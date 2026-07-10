@@ -41,6 +41,8 @@ jobs:
           sudo chgrp "$(id -gn)" /dev/kvm
 
       - name: Prove active KVM acceleration with a root guest
+        env:
+          COGS_SOURCE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
         run: dev/linux-kvm/qualify.sh docs/security-evidence/generated/kvm-qualification.json
 
       - name: Validate applicability-aware report

@@ -28,7 +28,7 @@ report_path, started_epoch_ms_text = sys.argv[1:]
 started_epoch_ms = int(started_epoch_ms_text)
 completed_epoch_ms = int(datetime.datetime.now(datetime.timezone.utc).timestamp() * 1000)
 format_time = lambda value: datetime.datetime.fromtimestamp(value / 1000, datetime.timezone.utc).isoformat().replace("+00:00", "Z")
-revision = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+revision = os.environ.get("COGS_SOURCE_REVISION") or subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
 qemu = shutil.which("qemu-system-x86_64")
 qemu_version = subprocess.check_output([qemu, "--version"], text=True).splitlines()[0] if qemu else "unavailable"
 dependency_names = ["authorization", "audit", "revocation", "identity", "network_enforcement"]
@@ -246,7 +246,7 @@ started_epoch_ms = int(started_epoch_ms_text)
 completed_epoch_ms = int(datetime.datetime.now(datetime.timezone.utc).timestamp() * 1000)
 started_at = datetime.datetime.fromtimestamp(started_epoch_ms / 1000, datetime.timezone.utc).isoformat().replace("+00:00", "Z")
 completed_at = datetime.datetime.fromtimestamp(completed_epoch_ms / 1000, datetime.timezone.utc).isoformat().replace("+00:00", "Z")
-revision = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+revision = os.environ.get("COGS_SOURCE_REVISION") or subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
 qemu_version = subprocess.check_output(["qemu-system-x86_64", "--version"], text=True).splitlines()[0]
 report = {
     "version": "cogs.security-report/v1alpha1",
