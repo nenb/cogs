@@ -1,0 +1,138 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Quality and Pi embedding
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install locked dependencies without lifecycle scripts
+        run: npm ci --ignore-scripts
+
+      - name: Format and lint
+        run: npm run format:check
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Unit, hostile-canary, fake-model, and JSONL tests
+        env:
+          PI_OFFLINE: "1"
+          PI_TELEMETRY: "0"
+          PI_SKIP_VERSION_CHECK: "1"
+        run: npm test
+
+      - name: Validate schemas and report semantics
+        run: npm run schemas
+
+      - name: Verify base-image digest pins
+        run: npm run images:check
+
+      - name: Verify registry dependency integrity
+        run: npm run lock:check
+
+      - name: Enforce production dependency license policy
+        run: npm run licenses
+
+      - name: Audit dependencies
+        run: npm run audit
+
+      - name: Lint and render the non-deploying Helm scaffold
+        run: |
+          helm lint deploy/helm/cogs
+          test -z "$(helm template cogs deploy/helm/cogs)"
+
+  secret-scan:
+    name: Secret scan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out full history
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Run Gitleaks
+        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  images:
+    name: Images, vulnerabilities, and SBOMs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Build worker scaffold
+        run: docker build --pull=false --tag cogs-worker:ci --file images/worker/Dockerfile .
+
+      - name: Build sandbox scaffold
+        run: docker build --pull=false --tag cogs-sandbox:ci --file images/sandbox/Dockerfile .
+
+      - name: Scan worker image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: cogs-worker:ci
+          format: table
+          exit-code: "1"
+          ignore-unfixed: true
+          severity: HIGH,CRITICAL
+
+      - name: Scan sandbox image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: cogs-sandbox:ci
+          format: table
+          exit-code: "1"
+          ignore-unfixed: true
+          severity: HIGH,CRITICAL
+
+      - name: Generate worker SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          image: cogs-worker:ci
+          format: spdx-json
+          output-file: worker.spdx.json
+
+      - name: Generate sandbox SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          image: cogs-sandbox:ci
+          format: spdx-json
+          output-file: sandbox.spdx.json
+
+      - name: Upload SBOMs
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: image-sboms-${{ github.run_id }}
+          path: "*.spdx.json"
+          if-no-files-found: error
+          retention-days: 30

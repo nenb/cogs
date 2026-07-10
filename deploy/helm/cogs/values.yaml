@@ -1,0 +1,2 @@
+# Stage 0 intentionally renders no Kubernetes resources.
+# Production topology begins only in its assigned implementation stage.

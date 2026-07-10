@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.dev/schemas/launch-v1alpha1.json",
+  "title": "Cogs immutable launch document",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "user_id",
+    "session_id",
+    "workspace_id",
+    "sandbox",
+    "model",
+    "skills",
+    "integrations",
+    "limits"
+  ],
+  "properties": {
+    "version": { "const": "cogs.dev/v1alpha1" },
+    "user_id": { "$ref": "#/$defs/opaqueId" },
+    "session_id": { "$ref": "#/$defs/opaqueId" },
+    "workspace_id": { "$ref": "#/$defs/opaqueId" },
+    "sandbox": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ssh_endpoint", "ssh_host_key", "client_key_path", "proxy_auth_handle"],
+      "properties": {
+        "ssh_endpoint": { "type": "string", "pattern": "^[A-Za-z0-9.-]+:[0-9]{1,5}$" },
+        "ssh_host_key": { "type": "string", "pattern": "^SHA256:[A-Za-z0-9+/]{43}$" },
+        "client_key_path": { "type": "string", "pattern": "^/run/cogs/ssh/[A-Za-z0-9][A-Za-z0-9._-]*$" },
+        "proxy_auth_handle": { "$ref": "#/$defs/secretHandle" }
+      }
+    },
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "id", "credential_handle"],
+      "properties": {
+        "provider": { "$ref": "#/$defs/opaqueId" },
+        "id": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "credential_handle": { "$ref": "#/$defs/secretHandle" }
+      }
+    },
+    "skills": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["shared_revision", "shared_path", "user_revision", "user_path"],
+      "properties": {
+        "shared_revision": { "$ref": "#/$defs/digest" },
+        "shared_path": { "const": "/shared/skills" },
+        "user_revision": { "$ref": "#/$defs/digest" },
+        "user_path": { "const": "/user/skills" }
+      }
+    },
+    "integrations": {
+      "type": "array",
+      "items": { "$ref": "integration-v1alpha1.json" }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cpu", "memory_bytes", "tool_timeout_seconds", "max_tool_output_bytes"],
+      "properties": {
+        "cpu": { "type": "number", "exclusiveMinimum": 0, "maximum": 8 },
+        "memory_bytes": { "type": "integer", "minimum": 134217728, "maximum": 17179869184 },
+        "tool_timeout_seconds": { "type": "integer", "minimum": 1, "maximum": 900 },
+        "max_tool_output_bytes": { "type": "integer", "minimum": 1, "maximum": 1048576 }
+      }
+    }
+  },
+  "$defs": {
+    "opaqueId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "secretHandle": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^(users|sessions|organizations)(?:/[A-Za-z0-9][A-Za-z0-9._:-]*)+$"
+    }
+  }
+}

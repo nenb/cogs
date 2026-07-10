@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.dev/schemas/export-manifest-v1alpha1.json",
+  "title": "Cogs session export manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "session_id", "created_at", "pi_version", "files", "skills", "attachments_included"],
+  "properties": {
+    "version": { "const": "cogs.export/v1alpha1" },
+    "session_id": { "$ref": "#/$defs/opaqueId" },
+    "created_at": { "type": "string", "format": "date-time" },
+    "pi_version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:[-+].*)?$" },
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "id"],
+      "properties": {
+        "provider": { "$ref": "#/$defs/opaqueId" },
+        "id": { "type": "string", "minLength": 1, "maxLength": 256 }
+      }
+    },
+    "files": {
+      "type": "array",
+      "minItems": 3,
+      "allOf": [
+        {
+          "contains": { "type": "object", "properties": { "path": { "const": "session.jsonl" } }, "required": ["path"] }
+        },
+        {
+          "contains": { "type": "object", "properties": { "path": { "const": "git-map.json" } }, "required": ["path"] }
+        },
+        { "contains": { "type": "object", "properties": { "path": { "const": "skills.json" } }, "required": ["path"] } }
+      ],
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "sha256", "bytes"],
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024,
+            "pattern": "^(?![A-Za-z]:)(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\)(?!.*//)[^\\u0000-\\u001F\\u007F]+$"
+          },
+          "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+          "bytes": { "type": "integer", "minimum": 0 }
+        }
+      }
+    },
+    "skills": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["shared_revision", "user_revision"],
+      "properties": {
+        "shared_revision": { "$ref": "#/$defs/digest" },
+        "user_revision": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "attachments_included": { "type": "boolean" }
+  },
+  "$defs": {
+    "opaqueId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+  }
+}

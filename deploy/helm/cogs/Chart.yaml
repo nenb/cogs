@@ -1,0 +1,9 @@
+apiVersion: v2
+name: cogs
+version: 0.0.0
+appVersion: "0.0.0"
+description: Non-deploying Stage 0 scaffold for future Cogs packaging
+type: application
+annotations:
+  dev.cogs/stage: "0"
+  dev.cogs/security-claim: "none"

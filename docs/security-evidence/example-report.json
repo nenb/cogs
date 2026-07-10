@@ -1,0 +1,62 @@
+{
+  "version": "cogs.security-report/v1alpha1",
+  "report_id": "example-stage0",
+  "source_revision": "0000000000000000000000000000000000000000",
+  "profile": "insecure-container",
+  "authority": "functional-only",
+  "started_at": "2026-07-10T12:00:00Z",
+  "completed_at": "2026-07-10T12:00:01Z",
+  "duration_ms": 1000,
+  "environment": {
+    "os": "linux",
+    "architecture": "amd64",
+    "runner": "example",
+    "runner_image": "ubuntu-24.04",
+    "runtime_versions": {
+      "node": "22.22.2"
+    },
+    "metadata": {
+      "authoritative_guest_root_evidence": false
+    }
+  },
+  "components": [
+    {
+      "name": "cogs",
+      "version": "0.0.0"
+    }
+  ],
+  "dependencies": {
+    "authorization": { "mode": "stubbed", "implementation": "fixture" },
+    "audit": { "mode": "stubbed", "implementation": "fixture" },
+    "revocation": { "mode": "not-applicable", "implementation": "not present in Stage 0" },
+    "identity": { "mode": "not-applicable", "implementation": "not present in Stage 0" },
+    "network_enforcement": { "mode": "not-applicable", "implementation": "insecure profile" }
+  },
+  "tests": [
+    {
+      "id": "example.stubbed",
+      "group": "report-format",
+      "result": "stubbed",
+      "release_eligible": false,
+      "duration_ms": 1,
+      "dependency_modes": {
+        "authorization": "stubbed",
+        "audit": "stubbed"
+      },
+      "diagnostics_redacted": "Example only; no security claim."
+    },
+    {
+      "id": "example.skip",
+      "group": "report-format",
+      "result": "skipped-with-approved-reason",
+      "release_eligible": false,
+      "dependency_modes": {},
+      "skip_approval": {
+        "owner": "Nick Byrne",
+        "reason": "Schema example",
+        "review_at": "2026-08-10T12:00:00Z"
+      }
+    }
+  ],
+  "known_limitations": ["This is a schema example and not security evidence."]
+}
