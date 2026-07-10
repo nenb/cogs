@@ -45,6 +45,18 @@ const integration = {
 };
 
 const validSamples: Record<string, unknown> = {
+  "egress-case-manifest-v1alpha1.json": {
+    version: "cogs.egress-cases/v1alpha1",
+    cases: [
+      {
+        id: "route.allowed",
+        group: "identity-route",
+        timeout_ms: 5000,
+        profiles: ["insecure-container", "linux-kvm"],
+        dependencies: ["identity", "authorization"],
+      },
+    ],
+  },
   "integration-v1alpha1.json": integration,
   "launch-v1alpha1.json": {
     version: "cogs.dev/v1alpha1",
