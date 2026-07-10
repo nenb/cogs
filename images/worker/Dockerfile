@@ -1,9 +1,9 @@
 # Stage 0 build scaffold only; this is not the production Cogs worker image.
-FROM node:22-bookworm-slim@sha256:53ada149d435c38b14476cb57e4a7da73c15595aba79bd6971b547ceb6d018bf
+FROM gcr.io/distroless/nodejs22-debian12:nonroot@sha256:13593b7570658e8477de39e2f4a1dd25db2f836d68a0ba771251572d23bb4f8e
 
 LABEL org.opencontainers.image.source="https://github.com/nenb/cogs" \
       org.opencontainers.image.licenses="Apache-2.0" \
       dev.cogs.profile="stage0-scaffold"
 
-USER node
-CMD ["node", "--version"]
+USER nonroot
+CMD ["--version"]

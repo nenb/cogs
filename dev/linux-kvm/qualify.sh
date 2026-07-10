@@ -24,11 +24,19 @@ if [[ ! -r /dev/kvm || ! -w /dev/kvm ]]; then
   exit 1
 fi
 
-kernel=$(find /boot -maxdepth 1 -type f -name 'vmlinuz-*' -print | sort -V | tail -1)
-if [[ -z "$kernel" ]]; then
+kernel_source=$(find /boot -maxdepth 1 -type f -name 'vmlinuz-*' -print | sort -V | tail -1)
+if [[ -z "$kernel_source" ]]; then
   echo "FAIL: no guest kernel found under /boot" >&2
   exit 1
 fi
+kernel="$workdir/vmlinuz"
+if [[ -r "$kernel_source" ]]; then
+  cp "$kernel_source" "$kernel"
+else
+  sudo cp "$kernel_source" "$kernel"
+  sudo chown "$(id -u):$(id -g)" "$kernel"
+fi
+chmod 0600 "$kernel"
 kernel_sha256=$(sha256sum "$kernel" | awk '{print $1}')
 if file /bin/busybox | grep -q 'dynamically linked'; then
   echo "FAIL: /bin/busybox is dynamic; the guest initramfs must be self-contained" >&2
