@@ -44,6 +44,7 @@ jobs:
         run: dev/linux-kvm/qualify.sh docs/security-evidence/generated/kvm-qualification.json
 
       - name: Validate applicability-aware report
+        if: always()
         run: npm run schemas -- docs/security-evidence/generated/kvm-qualification.json
 
       - name: Upload qualification evidence

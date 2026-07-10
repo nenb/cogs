@@ -2,7 +2,7 @@
 set -euo pipefail
 
 report_path=${1:-kvm-qualification-report.json}
-started_epoch_ms=$(date +%s%3N)
+started_epoch_ms=$(python3 -c 'import time; print(time.time_ns() // 1_000_000)')
 workdir=$(mktemp -d)
 umask 077
 qemu_pid=""
@@ -13,7 +13,77 @@ cleanup() {
   fi
   rm -rf "$workdir"
 }
-trap cleanup EXIT
+write_failure_report() {
+  mkdir -p "$(dirname "$report_path")"
+  python3 - "$report_path" "$started_epoch_ms" <<'PY'
+import datetime
+import json
+import os
+import platform
+import shutil
+import subprocess
+import sys
+
+report_path, started_epoch_ms_text = sys.argv[1:]
+started_epoch_ms = int(started_epoch_ms_text)
+completed_epoch_ms = int(datetime.datetime.now(datetime.timezone.utc).timestamp() * 1000)
+format_time = lambda value: datetime.datetime.fromtimestamp(value / 1000, datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+revision = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+qemu = shutil.which("qemu-system-x86_64")
+qemu_version = subprocess.check_output([qemu, "--version"], text=True).splitlines()[0] if qemu else "unavailable"
+dependency_names = ["authorization", "audit", "revocation", "identity", "network_enforcement"]
+report = {
+    "version": "cogs.security-report/v1alpha1",
+    "report_id": f"kvm-qualification-{os.environ.get('GITHUB_RUN_ID', 'local')}",
+    "source_revision": revision,
+    "profile": "linux-kvm",
+    "authority": "authoritative-local",
+    "started_at": format_time(started_epoch_ms),
+    "completed_at": format_time(completed_epoch_ms),
+    "duration_ms": completed_epoch_ms - started_epoch_ms,
+    "environment": {
+        "os": platform.system().lower(),
+        "architecture": platform.machine(),
+        "runner": os.environ.get("RUNNER_NAME", "local-linux"),
+        "runner_image": os.environ.get("ImageOS", "unknown"),
+        "runtime_versions": {"qemu": qemu_version},
+        "metadata": {
+            "kvm_present": os.path.exists("/dev/kvm"),
+            "kvm_enabled": False,
+            "guest_root": False,
+            "distinct_boot_ids": False,
+        },
+    },
+    "components": [{"name": "qemu", "version": qemu_version}],
+    "dependencies": {
+        name: {"mode": "not-applicable", "implementation": "Stage 0 runner qualification only"}
+        for name in dependency_names
+    },
+    "tests": [{
+        "id": "runner.kvm-acceleration",
+        "group": "runner-qualification",
+        "result": "fail",
+        "release_eligible": False,
+        "dependency_modes": {name: "not-applicable" for name in dependency_names},
+        "diagnostics_redacted": "KVM qualification failed; consult the CI step log for non-sensitive diagnostics.",
+    }],
+    "known_limitations": ["Failed qualification establishes no KVM or guest-root claim."],
+}
+with open(report_path, "w", encoding="utf-8") as output:
+    json.dump(report, output, indent=2, sort_keys=True)
+    output.write("\n")
+PY
+}
+finish() {
+  status=$?
+  trap - EXIT
+  cleanup
+  if [[ $status -ne 0 && ! -f "$report_path" ]]; then
+    write_failure_report || true
+  fi
+  exit "$status"
+}
+trap finish EXIT
 
 if [[ ! -c /dev/kvm ]]; then
   echo "FAIL: /dev/kvm is absent; software emulation is not an acceptable fallback" >&2
@@ -77,7 +147,7 @@ guest_log="$workdir/guest.log"
 # that KVM is present and enabled in the running VM.
 qemu-system-x86_64 \
   -name cogs-stage0-kvm-qualification \
-  -machine q35,accel=kvm \
+  -machine q35 \
   -accel kvm \
   -cpu host \
   -smp 1 \

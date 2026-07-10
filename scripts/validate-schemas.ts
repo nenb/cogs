@@ -165,8 +165,10 @@ for (const result of exampleReport.tests) assert.deepEqual(validateSecurityResul
 for (const reportPath of process.argv.slice(2)) {
   const report = JSON.parse(readFileSync(resolve(reportPath), "utf8")) as {
     authority: string;
+    profile: string;
     started_at: string;
     completed_at: string;
+    environment: { metadata?: Record<string, unknown> };
     tests: Array<SecurityTestResult & { id: string }>;
   };
   assert.equal(reportValidator(report), true, `${reportPath}: ${ajv.errorsText(reportValidator.errors)}`);
@@ -191,6 +193,15 @@ for (const reportPath of process.argv.slice(2)) {
         "functional-only",
         `${reportPath}: functional profiles cannot be release eligible`,
       );
+    }
+    if (result.id === "runner.kvm-acceleration" && result.result === "pass") {
+      for (const field of ["kvm_present", "kvm_enabled", "guest_root", "distinct_boot_ids"]) {
+        assert.equal(
+          report.environment.metadata?.[field],
+          true,
+          `${reportPath}: passing KVM evidence requires ${field}=true`,
+        );
+      }
     }
   }
 }

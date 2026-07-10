@@ -100,10 +100,10 @@
                 "type": "object",
                 "required": ["kvm_present", "kvm_enabled", "guest_root", "distinct_boot_ids"],
                 "properties": {
-                  "kvm_present": { "const": true },
-                  "kvm_enabled": { "const": true },
-                  "guest_root": { "const": true },
-                  "distinct_boot_ids": { "const": true }
+                  "kvm_present": { "type": "boolean" },
+                  "kvm_enabled": { "type": "boolean" },
+                  "guest_root": { "type": "boolean" },
+                  "distinct_boot_ids": { "type": "boolean" }
                 }
               }
             }
