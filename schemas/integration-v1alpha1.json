@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.dev/schemas/integration-v1alpha1.json",
+  "title": "Cogs integration rule group",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "id", "preset_revision", "rules", "auth"],
+  "properties": {
+    "version": { "const": "cogs.integration/v1alpha1" },
+    "id": { "$ref": "#/$defs/opaqueId" },
+    "preset_revision": { "$ref": "#/$defs/digest" },
+    "rules": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": { "$ref": "#/$defs/rule" }
+    },
+    "auth": { "$ref": "#/$defs/auth" }
+  },
+  "$defs": {
+    "opaqueId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "host": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 253,
+      "pattern": "^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$"
+    },
+    "rule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "host", "port", "methods", "path_patterns", "inject_auth"],
+      "properties": {
+        "name": { "$ref": "#/$defs/opaqueId" },
+        "host": { "$ref": "#/$defs/host" },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "methods": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "maxItems": 7,
+          "items": { "enum": ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"] }
+        },
+        "path_patterns": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 128,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048,
+            "pattern": "^/(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*[?#\\\\\\u0000-\\u001F\\u007F]).*$"
+          }
+        },
+        "inject_auth": { "type": "boolean", "default": true }
+      }
+    },
+    "auth": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "header", "prefix", "placeholder", "secret_handle"],
+          "properties": {
+            "type": { "enum": ["bearer_header", "api_key_header"] },
+            "header": { "type": "string", "pattern": "^[!#$%&'*+.^_`|~0-9A-Za-z-]+$" },
+            "prefix": { "type": "string", "maxLength": 128, "pattern": "^[^\\u0000-\\u001F\\u007F]*$" },
+            "placeholder": { "type": "string", "pattern": "^COGS_PLACEHOLDER_[A-Z0-9_]+$" },
+            "secret_handle": { "type": "string", "minLength": 1, "maxLength": 512 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "header", "placeholder", "secret_handle"],
+          "properties": {
+            "type": { "const": "basic_header" },
+            "header": { "const": "Authorization" },
+            "placeholder": { "type": "string", "pattern": "^COGS_PLACEHOLDER_[A-Z0-9_]+$" },
+            "secret_handle": { "type": "string", "minLength": 1, "maxLength": 512 }
+          }
+        }
+      ]
+    }
+  }
+}

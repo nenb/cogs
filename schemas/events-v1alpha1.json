@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.dev/schemas/events-v1alpha1.json",
+  "title": "Cogs event envelope",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "seq", "timestamp", "session_id", "kind", "correlation_id", "payload"],
+  "properties": {
+    "version": { "const": "cogs.event/v1alpha1" },
+    "seq": { "type": "integer", "minimum": 0 },
+    "timestamp": { "type": "string", "format": "date-time" },
+    "session_id": { "$ref": "#/$defs/opaqueId" },
+    "kind": {
+      "enum": [
+        "pi_event",
+        "tool_start",
+        "tool_update",
+        "tool_end",
+        "usage",
+        "git_mapping",
+        "checkpoint",
+        "approval_required",
+        "warning",
+        "error",
+        "run_settled",
+        "run_aborted",
+        "shutdown_ready"
+      ]
+    },
+    "correlation_id": { "$ref": "#/$defs/opaqueId" },
+    "request_id": { "$ref": "#/$defs/opaqueId" },
+    "payload": { "type": "object" }
+  },
+  "$defs": {
+    "opaqueId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    }
+  }
+}

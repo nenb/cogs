@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.dev/schemas/policy-v1alpha1.json",
+  "title": "Cogs policy action envelope",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "action", "user", "session", "resource", "attributes"],
+  "properties": {
+    "version": { "const": "cogs.policy/v1alpha1" },
+    "action": {
+      "enum": [
+        "mount.validate",
+        "tool.enable",
+        "tool.dispatch",
+        "egress.authorize",
+        "secret.use",
+        "export.create",
+        "restore.request"
+      ]
+    },
+    "user": { "$ref": "#/$defs/opaqueId" },
+    "session": { "$ref": "#/$defs/opaqueId" },
+    "resource": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "attributes": { "type": "object" }
+  },
+  "$defs": {
+    "opaqueId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    }
+  }
+}
