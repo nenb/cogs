@@ -1,6 +1,6 @@
 # ADR 0009: Transport skills as verified content-addressed artifacts
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-10
 - Reviewer: Nick Byrne
 

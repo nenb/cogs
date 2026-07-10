@@ -1,6 +1,6 @@
 # ADR 0004: Use Kata as the reference runtime and preserve a full-VM profile
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-10
 - Reviewer: Nick Byrne
 

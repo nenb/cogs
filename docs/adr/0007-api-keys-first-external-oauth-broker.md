@@ -1,6 +1,6 @@
 # ADR 0007: Ship API keys first and keep OAuth refresh ownership external
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-10
 - Reviewer and interim broker owner: Nick Byrne
 

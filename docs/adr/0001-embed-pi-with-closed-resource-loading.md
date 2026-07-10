@@ -1,6 +1,6 @@
 # ADR 0001: Embed Pi with closed resource loading
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-10
 - Reviewer: Nick Byrne
 

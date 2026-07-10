@@ -1,6 +1,6 @@
 # ADR 0008: Centralize operational metadata, not user content
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-10
 - Reviewer: Nick Byrne
 

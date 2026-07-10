@@ -1,6 +1,6 @@
 # ADR 0006: Record Git observations without claiming attestation
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-10
 - Reviewer: Nick Byrne
 
