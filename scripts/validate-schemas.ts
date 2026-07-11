@@ -158,7 +158,9 @@ export interface SecurityTestResult {
 export function validateSecurityResultSemantics(test: SecurityTestResult): string[] {
   const errors: string[] = [];
   const hasStub = Object.values(test.dependency_modes).includes("stubbed");
-  if (hasStub && test.result !== "stubbed") errors.push("a stubbed dependency requires result=stubbed");
+  if (hasStub && test.result === "pass") {
+    errors.push("a passing test with a stubbed dependency requires result=stubbed");
+  }
   if (test.result === "stubbed" && !hasStub) errors.push("result=stubbed requires a declared stubbed dependency");
   if (test.release_eligible && test.result !== "pass") errors.push("release eligibility requires result=pass");
   if (test.release_eligible && Object.values(test.dependency_modes).some((mode) => mode !== "real")) {
@@ -169,7 +171,15 @@ export function validateSecurityResultSemantics(test: SecurityTestResult): strin
 
 assert.deepEqual(
   validateSecurityResultSemantics({ result: "pass", release_eligible: true, dependency_modes: { audit: "stubbed" } }),
-  ["a stubbed dependency requires result=stubbed", "release-eligible test dependencies must all be real"],
+  [
+    "a passing test with a stubbed dependency requires result=stubbed",
+    "release-eligible test dependencies must all be real",
+  ],
+);
+assert.deepEqual(
+  validateSecurityResultSemantics({ result: "fail", release_eligible: false, dependency_modes: { audit: "stubbed" } }),
+  [],
+  "a real mechanism failure must remain fail even when a dependency is stubbed",
 );
 const exampleReport = validSamples["security-report-v1alpha1.json"] as { tests: SecurityTestResult[] };
 for (const result of exampleReport.tests) assert.deepEqual(validateSecurityResultSemantics(result), []);

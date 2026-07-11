@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
+import { performance } from "node:perf_hooks";
 import test from "node:test";
-import type { CaseManifest, RunnerOptions } from "./runner.ts";
+import { assertValidSecurityReport } from "./report.ts";
+import type { AdapterResult, CaseManifest, ConformanceAdapter, RunnerOptions } from "./runner.ts";
 import { renderHumanReport, runConformance, validateManifest } from "./runner.ts";
 
 const firstCase: CaseManifest["cases"][number] = {
@@ -32,6 +34,16 @@ const manifest: CaseManifest = {
   ],
 };
 
+function adapter(overrides: Partial<ConformanceAdapter> = {}): ConformanceAdapter {
+  return {
+    name: "test-adapter",
+    execute: async () => ({ passed: true }),
+    cleanup: async () => undefined,
+    teardown: async () => undefined,
+    ...overrides,
+  };
+}
+
 function options(overrides: Partial<RunnerOptions> = {}): RunnerOptions {
   return {
     reportId: "egress-test",
@@ -53,8 +65,10 @@ function options(overrides: Partial<RunnerOptions> = {}): RunnerOptions {
       network_enforcement: { mode: "not-applicable", implementation: "insecure profile" },
     },
     knownLimitations: ["unit test"],
-    execute: async () => ({ passed: true }),
-    teardown: async () => undefined,
+    adapter: adapter(),
+    cleanupTimeoutMs: 500,
+    teardownTimeoutMs: 500,
+    now: () => new Date("2026-07-10T12:00:00Z"),
     ...overrides,
   };
 }
@@ -64,13 +78,16 @@ test("runner is deterministic, applicability-aware, stub-aware, redacted, and hu
     manifest,
     options({
       redactValues: ["fixture-secret"],
-      execute: async (conformanceCase) => ({
-        passed: true,
-        diagnosticsRedacted: `case=${conformanceCase.id} token=fixture-secret\n`,
+      adapter: adapter({
+        execute: async (conformanceCase) => ({
+          passed: true,
+          diagnosticsRedacted: `case=${conformanceCase.id} token=fixture-secret\n`,
+        }),
       }),
     }),
   );
 
+  assertValidSecurityReport(report);
   assert.deepEqual(
     report.tests.map(({ id, result, release_eligible }) => ({ id, result, release_eligible })),
     [
@@ -84,21 +101,26 @@ test("runner is deterministic, applicability-aware, stub-aware, redacted, and hu
   assert.match(renderHumanReport(report), /not-applicable=1, stubbed=2/);
 });
 
-test("timeouts and teardown failures become explicit failed evidence", async () => {
+test("non-cooperative execution and teardown timeouts become bounded failed evidence", async () => {
   const oneCase: CaseManifest = { version: manifest.version, cases: [firstCase] };
+  let cleaned = false;
+  const started = performance.now();
   const report = await runConformance(
     oneCase,
     options({
-      execute: async (_case, signal) =>
-        await new Promise((_resolve, reject) => {
-          signal.addEventListener("abort", () => reject(signal.reason), { once: true });
-        }),
-      teardown: async () => {
-        throw new Error("teardown exposed fixture-secret");
-      },
-      redactValues: ["fixture-secret"],
+      adapter: adapter({
+        execute: async () => await new Promise<never>(() => undefined),
+        cleanup: async () => {
+          cleaned = true;
+        },
+        teardown: async () => await new Promise<never>(() => undefined),
+      }),
+      teardownTimeoutMs: 100,
     }),
   );
+  assert.ok(performance.now() - started < 1_000);
+  assert.equal(cleaned, true);
+  assertValidSecurityReport(report);
 
   assert.deepEqual(
     report.tests.map(({ id, result }) => ({ id, result })),
@@ -108,10 +130,36 @@ test("timeouts and teardown failures become explicit failed evidence", async () 
     ],
   );
   assert.match(report.tests[0]?.diagnostics_redacted ?? "", /timed out/);
-  assert.equal(JSON.stringify(report).includes("fixture-secret"), false);
+  assert.match(report.tests[1]?.diagnostics_redacted ?? "", /teardown timed out/);
 });
 
-test("approved skips retain owner and review point", async () => {
+test("cleanup failure invalidates its case and prevents later adapter execution", async () => {
+  let executions = 0;
+  const report = await runConformance(
+    { version: manifest.version, cases: manifest.cases.slice(0, 2) },
+    options({
+      adapter: adapter({
+        execute: async () => {
+          executions += 1;
+          return { passed: true };
+        },
+        cleanup: async () => await new Promise<never>(() => undefined),
+      }),
+      cleanupTimeoutMs: 100,
+    }),
+  );
+
+  assert.equal(executions, 1);
+  assertValidSecurityReport(report);
+  assert.deepEqual(
+    report.tests.map(({ result }) => result),
+    ["fail", "fail"],
+  );
+  assert.match(report.tests[0]?.diagnostics_redacted ?? "", /cleanup.*timed out/);
+  assert.match(report.tests[1]?.diagnostics_redacted ?? "", /not executed/);
+});
+
+test("approved skips retain owner and review point while expired skips fail closed", async () => {
   const report = await runConformance(
     { version: manifest.version, cases: [firstCase] },
     options({
@@ -124,8 +172,45 @@ test("approved skips retain owner and review point", async () => {
       },
     }),
   );
+  assertValidSecurityReport(report);
   assert.equal(report.tests[0]?.result, "skipped-with-approved-reason");
   assert.equal(report.tests[0]?.skip_approval?.owner, "Nick Byrne");
+
+  const expired = await runConformance(
+    { version: manifest.version, cases: [firstCase] },
+    options({
+      skips: {
+        "route.allowed": {
+          owner: "Nick Byrne",
+          reason: "expired fixture outage",
+          review_at: "2026-07-09T00:00:00Z",
+        },
+      },
+    }),
+  );
+  assertValidSecurityReport(expired);
+  assert.equal(expired.tests[0]?.result, "fail");
+  assert.equal(expired.tests[0]?.skip_approval, undefined);
+});
+
+test("malformed adapter results fail while genuine real-dependency success passes", async () => {
+  const realDependencies = options().dependencies;
+  realDependencies.authorization = { mode: "real", implementation: "candidate-policy" };
+  const malformed = await runConformance(
+    { version: manifest.version, cases: [firstCase] },
+    options({
+      dependencies: realDependencies,
+      adapter: adapter({ execute: async () => ({ passed: "true" }) as unknown as AdapterResult }),
+    }),
+  );
+  assert.equal(malformed.tests[0]?.result, "fail");
+
+  const passing = await runConformance(
+    { version: manifest.version, cases: [firstCase] },
+    options({ dependencies: realDependencies }),
+  );
+  assert.equal(passing.tests[0]?.result, "pass");
+  assertValidSecurityReport(passing);
 });
 
 test("malformed manifests and invalid authority claims fail before execution", async () => {
