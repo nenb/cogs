@@ -216,6 +216,14 @@ test("malformed adapter results fail while genuine real-dependency success passe
 test("malformed manifests and invalid authority claims fail before execution", async () => {
   assert.throws(() => validateManifest({ ...manifest, cases: [firstCase, firstCase] }), /duplicate case id/);
   assert.throws(() => validateManifest({ ...manifest, cases: [{ ...firstCase, timeout_ms: 1 }] }), /invalid timeout/);
+  assert.throws(
+    () =>
+      validateManifest({
+        ...manifest,
+        cases: [{ ...firstCase, group: "runner-control" } as unknown as CaseManifest["cases"][number]],
+      }),
+    /invalid group/,
+  );
   await assert.rejects(
     runConformance(manifest, options({ authority: "authoritative-local" })),
     /cannot produce authoritative evidence/,

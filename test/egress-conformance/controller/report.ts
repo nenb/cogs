@@ -2,7 +2,8 @@ import { mkdir, rename, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
 import type { Ajv as AjvCore, Options, ValidateFunction } from "ajv";
-import type { SecurityReport, SecurityTestResult } from "./runner.ts";
+import { validateSecurityResultSemantics } from "../../../scripts/security-result-semantics.ts";
+import type { SecurityReport } from "./runner.ts";
 import { renderHumanReport } from "./runner.ts";
 
 const require = createRequire(import.meta.url);
@@ -12,21 +13,6 @@ const schema = require("../../../schemas/security-report-v1alpha1.json") as obje
 const ajv = new Ajv2020({ allErrors: true, strict: true, strictRequired: false });
 addFormats(ajv);
 const validate = ajv.compile(schema) as ValidateFunction<SecurityReport>;
-
-function semanticErrors(test: SecurityTestResult): string[] {
-  const errors: string[] = [];
-  const modes = Object.values(test.dependency_modes);
-  const hasStub = modes.includes("stubbed");
-  if (hasStub && test.result === "pass") {
-    errors.push("a passing test with a stubbed dependency must be marked stubbed");
-  }
-  if (test.result === "stubbed" && !hasStub) errors.push("a stubbed result requires a stubbed dependency");
-  if (test.release_eligible && test.result !== "pass") errors.push("release eligibility requires pass");
-  if (test.release_eligible && modes.some((mode) => mode !== "real")) {
-    errors.push("release-eligible dependencies must all be real");
-  }
-  return errors;
-}
 
 export function assertValidSecurityReport(report: SecurityReport): void {
   if (!validate(report))
@@ -38,7 +24,7 @@ export function assertValidSecurityReport(report: SecurityReport): void {
     throw new Error("security report contains duplicate test IDs");
   }
   for (const test of report.tests) {
-    const errors = semanticErrors(test);
+    const errors = validateSecurityResultSemantics(test);
     if (errors.length > 0) throw new Error(`invalid result ${test.id}: ${errors.join("; ")}`);
     if (test.release_eligible && report.authority === "functional-only") {
       throw new Error(`functional profile result ${test.id} cannot be release eligible`);

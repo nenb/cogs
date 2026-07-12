@@ -3,6 +3,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
 import type { Ajv as AjvCore, Options, ValidateFunction } from "ajv";
+import { type SecurityResultSemanticsInput, validateSecurityResultSemantics } from "./security-result-semantics.ts";
 
 const require = createRequire(import.meta.url);
 const Ajv2020 = require("ajv/dist/2020.js") as new (options?: Options) => AjvCore;
@@ -149,26 +150,6 @@ const invalidAuthority = structuredClone(validSamples["security-report-v1alpha1.
 invalidAuthority.authority = "authoritative-local";
 assert.equal(reportValidator(invalidAuthority), false, "insecure profiles cannot claim authoritative evidence");
 
-export interface SecurityTestResult {
-  result: "pass" | "fail" | "stubbed" | "not-applicable" | "skipped-with-approved-reason";
-  release_eligible: boolean;
-  dependency_modes: Record<string, "real" | "stubbed" | "not-applicable">;
-}
-
-export function validateSecurityResultSemantics(test: SecurityTestResult): string[] {
-  const errors: string[] = [];
-  const hasStub = Object.values(test.dependency_modes).includes("stubbed");
-  if (hasStub && test.result === "pass") {
-    errors.push("a passing test with a stubbed dependency requires result=stubbed");
-  }
-  if (test.result === "stubbed" && !hasStub) errors.push("result=stubbed requires a declared stubbed dependency");
-  if (test.release_eligible && test.result !== "pass") errors.push("release eligibility requires result=pass");
-  if (test.release_eligible && Object.values(test.dependency_modes).some((mode) => mode !== "real")) {
-    errors.push("release-eligible test dependencies must all be real");
-  }
-  return errors;
-}
-
 assert.deepEqual(
   validateSecurityResultSemantics({ result: "pass", release_eligible: true, dependency_modes: { audit: "stubbed" } }),
   [
@@ -181,7 +162,7 @@ assert.deepEqual(
   [],
   "a real mechanism failure must remain fail even when a dependency is stubbed",
 );
-const exampleReport = validSamples["security-report-v1alpha1.json"] as { tests: SecurityTestResult[] };
+const exampleReport = validSamples["security-report-v1alpha1.json"] as { tests: SecurityResultSemanticsInput[] };
 for (const result of exampleReport.tests) assert.deepEqual(validateSecurityResultSemantics(result), []);
 
 for (const reportPath of process.argv.slice(2)) {
@@ -191,7 +172,7 @@ for (const reportPath of process.argv.slice(2)) {
     started_at: string;
     completed_at: string;
     environment: { metadata?: Record<string, unknown> };
-    tests: Array<SecurityTestResult & { id: string }>;
+    tests: Array<SecurityResultSemanticsInput & { id: string }>;
   };
   assert.equal(reportValidator(report), true, `${reportPath}: ${ajv.errorsText(reportValidator.errors)}`);
   assert.ok(

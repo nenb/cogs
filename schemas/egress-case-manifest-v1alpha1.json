@@ -34,8 +34,7 @@
             "bypass-resistance",
             "audit-failure",
             "revocation",
-            "client-compatibility",
-            "runner-control"
+            "client-compatibility"
           ]
         },
         "timeout_ms": { "type": "integer", "minimum": 100, "maximum": 300000 },

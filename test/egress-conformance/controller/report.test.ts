@@ -79,5 +79,5 @@ test("schema and semantic failures are rejected before writing", () => {
       dependency_modes: { authorization: "stubbed" },
     },
   ];
-  assert.throws(() => assertValidSecurityReport(invalidSemantics), /must be marked stubbed/);
+  assert.throws(() => assertValidSecurityReport(invalidSemantics), /requires result=stubbed/);
 });

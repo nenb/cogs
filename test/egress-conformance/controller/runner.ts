@@ -16,8 +16,7 @@ export interface ConformanceCase {
     | "bypass-resistance"
     | "audit-failure"
     | "revocation"
-    | "client-compatibility"
-    | "runner-control";
+    | "client-compatibility";
   timeout_ms: number;
   profiles: ConformanceProfile[];
   dependencies: DependencyName[];
@@ -118,7 +117,6 @@ const groups = new Set<ConformanceCase["group"]>([
   "audit-failure",
   "revocation",
   "client-compatibility",
-  "runner-control",
 ]);
 const profiles = new Set<ConformanceProfile>(["insecure-container", "macos-vm-dev", "linux-kvm"]);
 const dependencies = new Set<DependencyName>(dependencyNames);
