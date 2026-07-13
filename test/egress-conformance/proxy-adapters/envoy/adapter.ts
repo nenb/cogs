@@ -15,6 +15,7 @@ const idPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 export interface EnvoyCaseRuntime {
   proxyOrigin: string;
   stateDirectory: string;
+  containerName: string;
 }
 
 export interface EnvoyCaseCommand {
@@ -118,11 +119,16 @@ function parseAccessRecords(logs: string): EnvoyAccessRecord[] {
     if (value.event !== "request-complete") continue;
     const responseCode = Number(value.response_code);
     const duration = Number(value.duration_ms);
+    const intentId = typeof value.intent_id === "string" ? value.intent_id : "";
+    const routeId = typeof value.route_id === "string" ? value.route_id : "";
+    const intentValid = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(intentId);
+    const routeValid = idPattern.test(routeId);
+    if (responseCode === 0) continue;
+    if ((!Number.isInteger(responseCode) || responseCode < 100 || responseCode >= 400) && (!intentValid || !routeValid))
+      continue;
     if (
-      typeof value.intent_id !== "string" ||
-      !idPattern.test(value.intent_id) ||
-      typeof value.route_id !== "string" ||
-      !idPattern.test(value.route_id) ||
+      !intentValid ||
+      !routeValid ||
       !Number.isInteger(responseCode) ||
       responseCode < 100 ||
       responseCode > 599 ||
@@ -134,8 +140,8 @@ function parseAccessRecords(logs: string): EnvoyAccessRecord[] {
     }
     records.push({
       event: "request-complete",
-      intent_id: value.intent_id,
-      route_id: value.route_id,
+      intent_id: intentId,
+      route_id: routeId,
       response_code: responseCode,
       duration_ms: duration,
     });
@@ -227,7 +233,6 @@ export class EnvoyConformanceAdapter implements ConformanceAdapter {
       [
         ...common,
         "--detach",
-        "--rm",
         "--name",
         container,
         "--label",
@@ -251,6 +256,7 @@ export class EnvoyConformanceAdapter implements ConformanceAdapter {
     const runtime = Object.freeze({
       proxyOrigin: `http://127.0.0.1:${configuration.listenerPort}`,
       stateDirectory: directory,
+      containerName: container,
     });
     const plan = this.#options.commandFor(test, runtime);
     const result = await runFile(plan.command, plan.args, {
@@ -345,6 +351,7 @@ export class EnvoyConformanceAdapter implements ConformanceAdapter {
       }
       await this.#captureLogs();
       await runFile(this.#docker, ["stop", "--time", "3", active.container], { timeoutMs: 10_000 });
+      await runFile(this.#docker, ["container", "rm", active.container], { timeoutMs: 15_000 });
       const listed = await runFile(
         this.#docker,
         ["container", "ls", "--all", "--format", "{{.Names}}", "--filter", `name=^/${active.container}$`],

@@ -4,7 +4,7 @@ This time-boxed Stage 1 alternate uses `mitmproxy/mitmproxy:12.2.3` at OCI index
 
 The adapter writes a validated, immutable policy and mounts it read-only. `mitmdump` has one explicit proxy listener and no web/admin UI. Its generated CA private key remains in a trusted per-case state mount, while only `mitmproxy-ca-cert.pem` enters the insecure guest. Cleanup positively removes the container and all CA/configuration state.
 
-Unlike Envoy, the candidate needs the measured 168-line `addon.py` integration to:
+Unlike Envoy, the candidate needs the measured 182-line `addon.py` integration to:
 
 - validate a keyed session capability before CONNECT;
 - enforce exact host, port, method, and canonical path-prefix policy;
@@ -16,4 +16,4 @@ mitmproxy remains the HTTP/TLS parser; the addon consumes parsed flow fields and
 
 The latest upstream image currently has six fixed HIGH findings. `.trivyignore-mitmproxy` records their narrow test-only scope, evidence, owner, issue #25 tracking, and automatic expiry on 2026-07-27. The findings remain visible in the unsuppressed CI inventory artifact and are a candidate-comparison disadvantage; the exception cannot support selection or release.
 
-`ci-smoke.ts` runs the unchanged wrong-capability and protected bearer-injection black-box behavior from root over SSH in the `insecure-container` guest. Evidence is `functional-only` and dependency-stub-aware. It cannot support isolation, proxy selection, or release claims. The full parser, route, HTTP/2, redirect, revocation, drain, and smuggling matrix remains issue #22; authoritative guest-root evidence remains issue #23.
+`ci-smoke.ts` runs the candidate smoke, while `suite-smoke.ts` executes the same immutable 56-case route, HTTP/1, HTTP/2, credential, audit, OTLP-confidentiality, failure, revocation, drain, capability-rotation, and certificate-replacement matrix as Envoy. Requests originate from root over SSH in the `insecure-container` guest. Evidence is `functional-only` and dependency-stub-aware; it cannot support isolation, proxy selection, or release claims. Authoritative guest-root evidence remains issue #23.

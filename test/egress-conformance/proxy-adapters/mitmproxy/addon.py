@@ -8,7 +8,7 @@ import urllib.request
 from mitmproxy import ctx, http
 
 ID_KEYS = {"version", "case_id", "session_id", "authorization_origin", "routes"}
-ROUTE_KEYS = {"id", "protocol", "host", "port", "methods", "pathPrefix", "credential"}
+ROUTE_KEYS = {"id", "protocol", "host", "port", "methods", "pathPrefix"}
 CREDENTIAL_KEYS = {"kind", "value", "header"}
 
 
@@ -30,8 +30,12 @@ class CogsPolicy:
         if set(value) != ID_KEYS or value["version"] != "cogs.mitmproxy-policy/v1alpha1":
             raise RuntimeError("policy envelope is invalid")
         for route in value["routes"]:
-            if set(route) != ROUTE_KEYS or set(route["credential"]) not in (CREDENTIAL_KEYS, CREDENTIAL_KEYS - {"header"}):
+            keys = set(route)
+            credential = route.get("credential")
+            if keys not in (ROUTE_KEYS, ROUTE_KEYS | {"credential"}):
                 raise RuntimeError("policy route is invalid")
+            if credential is not None and set(credential) not in (CREDENTIAL_KEYS, CREDENTIAL_KEYS - {"header"}):
+                raise RuntimeError("policy credential is invalid")
         self.policy = value
 
     async def _request(self, path, headers=None, body=None):
@@ -55,6 +59,9 @@ class CogsPolicy:
         flow.response = http.Response.make(status, b"", {"cache-control": "no-store", "content-length": "0"})
 
     async def http_connect(self, flow: http.HTTPFlow):
+        if len(flow.request.headers.get_all("proxy-authorization")) != 1:
+            self._deny(flow, 407)
+            return
         capability = flow.request.headers.get("proxy-authorization")
         flow.request.headers.pop("proxy-authorization", None)
         if capability is None or len(capability) > 8192:
@@ -81,12 +88,18 @@ class CogsPolicy:
         path = flow.request.path
         host = flow.request.host.lower()
         sni = (flow.client_conn.sni or "").lower()
+        authority = (flow.request.host_header or "").lower()
+        allowed_authorities = {f"{host}:{flow.request.port}"}
+        if flow.request.port == 443:
+            allowed_authorities.add(host)
         if (
             self.policy is None
             or flow.request.scheme != "https"
             or any(character in path for character in ("?", "#", "\\", "%"))
             or "//" in path
             or any(part in (".", "..") for part in path.split("/"))
+            or len(flow.request.headers.get_all("host")) > 1
+            or authority not in allowed_authorities
             or connection[1] != host
             or connection[2] != flow.request.port
             or (sni and sni != host)
@@ -120,7 +133,7 @@ class CogsPolicy:
             "x-cogs-case-id": self.policy["case_id"],
             "x-cogs-session-id": self.policy["session_id"],
             "x-cogs-route-id": route["id"],
-            "x-cogs-credential-required": "true",
+            "x-cogs-credential-required": "true" if route.get("credential") is not None else "false",
         }
         try:
             status, response_headers, body = await self._request("/v1/envoy/authorize", headers)
@@ -131,11 +144,12 @@ class CogsPolicy:
         if status != 200 or len(body) > 8192 or not intent:
             self._deny(flow, 503 if status >= 500 else 403)
             return
-        credential = route["credential"]
+        credential = route.get("credential")
         flow.request.headers.pop("authorization", None)
         flow.request.headers.pop("proxy-authorization", None)
-        name = "authorization" if credential["kind"] in ("bearer", "basic") else credential["header"]
-        flow.request.headers[name] = credential["value"]
+        if credential is not None:
+            name = "authorization" if credential["kind"] in ("bearer", "basic") else credential["header"]
+            flow.request.headers[name] = credential["value"]
         self.pending[flow.id] = (intent, route["id"], time.monotonic())
 
     async def response(self, flow: http.HTTPFlow):

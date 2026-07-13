@@ -22,7 +22,7 @@ export interface EnvoyRouteConfig {
   upstreamAddress: string;
   upstreamPort: number;
   upstreamCaCertificatePem?: string;
-  credential: CredentialConfig;
+  credential?: CredentialConfig;
 }
 
 export interface EnvoyCandidateConfigInput {
@@ -157,7 +157,7 @@ function validateInput(input: EnvoyCandidateConfigInput): EnvoyRouteConfig[] {
         throw new Error("route methods must be canonical non-CONNECT tokens");
     }
     validatePathPrefix(route.pathPrefix);
-    credentialHeader(route.credential);
+    if (route.credential !== undefined) credentialHeader(route.credential);
     if (route.protocol === "https") {
       if (route.upstreamCaCertificatePem === undefined)
         throw new Error("HTTPS routes require an upstream CA certificate");
@@ -181,6 +181,7 @@ function authContext(
   input: EnvoyCandidateConfigInput,
   routeId?: string,
   requireCapability?: boolean,
+  credentialRequired?: boolean,
 ): Record<string, string> {
   return {
     "cogs.mode": mode,
@@ -191,7 +192,7 @@ function authContext(
       ? {}
       : {
           "cogs.require_capability": requireCapability ? "true" : "false",
-          "cogs.credential_required": "true",
+          "cogs.credential_required": credentialRequired ? "true" : "false",
         }),
   };
 }
@@ -280,7 +281,7 @@ function hardenedHcm(
 }
 
 function envoyRoute(route: EnvoyRouteConfig, input: EnvoyCandidateConfigInput, inner: boolean): Json[] {
-  const credential = credentialHeader(route.credential);
+  const credential = route.credential === undefined ? undefined : credentialHeader(route.credential);
   const escapedHost = route.host.replaceAll(".", "\\.");
   const defaultPort =
     (route.protocol === "http" && route.port === 80) || (route.protocol === "https" && route.port === 443);
@@ -298,11 +299,24 @@ function envoyRoute(route: EnvoyRouteConfig, input: EnvoyCandidateConfigInput, i
       cluster: `upstream_${route.id}`,
       timeout: "30s",
     },
-    request_headers_to_remove: ["authorization", "proxy-authorization", credential.name],
-    request_headers_to_add: [
-      { header: { key: credential.name, value: credential.value }, append_action: "OVERWRITE_IF_EXISTS_OR_ADD" },
+    request_headers_to_remove: [
+      "authorization",
+      "proxy-authorization",
+      ...(credential === undefined ? [] : [credential.name]),
     ],
-    typed_per_filter_config: routeAuthOverride(authContext("authorize", input, route.id, !inner)),
+    ...(credential === undefined
+      ? {}
+      : {
+          request_headers_to_add: [
+            {
+              header: { key: credential.name, value: credential.value },
+              append_action: "OVERWRITE_IF_EXISTS_OR_ADD",
+            },
+          ],
+        }),
+    typed_per_filter_config: routeAuthOverride(
+      authContext("authorize", input, route.id, !inner, credential !== undefined),
+    ),
   }));
 }
 

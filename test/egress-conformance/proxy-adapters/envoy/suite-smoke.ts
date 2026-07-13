@@ -1,15 +1,18 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { platform, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { STAGE_1_MANIFEST, stage1Case } from "../../cases/stage-1.ts";
+import { type PreparedCase, prepareStage1Case } from "../../cases/suite-runtime.ts";
 import { writeReports } from "../../controller/report.ts";
-import { type CaseManifest, runConformance, type SecurityReport } from "../../controller/runner.ts";
+import { runConformance, type SecurityReport } from "../../controller/runner.ts";
 import { startFaultInjector } from "../../fault-injector/server.ts";
+import { emitOtlpMetadata, startOtlpFixture } from "../../telemetry-fixture/server.ts";
 import { startUpstreamFixtures } from "../../upstream-fixtures/server.ts";
 import { EnvoyConformanceAdapter } from "./adapter.ts";
 import type { EnvoyCandidateConfigInput } from "./config.ts";
@@ -21,13 +24,25 @@ const repo = resolve(here, "../../../..");
 const outputDirectory = resolve(process.argv[2] ?? join(repo, "docs/security-evidence/generated"));
 const sourceRevision =
   process.env.COGS_SOURCE_REVISION ?? (await execFileAsync("git", ["-C", repo, "rev-parse", "HEAD"])).stdout.trim();
-const reportId = `envoy-candidate-${process.env.GITHUB_RUN_ID ?? "local"}`;
+const reportId = `envoy-suite-${process.env.GITHUB_RUN_ID ?? "local"}`;
 const stateRoot = process.platform === "linux" ? "/dev/shm" : tmpdir();
 const realCredential = `Bearer cogs-fixture-${randomBytes(24).toString("hex")}`;
+const apiCredential = `cogs-api-${randomBytes(24).toString("hex")}`;
+const basicCredential = `Basic ${Buffer.from(`fixture:${randomBytes(24).toString("hex")}`).toString("base64")}`;
 const capability = `cogs-capability-${randomBytes(24).toString("hex")}`;
 const wrongCapability = `cogs-wrong-${randomBytes(24).toString("hex")}`;
 const placeholder = "Bearer cogs-non-secret-placeholder";
-const sessionId = "session-envoy-smoke";
+const sessionId = "session-envoy-suite";
+const replacementCapability = `cogs-replacement-${randomBytes(24).toString("hex")}`;
+const sensitiveValues = [
+  realCredential,
+  apiCredential,
+  basicCredential,
+  capability,
+  replacementCapability,
+  wrongCapability,
+  placeholder,
+] as const;
 
 async function reservePort(): Promise<number> {
   const server = createServer();
@@ -143,15 +158,21 @@ const material = await mkdtemp(join(stateRoot, "cogs-envoy-smoke-material-"));
 const fixtures = await startUpstreamFixtures({
   expectedCredentials: {
     bearer: realCredential,
-    apiKey: "unused-api-key-fixture",
-    basic: "Basic dW51c2VkOmZpeHR1cmU=",
+    apiKey: apiCredential,
+    basic: basicCredential,
   },
   redirectLocation: "https://undeclared.invalid/denied",
+  delayedResponseMs: 5_000,
 });
 const faultInjector = await startFaultInjector({ initialCapability: capability });
+const telemetry = await startOtlpFixture(sensitiveValues);
 let report: SecurityReport | undefined;
 try {
   const proxyCertificate = await generateProxyCertificate(material);
+  const replacementDirectory = join(material, "replacement");
+  await mkdir(replacementDirectory, { mode: 0o700 });
+  const replacementCertificate = await generateProxyCertificate(replacementDirectory);
+  assert.notEqual(proxyCertificate.certificate, replacementCertificate.certificate);
   const fixtureUrl = new URL(fixtures.tlsOrigin);
   const fixturePort = Number(fixtureUrl.port);
   const proxyPort = await reservePort();
@@ -166,70 +187,88 @@ try {
     .stdout;
   assert.ok(versionOutput.includes(ENVOY_VERSION));
 
-  const configFor = (caseId: string): EnvoyCandidateConfigInput => ({
-    caseId,
-    sessionId,
-    listenerAddress: "0.0.0.0",
-    listenerPort: proxyPort,
-    authorizationGrpcTarget: faultInjector.grpcTarget,
-    proxyCertificatePem: proxyCertificate.certificate,
-    proxyPrivateKeyPem: proxyCertificate.privateKey,
-    routes: [
-      {
-        id: "route.fixture-bearer",
-        protocol: "https",
-        host: "localhost",
-        port: fixturePort,
-        methods: ["GET"],
-        pathPrefix: "/protected/header",
-        upstreamAddress: "127.0.0.1",
-        upstreamPort: fixturePort,
-        upstreamCaCertificatePem: fixtures.caCertificatePem,
-        credential: { kind: "bearer", value: realCredential },
-      },
-    ],
-  });
-
+  const prepared = new Map<string, PreparedCase>();
   const adapter = new EnvoyConformanceAdapter({
     stateRoot,
-    sensitiveValues: [realCredential, capability, wrongCapability, placeholder],
-    configurationFor: (test) => configFor(test.id),
-    commandFor: (test, runtime) => ({
-      command: join(here, "case-probe.sh"),
-      args: [],
-      env: {
-        COGS_ENVOY_GUEST_PROXY: `http://host.docker.internal:${new URL(runtime.proxyOrigin).port}`,
-        COGS_ENVOY_TARGET: `https://localhost:${fixturePort}/protected/header`,
-        COGS_ENVOY_PROXY_CA: proxyCertificate.caPath,
-        COGS_ENVOY_CAPABILITY: test.id === "envoy.capability-wrong" ? wrongCapability : capability,
-        COGS_ENVOY_EXPECT: test.id === "envoy.capability-wrong" ? "deny" : "allow",
-      },
-    }),
+    sensitiveValues,
+    configurationFor: (test) => {
+      const definition = stage1Case(test.id);
+      const state = prepareStage1Case(definition, faultInjector, capability, wrongCapability, replacementCapability);
+      prepared.set(test.id, state);
+      const scenario = definition.probe.scenario;
+      const replacement = scenario === "replacement-capability" || scenario === "old-capability-invalid";
+      const credential =
+        scenario === "telemetry-outage"
+          ? undefined
+          : scenario === "api-key"
+            ? ({ kind: "api-key", header: "x-api-key", value: apiCredential } as const)
+            : scenario === "basic"
+              ? ({ kind: "basic", value: basicCredential } as const)
+              : ({ kind: "bearer", value: realCredential } as const);
+      const parserPost = new Set(["cl-te-conflict", "invalid-chunk-size", "invalid-chunk-extension"]);
+      return {
+        caseId: test.id,
+        sessionId,
+        listenerAddress: "0.0.0.0",
+        listenerPort: proxyPort,
+        authorizationGrpcTarget: faultInjector.grpcTarget,
+        proxyCertificatePem: replacement ? replacementCertificate.certificate : proxyCertificate.certificate,
+        proxyPrivateKeyPem: replacement ? replacementCertificate.privateKey : proxyCertificate.privateKey,
+        routes: [
+          {
+            id: "route.fixture",
+            protocol: "https",
+            host: state.includeCredentialRoute ? "localhost" : "unused.invalid",
+            port: fixturePort,
+            methods: parserPost.has(scenario) ? ["GET", "POST"] : ["GET"],
+            pathPrefix:
+              scenario === "api-key"
+                ? "/protected/api-key"
+                : scenario === "basic"
+                  ? "/protected/basic"
+                  : scenario === "redirect-undeclared"
+                    ? "/redirect"
+                    : scenario === "telemetry-outage"
+                      ? "/large"
+                      : scenario === "long-lived-drain"
+                        ? "/delayed"
+                        : "/protected/header",
+            upstreamAddress: "127.0.0.1",
+            upstreamPort: fixturePort,
+            upstreamCaCertificatePem: fixtures.caCertificatePem,
+            ...(credential === undefined ? {} : { credential }),
+          },
+        ],
+      } satisfies EnvoyCandidateConfigInput;
+    },
+    commandFor: (test, runtime) => {
+      const definition = stage1Case(test.id);
+      const state = prepared.get(test.id);
+      if (!state) throw new Error("suite case was not prepared");
+      return {
+        command: join(repo, "test/egress-conformance/guest-probes/run-black-box-case.sh"),
+        args: [],
+        env: {
+          COGS_SUITE_GUEST_PROXY: `http://host.docker.internal:${new URL(runtime.proxyOrigin).port}`,
+          COGS_SUITE_TARGET_PORT: String(fixturePort),
+          COGS_SUITE_PUBLIC_CA:
+            definition.probe.scenario === "replacement-capability" ||
+            definition.probe.scenario === "old-capability-invalid"
+              ? replacementCertificate.caPath
+              : proxyCertificate.caPath,
+          COGS_SUITE_CAPABILITY: state.capability,
+          COGS_SUITE_SCENARIO: definition.probe.scenario,
+          COGS_SUITE_KIND: definition.probe.kind,
+          COGS_SUITE_EXPECT: state.probeExpected,
+          COGS_SUITE_DRAIN_CONTAINER: runtime.containerName,
+        },
+      };
+    },
   });
-
-  const manifest: CaseManifest = {
-    version: "cogs.egress-cases/v1alpha1",
-    cases: [
-      {
-        id: "envoy.capability-wrong",
-        group: "identity-route",
-        timeout_ms: 45_000,
-        profiles: ["insecure-container"],
-        dependencies: ["identity"],
-      },
-      {
-        id: "envoy.bearer-injection",
-        group: "credential-handling",
-        timeout_ms: 45_000,
-        profiles: ["insecure-container"],
-        dependencies: ["identity", "authorization", "audit"],
-      },
-    ],
-  };
   const dockerVersion = (
     await execFileAsync("docker", ["version", "--format", "{{.Server.Version}}"], { timeout: 30_000 })
   ).stdout.trim();
-  report = await runConformance(manifest, {
+  report = await runConformance(STAGE_1_MANIFEST, {
     reportId,
     sourceRevision,
     profile: "insecure-container",
@@ -257,63 +296,63 @@ try {
       "This is functional-only insecure-container evidence and cannot support a guest-root isolation claim.",
       "Direct OpenBao polling and production WAL persistence remain mandatory Stage 3 reruns.",
       "The immutable TLS interception certificate enumerates registered hosts; Envoy does not mint leaves dynamically.",
-      "The complete route, parser, HTTP/2, redirect, drain, and client matrix is tracked by Stage 1 issue 22.",
+      "Direct OpenBao change detection remains a Stage 1 revocation stub and requires a mandatory Stage 3 rerun.",
     ],
-    redactValues: [realCredential, capability, wrongCapability, placeholder],
+    redactValues: sensitiveValues,
     adapter,
     cleanupTimeoutMs: 20_000,
     teardownTimeoutMs: 20_000,
   });
 
-  const bearerResult = report.tests.find((result) => result.id === "envoy.bearer-injection");
-  if (bearerResult?.result === "fail") {
-    const checks = faultInjector.snapshot().capability_checks;
-    bearerResult.diagnostics_redacted = `${bearerResult.diagnostics_redacted ?? "Envoy mechanism failed"}; capability checks total=${checks.total} present=${checks.header_present} matched=${checks.digest_matched} accepted=${checks.accepted}`;
-  }
-
   try {
-    assert.equal(report.tests.find((result) => result.id === "envoy.capability-wrong")?.result, "stubbed");
-    assert.equal(report.tests.find((result) => result.id === "envoy.bearer-injection")?.result, "stubbed");
-    const observations = fixtures.observations().filter((item) => item.kind === "http");
-    assert.equal(observations.length, 1);
-    assert.equal(observations[0]?.route, "header-protected");
-    assert.equal(observations[0]?.credential_matches, true);
-    assert.equal(observations[0]?.authority_matches, null);
-    const snapshot = faultInjector.snapshot();
-    assert.equal(snapshot.intents.length, 1);
-    assert.equal(snapshot.intents[0]?.case_id, "envoy.bearer-injection");
-    assert.equal(snapshot.intents[0]?.route_id, "route.fixture-bearer");
     const records = adapter.accessRecords();
-    assert.equal(records.length, 1);
-    const completionRecord = records[0];
-    assert.ok(completionRecord);
-    assert.equal(completionRecord.intent_id, snapshot.intents[0]?.intent_id);
-    assert.equal(completionRecord.route_id, "route.fixture-bearer");
-    assert.equal(completionRecord.response_code, 200);
-    await completeIntent(
-      faultInjector.origin,
-      completionRecord.intent_id,
-      completionRecord.response_code,
-      completionRecord.duration_ms,
-    );
-    assert.notEqual(faultInjector.snapshot().intents[0]?.completion, null);
-    const serialized = JSON.stringify({ report, observations, snapshot: faultInjector.snapshot(), records });
-    for (const value of [realCredential, capability, wrongCapability, placeholder])
-      assert.equal(serialized.includes(value), false);
+    const snapshot = faultInjector.snapshot();
+    for (const record of records) {
+      const intent = snapshot.intents.find((item) => item.intent_id === record.intent_id);
+      assert.ok(intent, "completion record has no authorization intent");
+      assert.equal(record.route_id, "route.fixture");
+      if (intent.completion === null)
+        await completeIntent(faultInjector.origin, record.intent_id, record.response_code, record.duration_ms);
+      const completion = faultInjector
+        .snapshot()
+        .intents.find((item) => item.intent_id === record.intent_id)?.completion;
+      assert.deepEqual(completion, {
+        outcome: record.response_code >= 200 && record.response_code < 400 ? "success" : "failed",
+        status_class: Math.floor(record.response_code / 100),
+        latency_ms: record.duration_ms,
+      });
+      if (intent.case_id !== "audit.telemetry-outage-uncredentialed") {
+        await emitOtlpMetadata(telemetry.origin, {
+          test_id: intent.case_id,
+          outcome: record.response_code < 400 ? "success" : "failed",
+          status_class: Math.floor(record.response_code / 100),
+          duration_ms: record.duration_ms,
+        });
+      }
+    }
+    const observations = fixtures.observations().filter((item) => item.kind === "http");
+    const serialized = JSON.stringify({
+      report,
+      observations,
+      snapshot: faultInjector.snapshot(),
+      records,
+      telemetry: telemetry.records(),
+    });
+    for (const value of sensitiveValues) assert.equal(serialized.includes(value), false);
   } catch (error) {
-    const result = bearerResult ?? report.tests[0];
-    if (result !== undefined && result.result !== "fail") {
+    const result = report.tests.find((item) => item.result !== "fail") ?? report.tests[0];
+    if (result) {
       result.result = "fail";
       result.release_eligible = false;
       result.diagnostics_redacted =
-        error instanceof Error ? error.message.slice(0, 2048) : "Envoy smoke postcondition failed";
+        error instanceof Error ? error.message.slice(0, 2048) : "suite postcondition failed";
     }
   }
 
   const paths = await writeReports(outputDirectory, report);
-  console.log(`Wrote Envoy functional candidate evidence to ${paths.machine} and ${paths.human}`);
+  console.log(`Wrote Envoy Stage 1 suite evidence to ${paths.machine} and ${paths.human}`);
   if (report.tests.some((result) => result.result === "fail")) process.exitCode = 1;
 } finally {
-  await Promise.allSettled([fixtures.stop(), faultInjector.stop()]);
+  await Promise.allSettled([fixtures.stop(), faultInjector.stop(), telemetry.stop()]);
   await rm(material, { recursive: true, force: true });
 }

@@ -18,6 +18,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 export interface MitmproxyCaseRuntime {
   proxyOrigin: string;
   publicCaPath: string;
+  containerName: string;
 }
 export interface MitmproxyCaseCommand {
   command: string;
@@ -254,6 +255,7 @@ export class MitmproxyConformanceAdapter implements ConformanceAdapter {
     const plan = this.#options.commandFor(test, {
       proxyOrigin: `http://127.0.0.1:${this.#options.listenerPort}`,
       publicCaPath,
+      containerName: container,
     });
     const result = await runFile(plan.command, plan.args, Math.max(100, test.timeout_ms - 100), signal, {
       ...process.env,
