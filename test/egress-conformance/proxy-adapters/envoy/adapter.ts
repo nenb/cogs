@@ -116,6 +116,7 @@ function parseAccessRecords(logs: string): EnvoyAccessRecord[] {
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) continue;
     const value = parsed as Record<string, unknown>;
     if (value.event !== "request-complete") continue;
+    if (value.intent_id === "-" || value.route_id === "-" || value.route_id === "") continue;
     const responseCode = Number(value.response_code);
     const duration = Number(value.duration_ms);
     if (
