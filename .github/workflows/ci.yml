@@ -29,6 +29,12 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
 
+      - name: Set up Go for the static guest probe
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: test/egress-conformance/guest-probes/go.mod
+          cache: false
+
       - name: Install locked dependencies without lifecycle scripts
         run: npm ci --ignore-scripts
 
@@ -44,6 +50,24 @@ jobs:
           PI_TELEMETRY: "0"
           PI_SKIP_VERSION_CHECK: "1"
         run: npm test
+
+      - name: Test and reproducibly build the static guest probe
+        run: |
+          cd test/egress-conformance/guest-probes
+          go test ./...
+          ./build.sh "$RUNNER_TEMP/probe-a"
+          ./build.sh "$RUNNER_TEMP/probe-b"
+          cmp "$RUNNER_TEMP/probe-a/cogs-net-probe-linux-amd64" "$RUNNER_TEMP/probe-b/cogs-net-probe-linux-amd64"
+          cmp "$RUNNER_TEMP/probe-a/cogs-net-probe-linux-amd64.sha256" "$RUNNER_TEMP/probe-b/cogs-net-probe-linux-amd64.sha256"
+          file "$RUNNER_TEMP/probe-a/cogs-net-probe-linux-amd64" | grep -F 'statically linked'
+
+      - name: Upload guest probe and recorded digest
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cogs-net-probe-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/probe-a/
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Validate schemas and report semantics
         run: npm run schemas
