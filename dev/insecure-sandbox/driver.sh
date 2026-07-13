@@ -114,7 +114,13 @@ create() {
     --env SSL_CERT_FILE=/run/cogs-input/egress-ca.crt \
     "$image" >/dev/null
 
-  port=$(docker inspect --format '{{(index (index .NetworkSettings.Ports "2222/tcp") 0).HostPort}}' "$container")
+  sleep 1
+  if ! docker inspect --format '{{.State.Running}}' "$container" 2>/dev/null | grep -qx true; then
+    docker logs "$container" >&2 || true
+    printf 'insecure-container stopped during startup\n' >&2
+    return 1
+  fi
+  port=$(docker port "$container" 2222/tcp | awk -F: 'NR == 1 {print $NF}')
   [[ "$port" =~ ^[0-9]+$ ]] || { printf 'failed to discover SSH port\n' >&2; return 1; }
   printf '[127.0.0.1]:%s %s\n' "$port" "$(awk 'NF >= 2 {print $1 " " $2; exit}' "$input/ssh_host_ed25519_key.pub")" > "$state/known_hosts"
   printf '%s\n' "$container" > "$state/container"
