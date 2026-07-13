@@ -172,7 +172,7 @@ try {
     knownLimitations: [
       "This is functional-only insecure-container evidence and cannot support a guest-root isolation claim.",
       "Direct OpenBao polling and production WAL persistence remain mandatory Stage 3 reruns.",
-      "The candidate requires a custom 173-line Python addon for policy, capability, injection, and audit hooks.",
+      "The candidate requires a custom 182-line Python addon for policy, capability, injection, and audit hooks.",
       "The latest upstream image has six fixed HIGH findings under a narrow owner-and-expiry ignore through 2026-07-27; this evidence cannot support selection or release.",
       "Direct OpenBao change detection remains a Stage 1 revocation stub and requires a mandatory Stage 3 rerun.",
     ],

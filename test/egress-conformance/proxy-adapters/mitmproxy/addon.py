@@ -59,6 +59,9 @@ class CogsPolicy:
         flow.response = http.Response.make(status, b"", {"cache-control": "no-store", "content-length": "0"})
 
     async def http_connect(self, flow: http.HTTPFlow):
+        if len(flow.request.headers.get_all("proxy-authorization")) != 1:
+            self._deny(flow, 407)
+            return
         capability = flow.request.headers.get("proxy-authorization")
         flow.request.headers.pop("proxy-authorization", None)
         if capability is None or len(capability) > 8192:
@@ -85,12 +88,18 @@ class CogsPolicy:
         path = flow.request.path
         host = flow.request.host.lower()
         sni = (flow.client_conn.sni or "").lower()
+        authority = (flow.request.host_header or "").lower()
+        allowed_authorities = {f"{host}:{flow.request.port}"}
+        if flow.request.port == 443:
+            allowed_authorities.add(host)
         if (
             self.policy is None
             or flow.request.scheme != "https"
             or any(character in path for character in ("?", "#", "\\", "%"))
             or "//" in path
             or any(part in (".", "..") for part in path.split("/"))
+            or len(flow.request.headers.get_all("host")) > 1
+            or authority not in allowed_authorities
             or connection[1] != host
             or connection[2] != flow.request.port
             or (sni and sni != host)

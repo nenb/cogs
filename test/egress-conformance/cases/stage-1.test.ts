@@ -15,7 +15,8 @@ test("Stage 1 manifest is immutable, schema-valid, complete by required group, a
   const byId = new Map(STAGE_1_CASES.map((item) => [item.id, item]));
   for (const item of STAGE_1_CASES) {
     const controlId = item.probe.positiveControl;
-    if (item.probe.expected === "deny") assert.ok(controlId, `${item.id} must name its positive control`);
+    if (item.probe.expected === "deny" || item.probe.expected === "safe")
+      assert.ok(controlId, `${item.id} must name its positive control`);
     if (controlId) {
       const control = byId.get(controlId);
       assert.ok(control, `${item.id} references an unknown positive control`);

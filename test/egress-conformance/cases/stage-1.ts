@@ -6,7 +6,7 @@ export interface Stage1CaseDefinition extends ConformanceCase {
   probe: Readonly<{
     kind: ProbeKind;
     scenario: string;
-    expected: "allow" | "deny" | "normalize" | "drain" | "redacted";
+    expected: "allow" | "deny" | "safe" | "drain" | "redacted";
     positiveControl?: string;
   }>;
 }
@@ -184,7 +184,7 @@ export const STAGE_1_CASES: readonly Stage1CaseDefinition[] = Object.freeze([
     "http-parsing",
     "raw-http1",
     "duplicate-authorization",
-    "normalize",
+    "safe",
     authorized,
     "parser.http1-valid",
   ),
@@ -212,11 +212,11 @@ export const STAGE_1_CASES: readonly Stage1CaseDefinition[] = Object.freeze([
     "http-parsing",
     "raw-http1",
     "ambiguous-whitespace",
-    "normalize",
+    "safe",
     authorized,
     "parser.http1-valid",
   ),
-  define("parser.obs-fold", "http-parsing", "raw-http1", "obs-fold", "normalize", authorized, "parser.http1-valid"),
+  define("parser.obs-fold", "http-parsing", "raw-http1", "obs-fold", "safe", authorized, "parser.http1-valid"),
   define(
     "parser.oversized-header",
     "http-parsing",
@@ -249,7 +249,7 @@ export const STAGE_1_CASES: readonly Stage1CaseDefinition[] = Object.freeze([
     "http-parsing",
     "raw-http1",
     "invalid-chunk-extension",
-    "normalize",
+    "safe",
     authorized,
     "parser.http1-valid",
   ),

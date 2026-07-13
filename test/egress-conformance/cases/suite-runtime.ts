@@ -13,7 +13,7 @@ const noFaults: FaultState = Object.freeze({
 export interface PreparedCase {
   capability: string;
   includeCredentialRoute: boolean;
-  probeExpected: "allow" | "deny" | "normalize";
+  probeExpected: "allow" | "deny" | "safe";
 }
 
 export function prepareStage1Case(
@@ -50,7 +50,7 @@ export function prepareStage1Case(
     capability,
     includeCredentialRoute: scenario !== "secret-absent",
     probeExpected:
-      test.probe.expected === "allow" || test.probe.expected === "normalize"
+      test.probe.expected === "allow" || test.probe.expected === "safe"
         ? test.probe.expected
         : test.probe.expected === "redacted"
           ? "allow"

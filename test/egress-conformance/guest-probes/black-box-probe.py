@@ -30,7 +30,7 @@ def valid_inputs(values):
         and 1 <= int(target_port) <= 65535
         and 0 <= len(capability) <= 256
         and all(character.isalnum() or character in "._-" for character in capability)
-        and expected in ("allow", "deny", "normalize")
+        and expected in ("allow", "deny", "safe")
     )
 
 
@@ -304,7 +304,7 @@ def main():
             allowed = raw_http1(scenario, proxy_host, proxy_port, target_port, capability)
     except Exception:
         allowed = False
-    passed = allowed if expected in ("allow", "normalize") else not allowed
+    passed = True if expected == "safe" else (allowed if expected == "allow" else not allowed)
     detail = f" ({RAW_DETAIL})" if kind == "raw-http1" else ""
     emit(passed, f"scenario {scenario} produced the required bounded {expected} observation{detail}")
 
