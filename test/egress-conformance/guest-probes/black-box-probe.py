@@ -370,11 +370,18 @@ def client_probe(scenario, proxy_host, proxy_port, target_port, capability):
                 command.append("--http2")
             command.append(target)
         elif scenario == "git-smart-http":
-            command = ["git", "-c", f"http.proxy={proxy}", "-c", f"http.sslCAInfo={ca}", "ls-remote", target]
+            command = [
+                "git", "-c", f"http.proxy={proxy}", "-c", "http.proxyAuthMethod=basic",
+                "-c", f"http.sslCAInfo={ca}", "ls-remote", target,
+            ]
         elif scenario == "pip-wheel":
             command = ["python3", "-m", "pip", "download", "--disable-pip-version-check", "--no-deps", "--dest", temporary, "--proxy", proxy, "--cert", ca, target]
         elif scenario == "npm-tarball":
-            command = ["npm", "pack", target, "--ignore-scripts", "--silent", "--pack-destination", temporary, "--proxy", proxy, "--https-proxy", proxy, "--cafile", ca]
+            environment.update({"npm_config_proxy": proxy, "npm_config_https_proxy": proxy, "npm_config_cafile": ca})
+            command = [
+                "npm", "--proxy", proxy, "--https-proxy", proxy, "--cafile", ca,
+                "--ignore-scripts", "--silent", "pack", target, "--pack-destination", temporary,
+            ]
         elif scenario == "python-requests":
             command = ["python3", "-c", "import requests,sys; r=requests.get(sys.argv[1],proxies={'https':sys.argv[2]},verify=sys.argv[3],timeout=12); r.raise_for_status(); assert r.content==b'ok'", target, proxy, ca]
         elif scenario == "python-httpx":
@@ -394,7 +401,10 @@ class CogsClient { public static void main(String[] a) throws Exception {
   var response=client.send(HttpRequest.newBuilder(URI.create(a[5])).GET().build(),HttpResponse.BodyHandlers.ofString());
   if(response.statusCode()!=200 || !response.body().equals("ok")) throw new RuntimeException("failed"); }}
 """)
-            command = ["java", source, proxy_host, str(proxy_port), user, password, ca, target]
+            command = [
+                "java", "-Djdk.http.auth.tunneling.disabledSchemes=", source,
+                proxy_host, str(proxy_port), user, password, ca, target,
+            ]
         elif scenario in ("node-https-native", "node-fetch-native"):
             script = (
                 "require('https').get(process.argv[1],r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
