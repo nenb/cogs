@@ -12,6 +12,7 @@ import { type PreparedCase, prepareStage1Case } from "../../cases/suite-runtime.
 import { writeReports } from "../../controller/report.ts";
 import { runConformance, type SecurityReport } from "../../controller/runner.ts";
 import { startFaultInjector } from "../../fault-injector/server.ts";
+import { emitOtlpMetadata, startOtlpFixture } from "../../telemetry-fixture/server.ts";
 import { startUpstreamFixtures } from "../../upstream-fixtures/server.ts";
 import { EnvoyConformanceAdapter } from "./adapter.ts";
 import type { EnvoyCandidateConfigInput } from "./config.ts";
@@ -153,6 +154,13 @@ const fixtures = await startUpstreamFixtures({
   delayedResponseMs: 5_000,
 });
 const faultInjector = await startFaultInjector({ initialCapability: capability });
+const telemetry = await startOtlpFixture([
+  realCredential,
+  capability,
+  replacementCapability,
+  wrongCapability,
+  placeholder,
+]);
 let report: SecurityReport | undefined;
 try {
   const proxyCertificate = await generateProxyCertificate(material);
@@ -300,9 +308,23 @@ try {
       assert.equal(record.route_id, "route.fixture");
       if (intent.completion === null)
         await completeIntent(faultInjector.origin, record.intent_id, record.response_code, record.duration_ms);
+      if (intent.case_id !== "audit.telemetry-outage-uncredentialed") {
+        await emitOtlpMetadata(telemetry.origin, {
+          test_id: intent.case_id,
+          outcome: record.response_code < 400 ? "success" : "failed",
+          status_class: Math.floor(record.response_code / 100),
+          duration_ms: record.duration_ms,
+        });
+      }
     }
     const observations = fixtures.observations().filter((item) => item.kind === "http");
-    const serialized = JSON.stringify({ report, observations, snapshot: faultInjector.snapshot(), records });
+    const serialized = JSON.stringify({
+      report,
+      observations,
+      snapshot: faultInjector.snapshot(),
+      records,
+      telemetry: telemetry.records(),
+    });
     for (const value of [realCredential, capability, replacementCapability, wrongCapability, placeholder])
       assert.equal(serialized.includes(value), false);
   } catch (error) {
@@ -319,6 +341,6 @@ try {
   console.log(`Wrote Envoy Stage 1 suite evidence to ${paths.machine} and ${paths.human}`);
   if (report.tests.some((result) => result.result === "fail")) process.exitCode = 1;
 } finally {
-  await Promise.allSettled([fixtures.stop(), faultInjector.stop()]);
+  await Promise.allSettled([fixtures.stop(), faultInjector.stop(), telemetry.stop()]);
   await rm(material, { recursive: true, force: true });
 }

@@ -12,6 +12,7 @@ import { type PreparedCase, prepareStage1Case } from "../../cases/suite-runtime.
 import { writeReports } from "../../controller/report.ts";
 import { runConformance, type SecurityReport } from "../../controller/runner.ts";
 import { startFaultInjector } from "../../fault-injector/server.ts";
+import { emitOtlpMetadata, startOtlpFixture } from "../../telemetry-fixture/server.ts";
 import { startUpstreamFixtures } from "../../upstream-fixtures/server.ts";
 import { MitmproxyConformanceAdapter } from "./adapter.ts";
 import { MITMPROXY_IMAGE, MITMPROXY_IMAGE_DIGEST, MITMPROXY_VERSION } from "./image.ts";
@@ -55,6 +56,13 @@ const fixtures = await startUpstreamFixtures({
   delayedResponseMs: 5_000,
 });
 const faultInjector = await startFaultInjector({ initialCapability: capability });
+const telemetry = await startOtlpFixture([
+  realCredential,
+  capability,
+  replacementCapability,
+  wrongCapability,
+  placeholder,
+]);
 let report: SecurityReport | undefined;
 try {
   const fixtureUrl = new URL(fixtures.tlsOrigin);
@@ -190,13 +198,21 @@ try {
       assert.ok(intent, "completion record has no authorization intent");
       assert.equal(record.route_id, "route.fixture");
       assert.equal(record.completion_recorded, true);
+      if (intent.case_id !== "audit.telemetry-outage-uncredentialed") {
+        await emitOtlpMetadata(telemetry.origin, {
+          test_id: intent.case_id,
+          outcome: record.response_code < 400 ? "success" : "failed",
+          status_class: Math.floor(record.response_code / 100),
+          duration_ms: record.duration_ms,
+        });
+      }
     }
     assert.notEqual(
       certificateDigests.get("credential.bearer-injected"),
       certificateDigests.get("revocation.replacement-capability"),
     );
     const observations = fixtures.observations().filter((item) => item.kind === "http");
-    const serialized = JSON.stringify({ report, observations, snapshot, records });
+    const serialized = JSON.stringify({ report, observations, snapshot, records, telemetry: telemetry.records() });
     for (const value of [realCredential, capability, replacementCapability, wrongCapability, placeholder])
       assert.equal(serialized.includes(value), false);
   } catch (error) {
@@ -213,5 +229,5 @@ try {
   console.log(`Wrote mitmproxy Stage 1 suite evidence to ${paths.machine} and ${paths.human}`);
   if (report.tests.some((result) => result.result === "fail")) process.exitCode = 1;
 } finally {
-  await Promise.allSettled([fixtures.stop(), faultInjector.stop()]);
+  await Promise.allSettled([fixtures.stop(), faultInjector.stop(), telemetry.stop()]);
 }

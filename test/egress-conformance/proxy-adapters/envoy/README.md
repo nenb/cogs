@@ -29,16 +29,16 @@ Trusted policy input is rejected unless:
 - route policy tuples and IDs are unique;
 - API-key headers cannot target framing, routing, or authorization headers.
 
-At runtime Envoy applies one normalization before route matching and forwarding: path normalization is enabled, slash merging is disabled, escaped slashes are rejected, underscore headers are rejected, malformed messages close/reset, and request headers are bounded. Issue #22 supplies the complete smuggling and protocol matrix; candidate-specific tests must not weaken these settings.
+At runtime Envoy applies one normalization before route matching and forwarding: path normalization is enabled, slash merging is disabled, escaped slashes are rejected, underscore headers are rejected, malformed messages close/reset, and request headers are bounded. The shared Stage 1 suite exercises these smuggling and protocol rules without candidate-specific weakening.
 
 ## Current evidence and limitations
 
-`ci-smoke.ts` runs the shared conformance controller with a wrong-capability denial and a real CONNECT → inner TLS interception → bearer overwrite request issued over SSH by root in the `insecure-container` guest. The guest reaches only the candidate data listener through its fixed Docker host-gateway alias; the generated Envoy bootstrap has no admin listener. The controller correlates the stub intent, redacted Envoy completion, and non-reflecting upstream observation before atomically publishing the report.
+`ci-smoke.ts` runs the candidate smoke, while `suite-smoke.ts` runs all immutable Stage 1 route, parser, credential, audit, confidentiality, and revocation cases. Requests are issued over SSH by root in the `insecure-container` guest. The guest reaches only the candidate data listener through its fixed Docker host-gateway alias; the generated Envoy bootstrap has no admin listener. The controller correlates the stub intent, redacted Envoy completion, and non-reflecting upstream observation before atomically publishing the report.
 
 Still outstanding by design:
 
-- full route/parser/HTTP/2/redirect/Basic/API-key/drain/client probes are issue #22;
+- measured Git, package-manager, language, and HTTP/2 client presets remain issue #24;
 - guest-root default-deny is authoritative only in issue #23's Linux/KVM driver;
 - direct OpenBao metadata polling and durable WAL behavior are Stage 3 reruns;
 - Envoy cannot mint per-SNI leaves, so immutable certificates enumerate registered hosts;
-- this result does not select Envoy; the alternate candidate and comparison remain required.
+- this result does not select Envoy; the direct comparison remains issue #25.
