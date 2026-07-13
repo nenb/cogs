@@ -41,7 +41,7 @@ func TestTCPAndRawPositiveControls(t *testing.T) {
 
 	tcpConfig := baseConfig("tcp")
 	tcpConfig.Address = listener.Addr().String()
-	if got := run(tcpConfig); got.Outcome != "reached" || got.DetailCode != "connected" {
+	if got := run(tcpConfig); got.Outcome != "reached" || got.DetailCode != "connected" || len(got.ArtifactSHA256) != 64 {
 		t.Fatalf("unexpected TCP result: %#v", got)
 	}
 
@@ -104,12 +104,17 @@ func TestHTTP1AndHTTP2TLSWithoutValueReflection(t *testing.T) {
 	cfg.CAPEM = caPEM
 	cfg.Headers = map[string]string{"Authorization": secret}
 	cfg.HostHeader = "forged.fixture.test"
+	cfg.HTTPProtocol = "http2"
 	got := run(cfg)
 	if got.Outcome != "reached" || got.StatusCode != http.StatusOK || got.Protocol != "HTTP/2.0" || got.ResponseBytes != 32 {
 		t.Fatalf("unexpected HTTP/2 result: %#v", got)
 	}
 	if strings.Contains(got.DetailCode, secret) || strings.Contains(got.Protocol, secret) {
 		t.Fatal("result reflected a header value")
+	}
+	cfg.HTTPProtocol = "http1"
+	if http1 := run(cfg); http1.Outcome != "reached" || http1.Protocol != "HTTP/1.1" {
+		t.Fatalf("unexpected HTTP/1.1 result: %#v", http1)
 	}
 }
 
@@ -187,7 +192,7 @@ func TestNetworkErrorsAreCategorical(t *testing.T) {
 	cfg := baseConfig("tcp")
 	cfg.Address = address
 	got := run(cfg)
-	if got.Outcome != "denied" || got.DetailCode != "connection-refused" || strings.Contains(got.DetailCode, address) {
+	if got.Outcome != "refused" || got.DetailCode != "connection-refused" || strings.Contains(got.DetailCode, address) {
 		t.Fatalf("network error was not categorical: %#v", got)
 	}
 }

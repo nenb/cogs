@@ -4,9 +4,13 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -14,6 +18,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -34,6 +39,8 @@ type config struct {
 	PayloadBase64    string            `json:"payload_base64,omitempty"`
 	DNSName          string            `json:"dns_name,omitempty"`
 	DNSServer        string            `json:"dns_server,omitempty"`
+	DNSQType         string            `json:"dns_qtype,omitempty"`
+	HTTPProtocol     string            `json:"http_protocol,omitempty"`
 	CAPEM            string            `json:"ca_pem,omitempty"`
 	ServerName       string            `json:"server_name,omitempty"`
 	TimeoutMS        int               `json:"timeout_ms"`
@@ -41,24 +48,41 @@ type config struct {
 }
 
 type result struct {
-	Version       string `json:"version"`
-	Operation     string `json:"operation"`
-	Outcome       string `json:"outcome"`
-	DetailCode    string `json:"detail_code"`
-	DurationMS    int64  `json:"duration_ms"`
-	Root          bool   `json:"root"`
-	StatusCode    int    `json:"status_code,omitempty"`
-	Protocol      string `json:"protocol,omitempty"`
-	ResponseBytes int64  `json:"response_bytes,omitempty"`
-	Truncated     bool   `json:"truncated,omitempty"`
-	AnswerCount   int    `json:"answer_count,omitempty"`
+	Version        string `json:"version"`
+	Operation      string `json:"operation"`
+	Outcome        string `json:"outcome"`
+	DetailCode     string `json:"detail_code"`
+	DurationMS     int64  `json:"duration_ms"`
+	Root           bool   `json:"root"`
+	StatusCode     int    `json:"status_code,omitempty"`
+	Protocol       string `json:"protocol,omitempty"`
+	ResponseBytes  int64  `json:"response_bytes,omitempty"`
+	Truncated      bool   `json:"truncated,omitempty"`
+	AnswerCount    int    `json:"answer_count,omitempty"`
+	ArtifactSHA256 string `json:"artifact_sha256,omitempty"`
 }
 
 func main() {
 	started := time.Now()
-	cfg, err := decodeConfig(os.Stdin)
-	if err != nil {
-		emit(result{Version: version, Operation: "invalid", Outcome: "failed", DetailCode: "invalid-config", DurationMS: time.Since(started).Milliseconds(), Root: os.Geteuid() == 0})
+	type decoded struct {
+		cfg config
+		err error
+	}
+	input := make(chan decoded, 1)
+	go func() {
+		cfg, err := decodeConfig(os.Stdin)
+		input <- decoded{cfg: cfg, err: err}
+	}()
+	var cfg config
+	select {
+	case decodedInput := <-input:
+		if decodedInput.err != nil {
+			emit(result{Version: version, Operation: "invalid", Outcome: "failed", DetailCode: "invalid-config", DurationMS: time.Since(started).Milliseconds(), Root: os.Geteuid() == 0})
+			os.Exit(2)
+		}
+		cfg = decodedInput.cfg
+	case <-time.After(5 * time.Second):
+		emit(result{Version: version, Operation: "invalid", Outcome: "failed", DetailCode: "input-timeout", DurationMS: time.Since(started).Milliseconds(), Root: os.Geteuid() == 0})
 		os.Exit(2)
 	}
 	out := run(cfg)
@@ -107,6 +131,27 @@ func validateConfig(cfg config) error {
 	if !allowed[cfg.Operation] {
 		return errors.New("invalid config")
 	}
+	if cfg.DNSQType != "" && cfg.DNSQType != "A" && cfg.DNSQType != "AAAA" {
+		return errors.New("invalid config")
+	}
+	if cfg.HTTPProtocol != "" && cfg.HTTPProtocol != "http1" && cfg.HTTPProtocol != "http2" {
+		return errors.New("invalid config")
+	}
+	if cfg.Operation == "tcp" || cfg.Operation == "udp" || cfg.Operation == "raw-tcp" || cfg.Operation == "raw-tls" {
+		if !literalEndpoint(cfg.Address) {
+			return errors.New("invalid config")
+		}
+	}
+	if cfg.Operation == "dns" && (!literalEndpoint(cfg.DNSServer) || cfg.DNSName == "") {
+		return errors.New("invalid config")
+	}
+	if cfg.Operation == "http" {
+		parsed, err := url.Parse(cfg.URL)
+		if err != nil || parsed.Hostname() == "" || net.ParseIP(parsed.Hostname()) == nil {
+			return errors.New("invalid config")
+		}
+	}
+
 	if len(cfg.Headers) > 32 {
 		return errors.New("invalid config")
 	}
@@ -129,8 +174,39 @@ func validateConfig(cfg config) error {
 	return nil
 }
 
+func literalEndpoint(address string) bool {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil || net.ParseIP(host) == nil {
+		return false
+	}
+	parsedPort, err := strconv.Atoi(port)
+	return err == nil && parsedPort > 0 && parsedPort <= 65535
+}
+
 func baseResult(cfg config) result {
-	return result{Version: version, Operation: cfg.Operation, Root: os.Geteuid() == 0}
+	return result{
+		Version:        version,
+		Operation:      cfg.Operation,
+		Root:           os.Geteuid() == 0,
+		ArtifactSHA256: executableDigest(),
+	}
+}
+
+func executableDigest() string {
+	path, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	binary, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer binary.Close()
+	hash := sha256.New()
+	if _, err := io.Copy(hash, binary); err != nil {
+		return ""
+	}
+	return hex.EncodeToString(hash.Sum(nil))
 }
 
 func run(cfg config) result {
@@ -169,14 +245,14 @@ func classifyNetworkError(err error) (string, string) {
 		return "observed", "completed"
 	}
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, os.ErrDeadlineExceeded) {
-		return "denied", "timeout"
+		return "no-response", "timeout"
 	}
 	if errors.Is(err, syscall.ECONNREFUSED) {
-		return "denied", "connection-refused"
+		return "refused", "connection-refused"
 	}
 	var netErr net.Error
 	if errors.As(err, &netErr) && netErr.Timeout() {
-		return "denied", "timeout"
+		return "no-response", "timeout"
 	}
 	return "failed", "network-error"
 }
@@ -219,11 +295,7 @@ func runUDP(ctx context.Context, cfg config, out result) result {
 	buffer := make([]byte, min(cfg.MaxResponseBytes, 64*1024))
 	count, err := connection.Read(buffer)
 	if err != nil {
-		if outcome, code := classifyNetworkError(err); outcome == "denied" {
-			out.Outcome, out.DetailCode = "no-response", code
-		} else {
-			out.Outcome, out.DetailCode = outcome, code
-		}
+		out.Outcome, out.DetailCode = classifyNetworkError(err)
 		return out
 	}
 	out.Outcome, out.DetailCode, out.ResponseBytes = "reached", "udp-response", int64(count)
@@ -231,29 +303,94 @@ func runUDP(ctx context.Context, cfg config, out result) result {
 }
 
 func runDNS(ctx context.Context, cfg config, out result) result {
-	if cfg.DNSServer == "" || cfg.DNSName == "" {
+	query, identifier, err := dnsQuery(cfg.DNSName, cfg.DNSQType)
+	if err != nil {
 		out.Outcome, out.DetailCode = "failed", "invalid-config"
 		return out
 	}
-	resolver := &net.Resolver{PreferGo: true, Dial: func(dialCtx context.Context, _, _ string) (net.Conn, error) {
-		return (&net.Dialer{}).DialContext(dialCtx, "udp", cfg.DNSServer)
-	}}
-	answers, err := resolver.LookupHost(ctx, cfg.DNSName)
+	connection, err := dial(ctx, "udp", cfg.DNSServer)
 	if err != nil {
 		out.Outcome, out.DetailCode = classifyNetworkError(err)
 		return out
 	}
-	out.Outcome, out.DetailCode, out.AnswerCount = "reached", "dns-answer", len(answers)
+	defer connection.Close()
+	deadline, _ := ctx.Deadline()
+	_ = connection.SetDeadline(deadline)
+	if _, err := connection.Write(query); err != nil {
+		out.Outcome, out.DetailCode = classifyNetworkError(err)
+		return out
+	}
+	response := make([]byte, 4096)
+	count, err := connection.Read(response)
+	if err != nil {
+		out.Outcome, out.DetailCode = classifyNetworkError(err)
+		return out
+	}
+	if count < 12 || binary.BigEndian.Uint16(response[:2]) != identifier || response[2]&0x80 == 0 {
+		out.Outcome, out.DetailCode = "failed", "invalid-dns-response"
+		return out
+	}
+	rcode := response[3] & 0x0f
+	codes := map[byte]string{0: "dns-noerror", 1: "dns-formerr", 2: "dns-servfail", 3: "dns-nxdomain", 5: "dns-refused"}
+	code, exists := codes[rcode]
+	if !exists {
+		code = "dns-other-rcode"
+	}
+	out.Outcome, out.DetailCode = "reached", code
+	out.AnswerCount = int(binary.BigEndian.Uint16(response[6:8]))
+	out.ResponseBytes = int64(count)
 	return out
 }
 
-func tlsConfig(cfg config) (*tls.Config, error) {
-	roots, err := x509.SystemCertPool()
-	if err != nil || roots == nil {
-		roots = x509.NewCertPool()
+func dnsQuery(name, requestedType string) ([]byte, uint16, error) {
+	name = strings.TrimSuffix(name, ".")
+	if name == "" || len(name) > 253 {
+		return nil, 0, errors.New("invalid DNS name")
 	}
-	if cfg.CAPEM != "" && !roots.AppendCertsFromPEM([]byte(cfg.CAPEM)) {
-		return nil, errors.New("invalid CA")
+	identifierBytes := []byte{0, 0}
+	if _, err := rand.Read(identifierBytes); err != nil {
+		return nil, 0, err
+	}
+	identifier := binary.BigEndian.Uint16(identifierBytes)
+	query := make([]byte, 12, 512)
+	binary.BigEndian.PutUint16(query[:2], identifier)
+	binary.BigEndian.PutUint16(query[2:4], 0x0100)
+	binary.BigEndian.PutUint16(query[4:6], 1)
+	for _, label := range strings.Split(name, ".") {
+		if len(label) == 0 || len(label) > 63 {
+			return nil, 0, errors.New("invalid DNS name")
+		}
+		for _, character := range []byte(label) {
+			if !(character == '-' || character >= '0' && character <= '9' || character >= 'A' && character <= 'Z' || character >= 'a' && character <= 'z') {
+				return nil, 0, errors.New("invalid DNS name")
+			}
+		}
+		query = append(query, byte(len(label)))
+		query = append(query, label...)
+	}
+	query = append(query, 0)
+	queryType := uint16(1)
+	if requestedType == "AAAA" {
+		queryType = 28
+	}
+	query = binary.BigEndian.AppendUint16(query, queryType)
+	query = binary.BigEndian.AppendUint16(query, 1)
+	return query, identifier, nil
+}
+
+func tlsConfig(cfg config) (*tls.Config, error) {
+	var roots *x509.CertPool
+	if cfg.CAPEM == "" {
+		var err error
+		roots, err = x509.SystemCertPool()
+		if err != nil || roots == nil {
+			return nil, errors.New("system CA unavailable")
+		}
+	} else {
+		roots = x509.NewCertPool()
+		if !roots.AppendCertsFromPEM([]byte(cfg.CAPEM)) {
+			return nil, errors.New("invalid CA")
+		}
 	}
 	return &tls.Config{RootCAs: roots, ServerName: cfg.ServerName, MinVersion: tls.VersionTLS12}, nil
 }
@@ -288,7 +425,16 @@ func runHTTP(ctx context.Context, cfg config, out result) result {
 		out.Outcome, out.DetailCode = "failed", "invalid-ca"
 		return out
 	}
-	transport := &http.Transport{TLSClientConfig: tlsSettings, ForceAttemptHTTP2: true, DisableKeepAlives: true}
+	transport := &http.Transport{
+		Proxy:                  nil,
+		TLSClientConfig:        tlsSettings,
+		ForceAttemptHTTP2:      cfg.HTTPProtocol != "http1",
+		DisableKeepAlives:      true,
+		MaxResponseHeaderBytes: 64 * 1024,
+	}
+	if cfg.HTTPProtocol == "http1" {
+		transport.TLSNextProto = map[string]func(string, *tls.Conn) http.RoundTripper{}
+	}
 	defer transport.CloseIdleConnections()
 	client := &http.Client{Transport: transport, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
 	response, err := client.Do(request)
@@ -302,8 +448,20 @@ func runHTTP(ctx context.Context, cfg config, out result) result {
 		out.Outcome, out.DetailCode = "failed", "response-read-error"
 		return out
 	}
+	if cfg.HTTPProtocol == "http2" && response.ProtoMajor != 2 {
+		out.Outcome, out.DetailCode = "failed", "protocol-fallback"
+		return out
+	}
+	if cfg.HTTPProtocol == "http1" && response.ProtoMajor != 1 {
+		out.Outcome, out.DetailCode = "failed", "protocol-fallback"
+		return out
+	}
+	protocol := "HTTP/1.1"
+	if response.ProtoMajor == 2 {
+		protocol = "HTTP/2.0"
+	}
 	out.Outcome, out.DetailCode = "reached", "http-response"
-	out.StatusCode, out.Protocol, out.ResponseBytes, out.Truncated = response.StatusCode, response.Proto, count, truncated
+	out.StatusCode, out.Protocol, out.ResponseBytes, out.Truncated = response.StatusCode, protocol, count, truncated
 	return out
 }
 
