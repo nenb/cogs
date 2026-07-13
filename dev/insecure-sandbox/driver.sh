@@ -7,10 +7,15 @@ state=${COGS_INSECURE_STATE_DIR:-"$repo/.cogs-dev/insecure-sandbox"}
 image=${COGS_INSECURE_IMAGE:-cogs-insecure-sandbox:dev}
 profile=insecure-container
 operation=${1:-}
+state_root="$repo/.cogs-dev"
+state_name=${state#"$state_root/"}
 state_id=$(printf '%s' "$state" | openssl dgst -sha256 2>/dev/null | awk '{print substr($NF,1,12)}')
 container="cogs-insecure-$state_id"
 volume="cogs-insecure-workspace-$state_id"
 lock="${state}.lock"
+sentinel="$state/.cogs-insecure-owner"
+http_proxy=${COGS_HTTP_PROXY:-http://proxy.invalid:3128}
+https_proxy=${COGS_HTTPS_PROXY:-$http_proxy}
 result_emitted=false
 
 emit() {
@@ -39,8 +44,9 @@ on_signal() {
 trap on_error ERR
 trap on_signal INT TERM HUP
 
-if [[ "$state" != /* || "$state" == / || "$state" == "$repo" || "$state" =~ [[:cntrl:]] ]]; then
-  printf 'insecure-container state directory must be a safe absolute path and not the repository root\n' >&2
+if [[ "$state" != "$state_root/"* || -z "$state_name" || "$state_name" == */* \
+    || ! "$state_name" =~ ^[A-Za-z0-9._-]+$ || -L "$state_root" || -L "$state" ]]; then
+  printf 'insecure-container state directory must be one non-symlink child of %s\n' "$state_root" >&2
   exit 1
 fi
 
@@ -77,6 +83,12 @@ acquire_lock() {
 
 validate_metadata() {
   local recorded
+  if [[ -e "$state" ]]; then
+    [[ -d "$state" && ! -L "$state" && -s "$sentinel" ]] \
+      || fail 'insecure-container state lacks its ownership sentinel'
+    recorded=$(<"$sentinel")
+    [[ "$recorded" == "$state_id" ]] || fail 'insecure-container state ownership sentinel does not match'
+  fi
   if [[ -e "$state/container" ]]; then
     recorded=$(<"$state/container")
     [[ "$recorded" == "$container" ]] || fail 'insecure-container metadata has an unexpected container name'
@@ -225,6 +237,7 @@ create() {
   local input="$state/input" control="$state/control" ca_private
   mkdir -p "$input" "$control"
   chmod 0700 "$state" "$input" "$control"
+  printf '%s\n' "$state_id" > "$sentinel"
   printf '%s\n' "$container" > "$state/container"
   printf '%s\n' "$volume" > "$state/volume"
   trap 'cleanup_failed_create "$?"' ERR
@@ -233,6 +246,15 @@ create() {
   ssh-keygen -q -t ed25519 -N '' -C cogs-insecure-host -f "$input/ssh_host_ed25519_key"
   ssh-keygen -q -t ed25519 -N '' -C cogs-insecure-client -f "$control/client_ed25519_key"
   cp "$control/client_ed25519_key.pub" "$input/client_ed25519_key.pub"
+
+  if [[ ! "$http_proxy" =~ ^https?://[A-Za-z0-9.-]+:([0-9]{1,5})$ ]] \
+      || (( 10#${BASH_REMATCH[1]:-0} < 1 || 10#${BASH_REMATCH[1]:-0} > 65535 )); then
+    fail 'COGS_HTTP_PROXY must be a non-credentialed HTTP(S) host and port'
+  fi
+  if [[ ! "$https_proxy" =~ ^https?://[A-Za-z0-9.-]+:([0-9]{1,5})$ ]] \
+      || (( 10#${BASH_REMATCH[1]:-0} < 1 || 10#${BASH_REMATCH[1]:-0} > 65535 )); then
+    fail 'COGS_HTTPS_PROXY must be a non-credentialed HTTP(S) host and port'
+  fi
 
   if [[ -n "${COGS_PUBLIC_CA_FILE:-}" ]]; then
     [[ -f "$COGS_PUBLIC_CA_FILE" && ! -L "$COGS_PUBLIC_CA_FILE" ]] || fail 'configured public CA must be a regular, non-symlink file'
@@ -266,8 +288,8 @@ create() {
     --mount "type=volume,src=$volume,dst=/workspace" \
     --publish 127.0.0.1::2222 \
     --env COGS_PROFILE="$profile" \
-    --env HTTP_PROXY="${COGS_HTTP_PROXY:-http://proxy.invalid:3128}" \
-    --env HTTPS_PROXY="${COGS_HTTPS_PROXY:-${COGS_HTTP_PROXY:-http://proxy.invalid:3128}}" \
+    --env HTTP_PROXY="$http_proxy" \
+    --env HTTPS_PROXY="$https_proxy" \
     --env NO_PROXY="127.0.0.1,localhost" \
     --env SSL_CERT_FILE=/run/cogs-runtime/egress-ca.crt \
     "$image" >/dev/null

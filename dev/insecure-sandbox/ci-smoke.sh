@@ -67,8 +67,18 @@ else
   fi
   if ! bounded 2m "$driver" verify; then
     append_failure 'insecure-container SSH/SFTP verification failed or exceeded its deadline'
+  fi
+  if ! bounded 12m "$driver" reset; then
+    append_failure 'insecure-container reset failed or exceeded its deadline'
+  elif ! bounded 2m "$driver" verify; then
+    append_failure 'post-reset SSH/SFTP verification failed or exceeded its deadline'
   else
     verify_passed=true
+    reset_container=$(<"$state/container")
+    if ! reset_image_id=$(bounded 30s docker container inspect --format '{{.Image}}' "$reset_container" 2>/dev/null) \
+        || [[ "$reset_image_id" != "$image_id" ]]; then
+      append_failure 'reset used an unexpected container image'
+    fi
   fi
 fi
 
@@ -90,7 +100,7 @@ if [[ ! "$source_revision" =~ ^[a-f0-9]{40}$ ]]; then
   exit 1
 fi
 if (( ${#diagnostics[@]} == 0 )); then
-  diagnostics=('SSH/SFTP, injected host-key pin, controller-key denial, root, workspace, CA, and proxy-input wiring controls passed.')
+  diagnostics=('Create, SSH/SFTP, reset, post-reset, injected host-key pin, controller-key denial, root, workspace, CA, and proxy-input wiring controls passed.')
 fi
 diagnostic=$(IFS='; '; printf '%s' "${diagnostics[*]}")
 
