@@ -211,6 +211,23 @@ test("malformed adapter results fail while genuine real-dependency success passe
   );
   assert.equal(passing.tests[0]?.result, "pass");
   assertValidSecurityReport(passing);
+
+  const candidateEvidence = await runConformance(
+    { version: manifest.version, cases: [firstCase] },
+    options({
+      profile: "linux-kvm",
+      authority: "authoritative-local",
+      releaseEligibility: "disabled-candidate",
+      dependencies: realDependencies,
+      environment: {
+        ...options().environment,
+        metadata: { kvm_present: true, kvm_enabled: true, guest_root: true, distinct_boot_ids: true },
+      },
+    }),
+  );
+  assert.equal(candidateEvidence.tests[0]?.result, "pass");
+  assert.equal(candidateEvidence.tests[0]?.release_eligible, false);
+  assertValidSecurityReport(candidateEvidence);
 });
 
 test("malformed manifests and invalid authority claims fail before execution", async () => {

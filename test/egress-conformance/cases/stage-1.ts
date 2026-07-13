@@ -1,6 +1,14 @@
 import type { CaseManifest, ConformanceCase, DependencyName } from "../controller/runner.ts";
 
-export type ProbeKind = "https" | "redirect" | "raw-http1" | "raw-http2" | "fault" | "revocation" | "confidentiality";
+export type ProbeKind =
+  | "https"
+  | "redirect"
+  | "raw-http1"
+  | "raw-http2"
+  | "fault"
+  | "revocation"
+  | "confidentiality"
+  | "bypass";
 
 export interface Stage1CaseDefinition extends ConformanceCase {
   probe: Readonly<{
@@ -338,6 +346,124 @@ export const STAGE_1_CASES: readonly Stage1CaseDefinition[] = Object.freeze([
     "credential.bearer-injected",
   ),
   define("credential.no-leak", "credential-handling", "confidentiality", "all-sinks", "redacted", authorized),
+
+  define(
+    "bypass.unset-proxy",
+    "bypass-resistance",
+    "bypass",
+    "unset-proxy",
+    "deny",
+    dependencies("network_enforcement"),
+    "route.allowed-host-port",
+  ),
+  define(
+    "bypass.direct-ipv4",
+    "bypass-resistance",
+    "bypass",
+    "direct-ipv4",
+    "deny",
+    dependencies("network_enforcement"),
+    "route.allowed-host-port",
+  ),
+  define(
+    "bypass.direct-ipv6",
+    "bypass-resistance",
+    "bypass",
+    "direct-ipv6",
+    "deny",
+    dependencies("network_enforcement"),
+    "route.allowed-host-port",
+  ),
+  define(
+    "bypass.arbitrary-dns",
+    "bypass-resistance",
+    "bypass",
+    "arbitrary-dns",
+    "deny",
+    dependencies("network_enforcement"),
+    "route.allowed-host-port",
+  ),
+  define(
+    "bypass.dns-over-https",
+    "bypass-resistance",
+    "bypass",
+    "dns-over-https",
+    "deny",
+    dependencies("network_enforcement"),
+    "route.allowed-host-port",
+  ),
+  define(
+    "bypass.udp-quic",
+    "bypass-resistance",
+    "bypass",
+    "udp-quic",
+    "deny",
+    dependencies("network_enforcement"),
+    "route.allowed-host-port",
+  ),
+  define(
+    "bypass.alternate-tcp",
+    "bypass-resistance",
+    "bypass",
+    "alternate-tcp",
+    "deny",
+    dependencies("network_enforcement"),
+    "route.allowed-host-port",
+  ),
+  define(
+    "bypass.nested-connect",
+    "bypass-resistance",
+    "bypass",
+    "nested-connect",
+    "deny",
+    dependencies("network_enforcement"),
+    "route.allowed-host-port",
+  ),
+  define(
+    "bypass.websocket",
+    "bypass-resistance",
+    "bypass",
+    "websocket",
+    "deny",
+    dependencies("network_enforcement"),
+    "route.allowed-host-port",
+  ),
+  define(
+    "bypass.cogs-api",
+    "bypass-resistance",
+    "bypass",
+    "cogs-api",
+    "deny",
+    dependencies("network_enforcement"),
+    "route.allowed-host-port",
+  ),
+  define(
+    "bypass.proxy-admin",
+    "bypass-resistance",
+    "bypass",
+    "proxy-admin",
+    "deny",
+    dependencies("network_enforcement"),
+    "route.allowed-host-port",
+  ),
+  define(
+    "bypass.openbao",
+    "bypass-resistance",
+    "bypass",
+    "openbao",
+    "deny",
+    dependencies("network_enforcement"),
+    "route.allowed-host-port",
+  ),
+  define(
+    "bypass.cloud-metadata",
+    "bypass-resistance",
+    "bypass",
+    "cloud-metadata",
+    "deny",
+    dependencies("network_enforcement"),
+    "route.allowed-host-port",
+  ),
 
   define("audit.intent-before-use", "audit-failure", "https", "intent-before-use", "allow", authorized),
   define(

@@ -73,6 +73,7 @@ export interface RunnerOptions {
   components: ReportComponent[];
   dependencies: Record<DependencyName, { mode: DependencyMode; implementation: string; version?: string }>;
   knownLimitations: string[];
+  releaseEligibility?: "enabled" | "disabled-candidate";
   skips?: Readonly<Record<string, SkipApproval>>;
   redactValues?: readonly string[];
   adapter: ConformanceAdapter;
@@ -382,6 +383,7 @@ export async function runConformance(manifest: CaseManifest, options: RunnerOpti
         result,
         release_eligible:
           result === "pass" &&
+          options.releaseEligibility !== "disabled-candidate" &&
           options.authority !== "functional-only" &&
           Object.values(modes).every((mode) => mode === "real"),
         duration_ms: Math.round(performance.now() - caseStarted),

@@ -28,7 +28,7 @@ Reports use `cogs.security-report/v1alpha1`. `writeReports()` validates schema a
 - `macos-vm-dev`: optional functional convenience evidence only.
 - `linux-kvm`: authoritative local evidence only after KVM and guest-root qualification.
 
-The Stage 1 Linux/KVM driver and host-enforced default-deny network are tracked separately in issue #23.
+The Stage 1 Linux/KVM job runs the same matrix in a root Debian guest on a host-owned TAP with no NAT/default route. Its additional bypass group depends on real host network enforcement and remains authoritative-local even though authorization, audit, identity, and revocation results are still stubbed.
 
 ## Proxy candidates
 

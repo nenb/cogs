@@ -17,7 +17,7 @@ jobs:
     concurrency:
       group: kvm-qualification-${{ github.event.pull_request.number || github.ref }}
       cancel-in-progress: true
-    timeout-minutes: 20
+    timeout-minutes: 45
     steps:
       - name: Check out source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -36,7 +36,9 @@ jobs:
       - name: Install KVM qualification prerequisites
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends busybox-static cpio file linux-image-virtual qemu-system-x86
+          sudo apt-get install --yes --no-install-recommends \
+            busybox-static cloud-image-utils cpio curl e2fsprogs file iptables linux-image-virtual \
+            openssh-client qemu-system-x86 qemu-utils socat
           sudo chmod 0660 /dev/kvm
           sudo chgrp "$(id -gn)" /dev/kvm
 
@@ -45,15 +47,64 @@ jobs:
           COGS_SOURCE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
         run: dev/linux-kvm/qualify.sh docs/security-evidence/generated/kvm-qualification.json
 
-      - name: Validate applicability-aware report
+      - name: Exercise the isolated Debian guest lifecycle
+        env:
+          COGS_SOURCE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: dev/linux-kvm/ci-smoke.sh docs/security-evidence/generated/kvm-driver-smoke.json
+
+      - name: Create persistent isolated guest for authoritative conformance
+        id: guest
+        run: dev/linux-kvm/driver.sh create
+
+      - name: Run authoritative Stage 1 suite against Envoy
+        id: envoy_suite
+        continue-on-error: true
+        env:
+          COGS_SOURCE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
+          COGS_CONFORMANCE_PROFILE: linux-kvm
+        run: npx --no-install tsx test/egress-conformance/proxy-adapters/envoy/suite-smoke.ts docs/security-evidence/generated/envoy-kvm
+
+      - name: Run authoritative Stage 1 suite against mitmproxy
+        id: mitmproxy_suite
+        continue-on-error: true
+        env:
+          COGS_SOURCE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
+          COGS_CONFORMANCE_PROFILE: linux-kvm
+        run: npx --no-install tsx test/egress-conformance/proxy-adapters/mitmproxy/suite-smoke.ts docs/security-evidence/generated/mitmproxy-kvm
+
+      - name: Destroy isolated conformance guest
+        id: destroy
+        if: always() && steps.guest.outcome != 'skipped'
+        run: dev/linux-kvm/driver.sh destroy
+
+      - name: Validate applicability-aware reports
+        id: evidence
         if: always()
-        run: npm run schemas -- docs/security-evidence/generated/kvm-qualification.json
+        run: |
+          npm run schemas -- \
+            docs/security-evidence/generated/kvm-qualification.json \
+            docs/security-evidence/generated/kvm-driver-smoke.json \
+            docs/security-evidence/generated/envoy-kvm/envoy-suite-linux-kvm-*/report.json \
+            docs/security-evidence/generated/mitmproxy-kvm/mitmproxy-suite-linux-kvm-*/report.json
 
       - name: Upload qualification evidence
-        if: always()
+        if: always() && steps.evidence.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: kvm-qualification-${{ github.run_id }}-${{ github.run_attempt }}
           path: docs/security-evidence/generated/
           if-no-files-found: error
           retention-days: 30
+
+      - name: Enforce authoritative conformance after evidence publication
+        if: always()
+        env:
+          ENVOY_OUTCOME: ${{ steps.envoy_suite.outcome }}
+          MITMPROXY_OUTCOME: ${{ steps.mitmproxy_suite.outcome }}
+          DESTROY_OUTCOME: ${{ steps.destroy.outcome }}
+          EVIDENCE_OUTCOME: ${{ steps.evidence.outcome }}
+        run: |
+          test "$ENVOY_OUTCOME" = success
+          test "$MITMPROXY_OUTCOME" = success
+          test "$DESTROY_OUTCOME" = success
+          test "$EVIDENCE_OUTCOME" = success

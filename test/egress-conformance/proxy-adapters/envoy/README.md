@@ -38,7 +38,7 @@ At runtime Envoy applies one normalization before route matching and forwarding:
 Still outstanding by design:
 
 - measured Git, package-manager, language, and HTTP/2 client presets remain issue #24;
-- guest-root default-deny is authoritative only in issue #23's Linux/KVM driver;
+- guest-root default-deny evidence comes only from the authoritative Linux/KVM run, never this container smoke;
 - direct OpenBao metadata polling and durable WAL behavior are Stage 3 reruns;
 - Envoy cannot mint per-SNI leaves, so immutable certificates enumerate registered hosts;
 - this result does not select Envoy; the direct comparison remains issue #25.

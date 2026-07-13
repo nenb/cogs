@@ -47,6 +47,12 @@ for (const relativePath of dockerfiles) {
 }
 
 const ciWorkflow = readFileSync(resolve(root, ".github/workflows/ci.yml"), "utf8");
+const kvmDriver = readFileSync(resolve(root, "dev/linux-kvm/driver.sh"), "utf8");
+const envoySuite = readFileSync(resolve(root, "test/egress-conformance/proxy-adapters/envoy/suite-smoke.ts"), "utf8");
+const mitmproxySuite = readFileSync(
+  resolve(root, "test/egress-conformance/proxy-adapters/mitmproxy/suite-smoke.ts"),
+  "utf8",
+);
 const mitmproxyIgnore = readFileSync(resolve(root, ".trivyignore-mitmproxy"), "utf8");
 assert.match(ENVOY_IMAGE, /^envoyproxy\/envoy:v\d+\.\d+\.\d+@sha256:[a-f0-9]{64}$/);
 assert.ok(
@@ -75,6 +81,19 @@ assert.ok(
   ciWorkflow.includes("mitmproxy-vulnerabilities.json"),
   "candidate findings must remain available without suppression in the CI artifact",
 );
+assert.match(
+  kvmDriver,
+  /image_url="https:\/\/cloud\.debian\.org\/images\/cloud\/trixie\/\d{8}-\d+\/\$image_name"/,
+  "Linux/KVM guest image must use an immutable dated Debian release URL",
+);
+const guestDigest = kvmDriver.match(/image_sha512=([a-f0-9]{128})/)?.[1];
+assert.ok(guestDigest, "Linux/KVM guest image must have an exact SHA-512 pin");
+assert.ok(envoySuite.includes(guestDigest), "Envoy authoritative evidence must bind the exact guest image digest");
+assert.ok(
+  mitmproxySuite.includes(guestDigest),
+  "mitmproxy authoritative evidence must bind the exact guest image digest",
+);
+assert.match(kvmDriver, /sha512sum --check --status/, "Linux/KVM guest image pin must be verified before boot");
 
 console.log(
   `Verified external base-image digest pinning for ${dockerfiles.length} image definitions and two proxy candidates.`,
