@@ -4,13 +4,13 @@ FROM debian:13-slim@sha256:28de0877c2189802884ccd20f15ee41c203573bd87bb6b883f5f4
 ARG DEBIAN_SNAPSHOT=20260710T000000Z
 RUN printf '%s\n' \
       'Types: deb' \
-      "URIs: https://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}/" \
+      "URIs: http://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}/" \
       'Suites: trixie' \
       'Components: main' \
       'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
       'Check-Valid-Until: no' \
       > /etc/apt/sources.list.d/debian.sources \
-    && apt-get update \
+    && apt-get -o APT::Update::Error-Mode=any update \
     && DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends \
       bash \
       ca-certificates \
