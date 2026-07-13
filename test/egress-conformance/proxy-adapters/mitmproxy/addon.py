@@ -68,15 +68,30 @@ class CogsPolicy:
         if status != 200:
             self._deny(flow, 407)
             return
-        self.capabilities[str(flow.client_conn.id)] = capability
+        self.capabilities[str(flow.client_conn.id)] = (
+            capability,
+            flow.request.host.lower(),
+            flow.request.port,
+        )
 
     def client_disconnected(self, client):
         self.capabilities.pop(str(client.id), None)
 
-    def _route(self, flow):
-        if self.policy is None or flow.request.scheme != "https" or "?" in flow.request.path:
-            return None
+    def _route(self, flow, connection):
+        path = flow.request.path
         host = flow.request.host.lower()
+        sni = (flow.client_conn.sni or "").lower()
+        if (
+            self.policy is None
+            or flow.request.scheme != "https"
+            or any(character in path for character in ("?", "#", "\\", "%"))
+            or "//" in path
+            or any(part in (".", "..") for part in path.split("/"))
+            or connection[1] != host
+            or connection[2] != flow.request.port
+            or (sni and sni != host)
+        ):
+            return None
         for route in self.policy["routes"]:
             if (
                 route["host"] == host
@@ -90,11 +105,15 @@ class CogsPolicy:
     async def requestheaders(self, flow: http.HTTPFlow):
         if flow.request.method == "CONNECT":
             return
-        route = self._route(flow)
-        capability = self.capabilities.get(str(flow.client_conn.id))
-        if route is None or capability is None:
+        connection = self.capabilities.get(str(flow.client_conn.id))
+        if connection is None:
             self._deny(flow)
             return
+        route = self._route(flow, connection)
+        if route is None:
+            self._deny(flow)
+            return
+        capability = connection[0]
         headers = {
             "proxy-authorization": capability,
             "x-cogs-require-capability": "true",

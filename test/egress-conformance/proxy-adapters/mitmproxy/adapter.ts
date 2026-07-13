@@ -218,6 +218,8 @@ export class MitmproxyConformanceAdapter implements ConformanceAdapter {
         "--set",
         "connection_strategy=lazy",
         "--set",
+        "upstream_cert=false",
+        "--set",
         "ssl_verify_upstream_trusted_ca=/cogs/upstream-ca.pem",
         "--set",
         "cogs_policy=/cogs/policy.json",

@@ -152,7 +152,7 @@ try {
     knownLimitations: [
       "This is functional-only insecure-container evidence and cannot support a guest-root isolation claim.",
       "Direct OpenBao polling and production WAL persistence remain mandatory Stage 3 reruns.",
-      "The candidate requires a custom 149-line Python addon for policy, capability, injection, and audit hooks.",
+      "The candidate requires a custom 168-line Python addon for policy, capability, injection, and audit hooks.",
       "The complete route, parser, HTTP/2, redirect, drain, and client matrix is tracked by Stage 1 issue 22.",
     ],
     redactValues: [realCredential, capability, wrongCapability, placeholder],
