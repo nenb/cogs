@@ -21,9 +21,11 @@ install -m 0600 "$host_key" /run/cogs-runtime/ssh_host_ed25519_key
 install -m 0644 "$host_public" /run/cogs-runtime/ssh_host_ed25519_key.pub
 install -m 0600 "$client_public" /run/cogs-runtime/authorized_keys
 
-expected=$(ssh-keygen -y -f /run/cogs-runtime/ssh_host_ed25519_key)
-provided=$(awk 'NF >= 2 { print $1 " " $2; exit }' /run/cogs-runtime/ssh_host_ed25519_key.pub)
-if [[ "$expected" != "$provided" ]]; then
+ssh-keygen -y -f /run/cogs-runtime/ssh_host_ed25519_key > /run/cogs-runtime/derived_host_key.pub
+expected=$(ssh-keygen -l -E sha256 -f /run/cogs-runtime/derived_host_key.pub | awk '{print $2}')
+provided=$(ssh-keygen -l -E sha256 -f /run/cogs-runtime/ssh_host_ed25519_key.pub | awk '{print $2}')
+rm -f /run/cogs-runtime/derived_host_key.pub
+if [[ -z "$expected" || "$expected" != "$provided" ]]; then
   printf 'insecure-container: injected host key pair does not match\n' >&2
   exit 1
 fi
