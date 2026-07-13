@@ -10,6 +10,8 @@ import subprocess
 import sys
 import tempfile
 
+RAW_DETAIL = "none"
+
 
 def emit(passed, code):
     print(json.dumps({"passed": bool(passed), "diagnosticsRedacted": code}, separators=(",", ":")))
@@ -120,6 +122,7 @@ def connect_tls(proxy_host, proxy_port, target_port, capability, connect_host="l
 
 
 def raw_http1(scenario, proxy_host, proxy_port, target_port, capability):
+    global RAW_DETAIL
     if scenario == "duplicate-proxy-authorization":
         raw = socket.create_connection((proxy_host, proxy_port), timeout=5)
         authority = f"localhost:{target_port}"
@@ -138,9 +141,11 @@ def raw_http1(scenario, proxy_host, proxy_port, target_port, capability):
         sni = "undeclared.invalid"
     try:
         tls = connect_tls(proxy_host, proxy_port, target_port, capability, connect_host, sni)
-    except (OSError, ssl.SSLError):
+    except (OSError, ssl.SSLError) as error:
+        RAW_DETAIL = f"tls-{error.__class__.__name__.lower()}"
         return False
     if tls is None:
+        RAW_DETAIL = "connect-denied"
         return False
     host = f"localhost:{target_port}"
     path = "/protected/header"
@@ -175,7 +180,9 @@ def raw_http1(scenario, proxy_host, proxy_port, target_port, capability):
     except OSError:
         response = b""
     tls.close()
-    return b" 200 " in response.split(b"\r\n", 1)[0]
+    allowed = b" 200 " in response.split(b"\r\n", 1)[0]
+    RAW_DETAIL = "upstream-allowed" if allowed else "inner-denied"
+    return allowed
 
 
 def hpack_integer(value, prefix, first):
@@ -280,7 +287,8 @@ def main():
     except Exception:
         allowed = False
     passed = allowed if expected in ("allow", "normalize") else not allowed
-    emit(passed, f"scenario {scenario} produced the required bounded {expected} observation")
+    detail = f" ({RAW_DETAIL})" if kind == "raw-http1" else ""
+    emit(passed, f"scenario {scenario} produced the required bounded {expected} observation{detail}")
 
 
 if __name__ == "__main__":
