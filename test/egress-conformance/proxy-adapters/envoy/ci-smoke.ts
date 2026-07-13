@@ -261,6 +261,12 @@ try {
     teardownTimeoutMs: 20_000,
   });
 
+  const bearerResult = report.tests.find((result) => result.id === "envoy.bearer-injection");
+  if (bearerResult?.result === "fail") {
+    const checks = faultInjector.snapshot().capability_checks;
+    bearerResult.diagnostics_redacted = `${bearerResult.diagnostics_redacted ?? "Envoy mechanism failed"}; capability checks total=${checks.total} present=${checks.header_present} matched=${checks.digest_matched} accepted=${checks.accepted}`;
+  }
+
   try {
     assert.equal(report.tests.find((result) => result.id === "envoy.capability-wrong")?.result, "stubbed");
     assert.equal(report.tests.find((result) => result.id === "envoy.bearer-injection")?.result, "stubbed");
@@ -291,7 +297,7 @@ try {
     for (const value of [realCredential, capability, wrongCapability, placeholder])
       assert.equal(serialized.includes(value), false);
   } catch (error) {
-    const result = report.tests.find((item) => item.id === "envoy.bearer-injection") ?? report.tests[0];
+    const result = bearerResult ?? report.tests[0];
     if (result !== undefined && result.result !== "fail") {
       result.result = "fail";
       result.release_eligible = false;

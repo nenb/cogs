@@ -36,6 +36,12 @@ export interface FaultInjectorSnapshot {
     accepting: boolean;
     action: "none" | "deny-new" | "drain";
   };
+  capability_checks: {
+    total: number;
+    header_present: number;
+    digest_matched: number;
+    accepted: number;
+  };
   faults: Readonly<FaultState>;
 }
 
@@ -179,6 +185,7 @@ export async function startFaultInjector(options: StartOptions): Promise<FaultIn
   const lifecycle = new AbortController();
   const intents: IntentRecord[] = [];
   const sockets = new Set<Socket>();
+  const capabilityChecks = { total: 0, header_present: 0, digest_matched: 0, accepted: 0 };
   const faults: FaultState = {
     authorizationOutage: false,
     auditUnwritable: false,
@@ -189,9 +196,14 @@ export async function startFaultInjector(options: StartOptions): Promise<FaultIn
   };
 
   const capabilityAllowed = (request: IncomingMessage): boolean => {
+    capabilityChecks.total += 1;
     const supplied = request.headers["proxy-authorization"];
     const value = Array.isArray(supplied) ? undefined : supplied;
-    return value !== undefined && timingSafeEqual(digest(value, comparisonKey), capabilityDigest) && accepting;
+    if (value !== undefined) capabilityChecks.header_present += 1;
+    const matches = value !== undefined && timingSafeEqual(digest(value, comparisonKey), capabilityDigest);
+    if (matches) capabilityChecks.digest_matched += 1;
+    if (matches && accepting) capabilityChecks.accepted += 1;
+    return matches && accepting;
   };
 
   const appendIntent = (authorization: AuthorizationRequest): IntentRecord | undefined => {
@@ -378,7 +390,12 @@ export async function startFaultInjector(options: StartOptions): Promise<FaultIn
       accepting = true;
     },
     snapshot() {
-      return structuredClone({ intents, revocation: { epoch, accepting, action }, faults });
+      return structuredClone({
+        intents,
+        revocation: { epoch, accepting, action },
+        capability_checks: capabilityChecks,
+        faults,
+      });
     },
     stop: async () => {
       stopPromise ??= (async () => {
