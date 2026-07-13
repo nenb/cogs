@@ -295,7 +295,6 @@ function envoyRoute(
   inner: boolean,
 ): Json[] {
   const credential = credentialHeader(route.credential);
-  const forwardedAuthority = route.port === 80 || route.port === 443 ? route.host : `${route.host}:${route.port}`;
   const escapedHost = route.host.replaceAll(".", "\\.");
   return route.methods.map((method) => ({
     name: route.id,
@@ -313,7 +312,6 @@ function envoyRoute(
     request_headers_to_remove: ["authorization", "proxy-authorization", credential.name],
     request_headers_to_add: [
       { header: { key: credential.name, value: credential.value }, append_action: "OVERWRITE_IF_EXISTS_OR_ADD" },
-      { header: { key: "host", value: forwardedAuthority }, append_action: "OVERWRITE_IF_EXISTS_OR_ADD" },
     ],
     typed_per_filter_config: routeAuthOverride(
       authHttpService(authorizationOrigin, "/v1/envoy/authorize", input, route.id, !inner),
