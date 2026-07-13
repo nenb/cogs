@@ -1,0 +1,158 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import type { FaultInjector } from "./server.ts";
+import { startFaultInjector } from "./server.ts";
+
+const originalCapability = "cogs-original-capability-value";
+const replacementCapability = "cogs-replacement-capability-value";
+
+async function post(origin: string, path: string, body: object, headers: Record<string, string> = {}) {
+  const response = await fetch(`${origin}${path}`, {
+    method: "POST",
+    headers: { "content-type": "application/json", ...headers },
+    body: JSON.stringify(body),
+  });
+  return { status: response.status, body: (await response.json()) as Record<string, unknown> };
+}
+
+async function withInjector(run: (injector: FaultInjector) => Promise<void>, maxRecords?: number): Promise<void> {
+  const injector = await startFaultInjector({
+    initialCapability: originalCapability,
+    ...(maxRecords ? { maxRecords } : {}),
+  });
+  try {
+    await run(injector);
+  } finally {
+    await injector.stop();
+  }
+}
+
+const authorization = {
+  case_id: "audit.intent-before-use",
+  session_id: "session-opaque",
+  route_id: "route-allowed",
+  credential_required: true,
+};
+
+test("authorization returns only after a correlated intent is recorded", async () => {
+  await withInjector(async (injector) => {
+    const authorized = await post(injector.origin, "/v1/authorize", authorization);
+    assert.equal(authorized.status, 200);
+    const snapshot = injector.snapshot();
+    assert.equal(snapshot.intents.length, 1);
+    assert.equal(snapshot.intents[0]?.intent_id, authorized.body.intent_id);
+    assert.equal(snapshot.intents[0]?.completion, null);
+
+    const completed = await post(injector.origin, "/v1/complete", {
+      intent_id: authorized.body.intent_id,
+      outcome: "success",
+      status_class: 2,
+      latency_ms: 17,
+    });
+    assert.equal(completed.status, 200);
+    assert.deepEqual(injector.snapshot().intents[0]?.completion, {
+      outcome: "success",
+      status_class: 2,
+      latency_ms: 17,
+    });
+  });
+});
+
+test("authorization and audit failures deny before creating an intent", async () => {
+  await withInjector(async (injector) => {
+    for (const fault of ["authorizationOutage", "auditUnwritable", "auditFull"] as const) {
+      injector.setFaults({ [fault]: true });
+      const denied = await post(injector.origin, "/v1/authorize", authorization);
+      assert.equal(denied.status, 503);
+      assert.equal(injector.snapshot().intents.length, 0);
+      injector.setFaults({ [fault]: false });
+    }
+  });
+
+  await withInjector(async (injector) => {
+    assert.equal((await post(injector.origin, "/v1/authorize", authorization)).status, 200);
+    assert.equal((await post(injector.origin, "/v1/authorize", authorization)).status, 503);
+  }, 1);
+});
+
+test("completion failures remain correlated and recoverable", async () => {
+  await withInjector(async (injector) => {
+    const authorized = await post(injector.origin, "/v1/authorize", authorization);
+    injector.setFaults({ completionFailure: true });
+    assert.equal(
+      (
+        await post(injector.origin, "/v1/complete", {
+          intent_id: authorized.body.intent_id,
+          outcome: "failed",
+          status_class: 5,
+          latency_ms: 10,
+        })
+      ).status,
+      503,
+    );
+    assert.equal(injector.snapshot().intents[0]?.completion, null);
+  });
+});
+
+test("telemetry outage does not block an uncredentialed authorization intent", async () => {
+  await withInjector(async (injector) => {
+    injector.setFaults({ telemetryOutage: true });
+    const authorized = await post(injector.origin, "/v1/authorize", {
+      ...authorization,
+      credential_required: false,
+    });
+    assert.equal(authorized.status, 200);
+    assert.equal(authorized.body.telemetry_available, false);
+    assert.equal(injector.snapshot().intents.length, 1);
+  });
+});
+
+test("capability validation, deny-new, rotation, and drain never expose values", async () => {
+  await withInjector(async (injector) => {
+    const validate = (capability: string) =>
+      post(injector.origin, "/v1/capability/validate", {}, { "proxy-authorization": capability });
+
+    assert.equal((await validate(originalCapability)).status, 200);
+    assert.equal((await validate("cogs-wrong-capability-value")).status, 403);
+    injector.denyNew();
+    assert.equal((await validate(originalCapability)).status, 403);
+
+    injector.rotateCapability(replacementCapability);
+    assert.equal((await validate(originalCapability)).status, 403);
+    const replacement = await validate(replacementCapability);
+    assert.equal(replacement.status, 200);
+    assert.equal(replacement.body.action, "drain");
+    assert.ok(Number(replacement.body.epoch) >= 3);
+
+    const serialized = JSON.stringify({ snapshot: injector.snapshot(), response: replacement });
+    for (const value of [originalCapability, replacementCapability, "cogs-wrong-capability-value"]) {
+      assert.equal(serialized.includes(value), false);
+    }
+  });
+});
+
+test("unknown fields, queries, duplicate completion, and oversized bodies fail closed", async () => {
+  await withInjector(async (injector) => {
+    const unknown = await post(injector.origin, "/v1/authorize", { ...authorization, credential: "not-accepted" });
+    assert.equal(unknown.status, 400);
+    const query = await post(injector.origin, "/v1/authorize?credential=not-logged", authorization);
+    assert.equal(query.status, 400);
+
+    const authorized = await post(injector.origin, "/v1/authorize", authorization);
+    const completion = {
+      intent_id: authorized.body.intent_id,
+      outcome: "success",
+      status_class: 2,
+      latency_ms: 1,
+    };
+    assert.equal((await post(injector.origin, "/v1/complete", completion)).status, 200);
+    assert.equal((await post(injector.origin, "/v1/complete", completion)).status, 400);
+
+    const response = await fetch(`${injector.origin}/v1/authorize`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ padding: "x".repeat(40 * 1024) }),
+    });
+    assert.equal(response.status, 400);
+  });
+});
