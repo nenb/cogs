@@ -183,7 +183,6 @@ export class MitmproxyConformanceAdapter implements ConformanceAdapter {
       [
         "run",
         "--detach",
-        "--rm",
         "--name",
         container,
         "--label",
@@ -198,6 +197,8 @@ export class MitmproxyConformanceAdapter implements ConformanceAdapter {
         "--cpus=1",
         "--user",
         user,
+        "--env",
+        "PYTHONDONTWRITEBYTECODE=1",
         "--mount",
         `type=bind,src=${configDirectory},dst=/cogs,readonly`,
         "--mount",
@@ -226,7 +227,15 @@ export class MitmproxyConformanceAdapter implements ConformanceAdapter {
       signal,
     );
     if (this.#active) this.#active.started = true;
-    await waitForListener(this.#options.listenerPort, signal);
+    try {
+      await waitForListener(this.#options.listenerPort, signal);
+    } catch {
+      const logs = await runFile(this.#docker, ["logs", container], 15_000);
+      let diagnostic = `${logs.stdout}\n${logs.stderr}`.trim();
+      for (const secret of this.#options.sensitiveValues ?? [])
+        diagnostic = diagnostic.replaceAll(secret, "[redacted]");
+      throw new Error(`mitmproxy listener readiness failed${diagnostic ? `: ${diagnostic.slice(-2048)}` : ""}`);
+    }
     const publicCaPath = join(stateDirectory, "mitmproxy-ca-cert.pem");
     const ca = await readFile(publicCaPath, "utf8");
     if (!ca.includes("BEGIN CERTIFICATE") || ca.includes("PRIVATE KEY"))
@@ -287,6 +296,7 @@ export class MitmproxyConformanceAdapter implements ConformanceAdapter {
       if (active.started) {
         await this.#captureLogs();
         await runFile(this.#docker, ["stop", "--time", "3", active.container], 10_000);
+        await runFile(this.#docker, ["container", "rm", active.container], 15_000);
         const exists = await runFile(
           this.#docker,
           ["container", "ls", "--all", "--quiet", "--filter", `name=^/${active.container}$`],
