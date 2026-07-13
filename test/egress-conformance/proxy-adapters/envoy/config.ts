@@ -282,13 +282,16 @@ function hardenedHcm(
 function envoyRoute(route: EnvoyRouteConfig, input: EnvoyCandidateConfigInput, inner: boolean): Json[] {
   const credential = credentialHeader(route.credential);
   const escapedHost = route.host.replaceAll(".", "\\.");
+  const defaultPort =
+    (route.protocol === "http" && route.port === 80) || (route.protocol === "https" && route.port === 443);
+  const authorityPattern = defaultPort ? `^${escapedHost}(?::${route.port})?$` : `^${escapedHost}:${route.port}$`;
   return route.methods.map((method) => ({
     name: route.id,
     match: {
       prefix: route.pathPrefix,
       headers: [
         { name: ":method", string_match: { exact: method } },
-        { name: ":authority", string_match: { safe_regex: { regex: `^${escapedHost}(?::${route.port})?$` } } },
+        { name: ":authority", string_match: { safe_regex: { regex: authorityPattern } } },
       ],
     },
     route: {
@@ -370,7 +373,12 @@ export function generateEnvoyConfig(input: EnvoyCandidateConfigInput): Readonly<
     typed_config: { "@type": `${envoyType}/envoy.extensions.filters.http.router.v3.Router` },
   };
 
-  const outerRoutes: Json[] = physicalRoutes.flatMap((route) => envoyRoute(route, input, false));
+  const routeOrder = (left: EnvoyRouteConfig, right: EnvoyRouteConfig) =>
+    left.host.localeCompare(right.host) ||
+    left.port - right.port ||
+    right.pathPrefix.length - left.pathPrefix.length ||
+    left.id.localeCompare(right.id);
+  const outerRoutes: Json[] = physicalRoutes.sort(routeOrder).flatMap((route) => envoyRoute(route, input, false));
   for (const [authority, grouped] of [...secureGroups.entries()].sort(([left], [right]) => left.localeCompare(right))) {
     const first = grouped[0];
     if (first === undefined) continue;
@@ -481,7 +489,7 @@ export function generateEnvoyConfig(input: EnvoyCandidateConfigInput): Readonly<
                   {
                     name: `mitm_${first.host}_${first.port}`,
                     domains: [first.host, `${first.host}:${first.port}`],
-                    routes: grouped.flatMap((route) => envoyRoute(route, input, true)),
+                    routes: grouped.sort(routeOrder).flatMap((route) => envoyRoute(route, input, true)),
                   },
                 ],
                 [extAuthzFilter(false), routerFilter],

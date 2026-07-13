@@ -88,6 +88,8 @@ test("generator emits deterministic immutable static Envoy policy with no admini
   assert.match(rendered, /"internal_listener": \{\}/);
   assert.match(rendered, /"connect_matcher": \{\}/);
   assert.match(rendered, /"authorization"/);
+  assert.match(rendered, /Bearer fixture-real-value/);
+  assert.match(rendered, /Basic Zml4dHVyZTpwYXNzd29yZA==/);
   assert.match(rendered, /"x-api-key"/);
   assert.match(rendered, /"request-complete"/);
   assert.doesNotMatch(rendered, /%REQ\(:PATH\)%|%REQ\(AUTHORIZATION\)%|%REQ\(PROXY-AUTHORIZATION\)%/i);

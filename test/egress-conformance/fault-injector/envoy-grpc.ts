@@ -93,7 +93,7 @@ function messageField(buffer: Buffer, number: number): Buffer | undefined {
   return Buffer.isBuffer(field?.value) ? field.value : undefined;
 }
 
-function decodeStringMap(buffer: Buffer, number: number): Record<string, string> {
+function decodeStringMap(buffer: Buffer, number: number, allowedKeys?: ReadonlySet<string>): Record<string, string> {
   const output: Record<string, string> = {};
   for (const field of decodeFields(buffer)) {
     if (field.number !== number || !Buffer.isBuffer(field.value)) continue;
@@ -102,6 +102,7 @@ function decodeStringMap(buffer: Buffer, number: number): Record<string, string>
     const value = entry.find((candidate) => candidate.number === 2 && Buffer.isBuffer(candidate.value));
     if (!Buffer.isBuffer(key?.value) || !Buffer.isBuffer(value?.value)) continue;
     const decodedKey = key.value.toString("utf8");
+    if (allowedKeys !== undefined && !allowedKeys.has(decodedKey)) continue;
     const decodedValue = value.value.toString("utf8");
     if (decodedKey.length > 0 && decodedKey.length <= 256 && decodedValue.length <= 8192)
       output[decodedKey] = decodedValue;
@@ -115,8 +116,23 @@ function decodeCheckRequest(buffer: Buffer): DecodedCheckRequest {
   const request = attributes === undefined ? undefined : messageField(attributes, 4);
   const http = request === undefined ? undefined : messageField(request, 2);
   return {
-    headers: Object.freeze(http === undefined ? {} : decodeStringMap(http, 3)),
-    context: Object.freeze(attributes === undefined ? {} : decodeStringMap(attributes, 10)),
+    headers: Object.freeze(http === undefined ? {} : decodeStringMap(http, 3, new Set(["proxy-authorization"]))),
+    context: Object.freeze(
+      attributes === undefined
+        ? {}
+        : decodeStringMap(
+            attributes,
+            10,
+            new Set([
+              "cogs.mode",
+              "cogs.case_id",
+              "cogs.session_id",
+              "cogs.route_id",
+              "cogs.require_capability",
+              "cogs.credential_required",
+            ]),
+          ),
+    ),
   };
 }
 
