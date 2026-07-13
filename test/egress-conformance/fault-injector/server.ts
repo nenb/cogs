@@ -2,6 +2,7 @@ import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypt
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo, Socket } from "node:net";
 import { setTimeout as delay } from "node:timers/promises";
+import { startEnvoyAuthorizationGrpc } from "./envoy-grpc.ts";
 
 const maxBodyBytes = 32 * 1024;
 const opaqueId = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
@@ -47,6 +48,7 @@ export interface FaultInjectorSnapshot {
 
 export interface FaultInjector {
   origin: string;
+  grpcTarget: string;
   setFaults(faults: Partial<FaultState>): void;
   denyNew(): void;
   rotateCapability(newCapability: string): void;
@@ -195,15 +197,17 @@ export async function startFaultInjector(options: StartOptions): Promise<FaultIn
     delayMs: 0,
   };
 
-  const capabilityAllowed = (request: IncomingMessage): boolean => {
+  const capabilityValueAllowed = (value: string | undefined): boolean => {
     capabilityChecks.total += 1;
-    const supplied = request.headers["proxy-authorization"];
-    const value = Array.isArray(supplied) ? undefined : supplied;
     if (value !== undefined) capabilityChecks.header_present += 1;
     const matches = value !== undefined && timingSafeEqual(digest(value, comparisonKey), capabilityDigest);
     if (matches) capabilityChecks.digest_matched += 1;
     if (matches && accepting) capabilityChecks.accepted += 1;
     return matches && accepting;
+  };
+  const capabilityAllowed = (request: IncomingMessage): boolean => {
+    const supplied = request.headers["proxy-authorization"];
+    return capabilityValueAllowed(Array.isArray(supplied) ? undefined : supplied);
   };
 
   const appendIntent = (authorization: AuthorizationRequest): IntentRecord | undefined => {
@@ -222,6 +226,39 @@ export async function startFaultInjector(options: StartOptions): Promise<FaultIn
     intents.push(intent);
     return intent;
   };
+
+  const grpc = await startEnvoyAuthorizationGrpc({
+    decide(request) {
+      const mode = request.context["cogs.mode"];
+      if (mode === "capability") {
+        return { outcome: capabilityValueAllowed(request.headers["proxy-authorization"]) ? "allow" : "deny" };
+      }
+      if (mode !== "authorize") return { outcome: "deny" };
+      const requireCapability = request.context["cogs.require_capability"];
+      const authorization = parseAuthorization({
+        case_id: request.context["cogs.case_id"],
+        session_id: request.context["cogs.session_id"],
+        route_id: request.context["cogs.route_id"],
+        credential_required:
+          request.context["cogs.credential_required"] === "true"
+            ? true
+            : request.context["cogs.credential_required"] === "false"
+              ? false
+              : undefined,
+      });
+      if (
+        authorization === undefined ||
+        (requireCapability !== "true" && requireCapability !== "false") ||
+        (requireCapability === "true" && !capabilityValueAllowed(request.headers["proxy-authorization"])) ||
+        !accepting
+      ) {
+        return { outcome: "deny" };
+      }
+      const intent = appendIntent(authorization);
+      if (intent === undefined) return { outcome: "error" };
+      return { outcome: "allow", intentId: intent.intent_id };
+    },
+  });
 
   const server = createServer((request, response) => {
     void (async () => {
@@ -354,14 +391,20 @@ export async function startFaultInjector(options: StartOptions): Promise<FaultIn
     socket.once("close", () => sockets.delete(socket));
   });
 
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => resolve());
-  });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", () => resolve());
+    });
+  } catch (error) {
+    await grpc.stop();
+    throw error;
+  }
   const address = server.address() as AddressInfo;
 
   return {
     origin: `http://127.0.0.1:${address.port}`,
+    grpcTarget: grpc.target,
     setFaults(update) {
       for (const [name, value] of Object.entries(update)) {
         if (!(name in faults)) throw new Error("unknown fault");
@@ -401,7 +444,7 @@ export async function startFaultInjector(options: StartOptions): Promise<FaultIn
       stopPromise ??= (async () => {
         lifecycle.abort();
         for (const socket of sockets) socket.destroy();
-        await new Promise<void>((resolve) => server.close(() => resolve()));
+        await Promise.all([new Promise<void>((resolve) => server.close(() => resolve())), grpc.stop()]);
         comparisonKey.fill(0);
         capabilityDigest.fill(0);
       })();

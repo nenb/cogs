@@ -11,7 +11,7 @@ function input(): EnvoyCandidateConfigInput {
     sessionId: "session-test",
     listenerAddress: "127.0.0.1",
     listenerPort: 18080,
-    authorizationOrigin: "http://127.0.0.1:19090",
+    authorizationGrpcTarget: "127.0.0.1:19090",
     proxyCertificatePem: certificate,
     proxyPrivateKeyPem: privateKey,
     routes: [
@@ -78,8 +78,9 @@ test("generator emits deterministic immutable static Envoy policy with no admini
   assert.doesNotMatch(rendered, /"admin"|dynamic_resources|ads_config|sds_config|cluster_header|original_dst/i);
   assert.match(rendered, /envoy\.bootstrap\.internal_listener/);
   assert.match(rendered, /envoy\.filters\.http\.ext_authz/);
-  assert.equal(rendered.match(/envoy\.filters\.http\.lua/g)?.length, 2);
-  assert.match(rendered, /x-cogs-envoy-connect/);
+  assert.match(rendered, /"grpc_service"/);
+  assert.match(rendered, /"transport_api_version": "V3"/);
+  assert.doesNotMatch(rendered, /envoy\.filters\.http\.lua|x-cogs-envoy-connect/);
   assert.match(rendered, /"failure_mode_allow": false/);
   assert.match(rendered, /"path_with_escaped_slashes_action": "REJECT_REQUEST"/);
   assert.match(rendered, /"stream_error_on_invalid_http_message": true/);
@@ -130,7 +131,7 @@ test("generator rejects ambiguous routes, credential-bearing control origins, an
     route(value, 0).methods = ["CONNECT"];
   }, /non-CONNECT/);
   mutate((value) => {
-    value.authorizationOrigin = "http://user:secret@127.0.0.1:19090";
+    value.authorizationGrpcTarget = "user:secret@127.0.0.1:19090";
   }, /uncredentialed loopback/);
   mutate((value) => {
     route(value, 2).credential = { kind: "api-key", header: "authorization", value: "forbidden" };

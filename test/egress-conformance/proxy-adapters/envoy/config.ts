@@ -30,7 +30,7 @@ export interface EnvoyCandidateConfigInput {
   sessionId: string;
   listenerAddress: "127.0.0.1" | "0.0.0.0";
   listenerPort: number;
-  authorizationOrigin: string;
+  authorizationGrpcTarget: string;
   proxyCertificatePem: string;
   proxyPrivateKeyPem: string;
   routes: readonly EnvoyRouteConfig[];
@@ -115,29 +115,13 @@ function credentialHeader(credential: CredentialConfig): { name: string; value: 
   return { name, value: credential.value };
 }
 
-function parseAuthorizationOrigin(value: string): { origin: string; address: string; port: number } {
-  let parsed: URL;
-  try {
-    parsed = new URL(value);
-  } catch {
-    throw new Error("authorization origin must be an absolute loopback HTTP URL");
+function parseAuthorizationGrpcTarget(value: string): { address: string; port: number } {
+  const match = value.match(/^(127\.0\.0\.1):([0-9]{1,5})$/);
+  const port = Number(match?.[2]);
+  if (match === null || !Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error("authorization gRPC target must be an uncredentialed loopback host and explicit port");
   }
-  const port = Number(parsed.port);
-  if (
-    parsed.protocol !== "http:" ||
-    parsed.hostname !== "127.0.0.1" ||
-    parsed.pathname !== "/" ||
-    parsed.search !== "" ||
-    parsed.hash !== "" ||
-    parsed.username !== "" ||
-    parsed.password !== "" ||
-    !Number.isInteger(port) ||
-    port < 1 ||
-    port > 65535
-  ) {
-    throw new Error("authorization origin must be an uncredentialed loopback HTTP origin with an explicit port");
-  }
-  return { origin: parsed.origin, address: parsed.hostname, port };
+  return { address: match[1] ?? "127.0.0.1", port };
 }
 
 function validateInput(input: EnvoyCandidateConfigInput): EnvoyRouteConfig[] {
@@ -192,39 +176,33 @@ function matcherExact(value: string): Json {
   return { patterns: [{ exact: value }] };
 }
 
-function authHttpService(
-  origin: string,
-  path: "/v1/envoy/capability" | "/v1/envoy/authorize",
+function authContext(
+  mode: "capability" | "authorize",
   input: EnvoyCandidateConfigInput,
   routeId?: string,
   requireCapability?: boolean,
-): Json {
-  const headers: Json[] = [
-    { key: "x-cogs-case-id", value: input.caseId },
-    { key: "x-cogs-session-id", value: input.sessionId },
-  ];
-  if (routeId !== undefined) headers.push({ key: "x-cogs-route-id", value: routeId });
-  if (requireCapability !== undefined) {
-    headers.push({ key: "x-cogs-require-capability", value: requireCapability ? "true" : "false" });
-    headers.push({ key: "x-cogs-credential-required", value: "true" });
-  }
+): Record<string, string> {
   return {
-    server_uri: { uri: origin, cluster: "cogs_authz", timeout: "1s" },
-    path_override: path,
-    authorization_request: { headers_to_add: headers },
-    authorization_response: {
-      allowed_client_headers: matcherExact("content-type"),
-      dynamic_metadata_from_headers: matcherExact("x-cogs-intent-id"),
-    },
+    "cogs.mode": mode,
+    "cogs.case_id": input.caseId,
+    "cogs.session_id": input.sessionId,
+    ...(routeId === undefined ? {} : { "cogs.route_id": routeId }),
+    ...(requireCapability === undefined
+      ? {}
+      : {
+          "cogs.require_capability": requireCapability ? "true" : "false",
+          "cogs.credential_required": "true",
+        }),
   };
 }
 
-function extAuthzFilter(service: Json, capability: boolean): Json {
+function extAuthzFilter(capability: boolean): Json {
   return {
     name: "envoy.filters.http.ext_authz",
     typed_config: {
       "@type": `${envoyType}/envoy.extensions.filters.http.ext_authz.v3.ExtAuthz`,
-      http_service: service,
+      grpc_service: { envoy_grpc: { cluster_name: "cogs_authz" }, timeout: "1s" },
+      transport_api_version: "V3",
       failure_mode_allow: false,
       validate_mutations: true,
       ...(capability ? { allowed_headers: matcherExact("proxy-authorization") } : {}),
@@ -239,11 +217,11 @@ function extAuthzFilter(service: Json, capability: boolean): Json {
   };
 }
 
-function routeAuthOverride(service: Json): Json {
+function routeAuthOverride(context: Record<string, string>): Json {
   return {
     "envoy.filters.http.ext_authz": {
       "@type": `${envoyType}/envoy.extensions.filters.http.ext_authz.v3.ExtAuthzPerRoute`,
-      check_settings: { http_service: service },
+      check_settings: { context_extensions: context },
     },
   };
 }
@@ -301,12 +279,7 @@ function hardenedHcm(
   };
 }
 
-function envoyRoute(
-  route: EnvoyRouteConfig,
-  input: EnvoyCandidateConfigInput,
-  authorizationOrigin: string,
-  inner: boolean,
-): Json[] {
+function envoyRoute(route: EnvoyRouteConfig, input: EnvoyCandidateConfigInput, inner: boolean): Json[] {
   const credential = credentialHeader(route.credential);
   const escapedHost = route.host.replaceAll(".", "\\.");
   return route.methods.map((method) => ({
@@ -326,9 +299,7 @@ function envoyRoute(
     request_headers_to_add: [
       { header: { key: credential.name, value: credential.value }, append_action: "OVERWRITE_IF_EXISTS_OR_ADD" },
     ],
-    typed_per_filter_config: routeAuthOverride(
-      authHttpService(authorizationOrigin, "/v1/envoy/authorize", input, route.id, !inner),
-    ),
+    typed_per_filter_config: routeAuthOverride(authContext("authorize", input, route.id, !inner)),
   }));
 }
 
@@ -388,7 +359,7 @@ function deepFreeze<T>(value: T): Readonly<T> {
 
 export function generateEnvoyConfig(input: EnvoyCandidateConfigInput): Readonly<Json> {
   const routes = validateInput(input);
-  const authorization = parseAuthorizationOrigin(input.authorizationOrigin);
+  const authorization = parseAuthorizationGrpcTarget(input.authorizationGrpcTarget);
   const physicalRoutes = routes.filter((route) => route.protocol === "http");
   const secureGroups = Map.groupBy(
     routes.filter((route) => route.protocol === "https"),
@@ -398,28 +369,8 @@ export function generateEnvoyConfig(input: EnvoyCandidateConfigInput): Readonly<
     name: "envoy.filters.http.router",
     typed_config: { "@type": `${envoyType}/envoy.extensions.filters.http.router.v3.Router` },
   };
-  const connectAuthMethodFilter: Json = {
-    name: "envoy.filters.http.lua",
-    typed_config: {
-      "@type": `${envoyType}/envoy.extensions.filters.http.lua.v3.Lua`,
-      default_source_code: {
-        inline_string:
-          'function envoy_on_request(handle) handle:headers():remove("x-cogs-envoy-connect") if handle:headers():get(":method") == "CONNECT" then handle:headers():replace(":method", "GET") handle:headers():add("x-cogs-envoy-connect", "1") end end',
-      },
-    },
-  };
-  const restoreConnectMethodFilter: Json = {
-    name: "envoy.filters.http.lua",
-    typed_config: {
-      "@type": `${envoyType}/envoy.extensions.filters.http.lua.v3.Lua`,
-      default_source_code: {
-        inline_string:
-          'function envoy_on_request(handle) if handle:headers():get("x-cogs-envoy-connect") == "1" then handle:headers():replace(":method", "CONNECT") end handle:headers():remove("x-cogs-envoy-connect") end',
-      },
-    },
-  };
 
-  const outerRoutes: Json[] = physicalRoutes.flatMap((route) => envoyRoute(route, input, authorization.origin, false));
+  const outerRoutes: Json[] = physicalRoutes.flatMap((route) => envoyRoute(route, input, false));
   for (const [authority, grouped] of [...secureGroups.entries()].sort(([left], [right]) => left.localeCompare(right))) {
     const first = grouped[0];
     if (first === undefined) continue;
@@ -435,7 +386,7 @@ export function generateEnvoyConfig(input: EnvoyCandidateConfigInput): Readonly<
         upgrade_configs: [{ upgrade_type: "CONNECT", connect_config: {} }],
       },
       request_headers_to_remove: ["proxy-authorization", "authorization"],
-      typed_per_filter_config: routeAuthOverride(authHttpService(authorization.origin, "/v1/envoy/capability", input)),
+      typed_per_filter_config: routeAuthOverride(authContext("capability", input)),
     });
   }
 
@@ -451,12 +402,7 @@ export function generateEnvoyConfig(input: EnvoyCandidateConfigInput): Readonly<
               typed_config: hardenedHcm(
                 "forward_proxy",
                 [{ name: "explicit_proxy", domains: ["*"], routes: outerRoutes }],
-                [
-                  connectAuthMethodFilter,
-                  extAuthzFilter(authHttpService(authorization.origin, "/v1/envoy/capability", input), true),
-                  restoreConnectMethodFilter,
-                  routerFilter,
-                ],
+                [extAuthzFilter(true), routerFilter],
                 "proxy",
               ),
             },
@@ -471,6 +417,12 @@ export function generateEnvoyConfig(input: EnvoyCandidateConfigInput): Readonly<
       name: "cogs_authz",
       type: "STATIC",
       connect_timeout: "1s",
+      typed_extension_protocol_options: {
+        "envoy.extensions.upstreams.http.v3.HttpProtocolOptions": {
+          "@type": `${envoyType}/envoy.extensions.upstreams.http.v3.HttpProtocolOptions`,
+          explicit_http_config: { http2_protocol_options: {} },
+        },
+      },
       load_assignment: {
         cluster_name: "cogs_authz",
         endpoints: [
@@ -529,16 +481,10 @@ export function generateEnvoyConfig(input: EnvoyCandidateConfigInput): Readonly<
                   {
                     name: `mitm_${first.host}_${first.port}`,
                     domains: [first.host, `${first.host}:${first.port}`],
-                    routes: grouped.flatMap((route) => envoyRoute(route, input, authorization.origin, true)),
+                    routes: grouped.flatMap((route) => envoyRoute(route, input, true)),
                   },
                 ],
-                [
-                  extAuthzFilter(
-                    authHttpService(authorization.origin, "/v1/envoy/authorize", input, first.id, false),
-                    false,
-                  ),
-                  routerFilter,
-                ],
+                [extAuthzFilter(false), routerFilter],
                 "completion",
               ),
             },

@@ -167,7 +167,7 @@ try {
     sessionId,
     listenerAddress: "127.0.0.1",
     listenerPort: proxyPort,
-    authorizationOrigin: faultInjector.origin,
+    authorizationGrpcTarget: faultInjector.grpcTarget,
     proxyCertificatePem: proxyCertificate.certificate,
     proxyPrivateKeyPem: proxyCertificate.privateKey,
     routes: [
