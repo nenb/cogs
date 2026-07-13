@@ -262,10 +262,8 @@ try {
   });
 
   try {
-    assert.deepEqual(
-      report.tests.map((result) => result.result),
-      ["stubbed", "stubbed"],
-    );
+    assert.equal(report.tests.find((result) => result.id === "envoy.capability-wrong")?.result, "stubbed");
+    assert.equal(report.tests.find((result) => result.id === "envoy.bearer-injection")?.result, "stubbed");
     const observations = fixtures.observations().filter((item) => item.kind === "http");
     assert.equal(observations.length, 1);
     assert.equal(observations[0]?.route, "header-protected");
@@ -294,7 +292,7 @@ try {
       assert.equal(serialized.includes(value), false);
   } catch (error) {
     const result = report.tests.find((item) => item.id === "envoy.bearer-injection") ?? report.tests[0];
-    if (result !== undefined) {
+    if (result !== undefined && result.result !== "fail") {
       result.result = "fail";
       result.release_eligible = false;
       result.diagnostics_redacted =
