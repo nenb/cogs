@@ -177,6 +177,16 @@ jobs:
           ignore-unfixed: true
           severity: HIGH,CRITICAL
 
+      - name: Inventory mitmproxy candidate findings without suppression
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.MITMPROXY_IMAGE }}
+          format: json
+          output: mitmproxy-vulnerabilities.json
+          exit-code: "0"
+          ignore-unfixed: true
+          severity: HIGH,CRITICAL
+
       - name: Scan pinned mitmproxy candidate
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
@@ -226,6 +236,8 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: image-sboms-${{ github.run_id }}
-          path: "*.spdx.json"
+          path: |
+            *.spdx.json
+            mitmproxy-vulnerabilities.json
           if-no-files-found: error
           retention-days: 30

@@ -5,7 +5,7 @@
 # tracking: GitHub issue #25; this exception cannot support release or proxy-selection claims
 # rationale: upstream's latest image predates available fixes; the candidate is non-production, rootless,
 # read-only, capability-dropped, admin-disabled, functional-only test infrastructure. Findings remain
-# visible in the scan log and comparison evidence. Remove the candidate or refresh/re-review before expiry.
+# visible in the unsuppressed CI inventory artifact and comparison evidence. Remove the candidate or refresh/re-review before expiry.
 CVE-2026-4878
 CVE-2026-45447
 GHSA-537c-gmf6-5ccf

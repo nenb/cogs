@@ -141,6 +141,13 @@ export class MitmproxyConformanceAdapter implements ConformanceAdapter {
   constructor(options: MitmproxyAdapterOptions) {
     if (!Number.isInteger(options.listenerPort) || options.listenerPort < 1024 || options.listenerPort > 65535)
       throw new Error("mitmproxy listener port is invalid");
+    if (
+      options.upstreamCaCertificatePem.length === 0 ||
+      options.upstreamCaCertificatePem.length > 256 * 1024 ||
+      !options.upstreamCaCertificatePem.includes("BEGIN CERTIFICATE") ||
+      options.upstreamCaCertificatePem.includes("PRIVATE KEY")
+    )
+      throw new Error("mitmproxy upstream CA input must contain public certificates only");
     if (options.sensitiveValues?.some((value) => value.length === 0))
       throw new Error("sensitive values must not be empty");
     this.#options = options;
@@ -156,6 +163,8 @@ export class MitmproxyConformanceAdapter implements ConformanceAdapter {
     if (this.#active) throw new Error("mitmproxy adapter already has an active case");
     await mkdir(this.#stateRoot, { recursive: true, mode: 0o700 });
     const directory = await mkdtemp(join(this.#stateRoot, "cogs-mitmproxy-"));
+    const container = `cogs-mitmproxy-${this.#runId.slice(0, 12)}-${test.id.replaceAll(/[^A-Za-z0-9_.-]/g, "-")}`;
+    this.#active = { container, directory, started: false };
     const configDirectory = join(directory, "config");
     const stateDirectory = join(directory, "state");
     await Promise.all([mkdir(configDirectory, { mode: 0o700 }), mkdir(stateDirectory, { mode: 0o700 })]);
@@ -172,8 +181,6 @@ export class MitmproxyConformanceAdapter implements ConformanceAdapter {
         writeFile(join(configDirectory, "addon.py"), source, { mode: 0o400, flag: "wx" }),
       ),
     ]);
-    const container = `cogs-mitmproxy-${this.#runId.slice(0, 12)}-${test.id.replaceAll(/[^A-Za-z0-9_.-]/g, "-")}`;
-    this.#active = { container, directory, started: false };
     const user =
       typeof process.getuid === "function"
         ? `${process.getuid()}:${process.getgid?.() ?? process.getuid()}`

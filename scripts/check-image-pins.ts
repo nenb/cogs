@@ -71,6 +71,10 @@ assert.ok(
   ciWorkflow.includes("trivyignores: .trivyignore-mitmproxy"),
   "candidate vulnerability ignore must remain narrowly scoped to its scan",
 );
+assert.ok(
+  ciWorkflow.includes("mitmproxy-vulnerabilities.json"),
+  "candidate findings must remain available without suppression in the CI artifact",
+);
 
 console.log(
   `Verified external base-image digest pinning for ${dockerfiles.length} image definitions and two proxy candidates.`,
