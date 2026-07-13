@@ -47,6 +47,7 @@ for (const relativePath of dockerfiles) {
 }
 
 const ciWorkflow = readFileSync(resolve(root, ".github/workflows/ci.yml"), "utf8");
+const mitmproxyIgnore = readFileSync(resolve(root, ".trivyignore-mitmproxy"), "utf8");
 assert.match(ENVOY_IMAGE, /^envoyproxy\/envoy:v\d+\.\d+\.\d+@sha256:[a-f0-9]{64}$/);
 assert.ok(
   ciWorkflow.includes(`ENVOY_IMAGE: ${ENVOY_IMAGE}`),
@@ -56,6 +57,19 @@ assert.match(MITMPROXY_IMAGE, /^mitmproxy\/mitmproxy:\d+\.\d+\.\d+@sha256:[a-f0-
 assert.ok(
   ciWorkflow.includes(`MITMPROXY_IMAGE: ${MITMPROXY_IMAGE}`),
   "CI must scan and inventory the exact mitmproxy candidate pin",
+);
+assert.match(mitmproxyIgnore, /^# owner: @nenb$/m, "candidate vulnerability ignore must name its owner");
+assert.match(mitmproxyIgnore, /^# created: 2026-07-13$/m, "candidate vulnerability ignore must record creation");
+const expiry = mitmproxyIgnore.match(/^# expires: (\S+)$/m)?.[1];
+assert.ok(expiry, "candidate vulnerability ignore must record expiry");
+const createdAt = Date.parse("2026-07-13T00:00:00Z");
+const expiresAt = Date.parse(expiry);
+assert.ok(Number.isFinite(expiresAt), "candidate vulnerability ignore expiry must be valid UTC");
+assert.ok(expiresAt - createdAt <= 14 * 24 * 60 * 60 * 1000, "candidate vulnerability ignore exceeds 14 days");
+assert.ok(Date.now() < expiresAt, "candidate vulnerability ignore is expired");
+assert.ok(
+  ciWorkflow.includes("trivyignores: .trivyignore-mitmproxy"),
+  "candidate vulnerability ignore must remain narrowly scoped to its scan",
 );
 
 console.log(

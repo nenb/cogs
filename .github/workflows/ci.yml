@@ -185,6 +185,7 @@ jobs:
           exit-code: "1"
           ignore-unfixed: true
           severity: HIGH,CRITICAL
+          trivyignores: .trivyignore-mitmproxy
 
       - name: Generate worker SBOM
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
