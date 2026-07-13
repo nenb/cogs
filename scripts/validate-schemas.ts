@@ -110,6 +110,15 @@ const validSamples: Record<string, unknown> = {
     skills: { shared_revision: digest, user_revision: digest },
     attachments_included: false,
   },
+  "guest-probe-result-v1alpha1.json": {
+    version: "cogs.guest-probe/v1alpha1",
+    operation: "tcp",
+    outcome: "reached",
+    detail_code: "connected",
+    duration_ms: 10,
+    root: true,
+    artifact_sha256: "a".repeat(64),
+  },
   "git-mapping-v1alpha1.json": {
     version: "cogs.git-mapping/v1alpha1",
     repo: "repo-123",

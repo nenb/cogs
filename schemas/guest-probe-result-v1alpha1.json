@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.dev/schemas/guest-probe-result-v1alpha1.json",
+  "title": "Cogs guest network probe result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "operation", "outcome", "detail_code", "duration_ms", "root"],
+  "properties": {
+    "version": { "const": "cogs.guest-probe/v1alpha1" },
+    "operation": { "enum": ["invalid", "root-check", "tcp", "udp", "dns", "http", "raw-tcp", "raw-tls"] },
+    "outcome": { "enum": ["observed", "reached", "no-response", "refused", "failed"] },
+    "detail_code": {
+      "enum": [
+        "invalid-config",
+        "input-timeout",
+        "invalid-operation",
+        "guest-root",
+        "not-root",
+        "completed",
+        "timeout",
+        "connection-refused",
+        "network-error",
+        "connected",
+        "udp-response",
+        "dns-noerror",
+        "dns-formerr",
+        "dns-servfail",
+        "dns-nxdomain",
+        "dns-refused",
+        "dns-other-rcode",
+        "invalid-dns-response",
+        "invalid-url",
+        "invalid-request",
+        "invalid-ca",
+        "http-response",
+        "response-read-error",
+        "protocol-fallback",
+        "raw-response"
+      ]
+    },
+    "duration_ms": { "type": "integer", "minimum": 0, "maximum": 60000 },
+    "root": { "type": "boolean" },
+    "status_code": { "type": "integer", "minimum": 100, "maximum": 599 },
+    "protocol": { "enum": ["HTTP/1.1", "HTTP/2.0"] },
+    "response_bytes": { "type": "integer", "minimum": 0, "maximum": 1048576 },
+    "truncated": { "type": "boolean" },
+    "answer_count": { "type": "integer", "minimum": 0, "maximum": 65535 },
+    "artifact_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+  }
+}
