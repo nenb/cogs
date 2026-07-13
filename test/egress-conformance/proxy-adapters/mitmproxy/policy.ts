@@ -7,7 +7,7 @@ export interface MitmproxyRouteConfig {
   port: number;
   methods: readonly string[];
   pathPrefix: string;
-  credential: CredentialConfig;
+  credential?: CredentialConfig;
 }
 
 export interface MitmproxyPolicyInput {
@@ -86,7 +86,7 @@ export function renderMitmproxyPolicy(input: MitmproxyPolicyInput): string {
       throw new Error("route host is invalid");
     if (!Number.isInteger(route.port) || route.port < 1 || route.port > 65535) throw new Error("route port is invalid");
     validatePath(route.pathPrefix);
-    validateCredential(route.credential);
+    if (route.credential !== undefined) validateCredential(route.credential);
     if (route.methods.length === 0 || route.methods.some((method) => !methodPattern.test(method)))
       throw new Error("route methods are invalid");
     const methods = [...new Set(route.methods)].sort();

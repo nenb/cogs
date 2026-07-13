@@ -1,0 +1,287 @@
+#!/usr/bin/env python3
+"""Guest-root black-box proxy probe. Emits bounded booleans and never response content."""
+
+import json
+import os
+import socket
+import ssl
+import struct
+import subprocess
+import sys
+import tempfile
+
+
+def emit(passed, code):
+    print(json.dumps({"passed": bool(passed), "diagnosticsRedacted": code}, separators=(",", ":")))
+    raise SystemExit(0)
+
+
+def valid_inputs(values):
+    scenario, kind, proxy_host, proxy_port, target_port, capability, expected = values
+    return (
+        scenario.replace("-", "").replace(".", "").isalnum()
+        and kind in ("https", "redirect", "raw-http1", "raw-http2", "fault", "revocation", "confidentiality")
+        and proxy_host == "host.docker.internal"
+        and proxy_port.isdigit()
+        and target_port.isdigit()
+        and 1 <= int(proxy_port) <= 65535
+        and 1 <= int(target_port) <= 65535
+        and 0 <= len(capability) <= 256
+        and all(character.isalnum() or character in "._-" for character in capability)
+        and expected in ("allow", "deny", "normalize")
+    )
+
+
+def curl_probe(scenario, proxy, port, capability):
+    path = "/protected/header"
+    host = "localhost"
+    target_port = port
+    method = "GET"
+    follow = False
+    proxy_header = capability
+    extra = ["--header", "Authorization: Bearer cogs-non-secret-placeholder"]
+    if scenario == "capability-missing":
+        proxy_header = ""
+    elif scenario in ("capability-malformed", "capability-expired", "capability-other-session"):
+        proxy_header = capability
+    elif scenario == "undeclared-host":
+        host, target_port = "undeclared.invalid", 443
+    elif scenario == "direct-destination-ip":
+        host = "127.0.0.1"
+    elif scenario == "alternate-port":
+        target_port = port + 1 if port < 65535 else port - 1
+    elif scenario == "wrong-method":
+        method = "POST"
+    elif scenario == "wrong-path":
+        path = "/not-declared"
+    elif scenario == "encoded-slash-dot":
+        path = "/protected%2f..%2fheader"
+    elif scenario == "traversal":
+        path = "/protected/../header"
+    elif scenario == "redirect-undeclared":
+        path, follow = "/redirect", True
+    elif scenario == "api-key":
+        path = "/protected/api-key"
+    elif scenario == "basic":
+        path = "/protected/basic"
+    elif scenario == "authorization-stripped":
+        extra = [
+            "--header",
+            "Authorization: Bearer guest-one",
+            "--header",
+            "Authorization: Bearer guest-two",
+        ]
+    output = tempfile.NamedTemporaryFile(delete=False)
+    output.close()
+    command = [
+        "curl", "--silent", "--show-error", "--output", output.name, "--write-out", "%{http_code}",
+        "--max-time", "12", "--connect-timeout", "4", "--noproxy", "", "--proxy", proxy,
+        "--cacert", os.environ["SSL_CERT_FILE"], "--request", method, "--path-as-is", *extra,
+    ]
+    if proxy_header:
+        command += ["--proxy-header", "Proxy-Authorization: " + proxy_header]
+    if follow:
+        command += ["--location", "--max-redirs", "2"]
+    command += [f"https://{host}:{target_port}{path}"]
+    try:
+        completed = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=15, check=False)
+        status = completed.stdout.decode("ascii", "ignore")[-3:]
+        size = os.path.getsize(output.name)
+        return completed.returncode == 0 and status == "200" and size == 2
+    finally:
+        os.unlink(output.name)
+
+
+def receive_headers(sock):
+    data = b""
+    while b"\r\n\r\n" not in data and len(data) <= 65536:
+        chunk = sock.recv(4096)
+        if not chunk:
+            break
+        data += chunk
+    return data
+
+
+def connect_tls(proxy_host, proxy_port, target_port, capability, connect_host="localhost", sni="localhost", alpn="http/1.1"):
+    raw = socket.create_connection((proxy_host, proxy_port), timeout=5)
+    authority = f"{connect_host}:{target_port}"
+    request = (
+        f"CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\n"
+        f"Proxy-Authorization: {capability}\r\nConnection: keep-alive\r\n\r\n"
+    ).encode()
+    raw.sendall(request)
+    response = receive_headers(raw)
+    if not response.startswith(b"HTTP/1.1 200"):
+        raw.close()
+        return None
+    context = ssl.create_default_context(cafile=os.environ["SSL_CERT_FILE"])
+    context.set_alpn_protocols([alpn])
+    return context.wrap_socket(raw, server_hostname=sni)
+
+
+def raw_http1(scenario, proxy_host, proxy_port, target_port, capability):
+    if scenario == "duplicate-proxy-authorization":
+        raw = socket.create_connection((proxy_host, proxy_port), timeout=5)
+        authority = f"localhost:{target_port}"
+        raw.sendall((
+            f"CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\n"
+            f"Proxy-Authorization: {capability}\r\nProxy-Authorization: wrong-capability-value\r\n\r\n"
+        ).encode())
+        response = receive_headers(raw)
+        raw.close()
+        return response.startswith(b"HTTP/1.1 200")
+    connect_host = "localhost"
+    sni = "localhost"
+    if scenario == "connect-host-mismatch":
+        connect_host = "127.0.0.1"
+    if scenario == "sni-host-mismatch":
+        sni = "undeclared.invalid"
+    try:
+        tls = connect_tls(proxy_host, proxy_port, target_port, capability, connect_host, sni)
+    except (OSError, ssl.SSLError):
+        return False
+    if tls is None:
+        return False
+    host = f"localhost:{target_port}"
+    path = "/protected/header"
+    request = f"GET {path} HTTP/1.1\r\nHost: {host}\r\nAuthorization: Bearer placeholder\r\nConnection: close\r\n\r\n"
+    if scenario == "connect-host-mismatch":
+        request = request
+    elif scenario == "valid":
+        pass
+    elif scenario == "cl-te-conflict":
+        request = f"POST {path} HTTP/1.1\r\nHost: {host}\r\nContent-Length: 4\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n"
+    elif scenario == "duplicate-host":
+        request = f"GET {path} HTTP/1.1\r\nHost: {host}\r\nHost: undeclared.invalid\r\n\r\n"
+    elif scenario == "duplicate-authorization":
+        request = f"GET {path} HTTP/1.1\r\nHost: {host}\r\nAuthorization: one\r\nAuthorization: two\r\n\r\n"
+    elif scenario == "ambiguous-whitespace":
+        request = f"GET  {path} HTTP/1.1\r\nHost: {host}\r\n\r\n"
+    elif scenario == "obs-fold":
+        request = f"GET {path} HTTP/1.1\r\nHost: {host}\r\nX-Fold: one\r\n two\r\n\r\n"
+    elif scenario == "oversized-header":
+        request = f"GET {path} HTTP/1.1\r\nHost: {host}\r\nX-Large: " + ("a" * 70000) + "\r\n\r\n"
+    elif scenario == "oversized-request-line":
+        request = "GET /" + ("a" * 70000) + f" HTTP/1.1\r\nHost: {host}\r\n\r\n"
+    elif scenario == "invalid-chunk-size":
+        request = f"POST {path} HTTP/1.1\r\nHost: {host}\r\nTransfer-Encoding: chunked\r\n\r\nzz\r\nx\r\n0\r\n\r\n"
+    elif scenario == "invalid-chunk-extension":
+        request = f"POST {path} HTTP/1.1\r\nHost: {host}\r\nTransfer-Encoding: chunked\r\n\r\n1;bad=\"unterminated\r\nx\r\n0\r\n\r\n"
+    elif scenario == "path-normalization":
+        request = f"GET /protected/%2e%2e/header HTTP/1.1\r\nHost: {host}\r\n\r\n"
+    tls.sendall(request.encode())
+    try:
+        response = receive_headers(tls)
+    except OSError:
+        response = b""
+    tls.close()
+    return b" 200 " in response.split(b"\r\n", 1)[0]
+
+
+def hpack_integer(value, prefix, first):
+    maximum = (1 << prefix) - 1
+    if value < maximum:
+        return bytes([first | value])
+    output = bytearray([first | maximum])
+    value -= maximum
+    while value >= 128:
+        output.append((value & 127) | 128)
+        value >>= 7
+    output.append(value)
+    return bytes(output)
+
+
+def hpack_string(value):
+    encoded = value.encode()
+    return hpack_integer(len(encoded), 7, 0) + encoded
+
+
+def hpack_literal_indexed_name(index, value):
+    return hpack_integer(index, 4, 0) + hpack_string(value)
+
+
+def hpack_literal_name(name, value):
+    return b"\x00" + hpack_string(name) + hpack_string(value)
+
+
+def h2_frame(frame_type, flags, stream, payload=b""):
+    return len(payload).to_bytes(3, "big") + bytes([frame_type, flags]) + struct.pack(">I", stream & 0x7fffffff) + payload
+
+
+def raw_http2(scenario, proxy_host, proxy_port, target_port, capability):
+    try:
+        tls = connect_tls(proxy_host, proxy_port, target_port, capability, alpn="h2")
+    except (OSError, ssl.SSLError):
+        return False
+    if tls is None or tls.selected_alpn_protocol() != "h2":
+        if tls:
+            tls.close()
+        return False
+    authority = f"localhost:{target_port}"
+    headers = [b"\x82", b"\x87", hpack_literal_indexed_name(1, authority), hpack_literal_indexed_name(4, "/protected/header")]
+    if scenario == "authority-mismatch":
+        headers[2] = hpack_literal_indexed_name(1, f"127.0.0.1:{target_port}")
+    elif scenario == "duplicate-pseudo":
+        headers.insert(1, b"\x82")
+    elif scenario == "reordered-pseudo":
+        headers.insert(2, hpack_literal_name("x-before-pseudo", "one"))
+    elif scenario == "invalid-pseudo":
+        headers.insert(1, b"\x88")
+    elif scenario == "downgrade-ambiguity":
+        headers += [hpack_literal_name("content-length", "4"), hpack_literal_name("transfer-encoding", "chunked")]
+    block = b"".join(headers)
+    tls.settimeout(5)
+    try:
+        tls.sendall(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n" + h2_frame(4, 0, 0) + h2_frame(1, 5, 1, block))
+        allowed = False
+        for _ in range(12):
+            header = tls.recv(9)
+            if len(header) < 9:
+                break
+            length = int.from_bytes(header[:3], "big")
+            frame_type, stream = header[3], int.from_bytes(header[5:], "big") & 0x7fffffff
+            payload = b""
+            while len(payload) < length:
+                chunk = tls.recv(length - len(payload))
+                if not chunk:
+                    break
+                payload += chunk
+            if frame_type == 1 and stream == 1 and b"\x88" in payload:
+                allowed = True
+                break
+            if frame_type in (3, 7):
+                break
+        return allowed
+    except OSError:
+        return False
+    finally:
+        tls.close()
+
+
+def main():
+    if len(sys.argv) != 8 or not valid_inputs(sys.argv[1:]):
+        emit(False, "invalid probe input")
+    scenario, kind, proxy_host, proxy_port_text, target_port_text, capability, expected = sys.argv[1:]
+    proxy_port, target_port = int(proxy_port_text), int(target_port_text)
+    proxy = f"http://{proxy_host}:{proxy_port}"
+    try:
+        if scenario in {
+            "capability-valid", "capability-missing", "capability-malformed", "capability-expired",
+            "capability-other-session", "allowed-host-port", "undeclared-host", "direct-destination-ip",
+            "alternate-port", "wrong-method", "wrong-path", "encoded-slash-dot", "traversal",
+            "redirect-undeclared", "placeholder-preflight", "authorization-stripped", "bearer", "api-key",
+            "basic", "intent-before-use", "completion-correlated", "telemetry-outage",
+        }:
+            allowed = curl_probe(scenario, proxy, target_port, capability)
+        elif kind == "raw-http2":
+            allowed = raw_http2(scenario, proxy_host, proxy_port, target_port, capability)
+        else:
+            allowed = raw_http1(scenario, proxy_host, proxy_port, target_port, capability)
+    except Exception:
+        allowed = False
+    passed = allowed if expected in ("allow", "normalize") else not allowed
+    emit(passed, f"scenario {scenario} produced the required bounded {expected} observation")
+
+
+if __name__ == "__main__":
+    main()
