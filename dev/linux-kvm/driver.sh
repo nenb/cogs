@@ -11,7 +11,10 @@ image_url="https://cloud.debian.org/images/cloud/trixie/20260712-2537/$image_nam
 image_sha512=78f658893d7aecb56288b86afebb72dcdb1a636e8e9db8bda64851a308697794678ceb5cd3b7c86afd5fb892afbc6baf9d2dbaceb7855347fde8660e8d68e667
 host_ip=192.0.2.1
 guest_ip=192.0.2.2
-tap=cogsktap0
+network_suffix=$(printf '%s:%s' "$state" "$(id -u)" | sha256sum | cut -c1-8)
+tap="cgk${network_suffix}"
+input_chain="CGKI${network_suffix}"
+drop_chain="CGKD${network_suffix}"
 proxy_port=${COGS_KVM_PROXY_PORT:-18080}
 sentinel="$state/.cogs-linux-kvm-v1"
 lock="$repo/.cogs-dev/linux-kvm.lock"
@@ -23,9 +26,10 @@ validate_paths() {
   python3 - "$repo/.cogs-dev" "$state" "$cache" <<'PY'
 import os,sys
 root,state,cache=map(os.path.abspath,sys.argv[1:])
+root_real=os.path.realpath(root)
 for value in (state,cache):
-    if os.path.commonpath([root,value]) != root or value == root:
-        raise SystemExit("state/cache must be a child of .cogs-dev")
+    if os.path.dirname(value) != root or os.path.realpath(os.path.dirname(value)) != root_real:
+        raise SystemExit("state/cache must be one direct child of .cogs-dev")
     if os.path.lexists(value) and os.path.islink(value):
         raise SystemExit("state/cache must not be symlinks")
 PY
@@ -45,12 +49,12 @@ run_ssh() {
 }
 
 remove_firewall() {
-  sudo iptables -D INPUT -i "$tap" -j COGS_KVM_INPUT 2>/dev/null || true
-  sudo iptables -D FORWARD -i "$tap" -j COGS_KVM_DROP 2>/dev/null || true
-  sudo iptables -F COGS_KVM_INPUT 2>/dev/null || true
-  sudo iptables -X COGS_KVM_INPUT 2>/dev/null || true
-  sudo iptables -F COGS_KVM_DROP 2>/dev/null || true
-  sudo iptables -X COGS_KVM_DROP 2>/dev/null || true
+  sudo iptables -D INPUT -i "$tap" -j "$input_chain" 2>/dev/null || true
+  sudo iptables -D FORWARD -i "$tap" -j "$drop_chain" 2>/dev/null || true
+  sudo iptables -F "$input_chain" 2>/dev/null || true
+  sudo iptables -X "$input_chain" 2>/dev/null || true
+  sudo iptables -F "$drop_chain" 2>/dev/null || true
+  sudo iptables -X "$drop_chain" 2>/dev/null || true
   sudo ip6tables -D INPUT -i "$tap" -j DROP 2>/dev/null || true
   sudo ip6tables -D FORWARD -i "$tap" -j DROP 2>/dev/null || true
 }
@@ -174,14 +178,14 @@ prepare_network() {
   sudo ip tuntap add dev "$tap" mode tap user "$(id -u)"
   sudo ip addr add "$host_ip/30" dev "$tap"
   sudo ip link set "$tap" up
-  sudo iptables -N COGS_KVM_INPUT
-  sudo iptables -A COGS_KVM_INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-  sudo iptables -A COGS_KVM_INPUT -d "$host_ip" -p tcp --dport "$proxy_port" -j ACCEPT
-  sudo iptables -A COGS_KVM_INPUT -j DROP
-  sudo iptables -I INPUT 1 -i "$tap" -j COGS_KVM_INPUT
-  sudo iptables -N COGS_KVM_DROP
-  sudo iptables -A COGS_KVM_DROP -j DROP
-  sudo iptables -I FORWARD 1 -i "$tap" -j COGS_KVM_DROP
+  sudo iptables -N "$input_chain"
+  sudo iptables -A "$input_chain" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+  sudo iptables -A "$input_chain" -d "$host_ip" -p tcp --dport "$proxy_port" -j ACCEPT
+  sudo iptables -A "$input_chain" -j DROP
+  sudo iptables -I INPUT 1 -i "$tap" -j "$input_chain"
+  sudo iptables -N "$drop_chain"
+  sudo iptables -A "$drop_chain" -j DROP
+  sudo iptables -I FORWARD 1 -i "$tap" -j "$drop_chain"
   sudo ip6tables -I INPUT 1 -i "$tap" -j DROP
   sudo ip6tables -I FORWARD 1 -i "$tap" -j DROP
 }
