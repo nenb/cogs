@@ -228,7 +228,8 @@ export async function startFaultInjector(options: StartOptions): Promise<FaultIn
   };
 
   const grpc = await startEnvoyAuthorizationGrpc({
-    decide(request) {
+    async decide(request) {
+      if (faults.delayMs > 0) await delay(faults.delayMs, undefined, { signal: lifecycle.signal });
       const mode = request.context["cogs.mode"];
       if (mode === "capability") {
         return { outcome: capabilityValueAllowed(request.headers["proxy-authorization"]) ? "allow" : "deny" };

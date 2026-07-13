@@ -23,7 +23,7 @@ export interface EnvoyAuthorizationGrpc {
 }
 
 interface StartOptions {
-  decide(request: DecodedCheckRequest): EnvoyAuthorizationDecision;
+  decide(request: DecodedCheckRequest): EnvoyAuthorizationDecision | Promise<EnvoyAuthorizationDecision>;
 }
 
 interface WireField {
@@ -205,21 +205,19 @@ export async function startEnvoyAuthorizationGrpc(options: StartOptions): Promis
   });
   const service: ServiceDefinition = { Check: checkMethod };
   const check: handleUnaryCall<DecodedCheckRequest, EncodedDecision> = (call, callback) => {
-    let decision: EnvoyAuthorizationDecision;
-    try {
-      decision = options.decide(call.request);
-    } catch {
-      callback({ code: status.INTERNAL, message: "authorization decision failed" });
-      return;
-    }
-    if (decision.outcome === "error") {
-      callback({ code: status.UNAVAILABLE, message: "authorization dependency unavailable" });
-      return;
-    }
-    callback(null, {
-      outcome: decision.outcome,
-      ...(decision.intentId === undefined ? {} : { intentId: decision.intentId }),
-    });
+    void Promise.resolve()
+      .then(() => options.decide(call.request))
+      .then((decision) => {
+        if (decision.outcome === "error") {
+          callback({ code: status.UNAVAILABLE, message: "authorization dependency unavailable" });
+          return;
+        }
+        callback(null, {
+          outcome: decision.outcome,
+          ...(decision.intentId === undefined ? {} : { intentId: decision.intentId }),
+        });
+      })
+      .catch(() => callback({ code: status.INTERNAL, message: "authorization decision failed" }));
   };
   server.addService(service, { Check: check });
   const port = await new Promise<number>((resolve, reject) => {
