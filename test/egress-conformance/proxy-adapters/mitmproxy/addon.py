@@ -56,7 +56,10 @@ class CogsPolicy:
         return await asyncio.to_thread(call)
 
     def _deny(self, flow, status=403):
-        flow.response = http.Response.make(status, b"", {"cache-control": "no-store", "content-length": "0"})
+        headers = {"cache-control": "no-store", "content-length": "0"}
+        if status == 407:
+            headers["proxy-authenticate"] = 'Basic realm="cogs-session"'
+        flow.response = http.Response.make(status, b"", headers)
 
     async def http_connect(self, flow: http.HTTPFlow):
         if len(flow.request.headers.get_all("proxy-authorization")) != 1:

@@ -4,7 +4,7 @@ This time-boxed Stage 1 alternate uses `mitmproxy/mitmproxy:12.2.3` at OCI index
 
 The adapter writes a validated, immutable policy and mounts it read-only. `mitmdump` has one explicit proxy listener and no web/admin UI. Its generated CA private key remains in a trusted per-case state mount, while only `mitmproxy-ca-cert.pem` enters the insecure guest. Cleanup positively removes the container and all CA/configuration state.
 
-Unlike Envoy, the candidate needs the measured 182-line `addon.py` integration to:
+Unlike Envoy, the candidate needs the measured 185-line `addon.py` integration to:
 
 - validate a keyed session capability before CONNECT;
 - enforce exact host, port, method, and canonical path-prefix policy;
