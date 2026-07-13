@@ -120,6 +120,7 @@ jobs:
     timeout-minutes: 35
     env:
       ENVOY_IMAGE: envoyproxy/envoy:v1.38.3@sha256:5f7c43e1147412fdb3af578c651c67478a3df818eae89d2261e707e06c209cdb
+      MITMPROXY_IMAGE: mitmproxy/mitmproxy:12.2.3@sha256:00b77b5d8804c8ad18cb6caefbf9d5849e895e8986c5ce011f4ae30f4385962f
     steps:
       - name: Check out source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -135,8 +136,10 @@ jobs:
       - name: Build insecure-container test driver
         run: docker build --pull=false --tag cogs-insecure-sandbox:ci --file dev/insecure-sandbox/Dockerfile .
 
-      - name: Pull pinned Envoy candidate
-        run: docker pull "$ENVOY_IMAGE"
+      - name: Pull pinned proxy candidates
+        run: |
+          docker pull "$ENVOY_IMAGE"
+          docker pull "$MITMPROXY_IMAGE"
 
       - name: Scan worker image
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
@@ -174,6 +177,15 @@ jobs:
           ignore-unfixed: true
           severity: HIGH,CRITICAL
 
+      - name: Scan pinned mitmproxy candidate
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.MITMPROXY_IMAGE }}
+          format: table
+          exit-code: "1"
+          ignore-unfixed: true
+          severity: HIGH,CRITICAL
+
       - name: Generate worker SBOM
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
         with:
@@ -201,6 +213,13 @@ jobs:
           image: ${{ env.ENVOY_IMAGE }}
           format: spdx-json
           output-file: envoy-candidate.spdx.json
+
+      - name: Generate mitmproxy candidate SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          image: ${{ env.MITMPROXY_IMAGE }}
+          format: spdx-json
+          output-file: mitmproxy-candidate.spdx.json
 
       - name: Upload SBOMs
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

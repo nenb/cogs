@@ -1,0 +1,3 @@
+export const MITMPROXY_VERSION = "12.2.3";
+export const MITMPROXY_IMAGE_DIGEST = "sha256:00b77b5d8804c8ad18cb6caefbf9d5849e895e8986c5ce011f4ae30f4385962f";
+export const MITMPROXY_IMAGE = `mitmproxy/mitmproxy:${MITMPROXY_VERSION}@${MITMPROXY_IMAGE_DIGEST}`;

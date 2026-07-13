@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { ENVOY_IMAGE } from "../test/egress-conformance/proxy-adapters/envoy/image.ts";
+import { MITMPROXY_IMAGE } from "../test/egress-conformance/proxy-adapters/mitmproxy/image.ts";
 
 const root = resolve(import.meta.dirname, "..");
 const dockerfiles = ["images/worker/Dockerfile", "images/sandbox/Dockerfile", "dev/insecure-sandbox/Dockerfile"];
@@ -51,7 +52,12 @@ assert.ok(
   ciWorkflow.includes(`ENVOY_IMAGE: ${ENVOY_IMAGE}`),
   "CI must scan and inventory the exact Envoy candidate pin",
 );
+assert.match(MITMPROXY_IMAGE, /^mitmproxy\/mitmproxy:\d+\.\d+\.\d+@sha256:[a-f0-9]{64}$/);
+assert.ok(
+  ciWorkflow.includes(`MITMPROXY_IMAGE: ${MITMPROXY_IMAGE}`),
+  "CI must scan and inventory the exact mitmproxy candidate pin",
+);
 
 console.log(
-  `Verified external base-image digest pinning for ${dockerfiles.length} image definitions and Envoy candidate.`,
+  `Verified external base-image digest pinning for ${dockerfiles.length} image definitions and two proxy candidates.`,
 );
