@@ -31,11 +31,11 @@ const stateRoot = process.platform === "linux" ? "/dev/shm" : tmpdir();
 const realCredential = `Bearer cogs-fixture-${randomBytes(24).toString("hex")}`;
 const apiCredential = `cogs-api-${randomBytes(24).toString("hex")}`;
 const basicCredential = `Basic ${Buffer.from(`fixture:${randomBytes(24).toString("hex")}`).toString("base64")}`;
-const capability = `cogs-capability-${randomBytes(24).toString("hex")}`;
-const wrongCapability = `cogs-wrong-${randomBytes(24).toString("hex")}`;
+const capability = `Basic ${Buffer.from(`cogs:${randomBytes(24).toString("hex")}`).toString("base64")}`;
+const wrongCapability = `Basic ${Buffer.from(`wrong:${randomBytes(24).toString("hex")}`).toString("base64")}`;
 const placeholder = "Bearer cogs-non-secret-placeholder";
 const sessionId = "session-mitmproxy-suite";
-const replacementCapability = `cogs-replacement-${randomBytes(24).toString("hex")}`;
+const replacementCapability = `Basic ${Buffer.from(`replacement:${randomBytes(24).toString("hex")}`).toString("base64")}`;
 const sensitiveValues = [
   realCredential,
   apiCredential,
@@ -149,7 +149,15 @@ try {
                       ? "/large"
                       : scenario === "long-lived-drain"
                         ? "/delayed"
-                        : "/protected/header",
+                        : scenario === "git-smart-http"
+                          ? "/clients/repo.git"
+                          : scenario === "pip-wheel"
+                            ? "/clients/cogs_fixture-1.0.0-py3-none-any.whl"
+                            : scenario === "npm-tarball"
+                              ? "/clients/cogs-fixture-1.0.0.tgz"
+                              : definition.probe.kind === "client"
+                                ? "/clients/ok"
+                                : "/protected/header",
             ...(credential === undefined ? {} : { credential }),
           },
         ],
@@ -237,6 +245,8 @@ try {
         ? "This is authoritative local KVM evidence; authorization, audit, identity, and revocation dependencies remain Stage 1 stubs."
         : "This is functional-only insecure-container evidence and cannot support a guest-root isolation claim.",
       "Candidate evaluation disables release eligibility until proxy selection and production integration.",
+      "Node 22 native https/fetch ignore standard proxy variables without an explicit proxy agent and are measured as unsupported; other required clients use explicit proxy support.",
+      "Client compatibility cases are functional insecure-container measurements; Linux/KVM reports them as profile-mismatched while retaining authoritative protocol and bypass evidence.",
       "Direct OpenBao polling and production WAL persistence remain mandatory Stage 3 reruns.",
       "The candidate requires a custom 182-line Python addon for policy, capability, injection, and audit hooks.",
       "The latest upstream image has six fixed HIGH findings under a narrow owner-and-expiry ignore through 2026-07-27; this evidence cannot support selection or release.",

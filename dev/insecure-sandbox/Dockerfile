@@ -28,7 +28,9 @@ RUN printf '%s\n' \
       openssh-client \
       openssh-server \
       python3 \
+      python3-httpx \
       python3-pip \
+      python3-requests \
       socat \
     && rm -rf /var/lib/apt/lists/* \
     && rm -f /etc/ssh/ssh_host_*_key /etc/ssh/ssh_host_*_key.pub \

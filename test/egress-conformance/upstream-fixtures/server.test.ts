@@ -231,3 +231,26 @@ test("observation capacity fails closed without recording excess request data", 
     await fixtures.stop();
   }
 });
+
+test("deterministic client artifacts require the bearer credential and never reflect it", async () => {
+  await withFixtures(async (fixtures) => {
+    const headers = { authorization: credentials.bearer };
+    const [wheel, npm, git] = await Promise.all([
+      requestHttp1(fixtures, "/clients/cogs_fixture-1.0.0-py3-none-any.whl", headers),
+      requestHttp1(fixtures, "/clients/cogs-fixture-1.0.0.tgz", headers),
+      requestHttp1(fixtures, "/clients/repo.git/info/refs?service=git-upload-pack", headers),
+    ]);
+    assert.equal(wheel.status, 200);
+    assert.equal(npm.status, 200);
+    assert.equal(git.status, 200);
+    assert.equal(wheel.body.subarray(0, 2).toString("ascii"), "PK");
+    assert.equal(npm.body.subarray(0, 2).toString("hex"), "1f8b");
+    assert.match(git.body.toString("ascii"), /service=git-upload-pack/);
+    assert.equal(Buffer.concat([wheel.body, npm.body, git.body]).includes(Buffer.from(credentials.bearer)), false);
+    const observations = fixtures.observations().filter((item) => item.kind === "http");
+    assert.equal(
+      observations.slice(-3).every((item) => item.credential_matches === true),
+      true,
+    );
+  });
+});

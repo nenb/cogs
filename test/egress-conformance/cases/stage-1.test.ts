@@ -15,6 +15,7 @@ test("Stage 1 manifest is immutable, schema-valid, complete by required group, a
       "http-parsing",
       "credential-handling",
       "bypass-resistance",
+      "client-compatibility",
       "audit-failure",
       "revocation",
     ]),
@@ -64,6 +65,14 @@ test("Stage 1 case metadata covers every mandatory parser and credential behavio
     "websocket",
     "proxy-admin",
     "cloud-metadata",
+    "git-smart-http",
+    "pip-wheel",
+    "npm-tarball",
+    "python-requests",
+    "python-httpx",
+    "java-http",
+    "http2",
+    "node-fetch-native",
   ])
     assert.ok(scenarios.has(required), `missing mandatory scenario ${required}`);
 });

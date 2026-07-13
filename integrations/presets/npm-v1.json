@@ -1,0 +1,52 @@
+{
+  "version": "cogs.integration/v1alpha1",
+  "id": "npm",
+  "preset_revision": "sha256:ffb2cb7f8ef2793a78260a0f98c2e351c679cc1884eb82351eabe4eed8c7df50",
+  "dns": {
+    "mode": "proxy-connect-authority",
+    "guest_resolution": false
+  },
+  "rules": [
+    {
+      "name": "npm-registry-metadata",
+      "host": "registry.npmjs.org",
+      "port": 443,
+      "methods": ["GET", "PUT", "DELETE"],
+      "path_patterns": ["/*", "/@*/*"],
+      "path_policy": {
+        "strategy": "segment-glob",
+        "normalization": "reject-ambiguous"
+      },
+      "redirects": {
+        "mode": "allow-declared",
+        "max_hops": 1,
+        "allowed_hosts": ["registry.npmjs.org"]
+      },
+      "inject_auth": true
+    },
+    {
+      "name": "npm-package-tarballs",
+      "host": "registry.npmjs.org",
+      "port": 443,
+      "methods": ["GET"],
+      "path_patterns": ["/*/-/*.tgz", "/@*/*/-/*.tgz"],
+      "path_policy": {
+        "strategy": "segment-glob",
+        "normalization": "reject-ambiguous"
+      },
+      "redirects": {
+        "mode": "deny",
+        "max_hops": 0,
+        "allowed_hosts": []
+      },
+      "inject_auth": true
+    }
+  ],
+  "auth": {
+    "type": "bearer_header",
+    "header": "Authorization",
+    "prefix": "Bearer ",
+    "placeholder": "COGS_PLACEHOLDER_NPM_TOKEN",
+    "secret_handle": "integration/npm/token"
+  }
+}

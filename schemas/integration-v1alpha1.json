@@ -4,11 +4,20 @@
   "title": "Cogs integration rule group",
   "type": "object",
   "additionalProperties": false,
-  "required": ["version", "id", "preset_revision", "rules", "auth"],
+  "required": ["version", "id", "preset_revision", "dns", "rules", "auth"],
   "properties": {
     "version": { "const": "cogs.integration/v1alpha1" },
     "id": { "$ref": "#/$defs/opaqueId" },
     "preset_revision": { "$ref": "#/$defs/digest" },
+    "dns": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "guest_resolution"],
+      "properties": {
+        "mode": { "const": "proxy-connect-authority" },
+        "guest_resolution": { "const": false }
+      }
+    },
     "rules": {
       "type": "array",
       "minItems": 1,
@@ -37,7 +46,7 @@
     "rule": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "host", "port", "methods", "path_patterns", "inject_auth"],
+      "required": ["name", "host", "port", "methods", "path_patterns", "path_policy", "redirects", "inject_auth"],
       "properties": {
         "name": { "$ref": "#/$defs/opaqueId" },
         "host": { "$ref": "#/$defs/host" },
@@ -59,6 +68,30 @@
             "minLength": 1,
             "maxLength": 2048,
             "pattern": "^/(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*[?#\\\\\\u0000-\\u001F\\u007F]).*$"
+          }
+        },
+        "path_policy": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["strategy", "normalization"],
+          "properties": {
+            "strategy": { "enum": ["exact", "prefix", "segment-glob"] },
+            "normalization": { "const": "reject-ambiguous" }
+          }
+        },
+        "redirects": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["mode", "max_hops", "allowed_hosts"],
+          "properties": {
+            "mode": { "enum": ["deny", "allow-declared"] },
+            "max_hops": { "type": "integer", "minimum": 0, "maximum": 5 },
+            "allowed_hosts": {
+              "type": "array",
+              "maxItems": 16,
+              "uniqueItems": true,
+              "items": { "$ref": "#/$defs/host" }
+            }
           }
         },
         "inject_auth": { "type": "boolean", "default": true }

@@ -8,7 +8,8 @@ export type ProbeKind =
   | "fault"
   | "revocation"
   | "confidentiality"
-  | "bypass";
+  | "bypass"
+  | "client";
 
 export interface Stage1CaseDefinition extends ConformanceCase {
   probe: Readonly<{
@@ -31,12 +32,13 @@ const define = (
   requiredDependencies: readonly DependencyName[],
   positiveControl?: string,
   timeout = 45_000,
+  profiles: readonly ConformanceCase["profiles"][number][] = candidateProfiles,
 ): Stage1CaseDefinition =>
   Object.freeze({
     id,
     group,
     timeout_ms: timeout,
-    profiles: [...candidateProfiles],
+    profiles: [...profiles],
     dependencies: [...requiredDependencies],
     probe: Object.freeze({ kind, scenario, expected, ...(positiveControl ? { positiveControl } : {}) }),
   });
@@ -346,6 +348,85 @@ export const STAGE_1_CASES: readonly Stage1CaseDefinition[] = Object.freeze([
     "credential.bearer-injected",
   ),
   define("credential.no-leak", "credential-handling", "confidentiality", "all-sinks", "redacted", authorized),
+
+  define("client.curl", "client-compatibility", "client", "curl", "allow", authorized, undefined, 45_000, [
+    "insecure-container",
+  ]),
+  define(
+    "client.git-smart-http",
+    "client-compatibility",
+    "client",
+    "git-smart-http",
+    "allow",
+    authorized,
+    undefined,
+    45_000,
+    ["insecure-container"],
+  ),
+  define("client.pip-wheel", "client-compatibility", "client", "pip-wheel", "allow", authorized, undefined, 45_000, [
+    "insecure-container",
+  ]),
+  define(
+    "client.npm-tarball",
+    "client-compatibility",
+    "client",
+    "npm-tarball",
+    "allow",
+    authorized,
+    undefined,
+    45_000,
+    ["insecure-container"],
+  ),
+  define(
+    "client.python-requests",
+    "client-compatibility",
+    "client",
+    "python-requests",
+    "allow",
+    authorized,
+    undefined,
+    45_000,
+    ["insecure-container"],
+  ),
+  define(
+    "client.python-httpx",
+    "client-compatibility",
+    "client",
+    "python-httpx",
+    "allow",
+    authorized,
+    undefined,
+    45_000,
+    ["insecure-container"],
+  ),
+  define("client.java-http", "client-compatibility", "client", "java-http", "allow", authorized, undefined, 45_000, [
+    "insecure-container",
+  ]),
+  define("client.http2", "client-compatibility", "client", "http2", "allow", authorized, undefined, 45_000, [
+    "insecure-container",
+  ]),
+  define(
+    "client.node-https-native",
+    "client-compatibility",
+    "client",
+    "node-https-native",
+    "deny",
+    authorized,
+    "client.curl",
+    45_000,
+    ["insecure-container"],
+  ),
+  define(
+    "client.node-fetch-native",
+    "client-compatibility",
+    "client",
+    "node-fetch-native",
+    "deny",
+    authorized,
+    "client.curl",
+    45_000,
+    ["insecure-container"],
+  ),
 
   define(
     "bypass.unset-proxy",
