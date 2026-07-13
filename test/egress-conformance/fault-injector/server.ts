@@ -326,7 +326,10 @@ export async function startFaultInjector(options: StartOptions): Promise<FaultIn
   server.on("connect", (request, socket) => {
     void (async () => {
       if (faults.delayMs > 0) await delay(faults.delayMs, undefined, { signal: lifecycle.signal });
-      const allowed = request.url === "/v1/envoy/capability" && capabilityAllowed(request);
+      // Node exposes CONNECT authority-form targets through the dedicated event even when
+      // Envoy's ext_authz path override is configured. This loopback-only hook never opens
+      // a tunnel; every CONNECT is treated solely as a capability check.
+      const allowed = capabilityAllowed(request);
       const body = `${JSON.stringify({ allowed, epoch, action })}\n`;
       socket.end(
         `HTTP/1.1 ${allowed ? "200 OK" : "403 Forbidden"}\r\ncontent-type: application/json\r\ncontent-length: ${Buffer.byteLength(body)}\r\ncache-control: no-store\r\nconnection: close\r\n\r\n${body}`,
