@@ -535,8 +535,6 @@ export function generateEnvoyConfig(input: EnvoyCandidateConfigInput): Readonly<
   }
 
   return deepFreeze({
-    drain_time: "2s",
-    parent_shutdown_time: "3s",
     bootstrap_extensions: [
       {
         name: "envoy.bootstrap.internal_listener",

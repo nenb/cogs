@@ -48,6 +48,7 @@ interface ActiveCase {
   container: string;
   directory: string;
   listenerPort: number;
+  started: boolean;
 }
 
 function runFile(
@@ -192,7 +193,7 @@ export class EnvoyConformanceAdapter implements ConformanceAdapter {
     const configPath = join(directory, "envoy.json");
     await writeFile(configPath, renderEnvoyConfig(configuration), { mode: 0o400, flag: "wx" });
     const container = `cogs-envoy-${this.#runId.slice(0, 12)}-${test.id.replaceAll(/[^A-Za-z0-9_.-]/g, "-")}`;
-    this.#active = { container, directory, listenerPort: configuration.listenerPort };
+    this.#active = { container, directory, listenerPort: configuration.listenerPort, started: false };
 
     const user =
       typeof process.getuid === "function"
@@ -235,9 +236,14 @@ export class EnvoyConformanceAdapter implements ConformanceAdapter {
         "--disable-hot-restart",
         "--log-level",
         "warning",
+        "--drain-time-s",
+        "2",
+        "--parent-shutdown-time-s",
+        "3",
       ],
       { timeoutMs: 30_000, signal },
     );
+    if (this.#active !== undefined) this.#active.started = true;
     await waitForListener(configuration.listenerPort, signal);
 
     const runtime = Object.freeze({
@@ -286,7 +292,7 @@ export class EnvoyConformanceAdapter implements ConformanceAdapter {
   }
 
   async #captureLogs(): Promise<void> {
-    if (this.#active === undefined) return;
+    if (this.#active === undefined || !this.#active.started) return;
     const logs = await runFile(this.#docker, ["logs", this.#active.container], { timeoutMs: 15_000 });
     const combined = `${logs.stdout}\n${logs.stderr}`;
     if (this.#options.sensitiveValues?.some((secret) => combined.includes(secret))) {
@@ -306,6 +312,11 @@ export class EnvoyConformanceAdapter implements ConformanceAdapter {
     const active = this.#active;
     if (active === undefined) return;
     try {
+      if (!active.started) {
+        await rm(active.directory, { recursive: true, force: true });
+        this.#active = undefined;
+        return;
+      }
       await this.#captureLogs();
       await runFile(this.#docker, ["stop", "--time", "3", active.container], { timeoutMs: 10_000 });
       const listed = await runFile(
