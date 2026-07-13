@@ -153,17 +153,24 @@ verify() {
   [[ "$port" =~ ^[0-9]+$ ]] || { printf 'insecure-container SSH port is absent\n' >&2; exit 1; }
   ssh_options
   local observed
-  observed=$(ssh "${SSH_OPTIONS[@]}" root@127.0.0.1 \
-    'test "$(id -u)" = 0 && test "$COGS_PROFILE" = insecure-container && test -n "$HTTP_PROXY" && test -n "$HTTPS_PROXY" && test -r "$SSL_CERT_FILE" && printf verified')
-  [[ "$observed" == verified ]] || { printf 'SSH contract verification failed\n' >&2; exit 1; }
+  if ! observed=$(ssh "${SSH_OPTIONS[@]}" root@127.0.0.1 \
+    'test "$(id -u)" = 0 && test "$COGS_PROFILE" = insecure-container && test -n "$HTTP_PROXY" && test -n "$HTTPS_PROXY" && test -r "$SSL_CERT_FILE" && printf verified'); then
+    printf 'SSH contract verification failed\n' >&2
+    exit 1
+  fi
+  [[ "$observed" == verified ]] || { printf 'SSH contract returned an unexpected result\n' >&2; exit 1; }
 
   local transfer="$state/control/sftp-control.txt"
   printf 'sftp-positive-control\n' > "$transfer"
-  sftp "${SFTP_OPTIONS[@]}" -b - root@127.0.0.1 >/dev/null <<EOF
+  if ! sftp "${SFTP_OPTIONS[@]}" -b - root@127.0.0.1 >/dev/null <<EOF
 put $transfer /workspace/sftp-control.txt
 get /workspace/sftp-control.txt $state/control/sftp-roundtrip.txt
 EOF
-  cmp "$transfer" "$state/control/sftp-roundtrip.txt"
+  then
+    printf 'SFTP contract verification failed\n' >&2
+    exit 1
+  fi
+  cmp "$transfer" "$state/control/sftp-roundtrip.txt" || { printf 'SFTP round-trip mismatch\n' >&2; exit 1; }
 
   local wrong="$state/control/wrong_host_key"
   ssh-keygen -q -t ed25519 -N '' -C wrong-host-positive-control -f "$wrong"

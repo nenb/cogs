@@ -39,4 +39,16 @@ if ! grep -q -- 'BEGIN CERTIFICATE' "$public_ca"; then
   exit 1
 fi
 
-exec /usr/sbin/sshd -D -e -f /etc/ssh/sshd_config
+for name in COGS_PROFILE HTTP_PROXY HTTPS_PROXY NO_PROXY SSL_CERT_FILE; do
+  value=${!name:-}
+  if [[ -z "$value" || ${#value} -gt 2048 || "$value" =~ [[:space:]] ]]; then
+    printf 'insecure-container: invalid session environment\n' >&2
+    exit 1
+  fi
+done
+cp /etc/ssh/sshd_config /run/cogs-runtime/sshd_config
+printf 'SetEnv COGS_PROFILE=%s HTTP_PROXY=%s HTTPS_PROXY=%s NO_PROXY=%s SSL_CERT_FILE=%s\n' \
+  "$COGS_PROFILE" "$HTTP_PROXY" "$HTTPS_PROXY" "$NO_PROXY" "$SSL_CERT_FILE" \
+  >> /run/cogs-runtime/sshd_config
+
+exec /usr/sbin/sshd -D -e -f /run/cogs-runtime/sshd_config
