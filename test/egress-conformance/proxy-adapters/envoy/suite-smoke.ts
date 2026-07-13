@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { platform, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -156,6 +156,10 @@ const faultInjector = await startFaultInjector({ initialCapability: capability }
 let report: SecurityReport | undefined;
 try {
   const proxyCertificate = await generateProxyCertificate(material);
+  const replacementDirectory = join(material, "replacement");
+  await mkdir(replacementDirectory, { mode: 0o700 });
+  const replacementCertificate = await generateProxyCertificate(replacementDirectory);
+  assert.notEqual(proxyCertificate.certificate, replacementCertificate.certificate);
   const fixtureUrl = new URL(fixtures.tlsOrigin);
   const fixturePort = Number(fixtureUrl.port);
   const proxyPort = await reservePort();
@@ -179,6 +183,7 @@ try {
       const state = prepareStage1Case(definition, faultInjector, capability, wrongCapability, replacementCapability);
       prepared.set(test.id, state);
       const scenario = definition.probe.scenario;
+      const replacement = scenario === "replacement-capability" || scenario === "old-capability-invalid";
       const credential =
         scenario === "telemetry-outage"
           ? undefined
@@ -194,8 +199,8 @@ try {
         listenerAddress: "0.0.0.0",
         listenerPort: proxyPort,
         authorizationGrpcTarget: faultInjector.grpcTarget,
-        proxyCertificatePem: proxyCertificate.certificate,
-        proxyPrivateKeyPem: proxyCertificate.privateKey,
+        proxyCertificatePem: replacement ? replacementCertificate.certificate : proxyCertificate.certificate,
+        proxyPrivateKeyPem: replacement ? replacementCertificate.privateKey : proxyCertificate.privateKey,
         routes: [
           {
             id: "route.fixture",
@@ -233,7 +238,11 @@ try {
         env: {
           COGS_SUITE_GUEST_PROXY: `http://host.docker.internal:${new URL(runtime.proxyOrigin).port}`,
           COGS_SUITE_TARGET_PORT: String(fixturePort),
-          COGS_SUITE_PUBLIC_CA: proxyCertificate.caPath,
+          COGS_SUITE_PUBLIC_CA:
+            definition.probe.scenario === "replacement-capability" ||
+            definition.probe.scenario === "old-capability-invalid"
+              ? replacementCertificate.caPath
+              : proxyCertificate.caPath,
           COGS_SUITE_CAPABILITY: state.capability,
           COGS_SUITE_SCENARIO: definition.probe.scenario,
           COGS_SUITE_KIND: definition.probe.kind,
