@@ -48,9 +48,10 @@ if ! scp "${common[@]}" -P "$port" -- "$probe" root@127.0.0.1:/workspace/cogs-bl
   exit 0
 fi
 proxy_port=${COGS_SUITE_GUEST_PROXY##*:}
+capability_argument="b64.$(printf '%s' "$COGS_SUITE_CAPABILITY" | base64 -w0)"
 remote=(ssh "${common[@]}" -p "$port" root@127.0.0.1 python3 /workspace/cogs-black-box-probe.py
   "$COGS_SUITE_SCENARIO" "$COGS_SUITE_KIND" host.docker.internal "$proxy_port" "$COGS_SUITE_TARGET_PORT"
-  "$COGS_SUITE_CAPABILITY" "$COGS_SUITE_EXPECT")
+  "$capability_argument" "$COGS_SUITE_EXPECT")
 if [[ "$COGS_SUITE_SCENARIO" == long-lived-drain ]]; then
   if [[ ! "${COGS_SUITE_DRAIN_CONTAINER:-}" =~ ^cogs-[A-Za-z0-9_.-]{1,120}$ ]]; then
     printf '{"passed":false,"diagnosticsRedacted":"suite drain control is invalid"}\n'

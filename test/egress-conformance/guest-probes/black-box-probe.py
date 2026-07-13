@@ -414,9 +414,15 @@ class CogsClient { public static void main(String[] a) throws Exception {
 
 
 def main():
-    if len(sys.argv) != 8 or not valid_inputs(sys.argv[1:]):
+    values = sys.argv[1:]
+    try:
+        if len(values) == 7 and values[5].startswith("b64."):
+            values[5] = base64.b64decode(values[5][4:], validate=True).decode()
+    except (ValueError, UnicodeError):
         emit(False, "invalid probe input")
-    scenario, kind, proxy_host, proxy_port_text, target_port_text, capability, expected = sys.argv[1:]
+    if len(values) != 7 or not valid_inputs(values):
+        emit(False, "invalid probe input")
+    scenario, kind, proxy_host, proxy_port_text, target_port_text, capability, expected = values
     proxy_port, target_port = int(proxy_port_text), int(target_port_text)
     proxy = f"http://{proxy_host}:{proxy_port}"
     try:
