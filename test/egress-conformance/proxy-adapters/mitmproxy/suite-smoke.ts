@@ -1,13 +1,16 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { platform, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { STAGE_1_MANIFEST, stage1Case } from "../../cases/stage-1.ts";
+import { type PreparedCase, prepareStage1Case } from "../../cases/suite-runtime.ts";
 import { writeReports } from "../../controller/report.ts";
-import { type CaseManifest, runConformance, type SecurityReport } from "../../controller/runner.ts";
+import { runConformance, type SecurityReport } from "../../controller/runner.ts";
 import { startFaultInjector } from "../../fault-injector/server.ts";
 import { startUpstreamFixtures } from "../../upstream-fixtures/server.ts";
 import { MitmproxyConformanceAdapter } from "./adapter.ts";
@@ -20,13 +23,14 @@ const repo = resolve(here, "../../../..");
 const outputDirectory = resolve(process.argv[2] ?? join(repo, "docs/security-evidence/generated"));
 const sourceRevision =
   process.env.COGS_SOURCE_REVISION ?? (await execFileAsync("git", ["-C", repo, "rev-parse", "HEAD"])).stdout.trim();
-const reportId = `mitmproxy-candidate-${process.env.GITHUB_RUN_ID ?? "local"}`;
+const reportId = `mitmproxy-suite-${process.env.GITHUB_RUN_ID ?? "local"}`;
 const stateRoot = process.platform === "linux" ? "/dev/shm" : tmpdir();
 const realCredential = `Bearer cogs-fixture-${randomBytes(24).toString("hex")}`;
 const capability = `cogs-capability-${randomBytes(24).toString("hex")}`;
 const wrongCapability = `cogs-wrong-${randomBytes(24).toString("hex")}`;
 const placeholder = "Bearer cogs-non-secret-placeholder";
-const sessionId = "session-mitmproxy-smoke";
+const sessionId = "session-mitmproxy-suite";
+const replacementCapability = `cogs-replacement-${randomBytes(24).toString("hex")}`;
 
 async function reservePort(): Promise<number> {
   const server = createServer();
@@ -48,6 +52,7 @@ const fixtures = await startUpstreamFixtures({
     basic: "Basic dW51c2VkOmZpeHR1cmU=",
   },
   redirectLocation: "https://undeclared.invalid/denied",
+  delayedResponseMs: 5_000,
 });
 const faultInjector = await startFaultInjector({ initialCapability: capability });
 let report: SecurityReport | undefined;
@@ -67,65 +72,80 @@ try {
   ).stdout;
   assert.ok(versionOutput.includes(MITMPROXY_VERSION));
 
-  const policyFor = (caseId: string): MitmproxyPolicyInput => ({
-    caseId,
-    sessionId,
-    authorizationOrigin: faultInjector.origin,
-    routes: [
-      {
-        id: "route.fixture-bearer",
-        protocol: "https",
-        host: "localhost",
-        port: fixturePort,
-        methods: ["GET"],
-        pathPrefix: "/protected/header",
-        credential: { kind: "bearer", value: realCredential },
-      },
-    ],
-  });
-
+  const prepared = new Map<string, PreparedCase>();
+  const certificateDigests = new Map<string, string>();
   const adapter = new MitmproxyConformanceAdapter({
     stateRoot,
     listenerPort: proxyPort,
     upstreamCaCertificatePem: fixtures.caCertificatePem,
-    sensitiveValues: [realCredential, capability, wrongCapability, placeholder],
-    policyFor: (test) => policyFor(test.id),
-    commandFor: (test, runtime) => ({
-      command: join(here, "case-probe.sh"),
-      args: [],
-      env: {
-        COGS_MITMPROXY_GUEST_PROXY: `http://host.docker.internal:${new URL(runtime.proxyOrigin).port}`,
-        COGS_MITMPROXY_TARGET: `https://localhost:${fixturePort}/protected/header`,
-        COGS_MITMPROXY_PROXY_CA: runtime.publicCaPath,
-        COGS_MITMPROXY_CAPABILITY: test.id === "mitmproxy.capability-wrong" ? wrongCapability : capability,
-        COGS_MITMPROXY_EXPECT: test.id === "mitmproxy.capability-wrong" ? "deny" : "allow",
-      },
-    }),
+    sensitiveValues: [realCredential, capability, replacementCapability, wrongCapability, placeholder],
+    policyFor: (test) => {
+      const definition = stage1Case(test.id);
+      const state = prepareStage1Case(definition, faultInjector, capability, wrongCapability, replacementCapability);
+      prepared.set(test.id, state);
+      const scenario = definition.probe.scenario;
+      const credential =
+        scenario === "telemetry-outage"
+          ? undefined
+          : scenario === "api-key"
+            ? ({ kind: "api-key", header: "x-api-key", value: "unused-api-key-fixture" } as const)
+            : scenario === "basic"
+              ? ({ kind: "basic", value: "Basic dW51c2VkOmZpeHR1cmU=" } as const)
+              : ({ kind: "bearer", value: realCredential } as const);
+      const parserPost = new Set(["cl-te-conflict", "invalid-chunk-size", "invalid-chunk-extension"]);
+      return {
+        caseId: test.id,
+        sessionId,
+        authorizationOrigin: faultInjector.origin,
+        routes: [
+          {
+            id: "route.fixture",
+            protocol: "https",
+            host: state.includeCredentialRoute ? "localhost" : "unused.invalid",
+            port: fixturePort,
+            methods: parserPost.has(scenario) ? ["GET", "POST"] : ["GET"],
+            pathPrefix:
+              scenario === "api-key"
+                ? "/protected/api-key"
+                : scenario === "basic"
+                  ? "/protected/basic"
+                  : scenario === "redirect-undeclared"
+                    ? "/redirect"
+                    : scenario === "telemetry-outage"
+                      ? "/large"
+                      : scenario === "long-lived-drain"
+                        ? "/delayed"
+                        : "/protected/header",
+            ...(credential === undefined ? {} : { credential }),
+          },
+        ],
+      } satisfies MitmproxyPolicyInput;
+    },
+    commandFor: (test, runtime) => {
+      const definition = stage1Case(test.id);
+      const state = prepared.get(test.id);
+      if (!state) throw new Error("suite case was not prepared");
+      certificateDigests.set(test.id, createHash("sha256").update(readFileSync(runtime.publicCaPath)).digest("hex"));
+      return {
+        command: join(repo, "test/egress-conformance/guest-probes/run-black-box-case.sh"),
+        args: [],
+        env: {
+          COGS_SUITE_GUEST_PROXY: `http://host.docker.internal:${new URL(runtime.proxyOrigin).port}`,
+          COGS_SUITE_TARGET_PORT: String(fixturePort),
+          COGS_SUITE_PUBLIC_CA: runtime.publicCaPath,
+          COGS_SUITE_CAPABILITY: state.capability,
+          COGS_SUITE_SCENARIO: definition.probe.scenario,
+          COGS_SUITE_KIND: definition.probe.kind,
+          COGS_SUITE_EXPECT: state.probeExpected,
+          COGS_SUITE_DRAIN_CONTAINER: runtime.containerName,
+        },
+      };
+    },
   });
-
-  const manifest: CaseManifest = {
-    version: "cogs.egress-cases/v1alpha1",
-    cases: [
-      {
-        id: "mitmproxy.capability-wrong",
-        group: "identity-route",
-        timeout_ms: 45_000,
-        profiles: ["insecure-container"],
-        dependencies: ["identity"],
-      },
-      {
-        id: "mitmproxy.bearer-injection",
-        group: "credential-handling",
-        timeout_ms: 45_000,
-        profiles: ["insecure-container"],
-        dependencies: ["identity", "authorization", "audit"],
-      },
-    ],
-  };
   const dockerVersion = (
     await execFileAsync("docker", ["version", "--format", "{{.Server.Version}}"], { timeout: 30_000 })
   ).stdout.trim();
-  report = await runConformance(manifest, {
+  report = await runConformance(STAGE_1_MANIFEST, {
     reportId,
     sourceRevision,
     profile: "insecure-container",
@@ -154,56 +174,43 @@ try {
       "Direct OpenBao polling and production WAL persistence remain mandatory Stage 3 reruns.",
       "The candidate requires a custom 173-line Python addon for policy, capability, injection, and audit hooks.",
       "The latest upstream image has six fixed HIGH findings under a narrow owner-and-expiry ignore through 2026-07-27; this evidence cannot support selection or release.",
-      "The complete route, parser, HTTP/2, redirect, drain, and client matrix is tracked by Stage 1 issue 22.",
+      "Direct OpenBao change detection remains a Stage 1 revocation stub and requires a mandatory Stage 3 rerun.",
     ],
-    redactValues: [realCredential, capability, wrongCapability, placeholder],
+    redactValues: [realCredential, capability, replacementCapability, wrongCapability, placeholder],
     adapter,
     cleanupTimeoutMs: 20_000,
     teardownTimeoutMs: 20_000,
   });
 
-  const bearerResult = report.tests.find((result) => result.id === "mitmproxy.bearer-injection");
-  if (bearerResult?.result === "fail") {
-    const checks = faultInjector.snapshot().capability_checks;
-    bearerResult.diagnostics_redacted = `${bearerResult.diagnostics_redacted ?? "Mitmproxy mechanism failed"}; capability checks total=${checks.total} present=${checks.header_present} matched=${checks.digest_matched} accepted=${checks.accepted}`;
-  }
-
   try {
-    assert.equal(report.tests.find((result) => result.id === "mitmproxy.capability-wrong")?.result, "stubbed");
-    assert.equal(report.tests.find((result) => result.id === "mitmproxy.bearer-injection")?.result, "stubbed");
-    const observations = fixtures.observations().filter((item) => item.kind === "http");
-    assert.equal(observations.length, 1);
-    assert.equal(observations[0]?.route, "header-protected");
-    assert.equal(observations[0]?.credential_matches, true);
-    assert.equal(observations[0]?.authority_matches, null);
-    const snapshot = faultInjector.snapshot();
-    assert.equal(snapshot.intents.length, 1);
-    assert.equal(snapshot.intents[0]?.case_id, "mitmproxy.bearer-injection");
-    assert.equal(snapshot.intents[0]?.route_id, "route.fixture-bearer");
     const records = adapter.accessRecords();
-    assert.equal(records.length, 1);
-    const completionRecord = records[0];
-    assert.ok(completionRecord);
-    assert.equal(completionRecord.intent_id, snapshot.intents[0]?.intent_id);
-    assert.equal(completionRecord.route_id, "route.fixture-bearer");
-    assert.equal(completionRecord.response_code, 200);
-    assert.equal(completionRecord.completion_recorded, true);
-    assert.notEqual(faultInjector.snapshot().intents[0]?.completion, null);
-    const serialized = JSON.stringify({ report, observations, snapshot: faultInjector.snapshot(), records });
-    for (const value of [realCredential, capability, wrongCapability, placeholder])
+    const snapshot = faultInjector.snapshot();
+    for (const record of records) {
+      const intent = snapshot.intents.find((item) => item.intent_id === record.intent_id);
+      assert.ok(intent, "completion record has no authorization intent");
+      assert.equal(record.route_id, "route.fixture");
+      assert.equal(record.completion_recorded, true);
+    }
+    assert.notEqual(
+      certificateDigests.get("credential.bearer-injected"),
+      certificateDigests.get("revocation.replacement-capability"),
+    );
+    const observations = fixtures.observations().filter((item) => item.kind === "http");
+    const serialized = JSON.stringify({ report, observations, snapshot, records });
+    for (const value of [realCredential, capability, replacementCapability, wrongCapability, placeholder])
       assert.equal(serialized.includes(value), false);
   } catch (error) {
-    const result = bearerResult ?? report.tests[0];
-    if (result !== undefined && result.result !== "fail") {
+    const result = report.tests.find((item) => item.result !== "fail") ?? report.tests[0];
+    if (result) {
       result.result = "fail";
       result.release_eligible = false;
       result.diagnostics_redacted =
-        error instanceof Error ? error.message.slice(0, 2048) : "Mitmproxy smoke postcondition failed";
+        error instanceof Error ? error.message.slice(0, 2048) : "suite postcondition failed";
     }
   }
 
   const paths = await writeReports(outputDirectory, report);
-  console.log(`Wrote Mitmproxy functional candidate evidence to ${paths.machine} and ${paths.human}`);
+  console.log(`Wrote mitmproxy Stage 1 suite evidence to ${paths.machine} and ${paths.human}`);
   if (report.tests.some((result) => result.result === "fail")) process.exitCode = 1;
 } finally {
   await Promise.allSettled([fixtures.stop(), faultInjector.stop()]);
