@@ -398,6 +398,26 @@ export function generateEnvoyConfig(input: EnvoyCandidateConfigInput): Readonly<
     name: "envoy.filters.http.router",
     typed_config: { "@type": `${envoyType}/envoy.extensions.filters.http.router.v3.Router` },
   };
+  const connectAuthMethodFilter: Json = {
+    name: "envoy.filters.http.lua",
+    typed_config: {
+      "@type": `${envoyType}/envoy.extensions.filters.http.lua.v3.Lua`,
+      default_source_code: {
+        inline_string:
+          'function envoy_on_request(handle) handle:headers():remove("x-cogs-envoy-connect") if handle:headers():get(":method") == "CONNECT" then handle:headers():replace(":method", "GET") handle:headers():add("x-cogs-envoy-connect", "1") end end',
+      },
+    },
+  };
+  const restoreConnectMethodFilter: Json = {
+    name: "envoy.filters.http.lua",
+    typed_config: {
+      "@type": `${envoyType}/envoy.extensions.filters.http.lua.v3.Lua`,
+      default_source_code: {
+        inline_string:
+          'function envoy_on_request(handle) if handle:headers():get("x-cogs-envoy-connect") == "1" then handle:headers():replace(":method", "CONNECT") end handle:headers():remove("x-cogs-envoy-connect") end',
+      },
+    },
+  };
 
   const outerRoutes: Json[] = physicalRoutes.flatMap((route) => envoyRoute(route, input, authorization.origin, false));
   for (const [authority, grouped] of [...secureGroups.entries()].sort(([left], [right]) => left.localeCompare(right))) {
@@ -432,7 +452,9 @@ export function generateEnvoyConfig(input: EnvoyCandidateConfigInput): Readonly<
                 "forward_proxy",
                 [{ name: "explicit_proxy", domains: ["*"], routes: outerRoutes }],
                 [
+                  connectAuthMethodFilter,
                   extAuthzFilter(authHttpService(authorization.origin, "/v1/envoy/capability", input), true),
+                  restoreConnectMethodFilter,
                   routerFilter,
                 ],
                 "proxy",

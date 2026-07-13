@@ -78,6 +78,8 @@ test("generator emits deterministic immutable static Envoy policy with no admini
   assert.doesNotMatch(rendered, /"admin"|dynamic_resources|ads_config|sds_config|cluster_header|original_dst/i);
   assert.match(rendered, /envoy\.bootstrap\.internal_listener/);
   assert.match(rendered, /envoy\.filters\.http\.ext_authz/);
+  assert.equal(rendered.match(/envoy\.filters\.http\.lua/g)?.length, 2);
+  assert.match(rendered, /x-cogs-envoy-connect/);
   assert.match(rendered, /"failure_mode_allow": false/);
   assert.match(rendered, /"path_with_escaped_slashes_action": "REJECT_REQUEST"/);
   assert.match(rendered, /"stream_error_on_invalid_http_message": true/);
