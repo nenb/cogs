@@ -123,7 +123,8 @@ function parseAccessRecords(logs: string): EnvoyAccessRecord[] {
     const routeId = typeof value.route_id === "string" ? value.route_id : "";
     const intentValid = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(intentId);
     const routeValid = idPattern.test(routeId);
-    if (Number.isInteger(responseCode) && responseCode >= 400 && (!intentValid || !routeValid)) continue;
+    if ((!Number.isInteger(responseCode) || responseCode < 100 || responseCode >= 400) && (!intentValid || !routeValid))
+      continue;
     if (
       !intentValid ||
       !routeValid ||
