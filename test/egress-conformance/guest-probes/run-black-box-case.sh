@@ -48,12 +48,28 @@ if ! scp "${common[@]}" -P "$port" -- "$probe" root@127.0.0.1:/workspace/cogs-bl
   exit 0
 fi
 proxy_port=${COGS_SUITE_GUEST_PROXY##*:}
-result=$(ssh "${common[@]}" -p "$port" root@127.0.0.1 python3 /workspace/cogs-black-box-probe.py \
-  "$COGS_SUITE_SCENARIO" "$COGS_SUITE_KIND" host.docker.internal "$proxy_port" "$COGS_SUITE_TARGET_PORT" \
-  "$COGS_SUITE_CAPABILITY" "$COGS_SUITE_EXPECT" 2>>"$log") || {
-  printf '{"passed":false,"diagnosticsRedacted":"suite guest probe transport failed"}\n'
-  exit 0
-}
+remote=(ssh "${common[@]}" -p "$port" root@127.0.0.1 python3 /workspace/cogs-black-box-probe.py
+  "$COGS_SUITE_SCENARIO" "$COGS_SUITE_KIND" host.docker.internal "$proxy_port" "$COGS_SUITE_TARGET_PORT"
+  "$COGS_SUITE_CAPABILITY" "$COGS_SUITE_EXPECT")
+if [[ "$COGS_SUITE_SCENARIO" == long-lived-drain ]]; then
+  if [[ ! "${COGS_SUITE_DRAIN_CONTAINER:-}" =~ ^cogs-[A-Za-z0-9_.-]{1,120}$ ]]; then
+    printf '{"passed":false,"diagnosticsRedacted":"suite drain control is invalid"}\n'
+    exit 0
+  fi
+  result_file=$(mktemp)
+  "${remote[@]}" >"$result_file" 2>>"$log" &
+  remote_pid=$!
+  sleep 1
+  docker kill --signal=TERM "$COGS_SUITE_DRAIN_CONTAINER" >>"$log" 2>&1 || true
+  wait "$remote_pid" || true
+  result=$(<"$result_file")
+  rm -f -- "$result_file"
+else
+  result=$("${remote[@]}" 2>>"$log") || {
+    printf '{"passed":false,"diagnosticsRedacted":"suite guest probe transport failed"}\n'
+    exit 0
+  }
+fi
 if ! "$driver" destroy >>"$log" 2>&1; then
   printf '{"passed":false,"diagnosticsRedacted":"suite guest teardown failed"}\n'
   exit 0

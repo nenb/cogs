@@ -66,6 +66,10 @@ def curl_probe(scenario, proxy, port, capability):
         path = "/protected/api-key"
     elif scenario == "basic":
         path = "/protected/basic"
+    elif scenario == "telemetry-outage":
+        path = "/large"
+    elif scenario == "long-lived-drain":
+        path = "/delayed"
     elif scenario == "authorization-stripped":
         extra = [
             "--header",
@@ -89,7 +93,9 @@ def curl_probe(scenario, proxy, port, capability):
         completed = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=15, check=False)
         status = completed.stdout.decode("ascii", "ignore")[-3:]
         size = os.path.getsize(output.name)
-        return completed.returncode == 0 and status == "200" and size == 2
+        return completed.returncode == 0 and status == "200" and (
+            size == 2 or scenario in ("telemetry-outage", "long-lived-drain")
+        )
     finally:
         os.unlink(output.name)
 
@@ -123,6 +129,15 @@ def connect_tls(proxy_host, proxy_port, target_port, capability, connect_host="l
 
 def raw_http1(scenario, proxy_host, proxy_port, target_port, capability):
     global RAW_DETAIL
+    if scenario == "origin-form-to-proxy":
+        raw = socket.create_connection((proxy_host, proxy_port), timeout=5)
+        raw.sendall((
+            f"GET /protected/header HTTP/1.1\r\nHost: localhost:{target_port}\r\n"
+            f"Proxy-Authorization: {capability}\r\n\r\n"
+        ).encode())
+        response = receive_headers(raw)
+        raw.close()
+        return b" 200 " in response.split(b"\r\n", 1)[0]
     if scenario == "duplicate-proxy-authorization":
         raw = socket.create_connection((proxy_host, proxy_port), timeout=5)
         authority = f"localhost:{target_port}"
@@ -154,6 +169,8 @@ def raw_http1(scenario, proxy_host, proxy_port, target_port, capability):
         request = request
     elif scenario == "valid":
         pass
+    elif scenario == "absolute-form":
+        request = f"GET https://localhost:{target_port}{path} HTTP/1.1\r\nHost: {host}\r\n\r\n"
     elif scenario == "cl-te-conflict":
         request = f"POST {path} HTTP/1.1\r\nHost: {host}\r\nContent-Length: 4\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n"
     elif scenario == "duplicate-host":
@@ -277,7 +294,8 @@ def main():
             "capability-other-session", "allowed-host-port", "undeclared-host", "direct-destination-ip",
             "alternate-port", "wrong-method", "wrong-path", "encoded-slash-dot", "traversal",
             "redirect-undeclared", "placeholder-preflight", "authorization-stripped", "bearer", "api-key",
-            "basic", "intent-before-use", "completion-correlated", "telemetry-outage",
+            "basic", "intent-before-use", "completion-correlated", "telemetry-outage", "all-sinks",
+            "central-metadata-only", "replacement-capability", "long-lived-drain",
         }:
             allowed = curl_probe(scenario, proxy, target_port, capability)
         elif kind == "raw-http2":

@@ -84,6 +84,10 @@ async function generateProxyCertificate(directory: string): Promise<{
       "-sha256",
       "-days",
       "2",
+      "-addext",
+      "basicConstraints=critical,CA:TRUE",
+      "-addext",
+      "keyUsage=critical,keyCertSign,cRLSign",
       "-subj",
       "/CN=Cogs Envoy Smoke CA",
       "-out",
@@ -146,6 +150,7 @@ const fixtures = await startUpstreamFixtures({
     basic: "Basic dW51c2VkOmZpeHR1cmU=",
   },
   redirectLocation: "https://undeclared.invalid/denied",
+  delayedResponseMs: 5_000,
 });
 const faultInjector = await startFaultInjector({ initialCapability: capability });
 let report: SecurityReport | undefined;
@@ -205,7 +210,11 @@ try {
                   ? "/protected/basic"
                   : scenario === "redirect-undeclared"
                     ? "/redirect"
-                    : "/protected/header",
+                    : scenario === "telemetry-outage"
+                      ? "/large"
+                      : scenario === "long-lived-drain"
+                        ? "/delayed"
+                        : "/protected/header",
             upstreamAddress: "127.0.0.1",
             upstreamPort: fixturePort,
             upstreamCaCertificatePem: fixtures.caCertificatePem,
@@ -229,6 +238,7 @@ try {
           COGS_SUITE_SCENARIO: definition.probe.scenario,
           COGS_SUITE_KIND: definition.probe.kind,
           COGS_SUITE_EXPECT: state.probeExpected,
+          COGS_SUITE_DRAIN_CONTAINER: runtime.containerName,
         },
       };
     },
