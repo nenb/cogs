@@ -4,6 +4,7 @@ Protocol 2
 HostKey /run/cogs-runtime/ssh_host_ed25519_key
 PidFile /run/cogs-runtime/sshd.pid
 AuthorizedKeysFile /run/cogs-runtime/authorized_keys
+AllowUsers root
 PermitRootLogin prohibit-password
 PasswordAuthentication no
 KbdInteractiveAuthentication no
@@ -12,8 +13,10 @@ PubkeyAuthentication yes
 PermitEmptyPasswords no
 UsePAM no
 StrictModes yes
+DisableForwarding yes
 AllowAgentForwarding no
 AllowTcpForwarding no
+AllowStreamLocalForwarding no
 GatewayPorts no
 PermitTunnel no
 X11Forwarding no
@@ -25,4 +28,4 @@ LoginGraceTime 20
 ClientAliveInterval 30
 ClientAliveCountMax 2
 Subsystem sftp internal-sftp
-LogLevel ERROR
+LogLevel VERBOSE

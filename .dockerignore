@@ -1,0 +1,7 @@
+.cogs-dev/
+.git/
+.pi/
+node_modules/
+coverage/
+docs/security-evidence/generated/
+test/egress-conformance/reports/

@@ -24,13 +24,16 @@ RUN printf '%s\n' \
       nodejs \
       npm \
       openjdk-21-jre-headless \
+      openssl \
       openssh-client \
       openssh-server \
       python3 \
       python3-pip \
       socat \
     && rm -rf /var/lib/apt/lists/* \
-    && mkdir -p /workspace /run/sshd /run/cogs-runtime
+    && rm -f /etc/ssh/ssh_host_*_key /etc/ssh/ssh_host_*_key.pub \
+    && mkdir -p /workspace /run/sshd /run/cogs-runtime \
+    && chmod 0700 /run/cogs-runtime
 
 COPY dev/insecure-sandbox/sshd_config /etc/ssh/sshd_config
 COPY dev/insecure-sandbox/entrypoint.sh /usr/local/bin/cogs-insecure-entrypoint
