@@ -32,7 +32,7 @@ case "$COGS_ENVOY_EXPECT" in
     if (( status == 0 )) && [[ "$code" == 200 ]] && [[ $(<"$response") == ok ]]; then
       printf '{"passed":true,"diagnosticsRedacted":"allowed HTTPS CONNECT was intercepted and returned the protected fixture response"}\n'
     else
-      printf '{"passed":false,"diagnosticsRedacted":"allowed HTTPS CONNECT did not complete successfully"}\n'
+      printf '{"passed":false,"diagnosticsRedacted":"allowed HTTPS CONNECT failed with curl exit %s and HTTP status %s"}\n' "$status" "${code:-none}"
     fi
     ;;
   deny)
