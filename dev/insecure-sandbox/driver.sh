@@ -21,13 +21,14 @@ identifier() {
 }
 
 read_metadata() {
-  [[ -s "$state/container" && -s "$state/volume" && -s "$state/port" ]] || {
+  [[ -s "$state/container" && -s "$state/volume" ]] || {
     printf 'insecure-container state is absent or incomplete\n' >&2
     exit 1
   }
   container=$(<"$state/container")
   volume=$(<"$state/volume")
-  port=$(<"$state/port")
+  port=''
+  [[ ! -s "$state/port" ]] || port=$(<"$state/port")
 }
 
 ssh_options() {
@@ -96,6 +97,8 @@ create() {
 
   docker build --pull=false --tag "$image" --file "$repo/dev/insecure-sandbox/Dockerfile" "$repo"
   docker volume create --label dev.cogs.profile="$profile" "$volume" >/dev/null
+  printf '%s\n' "$container" > "$state/container"
+  printf '%s\n' "$volume" > "$state/volume"
   docker run --detach \
     --name "$container" \
     --hostname sandbox \
@@ -123,8 +126,6 @@ create() {
   port=$(docker port "$container" 2222/tcp | awk -F: 'NR == 1 {print $NF}')
   [[ "$port" =~ ^[0-9]+$ ]] || { printf 'failed to discover SSH port\n' >&2; return 1; }
   printf '[127.0.0.1]:%s %s\n' "$port" "$(awk 'NF >= 2 {print $1 " " $2; exit}' "$input/ssh_host_ed25519_key.pub")" > "$state/known_hosts"
-  printf '%s\n' "$container" > "$state/container"
-  printf '%s\n' "$volume" > "$state/volume"
   printf '%s\n' "$port" > "$state/port"
 
   ssh_options
@@ -149,6 +150,7 @@ create() {
 
 verify() {
   read_metadata
+  [[ "$port" =~ ^[0-9]+$ ]] || { printf 'insecure-container SSH port is absent\n' >&2; exit 1; }
   ssh_options
   local observed
   observed=$(ssh "${SSH_OPTIONS[@]}" root@127.0.0.1 \

@@ -14,6 +14,9 @@ for required in "$host_key" "$host_public" "$client_public" "$public_ca"; do
   fi
 done
 
+mkdir -p /workspace /run/sshd /run/cogs-runtime
+chmod 0700 /workspace /run/cogs-runtime
+
 install -m 0600 "$host_key" /run/cogs-runtime/ssh_host_ed25519_key
 install -m 0644 "$host_public" /run/cogs-runtime/ssh_host_ed25519_key.pub
 install -m 0600 "$client_public" /run/cogs-runtime/authorized_keys
@@ -34,6 +37,4 @@ if ! grep -q -- 'BEGIN CERTIFICATE' "$public_ca"; then
   exit 1
 fi
 
-mkdir -p /workspace /run/sshd
-chmod 0700 /workspace /run/cogs-runtime
 exec /usr/sbin/sshd -D -e -f /etc/ssh/sshd_config
