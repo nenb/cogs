@@ -116,14 +116,16 @@ function parseAccessRecords(logs: string): EnvoyAccessRecord[] {
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) continue;
     const value = parsed as Record<string, unknown>;
     if (value.event !== "request-complete") continue;
-    if (value.intent_id === "-" || value.route_id === "-" || value.route_id === "") continue;
     const responseCode = Number(value.response_code);
     const duration = Number(value.duration_ms);
+    const intentId = typeof value.intent_id === "string" ? value.intent_id : "";
+    const routeId = typeof value.route_id === "string" ? value.route_id : "";
+    const intentValid = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(intentId);
+    const routeValid = idPattern.test(routeId);
+    if (Number.isInteger(responseCode) && responseCode >= 400 && (!intentValid || !routeValid)) continue;
     if (
-      typeof value.intent_id !== "string" ||
-      !idPattern.test(value.intent_id) ||
-      typeof value.route_id !== "string" ||
-      !idPattern.test(value.route_id) ||
+      !intentValid ||
+      !routeValid ||
       !Number.isInteger(responseCode) ||
       responseCode < 100 ||
       responseCode > 599 ||
@@ -135,8 +137,8 @@ function parseAccessRecords(logs: string): EnvoyAccessRecord[] {
     }
     records.push({
       event: "request-complete",
-      intent_id: value.intent_id,
-      route_id: value.route_id,
+      intent_id: intentId,
+      route_id: routeId,
       response_code: responseCode,
       duration_ms: duration,
     });
