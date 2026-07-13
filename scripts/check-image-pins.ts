@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-const dockerfiles = ["images/worker/Dockerfile", "images/sandbox/Dockerfile"];
+const dockerfiles = ["images/worker/Dockerfile", "images/sandbox/Dockerfile", "dev/insecure-sandbox/Dockerfile"];
 for (const relativePath of dockerfiles) {
   const content = readFileSync(resolve(import.meta.dirname, "..", relativePath), "utf8");
   const externalStages: string[] = [];

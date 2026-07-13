@@ -117,7 +117,7 @@ jobs:
   images:
     name: Images, vulnerabilities, and SBOMs
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - name: Check out source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -129,6 +129,9 @@ jobs:
 
       - name: Build sandbox scaffold
         run: docker build --pull=false --tag cogs-sandbox:ci --file images/sandbox/Dockerfile .
+
+      - name: Build insecure-container test driver
+        run: docker build --pull=false --tag cogs-insecure-sandbox:ci --file dev/insecure-sandbox/Dockerfile .
 
       - name: Scan worker image
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
@@ -148,6 +151,15 @@ jobs:
           ignore-unfixed: true
           severity: HIGH,CRITICAL
 
+      - name: Scan insecure-container test driver
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: cogs-insecure-sandbox:ci
+          format: table
+          exit-code: "1"
+          ignore-unfixed: true
+          severity: HIGH,CRITICAL
+
       - name: Generate worker SBOM
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
         with:
@@ -161,6 +173,13 @@ jobs:
           image: cogs-sandbox:ci
           format: spdx-json
           output-file: sandbox.spdx.json
+
+      - name: Generate insecure-container test-driver SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          image: cogs-insecure-sandbox:ci
+          format: spdx-json
+          output-file: insecure-container.spdx.json
 
       - name: Upload SBOMs
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
