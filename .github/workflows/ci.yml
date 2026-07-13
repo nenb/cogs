@@ -55,7 +55,7 @@ jobs:
         run: |
           cd test/egress-conformance/guest-probes
           python3 -c 'compile(open("black-box-probe.py", encoding="utf-8").read(), "black-box-probe.py", "exec")'
-          bash -n run-black-box-case.sh
+          bash -n run-black-box-case.sh run-kvm-black-box-case.sh
           go test ./...
           ./build.sh "$RUNNER_TEMP/probe-a"
           ./build.sh "$RUNNER_TEMP/probe-b"

@@ -10,7 +10,14 @@ test("Stage 1 manifest is immutable, schema-valid, complete by required group, a
   assert.equal(new Set(STAGE_1_CASES.map((item) => item.id)).size, STAGE_1_CASES.length);
   assert.deepEqual(
     new Set(STAGE_1_CASES.map((item) => item.group)),
-    new Set(["identity-route", "http-parsing", "credential-handling", "audit-failure", "revocation"]),
+    new Set([
+      "identity-route",
+      "http-parsing",
+      "credential-handling",
+      "bypass-resistance",
+      "audit-failure",
+      "revocation",
+    ]),
   );
   const byId = new Map(STAGE_1_CASES.map((item) => [item.id, item]));
   for (const item of STAGE_1_CASES) {
@@ -47,6 +54,16 @@ test("Stage 1 case metadata covers every mandatory parser and credential behavio
     "basic",
     "all-sinks",
     "long-lived-drain",
+    "unset-proxy",
+    "direct-ipv4",
+    "direct-ipv6",
+    "arbitrary-dns",
+    "dns-over-https",
+    "udp-quic",
+    "nested-connect",
+    "websocket",
+    "proxy-admin",
+    "cloud-metadata",
   ])
     assert.ok(scenarios.has(required), `missing mandatory scenario ${required}`);
 });

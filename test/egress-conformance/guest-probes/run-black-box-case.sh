@@ -21,7 +21,7 @@ if [[ ! "$COGS_SUITE_GUEST_PROXY" =~ ^http://host\.docker\.internal:[0-9]{1,5}$ 
     || ! "$COGS_SUITE_TARGET_PORT" =~ ^[0-9]{1,5}$ \
     || ! "$COGS_SUITE_CAPABILITY" =~ ^[A-Za-z0-9._-]{0,256}$ \
     || ! "$COGS_SUITE_SCENARIO" =~ ^[a-z0-9.-]{1,64}$ \
-    || ! "$COGS_SUITE_KIND" =~ ^(https|redirect|raw-http1|raw-http2|fault|revocation|confidentiality)$ \
+    || ! "$COGS_SUITE_KIND" =~ ^(https|redirect|raw-http1|raw-http2|fault|revocation|confidentiality|bypass)$ \
     || ( "$COGS_SUITE_EXPECT" != allow && "$COGS_SUITE_EXPECT" != deny && "$COGS_SUITE_EXPECT" != safe ) ]]; then
   printf '{"passed":false,"diagnosticsRedacted":"suite probe input is invalid"}\n'
   exit 0

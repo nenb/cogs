@@ -22,8 +22,8 @@ def valid_inputs(values):
     scenario, kind, proxy_host, proxy_port, target_port, capability, expected = values
     return (
         scenario.replace("-", "").replace(".", "").isalnum()
-        and kind in ("https", "redirect", "raw-http1", "raw-http2", "fault", "revocation", "confidentiality")
-        and proxy_host == "host.docker.internal"
+        and kind in ("https", "redirect", "raw-http1", "raw-http2", "fault", "revocation", "confidentiality", "bypass")
+        and proxy_host in ("host.docker.internal", "192.0.2.1")
         and proxy_port.isdigit()
         and target_port.isdigit()
         and 1 <= int(proxy_port) <= 65535
@@ -282,6 +282,68 @@ def raw_http2(scenario, proxy_host, proxy_port, target_port, capability):
         tls.close()
 
 
+def bypass_probe(scenario, proxy_host, proxy_port, target_port, capability):
+    def tcp(host, port):
+        try:
+            connection = socket.create_connection((host, port), timeout=2)
+            connection.close()
+            return True
+        except OSError:
+            return False
+    if scenario in ("unset-proxy", "direct-ipv4"):
+        return tcp("192.0.2.1", target_port)
+    if scenario == "direct-ipv6":
+        return tcp("2001:db8::1", 443)
+    if scenario == "arbitrary-dns":
+        try:
+            subprocess.run(["getent", "ahostsv4", "example.com"], timeout=3, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return True
+        except (subprocess.SubprocessError, OSError):
+            return False
+    if scenario == "dns-over-https":
+        return tcp("1.1.1.1", 443)
+    if scenario == "udp-quic":
+        udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        udp.settimeout(2)
+        try:
+            udp.sendto(b"cogs-denial-probe", ("192.0.2.1", 443))
+            udp.recvfrom(64)
+            return True
+        except OSError:
+            return False
+        finally:
+            udp.close()
+    if scenario in ("alternate-tcp", "cogs-api", "openbao"):
+        return tcp("192.0.2.1", {"alternate-tcp": 22, "cogs-api": 8080, "openbao": 8200}[scenario])
+    if scenario == "cloud-metadata":
+        return tcp("169.254.169.254", 80)
+    if scenario == "proxy-admin":
+        raw = socket.create_connection((proxy_host, proxy_port), timeout=3)
+        raw.sendall(b"GET /config_dump HTTP/1.1\r\nHost: 192.0.2.1\r\nConnection: close\r\n\r\n")
+        response = receive_headers(raw)
+        raw.close()
+        return b" 200 " in response.split(b"\r\n", 1)[0]
+    if scenario in ("nested-connect", "websocket"):
+        try:
+            tls = connect_tls(proxy_host, proxy_port, target_port, capability)
+        except (OSError, ssl.SSLError):
+            return False
+        if tls is None:
+            return False
+        host = f"localhost:{target_port}"
+        if scenario == "nested-connect":
+            request = f"CONNECT {host} HTTP/1.1\r\nHost: {host}\r\n\r\n"
+            forbidden_status = b" 200 "
+        else:
+            request = f"GET /protected/header HTTP/1.1\r\nHost: {host}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Key: AAAAAAAAAAAAAAAAAAAAAA==\r\nSec-WebSocket-Version: 13\r\n\r\n"
+            forbidden_status = b" 101 "
+        tls.sendall(request.encode())
+        response = receive_headers(tls)
+        tls.close()
+        return forbidden_status in response.split(b"\r\n", 1)[0]
+    return False
+
+
 def main():
     if len(sys.argv) != 8 or not valid_inputs(sys.argv[1:]):
         emit(False, "invalid probe input")
@@ -289,7 +351,9 @@ def main():
     proxy_port, target_port = int(proxy_port_text), int(target_port_text)
     proxy = f"http://{proxy_host}:{proxy_port}"
     try:
-        if scenario in {
+        if kind == "bypass":
+            allowed = bypass_probe(scenario, proxy_host, proxy_port, target_port, capability)
+        elif scenario in {
             "capability-valid", "capability-missing", "capability-malformed", "capability-expired",
             "capability-other-session", "allowed-host-port", "undeclared-host", "direct-destination-ip",
             "alternate-port", "wrong-method", "wrong-path", "encoded-slash-dot", "traversal",

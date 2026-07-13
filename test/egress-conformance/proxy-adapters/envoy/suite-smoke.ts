@@ -24,7 +24,9 @@ const repo = resolve(here, "../../../..");
 const outputDirectory = resolve(process.argv[2] ?? join(repo, "docs/security-evidence/generated"));
 const sourceRevision =
   process.env.COGS_SOURCE_REVISION ?? (await execFileAsync("git", ["-C", repo, "rev-parse", "HEAD"])).stdout.trim();
-const reportId = `envoy-suite-${process.env.GITHUB_RUN_ID ?? "local"}`;
+const profile = process.env.COGS_CONFORMANCE_PROFILE === "linux-kvm" ? "linux-kvm" : "insecure-container";
+const authoritative = profile === "linux-kvm";
+const reportId = `envoy-suite-${profile}-${process.env.GITHUB_RUN_ID ?? "local"}`;
 const stateRoot = process.platform === "linux" ? "/dev/shm" : tmpdir();
 const realCredential = `Bearer cogs-fixture-${randomBytes(24).toString("hex")}`;
 const apiCredential = `cogs-api-${randomBytes(24).toString("hex")}`;
@@ -43,6 +45,25 @@ const sensitiveValues = [
   wrongCapability,
   placeholder,
 ] as const;
+
+let authoritativeGuestKernel: string | undefined;
+if (authoritative) {
+  const driver = join(repo, "dev/linux-kvm/driver.sh");
+  const verification = JSON.parse((await execFileAsync(driver, ["verify"], { timeout: 30_000 })).stdout) as Record<
+    string,
+    unknown
+  >;
+  assert.equal(verification.kvm_enabled, true);
+  assert.equal(verification.guest_root, true);
+  assert.equal(verification.distinct_boot_ids, true);
+  assert.equal(typeof verification.guest_kernel, "string");
+  authoritativeGuestKernel = verification.guest_kernel as string;
+  const hostBootId = (await readFile("/proc/sys/kernel/random/boot_id", "utf8")).trim();
+  const guestBootId = (
+    await execFileAsync(driver, ["ssh", "cat /proc/sys/kernel/random/boot_id"], { timeout: 15_000 })
+  ).stdout.trim();
+  assert.notEqual(guestBootId, hostBootId);
+}
 
 async function reservePort(): Promise<number> {
   const server = createServer();
@@ -175,7 +196,7 @@ try {
   assert.notEqual(proxyCertificate.certificate, replacementCertificate.certificate);
   const fixtureUrl = new URL(fixtures.tlsOrigin);
   const fixturePort = Number(fixtureUrl.port);
-  const proxyPort = await reservePort();
+  const proxyPort = authoritative ? 18080 : await reservePort();
   await execFileAsync("docker", ["pull", ENVOY_IMAGE], { timeout: 120_000, maxBuffer: 1024 * 1024 });
   const imageIdentity = (
     await execFileAsync("docker", ["image", "inspect", "--format", "{{json .RepoDigests}}", ENVOY_IMAGE], {
@@ -246,10 +267,17 @@ try {
       const state = prepared.get(test.id);
       if (!state) throw new Error("suite case was not prepared");
       return {
-        command: join(repo, "test/egress-conformance/guest-probes/run-black-box-case.sh"),
+        command: join(
+          repo,
+          authoritative
+            ? "test/egress-conformance/guest-probes/run-kvm-black-box-case.sh"
+            : "test/egress-conformance/guest-probes/run-black-box-case.sh",
+        ),
         args: [],
         env: {
-          COGS_SUITE_GUEST_PROXY: `http://host.docker.internal:${new URL(runtime.proxyOrigin).port}`,
+          COGS_SUITE_GUEST_PROXY: authoritative
+            ? "http://192.0.2.1:18080"
+            : `http://host.docker.internal:${new URL(runtime.proxyOrigin).port}`,
           COGS_SUITE_TARGET_PORT: String(fixturePort),
           COGS_SUITE_PUBLIC_CA:
             definition.probe.scenario === "replacement-capability" ||
@@ -271,8 +299,8 @@ try {
   report = await runConformance(STAGE_1_MANIFEST, {
     reportId,
     sourceRevision,
-    profile: "insecure-container",
-    authority: "functional-only",
+    profile,
+    authority: authoritative ? "authoritative-local" : "functional-only",
     environment: {
       os: platform(),
       architecture: process.arch,
@@ -281,8 +309,27 @@ try {
           ? `GitHub Actions ${process.env.RUNNER_NAME ?? "unknown"}`
           : "local Docker host",
       runner_image: process.env.ImageOS ?? "local",
-      runtime_versions: { docker: dockerVersion, envoy: ENVOY_VERSION },
-      metadata: { isolation_claim: false, proxy_admin_enabled: false, immutable_configuration: true },
+      runtime_versions: {
+        docker: dockerVersion,
+        envoy: ENVOY_VERSION,
+        ...(authoritativeGuestKernel ? { guest_kernel: authoritativeGuestKernel } : {}),
+      },
+      metadata: {
+        isolation_claim: authoritative,
+        kvm_present: authoritative,
+        kvm_enabled: authoritative,
+        guest_root: true,
+        distinct_boot_ids: authoritative,
+        host_enforced_network: authoritative,
+        ...(authoritative
+          ? {
+              guest_image_sha512:
+                "78f658893d7aecb56288b86afebb72dcdb1a636e8e9db8bda64851a308697794678ceb5cd3b7c86afd5fb892afbc6baf9d2dbaceb7855347fde8660e8d68e667",
+            }
+          : {}),
+        proxy_admin_enabled: false,
+        immutable_configuration: true,
+      },
     },
     components: [{ name: "envoy", version: ENVOY_VERSION, image_digest: ENVOY_IMAGE_DIGEST }],
     dependencies: {
@@ -290,10 +337,16 @@ try {
       audit: { mode: "stubbed", implementation: "Stage 1 in-memory intent and completion fixture" },
       revocation: { mode: "stubbed", implementation: "Stage 1 deny-new and process-drain fixture" },
       identity: { mode: "stubbed", implementation: "Stage 1 keyed session capability fixture" },
-      network_enforcement: { mode: "not-applicable", implementation: "insecure-container has no default-deny claim" },
+      network_enforcement: authoritative
+        ? { mode: "real", implementation: "host-owned TAP INPUT/FORWARD policy with no NAT or default route" }
+        : { mode: "not-applicable", implementation: "insecure-container has no default-deny claim" },
     },
+    releaseEligibility: "disabled-candidate",
     knownLimitations: [
-      "This is functional-only insecure-container evidence and cannot support a guest-root isolation claim.",
+      authoritative
+        ? "This is authoritative local KVM evidence; authorization, audit, identity, and revocation dependencies remain Stage 1 stubs."
+        : "This is functional-only insecure-container evidence and cannot support a guest-root isolation claim.",
+      "Candidate evaluation disables release eligibility until proxy selection and production integration.",
       "Direct OpenBao polling and production WAL persistence remain mandatory Stage 3 reruns.",
       "The immutable TLS interception certificate enumerates registered hosts; Envoy does not mint leaves dynamically.",
       "Direct OpenBao change detection remains a Stage 1 revocation stub and requires a mandatory Stage 3 rerun.",
