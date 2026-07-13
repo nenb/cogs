@@ -171,6 +171,7 @@ export class EnvoyConformanceAdapter implements ConformanceAdapter {
   readonly #runId = randomUUID().replaceAll("-", "");
   readonly #accessRecords: EnvoyAccessRecord[] = [];
   #active: ActiveCase | undefined;
+  #lastProxyDiagnostic: string | undefined;
 
   constructor(options: EnvoyAdapterOptions) {
     if (options.sensitiveValues?.some((value) => value.length === 0)) {
@@ -187,6 +188,7 @@ export class EnvoyConformanceAdapter implements ConformanceAdapter {
 
   async execute(test: Readonly<ConformanceCase>, signal: AbortSignal): Promise<AdapterResult> {
     if (this.#active !== undefined) throw new Error("Envoy adapter already has an active case");
+    this.#lastProxyDiagnostic = undefined;
     await mkdir(this.#stateRoot, { recursive: true, mode: 0o700 });
     const directory = await mkdtemp(join(this.#stateRoot, "cogs-envoy-"));
     const configuration = await this.#options.configurationFor(test);
@@ -265,7 +267,14 @@ export class EnvoyConformanceAdapter implements ConformanceAdapter {
     }
     await delay(50, undefined, { signal });
     await this.#captureLogs();
-    return parseExternalCaseResult(result.stdout.trim());
+    const parsed = parseExternalCaseResult(result.stdout.trim());
+    if (!parsed.passed && this.#lastProxyDiagnostic !== undefined) {
+      return {
+        passed: false,
+        diagnosticsRedacted: `${parsed.diagnosticsRedacted ?? "external case failed"}; ${this.#lastProxyDiagnostic}`,
+      };
+    }
+    return parsed;
   }
 
   async cleanup(_test: Readonly<ConformanceCase>): Promise<void> {
@@ -297,6 +306,23 @@ export class EnvoyConformanceAdapter implements ConformanceAdapter {
     const combined = `${logs.stdout}\n${logs.stderr}`;
     if (this.#options.sensitiveValues?.some((secret) => combined.includes(secret))) {
       throw new Error("Envoy logs contained a configured sensitive value");
+    }
+    for (const line of combined.split("\n")) {
+      if (!line.trimStart().startsWith("{")) continue;
+      try {
+        const value = JSON.parse(line) as Record<string, unknown>;
+        const responseCode = Number(value.response_code);
+        if (
+          value.event === "proxy-request" &&
+          Number.isInteger(responseCode) &&
+          responseCode >= 100 &&
+          responseCode <= 599 &&
+          typeof value.response_flags === "string" &&
+          value.response_flags.length <= 128
+        ) {
+          this.#lastProxyDiagnostic = `outer proxy status ${responseCode}, flags ${value.response_flags || "none"}`;
+        }
+      } catch {}
     }
     const known = new Set(this.#accessRecords.map((record) => `${record.intent_id}:${record.route_id}`));
     for (const record of parseAccessRecords(combined)) {

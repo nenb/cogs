@@ -248,7 +248,12 @@ function routeAuthOverride(service: Json): Json {
   };
 }
 
-function hardenedHcm(name: string, virtualHosts: Json[], filters: Json[], accessLog: boolean): Json {
+function hardenedHcm(
+  name: string,
+  virtualHosts: Json[],
+  filters: Json[],
+  accessLog: false | "proxy" | "completion",
+): Json {
   return {
     "@type": `${envoyType}/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager`,
     stat_prefix: name,
@@ -271,13 +276,21 @@ function hardenedHcm(name: string, virtualHosts: Json[], filters: Json[], access
               typed_config: {
                 "@type": `${envoyType}/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog`,
                 log_format: {
-                  json_format: {
-                    event: "request-complete",
-                    intent_id: "%DYNAMIC_METADATA(envoy.filters.http.ext_authz:x-cogs-intent-id)%",
-                    route_id: "%ROUTE_NAME%",
-                    response_code: "%RESPONSE_CODE%",
-                    duration_ms: "%DURATION%",
-                  },
+                  json_format:
+                    accessLog === "completion"
+                      ? {
+                          event: "request-complete",
+                          intent_id: "%DYNAMIC_METADATA(envoy.filters.http.ext_authz:x-cogs-intent-id)%",
+                          route_id: "%ROUTE_NAME%",
+                          response_code: "%RESPONSE_CODE%",
+                          duration_ms: "%DURATION%",
+                        }
+                      : {
+                          event: "proxy-request",
+                          route_id: "%ROUTE_NAME%",
+                          response_code: "%RESPONSE_CODE%",
+                          response_flags: "%RESPONSE_FLAGS%",
+                        },
                 },
               },
             },
@@ -422,7 +435,7 @@ export function generateEnvoyConfig(input: EnvoyCandidateConfigInput): Readonly<
                   extAuthzFilter(authHttpService(authorization.origin, "/v1/envoy/capability", input), true),
                   routerFilter,
                 ],
-                false,
+                "proxy",
               ),
             },
           ],
@@ -504,7 +517,7 @@ export function generateEnvoyConfig(input: EnvoyCandidateConfigInput): Readonly<
                   ),
                   routerFilter,
                 ],
-                true,
+                "completion",
               ),
             },
           ],
