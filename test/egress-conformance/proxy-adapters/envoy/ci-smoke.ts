@@ -165,7 +165,7 @@ try {
   const configFor = (caseId: string): EnvoyCandidateConfigInput => ({
     caseId,
     sessionId,
-    listenerAddress: "127.0.0.1",
+    listenerAddress: "0.0.0.0",
     listenerPort: proxyPort,
     authorizationGrpcTarget: faultInjector.grpcTarget,
     proxyCertificatePem: proxyCertificate.certificate,
@@ -194,7 +194,7 @@ try {
       command: join(here, "case-probe.sh"),
       args: [],
       env: {
-        COGS_ENVOY_PROXY: runtime.proxyOrigin,
+        COGS_ENVOY_GUEST_PROXY: `http://host.docker.internal:${new URL(runtime.proxyOrigin).port}`,
         COGS_ENVOY_TARGET: `https://localhost:${fixturePort}/protected/header`,
         COGS_ENVOY_PROXY_CA: proxyCertificate.caPath,
         COGS_ENVOY_CAPABILITY: test.id === "envoy.capability-wrong" ? wrongCapability : capability,

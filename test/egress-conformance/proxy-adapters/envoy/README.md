@@ -33,7 +33,7 @@ At runtime Envoy applies one normalization before route matching and forwarding:
 
 ## Current evidence and limitations
 
-`ci-smoke.ts` runs the shared conformance controller with a wrong-capability denial and a real CONNECT → inner TLS interception → bearer overwrite request. It correlates the stub intent, redacted Envoy completion, and non-reflecting upstream observation before atomically publishing the report.
+`ci-smoke.ts` runs the shared conformance controller with a wrong-capability denial and a real CONNECT → inner TLS interception → bearer overwrite request issued over SSH by root in the `insecure-container` guest. The guest reaches only the candidate data listener through its fixed Docker host-gateway alias; the generated Envoy bootstrap has no admin listener. The controller correlates the stub intent, redacted Envoy completion, and non-reflecting upstream observation before atomically publishing the report.
 
 Still outstanding by design:
 
