@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createConnection } from "node:net";
 import test from "node:test";
 import type { FaultInjector } from "./server.ts";
 import { startFaultInjector } from "./server.ts";
@@ -128,6 +129,65 @@ test("capability validation, deny-new, rotation, and drain never expose values",
     for (const value of [originalCapability, replacementCapability, "cogs-wrong-capability-value"]) {
       assert.equal(serialized.includes(value), false);
     }
+  });
+});
+
+test("Envoy HTTP authorization hooks validate capabilities and append redacted intents", async () => {
+  await withInjector(async (injector) => {
+    const origin = new URL(injector.origin);
+    const connectResponse = await new Promise<string>((resolve, reject) => {
+      const socket = createConnection(Number(origin.port), origin.hostname);
+      let response = "";
+      socket.setEncoding("utf8");
+      socket.once("error", reject);
+      socket.on("data", (chunk: string) => {
+        response += chunk;
+      });
+      socket.once("end", () => resolve(response));
+      socket.once("connect", () => {
+        socket.write(
+          `CONNECT /v1/envoy/capability HTTP/1.1\r\nHost: ${origin.host}\r\nProxy-Authorization: ${originalCapability}\r\nConnection: close\r\n\r\n`,
+        );
+      });
+    });
+    assert.match(connectResponse, /^HTTP\/1\.1 200 OK/);
+
+    const denied = await fetch(`${injector.origin}/v1/envoy/capability`, {
+      headers: { "proxy-authorization": "cogs-wrong-capability-value" },
+    });
+    assert.equal(denied.status, 403);
+
+    const authorized = await fetch(`${injector.origin}/v1/envoy/authorize`, {
+      headers: {
+        "x-cogs-case-id": authorization.case_id,
+        "x-cogs-session-id": authorization.session_id,
+        "x-cogs-route-id": authorization.route_id,
+        "x-cogs-credential-required": "true",
+        "x-cogs-require-capability": "false",
+        authorization: "must-not-be-retained",
+      },
+    });
+    assert.equal(authorized.status, 200);
+    const intentId = authorized.headers.get("x-cogs-intent-id");
+    assert.ok(intentId);
+    assert.equal(injector.snapshot().intents[0]?.intent_id, intentId);
+    assert.equal(JSON.stringify(injector.snapshot()).includes("must-not-be-retained"), false);
+
+    injector.denyNew();
+    assert.equal(
+      (
+        await fetch(`${injector.origin}/v1/envoy/authorize`, {
+          headers: {
+            "x-cogs-case-id": authorization.case_id,
+            "x-cogs-session-id": authorization.session_id,
+            "x-cogs-route-id": authorization.route_id,
+            "x-cogs-credential-required": "true",
+            "x-cogs-require-capability": "false",
+          },
+        })
+      ).status,
+      403,
+    );
   });
 });
 

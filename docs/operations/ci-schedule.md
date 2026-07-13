@@ -15,7 +15,7 @@ This schedule implements `IMPLEMENTATION.md` sections 7.1 and 11.3 without treat
 
 The KVM workflow fails when `/dev/kvm` is absent, when QEMU cannot start with `-accel kvm`, or when QMP `query-kvm` does not return both `present: true` and `enabled: true`. It never falls back to TCG/software emulation. GitHub-hosted KVM availability is monitored rather than assumed.
 
-Adding the `security` label triggers the KVM qualification workflow. Once Stage 1 exists, the same labelled path must run the authoritative guest-root conformance job. Routine CI artifacts need not be committed; release-candidate reports belong under `docs/security-evidence/`.
+Adding the `security` label triggers the KVM qualification workflow. The same labelled path now runs the `insecure-container` SSH/SFTP smoke and pinned Envoy candidate conformance; these reports are functional-only and stub-aware. Once issue #23 provides the Stage 1 driver, this path must also run authoritative guest-root conformance. Routine CI artifacts need not be committed; release-candidate reports belong under `docs/security-evidence/`.
 
 ## Vulnerability-noise triage
 

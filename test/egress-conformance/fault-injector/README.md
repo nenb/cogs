@@ -11,4 +11,6 @@ It provides bounded loopback-only HTTP contracts for:
 
 Only opaque case/session/route/intent IDs, booleans, status class, bounded latency, sequence, and revocation metadata are retained. Capability plaintext is converted immediately to a keyed digest. Queries, arbitrary fields, credentials, placeholders, request bodies, and capability values are never included in records or responses.
 
+The `/v1/envoy/capability` and `/v1/envoy/authorize` HTTP ext-authz compatibility hooks preserve those semantics for the pinned Envoy candidate. CONNECT capability checks are handled without treating tunneled traffic as an authorization body; inner per-request authorization records one intent and returns only its opaque ID as dynamic metadata for Envoy's redacted completion log.
+
 A successful Stage 1 test using this fixture must declare authorization, audit, or revocation as `stubbed` as applicable. Direct OpenBao polling remains stubbed and must be rerun against the real Stage 3 dependency. The injector exists to prove required hooks and fail-closed behavior, not to satisfy production release acceptance.
