@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { ENVOY_IMAGE } from "../test/egress-conformance/proxy-adapters/envoy/image.ts";
 
+const root = resolve(import.meta.dirname, "..");
 const dockerfiles = ["images/worker/Dockerfile", "images/sandbox/Dockerfile", "dev/insecure-sandbox/Dockerfile"];
 for (const relativePath of dockerfiles) {
-  const content = readFileSync(resolve(import.meta.dirname, "..", relativePath), "utf8");
+  const content = readFileSync(resolve(root, relativePath), "utf8");
   const externalStages: string[] = [];
   const stageAliases = new Set<string>();
   const instructions: Array<{ line: number; text: string }> = [];
@@ -43,4 +45,13 @@ for (const relativePath of dockerfiles) {
   }
 }
 
-console.log(`Verified external base-image digest pinning for ${dockerfiles.length} image definitions.`);
+const ciWorkflow = readFileSync(resolve(root, ".github/workflows/ci.yml"), "utf8");
+assert.match(ENVOY_IMAGE, /^envoyproxy\/envoy:v\d+\.\d+\.\d+@sha256:[a-f0-9]{64}$/);
+assert.ok(
+  ciWorkflow.includes(`ENVOY_IMAGE: ${ENVOY_IMAGE}`),
+  "CI must scan and inventory the exact Envoy candidate pin",
+);
+
+console.log(
+  `Verified external base-image digest pinning for ${dockerfiles.length} image definitions and Envoy candidate.`,
+);

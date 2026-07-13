@@ -29,3 +29,7 @@ Reports use `cogs.security-report/v1alpha1`. `writeReports()` validates schema a
 - `linux-kvm`: authoritative local evidence only after KVM and guest-root qualification.
 
 The Stage 1 Linux/KVM driver and host-enforced default-deny network are tracked separately in issue #23.
+
+## Proxy candidates
+
+Candidate-specific immutable configuration and external-process lifecycle adapters live under `proxy-adapters/`. The pinned Envoy candidate validates capability and authorization/audit hooks fail closed, exposes no administration endpoint, and decapsulates explicit CONNECT into host-specific inner TLS listeners. Its security-labelled CI report remains functional-only and stub-aware. The complete shared black-box case matrix is tracked in issue #22; a candidate smoke is not proxy selection evidence by itself.

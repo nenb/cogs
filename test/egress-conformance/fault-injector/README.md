@@ -11,4 +11,6 @@ It provides bounded loopback-only HTTP contracts for:
 
 Only opaque case/session/route/intent IDs, booleans, status class, bounded latency, sequence, and revocation metadata are retained. Capability plaintext is converted immediately to a keyed digest. Queries, arbitrary fields, credentials, placeholders, request bodies, and capability values are never included in records or responses.
 
+The pinned Envoy candidate uses the fixture's bounded loopback v3 gRPC ext-authz service. It decodes only the standard request header map and trusted context extensions, validates CONNECT capabilities without treating tunneled traffic as an authorization body, and records inner per-request intents. A successful decision returns only the opaque intent ID as dynamic metadata for Envoy's redacted completion log. HTTP compatibility endpoints remain negative-tested fixture surfaces but are not on the candidate data path.
+
 A successful Stage 1 test using this fixture must declare authorization, audit, or revocation as `stubbed` as applicable. Direct OpenBao polling remains stubbed and must be rerun against the real Stage 3 dependency. The injector exists to prove required hooks and fail-closed behavior, not to satisfy production release acceptance.

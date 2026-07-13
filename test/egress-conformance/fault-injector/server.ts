@@ -2,6 +2,7 @@ import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypt
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo, Socket } from "node:net";
 import { setTimeout as delay } from "node:timers/promises";
+import { startEnvoyAuthorizationGrpc } from "./envoy-grpc.ts";
 
 const maxBodyBytes = 32 * 1024;
 const opaqueId = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
@@ -36,11 +37,18 @@ export interface FaultInjectorSnapshot {
     accepting: boolean;
     action: "none" | "deny-new" | "drain";
   };
+  capability_checks: {
+    total: number;
+    header_present: number;
+    digest_matched: number;
+    accepted: number;
+  };
   faults: Readonly<FaultState>;
 }
 
 export interface FaultInjector {
   origin: string;
+  grpcTarget: string;
   setFaults(faults: Partial<FaultState>): void;
   denyNew(): void;
   rotateCapability(newCapability: string): void;
@@ -67,12 +75,18 @@ interface CompletionRequest {
   latency_ms: number;
 }
 
-function writeJSON(response: ServerResponse, status: number, value: object): void {
+function writeJSON(
+  response: ServerResponse,
+  status: number,
+  value: object,
+  headers: Readonly<Record<string, string>> = {},
+): void {
   const body = `${JSON.stringify(value)}\n`;
   response.writeHead(status, {
     "content-type": "application/json",
     "content-length": Buffer.byteLength(body),
     "cache-control": "no-store",
+    ...headers,
   });
   response.end(body);
 }
@@ -114,6 +128,20 @@ function parseAuthorization(value: unknown): AuthorizationRequest | undefined {
     return undefined;
   }
   return value as unknown as AuthorizationRequest;
+}
+
+function parseEnvoyAuthorization(request: IncomingMessage): AuthorizationRequest | undefined {
+  const single = (name: string): string | undefined => {
+    const value = request.headers[name];
+    return Array.isArray(value) ? undefined : value;
+  };
+  const credentialRequired = single("x-cogs-credential-required");
+  return parseAuthorization({
+    case_id: single("x-cogs-case-id"),
+    session_id: single("x-cogs-session-id"),
+    route_id: single("x-cogs-route-id"),
+    credential_required: credentialRequired === "true" ? true : credentialRequired === "false" ? false : undefined,
+  });
 }
 
 function parseCompletion(value: unknown): CompletionRequest | undefined {
@@ -159,6 +187,7 @@ export async function startFaultInjector(options: StartOptions): Promise<FaultIn
   const lifecycle = new AbortController();
   const intents: IntentRecord[] = [];
   const sockets = new Set<Socket>();
+  const capabilityChecks = { total: 0, header_present: 0, digest_matched: 0, accepted: 0 };
   const faults: FaultState = {
     authorizationOutage: false,
     auditUnwritable: false,
@@ -167,6 +196,70 @@ export async function startFaultInjector(options: StartOptions): Promise<FaultIn
     telemetryOutage: false,
     delayMs: 0,
   };
+
+  const capabilityValueAllowed = (value: string | undefined): boolean => {
+    capabilityChecks.total += 1;
+    if (value !== undefined) capabilityChecks.header_present += 1;
+    const matches = value !== undefined && timingSafeEqual(digest(value, comparisonKey), capabilityDigest);
+    if (matches) capabilityChecks.digest_matched += 1;
+    if (matches && accepting) capabilityChecks.accepted += 1;
+    return matches && accepting;
+  };
+  const capabilityAllowed = (request: IncomingMessage): boolean => {
+    const supplied = request.headers["proxy-authorization"];
+    return capabilityValueAllowed(Array.isArray(supplied) ? undefined : supplied);
+  };
+
+  const appendIntent = (authorization: AuthorizationRequest): IntentRecord | undefined => {
+    if (faults.authorizationOutage || faults.auditUnwritable || faults.auditFull || intents.length >= maxRecords) {
+      return undefined;
+    }
+    const intent: IntentRecord = {
+      sequence: sequence++,
+      intent_id: randomUUID(),
+      case_id: authorization.case_id,
+      session_id: authorization.session_id,
+      route_id: authorization.route_id,
+      credential_required: authorization.credential_required,
+      completion: null,
+    };
+    intents.push(intent);
+    return intent;
+  };
+
+  const grpc = await startEnvoyAuthorizationGrpc({
+    async decide(request) {
+      if (faults.delayMs > 0) await delay(faults.delayMs, undefined, { signal: lifecycle.signal });
+      const mode = request.context["cogs.mode"];
+      if (mode === "capability") {
+        return { outcome: capabilityValueAllowed(request.headers["proxy-authorization"]) ? "allow" : "deny" };
+      }
+      if (mode !== "authorize") return { outcome: "deny" };
+      const requireCapability = request.context["cogs.require_capability"];
+      const authorization = parseAuthorization({
+        case_id: request.context["cogs.case_id"],
+        session_id: request.context["cogs.session_id"],
+        route_id: request.context["cogs.route_id"],
+        credential_required:
+          request.context["cogs.credential_required"] === "true"
+            ? true
+            : request.context["cogs.credential_required"] === "false"
+              ? false
+              : undefined,
+      });
+      if (
+        authorization === undefined ||
+        (requireCapability !== "true" && requireCapability !== "false") ||
+        (requireCapability === "true" && !capabilityValueAllowed(request.headers["proxy-authorization"])) ||
+        !accepting
+      ) {
+        return { outcome: "deny" };
+      }
+      const intent = appendIntent(authorization);
+      if (intent === undefined) return { outcome: "error" };
+      return { outcome: "allow", intentId: intent.intent_id };
+    },
+  });
 
   const server = createServer((request, response) => {
     void (async () => {
@@ -178,35 +271,58 @@ export async function startFaultInjector(options: StartOptions): Promise<FaultIn
       }
 
       if (request.method === "POST" && url.pathname === "/v1/authorize") {
-        if (faults.authorizationOutage) {
-          writeJSON(response, 503, { error: "authorization-unavailable" });
-          return;
-        }
-        if (faults.auditUnwritable || faults.auditFull || intents.length >= maxRecords) {
-          writeJSON(response, 503, { error: "audit-unavailable" });
-          return;
-        }
         const authorization = parseAuthorization(await readJSON(request));
         if (authorization === undefined) {
           writeJSON(response, 400, { error: "invalid-request" });
           return;
         }
-        const intent: IntentRecord = {
-          sequence: sequence++,
-          intent_id: randomUUID(),
-          case_id: authorization.case_id,
-          session_id: authorization.session_id,
-          route_id: authorization.route_id,
-          credential_required: authorization.credential_required,
-          completion: null,
-        };
-        intents.push(intent);
+        const intent = appendIntent(authorization);
+        if (intent === undefined) {
+          writeJSON(response, 503, {
+            error: faults.authorizationOutage ? "authorization-unavailable" : "audit-unavailable",
+          });
+          return;
+        }
         writeJSON(response, 200, {
           allowed: true,
           intent_id: intent.intent_id,
           intent_sequence: intent.sequence,
           telemetry_available: !faults.telemetryOutage,
         });
+        return;
+      }
+
+      if (url.pathname === "/v1/envoy/capability") {
+        const allowed = capabilityAllowed(request);
+        writeJSON(response, allowed ? 200 : 403, { allowed, epoch, action });
+        return;
+      }
+
+      if (url.pathname === "/v1/envoy/authorize") {
+        const authorization = parseEnvoyAuthorization(request);
+        const requireCapability = request.headers["x-cogs-require-capability"];
+        if (
+          authorization === undefined ||
+          (requireCapability !== "true" && requireCapability !== "false") ||
+          (requireCapability === "true" && !capabilityAllowed(request)) ||
+          !accepting
+        ) {
+          writeJSON(response, 403, { error: "denied" });
+          return;
+        }
+        const intent = appendIntent(authorization);
+        if (intent === undefined) {
+          writeJSON(response, 503, {
+            error: faults.authorizationOutage ? "authorization-unavailable" : "audit-unavailable",
+          });
+          return;
+        }
+        writeJSON(
+          response,
+          200,
+          { allowed: true, telemetry_available: !faults.telemetryOutage },
+          { "x-cogs-intent-id": intent.intent_id },
+        );
         return;
       }
 
@@ -232,11 +348,9 @@ export async function startFaultInjector(options: StartOptions): Promise<FaultIn
       }
 
       if (request.method === "POST" && url.pathname === "/v1/capability/validate") {
-        const supplied = request.headers["proxy-authorization"];
-        const value = Array.isArray(supplied) ? supplied[0] : supplied;
-        const matches = value !== undefined && timingSafeEqual(digest(value, comparisonKey), capabilityDigest);
-        writeJSON(response, matches && accepting ? 200 : 403, {
-          allowed: matches && accepting,
+        const allowed = capabilityAllowed(request);
+        writeJSON(response, allowed ? 200 : 403, {
+          allowed,
           epoch,
           action,
         });
@@ -259,20 +373,39 @@ export async function startFaultInjector(options: StartOptions): Promise<FaultIn
       }
     });
   });
+  server.on("connect", (request, socket) => {
+    void (async () => {
+      if (faults.delayMs > 0) await delay(faults.delayMs, undefined, { signal: lifecycle.signal });
+      // Node exposes CONNECT authority-form targets through the dedicated event even when
+      // Envoy's ext_authz path override is configured. This loopback-only hook never opens
+      // a tunnel; every CONNECT is treated solely as a capability check.
+      const allowed = capabilityAllowed(request);
+      const body = `${JSON.stringify({ allowed, epoch, action })}\n`;
+      socket.end(
+        `HTTP/1.1 ${allowed ? "200 OK" : "403 Forbidden"}\r\ncontent-type: application/json\r\ncontent-length: ${Buffer.byteLength(body)}\r\ncache-control: no-store\r\nconnection: close\r\n\r\n${body}`,
+      );
+    })().catch(() => socket.destroy());
+  });
   server.maxConnections = 256;
   server.on("connection", (socket) => {
     sockets.add(socket);
     socket.once("close", () => sockets.delete(socket));
   });
 
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => resolve());
-  });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", () => resolve());
+    });
+  } catch (error) {
+    await grpc.stop();
+    throw error;
+  }
   const address = server.address() as AddressInfo;
 
   return {
     origin: `http://127.0.0.1:${address.port}`,
+    grpcTarget: grpc.target,
     setFaults(update) {
       for (const [name, value] of Object.entries(update)) {
         if (!(name in faults)) throw new Error("unknown fault");
@@ -301,13 +434,18 @@ export async function startFaultInjector(options: StartOptions): Promise<FaultIn
       accepting = true;
     },
     snapshot() {
-      return structuredClone({ intents, revocation: { epoch, accepting, action }, faults });
+      return structuredClone({
+        intents,
+        revocation: { epoch, accepting, action },
+        capability_checks: capabilityChecks,
+        faults,
+      });
     },
     stop: async () => {
       stopPromise ??= (async () => {
         lifecycle.abort();
         for (const socket of sockets) socket.destroy();
-        await new Promise<void>((resolve) => server.close(() => resolve()));
+        await Promise.all([new Promise<void>((resolve) => server.close(() => resolve())), grpc.stop()]);
         comparisonKey.fill(0);
         capabilityDigest.fill(0);
       })();

@@ -286,6 +286,7 @@ create() {
     --tmpfs /tmp:rw,nosuid,nodev,size=256m \
     --mount "type=bind,src=$input,dst=/run/cogs-input,readonly" \
     --mount "type=volume,src=$volume,dst=/workspace" \
+    --add-host host.docker.internal:host-gateway \
     --publish 127.0.0.1::2222 \
     --env COGS_PROFILE="$profile" \
     --env HTTP_PROXY="$http_proxy" \
