@@ -1,12 +1,7 @@
+.cogs-dev/
+.git/
+.pi/
 node_modules/
-dist/
 coverage/
-*.log
-.DS_Store
-.env
-.env.*
-!.env.example
 docs/security-evidence/generated/
 test/egress-conformance/reports/
-.pi/reviews/
-.cogs-dev/
