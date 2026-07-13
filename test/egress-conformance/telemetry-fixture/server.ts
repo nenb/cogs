@@ -154,7 +154,10 @@ export async function emitOtlpMetadata(origin: string, record: OtlpMetadataRecor
 export async function startOtlpFixture(forbiddenValues: readonly string[]): Promise<OtlpFixture> {
   if (forbiddenValues.some((value) => value.length === 0)) throw new Error("OTLP forbidden values must not be empty");
   const key = randomBytes(32);
-  const forbidden = forbiddenValues.map((value) => createHash("sha256").update(key).update(value).digest());
+  const forbidden = forbiddenValues.map((value) => ({
+    length: value.length,
+    digest: createHash("sha256").update(key).update(value).digest(),
+  }));
   const records: OtlpMetadataRecord[] = [];
   const server = createServer((request, response) => {
     void (async () => {
@@ -176,10 +179,17 @@ export async function startOtlpFixture(forbiddenValues: readonly string[]): Prom
         reply(response, 400);
         return;
       }
-      const testIdDigest = createHash("sha256").update(key).update(record.test_id).digest();
-      if (forbidden.some((digest) => timingSafeEqual(digest, testIdDigest))) {
-        reply(response, 400);
-        return;
+      for (const item of forbidden) {
+        for (let offset = 0; offset + item.length <= record.test_id.length; offset += 1) {
+          const candidate = createHash("sha256")
+            .update(key)
+            .update(record.test_id.slice(offset, offset + item.length))
+            .digest();
+          if (timingSafeEqual(item.digest, candidate)) {
+            reply(response, 400);
+            return;
+          }
+        }
       }
       records.push(record);
       reply(response, 200);
@@ -198,7 +208,7 @@ export async function startOtlpFixture(forbiddenValues: readonly string[]): Prom
       new Promise<void>((resolve) =>
         server.close(() => {
           key.fill(0);
-          for (const digest of forbidden) digest.fill(0);
+          for (const item of forbidden) item.digest.fill(0);
           resolve();
         }),
       ),

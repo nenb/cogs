@@ -27,11 +27,22 @@ const sourceRevision =
 const reportId = `envoy-suite-${process.env.GITHUB_RUN_ID ?? "local"}`;
 const stateRoot = process.platform === "linux" ? "/dev/shm" : tmpdir();
 const realCredential = `Bearer cogs-fixture-${randomBytes(24).toString("hex")}`;
+const apiCredential = `cogs-api-${randomBytes(24).toString("hex")}`;
+const basicCredential = `Basic ${Buffer.from(`fixture:${randomBytes(24).toString("hex")}`).toString("base64")}`;
 const capability = `cogs-capability-${randomBytes(24).toString("hex")}`;
 const wrongCapability = `cogs-wrong-${randomBytes(24).toString("hex")}`;
 const placeholder = "Bearer cogs-non-secret-placeholder";
 const sessionId = "session-envoy-suite";
 const replacementCapability = `cogs-replacement-${randomBytes(24).toString("hex")}`;
+const sensitiveValues = [
+  realCredential,
+  apiCredential,
+  basicCredential,
+  capability,
+  replacementCapability,
+  wrongCapability,
+  placeholder,
+] as const;
 
 async function reservePort(): Promise<number> {
   const server = createServer();
@@ -147,20 +158,14 @@ const material = await mkdtemp(join(stateRoot, "cogs-envoy-smoke-material-"));
 const fixtures = await startUpstreamFixtures({
   expectedCredentials: {
     bearer: realCredential,
-    apiKey: "unused-api-key-fixture",
-    basic: "Basic dW51c2VkOmZpeHR1cmU=",
+    apiKey: apiCredential,
+    basic: basicCredential,
   },
   redirectLocation: "https://undeclared.invalid/denied",
   delayedResponseMs: 5_000,
 });
 const faultInjector = await startFaultInjector({ initialCapability: capability });
-const telemetry = await startOtlpFixture([
-  realCredential,
-  capability,
-  replacementCapability,
-  wrongCapability,
-  placeholder,
-]);
+const telemetry = await startOtlpFixture(sensitiveValues);
 let report: SecurityReport | undefined;
 try {
   const proxyCertificate = await generateProxyCertificate(material);
@@ -185,7 +190,7 @@ try {
   const prepared = new Map<string, PreparedCase>();
   const adapter = new EnvoyConformanceAdapter({
     stateRoot,
-    sensitiveValues: [realCredential, capability, replacementCapability, wrongCapability, placeholder],
+    sensitiveValues,
     configurationFor: (test) => {
       const definition = stage1Case(test.id);
       const state = prepareStage1Case(definition, faultInjector, capability, wrongCapability, replacementCapability);
@@ -196,9 +201,9 @@ try {
         scenario === "telemetry-outage"
           ? undefined
           : scenario === "api-key"
-            ? ({ kind: "api-key", header: "x-api-key", value: "unused-api-key-fixture" } as const)
+            ? ({ kind: "api-key", header: "x-api-key", value: apiCredential } as const)
             : scenario === "basic"
-              ? ({ kind: "basic", value: "Basic dW51c2VkOmZpeHR1cmU=" } as const)
+              ? ({ kind: "basic", value: basicCredential } as const)
               : ({ kind: "bearer", value: realCredential } as const);
       const parserPost = new Set(["cl-te-conflict", "invalid-chunk-size", "invalid-chunk-extension"]);
       return {
@@ -293,7 +298,7 @@ try {
       "The immutable TLS interception certificate enumerates registered hosts; Envoy does not mint leaves dynamically.",
       "Direct OpenBao change detection remains a Stage 1 revocation stub and requires a mandatory Stage 3 rerun.",
     ],
-    redactValues: [realCredential, capability, replacementCapability, wrongCapability, placeholder],
+    redactValues: sensitiveValues,
     adapter,
     cleanupTimeoutMs: 20_000,
     teardownTimeoutMs: 20_000,
@@ -308,6 +313,14 @@ try {
       assert.equal(record.route_id, "route.fixture");
       if (intent.completion === null)
         await completeIntent(faultInjector.origin, record.intent_id, record.response_code, record.duration_ms);
+      const completion = faultInjector
+        .snapshot()
+        .intents.find((item) => item.intent_id === record.intent_id)?.completion;
+      assert.deepEqual(completion, {
+        outcome: record.response_code >= 200 && record.response_code < 400 ? "success" : "failed",
+        status_class: Math.floor(record.response_code / 100),
+        latency_ms: record.duration_ms,
+      });
       if (intent.case_id !== "audit.telemetry-outage-uncredentialed") {
         await emitOtlpMetadata(telemetry.origin, {
           test_id: intent.case_id,
@@ -325,8 +338,7 @@ try {
       records,
       telemetry: telemetry.records(),
     });
-    for (const value of [realCredential, capability, replacementCapability, wrongCapability, placeholder])
-      assert.equal(serialized.includes(value), false);
+    for (const value of sensitiveValues) assert.equal(serialized.includes(value), false);
   } catch (error) {
     const result = report.tests.find((item) => item.result !== "fail") ?? report.tests[0];
     if (result) {

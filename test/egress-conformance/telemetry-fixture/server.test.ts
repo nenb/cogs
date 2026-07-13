@@ -14,7 +14,7 @@ test("OTLP fixture accepts only bounded central metadata and retains no forbidde
     });
     await assert.rejects(() =>
       emitOtlpMetadata(fixture.origin, {
-        test_id: secret,
+        test_id: `prefix-${secret}-suffix`,
         outcome: "success",
         status_class: 2,
         duration_ms: 12,

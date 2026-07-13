@@ -27,11 +27,22 @@ const sourceRevision =
 const reportId = `mitmproxy-suite-${process.env.GITHUB_RUN_ID ?? "local"}`;
 const stateRoot = process.platform === "linux" ? "/dev/shm" : tmpdir();
 const realCredential = `Bearer cogs-fixture-${randomBytes(24).toString("hex")}`;
+const apiCredential = `cogs-api-${randomBytes(24).toString("hex")}`;
+const basicCredential = `Basic ${Buffer.from(`fixture:${randomBytes(24).toString("hex")}`).toString("base64")}`;
 const capability = `cogs-capability-${randomBytes(24).toString("hex")}`;
 const wrongCapability = `cogs-wrong-${randomBytes(24).toString("hex")}`;
 const placeholder = "Bearer cogs-non-secret-placeholder";
 const sessionId = "session-mitmproxy-suite";
 const replacementCapability = `cogs-replacement-${randomBytes(24).toString("hex")}`;
+const sensitiveValues = [
+  realCredential,
+  apiCredential,
+  basicCredential,
+  capability,
+  replacementCapability,
+  wrongCapability,
+  placeholder,
+] as const;
 
 async function reservePort(): Promise<number> {
   const server = createServer();
@@ -49,20 +60,14 @@ async function reservePort(): Promise<number> {
 const fixtures = await startUpstreamFixtures({
   expectedCredentials: {
     bearer: realCredential,
-    apiKey: "unused-api-key-fixture",
-    basic: "Basic dW51c2VkOmZpeHR1cmU=",
+    apiKey: apiCredential,
+    basic: basicCredential,
   },
   redirectLocation: "https://undeclared.invalid/denied",
   delayedResponseMs: 5_000,
 });
 const faultInjector = await startFaultInjector({ initialCapability: capability });
-const telemetry = await startOtlpFixture([
-  realCredential,
-  capability,
-  replacementCapability,
-  wrongCapability,
-  placeholder,
-]);
+const telemetry = await startOtlpFixture(sensitiveValues);
 let report: SecurityReport | undefined;
 try {
   const fixtureUrl = new URL(fixtures.tlsOrigin);
@@ -86,7 +91,7 @@ try {
     stateRoot,
     listenerPort: proxyPort,
     upstreamCaCertificatePem: fixtures.caCertificatePem,
-    sensitiveValues: [realCredential, capability, replacementCapability, wrongCapability, placeholder],
+    sensitiveValues,
     policyFor: (test) => {
       const definition = stage1Case(test.id);
       const state = prepareStage1Case(definition, faultInjector, capability, wrongCapability, replacementCapability);
@@ -96,9 +101,9 @@ try {
         scenario === "telemetry-outage"
           ? undefined
           : scenario === "api-key"
-            ? ({ kind: "api-key", header: "x-api-key", value: "unused-api-key-fixture" } as const)
+            ? ({ kind: "api-key", header: "x-api-key", value: apiCredential } as const)
             : scenario === "basic"
-              ? ({ kind: "basic", value: "Basic dW51c2VkOmZpeHR1cmU=" } as const)
+              ? ({ kind: "basic", value: basicCredential } as const)
               : ({ kind: "bearer", value: realCredential } as const);
       const parserPost = new Set(["cl-te-conflict", "invalid-chunk-size", "invalid-chunk-extension"]);
       return {
@@ -184,7 +189,7 @@ try {
       "The latest upstream image has six fixed HIGH findings under a narrow owner-and-expiry ignore through 2026-07-27; this evidence cannot support selection or release.",
       "Direct OpenBao change detection remains a Stage 1 revocation stub and requires a mandatory Stage 3 rerun.",
     ],
-    redactValues: [realCredential, capability, replacementCapability, wrongCapability, placeholder],
+    redactValues: sensitiveValues,
     adapter,
     cleanupTimeoutMs: 20_000,
     teardownTimeoutMs: 20_000,
@@ -198,6 +203,11 @@ try {
       assert.ok(intent, "completion record has no authorization intent");
       assert.equal(record.route_id, "route.fixture");
       assert.equal(record.completion_recorded, true);
+      assert.deepEqual(intent.completion, {
+        outcome: record.response_code >= 200 && record.response_code < 400 ? "success" : "failed",
+        status_class: Math.floor(record.response_code / 100),
+        latency_ms: record.duration_ms,
+      });
       if (intent.case_id !== "audit.telemetry-outage-uncredentialed") {
         await emitOtlpMetadata(telemetry.origin, {
           test_id: intent.case_id,
@@ -213,8 +223,7 @@ try {
     );
     const observations = fixtures.observations().filter((item) => item.kind === "http");
     const serialized = JSON.stringify({ report, observations, snapshot, records, telemetry: telemetry.records() });
-    for (const value of [realCredential, capability, replacementCapability, wrongCapability, placeholder])
-      assert.equal(serialized.includes(value), false);
+    for (const value of sensitiveValues) assert.equal(serialized.includes(value), false);
   } catch (error) {
     const result = report.tests.find((item) => item.result !== "fail") ?? report.tests[0];
     if (result) {
