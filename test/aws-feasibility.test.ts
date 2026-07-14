@@ -30,6 +30,22 @@ test("AWS fixture has no inbound rule and requires three independent termination
   assert.match(main, /limit_amount = "20"/);
 });
 
+test("AWS runtime validation requires active KVM and a distinct root Kata guest", () => {
+  const remote = read("deploy/aws-feasibility/remote/validate-runtime.sh");
+  const controller = read("deploy/aws-feasibility/run-runtime-validation.sh");
+  assert.match(remote, /qemu-system-x86_64 -S -nodefaults -display none -machine accel=kvm/);
+  assert.match(remote, /query-kvm/);
+  assert.match(remote, /'enabled': True, 'present': True/);
+  assert.match(remote, /kata_version=3\.32\.0/);
+  assert.match(remote, /kata-static-\$kata_version-amd64\.tar\.zst/);
+  assert.match(remote, /1449ecea50bd91fa73a94648db195d18950fe869ba4b1f12d05f55f1fa7c1b01/);
+  assert.match(remote, /guest_uid.*== 0/);
+  assert.match(remote, /guest_kernel.*!=.*host_kernel/);
+  assert.doesNotMatch(remote, /accel=tcg|--runtime.*runc/);
+  assert.match(controller, /timeout 2700/);
+  assert.match(controller, /nested_virtualization.*enabled/);
+});
+
 test("AWS apply and cleanup scripts preserve manual and tag-bound gates", () => {
   const apply = read("deploy/aws-feasibility/apply.sh");
   const inventory = read("deploy/aws-feasibility/inventory.sh");

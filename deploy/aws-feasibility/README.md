@@ -48,7 +48,18 @@ export COGS_AWS_APPLY_APPROVED=apply-one-cpu-instance
 unset COGS_AWS_APPLY_APPROVED
 ```
 
-Apply failure or SSM-readiness timeout triggers immediate best-effort destroy. Success is not permission to leave the host idle; proceed directly to the bounded validation script implemented by #41.
+Apply failure or SSM-readiness timeout triggers immediate best-effort destroy. Success is not permission to leave the host idle; proceed directly to runtime validation.
+
+## Bounded runtime validation
+
+```bash
+export AWS_PROFILE=nebula
+./deploy/aws-feasibility/run-runtime-validation.sh
+```
+
+The controller sends one digest-pinned validation script through SSM, with no repository checkout or credentials on the host. It installs distro QEMU/containerd tooling, proves VMX and `/dev/kvm`, starts QEMU with `accel=kvm`, requires QMP `query-kvm` to return `present=true` and `enabled=true`, verifies the SHA-256 of Kata 3.32.0's static x86_64 archive, boots a Kata QEMU sandbox as root, and proves the guest kernel differs from the host. There is no TCG or normal-container fallback. The command is bounded to 45 minutes and writes redacted local evidence under ignored `.state/`.
+
+Any failure is a stop-and-destroy condition, not permission to debug on an idle instance.
 
 ## Destroy and inventory
 
