@@ -88,7 +88,8 @@ class CogsPolicy:
         self.capabilities.pop(str(client.id), None)
 
     def _route(self, flow, connection):
-        path = flow.request.path
+        request_target = flow.request.path
+        path, separator, query = request_target.partition("?")
         host = flow.request.host.lower()
         sni = (flow.client_conn.sni or "").lower()
         authority = (flow.request.host_header or "").lower()
@@ -98,7 +99,9 @@ class CogsPolicy:
         if (
             self.policy is None
             or flow.request.scheme != "https"
-            or any(character in path for character in ("?", "#", "\\", "%"))
+            or any(character in path for character in ("#", "\\", "%"))
+            or "#" in query
+            or "?" in query
             or "//" in path
             or any(part in (".", "..") for part in path.split("/"))
             or len(flow.request.headers.get_all("host")) > 1
@@ -113,7 +116,9 @@ class CogsPolicy:
                 route["host"] == host
                 and route["port"] == flow.request.port
                 and flow.request.method in route["methods"]
-                and flow.request.path.startswith(route["pathPrefix"])
+                and path.startswith(route["pathPrefix"])
+                and query == route.get("query", "")
+                and separator == ("?" if "query" in route else "")
             ):
                 return route
         return None

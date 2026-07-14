@@ -7,6 +7,7 @@ export interface MitmproxyRouteConfig {
   port: number;
   methods: readonly string[];
   pathPrefix: string;
+  query?: string;
   credential?: CredentialConfig;
 }
 
@@ -86,12 +87,14 @@ export function renderMitmproxyPolicy(input: MitmproxyPolicyInput): string {
       throw new Error("route host is invalid");
     if (!Number.isInteger(route.port) || route.port < 1 || route.port > 65535) throw new Error("route port is invalid");
     validatePath(route.pathPrefix);
+    if (route.query !== undefined && !/^[a-z][a-z0-9._-]{0,63}=[A-Za-z0-9._-]{1,128}$/.test(route.query))
+      throw new Error("route query is invalid");
     if (route.credential !== undefined) validateCredential(route.credential);
     if (route.methods.length === 0 || route.methods.some((method) => !methodPattern.test(method)))
       throw new Error("route methods are invalid");
     const methods = [...new Set(route.methods)].sort();
     if (methods.length !== route.methods.length) throw new Error("route methods are duplicated");
-    const tuple = `${route.host}|${route.port}|${methods.join(",")}|${route.pathPrefix}`;
+    const tuple = `${route.host}|${route.port}|${methods.join(",")}|${route.pathPrefix}|${route.query ?? ""}`;
     if (tuples.has(tuple)) throw new Error("route policy is ambiguous");
     tuples.add(tuple);
     return { ...route, methods };

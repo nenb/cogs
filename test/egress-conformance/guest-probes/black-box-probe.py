@@ -363,7 +363,15 @@ def client_probe(scenario, proxy_host, proxy_port, target_port, capability):
         "npm-tarball": "/clients/cogs-fixture-1.0.0.tgz",
     }.get(scenario, "/clients/ok")
     target = f"https://localhost:{target_port}{path}"
-    environment = {**os.environ, "HTTPS_PROXY": proxy, "HTTP_PROXY": proxy, "NO_PROXY": "", "no_proxy": ""}
+    environment = {
+        **os.environ,
+        "HTTPS_PROXY": proxy,
+        "HTTP_PROXY": proxy,
+        "https_proxy": proxy,
+        "http_proxy": proxy,
+        "NO_PROXY": "",
+        "no_proxy": "",
+    }
     temporary = tempfile.mkdtemp(prefix="cogs-client-")
     try:
         if scenario in ("curl", "http2"):

@@ -14,6 +14,7 @@ const input = (): MitmproxyPolicyInput => ({
       port: 443,
       methods: ["GET"],
       pathPrefix: "/protected/header",
+      query: "service=git-upload-pack",
       credential: { kind: "bearer", value: "Bearer fixture-value" },
     },
     {
@@ -45,6 +46,7 @@ test("mitmproxy policy is deterministic, exact, and supports all credential form
   assert.match(rendered, /Bearer fixture-value/);
   assert.match(rendered, /Basic Zml4dHVyZTpwYXNzd29yZA==/);
   assert.match(rendered, /x-api-key/);
+  assert.match(rendered, /service=git-upload-pack/);
   assert.doesNotMatch(rendered, /admin|password|private_key/);
 });
 
@@ -60,6 +62,10 @@ test("mitmproxy policy rejects ambiguous or credential-bearing control input", (
   assert.ok(malformed.routes[0]);
   malformed.routes[0].pathPrefix = "/protected/%2e%2e/";
   assert.throws(() => renderMitmproxyPolicy(malformed));
+  const malformedQuery = structuredClone(input());
+  assert.ok(malformedQuery.routes[0]);
+  malformedQuery.routes[0].query = "token=secret&extra=true";
+  assert.throws(() => renderMitmproxyPolicy(malformedQuery));
   const unsafe = structuredClone(input());
   assert.ok(unsafe.routes[1]);
   unsafe.routes[1].credential = { kind: "api-key", header: "authorization", value: "fixture" };
