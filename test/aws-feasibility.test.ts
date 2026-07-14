@@ -108,7 +108,7 @@ test("Stage 2 measurement harness is bounded, redacted, and does not widen AWS s
   const readme = read("deploy/aws-feasibility/README.md");
   const plan = read("docs/test-reports/stage-2-measurement-plan.md");
   assert.match(remote, /COGS_STAGE2_MEASUREMENT_SAMPLES:-7/);
-  assert.match(remote, /samples.*-ge 5.*samples.*-le 9/);
+  assert.match(remote, /samples.*-ge 7.*samples.*-le 9/);
   assert.match(remote, /--runtime io\.containerd\.kata\.v2 --runtime-config-path "\$config" --rootfs --read-only/);
   assert.match(remote, /kata_cold_boot/);
   assert.match(remote, /warm_cpu_workload/);
@@ -125,7 +125,8 @@ test("Stage 2 measurement harness is bounded, redacted, and does not widen AWS s
   assert.match(remote, /SSM readiness has one sample per campaign; SSH-ready is not measured/);
   assert.match(controller, /stage2-measurement-evidence\.json/);
   assert.doesNotMatch(controller, /render-aws-stage2-measurement-report/);
-  assert.match(controller, /timeout 2700/);
+  assert.match(controller, /remote_timeout\.isdecimal\(\)/);
+  assert.match(controller, /f'\{remote_timeout\}s'/);
   assert.match(controller, /refusing to send measurement script from a dirty tree/);
   assert.match(controller, /apply_to_running_ms/);
   assert.match(controller, /apply_to_ssm_online_ms/);
@@ -167,7 +168,7 @@ const validStage2MeasurementEvidence = () => ({
     gpu: false,
   },
   campaign: {
-    sample_count: 5,
+    sample_count: 7,
     observed_duration_ms: 1_000_000,
     apply_to_running_ms: 100_000,
     apply_to_ssm_online_ms: 200_000,
@@ -192,24 +193,30 @@ const validStage2MeasurementEvidence = () => ({
     kata_archive_sha256: "1449ecea50bd91fa73a94648db195d18950fe869ba4b1f12d05f55f1fa7c1b01",
     package_setup_ms: 31_000,
     measurement_duration_ms: 900_000,
-    kata_cold_boot: { samples: [100, 110, 120, 130, 140], min_ms: 100, p50_ms: 120, p95_ms: 140, max_ms: 140 },
+    kata_cold_boot: {
+      samples: [100, 110, 120, 130, 140, 150, 160],
+      min_ms: 100,
+      p50_ms: 130,
+      p95_ms: 160,
+      max_ms: 160,
+    },
     warm_cpu_workload: {
-      host: { samples: [50, 60, 70, 80, 90], min_ms: 50, p50_ms: 70, p95_ms: 90, max_ms: 90 },
-      kata: { samples: [100, 120, 140, 160, 180], min_ms: 100, p50_ms: 140, p95_ms: 180, max_ms: 180 },
+      host: { samples: [50, 60, 70, 80, 90, 100, 110], min_ms: 50, p50_ms: 80, p95_ms: 110, max_ms: 110 },
+      kata: { samples: [100, 120, 140, 160, 180, 200, 220], min_ms: 100, p50_ms: 160, p95_ms: 220, max_ms: 220 },
       kata_to_host_p50_ratio: 2,
     },
     warm_filesystem_workload: {
-      host: { samples: [60, 70, 80, 90, 100], min_ms: 60, p50_ms: 80, p95_ms: 100, max_ms: 100 },
-      kata: { samples: [90, 105, 120, 135, 150], min_ms: 90, p50_ms: 120, p95_ms: 150, max_ms: 150 },
+      host: { samples: [60, 70, 80, 90, 100, 110, 120], min_ms: 60, p50_ms: 90, p95_ms: 120, max_ms: 120 },
+      kata: { samples: [90, 105, 120, 135, 150, 165, 180], min_ms: 90, p50_ms: 135, p95_ms: 180, max_ms: 180 },
       kata_to_host_p50_ratio: 1.5,
     },
-    host_git_baseline: { samples: [40, 50, 60, 70, 80], min_ms: 40, p50_ms: 60, p95_ms: 80, max_ms: 80 },
+    host_git_baseline: { samples: [40, 50, 60, 70, 80, 90, 100], min_ms: 40, p50_ms: 70, p95_ms: 100, max_ms: 100 },
     host_package_build_baseline: {
-      samples: [200, 220, 240, 260, 280],
+      samples: [200, 220, 240, 260, 280, 300, 320],
       min_ms: 200,
-      p50_ms: 240,
-      p95_ms: 280,
-      max_ms: 280,
+      p50_ms: 260,
+      p95_ms: 320,
+      max_ms: 320,
     },
     idle_memory: { qemu_rss_mib: 512, configured_guest_memory_mib: 2048, memory_basis_mib: 2048 },
     density_estimate: {
@@ -491,6 +498,7 @@ config=/fake/config.toml
 rootfs=/fake/rootfs
 qemu_pids() { printf '%s' "\${FAKE_QEMU_CURRENT:-}"; }
 assert_qemu_baseline() { local current; current=$(qemu_pids); [[ "$current" == "\${qemu_baseline:-}" ]]; }
+run_bounded() { shift 2; "$@"; }
 ${lifecycle}
 qemu_baseline=""
 case "\${1:-stop}" in
@@ -585,6 +593,156 @@ esac
   assert.equal(existsSync(resolve(state, "run-called")), false);
   runMode("success", null, false, "start")();
   assert.equal(readFileSync(resolve(state, "run-called"), "utf8"), "run-called\n");
+});
+
+test("measurement runtime preserves stdin and reports exact bounded timeout stage and sample", () => {
+  const script = resolve(root, "deploy/aws-feasibility/remote/measure-runtime.sh");
+  const run = (mode: string, remoteDeadline = "10", pidFile?: string, extraEnv: Record<string, string> = {}) =>
+    execFileSync("bash", [script], {
+      cwd: root,
+      env: {
+        ...process.env,
+        COGS_STAGE2_TIMEOUT_SELF_TEST: mode,
+        COGS_STAGE2_REMOTE_DEADLINE_SECONDS: remoteDeadline,
+        COGS_STAGE2_COMMAND_KILL_AFTER: "1s",
+        ...(pidFile ? { COGS_STAGE2_TIMEOUT_PID_FILE: pidFile } : {}),
+        ...extraEnv,
+      },
+      encoding: "utf8",
+      stdio: "pipe",
+    });
+  const assertPidGone = (pidFile: string) => {
+    const pid = Number(readFileSync(pidFile, "utf8"));
+    assert.ok(Number.isInteger(pid) && pid > 1);
+    for (let i = 0; i < 50; i++) {
+      try {
+        process.kill(pid, 0);
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+      } catch {
+        return;
+      }
+    }
+    assert.throws(() => process.kill(pid, 0));
+  };
+
+  const stdinDir = mkdtempSync(resolve(tmpdir(), "cogs-stdin-timeout-"));
+  const pipelineOutput = resolve(stdinDir, "pipeline.txt");
+  run("stdin-pipeline", "10", undefined, { COGS_STAGE2_STDIN_TEST_FILE: pipelineOutput });
+  assert.equal(readFileSync(pipelineOutput, "utf8"), "pipeline-ok");
+  const heredocOutput = resolve(stdinDir, "heredoc.txt");
+  run("stdin-heredoc", "10", undefined, { COGS_STAGE2_STDIN_TEST_FILE: heredocOutput });
+  assert.equal(readFileSync(heredocOutput, "utf8"), "heredoc-ok");
+
+  const watchdogPidFile = resolve(stdinDir, "watchdog.pid");
+  run("watchdog-success", "1", undefined, { COGS_STAGE2_WATCHDOG_PID_FILE: watchdogPidFile });
+  assertPidGone(watchdogPidFile);
+
+  const hostPidFile = resolve(mkdtempSync(resolve(tmpdir(), "cogs-host-timeout-")), "pid");
+  const hostStarted = Date.now();
+  assert.throws(
+    () => run("host-sample", "10", hostPidFile),
+    (error: unknown) => {
+      const stderr = String((error as { stderr?: Buffer | string }).stderr ?? "");
+      assert.match(stderr, /cogs-stage2-progress stage=warm-workload-samples sample=2 command=host-cpu-2/);
+      assert.match(
+        stderr,
+        /cogs-stage2-measurement-failure-stage=warm-workload-samples sample=2 command=host-cpu-2 status=/,
+      );
+      return true;
+    },
+  );
+  assertPidGone(hostPidFile);
+  assert.ok(Date.now() - hostStarted < 5000);
+  const kataPidFile = resolve(mkdtempSync(resolve(tmpdir(), "cogs-kata-timeout-")), "pid");
+  const kataStarted = Date.now();
+  assert.throws(
+    () => run("kata-sample", "10", kataPidFile),
+    (error: unknown) => {
+      const stderr = String((error as { stderr?: Buffer | string }).stderr ?? "");
+      assert.match(stderr, /cogs-stage2-progress stage=warm-workload-samples sample=3 command=kata-cpu-3/);
+      assert.match(
+        stderr,
+        /cogs-stage2-measurement-failure-stage=warm-workload-samples sample=3 command=kata-cpu-3 status=/,
+      );
+      return true;
+    },
+  );
+  assertPidGone(kataPidFile);
+  assert.ok(Date.now() - kataStarted < 5000);
+  const outerPidFile = resolve(mkdtempSync(resolve(tmpdir(), "cogs-outer-timeout-")), "pid");
+  const outerStarted = Date.now();
+  assert.throws(
+    () => run("outer", "1", outerPidFile),
+    (error: unknown) => {
+      const stderr = String((error as { stderr?: Buffer | string }).stderr ?? "");
+      assert.match(
+        stderr,
+        /cogs-stage2-measurement-timeout-stage=host-baselines sample=7 command=host-build-7 status=outer-timeout/,
+      );
+      return true;
+    },
+  );
+  assertPidGone(outerPidFile);
+  assert.ok(Date.now() - outerStarted < 5000);
+});
+
+test("measurement campaign orchestrator bounds hung validation and never publishes", () => {
+  const fixture = makeOrchestratorFixture("success");
+  writeFileSync(
+    resolve(fixture.directory, "run-measurement-validation.sh"),
+    `#!/usr/bin/env bash\nset -euo pipefail\necho run-measurement-validation.sh >> ${JSON.stringify(fixture.log)}\ncat > ${JSON.stringify(resolve(fixture.directory, ".state/stage2-measurement-evidence.json"))} <<'JSON'\n{"stale":true}\nJSON\ncat > ${JSON.stringify(resolve(fixture.directory, ".state/stage2-measurement-report.md"))} <<'EOF'\nstale report\nEOF\ncat > ${JSON.stringify(resolve(fixture.directory, ".state/remote-measurement-result.json"))} <<'JSON'\n{"stale":true}\nJSON\nsleep 10\n`,
+  );
+  chmodSync(resolve(fixture.directory, "run-measurement-validation.sh"), 0o755);
+  execFileSync("git", ["add", "."], { cwd: fixture.fixtureRoot });
+  execFileSync("git", ["commit", "-q", "-m", "hung validation stub"], { cwd: fixture.fixtureRoot });
+  assert.throws(() =>
+    execFileSync(resolve(fixture.directory, "run-measurement-campaign.sh"), {
+      cwd: fixture.fixtureRoot,
+      env: {
+        ...process.env,
+        COGS_AWS_FEASIBILITY_DIRECTORY: fixture.directory,
+        COGS_STAGE2_MEASUREMENT_VALIDATOR: fixture.validator,
+        COGS_STAGE2_MEASUREMENT_RENDERER: fixture.renderer,
+        COGS_STAGE2_ORCHESTRATOR_VALIDATION_TIMEOUT_SECONDS: "2",
+        COGS_STAGE2_SSM_POLL_INTERVAL_SECONDS: "1",
+        COGS_STAGE2_SSM_POLL_ATTEMPTS: "1",
+        COGS_AWS_MEASUREMENT_CAMPAIGN_APPROVED: "run-one-stage2-measurement-campaign",
+      },
+    }),
+  );
+  const log = readFileSync(fixture.log, "utf8");
+  assert.match(log, /run-measurement-validation\.sh\ndestroy\.sh\ninventory\.sh/);
+  assert.doesNotMatch(log, /validator:|renderer:/);
+  assert.equal(existsSync(resolve(fixture.directory, ".state/stage2-measurement-evidence.json")), false);
+  assert.equal(existsSync(resolve(fixture.directory, ".state/stage2-measurement-report.md")), false);
+  assert.equal(existsSync(resolve(fixture.directory, ".state/remote-measurement-result.json")), false);
+});
+
+test("measurement campaign bounds are internally consistent", () => {
+  const controller = read("deploy/aws-feasibility/run-measurement-validation.sh");
+  const orchestrator = read("deploy/aws-feasibility/run-measurement-campaign.sh");
+  const remote = read("deploy/aws-feasibility/remote/measure-runtime.sh");
+  const numberDefault = (source: string, name: string) => {
+    const match = source.match(new RegExp(`${name}=\\$\\{[^:]+:-(\\d+)\\}`));
+    assert.ok(match, `missing ${name}`);
+    return Number(match[1]);
+  };
+  const remoteDeadline = numberDefault(remote, "remote_deadline_seconds");
+  const remoteTimeout = numberDefault(controller, "remote_timeout_seconds");
+  const ssmTimeout = numberDefault(controller, "ssm_timeout_seconds");
+  const pollInterval = numberDefault(controller, "poll_interval_seconds");
+  const pollAttempts = numberDefault(controller, "poll_attempts");
+  const orchestratorTimeout = numberDefault(orchestrator, "validation_timeout_seconds");
+  assert.ok(remoteDeadline < remoteTimeout);
+  assert.ok(remoteTimeout < ssmTimeout);
+  assert.ok(ssmTimeout < pollInterval * pollAttempts);
+  assert.ok(pollInterval * pollAttempts < orchestratorTimeout);
+  assert.ok(orchestratorTimeout <= 900);
+  assert.match(controller, /remote_timeout\.isdecimal\(\)/);
+  assert.match(controller, /timeout hierarchy must satisfy remote < SSM < poll <= 820 seconds/);
+  assert.match(orchestrator, /poll_timeout_seconds < validation_timeout_seconds/);
+  assert.match(remote, /validate_kill_after/);
+  assert.doesNotMatch(remote, /run_bounded_shell/);
 });
 
 test("measurement campaign orchestrator handles external SIGTERM/SIGINT without final publish", async () => {

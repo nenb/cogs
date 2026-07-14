@@ -1,6 +1,6 @@
 # Stage 2 bounded measurement harness plan
 
-Status: harness design and authorized campaign outcomes for issue #42. Two post-merge Stage 2 measurement campaigns were attempted after checked plans and both failed closed during warm Kata workload teardown; no pass evidence was produced, destroy completed immediately, independent inventory returned zero after each failure, and issue #42 remains open.
+Status: harness design and authorized campaign outcomes for issue #42. Three post-merge Stage 2 measurement campaigns were attempted after checked plans and failed closed; no pass evidence was produced, destroy completed immediately, independent inventory returned zero after each failure, and issue #42 remains open.
 
 ## Scope reconciliation
 
@@ -22,13 +22,13 @@ The harness does **not** measure repeated EC2 launch p50/p95 or SSH-ready timing
 
 ## Deterministic workloads
 
-Default sample count is seven and is bounded to 5–9. Every timed sample must be at least 25 ms or the remote harness and validator fail closed.
+Default sample count is seven and is bounded to 7–9. Every accepted timed sample must still run the fixed workload and be at least 25 ms or the remote harness and validator fail closed.
 
 | Measurement | Workload | Interpretation |
 |---|---|---|
 | Kata cold boot p50/p95 | `ctr --runtime io.containerd.kata.v2 --runtime-config-path "$config" --rootfs --read-only` boots a fixed BusyBox rootfs and prints UID/kernel | Authoritative repeated Kata/containerd startup on the selected host |
 | Warm CPU workload | Sixteen SHA-256 passes over a fixed 16 MiB payload on host BusyBox and inside a persistent Kata task via `ctr tasks exec` | Relative warm in-guest CPU micro-workload ratio, excluding cold boot |
-| Warm filesystem workload | Four passes reading 1024 deterministic small files on host and inside a persistent Kata task; guest commands use explicit `/bin/busybox find`, `/bin/busybox xargs`, and `/bin/busybox cat` | Relative warm in-guest read-heavy small-file ratio, excluding cold boot |
+| Warm filesystem workload | Sixteen passes reading 1024 deterministic small files on host and inside a persistent Kata task; guest commands use explicit `/bin/busybox find`, `/bin/busybox xargs`, and `/bin/busybox cat` | Relative warm in-guest read-heavy small-file ratio, excluding cold boot |
 | Host Git baseline | Repeated `git grep` on a synthetic 512-file local repository | Host instance baseline only; representative sandbox Git acceptance remains unmet |
 | Host package-build baseline | `make clean all` for a deterministic C program | Host compiler/build baseline only; representative sandbox package/build acceptance remains unmet |
 | Idle memory | Start one sleeping Kata task, identify exactly one newly created `qemu-system-x86_64` PID, and read `/proc/$pid/status` RSS | Authoritative QEMU RSS signal or fail closed |
@@ -37,7 +37,11 @@ Default sample count is seven and is bounded to 5–9. Every timed sample must b
 ## Fail-closed and redaction requirements
 
 - The controller refuses to send the SSM script unless the tree is clean and the checked-out HEAD exactly matches the planned source revision.
-- Any failed stage exits non-zero, emits a bounded stage marker, and the campaign orchestrator destroys before debugging.
+- Any failed stage exits non-zero, emits bounded non-secret stage/sample/command progress and failure markers, and the campaign orchestrator destroys before debugging.
+- Per-command and per-sample timeouts bound package setup, downloads, QMP checks, QEMU probe socket/exit waits, Kata cold boots, warm host/Kata samples, host baseline samples, and idle observation while preserving identical fixed work for host/Kata ratio pairs.
+- Configurable sample/timeout/poll/kill-after values are validated against strict numeric or bounded-duration formats before use, and the controller enforces the numeric hierarchy `per-command < remote < SSM < poll < orchestrator`.
+- The remote script has a lower end-to-end deadline, runs bounded commands in their own process groups, records the active process group for the watchdog, and the SSM command/poll loop and orchestrator validation wrapper have corresponding bounds.
+- Stale evidence/report/remote-result files are removed before a run and again during failed, timed-out, interrupted, or validation-failed cleanup so timeout/TERM/KILL paths cannot publish evidence.
 - Kata stderr diagnostics are written and emitted through a true aggregate 8 KiB cap, including diagnostic headers, and sanitized to printable characters.
 - Evidence schemas reject unexpected fields and bounded report size.
 - The validator recomputes min/p50/p95/max, warm workload ratios, memory/density bounds, timing ordering, sample length, cleanup/zero-inventory finalization, and the `< USD 0.50` four-hour cost bound from raw evidence.
@@ -59,9 +63,11 @@ Release or ADR documents may quote redacted aggregate values from these artifact
 
 After PR #53 merged, one authorized bounded measurement campaign was run on the merged revision. The checked plan remained inside the one-host `c8i-flex.large`, CPU-only, SSM-only, no-EKS/no-NAT/no-load-balancer/no-EIP/no-EFS boundary with expected cost below USD 0.50. The campaign failed during `warm-workload-samples` because local Kata/containerd task teardown attempted to remove a task/container before containerd had observed task exit. The orchestrator treated this as a failed measurement, produced no validated measurement evidence or human report, destroyed all campaign resources, and independent inventory showed total zero. A second read-only inventory also showed total zero.
 
-After PR #54 merged, exactly one further authorized bounded measurement campaign was run from the merge revision with the same one-host, CPU-only, SSM-only, budgeted and TTL-bound scope. It again failed during `warm-workload-samples` with the same non-stopped Kata/containerd task/container removal symptom. The orchestrator destroyed all campaign resources immediately; orchestrator and independent read-only inventories both showed total zero. This second failed run confirms the local teardown fix was insufficient and records no measurement pass evidence.
+After PR #54 merged, exactly one further authorized bounded measurement campaign was run from the merge revision with the same one-host, CPU-only, SSM-only, budgeted and TTL-bound scope. It again failed during `warm-workload-samples` with the same non-stopped Kata/containerd task/container removal symptom. The orchestrator destroyed all campaign resources immediately; orchestrator and independent read-only inventories both showed total zero. This second failed run confirmed the local teardown fix was insufficient and records no measurement pass evidence.
 
-These failed runs record local teardown lifecycle bugs only; they do not provide measurement pass evidence and do not close any issue #42 acceptance criteria.
+After PR #55 merged, exactly one further authorized bounded measurement campaign was run from the merge revision with the same one-host, CPU-only, SSM-only, budgeted and TTL-bound scope. It failed closed at the 45-minute outer SSM command timeout before producing measurement evidence or a human report. The orchestrator destroyed all 16 campaign resources; orchestrator and independent read-only inventories both showed total zero. The bounded cost estimate was approximately USD 0.075. This third failed run records a harness timeout/diagnosability and cost-control problem only; it is not pass evidence.
+
+These failed runs record local harness/teardown lifecycle bugs only; they do not provide measurement pass evidence and do not close any issue #42 acceptance criteria.
 
 ## Source-grounded teardown basis
 
