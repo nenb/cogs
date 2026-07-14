@@ -402,6 +402,42 @@ const extractShellBlock = (source: string, start: string, end: string) => {
   return source.slice(startIndex, endIndex);
 };
 
+test("measurement failure preserves immutable numeric status during cleanup", () => {
+  const remote = read("deploy/aws-feasibility/remote/measure-runtime.sh");
+  const failureBlock = extractShellBlock(remote, "failure()", "outer_timeout_watchdog()");
+  const directory = mkdtempSync(resolve(tmpdir(), "cogs-failure-status-"));
+  const runner = resolve(directory, "runner.sh");
+  writeFileSync(
+    runner,
+    `#!/usr/bin/env bash
+set -eEuo pipefail
+stage=test-stage
+sample=test-sample
+command_label=test-command
+work=${JSON.stringify(directory)}
+cleanup_kata_tasks() { status=ABSENT; return 0; }
+${failureBlock}
+trap failure ERR
+return_42() { return 42; }
+return_42
+`,
+  );
+  chmodSync(runner, 0o755);
+  assert.throws(
+    () => execFileSync(runner, { encoding: "utf8", stdio: "pipe" }),
+    (error: unknown) => {
+      const failed = error as { status?: number; stderr?: Buffer | string };
+      assert.equal(failed.status, 42);
+      assert.match(
+        String(failed.stderr ?? ""),
+        /cogs-stage2-measurement-failure-stage=test-stage sample=test-sample command=test-command status=42/,
+      );
+      assert.doesNotMatch(String(failed.stderr ?? ""), /numeric argument required|status=ABSENT/);
+      return true;
+    },
+  );
+});
+
 test("Kata task teardown is deterministic and fail-closed with fake ctr", () => {
   const remote = read("deploy/aws-feasibility/remote/measure-runtime.sh");
   const lifecycle = extractShellBlock(remote, "start_kata_task()", "cleanup_kata_tasks()");
@@ -450,11 +486,13 @@ case "$kind:$action" in
       printf '%s' "$ls_count" >"$ls_count_file"
       status=$(cat "$task_path")
       if [[ "$mode" == delayed-stop && "$ls_count" -ge 3 ]]; then status=STOPPED; printf STOPPED >"$task_path"; fi
+      if [[ "$mode" == wait-nonzero-delayed-stop && "$ls_count" -ge 3 ]]; then status=STOPPED; printf STOPPED >"$task_path"; fi
       if [[ "$mode" == malformed-status ]]; then printf '%s 123\\n' "$list_name"; else printf '%s 123 %s\\n' "$list_name" "$status"; fi
     done ;;
   tasks:wait)
     [[ -f "$task" ]] || exit 1
-    if [[ "$mode" == wait-fails ]]; then exit 7; fi
+    if [[ "$mode" == wait-fails || "$mode" == wait-nonzero-delayed-stop ]]; then exit 7; fi
+    if [[ "$mode" == wait-exits-3-stopped ]]; then printf STOPPED >"$task"; exit 3; fi
     if [[ "$mode" == wait-success-still-running ]]; then exit 0; fi
     if [[ "$mode" == timeout-then-kill-success ]] && grep -q SIGKILL "$state/kill-log" 2>/dev/null; then
       printf STOPPED >"$task"
@@ -491,16 +529,27 @@ esac
   writeFileSync(
     runner,
     `#!/usr/bin/env bash
-set -euo pipefail
+set -eEuo pipefail
 export PATH=${JSON.stringify(fakeBin)}:$PATH
 work=${JSON.stringify(directory)}
 config=/fake/config.toml
 rootfs=/fake/rootfs
+stage=test-stage
+sample=test-sample
+command_label=test-command
 qemu_pids() { printf '%s' "\${FAKE_QEMU_CURRENT:-}"; }
 assert_qemu_baseline() { local current; current=$(qemu_pids); [[ "$current" == "\${qemu_baseline:-}" ]]; }
 run_bounded() { shift 2; "$@"; }
+progress() { echo progress:$stage:$sample:$command_label >> ${JSON.stringify(resolve(state, "progress-log"))}; }
 ${lifecycle}
 qemu_baseline=""
+failure_marker() {
+  local marker_status=$?
+  trap - ERR
+  printf 'cogs-stage2-measurement-failure-stage=%s sample=%s command=%s status=%s\n' "$stage" "$sample" "$command_label" "$marker_status" >&2
+  exit "$marker_status"
+}
+trap failure_marker ERR
 case "\${1:-stop}" in
   stop) stop_kata_task cogs-stage2-test ;;
   start) start_kata_task cogs-stage2-test ;;
@@ -532,11 +581,37 @@ esac
         },
       });
   };
+  const assertStopFailureMarker = (run: () => Buffer) => {
+    assert.throws(run, (error: unknown) => {
+      const failed = error as { stderr?: Buffer | string };
+      const stderr = String(failed.stderr ?? "");
+      assert.match(
+        stderr,
+        /cogs-stage2-measurement-failure-stage=test-stage sample=test-sample command=kata-stop-cogs-stage2-test status=/,
+      );
+      assert.doesNotMatch(stderr, /command=test-command/);
+      return true;
+    });
+  };
+
   for (const mode of ["success", "delayed", "delayed-stop"]) {
     runMode(mode, "RUNNING", true)();
     assert.equal(existsSync(resolve(state, "task-cogs-stage2-test")), false);
     assert.equal(existsSync(resolve(state, "container-cogs-stage2-test")), false);
   }
+  runMode("wait-exits-3-stopped", "RUNNING", true)();
+  assert.equal(existsSync(resolve(state, "task-cogs-stage2-test")), false);
+  assert.equal(existsSync(resolve(state, "container-cogs-stage2-test")), false);
+  assert.equal(readFileSync(resolve(directory, "task-wait-status-cogs-stage2-test-graceful.txt"), "utf8").trim(), "3");
+  assert.match(readFileSync(resolve(state, "progress-log"), "utf8"), /kata-stop-cogs-stage2-test/);
+  assert.doesNotMatch(readFileSync(resolve(state, "kill-log"), "utf8"), /SIGKILL/);
+
+  runMode("wait-nonzero-delayed-stop", "RUNNING", true)();
+  assert.equal(existsSync(resolve(state, "task-cogs-stage2-test")), false);
+  assert.equal(existsSync(resolve(state, "container-cogs-stage2-test")), false);
+  assert.equal(readFileSync(resolve(directory, "task-wait-status-cogs-stage2-test-graceful.txt"), "utf8").trim(), "7");
+  assert.doesNotMatch(readFileSync(resolve(state, "kill-log"), "utf8"), /SIGKILL/);
+
   runMode("success", "2", true)();
   assert.equal(existsSync(resolve(state, "task-cogs-stage2-test")), false);
   assert.equal(existsSync(resolve(state, "container-cogs-stage2-test")), false);
@@ -562,7 +637,7 @@ esac
     assert.equal(existsSync(resolve(state, "task-cogs-stage2-test")), true);
     assert.equal(existsSync(resolve(state, "container-cogs-stage2-test")), true);
   }
-  assert.throws(runMode("success", "BROKEN", true));
+  assertStopFailureMarker(runMode("success", "BROKEN", true));
   assert.throws(runMode("malformed-status", "RUNNING", true));
 
   assert.throws(runMode("wait-fails", "RUNNING", true));
