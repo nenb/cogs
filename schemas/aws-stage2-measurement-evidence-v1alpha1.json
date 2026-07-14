@@ -1,0 +1,192 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.invalid/schemas/aws-stage2-measurement-evidence-v1alpha1.json",
+  "title": "Cogs AWS Stage 2 Measurement Evidence v1alpha1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "authority",
+    "result",
+    "source_revision",
+    "region",
+    "expires_at",
+    "launch",
+    "campaign",
+    "measurement",
+    "limitations"
+  ],
+  "properties": {
+    "version": { "const": "cogs.aws-stage2-measurement-evidence/v1alpha1" },
+    "authority": { "const": "aws-feasibility" },
+    "result": { "enum": ["pass", "fail"] },
+    "source_revision": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "region": { "const": "us-east-1" },
+    "expires_at": { "type": "string", "format": "date-time" },
+    "launch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "instance_type",
+        "image_id",
+        "architecture",
+        "imds_v2",
+        "nested_virtualization",
+        "vcpu",
+        "memory_mib",
+        "bare_metal",
+        "gpu"
+      ],
+      "properties": {
+        "instance_type": { "const": "c8i-flex.large" },
+        "image_id": { "type": "string", "pattern": "^ami-[0-9a-f]+$" },
+        "architecture": { "const": "x86_64" },
+        "imds_v2": { "const": true },
+        "nested_virtualization": { "const": "enabled" },
+        "vcpu": { "const": 2 },
+        "memory_mib": { "const": 4096 },
+        "bare_metal": { "const": false },
+        "gpu": { "const": false }
+      }
+    },
+    "campaign": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sample_count",
+        "observed_duration_ms",
+        "apply_to_running_ms",
+        "apply_to_ssm_online_ms",
+        "cleanup_observed",
+        "final_zero_inventory_total",
+        "estimated_cost_usd",
+        "cost_basis"
+      ],
+      "properties": {
+        "sample_count": { "type": "integer", "minimum": 5, "maximum": 9 },
+        "observed_duration_ms": { "type": "integer", "minimum": 1, "maximum": 14400000 },
+        "apply_to_running_ms": { "type": "integer", "minimum": 1, "maximum": 14400000 },
+        "apply_to_ssm_online_ms": { "type": "integer", "minimum": 1, "maximum": 14400000 },
+        "cleanup_observed": { "type": "boolean" },
+        "final_zero_inventory_total": { "type": "integer", "minimum": -1, "maximum": 0 },
+        "estimated_cost_usd": { "type": "number", "minimum": 0, "maximum": 0.5 },
+        "cost_basis": { "type": "string", "minLength": 1, "maxLength": 768 }
+      }
+    },
+    "measurement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "result",
+        "host_kernel",
+        "guest_kernel",
+        "guest_root",
+        "cpu_vmx",
+        "kvm_device",
+        "qmp_kvm_present",
+        "qmp_kvm_enabled",
+        "containerd_version",
+        "qemu_version",
+        "kata_runtime_version",
+        "kata_archive_sha256",
+        "package_setup_ms",
+        "measurement_duration_ms",
+        "kata_cold_boot",
+        "warm_cpu_workload",
+        "warm_filesystem_workload",
+        "host_git_baseline",
+        "host_package_build_baseline",
+        "idle_memory",
+        "density_estimate"
+      ],
+      "properties": {
+        "version": { "const": "cogs.aws-stage2-measurement-result/v1alpha1" },
+        "result": { "const": "pass" },
+        "host_kernel": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "guest_kernel": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "guest_root": { "const": true },
+        "cpu_vmx": { "const": true },
+        "kvm_device": { "const": true },
+        "qmp_kvm_present": { "const": true },
+        "qmp_kvm_enabled": { "const": true },
+        "containerd_version": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "qemu_version": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "kata_runtime_version": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "kata_archive_sha256": { "const": "1449ecea50bd91fa73a94648db195d18950fe869ba4b1f12d05f55f1fa7c1b01" },
+        "package_setup_ms": { "type": "integer", "minimum": 1, "maximum": 2700000 },
+        "measurement_duration_ms": { "type": "integer", "minimum": 1, "maximum": 2700000 },
+        "kata_cold_boot": { "$ref": "#/$defs/summary" },
+        "warm_cpu_workload": { "$ref": "#/$defs/paired_workload" },
+        "warm_filesystem_workload": { "$ref": "#/$defs/paired_workload" },
+        "host_git_baseline": { "$ref": "#/$defs/summary" },
+        "host_package_build_baseline": { "$ref": "#/$defs/summary" },
+        "idle_memory": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["qemu_rss_mib", "configured_guest_memory_mib", "memory_basis_mib"],
+          "properties": {
+            "qemu_rss_mib": { "type": "integer", "minimum": 1, "maximum": 4096 },
+            "configured_guest_memory_mib": { "type": "integer", "minimum": 128, "maximum": 4096 },
+            "memory_basis_mib": { "type": "integer", "minimum": 128, "maximum": 4096 }
+          }
+        },
+        "density_estimate": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "basis",
+            "host_vcpus",
+            "configured_guest_vcpus",
+            "memory_bound_sandboxes",
+            "cpu_bound_sandboxes",
+            "bounded_estimate_sandboxes"
+          ],
+          "properties": {
+            "basis": { "type": "string", "minLength": 1, "maxLength": 384 },
+            "host_vcpus": { "const": 2 },
+            "configured_guest_vcpus": { "type": "integer", "minimum": 1, "maximum": 2 },
+            "memory_bound_sandboxes": { "type": "integer", "minimum": 1, "maximum": 128 },
+            "cpu_bound_sandboxes": { "type": "integer", "minimum": 1, "maximum": 2 },
+            "bounded_estimate_sandboxes": { "type": "integer", "minimum": 1, "maximum": 2 }
+          }
+        }
+      }
+    },
+    "limitations": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 12,
+      "items": { "type": "string", "minLength": 1, "maxLength": 512 }
+    }
+  },
+  "$defs": {
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["samples", "min_ms", "p50_ms", "p95_ms", "max_ms"],
+      "properties": {
+        "samples": {
+          "type": "array",
+          "minItems": 5,
+          "maxItems": 9,
+          "items": { "type": "integer", "minimum": 25, "maximum": 2700000 }
+        },
+        "min_ms": { "type": "integer", "minimum": 25, "maximum": 2700000 },
+        "p50_ms": { "type": "integer", "minimum": 25, "maximum": 2700000 },
+        "p95_ms": { "type": "integer", "minimum": 25, "maximum": 2700000 },
+        "max_ms": { "type": "integer", "minimum": 25, "maximum": 2700000 }
+      }
+    },
+    "paired_workload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["host", "kata", "kata_to_host_p50_ratio"],
+      "properties": {
+        "host": { "$ref": "#/$defs/summary" },
+        "kata": { "$ref": "#/$defs/summary" },
+        "kata_to_host_p50_ratio": { "type": "number", "exclusiveMinimum": 0, "maximum": 100000 }
+      }
+    }
+  }
+}

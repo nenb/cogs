@@ -61,6 +61,24 @@ The controller sends the local checked validation script from the planned source
 
 Any failure is a stop-and-destroy condition, not permission to debug on an idle instance.
 
+## Bounded Stage 2 measurements
+
+Issue #42 is intentionally still a one-instance Stage 2 measurement, not EKS or Stage 4 scope. The fail-closed campaign entry point is:
+
+```bash
+export AWS_PROFILE=nebula
+export COGS_AWS_MEASUREMENT_CAMPAIGN_APPROVED=run-one-stage2-measurement-campaign
+./deploy/aws-feasibility/run-measurement-campaign.sh
+```
+
+The orchestrator plans, applies one approved host, runs measurement validation, destroys on success/failure/interrupt/report-validation failure, writes an independent final zero-inventory artifact, and only then renders publishable evidence. The lower-level `run-measurement-validation.sh` is for an already-applied campaign only; it refuses to send SSM unless the tree is clean and the checked-out HEAD exactly matches the planned source revision.
+
+The measurement controller sends a local checked script from the planned source revision over SSM and writes redacted machine and human reports under ignored `.state/`: `stage2-measurement-evidence.json` and `stage2-measurement-report.md`. It preserves the same active-KVM, pinned Kata, root guest, distinct-kernel, QEMU config binding, SSM-only access, timeout, and fail-closed cleanup expectations as runtime validation.
+
+The harness records seven samples by default for Kata cold boot, warm CPU workload, warm filesystem workload, a synthetic host Git baseline, and a synthetic host package-build baseline. Warm in-guest workload samples use a persistent Kata task plus `ctr tasks exec`, so they exclude cold boot. The guest rootfs contains BusyBox only and the guest filesystem workload invokes explicit `/bin/busybox` applets. The report also records one apply-to-running and apply-to-SSM-online observation, deterministic idle QEMU RSS, configured guest memory/vCPU allocation, a conservative bounded density estimate, campaign duration through destroy completion, cleanup/zero-inventory status, and a cost estimate capped below the documented four-hour USD 0.50 envelope. It does not claim repeated EC2 launch p50/p95, SSH-ready timing, EKS timing, or representative sandbox Git/build/package workload acceptance. Those remain Stage 4/EKS or separately approved measurements, and issue #42 must stay open unless all acceptance criteria are actually met.
+
+Any measurement failure is a stop-and-destroy condition, not permission to debug on an idle instance.
+
 ## Destroy and inventory
 
 ```bash
