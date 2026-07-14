@@ -51,7 +51,11 @@ if [[ -z ${COGS_STAGE2_TIMEOUT_SELF_TEST:-} ]]; then
   done
 fi
 failure() {
-  status=$?
+  local failure_status=$?
+  local failed_stage=$stage
+  local failed_sample=$sample
+  local failed_command=$command_label
+  local diagnostic_file files remaining diagnostic header header_len
   trap - ERR
   set +e
   cleanup_kata_tasks >/dev/null 2>&1 || true
@@ -72,9 +76,9 @@ failure() {
     if (( remaining > 0 )); then printf '\n' >>"$diagnostic_file"; remaining=$((remaining - 1)); fi
     files=$((files + 1))
   done
-  printf 'cogs-stage2-measurement-failure-stage=%s sample=%s command=%s status=%s\n' "$stage" "$sample" "$command_label" "$status" >&2
+  printf 'cogs-stage2-measurement-failure-stage=%s sample=%s command=%s status=%s\n' "$failed_stage" "$failed_sample" "$failed_command" "$failure_status" >&2
   cat "$diagnostic_file" >&2
-  exit "$status"
+  exit "$failure_status"
 }
 outer_timeout_watchdog() {
   local parent_pgid=$1 state_file=$2
@@ -403,19 +407,19 @@ assert_qemu_baseline() {
   [[ "$current" == "${qemu_baseline:-}" ]] || { printf 'Kata QEMU process leak: baseline="%s" current="%s"\n' "${qemu_baseline:-}" "$current" >&2; return 1; }
 }
 run_kata() {
-  name=$1
+  local name=$1
   shift
   ctr --namespace cogs-stage2 containers rm "$name" >/dev/null 2>&1 || true
   run_bounded "$kata_boot_timeout" "kata-run-$name" ctr --namespace cogs-stage2 run --rm --runtime io.containerd.kata.v2 --runtime-config-path "$config" --rootfs --read-only "$rootfs" "$name" "$@"
   assert_qemu_baseline
 }
 start_kata_task() {
-  name=$1
+  local name=$1
   stop_kata_task "$name" >/dev/null
   run_bounded 30 "kata-start-$name" ctr --namespace cogs-stage2 run --runtime io.containerd.kata.v2 --runtime-config-path "$config" --rootfs --read-only --detach "$rootfs" "$name" /bin/busybox sleep 300
 }
 task_status() {
-  name=$1
+  local name=$1 list_output
   list_output=$work/task-ls-$name.txt
   ctr --namespace cogs-stage2 tasks ls >"$list_output"
   awk -v target="$name" 'NR > 1 && $1 == target { print $3; found=1 } END { if (!found) print "ABSENT" }' "$list_output"
@@ -433,89 +437,117 @@ normalize_task_status() {
   esac
 }
 wait_for_task_stopped_or_absent() {
-  name=$1
-  phase=$2
+  local name=$1 phase=$2 steps delay raw_status observed_status last_status attempt
   steps=${COGS_STAGE2_TEARDOWN_WAIT_STEPS:-100}
   delay=${COGS_STAGE2_TEARDOWN_WAIT_DELAY:-0.1}
-  for _ in $(seq 1 "$steps"); do
+  for attempt in $(seq 1 "$steps"); do
     raw_status=$(task_status "$name") || return $?
-    status=$(normalize_task_status "$raw_status" "$name") || return $?
-    printf '%s\n' "$status" >"$work/task-status-$name-$phase.txt"
-    case "$status" in
+    observed_status=$(normalize_task_status "$raw_status" "$name") || return $?
+    last_status=$observed_status
+    printf '%s\n' "$observed_status" >"$work/task-status-$name-$phase.txt"
+    case "$observed_status" in
       ABSENT|STOPPED) return 0 ;;
-      UNKNOWN|CREATED|RUNNING|PAUSED|PAUSING) sleep "$delay" ;;
+      RUNNING) sleep "$delay" ;;
+      UNKNOWN|CREATED|PAUSED|PAUSING)
+        printf 'Kata task %s reported terminal non-stopped status %s during %s\n' "$name" "$observed_status" "$phase" >&2
+        return 2 ;;
     esac
   done
-  printf 'timed out waiting for Kata task %s to report STOPPED or disappear during %s; last status %s\n' "$name" "$phase" "${status:-unset}" >&2
-  return 1
+  printf 'timed out waiting for Kata task %s to report STOPPED or disappear during %s; last status %s\n' "$name" "$phase" "${last_status:-unset}" >&2
+  [[ ${last_status:-} == RUNNING ]] && return 1
+  return 2
 }
 bounded_task_wait_after_signal() {
-  name=$1
-  signal=$2
-  phase=$3
+  local name=$1 signal=$2 phase=$3 wait_output wait_seconds wait_status
   wait_output=$work/task-wait-$name-$phase.txt
   wait_seconds=${COGS_STAGE2_TEARDOWN_WAIT_SECONDS:-10}
   ctr --namespace cogs-stage2 tasks kill --signal "$signal" "$name" >/dev/null 2>&1 || true
   if timeout --kill-after=1s "${wait_seconds}s" ctr --namespace cogs-stage2 tasks wait "$name" >"$wait_output" 2>&1; then
-    status=0
+    wait_status=0
   else
-    status=$?
+    wait_status=$?
   fi
-  return "$status"
+  printf '%s\n' "$wait_status" >"$work/task-wait-status-$name-$phase.txt"
+  return 0
 }
 stop_kata_task() {
-  name=$1
-  raw_status=$(task_status "$name") || return $?
-  status=$(normalize_task_status "$raw_status" "$name") || return $?
-  if [[ "$status" != ABSENT ]]; then
-    if [[ "$status" != STOPPED ]]; then
-      if [[ "$status" != RUNNING ]]; then
-        printf 'refusing to signal/remove Kata task %s from non-running status %s\n' "$name" "$status" >&2
+  local name=$1 raw_status observed_status stopped_status attempt
+  local previous_command_label=$command_label
+  command_label="kata-stop-$name"
+  progress
+  if raw_status=$(task_status "$name"); then
+    :
+  else
+    stopped_status=$?
+    return "$stopped_status"
+  fi
+  if observed_status=$(normalize_task_status "$raw_status" "$name"); then
+    :
+  else
+    stopped_status=$?
+    return "$stopped_status"
+  fi
+  if [[ "$observed_status" != ABSENT ]]; then
+    if [[ "$observed_status" != STOPPED ]]; then
+      if [[ "$observed_status" != RUNNING ]]; then
+        printf 'refusing to signal/remove Kata task %s from non-running status %s\n' "$name" "$observed_status" >&2
         return 1
       fi
-      if bounded_task_wait_after_signal "$name" SIGTERM graceful; then wait_status=0; else wait_status=$?; fi
-      if (( wait_status != 0 && wait_status != 124 && wait_status != 137 )); then
-        printf 'Kata task %s wait failed after SIGTERM with status %s\n' "$name" "$wait_status" >&2
-        return "$wait_status"
-      fi
+      bounded_task_wait_after_signal "$name" SIGTERM graceful
       if wait_for_task_stopped_or_absent "$name" graceful; then
         :
       else
         stopped_status=$?
-        (( stopped_status == 1 )) || return "$stopped_status"
-        if bounded_task_wait_after_signal "$name" SIGKILL killed; then wait_status=0; else wait_status=$?; fi
-        if (( wait_status != 0 && wait_status != 124 && wait_status != 137 )); then
-          printf 'Kata task %s wait failed after SIGKILL with status %s\n' "$name" "$wait_status" >&2
-          return "$wait_status"
+        if (( stopped_status == 1 )); then
+          bounded_task_wait_after_signal "$name" SIGKILL killed
+          if wait_for_task_stopped_or_absent "$name" killed; then
+            :
+          else
+            stopped_status=$?
+            return "$stopped_status"
+          fi
+        else
+          return "$stopped_status"
         fi
-        wait_for_task_stopped_or_absent "$name" killed
       fi
     fi
-    raw_status=$(task_status "$name") || return $?
-    status=$(normalize_task_status "$raw_status" "$name") || return $?
-    if [[ "$status" == STOPPED ]]; then
+    if raw_status=$(task_status "$name"); then
+      :
+    else
+      stopped_status=$?
+      return "$stopped_status"
+    fi
+    if observed_status=$(normalize_task_status "$raw_status" "$name"); then
+      :
+    else
+      stopped_status=$?
+      return "$stopped_status"
+    fi
+    if [[ "$observed_status" == STOPPED ]]; then
       ctr --namespace cogs-stage2 tasks rm "$name" >/dev/null
-    elif [[ "$status" != ABSENT ]]; then
-      printf 'refusing to remove Kata task %s before STOPPED/absent; status %s\n' "$name" "$status" >&2
+    elif [[ "$observed_status" != ABSENT ]]; then
+      printf 'refusing to remove Kata task %s before STOPPED/absent; status %s\n' "$name" "$observed_status" >&2
       return 1
     fi
   fi
-  for _ in $(seq 1 50); do
+  for attempt in $(seq 1 50); do
     [[ "$(normalize_task_status "$(task_status "$name")" "$name")" == ABSENT ]] && break
     sleep 0.1
   done
-  [[ "$(normalize_task_status "$(task_status "$name")" "$name")" == ABSENT ]]
+  [[ "$(normalize_task_status "$(task_status "$name")" "$name")" == ABSENT ]] || return 1
   if ctr --namespace cogs-stage2 containers info "$name" >/dev/null 2>&1; then
     ctr --namespace cogs-stage2 containers rm "$name" >/dev/null
   fi
-  for _ in $(seq 1 50); do
+  for attempt in $(seq 1 50); do
     ctr --namespace cogs-stage2 containers info "$name" >/dev/null 2>&1 || break
     sleep 0.1
   done
-  ! ctr --namespace cogs-stage2 containers info "$name" >/dev/null 2>&1
+  ! ctr --namespace cogs-stage2 containers info "$name" >/dev/null 2>&1 || return 1
   [[ ${qemu_baseline+x} != x ]] || assert_qemu_baseline
+  command_label=$previous_command_label
 }
 cleanup_kata_tasks() {
+  local name
   for name in cogs-stage2-warm cogs-stage2-idle; do
     stop_kata_task "$name" || true
   done
