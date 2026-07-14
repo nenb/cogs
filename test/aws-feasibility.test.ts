@@ -388,6 +388,166 @@ test("measurement campaign orchestrator reports destroy, inventory, and final va
   }
 });
 
+const extractShellBlock = (source: string, start: string, end: string) => {
+  const startIndex = source.indexOf(start);
+  const endIndex = source.indexOf(end, startIndex);
+  assert.ok(startIndex >= 0 && endIndex > startIndex);
+  return source.slice(startIndex, endIndex);
+};
+
+test("Kata task teardown is deterministic and fail-closed with fake ctr", () => {
+  const remote = read("deploy/aws-feasibility/remote/measure-runtime.sh");
+  const lifecycle = extractShellBlock(remote, "start_kata_task()", "cleanup_kata_tasks()");
+  assert.doesNotMatch(lifecycle, /jq -r|\.Status|Status/);
+  assert.match(lifecycle, /timeout --kill-after=1s/);
+  assert.match(lifecycle, /tasks wait/);
+  assert.match(lifecycle, /SIGTERM/);
+  assert.match(lifecycle, /SIGKILL/);
+  assert.doesNotMatch(lifecycle, /stop_kata_task "\$name"[^\n]*\|\| true/);
+
+  const directory = mkdtempSync(resolve(tmpdir(), "cogs-kata-teardown-"));
+  const fakeBin = resolve(directory, "bin");
+  const state = resolve(directory, "state");
+  mkdirSync(fakeBin, { recursive: true });
+  mkdirSync(state, { recursive: true });
+  const ctr = resolve(fakeBin, "ctr");
+  writeFileSync(
+    ctr,
+    `#!/usr/bin/env bash
+set -euo pipefail
+[[ "$1" == "--namespace" ]] && shift 2
+state=${JSON.stringify(state)}
+mode=\${FAKE_CTR_MODE:-success}
+if [[ "$1" == run ]]; then
+  printf 'run-called\\n' >>"$state/run-called"
+  exit 0
+fi
+kind=$1; action=$2
+name=\${3:-}
+if [[ "$kind:$action" == tasks:kill ]]; then name=\${@: -1}; fi
+task="$state/task-$name"
+container="$state/container-$name"
+case "$kind:$action" in
+  tasks:info)
+    [[ -f "$task" ]] || exit 1
+    if [[ "$mode" == malformed ]]; then printf 'not-json\\n'; else printf '{"opaque":"ignored"}\\n'; fi ;;
+  tasks:wait)
+    [[ -f "$task" ]] || exit 1
+    if [[ "$mode" == wait-fails ]]; then exit 7; fi
+    if [[ "$mode" == timeout-then-kill-success ]] && grep -q SIGKILL "$state/kill-log" 2>/dev/null; then
+      printf stopped >"$task"
+      exit 0
+    fi
+    if [[ "$mode" == timeout-then-kill-success || "$mode" == terminal-timeout ]]; then
+      printf '%s\\n' "$$" >"$state/wait-helper.pid"
+      trap '' TERM INT
+      sleep 20
+      exit 124
+    fi
+    if [[ "$mode" == delayed ]]; then sleep 0.2; fi
+    printf stopped >"$task"
+    exit 0 ;;
+  tasks:kill)
+    printf '%s\\n' "$*" >>"$state/kill-log"
+    exit 0 ;;
+  tasks:rm)
+    [[ "$mode" != rm-fails ]] || exit 9
+    [[ -f "$task" ]] || exit 1
+    [[ "$(cat "$task")" == stopped ]] || { printf 'cannot delete a non stopped container\\n' >&2; exit 1; }
+    rm -f "$task" ;;
+  containers:info)
+    [[ -f "$container" ]] || exit 1 ;;
+  containers:rm)
+    [[ -f "$task" ]] && { printf 'cannot delete a non stopped container\\n' >&2; exit 1; }
+    rm -f "$container" ;;
+  *) printf 'unexpected ctr call: %s\\n' "$*" >&2; exit 99 ;;
+esac
+`,
+  );
+  chmodSync(ctr, 0o755);
+  const runner = resolve(directory, "runner.sh");
+  writeFileSync(
+    runner,
+    `#!/usr/bin/env bash
+set -euo pipefail
+export PATH=${JSON.stringify(fakeBin)}:$PATH
+work=${JSON.stringify(directory)}
+config=/fake/config.toml
+rootfs=/fake/rootfs
+qemu_pids() { printf '%s' "\${FAKE_QEMU_CURRENT:-}"; }
+assert_qemu_baseline() { local current; current=$(qemu_pids); [[ "$current" == "\${qemu_baseline:-}" ]]; }
+${lifecycle}
+qemu_baseline=""
+case "\${1:-stop}" in
+  stop) stop_kata_task cogs-stage2-test ;;
+  start) start_kata_task cogs-stage2-test ;;
+  *) exit 99 ;;
+esac
+`,
+  );
+  chmodSync(runner, 0o755);
+  const runMode = (
+    mode: string,
+    task: string | null,
+    container: boolean,
+    command = "stop",
+    extraEnv: Record<string, string> = {},
+  ) => {
+    rmSync(state, { recursive: true, force: true });
+    mkdirSync(state, { recursive: true });
+    if (task) writeFileSync(resolve(state, "task-cogs-stage2-test"), task);
+    if (container) writeFileSync(resolve(state, "container-cogs-stage2-test"), "present");
+    return () =>
+      execFileSync(runner, [command], {
+        env: {
+          ...process.env,
+          FAKE_CTR_MODE: mode,
+          COGS_STAGE2_TEARDOWN_WAIT_SECONDS: "1",
+          ...extraEnv,
+        },
+      });
+  };
+  for (const mode of ["success", "delayed", "malformed"]) {
+    runMode(mode, "running", true)();
+    assert.equal(existsSync(resolve(state, "task-cogs-stage2-test")), false);
+    assert.equal(existsSync(resolve(state, "container-cogs-stage2-test")), false);
+  }
+  runMode("success", "stopped", true)();
+  assert.equal(existsSync(resolve(state, "task-cogs-stage2-test")), false);
+  assert.equal(existsSync(resolve(state, "container-cogs-stage2-test")), false);
+  runMode("success", null, true)();
+  assert.equal(existsSync(resolve(state, "container-cogs-stage2-test")), false);
+  runMode("success", null, false)();
+
+  assert.throws(runMode("wait-fails", "running", true));
+  assert.equal(existsSync(resolve(state, "task-cogs-stage2-test")), true);
+  assert.equal(existsSync(resolve(state, "container-cogs-stage2-test")), true);
+
+  const killSuccessStarted = Date.now();
+  runMode("timeout-then-kill-success", "running", true)();
+  assert.ok(Date.now() - killSuccessStarted < 5000);
+  assert.match(readFileSync(resolve(state, "kill-log"), "utf8"), /SIGTERM[\s\S]*SIGKILL/);
+  assert.equal(existsSync(resolve(state, "task-cogs-stage2-test")), false);
+  assert.equal(existsSync(resolve(state, "container-cogs-stage2-test")), false);
+
+  const terminalStarted = Date.now();
+  assert.throws(runMode("terminal-timeout", "running", true));
+  assert.ok(Date.now() - terminalStarted < 7000);
+  assert.match(readFileSync(resolve(state, "kill-log"), "utf8"), /SIGTERM[\s\S]*SIGKILL/);
+  const helperPid = Number(readFileSync(resolve(state, "wait-helper.pid"), "utf8"));
+  assert.throws(() => process.kill(helperPid, 0));
+  assert.equal(existsSync(resolve(state, "task-cogs-stage2-test")), true);
+  assert.equal(existsSync(resolve(state, "container-cogs-stage2-test")), true);
+
+  assert.throws(runMode("rm-fails", "running", true));
+  assert.throws(runMode("success", "running", true, "stop", { FAKE_QEMU_CURRENT: "999" }));
+
+  assert.throws(runMode("rm-fails", "running", true, "start"));
+  assert.equal(existsSync(resolve(state, "run-called")), false);
+  runMode("success", null, false, "start")();
+  assert.equal(readFileSync(resolve(state, "run-called"), "utf8"), "run-called\n");
+});
+
 test("measurement campaign orchestrator handles external SIGTERM/SIGINT without final publish", async () => {
   for (const signal of ["SIGTERM", "SIGINT"] as const) {
     const fixture = makeOrchestratorFixture("success");
