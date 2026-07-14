@@ -150,7 +150,7 @@ try {
                       : scenario === "long-lived-drain"
                         ? "/delayed"
                         : scenario === "git-smart-http"
-                          ? "/clients/repo.git"
+                          ? "/clients/repo.git/info/refs"
                           : scenario === "pip-wheel"
                             ? "/clients/cogs_fixture-1.0.0-py3-none-any.whl"
                             : scenario === "npm-tarball"

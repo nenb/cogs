@@ -379,7 +379,13 @@ def client_probe(scenario, proxy_host, proxy_port, target_port, capability):
         elif scenario == "pip-wheel":
             command = ["python3", "-m", "pip", "download", "--disable-pip-version-check", "--no-deps", "--dest", temporary, "--proxy", proxy, "--cert", ca, target]
         elif scenario == "npm-tarball":
-            environment.update({"npm_config_proxy": proxy, "npm_config_https_proxy": proxy, "npm_config_cafile": ca})
+            environment.update({
+                "HOME": temporary,
+                "npm_config_cache": os.path.join(temporary, ".npm"),
+                "npm_config_proxy": proxy,
+                "npm_config_https_proxy": proxy,
+                "npm_config_cafile": ca,
+            })
             command = [
                 "npm", "--proxy", proxy, "--https-proxy", proxy, "--cafile", ca,
                 "--ignore-scripts", "pack", target, "--pack-destination", temporary,

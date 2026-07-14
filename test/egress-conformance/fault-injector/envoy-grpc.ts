@@ -178,7 +178,7 @@ function encodeDecision(decision: EncodedDecision): Buffer {
     const deniedStatus = decision.deniedStatus ?? 403;
     const httpStatus = encodeVarintField(1, deniedStatus);
     const challengeHeader = encodeMessageField(
-      3,
+      2,
       encodeMessageField(
         1,
         Buffer.concat([encodeStringField(1, "proxy-authenticate"), encodeStringField(2, 'Basic realm="cogs-session"')]),
