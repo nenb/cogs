@@ -24,7 +24,7 @@ os.chmod(path, 0o600)
 PY
 unset COGS_AWS_BUDGET_EMAIL
 "$tofu" -chdir="$directory" init -input=false -reconfigure
-"$tofu" -chdir="$directory" plan -input=false -lock-timeout=30s -out=.state/campaign.tfplan
+"$tofu" -chdir="$directory" plan -input=false -lock-timeout=30s -var-file=.state/campaign.auto.tfvars.json -out=.state/campaign.tfplan
 "$tofu" -chdir="$directory" show -json .state/campaign.tfplan >"$directory/.state/campaign.plan.json"
 python3 "$directory/check-plan.py" "$directory/.state/campaign.plan.json"
 "$tofu" -chdir="$directory" show -no-color .state/campaign.tfplan >"$directory/.state/campaign.plan.txt"
