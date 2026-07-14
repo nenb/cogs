@@ -435,6 +435,14 @@ class CogsClient { public static void main(String[] a) throws Exception {
             completed = subprocess.run(command, env=environment, cwd=temporary, stdout=log, stderr=log, timeout=30, check=False)
         with open(log_path, "rb") as log:
             bounded = log.read(2048).decode("utf-8", "replace")
+        if scenario == "npm-tarball" and completed.returncode != 0:
+            npm_logs = os.path.join(temporary, ".npm", "_logs")
+            try:
+                latest = sorted(os.listdir(npm_logs))[-1]
+                with open(os.path.join(npm_logs, latest), "rb") as npm_log:
+                    bounded += " " + npm_log.read(2048).decode("utf-8", "replace")
+            except (OSError, IndexError):
+                pass
         for sensitive in (capability, password, proxy):
             bounded = bounded.replace(sensitive, "[REDACTED]")
         CLIENT_DETAIL = f"exit={completed.returncode}; {bounded.strip()}"[:2304]

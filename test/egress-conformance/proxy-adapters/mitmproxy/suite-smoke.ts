@@ -249,7 +249,7 @@ try {
       "Node 22 native https/fetch ignore standard proxy variables without an explicit proxy agent and are measured as unsupported; other required clients use explicit proxy support.",
       "Client compatibility cases are functional insecure-container measurements; Linux/KVM reports them as profile-mismatched while retaining authoritative protocol and bypass evidence.",
       "Direct OpenBao polling and production WAL persistence remain mandatory Stage 3 reruns.",
-      "The candidate requires a custom 190-line Python addon for policy, capability, injection, and audit hooks.",
+      "The candidate requires a custom 191-line Python addon for policy, capability, injection, and audit hooks.",
       "The latest upstream image has six fixed HIGH findings under a narrow owner-and-expiry ignore through 2026-07-27; this evidence cannot support selection or release.",
       "Direct OpenBao change detection remains a Stage 1 revocation stub and requires a mandatory Stage 3 rerun.",
     ],

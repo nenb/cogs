@@ -5,10 +5,11 @@ import json
 import time
 import urllib.error
 import urllib.request
+from urllib.parse import urlsplit
 from mitmproxy import ctx, http
 
 ID_KEYS = {"version", "case_id", "session_id", "authorization_origin", "routes"}
-ROUTE_KEYS = {"id", "protocol", "host", "port", "methods", "pathPrefix"}
+ROUTE_KEYS = {"id", "protocol", "host", "port", "methods", "pathPrefix", "query"}
 CREDENTIAL_KEYS = {"kind", "value", "header"}
 
 
@@ -88,8 +89,9 @@ class CogsPolicy:
         self.capabilities.pop(str(client.id), None)
 
     def _route(self, flow, connection):
-        request_target = flow.request.path
-        path, separator, query = request_target.partition("?")
+        parsed_target = urlsplit(flow.request.url)
+        path = parsed_target.path
+        query = parsed_target.query
         host = flow.request.host.lower()
         sni = (flow.client_conn.sni or "").lower()
         authority = (flow.request.host_header or "").lower()
@@ -100,7 +102,7 @@ class CogsPolicy:
             self.policy is None
             or flow.request.scheme != "https"
             or any(character in path for character in ("#", "\\", "%"))
-            or "#" in query
+            or parsed_target.fragment != ""
             or "?" in query
             or "//" in path
             or any(part in (".", "..") for part in path.split("/"))
@@ -118,7 +120,7 @@ class CogsPolicy:
                 and flow.request.method in route["methods"]
                 and path.startswith(route["pathPrefix"])
                 and query == route.get("query", "")
-                and separator == ("?" if "query" in route else "")
+                and (("query" in route and query != "") or ("query" not in route and query == ""))
             ):
                 return route
         return None
