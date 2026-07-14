@@ -1,6 +1,6 @@
 # Stage 2 bounded measurement harness plan
 
-Status: harness design for issue #42; no AWS campaign has been run for this plan. Issue #42 must remain open after this PR unless a later, authorized campaign produces evidence for every acceptance criterion.
+Status: harness design and first authorized campaign outcome for issue #42. One post-merge Stage 2 measurement campaign was attempted after a checked plan and failed closed during warm Kata workload teardown; no pass evidence was produced, destroy completed immediately, independent inventory returned zero twice, and issue #42 remains open.
 
 ## Scope reconciliation
 
@@ -54,3 +54,7 @@ A future authorized run writes ignored local artifacts:
 - `.state/final-zero-resource-inventory.json` after destroy.
 
 Release or ADR documents may quote redacted aggregate values from these artifacts, but must not commit raw ignored state.
+
+## First authorized campaign outcome
+
+After PR #53 merged, one authorized bounded measurement campaign was run on the merged revision. The checked plan remained inside the one-host `c8i-flex.large`, CPU-only, SSM-only, no-EKS/no-NAT/no-load-balancer/no-EIP/no-EFS boundary with expected cost below USD 0.50. The campaign failed during `warm-workload-samples` because local Kata/containerd task teardown attempted to remove a task/container before containerd had observed task exit. The orchestrator treated this as a failed measurement, produced no validated measurement evidence or human report, destroyed all campaign resources, and independent inventory showed total zero. A second read-only inventory also showed total zero. The failed run records a local teardown lifecycle bug only; it does not provide measurement pass evidence and does not close any issue #42 acceptance criteria.

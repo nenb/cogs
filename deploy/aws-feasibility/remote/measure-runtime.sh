@@ -173,18 +173,46 @@ run_kata() {
 }
 start_kata_task() {
   name=$1
-  stop_kata_task "$name" >/dev/null 2>&1 || true
+  stop_kata_task "$name" >/dev/null
   ctr --namespace cogs-stage2 run --runtime io.containerd.kata.v2 --runtime-config-path "$config" --rootfs --read-only --detach "$rootfs" "$name" /bin/busybox sleep 300
+}
+bounded_task_wait_after_signal() {
+  name=$1
+  signal=$2
+  phase=$3
+  wait_output=$work/task-wait-$name-$phase.txt
+  wait_seconds=${COGS_STAGE2_TEARDOWN_WAIT_SECONDS:-10}
+  ctr --namespace cogs-stage2 tasks kill --signal "$signal" "$name" >/dev/null 2>&1 || true
+  if timeout --kill-after=1s "${wait_seconds}s" ctr --namespace cogs-stage2 tasks wait "$name" >"$wait_output" 2>&1; then
+    status=0
+  else
+    status=$?
+  fi
+  return "$status"
 }
 stop_kata_task() {
   name=$1
   if ctr --namespace cogs-stage2 tasks info "$name" >/dev/null 2>&1; then
-    ctr --namespace cogs-stage2 tasks kill "$name" >/dev/null 2>&1 || true
-    for _ in $(seq 1 50); do
-      state=$(ctr --namespace cogs-stage2 tasks info "$name" 2>/dev/null | jq -r '.Status // .status // empty' || true)
-      [[ -z "$state" || "$state" == STOPPED || "$state" == stopped ]] && break
-      sleep 0.1
-    done
+    if bounded_task_wait_after_signal "$name" SIGTERM graceful; then
+      wait_status=0
+    else
+      wait_status=$?
+    fi
+    if (( wait_status != 0 )); then
+      if (( wait_status != 124 && wait_status != 137 )); then
+        printf 'Kata task %s wait failed after SIGTERM with status %s\n' "$name" "$wait_status" >&2
+        return "$wait_status"
+      fi
+      if bounded_task_wait_after_signal "$name" SIGKILL killed; then
+        wait_status=0
+      else
+        wait_status=$?
+      fi
+      if (( wait_status != 0 )); then
+        printf 'timed out waiting for Kata task %s to exit after SIGKILL; status %s\n' "$name" "$wait_status" >&2
+        return 1
+      fi
+    fi
     ctr --namespace cogs-stage2 tasks rm "$name" >/dev/null
   fi
   for _ in $(seq 1 50); do
