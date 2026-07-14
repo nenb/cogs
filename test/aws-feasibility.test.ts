@@ -58,6 +58,44 @@ test("AWS runtime validation requires active KVM and a distinct root Kata guest"
   assert.match(controller, /nested_virtualization.*enabled/);
 });
 
+test("Stage 2 decision package is accepted, bounded, and redacted", () => {
+  const report = read("docs/test-reports/stage-2-aws-feasibility.md");
+  const adr = read("docs/adr/0012-use-aws-virtual-nested-kvm-for-stage-4-candidate.md");
+  const index = read("docs/adr/README.md");
+  assert.match(adr, /Status: Accepted/);
+  assert.match(adr, /Accepted by: Nick Byrne on 2026-07-14/);
+  assert.match(index, /0012.*Accepted/);
+  assert.doesNotMatch(adr, /Status: Proposed/);
+  assert.match(report, /2036bb7d0e115bba2fa4b84f875e657559243c80/);
+  assert.match(report, /6e42a6df1ceff65f3b45a9805d91cdce5fbd7a5fb775789fe56c4ebe4a2466be/);
+  assert.match(report, /c8i-flex\.large/);
+  assert.match(report, /ami-052355af2a014bd2c/);
+  assert.match(report, /QMP KVM present \/ enabled\s*\| `true` \/ `true`/);
+  assert.match(report, /Kata boot\s*\| 2,097 ms/);
+  assert.match(report, /campaign-scoped SSM instance profile/);
+  assert.doesNotMatch(report, /digest-bound validation script|integration credentials, AWS credentials/);
+  assert.match(report, /does not currently record or verify a separate script digest/);
+  for (const pr of ["47", "48", "49", "50", "51"]) {
+    assert.match(report + adr, new RegExp(`PR #${pr}`));
+  }
+  assert.match(report, /15 partial resources/);
+  assert.match(report, /destroyed 16 resources/);
+  assert.match(report, /containerd v2\.2\.1/);
+  assert.match(
+    report + adr,
+    /github\.com\/containerd\/containerd\/blob\/v2\.2\.1\/cmd\/ctr\/commands\/run\/run_unix\.go/,
+  );
+  assert.doesNotMatch(report + adr, /containerd release\/1\.7|blob\/release\/1\.7/);
+  assert.match(report, /were skipped on that PR and are not the authoritative AWS campaign evidence/);
+  assert.match(report, /total `0`/);
+  assert.match(report, /not release evidence for EKS, production, general availability/);
+  assert.match(adr, /Mandatory Stage 4 reruns and qualifications/);
+  assert.doesNotMatch(
+    report + adr,
+    /\b\d{12}\b|\bi-[0-9a-f]{8,}\b|\bvpc-[0-9a-f]{8,}\b|\bsubnet-[0-9a-f]{8,}\b|\bsg-[0-9a-f]{8,}\b|\blt-[0-9a-f]{8,}\b|\b[0-9a-f-]{36}\b|[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i,
+  );
+});
+
 test("AWS apply and cleanup scripts preserve manual and tag-bound gates", () => {
   const apply = read("deploy/aws-feasibility/apply.sh");
   const plan = read("deploy/aws-feasibility/plan.sh");
