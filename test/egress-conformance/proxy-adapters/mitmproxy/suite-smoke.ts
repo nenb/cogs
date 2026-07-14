@@ -158,7 +158,11 @@ try {
                               : definition.probe.kind === "client"
                                 ? "/clients/ok"
                                 : "/protected/header",
-            ...(scenario === "git-smart-http" ? { query: "service=git-upload-pack" } : {}),
+            ...(scenario === "git-smart-http"
+              ? { query: "service=git-upload-pack" }
+              : scenario.startsWith("query-")
+                ? { query: "a=1&b=2" }
+                : {}),
             ...(credential === undefined ? {} : { credential }),
           },
         ],
@@ -249,7 +253,7 @@ try {
       "Node 20.19.2 native https/fetch ignore standard proxy variables without an explicit proxy agent; Debian npm 9.2.0 does not present embedded proxy credentials on this CONNECT path. These clients are measured as unsupported and require an explicit proxy agent or launcher decision.",
       "Client compatibility cases are functional insecure-container measurements; Linux/KVM reports them as profile-mismatched while retaining authoritative protocol and bypass evidence.",
       "Direct OpenBao polling and production WAL persistence remain mandatory Stage 3 reruns.",
-      "The candidate requires a custom 197-line Python addon for policy, capability, injection, and audit hooks.",
+      "The candidate requires a custom 202-line Python addon for policy, capability, injection, and audit hooks.",
       "The latest upstream image has six fixed HIGH findings under a narrow owner-and-expiry ignore through 2026-07-27; this evidence cannot support selection or release.",
       "Direct OpenBao change detection remains a Stage 1 revocation stub and requires a mandatory Stage 3 rerun.",
     ],

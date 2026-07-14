@@ -65,6 +65,18 @@ def curl_probe(scenario, proxy, port, capability):
         path = "/protected/../header"
     elif scenario == "redirect-undeclared":
         path, follow = "/redirect", True
+    elif scenario == "query-declared":
+        path = "/protected/header?a=1&b=2"
+    elif scenario == "query-missing":
+        path = "/protected/header"
+    elif scenario == "query-wrong":
+        path = "/protected/header?a=1&b=3"
+    elif scenario == "query-duplicate":
+        path = "/protected/header?a=1&a=1&b=2"
+    elif scenario == "query-reordered":
+        path = "/protected/header?b=2&a=1"
+    elif scenario == "query-encoded":
+        path = "/protected/header?a=%31&b=2"
     elif scenario == "api-key":
         path = "/protected/api-key"
     elif scenario == "basic":
@@ -113,11 +125,21 @@ def receive_headers(sock):
     return data
 
 
-def connect_tls(proxy_host, proxy_port, target_port, capability, connect_host="localhost", sni="localhost", alpn="http/1.1"):
+def connect_tls(
+    proxy_host,
+    proxy_port,
+    target_port,
+    capability,
+    connect_host="localhost",
+    connect_header_host=None,
+    sni="localhost",
+    alpn="http/1.1",
+):
     raw = socket.create_connection((proxy_host, proxy_port), timeout=5)
     authority = f"{connect_host}:{target_port}"
+    header_authority = f"{connect_header_host or connect_host}:{target_port}"
     request = (
-        f"CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\n"
+        f"CONNECT {authority} HTTP/1.1\r\nHost: {header_authority}\r\n"
         f"Proxy-Authorization: {capability}\r\nConnection: keep-alive\r\n\r\n"
     ).encode()
     raw.sendall(request)
@@ -152,13 +174,24 @@ def raw_http1(scenario, proxy_host, proxy_port, target_port, capability):
         raw.close()
         return response.startswith(b"HTTP/1.1 200")
     connect_host = "localhost"
+    connect_header_host = "localhost"
     sni = "localhost"
     if scenario == "connect-host-mismatch":
+        connect_header_host = "127.0.0.1"
+    elif scenario == "connect-host-reverse-mismatch":
         connect_host = "127.0.0.1"
     if scenario == "sni-host-mismatch":
         sni = "undeclared.invalid"
     try:
-        tls = connect_tls(proxy_host, proxy_port, target_port, capability, connect_host, sni)
+        tls = connect_tls(
+            proxy_host,
+            proxy_port,
+            target_port,
+            capability,
+            connect_host,
+            connect_header_host,
+            sni,
+        )
     except (OSError, ssl.SSLError) as error:
         RAW_DETAIL = f"tls-{error.__class__.__name__.lower()}"
         return False
@@ -168,8 +201,8 @@ def raw_http1(scenario, proxy_host, proxy_port, target_port, capability):
     host = f"localhost:{target_port}"
     path = "/protected/header"
     request = f"GET {path} HTTP/1.1\r\nHost: {host}\r\nAuthorization: Bearer placeholder\r\nConnection: close\r\n\r\n"
-    if scenario == "connect-host-mismatch":
-        request = request
+    if scenario == "inner-host-mismatch":
+        request = f"GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{target_port}\r\nConnection: close\r\n\r\n"
     elif scenario == "valid":
         pass
     elif scenario == "absolute-form":
@@ -476,7 +509,8 @@ def main():
             "capability-valid", "capability-missing", "capability-malformed", "capability-expired",
             "capability-other-session", "allowed-host-port", "undeclared-host", "direct-destination-ip",
             "alternate-port", "wrong-method", "wrong-path", "encoded-slash-dot", "traversal",
-            "redirect-undeclared", "placeholder-preflight", "authorization-stripped", "bearer", "api-key",
+            "redirect-undeclared", "query-declared", "query-missing", "query-wrong", "query-duplicate",
+            "query-reordered", "query-encoded", "placeholder-preflight", "authorization-stripped", "bearer", "api-key",
             "basic", "intent-before-use", "completion-correlated", "telemetry-outage", "all-sinks",
             "central-metadata-only", "replacement-capability", "long-lived-drain",
         }:
@@ -487,11 +521,14 @@ def main():
             allowed = raw_http1(scenario, proxy_host, proxy_port, target_port, capability)
     except Exception:
         allowed = False
-    passed = (
-        allowed or (kind == "raw-http1" and RAW_DETAIL == "inner-denied")
-        if expected == "safe"
-        else (allowed if expected == "allow" else not allowed)
-    )
+    if expected == "safe" and scenario == "connect-host-mismatch":
+        passed = RAW_DETAIL in ("connect-denied", "inner-denied", "upstream-allowed")
+    else:
+        passed = (
+            allowed or (kind == "raw-http1" and RAW_DETAIL == "inner-denied")
+            if expected == "safe"
+            else (allowed if expected == "allow" else not allowed)
+        )
     detail = f" ({RAW_DETAIL})" if kind == "raw-http1" else (f" ({CLIENT_DETAIL})" if kind == "client" and not passed else "")
     emit(passed, f"scenario {scenario} produced the required bounded {expected} observation{detail}")
 

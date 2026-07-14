@@ -49,6 +49,17 @@ function validateCredential(value: CredentialConfig): void {
   }
 }
 
+function validateQuery(value: string): void {
+  safeText(value, "route query", 1024);
+  const parts = value.split("&");
+  if (
+    parts.some((part) => !/^[A-Za-z0-9._~-]+=[A-Za-z0-9._~-]+$/.test(part)) ||
+    new Set(parts.map((part) => part.split("=", 1)[0])).size !== parts.length ||
+    [...parts].sort().join("&") !== value
+  )
+    throw new Error("route query must be exact, canonical, uniquely keyed, and key-sorted");
+}
+
 function validatePath(value: string): void {
   if (
     !value.startsWith("/") ||
@@ -87,8 +98,7 @@ export function renderMitmproxyPolicy(input: MitmproxyPolicyInput): string {
       throw new Error("route host is invalid");
     if (!Number.isInteger(route.port) || route.port < 1 || route.port > 65535) throw new Error("route port is invalid");
     validatePath(route.pathPrefix);
-    if (route.query !== undefined && !/^[a-z][a-z0-9._-]{0,63}=[A-Za-z0-9._-]{1,128}$/.test(route.query))
-      throw new Error("route query is invalid");
+    if (route.query !== undefined) validateQuery(route.query);
     if (route.credential !== undefined) validateCredential(route.credential);
     if (route.methods.length === 0 || route.methods.some((method) => !methodPattern.test(method)))
       throw new Error("route methods are invalid");

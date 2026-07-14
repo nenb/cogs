@@ -68,6 +68,11 @@ class CogsPolicy:
         flow.response = http.Response.make(status, b"", headers)
 
     async def http_connect(self, flow: http.HTTPFlow):
+        host_headers = flow.request.headers.get_all("host")
+        expected_authority = f"{flow.request.host.lower()}:{flow.request.port}"
+        if len(host_headers) != 1 or host_headers[0].lower() != expected_authority:
+            self._deny(flow)
+            return
         if len(flow.request.headers.get_all("proxy-authorization")) != 1:
             self._deny(flow, 407)
             return
