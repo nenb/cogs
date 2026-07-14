@@ -28,7 +28,7 @@ started=$(date +%s%3N)
 stage=package-index
 apt-get update -qq
 stage=package-install
-apt-get install -y -qq busybox-static containerd cpu-checker curl jq qemu-system-x86 runc zstd >/var/log/cogs-stage2-apt.log
+apt-get install -y -qq busybox-static containerd cpu-checker curl jq qemu-system-x86 zstd >/var/log/cogs-stage2-apt.log
 install_completed=$(date +%s%3N)
 
 stage=cpu-vmx
@@ -91,39 +91,34 @@ rm -f "$kata_archive"
 
 stage=kata-runtime-files
 test -x /opt/kata/bin/kata-runtime
+test -x /opt/kata/bin/containerd-shim-kata-v2
 config=/opt/kata/share/defaults/kata-containers/configuration-qemu.toml
 test -f "$config"
+stage=kata-shim-path
+ln -sf /opt/kata/bin/containerd-shim-kata-v2 /usr/local/bin/containerd-shim-kata-v2
 stage=kata-runtime-check
 /opt/kata/bin/kata-runtime --config "$config" check >"$work/kata-check.txt" 2>&1
 kata_runtime_version=$(/opt/kata/bin/kata-runtime --version | head -n 1 | tr -cd '[:alnum:]. _/-')
 containerd_version=$(containerd --version | tr -cd '[:alnum:]. _/-')
 qemu_version=$(qemu-system-x86_64 --version | head -n 1 | tr -cd '[:alnum:]. _/()-')
 
-stage=bundle-creation
-bundle=$work/bundle
-rm -rf "$bundle"
-mkdir -p "$bundle/rootfs/bin"
-cp /bin/busybox "$bundle/rootfs/bin/busybox"
-(cd "$bundle" && runc spec)
-python3 - "$bundle/config.json" <<'PY'
-import json, sys
-path = sys.argv[1]
-with open(path, encoding='utf-8') as source:
-    config = json.load(source)
-config['process']['terminal'] = False
-config['process']['cwd'] = '/'
-config['process']['user'] = {'uid': 0, 'gid': 0}
-config['process']['args'] = ['/bin/busybox', 'sh', '-c', '/bin/busybox echo COGS_UID=$(/bin/busybox id -u); /bin/busybox echo COGS_KERNEL=$(/bin/busybox uname -r)']
-config['root']['readonly'] = True
-with open(path, 'w', encoding='utf-8') as target:
-    json.dump(config, target, separators=(',', ':'))
-    target.write('\n')
-PY
+stage=containerd-start
+systemctl start containerd
+ctr --namespace cogs-stage2 version >"$work/containerd-version.txt" 2>&1
+
+stage=rootfs-creation
+rootfs=$work/rootfs
+rm -rf "$rootfs"
+mkdir -p "$rootfs/bin"
+cp /bin/busybox "$rootfs/bin/busybox"
 
 stage=kata-boot
 boot_started=$(date +%s%3N)
+ctr --namespace cogs-stage2 containers rm cogs-stage2 >/dev/null 2>&1 || true
 set +e
-/opt/kata/bin/kata-runtime --config "$config" run --bundle "$bundle" cogs-stage2 >"$work/kata-output.txt" 2>"$work/kata-stderr.txt"
+ctr --namespace cogs-stage2 run --rm --runtime io.containerd.kata.v2 --runtime-config-path "$config" --rootfs --read-only "$rootfs" cogs-stage2 \
+  /bin/busybox sh -c '/bin/busybox echo COGS_UID=$(/bin/busybox id -u); /bin/busybox echo COGS_KERNEL=$(/bin/busybox uname -r)' \
+  >"$work/kata-output.txt" 2>"$work/kata-stderr.txt"
 runtime_status=$?
 set -e
 boot_completed=$(date +%s%3N)

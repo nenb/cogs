@@ -26,7 +26,7 @@ Authoritative AWS documentation:
 
 The overview currently lists C8i/M8i/R8i and flex variants plus several 7th-generation Intel families. The API reference is stricter and says `NestedVirtualization=enabled` is supported only on 8th-generation Intel C8i, M8i, R8i, and flex variants. The campaign follows the stricter API reference.
 
-Nested virtualization itself has no additional AWS feature charge. KVM and Hyper-V are the currently documented L1 hypervisors; this campaign uses KVM only.
+Nested virtualization itself has no additional AWS feature charge. KVM and Hyper-V are the currently documented L1 hypervisors; this campaign uses KVM only. Runtime validation must enter Kata through an upstream-supported Kata Containers 3.32.0 interface. The local probe uses containerd's runtime-v2 path (`ctr --runtime io.containerd.kata.v2 --runtime-config-path "$config"` resolving to `containerd-shim-kata-v2`) rather than the unsupported direct `kata-runtime run` form, and binds that shim invocation to the checked Kata QEMU configuration file.
 
 ## Candidate and availability
 

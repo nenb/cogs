@@ -41,6 +41,11 @@ test("AWS runtime validation requires active KVM and a distinct root Kata guest"
   assert.match(remote, /kata_version=3\.32\.0/);
   assert.match(remote, /kata-static-\$kata_version-amd64\.tar\.zst/);
   assert.match(remote, /1449ecea50bd91fa73a94648db195d18950fe869ba4b1f12d05f55f1fa7c1b01/);
+  assert.match(remote, /containerd-shim-kata-v2/);
+  assert.match(remote, /--runtime io\.containerd\.kata\.v2/);
+  assert.match(remote, /--runtime-config-path "\$config"/);
+  assert.match(remote, /--rootfs --read-only "\$rootfs"/);
+  assert.doesNotMatch(remote, /kata-runtime .* run|--bundle|runc spec/);
   assert.match(remote, /guest_uid.*== 0/);
   assert.match(remote, /guest_kernel.*!=.*host_kernel/);
   assert.doesNotMatch(remote, /accel=tcg|--runtime.*runc/);
