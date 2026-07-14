@@ -63,7 +63,7 @@
         "cost_basis"
       ],
       "properties": {
-        "sample_count": { "type": "integer", "minimum": 5, "maximum": 9 },
+        "sample_count": { "type": "integer", "minimum": 7, "maximum": 9 },
         "observed_duration_ms": { "type": "integer", "minimum": 1, "maximum": 14400000 },
         "apply_to_running_ms": { "type": "integer", "minimum": 1, "maximum": 14400000 },
         "apply_to_ssm_online_ms": { "type": "integer", "minimum": 1, "maximum": 14400000 },
@@ -168,7 +168,7 @@
       "properties": {
         "samples": {
           "type": "array",
-          "minItems": 5,
+          "minItems": 7,
           "maxItems": 9,
           "items": { "type": "integer", "minimum": 25, "maximum": 2700000 }
         },

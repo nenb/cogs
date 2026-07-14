@@ -1,6 +1,55 @@
 #!/usr/bin/env bash
 set -eEuo pipefail
+if [[ ${COGS_STAGE2_MEASURE_IN_SESSION:-0} != 1 ]]; then
+  export COGS_STAGE2_MEASURE_IN_SESSION=1
+  exec python3 - "$0" "$@" <<'PY'
+import os, sys
+script, args = sys.argv[1], sys.argv[2:]
+os.setsid()
+os.execv('/usr/bin/env', ['env', 'bash', script, *args])
+PY
+fi
 stage=initialization
+sample=none
+command_label=none
+validate_seconds() {
+  local name=$1 value=$2 min=$3 max=$4
+  [[ "$value" =~ ^[0-9]+$ ]] || { printf '%s must be an integer number of seconds\n' "$name" >&2; exit 2; }
+  (( value >= min && value <= max )) || { printf '%s must be between %s and %s seconds\n' "$name" "$min" "$max" >&2; exit 2; }
+}
+validate_kill_after() {
+  local name=$1 value=$2
+  [[ "$value" =~ ^[1-5]s$ ]] || { printf '%s must match ^[1-5]s$\n' "$name" >&2; exit 2; }
+}
+remote_deadline_seconds=${COGS_STAGE2_REMOTE_DEADLINE_SECONDS:-660}
+command_kill_after=${COGS_STAGE2_COMMAND_KILL_AFTER:-2s}
+package_update_timeout=${COGS_STAGE2_PACKAGE_UPDATE_TIMEOUT:-90}
+package_install_timeout=${COGS_STAGE2_PACKAGE_INSTALL_TIMEOUT:-180}
+download_timeout=${COGS_STAGE2_DOWNLOAD_TIMEOUT:-90}
+extract_timeout=${COGS_STAGE2_EXTRACT_TIMEOUT:-60}
+qmp_timeout=${COGS_STAGE2_QMP_TIMEOUT:-20}
+qemu_probe_wait_timeout=${COGS_STAGE2_QEMU_PROBE_WAIT_TIMEOUT:-10}
+kata_boot_timeout=${COGS_STAGE2_KATA_BOOT_TIMEOUT:-60}
+warm_sample_timeout=${COGS_STAGE2_WARM_SAMPLE_TIMEOUT:-45}
+host_baseline_sample_timeout=${COGS_STAGE2_HOST_BASELINE_SAMPLE_TIMEOUT:-45}
+idle_timeout=${COGS_STAGE2_IDLE_TIMEOUT:-20}
+validate_seconds COGS_STAGE2_REMOTE_DEADLINE_SECONDS "$remote_deadline_seconds" 1 840
+validate_kill_after COGS_STAGE2_COMMAND_KILL_AFTER "$command_kill_after"
+validate_seconds COGS_STAGE2_PACKAGE_UPDATE_TIMEOUT "$package_update_timeout" 10 180
+validate_seconds COGS_STAGE2_PACKAGE_INSTALL_TIMEOUT "$package_install_timeout" 30 300
+validate_seconds COGS_STAGE2_DOWNLOAD_TIMEOUT "$download_timeout" 10 180
+validate_seconds COGS_STAGE2_EXTRACT_TIMEOUT "$extract_timeout" 5 120
+validate_seconds COGS_STAGE2_QMP_TIMEOUT "$qmp_timeout" 5 60
+validate_seconds COGS_STAGE2_QEMU_PROBE_WAIT_TIMEOUT "$qemu_probe_wait_timeout" 3 30
+validate_seconds COGS_STAGE2_KATA_BOOT_TIMEOUT "$kata_boot_timeout" 10 90
+validate_seconds COGS_STAGE2_WARM_SAMPLE_TIMEOUT "$warm_sample_timeout" 5 60
+validate_seconds COGS_STAGE2_HOST_BASELINE_SAMPLE_TIMEOUT "$host_baseline_sample_timeout" 5 60
+validate_seconds COGS_STAGE2_IDLE_TIMEOUT "$idle_timeout" 10 30
+if [[ -z ${COGS_STAGE2_TIMEOUT_SELF_TEST:-} ]]; then
+  for per_command_timeout in "$package_update_timeout" "$package_install_timeout" "$download_timeout" "$extract_timeout" "$qmp_timeout" "$qemu_probe_wait_timeout" "$kata_boot_timeout" "$warm_sample_timeout" "$host_baseline_sample_timeout" "$idle_timeout"; do
+    (( per_command_timeout < remote_deadline_seconds )) || { printf 'per-command timeout %s must be less than remote deadline %s\n' "$per_command_timeout" "$remote_deadline_seconds" >&2; exit 2; }
+  done
+fi
 failure() {
   status=$?
   trap - ERR
@@ -23,24 +72,202 @@ failure() {
     if (( remaining > 0 )); then printf '\n' >>"$diagnostic_file"; remaining=$((remaining - 1)); fi
     files=$((files + 1))
   done
-  printf 'cogs-stage2-measurement-failure-stage=%s status=%s\n' "$stage" "$status" >&2
+  printf 'cogs-stage2-measurement-failure-stage=%s sample=%s command=%s status=%s\n' "$stage" "$sample" "$command_label" "$status" >&2
   cat "$diagnostic_file" >&2
   exit "$status"
 }
+outer_timeout_watchdog() {
+  local parent_pgid=$1 state_file=$2
+  sleep "$remote_deadline_seconds"
+  if [[ -f "$state_file" ]]; then
+    read -r timeout_stage timeout_sample timeout_command <"$state_file" || true
+  fi
+  trap '' TERM
+  printf 'cogs-stage2-measurement-timeout-stage=%s sample=%s command=%s status=outer-timeout\n' "${timeout_stage:-$stage}" "${timeout_sample:-$sample}" "${timeout_command:-$command_label}" >&2
+  if [[ -f "${state_file}.active-pgid" ]]; then
+    read -r active_pgid <"${state_file}.active-pgid" || true
+    if [[ ${active_pgid:-} =~ ^[0-9]+$ ]]; then
+      kill -TERM -- "-$active_pgid" >/dev/null 2>&1 || true
+    fi
+  fi
+  kill -TERM -- "-$parent_pgid" >/dev/null 2>&1 || true
+  sleep 2
+  if [[ ${active_pgid:-} =~ ^[0-9]+$ ]]; then
+    kill -KILL -- "-$active_pgid" >/dev/null 2>&1 || true
+  fi
+  kill -KILL -- "-$parent_pgid" >/dev/null 2>&1 || true
+}
 trap failure ERR
+progress() {
+  printf '%s %s %s\n' "$stage" "$sample" "$command_label" >"${timeout_state:-/dev/null}" 2>/dev/null || true
+  printf 'cogs-stage2-progress stage=%s sample=%s command=%s\n' "$stage" "$sample" "$command_label" >&2
+}
+run_bounded() {
+  local seconds=$1
+  command_label=$2
+  shift 2
+  progress
+  if python3 -c '
+import os, signal, sys, time
+active_path, kill_after_raw, seconds_raw, command = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4:]
+kill_after = int(kill_after_raw.removesuffix("s"))
+seconds = int(seconds_raw.removesuffix("s"))
+pid = os.fork()
+if pid == 0:
+    os.setsid()
+    os.execvp(command[0], command)
+with open(active_path, "w", encoding="utf-8") as handle:
+    handle.write(f"{pid}\n")
+def descendants(root):
+    try:
+        rows = os.popen("ps -axo pid=,ppid=").read().splitlines()
+    except Exception:
+        return []
+    children = {}
+    for row in rows:
+        parts = row.split()
+        if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+            children.setdefault(int(parts[1]), []).append(int(parts[0]))
+    found = []
+    stack = [root]
+    while stack:
+        parent = stack.pop()
+        for child in children.get(parent, []):
+            found.append(child)
+            stack.append(child)
+    return found
+
+def signal_tree(root, sig):
+    try:
+        os.killpg(root, sig)
+    except ProcessLookupError:
+        pass
+    for child in descendants(root):
+        try:
+            os.kill(child, sig)
+        except ProcessLookupError:
+            pass
+
+deadline = time.monotonic() + seconds
+term_sent = False
+kill_deadline = None
+status = None
+while True:
+    waited_pid, status = os.waitpid(pid, os.WNOHANG)
+    if waited_pid == pid:
+        break
+    now = time.monotonic()
+    if not term_sent and now >= deadline:
+        signal_tree(pid, signal.SIGTERM)
+        term_sent = True
+        kill_deadline = now + kill_after
+    elif term_sent and kill_deadline is not None and now >= kill_deadline:
+        signal_tree(pid, signal.SIGKILL)
+    time.sleep(0.02)
+try:
+    os.unlink(active_path)
+except FileNotFoundError:
+    pass
+if os.WIFEXITED(status):
+    code = os.WEXITSTATUS(status)
+    if term_sent and code == 0:
+        code = 124
+    raise SystemExit(code)
+if os.WIFSIGNALED(status):
+    raise SystemExit(128 + os.WTERMSIG(status))
+raise SystemExit(1)
+' "${timeout_state:-/tmp/cogs-stage2-timeout}.active-pgid" "$command_kill_after" "${seconds}s" "$@"; then
+    bounded_status=0
+  else
+    bounded_status=$?
+  fi
+  rm -f "${timeout_state:-/tmp/cogs-stage2-timeout}.active-pgid"
+  return "$bounded_status"
+}
+measure_ms() {
+  local seconds=$1 label=$2 start_ms end_ms elapsed
+  shift 2
+  start_ms=$(date +%s%3N)
+  run_bounded "$seconds" "$label" "$@" >/dev/null
+  end_ms=$(date +%s%3N)
+  elapsed=$((end_ms - start_ms))
+  (( elapsed >= 25 )) || { printf 'benchmark sample too short: %s ms\n' "$elapsed" >&2; return 1; }
+  printf '%s\n' "$elapsed"
+}
 export DEBIAN_FRONTEND=noninteractive
 work=/var/tmp/cogs-stage2-measure
 report=$work/measurement-result.json
 samples=${COGS_STAGE2_MEASUREMENT_SAMPLES:-7}
-[[ "$samples" =~ ^[0-9]+$ && "$samples" -ge 5 && "$samples" -le 9 ]]
+[[ "$samples" =~ ^[0-9]+$ && "$samples" -ge 7 && "$samples" -le 9 ]]
 mkdir -p "$work"
 chmod 700 "$work"
+timeout_state=$work/timeout-state.txt
+progress
+script_pgid=$(ps -o pgid= $$ | tr -d ' ')
+outer_timeout_watchdog "$script_pgid" "$timeout_state" &
+outer_timeout_pid=$!
+if [[ -n ${COGS_STAGE2_WATCHDOG_PID_FILE:-} ]]; then
+  printf '%s\n' "$outer_timeout_pid" >"$COGS_STAGE2_WATCHDOG_PID_FILE"
+fi
+trap 'pkill -TERM -P "$outer_timeout_pid" >/dev/null 2>&1 || true; kill "$outer_timeout_pid" >/dev/null 2>&1 || true' EXIT
 started=$(date +%s%3N)
 
+if [[ ${COGS_STAGE2_TIMEOUT_SELF_TEST:-} == stdin-pipeline ]]; then
+  stage=timeout-self-test
+  sample=pipeline
+  printf 'pipeline-ok' | run_bounded 5 stdin-pipeline cat >"${COGS_STAGE2_STDIN_TEST_FILE:?}"
+  exit 0
+elif [[ ${COGS_STAGE2_TIMEOUT_SELF_TEST:-} == stdin-heredoc ]]; then
+  stage=timeout-self-test
+  sample=heredoc
+  run_bounded 5 stdin-heredoc python3 - "${COGS_STAGE2_STDIN_TEST_FILE:?}" <<'PY'
+import sys
+open(sys.argv[1], 'w', encoding='utf-8').write('heredoc-ok')
+PY
+  exit 0
+elif [[ ${COGS_STAGE2_TIMEOUT_SELF_TEST:-} == watchdog-success ]]; then
+  stage=timeout-self-test
+  sample=watchdog-success
+  command_label=quick-success
+  progress
+  exit 0
+elif [[ ${COGS_STAGE2_TIMEOUT_SELF_TEST:-} == host-sample ]]; then
+  stage=warm-workload-samples
+  sample=2
+  if [[ -n ${COGS_STAGE2_TIMEOUT_PID_FILE:-} ]]; then
+    measure_ms 1 host-cpu-2 bash -c 'echo $$ >"$1"; trap "" TERM; sleep 30' bash "$COGS_STAGE2_TIMEOUT_PID_FILE" >/dev/null
+  else
+    measure_ms 1 host-cpu-2 sleep 2 >/dev/null
+  fi
+  exit 99
+elif [[ ${COGS_STAGE2_TIMEOUT_SELF_TEST:-} == kata-sample ]]; then
+  stage=warm-workload-samples
+  sample=3
+  if [[ -n ${COGS_STAGE2_TIMEOUT_PID_FILE:-} ]]; then
+    measure_ms 1 kata-cpu-3 bash -c 'echo $$ >"$1"; trap "" TERM; sleep 30' bash "$COGS_STAGE2_TIMEOUT_PID_FILE" >/dev/null
+  else
+    measure_ms 1 kata-cpu-3 sleep 2 >/dev/null
+  fi
+  exit 99
+elif [[ ${COGS_STAGE2_TIMEOUT_SELF_TEST:-} == outer ]]; then
+  stage=host-baselines
+  sample=7
+  command_label=host-build-7
+  progress
+  if [[ -n ${COGS_STAGE2_TIMEOUT_PID_FILE:-} ]]; then
+    run_bounded 30 host-build-7 bash -c 'echo $$ >"$1"; trap "" TERM; sleep 30' bash "$COGS_STAGE2_TIMEOUT_PID_FILE"
+  else
+    sleep 2
+  fi
+  exit 99
+fi
+
 stage=package-index
-apt-get update -qq
+sample=none
+run_bounded "$package_update_timeout" apt-get-update apt-get update -qq
 stage=package-install
-apt-get install -y -qq busybox-static build-essential containerd cpu-checker curl git jq qemu-system-x86 zstd >/var/log/cogs-stage2-measure-apt.log
+sample=none
+run_bounded "$package_install_timeout" apt-get-install apt-get install -y -qq busybox-static build-essential containerd cpu-checker curl git jq qemu-system-x86 zstd >/var/log/cogs-stage2-measure-apt.log
 install_completed=$(date +%s%3N)
 
 stage=active-kvm
@@ -51,14 +278,21 @@ modprobe kvm_intel
 test -c /dev/kvm
 test -r /dev/kvm
 test -w /dev/kvm
-kvm-ok >"$work/kvm-ok.txt" 2>&1
+run_bounded 10 kvm-ok kvm-ok >"$work/kvm-ok.txt" 2>&1
 qmp=$work/qmp.sock
 rm -f "$qmp"
+command_label=qemu-probe-start
+progress
 qemu-system-x86_64 -S -nodefaults -display none -machine accel=kvm -cpu host -qmp "unix:$qmp,server=on,wait=off" &
 qemu_pid=$!
-for _ in $(seq 1 50); do [[ -S "$qmp" ]] && break; sleep 0.1; done
-[[ -S "$qmp" ]]
-python3 - "$qmp" "$work/qmp.json" <<'PY'
+cleanup_qemu_probe() {
+  kill "$qemu_pid" >/dev/null 2>&1 || true
+  timeout --kill-after=1s 3s tail --pid="$qemu_pid" -f /dev/null >/dev/null 2>&1 || true
+  wait "$qemu_pid" >/dev/null 2>&1 || true
+}
+run_bounded "$qemu_probe_wait_timeout" qemu-probe-socket bash -c 'for _ in $(seq 1 50); do [[ -S "$1" ]] && exit 0; sleep 0.1; done; exit 1' bash "$qmp" || { cleanup_qemu_probe; false; }
+set +e
+run_bounded "$qmp_timeout" qmp-query python3 - "$qmp" "$work/qmp.json" <<'PY'
 import json, socket, sys
 path, output = sys.argv[1:]
 s = socket.socket(socket.AF_UNIX)
@@ -81,17 +315,21 @@ with open(output, 'w', encoding='utf-8') as target:
 if capabilities.get('return') != {} or kvm.get('return') != {'enabled': True, 'present': True}:
     raise SystemExit('QMP did not prove active KVM')
 PY
+qmp_status=$?
+set -e
+(( qmp_status == 0 )) || { cleanup_qemu_probe; return "$qmp_status" 2>/dev/null || exit "$qmp_status"; }
+run_bounded "$qemu_probe_wait_timeout" qemu-probe-exit tail --pid="$qemu_pid" -f /dev/null || { cleanup_qemu_probe; false; }
 wait "$qemu_pid"
 
 kata_version=3.32.0
 kata_archive="$work/kata-static-$kata_version-amd64.tar.zst"
 kata_url="https://github.com/kata-containers/kata-containers/releases/download/$kata_version/kata-static-$kata_version-amd64.tar.zst"
 stage=kata-download
-curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 "$kata_url" --output "$kata_archive"
+run_bounded "$download_timeout" kata-download curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 "$kata_url" --output "$kata_archive"
 stage=kata-digest
-echo '1449ecea50bd91fa73a94648db195d18950fe869ba4b1f12d05f55f1fa7c1b01  '"$kata_archive" | sha256sum --check --status
+printf '%s  %s\n' '1449ecea50bd91fa73a94648db195d18950fe869ba4b1f12d05f55f1fa7c1b01' "$kata_archive" | run_bounded 15 kata-digest sha256sum --check --status
 stage=kata-extract
-tar --zstd -xf "$kata_archive" -C /
+run_bounded "$extract_timeout" kata-extract tar --zstd -xf "$kata_archive" -C /
 rm -f "$kata_archive"
 
 stage=kata-runtime-check
@@ -113,11 +351,11 @@ PY
 (( guest_memory_mib >= 128 && guest_memory_mib <= 4096 ))
 (( guest_vcpus >= 1 && guest_vcpus <= 2 ))
 ln -sf /opt/kata/bin/containerd-shim-kata-v2 /usr/local/bin/containerd-shim-kata-v2
-/opt/kata/bin/kata-runtime --config "$config" check >"$work/kata-check.txt" 2>&1
+run_bounded 30 kata-runtime-check /opt/kata/bin/kata-runtime --config "$config" check >"$work/kata-check.txt" 2>&1
 kata_runtime_version=$(/opt/kata/bin/kata-runtime --version | head -n 1 | tr -cd '[:alnum:]. _/-')
 containerd_version=$(containerd --version | tr -cd '[:alnum:]. _/-')
 qemu_version=$(qemu-system-x86_64 --version | head -n 1 | tr -cd '[:alnum:]. _/()-')
-systemctl start containerd
+run_bounded 20 containerd-start systemctl start containerd
 
 stage=workload-rootfs
 rootfs=$work/rootfs
@@ -168,13 +406,13 @@ run_kata() {
   name=$1
   shift
   ctr --namespace cogs-stage2 containers rm "$name" >/dev/null 2>&1 || true
-  ctr --namespace cogs-stage2 run --rm --runtime io.containerd.kata.v2 --runtime-config-path "$config" --rootfs --read-only "$rootfs" "$name" "$@"
+  run_bounded "$kata_boot_timeout" "kata-run-$name" ctr --namespace cogs-stage2 run --rm --runtime io.containerd.kata.v2 --runtime-config-path "$config" --rootfs --read-only "$rootfs" "$name" "$@"
   assert_qemu_baseline
 }
 start_kata_task() {
   name=$1
   stop_kata_task "$name" >/dev/null
-  ctr --namespace cogs-stage2 run --runtime io.containerd.kata.v2 --runtime-config-path "$config" --rootfs --read-only --detach "$rootfs" "$name" /bin/busybox sleep 300
+  run_bounded 30 "kata-start-$name" ctr --namespace cogs-stage2 run --runtime io.containerd.kata.v2 --runtime-config-path "$config" --rootfs --read-only --detach "$rootfs" "$name" /bin/busybox sleep 300
 }
 task_status() {
   name=$1
@@ -283,15 +521,6 @@ cleanup_kata_tasks() {
   done
 }
 qemu_baseline=$(qemu_pids | tr '\n' ' ' | sed 's/ $//')
-measure_ms() {
-  local start_ms end_ms elapsed
-  start_ms=$(date +%s%3N)
-  "$@" >/dev/null 2>/dev/null
-  end_ms=$(date +%s%3N)
-  elapsed=$((end_ms - start_ms))
-  (( elapsed >= 25 )) || { printf 'benchmark sample too short: %s ms\n' "$elapsed" >&2; return 1; }
-  printf '%s\n' "$elapsed"
-}
 json_array() { python3 - "$@" <<'PY'
 import json, sys
 print(json.dumps([int(x) for x in sys.argv[1:]], separators=(',', ':')))
@@ -302,6 +531,7 @@ stage=kata-cold-boot-samples
 kata_boot_ms=()
 guest_kernel=""
 for i in $(seq 1 "$samples"); do
+  sample=$i
   out=$work/kata-output-$i.txt
   err=$work/kata-stderr-$i.txt
   boot_started=$(date +%s%3N)
@@ -319,16 +549,18 @@ for i in $(seq 1 "$samples"); do
 done
 
 stage=warm-workload-samples
+sample=setup
 host_cpu_ms=()
 kata_cpu_ms=()
 host_fs_ms=()
 kata_fs_ms=()
 start_kata_task cogs-stage2-warm
 for i in $(seq 1 "$samples"); do
-  host_cpu_ms+=( "$(measure_ms /bin/busybox sh -c 'n=0; while [ $n -lt 16 ]; do /bin/busybox sha256sum /var/tmp/cogs-stage2-measure/rootfs/data/payload.bin >/dev/null; n=$((n+1)); done')" )
-  kata_cpu_ms+=( "$(measure_ms ctr --namespace cogs-stage2 tasks exec --exec-id "cpu-$i" cogs-stage2-warm /bin/busybox sh -c 'n=0; while [ $n -lt 16 ]; do /bin/busybox sha256sum /data/payload.bin >/dev/null; n=$((n+1)); done')" )
-  host_fs_ms+=( "$(measure_ms /bin/busybox sh -c 'n=0; while [ $n -lt 16 ]; do /bin/busybox find /var/tmp/cogs-stage2-measure/rootfs/data/files -type f -print0 | /bin/busybox xargs -0 /bin/busybox cat >/dev/null; n=$((n+1)); done')" )
-  kata_fs_ms+=( "$(measure_ms ctr --namespace cogs-stage2 tasks exec --exec-id "fs-$i" cogs-stage2-warm /bin/busybox sh -c 'n=0; while [ $n -lt 16 ]; do /bin/busybox find /data/files -type f -print0 | /bin/busybox xargs -0 /bin/busybox cat >/dev/null; n=$((n+1)); done')" )
+  sample=$i
+  host_cpu_ms+=( "$(measure_ms "$warm_sample_timeout" "host-cpu-$i" /bin/busybox sh -c 'n=0; while [ $n -lt 16 ]; do /bin/busybox sha256sum /var/tmp/cogs-stage2-measure/rootfs/data/payload.bin >/dev/null; n=$((n+1)); done')" )
+  kata_cpu_ms+=( "$(measure_ms "$warm_sample_timeout" "kata-cpu-$i" ctr --namespace cogs-stage2 tasks exec --exec-id "cpu-$i" cogs-stage2-warm /bin/busybox sh -c 'n=0; while [ $n -lt 16 ]; do /bin/busybox sha256sum /data/payload.bin >/dev/null; n=$((n+1)); done')" )
+  host_fs_ms+=( "$(measure_ms "$warm_sample_timeout" "host-fs-$i" /bin/busybox sh -c 'n=0; while [ $n -lt 16 ]; do /bin/busybox find /var/tmp/cogs-stage2-measure/rootfs/data/files -type f -print0 | /bin/busybox xargs -0 /bin/busybox cat >/dev/null; n=$((n+1)); done')" )
+  kata_fs_ms+=( "$(measure_ms "$warm_sample_timeout" "kata-fs-$i" ctr --namespace cogs-stage2 tasks exec --exec-id "fs-$i" cogs-stage2-warm /bin/busybox sh -c 'n=0; while [ $n -lt 16 ]; do /bin/busybox find /data/files -type f -print0 | /bin/busybox xargs -0 /bin/busybox cat >/dev/null; n=$((n+1)); done')" )
 done
 stop_kata_task cogs-stage2-warm
 assert_qemu_baseline
@@ -352,7 +584,8 @@ PY
 git -C "$repo" add .
 git -C "$repo" commit -q -m 'synthetic baseline'
 for i in $(seq 1 "$samples"); do
-  git_ms+=( "$(measure_ms /bin/busybox sh -c 'n=0; while [ $n -lt 20 ]; do git -C /var/tmp/cogs-stage2-measure/synthetic-repo grep -n line >/dev/null; n=$((n+1)); done')" )
+  sample=$i
+  git_ms+=( "$(measure_ms "$host_baseline_sample_timeout" "host-git-$i" /bin/busybox sh -c 'n=0; while [ $n -lt 20 ]; do git -C /var/tmp/cogs-stage2-measure/synthetic-repo grep -n line >/dev/null; n=$((n+1)); done')" )
 done
 build=$work/synthetic-build
 rm -rf "$build"
@@ -370,13 +603,15 @@ clean:
 	rm -f cogs-stage2
 MK
 for i in $(seq 1 "$samples"); do
-  build_ms+=( "$(measure_ms /bin/busybox sh -c 'n=0; while [ $n -lt 50 ]; do make -C /var/tmp/cogs-stage2-measure/synthetic-build clean all >/dev/null; n=$((n+1)); done')" )
+  sample=$i
+  build_ms+=( "$(measure_ms "$host_baseline_sample_timeout" "host-build-$i" /bin/busybox sh -c 'n=0; while [ $n -lt 50 ]; do make -C /var/tmp/cogs-stage2-measure/synthetic-build clean all >/dev/null; n=$((n+1)); done')" )
 done
 
 stage=idle-memory
+sample=idle
 qemu_before=$(qemu_pids | tr '\n' ' ' | sed 's/ $//')
 start_kata_task cogs-stage2-idle
-sleep 8
+run_bounded "$idle_timeout" idle-observation sleep 8
 qemu_after=$(qemu_pids | tr '\n' ' ' | sed 's/ $//')
 qemu_pid_detected=$(qemu_diff_one "$qemu_before" "$qemu_after")
 qemu_rss_mib=$(awk '/VmRSS:/ {print int($2/1024)}' "/proc/$qemu_pid_detected/status")

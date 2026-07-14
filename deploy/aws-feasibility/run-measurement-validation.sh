@@ -4,6 +4,25 @@ root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 directory="$root/deploy/aws-feasibility"
 state="$directory/.state"
 tofu=$($root/scripts/install-opentofu.sh)
+validate_seconds() {
+  local name=$1 value=$2 min=$3 max=$4
+  [[ "$value" =~ ^[0-9]+$ ]] || { printf '%s must be an integer number of seconds\n' "$name" >&2; exit 2; }
+  (( value >= min && value <= max )) || { printf '%s must be between %s and %s seconds\n' "$name" "$min" "$max" >&2; exit 2; }
+}
+remote_timeout_seconds=${COGS_STAGE2_REMOTE_TIMEOUT_SECONDS:-720}
+ssm_timeout_seconds=${COGS_STAGE2_SSM_TIMEOUT_SECONDS:-780}
+poll_interval_seconds=${COGS_STAGE2_SSM_POLL_INTERVAL_SECONDS:-5}
+poll_attempts=${COGS_STAGE2_SSM_POLL_ATTEMPTS:-160}
+validate_seconds COGS_STAGE2_REMOTE_TIMEOUT_SECONDS "$remote_timeout_seconds" 60 840
+validate_seconds COGS_STAGE2_SSM_TIMEOUT_SECONDS "$ssm_timeout_seconds" 60 870
+validate_seconds COGS_STAGE2_SSM_POLL_INTERVAL_SECONDS "$poll_interval_seconds" 1 30
+[[ "$poll_attempts" =~ ^[0-9]+$ ]] || { printf 'COGS_STAGE2_SSM_POLL_ATTEMPTS must be an integer\n' >&2; exit 2; }
+(( poll_attempts >= 1 && poll_attempts <= 900 )) || { printf 'COGS_STAGE2_SSM_POLL_ATTEMPTS out of range\n' >&2; exit 2; }
+poll_timeout_seconds=$((poll_interval_seconds * poll_attempts))
+(( remote_timeout_seconds < ssm_timeout_seconds && ssm_timeout_seconds < poll_timeout_seconds && poll_timeout_seconds <= 820 )) || {
+  printf 'timeout hierarchy must satisfy remote < SSM < poll <= 820 seconds\n' >&2
+  exit 2
+}
 : "${AWS_PROFILE:=nebula}"
 export AWS_PROFILE AWS_REGION=us-east-1
 [[ -f "$state/terraform.tfstate" ]] || { printf 'campaign state is missing\n' >&2; exit 1; }
@@ -22,12 +41,20 @@ if campaign.get('source_revision') != planned_revision:
 PY
 instance_id=$("$tofu" -chdir="$directory" output -json campaign | python3 -c 'import json,sys; print(json.load(sys.stdin)["instance_id"])')
 [[ "$instance_id" =~ ^i-[0-9a-f]+$ ]] || { printf 'invalid state-bound instance ID\n' >&2; exit 1; }
+rm -f "$state/stage2-measurement-evidence.json" "$state/stage2-measurement-report.md" "$state/remote-measurement-result.json"
 script="$directory/remote/measure-runtime.sh"
 payload=$(base64 <"$script" | tr -d '\n')
-parameters=$(python3 - "$payload" <<'PY'
-import json, sys
+parameters=$(python3 - "$payload" "$remote_timeout_seconds" <<'PY'
+import json, shlex, sys
 payload = sys.argv[1]
-command = f"printf '%s' '{payload}' | base64 -d >/var/tmp/cogs-measure-runtime.sh && chmod 0700 /var/tmp/cogs-measure-runtime.sh && timeout 2700 /var/tmp/cogs-measure-runtime.sh"
+remote_timeout = sys.argv[2]
+if not remote_timeout.isdecimal():
+    raise SystemExit('remote timeout must be numeric')
+command = ' '.join([
+    'printf', '%s', shlex.quote(payload), '|', 'base64', '-d', '>/var/tmp/cogs-measure-runtime.sh', '&&',
+    'chmod', '0700', '/var/tmp/cogs-measure-runtime.sh', '&&',
+    'timeout', '--kill-after=5s', f'{remote_timeout}s', '/var/tmp/cogs-measure-runtime.sh',
+])
 print(json.dumps({'commands': [command]}))
 PY
 )
@@ -35,18 +62,18 @@ command_id=$(aws ssm send-command \
   --instance-ids "$instance_id" \
   --document-name AWS-RunShellScript \
   --comment "Cogs Stage 2 bounded measurement validation" \
-  --timeout-seconds 2800 \
+  --timeout-seconds "$ssm_timeout_seconds" \
   --parameters "$parameters" \
   --query 'Command.CommandId' --output text)
 [[ "$command_id" =~ ^[0-9a-f-]+$ ]] || { printf 'invalid SSM command ID\n' >&2; exit 1; }
 printf '%s\n' "$command_id" >"$state/measurement-command-id.txt"
 status=Pending
-for _ in $(seq 1 280); do
+for _ in $(seq 1 "$poll_attempts"); do
   status=$(aws ssm get-command-invocation --command-id "$command_id" --instance-id "$instance_id" --query Status --output text 2>/dev/null || true)
   case "$status" in
     Success|Failed|Cancelled|TimedOut|Cancelling) break ;;
   esac
-  sleep 10
+  sleep "$poll_interval_seconds"
 done
 if [[ "$status" != Success ]]; then
   aws ssm cancel-command --command-id "$command_id" >/dev/null 2>&1 || true

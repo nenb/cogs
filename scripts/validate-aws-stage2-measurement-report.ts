@@ -116,6 +116,7 @@ function checkPaired(name: string, value: Paired | undefined, sampleCount: numbe
   assert.equal(value.kata_to_host_p50_ratio, expected, `${name} ratio mismatch`);
 }
 const sampleCount = report.campaign?.sample_count ?? 0;
+assert.ok(sampleCount >= 7 && sampleCount <= 9, "sample count must stay in the approved 7-9 bound");
 checkSummary("kata_cold_boot", report.measurement?.kata_cold_boot, sampleCount);
 checkPaired("warm_cpu_workload", report.measurement?.warm_cpu_workload, sampleCount);
 checkPaired("warm_filesystem_workload", report.measurement?.warm_filesystem_workload, sampleCount);
