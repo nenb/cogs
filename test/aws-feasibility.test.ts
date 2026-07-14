@@ -45,6 +45,8 @@ test("AWS runtime validation requires active KVM and a distinct root Kata guest"
   assert.match(remote, /guest_kernel.*!=.*host_kernel/);
   assert.doesNotMatch(remote, /accel=tcg|--runtime.*runc/);
   assert.match(remote, /cogs-stage2-failure-stage=/);
+  assert.match(remote, /cogs-stage2-bounded-diagnostic=/);
+  assert.match(remote, /tail -c 2048/);
   assert.match(controller, /runtime-failure\.json/);
   assert.match(controller, /runtime-command-id\.txt/);
   assert.match(controller, /timeout 2700/);

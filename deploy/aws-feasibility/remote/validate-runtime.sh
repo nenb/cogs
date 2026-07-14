@@ -1,7 +1,23 @@
 #!/usr/bin/env bash
 set -eEuo pipefail
 stage=initialization
-trap 'status=$?; printf "cogs-stage2-failure-stage=%s status=%s\n" "$stage" "$status" >&2; exit "$status"' ERR
+failure() {
+  status=$?
+  trap - ERR
+  set +e
+  printf 'cogs-stage2-failure-stage=%s status=%s\n' "$stage" "$status" >&2
+  if [[ "$stage" == kata-boot && -n "${work:-}" ]]; then
+    for diagnostic in "$work/kata-stderr.txt" "$work/kata-output.txt"; do
+      if [[ -f "$diagnostic" ]]; then
+        printf 'cogs-stage2-bounded-diagnostic=%s\n' "$(basename "$diagnostic")" >&2
+        tail -c 2048 "$diagnostic" | tr -c '[:print:]\n\t' '?' >&2
+        printf '\n' >&2
+      fi
+    done
+  fi
+  exit "$status"
+}
+trap failure ERR
 export DEBIAN_FRONTEND=noninteractive
 work=/var/tmp/cogs-stage2
 report=$work/runtime-result.json
