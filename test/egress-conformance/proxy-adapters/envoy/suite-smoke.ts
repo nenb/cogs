@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { randomBytes, X509Certificate } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { platform, tmpdir } from "node:os";
@@ -190,6 +190,12 @@ const telemetry = await startOtlpFixture(sensitiveValues);
 let report: SecurityReport | undefined;
 try {
   const proxyCertificate = await generateProxyCertificate(material);
+  const minimumCertificateLifetimeMs = (8 * 60 + 60) * 60 * 1_000;
+  assert.ok(
+    new Date(new X509Certificate(proxyCertificate.certificate).validTo).getTime() - Date.now() >
+      minimumCertificateLifetimeMs,
+    "proxy certificate must exceed the eight-hour session maximum plus a one-hour Stage 1 margin",
+  );
   const replacementDirectory = join(material, "replacement");
   await mkdir(replacementDirectory, { mode: 0o700 });
   const replacementCertificate = await generateProxyCertificate(replacementDirectory);
