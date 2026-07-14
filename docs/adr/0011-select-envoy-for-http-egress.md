@@ -26,7 +26,7 @@ Cogs will retain these boundaries from the Stage 1 candidate:
 1. Generate deterministic static configuration for each immutable session/integration set.
 2. Expose no Envoy admin endpoint and enable no xDS/SDS, Lua, original-destination, dynamic-forward-proxy, cluster-header, or direct-fallback path.
 3. Use explicit CONNECT decapsulation and terminate inner TLS with host-specific certificate/listener material.
-4. Enforce exact host, port, method, canonical path, declared query, CONNECT authority, SNI, Host, and HTTP/2 `:authority` consistency.
+4. Enforce exact host, port, method, canonical path, and canonical declared query. Treat the CONNECT request-target parsed by Envoy as the authoritative outer `:authority`, then independently enforce allowed SNI and inner HTTP/1 Host or HTTP/2 `:authority`. Envoy does not expose a disagreeing redundant outer HTTP/1 Host separately when the CONNECT target is allowed, so Cogs does not claim that mismatch direction is rejected or use that redundant field for policy.
 5. Use native v3 gRPC `ext_authz` with `failure_mode_allow: false`; successful authorization must follow a durable intent record.
 6. Remove guest authorization values and overwrite only with route-owned credentials after authorization.
 7. Emit bounded completion metadata correlated to the authorization intent. Credential values, capabilities, request/response bodies, prompts, source, and environment values are forbidden from central telemetry.
@@ -38,11 +38,13 @@ This selects a component and integration shape. It does **not** accept Stage 1 s
 
 ## Evidence
 
-The selected candidate and alternate ran the same 79 cases at source revision [`f6c474968b9f388025b4ad29e2c2159ec1289e65`](https://github.com/nenb/cogs/tree/f6c474968b9f388025b4ad29e2c2159ec1289e65).
+The selected candidate and alternate ran the same 87 cases at source revision [`3c3bc96aab61cf9f127e585974bfaddbcd8b20ac`](https://github.com/nenb/cogs/tree/3c3bc96aab61cf9f127e585974bfaddbcd8b20ac).
 
-- [Functional insecure-container reports, run 29323227947](https://github.com/nenb/cogs/actions/runs/29323227947): Envoy and mitmproxy each produced 66 `stubbed` and 13 `not-applicable` results. The profile is non-authoritative.
-- [Authoritative Linux/KVM reports, run 29323229469](https://github.com/nenb/cogs/actions/runs/29323229469): each candidate produced 13 `pass`, 56 `stubbed`, and 10 `not-applicable` results. All 13 passes are host-enforced bypass-resistance cases against a root Debian guest with active KVM and no TCG fallback.
+- [Functional insecure-container reports, run 29328370608](https://github.com/nenb/cogs/actions/runs/29328370608): Envoy and mitmproxy each produced 74 `stubbed` and 13 `not-applicable` results. The profile is non-authoritative.
+- [Authoritative Linux/KVM reports, run 29328370592](https://github.com/nenb/cogs/actions/runs/29328370592): each candidate produced 13 `pass`, 64 `stubbed`, and 10 `not-applicable` results. All 13 passes are host-enforced bypass-resistance cases against a root Debian guest with active KVM and no TCG fallback.
 - [SBOM/vulnerability run 29323183206](https://github.com/nenb/cogs/actions/runs/29323183206): the selected Envoy pin passed the HIGH/CRITICAL policy without an exception.
+- Six query cases prove exact declared raw-query acceptance and denial of missing, wrong, duplicate, reordered, and encoded variants. Envoy uses an exact full `:path` matcher for query-bearing routes and excludes queries from undeclared routes.
+- Three raw H1 cases independently vary CONNECT target, outer Host, and inner Host. Envoy denies a wrong target with an allowed Host and denies a wrong inner Host, but safely reaches only the declared static target when the target is allowed and redundant outer Host disagrees. mitmproxy rejects both outer mismatch directions.
 - Client measurements were equivalent across candidates: curl, Git smart HTTP, pip, requests, httpx, Java HTTPS, and curl HTTP/2 were compatible. Debian npm 9.2.0 and Node 20.19.2 native HTTPS/fetch were measured unsupported without an explicit launcher/agent.
 - Credential tests retain only keyed/boolean comparisons. `credential.no-leak` and post-suite serialization checks reject persistence of real fixture credentials or capabilities in guest-visible output, reports, observations, audit records, telemetry, and retained adapter state.
 - The selected candidate's Stage 1 leaf certificates are valid for 48 hours. The suite asserts a remaining lifetime greater than the eight-hour maximum session plus a one-hour Stage 1 startup/drain margin. Production issuance remains an OpenBao Stage 3 gate and must fail closed unless validity exceeds the session maximum plus the configured production margin.
@@ -63,7 +65,7 @@ Pinned digest:
 
 mitmproxy passed the same applicable mechanism tests and is operationally convenient for dynamic forward MITM. It is not selected because:
 
-- 197 lines of Cogs-specific Python execute inside the proxy process for capability checks, route authorization, credential overwrite, and audit completion, increasing the security-critical in-process footprint;
+- 202 lines of Cogs-specific Python execute inside the proxy process for capability checks, route authorization, credential overwrite, and audit completion, increasing the security-critical in-process footprint;
 - HTTP parser/resource bounds rely more on proxy defaults and container ceilings;
 - its pinned latest image has six fixed HIGH findings under the candidate-only exception tracked by #25;
 - that exception expires on 2026-07-27 and is explicitly ineligible to support selection or release.
@@ -74,7 +76,7 @@ The rejected candidate remains useful comparison evidence. It is not an automati
 
 Envoy does not execute custom Cogs code in-process. Stage 1 nevertheless demonstrates substantial integration work:
 
-- a 551-line deterministic configuration generator;
+- a 577-line deterministic configuration generator;
 - a 257-line minimal native-v3 gRPC codec used by the fault-injectable authorization fixture;
 - host-specific CONNECT/inner-TLS listener and cluster generation;
 - a required production Cogs authorization/WAL service and trusted completion collector.
@@ -82,6 +84,8 @@ Envoy does not execute custom Cogs code in-process. Stage 1 nevertheless demonst
 The hand-written Stage 1 protobuf codec is test infrastructure, not the prescribed production implementation. Stage 3 should use generated, pinned Envoy API bindings where practical and must preserve minimized request decoding.
 
 Operationally, Envoy's static host-specific configuration is less flexible than mitmproxy's dynamic MITM. This is accepted for the immutable MVP because it makes destinations and fallback absence inspectable. Scale and configuration-size limits must be measured before advertising production capacity.
+
+Envoy's H1 codec uses the CONNECT request-target as canonical `:authority`. The added cross-field probes show that Envoy accepts an allowed CONNECT target with a disagreeing redundant outer H1 Host, while mitmproxy rejects it. Envoy denies the reverse direction, mismatched SNI, and mismatched inner H1 Host. Because the outer Host cannot select or redirect the static tunnel, this is accepted as a documented parser canonicalization behavior rather than claimed as equality enforcement. If a future threat model requires rejection of both outer mismatch directions, this decision must be revisited; an ad hoc raw-byte parser must not be added.
 
 ## Unsupported surface
 
@@ -135,6 +139,7 @@ A previous Envoy digest may be restored only if it remains supported, is not imp
 Revisit this decision with a new ADR if:
 
 - Envoy cannot meet a required client/protocol contract without weakening the trust boundary;
+- the outer HTTP/1 Host on CONNECT becomes a policy-bearing field or both mismatch directions must be rejected;
 - static configuration size, startup time, memory, drain behavior, or host-specific listener count misses measured production limits;
 - a supported patched Envoy pin is unavailable within the security response window;
 - generated configuration or production authz/completion integration becomes more security-critical or complex than a qualified alternative;
