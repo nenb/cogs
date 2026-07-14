@@ -26,6 +26,7 @@ command_id=$(aws ssm send-command \
   --parameters "$parameters" \
   --query 'Command.CommandId' --output text)
 [[ "$command_id" =~ ^[0-9a-f-]+$ ]] || { printf 'invalid SSM command ID\n' >&2; exit 1; }
+printf '%s\n' "$command_id" >"$state/runtime-command-id.txt"
 status=Pending
 for _ in $(seq 1 280); do
   status=$(aws ssm get-command-invocation --command-id "$command_id" --instance-id "$instance_id" --query Status --output text 2>/dev/null || true)
@@ -37,6 +38,7 @@ done
 if [[ "$status" != Success ]]; then
   aws ssm cancel-command --command-id "$command_id" >/dev/null 2>&1 || true
   diagnostics=$(aws ssm get-command-invocation --command-id "$command_id" --instance-id "$instance_id" --query '{Status:Status,StatusDetails:StatusDetails,ResponseCode:ResponseCode,Stderr:StandardErrorContent}' --output json 2>/dev/null || printf '{}')
+  printf '%s\n' "$diagnostics" >"$state/runtime-failure.json"
   printf '%s\n' "$diagnostics" | head -c 4096 >&2
   printf '\nAWS runtime validation failed; destroy the campaign before debugging.\n' >&2
   exit 1
