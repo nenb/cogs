@@ -48,11 +48,15 @@ test("AWS runtime validation requires active KVM and a distinct root Kata guest"
 
 test("AWS apply and cleanup scripts preserve manual and tag-bound gates", () => {
   const apply = read("deploy/aws-feasibility/apply.sh");
+  const plan = read("deploy/aws-feasibility/plan.sh");
+  const destroy = read("deploy/aws-feasibility/destroy.sh");
   const inventory = read("deploy/aws-feasibility/inventory.sh");
   const installer = read("scripts/install-opentofu.sh");
   assert.match(apply, /COGS_AWS_APPLY_APPROVED/);
   assert.match(apply, /apply-one-cpu-instance/);
   assert.match(apply, /destroy -auto-approve/);
+  assert.match(plan, /-var-file=\.state\/campaign\.auto\.tfvars\.json/);
+  assert.match(destroy, /-var-file=\.state\/campaign\.auto\.tfvars\.json/);
   assert.match(inventory, /stage-2-nested-virtualization/);
   assert.match(inventory, /total == 0/);
   assert.match(installer, /version=1\.12\.4/);

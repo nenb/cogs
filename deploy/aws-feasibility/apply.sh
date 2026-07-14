@@ -24,7 +24,7 @@ cleanup_on_error() {
   status=$?
   if (( status != 0 )); then
     printf 'apply/readiness failed; destroying partial campaign resources\n' >&2
-    "$tofu" -chdir="$directory" destroy -auto-approve -input=false -lock-timeout=30s || true
+    "$tofu" -chdir="$directory" destroy -auto-approve -input=false -lock-timeout=30s -var-file=.state/campaign.auto.tfvars.json || true
   fi
   exit "$status"
 }
