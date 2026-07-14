@@ -87,6 +87,9 @@ jobs:
       - name: Audit dependencies
         run: npm run audit
 
+      - name: Validate the non-deploying AWS feasibility fixture
+        run: ./deploy/aws-feasibility/validate.sh
+
       - name: Lint and render the non-deploying Helm scaffold
         run: |
           helm lint deploy/helm/cogs
