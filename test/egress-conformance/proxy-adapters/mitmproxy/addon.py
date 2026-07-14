@@ -9,7 +9,7 @@ from urllib.parse import urlsplit
 from mitmproxy import ctx, http
 
 ID_KEYS = {"version", "case_id", "session_id", "authorization_origin", "routes"}
-ROUTE_KEYS = {"id", "protocol", "host", "port", "methods", "pathPrefix", "query"}
+ROUTE_KEYS = {"id", "protocol", "host", "port", "methods", "pathPrefix"}
 CREDENTIAL_KEYS = {"kind", "value", "header"}
 
 
@@ -33,7 +33,12 @@ class CogsPolicy:
         for route in value["routes"]:
             keys = set(route)
             credential = route.get("credential")
-            if keys not in (ROUTE_KEYS, ROUTE_KEYS | {"credential"}):
+            if keys not in (
+                ROUTE_KEYS,
+                ROUTE_KEYS | {"credential"},
+                ROUTE_KEYS | {"query"},
+                ROUTE_KEYS | {"query", "credential"},
+            ):
                 raise RuntimeError("policy route is invalid")
             if credential is not None and set(credential) not in (CREDENTIAL_KEYS, CREDENTIAL_KEYS - {"header"}):
                 raise RuntimeError("policy credential is invalid")

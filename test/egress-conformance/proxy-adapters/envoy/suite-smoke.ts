@@ -355,7 +355,7 @@ try {
         ? "This is authoritative local KVM evidence; authorization, audit, identity, and revocation dependencies remain Stage 1 stubs."
         : "This is functional-only insecure-container evidence and cannot support a guest-root isolation claim.",
       "Candidate evaluation disables release eligibility until proxy selection and production integration.",
-      "Node 22 native https/fetch ignore standard proxy variables without an explicit proxy agent and are measured as unsupported; other required clients use explicit proxy support.",
+      "Node 20.19.2 native https/fetch ignore standard proxy variables without an explicit proxy agent; Debian npm 9.2.0 does not present embedded proxy credentials on this CONNECT path. These clients are measured as unsupported and require an explicit proxy agent or launcher decision.",
       "Client compatibility cases are functional insecure-container measurements; Linux/KVM reports them as profile-mismatched while retaining authoritative protocol and bypass evidence.",
       "Direct OpenBao polling and production WAL persistence remain mandatory Stage 3 reruns.",
       "The immutable TLS interception certificate enumerates registered hosts; Envoy does not mint leaves dynamically.",
