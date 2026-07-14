@@ -1,6 +1,6 @@
 # Stage 2 bounded measurement harness plan
 
-Status: harness design and first authorized campaign outcome for issue #42. One post-merge Stage 2 measurement campaign was attempted after a checked plan and failed closed during warm Kata workload teardown; no pass evidence was produced, destroy completed immediately, independent inventory returned zero twice, and issue #42 remains open.
+Status: harness design and authorized campaign outcomes for issue #42. Two post-merge Stage 2 measurement campaigns were attempted after checked plans and both failed closed during warm Kata workload teardown; no pass evidence was produced, destroy completed immediately, independent inventory returned zero after each failure, and issue #42 remains open.
 
 ## Scope reconciliation
 
@@ -57,4 +57,12 @@ Release or ADR documents may quote redacted aggregate values from these artifact
 
 ## First authorized campaign outcome
 
-After PR #53 merged, one authorized bounded measurement campaign was run on the merged revision. The checked plan remained inside the one-host `c8i-flex.large`, CPU-only, SSM-only, no-EKS/no-NAT/no-load-balancer/no-EIP/no-EFS boundary with expected cost below USD 0.50. The campaign failed during `warm-workload-samples` because local Kata/containerd task teardown attempted to remove a task/container before containerd had observed task exit. The orchestrator treated this as a failed measurement, produced no validated measurement evidence or human report, destroyed all campaign resources, and independent inventory showed total zero. A second read-only inventory also showed total zero. The failed run records a local teardown lifecycle bug only; it does not provide measurement pass evidence and does not close any issue #42 acceptance criteria.
+After PR #53 merged, one authorized bounded measurement campaign was run on the merged revision. The checked plan remained inside the one-host `c8i-flex.large`, CPU-only, SSM-only, no-EKS/no-NAT/no-load-balancer/no-EIP/no-EFS boundary with expected cost below USD 0.50. The campaign failed during `warm-workload-samples` because local Kata/containerd task teardown attempted to remove a task/container before containerd had observed task exit. The orchestrator treated this as a failed measurement, produced no validated measurement evidence or human report, destroyed all campaign resources, and independent inventory showed total zero. A second read-only inventory also showed total zero.
+
+After PR #54 merged, exactly one further authorized bounded measurement campaign was run from the merge revision with the same one-host, CPU-only, SSM-only, budgeted and TTL-bound scope. It again failed during `warm-workload-samples` with the same non-stopped Kata/containerd task/container removal symptom. The orchestrator destroyed all campaign resources immediately; orchestrator and independent read-only inventories both showed total zero. This second failed run confirms the local teardown fix was insufficient and records no measurement pass evidence.
+
+These failed runs record local teardown lifecycle bugs only; they do not provide measurement pass evidence and do not close any issue #42 acceptance criteria.
+
+## Source-grounded teardown basis
+
+Containerd `v2.2.1` source inspection found that `ctr tasks ls` prints task status from `task.Status.String()` and the task status enum is `UNKNOWN=0`, `CREATED=1`, `RUNNING=2`, `STOPPED=3`, `PAUSED=4`, `PAUSING=5`. The `ctr tasks delete` command supports aliases `del/remove/rm` and an optional `--force`, but Stage 2 teardown does not rely on force deletion. The teardown must independently observe `STOPPED`/`3` or task absence after `ctr tasks wait`; wait completion alone is not treated as sufficient proof that containerd will accept `tasks rm`.

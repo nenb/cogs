@@ -401,8 +401,11 @@ test("Kata task teardown is deterministic and fail-closed with fake ctr", () => 
   assert.doesNotMatch(lifecycle, /jq -r|\.Status|Status/);
   assert.match(lifecycle, /timeout --kill-after=1s/);
   assert.match(lifecycle, /tasks wait/);
+  assert.match(lifecycle, /tasks ls/);
+  assert.doesNotMatch(lifecycle, /tasks info/);
   assert.match(lifecycle, /SIGTERM/);
   assert.match(lifecycle, /SIGKILL/);
+  assert.doesNotMatch(lifecycle, /--force/);
   assert.doesNotMatch(lifecycle, /stop_kata_task "\$name"[^\n]*\|\| true/);
 
   const directory = mkdtempSync(resolve(tmpdir(), "cogs-kata-teardown-"));
@@ -428,24 +431,36 @@ if [[ "$kind:$action" == tasks:kill ]]; then name=\${@: -1}; fi
 task="$state/task-$name"
 container="$state/container-$name"
 case "$kind:$action" in
-  tasks:info)
-    [[ -f "$task" ]] || exit 1
-    if [[ "$mode" == malformed ]]; then printf 'not-json\\n'; else printf '{"opaque":"ignored"}\\n'; fi ;;
+  tasks:ls)
+    printf 'TASK PID STATUS\\n'
+    for task_path in "$state"/task-*; do
+      [[ -f "$task_path" ]] || continue
+      list_name=\${task_path##*/task-}
+      ls_count_file="$state/ls-count-$list_name"
+      ls_count=0
+      [[ -f "$ls_count_file" ]] && ls_count=$(cat "$ls_count_file")
+      ls_count=$((ls_count + 1))
+      printf '%s' "$ls_count" >"$ls_count_file"
+      status=$(cat "$task_path")
+      if [[ "$mode" == delayed-stop && "$ls_count" -ge 3 ]]; then status=STOPPED; printf STOPPED >"$task_path"; fi
+      if [[ "$mode" == malformed-status ]]; then printf '%s 123\\n' "$list_name"; else printf '%s 123 %s\\n' "$list_name" "$status"; fi
+    done ;;
   tasks:wait)
     [[ -f "$task" ]] || exit 1
     if [[ "$mode" == wait-fails ]]; then exit 7; fi
+    if [[ "$mode" == wait-success-still-running ]]; then exit 0; fi
     if [[ "$mode" == timeout-then-kill-success ]] && grep -q SIGKILL "$state/kill-log" 2>/dev/null; then
-      printf stopped >"$task"
+      printf STOPPED >"$task"
       exit 0
     fi
-    if [[ "$mode" == timeout-then-kill-success || "$mode" == terminal-timeout ]]; then
+    if [[ "$mode" == timeout-then-kill-success || "$mode" == terminal-timeout || "$mode" == permanently-running ]]; then
       printf '%s\\n' "$$" >"$state/wait-helper.pid"
       trap '' TERM INT
       sleep 20
       exit 124
     fi
-    if [[ "$mode" == delayed ]]; then sleep 0.2; fi
-    printf stopped >"$task"
+    [[ "$mode" == delayed ]] && sleep 0.2
+    printf STOPPED >"$task"
     exit 0 ;;
   tasks:kill)
     printf '%s\\n' "$*" >>"$state/kill-log"
@@ -453,7 +468,7 @@ case "$kind:$action" in
   tasks:rm)
     [[ "$mode" != rm-fails ]] || exit 9
     [[ -f "$task" ]] || exit 1
-    [[ "$(cat "$task")" == stopped ]] || { printf 'cannot delete a non stopped container\\n' >&2; exit 1; }
+    [[ "$(cat "$task")" == STOPPED || "$(cat "$task")" == stopped || "$(cat "$task")" == 3 ]] || { printf 'cannot delete a non stopped container\\n' >&2; exit 1; }
     rm -f "$task" ;;
   containers:info)
     [[ -f "$container" ]] || exit 1 ;;
@@ -503,35 +518,58 @@ esac
           ...process.env,
           FAKE_CTR_MODE: mode,
           COGS_STAGE2_TEARDOWN_WAIT_SECONDS: "1",
+          COGS_STAGE2_TEARDOWN_WAIT_STEPS: "5",
+          COGS_STAGE2_TEARDOWN_WAIT_DELAY: "0.01",
           ...extraEnv,
         },
       });
   };
-  for (const mode of ["success", "delayed", "malformed"]) {
-    runMode(mode, "running", true)();
+  for (const mode of ["success", "delayed", "delayed-stop"]) {
+    runMode(mode, "RUNNING", true)();
     assert.equal(existsSync(resolve(state, "task-cogs-stage2-test")), false);
     assert.equal(existsSync(resolve(state, "container-cogs-stage2-test")), false);
   }
-  runMode("success", "stopped", true)();
+  runMode("success", "2", true)();
   assert.equal(existsSync(resolve(state, "task-cogs-stage2-test")), false);
   assert.equal(existsSync(resolve(state, "container-cogs-stage2-test")), false);
+  for (const stopped of ["STOPPED", "stopped", "3"]) {
+    runMode("success", stopped, true)();
+    assert.equal(existsSync(resolve(state, "task-cogs-stage2-test")), false);
+    assert.equal(existsSync(resolve(state, "container-cogs-stage2-test")), false);
+  }
   runMode("success", null, true)();
   assert.equal(existsSync(resolve(state, "container-cogs-stage2-test")), false);
   runMode("success", null, false)();
 
-  assert.throws(runMode("wait-fails", "running", true));
+  assert.throws(runMode("wait-success-still-running", "RUNNING", true));
+  assert.equal(readFileSync(resolve(state, "task-cogs-stage2-test"), "utf8"), "RUNNING");
+  assert.equal(existsSync(resolve(state, "container-cogs-stage2-test")), true);
+
+  assert.throws(runMode("permanently-running", "RUNNING", true));
+  assert.equal(readFileSync(resolve(state, "task-cogs-stage2-test"), "utf8"), "RUNNING");
+  assert.equal(existsSync(resolve(state, "container-cogs-stage2-test")), true);
+
+  for (const status of ["UNKNOWN", "0", "CREATED", "1", "PAUSED", "4", "PAUSING", "5"]) {
+    assert.throws(runMode("success", status, true));
+    assert.equal(existsSync(resolve(state, "task-cogs-stage2-test")), true);
+    assert.equal(existsSync(resolve(state, "container-cogs-stage2-test")), true);
+  }
+  assert.throws(runMode("success", "BROKEN", true));
+  assert.throws(runMode("malformed-status", "RUNNING", true));
+
+  assert.throws(runMode("wait-fails", "RUNNING", true));
   assert.equal(existsSync(resolve(state, "task-cogs-stage2-test")), true);
   assert.equal(existsSync(resolve(state, "container-cogs-stage2-test")), true);
 
   const killSuccessStarted = Date.now();
-  runMode("timeout-then-kill-success", "running", true)();
+  runMode("timeout-then-kill-success", "RUNNING", true)();
   assert.ok(Date.now() - killSuccessStarted < 5000);
   assert.match(readFileSync(resolve(state, "kill-log"), "utf8"), /SIGTERM[\s\S]*SIGKILL/);
   assert.equal(existsSync(resolve(state, "task-cogs-stage2-test")), false);
   assert.equal(existsSync(resolve(state, "container-cogs-stage2-test")), false);
 
   const terminalStarted = Date.now();
-  assert.throws(runMode("terminal-timeout", "running", true));
+  assert.throws(runMode("terminal-timeout", "RUNNING", true));
   assert.ok(Date.now() - terminalStarted < 7000);
   assert.match(readFileSync(resolve(state, "kill-log"), "utf8"), /SIGTERM[\s\S]*SIGKILL/);
   const helperPid = Number(readFileSync(resolve(state, "wait-helper.pid"), "utf8"));
@@ -539,10 +577,11 @@ esac
   assert.equal(existsSync(resolve(state, "task-cogs-stage2-test")), true);
   assert.equal(existsSync(resolve(state, "container-cogs-stage2-test")), true);
 
-  assert.throws(runMode("rm-fails", "running", true));
-  assert.throws(runMode("success", "running", true, "stop", { FAKE_QEMU_CURRENT: "999" }));
+  assert.throws(runMode("rm-fails", "RUNNING", true));
+  assert.throws(runMode("rm-fails", "STOPPED", true));
+  assert.throws(runMode("success", "RUNNING", true, "stop", { FAKE_QEMU_CURRENT: "999" }));
 
-  assert.throws(runMode("rm-fails", "running", true, "start"));
+  assert.throws(runMode("rm-fails", "RUNNING", true, "start"));
   assert.equal(existsSync(resolve(state, "run-called")), false);
   runMode("success", null, false, "start")();
   assert.equal(readFileSync(resolve(state, "run-called"), "utf8"), "run-called\n");
