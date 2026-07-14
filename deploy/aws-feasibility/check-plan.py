@@ -51,6 +51,13 @@ def one(changes, resource_type):
     return selected[0].get("change", {}).get("after") or {}
 
 
+def at(changes, address):
+    selected = [change for change in changes if change.get("address") == address]
+    if len(selected) != 1:
+        fail(f"expected one {address}, found {len(selected)}")
+    return selected[0].get("change", {}).get("after") or {}
+
+
 def main():
     if len(sys.argv) != 2:
         fail("usage: check-plan.py PLAN_JSON")
@@ -108,6 +115,24 @@ def main():
         fail("security group contains inbound rules")
     if len(group.get("egress") or []) != 4:
         fail("security group must contain only four declared outbound rules")
+
+    terminator_role = at(changes, "aws_iam_role.terminator")
+    try:
+        trust_statement = json.loads(terminator_role.get("assume_role_policy", ""))["Statement"][0]
+        trust_condition = trust_statement["Condition"]
+        source_arn = trust_condition["ArnEquals"]["aws:SourceArn"]
+        source_account = trust_condition["StringEquals"]["aws:SourceAccount"]
+    except (KeyError, IndexError, TypeError, json.JSONDecodeError):
+        fail("termination role trust policy is malformed")
+    if (
+        trust_statement.get("Effect") != "Allow"
+        or trust_statement.get("Action") != "sts:AssumeRole"
+        or trust_statement.get("Principal") != {"Service": "scheduler.amazonaws.com"}
+        or not source_arn.endswith(":schedule-group/default")
+        or "*" in source_arn
+        or not str(source_account).isdigit()
+    ):
+        fail("termination role trust is not bound to Scheduler, account, and the default schedule group")
 
     budget = one(changes, "aws_budgets_budget")
     if str(budget.get("limit_amount")) != "20" or budget.get("limit_unit") != "USD":
