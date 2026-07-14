@@ -76,7 +76,7 @@ The OpenTofu fixture must enforce:
 - one ephemeral public IPv4 solely for outbound SSM/package access, avoiding NAT Gateway and paid VPC endpoints;
 - one encrypted 30 GiB gp3 root volume with delete-on-termination;
 - instance metadata service v2 required and hop limit one;
-- no AWS credentials, repository source, integration credentials, prompts, or user data secrets on the instance;
+- no developer AWS credentials, repository source, integration credentials, model credentials, prompts, or user data secrets on the instance; the instance has only the campaign-scoped SSM instance profile;
 - one least-privilege instance role for SSM;
 - local/trusted OpenTofu state outside the disposable instance and excluded from Git;
 - bounded creation and command waits.
