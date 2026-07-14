@@ -1,6 +1,6 @@
 # ADR 0011: Select Envoy for the initial HTTP egress proxy
 
-- Status: Proposed — approval required at the Stage 1 gate
+- Status: Accepted
 - Date: 2026-07-14
 - Reviewer: Nick Byrne
 - Decision owner: Nick Byrne

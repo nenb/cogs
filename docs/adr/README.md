@@ -1,6 +1,6 @@
 # Architecture decision records
 
-ADRs 0001–0010 were accepted by Nick Byrne on 2026-07-10. ADR 0011 is the Stage 1 proxy-selection gate and remains proposed until explicit review.
+ADRs 0001–0010 were accepted by Nick Byrne on 2026-07-10. ADR 0011 was accepted at the Stage 1 proxy-selection gate on 2026-07-14.
 
 | ADR | Decision | Status |
 |---|---|---|
@@ -14,6 +14,6 @@ ADRs 0001–0010 were accepted by Nick Byrne on 2026-07-10. ADR 0011 is the Stag
 | [0008](0008-metadata-only-central-telemetry.md) | Metadata-only telemetry | Accepted |
 | [0009](0009-content-addressed-skill-artifacts.md) | Content-addressed skill artifacts | Accepted |
 | [0010](0010-qualify-github-hosted-kvm-per-run.md) | Per-run GitHub-hosted KVM qualification | Accepted |
-| [0011](0011-select-envoy-for-http-egress.md) | Select Envoy for initial HTTP egress | Proposed; Stage 1 gate |
+| [0011](0011-select-envoy-for-http-egress.md) | Select Envoy for initial HTTP egress | Accepted |
 
 Implementation pauses for every boundary listed in `IMPLEMENTATION.md` section 47. Superseding an accepted ADR requires a new ADR rather than editing history.
