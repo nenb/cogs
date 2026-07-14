@@ -28,17 +28,39 @@ cleanup_on_error() {
   fi
   exit "$status"
 }
+timestamp() { python3 - <<'PY'
+from datetime import datetime, timezone
+print(datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z'))
+PY
+}
 trap cleanup_on_error EXIT INT TERM
+apply_started_at=$(timestamp)
 "$tofu" -chdir="$directory" apply -input=false -lock-timeout=30s .state/campaign.tfplan
+apply_completed_at=$(timestamp)
 instance_id=$("$tofu" -chdir="$directory" output -json campaign | python3 -c 'import json,sys; print(json.load(sys.stdin)["instance_id"])')
 aws ec2 wait instance-running --instance-ids "$instance_id"
+instance_running_at=$(timestamp)
 for _ in $(seq 1 60); do
   status=$(aws ssm describe-instance-information --filters "Key=InstanceIds,Values=$instance_id" --query 'InstanceInformationList[0].PingStatus' --output text 2>/dev/null || true)
   [[ "$status" == "Online" ]] && break
   sleep 10
 done
 [[ ${status:-} == "Online" ]] || { printf 'instance did not become SSM-online within ten minutes\n' >&2; exit 1; }
+ssm_online_at=$(timestamp)
 aws ec2 describe-instances --instance-ids "$instance_id" --query 'Reservations[0].Instances[0].{State:State.Name,Type:InstanceType,PublicIpPresent:PublicIpAddress!=`null`,IamProfilePresent:IamInstanceProfile!=`null`,MetadataTokens:MetadataOptions.HttpTokens}' --output json >"$directory/.state/instance-readiness.json"
+python3 - "$directory/.state/campaign-timing.json" "$apply_started_at" "$apply_completed_at" "$instance_running_at" "$ssm_online_at" <<'PY'
+import json, sys
+path, apply_started_at, apply_completed_at, instance_running_at, ssm_online_at = sys.argv[1:]
+with open(path, 'w', encoding='utf-8') as output:
+    json.dump({
+        'version': 'cogs.aws-campaign-timing/v1alpha1',
+        'apply_started_at': apply_started_at,
+        'apply_completed_at': apply_completed_at,
+        'instance_running_at': instance_running_at,
+        'ssm_online_at': ssm_online_at,
+    }, output, sort_keys=True, separators=(',', ':'))
+    output.write('\n')
+PY
 trap - EXIT INT TERM
 printf 'One disposable instance is running and SSM-online: %s\n' "$instance_id"
 printf 'Independent AWS termination and guest-local termination fallbacks are armed.\n'

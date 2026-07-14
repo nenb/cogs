@@ -97,6 +97,10 @@ An independent EventBridge Scheduler invocation must call a narrowly scoped Lamb
 
 If setup fails before the independent terminator exists, apply must fail closed and immediately destroy any partial resources. The instance must not remain running while tests or package installation are debugged interactively.
 
+## Stage 2 measurement boundary
+
+The optional issue #42 measurement harness remains inside the same one-instance campaign envelope. It may repeat Kata/containerd boots and deterministic warm workloads on the already-created disposable host, but it must not create additional instances, stop/start the instance to synthesize EC2 launch percentiles, enable SSH, add EKS or Kubernetes resources, or widen networking/storage. Host Git/build/package measurements are baselines only and do not close representative sandbox workload acceptance. The report must explicitly mark EC2 repeated cold-start p50/p95, SSH-ready timing, EKS timing, and representative sandbox Git/build/package workloads as unmeasured in Stage 2 where applicable. Use the fail-closed `run-measurement-campaign.sh` wrapper for authorized campaigns so destroy and independent zero inventory run on success, failure, interrupt, or report-validation failure.
+
 ## Manual gates
 
 Read-only AWS discovery is approved. Repository implementation and local validation create no billable resources.
