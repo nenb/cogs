@@ -232,7 +232,8 @@ export async function startFaultInjector(options: StartOptions): Promise<FaultIn
       if (faults.delayMs > 0) await delay(faults.delayMs, undefined, { signal: lifecycle.signal });
       const mode = request.context["cogs.mode"];
       if (mode === "capability") {
-        return { outcome: capabilityValueAllowed(request.headers["proxy-authorization"]) ? "allow" : "deny" };
+        const allowed = capabilityValueAllowed(request.headers["proxy-authorization"]);
+        return allowed ? { outcome: "allow" } : { outcome: "deny", deniedStatus: 407 };
       }
       if (mode !== "authorize") return { outcome: "deny" };
       const requireCapability = request.context["cogs.require_capability"];

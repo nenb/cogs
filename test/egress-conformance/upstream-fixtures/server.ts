@@ -12,6 +12,18 @@ import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
+const clientWheel = Buffer.from(
+  "UEsDBBQAAAAIAAAAIVCn0vFHGAAAABYAAAAYAAAAY29nc19maXh0dXJlL19faW5pdF9fLnB5i48vSy0qzszPi49XsFVQMtQz0DNQ4gIAUEsDBBQAAAAIAAAAIVD9A6ASNAAAADkAAAAlAAAAY29nc19maXh0dXJlLTEuMC4wLmRpc3QtaW5mby9NRVRBREFUQfNNLUlMSSxJ1A1LLSrOzM+zUjDSM+TyS8xNtVJIzk8v1k3LrCgpLUrlgssb6hnoGXBxAQBQSwMEFAAAAAgAAAAhUAFy6+ZTAAAAUwAAACIAAABjb2dzX2ZpeHR1cmUtMS4wLjAuZGlzdC1pbmZvL1dIRUVMC89ITc3RDUstKs7Mz7NSMNQz4HJPzUstSizJL7JSSM5PL9ZNy6woKS1K5QrKzy/R9SzWDQBycjKTrBRKikpTuUIS060UCiqNdfPy81J1E/MquQBQSwMEFAAAAAgAAAAhUAAAAAACAAAAAAAAACMAAABjb2dzX2ZpeHR1cmUtMS4wLjAuZGlzdC1pbmZvL1JFQ09SRAMAUEsBAhQDFAAAAAgAAAAhUKfS8UcYAAAAFgAAABgAAAAAAAAAAAAAAKQBAAAAAGNvZ3NfZml4dHVyZS9fX2luaXRfXy5weVBLAQIUAxQAAAAIAAAAIVD9A6ASNAAAADkAAAAlAAAAAAAAAAAAAACkAU4AAABjb2dzX2ZpeHR1cmUtMS4wLjAuZGlzdC1pbmZvL01FVEFEQVRBUEsBAhQDFAAAAAgAAAAhUAFy6+ZTAAAAUwAAACIAAAAAAAAAAAAAAKQBxQAAAGNvZ3NfZml4dHVyZS0xLjAuMC5kaXN0LWluZm8vV0hFRUxQSwECFAMUAAAACAAAACFQAAAAAAIAAAAAAAAAIwAAAAAAAAAAAAAApAFYAQAAY29nc19maXh0dXJlLTEuMC4wLmRpc3QtaW5mby9SRUNPUkRQSwUGAAAAAAQABAA6AQAAmwEAAAAA",
+  "base64",
+);
+const clientNpmTarball = Buffer.from(
+  "H4sIAB5PVWoC/+3OQQrCMBBG4RxFspZ0UmMEV14llFiqmJamFUG8u1F3rkUE37d5MP9mhtAcQxur4VVzyH1SHyaFd+7Z4r0i61rZlZd648U97tZ6L2oh6gvmPIWxvKL+01WncIp6q3dN3+Zq312meYx6qc9xzF2fymKNGNE3BQAAAAAAAAAAAAAAAAD4IXeM2RvDACgAAA==",
+  "base64",
+);
+const packetLine = (value: string) => `${(Buffer.byteLength(value) + 4).toString(16).padStart(4, "0")}${value}`;
+const gitAdvertisement = Buffer.from(
+  `${packetLine("# service=git-upload-pack\n")}0000${packetLine(`${"1".repeat(40)} HEAD\0symref=HEAD:refs/heads/main\n`)}0000`,
+);
 
 export type FixtureRoute =
   | "health"
@@ -22,6 +34,10 @@ export type FixtureRoute =
   | "large"
   | "stream"
   | "delayed"
+  | "client-ok"
+  | "client-wheel"
+  | "client-npm"
+  | "client-git"
   | "unknown";
 
 export interface HttpObservation {
@@ -179,6 +195,14 @@ function classifyRoute(pathname: string): FixtureRoute {
       return "stream";
     case "/delayed":
       return "delayed";
+    case "/clients/ok":
+      return "client-ok";
+    case "/clients/cogs_fixture-1.0.0-py3-none-any.whl":
+      return "client-wheel";
+    case "/clients/cogs-fixture-1.0.0.tgz":
+      return "client-npm";
+    case "/clients/repo.git/info/refs":
+      return "client-git";
     default:
       return "unknown";
   }
@@ -331,7 +355,13 @@ export async function startUpstreamFixtures(options: UpstreamFixtureOptions): Pr
         : compareCredential(authority, expectedAuthorityDigest, comparisonKey);
     let credentialName: "authorization" | "x-api-key" | null = null;
     let expectedDigest: Buffer | undefined;
-    if (route === "header-protected") {
+    if (
+      route === "header-protected" ||
+      route === "client-ok" ||
+      route === "client-wheel" ||
+      route === "client-npm" ||
+      route === "client-git"
+    ) {
       credentialName = "authorization";
       expectedDigest = expectedDigests.bearer;
     } else if (route === "api-key-protected") {
@@ -374,8 +404,31 @@ export async function startUpstreamFixtures(options: UpstreamFixtureOptions): Pr
       case "header-protected":
       case "api-key-protected":
       case "basic-protected":
+      case "client-ok":
         response.writeHead(200, { "content-type": "text/plain" });
         response.end("ok");
+        return;
+      case "client-wheel":
+        response.writeHead(200, {
+          "content-type": "application/octet-stream",
+          "content-length": clientWheel.length,
+        });
+        response.end(clientWheel);
+        return;
+      case "client-npm":
+        response.writeHead(200, {
+          "content-type": "application/octet-stream",
+          "content-length": clientNpmTarball.length,
+        });
+        response.end(clientNpmTarball);
+        return;
+      case "client-git":
+        response.writeHead(200, {
+          "content-type": "application/x-git-upload-pack-advertisement",
+          "content-length": gitAdvertisement.length,
+          "cache-control": "no-store",
+        });
+        response.end(gitAdvertisement);
         return;
       case "redirect":
         response.writeHead(302, { location: redirect.href, "content-type": "text/plain" });

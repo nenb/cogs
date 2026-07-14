@@ -31,11 +31,11 @@ const stateRoot = process.platform === "linux" ? "/dev/shm" : tmpdir();
 const realCredential = `Bearer cogs-fixture-${randomBytes(24).toString("hex")}`;
 const apiCredential = `cogs-api-${randomBytes(24).toString("hex")}`;
 const basicCredential = `Basic ${Buffer.from(`fixture:${randomBytes(24).toString("hex")}`).toString("base64")}`;
-const capability = `cogs-capability-${randomBytes(24).toString("hex")}`;
-const wrongCapability = `cogs-wrong-${randomBytes(24).toString("hex")}`;
+const capability = `Basic ${Buffer.from(`cogs:${randomBytes(24).toString("hex")}`).toString("base64")}`;
+const wrongCapability = `Basic ${Buffer.from(`wrong:${randomBytes(24).toString("hex")}`).toString("base64")}`;
 const placeholder = "Bearer cogs-non-secret-placeholder";
 const sessionId = "session-envoy-suite";
-const replacementCapability = `cogs-replacement-${randomBytes(24).toString("hex")}`;
+const replacementCapability = `Basic ${Buffer.from(`replacement:${randomBytes(24).toString("hex")}`).toString("base64")}`;
 const sensitiveValues = [
   realCredential,
   apiCredential,
@@ -253,7 +253,15 @@ try {
                       ? "/large"
                       : scenario === "long-lived-drain"
                         ? "/delayed"
-                        : "/protected/header",
+                        : scenario === "git-smart-http"
+                          ? "/clients/repo.git/info/refs"
+                          : scenario === "pip-wheel"
+                            ? "/clients/cogs_fixture-1.0.0-py3-none-any.whl"
+                            : scenario === "npm-tarball"
+                              ? "/clients/cogs-fixture-1.0.0.tgz"
+                              : definition.probe.kind === "client"
+                                ? "/clients/ok"
+                                : "/protected/header",
             upstreamAddress: "127.0.0.1",
             upstreamPort: fixturePort,
             upstreamCaCertificatePem: fixtures.caCertificatePem,
@@ -347,6 +355,8 @@ try {
         ? "This is authoritative local KVM evidence; authorization, audit, identity, and revocation dependencies remain Stage 1 stubs."
         : "This is functional-only insecure-container evidence and cannot support a guest-root isolation claim.",
       "Candidate evaluation disables release eligibility until proxy selection and production integration.",
+      "Node 20.19.2 native https/fetch ignore standard proxy variables without an explicit proxy agent; Debian npm 9.2.0 does not present embedded proxy credentials on this CONNECT path. These clients are measured as unsupported and require an explicit proxy agent or launcher decision.",
+      "Client compatibility cases are functional insecure-container measurements; Linux/KVM reports them as profile-mismatched while retaining authoritative protocol and bypass evidence.",
       "Direct OpenBao polling and production WAL persistence remain mandatory Stage 3 reruns.",
       "The immutable TLS interception certificate enumerates registered hosts; Envoy does not mint leaves dynamically.",
       "Direct OpenBao change detection remains a Stage 1 revocation stub and requires a mandatory Stage 3 rerun.",

@@ -1,0 +1,89 @@
+{
+  "version": "cogs.integration/v1alpha1",
+  "id": "github-smart-http",
+  "preset_revision": "sha256:1a09dc2ee7d6b8c0df23b8dae20bbd1dba33ec1e8412c8d222b0c1a185cd5295",
+  "dns": {
+    "mode": "proxy-connect-authority",
+    "guest_resolution": false
+  },
+  "rules": [
+    {
+      "name": "github-smart-http",
+      "host": "github.com",
+      "port": 443,
+      "methods": ["GET", "POST"],
+      "path_patterns": ["/*/*.git/info/refs", "/*/*.git/git-upload-pack", "/*/*.git/git-receive-pack"],
+      "path_policy": {
+        "strategy": "segment-glob",
+        "normalization": "reject-ambiguous"
+      },
+      "redirects": {
+        "mode": "allow-declared",
+        "max_hops": 2,
+        "allowed_hosts": [
+          "codeload.github.com",
+          "github-releases.githubusercontent.com",
+          "objects.githubusercontent.com"
+        ]
+      },
+      "inject_auth": true
+    },
+    {
+      "name": "github-codeload",
+      "host": "codeload.github.com",
+      "port": 443,
+      "methods": ["GET"],
+      "path_patterns": ["/*/*/tar.gz/*", "/*/*/zip/*"],
+      "path_policy": {
+        "strategy": "segment-glob",
+        "normalization": "reject-ambiguous"
+      },
+      "redirects": {
+        "mode": "deny",
+        "max_hops": 0,
+        "allowed_hosts": []
+      },
+      "inject_auth": false
+    },
+    {
+      "name": "github-release-assets",
+      "host": "github-releases.githubusercontent.com",
+      "port": 443,
+      "methods": ["GET"],
+      "path_patterns": ["/*"],
+      "path_policy": {
+        "strategy": "segment-glob",
+        "normalization": "reject-ambiguous"
+      },
+      "redirects": {
+        "mode": "deny",
+        "max_hops": 0,
+        "allowed_hosts": []
+      },
+      "inject_auth": false
+    },
+    {
+      "name": "github-objects",
+      "host": "objects.githubusercontent.com",
+      "port": 443,
+      "methods": ["GET"],
+      "path_patterns": ["/*"],
+      "path_policy": {
+        "strategy": "segment-glob",
+        "normalization": "reject-ambiguous"
+      },
+      "redirects": {
+        "mode": "deny",
+        "max_hops": 0,
+        "allowed_hosts": []
+      },
+      "inject_auth": false
+    }
+  ],
+  "auth": {
+    "type": "basic_header",
+    "header": "Authorization",
+    "placeholder": "COGS_PLACEHOLDER_GITHUB_BASIC",
+    "secret_handle": "integration/github/credential"
+  }
+}

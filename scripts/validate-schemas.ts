@@ -26,6 +26,7 @@ const integration = {
   version: "cogs.integration/v1alpha1",
   id: "github-clone",
   preset_revision: digest,
+  dns: { mode: "proxy-connect-authority", guest_resolution: false },
   rules: [
     {
       name: "github-api",
@@ -33,6 +34,8 @@ const integration = {
       port: 443,
       methods: ["GET"],
       path_patterns: ["/*"],
+      path_policy: { strategy: "segment-glob", normalization: "reject-ambiguous" },
+      redirects: { mode: "deny", max_hops: 0, allowed_hosts: [] },
       inject_auth: true,
     },
   ],

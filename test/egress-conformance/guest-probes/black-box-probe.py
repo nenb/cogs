@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Guest-root black-box proxy probe. Emits bounded booleans and never response content."""
 
+import base64
 import json
 import os
+import re
 import socket
 import ssl
 import struct
@@ -11,6 +13,7 @@ import sys
 import tempfile
 
 RAW_DETAIL = "none"
+CLIENT_DETAIL = "none"
 
 
 def emit(passed, code):
@@ -22,14 +25,14 @@ def valid_inputs(values):
     scenario, kind, proxy_host, proxy_port, target_port, capability, expected = values
     return (
         scenario.replace("-", "").replace(".", "").isalnum()
-        and kind in ("https", "redirect", "raw-http1", "raw-http2", "fault", "revocation", "confidentiality", "bypass")
+        and kind in ("https", "redirect", "raw-http1", "raw-http2", "fault", "revocation", "confidentiality", "bypass", "client")
         and proxy_host in ("host.docker.internal", "192.0.2.1")
         and proxy_port.isdigit()
         and target_port.isdigit()
         and 1 <= int(proxy_port) <= 65535
         and 1 <= int(target_port) <= 65535
         and 0 <= len(capability) <= 256
-        and all(character.isalnum() or character in "._-" for character in capability)
+        and re.fullmatch(r"(?:[A-Za-z0-9._-]*|Basic [A-Za-z0-9+/=]{8,})", capability) is not None
         and expected in ("allow", "deny", "safe")
     )
 
@@ -344,15 +347,131 @@ def bypass_probe(scenario, proxy_host, proxy_port, target_port, capability):
     return False
 
 
+def client_probe(scenario, proxy_host, proxy_port, target_port, capability):
+    global CLIENT_DETAIL
+    if not capability.startswith("Basic "):
+        return False
+    try:
+        user, password = base64.b64decode(capability[6:], validate=True).decode().split(":", 1)
+    except (ValueError, UnicodeError):
+        return False
+    proxy = f"http://{user}:{password}@{proxy_host}:{proxy_port}"
+    ca = os.environ["SSL_CERT_FILE"]
+    path = {
+        "git-smart-http": "/clients/repo.git",
+        "pip-wheel": "/clients/cogs_fixture-1.0.0-py3-none-any.whl",
+        "npm-tarball": "/clients/cogs-fixture-1.0.0.tgz",
+    }.get(scenario, "/clients/ok")
+    target = f"https://localhost:{target_port}{path}"
+    environment = {
+        **os.environ,
+        "HTTPS_PROXY": proxy,
+        "HTTP_PROXY": proxy,
+        "https_proxy": proxy,
+        "http_proxy": proxy,
+        "NO_PROXY": "",
+        "no_proxy": "",
+    }
+    temporary = tempfile.mkdtemp(prefix="cogs-client-")
+    try:
+        if scenario in ("curl", "http2"):
+            command = ["curl", "--silent", "--show-error", "--fail", "--output", os.devnull, "--max-time", "15", "--noproxy", "", "--proxy", f"http://{proxy_host}:{proxy_port}", "--proxy-header", f"Proxy-Authorization: {capability}", "--cacert", ca]
+            if scenario == "http2":
+                command.append("--http2")
+            command.append(target)
+        elif scenario == "git-smart-http":
+            command = [
+                "git", "-c", f"http.proxy={proxy}", "-c", "http.proxyAuthMethod=basic",
+                "-c", f"http.sslCAInfo={ca}", "ls-remote", target,
+            ]
+        elif scenario == "pip-wheel":
+            command = ["python3", "-m", "pip", "download", "--disable-pip-version-check", "--no-deps", "--dest", temporary, "--proxy", proxy, "--cert", ca, target]
+        elif scenario == "npm-tarball":
+            environment.update({
+                "HOME": temporary,
+                "npm_config_cache": os.path.join(temporary, ".npm"),
+                "npm_config_proxy": proxy,
+                "npm_config_https_proxy": proxy,
+                "npm_config_cafile": ca,
+            })
+            command = [
+                "npm", "--proxy", proxy, "--https-proxy", proxy, "--cafile", ca,
+                "--ignore-scripts", "pack", target, "--pack-destination", temporary,
+            ]
+        elif scenario == "python-requests":
+            command = ["python3", "-c", "import requests,sys; r=requests.get(sys.argv[1],proxies={'https':sys.argv[2]},verify=sys.argv[3],timeout=12); r.raise_for_status(); assert r.content==b'ok'", target, proxy, ca]
+        elif scenario == "python-httpx":
+            command = ["python3", "-c", "import httpx,sys; r=httpx.get(sys.argv[1],proxy=sys.argv[2],verify=sys.argv[3],timeout=12); r.raise_for_status(); assert r.content==b'ok'", target, proxy, ca]
+        elif scenario == "java-http":
+            source = os.path.join(temporary, "CogsClient.java")
+            with open(source, "w", encoding="utf-8") as output:
+                output.write("""
+import java.io.*; import java.net.*; import java.net.http.*; import java.nio.file.*; import java.security.*; import java.security.cert.*; import javax.net.ssl.*;
+class CogsClient { public static void main(String[] a) throws Exception {
+  var cf=CertificateFactory.getInstance("X.509"); var cert=cf.generateCertificate(Files.newInputStream(Path.of(a[4])));
+  var ks=KeyStore.getInstance(KeyStore.getDefaultType()); ks.load(null); ks.setCertificateEntry("cogs",cert);
+  var tmf=TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm()); tmf.init(ks);
+  var ssl=SSLContext.getInstance("TLS"); ssl.init(null,tmf.getTrustManagers(),null);
+  var auth=new Authenticator(){ protected PasswordAuthentication getPasswordAuthentication(){ return new PasswordAuthentication(a[2],a[3].toCharArray()); }};
+  var client=HttpClient.newBuilder().sslContext(ssl).proxy(ProxySelector.of(new InetSocketAddress(a[0],Integer.parseInt(a[1])))).authenticator(auth).build();
+  var response=client.send(HttpRequest.newBuilder(URI.create(a[5])).header("Proxy-Authorization",a[6]).GET().build(),HttpResponse.BodyHandlers.ofString());
+  if(response.statusCode()!=200 || !response.body().equals("ok")) throw new RuntimeException("failed"); }}
+""")
+            command = [
+                "java", "-Djdk.http.auth.tunneling.disabledSchemes=", "-Djdk.httpclient.allowRestrictedHeaders=proxy-authorization", source,
+                proxy_host, str(proxy_port), user, password, ca, target, capability,
+            ]
+        elif scenario in ("node-https-native", "node-fetch-native"):
+            script = (
+                "require('https').get(process.argv[1],r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
+                if scenario == "node-https-native"
+                else "fetch(process.argv[1]).then(r=>process.exit(r.status===200?0:1)).catch(()=>process.exit(1))"
+            )
+            command = ["node", "-e", script, target]
+        else:
+            return False
+        log_path = os.path.join(temporary, "client.log")
+        with open(log_path, "wb") as log:
+            completed = subprocess.run(command, env=environment, cwd=temporary, stdout=log, stderr=log, timeout=30, check=False)
+        with open(log_path, "rb") as log:
+            bounded = log.read(2048).decode("utf-8", "replace")
+        if scenario == "npm-tarball" and completed.returncode != 0:
+            npm_logs = os.path.join(temporary, ".npm", "_logs")
+            try:
+                latest = sorted(os.listdir(npm_logs))[-1]
+                with open(os.path.join(npm_logs, latest), "rb") as npm_log:
+                    bounded += " " + npm_log.read(2048).decode("utf-8", "replace")
+            except (OSError, IndexError):
+                pass
+        for sensitive in (capability, password, proxy):
+            bounded = bounded.replace(sensitive, "[REDACTED]")
+        CLIENT_DETAIL = f"exit={completed.returncode}; {bounded.strip()}"[:2304]
+        return completed.returncode == 0
+    except (OSError, subprocess.SubprocessError) as error:
+        CLIENT_DETAIL = f"execution-error={type(error).__name__}"
+        return False
+    finally:
+        import shutil
+        shutil.rmtree(temporary, ignore_errors=True)
+
+
 def main():
-    if len(sys.argv) != 8 or not valid_inputs(sys.argv[1:]):
+    values = sys.argv[1:]
+    try:
+        if len(values) == 7 and values[5].startswith("b64."):
+            values[5] = base64.b64decode(values[5][4:], validate=True).decode()
+    except (ValueError, UnicodeError):
         emit(False, "invalid probe input")
-    scenario, kind, proxy_host, proxy_port_text, target_port_text, capability, expected = sys.argv[1:]
+    if len(values) != 7 or not valid_inputs(values):
+        emit(False, "invalid probe input")
+    scenario, kind, proxy_host, proxy_port_text, target_port_text, capability, expected = values
     proxy_port, target_port = int(proxy_port_text), int(target_port_text)
     proxy = f"http://{proxy_host}:{proxy_port}"
     try:
         if kind == "bypass":
             allowed = bypass_probe(scenario, proxy_host, proxy_port, target_port, capability)
+        elif kind == "client":
+            allowed = client_probe(scenario, proxy_host, proxy_port, target_port, capability)
         elif scenario in {
             "capability-valid", "capability-missing", "capability-malformed", "capability-expired",
             "capability-other-session", "allowed-host-port", "undeclared-host", "direct-destination-ip",
@@ -373,7 +492,7 @@ def main():
         if expected == "safe"
         else (allowed if expected == "allow" else not allowed)
     )
-    detail = f" ({RAW_DETAIL})" if kind == "raw-http1" else ""
+    detail = f" ({RAW_DETAIL})" if kind == "raw-http1" else (f" ({CLIENT_DETAIL})" if kind == "client" and not passed else "")
     emit(passed, f"scenario {scenario} produced the required bounded {expected} observation{detail}")
 
 

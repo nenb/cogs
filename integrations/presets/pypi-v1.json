@@ -1,0 +1,51 @@
+{
+  "version": "cogs.integration/v1alpha1",
+  "id": "pypi",
+  "preset_revision": "sha256:83f1128fe781132667746a53514be263b89a392dab28673803f401e4a383c219",
+  "dns": {
+    "mode": "proxy-connect-authority",
+    "guest_resolution": false
+  },
+  "rules": [
+    {
+      "name": "pypi-index",
+      "host": "pypi.org",
+      "port": 443,
+      "methods": ["GET"],
+      "path_patterns": ["/simple/*", "/pypi/*/json"],
+      "path_policy": {
+        "strategy": "segment-glob",
+        "normalization": "reject-ambiguous"
+      },
+      "redirects": {
+        "mode": "allow-declared",
+        "max_hops": 2,
+        "allowed_hosts": ["files.pythonhosted.org"]
+      },
+      "inject_auth": true
+    },
+    {
+      "name": "pypi-files",
+      "host": "files.pythonhosted.org",
+      "port": 443,
+      "methods": ["GET"],
+      "path_patterns": ["/packages/*"],
+      "path_policy": {
+        "strategy": "segment-glob",
+        "normalization": "reject-ambiguous"
+      },
+      "redirects": {
+        "mode": "deny",
+        "max_hops": 0,
+        "allowed_hosts": []
+      },
+      "inject_auth": false
+    }
+  ],
+  "auth": {
+    "type": "basic_header",
+    "header": "Authorization",
+    "placeholder": "COGS_PLACEHOLDER_PYPI_BASIC",
+    "secret_handle": "integration/pypi/credential"
+  }
+}

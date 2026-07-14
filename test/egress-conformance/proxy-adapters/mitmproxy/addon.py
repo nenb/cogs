@@ -5,6 +5,7 @@ import json
 import time
 import urllib.error
 import urllib.request
+from urllib.parse import urlsplit
 from mitmproxy import ctx, http
 
 ID_KEYS = {"version", "case_id", "session_id", "authorization_origin", "routes"}
@@ -32,7 +33,12 @@ class CogsPolicy:
         for route in value["routes"]:
             keys = set(route)
             credential = route.get("credential")
-            if keys not in (ROUTE_KEYS, ROUTE_KEYS | {"credential"}):
+            if keys not in (
+                ROUTE_KEYS,
+                ROUTE_KEYS | {"credential"},
+                ROUTE_KEYS | {"query"},
+                ROUTE_KEYS | {"query", "credential"},
+            ):
                 raise RuntimeError("policy route is invalid")
             if credential is not None and set(credential) not in (CREDENTIAL_KEYS, CREDENTIAL_KEYS - {"header"}):
                 raise RuntimeError("policy credential is invalid")
@@ -56,7 +62,10 @@ class CogsPolicy:
         return await asyncio.to_thread(call)
 
     def _deny(self, flow, status=403):
-        flow.response = http.Response.make(status, b"", {"cache-control": "no-store", "content-length": "0"})
+        headers = {"cache-control": "no-store", "content-length": "0"}
+        if status == 407:
+            headers["proxy-authenticate"] = 'Basic realm="cogs-session"'
+        flow.response = http.Response.make(status, b"", headers)
 
     async def http_connect(self, flow: http.HTTPFlow):
         if len(flow.request.headers.get_all("proxy-authorization")) != 1:
@@ -85,7 +94,9 @@ class CogsPolicy:
         self.capabilities.pop(str(client.id), None)
 
     def _route(self, flow, connection):
-        path = flow.request.path
+        parsed_target = urlsplit(flow.request.url)
+        path = parsed_target.path
+        query = parsed_target.query
         host = flow.request.host.lower()
         sni = (flow.client_conn.sni or "").lower()
         authority = (flow.request.host_header or "").lower()
@@ -95,7 +106,9 @@ class CogsPolicy:
         if (
             self.policy is None
             or flow.request.scheme != "https"
-            or any(character in path for character in ("?", "#", "\\", "%"))
+            or any(character in path for character in ("#", "\\", "%"))
+            or parsed_target.fragment != ""
+            or "?" in query
             or "//" in path
             or any(part in (".", "..") for part in path.split("/"))
             or len(flow.request.headers.get_all("host")) > 1
@@ -110,7 +123,9 @@ class CogsPolicy:
                 route["host"] == host
                 and route["port"] == flow.request.port
                 and flow.request.method in route["methods"]
-                and flow.request.path.startswith(route["pathPrefix"])
+                and path.startswith(route["pathPrefix"])
+                and query == route.get("query", "")
+                and (("query" in route and query != "") or ("query" not in route and query == ""))
             ):
                 return route
         return None

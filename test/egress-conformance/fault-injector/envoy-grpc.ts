@@ -15,6 +15,7 @@ interface DecodedCheckRequest {
 export interface EnvoyAuthorizationDecision {
   outcome: "allow" | "deny" | "error";
   intentId?: string;
+  deniedStatus?: 403 | 407;
 }
 
 export interface EnvoyAuthorizationGrpc {
@@ -35,6 +36,7 @@ interface WireField {
 interface EncodedDecision {
   outcome: "allow" | "deny";
   intentId?: string;
+  deniedStatus?: 403 | 407;
 }
 
 function readVarint(buffer: Buffer, offset: number): { value: bigint; offset: number } {
@@ -173,8 +175,19 @@ function encodeStringStruct(key: string, value: string): Buffer {
 function encodeDecision(decision: EncodedDecision): Buffer {
   if (decision.outcome === "deny") {
     const statusMessage = encodeVarintField(1, 7);
-    const httpStatus = encodeVarintField(1, 403);
-    const deniedResponse = encodeMessageField(1, httpStatus);
+    const deniedStatus = decision.deniedStatus ?? 403;
+    const httpStatus = encodeVarintField(1, deniedStatus);
+    const challengeHeader = encodeMessageField(
+      2,
+      encodeMessageField(
+        1,
+        Buffer.concat([encodeStringField(1, "proxy-authenticate"), encodeStringField(2, 'Basic realm="cogs-session"')]),
+      ),
+    );
+    const deniedResponse = Buffer.concat([
+      encodeMessageField(1, httpStatus),
+      ...(deniedStatus === 407 ? [challengeHeader] : []),
+    ]);
     return Buffer.concat([encodeMessageField(1, statusMessage), encodeMessageField(2, deniedResponse)]);
   }
   const fields = [encodeMessageField(1, Buffer.alloc(0)), encodeMessageField(3, Buffer.alloc(0))];
@@ -215,6 +228,7 @@ export async function startEnvoyAuthorizationGrpc(options: StartOptions): Promis
         callback(null, {
           outcome: decision.outcome,
           ...(decision.intentId === undefined ? {} : { intentId: decision.intentId }),
+          ...(decision.deniedStatus === undefined ? {} : { deniedStatus: decision.deniedStatus }),
         });
       })
       .catch(() => callback({ code: status.INTERNAL, message: "authorization decision failed" }));

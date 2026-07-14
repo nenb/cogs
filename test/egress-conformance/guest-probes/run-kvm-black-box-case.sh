@@ -14,9 +14,9 @@ for name in COGS_SUITE_GUEST_PROXY COGS_SUITE_TARGET_PORT COGS_SUITE_PUBLIC_CA C
 done
 if [[ "$COGS_SUITE_GUEST_PROXY" != http://192.0.2.1:18080 \
     || ! "$COGS_SUITE_TARGET_PORT" =~ ^[0-9]{1,5}$ \
-    || ! "$COGS_SUITE_CAPABILITY" =~ ^[A-Za-z0-9._-]{0,256}$ \
+    || ! "$COGS_SUITE_CAPABILITY" =~ ^([A-Za-z0-9._-]{0,256}|Basic[[:space:]][A-Za-z0-9+/=]{8,256})$ \
     || ! "$COGS_SUITE_SCENARIO" =~ ^[a-z0-9.-]{1,64}$ \
-    || ! "$COGS_SUITE_KIND" =~ ^(https|redirect|raw-http1|raw-http2|fault|revocation|confidentiality|bypass)$ \
+    || ! "$COGS_SUITE_KIND" =~ ^(https|redirect|raw-http1|raw-http2|fault|revocation|confidentiality|bypass|client)$ \
     || ( "$COGS_SUITE_EXPECT" != allow && "$COGS_SUITE_EXPECT" != deny && "$COGS_SUITE_EXPECT" != safe ) ]]; then
   printf '{"passed":false,"diagnosticsRedacted":"KVM suite input is invalid"}\n'
   exit 0
@@ -34,11 +34,12 @@ if ! scp "${common[@]}" -- "$probe" "$COGS_SUITE_PUBLIC_CA" root@192.0.2.2:/work
   printf '{"passed":false,"diagnosticsRedacted":"KVM suite public material transfer failed"}\n'; exit 0
 fi
 ca_name=$(basename "$COGS_SUITE_PUBLIC_CA")
+capability_argument="b64.$(printf '%s' "$COGS_SUITE_CAPABILITY" | base64 -w0)"
 ssh "${common[@]}" root@192.0.2.2 \
   'iptables -F 2>/dev/null || true; ip6tables -F 2>/dev/null || true; nft flush ruleset 2>/dev/null || true' >>"$log" 2>&1
 remote=(ssh "${common[@]}" root@192.0.2.2 env SSL_CERT_FILE="/workspace/$ca_name"
   python3 /workspace/black-box-probe.py "$COGS_SUITE_SCENARIO" "$COGS_SUITE_KIND" 192.0.2.1 18080
-  "$COGS_SUITE_TARGET_PORT" "$COGS_SUITE_CAPABILITY" "$COGS_SUITE_EXPECT")
+  "$COGS_SUITE_TARGET_PORT" "$capability_argument" "$COGS_SUITE_EXPECT")
 if [[ "$COGS_SUITE_SCENARIO" == long-lived-drain ]]; then
   if [[ ! "${COGS_SUITE_DRAIN_CONTAINER:-}" =~ ^cogs-[A-Za-z0-9_.-]{1,120}$ ]]; then
     printf '{"passed":false,"diagnosticsRedacted":"KVM drain control is invalid"}\n'; exit 0
