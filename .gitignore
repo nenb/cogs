@@ -1,6 +1,12 @@
 node_modules/
+.tools/
 __pycache__/
 *.pyc
+**/.terraform/
+**/.state/
+*.tfstate
+*.tfstate.*
+crash.log
 dist/
 coverage/
 *.log
