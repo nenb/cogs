@@ -257,7 +257,7 @@ resource "aws_iam_role" "terminator" {
           "aws:SourceAccount" = data.aws_caller_identity.current.account_id
         }
         ArnEquals = {
-          "aws:SourceArn" = "arn:${data.aws_partition.current.partition}:scheduler:${var.aws_region}:${data.aws_caller_identity.current.account_id}:schedule/default/${local.name}-terminate"
+          "aws:SourceArn" = "arn:${data.aws_partition.current.partition}:scheduler:${var.aws_region}:${data.aws_caller_identity.current.account_id}:schedule-group/default"
         }
       }
     }]

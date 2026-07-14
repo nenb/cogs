@@ -25,6 +25,8 @@ test("AWS fixture has no inbound rule and requires three independent termination
   assert.doesNotMatch(main, /\bingress\s*\{/);
   assert.match(main, /action_after_completion\s+= "DELETE"/);
   assert.match(main, /ec2:terminateInstances/);
+  assert.match(main, /schedule-group\/default/);
+  assert.doesNotMatch(main, /schedule\/default\/\$\{local\.name\}-terminate/);
   assert.match(main, /instance_initiated_shutdown_behavior = "terminate"/);
   assert.match(main, /shutdown -P \+220/);
   assert.match(main, /limit_amount = "20"/);
