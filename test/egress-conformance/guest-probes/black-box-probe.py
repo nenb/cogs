@@ -13,6 +13,7 @@ import sys
 import tempfile
 
 RAW_DETAIL = "none"
+CLIENT_DETAIL = "none"
 
 
 def emit(passed, code):
@@ -347,6 +348,7 @@ def bypass_probe(scenario, proxy_host, proxy_port, target_port, capability):
 
 
 def client_probe(scenario, proxy_host, proxy_port, target_port, capability):
+    global CLIENT_DETAIL
     if not capability.startswith("Basic "):
         return False
     try:
@@ -380,7 +382,7 @@ def client_probe(scenario, proxy_host, proxy_port, target_port, capability):
             environment.update({"npm_config_proxy": proxy, "npm_config_https_proxy": proxy, "npm_config_cafile": ca})
             command = [
                 "npm", "--proxy", proxy, "--https-proxy", proxy, "--cafile", ca,
-                "--ignore-scripts", "--silent", "pack", target, "--pack-destination", temporary,
+                "--ignore-scripts", "pack", target, "--pack-destination", temporary,
             ]
         elif scenario == "python-requests":
             command = ["python3", "-c", "import requests,sys; r=requests.get(sys.argv[1],proxies={'https':sys.argv[2]},verify=sys.argv[3],timeout=12); r.raise_for_status(); assert r.content==b'ok'", target, proxy, ca]
@@ -398,12 +400,12 @@ class CogsClient { public static void main(String[] a) throws Exception {
   var ssl=SSLContext.getInstance("TLS"); ssl.init(null,tmf.getTrustManagers(),null);
   var auth=new Authenticator(){ protected PasswordAuthentication getPasswordAuthentication(){ return new PasswordAuthentication(a[2],a[3].toCharArray()); }};
   var client=HttpClient.newBuilder().sslContext(ssl).proxy(ProxySelector.of(new InetSocketAddress(a[0],Integer.parseInt(a[1])))).authenticator(auth).build();
-  var response=client.send(HttpRequest.newBuilder(URI.create(a[5])).GET().build(),HttpResponse.BodyHandlers.ofString());
+  var response=client.send(HttpRequest.newBuilder(URI.create(a[5])).header("Proxy-Authorization",a[6]).GET().build(),HttpResponse.BodyHandlers.ofString());
   if(response.statusCode()!=200 || !response.body().equals("ok")) throw new RuntimeException("failed"); }}
 """)
             command = [
-                "java", "-Djdk.http.auth.tunneling.disabledSchemes=", source,
-                proxy_host, str(proxy_port), user, password, ca, target,
+                "java", "-Djdk.http.auth.tunneling.disabledSchemes=", "-Djdk.httpclient.allowRestrictedHeaders=proxy-authorization", source,
+                proxy_host, str(proxy_port), user, password, ca, target, capability,
             ]
         elif scenario in ("node-https-native", "node-fetch-native"):
             script = (
@@ -414,9 +416,17 @@ class CogsClient { public static void main(String[] a) throws Exception {
             command = ["node", "-e", script, target]
         else:
             return False
-        completed = subprocess.run(command, env=environment, cwd=temporary, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30, check=False)
+        log_path = os.path.join(temporary, "client.log")
+        with open(log_path, "wb") as log:
+            completed = subprocess.run(command, env=environment, cwd=temporary, stdout=log, stderr=log, timeout=30, check=False)
+        with open(log_path, "rb") as log:
+            bounded = log.read(2048).decode("utf-8", "replace")
+        for sensitive in (capability, password, proxy):
+            bounded = bounded.replace(sensitive, "[REDACTED]")
+        CLIENT_DETAIL = f"exit={completed.returncode}; {bounded.strip()}"[:2304]
         return completed.returncode == 0
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError) as error:
+        CLIENT_DETAIL = f"execution-error={type(error).__name__}"
         return False
     finally:
         import shutil
@@ -460,7 +470,7 @@ def main():
         if expected == "safe"
         else (allowed if expected == "allow" else not allowed)
     )
-    detail = f" ({RAW_DETAIL})" if kind == "raw-http1" else ""
+    detail = f" ({RAW_DETAIL})" if kind == "raw-http1" else (f" ({CLIENT_DETAIL})" if kind == "client" and not passed else "")
     emit(passed, f"scenario {scenario} produced the required bounded {expected} observation{detail}")
 
 

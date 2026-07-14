@@ -22,7 +22,7 @@ const clientNpmTarball = Buffer.from(
 );
 const packetLine = (value: string) => `${(Buffer.byteLength(value) + 4).toString(16).padStart(4, "0")}${value}`;
 const gitAdvertisement = Buffer.from(
-  `${packetLine("# service=git-upload-pack\\n")}0000${packetLine(`${"1".repeat(40)} HEAD\\0symref=HEAD:refs/heads/main\\n`)}0000`,
+  `${packetLine("# service=git-upload-pack\n")}0000${packetLine(`${"1".repeat(40)} HEAD\0symref=HEAD:refs/heads/main\n`)}0000`,
 );
 
 export type FixtureRoute =
