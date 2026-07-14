@@ -1,8 +1,9 @@
 # ADR 0012: Use AWS virtual nested KVM as the Stage 4 runtime candidate
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-14
 - Decision owner: Nick Byrne
+- Accepted by: Nick Byrne on 2026-07-14
 
 ## Context
 
@@ -10,9 +11,9 @@
 
 Stage 2 has now produced one successful disposable EC2 campaign at source revision [`2036bb7d0e115bba2fa4b84f875e657559243c80`](https://github.com/nenb/cogs/tree/2036bb7d0e115bba2fa4b84f875e657559243c80). The detailed report is [`stage-2-aws-feasibility.md`](../test-reports/stage-2-aws-feasibility.md).
 
-## Proposed decision
+## Decision
 
-If accepted, Cogs will use **AWS virtual nested KVM on `c8i-flex.large` in `us-east-1` as the Stage 4 EKS/NIC candidate** for the Kata reference profile.
+Cogs will use **AWS virtual nested KVM on `c8i-flex.large` in `us-east-1` as the Stage 4 EKS/NIC candidate** for the Kata reference profile.
 
 This decision is limited to candidate selection for the next validation stage. It does not approve production, release, EKS operation, general AWS availability, or a security/isolation claim beyond the measured one-instance evidence.
 

@@ -58,10 +58,14 @@ test("AWS runtime validation requires active KVM and a distinct root Kata guest"
   assert.match(controller, /nested_virtualization.*enabled/);
 });
 
-test("Stage 2 decision package is proposed, bounded, and redacted", () => {
+test("Stage 2 decision package is accepted, bounded, and redacted", () => {
   const report = read("docs/test-reports/stage-2-aws-feasibility.md");
   const adr = read("docs/adr/0012-use-aws-virtual-nested-kvm-for-stage-4-candidate.md");
-  assert.match(adr, /Status: Proposed/);
+  const index = read("docs/adr/README.md");
+  assert.match(adr, /Status: Accepted/);
+  assert.match(adr, /Accepted by: Nick Byrne on 2026-07-14/);
+  assert.match(index, /0012.*Accepted/);
+  assert.doesNotMatch(adr, /Status: Proposed/);
   assert.match(report, /2036bb7d0e115bba2fa4b84f875e657559243c80/);
   assert.match(report, /6e42a6df1ceff65f3b45a9805d91cdce5fbd7a5fb775789fe56c4ebe4a2466be/);
   assert.match(report, /c8i-flex\.large/);

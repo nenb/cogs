@@ -1,6 +1,6 @@
 # Architecture decision records
 
-ADRs 0001–0010 were accepted by Nick Byrne on 2026-07-10. ADR 0011 was accepted at the Stage 1 proxy-selection gate on 2026-07-14. ADR 0012 is proposed for the Stage 2 AWS runtime decision.
+ADRs 0001–0010 were accepted by Nick Byrne on 2026-07-10. ADR 0011 was accepted at the Stage 1 proxy-selection gate on 2026-07-14. ADR 0012 was accepted by Nick Byrne for the Stage 2 AWS runtime decision on 2026-07-14.
 
 | ADR | Decision | Status |
 |---|---|---|
@@ -15,6 +15,6 @@ ADRs 0001–0010 were accepted by Nick Byrne on 2026-07-10. ADR 0011 was accepte
 | [0009](0009-content-addressed-skill-artifacts.md) | Content-addressed skill artifacts | Accepted |
 | [0010](0010-qualify-github-hosted-kvm-per-run.md) | Per-run GitHub-hosted KVM qualification | Accepted |
 | [0011](0011-select-envoy-for-http-egress.md) | Select Envoy for initial HTTP egress | Accepted |
-| [0012](0012-use-aws-virtual-nested-kvm-for-stage-4-candidate.md) | Use AWS virtual nested KVM as Stage 4 candidate | Proposed |
+| [0012](0012-use-aws-virtual-nested-kvm-for-stage-4-candidate.md) | Use AWS virtual nested KVM as Stage 4 candidate | Accepted |
 
 Implementation pauses for every boundary listed in `IMPLEMENTATION.md` section 47. Superseding an accepted ADR requires a new ADR rather than editing history.
