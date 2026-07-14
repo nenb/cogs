@@ -268,6 +268,11 @@ try {
                               : definition.probe.kind === "client"
                                 ? "/clients/ok"
                                 : "/protected/header",
+            ...(scenario === "git-smart-http"
+              ? { query: "service=git-upload-pack" }
+              : scenario.startsWith("query-")
+                ? { query: "a=1&b=2" }
+                : {}),
             upstreamAddress: "127.0.0.1",
             upstreamPort: fixturePort,
             upstreamCaCertificatePem: fixtures.caCertificatePem,

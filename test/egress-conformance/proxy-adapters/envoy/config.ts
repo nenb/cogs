@@ -19,6 +19,7 @@ export interface EnvoyRouteConfig {
   port: number;
   methods: readonly string[];
   pathPrefix: string;
+  query?: string;
   upstreamAddress: string;
   upstreamPort: number;
   upstreamCaCertificatePem?: string;
@@ -90,6 +91,23 @@ function validatePathPrefix(value: string): void {
   }
 }
 
+function validateQuery(value: string): void {
+  assertSafeText(value, "route query", 1024);
+  const parts = value.split("&");
+  if (
+    parts.length === 0 ||
+    parts.some((part) => !/^[A-Za-z0-9._~-]+=[A-Za-z0-9._~-]+$/.test(part)) ||
+    new Set(parts.map((part) => part.split("=", 1)[0])).size !== parts.length ||
+    [...parts].sort().join("&") !== value
+  ) {
+    throw new Error("route query must be exact, canonical, uniquely keyed, and key-sorted");
+  }
+}
+
+function regexEscape(value: string): string {
+  return value.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&");
+}
+
 function credentialHeader(credential: CredentialConfig): { name: string; value: string } {
   assertSafeText(credential.value, "credential value", 8192);
   if (credential.kind === "bearer") {
@@ -157,6 +175,7 @@ function validateInput(input: EnvoyCandidateConfigInput): EnvoyRouteConfig[] {
         throw new Error("route methods must be canonical non-CONNECT tokens");
     }
     validatePathPrefix(route.pathPrefix);
+    if (route.query !== undefined) validateQuery(route.query);
     if (route.credential !== undefined) credentialHeader(route.credential);
     if (route.protocol === "https") {
       if (route.upstreamCaCertificatePem === undefined)
@@ -165,7 +184,7 @@ function validateInput(input: EnvoyCandidateConfigInput): EnvoyRouteConfig[] {
     } else if (route.upstreamCaCertificatePem !== undefined) {
       throw new Error("HTTP routes must not configure TLS trust material");
     }
-    const policyKey = `${route.protocol}|${route.host}|${route.port}|${[...route.methods].sort().join(",")}|${route.pathPrefix}`;
+    const policyKey = `${route.protocol}|${route.host}|${route.port}|${[...route.methods].sort().join(",")}|${route.pathPrefix}|${route.query ?? ""}`;
     if (policyKeys.has(policyKey)) throw new Error("duplicate route policy is not allowed");
     policyKeys.add(policyKey);
   }
@@ -293,6 +312,13 @@ function envoyRoute(route: EnvoyRouteConfig, input: EnvoyCandidateConfigInput, i
       headers: [
         { name: ":method", string_match: { exact: method } },
         { name: ":authority", string_match: { safe_regex: { regex: authorityPattern } } },
+        {
+          name: ":path",
+          string_match:
+            route.query === undefined
+              ? { safe_regex: { regex: `^${regexEscape(route.pathPrefix)}[^?]*$` } }
+              : { exact: `${route.pathPrefix}?${route.query}` },
+        },
       ],
     },
     route: {

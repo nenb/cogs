@@ -22,6 +22,7 @@ function input(): EnvoyCandidateConfigInput {
         port: 443,
         methods: ["GET", "POST"],
         pathPrefix: "/v1/allowed/",
+        query: "a=1&b=2",
         upstreamAddress: "127.0.0.1",
         upstreamPort: 19443,
         upstreamCaCertificatePem: certificate,
@@ -87,6 +88,8 @@ test("generator emits deterministic immutable static Envoy policy with no admini
   assert.match(rendered, /"name": "forward_proxy"/);
   assert.match(rendered, /"internal_listener": \{\}/);
   assert.match(rendered, /"connect_matcher": \{\}/);
+  assert.match(rendered, /"exact": "\/v1\/allowed\/\?a=1&b=2"/);
+  assert.match(rendered, /"regex": "\^\/basic\/\[\^\?\]\*\$"/);
   assert.match(rendered, /"authorization"/);
   assert.match(rendered, /Bearer fixture-real-value/);
   assert.match(rendered, /Basic Zml4dHVyZTpwYXNzd29yZA==/);
@@ -132,6 +135,15 @@ test("generator rejects ambiguous routes, credential-bearing control origins, an
   mutate((value) => {
     route(value, 0).methods = ["CONNECT"];
   }, /non-CONNECT/);
+  mutate((value) => {
+    route(value, 0).query = "b=2&a=1";
+  }, /exact, canonical/);
+  mutate((value) => {
+    route(value, 0).query = "a=1&a=2";
+  }, /uniquely keyed/);
+  mutate((value) => {
+    route(value, 0).query = "a=%31";
+  }, /exact, canonical/);
   mutate((value) => {
     value.authorizationGrpcTarget = "user:secret@127.0.0.1:19090";
   }, /uncredentialed loopback/);
