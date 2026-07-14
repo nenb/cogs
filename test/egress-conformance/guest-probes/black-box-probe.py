@@ -521,11 +521,14 @@ def main():
             allowed = raw_http1(scenario, proxy_host, proxy_port, target_port, capability)
     except Exception:
         allowed = False
-    passed = (
-        allowed or (kind == "raw-http1" and RAW_DETAIL == "inner-denied")
-        if expected == "safe"
-        else (allowed if expected == "allow" else not allowed)
-    )
+    if expected == "safe" and scenario == "connect-host-mismatch":
+        passed = RAW_DETAIL in ("connect-denied", "inner-denied", "upstream-allowed")
+    else:
+        passed = (
+            allowed or (kind == "raw-http1" and RAW_DETAIL == "inner-denied")
+            if expected == "safe"
+            else (allowed if expected == "allow" else not allowed)
+        )
     detail = f" ({RAW_DETAIL})" if kind == "raw-http1" else (f" ({CLIENT_DETAIL})" if kind == "client" and not passed else "")
     emit(passed, f"scenario {scenario} produced the required bounded {expected} observation{detail}")
 

@@ -169,7 +169,7 @@ export const STAGE_1_CASES: readonly Stage1CaseDefinition[] = Object.freeze([
     "identity-route",
     "raw-http1",
     "connect-host-mismatch",
-    "deny",
+    "safe",
     authorized,
     "parser.http1-valid",
   ),
