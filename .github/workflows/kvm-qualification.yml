@@ -64,14 +64,6 @@ jobs:
           COGS_CONFORMANCE_PROFILE: linux-kvm
         run: npx --no-install tsx test/egress-conformance/proxy-adapters/envoy/suite-smoke.ts docs/security-evidence/generated/envoy-kvm
 
-      - name: Run authoritative Stage 1 suite against mitmproxy
-        id: mitmproxy_suite
-        continue-on-error: true
-        env:
-          COGS_SOURCE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
-          COGS_CONFORMANCE_PROFILE: linux-kvm
-        run: npx --no-install tsx test/egress-conformance/proxy-adapters/mitmproxy/suite-smoke.ts docs/security-evidence/generated/mitmproxy-kvm
-
       - name: Destroy isolated conformance guest
         id: destroy
         if: always() && steps.guest.outcome != 'skipped'
@@ -84,8 +76,7 @@ jobs:
           npm run schemas -- \
             docs/security-evidence/generated/kvm-qualification.json \
             docs/security-evidence/generated/kvm-driver-smoke.json \
-            docs/security-evidence/generated/envoy-kvm/envoy-suite-linux-kvm-*/report.json \
-            docs/security-evidence/generated/mitmproxy-kvm/mitmproxy-suite-linux-kvm-*/report.json
+            docs/security-evidence/generated/envoy-kvm/envoy-suite-linux-kvm-*/report.json
 
       - name: Upload qualification evidence
         if: always() && steps.evidence.outcome == 'success'
@@ -100,11 +91,9 @@ jobs:
         if: always()
         env:
           ENVOY_OUTCOME: ${{ steps.envoy_suite.outcome }}
-          MITMPROXY_OUTCOME: ${{ steps.mitmproxy_suite.outcome }}
           DESTROY_OUTCOME: ${{ steps.destroy.outcome }}
           EVIDENCE_OUTCOME: ${{ steps.evidence.outcome }}
         run: |
           test "$ENVOY_OUTCOME" = success
-          test "$MITMPROXY_OUTCOME" = success
           test "$DESTROY_OUTCOME" = success
           test "$EVIDENCE_OUTCOME" = success

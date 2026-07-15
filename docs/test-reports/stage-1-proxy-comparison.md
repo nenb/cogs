@@ -82,7 +82,7 @@ Three raw H1 probes now separate CONNECT request-target, outer H1 Host, SNI, and
 | Limits | Explicit 32 KiB request-header and 100-header bounds, connection/upstream/authz timeouts, no unbounded admin surface; container is read-only with dropped capabilities, 256 PID, 256 MiB, and one-CPU limits. | Container has the same read-only, capability, PID, memory, and CPU bounds, and addon calls are bounded. HTTP parser/resource limits rely more heavily on mitmproxy defaults and container ceilings. |
 | Operational complexity | More generated static configuration: CONNECT listener plus host-specific inner TLS/listener/cluster material. Mature native ext-auth and observability primitives, but config generation and completion collection must be maintained. | Less proxy configuration and natural dynamic MITM behavior, but requires Python runtime, per-session CA state, and a security-critical in-process addon. |
 | Cogs-specific code | No custom code executes inside Envoy. Stage 1 has a 577-line deterministic config generator and 257-line minimal native-v3 gRPC codec in the fixture; production still needs the Cogs authz/WAL service and config materializer. | A measured 202-line Python addon executes inside the proxy for capability validation, routing checks, credential overwrite, and audit completion, plus a 120-line policy generator. |
-| Patch maturity | The pinned image passed the HIGH/CRITICAL CI policy without an exception in the cited run. | The pinned latest image has six fixed HIGH findings under the temporary #25 exception. The exception expires 2026-07-27 and cannot support selection or release. |
+| Patch maturity | The pinned image passed the HIGH/CRITICAL CI policy without an exception in the cited run. | The pinned latest image still has six unique fixed HIGH finding identifiers as of the 2026-07-15 repository Trivy scan. The temporary candidate-only exception was removed rather than renewed; mitmproxy is not an active Stage 3 path, selected CI image, or release fallback. |
 
 ### mitmproxy fixed HIGH inventory
 
@@ -93,7 +93,7 @@ Three raw H1 probes now separate CONNECT request-target, outer H1 Host, SNI, and
 - `CVE-2026-49853`
 - `CVE-2026-49855`
 
-The unsuppressed Trivy JSON is retained as a CI artifact. Ignoring these findings for candidate testing is not an assertion that they are unexploitable.
+The unsuppressed Trivy JSON from the pre-retirement scan is retained as a CI artifact and summarized in `docs/security-evidence/mitmproxy-12.2.3-retirement.md`. The ignore was removed rather than renewed; this historical inventory is not an assertion that the findings are unexploitable.
 
 ## Client compatibility
 
@@ -129,6 +129,6 @@ Adding any resolver allowance, generic tunnel, protocol parser, signer, client-k
 Both candidates demonstrate the required Stage 1 HTTP mechanism and the same authoritative network-denial result. The differentiators are therefore implementation and supply-chain risk, not pass counts:
 
 - Envoy requires more deterministic generated configuration and an external production authz/completion integration, but keeps policy code out of the proxy process, uses native fail-closed ext-auth, exposes no admin/dynamic-routing surface, and has the stronger current vulnerability result.
-- mitmproxy is operationally convenient for dynamic MITM and rejects both outer CONNECT-target/H1-Host mismatch directions, but places 202 lines of Cogs-specific security logic inside the proxy runtime and currently carries six fixed HIGH findings under an expiring candidate-only exception.
+- mitmproxy is operationally convenient for dynamic MITM and rejects both outer CONNECT-target/H1-Host mismatch directions, but places 202 lines of Cogs-specific security logic inside the proxy runtime and still carries six unique fixed HIGH finding identifiers on the pinned digest. The expiring candidate-only exception was removed rather than renewed, so mitmproxy is not an active Stage 3 path or release fallback.
 
 On the present evidence, Envoy has the stronger security and patch-maturity profile. ADR 0011 must make or reject that selection explicitly, record the unsupported client cost, and preserve mandatory Stage 3 reruns. This report alone does not cross the proxy-selection gate.

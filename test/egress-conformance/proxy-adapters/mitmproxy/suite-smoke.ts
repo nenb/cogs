@@ -254,7 +254,7 @@ try {
       "Client compatibility cases are functional insecure-container measurements; Linux/KVM reports them as profile-mismatched while retaining authoritative protocol and bypass evidence.",
       "Direct OpenBao polling and production WAL persistence remain mandatory Stage 3 reruns.",
       "The candidate requires a custom 202-line Python addon for policy, capability, injection, and audit hooks.",
-      "The latest upstream image has six fixed HIGH findings under a narrow owner-and-expiry ignore through 2026-07-27; this evidence cannot support selection or release.",
+      "The latest upstream image still has six unique fixed HIGH finding identifiers; the candidate-only ignore was removed rather than renewed, and this historical adapter cannot support Stage 3 selection or release.",
       "Direct OpenBao change detection remains a Stage 1 revocation stub and requires a mandatory Stage 3 rerun.",
     ],
     redactValues: sensitiveValues,
