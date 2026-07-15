@@ -125,6 +125,7 @@ jobs:
     timeout-minutes: 35
     env:
       ENVOY_IMAGE: envoyproxy/envoy:v1.38.3@sha256:5f7c43e1147412fdb3af578c651c67478a3df818eae89d2261e707e06c209cdb
+      OPENBAO_IMAGE: quay.io/openbao/openbao:2.6.0@sha256:900bb64d0671cd1d82b693c56206f7263b582445f3a3bb6ba6e5213f524a6653
     steps:
       - name: Check out source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -142,6 +143,9 @@ jobs:
 
       - name: Pull pinned selected proxy
         run: docker pull "$ENVOY_IMAGE"
+
+      - name: Pull pinned OpenBao model-auth fixture
+        run: docker pull "$OPENBAO_IMAGE"
 
       - name: Scan worker image
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
@@ -179,6 +183,16 @@ jobs:
           ignore-unfixed: true
           severity: HIGH,CRITICAL
 
+      - name: Scan pinned OpenBao model-auth fixture
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.OPENBAO_IMAGE }}
+          format: table
+          exit-code: "1"
+          ignore-unfixed: true
+          severity: HIGH,CRITICAL
+          trivyignores: .trivyignore-openbao
+
       - name: Generate worker SBOM
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
         with:
@@ -206,6 +220,13 @@ jobs:
           image: ${{ env.ENVOY_IMAGE }}
           format: spdx-json
           output-file: envoy-candidate.spdx.json
+
+      - name: Generate OpenBao model-auth fixture SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          image: ${{ env.OPENBAO_IMAGE }}
+          format: spdx-json
+          output-file: openbao-model-auth.spdx.json
 
       - name: Upload SBOMs
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

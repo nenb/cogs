@@ -1,0 +1,11 @@
+# OpenBao v2.6.0 scan-only ignores reviewed 2026-07-15; review deadline 2026-08-15.
+# Trivy 0.70 false positive: parses OpenBao pseudo Go module v0.0.0-20260714163401-03e3a243b6f0 while pinned runtime is v2.6.0; fixed version <=2.5.4.
+CVE-2024-8185
+# Trivy 0.70 false positive: parses OpenBao pseudo Go module v0.0.0-20260714163401-03e3a243b6f0 while pinned runtime is v2.6.0; fixed version <=2.5.4.
+CVE-2024-9180
+# Trivy 0.70 false positive: parses OpenBao pseudo Go module v0.0.0-20260714163401-03e3a243b6f0 while pinned runtime is v2.6.0; fixed version <=2.5.4.
+CVE-2025-59043
+# Trivy 0.70 false positive: parses OpenBao pseudo Go module v0.0.0-20260714163401-03e3a243b6f0 while pinned runtime is v2.6.0; fixed version <=2.5.4.
+CVE-2025-64761
+# Trivy 0.70 false positive: parses OpenBao pseudo Go module v0.0.0-20260714163401-03e3a243b6f0 while pinned runtime is v2.6.0; fixed version <=2.5.4.
+CVE-2026-45808
