@@ -122,6 +122,14 @@ function fakePorts(calls: string[], result: unknown = { ok: true }): CogsToolPor
     },
     bash: async (input) => {
       calls.push(`bash:${input.command}`);
+      await input.onUpdate?.({
+        content: [{ type: "text", text: JSON.stringify({ stream: "stdout", chunk: asRecord(result).leaked ?? "ok" }) }],
+        details: { cogsTool: "bash", stream: "stdout" },
+      });
+      await input.onUpdate?.({
+        content: [{ type: "text", text: JSON.stringify({ terminal: true, exitCode: 0, signal: null }) }],
+        details: { cogsTool: "bash", terminal: true },
+      });
       return { ...asRecord(result), exit_code: 0, stdout: "" };
     },
   };
@@ -415,6 +423,12 @@ test("Pi session invokes exactly the four Cogs tool ports and redacts tool-resul
       assert.equal(eventText.includes(secret), false);
       assert.equal(eventText.includes(secret.slice(0, 16)), true, "innocent shared prefixes must not be redacted");
       assert.equal(eventText.includes("tokenization"), true, "innocent normal text must not be redacted");
+      const bashUpdateEvent = events.find(
+        (event) => event.includes('"cogsTool":"bash"') && event.includes('"stream":"stdout"'),
+      );
+      assert.ok(bashUpdateEvent, "bash update content/details must be forwarded as a full tool update result");
+      assert.equal(bashUpdateEvent.includes(secret), false);
+      assert.ok(Buffer.byteLength(bashUpdateEvent, "utf8") <= 4096);
       const sessionFile = adapter.sessionFile();
       assert.ok(sessionFile);
       assert.equal((await readFile(sessionFile, "utf8")).includes(secret), false);
@@ -1190,3 +1204,403 @@ test("Pi adapter events publish through the actual SSE server schema envelope", 
 function sepForTest(): string {
   return process.platform === "win32" ? "\\" : "/";
 }
+
+function bashUpdateChunks(events: string[]): {
+  stdout: string;
+  stderr: string;
+  streamCount: number;
+  terminalCount: number;
+  terminalAfterStreams: boolean;
+} {
+  const out = { stdout: "", stderr: "", streamCount: 0, terminalCount: 0, terminalAfterStreams: false };
+  let sawTerminal = false;
+  const visit = (value: unknown): void => {
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item);
+      return;
+    }
+    if (typeof value !== "object" || value === null) return;
+    const maybe = value as { details?: unknown; content?: unknown };
+    if (typeof maybe.details === "object" && maybe.details !== null && Array.isArray(maybe.content)) {
+      const details = maybe.details as { cogsTool?: unknown; stream?: unknown; terminal?: unknown };
+      const first = maybe.content[0] as { text?: unknown } | undefined;
+      if (
+        details.cogsTool === "bash" &&
+        (details.stream === "stdout" || details.stream === "stderr") &&
+        typeof first?.text === "string"
+      ) {
+        const payload = JSON.parse(first.text) as { stream?: unknown; chunk?: unknown };
+        if (payload.stream === details.stream && typeof payload.chunk === "string") {
+          assert.equal(sawTerminal, false);
+          out[details.stream] += payload.chunk;
+          out.streamCount += 1;
+        }
+      }
+      if (details.cogsTool === "bash" && details.terminal === true && typeof first?.text === "string") {
+        const payload = JSON.parse(first.text) as { terminal?: unknown };
+        if (payload.terminal === true) {
+          out.terminalAfterStreams ||= out.streamCount > 0;
+          sawTerminal = true;
+          out.terminalCount += 1;
+        }
+      }
+    }
+    for (const item of Object.values(value)) visit(item);
+  };
+  for (const event of events) visit(JSON.parse(event));
+  return out;
+}
+
+test("Pi bash update redaction spans every boundary and rejects malformed updates", async () => {
+  const temporaryRoot = await mkdtemp(resolve(tmpdir(), "cogs-pi-bash-redact-"));
+  const cwd = resolve(temporaryRoot, "workspace");
+  const agentDir = resolve(temporaryRoot, "agent");
+  const sessionDir = resolve(temporaryRoot, "sessions");
+  const secret = "SPLIT_SECRET_KEY";
+  const events: string[] = [];
+  try {
+    await mkdir(cwd, { recursive: true });
+    await mkdir(agentDir, { recursive: true });
+    const adapter = await createCogsPiSession(
+      withDefaults({
+        cwd,
+        agentDir,
+        sessionRoot: sessionDir,
+        sessionId: "bash-redact-session",
+        model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+        apiKey: secret,
+        streamFn: oneToolStream("bash", { command: "printf split" }),
+        emit: (event) => {
+          events.push(JSON.stringify(event));
+          return true;
+        },
+        toolPorts: {
+          ...fakePorts([]),
+          bash: async (input) => {
+            for (let cut = 0; cut <= secret.length; cut++) {
+              await input.onUpdate?.({
+                content: [{ type: "text", text: JSON.stringify({ stream: "stdout", chunk: secret.slice(0, cut) }) }],
+                details: { cogsTool: "bash", stream: "stdout" },
+              });
+              await input.onUpdate?.({
+                content: [{ type: "text", text: JSON.stringify({ stream: "stdout", chunk: secret.slice(cut) }) }],
+                details: { cogsTool: "bash", stream: "stdout" },
+              });
+            }
+            await input.onUpdate?.({
+              content: [{ type: "text", text: JSON.stringify({ stream: "stderr", chunk: secret.slice(0, 3) }) }],
+              details: { cogsTool: "bash", stream: "stderr" },
+            });
+            await input.onUpdate?.({
+              content: [{ type: "text", text: JSON.stringify({ stream: "stderr", chunk: `${secret.slice(3)}-err` }) }],
+              details: { cogsTool: "bash", stream: "stderr" },
+            });
+            await input.onUpdate?.({
+              content: [
+                { type: "text", text: JSON.stringify({ stream: "stdout", chunk: "\u0000".repeat(1024) + secret }) },
+              ],
+              details: { cogsTool: "bash", stream: "stdout" },
+            });
+            await input.onUpdate?.({
+              content: [
+                { type: "text", text: JSON.stringify({ stream: "stdout", chunk: `${secret.slice(0, 5)}innocent` }) },
+              ],
+              details: { cogsTool: "bash", stream: "stdout" },
+            });
+            await input.onUpdate?.({
+              content: [{ type: "text", text: JSON.stringify({ terminal: true, exitCode: 0, signal: null }) }],
+              details: { cogsTool: "bash", terminal: true },
+            });
+            return { ok: true, stdout: "", stderr: "", exitCode: 0 };
+          },
+        },
+        maxToolResultBytes: 8192,
+      }),
+    );
+    try {
+      await adapter.input({ requestId: "split", correlationId: "split-corr", kind: "prompt", content: "split" });
+      await eventually(async () => assert.equal((await adapter.state()).runState, "settled"));
+      const eventText = events.join("\n");
+      assert.equal(eventText.includes(secret), false);
+      const chunks = bashUpdateChunks(events);
+      assert.equal(chunks.stdout.includes(secret), false);
+      assert.equal(chunks.stderr.includes(secret), false);
+      assert.match(chunks.stdout, /\[REDACTED\]/);
+      assert.match(chunks.stderr, /\[REDACTED\]-err/);
+      assert.equal(chunks.stdout.includes(`${secret.slice(0, 5)}innocent`), true);
+      assert.ok(chunks.streamCount > 0);
+      assert.equal(chunks.terminalCount, 1);
+      assert.equal(chunks.terminalAfterStreams, true);
+      assert.ok(events.every((event) => Buffer.byteLength(event, "utf8") <= 8192));
+      assert.equal((await readFile(adapter.sessionFile() ?? "", "utf8")).includes(secret), false);
+    } finally {
+      await adapter.dispose();
+    }
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+
+  const badRoot = await mkdtemp(resolve(tmpdir(), "cogs-pi-bash-badupdate-"));
+  try {
+    const badCwd = resolve(badRoot, "workspace");
+    const badAgent = resolve(badRoot, "agent");
+    await mkdir(badCwd, { recursive: true });
+    await mkdir(badAgent, { recursive: true });
+    const bad = await createCogsPiSession(
+      withDefaults({
+        cwd: badCwd,
+        agentDir: badAgent,
+        sessionRoot: resolve(badRoot, "sessions"),
+        sessionId: "bad-update",
+        model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+        apiKey: secret,
+        streamFn: oneToolStream("bash", { command: "bad" }),
+        toolPorts: {
+          ...fakePorts([]),
+          bash: async (input) => {
+            await input.onUpdate?.({
+              content: [{ type: "text", text: JSON.stringify({ stream: "stdout", chunk: "abc" }) }],
+              details: { cogsTool: "bash", stream: "stdout" },
+            });
+            await input.onUpdate?.({
+              content: [{ type: "text", text: JSON.stringify({ stream: "stdout", chunk: "oops" }) }],
+              details: { cogsTool: "not-bash", stream: "stdout" },
+            });
+            return { ok: true };
+          },
+        },
+      }),
+    );
+    try {
+      await bad.input({ requestId: "bad", correlationId: "bad-corr", kind: "prompt", content: "bad" });
+      await eventually(async () => assert.equal((await bad.state()).runState, "settled"));
+      const entries = await bad.entries({ after: undefined, limit: 10 });
+      assert.ok(JSON.stringify(entries).includes("tool failed"));
+    } finally {
+      await bad.dispose();
+    }
+  } finally {
+    await rm(badRoot, { recursive: true, force: true });
+  }
+});
+
+test("Pi bash update redaction flushes max-length held tail in bounded pieces", async () => {
+  const temporaryRoot = await mkdtemp(resolve(tmpdir(), "cogs-pi-bash-maxkey-"));
+  const cwd = resolve(temporaryRoot, "workspace");
+  const agentDir = resolve(temporaryRoot, "agent");
+  const sessionDir = resolve(temporaryRoot, "sessions");
+  const secret = "K".repeat(8192);
+  const events: string[] = [];
+  try {
+    await mkdir(cwd, { recursive: true });
+    await mkdir(agentDir, { recursive: true });
+    const adapter = await createCogsPiSession(
+      withDefaults({
+        cwd,
+        agentDir,
+        sessionRoot: sessionDir,
+        sessionId: "bash-maxkey-session",
+        model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+        apiKey: secret,
+        streamFn: oneToolStream("bash", { command: "printf max" }),
+        emit: (event) => {
+          events.push(JSON.stringify(event));
+          return true;
+        },
+        toolPorts: {
+          ...fakePorts([]),
+          bash: async (input) => {
+            await input.onUpdate?.({
+              content: [{ type: "text", text: JSON.stringify({ stream: "stdout", chunk: secret.slice(0, 4096) }) }],
+              details: { cogsTool: "bash", stream: "stdout" },
+            });
+            await input.onUpdate?.({
+              content: [{ type: "text", text: JSON.stringify({ stream: "stdout", chunk: secret.slice(4096, 8191) }) }],
+              details: { cogsTool: "bash", stream: "stdout" },
+            });
+            await input.onUpdate?.({
+              content: [{ type: "text", text: JSON.stringify({ terminal: true, exitCode: 0, signal: null }) }],
+              details: { cogsTool: "bash", terminal: true },
+            });
+            return { ok: true, stdout: "", stderr: "", exitCode: 0 };
+          },
+        },
+        maxToolResultBytes: 4096,
+      }),
+    );
+    try {
+      await adapter.input({ requestId: "maxkey", correlationId: "maxkey-corr", kind: "prompt", content: "max" });
+      await eventually(async () => assert.equal((await adapter.state()).runState, "settled"));
+      const chunks = bashUpdateChunks(events);
+      assert.equal(chunks.stdout, secret.slice(0, 8191));
+      assert.equal(chunks.streamCount > 1, true);
+      assert.equal(chunks.terminalCount, 1);
+      assert.equal(chunks.terminalAfterStreams, true);
+      assert.ok(
+        events.every((event) => {
+          assert.ok(Buffer.byteLength(event, "utf8") <= 4096);
+          JSON.stringify(JSON.parse(event));
+          return true;
+        }),
+      );
+    } finally {
+      await adapter.dispose();
+    }
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test("Pi bash terminal updates reject malformed terminal unions and emitted update floods", async () => {
+  const malformedTerminals = [
+    { terminal: true, exitCode: 0, signal: "SIGTERM" },
+    { terminal: true, exitCode: null, signal: null },
+    { terminal: true, exitCode: null, signal: "SIGWAT" },
+    { terminal: true, exitCode: 256, signal: null },
+    { terminal: true, exitCode: 1.5, signal: null },
+    { terminal: true, exitCode: 0, signal: null, description: "extra" },
+    { terminal: false, exitCode: 0, signal: null },
+  ];
+  for (const [index, terminal] of malformedTerminals.entries()) {
+    const root = await mkdtemp(resolve(tmpdir(), `cogs-pi-bash-badterminal-${index}-`));
+    try {
+      const cwd = resolve(root, "workspace");
+      const agentDir = resolve(root, "agent");
+      await mkdir(cwd, { recursive: true });
+      await mkdir(agentDir, { recursive: true });
+      const adapter = await createCogsPiSession(
+        withDefaults({
+          cwd,
+          agentDir,
+          sessionRoot: resolve(root, "sessions"),
+          sessionId: `bad-terminal-${index}`,
+          model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+          apiKey: "BAD_TERMINAL_SECRET",
+          streamFn: oneToolStream("bash", { command: "bad-terminal" }),
+          toolPorts: {
+            ...fakePorts([]),
+            bash: async (input) => {
+              await input.onUpdate?.({
+                content: [{ type: "text", text: JSON.stringify(terminal) }],
+                details: { cogsTool: "bash", terminal: true },
+              });
+              return { ok: true };
+            },
+          },
+        }),
+      );
+      try {
+        await adapter.input({
+          requestId: `bad-terminal-${index}`,
+          correlationId: `bad-terminal-${index}`,
+          kind: "prompt",
+          content: "bad",
+        });
+        await eventually(async () => assert.equal((await adapter.state()).runState, "settled"));
+        assert.ok(JSON.stringify(await adapter.entries({ after: undefined, limit: 10 })).includes("tool failed"));
+      } finally {
+        await adapter.dispose();
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+
+  const root = await mkdtemp(resolve(tmpdir(), "cogs-pi-bash-update-flood-"));
+  try {
+    const cwd = resolve(root, "workspace");
+    const agentDir = resolve(root, "agent");
+    await mkdir(cwd, { recursive: true });
+    await mkdir(agentDir, { recursive: true });
+    const adapter = await createCogsPiSession(
+      withDefaults({
+        cwd,
+        agentDir,
+        sessionRoot: resolve(root, "sessions"),
+        sessionId: "update-flood",
+        model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+        apiKey: "ZZZZZZZZ",
+        streamFn: oneToolStream("bash", { command: "flood" }),
+        toolPorts: {
+          ...fakePorts([]),
+          bash: async (input) => {
+            for (let index = 0; index < 2049; index++) {
+              await input.onUpdate?.({
+                content: [{ type: "text", text: JSON.stringify({ stream: "stdout", chunk: "aaaaaaaa" }) }],
+                details: { cogsTool: "bash", stream: "stdout" },
+              });
+            }
+            return { ok: true };
+          },
+        },
+      }),
+    );
+    try {
+      await adapter.input({ requestId: "flood", correlationId: "flood", kind: "prompt", content: "flood" });
+      await eventually(async () => assert.equal((await adapter.state()).runState, "settled"));
+      assert.ok(JSON.stringify(await adapter.entries({ after: undefined, limit: 10 })).includes("tool failed"));
+    } finally {
+      await adapter.dispose();
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Pi bash low-budget astral stream is preserved or rejected, never silently omitted", async () => {
+  const temporaryRoot = await mkdtemp(resolve(tmpdir(), "cogs-pi-bash-emoji-low-budget-"));
+  const cwd = resolve(temporaryRoot, "workspace");
+  const agentDir = resolve(temporaryRoot, "agent");
+  const events: string[] = [];
+  try {
+    await mkdir(cwd, { recursive: true });
+    await mkdir(agentDir, { recursive: true });
+    const adapter = await createCogsPiSession(
+      withDefaults({
+        cwd,
+        agentDir,
+        sessionRoot: resolve(temporaryRoot, "sessions"),
+        sessionId: "emoji-low-budget",
+        model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+        apiKey: "EMOJIKEY",
+        streamFn: oneToolStream("bash", { command: "emoji" }),
+        emit: (event) => {
+          events.push(JSON.stringify(event));
+          return true;
+        },
+        toolPorts: {
+          ...fakePorts([]),
+          bash: async (input) => {
+            await input.onUpdate?.({
+              content: [{ type: "text", text: JSON.stringify({ stream: "stdout", chunk: "😀" }) }],
+              details: { cogsTool: "bash", stream: "stdout" },
+            });
+            await input.onUpdate?.({
+              content: [{ type: "text", text: JSON.stringify({ terminal: true, exitCode: 0, signal: null }) }],
+              details: { cogsTool: "bash", terminal: true },
+            });
+            return { ok: true, stdout: "", stderr: "", exitCode: 0 };
+          },
+        },
+        maxToolResultBytes: 128,
+      }),
+    );
+    try {
+      await adapter.input({ requestId: "emoji", correlationId: "emoji-corr", kind: "prompt", content: "emoji" });
+      await eventually(async () => assert.equal((await adapter.state()).runState, "settled"));
+      const failed = JSON.stringify(await adapter.entries({ after: undefined, limit: 10 })).includes("tool failed");
+      const chunks = bashUpdateChunks(events);
+      if (failed) {
+        assert.equal(chunks.stdout, "");
+      } else {
+        assert.equal(chunks.stdout, "😀");
+        assert.equal(chunks.terminalCount, 1);
+        assert.equal(chunks.terminalAfterStreams, true);
+      }
+    } finally {
+      await adapter.dispose();
+    }
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+});

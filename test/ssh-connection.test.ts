@@ -59,6 +59,9 @@ class FakeConnection extends EventEmitter implements SshTransportConnection {
   public openSftp(): Promise<never> {
     return Promise.reject(new Error("sftp not implemented in connection tests"));
   }
+  public openExec(): Promise<never> {
+    return Promise.reject(new Error("exec not implemented in connection tests"));
+  }
   public close(): Promise<void> {
     this.closeCalls += 1;
     if (this.options.throwClose) throw new Error("close failed");
@@ -879,4 +882,217 @@ test("ssh2 SFTP stats reject POSIX mode high bits and channel observes remote cl
   sftp.emit("close");
   await channel.close();
   assert.equal(sftp.endCalls, 0);
+});
+
+test("ssh2 exec wrapper waits for exit plus close and rejects malformed events", async () => {
+  class FakeChannel extends EventEmitter {
+    public stderr = new EventEmitter();
+    public signalCalls: string[] = [];
+    public closeCalls = 0;
+    public destroyCalls = 0;
+    public signal(name: string): void {
+      this.signalCalls.push(name);
+    }
+    public close(): void {
+      this.closeCalls += 1;
+      this.emit("close");
+    }
+    public destroy(): void {
+      this.destroyCalls += 1;
+      this.emit("close");
+    }
+  }
+  class FakeClient extends EventEmitter {
+    public channel = new FakeChannel();
+    public exec(
+      _command: string,
+      _options: unknown,
+      callback: (error: Error | undefined, channel?: unknown) => void,
+    ): void {
+      callback(undefined, this.channel);
+    }
+  }
+  const client = new FakeClient();
+  const connection = new Ssh2Connection(client as never);
+  const exec = await connection.openExec("fixed", new AbortController().signal);
+  const stdout: Buffer[] = [];
+  exec.port.onStdout((chunk) => stdout.push(chunk));
+  client.channel.emit("data", Buffer.from("ok"));
+  const terminal = exec.port.terminal();
+  client.channel.emit("exit", 0, undefined, false, "");
+  await Promise.race([
+    terminal.then(() => assert.fail("terminal settled before close")),
+    new Promise((resolve) => setTimeout(resolve, 5)),
+  ]);
+  client.channel.emit("close");
+  assert.deepEqual(await terminal, { code: 0, signal: null });
+  assert.equal(Buffer.concat(stdout).toString("utf8"), "ok");
+  await assert.rejects(exec.port.signal("TERM"), /closed/);
+
+  const malformedClient = new FakeClient();
+  const malformed = await new Ssh2Connection(malformedClient as never).openExec("fixed", new AbortController().signal);
+  malformedClient.channel.emit("data", "not-buffer");
+  await assert.rejects(malformed.port.terminal(), /exec channel failed/);
+
+  const duplicateClient = new FakeClient();
+  const duplicate = await new Ssh2Connection(duplicateClient as never).openExec("fixed", new AbortController().signal);
+  duplicateClient.channel.emit("exit", 0, undefined, false, "");
+  duplicateClient.channel.emit("exit", 0, undefined, false, "");
+  await assert.rejects(duplicate.port.terminal(), /exec channel failed/);
+
+  const noExitClient = new FakeClient();
+  const noExit = await new Ssh2Connection(noExitClient as never).openExec("fixed", new AbortController().signal);
+  noExitClient.channel.emit("close");
+  await assert.rejects(noExit.port.terminal(), /exec channel failed/);
+});
+
+test("ssh2 exec wrapper rejects malformed terminal tuples, late callbacks, and keeps late error sinks", async () => {
+  class FakeChannel extends EventEmitter {
+    public stderr = new EventEmitter();
+    public closeCalls = 0;
+    public destroyCalls = 0;
+    public signal(_name: string): void {}
+    public close(): void {
+      this.closeCalls += 1;
+      this.emit("close");
+    }
+    public destroy(): void {
+      this.destroyCalls += 1;
+    }
+  }
+  class TwiceClient extends EventEmitter {
+    public first = new FakeChannel();
+    public late = new FakeChannel();
+    public exec(
+      _command: string,
+      _options: unknown,
+      callback: (error: Error | undefined, channel?: unknown) => void,
+    ): void {
+      callback(undefined, this.first);
+      callback(undefined, this.late);
+    }
+  }
+  const twice = new TwiceClient();
+  const opened = await new Ssh2Connection(twice as never).openExec("fixed", new AbortController().signal);
+  assert.equal(twice.late.destroyCalls, 1);
+  twice.first.emit("exit", 0, undefined, false, "");
+  twice.first.emit("close");
+  assert.deepEqual(await opened.port.terminal(), { code: 0, signal: null });
+  twice.first.emit("error", new Error("late"));
+  twice.first.stderr.emit("error", new Error("late"));
+
+  for (const allowedSignal of ["SIGFPE", "SIGILL"] as const) {
+    class SignalClient extends EventEmitter {
+      public channel = new FakeChannel();
+      public exec(
+        _command: string,
+        _options: unknown,
+        callback: (error: Error | undefined, channel?: unknown) => void,
+      ): void {
+        callback(undefined, this.channel);
+      }
+    }
+    const signalClient = new SignalClient();
+    const signalExec = await new Ssh2Connection(signalClient as never).openExec("fixed", new AbortController().signal);
+    signalClient.channel.emit("exit", null, allowedSignal, false, "");
+    signalClient.channel.emit("close");
+    assert.deepEqual(await signalExec.port.terminal(), { code: null, signal: allowedSignal });
+  }
+
+  for (const tuple of [
+    [null, "TERM", false, ""],
+    [null, "SIGBOGUS", false, ""],
+    [0, undefined, true, ""],
+    [0, undefined, false, "x".repeat(2048)],
+  ] as const) {
+    class Client extends EventEmitter {
+      public channel = new FakeChannel();
+      public exec(
+        _command: string,
+        _options: unknown,
+        callback: (error: Error | undefined, channel?: unknown) => void,
+      ): void {
+        callback(undefined, this.channel);
+      }
+    }
+    const client = new Client();
+    const exec = await new Ssh2Connection(client as never).openExec("fixed", new AbortController().signal);
+    client.channel.emit("exit", ...tuple);
+    await assert.rejects(exec.port.terminal(), /exec channel failed/);
+  }
+
+  class ThrowingClient extends EventEmitter {
+    public channel = new FakeChannel();
+    public exec(
+      _command: string,
+      _options: unknown,
+      callback: (error: Error | undefined, channel?: unknown) => void,
+    ): void {
+      this.channel.on = () => {
+        throw new Error("on failed");
+      };
+      callback(undefined, this.channel);
+    }
+  }
+  await assert.rejects(
+    new Ssh2Connection(new ThrowingClient() as never).openExec("fixed", new AbortController().signal),
+    /ssh exec open failed/,
+  );
+});
+
+test("ssh2 exec wrapper guards hostile stderr/off/destroy during attach cleanup and late destroy", async () => {
+  class HostileChannel extends EventEmitter {
+    public readonly stderrEmitter = new EventEmitter();
+    public get stderr(): EventEmitter {
+      return this.stderrEmitter;
+    }
+    public signal(_name: string): void {}
+    public close(): void {
+      this.emit("close");
+    }
+    public destroy(): void {
+      throw new Error("destroy failed");
+    }
+    public override off(_event: string | symbol, _listener: (...args: never[]) => void): this {
+      throw new Error("off failed");
+    }
+  }
+  class Client extends EventEmitter {
+    public channel = new HostileChannel();
+    public late = new HostileChannel();
+    public exec(
+      _command: string,
+      _options: unknown,
+      callback: (error: Error | undefined, channel?: unknown) => void,
+    ): void {
+      callback(undefined, this.channel);
+      callback(undefined, this.late);
+    }
+  }
+  const client = new Client();
+  const exec = await new Ssh2Connection(client as never).openExec("fixed", new AbortController().signal);
+  client.channel.emit("exit", 0, undefined, false, "");
+  client.channel.emit("close");
+  assert.deepEqual(await exec.port.terminal(), { code: 0, signal: null });
+  client.channel.emit("error", new Error("late channel"));
+  client.channel.stderrEmitter.emit("error", new Error("late stderr"));
+
+  class BadStderr extends HostileChannel {
+    public override get stderr(): EventEmitter {
+      throw new Error("stderr getter failed");
+    }
+  }
+  class BadClient extends EventEmitter {
+    public exec(
+      _command: string,
+      _options: unknown,
+      callback: (error: Error | undefined, channel?: unknown) => void,
+    ): void {
+      callback(undefined, new BadStderr());
+    }
+  }
+  await assert.rejects(
+    new Ssh2Connection(new BadClient() as never).openExec("fixed", new AbortController().signal),
+    /ssh exec open failed/,
+  );
 });

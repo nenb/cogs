@@ -1,7 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import { constants } from "node:fs";
 import { open } from "node:fs/promises";
-import type { SFTPWrapper } from "ssh2";
+import type { ClientChannel, SFTPWrapper } from "ssh2";
 import ssh2, { type ConnectConfig } from "ssh2";
 import type { LaunchConfig } from "../launch/config.ts";
 
@@ -20,6 +20,7 @@ export interface SshConnectionConfig {
   readonly handshakeTimeoutMs?: number;
   readonly permitAcquireTimeoutMs?: number;
   readonly sftpOpenTimeoutMs?: number;
+  readonly execOpenTimeoutMs?: number;
   readonly shutdownTimeoutMs?: number;
   readonly maxPermits?: number;
   readonly maxQueue?: number;
@@ -79,10 +80,28 @@ export interface SshSftpChannel {
   readonly destroy: () => void;
 }
 
+export type CogsExecTerminal =
+  | { readonly code: number; readonly signal: null }
+  | { readonly code: null; readonly signal: string };
+
+export interface CogsExecPort {
+  readonly onStdout: (listener: (chunk: Buffer) => void) => void;
+  readonly onStderr: (listener: (chunk: Buffer) => void) => void;
+  readonly terminal: () => Promise<CogsExecTerminal>;
+  readonly signal: (name: "TERM" | "INT") => Promise<void>;
+}
+
+export interface SshExecChannel {
+  readonly port: CogsExecPort;
+  readonly close: () => Promise<void>;
+  readonly destroy: () => void;
+}
+
 export interface SshTransportConnection {
   readonly on: (event: "close" | "error", listener: (error?: unknown) => void) => void;
   readonly off: (event: "close" | "error", listener: (error?: unknown) => void) => void;
   readonly openSftp: (signal: AbortSignal) => Promise<SshSftpChannel>;
+  readonly openExec: (command: string, signal: AbortSignal) => Promise<SshExecChannel>;
   readonly close: () => Promise<void>;
   readonly destroy: () => void;
 }
@@ -111,6 +130,7 @@ const DEFAULT_CONNECT_TIMEOUT_MS = 5000;
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 5000;
 const DEFAULT_PERMIT_ACQUIRE_TIMEOUT_MS = 5000;
 const DEFAULT_SFTP_OPEN_TIMEOUT_MS = 5000;
+const DEFAULT_EXEC_OPEN_TIMEOUT_MS = 5000;
 const DEFAULT_SHUTDOWN_TIMEOUT_MS = 2000;
 const DEFAULT_MAX_PERMITS = 4;
 const DEFAULT_MAX_QUEUE = 64;
@@ -294,6 +314,93 @@ export class SshConnectionManager {
       throw redactError(operationError, "ssh sftp operation failed");
     }
     if (closeFailed) throw new SshConnectionError("ssh sftp operation failed");
+    return result as T;
+  }
+
+  public async withBashExec<T>(
+    input: {
+      wrappedCommand: string;
+      signal?: AbortSignal;
+      openTimeoutMs?: number;
+      closeTimeoutMs?: number;
+      operationTimeoutMs?: number;
+    },
+    operation: (port: CogsExecPort) => Promise<T>,
+  ): Promise<T> {
+    const lease = await this.acquire("exec", input.signal === undefined ? {} : { signal: input.signal });
+    const openSignal = linkedSignal(input.signal);
+    let channel: SshExecChannel | undefined;
+    let opened = false;
+    let result: T | undefined;
+    let operationError: unknown;
+    let operationFailed = false;
+    let terminalSignal = false;
+    try {
+      const connection = this.#connection;
+      if (this.#phase !== "ready" || connection === undefined) throw new SshConnectionError("ssh connection is closed");
+      channel = await raceBounded(
+        connection.openExec(input.wrappedCommand, openSignal.signal),
+        input.openTimeoutMs ?? this.#config.execOpenTimeoutMs,
+        "ssh exec open timed out",
+        () => openSignal.abort(),
+        (late) => late.destroy(),
+        openSignal.signal,
+      );
+      openSignal.dispose();
+      if (this.#phase !== "ready") throw new SshConnectionError("ssh connection is closed");
+      opened = true;
+      result = await raceBounded(
+        (async () => {
+          const operationResult = await operation(channel.port);
+          const terminal = await channel.port.terminal();
+          terminalSignal = terminal.signal !== null;
+          return operationResult;
+        })(),
+        input.operationTimeoutMs ?? this.#config.shutdownTimeoutMs,
+        "ssh exec operation timed out",
+        () => channel?.destroy(),
+      );
+    } catch (error) {
+      operationFailed = true;
+      operationError = error;
+      try {
+        channel?.destroy();
+      } catch {
+        // Exec channel cleanup is best-effort after fail-closed operation failure.
+      }
+    }
+
+    let closeFailed = false;
+    try {
+      if (channel !== undefined) {
+        const closingChannel = channel;
+        await raceBounded(
+          closingChannel.close(),
+          input.closeTimeoutMs ?? this.#config.shutdownTimeoutMs,
+          "ssh exec close timed out",
+          () => closingChannel.destroy(),
+        );
+      }
+    } catch {
+      closeFailed = true;
+      try {
+        channel?.destroy();
+      } catch {
+        // Best effort; connection loss remains fail-closed at manager level.
+      }
+    } finally {
+      openSignal.dispose();
+      await lease.release();
+    }
+
+    if (!operationFailed && terminalSignal) this.#failClosed("exec-ended-by-signal");
+    if (closeFailed) this.#failClosed("exec-close-failed");
+    if (operationFailed) {
+      if (opened) this.#failClosed("exec-operation-failed");
+      if (opened && isErrorInstance(operationError) && !isSshConnectionError(operationError)) throw operationError;
+      throw redactError(operationError, "ssh exec operation failed");
+    }
+    if (closeFailed) throw new SshConnectionError("ssh exec operation failed");
     return result as T;
   }
 
@@ -579,6 +686,42 @@ export class Ssh2Connection implements SshTransportConnection {
       }
     });
   }
+  public openExec(command: string, signal: AbortSignal): Promise<SshExecChannel> {
+    return new Promise((resolveOpen, rejectOpen) => {
+      if (this.#closed || this.#lost !== undefined)
+        return rejectOpen(new SshConnectionError("ssh connection is closed"));
+      if (signal.aborted) return rejectOpen(new SshConnectionError("ssh exec open aborted"));
+      let settled = false;
+      const finish = (error?: Error | null, channel?: ClientChannel) => {
+        if (settled) {
+          if (channel !== undefined) destroyExecChannel(channel);
+          return;
+        }
+        settled = true;
+        signal.removeEventListener("abort", onAbort);
+        if ((error !== undefined && error !== null) || channel === undefined || signal.aborted) {
+          if (channel !== undefined) destroyExecChannel(channel);
+          rejectOpen(new SshConnectionError(signal.aborted ? "ssh exec open aborted" : "ssh exec open failed"));
+          return;
+        }
+        try {
+          resolveOpen(new Ssh2ExecChannel(channel));
+        } catch {
+          destroyExecChannel(channel);
+          rejectOpen(new SshConnectionError("ssh exec open failed"));
+        }
+      };
+      const onAbort = () => finish(new SshConnectionError("ssh exec open aborted"));
+      signal.addEventListener("abort", onAbort, { once: true });
+      try {
+        this.client.exec(command, { pty: false, x11: false, agentForward: false } as never, (error, channel) =>
+          finish(error, channel),
+        );
+      } catch {
+        finish(new SshConnectionError("ssh exec open failed"));
+      }
+    });
+  }
   public close(): Promise<void> {
     if (this.#closed) return Promise.resolve();
     if (this.#lost?.event === "error") {
@@ -696,6 +839,200 @@ function destroySftpWrapper(sftp: SFTPWrapper): void {
     const destroy = (sftp as { destroy?: () => void }).destroy;
     if (typeof destroy === "function") destroy.call(sftp);
     else sftp.end();
+  } catch {
+    // Best-effort channel teardown.
+  }
+}
+
+class Ssh2ExecChannel implements SshExecChannel, CogsExecPort {
+  public readonly port: CogsExecPort = this;
+  readonly #stdout = new Set<(chunk: Buffer) => void>();
+  readonly #stderr = new Set<(chunk: Buffer) => void>();
+  #terminalResolve: ((value: CogsExecTerminal) => void) | undefined;
+  #terminalReject: ((error: Error) => void) | undefined;
+  readonly #terminal = new Promise<CogsExecTerminal>((resolve, reject) => {
+    this.#terminalResolve = resolve;
+    this.#terminalReject = reject;
+  });
+  #exit: CogsExecTerminal | undefined;
+  #settled = false;
+  #closed = false;
+  readonly #onStdout = (chunk: unknown) => this.#data("stdout", chunk);
+  readonly #onStderr = (chunk: unknown) => this.#data("stderr", chunk);
+  readonly #onExit = (code: unknown, signal: unknown, coreDump: unknown, description: unknown) =>
+    this.#exitEvent(code, signal, coreDump, description);
+  readonly #onClose = () => this.#closeEvent();
+  readonly #onError = () => this.#fail();
+  readonly #lateErrorSink = () => undefined;
+  readonly #stderrStream;
+  public constructor(private readonly channel: ClientChannel) {
+    this.#terminal.catch(() => undefined);
+    try {
+      this.#stderrStream = channel.stderr;
+      channel.on("error", this.#lateErrorSink);
+      this.#stderrStream.on("error", this.#lateErrorSink);
+      channel.on("data", this.#onStdout);
+      this.#stderrStream.on("data", this.#onStderr);
+      this.#stderrStream.on("error", this.#onError);
+      channel.on("exit", this.#onExit);
+      channel.on("error", this.#onError);
+      channel.on("close", this.#onClose);
+    } catch {
+      this.#cleanup();
+      throw new Error("exec channel failed");
+    }
+  }
+  public onStdout(listener: (chunk: Buffer) => void): void {
+    if (this.#settled) throw new Error("exec channel closed");
+    this.#stdout.add(listener);
+  }
+  public onStderr(listener: (chunk: Buffer) => void): void {
+    if (this.#settled) throw new Error("exec channel closed");
+    this.#stderr.add(listener);
+  }
+  public terminal(): Promise<CogsExecTerminal> {
+    return this.#terminal;
+  }
+  public signal(name: "TERM" | "INT"): Promise<void> {
+    if (this.#settled) return Promise.reject(new Error("exec channel closed"));
+    return new Promise((resolve, reject) => {
+      try {
+        this.channel.signal(name);
+        resolve();
+      } catch {
+        reject(new Error("exec signal failed"));
+      }
+    });
+  }
+  public close(): Promise<void> {
+    if (this.#closed) return Promise.resolve();
+    return new Promise((resolveClose, rejectClose) => {
+      const done = () => resolveClose();
+      try {
+        this.channel.once("close", done);
+        this.channel.close();
+      } catch {
+        try {
+          this.channel.off("close", done);
+        } catch {
+          // Listener cleanup is best-effort.
+        }
+        rejectClose(new Error("exec close failed"));
+      }
+    });
+  }
+  public destroy(): void {
+    destroyExecChannel(this.channel);
+  }
+  #data(kind: "stdout" | "stderr", chunk: unknown): void {
+    if (this.#settled) return;
+    if (!Buffer.isBuffer(chunk)) {
+      this.#fail();
+      return;
+    }
+    const listeners = kind === "stdout" ? this.#stdout : this.#stderr;
+    for (const listener of [...listeners]) {
+      try {
+        listener(chunk);
+      } catch {
+        this.#fail();
+        break;
+      }
+    }
+  }
+  #exitEvent(code: unknown, signal: unknown, coreDump: unknown, description: unknown): void {
+    if (this.#settled || this.#exit !== undefined) {
+      this.#fail();
+      return;
+    }
+    if (coreDump !== undefined && coreDump !== false) {
+      this.#fail();
+      return;
+    }
+    if (description !== undefined && (typeof description !== "string" || description.length > 1024)) {
+      this.#fail();
+      return;
+    }
+    if (Number.isInteger(code) && (code as number) >= 0 && (code as number) <= 255 && signal == null) {
+      this.#exit = { code: code as number, signal: null };
+      return;
+    }
+    if (code == null && typeof signal === "string" && EXEC_SIGNAL_NAMES.has(signal)) {
+      this.#exit = { code: null, signal };
+      return;
+    }
+    this.#fail();
+  }
+  #closeEvent(): void {
+    if (this.#settled) return;
+    this.#closed = true;
+    if (this.#exit === undefined) {
+      this.#fail();
+      return;
+    }
+    this.#settled = true;
+    this.#cleanup();
+    this.#terminalResolve?.(this.#exit);
+  }
+  #fail(): void {
+    if (this.#settled) return;
+    this.#settled = true;
+    this.#cleanup();
+    this.#terminalReject?.(new Error("exec channel failed"));
+  }
+  #cleanup(): void {
+    this.#stdout.clear();
+    this.#stderr.clear();
+    safeEmitterOff(this.channel, "data", this.#onStdout);
+    safeEmitterOff(this.#stderrStream, "data", this.#onStderr);
+    safeEmitterOff(this.#stderrStream, "error", this.#onError);
+    safeEmitterOff(this.channel, "exit", this.#onExit);
+    safeEmitterOff(this.channel, "error", this.#onError);
+    safeEmitterOff(this.channel, "close", this.#onClose);
+  }
+}
+
+function safeEmitterOff(
+  emitter: { off?: (event: string | symbol, listener: (...args: unknown[]) => void) => unknown },
+  event: string,
+  listener: (...args: unknown[]) => void,
+): void {
+  try {
+    emitter.off?.(event, listener);
+  } catch {
+    // Listener cleanup is best-effort after terminal settlement.
+  }
+}
+
+const EXEC_SIGNAL_NAMES = new Set([
+  "SIGABRT",
+  "SIGALRM",
+  "SIGHUP",
+  "SIGFPE",
+  "SIGILL",
+  "SIGINT",
+  "SIGKILL",
+  "SIGPIPE",
+  "SIGQUIT",
+  "SIGSEGV",
+  "SIGTERM",
+  "SIGUSR1",
+  "SIGUSR2",
+]);
+
+function destroyExecChannel(channel: ClientChannel): void {
+  try {
+    channel.on("error", () => undefined);
+  } catch {
+    // Best-effort late error sink.
+  }
+  try {
+    channel.stderr.on("error", () => undefined);
+  } catch {
+    // Best-effort late error sink.
+  }
+  try {
+    channel.destroy();
   } catch {
     // Best-effort channel teardown.
   }
@@ -1110,6 +1447,7 @@ function validateConfig(config: SshConnectionConfig): Required<SshConnectionConf
       "permit acquire timeout",
     ),
     sftpOpenTimeoutMs: integer(config.sftpOpenTimeoutMs, DEFAULT_SFTP_OPEN_TIMEOUT_MS, 1, 60_000, "sftp open timeout"),
+    execOpenTimeoutMs: integer(config.execOpenTimeoutMs, DEFAULT_EXEC_OPEN_TIMEOUT_MS, 1, 60_000, "exec open timeout"),
     shutdownTimeoutMs: integer(config.shutdownTimeoutMs, DEFAULT_SHUTDOWN_TIMEOUT_MS, 1, 60_000, "shutdown timeout"),
     maxPermits: integer(config.maxPermits, DEFAULT_MAX_PERMITS, 1, 32, "max permits"),
     maxQueue: integer(config.maxQueue, DEFAULT_MAX_QUEUE, 0, 1024, "max queue"),

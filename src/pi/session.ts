@@ -28,7 +28,11 @@ export interface CogsToolPorts {
     newText: string;
     signal?: AbortSignal;
   }) => Promise<JsonValue>;
-  readonly bash: (input: { command: string; signal?: AbortSignal }) => Promise<JsonValue>;
+  readonly bash: (input: {
+    command: string;
+    signal?: AbortSignal;
+    onUpdate?: (update: { content: [{ type: "text"; text: string }]; details: JsonValue }) => void | Promise<void>;
+  }) => Promise<JsonValue>;
 }
 
 export interface CogsPiSessionOptions {
@@ -658,13 +662,211 @@ function createCogsTools(ports: CogsToolPorts, maxResultBytes: number, secret: S
         { command: Type.String({ minLength: 1, maxLength: 100_000 }) },
         { additionalProperties: false },
       ),
-      execute: async (_id, params, signal) => result("bash", () => ports.bash(withSignal(params, signal))),
+      execute: async (_id, params, signal, onUpdate) =>
+        result("bash", () => {
+          const update = toolUpdate(
+            onUpdate as ((update: unknown) => void | Promise<void>) | undefined,
+            maxResultBytes,
+            secret.value,
+          );
+          return ports.bash(
+            update === undefined ? withSignal(params, signal) : { ...withSignal(params, signal), onUpdate: update },
+          );
+        }),
     }),
   ];
 }
 
 function withSignal<T extends object>(params: T, signal: AbortSignal | undefined): T & { signal?: AbortSignal } {
   return signal === undefined ? params : { ...params, signal };
+}
+
+function toolUpdate(
+  onUpdate: ((update: unknown) => void | Promise<void>) | undefined,
+  maxBytes: number,
+  apiKey: string,
+) {
+  if (onUpdate === undefined) return undefined;
+  if (apiKey.length > 8192) throw new Error("api key too large for streaming redaction");
+  let emittedUpdates = 0;
+  const tails = new Map<string, string>();
+  const templates = new Map<string, { content: [{ type: "text"; text: string }]; details: JsonValue }>();
+  const safeEmit = async (update: { content: [{ type: "text"; text: string }]; details: JsonValue }) => {
+    emittedUpdates += 1;
+    if (emittedUpdates > BASH_TOOL_UPDATE_EMIT_LIMIT) throw new Error("bash update limit exceeded");
+    const normalized = normalizeToolResult(update, maxBytes, apiKey);
+    if (!isToolUpdateResult(normalized)) throw new Error("invalid tool update");
+    await onUpdate(normalized);
+  };
+  const safeEmitChunkPieces = async (
+    template: { content: [{ type: "text"; text: string }]; details: JsonValue },
+    stream: string,
+    chunk: string,
+  ) => {
+    for (const piece of splitScalarPieces(chunk, streamUpdatePieceLimit(maxBytes))) {
+      const rebuilt = rebuildBashChunkUpdate(template, stream, piece);
+      JSON.parse(rebuilt.content[0].text);
+      if (Buffer.byteLength(rebuilt.content[0].text, "utf8") > 4096) throw new Error("bash update chunk too large");
+      if (Buffer.byteLength(JSON.stringify(rebuilt), "utf8") > maxBytes) throw new Error("bash update too large");
+      await safeEmit(rebuilt);
+    }
+  };
+  const flushStream = async (stream: string) => {
+    const tail = tails.get(stream) ?? "";
+    if (tail.length === 0) return;
+    const template = templates.get(stream);
+    if (template === undefined) throw new Error("missing bash update template");
+    const processed = redactStreamingPrefix(tail, apiKey, tail.length);
+    tails.set(stream, processed.tail);
+    if (processed.emit.length > 0) await safeEmitChunkPieces(template, stream, processed.emit);
+  };
+  return async (update: { content: [{ type: "text"; text: string }]; details: JsonValue }) => {
+    assertToolJson(update, 64 * 1024);
+    const parsed = parseBashChunkUpdate(update);
+    if (parsed === undefined) {
+      if (!isBashTerminalUpdate(update)) throw new Error("invalid bash update");
+      for (const stream of [...tails.keys()]) await flushStream(stream);
+      await safeEmit(update);
+      return;
+    }
+    const template = normalizeToolResult(rebuildBashChunkUpdate(update, parsed.stream, ""), maxBytes, apiKey);
+    if (!isToolUpdateResult(template)) throw new Error("invalid tool update");
+    templates.set(parsed.stream, template);
+    const prior = tails.get(parsed.stream) ?? "";
+    const joined = prior + parsed.chunk;
+    const cut = scalarPrefixLength(joined, Math.max(0, joined.length - Math.max(0, apiKey.length - 1)));
+    const processed = redactStreamingPrefix(joined, apiKey, cut);
+    tails.set(parsed.stream, processed.tail);
+    if (processed.emit.length > 0) await safeEmitChunkPieces(template, parsed.stream, processed.emit);
+  };
+}
+
+function redactStreamingPrefix(joined: string, secret: string, cut: number): { emit: string; tail: string } {
+  if (secret.length === 0) return { emit: joined.slice(0, cut), tail: joined.slice(cut) };
+  let processed = 0;
+  let emit = "";
+  while (true) {
+    const index = joined.indexOf(secret, processed);
+    if (index < 0 || index >= cut) break;
+    emit += `${joined.slice(processed, index)}[REDACTED]`;
+    processed = index + secret.length;
+  }
+  const safeCut = Math.max(processed, cut);
+  emit += joined.slice(processed, safeCut);
+  return { emit, tail: joined.slice(safeCut) };
+}
+
+function scalarPrefixLength(value: string, requested: number): number {
+  if (requested <= 0) return 0;
+  let end = Math.min(value.length, requested);
+  const last = value.charCodeAt(end - 1);
+  if (last >= 0xd800 && last <= 0xdbff) end -= 1;
+  return end;
+}
+
+function streamUpdatePieceLimit(maxBytes: number): number {
+  const usable = Math.max(1, Math.min(maxBytes, 4096) - 512);
+  return Math.max(1, Math.min(512, Math.floor(usable / 12)));
+}
+
+function splitScalarPieces(value: string, maxCodeUnits: number): string[] {
+  const pieces: string[] = [];
+  for (let offset = 0; offset < value.length; ) {
+    let end = offset + scalarPrefixLength(value.slice(offset), maxCodeUnits);
+    if (end <= offset) {
+      const first = value.charCodeAt(offset);
+      const second = value.charCodeAt(offset + 1);
+      end = first >= 0xd800 && first <= 0xdbff && second >= 0xdc00 && second <= 0xdfff ? offset + 2 : offset + 1;
+    }
+    pieces.push(value.slice(offset, end));
+    offset = end;
+  }
+  return pieces;
+}
+
+const BASH_TOOL_UPDATE_EMIT_LIMIT = 2048;
+
+const BASH_TERMINAL_SIGNAL_NAMES = new Set([
+  "SIGABRT",
+  "SIGALRM",
+  "SIGHUP",
+  "SIGFPE",
+  "SIGILL",
+  "SIGINT",
+  "SIGKILL",
+  "SIGPIPE",
+  "SIGQUIT",
+  "SIGSEGV",
+  "SIGTERM",
+  "SIGUSR1",
+  "SIGUSR2",
+]);
+
+function isBashTerminalUpdate(value: { content: [{ type: "text"; text: string }]; details: JsonValue }): boolean {
+  if (typeof value.details !== "object" || value.details === null) return false;
+  if (!hasExactKeys(value.details, ["cogsTool", "terminal"])) return false;
+  const details = value.details as { cogsTool?: unknown; terminal?: unknown };
+  if (details.cogsTool !== "bash" || details.terminal !== true) return false;
+  try {
+    const parsed = JSON.parse(value.content[0].text) as unknown;
+    if (typeof parsed !== "object" || parsed === null) return false;
+    if (!hasExactKeys(parsed, ["terminal", "exitCode", "signal"])) return false;
+    const entry = parsed as { terminal?: unknown; exitCode?: unknown; signal?: unknown };
+    if (entry.terminal !== true) return false;
+    if (Number.isInteger(entry.exitCode) && (entry.exitCode as number) >= 0 && (entry.exitCode as number) <= 255) {
+      return entry.signal === null;
+    }
+    return entry.exitCode === null && typeof entry.signal === "string" && BASH_TERMINAL_SIGNAL_NAMES.has(entry.signal);
+  } catch {
+    return false;
+  }
+}
+
+function hasExactKeys(value: object, keys: string[]): boolean {
+  const actual = Object.keys(value).sort();
+  const expected = [...keys].sort();
+  return actual.length === expected.length && expected.every((key, index) => actual[index] === key);
+}
+
+function parseBashChunkUpdate(value: {
+  content: [{ type: "text"; text: string }];
+  details: JsonValue;
+}): { stream: string; chunk: string } | undefined {
+  if (typeof value.details !== "object" || value.details === null) return undefined;
+  const details = value.details as { cogsTool?: unknown; stream?: unknown };
+  if (details.cogsTool !== "bash" || (details.stream !== "stdout" && details.stream !== "stderr")) return undefined;
+  try {
+    const parsed = JSON.parse(value.content[0].text) as unknown;
+    if (typeof parsed !== "object" || parsed === null) return undefined;
+    const entry = parsed as { stream?: unknown; chunk?: unknown };
+    return entry.stream === details.stream && typeof entry.chunk === "string"
+      ? { stream: details.stream, chunk: entry.chunk }
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function rebuildBashChunkUpdate(
+  template: { content: [{ type: "text"; text: string }]; details: JsonValue },
+  stream: string,
+  chunk: string,
+): { content: [{ type: "text"; text: string }]; details: JsonValue } {
+  return { ...template, content: [{ type: "text", text: JSON.stringify({ stream, chunk }) }] };
+}
+
+function isToolUpdateResult(
+  value: JsonValue,
+): value is { content: [{ type: "text"; text: string }]; details: JsonValue } {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    Array.isArray((value as { content?: unknown }).content) &&
+    (value as { content: unknown[] }).content.length === 1 &&
+    typeof (value as { content: [{ type?: unknown; text?: unknown }] }).content[0]?.text === "string" &&
+    (value as { content: [{ type?: unknown }] }).content[0]?.type === "text" &&
+    "details" in value
+  );
 }
 
 function normalizeToolResult(value: unknown, maxBytes: number, apiKey: string): JsonValue {

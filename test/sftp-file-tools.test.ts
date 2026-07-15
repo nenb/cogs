@@ -310,6 +310,9 @@ class FakeConnection extends EventEmitter implements SshTransportConnection {
     if (!this.lateOpen) return Promise.resolve(makeChannel());
     return new Promise((resolve) => setTimeout(() => resolve(makeChannel()), 40));
   }
+  public openExec(): Promise<never> {
+    return Promise.reject(new Error("exec not implemented in sftp tests"));
+  }
   public close(): Promise<void> {
     return Promise.resolve();
   }
