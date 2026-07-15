@@ -1,6 +1,6 @@
 # Stage 2 bounded measurement harness plan
 
-Status: harness design and authorized campaign outcomes for issue #42. Four post-merge Stage 2 measurement campaigns were attempted after checked plans and failed closed; no pass evidence was produced, destroy completed immediately, independent inventory returned zero after each failure, and issue #42 remains open.
+Status: harness design and authorized campaign outcomes for issue #42. Five post-merge Stage 2 measurement campaigns were attempted after checked plans and failed closed; no pass evidence was produced, destroy completed immediately, independent inventory returned zero after each failure, and issue #42 remains open.
 
 ## Scope reconciliation
 
@@ -38,7 +38,7 @@ Default sample count is seven and is bounded to 7–9. Every accepted timed samp
 
 - The controller refuses to send the SSM script unless the tree is clean and the checked-out HEAD exactly matches the planned source revision.
 - Any failed stage exits non-zero, emits bounded non-secret stage/sample/command progress and failure markers, and the campaign orchestrator destroys before debugging.
-- Per-command and per-sample timeouts bound package setup, downloads, QMP checks, QEMU probe socket/exit waits, Kata cold boots, warm host/Kata samples, host baseline samples, and idle observation while preserving identical fixed work for host/Kata ratio pairs.
+- Per-command and per-sample timeouts bound package setup, downloads, QMP checks, QEMU probe socket/exit waits, Kata cold boots, warm host/Kata samples, host baseline samples, and idle observation while preserving identical fixed work for host/Kata ratio pairs. Successful timed samples emit and persist non-secret completion markers with stage, sample, command, and elapsed milliseconds so failed partial runs expose completed-sample distributions without publishing validated metrics.
 - Configurable sample/timeout/poll/kill-after values are validated against strict numeric or bounded-duration formats before use, and the controller enforces the numeric hierarchy `per-command < remote < SSM < poll < orchestrator`.
 - The remote script has a lower end-to-end deadline, runs bounded commands in their own process groups, records the active process group for the watchdog, and the SSM command/poll loop and orchestrator validation wrapper have corresponding bounds.
 - Stale evidence/report/remote-result files are removed before a run and again during failed, timed-out, interrupted, or validation-failed cleanup so timeout/TERM/KILL paths cannot publish evidence.
@@ -69,7 +69,9 @@ After PR #55 merged, exactly one further authorized bounded measurement campaign
 
 After PR #56 merged, exactly one further authorized bounded measurement campaign was run from the merge revision with the same one-host, CPU-only, SSM-only, budgeted and TTL-bound scope. It failed closed during warm workload teardown after completing the seventh warm host/Kata CPU/filesystem sample pair. The new progress diagnostics localized the failure to the warm task stop path and exposed two local shell/lifecycle defects: failure-status clobbering during best-effort cleanup and treating a non-zero `ctr tasks wait` status as authoritative failure even when independently observed task state should be the authority. The orchestrator destroyed all 16 campaign resources; orchestrator and independent read-only inventories both showed total zero. The bounded cost estimate was approximately USD 0.0084. This fourth failed run records local harness teardown defects only; it is not pass evidence.
 
-These failed runs record local harness/teardown lifecycle bugs only; they do not provide measurement pass evidence and do not close any issue #42 acceptance criteria.
+After PR #57 merged, exactly one further authorized bounded measurement campaign was run from the merge revision with the same one-host, CPU-only, SSM-only, budgeted and TTL-bound scope. It failed closed within 356 seconds during the seventh warm Kata CPU sample when `kata-cpu-7` hit the 45-second per-command bound and exited with status 143. Six complete warm host/Kata CPU/filesystem sample pairs had already finished, so this fifth failed run records a bounded workload timeout and diagnostic-attribution gap, not the prior teardown lifecycle bug. The orchestrator destroyed all 16 campaign resources; orchestrator and independent read-only inventories both showed total zero. The bounded cost estimate was approximately USD 0.0103. No validated measurement evidence or report was produced, and this is not pass evidence.
+
+These failed runs record local harness workload/teardown lifecycle bugs only; they do not provide measurement pass evidence and do not close any issue #42 acceptance criteria.
 
 ## Source-grounded teardown basis
 

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
@@ -712,6 +712,38 @@ test("measurement runtime preserves stdin and reports exact bounded timeout stag
   run("watchdog-success", "1", undefined, { COGS_STAGE2_WATCHDOG_PID_FILE: watchdogPidFile });
   assertPidGone(watchdogPidFile);
 
+  const completionWork = mkdtempSync(resolve(tmpdir(), "cogs-completion-marker-"));
+  const completion = spawnSync("bash", [script], {
+    cwd: root,
+    env: {
+      ...process.env,
+      COGS_STAGE2_TIMEOUT_SELF_TEST: "completion-marker",
+      COGS_STAGE2_REMOTE_DEADLINE_SECONDS: "10",
+      COGS_STAGE2_COMMAND_KILL_AFTER: "1s",
+      COGS_STAGE2_WORK_DIR: completionWork,
+    },
+    encoding: "utf8",
+  });
+  assert.equal(completion.status, 0);
+  assert.match(
+    completion.stderr,
+    /cogs-stage2-complete stage=warm-workload-samples sample=1 command=host-cpu-1 elapsed_ms=\d+/,
+  );
+  const completionMarkers = readFileSync(resolve(completionWork, "completion-markers.ndjson"), "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  assert.equal(completionMarkers.length, 1);
+  assert.deepEqual(
+    {
+      stage: completionMarkers[0].stage,
+      sample: completionMarkers[0].sample,
+      command: completionMarkers[0].command,
+    },
+    { stage: "warm-workload-samples", sample: "1", command: "host-cpu-1" },
+  );
+  assert.ok(completionMarkers[0].elapsed_ms >= 25);
+
   const hostPidFile = resolve(mkdtempSync(resolve(tmpdir(), "cogs-host-timeout-")), "pid");
   const hostStarted = Date.now();
   assert.throws(
@@ -744,6 +776,20 @@ test("measurement runtime preserves stdin and reports exact bounded timeout stag
   );
   assertPidGone(kataPidFile);
   assert.ok(Date.now() - kataStarted < 5000);
+  assert.throws(
+    () => run("command-substitution-sample", "10"),
+    (error: unknown) => {
+      const stderr = String((error as { stderr?: Buffer | string }).stderr ?? "");
+      assert.match(stderr, /cogs-stage2-progress stage=warm-workload-samples sample=7 command=kata-cpu-7/);
+      assert.match(
+        stderr,
+        /cogs-stage2-measurement-failure-stage=warm-workload-samples sample=7 command=kata-cpu-7 status=/,
+      );
+      assert.doesNotMatch(stderr, /cogs-stage2-measurement-failure-stage=.*kata-start-cogs-stage2-warm/);
+      return true;
+    },
+  );
+
   const outerPidFile = resolve(mkdtempSync(resolve(tmpdir(), "cogs-outer-timeout-")), "pid");
   const outerStarted = Date.now();
   assert.throws(
@@ -803,11 +849,14 @@ test("measurement campaign bounds are internally consistent", () => {
     return Number(match[1]);
   };
   const remoteDeadline = numberDefault(remote, "remote_deadline_seconds");
+  const warmSampleTimeout = numberDefault(remote, "warm_sample_timeout");
   const remoteTimeout = numberDefault(controller, "remote_timeout_seconds");
   const ssmTimeout = numberDefault(controller, "ssm_timeout_seconds");
   const pollInterval = numberDefault(controller, "poll_interval_seconds");
   const pollAttempts = numberDefault(controller, "poll_attempts");
   const orchestratorTimeout = numberDefault(orchestrator, "validation_timeout_seconds");
+  assert.equal(warmSampleTimeout, 60);
+  assert.ok(warmSampleTimeout < remoteDeadline);
   assert.ok(remoteDeadline < remoteTimeout);
   assert.ok(remoteTimeout < ssmTimeout);
   assert.ok(ssmTimeout < pollInterval * pollAttempts);
