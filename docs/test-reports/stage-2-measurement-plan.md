@@ -1,6 +1,6 @@
 # Stage 2 bounded measurement harness plan
 
-Status: harness design and authorized campaign outcomes for issue #42. Seven post-merge Stage 2 measurement campaigns were attempted after checked plans and failed closed or validation-rejected; no accepted pass evidence was produced, destroy completed immediately, independent inventory returned zero after each failure, and issue #42 remains open.
+Status: harness design and authorized campaign outcomes for issue #42. Eight post-merge Stage 2 measurement campaigns were attempted after checked plans. The first seven failed closed or were validation-rejected with no accepted pass evidence. The eighth campaign produced the first validator-accepted partial Stage 2 measurement evidence, destroy completed immediately, final and independent inventories returned zero, and issue #42 remains open because repeated EC2 launch/SSH-ready percentiles and representative sandbox Git/build/package workloads remain unmet.
 
 ## Scope reconciliation
 
@@ -48,6 +48,19 @@ Default sample count is seven and is bounded to 7–9. Every accepted timed samp
 - Machine and human reports must not include credentials, prompts, source, account IDs, instance/network IDs, public IPs, SSM command IDs, budget email, UUIDs, email addresses, or IP addresses.
 - Existing OpenTofu plan checks, budget alerts, independent TTL, SSM-only access, and zero-resource inventory remain mandatory.
 
+## Accepted partial evidence boundary
+
+The eighth campaign's accepted evidence satisfies the Stage 2 one-instance measurement subset for:
+
+- seven-sample Kata/containerd cold boot timing on the selected host;
+- seven-sample warm synthetic CPU and filesystem host-versus-Kata ratios;
+- host-only synthetic Git and package-build baselines;
+- idle QEMU RSS and conservative density-bound signal;
+- one apply-to-running and one apply-to-SSM-online readiness observation;
+- observed cleanup, final zero inventory, independent zero inventory, report rendering, and bounded cost.
+
+It does **not** satisfy issue #42 criteria that require repeated EC2 launch percentiles, SSH-ready percentiles, EKS scheduled-to-ready timing, or representative sandbox Git/build/package workloads. It is not EKS, production, release, general availability, or broad isolation evidence.
+
 ## Output artifacts
 
 A future authorized run writes ignored local artifacts:
@@ -75,7 +88,24 @@ After PR #58 merged, exactly one further authorized bounded measurement campaign
 
 After PR #59 merged, exactly one further authorized bounded measurement campaign was run from revision `7d5e74bc48072523bf63540f27fbfed426b5433c` with checked plan digest `7af79ad6c008a0f77c4dd221a5165b7872664ba75a1b0f390d7fa98604a18040` and the same one-host, CPU-only, SSM-only, budgeted and TTL-bound scope. The remote workload completed successfully in about 141 seconds and emitted provisional diagnostic values, but the controller rejected the remote result before evidence assembly because its separate hard-coded remote-result key set still expected `sample_count` and `limitations`, the two remote-only fields PR #59 intentionally removed from the strict schema-owned measurement object. The provisional values remain diagnostic only and are not accepted pass evidence. The orchestrator destroyed all 16 campaign resources; orchestrator and independent read-only inventories both showed total zero, and a later read-only inventory reconfirmed total zero. The bounded wrapper cost estimate including destroy time was approximately USD 0.009.
 
-These failed or validation-rejected runs record local harness workload/schema/controller/teardown lifecycle bugs only; they do not provide accepted measurement pass evidence and do not close any issue #42 acceptance criteria.
+After PR #60 merged, exactly one further authorized bounded measurement campaign was run from revision `5847df8d307884c6543def9eb91cf17351a7ba48` with checked plan digest `f0dc5a1b3b24f5b583eed9935cc717dde5d204adcccc8df58130104ded566773` and the same one-host, CPU-only, SSM-only, budgeted and TTL-bound scope. This eighth campaign is the first validator-accepted Stage 2 measurement run: pre-cleanup machine validation passed, all 16 campaign resources were destroyed immediately, final zero inventory and independent read-only inventory both showed total zero, final machine validation passed, and the redacted human report rendered successfully. Accepted metrics include seven-sample Kata cold boot p50/p95 `1378 / 1612 ms`, warm CPU p50 ratio `1.657`, warm filesystem p50 ratio `14.804`, host-only Git/package-build p50 `313 / 2039 ms`, idle QEMU RSS `260 MiB`, bounded density estimate `1`, apply-to-running `34000 ms`, apply-to-SSM-online `46000 ms`, observed duration `246000 ms`, and estimated cost `USD 0.0066`. This accepted result is still partial for issue #42 because repeated EC2 launch and SSH-ready percentiles plus representative sandbox Git/build/package workloads remain unmet.
+
+The first seven failed or validation-rejected runs record local harness workload/schema/controller/teardown lifecycle bugs only; they do not provide accepted measurement pass evidence. The eighth run provides accepted partial one-instance Stage 2 measurement evidence only and does not close all issue #42 acceptance criteria.
+
+## Campaign incident history
+
+| # | Merge point | Outcome | Boundary-safe incident detail | Cleanup/cost |
+|---|---|---|---|---|
+| 1 | after PR #53 | failed closed | warm workload teardown attempted to remove a Kata/containerd task/container before containerd observed task exit | destroyed; independent inventory total zero |
+| 2 | after PR #54 | failed closed | same non-stopped Kata/containerd task/container removal symptom after the first local teardown fix | destroyed; independent inventory total zero |
+| 3 | after PR #55 | failed closed | outer SSM command timeout before evidence/report production | destroyed 16 resources; independent inventory total zero; approximately USD 0.075 |
+| 4 | after PR #56 | failed closed | `warm-workload-samples` sample 7 produced a corrupted nonnumeric `status=ABSENT` failure marker after best-effort cleanup clobbered the original numeric `ctr tasks wait` status `3`; this was not authoritative evidence that the task was absent, so the run stayed fail-closed and local failure-status/wait-authority defects were fixed | destroyed 16 resources; independent inventory total zero; approximately USD 0.0084 |
+| 5 | after PR #57 | failed closed | exact marker `cogs-stage2-measurement-failure-stage=warm-workload-samples sample=7 command=kata-cpu-7 status=143` | destroyed 16 resources; independent inventory total zero; approximately USD 0.0103 |
+| 6 | after PR #58 | validation rejected | remote workload completed, but final schema validation rejected redundant remote `measurement.sample_count` as an additional property | destroyed 16 resources; independent inventory total zero; approximately USD 0.0092 |
+| 7 | after PR #59 | controller rejected before evidence assembly | remote workload completed in about 141 seconds, but controller still expected removed remote `sample_count` and `limitations` keys | destroyed 16 resources; independent inventory total zero; approximately USD 0.009 |
+| 8 | after PR #60 | accepted partial measurement | pre-cleanup validation, destroy, final zero inventory, independent zero inventory, final validation, and report rendering all passed | destroyed 16 resources; final and independent inventories total zero; USD 0.0066 |
+
+No row includes account IDs, instance/network IDs, SSM command IDs, public IPs, budget email, or raw ignored state. Only row 8 is accepted measurement evidence, and it remains one-instance partial Stage 2 evidence.
 
 ## Source-grounded teardown basis
 

@@ -98,6 +98,58 @@ test("Stage 2 decision package is accepted, bounded, and redacted", () => {
   );
 });
 
+test("Stage 2 accepted measurement report is redacted, sourced, partial, and metric-aligned", () => {
+  const report = read("docs/test-reports/stage-2-aws-measurement.md");
+  const plan = read("docs/test-reports/stage-2-measurement-plan.md");
+  const adr = read("docs/adr/0012-use-aws-virtual-nested-kvm-for-stage-4-candidate.md");
+  assert.match(report, /5847df8d307884c6543def9eb91cf17351a7ba48/);
+  assert.match(report, /f0dc5a1b3b24f5b583eed9935cc717dde5d204adcccc8df58130104ded566773/);
+  assert.match(report, /pre-cleanup machine validation passed, destroy completed, final zero inventory passed/);
+  assert.match(report, /not EKS, production, release, general availability, or isolation evidence/);
+  assert.match(report, /Raw ignored `\.state` evidence[\s\S]*are not committed/);
+  assert.match(report, /No credentials, source content, prompts/);
+  assert.doesNotMatch(report, /No credentials, source, prompts/);
+  assert.match(report, /Sample count: 7/);
+  assert.match(report, /Apply-start to instance-running: 34000 ms/);
+  assert.match(report, /Apply-start to SSM-online: 46000 ms/);
+  assert.match(report, /Observed\/estimated campaign duration: 246000 ms/);
+  assert.match(report, /Estimated cost: USD 0\.0066/);
+  assert.match(report, /Kata cold boot: min 1361 ms; p50 1378 ms; p95 1612 ms; max 1612 ms/);
+  assert.match(report, /Warm CPU workload Kata exec: min 332 ms; p50 353 ms; p95 395 ms; max 395 ms; p50 ratio 1\.657/);
+  assert.match(
+    report,
+    /Warm filesystem workload Kata exec: min 1638 ms; p50 1658 ms; p95 1799 ms; max 1799 ms; p50 ratio 14\.804/,
+  );
+  assert.match(report, /Host Git baseline only: min 312 ms; p50 313 ms; p95 314 ms; max 314 ms/);
+  assert.match(report, /Host package-build baseline only: min 2019 ms; p50 2039 ms; p95 2200 ms; max 2200 ms/);
+  assert.match(
+    report,
+    /Idle memory: QEMU RSS 260 MiB; configured guest memory 2048 MiB; density memory basis 2048 MiB/,
+  );
+  assert.match(report, /Bounded density estimate: 1 sandbox/);
+  assert.match(plan, /Eight post-merge Stage 2 measurement campaigns/);
+  assert.match(plan, /first validator-accepted Stage 2 measurement run/);
+  assert.match(
+    plan,
+    /corrupted nonnumeric `status=ABSENT` failure marker after best-effort cleanup clobbered the original numeric `ctr tasks wait` status `3`/,
+  );
+  assert.match(plan, /not authoritative evidence that the task was absent/);
+  assert.doesNotMatch(plan, /observed task absence during teardown/);
+  assert.match(
+    plan,
+    /repeated EC2 launch and SSH-ready percentiles plus representative sandbox Git\/build\/package workloads remain unmet/,
+  );
+  for (const pr of ["53", "54", "55", "56", "57", "58", "59", "60"]) {
+    assert.match(plan, new RegExp(`PR #${pr}`));
+  }
+  assert.match(adr, /measured one-instance evidence/);
+  assert.match(adr, /does not approve production, release, EKS operation, general AWS availability/);
+  assert.doesNotMatch(
+    report + plan,
+    /\b\d{12}\b|\bi-[0-9a-f]{8,}\b|\bvpc-[0-9a-f]{8,}\b|\bsubnet-[0-9a-f]{8,}\b|\bsg-[0-9a-f]{8,}\b|\blt-[0-9a-f]{8,}\b|\b[0-9a-f-]{36}\b|[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}|\b(?:\d{1,3}\.){3}\d{1,3}\b/i,
+  );
+});
+
 test("Stage 2 measurement harness is bounded, redacted, and does not widen AWS scope", () => {
   const remote = read("deploy/aws-feasibility/remote/measure-runtime.sh");
   const controller = read("deploy/aws-feasibility/run-measurement-validation.sh");
