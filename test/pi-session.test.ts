@@ -11,11 +11,13 @@ import { SessionManager } from "@earendil-works/pi-coding-agent";
 import type { Ajv as AjvCore } from "ajv";
 import { createFakeModelStream } from "../spikes/pi-embedding.ts";
 import { createApiServer } from "../src/api/server.ts";
+import type { ModelApiKeySource } from "../src/auth/model-auth.ts";
 import { type LaunchDependency, LaunchLifecycle } from "../src/launch/lifecycle.ts";
 import {
   COGS_PI_TOOL_NAMES,
   type CogsPiSessionOptions,
   type CogsToolPorts,
+  createAuthenticatedCogsPiSession,
   createCogsPiSession,
 } from "../src/pi/session.ts";
 
@@ -1602,5 +1604,180 @@ test("Pi bash low-budget astral stream is preserved or rejected, never silently 
     }
   } finally {
     await rm(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+class TestModelApiKeySource implements ModelApiKeySource {
+  public calls = 0;
+  public observedReturn: unknown = "unset";
+  public lastRequest: unknown;
+  public constructor(
+    private readonly apiKey: string,
+    private readonly options: {
+      throwBefore?: boolean;
+      duplicate?: boolean;
+      missing?: boolean;
+      expectHandle?: string;
+    } = {},
+  ) {}
+  public async withApiKey(
+    request: Parameters<ModelApiKeySource["withApiKey"]>[0],
+    operation: (apiKey: string) => Promise<void>,
+  ): Promise<void> {
+    this.calls += 1;
+    this.lastRequest = request;
+    if (request.signal?.aborted) throw new Error(`${this.apiKey} aborted`);
+    if (this.options.throwBefore) throw new Error(`${this.apiKey} source failed`);
+    if (this.options.expectHandle !== undefined && request.credentialHandle !== this.options.expectHandle) {
+      throw new Error(`${this.apiKey} bad handle`);
+    }
+    if (this.options.missing) return;
+    this.observedReturn = await operation(this.apiKey);
+    if (this.options.duplicate) await operation(this.apiKey);
+  }
+}
+
+function authOptions(
+  root: string,
+  source: ModelApiKeySource,
+  overrides: Partial<Parameters<typeof createAuthenticatedCogsPiSession>[0]> = {},
+) {
+  const cwd = resolve(root, "workspace");
+  const agentDir = resolve(root, "agent");
+  const sessionRoot = resolve(root, "sessions");
+  return {
+    cwd,
+    agentDir,
+    sessionRoot,
+    launchDocument: validLaunch("auth-session"),
+    toolPorts: fakePorts([]),
+    modelApiKeys: source,
+    emit: () => true,
+    onFatal: () => undefined,
+    ...overrides,
+  };
+}
+
+test("authenticated Pi session derives model auth from launch and performs runtime model call", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "cogs-pi-auth-success-"));
+  try {
+    await mkdir(resolve(root, "workspace"), { recursive: true });
+    await mkdir(resolve(root, "agent"), { recursive: true });
+    const secret = "aaaaaaaa";
+    const source = new TestModelApiKeySource(secret);
+    const events: string[] = [];
+    let seenApiKey = "";
+    const delegate = oneToolStream("read", { path: "/workspace/README.md" });
+    const adapter = await createAuthenticatedCogsPiSession(
+      authOptions(root, source, {
+        emit: (event) => {
+          events.push(JSON.stringify(event));
+          return true;
+        },
+        streamFn: (model, context, options) => {
+          assert.ok(options?.apiKey);
+          seenApiKey = options.apiKey;
+          return delegate(model, context, options);
+        },
+      }),
+    );
+    try {
+      await adapter.input({ requestId: "auth", correlationId: "auth-corr", kind: "prompt", content: "auth" });
+      await eventually(async () => assert.equal((await adapter.state()).runState, "settled"));
+      assert.equal(seenApiKey, secret);
+      assert.equal(source.calls, 1);
+      assert.deepEqual(source.lastRequest, {
+        userId: "user-1",
+        provider: "anthropic",
+        model: "claude-sonnet-4-5",
+        credentialHandle: "users/user-1/model",
+      });
+      assert.equal(source.observedReturn, undefined);
+      const sessionFile = adapter.sessionFile() ?? "";
+      const sessionText = await readFile(sessionFile, "utf8");
+      assert.equal(sessionText.includes(secret), false);
+      assert.equal(events.join("\n").includes(secret), false);
+      const historyText = JSON.stringify(await adapter.entries({ after: undefined, limit: 20 }));
+      assert.equal(historyText.includes(secret), false);
+      await adapter.dispose();
+      assert.equal((await readFile(sessionFile, "utf8")).includes(secret), false);
+      assert.equal(events.join("\n").includes(secret), false);
+      assert.equal(historyText.includes(secret), false);
+    } finally {
+      await adapter.dispose();
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("authenticated Pi session auth failures create no session and leak no key", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "cogs-pi-auth-fail-"));
+  try {
+    await mkdir(resolve(root, "workspace"), { recursive: true });
+    await mkdir(resolve(root, "agent"), { recursive: true });
+    const secret = "aaaaaaaa";
+    for (const source of [
+      new TestModelApiKeySource(secret, { throwBefore: true }),
+      new TestModelApiKeySource(secret, { duplicate: true }),
+      new TestModelApiKeySource(secret, { missing: true }),
+      new TestModelApiKeySource(secret, { expectHandle: "users/user-1/other" }),
+      new TestModelApiKeySource("bad\nkey"),
+    ]) {
+      let modelCalls = 0;
+      await assert.rejects(
+        createAuthenticatedCogsPiSession(
+          authOptions(root, source, {
+            streamFn: () => {
+              modelCalls += 1;
+              return createAssistantMessageEventStream();
+            },
+          }),
+        ),
+        (error) => {
+          const text = String(error);
+          assert.equal(text.includes(secret), false);
+          assert.equal(text.includes("bad\nkey"), false);
+          assert.equal(
+            (error as { code?: unknown }).code === "COGS_MODEL_AUTH_FAILED" || text.includes("invalid"),
+            true,
+          );
+          return true;
+        },
+      );
+      assert.equal(modelCalls, 0);
+    }
+    await assert.rejects(
+      createAuthenticatedCogsPiSession(
+        authOptions(root, new TestModelApiKeySource(secret), { launchDocument: { bad: true } }),
+      ),
+    );
+    await assertMissing(resolve(root, "sessions/auth-session.jsonl"));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("authenticated Pi session respects abort before resolution and unknown models create no session", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "cogs-pi-auth-abort-"));
+  try {
+    await mkdir(resolve(root, "workspace"), { recursive: true });
+    await mkdir(resolve(root, "agent"), { recursive: true });
+    const controller = new AbortController();
+    controller.abort();
+    const source = new TestModelApiKeySource("aaaaaaaa");
+    await assert.rejects(createAuthenticatedCogsPiSession(authOptions(root, source, { signal: controller.signal })));
+    assert.equal(source.calls, 1);
+
+    const unknownModelLaunch = validLaunch("unknown-model-session") as Record<string, unknown>;
+    unknownModelLaunch.model = { provider: "anthropic", id: "unknown-model", credential_handle: "users/user-1/model" };
+    await assert.rejects(
+      createAuthenticatedCogsPiSession(
+        authOptions(root, new TestModelApiKeySource("aaaaaaaa"), { launchDocument: unknownModelLaunch }),
+      ),
+    );
+    await assertMissing(resolve(root, "sessions/unknown-model-session.jsonl"));
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });

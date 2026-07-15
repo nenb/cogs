@@ -15,6 +15,8 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type { ApiEvent, HistoryPort, InputKind, JsonValue, RunState, SessionPort } from "../api/server.ts";
+import { type ModelApiKeySource, ModelCredentialResolver, validateModelApiKey } from "../auth/model-auth.ts";
+import { validateLaunchConfig } from "../launch/config.ts";
 
 export const COGS_PI_TOOL_NAMES = ["read", "write", "edit", "bash"] as const;
 export type CogsPiToolName = (typeof COGS_PI_TOOL_NAMES)[number];
@@ -50,6 +52,13 @@ export interface CogsPiSessionOptions {
   readonly operationTimeoutMs?: number;
   readonly abortTimeoutMs?: number;
   readonly maxToolResultBytes?: number;
+}
+
+export interface AuthenticatedCogsPiSessionOptions
+  extends Omit<CogsPiSessionOptions, "sessionId" | "model" | "apiKey"> {
+  readonly launchDocument: unknown;
+  readonly modelApiKeys: ModelApiKeySource;
+  readonly signal?: AbortSignal;
 }
 
 export interface CogsPiSessionPorts extends SessionPort, HistoryPort {
@@ -107,6 +116,32 @@ export function createLockedResourceLoader(systemPrompt?: string): ResourceLoade
   };
 }
 
+export async function createAuthenticatedCogsPiSession({
+  launchDocument,
+  modelApiKeys,
+  signal,
+  ...sessionOptions
+}: AuthenticatedCogsPiSessionOptions): Promise<CogsPiSessionPorts> {
+  const launch = validateLaunchConfig(launchDocument);
+  const resolver = new ModelCredentialResolver(modelApiKeys);
+  return resolver.withApiKey(
+    {
+      userId: launch.user_id,
+      provider: launch.model.provider,
+      model: launch.model.id,
+      credentialHandle: launch.model.credential_handle,
+      ...(signal === undefined ? {} : { signal }),
+    },
+    (apiKey) =>
+      createCogsPiSession({
+        ...sessionOptions,
+        sessionId: launch.session_id,
+        model: { provider: launch.model.provider, id: launch.model.id },
+        apiKey,
+      }),
+  );
+}
+
 export async function createCogsPiSession(options: CogsPiSessionOptions): Promise<CogsPiSessionPorts> {
   validateOptions(options);
   const cwd = options.cwd;
@@ -125,7 +160,7 @@ export async function createCogsPiSession(options: CogsPiSessionOptions): Promis
   const maxToolResultBytes = options.maxToolResultBytes ?? 16 * 1024;
   const apiKey = options.apiKey;
 
-  assertRuntimeSecret(apiKey, "model API key");
+  validateModelApiKey(apiKey);
   assertOpaqueId(sessionId, "session id");
   assertProviderId(modelProvider, "provider id");
   assertModelId(modelId, "model id");
@@ -993,11 +1028,6 @@ function findSecretAt(value: string, index: number, secrets: readonly string[]):
     if (value.startsWith(secret, index) && (longest === undefined || secret.length > longest.length)) longest = secret;
   }
   return longest;
-}
-
-function assertRuntimeSecret(value: string, label: string): void {
-  const bytes = Buffer.byteLength(value, "utf8");
-  if (bytes < 8 || bytes > 8192 || hasControl(value)) throw new Error(`invalid ${label}`);
 }
 
 function assertProviderId(value: string, label: string): void {
