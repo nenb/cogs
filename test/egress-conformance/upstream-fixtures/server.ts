@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { createSocket, type Socket as UdpSocket } from "node:dgram";
-import { type EventEmitter, once } from "node:events";
+import type { EventEmitter } from "node:events";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import type { IncomingMessage } from "node:http";
 import { createSecureServer, type Http2SecureServer, type Http2ServerRequest } from "node:http2";
@@ -329,15 +329,35 @@ export async function startUpstreamFixtures(options: UpstreamFixtureOptions): Pr
     socket.once("close", () => sockets.delete(socket));
   });
 
+  const waitForWritable = (response: FixtureResponse): Promise<void> => {
+    const emitter = response as unknown as EventEmitter;
+    return new Promise((resolve, reject) => {
+      const cleanup = () => {
+        emitter.off("drain", onDrain);
+        emitter.off("close", onClose);
+        emitter.off("error", onError);
+      };
+      const onDrain = () => {
+        cleanup();
+        resolve();
+      };
+      const onClose = () => {
+        cleanup();
+        reject(new Error("fixture response closed during backpressure"));
+      };
+      const onError = () => {
+        cleanup();
+        reject(new Error("fixture response failed during backpressure"));
+      };
+      emitter.on("drain", onDrain);
+      emitter.on("close", onClose);
+      emitter.on("error", onError);
+    });
+  };
+
   const writeChunk = async (response: FixtureResponse, chunk: Buffer): Promise<void> => {
     if (response.write(chunk)) return;
-    const emitter = response as unknown as EventEmitter;
-    await Promise.race([
-      once(emitter, "drain"),
-      once(emitter, "close").then(() => {
-        throw new Error("fixture response closed during backpressure");
-      }),
-    ]);
+    await waitForWritable(response);
   };
 
   const handleRequest = async (
