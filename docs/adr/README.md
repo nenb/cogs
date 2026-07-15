@@ -1,6 +1,6 @@
 # Architecture decision records
 
-ADRs 0001–0010 were accepted by Nick Byrne on 2026-07-10. ADR 0011 was accepted at the Stage 1 proxy-selection gate on 2026-07-14. ADR 0012 was accepted by Nick Byrne for the Stage 2 AWS runtime decision on 2026-07-14. ADR 0013 was accepted by Nick Byrne for the issue #64 SSH bash line-budget exception on 2026-07-15. ADR 0014 was accepted by Nick Byrne for the issue #65 model-auth scope and line-budget gate on 2026-07-15.
+ADRs 0001–0010 were accepted by Nick Byrne on 2026-07-10. ADR 0011 was accepted at the Stage 1 proxy-selection gate on 2026-07-14. ADR 0012 was accepted by Nick Byrne for the Stage 2 AWS runtime decision on 2026-07-14. ADR 0013 was accepted by Nick Byrne for the issue #64 SSH bash line-budget exception on 2026-07-15. ADR 0014 was accepted by Nick Byrne for the issue #65 model-auth scope and line-budget gate on 2026-07-15. ADR 0015 is proposed for the issue #66 Stage 3 egress integration scope and line-budget gate.
 
 | ADR | Decision | Status |
 |---|---|---|
@@ -18,5 +18,6 @@ ADRs 0001–0010 were accepted by Nick Byrne on 2026-07-10. ADR 0011 was accepte
 | [0012](0012-use-aws-virtual-nested-kvm-for-stage-4-candidate.md) | Use AWS virtual nested KVM as Stage 4 candidate | Accepted |
 | [0013](0013-bash-exec-scope-and-line-budget.md) | Allow a bounded Issue #64 line-budget exception for SSH bash | Accepted |
 | [0014](0014-model-auth-api-keys-and-disabled-oauth-broker.md) | Issue #65 model-auth scope and line budget | Accepted |
+| [0015](0015-stage-3-egress-integration-scope.md) | Issue #66 Stage 3 egress integration scope and line budget | Proposed |
 
 Implementation pauses for every boundary listed in `IMPLEMENTATION.md` section 47. Superseding an accepted ADR requires a new ADR rather than editing history.
