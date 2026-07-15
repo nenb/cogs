@@ -146,7 +146,12 @@ test("Stage 2 measurement harness is bounded, redacted, and does not widen AWS s
     .sort();
   assert.equal(remoteMeasurementKeys.includes("sample_count"), false);
   assert.deepEqual(remoteMeasurementKeys, measurementSchemaProperties);
+  assert.match(controller, /schema = json\.load\(open\(schema_path/);
+  assert.match(controller, /measurement_schema = schema\.get\('properties', \{\}\)\.get\('measurement', \{\}\)/);
+  assert.match(controller, /allowed_measurement = set\(schema_properties\)/);
+  assert.match(controller, /remote measurement result is malformed: /);
   assert.match(controller, /measurement_sample_count = len\(measurement\['kata_cold_boot'\]\['samples'\]\)/);
+  assert.doesNotMatch(controller, /expected_measurement = \{/);
   assert.doesNotMatch(controller, /'sample_count': measurement\['sample_count'\]/);
   assert.match(validator, /additionalProperty/);
   assert.match(validator, /sample count mismatch/);
@@ -247,6 +252,98 @@ const validStage2MeasurementEvidence = () => ({
     "Git and package-build measurements are host baselines only; representative sandbox Git/build/package workload acceptance remains unmet by this evidence",
     "density estimate is a conservative bound, not a scheduler or isolation claim",
   ],
+});
+
+test("Stage 2 measurement controller validates remote keys from the strict evidence schema", () => {
+  const controller = read("deploy/aws-feasibility/run-measurement-validation.sh");
+  const match = controller.match(
+    /python3 - "\$state\/remote-measurement-result\.json"[\s\S]*?<<'PY'\n([\s\S]*?)\nPY\nnpx --no-install tsx/,
+  );
+  assert.ok(match, "missing controller evidence-assembly Python block");
+  const controllerPython = match[1];
+  const directory = mkdtempSync(resolve(tmpdir(), "cogs-stage2-controller-"));
+  const measurementPath = resolve(directory, "remote-measurement-result.json");
+  const statePath = resolve(directory, "current-state.json");
+  const timingPath = resolve(directory, "campaign-timing.json");
+  const outputPath = resolve(directory, "evidence.json");
+  const schemaPath = resolve(root, "schemas/aws-stage2-measurement-evidence-v1alpha1.json");
+  writeFileSync(
+    statePath,
+    `${JSON.stringify({
+      values: {
+        outputs: {
+          campaign: {
+            value: {
+              source_revision: "0123456789abcdef0123456789abcdef01234567",
+              region: "us-east-1",
+              expiry: "2026-07-14T20:00:00Z",
+            },
+          },
+        },
+        root_module: {
+          resources: [
+            { address: "aws_launch_template.host", values: { cpu_options: [{ nested_virtualization: "enabled" }] } },
+          ],
+        },
+      },
+    })}\n`,
+  );
+  writeFileSync(
+    timingPath,
+    `${JSON.stringify({
+      apply_started_at: "2026-07-14T00:00:00Z",
+      instance_running_at: "2026-07-14T00:01:00Z",
+      ssm_online_at: "2026-07-14T00:02:00Z",
+    })}\n`,
+  );
+  const instanceJson = JSON.stringify({
+    State: "running",
+    Type: "c8i-flex.large",
+    ImageId: "ami-052355af2a014bd2c",
+    Architecture: "x86_64",
+    MetadataTokens: "required",
+  });
+  const typeJson = JSON.stringify({
+    Type: "c8i-flex.large",
+    VCPU: 2,
+    MemoryMiB: 4096,
+    BareMetal: false,
+    GpuPresent: false,
+  });
+  const runController = (measurement: Record<string, unknown>) => {
+    writeFileSync(measurementPath, `${JSON.stringify(measurement)}\n`);
+    return spawnSync(
+      "python3",
+      [
+        "-",
+        measurementPath,
+        statePath,
+        timingPath,
+        outputPath,
+        schemaPath,
+        instanceJson,
+        typeJson,
+        "2026-07-14T00:03:00Z",
+        "0123456789abcdef0123456789abcdef01234567",
+      ],
+      { cwd: root, input: controllerPython, encoding: "utf8" },
+    );
+  };
+  const validMeasurement = validStage2MeasurementEvidence().measurement;
+  const valid = runController(validMeasurement);
+  assert.equal(valid.status, 0, valid.stderr);
+  assert.deepEqual(JSON.parse(readFileSync(outputPath, "utf8")).measurement, validMeasurement);
+
+  const missing: Record<string, unknown> = { ...validMeasurement };
+  delete missing.qemu_version;
+  const missingResult = runController(missing);
+  assert.notEqual(missingResult.status, 0);
+  assert.match(missingResult.stderr, /remote measurement result is malformed: missing=qemu_version/);
+
+  const extra = { ...validMeasurement, sample_count: 7 };
+  const extraResult = runController(extra);
+  assert.notEqual(extraResult.status, 0);
+  assert.match(extraResult.stderr, /remote measurement result is malformed: extra=sample_count/);
 });
 
 test("Stage 2 measurement validator accepts valid evidence and rejects adversarial evidence", () => {

@@ -1,6 +1,6 @@
 # Stage 2 bounded measurement harness plan
 
-Status: harness design and authorized campaign outcomes for issue #42. Six post-merge Stage 2 measurement campaigns were attempted after checked plans and failed closed or validation-rejected; no accepted pass evidence was produced, destroy completed immediately, independent inventory returned zero after each failure, and issue #42 remains open.
+Status: harness design and authorized campaign outcomes for issue #42. Seven post-merge Stage 2 measurement campaigns were attempted after checked plans and failed closed or validation-rejected; no accepted pass evidence was produced, destroy completed immediately, independent inventory returned zero after each failure, and issue #42 remains open.
 
 ## Scope reconciliation
 
@@ -73,7 +73,9 @@ After PR #57 merged, exactly one further authorized bounded measurement campaign
 
 After PR #58 merged, exactly one further authorized bounded measurement campaign was run from the merge revision with the same one-host, CPU-only, SSM-only, budgeted and TTL-bound scope. The remote workload completed in about 207 seconds and emitted provisional diagnostic values, but final validation rejected the evidence because the remote measurement object included an extra redundant `sample_count` property. The authoritative sample count belongs to `campaign.sample_count`, and the validator already uses that count for length checks. The provisional values are diagnostic only and are not accepted pass evidence. The orchestrator destroyed all 16 campaign resources; orchestrator and independent read-only inventories both showed total zero. The bounded wrapper cost estimate including destroy time was approximately USD 0.0092.
 
-These failed or validation-rejected runs record local harness workload/schema/teardown lifecycle bugs only; they do not provide accepted measurement pass evidence and do not close any issue #42 acceptance criteria.
+After PR #59 merged, exactly one further authorized bounded measurement campaign was run from revision `7d5e74bc48072523bf63540f27fbfed426b5433c` with checked plan digest `7af79ad6c008a0f77c4dd221a5165b7872664ba75a1b0f390d7fa98604a18040` and the same one-host, CPU-only, SSM-only, budgeted and TTL-bound scope. The remote workload completed successfully in about 141 seconds and emitted provisional diagnostic values, but the controller rejected the remote result before evidence assembly because its separate hard-coded remote-result key set still expected `sample_count` and `limitations`, the two remote-only fields PR #59 intentionally removed from the strict schema-owned measurement object. The provisional values remain diagnostic only and are not accepted pass evidence. The orchestrator destroyed all 16 campaign resources; orchestrator and independent read-only inventories both showed total zero, and a later read-only inventory reconfirmed total zero. The bounded wrapper cost estimate including destroy time was approximately USD 0.009.
+
+These failed or validation-rejected runs record local harness workload/schema/controller/teardown lifecycle bugs only; they do not provide accepted measurement pass evidence and do not close any issue #42 acceptance criteria.
 
 ## Source-grounded teardown basis
 
