@@ -8,9 +8,9 @@ Included:
 - per-worker bearer authentication supplied at runtime outside the launch document; this slice is bearer-only and does not receive, persist, hydrate, refresh, log, or write back rotating refresh tokens;
 - strict method, origin-form route, literal loopback-only listen (`127.0.0.1` or `::1`; no DNS-resolved hostnames), JSON content-type, content-encoding, unknown-field, request-size, response-size, duplicate-header, query, and correlation-ID handling;
 - validated finite safe positive bounded integer API options, nonzero replay/duplicate capacities, a bounded control-free bearer token of at least 32 UTF-8 bytes, and a bounded session ID;
-- bounded local **LRU** duplicate suppression for accepted `/v1/input` request IDs, including exact duplicate recency refresh, concurrent duplicate coalescing, and no eviction of pending duplicate entries;
+- bounded local **LRU** duplicate suppression for accepted `/v1/input` request IDs, including exact duplicate recency refresh, concurrent duplicate coalescing, no eviction of pending duplicate entries, and bounded input-queue wait so queued admissions cannot stack into N×port-timeout waits;
 - legal prompt/steer/follow-up/abort state checks against the injected session port;
-- lifecycle-backed readiness and fail-closed shutdown behavior, including API readiness/admission poison and exactly-once lifecycle shutdown trigger after any injected port timeout; late noncooperative port completion cannot reopen readiness, write a timed-out response, or allow new event publication;
+- lifecycle-backed readiness and fail-closed shutdown behavior, including idempotent API close, closed-state readiness reporting where observable, API readiness/admission poison, and exactly-once lifecycle shutdown trigger after any injected port timeout; late noncooperative port completion cannot reopen readiness, write a timed-out response, or allow new event publication;
 - monotonic versioned SSE sequence with recursively validated JSON payloads, bounded replay, explicit replay-gap/future-sequence rejection, safe-integer sequence exhaustion guard, bounded event size, and backpressure disconnect;
 - paged append-order history through authenticated opaque cursors bound to the worker session;
 - explicit authenticated export API response marked sensitive.

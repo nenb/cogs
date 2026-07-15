@@ -108,6 +108,8 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
   let inputQueue: Promise<void> = Promise.resolve();
   let abortPromise: Promise<{ aborted: boolean; runState: RunState }> | undefined;
   let shutdownPromise: Promise<void> | undefined;
+  let closePromise: Promise<void> | undefined;
+  let listenStarted = false;
   let closed = false;
   let poisoned = false;
   let duplicateClock = 0;
@@ -116,7 +118,14 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
 
   const server = createServer((request, response) => {
     void route(request, response).catch(() => {
-      safeWriteJson(response, 500, { version: "cogs.error/v1alpha1", error: "internal" }, maxResponseBytes, "internal");
+      safeWriteJson(
+        response,
+        500,
+        { version: "cogs.error/v1alpha1", error: "internal" },
+        maxResponseBytes,
+        "internal",
+        true,
+      );
     });
   });
 
@@ -158,8 +167,8 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
         return method(request, response, url, maxResponseBytes, "GET", [], false, () =>
           safeWriteJson(
             response,
-            !poisoned && options.lifecycle.ready ? 200 : 503,
-            { ready: !poisoned && options.lifecycle.ready },
+            !closed && !poisoned && options.lifecycle.ready ? 200 : 503,
+            { ready: !closed && !poisoned && options.lifecycle.ready, closed },
             maxResponseBytes,
             correlationId,
           ),
@@ -200,12 +209,13 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
           { version: "cogs.error/v1alpha1", error: "not_found" },
           maxResponseBytes,
           correlationId,
+          true,
         );
     }
   }
 
   function requireReady(): void {
-    if (poisoned || !options.lifecycle.ready) throw new HttpError(503, "not_ready");
+    if (closed || poisoned || !options.lifecycle.ready) throw new HttpError(503, "not_ready");
   }
 
   function poisonFromPortTimeout(): void {
@@ -260,7 +270,7 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
     }
     const accepted = enqueueInput(async (): Promise<AcceptedResult> => {
       requireReady();
-      const state = validateRunState((await callPort((signal) => options.session.state({ signal }))).runState);
+      const state = validateStateResult(await callPort((signal) => options.session.state({ signal }))).runState;
       if (!legalInput(parsed.type, state)) throw new HttpError(409, "illegal_state");
       const runState = validateRunState(
         await callPort((signal) =>
@@ -309,7 +319,7 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
     if (!plainObject(body)) throw new HttpError(400, "malformed_json");
     assertNoUnknown(body, ["request_id"]);
     const requestId = requiredId(body, "request_id");
-    const state = validateRunState((await callPort((signal) => options.session.state({ signal }))).runState);
+    const state = validateStateResult(await callPort((signal) => options.session.state({ signal }))).runState;
     if (state !== "running") {
       return safeWriteJson(
         response,
@@ -422,23 +432,51 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
   }
 
   async function stateBody(): Promise<JsonValue> {
-    const state = await callPort((signal) => options.session.state({ signal }));
+    const state = validateStateResult(await callPort((signal) => options.session.state({ signal })));
     return {
       version: "cogs.state/v1alpha1",
       lifecycle: options.lifecycle.state,
-      ready: !poisoned && options.lifecycle.ready,
-      run_state: validateRunState(state.runState),
-      usage: state.usage === undefined ? null : validateJsonValue(state.usage),
+      ready: !closed && !poisoned && options.lifecycle.ready,
+      closed,
+      run_state: state.runState,
+      usage: state.usage ?? null,
     };
   }
 
   function enqueueInput<T>(operation: () => Promise<T>): Promise<T> {
-    const run = inputQueue.then(operation, operation);
+    let started = false;
+    let cancelled = false;
+    let timeout: NodeJS.Timeout | undefined;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeout = setTimeout(() => {
+        if (started) return;
+        cancelled = true;
+        reject(new HttpError(429, "input_queue_timeout"));
+      }, requestTimeoutMs);
+    });
+    const clear = () => {
+      if (timeout !== undefined) clearTimeout(timeout);
+      timeout = undefined;
+    };
+    const run = inputQueue.then(
+      async () => {
+        if (cancelled) return undefined as T;
+        started = true;
+        clear();
+        return operation();
+      },
+      async () => {
+        if (cancelled) return undefined as T;
+        started = true;
+        clear();
+        return operation();
+      },
+    );
     inputQueue = run.then(
       () => undefined,
       () => undefined,
     );
-    return run;
+    return Promise.race([run, timeoutPromise]).finally(clear);
   }
 
   function forgetDuplicate(requestId: string): void {
@@ -447,7 +485,7 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
   }
 
   function publish(event: ApiEvent): boolean {
-    if (poisoned || sequence >= Number.MAX_SAFE_INTEGER) return false;
+    if (closed || poisoned || sequence >= Number.MAX_SAFE_INTEGER) return false;
     const nextSeq = sequence + 1;
     let clean: ApiEvent;
     let serialized: string;
@@ -502,12 +540,22 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
   return {
     listen: (port = 0, host = "127.0.0.1") =>
       new Promise((resolve, reject) => {
+        if (closed) {
+          reject(new Error("api server is closed"));
+          return;
+        }
+        if (listenStarted) {
+          reject(new Error("api server is already listening"));
+          return;
+        }
         if (!loopbackHost(host)) {
           reject(new Error("listen host must be loopback"));
           return;
         }
+        listenStarted = true;
         const onError = (error: Error) => {
           server.off("listening", onListening);
+          listenStarted = false;
           reject(error);
         };
         const onListening = () => {
@@ -518,16 +566,23 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
         server.once("listening", onListening);
         server.listen(port, host);
       }),
-    close: () =>
-      new Promise((resolve, reject) => {
-        closed = true;
+    close: () => {
+      if (closePromise !== undefined) return closePromise;
+      closed = true;
+      closePromise = new Promise((resolve, reject) => {
         for (const client of clients) {
           client.close();
           client.response.destroy();
         }
         clients.clear();
+        if (!listenStarted || !server.listening) {
+          resolve();
+          return;
+        }
         server.close((error) => (error === undefined ? resolve() : reject(error)));
-      }),
+      });
+      return closePromise;
+    },
     publish,
   };
 
@@ -740,24 +795,39 @@ function validateRunState(value: unknown): RunState {
   throw new HttpError(500, "malformed_port_result");
 }
 
+function validateStateResult(value: unknown): { runState: RunState; usage?: JsonValue } {
+  if (!strictPlainObject(value)) throw new HttpError(500, "malformed_port_result");
+  if (Object.keys(value).some((key) => key !== "runState" && key !== "usage"))
+    throw new HttpError(500, "malformed_port_result");
+  const runState = validateRunState(requiredDataProperty(value, "runState"));
+  const usage = optionalDataProperty(value, "usage");
+  return usage === undefined ? { runState } : { runState, usage: validateJsonValue(usage) };
+}
+
 function validateAbortResult(value: unknown): { aborted: boolean; runState: RunState } {
-  if (!plainObject(value)) throw new HttpError(500, "malformed_port_result");
+  if (!strictPlainObject(value)) throw new HttpError(500, "malformed_port_result");
   if (Object.keys(value).some((key) => key !== "aborted" && key !== "runState"))
     throw new HttpError(500, "malformed_port_result");
-  if (typeof value.aborted !== "boolean") throw new HttpError(500, "malformed_port_result");
-  return { aborted: value.aborted, runState: validateRunState(value.runState) };
+  const aborted = requiredDataProperty(value, "aborted");
+  if (typeof aborted !== "boolean") throw new HttpError(500, "malformed_port_result");
+  return { aborted, runState: validateRunState(requiredDataProperty(value, "runState")) };
 }
 
 function validateEntriesPage(value: unknown): { entries: readonly JsonValue[]; nextAfter?: string } {
-  if (!plainObject(value)) throw new HttpError(500, "malformed_port_result");
+  if (!strictPlainObject(value)) throw new HttpError(500, "malformed_port_result");
   if (Object.keys(value).some((key) => key !== "entries" && key !== "nextAfter"))
     throw new HttpError(500, "malformed_port_result");
-  if (!Array.isArray(value.entries)) throw new HttpError(500, "malformed_port_result");
-  const entries = validateJsonValue(value.entries);
+  const rawEntries = requiredDataProperty(value, "entries");
+  if (!Array.isArray(rawEntries)) throw new HttpError(500, "malformed_port_result");
+  const entries = validateJsonValue(rawEntries);
   if (!Array.isArray(entries)) throw new HttpError(500, "malformed_port_result");
-  if (value.nextAfter !== undefined && !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/.test(String(value.nextAfter)))
-    throw new HttpError(500, "malformed_port_result");
-  return value.nextAfter === undefined ? { entries } : { entries, nextAfter: String(value.nextAfter) };
+  const nextAfter = optionalDataProperty(value, "nextAfter");
+  if (nextAfter !== undefined) {
+    if (typeof nextAfter !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/.test(nextAfter))
+      throw new HttpError(500, "malformed_port_result");
+    return { entries, nextAfter };
+  }
+  return { entries };
 }
 
 function writeJson(
@@ -844,6 +914,19 @@ function dataProperty(object: object, key: string): unknown {
   const descriptor = Object.getOwnPropertyDescriptor(object, key);
   if (descriptor === undefined) return undefined;
   if (!("value" in descriptor)) throw new Error("malformed event");
+  return descriptor.value;
+}
+
+function requiredDataProperty(object: object, key: string): unknown {
+  const descriptor = Object.getOwnPropertyDescriptor(object, key);
+  if (descriptor === undefined || !("value" in descriptor)) throw new HttpError(500, "malformed_port_result");
+  return descriptor.value;
+}
+
+function optionalDataProperty(object: object, key: string): unknown {
+  const descriptor = Object.getOwnPropertyDescriptor(object, key);
+  if (descriptor === undefined) return undefined;
+  if (!("value" in descriptor)) throw new HttpError(500, "malformed_port_result");
   return descriptor.value;
 }
 
