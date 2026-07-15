@@ -53,20 +53,6 @@ jobs:
           COGS_SOURCE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
         run: npx --no-install tsx test/egress-conformance/proxy-adapters/envoy/suite-smoke.ts docs/security-evidence/generated/envoy-suite
 
-      - name: Run pinned mitmproxy functional conformance
-        id: mitmproxy
-        continue-on-error: true
-        env:
-          COGS_SOURCE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: npx --no-install tsx test/egress-conformance/proxy-adapters/mitmproxy/ci-smoke.ts docs/security-evidence/generated/mitmproxy
-
-      - name: Run shared Stage 1 suite against mitmproxy
-        id: mitmproxy_suite
-        continue-on-error: true
-        env:
-          COGS_SOURCE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: npx --no-install tsx test/egress-conformance/proxy-adapters/mitmproxy/suite-smoke.ts docs/security-evidence/generated/mitmproxy-suite
-
       - name: Validate functional-only evidence
         id: evidence
         if: always()
@@ -74,9 +60,7 @@ jobs:
           npm run schemas -- \
             docs/security-evidence/generated/insecure-container-smoke.json \
             docs/security-evidence/generated/envoy/envoy-candidate-*/report.json \
-            docs/security-evidence/generated/envoy-suite/envoy-suite-*/report.json \
-            docs/security-evidence/generated/mitmproxy/mitmproxy-candidate-*/report.json \
-            docs/security-evidence/generated/mitmproxy-suite/mitmproxy-suite-*/report.json
+            docs/security-evidence/generated/envoy-suite/envoy-suite-*/report.json
 
       - name: Upload validated insecure-container evidence
         if: always() && steps.evidence.outcome == 'success'
@@ -87,8 +71,6 @@ jobs:
             docs/security-evidence/generated/insecure-container-smoke.json
             docs/security-evidence/generated/envoy/
             docs/security-evidence/generated/envoy-suite/
-            docs/security-evidence/generated/mitmproxy/
-            docs/security-evidence/generated/mitmproxy-suite/
           if-no-files-found: error
           retention-days: 30
 
@@ -98,11 +80,7 @@ jobs:
           DRIVER_OUTCOME: ${{ steps.smoke.outcome }}
           ENVOY_OUTCOME: ${{ steps.envoy.outcome }}
           ENVOY_SUITE_OUTCOME: ${{ steps.envoy_suite.outcome }}
-          MITMPROXY_OUTCOME: ${{ steps.mitmproxy.outcome }}
-          MITMPROXY_SUITE_OUTCOME: ${{ steps.mitmproxy_suite.outcome }}
         run: |
           test "$DRIVER_OUTCOME" = success
           test "$ENVOY_OUTCOME" = success
           test "$ENVOY_SUITE_OUTCOME" = success
-          test "$MITMPROXY_OUTCOME" = success
-          test "$MITMPROXY_SUITE_OUTCOME" = success

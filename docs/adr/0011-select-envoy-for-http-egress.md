@@ -67,10 +67,10 @@ mitmproxy passed the same applicable mechanism tests and is operationally conven
 
 - 202 lines of Cogs-specific Python execute inside the proxy process for capability checks, route authorization, credential overwrite, and audit completion, increasing the security-critical in-process footprint;
 - HTTP parser/resource bounds rely more on proxy defaults and container ceilings;
-- its pinned latest image has six fixed HIGH findings under the candidate-only exception tracked by #25;
-- that exception expires on 2026-07-27 and is explicitly ineligible to support selection or release.
+- its pinned latest image still has six unique fixed HIGH finding identifiers in the 2026-07-15 repository Trivy scan;
+- the candidate-only exception was removed instead of renewed before its 2026-07-27 expiry and was explicitly ineligible to support selection or release.
 
-The rejected candidate remains useful comparison evidence. It is not an automatic runtime fallback. Switching to it requires a new ADR, a clean supported pin, and a complete rerun.
+The rejected candidate remains useful historical comparison evidence. It is not an active Stage 3 path or runtime fallback. Switching to it requires a new ADR, a clean supported pin with no owner/expiry ignore supporting selection, and a complete rerun.
 
 ## Custom-code and operational cost
 
