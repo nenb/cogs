@@ -92,8 +92,20 @@ class FakeTransport implements SshTransport {
   }
 }
 
-const keyPair = ssh2.utils.generateKeyPairSync("ed25519", { comment: "cogs-test" });
+const keyPair = generateParsedTestKeyPair();
 const validPin = "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+
+function generateParsedTestKeyPair(): ReturnType<typeof ssh2.utils.generateKeyPairSync> {
+  for (let attempt = 0; attempt < 16; attempt += 1) {
+    const generated = ssh2.utils.generateKeyPairSync("ed25519", { comment: "cogs-test" });
+    if (isSinglePrivateParsedKey(ssh2.utils.parseKey(generated.private))) return generated;
+  }
+  throw new Error("test ssh private key fixture unavailable");
+}
+
+function isSinglePrivateParsedKey(parsed: ReturnType<typeof ssh2.utils.parseKey>): boolean {
+  return !(parsed instanceof Error) && !Array.isArray(parsed) && parsed.isPrivateKey();
+}
 
 async function keyFile(root: string, content = keyPair.private, name = "id_key"): Promise<string> {
   const path = resolve(root, name);
@@ -150,6 +162,10 @@ function launchWithKey(path: string) {
     limits: { cpu: 1, memory_bytes: 268435456, tool_timeout_seconds: 30, max_tool_output_bytes: 4096 },
   });
 }
+
+test("SSH test key fixture is a single parsed private key", () => {
+  assert.equal(isSinglePrivateParsedKey(ssh2.utils.parseKey(keyPair.private)), true);
+});
 
 test("SSH host-key pin decoding is OpenSSH-base64 to exact SHA256 hex", () => {
   const digest = decodeOpenSshSha256Pin(validPin);

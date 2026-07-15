@@ -75,6 +75,9 @@ jobs:
       - name: Validate schemas and report semantics
         run: npm run schemas
 
+      - name: Regenerate and verify Envoy ext_authz descriptor
+        run: npm run egress-bindings:regenerate-check
+
       - name: Verify base-image digest pins
         run: npm run images:check
 

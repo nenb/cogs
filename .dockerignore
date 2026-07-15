@@ -5,3 +5,4 @@ node_modules/
 coverage/
 docs/security-evidence/generated/
 test/egress-conformance/reports/
+third_party/envoy-ext-authz-v1.38.3/protos/
