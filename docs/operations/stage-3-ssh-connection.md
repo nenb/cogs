@@ -1,6 +1,6 @@
 # Stage 3 S3-02 SSH connection foundation
 
-Scope: IMPLEMENTATION §§21.1–21.2 SSH connection foundation plus SFTP `read`/`write`/`edit` file-tool ports only. This does not implement `bash` behavior or claim §21.3/issue completion.
+Scope: IMPLEMENTATION §§21.1–21.2 SSH connection foundation, SFTP `read`/`write`/`edit` file-tool ports, and initial production SSH-backed `bash` port. This does not claim complete §21.3 adversarial authority or issue completion until the remaining evidence is reviewed.
 
 ## Library selection
 
@@ -36,7 +36,7 @@ The S3-02 connection manager:
 - tears down fail-closed on disconnect/error/timeout;
 - keeps the SSH client internals and private-key material out of public/API/event surfaces.
 
-The real `ssh2` adapter authenticates the pinned connection. The manager exposes bounded permit/semaphore leases and manager-owned SFTP channel access; raw `ssh2` clients/channels are not exposed to Pi-facing code. Every real SFTP channel is opened only after a held `sftp` permit, so the configured maximum bounds actual concurrent SFTP channels. Command execution remains future §21.3 work.
+The real `ssh2` adapter authenticates the pinned connection. The manager exposes bounded permit/semaphore leases and manager-owned SFTP/exec channel access; raw `ssh2` clients/channels are not exposed to Pi-facing code. Every real SFTP or bash exec channel is opened only after a held permit, so the configured maximum bounds actual concurrent channels. The architecture retains ADR 0013's no-guest-daemon modular trust-boundary adapter path.
 
 The manager does not fail the worker merely because no tool is running. SFTP file operations have independent open, operation, idle, and close bounds. SSH keepalives are used only for dead-peer detection at the transport layer.
 
@@ -49,7 +49,18 @@ The manager does not fail the worker merely because no tool is running. SFTP fil
 - `write` returns `{ ok, path, bytesWritten, atomic: true, fsync: "openssh" }`. Content is bounded UTF-8. The adapter writes to a cryptographically unpredictable exclusive temporary sibling, uploads bounded chunks, validates temp metadata, requires OpenSSH `fsync` and `posix-rename`, then atomically replaces the target in the same directory. Failures, cancellation, disconnects, and timeouts attempt bounded temp cleanup and never intentionally publish partial target contents; cleanup is not guaranteed after transport loss.
 - `edit` performs a bounded strict-UTF-8 read, validates the opened handle with `fstat`, requires a regular file, requires nonempty `oldText`, requires exactly one occurrence, applies exact replacement only, then uses the same atomic write path. Missing or duplicate matches leave the target unchanged.
 
-SFTP v3 cannot eliminate all guest-side TOCTOU races against a malicious root guest. These checks are file-tool correctness and containment controls for trusted launch roots; they are not a host-security boundary. Future `bash` will make all guest files accessible to the guest process, so these file tools make no false isolation or host-secret claim.
+SFTP v3 cannot eliminate all guest-side TOCTOU races against a malicious root guest. These checks are file-tool correctness and containment controls for trusted launch roots; they are not a host-security boundary. The `bash` adapter makes guest files accessible to the guest process, so these file tools make no false isolation or host-secret claim.
+
+## Bash tool contract
+
+`createSshBashToolPort(...)` returns a production `bash` port compatible with `CogsToolPorts`.
+
+- Commands execute through the pinned SSH connection only; there is no local shell, system `ssh`, filesystem, direct network, PTY, stdin port/data exposed to Pi, agent forwarding, X11, environment mutation, or guest-daemon fallback. The underlying ssh2 channel remains writable because ssh2 1.17.0 rejects `signal()` after EOF; commands reading stdin therefore rely on bounded idle/total cancellation rather than an EOF shortcut.
+- The fixed remote wrapper enters `/workspace` and launches `/bin/bash --noprofile --norc -c "$1"` in a child `setsid --wait` process group. The outer wrapper remains outside that child group, records `child=$!`, preserves normal child status, and on TERM/INT/HUP sends bounded TERM then KILL only to the child group before reaping. Detached descendants are explicitly not claimed to be guaranteed cleaned without later evidence.
+- Command input rejects empty strings, NUL, unpaired surrogate code units, and over-budget UTF-8.
+- Stdout/stderr are kept separate, counted with safe bounded counters, drained after truncation, decoded as inert JSON string content, and report truncation/lossy-UTF-8 metadata. Output is never parsed as policy and never becomes executable host input.
+- Pi streaming uses bounded serialized full tool update results with details. Update rejection, update timeout, malformed channel events, stream errors, emergency manager timeout, close failure, and unconfirmed cancellation fail closed and revoke SSH readiness. Normal nonzero exits and confirmed caller/timeout cancellation return structured `ok:false` without readiness poisoning.
+- Caller abort, total timeout, idle timeout, and publisher failure are raced during operation. Acquire/open uses a combined operation signal so pre-open cancellation is prompt; after open the bash adapter keeps the channel alive long enough to request TERM/escalation and require terminal confirmation, with the manager operation timeout as an emergency backstop.
 
 ## Lifecycle integration
 
@@ -57,4 +68,4 @@ SFTP v3 cannot eliminate all guest-side TOCTOU races against a malicious root gu
 
 ## Evidence authority
 
-Unit tests use dependency-injected fake transports/SFTP channels for deterministic adversarial coverage plus focused real-`ssh2` terminal-event checks, including numeric SFTP status mapping, generic redaction of unknown callback errors, callback throw containment, EOF/partial-read tuple handling, malformed metadata/handle/tuple rejection, post-open metadata validation, bounded operation/close/cleanup paths, close-failure readiness revocation, late exclusive-open cleanup, path/content validation, edit uniqueness, and permit bounding. The label-gated `insecure-container` workflow runs a functional-only OpenSSH smoke against the production adapter using its generated loopback endpoint, per-session client key, and OpenSSH SHA256 host fingerprint; the correct pin must authenticate, SFTP read/write/edit must work against `/workspace`, mismatch/duplicate edit must leave content unchanged, and a wrong pin must fail closed. This smoke does not execute bash and is non-authoritative for isolation. No AWS, EKS, release, or production claim is made.
+Unit tests use dependency-injected fake transports/SFTP/exec channels for deterministic adversarial coverage plus focused real-`ssh2` terminal-event checks, including numeric SFTP status mapping, generic redaction of unknown callback errors, callback throw containment, EOF/partial-read tuple handling, malformed metadata/handle/tuple rejection, post-open metadata validation, bounded operation/close/cleanup paths, close-failure readiness revocation, late exclusive-open cleanup, path/content validation, edit uniqueness, exec exit/close/error reconciliation, malformed exec data/duplicate exit/close-without-exit rejection, bash wrapper shape, command validation, split UTF-8, truncation, nonzero exit, update result shape, timeout cancellation, update failure readiness revocation, acquire/open abort, and permit bounding. The label-gated `insecure-container` workflow runs a functional-only OpenSSH smoke against the production adapter using its generated loopback endpoint, per-session client key, and OpenSSH SHA256 host fingerprint; the correct pin must authenticate, SFTP read/write/edit must work against `/workspace`, bash must run in `/workspace` with stdout/stderr/nonzero status behavior, mismatch/duplicate edit must leave content unchanged, and a wrong pin must fail closed. This smoke is non-authoritative for isolation. No AWS, EKS, release, or production claim is made.

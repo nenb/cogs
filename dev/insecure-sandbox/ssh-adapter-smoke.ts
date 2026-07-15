@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createSshBashToolPort } from "../../src/ssh/bash-tool.ts";
 import { SshConnectionManager } from "../../src/ssh/connection.ts";
 import { createSftpFileToolPorts } from "../../src/ssh/file-tools.ts";
 
@@ -25,6 +26,7 @@ async function start(pin: string): Promise<SshConnectionManager> {
       handshakeTimeoutMs: 5000,
       permitAcquireTimeoutMs: 1000,
       sftpOpenTimeoutMs: 5000,
+      execOpenTimeoutMs: 5000,
       shutdownTimeoutMs: 2000,
       maxPermits: 1,
       maxQueue: 4,
@@ -68,6 +70,42 @@ try {
   await assert.rejects(ports.edit({ path: smokePath, oldText: "dup", newText: "x" }), /not unique/);
   const duplicateUnchanged = (await ports.read({ path: smokePath })) as { content: string };
   assert.equal(duplicateUnchanged.content, "dup dup\n");
+
+  const bash = createSshBashToolPort({ manager, timeoutMs: 5000, idleTimeoutMs: 5000, cancelGraceMs: 500 });
+  const updates: unknown[] = [];
+  const bashResult = (await bash.bash({
+    command: "pwd; printf 'out'; printf 'err' >&2",
+    onUpdate: (update) => {
+      updates.push(update);
+    },
+  })) as { ok: boolean; stdout: string; stderr: string; exitCode: number | null };
+  assert.equal(bashResult.ok, true);
+  assert.equal(bashResult.exitCode, 0);
+  assert.match(bashResult.stdout, /^\/workspace\nout/);
+  assert.equal(bashResult.stderr, "err");
+  assert.ok(updates.length >= 1);
+  const nonzero = (await bash.bash({ command: "exit 7" })) as { ok: boolean; exitCode: number | null };
+  assert.equal(nonzero.ok, false);
+  assert.equal(nonzero.exitCode, 7);
+
+  const timeoutBash = createSshBashToolPort({ manager, timeoutMs: 1000, idleTimeoutMs: 1000, cancelGraceMs: 250 });
+  const pgidFile = `/workspace/cogs-bash-pgid-${process.pid}.txt`;
+  const timeoutResult = (await timeoutBash.bash({
+    command: `printf $$ > ${pgidFile}; trap '' TERM INT; sleep 30`,
+  })) as {
+    ok: boolean;
+    timedOut: boolean;
+  };
+  assert.equal(timeoutResult.ok, false);
+  assert.equal(timeoutResult.timedOut, true);
+  const deadCheck = (await bash.bash({
+    command: `pgid=$(cat ${pgidFile}); if kill -0 -$pgid 2>/dev/null; then exit 42; else exit 0; fi`,
+  })) as {
+    ok: boolean;
+    exitCode: number | null;
+  };
+  assert.equal(deadCheck.ok, true);
+  assert.equal(deadCheck.exitCode, 0);
 } finally {
   if (manager !== undefined) {
     let cleanupTimer: NodeJS.Timeout | undefined;
@@ -93,5 +131,5 @@ await assert.rejects(
   "wrong host pin must fail closed",
 );
 console.log(
-  "production ssh/sftp adapter smoke passed: correct pin authenticated; read/write/edit worked; wrong pin failed closed",
+  "production ssh/sftp/bash adapter smoke passed: correct pin authenticated; read/write/edit/bash worked; wrong pin failed closed",
 );
