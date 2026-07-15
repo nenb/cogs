@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { request as httpRequest, ServerResponse } from "node:http";
+import { connect as netConnect } from "node:net";
 import test from "node:test";
 import {
   type ApiServer,
@@ -115,6 +116,34 @@ async function json(base: string, path: string, init: RequestInit = {}) {
 
 async function body(response: Response): Promise<Record<string, unknown>> {
   return (await response.json()) as Record<string, unknown>;
+}
+
+async function rawHttp(
+  port: number,
+  request: string,
+  extraWrite?: string,
+): Promise<{ text: string; elapsedMs: number }> {
+  const started = Date.now();
+  return new Promise((resolve, reject) => {
+    const socket = netConnect({ host: "127.0.0.1", port });
+    let text = "";
+    const timer = setTimeout(() => {
+      socket.destroy();
+      reject(new Error("raw request timeout"));
+    }, 1000);
+    socket.on("connect", () => {
+      socket.write(request);
+      if (extraWrite !== undefined) setTimeout(() => socket.write(extraWrite), 100);
+    });
+    socket.on("data", (chunk) => {
+      text += chunk.toString("utf8");
+    });
+    socket.on("close", () => {
+      clearTimeout(timer);
+      resolve({ text, elapsedMs: Date.now() - started });
+    });
+    socket.on("error", reject);
+  });
 }
 
 test("auth, route, method, and content-type handling are strict and redacted", async () => {
@@ -617,45 +646,63 @@ test("configuration rejects unsafe bearer, session, capacity, and size options",
   assert.throws(() => createApiServer({ ...base, requestTimeoutMs: Number.POSITIVE_INFINITY }), /requestTimeoutMs/);
 });
 
-test("not-ready admission drains slow bodies without dangling sockets", async () => {
-  const life = lifecycle();
-  life.ready = false;
-  const p = ports();
-  const api = createApiServer({
-    lifecycle: life as never,
-    session: p.session,
-    history: p.history,
-    exporter: p.exporter,
-    bearerToken: "worker-secret-0123456789abcdefghi",
-    sessionId: "session-1",
-  });
-  const { port } = await api.listen();
-  try {
-    const status = await new Promise<number>((resolve, reject) => {
-      const req = httpRequest(
-        {
-          host: "127.0.0.1",
-          port,
-          path: "/v1/input",
-          method: "POST",
-          headers: {
-            authorization: "Bearer worker-secret-0123456789abcdefghi",
-            "content-type": "application/json",
-            "content-length": "100000",
-          },
-        },
-        (res) => {
-          resolve(res.statusCode ?? 0);
-          res.resume();
-        },
-      );
-      req.on("error", reject);
-      req.write('{"request_id":"slow"');
+test("early rejection, timeout, and overflow close slow clients promptly", async () => {
+  const make = async (opts: { ready?: boolean; maxRequestBytes?: number; requestTimeoutMs?: number } = {}) => {
+    const life = lifecycle();
+    life.ready = opts.ready ?? true;
+    const p = ports();
+    const api = createApiServer({
+      lifecycle: life as never,
+      session: p.session,
+      history: p.history,
+      exporter: p.exporter,
+      bearerToken: "worker-secret-0123456789abcdefghi",
+      sessionId: "session-1",
+      ...(opts.maxRequestBytes === undefined ? {} : { maxRequestBytes: opts.maxRequestBytes }),
+      ...(opts.requestTimeoutMs === undefined ? {} : { requestTimeoutMs: opts.requestTimeoutMs }),
     });
-    assert.equal(status, 503);
-    assert.equal((await json(`http://127.0.0.1:${port}`, "/health/live", { method: "GET" })).status, 200);
-  } finally {
-    await api.close();
+    const { port } = await api.listen();
+    return { api, port };
+  };
+
+  const cases = [
+    {
+      name: "unauthorized",
+      setup: () => make(),
+      request:
+        "POST /v1/input HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer wrong\r\nContent-Type: application/json\r\nContent-Length: 100000\r\n\r\n{",
+      status: 401,
+    },
+    {
+      name: "not-ready",
+      setup: () => make({ ready: false }),
+      request: `POST /v1/input HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer worker-secret-0123456789abcdefghi\r\nContent-Type: application/json\r\nContent-Length: 100000\r\n\r\n{`,
+      status: 503,
+    },
+    {
+      name: "timeout",
+      setup: () => make({ requestTimeoutMs: 20 }),
+      request: `POST /v1/input HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer worker-secret-0123456789abcdefghi\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n1\r\n{\r\n`,
+      status: 408,
+    },
+    {
+      name: "overflow",
+      setup: () => make({ maxRequestBytes: 128 }),
+      request: `POST /v1/input HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer worker-secret-0123456789abcdefghi\r\nContent-Type: application/json\r\nContent-Length: 100000\r\n\r\n${"x".repeat(256)}`,
+      status: 413,
+    },
+  ];
+
+  for (const item of cases) {
+    const { api, port } = await item.setup();
+    try {
+      const result = await rawHttp(port, item.request, "still-sending");
+      assert.match(result.text, new RegExp(`HTTP/1\\.1 ${item.status}`), item.name);
+      assert.match(result.text, /Connection: close/i, item.name);
+      assert.ok(result.elapsedMs < 500, `${item.name} took ${result.elapsedMs}ms`);
+    } finally {
+      await api.close();
+    }
   }
 });
 
@@ -691,7 +738,10 @@ test("port timeout poisons readiness, shuts down once, and ignores late noncoope
     });
     assert.equal(timedOut.status, 504);
     assert.equal(life.shutdowns, 1);
-    assert.equal((await json(base, "/health/ready", { method: "GET" })).status, 503);
+    assert.equal(api.publish({ type: "after-poison" }), false);
+    const ready = await json(base, "/health/ready", { method: "GET" });
+    assert.equal(ready.status, 503);
+    assert.equal((await body(ready)).ready, false);
     assert.equal(
       (await json(base, "/v1/export", { method: "POST", body: JSON.stringify({ request_id: "x" }) })).status,
       503,
@@ -701,6 +751,130 @@ test("port timeout poisons readiness, shuts down once, and ignores late noncoope
     assert.equal(inputCalls, 1);
     assert.equal(life.shutdowns, 1);
     assert.equal((await json(base, "/v1/entries", { method: "GET" })).status, 503);
+  } finally {
+    await api.close();
+  }
+});
+
+test("port-timeout poison preserves delayed shutdown rejection", async () => {
+  let shutdownCalls = 0;
+  const life = lifecycle();
+  life.requestShutdown = async () => {
+    shutdownCalls += 1;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    throw new Error("cleanup failed");
+  };
+  const p = ports({ session: { state: async () => new Promise(() => undefined) } });
+  const api = createApiServer({
+    lifecycle: life as never,
+    session: p.session,
+    history: p.history,
+    exporter: p.exporter,
+    bearerToken: "worker-secret-0123456789abcdefghi",
+    sessionId: "session-1",
+    portTimeoutMs: 10,
+  });
+  const { port } = await api.listen();
+  const base = `http://127.0.0.1:${port}`;
+  try {
+    assert.equal((await json(base, "/v1/state", { method: "GET" })).status, 504);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assert.equal(shutdownCalls, 1);
+    assert.equal((await json(base, "/health/ready", { method: "GET" })).status, 503);
+    assert.equal((await json(base, "/v1/shutdown", { method: "POST", body: "{}" })).status, 500);
+    assert.equal(shutdownCalls, 1);
+  } finally {
+    await api.close();
+  }
+});
+
+test("malformed injected port results fail as internal errors without successful status", async () => {
+  for (const [name, override, path, init] of [
+    ["state", { session: { state: async () => ({ runState: "bogus" }) } }, "/v1/state", { method: "GET" }],
+    [
+      "input",
+      { session: { input: async () => "bogus" } },
+      "/v1/input",
+      { method: "POST", body: JSON.stringify({ request_id: "m1", type: "prompt", content: "x" }) },
+    ],
+    [
+      "history",
+      { history: { entries: async () => ({ entries: [{ bad: 1n }], nextAfter: "ok" }) } },
+      "/v1/entries",
+      { method: "GET" },
+    ],
+    [
+      "export",
+      { exporter: { createExport: async () => ({ bad: 1n }) } },
+      "/v1/export",
+      { method: "POST", body: JSON.stringify({ request_id: "e1" }) },
+    ],
+  ] as const) {
+    const life = lifecycle();
+    const p = ports(override as never);
+    const api = createApiServer({
+      lifecycle: life as never,
+      session: p.session,
+      history: p.history,
+      exporter: p.exporter,
+      bearerToken: "worker-secret-0123456789abcdefghi",
+      sessionId: "session-1",
+    });
+    const { port } = await api.listen();
+    try {
+      const response = await json(`http://127.0.0.1:${port}`, path, init);
+      assert.equal(response.status, 500, name);
+      assert.notEqual(await response.text(), "", name);
+    } finally {
+      await api.close();
+    }
+  }
+});
+
+test("SSE rejects future sequence requests", async () => {
+  await withServer(async ({ base, api }) => {
+    api.publish({ type: "one" });
+    const future = await fetch(`${base}/v1/events?after=2`, {
+      headers: { authorization: "Bearer worker-secret-0123456789abcdefghi" },
+    });
+    assert.equal(future.status, 409);
+    assert.equal((await body(future)).error, "replay_future");
+  });
+});
+
+test("already-aborting state does not invoke abort port again", async () => {
+  let abortCalls = 0;
+  const life = lifecycle();
+  const p = ports({
+    session: {
+      state: async () => ({ runState: "aborting" }),
+      abort: async () => {
+        abortCalls += 1;
+        return { aborted: true, runState: "aborting" };
+      },
+    },
+  });
+  const api = createApiServer({
+    lifecycle: life as never,
+    session: p.session,
+    history: p.history,
+    exporter: p.exporter,
+    bearerToken: "worker-secret-0123456789abcdefghi",
+    sessionId: "session-1",
+  });
+  const { port } = await api.listen();
+  try {
+    const first = await json(`http://127.0.0.1:${port}`, "/v1/abort", {
+      method: "POST",
+      body: JSON.stringify({ request_id: "a1" }),
+    });
+    const second = await json(`http://127.0.0.1:${port}`, "/v1/abort", {
+      method: "POST",
+      body: JSON.stringify({ request_id: "a2" }),
+    });
+    assert.equal(first.status, 202);
+    assert.equal(second.status, 202);
+    assert.equal(abortCalls, 0);
   } finally {
     await api.close();
   }
@@ -758,6 +932,7 @@ test("startup and request-target routing are loopback and origin-form only", asy
     sessionId: "session-1",
   });
   await assert.rejects(api.listen(0, "0.0.0.0"), /loopback/);
+  await assert.rejects(api.listen(0, "localhost"), /loopback/);
   const first = createApiServer({
     lifecycle: life as never,
     session: p.session,
@@ -802,6 +977,8 @@ test("startup and request-target routing are loopback and origin-form only", asy
       });
     assert.equal(await rawStatus("http://evil.example/v1/state"), 400);
     assert.equal(await rawStatus("//evil.example/v1/state"), 400);
+    assert.equal(await rawStatus("/v1/state#fragment"), 400);
+    assert.equal(await rawStatus("/v1\\state"), 400);
     assert.equal(
       await rawStatus("/v1/state", [
         "authorization",

@@ -88,7 +88,7 @@ type DuplicateEntry = {
   settled: boolean;
   lastUsed: number;
 };
-type Client = { readonly response: ServerResponse; readonly after: number; readonly close: () => void };
+type Client = { readonly response: ServerResponse; readonly close: () => void };
 
 const forbiddenResponse = Object.freeze({ version: "cogs.error/v1alpha1", error: "forbidden" });
 
@@ -123,11 +123,16 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
   async function route(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const rawTarget = request.url ?? "/";
     const correlationId = correlationFrom(request);
-    if (
-      !validRequestTarget(rawTarget) ||
-      duplicateHeader(request, "authorization") ||
-      duplicateHeader(request, "x-cogs-correlation-id")
-    ) {
+    let url: URL;
+    try {
+      if (
+        !validRequestTarget(rawTarget) ||
+        duplicateHeader(request, "authorization") ||
+        duplicateHeader(request, "x-cogs-correlation-id")
+      )
+        throw new Error("bad target");
+      url = new URL(rawTarget, "http://127.0.0.1");
+    } catch {
       drainRequest(request);
       return safeWriteJson(
         response,
@@ -135,9 +140,9 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
         { version: "cogs.error/v1alpha1", error: "bad_request_target" },
         maxResponseBytes,
         correlationId,
+        true,
       );
     }
-    const url = new URL(rawTarget, "http://127.0.0.1");
     response.setHeader("x-cogs-correlation-id", correlationId);
     if (url.pathname === "/health/live") {
       return method(request, response, url, maxResponseBytes, "GET", [], false, () =>
@@ -146,15 +151,15 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
     }
     if (!authorized(request, tokenDigest)) {
       drainRequest(request);
-      return safeWriteJson(response, 401, forbiddenResponse, maxResponseBytes, correlationId);
+      return safeWriteJson(response, 401, forbiddenResponse, maxResponseBytes, correlationId, true);
     }
     switch (url.pathname) {
       case "/health/ready":
         return method(request, response, url, maxResponseBytes, "GET", [], false, () =>
           safeWriteJson(
             response,
-            options.lifecycle.ready ? 200 : 503,
-            { ready: options.lifecycle.ready },
+            !poisoned && options.lifecycle.ready ? 200 : 503,
+            { ready: !poisoned && options.lifecycle.ready },
             maxResponseBytes,
             correlationId,
           ),
@@ -206,7 +211,14 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
   function poisonFromPortTimeout(): void {
     if (poisoned) return;
     poisoned = true;
-    shutdownPromise ??= options.lifecycle.requestShutdown("api-port-timeout").catch(() => undefined);
+    if (shutdownPromise === undefined) {
+      try {
+        shutdownPromise = options.lifecycle.requestShutdown("api-port-timeout");
+      } catch (error) {
+        shutdownPromise = Promise.reject(error);
+      }
+      shutdownPromise.catch(() => undefined);
+    }
   }
 
   async function callPort<T>(operation: (signal: AbortSignal) => Promise<T>): Promise<T> {
@@ -226,8 +238,8 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
     const fingerprint = inputFingerprint(parsed.type, parsed.content);
     const duplicate = duplicates.find((entry) => entry.requestId === parsed.request_id);
     if (duplicate !== undefined) {
-      duplicate.lastUsed = ++duplicateClock;
       if (duplicate.fingerprint !== fingerprint) throw new HttpError(409, "duplicate_mismatch");
+      duplicate.lastUsed = ++duplicateClock;
       const result = await duplicate.result;
       return safeWriteJson(response, 202, { ...result, duplicate: true }, maxResponseBytes, correlationId);
     }
@@ -248,16 +260,18 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
     }
     const accepted = enqueueInput(async (): Promise<AcceptedResult> => {
       requireReady();
-      const state = (await callPort((signal) => options.session.state({ signal }))).runState;
+      const state = validateRunState((await callPort((signal) => options.session.state({ signal }))).runState);
       if (!legalInput(parsed.type, state)) throw new HttpError(409, "illegal_state");
-      const runState = await callPort((signal) =>
-        options.session.input({
-          requestId: parsed.request_id,
-          correlationId,
-          kind: parsed.type,
-          content: parsed.content,
-          signal,
-        }),
+      const runState = validateRunState(
+        await callPort((signal) =>
+          options.session.input({
+            requestId: parsed.request_id,
+            correlationId,
+            kind: parsed.type,
+            content: parsed.content,
+            signal,
+          }),
+        ),
       );
       return {
         version: "cogs.input-acceptance/v1alpha1",
@@ -295,12 +309,12 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
     if (!plainObject(body)) throw new HttpError(400, "malformed_json");
     assertNoUnknown(body, ["request_id"]);
     const requestId = requiredId(body, "request_id");
-    const state = (await callPort((signal) => options.session.state({ signal }))).runState;
-    if (state !== "running" && state !== "aborting") {
+    const state = validateRunState((await callPort((signal) => options.session.state({ signal }))).runState);
+    if (state !== "running") {
       return safeWriteJson(
         response,
         202,
-        { version: "cogs.abort/v1alpha1", request_id: requestId, aborted: false, run_state: state },
+        { version: "cogs.abort/v1alpha1", request_id: requestId, aborted: state === "aborting", run_state: state },
         maxResponseBytes,
         correlationId,
       );
@@ -308,7 +322,7 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
     abortPromise ??= callPort((signal) => options.session.abort({ requestId, correlationId, signal })).finally(() => {
       abortPromise = undefined;
     });
-    const result = await abortPromise;
+    const result = validateAbortResult(await abortPromise);
     return safeWriteJson(
       response,
       202,
@@ -328,7 +342,9 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
     if (!plainObject(body)) throw new HttpError(400, "malformed_json");
     assertNoUnknown(body, ["request_id"]);
     const requestId = requiredId(body, "request_id");
-    const bundle = await callPort((signal) => options.exporter.createExport({ requestId, correlationId, signal }));
+    const bundle = validateJsonValue(
+      await callPort((signal) => options.exporter.createExport({ requestId, correlationId, signal })),
+    );
     return safeWriteJson(
       response,
       200,
@@ -364,7 +380,7 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
     const limit = Number(limitText);
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new HttpError(400, "bad_limit");
     const after = decodeCursor(url.searchParams.get("after"));
-    const page = await callPort((signal) => options.history.entries({ after, limit, signal }));
+    const page = validateEntriesPage(await callPort((signal) => options.history.entries({ after, limit, signal })));
     return safeWriteJson(
       response,
       200,
@@ -384,6 +400,7 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
     if (!/^\d+$/.test(afterText)) throw new HttpError(400, "bad_after");
     const after = Number(afterText);
     if (!Number.isSafeInteger(after)) throw new HttpError(400, "bad_after");
+    if (after > sequence) throw new HttpError(409, "replay_future");
     const oldest = replay[0]?.seq ?? sequence + 1;
     if (replay.length > 0 && after < oldest - 1) throw new HttpError(409, "replay_gap");
     response.writeHead(200, {
@@ -399,7 +416,7 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
       }
     }
     const onClose = () => clients.delete(client);
-    const client = { response, after, close: () => request.off("close", onClose) };
+    const client = { response, close: () => request.off("close", onClose) };
     clients.add(client);
     request.on("close", onClose);
   }
@@ -409,9 +426,9 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
     return {
       version: "cogs.state/v1alpha1",
       lifecycle: options.lifecycle.state,
-      ready: options.lifecycle.ready,
-      run_state: state.runState,
-      usage: state.usage ?? null,
+      ready: !poisoned && options.lifecycle.ready,
+      run_state: validateRunState(state.runState),
+      usage: state.usage === undefined ? null : validateJsonValue(state.usage),
     };
   }
 
@@ -430,7 +447,7 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
   }
 
   function publish(event: ApiEvent): boolean {
-    if (sequence >= Number.MAX_SAFE_INTEGER) return false;
+    if (poisoned || sequence >= Number.MAX_SAFE_INTEGER) return false;
     const nextSeq = sequence + 1;
     let clean: ApiEvent;
     let serialized: string;
@@ -520,9 +537,10 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
     body: JsonValue,
     maxBytes: number,
     correlationId: string,
+    closeAfter = false,
   ): void {
     if (closed || response.destroyed || response.writableEnded) return;
-    writeJson(response, status, body, maxBytes, correlationId);
+    writeJson(response, status, body, maxBytes, correlationId, closeAfter);
   }
 }
 
@@ -557,6 +575,7 @@ async function method(
         { version: "cogs.error/v1alpha1", error: error.code },
         maxResponseBytes,
         correlationFrom(request),
+        true,
       );
     }
     throw error;
@@ -569,6 +588,7 @@ async function method(
       { version: "cogs.error/v1alpha1", error: "method_not_allowed" },
       maxResponseBytes,
       correlationFrom(request),
+      true,
     );
   }
   try {
@@ -582,6 +602,7 @@ async function method(
         { version: "cogs.error/v1alpha1", error: error.code },
         maxResponseBytes,
         correlationFrom(request),
+        true,
       );
     }
     throw error;
@@ -713,12 +734,39 @@ function legalInput(kind: InputKind, state: RunState): boolean {
   return state === "idle" || state === "settled";
 }
 
+function validateRunState(value: unknown): RunState {
+  if (value === "idle" || value === "running" || value === "settled" || value === "aborting" || value === "shutdown")
+    return value;
+  throw new HttpError(500, "malformed_port_result");
+}
+
+function validateAbortResult(value: unknown): { aborted: boolean; runState: RunState } {
+  if (!plainObject(value)) throw new HttpError(500, "malformed_port_result");
+  if (Object.keys(value).some((key) => key !== "aborted" && key !== "runState"))
+    throw new HttpError(500, "malformed_port_result");
+  if (typeof value.aborted !== "boolean") throw new HttpError(500, "malformed_port_result");
+  return { aborted: value.aborted, runState: validateRunState(value.runState) };
+}
+
+function validateEntriesPage(value: unknown): { entries: readonly JsonValue[]; nextAfter?: string } {
+  if (!plainObject(value)) throw new HttpError(500, "malformed_port_result");
+  if (Object.keys(value).some((key) => key !== "entries" && key !== "nextAfter"))
+    throw new HttpError(500, "malformed_port_result");
+  if (!Array.isArray(value.entries)) throw new HttpError(500, "malformed_port_result");
+  const entries = validateJsonValue(value.entries);
+  if (!Array.isArray(entries)) throw new HttpError(500, "malformed_port_result");
+  if (value.nextAfter !== undefined && !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/.test(String(value.nextAfter)))
+    throw new HttpError(500, "malformed_port_result");
+  return value.nextAfter === undefined ? { entries } : { entries, nextAfter: String(value.nextAfter) };
+}
+
 function writeJson(
   response: ServerResponse,
   status: number,
   body: JsonValue,
   maxResponseBytes: number,
   correlationId: string,
+  closeAfter = false,
 ): void {
   if (response.destroyed || response.writableEnded) return;
   const limit = Number.isSafeInteger(maxResponseBytes) && maxResponseBytes >= 128 ? maxResponseBytes : 128;
@@ -726,6 +774,12 @@ function writeJson(
   try {
     payload = Buffer.from(JSON.stringify(body));
   } catch {
+    if (response.headersSent) {
+      response.destroy();
+      return;
+    }
+    status = 500;
+    closeAfter = true;
     payload = Buffer.from(JSON.stringify({ version: "cogs.error/v1alpha1", error: "internal" }));
   }
   if (payload.length > limit) {
@@ -740,8 +794,9 @@ function writeJson(
         "content-length": overflow.length,
         "x-cogs-correlation-id": correlationId,
         "cache-control": "no-store",
+        ...(closeAfter ? { connection: "close" } : {}),
       });
-    response.end(overflow);
+    endResponse(response, overflow, closeAfter);
     return;
   }
   if (!response.headersSent)
@@ -750,8 +805,15 @@ function writeJson(
       "content-length": payload.length,
       "x-cogs-correlation-id": correlationId,
       "cache-control": "no-store",
+      ...(closeAfter ? { connection: "close" } : {}),
     });
-  response.end(payload);
+  endResponse(response, payload, closeAfter);
+}
+
+function endResponse(response: ServerResponse, payload: Buffer, closeAfter: boolean): void {
+  response.end(payload, () => {
+    if (closeAfter) response.destroy();
+  });
 }
 
 function validateEvent(event: ApiEvent): ApiEvent {
@@ -859,11 +921,16 @@ function optionInteger(value: number | undefined, fallback: number, name: string
 }
 
 function loopbackHost(host: string): boolean {
-  return host === "127.0.0.1" || host === "::1" || host === "localhost";
+  return host === "127.0.0.1" || host === "::1";
 }
 
 function validRequestTarget(target: string): boolean {
-  return target.startsWith("/") && !target.startsWith("//") && !/[\r\n]/u.test(target);
+  if (!target.startsWith("/") || target.startsWith("//")) return false;
+  for (const character of target) {
+    const code = character.codePointAt(0);
+    if (code !== undefined && (code < 0x20 || code === 0x7f)) return false;
+  }
+  return !target.includes("\\") && !target.includes("#");
 }
 
 function duplicateHeader(request: IncomingMessage, name: string): boolean {
