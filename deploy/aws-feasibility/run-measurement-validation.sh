@@ -144,6 +144,13 @@ hours = observed_ms / 3_600_000
 # c8i-flex.large Linux on-demand plus ephemeral public IPv4 and a small gp3 root-volume allowance.
 hourly = 0.08902 + 0.005 + 0.003
 estimated_cost = round(hours * hourly, 4)
+measurement_sample_count = len(measurement['kata_cold_boot']['samples'])
+limitations = [
+  'single EC2 host campaign; EC2 launch p50/p95 requires multiple launches and is not measured by this harness',
+  'SSM readiness has one sample per campaign; SSH-ready is not measured because Stage 2 access is SSM-only',
+  'Git and package-build measurements are host baselines only; representative sandbox Git/build/package workload acceptance remains unmet by this evidence',
+  'density estimate is a conservative bound, not a scheduler or isolation claim',
+]
 evidence = {
   'version': 'cogs.aws-stage2-measurement-evidence/v1alpha1',
   'authority': 'aws-feasibility',
@@ -158,7 +165,7 @@ evidence = {
     'bare_metal': instance_type['BareMetal'], 'gpu': instance_type['GpuPresent'],
   },
   'campaign': {
-    'sample_count': measurement['sample_count'],
+    'sample_count': measurement_sample_count,
     'observed_duration_ms': observed_ms,
     'apply_to_running_ms': apply_to_running_ms,
     'apply_to_ssm_online_ms': apply_to_ssm_online_ms,
@@ -167,8 +174,8 @@ evidence = {
     'estimated_cost_usd': estimated_cost,
     'cost_basis': 'bounded estimate from apply-start to measurement-complete, not SSH-ready, multiplied by c8i-flex.large Linux on-demand 0.08902 USD/hour, ephemeral IPv4 0.005 USD/hour, and a small gp3 allowance; excludes unrelated account costs and destroy minutes until run-measurement-campaign records cleanup',
   },
-  'measurement': {key: value for key, value in measurement.items() if key != 'limitations'},
-  'limitations': measurement['limitations'],
+  'measurement': measurement,
+  'limitations': limitations,
 }
 with open(output_path, 'w', encoding='utf-8') as output:
     json.dump(evidence, output, sort_keys=True, separators=(',', ':'))

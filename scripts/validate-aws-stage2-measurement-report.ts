@@ -62,7 +62,19 @@ type Paired = { host?: Summary; kata?: Summary; kata_to_host_p50_ratio?: number 
 const ajv = new Ajv2020({ allErrors: true, strict: true });
 addFormats(ajv);
 const validate = ajv.compile(schema);
-assert.equal(validate(report), true, ajv.errorsText(validate.errors, { separator: "\n" }));
+if (!validate(report)) {
+  const details = (validate.errors ?? [])
+    .map((error) => {
+      const location = error.instancePath || "/";
+      const extra =
+        error.keyword === "additionalProperties" && typeof error.params.additionalProperty === "string"
+          ? ` (${error.params.additionalProperty})`
+          : "";
+      return `${location}: ${error.message ?? error.keyword}${extra}`;
+    })
+    .join("\n");
+  assert.fail(details || ajv.errorsText(validate.errors, { separator: "\n" }));
+}
 assert.equal(report.result, "pass");
 assert.equal(report.measurement?.result, "pass");
 assert.notEqual(report.measurement?.host_kernel, report.measurement?.guest_kernel);
