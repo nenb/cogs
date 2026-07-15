@@ -27,6 +27,7 @@ export interface CogsExtAuthzCheck {
 
 export type CogsExtAuthzDecision =
   | { readonly outcome: "allow"; readonly intentId: string }
+  | { readonly outcome: "allow_capability" }
   | { readonly outcome: "deny"; readonly status: 403 | 407 };
 
 export class ExtAuthzAdapterError extends Error {
@@ -82,6 +83,9 @@ function buildExtAuthzResponseFromUnknown(decision: unknown): unknown {
           fields: [{ key: "x-cogs-intent-id", value: { string_value: validateOpaque(value.intentId) } }],
         },
       });
+    }
+    if (value.outcome === "allow_capability") {
+      return deepFreeze({ status: { code: 0, message: "", details: [] }, ok_response: {} });
     }
     if (value.outcome === "deny" && (value.status === 403 || value.status === 407)) {
       return deepFreeze({
