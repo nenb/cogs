@@ -178,6 +178,7 @@ test("freezes parsed checks and rejects malformed response decisions", () => {
   const parsed = parseExtAuthzCheck(request());
   assert.equal(Object.isFrozen(parsed), true);
   assert.throws(() => buildExtAuthzResponse({ outcome: "allow", intentId: "bad/control\n" }), ExtAuthzAdapterError);
+  assert.throws(() => buildExtAuthzResponse({ outcome: "allow" } as never), ExtAuthzAdapterError);
   assert.throws(() => buildExtAuthzResponse({ outcome: "deny", status: 500 } as never), ExtAuthzAdapterError);
   assert.throws(
     () => buildExtAuthzResponse(Object.create({ outcome: "allow", intentId: "intent-a" }) as never),
@@ -189,6 +190,10 @@ test("freezes parsed checks and rejects malformed response decisions", () => {
 });
 
 test("builds intent metadata as dynamic metadata only", () => {
+  assert.deepEqual(buildExtAuthzResponse({ outcome: "allow_capability" }), {
+    status: { code: 0, message: "", details: [] },
+    ok_response: {},
+  });
   assert.deepEqual(buildExtAuthzResponse({ outcome: "allow", intentId: "intent-a" }), {
     status: { code: 0, message: "", details: [] },
     ok_response: {},
