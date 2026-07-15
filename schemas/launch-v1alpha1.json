@@ -54,6 +54,7 @@
     },
     "integrations": {
       "type": "array",
+      "maxItems": 16,
       "items": { "$ref": "integration-v1alpha1.json" }
     },
     "limits": {

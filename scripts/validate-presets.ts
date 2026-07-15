@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
 import type { Ajv as AjvCore, Options } from "ajv";
+import { canonicalPresetPolicyRevision } from "../src/egress/preset-revision.ts";
 
 const require = createRequire(import.meta.url);
 const Ajv2020 = require("ajv/dist/2020.js") as new (options?: Options) => AjvCore;
@@ -16,17 +16,6 @@ const ajv = new Ajv2020({ allErrors: true, strict: true });
 addFormats(ajv);
 const validate = ajv.compile(schema);
 
-function canonical(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
-  if (typeof value === "object" && value !== null) {
-    return `{${Object.entries(value)
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([key, item]) => `${JSON.stringify(key)}:${canonical(item)}`)
-      .join(",")}}`;
-  }
-  return JSON.stringify(value);
-}
-
 for (const filename of readdirSync(directory)
   .filter((name) => name.endsWith(".json"))
   .sort()) {
@@ -34,9 +23,7 @@ for (const filename of readdirSync(directory)
   const preset = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
   assert.ok(validate(preset), `${filename}: ${ajv.errorsText(validate.errors)}`);
   const revision = preset.preset_revision;
-  const revisionInput = { ...preset };
-  delete revisionInput.preset_revision;
-  const expected = `sha256:${createHash("sha256").update(canonical(revisionInput)).digest("hex")}`;
+  const expected = canonicalPresetPolicyRevision(preset);
   assert.equal(revision, expected, `${filename}: preset_revision does not bind canonical policy`);
 
   const rules = preset.rules as Array<Record<string, unknown>>;
@@ -52,23 +39,26 @@ for (const filename of readdirSync(directory)
     for (const pathPattern of rule.path_patterns as string[]) {
       assert.doesNotMatch(pathPattern, /%|\\|\/\/|(?:^|\/)\.\.?(?:\/|$)/, `${filename}: ambiguous path pattern`);
     }
-    const redirects = rule.redirects as { mode: string; max_hops: number; allowed_hosts: string[] };
-    if (redirects.mode === "deny") {
-      assert.equal(redirects.max_hops, 0, `${filename}: denied redirects must have zero hops`);
-      assert.deepEqual(redirects.allowed_hosts, [], `${filename}: denied redirects must have no hosts`);
+    const query = rule.query_policy as { mode: string; values?: string[] };
+    if (query.mode === "exact") {
+      assert.ok((query.values?.length ?? 0) > 0, `${filename}: exact query needs values`);
+      assert.equal(
+        [...(query.values ?? [])].sort().join("&"),
+        (query.values ?? []).join("&"),
+        `${filename}: query values must be sorted`,
+      );
+      assert.equal(
+        new Set((query.values ?? []).map((value) => value.split("=", 1)[0])).size,
+        query.values?.length,
+        `${filename}: query keys must be unique`,
+      );
     } else {
-      assert.ok(redirects.max_hops > 0, `${filename}: allowed redirects need a positive hop bound`);
-      assert.ok(redirects.allowed_hosts.length > 0, `${filename}: allowed redirects need exact hosts`);
+      assert.equal(query.mode, "deny", `${filename}: unsupported query mode`);
     }
-  }
-  for (const rule of rules) {
-    const redirects = rule.redirects as { allowed_hosts: string[] };
-    for (const host of redirects.allowed_hosts) {
-      const destinations = hosts.get(host);
-      assert.ok(destinations, `${filename}: redirect host ${host} has no bound rule`);
-      // A redirect can carry the preset credential only when its destination rule explicitly binds it.
-      assert.ok(destinations.some((destination) => typeof destination.inject_auth === "boolean"));
-    }
+    const redirects = rule.redirects as { mode: string; max_hops: number; allowed_hosts: string[] };
+    assert.equal(redirects.mode, "deny", `${filename}: shipped presets must deny redirects in Slice 2a`);
+    assert.equal(redirects.max_hops, 0, `${filename}: denied redirects must have zero hops`);
+    assert.deepEqual(redirects.allowed_hosts, [], `${filename}: denied redirects must have no hosts`);
   }
 }
 

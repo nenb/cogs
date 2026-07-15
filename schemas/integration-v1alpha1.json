@@ -46,7 +46,17 @@
     "rule": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "host", "port", "methods", "path_patterns", "path_policy", "redirects", "inject_auth"],
+      "required": [
+        "name",
+        "host",
+        "port",
+        "methods",
+        "path_patterns",
+        "path_policy",
+        "query_policy",
+        "redirects",
+        "inject_auth"
+      ],
       "properties": {
         "name": { "$ref": "#/$defs/opaqueId" },
         "host": { "$ref": "#/$defs/host" },
@@ -79,6 +89,36 @@
             "normalization": { "const": "reject-ambiguous" }
           }
         },
+        "query_policy": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["mode"],
+              "properties": { "mode": { "const": "deny" } }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["mode", "values"],
+              "properties": {
+                "mode": { "const": "exact" },
+                "values": {
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 16,
+                  "uniqueItems": true,
+                  "items": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 256,
+                    "pattern": "^[A-Za-z0-9._~-]+=[A-Za-z0-9._~-]+$"
+                  }
+                }
+              }
+            }
+          ]
+        },
         "redirects": {
           "type": "object",
           "additionalProperties": false,
@@ -97,6 +137,12 @@
         "inject_auth": { "type": "boolean", "default": true }
       }
     },
+    "integrationSecretHandle": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^(users|organizations)(?:/[A-Za-z0-9][A-Za-z0-9._:-]*)+$"
+    },
     "auth": {
       "oneOf": [
         {
@@ -108,7 +154,7 @@
             "header": { "type": "string", "pattern": "^[!#$%&'*+.^_`|~0-9A-Za-z-]+$" },
             "prefix": { "type": "string", "maxLength": 128, "pattern": "^[^\\u0000-\\u001F\\u007F]*$" },
             "placeholder": { "type": "string", "pattern": "^COGS_PLACEHOLDER_[A-Z0-9_]+$" },
-            "secret_handle": { "type": "string", "minLength": 1, "maxLength": 512 }
+            "secret_handle": { "$ref": "#/$defs/integrationSecretHandle" }
           }
         },
         {
@@ -119,7 +165,7 @@
             "type": { "const": "basic_header" },
             "header": { "const": "Authorization" },
             "placeholder": { "type": "string", "pattern": "^COGS_PLACEHOLDER_[A-Z0-9_]+$" },
-            "secret_handle": { "type": "string", "minLength": 1, "maxLength": 512 }
+            "secret_handle": { "$ref": "#/$defs/integrationSecretHandle" }
           }
         }
       ]
