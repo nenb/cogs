@@ -94,21 +94,32 @@ from datetime import datetime, timezone
 print(datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z'))
 PY
 )
-python3 - "$state/remote-measurement-result.json" "$state/current-state.json" "$state/campaign-timing.json" "$state/stage2-measurement-evidence.json" "$instance_json" "$type_json" "$completed_at" "$planned_revision" <<'PY'
+python3 - "$state/remote-measurement-result.json" "$state/current-state.json" "$state/campaign-timing.json" "$state/stage2-measurement-evidence.json" "$root/schemas/aws-stage2-measurement-evidence-v1alpha1.json" "$instance_json" "$type_json" "$completed_at" "$planned_revision" <<'PY'
 import json, sys
 from datetime import datetime, timezone
-measurement_path, state_path, timing_path, output_path, instance_raw, type_raw, completed_at, planned_revision = sys.argv[1:]
+measurement_path, state_path, timing_path, output_path, schema_path, instance_raw, type_raw, completed_at, planned_revision = sys.argv[1:]
 measurement = json.load(open(measurement_path, encoding='utf-8'))
 state = json.load(open(state_path, encoding='utf-8'))
 timing = json.load(open(timing_path, encoding='utf-8'))
-expected_measurement = {
-  'version', 'result', 'sample_count', 'host_kernel', 'guest_kernel', 'guest_root', 'cpu_vmx', 'kvm_device',
-  'qmp_kvm_present', 'qmp_kvm_enabled', 'containerd_version', 'qemu_version', 'kata_runtime_version',
-  'kata_archive_sha256', 'package_setup_ms', 'measurement_duration_ms', 'kata_cold_boot', 'warm_cpu_workload',
-  'warm_filesystem_workload', 'host_git_baseline', 'host_package_build_baseline', 'idle_memory', 'density_estimate', 'limitations'
-}
-if set(measurement) != expected_measurement or measurement['result'] != 'pass':
-    raise SystemExit('remote measurement result is malformed')
+schema = json.load(open(schema_path, encoding='utf-8'))
+measurement_schema = schema.get('properties', {}).get('measurement', {})
+schema_properties = measurement_schema.get('properties', {})
+schema_required = set(measurement_schema.get('required', []))
+allowed_measurement = set(schema_properties)
+if not allowed_measurement or schema_required != allowed_measurement or measurement_schema.get('additionalProperties') is not False:
+    raise SystemExit('measurement schema is not an exact remote-result key contract')
+measurement_keys = set(measurement)
+missing = sorted(allowed_measurement - measurement_keys)
+extra = sorted(measurement_keys - allowed_measurement)
+if missing or extra or measurement.get('result') != 'pass':
+    diagnostics = []
+    if missing:
+        diagnostics.append('missing=' + ','.join(missing))
+    if extra:
+        diagnostics.append('extra=' + ','.join(extra))
+    if measurement.get('result') != 'pass':
+        diagnostics.append('result=' + repr(measurement.get('result')))
+    raise SystemExit('remote measurement result is malformed: ' + '; '.join(diagnostics))
 if measurement['host_kernel'] == measurement['guest_kernel']:
     raise SystemExit('host and guest kernels are not distinct')
 for key in ('guest_root', 'cpu_vmx', 'kvm_device', 'qmp_kvm_present', 'qmp_kvm_enabled'):
