@@ -86,22 +86,21 @@ type DuplicateEntry = {
   readonly fingerprint: string;
   readonly result: Promise<AcceptedResult>;
   settled: boolean;
+  lastUsed: number;
 };
-type Client = { readonly response: ServerResponse; readonly after: number };
+type Client = { readonly response: ServerResponse; readonly after: number; readonly close: () => void };
 
 const forbiddenResponse = Object.freeze({ version: "cogs.error/v1alpha1", error: "forbidden" });
 
 export function createApiServer(options: ApiServerOptions): ApiServer {
-  if (options.bearerToken.length < 16 || options.bearerToken.length > 4096) {
-    throw new Error("invalid bearer token configuration");
-  }
-  const maxRequestBytes = options.maxRequestBytes ?? 16 * 1024;
-  const maxResponseBytes = options.maxResponseBytes ?? 128 * 1024;
-  const duplicateCapacity = options.duplicateCapacity ?? 128;
-  const eventReplayCapacity = options.eventReplayCapacity ?? 256;
-  const requestTimeoutMs = options.requestTimeoutMs ?? 5_000;
-  const portTimeoutMs = options.portTimeoutMs ?? requestTimeoutMs;
-  const maxEventBytes = options.maxEventBytes ?? 32 * 1024;
+  validateConfig(options);
+  const maxRequestBytes = optionInteger(options.maxRequestBytes, 16 * 1024, "maxRequestBytes", 128, 1024 * 1024);
+  const maxResponseBytes = optionInteger(options.maxResponseBytes, 128 * 1024, "maxResponseBytes", 128, 1024 * 1024);
+  const duplicateCapacity = optionInteger(options.duplicateCapacity, 128, "duplicateCapacity", 1, 4096);
+  const eventReplayCapacity = optionInteger(options.eventReplayCapacity, 256, "eventReplayCapacity", 1, 4096);
+  const requestTimeoutMs = optionInteger(options.requestTimeoutMs, 5_000, "requestTimeoutMs", 1, 60_000);
+  const portTimeoutMs = optionInteger(options.portTimeoutMs, requestTimeoutMs, "portTimeoutMs", 1, 60_000);
+  const maxEventBytes = optionInteger(options.maxEventBytes, 32 * 1024, "maxEventBytes", 128, 1024 * 1024);
   const duplicates: DuplicateEntry[] = [];
   const replay: { seq: number; event: ApiEvent; serialized: string }[] = [];
   const clients = new Set<Client>();
@@ -110,6 +109,8 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
   let abortPromise: Promise<{ aborted: boolean; runState: RunState }> | undefined;
   let shutdownPromise: Promise<void> | undefined;
   let closed = false;
+  let poisoned = false;
+  let duplicateClock = 0;
   const tokenDigest = digest(options.bearerToken);
   const cursorSecret = createHmac("sha256", options.bearerToken).update(`cursor:${options.sessionId}`).digest();
 
@@ -120,11 +121,26 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
   });
 
   async function route(request: IncomingMessage, response: ServerResponse): Promise<void> {
-    const url = new URL(request.url ?? "/", "http://127.0.0.1");
+    const rawTarget = request.url ?? "/";
     const correlationId = correlationFrom(request);
+    if (
+      !validRequestTarget(rawTarget) ||
+      duplicateHeader(request, "authorization") ||
+      duplicateHeader(request, "x-cogs-correlation-id")
+    ) {
+      drainRequest(request);
+      return safeWriteJson(
+        response,
+        400,
+        { version: "cogs.error/v1alpha1", error: "bad_request_target" },
+        maxResponseBytes,
+        correlationId,
+      );
+    }
+    const url = new URL(rawTarget, "http://127.0.0.1");
     response.setHeader("x-cogs-correlation-id", correlationId);
     if (url.pathname === "/health/live") {
-      return method(request, response, url, "GET", [], false, () =>
+      return method(request, response, url, maxResponseBytes, "GET", [], false, () =>
         safeWriteJson(response, 200, { live: true }, maxResponseBytes, correlationId),
       );
     }
@@ -134,7 +150,7 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
     }
     switch (url.pathname) {
       case "/health/ready":
-        return method(request, response, url, "GET", [], false, () =>
+        return method(request, response, url, maxResponseBytes, "GET", [], false, () =>
           safeWriteJson(
             response,
             options.lifecycle.ready ? 200 : 503,
@@ -144,31 +160,33 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
           ),
         );
       case "/v1/state":
-        return method(request, response, url, "GET", [], false, async () =>
+        return method(request, response, url, maxResponseBytes, "GET", [], false, async () =>
           safeWriteJson(response, 200, await stateBody(), maxResponseBytes, correlationId),
         );
       case "/v1/input":
-        return method(request, response, url, "POST", [], true, async () =>
+        return method(request, response, url, maxResponseBytes, "POST", [], true, async () =>
           handleInput(request, response, correlationId),
         );
       case "/v1/abort":
-        return method(request, response, url, "POST", [], true, async () =>
+        return method(request, response, url, maxResponseBytes, "POST", [], true, async () =>
           handleAbort(request, response, correlationId),
         );
       case "/v1/export":
-        return method(request, response, url, "POST", [], true, async () =>
+        return method(request, response, url, maxResponseBytes, "POST", [], true, async () =>
           handleExport(request, response, correlationId),
         );
       case "/v1/shutdown":
-        return method(request, response, url, "POST", [], true, async () =>
+        return method(request, response, url, maxResponseBytes, "POST", [], true, async () =>
           handleShutdown(request, response, correlationId),
         );
       case "/v1/entries":
-        return method(request, response, url, "GET", ["after", "limit"], false, async () =>
+        return method(request, response, url, maxResponseBytes, "GET", ["after", "limit"], false, async () =>
           handleEntries(url, response, correlationId),
         );
       case "/v1/events":
-        return method(request, response, url, "GET", ["after"], false, () => handleEvents(url, request, response));
+        return method(request, response, url, maxResponseBytes, "GET", ["after"], false, () =>
+          handleEvents(url, request, response),
+        );
       default:
         drainRequest(request);
         return safeWriteJson(
@@ -182,7 +200,23 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
   }
 
   function requireReady(): void {
-    if (!options.lifecycle.ready) throw new HttpError(503, "not_ready");
+    if (poisoned || !options.lifecycle.ready) throw new HttpError(503, "not_ready");
+  }
+
+  function poisonFromPortTimeout(): void {
+    if (poisoned) return;
+    poisoned = true;
+    shutdownPromise ??= options.lifecycle.requestShutdown("api-port-timeout").catch(() => undefined);
+  }
+
+  async function callPort<T>(operation: (signal: AbortSignal) => Promise<T>): Promise<T> {
+    requireReady();
+    try {
+      return await withPortTimeout(operation, portTimeoutMs);
+    } catch (error) {
+      if (error instanceof HttpError && error.code === "port_timeout") poisonFromPortTimeout();
+      throw error;
+    }
   }
 
   async function handleInput(request: IncomingMessage, response: ServerResponse, correlationId: string): Promise<void> {
@@ -192,6 +226,7 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
     const fingerprint = inputFingerprint(parsed.type, parsed.content);
     const duplicate = duplicates.find((entry) => entry.requestId === parsed.request_id);
     if (duplicate !== undefined) {
+      duplicate.lastUsed = ++duplicateClock;
       if (duplicate.fingerprint !== fingerprint) throw new HttpError(409, "duplicate_mismatch");
       const result = await duplicate.result;
       return safeWriteJson(response, 202, { ...result, duplicate: true }, maxResponseBytes, correlationId);
@@ -199,24 +234,30 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
     if (duplicates.length >= duplicateCapacity && duplicates.every((entry) => !entry.settled))
       throw new HttpError(429, "duplicate_cache_pending");
     while (duplicates.length >= duplicateCapacity) {
-      const index = duplicates.findIndex((entry) => entry.settled);
+      let index = -1;
+      let oldest = Number.POSITIVE_INFINITY;
+      for (let i = 0; i < duplicates.length; i += 1) {
+        const entry = duplicates[i];
+        if (entry?.settled === true && entry.lastUsed < oldest) {
+          oldest = entry.lastUsed;
+          index = i;
+        }
+      }
       if (index < 0) throw new HttpError(429, "duplicate_cache_pending");
       duplicates.splice(index, 1);
     }
     const accepted = enqueueInput(async (): Promise<AcceptedResult> => {
       requireReady();
-      const state = (await withPortTimeout((signal) => options.session.state({ signal }), portTimeoutMs)).runState;
+      const state = (await callPort((signal) => options.session.state({ signal }))).runState;
       if (!legalInput(parsed.type, state)) throw new HttpError(409, "illegal_state");
-      const runState = await withPortTimeout(
-        (signal) =>
-          options.session.input({
-            requestId: parsed.request_id,
-            correlationId,
-            kind: parsed.type,
-            content: parsed.content,
-            signal,
-          }),
-        portTimeoutMs,
+      const runState = await callPort((signal) =>
+        options.session.input({
+          requestId: parsed.request_id,
+          correlationId,
+          kind: parsed.type,
+          content: parsed.content,
+          signal,
+        }),
       );
       return {
         version: "cogs.input-acceptance/v1alpha1",
@@ -227,7 +268,13 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
         run_state: runState,
       };
     });
-    const entry: DuplicateEntry = { requestId: parsed.request_id, fingerprint, result: accepted, settled: false };
+    const entry: DuplicateEntry = {
+      requestId: parsed.request_id,
+      fingerprint,
+      result: accepted,
+      settled: false,
+      lastUsed: ++duplicateClock,
+    };
     duplicates.push(entry);
     accepted
       .finally(() => {
@@ -248,7 +295,7 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
     if (!plainObject(body)) throw new HttpError(400, "malformed_json");
     assertNoUnknown(body, ["request_id"]);
     const requestId = requiredId(body, "request_id");
-    const state = (await withPortTimeout((signal) => options.session.state({ signal }), portTimeoutMs)).runState;
+    const state = (await callPort((signal) => options.session.state({ signal }))).runState;
     if (state !== "running" && state !== "aborting") {
       return safeWriteJson(
         response,
@@ -258,10 +305,7 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
         correlationId,
       );
     }
-    abortPromise ??= withPortTimeout(
-      (signal) => options.session.abort({ requestId, correlationId, signal }),
-      portTimeoutMs,
-    ).finally(() => {
+    abortPromise ??= callPort((signal) => options.session.abort({ requestId, correlationId, signal })).finally(() => {
       abortPromise = undefined;
     });
     const result = await abortPromise;
@@ -284,10 +328,7 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
     if (!plainObject(body)) throw new HttpError(400, "malformed_json");
     assertNoUnknown(body, ["request_id"]);
     const requestId = requiredId(body, "request_id");
-    const bundle = await withPortTimeout(
-      (signal) => options.exporter.createExport({ requestId, correlationId, signal }),
-      portTimeoutMs,
-    );
+    const bundle = await callPort((signal) => options.exporter.createExport({ requestId, correlationId, signal }));
     return safeWriteJson(
       response,
       200,
@@ -323,7 +364,7 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
     const limit = Number(limitText);
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new HttpError(400, "bad_limit");
     const after = decodeCursor(url.searchParams.get("after"));
-    const page = await withPortTimeout((signal) => options.history.entries({ after, limit, signal }), portTimeoutMs);
+    const page = await callPort((signal) => options.history.entries({ after, limit, signal }));
     return safeWriteJson(
       response,
       200,
@@ -351,14 +392,20 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
       connection: "keep-alive",
       "x-accel-buffering": "no",
     });
-    for (const item of replay) if (item.seq > after && !writeSerializedSse(response, item.seq, item.serialized)) return;
-    const client = { response, after };
+    for (const item of replay) {
+      if (item.seq > after && !writeSerializedSse(response, item.seq, item.serialized)) {
+        response.destroy();
+        return;
+      }
+    }
+    const onClose = () => clients.delete(client);
+    const client = { response, after, close: () => request.off("close", onClose) };
     clients.add(client);
-    request.on("close", () => clients.delete(client));
+    request.on("close", onClose);
   }
 
   async function stateBody(): Promise<JsonValue> {
-    const state = await withPortTimeout((signal) => options.session.state({ signal }), portTimeoutMs);
+    const state = await callPort((signal) => options.session.state({ signal }));
     return {
       version: "cogs.state/v1alpha1",
       lifecycle: options.lifecycle.state,
@@ -383,15 +430,25 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
   }
 
   function publish(event: ApiEvent): boolean {
-    const clean = validateEvent(event);
+    if (sequence >= Number.MAX_SAFE_INTEGER) return false;
     const nextSeq = sequence + 1;
-    const serialized = serializeSse(nextSeq, clean);
+    let clean: ApiEvent;
+    let serialized: string;
+    try {
+      clean = validateEvent(event);
+      serialized = serializeSse(nextSeq, clean);
+    } catch {
+      return false;
+    }
     if (Buffer.byteLength(serialized) > maxEventBytes) return false;
     sequence = nextSeq;
     replay.push({ seq: sequence, event: clean, serialized });
     while (replay.length > eventReplayCapacity) replay.shift();
     for (const client of [...clients]) {
-      if (!writeSerializedSse(client.response, sequence, serialized)) clients.delete(client);
+      if (!writeSerializedSse(client.response, sequence, serialized)) {
+        clients.delete(client);
+        client.close();
+      }
     }
     return true;
   }
@@ -427,13 +484,30 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
 
   return {
     listen: (port = 0, host = "127.0.0.1") =>
-      new Promise((resolve) =>
-        server.listen(port, host, () => resolve({ port: (server.address() as { port: number }).port })),
-      ),
+      new Promise((resolve, reject) => {
+        if (!loopbackHost(host)) {
+          reject(new Error("listen host must be loopback"));
+          return;
+        }
+        const onError = (error: Error) => {
+          server.off("listening", onListening);
+          reject(error);
+        };
+        const onListening = () => {
+          server.off("error", onError);
+          resolve({ port: (server.address() as { port: number }).port });
+        };
+        server.once("error", onError);
+        server.once("listening", onListening);
+        server.listen(port, host);
+      }),
     close: () =>
       new Promise((resolve, reject) => {
         closed = true;
-        for (const client of clients) client.response.destroy();
+        for (const client of clients) {
+          client.close();
+          client.response.destroy();
+        }
         clients.clear();
         server.close((error) => (error === undefined ? resolve() : reject(error)));
       }),
@@ -465,6 +539,7 @@ async function method(
   request: IncomingMessage,
   response: ServerResponse,
   url: URL,
+  maxResponseBytes: number,
   expected: string,
   allowedQuery: readonly string[],
   allowBody: boolean,
@@ -480,7 +555,7 @@ async function method(
         response,
         error.status,
         { version: "cogs.error/v1alpha1", error: error.code },
-        4096,
+        maxResponseBytes,
         correlationFrom(request),
       );
     }
@@ -492,21 +567,23 @@ async function method(
       response,
       405,
       { version: "cogs.error/v1alpha1", error: "method_not_allowed" },
-      4096,
+      maxResponseBytes,
       correlationFrom(request),
     );
   }
   try {
     await handler();
   } catch (error) {
-    if (error instanceof HttpError)
+    if (error instanceof HttpError) {
+      drainRequest(request);
       return writeJson(
         response,
         error.status,
         { version: "cogs.error/v1alpha1", error: error.code },
-        4096,
+        maxResponseBytes,
         correlationFrom(request),
       );
+    }
     throw error;
   }
 }
@@ -544,9 +621,14 @@ function safeEqual(left: string, right: string): boolean {
 
 async function readJson(request: IncomingMessage, maxBytes: number, timeoutMs: number): Promise<unknown> {
   const contentType = request.headers["content-type"];
-  if (request.headers["content-encoding"] !== undefined) throw new HttpError(415, "content_encoding_not_allowed");
-  if (typeof contentType !== "string" || !/^application\/json(?:;\s*charset=utf-8)?$/i.test(contentType))
+  if (request.headers["content-encoding"] !== undefined) {
+    drainRequest(request);
+    throw new HttpError(415, "content_encoding_not_allowed");
+  }
+  if (typeof contentType !== "string" || !/^application\/json(?:;\s*charset=utf-8)?$/i.test(contentType)) {
+    drainRequest(request);
     throw new HttpError(415, "unsupported_media_type");
+  }
   const contentLength = request.headers["content-length"];
   if (typeof contentLength === "string" && /^\d+$/.test(contentLength) && Number(contentLength) > maxBytes) {
     drainRequest(request);
@@ -558,20 +640,7 @@ async function readJson(request: IncomingMessage, maxBytes: number, timeoutMs: n
   let timeout: NodeJS.Timeout | undefined;
   try {
     await new Promise<void>((resolve, reject) => {
-      const finish = (error?: Error) => {
-        if (settled) return;
-        settled = true;
-        request.removeAllListeners("data");
-        request.removeAllListeners("end");
-        request.removeAllListeners("error");
-        if (error !== undefined) reject(error);
-        else resolve();
-      };
-      timeout = setTimeout(() => {
-        drainRequest(request);
-        finish(new HttpError(408, "request_timeout"));
-      }, timeoutMs);
-      request.on("data", (chunk: Buffer) => {
+      const onData = (chunk: Buffer) => {
         bytes += chunk.length;
         if (bytes > maxBytes) {
           drainRequest(request);
@@ -579,9 +648,25 @@ async function readJson(request: IncomingMessage, maxBytes: number, timeoutMs: n
           return;
         }
         chunks.push(chunk);
-      });
-      request.on("end", () => finish());
-      request.on("error", finish);
+      };
+      const onEnd = () => finish();
+      const onError = (error: Error) => finish(error);
+      const finish = (error?: Error) => {
+        if (settled) return;
+        settled = true;
+        request.off("data", onData);
+        request.off("end", onEnd);
+        request.off("error", onError);
+        if (error !== undefined) reject(error);
+        else resolve();
+      };
+      timeout = setTimeout(() => {
+        drainRequest(request);
+        finish(new HttpError(408, "request_timeout"));
+      }, timeoutMs);
+      request.on("data", onData);
+      request.on("end", onEnd);
+      request.on("error", onError);
     });
   } finally {
     if (timeout !== undefined) clearTimeout(timeout);
@@ -636,9 +721,19 @@ function writeJson(
   correlationId: string,
 ): void {
   if (response.destroyed || response.writableEnded) return;
-  const payload = Buffer.from(JSON.stringify(body));
-  if (payload.length > maxResponseBytes) {
+  const limit = Number.isSafeInteger(maxResponseBytes) && maxResponseBytes >= 128 ? maxResponseBytes : 128;
+  let payload: Buffer;
+  try {
+    payload = Buffer.from(JSON.stringify(body));
+  } catch {
+    payload = Buffer.from(JSON.stringify({ version: "cogs.error/v1alpha1", error: "internal" }));
+  }
+  if (payload.length > limit) {
     const overflow = Buffer.from(JSON.stringify({ version: "cogs.error/v1alpha1", error: "response_too_large" }));
+    if (overflow.length > limit) {
+      response.destroy();
+      return;
+    }
     if (!response.headersSent)
       response.writeHead(500, {
         "content-type": "application/json; charset=utf-8",
@@ -660,25 +755,66 @@ function writeJson(
 }
 
 function validateEvent(event: ApiEvent): ApiEvent {
-  if (!plainObject(event)) throw new Error("malformed event");
+  if (!strictPlainObject(event)) throw new Error("malformed event");
   const keys = Object.keys(event);
   if (keys.some((key) => key !== "type" && key !== "correlation_id" && key !== "payload"))
     throw new Error("malformed event");
-  if (typeof event.type !== "string" || !/^[a-z][a-z0-9._:-]{0,63}$/.test(event.type))
-    throw new Error("malformed event");
+  const type = dataProperty(event, "type");
+  const correlation = dataProperty(event, "correlation_id");
+  const payload = dataProperty(event, "payload");
+  if (typeof type !== "string" || !/^[a-z][a-z0-9._:-]{0,63}$/.test(type)) throw new Error("malformed event");
   if (
-    event.correlation_id !== undefined &&
-    (typeof event.correlation_id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(event.correlation_id))
+    correlation !== undefined &&
+    (typeof correlation !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(correlation))
   )
     throw new Error("malformed event");
-  const clean: { type: string; correlation_id?: string; payload?: JsonValue } = { type: event.type };
-  if (event.correlation_id !== undefined) clean.correlation_id = event.correlation_id;
-  if (event.payload !== undefined) clean.payload = event.payload;
+  const clean: { type: string; correlation_id?: string; payload?: JsonValue } = { type };
+  if (correlation !== undefined) clean.correlation_id = correlation;
+  if (payload !== undefined) clean.payload = validateJsonValue(payload);
   return clean;
 }
 
 function serializeSse(seq: number, event: ApiEvent): string {
   return `id: ${seq}\nevent: cogs\ndata: ${JSON.stringify({ ...event, version: "cogs.event/v1alpha1", seq })}\n\n`;
+}
+
+function dataProperty(object: object, key: string): unknown {
+  const descriptor = Object.getOwnPropertyDescriptor(object, key);
+  if (descriptor === undefined) return undefined;
+  if (!("value" in descriptor)) throw new Error("malformed event");
+  return descriptor.value;
+}
+
+function strictPlainObject(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function validateJsonValue(value: unknown, seen = new Set<object>(), depth = 0, count = { value: 0 }): JsonValue {
+  count.value += 1;
+  if (depth > 32 || count.value > 4096) throw new Error("malformed event");
+  if (value === null || typeof value === "string" || typeof value === "boolean") return value;
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) throw new Error("malformed event");
+    return value;
+  }
+  if (typeof value !== "object") throw new Error("malformed event");
+  if (seen.has(value)) throw new Error("malformed event");
+  seen.add(value);
+  try {
+    if (Array.isArray(value)) return value.map((item) => validateJsonValue(item, seen, depth + 1, count));
+    if (!strictPlainObject(value)) throw new Error("malformed event");
+    const output: Record<string, JsonValue> = {};
+    for (const key of Object.keys(value)) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (descriptor === undefined || !("value" in descriptor)) throw new Error("malformed event");
+      if (descriptor.value !== undefined) output[key] = validateJsonValue(descriptor.value, seen, depth + 1, count);
+    }
+    return output;
+  } finally {
+    seen.delete(value);
+  }
 }
 
 function writeSerializedSse(response: ServerResponse, _seq: number, serialized: string): boolean {
@@ -698,6 +834,44 @@ function correlationFrom(request: IncomingMessage): string {
 
 function drainRequest(request: IncomingMessage): void {
   request.resume();
+}
+
+function validateConfig(options: ApiServerOptions): void {
+  const bearerBytes = Buffer.byteLength(options.bearerToken, "utf8");
+  if (bearerBytes < 32 || bearerBytes > 4096 || hasControlCharacter(options.bearerToken))
+    throw new Error("invalid bearer token configuration");
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(options.sessionId))
+    throw new Error("invalid session id configuration");
+}
+
+function hasControlCharacter(value: string): boolean {
+  for (const character of value) {
+    const code = character.codePointAt(0);
+    if (code !== undefined && (code < 0x20 || code === 0x7f)) return true;
+  }
+  return false;
+}
+
+function optionInteger(value: number | undefined, fallback: number, name: string, min: number, max: number): number {
+  const resolved = value ?? fallback;
+  if (!Number.isSafeInteger(resolved) || resolved < min || resolved > max) throw new Error(`invalid ${name}`);
+  return resolved;
+}
+
+function loopbackHost(host: string): boolean {
+  return host === "127.0.0.1" || host === "::1" || host === "localhost";
+}
+
+function validRequestTarget(target: string): boolean {
+  return target.startsWith("/") && !target.startsWith("//") && !/[\r\n]/u.test(target);
+}
+
+function duplicateHeader(request: IncomingMessage, name: string): boolean {
+  let count = 0;
+  for (let i = 0; i < request.rawHeaders.length; i += 2) {
+    if (request.rawHeaders[i]?.toLowerCase() === name) count += 1;
+  }
+  return count > 1;
 }
 
 async function withPortTimeout<T>(operation: (signal: AbortSignal) => Promise<T>, timeoutMs: number): Promise<T> {

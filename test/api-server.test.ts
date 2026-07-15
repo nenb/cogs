@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { request as httpRequest } from "node:http";
+import { request as httpRequest, ServerResponse } from "node:http";
 import test from "node:test";
 import {
   type ApiServer,
@@ -90,7 +90,7 @@ async function withServer<T>(
     session: p.session,
     history: p.history,
     exporter: p.exporter,
-    bearerToken: "worker-secret-0123456789",
+    bearerToken: "worker-secret-0123456789abcdefghi",
     sessionId: "session-1",
     ...opts,
   });
@@ -106,7 +106,7 @@ async function json(base: string, path: string, init: RequestInit = {}) {
   return fetch(`${base}${path}`, {
     ...init,
     headers: {
-      authorization: "Bearer worker-secret-0123456789",
+      authorization: "Bearer worker-secret-0123456789abcdefghi",
       "content-type": "application/json",
       ...(init.headers ?? {}),
     },
@@ -126,11 +126,11 @@ test("auth, route, method, and content-type handling are strict and redacted", a
     assert.equal((await json(base, "/v1/input/", { method: "POST", body: "{}" })).status, 404);
     const badType = await fetch(`${base}/v1/input`, {
       method: "POST",
-      headers: { authorization: "Bearer worker-secret-0123456789", "content-type": "text/plain" },
+      headers: { authorization: "Bearer worker-secret-0123456789abcdefghi", "content-type": "text/plain" },
       body: "{}",
     });
     assert.equal(badType.status, 415);
-    assert.doesNotMatch(await badType.text(), /worker-secret-0123456789|prompt|users\//);
+    assert.doesNotMatch(await badType.text(), /worker-secret-0123456789abcdefghi|prompt|users\//);
   });
 });
 
@@ -180,7 +180,7 @@ test("bounded duplicate suppression coalesces concurrent duplicate input", async
     session: p.session,
     history: p.history,
     exporter: p.exporter,
-    bearerToken: "worker-secret-0123456789",
+    bearerToken: "worker-secret-0123456789abcdefghi",
     sessionId: "session-1",
   });
   const { port } = await api.listen();
@@ -225,7 +225,7 @@ test("SSE sequence supports replay and rejects replay gaps while slow consumers 
       api.publish({ type: "one" });
       api.publish({ type: "two", payload: { ok: true } });
       const replay = await fetch(`${base}/v1/events?after=0`, {
-        headers: { authorization: "Bearer worker-secret-0123456789" },
+        headers: { authorization: "Bearer worker-secret-0123456789abcdefghi" },
       });
       assert.equal(replay.status, 200);
       const reader = replay.body?.getReader();
@@ -250,7 +250,7 @@ test("SSE sequence supports replay and rejects replay gaps while slow consumers 
       api.publish({ type: "two" });
       api.publish({ type: "three" });
       const gap = await fetch(`${base}/v1/events?after=0`, {
-        headers: { authorization: "Bearer worker-secret-0123456789" },
+        headers: { authorization: "Bearer worker-secret-0123456789abcdefghi" },
       });
       assert.equal(gap.status, 409);
     },
@@ -289,7 +289,7 @@ test("export is authenticated API only and response overflow is bounded", async 
     session: p.session,
     history: p.history,
     exporter: p.exporter,
-    bearerToken: "worker-secret-0123456789",
+    bearerToken: "worker-secret-0123456789abcdefghi",
     sessionId: "session-1",
     maxResponseBytes: 128,
   });
@@ -330,7 +330,7 @@ test("malformed, oversized, and slow request bodies are rejected", async () => {
     session: p.session,
     history: p.history,
     exporter: p.exporter,
-    bearerToken: "worker-secret-0123456789",
+    bearerToken: "worker-secret-0123456789abcdefghi",
     sessionId: "session-1",
     requestTimeoutMs: 20,
   });
@@ -343,7 +343,7 @@ test("malformed, oversized, and slow request bodies are rejected", async () => {
           port,
           path: "/v1/input",
           method: "POST",
-          headers: { authorization: "Bearer worker-secret-0123456789", "content-type": "application/json" },
+          headers: { authorization: "Bearer worker-secret-0123456789abcdefghi", "content-type": "application/json" },
         },
         (res) => {
           resolve(res.statusCode ?? 0);
@@ -376,7 +376,7 @@ test("readiness loss gates dependency-requiring operations", async () => {
       503,
     );
     assert.equal((await json(base, "/v1/entries", { method: "GET" })).status, 503);
-    assert.equal((await json(base, "/v1/state", { method: "GET" })).status, 200);
+    assert.equal((await json(base, "/v1/state", { method: "GET" })).status, 503);
     assert.equal((await json(base, "/v1/shutdown", { method: "POST", body: "{}" })).status, 202);
   });
 });
@@ -399,7 +399,7 @@ test("duplicate id mismatch and pending duplicate flood fail boundedly", async (
     session: p.session,
     history: p.history,
     exporter: p.exporter,
-    bearerToken: "worker-secret-0123456789",
+    bearerToken: "worker-secret-0123456789abcdefghi",
     sessionId: "session-1",
     duplicateCapacity: 1,
   });
@@ -462,7 +462,7 @@ test("concurrent distinct prompts are serialized and abort/shutdown ports are id
     session: p.session,
     history: p.history,
     exporter: p.exporter,
-    bearerToken: "worker-secret-0123456789",
+    bearerToken: "worker-secret-0123456789abcdefghi",
     sessionId: "session-1",
   });
   const { port } = await api.listen();
@@ -514,7 +514,7 @@ test("query/body smuggling, malformed cursors, and hanging ports fail closed", a
           port: Number(url.port),
           path: "/v1/state",
           method: "GET",
-          headers: { authorization: "Bearer worker-secret-0123456789", "content-length": "2" },
+          headers: { authorization: "Bearer worker-secret-0123456789abcdefghi", "content-length": "2" },
         },
         (res) => {
           resolve(res.statusCode ?? 0);
@@ -539,7 +539,7 @@ test("query/body smuggling, malformed cursors, and hanging ports fail closed", a
     session: p.session,
     history: p.history,
     exporter: p.exporter,
-    bearerToken: "worker-secret-0123456789",
+    bearerToken: "worker-secret-0123456789abcdefghi",
     sessionId: "session-1",
     portTimeoutMs: 20,
   });
@@ -555,9 +555,9 @@ test("SSE rejects malformed or oversized events and handles disconnect cleanup",
   await withServer(
     async ({ base, api }) => {
       assert.equal(api.publish({ type: "ok", payload: { seq: 99, version: "evil" } }), true);
-      assert.throws(() => api.publish({ type: "bad", seq: 1 } as never));
+      assert.equal(api.publish({ type: "bad", seq: 1 } as never), false);
       const stream = await fetch(`${base}/v1/events?after=0`, {
-        headers: { authorization: "Bearer worker-secret-0123456789" },
+        headers: { authorization: "Bearer worker-secret-0123456789abcdefghi" },
       });
       assert.equal(stream.status, 200);
       await stream.body?.cancel();
@@ -573,6 +573,260 @@ test("SSE rejects malformed or oversized events and handles disconnect cleanup",
   );
 });
 
+test("duplicate cache is LRU for settled entries and refreshes exact duplicate hits", async () => {
+  await withServer(
+    async ({ base, p }) => {
+      const submit = async (request_id: string, content: string) => {
+        p.setRunState("idle");
+        return body(
+          await json(base, "/v1/input", {
+            method: "POST",
+            body: JSON.stringify({ request_id, type: "prompt", content }),
+          }),
+        );
+      };
+      assert.equal((await submit("lru-a", "a")).duplicate, false);
+      assert.equal((await submit("lru-b", "b")).duplicate, false);
+      assert.equal((await submit("lru-a", "a")).duplicate, true);
+      assert.equal((await submit("lru-c", "c")).duplicate, false);
+      assert.equal((await submit("lru-a", "a")).duplicate, true);
+      assert.equal((await submit("lru-b", "b")).duplicate, false);
+    },
+    { duplicateCapacity: 2 },
+  );
+});
+
+test("configuration rejects unsafe bearer, session, capacity, and size options", async () => {
+  const life = lifecycle();
+  const p = ports();
+  const base = {
+    lifecycle: life as never,
+    session: p.session,
+    history: p.history,
+    exporter: p.exporter,
+    bearerToken: "x".repeat(32),
+    sessionId: "session-1",
+  };
+  assert.throws(() => createApiServer({ ...base, bearerToken: "short" }), /bearer/);
+  assert.throws(() => createApiServer({ ...base, bearerToken: `${"x".repeat(31)}\n` }), /bearer/);
+  assert.throws(() => createApiServer({ ...base, bearerToken: "x".repeat(4097) }), /bearer/);
+  assert.throws(() => createApiServer({ ...base, sessionId: "../other" }), /session/);
+  assert.throws(() => createApiServer({ ...base, duplicateCapacity: 0 }), /duplicateCapacity/);
+  assert.throws(() => createApiServer({ ...base, eventReplayCapacity: 0 }), /eventReplayCapacity/);
+  assert.throws(() => createApiServer({ ...base, maxResponseBytes: 1 }), /maxResponseBytes/);
+  assert.throws(() => createApiServer({ ...base, requestTimeoutMs: Number.POSITIVE_INFINITY }), /requestTimeoutMs/);
+});
+
+test("not-ready admission drains slow bodies without dangling sockets", async () => {
+  const life = lifecycle();
+  life.ready = false;
+  const p = ports();
+  const api = createApiServer({
+    lifecycle: life as never,
+    session: p.session,
+    history: p.history,
+    exporter: p.exporter,
+    bearerToken: "worker-secret-0123456789abcdefghi",
+    sessionId: "session-1",
+  });
+  const { port } = await api.listen();
+  try {
+    const status = await new Promise<number>((resolve, reject) => {
+      const req = httpRequest(
+        {
+          host: "127.0.0.1",
+          port,
+          path: "/v1/input",
+          method: "POST",
+          headers: {
+            authorization: "Bearer worker-secret-0123456789abcdefghi",
+            "content-type": "application/json",
+            "content-length": "100000",
+          },
+        },
+        (res) => {
+          resolve(res.statusCode ?? 0);
+          res.resume();
+        },
+      );
+      req.on("error", reject);
+      req.write('{"request_id":"slow"');
+    });
+    assert.equal(status, 503);
+    assert.equal((await json(`http://127.0.0.1:${port}`, "/health/live", { method: "GET" })).status, 200);
+  } finally {
+    await api.close();
+  }
+});
+
+test("port timeout poisons readiness, shuts down once, and ignores late noncooperative completion", async () => {
+  let inputCalls = 0;
+  let lateMutation = "before";
+  const life = lifecycle();
+  const p = ports({
+    session: {
+      input: async () => {
+        inputCalls += 1;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        lateMutation = "after";
+        return "running";
+      },
+    },
+  });
+  const api = createApiServer({
+    lifecycle: life as never,
+    session: p.session,
+    history: p.history,
+    exporter: p.exporter,
+    bearerToken: "worker-secret-0123456789abcdefghi",
+    sessionId: "session-1",
+    portTimeoutMs: 10,
+  });
+  const { port } = await api.listen();
+  const base = `http://127.0.0.1:${port}`;
+  try {
+    const timedOut = await json(base, "/v1/input", {
+      method: "POST",
+      body: JSON.stringify({ request_id: "t1", type: "prompt", content: "timeout" }),
+    });
+    assert.equal(timedOut.status, 504);
+    assert.equal(life.shutdowns, 1);
+    assert.equal((await json(base, "/health/ready", { method: "GET" })).status, 503);
+    assert.equal(
+      (await json(base, "/v1/export", { method: "POST", body: JSON.stringify({ request_id: "x" }) })).status,
+      503,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 70));
+    assert.equal(lateMutation, "after");
+    assert.equal(inputCalls, 1);
+    assert.equal(life.shutdowns, 1);
+    assert.equal((await json(base, "/v1/entries", { method: "GET" })).status, 503);
+  } finally {
+    await api.close();
+  }
+});
+
+test("publish validates payload graph and disconnects actual backpressure consumers", async () => {
+  await withServer(async ({ api }) => {
+    assert.equal(api.publish({ type: "nan", payload: Number.NaN }), false);
+    assert.equal(api.publish({ type: "bigint", payload: 1n as never }), false);
+    const cycle: Record<string, unknown> = {};
+    cycle.self = cycle;
+    assert.equal(api.publish({ type: "cycle", payload: cycle as never }), false);
+    const accessor = Object.create(null, { value: { get: () => "secret", enumerable: true } });
+    assert.equal(api.publish({ type: "accessor", payload: accessor }), false);
+    assert.equal(api.publish({ type: "ok", payload: { nested: [1, true, null] } }), true);
+  });
+
+  const originalWrite = ServerResponse.prototype.write;
+  let sawBackpressureWrite = false;
+  try {
+    ServerResponse.prototype.write = function patchedWrite(
+      this: ServerResponse,
+      chunk: unknown,
+      ...args: unknown[]
+    ): boolean {
+      if (typeof chunk === "string" && chunk.includes("backpressure")) {
+        sawBackpressureWrite = true;
+        return false;
+      }
+      return Reflect.apply(originalWrite, this, [chunk, ...args]) as boolean;
+    };
+    await withServer(async ({ base, api }) => {
+      void fetch(`${base}/v1/events`, {
+        headers: { authorization: "Bearer worker-secret-0123456789abcdefghi" },
+      }).catch(() => undefined);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      assert.equal(api.publish({ type: "backpressure" }), true);
+      assert.equal(sawBackpressureWrite, true);
+      assert.equal(api.publish({ type: "after-backpressure" }), true);
+    });
+  } finally {
+    ServerResponse.prototype.write = originalWrite;
+  }
+});
+
+test("startup and request-target routing are loopback and origin-form only", async () => {
+  const life = lifecycle();
+  const p = ports();
+  const api = createApiServer({
+    lifecycle: life as never,
+    session: p.session,
+    history: p.history,
+    exporter: p.exporter,
+    bearerToken: "worker-secret-0123456789abcdefghi",
+    sessionId: "session-1",
+  });
+  await assert.rejects(api.listen(0, "0.0.0.0"), /loopback/);
+  const first = createApiServer({
+    lifecycle: life as never,
+    session: p.session,
+    history: p.history,
+    exporter: p.exporter,
+    bearerToken: "worker-secret-0123456789abcdefghi",
+    sessionId: "session-1",
+  });
+  const second = createApiServer({
+    lifecycle: life as never,
+    session: p.session,
+    history: p.history,
+    exporter: p.exporter,
+    bearerToken: "worker-secret-0123456789abcdefghi",
+    sessionId: "session-1",
+  });
+  const { port } = await first.listen();
+  await assert.rejects(second.listen(port), /EADDRINUSE/);
+  await first.close();
+
+  const routed = createApiServer({
+    lifecycle: life as never,
+    session: p.session,
+    history: p.history,
+    exporter: p.exporter,
+    bearerToken: "worker-secret-0123456789abcdefghi",
+    sessionId: "session-1",
+  });
+  const listened = await routed.listen();
+  try {
+    const rawStatus = (
+      path: string,
+      headers: string[] = ["authorization", "Bearer worker-secret-0123456789abcdefghi"],
+    ) =>
+      new Promise<number>((resolve, reject) => {
+        const req = httpRequest({ host: "127.0.0.1", port: listened.port, path, method: "GET", headers }, (res) => {
+          resolve(res.statusCode ?? 0);
+          res.resume();
+        });
+        req.on("error", reject);
+        req.end();
+      });
+    assert.equal(await rawStatus("http://evil.example/v1/state"), 400);
+    assert.equal(await rawStatus("//evil.example/v1/state"), 400);
+    assert.equal(
+      await rawStatus("/v1/state", [
+        "authorization",
+        "Bearer worker-secret-0123456789abcdefghi",
+        "Authorization",
+        "Bearer worker-secret-0123456789abcdefghi",
+      ]),
+      400,
+    );
+    assert.equal(
+      await rawStatus("/v1/state", [
+        "authorization",
+        "Bearer worker-secret-0123456789abcdefghi",
+        "x-cogs-correlation-id",
+        "a",
+        "X-Cogs-Correlation-Id",
+        "b",
+      ]),
+      400,
+    );
+  } finally {
+    await routed.close();
+  }
+});
+
 test("state and readiness follow lifecycle without cross-session data", async () => {
   await withServer(async ({ base, life }) => {
     let ready = await json(base, "/health/ready", { method: "GET" });
@@ -582,6 +836,6 @@ test("state and readiness follow lifecycle without cross-session data", async ()
     assert.equal(ready.status, 503);
     const state = await json(base, "/v1/state", { method: "GET" });
     const stateBody = JSON.stringify(await body(state));
-    assert.doesNotMatch(stateBody, /worker-secret-0123456789|other-session|raw_export/);
+    assert.doesNotMatch(stateBody, /worker-secret-0123456789abcdefghi|other-session|raw_export/);
   });
 });
