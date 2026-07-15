@@ -1,8 +1,9 @@
 # ADR 0015: Stage 3 egress integration scope and line budget
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-15
 - Decision owner: Nick Byrne
+- Accepted by: Nick Byrne on 2026-07-15
 
 ## Context
 
