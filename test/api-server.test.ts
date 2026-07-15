@@ -1,7 +1,16 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { request as httpRequest, ServerResponse } from "node:http";
+import { createRequire } from "node:module";
 import { connect as netConnect } from "node:net";
+import { resolve } from "node:path";
 import test from "node:test";
+import type { Ajv as AjvCore } from "ajv";
+
+const require = createRequire(import.meta.url);
+const Ajv = require("ajv/dist/2020") as new (options?: Record<string, unknown>) => AjvCore;
+const addFormats = require("ajv-formats") as (ajv: AjvCore) => AjvCore;
+
 import {
   type ApiServer,
   createApiServer,
@@ -118,6 +127,10 @@ async function body(response: Response): Promise<Record<string, unknown>> {
   return (await response.json()) as Record<string, unknown>;
 }
 
+function event(kind: string, payload: Record<string, unknown> = {}) {
+  return { kind, correlation_id: "corr-event", payload } as never;
+}
+
 async function rawHttp(
   port: number,
   request: string,
@@ -186,6 +199,26 @@ test("input accepts legal transitions, rejects malformed and illegal combination
     assert.equal(accepted.headers.get("x-cogs-correlation-id"), "corr-ok");
     assert.equal((await body(accepted)).correlation_id, "corr-ok");
     assert.deepEqual(p.inputs, ["prompt:hello:corr-ok"]);
+
+    let retainedSignal: AbortSignal | undefined;
+    (p.session as { input: SessionPort["input"] }).input = async (input) => {
+      retainedSignal = input.signal;
+      p.inputs.push(`${input.kind}:${input.content}:${input.correlationId}`);
+      return "running";
+    };
+    const steerAccepted = await json(base, "/v1/input", {
+      method: "POST",
+      headers: { "x-cogs-correlation-id": "corr-steer" },
+      body: JSON.stringify({ request_id: "r4", type: "steer", content: "queue" }),
+    });
+    assert.equal(steerAccepted.status, 202);
+    assert.equal(retainedSignal, undefined, "accepted input runs must not retain the API admission timeout signal");
+    p.setRunState("idle");
+    const followIdle = await json(base, "/v1/input", {
+      method: "POST",
+      body: JSON.stringify({ request_id: "r5", type: "follow_up", content: "not-running" }),
+    });
+    assert.equal(followIdle.status, 409);
   });
 });
 
@@ -251,8 +284,8 @@ test("abort and shutdown are idempotent and fail closed", async () => {
 test("SSE sequence supports replay and rejects replay gaps while slow consumers are cleaned up", async () => {
   await withServer(
     async ({ base, api }) => {
-      api.publish({ type: "one" });
-      api.publish({ type: "two", payload: { ok: true } });
+      api.publish(event("pi_event", { name: "one" }));
+      api.publish(event("pi_event", { ok: true }));
       const replay = await fetch(`${base}/v1/events?after=0`, {
         headers: { authorization: "Bearer worker-secret-0123456789abcdefghi" },
       });
@@ -275,9 +308,9 @@ test("SSE sequence supports replay and rejects replay gaps while slow consumers 
   );
   await withServer(
     async ({ base, api }) => {
-      api.publish({ type: "one" });
-      api.publish({ type: "two" });
-      api.publish({ type: "three" });
+      api.publish(event("pi_event", { name: "one" }));
+      api.publish(event("pi_event", { name: "two" }));
+      api.publish(event("pi_event", { name: "three" }));
       const gap = await fetch(`${base}/v1/events?after=0`, {
         headers: { authorization: "Bearer worker-secret-0123456789abcdefghi" },
       });
@@ -285,6 +318,46 @@ test("SSE sequence supports replay and rejects replay gaps while slow consumers 
     },
     { eventReplayCapacity: 1 },
   );
+});
+
+test("SSE envelopes exactly validate the authoritative event schema", async () => {
+  const schema = JSON.parse(await readFile(resolve(import.meta.dirname, "../schemas/events-v1alpha1.json"), "utf8"));
+  const ajv = new Ajv({ strict: true, allErrors: true });
+  addFormats(ajv);
+  const validate = ajv.compile(schema);
+  await withServer(async ({ base, api }) => {
+    api.publish({
+      kind: "tool_start",
+      correlation_id: "corr-schema",
+      request_id: "req-schema",
+      payload: { tool: "read" },
+    });
+    const response = await fetch(`${base}/v1/events?after=0`, {
+      headers: { authorization: "Bearer worker-secret-0123456789abcdefghi" },
+    });
+    assert.equal(response.status, 200);
+    const reader = response.body?.getReader();
+    assert.ok(reader);
+    const chunks: string[] = [];
+    for (;;) {
+      const read = await reader.read();
+      if (read.done) break;
+      chunks.push(Buffer.from(read.value).toString("utf8"));
+      if (chunks.join("").includes("data: ")) break;
+    }
+    await reader.cancel();
+    const dataLine = chunks
+      .join("")
+      .split("\n")
+      .find((line) => line.startsWith("data: "));
+    assert.ok(dataLine);
+    const envelope = JSON.parse(dataLine.slice("data: ".length));
+    assert.equal(validate(envelope), true, JSON.stringify(validate.errors));
+    assert.equal("type" in envelope, false);
+    assert.equal(envelope.session_id, "session-1");
+    assert.equal(envelope.seq, 1);
+    assert.equal(envelope.kind, "tool_start");
+  });
 });
 
 test("entries use authenticated opaque cursors and reject tampering", async () => {
@@ -350,6 +423,18 @@ test("malformed, oversized, and slow request bodies are rejected", async () => {
       );
     },
     { maxRequestBytes: 256 },
+  );
+
+  await withServer(
+    async ({ base }) => {
+      const utf8Oversize = await json(base, "/v1/input", {
+        method: "POST",
+        body: JSON.stringify({ request_id: "utf8", type: "prompt", content: "💣".repeat(4097) }),
+      });
+      assert.equal(utf8Oversize.status, 400);
+      assert.equal((await body(utf8Oversize)).error, "bad_content");
+    },
+    { maxRequestBytes: 65_536 },
   );
 
   const life = lifecycle();
@@ -583,20 +668,20 @@ test("query/body smuggling, malformed cursors, and hanging ports fail closed", a
 test("SSE rejects malformed or oversized events and handles disconnect cleanup", async () => {
   await withServer(
     async ({ base, api }) => {
-      assert.equal(api.publish({ type: "ok", payload: { seq: 99, version: "evil" } }), true);
-      assert.equal(api.publish({ type: "bad", seq: 1 } as never), false);
+      assert.equal(api.publish(event("pi_event", { seq: 99, version: "evil" })), true);
+      assert.equal(api.publish({ kind: "pi_event", correlation_id: "corr-event", seq: 1 } as never), false);
       const stream = await fetch(`${base}/v1/events?after=0`, {
         headers: { authorization: "Bearer worker-secret-0123456789abcdefghi" },
       });
       assert.equal(stream.status, 200);
       await stream.body?.cancel();
-      assert.equal(api.publish({ type: "after-disconnect" }), true);
+      assert.equal(api.publish(event("pi_event", { name: "after-disconnect" })), true);
     },
     { maxEventBytes: 256 },
   );
   await withServer(
     async ({ api }) => {
-      assert.equal(api.publish({ type: "too-big", payload: { data: "x".repeat(512) } }), false);
+      assert.equal(api.publish(event("pi_event", { data: "x".repeat(512) })), false);
     },
     { maxEventBytes: 128 },
   );
@@ -659,10 +744,10 @@ test("server lifecycle is deterministic and closed state is fail-closed", async 
   });
   const { port } = await api.listen();
   await assert.rejects(api.listen(), /already listening/);
-  assert.equal(api.publish({ type: "before-close" }), true);
+  assert.equal(api.publish(event("pi_event", { name: "before-close" })), true);
   await api.close();
   await api.close();
-  assert.equal(api.publish({ type: "after-close" }), false);
+  assert.equal(api.publish(event("pi_event", { name: "after-close" })), false);
   await assert.rejects(api.listen(), /closed/);
   assert.equal(life.shutdowns, 0);
 
@@ -796,7 +881,7 @@ test("port timeout poisons readiness, shuts down once, and ignores late noncoope
     });
     assert.equal(timedOut.status, 504);
     assert.equal(life.shutdowns, 1);
-    assert.equal(api.publish({ type: "after-poison" }), false);
+    assert.equal(api.publish(event("pi_event", { name: "after-poison" })), false);
     const ready = await json(base, "/health/ready", { method: "GET" });
     assert.equal(ready.status, 503);
     assert.equal((await body(ready)).ready, false);
@@ -861,7 +946,7 @@ test("input queue wait is bounded without poisoning or late delivery", async () 
     assert.deepEqual([second.status, third.status].sort(), [429, 429]);
     await new Promise((resolve) => setTimeout(resolve, 120));
     assert.deepEqual(delivered, ["first"]);
-    assert.equal(api.publish({ type: "queue-contention-not-poisoned" }), true);
+    assert.equal(api.publish(event("pi_event", { name: "queue-contention-not-poisoned" })), true);
     assert.equal((await json(base, "/health/ready", { method: "GET" })).status, 200);
   } finally {
     await api.close();
@@ -968,7 +1053,7 @@ test("malformed injected port results fail as internal errors without successful
 
 test("SSE rejects future sequence requests", async () => {
   await withServer(async ({ base, api }) => {
-    api.publish({ type: "one" });
+    api.publish(event("pi_event", { name: "one" }));
     const future = await fetch(`${base}/v1/events?after=2`, {
       headers: { authorization: "Bearer worker-secret-0123456789abcdefghi" },
     });
@@ -1017,14 +1102,14 @@ test("already-aborting state does not invoke abort port again", async () => {
 
 test("publish validates payload graph and disconnects actual backpressure consumers", async () => {
   await withServer(async ({ api }) => {
-    assert.equal(api.publish({ type: "nan", payload: Number.NaN }), false);
-    assert.equal(api.publish({ type: "bigint", payload: 1n as never }), false);
+    assert.equal(api.publish(event("pi_event", { value: Number.NaN })), false);
+    assert.equal(api.publish({ kind: "pi_event", correlation_id: "corr-event", payload: 1n } as never), false);
     const cycle: Record<string, unknown> = {};
     cycle.self = cycle;
-    assert.equal(api.publish({ type: "cycle", payload: cycle as never }), false);
+    assert.equal(api.publish(event("pi_event", cycle as never)), false);
     const accessor = Object.create(null, { value: { get: () => "secret", enumerable: true } });
-    assert.equal(api.publish({ type: "accessor", payload: accessor }), false);
-    assert.equal(api.publish({ type: "ok", payload: { nested: [1, true, null] } }), true);
+    assert.equal(api.publish(event("pi_event", accessor)), false);
+    assert.equal(api.publish(event("pi_event", { nested: [1, true, null] })), true);
   });
 
   const originalWrite = ServerResponse.prototype.write;
@@ -1046,9 +1131,9 @@ test("publish validates payload graph and disconnects actual backpressure consum
         headers: { authorization: "Bearer worker-secret-0123456789abcdefghi" },
       }).catch(() => undefined);
       await new Promise((resolve) => setTimeout(resolve, 20));
-      assert.equal(api.publish({ type: "backpressure" }), true);
+      assert.equal(api.publish(event("pi_event", { name: "backpressure" })), true);
       assert.equal(sawBackpressureWrite, true);
-      assert.equal(api.publish({ type: "after-backpressure" }), true);
+      assert.equal(api.publish(event("pi_event", { name: "after-backpressure" })), true);
     });
   } finally {
     ServerResponse.prototype.write = originalWrite;

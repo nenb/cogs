@@ -16,6 +16,7 @@
     "typecheck": "tsc --noEmit",
     "test": "tsx --test test/**/*.test.ts",
     "test:pi": "tsx --test test/pi-embedding.test.ts",
+    "test:pi:real-provider": "tsx scripts/pi-real-provider-integration.ts",
     "schemas": "tsx scripts/validate-schemas.ts",
     "presets:check": "tsx scripts/validate-presets.ts",
     "images:check": "tsx scripts/check-image-pins.ts",
