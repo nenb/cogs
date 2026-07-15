@@ -73,6 +73,24 @@ function requestHttp2(
   });
 }
 
+function abortHttp2AfterFirstChunk(fixtures: UpstreamFixtures, path: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const client = connectHttp2(fixtures.tlsOrigin, { ca: fixtures.caCertificatePem });
+    client.once("error", reject);
+    const request = client.request({ ":method": "GET", ":path": path });
+    request.once("data", () => {
+      request.close();
+      client.close();
+      resolve();
+    });
+    request.once("error", (error) => {
+      client.destroy();
+      reject(error);
+    });
+    request.end();
+  });
+}
+
 async function waitFor(predicate: () => boolean, timeoutMs = 1_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!predicate()) {
@@ -171,6 +189,54 @@ test("redirect, large, streaming, and delayed fixtures are deterministic", async
     assert.equal(delayed.status, 200);
     assert.ok(Date.now() - started >= 60, "delayed endpoint must keep a connection open for drain tests");
   });
+});
+
+test("HTTP/2 large response backpressure does not leak response listeners", async () => {
+  const warnings: Error[] = [];
+  const onWarning = (warning: Error) => {
+    if (warning.name === "MaxListenersExceededWarning" && warning.message.includes("Http2ServerResponse")) {
+      warnings.push(warning);
+    }
+  };
+  process.prependListener("warning", onWarning);
+  const fixtures = await startUpstreamFixtures({
+    expectedCredentials: credentials,
+    redirectLocation: "https://allowed.fixture.invalid/next",
+    largeResponseBytes: 4 * 1024 * 1024,
+  });
+  try {
+    const response = await requestHttp2(fixtures, "/large");
+    assert.equal(response.status, 200);
+    assert.equal(response.body.length, 4 * 1024 * 1024);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(warnings, []);
+  } finally {
+    process.off("warning", onWarning);
+    await fixtures.stop();
+  }
+});
+
+test("HTTP/2 closed large response backpressure does not leak response listeners", async () => {
+  const warnings: Error[] = [];
+  const onWarning = (warning: Error) => {
+    if (warning.name === "MaxListenersExceededWarning" && warning.message.includes("Http2ServerResponse")) {
+      warnings.push(warning);
+    }
+  };
+  process.prependListener("warning", onWarning);
+  const fixtures = await startUpstreamFixtures({
+    expectedCredentials: credentials,
+    redirectLocation: "https://allowed.fixture.invalid/next",
+    largeResponseBytes: 4 * 1024 * 1024,
+  });
+  try {
+    await abortHttp2AfterFirstChunk(fixtures, "/large");
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(warnings, []);
+  } finally {
+    process.off("warning", onWarning);
+    await fixtures.stop();
+  }
 });
 
 test("TCP and UDP listeners are silent denial sensors with positive controls", async () => {
