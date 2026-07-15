@@ -1,0 +1,318 @@
+{
+  "version": "cogs.envoy-ext-authz-descriptor/v1alpha1",
+  "envoy_version": "1.38.3",
+  "root_proto": "envoy/service/auth/v3/external_auth.proto",
+  "descriptor": {
+    "path": "ext_authz.descriptor.pb",
+    "sha256": "f380ca351c3aa52c40b70c1cfe11378ec514b670060139e6c3ac92baa22051dd",
+    "size_bytes": 44227,
+    "include_imports": true,
+    "include_source_info": false,
+    "file_names": [
+      "google/protobuf/any.proto",
+      "google/protobuf/descriptor.proto",
+      "udpa/annotations/status.proto",
+      "google/protobuf/duration.proto",
+      "google/protobuf/timestamp.proto",
+      "validate/validate.proto",
+      "envoy/config/core/v3/extension.proto",
+      "udpa/annotations/versioning.proto",
+      "envoy/config/core/v3/socket_option.proto",
+      "google/protobuf/wrappers.proto",
+      "envoy/annotations/deprecation.proto",
+      "envoy/config/core/v3/address.proto",
+      "envoy/config/core/v3/backoff.proto",
+      "envoy/config/core/v3/http_uri.proto",
+      "envoy/type/v3/percent.proto",
+      "envoy/type/v3/semantic_version.proto",
+      "google/protobuf/struct.proto",
+      "xds/annotations/v3/status.proto",
+      "xds/core/v3/context_params.proto",
+      "udpa/annotations/migrate.proto",
+      "envoy/config/core/v3/base.proto",
+      "envoy/service/auth/v3/attribute_context.proto",
+      "envoy/type/v3/http_status.proto",
+      "google/rpc/status.proto",
+      "envoy/service/auth/v3/external_auth.proto"
+    ],
+    "sha256_file": {
+      "path": "ext_authz.descriptor.sha256",
+      "sha256": "e0e398f42a7444db961d6e0e0688a7704ef57f2ac3c73a3f6c1fe05f3b2292ad"
+    }
+  },
+  "protoc": {
+    "version": "33.1",
+    "reported_version": "libprotoc 33.1",
+    "linux_x86_64_url": "https://github.com/protocolbuffers/protobuf/releases/download/v33.1/protoc-33.1-linux-x86_64.zip",
+    "linux_x86_64_sha256": "f3340e28a83d1c637d8bafdeed92b9f7db6a384c26bca880a6e5217b40a4328b"
+  },
+  "loader": {
+    "grpc_js_version": "1.14.4",
+    "proto_loader_version": "0.8.1",
+    "method": "loadFileDescriptorSetFromBuffer",
+    "options": {
+      "keepCase": true,
+      "longs": "String",
+      "enums": "String",
+      "defaults": false,
+      "oneofs": true,
+      "json": false,
+      "includeDirs": []
+    },
+    "service_path": "/envoy.service.auth.v3.Authorization/Check",
+    "request_stream": false,
+    "response_stream": false
+  },
+  "sources": [
+    {
+      "name": "envoy",
+      "version": "1.38.3",
+      "license": "Apache-2.0",
+      "url": "https://github.com/envoyproxy/envoy/archive/refs/tags/v1.38.3.tar.gz",
+      "sha256": "db23fed5e174e7988e4b0eaf7718cd3c33230f334bb3fa458e90549a506a8944",
+      "id": "envoy"
+    },
+    {
+      "name": "googleapis",
+      "version": "0.0.0-20251003-2193a2bf",
+      "license": "Apache-2.0",
+      "url": "https://github.com/googleapis/googleapis/archive/2193a2bfcecb92b92aad7a4d81baa428cafd7dfd.zip",
+      "bcrIntegrity": "sha256-B6b3AM7lynlvUjCHbthFS/HYzECbOz5jRQW8TzKp9ys=",
+      "sha256": "07a6f700cee5ca796f5230876ed8454bf1d8cc409b3b3e634505bc4f32a9f72b",
+      "id": "googleapis"
+    },
+    {
+      "name": "protoc-gen-validate",
+      "version": "1.2.1.bcr.2",
+      "license": "Apache-2.0",
+      "url": "https://github.com/bufbuild/protoc-gen-validate/archive/refs/tags/v1.2.1.tar.gz",
+      "bcrIntegrity": "sha256-5HGDUnVN8Tk7h5K2MTOKqFYvOQ6BYHg+NlRUvBHZYyg=",
+      "sha256": "e4718352754df1393b8792b631338aa8562f390e8160783e365454bc11d96328",
+      "id": "pgv"
+    },
+    {
+      "name": "protobuf",
+      "version": "33.1",
+      "license": "BSD-3-Clause",
+      "url": "https://github.com/protocolbuffers/protobuf/releases/download/v33.1/protobuf-33.1.tar.gz",
+      "bcrIntegrity": "sha256-/aEyywyGQAOBwK8f6YvQ93XLVmyyR83MEF40TgCsww4=",
+      "sha256": "fda132cb0c86400381c0af1fe98bd0f775cb566cb247cdcc105e344e00acc30e",
+      "id": "protobuf"
+    },
+    {
+      "name": "xds",
+      "version": "0.0.0-20240423-555b57e",
+      "license": "Apache-2.0",
+      "url": "https://github.com/cncf/xds/archive/555b57ec207be86f811fb0c04752db6f85e3d7e2.tar.gz",
+      "bcrIntegrity": "sha256-DIxPD2f+2We1EEn31eLKepvUM5cKKciOJyyGZTKBcvU=",
+      "sha256": "0c8c4f0f67fed967b51049f7d5e2ca7a9bd433970a29c88e272c8665328172f5",
+      "id": "xds"
+    }
+  ],
+  "files": [
+    {
+      "path": "google/protobuf/any.proto",
+      "sourceId": "protobuf",
+      "sha256": "bcf5de6ce463b1a38ff76b77955aa7e580b4ec12af34a927b1d45c9efb0faf66",
+      "license": "BSD-3-Clause",
+      "originPath": "src/google/protobuf/any.proto"
+    },
+    {
+      "path": "google/protobuf/descriptor.proto",
+      "sourceId": "protobuf",
+      "sha256": "9660f572748b9c98cf2aea2e937f9481b7c1c5d5ba0dbb556936a4c5a5f1c271",
+      "license": "BSD-3-Clause",
+      "originPath": "src/google/protobuf/descriptor.proto"
+    },
+    {
+      "path": "udpa/annotations/status.proto",
+      "sourceId": "xds",
+      "sha256": "038771f31b67fc4d5be4b41eb08e5846bd4e972d3aa73674097706a8aac9e697",
+      "license": "Apache-2.0",
+      "originPath": "udpa/annotations/status.proto"
+    },
+    {
+      "path": "google/protobuf/duration.proto",
+      "sourceId": "protobuf",
+      "sha256": "a3f7301ff2956ec2e30c2241ece07197e4a86c752348d5607224819d4921c9fe",
+      "license": "BSD-3-Clause",
+      "originPath": "src/google/protobuf/duration.proto"
+    },
+    {
+      "path": "google/protobuf/timestamp.proto",
+      "sourceId": "protobuf",
+      "sha256": "79c9bb541fdd52214ca3d3a2c991e0dfec5bb2a9a05ba2e061e3fc68b460407d",
+      "license": "BSD-3-Clause",
+      "originPath": "src/google/protobuf/timestamp.proto"
+    },
+    {
+      "path": "validate/validate.proto",
+      "sourceId": "pgv",
+      "sha256": "68c9625ebe0668605a37670db1759ceb03864bc07c52eee919b049347cbc018c",
+      "license": "Apache-2.0",
+      "originPath": "validate/validate.proto"
+    },
+    {
+      "path": "envoy/config/core/v3/extension.proto",
+      "sourceId": "envoy",
+      "sha256": "860106c686cab11106159f462243ce4009cbc405f197df7df8ab423af71a82a7",
+      "license": "Apache-2.0",
+      "originPath": "api/envoy/config/core/v3/extension.proto"
+    },
+    {
+      "path": "udpa/annotations/versioning.proto",
+      "sourceId": "xds",
+      "sha256": "d53f268b4a2b69a6067ff06a43486fb2a2a0d65a3405d3cf43e82192818e2d27",
+      "license": "Apache-2.0",
+      "originPath": "udpa/annotations/versioning.proto"
+    },
+    {
+      "path": "envoy/config/core/v3/socket_option.proto",
+      "sourceId": "envoy",
+      "sha256": "78937443cba81f3a60a18b71debc9962b27b484ec55ea79892cfb1deabda9058",
+      "license": "Apache-2.0",
+      "originPath": "api/envoy/config/core/v3/socket_option.proto"
+    },
+    {
+      "path": "google/protobuf/wrappers.proto",
+      "sourceId": "protobuf",
+      "sha256": "6878dc7534cf9805eee56345cdc38b5e9ca39dece246710c663c7007a67fef49",
+      "license": "BSD-3-Clause",
+      "originPath": "src/google/protobuf/wrappers.proto"
+    },
+    {
+      "path": "envoy/annotations/deprecation.proto",
+      "sourceId": "envoy",
+      "sha256": "bc72a2deefc60cacdb0f49380e1c92028078e219b02993d6772e2854a8929b36",
+      "license": "Apache-2.0",
+      "originPath": "api/envoy/annotations/deprecation.proto"
+    },
+    {
+      "path": "envoy/config/core/v3/address.proto",
+      "sourceId": "envoy",
+      "sha256": "33ec035d4e2a4b0fb20ab4a1b7790661404f7330ff322a74868fc0d7848fe79b",
+      "license": "Apache-2.0",
+      "originPath": "api/envoy/config/core/v3/address.proto"
+    },
+    {
+      "path": "envoy/config/core/v3/backoff.proto",
+      "sourceId": "envoy",
+      "sha256": "f347a6a36616ea6735ff031b546d10cc79aaae17da3a60e8174479c7f75ac53e",
+      "license": "Apache-2.0",
+      "originPath": "api/envoy/config/core/v3/backoff.proto"
+    },
+    {
+      "path": "envoy/config/core/v3/http_uri.proto",
+      "sourceId": "envoy",
+      "sha256": "ef5c59234f0be07a23327d695afc65435ef5052941a63184795b0d300fccf1e6",
+      "license": "Apache-2.0",
+      "originPath": "api/envoy/config/core/v3/http_uri.proto"
+    },
+    {
+      "path": "envoy/type/v3/percent.proto",
+      "sourceId": "envoy",
+      "sha256": "b5b5ea7f6264f465ce4b398601e855b62395e3c83e4bb7e0d9d4ebae788210ca",
+      "license": "Apache-2.0",
+      "originPath": "api/envoy/type/v3/percent.proto"
+    },
+    {
+      "path": "envoy/type/v3/semantic_version.proto",
+      "sourceId": "envoy",
+      "sha256": "71cc18d6cbbccd0e3a027d3499bbdbe0a7e74cdf125565f36843736027cc8cc5",
+      "license": "Apache-2.0",
+      "originPath": "api/envoy/type/v3/semantic_version.proto"
+    },
+    {
+      "path": "google/protobuf/struct.proto",
+      "sourceId": "protobuf",
+      "sha256": "1bf07ba8b9a24e3a0390dddac3ad0db41c63287d252788b02398220b9abc900f",
+      "license": "BSD-3-Clause",
+      "originPath": "src/google/protobuf/struct.proto"
+    },
+    {
+      "path": "xds/annotations/v3/status.proto",
+      "sourceId": "xds",
+      "sha256": "0145b2d9437ace6c1201453cd57d44c96e2e89894e502c2d869e8ee2b59b8c19",
+      "license": "Apache-2.0",
+      "originPath": "xds/annotations/v3/status.proto"
+    },
+    {
+      "path": "xds/core/v3/context_params.proto",
+      "sourceId": "xds",
+      "sha256": "912801a580c04553d75a0099d16206a668dd609277c860b6d05d86f8cbddc11c",
+      "license": "Apache-2.0",
+      "originPath": "xds/core/v3/context_params.proto"
+    },
+    {
+      "path": "udpa/annotations/migrate.proto",
+      "sourceId": "xds",
+      "sha256": "4fb5c329d0ac560e0c127b2f2d3368fb2038d093961202dba8700fd4f1308a86",
+      "license": "Apache-2.0",
+      "originPath": "udpa/annotations/migrate.proto"
+    },
+    {
+      "path": "envoy/config/core/v3/base.proto",
+      "sourceId": "envoy",
+      "sha256": "531b3c33b6f14fa76b16040df61975aa37bf07a34852d3dd12e80a159821e06f",
+      "license": "Apache-2.0",
+      "originPath": "api/envoy/config/core/v3/base.proto"
+    },
+    {
+      "path": "envoy/service/auth/v3/attribute_context.proto",
+      "sourceId": "envoy",
+      "sha256": "4d7e49959ed507b3274baea1ce5fbdf6b7afb3d762cec982c0f08a2d8898ea5c",
+      "license": "Apache-2.0",
+      "originPath": "api/envoy/service/auth/v3/attribute_context.proto"
+    },
+    {
+      "path": "envoy/type/v3/http_status.proto",
+      "sourceId": "envoy",
+      "sha256": "d46c670810e539fabf6c8204d9a33dd135f092ef5896d6c37193999e38a3952c",
+      "license": "Apache-2.0",
+      "originPath": "api/envoy/type/v3/http_status.proto"
+    },
+    {
+      "path": "google/rpc/status.proto",
+      "sourceId": "googleapis",
+      "sha256": "3b5c712455570ac4342dd3c521c4c11011652ae9a0fbca75ba22fcc45c6e1991",
+      "license": "Apache-2.0",
+      "originPath": "google/rpc/status.proto"
+    },
+    {
+      "path": "envoy/service/auth/v3/external_auth.proto",
+      "sourceId": "envoy",
+      "sha256": "651f198016f628db10aba4ffd0cced85a3c7b06292afb557d0b09b96038c718a",
+      "license": "Apache-2.0",
+      "originPath": "api/envoy/service/auth/v3/external_auth.proto"
+    }
+  ],
+  "production_image_policy": {
+    "include_descriptor": true,
+    "include_manifest": true,
+    "include_license_notices": true,
+    "include_source_protos": false,
+    "include_protoc": false
+  },
+  "license_notices": [
+    {
+      "path": "LICENSES/envoy-Apache-2.0.txt",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    {
+      "path": "LICENSES/googleapis-Apache-2.0.txt",
+      "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+    },
+    {
+      "path": "LICENSES/protobuf-BSD-3-Clause.txt",
+      "sha256": "6e5e117324afd944dcf67f36cf329843bc1a92229a8cd9bb573d7a83130fea7d"
+    },
+    {
+      "path": "LICENSES/protoc-gen-validate-Apache-2.0.txt",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    {
+      "path": "LICENSES/xds-Apache-2.0.txt",
+      "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+    }
+  ]
+}
