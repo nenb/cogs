@@ -22,5 +22,5 @@
     "allowImportingTsExtensions": true,
     "noEmit": true
   },
-  "include": ["scripts/**/*.ts", "spikes/**/*.ts", "test/**/*.ts"]
+  "include": ["src/**/*.ts", "scripts/**/*.ts", "spikes/**/*.ts", "test/**/*.ts"]
 }
