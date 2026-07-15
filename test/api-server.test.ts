@@ -78,6 +78,9 @@ async function withServer<T>(
     maxResponseBytes?: number;
     eventReplayCapacity?: number;
     requestTimeoutMs?: number;
+    portTimeoutMs?: number;
+    maxEventBytes?: number;
+    duplicateCapacity?: number;
   } = {},
 ): Promise<T> {
   const life = lifecycle();
@@ -87,7 +90,7 @@ async function withServer<T>(
     session: p.session,
     history: p.history,
     exporter: p.exporter,
-    bearerToken: "worker-secret",
+    bearerToken: "worker-secret-0123456789",
     sessionId: "session-1",
     ...opts,
   });
@@ -102,7 +105,11 @@ async function withServer<T>(
 async function json(base: string, path: string, init: RequestInit = {}) {
   return fetch(`${base}${path}`, {
     ...init,
-    headers: { authorization: "Bearer worker-secret", "content-type": "application/json", ...(init.headers ?? {}) },
+    headers: {
+      authorization: "Bearer worker-secret-0123456789",
+      "content-type": "application/json",
+      ...(init.headers ?? {}),
+    },
   });
 }
 
@@ -119,11 +126,11 @@ test("auth, route, method, and content-type handling are strict and redacted", a
     assert.equal((await json(base, "/v1/input/", { method: "POST", body: "{}" })).status, 404);
     const badType = await fetch(`${base}/v1/input`, {
       method: "POST",
-      headers: { authorization: "Bearer worker-secret", "content-type": "text/plain" },
+      headers: { authorization: "Bearer worker-secret-0123456789", "content-type": "text/plain" },
       body: "{}",
     });
     assert.equal(badType.status, 415);
-    assert.doesNotMatch(await badType.text(), /worker-secret|prompt|users\//);
+    assert.doesNotMatch(await badType.text(), /worker-secret-0123456789|prompt|users\//);
   });
 });
 
@@ -173,7 +180,7 @@ test("bounded duplicate suppression coalesces concurrent duplicate input", async
     session: p.session,
     history: p.history,
     exporter: p.exporter,
-    bearerToken: "worker-secret",
+    bearerToken: "worker-secret-0123456789",
     sessionId: "session-1",
   });
   const { port } = await api.listen();
@@ -217,7 +224,9 @@ test("SSE sequence supports replay and rejects replay gaps while slow consumers 
     async ({ base, api }) => {
       api.publish({ type: "one" });
       api.publish({ type: "two", payload: { ok: true } });
-      const replay = await fetch(`${base}/v1/events?after=0`, { headers: { authorization: "Bearer worker-secret" } });
+      const replay = await fetch(`${base}/v1/events?after=0`, {
+        headers: { authorization: "Bearer worker-secret-0123456789" },
+      });
       assert.equal(replay.status, 200);
       const reader = replay.body?.getReader();
       assert.ok(reader);
@@ -240,7 +249,9 @@ test("SSE sequence supports replay and rejects replay gaps while slow consumers 
       api.publish({ type: "one" });
       api.publish({ type: "two" });
       api.publish({ type: "three" });
-      const gap = await fetch(`${base}/v1/events?after=0`, { headers: { authorization: "Bearer worker-secret" } });
+      const gap = await fetch(`${base}/v1/events?after=0`, {
+        headers: { authorization: "Bearer worker-secret-0123456789" },
+      });
       assert.equal(gap.status, 409);
     },
     { eventReplayCapacity: 1 },
@@ -278,7 +289,7 @@ test("export is authenticated API only and response overflow is bounded", async 
     session: p.session,
     history: p.history,
     exporter: p.exporter,
-    bearerToken: "worker-secret",
+    bearerToken: "worker-secret-0123456789",
     sessionId: "session-1",
     maxResponseBytes: 128,
   });
@@ -319,7 +330,7 @@ test("malformed, oversized, and slow request bodies are rejected", async () => {
     session: p.session,
     history: p.history,
     exporter: p.exporter,
-    bearerToken: "worker-secret",
+    bearerToken: "worker-secret-0123456789",
     sessionId: "session-1",
     requestTimeoutMs: 20,
   });
@@ -332,7 +343,7 @@ test("malformed, oversized, and slow request bodies are rejected", async () => {
           port,
           path: "/v1/input",
           method: "POST",
-          headers: { authorization: "Bearer worker-secret", "content-type": "application/json" },
+          headers: { authorization: "Bearer worker-secret-0123456789", "content-type": "application/json" },
         },
         (res) => {
           resolve(res.statusCode ?? 0);
@@ -348,6 +359,220 @@ test("malformed, oversized, and slow request bodies are rejected", async () => {
   }
 });
 
+test("readiness loss gates dependency-requiring operations", async () => {
+  await withServer(async ({ base, life }) => {
+    life.ready = false;
+    assert.equal(
+      (
+        await json(base, "/v1/input", {
+          method: "POST",
+          body: JSON.stringify({ request_id: "nr1", type: "prompt", content: "x" }),
+        })
+      ).status,
+      503,
+    );
+    assert.equal(
+      (await json(base, "/v1/export", { method: "POST", body: JSON.stringify({ request_id: "nr2" }) })).status,
+      503,
+    );
+    assert.equal((await json(base, "/v1/entries", { method: "GET" })).status, 503);
+    assert.equal((await json(base, "/v1/state", { method: "GET" })).status, 200);
+    assert.equal((await json(base, "/v1/shutdown", { method: "POST", body: "{}" })).status, 202);
+  });
+});
+
+test("duplicate id mismatch and pending duplicate flood fail boundedly", async () => {
+  let release: (() => void) | undefined;
+  const life = lifecycle();
+  const p = ports({
+    session: {
+      input: async () => {
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        return "running";
+      },
+    },
+  });
+  const api = createApiServer({
+    lifecycle: life as never,
+    session: p.session,
+    history: p.history,
+    exporter: p.exporter,
+    bearerToken: "worker-secret-0123456789",
+    sessionId: "session-1",
+    duplicateCapacity: 1,
+  });
+  const { port } = await api.listen();
+  const base = `http://127.0.0.1:${port}`;
+  try {
+    const first = json(base, "/v1/input", {
+      method: "POST",
+      body: JSON.stringify({ request_id: "same", type: "prompt", content: "one" }),
+    });
+    for (let i = 0; i < 20 && release === undefined; i += 1) await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.equal(
+      (
+        await json(base, "/v1/input", {
+          method: "POST",
+          body: JSON.stringify({ request_id: "same", type: "prompt", content: "two" }),
+        })
+      ).status,
+      409,
+    );
+    assert.equal(
+      (
+        await json(base, "/v1/input", {
+          method: "POST",
+          body: JSON.stringify({ request_id: "other", type: "prompt", content: "x" }),
+        })
+      ).status,
+      429,
+    );
+    assert.ok(release);
+    release();
+    assert.equal((await first).status, 202);
+  } finally {
+    await api.close();
+  }
+});
+
+test("concurrent distinct prompts are serialized and abort/shutdown ports are idempotent", async () => {
+  const order: string[] = [];
+  let abortCalls = 0;
+  const life = lifecycle();
+  const p = ports({
+    session: {
+      input: async ({ content }) => {
+        order.push(`start:${content}`);
+        await new Promise((resolve) => setTimeout(resolve, content === "one" ? 25 : 0));
+        order.push(`end:${content}`);
+        return "running";
+      },
+      abort: async () => {
+        abortCalls += 1;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        return { aborted: true, runState: "aborting" };
+      },
+      state: async () => ({ runState: "running" }),
+    },
+  });
+  const api = createApiServer({
+    lifecycle: life as never,
+    session: p.session,
+    history: p.history,
+    exporter: p.exporter,
+    bearerToken: "worker-secret-0123456789",
+    sessionId: "session-1",
+  });
+  const { port } = await api.listen();
+  const base = `http://127.0.0.1:${port}`;
+  try {
+    const a = json(base, "/v1/input", {
+      method: "POST",
+      body: JSON.stringify({ request_id: "d1", type: "steer", content: "one" }),
+    });
+    const b = json(base, "/v1/input", {
+      method: "POST",
+      body: JSON.stringify({ request_id: "d2", type: "steer", content: "two" }),
+    });
+    assert.equal((await a).status, 202);
+    assert.equal((await b).status, 202);
+    assert.deepEqual(order, ["start:one", "end:one", "start:two", "end:two"]);
+    const aborts = await Promise.all([
+      json(base, "/v1/abort", { method: "POST", body: JSON.stringify({ request_id: "a1" }) }),
+      json(base, "/v1/abort", { method: "POST", body: JSON.stringify({ request_id: "a2" }) }),
+    ]);
+    assert.deepEqual(
+      aborts.map((r) => r.status),
+      [202, 202],
+    );
+    assert.equal(abortCalls, 1);
+    const shutdowns = await Promise.all([
+      json(base, "/v1/shutdown", { method: "POST", body: "{}" }),
+      json(base, "/v1/shutdown", { method: "POST", body: "{}" }),
+    ]);
+    assert.deepEqual(
+      shutdowns.map((r) => r.status),
+      [202, 202],
+    );
+    assert.equal(life.shutdowns, 1);
+  } finally {
+    await api.close();
+  }
+});
+
+test("query/body smuggling, malformed cursors, and hanging ports fail closed", async () => {
+  await withServer(async ({ base }) => {
+    assert.equal((await json(base, "/v1/entries?limit=1&limit=2", { method: "GET" })).status, 400);
+    assert.equal((await json(base, "/v1/state?x=1", { method: "GET" })).status, 400);
+    const getBodyStatus = await new Promise<number>((resolve, reject) => {
+      const url = new URL(base);
+      const req = httpRequest(
+        {
+          host: url.hostname,
+          port: Number(url.port),
+          path: "/v1/state",
+          method: "GET",
+          headers: { authorization: "Bearer worker-secret-0123456789", "content-length": "2" },
+        },
+        (res) => {
+          resolve(res.statusCode ?? 0);
+          res.resume();
+        },
+      );
+      req.on("error", reject);
+      req.write("{}");
+      req.end();
+    });
+    assert.equal(getBodyStatus, 400);
+    assert.equal(
+      (await json(base, "/v1/shutdown", { method: "POST", body: JSON.stringify({ extra: true }) })).status,
+      400,
+    );
+    assert.equal((await json(base, "/v1/entries?after=not-a-cursor", { method: "GET" })).status, 400);
+  });
+  const life = lifecycle();
+  const p = ports({ session: { state: async () => new Promise(() => undefined) } });
+  const api = createApiServer({
+    lifecycle: life as never,
+    session: p.session,
+    history: p.history,
+    exporter: p.exporter,
+    bearerToken: "worker-secret-0123456789",
+    sessionId: "session-1",
+    portTimeoutMs: 20,
+  });
+  const { port } = await api.listen();
+  try {
+    assert.equal((await json(`http://127.0.0.1:${port}`, "/v1/state", { method: "GET" })).status, 504);
+  } finally {
+    await api.close();
+  }
+});
+
+test("SSE rejects malformed or oversized events and handles disconnect cleanup", async () => {
+  await withServer(
+    async ({ base, api }) => {
+      assert.equal(api.publish({ type: "ok", payload: { seq: 99, version: "evil" } }), true);
+      assert.throws(() => api.publish({ type: "bad", seq: 1 } as never));
+      const stream = await fetch(`${base}/v1/events?after=0`, {
+        headers: { authorization: "Bearer worker-secret-0123456789" },
+      });
+      assert.equal(stream.status, 200);
+      await stream.body?.cancel();
+      assert.equal(api.publish({ type: "after-disconnect" }), true);
+    },
+    { maxEventBytes: 256 },
+  );
+  await withServer(
+    async ({ api }) => {
+      assert.equal(api.publish({ type: "too-big", payload: { data: "x".repeat(512) } }), false);
+    },
+    { maxEventBytes: 128 },
+  );
+});
+
 test("state and readiness follow lifecycle without cross-session data", async () => {
   await withServer(async ({ base, life }) => {
     let ready = await json(base, "/health/ready", { method: "GET" });
@@ -357,6 +582,6 @@ test("state and readiness follow lifecycle without cross-session data", async ()
     assert.equal(ready.status, 503);
     const state = await json(base, "/v1/state", { method: "GET" });
     const stateBody = JSON.stringify(await body(state));
-    assert.doesNotMatch(stateBody, /worker-secret|other-session|raw_export/);
+    assert.doesNotMatch(stateBody, /worker-secret-0123456789|other-session|raw_export/);
   });
 });
