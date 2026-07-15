@@ -53,10 +53,26 @@ export interface ExportPort {
   }) => Promise<JsonValue>;
 }
 
+export type ApiEventKind =
+  | "pi_event"
+  | "tool_start"
+  | "tool_update"
+  | "tool_end"
+  | "usage"
+  | "git_mapping"
+  | "checkpoint"
+  | "approval_required"
+  | "warning"
+  | "error"
+  | "run_settled"
+  | "run_aborted"
+  | "shutdown_ready";
+
 export interface ApiEvent {
-  readonly type: string;
-  readonly correlation_id?: string;
-  readonly payload?: JsonValue;
+  readonly kind: ApiEventKind;
+  readonly correlation_id: string;
+  readonly request_id?: string;
+  readonly payload: { readonly [key: string]: JsonValue | undefined };
 }
 
 export interface ApiServerOptions {
@@ -102,7 +118,7 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
   const portTimeoutMs = optionInteger(options.portTimeoutMs, requestTimeoutMs, "portTimeoutMs", 1, 60_000);
   const maxEventBytes = optionInteger(options.maxEventBytes, 32 * 1024, "maxEventBytes", 128, 1024 * 1024);
   const duplicates: DuplicateEntry[] = [];
-  const replay: { seq: number; event: ApiEvent; serialized: string }[] = [];
+  const replay: { seq: number; serialized: string }[] = [];
   const clients = new Set<Client>();
   let sequence = 0;
   let inputQueue: Promise<void> = Promise.resolve();
@@ -241,6 +257,16 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
     }
   }
 
+  async function callPortAdmission<T>(operation: () => Promise<T>): Promise<T> {
+    requireReady();
+    try {
+      return await withAdmissionTimeout(operation, portTimeoutMs);
+    } catch (error) {
+      if (error instanceof HttpError && error.code === "port_timeout") poisonFromPortTimeout();
+      throw error;
+    }
+  }
+
   async function handleInput(request: IncomingMessage, response: ServerResponse, correlationId: string): Promise<void> {
     requireReady();
     const body = await readJson(request, maxRequestBytes, requestTimeoutMs);
@@ -273,13 +299,12 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
       const state = validateStateResult(await callPort((signal) => options.session.state({ signal }))).runState;
       if (!legalInput(parsed.type, state)) throw new HttpError(409, "illegal_state");
       const runState = validateRunState(
-        await callPort((signal) =>
+        await callPortAdmission(() =>
           options.session.input({
             requestId: parsed.request_id,
             correlationId,
             kind: parsed.type,
             content: parsed.content,
-            signal,
           }),
         ),
       );
@@ -491,13 +516,13 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
     let serialized: string;
     try {
       clean = validateEvent(event);
-      serialized = serializeSse(nextSeq, clean);
+      serialized = serializeSse(nextSeq, options.sessionId, clean);
     } catch {
       return false;
     }
     if (Buffer.byteLength(serialized) > maxEventBytes) return false;
     sequence = nextSeq;
-    replay.push({ seq: sequence, event: clean, serialized });
+    replay.push({ seq: sequence, serialized });
     while (replay.length > eventReplayCapacity) replay.shift();
     for (const client of [...clients]) {
       if (!writeSerializedSse(client.response, sequence, serialized)) {
@@ -761,7 +786,12 @@ function parseInput(body: unknown): { request_id: string; type: InputKind; conte
   const type = body.type;
   const content = body.content;
   if (type !== "prompt" && type !== "steer" && type !== "follow_up") throw new HttpError(400, "bad_input_type");
-  if (typeof content !== "string" || content.length < 1 || content.length > 8192)
+  if (
+    typeof content !== "string" ||
+    content.length < 1 ||
+    content.length > 8192 ||
+    Buffer.byteLength(content, "utf8") > 16 * 1024
+  )
     throw new HttpError(400, "bad_content");
   return { request_id, type, content };
 }
@@ -784,9 +814,8 @@ function plainObject(value: unknown): value is Record<string, unknown> {
 }
 
 function legalInput(kind: InputKind, state: RunState): boolean {
-  if (kind === "steer") return state === "running";
-  if (kind === "follow_up") return state === "settled" || state === "idle";
-  return state === "idle" || state === "settled";
+  if (kind === "prompt") return state === "idle" || state === "settled";
+  return state === "running";
 }
 
 function validateRunState(value: unknown): RunState {
@@ -889,25 +918,59 @@ function endResponse(response: ServerResponse, payload: Buffer, closeAfter: bool
 function validateEvent(event: ApiEvent): ApiEvent {
   if (!strictPlainObject(event)) throw new Error("malformed event");
   const keys = Object.keys(event);
-  if (keys.some((key) => key !== "type" && key !== "correlation_id" && key !== "payload"))
+  if (keys.some((key) => key !== "kind" && key !== "correlation_id" && key !== "request_id" && key !== "payload"))
     throw new Error("malformed event");
-  const type = dataProperty(event, "type");
+  const kind = dataProperty(event, "kind");
   const correlation = dataProperty(event, "correlation_id");
+  const request = dataProperty(event, "request_id");
   const payload = dataProperty(event, "payload");
-  if (typeof type !== "string" || !/^[a-z][a-z0-9._:-]{0,63}$/.test(type)) throw new Error("malformed event");
-  if (
-    correlation !== undefined &&
-    (typeof correlation !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(correlation))
-  )
-    throw new Error("malformed event");
-  const clean: { type: string; correlation_id?: string; payload?: JsonValue } = { type };
-  if (correlation !== undefined) clean.correlation_id = correlation;
-  if (payload !== undefined) clean.payload = validateJsonValue(payload);
+  if (!eventKind(kind)) throw new Error("malformed event");
+  if (typeof correlation !== "string" || !opaqueId(correlation)) throw new Error("malformed event");
+  if (request !== undefined && (typeof request !== "string" || !opaqueId(request))) throw new Error("malformed event");
+  const cleanPayload = validateJsonValue(payload);
+  if (!strictPlainObject(cleanPayload)) throw new Error("malformed event");
+  const clean: { kind: ApiEventKind; correlation_id: string; request_id?: string; payload: Record<string, JsonValue> } =
+    {
+      kind,
+      correlation_id: correlation,
+      payload: stripUndefined(cleanPayload),
+    };
+  if (request !== undefined) clean.request_id = request;
   return clean;
 }
 
-function serializeSse(seq: number, event: ApiEvent): string {
-  return `id: ${seq}\nevent: cogs\ndata: ${JSON.stringify({ ...event, version: "cogs.event/v1alpha1", seq })}\n\n`;
+function eventKind(value: unknown): value is ApiEventKind {
+  return (
+    value === "pi_event" ||
+    value === "tool_start" ||
+    value === "tool_update" ||
+    value === "tool_end" ||
+    value === "usage" ||
+    value === "git_mapping" ||
+    value === "checkpoint" ||
+    value === "approval_required" ||
+    value === "warning" ||
+    value === "error" ||
+    value === "run_settled" ||
+    value === "run_aborted" ||
+    value === "shutdown_ready"
+  );
+}
+
+function stripUndefined(value: Record<string, JsonValue | undefined>): Record<string, JsonValue> {
+  const output: Record<string, JsonValue> = {};
+  for (const [key, entry] of Object.entries(value)) if (entry !== undefined) output[key] = entry;
+  return output;
+}
+
+function serializeSse(seq: number, sessionId: string, event: ApiEvent): string {
+  return `id: ${seq}\nevent: cogs\ndata: ${JSON.stringify({
+    version: "cogs.event/v1alpha1",
+    seq,
+    timestamp: new Date().toISOString(),
+    session_id: sessionId,
+    ...event,
+  })}\n\n`;
 }
 
 function dataProperty(object: object, key: string): unknown {
@@ -973,7 +1036,7 @@ function writeSerializedSse(response: ServerResponse, _seq: number, serialized: 
 
 function correlationFrom(request: IncomingMessage): string {
   const header = request.headers["x-cogs-correlation-id"];
-  if (typeof header === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(header)) return header;
+  if (typeof header === "string" && opaqueId(header)) return header;
   return `worker-${randomUUID()}`;
 }
 
@@ -985,8 +1048,11 @@ function validateConfig(options: ApiServerOptions): void {
   const bearerBytes = Buffer.byteLength(options.bearerToken, "utf8");
   if (bearerBytes < 32 || bearerBytes > 4096 || hasControlCharacter(options.bearerToken))
     throw new Error("invalid bearer token configuration");
-  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(options.sessionId))
-    throw new Error("invalid session id configuration");
+  if (!opaqueId(options.sessionId)) throw new Error("invalid session id configuration");
+}
+
+function opaqueId(value: string): boolean {
+  return /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value);
 }
 
 function hasControlCharacter(value: string): boolean {
@@ -1037,6 +1103,20 @@ async function withPortTimeout<T>(operation: (signal: AbortSignal) => Promise<T>
     return await Promise.race([operation(controller.signal), timeoutPromise]);
   } finally {
     controller.abort();
+    if (timeout !== undefined) clearTimeout(timeout);
+  }
+}
+
+async function withAdmissionTimeout<T>(operation: () => Promise<T>, timeoutMs: number): Promise<T> {
+  let timeout: NodeJS.Timeout | undefined;
+  try {
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeout = setTimeout(() => {
+        reject(new HttpError(504, "port_timeout"));
+      }, timeoutMs);
+    });
+    return await Promise.race([operation(), timeoutPromise]);
+  } finally {
     if (timeout !== undefined) clearTimeout(timeout);
   }
 }
