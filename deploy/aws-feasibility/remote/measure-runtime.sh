@@ -30,7 +30,7 @@ extract_timeout=${COGS_STAGE2_EXTRACT_TIMEOUT:-60}
 qmp_timeout=${COGS_STAGE2_QMP_TIMEOUT:-20}
 qemu_probe_wait_timeout=${COGS_STAGE2_QEMU_PROBE_WAIT_TIMEOUT:-10}
 kata_boot_timeout=${COGS_STAGE2_KATA_BOOT_TIMEOUT:-60}
-warm_sample_timeout=${COGS_STAGE2_WARM_SAMPLE_TIMEOUT:-45}
+warm_sample_timeout=${COGS_STAGE2_WARM_SAMPLE_TIMEOUT:-60}
 host_baseline_sample_timeout=${COGS_STAGE2_HOST_BASELINE_SAMPLE_TIMEOUT:-45}
 idle_timeout=${COGS_STAGE2_IDLE_TIMEOUT:-20}
 validate_seconds COGS_STAGE2_REMOTE_DEADLINE_SECONDS "$remote_deadline_seconds" 1 840
@@ -55,7 +55,16 @@ failure() {
   local failed_stage=$stage
   local failed_sample=$sample
   local failed_command=$command_label
+  local state_stage state_sample state_command
   local diagnostic_file files remaining diagnostic header header_len
+  if [[ -n ${timeout_state:-} && -f $timeout_state ]]; then
+    read -r state_stage state_sample state_command <"$timeout_state" || true
+    if [[ ${state_stage:-} =~ ^[A-Za-z0-9._:-]+$ && ${state_sample:-} =~ ^[A-Za-z0-9._:-]+$ && ${state_command:-} =~ ^[A-Za-z0-9._:-]+$ ]]; then
+      failed_stage=$state_stage
+      failed_sample=$state_sample
+      failed_command=$state_command
+    fi
+  fi
   trap - ERR
   set +e
   cleanup_kata_tasks >/dev/null 2>&1 || true
@@ -105,6 +114,12 @@ trap failure ERR
 progress() {
   printf '%s %s %s\n' "$stage" "$sample" "$command_label" >"${timeout_state:-/dev/null}" 2>/dev/null || true
   printf 'cogs-stage2-progress stage=%s sample=%s command=%s\n' "$stage" "$sample" "$command_label" >&2
+}
+completion() {
+  local completed_stage=$1 completed_sample=$2 completed_command=$3 elapsed_ms=$4 marker_file
+  marker_file=${work:-/tmp}/completion-markers.ndjson
+  printf 'cogs-stage2-complete stage=%s sample=%s command=%s elapsed_ms=%s\n' "$completed_stage" "$completed_sample" "$completed_command" "$elapsed_ms" >&2
+  printf '{"stage":"%s","sample":"%s","command":"%s","elapsed_ms":%s}\n' "$completed_stage" "$completed_sample" "$completed_command" "$elapsed_ms" >>"$marker_file"
 }
 run_bounded() {
   local seconds=$1
@@ -189,17 +204,20 @@ raise SystemExit(1)
   return "$bounded_status"
 }
 measure_ms() {
-  local seconds=$1 label=$2 start_ms end_ms elapsed
+  local seconds=$1 label=$2 start_ms end_ms elapsed completed_stage completed_sample
   shift 2
-  start_ms=$(date +%s%3N)
+  completed_stage=$stage
+  completed_sample=$sample
+  start_ms=$(python3 -c 'import time; print(int(time.time() * 1000))')
   run_bounded "$seconds" "$label" "$@" >/dev/null
-  end_ms=$(date +%s%3N)
+  end_ms=$(python3 -c 'import time; print(int(time.time() * 1000))')
   elapsed=$((end_ms - start_ms))
   (( elapsed >= 25 )) || { printf 'benchmark sample too short: %s ms\n' "$elapsed" >&2; return 1; }
+  completion "$completed_stage" "$completed_sample" "$label" "$elapsed"
   printf '%s\n' "$elapsed"
 }
 export DEBIAN_FRONTEND=noninteractive
-work=/var/tmp/cogs-stage2-measure
+work=${COGS_STAGE2_WORK_DIR:-/var/tmp/cogs-stage2-measure}
 report=$work/measurement-result.json
 samples=${COGS_STAGE2_MEASUREMENT_SAMPLES:-7}
 [[ "$samples" =~ ^[0-9]+$ && "$samples" -ge 7 && "$samples" -le 9 ]]
@@ -235,6 +253,11 @@ elif [[ ${COGS_STAGE2_TIMEOUT_SELF_TEST:-} == watchdog-success ]]; then
   command_label=quick-success
   progress
   exit 0
+elif [[ ${COGS_STAGE2_TIMEOUT_SELF_TEST:-} == completion-marker ]]; then
+  stage=warm-workload-samples
+  sample=1
+  measure_ms 5 host-cpu-1 sleep 0.03 >/dev/null
+  exit 0
 elif [[ ${COGS_STAGE2_TIMEOUT_SELF_TEST:-} == host-sample ]]; then
   stage=warm-workload-samples
   sample=2
@@ -252,6 +275,14 @@ elif [[ ${COGS_STAGE2_TIMEOUT_SELF_TEST:-} == kata-sample ]]; then
   else
     measure_ms 1 kata-cpu-3 sleep 2 >/dev/null
   fi
+  exit 99
+elif [[ ${COGS_STAGE2_TIMEOUT_SELF_TEST:-} == command-substitution-sample ]]; then
+  stage=warm-workload-samples
+  sample=7
+  command_label=kata-start-cogs-stage2-warm
+  progress
+  sample_value=$(measure_ms 1 kata-cpu-7 sleep 2)
+  printf '%s\n' "$sample_value" >/dev/null
   exit 99
 elif [[ ${COGS_STAGE2_TIMEOUT_SELF_TEST:-} == outer ]]; then
   stage=host-baselines
