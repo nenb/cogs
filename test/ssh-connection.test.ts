@@ -10,6 +10,7 @@ import ssh2 from "ssh2";
 import { validateLaunchConfig } from "../src/launch/config.ts";
 import { type LaunchDependency, LaunchLifecycle } from "../src/launch/lifecycle.ts";
 import {
+  CogsSftpStatusError,
   createSshLaunchDependency,
   decodeOpenSshSha256Pin,
   Ssh2Connection,
@@ -54,6 +55,9 @@ class FakeConnection extends EventEmitter implements SshTransportConnection {
   public override off(event: "close" | "error", listener: (...args: unknown[]) => void): this {
     if (this.options.throwOff) throw new Error("off failed");
     return super.off(event, listener);
+  }
+  public openSftp(): Promise<never> {
+    return Promise.reject(new Error("sftp not implemented in connection tests"));
   }
   public close(): Promise<void> {
     this.closeCalls += 1;
@@ -472,4 +476,407 @@ test("SSH launch dependency gates readiness and dependency loss revokes lifecycl
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("ssh2 SFTP wrapper maps only exact numeric own status codes and destroys channels", async () => {
+  class FakeSftp extends EventEmitter {
+    public destroyed = 0;
+    public readError: unknown;
+    public read(
+      _handle: Buffer,
+      buffer: Buffer,
+      _offset: number,
+      _length: number,
+      position: number,
+      cb: (err: Error | undefined, bytesRead: number, buffer: Buffer, position: number) => void,
+    ) {
+      setImmediate(() => cb(this.readError as Error, 0, buffer, position));
+    }
+    public end(): void {
+      this.emit("close");
+    }
+    public destroy(): void {
+      this.destroyed++;
+      this.emit("close");
+    }
+  }
+  class FakeClient extends EventEmitter {
+    public constructor(private readonly sftpImpl: FakeSftp) {
+      super();
+    }
+    public sftp(cb: (error: Error | undefined, sftp: FakeSftp) => void): void {
+      setImmediate(() => cb(undefined, this.sftpImpl));
+    }
+    public end(): void {
+      this.emit("close");
+    }
+    public destroy(): void {
+      this.emit("close");
+    }
+  }
+  const sftp = new FakeSftp();
+  const wrapped = new Ssh2Connection(new FakeClient(sftp) as never);
+  const channel = await wrapped.openSftp(new AbortController().signal);
+  const eof = new Error("permission message says EOF but is exact status");
+  Object.defineProperty(eof, "code", { value: 1, enumerable: true });
+  sftp.readError = eof;
+  assert.equal(
+    (await channel.port.read(Buffer.from("h"), Buffer.alloc(1), 0, 1, 0, new AbortController().signal)).bytesRead,
+    0,
+  );
+  const denied = new Error("missing EOF words must not classify");
+  Object.defineProperty(denied, "code", { value: 3, enumerable: true });
+  sftp.readError = denied;
+  await assert.rejects(
+    channel.port.read(Buffer.from("h"), Buffer.alloc(1), 0, 1, 0, new AbortController().signal),
+    (error: unknown) => error instanceof CogsSftpStatusError && error.status === "permission_denied",
+  );
+  const accessor = new Error("EOF accessor must not classify");
+  Object.defineProperty(accessor, "code", { get: () => 1 });
+  sftp.readError = accessor;
+  await assert.rejects(
+    channel.port.read(Buffer.from("h"), Buffer.alloc(1), 0, 1, 0, new AbortController().signal),
+    /^Error: sftp operation failed$/,
+  );
+  channel.destroy();
+  assert.equal(sftp.destroyed, 1);
+});
+
+test("ssh2 SFTP wrapper accepts zero EOF and partial slice read tuples and cleans late wx handles", async () => {
+  class FakeSftp extends EventEmitter {
+    public files = new Set<string>();
+    public closed = 0;
+    public unlinked = 0;
+    public mode: "zero" | "slice" | "late-open" = "zero";
+    public read(
+      _handle: Buffer,
+      buffer: Buffer,
+      offset: number,
+      _length: number,
+      position: number,
+      cb: (err: Error | undefined, bytesRead: number, buffer: Buffer, position: number) => void,
+    ) {
+      setImmediate(() => {
+        if (this.mode === "zero") return cb(undefined, 0, Buffer.alloc(0), position);
+        buffer[offset] = 0x61;
+        buffer[offset + 1] = 0x62;
+        return cb(undefined, 2, Buffer.from("ab"), position);
+      });
+    }
+    public open(
+      path: string,
+      _mode: string,
+      _attrs: unknown,
+      cb?: (err: Error | undefined, handle: Buffer) => void,
+    ): void {
+      const callback = (typeof _attrs === "function" ? _attrs : cb) as (err: Error | undefined, handle: Buffer) => void;
+      setTimeout(() => {
+        this.files.add(path);
+        callback(undefined, Buffer.from("late"));
+      }, 10);
+    }
+    public close(_handle: Buffer, cb: (err?: Error) => void): void {
+      this.closed++;
+      setImmediate(() => cb());
+    }
+    public unlink(path: string, cb: (err?: Error) => void): void {
+      this.unlinked++;
+      this.files.delete(path);
+      setImmediate(() => cb());
+    }
+    public end(): void {
+      this.emit("close");
+    }
+    public destroy(): void {
+      this.emit("close");
+    }
+  }
+  class FakeClient extends EventEmitter {
+    public constructor(private readonly sftpImpl: FakeSftp) {
+      super();
+    }
+    public sftp(cb: (error: Error | undefined, sftp: FakeSftp) => void): void {
+      cb(undefined, this.sftpImpl);
+    }
+    public end(): void {
+      this.emit("close");
+    }
+    public destroy(): void {
+      this.emit("close");
+    }
+  }
+  const sftp = new FakeSftp();
+  const channel = await new Ssh2Connection(new FakeClient(sftp) as never).openSftp(new AbortController().signal);
+  assert.equal(
+    (await channel.port.read(Buffer.from("h"), Buffer.alloc(4), 1, 2, 9, new AbortController().signal)).bytesRead,
+    0,
+  );
+  sftp.mode = "slice";
+  const destination = Buffer.alloc(4);
+  assert.deepEqual(await channel.port.read(Buffer.from("h"), destination, 1, 2, 11, new AbortController().signal), {
+    bytesRead: 2,
+    buffer: destination,
+    position: 11,
+  });
+  assert.equal(destination.subarray(1, 3).toString(), "ab");
+  sftp.mode = "late-open";
+  const controller = new AbortController();
+  const opened = channel.port.open("/workspace/.cogs-late.tmp", "wx", controller.signal);
+  controller.abort();
+  await assert.rejects(opened, /sftp operation failed/);
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(sftp.closed, 1);
+  assert.equal(sftp.unlinked, 1);
+  assert.equal(sftp.files.has("/workspace/.cogs-late.tmp"), false);
+});
+
+test("ssh2 SFTP callbacks reject malformed async values without uncaught throws or hangs", async () => {
+  class BadStatsSftp extends EventEmitter {
+    public calls = 0;
+    public lstat(_path: string, cb: (error: Error | undefined, stats: unknown) => void): void {
+      setImmediate(() => {
+        this.calls++;
+        cb(
+          undefined,
+          new Proxy(
+            {},
+            {
+              getOwnPropertyDescriptor: () => {
+                throw new Error("stats proxy boom");
+              },
+            },
+          ),
+        );
+        cb(undefined, { size: 1, mode: 0o100600 });
+      });
+    }
+    public fstat(_handle: Buffer, cb: (error: Error | undefined, stats: unknown) => void): void {
+      setImmediate(() =>
+        cb(undefined, {
+          get size() {
+            throw new Error("accessor must not run");
+          },
+          mode: 0o100600,
+        }),
+      );
+    }
+    public read(
+      _handle: Buffer,
+      buffer: Buffer,
+      _offset: number,
+      _length: number,
+      position: number,
+      cb: (error: unknown, bytesRead: number, buffer: Buffer, position: number) => void,
+    ): void {
+      setImmediate(() =>
+        cb(
+          new Proxy(
+            {},
+            {
+              getOwnPropertyDescriptor: () => {
+                throw new Error("error proxy boom");
+              },
+            },
+          ),
+          0,
+          buffer,
+          position,
+        ),
+      );
+    }
+    public end(): void {
+      this.emit("close");
+    }
+    public destroy(): void {
+      this.emit("close");
+    }
+  }
+  class FakeClient extends EventEmitter {
+    public constructor(private readonly sftpImpl: BadStatsSftp) {
+      super();
+    }
+    public sftp(cb: (error: Error | undefined, sftp: BadStatsSftp) => void): void {
+      cb(undefined, this.sftpImpl);
+    }
+    public end(): void {
+      this.emit("close");
+    }
+    public destroy(): void {
+      this.emit("close");
+    }
+  }
+  const uncaught: unknown[] = [];
+  const onUncaught = (error: unknown) => uncaught.push(error);
+  process.on("uncaughtException", onUncaught);
+  try {
+    const sftp = new BadStatsSftp();
+    const channel = await new Ssh2Connection(new FakeClient(sftp) as never).openSftp(new AbortController().signal);
+    await assert.rejects(
+      Promise.race([
+        channel.port.lstat("/bad", new AbortController().signal),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("hung lstat")), 50)),
+      ]),
+      /stats proxy boom|invalid stats|operation/,
+    );
+    await assert.rejects(
+      Promise.race([
+        channel.port.fstat(Buffer.from("h"), new AbortController().signal),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("hung fstat")), 50)),
+      ]),
+      /sftp operation failed/,
+    );
+    await assert.rejects(
+      Promise.race([
+        channel.port.read(Buffer.from("h"), Buffer.alloc(1), 0, 1, 0, new AbortController().signal),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("hung read")), 50)),
+      ]),
+      /sftp operation failed/,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.deepEqual(uncaught, []);
+    assert.equal(sftp.calls, 1);
+  } finally {
+    process.off("uncaughtException", onUncaught);
+  }
+});
+
+test("ssh2 SFTP wrapper validates own-data stats and malformed handles/read tuples without raw leakage", async () => {
+  class StrictSftp extends EventEmitter {
+    public openMode: "empty" | "oversize" | "valid" = "valid";
+    public readMode: "bad-buffer" | "bad-position" | "mismatch" = "bad-buffer";
+    public lstat(_path: string, cb: (error: Error | undefined, stats: unknown) => void): void {
+      setImmediate(() =>
+        cb(undefined, {
+          size: 7,
+          mode: 0o100600,
+          isDirectory: () => {
+            throw new Error("predicate must not be called");
+          },
+          isFile: () => {
+            throw new Error("predicate must not be called");
+          },
+        }),
+      );
+    }
+    public fstat(_handle: Buffer, cb: (error: Error | undefined, stats: unknown) => void): void {
+      setImmediate(() => cb(undefined, { size: -1, mode: 0o100600 }));
+    }
+    public open(
+      _path: string,
+      _mode: string,
+      _attrs: unknown,
+      cb?: (error: Error | undefined, handle: Buffer) => void,
+    ): void {
+      const callback = (typeof _attrs === "function" ? _attrs : cb) as (
+        error: Error | undefined,
+        handle: Buffer,
+      ) => void;
+      setImmediate(() => {
+        callback(
+          undefined,
+          this.openMode === "empty"
+            ? Buffer.alloc(0)
+            : this.openMode === "oversize"
+              ? Buffer.alloc(257)
+              : Buffer.from("ok"),
+        );
+        callback(undefined, Buffer.from("late"));
+      });
+    }
+    public read(
+      _handle: Buffer,
+      buffer: Buffer,
+      offset: number,
+      _length: number,
+      position: number,
+      cb: (error: Error | undefined, bytesRead: number, buffer: Buffer, position: number) => void,
+    ): void {
+      setImmediate(() => {
+        if (this.readMode === "bad-buffer") return cb(undefined, 1, Buffer.from("z"), position);
+        buffer[offset] = 0x61;
+        if (this.readMode === "bad-position") return cb(undefined, 1, buffer, position + 1);
+        return cb(undefined, 1, Buffer.from("b"), position);
+      });
+    }
+    public close(_handle: Buffer, cb: (error?: Error) => void): void {
+      setImmediate(() => cb());
+    }
+    public unlink(_path: string, cb: (error?: Error) => void): void {
+      setImmediate(() => cb());
+    }
+    public end(): void {
+      this.emit("close");
+    }
+    public destroy(): void {
+      this.emit("close");
+    }
+  }
+  class FakeClient extends EventEmitter {
+    public constructor(private readonly sftpImpl: StrictSftp) {
+      super();
+    }
+    public sftp(cb: (error: Error | undefined, sftp: StrictSftp) => void): void {
+      cb(undefined, this.sftpImpl);
+    }
+    public end(): void {
+      this.emit("close");
+    }
+    public destroy(): void {
+      this.emit("close");
+    }
+  }
+  const sftp = new StrictSftp();
+  const channel = await new Ssh2Connection(new FakeClient(sftp) as never).openSftp(new AbortController().signal);
+  assert.deepEqual(await channel.port.lstat("/file", new AbortController().signal), { size: 7, type: "file" });
+  await assert.rejects(channel.port.fstat(Buffer.from("h"), new AbortController().signal), /sftp operation failed/);
+  sftp.openMode = "empty";
+  await assert.rejects(channel.port.open("/x", "r", new AbortController().signal), /invalid handle/);
+  sftp.openMode = "oversize";
+  await assert.rejects(channel.port.open("/x", "r", new AbortController().signal), /invalid handle/);
+  for (const mode of ["bad-buffer", "bad-position", "mismatch"] as const) {
+    sftp.readMode = mode;
+    await assert.rejects(
+      channel.port.read(Buffer.from("h"), Buffer.alloc(2), 0, 1, 0, new AbortController().signal),
+      /sftp operation failed/,
+    );
+  }
+});
+
+test("ssh2 SFTP stats reject POSIX mode high bits and channel observes remote close before close call", async () => {
+  class ModeSftp extends EventEmitter {
+    public mode = 0o100600;
+    public lstat(_path: string, cb: (error: Error | undefined, stats: unknown) => void): void {
+      setImmediate(() => cb(undefined, { size: 1, mode: this.mode }));
+    }
+    public endCalls = 0;
+    public end(): void {
+      this.endCalls++;
+      this.emit("close");
+    }
+    public destroy(): void {
+      this.emit("close");
+    }
+  }
+  class FakeClient extends EventEmitter {
+    public constructor(private readonly sftpImpl: ModeSftp) {
+      super();
+    }
+    public sftp(cb: (error: Error | undefined, sftp: ModeSftp) => void): void {
+      cb(undefined, this.sftpImpl);
+    }
+    public end(): void {
+      this.emit("close");
+    }
+    public destroy(): void {
+      this.emit("close");
+    }
+  }
+  const sftp = new ModeSftp();
+  const channel = await new Ssh2Connection(new FakeClient(sftp) as never).openSftp(new AbortController().signal);
+  assert.deepEqual(await channel.port.lstat("/ok", new AbortController().signal), { size: 1, type: "file" });
+  sftp.mode = 0o200000;
+  await assert.rejects(channel.port.lstat("/bad", new AbortController().signal), /sftp operation failed/);
+  sftp.emit("close");
+  await channel.close();
+  assert.equal(sftp.endCalls, 0);
 });

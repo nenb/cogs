@@ -1,6 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import { constants } from "node:fs";
 import { open } from "node:fs/promises";
+import type { SFTPWrapper } from "ssh2";
 import ssh2, { type ConnectConfig } from "ssh2";
 import type { LaunchConfig } from "../launch/config.ts";
 
@@ -18,6 +19,7 @@ export interface SshConnectionConfig {
   readonly connectTimeoutMs?: number;
   readonly handshakeTimeoutMs?: number;
   readonly permitAcquireTimeoutMs?: number;
+  readonly sftpOpenTimeoutMs?: number;
   readonly shutdownTimeoutMs?: number;
   readonly maxPermits?: number;
   readonly maxQueue?: number;
@@ -29,9 +31,58 @@ export interface SshPermitLease {
   readonly release: () => Promise<void>;
 }
 
+export interface CogsSftpStats {
+  readonly size: number;
+  readonly type: "file" | "directory" | "symlink" | "fifo" | "block" | "character" | "socket" | "unknown";
+}
+
+export type CogsSftpStatus = "eof" | "no_such_file" | "permission_denied" | "failure";
+
+export class CogsSftpStatusError extends Error {
+  public readonly code = "COGS_SFTP_STATUS";
+  public constructor(public readonly status: CogsSftpStatus) {
+    super(`sftp status: ${status}`);
+    this.name = "CogsSftpStatusError";
+  }
+}
+
+export interface CogsSftpPort {
+  readonly lstat: (path: string, signal: AbortSignal) => Promise<CogsSftpStats>;
+  readonly realpath: (path: string, signal: AbortSignal) => Promise<string>;
+  readonly open: (path: string, mode: "r" | "wx", signal: AbortSignal) => Promise<Buffer>;
+  readonly read: (
+    handle: Buffer,
+    buffer: Buffer,
+    offset: number,
+    length: number,
+    position: number,
+    signal: AbortSignal,
+  ) => Promise<{ bytesRead: number; buffer: Buffer; position: number }>;
+  readonly write: (
+    handle: Buffer,
+    buffer: Buffer,
+    offset: number,
+    length: number,
+    position: number,
+    signal: AbortSignal,
+  ) => Promise<void>;
+  readonly fstat: (handle: Buffer, signal: AbortSignal) => Promise<CogsSftpStats>;
+  readonly closeHandle: (handle: Buffer, signal: AbortSignal) => Promise<void>;
+  readonly unlink: (path: string, signal: AbortSignal) => Promise<void>;
+  readonly fsync: (handle: Buffer, signal: AbortSignal) => Promise<void>;
+  readonly posixRename: (source: string, target: string, signal: AbortSignal) => Promise<void>;
+}
+
+export interface SshSftpChannel {
+  readonly port: CogsSftpPort;
+  readonly close: () => Promise<void>;
+  readonly destroy: () => void;
+}
+
 export interface SshTransportConnection {
   readonly on: (event: "close" | "error", listener: (error?: unknown) => void) => void;
   readonly off: (event: "close" | "error", listener: (error?: unknown) => void) => void;
+  readonly openSftp: (signal: AbortSignal) => Promise<SshSftpChannel>;
   readonly close: () => Promise<void>;
   readonly destroy: () => void;
 }
@@ -59,6 +110,7 @@ export interface SshConnectionManagerOptions {
 const DEFAULT_CONNECT_TIMEOUT_MS = 5000;
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 5000;
 const DEFAULT_PERMIT_ACQUIRE_TIMEOUT_MS = 5000;
+const DEFAULT_SFTP_OPEN_TIMEOUT_MS = 5000;
 const DEFAULT_SHUTDOWN_TIMEOUT_MS = 2000;
 const DEFAULT_MAX_PERMITS = 4;
 const DEFAULT_MAX_QUEUE = 64;
@@ -164,6 +216,85 @@ export class SshConnectionManager {
       await this.shutdown().catch(() => undefined);
       throw redactError(error, "ssh start failed");
     }
+  }
+
+  public async withSftp<T>(
+    input:
+      | { signal?: AbortSignal; openTimeoutMs?: number; closeTimeoutMs?: number; operationTimeoutMs?: number }
+      | undefined,
+    operation: (port: CogsSftpPort, signal: AbortSignal) => Promise<T>,
+  ): Promise<T> {
+    const lease = await this.acquire("sftp", input?.signal === undefined ? {} : { signal: input.signal });
+    const controller = linkedSignal(input?.signal);
+    let channel: SshSftpChannel | undefined;
+    let opened = false;
+    let result: T | undefined;
+    let operationError: unknown;
+    let operationFailed = false;
+    try {
+      const connection = this.#connection;
+      if (this.#phase !== "ready" || connection === undefined) throw new SshConnectionError("ssh connection is closed");
+      channel = await raceBounded(
+        connection.openSftp(controller.signal),
+        input?.openTimeoutMs ?? this.#config.sftpOpenTimeoutMs,
+        "ssh sftp open timed out",
+        () => controller.abort(),
+        (late) => late.destroy(),
+        controller.signal,
+      );
+      if (this.#phase !== "ready") throw new SshConnectionError("ssh connection is closed");
+      opened = true;
+      result = await raceBounded(
+        operation(channel.port, controller.signal),
+        input?.operationTimeoutMs ?? this.#config.shutdownTimeoutMs,
+        "ssh sftp operation timed out",
+        () => {
+          controller.abort();
+          channel?.destroy();
+        },
+        undefined,
+        controller.signal,
+      );
+    } catch (error) {
+      operationFailed = true;
+      operationError = error;
+      try {
+        channel?.destroy();
+      } catch {
+        // SFTP channel cleanup is best-effort after fail-closed operation failure.
+      }
+    }
+
+    let closeFailed = false;
+    try {
+      if (channel !== undefined) {
+        const closingChannel = channel;
+        await raceBounded(
+          closingChannel.close(),
+          input?.closeTimeoutMs ?? this.#config.shutdownTimeoutMs,
+          "ssh sftp close timed out",
+          () => closingChannel.destroy(),
+        );
+      }
+    } catch {
+      closeFailed = true;
+      try {
+        channel?.destroy();
+      } catch {
+        // Best effort; connection loss remains fail-closed at manager level.
+      }
+    } finally {
+      controller.dispose();
+      await lease.release();
+    }
+
+    if (closeFailed) this.#failClosed("sftp-close-failed");
+    if (operationFailed) {
+      if (opened && isErrorInstance(operationError) && !isSshConnectionError(operationError)) throw operationError;
+      throw redactError(operationError, "ssh sftp operation failed");
+    }
+    if (closeFailed) throw new SshConnectionError("ssh sftp operation failed");
+    return result as T;
   }
 
   public acquire(kind: SshPermitKind, input: { signal?: AbortSignal } = {}): Promise<SshPermitLease> {
@@ -407,6 +538,47 @@ export class Ssh2Connection implements SshTransportConnection {
   public off(event: "close" | "error", listener: (error?: unknown) => void): void {
     this.#listeners.get(event)?.delete(listener);
   }
+  public openSftp(signal: AbortSignal): Promise<SshSftpChannel> {
+    return new Promise((resolveOpen, rejectOpen) => {
+      if (this.#closed || this.#lost !== undefined) {
+        rejectOpen(new SshConnectionError("ssh connection is closed"));
+        return;
+      }
+      if (signal.aborted) {
+        rejectOpen(new SshConnectionError("ssh sftp open aborted"));
+        return;
+      }
+      let settled = false;
+      let channel: Ssh2SftpChannel | undefined;
+      const finish = (error?: Error, sftp?: SFTPWrapper) => {
+        if (settled) {
+          if (sftp !== undefined) destroySftpWrapper(sftp);
+          return;
+        }
+        settled = true;
+        signal.removeEventListener("abort", onAbort);
+        if (error !== undefined || sftp === undefined || signal.aborted) {
+          if (sftp !== undefined) destroySftpWrapper(sftp);
+          channel?.destroy();
+          rejectOpen(
+            error ?? new SshConnectionError(signal.aborted ? "ssh sftp open aborted" : "ssh sftp open failed"),
+          );
+          return;
+        }
+        channel = new Ssh2SftpChannel(sftp);
+        resolveOpen(channel);
+      };
+      const onAbort = () => finish(new SshConnectionError("ssh sftp open aborted"));
+      signal.addEventListener("abort", onAbort, { once: true });
+      try {
+        this.client.sftp((error, sftp) =>
+          finish(error === undefined ? undefined : new SshConnectionError("ssh sftp open failed"), sftp),
+        );
+      } catch {
+        finish(new SshConnectionError("ssh sftp open failed"));
+      }
+    });
+  }
   public close(): Promise<void> {
     if (this.#closed) return Promise.resolve();
     if (this.#lost?.event === "error") {
@@ -471,6 +643,405 @@ export class Ssh2Connection implements SshTransportConnection {
       // Listener cleanup is best-effort at terminal state.
     }
   }
+}
+
+class Ssh2SftpChannel implements SshSftpChannel {
+  public readonly port: CogsSftpPort;
+  #closed = false;
+  readonly #closeWaiters = new Set<() => void>();
+  readonly #onClose = () => {
+    if (this.#closed) return;
+    this.#closed = true;
+    for (const waiter of [...this.#closeWaiters]) waiter();
+    this.#closeWaiters.clear();
+  };
+  public constructor(private readonly sftp: SFTPWrapper) {
+    this.port = new Ssh2SftpPort(sftp);
+    try {
+      this.sftp.once("close", this.#onClose);
+    } catch {
+      this.#onClose();
+    }
+  }
+  public close(): Promise<void> {
+    if (this.#closed) return Promise.resolve();
+    return new Promise((resolveClose, rejectClose) => {
+      let settled = false;
+      const done = () => {
+        if (settled) return;
+        settled = true;
+        this.#closeWaiters.delete(done);
+        resolveClose();
+      };
+      this.#closeWaiters.add(done);
+      try {
+        this.sftp.end();
+      } catch {
+        this.#closeWaiters.delete(done);
+        if (!settled) {
+          settled = true;
+          rejectClose(new Error("sftp close failed"));
+        }
+      }
+    });
+  }
+  public destroy(): void {
+    destroySftpWrapper(this.sftp);
+    this.#onClose();
+  }
+}
+
+function destroySftpWrapper(sftp: SFTPWrapper): void {
+  try {
+    const destroy = (sftp as { destroy?: () => void }).destroy;
+    if (typeof destroy === "function") destroy.call(sftp);
+    else sftp.end();
+  } catch {
+    // Best-effort channel teardown.
+  }
+}
+
+class Ssh2SftpPort implements CogsSftpPort {
+  public constructor(private readonly sftp: SFTPWrapper) {}
+  public lstat(path: string, _signal: AbortSignal): Promise<CogsSftpStats> {
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      this.sftp.lstat(path, (error, stats) =>
+        settleSftpCallback(
+          () => settled,
+          () => {
+            settled = true;
+          },
+          resolve,
+          reject,
+          () => {
+            if (error !== undefined && error !== null) throw toCogsSftpError(error);
+            return toCogsStats(stats);
+          },
+        ),
+      );
+    });
+  }
+  public realpath(path: string, _signal: AbortSignal): Promise<string> {
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      this.sftp.realpath(path, (error, resolved) =>
+        settleSftpCallback(
+          () => settled,
+          () => {
+            settled = true;
+          },
+          resolve,
+          reject,
+          () => {
+            if (error !== undefined && error !== null) throw toCogsSftpError(error);
+            if (typeof resolved !== "string") throw new Error("invalid realpath");
+            return resolved;
+          },
+        ),
+      );
+    });
+  }
+  public open(path: string, mode: "r" | "wx", signal: AbortSignal): Promise<Buffer> {
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const cleanupLateHandle = (handle: Buffer) => {
+        this.closeHandle(handle, new AbortController().signal)
+          .then(() => (mode === "wx" ? this.unlink(path, new AbortController().signal) : undefined))
+          .catch(() => {
+            destroySftpWrapper(this.sftp);
+          });
+      };
+      const finish = (error?: unknown, handle?: Buffer) => {
+        if (settled) {
+          if (Buffer.isBuffer(handle)) cleanupLateHandle(handle);
+          return;
+        }
+        settled = true;
+        signal.removeEventListener("abort", onAbort);
+        try {
+          if (error !== undefined && error !== null) reject(toCogsSftpError(error));
+          else if (signal.aborted) {
+            if (Buffer.isBuffer(handle)) cleanupLateHandle(handle);
+            reject(new Error("sftp open aborted"));
+          } else if (isValidHandle(handle)) resolve(handle);
+          else reject(new Error("invalid handle"));
+        } catch {
+          reject(new Error("sftp operation failed"));
+        }
+      };
+      const onAbort = () => finish(new Error("sftp open aborted"));
+      signal.addEventListener("abort", onAbort, { once: true });
+      if (mode === "r") this.sftp.open(path, mode, finish);
+      else this.sftp.open(path, mode, { mode: 0o600 }, finish);
+    });
+  }
+  public read(
+    handle: Buffer,
+    buffer: Buffer,
+    offset: number,
+    length: number,
+    position: number,
+    _signal: AbortSignal,
+  ): Promise<{ bytesRead: number; buffer: Buffer; position: number }> {
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      this.sftp.read(handle, buffer, offset, length, position, (error, bytesRead, returned, returnedPosition) =>
+        settleSftpCallback(
+          () => settled,
+          () => {
+            settled = true;
+          },
+          resolve,
+          reject,
+          () => {
+            if (error !== undefined && error !== null) {
+              const mapped = toCogsSftpError(error);
+              if (mapped instanceof CogsSftpStatusError && mapped.status === "eof")
+                return { bytesRead: 0, buffer, position };
+              throw mapped;
+            }
+            if (!validReadTuple(buffer, offset, length, position, bytesRead, returned, returnedPosition))
+              throw new Error("invalid read result");
+            return { bytesRead, buffer, position };
+          },
+        ),
+      );
+    });
+  }
+  public write(
+    handle: Buffer,
+    buffer: Buffer,
+    offset: number,
+    length: number,
+    position: number,
+    _signal: AbortSignal,
+  ): Promise<void> {
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      this.sftp.write(handle, buffer, offset, length, position, (error) =>
+        settleSftpCallback(
+          () => settled,
+          () => {
+            settled = true;
+          },
+          resolve,
+          reject,
+          () => {
+            if (error !== undefined && error !== null) throw toCogsSftpError(error);
+          },
+        ),
+      );
+    });
+  }
+  public fstat(handle: Buffer, _signal: AbortSignal): Promise<CogsSftpStats> {
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      this.sftp.fstat(handle, (error, stats) =>
+        settleSftpCallback(
+          () => settled,
+          () => {
+            settled = true;
+          },
+          resolve,
+          reject,
+          () => {
+            if (error !== undefined && error !== null) throw toCogsSftpError(error);
+            return toCogsStats(stats);
+          },
+        ),
+      );
+    });
+  }
+  public closeHandle(handle: Buffer, _signal: AbortSignal): Promise<void> {
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      this.sftp.close(handle, (error) =>
+        settleSftpCallback(
+          () => settled,
+          () => {
+            settled = true;
+          },
+          resolve,
+          reject,
+          () => {
+            if (error !== undefined && error !== null) throw toCogsSftpError(error);
+          },
+        ),
+      );
+    });
+  }
+  public unlink(path: string, _signal: AbortSignal): Promise<void> {
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      this.sftp.unlink(path, (error) =>
+        settleSftpCallback(
+          () => settled,
+          () => {
+            settled = true;
+          },
+          resolve,
+          reject,
+          () => {
+            if (error !== undefined && error !== null) throw toCogsSftpError(error);
+          },
+        ),
+      );
+    });
+  }
+  public fsync(handle: Buffer, _signal: AbortSignal): Promise<void> {
+    if (typeof this.sftp.ext_openssh_fsync !== "function") return Promise.reject(new Error("fsync unavailable"));
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      this.sftp.ext_openssh_fsync(handle, (error) =>
+        settleSftpCallback(
+          () => settled,
+          () => {
+            settled = true;
+          },
+          resolve,
+          reject,
+          () => {
+            if (error !== undefined && error !== null) throw toCogsSftpError(error);
+          },
+        ),
+      );
+    });
+  }
+  public posixRename(source: string, target: string, _signal: AbortSignal): Promise<void> {
+    if (typeof this.sftp.ext_openssh_rename !== "function") return Promise.reject(new Error("rename unavailable"));
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      this.sftp.ext_openssh_rename(source, target, (error) =>
+        settleSftpCallback(
+          () => settled,
+          () => {
+            settled = true;
+          },
+          resolve,
+          reject,
+          () => {
+            if (error !== undefined && error !== null) throw toCogsSftpError(error);
+          },
+        ),
+      );
+    });
+  }
+}
+
+function settleSftpCallback<T>(
+  isSettled: () => boolean,
+  markSettled: () => void,
+  resolve: (value: T) => void,
+  reject: (error: Error) => void,
+  convert: () => T,
+): void {
+  if (isSettled()) return;
+  markSettled();
+  try {
+    resolve(convert());
+  } catch (error) {
+    reject(sanitizeSftpError(error));
+  }
+}
+
+function sanitizeSftpError(error: unknown): Error {
+  const status = cogsStatusFromOwnedError(error);
+  return status === undefined ? new Error("sftp operation failed") : new CogsSftpStatusError(status);
+}
+
+function cogsStatusFromOwnedError(error: unknown): CogsSftpStatus | undefined {
+  try {
+    if (!(error instanceof CogsSftpStatusError)) return undefined;
+    const descriptor = Object.getOwnPropertyDescriptor(error, "status");
+    if (descriptor === undefined || !("value" in descriptor)) return undefined;
+    return isCogsSftpStatus(descriptor.value) ? descriptor.value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function isCogsSftpStatus(value: unknown): value is CogsSftpStatus {
+  return value === "eof" || value === "no_such_file" || value === "permission_denied" || value === "failure";
+}
+
+function toCogsSftpError(error: unknown): Error {
+  try {
+    const status = sftpStatusFromError(error);
+    if (status !== undefined) return new CogsSftpStatusError(status);
+  } catch {
+    // Hostile error objects/proxies are redacted below.
+  }
+  return new Error("sftp operation failed");
+}
+
+function sftpStatusFromError(error: unknown): CogsSftpStatus | undefined {
+  if (error === null || typeof error !== "object") return undefined;
+  const descriptor = Object.getOwnPropertyDescriptor(error, "code");
+  if (descriptor === undefined || !("value" in descriptor) || !Number.isInteger(descriptor.value)) return undefined;
+  return descriptor.value === 1
+    ? "eof"
+    : descriptor.value === 2
+      ? "no_such_file"
+      : descriptor.value === 3
+        ? "permission_denied"
+        : descriptor.value === 4
+          ? "failure"
+          : undefined;
+}
+
+function isValidHandle(handle: unknown): handle is Buffer {
+  return Buffer.isBuffer(handle) && handle.length > 0 && handle.length <= 256;
+}
+
+function validReadTuple(
+  destination: Buffer,
+  offset: number,
+  length: number,
+  position: number,
+  bytesRead: unknown,
+  returned: unknown,
+  returnedPosition: unknown,
+): returned is Buffer {
+  if (!Number.isInteger(bytesRead) || (bytesRead as number) < 0 || (bytesRead as number) > length) return false;
+  if (returnedPosition !== position || !Buffer.isBuffer(returned)) return false;
+  const read = bytesRead as number;
+  if (returned.length !== read && returned.length !== length && returned.length !== destination.length) return false;
+  if (read === 0) return true;
+  const source = returned.length === read ? returned.subarray(0, read) : returned.subarray(offset, offset + read);
+  return source.length === read && source.equals(destination.subarray(offset, offset + read));
+}
+
+function toCogsStats(stats: unknown): CogsSftpStats {
+  if (stats === null || typeof stats !== "object") throw new Error("invalid stats");
+  const sizeDescriptor = Object.getOwnPropertyDescriptor(stats, "size");
+  const modeDescriptor = Object.getOwnPropertyDescriptor(stats, "mode");
+  if (sizeDescriptor === undefined || !("value" in sizeDescriptor) || !Number.isSafeInteger(sizeDescriptor.value))
+    throw new Error("invalid stats");
+  if (modeDescriptor === undefined || !("value" in modeDescriptor) || !Number.isSafeInteger(modeDescriptor.value))
+    throw new Error("invalid stats");
+  const size = sizeDescriptor.value as number;
+  const mode = modeDescriptor.value as number;
+  if (size < 0 || mode < 0 || mode > 0o177777) throw new Error("invalid stats");
+  const kind = mode & 0o170000;
+  const type =
+    kind === 0o100000
+      ? "file"
+      : kind === 0o040000
+        ? "directory"
+        : kind === 0o120000
+          ? "symlink"
+          : kind === 0o010000
+            ? "fifo"
+            : kind === 0o060000
+              ? "block"
+              : kind === 0o020000
+                ? "character"
+                : kind === 0o140000
+                  ? "socket"
+                  : "unknown";
+  if (type === "unknown") throw new Error("invalid stats");
+  return { size, type };
 }
 
 async function readPrivateKey(path: string, maxBytes: number): Promise<Buffer> {
@@ -538,6 +1109,7 @@ function validateConfig(config: SshConnectionConfig): Required<SshConnectionConf
       60_000,
       "permit acquire timeout",
     ),
+    sftpOpenTimeoutMs: integer(config.sftpOpenTimeoutMs, DEFAULT_SFTP_OPEN_TIMEOUT_MS, 1, 60_000, "sftp open timeout"),
     shutdownTimeoutMs: integer(config.shutdownTimeoutMs, DEFAULT_SHUTDOWN_TIMEOUT_MS, 1, 60_000, "shutdown timeout"),
     maxPermits: integer(config.maxPermits, DEFAULT_MAX_PERMITS, 1, 32, "max permits"),
     maxQueue: integer(config.maxQueue, DEFAULT_MAX_QUEUE, 0, 1024, "max queue"),
@@ -631,12 +1203,28 @@ function raceBounded<T>(
   });
 }
 
+function isErrorInstance(error: unknown): error is Error {
+  try {
+    return error instanceof Error;
+  } catch {
+    return false;
+  }
+}
+
 function throwIfAbortedSync(signal: AbortSignal | undefined): void {
   if (signal?.aborted) throw new SshConnectionError("ssh operation aborted");
 }
 
+function isSshConnectionError(error: unknown): error is SshConnectionError {
+  try {
+    return error instanceof SshConnectionError;
+  } catch {
+    return false;
+  }
+}
+
 function redactError(error: unknown, fallback: string): SshConnectionError {
-  if (error instanceof SshConnectionError) return error;
+  if (isSshConnectionError(error)) return new SshConnectionError(error.message);
   return new SshConnectionError(fallback);
 }
 
