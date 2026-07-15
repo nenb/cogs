@@ -14,6 +14,8 @@ ADR 0003 keeps the real credentials, trusted proxy, and CA private key outside t
 
 ADR 0013 authorized only issue #64 SSH/SFTP/bash work. ADR 0014 authorized only issue #65 API-key model authentication plus the disabled OAuth broker contract. Neither ADR authorizes Envoy integration, egress credential injection, audit WAL, egress telemetry/completion, OpenBao PKI, route groups, revocation/drain, or Stage 1 conformance replacement.
 
+The dependency/bindings feasibility spike is summarized in [`stage-3-egress-bindings-feasibility.md`](../test-reports/stage-3-egress-bindings-feasibility.md). It found that static `ts-proto@2.12.0` generation for the full official Envoy v1.38.3 `ext_authz` closure is technically feasible but produces 25 TypeScript files, 12,864 lines, and 352,756 bytes before Cogs-specific code, exceeding this ADR's binding estimate and cap if checked into production `src/`.
+
 Clean `main` after PR #82 is at **5,695** production TypeScript lines under `src/`:
 
 ```sh
@@ -46,18 +48,21 @@ Issue #66 implementation must preserve ADR 0011:
 
 OpenBao is **not** an Envoy SDS provider for this scope. This ADR does not approve building an xDS/SDS bridge. Static secret-bearing material is rendered only into trusted tmpfs and replaced on rotation/revocation.
 
-### Dependency and binding subgate
+### Selected dependency and binding strategy
 
-Issue #66 must not start the production `ext_authz` authorization-service implementation until a reviewed ADR amendment or dependency decision selects the binding strategy. That subgate must:
+Issue #66 will use a bounded dynamic trusted-schema strategy for Envoy v3 `ext_authz`:
 
-- choose generated/pinned Envoy v3 API bindings matching Envoy 1.38.3, or a documented equivalent generated surface;
-- count any checked-in generated TypeScript under `src/` against the issue #66 line cap;
-- verify license compatibility, source integrity, pinned upstream/proto revision, transitive import closure, and reproducibility of generated artifacts;
-- explicitly decide whether the existing `@grpc/grpc-js@1.14.4` dev dependency is promoted for production use;
-- decide whether `@grpc/proto-loader@0.8.1` or another loader/codegen component is needed. It is only a candidate, not accepted by this ADR;
-- avoid promoting the handwritten Stage 1 protobuf codec into production.
+- Promote the existing exact `@grpc/grpc-js@1.14.4` package to production dependency classification.
+- Add/promote the exact `@grpc/proto-loader@0.8.1` package to production dependency classification.
+- Rely only on versions and transitive dependencies pinned by the repository lockfile; any version change, new package, or dependency substitution requires a reviewed amendment or superseding ADR.
+- Vendor the exact minimal official Envoy 1.38.3 `ext_authz` proto closure, plus the BCR-pinned Google, XDS, UDPA, validate, and protobuf WKT sources needed by that closure, as non-`src` trusted assets with a source/license/digest manifest.
+- Parse only those immutable trusted proto files once before readiness, using exact include roots and loader options recorded in tests/docs.
+- Fail readiness closed on missing files, extra files, symlinks, hash mismatch, manifest mismatch, import-closure mismatch, unexpected include roots, loader errors, or unsupported package versions.
+- Keep loaded descriptors and service definitions frozen/contained after startup. No untrusted schema path, launch-provided path, guest-visible path, runtime network schema, or mutable descriptor expansion is allowed.
+- Use the generated protobufjs service mappings produced by the loader for gRPC network decoding. Cogs then strictly maps only required own fields from `CheckRequest` into its narrow authorization envelope and constructs only the allowed `CheckResponse` fields.
+- Do not promote the handwritten Stage 1 protobuf codec into production.
 
-This ADR does not authorize a new production loader/codegen dependency or a vendored Envoy proto closure by itself.
+Runtime schema parsing is accepted here because schemas are trusted, pinned startup inputs verified before readiness, not untrusted request data. Static generation is rejected for the current issue #66 architecture because the measured official `ts-proto@2.12.0` output was 12,864 `src`-countable lines before Cogs code, breaching the binding bucket and proposed cap. This does not reject static generation forever; a later ADR may choose it with a different cap, artifact policy, or generator/runtime strategy.
 
 ### Authorized production components
 
@@ -66,7 +71,7 @@ Issue #66 may add narrow production modules equivalent to these surfaces:
 | Area | Estimated production lines |
 |---|---:|
 | Validated egress route groups, preset lowering, canonical Envoy static config model/rendering, config validation hooks | 650 |
-| Generated/pinned Envoy v3 `ext_authz` binding assets and wrapper, counted if checked in under `src/`, plus minimized request/response mapping | 450 |
+| Trusted pinned Envoy v3 `ext_authz` proto manifest/loader wrapper and minimized request/response mapping; no generated binding bulk under `src` | 450 |
 | Loopback-only authorization/completion service, capability checks, denial mapping, and lifecycle integration | 320 |
 | Synchronous append-only intent audit WAL before credential use, bounded WAL errors/full handling, and replay/correlation helpers | 320 |
 | Bounded completion queue and OTLP metadata-only buffering/drop accounting | 180 |
@@ -107,7 +112,7 @@ This ADR does not approve:
 - application gRPC, SigV4/HMAC signing, upstream mTLS, database protocols, SSH egress, WebSockets, arbitrary TCP/TLS, nested CONNECT, UDP, QUIC/HTTP/3, guest DNS/DoH, or native Node/npm support beyond separately measured launcher/proxy-agent decisions;
 - subscription OAuth enablement or any worker-visible OAuth refresh-token path;
 - session export/history, skills, Git checkpoints, or broader policy/observability work except the minimum egress metadata and completion surfaces needed for issue #66;
-- adding production dependencies, generated binding artifacts, loader/codegen dependencies, or vendored Envoy proto closures without the dependency/binding subgate above or a superseding ADR.
+- adding production dependencies beyond exact `@grpc/grpc-js@1.14.4` and exact `@grpc/proto-loader@0.8.1`, changing those versions, changing the vendored proto source set, or adding generated binding artifacts under `src/` without a reviewed amendment or superseding ADR.
 
 ## Consequences
 
@@ -117,11 +122,8 @@ Security claims remain bounded. Insecure-container/local OpenBao evidence is fun
 
 ## Explicit unresolved decisions
 
-These choices remain unresolved and must be settled by issue-specific PR review, the dependency/binding subgate, or a later ADR before implementation relies on them:
+These choices remain unresolved and must be settled by issue-specific PR review or a later ADR before implementation relies on them:
 
-- exact Envoy v3 `ext_authz` generated-binding source, generator, checked-in artifact location, and reproducibility process;
-- whether `@grpc/grpc-js@1.14.4` is promoted from dev to production dependency;
-- whether `@grpc/proto-loader@0.8.1` or any other loader/codegen dependency is introduced;
 - exact local OpenBao PKI mount/role/path conventions for functional fixtures;
 - production Kubernetes-auth/OpenBao identity wiring, which is not authorized here;
 - exact OTLP exporter dependency/path, if any beyond existing metadata-only test fixtures;
@@ -139,7 +141,11 @@ Rejected. ADR 0011 selected Envoy and required Stage 3 reruns, but it did not au
 
 ### Copy the Stage 1 handwritten protobuf codec into production
 
-Rejected. The Stage 1 codec is test infrastructure. Production `ext_authz` should use generated, pinned Envoy API bindings or another reviewed generated surface.
+Rejected. The Stage 1 codec is test infrastructure. Production `ext_authz` must use the selected `@grpc/grpc-js`/`@grpc/proto-loader` trusted-schema path or a later reviewed replacement.
+
+### Check static generated TypeScript into production `src/` now
+
+Rejected under the current issue #66 architecture and cap. The feasibility spike measured `ts-proto@2.12.0` against the full official Envoy v1.38.3 `ext_authz` closure at 25 files, 12,864 TypeScript lines, and 352,756 bytes before Cogs-specific code. That breaches the 450-line binding bucket and the proposed 8,500 aggregate cap. Static generation may be revisited later with a different cap, artifact policy, or generator/runtime strategy.
 
 ### Use OpenBao as Envoy SDS/xDS input
 
