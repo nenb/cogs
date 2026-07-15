@@ -715,7 +715,6 @@ cpu_bound = max(1, host_cpu // guest_cpu)
 value = {
   'version': 'cogs.aws-stage2-measurement-result/v1alpha1',
   'result': 'pass',
-  'sample_count': int(samples),
   'host_kernel': host_kernel,
   'guest_kernel': guest_kernel,
   'guest_root': True,
@@ -743,12 +742,6 @@ value = {
     'cpu_bound_sandboxes': cpu_bound,
     'bounded_estimate_sandboxes': max(1, min(memory_bound, cpu_bound)),
   },
-  'limitations': [
-    'single EC2 host campaign; EC2 launch p50/p95 requires multiple launches and is not measured by this harness',
-    'SSM readiness has one sample per campaign; SSH-ready is not measured because Stage 2 access is SSM-only',
-    'Git and package-build measurements are host baselines only; representative sandbox Git/build/package workload acceptance remains unmet by this evidence',
-    'density estimate is a conservative bound, not a scheduler or isolation claim',
-  ],
 }
 with open(output, 'w', encoding='utf-8') as target:
     json.dump(value, target, sort_keys=True, separators=(',', ':'))

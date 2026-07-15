@@ -122,7 +122,7 @@ test("Stage 2 measurement harness is bounded, redacted, and does not widen AWS s
   assert.match(remote, /tasks rm/);
   assert.match(remote, /configured_guest_memory_mib/);
   assert.match(remote, /density_estimate/);
-  assert.match(remote, /SSM readiness has one sample per campaign; SSH-ready is not measured/);
+  assert.match(controller, /SSM readiness has one sample per campaign; SSH-ready is not measured/);
   assert.match(controller, /stage2-measurement-evidence\.json/);
   assert.doesNotMatch(controller, /render-aws-stage2-measurement-report/);
   assert.match(controller, /remote_timeout\.isdecimal\(\)/);
@@ -137,6 +137,18 @@ test("Stage 2 measurement harness is bounded, redacted, and does not widen AWS s
   assert.doesNotMatch(orchestrator, /trap cleanup EXIT INT TERM/);
   assert.match(orchestrator, /final-zero-resource-inventory\.json/);
   assert.match(schema, /cogs\.aws-stage2-measurement-evidence\/v1alpha1/);
+  const measurementSchemaProperties = Object.keys(JSON.parse(schema).properties.measurement.properties).sort();
+  const measurementStart = remote.indexOf("value = {\n  'version': 'cogs.aws-stage2-measurement-result/v1alpha1'");
+  assert.ok(measurementStart >= 0, "missing remote measurement payload literal");
+  const measurementPayloadBlock = remote.slice(measurementStart, remote.indexOf("with open(output", measurementStart));
+  const remoteMeasurementKeys = [...measurementPayloadBlock.matchAll(/^ {2}'([^']+)':/gm)]
+    .map((match) => match[1])
+    .sort();
+  assert.equal(remoteMeasurementKeys.includes("sample_count"), false);
+  assert.deepEqual(remoteMeasurementKeys, measurementSchemaProperties);
+  assert.match(controller, /measurement_sample_count = len\(measurement\['kata_cold_boot'\]\['samples'\]\)/);
+  assert.doesNotMatch(controller, /'sample_count': measurement\['sample_count'\]/);
+  assert.match(validator, /additionalProperty/);
   assert.match(validator, /sample count mismatch/);
   assert.match(validator, /ratio mismatch/);
   assert.match(validator, /memory density bound mismatch/);
