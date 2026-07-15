@@ -1,7 +1,7 @@
 {
   "version": "cogs.integration/v1alpha1",
   "id": "npm",
-  "preset_revision": "sha256:ffb2cb7f8ef2793a78260a0f98c2e351c679cc1884eb82351eabe4eed8c7df50",
+  "preset_revision": "sha256:d4be179781e348da4d13e34608a8c85a9a2fa4ea52ce2afb4ecc62897b687bc4",
   "dns": {
     "mode": "proxy-connect-authority",
     "guest_resolution": false
@@ -11,16 +11,19 @@
       "name": "npm-registry-metadata",
       "host": "registry.npmjs.org",
       "port": 443,
-      "methods": ["GET", "PUT", "DELETE"],
+      "methods": ["GET"],
       "path_patterns": ["/*", "/@*/*"],
       "path_policy": {
         "strategy": "segment-glob",
         "normalization": "reject-ambiguous"
       },
+      "query_policy": {
+        "mode": "deny"
+      },
       "redirects": {
-        "mode": "allow-declared",
-        "max_hops": 1,
-        "allowed_hosts": ["registry.npmjs.org"]
+        "mode": "deny",
+        "max_hops": 0,
+        "allowed_hosts": []
       },
       "inject_auth": true
     },
@@ -33,6 +36,9 @@
       "path_policy": {
         "strategy": "segment-glob",
         "normalization": "reject-ambiguous"
+      },
+      "query_policy": {
+        "mode": "deny"
       },
       "redirects": {
         "mode": "deny",
@@ -47,6 +53,6 @@
     "header": "Authorization",
     "prefix": "Bearer ",
     "placeholder": "COGS_PLACEHOLDER_NPM_TOKEN",
-    "secret_handle": "integration/npm/token"
+    "secret_handle": "users/preset-user/integrations/npm"
   }
 }

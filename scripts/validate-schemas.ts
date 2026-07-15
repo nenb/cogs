@@ -35,6 +35,7 @@ const integration = {
       methods: ["GET"],
       path_patterns: ["/*"],
       path_policy: { strategy: "segment-glob", normalization: "reject-ambiguous" },
+      query_policy: { mode: "deny" },
       redirects: { mode: "deny", max_hops: 0, allowed_hosts: [] },
       inject_auth: true,
     },
