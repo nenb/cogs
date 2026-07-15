@@ -350,7 +350,13 @@ verify() {
   verify_runtime_identity
   ssh_options
 
-  local observed transfer="$state/control/sftp-control.txt" roundtrip="$state/control/sftp-roundtrip.txt"
+  local observed transfer="$state/control/sftp-control.txt" roundtrip="$state/control/sftp-roundtrip.txt" host_fingerprint
+  host_fingerprint=$(ssh-keygen -q -lf "$state/input/ssh_host_ed25519_key.pub" -E sha256 | awk 'NR == 1 {print $2}')
+  [[ "$host_fingerprint" =~ ^SHA256:[A-Za-z0-9+/]{43}$ ]] || fail 'insecure-container host fingerprint is invalid'
+  bounded 20s npx --no-install tsx "$repo/dev/insecure-sandbox/ssh-adapter-smoke.ts" \
+    "127.0.0.1:$port" "$state/control/client_ed25519_key" "$host_fingerprint" \
+    >/dev/null || fail 'production SSH adapter smoke failed'
+
   observed=$(bounded 20s ssh "${SSH_OPTIONS[@]}" root@127.0.0.1 \
     'test "$(id -u)" = 0 && test "$COGS_PROFILE" = insecure-container && test -n "$HTTP_PROXY" && test -n "$HTTPS_PROXY" && test -r "$SSL_CERT_FILE" && printf verified')
   [[ "$observed" == verified ]] || fail 'SSH contract returned an unexpected result'
