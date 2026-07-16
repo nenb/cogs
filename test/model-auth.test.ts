@@ -203,12 +203,15 @@ test("OpenBao handle, user, origin, mount, provider, and model validation fail c
     for (const bad of [
       { credentialHandle: "sessions/a/a" },
       { credentialHandle: "users/bob/anthropic" },
+      { credentialHandle: "users/alice/./anthropic" },
       { credentialHandle: "users/alice/../anthropic" },
       { credentialHandle: "users/alice/%2e%2e/anthropic" },
       { credentialHandle: "users//alice" },
       { credentialHandle: `users/alice/${"a/".repeat(9)}x` },
       { credentialHandle: `users/alice/${"a".repeat(513)}` },
       { credentialHandle: "organizations" },
+      { credentialHandle: "organizations/./anthropic" },
+      { credentialHandle: "organizations/../anthropic" },
       { credentialHandle: "bad/a/a" },
       { userId: "_alice" },
       { provider: "_anthropic" },
@@ -216,6 +219,23 @@ test("OpenBao handle, user, origin, mount, provider, and model validation fail c
       { model: "\nmodel" },
     ])
       await assertAuthRejects(resolve(source, { ...request, ...bad }), [app.origin, key, token]);
+    const unusedIdentity = new StaticIdentity();
+    let fetchCalled = false;
+    const unusedSource = store(app.origin, unusedIdentity, {
+      fetchImpl: async () => {
+        fetchCalled = true;
+        return new Response(body(), { status: 200, headers: { "content-type": "application/json" } });
+      },
+    });
+    for (const credentialHandle of [
+      "users/alice/./anthropic",
+      "users/alice/../anthropic",
+      "organizations/./a",
+      "organizations/../a",
+    ])
+      await assertAuthRejects(resolve(unusedSource, { ...request, credentialHandle }), [app.origin, key, token]);
+    assert.equal(unusedIdentity.calls, 0);
+    assert.equal(fetchCalled, false);
     assert.equal(await resolve(source, { ...request, credentialHandle: "organizations/a/a" }), key);
   } finally {
     await app.close();
