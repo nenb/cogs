@@ -28,26 +28,47 @@ function validSidecar() {
       openbao: { version: "2.6.0", image_digest: `sha256:${"d".repeat(64)}` },
       runtime_manager: { mode: "real" },
     },
+    timings: {
+      revocation_poll_interval_ms: 500,
+      revocation_observation_bound_ms: 20_000,
+      harness_replacement_ready_bound_ms: 40_000,
+      credential_write_ms: 10,
+      credential_changed_callback_ms: 1000,
+      credential_changed_drain_probe_ms: 1200,
+      harness_replacement_ready_ms: 5000,
+      credential_delete_ms: 10,
+      revoked_callback_ms: 1000,
+      revoked_drain_probe_ms: 1200,
+    },
     dependency_modes: {
       identity: "real",
       authorization: "real",
       audit: "real",
-      revocation: "stubbed",
+      revocation: "real",
       telemetry: "stubbed",
       network_enforcement: "not-applicable",
     },
     assertions: {
       openbao_loopback_only: true,
-      credential_injected: true,
+      credential_v1_injected: true,
+      credential_v2_injected: true,
+      baseline_wrong_capability_denied: true,
+      baseline_wrong_path_denied: true,
       proxy_capability_stripped_upstream: true,
-      wal_intent_preceded_upstream: true,
-      completion_correlated: true,
+      wal_intents_preceded_upstream: true,
+      completions_correlated: true,
+      credential_change_callback_observed: true,
+      revoked_callback_observed: true,
+      harness_driven_replacement_after_callback: true,
+      old_capability_denied_after_replacement: true,
+      new_capability_invalidated_after_revocation: true,
       tmpfs_material_existed_in_scope: true,
       tmpfs_cleanup_verified: true,
       scoped_token_revoked: true,
       root_token_revoked: true,
       private_material_absent_from_reports: true,
       ca_private_key_not_returned: true,
+      no_daemon_or_sandbox_replacement_claim: true,
     },
   };
 }
@@ -65,7 +86,7 @@ test("Stage 3 real-runtime sidecar is strict, explicit, and redacted", async () 
   assert.throws(() =>
     assertValidRealRuntimeSidecar({
       ...sidecar,
-      dependency_modes: { ...sidecar.dependency_modes, revocation: "real" },
+      dependency_modes: { ...sidecar.dependency_modes, telemetry: "real" },
     }),
   );
   const missing = structuredClone(sidecar);
@@ -85,7 +106,7 @@ test("Stage 3 real-runtime sidecar is strict, explicit, and redacted", async () 
   assert.throws(() => assertValidRealRuntimeSidecar(symbolExtra));
 });
 
-test("Stage 3 real-runtime report result is stubbed when revocation is stubbed", () => {
+test("Stage 3 real-runtime report result stays stubbed while telemetry is stubbed", () => {
   assert.deepEqual(
     validateSecurityResultSemantics({
       result: "stubbed",
@@ -94,7 +115,8 @@ test("Stage 3 real-runtime report result is stubbed when revocation is stubbed",
         authorization: "real",
         audit: "real",
         identity: "real",
-        revocation: "stubbed",
+        revocation: "real",
+        telemetry: "stubbed",
         network_enforcement: "not-applicable",
       },
     }),
@@ -104,7 +126,7 @@ test("Stage 3 real-runtime report result is stubbed when revocation is stubbed",
     validateSecurityResultSemantics({
       result: "pass",
       release_eligible: false,
-      dependency_modes: { revocation: "stubbed" },
+      dependency_modes: { revocation: "real", telemetry: "stubbed" },
     }),
     ["a passing test with a stubbed dependency requires result=stubbed"],
   );
@@ -117,10 +139,19 @@ test("Stage 3 real-runtime OpenBao PKI role is explicit least privilege", async 
   assert.match(harness, /allow_subdomains: false/);
   assert.match(harness, /allow_localhost: false/);
   assert.match(harness, /auth\/token\/revoke/);
+  assert.match(harness, /path "model\/data\/\$\{secretHandle\}" \{ capabilities = \["read"\] \}/);
+  assert.match(harness, /path "model\/metadata\/\$\{secretHandle\}" \{ capabilities = \["read"\] \}/);
+  assert.doesNotMatch(harness, /model\/metadata\/\$\{secretHandle\}" \{ capabilities = \["read",/);
   assert.match(harness, /phase\("validate_sidecar"/);
   assert.match(harness, /phase\("validate_security_report"/);
   assert.match(harness, /phase\("validate_redaction"/);
   assert.match(harness, /result: "stubbed"/);
+  assert.match(harness, /revocation: "real"/);
+  assert.match(harness, /telemetry: "stubbed"/);
+  assert.match(harness, /harness_driven_replacement_after_production_callback/);
+  assert.match(harness, /daemon_or_sandbox_replacement_proven: false/);
+  assert.match(harness, /revocationPollIntervalMs/);
+  assert.match(harness, /revocationObservationBoundMs/);
   assert.doesNotMatch(harness, /revocationDiagnostics/);
   assert.match(harness, /host: "localhost"/);
   assert.match(harness, /ipv6\.listen\(\{ port: 0, host: "::1", ipv6Only: true \}, resolve\)/);

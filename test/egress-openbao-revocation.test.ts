@@ -269,6 +269,67 @@ test("aggregate binding derives credential-required handles, deduplicates, and s
   assert.equal(fetches, 0);
 });
 
+test("aggregate post-binding revoked member preserves full aggregate and watcher reason revoked", async () => {
+  let revokedA = false;
+  let malformedB = false;
+  const seen: string[] = [];
+  const binding = await createOpenBaoEgressRevocationBinding({
+    ...aggregateBase(),
+    routePlan: plan(["users/user-a/b", "users/user-a/a"]),
+    fetchImpl: async (url) => {
+      seen.push(String(url));
+      if (String(url).endsWith("/a")) return json(meta(1, revokedA ? { deletion_time: "2026-01-01T00:00:00Z" } : {}));
+      if (malformedB) return json(meta(1, {}, { data: { ...meta(1).data, versions: {} } }));
+      return json(meta(1));
+    },
+  });
+  assert.deepEqual(seen, [
+    "http://127.0.0.1:8200/v1/model/metadata/users/user-a/a",
+    "http://127.0.0.1:8200/v1/model/metadata/users/user-a/b",
+  ]);
+  revokedA = true;
+  const revoked = await binding.source.read(new AbortController().signal);
+  assert.equal(Object.isFrozen(revoked), true);
+  assert.equal(revoked.presetRevision, base.presetRevision);
+  assert.equal(revoked.credentialVersion, binding.credentialVersion);
+  assert.equal(revoked.revoked, true);
+  assert.equal(revoked.pkiExpiresAtMs, base.pkiExpiresAtMs);
+
+  revokedA = false;
+  const timers = new ManualTimers();
+  const calls: string[] = [];
+  const watcher = await createCogsEgressRevocationWatcher(
+    binding.source,
+    {
+      denyNew: async (reason) => void calls.push(`denyNew:${reason}`),
+      drain: async (reason) => void calls.push(`drain:${reason}`),
+      replace: async (reason) => void calls.push(`replace:${reason}`),
+    },
+    {
+      baseline: {
+        presetRevision: base.presetRevision,
+        credentialVersion: binding.credentialVersion,
+        revoked: false,
+        pkiExpiresAtMs: base.pkiExpiresAtMs,
+      },
+      pollIntervalMs: 50,
+      minPkiRemainingMs: 1000,
+      operationTimeoutMs: 50,
+      nowMs: () => 1,
+      timers,
+    },
+  );
+  revokedA = true;
+  timers.tick(50);
+  await flush();
+  await flush();
+  assert.equal(watcher.ready, false);
+  assert.deepEqual(calls, ["denyNew:revoked", "drain:revoked", "replace:revoked"]);
+
+  malformedB = true;
+  await assert.rejects(binding.source.read(new AbortController().signal), generic);
+});
+
 test("aggregate binding returns credential source coupled to same OpenBao authority and identity", async () => {
   const urls: string[] = [];
   let tokenCalls = 0;
@@ -385,7 +446,7 @@ test("aggregate zero-handle binding still validates config and rejects aborted s
   );
 });
 
-test("aggregate binding fails all handles generically and leaves no identity callback alive", async () => {
+test("aggregate binding fails malformed and unavailable handles generically and leaves no identity callback alive", async () => {
   let live = 0;
   await assert.rejects(
     createOpenBaoEgressRevocationBinding({
@@ -402,7 +463,8 @@ test("aggregate binding fails all handles generically and leaves no identity cal
         },
       }),
       routePlan: plan(["users/user-a/a", "users/user-a/b"]),
-      fetchImpl: async (url) => (String(url).endsWith("/b") ? json(meta(1, { destroyed: true })) : json(meta(1))),
+      fetchImpl: async (url) =>
+        String(url).endsWith("/b") ? json(meta(1, {}, { data: { ...meta(1).data, versions: {} } })) : json(meta(1)),
     }),
     generic,
   );

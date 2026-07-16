@@ -88,7 +88,7 @@ export interface SecurityTestResult {
   result: ConformanceResult;
   release_eligible: boolean;
   duration_ms: number;
-  dependency_modes: Partial<Record<DependencyName, DependencyMode>>;
+  dependency_modes: Record<string, DependencyMode>;
   diagnostics_redacted?: string;
   skip_approval?: SkipApproval;
 }
