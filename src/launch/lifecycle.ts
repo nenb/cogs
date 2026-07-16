@@ -1,7 +1,8 @@
+import type { CogsEgressRuntimeManager } from "../egress/runtime-manager.ts";
 import type { LaunchConfig } from "./config.ts";
 import { deepFreeze, validateLaunchConfig } from "./config.ts";
 
-export const launchDependencyNames = ["sessionStorage", "ssh", "proxy", "auth", "auditWal"] as const;
+export const launchDependencyNames = ["sessionStorage", "ssh", "proxy", "auth", "auditWal", "egressRuntime"] as const;
 export type LaunchDependencyName = (typeof launchDependencyNames)[number];
 export type LifecycleState = "created" | "starting" | "ready" | "draining" | "stopped" | "failed";
 
@@ -28,6 +29,7 @@ export interface LaunchDependency {
   readonly name: LaunchDependencyName;
   readonly start: (signal: AbortSignal) => Promise<void>;
   readonly shutdown: (signal: AbortSignal) => Promise<void>;
+  readonly ready?: () => boolean;
 }
 
 export interface LifecycleEvent {
@@ -49,6 +51,7 @@ export interface LaunchLifecycleOptions {
   readonly shutdownTimeoutMs?: number;
   readonly recycleAfterMs?: number;
   readonly emergencyHardDeadlineMs?: number;
+  readonly dependencyHealthIntervalMs?: number;
   readonly onEvent?: (event: LifecycleEvent) => void;
   readonly onRecycleNotice?: (notice: RecycleNotice) => void;
 }
@@ -67,6 +70,7 @@ const systemScheduler: Scheduler = {
   now: Date.now,
   setTimer: (milliseconds, callback) => {
     const timeout = setTimeout(callback, milliseconds);
+    timeout.unref();
     return { cancel: () => clearTimeout(timeout) };
   },
 };
@@ -80,6 +84,7 @@ export class LaunchLifecycle {
   readonly #shutdownTimeoutMs: number;
   readonly #recycleAfterMs: number | undefined;
   readonly #emergencyHardDeadlineMs: number;
+  readonly #dependencyHealthIntervalMs: number;
   readonly #onEvent: ((event: LifecycleEvent) => void) | undefined;
   readonly #onRecycleNotice: ((notice: RecycleNotice) => void) | undefined;
   readonly #signalSubscription: SignalSubscription | undefined;
@@ -92,6 +97,7 @@ export class LaunchLifecycle {
   #recycleNoticeSent = false;
   #recycleTimer: TimerHandle | undefined;
   #emergencyTimer: TimerHandle | undefined;
+  #healthTimer: TimerHandle | undefined;
 
   public constructor(options: LaunchLifecycleOptions) {
     this.#config = validateLaunchConfig(options.launchDocument);
@@ -101,6 +107,7 @@ export class LaunchLifecycle {
     this.#shutdownTimeoutMs = options.shutdownTimeoutMs ?? 10_000;
     this.#recycleAfterMs = options.recycleAfterMs;
     this.#emergencyHardDeadlineMs = options.emergencyHardDeadlineMs ?? 30_000;
+    this.#dependencyHealthIntervalMs = integer(options.dependencyHealthIntervalMs ?? 100, 50, 5000);
     this.#onEvent = options.onEvent;
     this.#onRecycleNotice = options.onRecycleNotice;
     if (this.#shutdownTimeoutMs < 1) {
@@ -151,6 +158,7 @@ export class LaunchLifecycle {
       this.#readyConfig = deepFreeze(structuredClone(this.#config));
       this.#transition("ready", "dependencies-ready");
       this.#armRecycleTimer();
+      this.#armHealthTimer();
     }
   }
 
@@ -177,6 +185,7 @@ export class LaunchLifecycle {
     if (this.#shutdownPromise !== undefined) return this.#shutdownPromise;
     this.#lifecycleAbort.abort();
     this.#clearRecycleTimers();
+    this.#clearHealthTimer();
     this.#readyConfig = undefined;
     this.#shutdownPromise = this.#shutdown(reason);
     return this.#shutdownPromise;
@@ -232,6 +241,41 @@ export class LaunchLifecycle {
     });
   }
 
+  #armHealthTimer(): void {
+    if (!this.ready) return;
+    try {
+      this.#healthTimer = this.#scheduler.setTimer(this.#dependencyHealthIntervalMs, () =>
+        this.#checkDependencyHealth(),
+      );
+    } catch {
+      this.#failClosed("dependency-health-timer-failed");
+    }
+  }
+
+  #checkDependencyHealth(): void {
+    this.#healthTimer = undefined;
+    if (!this.ready || this.#shutdownPromise !== undefined) return;
+    for (const name of launchDependencyNames) {
+      if (!this.#attemptedDependencies.includes(name)) continue;
+      try {
+        const ready = this.#dependencies.get(name)?.ready;
+        if (ready && !ready()) {
+          this.dependencyLost(name);
+          return;
+        }
+      } catch {
+        this.dependencyLost(name);
+        return;
+      }
+    }
+    this.#armHealthTimer();
+  }
+
+  #clearHealthTimer(): void {
+    this.#healthTimer?.cancel();
+    this.#healthTimer = undefined;
+  }
+
   #clearRecycleTimers(): void {
     this.#recycleTimer?.cancel();
     this.#emergencyTimer?.cancel();
@@ -254,7 +298,7 @@ export class LaunchLifecycle {
       if (!result.has(name))
         throw new LaunchLifecycleError("COGS_LAUNCH_MISSING_DEPENDENCY", "missing launch dependency");
     }
-    return result;
+    return new Map(launchDependencyNames.map((name) => [name, result.get(name) as LaunchDependency]));
   }
 
   #knownDependency(name: LaunchDependencyName): void {
@@ -323,6 +367,7 @@ export class LaunchLifecycle {
   #disposeResources(): void {
     this.#lifecycleAbort.abort();
     this.#clearRecycleTimers();
+    this.#clearHealthTimer();
     this.#signalSubscription?.dispose();
   }
 
@@ -340,4 +385,75 @@ export class LaunchLifecycle {
       removeAbortListener?.();
     }
   }
+}
+
+function integer(value: number, min: number, max: number): number {
+  if (!Number.isSafeInteger(value) || value < min || value > max)
+    throw new LaunchLifecycleError("COGS_LAUNCH_INVALID_HEALTH_INTERVAL", "dependency health interval invalid");
+  return value;
+}
+
+export function createCogsEgressRuntimeLaunchDependency(
+  factory: (signal: AbortSignal) => Promise<CogsEgressRuntimeManager>,
+): LaunchDependency {
+  if (typeof factory !== "function") throw egressRuntimeError();
+  let manager: CogsEgressRuntimeManager | undefined;
+  let closePromise: Promise<void> | undefined;
+  let startWork: Promise<void> | undefined;
+  let shutdownPromise: Promise<void> | undefined;
+  let shutdownRequested = false;
+  let started = false;
+  return Object.freeze({
+    name: "egressRuntime",
+    async start(signal: AbortSignal) {
+      if (started) throw egressRuntimeError();
+      started = true;
+      startWork = (async () => {
+        try {
+          if (signal.aborted) throw new Error("aborted");
+          manager = await factory(signal);
+          if (signal.aborted || shutdownRequested || !manager.ready) throw new Error("egress not ready");
+        } catch {
+          if (manager) {
+            try {
+              closePromise ??= manager.close();
+              await closePromise;
+              manager = undefined;
+            } catch {
+              // Retain the owned handle for lifecycle rollback shutdown.
+            }
+          }
+          throw egressRuntimeError();
+        }
+      })();
+      return startWork;
+    },
+    ready: () => {
+      try {
+        return manager?.ready === true;
+      } catch {
+        return false;
+      }
+    },
+    async shutdown() {
+      shutdownRequested = true;
+      shutdownPromise ??= (async () => {
+        try {
+          await startWork?.catch(() => undefined);
+          const current = manager;
+          if (!current) return;
+          closePromise ??= current.close();
+          await closePromise;
+          manager = undefined;
+        } catch {
+          throw egressRuntimeError();
+        }
+      })();
+      return shutdownPromise;
+    },
+  });
+}
+
+function egressRuntimeError(): LaunchLifecycleError {
+  return new LaunchLifecycleError("COGS_LAUNCH_EGRESS_RUNTIME_FAILED", "egress runtime unavailable");
 }
