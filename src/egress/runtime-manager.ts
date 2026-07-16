@@ -16,6 +16,13 @@ import {
 } from "./envoy-runtime-config.ts";
 import { type CogsExtAuthzServer, startCogsExtAuthzServer } from "./ext-authz-server.ts";
 import {
+  createOpenBaoEgressRevocationBinding,
+  normalizeOpenBaoEgressRevocationAuthorityOptions,
+  type OpenBaoEgressRevocationBinding,
+  type OpenBaoEgressRevocationBindingOptions,
+  type OpenBaoEgressRevocationBindingRequest,
+} from "./openbao-revocation.ts";
+import {
   type CogsEgressRevocationReason,
   type CogsEgressRevocationSource,
   type CogsEgressRevocationTimers,
@@ -64,7 +71,17 @@ type RuntimeManagerPorts = Readonly<{
     pki: CogsEgressPkiMaterial,
     operation: (paths: RuntimeMaterialPaths) => Promise<T>,
   ): Promise<T>;
+  bindOpenBaoRevocation(request: OpenBaoEgressRevocationBindingRequest): Promise<OpenBaoEgressRevocationBinding>;
 }>;
+
+export type CogsEgressRuntimeRevocationConfig =
+  | Readonly<{ mode: "openbao"; openbao: OpenBaoEgressRevocationBindingOptions }>
+  | Readonly<{
+      mode: "injected";
+      credentialVersion: string;
+      credentialSource: CogsEnvoyCredentialSource;
+      revocationSource: CogsEgressRevocationSource;
+    }>;
 
 export type CogsEgressRuntimeManagerOptions = Readonly<{
   launch: LaunchConfig;
@@ -72,11 +89,9 @@ export type CogsEgressRuntimeManagerOptions = Readonly<{
   listenerPort: number;
   maxSessionExpiresAtMs: number;
   completionCapacity: number;
-  credentialVersion: string;
+  revocation: CogsEgressRuntimeRevocationConfig;
   proxyCapability: string;
-  credentialSource: CogsEnvoyCredentialSource;
   pkiSource: CogsEgressPkiSource;
-  revocationSource: CogsEgressRevocationSource;
   envoyProcess: CogsEnvoyProcessPort;
   randomSecret(bytes: number): string;
   onReplacementRequired(reason: CogsEgressRevocationReason, signal: AbortSignal): Promise<void>;
@@ -244,8 +259,9 @@ class RuntimeManager {
         maxSessionExpiresAtMs: this.options.maxSessionExpiresAtMs,
         ...(this.options.signal === undefined ? {} : { signal: this.options.signal }),
       },
-      async (pki) =>
-        this.options.ports.withConfig(
+      async (pki) => {
+        const binding = await this.resolveRevocationBinding(presetRevision, pki);
+        return this.options.ports.withConfig(
           {
             sessionId: this.options.launch.session_id,
             listenerPort: this.options.listenerPort,
@@ -253,9 +269,34 @@ class RuntimeManager {
             authzTarget: this.authz?.target ?? "",
             internalAuthzToken: this.internalAuthzToken,
           },
-          this.options.credentialSource,
-          async (config) => this.withMaterial(config, pki, presetRevision),
-        ),
+          binding.credentialSource,
+          async (config) => this.withMaterial(config, pki, presetRevision, binding),
+        );
+      },
+    );
+  }
+
+  private async resolveRevocationBinding(
+    presetRevision: string,
+    pki: CogsEgressPkiMaterial,
+  ): Promise<OpenBaoEgressRevocationBinding> {
+    const revocation = this.options.revocation;
+    if (revocation.mode === "injected") {
+      return validBinding({
+        source: revocation.revocationSource,
+        credentialSource: revocation.credentialSource,
+        credentialVersion: revocation.credentialVersion,
+      });
+    }
+    return validBinding(
+      await this.options.ports.bindOpenBaoRevocation({
+        ...revocation.openbao,
+        routePlan: this.routePlan,
+        userId: this.options.launch.user_id,
+        presetRevision,
+        pkiExpiresAtMs: pki.expiresAtMs,
+        ...(this.options.signal === undefined ? {} : { signal: this.options.signal }),
+      }),
     );
   }
 
@@ -263,18 +304,13 @@ class RuntimeManager {
     config: CogsEnvoyRuntimeConfig,
     pki: CogsEgressPkiMaterial,
     presetRevision: string,
+    binding: OpenBaoEgressRevocationBinding,
   ): Promise<void> {
     await this.options.ports.withTmpfs(config, pki, async (paths) => {
-      this.process = await this.options.envoyProcess.start({
-        bootstrapPath: paths.bootstrap,
-        listenerPort: this.options.listenerPort,
-        ...(this.options.signal === undefined ? {} : { signal: this.options.signal }),
-        onCompletionLine: (line) => this.queue?.onCompletionLine(line) ?? Promise.reject(new Error("closed")),
-      });
-      this.watcher = await createCogsEgressRevocationWatcher(this.options.revocationSource, this.actions(), {
+      this.watcher = await createCogsEgressRevocationWatcher(binding.source, this.actions(), {
         baseline: Object.freeze({
           presetRevision,
-          credentialVersion: this.options.credentialVersion,
+          credentialVersion: validOpaque(binding.credentialVersion),
           revoked: false,
           pkiExpiresAtMs: pki.expiresAtMs,
         }),
@@ -284,6 +320,12 @@ class RuntimeManager {
         nowMs: this.options.nowMs,
         timers: this.options.timers,
         ...(this.options.signal === undefined ? {} : { signal: this.options.signal }),
+      });
+      this.process = await this.options.envoyProcess.start({
+        bootstrapPath: paths.bootstrap,
+        listenerPort: this.options.listenerPort,
+        ...(this.options.signal === undefined ? {} : { signal: this.options.signal }),
+        onCompletionLine: (line) => this.queue?.onCompletionLine(line) ?? Promise.reject(new Error("closed")),
       });
       if (!this.dependenciesReady()) throw new Error("dependency unavailable");
       this.readyState = true;
@@ -464,7 +506,7 @@ function capture(options: CogsEgressRuntimeManagerOptions): Captured {
       listenerPort: integer(options.listenerPort, 1, 65_535),
       maxSessionExpiresAtMs: integer(options.maxSessionExpiresAtMs, 1, Number.MAX_SAFE_INTEGER),
       completionCapacity: integer(options.completionCapacity, 1, 1024),
-      credentialVersion: validOpaque(options.credentialVersion),
+      revocation: validRevocation(options.revocation),
       proxyCapability: validSecret(options.proxyCapability),
       revocationPollIntervalMs: integer(options.revocationPollIntervalMs ?? 1000, 50, 60_000),
       revocationMinPkiRemainingMs: integer(options.revocationMinPkiRemainingMs ?? 60_000, 1000, 3_600_000),
@@ -494,11 +536,74 @@ function integer(value: number, min: number, max: number): number {
   return value;
 }
 
+function validRevocation(value: CogsEgressRuntimeRevocationConfig): CogsEgressRuntimeRevocationConfig {
+  if (!plain(value)) throw new Error("bad revocation");
+  if (value.mode === "injected") {
+    exactShape(value, ["credentialSource", "credentialVersion", "mode", "revocationSource"], []);
+    const binding = validBinding({
+      credentialVersion: value.credentialVersion,
+      credentialSource: value.credentialSource,
+      source: value.revocationSource,
+    });
+    return Object.freeze({
+      mode: "injected",
+      credentialVersion: binding.credentialVersion,
+      credentialSource: binding.credentialSource,
+      revocationSource: binding.source,
+    });
+  }
+  if (value.mode === "openbao") {
+    exactShape(value, ["mode", "openbao"], []);
+    return Object.freeze({ mode: "openbao", openbao: normalizeOpenBaoEgressRevocationAuthorityOptions(value.openbao) });
+  }
+  throw new Error("bad revocation");
+}
+
+function validBinding(value: unknown): OpenBaoEgressRevocationBinding {
+  if (!plain(value)) throw new Error("bad binding");
+  exactShape(value, ["credentialSource", "credentialVersion", "source"], []);
+  const source = value.source as { read?: unknown };
+  const credentialSource = value.credentialSource as { withCredential?: unknown };
+  if (!source || typeof source !== "object" || typeof source.read !== "function") throw new Error("bad binding");
+  if (
+    !credentialSource ||
+    typeof credentialSource !== "object" ||
+    typeof credentialSource.withCredential !== "function"
+  )
+    throw new Error("bad binding");
+  return Object.freeze({
+    source: value.source as CogsEgressRevocationSource,
+    credentialSource: value.credentialSource as CogsEnvoyCredentialSource,
+    credentialVersion: validOpaque(value.credentialVersion as string),
+  });
+}
+
+function plain(value: unknown): value is Record<string, unknown> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    Object.getPrototypeOf(value) === Object.prototype
+  );
+}
+
+function exactShape(value: Record<string, unknown>, required: readonly string[], optional: readonly string[]): void {
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const keys = Reflect.ownKeys(descriptors);
+  if (keys.some((key) => typeof key === "symbol")) throw new Error("bad keys");
+  const names = keys as string[];
+  if (required.some((key) => !names.includes(key))) throw new Error("bad keys");
+  if (names.some((key) => !required.includes(key) && !optional.includes(key))) throw new Error("bad keys");
+  for (const key of names) {
+    const descriptor = descriptors[key];
+    if (!descriptor?.enumerable || !Object.hasOwn(descriptor, "value")) throw new Error("bad keys");
+  }
+}
+
 function validateRequiredPorts(options: CogsEgressRuntimeManagerOptions): void {
-  if (!options.credentialSource || typeof options.credentialSource.withCredential !== "function")
+  if (Object.hasOwn(options, "credentialSource") || Object.hasOwn(options, "revocationSource"))
     throw new Error("bad ports");
   if (!options.pkiSource || typeof options.pkiSource.withPkiMaterial !== "function") throw new Error("bad ports");
-  if (!options.revocationSource || typeof options.revocationSource.read !== "function") throw new Error("bad ports");
   if (!options.envoyProcess || typeof options.envoyProcess.start !== "function") throw new Error("bad ports");
   if (typeof options.randomSecret !== "function" || typeof options.onReplacementRequired !== "function")
     throw new Error("bad ports");
@@ -514,8 +619,12 @@ function ports(input: Partial<RuntimeManagerPorts> | undefined): RuntimeManagerP
     startAuthz: own("startAuthz") ? input?.startAuthz : startCogsExtAuthzServer,
     withConfig: own("withConfig") ? input?.withConfig : withCogsEnvoyRuntimeConfig,
     withTmpfs: own("withTmpfs") ? input?.withTmpfs : withCogsEgressTmpfsMaterial,
+    bindOpenBaoRevocation: own("bindOpenBaoRevocation")
+      ? input?.bindOpenBaoRevocation
+      : createOpenBaoEgressRevocationBinding,
   });
   if (typeof value.openWal !== "function" || typeof value.startAuthz !== "function") throw new Error("bad ports");
   if (typeof value.withConfig !== "function" || typeof value.withTmpfs !== "function") throw new Error("bad ports");
+  if (typeof value.bindOpenBaoRevocation !== "function") throw new Error("bad ports");
   return value as RuntimeManagerPorts;
 }

@@ -1,11 +1,14 @@
-import type { OpenBaoIdentityPort } from "../auth/model-auth.ts";
+import { createHash } from "node:crypto";
+import { ModelCredentialResolver, type OpenBaoIdentityPort, OpenBaoModelApiKeyStore } from "../auth/model-auth.ts";
+import { ModelBackedEgressCredentialSource } from "./egress-material.ts";
+import type { CogsEnvoyCredentialSource } from "./envoy-runtime-config.ts";
 import type { CogsEgressRevocationSnapshot, CogsEgressRevocationSource } from "./revocation-watcher.ts";
+import type { CogsEgressRoutePlan } from "./route-policy.ts";
 
 const jsonType = /^application\/json(?:\s*;|$)/i;
 const name = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 const opaque = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 
-/** Source-only adapter options; later composition must supply the watcher baseline credentialVersion consistently. */
 export type OpenBaoEgressRevocationSourceOptions = Readonly<{
   origin: string;
   mount: string;
@@ -25,6 +28,78 @@ export class CogsEgressOpenBaoRevocationError extends Error {
   public constructor() {
     super("egress revocation metadata unavailable");
     this.name = "CogsEgressOpenBaoRevocationError";
+  }
+}
+
+export type OpenBaoEgressRevocationBindingOptions = Omit<
+  OpenBaoEgressRevocationSourceOptions,
+  "userId" | "credentialHandle" | "presetRevision" | "pkiExpiresAtMs"
+>;
+
+export function normalizeOpenBaoEgressRevocationAuthorityOptions(
+  input: OpenBaoEgressRevocationBindingOptions,
+): OpenBaoEgressRevocationBindingOptions {
+  try {
+    exactPlain(
+      input,
+      ["identity", "mount", "origin"],
+      ["allowLoopbackHttpDevelopment", "fetchImpl", "maxResponseBytes", "timeoutMs"],
+    );
+    const normalized = Object.freeze({
+      origin: origin(input.origin, input.allowLoopbackHttpDevelopment === true),
+      mount: named(input.mount),
+      identity: identity(input.identity),
+      ...(input.allowLoopbackHttpDevelopment === undefined
+        ? {}
+        : { allowLoopbackHttpDevelopment: boolean(input.allowLoopbackHttpDevelopment) }),
+      ...(input.timeoutMs === undefined ? {} : { timeoutMs: integer(input.timeoutMs, 1, 60_000) }),
+      ...(input.maxResponseBytes === undefined
+        ? {}
+        : { maxResponseBytes: integer(input.maxResponseBytes, 512, 1024 * 1024) }),
+      ...(input.fetchImpl === undefined ? {} : { fetchImpl: fetchFunction(input.fetchImpl) }),
+    });
+    return normalized;
+  } catch {
+    throw new CogsEgressOpenBaoRevocationError();
+  }
+}
+
+export type OpenBaoEgressRevocationBindingRequest = Readonly<
+  OpenBaoEgressRevocationBindingOptions & {
+    routePlan: CogsEgressRoutePlan;
+    userId: string;
+    presetRevision: string;
+    pkiExpiresAtMs: number;
+    signal?: AbortSignal;
+  }
+>;
+
+export type OpenBaoEgressRevocationBinding = Readonly<{
+  source: CogsEgressRevocationSource;
+  credentialSource: CogsEnvoyCredentialSource;
+  credentialVersion: string;
+}>;
+
+export async function createOpenBaoEgressRevocationBinding(
+  request: OpenBaoEgressRevocationBindingRequest,
+): Promise<OpenBaoEgressRevocationBinding> {
+  try {
+    const authority = normalizeOpenBaoEgressRevocationAuthorityOptions(authorityOptions(request));
+    const source = new AggregateOpenBaoEgressRevocationSource({ ...request, ...authority });
+    const first = await source.read(request.signal ?? new AbortController().signal);
+    if (first.revoked) throw new Error("revoked");
+    const credentialSource = new ModelBackedEgressCredentialSource({
+      userId: validOpaque(request.userId),
+      resolver: new ModelCredentialResolver(
+        new OpenBaoModelApiKeyStore({
+          ...authority,
+        }),
+      ),
+      ...(request.signal === undefined ? {} : { signal: request.signal }),
+    });
+    return Object.freeze({ source, credentialSource, credentialVersion: first.credentialVersion });
+  } catch {
+    throw new CogsEgressOpenBaoRevocationError();
   }
 }
 
@@ -96,6 +171,100 @@ export class OpenBaoEgressRevocationSource implements CogsEgressRevocationSource
       throw new CogsEgressOpenBaoRevocationError();
     }
   }
+}
+
+class AggregateOpenBaoEgressRevocationSource implements CogsEgressRevocationSource {
+  readonly #options: OpenBaoEgressRevocationBindingOptions;
+  readonly #handles: readonly string[];
+  readonly #userId: string;
+  readonly #presetRevision: string;
+  readonly #pkiExpiresAtMs: number;
+  readonly #timeoutMs: number;
+
+  public constructor(request: OpenBaoEgressRevocationBindingRequest) {
+    this.#options = normalizeOpenBaoEgressRevocationAuthorityOptions(authorityOptions(request));
+    this.#userId = validOpaque(request.userId);
+    this.#handles = routeCredentialHandles(request.routePlan, this.#userId);
+    this.#presetRevision = validOpaque(request.presetRevision);
+    this.#pkiExpiresAtMs = integer(request.pkiExpiresAtMs, 1, Number.MAX_SAFE_INTEGER);
+    this.#timeoutMs = integer(request.timeoutMs ?? 5000, 1, 60_000);
+  }
+
+  public async read(signal: AbortSignal): Promise<CogsEgressRevocationSnapshot> {
+    if (signal.aborted) throw new CogsEgressOpenBaoRevocationError();
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), this.#timeoutMs);
+    const relay = () => controller.abort();
+    signal.addEventListener("abort", relay, { once: true });
+    try {
+      if (signal.aborted) controller.abort();
+      return await this.readInner(controller.signal);
+    } catch {
+      throw new CogsEgressOpenBaoRevocationError();
+    } finally {
+      controller.abort();
+      clearTimeout(timeout);
+      signal.removeEventListener("abort", relay);
+    }
+  }
+
+  private async readInner(signal: AbortSignal): Promise<CogsEgressRevocationSnapshot> {
+    const pairs: [string, string][] = [];
+    for (const handle of this.#handles) {
+      if (signal.aborted) throw new Error("aborted");
+      const snapshot = await new OpenBaoEgressRevocationSource({
+        ...this.#options,
+        userId: this.#userId,
+        credentialHandle: handle,
+        presetRevision: this.#presetRevision,
+        pkiExpiresAtMs: this.#pkiExpiresAtMs,
+      }).read(signal);
+      if (snapshot.revoked) throw new Error("revoked");
+      pairs.push([handleDigest(handle), snapshot.credentialVersion]);
+    }
+    return Object.freeze({
+      presetRevision: this.#presetRevision,
+      credentialVersion: aggregateVersion(pairs),
+      revoked: false,
+      pkiExpiresAtMs: this.#pkiExpiresAtMs,
+    });
+  }
+}
+
+function authorityOptions(request: OpenBaoEgressRevocationBindingRequest): OpenBaoEgressRevocationBindingOptions {
+  return Object.freeze({
+    origin: request.origin,
+    mount: request.mount,
+    identity: request.identity,
+    ...(request.allowLoopbackHttpDevelopment === undefined
+      ? {}
+      : { allowLoopbackHttpDevelopment: request.allowLoopbackHttpDevelopment }),
+    ...(request.timeoutMs === undefined ? {} : { timeoutMs: request.timeoutMs }),
+    ...(request.maxResponseBytes === undefined ? {} : { maxResponseBytes: request.maxResponseBytes }),
+    ...(request.fetchImpl === undefined ? {} : { fetchImpl: request.fetchImpl }),
+  });
+}
+
+function routeCredentialHandles(routePlan: CogsEgressRoutePlan, userId: string): readonly string[] {
+  if (!routePlan || typeof routePlan !== "object" || Array.isArray(routePlan) || !Object.isFrozen(routePlan))
+    throw new Error("bad route plan");
+  const handles = new Set<string>();
+  for (const integration of routePlan.integrations) {
+    if (!Object.isFrozen(integration) || !Object.isFrozen(integration.routes)) throw new Error("bad route plan");
+    if (integration.routes.some((route) => route.credentialRequired === true)) {
+      credentialPath(integration.auth.secretHandle, userId);
+      handles.add(integration.auth.secretHandle);
+    }
+  }
+  return Object.freeze([...handles].sort((left, right) => left.localeCompare(right)));
+}
+
+function handleDigest(handle: string): string {
+  return `sha256:${createHash("sha256").update(handle).digest("hex")}`;
+}
+
+function aggregateVersion(pairs: readonly (readonly [string, string])[]): string {
+  return `sha256:${createHash("sha256").update(JSON.stringify(pairs)).digest("hex")}`;
 }
 
 function parseMetadata(text: string, response: Response): { current: number; revoked: boolean } {
@@ -305,11 +474,46 @@ function credentialPath(handle: string, userId: string): string {
   return parts.map(encodeURIComponent).join("/");
 }
 function named(value: string): string {
-  if (!name.test(value)) throw new Error("bad name");
+  if (typeof value !== "string" || !name.test(value)) throw new Error("bad name");
   return value;
 }
+function identity(value: OpenBaoIdentityPort): OpenBaoIdentityPort {
+  if (!value || typeof value !== "object" || typeof value.withToken !== "function") throw new Error("bad identity");
+  return value;
+}
+function boolean(value: boolean): boolean {
+  if (typeof value !== "boolean") throw new Error("bad boolean");
+  return value;
+}
+function fetchFunction(value: typeof fetch): typeof fetch {
+  if (typeof value !== "function") throw new Error("bad fetch");
+  return value;
+}
+function exactPlain(
+  value: unknown,
+  required: readonly string[],
+  optional: readonly string[],
+): asserts value is Record<string, unknown> {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    Array.isArray(value) ||
+    Object.getPrototypeOf(value) !== Object.prototype
+  )
+    throw new Error("bad object");
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const keys = Reflect.ownKeys(descriptors);
+  if (keys.some((key) => typeof key === "symbol")) throw new Error("bad object");
+  const names = keys as string[];
+  if (required.some((key) => !names.includes(key))) throw new Error("bad object");
+  if (names.some((key) => !required.includes(key) && !optional.includes(key))) throw new Error("bad object");
+  for (const key of names) {
+    const descriptor = descriptors[key];
+    if (!descriptor?.enumerable || !Object.hasOwn(descriptor, "value")) throw new Error("bad object");
+  }
+}
 function validOpaque(value: string): string {
-  if (!opaque.test(value)) throw new Error("bad opaque");
+  if (typeof value !== "string" || !opaque.test(value)) throw new Error("bad opaque");
   return value;
 }
 function secret(value: string): string {

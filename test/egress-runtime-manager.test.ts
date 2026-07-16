@@ -60,7 +60,10 @@ test("revocation performs deny authz, process drain final completion, replacemen
   fixture.revocation = snap({ revoked: true });
   fixture.timers.tick(50);
   await flush();
-  assert.deepEqual(fixture.events, ["authz.close", "process.close", "replacement:revoked"]);
+  assert.deepEqual(
+    fixture.events.filter((event) => event !== "process.start"),
+    ["authz.close", "process.close", "replacement:revoked"],
+  );
   assert.equal(manager.ready, false);
   assert.equal(manager.replacementRequired, true);
   assert.deepEqual(manager.drainCompletions(4), [
@@ -140,6 +143,36 @@ test("canonical path and invalid injected port fail before side effects", async 
     generic,
   );
   assert.equal(fixture.openWalCalls, 0);
+
+  const mixed = fixtureRuntime({ openBaoMode: true });
+  await assert.rejects(
+    startCogsEgressRuntimeManager(
+      mixed.options({ credentialSource: { withCredential: async () => undefined } } as never),
+    ),
+    generic,
+  );
+  assert.equal(mixed.openWalCalls, 0);
+
+  const extra = fixtureRuntime();
+  await assert.rejects(
+    startCogsEgressRuntimeManager(
+      extra.options({ revocation: { ...extra.options().revocation, extra: true } } as never),
+    ),
+    generic,
+  );
+  assert.equal(extra.openWalCalls, 0);
+
+  for (const revocation of [
+    { mode: "openbao" },
+    { mode: "openbao", openbao: { ...openBaoConfig(), extra: true } },
+    { mode: "openbao", openbao: accessorOpenBaoConfig() },
+    { mode: "openbao", openbao: symbolOpenBaoConfig() },
+    { mode: "openbao", openbao: nonEnumerableOpenBaoConfig() },
+  ] as const) {
+    const hostile = fixtureRuntime();
+    await assert.rejects(startCogsEgressRuntimeManager(hostile.options({ revocation } as never)), generic);
+    assert.equal(hostile.openWalCalls, 0);
+  }
 });
 
 test("normal close uses one promise, closes in order, and preserves final completions", async () => {
@@ -149,12 +182,75 @@ test("normal close uses one promise, closes in order, and preserves final comple
   const second = manager.close();
   assert.equal(first, second);
   await first;
-  assert.deepEqual(fixture.events, ["authz.close", "process.close", "wal.close"]);
+  assert.deepEqual(
+    fixture.events.filter((event) => event !== "process.start"),
+    ["authz.close", "process.close", "wal.close"],
+  );
   assert.equal(fixture.scopeReleased, true);
   assert.deepEqual(
     manager.drainCompletions(1).map((item) => item.intentId),
     ["intent"],
   );
+});
+
+test("malformed OpenBao binding from port override fails before config rendering", async () => {
+  const fixture = fixtureRuntime({ openBaoMode: true, malformedBinding: true });
+  await assert.rejects(startCogsEgressRuntimeManager(fixture.options()), generic);
+  assert.equal(fixture.events.includes("config"), false);
+  assert.ok(fixture.events.includes("authz.close"));
+  assert.ok(fixture.events.includes("wal.close"));
+});
+
+test("openbao mode orders preflight, config render, watcher read, process start, then readiness", async () => {
+  const fixture = fixtureRuntime({ openBaoMode: true });
+  const manager = await startCogsEgressRuntimeManager(fixture.options());
+  assert.equal(manager.ready, true);
+  assert.deepEqual(
+    fixture.events.filter((event) => event.startsWith("openbao.") || event === "config" || event === "process.start"),
+    [
+      "openbao.bind:preset-user",
+      "openbao.read:cred1",
+      "config",
+      "openbao.credential",
+      "openbao.read:cred1",
+      "process.start",
+    ],
+  );
+  await manager.close();
+});
+
+test("openbao mode fails if metadata changes during config rendering before Envoy starts", async () => {
+  const fixture = fixtureRuntime({ openBaoMode: true, configChangesCredential: true });
+  await assert.rejects(startCogsEgressRuntimeManager(fixture.options()), generic);
+  assert.deepEqual(
+    fixture.events.filter((event) => event.startsWith("openbao.") || event === "config" || event === "process.start"),
+    ["openbao.bind:preset-user", "openbao.read:cred1", "config", "openbao.credential", "openbao.read:cred2"],
+  );
+  assert.equal(fixture.events.includes("process.start"), false);
+  assert.ok(fixture.events.includes("authz.close"));
+  assert.ok(fixture.events.includes("wal.close"));
+});
+
+test("openbao lifecycle abort during data rendering settles and never becomes ready", async () => {
+  const controller = new AbortController();
+  const fixture = fixtureRuntime({ openBaoMode: true, abortDuringCredential: true });
+  const start = startCogsEgressRuntimeManager(fixture.options({ signal: controller.signal }));
+  await flush();
+  controller.abort();
+  await assert.rejects(start, generic);
+  assert.ok(fixture.events.includes("openbao.credential.abort"));
+  assert.equal(fixture.events.includes("process.start"), false);
+  assert.ok(fixture.events.includes("authz.close"));
+  assert.ok(fixture.events.includes("wal.close"));
+});
+
+test("openbao revocation during process startup is never ready and fully cleaned", async () => {
+  const fixture = fixtureRuntime({ openBaoMode: true, processStartupRevokes: true });
+  await assert.rejects(startCogsEgressRuntimeManager(fixture.options()), generic);
+  assert.ok(fixture.events.includes("process.start"));
+  assert.ok(fixture.events.includes("authz.close"));
+  assert.ok(fixture.events.includes("process.close"));
+  assert.ok(fixture.events.includes("wal.close"));
 });
 
 test("startup failures clean already-owned resources and stay generic", async () => {
@@ -165,7 +261,7 @@ test("startup failures clean already-owned resources and stay generic", async ()
     ["configFails", ["authz.close", "wal.close"]],
     ["tmpfsFails", ["authz.close", "wal.close"]],
     ["processFails", ["authz.close", "wal.close"]],
-    ["watcherFails", ["authz.close", "process.close", "wal.close"]],
+    ["watcherFails", ["authz.close", "wal.close"]],
   ] as const) {
     const fixture = fixtureRuntime({ [flag]: true });
     await assert.rejects(startCogsEgressRuntimeManager(fixture.options()), generic);
@@ -187,6 +283,11 @@ function fixtureRuntime(
     processReadyThrows?: boolean;
     pkiFails?: boolean;
     watcherFails?: boolean;
+    openBaoMode?: boolean;
+    configChangesCredential?: boolean;
+    processStartupRevokes?: boolean;
+    abortDuringCredential?: boolean;
+    malformedBinding?: boolean;
   } = {},
 ) {
   const timers = new ManualTimers();
@@ -240,7 +341,13 @@ function fixtureRuntime(
   };
   const envoyProcess: CogsEnvoyProcessPort = {
     async start(input) {
+      events.push("process.start");
       processBootstrapPath = input.bootstrapPath;
+      if (flags.processStartupRevokes) {
+        revocation = snap({ revoked: true });
+        timers.tick(50);
+        await flush();
+      }
       return Object.freeze({
         get ready() {
           if (flags.processReadyThrows) throw new Error(raw);
@@ -289,7 +396,17 @@ function fixtureRuntime(
       _source: CogsEnvoyCredentialSource,
       operation: (config: CogsEnvoyRuntimeConfig) => Promise<T>,
     ) {
+      if (flags.openBaoMode) events.push("config");
       if (flags.configFails) throw new Error(raw);
+      if (flags.configChangesCredential) revocation = snap({ credentialVersion: "cred2" });
+      await _source.withCredential(
+        Object.freeze({
+          integrationId: "npm",
+          secretHandle: "users/preset-user/integrations/npm",
+          authType: "bearer_header" as const,
+        }),
+        async () => undefined,
+      );
       return operation(config());
     },
     async withTmpfs<T>(
@@ -319,6 +436,41 @@ function fixtureRuntime(
         scopeReleased = true;
       }
     },
+    async bindOpenBaoRevocation(request: { userId: string; routePlan: unknown; signal?: AbortSignal }) {
+      events.push(`openbao.bind:${request.userId}`);
+      if (flags.malformedBinding) return { credentialVersion: "bad version" } as never;
+      assert.equal(Object.isFrozen(request.routePlan), true);
+      const source = Object.freeze({
+        read: async () => {
+          events.push(`openbao.read:${revocation.credentialVersion}`);
+          return revocation;
+        },
+      });
+      const boundCredentialSource: CogsEnvoyCredentialSource = {
+        async withCredential(_request, consume) {
+          events.push("openbao.credential");
+          if (flags.abortDuringCredential) {
+            await new Promise<void>((_resolve, reject) => {
+              request.signal?.addEventListener(
+                "abort",
+                () => {
+                  events.push("openbao.credential.abort");
+                  reject(new Error(raw));
+                },
+                { once: true },
+              );
+            });
+          }
+          await consume(Object.freeze({ type: "bearer", token: "B".repeat(16) }));
+        },
+      };
+      const first = await source.read();
+      return Object.freeze({
+        credentialVersion: first.credentialVersion,
+        credentialSource: boundCredentialSource,
+        source,
+      });
+    },
   };
   const options = (patch: Partial<Parameters<typeof startCogsEgressRuntimeManager>[0]> = {}) => ({
     launch: launch(),
@@ -326,11 +478,19 @@ function fixtureRuntime(
     listenerPort: 15001,
     maxSessionExpiresAtMs: 20_000,
     completionCapacity: 8,
-    credentialVersion: "cred1",
+    revocation: flags.openBaoMode
+      ? {
+          mode: "openbao" as const,
+          openbao: openBaoConfig(),
+        }
+      : {
+          mode: "injected" as const,
+          credentialVersion: "cred1",
+          credentialSource,
+          revocationSource: { read: async () => (flags.watcherFails ? snap({ revoked: true }) : revocation) },
+        },
     proxyCapability: "P".repeat(32),
-    credentialSource,
     pkiSource,
-    revocationSource: { read: async () => (flags.watcherFails ? snap({ revoked: true }) : revocation) },
     envoyProcess: flags.processFails
       ? {
           start: async () => {
@@ -396,6 +556,28 @@ function fixtureRuntime(
     secretCalls,
     timers,
   };
+}
+
+function openBaoConfig() {
+  return {
+    origin: "http://127.0.0.1:8200/",
+    mount: "model",
+    identity: { withToken: async () => undefined },
+    allowLoopbackHttpDevelopment: true,
+  };
+}
+function accessorOpenBaoConfig() {
+  const value = openBaoConfig();
+  Object.defineProperty(value, "origin", { enumerable: true, get: () => "http://127.0.0.1:8200/" });
+  return value;
+}
+function symbolOpenBaoConfig() {
+  return Object.assign(openBaoConfig(), { [Symbol("x")]: true });
+}
+function nonEnumerableOpenBaoConfig() {
+  const value = openBaoConfig();
+  Object.defineProperty(value, "hidden", { value: true, enumerable: false });
+  return value;
 }
 
 function launch(): LaunchConfig {

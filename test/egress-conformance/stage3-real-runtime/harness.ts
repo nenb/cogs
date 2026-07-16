@@ -252,23 +252,26 @@ async function main(): Promise<void> {
           listenerPort,
           maxSessionExpiresAtMs: Date.now() + 60 * 60 * 1000,
           completionCapacity: 8,
-          credentialVersion: "openbao-fixture-v1",
-          proxyCapability,
-          credentialSource,
-          pkiSource,
-          revocationSource: {
-            read: async () =>
-              phase("read_revocation_snapshot", async () => {
-                if (!Number.isSafeInteger(capturedPkiExpiresAtMs) || capturedPkiExpiresAtMs < 1)
-                  throw new Error("pki unavailable");
-                return Object.freeze({
-                  presetRevision: revision,
-                  credentialVersion: "openbao-fixture-v1",
-                  revoked: false,
-                  pkiExpiresAtMs: capturedPkiExpiresAtMs,
-                });
-              }),
+          revocation: {
+            mode: "injected",
+            credentialVersion: "openbao-fixture-v1",
+            credentialSource,
+            revocationSource: {
+              read: async () =>
+                phase("read_revocation_snapshot", async () => {
+                  if (!Number.isSafeInteger(capturedPkiExpiresAtMs) || capturedPkiExpiresAtMs < 1)
+                    throw new Error("pki unavailable");
+                  return Object.freeze({
+                    presetRevision: revision,
+                    credentialVersion: "openbao-fixture-v1",
+                    revoked: false,
+                    pkiExpiresAtMs: capturedPkiExpiresAtMs,
+                  });
+                }),
+            },
           },
+          proxyCapability,
+          pkiSource,
           envoyProcess: Object.freeze({
             start: (request) =>
               phase("start_envoy_process", () =>
