@@ -457,14 +457,14 @@ test("SSH launch dependency gates readiness and dependency loss revokes lifecycl
         throw new Error("observer failure");
       },
     });
-    const noop = (name: "sessionStorage" | "proxy" | "auth" | "auditWal"): LaunchDependency => ({
+    const noop = (name: "sessionStorage" | "proxy" | "auth" | "auditWal" | "egressRuntime"): LaunchDependency => ({
       name,
       start: async () => undefined,
       shutdown: async () => undefined,
     });
     lifecycle = new LaunchLifecycle({
       launchDocument: launch,
-      dependencies: [noop("sessionStorage"), ssh, noop("proxy"), noop("auth"), noop("auditWal")],
+      dependencies: [noop("sessionStorage"), ssh, noop("proxy"), noop("auth"), noop("auditWal"), noop("egressRuntime")],
       onEvent: (event) => states.push(event.state),
     });
     await lifecycle.start();
@@ -485,7 +485,14 @@ test("SSH launch dependency gates readiness and dependency loss revokes lifecycl
     });
     raceLifecycle = new LaunchLifecycle({
       launchDocument: launch,
-      dependencies: [noop("sessionStorage"), raceSsh, noop("proxy"), noop("auth"), noop("auditWal")],
+      dependencies: [
+        noop("sessionStorage"),
+        raceSsh,
+        noop("proxy"),
+        noop("auth"),
+        noop("auditWal"),
+        noop("egressRuntime"),
+      ],
       onEvent: (event) => raceStates.push(event.state),
     });
     await raceLifecycle.start();

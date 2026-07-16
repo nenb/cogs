@@ -99,7 +99,7 @@ function validLaunch(sessionId: string): unknown {
 }
 
 function dependencies(shutdowns: string[]): LaunchDependency[] {
-  return (["sessionStorage", "ssh", "proxy", "auth", "auditWal"] as const).map((name) => ({
+  return (["sessionStorage", "ssh", "proxy", "auth", "auditWal", "egressRuntime"] as const).map((name) => ({
     name,
     start: async () => undefined,
     shutdown: async () => {
@@ -1086,7 +1086,7 @@ test("Pi adapter fatal callback requests lifecycle shutdown and readiness closes
     await adapter.dispose();
     await api.close();
     assert.equal(lifecycle.ready, false);
-    assert.deepEqual(shutdowns.sort(), ["auditWal", "auth", "proxy", "sessionStorage", "ssh"].sort());
+    assert.deepEqual(shutdowns.sort(), ["auditWal", "auth", "egressRuntime", "proxy", "sessionStorage", "ssh"].sort());
   } finally {
     await rm(temporaryRoot, { recursive: true, force: true });
   }

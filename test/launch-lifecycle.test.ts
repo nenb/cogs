@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { LaunchConfigError, validateLaunchConfig } from "../src/launch/config.ts";
 import {
+  createCogsEgressRuntimeLaunchDependency,
   type LaunchDependency,
   LaunchLifecycle,
   LaunchLifecycleError,
@@ -37,7 +38,7 @@ function validLaunch(): unknown {
 }
 
 function dependencies(overrides: Partial<Record<string, Partial<LaunchDependency>>> = {}): LaunchDependency[] {
-  return (["sessionStorage", "ssh", "proxy", "auth", "auditWal"] as const).map((name) => ({
+  return (["sessionStorage", "ssh", "proxy", "auth", "auditWal", "egressRuntime"] as const).map((name) => ({
     name,
     start: async () => undefined,
     shutdown: async () => undefined,
@@ -389,6 +390,11 @@ test("dependency loss fails closed and cleanup only targets attempted dependenci
           calls.push("auditWal");
         },
       },
+      egressRuntime: {
+        shutdown: async () => {
+          calls.push("egressRuntime");
+        },
+      },
     }),
   });
   await lifecycle.start();
@@ -396,7 +402,7 @@ test("dependency loss fails closed and cleanup only targets attempted dependenci
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(lifecycle.ready, false);
   assert.equal(lifecycle.state, "stopped");
-  assert.deepEqual(calls, ["auditWal", "auth", "proxy", "ssh", "sessionStorage"]);
+  assert.deepEqual(calls, ["egressRuntime", "auditWal", "auth", "proxy", "ssh", "sessionStorage"]);
 });
 
 test("shutdown timeout aborts cancellable cleanup and leaves no timer", async () => {
@@ -417,6 +423,7 @@ test("shutdown timeout aborts cancellable cleanup and leaves no timer", async ()
   });
   await lifecycle.start();
   const shutdown = lifecycle.requestShutdown("operator");
+  for (let index = 0; index < 5; index++) await Promise.resolve();
   scheduler.advance(25);
   await shutdown;
   assert.equal(shutdownAborted, true);
@@ -541,4 +548,294 @@ test("constructor rejects missing, duplicate, or unknown dependencies without pa
       }),
     /unknown launch dependency/,
   );
+});
+
+test("dependencies are canonicalized, egress starts last and shuts down first", async () => {
+  const calls: string[] = [];
+  const deps = dependencies();
+  for (const dependency of deps) {
+    const name = dependency.name;
+    (dependency as { start: LaunchDependency["start"] }).start = async () => {
+      calls.push(`start:${name}`);
+    };
+    (dependency as { shutdown: LaunchDependency["shutdown"] }).shutdown = async () => {
+      calls.push(`shutdown:${name}`);
+    };
+  }
+  const lifecycle = new LaunchLifecycle({ launchDocument: validLaunch(), dependencies: [...deps].reverse() });
+  await lifecycle.start();
+  await lifecycle.requestShutdown("done");
+  assert.deepEqual(calls, [
+    "start:sessionStorage",
+    "start:ssh",
+    "start:proxy",
+    "start:auth",
+    "start:auditWal",
+    "start:egressRuntime",
+    "shutdown:egressRuntime",
+    "shutdown:auditWal",
+    "shutdown:auth",
+    "shutdown:proxy",
+    "shutdown:ssh",
+    "shutdown:sessionStorage",
+  ]);
+});
+
+test("egress runtime adapter gates startup, maps readiness safely, and closes once", async () => {
+  let closeCalls = 0;
+  const manager = fakeManager(
+    () => true,
+    async () => {
+      closeCalls++;
+    },
+  );
+  const dependency = createCogsEgressRuntimeLaunchDependency(async () => manager);
+  await dependency.start(new AbortController().signal);
+  assert.equal(dependency.ready?.(), true);
+  await Promise.all([
+    dependency.shutdown(new AbortController().signal),
+    dependency.shutdown(new AbortController().signal),
+  ]);
+  assert.equal(closeCalls, 1);
+
+  await assert.rejects(
+    createCogsEgressRuntimeLaunchDependency(async () =>
+      fakeManager(
+        () => false,
+        async () => {
+          closeCalls++;
+        },
+      ),
+    ).start(new AbortController().signal),
+  );
+  assert.equal(closeCalls, 2);
+  const throwing = createCogsEgressRuntimeLaunchDependency(async () =>
+    fakeManager(() => {
+      throw new Error("raw");
+    }),
+  );
+  await assert.rejects(throwing.start(new AbortController().signal));
+});
+
+test("health poll detects egress readiness loss, cancels timers, and late callbacks are no-op", async () => {
+  const scheduler = new FakeScheduler();
+  let egressReady = true;
+  const shutdowns: string[] = [];
+  const lifecycle = new LaunchLifecycle({
+    launchDocument: validLaunch(),
+    dependencies: dependencies({
+      egressRuntime: {
+        ready: () => egressReady,
+        shutdown: async () => {
+          shutdowns.push("egress");
+        },
+      },
+    }),
+    scheduler,
+    dependencyHealthIntervalMs: 50,
+  });
+  await lifecycle.start();
+  assert.equal(lifecycle.ready, true);
+  egressReady = false;
+  scheduler.advance(50);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(lifecycle.state, "stopped");
+  assert.deepEqual(shutdowns, ["egress"]);
+  const pending = scheduler.pendingTimers;
+  scheduler.advance(500);
+  assert.equal(scheduler.pendingTimers, pending);
+});
+
+test("health poll getter throw and scheduler throw fail closed", async () => {
+  const scheduler = new FakeScheduler();
+  const lifecycle = new LaunchLifecycle({
+    launchDocument: validLaunch(),
+    dependencies: dependencies({
+      egressRuntime: {
+        ready: () => {
+          throw new Error("raw");
+        },
+      },
+    }),
+    scheduler,
+    dependencyHealthIntervalMs: 50,
+  });
+  await lifecycle.start();
+  scheduler.advance(50);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(lifecycle.state, "stopped");
+
+  const getterScheduler = new FakeScheduler();
+  const deps = dependencies();
+  Object.defineProperty(deps[5] as LaunchDependency, "ready", {
+    get() {
+      throw new Error("raw");
+    },
+  });
+  const getterLifecycle = new LaunchLifecycle({
+    launchDocument: validLaunch(),
+    dependencies: deps,
+    scheduler: getterScheduler,
+    dependencyHealthIntervalMs: 50,
+  });
+  await getterLifecycle.start();
+  getterScheduler.advance(50);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(getterLifecycle.state, "stopped");
+
+  const throwingScheduler: Scheduler = {
+    now: () => 0,
+    setTimer(milliseconds, callback) {
+      if (milliseconds === 50) throw new Error("raw timer");
+      return scheduler.setTimer(milliseconds, callback);
+    },
+  };
+  const timerFailure = new LaunchLifecycle({
+    launchDocument: validLaunch(),
+    dependencies: dependencies(),
+    scheduler: throwingScheduler,
+    dependencyHealthIntervalMs: 50,
+  });
+  await timerFailure.start();
+  await timerFailure.requestShutdown("join");
+  assert.equal(timerFailure.ready, false);
+  assert.equal(timerFailure.state, "stopped");
+
+  assert.throws(
+    () =>
+      new LaunchLifecycle({
+        launchDocument: validLaunch(),
+        dependencies: dependencies(),
+        dependencyHealthIntervalMs: 49,
+      }),
+    LaunchLifecycleError,
+  );
+});
+
+function fakeManager(ready: () => boolean, close: () => Promise<void> = async () => undefined) {
+  return Object.freeze({
+    get ready() {
+      return ready();
+    },
+    listenerPort: 15001,
+    replacementRequired: false,
+    drainCompletions: () => [],
+    close,
+  });
+}
+
+test("egress runtime adapter rejects second start and redacts raw factory and close failures", async () => {
+  assert.throws(() => createCogsEgressRuntimeLaunchDependency(undefined as never), LaunchLifecycleError);
+
+  let closeCalls = 0;
+  const dependency = createCogsEgressRuntimeLaunchDependency(async () =>
+    fakeManager(
+      () => true,
+      async () => {
+        closeCalls++;
+      },
+    ),
+  );
+  await dependency.start(new AbortController().signal);
+  await assert.rejects(dependency.start(new AbortController().signal), (error: unknown) => {
+    assert.ok(error instanceof LaunchLifecycleError);
+    assert.equal(error.code, "COGS_LAUNCH_EGRESS_RUNTIME_FAILED");
+    assert.doesNotMatch(String(error.stack ?? ""), /raw/);
+    return true;
+  });
+  await dependency.shutdown(new AbortController().signal);
+  assert.equal(closeCalls, 1);
+
+  await assert.rejects(
+    createCogsEgressRuntimeLaunchDependency(async () => {
+      throw new Error("raw secret");
+    }).start(new AbortController().signal),
+    (error: unknown) => {
+      assert.ok(error instanceof LaunchLifecycleError);
+      assert.equal(error.message, "egress runtime unavailable");
+      assert.doesNotMatch(String(error.stack ?? ""), /raw secret/);
+      return true;
+    },
+  );
+
+  let rejectedCloseCalls = 0;
+  const closeRejecting = createCogsEgressRuntimeLaunchDependency(async () =>
+    fakeManager(
+      () => true,
+      async () => {
+        rejectedCloseCalls++;
+        throw new Error("raw close");
+      },
+    ),
+  );
+  await closeRejecting.start(new AbortController().signal);
+  const first = closeRejecting.shutdown(new AbortController().signal);
+  const second = closeRejecting.shutdown(new AbortController().signal);
+  await assert.rejects(first, LaunchLifecycleError);
+  await assert.rejects(second, LaunchLifecycleError);
+  assert.equal(rejectedCloseCalls, 1);
+});
+
+test("egress adapter retains not-ready manager when startup close rejects for rollback shutdown", async () => {
+  let closeCalls = 0;
+  const dependency = createCogsEgressRuntimeLaunchDependency(async () =>
+    fakeManager(
+      () => false,
+      async () => {
+        closeCalls++;
+        throw new Error("raw close");
+      },
+    ),
+  );
+  await assert.rejects(dependency.start(new AbortController().signal), (error: unknown) => {
+    assert.ok(error instanceof LaunchLifecycleError);
+    assert.equal(error.code, "COGS_LAUNCH_EGRESS_RUNTIME_FAILED");
+    assert.doesNotMatch(String(error.stack ?? ""), /raw close/);
+    return true;
+  });
+  const first = dependency.shutdown(new AbortController().signal);
+  const second = dependency.shutdown(new AbortController().signal);
+  await assert.rejects(first, LaunchLifecycleError);
+  await assert.rejects(second, LaunchLifecycleError);
+  assert.equal(closeCalls, 1);
+});
+
+test("egress adapter closes deferred factory result after shutdown before resolve", async () => {
+  let resolveFactory!: (manager: ReturnType<typeof fakeManager>) => void;
+  let closeCalls = 0;
+  const controller = new AbortController();
+  const dependency = createCogsEgressRuntimeLaunchDependency(
+    () =>
+      new Promise((resolve) => {
+        resolveFactory = resolve;
+      }),
+  );
+  const start = dependency.start(controller.signal);
+  controller.abort();
+  const shutdown = dependency.shutdown(new AbortController().signal);
+  resolveFactory(
+    fakeManager(
+      () => true,
+      async () => {
+        closeCalls++;
+      },
+    ),
+  );
+  await assert.rejects(start, LaunchLifecycleError);
+  await shutdown;
+  assert.equal(dependency.ready?.(), false);
+  assert.equal(closeCalls, 1);
+});
+
+test("egress adapter consumes already-aborted start without invoking factory", async () => {
+  let calls = 0;
+  const controller = new AbortController();
+  controller.abort();
+  const dependency = createCogsEgressRuntimeLaunchDependency(async () => {
+    calls++;
+    return fakeManager(() => true);
+  });
+  await assert.rejects(dependency.start(controller.signal), LaunchLifecycleError);
+  await assert.rejects(dependency.start(new AbortController().signal), LaunchLifecycleError);
+  assert.equal(calls, 0);
 });
