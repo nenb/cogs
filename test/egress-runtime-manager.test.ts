@@ -258,7 +258,7 @@ function fixtureRuntime(
             }),
           ];
           await input.onCompletionLine(
-            '{"event":"request-complete","intent_id":"intent","route_id":"npm:npm-registry-metadata:GET:0","response_code":"200","duration_ms":"1"}',
+            '{"event":"request-complete","intent_id":"intent","route_id":"npm:npm-registry-metadata:GET:0","response_code":200,"duration_ms":1}',
           );
         },
       });

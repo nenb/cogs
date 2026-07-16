@@ -207,13 +207,24 @@ test("renders deterministic contained Envoy bootstrap JSON with loopback authz m
   const inner = boot.static_resources.listeners[1];
   const innerHcm = inner.filter_chains[0].filters[0].typed_config;
   const innerFilter = innerHcm.http_filters[0].typed_config;
-  assert.equal(Object.hasOwn(innerFilter, "allowed_headers"), false);
+  assert.deepEqual(innerFilter.allowed_headers, { patterns: [{ exact: "proxy-authorization" }] });
   assert.deepEqual(innerFilter.disallowed_headers.patterns, [
     { exact: "authorization" },
     { exact: "cookie" },
     { exact: "proxy-authorization" },
   ]);
-  assert.deepEqual(Object.keys(innerHcm.access_log[0].typed_config.log_format.json_format).sort(), [
+  const completionAccessLog = innerHcm.access_log[0];
+  assert.deepEqual(completionAccessLog.filter, {
+    metadata_filter: {
+      matcher: {
+        filter: "envoy.filters.http.ext_authz",
+        path: [{ key: "x-cogs-intent-id" }],
+        value: { present_match: true },
+      },
+      match_if_key_not_found: false,
+    },
+  });
+  assert.deepEqual(Object.keys(completionAccessLog.typed_config.log_format.json_format).sort(), [
     "duration_ms",
     "event",
     "intent_id",

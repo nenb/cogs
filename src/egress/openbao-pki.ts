@@ -18,6 +18,7 @@ type Data = Readonly<{
   issuing_ca?: string;
   ca_chain?: string[];
   expiration?: number;
+  not_before?: number;
   private_key_type?: string;
 }>;
 
@@ -150,6 +151,11 @@ function validateMaterial(
     (!Number.isSafeInteger(data.expiration) || Math.abs(data.expiration * 1000 - expiresAtMs) > 1000)
   )
     throw new Error("bad expiration");
+  if (
+    data.not_before !== undefined &&
+    (!Number.isSafeInteger(data.not_before) || Math.abs(data.not_before * 1000 - validFromMs) > 1000)
+  )
+    throw new Error("bad not_before");
   const caPems = caChain(data);
   const caCerts = caPems.map((pem) => new X509Certificate(pem));
   for (const cert of [leaf, ...caCerts]) validLifetime(cert, expiresAt + marginMs);
@@ -275,6 +281,7 @@ function parse(text: string, response: Response): Data {
     "ca_chain",
     "serial_number",
     "expiration",
+    "not_before",
     "private_key_type",
   ]);
   const data = root.data as Record<string, unknown>;
@@ -288,6 +295,8 @@ function parse(text: string, response: Response): Data {
   if (data.serial_number !== undefined && typeof data.serial_number !== "string") throw new Error("bad serial");
   if (data.expiration !== undefined && (!Number.isSafeInteger(data.expiration) || typeof data.expiration !== "number"))
     throw new Error("bad expiration");
+  if (data.not_before !== undefined && (!Number.isSafeInteger(data.not_before) || typeof data.not_before !== "number"))
+    throw new Error("bad not_before");
   if (data.private_key_type !== undefined && typeof data.private_key_type !== "string") throw new Error("bad key type");
   return data as Data;
 }
@@ -364,9 +373,9 @@ function hostSet(hosts: string[]): string[] {
 function ttl(expiresAt: number, now: number, margin: number): number {
   if (!Number.isSafeInteger(expiresAt) || expiresAt <= now || expiresAt - now > maxSessionMs)
     throw new Error("bad expiry");
-  const value = expiresAt - now + margin;
-  if (value < 1 || value > maxRequestMs) throw new Error("bad ttl");
-  return value;
+  const value = Math.ceil((expiresAt - now + margin) / 1000) + 1;
+  if (value < 1 || value > Math.ceil(maxRequestMs / 1000) + 1) throw new Error("bad ttl");
+  return value * 1000;
 }
 
 function certPem(value: string): string {

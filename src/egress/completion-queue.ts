@@ -2,7 +2,6 @@ import type { EgressAuditWal, EgressAuditWalRecord } from "./audit-wal.ts";
 
 const expectedKeys = ["event", "intent_id", "route_id", "response_code", "duration_ms"] as const;
 const opaque = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
-const decimal = /^(0|[1-9][0-9]*)$/;
 
 export type CogsEgressCompletion = Readonly<{
   intentId: string;
@@ -41,7 +40,7 @@ export function createCogsEgressCompletionQueue(
     const captured = Object.freeze({ capacity: options.capacity, nowMs: options.nowMs });
     const capacity = bound(captured.capacity, 1, 1024);
     if (typeof captured.nowMs !== "function" || !wal.ready || wal.records.length > 10_000) throw new Error("bad queue");
-    const baseline = Math.max(0, ...wal.records.map((record) => safeSequence(record.sequence)));
+    const baseline = Math.max(-1, ...wal.records.map((record) => safeSequence(record.sequence)));
     const queue = new CompletionQueue(wal, capacity, captured.nowMs, baseline);
     return queue.handle();
   } catch {
@@ -139,7 +138,13 @@ class CompletionQueue {
   }
 }
 
-function parseLine(line: string): Record<(typeof expectedKeys)[number], string> {
+function parseLine(line: string): {
+  readonly event: string;
+  readonly intent_id: string;
+  readonly route_id: string;
+  readonly response_code: number;
+  readonly duration_ms: number;
+} {
   if (typeof line !== "string" || line.length < 1 || line.length > 4096 || line.trim() !== line || line.includes("\\"))
     throw new Error("bad line");
   const data = new TextEncoder().encode(line);
@@ -153,10 +158,13 @@ function parseLine(line: string): Record<(typeof expectedKeys)[number], string> 
   for (const key of expectedKeys) {
     if ((line.match(new RegExp(`"${key}"\\s*:`, "g")) ?? []).length !== 1) throw new Error("bad key token");
   }
-  const parsed = Object.fromEntries(expectedKeys.map((key) => [key, ownString(record, key)])) as Record<
-    (typeof expectedKeys)[number],
-    string
-  >;
+  const parsed = Object.freeze({
+    event: ownString(record, "event"),
+    intent_id: ownString(record, "intent_id"),
+    route_id: ownString(record, "route_id"),
+    response_code: ownDecimalField(record, "response_code"),
+    duration_ms: ownDecimalField(record, "duration_ms"),
+  });
   if (parsed.event !== "request-complete") throw new Error("bad event");
   parseDecimal(parsed.response_code, 100, 599);
   parseDecimal(parsed.duration_ms, 0, 86_400_000);
@@ -168,9 +176,13 @@ function ownString(record: Record<string, unknown>, key: string): string {
   return record[key];
 }
 
-function parseDecimal(value: string, minimum: number, maximum: number): number {
-  if (!decimal.test(value)) throw new Error("bad decimal");
-  return bound(Number(value), minimum, maximum);
+function ownDecimalField(record: Record<string, unknown>, key: "response_code" | "duration_ms"): number {
+  if (!Object.hasOwn(record, key) || typeof record[key] !== "number") throw new Error("bad decimal");
+  return record[key];
+}
+
+function parseDecimal(value: number, minimum: number, maximum: number): number {
+  return bound(value, minimum, maximum);
 }
 
 function bound(value: number, minimum: number, maximum: number): number {
@@ -179,7 +191,7 @@ function bound(value: number, minimum: number, maximum: number): number {
 }
 
 function safeSequence(value: number): number {
-  return bound(value, 1, Number.MAX_SAFE_INTEGER);
+  return bound(value, 0, Number.MAX_SAFE_INTEGER);
 }
 
 function safeNow(value: number): number {

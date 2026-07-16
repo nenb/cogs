@@ -14,12 +14,12 @@ const generic = (error: unknown) => {
 };
 
 test("completes only post-baseline WAL intents, ignores denied logs, and drains frozen metadata in arrival order", async () => {
-  const wal = fakeWal([record(1, "old", "r1")]);
+  const wal = fakeWal([record(0, "old", "r1")]);
   const queue = createCogsEgressCompletionQueue(wal, { capacity: 4, nowMs: () => 1234 });
   wal.records = [...wal.records, record(3, "second", "r2"), record(2, "first", "r1")];
-  await queue.onCompletionLine(line({ intent_id: "-", route_id: "-", response_code: "403", duration_ms: "0" }));
-  await queue.onCompletionLine(line({ intent_id: "second", route_id: "r2", response_code: "201", duration_ms: "9" }));
-  await queue.onCompletionLine(line({ intent_id: "first", route_id: "r1", response_code: "200", duration_ms: "7" }));
+  await queue.onCompletionLine(line({ intent_id: "-", route_id: "-", response_code: 403, duration_ms: 0 }));
+  await queue.onCompletionLine(line({ intent_id: "second", route_id: "r2", response_code: 201, duration_ms: 9 }));
+  await queue.onCompletionLine(line({ intent_id: "first", route_id: "r1", response_code: 200, duration_ms: 7 }));
   const drained = queue.drain(4);
   assert.deepEqual(drained, [
     { intentId: "second", sequence: 3, routeId: "r2", responseCode: 201, durationMs: 9, completedAtMs: 1234 },
@@ -36,17 +36,18 @@ test("schema, key, JSON type, byte bound, event, number, and clock failures are 
     "[]",
     "null",
     JSON.stringify({ ...base(), extra: raw }),
-    '{"event":"request-complete","event":"request-complete","intent_id":"i","route_id":"r","response_code":"200","duration_ms":"1"}',
-    '{"\\u0065vent":"request-complete","intent_id":"i","route_id":"r","response_code":"200","duration_ms":"1"}',
-    '{"event":"wrong","\\u0065vent":"request-complete","intent_id":"i","route_id":"r","response_code":"200","duration_ms":"1"}',
+    '{"event":"request-complete","event":"request-complete","intent_id":"i","route_id":"r","response_code":200,"duration_ms":1}',
+    '{"\\u0065vent":"request-complete","intent_id":"i","route_id":"r","response_code":200,"duration_ms":1}',
+    '{"event":"wrong","\\u0065vent":"request-complete","intent_id":"i","route_id":"r","response_code":200,"duration_ms":1}',
     ` ${line()}`,
     `${line()} `,
-    JSON.stringify({ event: "request-complete", intent_id: "i", route_id: "r", response_code: 200, duration_ms: "1" }),
+    JSON.stringify({ ...base(), response_code: "200" }),
+    JSON.stringify({ ...base(), duration_ms: "1" }),
     line({ event: "wrong" }),
-    line({ response_code: "099" }),
-    line({ response_code: "600" }),
-    line({ duration_ms: "01" }),
-    line({ duration_ms: "86400001" }),
+    line({ response_code: 99 }),
+    line({ response_code: 600 }),
+    line({ duration_ms: -1 }),
+    line({ duration_ms: 86_400_001 }),
     `${"é".repeat(2049)}`,
     line({ intent_id: "\uD800" }),
   ]) {
@@ -62,6 +63,21 @@ test("schema, key, JSON type, byte bound, event, number, and clock failures are 
     nowMs: () => Number.NaN,
   });
   await assert.rejects(poisoned.onCompletionLine(line()), generic);
+});
+
+test("accepts first real WAL sequence zero and rejects recovered-baseline completions", async () => {
+  const wal = fakeWal([]);
+  const queue = createCogsEgressCompletionQueue(wal, { capacity: 2, nowMs: () => 5 });
+  wal.records = [record(0, "first", "r")];
+  await queue.onCompletionLine(line({ intent_id: "first" }));
+  assert.deepEqual(queue.drain(1), [
+    { intentId: "first", sequence: 0, routeId: "r", responseCode: 200, durationMs: 1, completedAtMs: 5 },
+  ]);
+
+  const recoveredWal = fakeWal([record(0, "recovered", "r")]);
+  const recoveredQueue = createCogsEgressCompletionQueue(recoveredWal, { capacity: 1, nowMs: () => 1 });
+  await assert.rejects(recoveredQueue.onCompletionLine(line({ intent_id: "recovered" })), generic);
+  assert.equal(recoveredQueue.ready, false);
 });
 
 test("unknown, duplicate, old, route mismatch, WAL readiness loss, full queue, and malformed denied logs poison", async () => {
@@ -81,6 +97,10 @@ test("unknown, duplicate, old, route mismatch, WAL readiness loss, full queue, a
       await queue.onCompletionLine(line());
     },
     async (wal, queue) => {
+      wal.records = [record(-1, "i", "r")];
+      await queue.onCompletionLine(line());
+    },
+    async (wal, queue) => {
       wal.ready = false;
       await queue.onCompletionLine(line());
     },
@@ -90,6 +110,7 @@ test("unknown, duplicate, old, route mismatch, WAL readiness loss, full queue, a
       await queue.onCompletionLine(line({ intent_id: "j" }));
     },
     async (_wal, queue) => queue.onCompletionLine(line({ intent_id: "-", route_id: raw })),
+    async (_wal, queue) => queue.onCompletionLine(line({ intent_id: "", route_id: "" })),
   ];
   const oldWal = fakeWal([record(1, "i", "r")]);
   const oldQueue = createCogsEgressCompletionQueue(oldWal, { capacity: 1, nowMs: () => 1 });
@@ -101,6 +122,33 @@ test("unknown, duplicate, old, route mismatch, WAL readiness loss, full queue, a
     await assert.rejects(run(wal, queue), generic);
     assert.equal(queue.ready, false);
     assert.throws(() => queue.drain(1), generic);
+  }
+});
+
+test("accepts Envoy numeric completion counters without accepting malformed or string numbers", async () => {
+  const wal = fakeWal([]);
+  const queue = createCogsEgressCompletionQueue(wal, { capacity: 1, nowMs: () => 7 });
+  wal.records = [record(0, "i", "r")];
+  await queue.onCompletionLine(JSON.stringify({ ...base(), response_code: 204, duration_ms: 0 }));
+  assert.deepEqual(queue.drain(1), [
+    { intentId: "i", sequence: 0, routeId: "r", responseCode: 204, durationMs: 0, completedAtMs: 7 },
+  ]);
+
+  for (const bad of [
+    JSON.stringify({ ...base(), response_code: "200" }),
+    JSON.stringify({ ...base(), duration_ms: "1" }),
+    JSON.stringify({ ...base(), response_code: null }),
+    JSON.stringify({ ...base(), duration_ms: null }),
+    JSON.stringify({ ...base(), response_code: 200.5 }),
+    JSON.stringify({ ...base(), duration_ms: -1 }),
+    JSON.stringify({ ...base(), response_code: Number.MAX_SAFE_INTEGER + 1 }),
+    JSON.stringify({ ...base(), duration_ms: 86_400_001 }),
+  ]) {
+    const badWal = fakeWal([]);
+    const poisoned = createCogsEgressCompletionQueue(badWal, { capacity: 1, nowMs: () => 1 });
+    badWal.records = [record(1, "i", "r")];
+    await assert.rejects(poisoned.onCompletionLine(bad), generic);
+    assert.equal(poisoned.ready, false);
   }
 });
 
@@ -137,14 +185,20 @@ test("constructor, drain bounds, close idempotence, and accept-after-close are g
 });
 
 function base(
-  overrides: Partial<Record<"event" | "intent_id" | "route_id" | "response_code" | "duration_ms", string>> = {},
+  overrides: Partial<{
+    event: string;
+    intent_id: string;
+    route_id: string;
+    response_code: unknown;
+    duration_ms: unknown;
+  }> = {},
 ) {
   return {
     event: "request-complete",
     intent_id: "i",
     route_id: "r",
-    response_code: "200",
-    duration_ms: "1",
+    response_code: 200,
+    duration_ms: 1,
     ...overrides,
   };
 }
