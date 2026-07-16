@@ -28,6 +28,7 @@ const paths = Object.freeze({
   bootstrap: "/run/cogs/egress/envoy/bootstrap.json",
   proxyCertificate: "/run/cogs/egress/envoy/proxy-cert.pem",
   proxyPrivateKey: "/run/cogs/egress/envoy/proxy-key.pem",
+  proxyCaCertificate: "/run/cogs/egress/envoy/proxy-ca.pem",
 } as const);
 
 type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
