@@ -12,7 +12,7 @@ jobs:
   insecure-container:
     if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'security')
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 35
     concurrency:
       group: insecure-container-${{ github.event.pull_request.number || github.ref }}
       cancel-in-progress: true
@@ -60,6 +60,13 @@ jobs:
           COGS_SOURCE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
         run: dev/openbao-model-auth/ci-smoke.sh docs/security-evidence/generated/openbao-model-auth
 
+      - name: Run real Stage 3 runtime manager functional smoke
+        id: real_runtime
+        continue-on-error: true
+        env:
+          COGS_SOURCE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test/egress-conformance/stage3-real-runtime/ci-smoke.sh docs/security-evidence/generated/stage3-real-runtime
+
       - name: Validate functional-only evidence
         id: evidence
         if: always()
@@ -68,7 +75,8 @@ jobs:
             docs/security-evidence/generated/insecure-container-smoke.json \
             docs/security-evidence/generated/envoy/envoy-candidate-*/report.json \
             docs/security-evidence/generated/envoy-suite/envoy-suite-*/report.json \
-            docs/security-evidence/generated/openbao-model-auth/report.json
+            docs/security-evidence/generated/openbao-model-auth/report.json \
+            docs/security-evidence/generated/stage3-real-runtime/stage3-real-runtime-*/report.json
 
       - name: Upload validated insecure-container evidence
         if: always() && steps.evidence.outcome == 'success'
@@ -80,6 +88,7 @@ jobs:
             docs/security-evidence/generated/envoy/
             docs/security-evidence/generated/envoy-suite/
             docs/security-evidence/generated/openbao-model-auth/
+            docs/security-evidence/generated/stage3-real-runtime/
           if-no-files-found: error
           retention-days: 30
 
@@ -90,8 +99,10 @@ jobs:
           ENVOY_OUTCOME: ${{ steps.envoy.outcome }}
           ENVOY_SUITE_OUTCOME: ${{ steps.envoy_suite.outcome }}
           OPENBAO_MODEL_AUTH_OUTCOME: ${{ steps.openbao_model_auth.outcome }}
+          REAL_RUNTIME_OUTCOME: ${{ steps.real_runtime.outcome }}
         run: |
           test "$DRIVER_OUTCOME" = success
           test "$ENVOY_OUTCOME" = success
           test "$ENVOY_SUITE_OUTCOME" = success
           test "$OPENBAO_MODEL_AUTH_OUTCOME" = success
+          test "$REAL_RUNTIME_OUTCOME" = success

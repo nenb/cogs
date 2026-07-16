@@ -61,6 +61,36 @@ test("issues deterministic PKI request and returns frozen chain material", async
   assert.ok(material.expiresAtMs >= expires + 30_000);
 });
 
+test("adds one bounded second to requested TTL for second-granularity certificates", async () => {
+  const certs = await fixture(["a.example.com"]);
+  const realNow = Date.now;
+  let body = "";
+  try {
+    Date.now = () => 1_700_000_000_123;
+    const source = new OpenBaoEgressPkiSource({
+      origin: "https://bao.example/",
+      mount: "pki",
+      role: "egress",
+      identity: new Identity(),
+      minValidityMarginMs: 1000,
+      fetchImpl: async (_url, init) => {
+        body = String(init?.body);
+        return jsonResponse(certs);
+      },
+    });
+    await assert.rejects(
+      source.withPkiMaterial(
+        { sessionId: "session-1", hosts: ["a.example.com"], maxSessionExpiresAtMs: 1_700_000_060_456 },
+        async () => {},
+      ),
+      generic,
+    );
+  } finally {
+    Date.now = realNow;
+  }
+  assert.equal(JSON.parse(body).ttl, "63s");
+});
+
 test("omits alt_names for a single sorted host and allows explicit loopback http", async () => {
   const certs = await fixture(["solo.example.com"]);
   let body = "";
@@ -179,6 +209,7 @@ test("rejects SAN mismatch, extra SAN, key mismatch, duplicate chain, bad key ty
     { ...good, key: other.key },
     { ...good, caChain: [good.ca, good.ca] },
     { ...good, privateKeyType: "ec" },
+    { ...good, notBefore: 7 },
     { ...good, maxSessionExpiresAtMs: Date.now() + 2 * 24 * 60 * 60 * 1000 },
     { ...good, ca: badCa.ca },
   ]) {
@@ -203,6 +234,10 @@ test("rejects bad HTTP responses, JSON shape, identity callbacks, aborts, getter
       headers: { "content-type": "application/json" },
     }),
     new Response(JSON.stringify({ data: { ...payload(certs), extra: true } }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    }),
+    new Response(JSON.stringify({ data: { ...payload(certs), not_before: "bad" } }), {
       status: 200,
       headers: { "content-type": "application/json" },
     }),
@@ -259,6 +294,7 @@ async function callWith(
     maxSessionExpiresAtMs?: number;
     signal?: AbortSignal;
     privateKeyType?: string;
+    notBefore?: number;
     caChain?: string[];
     intermediate?: string;
   },
@@ -284,7 +320,12 @@ async function callWith(
 }
 
 function jsonResponse(
-  certs: Awaited<ReturnType<typeof fixture>> & { privateKeyType?: string; caChain?: string[]; intermediate?: string },
+  certs: Awaited<ReturnType<typeof fixture>> & {
+    privateKeyType?: string;
+    notBefore?: number;
+    caChain?: string[];
+    intermediate?: string;
+  },
 ): Response {
   const text = JSON.stringify({
     request_id: "r",
@@ -303,7 +344,12 @@ function jsonResponse(
 }
 
 function payload(
-  certs: Awaited<ReturnType<typeof fixture>> & { privateKeyType?: string; caChain?: string[]; intermediate?: string },
+  certs: Awaited<ReturnType<typeof fixture>> & {
+    privateKeyType?: string;
+    notBefore?: number;
+    caChain?: string[];
+    intermediate?: string;
+  },
 ) {
   return {
     certificate: certs.leaf,
@@ -312,6 +358,7 @@ function payload(
     ca_chain: certs.caChain ?? [certs.ca],
     serial_number: "01",
     expiration: Math.floor(new X509Certificate(certs.leaf).validToDate.getTime() / 1000),
+    not_before: certs.notBefore ?? Math.floor(new X509Certificate(certs.leaf).validFromDate.getTime() / 1000),
     private_key_type: certs.privateKeyType ?? "rsa",
   };
 }

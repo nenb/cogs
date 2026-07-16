@@ -358,7 +358,7 @@ function extAuthz(capability: boolean, token: string): Json {
       transport_api_version: "V3",
       failure_mode_allow: false,
       validate_mutations: true,
-      ...(capability ? { allowed_headers: matcher("proxy-authorization") } : {}),
+      allowed_headers: matcher("proxy-authorization"),
       disallowed_headers: {
         patterns: [
           { exact: "authorization" },
@@ -386,6 +386,16 @@ function hcm(name: string, virtualHosts: Json[], filters: Json[], completion: bo
           access_log: [
             {
               name: "envoy.access_loggers.stdout",
+              filter: {
+                metadata_filter: {
+                  matcher: {
+                    filter: "envoy.filters.http.ext_authz",
+                    path: [{ key: "x-cogs-intent-id" }],
+                    value: { present_match: true },
+                  },
+                  match_if_key_not_found: false,
+                },
+              },
               typed_config: {
                 "@type": `${envoyType}/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog`,
                 log_format: {
