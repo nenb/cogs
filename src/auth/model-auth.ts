@@ -258,6 +258,7 @@ function credentialPath(handle: string, userId: string): string {
   const parts = handle.split("/");
   if (parts.length < 3 || parts.length > 8) throw new ModelAuthError();
   const validated = parts.map((part) => validateOpaqueId(part, "handle"));
+  if (validated.some((part) => part === "." || part === "..")) throw new ModelAuthError();
   if (validated[0] === "sessions") throw new ModelAuthError();
   if (validated[0] === "users") {
     if (validated[1] !== user) throw new ModelAuthError();
