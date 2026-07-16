@@ -21,7 +21,12 @@ export interface CogsEgressPkiRequest {
   readonly signal?: AbortSignal;
 }
 
-export type CogsEgressPkiMaterial = Readonly<{ certificatePem: string; privateKeyPem: string; expiresAtMs: number }>;
+export type CogsEgressPkiMaterial = Readonly<{
+  certificateChainPem: string;
+  privateKeyPem: string;
+  caCertificatePem: string;
+  expiresAtMs: number;
+}>;
 
 export interface CogsEgressPkiSource {
   withPkiMaterial<T>(
