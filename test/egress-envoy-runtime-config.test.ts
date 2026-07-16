@@ -148,6 +148,7 @@ async function render(options = baseOptions(), credentialSource = source()) {
       bootstrap: "/run/cogs/egress/envoy/bootstrap.json",
       proxyCertificate: "/run/cogs/egress/envoy/proxy-cert.pem",
       proxyPrivateKey: "/run/cogs/egress/envoy/proxy-key.pem",
+      proxyCaCertificate: "/run/cogs/egress/envoy/proxy-ca.pem",
     });
     return "ok";
   });
