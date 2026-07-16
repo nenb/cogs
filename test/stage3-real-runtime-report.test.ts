@@ -48,6 +48,7 @@ function validSidecar() {
       telemetry: "stubbed",
       network_enforcement: "not-applicable",
     },
+    network_evidence: { mode: "not-applicable" },
     assertions: {
       openbao_loopback_only: true,
       credential_v1_injected: true,
@@ -87,6 +88,79 @@ test("Stage 3 real-runtime sidecar is strict, explicit, and redacted", async () 
     assertValidRealRuntimeSidecar({
       ...sidecar,
       dependency_modes: { ...sidecar.dependency_modes, telemetry: "real" },
+    }),
+  );
+  const kvmSidecar = structuredClone(sidecar) as ReturnType<typeof validSidecar> & {
+    profile: "insecure-container" | "linux-kvm";
+    dependency_modes: ReturnType<typeof validSidecar>["dependency_modes"] & {
+      network_enforcement: "not-applicable" | "real";
+    };
+    network_evidence: Record<string, unknown> & { relay?: Record<string, unknown> };
+    assertions: ReturnType<typeof validSidecar>["assertions"] & Record<string, boolean>;
+  };
+  kvmSidecar.profile = "linux-kvm";
+  kvmSidecar.dependency_modes.network_enforcement = "real";
+  Object.assign(kvmSidecar.assertions, {
+    kvm_guest_proxy_allowed_v1: true,
+    kvm_guest_proxy_allowed_v2: true,
+    kvm_bypass_matrix_denied: true,
+    kvm_relay_no_target_denied: true,
+    kvm_relay_identity_verified: true,
+    kvm_relay_cleanup_verified: true,
+  });
+  kvmSidecar.network_evidence = {
+    mode: "linux-kvm",
+    authority: "authoritative-local",
+    guest_firewall_trusted: false,
+    host_firewall_enforced: true,
+    kvm: {
+      kvm_present: true,
+      kvm_enabled: true,
+      guest_root: true,
+      distinct_boot_ids: true,
+      guest_kernel: "6.18.35",
+      guest_image_sha512: "a".repeat(128),
+      host_ip: "192.0.2.1",
+      guest_ip: "192.0.2.2",
+      proxy_port: 18080,
+    },
+    openbao_actual_port_denied: true,
+    bypass_denials: {
+      "unset-proxy": true,
+      "direct-ipv4": true,
+      "direct-ipv6": true,
+      "udp-quic": true,
+      "alternate-tcp": true,
+      openbao: true,
+      "cogs-api": true,
+      "proxy-admin": true,
+      "arbitrary-dns": true,
+      "dns-over-https": true,
+      "cloud-metadata": true,
+    },
+    relay: {
+      bindHost: "192.0.2.1",
+      bindPort: 18080,
+      activeTarget: null,
+      registeredTargets: [10001, 10002],
+      acceptedConnections: 2,
+      deniedConnections: 1,
+      switchedTargets: 2,
+      activeSockets: 0,
+      maxActiveSockets: 32,
+      ready: false,
+      poisoned: false,
+      closed: true,
+    },
+  };
+  assertValidRealRuntimeSidecar(kvmSidecar);
+  assert.throws(() =>
+    assertValidRealRuntimeSidecar({
+      ...kvmSidecar,
+      network_evidence: {
+        ...kvmSidecar.network_evidence,
+        relay: { ...kvmSidecar.network_evidence.relay, bindPort: 18081 },
+      },
     }),
   );
   const missing = structuredClone(sidecar);
