@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { OpenBaoIdentityPort } from "../src/auth/model-auth.ts";
-import { CogsEgressOpenBaoRevocationError, OpenBaoEgressRevocationSource } from "../src/egress/openbao-revocation.ts";
+import {
+  CogsEgressOpenBaoRevocationError,
+  createOpenBaoEgressRevocationBinding,
+  OpenBaoEgressRevocationSource,
+} from "../src/egress/openbao-revocation.ts";
 import { createCogsEgressRevocationWatcher } from "../src/egress/revocation-watcher.ts";
 
 const raw = "tokensecret users/user-a/provider path metadata";
@@ -230,6 +234,197 @@ test("callback-scoped token is exactly once, aborts propagate, redirects are dis
   await assert.rejects(src().read(aborted.signal), generic);
 });
 
+test("aggregate binding derives credential-required handles, deduplicates, and supports zero-handle no-use", async () => {
+  const seen: string[] = [];
+  const binding = await createOpenBaoEgressRevocationBinding({
+    ...aggregateBase(),
+    routePlan: plan(["users/user-a/a", "organizations/org/b", "users/user-a/a"]),
+    fetchImpl: async (url) => {
+      seen.push(String(url));
+      return json(meta(seen.length));
+    },
+  });
+  assert.match(binding.credentialVersion, /^sha256:[a-f0-9]{64}$/);
+  assert.equal(binding.credentialVersion.includes("users/user-a"), false);
+  assert.deepEqual(seen, [
+    "http://127.0.0.1:8200/v1/model/metadata/organizations/org/b",
+    "http://127.0.0.1:8200/v1/model/metadata/users/user-a/a",
+  ]);
+  const second = await binding.source.read(new AbortController().signal);
+  assert.notEqual(second.credentialVersion, binding.credentialVersion);
+
+  let tokens = 0;
+  let fetches = 0;
+  const zero = await createOpenBaoEgressRevocationBinding({
+    ...aggregateBase({ identity: { withToken: async () => void tokens++ } }),
+    routePlan: plan([], false),
+    fetchImpl: async () => {
+      fetches++;
+      return json(meta(1));
+    },
+  });
+  assert.match(zero.credentialVersion, /^sha256:[a-f0-9]{64}$/);
+  assert.equal((await zero.source.read(new AbortController().signal)).credentialVersion, zero.credentialVersion);
+  assert.equal(tokens, 0);
+  assert.equal(fetches, 0);
+});
+
+test("aggregate binding returns credential source coupled to same OpenBao authority and identity", async () => {
+  const urls: string[] = [];
+  let tokenCalls = 0;
+  const binding = await createOpenBaoEgressRevocationBinding({
+    ...aggregateBase({
+      identity: {
+        async withToken(signal, operation) {
+          tokenCalls++;
+          if (!signal.aborted) await operation("tokensecret");
+        },
+      },
+    }),
+    routePlan: plan(["users/user-a/a"]),
+    fetchImpl: async (url) => {
+      urls.push(String(url));
+      return String(url).includes("/data/") ? json(dataSecret("K".repeat(16))) : json(meta(1));
+    },
+  });
+  await binding.credentialSource.withCredential(
+    Object.freeze({ integrationId: "provider", secretHandle: "users/user-a/a", authType: "bearer_header" as const }),
+    async (credential) => {
+      assert.deepEqual(credential, { type: "bearer", token: "K".repeat(16) });
+    },
+  );
+  assert.deepEqual(urls, [
+    "http://127.0.0.1:8200/v1/model/metadata/users/user-a/a",
+    "http://127.0.0.1:8200/v1/model/data/users/user-a/a",
+  ]);
+  assert.equal(tokenCalls, 2);
+});
+
+test("bound credential source observes lifecycle abort during OpenBao data rendering", async () => {
+  const controller = new AbortController();
+  let liveCallbacks = 0;
+  let dataFetchAborted = false;
+  const binding = await createOpenBaoEgressRevocationBinding({
+    ...aggregateBase({
+      signal: controller.signal,
+      identity: {
+        async withToken(signal, operation) {
+          liveCallbacks++;
+          try {
+            if (!signal.aborted) await operation("tokensecret");
+          } finally {
+            liveCallbacks--;
+          }
+        },
+      },
+    }),
+    routePlan: plan(["users/user-a/a"]),
+    fetchImpl: async (url, init) => {
+      if (String(url).includes("/metadata/")) return json(meta(1));
+      return new Promise<Response>((_resolve, reject) => {
+        (init?.signal as AbortSignal | undefined)?.addEventListener(
+          "abort",
+          () => {
+            dataFetchAborted = true;
+            reject(new Error(raw));
+          },
+          { once: true },
+        );
+      });
+    },
+  });
+  const read = binding.credentialSource.withCredential(
+    Object.freeze({ integrationId: "provider", secretHandle: "users/user-a/a", authType: "bearer_header" as const }),
+    async () => undefined,
+  );
+  await flush();
+  controller.abort();
+  await assert.rejects(read);
+  await flush();
+  assert.equal(dataFetchAborted, true);
+  assert.equal(liveCallbacks, 0);
+});
+
+test("aggregate zero-handle binding still validates config and rejects aborted signals", async () => {
+  await assert.rejects(
+    createOpenBaoEgressRevocationBinding({
+      ...aggregateBase({ origin: "http://example.com/" }),
+      routePlan: plan([], false),
+    }),
+    generic,
+  );
+  await assert.rejects(
+    createOpenBaoEgressRevocationBinding({
+      ...aggregateBase({ identity: {} as never }),
+      routePlan: plan([], false),
+    }),
+    generic,
+  );
+  await assert.rejects(
+    createOpenBaoEgressRevocationBinding({
+      ...aggregateBase({ userId: 123 as never }),
+      routePlan: plan([], false),
+    }),
+    generic,
+  );
+  await assert.rejects(
+    createOpenBaoEgressRevocationBinding({
+      ...aggregateBase({ presetRevision: 123 as never }),
+      routePlan: plan([], false),
+    }),
+    generic,
+  );
+  const aborted = new AbortController();
+  aborted.abort();
+  await assert.rejects(
+    createOpenBaoEgressRevocationBinding({
+      ...aggregateBase({ signal: aborted.signal }),
+      routePlan: plan([], false),
+    }),
+    generic,
+  );
+});
+
+test("aggregate binding fails all handles generically and leaves no identity callback alive", async () => {
+  let live = 0;
+  await assert.rejects(
+    createOpenBaoEgressRevocationBinding({
+      ...aggregateBase({
+        identity: {
+          async withToken(_signal, operation) {
+            live++;
+            try {
+              await operation("tokensecret");
+            } finally {
+              live--;
+            }
+          },
+        },
+      }),
+      routePlan: plan(["users/user-a/a", "users/user-a/b"]),
+      fetchImpl: async (url) => (String(url).endsWith("/b") ? json(meta(1, { destroyed: true })) : json(meta(1))),
+    }),
+    generic,
+  );
+  assert.equal(live, 0);
+  await assert.rejects(
+    createOpenBaoEgressRevocationBinding({
+      ...aggregateBase(),
+      routePlan: plan(["users/user-a/a"]),
+      fetchImpl: async () => json(meta(1, {}, { data: { ...meta(1).data, versions: {} } })),
+    }),
+    generic,
+  );
+  await assert.rejects(
+    createOpenBaoEgressRevocationBinding({
+      ...aggregateBase(),
+      routePlan: plan(["users/user-a/a"]),
+      fetchImpl: async () => response("missing", 404, "text/plain"),
+    }),
+    generic,
+  );
+});
+
 test("existing watcher maps OpenBao version, deletion, and source failures to fail-closed transitions", async () => {
   for (const [second, expected] of [
     [json(meta(2)), "credential_changed"],
@@ -262,6 +457,58 @@ test("existing watcher maps OpenBao version, deletion, and source failures to fa
     assert.deepEqual(calls, [`denyNew:${expected}`, `drain:${expected}`, `replace:${expected}`]);
   }
 });
+
+function aggregateBase(patch: Partial<Parameters<typeof createOpenBaoEgressRevocationBinding>[0]> = {}) {
+  return {
+    origin: base.origin,
+    mount: base.mount,
+    identity: id(),
+    userId: base.userId,
+    presetRevision: base.presetRevision,
+    pkiExpiresAtMs: base.pkiExpiresAtMs,
+    allowLoopbackHttpDevelopment: true,
+    timeoutMs: 50,
+    maxResponseBytes: 4096,
+    ...patch,
+  };
+}
+
+function plan(handles: readonly string[], credentialRequired = true) {
+  return Object.freeze({
+    routeCount: Math.max(1, handles.length),
+    integrations: Object.freeze(
+      handles.map((handle, index) =>
+        Object.freeze({
+          id: `i${index}`,
+          presetRevision: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          auth: Object.freeze({
+            type: "bearer_header" as const,
+            header: "Authorization",
+            prefix: "Bearer ",
+            placeholder: "COGS_PLACEHOLDER_TOKEN",
+            secretHandle: handle,
+          }),
+          routes: Object.freeze([
+            Object.freeze({
+              integrationId: `i${index}`,
+              ruleName: "r",
+              routeId: `r${index}`,
+              host: "example.com",
+              port: 443,
+              method: "GET",
+              pathPattern: "/",
+              pathStrategy: "exact" as const,
+              queryPolicy: Object.freeze({ mode: "deny" as const }),
+              pathMatch: Object.freeze({ kind: "safe_regex" as const, value: "^/$" }),
+              injectAuth: credentialRequired,
+              credentialRequired,
+            }),
+          ]),
+        }),
+      ),
+    ),
+  });
+}
 
 function src(patch: Partial<ConstructorParameters<typeof OpenBaoEgressRevocationSource>[0]> = {}) {
   return new OpenBaoEgressRevocationSource({
@@ -311,6 +558,28 @@ function manyVersions(count: number) {
 }
 function json(value: unknown) {
   return response(JSON.stringify(value), 200);
+}
+function dataSecret(apiKey: string) {
+  return {
+    request_id: "req",
+    lease_id: "",
+    renewable: false,
+    lease_duration: 0,
+    data: {
+      data: { api_key: apiKey },
+      metadata: {
+        created_time: "2026-01-01T00:00:00Z",
+        deletion_time: "",
+        destroyed: false,
+        version: 1,
+        custom_metadata: null,
+      },
+    },
+    wrap_info: null,
+    warnings: null,
+    auth: null,
+    mount_type: "kv",
+  };
 }
 function response(text: string, status = 200, type = "application/json", cancel?: () => void | Promise<void>) {
   const stream = new ReadableStream<Uint8Array>({
