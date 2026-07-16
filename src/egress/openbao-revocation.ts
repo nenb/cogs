@@ -210,6 +210,7 @@ class AggregateOpenBaoEgressRevocationSource implements CogsEgressRevocationSour
 
   private async readInner(signal: AbortSignal): Promise<CogsEgressRevocationSnapshot> {
     const pairs: [string, string][] = [];
+    let revoked = false;
     for (const handle of this.#handles) {
       if (signal.aborted) throw new Error("aborted");
       const snapshot = await new OpenBaoEgressRevocationSource({
@@ -219,18 +220,12 @@ class AggregateOpenBaoEgressRevocationSource implements CogsEgressRevocationSour
         presetRevision: this.#presetRevision,
         pkiExpiresAtMs: this.#pkiExpiresAtMs,
       }).read(signal);
-      if (snapshot.revoked) throw new Error("revoked");
       pairs.push([handleDigest(handle), snapshot.credentialVersion]);
+      revoked ||= snapshot.revoked;
     }
-    return Object.freeze({
-      presetRevision: this.#presetRevision,
-      credentialVersion: aggregateVersion(pairs),
-      revoked: false,
-      pkiExpiresAtMs: this.#pkiExpiresAtMs,
-    });
+    return aggregateSnapshot(this.#presetRevision, pairs, revoked, this.#pkiExpiresAtMs);
   }
 }
-
 function authorityOptions(request: OpenBaoEgressRevocationBindingRequest): OpenBaoEgressRevocationBindingOptions {
   return Object.freeze({
     origin: request.origin,
@@ -244,7 +239,14 @@ function authorityOptions(request: OpenBaoEgressRevocationBindingRequest): OpenB
     ...(request.fetchImpl === undefined ? {} : { fetchImpl: request.fetchImpl }),
   });
 }
-
+function aggregateSnapshot(
+  presetRevision: string,
+  pairs: readonly (readonly [string, string])[],
+  revoked: boolean,
+  pkiExpiresAtMs: number,
+): CogsEgressRevocationSnapshot {
+  return Object.freeze({ presetRevision, credentialVersion: aggregateVersion(pairs), revoked, pkiExpiresAtMs });
+}
 function routeCredentialHandles(routePlan: CogsEgressRoutePlan, userId: string): readonly string[] {
   if (!routePlan || typeof routePlan !== "object" || Array.isArray(routePlan) || !Object.isFrozen(routePlan))
     throw new Error("bad route plan");
@@ -258,7 +260,6 @@ function routeCredentialHandles(routePlan: CogsEgressRoutePlan, userId: string):
   }
   return Object.freeze([...handles].sort((left, right) => left.localeCompare(right)));
 }
-
 function handleDigest(handle: string): string {
   return `sha256:${createHash("sha256").update(handle).digest("hex")}`;
 }

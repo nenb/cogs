@@ -8,20 +8,11 @@ import { arch, platform, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
-import {
-  ModelCredentialResolver,
-  type OpenBaoIdentityPort,
-  OpenBaoModelApiKeyStore,
-} from "../../../src/auth/model-auth.ts";
-import { ModelBackedEgressCredentialSource } from "../../../src/egress/egress-material.ts";
+import type { OpenBaoIdentityPort } from "../../../src/auth/model-auth.ts";
 import { createNodeCogsEnvoyProcessPort } from "../../../src/egress/envoy-process.ts";
 import { OpenBaoEgressPkiSource } from "../../../src/egress/openbao-pki.ts";
 import { canonicalPresetPolicyRevision } from "../../../src/egress/preset-revision.ts";
-import { lowerLaunchEgressRoutePlan } from "../../../src/egress/route-policy.ts";
-import {
-  aggregateCogsEgressRoutePlanRevision,
-  startCogsEgressRuntimeManager,
-} from "../../../src/egress/runtime-manager.ts";
+import { type CogsEgressRuntimeManager, startCogsEgressRuntimeManager } from "../../../src/egress/runtime-manager.ts";
 import type { LaunchConfig } from "../../../src/launch/config.ts";
 import { assertValidSecurityReport, writeReports } from "../controller/report.ts";
 import type { SecurityReport } from "../controller/runner.ts";
@@ -50,18 +41,23 @@ const integrationId = "stage3-localhost";
 const secretHandle = `users/${userId}/${integrationId}`;
 const routePath = "/protected/header";
 const bearerToken = `cogs-bearer-${randomBytes(24).toString("hex")}`;
+const bearerTokenV2 = `cogs-bearer-v2-${randomBytes(24).toString("hex")}`;
 const expectedAuthorization = `Bearer ${bearerToken}`;
+const expectedAuthorizationV2 = `Bearer ${bearerTokenV2}`;
 const proxyCapability = `cogs-proxy-${randomBytes(24).toString("hex")}`;
+const proxyCapabilityV2 = `cogs-proxy-v2-${randomBytes(24).toString("hex")}`;
 const wrongCapability = `cogs-wrong-${randomBytes(24).toString("hex")}`;
+const revocationPollIntervalMs = 500;
+const revocationObservationBoundMs = 20_000;
+const harnessReplacementReadyBoundMs = 40_000;
 let rootToken = "";
 let scopedToken = "";
 let caPem = "";
 let upstreamPrivateKey = "";
 let upstreamCertificate = "";
-let managerClosed = false;
+const managers: CogsEgressRuntimeManager[] = [];
 let rootRevoked = false;
 let scopedRevoked = false;
-let capturedPkiExpiresAtMs = 0;
 const forbiddenSecrets = new Set<string>();
 let currentPhase = "startup";
 
@@ -87,38 +83,82 @@ interface Sidecar {
     identity: "real";
     authorization: "real";
     audit: "real";
-    revocation: "stubbed";
+    revocation: "real";
     telemetry: "stubbed";
     network_enforcement: "not-applicable";
   };
+  timings: Record<
+    | "revocation_poll_interval_ms"
+    | "revocation_observation_bound_ms"
+    | "harness_replacement_ready_bound_ms"
+    | "credential_write_ms"
+    | "credential_changed_callback_ms"
+    | "credential_changed_drain_probe_ms"
+    | "harness_replacement_ready_ms"
+    | "credential_delete_ms"
+    | "revoked_callback_ms"
+    | "revoked_drain_probe_ms",
+    number
+  >;
   assertions: Record<
     | "openbao_loopback_only"
-    | "credential_injected"
+    | "credential_v1_injected"
+    | "credential_v2_injected"
+    | "baseline_wrong_capability_denied"
+    | "baseline_wrong_path_denied"
     | "proxy_capability_stripped_upstream"
-    | "wal_intent_preceded_upstream"
-    | "completion_correlated"
+    | "wal_intents_preceded_upstream"
+    | "completions_correlated"
+    | "credential_change_callback_observed"
+    | "revoked_callback_observed"
+    | "harness_driven_replacement_after_callback"
+    | "old_capability_denied_after_replacement"
+    | "new_capability_invalidated_after_revocation"
     | "tmpfs_material_existed_in_scope"
     | "tmpfs_cleanup_verified"
     | "scoped_token_revoked"
     | "root_token_revoked"
     | "private_material_absent_from_reports"
-    | "ca_private_key_not_returned",
+    | "ca_private_key_not_returned"
+    | "no_daemon_or_sandbox_replacement_claim",
     boolean
   >;
 }
 
+const timingKeys = [
+  "revocation_poll_interval_ms",
+  "revocation_observation_bound_ms",
+  "harness_replacement_ready_bound_ms",
+  "credential_write_ms",
+  "credential_changed_callback_ms",
+  "credential_changed_drain_probe_ms",
+  "harness_replacement_ready_ms",
+  "credential_delete_ms",
+  "revoked_callback_ms",
+  "revoked_drain_probe_ms",
+] as const;
+
 const assertionKeys = [
   "openbao_loopback_only",
-  "credential_injected",
+  "credential_v1_injected",
+  "credential_v2_injected",
+  "baseline_wrong_capability_denied",
+  "baseline_wrong_path_denied",
   "proxy_capability_stripped_upstream",
-  "wal_intent_preceded_upstream",
-  "completion_correlated",
+  "wal_intents_preceded_upstream",
+  "completions_correlated",
+  "credential_change_callback_observed",
+  "revoked_callback_observed",
+  "harness_driven_replacement_after_callback",
+  "old_capability_denied_after_replacement",
+  "new_capability_invalidated_after_revocation",
   "tmpfs_material_existed_in_scope",
   "tmpfs_cleanup_verified",
   "scoped_token_revoked",
   "root_token_revoked",
   "private_material_absent_from_reports",
   "ca_private_key_not_returned",
+  "no_daemon_or_sandbox_replacement_claim",
 ] as const;
 
 export function assertValidRealRuntimeSidecar(value: unknown): asserts value is Sidecar {
@@ -132,6 +172,7 @@ export function assertValidRealRuntimeSidecar(value: unknown): asserts value is 
     "profile",
     "release_eligible",
     "source_revision",
+    "timings",
     "version",
   ]);
   const sidecar = value as Sidecar;
@@ -161,10 +202,22 @@ export function assertValidRealRuntimeSidecar(value: unknown): asserts value is 
     identity: "real",
     authorization: "real",
     audit: "real",
-    revocation: "stubbed",
+    revocation: "real",
     telemetry: "stubbed",
     network_enforcement: "not-applicable",
   });
+  exactKeys(sidecar.timings, [...timingKeys]);
+  for (const key of timingKeys) {
+    assert.equal(Number.isSafeInteger(sidecar.timings[key]), true);
+    assert.ok(sidecar.timings[key] >= 0);
+  }
+  assert.equal(sidecar.timings.revocation_poll_interval_ms, revocationPollIntervalMs);
+  assert.equal(sidecar.timings.revocation_observation_bound_ms, revocationObservationBoundMs);
+  assert.ok(sidecar.timings.credential_changed_callback_ms <= revocationObservationBoundMs);
+  assert.ok(sidecar.timings.credential_changed_drain_probe_ms <= revocationObservationBoundMs);
+  assert.ok(sidecar.timings.revoked_callback_ms <= revocationObservationBoundMs);
+  assert.ok(sidecar.timings.revoked_drain_probe_ms <= revocationObservationBoundMs);
+  assert.ok(sidecar.timings.harness_replacement_ready_ms <= sidecar.timings.harness_replacement_ready_bound_ms);
   exactKeys(sidecar.assertions, [...assertionKeys]);
   for (const key of assertionKeys) assert.equal(sidecar.assertions[key], true);
 }
@@ -195,31 +248,7 @@ async function main(): Promise<void> {
     const upstream = await phase("start_upstream", () => startUpstream(upstreamCertificate, upstreamPrivateKey));
     try {
       const launch = launchFor(upstream.port);
-      const routePlan = lowerLaunchEgressRoutePlan(launch);
-      const revision = aggregateCogsEgressRoutePlanRevision(routePlan);
       const identity = new StaticIdentity(() => scopedToken);
-      const resolver = new ModelCredentialResolver(
-        new OpenBaoModelApiKeyStore({
-          origin: `${openBaoOrigin}/`,
-          mount: "model",
-          identity,
-          allowLoopbackHttpDevelopment: true,
-          timeoutMs: 5_000,
-        }),
-      );
-      const realCredentialSource = new ModelBackedEgressCredentialSource({ userId, resolver });
-      const credentialSource = Object.freeze({
-        withCredential: (
-          request: Parameters<typeof realCredentialSource.withCredential>[0],
-          consume: Parameters<typeof realCredentialSource.withCredential>[1],
-        ) =>
-          phase("resolve_egress_credential", () =>
-            realCredentialSource.withCredential(request, async (credential) => {
-              currentPhase = "render_runtime_config";
-              return consume(credential);
-            }),
-          ),
-      });
       const realPkiSource = new OpenBaoEgressPkiSource({
         origin: `${openBaoOrigin}/`,
         mount: "pki",
@@ -236,290 +265,353 @@ async function main(): Promise<void> {
         ) =>
           phase("issue_proxy_pki", () =>
             realPkiSource.withPkiMaterial(request, async (material) => {
-              capturedPkiExpiresAtMs = material.expiresAtMs;
               currentPhase = "runtime_scope_with_pki";
               return consume(material);
             }),
           ),
       });
-      const listenerPort = await reservePort();
-      const controller = new AbortController();
       const timers = { setTimeout, clearTimeout };
-      const manager = await phase("start_runtime_manager", () =>
-        startCogsEgressRuntimeManager({
-          launch,
-          walPath,
-          listenerPort,
-          maxSessionExpiresAtMs: Date.now() + 60 * 60 * 1000,
-          completionCapacity: 8,
-          revocation: {
-            mode: "injected",
-            credentialVersion: "openbao-fixture-v1",
-            credentialSource,
-            revocationSource: {
-              read: async () =>
-                phase("read_revocation_snapshot", async () => {
-                  if (!Number.isSafeInteger(capturedPkiExpiresAtMs) || capturedPkiExpiresAtMs < 1)
-                    throw new Error("pki unavailable");
-                  return Object.freeze({
-                    presetRevision: revision,
-                    credentialVersion: "openbao-fixture-v1",
-                    revoked: false,
-                    pkiExpiresAtMs: capturedPkiExpiresAtMs,
-                  });
-                }),
+      const replacements: { epoch: "A" | "B"; reason: string; atMs: number }[] = [];
+      const startRuntime = async (epoch: "A" | "B", capability: string, wal: string, listenerPort: number) => {
+        const controller = new AbortController();
+        const manager = await phase(`start_runtime_manager_${epoch}`, () =>
+          startCogsEgressRuntimeManager({
+            launch,
+            walPath: wal,
+            listenerPort,
+            maxSessionExpiresAtMs: Date.now() + 60 * 60 * 1000,
+            completionCapacity: 8,
+            revocation: {
+              mode: "openbao",
+              openbao: {
+                origin: `${openBaoOrigin}/`,
+                mount: "model",
+                identity,
+                allowLoopbackHttpDevelopment: true,
+                timeoutMs: 5_000,
+                maxResponseBytes: 16 * 1024,
+              },
             },
-          },
-          proxyCapability,
-          pkiSource,
-          envoyProcess: Object.freeze({
-            start: (request) =>
-              phase("start_envoy_process", () =>
-                createNodeCogsEnvoyProcessPort({
-                  executablePath: envoyExecutable,
-                  startupTimeoutMs: 15_000,
-                  closeTimeoutMs: 5_000,
-                }).start(request),
-              ),
+            proxyCapability: capability,
+            pkiSource,
+            envoyProcess: Object.freeze({
+              start: (request) =>
+                phase(`start_envoy_process_${epoch}`, () =>
+                  createNodeCogsEnvoyProcessPort({
+                    executablePath: envoyExecutable,
+                    startupTimeoutMs: 15_000,
+                    closeTimeoutMs: 5_000,
+                  }).start(request),
+                ),
+            }),
+            randomSecret: (bytes) => `cogs-${randomBytes(bytes).toString("base64url")}`,
+            onReplacementRequired: async (reason) => {
+              replacements.push({ epoch, reason, atMs: Date.now() });
+            },
+            nowMs: Date.now,
+            timers,
+            signal: controller.signal,
+            revocationPollIntervalMs,
+            revocationMinPkiRemainingMs: 60_000,
+            operationTimeoutMs: 5000,
           }),
-          randomSecret: (bytes) => `cogs-${randomBytes(bytes).toString("base64url")}`,
-          onReplacementRequired: async () => undefined,
-          nowMs: Date.now,
-          timers,
-          signal: controller.signal,
-          revocationPollIntervalMs: 5000,
-          revocationMinPkiRemainingMs: 60_000,
-          operationTimeoutMs: 5000,
-        }),
+        );
+        managers.push(manager);
+        return { manager, controller, listenerPort, wal };
+      };
+
+      const walPathA = walPath;
+      const walPathB = join(walDirectory, "egress-b.wal");
+      const runtimeA = await startRuntime("A", proxyCapability, walPathA, await reservePort());
+      const materialExisted = await exists("/run/cogs/egress/envoy/bootstrap.json");
+      assert.equal(runtimeA.manager.ready, true);
+      const curlA = await phase("allowed_proxy_probe_v1", () =>
+        proxyProbe(runtimeA.listenerPort, proxyCapability, upstream.port, routePath),
       );
-      try {
-        assert.equal(manager.ready, true);
-        const materialExisted = await exists("/run/cogs/egress/envoy/bootstrap.json");
-        const curl = await phase("allowed_proxy_probe", () =>
-          run(
-            "curl",
-            [
-              "--fail",
-              "--silent",
-              "--show-error",
-              "--max-time",
-              "15",
-              "--proxy",
-              `http://127.0.0.1:${listenerPort}`,
-              "--noproxy",
-              "",
-              "--proxy-header",
-              `Proxy-Authorization: ${proxyCapability}`,
-              `https://localhost:${upstream.port}${routePath}`,
-            ],
-            20_000,
+      if (!curlA.ok || curlA.stdout !== "ok") throw new Error("proxy probe v1 failed");
+      const beforeWrongCapabilityA = upstream.observations.length;
+      const wrongCapabilityA = await phase("wrong_capability_denial_probe_a", () =>
+        proxyProbe(runtimeA.listenerPort, wrongCapability, upstream.port, routePath, 3),
+      );
+      const wrongCapabilityADenied = !wrongCapabilityA.ok && upstream.observations.length === beforeWrongCapabilityA;
+      if (!wrongCapabilityADenied) throw new Error("wrong capability reached upstream");
+      const beforeWrongPathA = upstream.observations.length;
+      const wrongPathA = await phase("wrong_path_denial_probe_a", () =>
+        proxyProbe(runtimeA.listenerPort, proxyCapability, upstream.port, "/denied", 3),
+      );
+      const wrongPathADenied = !wrongPathA.ok && upstream.observations.length === beforeWrongPathA;
+      if (!wrongPathADenied) throw new Error("wrong path reached upstream");
+      const observationAfterA = upstream.observations.length;
+      const mutationAStartedMs = Date.now();
+      await phase("write_openbao_credential_v2", () => writeCredential(bearerTokenV2));
+      const mutationACompletedMs = Date.now();
+      const credentialChanged = await phase("wait_credential_changed", () =>
+        waitForReplacement(
+          runtimeA.manager,
+          replacements,
+          "A",
+          "credential_changed",
+          upstream.observations,
+          observationAfterA,
+          upstream.port,
+          proxyCapability,
+          runtimeA.listenerPort,
+          mutationAStartedMs,
+        ),
+      );
+      await runtimeA.manager.close().catch(() => undefined);
+      const completionsA = runtimeA.manager.drainCompletions(8);
+      const walRecordsA = await readWal(walPathA);
+      runtimeA.controller.abort();
+
+      const runtimeB = await startRuntime("B", proxyCapabilityV2, walPathB, await reservePort());
+      const runtimeBReadyMs = Date.now() - mutationAStartedMs;
+      if (runtimeBReadyMs > harnessReplacementReadyBoundMs)
+        throw new Error("replacement runtime startup exceeded bound");
+      assert.equal(runtimeB.manager.ready, true);
+      const beforeOldCapability = upstream.observations.length;
+      const oldCapabilityProbe = await phase("old_capability_denial_after_harness_replacement", () =>
+        proxyProbe(runtimeB.listenerPort, proxyCapability, upstream.port, routePath, 3),
+      );
+      const oldCapabilityDenied = !oldCapabilityProbe.ok && upstream.observations.length === beforeOldCapability;
+      if (!oldCapabilityDenied) throw new Error("old capability reached replacement runtime");
+      const curlB = await phase("allowed_proxy_probe_v2", () =>
+        proxyProbe(runtimeB.listenerPort, proxyCapabilityV2, upstream.port, routePath),
+      );
+      if (!curlB.ok || curlB.stdout !== "ok") throw new Error("proxy probe v2 failed");
+      const observationAfterB = upstream.observations.length;
+      const mutationBStartedMs = Date.now();
+      await phase("soft_delete_openbao_credential_v2", () => deleteCredential());
+      const mutationBCompletedMs = Date.now();
+      const revoked = await phase("wait_revoked", () =>
+        waitForReplacement(
+          runtimeB.manager,
+          replacements,
+          "B",
+          "revoked",
+          upstream.observations,
+          observationAfterB,
+          upstream.port,
+          proxyCapabilityV2,
+          runtimeB.listenerPort,
+          mutationBStartedMs,
+        ),
+      );
+      await runtimeB.manager.close().catch(() => undefined);
+      const completionsB = runtimeB.manager.drainCompletions(8);
+      const walRecordsB = await readWal(walPathB);
+      runtimeB.controller.abort();
+
+      if (upstream.observations.length !== 2) throw new Error("upstream observation count assertion failed");
+      const observedA = upstream.observations[0];
+      const observedB = upstream.observations[1];
+      if (!observedA || !observedB) throw new Error("upstream observations missing");
+      if (observedA.authorization !== expectedAuthorization)
+        throw new Error("credential v1 injection assertion failed");
+      if (observedB.authorization !== expectedAuthorizationV2)
+        throw new Error("credential v2 injection assertion failed");
+      if (observedA.proxyAuthorization !== undefined || observedB.proxyAuthorization !== undefined)
+        throw new Error("capability stripping assertion failed");
+      if (walRecordsA.length !== 1 || walRecordsB.length !== 1) throw new Error("WAL intent count assertion failed");
+      if (completionsA.length !== 1 || completionsB.length !== 1) throw new Error("completion count assertion failed");
+      assert.ok(walRecordsA[0]);
+      assert.ok(walRecordsB[0]);
+      assert.ok(walRecordsA[0].timestamp_ms <= observedA.atMs);
+      assert.ok(walRecordsB[0].timestamp_ms <= observedB.atMs);
+      const completionA = completionsA.some((item) => item.intentId === walRecordsA[0]?.intent_id);
+      const completionB = completionsB.some((item) => item.intentId === walRecordsB[0]?.intent_id);
+      assert.deepEqual(
+        replacements.map((item) => `${item.epoch}:${item.reason}`),
+        ["A:credential_changed", "B:revoked"],
+      );
+      const tmpfsClean = !(await exists("/run/cogs/egress/envoy"));
+      await phase("revoke_tokens", async () => {
+        await revokeTokens();
+        if (!scopedRevoked || !rootRevoked) throw new Error("OpenBao token revocation assertion failed");
+      });
+      const completed = new Date();
+      const sidecar: Sidecar = {
+        version: "cogs.stage3-real-runtime/v1alpha1",
+        source_revision: sourceRevision,
+        profile: "insecure-container",
+        release_eligible: false,
+        components: {
+          envoy: { version: envoyVersion, image_digest: envoyDigest, binary_sha256: binaryHash },
+          openbao: { version: openBaoVersion, image_digest: openBaoDigest },
+          runtime_manager: { mode: "real" },
+        },
+        timings: {
+          revocation_poll_interval_ms: revocationPollIntervalMs,
+          revocation_observation_bound_ms: revocationObservationBoundMs,
+          harness_replacement_ready_bound_ms: harnessReplacementReadyBoundMs,
+          credential_write_ms: mutationACompletedMs - mutationAStartedMs,
+          credential_changed_callback_ms: credentialChanged.callbackMs,
+          credential_changed_drain_probe_ms: credentialChanged.drainProbeMs,
+          harness_replacement_ready_ms: runtimeBReadyMs,
+          credential_delete_ms: mutationBCompletedMs - mutationBStartedMs,
+          revoked_callback_ms: revoked.callbackMs,
+          revoked_drain_probe_ms: revoked.drainProbeMs,
+        },
+        dependency_modes: {
+          identity: "real",
+          authorization: "real",
+          audit: "real",
+          revocation: "real",
+          telemetry: "stubbed",
+          network_enforcement: "not-applicable",
+        },
+        assertions: {
+          openbao_loopback_only: openBaoOrigin.startsWith("http://127.0.0.1:"),
+          credential_v1_injected: observedA.authorization === expectedAuthorization,
+          credential_v2_injected: observedB.authorization === expectedAuthorizationV2,
+          baseline_wrong_capability_denied: wrongCapabilityADenied,
+          baseline_wrong_path_denied: wrongPathADenied,
+          proxy_capability_stripped_upstream:
+            observedA.proxyAuthorization === undefined &&
+            observedB.proxyAuthorization === undefined &&
+            wrongCapabilityADenied &&
+            wrongPathADenied,
+          wal_intents_preceded_upstream:
+            walRecordsA[0].timestamp_ms <= observedA.atMs && walRecordsB[0].timestamp_ms <= observedB.atMs,
+          completions_correlated: completionA && completionB,
+          credential_change_callback_observed: replacements.some(
+            (item) => item.epoch === "A" && item.reason === "credential_changed",
           ),
-        );
-        if (curl.stdout !== "ok") throw new Error("proxy probe failed");
-        const observationCount = upstream.observations.length;
-        await phase("wrong_capability_denial_probe", () =>
-          run(
-            "curl",
-            [
-              "--silent",
-              "--show-error",
-              "--max-time",
-              "15",
-              "--proxy",
-              `http://127.0.0.1:${listenerPort}`,
-              "--noproxy",
-              "",
-              "--proxy-header",
-              `Proxy-Authorization: ${wrongCapability}`,
-              `https://localhost:${upstream.port}${routePath}`,
-            ],
-            20_000,
-            true,
-          ),
-        );
-        await phase("wrong_path_denial_probe", () =>
-          run(
-            "curl",
-            [
-              "--silent",
-              "--show-error",
-              "--max-time",
-              "15",
-              "--proxy",
-              `http://127.0.0.1:${listenerPort}`,
-              "--noproxy",
-              "",
-              "--proxy-header",
-              `Proxy-Authorization: ${proxyCapability}`,
-              `https://localhost:${upstream.port}/denied`,
-            ],
-            20_000,
-            true,
-          ),
-        );
-        if (upstream.observations.length !== observationCount) throw new Error("denied probe reached upstream");
-        await delay(500);
-        await phase("close_runtime_manager", () => manager.close());
-        managerClosed = true;
-        const completions = manager.drainCompletions(8);
-        const walRecords = (await readFile(walPath, "utf8"))
-          .trim()
-          .split("\n")
-          .filter(Boolean)
-          .map((line) => JSON.parse(line) as { intent_id: string; route_id: string; timestamp_ms: number });
-        if (upstream.observations.length !== 1) throw new Error("upstream observation count assertion failed");
-        if (walRecords.length !== 1) throw new Error("WAL intent count assertion failed");
-        if (completions.length !== 1) throw new Error("completion count assertion failed");
-        const observed = upstream.observations[0];
-        if (!observed) throw new Error("upstream observation missing");
-        if (observed.authorization !== expectedAuthorization) throw new Error("credential injection assertion failed");
-        if (observed.proxyAuthorization !== undefined) throw new Error("capability stripping assertion failed");
-        assert.ok(walRecords[0]);
-        assert.ok(walRecords[0].timestamp_ms <= observed.atMs);
-        assert.ok(completions.some((item) => item.intentId === walRecords[0]?.intent_id));
-        const tmpfsClean = !(await exists("/run/cogs/egress/envoy"));
-        await phase("revoke_tokens", async () => {
-          await revokeTokens();
-          if (!scopedRevoked || !rootRevoked) throw new Error("OpenBao token revocation assertion failed");
-        });
-        const completed = new Date();
-        const sidecar: Sidecar = {
-          version: "cogs.stage3-real-runtime/v1alpha1",
-          source_revision: sourceRevision,
-          profile: "insecure-container",
-          release_eligible: false,
-          components: {
-            envoy: { version: envoyVersion, image_digest: envoyDigest, binary_sha256: binaryHash },
-            openbao: { version: openBaoVersion, image_digest: openBaoDigest },
-            runtime_manager: { mode: "real" },
-          },
-          dependency_modes: {
-            identity: "real",
-            authorization: "real",
-            audit: "real",
-            revocation: "stubbed",
-            telemetry: "stubbed",
-            network_enforcement: "not-applicable",
-          },
-          assertions: {
-            openbao_loopback_only: openBaoOrigin.startsWith("http://127.0.0.1:"),
-            credential_injected: observed.authorization === expectedAuthorization,
-            proxy_capability_stripped_upstream: observed.proxyAuthorization === undefined,
-            wal_intent_preceded_upstream: walRecords[0].timestamp_ms <= observed.atMs,
-            completion_correlated: completions.some((item) => item.intentId === walRecords[0]?.intent_id),
-            tmpfs_material_existed_in_scope: materialExisted,
+          revoked_callback_observed: replacements.some((item) => item.epoch === "B" && item.reason === "revoked"),
+          harness_driven_replacement_after_callback: true,
+          old_capability_denied_after_replacement: oldCapabilityDenied,
+          new_capability_invalidated_after_revocation: revoked.drainProbeMs <= revocationObservationBoundMs,
+          tmpfs_material_existed_in_scope: materialExisted,
+          tmpfs_cleanup_verified: tmpfsClean,
+          scoped_token_revoked: scopedRevoked,
+          root_token_revoked: rootRevoked,
+          private_material_absent_from_reports: true,
+          ca_private_key_not_returned: true,
+          no_daemon_or_sandbox_replacement_claim: true,
+        },
+      };
+      await phase("validate_sidecar", async () => assertValidRealRuntimeSidecar(sidecar));
+      const report: SecurityReport = {
+        version: "cogs.security-report/v1alpha1",
+        report_id: `stage3-real-runtime-${sourceRevision.slice(0, 12)}`,
+        source_revision: sourceRevision,
+        profile: "insecure-container",
+        authority: "functional-only",
+        started_at: started.toISOString(),
+        completed_at: completed.toISOString(),
+        duration_ms: Date.now() - startedMs,
+        environment: {
+          os: platform(),
+          architecture: arch(),
+          runner:
+            process.env.GITHUB_ACTIONS === "true" ? `GitHub Actions ${process.env.RUNNER_NAME ?? "unknown"}` : "local",
+          runner_image: process.env.ImageOS ?? "local",
+          runtime_versions: { node: process.version, envoy: envoyVersion, openbao: openBaoVersionText.trim() },
+          metadata: {
+            real_runtime_manager: true,
+            openbao_loopback_only: true,
+            revocation_poll_interval_ms: revocationPollIntervalMs,
+            revocation_observation_bound_ms: revocationObservationBoundMs,
+            harness_replacement_ready_bound_ms: harnessReplacementReadyBoundMs,
+            credential_changed_callback_ms: credentialChanged.callbackMs,
+            credential_changed_drain_probe_ms: credentialChanged.drainProbeMs,
+            harness_replacement_ready_ms: runtimeBReadyMs,
+            credential_write_ms: mutationACompletedMs - mutationAStartedMs,
+            credential_delete_ms: mutationBCompletedMs - mutationBStartedMs,
+            revoked_callback_ms: revoked.callbackMs,
+            revoked_drain_probe_ms: revoked.drainProbeMs,
+            credential_changed_callback_observed: true,
+            revoked_callback_observed: true,
+            harness_driven_replacement_after_production_callback: true,
+            daemon_or_sandbox_replacement_proven: false,
+            tmpfs_parent_verified: true,
             tmpfs_cleanup_verified: tmpfsClean,
-            scoped_token_revoked: scopedRevoked,
-            root_token_revoked: rootRevoked,
-            private_material_absent_from_reports: true,
+            wal_intent_count: walRecordsA.length + walRecordsB.length,
+            completion_count: completionsA.length + completionsB.length,
+            proxy_capability_stripped_upstream: true,
             ca_private_key_not_returned: true,
           },
-        };
-        await phase("validate_sidecar", async () => assertValidRealRuntimeSidecar(sidecar));
-        const report: SecurityReport = {
-          version: "cogs.security-report/v1alpha1",
-          report_id: `stage3-real-runtime-${sourceRevision.slice(0, 12)}`,
-          source_revision: sourceRevision,
-          profile: "insecure-container",
-          authority: "functional-only",
-          started_at: started.toISOString(),
-          completed_at: completed.toISOString(),
-          duration_ms: Date.now() - startedMs,
-          environment: {
-            os: platform(),
-            architecture: arch(),
-            runner:
-              process.env.GITHUB_ACTIONS === "true"
-                ? `GitHub Actions ${process.env.RUNNER_NAME ?? "unknown"}`
-                : "local",
-            runner_image: process.env.ImageOS ?? "local",
-            runtime_versions: { node: process.version, envoy: envoyVersion, openbao: openBaoVersionText.trim() },
-            metadata: {
-              real_runtime_manager: true,
-              openbao_loopback_only: true,
-              tmpfs_parent_verified: true,
-              tmpfs_cleanup_verified: tmpfsClean,
-              wal_intent_count: walRecords.length,
-              completion_count: completions.length,
-              proxy_capability_stripped_upstream: true,
-              ca_private_key_not_returned: true,
+        },
+        components: [
+          { name: "cogs", version: "0.0.0" },
+          { name: "envoy", version: envoyVersion, image_digest: envoyDigest },
+          { name: "openbao", version: openBaoVersion, image_digest: openBaoDigest },
+        ],
+        dependencies: {
+          authorization: { mode: "real", implementation: "Cogs ext_authz server and route policy" },
+          audit: { mode: "real", implementation: "Cogs append-only WAL and Envoy completion correlation" },
+          revocation: { mode: "real", implementation: "OpenBao KV-v2 metadata polling via production runtime binding" },
+          identity: { mode: "real", implementation: "OpenBao scoped KV-v2 credential and PKI issue token" },
+          network_enforcement: { mode: "not-applicable", implementation: "insecure-container functional profile" },
+        },
+        tests: [
+          {
+            id: "stage3.real-runtime.bearer",
+            group: "credential-handling",
+            result: "stubbed",
+            release_eligible: false,
+            duration_ms: Date.now() - startedMs,
+            dependency_modes: {
+              authorization: "real",
+              audit: "real",
+              identity: "real",
+              revocation: "real",
+              telemetry: "stubbed",
+              network_enforcement: "not-applicable",
             },
+            diagnostics_redacted:
+              "Real runtime manager, Envoy process, OpenBao KV/PKI, metadata revocation callbacks, WAL, authz, tmpfs, and completion correlation passed in functional insecure-container evidence; telemetry remains stubbed and replacement is harness-driven after production callback.",
           },
-          components: [
-            { name: "cogs", version: "0.0.0" },
-            { name: "envoy", version: envoyVersion, image_digest: envoyDigest },
-            { name: "openbao", version: openBaoVersion, image_digest: openBaoDigest },
-          ],
-          dependencies: {
-            authorization: { mode: "real", implementation: "Cogs ext_authz server and route policy" },
-            audit: { mode: "real", implementation: "Cogs append-only WAL and Envoy completion correlation" },
-            revocation: {
-              mode: "stubbed",
-              implementation: "Injected stable snapshot; real OpenBao metadata polling remains pending",
-            },
-            identity: { mode: "real", implementation: "OpenBao scoped KV-v2 credential and PKI issue token" },
-            network_enforcement: { mode: "not-applicable", implementation: "insecure-container functional profile" },
-          },
-          tests: [
-            {
-              id: "stage3.real-runtime.bearer",
-              group: "credential-handling",
-              result: "stubbed",
-              release_eligible: false,
-              duration_ms: Date.now() - startedMs,
-              dependency_modes: {
-                authorization: "real",
-                audit: "real",
-                identity: "real",
-                revocation: "stubbed",
-                network_enforcement: "not-applicable",
-              },
-              diagnostics_redacted:
-                "Real runtime manager, Envoy process, OpenBao KV/PKI, WAL, authz, tmpfs, and completion correlation passed; revocation and telemetry are explicit non-release stubs.",
-            },
-          ],
-          known_limitations: [
-            "Functional insecure-container evidence only; no bypass, default-deny, or release claim.",
-            "OpenBao metadata revocation and WAL-to-OTLP buffering remain pending Stage 3 gaps.",
-            "KVM authoritative guest proxy client evidence is intentionally out of scope for this harness slice.",
-          ],
-        };
-        await phase("validate_security_report", async () => assertValidSecurityReport(report));
-        await phase("validate_redaction", async () =>
-          assertNoSecrets({ report, sidecar }, [
-            bearerToken,
-            expectedAuthorization,
-            proxyCapability,
-            wrongCapability,
-            upstreamPrivateKey,
-            ...forbiddenSecrets,
-          ]),
-        );
-        const paths = await phase("write_reports", () => writeReports(outputDirectory, report));
-        await writeFile(
-          resolve(outputDirectory, report.report_id, "stage3-real-runtime-sidecar.json"),
-          `${JSON.stringify(sidecar, null, 2)}\n`,
-          { mode: 0o600 },
-        );
-        const serialized = await readFile(paths.machine, "utf8");
-        await phase("validate_redaction", async () =>
-          assertNoSecrets(serialized, [
-            bearerToken,
-            expectedAuthorization,
-            proxyCapability,
-            wrongCapability,
-            upstreamPrivateKey,
-            ...forbiddenSecrets,
-          ]),
-        );
-      } finally {
-        if (!managerClosed) await manager.close().catch(() => undefined);
-        controller.abort();
-      }
+        ],
+        known_limitations: [
+          "Functional insecure-container evidence only; no bypass, default-deny, guest-reachability, or release claim.",
+          "WAL-to-OTLP buffering remains pending and telemetry is stubbed.",
+          "Harness constructs the second runtime after observing the production replacement callback; no daemon or sandbox replacement automation is proven.",
+          "KVM authoritative guest proxy client evidence is intentionally out of scope for this harness slice.",
+        ],
+      };
+      await phase("validate_security_report", async () => assertValidSecurityReport(report));
+      await phase("validate_redaction", async () =>
+        assertNoSecrets({ report, sidecar }, [
+          bearerToken,
+          bearerTokenV2,
+          expectedAuthorization,
+          expectedAuthorizationV2,
+          proxyCapability,
+          proxyCapabilityV2,
+          wrongCapability,
+          secretHandle,
+          upstreamPrivateKey,
+          ...forbiddenSecrets,
+        ]),
+      );
+      const paths = await phase("write_reports", () => writeReports(outputDirectory, report));
+      await writeFile(
+        resolve(outputDirectory, report.report_id, "stage3-real-runtime-sidecar.json"),
+        `${JSON.stringify(sidecar, null, 2)}\n`,
+        { mode: 0o600 },
+      );
+      const serialized = await readFile(paths.machine, "utf8");
+      await phase("validate_redaction", async () =>
+        assertNoSecrets(serialized, [
+          bearerToken,
+          bearerTokenV2,
+          expectedAuthorization,
+          expectedAuthorizationV2,
+          proxyCapability,
+          proxyCapabilityV2,
+          wrongCapability,
+          secretHandle,
+          upstreamPrivateKey,
+          ...forbiddenSecrets,
+        ]),
+      );
+      for (const manager of managers) await manager.close().catch(() => undefined);
     } finally {
       await upstream.stop();
     }
   } finally {
+    await Promise.all(managers.map((manager) => manager.close().catch(() => undefined)));
     await revokeTokens().catch(() => undefined);
     upstreamPrivateKey = "";
     upstreamCertificate = "";
@@ -580,6 +672,7 @@ async function initializeOpenBao(): Promise<{ ca: string; leaf: { certificate: s
   });
   const policy = [
     `path "model/data/${secretHandle}" { capabilities = ["read"] }`,
+    `path "model/metadata/${secretHandle}" { capabilities = ["read"] }`,
     'path "pki/issue/cogs-egress" { capabilities = ["update"] }',
   ].join("\n");
   await bao("/v1/sys/policies/acl/cogs-stage3-runtime", { method: "PUT", token: rootToken, body: { policy } });
@@ -629,6 +722,98 @@ async function revokeTokens(): Promise<void> {
       () => undefined,
     );
   }
+}
+
+async function writeCredential(apiKey: string): Promise<void> {
+  await bao(`/v1/model/data/${secretHandle}`, {
+    method: "POST",
+    token: rootToken,
+    body: { data: { api_key: apiKey } },
+  });
+}
+
+async function deleteCredential(): Promise<void> {
+  await bao(`/v1/model/data/${secretHandle}`, { method: "DELETE", token: rootToken });
+}
+
+async function proxyProbe(
+  listenerPort: number,
+  capability: string,
+  upstreamPort: number,
+  path: string,
+  maxTimeSeconds = 15,
+): Promise<{ stdout: string; stderr: string; ok: boolean }> {
+  try {
+    const { stdout, stderr } = (await execFileAsync(
+      "curl",
+      [
+        "--fail",
+        "--silent",
+        "--show-error",
+        "--max-time",
+        String(maxTimeSeconds),
+        "--proxy",
+        `http://127.0.0.1:${listenerPort}`,
+        "--noproxy",
+        "",
+        "--proxy-header",
+        `Proxy-Authorization: ${capability}`,
+        `https://localhost:${upstreamPort}${path}`,
+      ],
+      { timeout: (maxTimeSeconds + 5) * 1000, maxBuffer: 1024 * 1024, windowsHide: true },
+    )) as { stdout: string; stderr: string };
+    return { stdout, stderr, ok: true };
+  } catch {
+    return { stdout: "", stderr: "", ok: false };
+  }
+}
+
+async function waitForReplacement(
+  manager: CogsEgressRuntimeManager,
+  replacements: readonly { epoch: "A" | "B"; reason: string; atMs: number }[],
+  epoch: "A" | "B",
+  reason: "credential_changed" | "revoked",
+  observations: readonly unknown[],
+  observationBaseline: number,
+  upstreamPort: number,
+  capability: string,
+  listenerPort: number,
+  mutationStartedMs: number,
+): Promise<{ callbackMs: number; drainProbeMs: number }> {
+  const deadline = mutationStartedMs + revocationObservationBoundMs;
+  let wrongReason = "";
+  while (Date.now() < deadline) {
+    await delay(100);
+    const epochCallbacks = replacements.filter((entry) => entry.epoch === epoch);
+    const item = epochCallbacks.find((entry) => entry.reason === reason);
+    const unexpected = epochCallbacks.find((entry) => entry.reason !== reason);
+    if (unexpected) wrongReason = unexpected.reason;
+    if (item) {
+      const callbackMs = item.atMs - mutationStartedMs;
+      if (callbackMs < 0 || callbackMs > revocationObservationBoundMs)
+        throw new Error(`revocation ${reason} callback bound failed`);
+      assert.equal(manager.ready, false);
+      assert.equal(manager.replacementRequired, true);
+      const probe = await proxyProbe(listenerPort, capability, upstreamPort, routePath, 3);
+      const drainProbeMs = Date.now() - mutationStartedMs;
+      if (probe.ok) throw new Error(`revocation ${reason} old listener still accepted proxy request`);
+      if (observations.length !== observationBaseline)
+        throw new Error(`revocation ${reason} old listener reached upstream`);
+      if (drainProbeMs < 0 || drainProbeMs > revocationObservationBoundMs)
+        throw new Error(`revocation ${reason} drain probe bound failed`);
+      return { callbackMs, drainProbeMs };
+    }
+  }
+  if (wrongReason !== "") throw new Error(`revocation ${reason} observed wrong callback reason ${wrongReason}`);
+  throw new Error(`revocation ${reason} callback missing within bound`);
+}
+
+async function readWal(path: string): Promise<{ intent_id: string; route_id: string; timestamp_ms: number }[]> {
+  return (await readFile(path, "utf8"))
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as { intent_id: string; route_id: string; timestamp_ms: number });
 }
 
 async function bao(path: string, init: { method: string; token?: string; body?: unknown }): Promise<unknown> {
