@@ -331,8 +331,17 @@ class FakeTransport {
   }
 }
 
-const keyPair = ssh2.utils.generateKeyPairSync("ed25519", { comment: "cogs-sftp-test" });
+const keyPair = generateParsedTestKeyPair();
 const validPin = "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+
+function generateParsedTestKeyPair(): ReturnType<typeof ssh2.utils.generateKeyPairSync> {
+  for (let attempt = 0; attempt < 16; attempt += 1) {
+    const generated = ssh2.utils.generateKeyPairSync("ed25519", { comment: "cogs-sftp-test" });
+    const parsed = ssh2.utils.parseKey(generated.private);
+    if (!(parsed instanceof Error) && !Array.isArray(parsed) && parsed.isPrivateKey()) return generated;
+  }
+  throw new Error("test ssh private key fixture unavailable");
+}
 
 async function managerFor(
   sftp: FakeSftp,
