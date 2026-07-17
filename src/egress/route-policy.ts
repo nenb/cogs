@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { LaunchConfig } from "../launch/config.ts";
+import { requireCogsPolicyAllow } from "../policy/require-policy.ts";
 import { canonicalPresetPolicyRevision } from "./preset-revision.ts";
 
 const maxIntegrations = 16;
@@ -86,7 +87,22 @@ export function lowerLaunchEgressRoutePlan(launch: LaunchConfig): CogsEgressRout
       .sort((left, right) => left.id.localeCompare(right.id));
     const routeCount = maxExpandedRoutes - budget.remaining;
     rejectDuplicateRoutes(lowered);
-    return deepFreeze({ integrations: lowered, routeCount });
+    const plan = deepFreeze({ integrations: lowered, routeCount });
+    requireCogsPolicyAllow({
+      version: "cogs.policy/v1alpha1",
+      action: "config.validate",
+      user: launch.user_id,
+      session: launch.session_id,
+      resource: "egress_route_plan",
+      attributes: {
+        route_count: routeCount,
+        credential_route_count: lowered.reduce(
+          (count, integration) => count + integration.routes.filter((route) => route.credentialRequired).length,
+          0,
+        ),
+      },
+    });
+    return plan;
   } catch {
     throw new EgressRoutePolicyError();
   }

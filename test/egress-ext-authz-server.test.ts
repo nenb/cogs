@@ -82,6 +82,7 @@ async function withTempWal<T>(run: (wal: EgressAuditWal) => Promise<T>): Promise
 
 async function withServer<T>(wal: EgressAuditWal, run: (server: CogsExtAuthzServer) => Promise<T>): Promise<T> {
   const server = await startCogsExtAuthzServer({
+    userId: "user-1",
     sessionId: session,
     internalAuthzToken: token,
     proxyCapability: capability,
@@ -251,6 +252,51 @@ test("loopback server appends WAL before authorize allow and denies route mismat
   });
 });
 
+test("loopback server policy deny happens after route match and before WAL append", async () => {
+  await withTempWal(async (wal) => {
+    const seen: unknown[] = [];
+    const authorizer = Object.freeze((input: unknown) => {
+      seen.push(input);
+      return Object.freeze({
+        version: "cogs.policy-decision/v1alpha1" as const,
+        decision_id: `sha256:${"b".repeat(64)}` as const,
+        allow: false,
+        reason: "unsupported_surface" as const,
+      });
+    });
+    const server = await startCogsExtAuthzServer({
+      userId: "user-1",
+      sessionId: session,
+      internalAuthzToken: token,
+      proxyCapability: capability,
+      routePlan: plan(),
+      wal,
+      policyAuthorizer: authorizer,
+    });
+    try {
+      assert.equal(deniedCode(await call(server.target, authorizeRequest())), "Forbidden");
+      assert.equal(wal.records.length, 0);
+      assert.deepEqual(seen, [
+        {
+          version: "cogs.policy/v1alpha1",
+          action: "egress.authorize",
+          user: "user-1",
+          session,
+          resource: routeId,
+          attributes: {
+            integration_id: "github",
+            route_id: routeId,
+            method: "GET",
+            credential_required: true,
+          },
+        },
+      ]);
+    } finally {
+      await server.close().catch(() => undefined);
+    }
+  });
+});
+
 test("loopback server rejects internal auth, malformed requests, bad deadlines, and cancellation generically", async () => {
   await withTempWal(async (wal) => {
     await withServer(wal, async (server) => {
@@ -283,6 +329,7 @@ test("loopback server rejects internal auth, malformed requests, bad deadlines, 
 test("server enforces concurrency, WAL poison, close races, and start failures", async () => {
   const slowWal = fakeWal(async () => new Promise(() => undefined));
   const server = await startCogsExtAuthzServer({
+    userId: "user-1",
     sessionId: session,
     internalAuthzToken: token,
     proxyCapability: capability,
@@ -311,6 +358,7 @@ test("server enforces concurrency, WAL poison, close races, and start failures",
 
   const mutableReady = fakeWal();
   const unreadyServer = await startCogsExtAuthzServer({
+    userId: "user-1",
     sessionId: session,
     internalAuthzToken: token,
     proxyCapability: capability,
@@ -329,6 +377,7 @@ test("server enforces concurrency, WAL poison, close races, and start failures",
     throw new Error("poison");
   });
   const poisonServer = await startCogsExtAuthzServer({
+    userId: "user-1",
     sessionId: session,
     internalAuthzToken: token,
     proxyCapability: capability,
@@ -345,6 +394,7 @@ test("server enforces concurrency, WAL poison, close races, and start failures",
   await assert.rejects(
     () =>
       startCogsExtAuthzServer({
+        userId: "user-1",
         sessionId: "bad/session",
         internalAuthzToken: token,
         proxyCapability: capability,
@@ -369,6 +419,7 @@ test("server enforces concurrency, WAL poison, close races, and start failures",
   await assert.rejects(
     () =>
       startCogsExtAuthzServer({
+        userId: "user-1",
         sessionId: session,
         internalAuthzToken: token,
         proxyCapability: capability,
@@ -380,6 +431,7 @@ test("server enforces concurrency, WAL poison, close races, and start failures",
   await assert.rejects(
     () =>
       startCogsExtAuthzServer({
+        userId: "user-1",
         sessionId: session,
         internalAuthzToken: token,
         proxyCapability: token,
@@ -400,6 +452,7 @@ test("server enforces concurrency, WAL poison, close races, and start failures",
   await assert.rejects(
     () =>
       startCogsExtAuthzServer({
+        userId: "user-1",
         sessionId: session,
         internalAuthzToken: token,
         proxyCapability: capability,

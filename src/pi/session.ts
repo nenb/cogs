@@ -19,6 +19,7 @@ import { Type } from "typebox";
 import type { ApiEvent, ExportPort, HistoryPort, InputKind, JsonValue, RunState, SessionPort } from "../api/server.ts";
 import { type ModelApiKeySource, ModelCredentialResolver, validateModelApiKey } from "../auth/model-auth.ts";
 import { validateLaunchConfig } from "../launch/config.ts";
+import { type CogsPolicyAuthorizer, requireCogsPolicyAllow } from "../policy/require-policy.ts";
 import {
   type CogsGitCheckpointConfig,
   type CogsGitCheckpointer,
@@ -75,6 +76,7 @@ export interface CogsToolPorts {
 export interface CogsPiSessionOptions {
   readonly cwd: string;
   readonly agentDir: string;
+  readonly userId: string;
   readonly sessionId: string;
   readonly model: { provider: string; id: string };
   readonly apiKey: string;
@@ -89,6 +91,7 @@ export interface CogsPiSessionOptions {
   readonly maxToolResultBytes?: number;
   readonly preparedResources?: CogsPreparedSkills;
   readonly git?: CogsPiGitOptions;
+  readonly policyAuthorizer?: CogsPolicyAuthorizer;
 }
 
 export interface CogsPiGitOptions {
@@ -101,7 +104,7 @@ export interface CogsPiGitOptions {
 }
 
 export interface AuthenticatedCogsPiSessionOptions
-  extends Omit<CogsPiSessionOptions, "sessionId" | "model" | "apiKey"> {
+  extends Omit<CogsPiSessionOptions, "userId" | "sessionId" | "model" | "apiKey"> {
   readonly launchDocument: unknown;
   readonly modelApiKeys: ModelApiKeySource;
   readonly skillPreparer: CogsSkillPreparerPort;
@@ -150,8 +153,17 @@ const SENSITIVE_FIELD = /^(api[-_]?key|authorization|credential|secret|token|ref
 
 function validateOptions(options: CogsPiSessionOptions): void {
   validateOptionalInteger(options.operationTimeoutMs, "operationTimeoutMs", 1, 3_600_000);
+  if (options.policyAuthorizer !== undefined) validatePolicyAuthorizer(options.policyAuthorizer);
   validateOptionalInteger(options.abortTimeoutMs, "abortTimeoutMs", 1, 60_000);
   validateOptionalInteger(options.maxToolResultBytes, "maxToolResultBytes", 128, 1024 * 1024);
+}
+
+function validatePolicyAuthorizer(value: unknown): asserts value is CogsPolicyAuthorizer {
+  try {
+    if (typeof value !== "function" || !Object.isFrozen(value)) throw new Error("invalid policy authorizer");
+  } catch {
+    throw new Error("invalid policy authorizer");
+  }
 }
 
 function validateOptionalInteger(value: number | undefined, label: string, minimum: number, maximum: number): void {
@@ -387,6 +399,7 @@ export async function createAuthenticatedCogsPiSession({
       (apiKey) =>
         createCogsPiSession({
           ...sessionOptions,
+          userId: launch.user_id,
           sessionId: launch.session_id,
           model: { provider: launch.model.provider, id: launch.model.id },
           apiKey,
@@ -419,6 +432,7 @@ export async function createCogsPiSession(options: CogsPiSessionOptions): Promis
   validateOptions(options);
   const cwd = options.cwd;
   const agentDir = options.agentDir;
+  const userId = options.userId;
   const sessionId = options.sessionId;
   const modelProvider = options.model.provider;
   const modelId = options.model.id;
@@ -432,21 +446,36 @@ export async function createCogsPiSession(options: CogsPiSessionOptions): Promis
   const abortTimeoutMs = options.abortTimeoutMs;
   const maxToolResultBytes = options.maxToolResultBytes ?? 16 * 1024;
   const apiKey = options.apiKey;
-  const preparedResources =
-    options.preparedResources === undefined ? undefined : validatePreparedResources(options.preparedResources);
+  const policyAuthorizer = options.policyAuthorizer;
+  const rawPreparedResources = options.preparedResources;
 
   validateModelApiKey(apiKey);
   const gitOptions = validateGitOptions(options.git);
+  assertOpaqueId(userId, "user id");
   assertOpaqueId(sessionId, "session id");
   assertProviderId(modelProvider, "provider id");
   assertModelId(modelId, "model id");
 
   const secret: SecretHolder = { value: apiKey };
+  let preparedResources: CogsPreparedSkills | undefined;
   let startupGitBinding: CogsGitBoundary | undefined;
   let startupLocalExporter: CogsLocalExporter | undefined;
   const authStorage = AuthStorage.inMemory();
-  authStorage.setRuntimeApiKey(modelProvider, secret.value);
   try {
+    preparedResources =
+      rawPreparedResources === undefined ? undefined : validatePreparedResources(rawPreparedResources);
+    requireCogsPolicyAllow(
+      {
+        version: "cogs.policy/v1alpha1",
+        action: "secret.use",
+        user: userId,
+        session: sessionId,
+        resource: "model_api_key_runtime",
+        attributes: { secret_class: "model_api_key_runtime" },
+      },
+      policyAuthorizer,
+    );
+    authStorage.setRuntimeApiKey(modelProvider, secret.value);
     const modelRegistry = ModelRegistry.inMemory(authStorage);
     const model = modelRegistry.find(modelProvider, modelId);
     if (!model) throw new Error("unknown model");
@@ -496,6 +525,19 @@ export async function createCogsPiSession(options: CogsPiSessionOptions): Promis
           });
     startupGitBinding = gitBinding;
     const toolHooks = gitBinding?.toolHooks();
+    for (const tool of COGS_PI_TOOL_NAMES) {
+      requireCogsPolicyAllow(
+        {
+          version: "cogs.policy/v1alpha1",
+          action: "tool.enable",
+          user: userId,
+          session: sessionId,
+          resource: tool,
+          attributes: { tool },
+        },
+        policyAuthorizer,
+      );
+    }
 
     const sessionResult = await createAgentSession({
       cwd,
@@ -513,7 +555,11 @@ export async function createCogsPiSession(options: CogsPiSessionOptions): Promis
               appendSystemPrompt: [preparedResources.eagerTrustedSkillPrompt],
             },
       ),
-      customTools: createCogsTools(toolPorts, maxToolResultBytes, secret, toolHooks),
+      customTools: createCogsTools(toolPorts, maxToolResultBytes, secret, toolHooks, {
+        userId,
+        sessionId,
+        ...(policyAuthorizer === undefined ? {} : { authorizer: policyAuthorizer }),
+      }),
       tools: [...COGS_PI_TOOL_NAMES],
       noTools: "builtin",
       sessionManager,
@@ -533,6 +579,7 @@ export async function createCogsPiSession(options: CogsPiSessionOptions): Promis
       emit,
       onFatal,
       provider: modelProvider,
+      userId,
       sessionId,
       secret,
       operationTimeoutMs,
@@ -542,21 +589,22 @@ export async function createCogsPiSession(options: CogsPiSessionOptions): Promis
       gitMapStore,
       gitBinding,
       localExporter,
+      policyAuthorizer,
     });
     adapterRef.current = adapter;
     return adapter;
   } catch (error) {
     let cleanupError: unknown;
-    try {
-      await startupLocalExporter?.dispose();
-      await startupGitBinding?.dispose();
-    } catch (disposeError) {
-      cleanupError = disposeError;
-    }
-    try {
-      await preparedResources?.dispose();
-    } catch (disposeError) {
-      cleanupError = disposeError;
+    for (const cleanup of [
+      () => startupLocalExporter?.dispose() ?? Promise.resolve(),
+      () => startupGitBinding?.dispose() ?? Promise.resolve(),
+      () => preparedResources?.dispose() ?? Promise.resolve(),
+    ]) {
+      try {
+        await cleanup();
+      } catch (disposeError) {
+        cleanupError = disposeError;
+      }
     }
     authStorage.removeRuntimeApiKey(modelProvider);
     secret.value = "";
@@ -1418,6 +1466,7 @@ class PiSessionAdapter implements CogsPiSessionPorts {
       readonly emit: (event: ApiEvent) => boolean | undefined;
       readonly onFatal: (reason: string) => void | Promise<void>;
       readonly provider: string;
+      readonly userId: string;
       readonly sessionId: string;
       readonly secret: SecretHolder;
       readonly operationTimeoutMs: number | undefined;
@@ -1427,6 +1476,7 @@ class PiSessionAdapter implements CogsPiSessionPorts {
       readonly gitMapStore: CogsGitMapStore | undefined;
       readonly gitBinding: CogsGitBoundary | undefined;
       readonly localExporter: CogsLocalExporter;
+      readonly policyAuthorizer: CogsPolicyAuthorizer | undefined;
     },
   ) {
     this.#authStorage = authStorage;
@@ -1605,6 +1655,7 @@ class PiSessionAdapter implements CogsPiSessionPorts {
     await throwIfAborted(input.signal);
     assertOpaqueId(input.requestId, "request id");
     assertOpaqueId(input.correlationId, "correlation id");
+    requireRawExportPolicy(this.runtime.userId, this.runtime.sessionId, this.runtime.policyAuthorizer);
     return this.runtime.localExporter.createExport(
       input.signal === undefined ? {} : { signal: input.signal },
     ) as Promise<unknown> as Promise<JsonValue>;
@@ -1671,6 +1722,7 @@ class PiSessionAdapter implements CogsPiSessionPorts {
       await this.runtime.historyStore.flushSettled(input.signal === undefined ? {} : { signal: input.signal });
       await this.runtime.gitBinding?.shutdown(this.sessionManager, input.correlationId, input.requestId, input.signal);
       await throwIfAborted(input.signal);
+      requireRawExportPolicy(this.runtime.userId, this.runtime.sessionId, this.runtime.policyAuthorizer);
       const descriptor = snapshotExportDescriptor(
         await this.runtime.localExporter.createExport(input.signal === undefined ? {} : { signal: input.signal }),
         this.runtime.sessionId,
@@ -2006,6 +2058,7 @@ function createCogsTools(
   maxResultBytes: number,
   secret: SecretHolder,
   hooks: CogsToolGitHooks | undefined,
+  policy: { readonly userId: string; readonly sessionId: string; readonly authorizer?: CogsPolicyAuthorizer },
 ) {
   const result = async (
     name: CogsPiToolName,
@@ -2041,7 +2094,11 @@ function createCogsTools(
         },
         { additionalProperties: false },
       ),
-      execute: async (id, params, signal) => result("read", id, signal, () => ports.read(withSignal(params, signal))),
+      execute: async (id, params, signal) =>
+        result("read", id, signal, () => {
+          requireToolDispatchPolicy(policy, "read", classifyReadPath(params.path));
+          return ports.read(withSignal(params, signal));
+        }),
     }),
     defineTool({
       name: "write",
@@ -2051,7 +2108,11 @@ function createCogsTools(
         { path: Type.String({ minLength: 1, maxLength: 4096 }), content: Type.String({ maxLength: 1_000_000 }) },
         { additionalProperties: false },
       ),
-      execute: async (id, params, signal) => result("write", id, signal, () => ports.write(withSignal(params, signal))),
+      execute: async (id, params, signal) =>
+        result("write", id, signal, () => {
+          requireToolDispatchPolicy(policy, "write", classifyWorkspaceWritePath(params.path));
+          return ports.write(withSignal(params, signal));
+        }),
     }),
     defineTool({
       name: "edit",
@@ -2065,7 +2126,11 @@ function createCogsTools(
         },
         { additionalProperties: false },
       ),
-      execute: async (id, params, signal) => result("edit", id, signal, () => ports.edit(withSignal(params, signal))),
+      execute: async (id, params, signal) =>
+        result("edit", id, signal, () => {
+          requireToolDispatchPolicy(policy, "edit", classifyWorkspaceWritePath(params.path));
+          return ports.edit(withSignal(params, signal));
+        }),
     }),
     defineTool({
       name: "bash",
@@ -2077,6 +2142,7 @@ function createCogsTools(
       ),
       execute: async (id, params, signal, onUpdate) =>
         result("bash", id, signal, () => {
+          requireToolDispatchPolicy(policy, "bash");
           const update = toolUpdate(
             onUpdate as ((update: unknown) => void | Promise<void>) | undefined,
             maxResultBytes,
@@ -2088,6 +2154,64 @@ function createCogsTools(
         }),
     }),
   ];
+}
+
+function requireRawExportPolicy(userId: string, sessionId: string, authorizer: CogsPolicyAuthorizer | undefined): void {
+  requireCogsPolicyAllow(
+    {
+      version: "cogs.policy/v1alpha1",
+      action: "export.create",
+      user: userId,
+      session: sessionId,
+      resource: "local_bundle",
+      attributes: {
+        mode: "raw",
+        sensitive: true,
+        sanitized: false,
+        anonymized: false,
+        attachments_included: false,
+      },
+    },
+    authorizer,
+  );
+}
+
+function requireToolDispatchPolicy(
+  policy: { readonly userId: string; readonly sessionId: string; readonly authorizer?: CogsPolicyAuthorizer },
+  tool: CogsPiToolName,
+  pathClass?: "workspace" | "shared_skill" | "user_skill",
+): void {
+  requireCogsPolicyAllow(
+    {
+      version: "cogs.policy/v1alpha1",
+      action: "tool.dispatch",
+      user: policy.userId,
+      session: policy.sessionId,
+      resource: tool,
+      attributes: tool === "bash" ? { tool } : { tool, path_class: pathClass },
+    },
+    policy.authorizer,
+  );
+}
+
+function classifyReadPath(path: string): "workspace" | "shared_skill" | "user_skill" {
+  if (isGuestPathClass(path, "/workspace")) return "workspace";
+  if (isGuestPathClass(path, "/shared/skills")) return "shared_skill";
+  if (isGuestPathClass(path, "/user/skills")) return "user_skill";
+  throw new Error("read tool failed");
+}
+
+function classifyWorkspaceWritePath(path: string): "workspace" {
+  if (isGuestPathClass(path, "/workspace")) return "workspace";
+  throw new Error("write tool failed");
+}
+
+function isGuestPathClass(path: string, root: string): boolean {
+  if (!path.startsWith("/")) return false;
+  if (path.includes("\0") || path.includes("\\")) return false;
+  const segments = path.split("/");
+  if (segments.some((segment) => segment === "." || segment === "..")) return false;
+  return path === root || path.startsWith(`${root}/`);
 }
 
 function linkedAbortSignal(parent: AbortSignal | undefined): {

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { isAbsolute, resolve } from "node:path";
 import type { LaunchConfig } from "../launch/config.ts";
+import { type CogsPolicyAuthorizer, requireCogsPolicyAllow } from "../policy/require-policy.ts";
 import { type EgressAuditWal, openEgressAuditWal } from "./audit-wal.ts";
 import {
   type CogsEgressCompletion,
@@ -104,6 +105,7 @@ export type CogsEgressRuntimeManagerOptions = Readonly<{
   nowMs(): number;
   timers: CogsEgressRevocationTimers;
   signal?: AbortSignal;
+  policyAuthorizer?: CogsPolicyAuthorizer;
   revocationPollIntervalMs?: number;
   revocationMinPkiRemainingMs?: number;
   operationTimeoutMs?: number;
@@ -160,8 +162,9 @@ export async function startCogsEgressRuntimeManager(
 }
 
 type Captured = Readonly<
-  Required<Omit<CogsEgressRuntimeManagerOptions, "signal" | "ports">> & {
+  Required<Omit<CogsEgressRuntimeManagerOptions, "signal" | "ports" | "policyAuthorizer">> & {
     signal?: AbortSignal;
+    policyAuthorizer?: CogsPolicyAuthorizer;
     ports: RuntimeManagerPorts;
   }
 >;
@@ -210,12 +213,26 @@ class RuntimeManager {
     });
     this.internalAuthzToken = validSecret(this.options.randomSecret(32));
     this.proxyCapability = validSecret(this.options.proxyCapability);
+    requireSecretPolicy(
+      this.options.launch.user_id,
+      this.options.launch.session_id,
+      "proxy_capability",
+      this.options.policyAuthorizer,
+    );
+    requireSecretPolicy(
+      this.options.launch.user_id,
+      this.options.launch.session_id,
+      "proxy_leaf_key",
+      this.options.policyAuthorizer,
+    );
     this.authz = await this.options.ports.startAuthz({
+      userId: validOpaque(this.options.launch.user_id),
       sessionId: validOpaque(this.options.launch.session_id),
       internalAuthzToken: this.internalAuthzToken,
       proxyCapability: this.proxyCapability,
       routePlan: this.routePlan,
       wal: this.wal,
+      ...(this.options.policyAuthorizer === undefined ? {} : { policyAuthorizer: this.options.policyAuthorizer }),
     });
     this.scopePromise = this.runScoped(presetRevision);
     void this.scopePromise.then(
@@ -272,11 +289,13 @@ class RuntimeManager {
         const binding = await this.resolveRevocationBinding(presetRevision, pki);
         return this.options.ports.withConfig(
           {
+            userId: this.options.launch.user_id,
             sessionId: this.options.launch.session_id,
             listenerPort: this.options.listenerPort,
             routePlan: this.routePlan,
             authzTarget: this.authz?.target ?? "",
             internalAuthzToken: this.internalAuthzToken,
+            ...(this.options.policyAuthorizer === undefined ? {} : { policyAuthorizer: this.options.policyAuthorizer }),
           },
           binding.credentialSource,
           async (config) => this.withMaterial(config, pki, presetRevision, binding),
@@ -527,10 +546,41 @@ function capture(options: CogsEgressRuntimeManagerOptions): Captured {
       revocationPollIntervalMs: integer(options.revocationPollIntervalMs ?? 1000, 50, 60_000),
       revocationMinPkiRemainingMs: integer(options.revocationMinPkiRemainingMs ?? 60_000, 1000, 3_600_000),
       operationTimeoutMs: integer(options.operationTimeoutMs ?? 1000, 50, 5000),
+      ...(options.policyAuthorizer === undefined
+        ? {}
+        : { policyAuthorizer: validPolicyAuthorizer(options.policyAuthorizer) }),
       ports: ports(options.ports),
     });
   } catch {
     throw new CogsEgressRuntimeManagerError();
+  }
+}
+
+function requireSecretPolicy(
+  userId: string,
+  sessionId: string,
+  secretClass: "proxy_capability" | "proxy_leaf_key",
+  authorizer: CogsPolicyAuthorizer | undefined,
+): void {
+  requireCogsPolicyAllow(
+    {
+      version: "cogs.policy/v1alpha1",
+      action: "secret.use",
+      user: userId,
+      session: sessionId,
+      resource: secretClass,
+      attributes: { secret_class: secretClass },
+    },
+    authorizer,
+  );
+}
+
+function validPolicyAuthorizer(value: unknown): CogsPolicyAuthorizer {
+  try {
+    if (typeof value !== "function" || !Object.isFrozen(value)) throw new Error("bad policy authorizer");
+    return value as CogsPolicyAuthorizer;
+  } catch {
+    throw new Error("bad policy authorizer");
   }
 }
 

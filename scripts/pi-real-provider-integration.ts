@@ -10,9 +10,10 @@ if (!enabled) throw new Error("set COGS_PI_REAL_PROVIDER_INTEGRATION=1 to run th
 if (!apiKey) throw new Error("set COGS_PI_ANTHROPIC_API_KEY; the value is never printed or persisted by this script");
 
 function withDefaults(
-  options: Omit<CogsPiSessionOptions, "emit" | "onFatal"> & Partial<Pick<CogsPiSessionOptions, "emit" | "onFatal">>,
+  options: Omit<CogsPiSessionOptions, "userId" | "emit" | "onFatal"> &
+    Partial<Pick<CogsPiSessionOptions, "userId" | "emit" | "onFatal">>,
 ): CogsPiSessionOptions {
-  return { emit: () => true, onFatal: () => undefined, ...options };
+  return { userId: "user-1", emit: () => true, onFatal: () => undefined, ...options };
 }
 
 const ports: CogsToolPorts = {

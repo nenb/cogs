@@ -2,6 +2,7 @@ import { createRequire } from "node:module";
 import type { Ajv as AjvCore, ErrorObject, Options } from "ajv";
 import integrationSchema from "../../schemas/integration-v1alpha1.json" with { type: "json" };
 import launchSchema from "../../schemas/launch-v1alpha1.json" with { type: "json" };
+import { requireCogsPolicyAllow } from "../policy/require-policy.ts";
 
 const require = createRequire(import.meta.url);
 const Ajv2020 = require("ajv/dist/2020.js") as new (options?: Options) => AjvCore;
@@ -83,7 +84,29 @@ export function validateLaunchConfig(input: unknown): LaunchConfig {
       })),
     );
   }
-  return deepFreeze(candidate as LaunchConfig);
+  const launch = candidate as LaunchConfig;
+  requireCogsPolicyAllow({
+    version: "cogs.policy/v1alpha1",
+    action: "config.validate",
+    user: launch.user_id,
+    session: launch.session_id,
+    resource: "launch",
+    attributes: {
+      integration_count: launch.integrations.length,
+      mount_classes: ["workspace", "shared_skill", "user_skill", "proxy_public"],
+    },
+  });
+  for (const mountClass of ["workspace", "shared_skill", "user_skill", "proxy_public"] as const) {
+    requireCogsPolicyAllow({
+      version: "cogs.policy/v1alpha1",
+      action: "mount.validate",
+      user: launch.user_id,
+      session: launch.session_id,
+      resource: mountClass,
+      attributes: { mount_class: mountClass },
+    });
+  }
+  return deepFreeze(launch);
 }
 
 export function deepFreeze<T>(value: T): T {

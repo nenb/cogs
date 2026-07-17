@@ -408,6 +408,16 @@ test("export is authenticated API only and response overflow is bounded", async 
   }
 });
 
+test("reserved restore route is not exposed", async () => {
+  await withServer(async ({ base }) => {
+    assert.equal(
+      (await json(base, "/v1/restore", { method: "POST", body: JSON.stringify({ request_id: "r" }) })).status,
+      404,
+    );
+    assert.equal((await fetch(`${base}/v1/restore`, { method: "POST" })).status, 401);
+  });
+});
+
 test("malformed, oversized, and slow request bodies are rejected", async () => {
   await withServer(
     async ({ base }) => {

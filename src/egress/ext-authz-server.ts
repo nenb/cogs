@@ -1,5 +1,7 @@
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import * as grpc from "@grpc/grpc-js";
+import type { CogsPolicyAuthorizer } from "../policy/require-policy.ts";
+import { requireCogsPolicyAllow } from "../policy/require-policy.ts";
 import type { EgressAuditWal } from "./audit-wal.ts";
 import { buildExtAuthzResponse, type CogsExtAuthzCheck, parseExtAuthzCheck } from "./ext-authz-adapter.ts";
 import { loadExtAuthzDescriptor } from "./ext-authz-descriptor.ts";
@@ -17,11 +19,13 @@ const serverOptions = Object.freeze({
 const opaque = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 
 export interface CogsExtAuthzServerOptions {
+  readonly userId: string;
   readonly sessionId: string;
   readonly internalAuthzToken: string;
   readonly proxyCapability: string;
   readonly routePlan: CogsEgressRoutePlan;
   readonly wal: EgressAuditWal;
+  readonly policyAuthorizer?: CogsPolicyAuthorizer;
 }
 
 export interface CogsExtAuthzServer {
@@ -53,16 +57,34 @@ export async function startCogsExtAuthzServer(options: CogsExtAuthzServerOptions
   let server: grpc.Server | undefined;
   try {
     const captured = Object.freeze({ ...options });
+    const userId = validOpaque(captured.userId);
     const sessionId = validOpaque(captured.sessionId);
     const internalToken = validSecret(captured.internalAuthzToken);
     const proxyCapability = validSecret(captured.proxyCapability);
+    try {
+      if (
+        captured.policyAuthorizer !== undefined &&
+        (typeof captured.policyAuthorizer !== "function" || !Object.isFrozen(captured.policyAuthorizer))
+      )
+        throw new Error("bad policy authorizer");
+    } catch {
+      throw new Error("bad policy authorizer");
+    }
     if (internalToken === proxyCapability) throw new Error("shared token");
     const routes = buildRouteIndex(captured.routePlan);
     if (!captured.wal.ready) throw new Error("wal unavailable");
     verifier = SecretVerifier.create(internalToken, proxyCapability);
     const descriptor = await loadExtAuthzDescriptor();
     server = new grpc.Server(serverOptions);
-    const impl = new ExtAuthzServerImpl(sessionId, routes, captured.wal, verifier, server);
+    const impl = new ExtAuthzServerImpl(
+      userId,
+      sessionId,
+      routes,
+      captured.wal,
+      verifier,
+      server,
+      captured.policyAuthorizer,
+    );
     server.addService(descriptor.authorizationService as grpc.ServiceDefinition<grpc.UntypedServiceImplementation>, {
       Check: impl.check,
     });
@@ -92,11 +114,13 @@ class ExtAuthzServerImpl {
   };
   readonly surface: CogsExtAuthzServer;
   public constructor(
+    private readonly userId: string,
     private readonly sessionId: string,
     private readonly routes: ReadonlyMap<string, RouteEntry>,
     wal: EgressAuditWal,
     private readonly verifier: SecretVerifier,
     private readonly server: grpc.Server,
+    private readonly policyAuthorizer: CogsPolicyAuthorizer | undefined,
   ) {
     this.#wal = wal;
     const self = this;
@@ -196,6 +220,26 @@ class ExtAuthzServerImpl {
       check.pathAndQuery === undefined ||
       !entry.re.test(check.pathAndQuery)
     ) {
+      return undefined;
+    }
+    try {
+      requireCogsPolicyAllow(
+        {
+          version: "cogs.policy/v1alpha1",
+          action: "egress.authorize",
+          user: this.userId,
+          session: this.sessionId,
+          resource: entry.routeId,
+          attributes: {
+            integration_id: entry.integrationId,
+            route_id: entry.routeId,
+            method: entry.method,
+            credential_required: entry.credentialRequired,
+          },
+        },
+        this.policyAuthorizer,
+      );
+    } catch {
       return undefined;
     }
     return {
