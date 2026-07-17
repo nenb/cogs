@@ -2,33 +2,469 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://cogs.dev/schemas/policy-v1alpha1.json",
   "title": "Cogs policy action envelope",
-  "type": "object",
-  "additionalProperties": false,
-  "required": ["version", "action", "user", "session", "resource", "attributes"],
-  "properties": {
-    "version": { "const": "cogs.policy/v1alpha1" },
-    "action": {
-      "enum": [
-        "mount.validate",
-        "tool.enable",
-        "tool.dispatch",
-        "egress.authorize",
-        "secret.use",
-        "export.create",
-        "restore.request"
-      ]
+  "oneOf": [
+    {
+      "$ref": "#/$defs/mountValidate"
     },
-    "user": { "$ref": "#/$defs/opaqueId" },
-    "session": { "$ref": "#/$defs/opaqueId" },
-    "resource": { "type": "string", "minLength": 1, "maxLength": 256 },
-    "attributes": { "type": "object" }
-  },
+    {
+      "$ref": "#/$defs/configValidateLaunch"
+    },
+    {
+      "$ref": "#/$defs/configValidateRoutePlan"
+    },
+    {
+      "$ref": "#/$defs/toolEnable"
+    },
+    {
+      "$ref": "#/$defs/toolDispatchBash"
+    },
+    {
+      "$ref": "#/$defs/toolDispatchRead"
+    },
+    {
+      "$ref": "#/$defs/toolDispatchWriteEdit"
+    },
+    {
+      "$ref": "#/$defs/egressAuthorize"
+    },
+    {
+      "$ref": "#/$defs/secretUseEgress"
+    },
+    {
+      "$ref": "#/$defs/secretUseFixed"
+    },
+    {
+      "$ref": "#/$defs/exportCreate"
+    },
+    {
+      "$ref": "#/$defs/restoreRequest"
+    }
+  ],
   "$defs": {
+    "base": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "action", "user", "session", "resource", "attributes"],
+      "properties": {
+        "version": {
+          "const": "cogs.policy/v1alpha1"
+        },
+        "action": {
+          "type": "string"
+        },
+        "user": {
+          "$ref": "#/$defs/opaqueId"
+        },
+        "session": {
+          "$ref": "#/$defs/opaqueId"
+        },
+        "resource": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "attributes": {
+          "type": "object"
+        }
+      }
+    },
+    "mountClass": {
+      "enum": ["workspace", "shared_skill", "user_skill", "proxy_public"]
+    },
+    "tool": {
+      "enum": ["read", "write", "edit", "bash"]
+    },
+    "pathClass": {
+      "enum": ["workspace", "shared_skill", "user_skill"]
+    },
+    "method": {
+      "enum": ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "CONNECT"]
+    },
     "opaqueId": {
       "type": "string",
       "minLength": 1,
       "maxLength": 128,
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 10000
+    },
+    "mountValidate": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "const": "mount.validate"
+            },
+            "resource": {
+              "$ref": "#/$defs/mountClass"
+            },
+            "attributes": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["mount_class"],
+              "properties": {
+                "mount_class": {
+                  "$ref": "#/$defs/mountClass"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "configValidateLaunch": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "const": "config.validate"
+            },
+            "resource": {
+              "const": "launch"
+            },
+            "attributes": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["integration_count", "mount_classes"],
+              "properties": {
+                "integration_count": {
+                  "$ref": "#/$defs/count"
+                },
+                "mount_classes": {
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 4,
+                  "uniqueItems": true,
+                  "items": {
+                    "$ref": "#/$defs/mountClass"
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "configValidateRoutePlan": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "const": "config.validate"
+            },
+            "resource": {
+              "const": "egress_route_plan"
+            },
+            "attributes": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["route_count", "credential_route_count"],
+              "properties": {
+                "route_count": {
+                  "$ref": "#/$defs/count"
+                },
+                "credential_route_count": {
+                  "$ref": "#/$defs/count"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "toolEnable": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "const": "tool.enable"
+            },
+            "resource": {
+              "$ref": "#/$defs/tool"
+            },
+            "attributes": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["tool"],
+              "properties": {
+                "tool": {
+                  "$ref": "#/$defs/tool"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "toolDispatchBash": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "const": "tool.dispatch"
+            },
+            "resource": {
+              "const": "bash"
+            },
+            "attributes": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["tool"],
+              "properties": {
+                "tool": {
+                  "const": "bash"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "toolDispatchRead": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "const": "tool.dispatch"
+            },
+            "resource": {
+              "const": "read"
+            },
+            "attributes": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["tool", "path_class"],
+              "properties": {
+                "tool": {
+                  "const": "read"
+                },
+                "path_class": {
+                  "$ref": "#/$defs/pathClass"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "toolDispatchWriteEdit": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "const": "tool.dispatch"
+            },
+            "resource": {
+              "enum": ["write", "edit"]
+            },
+            "attributes": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["tool", "path_class"],
+              "properties": {
+                "tool": {
+                  "enum": ["write", "edit"]
+                },
+                "path_class": {
+                  "const": "workspace"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "egressAuthorize": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "const": "egress.authorize"
+            },
+            "resource": {
+              "$ref": "#/$defs/opaqueId"
+            },
+            "attributes": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["integration_id", "route_id", "method", "credential_required"],
+              "properties": {
+                "integration_id": {
+                  "$ref": "#/$defs/opaqueId"
+                },
+                "route_id": {
+                  "$ref": "#/$defs/opaqueId"
+                },
+                "method": {
+                  "$ref": "#/$defs/method"
+                },
+                "credential_required": {
+                  "type": "boolean"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "secretUseEgress": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "const": "secret.use"
+            },
+            "resource": {
+              "const": "egress_integration_credential"
+            },
+            "attributes": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["secret_class", "integration_id"],
+              "properties": {
+                "secret_class": {
+                  "const": "egress_integration_credential"
+                },
+                "integration_id": {
+                  "$ref": "#/$defs/opaqueId"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "secretUseFixed": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "const": "secret.use"
+            },
+            "resource": {
+              "enum": ["model_api_key_runtime", "proxy_capability", "proxy_leaf_key"]
+            },
+            "attributes": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["secret_class"],
+              "properties": {
+                "secret_class": {
+                  "enum": ["model_api_key_runtime", "proxy_capability", "proxy_leaf_key"]
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "exportCreate": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "const": "export.create"
+            },
+            "resource": {
+              "const": "local_bundle"
+            },
+            "attributes": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["mode", "sensitive", "sanitized", "anonymized", "attachments_included"],
+              "properties": {
+                "mode": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 32
+                },
+                "sensitive": {
+                  "type": "boolean"
+                },
+                "sanitized": {
+                  "type": "boolean"
+                },
+                "anonymized": {
+                  "type": "boolean"
+                },
+                "attachments_included": {
+                  "type": "boolean"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "restoreRequest": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "const": "restore.request"
+            },
+            "resource": {
+              "const": "restore"
+            },
+            "attributes": {
+              "type": "object",
+              "additionalProperties": false,
+              "maxProperties": 0
+            }
+          }
+        }
+      ]
     }
   }
 }

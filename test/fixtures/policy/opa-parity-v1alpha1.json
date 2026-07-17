@@ -1,0 +1,262 @@
+[
+  {
+    "name": "allow mount workspace",
+    "envelope": {
+      "version": "cogs.policy/v1alpha1",
+      "user": "user-123",
+      "session": "session-123",
+      "action": "mount.validate",
+      "resource": "workspace",
+      "attributes": {
+        "mount_class": "workspace"
+      }
+    },
+    "decision": {
+      "version": "cogs.policy-decision/v1alpha1",
+      "decision_id": "sha256:d256823aae698faf0ed95dd04f0a60a50e700af27fce77dfa68244e0433be806",
+      "allow": true,
+      "reason": "allowed"
+    }
+  },
+  {
+    "name": "allow launch config",
+    "envelope": {
+      "version": "cogs.policy/v1alpha1",
+      "user": "user-123",
+      "session": "session-123",
+      "action": "config.validate",
+      "resource": "launch",
+      "attributes": {
+        "integration_count": 2,
+        "mount_classes": ["workspace", "shared_skill"]
+      }
+    },
+    "decision": {
+      "version": "cogs.policy-decision/v1alpha1",
+      "decision_id": "sha256:93e5c140e2d5a9f4bf91609ba00d7904f164349e70449e85fd601ea55a3e953b",
+      "allow": true,
+      "reason": "allowed"
+    }
+  },
+  {
+    "name": "allow route plan config",
+    "envelope": {
+      "version": "cogs.policy/v1alpha1",
+      "user": "user-123",
+      "session": "session-123",
+      "action": "config.validate",
+      "resource": "egress_route_plan",
+      "attributes": {
+        "route_count": 3,
+        "credential_route_count": 1
+      }
+    },
+    "decision": {
+      "version": "cogs.policy-decision/v1alpha1",
+      "decision_id": "sha256:36a2c4debc1a536ca94086fb5ad0e0aa63e394c0740e0220ed012d5964083691",
+      "allow": true,
+      "reason": "allowed"
+    }
+  },
+  {
+    "name": "allow tool enable bash",
+    "envelope": {
+      "version": "cogs.policy/v1alpha1",
+      "user": "user-123",
+      "session": "session-123",
+      "action": "tool.enable",
+      "resource": "bash",
+      "attributes": {
+        "tool": "bash"
+      }
+    },
+    "decision": {
+      "version": "cogs.policy-decision/v1alpha1",
+      "decision_id": "sha256:f42ffe4c35a15ad66045983929b04d0e2a5681072025e91e989edad537899dbb",
+      "allow": true,
+      "reason": "allowed"
+    }
+  },
+  {
+    "name": "allow bash dispatch",
+    "envelope": {
+      "version": "cogs.policy/v1alpha1",
+      "user": "user-123",
+      "session": "session-123",
+      "action": "tool.dispatch",
+      "resource": "bash",
+      "attributes": {
+        "tool": "bash"
+      }
+    },
+    "decision": {
+      "version": "cogs.policy-decision/v1alpha1",
+      "decision_id": "sha256:317365d1f03ceee6aafe7c304d0b1572cd9a8c07ade3abcc587b7f4bcb08cee9",
+      "allow": true,
+      "reason": "allowed"
+    }
+  },
+  {
+    "name": "allow read shared skill",
+    "envelope": {
+      "version": "cogs.policy/v1alpha1",
+      "user": "user-123",
+      "session": "session-123",
+      "action": "tool.dispatch",
+      "resource": "read",
+      "attributes": {
+        "tool": "read",
+        "path_class": "shared_skill"
+      }
+    },
+    "decision": {
+      "version": "cogs.policy-decision/v1alpha1",
+      "decision_id": "sha256:d6f0fb0e8b04c611f1144fa8d5af1d7e2d31e8f6e1016ca7173f614d2c852157",
+      "allow": true,
+      "reason": "allowed"
+    }
+  },
+  {
+    "name": "allow egress",
+    "envelope": {
+      "version": "cogs.policy/v1alpha1",
+      "user": "user-123",
+      "session": "session-123",
+      "action": "egress.authorize",
+      "resource": "route-123",
+      "attributes": {
+        "integration_id": "integration-123",
+        "route_id": "route-123",
+        "method": "GET",
+        "credential_required": true
+      }
+    },
+    "decision": {
+      "version": "cogs.policy-decision/v1alpha1",
+      "decision_id": "sha256:b4f27c24275d1074517fa83247bf1b0458c620638319c02d3d19d29bf01dcc85",
+      "allow": true,
+      "reason": "allowed"
+    }
+  },
+  {
+    "name": "allow egress secret",
+    "envelope": {
+      "version": "cogs.policy/v1alpha1",
+      "user": "user-123",
+      "session": "session-123",
+      "action": "secret.use",
+      "resource": "egress_integration_credential",
+      "attributes": {
+        "secret_class": "egress_integration_credential",
+        "integration_id": "integration-123"
+      }
+    },
+    "decision": {
+      "version": "cogs.policy-decision/v1alpha1",
+      "decision_id": "sha256:d4d773559164158be2afeafa859850fd58c37e109bb6195a09bb0acf3e22ba87",
+      "allow": true,
+      "reason": "allowed"
+    }
+  },
+  {
+    "name": "allow model secret",
+    "envelope": {
+      "version": "cogs.policy/v1alpha1",
+      "user": "user-123",
+      "session": "session-123",
+      "action": "secret.use",
+      "resource": "model_api_key_runtime",
+      "attributes": {
+        "secret_class": "model_api_key_runtime"
+      }
+    },
+    "decision": {
+      "version": "cogs.policy-decision/v1alpha1",
+      "decision_id": "sha256:3a8527521e72de1f04b8ab42460203b6f7597febd32fc82b508d97bced228d0c",
+      "allow": true,
+      "reason": "allowed"
+    }
+  },
+  {
+    "name": "allow raw export",
+    "envelope": {
+      "version": "cogs.policy/v1alpha1",
+      "user": "user-123",
+      "session": "session-123",
+      "action": "export.create",
+      "resource": "local_bundle",
+      "attributes": {
+        "mode": "raw",
+        "sensitive": true,
+        "sanitized": false,
+        "anonymized": false,
+        "attachments_included": false
+      }
+    },
+    "decision": {
+      "version": "cogs.policy-decision/v1alpha1",
+      "decision_id": "sha256:441acd7357abaea870f2a62d9d3b94c275c4fcc6e6cb8e2f831b359e3d4b72c5",
+      "allow": true,
+      "reason": "allowed"
+    }
+  },
+  {
+    "name": "deny restore reserved",
+    "envelope": {
+      "version": "cogs.policy/v1alpha1",
+      "user": "user-123",
+      "session": "session-123",
+      "action": "restore.request",
+      "resource": "restore",
+      "attributes": {}
+    },
+    "decision": {
+      "version": "cogs.policy-decision/v1alpha1",
+      "decision_id": "sha256:9665fb7cd40fe1741e0f7c1f93b101cef4ed99d401798c962e27b41f45672e13",
+      "allow": false,
+      "reason": "restore_reserved"
+    }
+  },
+  {
+    "name": "deny sanitized export",
+    "envelope": {
+      "version": "cogs.policy/v1alpha1",
+      "user": "user-123",
+      "session": "session-123",
+      "action": "export.create",
+      "resource": "local_bundle",
+      "attributes": {
+        "mode": "sanitized",
+        "sensitive": true,
+        "sanitized": true,
+        "anonymized": false,
+        "attachments_included": false
+      }
+    },
+    "decision": {
+      "version": "cogs.policy-decision/v1alpha1",
+      "decision_id": "sha256:438b534b1277598586980090126c8c75c3d546eaea08a3254dc0caa9fd4f2ffa",
+      "allow": false,
+      "reason": "mode_denied"
+    }
+  },
+  {
+    "name": "deny unknown action",
+    "envelope": {
+      "version": "cogs.policy/v1alpha1",
+      "user": "user-123",
+      "session": "session-123",
+      "action": "unknown.action",
+      "resource": "bash",
+      "attributes": {
+        "tool": "bash"
+      }
+    },
+    "decision": {
+      "version": "cogs.policy-decision/v1alpha1",
+      "decision_id": "sha256:baada971d35203f03f2714621a80a8b63ef58ca5b581abe45921e055b6fcecd3",
+      "allow": false,
+      "reason": "unknown_action"
+    }
+  }
+]

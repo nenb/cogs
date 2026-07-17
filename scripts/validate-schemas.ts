@@ -99,7 +99,13 @@ const validSamples: Record<string, unknown> = {
     user: opaque,
     session: "session-123",
     resource: "bash",
-    attributes: {},
+    attributes: { tool: "bash" },
+  },
+  "policy-decision-v1alpha1.json": {
+    version: "cogs.policy-decision/v1alpha1",
+    decision_id: digest,
+    allow: true,
+    reason: "allowed",
   },
   "export-manifest-v1alpha1.json": {
     version: "cogs.export/v1alpha1",
@@ -155,6 +161,14 @@ for (const [file, sample] of Object.entries(validSamples)) {
 
   const withUnknown = { ...(sample as Record<string, unknown>), unexpected_security_field: true };
   assert.equal(validate(withUnknown), false, `${file} must reject unknown top-level fields`);
+}
+
+const decisionValidator = validatorFor("policy-decision-v1alpha1.json");
+for (const invalidDecision of [
+  { version: "cogs.policy-decision/v1alpha1", decision_id: digest, allow: true, reason: "invalid_envelope" },
+  { version: "cogs.policy-decision/v1alpha1", decision_id: digest, allow: false, reason: "allowed" },
+]) {
+  assert.equal(decisionValidator(invalidDecision), false, "policy decisions must couple allow with reason");
 }
 
 const launchValidator = validatorFor("launch-v1alpha1.json");
