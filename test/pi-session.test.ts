@@ -20,6 +20,8 @@ import {
   createAuthenticatedCogsPiSession,
   createCogsPiSession,
 } from "../src/pi/session.ts";
+import type { CogsGitMapRecord } from "../src/session/git-map.ts";
+import type { CogsGitObservation, CogsGitObserver } from "../src/session/git-observer.ts";
 import type { CogsPreparedSkills, CogsSkillPreparerPort } from "../src/skills/session-preparer.ts";
 
 const require = createRequire(import.meta.url);
@@ -107,6 +109,30 @@ function dependencies(shutdowns: string[]): LaunchDependency[] {
       shutdowns.push(name);
     },
   }));
+}
+
+function fakeObserver(commits: readonly string[], notes: CogsGitMapRecord[] = []): CogsGitObserver {
+  let index = 0;
+  return Object.freeze({
+    observeHead: async (): Promise<CogsGitObservation> => {
+      const commit = commits[Math.min(index, commits.length - 1)];
+      index += 1;
+      return commit === undefined
+        ? Object.freeze({ kind: "unavailable" as const })
+        : Object.freeze({
+            kind: "observed" as const,
+            repo: "workspace-1",
+            commit,
+            observed_at: "2026-07-17T00:00:00.000Z",
+          });
+    },
+    nearestAncestor: async (input: { readonly candidates: readonly string[] }) => input.candidates[0] ?? null,
+    appendNote: async (record: CogsGitMapRecord) => {
+      notes.push(record);
+      return true;
+    },
+    dispose: async () => undefined,
+  });
 }
 
 function fakePorts(calls: string[], result: unknown = { ok: true }): CogsToolPorts {
@@ -441,6 +467,308 @@ test("Pi session invokes exactly the four Cogs tool ports and redacts tool-resul
     } finally {
       await adapter.dispose();
     }
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test("Pi session Git observer maps user, tool, and settle boundaries only after durable sidecar append", async () => {
+  const temporaryRoot = await mkdtemp(resolve(tmpdir(), "cogs-pi-git-"));
+  const cwd = resolve(temporaryRoot, "workspace");
+  const agentDir = resolve(temporaryRoot, "agent");
+  const calls: string[] = [];
+  const events: Array<{ kind: string; payload: Record<string, unknown> }> = [];
+  const commits = ["a".repeat(40), "b".repeat(40), "c".repeat(40)] as const;
+  try {
+    await mkdir(cwd, { recursive: true });
+    await mkdir(agentDir, { recursive: true });
+    const adapter = await createCogsPiSession(
+      withDefaults({
+        cwd,
+        agentDir,
+        sessionRoot: resolve(temporaryRoot, "sessions"),
+        sessionId: "git-session",
+        model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+        apiKey: "COGS_RUNTIME_ONLY_TEST_KEY",
+        toolPorts: fakePorts(calls),
+        streamFn: oneToolStream("read", { path: "/workspace/README.md" }),
+        git: { repositoryId: "workspace-1", observer: fakeObserver(commits), enableNotes: true },
+        emit: (event) => {
+          events.push({ kind: event.kind, payload: event.payload as Record<string, unknown> });
+          return true;
+        },
+      }),
+    );
+    try {
+      await adapter.input({ requestId: "git", correlationId: "git-corr", kind: "prompt", content: "git" });
+      await eventually(async () => assert.equal((await adapter.state()).runState, "settled"));
+      const mappings = adapter.gitMapRecords();
+      assert.equal(mappings.length, 3);
+      assert.deepEqual(
+        mappings.map((record) => record.commit),
+        commits,
+      );
+      assert.deepEqual(
+        events.filter((event) => event.kind === "git_mapping").map((event) => event.payload.boundary),
+        ["user", "tool", "settle"],
+      );
+      const gitEvents = events.filter((event) => event.kind === "git_mapping" || event.kind === "warning");
+      assert.equal(
+        gitEvents.some((event) => JSON.stringify(event).includes("/workspace")),
+        false,
+      );
+      assert.equal(
+        gitEvents.some((event) => JSON.stringify(event).includes("README")),
+        false,
+      );
+      assert.equal(
+        events.findIndex((event) => event.kind === "git_mapping") <
+          events.findIndex((event) => event.kind === "run_settled"),
+        true,
+      );
+      assert.equal((await adapter.resolveGitMapping({ repo: "workspace-1", commit: commits[1] }))?.kind, "mapped");
+    } finally {
+      await adapter.dispose();
+    }
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test("Pi session Git observer captures failed tool operation once", async () => {
+  const temporaryRoot = await mkdtemp(resolve(tmpdir(), "cogs-pi-git-tool-error-"));
+  const cwd = resolve(temporaryRoot, "workspace");
+  const agentDir = resolve(temporaryRoot, "agent");
+  try {
+    await mkdir(cwd, { recursive: true });
+    await mkdir(agentDir, { recursive: true });
+    const adapter = await createCogsPiSession(
+      withDefaults({
+        cwd,
+        agentDir,
+        sessionRoot: resolve(temporaryRoot, "sessions"),
+        sessionId: "git-tool-error",
+        model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+        apiKey: "COGS_RUNTIME_ONLY_TEST_KEY",
+        toolPorts: {
+          ...fakePorts([]),
+          read: async () => {
+            throw new Error("raw read failure");
+          },
+        },
+        streamFn: oneToolStream("read", { path: "/workspace/README.md" }),
+        git: { repositoryId: "workspace-1", observer: fakeObserver(["a".repeat(40), "b".repeat(40), "c".repeat(40)]) },
+      }),
+    );
+    try {
+      await adapter.input({ requestId: "git-tool", correlationId: "git-tool", kind: "prompt", content: "go" });
+      await eventually(async () => assert.equal((await adapter.state()).runState, "settled"));
+      assert.equal(adapter.gitMapRecords().filter((record) => record.commit === "b".repeat(40)).length, 1);
+    } finally {
+      await adapter.dispose();
+    }
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test("Pi session Git observer failures are warnings and note failures are nonfatal", async () => {
+  const temporaryRoot = await mkdtemp(resolve(tmpdir(), "cogs-pi-git-hostile-"));
+  const cwd = resolve(temporaryRoot, "workspace");
+  const agentDir = resolve(temporaryRoot, "agent");
+  const events: Array<{ kind: string; payload: Record<string, unknown> }> = [];
+  let noteAttempts = 0;
+  const observer: CogsGitObserver = Object.freeze({
+    observeHead: async () =>
+      Object.freeze({
+        kind: "observed" as const,
+        repo: "workspace-1",
+        commit: "d".repeat(40),
+        observed_at: "2026-07-17T00:00:00.000Z",
+      }),
+    nearestAncestor: async () => null,
+    appendNote: async () => {
+      noteAttempts += 1;
+      throw new Error("raw note failure");
+    },
+    dispose: async () => undefined,
+  });
+  try {
+    await mkdir(cwd, { recursive: true });
+    await mkdir(agentDir, { recursive: true });
+    const adapter = await createCogsPiSession(
+      withDefaults({
+        cwd,
+        agentDir,
+        sessionRoot: resolve(temporaryRoot, "sessions"),
+        sessionId: "git-hostile-session",
+        model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+        apiKey: "COGS_RUNTIME_ONLY_TEST_KEY",
+        toolPorts: fakePorts([]),
+        streamFn: oneTextStream("done"),
+        git: { repositoryId: "workspace-1", observer },
+        emit: (event) => {
+          events.push({ kind: event.kind, payload: event.payload as Record<string, unknown> });
+          return true;
+        },
+      }),
+    );
+    try {
+      await adapter.input({ requestId: "git-note", correlationId: "git-note", kind: "prompt", content: "go" });
+      await eventually(async () => assert.equal((await adapter.state()).runState, "settled"));
+      assert.ok(noteAttempts > 0, "notes are attempted by default");
+      assert.ok(events.some((event) => event.kind === "warning" && event.payload.code === "git-note-unavailable"));
+      assert.ok(events.some((event) => event.kind === "run_settled"));
+    } finally {
+      await adapter.dispose();
+    }
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test("Pi session bounds hanging Git notes and resolver ancestor lookups", async () => {
+  const noteRoot = await mkdtemp(resolve(tmpdir(), "cogs-pi-git-hanging-note-"));
+  try {
+    const cwd = resolve(noteRoot, "workspace");
+    const agentDir = resolve(noteRoot, "agent");
+    const events: Array<{ kind: string; payload: Record<string, unknown> }> = [];
+    await mkdir(cwd, { recursive: true });
+    await mkdir(agentDir, { recursive: true });
+    let noteAttempts = 0;
+    const observer: CogsGitObserver = Object.freeze({
+      observeHead: async () =>
+        Object.freeze({
+          kind: "observed" as const,
+          repo: "workspace-1",
+          commit: "f".repeat(40),
+          observed_at: "2026-07-17T00:00:00.000Z",
+        }),
+      nearestAncestor: async () => null,
+      appendNote: () => {
+        noteAttempts += 1;
+        return noteAttempts === 1 ? new Promise<boolean>(() => undefined) : Promise.resolve(false);
+      },
+      dispose: async () => undefined,
+    });
+    const adapter = await createCogsPiSession(
+      withDefaults({
+        cwd,
+        agentDir,
+        sessionRoot: resolve(noteRoot, "sessions"),
+        sessionId: "git-hanging-note",
+        model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+        apiKey: "COGS_RUNTIME_ONLY_TEST_KEY",
+        toolPorts: fakePorts([]),
+        streamFn: oneTextStream("done"),
+        git: { repositoryId: "workspace-1", observer },
+        emit: (event) => {
+          events.push({ kind: event.kind, payload: event.payload as Record<string, unknown> });
+          return true;
+        },
+      }),
+    );
+    try {
+      await adapter.input({ requestId: "hanging-note", correlationId: "hanging-note", kind: "prompt", content: "go" });
+      await eventually(async () => assert.equal((await adapter.state()).runState, "settled"));
+      assert.ok(events.some((event) => event.kind === "warning" && event.payload.code === "git-note-unavailable"));
+      assert.ok(events.some((event) => event.kind === "run_settled"));
+    } finally {
+      await adapter.dispose();
+    }
+  } finally {
+    await rm(noteRoot, { recursive: true, force: true });
+  }
+
+  const resolveRoot = await mkdtemp(resolve(tmpdir(), "cogs-pi-git-hanging-resolve-"));
+  try {
+    const cwd = resolve(resolveRoot, "workspace");
+    const agentDir = resolve(resolveRoot, "agent");
+    await mkdir(cwd, { recursive: true });
+    await mkdir(agentDir, { recursive: true });
+    const adapter = await createCogsPiSession(
+      withDefaults({
+        cwd,
+        agentDir,
+        sessionRoot: resolve(resolveRoot, "sessions"),
+        sessionId: "git-hanging-resolve",
+        model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+        apiKey: "COGS_RUNTIME_ONLY_TEST_KEY",
+        toolPorts: fakePorts([]),
+        streamFn: oneTextStream("done"),
+        git: {
+          repositoryId: "workspace-1",
+          observer: Object.freeze({
+            ...fakeObserver(["1".repeat(40)]),
+            nearestAncestor: () => new Promise<string | null>(() => undefined),
+          }),
+        },
+      }),
+    );
+    try {
+      await adapter.input({
+        requestId: "hanging-resolve",
+        correlationId: "hanging-resolve",
+        kind: "prompt",
+        content: "go",
+      });
+      await eventually(async () => assert.equal((await adapter.state()).runState, "settled"));
+      const started = Date.now();
+      const resolved = await adapter.resolveGitMapping({ repo: "workspace-1", commit: "2".repeat(40) });
+      assert.equal(resolved?.kind, "unavailable");
+      assert.ok(Date.now() - started < 3500);
+    } finally {
+      await adapter.dispose();
+    }
+  } finally {
+    await rm(resolveRoot, { recursive: true, force: true });
+  }
+});
+
+test("Pi session rejects malformed Git options before sidecar and git event publication failure shuts down", async () => {
+  const temporaryRoot = await mkdtemp(resolve(tmpdir(), "cogs-pi-git-options-"));
+  const cwd = resolve(temporaryRoot, "workspace");
+  const agentDir = resolve(temporaryRoot, "agent");
+  try {
+    await mkdir(cwd, { recursive: true });
+    await mkdir(agentDir, { recursive: true });
+    const cyclic = new Proxy(
+      { repositoryId: "workspace-1", manager: {} },
+      { getPrototypeOf: (target) => target },
+    ) as NonNullable<CogsPiSessionOptions["git"]>;
+    await assert.rejects(() =>
+      createCogsPiSession(
+        withDefaults({
+          cwd,
+          agentDir,
+          sessionRoot: resolve(temporaryRoot, "bad"),
+          sessionId: "bad-git",
+          model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+          apiKey: "COGS_RUNTIME_ONLY_TEST_KEY",
+          toolPorts: fakePorts([]),
+          git: cyclic,
+        }),
+      ),
+    );
+    await assert.rejects(readFile(resolve(temporaryRoot, "bad/bad-git/git-map.jsonl"), "utf8"), { code: "ENOENT" });
+
+    const observer = fakeObserver(["e".repeat(40)]);
+    const adapter = await createCogsPiSession(
+      withDefaults({
+        cwd,
+        agentDir,
+        sessionRoot: resolve(temporaryRoot, "publish"),
+        sessionId: "publish-git",
+        model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+        apiKey: "COGS_RUNTIME_ONLY_TEST_KEY",
+        toolPorts: fakePorts([]),
+        streamFn: oneTextStream("done"),
+        git: { repositoryId: "workspace-1", observer },
+        emit: (event) => event.kind !== "git_mapping",
+      }),
+    );
+    await adapter.input({ requestId: "pub", correlationId: "pub", kind: "prompt", content: "go" });
+    await eventually(async () => assert.equal((await adapter.state()).runState, "shutdown"));
   } finally {
     await rm(temporaryRoot, { recursive: true, force: true });
   }
