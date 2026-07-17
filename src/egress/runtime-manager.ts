@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { isAbsolute, resolve } from "node:path";
 import type { LaunchConfig } from "../launch/config.ts";
 import { type CogsPolicyAuthorizer, requireCogsPolicyAllow } from "../policy/require-policy.ts";
+import { type CogsTelemetry, captureTelemetry } from "../telemetry/instrumentation.ts";
 import { type EgressAuditWal, openEgressAuditWal } from "./audit-wal.ts";
 import {
   type CogsEgressCompletion,
@@ -97,6 +98,7 @@ export type CogsEgressRuntimeManagerOptions = Readonly<{
   completionCapacity: number;
   revocation: CogsEgressRuntimeRevocationConfig;
   telemetry: CogsEgressTelemetryMode;
+  workerTelemetry?: CogsTelemetry;
   proxyCapability: string;
   pkiSource: CogsEgressPkiSource;
   envoyProcess: CogsEnvoyProcessPort;
@@ -210,6 +212,7 @@ class RuntimeManager {
       capacity: this.options.completionCapacity,
       nowMs: this.options.nowMs,
       telemetry: this.telemetry,
+      ...(this.options.workerTelemetry === undefined ? {} : { workerTelemetry: this.options.workerTelemetry }),
     });
     this.internalAuthzToken = validSecret(this.options.randomSecret(32));
     this.proxyCapability = validSecret(this.options.proxyCapability);
@@ -232,6 +235,8 @@ class RuntimeManager {
       proxyCapability: this.proxyCapability,
       routePlan: this.routePlan,
       wal: this.wal,
+      ...(this.options.workerTelemetry === undefined ? {} : { workerTelemetry: this.options.workerTelemetry }),
+      nowMs: this.options.nowMs,
       ...(this.options.policyAuthorizer === undefined ? {} : { policyAuthorizer: this.options.policyAuthorizer }),
     });
     this.scopePromise = this.runScoped(presetRevision);
@@ -543,6 +548,7 @@ function capture(options: CogsEgressRuntimeManagerOptions): Captured {
       completionCapacity: integer(options.completionCapacity, 1, 1024),
       revocation: validRevocation(options.revocation),
       proxyCapability: validSecret(options.proxyCapability),
+      workerTelemetry: captureTelemetry(options.workerTelemetry),
       revocationPollIntervalMs: integer(options.revocationPollIntervalMs ?? 1000, 50, 60_000),
       revocationMinPkiRemainingMs: integer(options.revocationMinPkiRemainingMs ?? 60_000, 1000, 3_600_000),
       operationTimeoutMs: integer(options.operationTimeoutMs ?? 1000, 50, 5000),

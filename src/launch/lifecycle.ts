@@ -1,4 +1,12 @@
 import type { CogsEgressRuntimeManager } from "../egress/runtime-manager.ts";
+import {
+  type CogsTelemetry,
+  captureTelemetry,
+  emitMetric,
+  emitSpan,
+  telemetryDuration,
+  telemetryStart,
+} from "../telemetry/instrumentation.ts";
 import type { LaunchConfig } from "./config.ts";
 import { deepFreeze, validateLaunchConfig } from "./config.ts";
 
@@ -54,6 +62,7 @@ export interface LaunchLifecycleOptions {
   readonly dependencyHealthIntervalMs?: number;
   readonly onEvent?: (event: LifecycleEvent) => void;
   readonly onRecycleNotice?: (notice: RecycleNotice) => void;
+  readonly telemetry?: CogsTelemetry;
 }
 
 export class LaunchLifecycleError extends Error {
@@ -79,6 +88,7 @@ export class LaunchLifecycle {
   readonly #config: LaunchConfig;
   readonly #dependencies: Map<LaunchDependencyName, LaunchDependency>;
   readonly #dependencyStates = new Map<LaunchDependencyName, DependencyState>();
+  readonly #dependencyStartedAt = new Map<LaunchDependencyName, number>();
   readonly #attemptedDependencies: LaunchDependencyName[] = [];
   readonly #scheduler: Scheduler;
   readonly #shutdownTimeoutMs: number;
@@ -87,6 +97,7 @@ export class LaunchLifecycle {
   readonly #dependencyHealthIntervalMs: number;
   readonly #onEvent: ((event: LifecycleEvent) => void) | undefined;
   readonly #onRecycleNotice: ((notice: RecycleNotice) => void) | undefined;
+  readonly #telemetry: CogsTelemetry;
   readonly #signalSubscription: SignalSubscription | undefined;
   readonly #lifecycleAbort = new AbortController();
   #state: LifecycleState = "created";
@@ -110,6 +121,7 @@ export class LaunchLifecycle {
     this.#dependencyHealthIntervalMs = integer(options.dependencyHealthIntervalMs ?? 100, 50, 5000);
     this.#onEvent = options.onEvent;
     this.#onRecycleNotice = options.onRecycleNotice;
+    this.#telemetry = captureTelemetry(options.telemetry);
     if (this.#shutdownTimeoutMs < 1) {
       throw new LaunchLifecycleError("COGS_LAUNCH_INVALID_TIMEOUT", "shutdown timeout must be positive");
     }
@@ -152,6 +164,7 @@ export class LaunchLifecycle {
     if (!this.#attemptedDependencies.includes(name)) return;
     if (this.#dependencyStates.get(name) === "ready") return;
     this.#dependencyStates.set(name, "ready");
+    emitSpan(this.#telemetry, "dependency.ready", { dependency: telemetryDependency(name), outcome: "ok" });
     if (launchDependencyNames.every((dependency) => this.#dependencyStates.get(dependency) === "ready")) {
       if (this.#lifecycleAbort.signal.aborted || this.#shutdownPromise !== undefined || this.#state !== "starting")
         return;
@@ -166,6 +179,12 @@ export class LaunchLifecycle {
     this.#knownDependency(name);
     if (this.#state === "stopped" || this.#state === "failed") return;
     this.#dependencyStates.set(name, "failed");
+    const started = this.#dependencyStartedAt.get(name);
+    emitSpan(this.#telemetry, "dependency.start", {
+      dependency: telemetryDependency(name),
+      outcome: "error",
+      ...(started === undefined ? {} : { duration_ms: telemetryDuration(this.#scheduler, started) }),
+    });
     this.#failClosed("dependency-start-failed");
   }
 
@@ -173,6 +192,7 @@ export class LaunchLifecycle {
     this.#knownDependency(name);
     if (this.#state === "stopped" || this.#state === "failed") return;
     this.#dependencyStates.set(name, "lost");
+    emitSpan(this.#telemetry, "dependency.lost", { dependency: telemetryDependency(name), outcome: "error" });
     this.#failClosed("dependency-lost");
   }
 
@@ -196,6 +216,7 @@ export class LaunchLifecycle {
   }
 
   async #start(): Promise<void> {
+    const start = telemetryStart(this.#scheduler);
     this.#transition("starting", "start");
     let currentDependency: LaunchDependencyName = "sessionStorage";
     try {
@@ -203,10 +224,21 @@ export class LaunchLifecycle {
         this.#throwIfStartInterrupted();
         currentDependency = dependency.name;
         this.#attemptedDependencies.push(dependency.name);
+        const dependencyStart = telemetryStart(this.#scheduler);
+        this.#dependencyStartedAt.set(dependency.name, dependencyStart);
         await this.#withAbort(dependency.start(this.#lifecycleAbort.signal), this.#lifecycleAbort.signal);
+        emitSpan(this.#telemetry, "dependency.start", {
+          dependency: telemetryDependency(dependency.name),
+          outcome: "ok",
+          duration_ms: telemetryDuration(this.#scheduler, dependencyStart),
+        });
         this.#throwIfStartInterrupted();
         this.dependencyReady(dependency.name);
       }
+      emitSpan(this.#telemetry, "lifecycle.start", {
+        outcome: "ok",
+        duration_ms: telemetryDuration(this.#scheduler, start),
+      });
     } catch (error) {
       if (this.#shutdownPromise !== undefined || this.#lifecycleAbort.signal.aborted) {
         await this.#shutdownPromise;
@@ -312,6 +344,12 @@ export class LaunchLifecycle {
 
   #transition(state: LifecycleState, reason: string): void {
     this.#state = state;
+    if (state === "ready") {
+      emitSpan(this.#telemetry, "lifecycle.ready", { state: "ready", outcome: "ok" });
+      emitMetric(this.#telemetry, "session.active", 1, { state: "ready" });
+    } else if (state === "stopped" || state === "failed") {
+      emitMetric(this.#telemetry, "session.active", 0, { state: state === "failed" ? "failed" : "shutdown" });
+    }
     try {
       this.#onEvent?.({ state, ready: this.ready, reason });
     } catch {
@@ -334,6 +372,8 @@ export class LaunchLifecycle {
   }
 
   async #shutdown(reason: string): Promise<void> {
+    const start = telemetryStart(this.#scheduler);
+    emitSpan(this.#telemetry, "shutdown.prepare", { operation: "prepare", state: "shutdown" });
     if (this.#state !== "failed" && this.#state !== "stopped") this.#transition("draining", reason);
     const shutdownAbort = new AbortController();
     const timeout = this.#scheduler.setTimer(this.#shutdownTimeoutMs, () => {
@@ -345,6 +385,11 @@ export class LaunchLifecycle {
       timeout.cancel();
       shutdownAbort.abort();
       this.#readyConfig = undefined;
+      emitSpan(this.#telemetry, "shutdown.ready", {
+        operation: "close",
+        outcome: "ok",
+        duration_ms: telemetryDuration(this.#scheduler, start),
+      });
       this.#transition("stopped", reason);
       this.#disposeResources();
     }
@@ -391,6 +436,13 @@ function integer(value: number, min: number, max: number): number {
   if (!Number.isSafeInteger(value) || value < min || value > max)
     throw new LaunchLifecycleError("COGS_LAUNCH_INVALID_HEALTH_INTERVAL", "dependency health interval invalid");
   return value;
+}
+
+function telemetryDependency(name: LaunchDependencyName): "storage" | "ssh" | "proxy" | "auth" | "wal" | "egress" {
+  if (name === "sessionStorage") return "storage";
+  if (name === "auditWal") return "wal";
+  if (name === "egressRuntime") return "egress";
+  return name;
 }
 
 export function createCogsEgressRuntimeLaunchDependency(

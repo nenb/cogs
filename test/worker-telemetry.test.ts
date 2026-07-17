@@ -2,7 +2,90 @@ import assert from "node:assert/strict";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { test } from "node:test";
-import { createCogsWorkerTelemetrySink } from "../src/telemetry/worker-telemetry.ts";
+import { emitTelemetryHealth, TelemetryHealthCursor } from "../src/telemetry/instrumentation.ts";
+import { createCogsWorkerTelemetrySink, validateCogsWorkerTelemetrySink } from "../src/telemetry/worker-telemetry.ts";
+
+test("worker telemetry sink validator requires frozen exact surface and traps getters generically", () => {
+  const sink = createCogsWorkerTelemetrySink();
+  assert.doesNotThrow(() => validateCogsWorkerTelemetrySink(undefined));
+  assert.doesNotThrow(() => validateCogsWorkerTelemetrySink(sink));
+  assert.throws(() => validateCogsWorkerTelemetrySink({ ...sink }), /invalid worker telemetry sink/);
+  assert.throws(
+    () =>
+      validateCogsWorkerTelemetrySink(
+        Object.freeze({
+          get ready() {
+            throw new Error("SECRET_TRAP");
+          },
+          span: () => true,
+          metric: () => true,
+          snapshot: () => Object.freeze({ ready: true, queued: 0, exported: 0, dropped: 0, failed: 0, lag_ms: 0 }),
+          close: async () => undefined,
+        }) as never,
+      ),
+    /invalid worker telemetry sink/,
+  );
+});
+
+test("telemetry health helper snapshots exact counters and emits bounded deltas", () => {
+  const metrics: unknown[] = [];
+  let snapshot: Readonly<{
+    ready: boolean;
+    queued: number;
+    exported: number;
+    dropped: number;
+    failed: number;
+    lag_ms: number;
+  }> = Object.freeze({ ready: true, queued: 2, exported: 4, dropped: 3, failed: 1, lag_ms: 9 });
+  const sink = Object.freeze({
+    get ready() {
+      return true;
+    },
+    span: () => true,
+    metric: (input: unknown) => {
+      metrics.push(input);
+      return true;
+    },
+    snapshot: () => snapshot,
+    close: async () => undefined,
+  });
+  const cursor = new TelemetryHealthCursor();
+  emitTelemetryHealth(sink, cursor);
+  snapshot = Object.freeze({ ready: true, queued: 1, exported: 9, dropped: 5, failed: 4, lag_ms: 7 });
+  emitTelemetryHealth(sink, cursor);
+  const values = metrics.map((item) => (item as { name: string; attributes: { value: number } }).attributes.value);
+  assert.deepEqual(values, [2, 9, 3, 1, 1, 7, 2, 3]);
+  (cursor as unknown as { snapshot?: unknown }).snapshot = Object.freeze({ dropped: 999, failed: 999 });
+  snapshot = Object.freeze({ ready: true, queued: 0, exported: 10, dropped: 6, failed: 5, lag_ms: 0 });
+  emitTelemetryHealth(sink, cursor);
+  assert.deepEqual(
+    metrics.slice(-4).map((item) => (item as { attributes: { value: number } }).attributes.value),
+    [0, 0, 1, 1],
+  );
+
+  let getterInvoked = false;
+  snapshot = Object.freeze(
+    Object.defineProperty({ ready: true, queued: 0, exported: 0, dropped: 0, failed: 0 }, "lag_ms", {
+      enumerable: true,
+      get: () => {
+        getterInvoked = true;
+        return 0;
+      },
+    }),
+  ) as never;
+  emitTelemetryHealth(sink, cursor);
+  assert.equal(getterInvoked, false);
+  assert.equal(metrics.length, 12);
+  emitTelemetryHealth(
+    Object.freeze({
+      ...sink,
+      metric: () => {
+        throw new Error("telemetry");
+      },
+    }),
+    cursor,
+  );
+});
 
 test("worker telemetry disabled default is zero I/O and closes immediately", async () => {
   const sink = createCogsWorkerTelemetrySink();

@@ -4,6 +4,13 @@ import { open } from "node:fs/promises";
 import type { ClientChannel, SFTPWrapper } from "ssh2";
 import ssh2, { type ConnectConfig } from "ssh2";
 import type { LaunchConfig } from "../launch/config.ts";
+import {
+  type CogsTelemetry,
+  captureTelemetry,
+  emitSpan,
+  telemetryDuration,
+  telemetryStart,
+} from "../telemetry/instrumentation.ts";
 
 const { Client, utils } = ssh2;
 
@@ -127,6 +134,7 @@ export interface SshConnectionManagerOptions {
   readonly config: SshConnectionConfig;
   readonly transport?: SshTransport;
   readonly onLost?: (reason: string) => void;
+  readonly telemetry?: CogsTelemetry;
 }
 
 const DEFAULT_CONNECT_TIMEOUT_MS = 5000;
@@ -162,6 +170,7 @@ export class SshConnectionManager {
   readonly #config: Required<SshConnectionConfig>;
   readonly #transport: SshTransport;
   readonly #onLost: ((reason: string) => void) | undefined;
+  readonly #telemetry: CogsTelemetry;
   #phase: Phase = "created";
   #connection: SshTransportConnection | undefined;
   #privateKey: Buffer | undefined;
@@ -175,6 +184,7 @@ export class SshConnectionManager {
     this.#config = validateConfig(options.config);
     this.#transport = options.transport ?? new Ssh2Transport();
     this.#onLost = options.onLost;
+    this.#telemetry = captureTelemetry(options.telemetry);
   }
 
   public get ready(): boolean {
@@ -182,6 +192,7 @@ export class SshConnectionManager {
   }
 
   public async start(signal?: AbortSignal): Promise<void> {
+    const start = telemetryStart();
     if (this.#phase !== "created") throw new SshConnectionError("ssh manager can start only once");
     this.#phase = "starting";
     let connection: SshTransportConnection | undefined;
@@ -228,6 +239,11 @@ export class SshConnectionManager {
       connection.on("close", this.#boundLost);
       connection.on("error", this.#boundLost);
       this.#phase = "ready";
+      emitSpan(this.#telemetry, "ssh.connect", {
+        operation: "connect",
+        outcome: "ok",
+        duration_ms: telemetryDuration(undefined, start),
+      });
     } catch (error) {
       try {
         connection?.destroy();
@@ -237,6 +253,11 @@ export class SshConnectionManager {
       this.#phase = "failed";
       this.#clearKey();
       await this.shutdown().catch(() => undefined);
+      emitSpan(this.#telemetry, "ssh.connect", {
+        operation: "connect",
+        outcome: "error",
+        duration_ms: telemetryDuration(undefined, start),
+      });
       throw redactError(error, "ssh start failed");
     }
   }
@@ -247,13 +268,31 @@ export class SshConnectionManager {
       | undefined,
     operation: (port: CogsSftpPort, signal: AbortSignal) => Promise<T>,
   ): Promise<T> {
-    const lease = await this.acquire("sftp", input?.signal === undefined ? {} : { signal: input.signal });
+    const start = telemetryStart();
+    let lease: SshPermitLease;
+    try {
+      lease = await this.acquire("sftp", input?.signal === undefined ? {} : { signal: input.signal });
+    } catch (error) {
+      const outcome = input?.signal?.aborted === true ? "cancelled" : "error";
+      emitSpan(this.#telemetry, "ssh.channel", {
+        operation: "channel",
+        outcome,
+        duration_ms: telemetryDuration(undefined, start),
+      });
+      emitSpan(this.#telemetry, "sftp.operation", {
+        operation: "channel",
+        outcome,
+        duration_ms: telemetryDuration(undefined, start),
+      });
+      throw error;
+    }
     const controller = linkedSignal(input?.signal);
     let channel: SshSftpChannel | undefined;
     let opened = false;
     let result: T | undefined;
     let operationError: unknown;
     let operationFailed = false;
+    let timedOut = false;
     try {
       const connection = this.#connection;
       if (this.#phase !== "ready" || connection === undefined) throw new SshConnectionError("ssh connection is closed");
@@ -261,7 +300,10 @@ export class SshConnectionManager {
         connection.openSftp(controller.signal),
         input?.openTimeoutMs ?? this.#config.sftpOpenTimeoutMs,
         "ssh sftp open timed out",
-        () => controller.abort(),
+        () => {
+          timedOut = true;
+          controller.abort();
+        },
         (late) => late.destroy(),
         controller.signal,
       );
@@ -272,6 +314,7 @@ export class SshConnectionManager {
         input?.operationTimeoutMs ?? this.#config.shutdownTimeoutMs,
         "ssh sftp operation timed out",
         () => {
+          timedOut = true;
           controller.abort();
           channel?.destroy();
         },
@@ -296,7 +339,10 @@ export class SshConnectionManager {
           closingChannel.close(),
           input?.closeTimeoutMs ?? this.#config.shutdownTimeoutMs,
           "ssh sftp close timed out",
-          () => closingChannel.destroy(),
+          () => {
+            timedOut = true;
+            closingChannel.destroy();
+          },
         );
       }
     } catch {
@@ -313,10 +359,48 @@ export class SshConnectionManager {
 
     if (closeFailed) this.#failClosed("sftp-close-failed");
     if (operationFailed) {
-      if (opened && isErrorInstance(operationError) && !isSshConnectionError(operationError)) throw operationError;
+      const outcome = timedOut ? "timeout" : input?.signal?.aborted === true ? "cancelled" : "error";
+      emitSpan(this.#telemetry, "ssh.channel", {
+        operation: "channel",
+        outcome,
+        duration_ms: telemetryDuration(undefined, start),
+        timed_out: timedOut,
+      });
+      emitSpan(this.#telemetry, "sftp.operation", {
+        operation: "channel",
+        outcome,
+        duration_ms: telemetryDuration(undefined, start),
+        timed_out: timedOut,
+      });
+      if (opened && !timedOut && isErrorInstance(operationError) && !isSshConnectionError(operationError))
+        throw operationError;
       throw redactError(operationError, "ssh sftp operation failed");
     }
-    if (closeFailed) throw new SshConnectionError("ssh sftp operation failed");
+    if (closeFailed) {
+      emitSpan(this.#telemetry, "ssh.channel", {
+        operation: "channel",
+        outcome: timedOut ? "timeout" : "error",
+        duration_ms: telemetryDuration(undefined, start),
+        timed_out: timedOut,
+      });
+      emitSpan(this.#telemetry, "sftp.operation", {
+        operation: "channel",
+        outcome: timedOut ? "timeout" : "error",
+        duration_ms: telemetryDuration(undefined, start),
+        timed_out: timedOut,
+      });
+      throw new SshConnectionError("ssh sftp operation failed");
+    }
+    emitSpan(this.#telemetry, "ssh.channel", {
+      operation: "channel",
+      outcome: "ok",
+      duration_ms: telemetryDuration(undefined, start),
+    });
+    emitSpan(this.#telemetry, "sftp.operation", {
+      operation: "channel",
+      outcome: "ok",
+      duration_ms: telemetryDuration(undefined, start),
+    });
     return result as T;
   }
 
@@ -330,7 +414,18 @@ export class SshConnectionManager {
     },
     operation: (port: CogsExecPort) => Promise<T>,
   ): Promise<T> {
-    const lease = await this.acquire("exec", input.signal === undefined ? {} : { signal: input.signal });
+    const start = telemetryStart();
+    let lease: SshPermitLease;
+    try {
+      lease = await this.acquire("exec", input.signal === undefined ? {} : { signal: input.signal });
+    } catch (error) {
+      emitSpan(this.#telemetry, "ssh.channel", {
+        operation: "channel",
+        outcome: input.signal?.aborted === true ? "cancelled" : "error",
+        duration_ms: telemetryDuration(undefined, start),
+      });
+      throw error;
+    }
     const openSignal = linkedSignal(input.signal);
     let channel: SshExecChannel | undefined;
     let opened = false;
@@ -399,11 +494,28 @@ export class SshConnectionManager {
     if (!operationFailed && terminalSignal) this.#failClosed("exec-ended-by-signal");
     if (closeFailed) this.#failClosed("exec-close-failed");
     if (operationFailed) {
+      emitSpan(this.#telemetry, "ssh.channel", {
+        operation: "channel",
+        outcome: "error",
+        duration_ms: telemetryDuration(undefined, start),
+      });
       if (opened) this.#failClosed("exec-operation-failed");
       if (opened && isErrorInstance(operationError) && !isSshConnectionError(operationError)) throw operationError;
       throw redactError(operationError, "ssh exec operation failed");
     }
-    if (closeFailed) throw new SshConnectionError("ssh exec operation failed");
+    if (closeFailed) {
+      emitSpan(this.#telemetry, "ssh.channel", {
+        operation: "channel",
+        outcome: "error",
+        duration_ms: telemetryDuration(undefined, start),
+      });
+      throw new SshConnectionError("ssh exec operation failed");
+    }
+    emitSpan(this.#telemetry, "ssh.channel", {
+      operation: "channel",
+      outcome: "ok",
+      duration_ms: telemetryDuration(undefined, start),
+    });
     return result as T;
   }
 
@@ -514,6 +626,7 @@ export class SshConnectionManager {
     if (this.#lost) return;
     this.#lost = true;
     this.#phase = "failed";
+    emitSpan(this.#telemetry, "dependency.lost", { dependency: "ssh", outcome: "error" });
     try {
       this.#onLost?.(reason);
     } catch {
@@ -533,6 +646,7 @@ export function createSshLaunchDependency(input: {
   readonly username: string;
   readonly transport?: SshTransport;
   readonly onLost?: (reason: string) => void;
+  readonly telemetry?: CogsTelemetry;
 }): LaunchDependency & { readonly manager: SshConnectionManager } {
   const manager = new SshConnectionManager({
     config: {
@@ -543,6 +657,7 @@ export function createSshLaunchDependency(input: {
     },
     ...(input.transport === undefined ? {} : { transport: input.transport }),
     ...(input.onLost === undefined ? {} : { onLost: input.onLost }),
+    telemetry: input.telemetry,
   });
   return {
     name: "ssh",

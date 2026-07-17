@@ -3405,3 +3405,453 @@ test("authenticated Pi session respects abort before resolution and unknown mode
     await rm(root, { recursive: true, force: true });
   }
 });
+
+function recordingTelemetry() {
+  const spans: unknown[] = [];
+  const metrics: unknown[] = [];
+  const sink = Object.freeze({
+    get ready() {
+      return true;
+    },
+    span: (input: unknown) => {
+      spans.push(input);
+      return true;
+    },
+    metric: (input: unknown) => {
+      metrics.push(input);
+      return true;
+    },
+    snapshot: () => Object.freeze({ ready: true, queued: 0, exported: 0, dropped: 0, failed: 0, lag_ms: 0 }),
+    close: async () => undefined,
+  });
+  return { sink, spans, metrics };
+}
+
+function telemetryByName(items: unknown[], name: string): Array<{ attributes?: Record<string, unknown> }> {
+  return items.filter(
+    (item): item is { attributes?: Record<string, unknown> } =>
+      typeof item === "object" && item !== null && (item as { name?: unknown }).name === name,
+  );
+}
+
+function metricValues(metrics: unknown[], name: string): number[] {
+  return telemetryByName(metrics, name)
+    .map((item) => item.attributes?.value)
+    .filter((value): value is number => typeof value === "number");
+}
+
+function throwingTelemetry() {
+  return Object.freeze({
+    get ready() {
+      return true;
+    },
+    span: () => {
+      throw new Error("SECRET_TELEMETRY");
+    },
+    metric: () => {
+      throw new Error("SECRET_TELEMETRY");
+    },
+    snapshot: () => Object.freeze({ ready: true, queued: 0, exported: 0, dropped: 0, failed: 0, lag_ms: 0 }),
+    close: async () => undefined,
+  });
+}
+
+test("Pi telemetry instruments real tool dispatches and excludes sentinels", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "cogs-pi-telemetry-"));
+  const cwd = resolve(root, "cwd");
+  const agentDir = resolve(root, "agent");
+  const sessionRoot = resolve(root, "sessions");
+  const telemetry = recordingTelemetry();
+  const secret = "sk-test-telemetry-secret";
+  const calls: string[] = [];
+  try {
+    await mkdir(cwd, { recursive: true });
+    await mkdir(agentDir, { recursive: true });
+    const adapter = await createCogsPiSession(
+      withDefaults({
+        cwd,
+        agentDir,
+        sessionRoot,
+        sessionId: "telemetry-tools",
+        model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+        apiKey: secret,
+        toolPorts: fakePorts(calls, { ok: true, truncated: true, timedOut: true, stdoutTruncated: true }),
+        streamFn: allToolsStream(),
+        telemetry: telemetry.sink,
+      }),
+    );
+    await adapter.input({
+      requestId: "request-secret",
+      correlationId: "correlation-secret",
+      kind: "prompt",
+      content:
+        "PROMPT_SECRET COMMAND_SECRET PATH_SECRET OUTPUT_SECRET QUERY_SECRET ACCOUNT_SECRET MODEL_SECRET PROVIDER_SECRET",
+    });
+    await eventually(async () => assert.equal((await adapter.state()).runState, "settled"));
+    const text = JSON.stringify([...telemetry.spans, ...telemetry.metrics]);
+    const enableTools = telemetryByName(telemetry.spans, "tool.enable").map((span) => span.attributes?.tool);
+    assert.deepEqual(enableTools, ["read", "write", "edit", "bash"]);
+    const dispatchTools = telemetryByName(telemetry.spans, "tool.dispatch").map((span) => [
+      span.attributes?.tool,
+      span.attributes?.outcome,
+    ]);
+    assert.deepEqual(dispatchTools, [
+      ["read", "ok"],
+      ["write", "ok"],
+      ["edit", "ok"],
+      ["bash", "timeout"],
+    ]);
+    assert.equal(metricValues(telemetry.metrics, "tool.count").length, 4);
+    assert.equal(metricValues(telemetry.metrics, "tool.timeouts").length, 1);
+    assert.equal(metricValues(telemetry.metrics, "tool.truncated").length, 4);
+    assert.equal(
+      /PROMPT_SECRET|COMMAND_SECRET|PATH_SECRET|OUTPUT_SECRET|QUERY_SECRET|ACCOUNT_SECRET|MODEL_SECRET|PROVIDER_SECRET|\/workspace|request-secret|correlation-secret|claude-sonnet|sk-test/.test(
+        text,
+      ),
+      false,
+    );
+    await adapter.dispose();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Pi telemetry handles policy denial, throwing sink, model events and usage deltas", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "cogs-pi-telemetry-deny-"));
+  const cwd = resolve(root, "cwd");
+  const agentDir = resolve(root, "agent");
+  const sessionRoot = resolve(root, "sessions");
+  const telemetry = recordingTelemetry();
+  const beforeStats = { tokens: { input: 0, output: 0, cache: 5, cacheRead: 99, cacheWrite: 99 }, cost: { total: 0 } };
+  const afterStats = {
+    tokens: { input: 10, output: 4, cache: 7, cacheRead: 1000, cacheWrite: 1000 },
+    cost: { total: 0.000123 },
+  };
+  const secondStats = {
+    tokens: { input: 13, output: 9, cacheRead: 2, cacheWrite: 8 },
+    cost: { total: 0.0002 },
+  };
+  const resetStats = { tokens: { input: 1, output: Number.NaN, cache: 0 }, cost: { total: Number.NaN } };
+  const hugeStats = { tokens: { input: 1_000, output: 1_000, cache: 1_000 }, cost: { total: 0.01 } };
+  const hugeDeltaStats = { tokens: { input: 86_401_001, output: 1_001, cache: 1_001 }, cost: { total: 0.010001 } };
+  let turnCalls = 0;
+  let currentBefore = beforeStats as unknown;
+  let currentAfter = afterStats as unknown;
+  try {
+    await mkdir(cwd, { recursive: true });
+    await mkdir(agentDir, { recursive: true });
+    const adapter = await createCogsPiSession(
+      withDefaults({
+        cwd,
+        agentDir,
+        sessionRoot,
+        sessionId: "telemetry-usage",
+        model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+        apiKey: "sk-test-usage-secret",
+        toolPorts: fakePorts([]),
+        streamFn: oneTextStream("ok"),
+        telemetry: telemetry.sink,
+      }),
+    );
+    (adapter as unknown as { session: { getSessionStats: () => unknown } }).session.getSessionStats = () =>
+      turnCalls++ === 0 ? currentBefore : currentAfter;
+    const session = internalSession(adapter);
+    for (const reason of ["toolUse", "stop", "length"] as const) {
+      session._emit({ type: "message_start", message: { role: "assistant", content: "SECRET_SOURCE" } });
+      session._emit({
+        type: "message_end",
+        message: { role: "assistant", stopReason: reason, content: "SECRET_OUTPUT" },
+      });
+    }
+    session._emit({ type: "message_start", message: { role: "assistant" } });
+    session._emit({ type: "message_end", message: { role: "assistant", stopReason: "aborted" } });
+    session._emit({ type: "message_start", message: { role: "assistant" } });
+    session._emit({ type: "message_end", message: { role: "assistant", stopReason: "error" } });
+    session._emit({ type: "message_start", message: { role: "assistant" } });
+    session._emit({ type: "message_end", message: { role: "assistant" } });
+    let getterInvoked = false;
+    let contentGetterInvoked = false;
+    const hostileContentMessage = Object.freeze(
+      Object.defineProperty({ role: "assistant", stopReason: "stop" }, "content", {
+        enumerable: true,
+        get: () => {
+          contentGetterInvoked = true;
+          return "SECRET_CONTENT";
+        },
+      }),
+    );
+    session._emit({ type: "message_start", message: hostileContentMessage });
+    session._emit({ type: "message_end", message: hostileContentMessage });
+    session._emit({
+      type: "message_start",
+      message: Object.defineProperty({}, "role", {
+        enumerable: true,
+        get: () => {
+          getterInvoked = true;
+          return "assistant";
+        },
+      }),
+    });
+    session._emit({
+      type: "message_end",
+      message: new Proxy(
+        { role: "assistant" },
+        {
+          getOwnPropertyDescriptor: () => {
+            throw new Error("trap");
+          },
+        },
+      ),
+    });
+    turnCalls = 0;
+    currentBefore = beforeStats;
+    currentAfter = afterStats;
+    await adapter.input({ requestId: "usage", correlationId: "usage-corr", kind: "prompt", content: "hello" });
+    await eventually(async () => assert.equal((await adapter.state()).runState, "settled"));
+    turnCalls = 0;
+    currentBefore = afterStats;
+    currentAfter = secondStats;
+    await adapter.input({ requestId: "usage2", correlationId: "usage-corr2", kind: "prompt", content: "hello again" });
+    await eventually(async () => assert.equal((await adapter.state()).runState, "settled"));
+    turnCalls = 0;
+    currentBefore = secondStats;
+    currentAfter = resetStats;
+    await adapter.input({ requestId: "usage3", correlationId: "usage-corr3", kind: "prompt", content: "reset" });
+    await eventually(async () => assert.equal((await adapter.state()).runState, "settled"));
+    turnCalls = 0;
+    currentBefore = resetStats;
+    currentAfter = hugeStats;
+    await adapter.input({ requestId: "usage4", correlationId: "usage-corr4", kind: "prompt", content: "baseline" });
+    await eventually(async () => assert.equal((await adapter.state()).runState, "settled"));
+    turnCalls = 0;
+    currentBefore = hugeStats;
+    currentAfter = hugeDeltaStats;
+    await adapter.input({ requestId: "usage5", correlationId: "usage-corr5", kind: "prompt", content: "delta" });
+    await eventually(async () => assert.equal((await adapter.state()).runState, "settled"));
+    const text = JSON.stringify([...telemetry.spans, ...telemetry.metrics]);
+    assert.deepEqual(
+      telemetryByName(telemetry.spans, "pi.model_call")
+        .map((span) => span.attributes?.outcome)
+        .slice(0, 5),
+      ["ok", "ok", "ok", "cancelled", "error"],
+    );
+    assert.equal(telemetryByName(telemetry.spans, "pi.model_call").map((span) => span.attributes?.outcome)[5], "error");
+    assert.equal(getterInvoked, false);
+    assert.equal(contentGetterInvoked, false);
+    assert.deepEqual(metricValues(telemetry.metrics, "token.input"), [10, 3, 86_400_001]);
+    assert.deepEqual(metricValues(telemetry.metrics, "token.output"), [4, 5, 1]);
+    assert.deepEqual(metricValues(telemetry.metrics, "token.cache"), [2, 3, 1]);
+    assert.deepEqual(metricValues(telemetry.metrics, "cost.microunits"), [123, 77, 1]);
+    assert.equal(text.includes("SECRET_SOURCE"), false);
+    assert.equal(text.includes("SECRET_OUTPUT"), false);
+    await adapter.dispose();
+    session._emit({ type: "message_start", message: { role: "assistant" } });
+    session._emit({ type: "message_end", message: { role: "assistant", stopReason: "stop" } });
+    assert.equal(telemetryByName(telemetry.spans, "pi.model_call").length, 12);
+
+    const throwing = await createCogsPiSession(
+      withDefaults({
+        cwd,
+        agentDir,
+        sessionRoot,
+        sessionId: "telemetry-throwing",
+        model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+        apiKey: "sk-test-throwing-secret",
+        toolPorts: fakePorts([]),
+        streamFn: oneTextStream("ok"),
+        telemetry: throwingTelemetry(),
+      }),
+    );
+    await throwing.input({ requestId: "throw", correlationId: "throw-corr", kind: "prompt", content: "ok" });
+    await eventually(async () => assert.equal((await throwing.state()).runState, "settled"));
+    await throwing.dispose();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Pi telemetry covers real tool policy denial, malformed paths, failed ports, aborts, and metadata accessors", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "cogs-pi-telemetry-negative-"));
+  const cwd = resolve(root, "cwd");
+  const agentDir = resolve(root, "agent");
+  const sessionRoot = resolve(root, "sessions");
+  try {
+    await mkdir(cwd, { recursive: true });
+    await mkdir(agentDir, { recursive: true });
+
+    const traversalTelemetry = recordingTelemetry();
+    const traversalCalls: string[] = [];
+    const traversal = await createCogsPiSession(
+      withDefaults({
+        cwd,
+        agentDir,
+        sessionRoot,
+        sessionId: "telemetry-traversal",
+        model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+        apiKey: "sk-test-negative-secret",
+        toolPorts: fakePorts(traversalCalls),
+        streamFn: oneToolStream("read", { path: "/workspace/../SECRET_PATH" }),
+        telemetry: traversalTelemetry.sink,
+      }),
+    );
+    await traversal.input({ requestId: "trav", correlationId: "trav-corr", kind: "prompt", content: "x" });
+    await eventually(async () => assert.equal((await traversal.state()).runState, "settled"));
+    assert.deepEqual(traversalCalls, []);
+    assert.equal(telemetryByName(traversalTelemetry.spans, "tool.dispatch").at(0)?.attributes?.outcome, "error");
+    assert.equal(JSON.stringify(traversalTelemetry.spans).includes("SECRET_PATH"), false);
+    await traversal.dispose();
+
+    const denialTelemetry = recordingTelemetry();
+    const denialCalls: string[] = [];
+    const denyDispatch = Object.freeze((input: unknown) => {
+      const allow = (input as { action?: unknown }).action !== "tool.dispatch";
+      return Object.freeze({
+        version: "cogs.policy-decision/v1alpha1" as const,
+        decision_id: `sha256:${"b".repeat(64)}` as const,
+        allow,
+        reason: allow ? ("allowed" as const) : ("unsupported_surface" as const),
+      });
+    });
+    const denied = await createCogsPiSession(
+      withDefaults({
+        cwd,
+        agentDir,
+        sessionRoot,
+        sessionId: "telemetry-denied-dispatch",
+        model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+        apiKey: "sk-test-negative-secret",
+        toolPorts: fakePorts(denialCalls),
+        streamFn: oneToolStream("read", { path: "/workspace/file.txt" }),
+        policyAuthorizer: denyDispatch,
+        telemetry: denialTelemetry.sink,
+      }),
+    );
+    await denied.input({ requestId: "deny", correlationId: "deny-corr", kind: "prompt", content: "x" });
+    await eventually(async () => assert.equal((await denied.state()).runState, "settled"));
+    assert.deepEqual(denialCalls, []);
+    assert.equal(telemetryByName(denialTelemetry.spans, "tool.dispatch").at(0)?.attributes?.outcome, "denied");
+    await denied.dispose();
+
+    const enableTelemetry = recordingTelemetry();
+    const denyEnable = Object.freeze((input: unknown) => {
+      const allow =
+        (input as { action?: unknown; resource?: unknown }).action !== "tool.enable" ||
+        (input as { resource?: unknown }).resource !== "edit";
+      return Object.freeze({
+        version: "cogs.policy-decision/v1alpha1" as const,
+        decision_id: `sha256:${"c".repeat(64)}` as const,
+        allow,
+        reason: allow ? ("allowed" as const) : ("unsupported_surface" as const),
+      });
+    });
+    await assert.rejects(
+      createCogsPiSession(
+        withDefaults({
+          cwd,
+          agentDir,
+          sessionRoot,
+          sessionId: "telemetry-denied-enable",
+          model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+          apiKey: "sk-test-negative-secret",
+          toolPorts: fakePorts([]),
+          policyAuthorizer: denyEnable,
+          telemetry: enableTelemetry.sink,
+        }),
+      ),
+    );
+    assert.deepEqual(
+      telemetryByName(enableTelemetry.spans, "tool.enable").map((span) => [
+        span.attributes?.tool,
+        span.attributes?.outcome,
+      ]),
+      [
+        ["read", "ok"],
+        ["write", "ok"],
+        ["edit", "denied"],
+      ],
+    );
+
+    let metadataGetter = false;
+    const result = Object.defineProperty({ ok: true }, "truncated", {
+      enumerable: false,
+      get: () => {
+        metadataGetter = true;
+        return true;
+      },
+    });
+    const accessorTelemetry = recordingTelemetry();
+    const accessor = await createCogsPiSession(
+      withDefaults({
+        cwd,
+        agentDir,
+        sessionRoot,
+        sessionId: "telemetry-accessor-metadata",
+        model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+        apiKey: "sk-test-negative-secret",
+        toolPorts: fakePorts([], result),
+        streamFn: oneToolStream("read", { path: "/workspace/file.txt" }),
+        telemetry: accessorTelemetry.sink,
+      }),
+    );
+    await accessor.input({ requestId: "accessor", correlationId: "accessor-corr", kind: "prompt", content: "x" });
+    await eventually(async () => assert.equal((await accessor.state()).runState, "settled"));
+    assert.equal(metadataGetter, false);
+    assert.equal(JSON.stringify(accessorTelemetry.metrics).includes("tool.truncated"), false);
+    await accessor.dispose();
+
+    const failedTelemetry = recordingTelemetry();
+    const failed = await createCogsPiSession(
+      withDefaults({
+        cwd,
+        agentDir,
+        sessionRoot,
+        sessionId: "telemetry-failed-port",
+        model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+        apiKey: "sk-test-negative-secret",
+        toolPorts: {
+          ...fakePorts([]),
+          read: async () => {
+            throw new Error("SECRET_PORT_FAILURE");
+          },
+        },
+        streamFn: oneToolStream("read", { path: "/workspace/file.txt" }),
+        telemetry: failedTelemetry.sink,
+      }),
+    );
+    await failed.input({ requestId: "failed", correlationId: "failed-corr", kind: "prompt", content: "x" });
+    await eventually(async () => assert.equal((await failed.state()).runState, "settled"));
+    assert.equal(telemetryByName(failedTelemetry.spans, "tool.dispatch").at(0)?.attributes?.outcome, "error");
+    assert.equal(JSON.stringify(failedTelemetry.spans).includes("SECRET_PORT_FAILURE"), false);
+    await failed.dispose();
+
+    const cancelledTelemetry = recordingTelemetry();
+    const cancelled = await createCogsPiSession(
+      withDefaults({
+        cwd,
+        agentDir,
+        sessionRoot,
+        sessionId: "telemetry-cancelled-port",
+        model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+        apiKey: "sk-test-negative-secret",
+        toolPorts: {
+          ...fakePorts([]),
+          read: async (input) => {
+            await new Promise((_resolve, reject) =>
+              input.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true }),
+            );
+            return { ok: true };
+          },
+        },
+        streamFn: oneToolStream("read", { path: "/workspace/file.txt" }),
+        telemetry: cancelledTelemetry.sink,
+        operationTimeoutMs: 10,
+      }),
+    );
+    await cancelled.input({ requestId: "cancel", correlationId: "cancel-corr", kind: "prompt", content: "x" });
+    await eventually(async () => assert.notEqual((await cancelled.state()).runState, "running"));
+    assert.equal(telemetryByName(cancelledTelemetry.spans, "tool.dispatch").at(0)?.attributes?.outcome, "cancelled");
+    await cancelled.dispose().catch(() => undefined);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
