@@ -19,7 +19,7 @@ import { Type } from "typebox";
 import type { ApiEvent, ExportPort, HistoryPort, InputKind, JsonValue, RunState, SessionPort } from "../api/server.ts";
 import { type ModelApiKeySource, ModelCredentialResolver, validateModelApiKey } from "../auth/model-auth.ts";
 import { validateLaunchConfig } from "../launch/config.ts";
-import { type CogsPolicyAuthorizer, requireCogsPolicyAllow } from "../policy/require-policy.ts";
+import { type CogsPolicyAuthorizer, CogsPolicyDeniedError, requireCogsPolicyAllow } from "../policy/require-policy.ts";
 import {
   type CogsGitCheckpointConfig,
   type CogsGitCheckpointer,
@@ -53,6 +53,17 @@ import type {
   CogsSkillPreparerPort,
 } from "../skills/session-preparer.ts";
 import type { SshConnectionManager } from "../ssh/connection.ts";
+import {
+  byteBucket,
+  type CogsTelemetry,
+  captureTelemetry,
+  emitMetric,
+  emitSpan,
+  emitTelemetryHealth,
+  TelemetryHealthCursor,
+  telemetryDuration,
+  telemetryStart,
+} from "../telemetry/instrumentation.ts";
 
 export const COGS_PI_TOOL_NAMES = ["read", "write", "edit", "bash"] as const;
 export type CogsPiToolName = (typeof COGS_PI_TOOL_NAMES)[number];
@@ -92,6 +103,7 @@ export interface CogsPiSessionOptions {
   readonly preparedResources?: CogsPreparedSkills;
   readonly git?: CogsPiGitOptions;
   readonly policyAuthorizer?: CogsPolicyAuthorizer;
+  readonly telemetry?: CogsTelemetry;
 }
 
 export interface CogsPiGitOptions {
@@ -154,6 +166,7 @@ const SENSITIVE_FIELD = /^(api[-_]?key|authorization|credential|secret|token|ref
 function validateOptions(options: CogsPiSessionOptions): void {
   validateOptionalInteger(options.operationTimeoutMs, "operationTimeoutMs", 1, 3_600_000);
   if (options.policyAuthorizer !== undefined) validatePolicyAuthorizer(options.policyAuthorizer);
+  captureTelemetry(options.telemetry);
   validateOptionalInteger(options.abortTimeoutMs, "abortTimeoutMs", 1, 60_000);
   validateOptionalInteger(options.maxToolResultBytes, "maxToolResultBytes", 128, 1024 * 1024);
 }
@@ -448,6 +461,7 @@ export async function createCogsPiSession(options: CogsPiSessionOptions): Promis
   const apiKey = options.apiKey;
   const policyAuthorizer = options.policyAuthorizer;
   const rawPreparedResources = options.preparedResources;
+  const telemetry = captureTelemetry(options.telemetry);
 
   validateModelApiKey(apiKey);
   const gitOptions = validateGitOptions(options.git);
@@ -519,6 +533,7 @@ export async function createCogsPiSession(options: CogsPiSessionOptions): Promis
             observer: gitObserver,
             checkpointer: gitCheckpointer,
             checkpointTimeoutMs: gitOptions.checkpoint?.timeoutMs ?? 2500,
+            telemetry,
             emit: (kind, correlationId, requestId, payload) =>
               adapterRef.current?.publishGit(kind, correlationId, requestId, payload),
             notes: gitOptions.enableNotes !== false,
@@ -526,17 +541,23 @@ export async function createCogsPiSession(options: CogsPiSessionOptions): Promis
     startupGitBinding = gitBinding;
     const toolHooks = gitBinding?.toolHooks();
     for (const tool of COGS_PI_TOOL_NAMES) {
-      requireCogsPolicyAllow(
-        {
-          version: "cogs.policy/v1alpha1",
-          action: "tool.enable",
-          user: userId,
-          session: sessionId,
-          resource: tool,
-          attributes: { tool },
-        },
-        policyAuthorizer,
-      );
+      try {
+        requireCogsPolicyAllow(
+          {
+            version: "cogs.policy/v1alpha1",
+            action: "tool.enable",
+            user: userId,
+            session: sessionId,
+            resource: tool,
+            attributes: { tool },
+          },
+          policyAuthorizer,
+        );
+        emitSpan(telemetry, "tool.enable", { tool, outcome: "ok" });
+      } catch (error) {
+        emitSpan(telemetry, "tool.enable", { tool, outcome: "denied" });
+        throw error;
+      }
     }
 
     const sessionResult = await createAgentSession({
@@ -558,6 +579,7 @@ export async function createCogsPiSession(options: CogsPiSessionOptions): Promis
       customTools: createCogsTools(toolPorts, maxToolResultBytes, secret, toolHooks, {
         userId,
         sessionId,
+        telemetry,
         ...(policyAuthorizer === undefined ? {} : { authorizer: policyAuthorizer }),
       }),
       tools: [...COGS_PI_TOOL_NAMES],
@@ -590,6 +612,7 @@ export async function createCogsPiSession(options: CogsPiSessionOptions): Promis
       gitBinding,
       localExporter,
       policyAuthorizer,
+      telemetry,
     });
     adapterRef.current = adapter;
     return adapter;
@@ -882,6 +905,7 @@ class CogsGitBoundary {
       readonly observer: CogsGitObserver;
       readonly checkpointer: CogsGitCheckpointer | undefined;
       readonly checkpointTimeoutMs: number;
+      readonly telemetry: CogsTelemetry;
       readonly emit: GitEmit;
       readonly notes: boolean;
     },
@@ -1161,6 +1185,7 @@ class CogsGitBoundary {
     };
     let checkpoint: CogsGitCheckpointResult | null;
     const controller = new AbortController();
+    const start = telemetryStart();
     try {
       checkpoint = await observerDeadline(
         Promise.resolve().then(
@@ -1172,6 +1197,8 @@ class CogsGitBoundary {
       if (checkpoint !== null) checkpoint = snapshotCheckpointResult(checkpoint, input);
     } catch {
       controller.abort();
+      emitSpan(this.options.telemetry, "checkpoint.failure", { operation: "checkpoint", outcome: "error" });
+      emitMetric(this.options.telemetry, "checkpoint.failures", 1);
       this.warn(correlationId, requestId, "git-checkpoint-unavailable", "settle");
       return;
     }
@@ -1183,6 +1210,12 @@ class CogsGitBoundary {
       this.warn(correlationId, requestId, "git-checkpoint-map-unavailable", "settle");
       return;
     }
+    emitSpan(this.options.telemetry, "checkpoint.create", {
+      operation: "checkpoint",
+      outcome: "ok",
+      duration_ms: telemetryDuration(undefined, start),
+    });
+    emitMetric(this.options.telemetry, "checkpoint.count", 1);
     this.options.emit("checkpoint", correlationId, requestId, checkpointEvent(checkpoint));
     if (this.options.notes) {
       let ok = false;
@@ -1225,15 +1258,25 @@ class CogsGitBoundary {
   }
 
   private async safeObserve(signal?: AbortSignal): Promise<CogsGitObservation> {
+    const start = telemetryStart();
     try {
       const observation = await observerDeadline(
         this.options.observer.observeHead(signal === undefined ? {} : { signal }),
         2500,
       );
-      return observation.kind === "observed" && observation.repo === this.options.repositoryId
-        ? observation
-        : Object.freeze({ kind: "unavailable" as const });
+      const ok = observation.kind === "observed" && observation.repo === this.options.repositoryId;
+      emitSpan(this.options.telemetry, "git.observe", {
+        operation: "observe",
+        outcome: ok ? "ok" : "error",
+        duration_ms: telemetryDuration(undefined, start),
+      });
+      return ok ? observation : Object.freeze({ kind: "unavailable" as const });
     } catch {
+      emitSpan(this.options.telemetry, "git.observe", {
+        operation: "observe",
+        outcome: "error",
+        duration_ms: telemetryDuration(undefined, start),
+      });
       return Object.freeze({ kind: "unavailable" as const });
     }
   }
@@ -1426,6 +1469,42 @@ function safeInteger(value: unknown, min: number, max: number): boolean {
   return Number.isSafeInteger(value) && (value as number) >= min && (value as number) <= max;
 }
 
+function statInt(value: unknown): number | undefined {
+  if (value === undefined) return 0;
+  return Number.isSafeInteger(value) && (value as number) >= 0 ? (value as number) : undefined;
+}
+
+function statCache(tokens: Record<string, unknown> | undefined): number | undefined {
+  if (tokens === undefined) return 0;
+  if (tokens.cache !== undefined) return validStat(tokens.cache) ? (tokens.cache as number) : undefined;
+  if (tokens.cached !== undefined) return validStat(tokens.cached) ? (tokens.cached as number) : undefined;
+  const read = statInt(tokens.cacheRead);
+  const write = statInt(tokens.cacheWrite);
+  if (read === undefined || write === undefined || Number.MAX_SAFE_INTEGER - read < write) return undefined;
+  return read + write;
+}
+
+function validStat(value: unknown): boolean {
+  return Number.isSafeInteger(value) && (value as number) >= 0;
+}
+
+function statCostMicros(value: unknown): number | undefined {
+  const total = value !== null && typeof value === "object" ? (value as { total?: unknown }).total : value;
+  if (total === undefined) return 0;
+  if (typeof total === "number" && Number.isFinite(total) && total >= 0) {
+    const micros = total * 1_000_000;
+    if (!Number.isSafeInteger(Math.trunc(micros)) || micros > Number.MAX_SAFE_INTEGER) return undefined;
+    return Math.trunc(micros);
+  }
+  return undefined;
+}
+
+function emitDelta(sink: CogsTelemetry, name: string, after: number, before: number): void {
+  if (!Number.isSafeInteger(after) || !Number.isSafeInteger(before) || after < before) return;
+  const value = after - before;
+  if (value > 0) emitMetric(sink, name, value);
+}
+
 function latestEntry(sessionManager: SessionManager): { id?: unknown; message?: unknown; type?: unknown } | undefined {
   const entries = sessionManager.getEntries() as unknown[];
   return entries.at(-1) as { id?: unknown; message?: unknown; type?: unknown } | undefined;
@@ -1433,6 +1512,47 @@ function latestEntry(sessionManager: SessionManager): { id?: unknown; message?: 
 
 function plainObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function assistantMessage(value: unknown): boolean {
+  return snapshotAssistantMessage(value) !== undefined;
+}
+
+function modelOutcome(value: unknown): "ok" | "error" | "cancelled" {
+  const message = snapshotAssistantMessage(value);
+  if (message === undefined) return "error";
+  const reason = message.stopReason ?? message.stop_reason;
+  if (
+    reason === "stop" ||
+    reason === "end_turn" ||
+    reason === "toolUse" ||
+    reason === "tool_use" ||
+    reason === "length"
+  )
+    return "ok";
+  if (reason === "aborted") return "cancelled";
+  return "error";
+}
+
+function snapshotAssistantMessage(
+  value: unknown,
+): { role: unknown; stopReason?: unknown; stop_reason?: unknown } | undefined {
+  try {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
+    if (Object.getPrototypeOf(value) !== Object.prototype) return undefined;
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const data = (key: "role" | "stopReason" | "stop_reason"): unknown => {
+      const descriptor = descriptors[key];
+      if (descriptor === undefined) return undefined;
+      if (!("value" in descriptor) || descriptor.enumerable !== true) throw new Error("bad message");
+      return descriptor.value;
+    };
+    const role = data("role");
+    if (role !== "assistant") return undefined;
+    return Object.freeze({ role, stopReason: data("stopReason"), stop_reason: data("stop_reason") });
+  } catch {
+    return undefined;
+  }
 }
 
 function matchesLeaf(
@@ -1453,6 +1573,9 @@ class PiSessionAdapter implements CogsPiSessionPorts {
   private shutdownPreparePromise: Promise<JsonValue> | undefined;
   private shutdownPrepareAbort: { abort: () => void } | undefined;
   private fatalEmitted = false;
+  private usageBase: { input: number; output: number; cache: number; cost: number } | undefined;
+  private modelCallStartedAt: number | undefined;
+  private readonly telemetryHealth = new TelemetryHealthCursor();
   private readonly timeoutMs: number;
   private readonly abortTimeoutMs: number;
   private readonly unsubscribe: () => void;
@@ -1477,6 +1600,7 @@ class PiSessionAdapter implements CogsPiSessionPorts {
       readonly gitBinding: CogsGitBoundary | undefined;
       readonly localExporter: CogsLocalExporter;
       readonly policyAuthorizer: CogsPolicyAuthorizer | undefined;
+      readonly telemetry: CogsTelemetry;
     },
   ) {
     this.#authStorage = authStorage;
@@ -1655,10 +1779,27 @@ class PiSessionAdapter implements CogsPiSessionPorts {
     await throwIfAborted(input.signal);
     assertOpaqueId(input.requestId, "request id");
     assertOpaqueId(input.correlationId, "correlation id");
-    requireRawExportPolicy(this.runtime.userId, this.runtime.sessionId, this.runtime.policyAuthorizer);
-    return this.runtime.localExporter.createExport(
-      input.signal === undefined ? {} : { signal: input.signal },
-    ) as Promise<unknown> as Promise<JsonValue>;
+    const start = telemetryStart();
+    try {
+      requireRawExportPolicy(this.runtime.userId, this.runtime.sessionId, this.runtime.policyAuthorizer);
+      const descriptor = snapshotExportDescriptor(
+        await this.runtime.localExporter.createExport(input.signal === undefined ? {} : { signal: input.signal }),
+        this.runtime.sessionId,
+      );
+      const bytes = statInt(descriptor.total_bytes) ?? 0;
+      emitSpan(this.runtime.telemetry, "export.create", {
+        operation: "export",
+        outcome: "ok",
+        duration_ms: telemetryDuration(undefined, start),
+        bytes_bucket: byteBucket(bytes),
+      });
+      emitMetric(this.runtime.telemetry, "export.bytes", bytes, { bytes_bucket: byteBucket(bytes) });
+      return descriptor as unknown as JsonValue;
+    } catch (error) {
+      emitSpan(this.runtime.telemetry, "export.failure", { operation: "export", outcome: "error" });
+      emitMetric(this.runtime.telemetry, "export.failures", 1);
+      throw error;
+    }
   }
 
   public async dispose(): Promise<void> {
@@ -1717,12 +1858,22 @@ class PiSessionAdapter implements CogsPiSessionPorts {
     correlationId: string;
     signal?: AbortSignal;
   }): Promise<JsonValue> {
+    const start = telemetryStart();
+    let exportStarted = false;
+    emitSpan(this.runtime.telemetry, "shutdown.prepare", { operation: "prepare", state: "shutdown" });
     try {
       await throwIfAborted(input.signal);
+      const flushStart = telemetryStart();
       await this.runtime.historyStore.flushSettled(input.signal === undefined ? {} : { signal: input.signal });
+      emitSpan(this.runtime.telemetry, "pi.history.flush", {
+        operation: "flush",
+        outcome: "ok",
+        duration_ms: telemetryDuration(undefined, flushStart),
+      });
       await this.runtime.gitBinding?.shutdown(this.sessionManager, input.correlationId, input.requestId, input.signal);
       await throwIfAborted(input.signal);
       requireRawExportPolicy(this.runtime.userId, this.runtime.sessionId, this.runtime.policyAuthorizer);
+      exportStarted = true;
       const descriptor = snapshotExportDescriptor(
         await this.runtime.localExporter.createExport(input.signal === undefined ? {} : { signal: input.signal }),
         this.runtime.sessionId,
@@ -1743,15 +1894,28 @@ class PiSessionAdapter implements CogsPiSessionPorts {
         },
         { secrets: [this.runtime.secret.value] },
       ) as Record<string, JsonValue>;
+      emitSpan(this.runtime.telemetry, "shutdown.ready", {
+        operation: "prepare",
+        outcome: "ok",
+        duration_ms: telemetryDuration(undefined, start),
+      });
+      emitTelemetryHealth(this.runtime.telemetry, this.telemetryHealth);
       this.emitOrFail("shutdown_ready", input.correlationId, input.requestId, payload);
       this.phase = "shutdown";
       return Object.freeze(payload);
     } catch {
+      emitSpan(this.runtime.telemetry, "shutdown.ready", { operation: "prepare", outcome: "error" });
+      if (exportStarted) {
+        emitSpan(this.runtime.telemetry, "export.failure", { operation: "export", outcome: "error" });
+        emitMetric(this.runtime.telemetry, "export.failures", 1);
+      }
       throw new Error("shutdown preparation failed");
     }
   }
 
   private async runPrompt(active: ActiveRun, content: string): Promise<void> {
+    const runStart = telemetryStart();
+    this.usageBase = this.safeUsageBase();
     active.deadline = setTimeout(() => {
       void this.timeoutActive(active);
     }, this.timeoutMs);
@@ -1760,21 +1924,48 @@ class PiSessionAdapter implements CogsPiSessionPorts {
       await this.session.prompt(content, { expandPromptTemplates: false });
       if (active.suppressLate || this.phase === "aborting") return;
       try {
+        const flushStart = telemetryStart();
         await this.runtime.historyStore.flushSettled();
+        emitSpan(this.runtime.telemetry, "pi.history.flush", {
+          operation: "flush",
+          outcome: "ok",
+          duration_ms: telemetryDuration(undefined, flushStart),
+        });
       } catch {
+        emitSpan(this.runtime.telemetry, "pi.history.flush", { operation: "flush", outcome: "error" });
         await this.failClosed("history-flush-failed", active);
         return;
       }
       if (active.suppressLate) return;
       await this.runtime.gitBinding?.settleTurn(this.sessionManager, active.correlationId, active.requestId);
       if (active.suppressLate) return;
+      this.emitUsageDeltas();
+      emitTelemetryHealth(this.runtime.telemetry, this.telemetryHealth);
+      emitSpan(this.runtime.telemetry, "pi.run", {
+        operation: "run",
+        outcome: "ok",
+        duration_ms: telemetryDuration(undefined, runStart),
+      });
+      emitSpan(this.runtime.telemetry, "pi.turn", {
+        state: "settled",
+        outcome: "ok",
+        duration_ms: telemetryDuration(undefined, runStart),
+      });
       this.terminal(active, "run_settled", { state: "settled" });
     } catch (error) {
       if (active.terminal || active.suppressLate || this.phase === "aborting") return;
       if (isAbortLike(error)) {
+        emitSpan(this.runtime.telemetry, "pi.run", {
+          outcome: "cancelled",
+          duration_ms: telemetryDuration(undefined, runStart),
+        });
         this.terminal(active, "run_aborted", { reason: "cancelled" });
         return;
       }
+      emitSpan(this.runtime.telemetry, "pi.run", {
+        outcome: "error",
+        duration_ms: telemetryDuration(undefined, runStart),
+      });
       this.terminal(active, "error", { message: "pi operation failed" });
     }
   }
@@ -1886,6 +2077,8 @@ class PiSessionAdapter implements CogsPiSessionPorts {
     const correlation = active?.correlationId ?? "system";
     const request = active?.requestId;
     if (event.type === "agent_settled") return;
+    this.observeModelEvent(event);
+    emitSpan(this.runtime.telemetry, "pi.event", { outcome: "ok" });
     if (event.type === "message_end")
       this.runtime.gitBinding?.messageEnd(event, this.sessionManager, correlation, request);
     if (event.type === "tool_execution_start") {
@@ -1906,6 +2099,49 @@ class PiSessionAdapter implements CogsPiSessionPorts {
     return typeof usage === "object" && usage !== null && !Array.isArray(usage)
       ? (usage as Record<string, JsonValue>)
       : {};
+  }
+
+  private observeModelEvent(event: { type: string; [key: string]: unknown }): void {
+    if (this.phase === "disposed" || this.phase === "failed" || this.active?.suppressLate === true) return;
+    if (event.type === "message_start" && assistantMessage(event.message)) {
+      this.modelCallStartedAt = telemetryStart();
+      return;
+    }
+    if (event.type !== "message_end" || !assistantMessage(event.message)) return;
+    const started = this.modelCallStartedAt;
+    this.modelCallStartedAt = undefined;
+    if (started === undefined) return;
+    emitSpan(this.runtime.telemetry, "pi.model_call", {
+      operation: "run",
+      outcome: modelOutcome(event.message),
+      duration_ms: telemetryDuration(undefined, started),
+    });
+  }
+
+  private safeUsageBase(): { input: number; output: number; cache: number; cost: number } | undefined {
+    try {
+      const stats = this.session.getSessionStats() as { tokens?: unknown; cost?: unknown };
+      const tokens = stats.tokens as Record<string, unknown> | undefined;
+      const input = statInt(tokens?.input ?? tokens?.inputTokens);
+      const output = statInt(tokens?.output ?? tokens?.outputTokens);
+      const cache = statCache(tokens);
+      const cost = statCostMicros(stats.cost);
+      if (input === undefined || output === undefined || cache === undefined || cost === undefined) return undefined;
+      return { input, output, cache, cost };
+    } catch {
+      return undefined;
+    }
+  }
+
+  private emitUsageDeltas(): void {
+    const before = this.usageBase;
+    const after = this.safeUsageBase();
+    this.usageBase = after;
+    if (before === undefined || after === undefined) return;
+    emitDelta(this.runtime.telemetry, "token.input", after.input, before.input);
+    emitDelta(this.runtime.telemetry, "token.output", after.output, before.output);
+    emitDelta(this.runtime.telemetry, "token.cache", after.cache, before.cache);
+    emitDelta(this.runtime.telemetry, "cost.microunits", after.cost, before.cost);
   }
 
   private redactEvent(event: { type: string; [key: string]: unknown }): Record<string, JsonValue> {
@@ -2058,14 +2294,26 @@ function createCogsTools(
   maxResultBytes: number,
   secret: SecretHolder,
   hooks: CogsToolGitHooks | undefined,
-  policy: { readonly userId: string; readonly sessionId: string; readonly authorizer?: CogsPolicyAuthorizer },
+  policy: {
+    readonly userId: string;
+    readonly sessionId: string;
+    readonly authorizer?: CogsPolicyAuthorizer;
+    readonly telemetry: CogsTelemetry;
+  },
 ) {
   const result = async (
     name: CogsPiToolName,
     toolCallId: string,
     signal: AbortSignal | undefined,
     operation: () => Promise<JsonValue>,
+    pathClass?: "workspace" | "shared_skill" | "user_skill",
   ) => {
+    const start = telemetryStart();
+    const attrs =
+      pathClass === undefined
+        ? { tool: name, operation: "dispatch" as const }
+        : { tool: name, path_class: pathClass, operation: "dispatch" as const };
+    emitMetric(policy.telemetry, "tool.count", 1, { tool: name });
     try {
       let value: JsonValue;
       try {
@@ -2075,9 +2323,40 @@ function createCogsTools(
         throw error;
       }
       await hooks?.afterTool(toolCallId, signal).catch(() => undefined);
+      const meta = toolResultMetadata(name, value);
       const normalized = normalizeToolResult(value, maxResultBytes, secret.value);
+      const outcome = meta.timed_out ? "timeout" : meta.cancelled ? "cancelled" : meta.ok === false ? "error" : "ok";
+      const extra = { timed_out: meta.timed_out, cancelled: meta.cancelled, truncated: meta.truncated };
+      emitSpan(policy.telemetry, name === "bash" ? "bash.operation" : "sftp.operation", {
+        operation: name === "bash" ? "run" : name,
+        outcome,
+        duration_ms: telemetryDuration(undefined, start),
+        ...extra,
+      });
+      emitSpan(policy.telemetry, "tool.dispatch", {
+        ...attrs,
+        outcome,
+        duration_ms: telemetryDuration(undefined, start),
+        ...extra,
+      });
+      if (meta.timed_out) emitMetric(policy.telemetry, "tool.timeouts", 1, { tool: name });
+      if (meta.truncated) emitMetric(policy.telemetry, "tool.truncated", 1, { tool: name });
+      if (outcome === "error") emitMetric(policy.telemetry, "tool.errors", 1, { tool: name });
       return { content: [{ type: "text" as const, text: JSON.stringify(normalized) }], details: { cogsTool: name } };
-    } catch {
+    } catch (error) {
+      const outcome =
+        error instanceof CogsPolicyDeniedError ? "denied" : signal?.aborted === true ? "cancelled" : "error";
+      emitSpan(policy.telemetry, name === "bash" ? "bash.operation" : "sftp.operation", {
+        operation: name === "bash" ? "run" : name,
+        outcome,
+        duration_ms: telemetryDuration(undefined, start),
+      });
+      emitSpan(policy.telemetry, "tool.dispatch", {
+        ...attrs,
+        outcome,
+        duration_ms: telemetryDuration(undefined, start),
+      });
+      if (outcome === "error") emitMetric(policy.telemetry, "tool.errors", 1, { tool: name });
       throw new Error(`${name} tool failed`);
     }
   };
@@ -2095,10 +2374,20 @@ function createCogsTools(
         { additionalProperties: false },
       ),
       execute: async (id, params, signal) =>
-        result("read", id, signal, () => {
-          requireToolDispatchPolicy(policy, "read", classifyReadPath(params.path));
-          return ports.read(withSignal(params, signal));
-        }),
+        (() => {
+          const pathClass = safeReadPathClass(params.path);
+          return result(
+            "read",
+            id,
+            signal,
+            () => {
+              if (pathClass === undefined) throw new Error("read tool failed");
+              requireToolDispatchPolicy(policy, "read", pathClass);
+              return ports.read(withSignal(params, signal));
+            },
+            pathClass,
+          );
+        })(),
     }),
     defineTool({
       name: "write",
@@ -2109,10 +2398,20 @@ function createCogsTools(
         { additionalProperties: false },
       ),
       execute: async (id, params, signal) =>
-        result("write", id, signal, () => {
-          requireToolDispatchPolicy(policy, "write", classifyWorkspaceWritePath(params.path));
-          return ports.write(withSignal(params, signal));
-        }),
+        (() => {
+          const pathClass = safeWorkspacePathClass(params.path);
+          return result(
+            "write",
+            id,
+            signal,
+            () => {
+              if (pathClass === undefined) throw new Error("write tool failed");
+              requireToolDispatchPolicy(policy, "write", pathClass);
+              return ports.write(withSignal(params, signal));
+            },
+            pathClass,
+          );
+        })(),
     }),
     defineTool({
       name: "edit",
@@ -2127,10 +2426,20 @@ function createCogsTools(
         { additionalProperties: false },
       ),
       execute: async (id, params, signal) =>
-        result("edit", id, signal, () => {
-          requireToolDispatchPolicy(policy, "edit", classifyWorkspaceWritePath(params.path));
-          return ports.edit(withSignal(params, signal));
-        }),
+        (() => {
+          const pathClass = safeWorkspacePathClass(params.path);
+          return result(
+            "edit",
+            id,
+            signal,
+            () => {
+              if (pathClass === undefined) throw new Error("write tool failed");
+              requireToolDispatchPolicy(policy, "edit", pathClass);
+              return ports.edit(withSignal(params, signal));
+            },
+            pathClass,
+          );
+        })(),
     }),
     defineTool({
       name: "bash",
@@ -2154,6 +2463,38 @@ function createCogsTools(
         }),
     }),
   ];
+}
+
+function toolResultMetadata(
+  tool: CogsPiToolName,
+  value: unknown,
+): {
+  readonly ok: boolean | undefined;
+  readonly timed_out: boolean;
+  readonly cancelled: boolean;
+  readonly truncated: boolean;
+} {
+  try {
+    if (value === null || typeof value !== "object" || Array.isArray(value))
+      return Object.freeze({ ok: undefined, timed_out: false, cancelled: false, truncated: false });
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const data = (key: string): unknown => {
+      const descriptor = descriptors[key];
+      return descriptor !== undefined && descriptor.enumerable === true && "value" in descriptor
+        ? descriptor.value
+        : undefined;
+    };
+    const ok = typeof data("ok") === "boolean" ? (data("ok") as boolean) : undefined;
+    if (tool === "bash") {
+      const timedOut = data("timedOut") === true;
+      const cancelled = data("cancelled") === true;
+      const truncated = data("stdoutTruncated") === true || data("stderrTruncated") === true;
+      return Object.freeze({ ok, timed_out: timedOut, cancelled, truncated });
+    }
+    return Object.freeze({ ok, timed_out: false, cancelled: false, truncated: data("truncated") === true });
+  } catch {
+    return Object.freeze({ ok: undefined, timed_out: false, cancelled: false, truncated: false });
+  }
 }
 
 function requireRawExportPolicy(userId: string, sessionId: string, authorizer: CogsPolicyAuthorizer | undefined): void {
@@ -2201,9 +2542,25 @@ function classifyReadPath(path: string): "workspace" | "shared_skill" | "user_sk
   throw new Error("read tool failed");
 }
 
+function safeReadPathClass(path: string): "workspace" | "shared_skill" | "user_skill" | undefined {
+  try {
+    return classifyReadPath(path);
+  } catch {
+    return undefined;
+  }
+}
+
 function classifyWorkspaceWritePath(path: string): "workspace" {
   if (isGuestPathClass(path, "/workspace")) return "workspace";
   throw new Error("write tool failed");
+}
+
+function safeWorkspacePathClass(path: string): "workspace" | undefined {
+  try {
+    return classifyWorkspaceWritePath(path);
+  } catch {
+    return undefined;
+  }
 }
 
 function isGuestPathClass(path: string, root: string): boolean {
@@ -2489,8 +2846,19 @@ function sanitizeJson(value: unknown, options: { secrets: readonly string[] }): 
       if (seen.has(entry)) return "[cycle]";
       seen.add(entry);
       const output: Record<string, JsonValue> = {};
-      for (const keyName of Object.keys(entry).slice(0, 128)) {
-        const descriptor = Object.getOwnPropertyDescriptor(entry, keyName);
+      let keys: string[];
+      try {
+        keys = Object.keys(entry).slice(0, 128);
+      } catch {
+        return "[unreadable]";
+      }
+      for (const keyName of keys) {
+        let descriptor: PropertyDescriptor | undefined;
+        try {
+          descriptor = Object.getOwnPropertyDescriptor(entry, keyName);
+        } catch {
+          descriptor = undefined;
+        }
         const sanitizedValue =
           descriptor === undefined || !("value" in descriptor)
             ? "[unreadable]"

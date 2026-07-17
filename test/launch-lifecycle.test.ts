@@ -839,3 +839,116 @@ test("egress adapter consumes already-aborted start without invoking factory", a
   await assert.rejects(dependency.start(new AbortController().signal), LaunchLifecycleError);
   assert.equal(calls, 0);
 });
+
+function recordingWorkerSink(spans: unknown[], metrics: unknown[]) {
+  return Object.freeze({
+    get ready() {
+      return true;
+    },
+    span: (input: unknown) => {
+      spans.push(input);
+      return true;
+    },
+    metric: (input: unknown) => {
+      metrics.push(input);
+      return true;
+    },
+    snapshot: () => Object.freeze({ ready: true, queued: 0, exported: 0, dropped: 0, failed: 0, lag_ms: 0 }),
+    close: async () => undefined,
+  });
+}
+
+test("lifecycle telemetry uses fixed metadata and is nonfatal", async () => {
+  const spans: unknown[] = [];
+  const metrics: unknown[] = [];
+  const sink = recordingWorkerSink(spans, metrics);
+  const scheduler = new FakeScheduler();
+  let startCalls = 0;
+  const deps = dependencies({
+    ssh: {
+      start: async () => {
+        startCalls++;
+      },
+    },
+  });
+  const lifecycle = new LaunchLifecycle({
+    launchDocument: validLaunch(),
+    dependencies: deps,
+    scheduler,
+    telemetry: sink,
+  });
+  await lifecycle.start();
+  assert.equal(startCalls, 1);
+  await lifecycle.requestShutdown("done");
+  const text = JSON.stringify([...spans, ...metrics]);
+  for (const forbidden of [
+    "SECRET",
+    "prompt",
+    "source",
+    "command",
+    "path",
+    "output",
+    "query",
+    "account",
+    "request",
+    "correlation",
+    "model",
+    "provider",
+  ]) {
+    assert.equal(text.includes(forbidden), false);
+  }
+  assert.ok(text.includes("lifecycle.ready"));
+  assert.ok(text.includes("shutdown.ready"));
+  assert.ok(text.includes("session.active"));
+  const names = spans.map((span) => (span as { name?: unknown }).name);
+  assert.equal(names.filter((name) => name === "dependency.start").length, 6);
+  assert.equal(names.filter((name) => name === "dependency.ready").length, 6);
+  assert.ok(names.indexOf("dependency.start") < names.indexOf("dependency.ready"));
+
+  const throwing = new LaunchLifecycle({
+    launchDocument: validLaunch(),
+    dependencies: dependencies(),
+    scheduler: new FakeScheduler(),
+    telemetry: Object.freeze({
+      get ready() {
+        return true;
+      },
+      span: () => {
+        throw new Error("SECRET_TELEMETRY");
+      },
+      metric: () => {
+        throw new Error("SECRET_TELEMETRY");
+      },
+      snapshot: () => Object.freeze({ ready: true, queued: 0, exported: 0, dropped: 0, failed: 0, lag_ms: 0 }),
+      close: async () => undefined,
+    }),
+  });
+  await throwing.start();
+  await throwing.requestShutdown("done");
+});
+
+test("lifecycle telemetry emits one dependency start failure", async () => {
+  const spans: unknown[] = [];
+  const sink = recordingWorkerSink(spans, []);
+  const lifecycle = new LaunchLifecycle({
+    launchDocument: validLaunch(),
+    dependencies: dependencies({
+      ssh: {
+        start: async () => {
+          throw new Error("SECRET_START");
+        },
+      },
+    }),
+    scheduler: new FakeScheduler(),
+    telemetry: sink,
+  });
+  await assert.rejects(lifecycle.start(), LaunchLifecycleError);
+  const starts = spans.filter((span) => (span as { name?: unknown }).name === "dependency.start");
+  assert.equal(starts.length, 2);
+  assert.deepEqual((starts[1] as { attributes: unknown }).attributes, {
+    dependency: "ssh",
+    outcome: "error",
+    duration_ms: 0,
+  });
+  assert.equal(JSON.stringify(spans).includes("SECRET_START"), false);
+});

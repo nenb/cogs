@@ -508,3 +508,158 @@ function deepFreeze<T>(value: T): T {
   }
   return value;
 }
+
+function extTelemetry(throwing = false) {
+  const events: unknown[] = [];
+  const sink = Object.freeze({
+    get ready() {
+      return true;
+    },
+    span: (input: unknown) => {
+      if (throwing) throw new Error("SECRET_SINK");
+      events.push(input);
+      return true;
+    },
+    metric: (input: unknown) => {
+      if (throwing) throw new Error("SECRET_SINK");
+      events.push(input);
+      return true;
+    },
+    snapshot: () => Object.freeze({ ready: true, queued: 0, exported: 0, dropped: 0, failed: 0, lag_ms: 0 }),
+    close: async () => undefined,
+  });
+  return { sink, events };
+}
+
+test("ext-authz worker telemetry preserves WAL-before-allow ordering and redaction", async () => {
+  await withTempWal(async (wal) => {
+    const telemetry = extTelemetry();
+    const timeline: string[] = [];
+    const orderedWal = Object.freeze({
+      get ready() {
+        return wal.ready;
+      },
+      get records() {
+        return wal.records;
+      },
+      append: async (input: EgressAuditWalAppendInput) => {
+        const record = await wal.append(input);
+        timeline.push("append-complete");
+        return record;
+      },
+      close: () => wal.close(),
+    });
+    const orderedTelemetry = Object.freeze({
+      get ready() {
+        return true;
+      },
+      span: (input: unknown) => {
+        timeline.push((input as { name?: string }).name ?? "span");
+        return telemetry.sink.span(input);
+      },
+      metric: (input: unknown) => {
+        timeline.push((input as { name?: string }).name ?? "metric");
+        return telemetry.sink.metric(input);
+      },
+      snapshot: telemetry.sink.snapshot,
+      close: telemetry.sink.close,
+    });
+    const server = await startCogsExtAuthzServer({
+      userId: "user-1",
+      sessionId: session,
+      internalAuthzToken: token,
+      proxyCapability: capability,
+      routePlan: plan(),
+      wal: orderedWal,
+      workerTelemetry: orderedTelemetry,
+      nowMs: () => 100,
+    });
+    try {
+      await call(server.target, authorizeRequest());
+      timeline.push("allow-callback");
+      assert.equal(wal.records.length, 1);
+      const text = JSON.stringify(telemetry.events);
+      assert.ok(text.includes("wal.append"));
+      assert.ok(text.includes("wal.depth"));
+      assert.ok(text.includes("egress.authorize"));
+      assert.equal(text.includes(routeId), false);
+      assert.equal(/SECRET|query|account|request|correlation|integration/.test(text), false);
+      assert.ok(timeline.indexOf("append-complete") < timeline.indexOf("wal.append"));
+      assert.ok(timeline.indexOf("wal.append") < timeline.indexOf("wal.depth"));
+      assert.ok(timeline.indexOf("wal.depth") < timeline.indexOf("allow-callback"));
+    } finally {
+      await server.close();
+    }
+  });
+});
+
+test("ext-authz telemetry denial, WAL failure, and throwing sink are nonfatal", async () => {
+  await withTempWal(async (wal) => {
+    const telemetry = extTelemetry();
+    const server = await startCogsExtAuthzServer({
+      userId: "user-1",
+      sessionId: session,
+      internalAuthzToken: token,
+      proxyCapability: capability,
+      routePlan: plan(),
+      wal,
+      workerTelemetry: telemetry.sink,
+    });
+    try {
+      await call(server.target, authorizeRequest({ path: "/denied?SECRET=1" }));
+      assert.equal(wal.records.length, 0);
+      assert.ok(JSON.stringify(telemetry.events).includes("egress.denials"));
+    } finally {
+      await server.close();
+    }
+  });
+  await withTempWal(async (wal) => {
+    const telemetry = extTelemetry();
+    const failingWal = Object.freeze({
+      get ready() {
+        return wal.ready;
+      },
+      get records() {
+        return wal.records;
+      },
+      append: async () => {
+        throw new Error("wal append failed");
+      },
+      close: () => wal.close(),
+    });
+    const server = await startCogsExtAuthzServer({
+      userId: "user-1",
+      sessionId: session,
+      internalAuthzToken: token,
+      proxyCapability: capability,
+      routePlan: plan(),
+      wal: failingWal,
+      workerTelemetry: telemetry.sink,
+    });
+    try {
+      await assert.rejects(call(server.target, authorizeRequest()), /Unavailable|UNAVAILABLE|unavailable/);
+      assert.equal(wal.records.length, 0);
+      assert.ok(JSON.stringify(telemetry.events).includes("wal.failures"));
+    } finally {
+      await server.close();
+    }
+  });
+  await withTempWal(async (wal) => {
+    const telemetry = extTelemetry(true);
+    const server = await startCogsExtAuthzServer({
+      userId: "user-1",
+      sessionId: session,
+      internalAuthzToken: token,
+      proxyCapability: capability,
+      routePlan: plan(),
+      wal,
+      workerTelemetry: telemetry.sink,
+    });
+    try {
+      await call(server.target, authorizeRequest());
+      assert.equal(wal.records.length, 1);
+    } finally {
+      await server.close();
+    }
+  });
+});

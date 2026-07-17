@@ -282,3 +282,70 @@ function fakeWal(records: readonly EgressAuditWalRecord[], ready = true): FakeWa
     close: async () => {},
   };
 }
+
+function completionTelemetry(throwing = false) {
+  const events: unknown[] = [];
+  const sink = Object.freeze({
+    get ready() {
+      return true;
+    },
+    span: (input: unknown) => {
+      if (throwing) throw new Error("SECRET_THROW");
+      events.push(input);
+      return true;
+    },
+    metric: (input: unknown) => {
+      if (throwing) throw new Error("SECRET_THROW");
+      events.push(input);
+      return true;
+    },
+    snapshot: () => Object.freeze({ ready: true, queued: 0, exported: 0, dropped: 0, failed: 0, lag_ms: 0 }),
+    close: async () => undefined,
+  });
+  return { sink, events };
+}
+
+test("completion queue emits status/request worker telemetry after correlation", async () => {
+  const telemetry = completionTelemetry();
+  const wal = fakeWal([]) as FakeWal;
+  const queue = createCogsEgressCompletionQueue(wal, {
+    capacity: 2,
+    nowMs: () => 123,
+    workerTelemetry: telemetry.sink,
+  });
+  wal.records = [record(0, "intent-1", "route-1")];
+  await queue.onCompletionLine(
+    JSON.stringify({
+      event: "request-complete",
+      intent_id: "intent-1",
+      route_id: "route-1",
+      response_code: 204,
+      duration_ms: 7,
+    }),
+  );
+  const text = JSON.stringify(telemetry.events);
+  assert.ok(text.includes("egress.complete"));
+  assert.ok(text.includes("egress.requests"));
+  assert.ok(text.includes("2xx"));
+  assert.equal(/intent-1|route-1|SECRET|query|account|correlation_id/.test(text), false);
+});
+
+test("completion queue worker telemetry throwing is nonfatal", async () => {
+  const wal = fakeWal([]) as FakeWal;
+  const queue = createCogsEgressCompletionQueue(wal, {
+    capacity: 2,
+    nowMs: () => 123,
+    workerTelemetry: completionTelemetry(true).sink,
+  });
+  wal.records = [record(0, "intent-2", "route-2")];
+  await queue.onCompletionLine(
+    JSON.stringify({
+      event: "request-complete",
+      intent_id: "intent-2",
+      route_id: "route-2",
+      response_code: 503,
+      duration_ms: 9,
+    }),
+  );
+  assert.equal(queue.drain(1).length, 1);
+});

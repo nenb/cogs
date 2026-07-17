@@ -16,6 +16,7 @@ import {
   Ssh2Connection,
   Ssh2Transport,
   SshConnectionManager,
+  type SshSftpChannel,
   type SshTransport,
   type SshTransportConnection,
   type SshTransportConnectOptions,
@@ -1171,4 +1172,194 @@ test("ssh2 exec wrapper guards hostile stderr/off/destroy during attach cleanup 
     new Ssh2Connection(new BadClient() as never).openExec("fixed", new AbortController().signal),
     /ssh exec open failed/,
   );
+});
+
+function sshTelemetry() {
+  const spans: unknown[] = [];
+  const sink = Object.freeze({
+    get ready() {
+      return true;
+    },
+    span: (input: unknown) => {
+      spans.push(input);
+      return true;
+    },
+    metric: () => true,
+    snapshot: () => Object.freeze({ ready: true, queued: 0, exported: 0, dropped: 0, failed: 0, lag_ms: 0 }),
+    close: async () => undefined,
+  });
+  return { sink, spans };
+}
+
+class SftpConnection extends EventEmitter implements SshTransportConnection {
+  public constructor(private readonly mode: "ok" | "open-fail" | "open-hang" | "close-fail" = "ok") {
+    super();
+  }
+  public override on(event: "close" | "error", listener: (...args: unknown[]) => void): this {
+    return super.on(event, listener);
+  }
+  public override off(event: "close" | "error", listener: (...args: unknown[]) => void): this {
+    return super.off(event, listener);
+  }
+  public openSftp(): Promise<SshSftpChannel> {
+    if (this.mode === "open-fail") return Promise.reject(new Error("SECRET_HOST_PATH_KEY"));
+    if (this.mode === "open-hang") return new Promise<SshSftpChannel>(() => undefined);
+    return Promise.resolve(
+      Object.freeze({
+        port: Object.freeze({
+          lstat: async () => ({ size: 0, type: "file" as const }),
+          realpath: async () => "/workspace/SECRET_PATH",
+          open: async () => Buffer.from("h"),
+          read: async (_handle: Buffer, buffer: Buffer) => ({ bytesRead: 0, buffer, position: 0 }),
+          write: async () => undefined,
+          fstat: async () => ({ size: 0, type: "file" as const }),
+          closeHandle: async () => undefined,
+          unlink: async () => undefined,
+          fsync: async () => undefined,
+          posixRename: async () => undefined,
+        }),
+        close: async () => {
+          if (this.mode === "close-fail") throw new Error("SECRET_CLOSE");
+        },
+        destroy: () => undefined,
+      }),
+    );
+  }
+  public openExec(): Promise<never> {
+    return Promise.reject(new Error("exec unavailable"));
+  }
+  public close(): Promise<void> {
+    return Promise.resolve();
+  }
+  public destroy(): void {}
+}
+
+class SftpTransport implements SshTransport {
+  public connection: SftpConnection;
+  public constructor(mode: "ok" | "open-fail" | "open-hang" | "close-fail" = "ok") {
+    this.connection = new SftpConnection(mode);
+  }
+  public connect(): Promise<SshTransportConnection> {
+    return Promise.resolve(this.connection);
+  }
+}
+
+test("SSH telemetry covers connect and SFTP channel outcomes without sentinels", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "cogs-ssh-telemetry-"));
+  const telemetry = sshTelemetry();
+  try {
+    const manager = new SshConnectionManager({
+      config: config(await keyFile(root)),
+      transport: new SftpTransport(),
+      telemetry: telemetry.sink,
+    });
+    await manager.start();
+    await manager.withSftp(undefined, async () => "ok");
+    await manager.shutdown();
+    const text = JSON.stringify(telemetry.spans);
+    assert.ok(text.includes("ssh.connect"));
+    assert.ok(text.includes("ssh.channel"));
+    assert.ok(text.includes("sftp.operation"));
+    assert.equal(/sandbox|cogs|OPENSSH|SECRET|2222/.test(text), false);
+
+    const lost = sshTelemetry();
+    const lostTransport = new SftpTransport();
+    const lostManager = new SshConnectionManager({
+      config: config(await keyFile(root, keyPair.private, "idlost")),
+      transport: lostTransport,
+      telemetry: lost.sink,
+    });
+    await lostManager.start();
+    lostTransport.connection.emit("error", new Error("SECRET_LOST_REASON"));
+    for (let i = 0; i < 20 && lostManager.ready; i++) await new Promise((resolve) => setTimeout(resolve, 1));
+    assert.equal(lostManager.ready, false);
+    const lostText = JSON.stringify(lost.spans);
+    assert.ok(lostText.includes("dependency.lost"));
+    assert.equal(lostText.includes("SECRET_LOST_REASON"), false);
+    await lostManager.shutdown().catch(() => undefined);
+
+    const throwingSink = Object.freeze({
+      get ready() {
+        return true;
+      },
+      span: () => {
+        throw new Error("SECRET_SINK");
+      },
+      metric: () => true,
+      snapshot: () => Object.freeze({ ready: true, queued: 0, exported: 0, dropped: 0, failed: 0, lag_ms: 0 }),
+      close: async () => undefined,
+    });
+    const throwingManager = new SshConnectionManager({
+      config: config(await keyFile(root, keyPair.private, "idthrow")),
+      transport: new SftpTransport(),
+      telemetry: throwingSink,
+    });
+    await throwingManager.start();
+    assert.equal(await throwingManager.withSftp(undefined, async () => "ok"), "ok");
+    await throwingManager.shutdown();
+
+    const failing = sshTelemetry();
+    const failed = new SshConnectionManager({
+      config: config(await keyFile(root, keyPair.private, "id2")),
+      transport: new SftpTransport("open-fail"),
+      telemetry: failing.sink,
+    });
+    await failed.start();
+    await assert.rejects(
+      failed.withSftp(undefined, async () => "never"),
+      /ssh sftp operation failed/,
+    );
+    assert.ok(JSON.stringify(failing.spans).includes('"outcome":"error"'));
+    assert.equal(JSON.stringify(failing.spans).includes("SECRET"), false);
+    await failed.shutdown().catch(() => undefined);
+
+    const openTimed = sshTelemetry();
+    const openTimedManager = new SshConnectionManager({
+      config: config(await keyFile(root, keyPair.private, "id3")),
+      transport: new SftpTransport("open-hang"),
+      telemetry: openTimed.sink,
+    });
+    await openTimedManager.start();
+    await assert.rejects(openTimedManager.withSftp({ openTimeoutMs: 1 }, async () => "never"));
+    assert.ok(JSON.stringify(openTimed.spans).includes('"outcome":"timeout"'));
+    await openTimedManager.shutdown().catch(() => undefined);
+
+    const timed = sshTelemetry();
+    const timedManager = new SshConnectionManager({
+      config: config(await keyFile(root, keyPair.private, "id4")),
+      transport: new SftpTransport(),
+      telemetry: timed.sink,
+    });
+    await timedManager.start();
+    await assert.rejects(timedManager.withSftp({ operationTimeoutMs: 1 }, () => new Promise(() => undefined)));
+    assert.ok(JSON.stringify(timed.spans).includes('"outcome":"timeout"'));
+    assert.ok(JSON.stringify(timed.spans).includes('"timed_out":true'));
+    await timedManager.shutdown().catch(() => undefined);
+
+    const closed = sshTelemetry();
+    const closeFailed = new SshConnectionManager({
+      config: config(await keyFile(root, keyPair.private, "id5")),
+      transport: new SftpTransport("close-fail"),
+      telemetry: closed.sink,
+    });
+    await closeFailed.start();
+    await assert.rejects(closeFailed.withSftp(undefined, async () => "ok"));
+    assert.ok(JSON.stringify(closed.spans).includes('"outcome":"error"'));
+    await closeFailed.shutdown().catch(() => undefined);
+
+    const cancelled = sshTelemetry();
+    const cancelledManager = new SshConnectionManager({
+      config: config(await keyFile(root, keyPair.private, "id6")),
+      transport: new SftpTransport(),
+      telemetry: cancelled.sink,
+    });
+    await cancelledManager.start();
+    const controller = new AbortController();
+    controller.abort();
+    await assert.rejects(cancelledManager.withSftp({ signal: controller.signal }, async () => "never"));
+    assert.ok(JSON.stringify(cancelled.spans).includes('"outcome":"cancelled"'));
+    await cancelledManager.shutdown().catch(() => undefined);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });

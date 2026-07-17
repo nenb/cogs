@@ -1,3 +1,11 @@
+import {
+  type CogsTelemetry,
+  captureTelemetry,
+  emitMetric,
+  emitSpan,
+  emitTelemetryHealth,
+  TelemetryHealthCursor,
+} from "../telemetry/instrumentation.ts";
 import type { EgressAuditWal, EgressAuditWalRecord } from "./audit-wal.ts";
 import { type CogsEgressTelemetrySink, validateCogsEgressTelemetrySink } from "./otlp-telemetry.ts";
 
@@ -24,6 +32,7 @@ export type CogsEgressCompletionQueueOptions = Readonly<{
   capacity: number;
   nowMs: () => number;
   telemetry?: CogsEgressTelemetrySink;
+  workerTelemetry?: CogsTelemetry;
 }>;
 
 export class CogsEgressCompletionError extends Error {
@@ -39,12 +48,25 @@ export function createCogsEgressCompletionQueue(
   options: CogsEgressCompletionQueueOptions,
 ): CogsEgressCompletionQueue {
   try {
-    const captured = Object.freeze({ capacity: options.capacity, nowMs: options.nowMs, telemetry: options.telemetry });
+    const captured = Object.freeze({
+      capacity: options.capacity,
+      nowMs: options.nowMs,
+      telemetry: options.telemetry,
+      workerTelemetry: options.workerTelemetry,
+    });
     const capacity = bound(captured.capacity, 1, 1024);
     validateCogsEgressTelemetrySink(captured.telemetry);
+    captureTelemetry(captured.workerTelemetry);
     if (typeof captured.nowMs !== "function" || !wal.ready || wal.records.length > 10_000) throw new Error("bad queue");
     const baseline = Math.max(-1, ...wal.records.map((record) => safeSequence(record.sequence)));
-    const queue = new CompletionQueue(wal, capacity, captured.nowMs, baseline, captured.telemetry);
+    const queue = new CompletionQueue(
+      wal,
+      capacity,
+      captured.nowMs,
+      baseline,
+      captured.telemetry,
+      captured.workerTelemetry,
+    );
     return queue.handle();
   } catch {
     throw new CogsEgressCompletionError();
@@ -56,6 +78,7 @@ class CompletionQueue {
   private poisoned = false;
   private readonly retained: CogsEgressCompletion[] = [];
   private readonly completed = new Set<string>();
+  private readonly telemetryHealth = new TelemetryHealthCursor();
 
   public constructor(
     private readonly wal: EgressAuditWal,
@@ -63,6 +86,7 @@ class CompletionQueue {
     private readonly nowMs: () => number,
     private readonly baseline: number,
     private readonly telemetry: CogsEgressTelemetrySink | undefined,
+    private readonly workerTelemetry: CogsTelemetry,
   ) {}
 
   public handle(): CogsEgressCompletionQueue {
@@ -103,6 +127,14 @@ class CompletionQueue {
         // Telemetry is best-effort; sink exceptions must not poison durable completion correlation.
         this.telemetry?.enqueue(Object.freeze({ intent: safeIntent(match), completion }));
       } catch {}
+      emitSpan(this.workerTelemetry, "egress.complete", {
+        operation: "complete",
+        outcome: "ok",
+        status_bucket: statusBucket(completion.responseCode),
+        duration_ms: completion.durationMs,
+      });
+      emitMetric(this.workerTelemetry, "egress.requests", 1, { status_bucket: statusBucket(completion.responseCode) });
+      emitTelemetryHealth(this.workerTelemetry, this.telemetryHealth);
     } catch {
       this.poison();
       throw new CogsEgressCompletionError();
@@ -217,4 +249,12 @@ function safeSequence(value: number): number {
 
 function safeNow(value: number): number {
   return bound(value, 0, Number.MAX_SAFE_INTEGER);
+}
+
+function statusBucket(code: number): "1xx" | "2xx" | "3xx" | "4xx" | "5xx" {
+  if (code < 200) return "1xx";
+  if (code < 300) return "2xx";
+  if (code < 400) return "3xx";
+  if (code < 500) return "4xx";
+  return "5xx";
 }

@@ -2,6 +2,14 @@ import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import * as grpc from "@grpc/grpc-js";
 import type { CogsPolicyAuthorizer } from "../policy/require-policy.ts";
 import { requireCogsPolicyAllow } from "../policy/require-policy.ts";
+import {
+  type CogsTelemetry,
+  captureTelemetry,
+  emitMetric,
+  emitSpan,
+  telemetryDuration,
+  telemetryStart,
+} from "../telemetry/instrumentation.ts";
 import type { EgressAuditWal } from "./audit-wal.ts";
 import { buildExtAuthzResponse, type CogsExtAuthzCheck, parseExtAuthzCheck } from "./ext-authz-adapter.ts";
 import { loadExtAuthzDescriptor } from "./ext-authz-descriptor.ts";
@@ -26,6 +34,8 @@ export interface CogsExtAuthzServerOptions {
   readonly routePlan: CogsEgressRoutePlan;
   readonly wal: EgressAuditWal;
   readonly policyAuthorizer?: CogsPolicyAuthorizer;
+  readonly workerTelemetry?: CogsTelemetry;
+  readonly nowMs?: () => number;
 }
 
 export interface CogsExtAuthzServer {
@@ -84,6 +94,8 @@ export async function startCogsExtAuthzServer(options: CogsExtAuthzServerOptions
       verifier,
       server,
       captured.policyAuthorizer,
+      captureTelemetry(captured.workerTelemetry),
+      typeof captured.nowMs === "function" ? captured.nowMs : Date.now,
     );
     server.addService(descriptor.authorizationService as grpc.ServiceDefinition<grpc.UntypedServiceImplementation>, {
       Check: impl.check,
@@ -121,6 +133,8 @@ class ExtAuthzServerImpl {
     private readonly verifier: SecretVerifier,
     private readonly server: grpc.Server,
     private readonly policyAuthorizer: CogsPolicyAuthorizer | undefined,
+    private readonly workerTelemetry: CogsTelemetry,
+    private readonly nowMs: () => number,
   ) {
     this.#wal = wal;
     const self = this;
@@ -142,6 +156,7 @@ class ExtAuthzServerImpl {
     call: grpc.ServerUnaryCall<unknown, unknown>,
     callback: (error: grpc.ServiceError | null, value?: unknown) => void,
   ) {
+    const start = telemetryStart({ now: this.nowMs });
     if (this.#closing || !this.#ready || !this.#wal.ready) {
       callback(status(grpc.status.UNAVAILABLE));
       return;
@@ -166,15 +181,33 @@ class ExtAuthzServerImpl {
       }
       const recordInput = this.#authorize(check);
       if (recordInput === undefined) {
+        emitSpan(this.workerTelemetry, "egress.authorize", {
+          outcome: "denied",
+          duration_ms: telemetryDuration({ now: this.nowMs }, start),
+        });
+        emitMetric(this.workerTelemetry, "egress.denials", 1);
         callback(null, buildExtAuthzResponse({ outcome: "deny", status: 403 }));
         return;
       }
       if (call.cancelled) throw status(grpc.status.CANCELLED);
       appendStarted = true;
       const record = await this.#wal.append(recordInput);
+      emitSpan(this.workerTelemetry, "wal.append", { operation: "append", outcome: "ok" });
+      emitMetric(this.workerTelemetry, "wal.depth", record.sequence + 1);
+      emitSpan(this.workerTelemetry, "egress.authorize", {
+        outcome: "ok",
+        method: record.method,
+        credential_required: record.credential_required,
+        duration_ms: telemetryDuration({ now: this.nowMs }, start),
+      });
       callback(null, buildExtAuthzResponse({ outcome: "allow", intentId: record.intent_id }));
     } catch (error) {
       if (appendStarted) this.#ready = false;
+      if (appendStarted) emitMetric(this.workerTelemetry, "wal.failures", 1);
+      emitSpan(this.workerTelemetry, appendStarted ? "wal.append" : "egress.authorize", {
+        outcome: "error",
+        duration_ms: telemetryDuration({ now: this.nowMs }, start),
+      });
       callback(isGrpcFailure(error) ? error : status(grpc.status.UNAVAILABLE));
     } finally {
       this.#active -= 1;

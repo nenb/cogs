@@ -59,6 +59,7 @@ const spanNames = new Set([
   "egress.complete",
   "wal.append",
   "wal.complete",
+  "git.observe",
   "otlp.export",
   "export.create",
   "export.failure",
@@ -96,7 +97,20 @@ const metricNames = new Set([
 ]);
 const outcomes = new Set(["ok", "error", "denied", "dropped", "cancelled", "timeout"]);
 const states = new Set(["starting", "ready", "running", "idle", "settled", "shutdown", "failed"]);
-const dependencies = new Set(["pi", "ssh", "sftp", "egress", "wal", "otlp", "export", "git", "policy"]);
+const dependencies = new Set([
+  "pi",
+  "ssh",
+  "sftp",
+  "egress",
+  "wal",
+  "otlp",
+  "export",
+  "git",
+  "policy",
+  "storage",
+  "proxy",
+  "auth",
+]);
 const tools = new Set(["read", "write", "edit", "bash"]);
 const pathClasses = new Set(["workspace", "shared_skill", "user_skill"]);
 const operations = new Set([
@@ -117,11 +131,13 @@ const operations = new Set([
   "create",
   "prepare",
   "run",
+  "observe",
   "settle",
   "close",
 ]);
 const methods = new Set(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "CONNECT"]);
 const buckets = new Set(["0", "1", "2_4", "5_16", "17_64", "65_256", "257_1024", "gt_1024"]);
+const statusBuckets = new Set(["1xx", "2xx", "3xx", "4xx", "5xx"]);
 const attrKeys = [
   "outcome",
   "state",
@@ -138,6 +154,7 @@ const attrKeys = [
   "count",
   "value",
   "bytes_bucket",
+  "status_bucket",
 ] as const;
 type AttrKey = (typeof attrKeys)[number];
 type AttrValue = string | number | boolean;
@@ -157,6 +174,26 @@ export function createCogsWorkerTelemetrySink(config: CogsWorkerTelemetryMode = 
     return new OtlpWorkerSink(snap).handle();
   } catch {
     throw new Error("invalid worker telemetry");
+  }
+}
+
+export function validateCogsWorkerTelemetrySink(value: CogsWorkerTelemetrySink | undefined): void {
+  try {
+    if (value === undefined) return;
+    if (value === null || typeof value !== "object" || !Object.isFrozen(value)) throw new Error("bad sink");
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const keys = Reflect.ownKeys(descriptors).sort();
+    if (keys.join("\0") !== ["close", "metric", "ready", "snapshot", "span"].join("\0")) throw new Error("bad sink");
+    for (const key of ["span", "metric", "snapshot", "close"] as const) {
+      const descriptor = descriptors[key];
+      if (descriptor === undefined || !("value" in descriptor) || typeof descriptor.value !== "function")
+        throw new Error("bad sink");
+    }
+    const ready = descriptors.ready;
+    if (ready === undefined || typeof ready.get !== "function" || typeof value.ready !== "boolean")
+      throw new Error("bad sink");
+  } catch {
+    throw new Error("invalid worker telemetry sink");
   }
 }
 
@@ -517,6 +554,7 @@ function attrValue(key: AttrKey, value: unknown): AttrValue {
   if (key === "operation") return enumString(value, operations);
   if (key === "method") return enumString(value, methods);
   if (key === "bytes_bucket") return enumString(value, buckets);
+  if (key === "status_bucket") return enumString(value, statusBuckets);
   if (key === "credential_required" || key === "truncated" || key === "timed_out" || key === "cancelled") {
     if (typeof value !== "boolean") throw new Error("bad bool");
     return value;
