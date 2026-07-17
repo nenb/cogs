@@ -351,6 +351,8 @@ def bypass_probe(scenario, proxy_host, proxy_port, target_port, capability):
             udp.close()
     if scenario in ("alternate-tcp", "cogs-api", "openbao"):
         return tcp("192.0.2.1", {"alternate-tcp": 22, "cogs-api": 8080, "openbao": 8200}[scenario])
+    if scenario == "openbao-actual":
+        return tcp("192.0.2.1", target_port)
     if scenario == "cloud-metadata":
         return tcp("169.254.169.254", 80)
     if scenario == "proxy-admin":

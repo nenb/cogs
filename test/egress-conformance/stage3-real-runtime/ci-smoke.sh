@@ -8,6 +8,11 @@ OPENBAO_IMAGE="quay.io/openbao/openbao:2.6.0@sha256:900bb64d0671cd1d82b693c56206
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../../.." && pwd)"
 REPORT_DIR="${1:-${REPO_ROOT}/docs/security-evidence/generated/stage3-real-runtime}"
+PROFILE="${COGS_STAGE3_REAL_RUNTIME_PROFILE:-insecure-container}"
+if [ "${PROFILE}" != "insecure-container" ] && [ "${PROFILE}" != "linux-kvm" ]; then
+  echo "invalid Stage 3 real-runtime profile" >&2
+  exit 1
+fi
 SESSION_ID="$(printf '%s' "${COGS_SOURCE_REVISION:-local}-$$-$(date +%s%N)" | sha256sum | cut -c1-16)"
 LABEL="cogs.stage3-real-runtime.session=${SESSION_ID}"
 OPENBAO_CONTAINER="cogs-stage3-openbao-${SESSION_ID}"
@@ -40,6 +45,31 @@ record_cleanup_failure() {
   cleanup_failed=1
   cleanup_messages+=("$1")
   echo "$1" >&2
+}
+
+write_failure_report() {
+  local diagnostic=${1:-"Stage 3 real-runtime smoke failed before validated evidence was published."}
+  rm -rf -- "${REPORT_DIR}"/stage3-real-runtime-* 2>/dev/null || true
+  mkdir -p -- "${REPORT_DIR}"
+  python3 - "${REPORT_DIR}" "${COGS_SOURCE_REVISION:-}" "${PROFILE}" "${diagnostic}" <<'PY'
+import datetime,json,os,platform,sys,time
+out,revision,profile,diagnostic=sys.argv[1:]
+if not revision:
+ import subprocess; revision=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()
+now=datetime.datetime.now(datetime.timezone.utc).isoformat().replace('+00:00','Z')
+authority='authoritative-local' if profile=='linux-kvm' else 'functional-only'
+network='real' if profile=='linux-kvm' else 'not-applicable'
+report={
+ 'version':'cogs.security-report/v1alpha1','report_id':f'stage3-real-runtime-{profile}-failure-{revision[:12]}',
+ 'source_revision':revision,'profile':profile,'authority':authority,'started_at':now,'completed_at':now,'duration_ms':0,
+ 'environment':{'os':platform.system().lower(),'architecture':platform.machine(),'runner':os.environ.get('RUNNER_NAME','local'),'runner_image':os.environ.get('ImageOS','local'),'runtime_versions':{'node':os.environ.get('NODE_VERSION','unknown')},'metadata':{'kvm_present':profile=='linux-kvm','kvm_enabled':False,'guest_root':False,'distinct_boot_ids':False} if profile=='linux-kvm' else {}},
+ 'components':[{'name':'cogs','version':'0.0.0'}],
+ 'dependencies':{name:{'mode':('real' if name in ('authorization','audit','revocation','identity') else network),'implementation':'failure before full Stage 3 evidence publication'} for name in ['authorization','audit','revocation','identity','network_enforcement']},
+ 'tests':[{'id':'stage3.real-runtime.failure','group':'credential-handling','result':'fail','release_eligible':False,'duration_ms':0,'dependency_modes':{'authorization':'real','audit':'real','identity':'real','revocation':'real','telemetry':'stubbed','network_enforcement':network},'diagnostics_redacted':diagnostic[:2048]}],
+ 'known_limitations':['Failure report only; no successful Stage 3 evidence claim.']}
+dest=os.path.join(out,report['report_id']); os.makedirs(dest,exist_ok=True)
+with open(os.path.join(dest,'report.json'),'w',encoding='utf-8') as f: json.dump(report,f,indent=2); f.write('\n')
+PY
 }
 
 cleanup() {
@@ -79,8 +109,10 @@ cleanup() {
   rm -rf -- "${TMP_ROOT}" || record_cleanup_failure "failed to remove temporary runtime directory"
   if [ "${cleanup_failed}" -ne 0 ]; then
     printf 'stage3 real runtime cleanup ambiguity: %s\n' "${cleanup_messages[*]}" >&2
+    write_failure_report "Stage 3 real-runtime cleanup failed closed."
     exit 1
   fi
+  if [ "${status}" -ne 0 ]; then write_failure_report; fi
   exit "${status}"
 }
 
@@ -173,4 +205,5 @@ COGS_OPENBAO_RUNTIME_VERSION="${OPENBAO_RUNTIME_VERSION}" \
 COGS_TRUST_CERT_PATH="${TRUST_PATH}" \
 COGS_STAGE3_REAL_RUNTIME_TMP="${TMP_ROOT}" \
 COGS_SOURCE_REVISION="${COGS_SOURCE_REVISION}" \
+COGS_STAGE3_REAL_RUNTIME_PROFILE="${PROFILE}" \
 bounded 3m npx --no-install tsx test/egress-conformance/stage3-real-runtime/harness.ts "${REPORT_DIR}"

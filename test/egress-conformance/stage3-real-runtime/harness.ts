@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer as createHttpsServer } from "node:https";
 import { createServer as createTcpServer } from "node:net";
 import { arch, platform, tmpdir } from "node:os";
@@ -16,6 +17,7 @@ import { type CogsEgressRuntimeManager, startCogsEgressRuntimeManager } from "..
 import type { LaunchConfig } from "../../../src/launch/config.ts";
 import { assertValidSecurityReport, writeReports } from "../controller/report.ts";
 import type { SecurityReport } from "../controller/runner.ts";
+import { createKvmStage3RuntimeRelay, type Stage3RelaySnapshot, type Stage3RuntimeRelay } from "./relay.ts";
 
 const execFileAsync = promisify(execFile);
 const outputDirectory = resolve(process.argv[2] ?? "docs/security-evidence/generated/stage3-real-runtime");
@@ -32,7 +34,13 @@ const trustPath = requiredEnv(
   /^\/usr\/local\/share\/ca-certificates\/cogs-stage3-real-runtime\.crt$/,
 );
 const tempRoot = resolve(process.env.COGS_STAGE3_REAL_RUNTIME_TMP ?? tmpdir());
+const profileInput = process.env.COGS_STAGE3_REAL_RUNTIME_PROFILE ?? "insecure-container";
+if (profileInput !== "insecure-container" && profileInput !== "linux-kvm") throw new Error("invalid Stage 3 profile");
+const profile: "insecure-container" | "linux-kvm" = profileInput;
+const authoritativeKvm = profile === "linux-kvm";
 const openBaoDigest = openBaoImage.slice(openBaoImage.indexOf("@") + 1);
+const openBaoActualPort = Number(new URL(openBaoOrigin).port);
+assert.equal(Number.isInteger(openBaoActualPort) && openBaoActualPort >= 1 && openBaoActualPort <= 65535, true);
 const openBaoVersion = "2.6.0";
 const envoyVersion = "1.38.3";
 const sessionId = "stage3-real-runtime";
@@ -50,6 +58,8 @@ const wrongCapability = `cogs-wrong-${randomBytes(24).toString("hex")}`;
 const revocationPollIntervalMs = 500;
 const revocationObservationBoundMs = 20_000;
 const harnessReplacementReadyBoundMs = 40_000;
+const debianGuestImageSha512 =
+  "78f658893d7aecb56288b86afebb72dcdb1a636e8e9db8bda64851a308697794678ceb5cd3b7c86afd5fb892afbc6baf9d2dbaceb7855347fde8660e8d68e667";
 let rootToken = "";
 let scopedToken = "";
 let caPem = "";
@@ -60,6 +70,7 @@ let rootRevoked = false;
 let scopedRevoked = false;
 const forbiddenSecrets = new Set<string>();
 let currentPhase = "startup";
+let activeRelay: Stage3RuntimeRelay | undefined;
 
 class StaticIdentity implements OpenBaoIdentityPort {
   public constructor(private readonly token: () => string) {}
@@ -69,10 +80,22 @@ class StaticIdentity implements OpenBaoIdentityPort {
   }
 }
 
+type KvmEvidence = Readonly<{
+  kvm_present: true;
+  kvm_enabled: true;
+  guest_root: true;
+  distinct_boot_ids: true;
+  guest_kernel: string;
+  guest_image_sha512: string;
+  host_ip: "192.0.2.1";
+  guest_ip: "192.0.2.2";
+  proxy_port: 18080;
+}>;
+
 interface Sidecar {
   version: "cogs.stage3-real-runtime/v1alpha1";
   source_revision: string;
-  profile: "insecure-container";
+  profile: "insecure-container" | "linux-kvm";
   release_eligible: false;
   components: {
     envoy: { version: string; image_digest: string; binary_sha256: string };
@@ -85,7 +108,7 @@ interface Sidecar {
     audit: "real";
     revocation: "real";
     telemetry: "stubbed";
-    network_enforcement: "not-applicable";
+    network_enforcement: "not-applicable" | "real";
   };
   timings: Record<
     | "revocation_poll_interval_ms"
@@ -100,28 +123,48 @@ interface Sidecar {
     | "revoked_drain_probe_ms",
     number
   >;
-  assertions: Record<
-    | "openbao_loopback_only"
-    | "credential_v1_injected"
-    | "credential_v2_injected"
-    | "baseline_wrong_capability_denied"
-    | "baseline_wrong_path_denied"
-    | "proxy_capability_stripped_upstream"
-    | "wal_intents_preceded_upstream"
-    | "completions_correlated"
-    | "credential_change_callback_observed"
-    | "revoked_callback_observed"
-    | "harness_driven_replacement_after_callback"
-    | "old_capability_denied_after_replacement"
-    | "new_capability_invalidated_after_revocation"
-    | "tmpfs_material_existed_in_scope"
-    | "tmpfs_cleanup_verified"
-    | "scoped_token_revoked"
-    | "root_token_revoked"
-    | "private_material_absent_from_reports"
-    | "ca_private_key_not_returned"
-    | "no_daemon_or_sandbox_replacement_claim",
-    boolean
+  network_evidence:
+    | { mode: "not-applicable" }
+    | {
+        mode: "linux-kvm";
+        authority: "authoritative-local";
+        relay: Stage3RelaySnapshot;
+        kvm: KvmEvidence;
+        bypass_denials: Record<string, boolean>;
+        openbao_actual_port_denied: true;
+        guest_firewall_trusted: false;
+        host_firewall_enforced: true;
+      };
+  assertions: Partial<
+    Record<
+      | "openbao_loopback_only"
+      | "credential_v1_injected"
+      | "credential_v2_injected"
+      | "baseline_wrong_capability_denied"
+      | "baseline_wrong_path_denied"
+      | "proxy_capability_stripped_upstream"
+      | "wal_intents_preceded_upstream"
+      | "completions_correlated"
+      | "credential_change_callback_observed"
+      | "revoked_callback_observed"
+      | "harness_driven_replacement_after_callback"
+      | "old_capability_denied_after_replacement"
+      | "new_capability_invalidated_after_revocation"
+      | "tmpfs_material_existed_in_scope"
+      | "tmpfs_cleanup_verified"
+      | "scoped_token_revoked"
+      | "root_token_revoked"
+      | "private_material_absent_from_reports"
+      | "ca_private_key_not_returned"
+      | "no_daemon_or_sandbox_replacement_claim"
+      | "kvm_guest_proxy_allowed_v1"
+      | "kvm_guest_proxy_allowed_v2"
+      | "kvm_bypass_matrix_denied"
+      | "kvm_relay_no_target_denied"
+      | "kvm_relay_identity_verified"
+      | "kvm_relay_cleanup_verified",
+      boolean
+    >
   >;
 }
 
@@ -136,6 +179,20 @@ const timingKeys = [
   "credential_delete_ms",
   "revoked_callback_ms",
   "revoked_drain_probe_ms",
+] as const;
+
+const bypassScenarios = [
+  "unset-proxy",
+  "direct-ipv4",
+  "direct-ipv6",
+  "udp-quic",
+  "alternate-tcp",
+  "openbao",
+  "cogs-api",
+  "proxy-admin",
+  "arbitrary-dns",
+  "dns-over-https",
+  "cloud-metadata",
 ] as const;
 
 const assertionKeys = [
@@ -161,6 +218,15 @@ const assertionKeys = [
   "no_daemon_or_sandbox_replacement_claim",
 ] as const;
 
+const kvmAssertionKeys = [
+  "kvm_guest_proxy_allowed_v1",
+  "kvm_guest_proxy_allowed_v2",
+  "kvm_bypass_matrix_denied",
+  "kvm_relay_no_target_denied",
+  "kvm_relay_identity_verified",
+  "kvm_relay_cleanup_verified",
+] as const;
+
 export function assertValidRealRuntimeSidecar(value: unknown): asserts value is Sidecar {
   assert.equal(typeof value, "object");
   assert.notEqual(value, null);
@@ -169,6 +235,7 @@ export function assertValidRealRuntimeSidecar(value: unknown): asserts value is 
     "assertions",
     "components",
     "dependency_modes",
+    "network_evidence",
     "profile",
     "release_eligible",
     "source_revision",
@@ -178,7 +245,7 @@ export function assertValidRealRuntimeSidecar(value: unknown): asserts value is 
   const sidecar = value as Sidecar;
   assert.equal(sidecar.version, "cogs.stage3-real-runtime/v1alpha1");
   assert.match(sidecar.source_revision, /^[a-f0-9]{40}$/);
-  assert.equal(sidecar.profile, "insecure-container");
+  assert.ok(sidecar.profile === "insecure-container" || sidecar.profile === "linux-kvm");
   assert.equal(sidecar.release_eligible, false);
   exactKeys(sidecar.components, ["envoy", "openbao", "runtime_manager"]);
   exactKeys(sidecar.components.envoy, ["binary_sha256", "image_digest", "version"]);
@@ -204,8 +271,91 @@ export function assertValidRealRuntimeSidecar(value: unknown): asserts value is 
     audit: "real",
     revocation: "real",
     telemetry: "stubbed",
-    network_enforcement: "not-applicable",
+    network_enforcement: sidecar.profile === "linux-kvm" ? "real" : "not-applicable",
   });
+  if (sidecar.profile === "linux-kvm") {
+    exactKeys(sidecar.network_evidence, [
+      "authority",
+      "bypass_denials",
+      "guest_firewall_trusted",
+      "host_firewall_enforced",
+      "kvm",
+      "mode",
+      "openbao_actual_port_denied",
+      "relay",
+    ]);
+    assert.equal(sidecar.network_evidence.mode, "linux-kvm");
+    assert.equal(sidecar.network_evidence.authority, "authoritative-local");
+    assert.equal(sidecar.network_evidence.guest_firewall_trusted, false);
+    assert.equal(sidecar.network_evidence.host_firewall_enforced, true);
+    exactKeys(sidecar.network_evidence.bypass_denials, [...bypassScenarios]);
+    for (const scenario of bypassScenarios) assert.equal(sidecar.network_evidence.bypass_denials[scenario], true);
+    assert.equal(sidecar.network_evidence.openbao_actual_port_denied, true);
+    exactKeys(sidecar.network_evidence.kvm, [
+      "distinct_boot_ids",
+      "guest_image_sha512",
+      "guest_ip",
+      "guest_kernel",
+      "guest_root",
+      "host_ip",
+      "kvm_enabled",
+      "kvm_present",
+      "proxy_port",
+    ]);
+    assert.deepEqual(
+      { ...sidecar.network_evidence.kvm, guest_kernel: "kernel", guest_image_sha512: "image" },
+      {
+        kvm_present: true,
+        kvm_enabled: true,
+        guest_root: true,
+        distinct_boot_ids: true,
+        guest_kernel: "kernel",
+        guest_image_sha512: "image",
+        host_ip: "192.0.2.1",
+        guest_ip: "192.0.2.2",
+        proxy_port: 18080,
+      },
+    );
+    assert.match(sidecar.network_evidence.kvm.guest_kernel, /^[A-Za-z0-9._+-]+$/);
+    assert.match(sidecar.network_evidence.kvm.guest_image_sha512, /^[a-f0-9]{128}$/);
+    exactKeys(sidecar.network_evidence.relay, [
+      "acceptedConnections",
+      "activeSockets",
+      "activeTarget",
+      "bindHost",
+      "bindPort",
+      "closed",
+      "deniedConnections",
+      "maxActiveSockets",
+      "poisoned",
+      "ready",
+      "registeredTargets",
+      "switchedTargets",
+    ]);
+    assert.equal(sidecar.network_evidence.relay.bindHost, "192.0.2.1");
+    assert.equal(sidecar.network_evidence.relay.bindPort, 18080);
+    assert.equal(sidecar.network_evidence.relay.activeTarget, null);
+    assert.equal(sidecar.network_evidence.relay.activeSockets, 0);
+    assert.equal(sidecar.network_evidence.relay.ready, false);
+    assert.equal(sidecar.network_evidence.relay.poisoned, false);
+    assert.equal(sidecar.network_evidence.relay.closed, true);
+    assert.equal(sidecar.network_evidence.relay.maxActiveSockets, 32);
+    assert.equal(sidecar.network_evidence.relay.registeredTargets.length, 2);
+    assert.notEqual(
+      sidecar.network_evidence.relay.registeredTargets[0],
+      sidecar.network_evidence.relay.registeredTargets[1],
+    );
+    for (const port of sidecar.network_evidence.relay.registeredTargets) {
+      assert.equal(Number.isInteger(port), true);
+      assert.ok(port >= 1 && port <= 65535);
+    }
+    assert.ok(sidecar.network_evidence.relay.acceptedConnections >= 2);
+    assert.ok(sidecar.network_evidence.relay.deniedConnections >= 1);
+    assert.ok(sidecar.network_evidence.relay.switchedTargets >= 2);
+  } else {
+    exactKeys(sidecar.network_evidence, ["mode"]);
+    assert.equal(sidecar.network_evidence.mode, "not-applicable");
+  }
   exactKeys(sidecar.timings, [...timingKeys]);
   for (const key of timingKeys) {
     assert.equal(Number.isSafeInteger(sidecar.timings[key]), true);
@@ -218,11 +368,14 @@ export function assertValidRealRuntimeSidecar(value: unknown): asserts value is 
   assert.ok(sidecar.timings.revoked_callback_ms <= revocationObservationBoundMs);
   assert.ok(sidecar.timings.revoked_drain_probe_ms <= revocationObservationBoundMs);
   assert.ok(sidecar.timings.harness_replacement_ready_ms <= sidecar.timings.harness_replacement_ready_bound_ms);
-  exactKeys(sidecar.assertions, [...assertionKeys]);
-  for (const key of assertionKeys) assert.equal(sidecar.assertions[key], true);
+  const expectedAssertionKeys =
+    sidecar.profile === "linux-kvm" ? [...assertionKeys, ...kvmAssertionKeys] : [...assertionKeys];
+  exactKeys(sidecar.assertions, expectedAssertionKeys);
+  for (const key of expectedAssertionKeys) assert.equal(sidecar.assertions[key], true);
 }
 
 async function main(): Promise<void> {
+  const kvmEvidence = authoritativeKvm ? await phase("verify_kvm_guest", verifyKvmGuest) : undefined;
   const started = new Date();
   const startedMs = Date.now();
   const state = await mkdtemp(join(tempRoot, "runtime-state-"));
@@ -272,6 +425,9 @@ async function main(): Promise<void> {
       });
       const timers = { setTimeout, clearTimeout };
       const replacements: { epoch: "A" | "B"; reason: string; atMs: number }[] = [];
+      const relay = authoritativeKvm ? createKvmStage3RuntimeRelay() : undefined;
+      activeRelay = relay;
+      if (relay) await phase("start_kvm_guest_relay", () => relay.start());
       const startRuntime = async (epoch: "A" | "B", capability: string, wal: string, listenerPort: number) => {
         const controller = new AbortController();
         const manager = await phase(`start_runtime_manager_${epoch}`, () =>
@@ -323,24 +479,39 @@ async function main(): Promise<void> {
       const walPathA = walPath;
       const walPathB = join(walDirectory, "egress-b.wal");
       const runtimeA = await startRuntime("A", proxyCapability, walPathA, await reservePort());
+      relay?.registerTarget(runtimeA.listenerPort);
+      relay?.switchTo(runtimeA.listenerPort);
       const materialExisted = await exists("/run/cogs/egress/envoy/bootstrap.json");
       assert.equal(runtimeA.manager.ready, true);
       const curlA = await phase("allowed_proxy_probe_v1", () =>
-        proxyProbe(runtimeA.listenerPort, proxyCapability, upstream.port, routePath),
+        proxyProbe(runtimeA.listenerPort, proxyCapability, upstream.port, routePath, 15, "allow", "capability-valid"),
       );
       if (!curlA.ok || curlA.stdout !== "ok") throw new Error("proxy probe v1 failed");
       const beforeWrongCapabilityA = upstream.observations.length;
       const wrongCapabilityA = await phase("wrong_capability_denial_probe_a", () =>
-        proxyProbe(runtimeA.listenerPort, wrongCapability, upstream.port, routePath, 3),
+        proxyProbe(runtimeA.listenerPort, wrongCapability, upstream.port, routePath, 3, "deny", "capability-malformed"),
       );
       const wrongCapabilityADenied = !wrongCapabilityA.ok && upstream.observations.length === beforeWrongCapabilityA;
       if (!wrongCapabilityADenied) throw new Error("wrong capability reached upstream");
       const beforeWrongPathA = upstream.observations.length;
       const wrongPathA = await phase("wrong_path_denial_probe_a", () =>
-        proxyProbe(runtimeA.listenerPort, proxyCapability, upstream.port, "/denied", 3),
+        proxyProbe(runtimeA.listenerPort, proxyCapability, upstream.port, "/denied", 3, "deny", "wrong-path"),
       );
       const wrongPathADenied = !wrongPathA.ok && upstream.observations.length === beforeWrongPathA;
       if (!wrongPathADenied) throw new Error("wrong path reached upstream");
+      const beforeBypassMatrix = upstream.observations.length;
+      const bypassDenials = authoritativeKvm
+        ? await phase("kvm_guest_bypass_denial_matrix", () => runKvmBypassMatrix(upstream.port, proxyCapability))
+        : Object.fromEntries(bypassScenarios.map((scenario) => [scenario, true]));
+      const openBaoActualPortDenied = authoritativeKvm
+        ? (
+            await phase("kvm_guest_openbao_actual_port_denial", () =>
+              guestProbe("openbao-actual", "bypass", openBaoActualPort, proxyCapability, "deny"),
+            )
+          ).passed
+        : true;
+      if (!openBaoActualPortDenied) throw new Error("actual OpenBao port was reachable from guest");
+      if (upstream.observations.length !== beforeBypassMatrix) throw new Error("KVM bypass matrix reached upstream");
       const observationAfterA = upstream.observations.length;
       const mutationAStartedMs = Date.now();
       await phase("write_openbao_credential_v2", () => writeCredential(bearerTokenV2));
@@ -359,24 +530,35 @@ async function main(): Promise<void> {
           mutationAStartedMs,
         ),
       );
+      relay?.clear();
+      const noTargetDenied = authoritativeKvm
+        ? (
+            await phase("kvm_guest_relay_no_target_denial", () =>
+              guestProbe("capability-valid", "https", upstream.port, proxyCapability, "deny"),
+            )
+          ).passed
+        : true;
+      if (!noTargetDenied) throw new Error("cleared relay did not deny guest probe");
       await runtimeA.manager.close().catch(() => undefined);
       const completionsA = runtimeA.manager.drainCompletions(8);
       const walRecordsA = await readWal(walPathA);
       runtimeA.controller.abort();
 
       const runtimeB = await startRuntime("B", proxyCapabilityV2, walPathB, await reservePort());
+      relay?.registerTarget(runtimeB.listenerPort);
       const runtimeBReadyMs = Date.now() - mutationAStartedMs;
       if (runtimeBReadyMs > harnessReplacementReadyBoundMs)
         throw new Error("replacement runtime startup exceeded bound");
       assert.equal(runtimeB.manager.ready, true);
+      relay?.switchTo(runtimeB.listenerPort);
       const beforeOldCapability = upstream.observations.length;
       const oldCapabilityProbe = await phase("old_capability_denial_after_harness_replacement", () =>
-        proxyProbe(runtimeB.listenerPort, proxyCapability, upstream.port, routePath, 3),
+        proxyProbe(runtimeB.listenerPort, proxyCapability, upstream.port, routePath, 3, "deny", "capability-malformed"),
       );
       const oldCapabilityDenied = !oldCapabilityProbe.ok && upstream.observations.length === beforeOldCapability;
       if (!oldCapabilityDenied) throw new Error("old capability reached replacement runtime");
       const curlB = await phase("allowed_proxy_probe_v2", () =>
-        proxyProbe(runtimeB.listenerPort, proxyCapabilityV2, upstream.port, routePath),
+        proxyProbe(runtimeB.listenerPort, proxyCapabilityV2, upstream.port, routePath, 15, "allow", "capability-valid"),
       );
       if (!curlB.ok || curlB.stdout !== "ok") throw new Error("proxy probe v2 failed");
       const observationAfterB = upstream.observations.length;
@@ -397,6 +579,8 @@ async function main(): Promise<void> {
           mutationBStartedMs,
         ),
       );
+      relay?.clear();
+      const relaySnapshot = relay ? await phase("close_kvm_guest_relay", () => relay.close()) : undefined;
       await runtimeB.manager.close().catch(() => undefined);
       const completionsB = runtimeB.manager.drainCompletions(8);
       const walRecordsB = await readWal(walPathB);
@@ -433,7 +617,7 @@ async function main(): Promise<void> {
       const sidecar: Sidecar = {
         version: "cogs.stage3-real-runtime/v1alpha1",
         source_revision: sourceRevision,
-        profile: "insecure-container",
+        profile,
         release_eligible: false,
         components: {
           envoy: { version: envoyVersion, image_digest: envoyDigest, binary_sha256: binaryHash },
@@ -458,8 +642,20 @@ async function main(): Promise<void> {
           audit: "real",
           revocation: "real",
           telemetry: "stubbed",
-          network_enforcement: "not-applicable",
+          network_enforcement: authoritativeKvm ? "real" : "not-applicable",
         },
+        network_evidence: authoritativeKvm
+          ? {
+              mode: "linux-kvm",
+              authority: "authoritative-local",
+              relay: relaySnapshot ?? fail("missing relay snapshot"),
+              kvm: kvmEvidence ?? fail("missing KVM evidence"),
+              bypass_denials: bypassDenials,
+              openbao_actual_port_denied: openBaoActualPortDenied,
+              guest_firewall_trusted: false,
+              host_firewall_enforced: true,
+            }
+          : { mode: "not-applicable" },
         assertions: {
           openbao_loopback_only: openBaoOrigin.startsWith("http://127.0.0.1:"),
           credential_v1_injected: observedA.authorization === expectedAuthorization,
@@ -488,15 +684,34 @@ async function main(): Promise<void> {
           private_material_absent_from_reports: true,
           ca_private_key_not_returned: true,
           no_daemon_or_sandbox_replacement_claim: true,
+          ...(authoritativeKvm
+            ? {
+                kvm_guest_proxy_allowed_v1: curlA.ok && curlA.stdout === "ok",
+                kvm_guest_proxy_allowed_v2: curlB.ok && curlB.stdout === "ok",
+                kvm_bypass_matrix_denied:
+                  Object.values(bypassDenials).every((item) => item === true) && openBaoActualPortDenied,
+                kvm_relay_no_target_denied: noTargetDenied,
+                kvm_relay_identity_verified:
+                  relaySnapshot?.bindHost === "192.0.2.1" &&
+                  relaySnapshot.bindPort === 18080 &&
+                  relaySnapshot.activeTarget === null &&
+                  relaySnapshot.deniedConnections >= 1 &&
+                  noTargetDenied,
+                kvm_relay_cleanup_verified:
+                  relaySnapshot?.closed === true && relaySnapshot.ready === false && relaySnapshot.poisoned === false,
+              }
+            : {}),
         },
       };
       await phase("validate_sidecar", async () => assertValidRealRuntimeSidecar(sidecar));
       const report: SecurityReport = {
         version: "cogs.security-report/v1alpha1",
-        report_id: `stage3-real-runtime-${sourceRevision.slice(0, 12)}`,
+        report_id: authoritativeKvm
+          ? `stage3-real-runtime-linux-kvm-${sourceRevision.slice(0, 12)}`
+          : `stage3-real-runtime-${sourceRevision.slice(0, 12)}`,
         source_revision: sourceRevision,
-        profile: "insecure-container",
-        authority: "functional-only",
+        profile,
+        authority: authoritativeKvm ? "authoritative-local" : "functional-only",
         started_at: started.toISOString(),
         completed_at: completed.toISOString(),
         duration_ms: Date.now() - startedMs,
@@ -530,6 +745,20 @@ async function main(): Promise<void> {
             completion_count: completionsA.length + completionsB.length,
             proxy_capability_stripped_upstream: true,
             ca_private_key_not_returned: true,
+            ...(authoritativeKvm
+              ? {
+                  kvm_present: kvmEvidence?.kvm_present ?? false,
+                  kvm_enabled: kvmEvidence?.kvm_enabled ?? false,
+                  guest_root: kvmEvidence?.guest_root ?? false,
+                  distinct_boot_ids: kvmEvidence?.distinct_boot_ids ?? false,
+                  guest_kernel: kvmEvidence?.guest_kernel ?? null,
+                  guest_image_sha512: kvmEvidence?.guest_image_sha512 ?? null,
+                  host_enforced_network: true,
+                  guest_firewall_trusted: false,
+                  relay_bind: "192.0.2.1:18080",
+                  kvm_bypass_matrix_denied: Object.values(bypassDenials).every((item) => item),
+                }
+              : {}),
           },
         },
         components: [
@@ -542,7 +771,9 @@ async function main(): Promise<void> {
           audit: { mode: "real", implementation: "Cogs append-only WAL and Envoy completion correlation" },
           revocation: { mode: "real", implementation: "OpenBao KV-v2 metadata polling via production runtime binding" },
           identity: { mode: "real", implementation: "OpenBao scoped KV-v2 credential and PKI issue token" },
-          network_enforcement: { mode: "not-applicable", implementation: "insecure-container functional profile" },
+          network_enforcement: authoritativeKvm
+            ? { mode: "real", implementation: "host-owned KVM TAP INPUT/FORWARD policy plus 192.0.2.1:18080 relay" }
+            : { mode: "not-applicable", implementation: "insecure-container functional profile" },
         },
         tests: [
           {
@@ -557,17 +788,22 @@ async function main(): Promise<void> {
               identity: "real",
               revocation: "real",
               telemetry: "stubbed",
-              network_enforcement: "not-applicable",
+              network_enforcement: authoritativeKvm ? "real" : "not-applicable",
             },
-            diagnostics_redacted:
-              "Real runtime manager, Envoy process, OpenBao KV/PKI, metadata revocation callbacks, WAL, authz, tmpfs, and completion correlation passed in functional insecure-container evidence; telemetry remains stubbed and replacement is harness-driven after production callback.",
+            diagnostics_redacted: authoritativeKvm
+              ? "Real runtime manager, Envoy process, OpenBao KV/PKI, metadata revocation callbacks, WAL, authz, KVM guest probes, host firewall default-deny, relay cleanup, tmpfs, and completion correlation passed; telemetry remains stubbed and replacement is harness-driven after production callback."
+              : "Real runtime manager, Envoy process, OpenBao KV/PKI, metadata revocation callbacks, WAL, authz, tmpfs, and completion correlation passed in functional insecure-container evidence; telemetry remains stubbed and replacement is harness-driven after production callback.",
           },
         ],
         known_limitations: [
-          "Functional insecure-container evidence only; no bypass, default-deny, guest-reachability, or release claim.",
+          authoritativeKvm
+            ? "Authoritative local Linux/KVM network-enforcement evidence only; no AWS, production-profile, or release claim."
+            : "Functional insecure-container evidence only; no bypass, default-deny, guest-reachability, or release claim.",
           "WAL-to-OTLP buffering remains pending and telemetry is stubbed.",
           "Harness constructs the second runtime after observing the production replacement callback; no daemon or sandbox replacement automation is proven.",
-          "KVM authoritative guest proxy client evidence is intentionally out of scope for this harness slice.",
+          authoritativeKvm
+            ? "The host relay is a test-only bridge from the KVM guest to the active loopback runtime listener; it has no arbitrary direct fallback."
+            : "KVM authoritative guest proxy client evidence is intentionally out of scope for this harness slice.",
         ],
       };
       await phase("validate_security_report", async () => assertValidSecurityReport(report));
@@ -611,6 +847,8 @@ async function main(): Promise<void> {
       await upstream.stop();
     }
   } finally {
+    await activeRelay?.close().catch(() => undefined);
+    activeRelay = undefined;
     await Promise.all(managers.map((manager) => manager.close().catch(() => undefined)));
     await revokeTokens().catch(() => undefined);
     upstreamPrivateKey = "";
@@ -736,13 +974,88 @@ async function deleteCredential(): Promise<void> {
   await bao(`/v1/model/data/${secretHandle}`, { method: "DELETE", token: rootToken });
 }
 
+async function verifyKvmGuest(): Promise<KvmEvidence> {
+  await access("/dev/kvm", fsConstants.R_OK | fsConstants.W_OK);
+  const driver = resolve("dev/linux-kvm/driver.sh");
+  const { stdout } = (await execFileAsync(driver, ["verify"], {
+    timeout: 30_000,
+    maxBuffer: 64 * 1024,
+    windowsHide: true,
+  })) as { stdout: string };
+  const parsed = JSON.parse(stdout) as unknown;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("bad KVM verification");
+  const value = parsed as Record<string, unknown>;
+  exactKeys(value, [
+    "distinct_boot_ids",
+    "guest_image_sha512",
+    "guest_ip",
+    "guest_kernel",
+    "guest_root",
+    "host_ip",
+    "kvm_enabled",
+    "profile",
+    "proxy_port",
+    "status",
+  ]);
+  assert.deepEqual(
+    {
+      status: value.status,
+      profile: value.profile,
+      guest_root: value.guest_root,
+      kvm_enabled: value.kvm_enabled,
+      distinct_boot_ids: value.distinct_boot_ids,
+      host_ip: value.host_ip,
+      guest_ip: value.guest_ip,
+      proxy_port: value.proxy_port,
+    },
+    {
+      status: "ready",
+      profile: "linux-kvm",
+      guest_root: true,
+      kvm_enabled: true,
+      distinct_boot_ids: true,
+      host_ip: "192.0.2.1",
+      guest_ip: "192.0.2.2",
+      proxy_port: 18080,
+    },
+  );
+  if (typeof value.guest_kernel !== "string") throw new Error("bad KVM verification");
+  const guestKernel = value.guest_kernel;
+  assert.match(guestKernel, /^[A-Za-z0-9._+-]+$/);
+  assert.equal(value.guest_image_sha512, debianGuestImageSha512);
+  return Object.freeze({
+    kvm_present: true,
+    kvm_enabled: true,
+    guest_root: true,
+    distinct_boot_ids: true,
+    guest_kernel: guestKernel,
+    guest_image_sha512: debianGuestImageSha512,
+    host_ip: "192.0.2.1",
+    guest_ip: "192.0.2.2",
+    proxy_port: 18080,
+  });
+}
+
 async function proxyProbe(
   listenerPort: number,
   capability: string,
   upstreamPort: number,
   path: string,
   maxTimeSeconds = 15,
+  expected: "allow" | "deny" = "allow",
+  scenario: string = path === routePath ? "capability-valid" : "wrong-path",
 ): Promise<{ stdout: string; stderr: string; ok: boolean }> {
+  if (authoritativeKvm) {
+    const target = activeRelay?.snapshot().activeTarget;
+    assert.equal(target === listenerPort || expected === "deny", true);
+    const result = await guestProbe(scenario, "https", upstreamPort, capability, expected);
+    if (!result.passed) throw new Error("KVM guest probe failed expectation");
+    return {
+      stdout: expected === "allow" ? "ok" : "",
+      stderr: result.diagnosticsRedacted,
+      ok: expected === "allow",
+    };
+  }
   try {
     const { stdout, stderr } = (await execFileAsync(
       "curl",
@@ -766,6 +1079,51 @@ async function proxyProbe(
   } catch {
     return { stdout: "", stderr: "", ok: false };
   }
+}
+
+async function runKvmBypassMatrix(
+  upstreamPort: number,
+  capability: string,
+): Promise<Record<(typeof bypassScenarios)[number], boolean>> {
+  const results = {} as Record<(typeof bypassScenarios)[number], boolean>;
+  for (const scenario of bypassScenarios) {
+    const result = await guestProbe(scenario, "bypass", upstreamPort, capability, "deny");
+    if (!result.passed) throw new Error("KVM bypass probe failed expectation");
+    results[scenario] = true;
+  }
+  return results;
+}
+
+async function guestProbe(
+  scenario: string,
+  kind: string,
+  targetPort: number,
+  capability: string,
+  expect: "allow" | "deny" | "safe",
+): Promise<{ passed: boolean; diagnosticsRedacted: string }> {
+  const script = resolve("test/egress-conformance/guest-probes/run-kvm-black-box-case.sh");
+  const { stdout } = (await execFileAsync(script, [], {
+    env: {
+      ...process.env,
+      COGS_SUITE_GUEST_PROXY: "http://192.0.2.1:18080",
+      COGS_SUITE_TARGET_PORT: String(targetPort),
+      COGS_SUITE_PUBLIC_CA: trustPath,
+      COGS_SUITE_CAPABILITY: capability,
+      COGS_SUITE_SCENARIO: scenario,
+      COGS_SUITE_KIND: kind,
+      COGS_SUITE_EXPECT: expect,
+    },
+    timeout: 30_000,
+    maxBuffer: 64 * 1024,
+    windowsHide: true,
+  })) as { stdout: string };
+  const parsed = JSON.parse(stdout) as unknown;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("bad guest probe");
+  const result = parsed as Record<string, unknown>;
+  exactKeys(result, ["diagnosticsRedacted", "passed"]);
+  if (typeof result.passed !== "boolean" || typeof result.diagnosticsRedacted !== "string")
+    throw new Error("bad guest probe");
+  return { passed: result.passed, diagnosticsRedacted: result.diagnosticsRedacted };
 }
 
 async function waitForReplacement(
@@ -794,7 +1152,7 @@ async function waitForReplacement(
         throw new Error(`revocation ${reason} callback bound failed`);
       assert.equal(manager.ready, false);
       assert.equal(manager.replacementRequired, true);
-      const probe = await proxyProbe(listenerPort, capability, upstreamPort, routePath, 3);
+      const probe = await proxyProbe(listenerPort, capability, upstreamPort, routePath, 3, "deny", "capability-valid");
       const drainProbeMs = Date.now() - mutationStartedMs;
       if (probe.ok) throw new Error(`revocation ${reason} old listener still accepted proxy request`);
       if (observations.length !== observationBaseline)
@@ -990,6 +1348,10 @@ async function run(
     throw new Error("external command failed");
   }
 }
+function fail(message: string): never {
+  throw new Error(message);
+}
+
 function requiredEnv(name: string, pattern: RegExp): string {
   const value = process.env[name];
   if (typeof value !== "string" || !pattern.test(value)) throw new Error(`missing ${name}`);
