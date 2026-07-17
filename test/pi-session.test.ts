@@ -112,6 +112,33 @@ function dependencies(shutdowns: string[]): LaunchDependency[] {
   }));
 }
 
+function pausedObserver(state: { started: boolean; aborted: boolean; calls?: number }): CogsGitObserver {
+  return Object.freeze({
+    observeHead: async (input: { readonly signal?: AbortSignal } = {}): Promise<CogsGitObservation> => {
+      state.calls = (state.calls ?? 0) + 1;
+      if (state.calls <= 2)
+        return Object.freeze({
+          kind: "observed" as const,
+          repo: "workspace-1",
+          commit: "a".repeat(40),
+          observed_at: "2026-07-17T00:00:00.000Z",
+        });
+      state.started = true;
+      return new Promise((_resolve, reject) => {
+        const abort = () => {
+          state.aborted = true;
+          reject(new Error("aborted"));
+        };
+        if (input.signal?.aborted) return abort();
+        input.signal?.addEventListener("abort", abort, { once: true });
+      });
+    },
+    nearestAncestor: async () => null,
+    appendNote: async () => true,
+    dispose: async () => undefined,
+  });
+}
+
 function fakeObserver(commits: readonly string[], notes: CogsGitMapRecord[] = []): CogsGitObserver {
   let index = 0;
   return Object.freeze({
@@ -2710,6 +2737,215 @@ test("Pi session creates authenticated local export descriptor without adding a 
       } finally {
         await api.close();
       }
+    } finally {
+      await adapter.dispose();
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Pi session prepareShutdown maps shutdown boundary before final export and ready event", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "cogs-pi-shutdown-export-"));
+  try {
+    const cwd = resolve(root, "workspace");
+    const agentDir = resolve(root, "agent");
+    const sessionRoot = resolve(root, "sessions");
+    await mkdir(cwd, { recursive: true });
+    await mkdir(agentDir, { recursive: true });
+    await mkdir(sessionRoot, { recursive: true });
+    const events: string[] = [];
+    const notes: CogsGitMapRecord[] = [];
+    const adapter = await createCogsPiSession(
+      withDefaults({
+        cwd,
+        agentDir,
+        sessionRoot,
+        sessionId: "shutdown-session",
+        model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+        apiKey: "sk-ant-api03-shutdown-export",
+        toolPorts: fakePorts([]),
+        streamFn: textStream("shutdown ready"),
+        preparedResources: hostilePrepared(),
+        git: {
+          repositoryId: "workspace-1",
+          observer: fakeObserver(["a".repeat(40), "b".repeat(40), "c".repeat(40)], notes),
+        },
+        emit: (event) => {
+          events.push(`${event.kind}:${(event.payload as { boundary?: unknown }).boundary ?? ""}`);
+          return true;
+        },
+      }),
+    );
+    try {
+      assert.deepEqual(adapter.activeToolNames(), COGS_PI_TOOL_NAMES);
+      await adapter.input({ requestId: "run", correlationId: "corr", kind: "prompt", content: "go" });
+      await eventually(async () => assert.equal((await adapter.state()).runState, "settled"));
+      const [first, second] = await Promise.all([
+        adapter.prepareShutdown({ requestId: "shutdown", correlationId: "corr" }),
+        adapter.prepareShutdown({ requestId: "shutdown", correlationId: "corr" }),
+      ]);
+      assert.deepEqual(second, first);
+      assert.equal((await adapter.state()).runState, "shutdown");
+      assert.equal(events.filter((event) => event === "git_mapping:shutdown").length, 1, JSON.stringify(events));
+      assert.equal(events.filter((event) => event === "shutdown_ready:").length, 1, JSON.stringify(events));
+      assert.ok(events.indexOf("git_mapping:shutdown") >= 0, JSON.stringify(events));
+      assert.ok(events.indexOf("shutdown_ready:") > events.indexOf("git_mapping:shutdown"));
+      assert.equal(notes.at(-1)?.commit, "c".repeat(40));
+      await assert.rejects(adapter.createExport({ requestId: "late", correlationId: "corr" }), /closed/);
+      const gitMap = JSON.parse(
+        await readFile(
+          resolve(sessionRoot, "shutdown-session", "exports", "cogs-session-shutdown-session", "git-map.json"),
+          "utf8",
+        ),
+      );
+      assert.equal(gitMap.records.at(-1).commit, "c".repeat(40));
+      assert.equal(JSON.stringify(first).includes("sk-ant-api03"), false);
+    } finally {
+      await adapter.dispose();
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Pi session dispose aborts and joins draining shutdown without late ready", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "cogs-pi-shutdown-dispose-"));
+  try {
+    const cwd = resolve(root, "workspace");
+    const agentDir = resolve(root, "agent");
+    const sessionRoot = resolve(root, "sessions");
+    await mkdir(cwd, { recursive: true });
+    await mkdir(agentDir, { recursive: true });
+    const events: string[] = [];
+    const observerState = { started: false, aborted: false };
+    const adapter = await createCogsPiSession(
+      withDefaults({
+        cwd,
+        agentDir,
+        sessionRoot,
+        sessionId: "shutdown-dispose-session",
+        model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+        apiKey: "sk-ant-api03-shutdown-dispose",
+        toolPorts: fakePorts([]),
+        streamFn: textStream("ready"),
+        preparedResources: hostilePrepared(),
+        git: { repositoryId: "workspace-1", observer: pausedObserver(observerState) },
+        emit: (event) => {
+          events.push(event.kind);
+          return true;
+        },
+      }),
+    );
+    await adapter.input({ requestId: "run", correlationId: "corr", kind: "prompt", content: "go" });
+    await eventually(async () => assert.equal((await adapter.state()).runState, "settled"));
+    const preparing = adapter.prepareShutdown({ requestId: "shutdown", correlationId: "corr" });
+    await eventually(() => assert.equal(observerState.started, true));
+    await adapter.dispose();
+    await assert.rejects(preparing, /shutdown preparation failed/);
+    assert.equal(observerState.aborted, true);
+    assert.equal(events.includes("shutdown_ready"), false);
+    assert.equal((await adapter.state()).runState, "shutdown");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Pi session shutdown rejection cases preserve active turn and fail closed on ready publication", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "cogs-pi-shutdown-reject-"));
+  try {
+    const cwd = resolve(root, "workspace");
+    const agentDir = resolve(root, "agent");
+    const sessionRoot = resolve(root, "sessions");
+    await mkdir(cwd, { recursive: true });
+    await mkdir(agentDir, { recursive: true });
+    const active = await createCogsPiSession(
+      withDefaults({
+        cwd,
+        agentDir,
+        sessionRoot,
+        sessionId: "shutdown-active-session",
+        model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+        apiKey: "sk-ant-api03-shutdown-active",
+        toolPorts: fakePorts([]),
+        streamFn: hangingStream({ count: 0 }),
+      }),
+    );
+    try {
+      await active.input({ requestId: "run", correlationId: "corr", kind: "prompt", content: "go" });
+      await eventually(async () => assert.equal((await active.state()).runState, "running"));
+      await assert.rejects(active.prepareShutdown({ requestId: "shutdown", correlationId: "corr" }), /not idle/);
+      assert.equal((await active.state()).runState, "running");
+    } finally {
+      await active.dispose().catch(() => undefined);
+    }
+
+    let readyAttempts = 0;
+    const failReady = await createCogsPiSession(
+      withDefaults({
+        cwd,
+        agentDir,
+        sessionRoot,
+        sessionId: "shutdown-ready-fail-session",
+        model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+        apiKey: "sk-ant-api03-shutdown-ready-fail",
+        toolPorts: fakePorts([]),
+        streamFn: textStream("ready"),
+        preparedResources: hostilePrepared(),
+        emit: (event) => {
+          if (event.kind === "shutdown_ready") {
+            readyAttempts += 1;
+            return false;
+          }
+          return true;
+        },
+      }),
+    );
+    await failReady.input({ requestId: "run", correlationId: "corr", kind: "prompt", content: "go" });
+    await eventually(async () => assert.equal((await failReady.state()).runState, "settled"));
+    await assert.rejects(failReady.prepareShutdown({ requestId: "shutdown", correlationId: "corr" }), /failed/);
+    assert.equal(readyAttempts, 1);
+    assert.equal((await failReady.state()).runState, "shutdown");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Pi session shutdown without Git still emits one ready", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "cogs-pi-shutdown-nongit-"));
+  try {
+    const cwd = resolve(root, "workspace");
+    const agentDir = resolve(root, "agent");
+    const sessionRoot = resolve(root, "sessions");
+    await mkdir(cwd, { recursive: true });
+    await mkdir(agentDir, { recursive: true });
+    const events: string[] = [];
+    const adapter = await createCogsPiSession(
+      withDefaults({
+        cwd,
+        agentDir,
+        sessionRoot,
+        sessionId: "shutdown-nongit-session",
+        model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+        apiKey: "sk-ant-api03-shutdown-nongit",
+        toolPorts: fakePorts([]),
+        streamFn: textStream("ready"),
+        preparedResources: hostilePrepared(),
+        emit: (event) => {
+          events.push(event.kind);
+          return true;
+        },
+      }),
+    );
+    try {
+      await adapter.input({ requestId: "run", correlationId: "corr", kind: "prompt", content: "go" });
+      await eventually(async () => assert.equal((await adapter.state()).runState, "settled"));
+      const [first, second] = await Promise.all([
+        adapter.prepareShutdown({ requestId: "shutdown", correlationId: "corr" }),
+        adapter.prepareShutdown({ requestId: "shutdown", correlationId: "corr" }),
+      ]);
+      assert.deepEqual(second, first);
+      assert.equal(events.filter((event) => event === "shutdown_ready").length, 1);
     } finally {
       await adapter.dispose();
     }

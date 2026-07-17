@@ -120,6 +120,11 @@ export interface CogsPiSessionPorts extends SessionPort, HistoryPort, ExportPort
     commit: string;
     signal?: AbortSignal;
   }) => Promise<CogsGitMapResolveResult | undefined>;
+  readonly prepareShutdown: (input: {
+    requestId: string;
+    correlationId: string;
+    signal?: AbortSignal;
+  }) => Promise<JsonValue>;
   readonly navigate: (
     entryId: string,
     input?: { signal?: AbortSignal },
@@ -528,6 +533,7 @@ export async function createCogsPiSession(options: CogsPiSessionOptions): Promis
       emit,
       onFatal,
       provider: modelProvider,
+      sessionId,
       secret,
       operationTimeoutMs,
       abortTimeoutMs,
@@ -787,9 +793,9 @@ function strictGuestBaseDir(baseDir: string, filePath: string): boolean {
   return base[1] === file[1] && base[2] === "skills" && base[3] === file[3];
 }
 
-type AdapterPhase = "open" | "running" | "aborting" | "failed" | "disposed";
+type AdapterPhase = "open" | "running" | "aborting" | "draining" | "shutdown" | "failed" | "disposed";
 type CogsToolGitHooks = { readonly afterTool: (toolCallId: string, signal?: AbortSignal) => Promise<void> };
-type CogsGitBoundaryKind = "user" | "tool" | "settle";
+type CogsGitBoundaryKind = "user" | "tool" | "settle" | "shutdown";
 type PendingCapture = {
   readonly observation: CogsGitObservation;
   readonly boundary: CogsGitBoundaryKind;
@@ -919,6 +925,32 @@ class CogsGitBoundary {
     this.clearPending();
   }
 
+  public async shutdown(
+    sessionManager: SessionManager,
+    correlationId: string,
+    requestId: string | undefined,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    await this.drain();
+    if (this.disposed) return;
+    this.reportIncomplete(correlationId, requestId);
+    this.clearPending();
+    const observation = await this.safeObserve(signal);
+    if (observation.kind === "unavailable") {
+      this.warn(correlationId, requestId, "git-head-unavailable", "shutdown");
+      return;
+    }
+    await this.bindLeaf(
+      sessionManager,
+      Object.freeze({ observation, boundary: "shutdown" as const, turn: this.turn }),
+      correlationId,
+      requestId,
+      undefined,
+      signal,
+    );
+    await this.drain();
+  }
+
   public resolve(input: { repo: string; commit: string; signal?: AbortSignal }): Promise<CogsGitMapResolveResult> {
     return this.options.store.resolve({
       repo: input.repo,
@@ -988,13 +1020,14 @@ class CogsGitBoundary {
     correlationId: string,
     requestId: string | undefined,
     expected?: { role: "user" } | { role: "toolResult"; toolCallId: string },
+    signal?: AbortSignal,
   ): Promise<void> {
     if (this.disposed) return;
     if (capture.observation.kind === "unavailable") {
       this.warn(correlationId, requestId, "git-head-unavailable", capture.boundary);
       return;
     }
-    await this.bindEntry(latestEntry(sessionManager), capture, correlationId, requestId, expected);
+    await this.bindEntry(latestEntry(sessionManager), capture, correlationId, requestId, expected, signal);
   }
 
   private async bindEntry(
@@ -1003,6 +1036,7 @@ class CogsGitBoundary {
     correlationId: string,
     requestId: string | undefined,
     expected?: { role: "user" } | { role: "toolResult"; toolCallId: string },
+    signal?: AbortSignal,
   ): Promise<void> {
     if (capture.observation.kind === "unavailable") {
       this.warn(correlationId, requestId, "git-head-unavailable", capture.boundary);
@@ -1032,7 +1066,7 @@ class CogsGitBoundary {
     };
     let appended: CogsGitMapRecord;
     try {
-      appended = await this.options.store.append(record);
+      appended = await this.options.store.append(record, signal === undefined ? {} : { signal });
     } catch {
       this.warn(correlationId, requestId, "git-map-unavailable", capture.boundary);
       return;
@@ -1042,7 +1076,9 @@ class CogsGitBoundary {
       let ok = false;
       try {
         ok = await observerDeadline(
-          Promise.resolve().then(() => this.options.observer.appendNote(appended)),
+          Promise.resolve().then(() =>
+            this.options.observer.appendNote(appended, signal === undefined ? {} : { signal }),
+          ),
           2500,
         );
       } catch {
@@ -1196,6 +1232,101 @@ function observerDeadline<T>(promise: Promise<T> | PromiseLike<T>, ms: number, o
   });
 }
 
+function snapshotExportDescriptor(value: unknown, sessionId: string): Record<string, JsonValue> {
+  try {
+    const snapshot = exactValues(value, [
+      "anonymized",
+      "attachments_included",
+      "bundle",
+      "created_at",
+      "file_count",
+      "manifest_sha256",
+      "mode",
+      "sanitized",
+      "sensitive",
+      "total_bytes",
+      "version",
+    ]);
+    if (
+      snapshot.version !== "cogs.export-descriptor/v1alpha1" ||
+      snapshot.bundle !== `cogs-session-${sessionId}` ||
+      typeof snapshot.manifest_sha256 !== "string" ||
+      !/^[a-f0-9]{64}$/.test(snapshot.manifest_sha256) ||
+      typeof snapshot.created_at !== "string" ||
+      !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(snapshot.created_at) ||
+      new Date(snapshot.created_at).toISOString() !== snapshot.created_at ||
+      snapshot.mode !== "raw" ||
+      snapshot.attachments_included !== false ||
+      snapshot.sensitive !== true ||
+      snapshot.sanitized !== false ||
+      snapshot.anonymized !== false ||
+      typeof snapshot.file_count !== "number" ||
+      !Number.isSafeInteger(snapshot.file_count) ||
+      snapshot.file_count !== 6 ||
+      typeof snapshot.total_bytes !== "number" ||
+      !Number.isSafeInteger(snapshot.total_bytes) ||
+      snapshot.total_bytes < 1 ||
+      snapshot.total_bytes > 72 * 1024 * 1024
+    )
+      throw new Error("bad descriptor");
+    return {
+      version: snapshot.version,
+      bundle: snapshot.bundle,
+      manifest_sha256: snapshot.manifest_sha256,
+      created_at: snapshot.created_at,
+      mode: snapshot.mode,
+      attachments_included: false,
+      file_count: snapshot.file_count,
+      total_bytes: snapshot.total_bytes,
+      sensitive: true,
+      sanitized: false,
+      anonymized: false,
+    };
+  } catch {
+    throw new Error("invalid export descriptor");
+  }
+}
+
+function optionalExactValues(value: unknown, keys: readonly string[]): Record<string, unknown> {
+  if (
+    value === null ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    Object.getPrototypeOf(value) !== Object.prototype
+  )
+    throw new Error("bad input");
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const actual = Reflect.ownKeys(descriptors);
+  const allowed = new Set(keys);
+  if (!actual.every((key) => typeof key === "string" && allowed.has(key))) throw new Error("bad input");
+  const out: Record<string, unknown> = {};
+  for (const key of keys) {
+    const descriptor = descriptors[key];
+    if (descriptor === undefined) continue;
+    if (!descriptor.enumerable || !("value" in descriptor)) throw new Error("bad input");
+    out[key] = descriptor.value;
+  }
+  return out;
+}
+
+function snapshotShutdownInput(input: unknown): { requestId: string; correlationId: string; signal?: AbortSignal } {
+  try {
+    const snapshot = optionalExactValues(input, ["correlationId", "requestId", "signal"]);
+    if (typeof snapshot.requestId !== "string" || typeof snapshot.correlationId !== "string")
+      throw new Error("bad shutdown request");
+    assertOpaqueId(snapshot.requestId, "request id");
+    assertOpaqueId(snapshot.correlationId, "correlation id");
+    if (snapshot.signal !== undefined && !(snapshot.signal instanceof AbortSignal)) throw new Error("bad signal");
+    return Object.freeze({
+      requestId: snapshot.requestId,
+      correlationId: snapshot.correlationId,
+      ...(snapshot.signal === undefined ? {} : { signal: snapshot.signal }),
+    });
+  } catch {
+    throw new Error("invalid shutdown request");
+  }
+}
+
 function snapshotCheckpointResult(
   value: unknown,
   input: { repo: string; session: string; entry: string; turn: number; head: string; observed_at: string },
@@ -1271,6 +1402,8 @@ class PiSessionAdapter implements CogsPiSessionPorts {
   private active: ActiveRun | undefined;
   private phase: AdapterPhase = "open";
   private cleanupPromise: Promise<void> | undefined;
+  private shutdownPreparePromise: Promise<JsonValue> | undefined;
+  private shutdownPrepareAbort: { abort: () => void } | undefined;
   private fatalEmitted = false;
   private readonly timeoutMs: number;
   private readonly abortTimeoutMs: number;
@@ -1285,6 +1418,7 @@ class PiSessionAdapter implements CogsPiSessionPorts {
       readonly emit: (event: ApiEvent) => boolean | undefined;
       readonly onFatal: (reason: string) => void | Promise<void>;
       readonly provider: string;
+      readonly sessionId: string;
       readonly secret: SecretHolder;
       readonly operationTimeoutMs: number | undefined;
       readonly abortTimeoutMs: number | undefined;
@@ -1431,6 +1565,37 @@ class PiSessionAdapter implements CogsPiSessionPorts {
     }
   }
 
+  public async prepareShutdown(input: {
+    requestId: string;
+    correlationId: string;
+    signal?: AbortSignal;
+  }): Promise<JsonValue> {
+    const request = snapshotShutdownInput(input);
+    if (this.shutdownPreparePromise !== undefined) return this.shutdownPreparePromise;
+    await throwIfAborted(request.signal);
+    if (this.shutdownPreparePromise !== undefined) return this.shutdownPreparePromise;
+    if (this.phase === "shutdown") return { version: "cogs.shutdown-ready/v1alpha1", already_ready: true };
+    if (this.phase !== "open" || this.active !== undefined || this.session.isStreaming)
+      throw new Error("Pi session is not idle");
+    this.phase = "draining";
+    const controller = linkedAbortSignal(request.signal);
+    this.shutdownPrepareAbort = controller;
+    this.shutdownPreparePromise = this.prepareShutdownOnce({
+      requestId: request.requestId,
+      correlationId: request.correlationId,
+      signal: controller.signal,
+    })
+      .catch(async (error) => {
+        await this.failClosed("shutdown-prepare-failed", this.active).catch(() => undefined);
+        throw error instanceof Error ? error : new Error("shutdown preparation failed");
+      })
+      .finally(() => {
+        controller.dispose();
+        if (this.shutdownPrepareAbort === controller) this.shutdownPrepareAbort = undefined;
+      });
+    return this.shutdownPreparePromise;
+  }
+
   public async createExport(input: {
     requestId: string;
     correlationId: string;
@@ -1447,6 +1612,20 @@ class PiSessionAdapter implements CogsPiSessionPorts {
 
   public async dispose(): Promise<void> {
     if (this.phase === "disposed") return;
+    if (this.phase === "draining" && this.shutdownPreparePromise !== undefined) {
+      this.shutdownPrepareAbort?.abort();
+      try {
+        await observerDeadline(
+          this.shutdownPreparePromise.then(
+            () => undefined,
+            () => undefined,
+          ),
+          this.abortTimeoutMs,
+        );
+      } catch {
+        throw new Error("Pi session cleanup failed");
+      }
+    }
     if (this.cleanupPromise !== undefined) {
       await this.cleanupPromise;
       this.phase = "disposed";
@@ -1465,17 +1644,59 @@ class PiSessionAdapter implements CogsPiSessionPorts {
     } catch (error) {
       cleanupError = error;
     }
-    try {
-      await this.runtime.localExporter.dispose();
-      await this.runtime.gitBinding?.dispose();
-      await this.runtime.preparedResources?.dispose();
-    } catch (error) {
-      cleanupError = error;
+    for (const cleanup of [
+      () => this.runtime.localExporter.dispose(),
+      () => this.runtime.gitBinding?.dispose() ?? Promise.resolve(),
+      () => this.runtime.preparedResources?.dispose() ?? Promise.resolve(),
+    ]) {
+      try {
+        await cleanup();
+      } catch (error) {
+        cleanupError = error;
+      }
     }
     this.#authStorage.removeRuntimeApiKey(this.runtime.provider);
     this.runtime.secret.value = "";
     this.phase = "disposed";
     if (cleanupError !== undefined) throw new Error("Pi session cleanup failed");
+  }
+
+  private async prepareShutdownOnce(input: {
+    requestId: string;
+    correlationId: string;
+    signal?: AbortSignal;
+  }): Promise<JsonValue> {
+    try {
+      await throwIfAborted(input.signal);
+      await this.runtime.historyStore.flushSettled(input.signal === undefined ? {} : { signal: input.signal });
+      await this.runtime.gitBinding?.shutdown(this.sessionManager, input.correlationId, input.requestId, input.signal);
+      await throwIfAborted(input.signal);
+      const descriptor = snapshotExportDescriptor(
+        await this.runtime.localExporter.createExport(input.signal === undefined ? {} : { signal: input.signal }),
+        this.runtime.sessionId,
+      );
+      const payload = sanitizeJson(
+        {
+          version: "cogs.shutdown-ready/v1alpha1",
+          bundle: descriptor.bundle,
+          manifest_sha256: descriptor.manifest_sha256,
+          created_at: descriptor.created_at,
+          mode: descriptor.mode,
+          attachments_included: descriptor.attachments_included,
+          file_count: descriptor.file_count,
+          total_bytes: descriptor.total_bytes,
+          sensitive: true,
+          sanitized: false,
+          anonymized: false,
+        },
+        { secrets: [this.runtime.secret.value] },
+      ) as Record<string, JsonValue>;
+      this.emitOrFail("shutdown_ready", input.correlationId, input.requestId, payload);
+      this.phase = "shutdown";
+      return Object.freeze(payload);
+    } catch {
+      throw new Error("shutdown preparation failed");
+    }
   }
 
   private async runPrompt(active: ActiveRun, content: string): Promise<void> {
@@ -1580,7 +1801,8 @@ class PiSessionAdapter implements CogsPiSessionPorts {
   }
 
   private stateSync(): RunState {
-    if (this.phase === "disposed" || this.phase === "failed") return "shutdown";
+    if (this.phase === "disposed" || this.phase === "failed" || this.phase === "shutdown" || this.phase === "draining")
+      return "shutdown";
     if (this.phase === "aborting") return "aborting";
     const active = this.active;
     if (active !== undefined && !active.terminal) return "running";
@@ -1686,6 +1908,7 @@ class PiSessionAdapter implements CogsPiSessionPorts {
     if (this.cleanupPromise !== undefined) return this.cleanupPromise;
     if (this.phase === "failed" || this.phase === "disposed") return;
     this.phase = "aborting";
+    this.shutdownPrepareAbort?.abort();
     if (active !== undefined) {
       active.suppressLate = true;
       if (active.deadline !== undefined) clearTimeout(active.deadline);
@@ -1703,11 +1926,16 @@ class PiSessionAdapter implements CogsPiSessionPorts {
         } catch (error) {
           cleanupError = error;
         }
-        try {
-          await this.runtime.gitBinding?.dispose();
-          await this.runtime.preparedResources?.dispose();
-        } catch (error) {
-          cleanupError = error;
+        for (const cleanup of [
+          () => this.runtime.localExporter.dispose(),
+          () => this.runtime.gitBinding?.dispose() ?? Promise.resolve(),
+          () => this.runtime.preparedResources?.dispose() ?? Promise.resolve(),
+        ]) {
+          try {
+            await cleanup();
+          } catch (error) {
+            cleanupError = error;
+          }
         }
         this.#authStorage.removeRuntimeApiKey(this.runtime.provider);
         this.runtime.secret.value = "";
@@ -1860,6 +2088,22 @@ function createCogsTools(
         }),
     }),
   ];
+}
+
+function linkedAbortSignal(parent: AbortSignal | undefined): {
+  signal: AbortSignal;
+  abort: () => void;
+  dispose: () => void;
+} {
+  const controller = new AbortController();
+  if (parent?.aborted) controller.abort();
+  const abort = () => controller.abort();
+  parent?.addEventListener("abort", abort, { once: true });
+  return {
+    signal: controller.signal,
+    abort: () => controller.abort(),
+    dispose: () => parent?.removeEventListener("abort", abort),
+  };
 }
 
 function withSignal<T extends object>(params: T, signal: AbortSignal | undefined): T & { signal?: AbortSignal } {
