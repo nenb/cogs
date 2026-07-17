@@ -20,6 +20,18 @@ import type { ApiEvent, HistoryPort, InputKind, JsonValue, RunState, SessionPort
 import { type ModelApiKeySource, ModelCredentialResolver, validateModelApiKey } from "../auth/model-auth.ts";
 import { validateLaunchConfig } from "../launch/config.ts";
 import {
+  type CogsGitMapRecord,
+  type CogsGitMapResolveResult,
+  type CogsGitMapStore,
+  createCogsGitMapStore,
+} from "../session/git-map.ts";
+import {
+  type CogsGitObservation,
+  type CogsGitObserver,
+  createSshGitObserver,
+  gitObservationEvent,
+} from "../session/git-observer.ts";
+import {
   CogsJsonlHistoryCursorError,
   type CogsJsonlHistoryStore,
   createCogsJsonlHistoryStore,
@@ -30,6 +42,7 @@ import type {
   CogsPreparedSkills,
   CogsSkillPreparerPort,
 } from "../skills/session-preparer.ts";
+import type { SshConnectionManager } from "../ssh/connection.ts";
 
 export const COGS_PI_TOOL_NAMES = ["read", "write", "edit", "bash"] as const;
 export type CogsPiToolName = (typeof COGS_PI_TOOL_NAMES)[number];
@@ -66,6 +79,14 @@ export interface CogsPiSessionOptions {
   readonly abortTimeoutMs?: number;
   readonly maxToolResultBytes?: number;
   readonly preparedResources?: CogsPreparedSkills;
+  readonly git?: CogsPiGitOptions;
+}
+
+export interface CogsPiGitOptions {
+  readonly repositoryId: string;
+  readonly manager?: SshConnectionManager;
+  readonly observer?: CogsGitObserver;
+  readonly enableNotes?: boolean;
 }
 
 export interface AuthenticatedCogsPiSessionOptions
@@ -82,6 +103,12 @@ export interface CogsPiSessionPorts extends SessionPort, HistoryPort {
   readonly activeToolNames: () => readonly string[];
   readonly sessionFile: () => string | undefined;
   readonly skillMetadata: () => CogsPreparedSkillMetadata | undefined;
+  readonly gitMapRecords: () => readonly CogsGitMapRecord[];
+  readonly resolveGitMapping: (input: {
+    repo: string;
+    commit: string;
+    signal?: AbortSignal;
+  }) => Promise<CogsGitMapResolveResult | undefined>;
   readonly navigate: (
     entryId: string,
     input?: { signal?: AbortSignal },
@@ -116,6 +143,81 @@ function validateOptionalInteger(value: number | undefined, label: string, minim
   if (!Number.isInteger(value) || value < minimum || value > maximum) throw new Error(`invalid ${label}`);
 }
 
+function validateGitOptions(value: CogsPiGitOptions | undefined): CogsPiGitOptions | undefined {
+  try {
+    if (value === undefined) return undefined;
+    if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid git options");
+    if (Object.getPrototypeOf(value) !== Object.prototype) throw new Error("invalid git options");
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const keys = Reflect.ownKeys(descriptors);
+    const allowed = ["repositoryId", "manager", "observer", "enableNotes"];
+    if (!keys.every((key) => typeof key === "string" && allowed.includes(key))) throw new Error("invalid git options");
+    if (
+      !descriptors.repositoryId ||
+      !("value" in descriptors.repositoryId) ||
+      descriptors.repositoryId.enumerable !== true
+    )
+      throw new Error("invalid git options");
+    const repositoryId = descriptors.repositoryId.value;
+    const manager = dataValue(descriptors, "manager");
+    const observer = dataValue(descriptors, "observer");
+    const enableNotes = dataValue(descriptors, "enableNotes");
+    if (typeof repositoryId !== "string") throw new Error("invalid git options");
+    assertOpaqueId(repositoryId, "repository id");
+    if ((manager === undefined) === (observer === undefined)) throw new Error("invalid git options");
+    if (observer !== undefined) validateObserverShape(observer);
+    if (manager !== undefined) validateManagerShape(manager);
+    if (enableNotes !== undefined && typeof enableNotes !== "boolean") throw new Error("invalid git options");
+    return Object.freeze({
+      repositoryId,
+      ...(manager === undefined ? {} : { manager: manager as SshConnectionManager }),
+      ...(observer === undefined ? {} : { observer: observer as CogsGitObserver }),
+      ...(enableNotes === undefined ? {} : { enableNotes }),
+    }) as CogsPiGitOptions;
+  } catch {
+    throw new Error("invalid git options");
+  }
+}
+
+function dataValue(descriptors: PropertyDescriptorMap, key: string): unknown {
+  const descriptor = descriptors[key];
+  if (descriptor === undefined) return undefined;
+  if (!("value" in descriptor) || descriptor.enumerable !== true) throw new Error("invalid git options");
+  return descriptor.value;
+}
+
+function validateObserverShape(value: unknown): void {
+  if (value === null || typeof value !== "object" || !Object.isFrozen(value)) throw new Error("invalid git options");
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const keys = Reflect.ownKeys(descriptors).sort();
+  if (keys.join("\0") !== ["appendNote", "dispose", "nearestAncestor", "observeHead"].join("\0"))
+    throw new Error("invalid git options");
+  for (const key of keys) {
+    if (typeof key !== "string") throw new Error("invalid git options");
+    const descriptor = descriptors[key];
+    if (descriptor === undefined || !("value" in descriptor) || descriptor.enumerable !== true)
+      throw new Error("invalid git options");
+    if (typeof descriptor.value !== "function") throw new Error("invalid git options");
+  }
+}
+
+function validateManagerShape(value: unknown): void {
+  if (value === null || typeof value !== "object") throw new Error("invalid git options");
+  let current: object | null = value;
+  const seen = new Set<object>();
+  for (let depth = 0; current !== null && depth < 8; depth += 1) {
+    if (seen.has(current)) throw new Error("invalid git options");
+    seen.add(current);
+    const descriptor = Object.getOwnPropertyDescriptor(current, "withBashExec");
+    if (descriptor !== undefined) {
+      if (!("value" in descriptor) || typeof descriptor.value !== "function") throw new Error("invalid git options");
+      return;
+    }
+    current = Object.getPrototypeOf(current);
+  }
+  throw new Error("invalid git options");
+}
+
 export function createLockedResourceLoader(
   input: {
     readonly systemPrompt?: string;
@@ -147,9 +249,11 @@ export async function createAuthenticatedCogsPiSession({
   modelApiKeys,
   skillPreparer,
   signal,
+  git,
   ...sessionOptions
 }: AuthenticatedCogsPiSessionOptions): Promise<CogsPiSessionPorts> {
   const launch = validateLaunchConfig(launchDocument);
+  const authenticatedGit = validateGitOptions(git);
   const prepareSkills = validateSkillPreparer(skillPreparer);
   let preparedResources: CogsPreparedSkills;
   try {
@@ -180,6 +284,16 @@ export async function createAuthenticatedCogsPiSession({
           model: { provider: launch.model.provider, id: launch.model.id },
           apiKey,
           preparedResources,
+          ...(authenticatedGit === undefined
+            ? {}
+            : {
+                git: Object.freeze({
+                  repositoryId: launch.workspace_id,
+                  ...(authenticatedGit.manager === undefined ? {} : { manager: authenticatedGit.manager }),
+                  ...(authenticatedGit.observer === undefined ? {} : { observer: authenticatedGit.observer }),
+                  ...(authenticatedGit.enableNotes === undefined ? {} : { enableNotes: authenticatedGit.enableNotes }),
+                }),
+              }),
         }),
     );
   } catch (error) {
@@ -215,11 +329,13 @@ export async function createCogsPiSession(options: CogsPiSessionOptions): Promis
     options.preparedResources === undefined ? undefined : validatePreparedResources(options.preparedResources);
 
   validateModelApiKey(apiKey);
+  const gitOptions = validateGitOptions(options.git);
   assertOpaqueId(sessionId, "session id");
   assertProviderId(modelProvider, "provider id");
   assertModelId(modelId, "model id");
 
   const secret: SecretHolder = { value: apiKey };
+  let startupGitBinding: CogsGitBoundary | undefined;
   const authStorage = AuthStorage.inMemory();
   authStorage.setRuntimeApiKey(modelProvider, secret.value);
   try {
@@ -229,11 +345,33 @@ export async function createCogsPiSession(options: CogsPiSessionOptions): Promis
     if (modelRegistry.isUsingOAuth(model)) throw new Error("oauth model authentication is disabled");
 
     const sessionManager = await createContainedSessionManager(cwd, sessionRoot, sessionId, resumeFile);
+    const sessionDir = sessionManager.getSessionDir();
     const historyStore = createCogsJsonlHistoryStore({
       sessionFile: sessionManager.getSessionFile(),
-      sessionDir: sessionManager.getSessionDir(),
+      sessionDir,
     });
     await historyStore.initialize();
+    const gitMapStore = gitOptions === undefined ? undefined : await createCogsGitMapStore({ sessionDir });
+    const gitObserver =
+      gitOptions?.observer ??
+      (gitOptions?.manager === undefined
+        ? undefined
+        : createSshGitObserver({ manager: gitOptions.manager, repositoryId: gitOptions.repositoryId }));
+    const adapterRef: { current?: PiSessionAdapter } = {};
+    const gitBinding =
+      gitOptions === undefined || gitMapStore === undefined || gitObserver === undefined
+        ? undefined
+        : new CogsGitBoundary({
+            sessionId,
+            repositoryId: gitOptions.repositoryId,
+            store: gitMapStore,
+            observer: gitObserver,
+            emit: (kind, correlationId, requestId, payload) =>
+              adapterRef.current?.publishGit(kind, correlationId, requestId, payload),
+            notes: gitOptions.enableNotes !== false,
+          });
+    startupGitBinding = gitBinding;
+    const toolHooks = gitBinding?.toolHooks();
 
     const sessionResult = await createAgentSession({
       cwd,
@@ -251,7 +389,7 @@ export async function createCogsPiSession(options: CogsPiSessionOptions): Promis
               appendSystemPrompt: [preparedResources.eagerTrustedSkillPrompt],
             },
       ),
-      customTools: createCogsTools(toolPorts, maxToolResultBytes, secret),
+      customTools: createCogsTools(toolPorts, maxToolResultBytes, secret, toolHooks),
       tools: [...COGS_PI_TOOL_NAMES],
       noTools: "builtin",
       sessionManager,
@@ -267,7 +405,7 @@ export async function createCogsPiSession(options: CogsPiSessionOptions): Promis
       };
     }
 
-    return new PiSessionAdapter(session, authStorage, model, sessionManager, {
+    const adapter = new PiSessionAdapter(session, authStorage, model, sessionManager, {
       emit,
       onFatal,
       provider: modelProvider,
@@ -276,9 +414,18 @@ export async function createCogsPiSession(options: CogsPiSessionOptions): Promis
       abortTimeoutMs,
       preparedResources,
       historyStore,
+      gitMapStore,
+      gitBinding,
     });
+    adapterRef.current = adapter;
+    return adapter;
   } catch (error) {
     let cleanupError: unknown;
+    try {
+      await startupGitBinding?.dispose();
+    } catch (disposeError) {
+      cleanupError = disposeError;
+    }
     try {
       await preparedResources?.dispose();
     } catch (disposeError) {
@@ -520,6 +667,366 @@ function strictGuestBaseDir(baseDir: string, filePath: string): boolean {
 }
 
 type AdapterPhase = "open" | "running" | "aborting" | "failed" | "disposed";
+type CogsToolGitHooks = { readonly afterTool: (toolCallId: string, signal?: AbortSignal) => Promise<void> };
+type CogsGitBoundaryKind = "user" | "tool" | "settle";
+type PendingCapture = {
+  readonly observation: CogsGitObservation;
+  readonly boundary: CogsGitBoundaryKind;
+  readonly turn: number;
+};
+type GitEmit = (
+  kind: ApiEvent["kind"],
+  correlationId: string,
+  requestId: string | undefined,
+  payload: Record<string, JsonValue>,
+) => void;
+
+const MAX_GIT_PENDING = 128;
+const MAX_GIT_TOOLS = 64;
+
+class CogsGitBoundary {
+  private turn = 0;
+  private preTurn: PendingCapture | undefined;
+  private readonly toolCaptures = new Map<string, PendingCapture>();
+  private readonly messageWaiters = new Map<
+    string,
+    { sessionManager: SessionManager; correlationId: string; requestId: string | undefined }
+  >();
+  private readonly queued: Array<() => Promise<void>> = [];
+  private readonly pendingPersist = new Set<Promise<void>>();
+  private drainChain: Promise<void> = Promise.resolve();
+  private disposed = false;
+  private overflow = false;
+  private incomplete = false;
+
+  public constructor(
+    private readonly options: {
+      readonly sessionId: string;
+      readonly repositoryId: string;
+      readonly store: CogsGitMapStore;
+      readonly observer: CogsGitObserver;
+      readonly emit: GitEmit;
+      readonly notes: boolean;
+    },
+  ) {
+    this.turn = maxTurn(options.store.records());
+  }
+
+  public toolHooks(): CogsToolGitHooks {
+    return Object.freeze({
+      afterTool: async (toolCallId: string, signal?: AbortSignal) => {
+        if (!strictToolCallId(toolCallId) || this.disposed) return;
+        if (this.toolCaptures.size + this.messageWaiters.size + this.queued.length >= MAX_GIT_PENDING) {
+          this.overflow = true;
+          return;
+        }
+        const observation = await this.safeObserve(signal);
+        if (this.disposed) return;
+        this.toolCaptures.set(toolCallId, Object.freeze({ observation, boundary: "tool", turn: this.turn }));
+        const waiter = this.messageWaiters.get(toolCallId);
+        if (waiter !== undefined) this.bindToolLater(toolCallId, waiter);
+      },
+    });
+  }
+
+  public async beginTurn(correlationId: string, requestId: string): Promise<void> {
+    if (this.disposed) return;
+    this.turn += 1;
+    const observation = await this.safeObserve();
+    if (this.disposed) return;
+    if (observation.kind === "unavailable") {
+      this.warn(correlationId, requestId, "git-head-unavailable", "user");
+      this.preTurn = undefined;
+      return;
+    }
+    this.preTurn = Object.freeze({ observation, boundary: "user", turn: this.turn });
+  }
+
+  public messageEnd(
+    event: { type: string; [key: string]: unknown },
+    sessionManager: SessionManager,
+    correlationId: string,
+    requestId: string | undefined,
+  ): void {
+    const message = (event as { message?: unknown }).message;
+    if (!plainObject(message)) return;
+    const role = (message as { role?: unknown }).role;
+    if (role === "user" && this.preTurn !== undefined) {
+      const capture = this.preTurn;
+      this.preTurn = undefined;
+      void this.bindAfterPersist(sessionManager, capture, { role: "user" }, correlationId, requestId).catch(
+        () => undefined,
+      );
+      return;
+    }
+    if (role !== "toolResult") return;
+    const toolCallId = (message as { toolCallId?: unknown }).toolCallId;
+    if (typeof toolCallId !== "string" || !strictToolCallId(toolCallId)) return;
+    const waiter = { sessionManager, correlationId, requestId };
+    if (this.messageWaiters.size >= MAX_GIT_TOOLS) {
+      this.overflow = true;
+      this.warn(correlationId, requestId, "git-binding-overflow", "tool");
+      return;
+    }
+    this.messageWaiters.set(toolCallId, waiter);
+    if (this.toolCaptures.has(toolCallId)) this.bindToolLater(toolCallId, waiter);
+  }
+
+  public async settleTurn(
+    sessionManager: SessionManager,
+    correlationId: string,
+    requestId: string | undefined,
+  ): Promise<void> {
+    await this.drain();
+    if (this.disposed) return;
+    this.reportIncomplete(correlationId, requestId);
+    this.clearPending();
+    const observation = await this.safeObserve();
+    if (observation.kind === "unavailable") {
+      this.warn(correlationId, requestId, "git-head-unavailable", "settle");
+      this.clearPending();
+      return;
+    }
+    await this.bindLeaf(
+      sessionManager,
+      Object.freeze({ observation, boundary: "settle", turn: this.turn }),
+      correlationId,
+      requestId,
+    );
+    await this.drain();
+    this.reportIncomplete(correlationId, requestId);
+    this.clearPending();
+  }
+
+  public resolve(input: { repo: string; commit: string; signal?: AbortSignal }): Promise<CogsGitMapResolveResult> {
+    return this.options.store.resolve({
+      repo: input.repo,
+      session: this.options.sessionId,
+      commit: input.commit,
+      nearestAncestor: (ancestorInput) =>
+        observerDeadline(
+          Promise.resolve().then(() => this.options.observer.nearestAncestor(ancestorInput)),
+          2500,
+        ),
+      ...(input.signal === undefined ? {} : { signal: input.signal }),
+    });
+  }
+
+  public async dispose(): Promise<void> {
+    this.disposed = true;
+    this.preTurn = undefined;
+    this.toolCaptures.clear();
+    this.messageWaiters.clear();
+    this.queued.length = 0;
+    await this.drain().catch(() => undefined);
+    await observerDeadline(this.options.observer.dispose(), 2500).catch(() => undefined);
+    this.clearPending();
+  }
+
+  private bindToolLater(
+    toolCallId: string,
+    waiter: { sessionManager: SessionManager; correlationId: string; requestId: string | undefined },
+  ): void {
+    const capture = this.toolCaptures.get(toolCallId);
+    if (capture === undefined) return;
+    this.toolCaptures.delete(toolCallId);
+    this.messageWaiters.delete(toolCallId);
+    void this.bindAfterPersist(
+      waiter.sessionManager,
+      capture,
+      { role: "toolResult", toolCallId },
+      waiter.correlationId,
+      waiter.requestId,
+    ).catch(() => undefined);
+  }
+
+  private async bindAfterPersist(
+    sessionManager: SessionManager,
+    capture: PendingCapture,
+    expected: { role: "user" } | { role: "toolResult"; toolCallId: string },
+    correlationId: string,
+    requestId: string | undefined,
+  ): Promise<void> {
+    const promise = new Promise<void>((resolve) =>
+      queueMicrotask(() => {
+        const leaf = latestEntry(sessionManager);
+        if (!this.disposed && this.queued.length < MAX_GIT_PENDING)
+          this.queued.push(() => this.bindEntry(leaf, capture, correlationId, requestId, expected));
+        else this.overflow = true;
+        resolve();
+      }),
+    );
+    this.pendingPersist.add(promise);
+    await promise.finally(() => this.pendingPersist.delete(promise));
+  }
+
+  private async bindLeaf(
+    sessionManager: SessionManager,
+    capture: PendingCapture,
+    correlationId: string,
+    requestId: string | undefined,
+    expected?: { role: "user" } | { role: "toolResult"; toolCallId: string },
+  ): Promise<void> {
+    if (this.disposed) return;
+    if (capture.observation.kind === "unavailable") {
+      this.warn(correlationId, requestId, "git-head-unavailable", capture.boundary);
+      return;
+    }
+    await this.bindEntry(latestEntry(sessionManager), capture, correlationId, requestId, expected);
+  }
+
+  private async bindEntry(
+    leaf: { id?: unknown; message?: unknown; type?: unknown } | undefined,
+    capture: PendingCapture,
+    correlationId: string,
+    requestId: string | undefined,
+    expected?: { role: "user" } | { role: "toolResult"; toolCallId: string },
+  ): Promise<void> {
+    if (capture.observation.kind === "unavailable") {
+      this.warn(correlationId, requestId, "git-head-unavailable", capture.boundary);
+      return;
+    }
+    if (capture.observation.repo !== this.options.repositoryId) {
+      this.warn(correlationId, requestId, "git-repo-mismatch", capture.boundary);
+      return;
+    }
+    if (leaf === undefined || typeof leaf.id !== "string" || !ENTRY_ID.test(leaf.id)) {
+      this.warn(correlationId, requestId, "git-entry-unavailable", capture.boundary);
+      return;
+    }
+    if (expected !== undefined && !matchesLeaf(leaf, expected)) {
+      this.warn(correlationId, requestId, "git-boundary-mismatch", capture.boundary);
+      return;
+    }
+    const record = {
+      version: "cogs.git-mapping/v1alpha1" as const,
+      repo: this.options.repositoryId,
+      commit: capture.observation.commit,
+      session: this.options.sessionId,
+      entry: leaf.id,
+      turn: capture.turn,
+      observed_at: capture.observation.observed_at,
+      confidence: "exact" as const,
+    };
+    let appended: CogsGitMapRecord;
+    try {
+      appended = await this.options.store.append(record);
+    } catch {
+      this.warn(correlationId, requestId, "git-map-unavailable", capture.boundary);
+      return;
+    }
+    this.options.emit("git_mapping", correlationId, requestId, gitObservationEvent(appended, capture.boundary));
+    if (this.options.notes) {
+      let ok = false;
+      try {
+        ok = await observerDeadline(
+          Promise.resolve().then(() => this.options.observer.appendNote(appended)),
+          2500,
+        );
+      } catch {
+        ok = false;
+      }
+      if (!ok) this.warn(correlationId, requestId, "git-note-unavailable", capture.boundary);
+    }
+  }
+
+  private drain(): Promise<void> {
+    this.drainChain = this.drainChain.then(async () => {
+      if (this.pendingPersist.size > 0) await Promise.allSettled([...this.pendingPersist]);
+      while (this.queued.length > 0) {
+        const operation = this.queued.shift();
+        if (operation !== undefined) await operation().catch(() => undefined);
+      }
+    });
+    return this.drainChain;
+  }
+
+  private reportIncomplete(correlationId: string, requestId: string | undefined): void {
+    if (this.toolCaptures.size > 0 || this.messageWaiters.size > 0 || this.queued.length > 0) this.incomplete = true;
+    if (this.incomplete) this.warn(correlationId, requestId, "git-binding-incomplete", "settle");
+    if (this.overflow) this.warn(correlationId, requestId, "git-binding-overflow", "settle");
+    this.incomplete = false;
+    this.overflow = false;
+  }
+
+  private clearPending(): void {
+    this.preTurn = undefined;
+    this.toolCaptures.clear();
+    this.messageWaiters.clear();
+    this.queued.length = 0;
+  }
+
+  private async safeObserve(signal?: AbortSignal): Promise<CogsGitObservation> {
+    try {
+      const observation = await observerDeadline(
+        this.options.observer.observeHead(signal === undefined ? {} : { signal }),
+        2500,
+      );
+      return observation.kind === "observed" && observation.repo === this.options.repositoryId
+        ? observation
+        : Object.freeze({ kind: "unavailable" as const });
+    } catch {
+      return Object.freeze({ kind: "unavailable" as const });
+    }
+  }
+
+  private warn(
+    correlationId: string,
+    requestId: string | undefined,
+    reason: string,
+    boundary: CogsGitBoundaryKind,
+  ): void {
+    this.options.emit("warning", correlationId, requestId, {
+      code: reason,
+      boundary,
+      trust: "trusted Cogs record of untrusted Git observation",
+    });
+  }
+}
+
+const ENTRY_ID = /^[a-f0-9]{8}$/;
+const TOOL_CALL_ID = /^[A-Za-z0-9._:-]{1,128}$/;
+
+function strictToolCallId(value: string): boolean {
+  return TOOL_CALL_ID.test(value);
+}
+
+function maxTurn(records: readonly CogsGitMapRecord[]): number {
+  let turn = 0;
+  for (const record of records) if (record.turn > turn) turn = record.turn;
+  return turn;
+}
+
+function observerDeadline<T>(promise: Promise<T> | PromiseLike<T>, ms: number): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  return Promise.race([
+    promise,
+    new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error("git observer unavailable")), ms);
+    }),
+  ]).finally(() => {
+    if (timer !== undefined) clearTimeout(timer);
+  });
+}
+
+function latestEntry(sessionManager: SessionManager): { id?: unknown; message?: unknown; type?: unknown } | undefined {
+  const entries = sessionManager.getEntries() as unknown[];
+  return entries.at(-1) as { id?: unknown; message?: unknown; type?: unknown } | undefined;
+}
+
+function plainObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function matchesLeaf(
+  leaf: { id?: unknown; message?: unknown; type?: unknown },
+  expected: { role: "user" } | { role: "toolResult"; toolCallId: string },
+): boolean {
+  if (leaf.type !== "message" || !plainObject(leaf.message)) return false;
+  const message = leaf.message as { role?: unknown; toolCallId?: unknown };
+  if (message.role !== expected.role) return false;
+  return expected.role === "user" || message.toolCallId === expected.toolCallId;
+}
 
 class PiSessionAdapter implements CogsPiSessionPorts {
   readonly #authStorage: AuthStorage;
@@ -545,6 +1052,8 @@ class PiSessionAdapter implements CogsPiSessionPorts {
       readonly abortTimeoutMs: number | undefined;
       readonly preparedResources: CogsPreparedSkills | undefined;
       readonly historyStore: CogsJsonlHistoryStore;
+      readonly gitMapStore: CogsGitMapStore | undefined;
+      readonly gitBinding: CogsGitBoundary | undefined;
     },
   ) {
     this.#authStorage = authStorage;
@@ -563,6 +1072,29 @@ class PiSessionAdapter implements CogsPiSessionPorts {
 
   public skillMetadata(): CogsPreparedSkillMetadata | undefined {
     return this.runtime.preparedResources?.metadata;
+  }
+
+  public gitMapRecords(): readonly CogsGitMapRecord[] {
+    return this.runtime.gitMapStore?.records() ?? Object.freeze([]);
+  }
+
+  public resolveGitMapping(input: {
+    repo: string;
+    commit: string;
+    signal?: AbortSignal;
+  }): Promise<CogsGitMapResolveResult | undefined> {
+    const binding = this.runtime.gitBinding;
+    if (binding === undefined) return Promise.resolve(undefined);
+    return binding.resolve(input);
+  }
+
+  public publishGit(
+    kind: ApiEvent["kind"],
+    correlationId: string,
+    requestId: string | undefined,
+    payload: Record<string, JsonValue>,
+  ): void {
+    this.publishOrClose(kind, correlationId, requestId, payload);
   }
 
   public async navigate(
@@ -681,6 +1213,7 @@ class PiSessionAdapter implements CogsPiSessionPorts {
       cleanupError = error;
     }
     try {
+      await this.runtime.gitBinding?.dispose();
       await this.runtime.preparedResources?.dispose();
     } catch (error) {
       cleanupError = error;
@@ -696,6 +1229,7 @@ class PiSessionAdapter implements CogsPiSessionPorts {
       void this.timeoutActive(active);
     }, this.timeoutMs);
     try {
+      await this.runtime.gitBinding?.beginTurn(active.correlationId, active.requestId);
       await this.session.prompt(content, { expandPromptTemplates: false });
       if (active.suppressLate || this.phase === "aborting") return;
       try {
@@ -704,6 +1238,8 @@ class PiSessionAdapter implements CogsPiSessionPorts {
         await this.failClosed("history-flush-failed", active);
         return;
       }
+      if (active.suppressLate) return;
+      await this.runtime.gitBinding?.settleTurn(this.sessionManager, active.correlationId, active.requestId);
       if (active.suppressLate) return;
       this.terminal(active, "run_settled", { state: "settled" });
     } catch (error) {
@@ -822,6 +1358,8 @@ class PiSessionAdapter implements CogsPiSessionPorts {
     const correlation = active?.correlationId ?? "system";
     const request = active?.requestId;
     if (event.type === "agent_settled") return;
+    if (event.type === "message_end")
+      this.runtime.gitBinding?.messageEnd(event, this.sessionManager, correlation, request);
     if (event.type === "tool_execution_start") {
       this.publishOrClose("tool_start", correlation, request, { event: this.redactEvent(event) });
     } else if (event.type === "tool_execution_update") {
@@ -912,6 +1450,7 @@ class PiSessionAdapter implements CogsPiSessionPorts {
           cleanupError = error;
         }
         try {
+          await this.runtime.gitBinding?.dispose();
           await this.runtime.preparedResources?.dispose();
         } catch (error) {
           cleanupError = error;
@@ -980,11 +1519,29 @@ function basenameOnly(path: string): string {
   return parts.at(-1) ?? path;
 }
 
-function createCogsTools(ports: CogsToolPorts, maxResultBytes: number, secret: SecretHolder) {
-  const result = async (name: CogsPiToolName, operation: () => Promise<JsonValue>) => {
+function createCogsTools(
+  ports: CogsToolPorts,
+  maxResultBytes: number,
+  secret: SecretHolder,
+  hooks: CogsToolGitHooks | undefined,
+) {
+  const result = async (
+    name: CogsPiToolName,
+    toolCallId: string,
+    signal: AbortSignal | undefined,
+    operation: () => Promise<JsonValue>,
+  ) => {
     try {
-      const value = normalizeToolResult(await operation(), maxResultBytes, secret.value);
-      return { content: [{ type: "text" as const, text: JSON.stringify(value) }], details: { cogsTool: name } };
+      let value: JsonValue;
+      try {
+        value = await operation();
+      } catch (error) {
+        await hooks?.afterTool(toolCallId, signal).catch(() => undefined);
+        throw error;
+      }
+      await hooks?.afterTool(toolCallId, signal).catch(() => undefined);
+      const normalized = normalizeToolResult(value, maxResultBytes, secret.value);
+      return { content: [{ type: "text" as const, text: JSON.stringify(normalized) }], details: { cogsTool: name } };
     } catch {
       throw new Error(`${name} tool failed`);
     }
@@ -1002,7 +1559,7 @@ function createCogsTools(ports: CogsToolPorts, maxResultBytes: number, secret: S
         },
         { additionalProperties: false },
       ),
-      execute: async (_id, params, signal) => result("read", () => ports.read(withSignal(params, signal))),
+      execute: async (id, params, signal) => result("read", id, signal, () => ports.read(withSignal(params, signal))),
     }),
     defineTool({
       name: "write",
@@ -1012,7 +1569,7 @@ function createCogsTools(ports: CogsToolPorts, maxResultBytes: number, secret: S
         { path: Type.String({ minLength: 1, maxLength: 4096 }), content: Type.String({ maxLength: 1_000_000 }) },
         { additionalProperties: false },
       ),
-      execute: async (_id, params, signal) => result("write", () => ports.write(withSignal(params, signal))),
+      execute: async (id, params, signal) => result("write", id, signal, () => ports.write(withSignal(params, signal))),
     }),
     defineTool({
       name: "edit",
@@ -1026,7 +1583,7 @@ function createCogsTools(ports: CogsToolPorts, maxResultBytes: number, secret: S
         },
         { additionalProperties: false },
       ),
-      execute: async (_id, params, signal) => result("edit", () => ports.edit(withSignal(params, signal))),
+      execute: async (id, params, signal) => result("edit", id, signal, () => ports.edit(withSignal(params, signal))),
     }),
     defineTool({
       name: "bash",
@@ -1036,8 +1593,8 @@ function createCogsTools(ports: CogsToolPorts, maxResultBytes: number, secret: S
         { command: Type.String({ minLength: 1, maxLength: 100_000 }) },
         { additionalProperties: false },
       ),
-      execute: async (_id, params, signal, onUpdate) =>
-        result("bash", () => {
+      execute: async (id, params, signal, onUpdate) =>
+        result("bash", id, signal, () => {
           const update = toolUpdate(
             onUpdate as ((update: unknown) => void | Promise<void>) | undefined,
             maxResultBytes,
