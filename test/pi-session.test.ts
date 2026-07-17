@@ -72,9 +72,10 @@ async function eventually(assertion: () => void | Promise<void>): Promise<void> 
 }
 
 function withDefaults(
-  options: Omit<CogsPiSessionOptions, "emit" | "onFatal"> & Partial<Pick<CogsPiSessionOptions, "emit" | "onFatal">>,
+  options: Omit<CogsPiSessionOptions, "userId" | "emit" | "onFatal"> &
+    Partial<Pick<CogsPiSessionOptions, "userId" | "emit" | "onFatal">>,
 ): CogsPiSessionOptions {
-  return { emit: () => true, onFatal: () => undefined, ...options };
+  return { userId: "user-1", emit: () => true, onFatal: () => undefined, ...options };
 }
 
 function validLaunch(sessionId: string): unknown {
@@ -478,6 +479,16 @@ test("Pi session invokes exactly the four Cogs tool ports and redacts tool-resul
   const secret = "COGS_RUNTIME_ONLY_TEST_KEY";
   const calls: string[] = [];
   const events: string[] = [];
+  const policyInputs: unknown[] = [];
+  const policyAuthorizer = Object.freeze((input: unknown) => {
+    policyInputs.push(input);
+    return Object.freeze({
+      version: "cogs.policy-decision/v1alpha1" as const,
+      decision_id: `sha256:${"a".repeat(64)}` as const,
+      allow: true,
+      reason: "allowed" as const,
+    });
+  });
   try {
     await mkdir(cwd, { recursive: true });
     await mkdir(agentDir, { recursive: true });
@@ -496,6 +507,7 @@ test("Pi session invokes exactly the four Cogs tool ports and redacts tool-resul
           return true;
         },
         maxToolResultBytes: 4096,
+        policyAuthorizer,
       }),
     );
     try {
@@ -508,6 +520,45 @@ test("Pi session invokes exactly the four Cogs tool ports and redacts tool-resul
         "edit:/workspace/out.txt",
         "bash:printf ok",
       ]);
+      assert.equal(JSON.stringify(policyInputs).includes("/workspace/README.md"), false);
+      assert.equal(JSON.stringify(policyInputs).includes("printf ok"), false);
+      assert.deepEqual(
+        policyInputs.filter((input) => (input as { action?: unknown }).action === "tool.dispatch"),
+        [
+          {
+            version: "cogs.policy/v1alpha1",
+            action: "tool.dispatch",
+            user: "user-1",
+            session: "tool-session",
+            resource: "read",
+            attributes: { tool: "read", path_class: "workspace" },
+          },
+          {
+            version: "cogs.policy/v1alpha1",
+            action: "tool.dispatch",
+            user: "user-1",
+            session: "tool-session",
+            resource: "write",
+            attributes: { tool: "write", path_class: "workspace" },
+          },
+          {
+            version: "cogs.policy/v1alpha1",
+            action: "tool.dispatch",
+            user: "user-1",
+            session: "tool-session",
+            resource: "edit",
+            attributes: { tool: "edit", path_class: "workspace" },
+          },
+          {
+            version: "cogs.policy/v1alpha1",
+            action: "tool.dispatch",
+            user: "user-1",
+            session: "tool-session",
+            resource: "bash",
+            attributes: { tool: "bash" },
+          },
+        ],
+      );
       const eventText = events.join("\n");
       assert.equal(eventText.includes(secret), false);
       assert.equal(eventText.includes(secret.slice(0, 16)), true, "innocent shared prefixes must not be redacted");
@@ -626,6 +677,55 @@ test("Pi session Git observer captures failed tool operation once", async () => 
       assert.equal(adapter.gitMapRecords().filter((record) => record.commit === "b".repeat(40)).length, 1);
     } finally {
       await adapter.dispose();
+    }
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test("Pi session policy path denial blocks ports and still records failed tool boundary once", async () => {
+  const temporaryRoot = await mkdtemp(resolve(tmpdir(), "cogs-pi-policy-path-deny-"));
+  const cwd = resolve(temporaryRoot, "workspace");
+  const agentDir = resolve(temporaryRoot, "agent");
+  const calls: string[] = [];
+  try {
+    await mkdir(cwd, { recursive: true });
+    await mkdir(agentDir, { recursive: true });
+    for (const [tool, args] of [
+      ["read", { path: "../secret" }],
+      ["write", { path: "/shared/skills/file", content: "x" }],
+      ["edit", { path: "/user/skills/file", oldText: "x", newText: "y" }],
+    ] as const) {
+      calls.length = 0;
+      const adapter = await createCogsPiSession(
+        withDefaults({
+          cwd,
+          agentDir,
+          sessionRoot: resolve(temporaryRoot, `sessions-${tool}`),
+          sessionId: `policy-path-${tool}`,
+          model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+          apiKey: "COGS_RUNTIME_ONLY_TEST_KEY",
+          toolPorts: fakePorts(calls),
+          streamFn: oneToolStream(tool, args),
+          git: {
+            repositoryId: "workspace-1",
+            observer: fakeObserver(["a".repeat(40), "b".repeat(40), "c".repeat(40)]),
+          },
+        }),
+      );
+      try {
+        await adapter.input({
+          requestId: `path-${tool}`,
+          correlationId: `path-${tool}`,
+          kind: "prompt",
+          content: "go",
+        });
+        await eventually(async () => assert.equal((await adapter.state()).runState, "settled"));
+        assert.deepEqual(calls, []);
+        assert.equal(adapter.gitMapRecords().filter((record) => record.commit === "b".repeat(40)).length, 1);
+      } finally {
+        await adapter.dispose();
+      }
     }
   } finally {
     await rm(temporaryRoot, { recursive: true, force: true });
@@ -2367,6 +2467,162 @@ function authOptions(
     ...overrides,
   };
 }
+
+test("Pi session rejects hostile policy authorizer seam generically before side effects", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "cogs-pi-policy-seam-"));
+  try {
+    const cwd = resolve(root, "workspace");
+    const agentDir = resolve(root, "agent");
+    await mkdir(cwd, { recursive: true });
+    await mkdir(agentDir, { recursive: true });
+    const hostileAuthorizer = new Proxy(
+      Object.freeze(() => assert.fail("authorizer should not run")),
+      {
+        isExtensible() {
+          throw new Error("SECRET_POLICY_AUTHORIZE_TRAP");
+        },
+      },
+    );
+    await assert.rejects(
+      createCogsPiSession(
+        withDefaults({
+          cwd,
+          agentDir,
+          sessionRoot: resolve(root, "sessions"),
+          sessionId: "policy-seam-deny",
+          model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+          apiKey: "aaaaaaaa",
+          toolPorts: fakePorts([]),
+          policyAuthorizer: hostileAuthorizer,
+        }),
+      ),
+      /invalid policy authorizer/,
+    );
+    await assertMissing(resolve(root, "sessions"));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Pi session model policy denial cleans prepared resources before session side effects", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "cogs-pi-policy-model-deny-"));
+  try {
+    const cwd = resolve(root, "workspace");
+    const agentDir = resolve(root, "agent");
+    const sessionRoot = resolve(root, "sessions");
+    await mkdir(cwd, { recursive: true });
+    await mkdir(agentDir, { recursive: true });
+    let disposed = 0;
+    const authorizer = Object.freeze(() =>
+      Object.freeze({
+        version: "cogs.policy-decision/v1alpha1" as const,
+        decision_id: `sha256:${"b".repeat(64)}` as const,
+        allow: false,
+        reason: "unsupported_surface" as const,
+      }),
+    );
+    await assert.rejects(
+      createCogsPiSession(
+        withDefaults({
+          cwd,
+          agentDir,
+          sessionRoot,
+          sessionId: "policy-model-deny",
+          model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+          apiKey: "aaaaaaaa",
+          toolPorts: fakePorts([]),
+          preparedResources: hostilePrepared({
+            dispose: async () => {
+              disposed += 1;
+            },
+          }),
+          policyAuthorizer: authorizer,
+        }),
+      ),
+    );
+    assert.equal(disposed, 1);
+    await assertMissing(resolve(sessionRoot, "policy-model-deny"));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Pi session tool enable policy denial cleans owned exporter Git and prepared resources", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "cogs-pi-policy-enable-deny-"));
+  try {
+    const cwd = resolve(root, "workspace");
+    const agentDir = resolve(root, "agent");
+    const sessionRoot = resolve(root, "sessions");
+    await mkdir(cwd, { recursive: true });
+    await mkdir(agentDir, { recursive: true });
+    let disposed = 0;
+    let observerDisposed = 0;
+    let checkpointerDisposed = 0;
+    let policyCalls = 0;
+    const observer = fakeObserver(["a".repeat(40)]);
+    const trackedObserver: CogsGitObserver = Object.freeze({
+      ...observer,
+      dispose: async () => {
+        observerDisposed += 1;
+        await observer.dispose();
+      },
+    });
+    const checkpointer: CogsGitCheckpointer = Object.freeze({
+      checkpoint: async () => ({
+        repo: "workspace-1",
+        session: "policy-enable-deny",
+        entry: "00000000",
+        turn: 1,
+        commit: "b".repeat(40),
+        checkpoint_ref: "refs/cogs/checkpoints/session/1",
+        observed_at: new Date(0).toISOString(),
+        file_count: 0,
+        total_bytes: 0,
+        duration_ms: 0,
+      }),
+      dispose: async () => {
+        checkpointerDisposed += 1;
+      },
+    });
+    const authorizer = Object.freeze((input: unknown) => {
+      policyCalls += 1;
+      const action = (input as { action?: unknown }).action;
+      return Object.freeze({
+        version: "cogs.policy-decision/v1alpha1" as const,
+        decision_id: `sha256:${"a".repeat(64)}` as const,
+        allow: action !== "tool.enable",
+        reason: action === "tool.enable" ? ("unsupported_surface" as const) : ("allowed" as const),
+      });
+    });
+    await assert.rejects(
+      createCogsPiSession(
+        withDefaults({
+          cwd,
+          agentDir,
+          sessionRoot,
+          sessionId: "policy-enable-deny",
+          model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+          apiKey: "aaaaaaaa",
+          toolPorts: fakePorts([]),
+          preparedResources: hostilePrepared({
+            dispose: async () => {
+              disposed += 1;
+              throw new Error("prepared cleanup failed");
+            },
+          }),
+          git: { repositoryId: "workspace-1", observer: trackedObserver, checkpointer },
+          policyAuthorizer: authorizer,
+        }),
+      ),
+    );
+    assert.equal(disposed, 1);
+    assert.equal(observerDisposed, 1);
+    assert.equal(checkpointerDisposed, 1);
+    assert.ok(policyCalls >= 2);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test("Pi session fails closed instead of settling when durable JSONL flush rejects", async () => {
   const root = await mkdtemp(resolve(tmpdir(), "cogs-pi-jsonl-flush-fail-"));

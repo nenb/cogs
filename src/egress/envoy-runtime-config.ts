@@ -1,3 +1,4 @@
+import { type CogsPolicyAuthorizer, requireCogsPolicyAllow } from "../policy/require-policy.ts";
 import type {
   CogsEgressAuthRef,
   CogsEgressIntegrationPlan,
@@ -36,11 +37,13 @@ type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 type Header = Readonly<{ name: string; value: string }>;
 
 export interface CogsEnvoyRuntimeConfigOptions {
+  readonly userId: string;
   readonly sessionId: string;
   readonly listenerPort: number;
   readonly routePlan: CogsEgressRoutePlan;
   readonly authzTarget: string;
   readonly internalAuthzToken: string;
+  readonly policyAuthorizer?: CogsPolicyAuthorizer;
 }
 
 export interface CogsEnvoyCredentialRequest {
@@ -107,10 +110,20 @@ export async function withCogsEnvoyRuntimeConfig<T>(
 ): Promise<T> {
   try {
     const captured = Object.freeze({ ...options });
+    const userId = validOpaque(captured.userId);
     const sessionId = validOpaque(captured.sessionId);
     const listenerPort = port(captured.listenerPort);
     const authorization = parseAuthzTarget(captured.authzTarget);
     const internalToken = visibleSecret(captured.internalAuthzToken, 16, 256);
+    try {
+      if (
+        captured.policyAuthorizer !== undefined &&
+        (typeof captured.policyAuthorizer !== "function" || !Object.isFrozen(captured.policyAuthorizer))
+      )
+        throw new Error("bad policy authorizer");
+    } catch {
+      throw new Error("bad policy authorizer");
+    }
     const integrations = copyPlan(captured.routePlan);
     const credentialed = integrations.filter((integration) => integration.needsCredential);
     const credentials = new Map<string, Header>();
@@ -120,6 +133,9 @@ export async function withCogsEnvoyRuntimeConfig<T>(
       await withCredentials(
         0,
         credentialed,
+        userId,
+        sessionId,
+        captured.policyAuthorizer,
         credentialSource,
         credentials,
         () => true,
@@ -143,6 +159,9 @@ export async function withCogsEnvoyRuntimeConfig<T>(
 async function withCredentials(
   index: number,
   integrations: readonly CopiedIntegration[],
+  userId: string,
+  sessionId: string,
+  authorizer: CogsPolicyAuthorizer | undefined,
   source: CogsEnvoyCredentialSource,
   credentials: Map<string, Header>,
   parentActive: () => boolean,
@@ -158,6 +177,17 @@ async function withCredentials(
   let violated = false;
   let callbackSettled = false;
   let callbackPromise: Promise<void> | undefined;
+  requireCogsPolicyAllow(
+    {
+      version: "cogs.policy/v1alpha1",
+      action: "secret.use",
+      user: userId,
+      session: sessionId,
+      resource: "egress_integration_credential",
+      attributes: { secret_class: "egress_integration_credential", integration_id: integration.id },
+    },
+    authorizer,
+  );
   const request = Object.freeze({
     integrationId: integration.id,
     secretHandle: integration.auth.secretHandle,
@@ -173,7 +203,17 @@ async function withCredentials(
       await new Promise((resolve) => setTimeout(resolve, 0));
       if (!active || violated || !parentActive()) throw new Error("inactive credential scope");
       credentials.set(integration.id, credentialHeader(integration.auth, credential));
-      await withCredentials(index + 1, integrations, source, credentials, () => active && parentActive(), next);
+      await withCredentials(
+        index + 1,
+        integrations,
+        userId,
+        sessionId,
+        authorizer,
+        source,
+        credentials,
+        () => active && parentActive(),
+        next,
+      );
     })().finally(() => {
       callbackSettled = true;
     });

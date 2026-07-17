@@ -4,6 +4,7 @@ import { createRequire } from "node:module";
 import { resolve } from "node:path";
 import { test } from "node:test";
 import type { Ajv as AjvCore, Options } from "ajv";
+import { CogsPolicyDeniedError, requireCogsPolicyAllow } from "../src/policy/require-policy.ts";
 import { authorizeCogsPolicyAction } from "../src/policy/static-policy.ts";
 
 const require = createRequire(import.meta.url);
@@ -139,6 +140,51 @@ const denialCases: Array<{ name: string; input: unknown; reason: string }> = [
   },
   { name: "restore reserved", input: envelope("restore.request", "restore", {}), reason: "restore_reserved" },
 ];
+
+test("require policy helper converts hostile authorizer results into generic denial", () => {
+  const allowed = Object.freeze({
+    version: "cogs.policy-decision/v1alpha1" as const,
+    decision_id: `sha256:${"a".repeat(64)}` as const,
+    allow: true,
+    reason: "allowed" as const,
+  });
+  assert.doesNotThrow(() => requireCogsPolicyAllow(envelope("tool.dispatch", "bash", { tool: "bash" }), () => allowed));
+  for (const authorizer of [
+    () => {
+      throw new Error("SECRET_THROW");
+    },
+    () =>
+      new Proxy(allowed, {
+        getOwnPropertyDescriptor() {
+          throw new Error("SECRET_PROXY");
+        },
+      }),
+    () => {
+      const value: Record<string, unknown> = { ...allowed };
+      Object.defineProperty(value, "extra", {
+        enumerable: true,
+        get() {
+          throw new Error("SECRET_ACCESSOR");
+        },
+      });
+      return value;
+    },
+    () => ({ ...allowed, [Symbol("secret")]: true }),
+    () => ({ ...allowed, extra: true }),
+    () => ({ ...allowed, allow: false }),
+    () => ({
+      version: "cogs.policy-decision/v1alpha1" as const,
+      decision_id: `sha256:${"a".repeat(64)}` as const,
+      allow: true,
+      reason: "allowed" as const,
+    }),
+  ]) {
+    assert.throws(
+      () => requireCogsPolicyAllow(envelope("tool.dispatch", "bash", { tool: "bash" }), authorizer as never),
+      CogsPolicyDeniedError,
+    );
+  }
+});
 
 test("static policy allows only exact authorized combinations", () => {
   for (const input of allowedCases) {

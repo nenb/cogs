@@ -4,12 +4,14 @@ import {
   type CogsEnvoyCredentialSource,
   type CogsEnvoyCredentialValue,
   CogsEnvoyRuntimeConfigError,
+  type CogsEnvoyRuntimeConfigOptions,
   withCogsEnvoyRuntimeConfig,
 } from "../src/egress/envoy-runtime-config.ts";
 import type { CogsEgressAuthRef, CogsEgressRoutePlan } from "../src/egress/route-policy.ts";
 
 const token = "internal-authz-token";
-const baseOptions = () => ({
+const baseOptions = (): CogsEnvoyRuntimeConfigOptions => ({
+  userId: "user-1",
   sessionId: "session-1",
   listenerPort: 15001,
   authzTarget: "127.0.0.1:18080",
@@ -324,6 +326,31 @@ test("resolves credentialed integrations once in deterministic order and skips u
   assert.equal(text.includes("github-secret"), true);
   assert.equal(text.includes("npm-secret"), true);
   assert.equal(text.includes("pypi-secret"), false);
+});
+
+test("policy secret deny prevents credential source callback", async () => {
+  let called = false;
+  const authorizer = Object.freeze(() =>
+    Object.freeze({
+      version: "cogs.policy-decision/v1alpha1" as const,
+      decision_id: `sha256:${"b".repeat(64)}` as const,
+      allow: false,
+      reason: "unsupported_surface" as const,
+    }),
+  );
+  await assert.rejects(
+    () =>
+      render(
+        { ...baseOptions(), policyAuthorizer: authorizer },
+        {
+          withCredential: async () => {
+            called = true;
+          },
+        },
+      ),
+    CogsEnvoyRuntimeConfigError,
+  );
+  assert.equal(called, false);
 });
 
 test("credential callback is exactly scoped to caller operation", async () => {
