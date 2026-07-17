@@ -1,8 +1,10 @@
-# ADR 0022: Proposed issue #68 session, Git, and export scope and line budget
+# ADR 0022: Issue #68 session, Git, and export scope and line budget
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-17
-- Reviewer: Pending owner/lead acceptance
+- Decision owner: Nick Byrne
+- Reviewed by: Delegated project lead
+- Acceptance: Accepted under Nick Byrne's explicit delegation to continue autonomously and make project decisions without waiting, the same delegation basis used for ADRs 0020 and 0021.
 
 ## Context
 
@@ -19,7 +21,7 @@ Current implementation state relevant to issue #68:
 
 ## Decision
 
-Approve issue #68 implementation only within the scope below, subject to owner/lead acceptance of this proposed ADR before production code begins.
+Approve issue #68 implementation only within the scope below.
 
 ### Line budget
 
@@ -76,6 +78,8 @@ The first-turn pre-observation is held as pending and mapped only after the auth
 
 Checkpoint enable/disable, limits, timeout, and exclusions must be supplied through existing trusted constructor/composition options, not by expanding the launch schema. If implementation proves production wiring requires a launch-schema change, pause for separately reviewed schema/design approval.
 
+Trusted exclusions must be validated as bounded canonical relative path or pattern values. They must not accept absolute paths, traversal, empty segments, control characters, backslashes, or any value that can inject arbitrary Git pathspec magic/options such as leading `-`, `:(...)`, or option-like/pathspec-control syntax.
+
 Hidden checkpoints must:
 
 - use fixed trusted scripts/commands and a temporary Git index;
@@ -83,7 +87,7 @@ Hidden checkpoints must:
 - use one total deadline for the complete checkpoint operation;
 - preflight with strict NUL-delimited Git status output and SFTP `lstat` under the guest root;
 - reject unsupported, malformed, over-limit, non-regular, escaping, symlink, device, or otherwise unsafe inputs;
-- respect `.gitignore` and trusted exclusions;
+- respect `.gitignore` and trusted exclusions only after those exclusions pass canonical relative path/pattern validation;
 - enforce changed-file, per-file, total-size, output, and timeout bounds;
 - tolerate residual unreachable Git objects only as documented untrusted workspace mutation after interrupted checkpoint attempts.
 
@@ -162,4 +166,4 @@ Issue #68 must add deterministic tests/evidence for:
 
 ## Consequences
 
-Issue #68 can proceed after owner/lead acceptance with a measured cap and strict security language. Native Pi JSONL remains authoritative; Git records remain trusted records of untrusted observations; export remains local, raw, authenticated, and deterministic. No cloud, release, restore, sanitization, or dependency decision follows from this ADR.
+Issue #68 can proceed with a measured cap and strict security language. Native Pi JSONL remains authoritative; Git records remain trusted records of untrusted observations; export remains local, raw, authenticated, and deterministic. No cloud, release, restore, sanitization, or dependency decision follows from this ADR.
