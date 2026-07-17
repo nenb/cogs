@@ -1,3 +1,4 @@
+import { exactPlainObject, otlpEndpoint, postOtlpJson, safeInteger } from "../telemetry/otlp-http.ts";
 import type { EgressAuditWalRecord } from "./audit-wal.ts";
 import type { CogsEgressCompletion } from "./completion-queue.ts";
 
@@ -67,18 +68,18 @@ export class CogsEgressTelemetryError extends Error {
 
 export function createCogsEgressTelemetrySink(config: CogsEgressTelemetryMode): CogsEgressTelemetrySink {
   try {
-    exactPlain(
+    exactPlainObject(
       config,
       ["mode"],
       ["allowLoopbackHttpDevelopment", "capacity", "endpoint", "maxResponseBytes", "timeoutMs"],
     );
     const mode = config.mode;
     if (mode === "injected-stub-evidence") {
-      exactPlain(config, ["mode"], []);
+      exactPlainObject(config, ["mode"], []);
       return stubSink();
     }
     if (mode !== "otlp") throw new Error("bad telemetry");
-    exactPlain(
+    exactPlainObject(
       config,
       ["endpoint", "mode"],
       ["allowLoopbackHttpDevelopment", "capacity", "maxResponseBytes", "timeoutMs"],
@@ -88,10 +89,10 @@ export function createCogsEgressTelemetrySink(config: CogsEgressTelemetryMode): 
     const timeoutMs = optional(config, "timeoutMs", "number") ?? 1000;
     const maxResponseBytes = optional(config, "maxResponseBytes", "number") ?? 8192;
     return new OtlpSink(
-      endpoint(config.endpoint, allow),
-      integer(capacity, 1, 64),
-      integer(timeoutMs, 50, 5000),
-      integer(maxResponseBytes, 0, 65536),
+      otlpEndpoint(config.endpoint, "logs", allow),
+      safeInteger(capacity, 1, 64),
+      safeInteger(timeoutMs, 50, 5000),
+      safeInteger(maxResponseBytes, 0, 65536),
     ).handle();
   } catch {
     throw new CogsEgressTelemetryError();
@@ -223,40 +224,32 @@ class OtlpSink {
     return false;
   }
   private async post(batch: readonly SafeRecord[], parent?: AbortSignal): Promise<void> {
-    if (parent?.aborted) throw new Error("aborted");
     const controller = new AbortController();
-    this.controller = controller;
     const abort = () => controller.abort();
-    const timer = parent === undefined ? setTimeout(abort, this.timeoutMs) : undefined;
+    this.controller = controller;
     try {
       parent?.addEventListener("abort", abort, { once: true });
-      const body = JSON.stringify(envelope(batch));
-      if (Buffer.byteLength(body) > 65_536) throw new Error("too large");
-      const response = await fetch(this.url, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body,
-        redirect: "error",
-        signal: controller.signal,
+      if (parent?.aborted) abort();
+      await postOtlpJson({
+        url: this.url,
+        kind: "logs",
+        body: envelope(batch),
+        timeoutMs: this.timeoutMs,
+        maxRequestBytes: 65_536,
+        maxResponseBytes: this.maxResponseBytes,
+        parent: controller.signal,
       });
-      const length = response.headers.get("content-length");
-      const badLength = length !== null && (!/^[0-9]+$/.test(length) || Number(length) > this.maxResponseBytes);
-      if (response.status !== 200 || !jsonType(response.headers.get("content-type")) || badLength) {
-        await response.body?.cancel().catch(() => undefined);
-        throw new Error("bad response");
-      }
-      validateResponse(await boundedText(response, this.maxResponseBytes));
     } finally {
-      if (timer !== undefined) clearTimeout(timer);
       parent?.removeEventListener("abort", abort);
+      controller.abort();
       if (this.controller === controller) this.controller = undefined;
     }
   }
 }
 
 function safeRecord(event: CogsEgressTelemetryEvent): SafeRecord {
-  exactPlain(event, ["completion", "intent"], []);
-  exactPlain(
+  exactPlainObject(event, ["completion", "intent"], []);
+  exactPlainObject(
     event.intent,
     [
       "credential_required",
@@ -270,7 +263,11 @@ function safeRecord(event: CogsEgressTelemetryEvent): SafeRecord {
     ],
     [],
   );
-  exactPlain(event.completion, ["completedAtMs", "durationMs", "intentId", "responseCode", "routeId", "sequence"], []);
+  exactPlainObject(
+    event.completion,
+    ["completedAtMs", "durationMs", "intentId", "responseCode", "routeId", "sequence"],
+    [],
+  );
   const intent = Object.freeze({ ...event.intent });
   const completion = Object.freeze({ ...event.completion });
   if (
@@ -279,24 +276,24 @@ function safeRecord(event: CogsEgressTelemetryEvent): SafeRecord {
     completion.routeId !== intent.route_id
   )
     throw new Error("bad correlation");
-  const lag = integer(
-    completion.completedAtMs - integer(intent.timestamp_ms, 0, Number.MAX_SAFE_INTEGER),
+  const lag = safeInteger(
+    completion.completedAtMs - safeInteger(intent.timestamp_ms, 0, Number.MAX_SAFE_INTEGER),
     0,
     86_400_000,
   );
   return Object.freeze({
-    timeUnixNano: (BigInt(integer(completion.completedAtMs, 0, Number.MAX_SAFE_INTEGER)) * 1_000_000n).toString(),
+    timeUnixNano: (BigInt(safeInteger(completion.completedAtMs, 0, Number.MAX_SAFE_INTEGER)) * 1_000_000n).toString(),
     attributes: Object.freeze({
       "cogs.event": "egress.complete",
       "cogs.intent_id": validOpaque(intent.intent_id),
-      "cogs.intent_sequence": integer(intent.sequence, 0, Number.MAX_SAFE_INTEGER),
+      "cogs.intent_sequence": safeInteger(intent.sequence, 0, Number.MAX_SAFE_INTEGER),
       "cogs.session_id": validOpaque(intent.session_id),
       "cogs.integration_id": validOpaque(intent.integration_id),
       "cogs.route_id": validOpaque(intent.route_id),
       "cogs.method": intent.method === "GET" || intent.method === "POST" ? intent.method : fail(),
       "cogs.credential_required": typeof intent.credential_required === "boolean" ? intent.credential_required : fail(),
-      "cogs.status_class": Math.floor(integer(completion.responseCode, 100, 599) / 100),
-      "cogs.duration_ms": integer(completion.durationMs, 0, 86_400_000),
+      "cogs.status_class": Math.floor(safeInteger(completion.responseCode, 100, 599) / 100),
+      "cogs.duration_ms": safeInteger(completion.durationMs, 0, 86_400_000),
       "cogs.completed_lag_ms": lag,
     }),
   });
@@ -327,44 +324,6 @@ function attr(key: string, value: string | number | boolean): unknown {
   if (typeof value === "number") return { key, value: { intValue: String(value) } };
   return { key, value: { boolValue: value } };
 }
-async function boundedText(response: Response, max: number): Promise<string> {
-  const reader = response.body?.getReader();
-  if (!reader) return "";
-  let total = 0;
-  const chunks: Uint8Array[] = [];
-  try {
-    for (;;) {
-      const part = await reader.read();
-      if (part.done) break;
-      total += part.value.byteLength;
-      if (total > max) throw new Error("too large");
-      chunks.push(part.value);
-    }
-  } finally {
-    await reader.cancel().catch(() => undefined);
-    reader.releaseLock();
-  }
-  return new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks));
-}
-function validateResponse(text: string): void {
-  const value = text === "" ? {} : JSON.parse(text);
-  exactPlain(value, [], ["partialSuccess"]);
-  if (!Object.hasOwn(value, "partialSuccess")) return;
-  const partial = value.partialSuccess;
-  exactPlain(partial, [], ["rejectedLogRecords", "errorMessage"]);
-  if (Object.hasOwn(partial, "rejectedLogRecords") && partial.rejectedLogRecords !== "0") throw new Error("rejected");
-  if (Object.hasOwn(partial, "errorMessage") && partial.errorMessage !== "") throw new Error("rejected");
-}
-function endpoint(value: unknown, allowLoopbackHttp: boolean): string {
-  if (typeof value !== "string") throw new Error("bad url");
-  const url = new URL(value);
-  if (url.username || url.password || url.search || url.hash || url.pathname !== "/v1/logs" || url.port === "0")
-    throw new Error("bad url");
-  if (url.protocol === "https:") return url.href;
-  if (url.protocol === "http:" && allowLoopbackHttp && (url.hostname === "127.0.0.1" || url.hostname === "[::1]"))
-    return url.href;
-  throw new Error("bad url");
-}
 function optional(
   value: Record<string, unknown>,
   key: string,
@@ -374,40 +333,9 @@ function optional(
   if (typeof value[key] !== type) throw new Error("bad option");
   return value[key] as boolean | number;
 }
-function jsonType(value: string | null): boolean {
-  return value?.split(";", 1)[0]?.trim().toLowerCase() === "application/json";
-}
 function validOpaque(value: unknown): string {
   if (typeof value !== "string" || !opaque.test(value)) throw new Error("bad opaque");
   return value;
-}
-function integer(value: unknown, min: number, max: number): number {
-  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < min || value > max)
-    throw new Error("bad int");
-  return value;
-}
-function exactPlain(
-  value: unknown,
-  required: readonly string[],
-  optional: readonly string[],
-): asserts value is Record<string, unknown> {
-  if (
-    typeof value !== "object" ||
-    value === null ||
-    Array.isArray(value) ||
-    Object.getPrototypeOf(value) !== Object.prototype
-  )
-    throw new Error("bad object");
-  const descriptors = Object.getOwnPropertyDescriptors(value);
-  const keys = Reflect.ownKeys(descriptors);
-  if (keys.some((key) => typeof key === "symbol")) throw new Error("bad keys");
-  const names = keys as string[];
-  for (const key of names) {
-    const descriptor = descriptors[key];
-    if (!descriptor?.enumerable || !Object.hasOwn(descriptor, "value")) throw new Error("bad keys");
-    if (!required.includes(key) && !optional.includes(key)) throw new Error("bad keys");
-  }
-  for (const key of required) if (!Object.hasOwn(descriptors, key)) throw new Error("bad keys");
 }
 function fail(): never {
   throw new Error("bad event");
