@@ -23,6 +23,11 @@ import {
   type OpenBaoEgressRevocationBindingRequest,
 } from "./openbao-revocation.ts";
 import {
+  type CogsEgressTelemetryMode,
+  type CogsEgressTelemetrySink,
+  createCogsEgressTelemetrySink,
+} from "./otlp-telemetry.ts";
+import {
   type CogsEgressRevocationReason,
   type CogsEgressRevocationSource,
   type CogsEgressRevocationTimers,
@@ -90,6 +95,7 @@ export type CogsEgressRuntimeManagerOptions = Readonly<{
   maxSessionExpiresAtMs: number;
   completionCapacity: number;
   revocation: CogsEgressRuntimeRevocationConfig;
+  telemetry: CogsEgressTelemetryMode;
   proxyCapability: string;
   pkiSource: CogsEgressPkiSource;
   envoyProcess: CogsEnvoyProcessPort;
@@ -164,6 +170,7 @@ class RuntimeManager {
   private routePlan!: CogsEgressRoutePlan;
   private wal: EgressAuditWal | undefined;
   private queue: CogsEgressCompletionQueue | undefined;
+  private telemetry: CogsEgressTelemetrySink | undefined;
   private authz: CogsExtAuthzServer | undefined;
   private process: CogsEnvoyProcessHandle | undefined;
   private watcher: CogsEgressRevocationWatcher | undefined;
@@ -190,6 +197,7 @@ class RuntimeManager {
     });
     this.routePlan = lowerLaunchEgressRoutePlan(this.options.launch);
     const presetRevision = aggregateCogsEgressRoutePlanRevision(this.routePlan);
+    this.telemetry = createCogsEgressTelemetrySink(this.options.telemetry);
     this.wal = await this.options.ports.openWal({
       path: this.options.walPath,
       ...walLimits,
@@ -198,6 +206,7 @@ class RuntimeManager {
     this.queue = createCogsEgressCompletionQueue(this.wal, {
       capacity: this.options.completionCapacity,
       nowMs: this.options.nowMs,
+      telemetry: this.telemetry,
     });
     this.internalAuthzToken = validSecret(this.options.randomSecret(32));
     this.proxyCapability = validSecret(this.options.proxyCapability);
@@ -403,6 +412,7 @@ class RuntimeManager {
       () => this.closeAuthz(),
       () => this.closeProcess(),
       () => this.closeQueue(),
+      () => this.closeTelemetry(),
       () => this.releaseScope(),
       () => this.closeWal(),
     ]) {
@@ -450,6 +460,12 @@ class RuntimeManager {
       failed = true;
     }
     if (failed) throw new Error("queue cleanup failed");
+  }
+
+  private async closeTelemetry(): Promise<void> {
+    const telemetry = this.telemetry;
+    if (telemetry) await this.withTimeout((signal) => telemetry.close(signal));
+    this.telemetry = undefined;
   }
 
   private async releaseScope(): Promise<void> {

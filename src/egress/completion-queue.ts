@@ -1,4 +1,5 @@
 import type { EgressAuditWal, EgressAuditWalRecord } from "./audit-wal.ts";
+import { type CogsEgressTelemetrySink, validateCogsEgressTelemetrySink } from "./otlp-telemetry.ts";
 
 const expectedKeys = ["event", "intent_id", "route_id", "response_code", "duration_ms"] as const;
 const opaque = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
@@ -22,6 +23,7 @@ export type CogsEgressCompletionQueue = Readonly<{
 export type CogsEgressCompletionQueueOptions = Readonly<{
   capacity: number;
   nowMs: () => number;
+  telemetry?: CogsEgressTelemetrySink;
 }>;
 
 export class CogsEgressCompletionError extends Error {
@@ -37,11 +39,12 @@ export function createCogsEgressCompletionQueue(
   options: CogsEgressCompletionQueueOptions,
 ): CogsEgressCompletionQueue {
   try {
-    const captured = Object.freeze({ capacity: options.capacity, nowMs: options.nowMs });
+    const captured = Object.freeze({ capacity: options.capacity, nowMs: options.nowMs, telemetry: options.telemetry });
     const capacity = bound(captured.capacity, 1, 1024);
+    validateCogsEgressTelemetrySink(captured.telemetry);
     if (typeof captured.nowMs !== "function" || !wal.ready || wal.records.length > 10_000) throw new Error("bad queue");
     const baseline = Math.max(-1, ...wal.records.map((record) => safeSequence(record.sequence)));
-    const queue = new CompletionQueue(wal, capacity, captured.nowMs, baseline);
+    const queue = new CompletionQueue(wal, capacity, captured.nowMs, baseline, captured.telemetry);
     return queue.handle();
   } catch {
     throw new CogsEgressCompletionError();
@@ -59,6 +62,7 @@ class CompletionQueue {
     private readonly capacity: number,
     private readonly nowMs: () => number,
     private readonly baseline: number,
+    private readonly telemetry: CogsEgressTelemetrySink | undefined,
   ) {}
 
   public handle(): CogsEgressCompletionQueue {
@@ -95,6 +99,10 @@ class CompletionQueue {
       });
       this.completed.add(parsed.intent_id);
       this.retained.push(completion);
+      try {
+        // Telemetry is best-effort; sink exceptions must not poison durable completion correlation.
+        this.telemetry?.enqueue(Object.freeze({ intent: safeIntent(match), completion }));
+      } catch {}
     } catch {
       this.poison();
       throw new CogsEgressCompletionError();
@@ -136,6 +144,19 @@ class CompletionQueue {
     this.retained.length = 0;
     this.completed.clear();
   }
+}
+
+function safeIntent(record: EgressAuditWalRecord) {
+  return Object.freeze({
+    sequence: record.sequence,
+    intent_id: record.intent_id,
+    timestamp_ms: record.timestamp_ms,
+    session_id: record.session_id,
+    integration_id: record.integration_id,
+    route_id: record.route_id,
+    method: record.method,
+    credential_required: record.credential_required,
+  });
 }
 
 function parseLine(line: string): {

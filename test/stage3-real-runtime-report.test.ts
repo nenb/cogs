@@ -45,8 +45,15 @@ function validSidecar() {
       authorization: "real",
       audit: "real",
       revocation: "real",
-      telemetry: "stubbed",
+      telemetry: "real",
       network_enforcement: "not-applicable",
+    },
+    telemetry_evidence: {
+      mode: "otlp",
+      authority: "functional-only",
+      records_received: 2,
+      exact_envelope: true,
+      forbidden_absent: true,
     },
     network_evidence: { mode: "not-applicable" },
     assertions: {
@@ -87,7 +94,7 @@ test("Stage 3 real-runtime sidecar is strict, explicit, and redacted", async () 
   assert.throws(() =>
     assertValidRealRuntimeSidecar({
       ...sidecar,
-      dependency_modes: { ...sidecar.dependency_modes, telemetry: "real" },
+      dependency_modes: { ...sidecar.dependency_modes, telemetry: "stubbed" },
     }),
   );
   const kvmSidecar = structuredClone(sidecar) as ReturnType<typeof validSidecar> & {
@@ -99,6 +106,7 @@ test("Stage 3 real-runtime sidecar is strict, explicit, and redacted", async () 
     assertions: ReturnType<typeof validSidecar>["assertions"] & Record<string, boolean>;
   };
   kvmSidecar.profile = "linux-kvm";
+  kvmSidecar.telemetry_evidence.authority = "authoritative-local";
   kvmSidecar.dependency_modes.network_enforcement = "real";
   Object.assign(kvmSidecar.assertions, {
     kvm_guest_proxy_allowed_v1: true,
@@ -180,17 +188,17 @@ test("Stage 3 real-runtime sidecar is strict, explicit, and redacted", async () 
   assert.throws(() => assertValidRealRuntimeSidecar(symbolExtra));
 });
 
-test("Stage 3 real-runtime report result stays stubbed while telemetry is stubbed", () => {
+test("Stage 3 real-runtime report can pass only after telemetry is real", () => {
   assert.deepEqual(
     validateSecurityResultSemantics({
-      result: "stubbed",
+      result: "pass",
       release_eligible: false,
       dependency_modes: {
         authorization: "real",
         audit: "real",
         identity: "real",
         revocation: "real",
-        telemetry: "stubbed",
+        telemetry: "real",
         network_enforcement: "not-applicable",
       },
     }),
@@ -219,9 +227,9 @@ test("Stage 3 real-runtime OpenBao PKI role is explicit least privilege", async 
   assert.match(harness, /phase\("validate_sidecar"/);
   assert.match(harness, /phase\("validate_security_report"/);
   assert.match(harness, /phase\("validate_redaction"/);
-  assert.match(harness, /result: "stubbed"/);
+  assert.match(harness, /result: "pass"/);
   assert.match(harness, /revocation: "real"/);
-  assert.match(harness, /telemetry: "stubbed"/);
+  assert.match(harness, /telemetry: "real"/);
   assert.match(harness, /harness_driven_replacement_after_production_callback/);
   assert.match(harness, /daemon_or_sandbox_replacement_proven: false/);
   assert.match(harness, /revocationPollIntervalMs/);
