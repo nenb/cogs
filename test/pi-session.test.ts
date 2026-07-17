@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { basename, dirname, resolve } from "node:path";
@@ -1740,6 +1740,51 @@ function authOptions(
     ...overrides,
   };
 }
+
+test("Pi session fails closed instead of settling when durable JSONL flush rejects", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "cogs-pi-jsonl-flush-fail-"));
+  try {
+    const cwd = resolve(root, "workspace");
+    const agentDir = resolve(root, "agent");
+    const sessionRoot = resolve(root, "sessions");
+    const sessionId = "jsonl-flush-fail-session";
+    const sessionDir = resolve(sessionRoot, sessionId);
+    const resumeFile = "resume.jsonl";
+    const sessionFile = resolve(sessionDir, resumeFile);
+    await mkdir(cwd, { recursive: true });
+    await mkdir(agentDir, { recursive: true });
+    await mkdir(sessionDir, { recursive: true });
+    await writeFile(
+      sessionFile,
+      `${JSON.stringify({ type: "session", version: 3, id: sessionId, timestamp: new Date(0).toISOString(), cwd })}\n`,
+    );
+    let fatal = "";
+    const adapter = await createCogsPiSession(
+      withDefaults({
+        cwd,
+        agentDir,
+        sessionRoot,
+        sessionId,
+        resumeFile,
+        model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+        apiKey: "aaaaaaaa",
+        toolPorts: fakePorts([]),
+        streamFn: oneToolStream("read", { path: "/workspace/README.md" }),
+        onFatal: (reason) => {
+          fatal = reason;
+        },
+      }),
+    );
+    await unlink(sessionFile);
+    await symlink(resolve(root, "outside.jsonl"), sessionFile);
+    await writeFile(resolve(root, "outside.jsonl"), "not pi jsonl\n");
+    await adapter.input({ requestId: "flush", correlationId: "flush-corr", kind: "prompt", content: "go" });
+    await eventually(async () => assert.equal((await adapter.state()).runState, "shutdown"));
+    assert.equal(fatal, "history-flush-failed");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test("authenticated Pi session disposes malformed prepared resources before model key source", async () => {
   const root = await mkdtemp(resolve(tmpdir(), "cogs-pi-bad-prepared-cleanup-"));
