@@ -25,5 +25,6 @@ ADRs 0001–0010 were accepted by Nick Byrne on 2026-07-10. ADR 0011 was accepte
 | [0019](0019-raise-issue-66-telemetry-line-budget.md) | Raise issue #66 telemetry line-budget | Accepted; current issue #66 cap |
 | [0020](0020-issue-67-skill-provenance-scope-and-line-budget.md) | Issue #67 skill provenance scope and line budget | Accepted; numeric cap superseded by ADR 0021 |
 | [0021](0021-raise-issue-67-final-integration-line-budget.md) | Raise issue #67 final integration line budget | Accepted; current issue #67 cap |
+| [0022](0022-proposed-issue-68-session-git-export-scope-and-line-budget.md) | Proposed issue #68 session, Git, and export scope and line budget | Proposed |
 
 Implementation pauses for every boundary listed in `IMPLEMENTATION.md` section 47. Superseding an accepted ADR requires a new ADR rather than editing history.
