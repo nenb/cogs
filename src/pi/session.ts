@@ -17,6 +17,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type { ApiEvent, ExportPort, HistoryPort, InputKind, JsonValue, RunState, SessionPort } from "../api/server.ts";
+import { type CogsCommandAuditHook, captureCogsCommandAuditHook } from "../audit/command-audit.ts";
 import { type ModelApiKeySource, ModelCredentialResolver, validateModelApiKey } from "../auth/model-auth.ts";
 import { validateLaunchConfig } from "../launch/config.ts";
 import { type CogsPolicyAuthorizer, CogsPolicyDeniedError, requireCogsPolicyAllow } from "../policy/require-policy.ts";
@@ -104,6 +105,7 @@ export interface CogsPiSessionOptions {
   readonly git?: CogsPiGitOptions;
   readonly policyAuthorizer?: CogsPolicyAuthorizer;
   readonly telemetry?: CogsTelemetry;
+  readonly commandAudit?: CogsCommandAuditHook;
 }
 
 export interface CogsPiGitOptions {
@@ -167,6 +169,7 @@ function validateOptions(options: CogsPiSessionOptions): void {
   validateOptionalInteger(options.operationTimeoutMs, "operationTimeoutMs", 1, 3_600_000);
   if (options.policyAuthorizer !== undefined) validatePolicyAuthorizer(options.policyAuthorizer);
   captureTelemetry(options.telemetry);
+  captureCogsCommandAuditHook(options.commandAudit);
   validateOptionalInteger(options.abortTimeoutMs, "abortTimeoutMs", 1, 60_000);
   validateOptionalInteger(options.maxToolResultBytes, "maxToolResultBytes", 128, 1024 * 1024);
 }
@@ -462,6 +465,7 @@ export async function createCogsPiSession(options: CogsPiSessionOptions): Promis
   const policyAuthorizer = options.policyAuthorizer;
   const rawPreparedResources = options.preparedResources;
   const telemetry = captureTelemetry(options.telemetry);
+  captureCogsCommandAuditHook(options.commandAudit);
 
   validateModelApiKey(apiKey);
   const gitOptions = validateGitOptions(options.git);
