@@ -70,6 +70,9 @@ export interface CogsSftpPort {
   readonly fstat: (handle: Buffer, signal: AbortSignal) => Promise<CogsSftpStats>;
   readonly closeHandle: (handle: Buffer, signal: AbortSignal) => Promise<void>;
   readonly unlink: (path: string, signal: AbortSignal) => Promise<void>;
+  readonly mkdir?: (path: string, mode: number, signal: AbortSignal) => Promise<void>;
+  readonly setMode?: (path: string, mode: number, signal: AbortSignal) => Promise<void>;
+  readonly rmdir?: (path: string, signal: AbortSignal) => Promise<void>;
   readonly fsync: (handle: Buffer, signal: AbortSignal) => Promise<void>;
   readonly posixRename: (source: string, target: string, signal: AbortSignal) => Promise<void>;
 }
@@ -1212,6 +1215,60 @@ class Ssh2SftpPort implements CogsSftpPort {
     return new Promise((resolve, reject) => {
       let settled = false;
       this.sftp.unlink(path, (error) =>
+        settleSftpCallback(
+          () => settled,
+          () => {
+            settled = true;
+          },
+          resolve,
+          reject,
+          () => {
+            if (error !== undefined && error !== null) throw toCogsSftpError(error);
+          },
+        ),
+      );
+    });
+  }
+  public mkdir(path: string, mode: number, _signal: AbortSignal): Promise<void> {
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      this.sftp.mkdir(path, { mode }, (error) =>
+        settleSftpCallback(
+          () => settled,
+          () => {
+            settled = true;
+          },
+          resolve,
+          reject,
+          () => {
+            if (error !== undefined && error !== null) throw toCogsSftpError(error);
+          },
+        ),
+      );
+    });
+  }
+  public setMode(path: string, mode: number, _signal: AbortSignal): Promise<void> {
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      this.sftp.chmod(path, mode, (error) =>
+        settleSftpCallback(
+          () => settled,
+          () => {
+            settled = true;
+          },
+          resolve,
+          reject,
+          () => {
+            if (error !== undefined && error !== null) throw toCogsSftpError(error);
+          },
+        ),
+      );
+    });
+  }
+  public rmdir(path: string, _signal: AbortSignal): Promise<void> {
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      this.sftp.rmdir(path, (error) =>
         settleSftpCallback(
           () => settled,
           () => {

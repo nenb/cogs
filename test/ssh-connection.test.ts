@@ -868,6 +868,59 @@ test("ssh2 SFTP wrapper validates own-data stats and malformed handles/read tupl
   }
 });
 
+test("ssh2 SFTP wrapper maps mkdir setMode and rmdir callbacks", async () => {
+  class MutatingSftp extends EventEmitter {
+    public calls: string[] = [];
+    public failNext = false;
+    public mkdir(path: string, attrs: unknown, cb: (error?: Error) => void): void {
+      this.calls.push(`mkdir:${path}:${JSON.stringify(attrs)}`);
+      const fail = this.failNext;
+      this.failNext = false;
+      setImmediate(() => cb(fail ? new Error("mkdir raw") : undefined));
+    }
+    public chmod(path: string, mode: number, cb: (error?: Error) => void): void {
+      this.calls.push(`chmod:${path}:${mode.toString(8)}`);
+      const fail = this.failNext;
+      this.failNext = false;
+      setImmediate(() => cb(fail ? new Error("chmod raw") : undefined));
+    }
+    public rmdir(path: string, cb: (error?: Error) => void): void {
+      this.calls.push(`rmdir:${path}`);
+      const fail = this.failNext;
+      this.failNext = false;
+      setImmediate(() => cb(fail ? new Error("rmdir raw") : undefined));
+    }
+    public end(): void {
+      this.emit("close");
+    }
+    public destroy(): void {
+      this.emit("close");
+    }
+  }
+  class FakeClient extends EventEmitter {
+    public constructor(private readonly sftpImpl: MutatingSftp) {
+      super();
+    }
+    public sftp(cb: (error: Error | undefined, sftp: MutatingSftp) => void): void {
+      cb(undefined, this.sftpImpl);
+    }
+  }
+  const sftp = new MutatingSftp();
+  const channel = await new Ssh2Connection(new FakeClient(sftp) as never).openSftp(new AbortController().signal);
+  const mkdirPort = channel.port.mkdir?.bind(channel.port);
+  const setModePort = channel.port.setMode?.bind(channel.port);
+  const rmdirPort = channel.port.rmdir?.bind(channel.port);
+  assert.ok(mkdirPort);
+  assert.ok(setModePort);
+  assert.ok(rmdirPort);
+  await mkdirPort("/dir", 0o555, new AbortController().signal);
+  await setModePort("/dir", 0o444, new AbortController().signal);
+  await rmdirPort("/dir", new AbortController().signal);
+  assert.deepEqual(sftp.calls, ['mkdir:/dir:{"mode":365}', "chmod:/dir:444", "rmdir:/dir"]);
+  sftp.failNext = true;
+  await assert.rejects(mkdirPort("/bad", 0o555, new AbortController().signal), /sftp operation failed/);
+});
+
 test("ssh2 SFTP stats reject POSIX mode high bits and channel observes remote close before close call", async () => {
   class ModeSftp extends EventEmitter {
     public mode = 0o100600;

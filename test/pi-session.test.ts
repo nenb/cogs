@@ -20,6 +20,7 @@ import {
   createAuthenticatedCogsPiSession,
   createCogsPiSession,
 } from "../src/pi/session.ts";
+import type { CogsPreparedSkills, CogsSkillPreparerPort } from "../src/skills/session-preparer.ts";
 
 const require = createRequire(import.meta.url);
 const Ajv = require("ajv/dist/2020") as new (options?: Record<string, unknown>) => AjvCore;
@@ -1637,6 +1638,87 @@ class TestModelApiKeySource implements ModelApiKeySource {
   }
 }
 
+function emptySkillPreparer(): CogsSkillPreparerPort {
+  return Object.freeze({
+    prepare: async () =>
+      Object.freeze({
+        piSkills: Object.freeze([]),
+        eagerTrustedSkillPrompt: "",
+        agentsFiles: Object.freeze([]),
+        metadata: Object.freeze({
+          shared: Object.freeze({
+            scope: "shared",
+            revision: `sha256:${"a".repeat(64)}`,
+            bundleDigest: `sha256:${"a".repeat(64)}`,
+            guestRoot: "/shared/skills",
+            guestSubtree: `/shared/skills/${"a".repeat(64)}`,
+            fileCount: 0,
+            byteCount: 0,
+            readOnlyEnforced: false,
+          }),
+          user: Object.freeze({
+            scope: "user",
+            revision: `sha256:${"a".repeat(64)}`,
+            bundleDigest: `sha256:${"a".repeat(64)}`,
+            guestRoot: "/user/skills",
+            guestSubtree: `/user/skills/${"a".repeat(64)}`,
+            fileCount: 0,
+            byteCount: 0,
+            readOnlyEnforced: false,
+          }),
+          agentsStatus: "missing",
+          skillCount: 0,
+        }),
+        dispose: async () => undefined,
+      }),
+  });
+}
+
+function hostilePrepared(overrides: Record<string, unknown> = {}): CogsPreparedSkills {
+  const sharedHex = "a".repeat(64);
+  const userHex = "b".repeat(64);
+  return Object.freeze({
+    piSkills: Object.freeze([
+      Object.freeze({
+        name: "safe-skill",
+        description: "safe description",
+        filePath: `/shared/skills/${sharedHex}/SKILL.md`,
+        baseDir: `/shared/skills/${sharedHex}`,
+        sourceInfo: {},
+        disableModelInvocation: false,
+      }),
+    ]),
+    eagerTrustedSkillPrompt: "",
+    agentsFiles: Object.freeze([]),
+    metadata: Object.freeze({
+      shared: Object.freeze({
+        scope: "shared",
+        revision: `sha256:${"c".repeat(64)}`,
+        bundleDigest: `sha256:${sharedHex}`,
+        guestRoot: "/shared/skills",
+        guestSubtree: `/shared/skills/${sharedHex}`,
+        fileCount: 1,
+        byteCount: 1,
+        readOnlyEnforced: false,
+      }),
+      user: Object.freeze({
+        scope: "user",
+        revision: `sha256:${userHex}`,
+        bundleDigest: `sha256:${userHex}`,
+        guestRoot: "/user/skills",
+        guestSubtree: `/user/skills/${userHex}`,
+        fileCount: 0,
+        byteCount: 0,
+        readOnlyEnforced: false,
+      }),
+      agentsStatus: "missing",
+      skillCount: 1,
+    }),
+    dispose: async () => undefined,
+    ...overrides,
+  }) as unknown as CogsPreparedSkills;
+}
+
 function authOptions(
   root: string,
   source: ModelApiKeySource,
@@ -1652,11 +1734,331 @@ function authOptions(
     launchDocument: validLaunch("auth-session"),
     toolPorts: fakePorts([]),
     modelApiKeys: source,
+    skillPreparer: emptySkillPreparer(),
     emit: () => true,
     onFatal: () => undefined,
     ...overrides,
   };
 }
+
+test("authenticated Pi session disposes malformed prepared resources before model key source", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "cogs-pi-bad-prepared-cleanup-"));
+  try {
+    await mkdir(resolve(root, "workspace"), { recursive: true });
+    await mkdir(resolve(root, "agent"), { recursive: true });
+    const source = new TestModelApiKeySource("aaaaaaaa");
+    let disposed = 0;
+    await assert.rejects(
+      createAuthenticatedCogsPiSession(
+        authOptions(root, source, {
+          skillPreparer: Object.freeze({
+            prepare: async () =>
+              Object.freeze({
+                piSkills: Object.freeze([
+                  Object.freeze({
+                    name: "bad",
+                    description: "bad",
+                    filePath: "/tmp/host/SKILL.md",
+                    baseDir: "/tmp/host",
+                    sourceInfo: {},
+                    disableModelInvocation: false,
+                  }),
+                ]),
+                eagerTrustedSkillPrompt: "bad",
+                agentsFiles: Object.freeze([]),
+                metadata: Object.freeze({}),
+                dispose: async () => {
+                  disposed += 1;
+                },
+              } as never),
+          }),
+        }),
+      ),
+    );
+    assert.equal(disposed, 1);
+    assert.equal(source.calls, 0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("authenticated Pi session rejects hostile prepared paths and metadata before model key source", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "cogs-pi-hostile-prepared-"));
+  try {
+    await mkdir(resolve(root, "workspace"), { recursive: true });
+    await mkdir(resolve(root, "agent"), { recursive: true });
+    const source = new TestModelApiKeySource("aaaaaaaa");
+    const sharedHex = "a".repeat(64);
+    const userHex = "b".repeat(64);
+    const cases: Array<{ name: string; prepared: CogsPreparedSkills }> = [
+      {
+        name: "terminal-dotdot",
+        prepared: hostilePrepared({
+          piSkills: Object.freeze([
+            Object.freeze({
+              name: "safe-skill",
+              description: "safe description",
+              filePath: `/shared/skills/${sharedHex}/..`,
+              baseDir: `/shared/skills/${sharedHex}`,
+              sourceInfo: {},
+              disableModelInvocation: false,
+            }),
+          ]),
+        }),
+      },
+      {
+        name: "control-char",
+        prepared: hostilePrepared({
+          piSkills: Object.freeze([
+            Object.freeze({
+              name: "safe-skill",
+              description: "safe description",
+              filePath: `/shared/skills/${sharedHex}/bad\u0001.md`,
+              baseDir: `/shared/skills/${sharedHex}`,
+              sourceInfo: {},
+              disableModelInvocation: false,
+            }),
+          ]),
+        }),
+      },
+      {
+        name: "empty-description",
+        prepared: hostilePrepared({
+          piSkills: Object.freeze([
+            Object.freeze({
+              name: "safe-skill",
+              description: "",
+              filePath: `/shared/skills/${sharedHex}/SKILL.md`,
+              baseDir: `/shared/skills/${sharedHex}`,
+              sourceInfo: {},
+              disableModelInvocation: false,
+            }),
+          ]),
+        }),
+      },
+      {
+        name: "bad-name",
+        prepared: hostilePrepared({
+          piSkills: Object.freeze([
+            Object.freeze({
+              name: "-bad",
+              description: "safe description",
+              filePath: `/shared/skills/${sharedHex}/SKILL.md`,
+              baseDir: `/shared/skills/${sharedHex}`,
+              sourceInfo: {},
+              disableModelInvocation: false,
+            }),
+          ]),
+        }),
+      },
+      {
+        name: "guest-subtree-digest-mismatch",
+        prepared: hostilePrepared({
+          metadata: Object.freeze({
+            ...hostilePrepared().metadata,
+            shared: Object.freeze({
+              ...hostilePrepared().metadata.shared,
+              guestSubtree: `/shared/skills/${"c".repeat(64)}`,
+            }),
+          }),
+        }),
+      },
+      {
+        name: "user-revision-mismatch",
+        prepared: hostilePrepared({
+          metadata: Object.freeze({
+            ...hostilePrepared().metadata,
+            user: Object.freeze({ ...hostilePrepared().metadata.user, revision: `sha256:${"c".repeat(64)}` }),
+          }),
+        }),
+      },
+      {
+        name: "file-count-cap",
+        prepared: hostilePrepared({
+          metadata: Object.freeze({
+            ...hostilePrepared().metadata,
+            shared: Object.freeze({ ...hostilePrepared().metadata.shared, fileCount: 129 }),
+          }),
+        }),
+      },
+      {
+        name: "byte-count-cap",
+        prepared: hostilePrepared({
+          metadata: Object.freeze({
+            ...hostilePrepared().metadata,
+            shared: Object.freeze({ ...hostilePrepared().metadata.shared, byteCount: 768 * 1024 + 1 }),
+          }),
+        }),
+      },
+      {
+        name: "skill-count-cap",
+        prepared: hostilePrepared({ metadata: Object.freeze({ ...hostilePrepared().metadata, skillCount: 33 }) }),
+      },
+    ];
+    for (const one of cases) {
+      await assert.rejects(
+        createAuthenticatedCogsPiSession(
+          authOptions(root, source, { skillPreparer: Object.freeze({ prepare: async () => one.prepared }) }),
+        ),
+        /skill preparation failed/,
+        one.name,
+      );
+      assert.equal(source.calls, 0, one.name);
+    }
+    assert.equal(userHex.length, 64);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("authenticated Pi session fails preparation before model key source", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "cogs-pi-prep-before-auth-"));
+  try {
+    await mkdir(resolve(root, "workspace"), { recursive: true });
+    await mkdir(resolve(root, "agent"), { recursive: true });
+    const source = new TestModelApiKeySource("aaaaaaaa");
+    await assert.rejects(
+      createAuthenticatedCogsPiSession(
+        authOptions(root, source, {
+          skillPreparer: Object.freeze({
+            prepare: async () => {
+              throw new Error("prep failed with secret-ish host /tmp/private");
+            },
+          }),
+        }),
+      ),
+    );
+    assert.equal(source.calls, 0);
+    await assertMissing(resolve(root, "sessions/auth-session.jsonl"));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Pi session exposes canonical prepared metadata and direct-root skill paths", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "cogs-pi-skill-metadata-"));
+  try {
+    await mkdir(resolve(root, "workspace"), { recursive: true });
+    await mkdir(resolve(root, "agent"), { recursive: true });
+    const sharedHex = "a".repeat(64);
+    const prepared = hostilePrepared({
+      piSkills: Object.freeze([
+        Object.freeze({
+          name: "root-skill",
+          description: "root description",
+          filePath: `/shared/skills/${sharedHex}/root.md`,
+          baseDir: `/shared/skills/${sharedHex}`,
+          sourceInfo: {},
+          disableModelInvocation: false,
+        }),
+      ]),
+    });
+    const source = new TestModelApiKeySource("aaaaaaaa");
+    const adapter = await createAuthenticatedCogsPiSession(
+      authOptions(root, source, { skillPreparer: Object.freeze({ prepare: async () => prepared }) }),
+    );
+    try {
+      assert.equal(adapter.skillMetadata()?.shared.guestSubtree, `/shared/skills/${sharedHex}`);
+      const metadata = adapter.skillMetadata();
+      assert.ok(Object.isFrozen(metadata));
+      assert.equal(source.calls, 1);
+      assert.equal(adapter.activeToolNames().length, COGS_PI_TOOL_NAMES.length);
+    } finally {
+      await adapter.dispose();
+    }
+
+    const unprepared = await createCogsPiSession(
+      withDefaults({
+        cwd: resolve(root, "workspace"),
+        agentDir: resolve(root, "agent"),
+        sessionRoot: resolve(root, "sessions2"),
+        sessionId: "no-skill-metadata-session",
+        model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+        apiKey: "aaaaaaaa",
+        toolPorts: fakePorts([]),
+      }),
+    );
+    try {
+      assert.equal(unprepared.skillMetadata(), undefined);
+    } finally {
+      await unprepared.dispose();
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Pi session uses prepared eager skill prompt with guest paths before first model call", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "cogs-pi-prepared-prompt-"));
+  try {
+    const cwd = resolve(root, "workspace");
+    const agentDir = resolve(root, "agent");
+    const sessionRoot = resolve(root, "sessions");
+    await mkdir(cwd, { recursive: true });
+    await mkdir(agentDir, { recursive: true });
+    const hostPath = resolve(root, "trusted-host-temp");
+    const trusted = "# Trusted skill body\nUse the verified skill content.";
+    let observed = "";
+    const delegate = oneToolStream("read", { path: "/workspace/README.md" });
+    const adapter = await createCogsPiSession(
+      withDefaults({
+        cwd,
+        agentDir,
+        sessionRoot,
+        sessionId: "prepared-prompt-session",
+        model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+        apiKey: "aaaaaaaa",
+        toolPorts: fakePorts([]),
+        preparedResources: Object.freeze({
+          piSkills: Object.freeze([]),
+          eagerTrustedSkillPrompt: JSON.stringify({ path: "/shared/skills/abc/SKILL.md", markdown: trusted }),
+          agentsFiles: Object.freeze([]),
+          metadata: Object.freeze({
+            shared: Object.freeze({
+              scope: "shared",
+              revision: `sha256:${"a".repeat(64)}`,
+              bundleDigest: `sha256:${"a".repeat(64)}`,
+              guestRoot: "/shared/skills",
+              guestSubtree: `/shared/skills/${"a".repeat(64)}`,
+              fileCount: 1,
+              byteCount: trusted.length,
+              readOnlyEnforced: false,
+            }),
+            user: Object.freeze({
+              scope: "user",
+              revision: `sha256:${"b".repeat(64)}`,
+              bundleDigest: `sha256:${"b".repeat(64)}`,
+              guestRoot: "/user/skills",
+              guestSubtree: `/user/skills/${"b".repeat(64)}`,
+              fileCount: 0,
+              byteCount: 0,
+              readOnlyEnforced: false,
+            }),
+            agentsStatus: "missing",
+            skillCount: 0,
+          }),
+          dispose: async () => undefined,
+        }),
+        streamFn: (model, context, options) => {
+          observed = JSON.stringify(context);
+          return delegate(model, context, options);
+        },
+      }),
+    );
+    try {
+      await adapter.input({ requestId: "prepared", correlationId: "prepared-corr", kind: "prompt", content: "go" });
+      await eventually(async () => assert.equal((await adapter.state()).runState, "settled"));
+      assert.match(observed, /Trusted skill body/);
+      assert.match(observed, /\/shared\/skills\/abc\/SKILL\.md/);
+      assert.equal(observed.includes(hostPath), false);
+      assert.deepEqual([...adapter.activeToolNames()].sort(), [...COGS_PI_TOOL_NAMES].sort());
+    } finally {
+      await adapter.dispose();
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test("authenticated Pi session derives model auth from launch and performs runtime model call", async () => {
   const root = await mkdtemp(resolve(tmpdir(), "cogs-pi-auth-success-"));
