@@ -19,6 +19,11 @@ import { Type } from "typebox";
 import type { ApiEvent, HistoryPort, InputKind, JsonValue, RunState, SessionPort } from "../api/server.ts";
 import { type ModelApiKeySource, ModelCredentialResolver, validateModelApiKey } from "../auth/model-auth.ts";
 import { validateLaunchConfig } from "../launch/config.ts";
+import {
+  CogsJsonlHistoryCursorError,
+  type CogsJsonlHistoryStore,
+  createCogsJsonlHistoryStore,
+} from "../session/jsonl-history.ts";
 import type {
   CogsAgentsFile,
   CogsPreparedSkillMetadata,
@@ -224,6 +229,11 @@ export async function createCogsPiSession(options: CogsPiSessionOptions): Promis
     if (modelRegistry.isUsingOAuth(model)) throw new Error("oauth model authentication is disabled");
 
     const sessionManager = await createContainedSessionManager(cwd, sessionRoot, sessionId, resumeFile);
+    const historyStore = createCogsJsonlHistoryStore({
+      sessionFile: sessionManager.getSessionFile(),
+      sessionDir: sessionManager.getSessionDir(),
+    });
+    await historyStore.initialize();
 
     const sessionResult = await createAgentSession({
       cwd,
@@ -265,6 +275,7 @@ export async function createCogsPiSession(options: CogsPiSessionOptions): Promis
       operationTimeoutMs,
       abortTimeoutMs,
       preparedResources,
+      historyStore,
     });
   } catch (error) {
     let cleanupError: unknown;
@@ -533,6 +544,7 @@ class PiSessionAdapter implements CogsPiSessionPorts {
       readonly operationTimeoutMs: number | undefined;
       readonly abortTimeoutMs: number | undefined;
       readonly preparedResources: CogsPreparedSkills | undefined;
+      readonly historyStore: CogsJsonlHistoryStore;
     },
   ) {
     this.#authStorage = authStorage;
@@ -636,16 +648,16 @@ class PiSessionAdapter implements CogsPiSessionPorts {
     await throwIfAborted(input.signal);
     if (!Number.isInteger(input.limit) || input.limit < 1 || input.limit > 100)
       throw new Error("invalid history limit");
-    const entries = this.sessionManager.getEntries();
-    const cursorIndex = input.after === undefined ? -1 : entries.findIndex((entry) => entry.id === input.after);
-    if (input.after !== undefined && cursorIndex < 0) throw new Error("unknown history cursor");
-    const start = cursorIndex + 1;
-    const page = entries.slice(start, start + input.limit);
-    const last = page.at(-1);
-    return {
-      entries: sanitizeJson(page, { secrets: [this.runtime.secret.value] }) as JsonValue[],
-      ...(start + input.limit < entries.length && last !== undefined ? { nextAfter: last.id } : {}),
-    };
+    try {
+      const page = await this.runtime.historyStore.entries(input);
+      return {
+        entries: sanitizeJson(page.entries, { secrets: [this.runtime.secret.value] }) as JsonValue[],
+        ...(page.nextAfter === undefined ? {} : { nextAfter: page.nextAfter }),
+      };
+    } catch (error) {
+      if (error instanceof CogsJsonlHistoryCursorError) throw new Error("unknown history cursor");
+      throw new Error("invalid session history");
+    }
   }
 
   public async dispose(): Promise<void> {
@@ -686,6 +698,13 @@ class PiSessionAdapter implements CogsPiSessionPorts {
     try {
       await this.session.prompt(content, { expandPromptTemplates: false });
       if (active.suppressLate || this.phase === "aborting") return;
+      try {
+        await this.runtime.historyStore.flushSettled();
+      } catch {
+        await this.failClosed("history-flush-failed", active);
+        return;
+      }
+      if (active.suppressLate) return;
       this.terminal(active, "run_settled", { state: "settled" });
     } catch (error) {
       if (active.terminal || active.suppressLate || this.phase === "aborting") return;
@@ -1293,11 +1312,16 @@ function sanitizeJson(value: unknown, options: { secrets: readonly string[] }): 
       const output: Record<string, JsonValue> = {};
       for (const keyName of Object.keys(entry).slice(0, 128)) {
         const descriptor = Object.getOwnPropertyDescriptor(entry, keyName);
-        if (descriptor === undefined || !("value" in descriptor)) {
-          output[keyName] = "[unreadable]";
-        } else {
-          output[keyName] = visit(descriptor.value, depth + 1, keyName);
-        }
+        const sanitizedValue =
+          descriptor === undefined || !("value" in descriptor)
+            ? "[unreadable]"
+            : visit(descriptor.value, depth + 1, keyName);
+        Object.defineProperty(output, keyName, {
+          value: sanitizedValue,
+          enumerable: true,
+          writable: true,
+          configurable: true,
+        });
       }
       return output;
     }
