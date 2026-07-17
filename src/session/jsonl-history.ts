@@ -25,6 +25,13 @@ export class CogsJsonlHistoryCursorError extends Error {
   }
 }
 
+export interface CogsJsonlHistorySnapshot {
+  readonly bytes: Buffer;
+  readonly sessionId: string;
+  readonly createdAt: string;
+  readonly entryIds: readonly string[];
+}
+
 export interface CogsJsonlHistoryStore {
   readonly initialize: (input?: { signal?: AbortSignal }) => Promise<void>;
   readonly flushSettled: (input?: { signal?: AbortSignal }) => Promise<void>;
@@ -33,6 +40,7 @@ export interface CogsJsonlHistoryStore {
     limit: number;
     signal?: AbortSignal;
   }) => Promise<CogsJsonlHistoryPage>;
+  readonly snapshot: (input?: { signal?: AbortSignal }) => Promise<CogsJsonlHistorySnapshot>;
   readonly durableBytes: () => number;
 }
 
@@ -126,6 +134,32 @@ export function createCogsJsonlHistoryStore(input: {
           entries: Object.freeze(scanned.page),
           ...(scanned.nextAfter === undefined ? {} : { nextAfter: scanned.nextAfter }),
         });
+      } finally {
+        await closeOpened(opened, success);
+      }
+    },
+    snapshot: async ({ signal }: { signal?: AbortSignal } = {}) => {
+      throwIfAborted(signal);
+      const marker = durableMarker;
+      if (sessionFile === undefined || marker === undefined) throw new CogsJsonlHistoryError();
+      const opened = await openForRead(sessionFile, sessionDir, marker, signal);
+      let success = false;
+      try {
+        const bytes = await readExactSnapshot(opened.handle, marker.bytes, signal);
+        const metadata = parseSnapshotMetadata(bytes);
+        const afterRead = await opened.handle.stat({ bigint: true });
+        if (
+          !afterRead.isFile() ||
+          afterRead.dev !== marker.dev ||
+          afterRead.ino !== marker.ino ||
+          afterRead.size < BigInt(marker.bytes)
+        )
+          throw new CogsJsonlHistoryError();
+        const afterDir = await opened.dirHandle.stat({ bigint: true });
+        if (!afterDir.isDirectory() || afterDir.dev !== marker.dirDev || afterDir.ino !== marker.dirIno)
+          throw new CogsJsonlHistoryError();
+        success = true;
+        return Object.freeze({ bytes, ...metadata });
       } finally {
         await closeOpened(opened, success);
       }
@@ -437,6 +471,81 @@ function validateHeader(value: JsonValue | undefined): void {
   const header = value as { readonly type?: unknown; readonly version?: unknown; readonly id?: unknown };
   if (header.type !== "session" || header.version !== 3 || typeof header.id !== "string" || !HEADER_ID.test(header.id))
     throw new CogsJsonlHistoryError();
+}
+
+async function readExactSnapshot(
+  handle: Awaited<ReturnType<typeof open>>,
+  bytes: number,
+  signal: AbortSignal | undefined,
+): Promise<Buffer> {
+  if (!Number.isSafeInteger(bytes) || bytes < 1 || bytes > MAX_HISTORY_BYTES) throw new CogsJsonlHistoryError();
+  const out = Buffer.alloc(bytes);
+  let offset = 0;
+  while (offset < bytes) {
+    throwIfAborted(signal);
+    const read = await handle.read(out, offset, Math.min(READ_CHUNK_BYTES, bytes - offset), offset);
+    if (read.bytesRead < 1) throw new CogsJsonlHistoryError();
+    offset += read.bytesRead;
+  }
+  return out;
+}
+
+function parseSnapshotMetadata(bytes: Buffer): {
+  readonly sessionId: string;
+  readonly createdAt: string;
+  readonly entryIds: readonly string[];
+} {
+  const text = decodeSnapshot(bytes);
+  const lines = text.split("\n");
+  if (lines.at(-1) !== "") throw new CogsJsonlHistoryError();
+  lines.pop();
+  if (lines.length < 1 || lines.length > MAX_ENTRIES + 1) throw new CogsJsonlHistoryError();
+  const ids = new Set<string>();
+  let sessionId = "";
+  let createdAt = "";
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] ?? "";
+    if (Buffer.byteLength(line, "utf8") < 1 || Buffer.byteLength(line, "utf8") > MAX_LINE_BYTES)
+      throw new CogsJsonlHistoryError();
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      throw new CogsJsonlHistoryError();
+    }
+    if (!isPlainJsonObject(parsed)) throw new CogsJsonlHistoryError();
+    if (index === 0) {
+      validateHeader(parsed as JsonValue);
+      const header = parsed as { readonly id?: unknown; readonly timestamp?: unknown };
+      if (typeof header.id !== "string" || typeof header.timestamp !== "string" || !ISO_TIMESTAMP(header.timestamp))
+        throw new CogsJsonlHistoryError();
+      sessionId = header.id;
+      createdAt = header.timestamp;
+      continue;
+    }
+    const id = entryId(parsed as JsonValue);
+    if (ids.has(id)) throw new CogsJsonlHistoryError();
+    const parentId = (parsed as { readonly parentId?: unknown }).parentId;
+    if (parentId !== null && (typeof parentId !== "string" || !ids.has(parentId))) throw new CogsJsonlHistoryError();
+    ids.add(id);
+  }
+  return Object.freeze({ sessionId, createdAt, entryIds: Object.freeze([...ids]) });
+}
+
+function decodeSnapshot(bytes: Buffer): string {
+  try {
+    return DECODER.decode(bytes);
+  } catch {
+    throw new CogsJsonlHistoryError();
+  }
+}
+
+function ISO_TIMESTAMP(value: string): boolean {
+  try {
+    return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value) && new Date(value).toISOString() === value;
+  } catch {
+    return false;
+  }
 }
 
 function entryId(value: JsonValue): string {

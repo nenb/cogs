@@ -4,12 +4,24 @@
   "title": "Cogs session export manifest",
   "type": "object",
   "additionalProperties": false,
-  "required": ["version", "session_id", "created_at", "pi_version", "files", "skills", "attachments_included"],
+  "required": [
+    "version",
+    "cogs_version",
+    "pi_version",
+    "session_id",
+    "created_at",
+    "mode",
+    "attachments_included",
+    "files",
+    "skills"
+  ],
   "properties": {
     "version": { "const": "cogs.export/v1alpha1" },
+    "cogs_version": { "const": "0.0.0" },
+    "pi_version": { "const": "0.80.6" },
     "session_id": { "$ref": "#/$defs/opaqueId" },
     "created_at": { "type": "string", "format": "date-time" },
-    "pi_version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:[-+].*)?$" },
+    "mode": { "const": "raw" },
     "model": {
       "type": "object",
       "additionalProperties": false,
@@ -21,7 +33,7 @@
     },
     "files": {
       "type": "array",
-      "minItems": 3,
+      "minItems": 5,
       "allOf": [
         {
           "contains": { "type": "object", "properties": { "path": { "const": "session.jsonl" } }, "required": ["path"] }
@@ -29,7 +41,19 @@
         {
           "contains": { "type": "object", "properties": { "path": { "const": "git-map.json" } }, "required": ["path"] }
         },
-        { "contains": { "type": "object", "properties": { "path": { "const": "skills.json" } }, "required": ["path"] } }
+        {
+          "contains": { "type": "object", "properties": { "path": { "const": "skills.json" } }, "required": ["path"] }
+        },
+        {
+          "contains": { "type": "object", "properties": { "path": { "const": "warnings.json" } }, "required": ["path"] }
+        },
+        {
+          "contains": {
+            "type": "object",
+            "properties": { "path": { "const": "transform-report.json" } },
+            "required": ["path"]
+          }
+        }
       ],
       "items": {
         "type": "object",
@@ -56,7 +80,7 @@
         "user_revision": { "$ref": "#/$defs/digest" }
       }
     },
-    "attachments_included": { "type": "boolean" }
+    "attachments_included": { "const": false }
   },
   "$defs": {
     "opaqueId": {
