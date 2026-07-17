@@ -24,7 +24,8 @@
     "images:check": "tsx scripts/check-image-pins.ts",
     "lock:check": "tsx scripts/check-lock-integrity.ts",
     "licenses": "tsx scripts/check-licenses.ts",
-    "audit": "npm audit --audit-level=high"
+    "audit": "npm audit --audit-level=high",
+    "evidence:issue68": "tsx scripts/benchmark-issue68-checkpoints.ts"
   },
   "dependencies": {
     "@earendil-works/pi-agent-core": "0.80.6",
