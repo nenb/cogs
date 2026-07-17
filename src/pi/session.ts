@@ -20,6 +20,14 @@ import type { ApiEvent, HistoryPort, InputKind, JsonValue, RunState, SessionPort
 import { type ModelApiKeySource, ModelCredentialResolver, validateModelApiKey } from "../auth/model-auth.ts";
 import { validateLaunchConfig } from "../launch/config.ts";
 import {
+  type CogsGitCheckpointConfig,
+  type CogsGitCheckpointer,
+  type CogsGitCheckpointResult,
+  checkpointEvent,
+  checkpointRecord,
+  createSshGitCheckpointer,
+} from "../session/git-checkpoint.ts";
+import {
   type CogsGitMapRecord,
   type CogsGitMapResolveResult,
   type CogsGitMapStore,
@@ -87,6 +95,8 @@ export interface CogsPiGitOptions {
   readonly manager?: SshConnectionManager;
   readonly observer?: CogsGitObserver;
   readonly enableNotes?: boolean;
+  readonly checkpoint?: CogsGitCheckpointConfig;
+  readonly checkpointer?: CogsGitCheckpointer;
 }
 
 export interface AuthenticatedCogsPiSessionOptions
@@ -150,7 +160,7 @@ function validateGitOptions(value: CogsPiGitOptions | undefined): CogsPiGitOptio
     if (Object.getPrototypeOf(value) !== Object.prototype) throw new Error("invalid git options");
     const descriptors = Object.getOwnPropertyDescriptors(value);
     const keys = Reflect.ownKeys(descriptors);
-    const allowed = ["repositoryId", "manager", "observer", "enableNotes"];
+    const allowed = ["repositoryId", "manager", "observer", "enableNotes", "checkpoint", "checkpointer"];
     if (!keys.every((key) => typeof key === "string" && allowed.includes(key))) throw new Error("invalid git options");
     if (
       !descriptors.repositoryId ||
@@ -162,17 +172,26 @@ function validateGitOptions(value: CogsPiGitOptions | undefined): CogsPiGitOptio
     const manager = dataValue(descriptors, "manager");
     const observer = dataValue(descriptors, "observer");
     const enableNotes = dataValue(descriptors, "enableNotes");
+    const checkpoint = dataValue(descriptors, "checkpoint");
+    const checkpointer = dataValue(descriptors, "checkpointer");
     if (typeof repositoryId !== "string") throw new Error("invalid git options");
     assertOpaqueId(repositoryId, "repository id");
     if ((manager === undefined) === (observer === undefined)) throw new Error("invalid git options");
     if (observer !== undefined) validateObserverShape(observer);
     if (manager !== undefined) validateManagerShape(manager);
     if (enableNotes !== undefined && typeof enableNotes !== "boolean") throw new Error("invalid git options");
+    const normalizedCheckpoint = validateCheckpointOptions(checkpoint);
+    if (checkpointer !== undefined) validateCheckpointerShape(checkpointer);
+    if (normalizedCheckpoint?.enabled === true && manager === undefined && checkpointer === undefined)
+      throw new Error("invalid git options");
+    if (checkpointer !== undefined && normalizedCheckpoint !== undefined) throw new Error("invalid git options");
     return Object.freeze({
       repositoryId,
       ...(manager === undefined ? {} : { manager: manager as SshConnectionManager }),
       ...(observer === undefined ? {} : { observer: observer as CogsGitObserver }),
       ...(enableNotes === undefined ? {} : { enableNotes }),
+      ...(normalizedCheckpoint === undefined ? {} : { checkpoint: normalizedCheckpoint }),
+      ...(checkpointer === undefined ? {} : { checkpointer: checkpointer as CogsGitCheckpointer }),
     }) as CogsPiGitOptions;
   } catch {
     throw new Error("invalid git options");
@@ -186,12 +205,94 @@ function dataValue(descriptors: PropertyDescriptorMap, key: string): unknown {
   return descriptor.value;
 }
 
+function validateCheckpointOptions(value: unknown): CogsGitCheckpointConfig | undefined {
+  if (value === undefined) return undefined;
+  if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid git options");
+  if (Object.getPrototypeOf(value) !== Object.prototype) throw new Error("invalid git options");
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const keys = Reflect.ownKeys(descriptors);
+  const allowed = [
+    "enabled",
+    "exclusions",
+    "maxChangedFiles",
+    "maxFileBytes",
+    "maxTotalBytes",
+    "maxOutputBytes",
+    "timeoutMs",
+  ];
+  if (!keys.every((key) => typeof key === "string" && allowed.includes(key))) throw new Error("invalid git options");
+  const enabled = dataValue(descriptors, "enabled");
+  if (typeof enabled !== "boolean") throw new Error("invalid git options");
+  const exclusions = dataValue(descriptors, "exclusions");
+  const config: CogsGitCheckpointConfig = { enabled };
+  if (exclusions !== undefined) {
+    if (!Array.isArray(exclusions) || Object.getPrototypeOf(exclusions) !== Array.prototype)
+      throw new Error("invalid git options");
+    const arrayDescriptors = Object.getOwnPropertyDescriptors(exclusions);
+    const lengthDescriptor = Object.getOwnPropertyDescriptor(exclusions, "length");
+    const length =
+      lengthDescriptor === undefined || !("value" in lengthDescriptor) ? undefined : lengthDescriptor.value;
+    if (!Number.isInteger(length) || length < 0 || length > 64) throw new Error("invalid git options");
+    const copied: string[] = [];
+    for (let index = 0; index < length; index += 1) {
+      const descriptor = arrayDescriptors[String(index)];
+      if (descriptor === undefined || !("value" in descriptor) || descriptor.enumerable !== true)
+        throw new Error("invalid git options");
+      if (typeof descriptor.value !== "string") throw new Error("invalid git options");
+      copied.push(descriptor.value);
+    }
+    const allowedArrayKeys = new Set(["length", ...copied.map((_, index) => String(index))]);
+    if (!Reflect.ownKeys(arrayDescriptors).every((key) => typeof key === "string" && allowedArrayKeys.has(key)))
+      throw new Error("invalid git options");
+    Object.assign(config, { exclusions: Object.freeze(copied) });
+  }
+  for (const key of ["maxChangedFiles", "maxFileBytes", "maxTotalBytes", "maxOutputBytes", "timeoutMs"] as const) {
+    const item = dataValue(descriptors, key);
+    if (item !== undefined) {
+      if (!Number.isInteger(item)) throw new Error("invalid git options");
+      const bounds = checkpointBounds(key);
+      if ((item as number) < bounds[0] || (item as number) > bounds[1]) throw new Error("invalid git options");
+      Object.assign(config, { [key]: item });
+    }
+  }
+  return Object.freeze(config);
+}
+
+function checkpointBounds(key: string): readonly [number, number] {
+  switch (key) {
+    case "maxChangedFiles":
+      return [1, 4096];
+    case "maxFileBytes":
+      return [0, 32 * 1024 * 1024];
+    case "maxTotalBytes":
+      return [0, 128 * 1024 * 1024];
+    case "maxOutputBytes":
+      return [1024, 4 * 1024 * 1024];
+    default:
+      return [1, 60_000];
+  }
+}
+
 function validateObserverShape(value: unknown): void {
   if (value === null || typeof value !== "object" || !Object.isFrozen(value)) throw new Error("invalid git options");
   const descriptors = Object.getOwnPropertyDescriptors(value);
   const keys = Reflect.ownKeys(descriptors).sort();
   if (keys.join("\0") !== ["appendNote", "dispose", "nearestAncestor", "observeHead"].join("\0"))
     throw new Error("invalid git options");
+  for (const key of keys) {
+    if (typeof key !== "string") throw new Error("invalid git options");
+    const descriptor = descriptors[key];
+    if (descriptor === undefined || !("value" in descriptor) || descriptor.enumerable !== true)
+      throw new Error("invalid git options");
+    if (typeof descriptor.value !== "function") throw new Error("invalid git options");
+  }
+}
+
+function validateCheckpointerShape(value: unknown): void {
+  if (value === null || typeof value !== "object" || !Object.isFrozen(value)) throw new Error("invalid git options");
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const keys = Reflect.ownKeys(descriptors).sort();
+  if (keys.join("\0") !== ["checkpoint", "dispose"].join("\0")) throw new Error("invalid git options");
   for (const key of keys) {
     if (typeof key !== "string") throw new Error("invalid git options");
     const descriptor = descriptors[key];
@@ -357,6 +458,11 @@ export async function createCogsPiSession(options: CogsPiSessionOptions): Promis
       (gitOptions?.manager === undefined
         ? undefined
         : createSshGitObserver({ manager: gitOptions.manager, repositoryId: gitOptions.repositoryId }));
+    const gitCheckpointer =
+      gitOptions?.checkpointer ??
+      (gitOptions?.manager === undefined || gitOptions.checkpoint?.enabled !== true
+        ? undefined
+        : createSshGitCheckpointer({ manager: gitOptions.manager, config: gitOptions.checkpoint }));
     const adapterRef: { current?: PiSessionAdapter } = {};
     const gitBinding =
       gitOptions === undefined || gitMapStore === undefined || gitObserver === undefined
@@ -366,6 +472,8 @@ export async function createCogsPiSession(options: CogsPiSessionOptions): Promis
             repositoryId: gitOptions.repositoryId,
             store: gitMapStore,
             observer: gitObserver,
+            checkpointer: gitCheckpointer,
+            checkpointTimeoutMs: gitOptions.checkpoint?.timeoutMs ?? 2500,
             emit: (kind, correlationId, requestId, payload) =>
               adapterRef.current?.publishGit(kind, correlationId, requestId, payload),
             notes: gitOptions.enableNotes !== false,
@@ -705,6 +813,8 @@ class CogsGitBoundary {
       readonly repositoryId: string;
       readonly store: CogsGitMapStore;
       readonly observer: CogsGitObserver;
+      readonly checkpointer: CogsGitCheckpointer | undefined;
+      readonly checkpointTimeoutMs: number;
       readonly emit: GitEmit;
       readonly notes: boolean;
     },
@@ -787,13 +897,11 @@ class CogsGitBoundary {
       this.clearPending();
       return;
     }
-    await this.bindLeaf(
-      sessionManager,
-      Object.freeze({ observation, boundary: "settle", turn: this.turn }),
-      correlationId,
-      requestId,
-    );
+    const capture = Object.freeze({ observation, boundary: "settle" as const, turn: this.turn });
+    const leaf = latestEntry(sessionManager);
+    await this.bindLeaf(sessionManager, capture, correlationId, requestId);
     await this.drain();
+    await this.checkpointLeaf(leaf, capture, correlationId, requestId);
     this.reportIncomplete(correlationId, requestId);
     this.clearPending();
   }
@@ -820,6 +928,7 @@ class CogsGitBoundary {
     this.queued.length = 0;
     await this.drain().catch(() => undefined);
     await observerDeadline(this.options.observer.dispose(), 2500).catch(() => undefined);
+    await observerDeadline(this.options.checkpointer?.dispose() ?? Promise.resolve(), 2500).catch(() => undefined);
     this.clearPending();
   }
 
@@ -930,6 +1039,68 @@ class CogsGitBoundary {
     }
   }
 
+  private async checkpointLeaf(
+    leaf: { id?: unknown; message?: unknown; type?: unknown } | undefined,
+    capture: PendingCapture,
+    correlationId: string,
+    requestId: string | undefined,
+  ): Promise<void> {
+    if (this.options.checkpointer === undefined || this.disposed) return;
+    if (capture.observation.kind === "unavailable") {
+      this.warn(correlationId, requestId, "git-checkpoint-unavailable", "settle");
+      return;
+    }
+    if (leaf === undefined || typeof leaf.id !== "string" || !ENTRY_ID.test(leaf.id)) {
+      this.warn(correlationId, requestId, "git-checkpoint-unavailable", "settle");
+      return;
+    }
+    const input = {
+      repo: this.options.repositoryId,
+      session: this.options.sessionId,
+      entry: leaf.id,
+      turn: capture.turn,
+      head: capture.observation.commit,
+      observed_at: capture.observation.observed_at,
+    };
+    let checkpoint: CogsGitCheckpointResult | null;
+    const controller = new AbortController();
+    try {
+      checkpoint = await observerDeadline(
+        Promise.resolve().then(
+          () => this.options.checkpointer?.checkpoint({ ...input, signal: controller.signal }) ?? null,
+        ),
+        this.options.checkpointTimeoutMs,
+        () => controller.abort(),
+      );
+      if (checkpoint !== null) checkpoint = snapshotCheckpointResult(checkpoint, input);
+    } catch {
+      controller.abort();
+      this.warn(correlationId, requestId, "git-checkpoint-unavailable", "settle");
+      return;
+    }
+    if (checkpoint === null) return;
+    const record = checkpointRecord(checkpoint);
+    try {
+      await this.options.store.append(record);
+    } catch {
+      this.warn(correlationId, requestId, "git-checkpoint-map-unavailable", "settle");
+      return;
+    }
+    this.options.emit("checkpoint", correlationId, requestId, checkpointEvent(checkpoint));
+    if (this.options.notes) {
+      let ok = false;
+      try {
+        ok = await observerDeadline(
+          Promise.resolve().then(() => this.options.observer.appendNote(record)),
+          2500,
+        );
+      } catch {
+        ok = false;
+      }
+      if (!ok) this.warn(correlationId, requestId, "git-note-unavailable", "settle");
+    }
+  }
+
   private drain(): Promise<void> {
     this.drainChain = this.drainChain.then(async () => {
       if (this.pendingPersist.size > 0) await Promise.allSettled([...this.pendingPersist]);
@@ -997,16 +1168,70 @@ function maxTurn(records: readonly CogsGitMapRecord[]): number {
   return turn;
 }
 
-function observerDeadline<T>(promise: Promise<T> | PromiseLike<T>, ms: number): Promise<T> {
+function observerDeadline<T>(promise: Promise<T> | PromiseLike<T>, ms: number, onTimeout?: () => void): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
   return Promise.race([
     promise,
     new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject(new Error("git observer unavailable")), ms);
+      timer = setTimeout(() => {
+        onTimeout?.();
+        reject(new Error("git observer unavailable"));
+      }, ms);
     }),
   ]).finally(() => {
     if (timer !== undefined) clearTimeout(timer);
   });
+}
+
+function snapshotCheckpointResult(
+  value: unknown,
+  input: { repo: string; session: string; entry: string; turn: number; head: string; observed_at: string },
+): CogsGitCheckpointResult {
+  if (value === null || typeof value !== "object" || Object.getPrototypeOf(value) !== Object.prototype)
+    throw new Error("git checkpoint unavailable");
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const keys = Reflect.ownKeys(descriptors).sort();
+  const expected = [
+    "checkpoint_ref",
+    "commit",
+    "duration_ms",
+    "entry",
+    "file_count",
+    "observed_at",
+    "repo",
+    "session",
+    "total_bytes",
+    "turn",
+  ];
+  if (keys.join("\0") !== expected.join("\0")) throw new Error("git checkpoint unavailable");
+  const record = Object.fromEntries(expected.map((key) => [key, ownCheckpointData(descriptors, key)]));
+  if (
+    record.repo !== input.repo ||
+    record.session !== input.session ||
+    record.entry !== input.entry ||
+    record.turn !== input.turn ||
+    record.observed_at !== input.observed_at ||
+    record.checkpoint_ref !== `refs/cogs/sessions/${input.session}/${input.turn}` ||
+    typeof record.commit !== "string" ||
+    !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(record.commit) ||
+    record.commit.length !== input.head.length ||
+    !safeInteger(record.file_count, 0, 4096) ||
+    !safeInteger(record.total_bytes, 0, 128 * 1024 * 1024) ||
+    !safeInteger(record.duration_ms, 0, 60_000)
+  )
+    throw new Error("git checkpoint unavailable");
+  return Object.freeze(record as unknown as CogsGitCheckpointResult);
+}
+
+function ownCheckpointData(descriptors: PropertyDescriptorMap, key: string): unknown {
+  const descriptor = descriptors[key];
+  if (descriptor === undefined || !("value" in descriptor) || descriptor.enumerable !== true)
+    throw new Error("git checkpoint unavailable");
+  return descriptor.value;
+}
+
+function safeInteger(value: unknown, min: number, max: number): boolean {
+  return Number.isSafeInteger(value) && (value as number) >= min && (value as number) <= max;
 }
 
 function latestEntry(sessionManager: SessionManager): { id?: unknown; message?: unknown; type?: unknown } | undefined {
