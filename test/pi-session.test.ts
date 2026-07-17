@@ -169,6 +169,38 @@ function asRecord(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 }
 
+function textStream(text = "done"): StreamFn {
+  return (model) => {
+    const stream = createAssistantMessageEventStream();
+    const message: AssistantMessage = {
+      role: "assistant",
+      content: [{ type: "text", text }],
+      api: "anthropic-messages",
+      provider: "anthropic",
+      model: model.id,
+      usage: {
+        input: 1,
+        output: 1,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 2,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+      stopReason: "stop",
+      timestamp: Date.now(),
+    };
+    queueMicrotask(() => {
+      stream.push({ type: "start", partial: message });
+      stream.push({ type: "text_start", contentIndex: 0, partial: message });
+      stream.push({ type: "text_delta", contentIndex: 0, delta: text, partial: message });
+      stream.push({ type: "text_end", contentIndex: 0, content: text, partial: message });
+      stream.push({ type: "done", reason: "stop", message });
+      stream.end();
+    });
+    return stream;
+  };
+}
+
 function hangingStream(aborted: { count: number }): StreamFn {
   return (_model, _context, options) => {
     const stream = createAssistantMessageEventStream();
@@ -2595,6 +2627,91 @@ test("Pi session exposes canonical prepared metadata and direct-root skill paths
       assert.equal(unprepared.skillMetadata(), undefined);
     } finally {
       await unprepared.dispose();
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Pi session creates authenticated local export descriptor without adding a model tool", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "cogs-pi-local-export-"));
+  try {
+    const cwd = resolve(root, "workspace");
+    const agentDir = resolve(root, "agent");
+    const sessionRoot = resolve(root, "sessions");
+    await mkdir(cwd, { recursive: true });
+    await mkdir(agentDir, { recursive: true });
+    await mkdir(sessionRoot, { recursive: true });
+    const adapter = await createCogsPiSession(
+      withDefaults({
+        cwd,
+        agentDir,
+        sessionId: "export-session",
+        model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+        apiKey: "sk-ant-api03-local-export",
+        sessionRoot,
+        toolPorts: fakePorts([]),
+        streamFn: textStream("export ready"),
+        preparedResources: hostilePrepared(),
+      }),
+    );
+    try {
+      assert.deepEqual(adapter.activeToolNames(), COGS_PI_TOOL_NAMES);
+      await adapter.input({ requestId: "export-run", correlationId: "export-corr", kind: "prompt", content: "go" });
+      await eventually(async () => assert.equal((await adapter.state()).runState, "settled"));
+      const descriptor = await adapter.createExport({ requestId: "export", correlationId: "export-corr" });
+      assert.equal((descriptor as { sensitive?: unknown }).sensitive, true);
+      assert.equal((descriptor as { bundle?: unknown }).bundle, "cogs-session-export-session");
+      assert.equal(typeof (descriptor as { manifest_sha256?: unknown }).manifest_sha256, "string");
+      const manifest = JSON.parse(
+        await readFile(
+          resolve(sessionRoot, "export-session", "exports", "cogs-session-export-session", "manifest.json"),
+          "utf8",
+        ),
+      );
+      assert.equal(manifest.mode, "raw");
+      assert.equal(manifest.attachments_included, false);
+      const lifecycle = { ready: true, state: "ready", requestShutdown: async () => undefined };
+      const api = createApiServer({
+        lifecycle: lifecycle as never,
+        bearerToken: "worker-secret-0123456789abcdefghi",
+        sessionId: "export-session",
+        session: adapter,
+        history: adapter,
+        exporter: adapter,
+      });
+      const { port } = await api.listen();
+      try {
+        const base = `http://127.0.0.1:${port}`;
+        assert.equal(
+          (
+            await fetch(`${base}/v1/export`, {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ request_id: "api-export" }),
+            })
+          ).status,
+          401,
+        );
+        const response = await fetch(`${base}/v1/export`, {
+          method: "POST",
+          headers: {
+            authorization: "Bearer worker-secret-0123456789abcdefghi",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ request_id: "api-export" }),
+        });
+        assert.equal(response.status, 200);
+        const body = (await response.json()) as { sensitive?: unknown; bundle?: Record<string, unknown> };
+        assert.equal(body.sensitive, true);
+        assert.equal(body.bundle?.bundle, "cogs-session-export-session");
+        assert.equal(String(body.bundle?.bundle).startsWith("/"), false);
+        assert.equal(JSON.stringify(body).includes("export ready"), false);
+      } finally {
+        await api.close();
+      }
+    } finally {
+      await adapter.dispose();
     }
   } finally {
     await rm(root, { recursive: true, force: true });

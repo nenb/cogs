@@ -16,7 +16,7 @@ import {
   type Skill,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import type { ApiEvent, HistoryPort, InputKind, JsonValue, RunState, SessionPort } from "../api/server.ts";
+import type { ApiEvent, ExportPort, HistoryPort, InputKind, JsonValue, RunState, SessionPort } from "../api/server.ts";
 import { type ModelApiKeySource, ModelCredentialResolver, validateModelApiKey } from "../auth/model-auth.ts";
 import { validateLaunchConfig } from "../launch/config.ts";
 import {
@@ -44,6 +44,7 @@ import {
   type CogsJsonlHistoryStore,
   createCogsJsonlHistoryStore,
 } from "../session/jsonl-history.ts";
+import { type CogsLocalExporter, createCogsLocalExporter } from "../session/local-export.ts";
 import type {
   CogsAgentsFile,
   CogsPreparedSkillMetadata,
@@ -107,7 +108,7 @@ export interface AuthenticatedCogsPiSessionOptions
   readonly signal?: AbortSignal;
 }
 
-export interface CogsPiSessionPorts extends SessionPort, HistoryPort {
+export interface CogsPiSessionPorts extends SessionPort, HistoryPort, ExportPort {
   readonly dispose: () => Promise<void>;
   readonly model: Model<Api>;
   readonly activeToolNames: () => readonly string[];
@@ -437,6 +438,7 @@ export async function createCogsPiSession(options: CogsPiSessionOptions): Promis
 
   const secret: SecretHolder = { value: apiKey };
   let startupGitBinding: CogsGitBoundary | undefined;
+  let startupLocalExporter: CogsLocalExporter | undefined;
   const authStorage = AuthStorage.inMemory();
   authStorage.setRuntimeApiKey(modelProvider, secret.value);
   try {
@@ -463,6 +465,15 @@ export async function createCogsPiSession(options: CogsPiSessionOptions): Promis
       (gitOptions?.manager === undefined || gitOptions.checkpoint?.enabled !== true
         ? undefined
         : createSshGitCheckpointer({ manager: gitOptions.manager, config: gitOptions.checkpoint }));
+    const localExporter = createCogsLocalExporter({
+      sessionDir,
+      sessionId,
+      history: historyStore,
+      ...(gitMapStore === undefined ? {} : { gitMap: gitMapStore }),
+      skillMetadata: () => preparedResources?.metadata,
+      model: { provider: modelProvider, id: modelId },
+    });
+    startupLocalExporter = localExporter;
     const adapterRef: { current?: PiSessionAdapter } = {};
     const gitBinding =
       gitOptions === undefined || gitMapStore === undefined || gitObserver === undefined
@@ -524,12 +535,14 @@ export async function createCogsPiSession(options: CogsPiSessionOptions): Promis
       historyStore,
       gitMapStore,
       gitBinding,
+      localExporter,
     });
     adapterRef.current = adapter;
     return adapter;
   } catch (error) {
     let cleanupError: unknown;
     try {
+      await startupLocalExporter?.dispose();
       await startupGitBinding?.dispose();
     } catch (disposeError) {
       cleanupError = disposeError;
@@ -1279,6 +1292,7 @@ class PiSessionAdapter implements CogsPiSessionPorts {
       readonly historyStore: CogsJsonlHistoryStore;
       readonly gitMapStore: CogsGitMapStore | undefined;
       readonly gitBinding: CogsGitBoundary | undefined;
+      readonly localExporter: CogsLocalExporter;
     },
   ) {
     this.#authStorage = authStorage;
@@ -1417,6 +1431,20 @@ class PiSessionAdapter implements CogsPiSessionPorts {
     }
   }
 
+  public async createExport(input: {
+    requestId: string;
+    correlationId: string;
+    signal?: AbortSignal;
+  }): Promise<JsonValue> {
+    this.assertLive();
+    await throwIfAborted(input.signal);
+    assertOpaqueId(input.requestId, "request id");
+    assertOpaqueId(input.correlationId, "correlation id");
+    return this.runtime.localExporter.createExport(
+      input.signal === undefined ? {} : { signal: input.signal },
+    ) as Promise<unknown> as Promise<JsonValue>;
+  }
+
   public async dispose(): Promise<void> {
     if (this.phase === "disposed") return;
     if (this.cleanupPromise !== undefined) {
@@ -1438,6 +1466,7 @@ class PiSessionAdapter implements CogsPiSessionPorts {
       cleanupError = error;
     }
     try {
+      await this.runtime.localExporter.dispose();
       await this.runtime.gitBinding?.dispose();
       await this.runtime.preparedResources?.dispose();
     } catch (error) {
