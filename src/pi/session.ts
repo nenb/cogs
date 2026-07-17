@@ -7,16 +7,24 @@ import {
   AuthStorage,
   createAgentSession,
   createExtensionRuntime,
+  createSyntheticSourceInfo,
   defineTool,
   ModelRegistry,
   type ResourceLoader,
   SessionManager,
   SettingsManager,
+  type Skill,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type { ApiEvent, HistoryPort, InputKind, JsonValue, RunState, SessionPort } from "../api/server.ts";
 import { type ModelApiKeySource, ModelCredentialResolver, validateModelApiKey } from "../auth/model-auth.ts";
 import { validateLaunchConfig } from "../launch/config.ts";
+import type {
+  CogsAgentsFile,
+  CogsPreparedSkillMetadata,
+  CogsPreparedSkills,
+  CogsSkillPreparerPort,
+} from "../skills/session-preparer.ts";
 
 export const COGS_PI_TOOL_NAMES = ["read", "write", "edit", "bash"] as const;
 export type CogsPiToolName = (typeof COGS_PI_TOOL_NAMES)[number];
@@ -52,12 +60,14 @@ export interface CogsPiSessionOptions {
   readonly operationTimeoutMs?: number;
   readonly abortTimeoutMs?: number;
   readonly maxToolResultBytes?: number;
+  readonly preparedResources?: CogsPreparedSkills;
 }
 
 export interface AuthenticatedCogsPiSessionOptions
   extends Omit<CogsPiSessionOptions, "sessionId" | "model" | "apiKey"> {
   readonly launchDocument: unknown;
   readonly modelApiKeys: ModelApiKeySource;
+  readonly skillPreparer: CogsSkillPreparerPort;
   readonly signal?: AbortSignal;
 }
 
@@ -66,6 +76,7 @@ export interface CogsPiSessionPorts extends SessionPort, HistoryPort {
   readonly model: Model<Api>;
   readonly activeToolNames: () => readonly string[];
   readonly sessionFile: () => string | undefined;
+  readonly skillMetadata: () => CogsPreparedSkillMetadata | undefined;
   readonly navigate: (
     entryId: string,
     input?: { signal?: AbortSignal },
@@ -100,17 +111,27 @@ function validateOptionalInteger(value: number | undefined, label: string, minim
   if (!Number.isInteger(value) || value < minimum || value > maximum) throw new Error(`invalid ${label}`);
 }
 
-export function createLockedResourceLoader(systemPrompt?: string): ResourceLoader {
+export function createLockedResourceLoader(
+  input: {
+    readonly systemPrompt?: string;
+    readonly skills?: readonly Skill[];
+    readonly agentsFiles?: readonly { readonly path: string; readonly content: string }[];
+    readonly appendSystemPrompt?: readonly string[];
+  } = {},
+): ResourceLoader {
   const runtime = createExtensionRuntime();
+  const skills = Object.freeze([...(input.skills ?? [])]);
+  const agentsFiles = Object.freeze([...(input.agentsFiles ?? [])]);
+  const appendSystemPrompt = Object.freeze([...(input.appendSystemPrompt ?? [])]);
   return {
     getExtensions: () => ({ extensions: [], errors: [], runtime }),
-    getSkills: () => ({ skills: [], diagnostics: [] }),
+    getSkills: () => ({ skills: [...skills], diagnostics: [] }),
     getPrompts: () => ({ prompts: [], diagnostics: [] }),
     getThemes: () => ({ themes: [], diagnostics: [] }),
-    getAgentsFiles: () => ({ agentsFiles: [] }),
+    getAgentsFiles: () => ({ agentsFiles: [...agentsFiles] }),
     getSystemPrompt: () =>
-      systemPrompt ?? "You are Cogs. Use only the explicitly supplied read, write, edit, and bash tools.",
-    getAppendSystemPrompt: () => [],
+      input.systemPrompt ?? "You are Cogs. Use only the explicitly supplied read, write, edit, and bash tools.",
+    getAppendSystemPrompt: () => [...appendSystemPrompt],
     extendResources: () => {},
     reload: async () => {},
   };
@@ -119,27 +140,53 @@ export function createLockedResourceLoader(systemPrompt?: string): ResourceLoade
 export async function createAuthenticatedCogsPiSession({
   launchDocument,
   modelApiKeys,
+  skillPreparer,
   signal,
   ...sessionOptions
 }: AuthenticatedCogsPiSessionOptions): Promise<CogsPiSessionPorts> {
   const launch = validateLaunchConfig(launchDocument);
+  const prepareSkills = validateSkillPreparer(skillPreparer);
+  let preparedResources: CogsPreparedSkills;
+  try {
+    const rawPrepared = await prepareSkills({ launch, ...(signal === undefined ? {} : { signal }) });
+    try {
+      preparedResources = validatePreparedResources(rawPrepared);
+    } catch (error) {
+      await disposeMalformedPrepared(rawPrepared);
+      throw error;
+    }
+  } catch {
+    throw new Error("skill preparation failed");
+  }
   const resolver = new ModelCredentialResolver(modelApiKeys);
-  return resolver.withApiKey(
-    {
-      userId: launch.user_id,
-      provider: launch.model.provider,
-      model: launch.model.id,
-      credentialHandle: launch.model.credential_handle,
-      ...(signal === undefined ? {} : { signal }),
-    },
-    (apiKey) =>
-      createCogsPiSession({
-        ...sessionOptions,
-        sessionId: launch.session_id,
-        model: { provider: launch.model.provider, id: launch.model.id },
-        apiKey,
-      }),
-  );
+  try {
+    return await resolver.withApiKey(
+      {
+        userId: launch.user_id,
+        provider: launch.model.provider,
+        model: launch.model.id,
+        credentialHandle: launch.model.credential_handle,
+        ...(signal === undefined ? {} : { signal }),
+      },
+      (apiKey) =>
+        createCogsPiSession({
+          ...sessionOptions,
+          sessionId: launch.session_id,
+          model: { provider: launch.model.provider, id: launch.model.id },
+          apiKey,
+          preparedResources,
+        }),
+    );
+  } catch (error) {
+    let cleanupError: unknown;
+    try {
+      await preparedResources.dispose();
+    } catch (disposeError) {
+      cleanupError = disposeError;
+    }
+    if (cleanupError !== undefined) throw new Error("Pi session cleanup failed");
+    throw error;
+  }
 }
 
 export async function createCogsPiSession(options: CogsPiSessionOptions): Promise<CogsPiSessionPorts> {
@@ -159,6 +206,8 @@ export async function createCogsPiSession(options: CogsPiSessionOptions): Promis
   const abortTimeoutMs = options.abortTimeoutMs;
   const maxToolResultBytes = options.maxToolResultBytes ?? 16 * 1024;
   const apiKey = options.apiKey;
+  const preparedResources =
+    options.preparedResources === undefined ? undefined : validatePreparedResources(options.preparedResources);
 
   validateModelApiKey(apiKey);
   assertOpaqueId(sessionId, "session id");
@@ -183,7 +232,15 @@ export async function createCogsPiSession(options: CogsPiSessionOptions): Promis
       thinkingLevel: "off",
       authStorage,
       modelRegistry,
-      resourceLoader: createLockedResourceLoader(),
+      resourceLoader: createLockedResourceLoader(
+        preparedResources === undefined
+          ? {}
+          : {
+              skills: preparedResources.piSkills,
+              agentsFiles: preparedResources.agentsFiles,
+              appendSystemPrompt: [preparedResources.eagerTrustedSkillPrompt],
+            },
+      ),
       customTools: createCogsTools(toolPorts, maxToolResultBytes, secret),
       tools: [...COGS_PI_TOOL_NAMES],
       noTools: "builtin",
@@ -207,12 +264,248 @@ export async function createCogsPiSession(options: CogsPiSessionOptions): Promis
       secret,
       operationTimeoutMs,
       abortTimeoutMs,
+      preparedResources,
     });
   } catch (error) {
+    let cleanupError: unknown;
+    try {
+      await preparedResources?.dispose();
+    } catch (disposeError) {
+      cleanupError = disposeError;
+    }
     authStorage.removeRuntimeApiKey(modelProvider);
     secret.value = "";
+    if (cleanupError !== undefined) throw new Error("Pi session cleanup failed");
     throw error;
   }
+}
+
+function validateSkillPreparer(value: CogsSkillPreparerPort): CogsSkillPreparerPort["prepare"] {
+  try {
+    if (value === null || typeof value !== "object" || !Object.isFrozen(value)) throw new Error("bad preparer");
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const keys = Reflect.ownKeys(descriptors);
+    if (keys.length !== 1 || keys[0] !== "prepare") throw new Error("bad preparer");
+    const prepare = descriptors.prepare;
+    if (prepare === undefined || !("value" in prepare) || typeof prepare.value !== "function")
+      throw new Error("bad preparer");
+    return prepare.value as CogsSkillPreparerPort["prepare"];
+  } catch {
+    throw new Error("invalid skill preparer");
+  }
+}
+
+function validatePreparedResources(value: CogsPreparedSkills): CogsPreparedSkills {
+  try {
+    const snapshot = exactValues(value, ["piSkills", "eagerTrustedSkillPrompt", "agentsFiles", "metadata", "dispose"]);
+    const piSkills = snapshotFrozenArray(snapshot.piSkills, 32).map(canonicalPreparedSkill);
+    const prompt = snapshot.eagerTrustedSkillPrompt;
+    if (typeof prompt !== "string" || Buffer.byteLength(prompt, "utf8") > 384 * 1024) throw new Error("bad resources");
+    const agentsFiles = snapshotFrozenArray(snapshot.agentsFiles, 1).map(canonicalPreparedAgentsFile);
+    const metadata = canonicalPreparedMetadata(snapshot.metadata);
+    if (typeof snapshot.dispose !== "function") throw new Error("bad resources");
+    return Object.freeze({
+      piSkills: Object.freeze(piSkills),
+      eagerTrustedSkillPrompt: prompt,
+      agentsFiles: Object.freeze(agentsFiles),
+      metadata,
+      dispose: onceAsync(snapshot.dispose as () => Promise<void>),
+    });
+  } catch {
+    throw new Error("invalid prepared skill resources");
+  }
+}
+
+async function disposeMalformedPrepared(value: unknown): Promise<void> {
+  try {
+    const descriptors = Object.getOwnPropertyDescriptors(value as object);
+    const dispose = descriptors.dispose;
+    if (dispose !== undefined && "value" in dispose && typeof dispose.value === "function") await dispose.value();
+  } catch {
+    // Preparation failure remains generic; best-effort cleanup cannot expose raw errors.
+  }
+}
+
+function canonicalPreparedSkill(value: unknown): Skill {
+  const data = exactValues(value, [
+    "name",
+    "description",
+    "filePath",
+    "baseDir",
+    "sourceInfo",
+    "disableModelInvocation",
+  ]);
+  if (typeof data.name !== "string" || !isStandardSkillName(data.name)) throw new Error("bad resources");
+  if (
+    typeof data.description !== "string" ||
+    Buffer.byteLength(data.description, "utf8") < 1 ||
+    Buffer.byteLength(data.description, "utf8") > 1024
+  )
+    throw new Error("bad resources");
+  if (typeof data.filePath !== "string" || !strictGuestPath(data.filePath)) throw new Error("bad resources");
+  if (typeof data.baseDir !== "string" || !strictGuestBaseDir(data.baseDir, data.filePath))
+    throw new Error("bad resources");
+  if (typeof data.disableModelInvocation !== "boolean") throw new Error("bad resources");
+  return Object.freeze({
+    name: data.name,
+    description: data.description,
+    filePath: data.filePath,
+    baseDir: data.baseDir,
+    sourceInfo: createSyntheticSourceInfo(data.filePath, {
+      source: "cogs",
+      scope: "project",
+      origin: "top-level",
+      baseDir: data.baseDir,
+    }),
+    disableModelInvocation: data.disableModelInvocation,
+  });
+}
+
+function canonicalPreparedAgentsFile(value: unknown): CogsAgentsFile {
+  const data = exactValues(value, ["path", "content"]);
+  if (data.path !== "/workspace/AGENTS.md") throw new Error("bad resources");
+  if (typeof data.content !== "string" || Buffer.byteLength(data.content, "utf8") > 32 * 1024)
+    throw new Error("bad resources");
+  return Object.freeze({ path: "/workspace/AGENTS.md" as const, content: data.content });
+}
+
+function canonicalPreparedMetadata(value: unknown): CogsPreparedSkills["metadata"] {
+  const data = exactValues(value, ["shared", "user", "agentsStatus", "skillCount"]);
+  const agentsStatus = data.agentsStatus;
+  if (
+    agentsStatus !== "loaded" &&
+    agentsStatus !== "missing" &&
+    agentsStatus !== "permission_denied" &&
+    agentsStatus !== "oversize" &&
+    agentsStatus !== "invalid" &&
+    agentsStatus !== "read_error"
+  )
+    throw new Error("bad resources");
+  if (!Number.isSafeInteger(data.skillCount) || (data.skillCount as number) < 0 || (data.skillCount as number) > 32)
+    throw new Error("bad resources");
+  return Object.freeze({
+    shared: canonicalPreparedSet(data.shared, "shared"),
+    user: canonicalPreparedSet(data.user, "user"),
+    agentsStatus,
+    skillCount: data.skillCount as number,
+  });
+}
+
+function canonicalPreparedSet(value: unknown, scope: "shared" | "user") {
+  const data = exactValues(value, [
+    "scope",
+    "revision",
+    "bundleDigest",
+    "guestRoot",
+    "guestSubtree",
+    "fileCount",
+    "byteCount",
+    "readOnlyEnforced",
+  ]);
+  if (data.scope !== scope) throw new Error("bad resources");
+  if (typeof data.revision !== "string" || !/^sha256:[a-f0-9]{64}$/.test(data.revision))
+    throw new Error("bad resources");
+  if (typeof data.bundleDigest !== "string" || !/^sha256:[a-f0-9]{64}$/.test(data.bundleDigest))
+    throw new Error("bad resources");
+  const expectedRoot = scope === "shared" ? "/shared/skills" : "/user/skills";
+  if (data.guestRoot !== expectedRoot) throw new Error("bad resources");
+  const bundleHex = data.bundleDigest.slice("sha256:".length);
+  if (data.guestSubtree !== `${expectedRoot}/${bundleHex}`) throw new Error("bad resources");
+  if (scope === "user" && data.revision !== data.bundleDigest) throw new Error("bad resources");
+  if (!Number.isSafeInteger(data.fileCount) || (data.fileCount as number) < 0 || (data.fileCount as number) > 128)
+    throw new Error("bad resources");
+  if (
+    !Number.isSafeInteger(data.byteCount) ||
+    (data.byteCount as number) < 0 ||
+    (data.byteCount as number) > 768 * 1024
+  )
+    throw new Error("bad resources");
+  if (data.readOnlyEnforced !== false) throw new Error("bad resources");
+  return Object.freeze({
+    scope,
+    revision: data.revision as `sha256:${string}`,
+    bundleDigest: data.bundleDigest as `sha256:${string}`,
+    guestRoot: expectedRoot,
+    guestSubtree: data.guestSubtree,
+    fileCount: data.fileCount as number,
+    byteCount: data.byteCount as number,
+    readOnlyEnforced: false as const,
+  });
+}
+
+function exactValues(value: unknown, keys: readonly string[]): Record<string, unknown> {
+  if (value === null || typeof value !== "object" || !Object.isFrozen(value)) throw new Error("bad resources");
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const names = Reflect.ownKeys(descriptors);
+  if (names.length !== keys.length || !names.every((name) => typeof name === "string" && keys.includes(name)))
+    throw new Error("bad resources");
+  const result: Record<string, unknown> = {};
+  for (const key of keys) {
+    const descriptor = descriptors[key];
+    if (descriptor === undefined || !("value" in descriptor)) throw new Error("bad resources");
+    result[key] = descriptor.value;
+  }
+  return result;
+}
+
+function snapshotFrozenArray(value: unknown, maxLength: number): unknown[] {
+  if (!Array.isArray(value) || !Object.isFrozen(value)) throw new Error("bad resources");
+  const descriptors = Object.getOwnPropertyDescriptors(value) as Record<string, PropertyDescriptor>;
+  const lengthDescriptor = descriptors.length;
+  if (lengthDescriptor === undefined || !("value" in lengthDescriptor) || !Number.isSafeInteger(lengthDescriptor.value))
+    throw new Error("bad resources");
+  const length = lengthDescriptor.value as number;
+  if (length < 0 || length > maxLength) throw new Error("bad resources");
+  const out: unknown[] = [];
+  for (let index = 0; index < length; index += 1) {
+    const descriptor = descriptors[`${index}`];
+    if (descriptor === undefined || !("value" in descriptor)) throw new Error("bad resources");
+    out.push(descriptor.value);
+  }
+  return out;
+}
+
+function onceAsync<T>(fn: () => Promise<T>): () => Promise<T> {
+  let promise: Promise<T> | undefined;
+  return () => (promise ??= fn());
+}
+
+function isStandardSkillName(value: string): boolean {
+  return /^[a-z0-9](?:[a-z0-9]|-(?!-)){0,62}[a-z0-9]$|^[a-z0-9]$/.test(value);
+}
+
+function strictGuestPath(value: string): boolean {
+  if (value.normalize("NFC") !== value || Buffer.from(value, "utf8").toString("utf8") !== value) return false;
+  const segments = value.split("/");
+  if (segments.length < 5 || segments[0] !== "" || (segments[1] !== "shared" && segments[1] !== "user")) return false;
+  const digest = segments[3];
+  if (segments[2] !== "skills" || digest === undefined || !/^[a-f0-9]{64}$/.test(digest)) return false;
+  return segments.slice(4).every(isSafeGuestSegment);
+}
+function isSafeGuestSegment(segment: string): boolean {
+  return (
+    segment.length > 0 &&
+    segment !== "." &&
+    segment !== ".." &&
+    !segment.includes("\\") &&
+    hasNoControlChars(segment) &&
+    segment.normalize("NFC") === segment &&
+    Buffer.from(segment, "utf8").toString("utf8") === segment
+  );
+}
+function hasNoControlChars(value: string): boolean {
+  for (const char of value) {
+    const code = char.codePointAt(0);
+    if (code === undefined || code <= 0x1f || code === 0x7f) return false;
+  }
+  return true;
+}
+function strictGuestBaseDir(baseDir: string, filePath: string): boolean {
+  if (!strictGuestPath(`${baseDir}/x`) || !strictGuestPath(filePath) || !filePath.startsWith(`${baseDir}/`))
+    return false;
+  const base = baseDir.split("/");
+  const file = filePath.split("/");
+  return base[1] === file[1] && base[2] === "skills" && base[3] === file[3];
 }
 
 type AdapterPhase = "open" | "running" | "aborting" | "failed" | "disposed";
@@ -239,6 +532,7 @@ class PiSessionAdapter implements CogsPiSessionPorts {
       readonly secret: SecretHolder;
       readonly operationTimeoutMs: number | undefined;
       readonly abortTimeoutMs: number | undefined;
+      readonly preparedResources: CogsPreparedSkills | undefined;
     },
   ) {
     this.#authStorage = authStorage;
@@ -253,6 +547,10 @@ class PiSessionAdapter implements CogsPiSessionPorts {
 
   public sessionFile(): string | undefined {
     return this.sessionManager.getSessionFile();
+  }
+
+  public skillMetadata(): CogsPreparedSkillMetadata | undefined {
+    return this.runtime.preparedResources?.metadata;
   }
 
   public async navigate(
@@ -364,10 +662,21 @@ class PiSessionAdapter implements CogsPiSessionPorts {
       return;
     }
     this.unsubscribe();
-    this.session.dispose();
+    let cleanupError: unknown;
+    try {
+      this.session.dispose();
+    } catch (error) {
+      cleanupError = error;
+    }
+    try {
+      await this.runtime.preparedResources?.dispose();
+    } catch (error) {
+      cleanupError = error;
+    }
     this.#authStorage.removeRuntimeApiKey(this.runtime.provider);
     this.runtime.secret.value = "";
     this.phase = "disposed";
+    if (cleanupError !== undefined) throw new Error("Pi session cleanup failed");
   }
 
   private async runPrompt(active: ActiveRun, content: string): Promise<void> {
@@ -571,19 +880,30 @@ class PiSessionAdapter implements CogsPiSessionPorts {
       if (active.deadline !== undefined) clearTimeout(active.deadline);
     }
     this.cleanupPromise = (async () => {
+      let cleanupError: unknown;
       try {
         await this.abortWithBound("fail-closed");
       } catch {
         // Non-cooperative abort is represented by the failed-closed phase.
       } finally {
         this.unsubscribe();
-        this.session.dispose();
+        try {
+          this.session.dispose();
+        } catch (error) {
+          cleanupError = error;
+        }
+        try {
+          await this.runtime.preparedResources?.dispose();
+        } catch (error) {
+          cleanupError = error;
+        }
         this.#authStorage.removeRuntimeApiKey(this.runtime.provider);
         this.runtime.secret.value = "";
         this.active = undefined;
         this.phase = "failed";
         this.invokeFatal(_reason);
       }
+      if (cleanupError !== undefined) throw new Error("Pi session cleanup failed");
     })();
     await this.cleanupPromise;
   }
