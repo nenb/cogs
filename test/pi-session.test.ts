@@ -20,6 +20,7 @@ import {
   createAuthenticatedCogsPiSession,
   createCogsPiSession,
 } from "../src/pi/session.ts";
+import type { CogsGitCheckpointer } from "../src/session/git-checkpoint.ts";
 import type { CogsGitMapRecord } from "../src/session/git-map.ts";
 import type { CogsGitObservation, CogsGitObserver } from "../src/session/git-observer.ts";
 import type { CogsPreparedSkills, CogsSkillPreparerPort } from "../src/skills/session-preparer.ts";
@@ -622,6 +623,245 @@ test("Pi session Git observer failures are warnings and note failures are nonfat
     } finally {
       await adapter.dispose();
     }
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test("Pi session enabled checkpoint publishes only after exact map and durable sidecar", async () => {
+  const temporaryRoot = await mkdtemp(resolve(tmpdir(), "cogs-pi-checkpoint-"));
+  const cwd = resolve(temporaryRoot, "workspace");
+  const agentDir = resolve(temporaryRoot, "agent");
+  const notes: CogsGitMapRecord[] = [];
+  const events: string[] = [];
+  try {
+    await mkdir(cwd, { recursive: true });
+    await mkdir(agentDir, { recursive: true });
+    const checkpointer = Object.freeze({
+      checkpoint: async (input: Parameters<CogsGitCheckpointer["checkpoint"]>[0]) =>
+        Object.freeze({
+          repo: input.repo,
+          session: input.session,
+          entry: input.entry,
+          turn: input.turn,
+          commit: "9".repeat(40),
+          checkpoint_ref: `refs/cogs/sessions/${input.session}/${input.turn}`,
+          observed_at: input.observed_at,
+          file_count: 1,
+          total_bytes: 4,
+          duration_ms: 3,
+        }),
+      dispose: async () => undefined,
+    });
+    const adapter = await createCogsPiSession(
+      withDefaults({
+        cwd,
+        agentDir,
+        sessionRoot: resolve(temporaryRoot, "sessions"),
+        sessionId: "checkpoint-session",
+        model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+        apiKey: "COGS_RUNTIME_ONLY_TEST_KEY",
+        toolPorts: fakePorts([]),
+        streamFn: oneTextStream("done"),
+        git: {
+          repositoryId: "workspace-1",
+          observer: fakeObserver(["1".repeat(40), "2".repeat(40)], notes),
+          checkpointer,
+        },
+        emit: (event) => {
+          if (event.kind === "git_mapping" || event.kind === "checkpoint") events.push(event.kind);
+          return true;
+        },
+      }),
+    );
+    try {
+      await adapter.input({ requestId: "checkpoint", correlationId: "checkpoint", kind: "prompt", content: "go" });
+      await eventually(async () => assert.equal((await adapter.state()).runState, "settled"));
+      assert.deepEqual(events, ["git_mapping", "git_mapping", "checkpoint"]);
+      assert.equal(adapter.gitMapRecords().at(-1)?.confidence, "checkpoint");
+      assert.equal(notes.at(-1)?.confidence, "checkpoint");
+    } finally {
+      await adapter.dispose();
+    }
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test("Pi session disabled or failed checkpoint is nonfatal and never fabricates checkpoint events", async () => {
+  const temporaryRoot = await mkdtemp(resolve(tmpdir(), "cogs-pi-checkpoint-fail-"));
+  const cwd = resolve(temporaryRoot, "workspace");
+  const agentDir = resolve(temporaryRoot, "agent");
+  try {
+    await mkdir(cwd, { recursive: true });
+    await mkdir(agentDir, { recursive: true });
+    let checkpointCalls = 0;
+    const disabled = await createCogsPiSession(
+      withDefaults({
+        cwd,
+        agentDir,
+        sessionRoot: resolve(temporaryRoot, "disabled"),
+        sessionId: "disabled-checkpoint",
+        model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+        apiKey: "COGS_RUNTIME_ONLY_TEST_KEY",
+        toolPorts: fakePorts([]),
+        streamFn: oneTextStream("done"),
+        git: { repositoryId: "workspace-1", observer: fakeObserver(["3".repeat(40), "4".repeat(40)]) },
+        emit: (event) => event.kind !== "checkpoint",
+      }),
+    );
+    await disabled.input({ requestId: "disabled", correlationId: "disabled", kind: "prompt", content: "go" });
+    await eventually(async () => assert.equal((await disabled.state()).runState, "settled"));
+    assert.equal(
+      disabled.gitMapRecords().some((record) => record.confidence === "checkpoint"),
+      false,
+    );
+    await disabled.dispose();
+
+    const failedEvents: string[] = [];
+    const failing = await createCogsPiSession(
+      withDefaults({
+        cwd,
+        agentDir,
+        sessionRoot: resolve(temporaryRoot, "failed"),
+        sessionId: "failed-checkpoint",
+        model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+        apiKey: "COGS_RUNTIME_ONLY_TEST_KEY",
+        toolPorts: fakePorts([]),
+        streamFn: oneTextStream("done"),
+        git: {
+          repositoryId: "workspace-1",
+          observer: fakeObserver(["5".repeat(40), "6".repeat(40)]),
+          checkpointer: Object.freeze({
+            checkpoint: async () => {
+              checkpointCalls += 1;
+              throw new Error("raw checkpoint failure");
+            },
+            dispose: async () => undefined,
+          }),
+        },
+        emit: (event) => {
+          failedEvents.push(event.kind);
+          return true;
+        },
+      }),
+    );
+    await failing.input({ requestId: "failed", correlationId: "failed", kind: "prompt", content: "go" });
+    await eventually(async () => assert.equal((await failing.state()).runState, "settled"));
+    assert.equal(checkpointCalls, 1);
+    assert.equal(
+      failing.gitMapRecords().some((record) => record.confidence === "checkpoint"),
+      false,
+    );
+    assert.ok(failedEvents.includes("warning"));
+    assert.equal(failedEvents.includes("checkpoint"), false);
+    await failing.dispose();
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test("Pi session hanging or forged checkpoint warns without checkpoint claim", async () => {
+  const temporaryRoot = await mkdtemp(resolve(tmpdir(), "cogs-pi-checkpoint-hostile-"));
+  const cwd = resolve(temporaryRoot, "workspace");
+  const agentDir = resolve(temporaryRoot, "agent");
+  try {
+    await mkdir(cwd, { recursive: true });
+    await mkdir(agentDir, { recursive: true });
+    for (const checkpointer of [
+      Object.freeze({ checkpoint: () => new Promise(() => undefined), dispose: async () => undefined }),
+      Object.freeze({
+        checkpoint: async () =>
+          Object.freeze({
+            repo: "other",
+            session: "bad",
+            entry: "00000000",
+            turn: 999,
+            commit: "b".repeat(40),
+            checkpoint_ref: "refs/cogs/sessions/bad/999",
+            observed_at: "2026-07-17T00:00:00.000Z",
+            file_count: 1,
+            total_bytes: 1,
+            duration_ms: 1,
+          }),
+        dispose: async () => undefined,
+      }),
+    ] as CogsGitCheckpointer[]) {
+      const events: string[] = [];
+      const adapter = await createCogsPiSession(
+        withDefaults({
+          cwd,
+          agentDir,
+          sessionRoot: resolve(temporaryRoot, `sessions-${events.length}-${Date.now()}`),
+          sessionId: `hostile-checkpoint-${events.length}-${Date.now()}`,
+          model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+          apiKey: "COGS_RUNTIME_ONLY_TEST_KEY",
+          toolPorts: fakePorts([]),
+          streamFn: oneTextStream("done"),
+          git: { repositoryId: "workspace-1", observer: fakeObserver(["b".repeat(40), "c".repeat(40)]), checkpointer },
+          emit: (event) => {
+            events.push(event.kind);
+            return true;
+          },
+        }),
+      );
+      await adapter.input({ requestId: "hostile", correlationId: "hostile", kind: "prompt", content: "go" });
+      await eventually(async () => assert.equal((await adapter.state()).runState, "settled"));
+      assert.ok(events.includes("warning"));
+      assert.equal(events.includes("checkpoint"), false);
+      assert.equal(
+        adapter.gitMapRecords().some((record) => record.confidence === "checkpoint"),
+        false,
+      );
+      await adapter.dispose();
+    }
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test("Pi session checkpoint event publication failure shuts down", async () => {
+  const temporaryRoot = await mkdtemp(resolve(tmpdir(), "cogs-pi-checkpoint-emit-"));
+  const cwd = resolve(temporaryRoot, "workspace");
+  const agentDir = resolve(temporaryRoot, "agent");
+  try {
+    await mkdir(cwd, { recursive: true });
+    await mkdir(agentDir, { recursive: true });
+    const adapter = await createCogsPiSession(
+      withDefaults({
+        cwd,
+        agentDir,
+        sessionRoot: resolve(temporaryRoot, "sessions"),
+        sessionId: "checkpoint-emit",
+        model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+        apiKey: "COGS_RUNTIME_ONLY_TEST_KEY",
+        toolPorts: fakePorts([]),
+        streamFn: oneTextStream("done"),
+        git: {
+          repositoryId: "workspace-1",
+          observer: fakeObserver(["7".repeat(40), "8".repeat(40)]),
+          checkpointer: Object.freeze({
+            checkpoint: async (input: Parameters<CogsGitCheckpointer["checkpoint"]>[0]) =>
+              Object.freeze({
+                repo: input.repo,
+                session: input.session,
+                entry: input.entry,
+                turn: input.turn,
+                commit: "a".repeat(40),
+                checkpoint_ref: `refs/cogs/sessions/${input.session}/${input.turn}`,
+                observed_at: input.observed_at,
+                file_count: 1,
+                total_bytes: 1,
+                duration_ms: 1,
+              }),
+            dispose: async () => undefined,
+          }),
+        },
+        emit: (event) => event.kind !== "checkpoint",
+      }),
+    );
+    await adapter.input({ requestId: "emit", correlationId: "emit", kind: "prompt", content: "go" });
+    await eventually(async () => assert.equal((await adapter.state()).runState, "shutdown"));
   } finally {
     await rm(temporaryRoot, { recursive: true, force: true });
   }
