@@ -107,6 +107,7 @@ test("scope rejection and unexpected normal completion after publication fail cl
   const second = await startCogsEgressRuntimeManager(completing.options());
   completing.releaseScope?.();
   await flush();
+  await flush();
   assert.equal(second.ready, false);
   assert.ok(completing.events.includes("wal.close"));
 });
@@ -140,6 +141,12 @@ test("canonical path and invalid injected port fail before side effects", async 
   );
   await assert.rejects(
     startCogsEgressRuntimeManager(fixture.options({ ports: { startAuthz: "bad" as never } })),
+    generic,
+  );
+  await assert.rejects(
+    startCogsEgressRuntimeManager(
+      fixture.options({ telemetry: { mode: "otlp", endpoint: "http://example.com/v1/logs" } }),
+    ),
     generic,
   );
   assert.equal(fixture.openWalCalls, 0);
@@ -191,6 +198,27 @@ test("normal close uses one promise, closes in order, and preserves final comple
     manager.drainCompletions(1).map((item) => item.intentId),
     ["intent"],
   );
+});
+
+test("OTLP telemetry outage does not poison runtime close or completion preservation", async () => {
+  const fixture = fixtureRuntime();
+  const manager = await startCogsEgressRuntimeManager(
+    fixture.options({
+      telemetry: {
+        mode: "otlp",
+        endpoint: "http://127.0.0.1:9/v1/logs",
+        allowLoopbackHttpDevelopment: true,
+        timeoutMs: 50,
+      },
+    }),
+  );
+  await manager.close();
+  assert.equal(manager.ready, false);
+  assert.deepEqual(
+    manager.drainCompletions(1).map((item) => item.intentId),
+    ["intent"],
+  );
+  assert.ok(fixture.events.includes("wal.close"));
 });
 
 test("malformed OpenBao binding from port override fails before config rendering", async () => {
@@ -478,6 +506,7 @@ function fixtureRuntime(
     listenerPort: 15001,
     maxSessionExpiresAtMs: 20_000,
     completionCapacity: 8,
+    telemetry: { mode: "injected-stub-evidence" as const },
     revocation: flags.openBaoMode
       ? {
           mode: "openbao" as const,

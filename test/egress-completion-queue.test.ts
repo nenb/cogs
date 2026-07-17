@@ -30,6 +30,42 @@ test("completes only post-baseline WAL intents, ignores denied logs, and drains 
   assert.deepEqual(queue.drain(1), []);
 });
 
+test("completion queue emits WAL-correlated safe telemetry hook without poisoning readiness", async () => {
+  const seen: unknown[] = [];
+  const sink = Object.freeze({
+    ready: true,
+    enqueue: (event: unknown) => {
+      seen.push(event);
+      throw new Error(raw);
+    },
+    close: async () => undefined,
+    snapshot: () => Object.freeze({ queued: 0, exported: 0, dropped: 0, failed: 0, depth: 0 }),
+  });
+  const wal = fakeWal([]);
+  const queue = createCogsEgressCompletionQueue(wal, { capacity: 1, nowMs: () => 9, telemetry: sink });
+  wal.records = [record(1, "intent", "r")];
+  await queue.onCompletionLine(line({ intent_id: "intent", route_id: "r", duration_ms: 4 }));
+  assert.equal(queue.ready, true);
+  assert.deepEqual(queue.drain(1), [
+    { intentId: "intent", sequence: 1, routeId: "r", responseCode: 200, durationMs: 4, completedAtMs: 9 },
+  ]);
+  assert.deepEqual(seen, [
+    {
+      intent: {
+        sequence: 1,
+        intent_id: "intent",
+        timestamp_ms: 1,
+        session_id: "s",
+        integration_id: "g",
+        route_id: "r",
+        method: "GET",
+        credential_required: false,
+      },
+      completion: { intentId: "intent", sequence: 1, routeId: "r", responseCode: 200, durationMs: 4, completedAtMs: 9 },
+    },
+  ]);
+});
+
 test("schema, key, JSON type, byte bound, event, number, and clock failures are generic", async () => {
   for (const bad of [
     "",
@@ -165,6 +201,22 @@ test("field-name values are valid without confusing duplicate-key detection", as
 test("constructor, drain bounds, close idempotence, and accept-after-close are generic and bounded", async () => {
   assert.throws(() => createCogsEgressCompletionQueue(fakeWal([], false), { capacity: 1, nowMs: () => 1 }), generic);
   assert.throws(() => createCogsEgressCompletionQueue(fakeWal([]), { capacity: 0, nowMs: () => 1 }), generic);
+  const sink = {
+    ready: true,
+    enqueue: () => undefined,
+    close: async () => undefined,
+    snapshot: () => ({ queued: 0, exported: 0, dropped: 0, failed: 0, depth: 0 }),
+  };
+  for (const telemetry of [
+    { ...sink, ready: false },
+    sink,
+    Object.freeze({ ...sink, extra: true }),
+    Object.freeze({ ...sink, [Symbol("x")]: true }),
+  ])
+    assert.throws(
+      () => createCogsEgressCompletionQueue(fakeWal([]), { capacity: 1, nowMs: () => 1, telemetry }),
+      generic,
+    );
   const queue = createCogsEgressCompletionQueue(fakeWal([record(1, "i", "r")]), { capacity: 2, nowMs: () => 1 });
   assert.throws(() => queue.drain(0), generic);
   assert.throws(() => queue.drain(3), generic);

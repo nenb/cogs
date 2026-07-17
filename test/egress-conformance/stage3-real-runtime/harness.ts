@@ -3,6 +3,7 @@ import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createServer as createHttpServer } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
 import { createServer as createTcpServer } from "node:net";
 import { arch, platform, tmpdir } from "node:os";
@@ -107,8 +108,15 @@ interface Sidecar {
     authorization: "real";
     audit: "real";
     revocation: "real";
-    telemetry: "stubbed";
+    telemetry: "real";
     network_enforcement: "not-applicable" | "real";
+  };
+  telemetry_evidence: {
+    mode: "otlp";
+    authority: "authoritative-local" | "functional-only";
+    records_received: 2;
+    exact_envelope: true;
+    forbidden_absent: true;
   };
   timings: Record<
     | "revocation_poll_interval_ms"
@@ -239,6 +247,7 @@ export function assertValidRealRuntimeSidecar(value: unknown): asserts value is 
     "profile",
     "release_eligible",
     "source_revision",
+    "telemetry_evidence",
     "timings",
     "version",
   ]);
@@ -270,8 +279,22 @@ export function assertValidRealRuntimeSidecar(value: unknown): asserts value is 
     authorization: "real",
     audit: "real",
     revocation: "real",
-    telemetry: "stubbed",
+    telemetry: "real",
     network_enforcement: sidecar.profile === "linux-kvm" ? "real" : "not-applicable",
+  });
+  exactKeys(sidecar.telemetry_evidence, [
+    "authority",
+    "exact_envelope",
+    "forbidden_absent",
+    "mode",
+    "records_received",
+  ]);
+  assert.deepEqual(sidecar.telemetry_evidence, {
+    mode: "otlp",
+    authority: sidecar.profile === "linux-kvm" ? "authoritative-local" : "functional-only",
+    records_received: 2,
+    exact_envelope: true,
+    forbidden_absent: true,
   });
   if (sidecar.profile === "linux-kvm") {
     exactKeys(sidecar.network_evidence, [
@@ -399,6 +422,7 @@ async function main(): Promise<void> {
     upstreamPrivateKey = pki.leaf.privateKey;
     await phase("install_public_ca", () => installPublicCa(caPem, state));
     const upstream = await phase("start_upstream", () => startUpstream(upstreamCertificate, upstreamPrivateKey));
+    const telemetry = await phase("start_otlp_collector", () => startOtlpCollector());
     try {
       const launch = launchFor(upstream.port);
       const identity = new StaticIdentity(() => scopedToken);
@@ -437,6 +461,13 @@ async function main(): Promise<void> {
             listenerPort,
             maxSessionExpiresAtMs: Date.now() + 60 * 60 * 1000,
             completionCapacity: 8,
+            telemetry: {
+              mode: "otlp",
+              endpoint: telemetry.endpoint,
+              allowLoopbackHttpDevelopment: true,
+              capacity: 8,
+              timeoutMs: 1000,
+            },
             revocation: {
               mode: "openbao",
               openbao: {
@@ -608,6 +639,9 @@ async function main(): Promise<void> {
         replacements.map((item) => `${item.epoch}:${item.reason}`),
         ["A:credential_changed", "B:revoked"],
       );
+      await phase("wait_otlp_records", () => telemetry.waitForRecords(2));
+      const telemetryRecords = telemetry.records();
+      if (telemetryRecords.length !== 2) throw new Error("OTLP telemetry count assertion failed");
       const tmpfsClean = !(await exists("/run/cogs/egress/envoy"));
       await phase("revoke_tokens", async () => {
         await revokeTokens();
@@ -641,8 +675,15 @@ async function main(): Promise<void> {
           authorization: "real",
           audit: "real",
           revocation: "real",
-          telemetry: "stubbed",
+          telemetry: "real",
           network_enforcement: authoritativeKvm ? "real" : "not-applicable",
+        },
+        telemetry_evidence: {
+          mode: "otlp",
+          authority: authoritativeKvm ? "authoritative-local" : "functional-only",
+          records_received: 2,
+          exact_envelope: true,
+          forbidden_absent: true,
         },
         network_evidence: authoritativeKvm
           ? {
@@ -779,7 +820,7 @@ async function main(): Promise<void> {
           {
             id: "stage3.real-runtime.bearer",
             group: "credential-handling",
-            result: "stubbed",
+            result: "pass",
             release_eligible: false,
             duration_ms: Date.now() - startedMs,
             dependency_modes: {
@@ -787,19 +828,18 @@ async function main(): Promise<void> {
               audit: "real",
               identity: "real",
               revocation: "real",
-              telemetry: "stubbed",
+              telemetry: "real",
               network_enforcement: authoritativeKvm ? "real" : "not-applicable",
             },
             diagnostics_redacted: authoritativeKvm
-              ? "Real runtime manager, Envoy process, OpenBao KV/PKI, metadata revocation callbacks, WAL, authz, KVM guest probes, host firewall default-deny, relay cleanup, tmpfs, and completion correlation passed; telemetry remains stubbed and replacement is harness-driven after production callback."
-              : "Real runtime manager, Envoy process, OpenBao KV/PKI, metadata revocation callbacks, WAL, authz, tmpfs, and completion correlation passed in functional insecure-container evidence; telemetry remains stubbed and replacement is harness-driven after production callback.",
+              ? "Real runtime manager, Envoy process, OpenBao KV/PKI, metadata revocation callbacks, WAL, authz, KVM guest probes, host firewall default-deny, relay cleanup, tmpfs, completion correlation, and OTLP metadata export passed; replacement is harness-driven after production callback."
+              : "Real runtime manager, Envoy process, OpenBao KV/PKI, metadata revocation callbacks, WAL, authz, tmpfs, completion correlation, and OTLP metadata export passed in functional insecure-container evidence; replacement is harness-driven after production callback.",
           },
         ],
         known_limitations: [
           authoritativeKvm
             ? "Authoritative local Linux/KVM network-enforcement evidence only; no AWS, production-profile, or release claim."
             : "Functional insecure-container evidence only; no bypass, default-deny, guest-reachability, or release claim.",
-          "WAL-to-OTLP buffering remains pending and telemetry is stubbed.",
           "Harness constructs the second runtime after observing the production replacement callback; no daemon or sandbox replacement automation is proven.",
           authoritativeKvm
             ? "The host relay is a test-only bridge from the KVM guest to the active loopback runtime listener; it has no arbitrary direct fallback."
@@ -808,7 +848,7 @@ async function main(): Promise<void> {
       };
       await phase("validate_security_report", async () => assertValidSecurityReport(report));
       await phase("validate_redaction", async () =>
-        assertNoSecrets({ report, sidecar }, [
+        assertNoSecrets({ report, sidecar, telemetryRecords }, [
           bearerToken,
           bearerTokenV2,
           expectedAuthorization,
@@ -844,6 +884,7 @@ async function main(): Promise<void> {
       );
       for (const manager of managers) await manager.close().catch(() => undefined);
     } finally {
+      await telemetry.stop();
       await upstream.stop();
     }
   } finally {
@@ -1305,7 +1346,127 @@ async function startUpstream(
   };
 }
 
-async function closeServer(server: ReturnType<typeof createHttpsServer>): Promise<void> {
+async function startOtlpCollector(): Promise<{
+  endpoint: string;
+  records(): readonly Record<string, unknown>[];
+  waitForRecords(count: number): Promise<void>;
+  stop(): Promise<void>;
+}> {
+  const received: Record<string, unknown>[] = [];
+  const server = createHttpServer((request, response) => {
+    const chunks: Buffer[] = [];
+    let total = 0;
+    request.on("data", (chunk) => {
+      const buffer = Buffer.from(chunk);
+      total += buffer.byteLength;
+      if (total > 65_536) request.destroy();
+      else chunks.push(buffer);
+    });
+    request.on("end", () => {
+      try {
+        assert.equal(request.method, "POST");
+        assert.equal(request.url, "/v1/logs");
+        const contentType = header(request.headers["content-type"]);
+        assert.equal(contentType?.startsWith("application/json"), true);
+        received.push(...exactOtlpRecords(JSON.parse(Buffer.concat(chunks).toString("utf8"))));
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end("{}");
+      } catch {
+        response.writeHead(400, { "content-type": "text/plain" });
+        response.end("bad telemetry");
+      }
+    });
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  return {
+    endpoint: `http://127.0.0.1:${address.port}/v1/logs`,
+    records: () => Object.freeze(received.map((item) => Object.freeze({ ...item }))),
+    waitForRecords: async (count) => {
+      const deadline = Date.now() + 10_000;
+      while (received.length < count && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
+      if (received.length < count) throw new Error("OTLP telemetry timeout");
+    },
+    stop: () => closeServer(server),
+  };
+}
+
+function exactOtlpRecords(value: unknown): readonly Record<string, unknown>[] {
+  const root = object(value);
+  exactKeys(root, ["resourceLogs"]);
+  const resourceLogs = root.resourceLogs;
+  assert.ok(Array.isArray(resourceLogs) && resourceLogs.length === 1);
+  const resource = object(resourceLogs[0]);
+  exactKeys(resource, ["resource", "scopeLogs"]);
+  const resourceValue = object(resource.resource);
+  exactKeys(resourceValue, ["attributes"]);
+  assert.deepEqual(resourceValue.attributes, [{ key: "service.name", value: { stringValue: "cogs-egress" } }]);
+  const scopeLogs = resource.scopeLogs;
+  assert.ok(Array.isArray(scopeLogs) && scopeLogs.length === 1);
+  const scope = object(scopeLogs[0]);
+  exactKeys(scope, ["logRecords", "scope"]);
+  const scopeValue = object(scope.scope);
+  exactKeys(scopeValue, ["name", "version"]);
+  assert.equal(scopeValue.name, "cogs.egress.telemetry");
+  assert.equal(scopeValue.version, "v1alpha1");
+  const logs = scope.logRecords;
+  assert.ok(Array.isArray(logs) && logs.length >= 1 && logs.length <= 16);
+  return Object.freeze(logs.map((log) => exactOtlpLogRecord(log)));
+}
+
+function exactOtlpLogRecord(logValue: unknown): Record<string, unknown> {
+  const log = object(logValue);
+  exactKeys(log, ["attributes", "body", "severityText", "timeUnixNano"]);
+  const timeUnixNano = stringField(log, "timeUnixNano");
+  assert.match(timeUnixNano, /^[1-9][0-9]*$/);
+  assert.equal(log.severityText, "INFO");
+  assert.deepEqual(log.body, { stringValue: "cogs.egress.complete" });
+  const attributes = log.attributes;
+  assert.ok(Array.isArray(attributes));
+  assert.equal(attributes.length, 11);
+  const out: Record<string, unknown> = {};
+  for (const item of attributes) {
+    const attribute = object(item);
+    exactKeys(attribute, ["key", "value"]);
+    const key = stringField(attribute, "key");
+    const field = object(attribute.value);
+    const fieldKeys = Reflect.ownKeys(field);
+    assert.equal(fieldKeys.length, 1);
+    const fieldKey = String(fieldKeys[0]);
+    assert.ok(fieldKey === "stringValue" || fieldKey === "intValue" || fieldKey === "boolValue");
+    if (fieldKey === "stringValue") assert.equal(typeof field[fieldKey], "string");
+    if (fieldKey === "boolValue") assert.equal(typeof field[fieldKey], "boolean");
+    if (fieldKey === "intValue") assert.match(stringField(field, fieldKey), /^(0|[1-9][0-9]*)$/);
+    out[key] = field[fieldKey];
+  }
+  assert.equal(new Set(Object.keys(out)).size, 11);
+  exactKeys(out, [
+    "cogs.completed_lag_ms",
+    "cogs.credential_required",
+    "cogs.duration_ms",
+    "cogs.event",
+    "cogs.integration_id",
+    "cogs.intent_id",
+    "cogs.intent_sequence",
+    "cogs.method",
+    "cogs.route_id",
+    "cogs.session_id",
+    "cogs.status_class",
+  ]);
+  assert.equal(out["cogs.event"], "egress.complete");
+  assert.equal(out["cogs.session_id"], sessionId);
+  assert.equal(out["cogs.integration_id"], integrationId);
+  assert.equal(out["cogs.method"], "GET");
+  assert.equal(out["cogs.credential_required"], true);
+  assert.equal(out["cogs.status_class"], "2");
+  return Object.freeze(out);
+}
+
+async function closeServer(server: { close(callback?: (error?: Error) => void): unknown }): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     server.close((error) => (error ? reject(error) : resolve()));
   });
