@@ -3855,3 +3855,118 @@ test("Pi telemetry covers real tool policy denial, malformed paths, failed ports
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("Pi command audit disabled seam is inert for real bash dispatch", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "cogs-pi-command-audit-"));
+  const cwd = resolve(root, "cwd");
+  const agentDir = resolve(root, "agent");
+  const sessionRoot = resolve(root, "sessions");
+  try {
+    await mkdir(cwd, { recursive: true });
+    await mkdir(agentDir, { recursive: true });
+    const omittedCalls: string[] = [];
+    const omitted = await createCogsPiSession(
+      withDefaults({
+        cwd,
+        agentDir,
+        sessionRoot,
+        sessionId: "audit-omitted",
+        model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+        apiKey: "sk-test-command-audit",
+        toolPorts: fakePorts(omittedCalls),
+        streamFn: oneToolStream("bash", { command: "printf SECRET_COMMAND" }),
+      }),
+    );
+    await omitted.input({ requestId: "omitted", correlationId: "omitted-corr", kind: "prompt", content: "run" });
+    await eventually(async () => assert.equal((await omitted.state()).runState, "settled"));
+    await omitted.dispose();
+
+    let auditCalls = 0;
+    const explicitAudit = Object.freeze({
+      mode: "disabled" as const,
+      enabled: false as const,
+      record: () => {
+        auditCalls += 1;
+        throw new Error("SECRET_COMMAND audit callback must not run");
+      },
+    });
+    const explicitCalls: string[] = [];
+    const explicit = await createCogsPiSession(
+      withDefaults({
+        cwd,
+        agentDir,
+        sessionRoot,
+        sessionId: "audit-explicit",
+        model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+        apiKey: "sk-test-command-audit",
+        toolPorts: fakePorts(explicitCalls),
+        streamFn: oneToolStream("bash", { command: "printf SECRET_COMMAND" }),
+        commandAudit: explicitAudit,
+      }),
+    );
+    await explicit.input({ requestId: "explicit", correlationId: "explicit-corr", kind: "prompt", content: "run" });
+    await eventually(async () => assert.equal((await explicit.state()).runState, "settled"));
+    await explicit.dispose();
+
+    assert.deepEqual(omittedCalls, ["bash:printf SECRET_COMMAND"]);
+    assert.deepEqual(explicitCalls, omittedCalls);
+    assert.equal(auditCalls, 0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Pi command audit rejects malformed hooks before session side effects", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "cogs-pi-command-audit-invalid-"));
+  const cwd = resolve(root, "cwd");
+  const agentDir = resolve(root, "agent");
+  const sessionRoot = resolve(root, "sessions");
+  try {
+    await mkdir(cwd, { recursive: true });
+    await mkdir(agentDir, { recursive: true });
+    let disposed = 0;
+    const resources = hostilePrepared({
+      dispose: async () => {
+        disposed += 1;
+      },
+    });
+    const invalidHooks: unknown[] = [
+      Object.freeze({ mode: "enabled", enabled: true, record: () => false }),
+      Object.freeze({ mode: "disabled", enabled: false, record: () => false, extra: "SECRET" }),
+      Object.freeze(
+        Object.defineProperty({ enabled: false, record: () => false }, "mode", {
+          enumerable: true,
+          get: () => "disabled",
+        }),
+      ),
+      Object.freeze({ mode: "disabled", enabled: false, record: () => false, [Symbol.for("SECRET")]: true }),
+      new Proxy(Object.freeze({ mode: "disabled", enabled: false, record: () => false }), {
+        getOwnPropertyDescriptor: () => {
+          throw new Error("SECRET proxy trap");
+        },
+      }),
+    ];
+    for (const [index, commandAudit] of invalidHooks.entries()) {
+      await assert.rejects(
+        createCogsPiSession(
+          withDefaults({
+            cwd,
+            agentDir,
+            sessionRoot,
+            sessionId: `audit-invalid-${index}`,
+            model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+            apiKey: "sk-test-command-audit",
+            toolPorts: fakePorts([]),
+            preparedResources: resources,
+            commandAudit: commandAudit as never,
+          }),
+        ),
+        /^Error: invalid command audit hook$/,
+      );
+      await assertMissing(resolve(sessionRoot, `audit-invalid-${index}`));
+    }
+    assert.equal(disposed, 0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
