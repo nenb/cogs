@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { test } from "node:test";
-import { commandDescriptor, type RunnerSeams, runCommand } from "../dev/launcher/runner.ts";
+import { commandDescriptor, observeProcessIdentity, type RunnerSeams, runCommand } from "../dev/launcher/runner.ts";
 
 function command(code: string, timeoutMs = 5_000) {
   return commandDescriptor({
@@ -18,6 +18,11 @@ function command(code: string, timeoutMs = 5_000) {
     killGraceMs: 100,
   });
 }
+
+test("launcher runner process identity classifies invalid pid as definitely absent", () => {
+  assert.equal(observeProcessIdentity(0), null);
+  assert.equal(observeProcessIdentity(2 ** 31), null);
+});
 
 test("launcher runner uses fixed absolute argv, no shell, bounded output, and captures nonzero", async () => {
   assert.throws(() => commandDescriptor({ ...command(""), executable: "node" }));

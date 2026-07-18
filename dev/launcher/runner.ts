@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import type { Readable } from "node:stream";
 
@@ -28,7 +29,7 @@ export type RunnerSeams = Readonly<{
   setTimer: (ms: number, cb: () => void) => { unref?: () => void; close?: () => void; [Symbol.dispose]?: () => void };
   clearTimer: (timer: unknown) => void;
   kill: (pid: number, signal: NodeJS.Signals) => boolean;
-  identity: (pid: number) => string | null;
+  identity: (pid: number) => string | null | undefined;
 }>;
 
 const defaultSpawn = Object.freeze(((command: string, args?: readonly string[], options?: unknown) =>
@@ -47,37 +48,48 @@ const defaultKill = Object.freeze((pid: number, signal: NodeJS.Signals) => {
     return false;
   }
 });
-const defaultIdentity = Object.freeze((pid: number) => {
-  try {
-    if (process.platform === "linux") {
+export const observeProcessIdentity = Object.freeze((pid: number) => {
+  if (!Number.isSafeInteger(pid) || pid < 1 || pid > 2 ** 31 - 1) return null;
+  if (process.platform === "linux") {
+    try {
       const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
       const tail = stat
         .slice(stat.lastIndexOf(")") + 2)
         .trim()
         .split(/\s+/u);
-      return tail[19] ? `${pid}:${tail[19]}` : null;
+      return tail[19] ? identityDigest(pid, `linux:${tail[19]}`) : undefined;
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === "ENOENT" ? null : undefined;
     }
-    if (process.platform === "darwin") {
+  }
+  if (process.platform === "darwin") {
+    try {
       const out = spawnSync("/bin/ps", ["-o", "lstart=", "-p", String(pid)], {
         encoding: "utf8",
         shell: false,
         timeout: 1000,
         maxBuffer: 256,
       });
-      const start = out.status === 0 ? out.stdout.trim().replace(/\s+/gu, " ") : "";
-      return start.length > 0 && start.length < 96 ? `${pid}:${start}` : null;
+      if (out.error || out.signal) return undefined;
+      if (out.status === 1) return null;
+      if (out.status !== 0) return undefined;
+      const start = out.stdout.trim().replace(/\s+/gu, " ");
+      return start.length > 0 && start.length < 96 ? identityDigest(pid, `darwin:${start}`) : undefined;
+    } catch {
+      return undefined;
     }
-  } catch {
-    return null;
   }
-  return null;
+  return undefined;
 });
+function identityDigest(pid: number, observed: string): string {
+  return `sha256:${createHash("sha256").update(`${pid}\0${observed}`).digest("hex")}`;
+}
 const defaultSeams: RunnerSeams = Object.freeze({
   spawn: defaultSpawn,
   setTimer: defaultSetTimer,
   clearTimer: defaultClearTimer,
   kill: defaultKill,
-  identity: defaultIdentity,
+  identity: observeProcessIdentity,
 });
 
 export function commandDescriptor(input: CommandDescriptor): CommandDescriptor {
@@ -428,12 +440,12 @@ function isReadable(value: unknown): value is Readable {
   }
 }
 
-function safeIdentity(seams: RunnerSeams, pid: number): string | null {
+function safeIdentity(seams: RunnerSeams, pid: number): string | undefined {
   try {
     const identity = seams.identity(pid);
-    return typeof identity === "string" && identity.length > 0 && identity.length < 128 ? identity : null;
+    return typeof identity === "string" && identity.length > 0 && identity.length < 128 ? identity : undefined;
   } catch {
-    return null;
+    return undefined;
   }
 }
 
