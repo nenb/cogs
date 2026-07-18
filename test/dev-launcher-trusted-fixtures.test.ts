@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { mkdir, mkdtemp, realpath, rm, symlink } from "node:fs/promises";
 import { Socket } from "node:net";
 import { tmpdir } from "node:os";
@@ -9,6 +11,37 @@ import { OPENBAO_IMAGE, type OpenBaoSeams, startTrustedOpenBao } from "../dev/la
 import { createState, readManifest, resolveLauncherState, writePhase } from "../dev/launcher/state.ts";
 
 const sourceRevision = "a".repeat(40);
+function testCaPem() {
+  const dir = mkdtempSync(join(tmpdir(), "cogs-launcher-ca-"));
+  try {
+    const key = join(dir, "ca.key"),
+      cert = join(dir, "ca.crt");
+    execFileSync(
+      "openssl",
+      [
+        "req",
+        "-x509",
+        "-newkey",
+        "rsa:2048",
+        "-keyout",
+        key,
+        "-out",
+        cert,
+        "-nodes",
+        "-subj",
+        "/CN=localhost",
+        "-days",
+        "1",
+        "-addext",
+        "basicConstraints=critical,CA:TRUE",
+      ],
+      { stdio: "ignore" },
+    );
+    return readFileSync(cert, "utf8");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
 async function state() {
   const dir = await mkdtemp(join(tmpdir(), "cogs-launcher-fixtures-"));
   const root = join(await realpath(dir), "launcher");
@@ -24,6 +57,8 @@ function json(value: unknown, status = 200) {
 function openBaoSeams(events: string[] = [], badInspect = false, badClose = false): OpenBaoSeams {
   let container = "",
     inspectCount = 0,
+    keyCount = 0,
+    tokenCount = 0,
     healthy = false;
   const id = "a".repeat(64);
   const docker = Object.freeze(async (raw: readonly string[]) => {
@@ -71,11 +106,42 @@ function openBaoSeams(events: string[] = [], badInspect = false, badClose = fals
       healthy = true;
       return json({ sealed: false });
     }
-    if (u.pathname === "/v1/auth/token/create-orphan") return json({ auth: { client_token: "modelToken123" } });
+    if (u.pathname === "/v1/pki/root/generate/internal") return json({ data: { certificate: testCaPem() } });
+    if (u.pathname === "/v1/pki/roles/cogs-egress") {
+      assert.deepEqual(body, {
+        allowed_domains: ["localhost"],
+        allow_bare_domains: true,
+        allow_subdomains: false,
+        allow_localhost: false,
+        max_ttl: "8h",
+        ttl: "2h",
+        key_type: "rsa",
+        key_bits: 2048,
+      });
+      return json({});
+    }
+    if (u.pathname === "/v1/sys/policies/acl/cogs-stage3-runtime") {
+      assert.equal(body.policy.includes('path "model/data/users/alice/integrations/stage3-localhost"'), true);
+      assert.equal(body.policy.includes('path "model/metadata/users/alice/integrations/stage3-localhost"'), true);
+      assert.equal(body.policy.includes('path "pki/issue/cogs-egress"'), true);
+      return json({});
+    }
+    if (u.pathname === "/v1/auth/token/create-orphan") {
+      tokenCount++;
+      assert.equal(body.ttl, "8h");
+      assert.equal(body.explicit_max_ttl, "8h");
+      assert.equal(body.renewable, false);
+      assert.deepEqual(body.policies, [tokenCount === 1 ? "cogs-model-auth-read" : "cogs-stage3-runtime"]);
+      return json({ auth: { client_token: tokenCount === 1 ? "modelToken123" : "egressToken123" } });
+    }
     if (u.pathname === "/v1/auth/token/revoke-self") return json({});
     return json({ ok: true });
   }) as typeof fetch;
-  return Object.freeze({ docker, fetch: fetchImpl, randomBytes: Object.freeze(() => Buffer.alloc(32, 7)) as never });
+  return Object.freeze({
+    docker,
+    fetch: fetchImpl,
+    randomBytes: Object.freeze(() => Buffer.alloc(32, ++keyCount)) as never,
+  });
 }
 
 test("openbao lifecycle uses exact image, health sequence, model seed, and disposes holders", async () => {
@@ -86,20 +152,30 @@ test("openbao lifecycle uses exact image, health sequence, model seed, and dispo
     const snap = bao.snapshot();
     assert.equal(snap.ready, true);
     assert.equal(snap.image, OPENBAO_IMAGE);
-    assert.equal(snap.seeded, "model-kv");
+    assert.equal(snap.seeded, "model-kv-egress-pki");
+    assert.equal(snap.egress.credentialHandle, "users/alice/integrations/stage3-localhost");
     assert.equal(JSON.stringify(snap).includes("Token123"), false);
     let model = "",
       key = "";
+    let egress = "",
+      integration = "";
     bao.modelToken.withSecret((v) => (model = v));
     bao.modelApiKey.withSecret((v) => (key = v));
+    bao.egressToken.withSecret((v) => (egress = v));
+    bao.integrationCredential.withSecret((v) => (integration = v));
     assert.equal(model, "modelToken123");
+    assert.equal(egress, "egressToken123");
     assert.match(key, /^[A-Za-z0-9_-]{43}$/u);
+    assert.match(integration, /^[A-Za-z0-9_-]{43}$/u);
+    assert.notEqual(key, integration);
     assert.ok(events.includes("GET /v1/sys/health"));
     assert.ok(events.includes("POST /v1/sys/unseal"));
     await bao.close();
     assert.ok(events.some((e) => e.includes("docker rm -f")));
     assert.throws(() => bao.modelToken.withSecret(() => undefined));
     assert.throws(() => bao.modelApiKey.withSecret(() => undefined));
+    assert.throws(() => bao.egressToken.withSecret(() => undefined));
+    assert.throws(() => bao.integrationCredential.withSecret(() => undefined));
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -132,6 +208,8 @@ test("openbao close refuses identity mismatch and preserves owned container", as
     );
     assert.equal(events.includes("POST /v1/auth/token/revoke-self"), false);
     assert.throws(() => bao.modelToken.withSecret(() => undefined));
+    assert.throws(() => bao.egressToken.withSecret(() => undefined));
+    assert.throws(() => bao.integrationCredential.withSecret(() => undefined));
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
