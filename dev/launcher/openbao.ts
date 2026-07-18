@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { randomBytes, X509Certificate } from "node:crypto";
 import { lstat, readFile, realpath } from "node:fs/promises";
 import { Socket } from "node:net";
 import { dirname } from "node:path";
@@ -17,12 +17,20 @@ export type OpenBaoSnapshot = Readonly<{
   containerId: string;
   port: number;
   image: string;
-  seeded: "model-kv";
+  seeded: "model-kv-egress-pki";
+  egress: {
+    mount: "model";
+    pkiMount: "pki";
+    pkiRole: "cogs-egress";
+    credentialHandle: "users/alice/integrations/stage3-localhost";
+  };
 }>;
 export type OpenBaoHandle = Readonly<{
   snapshot(): OpenBaoSnapshot;
   modelToken: SecretHolder;
   modelApiKey: SecretHolder;
+  egressToken: SecretHolder;
+  integrationCredential: SecretHolder;
   close(): Promise<void>;
 }>;
 export type OpenBaoSeams = Readonly<{
@@ -35,6 +43,8 @@ const version = /^OpenBao\s+v2\.6\.0(?:[\s,]|$)/u;
 const imageRe = /^quay\.io\/openbao\/openbao:2\.6\.0@sha256:([a-f0-9]{64})$/u;
 const idRe = /^[a-f0-9]{64}$/u;
 const secretRe = /^[A-Za-z0-9._~+/=-]{8,4096}$/u;
+const pemCert = /^-----BEGIN CERTIFICATE-----\n[\s\S]+\n-----END CERTIFICATE-----\n?$/u;
+const egressHandle = "users/alice/integrations/stage3-localhost";
 const configPath = fileURLToPath(new URL("../openbao-model-auth/config.hcl", import.meta.url));
 const expectedConfig =
   'disable_mlock = true\napi_addr = "http://127.0.0.1:8200"\n\nstorage "file" {\n  path = "/openbao/file"\n}\n\nlistener "tcp" {\n  address = "0.0.0.0:8200"\n  tls_disable = 1\n}\n';
@@ -46,13 +56,17 @@ export async function startTrustedOpenBao(state: LauncherState, seams?: OpenBaoS
   let root = "",
     unseal = "",
     model = "",
-    apiKey = "";
+    egress = "",
+    apiKey = "",
+    integrationCredential = "";
   try {
     const digest = imageDigest();
     await validateState(state);
     await validateConfig();
     const s = snapSeams(seams, state.dir);
     apiKey = key(s.randomBytes);
+    integrationCredential = key(s.randomBytes);
+    if (integrationCredential === apiKey) fail();
     const exec = (a: readonly string[]) => dock(s.docker, a);
     const name = `cogs-openbao-${state.stateId}`,
       label = `cogs.dev.launcher.state=${state.stateId}`;
@@ -134,6 +148,67 @@ export async function startTrustedOpenBao(state: LauncherState, seams?: OpenBaoS
         { policy: 'path "model/data/users/alice/anthropic" { capabilities = ["read"] }' },
         [200, 204],
       );
+      await bao(
+        s.fetch,
+        origin,
+        `/v1/model/data/${egressHandle}`,
+        "POST",
+        root,
+        { data: { api_key: integrationCredential } },
+        [200, 204],
+      );
+      await bao(
+        s.fetch,
+        origin,
+        "/v1/sys/mounts/pki",
+        "POST",
+        root,
+        { type: "pki", config: { max_lease_ttl: "24h" } },
+        [200, 204],
+      );
+      const ca = await bao(
+        s.fetch,
+        origin,
+        "/v1/pki/root/generate/internal",
+        "POST",
+        root,
+        { common_name: "localhost", ttl: "24h" },
+        [200],
+      );
+      certOnly(ca);
+      await bao(
+        s.fetch,
+        origin,
+        "/v1/pki/roles/cogs-egress",
+        "POST",
+        root,
+        {
+          allowed_domains: ["localhost"],
+          allow_bare_domains: true,
+          allow_subdomains: false,
+          allow_localhost: false,
+          max_ttl: "8h",
+          ttl: "2h",
+          key_type: "rsa",
+          key_bits: 2048,
+        },
+        [200, 204],
+      );
+      await bao(
+        s.fetch,
+        origin,
+        "/v1/sys/policies/acl/cogs-stage3-runtime",
+        "PUT",
+        root,
+        {
+          policy: [
+            `path "model/data/${egressHandle}" { capabilities = ["read"] }`,
+            `path "model/metadata/${egressHandle}" { capabilities = ["read"] }`,
+            'path "pki/issue/cogs-egress" { capabilities = ["update"] }',
+          ].join("\n"),
+        },
+        [200, 204],
+      );
       model = token(
         await bao(
           s.fetch,
@@ -145,13 +220,27 @@ export async function startTrustedOpenBao(state: LauncherState, seams?: OpenBaoS
           [200],
         ),
       );
+      egress = token(
+        await bao(
+          s.fetch,
+          origin,
+          "/v1/auth/token/create-orphan",
+          "POST",
+          root,
+          { policies: ["cogs-stage3-runtime"], ttl: "8h", explicit_max_ttl: "8h", renewable: false },
+          [200],
+        ),
+      );
+      if (egress === model || egress === root) fail();
       ready = true;
       const clear = () => {
         ready = false;
         root = "";
         unseal = "";
         model = "";
+        egress = "";
         apiKey = "";
+        integrationCredential = "";
       };
       return Object.freeze({
         snapshot: () =>
@@ -161,7 +250,13 @@ export async function startTrustedOpenBao(state: LauncherState, seams?: OpenBaoS
             containerId: id,
             port: meta.port,
             image: OPENBAO_IMAGE,
-            seeded: "model-kv" as const,
+            seeded: "model-kv-egress-pki" as const,
+            egress: {
+              mount: "model",
+              pkiMount: "pki",
+              pkiRole: "cogs-egress",
+              credentialHandle: egressHandle,
+            } as const,
           }),
         modelToken: holder(
           () => model,
@@ -171,12 +266,22 @@ export async function startTrustedOpenBao(state: LauncherState, seams?: OpenBaoS
           () => apiKey,
           (v) => (apiKey = v),
         ),
+        egressToken: holder(
+          () => egress,
+          (v) => (egress = v),
+        ),
+        integrationCredential: holder(
+          () => integrationCredential,
+          (v) => (integrationCredential = v),
+        ),
         close: once(async () => {
           try {
             const before = await inspect(exec, name);
             if (!ownedLive(before, id, name, state.stateId, meta.port)) fail();
             await revoke(s.fetch, origin, model);
             model = "";
+            await revoke(s.fetch, origin, egress);
+            egress = "";
             await revoke(s.fetch, origin, root);
             root = "";
             const latest = await inspect(exec, name);
@@ -199,7 +304,9 @@ export async function startTrustedOpenBao(state: LauncherState, seams?: OpenBaoS
     root = "";
     unseal = "";
     model = "";
+    egress = "";
     apiKey = "";
+    integrationCredential = "";
     throw fail();
   }
 }
@@ -427,6 +534,16 @@ function arrStr(v: unknown, k: string) {
 }
 function token(v: unknown) {
   return str((v as { auth?: unknown }).auth, "client_token");
+}
+function certOnly(v: unknown) {
+  const d = (v as { data?: unknown }).data as Record<string, unknown>;
+  if (!d || typeof d !== "object" || Array.isArray(d) || Object.hasOwn(d, "private_key")) fail();
+  if (typeof d.certificate !== "string" || !pemCert.test(d.certificate)) fail();
+  try {
+    if (new X509Certificate(d.certificate).ca !== true) fail();
+  } catch {
+    fail();
+  }
 }
 function holder(get: () => string, set: (v: string) => void): SecretHolder {
   return Object.freeze({
