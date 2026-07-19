@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { type DriverResult, deepFreeze, type LauncherProfile } from "../dev/launcher/contract.ts";
+import { beginWorkerStartup, createApiToken } from "../dev/launcher/control.ts";
 import { createSandbox, destroySandbox, resetSandbox, statusSandbox } from "../dev/launcher/core.ts";
 import type { ProfileAdapter } from "../dev/launcher/profiles.ts";
 import type { LauncherState } from "../dev/launcher/state.ts";
+import { readManifest, resolveLauncherState, writePhase } from "../dev/launcher/state.ts";
 
 const sourceRevision = "2".repeat(40);
 
@@ -53,6 +55,150 @@ test("core create reaches sandbox-ready but never claims worker-ready", async ()
     assert.deepEqual(log, ["create", "verify"]);
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("core destroy preserves worker-ready state for future exact worker cleanup", async () => {
+  const root = await temp();
+  const log: string[] = [];
+  try {
+    const profileAdapter = adapter("linux-kvm", log);
+    await createSandbox({ root, name: "worker", sourceRevision, profile: "linux-kvm", adapter: profileAdapter });
+    const state = await resolveLauncherState({ root, name: "worker", sourceRevision });
+    await writePhase(state, await readManifest(state), "worker-ready");
+    await assert.rejects(() =>
+      destroySandbox({ root, name: "worker", sourceRevision, profile: "linux-kvm", adapter: profileAdapter }),
+    );
+    assert.deepEqual(log, ["create", "verify"]);
+    assert.equal((await readManifest(state)).phase, "worker-ready");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("core reset and destroy preserve pre-spawn worker admission controls", async () => {
+  const root = await temp();
+  const log: string[] = [];
+  try {
+    const profileAdapter = adapter("linux-kvm", log);
+    await createSandbox({ root, name: "starting", sourceRevision, profile: "linux-kvm", adapter: profileAdapter });
+    const state = await resolveLauncherState({ root, name: "starting", sourceRevision });
+    await beginWorkerStartup(
+      state,
+      Object.freeze({
+        randomBytes: Object.freeze(() => Buffer.alloc(32, 8)) as never,
+        identity: Object.freeze(() => `sha256:${"1".repeat(64)}`),
+        parentPid: 123,
+      }),
+    );
+    await assert.rejects(() =>
+      resetSandbox({ root, name: "starting", sourceRevision, profile: "linux-kvm", adapter: profileAdapter }),
+    );
+    await assert.rejects(() =>
+      destroySandbox({ root, name: "starting", sourceRevision, profile: "linux-kvm", adapter: profileAdapter }),
+    );
+    assert.deepEqual(log, ["create", "verify"]);
+    assert.equal((await readManifest(state)).phase, "sandbox-ready");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("core preserves api token and unknown controls before adapter actions", async () => {
+  const root = await temp();
+  const log: string[] = [];
+  try {
+    const profileAdapter = adapter("insecure-container", log);
+    await createSandbox({
+      root,
+      name: "token",
+      sourceRevision,
+      profile: "insecure-container",
+      adapter: profileAdapter,
+    });
+    const state = await resolveLauncherState({ root, name: "token", sourceRevision });
+    await createApiToken(
+      state,
+      Object.freeze({
+        randomBytes: Object.freeze(() => Buffer.alloc(32, 3)) as never,
+        identity: Object.freeze(() => `sha256:${"1".repeat(64)}`),
+      }),
+    );
+    await assert.rejects(() =>
+      destroySandbox({ root, name: "token", sourceRevision, profile: "insecure-container", adapter: profileAdapter }),
+    );
+    await writeFile(join(state.controlDir, "unknown"), "x", { mode: 0o600 });
+    await assert.rejects(() =>
+      resetSandbox({ root, name: "token", sourceRevision, profile: "insecure-container", adapter: profileAdapter }),
+    );
+    assert.deepEqual(log, ["create", "verify"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("core preserves malformed worker controls and uncertain temp before adapter actions", async () => {
+  const root = await temp();
+  const log: string[] = [];
+  try {
+    const profileAdapter = adapter("insecure-container", log);
+    await createSandbox({
+      root,
+      name: "malformed",
+      sourceRevision,
+      profile: "insecure-container",
+      adapter: profileAdapter,
+    });
+    const state = await resolveLauncherState({ root, name: "malformed", sourceRevision });
+    await writeFile(join(state.controlDir, "worker.json"), "not-json\n", { mode: 0o600 });
+    await assert.rejects(() =>
+      statusSandbox({
+        root,
+        name: "malformed",
+        sourceRevision,
+        profile: "insecure-container",
+        adapter: profileAdapter,
+      }),
+    );
+    await assert.rejects(() =>
+      destroySandbox({
+        root,
+        name: "malformed",
+        sourceRevision,
+        profile: "insecure-container",
+        adapter: profileAdapter,
+      }),
+    );
+    assert.deepEqual(log, ["create", "verify"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+
+  const tempRoot = await temp();
+  const tempLog: string[] = [];
+  try {
+    const profileAdapter = adapter("insecure-container", tempLog);
+    await createSandbox({
+      root: tempRoot,
+      name: "temp",
+      sourceRevision,
+      profile: "insecure-container",
+      adapter: profileAdapter,
+    });
+    const state = await resolveLauncherState({ root: tempRoot, name: "temp", sourceRevision });
+    await writeFile(join(state.controlDir, `.worker-${state.stateId}-left.tmp`), "x", { mode: 0o600 });
+    await assert.rejects(() =>
+      resetSandbox({
+        root: tempRoot,
+        name: "temp",
+        sourceRevision,
+        profile: "insecure-container",
+        adapter: profileAdapter,
+      }),
+    );
+    assert.deepEqual(tempLog, ["create", "verify"]);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
   }
 });
 

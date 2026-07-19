@@ -333,7 +333,7 @@ export async function startEnvoyEgress(rawOptions: Options): Promise<EnvoyEgress
 
 export async function cleanupEnvoyBinary(state: LauncherState, binary: EnvoyBinaryDescriptor): Promise<void> {
   try {
-    await validateState(state);
+    await validateState(state, undefined, true);
     await validateBinary(state, binary);
     await requireExactEntries(runtimeDir(state), [".cogs-envoy-owner", "envoy"]);
     await unlink(binary.path);
@@ -742,10 +742,11 @@ function validateLaunch(document: unknown, state: LauncherState, fixturePort: nu
   return launch;
 }
 
-async function validateState(state: LauncherState, profile?: LauncherProfile): Promise<void> {
+async function validateState(state: LauncherState, profile?: LauncherProfile, allowWorkerReady = false): Promise<void> {
   const manifest = await readManifest(state);
+  const phaseOk = manifest.phase === "sandbox-ready" || (allowWorkerReady && manifest.phase === "worker-ready");
   if (
-    manifest.phase !== "sandbox-ready" ||
+    !phaseOk ||
     manifest.sourceRevision !== state.sourceRevision ||
     (profile !== undefined && manifest.profile !== profile)
   ) {

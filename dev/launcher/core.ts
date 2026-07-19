@@ -1,6 +1,7 @@
 import { lstat, realpath } from "node:fs/promises";
 import { dirname } from "node:path";
 import { deepFreeze, type LauncherManifest, type LauncherProfile, normalizeProfile } from "./contract.ts";
+import { requireSessionControlsAbsent } from "./control.ts";
 import { createProfileAdapter, type ProfileAdapter } from "./profiles.ts";
 import {
   createState,
@@ -54,6 +55,7 @@ export async function resetSandbox(options: LauncherCoreOptions, signal?: AbortS
   const state = await stateFrom(captured);
   return await withStateLock(state, async () => {
     const manifest = await requireReady(state, captured.profile, captured.sourceRevision);
+    await requireSessionControlsAbsent(state);
     const adapter = captureAdapter(captured.adapter ?? createProfileAdapter(manifest.profile), manifest.profile);
     try {
       await expectResult(adapter.reset(state, signal), manifest.profile, "reset");
@@ -77,6 +79,7 @@ export async function statusSandbox(options: LauncherCoreOptions, signal?: Abort
   const state = await stateFrom(captured);
   return await withStateLock(state, async () => {
     const manifest = await requireReady(state, captured.profile, captured.sourceRevision);
+    await requireSessionControlsAbsent(state);
     const adapter = captureAdapter(captured.adapter ?? createProfileAdapter(manifest.profile), manifest.profile);
     try {
       await expectResult(adapter.verify(state, signal), manifest.profile, "verify");
@@ -111,6 +114,8 @@ export async function destroySandbox(
       throw error;
     }
     if (manifest.profile !== captured.profile) throw new Error("invalid launcher state");
+    if (manifest.phase === "worker-ready") throw new Error("launcher worker cleanup required");
+    await requireSessionControlsAbsent(state);
     const adapter = captureAdapter(captured.adapter ?? createProfileAdapter(manifest.profile), manifest.profile);
     const destroying = await writePhase(state, manifest, "destroying");
     try {
