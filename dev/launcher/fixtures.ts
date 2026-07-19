@@ -1,6 +1,10 @@
 import { timingSafeEqual } from "node:crypto";
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { Socket } from "node:net";
+
+const ABORTED_GETTER = Object.getOwnPropertyDescriptor(AbortSignal.prototype, "aborted")?.get;
+const EVENT_ADD = EventTarget.prototype.addEventListener;
+const EVENT_REMOVE = EventTarget.prototype.removeEventListener;
 
 export type LocalFixtureSnapshot = Readonly<{
   ready: boolean;
@@ -10,11 +14,12 @@ export type LocalFixtureSnapshot = Readonly<{
   total: number;
   counts: Readonly<Record<string, number>>;
 }>;
+export type FixtureCooperativeOptions = Readonly<{ signal?: AbortSignal; deadlineAt?: number }>;
 export type LocalFixture = Readonly<{
   endpoint(): string;
   snapshot(): LocalFixtureSnapshot;
   reset(): void;
-  close(): Promise<void>;
+  close(options?: FixtureCooperativeOptions): Promise<void>;
 }>;
 
 export async function startLocalFixtures(options: {
@@ -23,8 +28,11 @@ export async function startLocalFixtures(options: {
   maxBytes?: number;
   maxInflight?: number;
   maxRecords?: number;
+  signal?: AbortSignal;
+  deadlineAt?: number;
 }): Promise<LocalFixture> {
   const o = snap(options),
+    cooperative = cooperativeOptions(o, true),
     deadlineMs = int(o.deadlineMs ?? 1000, 50, 10000),
     maxBytes = int(o.maxBytes ?? 16384, 0, 65536),
     maxInflight = int(o.maxInflight ?? 8, 1, 64),
@@ -44,18 +52,17 @@ export async function startLocalFixtures(options: {
     s.setTimeout(deadlineMs, () => s.destroy());
     s.once("close", () => sockets.delete(s));
   });
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      server.off("error", reject);
-      resolve();
-    });
-  }).catch(() => {
+  let port: number;
+  try {
+    await listenServer(server, cooperative, () => destroyOwnedConnections());
+    if (aborted(cooperative)) fail();
+    const a = server.address();
+    port = typeof a === "object" && a ? a.port : 0;
+    if (!Number.isSafeInteger(port) || port < 1) fail();
+  } catch {
+    await closeServer(server, () => destroyOwnedConnections());
     throw fail();
-  });
-  const a = server.address();
-  const port = typeof a === "object" && a ? a.port : 0;
-  if (!Number.isSafeInteger(port) || port < 1) fail();
+  }
   async function handle(req: IncomingMessage, res: ServerResponse) {
     if (closed || inflight >= maxInflight) return reject(req, res, 503);
     const path = String(req.url ?? ""),
@@ -98,31 +105,35 @@ export async function startLocalFixtures(options: {
       total = 0;
       generation++;
     },
-    close: () =>
-      (closePromise ??= (async () => {
-        closed = true;
-        let t: NodeJS.Timeout | undefined;
-        try {
-          const closing = new Promise<void>((r) => server.close(() => r()));
-          await new Promise((r) => setTimeout(r, 25));
-          for (const s of sockets) s.destroy();
-          await Promise.race([
-            closing,
-            new Promise((_, rej) => {
-              t = setTimeout(() => rej(fail()), 500);
-            }),
-          ]);
-          await new Promise((r) => setTimeout(r, 10));
-          if (inflight !== 0 || sockets.size !== 0) fail();
-          await closedPort(port);
-        } finally {
-          if (t) clearTimeout(t);
-          credential = "";
-          for (const k of Object.keys(counts)) delete counts[k];
-          total = 0;
-        }
-      })()),
+    close: (options) => {
+      const closeOptions = cooperativeOptions(options ?? {}, false);
+      if (closePromise === undefined) {
+        closePromise = (async () => {
+          closed = true;
+          const cleanupAbort = watchAbort(closeOptions, destroyOwnedConnections);
+          const deadlineTimer = armDeadline(closeOptions, destroyOwnedConnections);
+          try {
+            await closeServer(server, destroyOwnedConnections);
+            destroyOwnedConnections();
+            await new Promise((r) => setTimeout(r, 0));
+            if (server.listening || inflight !== 0 || sockets.size !== 0) fail();
+            await closedPort(port);
+          } finally {
+            cleanupAbort();
+            deadlineTimer();
+            credential = "";
+            for (const k of Object.keys(counts)) delete counts[k];
+            total = 0;
+          }
+        })();
+      }
+      return closePromise;
+    },
   });
+  function destroyOwnedConnections(): void {
+    for (const s of sockets) s.destroy();
+    server.closeAllConnections?.();
+  }
 }
 async function drainBody(req: IncomingMessage, max: number, deadline: number) {
   let total = 0,
@@ -182,11 +193,16 @@ function snap(v: {
   maxBytes?: number;
   maxInflight?: number;
   maxRecords?: number;
+  signal?: AbortSignal;
+  deadlineAt?: number;
 }) {
   if (!v || typeof v !== "object" || Array.isArray(v) || Object.getPrototypeOf(v) !== Object.prototype) fail();
   const d = Object.getOwnPropertyDescriptors(v);
   for (const k of Reflect.ownKeys(d)) {
-    if (typeof k !== "string" || !["credential", "deadlineMs", "maxBytes", "maxInflight", "maxRecords"].includes(k))
+    if (
+      typeof k !== "string" ||
+      !["credential", "deadlineMs", "maxBytes", "maxInflight", "maxRecords", "signal", "deadlineAt"].includes(k)
+    )
       fail();
     const x = d[k];
     if (!x || !("value" in x) || x.enumerable !== true) fail();
@@ -200,6 +216,99 @@ function text(v: unknown, max: number) {
 function int(v: number, min: number, max: number) {
   if (!Number.isSafeInteger(v) || v < min || v > max) fail();
   return v;
+}
+function cooperativeOptions(value: unknown, startOptions: boolean): FixtureCooperativeOptions {
+  if (!value || typeof value !== "object" || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype)
+    fail();
+  const d = Object.getOwnPropertyDescriptors(value);
+  const out: { signal?: AbortSignal; deadlineAt?: number } = {};
+  const allowed = startOptions
+    ? ["credential", "deadlineMs", "maxBytes", "maxInflight", "maxRecords", "signal", "deadlineAt"]
+    : ["signal", "deadlineAt"];
+  for (const key of Reflect.ownKeys(d)) {
+    if (typeof key !== "string" || !allowed.includes(key)) fail();
+    const item = d[key];
+    if (!item || !("value" in item) || item.enumerable !== true) fail();
+    if (key === "signal") {
+      if (!(item.value instanceof AbortSignal)) fail();
+      out.signal = item.value;
+    } else if (key === "deadlineAt") {
+      if (!Number.isSafeInteger(item.value) || item.value > Date.now() + 10_000) fail();
+      out.deadlineAt = item.value;
+    }
+  }
+  return Object.freeze(out);
+}
+function aborted(options: FixtureCooperativeOptions): boolean {
+  const signalAborted =
+    options.signal !== undefined &&
+    (ABORTED_GETTER === undefined ? false : ABORTED_GETTER.call(options.signal) === true);
+  return signalAborted || (options.deadlineAt !== undefined && Date.now() >= options.deadlineAt);
+}
+function watchAbort(options: FixtureCooperativeOptions, callback: () => void): () => void {
+  if (options.signal === undefined) return () => undefined;
+  EVENT_ADD.call(options.signal, "abort", callback, { once: true });
+  return () => EVENT_REMOVE.call(options.signal as AbortSignal, "abort", callback);
+}
+function armDeadline(options: FixtureCooperativeOptions, callback: () => void): () => void {
+  if (options.deadlineAt === undefined) return () => undefined;
+  const timer = setTimeout(callback, Math.max(0, options.deadlineAt - Date.now()));
+  timer.unref?.();
+  return () => clearTimeout(timer);
+}
+async function listenServer(
+  server: Server,
+  options: FixtureCooperativeOptions,
+  destroyOwned: () => void,
+): Promise<void> {
+  if (aborted(options)) fail();
+  await new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const done = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      if (error) reject(error);
+      else resolve();
+    };
+    let cancelRequested = false;
+    const closeBeforeReject = () => {
+      destroyOwned();
+      server.close((error) => {
+        if (error && (error as NodeJS.ErrnoException).code !== "ERR_SERVER_NOT_RUNNING") done(error);
+        else done(new Error("launcher fixture failed"));
+      });
+    };
+    const onAbort = () => {
+      cancelRequested = true;
+      destroyOwned();
+      if (server.listening) closeBeforeReject();
+    };
+    const onError = (error: Error) => done(error);
+    const timer =
+      options.deadlineAt === undefined ? undefined : setTimeout(onAbort, Math.max(0, options.deadlineAt - Date.now()));
+    timer?.unref?.();
+    const cleanup = () => {
+      server.off("error", onError);
+      if (options.signal !== undefined) EVENT_REMOVE.call(options.signal, "abort", onAbort);
+      if (timer) clearTimeout(timer);
+    };
+    if (options.signal !== undefined) EVENT_ADD.call(options.signal, "abort", onAbort, { once: true });
+    server.once("error", onError);
+    server.listen(0, "127.0.0.1", () => {
+      if (cancelRequested || aborted(options)) closeBeforeReject();
+      else done();
+    });
+  });
+}
+async function closeServer(server: Server, destroyOwned: () => void): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    server.close((error) => {
+      if (error && (error as NodeJS.ErrnoException).code !== "ERR_SERVER_NOT_RUNNING") reject(error);
+      else resolve();
+    });
+    destroyOwned();
+  }).catch(() => fail());
 }
 async function closedPort(port: number) {
   await new Promise<void>((res, rej) => {
