@@ -1,5 +1,13 @@
 import { createServer, Socket } from "node:net";
 
+export type KvmRelayOptions = Readonly<{ signal?: AbortSignal; deadlineAt?: number }>;
+
+const abortSignalAborted = Object.getOwnPropertyDescriptor(AbortSignal.prototype, "aborted")?.get as
+  | ((this: AbortSignal) => boolean)
+  | undefined;
+const eventAdd = EventTarget.prototype.addEventListener;
+const eventRemove = EventTarget.prototype.removeEventListener;
+
 export type KvmRelaySnapshot = Readonly<{
   profile: "linux-kvm" | "loopback-functional";
   bindHost: "192.0.2.1" | "127.0.0.1";
@@ -58,36 +66,50 @@ export class KvmRelay {
     return new KvmRelay("loopback-functional", "127.0.0.1", port, maxActiveSockets);
   }
 
-  async start(): Promise<void> {
+  async start(options?: KvmRelayOptions): Promise<void> {
     try {
+      const cooperative = cooperativeOptions(options);
+      checkCooperative(cooperative);
       if (this.#started || this.#closed || this.#poisoned) fail();
-      await bound(
-        new Promise<void>((resolve, reject) => {
+      let cancelled = false;
+      let settleClosed: (() => void) | undefined;
+      const relay = () => {
+        cancelled = true;
+        this.#closed = true;
+        if (this.#server.listening) this.#server.close(() => settleClosed?.());
+      };
+      const timer = setTimeout(relay, remainingMs(cooperative, 2000));
+      if (cooperative.signal) eventAdd.call(cooperative.signal, "abort", relay, { once: true });
+      try {
+        await new Promise<void>((resolve, reject) => {
+          settleClosed = resolve;
           const onError = () => reject(fail());
           this.#server.once("error", onError);
           this.#server.listen({ host: this.#host, port: this.#requestedPort }, () => {
             this.#server.off("error", onError);
-            if (this.#closed || this.#poisoned) {
-              this.#server.close(() => undefined);
-              reject(fail());
-              return;
-            }
             const a = this.#server.address();
             const port = typeof a === "object" && a ? a.port : 0;
             if (!Number.isInteger(port) || port < 1 || port > 65535) reject(fail());
+            else if (cancelled || this.#closed) this.#server.close(() => resolve());
             else {
               this.#port = port;
               this.#started = true;
               resolve();
             }
           });
-        }),
-        2000,
-      );
+        });
+      } finally {
+        clearTimeout(timer);
+        if (cooperative.signal) eventRemove.call(cooperative.signal, "abort", relay);
+      }
+      if (cancelled || aborted(cooperative.signal) || this.#closed || this.#poisoned) {
+        await this.closeServer();
+        throw fail();
+      }
     } catch {
       this.#closed = true;
       this.poison();
-      await this.closeServer().catch(() => undefined);
+      await this.closeServer();
       throw fail();
     }
   }
@@ -103,12 +125,15 @@ export class KvmRelay {
     }
   }
 
-  async switchTo(port: number): Promise<void> {
+  async switchTo(port: number, options?: KvmRelayOptions): Promise<void> {
     try {
+      const cooperative = cooperativeOptions(options);
+      checkCooperative(cooperative);
       this.open();
       const target = validPort(port);
       if (!this.#registered.has(target)) fail();
       await this.destroyAll();
+      checkCooperative(cooperative);
       if (this.#target !== target && !this.count("switched")) fail();
       this.#target = target;
       if (!this.advanceGeneration()) fail();
@@ -146,7 +171,8 @@ export class KvmRelay {
     });
   }
 
-  close(): Promise<void> {
+  close(options?: KvmRelayOptions): Promise<void> {
+    cooperativeOptions(options);
     if (!this.#closePromise)
       this.#closePromise = this.closeInner().catch(() => {
         throw fail();
@@ -247,7 +273,8 @@ export class KvmRelay {
     if (this.#sockets.size !== 0) fail();
   }
   private async closeServer(): Promise<void> {
-    await bound(new Promise<void>((resolve) => this.#server.close(() => resolve())), 2000);
+    if (!this.#server.listening) return;
+    await new Promise<void>((resolve) => this.#server.close(() => resolve()));
   }
 }
 
@@ -262,27 +289,61 @@ function validPort(port: number): number {
   if (!Number.isInteger(port) || port < 1 || port > 65535) fail();
   return port;
 }
-async function bound<T>(p: Promise<T>, ms: number): Promise<T> {
-  let t: NodeJS.Timeout | undefined;
+async function closedPort(host: string, port: number): Promise<void> {
+  let timer: NodeJS.Timeout | undefined;
+  const s = new Socket();
   try {
-    return await Promise.race([p, new Promise<never>((_, reject) => (t = setTimeout(() => reject(fail()), ms)))]);
+    await new Promise<void>((resolve, reject) => {
+      const done = (ok: boolean) => {
+        if (timer) clearTimeout(timer);
+        s.destroy();
+        ok ? resolve() : reject(fail());
+      };
+      timer = setTimeout(() => done(false), 500);
+      s.once("connect", () => done(false));
+      s.once("error", () => done(true));
+      s.connect(port, host);
+    });
   } finally {
-    if (t) clearTimeout(t);
+    if (timer) clearTimeout(timer);
+    s.destroy();
   }
 }
-async function closedPort(host: string, port: number): Promise<void> {
-  await bound(
-    new Promise<void>((resolve, reject) => {
-      const s = new Socket();
-      s.once("connect", () => {
-        s.destroy();
-        reject(fail());
-      });
-      s.once("error", () => resolve());
-      s.connect(port, host);
-    }),
-    500,
-  );
+
+function cooperativeOptions(options?: KvmRelayOptions): KvmRelayOptions {
+  if (options === undefined) return Object.freeze({});
+  if (!options || typeof options !== "object" || Object.getPrototypeOf(options) !== Object.prototype) fail();
+  const descriptors = Object.getOwnPropertyDescriptors(options);
+  const keys = Reflect.ownKeys(descriptors);
+  if (keys.some((key) => typeof key !== "string" || !["deadlineAt", "signal"].includes(key))) fail();
+  for (const descriptor of Object.values(descriptors)) {
+    if (!descriptor.enumerable || !Object.hasOwn(descriptor, "value")) fail();
+  }
+  const signal = descriptors.signal?.value;
+  const deadlineAt = descriptors.deadlineAt?.value;
+  if (signal !== undefined && !(signal instanceof AbortSignal)) fail();
+  if (deadlineAt !== undefined && (!Number.isSafeInteger(deadlineAt) || deadlineAt > Date.now() + 60_000)) fail();
+  return Object.freeze({
+    ...(signal === undefined ? {} : { signal }),
+    ...(deadlineAt === undefined ? {} : { deadlineAt }),
+  });
+}
+
+function checkCooperative(options: KvmRelayOptions): void {
+  if (aborted(options.signal) || (options.deadlineAt !== undefined && Date.now() >= options.deadlineAt)) fail();
+}
+function remainingMs(options: KvmRelayOptions, cap: number): number {
+  const remaining = options.deadlineAt === undefined ? cap : Math.min(cap, options.deadlineAt - Date.now());
+  if (!Number.isSafeInteger(remaining) || remaining < 1) fail();
+  return remaining;
+}
+function aborted(signal: AbortSignal | undefined): boolean {
+  if (!signal) return false;
+  try {
+    return abortSignalAborted?.call(signal) === true;
+  } catch {
+    return true;
+  }
 }
 function fail(): never {
   throw new Error("launcher relay failed");

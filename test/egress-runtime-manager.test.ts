@@ -132,6 +132,32 @@ test("hostile ready getter is generic, sticky, and cleans during startup gate", 
   assert.ok(fixture.events.includes("wal.close"));
 });
 
+test("runtime manager uses intrinsic signal state during start capture", async () => {
+  const hostile = fixtureRuntime();
+  const controller = new AbortController();
+  let invoked = false;
+  Object.defineProperty(controller.signal, "aborted", {
+    configurable: true,
+    enumerable: true,
+    get: () => {
+      invoked = true;
+      return false;
+    },
+  });
+  await assert.rejects(
+    startCogsEgressRuntimeManager(hostile.options({ signal: controller.signal, walPath: "/tmp/../tmp/wal" })),
+    generic,
+  );
+  assert.equal(invoked, false);
+  assert.equal(hostile.openWalCalls, 0);
+
+  const preaborted = fixtureRuntime();
+  const preController = new AbortController();
+  preController.abort();
+  await assert.rejects(startCogsEgressRuntimeManager(preaborted.options({ signal: preController.signal })), generic);
+  assert.equal(preaborted.openWalCalls, 0);
+});
+
 test("canonical path and invalid injected port fail before side effects", async () => {
   const fixture = fixtureRuntime();
   await assert.rejects(startCogsEgressRuntimeManager(fixture.options({ walPath: "/tmp/../tmp/wal" })), generic);
@@ -281,6 +307,92 @@ test("openbao revocation during process startup is never ready and fully cleaned
   assert.ok(fixture.events.includes("wal.close"));
 });
 
+test("close timeout aborts work but waits for settlement before rejecting and remains idempotent", async () => {
+  const fixture = fixtureRuntime();
+  let settleProcess!: () => void;
+  const manager = await startCogsEgressRuntimeManager(
+    fixture.options({
+      envoyProcess: {
+        start: async () =>
+          Object.freeze({
+            ready: true,
+            close: async () => {
+              fixture.events.push("process.close.start");
+              await new Promise<void>((resolve) => {
+                settleProcess = resolve;
+              });
+              fixture.events.push("process.close.done");
+            },
+          }),
+      } as never,
+    }),
+  );
+  const closed = manager.close();
+  assert.equal(manager.close(), closed);
+  fixture.timers.tick(50);
+  await flush();
+  assert.equal(fixture.events.includes("wal.close"), false);
+  settleProcess();
+  await assert.rejects(closed, generic);
+  assert.ok(fixture.events.includes("process.close.done"));
+  assert.ok(fixture.events.includes("wal.close"));
+});
+
+test("runtime close option accessors are rejected without invocation", async () => {
+  const fixture = fixtureRuntime();
+  const manager = await startCogsEgressRuntimeManager(fixture.options());
+  let invoked = false;
+  assert.throws(
+    () =>
+      manager.close(
+        Object.defineProperty({}, "deadlineAt", {
+          enumerable: true,
+          get: () => {
+            invoked = true;
+            return Date.now();
+          },
+        }) as never,
+      ),
+    CogsEgressRuntimeManagerError,
+  );
+  assert.equal(invoked, false);
+  await manager.close();
+});
+
+test("pre-aborted and expired close options still run exact cleanup once", async () => {
+  for (const mode of ["preabort", "expired"] as const) {
+    const fixture = fixtureRuntime();
+    const manager = await startCogsEgressRuntimeManager(fixture.options());
+    const controller = new AbortController();
+    if (mode === "preabort") controller.abort();
+    const first = manager.close(mode === "preabort" ? { signal: controller.signal } : { deadlineAt: Date.now() - 1 });
+    assert.equal(manager.close(), first);
+    await first;
+    assert.deepEqual(
+      fixture.events.filter((event) => event !== "process.start"),
+      ["authz.close", "process.close", "wal.close"],
+    );
+  }
+});
+
+test("close parent abort waits for active close settlement and continues independent cleanup", async () => {
+  const fixture = fixtureRuntime({ authzCloseWaits: true });
+  const manager = await startCogsEgressRuntimeManager(fixture.options());
+  const controller = new AbortController();
+  const first = manager.close({ signal: controller.signal, deadlineAt: Date.now() + 5000 });
+  await flush();
+  assert.ok(fixture.events.includes("authz.close"));
+  controller.abort();
+  await flush();
+  assert.equal(fixture.events.includes("process.close"), false);
+  fixture.settleAuthzClose?.();
+  await first;
+  await flush();
+  assert.equal(manager.close(), first);
+  assert.ok(fixture.events.includes("process.close"));
+  assert.ok(fixture.events.includes("wal.close"));
+});
+
 test("startup failures clean already-owned resources and stay generic", async () => {
   for (const [flag, expected] of [
     ["openWalFails", []],
@@ -316,6 +428,7 @@ function fixtureRuntime(
     processStartupRevokes?: boolean;
     abortDuringCredential?: boolean;
     malformedBinding?: boolean;
+    authzCloseWaits?: boolean;
   } = {},
 ) {
   const timers = new ManualTimers();
@@ -332,6 +445,7 @@ function fixtureRuntime(
   let releaseScope: (() => void) | undefined;
   let rejectScope: ((error: Error) => void) | undefined;
   let records: readonly EgressAuditWalRecord[] = [];
+  let settleAuthzClose: (() => void) | undefined;
   const wal: EgressAuditWal = {
     get ready() {
       return true;
@@ -415,6 +529,7 @@ function fixtureRuntime(
         async close() {
           events.push("authz.close");
           authzCloseAttempts++;
+          if (flags.authzCloseWaits) await new Promise<void>((resolve) => (settleAuthzClose = resolve));
           if (flags.authzCloseFailsOnce && authzCloseAttempts === 1) throw new Error(raw);
         },
       }) as CogsExtAuthzServer;
@@ -549,6 +664,9 @@ function fixtureRuntime(
     },
     get authzOptions() {
       return authzOptions;
+    },
+    get settleAuthzClose() {
+      return settleAuthzClose;
     },
     get openWalCalls() {
       return openWalCalls;

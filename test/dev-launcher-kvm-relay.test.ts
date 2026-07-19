@@ -126,6 +126,62 @@ test("relay enforces target and active socket bounds", async () => {
   }
 });
 
+test("relay cooperative preabort and abort during start leave no listener", async () => {
+  const pre = createLoopbackFunctionalRelay();
+  const preController = new AbortController();
+  preController.abort();
+  await assert.rejects(() => pre.start({ signal: preController.signal }), /launcher relay failed/);
+  assert.equal(pre.snapshot().closed, true);
+
+  const r = createLoopbackFunctionalRelay();
+  const controller = new AbortController();
+  const starting = r.start({ signal: controller.signal });
+  controller.abort();
+  await assert.rejects(starting, /launcher relay failed/);
+  const port = r.snapshot().bindPort;
+  assert.equal(r.snapshot().closed, true);
+  if (port > 0) await assert.rejects(() => socketTo(port));
+});
+
+test("relay close is idempotent under raw sockets and expired deadline still cleans", async () => {
+  const upstream = await echoServer();
+  const r = createLoopbackFunctionalRelay();
+  await r.start();
+  try {
+    r.registerTarget(upstream.port);
+    await r.switchTo(upstream.port);
+    const raw = await socketTo(r.snapshot().bindPort);
+    const first = r.close({ deadlineAt: Date.now() - 1 });
+    assert.equal(r.close(), first);
+    await first;
+    assert.equal(raw.destroyed, true);
+    assert.equal(r.snapshot().activeSockets, 0);
+    await assert.rejects(() => socketTo(r.snapshot().bindPort));
+  } finally {
+    await upstream.close();
+  }
+});
+
+test("relay rejects hostile cooperative option bags without getters", async () => {
+  const r = createLoopbackFunctionalRelay();
+  let invoked = false;
+  assert.throws(
+    () =>
+      r.close(
+        Object.defineProperty({}, "deadlineAt", {
+          enumerable: true,
+          get: () => {
+            invoked = true;
+            return Date.now();
+          },
+        }) as never,
+      ),
+    /launcher relay failed/,
+  );
+  assert.equal(invoked, false);
+  await r.close();
+});
+
 test("target connect failure poisons and close remains idempotent", async () => {
   const r = createLoopbackFunctionalRelay();
   await r.start();
