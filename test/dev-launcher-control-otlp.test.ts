@@ -852,11 +852,12 @@ test("otlp fixture rejects duplicate critical raw headers", async () => {
       socket.connect(fixture.snapshot().port, "127.0.0.1", resolve);
     });
     socket.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+    const closed = new Promise((resolve) => socket.once("close", resolve));
     const body = validTrace();
     socket.end(
       `POST /v1/traces HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`,
     );
-    await new Promise((resolve) => socket.once("close", resolve));
+    await closed;
     assert.match(Buffer.concat(chunks).toString("utf8"), / 400 /u);
     assert.equal(fixture.snapshot().traces, 0);
   } finally {

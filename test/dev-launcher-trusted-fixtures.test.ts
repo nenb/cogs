@@ -564,8 +564,9 @@ test("local fixtures reject credential malformed oversize duplicate headers and 
       getSock.connect(f.snapshot().port, "127.0.0.1", resolve).once("error", reject),
     );
     getSock.on("data", (c) => getChunks.push(Buffer.from(c)));
+    const getSockClosed = new Promise((resolve) => getSock.once("close", resolve));
     getSock.end("GET /allowed HTTP/1.1\r\nHost: 127.0.0.1\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n");
-    await new Promise((resolve) => getSock.once("close", resolve));
+    await getSockClosed;
     assert.match(Buffer.concat(getChunks).toString("utf8"), / 400 /u);
     const sock = new Socket();
     const chunks: Buffer[] = [];
@@ -573,11 +574,12 @@ test("local fixtures reject credential malformed oversize duplicate headers and 
       sock.connect(f.snapshot().port, "127.0.0.1", resolve).once("error", reject),
     );
     sock.on("data", (c) => chunks.push(Buffer.from(c)));
+    const sockClosed = new Promise((resolve) => sock.once("close", resolve));
     const body = "{}";
     sock.end(
       `POST /allowed HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`,
     );
-    await new Promise((resolve) => sock.once("close", resolve));
+    await sockClosed;
     assert.match(Buffer.concat(chunks).toString("utf8"), / 400 /u);
   } finally {
     await f.close();
