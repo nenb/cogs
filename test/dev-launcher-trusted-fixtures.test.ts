@@ -7,7 +7,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { startLocalFixtures } from "../dev/launcher/fixtures.ts";
-import { OPENBAO_IMAGE, type OpenBaoSeams, startTrustedOpenBao } from "../dev/launcher/openbao.ts";
+import {
+  OPENBAO_IMAGE,
+  type OpenBaoSeams,
+  startTrustedOpenBao,
+  startTrustedOpenBaoCooperative,
+} from "../dev/launcher/openbao.ts";
 import { createState, readManifest, resolveLauncherState, writePhase } from "../dev/launcher/state.ts";
 
 const sourceRevision = "a".repeat(40);
@@ -264,6 +269,251 @@ test("openbao rejects non-frozen seams and redacts secrets from errors", async (
         return true;
       },
     );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("openbao cooperative preabort avoids docker and option bags are strict", async () => {
+  const { dir, state: s } = await state();
+  const events: string[] = [];
+  try {
+    const controller = new AbortController();
+    controller.abort();
+    await assert.rejects(
+      () => startTrustedOpenBaoCooperative(s, { signal: controller.signal }, openBaoSeams(events)),
+      /launcher openbao failed/,
+    );
+    assert.equal(events.length, 0);
+    await assert.rejects(() => startTrustedOpenBaoCooperative(s, { deadlineAt: Date.now() }, openBaoSeams(events)));
+    let invoked = false;
+    await assert.rejects(() =>
+      startTrustedOpenBaoCooperative(
+        s,
+        Object.defineProperty({}, "signal", {
+          get: () => {
+            invoked = true;
+            return controller.signal;
+          },
+          enumerable: true,
+        }) as never,
+        openBaoSeams(events),
+      ),
+    );
+    assert.equal(invoked, false);
+    await assert.rejects(() => startTrustedOpenBaoCooperative(s, Object.assign(Object.create(null), {}) as never));
+    await assert.rejects(() => startTrustedOpenBaoCooperative(s, { [Symbol()]: true } as never));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("openbao abort after run removes exact owned container before rejecting", async () => {
+  const { dir, state: s } = await state();
+  const controller = new AbortController();
+  const events: string[] = [];
+  const base = openBaoSeams(events);
+  const seams = Object.freeze({
+    ...base,
+    docker: Object.freeze(async (args: readonly string[], options?: { signal?: AbortSignal }) => {
+      const result = await base.docker?.(args, options);
+      if (args[1] === "run") queueMicrotask(() => controller.abort());
+      return result ?? { status: 1, stdout: "" };
+    }),
+  }) as OpenBaoSeams;
+  try {
+    await assert.rejects(
+      () => startTrustedOpenBaoCooperative(s, { signal: controller.signal }, seams),
+      /launcher openbao failed/,
+    );
+    assert.ok(events.some((e) => e.includes("docker rm -f")));
+    assert.equal(JSON.stringify(events).includes("Token123"), false);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("openbao cooperative close is same promise, wipes secrets, and rejects hostile close options", async () => {
+  const { dir, state: s } = await state();
+  const events: string[] = [];
+  try {
+    const bao = await startTrustedOpenBaoCooperative(s, {}, openBaoSeams(events));
+    assert.throws(() => bao.close({ signal: {} as AbortSignal }));
+    assert.throws(() =>
+      bao.close(Object.defineProperty({}, "deadlineAt", { get: () => Date.now(), enumerable: true }) as never),
+    );
+    const close = bao.close({ deadlineAt: Date.now() + 5000 });
+    assert.equal(bao.close(), close);
+    await close;
+    assert.throws(() => bao.modelToken.withSecret(() => undefined));
+    assert.throws(() => bao.egressToken.withSecret(() => undefined));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("openbao expired deadline after run rolls back exactly once with fresh cleanup", async () => {
+  const { dir, state: s } = await state();
+  const events: string[] = [];
+  const base = openBaoSeams(events);
+  const seams = Object.freeze({
+    ...base,
+    docker: Object.freeze(async (args: readonly string[], options?: { signal?: AbortSignal; deadlineAt?: number }) => {
+      const result = await base.docker?.(args, options);
+      if (args[1] === "run") await new Promise((resolve) => setTimeout(resolve, 120));
+      return result ?? { status: 1, stdout: "" };
+    }),
+  }) as OpenBaoSeams;
+  try {
+    await assert.rejects(
+      () => startTrustedOpenBaoCooperative(s, { deadlineAt: Date.now() + 100 }, seams),
+      /launcher openbao failed/,
+    );
+    assert.equal(events.filter((e) => e.includes("docker rm -f")).length, 1);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("openbao rollback cleanup failures dominate generically", async () => {
+  for (const mode of ["inspect", "rm", "inventory"] as const) {
+    const { dir, state: s } = await state();
+    const events: string[] = [];
+    const base = openBaoSeams(events);
+    const seams = Object.freeze({
+      ...base,
+      docker: Object.freeze(
+        async (args: readonly string[], options?: { signal?: AbortSignal; deadlineAt?: number }) => {
+          if (mode === "inspect" && args[1] === "inspect") return { status: 1, stdout: "" };
+          if (mode === "rm" && args[1] === "rm") return { status: 1, stdout: "" };
+          if (mode === "inventory" && args[1] === "ps" && events.some((e) => e.includes("docker rm -f")))
+            return { status: 0, stdout: `${"a".repeat(64)}\n` };
+          const result = await base.docker?.(args, options);
+          if (args[1] === "run") queueMicrotask(() => controller.abort());
+          return result ?? { status: 1, stdout: "" };
+        },
+      ),
+    }) as OpenBaoSeams;
+    const controller = new AbortController();
+    try {
+      await assert.rejects(
+        () => startTrustedOpenBaoCooperative(s, { signal: controller.signal }, seams),
+        /launcher openbao failed/,
+      );
+      assert.equal(String(events).includes("Token123"), false);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+});
+
+test("openbao revoke failures are redacted while exact removal and secret wiping complete", async () => {
+  const { dir, state: s } = await state();
+  const events: string[] = [];
+  const base = openBaoSeams(events);
+  const seams = Object.freeze({
+    ...base,
+    fetch: Object.freeze(async (url: string | URL | Request, init?: RequestInit) => {
+      const u = new URL(String(url));
+      if (u.pathname === "/v1/auth/token/revoke-self") return json({ failed: true }, 500);
+      return (base.fetch as typeof fetch)(url, init);
+    }) as typeof fetch,
+  }) as OpenBaoSeams;
+  try {
+    const bao = await startTrustedOpenBaoCooperative(s, {}, seams);
+    await bao.close();
+    assert.ok(events.some((e) => e.includes("docker rm -f")));
+    assert.throws(() => bao.modelToken.withSecret(() => undefined));
+    assert.throws(() => bao.egressToken.withSecret(() => undefined));
+    assert.equal(JSON.stringify(events).includes("Token123"), false);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("openbao cooperative docker and fetch receive cancellation authority", async () => {
+  const first = await state();
+  try {
+    const controller = new AbortController();
+    let observedDockerAbort = false;
+    const seams = Object.freeze({
+      docker: Object.freeze(
+        (_args: readonly string[], options?: { signal?: AbortSignal }) =>
+          new Promise<{ status: number; stdout: string }>((_resolve, reject) => {
+            options?.signal?.addEventListener("abort", () => {
+              observedDockerAbort = true;
+              reject(new Error("aborted"));
+            });
+            queueMicrotask(() => controller.abort());
+          }),
+      ),
+      fetch: openBaoSeams().fetch,
+      randomBytes: openBaoSeams().randomBytes,
+    }) as OpenBaoSeams;
+    const started = startTrustedOpenBaoCooperative(first.state, { signal: controller.signal }, seams);
+    await assert.rejects(started, /launcher openbao failed/);
+    assert.equal(observedDockerAbort, true);
+  } finally {
+    await rm(first.dir, { recursive: true, force: true });
+  }
+
+  const second = await state();
+  try {
+    const controller = new AbortController();
+    const events: string[] = [];
+    const base = openBaoSeams(events);
+    let observedFetchAbort = false;
+    const seams = Object.freeze({
+      ...base,
+      fetch: Object.freeze((url: string | URL | Request, init?: RequestInit) => {
+        const u = new URL(String(url));
+        if (u.pathname === "/v1/sys/health") {
+          queueMicrotask(() => controller.abort());
+          return new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener("abort", () => {
+              observedFetchAbort = true;
+              reject(new Error("aborted"));
+            });
+          });
+        }
+        return (base.fetch as typeof fetch)(url, init);
+      }) as typeof fetch,
+    }) as OpenBaoSeams;
+    await assert.rejects(
+      () => startTrustedOpenBaoCooperative(second.state, { signal: controller.signal }, seams),
+      /launcher openbao failed/,
+    );
+    assert.equal(observedFetchAbort, true);
+    assert.ok(events.some((e) => e.includes("docker rm -f")));
+  } finally {
+    await rm(second.dir, { recursive: true, force: true });
+  }
+});
+
+test("openbao docker seams receive cooperative signal and deadline", async () => {
+  const { dir, state: s } = await state();
+  const events: string[] = [];
+  const base = openBaoSeams(events);
+  const controller = new AbortController();
+  let sawSignal = false,
+    sawDeadline = false;
+  const seams = Object.freeze({
+    ...base,
+    docker: Object.freeze(async (args: readonly string[], options?: { signal?: AbortSignal; deadlineAt?: number }) => {
+      sawSignal ||= options?.signal === controller.signal;
+      sawDeadline ||= typeof options?.deadlineAt === "number";
+      return (await base.docker?.(args, options)) ?? { status: 1, stdout: "" };
+    }),
+  }) as OpenBaoSeams;
+  try {
+    const bao = await startTrustedOpenBaoCooperative(
+      s,
+      { signal: controller.signal, deadlineAt: Date.now() + 5000 },
+      seams,
+    );
+    await bao.close();
+    assert.equal(sawSignal, true);
+    assert.equal(sawDeadline, true);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
