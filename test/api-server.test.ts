@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { request as httpRequest, ServerResponse } from "node:http";
 import { createRequire } from "node:module";
-import { connect as netConnect } from "node:net";
+import { createServer as createNetServer, connect as netConnect } from "node:net";
 import { resolve } from "node:path";
 import test from "node:test";
 import type { Ajv as AjvCore } from "ajv";
@@ -1246,3 +1246,184 @@ test("state and readiness follow lifecycle without cross-session data", async ()
     assert.doesNotMatch(stateBody, /worker-secret-0123456789abcdefghi|other-session|raw_export/);
   });
 });
+
+test("cooperative listen handles pre-abort without exposing a listener", async () => {
+  const reserved = await reserveLoopbackPort();
+  const life = lifecycle();
+  const p = ports();
+  const api = createApiServer({
+    lifecycle: life as never,
+    session: p.session,
+    history: p.history,
+    exporter: p.exporter,
+    bearerToken: "worker-secret-0123456789abcdefghi",
+    sessionId: "session-1",
+  });
+  const controller = new AbortController();
+  controller.abort();
+  await assert.rejects(api.listen(reserved, "127.0.0.1", { signal: controller.signal }));
+  await assertCanBind(reserved);
+});
+
+test("cooperative listen abort and close during pending bind prove no later listener", async () => {
+  const abortPort = await reserveLoopbackPort();
+  const life = lifecycle();
+  const p = ports();
+  const aborted = createApiServer({
+    lifecycle: life as never,
+    session: p.session,
+    history: p.history,
+    exporter: p.exporter,
+    bearerToken: "worker-secret-0123456789abcdefghi",
+    sessionId: "session-1",
+  });
+  const controller = new AbortController();
+  const abortedListen = aborted.listen(abortPort, "127.0.0.1", { signal: controller.signal });
+  controller.abort();
+  await assert.rejects(abortedListen);
+  await assertCanBind(abortPort);
+
+  const closePort = await reserveLoopbackPort();
+  const closing = createApiServer({
+    lifecycle: life as never,
+    session: p.session,
+    history: p.history,
+    exporter: p.exporter,
+    bearerToken: "worker-secret-0123456789abcdefghi",
+    sessionId: "session-2",
+  });
+  const pendingListen = closing.listen(closePort);
+  const pendingClose = closing.close();
+  await assert.rejects(pendingListen);
+  await pendingClose;
+  await assertCanBind(closePort);
+});
+
+test("cooperative close is idempotent, closes SSE and raw sockets, and rejects later listen", async () => {
+  const life = lifecycle();
+  const p = ports();
+  const api = createApiServer({
+    lifecycle: life as never,
+    session: p.session,
+    history: p.history,
+    exporter: p.exporter,
+    bearerToken: "worker-secret-0123456789abcdefghi",
+    sessionId: "session-1",
+  });
+  const { port } = await api.listen();
+  const base = `http://127.0.0.1:${port}`;
+  const events = fetch(`${base}/v1/events`, {
+    headers: { authorization: "Bearer worker-secret-0123456789abcdefghi" },
+  }).catch(() => undefined);
+  const raw = netConnect({ host: "127.0.0.1", port });
+  await new Promise<void>((resolve, reject) => {
+    raw.once("connect", resolve);
+    raw.once("error", reject);
+  });
+  const closedRaw = new Promise<void>((resolve) => raw.once("close", () => resolve()));
+  const close1 = api.close();
+  const close2 = api.close();
+  assert.equal(close1, close2);
+  await close1;
+  await closedRaw;
+  await events;
+  await assert.rejects(api.listen());
+  await assertCanBind(port);
+});
+
+test("cooperative close destroys raw socket and closes listener", async () => {
+  const life = lifecycle();
+  const p = ports();
+  const api = createApiServer({
+    lifecycle: life as never,
+    session: p.session,
+    history: p.history,
+    exporter: p.exporter,
+    bearerToken: "worker-secret-0123456789abcdefghi",
+    sessionId: "session-1",
+  });
+  const { port } = await api.listen();
+  const raw = netConnect({ host: "127.0.0.1", port });
+  await new Promise<void>((resolve, reject) => {
+    raw.once("connect", resolve);
+    raw.once("error", reject);
+  });
+  raw.write("GET /health/live HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
+  await new Promise<void>((resolve) => raw.once("data", () => resolve()));
+  const closedRaw = new Promise((resolve) => raw.once("close", resolve));
+  await Promise.all([api.close(), closedRaw]);
+  await assertCanBind(port);
+});
+
+test("cooperative close deadline destroys raw socket and proves closed listener", async () => {
+  const life = lifecycle();
+  const p = ports();
+  const api = createApiServer({
+    lifecycle: life as never,
+    session: p.session,
+    history: p.history,
+    exporter: p.exporter,
+    bearerToken: "worker-secret-0123456789abcdefghi",
+    sessionId: "session-1",
+  });
+  const { port } = await api.listen();
+  const raw = netConnect({ host: "127.0.0.1", port });
+  await new Promise<void>((resolve, reject) => {
+    raw.once("connect", resolve);
+    raw.once("error", reject);
+  });
+  raw.write("GET /health/live HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
+  await new Promise<void>((resolve) => raw.once("data", () => resolve()));
+  const closedRaw = new Promise((resolve) => raw.once("close", resolve));
+  await api.close({ deadlineAt: Date.now() });
+  await closedRaw;
+  await assertCanBind(port);
+});
+
+test("cooperative option bags reject hostile shapes without invoking getters", async () => {
+  const life = lifecycle();
+  const p = ports();
+  const api = createApiServer({
+    lifecycle: life as never,
+    session: p.session,
+    history: p.history,
+    exporter: p.exporter,
+    bearerToken: "worker-secret-0123456789abcdefghi",
+    sessionId: "session-1",
+  });
+  let invoked = false;
+  const accessor = {} as { signal?: AbortSignal };
+  Object.defineProperty(accessor, "signal", {
+    enumerable: true,
+    get: () => {
+      invoked = true;
+      return new AbortController().signal;
+    },
+  });
+  await assert.rejects(api.listen(0, "127.0.0.1", accessor));
+  assert.equal(invoked, false);
+  await assert.rejects(api.close(Object.freeze({ [Symbol("x")]: true }) as never));
+  await assert.rejects(api.close(Object.create(null)));
+});
+
+async function reserveLoopbackPort(): Promise<number> {
+  const server = createNetServer();
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => resolve());
+  });
+  const address = server.address();
+  const port = typeof address === "object" && address !== null ? address.port : 0;
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+  assert.ok(port > 0);
+  return port;
+}
+
+async function assertCanBind(port: number): Promise<void> {
+  const server = createNetServer();
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(port, "127.0.0.1", () => resolve());
+  });
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+}
