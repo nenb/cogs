@@ -3,6 +3,7 @@ import { lstat, open, realpath } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { TextDecoder } from "node:util";
 import type { JsonValue } from "../api/server.ts";
+import type { InternalCogsPiOwnedMarker } from "../pi/owned-runtime.ts";
 
 export interface CogsJsonlHistoryPage {
   readonly entries: readonly JsonValue[];
@@ -53,6 +54,10 @@ interface DurableMarker extends DirectoryMarker {
   readonly dev: bigint;
   readonly ino: bigint;
   readonly bytes: number;
+  readonly mode: number;
+  readonly nlink: bigint;
+  readonly mtimeNs: bigint;
+  readonly ctimeNs: bigint;
 }
 
 interface OpenedHistory {
@@ -84,6 +89,7 @@ const CURSOR = /^[A-Za-z0-9-]{1,128}$/;
 export function createCogsJsonlHistoryStore(input: {
   readonly sessionFile: string | undefined;
   readonly sessionDir: string;
+  readonly onOwnedHistoryMarker?: (marker: InternalCogsPiOwnedMarker) => Promise<void>;
 }): CogsJsonlHistoryStore {
   const sessionFile = input.sessionFile;
   const sessionDir = input.sessionDir;
@@ -105,12 +111,14 @@ export function createCogsJsonlHistoryStore(input: {
         throw new CogsJsonlHistoryError();
       }
       durableMarker = await validateAndSync(sessionFile, sessionDir, pinnedDirectory, undefined, signal);
+      await input.onOwnedHistoryMarker?.(ownedMarker(sessionFile, durableMarker));
       pinnedDirectory = durableMarker;
     },
     flushSettled: async ({ signal }: { signal?: AbortSignal } = {}) => {
       throwIfAborted(signal);
       if (sessionFile === undefined || pinnedDirectory === undefined) throw new CogsJsonlHistoryError();
       durableMarker = await validateAndSync(sessionFile, sessionDir, pinnedDirectory, durableMarker, signal);
+      await input.onOwnedHistoryMarker?.(ownedMarker(sessionFile, durableMarker));
       pinnedDirectory = durableMarker;
     },
     entries: async ({ after, limit, signal }: { after: string | undefined; limit: number; signal?: AbortSignal }) => {
@@ -165,6 +173,20 @@ export function createCogsJsonlHistoryStore(input: {
       }
     },
     durableBytes: () => durableMarker?.bytes ?? 0,
+  });
+}
+
+function ownedMarker(path: string, marker: DurableMarker): InternalCogsPiOwnedMarker {
+  return Object.freeze({
+    path,
+    dev: marker.dev,
+    ino: marker.ino,
+    mode: marker.mode,
+    nlink: marker.nlink,
+    size: BigInt(marker.bytes),
+    mtimeNs: marker.mtimeNs,
+    ctimeNs: marker.ctimeNs,
+    kind: "file" as const,
   });
 }
 
@@ -249,7 +271,16 @@ async function openForFlush(
     return {
       handle,
       dirHandle: dir,
-      marker: { dev: stat.dev, ino: stat.ino, bytes: Number(stat.size), ...pinned.marker },
+      marker: {
+        dev: stat.dev,
+        ino: stat.ino,
+        bytes: Number(stat.size),
+        mode: Number(stat.mode) & 0o777,
+        nlink: BigInt(stat.nlink),
+        mtimeNs: statNs(stat, "mtime"),
+        ctimeNs: statNs(stat, "ctime"),
+        ...pinned.marker,
+      },
     };
   } catch (error) {
     await handle?.close().catch(() => undefined);
@@ -257,6 +288,18 @@ async function openForFlush(
     if (error instanceof CogsJsonlHistoryError) throw error;
     throw new CogsJsonlHistoryError();
   }
+}
+
+function statNs(
+  stat: Awaited<ReturnType<Awaited<ReturnType<typeof open>>["stat"]>>,
+  prefix: "mtime" | "ctime",
+): bigint {
+  const keyed = stat as unknown as Record<string, unknown>;
+  const ns = keyed[`${prefix}Ns`];
+  if (typeof ns === "bigint") return ns;
+  const ms = prefix === "mtime" ? stat.mtimeMs : stat.ctimeMs;
+  if (typeof ms === "bigint") return ms * 1_000_000n;
+  return BigInt(Math.trunc(Number(ms) * 1_000_000));
 }
 
 async function openForRead(

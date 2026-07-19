@@ -63,6 +63,28 @@ function sha(bytes: Buffer) {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+async function assertStillPending<T>(promise: Promise<T>): Promise<void> {
+  const sentinel = Symbol("pending");
+  assert.equal(
+    await Promise.race([
+      promise.then(
+        () => "settled",
+        () => "settled",
+      ),
+      new Promise((done) => setTimeout(done, 50, sentinel)),
+    ]),
+    sentinel,
+  );
+}
+
 async function setup() {
   const root = await mkdtemp(join(tmpdir(), "cogs-local-export-"));
   const sessionFile = join(root, "session.jsonl");
@@ -259,6 +281,40 @@ test("local export rejects absent or hostile skills and hostile preexisting fina
       await readFile(join(hostile, "manifest.json"), "utf8"),
       JSON.stringify({ version: "cogs.export/v1alpha1", session_id: "session-1", extra: true }),
     );
+  } finally {
+    await rm(t.root, { recursive: true, force: true });
+  }
+});
+
+test("local export dispose joins late owned callback and rejects after deadline without false success", async () => {
+  const t = await setup();
+  try {
+    const entered = deferred();
+    const release = deferred();
+    let callbackEntered = false;
+    const exporter = createCogsLocalExporter({
+      sessionDir: t.root,
+      sessionId: "session-1",
+      history: t.history,
+      gitMap: t.gitMap,
+      skillMetadata: metadata,
+      onOwnedExportBundle: async () => {
+        callbackEntered = true;
+        entered.resolve();
+        await release.promise;
+      },
+    });
+    const exporting = exporter.createExport();
+    await entered.promise;
+    assert.equal(callbackEntered, true);
+    const disposing = exporter.dispose(Date.now() + 25);
+    await assertStillPending(disposing);
+    await assertStillPending(exporting);
+    const namesBefore = (await readdir(join(t.root, "exports", "cogs-session-session-1"))).sort();
+    release.resolve();
+    await assert.rejects(disposing, /local export unavailable/i);
+    await exporting;
+    assert.deepEqual((await readdir(join(t.root, "exports", "cogs-session-session-1"))).sort(), namesBefore);
   } finally {
     await rm(t.root, { recursive: true, force: true });
   }
