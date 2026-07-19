@@ -1,5 +1,6 @@
 import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import type { Socket } from "node:net";
 import { URL } from "node:url";
 import type { LaunchLifecycle } from "../launch/lifecycle.ts";
 
@@ -91,9 +92,19 @@ export interface ApiServerOptions {
   readonly maxEventBytes?: number;
 }
 
+export interface ApiListenOptions {
+  readonly signal?: AbortSignal;
+  readonly deadlineAt?: number;
+}
+
+export interface ApiCloseOptions {
+  readonly signal?: AbortSignal;
+  readonly deadlineAt?: number;
+}
+
 export interface ApiServer {
-  readonly listen: (port?: number, host?: string) => Promise<{ port: number }>;
-  readonly close: () => Promise<void>;
+  readonly listen: (port?: number, host?: string, options?: ApiListenOptions) => Promise<{ port: number }>;
+  readonly close: (options?: ApiCloseOptions) => Promise<void>;
   readonly publish: (event: ApiEvent) => boolean;
 }
 
@@ -107,6 +118,10 @@ type DuplicateEntry = {
 type Client = { readonly response: ServerResponse; readonly close: () => void };
 
 const forbiddenResponse = Object.freeze({ version: "cogs.error/v1alpha1", error: "forbidden" });
+const ABORTED_GETTER = Object.getOwnPropertyDescriptor(AbortSignal.prototype, "aborted")?.get;
+const EVENT_ADD = EventTarget.prototype.addEventListener;
+const EVENT_REMOVE = EventTarget.prototype.removeEventListener;
+const MAX_COOPERATIVE_DEADLINE_MS = 60_000;
 
 export function createApiServer(options: ApiServerOptions): ApiServer {
   validateConfig(options);
@@ -125,13 +140,18 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
   let abortPromise: Promise<{ aborted: boolean; runState: RunState }> | undefined;
   let shutdownPromise: Promise<void> | undefined;
   let closePromise: Promise<void> | undefined;
+  let listenPromise: Promise<{ port: number }> | undefined;
+  let listenEventPromise: Promise<void> | undefined;
+  let closeServerPromise: Promise<void> | undefined;
   let listenStarted = false;
+  let bindState: "idle" | "binding" | "listening" | "failed" | "closed" = "idle";
   let closed = false;
   let poisoned = false;
   let duplicateClock = 0;
   const tokenDigest = digest(options.bearerToken);
   const cursorSecret = createHmac("sha256", options.bearerToken).update(`cursor:${options.sessionId}`).digest();
 
+  const sockets = new Set<Socket>();
   const server = createServer((request, response) => {
     void route(request, response).catch(() => {
       safeWriteJson(
@@ -143,6 +163,10 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
         true,
       );
     });
+  });
+  server.on("connection", (socket) => {
+    sockets.add(socket);
+    socket.once("close", () => sockets.delete(socket));
   });
 
   async function route(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -563,53 +587,170 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
   }
 
   return {
-    listen: (port = 0, host = "127.0.0.1") =>
-      new Promise((resolve, reject) => {
-        if (closed) {
-          reject(new Error("api server is closed"));
-          return;
-        }
-        if (listenStarted) {
-          reject(new Error("api server is already listening"));
-          return;
-        }
-        if (!loopbackHost(host)) {
-          reject(new Error("listen host must be loopback"));
-          return;
-        }
-        listenStarted = true;
-        const onError = (error: Error) => {
-          server.off("listening", onListening);
-          listenStarted = false;
-          reject(error);
-        };
-        const onListening = () => {
-          server.off("error", onError);
-          resolve({ port: (server.address() as { port: number }).port });
-        };
-        server.once("error", onError);
-        server.once("listening", onListening);
-        server.listen(port, host);
-      }),
-    close: () => {
-      if (closePromise !== undefined) return closePromise;
-      closed = true;
-      closePromise = new Promise((resolve, reject) => {
-        for (const client of clients) {
-          client.close();
-          client.response.destroy();
-        }
-        clients.clear();
-        if (!listenStarted || !server.listening) {
-          resolve();
-          return;
-        }
-        server.close((error) => (error === undefined ? resolve() : reject(error)));
+    listen: (port = 0, host = "127.0.0.1", rawOptions?: ApiListenOptions) => {
+      let cooperative: CooperativeOptions;
+      try {
+        cooperative = captureCooperativeOptions(rawOptions);
+      } catch (error) {
+        return Promise.reject(error);
+      }
+      if (closed) return Promise.reject(new Error("api server is closed"));
+      if (listenPromise !== undefined) return Promise.reject(new Error("api server is already listening"));
+      listenPromise = listenOnce(port, host, cooperative);
+      listenPromise.catch(() => {
+        if (!listenStarted && !closed) listenPromise = undefined;
       });
+      return listenPromise;
+    },
+    close: (rawOptions?: ApiCloseOptions) => {
+      let cooperative: CooperativeOptions;
+      try {
+        cooperative = captureCooperativeOptions(rawOptions);
+      } catch (error) {
+        return Promise.reject(error);
+      }
+      closePromise ??= closeOnce(cooperative);
       return closePromise;
     },
     publish,
   };
+
+  async function listenOnce(port = 0, host = "127.0.0.1", cooperative: CooperativeOptions): Promise<{ port: number }> {
+    if (closed) throw new Error("api server is closed");
+    if (listenStarted) throw new Error("api server is already listening");
+    if (!loopbackHost(host)) throw new Error("listen host must be loopback");
+    listenStarted = true;
+    if (isCooperativeAborted(cooperative)) {
+      closed = true;
+      await ensureServerClosed(cooperative);
+      throw new Error("api server listen cancelled");
+    }
+    let cancelRequested = false;
+    const requestCancellation = () => {
+      cancelRequested = true;
+      closed = true;
+      destroyOwnedConnections();
+    };
+    const cleanupAbort = watchAbort(cooperative, requestCancellation);
+    const deadlineTimer = armDeadline(cooperative, requestCancellation);
+    try {
+      let selected: { port: number } | undefined;
+      listenEventPromise = createListenEvent(port, host, (value) => {
+        selected = value;
+      });
+      await listenEventPromise;
+      const outcome = selected;
+      if (outcome === undefined) throw new Error("api server listen failed");
+      if (closed || cancelRequested || isCooperativeAborted(cooperative)) {
+        closed = true;
+        await ensureServerClosed(cooperative);
+        throw new Error("api server listen cancelled");
+      }
+      return outcome;
+    } catch (error) {
+      closed = true;
+      try {
+        await ensureServerClosed(cooperative);
+      } catch {
+        throw new Error("api server close uncertain");
+      }
+      throw cancelRequested || isCooperativeAborted(cooperative) ? new Error("api server listen cancelled") : error;
+    } finally {
+      cleanupAbort();
+      deadlineTimer();
+    }
+  }
+
+  function createListenEvent(port: number, host: string, select: (value: { port: number }) => void): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const finish = (error?: Error) => {
+        if (settled) return;
+        settled = true;
+        server.off("error", onError);
+        server.off("listening", onListening);
+        if (error !== undefined) reject(error);
+        else resolve();
+      };
+      const onError = (error: Error) => {
+        bindState = "failed";
+        listenStarted = false;
+        finish(error);
+      };
+      const onListening = () => {
+        const address = server.address();
+        const selectedPort = typeof address === "object" && address !== null ? address.port : 0;
+        if (!Number.isSafeInteger(selectedPort) || selectedPort < 1 || selectedPort > 65535) {
+          bindState = "failed";
+          finish(new Error("api server listen failed"));
+          return;
+        }
+        bindState = "listening";
+        select({ port: selectedPort });
+        finish();
+      };
+      bindState = "binding";
+      server.once("error", onError);
+      server.once("listening", onListening);
+      try {
+        server.listen(port, host);
+      } catch (error) {
+        bindState = "failed";
+        listenStarted = false;
+        finish(error instanceof Error ? error : new Error("api server listen failed"));
+      }
+    });
+  }
+
+  async function closeOnce(cooperative: CooperativeOptions): Promise<void> {
+    closed = true;
+    const cleanupAbort = watchAbort(cooperative, destroyOwnedConnections);
+    const deadlineTimer = armDeadline(cooperative, destroyOwnedConnections);
+    try {
+      await ensureServerClosed(cooperative);
+    } finally {
+      cleanupAbort();
+      deadlineTimer();
+    }
+  }
+
+  function destroyOwnedConnections(): void {
+    for (const client of clients) {
+      client.close();
+      client.response.destroy();
+    }
+    clients.clear();
+    for (const socket of [...sockets]) socket.destroy();
+    server.closeAllConnections?.();
+  }
+
+  async function ensureServerClosed(_cooperative: CooperativeOptions): Promise<void> {
+    if (listenEventPromise !== undefined && bindState === "binding") {
+      await listenEventPromise.catch(() => undefined);
+    }
+    destroyOwnedConnections();
+    if (bindState === "listening" || server.listening) {
+      closeServerPromise ??= closeServerHandle();
+      const closeError = await closeServerPromise.then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      if (closeError !== undefined && !serverNotRunning(closeError)) throw new Error("api server close uncertain");
+    }
+    destroyOwnedConnections();
+    if (server.listening) throw new Error("api server close uncertain");
+    bindState = bindState === "listening" || bindState === "binding" ? "closed" : bindState;
+  }
+
+  function closeServerHandle(): Promise<void> {
+    return new Promise((resolve, reject) => {
+      server.close((error) => {
+        if (error !== undefined && !serverNotRunning(error)) reject(error);
+        else resolve();
+      });
+      destroyOwnedConnections();
+    });
+  }
 
   function safeWriteJson(
     response: ServerResponse,
@@ -622,6 +763,69 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
     if (closed || response.destroyed || response.writableEnded) return;
     writeJson(response, status, body, maxBytes, correlationId, closeAfter);
   }
+}
+
+type CooperativeOptions = Readonly<{ signal?: AbortSignal; deadlineAt?: number }>;
+
+function captureCooperativeOptions(value: unknown): CooperativeOptions {
+  if (value === undefined) return Object.freeze({});
+  if (
+    value === null ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    Object.getPrototypeOf(value) !== Object.prototype
+  )
+    throw new Error("invalid api server option");
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const output: { signal?: AbortSignal; deadlineAt?: number } = {};
+  for (const key of Reflect.ownKeys(descriptors)) {
+    if (typeof key !== "string" || (key !== "signal" && key !== "deadlineAt"))
+      throw new Error("invalid api server option");
+    const descriptor = descriptors[key];
+    if (!descriptor || !("value" in descriptor) || descriptor.enumerable !== true)
+      throw new Error("invalid api server option");
+    if (key === "signal") {
+      if (!(descriptor.value instanceof AbortSignal)) throw new Error("invalid api server option");
+      output.signal = descriptor.value;
+    } else {
+      const deadlineAt = descriptor.value;
+      const now = Date.now();
+      if (
+        typeof deadlineAt !== "number" ||
+        !Number.isSafeInteger(deadlineAt) ||
+        deadlineAt > now + MAX_COOPERATIVE_DEADLINE_MS
+      )
+        throw new Error("invalid api server option");
+      output.deadlineAt = deadlineAt;
+    }
+  }
+  return Object.freeze(output);
+}
+
+function isCooperativeAborted(options: CooperativeOptions): boolean {
+  if (options.signal !== undefined) {
+    const aborted = ABORTED_GETTER === undefined ? options.signal.aborted : ABORTED_GETTER.call(options.signal);
+    if (aborted === true) return true;
+  }
+  return options.deadlineAt !== undefined && Date.now() >= options.deadlineAt;
+}
+
+function watchAbort(options: CooperativeOptions, callback: () => void): () => void {
+  if (options.signal === undefined) return () => undefined;
+  EVENT_ADD.call(options.signal, "abort", callback, { once: true });
+  return () => EVENT_REMOVE.call(options.signal as AbortSignal, "abort", callback);
+}
+
+function armDeadline(options: CooperativeOptions, callback: () => void): () => void {
+  if (options.deadlineAt === undefined) return () => undefined;
+  const delay = Math.max(0, options.deadlineAt - Date.now());
+  const timer = setTimeout(callback, delay);
+  timer.unref?.();
+  return () => clearTimeout(timer);
+}
+
+function serverNotRunning(error: unknown): boolean {
+  return error instanceof Error && (error as NodeJS.ErrnoException).code === "ERR_SERVER_NOT_RUNNING";
 }
 
 class HttpError extends Error {
