@@ -7,7 +7,7 @@ export const launcherOperations = ["create", "reset", "status", "destroy"] as co
 export type LauncherOperation = (typeof launcherOperations)[number];
 
 export type LauncherAuthority = "functional-only" | "authoritative-local";
-export type LauncherPhase = "creating" | "sandbox-ready" | "cleanup-required" | "destroying";
+export type LauncherPhase = "creating" | "sandbox-ready" | "worker-ready" | "cleanup-required" | "destroying";
 
 export const launcherManifestVersion = "cogs.dev-launcher-manifest/v1alpha1" as const;
 export const launcherRecoveryVersion = "cogs.dev-launcher-recovery/v1alpha1" as const;
@@ -44,7 +44,7 @@ const resourceRe =
   /^(?:\.[a-f0-9]{16}\.lock|(?!.*(?:^|\/)\.\.?(?:\/|$))[A-Za-z0-9][A-Za-z0-9._-]{0,63}(?:\/[A-Za-z0-9][A-Za-z0-9._-]{0,63}){0,3})$/;
 const profileSet = new Set<string>(launcherProfiles);
 const operationSet = new Set<string>(launcherOperations);
-const phaseSet = new Set<string>(["creating", "sandbox-ready", "cleanup-required", "destroying"]);
+const phaseSet = new Set<string>(["creating", "sandbox-ready", "worker-ready", "cleanup-required", "destroying"]);
 const authoritySet = new Set<string>(["functional-only", "authoritative-local"]);
 
 export function normalizeProfile(value: unknown): LauncherProfile {
