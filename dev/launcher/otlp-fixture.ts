@@ -1,6 +1,10 @@
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { Socket } from "node:net";
 import { hasDuplicateJsonKeys } from "./contract.ts";
+
+const ABORTED_GETTER = Object.getOwnPropertyDescriptor(AbortSignal.prototype, "aborted")?.get;
+const EVENT_ADD = EventTarget.prototype.addEventListener;
+const EVENT_REMOVE = EventTarget.prototype.removeEventListener;
 
 export type OtlpSignal = "logs" | "traces" | "metrics";
 export type OtlpFixtureSnapshot = Readonly<{
@@ -13,11 +17,12 @@ export type OtlpFixtureSnapshot = Readonly<{
   metrics: number;
   names: readonly string[];
 }>;
+export type OtlpCooperativeOptions = Readonly<{ signal?: AbortSignal; deadlineAt?: number }>;
 export type OtlpFixture = Readonly<{
   endpoint(signal: OtlpSignal): string;
   snapshot(): OtlpFixtureSnapshot;
   reset(): void;
-  close(): Promise<void>;
+  close(options?: OtlpCooperativeOptions): Promise<void>;
 }>;
 
 const paths: Record<string, OtlpSignal> = Object.freeze({
@@ -161,15 +166,31 @@ const buckets = new Set(["0", "1", "2_4", "5_16", "17_64", "65_256", "257_1024",
 const statusBuckets = new Set(["1xx", "2xx", "3xx", "4xx", "5xx"]);
 
 export async function startOtlpFixture(
-  options: { deadlineMs?: number; maxBytes?: number; maxInflight?: number; maxRecords?: number } = {},
+  options: {
+    deadlineMs?: number;
+    maxBytes?: number;
+    maxInflight?: number;
+    maxRecords?: number;
+    signal?: AbortSignal;
+    deadlineAt?: number;
+  } = {},
 ): Promise<OtlpFixture> {
-  let o: { deadlineMs?: number; maxBytes?: number; maxInflight?: number; maxRecords?: number };
+  let o: {
+    deadlineMs?: number;
+    maxBytes?: number;
+    maxInflight?: number;
+    maxRecords?: number;
+    signal?: AbortSignal;
+    deadlineAt?: number;
+  };
+  let cooperative: OtlpCooperativeOptions;
   let deadlineMs: number;
   let maxBytes: number;
   let maxInflight: number;
   let maxRecords: number;
   try {
     o = snapshotOptions(options);
+    cooperative = cooperativeOptions(o, true);
     deadlineMs = integer(o.deadlineMs ?? 1000, 50, 10_000);
     maxBytes = integer(o.maxBytes ?? 1024 * 1024, 128, 1024 * 1024);
     maxInflight = integer(o.maxInflight ?? 8, 1, 64);
@@ -196,19 +217,13 @@ export async function startOtlpFixture(
   });
   let port: number;
   try {
-    await new Promise<void>((resolve, reject) => {
-      server.once("error", reject);
-      server.listen(0, "127.0.0.1", () => {
-        server.off("error", reject);
-        resolve();
-      });
-    });
+    await listenServer(server, cooperative, () => destroyOwnedConnections());
+    if (aborted(cooperative)) throw new Error("launcher otlp fixture failed");
     const address = server.address();
     port = typeof address === "object" && address ? address.port : 0;
     if (!Number.isInteger(port) || port < 1) throw new Error("bad port");
   } catch {
-    for (const socket of sockets) socket.destroy();
-    server.close();
+    await closeServer(server, () => destroyOwnedConnections());
     throw new Error("launcher otlp fixture failed");
   }
 
@@ -256,33 +271,39 @@ export async function startOtlpFixture(
       acceptedTotal = 0;
       generation++;
     },
-    close: () =>
-      (closePromise ??= (async () => {
-        closed = true;
-        let timer: NodeJS.Timeout | undefined;
-        try {
-          const closing = new Promise<void>((resolve) => server.close(() => resolve()));
-          await new Promise((r) => setTimeout(r, 25));
-          for (const socket of sockets) socket.destroy();
-          await Promise.race([
-            closing,
-            new Promise((_, reject) => {
-              timer = setTimeout(() => reject(new Error("launcher otlp fixture failed")), 500);
-            }),
-          ]);
-          await new Promise((resolve) => setTimeout(resolve, 10));
-          if (inflight !== 0 || sockets.size !== 0) throw new Error("launcher otlp fixture failed");
-          await assertClosed(port);
-        } finally {
-          if (timer) clearTimeout(timer);
-          counts.logs = 0;
-          counts.traces = 0;
-          counts.metrics = 0;
-          names.clear();
-          acceptedTotal = 0;
-        }
-      })()),
+    close: (options) => {
+      const closeOptions = cooperativeOptions(options ?? {}, false);
+      if (closePromise === undefined) {
+        closePromise = (async () => {
+          closed = true;
+          const cleanupAbort = watchAbort(closeOptions, destroyOwnedConnections);
+          const deadlineTimer = armDeadline(closeOptions, destroyOwnedConnections);
+          try {
+            await closeServer(server, destroyOwnedConnections);
+            destroyOwnedConnections();
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            if (server.listening || inflight !== 0 || sockets.size !== 0)
+              throw new Error("launcher otlp fixture failed");
+            await assertClosed(port);
+          } finally {
+            cleanupAbort();
+            deadlineTimer();
+            counts.logs = 0;
+            counts.traces = 0;
+            counts.metrics = 0;
+            names.clear();
+            acceptedTotal = 0;
+          }
+        })();
+      }
+      return closePromise;
+    },
   });
+
+  function destroyOwnedConnections(): void {
+    for (const socket of sockets) socket.destroy();
+    server.closeAllConnections?.();
+  }
 
   function audit(value: unknown, signal: OtlpSignal): { count: number; names: readonly string[] } {
     const seen: string[] = [];
@@ -528,11 +549,15 @@ function snapshotOptions(value: {
   maxBytes?: number;
   maxInflight?: number;
   maxRecords?: number;
+  signal?: AbortSignal;
+  deadlineAt?: number;
 }): {
   deadlineMs?: number;
   maxBytes?: number;
   maxInflight?: number;
   maxRecords?: number;
+  signal?: AbortSignal;
+  deadlineAt?: number;
 } {
   try {
     if (
@@ -543,9 +568,19 @@ function snapshotOptions(value: {
     )
       throw new Error("bad options");
     const d = Object.getOwnPropertyDescriptors(value);
-    const out: { deadlineMs?: number; maxBytes?: number; maxInflight?: number; maxRecords?: number } = {};
+    const out: {
+      deadlineMs?: number;
+      maxBytes?: number;
+      maxInflight?: number;
+      maxRecords?: number;
+      signal?: AbortSignal;
+      deadlineAt?: number;
+    } = {};
     for (const key of Reflect.ownKeys(d)) {
-      if (typeof key !== "string" || !["deadlineMs", "maxBytes", "maxInflight", "maxRecords"].includes(key))
+      if (
+        typeof key !== "string" ||
+        !["deadlineMs", "maxBytes", "maxInflight", "maxRecords", "signal", "deadlineAt"].includes(key)
+      )
         throw new Error("bad options");
       const item = d[key];
       if (!item || !("value" in item) || item.enumerable !== true) throw new Error("bad options");
@@ -555,6 +590,98 @@ function snapshotOptions(value: {
   } catch {
     throw new Error("launcher otlp fixture failed");
   }
+}
+function cooperativeOptions(value: unknown, startOptions: boolean): OtlpCooperativeOptions {
+  if (!value || typeof value !== "object" || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype)
+    throw new Error("launcher otlp fixture failed");
+  const d = Object.getOwnPropertyDescriptors(value);
+  const out: { signal?: AbortSignal; deadlineAt?: number } = {};
+  const allowed = startOptions
+    ? ["deadlineMs", "maxBytes", "maxInflight", "maxRecords", "signal", "deadlineAt"]
+    : ["signal", "deadlineAt"];
+  for (const key of Reflect.ownKeys(d)) {
+    if (typeof key !== "string" || !allowed.includes(key)) throw new Error("launcher otlp fixture failed");
+    const item = d[key];
+    if (!item || !("value" in item) || item.enumerable !== true) throw new Error("launcher otlp fixture failed");
+    if (key === "signal") {
+      if (!(item.value instanceof AbortSignal)) throw new Error("launcher otlp fixture failed");
+      out.signal = item.value;
+    } else if (key === "deadlineAt") {
+      if (!Number.isSafeInteger(item.value) || item.value > Date.now() + 10_000)
+        throw new Error("launcher otlp fixture failed");
+      out.deadlineAt = item.value;
+    }
+  }
+  return Object.freeze(out);
+}
+function aborted(options: OtlpCooperativeOptions): boolean {
+  const signalAborted =
+    options.signal !== undefined &&
+    (ABORTED_GETTER === undefined ? false : ABORTED_GETTER.call(options.signal) === true);
+  return signalAborted || (options.deadlineAt !== undefined && Date.now() >= options.deadlineAt);
+}
+function watchAbort(options: OtlpCooperativeOptions, callback: () => void): () => void {
+  if (options.signal === undefined) return () => undefined;
+  EVENT_ADD.call(options.signal, "abort", callback, { once: true });
+  return () => EVENT_REMOVE.call(options.signal as AbortSignal, "abort", callback);
+}
+function armDeadline(options: OtlpCooperativeOptions, callback: () => void): () => void {
+  if (options.deadlineAt === undefined) return () => undefined;
+  const timer = setTimeout(callback, Math.max(0, options.deadlineAt - Date.now()));
+  timer.unref?.();
+  return () => clearTimeout(timer);
+}
+async function listenServer(server: Server, options: OtlpCooperativeOptions, destroyOwned: () => void): Promise<void> {
+  if (aborted(options)) throw new Error("launcher otlp fixture failed");
+  await new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const done = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      if (error) reject(error);
+      else resolve();
+    };
+    let cancelRequested = false;
+    const closeBeforeReject = () => {
+      destroyOwned();
+      server.close((error) => {
+        if (error && (error as NodeJS.ErrnoException).code !== "ERR_SERVER_NOT_RUNNING") done(error);
+        else done(new Error("launcher otlp fixture failed"));
+      });
+    };
+    const onAbort = () => {
+      cancelRequested = true;
+      destroyOwned();
+      if (server.listening) closeBeforeReject();
+    };
+    const onError = (error: Error) => done(error);
+    const timer =
+      options.deadlineAt === undefined ? undefined : setTimeout(onAbort, Math.max(0, options.deadlineAt - Date.now()));
+    timer?.unref?.();
+    const cleanup = () => {
+      server.off("error", onError);
+      if (options.signal !== undefined) EVENT_REMOVE.call(options.signal, "abort", onAbort);
+      if (timer) clearTimeout(timer);
+    };
+    if (options.signal !== undefined) EVENT_ADD.call(options.signal, "abort", onAbort, { once: true });
+    server.once("error", onError);
+    server.listen(0, "127.0.0.1", () => {
+      if (cancelRequested || aborted(options)) closeBeforeReject();
+      else done();
+    });
+  });
+}
+async function closeServer(server: Server, destroyOwned: () => void): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    server.close((error) => {
+      if (error && (error as NodeJS.ErrnoException).code !== "ERR_SERVER_NOT_RUNNING") reject(error);
+      else resolve();
+    });
+    destroyOwned();
+  }).catch(() => {
+    throw new Error("launcher otlp fixture failed");
+  });
 }
 async function assertClosed(port: number): Promise<void> {
   await new Promise<void>((resolve, reject) => {

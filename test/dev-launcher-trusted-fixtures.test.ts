@@ -347,11 +347,81 @@ test("local fixtures reject reset while inflight and close idempotently under ra
     );
     await new Promise((resolve) => setTimeout(resolve, 10));
     assert.throws(() => f.reset());
+    const closedRaw = new Promise((resolve) => sock.once("close", resolve));
     const started = Date.now();
-    await Promise.all([f.close(), f.close()]);
+    const close = f.close({ deadlineAt: Date.now() });
+    assert.equal(f.close(), close);
+    await close;
+    await closedRaw;
     assert.ok(Date.now() - started < 1000);
   } finally {
     sock.destroy();
     await f.close().catch(() => undefined);
+  }
+});
+
+test("local fixtures cooperative start and option bags are strict", async () => {
+  const aborted = new AbortController();
+  aborted.abort();
+  await assert.rejects(() => startLocalFixtures({ credential: "cogs-dev-egress-key", signal: aborted.signal }));
+  await assert.rejects(() => startLocalFixtures({ credential: "cogs-dev-egress-key", deadlineAt: Date.now() }));
+  let invoked = false;
+  await assert.rejects(() =>
+    startLocalFixtures(
+      Object.defineProperty({ credential: "cogs-dev-egress-key" }, "signal", {
+        get: () => {
+          invoked = true;
+          return aborted.signal;
+        },
+        enumerable: true,
+      }) as never,
+    ),
+  );
+  assert.equal(invoked, false);
+  await assert.rejects(() =>
+    startLocalFixtures(Object.assign(Object.create(null), { credential: "cogs-dev-egress-key" }) as never),
+  );
+  await assert.rejects(() => startLocalFixtures({ credential: "cogs-dev-egress-key", [Symbol()]: true } as never));
+  const hostileSignal = new AbortController().signal;
+  let signalAccessorInvoked = false;
+  Object.defineProperties(hostileSignal, {
+    aborted: {
+      get: () => {
+        signalAccessorInvoked = true;
+        return true;
+      },
+    },
+    addEventListener: {
+      value: () => {
+        signalAccessorInvoked = true;
+        throw new Error("hostile add");
+      },
+    },
+    removeEventListener: {
+      value: () => {
+        signalAccessorInvoked = true;
+        throw new Error("hostile remove");
+      },
+    },
+  });
+  const f = await startLocalFixtures({ credential: "cogs-dev-egress-key", signal: hostileSignal });
+  try {
+    assert.equal(signalAccessorInvoked, false);
+    assert.throws(() => f.close({ signal: {} as AbortSignal }));
+    assert.throws(() => f.close({ deadlineMs: 100 } as never));
+    assert.throws(() => f.close(Object.defineProperty({}, "deadlineAt", { get: () => Date.now(), enumerable: true })));
+    await f.close({ signal: hostileSignal });
+    assert.equal(signalAccessorInvoked, false);
+  } finally {
+    await f.close();
+  }
+});
+
+test("local fixtures cooperative cancellation before ownership leaves no live server", async () => {
+  for (let i = 0; i < 20; i++) {
+    const controller = new AbortController();
+    const started = startLocalFixtures({ credential: "cogs-dev-egress-key", signal: controller.signal });
+    queueMicrotask(() => controller.abort());
+    await assert.rejects(started, /launcher fixture failed/);
   }
 });

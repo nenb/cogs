@@ -877,13 +877,83 @@ test("otlp fixture reset rejects inflight trickle and close is idempotent bounde
     );
     await new Promise((resolve) => setTimeout(resolve, 10));
     assert.throws(() => fixture.reset());
+    const closedRaw = new Promise((resolve) => socket.once("close", resolve));
     const started = Date.now();
-    await Promise.all([fixture.close(), fixture.close()]);
+    const close = fixture.close({ deadlineAt: Date.now() });
+    assert.equal(fixture.close(), close);
+    await close;
+    await closedRaw;
     assert.ok(Date.now() - started < 1000);
     assert.equal(fixture.snapshot().traces, 0);
   } finally {
     socket.destroy();
     await fixture.close().catch(() => undefined);
+  }
+});
+
+test("otlp fixture cooperative start and option bags are strict", async () => {
+  const aborted = new AbortController();
+  aborted.abort();
+  await assert.rejects(() => startOtlpFixture({ signal: aborted.signal }));
+  await assert.rejects(() => startOtlpFixture({ deadlineAt: Date.now() }));
+  let invoked = false;
+  await assert.rejects(() =>
+    startOtlpFixture(
+      Object.defineProperty({}, "signal", {
+        get: () => {
+          invoked = true;
+          return aborted.signal;
+        },
+        enumerable: true,
+      }) as never,
+    ),
+  );
+  assert.equal(invoked, false);
+  await assert.rejects(() => startOtlpFixture(Object.assign(Object.create(null), { maxRecords: 1 }) as never));
+  await assert.rejects(() => startOtlpFixture({ [Symbol()]: true } as never));
+  const hostileSignal = new AbortController().signal;
+  let signalAccessorInvoked = false;
+  Object.defineProperties(hostileSignal, {
+    aborted: {
+      get: () => {
+        signalAccessorInvoked = true;
+        return true;
+      },
+    },
+    addEventListener: {
+      value: () => {
+        signalAccessorInvoked = true;
+        throw new Error("hostile add");
+      },
+    },
+    removeEventListener: {
+      value: () => {
+        signalAccessorInvoked = true;
+        throw new Error("hostile remove");
+      },
+    },
+  });
+  const fixture = await startOtlpFixture({ signal: hostileSignal });
+  try {
+    assert.equal(signalAccessorInvoked, false);
+    assert.throws(() => fixture.close({ signal: {} as AbortSignal }));
+    assert.throws(() => fixture.close({ maxRecords: 1 } as never));
+    assert.throws(() =>
+      fixture.close(Object.defineProperty({}, "deadlineAt", { get: () => Date.now(), enumerable: true })),
+    );
+    await fixture.close({ signal: hostileSignal });
+    assert.equal(signalAccessorInvoked, false);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("otlp fixture cooperative cancellation before ownership leaves no live server", async () => {
+  for (let i = 0; i < 20; i++) {
+    const controller = new AbortController();
+    const started = startOtlpFixture({ signal: controller.signal });
+    queueMicrotask(() => controller.abort());
+    await assert.rejects(started, /launcher otlp fixture failed/);
   }
 });
 
