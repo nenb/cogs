@@ -3,6 +3,7 @@ import { constants } from "node:fs";
 import { lstat, mkdir, open, readdir, realpath, rename, rmdir, unlink } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { JsonValue } from "../api/server.ts";
+import type { InternalCogsPiOwnedExportLedger, InternalCogsPiOwnedMarker } from "../pi/owned-runtime.ts";
 import type { CogsPreparedSkillMetadata } from "../skills/session-preparer.ts";
 import type { CogsGitMapRecord, CogsGitMapStore } from "./git-map.ts";
 import type { CogsJsonlHistoryStore } from "./jsonl-history.ts";
@@ -31,7 +32,7 @@ export interface CogsLocalExportDescriptor {
 
 export interface CogsLocalExporter {
   readonly createExport: (input?: { readonly signal?: AbortSignal }) => Promise<CogsLocalExportDescriptor>;
-  readonly dispose: () => Promise<void>;
+  readonly dispose: (deadlineExpiresAt?: number) => Promise<void>;
 }
 
 interface FileEntry {
@@ -46,6 +47,10 @@ interface BigStats {
   readonly mode: bigint;
   readonly nlink: bigint;
   readonly size: bigint;
+  readonly mtimeMs?: number | bigint;
+  readonly ctimeMs?: number | bigint;
+  readonly mtimeNs?: bigint;
+  readonly ctimeNs?: bigint;
   readonly isFile: () => boolean;
   readonly isDirectory: () => boolean;
   readonly isSymbolicLink: () => boolean;
@@ -57,6 +62,8 @@ interface Marker {
   readonly mode: bigint;
   readonly nlink: bigint;
   readonly size: bigint;
+  readonly mtimeNs: bigint;
+  readonly ctimeNs: bigint;
 }
 
 interface BundleSnapshot {
@@ -100,6 +107,8 @@ export function createCogsLocalExporter(input: {
   readonly gitMap?: CogsGitMapStore;
   readonly skillMetadata: () => CogsPreparedSkillMetadata | undefined;
   readonly model?: { readonly provider: string; readonly id: string };
+  readonly onOwnedExportTransition?: (ledger: InternalCogsPiOwnedExportLedger) => Promise<void>;
+  readonly onOwnedExportBundle?: (ledger: InternalCogsPiOwnedExportLedger) => Promise<void>;
 }): CogsLocalExporter {
   const config = snapshotConfig(input);
   let chain: Promise<unknown> = Promise.resolve();
@@ -118,18 +127,11 @@ export function createCogsLocalExporter(input: {
       chain = next.catch(() => undefined);
       return next;
     },
-    dispose: async () => {
+    dispose: async (deadlineExpiresAt?: number) => {
       disposed = true;
       for (const controller of active) controller.abort();
-      const done = Symbol("done");
-      const result = await Promise.race([
-        chain.then(
-          () => done,
-          () => done,
-        ),
-        new Promise((resolve) => setTimeout(resolve, DEFAULT_TIMEOUT_MS)),
-      ]);
-      if (result !== done) throw new CogsLocalExportError();
+      await settleChain(chain);
+      if (deadlineExpiresAt !== undefined && Date.now() > deadlineExpiresAt) throw new CogsLocalExportError();
     },
   });
 }
@@ -170,6 +172,7 @@ async function writeExport(
     throwIfAborted(signal);
     if (await exists(finalDir)) {
       const old = await verifyExistingBundle(finalDir, config.sessionId);
+      await config.onOwnedExportTransition?.(bundleLedger(root, await verifyDir(root, 0o700), finalDir, old));
       throwIfAborted(signal);
       await rename(finalDir, backupDir).catch(() => {
         throw new CogsLocalExportError();
@@ -191,6 +194,12 @@ async function writeExport(
       backupOwned = undefined;
       await syncDir(root, signal);
     }
+    await config.onOwnedExportBundle?.(
+      bundleLedger(root, await verifyDir(root, 0o700), finalDir, {
+        dir: await verifyDir(finalDir, 0o700),
+        files: finalOwned.files,
+      }),
+    );
     finalOwned = undefined;
     const manifest = files.find((file) => file.path === "manifest.json");
     if (manifest === undefined) throw new CogsLocalExportError();
@@ -577,7 +586,24 @@ function markerFrom(
   if (mode !== undefined && Number(stat.mode & 0o777n) !== mode) throw new CogsLocalExportError();
   if (size !== undefined && stat.size !== size) throw new CogsLocalExportError();
   if (stat.size < 0n || stat.size > BigInt(MAX_BUNDLE_BYTES)) throw new CogsLocalExportError();
-  return Object.freeze({ dev: stat.dev, ino: stat.ino, mode: stat.mode, nlink: stat.nlink, size: stat.size });
+  return Object.freeze({
+    dev: stat.dev,
+    ino: stat.ino,
+    mode: stat.mode,
+    nlink: stat.nlink,
+    size: stat.size,
+    mtimeNs: statNs(stat, "mtime"),
+    ctimeNs: statNs(stat, "ctime"),
+  });
+}
+
+function statNs(stat: BigStats, prefix: "mtime" | "ctime"): bigint {
+  const ns = prefix === "mtime" ? stat.mtimeNs : stat.ctimeNs;
+  if (typeof ns === "bigint") return ns;
+  const ms = prefix === "mtime" ? stat.mtimeMs : stat.ctimeMs;
+  if (typeof ms === "bigint") return ms * 1_000_000n;
+  if (typeof ms !== "number") throw new CogsLocalExportError();
+  return BigInt(Math.trunc(ms * 1_000_000));
 }
 
 function sameMarker(actual: Marker, expected: Marker): void {
@@ -586,7 +612,9 @@ function sameMarker(actual: Marker, expected: Marker): void {
     actual.ino !== expected.ino ||
     actual.mode !== expected.mode ||
     actual.nlink !== expected.nlink ||
-    actual.size !== expected.size
+    actual.size !== expected.size ||
+    actual.mtimeNs !== expected.mtimeNs ||
+    actual.ctimeNs !== expected.ctimeNs
   )
     throw new CogsLocalExportError();
 }
@@ -750,6 +778,46 @@ async function absent(path: string): Promise<void> {
   if (await exists(path)) throw new CogsLocalExportError();
 }
 
+async function settleChain(chain: Promise<unknown>): Promise<void> {
+  await chain.then(
+    () => undefined,
+    () => undefined,
+  );
+}
+
+function bundleLedger(
+  root: string,
+  rootMarker: Marker,
+  bundleDir: string,
+  snapshot: BundleSnapshot,
+): InternalCogsPiOwnedExportLedger {
+  return Object.freeze({
+    root: ownedMarker(root, rootMarker, "dir"),
+    bundleDir: ownedMarker(bundleDir, snapshot.dir, "dir"),
+    files: Object.freeze(
+      FILES.map((file) => {
+        const marker = snapshot.files.get(file);
+        if (marker === undefined) throw new CogsLocalExportError();
+        return ownedMarker(join(bundleDir, file), marker, "file");
+      }),
+    ),
+  });
+}
+
+function ownedMarker(path: string, marker: Marker, kind: "file" | "dir"): InternalCogsPiOwnedMarker {
+  return Object.freeze({
+    path,
+    dev: marker.dev,
+    ino: marker.ino,
+    mode: Number(marker.mode) & 0o777,
+    nlink: marker.nlink,
+    size: marker.size,
+    mtimeNs: marker.mtimeNs,
+    ctimeNs: marker.ctimeNs,
+    kind,
+  });
+}
+
 async function exists(path: string): Promise<boolean> {
   return lstat(path).then(
     () => true,
@@ -767,9 +835,24 @@ function snapshotConfig(input: {
   readonly gitMap?: CogsGitMapStore;
   readonly skillMetadata: () => CogsPreparedSkillMetadata | undefined;
   readonly model?: { readonly provider: string; readonly id: string };
+  readonly onOwnedExportTransition?: (ledger: InternalCogsPiOwnedExportLedger) => Promise<void>;
+  readonly onOwnedExportBundle?: (ledger: InternalCogsPiOwnedExportLedger) => Promise<void>;
 }) {
   try {
-    const raw = exactData(input, ["gitMap", "history", "model", "sessionDir", "sessionId", "skillMetadata"], true);
+    const raw = exactData(
+      input,
+      [
+        "gitMap",
+        "history",
+        "model",
+        "onOwnedExportBundle",
+        "onOwnedExportTransition",
+        "sessionDir",
+        "sessionId",
+        "skillMetadata",
+      ],
+      true,
+    );
     if (typeof raw.sessionId !== "string" || !OPAQUE.test(raw.sessionId)) throw new CogsLocalExportError();
     if (typeof raw.sessionDir !== "string" || raw.sessionDir.length < 1) throw new CogsLocalExportError();
     const history = raw.history as CogsJsonlHistoryStore;
@@ -777,6 +860,10 @@ function snapshotConfig(input: {
     if (typeof history?.snapshot !== "function") throw new CogsLocalExportError();
     if (gitMap !== undefined && typeof gitMap.records !== "function") throw new CogsLocalExportError();
     if (typeof raw.skillMetadata !== "function") throw new CogsLocalExportError();
+    if (raw.onOwnedExportBundle !== undefined && typeof raw.onOwnedExportBundle !== "function")
+      throw new CogsLocalExportError();
+    if (raw.onOwnedExportTransition !== undefined && typeof raw.onOwnedExportTransition !== "function")
+      throw new CogsLocalExportError();
     const model = raw.model === undefined ? undefined : snapshotModel(raw.model as { provider: string; id: string });
     return Object.freeze({
       sessionDir: raw.sessionDir,
@@ -784,6 +871,12 @@ function snapshotConfig(input: {
       history,
       gitMap,
       skillMetadata: raw.skillMetadata as () => CogsPreparedSkillMetadata | undefined,
+      onOwnedExportTransition: raw.onOwnedExportTransition as
+        | ((ledger: InternalCogsPiOwnedExportLedger) => Promise<void>)
+        | undefined,
+      onOwnedExportBundle: raw.onOwnedExportBundle as
+        | ((ledger: InternalCogsPiOwnedExportLedger) => Promise<void>)
+        | undefined,
       ...(model === undefined ? {} : { model }),
     });
   } catch {

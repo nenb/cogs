@@ -3,6 +3,7 @@ import { lstat, open, realpath } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { TextDecoder } from "node:util";
 import type { JsonValue } from "../api/server.ts";
+import type { InternalCogsPiOwnedMarker } from "../pi/owned-runtime.ts";
 
 export type CogsGitMapConfidence = "exact" | "checkpoint";
 export type CogsGitMapResolveConfidence = CogsGitMapConfidence | "inferred-ancestor";
@@ -82,6 +83,10 @@ interface FileMarker {
   readonly dev: bigint;
   readonly ino: bigint;
   readonly size: number;
+  readonly mode: number;
+  readonly nlink: bigint;
+  readonly mtimeNs: bigint;
+  readonly ctimeNs: bigint;
 }
 
 interface OpenedAppend {
@@ -96,6 +101,10 @@ interface BigStats {
   readonly mode: bigint | number;
   readonly nlink: bigint;
   readonly size: bigint;
+  readonly mtimeMs?: number | bigint;
+  readonly ctimeMs?: number | bigint;
+  readonly mtimeNs?: bigint;
+  readonly ctimeNs?: bigint;
   readonly isFile: () => boolean;
   readonly isDirectory: () => boolean;
   readonly isSymbolicLink: () => boolean;
@@ -126,7 +135,10 @@ const ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 const CHECKPOINT_REF = /^refs\/cogs\/sessions\/([A-Za-z0-9][A-Za-z0-9._:-]*)\/([0-9]+)$/;
 
 export async function createCogsGitMapStore(
-  input: { readonly sessionDir: string },
+  input: {
+    readonly sessionDir: string;
+    readonly onOwnedSidecar?: (marker: InternalCogsPiOwnedMarker) => Promise<void>;
+  },
   hooks: CogsGitMapTestHooks = {},
 ): Promise<CogsGitMapStore> {
   const fs = freezeFs(hooks.fs);
@@ -146,6 +158,7 @@ export async function createCogsGitMapStore(
     chain: Promise.resolve(),
   };
   await initializeExisting(fs, sidecar, sessionDir, pinnedDir, state);
+  if (state.marker !== undefined) await input.onOwnedSidecar?.(ownedMarker(sidecar, state.marker));
   return Object.freeze({
     append: async (raw: unknown, options: { signal?: AbortSignal } = {}) => {
       let record: CogsGitMapRecord;
@@ -186,10 +199,11 @@ export async function createCogsGitMapStore(
             mutationStarted = true;
             throw new CogsGitMapError();
           }
-          const nextMarker = { ...opened.marker, size: opened.marker.size + bytes.length };
+          const nextMarker = fileMarker(after);
           await syncDirectory(opened.handle, nextMarker, fs, sessionDir, pinnedDir);
           await verifyPathFile(fs, sidecar, nextMarker);
           await closeHandle(opened.handle, true);
+          await input.onOwnedSidecar?.(ownedMarker(sidecar, nextMarker));
           const frozen = freezeRecord(record);
           state.records.push(frozen);
           state.canonicals.add(canonical);
@@ -322,7 +336,7 @@ async function openExisting(
   try {
     const stat = await handle.stat({ bigint: true });
     validateSameFile(stat, before, before.size);
-    return { handle, marker: { dev: stat.dev, ino: stat.ino, size: Number(stat.size) } };
+    return { handle, marker: fileMarker(stat) };
   } catch (error) {
     await closeHandle(handle, false).catch(() => undefined);
     if (error instanceof CogsGitMapError) throw error;
@@ -351,7 +365,7 @@ async function openForAppend(
     try {
       const stat = await created.stat({ bigint: true });
       validateFileMode(stat, 0n);
-      return { handle: created, marker: { dev: stat.dev, ino: stat.ino, size: 0 } };
+      return { handle: created, marker: fileMarker(stat) };
     } catch (error) {
       await closeHandle(created, false).catch(() => undefined);
       if (error instanceof CogsGitMapError) throw error;
@@ -383,7 +397,7 @@ async function openExistingForAppend(
   try {
     const stat = await handle.stat({ bigint: true });
     validateSameFile(stat, before, before.size);
-    return { handle, marker: { dev: stat.dev, ino: stat.ino, size: Number(stat.size) } };
+    return { handle, marker: fileMarker(stat) };
   } catch (error) {
     await closeHandle(handle, false).catch(() => undefined);
     if (error instanceof CogsGitMapError) throw error;
@@ -438,6 +452,41 @@ async function checkedFileStat(fs: FsPort, sidecar: string): Promise<BigStats> {
   return stat;
 }
 
+function ownedMarker(path: string, marker: FileMarker): InternalCogsPiOwnedMarker {
+  return Object.freeze({
+    path,
+    dev: marker.dev,
+    ino: marker.ino,
+    mode: marker.mode,
+    nlink: marker.nlink,
+    size: BigInt(marker.size),
+    mtimeNs: marker.mtimeNs,
+    ctimeNs: marker.ctimeNs,
+    kind: "file" as const,
+  });
+}
+
+function fileMarker(stat: BigStats): FileMarker {
+  return Object.freeze({
+    dev: stat.dev,
+    ino: stat.ino,
+    size: Number(stat.size),
+    mode: Number(stat.mode) & 0o777,
+    nlink: BigInt(stat.nlink),
+    mtimeNs: statNs(stat, "mtime"),
+    ctimeNs: statNs(stat, "ctime"),
+  });
+}
+
+function statNs(stat: BigStats, prefix: "mtime" | "ctime"): bigint {
+  const ns = prefix === "mtime" ? stat.mtimeNs : stat.ctimeNs;
+  if (typeof ns === "bigint") return ns;
+  const ms = prefix === "mtime" ? stat.mtimeMs : stat.ctimeMs;
+  if (typeof ms === "bigint") return ms * 1_000_000n;
+  if (typeof ms !== "number") throw new CogsGitMapError();
+  return BigInt(Math.trunc(ms * 1_000_000));
+}
+
 function validateFileMode(stat: BigStats, expectedSize: bigint | undefined): void {
   if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1n) throw new CogsGitMapError();
   if (typeof process.getuid === "function" && stat.uid !== BigInt(process.getuid())) throw new CogsGitMapError();
@@ -448,12 +497,27 @@ function validateFileMode(stat: BigStats, expectedSize: bigint | undefined): voi
 
 function validateSameFile(stat: BigStats, before: BigStats, size: bigint): void {
   validateFileMode(stat, size);
-  if (stat.dev !== before.dev || stat.ino !== before.ino || stat.size !== before.size) throw new CogsGitMapError();
+  if (
+    stat.dev !== before.dev ||
+    stat.ino !== before.ino ||
+    stat.size !== before.size ||
+    (Number(stat.mode) & 0o777) !== (Number(before.mode) & 0o777) ||
+    BigInt(stat.nlink) !== BigInt(before.nlink)
+  )
+    throw new CogsGitMapError();
 }
 
 function validateOpenedMarker(stat: BigStats, marker: FileMarker): void {
   validateFileMode(stat, BigInt(marker.size));
-  if (stat.dev !== marker.dev || stat.ino !== marker.ino) throw new CogsGitMapError();
+  if (
+    stat.dev !== marker.dev ||
+    stat.ino !== marker.ino ||
+    (Number(stat.mode) & 0o777) !== marker.mode ||
+    BigInt(stat.nlink) !== marker.nlink ||
+    statNs(stat, "mtime") !== marker.mtimeNs ||
+    statNs(stat, "ctime") !== marker.ctimeNs
+  )
+    throw new CogsGitMapError();
 }
 
 async function verifyPathFile(fs: FsPort, sidecar: string, marker: FileMarker): Promise<void> {
@@ -469,8 +533,7 @@ async function syncDirectory(
   dir: DirectoryMarker,
 ): Promise<void> {
   const file = await handle.stat({ bigint: true });
-  if (!file.isFile() || file.dev !== marker.dev || file.ino !== marker.ino || file.size !== BigInt(marker.size))
-    throw new CogsGitMapError();
+  validateOpenedMarker(file, marker);
   const dirHandle = await fs.open(sessionDir, constants.O_RDONLY | constants.O_DIRECTORY).catch(() => {
     throw new CogsGitMapError();
   });

@@ -65,6 +65,13 @@ import {
   telemetryDuration,
   telemetryStart,
 } from "../telemetry/instrumentation.ts";
+import {
+  type CogsPiOwnedRuntimeCleanupResult,
+  type CogsPiOwnedRuntimeOptions,
+  type CogsPiOwnedRuntimeTracker,
+  createCogsPiOwnedRuntimeTracker,
+  snapshotCogsPiOwnedRuntimeOptions,
+} from "./owned-runtime.ts";
 
 export const COGS_PI_TOOL_NAMES = ["read", "write", "edit", "bash"] as const;
 export type CogsPiToolName = (typeof COGS_PI_TOOL_NAMES)[number];
@@ -106,6 +113,7 @@ export interface CogsPiSessionOptions {
   readonly policyAuthorizer?: CogsPolicyAuthorizer;
   readonly telemetry?: CogsTelemetry;
   readonly commandAudit?: CogsCommandAuditHook;
+  readonly ownedRuntime?: CogsPiOwnedRuntimeOptions;
 }
 
 export interface CogsPiGitOptions {
@@ -127,6 +135,7 @@ export interface AuthenticatedCogsPiSessionOptions
 
 export interface CogsPiSessionPorts extends SessionPort, HistoryPort, ExportPort {
   readonly dispose: () => Promise<void>;
+  readonly disposeOwnedRuntime: () => Promise<CogsPiOwnedRuntimeCleanupResult>;
   readonly model: Model<Api>;
   readonly activeToolNames: () => readonly string[];
   readonly sessionFile: () => string | undefined;
@@ -172,6 +181,7 @@ function validateOptions(options: CogsPiSessionOptions): void {
   captureCogsCommandAuditHook(options.commandAudit);
   validateOptionalInteger(options.abortTimeoutMs, "abortTimeoutMs", 1, 60_000);
   validateOptionalInteger(options.maxToolResultBytes, "maxToolResultBytes", 128, 1024 * 1024);
+  snapshotCogsPiOwnedRuntimeOptions(options.ownedRuntime);
 }
 
 function validatePolicyAuthorizer(value: unknown): asserts value is CogsPolicyAuthorizer {
@@ -466,6 +476,7 @@ export async function createCogsPiSession(options: CogsPiSessionOptions): Promis
   const rawPreparedResources = options.preparedResources;
   const telemetry = captureTelemetry(options.telemetry);
   captureCogsCommandAuditHook(options.commandAudit);
+  const ownedRuntimeOptions = snapshotCogsPiOwnedRuntimeOptions(options.ownedRuntime);
 
   validateModelApiKey(apiKey);
   const gitOptions = validateGitOptions(options.git);
@@ -478,8 +489,21 @@ export async function createCogsPiSession(options: CogsPiSessionOptions): Promis
   let preparedResources: CogsPreparedSkills | undefined;
   let startupGitBinding: CogsGitBoundary | undefined;
   let startupLocalExporter: CogsLocalExporter | undefined;
+  const ownedRuntime =
+    ownedRuntimeOptions === undefined
+      ? undefined
+      : createCogsPiOwnedRuntimeTracker({
+          agentDir,
+          sessionRoot,
+          sessionId,
+          options: ownedRuntimeOptions,
+          ...(resumeFile === undefined ? {} : { resumeFile }),
+        });
   const authStorage = AuthStorage.inMemory();
+  let ownershipStarted = false;
   try {
+    await ownedRuntime?.begin();
+    ownershipStarted = ownedRuntime !== undefined;
     preparedResources =
       rawPreparedResources === undefined ? undefined : validatePreparedResources(rawPreparedResources);
     requireCogsPolicyAllow(
@@ -501,12 +525,20 @@ export async function createCogsPiSession(options: CogsPiSessionOptions): Promis
 
     const sessionManager = await createContainedSessionManager(cwd, sessionRoot, sessionId, resumeFile);
     const sessionDir = sessionManager.getSessionDir();
+    await ownedRuntime?.adoptSessionDir(sessionDir);
     const historyStore = createCogsJsonlHistoryStore({
       sessionFile: sessionManager.getSessionFile(),
       sessionDir,
+      ...(ownedRuntime === undefined ? {} : { onOwnedHistoryMarker: ownedRuntime.recordSessionFile }),
     });
     await historyStore.initialize();
-    const gitMapStore = gitOptions === undefined ? undefined : await createCogsGitMapStore({ sessionDir });
+    const gitMapStore =
+      gitOptions === undefined
+        ? undefined
+        : await createCogsGitMapStore({
+            sessionDir,
+            ...(ownedRuntime === undefined ? {} : { onOwnedSidecar: ownedRuntime.recordGitMapFile }),
+          });
     const gitObserver =
       gitOptions?.observer ??
       (gitOptions?.manager === undefined
@@ -524,6 +556,12 @@ export async function createCogsPiSession(options: CogsPiSessionOptions): Promis
       ...(gitMapStore === undefined ? {} : { gitMap: gitMapStore }),
       skillMetadata: () => preparedResources?.metadata,
       model: { provider: modelProvider, id: modelId },
+      ...(ownedRuntime === undefined
+        ? {}
+        : {
+            onOwnedExportTransition: ownedRuntime.verifyExportTransition,
+            onOwnedExportBundle: ownedRuntime.recordExportBundle,
+          }),
     });
     startupLocalExporter = localExporter;
     const adapterRef: { current?: PiSessionAdapter } = {};
@@ -617,6 +655,7 @@ export async function createCogsPiSession(options: CogsPiSessionOptions): Promis
       localExporter,
       policyAuthorizer,
       telemetry,
+      ownedRuntime,
     });
     adapterRef.current = adapter;
     return adapter;
@@ -635,6 +674,13 @@ export async function createCogsPiSession(options: CogsPiSessionOptions): Promis
     }
     authStorage.removeRuntimeApiKey(modelProvider);
     secret.value = "";
+    if (ownershipStarted) {
+      try {
+        await ownedRuntime?.cleanup(async () => undefined);
+      } catch {
+        cleanupError = new Error("Pi owned runtime cleanup failed");
+      }
+    }
     if (cleanupError !== undefined) throw new Error("Pi session cleanup failed");
     throw error;
   }
@@ -1605,6 +1651,7 @@ class PiSessionAdapter implements CogsPiSessionPorts {
       readonly localExporter: CogsLocalExporter;
       readonly policyAuthorizer: CogsPolicyAuthorizer | undefined;
       readonly telemetry: CogsTelemetry;
+      readonly ownedRuntime: CogsPiOwnedRuntimeTracker | undefined;
     },
   ) {
     this.#authStorage = authStorage;
@@ -1806,7 +1853,13 @@ class PiSessionAdapter implements CogsPiSessionPorts {
     }
   }
 
-  public async dispose(): Promise<void> {
+  public disposeOwnedRuntime(): Promise<CogsPiOwnedRuntimeCleanupResult> {
+    const owner = this.runtime.ownedRuntime;
+    if (owner === undefined) return Promise.reject(new Error("Pi owned runtime cleanup failed"));
+    return owner.cleanup((deadlineExpiresAt) => this.dispose({ ownedDeadlineExpiresAt: deadlineExpiresAt }));
+  }
+
+  public async dispose(input: { readonly ownedDeadlineExpiresAt?: number } = {}): Promise<void> {
     if (this.phase === "disposed") return;
     if (this.phase === "draining" && this.shutdownPreparePromise !== undefined) {
       this.shutdownPrepareAbort?.abort();
@@ -1841,7 +1894,7 @@ class PiSessionAdapter implements CogsPiSessionPorts {
       cleanupError = error;
     }
     for (const cleanup of [
-      () => this.runtime.localExporter.dispose(),
+      () => this.runtime.localExporter.dispose(input.ownedDeadlineExpiresAt),
       () => this.runtime.gitBinding?.dispose() ?? Promise.resolve(),
       () => this.runtime.preparedResources?.dispose() ?? Promise.resolve(),
     ]) {

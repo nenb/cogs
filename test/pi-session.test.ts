@@ -1,9 +1,25 @@
 import assert from "node:assert/strict";
-import { cp, mkdir, mkdtemp, readFile, rm, symlink, unlink, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import {
+  chmod,
+  cp,
+  link,
+  lstat,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  realpath,
+  rm,
+  symlink,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { basename, dirname, resolve } from "node:path";
 import test from "node:test";
+import { promisify } from "node:util";
 import type { StreamFn } from "@earendil-works/pi-agent-core";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import type { AssistantMessage } from "@earendil-works/pi-ai/compat";
@@ -13,6 +29,7 @@ import { createFakeModelStream } from "../spikes/pi-embedding.ts";
 import { createApiServer } from "../src/api/server.ts";
 import type { ModelApiKeySource } from "../src/auth/model-auth.ts";
 import { type LaunchDependency, LaunchLifecycle } from "../src/launch/lifecycle.ts";
+import { createCogsPiOwnedRuntimeTracker, type InternalCogsPiOwnedMarker } from "../src/pi/owned-runtime.ts";
 import {
   COGS_PI_TOOL_NAMES,
   type CogsPiSessionOptions,
@@ -25,6 +42,7 @@ import type { CogsGitMapRecord } from "../src/session/git-map.ts";
 import type { CogsGitObservation, CogsGitObserver } from "../src/session/git-observer.ts";
 import type { CogsPreparedSkills, CogsSkillPreparerPort } from "../src/skills/session-preparer.ts";
 
+const execFileAsync = promisify(execFile);
 const require = createRequire(import.meta.url);
 const Ajv = require("ajv/dist/2020") as new (options?: Record<string, unknown>) => AjvCore;
 const addFormats = require("ajv-formats") as (ajv: AjvCore) => AjvCore;
@@ -3966,6 +3984,861 @@ test("Pi command audit rejects malformed hooks before session side effects", asy
       await assertMissing(resolve(sessionRoot, `audit-invalid-${index}`));
     }
     assert.equal(disposed, 0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+async function makeOwnedSession(root: string, overrides: Partial<CogsPiSessionOptions> = {}) {
+  const cwd = resolve(root, "workspace");
+  const agentDir = resolve(root, "agent");
+  const sessionRoot = resolve(root, "sessions");
+  await mkdir(cwd, { recursive: true });
+  await mkdir(agentDir, { recursive: true, mode: 0o700 });
+  await mkdir(sessionRoot, { recursive: true, mode: 0o700 });
+  await chmod(agentDir, 0o700);
+  await chmod(sessionRoot, 0o700);
+  return createCogsPiSession(
+    withDefaults({
+      cwd,
+      agentDir,
+      sessionRoot,
+      sessionId: "owned-session",
+      model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+      apiKey: "COGS_RUNTIME_ONLY_TEST_KEY",
+      toolPorts: fakePorts([]),
+      streamFn: oneTextStream("owned ok"),
+      ownedRuntime: { enabled: true, requireEmptyRoots: true },
+      ...overrides,
+    }),
+  );
+}
+
+async function assertGone(path: string): Promise<void> {
+  await assert.rejects(lstat(path), { code: "ENOENT" });
+}
+
+async function ownedMarkerForTest(path: string, kind: "file" | "dir"): Promise<InternalCogsPiOwnedMarker> {
+  const stat = await lstat(path, { bigint: true });
+  return Object.freeze({
+    path,
+    dev: stat.dev,
+    ino: stat.ino,
+    mode: Number(stat.mode) & 0o777,
+    nlink: BigInt(stat.nlink),
+    size: BigInt(stat.size),
+    mtimeNs: statNsForTest(stat, "mtime"),
+    ctimeNs: statNsForTest(stat, "ctime"),
+    kind,
+  });
+}
+
+function statNsForTest(stat: Awaited<ReturnType<typeof lstat>>, prefix: "mtime" | "ctime"): bigint {
+  const keyed = stat as unknown as Record<string, unknown>;
+  const ns = keyed[`${prefix}Ns`];
+  if (typeof ns === "bigint") return ns;
+  const ms = prefix === "mtime" ? stat.mtimeMs : stat.ctimeMs;
+  if (typeof ms === "bigint") return ms * 1_000_000n;
+  return BigInt(Math.trunc(Number(ms) * 1_000_000));
+}
+
+async function makeTrackedOwnedRuntime(
+  root: string,
+  hook?: { readonly after: (stage: string) => void | Promise<void> },
+) {
+  const agentDir = resolve(root, "agent");
+  const sessionRoot = resolve(root, "sessions");
+  const sessionDir = resolve(sessionRoot, "owned-session");
+  await mkdir(agentDir, { recursive: true, mode: 0o700 });
+  await mkdir(sessionRoot, { recursive: true, mode: 0o700 });
+  const tracker = createCogsPiOwnedRuntimeTracker({
+    agentDir,
+    sessionRoot,
+    sessionId: "owned-session",
+    options: { enabled: true, requireEmptyRoots: true, cleanupDeadlineMs: 120 },
+    ...(hook === undefined ? {} : { testHook: hook }),
+  });
+  await tracker.begin();
+  await mkdir(sessionDir, { mode: 0o700 });
+  await tracker.adoptSessionDir(sessionDir);
+  const file = resolve(sessionDir, "owned.jsonl");
+  await writeFile(file, '{"type":"session"}\n', { mode: 0o644, flag: "wx" });
+  await tracker.recordSessionFile(await ownedMarkerForTest(file, "file"));
+  return { agentDir, sessionRoot, sessionDir, file, tracker };
+}
+
+test("Pi owned runtime final cleanup removes exact empty roots and is idempotent", async () => {
+  const root = await mkdtemp(resolve(await realpath(tmpdir()), "cogs-pi-owned-empty-"));
+  const agentDir = resolve(root, "agent");
+  const sessionRoot = resolve(root, "sessions");
+  try {
+    const adapter = await makeOwnedSession(root);
+    const first = adapter.disposeOwnedRuntime();
+    assert.equal(first, adapter.disposeOwnedRuntime());
+    assert.deepEqual(await first, { version: "cogs.pi-owned-runtime-cleanup/v1alpha1", cleaned: true });
+    await assertGone(agentDir);
+    await assertGone(sessionRoot);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Pi owned runtime retains history/export until final cleanup then removes exact artifacts", async () => {
+  const root = await mkdtemp(resolve(await realpath(tmpdir()), "cogs-pi-owned-artifacts-"));
+  const sessionRoot = resolve(root, "sessions");
+  try {
+    const adapter = await makeOwnedSession(root, { preparedResources: hostilePrepared() });
+    await adapter.input({ requestId: "owned-run", correlationId: "owned-corr", kind: "prompt", content: "persist" });
+    await eventually(async () => assert.equal((await adapter.state()).runState, "settled"));
+    const sessionFile = adapter.sessionFile();
+    assert.ok(sessionFile);
+    assert.ok((await adapter.entries({ after: undefined, limit: 10 })).entries.length > 0);
+    const descriptor = await adapter.createExport({ requestId: "owned-export", correlationId: "owned-export-corr" });
+    assert.equal((descriptor as Record<string, unknown>).sensitive, true);
+    await lstat(sessionFile);
+    await lstat(resolve(sessionRoot, "owned-session", "exports"));
+    await adapter.disposeOwnedRuntime();
+    await assertGone(resolve(root, "agent"));
+    await assertGone(sessionRoot);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Pi owned runtime preserves unknown entries and rejects generically without broad deletion", async () => {
+  const root = await mkdtemp(resolve(await realpath(tmpdir()), "cogs-pi-owned-unknown-"));
+  const sentinel = resolve(root, "sessions", "owned-session", "unknown.txt");
+  try {
+    const adapter = await makeOwnedSession(root);
+    await writeFile(sentinel, "preserve", { flag: "wx" });
+    await assert.rejects(adapter.disposeOwnedRuntime(), /owned runtime cleanup failed/i);
+    assert.equal(await readFile(sentinel, "utf8"), "preserve");
+    assert.deepEqual((await readdir(resolve(root, "agent"))).sort(), []);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Pi owned runtime requires explicit empty roots option and rejects nonempty roots", async () => {
+  const root = await mkdtemp(resolve(await realpath(tmpdir()), "cogs-pi-owned-roots-"));
+  try {
+    await assert.rejects(
+      makeOwnedSession(root, { ownedRuntime: { enabled: true } as never }),
+      /owned runtime cleanup failed/i,
+    );
+    await mkdir(resolve(root, "agent"), { recursive: true, mode: 0o700 });
+    await mkdir(resolve(root, "sessions"), { recursive: true, mode: 0o700 });
+    await writeFile(resolve(root, "agent", "unknown.txt"), "x");
+    await assert.rejects(makeOwnedSession(root), /owned runtime cleanup failed/i);
+    assert.equal(await readFile(resolve(root, "agent", "unknown.txt"), "utf8"), "x");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Pi owned runtime accepts controlled JSONL and Git growth across repeated turns", async () => {
+  const root = await mkdtemp(resolve(await realpath(tmpdir()), "cogs-pi-owned-growth-"));
+  try {
+    const notes: CogsGitMapRecord[] = [];
+    const adapter = await makeOwnedSession(root, {
+      git: {
+        repositoryId: "workspace-1",
+        observer: fakeObserver(["a".repeat(40), "b".repeat(40), "c".repeat(40), "d".repeat(40)], notes),
+      },
+    });
+    await adapter.input({ requestId: "owned-run-1", correlationId: "owned-corr-1", kind: "prompt", content: "one" });
+    await eventually(async () => assert.equal((await adapter.state()).runState, "settled"));
+    await adapter.input({ requestId: "owned-run-2", correlationId: "owned-corr-2", kind: "prompt", content: "two" });
+    await eventually(async () => assert.equal((await adapter.state()).runState, "settled"));
+    assert.ok(notes.length >= 2);
+    await adapter.disposeOwnedRuntime();
+    await assertGone(resolve(root, "agent"));
+    await assertGone(resolve(root, "sessions"));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Pi owned runtime supports repeated exports after settled backup removal", async () => {
+  const root = await mkdtemp(resolve(await realpath(tmpdir()), "cogs-pi-owned-two-export-"));
+  try {
+    const adapter = await makeOwnedSession(root, { preparedResources: hostilePrepared() });
+    await adapter.input({ requestId: "owned-run", correlationId: "owned-corr", kind: "prompt", content: "persist" });
+    await eventually(async () => assert.equal((await adapter.state()).runState, "settled"));
+    const first = await adapter.createExport({ requestId: "owned-export-1", correlationId: "owned-export-corr-1" });
+    const second = await adapter.createExport({ requestId: "owned-export-2", correlationId: "owned-export-corr-2" });
+    assert.equal((first as { bundle: string }).bundle, (second as { bundle: string }).bundle);
+    await adapter.disposeOwnedRuntime();
+    await assertGone(resolve(root, "agent"));
+    await assertGone(resolve(root, "sessions"));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Pi owned runtime rejects schema-valid replaced export between repeated exports", async () => {
+  const root = await mkdtemp(resolve(await realpath(tmpdir()), "cogs-pi-owned-export-transition-"));
+  try {
+    const adapter = await makeOwnedSession(root, { preparedResources: hostilePrepared() });
+    await adapter.input({ requestId: "owned-run", correlationId: "owned-corr", kind: "prompt", content: "persist" });
+    await eventually(async () => assert.equal((await adapter.state()).runState, "settled"));
+    const first = await adapter.createExport({ requestId: "owned-export-1", correlationId: "owned-export-corr-1" });
+    const bundle = resolve(root, "sessions", "owned-session", "exports", (first as { bundle: string }).bundle);
+    for (const name of await readdir(bundle)) {
+      const path = resolve(bundle, name);
+      const bytes = await readFile(path);
+      await unlink(path);
+      await writeFile(path, bytes, { mode: 0o600, flag: "wx" });
+    }
+    await assert.rejects(
+      adapter.createExport({ requestId: "owned-export-2", correlationId: "owned-export-corr-2" }),
+      /local export unavailable/,
+    );
+    assert.ok((await readdir(bundle)).includes("manifest.json"));
+    await assert.rejects(adapter.disposeOwnedRuntime(), /owned runtime cleanup failed/i);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Pi session ports never expose owned runtime marker APIs", async () => {
+  const root = await mkdtemp(resolve(await realpath(tmpdir()), "cogs-pi-owned-surface-"));
+  try {
+    const adapter = await makeOwnedSession(root);
+    const keys = new Set(Reflect.ownKeys(Object.getPrototypeOf(adapter)).map(String));
+    assert.equal(keys.has("recordSessionFile"), false);
+    assert.equal(keys.has("recordGitMapFile"), false);
+    assert.equal(keys.has("recordExportBundle"), false);
+    assert.deepEqual(await adapter.disposeOwnedRuntime(), {
+      version: "cogs.pi-owned-runtime-cleanup/v1alpha1",
+      cleaned: true,
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Pi owned runtime failure hook rejects before broad deletion and after joined deletion", async () => {
+  const makeArmed = async (name: string, failAt: string) => {
+    const root = await mkdtemp(resolve(await realpath(tmpdir()), `cogs-pi-owned-hook-${name}-`));
+    const agentDir = resolve(root, "agent");
+    const sessionRoot = resolve(root, "sessions");
+    const sessionDir = resolve(sessionRoot, "owned-session");
+    await mkdir(agentDir, { recursive: true, mode: 0o700 });
+    await mkdir(sessionRoot, { recursive: true, mode: 0o700 });
+    const seen: string[] = [];
+    const tracker = createCogsPiOwnedRuntimeTracker({
+      agentDir,
+      sessionRoot,
+      sessionId: "owned-session",
+      options: { enabled: true, requireEmptyRoots: true, cleanupDeadlineMs: 100 },
+      testHook: Object.freeze({
+        after: Object.freeze((stage: string) => {
+          seen.push(stage);
+          if (stage === failAt) throw new Error("fail");
+        }),
+      }),
+    });
+    await tracker.begin();
+    await mkdir(sessionDir, { mode: 0o700 });
+    await tracker.adoptSessionDir(sessionDir);
+    const file = resolve(sessionDir, "owned.jsonl");
+    await writeFile(file, '{"type":"session"}\n', { mode: 0o644, flag: "wx" });
+    await tracker.recordSessionFile(await ownedMarkerForTest(file, "file"));
+    return { root, sessionRoot, sessionDir, file, tracker, seen };
+  };
+
+  const preflight = await makeArmed("preflight", "preflight:done");
+  try {
+    await assert.rejects(
+      preflight.tracker.cleanup(async () => undefined),
+      /owned runtime cleanup failed/i,
+    );
+    assert.equal(await readFile(preflight.file, "utf8"), '{"type":"session"}\n');
+  } finally {
+    await rm(preflight.root, { recursive: true, force: true });
+  }
+
+  const afterUnlink = await makeArmed("unlink", "unlink:after");
+  try {
+    await assert.rejects(
+      afterUnlink.tracker.cleanup(async () => undefined),
+      /owned runtime cleanup failed/i,
+    );
+    await assertGone(afterUnlink.file);
+    assert.ok(afterUnlink.seen.includes("unlink:after"));
+    assert.ok(await lstat(afterUnlink.sessionDir));
+  } finally {
+    await rm(afterUnlink.root, { recursive: true, force: true });
+  }
+});
+
+test("Pi owned runtime rejects strict test hook anomalies before touching roots", async () => {
+  const root = await mkdtemp(resolve(await realpath(tmpdir()), "cogs-pi-owned-hook-shape-"));
+  try {
+    const agentDir = resolve(root, "agent");
+    const sessionRoot = resolve(root, "sessions");
+    await mkdir(agentDir, { recursive: true, mode: 0o700 });
+    await mkdir(sessionRoot, { recursive: true, mode: 0o700 });
+    let getterInvoked = false;
+    const hostile = Object.freeze(
+      Object.defineProperty({}, "after", {
+        enumerable: true,
+        get: () => {
+          getterInvoked = true;
+          return Object.freeze(() => undefined);
+        },
+      }),
+    ) as { readonly after: (stage: string) => void };
+    assert.throws(
+      () =>
+        createCogsPiOwnedRuntimeTracker({
+          agentDir,
+          sessionRoot,
+          sessionId: "owned-session",
+          options: { enabled: true, requireEmptyRoots: true },
+          testHook: hostile,
+        }),
+      /owned runtime cleanup failed/i,
+    );
+    assert.equal(getterInvoked, false);
+    const thenable = () => undefined;
+    Object.defineProperty(thenable, `th${"en"}`, { value: Object.freeze(() => undefined) });
+    Object.freeze(thenable);
+    assert.throws(
+      () =>
+        createCogsPiOwnedRuntimeTracker({
+          agentDir,
+          sessionRoot,
+          sessionId: "owned-session",
+          options: { enabled: true, requireEmptyRoots: true },
+          testHook: Object.freeze({ after: thenable }),
+        }),
+      /owned runtime cleanup failed/i,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Pi owned runtime rejects directory replacement at cleanup preflight without unlink", async () => {
+  const cases = ["agent", "root", "session", "export-root", "export-bundle"] as const;
+  for (const target of cases) {
+    const root = await mkdtemp(resolve(await realpath(tmpdir()), `cogs-pi-owned-dir-race-${target}-`));
+    let armed = true;
+    try {
+      const hook = Object.freeze({
+        after: Object.freeze(async (stage: string) => {
+          if (!armed || stage !== "preflight:start") return;
+          armed = false;
+          const sessionDir = resolve(root, "sessions", "owned-session");
+          const exports = resolve(sessionDir, "exports");
+          const bundle = resolve(exports, "cogs-session-owned-session");
+          const replace =
+            target === "agent"
+              ? resolve(root, "agent")
+              : target === "root"
+                ? resolve(root, "sessions")
+                : target === "session"
+                  ? sessionDir
+                  : target === "export-root"
+                    ? exports
+                    : bundle;
+          await rm(replace, { recursive: true, force: true });
+          await mkdir(replace, { recursive: true, mode: 0o700 });
+          await writeFile(resolve(replace, "sentinel.txt"), "preserve", { flag: "wx" });
+        }),
+      });
+      const owned = await makeTrackedOwnedRuntime(root, hook);
+      const exports = resolve(owned.sessionDir, "exports");
+      const bundle = resolve(exports, "cogs-session-owned-session");
+      await mkdir(bundle, { recursive: true, mode: 0o700 });
+      const files = [
+        "git-map.json",
+        "manifest.json",
+        "session.jsonl",
+        "skills.json",
+        "transform-report.json",
+        "warnings.json",
+      ];
+      for (const file of files) await writeFile(resolve(bundle, file), "{}", { mode: 0o600, flag: "wx" });
+      await owned.tracker.recordExportBundle({
+        root: await ownedMarkerForTest(exports, "dir"),
+        bundleDir: await ownedMarkerForTest(bundle, "dir"),
+        files: await Promise.all(files.map((file) => ownedMarkerForTest(resolve(bundle, file), "file"))),
+      });
+      await assert.rejects(
+        owned.tracker.cleanup(async () => undefined),
+        /owned runtime cleanup failed/i,
+      );
+      const replace =
+        target === "agent"
+          ? resolve(root, "agent")
+          : target === "root"
+            ? resolve(root, "sessions")
+            : target === "session"
+              ? resolve(root, "sessions", "owned-session")
+              : target === "export-root"
+                ? resolve(root, "sessions", "owned-session", "exports")
+                : resolve(root, "sessions", "owned-session", "exports", "cogs-session-owned-session");
+      assert.equal(await readFile(resolve(replace, "sentinel.txt"), "utf8"), "preserve");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test("Pi owned runtime stage failures cover close fsync rmdir and expired delayed stages", async () => {
+  const cases = ["close:after", "fsync:after", "rmdir:before", "unlink:before-expire"] as const;
+  for (const failure of cases) {
+    const root = await mkdtemp(
+      resolve(await realpath(tmpdir()), `cogs-pi-owned-stage-${failure.replace(/[^a-z]/g, "-")}-`),
+    );
+    const seen: string[] = [];
+    try {
+      const hook = Object.freeze({
+        after: Object.freeze(async (stage: string) => {
+          seen.push(stage);
+          if (failure === "unlink:before-expire" && stage === "preflight:done")
+            await new Promise((resolveTimer) => setTimeout(resolveTimer, 150));
+          if (stage === failure) throw new Error("stage failure");
+        }),
+      });
+      const owned = await makeTrackedOwnedRuntime(root, hook);
+      await assert.rejects(
+        owned.tracker.cleanup(async () => undefined),
+        /owned runtime cleanup failed/i,
+      );
+      if (failure === "fsync:after") await assertGone(owned.file);
+      else if (failure === "rmdir:before") assert.ok(await lstat(owned.sessionDir));
+      else assert.equal(await readFile(owned.file, "utf8"), '{"type":"session"}\n');
+      assert.ok(seen.length > 0);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test("Pi owned runtime explicitly adopts contained resumed JSONL and cleans it after append", async () => {
+  const sourceRoot = await mkdtemp(resolve(await realpath(tmpdir()), "cogs-pi-owned-resume-source-"));
+  const ownedRoot = await mkdtemp(resolve(await realpath(tmpdir()), "cogs-pi-owned-resume-adopt-"));
+  try {
+    const sourceCwd = resolve(sourceRoot, "workspace");
+    const sourceAgent = resolve(sourceRoot, "agent");
+    const sourceSessionRoot = resolve(sourceRoot, "sessions");
+    await mkdir(sourceCwd, { recursive: true });
+    await mkdir(sourceAgent, { recursive: true, mode: 0o700 });
+    await mkdir(sourceSessionRoot, { recursive: true, mode: 0o700 });
+    const source = await createCogsPiSession(
+      withDefaults({
+        cwd: sourceCwd,
+        agentDir: sourceAgent,
+        sessionRoot: sourceSessionRoot,
+        sessionId: "owned-session",
+        model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+        apiKey: "COGS_RUNTIME_ONLY_TEST_KEY",
+        toolPorts: fakePorts([]),
+        streamFn: oneTextStream("resume source ok"),
+      }),
+    );
+    await source.input({
+      requestId: "resume-source",
+      correlationId: "resume-source-corr",
+      kind: "prompt",
+      content: "persist",
+    });
+    await eventually(async () => assert.equal((await source.state()).runState, "settled"));
+    const sourceFile = source.sessionFile();
+    assert.ok(sourceFile);
+    const sourceEntries = (await source.entries({ after: undefined, limit: 20 })).entries.length;
+    await source.dispose();
+
+    const ownedAgent = resolve(ownedRoot, "agent");
+    const ownedSessionRoot = resolve(ownedRoot, "sessions");
+    const ownedSessionDir = resolve(ownedSessionRoot, "owned-session");
+    await mkdir(ownedAgent, { recursive: true, mode: 0o700 });
+    await mkdir(ownedSessionDir, { recursive: true, mode: 0o700 });
+    await chmod(ownedAgent, 0o700);
+    await chmod(ownedSessionRoot, 0o700);
+    await chmod(ownedSessionDir, 0o700);
+    const resumeName = basename(sourceFile);
+    const ownedResume = resolve(ownedSessionDir, resumeName);
+    await cp(sourceFile, ownedResume);
+    await chmod(ownedResume, 0o644);
+    const adoptedIdentity = await ownedMarkerForTest(ownedResume, "file");
+
+    const ownedCwd = resolve(ownedRoot, "workspace");
+    await mkdir(ownedCwd, { recursive: true });
+    const resumed = await createCogsPiSession(
+      withDefaults({
+        cwd: ownedCwd,
+        agentDir: ownedAgent,
+        sessionRoot: ownedSessionRoot,
+        sessionId: "owned-session",
+        resumeFile: resumeName,
+        model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+        apiKey: "COGS_RUNTIME_ONLY_TEST_KEY",
+        toolPorts: fakePorts([]),
+        streamFn: oneTextStream("resume append ok"),
+        ownedRuntime: { enabled: true, requireEmptyRoots: true },
+      }),
+    );
+    assert.equal(resumed.sessionFile(), ownedResume);
+    assert.deepEqual(await ownedMarkerForTest(ownedResume, "file"), adoptedIdentity);
+    assert.ok((await resumed.entries({ after: undefined, limit: 30 })).entries.length >= sourceEntries);
+    await resumed.input({
+      requestId: "resume-owned",
+      correlationId: "resume-owned-corr",
+      kind: "prompt",
+      content: "append",
+    });
+    await eventually(async () => assert.equal((await resumed.state()).runState, "settled"));
+    assert.ok((await resumed.entries({ after: undefined, limit: 40 })).entries.length > sourceEntries);
+    await resumed.disposeOwnedRuntime();
+    await assertGone(ownedAgent);
+    await assertGone(ownedSessionRoot);
+    assert.ok(await lstat(sourceFile));
+  } finally {
+    await rm(sourceRoot, { recursive: true, force: true });
+    await rm(ownedRoot, { recursive: true, force: true });
+  }
+});
+
+test("Pi owned runtime rejects hostile explicit resumed JSONL adoption before mutation", async () => {
+  const cases = [
+    "extra-agent",
+    "extra-session-root",
+    "extra-session-file",
+    "symlink",
+    "hardlink",
+    "wrong-mode",
+    "replace",
+  ] as const;
+  for (const hazard of cases) {
+    const root = await mkdtemp(resolve(await realpath(tmpdir()), `cogs-pi-owned-resume-${hazard}-`));
+    try {
+      const agentDir = resolve(root, "agent");
+      const sessionRoot = resolve(root, "sessions");
+      const sessionDir = resolve(sessionRoot, "owned-session");
+      const resumeName = "resume.jsonl";
+      const resumePath = resolve(sessionDir, resumeName);
+      await mkdir(agentDir, { recursive: true, mode: 0o700 });
+      await mkdir(sessionDir, { recursive: true, mode: 0o700 });
+      await writeFile(
+        resumePath,
+        '{"type":"session","version":3,"id":"owned-session","timestamp":"2026-07-17T00:00:00.000Z","cwd":"/workspace"}\n',
+        { mode: 0o644, flag: "wx" },
+      );
+      const sentinel = resolve(root, "sentinel.txt");
+      await writeFile(sentinel, "preserve", { flag: "wx" });
+      if (hazard === "extra-agent") await writeFile(resolve(agentDir, "extra.txt"), "x", { flag: "wx" });
+      else if (hazard === "extra-session-root") await mkdir(resolve(sessionRoot, "other-session"), { mode: 0o700 });
+      else if (hazard === "extra-session-file")
+        await writeFile(resolve(sessionDir, "other.jsonl"), "{}\n", { flag: "wx" });
+      else if (hazard === "symlink") {
+        await unlink(resumePath);
+        await symlink(sentinel, resumePath);
+      } else if (hazard === "hardlink") await link(resumePath, resolve(sessionDir, "linked.jsonl"));
+      else if (hazard === "wrong-mode") await chmod(resumePath, 0o600);
+
+      if (hazard === "replace") {
+        const tracker = createCogsPiOwnedRuntimeTracker({
+          agentDir,
+          sessionRoot,
+          sessionId: "owned-session",
+          resumeFile: resumeName,
+          options: { enabled: true, requireEmptyRoots: true },
+        });
+        await tracker.begin();
+        await unlink(resumePath);
+        await writeFile(resumePath, '{"type":"session"}\n', { mode: 0o644, flag: "wx" });
+        await assert.rejects(
+          tracker.recordSessionFile(await ownedMarkerForTest(resumePath, "file")),
+          /owned runtime cleanup failed/i,
+        );
+      } else {
+        const cwd = resolve(root, "workspace");
+        await mkdir(cwd, { recursive: true });
+        await assert.rejects(
+          createCogsPiSession(
+            withDefaults({
+              cwd,
+              agentDir,
+              sessionRoot,
+              sessionId: "owned-session",
+              resumeFile: resumeName,
+              model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+              apiKey: "COGS_RUNTIME_ONLY_TEST_KEY",
+              toolPorts: fakePorts([]),
+              streamFn: oneTextStream("resume hostile"),
+              ownedRuntime: { enabled: true, requireEmptyRoots: true },
+            }),
+          ),
+          /owned runtime cleanup failed|invalid session/i,
+        );
+      }
+      assert.equal(await readFile(sentinel, "utf8"), "preserve");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test("Pi owned runtime rejects owner-marker callback path replacements", async () => {
+  const root = await mkdtemp(resolve(await realpath(tmpdir()), "cogs-pi-owned-marker-race-"));
+  try {
+    const agentDir = resolve(root, "agent");
+    const sessionRoot = resolve(root, "sessions");
+    const sessionDir = resolve(sessionRoot, "owned-session");
+    await mkdir(agentDir, { recursive: true, mode: 0o700 });
+    await mkdir(sessionRoot, { recursive: true, mode: 0o700 });
+    const tracker = createCogsPiOwnedRuntimeTracker({
+      agentDir,
+      sessionRoot,
+      sessionId: "owned-session",
+      options: { enabled: true, requireEmptyRoots: true },
+    });
+    await tracker.begin();
+    await mkdir(sessionDir, { mode: 0o700 });
+    await tracker.adoptSessionDir(sessionDir);
+    const gitMap = resolve(sessionDir, "git-map.jsonl");
+    await writeFile(gitMap, "{}\n", { mode: 0o600, flag: "wx" });
+    const gitOwner = await ownedMarkerForTest(gitMap, "file");
+    await unlink(gitMap);
+    await writeFile(gitMap, "{}\n", { mode: 0o600, flag: "wx" });
+    await assert.rejects(tracker.recordGitMapFile(gitOwner), /owned runtime cleanup failed/i);
+    const replacementOwner = await ownedMarkerForTest(gitMap, "file");
+    await assert.rejects(
+      tracker.recordGitMapFile(
+        Object.freeze({
+          ...replacementOwner,
+          mtimeNs: gitOwner.mtimeNs,
+          ctimeNs: gitOwner.ctimeNs,
+        }),
+      ),
+      /owned runtime cleanup failed/i,
+    );
+
+    const exports = resolve(sessionDir, "exports");
+    const bundle = resolve(exports, "cogs-session-owned-session");
+    await mkdir(bundle, { recursive: true, mode: 0o700 });
+    const files = [
+      "git-map.json",
+      "manifest.json",
+      "session.jsonl",
+      "skills.json",
+      "transform-report.json",
+      "warnings.json",
+    ];
+    for (const file of files) await writeFile(resolve(bundle, file), "{}", { mode: 0o600, flag: "wx" });
+    const ledger = {
+      root: await ownedMarkerForTest(exports, "dir"),
+      bundleDir: await ownedMarkerForTest(bundle, "dir"),
+      files: await Promise.all(files.map((file) => ownedMarkerForTest(resolve(bundle, file), "file"))),
+    };
+    await unlink(resolve(bundle, "warnings.json"));
+    await writeFile(resolve(bundle, "warnings.json"), "{}", { mode: 0o600, flag: "wx" });
+    await assert.rejects(tracker.recordExportBundle(ledger), /owned runtime cleanup failed/i);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Pi owned runtime rejects replacements and preserves matching attacker export names", async () => {
+  const root = await mkdtemp(resolve(await realpath(tmpdir()), "cogs-pi-owned-replace-"));
+  try {
+    const adapter = await makeOwnedSession(root, { preparedResources: hostilePrepared() });
+    await adapter.input({ requestId: "owned-run", correlationId: "owned-corr", kind: "prompt", content: "persist" });
+    await eventually(async () => assert.equal((await adapter.state()).runState, "settled"));
+    const descriptor = await adapter.createExport({ requestId: "owned-export", correlationId: "owned-export-corr" });
+    const sessionFile = adapter.sessionFile();
+    assert.ok(sessionFile);
+    const bundle = resolve(root, "sessions", "owned-session", "exports", (descriptor as { bundle: string }).bundle);
+    const attacker = resolve(bundle, "warnings.json");
+    await unlink(attacker);
+    await writeFile(attacker, "attacker replacement", { flag: "wx" });
+    await assert.rejects(adapter.disposeOwnedRuntime(), /owned runtime cleanup failed/i);
+    assert.equal(await readFile(attacker, "utf8"), "attacker replacement");
+    assert.ok((await readdir(bundle)).includes("manifest.json"));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Pi owned runtime rejects JSONL, Git map, file type, hardlink, and unknown-level hazards", async () => {
+  const cases = [
+    "jsonl-replace",
+    "jsonl-shrink",
+    "gitmap-replace",
+    "symlink",
+    "fifo",
+    "hardlink",
+    "wrong-mode",
+    "unknown-root",
+    "unknown-export",
+  ] as const;
+  for (const hazard of cases) {
+    const root = await mkdtemp(resolve(await realpath(tmpdir()), `cogs-pi-owned-${hazard}-`));
+    try {
+      const notes: CogsGitMapRecord[] = [];
+      const adapter = await makeOwnedSession(root, {
+        ...(hazard === "gitmap-replace"
+          ? { git: { repositoryId: "workspace-1", observer: fakeObserver(["a".repeat(40), "b".repeat(40)], notes) } }
+          : {}),
+        ...(hazard === "unknown-export" ? { preparedResources: hostilePrepared() } : {}),
+      });
+      await adapter.input({ requestId: "owned-run", correlationId: "owned-corr", kind: "prompt", content: "persist" });
+      await eventually(async () => assert.equal((await adapter.state()).runState, "settled"));
+      const descriptor =
+        hazard === "unknown-export"
+          ? await adapter.createExport({ requestId: "owned-export", correlationId: "owned-export-corr" })
+          : undefined;
+      const sessionDir = resolve(root, "sessions", "owned-session");
+      const sessionFile = adapter.sessionFile();
+      assert.ok(sessionFile);
+      const bundle =
+        descriptor === undefined
+          ? undefined
+          : resolve(sessionDir, "exports", (descriptor as { bundle: string }).bundle);
+      if (hazard === "jsonl-replace") {
+        await unlink(sessionFile);
+        await writeFile(sessionFile, "{}\n", { flag: "wx" });
+      } else if (hazard === "jsonl-shrink") {
+        await writeFile(sessionFile, "", { flag: "w" });
+      } else if (hazard === "gitmap-replace") {
+        await unlink(resolve(sessionDir, "git-map.jsonl"));
+        await writeFile(resolve(sessionDir, "git-map.jsonl"), "attacker\n", { flag: "wx" });
+      } else if (hazard === "symlink") {
+        await symlink(sessionFile, resolve(sessionDir, "unknown-link"));
+      } else if (hazard === "fifo") {
+        await execFileAsync("mkfifo", [resolve(sessionDir, "unknown-fifo")]);
+      } else if (hazard === "hardlink") {
+        await link(sessionFile, resolve(sessionDir, "unknown-hardlink"));
+      } else if (hazard === "wrong-mode") {
+        await chmod(sessionFile, 0o666);
+      } else if (hazard === "unknown-root") {
+        await writeFile(resolve(root, "sessions", "unknown.txt"), "preserve", { flag: "wx" });
+      } else {
+        assert.ok(bundle);
+        await writeFile(resolve(bundle, "unknown.txt"), "preserve", { flag: "wx" });
+      }
+      await assert.rejects(adapter.disposeOwnedRuntime(), /owned runtime cleanup failed/i);
+      assert.equal(
+        JSON.stringify(await adapter.disposeOwnedRuntime().catch((error: unknown) => error)).includes(sessionDir),
+        false,
+      );
+      assert.ok(await lstat(sessionDir));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test("Pi owned runtime rollback is exact and final cleanup is same-promise during dispose", async () => {
+  const root = await mkdtemp(resolve(await realpath(tmpdir()), "cogs-pi-owned-rollback-"));
+  const denyEnable = Object.freeze((input: unknown) => {
+    const allow = (input as { action?: unknown }).action !== "tool.enable";
+    return Object.freeze({
+      version: "cogs.policy-decision/v1alpha1" as const,
+      decision_id: `sha256:${"c".repeat(64)}` as const,
+      allow,
+      reason: allow ? ("allowed" as const) : ("unsupported_surface" as const),
+    });
+  });
+  try {
+    await assert.rejects(
+      makeOwnedSession(root, { policyAuthorizer: denyEnable }),
+      /Pi session cleanup failed|policy denied|unsupported/i,
+    );
+    await assertGone(resolve(root, "agent"));
+    await assertGone(resolve(root, "sessions"));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+
+  const concurrentRoot = await mkdtemp(resolve(await realpath(tmpdir()), "cogs-pi-owned-concurrent-"));
+  try {
+    const adapter = await makeOwnedSession(concurrentRoot);
+    const normalDispose = adapter.dispose();
+    const owned = adapter.disposeOwnedRuntime();
+    assert.equal(owned, adapter.disposeOwnedRuntime());
+    await normalDispose;
+    assert.deepEqual(await owned, { version: "cogs.pi-owned-runtime-cleanup/v1alpha1", cleaned: true });
+    await assertGone(resolve(concurrentRoot, "agent"));
+    await assertGone(resolve(concurrentRoot, "sessions"));
+  } finally {
+    await rm(concurrentRoot, { recursive: true, force: true });
+  }
+});
+
+test("non-owned Pi session dispose retains host runtime directories", async () => {
+  const root = await mkdtemp(resolve(await realpath(tmpdir()), "cogs-pi-non-owned-retain-"));
+  try {
+    const cwd = resolve(root, "workspace");
+    const agentDir = resolve(root, "agent");
+    const sessionRoot = resolve(root, "sessions");
+    await mkdir(cwd, { recursive: true });
+    await mkdir(agentDir, { recursive: true, mode: 0o700 });
+    await mkdir(sessionRoot, { recursive: true, mode: 0o700 });
+    const adapter = await createCogsPiSession(
+      withDefaults({
+        cwd,
+        agentDir,
+        sessionRoot,
+        sessionId: "non-owned-session",
+        model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+        apiKey: "COGS_RUNTIME_ONLY_TEST_KEY",
+        toolPorts: fakePorts([]),
+      }),
+    );
+    await adapter.dispose();
+    assert.ok(await lstat(agentDir));
+    assert.ok(await lstat(sessionRoot));
+    await assert.rejects(adapter.disposeOwnedRuntime(), /Pi owned runtime cleanup failed/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Pi owned runtime rejects hostile option shapes before creating roots", async () => {
+  const root = await mkdtemp(resolve(await realpath(tmpdir()), "cogs-pi-owned-hostile-"));
+  try {
+    const cwd = resolve(root, "workspace");
+    const agentDir = resolve(root, "agent");
+    const sessionRoot = resolve(root, "sessions");
+    await mkdir(cwd, { recursive: true });
+    await mkdir(agentDir, { recursive: true, mode: 0o700 });
+    await mkdir(sessionRoot, { recursive: true, mode: 0o700 });
+    await chmod(agentDir, 0o700);
+    await chmod(sessionRoot, 0o700);
+    const hostile = Object.create(null, {
+      enabled: {
+        enumerable: true,
+        get() {
+          throw new Error("SECRET_HOSTILE_OWNED_RUNTIME");
+        },
+      },
+    });
+    await assert.rejects(
+      createCogsPiSession(
+        withDefaults({
+          cwd,
+          agentDir,
+          sessionRoot,
+          sessionId: "owned-session",
+          model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+          apiKey: "COGS_RUNTIME_ONLY_TEST_KEY",
+          toolPorts: fakePorts([]),
+          ownedRuntime: hostile as CogsPiSessionOptions["ownedRuntime"] & {},
+        }),
+      ),
+      (error: unknown) => {
+        assert.equal(String(error).includes("SECRET_HOSTILE_OWNED_RUNTIME"), false);
+        return true;
+      },
+    );
+    assert.deepEqual(await readdir(agentDir), []);
+    assert.deepEqual(await readdir(sessionRoot), []);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
