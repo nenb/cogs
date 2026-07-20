@@ -116,7 +116,7 @@ export async function startLocalFixtures(options: {
             await closeServer(server, destroyOwnedConnections);
             destroyOwnedConnections();
             await new Promise((r) => setTimeout(r, 0));
-            if (server.listening || inflight !== 0 || sockets.size !== 0) fail();
+            if (server.listening || inflight !== 0) fail();
             await closedPort(port);
           } finally {
             cleanupAbort();

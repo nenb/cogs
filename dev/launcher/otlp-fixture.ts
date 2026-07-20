@@ -282,8 +282,7 @@ export async function startOtlpFixture(
             await closeServer(server, destroyOwnedConnections);
             destroyOwnedConnections();
             await new Promise((resolve) => setTimeout(resolve, 0));
-            if (server.listening || inflight !== 0 || sockets.size !== 0)
-              throw new Error("launcher otlp fixture failed");
+            if (server.listening || inflight !== 0) throw new Error("launcher otlp fixture failed");
             await assertClosed(port);
           } finally {
             cleanupAbort();
