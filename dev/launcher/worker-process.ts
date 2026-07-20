@@ -28,7 +28,7 @@ export type WorkerProvisionalRuntime = Readonly<{
   close(): Promise<void>;
 }>;
 
-export type WorkerRuntimeFactory = (signal: AbortSignal) => Promise<WorkerProvisionalRuntime>;
+export type WorkerRuntimeFactory = (state: LauncherState, signal: AbortSignal) => Promise<WorkerProvisionalRuntime>;
 
 export type WorkerChildChannel = Readonly<{
   connected(): boolean;
@@ -455,7 +455,7 @@ export async function runWorkerChild(
               fail();
             recovery = true;
             stage = "ack";
-            const candidate = await runtimeFactory(runtimeAbort.signal);
+            const candidate = await runtimeFactory(state, runtimeAbort.signal);
             let provisional: WorkerProvisionalRuntime;
             try {
               provisional = runtimePort(candidate);
@@ -539,7 +539,10 @@ export function processWorkerChannel(): WorkerChildChannel {
   });
 }
 
-export function unavailableWorkerRuntime(_signal: AbortSignal): Promise<WorkerProvisionalRuntime> {
+export function unavailableWorkerRuntime(
+  _state: LauncherState,
+  _signal: AbortSignal,
+): Promise<WorkerProvisionalRuntime> {
   return Promise.reject(generic());
 }
 
