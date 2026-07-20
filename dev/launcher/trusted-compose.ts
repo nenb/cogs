@@ -130,6 +130,10 @@ const DEFAULT_SEAMS: TrustedCompositionSeams = Object.freeze({
   beforeRemoveRuntimePath: () => undefined,
 });
 
+function debugStartupStage(stage: string): void {
+  if (process.env.COGS_LAUNCHER_DEBUG_STAGE === "1") process.stderr.write(`launcher-debug-stage:${stage}\n`);
+}
+
 export async function createTrustedWorkerRuntime(
   state: LauncherState,
   callerSignal: AbortSignal,
@@ -197,33 +201,40 @@ export async function createTrustedWorkerRuntime(
 
   try {
     admitted = await checkAdmission();
+    debugStartupStage("trusted-admission");
     await s.preflightEgressRoot(startup.signal);
+    debugStartupStage("trusted-egress-root");
     await checkAdmission();
 
     const sshControls = await s.materializeSshControls(state, admitted.profile, admitted.authority, startup.signal);
+    debugStartupStage("trusted-ssh-controls");
     cleanups.push({ name: "ssh-key", close: () => sshControls.close() });
     requireSshControls(sshControls);
     checkCooperative(startup.signal, deadlineAt);
     await checkAdmission();
 
     const skills = await s.createSkillInputs(state, startup.signal);
+    debugStartupStage("trusted-skills");
     cleanups.push({ name: "host-skills", close: () => skills.close() });
     requireSkills(skills);
     checkCooperative(startup.signal, deadlineAt);
 
     const roots = await createRuntimeRoots(state, s);
+    debugStartupStage("trusted-runtime-roots");
     cleanups.push({ name: "runtime-roots", close: () => roots.close(piOwnedCleaned) });
     sessionStorageReady = true;
     checkCooperative(startup.signal, deadlineAt);
     await checkAdmission();
 
     const apiToken = await s.readApiToken(state);
+    debugStartupStage("trusted-api-token-holder");
     cleanups.push({ name: "api-token", close: () => apiToken.dispose() });
     requireToken(apiToken);
     checkCooperative(startup.signal, deadlineAt);
     await checkAdmission();
 
     const openbao = await s.startOpenBao(state, { signal: startup.signal, deadlineAt });
+    debugStartupStage("trusted-openbao");
     cleanups.push({ name: "openbao", close: (options) => openbao.close(options) });
     requireOpenBao(openbao);
     checkCooperative(startup.signal, deadlineAt);
@@ -240,12 +251,14 @@ export async function createTrustedWorkerRuntime(
         deadlineAt,
       }),
     );
+    debugStartupStage("trusted-fixture");
     cleanups.push({ name: "local-fixture", close: (options) => fixture.close(options) });
     requireFixture(fixture);
     checkCooperative(startup.signal, deadlineAt);
     await checkAdmission();
 
     const otlp = await s.startOtlpFixture({ signal: startup.signal, deadlineAt });
+    debugStartupStage("trusted-otlp");
     cleanups.push({
       name: "otlp",
       close: async (options) => {
@@ -266,6 +279,7 @@ export async function createTrustedWorkerRuntime(
     );
     cleanups.push({ name: "telemetry", close: () => telemetry.close() });
     requireTelemetry(telemetry);
+    debugStartupStage("trusted-telemetry");
     checkCooperative(startup.signal, deadlineAt);
 
     const launch = buildLaunch(state.stateId, sshControls, skills, fixture.snapshot().port);
@@ -292,12 +306,14 @@ export async function createTrustedWorkerRuntime(
     });
     cleanups.push({ name: "ssh", close: () => ssh.shutdown() });
     await ssh.start(startup.signal);
+    debugStartupStage("trusted-ssh");
     requireSshReady(ssh);
     checkCooperative(startup.signal, deadlineAt);
 
     let binary: EnvoyBinaryDescriptor | undefined;
     let binaryOwned = false;
     binary = await s.prepareEnvoyBinary(state, { signal: startup.signal, deadlineAt });
+    debugStartupStage("trusted-envoy-binary");
     binaryOwned = true;
     cleanups.push({
       name: "envoy-binary",
@@ -321,6 +337,7 @@ export async function createTrustedWorkerRuntime(
       (actual) => openbao.modelApiKey.withSecret((expected) => compareSecret(actual, expected)),
     );
     authReady = true;
+    debugStartupStage("trusted-model-auth");
     checkCooperative(startup.signal, deadlineAt);
 
     await proveAuditWalAbsent(state);
@@ -330,6 +347,7 @@ export async function createTrustedWorkerRuntime(
     const reservation = await (s.reserveLoopbackPort === DEFAULT_SEAMS.reserveLoopbackPort
       ? reserveLoopbackPort(startup.signal, deadlineAt, s.createNetServer)
       : s.reserveLoopbackPort(startup.signal, deadlineAt));
+    debugStartupStage("trusted-reservation");
     let reservationOwned = true;
     cleanups.push({
       name: "listener-reservation",
@@ -358,6 +376,7 @@ export async function createTrustedWorkerRuntime(
       signal: startup.signal,
       deadlineAt,
     });
+    debugStartupStage("trusted-egress");
     cleanups.push({ name: "egress", close: (options) => egress.close(options) });
     requireEgress(egress, admitted.profile, listenerPort);
     const proxyCapability = ownData(egress, "proxyCapability");
@@ -400,6 +419,7 @@ export async function createTrustedWorkerRuntime(
       close: () => (lifecycleStopped ? undefined : lifecycle?.requestShutdown("trusted-compose-close")),
     });
     await lifecycle.start();
+    debugStartupStage("trusted-lifecycle");
     if (!lifecycle.ready) fail();
     checkCooperative(startup.signal, deadlineAt);
     await checkAdmission();
@@ -439,6 +459,7 @@ export async function createTrustedWorkerRuntime(
       }),
     });
     await verifyPi(pi, roots.sessionRoot, skills);
+    debugStartupStage("trusted-pi");
     checkCooperative(startup.signal, deadlineAt);
     await checkAdmission();
 
@@ -458,6 +479,7 @@ export async function createTrustedWorkerRuntime(
     const listened = await api.listen(0, "127.0.0.1", { signal: startup.signal, deadlineAt });
     const apiPort = port(listened.port);
     await readyProof(s.fetch, apiPort, apiToken, startup.signal);
+    debugStartupStage("trusted-api-ready");
     if (!lifecycle.ready) fail();
     await verifyPi(pi, roots.sessionRoot, skills);
     await checkAdmission();

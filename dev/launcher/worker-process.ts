@@ -109,6 +109,8 @@ export async function startWorkerProcess(
       startup.startup.digest() !== before.startupDigest
     )
       fail();
+    debugStartupStage("worker-spawn");
+    const debugEnabled = process.env.COGS_LAUNCHER_DEBUG_STAGE === "1";
     child = captured.seams.spawn(
       workerProcessPaths.executable,
       [
@@ -122,12 +124,13 @@ export async function startWorkerProcess(
       ],
       {
         cwd: workerProcessPaths.cwd,
-        env: {},
+        env: debugEnabled ? { COGS_LAUNCHER_DEBUG_STAGE: "1" } : {},
         shell: false,
-        stdio: ["ignore", "ignore", "ignore", "ipc"],
+        stdio: ["ignore", "ignore", debugEnabled ? "pipe" : "ignore", "ipc"],
         windowsHide: true,
       },
     );
+    captureChildDebugStderr(child, debugEnabled);
     endpoint = childEndpoint(child);
     const worker = endpoint;
     childPid = worker.pid;
@@ -184,6 +187,7 @@ export async function startWorkerProcess(
         void (async () => {
           if (stage === "hello") {
             const hello = parseChildIdentityHello(value);
+            debugStartupStage("worker-hello");
             if (
               hello.pid !== childPid ||
               hello.pidIdentity !== childIdentity ||
@@ -193,6 +197,7 @@ export async function startWorkerProcess(
               fail();
             recovery = true;
             const bound = await bindWorkerChild(state, hello, { identity: captured.seams.identity });
+            debugStartupStage("worker-bound");
             if (!active(turn)) return;
             if (
               bound.stage !== "child-bound" ||
@@ -204,9 +209,11 @@ export async function startWorkerProcess(
             stage = "ready";
             if (!active(turn)) return;
             send(createSupervisorAdmit(bound.startupDigest));
+            debugStartupStage("worker-admit-sent");
             return;
           }
           const readyMessage = parseChildReady(value);
+          debugStartupStage("worker-ready");
           if (
             readyMessage.pid !== childPid ||
             readyMessage.pidIdentity !== childIdentity ||
@@ -232,6 +239,7 @@ export async function startWorkerProcess(
             fail();
           if (!active(turn)) return;
           send(createSupervisorReadyAck(descriptor.startupDigest), () => {
+            debugStartupStage("worker-ack");
             if (active(turn)) finish(undefined, descriptor);
           });
         })()
@@ -291,6 +299,31 @@ export async function startWorkerProcess(
     if (!disconnected) recovery = true;
     throw recovery ? recoveryRequired() : generic();
   }
+}
+
+function debugStartupStage(stage: string): void {
+  if (process.env.COGS_LAUNCHER_DEBUG_STAGE === "1") process.stderr.write(`launcher-debug-stage:${stage}\n`);
+}
+
+function captureChildDebugStderr(child: ChildProcess, enabled: boolean): void {
+  if (!enabled || !child.stderr) return;
+  let buffered = "";
+  let bytes = 0;
+  child.stderr.setEncoding("utf8");
+  child.stderr.on("data", (chunk: string) => {
+    if (bytes > 8192) return;
+    bytes += Buffer.byteLength(chunk, "utf8");
+    buffered = `${buffered}${chunk}`;
+    const lines = buffered.split(/\n/u);
+    buffered = lines.pop() ?? "";
+    for (const line of lines) reemitDebugStage(line);
+    if (buffered.length > 128) buffered = "";
+  });
+}
+
+function reemitDebugStage(line: string): void {
+  if (/^launcher-debug-stage:(?:worker|child|trusted|supervisor)-[a-z-]+$/u.test(line))
+    process.stderr.write(`${line}\n`);
 }
 
 export async function runWorkerChild(
@@ -424,6 +457,7 @@ export async function runWorkerChild(
         void (async () => {
           const message = parseWorkerProtocolMessage(value);
           if (stage === "challenge" && message.type === "parent-challenge") {
+            debugStartupStage("child-challenge");
             if (digestNonce(message.startupNonce) !== descriptor.startupDigest || !active(turn)) fail();
             stage = "admit";
             if (!active(turn)) return;
@@ -434,9 +468,11 @@ export async function runWorkerChild(
               pid: captured.seams.pid,
               pidIdentity: selfIdentity,
             });
+            debugStartupStage("child-identity-sent");
             return;
           }
           if (stage === "admit" && message.type === "supervisor-admit") {
+            debugStartupStage("child-admitted");
             if (message.startupDigest !== descriptor.startupDigest || !active(turn)) fail();
             const bound = await readWorkerDescriptor(state);
             if (!active(turn)) return;
@@ -455,7 +491,9 @@ export async function runWorkerChild(
               fail();
             recovery = true;
             stage = "ack";
+            debugStartupStage("child-runtime-start");
             const candidate = await runtimeFactory(state, runtimeAbort.signal);
+            debugStartupStage("child-runtime-return");
             let provisional: WorkerProvisionalRuntime;
             try {
               provisional = runtimePort(candidate);
@@ -485,6 +523,7 @@ export async function runWorkerChild(
               pidIdentity: bound.childPidIdentity,
               apiPort: runtime.apiPort,
             });
+            debugStartupStage("child-ready-sent");
             return;
           }
           if (stage === "ack" && message.type === "supervisor-ready-ack") {

@@ -79,16 +79,21 @@ export async function startWorkerForState(
   let startup: Awaited<ReturnType<typeof beginWorkerStartup>> | undefined;
   try {
     const manifest = await readManifest(state);
+    debugStartupStage("supervisor-manifest");
     if (manifest.phase !== "sandbox-ready" || manifest.sourceRevision !== state.sourceRevision) fail();
     if ((await recoveryState(state.recoveryPath)) !== "absent") fail();
     await requireSessionControlsAbsent(state);
+    debugStartupStage("supervisor-controls");
     if (isAborted(signal)) throw generic();
     await createApiToken(state);
+    debugStartupStage("supervisor-token");
     startup = await beginWorkerStartup(state, { identity: captured.identity });
+    debugStartupStage("supervisor-startup-control");
     const ready = await captured.startWorkerProcess(state, startup, {
       ...(signal === undefined ? {} : { signal }),
       seams: workerSeams(captured),
     });
+    debugStartupStage("supervisor-worker-process-return");
     const proof = await readReadyWorkerDescriptor(state);
     const promoted = await readManifest(state);
     if (promoted.phase !== "worker-ready" || promoted.sourceRevision !== state.sourceRevision) fail();
@@ -234,6 +239,10 @@ function workerSeams(seams: SupervisorSeams) {
     setTimer: seams.setTimer,
     clearTimer: seams.clearTimer,
   });
+}
+
+function debugStartupStage(stage: string): void {
+  if (process.env.COGS_LAUNCHER_DEBUG_STAGE === "1") process.stderr.write(`launcher-debug-stage:${stage}\n`);
 }
 
 async function uncertain(state: LauncherState): Promise<never> {

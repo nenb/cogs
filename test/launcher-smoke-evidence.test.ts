@@ -78,7 +78,12 @@ test("launcher command descriptor uses exact node and minimal env with deadline"
 });
 
 test("launcher debug smoke markers are fixed and allowlisted on debug branch only", async () => {
-  const operations = await readFile(join(process.cwd(), "dev/launcher/operations.ts"), "utf8");
+  const markerSources = await Promise.all(
+    ["operations.ts", "supervisor.ts", "worker-process.ts", "trusted-compose.ts"].map((file) =>
+      readFile(join(process.cwd(), "dev/launcher", file), "utf8"),
+    ),
+  );
+  const sourceText = markerSources.join("\n");
   const harness = await readFile(join(process.cwd(), "scripts/run-launcher-smoke-evidence.ts"), "utf8");
   for (const stage of [
     "after-create",
@@ -91,11 +96,23 @@ test("launcher debug smoke markers are fixed and allowlisted on debug branch onl
     "after-shutdown",
     "after-inventory",
     "after-destroy",
+    "supervisor-manifest",
+    "supervisor-controls",
+    "supervisor-token",
+    "supervisor-startup-control",
+    "supervisor-worker-process-return",
+    "worker-spawn",
+    "child-runtime-start",
+    "trusted-admission",
+    "trusted-egress-root",
+    "trusted-ssh-controls",
+    "trusted-egress",
+    "trusted-api-ready",
   ]) {
-    assert.match(operations, new RegExp(`debugSmokeStage\\("${stage}"\\)`));
+    assert.match(sourceText, new RegExp(`debugStartupStage\\("${stage}"\\)|debugSmokeStage\\("${stage}"\\)`));
     assert.match(harness, new RegExp(`"${stage}"`));
   }
-  assert.match(operations, /process\.env\.COGS_LAUNCHER_DEBUG_STAGE === "1"/);
+  assert.match(sourceText, /process\.env\.COGS_LAUNCHER_DEBUG_STAGE === "1"/);
   assert.match(harness, /line\.match\(\/\^launcher-debug-stage:\(\[a-z-\]\+\)\$\/u\)/);
 });
 
