@@ -299,6 +299,8 @@ create() {
     --read-only \
     --tmpfs /run:rw,nosuid,nodev,noexec,size=32m,mode=0700 \
     --tmpfs /tmp:rw,nosuid,nodev,size=256m \
+    --tmpfs /shared:rw,nosuid,nodev,noexec,size=8m,mode=0700 \
+    --tmpfs /user:rw,nosuid,nodev,noexec,size=8m,mode=0700 \
     --mount "type=bind,src=$input,dst=/run/cogs-input,readonly" \
     --mount "type=volume,src=$volume,dst=/workspace" \
     --add-host host.docker.internal:host-gateway \
@@ -355,6 +357,12 @@ verify_runtime_identity() {
 
 verify_skill_roots() {
   bounded 12s ssh "${SSH_OPTIONS[@]}" root@127.0.0.1 '
+    for skill_parent in /shared /user; do
+      test -d "$skill_parent" &&
+      test ! -L "$skill_parent" &&
+      test "$(realpath -e "$skill_parent")" = "$skill_parent" &&
+      test "$(stat -c "%u:%g:%a:%F" "$skill_parent")" = "0:0:700:directory"
+    done
     for skill_root in /shared/skills /user/skills; do
       test -d "$skill_root" &&
       test ! -L "$skill_root" &&

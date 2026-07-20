@@ -189,8 +189,15 @@ test("profile drivers use exact launcher-compatible local controls", async () =>
   assert.match(insecure, /tsx_bin="\$repo\/node_modules\/\.bin\/tsx"/);
   assert.match(insecure, /tsx_real=\$\(realpath "\$tsx_bin"\)/);
   assert.match(insecure, /"\$tsx_bin" "\$repo\/dev\/insecure-sandbox\/ssh-adapter-smoke\.ts"/);
+  assert(
+    insecure.includes(
+      "--read-only \\\n    --tmpfs /run:rw,nosuid,nodev,noexec,size=32m,mode=0700 \\\n    --tmpfs /tmp:rw,nosuid,nodev,size=256m \\\n    --tmpfs /shared:rw,nosuid,nodev,noexec,size=8m,mode=0700 \\\n    --tmpfs /user:rw,nosuid,nodev,noexec,size=8m,mode=0700",
+    ),
+  );
   for (const text of [insecureEntrypoint, insecure]) {
+    assert.match(text, /\/shared \/user/);
     assert.match(text, /\/shared\/skills \/user\/skills/);
+    assert.match(text, /realpath -e "\$skill_parent"/);
     assert.match(text, /realpath -e "\$skill_root"/);
     assert.match(text, /0:0:700:directory/);
   }

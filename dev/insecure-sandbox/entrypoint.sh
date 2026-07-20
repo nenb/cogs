@@ -15,8 +15,21 @@ for required in "$host_key" "$host_public" "$client_public" "$public_ca"; do
   fi
 done
 
-mkdir -p /workspace /run/sshd "$runtime" /shared/skills /user/skills
-chmod 0700 /workspace "$runtime" /shared/skills /user/skills
+mkdir -p /workspace /run/sshd "$runtime"
+chmod 0700 /workspace "$runtime"
+for skill_parent in /shared /user; do
+  if [[ -L "$skill_parent" || "$(realpath -e "$skill_parent")" != "$skill_parent" ]]; then
+    printf 'insecure-container: invalid skill parent\n' >&2
+    exit 1
+  fi
+  skill_parent_stat=$(stat -c '%u:%g:%a:%F' "$skill_parent")
+  if [[ "$skill_parent_stat" != '0:0:700:directory' ]]; then
+    printf 'insecure-container: invalid skill parent\n' >&2
+    exit 1
+  fi
+done
+mkdir -p /shared/skills /user/skills
+chmod 0700 /shared/skills /user/skills
 chown root:root /shared/skills /user/skills
 for skill_root in /shared/skills /user/skills; do
   if [[ -L "$skill_root" || "$(realpath -e "$skill_root")" != "$skill_root" ]]; then
