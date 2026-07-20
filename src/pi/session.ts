@@ -2079,11 +2079,7 @@ class PiSessionAdapter implements CogsPiSessionPorts {
     this.phase = "aborting";
     try {
       await this.abortWithBound(reason);
-      this.terminal(active, "run_aborted", {
-        reason,
-        run_request_id: active.requestId,
-        run_correlation_id: active.correlationId,
-      });
+      this.terminal(active, "run_aborted", { reason });
     } catch (error) {
       await this.failClosed("abort-failed", active);
       throw error;
@@ -2112,10 +2108,18 @@ class PiSessionAdapter implements CogsPiSessionPorts {
     active.terminal = true;
     active.suppressLate = true;
     if (active.deadline !== undefined) clearTimeout(active.deadline);
-    const terminalRequestId = kind === "run_aborted" ? (active.abortRequestId ?? active.requestId) : active.requestId;
-    const terminalCorrelationId =
-      kind === "run_aborted" ? (active.abortCorrelationId ?? active.correlationId) : active.correlationId;
-    this.emitOrFail(kind, terminalCorrelationId, terminalRequestId, payload);
+    const terminalPayload =
+      kind === "run_aborted" &&
+      active.abortRequestId !== undefined &&
+      active.abortCorrelationId !== undefined &&
+      (active.abortRequestId !== active.requestId || active.abortCorrelationId !== active.correlationId)
+        ? Object.freeze({
+            ...payload,
+            abort_request_id: active.abortRequestId,
+            abort_correlation_id: active.abortCorrelationId,
+          })
+        : payload;
+    this.emitOrFail(kind, active.correlationId, active.requestId, terminalPayload);
     if (this.active === active) this.active = undefined;
     if (this.phase === "running" || this.phase === "aborting") this.phase = "open";
   }

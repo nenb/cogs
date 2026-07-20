@@ -320,6 +320,43 @@ test("shutdown still stops when token read fails", async () => {
   }
 });
 
+test("run ignores inaccessible abort-correlated terminal events", async () => {
+  const { dir, ctx } = await roots();
+  try {
+    await sandbox(ctx, "abortcorr");
+    await ready(await resolveLauncherState({ root: ctx.launcherRoot, name: "abortcorr", sourceRevision: revision }));
+    const seams = Object.freeze({
+      ...opSeams([]),
+      createApiClient: Object.freeze(() =>
+        Object.freeze({
+          request: Object.freeze(async () =>
+            Object.freeze({ correlation_id: "run-corr", accepted: true }),
+          ) as ApiClient["request"],
+          events: Object.freeze(async function* () {
+            yield Object.freeze({
+              id: 1,
+              data: Object.freeze({ kind: "run_aborted", correlation_id: "abort-corr" }),
+            }) as ApiEvent;
+            yield Object.freeze({
+              id: 2,
+              data: Object.freeze({ kind: "warning", correlation_id: "run-corr" }),
+            }) as ApiEvent;
+          }) as ApiClient["events"],
+        }),
+      ) as never,
+    });
+    await assert.rejects(() =>
+      runLauncherOperation(
+        Object.freeze({ op: "run", profile: "linux-kvm", state: "abortcorr", promptFile: "p.txt" }),
+        ctx,
+        seams,
+      ),
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("run rejects terminal event past maximum", async () => {
   const { dir, ctx } = await roots();
   try {
