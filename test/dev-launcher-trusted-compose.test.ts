@@ -1,0 +1,1511 @@
+import assert from "node:assert/strict";
+import { mkdir, mkdtemp, realpath, rm, rmdir, unlink, writeFile } from "node:fs/promises";
+import { createServer as createHttpServer } from "node:http";
+import { createServer } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { test } from "node:test";
+import type { LauncherState } from "../dev/launcher/state.ts";
+import { createTrustedWorkerRuntime, type TrustedCompositionSeams } from "../dev/launcher/trusted-compose.ts";
+import type { WorkerProvisionalRuntime } from "../dev/launcher/worker-process.ts";
+
+const sourceRevision = "a".repeat(40);
+const stateId = "b".repeat(64);
+const emptyBundle = "sha256:db1d1d550f597a03595794d95ca6c596c16a4b3b4f2304301f03c93bc6b53c0c";
+const emptyManifest = "sha256:726176e9bdb7524fbe935a0235fcbe5d509bf44592b9571421fc9fd8551ff1c1";
+
+test("trusted composition factory starts in exact order, proves ready, and closes in reverse", async () => {
+  const fixture = await makeFixture();
+  try {
+    const calls: string[] = [];
+    const captured: Record<string, unknown> = {};
+    let runtime: WorkerProvisionalRuntime;
+    try {
+      runtime = await createTrustedWorkerRuntime(fixture.state, new AbortController().signal, seams(calls, captured));
+    } catch (error) {
+      assert.fail(`${(error as Error).message}: ${calls.join(" > ")}`);
+    }
+    assert.equal(runtime.apiPort, 40123);
+    assert.deepEqual(calls.slice(0, 18), [
+      "manifest",
+      "descriptor",
+      "preflight-egress",
+      "manifest",
+      "descriptor",
+      "ssh-controls",
+      "manifest",
+      "descriptor",
+      "skills",
+      `mkdir:trusted-compose-${stateId}`,
+      "mkdir:agent",
+      "mkdir:sessions",
+      "manifest",
+      "descriptor",
+      "api-token",
+      "manifest",
+      "descriptor",
+      "openbao",
+    ]);
+    assert.equal(calls.includes("pi"), true);
+    assert.equal(calls.includes("api-listen"), true);
+    assert.equal(calls.includes("fetch-ready"), true);
+    const launch = captured.launch as {
+      user_id: string;
+      session_id: string;
+      integrations: readonly Record<string, unknown>[];
+      sandbox: Record<string, string>;
+    };
+    assert.equal(launch.user_id, "alice");
+    assert.equal(launch.session_id, `launcher-${stateId}`);
+    assert.equal(launch.sandbox.client_key_path, `/run/cogs/ssh/launcher-${stateId}`);
+    assert.equal(launch.integrations[0]?.id, "stage3-localhost");
+    assert.equal(JSON.stringify(launch).includes("SECRET"), false);
+    calls.length = 0;
+    const close1 = runtime.close();
+    const close2 = runtime.close();
+    assert.equal(close1, close2);
+    await close1;
+    assert.deepEqual(calls, [
+      "api-close",
+      "pi-dispose",
+      "lifecycle-shutdown",
+      "egress-close",
+      "ssh-shutdown",
+      "telemetry-close",
+      "fixture-close",
+      "otlp-reset",
+      "otlp-close",
+      "openbao-close",
+      "api-token-dispose",
+      "skills-close",
+      "ssh-key-close",
+    ]);
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("trusted composition fails closed before OpenBao when preflight fails", async () => {
+  const fixture = await makeFixture();
+  try {
+    const calls: string[] = [];
+    const bad = seams(calls, {});
+    const wrapped = Object.freeze({
+      ...bad,
+      preflightEgressRoot: async () => {
+        calls.push("preflight-egress");
+        throw new Error("boom SECRET path");
+      },
+    });
+    await assert.rejects(
+      createTrustedWorkerRuntime(fixture.state, new AbortController().signal, wrapped),
+      /launcher trusted composition failed/,
+    );
+    assert.equal(calls.includes("openbao"), false);
+    assert.equal(calls.includes("fixture"), false);
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("trusted composition releases real port reservation before egress bind", async () => {
+  const fixture = await makeFixture();
+  try {
+    const calls: string[] = [];
+    const base = seams(calls, {});
+    const wrapped = Object.freeze({
+      ...base,
+      reserveLoopbackPort: async () => {
+        const server = createServer();
+        await new Promise<void>((resolve, reject) => {
+          server.once("error", reject);
+          server.listen(0, "127.0.0.1", () => resolve());
+        });
+        const address = server.address();
+        const port = typeof address === "object" && address !== null ? address.port : 0;
+        return Object.freeze({
+          port,
+          close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+        });
+      },
+      startEnvoyEgress: async (options: Parameters<NonNullable<typeof base.startEnvoyEgress>>[0]) => {
+        const probe = createServer();
+        await new Promise<void>((resolve, reject) => {
+          probe.once("error", reject);
+          probe.listen(options.listenerPort, "127.0.0.1", () => resolve());
+        });
+        await new Promise<void>((resolve) => probe.close(() => resolve()));
+        return (base.startEnvoyEgress as NonNullable<typeof base.startEnvoyEgress>)(options);
+      },
+    });
+    const runtime = await createTrustedWorkerRuntime(fixture.state, new AbortController().signal, wrapped);
+    await runtime.close();
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("trusted composition default reservation closes pending abort and allows rebind", async () => {
+  const fixture = await makeFixture();
+  try {
+    const calls: string[] = [];
+    const controller = new AbortController();
+    const base = seams(calls, {});
+    const { reserveLoopbackPort: _omittedReservation, ...withoutReservation } = base;
+    let selected = 0;
+    const wrapped = Object.freeze({
+      ...withoutReservation,
+      createNetServer: () => {
+        const server = createServer();
+        const listen = server.listen.bind(server);
+        server.listen = ((...args: Parameters<typeof server.listen>) => {
+          calls.push("reservation-listen-pending");
+          server.once("listening", () => {
+            const address = server.address();
+            selected = typeof address === "object" && address !== null ? address.port : 0;
+          });
+          setImmediate(() => listen(...args));
+          controller.abort();
+          return server;
+        }) as typeof server.listen;
+        return server;
+      },
+    });
+    await assert.rejects(
+      createTrustedWorkerRuntime(
+        fixture.state,
+        controller.signal,
+        wrapped as unknown as Partial<TrustedCompositionSeams>,
+      ),
+      /launcher trusted composition failed/,
+    );
+    assert.notEqual(selected, 0);
+    const probe = createServer();
+    await new Promise<void>((resolve, reject) => {
+      probe.once("error", reject);
+      probe.listen(selected, "127.0.0.1", () => resolve());
+    });
+    await new Promise<void>((resolve) => probe.close(() => resolve()));
+    assert.equal(calls.includes("egress-start"), false);
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("trusted composition rejects descriptor replacement after admission", async () => {
+  const fixture = await makeFixture();
+  try {
+    const calls: string[] = [];
+    let reads = 0;
+    const base = seams(calls, {});
+    const wrapped = Object.freeze({
+      ...base,
+      readWorkerDescriptor: async (state: LauncherState) => {
+        reads += 1;
+        const descriptor = await (base.readWorkerDescriptor as NonNullable<typeof base.readWorkerDescriptor>)(state);
+        return reads > 2 ? Object.freeze({ ...descriptor, startupDigest: `sha256:${"f".repeat(64)}` }) : descriptor;
+      },
+    });
+    await assert.rejects(
+      createTrustedWorkerRuntime(fixture.state, new AbortController().signal, wrapped),
+      /launcher trusted composition failed/,
+    );
+    assert.equal(calls.includes("openbao"), false);
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("trusted composition rejects malformed ready proof and closes partial resources", async () => {
+  const fixture = await makeFixture();
+  try {
+    const calls: string[] = [];
+    const base = seams(calls, {});
+    const wrapped = Object.freeze({
+      ...base,
+      fetch: async () =>
+        new Response(`{"ready":true,"closed":false,"extra":"${"x".repeat(200)}"}`, {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+    });
+    await assert.rejects(
+      createTrustedWorkerRuntime(fixture.state, new AbortController().signal, wrapped),
+      /launcher trusted composition failed/,
+    );
+    assert.equal(calls.includes("api-close"), true);
+    assert.equal(calls.includes("fixture-close"), true);
+    assert.equal(calls.includes("otlp-close"), true);
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("trusted composition rejects wrong egress proof and disposes rollback", async () => {
+  const fixture = await makeFixture();
+  try {
+    const calls: string[] = [];
+    const base = seams(calls, {});
+    const wrapped = Object.freeze({
+      ...base,
+      startEnvoyEgress: async (options: Parameters<NonNullable<typeof base.startEnvoyEgress>>[0]) => {
+        const handle = await (base.startEnvoyEgress as NonNullable<typeof base.startEnvoyEgress>)(options);
+        return Object.freeze({
+          ...handle,
+          snapshot: () => Object.freeze({ ...handle.snapshot(), listenerPort: 39001 }),
+        });
+      },
+    });
+    await assert.rejects(
+      createTrustedWorkerRuntime(fixture.state, new AbortController().signal, wrapped),
+      /launcher trusted composition failed/,
+    );
+    assert.equal(calls.includes("egress-close"), true);
+    assert.equal(calls.includes("reserve-close"), true);
+    assert.equal(calls.includes("ssh-shutdown"), true);
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("trusted composition requires contained session file and exact empty skill metadata", async () => {
+  const fixture = await makeFixture();
+  try {
+    const calls: string[] = [];
+    const base = seams(calls, {});
+    const wrapped = Object.freeze({
+      ...base,
+      createPi: async (options: Parameters<NonNullable<typeof base.createPi>>[0]) => {
+        const pi = await (base.createPi as NonNullable<typeof base.createPi>)(options);
+        return Object.freeze({ ...pi, sessionFile: () => undefined });
+      },
+    });
+    await assert.rejects(
+      createTrustedWorkerRuntime(fixture.state, new AbortController().signal, wrapped),
+      /launcher trusted composition failed/,
+    );
+    assert.equal(calls.includes("api-listen"), false);
+    assert.equal(calls.includes("pi-dispose"), true);
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("trusted composition observes pre-aborted admission before hidden work", async () => {
+  const fixture = await makeFixture();
+  try {
+    const calls: string[] = [];
+    const controller = new AbortController();
+    controller.abort();
+    await assert.rejects(
+      createTrustedWorkerRuntime(fixture.state, controller.signal, seams(calls, {})),
+      /launcher trusted composition failed/,
+    );
+    assert.equal(calls.includes("preflight-egress"), false);
+    assert.equal(calls.includes("openbao"), false);
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("trusted composition rejects unfrozen or hostile seam bags generically", async () => {
+  const fixture = await makeFixture();
+  try {
+    await assert.rejects(
+      createTrustedWorkerRuntime(fixture.state, new AbortController().signal, {}),
+      /launcher trusted composition failed/,
+    );
+    const hostile = {} as Partial<TrustedCompositionSeams>;
+    Object.defineProperty(hostile, "startOpenBao", {
+      get: () => {
+        throw new Error("SECRET");
+      },
+      enumerable: true,
+    });
+    Object.freeze(hostile);
+    await assert.rejects(
+      createTrustedWorkerRuntime(fixture.state, new AbortController().signal, hostile),
+      /launcher trusted composition failed/,
+    );
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("trusted composition rejects auth mismatch without self-compare or secret serialization", async () => {
+  const fixture = await makeFixture();
+  try {
+    const calls: string[] = [];
+    const base = seams(calls, {});
+    const wrapped = Object.freeze({
+      ...base,
+      startOpenBao: async (state: LauncherState, options?: { signal?: AbortSignal; deadlineAt?: number }) => {
+        const openbao = await (base.startOpenBao as NonNullable<typeof base.startOpenBao>)(state, options);
+        return Object.freeze({
+          ...openbao,
+          modelApiKey: Object.freeze({
+            withSecret: <T>(op: (secret: string) => T) => op("DIFFERENT_MODEL_KEY_123"),
+            dispose: () => undefined,
+          }),
+        });
+      },
+    });
+    await assert.rejects(
+      createTrustedWorkerRuntime(fixture.state, new AbortController().signal, wrapped),
+      (error) =>
+        String(error).includes("launcher trusted composition failed") && !JSON.stringify(error).includes("MODEL_KEY"),
+    );
+    assert.equal(calls.includes("egress-start"), false);
+    assert.equal(calls.includes("openbao-close"), true);
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("trusted composition ledgers telemetry and API before validation", async () => {
+  for (const mode of ["telemetry", "api"] as const) {
+    const fixture = await makeFixture();
+    try {
+      const calls: string[] = [];
+      const base = seams(calls, {});
+      const wrapped = Object.freeze({
+        ...base,
+        ...(mode === "telemetry"
+          ? {
+              createTelemetry: () =>
+                Object.freeze({
+                  snapshot: () => Object.freeze({ ready: true }),
+                  close: async () => calls.push("bad-telemetry-close"),
+                }) as never,
+            }
+          : {
+              createApi: () =>
+                Object.freeze({
+                  close: async () => calls.push("bad-api-close"),
+                  publish: () => true,
+                }) as never,
+            }),
+      });
+      await assert.rejects(
+        createTrustedWorkerRuntime(fixture.state, new AbortController().signal, wrapped),
+        /launcher trusted composition failed/,
+      );
+      assert.equal(calls.includes(mode === "telemetry" ? "bad-telemetry-close" : "bad-api-close"), true);
+    } finally {
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  }
+});
+
+test("trusted composition rolls back partial startup roots exactly", async () => {
+  const fixture = await makeFixture();
+  try {
+    const calls: string[] = [];
+    const base = seams(calls, {});
+    const wrapped = Object.freeze({
+      ...base,
+      mkdir: (async (path: unknown, options: unknown) => {
+        if (String(path).endsWith("sessions")) throw new Error("mkdir failed");
+        return (base.mkdir as NonNullable<typeof base.mkdir>)(path as never, options as never);
+      }) as never,
+    });
+    await assert.rejects(
+      createTrustedWorkerRuntime(fixture.state, new AbortController().signal, wrapped),
+      /launcher trusted composition failed/,
+    );
+    await assert.rejects(realpath(join(fixture.state.sandboxDir, `trusted-compose-${stateId}`)));
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("trusted composition uses Pi-owned cleanup success and rejects cleanup failure", async () => {
+  const fixture = await makeFixture();
+  try {
+    const calls: string[] = [];
+    const base = seams(calls, {});
+    const wrapped = Object.freeze({
+      ...base,
+      createPi: async (options: Parameters<NonNullable<typeof base.createPi>>[0]) => {
+        const pi = await (base.createPi as NonNullable<typeof base.createPi>)(options);
+        return Object.freeze({
+          ...pi,
+          disposeOwnedRuntime: async () => {
+            calls.push("pi-owned-fail");
+            throw new Error("SECRET pi path");
+          },
+        });
+      },
+    });
+    const runtime = await createTrustedWorkerRuntime(fixture.state, new AbortController().signal, wrapped);
+    await assert.rejects(runtime.close(), /launcher trusted composition failed/);
+    assert.equal(calls.includes("pi-owned-fail"), true);
+    assert.equal(calls.includes("egress-close"), true);
+    assert.equal(JSON.stringify(calls).includes("SECRET"), false);
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("trusted composition rejects lying Pi cleanup that leaves runtime roots", async () => {
+  const fixture = await makeFixture();
+  try {
+    const calls: string[] = [];
+    let agentDir = "";
+    let sessionRoot = "";
+    const base = seams(calls, {});
+    const wrapped = Object.freeze({
+      ...base,
+      createPi: async (options: Parameters<NonNullable<typeof base.createPi>>[0]) => {
+        const pi = await (base.createPi as NonNullable<typeof base.createPi>)(options);
+        agentDir = (options as { agentDir: string }).agentDir;
+        sessionRoot = (options as { sessionRoot: string }).sessionRoot;
+        return Object.freeze({
+          ...pi,
+          disposeOwnedRuntime: async () => {
+            calls.push("pi-lying-cleanup");
+            return Object.freeze({
+              version: "cogs.pi-owned-runtime-cleanup/v1alpha1" as const,
+              cleaned: true as const,
+            });
+          },
+        });
+      },
+    });
+    const runtime = await createTrustedWorkerRuntime(fixture.state, new AbortController().signal, wrapped);
+    await assert.rejects(runtime.close(), /launcher trusted composition failed/);
+    await assert.doesNotReject(realpath(agentDir));
+    await assert.doesNotReject(realpath(sessionRoot));
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("trusted composition preserves unknown launcher root content after Pi cleanup", async () => {
+  const fixture = await makeFixture();
+  try {
+    const calls: string[] = [];
+    let unknown = "";
+    const base = seams(calls, {});
+    const wrapped = Object.freeze({
+      ...base,
+      createPi: async (options: Parameters<NonNullable<typeof base.createPi>>[0]) => {
+        const pi = await (base.createPi as NonNullable<typeof base.createPi>)(options);
+        unknown = join((options as { agentDir: string }).agentDir, "..", "unknown");
+        return Object.freeze({
+          ...pi,
+          disposeOwnedRuntime: async () => {
+            const result = await pi.disposeOwnedRuntime();
+            await writeFile(unknown, "preserve", { flag: "wx" });
+            return result;
+          },
+        });
+      },
+    });
+    const runtime = await createTrustedWorkerRuntime(fixture.state, new AbortController().signal, wrapped);
+    await assert.rejects(runtime.close(), /launcher trusted composition failed/);
+    await assert.doesNotReject(realpath(unknown));
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("trusted composition pending OpenBao observes cooperative abort without live handle", async () => {
+  const fixture = await makeFixture();
+  try {
+    const calls: string[] = [];
+    const controller = new AbortController();
+    const base = seams(calls, {});
+    const wrapped = Object.freeze({
+      ...base,
+      startOpenBao: (_state: LauncherState, options?: { signal?: AbortSignal }) =>
+        new Promise<Awaited<ReturnType<NonNullable<TrustedCompositionSeams["startOpenBao"]>>>>((_resolve, reject) => {
+          calls.push("openbao-pending");
+          options?.signal?.addEventListener(
+            "abort",
+            () => {
+              calls.push("openbao-abort");
+              reject(new Error("aborted"));
+            },
+            { once: true },
+          );
+        }),
+    });
+    const pending = createTrustedWorkerRuntime(fixture.state, controller.signal, wrapped);
+    await eventually(() => calls.includes("openbao-pending"));
+    controller.abort();
+    await assert.rejects(pending, /launcher trusted composition failed/);
+    assert.equal(calls.includes("openbao-abort"), true);
+    assert.equal(calls.includes("openbao-close"), false);
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("trusted composition rejects frozen accessor handles without invoking secret getters", async () => {
+  const fixture = await makeFixture();
+  try {
+    const calls: string[] = [];
+    const base = seams(calls, {});
+    let invoked = false;
+    const handle = {};
+    Object.defineProperty(handle, "snapshot", {
+      enumerable: true,
+      get: () => {
+        invoked = true;
+        throw new Error("SECRET getter");
+      },
+    });
+    Object.defineProperty(handle, "close", { enumerable: true, value: async () => calls.push("openbao-close") });
+    Object.freeze(handle);
+    const wrapped = Object.freeze({ ...base, startOpenBao: async () => handle as never });
+    await assert.rejects(
+      createTrustedWorkerRuntime(fixture.state, new AbortController().signal, wrapped),
+      /launcher trusted composition failed/,
+    );
+    assert.equal(invoked, false);
+    assert.equal(calls.includes("openbao-close"), true);
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("trusted composition rejects ready hangs through abort and does not leak bearer", async () => {
+  const fixture = await makeFixture();
+  try {
+    const calls: string[] = [];
+    const controller = new AbortController();
+    const base = seams(calls, {});
+    const wrapped = Object.freeze({
+      ...base,
+      fetch: async (_url: string | URL | Request, init?: RequestInit) => {
+        calls.push(`fetch-auth:${String(init?.headers).includes("TESTTOKEN")}`);
+        return new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+        });
+      },
+    });
+    const pending = createTrustedWorkerRuntime(fixture.state, controller.signal, wrapped);
+    await eventually(() => calls.some((call) => call.startsWith("fetch-auth:")));
+    controller.abort();
+    await assert.rejects(pending, /launcher trusted composition failed/);
+    assert.equal(JSON.stringify(calls).includes("TESTTOKEN"), false);
+    assert.equal(calls.includes("api-close"), true);
+    assert.equal(calls.includes("pi-dispose"), true);
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("trusted composition defers triggered cleanup until startup quiesces", async () => {
+  for (const mode of ["ssh-loss", "lifecycle-stopped", "pi-fatal"] as const) {
+    const fixture = await makeFixture();
+    try {
+      const calls: string[] = [];
+      const base = seams(calls, {});
+      let release: (() => void) | undefined;
+      let onLost: (() => void) | undefined;
+      let onEvent: ((event: unknown) => void) | undefined;
+      let onFatal: (() => void) | undefined;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const wrapped = Object.freeze({
+        ...base,
+        ...(mode === "ssh-loss"
+          ? {
+              createSshManager: (options: Parameters<NonNullable<typeof base.createSshManager>>[0]) => {
+                onLost = options.onLost as () => void;
+                const ssh = (base.createSshManager as NonNullable<typeof base.createSshManager>)(options);
+                return {
+                  get ready() {
+                    return ssh.ready;
+                  },
+                  start: (signal: AbortSignal) => ssh.start(signal),
+                  shutdown: () => ssh.shutdown(),
+                } as never;
+              },
+              prepareEnvoyBinary: async () => {
+                calls.push("prepare-envoy");
+                onLost?.();
+                await gate;
+                return Object.freeze({
+                  path: "/redacted/envoy",
+                  sha256: `sha256:${"3".repeat(64)}`,
+                  image:
+                    "envoyproxy/envoy:v1.38.3@sha256:5f7c43e1147412fdb3af578c651c67478a3df818eae89d2261e707e06c209cdb",
+                  cleanup: "owned" as const,
+                });
+              },
+              cleanupEnvoyBinary: async () => calls.push("envoy-binary-cleanup"),
+            }
+          : {}),
+        ...(mode === "lifecycle-stopped"
+          ? {
+              createLifecycle: (options: Parameters<TrustedCompositionSeams["createLifecycle"]>[0]) => {
+                onEvent = options.onEvent as never;
+                return fakeLifecycle(options, calls) as never;
+              },
+              createPi: async (options: Parameters<NonNullable<typeof base.createPi>>[0]) => {
+                calls.push("pi-pending");
+                onEvent?.({ state: "stopped" });
+                await gate;
+                return (base.createPi as NonNullable<typeof base.createPi>)(options);
+              },
+            }
+          : {}),
+        ...(mode === "pi-fatal"
+          ? {
+              createPi: async (options: Parameters<NonNullable<typeof base.createPi>>[0]) => {
+                onFatal = options.onFatal as () => void;
+                return (base.createPi as NonNullable<typeof base.createPi>)(options);
+              },
+              createApi: () =>
+                Object.freeze({
+                  listen: async () => {
+                    calls.push("api-listen");
+                    onFatal?.();
+                    await gate;
+                    return { port: 40123 };
+                  },
+                  close: async () => calls.push("api-close"),
+                  publish: () => true,
+                }) as never,
+            }
+          : {}),
+      });
+      const pending = createTrustedWorkerRuntime(
+        fixture.state,
+        new AbortController().signal,
+        wrapped as unknown as Partial<TrustedCompositionSeams>,
+      );
+      await eventually(() => calls.some((call) => ["prepare-envoy", "pi-pending", "api-listen"].includes(call)));
+      release?.();
+      await assert.rejects(pending, /launcher trusted composition failed/);
+      assert.equal(
+        mode === "ssh-loss"
+          ? calls.includes("envoy-binary-cleanup")
+          : calls.includes(mode === "lifecycle-stopped" ? "pi-dispose" : "api-close"),
+        true,
+      );
+      assert.equal(calls.includes("ssh-key-close"), true);
+    } finally {
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  }
+});
+
+test("trusted composition rejects lifecycle stop during final verification without returning runtime", async () => {
+  const fixture = await makeFixture();
+  try {
+    const calls: string[] = [];
+    let event: ((event: unknown) => void) | undefined;
+    const base = seams(calls, {});
+    let fired = false;
+    const wrapped = Object.freeze({
+      ...base,
+      createLifecycle: (options: Parameters<TrustedCompositionSeams["createLifecycle"]>[0]) => {
+        event = options.onEvent as never;
+        return fakeLifecycle(options, calls) as never;
+      },
+      readManifest: async (state: LauncherState) => {
+        if (calls.includes("fetch-ready") && !fired) {
+          fired = true;
+          event?.({ state: "stopped" });
+        }
+        return (base.readManifest as NonNullable<typeof base.readManifest>)(state);
+      },
+    });
+    await assert.rejects(
+      createTrustedWorkerRuntime(fixture.state, new AbortController().signal, wrapped),
+      /launcher trusted composition failed/,
+    );
+    assert.equal(calls.includes("api-close"), true);
+    assert.equal(calls.includes("pi-dispose"), true);
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("trusted composition preserves runtime replacements during cleanup", async () => {
+  for (const target of ["agent", "sessions", ".cogs-trusted-compose-owner", "root"] as const) {
+    const fixture = await makeFixture();
+    try {
+      const calls: string[] = [];
+      const base = seams(calls, {});
+      let replaced = "";
+      const wrapped = Object.freeze({
+        ...base,
+        readApiToken: async () => {
+          throw new Error("force cleanup");
+        },
+        beforeRemoveRuntimePath: async (path: string) => {
+          if (replaced !== "") return;
+          const name = path.split("/").at(-1);
+          if ((target === "root" && name?.startsWith("trusted-compose-")) || name === target) {
+            replaced = path;
+            await rm(path, { recursive: true, force: true });
+            if (target === ".cogs-trusted-compose-owner") await writeFile(path, "attacker", { mode: 0o600 });
+            else await mkdir(path, { mode: 0o700 });
+          }
+        },
+      });
+      await assert.rejects(
+        createTrustedWorkerRuntime(fixture.state, new AbortController().signal, wrapped),
+        /launcher trusted composition failed/,
+      );
+      assert.notEqual(replaced, "");
+      await assert.doesNotReject(realpath(replaced));
+    } finally {
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  }
+});
+
+test("trusted composition rejects same-inode sentinel overwrite before unlink", async () => {
+  const fixture = await makeFixture();
+  try {
+    const calls: string[] = [];
+    const base = seams(calls, {});
+    let sentinel = "";
+    const wrapped = Object.freeze({
+      ...base,
+      readApiToken: async () => {
+        throw new Error("force cleanup");
+      },
+      beforeRemoveRuntimePath: async (path: string) => {
+        if (sentinel === "" && path.endsWith("/.cogs-trusted-compose-owner")) {
+          sentinel = path;
+          await writeFile(path, "x".repeat(stateId.length + 1), { flag: "r+" });
+        }
+      },
+    });
+    await assert.rejects(
+      createTrustedWorkerRuntime(fixture.state, new AbortController().signal, wrapped),
+      /launcher trusted composition failed/,
+    );
+    assert.notEqual(sentinel, "");
+    await assert.doesNotReject(realpath(sentinel));
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("trusted composition rejects reservation close callback errors and releases port", async () => {
+  const fixture = await makeFixture();
+  try {
+    const calls: string[] = [];
+    const controller = new AbortController();
+    const base = seams(calls, {});
+    const { reserveLoopbackPort: _omittedReservation, ...withoutReservation } = base;
+    let selected = 0;
+    const wrapped = Object.freeze({
+      ...withoutReservation,
+      createNetServer: () => {
+        const server = createServer();
+        const listen = server.listen.bind(server);
+        const close = server.close.bind(server);
+        server.listen = ((...args: Parameters<typeof server.listen>) => {
+          server.once("listening", () => {
+            const address = server.address();
+            selected = typeof address === "object" && address !== null ? address.port : 0;
+          });
+          return listen(...args);
+        }) as typeof server.listen;
+        server.close = ((callback?: (error?: Error & { code?: string }) => void) =>
+          close(() =>
+            callback?.(Object.assign(new Error("synthetic close failure"), { code: "SYNTHETIC" })),
+          )) as typeof server.close;
+        return server;
+      },
+    });
+    await assert.rejects(
+      createTrustedWorkerRuntime(
+        fixture.state,
+        controller.signal,
+        wrapped as unknown as Partial<TrustedCompositionSeams>,
+      ),
+      /launcher trusted composition failed/,
+    );
+    assert.notEqual(selected, 0);
+    const probe = createServer();
+    await new Promise<void>((resolve, reject) => {
+      probe.once("error", reject);
+      probe.listen(selected, "127.0.0.1", () => resolve());
+    });
+    await new Promise<void>((resolve) => probe.close(() => resolve()));
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("trusted composition lifecycle stopped after return enters same cleanup", async () => {
+  const fixture = await makeFixture();
+  try {
+    const calls: string[] = [];
+    let event: ((event: unknown) => void) | undefined;
+    const base = seams(calls, {});
+    const wrapped = Object.freeze({
+      ...base,
+      createLifecycle: (options: Parameters<TrustedCompositionSeams["createLifecycle"]>[0]) => {
+        event = options.onEvent as never;
+        return fakeLifecycle(options, calls) as never;
+      },
+    });
+    const runtime = await createTrustedWorkerRuntime(fixture.state, new AbortController().signal, wrapped);
+    event?.({ state: "stopped" });
+    await new Promise((resolve) => setImmediate(resolve));
+    await runtime.close();
+    assert.equal(calls.includes("api-close"), true);
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("trusted composition continues all later cleanup after individual cleanup failures", async () => {
+  for (const failing of [
+    "api",
+    "pi",
+    "egress",
+    "ssh",
+    "telemetry",
+    "fixture",
+    "otlp",
+    "openbao",
+    "token",
+    "skills",
+    "ssh-key",
+  ] as const) {
+    const fixture = await makeFixture();
+    try {
+      const calls: string[] = [];
+      const base = seams(calls, {});
+      const wrapped = Object.freeze({
+        ...base,
+        materializeSshControls: async (state: LauncherState) => {
+          const v = await (base.materializeSshControls as NonNullable<typeof base.materializeSshControls>)(
+            state,
+            "linux-kvm",
+            "authoritative-local",
+            new AbortController().signal,
+          );
+          return Object.freeze({
+            ...v,
+            close: async () => {
+              await v.close();
+              if (failing === "ssh-key") throw new Error("x");
+            },
+          });
+        },
+        createSkillInputs: async (state: LauncherState, signal?: AbortSignal) => {
+          const v = await (base.createSkillInputs as NonNullable<typeof base.createSkillInputs>)(state, signal);
+          return Object.freeze({
+            ...v,
+            close: async () => {
+              await v.close();
+              if (failing === "skills") throw new Error("x");
+            },
+          });
+        },
+        readApiToken: async (state: LauncherState) => {
+          const v = await (base.readApiToken as NonNullable<typeof base.readApiToken>)(state);
+          return Object.freeze({
+            ...v,
+            dispose: () => {
+              v.dispose();
+              if (failing === "token") throw new Error("x");
+            },
+          });
+        },
+        startOpenBao: async (state: LauncherState, options?: { signal?: AbortSignal; deadlineAt?: number }) => {
+          const v = await (base.startOpenBao as NonNullable<typeof base.startOpenBao>)(state, options);
+          return Object.freeze({
+            ...v,
+            close: async () => {
+              await v.close();
+              if (failing === "openbao") throw new Error("x");
+            },
+          });
+        },
+        startLocalFixtures: async (options: never) => {
+          const v = await (base.startLocalFixtures as NonNullable<typeof base.startLocalFixtures>)(options);
+          return Object.freeze({
+            ...v,
+            close: async () => {
+              await v.close();
+              if (failing === "fixture") throw new Error("x");
+            },
+          });
+        },
+        startOtlpFixture: async (options: never) => {
+          const v = await (base.startOtlpFixture as NonNullable<typeof base.startOtlpFixture>)(options);
+          return Object.freeze({
+            ...v,
+            close: async () => {
+              await v.close();
+              if (failing === "otlp") throw new Error("x");
+            },
+          });
+        },
+        createTelemetry: (options: never) => {
+          const v = (base.createTelemetry as NonNullable<typeof base.createTelemetry>)(options);
+          return Object.freeze({
+            ...v,
+            close: async () => {
+              await v.close();
+              if (failing === "telemetry") throw new Error("x");
+            },
+          }) as never;
+        },
+        startEnvoyEgress: async (options: Parameters<NonNullable<typeof base.startEnvoyEgress>>[0]) => {
+          const v = await (base.startEnvoyEgress as NonNullable<typeof base.startEnvoyEgress>)(options);
+          return Object.freeze({
+            ...v,
+            close: async () => {
+              await v.close();
+              if (failing === "egress") throw new Error("x");
+            },
+          });
+        },
+        createSshManager: (options: Parameters<NonNullable<typeof base.createSshManager>>[0]) => {
+          const ssh = (base.createSshManager as NonNullable<typeof base.createSshManager>)(options);
+          return {
+            get ready() {
+              return ssh.ready;
+            },
+            start: (signal: AbortSignal) => ssh.start(signal),
+            shutdown: async () => {
+              await ssh.shutdown();
+              if (failing === "ssh") throw new Error("x");
+            },
+          } as never;
+        },
+        createPi: async (options: Parameters<NonNullable<typeof base.createPi>>[0]) => {
+          const pi = await (base.createPi as NonNullable<typeof base.createPi>)(options);
+          return Object.freeze({
+            ...pi,
+            disposeOwnedRuntime: async () => {
+              const result = await pi.disposeOwnedRuntime();
+              if (failing === "pi") throw new Error("x");
+              return result;
+            },
+          });
+        },
+        createApi: (options: never) => {
+          const api = (base.createApi as NonNullable<typeof base.createApi>)(options);
+          return Object.freeze({
+            ...api,
+            close: async () => {
+              await api.close();
+              if (failing === "api") throw new Error("x");
+            },
+          }) as never;
+        },
+      });
+      const runtime = await createTrustedWorkerRuntime(
+        fixture.state,
+        new AbortController().signal,
+        wrapped as unknown as Partial<TrustedCompositionSeams>,
+      );
+      await assert.rejects(runtime.close(), /launcher trusted composition failed/);
+      assert.equal(calls.includes("ssh-key-close"), true);
+    } finally {
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  }
+});
+
+test("trusted composition rejects ready proof status headers utf8 and oversize", async () => {
+  const cases = [
+    () =>
+      new Response('{"ready":true,"closed":false}', { status: 503, headers: { "content-type": "application/json" } }),
+    () => new Response('{"ready":true,"closed":false}', { status: 200, headers: { "content-type": "text/plain" } }),
+    () => new Response(new Uint8Array([0xff]), { status: 200, headers: { "content-type": "application/json" } }),
+    () =>
+      new Response(`{"ready":true,"closed":false,"pad":"${"x".repeat(200)}"}`, {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+  ];
+  for (const makeResponse of cases) {
+    const fixture = await makeFixture();
+    try {
+      const calls: string[] = [];
+      const base = seams(calls, {});
+      const wrapped = Object.freeze({ ...base, fetch: async () => makeResponse() });
+      await assert.rejects(
+        createTrustedWorkerRuntime(fixture.state, new AbortController().signal, wrapped),
+        /launcher trusted composition failed/,
+      );
+      assert.equal(calls.includes("api-close"), true);
+      assert.equal(calls.includes("ssh-key-close"), true);
+    } finally {
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  }
+});
+
+test("trusted composition rejects accessor proxy capability without invoking getter", async () => {
+  const fixture = await makeFixture();
+  try {
+    const calls: string[] = [];
+    let invoked = false;
+    const base = seams(calls, {});
+    const wrapped = Object.freeze({
+      ...base,
+      startEnvoyEgress: async (options: Parameters<NonNullable<typeof base.startEnvoyEgress>>[0]) => {
+        const handle = await (base.startEnvoyEgress as NonNullable<typeof base.startEnvoyEgress>)(options);
+        const bad = { snapshot: handle.snapshot, close: handle.close };
+        Object.defineProperty(bad, "proxyCapability", {
+          enumerable: true,
+          get: () => {
+            invoked = true;
+            return handle.proxyCapability;
+          },
+        });
+        return Object.freeze(bad) as never;
+      },
+    });
+    await assert.rejects(
+      createTrustedWorkerRuntime(fixture.state, new AbortController().signal, wrapped),
+      /launcher trusted composition failed/,
+    );
+    assert.equal(invoked, false);
+    assert.equal(calls.includes("egress-close"), true);
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("trusted composition error serialization excludes seeded secret and path sentinels", async () => {
+  const fixture = await makeFixture();
+  try {
+    const calls: string[] = [];
+    const base = seams(calls, {});
+    const wrapped = Object.freeze({
+      ...base,
+      fetch: async () => {
+        throw new Error("TESTTOKEN MODEL_KEY_VALUE_123 INTEGRATION_SECRET PROXY_CAPABILITY_123 /redacted/envoy");
+      },
+    });
+    await assert.rejects(createTrustedWorkerRuntime(fixture.state, new AbortController().signal, wrapped), (error) => {
+      const text = JSON.stringify(error);
+      return [
+        "TESTTOKEN",
+        "MODEL_KEY_VALUE_123",
+        "INTEGRATION_SECRET",
+        "PROXY_CAPABILITY_123",
+        "/redacted/envoy",
+      ].every((secret) => !text.includes(secret));
+    });
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+async function makeFixture() {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "cogs-trusted-compose-")));
+  const sandboxDir = join(root, "sandbox");
+  await import("node:fs/promises").then(async (fs) => {
+    await fs.mkdir(sandboxDir, { mode: 0o700 });
+    await fs.mkdir(join(root, "state"), { mode: 0o700 });
+    await fs.mkdir(join(root, "state", "control"), { mode: 0o700 });
+  });
+  const state: LauncherState = Object.freeze({
+    root,
+    name: "s1",
+    dir: join(root, "state"),
+    controlDir: join(root, "state", "control"),
+    sandboxDir,
+    driverStateName: "driver",
+    driverStateDir: join(root, "driver"),
+    driverCacheDir: join(root, "cache"),
+    lockDir: join(root, "lock"),
+    manifestPath: join(root, "state", "manifest.json"),
+    sentinelPath: join(root, "state", ".cogs-launcher-owner"),
+    recoveryPath: join(root, "state", ".cogs-launcher-recovery"),
+    stateId,
+    sourceRevision,
+  });
+  return { root, state };
+}
+
+async function eventually(predicate: () => boolean): Promise<void> {
+  const deadline = Date.now() + 1000;
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error("timed out waiting for test condition");
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
+}
+
+function seams(calls: string[], captured: Record<string, unknown>): Partial<TrustedCompositionSeams> {
+  const fake: Partial<TrustedCompositionSeams> = {
+    readManifest: async (state) => {
+      calls.push("manifest");
+      return Object.freeze({
+        version: "cogs.dev-launcher-manifest/v1alpha1",
+        stateId: state.stateId,
+        stateName: state.name,
+        sourceRevision: state.sourceRevision,
+        profile: "linux-kvm",
+        phase: "sandbox-ready",
+        owned: { sandboxState: state.driverStateName, controlDir: "control", lockName: `.${state.stateId}.lock` },
+        ports: [],
+      }) as never;
+    },
+    readWorkerDescriptor: async (state) => {
+      calls.push("descriptor");
+      return Object.freeze({
+        version: "cogs.dev-launcher-worker/v1alpha1",
+        stateId: state.stateId,
+        sourceRevision: state.sourceRevision,
+        profile: "linux-kvm",
+        authority: "authoritative-local",
+        readiness: "starting",
+        stage: "child-bound",
+        startupDigest: `sha256:${"c".repeat(64)}`,
+        parentPid: 10,
+        parentPidIdentity: `sha256:${"d".repeat(64)}`,
+        childPid: 11,
+        childPidIdentity: `sha256:${"e".repeat(64)}`,
+      }) as never;
+    },
+    preflightEgressRoot: async () => {
+      calls.push("preflight-egress");
+    },
+    materializeSshControls: async (state) => {
+      calls.push("ssh-controls");
+      return Object.freeze({
+        endpoint: "192.0.2.2:22",
+        username: "root" as const,
+        hostKeySha256: `SHA256:${"A".repeat(43)}`,
+        clientKeyPath: `/run/cogs/ssh/launcher-${state.stateId}`,
+        close: async () => {
+          calls.push("ssh-key-close");
+        },
+      });
+    },
+    createSkillInputs: async () => {
+      calls.push("skills");
+      return Object.freeze({
+        sharedRevision: emptyManifest,
+        userRevision: emptyBundle,
+        createPreparer: () =>
+          Object.freeze({
+            prepare: async () =>
+              Object.freeze({
+                piSkills: [],
+                eagerTrustedSkillPrompt: "",
+                agentsFiles: [],
+                metadata: Object.freeze({ shared: [], user: [] }),
+                dispose: async () => undefined,
+              }),
+          }),
+        close: async () => {
+          calls.push("skills-close");
+        },
+      }) as never;
+    },
+    readApiToken: async () => {
+      calls.push("api-token");
+      let token = "TESTTOKEN";
+      return Object.freeze({
+        read: () => token,
+        withToken: (op: (token: string) => unknown) => {
+          captured.apiTokenActive = true;
+          try {
+            return op(token);
+          } finally {
+            captured.apiTokenActive = false;
+          }
+        },
+        dispose: () => {
+          token = "";
+          calls.push("api-token-dispose");
+        },
+      }) as never;
+    },
+    startOpenBao: async () => {
+      calls.push("openbao");
+      const modelSecret = "MODEL_KEY_VALUE_123";
+      const server = createHttpServer((request, response) => {
+        if (request.url?.startsWith("/v1/model/data/users/alice/anthropic") === true) {
+          response.writeHead(200, { "content-type": "application/json" });
+          response.end(
+            JSON.stringify({
+              data: {
+                data: { api_key: modelSecret },
+                metadata: {
+                  created_time: "2026-01-01T00:00:00Z",
+                  deletion_time: "",
+                  destroyed: false,
+                  version: 1,
+                  custom_metadata: null,
+                },
+              },
+            }),
+          );
+          return;
+        }
+        response.writeHead(404, { "content-type": "application/json" });
+        response.end("{}");
+      });
+      await new Promise<void>((resolve, reject) => {
+        server.once("error", reject);
+        server.listen(0, "127.0.0.1", () => resolve());
+      });
+      const address = server.address();
+      const port = typeof address === "object" && address !== null ? address.port : 0;
+      let closePromise: Promise<void> | undefined;
+      const closeServer = () => {
+        closePromise ??= new Promise<void>((resolve) => server.close(() => resolve()));
+        server.closeAllConnections();
+        return closePromise;
+      };
+      const holder = (secret: string) =>
+        Object.freeze({ withSecret: (op: (secret: string) => unknown) => op(secret), dispose: () => undefined });
+      return Object.freeze({
+        snapshot: () =>
+          Object.freeze({
+            ready: true,
+            name: "n",
+            containerId: "c".repeat(64),
+            port,
+            image: "i",
+            seeded: "model-kv-egress-pki",
+            egress: {
+              mount: "model",
+              pkiMount: "pki",
+              pkiRole: "cogs-egress",
+              credentialHandle: "users/alice/integrations/stage3-localhost",
+            },
+          }),
+        modelToken: holder("T".repeat(32)),
+        modelApiKey: holder(modelSecret),
+        egressToken: holder("E".repeat(32)),
+        integrationCredential: holder("INTEGRATION_SECRET"),
+        close: async () => {
+          calls.push("openbao-close");
+          await closeServer();
+        },
+      }) as never;
+    },
+    startLocalFixtures: async () => {
+      calls.push("fixture");
+      return Object.freeze({
+        endpoint: () => "http://127.0.0.1:3000",
+        snapshot: () => Object.freeze({ ready: true, port: 3000, generation: 0, inflight: 0, total: 0, counts: {} }),
+        reset: () => undefined,
+        close: async () => {
+          calls.push("fixture-close");
+        },
+      });
+    },
+    startOtlpFixture: async () => {
+      calls.push("otlp");
+      return Object.freeze({
+        endpoint: (signal: string) => `http://127.0.0.1:4318/v1/${signal}`,
+        snapshot: () =>
+          Object.freeze({
+            ready: true,
+            port: 4318,
+            generation: 0,
+            inflight: 0,
+            logs: 0,
+            traces: 0,
+            metrics: 0,
+            names: [],
+          }),
+        reset: () => calls.push("otlp-reset"),
+        close: async () => {
+          calls.push("otlp-close");
+        },
+      }) as never;
+    },
+    createTelemetry: () => {
+      calls.push("telemetry");
+      return Object.freeze({
+        get ready() {
+          return true;
+        },
+        span: () => true,
+        metric: () => true,
+        snapshot: () => Object.freeze({ ready: true, queued: 0, exported: 0, dropped: 0, failed: 0, lag_ms: 0 }),
+        close: async () => {
+          calls.push("telemetry-close");
+        },
+      }) as never;
+    },
+    prepareEnvoyBinary: async () => {
+      calls.push("prepare-envoy");
+      return Object.freeze({
+        path: "/redacted/envoy",
+        sha256: `sha256:${"3".repeat(64)}`,
+        image: "envoyproxy/envoy:v1.38.3@sha256:5f7c43e1147412fdb3af578c651c67478a3df818eae89d2261e707e06c209cdb",
+        cleanup: "owned" as const,
+      });
+    },
+    startEnvoyEgress: async (options) => {
+      calls.push("egress-start");
+      captured.launch = options.launchDocument;
+      return Object.freeze({
+        snapshot: () =>
+          Object.freeze({
+            ready: true,
+            profile: "linux-kvm",
+            listenerPort: options.listenerPort,
+            replacementRequired: false,
+            replacementEvents: 0,
+            authority: {
+              user: "alice",
+              modelHandle: "users/alice/anthropic",
+              egressHandle: "users/alice/integrations/stage3-localhost",
+              pkiMount: "pki",
+              pkiRole: "cogs-egress",
+            },
+            envoy: { image: "x", binarySha256: `sha256:${"3".repeat(64)}` },
+            completions: { drained: 0, classification: "none" },
+          }),
+        proxyCapability: Object.freeze({
+          withSecret: (op: (secret: string) => unknown) => op("PROXY_CAPABILITY_123"),
+          dispose: () => undefined,
+        }),
+        close: async () => {
+          calls.push("egress-close");
+        },
+      }) as never;
+    },
+    createSshManager: () => {
+      let ready = false;
+      return {
+        get ready() {
+          return ready;
+        },
+        start: async () => {
+          calls.push("ssh-start");
+          ready = true;
+        },
+        shutdown: async () => {
+          calls.push("ssh-shutdown");
+          ready = false;
+        },
+      } as never;
+    },
+    createLifecycle: (options) => fakeLifecycle(options, calls) as never,
+    createPi: async (options) => {
+      calls.push("pi");
+      captured.launch = options.launchDocument;
+      await writeFile(join((options as { agentDir: string }).agentDir, "agent-state.json"), "{}", { flag: "wx" });
+      await writeFile(join((options as { sessionRoot: string }).sessionRoot, "launcher.jsonl"), "", { flag: "wx" });
+      return Object.freeze({
+        state: async () => ({ runState: "idle" as const }),
+        activeToolNames: () => ["read", "write", "edit", "bash"],
+        sessionFile: () => join((options as { sessionRoot: string }).sessionRoot, "launcher.jsonl"),
+        skillMetadata: () =>
+          Object.freeze({
+            shared: Object.freeze({
+              scope: "shared",
+              revision: emptyManifest,
+              bundleDigest: emptyBundle,
+              guestRoot: "/shared/skills",
+              guestSubtree: "/shared/skills/empty",
+              fileCount: 0,
+              byteCount: 0,
+              readOnlyEnforced: false,
+            }),
+            user: Object.freeze({
+              scope: "user",
+              revision: emptyBundle,
+              bundleDigest: emptyBundle,
+              guestRoot: "/user/skills",
+              guestSubtree: "/user/skills/empty",
+              fileCount: 0,
+              byteCount: 0,
+              readOnlyEnforced: false,
+            }),
+            agentsStatus: "missing",
+            skillCount: 0,
+          }),
+        dispose: async () => {
+          calls.push("pi-dispose");
+        },
+        disposeOwnedRuntime: async () => {
+          calls.push("pi-dispose");
+          await unlink(join((options as { agentDir: string }).agentDir, "agent-state.json")).catch(() => undefined);
+          await unlink(join((options as { sessionRoot: string }).sessionRoot, "launcher.jsonl")).catch(() => undefined);
+          await rmdir((options as { agentDir: string }).agentDir).catch(() => undefined);
+          await rmdir((options as { sessionRoot: string }).sessionRoot).catch(() => undefined);
+          return Object.freeze({ version: "cogs.pi-owned-runtime-cleanup/v1alpha1" as const, cleaned: true as const });
+        },
+        input: async () => "running" as const,
+        abort: async () => ({ aborted: true, runState: "idle" as const }),
+        entries: async () => ({ entries: [] }),
+        createExport: async () => ({}),
+        prepareShutdown: async () => ({}),
+        navigate: async () => ({ cancelled: false }),
+        model: {} as never,
+        gitMapRecords: () => [],
+        resolveGitMapping: async () => undefined,
+      }) as never;
+    },
+    createApi: () => {
+      assert.equal(captured.apiTokenActive, true);
+      return Object.freeze({
+        listen: async () => {
+          calls.push("api-listen");
+          return { port: 40123 };
+        },
+        close: async () => {
+          calls.push("api-close");
+        },
+        publish: () => true,
+      }) as never;
+    },
+    fetch: async () => {
+      calls.push("fetch-ready");
+      return new Response('{"ready":true,"closed":false}', {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    },
+    reserveLoopbackPort: async () => {
+      calls.push("reserve-port");
+      return Object.freeze({
+        port: 39000,
+        close: async () => {
+          calls.push("reserve-close");
+        },
+      });
+    },
+    mkdir: (async (path: unknown, options: unknown) => {
+      calls.push(`mkdir:${String(path).split("/").at(-1)}`);
+      await mkdir(String(path), options as never);
+      return undefined;
+    }) as never,
+  };
+  return Object.freeze(fake);
+}
+function fakeLifecycle(options: Parameters<TrustedCompositionSeams["createLifecycle"]>[0], calls: string[]) {
+  let ready = false;
+  return Object.freeze({
+    get ready() {
+      return ready;
+    },
+    get state() {
+      return ready ? "ready" : "created";
+    },
+    start: async () => {
+      for (const dep of options.dependencies) {
+        if (dep.name === "auth") calls.push("auth-start");
+        else await dep.start(new AbortController().signal);
+      }
+      ready = true;
+      calls.push("lifecycle-ready");
+    },
+    requestShutdown: async () => {
+      calls.push("lifecycle-shutdown");
+      for (const dep of [...options.dependencies].reverse()) await dep.shutdown(new AbortController().signal);
+      ready = false;
+    },
+  });
+}
