@@ -193,6 +193,155 @@ export async function markRecovery(state: LauncherState, reason: string): Promis
   await writeRecovery(state, reason);
 }
 
+export async function clearRecovery(
+  state: LauncherState,
+  seams: Readonly<{ beforeFinalRevalidate?: () => void | Promise<void> }> = Object.freeze({}),
+): Promise<void> {
+  const captured = snapshotClearRecoverySeams(seams);
+  const parent = await validateOwnedState(state);
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
+  let closeFailed = false;
+  try {
+    handle = await open(state.recoveryPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw new Error("launcher recovery cleanup failed");
+  }
+  try {
+    const marker = await handle.stat();
+    validateRecoveryMarker(marker);
+    if ((await realpath(state.recoveryPath)) !== state.recoveryPath)
+      throw new Error("launcher recovery cleanup failed");
+    const text = await readRecoveryHandle(handle, marker);
+    validateRecoveryContent(text, state.stateId);
+    const pathStat = await lstat(state.recoveryPath);
+    validateRecoveryMarker(pathStat);
+    if (!sameFile(pathStat, marker) || (await realpath(state.recoveryPath)) !== state.recoveryPath)
+      throw new Error("launcher recovery cleanup failed");
+    await captured.beforeFinalRevalidate?.();
+    const finalParent = await validateOwnedState(state);
+    if (!sameFile(finalParent, parent)) throw new Error("launcher recovery cleanup failed");
+    const finalPathStat = await lstat(state.recoveryPath);
+    validateRecoveryMarker(finalPathStat);
+    if (!sameFile(finalPathStat, marker) || (await realpath(state.recoveryPath)) !== state.recoveryPath)
+      throw new Error("launcher recovery cleanup failed");
+    const finalHandle = await open(state.recoveryPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+    try {
+      const finalOpenStat = await finalHandle.stat();
+      validateRecoveryMarker(finalOpenStat);
+      if (!sameFile(finalOpenStat, marker)) throw new Error("launcher recovery cleanup failed");
+    } finally {
+      await finalHandle.close();
+    }
+    await unlink(state.recoveryPath);
+    try {
+      await lstat(state.recoveryPath);
+      throw new Error("launcher recovery cleanup failed");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    await fsyncDir(state.dir);
+    const afterParent = await validateOwnedState(state);
+    if (!sameFile(afterParent, parent)) throw new Error("launcher recovery cleanup failed");
+  } catch {
+    throw new Error("launcher recovery cleanup failed");
+  } finally {
+    try {
+      await handle.close();
+    } catch {
+      closeFailed = true;
+    }
+  }
+  if (closeFailed) throw new Error("launcher recovery cleanup failed");
+}
+
+function snapshotClearRecoverySeams(seams: Readonly<{ beforeFinalRevalidate?: () => void | Promise<void> }>): Readonly<{
+  beforeFinalRevalidate?: () => void | Promise<void>;
+}> {
+  if (
+    !seams ||
+    typeof seams !== "object" ||
+    Object.getPrototypeOf(seams) !== Object.prototype ||
+    !Object.isFrozen(seams)
+  )
+    throw new Error("launcher recovery cleanup failed");
+  if (Object.getOwnPropertySymbols(seams).length !== 0) throw new Error("launcher recovery cleanup failed");
+  const descriptors = Object.getOwnPropertyDescriptors(seams);
+  if (Object.keys(descriptors).some((key) => key !== "beforeFinalRevalidate"))
+    throw new Error("launcher recovery cleanup failed");
+  const hook = descriptors.beforeFinalRevalidate;
+  if (hook === undefined) return Object.freeze({});
+  if (!hook.enumerable || !Object.hasOwn(hook, "value") || typeof hook.value !== "function")
+    throw new Error("launcher recovery cleanup failed");
+  return Object.freeze({ beforeFinalRevalidate: hook.value });
+}
+
+type RecoveryMarker = {
+  dev: number;
+  ino: number;
+  mode: number;
+  nlink: number;
+  size: number;
+  uid: number;
+  isFile(): boolean;
+  isSymbolicLink(): boolean;
+};
+
+function validateRecoveryMarker(stat: RecoveryMarker): void {
+  if (
+    !stat.isFile() ||
+    stat.isSymbolicLink() ||
+    stat.nlink !== 1 ||
+    stat.size < 1 ||
+    stat.size > 8192 ||
+    (stat.mode & 0o777) !== fileMode ||
+    (geteuid() !== undefined && stat.uid !== geteuid())
+  )
+    throw new Error("launcher recovery cleanup failed");
+}
+
+async function readRecoveryHandle(handle: Awaited<ReturnType<typeof open>>, marker: RecoveryMarker) {
+  const bytes = await handle.readFile("utf8");
+  const after = await handle.stat();
+  if (!sameFile(after, marker) || after.size !== Buffer.byteLength(bytes) || after.size > 8192)
+    throw new Error("launcher recovery cleanup failed");
+  return bytes;
+}
+
+function validateRecoveryContent(text: string, stateId: string): void {
+  const parsed = JSON.parse(text) as unknown;
+  const record = parsed && typeof parsed === "object" ? Object.getOwnPropertyDescriptors(parsed) : undefined;
+  if (
+    !record ||
+    Object.getPrototypeOf(parsed) !== Object.prototype ||
+    Object.getOwnPropertySymbols(parsed).length !== 0 ||
+    Object.keys(record).sort().join(",") !== "reason,stateId,version"
+  )
+    throw new Error("launcher recovery cleanup failed");
+  const { reason, stateId: parsedStateId, version } = record;
+  if (
+    !version ||
+    !parsedStateId ||
+    !reason ||
+    !("value" in version) ||
+    !("value" in parsedStateId) ||
+    !("value" in reason) ||
+    version.value !== launcherRecoveryVersion ||
+    parsedStateId.value !== stateId ||
+    typeof reason.value !== "string" ||
+    !/^[a-z0-9._-]{1,64}$/u.test(reason.value) ||
+    canonicalJson({ version: launcherRecoveryVersion, stateId, reason: reason.value }) !== text
+  )
+    throw new Error("launcher recovery cleanup failed");
+}
+
+function sameFile(
+  a: { dev: number | bigint; ino: number | bigint },
+  b: { dev: number | bigint; ino: number | bigint },
+): boolean {
+  return a.dev === b.dev && a.ino === b.ino;
+}
+
 export async function removeOwnedState(state: LauncherState): Promise<void> {
   const before = await validateOwnedState(state);
   if (before.nlink < 2) throw new Error("invalid launcher state");
