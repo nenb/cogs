@@ -25,7 +25,8 @@
     "lock:check": "tsx scripts/check-lock-integrity.ts",
     "licenses": "tsx scripts/check-licenses.ts",
     "audit": "npm audit --audit-level=high",
-    "evidence:issue68": "tsx scripts/benchmark-issue68-checkpoints.ts"
+    "evidence:issue68": "tsx scripts/benchmark-issue68-checkpoints.ts",
+    "launcher": "tsx dev/launcher/main.ts"
   },
   "dependencies": {
     "@earendil-works/pi-agent-core": "0.80.6",
