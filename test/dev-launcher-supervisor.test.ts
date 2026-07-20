@@ -84,6 +84,44 @@ function seams(overrides: Partial<SupervisorSeams> = {}): Partial<SupervisorSeam
   });
 }
 
+function assertReadyInventoryMetadataOnly(
+  inventory: Awaited<ReturnType<typeof launcherInventory>>,
+  state: LauncherState,
+): void {
+  const descriptors = Object.getOwnPropertyDescriptors(inventory);
+  assert.deepEqual(Object.keys(descriptors).sort(), [
+    "authority",
+    "cleanupRequired",
+    "descriptor",
+    "driverState",
+    "phase",
+    "profile",
+    "recovery",
+    "stateId",
+    "version",
+    "workerLive",
+  ]);
+  for (const descriptor of Object.values(descriptors)) {
+    assert.equal(descriptor.enumerable, true);
+    assert.equal(Object.hasOwn(descriptor, "value"), true);
+  }
+  assert.deepEqual(
+    Object.fromEntries(Object.entries(descriptors).map(([key, descriptor]) => [key, descriptor.value])),
+    {
+      version: "cogs.dev-launcher-inventory/v1alpha1",
+      stateId: state.stateId,
+      profile: "insecure-container",
+      authority: "functional-only",
+      phase: "worker-ready",
+      descriptor: "ready",
+      workerLive: true,
+      recovery: "absent",
+      cleanupRequired: true,
+      driverState: "present",
+    },
+  );
+}
+
 async function assertNoToken(state: LauncherState): Promise<void> {
   await assert.rejects(() => readApiToken(state));
 }
@@ -287,8 +325,7 @@ test("supervisor inventory is frozen metadata for descriptor, recovery, and driv
     assert.equal(inventory.descriptor, "ready");
     assert.equal(inventory.workerLive, true);
     assert.equal(inventory.driverState, "present");
-    assert.equal(JSON.stringify(inventory).includes("222"), false);
-    assert.equal(JSON.stringify(inventory).includes(childDigest), false);
+    assertReadyInventoryMetadataOnly(inventory, state);
     await writeFile(
       state.recoveryPath,
       canonicalJson({ version: "cogs.dev-launcher-recovery/v1alpha1", stateId: state.stateId, reason: "x" }),

@@ -151,9 +151,9 @@ function exactOpen(value: unknown): Record<string, unknown> {
     fail();
   if (Object.getOwnPropertySymbols(value).length !== 0) fail();
   const descriptors = Object.getOwnPropertyDescriptors(value);
-  const output: Record<string, unknown> = {};
+  const output: Record<string, unknown> = Object.create(null);
   for (const key of Reflect.ownKeys(descriptors)) {
-    if (typeof key !== "string") fail();
+    if (typeof key !== "string" || key === "__proto__" || key === "constructor" || key === "prototype") fail();
     const descriptor = descriptors[key];
     if (!descriptor?.enumerable || !Object.hasOwn(descriptor, "value")) fail();
     output[key] = descriptor.value;

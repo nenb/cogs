@@ -148,6 +148,17 @@ test("control rejects symlink hardlink replacement and noncanonical worker", asy
       mode: 0o600,
     });
     await assert.rejects(() => readWorkerDescriptor(s));
+    await rm(join(s.controlDir, "worker.json"), { force: true });
+    await readyWorker(s);
+    const workerPath = join(s.controlDir, "worker.json");
+    const validWorker = await readFile(workerPath, "utf8");
+    for (const key of ["__proto__", "constructor", "prototype"] as const) {
+      const hostile = JSON.parse(validWorker);
+      Object.defineProperty(hostile, key, { value: Object.freeze({ hidden: true }), enumerable: true });
+      await writeFile(workerPath, JSON.stringify(hostile));
+      await assert.rejects(() => readWorkerDescriptor(s));
+      await writeFile(workerPath, validWorker);
+    }
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -613,6 +624,21 @@ test("worker protocol schemas are exact frozen and redact challenge holder metad
     assert.throws(() => parseWorkerProtocolMessage(Object.freeze({ ...challenge, startupNonce: bad })));
   }
   assert.throws(() => parseWorkerProtocolMessage(Object.freeze({ ...hello, extra: true })));
+  for (const key of ["__proto__", "constructor", "prototype"] as const) {
+    const hostile = Object.defineProperty(
+      {
+        version: "cogs.dev-launcher-worker-protocol/v1alpha1",
+        type: "child-identity",
+        startupDigest: digest,
+        pid: 123,
+        pidIdentity: digest2,
+      },
+      key,
+      { value: Object.freeze({ hidden: true }), enumerable: true },
+    );
+    assert.throws(() => parseChildIdentityHello(hostile));
+    assert.throws(() => parseWorkerProtocolMessage(hostile));
+  }
   assert.throws(() =>
     parseChildIdentityHello(
       Object.defineProperty(
@@ -627,6 +653,30 @@ test("worker protocol schemas are exact frozen and redact challenge holder metad
       ),
     ),
   );
+});
+
+test("control rejects dangerous protocol keys before worker binding", async () => {
+  const { dir, state: s } = await state();
+  try {
+    const startup = await beginWorkerStartup(s, seams(digest, () => Buffer.alloc(32, 22), 123) as never);
+    for (const key of ["__proto__", "constructor", "prototype"] as const) {
+      const hostile = Object.defineProperty(
+        {
+          version: "cogs.dev-launcher-worker-protocol/v1alpha1",
+          type: "child-identity",
+          startupDigest: startup.startup.digest(),
+          pid: 456,
+          pidIdentity: digest2,
+        },
+        key,
+        { value: Object.freeze({ hidden: true }), enumerable: true },
+      );
+      await assert.rejects(() => bindWorkerChild(s, hostile, seams(digest2) as never));
+      assert.equal((await readWorkerDescriptor(s)).stage, "pre-spawn");
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test("otlp fixture accepts worker and egress sinks and snapshots metadata only", async () => {

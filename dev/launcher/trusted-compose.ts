@@ -64,7 +64,7 @@ export type TrustedCompositionSeams = Readonly<{
   beforeRemoveRuntimePath: (path: string) => Promise<void> | void;
 }>;
 
-type Cleanup = Readonly<{ name: string; close: (options: DeadlineOptions) => Promise<void> | void }>;
+type Cleanup = Readonly<{ name: CleanupName; close: (options: DeadlineOptions) => Promise<void> | void }>;
 type RuntimeRoots = Readonly<{
   agentDir: string;
   sessionRoot: string;
@@ -104,6 +104,25 @@ const CLEANUP_DEADLINE_MS = 15_000;
 const ABORTED_GETTER = Object.getOwnPropertyDescriptor(AbortSignal.prototype, "aborted")?.get;
 const EVENT_ADD = EventTarget.prototype.addEventListener;
 const EVENT_REMOVE = EventTarget.prototype.removeEventListener;
+const CLEANUP_ORDER = Object.freeze([
+  "api",
+  "pi",
+  "lifecycle",
+  "egress",
+  "ssh",
+  "envoy-binary",
+  "listener-reservation",
+  "telemetry",
+  "local-fixture",
+  "otlp",
+  "openbao",
+  "api-token",
+  "runtime-roots",
+  "host-skills",
+  "ssh-key",
+] as const);
+type CleanupName = (typeof CLEANUP_ORDER)[number];
+const CLEANUP_NAMES = new Set<string>(CLEANUP_ORDER);
 
 const DEFAULT_SEAMS: TrustedCompositionSeams = Object.freeze({
   readManifest,
@@ -201,30 +220,30 @@ export async function createTrustedWorkerRuntime(
     await checkAdmission();
 
     const sshControls = await s.materializeSshControls(state, admitted.profile, admitted.authority, startup.signal);
-    cleanups.push({ name: "ssh-key", close: () => sshControls.close() });
+    registerCleanup(cleanups, { name: "ssh-key", close: () => sshControls.close() });
     requireSshControls(sshControls);
     checkCooperative(startup.signal, deadlineAt);
     await checkAdmission();
 
     const skills = await s.createSkillInputs(state, startup.signal);
-    cleanups.push({ name: "host-skills", close: () => skills.close() });
+    registerCleanup(cleanups, { name: "host-skills", close: () => skills.close() });
     requireSkills(skills);
     checkCooperative(startup.signal, deadlineAt);
 
     const roots = await createRuntimeRoots(state, s);
-    cleanups.push({ name: "runtime-roots", close: () => roots.close(piOwnedCleaned) });
+    registerCleanup(cleanups, { name: "runtime-roots", close: () => roots.close(piOwnedCleaned) });
     sessionStorageReady = true;
     checkCooperative(startup.signal, deadlineAt);
     await checkAdmission();
 
     const apiToken = await s.readApiToken(state);
-    cleanups.push({ name: "api-token", close: () => apiToken.dispose() });
+    registerCleanup(cleanups, { name: "api-token", close: () => apiToken.dispose() });
     requireToken(apiToken);
     checkCooperative(startup.signal, deadlineAt);
     await checkAdmission();
 
     const openbao = await s.startOpenBao(state, { signal: startup.signal, deadlineAt });
-    cleanups.push({ name: "openbao", close: (options) => openbao.close(options) });
+    registerCleanup(cleanups, { name: "openbao", close: (options) => openbao.close(options) });
     requireOpenBao(openbao);
     checkCooperative(startup.signal, deadlineAt);
     await checkAdmission();
@@ -240,13 +259,13 @@ export async function createTrustedWorkerRuntime(
         deadlineAt,
       }),
     );
-    cleanups.push({ name: "local-fixture", close: (options) => fixture.close(options) });
+    registerCleanup(cleanups, { name: "local-fixture", close: (options) => fixture.close(options) });
     requireFixture(fixture);
     checkCooperative(startup.signal, deadlineAt);
     await checkAdmission();
 
     const otlp = await s.startOtlpFixture({ signal: startup.signal, deadlineAt });
-    cleanups.push({
+    registerCleanup(cleanups, {
       name: "otlp",
       close: async (options) => {
         otlp.reset();
@@ -264,7 +283,7 @@ export async function createTrustedWorkerRuntime(
         allowLoopbackHttpDevelopment: true,
       }),
     );
-    cleanups.push({ name: "telemetry", close: () => telemetry.close() });
+    registerCleanup(cleanups, { name: "telemetry", close: () => telemetry.close() });
     requireTelemetry(telemetry);
     checkCooperative(startup.signal, deadlineAt);
 
@@ -290,7 +309,7 @@ export async function createTrustedWorkerRuntime(
       onLost: () => void cleanup().catch(() => undefined),
       telemetry,
     });
-    cleanups.push({ name: "ssh", close: () => ssh.shutdown() });
+    registerCleanup(cleanups, { name: "ssh", close: () => ssh.shutdown() });
     await ssh.start(startup.signal);
     requireSshReady(ssh);
     checkCooperative(startup.signal, deadlineAt);
@@ -299,7 +318,7 @@ export async function createTrustedWorkerRuntime(
     let binaryOwned = false;
     binary = await s.prepareEnvoyBinary(state, { signal: startup.signal, deadlineAt });
     binaryOwned = true;
-    cleanups.push({
+    registerCleanup(cleanups, {
       name: "envoy-binary",
       close: async () => {
         if (binaryOwned && binary !== undefined) {
@@ -331,7 +350,7 @@ export async function createTrustedWorkerRuntime(
       ? reserveLoopbackPort(startup.signal, deadlineAt, s.createNetServer)
       : s.reserveLoopbackPort(startup.signal, deadlineAt));
     let reservationOwned = true;
-    cleanups.push({
+    registerCleanup(cleanups, {
       name: "listener-reservation",
       close: async (options) => {
         if (reservationOwned) {
@@ -358,7 +377,7 @@ export async function createTrustedWorkerRuntime(
       signal: startup.signal,
       deadlineAt,
     });
-    cleanups.push({ name: "egress", close: (options) => egress.close(options) });
+    registerCleanup(cleanups, { name: "egress", close: (options) => egress.close(options) });
     requireEgress(egress, admitted.profile, listenerPort);
     const proxyCapability = ownData(egress, "proxyCapability");
     requireSecretHolder(proxyCapability);
@@ -395,7 +414,7 @@ export async function createTrustedWorkerRuntime(
         }
       },
     });
-    cleanups.push({
+    registerCleanup(cleanups, {
       name: "lifecycle",
       close: () => (lifecycleStopped ? undefined : lifecycle?.requestShutdown("trusted-compose-close")),
     });
@@ -412,7 +431,7 @@ export async function createTrustedWorkerRuntime(
       if (result.version !== "cogs.pi-owned-runtime-cleanup/v1alpha1" || result.cleaned !== true) fail();
       piOwnedCleaned = true;
     };
-    cleanups.push({ name: "pi", close: disposePi });
+    registerCleanup(cleanups, { name: "pi", close: disposePi });
 
     const filePorts = createSftpFileToolPorts({ manager: ssh });
     const bashPort = createSshBashToolPort({ manager: ssh });
@@ -453,7 +472,7 @@ export async function createTrustedWorkerRuntime(
         sessionId: `launcher-${state.stateId}`,
       }),
     );
-    cleanups.push({ name: "api", close: (options) => api?.close(options) });
+    registerCleanup(cleanups, { name: "api", close: (options) => api?.close(options) });
     requireApi(api);
     const listened = await api.listen(0, "127.0.0.1", { signal: startup.signal, deadlineAt });
     const apiPort = port(listened.port);
@@ -487,26 +506,9 @@ export async function createTrustedWorkerRuntime(
   async function cleanupAll(items: Cleanup[], controller: AbortController): Promise<void> {
     cleanupEntered = true;
     controller.abort();
-    const order = [
-      "api",
-      "pi",
-      "lifecycle",
-      "egress",
-      "ssh",
-      "envoy-binary",
-      "listener-reservation",
-      "telemetry",
-      "local-fixture",
-      "otlp",
-      "openbao",
-      "api-token",
-      "runtime-roots",
-      "host-skills",
-      "ssh-key",
-    ];
     let failed = false;
-    const byName = new Map(items.map((item) => [item.name, item]));
-    for (const name of order) {
+    const byName = cleanupMap(items);
+    for (const name of CLEANUP_ORDER) {
       const item = byName.get(name);
       if (item === undefined) continue;
       try {
@@ -517,6 +519,20 @@ export async function createTrustedWorkerRuntime(
     }
     if (failed) throw new Error(GENERIC);
   }
+}
+
+function registerCleanup(items: Cleanup[], item: Cleanup): void {
+  if (!CLEANUP_NAMES.has(item.name) || items.some((existing) => existing.name === item.name)) fail();
+  items.push(item);
+}
+
+function cleanupMap(items: readonly Cleanup[]): Map<CleanupName, Cleanup> {
+  const byName = new Map<CleanupName, Cleanup>();
+  for (const item of items) {
+    if (!CLEANUP_NAMES.has(item.name) || byName.has(item.name)) fail();
+    byName.set(item.name, item);
+  }
+  return byName;
 }
 
 function nonProducingDependencies(
@@ -593,8 +609,15 @@ function buildLaunch(
   });
 }
 
+function effectiveUid(): number {
+  if (typeof process.geteuid !== "function") fail();
+  const uid = process.geteuid();
+  if (!Number.isSafeInteger(uid) || uid < 0) fail();
+  return uid;
+}
+
 async function createRuntimeRoots(state: LauncherState, seams: TrustedCompositionSeams): Promise<RuntimeRoots> {
-  const uid = process.getuid?.() ?? 0;
+  const uid = effectiveUid();
   const root = join(state.sandboxDir, `trusted-compose-${state.stateId}`);
   const sentinel = join(root, ".cogs-trusted-compose-owner");
   const agentDir = join(root, "agent");
@@ -658,7 +681,7 @@ async function createRuntimeRoots(state: LauncherState, seams: TrustedCompositio
 }
 
 async function proveAuditWalAbsent(state: LauncherState): Promise<void> {
-  await strictDirectory(state.dir, process.getuid?.() ?? 0);
+  await strictDirectory(state.dir, effectiveUid());
   await lstat(join(state.dir, "egress-audit.wal")).then(
     () => fail(),
     (error: NodeJS.ErrnoException) => {
