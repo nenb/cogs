@@ -501,9 +501,10 @@ export async function createTrustedWorkerRuntime(
     cleanupStartupTimer(startupTimer, callerSignal, onAbort);
     startupTimer = undefined;
     markQuiesced();
+    const closeRuntime = Object.freeze(() => cleanup());
     return Object.freeze({
       apiPort,
-      close: () => cleanup(),
+      close: closeRuntime,
     });
   } catch {
     cleanupStartupTimer(startupTimer, callerSignal, onAbort);
