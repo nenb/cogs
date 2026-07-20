@@ -212,6 +212,19 @@ test("profile drivers use exact launcher-compatible local controls", async () =>
   assert(!kvm.includes('"$(<"$state/control/host_ed25519_key.pub")"'));
 });
 
+test("launcher smoke scripts quote driver paths and document aggregate failures", async () => {
+  const kvmSmoke = await readFile(join(process.cwd(), "dev/linux-kvm/ci-smoke.sh"), "utf8");
+  assert.doesNotMatch(kvmSmoke, /\$driver ssh/u);
+  assert.doesNotMatch(kvmSmoke, /\$\(\$driver ssh/u);
+  assert.match(kvmSmoke, /guest_boot=\$\("\$driver" ssh cat \/proc\/sys\/kernel\/random\/boot_id\)/u);
+  assert.match(kvmSmoke, /! "\$driver" ssh 'timeout 2 bash -c "<\/dev\/tcp\/1\.1\.1\.1\/443"'/u);
+  assert.match(kvmSmoke, /second_boot=\$\("\$driver" ssh cat \/proc\/sys\/kernel\/random\/boot_id\)/u);
+
+  const insecureSmoke = await readFile(join(process.cwd(), "dev/insecure-sandbox/ci-smoke.sh"), "utf8");
+  assert.match(insecureSmoke, /set -uo pipefail/u);
+  assert.match(insecureSmoke, /Keep -e disabled: this smoke accumulates guarded step failures/u);
+});
+
 test("insecure driver isolates docker tool state outside launcher controls", async () => {
   const temp = await mkdtemp(join(tmpdir(), "cogs-insecure-docker-"));
   const stateName = `fake-docker-${Math.random().toString(16).slice(2)}`;
