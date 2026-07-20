@@ -114,9 +114,38 @@ validate_metadata() {
   fi
 }
 
+verify_private_dir() {
+  local path=$1 mode owner
+  [[ -d "$path" && ! -L "$path" && "$(realpath "$path")" == "$path" ]] || fail 'insecure-container docker state is invalid'
+  mode=$(mode_octal "$path")
+  owner=$(stat -c '%u:%g' "$path" 2>/dev/null || stat -f '%u:%g' "$path")
+  [[ "$owner:$mode:directory" == "$(id -u):$(id -g):700:directory" ]] || fail 'insecure-container docker state is invalid'
+}
+
+init_docker_tool_state() {
+  docker_control="$state/control"
+  docker_home="$docker_control/docker-home"
+  docker_config="$docker_control/docker-config"
+  buildx_config="$docker_control/buildx-config"
+  docker_cmd="$docker_control/docker-command"
+  verify_private_dir "$state"
+  verify_private_dir "$docker_control"
+  mkdir -p "$docker_home" "$docker_config" "$buildx_config"
+  chmod 0700 "$docker_home" "$docker_config" "$buildx_config"
+  cat > "$docker_cmd" <<EOF
+#!/usr/bin/env bash
+exec env HOME="$docker_home" DOCKER_CONFIG="$docker_config" BUILDX_CONFIG="$buildx_config" docker "\$@"
+EOF
+  chmod 0700 "$docker_cmd"
+  verify_private_dir "$docker_home"
+  verify_private_dir "$docker_config"
+  verify_private_dir "$buildx_config"
+  [[ -f "$docker_cmd" && ! -L "$docker_cmd" && "$(realpath "$docker_cmd")" == "$docker_cmd" ]] || fail 'insecure-container docker state is invalid'
+}
+
 container_present() {
   local listing
-  if ! listing=$(bounded 30s docker container ls --all --quiet --filter "name=^/${container}$"); then
+  if ! listing=$(bounded 30s "$docker_cmd" container ls --all --quiet --filter "name=^/${container}$"); then
     fail 'could not query insecure-container resources'
     return 2
   fi
@@ -125,7 +154,7 @@ container_present() {
 
 volume_present() {
   local listing
-  if ! listing=$(bounded 30s docker volume ls --quiet --filter "name=$volume"); then
+  if ! listing=$(bounded 30s "$docker_cmd" volume ls --quiet --filter "name=$volume"); then
     fail 'could not query insecure-container workspace resources'
     return 2
   fi
@@ -134,13 +163,13 @@ volume_present() {
 
 validate_container_ownership() {
   local labels
-  labels=$(bounded 30s docker container inspect --format '{{index .Config.Labels "dev.cogs.profile"}} {{index .Config.Labels "dev.cogs.state"}}' "$container")
+  labels=$(bounded 30s "$docker_cmd" container inspect --format '{{index .Config.Labels "dev.cogs.profile"}} {{index .Config.Labels "dev.cogs.state"}}' "$container")
   [[ "$labels" == "$profile $state_id" ]] || fail 'refusing to operate on a container without matching ownership labels'
 }
 
 validate_volume_ownership() {
   local labels
-  labels=$(bounded 30s docker volume inspect --format '{{index .Labels "dev.cogs.profile"}} {{index .Labels "dev.cogs.state"}}' "$volume")
+  labels=$(bounded 30s "$docker_cmd" volume inspect --format '{{index .Labels "dev.cogs.profile"}} {{index .Labels "dev.cogs.state"}}' "$volume")
   [[ "$labels" == "$profile $state_id" ]] || fail 'refusing to operate on a volume without matching ownership labels'
 }
 
@@ -168,7 +197,7 @@ remove_resources() {
   if container_present; then
     if ! validate_container_ownership; then
       status=1
-    elif ! bounded 45s docker container rm --force "$container" >/dev/null; then
+    elif ! bounded 45s "$docker_cmd" container rm --force "$container" >/dev/null; then
       printf 'failed to remove insecure-container container\n' >&2
       status=1
     fi
@@ -180,7 +209,7 @@ remove_resources() {
   if volume_present; then
     if ! validate_volume_ownership; then
       status=1
-    elif ! bounded 45s docker volume rm --force "$volume" >/dev/null; then
+    elif ! bounded 45s "$docker_cmd" volume rm --force "$volume" >/dev/null; then
       printf 'failed to remove insecure-container workspace volume\n' >&2
       status=1
     fi
@@ -244,20 +273,24 @@ create() {
   require openssl
   validate_metadata
   [[ ! -e "$state" ]] || fail 'insecure-container state already exists; reset or destroy it first'
-  assert_resources_absent
-
-  # Build before generating controller keys so private material never enters the build context.
-  bounded 10m docker build --pull=false --tag "$image" --file "$repo/dev/insecure-sandbox/Dockerfile" "$repo"
 
   local input="$state/input" control="$state/control" ca_private
-  mkdir -p "$input" "$control"
-  chmod 0700 "$state" "$input" "$control"
+  mkdir -p "$control"
+  chmod 0700 "$state" "$control"
   printf '%s\n' "$state_id" > "$sentinel"
   printf '%s\n' "$container" > "$state/container"
   printf '%s\n' "$volume" > "$state/volume"
   trap 'cleanup_failed_create "$?"' ERR
   trap 'cleanup_failed_create 130' INT TERM HUP
+  init_docker_tool_state
+  assert_resources_absent
 
+  # Build before generating controller keys so private material never enters the build context.
+  bounded 10m "$docker_cmd" build --pull=false --tag "$image" --file "$repo/dev/insecure-sandbox/Dockerfile" "$repo"
+  assert_resources_absent
+
+  mkdir -p "$input"
+  chmod 0700 "$input"
   ssh-keygen -q -t ed25519 -N '' -C cogs-insecure-host -f "$input/ssh_host_ed25519_key"
   ssh-keygen -q -t ed25519 -N '' -C cogs-insecure-client -f "$control/client_ed25519_key"
   cp "$control/client_ed25519_key.pub" "$input/client_ed25519_key.pub"
@@ -286,11 +319,11 @@ create() {
     rm -f "$ca_private"
   fi
 
-  bounded 30s docker volume create \
+  bounded 30s "$docker_cmd" volume create \
     --label dev.cogs.profile="$profile" \
     --label dev.cogs.state="$state_id" \
     "$volume" >/dev/null
-  bounded 45s docker run --detach \
+  bounded 45s "$docker_cmd" run --detach \
     --name "$container" \
     --hostname sandbox \
     --label dev.cogs.profile="$profile" \
@@ -314,12 +347,12 @@ create() {
 
   local running deadline
   sleep 1
-  running=$(bounded 30s docker inspect --format '{{.State.Running}}' "$container")
+  running=$(bounded 30s "$docker_cmd" inspect --format '{{.State.Running}}' "$container")
   if [[ "$running" != true ]]; then
-    bounded 15s docker logs "$container" >&2 || true
+    bounded 15s "$docker_cmd" logs "$container" >&2 || true
     fail 'insecure-container stopped during startup'
   fi
-  port=$(bounded 30s docker port "$container" 2222/tcp | awk -F: 'NR == 1 {print $NF}')
+  port=$(bounded 30s "$docker_cmd" port "$container" 2222/tcp | awk -F: 'NR == 1 {print $NF}')
   [[ "$port" =~ ^[0-9]+$ ]] || fail 'failed to discover SSH port'
   printf '[127.0.0.1]:%s %s\n' "$port" "$(awk 'NF >= 2 {print $1 " " $2; exit}' "$input/ssh_host_ed25519_key.pub")" > "$state/known_hosts"
   printf '%s\n' "$port" > "$state/port"
@@ -328,12 +361,12 @@ create() {
   deadline=$((SECONDS + 30))
   until bounded 12s ssh "${SSH_OPTIONS[@]}" root@127.0.0.1 true >/dev/null 2>&1; do
     if (( SECONDS >= deadline )); then
-      bounded 15s docker logs "$container" >&2 || true
+      bounded 15s "$docker_cmd" logs "$container" >&2 || true
       fail 'insecure-container SSH readiness timed out'
     fi
-    running=$(bounded 30s docker inspect --format '{{.State.Running}}' "$container")
+    running=$(bounded 30s "$docker_cmd" inspect --format '{{.State.Running}}' "$container")
     if [[ "$running" != true ]]; then
-      bounded 15s docker logs "$container" >&2 || true
+      bounded 15s "$docker_cmd" logs "$container" >&2 || true
       fail 'insecure-container stopped before SSH became ready'
     fi
     sleep 1
@@ -347,11 +380,11 @@ verify_runtime_identity() {
   local running mount published
   validate_container_ownership
   validate_volume_ownership
-  running=$(bounded 30s docker inspect --format '{{.State.Running}}' "$container")
+  running=$(bounded 30s "$docker_cmd" inspect --format '{{.State.Running}}' "$container")
   [[ "$running" == true ]] || fail 'recorded insecure-container is not running'
-  mount=$(bounded 30s docker inspect --format '{{range .Mounts}}{{if eq .Destination "/workspace"}}{{.Name}}{{end}}{{end}}' "$container")
+  mount=$(bounded 30s "$docker_cmd" inspect --format '{{range .Mounts}}{{if eq .Destination "/workspace"}}{{.Name}}{{end}}{{end}}' "$container")
   [[ "$mount" == "$volume" ]] || fail 'recorded workspace volume is not mounted in the container'
-  published=$(bounded 30s docker port "$container" 2222/tcp)
+  published=$(bounded 30s "$docker_cmd" port "$container" 2222/tcp)
   [[ "$published" == "127.0.0.1:$port" ]] || fail 'recorded SSH endpoint is not the loopback-published container port'
 }
 
@@ -379,6 +412,7 @@ verify() {
   require cmp
   verify_tsx
   validate_metadata
+  init_docker_tool_state
   [[ -s "$state/container" && -s "$state/volume" && -s "$state/port" ]] || fail 'insecure-container state is absent or incomplete'
   port=$(<"$state/port")
   [[ "$port" =~ ^[0-9]+$ ]] || fail 'insecure-container SSH port is invalid'
@@ -444,6 +478,7 @@ EOF
 
 destroy() {
   validate_metadata
+  if [[ -e "$state" ]]; then init_docker_tool_state; fi
   remove_resources
   rm -rf -- "$state"
   [[ ! -e "$state" ]] || fail 'controller state teardown verification failed'

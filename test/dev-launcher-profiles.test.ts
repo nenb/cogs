@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, lstat, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -209,6 +209,69 @@ test("profile drivers use exact launcher-compatible local controls", async () =>
   assert.match(kvm, /realpath -e "\\\$skill_root"/);
   assert.match(kvm, /0:0:700:directory/);
   assert(!kvm.includes('"$(<"$state/control/host_ed25519_key.pub")"'));
+});
+
+test("insecure driver isolates docker tool state outside launcher controls", async () => {
+  const temp = await mkdtemp(join(tmpdir(), "cogs-insecure-docker-"));
+  const stateName = `fake-docker-${Math.random().toString(16).slice(2)}`;
+  const stateDir = join(process.cwd(), ".cogs-dev", stateName);
+  const launcherControl = join(temp, "launcher-control");
+  const bin = join(temp, "bin");
+  const log = join(temp, "docker.log");
+  await rm(stateDir, { recursive: true, force: true });
+  await mkdir(join(launcherControl, "sandbox"), { recursive: true, mode: 0o700 });
+  await mkdir(bin, { mode: 0o700 });
+  await writeFile(
+    join(bin, "docker"),
+    `#!/usr/bin/env bash
+set -euo pipefail
+printf 'home=%s\\nconfig=%s\\nbuildx=%s\\nargs=%s\\n' "\${HOME:-}" "\${DOCKER_CONFIG:-}" "\${BUILDX_CONFIG:-}" "$*" >> ${JSON.stringify(log)}
+mkdir -p "\${HOME:?}" "\${DOCKER_CONFIG:?}" "\${BUILDX_CONFIG:?}"
+touch "$HOME/home-write" "$DOCKER_CONFIG/config-write" "$BUILDX_CONFIG/buildx-write"
+if [[ "$1 $2" == 'container ls' || "$1 $2" == 'volume ls' ]]; then exit 0; fi
+if [[ "$1" == build ]]; then
+  if compgen -G ${JSON.stringify(`${stateDir}/input/ssh_*`)} >/dev/null; then printf 'keys-present\\n' >> ${JSON.stringify(log)}; fi
+  exit 37
+fi
+exit 38
+`,
+    { mode: 0o700 },
+  );
+  try {
+    await assert.rejects(() =>
+      execFileAsync("bash", ["dev/insecure-sandbox/driver.sh", "create"], {
+        cwd: process.cwd(),
+        timeout: 60_000,
+        env: {
+          ...process.env,
+          PATH: `${bin}:${process.env.PATH ?? ""}`,
+          HOME: launcherControl,
+          COGS_INSECURE_STATE_DIR: stateDir,
+          COGS_INSECURE_IMAGE: "cogs-insecure-fake:dev",
+        },
+      }),
+    );
+    const text = await readFile(log, "utf8");
+    assert(text.includes(`home=${stateDir}/control/docker-home\n`));
+    assert(text.includes(`config=${stateDir}/control/docker-config\n`));
+    assert(text.includes(`buildx=${stateDir}/control/buildx-config\n`));
+    assert.doesNotMatch(text, /keys-present/u);
+    await assert.rejects(access(stateDir));
+    assert.deepEqual((await readFile(join(process.cwd(), ".dockerignore"), "utf8")).split(/\n/u).filter(Boolean), [
+      ".cogs-dev/",
+      ".git/",
+      ".pi/",
+      "node_modules/",
+      "coverage/",
+      "docs/security-evidence/generated/",
+      "test/egress-conformance/reports/",
+      "third_party/envoy-ext-authz-v1.38.3/protos/",
+    ]);
+    assert.deepEqual(await readdir(launcherControl), ["sandbox"]);
+  } finally {
+    await rm(stateDir, { recursive: true, force: true });
+    await rm(temp, { recursive: true, force: true });
+  }
 });
 
 test("linux-kvm seed generation preserves guest skill-root checks under nounset", async () => {
