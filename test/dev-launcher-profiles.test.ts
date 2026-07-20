@@ -1,15 +1,19 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { lstat, readFile, rm } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { test } from "node:test";
+import { promisify } from "node:util";
 import { normalizeDriverResult } from "../dev/launcher/contract.ts";
 import { createProfileAdapter, descriptor, driverPath } from "../dev/launcher/profiles.ts";
 import type { RunnerSeams } from "../dev/launcher/runner.ts";
 import { resolveLauncherState } from "../dev/launcher/state.ts";
 
 const sourceRevision = "1".repeat(40);
+const execFileAsync = promisify(execFile);
 
 function fakeSeams(output: string, code = 0, calls: unknown[] = []): RunnerSeams {
   return Object.freeze({
@@ -195,9 +199,43 @@ test("profile drivers use exact launcher-compatible local controls", async () =>
   assert.match(kvm, /read -r host_key_type host_key_data ignored/);
   assert.match(kvm, /printf '%s %s %s\\n' "\$guest_ip" "\$host_key_type" "\$host_key_data"/);
   assert.match(kvm, /\/shared\/skills, \/user\/skills/);
-  assert.match(kvm, /realpath -e "\$skill_root"/);
+  assert.match(kvm, /realpath -e "\\\$skill_root"/);
   assert.match(kvm, /0:0:700:directory/);
   assert(!kvm.includes('"$(<"$state/control/host_ed25519_key.pub")"'));
+});
+
+test("linux-kvm seed generation preserves guest skill-root checks under nounset", async () => {
+  const temp = await mkdtemp(join(tmpdir(), "cogs-kvm-seed-"));
+  try {
+    const control = join(temp, "control");
+    await writeFile(join(temp, "seed.img"), "");
+    await rm(control, { recursive: true, force: true });
+    await mkdir(control, { recursive: true, mode: 0o700 });
+    await writeFile(
+      join(control, "client_ed25519_key.pub"),
+      "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICLIENT cogs-kvm-client\n",
+    );
+    await writeFile(join(control, "host_ed25519_key"), "host-private\n");
+    await writeFile(join(control, "host_ed25519_key.pub"), "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHOST cogs-kvm-host\n");
+    const probe = `
+set -euo pipefail
+state=${JSON.stringify(temp)}
+guest_ip=192.0.2.2
+cloud-localds() { :; }
+eval "$(awk '/^prepare_seed\\(\\) \\{/{flag=1} flag{print} flag && /^}/{exit}' dev/linux-kvm/driver.sh)"
+prepare_seed
+`;
+    await execFileAsync("bash", ["-c", probe], { cwd: process.cwd(), timeout: 20_000 });
+    const userData = await readFile(join(temp, "user-data"), "utf8");
+    assert.match(userData, /ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICLIENT cogs-kvm-client/);
+    assert.match(userData, /content: [A-Za-z0-9+/]+=*/);
+    assert.match(userData, /for skill_root in \/shared\/skills \/user\/skills/);
+    assert.match(userData, /test -d "\$skill_root"/);
+    assert.match(userData, /test "\$\(realpath -e "\$skill_root"\)" = "\$skill_root"/);
+    assert.match(userData, /test "\$\(stat -c "%u:%g:%a:%F" "\$skill_root"\)" = "0:0:700:directory"/);
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
 });
 
 test("profile descriptor maps status to verify and never exposes arbitrary executable", async () => {

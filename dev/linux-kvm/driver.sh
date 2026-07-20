@@ -152,7 +152,7 @@ runcmd:
   - [mkdir, -p, /shared/skills, /user/skills]
   - [chown, root:root, /shared/skills, /user/skills]
   - [chmod, '0700', /shared/skills, /user/skills]
-  - [bash, -lc, 'for skill_root in /shared/skills /user/skills; do test -d "$skill_root" && test ! -L "$skill_root" && test "$(realpath -e "$skill_root")" = "$skill_root" && test "$(stat -c "%u:%g:%a:%F" "$skill_root")" = "0:0:700:directory"; done']
+  - [bash, -lc, 'for skill_root in /shared/skills /user/skills; do test -d "\$skill_root" && test ! -L "\$skill_root" && test "\$(realpath -e "\$skill_root")" = "\$skill_root" && test "\$(stat -c "%u:%g:%a:%F" "\$skill_root")" = "0:0:700:directory"; done']
   - [systemctl, restart, ssh]
 EOF
   cat > "$state/meta-data" <<EOF
