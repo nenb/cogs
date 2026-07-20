@@ -195,7 +195,7 @@ export function normalizeDriverResult(
       record.kvm_enabled !== true ||
       record.distinct_boot_ids !== true ||
       typeof record.guest_kernel !== "string" ||
-      !/^[0-9A-Za-z._-]{1,64}$/u.test(record.guest_kernel) ||
+      !/^[0-9A-Za-z._+-]{1,64}$/u.test(record.guest_kernel) ||
       typeof record.guest_image_sha512 !== "string" ||
       !/^[a-f0-9]{128}$/u.test(record.guest_image_sha512) ||
       record.host_ip !== "192.0.2.1" ||

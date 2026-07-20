@@ -1449,7 +1449,9 @@ test("Pi session queue, abort, timeout, publication failure, and containment fai
         toolPorts: fakePorts(calls),
         streamFn: hangingStream(aborted),
         emit: (event) => {
-          events.push(`${event.kind}:${event.correlation_id}:${event.request_id ?? "none"}`);
+          events.push(
+            `${event.kind}:${event.correlation_id}:${event.request_id ?? "none"}:${event.payload.abort_correlation_id ?? "none"}:${event.payload.abort_request_id ?? "none"}`,
+          );
           return true;
         },
         operationTimeoutMs: 75,
@@ -1472,7 +1474,7 @@ test("Pi session queue, abort, timeout, publication failure, and containment fai
       await abortPromise;
       assert.deepEqual(
         events.filter((event) => event.startsWith("run_aborted")),
-        ["run_aborted:abort-corr:abort1"],
+        ["run_aborted:root-corr:root:abort-corr:abort1"],
       );
     } finally {
       await adapter.dispose();

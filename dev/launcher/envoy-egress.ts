@@ -186,9 +186,10 @@ export async function prepareEnvoyBinary(
 
       checkCooperative(prepareOptions);
       const versionOutput = await (capturedSeams.runVersion ?? runEnvoyVersion)(finalBinaryPath, prepareOptions);
-      if (!/Envoy\sversion:\s+1\.38\.3\//u.test(versionOutput)) {
-        fail();
-      }
+      const versionMatch = versionOutput.match(
+        /^\n(.+\/envoy) {2}version: [a-f0-9]{40}\/1\.38\.3\/Clean\/RELEASE\/BoringSSL\n\n$/u,
+      );
+      if (versionMatch?.[1] !== finalBinaryPath) fail();
 
       await proveExtractionContainerIdentity(docker, containerName, containerId, state.stateId);
       await requireDockerSuccess(docker(["rm", containerId]));
@@ -584,10 +585,14 @@ async function validateManagerReady(
 
 async function startLinuxKvmRelay(relay: KvmRelay, listenerPort: number, options: DeadlineOptions): Promise<void> {
   checkCooperative(options);
-  await relay.start(options);
+  const cooperative = Object.freeze({
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
+    ...(options.deadlineAt === undefined ? {} : { deadlineAt: options.deadlineAt }),
+  });
+  await relay.start(cooperative);
   checkCooperative(options);
   relay.registerTarget(listenerPort);
-  await relay.switchTo(listenerPort, options);
+  await relay.switchTo(listenerPort, cooperative);
   checkCooperative(options);
 }
 

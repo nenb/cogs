@@ -26,7 +26,7 @@ export const LAUNCHER_DETERMINISTIC_UNKNOWN_TEXT = "cogs launcher deterministic 
 const GENERIC_ERROR = "launcher deterministic stream failed";
 const MAX_API_KEY_LENGTH = 4096;
 const MAX_PROMPT_LENGTH = 1024;
-const MAX_MESSAGES = 4;
+const MAX_MESSAGES = 5;
 const MAX_CONTENT_BLOCKS = 8;
 const MAX_RECORD_KEYS = 32;
 const DEFAULT_SEAMS = Object.freeze({});
@@ -60,12 +60,14 @@ interface AssistantSnapshot {
     readonly id: string;
     readonly name: string;
   };
+  readonly text?: string;
 }
 
 interface ToolResultSnapshot {
   readonly role: "toolResult";
   readonly toolCallId: string;
   readonly toolName: string;
+  readonly text: string;
 }
 
 type MessageSnapshot = UserSnapshot | AssistantSnapshot | ToolResultSnapshot;
@@ -163,8 +165,7 @@ function snapshotMessage(message: unknown): MessageSnapshot {
   const record = snapshotPlainRecord(message, []);
   const role = record.role;
   if (role === "user") {
-    const content = boundedString(record.content, 0, MAX_PROMPT_LENGTH);
-    return Object.freeze({ role, content });
+    return Object.freeze({ role, content: snapshotUserText(record.content) });
   }
   if (role === "assistant") {
     return snapshotAssistant(record);
@@ -175,21 +176,36 @@ function snapshotMessage(message: unknown): MessageSnapshot {
   throw new Error(GENERIC_ERROR);
 }
 
+function snapshotUserText(content: unknown): string {
+  const blocks = snapshotDenseArray(content, 1);
+  if (blocks.length !== 1) throw new Error(GENERIC_ERROR);
+  const textBlock = snapshotPlainRecord(blocks[0], ["type", "text"]);
+  if (Object.keys(textBlock).sort().join(",") !== "text,type" || textBlock.type !== "text") {
+    throw new Error(GENERIC_ERROR);
+  }
+  return boundedUserText(textBlock.text);
+}
+
 function snapshotAssistant(record: Record<string, unknown>): AssistantSnapshot {
   const blocks = snapshotDenseArray(record.content, MAX_CONTENT_BLOCKS);
   let toolCall: AssistantSnapshot["toolCall"];
+  let text: string | undefined;
   for (const block of blocks) {
     const content = snapshotPlainRecord(block, []);
     const type = content.type;
     if (type === "toolCall") {
-      if (toolCall !== undefined) throw new Error(GENERIC_ERROR);
+      if (toolCall !== undefined || text !== undefined) throw new Error(GENERIC_ERROR);
       toolCall = Object.freeze({
         id: boundedString(content.id, 1, 128),
         name: boundedString(content.name, 1, 128),
       });
       continue;
     }
-    if (type === "text") boundedString(content.text, 0, MAX_PROMPT_LENGTH);
+    if (type === "text") {
+      if (text !== undefined || toolCall !== undefined) throw new Error(GENERIC_ERROR);
+      text = boundedString(content.text, 0, MAX_PROMPT_LENGTH);
+      continue;
+    }
     throw new Error(GENERIC_ERROR);
   }
   const metadata = Object.freeze({
@@ -199,32 +215,33 @@ function snapshotAssistant(record: Record<string, unknown>): AssistantSnapshot {
     model: boundedString(record.model, 1, 256),
     stopReason: boundedString(record.stopReason, 1, 32),
   });
-  return Object.freeze(toolCall === undefined ? metadata : { ...metadata, toolCall });
+  return Object.freeze({
+    ...metadata,
+    ...(toolCall === undefined ? {} : { toolCall }),
+    ...(text === undefined ? {} : { text }),
+  });
 }
 
 function snapshotToolResult(record: Record<string, unknown>): ToolResultSnapshot {
   const blocks = snapshotDenseArray(record.content, MAX_CONTENT_BLOCKS);
-  for (const block of blocks) {
-    const content = snapshotPlainRecord(block, []);
-    if (content.type !== "text") throw new Error(GENERIC_ERROR);
-    boundedString(content.text, 0, MAX_PROMPT_LENGTH);
-  }
+  if (blocks.length !== 1) throw new Error(GENERIC_ERROR);
+  const content = snapshotPlainRecord(blocks[0], []);
+  if (content.type !== "text") throw new Error(GENERIC_ERROR);
+  const text = boundedString(content.text, 0, MAX_PROMPT_LENGTH);
   if (record.isError !== false) throw new Error(GENERIC_ERROR);
   return Object.freeze({
     role: "toolResult",
     toolCallId: boundedString(record.toolCallId, 1, 128),
     toolName: boundedString(record.toolName, 1, 128),
+    text,
   });
 }
 
 function selectMode(context: ContextSnapshot): RequestSnapshot["mode"] {
+  if (isFreshAbort(context.messages) || isCompletedNormalThenAbort(context.messages)) return "abort";
   const userMessages = context.messages.filter((message): message is UserSnapshot => message.role === "user");
   if (userMessages.length !== 1) throw new Error(GENERIC_ERROR);
   const prompt = userMessages[0]?.content;
-  if (prompt === LAUNCHER_DETERMINISTIC_ABORT_PROMPT) {
-    if (context.messages.length !== 1) throw new Error(GENERIC_ERROR);
-    return "abort";
-  }
   if (prompt === LAUNCHER_DETERMINISTIC_NORMAL_PROMPT) {
     if (context.messages.length === 1) return "tool";
     if (context.messages.length !== 3) throw new Error(GENERIC_ERROR);
@@ -250,6 +267,80 @@ function selectMode(context: ContextSnapshot): RequestSnapshot["mode"] {
   if (context.messages.length !== 1) throw new Error(GENERIC_ERROR);
   boundedString(prompt, 0, MAX_PROMPT_LENGTH);
   return "unknown";
+}
+
+function isFreshAbort(messages: readonly MessageSnapshot[]): boolean {
+  const only = messages[0];
+  return messages.length === 1 && only?.role === "user" && only.content === LAUNCHER_DETERMINISTIC_ABORT_PROMPT;
+}
+
+function isCompletedNormalThenAbort(messages: readonly MessageSnapshot[]): boolean {
+  if (messages.length !== 5) return false;
+  const [prompt, toolUse, result, final, abort] = messages;
+  return (
+    prompt?.role === "user" &&
+    prompt.content === LAUNCHER_DETERMINISTIC_NORMAL_PROMPT &&
+    toolUse?.role === "assistant" &&
+    toolUse.api === LAUNCHER_DETERMINISTIC_API &&
+    toolUse.provider === LAUNCHER_DETERMINISTIC_PROVIDER &&
+    toolUse.model === LAUNCHER_DETERMINISTIC_MODEL_ID &&
+    toolUse.stopReason === "toolUse" &&
+    toolUse.text === undefined &&
+    toolUse.toolCall?.id === LAUNCHER_DETERMINISTIC_TOOL_ID &&
+    toolUse.toolCall.name === LAUNCHER_DETERMINISTIC_TOOL_NAME &&
+    result?.role === "toolResult" &&
+    result.toolCallId === LAUNCHER_DETERMINISTIC_TOOL_ID &&
+    result.toolName === LAUNCHER_DETERMINISTIC_TOOL_NAME &&
+    isExactSuccessfulBashResult(result.text) &&
+    final?.role === "assistant" &&
+    final.api === LAUNCHER_DETERMINISTIC_API &&
+    final.provider === LAUNCHER_DETERMINISTIC_PROVIDER &&
+    final.model === LAUNCHER_DETERMINISTIC_MODEL_ID &&
+    final.stopReason === "stop" &&
+    final.toolCall === undefined &&
+    final.text === LAUNCHER_DETERMINISTIC_FINAL_TEXT &&
+    abort?.role === "user" &&
+    abort.content === LAUNCHER_DETERMINISTIC_ABORT_PROMPT
+  );
+}
+
+function isExactSuccessfulBashResult(text: string): boolean {
+  try {
+    const value = JSON.parse(text) as unknown;
+    if (!value || typeof value !== "object" || Object.getPrototypeOf(value) !== Object.prototype) return false;
+    const record = value as Record<string, unknown>;
+    const keys = Object.keys(record).sort().join(",");
+    if (
+      keys !==
+      "cancelled,elapsedMs,exitCode,idleTimedOut,ok,signal,stderr,stderrBytes,stderrDroppedBytes,stderrLossyUtf8,stderrResultOmittedUtf8Bytes,stderrTruncated,stdout,stdoutBytes,stdoutDroppedBytes,stdoutLossyUtf8,stdoutResultOmittedUtf8Bytes,stdoutTruncated,timedOut,updateDropped"
+    )
+      return false;
+    return (
+      record.ok === true &&
+      record.stdout === "cogs-launcher-deterministic" &&
+      record.stderr === "" &&
+      record.exitCode === 0 &&
+      record.signal === null &&
+      Number.isSafeInteger(record.elapsedMs) &&
+      (record.elapsedMs as number) >= 0 &&
+      record.timedOut === false &&
+      record.idleTimedOut === false &&
+      record.cancelled === false &&
+      record.stdoutBytes === 27 &&
+      record.stderrBytes === 0 &&
+      record.stdoutDroppedBytes === 0 &&
+      record.stderrDroppedBytes === 0 &&
+      record.stdoutResultOmittedUtf8Bytes === 0 &&
+      record.stderrResultOmittedUtf8Bytes === 0 &&
+      record.stdoutTruncated === false &&
+      record.stderrTruncated === false &&
+      record.stdoutLossyUtf8 === false &&
+      record.stderrLossyUtf8 === false &&
+      record.updateDropped === 0
+    );
+  } catch {
+    return false;
+  }
 }
 
 function createToolStream(modelId: string, timestamp: number) {
@@ -354,6 +445,15 @@ function fallbackTimestamp(): number {
 function boundedString(value: unknown, minLength: number, maxLength: number): string {
   if (typeof value !== "string" || value.length < minLength || value.length > maxLength) throw new Error(GENERIC_ERROR);
   return value;
+}
+
+function boundedUserText(value: unknown): string {
+  const text = boundedString(value, 1, MAX_PROMPT_LENGTH);
+  for (let index = 0; index < text.length; index += 1) {
+    const code = text.charCodeAt(index);
+    if (code < 0x20 || code === 0x7f) throw new Error(GENERIC_ERROR);
+  }
+  return text;
 }
 
 function snapshotPlainRecord(value: unknown, allowedKeys: readonly string[]): Record<string, unknown> {

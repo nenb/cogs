@@ -112,6 +112,42 @@ async function withServer<T>(
   }
 }
 
+test("API server object is frozen plain own-method authority and remains functional", async () => {
+  const life = lifecycle();
+  const p = ports();
+  const token = "worker-token-0123456789abcdefghij";
+  const api = createApiServer({
+    lifecycle: life as never,
+    session: p.session,
+    history: p.history,
+    exporter: p.exporter,
+    bearerToken: token,
+    sessionId: "session-1",
+  });
+  assert.equal(Object.getPrototypeOf(api), Object.prototype);
+  assert.equal(Object.isFrozen(api), true);
+  assert.deepEqual(Object.keys(api).sort(), ["close", "listen", "publish"]);
+  for (const name of ["listen", "close", "publish"] as const) {
+    const descriptor = Object.getOwnPropertyDescriptor(api, name);
+    assert.equal(descriptor?.enumerable, true);
+    assert.equal(descriptor?.writable, false);
+    assert.equal(descriptor?.configurable, false);
+    assert.equal(typeof descriptor?.value, "function");
+  }
+  assert.throws(() => Object.defineProperty(api, "extra", { value: true }));
+  assert.throws(() => Object.defineProperty(api, "listen", { value: () => undefined }));
+  assert.equal(Reflect.deleteProperty(api, "publish"), false);
+  const { port } = await api.listen();
+  assert.equal(api.publish({ kind: "pi_event", correlation_id: "corr-event", payload: { ok: true } }), true);
+  const ready = await fetch(`http://127.0.0.1:${port}/health/ready`, {
+    headers: { authorization: `Bearer ${token}` },
+  });
+  assert.equal(ready.status, 200);
+  await ready.body?.cancel();
+  await api.close();
+  assert.equal(api.publish({ kind: "pi_event", correlation_id: "corr-event", payload: { ok: true } }), false);
+});
+
 async function json(base: string, path: string, init: RequestInit = {}) {
   return fetch(`${base}${path}`, {
     ...init,

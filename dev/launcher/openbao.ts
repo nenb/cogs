@@ -46,7 +46,7 @@ export type OpenBaoSeams = Readonly<{
 const ABORTED_GETTER = Object.getOwnPropertyDescriptor(AbortSignal.prototype, "aborted")?.get;
 const EVENT_ADD = EventTarget.prototype.addEventListener;
 const EVENT_REMOVE = EventTarget.prototype.removeEventListener;
-const MAX_COOPERATIVE_DEADLINE_MS = 10_000;
+const MAX_COOPERATIVE_DEADLINE_MS = 30_000;
 
 const version = /^OpenBao\s+v2\.6\.0(?:[\s,]|$)/u;
 const imageRe = /^quay\.io\/openbao\/openbao:2\.6\.0@sha256:([a-f0-9]{64})$/u;

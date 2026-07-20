@@ -6,6 +6,7 @@ import { readPromptFile, writeSensitiveExport } from "./cli.ts";
 import { deepFreeze, type LauncherAuthority, type LauncherPhase, type LauncherProfile } from "./contract.ts";
 import { readApiToken, readReadyWorkerDescriptor } from "./control.ts";
 import { createSandbox, destroySandbox, type LauncherCoreOptions, resetSandbox } from "./core.ts";
+import { LAUNCHER_DETERMINISTIC_ABORT_PROMPT } from "./deterministic-stream.ts";
 import { resolveLauncherState, withStateLock } from "./state.ts";
 import { launcherInventory, startWorkerForState, stopWorkerForState } from "./supervisor.ts";
 
@@ -309,7 +310,7 @@ async function smoke(
     await apiExport(Object.freeze({ ...request, op: "export", out: "launcher-smoke.json" }), options, ctx, s);
     const aborted = await withReadyClient(options, request, ctx, s, async (client, signal) => {
       const correlation = runCorrelation(
-        await client.request("run", Object.freeze({ content: "fixed smoke prompt" }), signal),
+        await client.request("run", Object.freeze({ content: LAUNCHER_DETERMINISTIC_ABORT_PROMPT }), signal),
       );
       const r = exactPlain(await client.request("abort", Object.freeze({}), signal));
       if (bool(r.aborted) !== true) throw new Error("launcher operation failed");

@@ -506,9 +506,13 @@ test("openbao docker seams receive cooperative signal and deadline", async () =>
     }),
   }) as OpenBaoSeams;
   try {
+    await assert.rejects(
+      () => startTrustedOpenBaoCooperative(s, { deadlineAt: Date.now() + 31_000 }, seams),
+      /launcher openbao failed/,
+    );
     const bao = await startTrustedOpenBaoCooperative(
       s,
-      { signal: controller.signal, deadlineAt: Date.now() + 5000 },
+      { signal: controller.signal, deadlineAt: Date.now() + 29_000 },
       seams,
     );
     await bao.close();
@@ -617,6 +621,11 @@ test("local fixtures cooperative start and option bags are strict", async () => 
   aborted.abort();
   await assert.rejects(() => startLocalFixtures({ credential: "cogs-dev-egress-key", signal: aborted.signal }));
   await assert.rejects(() => startLocalFixtures({ credential: "cogs-dev-egress-key", deadlineAt: Date.now() }));
+  await assert.rejects(() =>
+    startLocalFixtures({ credential: "cogs-dev-egress-key", deadlineAt: Date.now() + 31_000 }),
+  );
+  const composed = await startLocalFixtures({ credential: "cogs-dev-egress-key", deadlineAt: Date.now() + 29_000 });
+  await composed.close();
   let invoked = false;
   await assert.rejects(() =>
     startLocalFixtures(

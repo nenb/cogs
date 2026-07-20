@@ -586,7 +586,7 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
     }
   }
 
-  return {
+  return Object.freeze({
     listen: (port = 0, host = "127.0.0.1", rawOptions?: ApiListenOptions) => {
       let cooperative: CooperativeOptions;
       try {
@@ -613,7 +613,7 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
       return closePromise;
     },
     publish,
-  };
+  });
 
   async function listenOnce(port = 0, host = "127.0.0.1", cooperative: CooperativeOptions): Promise<{ port: number }> {
     if (closed) throw new Error("api server is closed");

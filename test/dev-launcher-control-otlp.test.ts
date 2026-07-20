@@ -897,6 +897,9 @@ test("otlp fixture cooperative start and option bags are strict", async () => {
   aborted.abort();
   await assert.rejects(() => startOtlpFixture({ signal: aborted.signal }));
   await assert.rejects(() => startOtlpFixture({ deadlineAt: Date.now() }));
+  await assert.rejects(() => startOtlpFixture({ deadlineAt: Date.now() + 31_000 }));
+  const composed = await startOtlpFixture({ deadlineAt: Date.now() + 29_000 });
+  await composed.close();
   let invoked = false;
   await assert.rejects(() =>
     startOtlpFixture(

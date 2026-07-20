@@ -1,1 +1,1 @@
-fixed smoke prompt
+cogs launcher deterministic smoke

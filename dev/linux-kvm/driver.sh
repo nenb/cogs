@@ -99,7 +99,12 @@ prepare_keys() {
   ssh-keygen -q -t ed25519 -N '' -C cogs-kvm-client -f "$state/control/client_ed25519_key"
   ssh-keygen -q -t ed25519 -N '' -C cogs-kvm-host -f "$state/control/host_ed25519_key"
   chmod 0600 "$state/control/"*_ed25519_key
-  printf '%s %s\n' "$guest_ip" "$(<"$state/control/host_ed25519_key.pub")" > "$state/known_hosts"
+  local host_key_type host_key_data ignored
+  read -r host_key_type host_key_data ignored < "$state/control/host_ed25519_key.pub"
+  [[ "$host_key_type" == ssh-ed25519 && "$host_key_data" =~ ^[A-Za-z0-9+/]+={0,2}$ ]] || {
+    echo 'FAIL: generated KVM host public key is invalid' >&2; return 1;
+  }
+  printf '%s %s %s\n' "$guest_ip" "$host_key_type" "$host_key_data" > "$state/known_hosts"
 }
 
 prepare_seed() {
@@ -144,6 +149,10 @@ write_files:
 mounts:
   - [LABEL=COGS_WORKSPACE, /workspace, auto, 'defaults,nosuid,nodev', '0', '2']
 runcmd:
+  - [mkdir, -p, /shared/skills, /user/skills]
+  - [chown, root:root, /shared/skills, /user/skills]
+  - [chmod, '0700', /shared/skills, /user/skills]
+  - [bash, -lc, 'for skill_root in /shared/skills /user/skills; do test -d "\$skill_root" && test ! -L "\$skill_root" && test "\$(realpath -e "\$skill_root")" = "\$skill_root" && test "\$(stat -c "%u:%g:%a:%F" "\$skill_root")" = "0:0:700:directory"; done']
   - [systemctl, restart, ssh]
 EOF
   cat > "$state/meta-data" <<EOF
@@ -240,6 +249,7 @@ verify() {
   run_ssh 'test -d /workspace'
   run_ssh 'test -z "$(ip route show default)"'
   run_ssh 'test "$(cat /sys/class/net/eth0/address)" = 52:54:00:c0:65:01'
+  run_ssh 'for skill_root in /shared/skills /user/skills; do test -d "$skill_root" && test ! -L "$skill_root" && test "$(realpath -e "$skill_root")" = "$skill_root" && test "$(stat -c "%u:%g:%a:%F" "$skill_root")" = "0:0:700:directory"; done'
   fingerprint=$(ssh-keygen -lf "$state/control/host_ed25519_key.pub" -E sha256 | awk '{print $2}')
   scanned=$(ssh-keyscan -T 5 -t ed25519 "$guest_ip" 2>/dev/null | ssh-keygen -lf - -E sha256 | awk '{print $2}')
   [[ "$fingerprint" == "$scanned" ]] || { echo 'FAIL: guest host-key fingerprint mismatch' >&2; exit 1; }

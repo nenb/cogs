@@ -67,6 +67,42 @@ jobs:
           COGS_SOURCE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
         run: test/egress-conformance/stage3-real-runtime/ci-smoke.sh docs/security-evidence/generated/stage3-real-runtime
 
+      - name: Provision explicit launcher tmpfs roots
+        id: launcher_roots
+        run: |
+          set -euo pipefail
+          sudo mkdir -p /run/cogs/egress /run/cogs/ssh
+          sudo mount -t tmpfs -o "size=16m,mode=0700,uid=$(id -u),gid=$(id -g)" tmpfs /run/cogs/egress
+          sudo mount -t tmpfs -o "size=16m,mode=0700,uid=$(id -u),gid=$(id -g)" tmpfs /run/cogs/ssh
+          test "$(find /run/cogs/egress /run/cogs/ssh -mindepth 1 -maxdepth 1 | wc -l)" = 0
+
+      - name: Run development launcher insecure-container smoke
+        id: launcher_smoke
+        continue-on-error: true
+        env:
+          COGS_SOURCE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: >-
+          npx --no-install tsx scripts/run-launcher-smoke-evidence.ts
+          --profile insecure-container
+          --state insecure-${{ github.run_id }}-${{ github.run_attempt }}
+          --timeout-ms 600000
+          --report docs/security-evidence/generated/launcher-insecure-container.json
+
+      - name: Unmount explicit launcher tmpfs roots
+        id: launcher_roots_cleanup
+        if: always() && steps.launcher_roots.outcome != 'skipped'
+        run: |
+          set -euo pipefail
+          for root in /run/cogs/ssh /run/cogs/egress; do
+            test -d "$root"
+            test "$(realpath "$root")" = "$root"
+            test "$(find "$root" -mindepth 1 -maxdepth 1 | wc -l)" = 0
+            mountpoint -q "$root"
+            sudo umount "$root"
+            ! mountpoint -q "$root"
+          done
+          sudo rmdir /run/cogs/ssh /run/cogs/egress /run/cogs
+
       - name: Validate functional-only evidence
         id: evidence
         if: always()
@@ -76,7 +112,8 @@ jobs:
             docs/security-evidence/generated/envoy/envoy-candidate-*/report.json \
             docs/security-evidence/generated/envoy-suite/envoy-suite-*/report.json \
             docs/security-evidence/generated/openbao-model-auth/report.json \
-            docs/security-evidence/generated/stage3-real-runtime/stage3-real-runtime-*/report.json
+            docs/security-evidence/generated/stage3-real-runtime/stage3-real-runtime-*/report.json \
+            docs/security-evidence/generated/launcher-insecure-container.json
 
       - name: Upload validated insecure-container evidence
         if: always() && steps.evidence.outcome == 'success'
@@ -89,6 +126,7 @@ jobs:
             docs/security-evidence/generated/envoy-suite/
             docs/security-evidence/generated/openbao-model-auth/
             docs/security-evidence/generated/stage3-real-runtime/
+            docs/security-evidence/generated/launcher-insecure-container.json
           if-no-files-found: error
           retention-days: 30
 
@@ -100,9 +138,13 @@ jobs:
           ENVOY_SUITE_OUTCOME: ${{ steps.envoy_suite.outcome }}
           OPENBAO_MODEL_AUTH_OUTCOME: ${{ steps.openbao_model_auth.outcome }}
           REAL_RUNTIME_OUTCOME: ${{ steps.real_runtime.outcome }}
+          LAUNCHER_SMOKE_OUTCOME: ${{ steps.launcher_smoke.outcome }}
+          LAUNCHER_ROOTS_CLEANUP_OUTCOME: ${{ steps.launcher_roots_cleanup.outcome }}
         run: |
           test "$DRIVER_OUTCOME" = success
           test "$ENVOY_OUTCOME" = success
           test "$ENVOY_SUITE_OUTCOME" = success
           test "$OPENBAO_MODEL_AUTH_OUTCOME" = success
           test "$REAL_RUNTIME_OUTCOME" = success
+          test "$LAUNCHER_SMOKE_OUTCOME" = success
+          test "$LAUNCHER_ROOTS_CLEANUP_OUTCOME" = success

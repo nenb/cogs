@@ -94,6 +94,7 @@ const MODEL_ID = "claude-sonnet-4-5";
 const MODEL_HANDLE = "users/alice/anthropic";
 const INTEGRATION_ID = "stage3-localhost";
 const INTEGRATION_HANDLE = "users/alice/integrations/stage3-localhost";
+const LINUX_KVM_PROXY_PORT = 18080;
 const SHARED_PATH = "/shared/skills";
 const USER_PATH = "/user/skills";
 const EMPTY_BUNDLE_DIGEST = "sha256:db1d1d550f597a03595794d95ca6c596c16a4b3b4f2304301f03c93bc6b53c0c";
@@ -465,9 +466,10 @@ export async function createTrustedWorkerRuntime(
     cleanupStartupTimer(startupTimer, callerSignal, onAbort);
     startupTimer = undefined;
     markQuiesced();
+    const closeRuntime = Object.freeze(() => cleanup());
     return Object.freeze({
       apiPort,
-      close: () => cleanup(),
+      close: closeRuntime,
     });
   } catch {
     cleanupStartupTimer(startupTimer, callerSignal, onAbort);
@@ -1114,11 +1116,13 @@ function requireApi(value: ApiServer): void {
 }
 function requireSshControls(value: TrustedSshControls): void {
   requireFrozenPlain(value);
-  const endpoint = ownData(value, "endpoint");
-  const username = ownData(value, "username");
-  const hostKeySha256 = ownData(value, "hostKeySha256");
-  const clientKeyPath = ownData(value, "clientKeyPath");
-  ownFunction(value, "close");
+  if (Object.getOwnPropertyNames(value).sort().join(",") !== "clientKeyPath,close,endpoint,hostKeySha256,username")
+    fail();
+  const endpoint = ownHiddenData(value, "endpoint");
+  const username = ownHiddenData(value, "username");
+  const hostKeySha256 = ownHiddenData(value, "hostKeySha256");
+  const clientKeyPath = ownHiddenData(value, "clientKeyPath");
+  if (typeof ownHiddenData(value, "close") !== "function") fail();
   if (
     typeof endpoint !== "string" ||
     !/^.+:[0-9]+$/u.test(endpoint) ||
@@ -1213,7 +1217,7 @@ function requireEgress(
   if (
     snap.ready !== true ||
     snap.profile !== profile ||
-    snap.listenerPort !== listenerPort ||
+    snap.listenerPort !== (profile === "linux-kvm" ? LINUX_KVM_PROXY_PORT : listenerPort) ||
     snap.replacementRequired !== false ||
     authority.user !== USER ||
     authority.modelHandle !== MODEL_HANDLE ||
@@ -1242,6 +1246,18 @@ function plainRecord(value: unknown): Record<string, unknown> {
 function ownData(value: object, key: string): unknown {
   const descriptor = Object.getOwnPropertyDescriptor(value, key);
   if (!descriptor || !("value" in descriptor) || descriptor.enumerable !== true) fail();
+  return descriptor.value;
+}
+function ownHiddenData(value: object, key: string): unknown {
+  const descriptor = Object.getOwnPropertyDescriptor(value, key);
+  if (
+    !descriptor ||
+    !("value" in descriptor) ||
+    descriptor.enumerable !== false ||
+    descriptor.writable !== false ||
+    descriptor.configurable !== false
+  )
+    fail();
   return descriptor.value;
 }
 function ownFunction(value: object, key: string): (...args: never[]) => unknown {
