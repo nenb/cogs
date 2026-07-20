@@ -3,6 +3,7 @@ import { getEventListeners } from "node:events";
 import test from "node:test";
 import type { StreamFn } from "@earendil-works/pi-agent-core";
 import type { AssistantMessageEvent, Context, Model } from "@earendil-works/pi-ai";
+import { convertToLlm } from "@earendil-works/pi-coding-agent";
 import {
   createDeterministicLauncherStream,
   LAUNCHER_DETERMINISTIC_ABORT_PROMPT,
@@ -40,48 +41,106 @@ function options(controller = new AbortController(), apiKey = "test-key") {
 }
 
 function normalContext(): Context {
-  return { messages: [{ role: "user", content: LAUNCHER_DETERMINISTIC_NORMAL_PROMPT, timestamp: TIMESTAMP }] };
+  return { messages: [normalMessage()] };
 }
 
 function unknownContext(prompt = "unrecognized bounded prompt"): Context {
-  return { messages: [{ role: "user", content: prompt, timestamp: TIMESTAMP }] };
+  return { messages: [userMessage(prompt)] };
 }
 
 function abortContext(): Context {
-  return { messages: [{ role: "user", content: LAUNCHER_DETERMINISTIC_ABORT_PROMPT, timestamp: TIMESTAMP }] };
+  return { messages: [userMessage(LAUNCHER_DETERMINISTIC_ABORT_PROMPT)] };
 }
 
 function matchingFinalContext(): Context {
   return {
+    messages: [normalMessage(), toolUseMessage(), toolResultMessage()],
+  };
+}
+
+function completedNormalContext(): Context {
+  return {
     messages: [
-      { role: "user", content: LAUNCHER_DETERMINISTIC_NORMAL_PROMPT, timestamp: TIMESTAMP },
+      normalMessage(),
+      toolUseMessage(),
+      toolResultMessage(),
       {
         role: "assistant",
         api: LAUNCHER_DETERMINISTIC_API,
         provider: LAUNCHER_DETERMINISTIC_PROVIDER,
         model: LAUNCHER_DETERMINISTIC_MODEL_ID,
-        content: [
-          {
-            type: "toolCall",
-            id: LAUNCHER_DETERMINISTIC_TOOL_ID,
-            name: LAUNCHER_DETERMINISTIC_TOOL_NAME,
-            arguments: { command: "ignored-by-validator" },
-          },
-        ],
+        content: [{ type: "text", text: LAUNCHER_DETERMINISTIC_FINAL_TEXT }],
         usage: zeroUsage(),
-        stopReason: "toolUse",
-        timestamp: TIMESTAMP,
-      },
-      {
-        role: "toolResult",
-        toolCallId: LAUNCHER_DETERMINISTIC_TOOL_ID,
-        toolName: LAUNCHER_DETERMINISTIC_TOOL_NAME,
-        content: [{ type: "text", text: "tool output is not reflected" }],
-        isError: false,
+        stopReason: "stop" as const,
         timestamp: TIMESTAMP,
       },
     ],
   };
+}
+
+function normalMessage() {
+  return userMessage(LAUNCHER_DETERMINISTIC_NORMAL_PROMPT);
+}
+
+function userMessage(text: string) {
+  return { role: "user" as const, content: [{ type: "text" as const, text }], timestamp: TIMESTAMP };
+}
+
+function toolUseMessage() {
+  return {
+    role: "assistant" as const,
+    api: LAUNCHER_DETERMINISTIC_API,
+    provider: LAUNCHER_DETERMINISTIC_PROVIDER,
+    model: LAUNCHER_DETERMINISTIC_MODEL_ID,
+    content: [
+      {
+        type: "toolCall" as const,
+        id: LAUNCHER_DETERMINISTIC_TOOL_ID,
+        name: LAUNCHER_DETERMINISTIC_TOOL_NAME,
+        arguments: { command: "ignored-by-validator" },
+      },
+    ],
+    usage: zeroUsage(),
+    stopReason: "toolUse" as const,
+    timestamp: TIMESTAMP,
+  };
+}
+
+function toolResultMessage() {
+  return {
+    role: "toolResult" as const,
+    toolCallId: LAUNCHER_DETERMINISTIC_TOOL_ID,
+    toolName: LAUNCHER_DETERMINISTIC_TOOL_NAME,
+    content: [{ type: "text" as const, text: bashResultText() }],
+    isError: false,
+    timestamp: TIMESTAMP,
+  };
+}
+
+function bashResultText(overrides: Record<string, unknown> = {}) {
+  return JSON.stringify({
+    ok: true,
+    stdout: "cogs-launcher-deterministic",
+    stderr: "",
+    exitCode: 0,
+    signal: null,
+    elapsedMs: 7,
+    timedOut: false,
+    idleTimedOut: false,
+    cancelled: false,
+    stdoutBytes: 27,
+    stderrBytes: 0,
+    stdoutDroppedBytes: 0,
+    stderrDroppedBytes: 0,
+    stdoutResultOmittedUtf8Bytes: 0,
+    stderrResultOmittedUtf8Bytes: 0,
+    stdoutTruncated: false,
+    stderrTruncated: false,
+    stdoutLossyUtf8: false,
+    stderrLossyUtf8: false,
+    updateDropped: 0,
+    ...overrides,
+  });
 }
 
 function zeroUsage() {
@@ -137,6 +196,12 @@ function assertGenericError(events: AssistantMessageEvent[]): void {
   assert.equal(events[0].error.errorMessage, "launcher deterministic stream failed");
   assert.equal(events[0].error.model, LAUNCHER_DETERMINISTIC_MODEL_ID);
 }
+
+test("pinned Pi conversion preserves one-text-block user message content", () => {
+  const message = userMessage(LAUNCHER_DETERMINISTIC_NORMAL_PROMPT);
+  const converted = convertToLlm([message]);
+  assert.deepEqual(converted, [message]);
+});
 
 test("deterministic stream emits exact first-turn tool event order and values", async () => {
   const events = await eventsFor(normalContext());
@@ -247,6 +312,53 @@ test("deterministic abort mode waits for later abort and removes its listener", 
   assert.equal(getEventListeners(controller.signal, "abort").length, 0);
 });
 
+test("deterministic abort mode accepts exact completed normal transcript only", async () => {
+  const controller = new AbortController();
+  const pending = await stream()(
+    model(),
+    {
+      messages: [...completedNormalContext().messages, userMessage(LAUNCHER_DETERMINISTIC_ABORT_PROMPT)],
+    },
+    options(controller),
+  );
+  assert.equal(await collectWithTimeout(pending), "timeout");
+  controller.abort();
+  const result = await resultWithTimeout(pending);
+  assert.notEqual(result, "timeout");
+  if (result === "timeout") throw new Error("expected result");
+  assert.equal(result.stopReason, "aborted");
+});
+
+test("deterministic abort mode rejects malformed prior history", async () => {
+  const completed = completedNormalContext().messages;
+  const abort = userMessage(LAUNCHER_DETERMINISTIC_ABORT_PROMPT);
+  const cases: Context[] = [
+    { messages: [...matchingFinalContext().messages, abort] },
+    { messages: [completed[1], completed[0], completed[2], completed[3], abort].filter((m) => m !== undefined) },
+    { messages: [completed[0], completed[1], completed[3], abort].filter((m) => m !== undefined) },
+    {
+      messages: [
+        completed[0],
+        completed[1],
+        { ...toolResultMessage(), content: [{ type: "text" as const, text: bashResultText({ stdout: "wrong" }) }] },
+        completed[3],
+        abort,
+      ].filter((m) => m !== undefined),
+    },
+    { messages: [...completed.slice(0, 3), { ...completed[3], stopReason: "toolUse" } as never, abort] },
+    {
+      messages: [
+        ...completed.slice(0, 3),
+        { ...completed[3], content: [{ type: "text", text: "wrong" }] } as never,
+        abort,
+      ],
+    },
+    { messages: [unknownContext().messages[0], ...completed.slice(1), abort].filter((m) => m !== undefined) },
+    { messages: [...completed, { ...abort, content: "other" }] },
+  ];
+  for (const item of cases) assertGenericError(await collect(await stream()(model(), item, options())));
+});
+
 test("deterministic abort mode pre-aborted signal terminates immediately without listener", async () => {
   const controller = new AbortController();
   controller.abort();
@@ -322,7 +434,7 @@ test("deterministic stream validates model and API key contract generically", as
 });
 
 test("deterministic stream rejects malformed context, bounds, duplicate and wrong tool cases", async () => {
-  const tooManyMessages = { messages: Array.from({ length: 5 }, () => normalContext().messages[0]) };
+  const tooManyMessages = { messages: Array.from({ length: 6 }, () => normalContext().messages[0]) };
   const wrongToolId = matchingFinalContext();
   (wrongToolId.messages[2] as { toolCallId: string }).toolCallId = "wrong";
   const wrongToolName = matchingFinalContext();
@@ -350,8 +462,6 @@ test("deterministic stream rejects malformed context, bounds, duplicate and wron
     { messages: [] },
     tooManyMessages,
     { messages: [{ role: "system", content: "bad", timestamp: TIMESTAMP }] },
-    { messages: [{ role: "user", content: "x".repeat(1025), timestamp: TIMESTAMP }] },
-    { messages: [{ role: "user", content: [{ type: "text", text: "bad" }], timestamp: TIMESTAMP }] },
     {
       messages: [
         normalContext().messages[0],
@@ -385,6 +495,78 @@ test("deterministic stream rejects malformed context, bounds, duplicate and wron
   ]) {
     assertGenericError(await collect(await stream()(model(), badContext as never, options())));
   }
+});
+
+test("deterministic stream accepts only pinned one-text-block user message content", async () => {
+  let invoked = false;
+  const accessorContent = [Object.freeze({ type: "text", text: LAUNCHER_DETERMINISTIC_NORMAL_PROMPT })];
+  Object.defineProperty(accessorContent, "0", {
+    get() {
+      invoked = true;
+      return userMessage(LAUNCHER_DETERMINISTIC_NORMAL_PROMPT).content[0];
+    },
+  });
+  const accessorBlock = { type: "text" };
+  Object.defineProperty(accessorBlock, "text", {
+    get() {
+      invoked = true;
+      return LAUNCHER_DETERMINISTIC_NORMAL_PROMPT;
+    },
+  });
+  const symbolContent = userMessage(LAUNCHER_DETERMINISTIC_NORMAL_PROMPT).content as unknown[] & {
+    [key: symbol]: string;
+  };
+  symbolContent[Symbol("hidden")] = "hidden";
+  const protoContent = userMessage(LAUNCHER_DETERMINISTIC_NORMAL_PROMPT).content;
+  Object.setPrototypeOf(protoContent, null);
+  const protoBlock = Object.create({ inherited: true });
+  Object.assign(protoBlock, { type: "text", text: LAUNCHER_DETERMINISTIC_NORMAL_PROMPT });
+  const cases: Context[] = [
+    { messages: [{ role: "user", content: LAUNCHER_DETERMINISTIC_NORMAL_PROMPT, timestamp: TIMESTAMP }] } as never,
+    { messages: [{ role: "user", content: [], timestamp: TIMESTAMP }] } as never,
+    { messages: [{ role: "user", content: [{ type: "text", text: "" }], timestamp: TIMESTAMP }] } as never,
+    {
+      messages: [{ role: "user", content: [{ type: "text", text: "x".repeat(1025) }], timestamp: TIMESTAMP }],
+    } as never,
+    { messages: [{ role: "user", content: [{ type: "text", text: "bad\ncontrol" }], timestamp: TIMESTAMP }] } as never,
+    {
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "a" },
+            { type: "text", text: "b" },
+          ],
+          timestamp: TIMESTAMP,
+        },
+      ],
+    } as never,
+    {
+      messages: [
+        {
+          role: "user",
+          content: [{ type: "image", text: LAUNCHER_DETERMINISTIC_NORMAL_PROMPT }],
+          timestamp: TIMESTAMP,
+        },
+      ],
+    } as never,
+    {
+      messages: [
+        {
+          role: "user",
+          content: [{ type: "text", text: LAUNCHER_DETERMINISTIC_NORMAL_PROMPT, extra: true }],
+          timestamp: TIMESTAMP,
+        },
+      ],
+    } as never,
+    { messages: [{ role: "user", content: accessorContent, timestamp: TIMESTAMP }] } as never,
+    { messages: [{ role: "user", content: [accessorBlock], timestamp: TIMESTAMP }] } as never,
+    { messages: [{ role: "user", content: symbolContent, timestamp: TIMESTAMP }] } as never,
+    { messages: [{ role: "user", content: protoContent, timestamp: TIMESTAMP }] } as never,
+    { messages: [{ role: "user", content: [protoBlock], timestamp: TIMESTAMP }] } as never,
+  ];
+  for (const item of cases) assertGenericError(await collect(await stream()(model(), item, options())));
+  assert.equal(invoked, false);
 });
 
 test("deterministic stream rejects final-turn reorder, extra content, metadata mismatch, and errored results", async () => {
@@ -606,7 +788,7 @@ test("deterministic stream does not reflect or retain API keys, prompts, command
 
   const finalEvents = await eventsFor(matchingFinalContext());
   const finalSerialized = JSON.stringify(finalEvents);
-  assert.doesNotMatch(finalSerialized, /ignored-by-validator|tool output is not reflected/);
+  assert.doesNotMatch(finalSerialized, /ignored-by-validator|cogs-launcher-deterministic/);
 });
 
 test("deterministic stream factory validates and freezes its seam", () => {

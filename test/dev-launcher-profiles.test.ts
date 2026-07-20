@@ -86,7 +86,7 @@ test("profiles normalize linux authority and reject hostile output/profile misma
     const linux = createProfileAdapter(
       "linux-kvm",
       fakeSeams(
-        `{"status":"ready","profile":"linux-kvm","guest_root":true,"kvm_enabled":true,"distinct_boot_ids":true,"guest_kernel":"6.1.0","guest_image_sha512":"${"a".repeat(128)}","host_ip":"192.0.2.1","guest_ip":"192.0.2.2","proxy_port":18080}\n`,
+        `{"status":"ready","profile":"linux-kvm","guest_root":true,"kvm_enabled":true,"distinct_boot_ids":true,"guest_kernel":"6.12.95+deb13-amd64","guest_image_sha512":"${"a".repeat(128)}","host_ip":"192.0.2.1","guest_ip":"192.0.2.2","proxy_port":18080}\n`,
       ),
     );
     assert.equal((await linux.verify(launcherState)).authority, "authoritative-local");
@@ -178,12 +178,17 @@ test("real profile descriptor uses driver-compatible direct .cogs-dev state and 
   }
 });
 
-test("insecure driver invokes exact repo-local tsx without npm exec", async () => {
-  const text = await readFile(join(process.cwd(), "dev/insecure-sandbox/driver.sh"), "utf8");
-  assert(!/\bnpx\b|\bnpm\b/.test(text));
-  assert.match(text, /tsx_bin="\$repo\/node_modules\/\.bin\/tsx"/);
-  assert.match(text, /tsx_real=\$\(realpath "\$tsx_bin"\)/);
-  assert.match(text, /"\$tsx_bin" "\$repo\/dev\/insecure-sandbox\/ssh-adapter-smoke\.ts"/);
+test("profile drivers use exact launcher-compatible local controls", async () => {
+  const insecure = await readFile(join(process.cwd(), "dev/insecure-sandbox/driver.sh"), "utf8");
+  assert(!/\bnpx\b|\bnpm\b/.test(insecure));
+  assert.match(insecure, /tsx_bin="\$repo\/node_modules\/\.bin\/tsx"/);
+  assert.match(insecure, /tsx_real=\$\(realpath "\$tsx_bin"\)/);
+  assert.match(insecure, /"\$tsx_bin" "\$repo\/dev\/insecure-sandbox\/ssh-adapter-smoke\.ts"/);
+
+  const kvm = await readFile(join(process.cwd(), "dev/linux-kvm/driver.sh"), "utf8");
+  assert.match(kvm, /read -r host_key_type host_key_data ignored/);
+  assert.match(kvm, /printf '%s %s %s\\n' "\$guest_ip" "\$host_key_type" "\$host_key_data"/);
+  assert(!kvm.includes('"$(<"$state/control/host_ed25519_key.pub")"'));
 });
 
 test("profile descriptor maps status to verify and never exposes arbitrary executable", async () => {

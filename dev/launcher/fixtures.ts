@@ -233,7 +233,7 @@ function cooperativeOptions(value: unknown, startOptions: boolean): FixtureCoope
       if (!(item.value instanceof AbortSignal)) fail();
       out.signal = item.value;
     } else if (key === "deadlineAt") {
-      if (!Number.isSafeInteger(item.value) || item.value > Date.now() + 10_000) fail();
+      if (!Number.isSafeInteger(item.value) || item.value > Date.now() + 30_000) fail();
       out.deadlineAt = item.value;
     }
   }

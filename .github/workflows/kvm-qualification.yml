@@ -22,6 +22,7 @@ jobs:
       - name: Check out source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
 
       - name: Set up Node.js
@@ -77,6 +78,49 @@ jobs:
         if: always() && steps.guest.outcome != 'skipped'
         run: dev/linux-kvm/driver.sh destroy
 
+      - name: Prepare exact pinned launcher images
+        id: launcher_images
+        if: always() && steps.destroy.outcome == 'success'
+        run: npx --no-install tsx scripts/prepare-launcher-images.ts
+
+      - name: Provision explicit launcher tmpfs roots
+        id: launcher_roots
+        if: always() && steps.launcher_images.outcome == 'success'
+        run: |
+          set -euo pipefail
+          sudo mkdir -p /run/cogs/egress /run/cogs/ssh
+          sudo mount -t tmpfs -o "size=16m,mode=0700,uid=$(id -u),gid=$(id -g)" tmpfs /run/cogs/egress
+          sudo mount -t tmpfs -o "size=16m,mode=0700,uid=$(id -u),gid=$(id -g)" tmpfs /run/cogs/ssh
+          test "$(find /run/cogs/egress /run/cogs/ssh -mindepth 1 -maxdepth 1 | wc -l)" = 0
+
+      - name: Run development launcher linux-kvm smoke
+        id: launcher_smoke
+        if: always() && steps.launcher_roots.outcome == 'success'
+        continue-on-error: true
+        env:
+          COGS_SOURCE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: >-
+          npx --no-install tsx scripts/run-launcher-smoke-evidence.ts
+          --profile linux-kvm
+          --state kvm-${{ github.run_id }}-${{ github.run_attempt }}
+          --timeout-ms 600000
+          --report docs/security-evidence/generated/launcher-linux-kvm.json
+
+      - name: Unmount explicit launcher tmpfs roots
+        id: launcher_roots_cleanup
+        if: always() && steps.launcher_roots.outcome != 'skipped'
+        run: |
+          set -euo pipefail
+          for root in /run/cogs/ssh /run/cogs/egress; do
+            test -d "$root"
+            test "$(realpath "$root")" = "$root"
+            test "$(find "$root" -mindepth 1 -maxdepth 1 | wc -l)" = 0
+            mountpoint -q "$root"
+            sudo umount "$root"
+            ! mountpoint -q "$root"
+          done
+          sudo rmdir /run/cogs/ssh /run/cogs/egress /run/cogs
+
       - name: Validate applicability-aware reports
         id: evidence
         if: always()
@@ -85,7 +129,8 @@ jobs:
             docs/security-evidence/generated/kvm-qualification.json \
             docs/security-evidence/generated/kvm-driver-smoke.json \
             docs/security-evidence/generated/envoy-kvm/envoy-suite-linux-kvm-*/report.json \
-            docs/security-evidence/generated/stage3-real-runtime-kvm/stage3-real-runtime-linux-kvm-*/report.json
+            docs/security-evidence/generated/stage3-real-runtime-kvm/stage3-real-runtime-linux-kvm-*/report.json \
+            docs/security-evidence/generated/launcher-linux-kvm.json
           shopt -s nullglob
           sidecars=(docs/security-evidence/generated/stage3-real-runtime-kvm/stage3-real-runtime-linux-kvm-*/stage3-real-runtime-sidecar.json)
           test "${#sidecars[@]}" -eq 1
@@ -107,8 +152,14 @@ jobs:
           REAL_RUNTIME_KVM_OUTCOME: ${{ steps.real_runtime_kvm.outcome }}
           DESTROY_OUTCOME: ${{ steps.destroy.outcome }}
           EVIDENCE_OUTCOME: ${{ steps.evidence.outcome }}
+          LAUNCHER_IMAGES_OUTCOME: ${{ steps.launcher_images.outcome }}
+          LAUNCHER_SMOKE_OUTCOME: ${{ steps.launcher_smoke.outcome }}
+          LAUNCHER_ROOTS_CLEANUP_OUTCOME: ${{ steps.launcher_roots_cleanup.outcome }}
         run: |
           test "$ENVOY_OUTCOME" = success
           test "$REAL_RUNTIME_KVM_OUTCOME" = success
           test "$DESTROY_OUTCOME" = success
+          test "$LAUNCHER_IMAGES_OUTCOME" = success
+          test "$LAUNCHER_SMOKE_OUTCOME" = success
+          test "$LAUNCHER_ROOTS_CLEANUP_OUTCOME" = success
           test "$EVIDENCE_OUTCOME" = success

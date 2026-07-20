@@ -18,6 +18,7 @@ import type { CogsEgressRuntimeManagerOptions } from "../src/egress/runtime-mana
 const sourceRevision = "a".repeat(40);
 const fakeBin = Buffer.alloc(1024 * 1024, 1);
 const fakeBinHash = `sha256:${createHash("sha256").update(fakeBin).digest("hex")}`;
+const envoyVersion = (path: string) => `\n${path}  version: ${"a".repeat(40)}/1.38.3/Clean/RELEASE/BoringSSL\n\n`;
 function launch(stateId: string, port = 31337) {
   const integ: Record<string, unknown> = {
     version: "cogs.integration/v1alpha1",
@@ -143,7 +144,7 @@ test("prepareEnvoyBinary extracts exact pinned image into owned runtime dir and 
         if (args[0] === "rm") return { status: 0, stdout: "" };
         return { status: 1, stdout: "" };
       }),
-      runVersion: Object.freeze(async () => "Envoy version: 1.38.3/clean"),
+      runVersion: Object.freeze(async (path: string) => envoyVersion(path)),
     });
     const d = await prepareEnvoyBinary(state, seams);
     assert.equal(d.image, ENVOY_IMAGE);
@@ -601,7 +602,7 @@ test("prepare envoy cooperative deadline after extraction cleans owned runtime",
       runVersion: Object.freeze(async () => {
         await new Promise((resolve) => setTimeout(resolve, 5));
         await new Promise((resolve) => setTimeout(resolve, 80));
-        return "Envoy version: 1.38.3/clean";
+        return envoyVersion(join(state.dir, "runtime", "envoy"));
       }),
     });
     await assert.rejects(
@@ -813,6 +814,8 @@ test("envoy runVersion and relay startup receive cooperative cancellation", asyn
     const events: string[] = [];
     const relay = Object.freeze({
       start: (options?: { signal?: AbortSignal }) => {
+        assert(Object.isFrozen(options));
+        assert.deepEqual(Object.keys(options ?? {}), ["signal"]);
         queueMicrotask(() => controller.abort());
         return new Promise<void>((_resolve, reject) =>
           options?.signal?.addEventListener("abort", () => {

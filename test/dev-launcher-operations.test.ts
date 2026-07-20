@@ -10,6 +10,10 @@ import type { LauncherProfile } from "../dev/launcher/contract.ts";
 import { canonicalJson } from "../dev/launcher/contract.ts";
 import { beginWorkerStartup, bindWorkerChild, createApiToken, promoteWorkerReady } from "../dev/launcher/control.ts";
 import {
+  LAUNCHER_DETERMINISTIC_ABORT_PROMPT,
+  LAUNCHER_DETERMINISTIC_NORMAL_PROMPT,
+} from "../dev/launcher/deterministic-stream.ts";
+import {
   type LauncherOperationContext,
   type LauncherOperationSeams,
   runLauncherOperation,
@@ -95,6 +99,7 @@ function client(calls: string[]): ApiClient {
           .join("+")}`,
       );
       if (op === "run") {
+        calls.push(`content:${input?.content ?? ""}`);
         correlation = `corr-${calls.filter((x) => x.startsWith("run:")).length}`;
         return Object.freeze({ accepted: true, duplicate: false, run_state: "running", correlation_id: correlation });
       }
@@ -180,7 +185,7 @@ function opSeams(calls: string[]): Partial<LauncherOperationSeams> {
       return Object.freeze({ removed: true });
     }) as never,
     createApiClient: Object.freeze(() => client(calls)) as never,
-    readPromptFile: Object.freeze(async () => "fixed prompt") as never,
+    readPromptFile: Object.freeze(async () => LAUNCHER_DETERMINISTIC_NORMAL_PROMPT) as never,
     writeSensitiveExport: Object.freeze(async (_root: string, rel: string, value: unknown) => {
       calls.push(`write:${rel}:${canonicalJson(value).includes("kept")}`);
       return rel;
@@ -254,6 +259,8 @@ test("fixed smoke uses dispatcher sequence and leaves metadata-only output", asy
     );
     assert(calls.indexOf("shutdown:") >= 0 && calls.indexOf("shutdown:") < calls.indexOf("stop"));
     assert(calls.includes("event:run_aborted"));
+    assert(calls.includes(`content:${LAUNCHER_DETERMINISTIC_NORMAL_PROMPT}`));
+    assert(calls.includes(`content:${LAUNCHER_DETERMINISTIC_ABORT_PROMPT}`));
     assert.equal(JSON.stringify(result).includes("kept"), false);
     assert.equal(JSON.stringify(result).includes(ctx.launcherRoot), false);
   } finally {

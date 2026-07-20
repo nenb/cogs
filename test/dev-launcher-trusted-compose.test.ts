@@ -889,13 +889,16 @@ test("trusted composition continues all later cleanup after individual cleanup f
             "authoritative-local",
             new AbortController().signal,
           );
-          return Object.freeze({
-            ...v,
+          return hiddenSshControls({
+            endpoint: v.endpoint,
+            username: v.username,
+            hostKeySha256: v.hostKeySha256,
+            clientKeyPath: v.clientKeyPath,
             close: async () => {
               await v.close();
               if (failing === "ssh-key") throw new Error("x");
             },
-          });
+          }) as never;
         },
         createSkillInputs: async (state: LauncherState, signal?: AbortSignal) => {
           const v = await (base.createSkillInputs as NonNullable<typeof base.createSkillInputs>)(state, signal);
@@ -1138,6 +1141,13 @@ async function eventually(predicate: () => boolean): Promise<void> {
   }
 }
 
+function hiddenSshControls(value: Record<string, unknown>) {
+  const output: Record<string, unknown> = {};
+  for (const key of ["endpoint", "username", "hostKeySha256", "clientKeyPath", "close"])
+    Object.defineProperty(output, key, { value: value[key], enumerable: false, writable: false, configurable: false });
+  return Object.freeze(output);
+}
+
 function seams(calls: string[], captured: Record<string, unknown>): Partial<TrustedCompositionSeams> {
   const fake: Partial<TrustedCompositionSeams> = {
     readManifest: async (state) => {
@@ -1175,7 +1185,7 @@ function seams(calls: string[], captured: Record<string, unknown>): Partial<Trus
     },
     materializeSshControls: async (state) => {
       calls.push("ssh-controls");
-      return Object.freeze({
+      return hiddenSshControls({
         endpoint: "192.0.2.2:22",
         username: "root" as const,
         hostKeySha256: `SHA256:${"A".repeat(43)}`,
@@ -1183,7 +1193,7 @@ function seams(calls: string[], captured: Record<string, unknown>): Partial<Trus
         close: async () => {
           calls.push("ssh-key-close");
         },
-      });
+      }) as never;
     },
     createSkillInputs: async () => {
       calls.push("skills");
@@ -1353,7 +1363,7 @@ function seams(calls: string[], captured: Record<string, unknown>): Partial<Trus
           Object.freeze({
             ready: true,
             profile: "linux-kvm",
-            listenerPort: options.listenerPort,
+            listenerPort: 18080,
             replacementRequired: false,
             replacementEvents: 0,
             authority: {

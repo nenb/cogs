@@ -606,7 +606,7 @@ function cooperativeOptions(value: unknown, startOptions: boolean): OtlpCooperat
       if (!(item.value instanceof AbortSignal)) throw new Error("launcher otlp fixture failed");
       out.signal = item.value;
     } else if (key === "deadlineAt") {
-      if (!Number.isSafeInteger(item.value) || item.value > Date.now() + 10_000)
+      if (!Number.isSafeInteger(item.value) || item.value > Date.now() + 30_000)
         throw new Error("launcher otlp fixture failed");
       out.deadlineAt = item.value;
     }

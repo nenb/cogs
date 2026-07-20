@@ -99,7 +99,12 @@ prepare_keys() {
   ssh-keygen -q -t ed25519 -N '' -C cogs-kvm-client -f "$state/control/client_ed25519_key"
   ssh-keygen -q -t ed25519 -N '' -C cogs-kvm-host -f "$state/control/host_ed25519_key"
   chmod 0600 "$state/control/"*_ed25519_key
-  printf '%s %s\n' "$guest_ip" "$(<"$state/control/host_ed25519_key.pub")" > "$state/known_hosts"
+  local host_key_type host_key_data ignored
+  read -r host_key_type host_key_data ignored < "$state/control/host_ed25519_key.pub"
+  [[ "$host_key_type" == ssh-ed25519 && "$host_key_data" =~ ^[A-Za-z0-9+/]+={0,2}$ ]] || {
+    echo 'FAIL: generated KVM host public key is invalid' >&2; return 1;
+  }
+  printf '%s %s %s\n' "$guest_ip" "$host_key_type" "$host_key_data" > "$state/known_hosts"
 }
 
 prepare_seed() {
