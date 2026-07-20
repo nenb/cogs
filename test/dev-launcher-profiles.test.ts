@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { access, lstat, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { access, lstat, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -215,10 +216,12 @@ test("insecure driver isolates docker tool state outside launcher controls", asy
   const temp = await mkdtemp(join(tmpdir(), "cogs-insecure-docker-"));
   const stateName = `fake-docker-${Math.random().toString(16).slice(2)}`;
   const stateDir = join(process.cwd(), ".cogs-dev", stateName);
+  const hostileState = join(process.cwd(), ".cogs-dev", `${stateName}-hostile`);
   const launcherControl = join(temp, "launcher-control");
   const bin = join(temp, "bin");
   const log = join(temp, "docker.log");
   await rm(stateDir, { recursive: true, force: true });
+  await rm(hostileState, { recursive: true, force: true });
   await mkdir(join(launcherControl, "sandbox"), { recursive: true, mode: 0o700 });
   await mkdir(bin, { mode: 0o700 });
   await writeFile(
@@ -252,9 +255,9 @@ exit 38
       }),
     );
     const text = await readFile(log, "utf8");
-    assert(text.includes(`home=${stateDir}/control/docker-home\n`));
-    assert(text.includes(`config=${stateDir}/control/docker-config\n`));
-    assert(text.includes(`buildx=${stateDir}/control/buildx-config\n`));
+    assert(text.includes(`home=${stateDir}/docker-tool/home\n`));
+    assert(text.includes(`config=${stateDir}/docker-tool/config\n`));
+    assert(text.includes(`buildx=${stateDir}/docker-tool/buildx\n`));
     assert.doesNotMatch(text, /keys-present/u);
     await assert.rejects(access(stateDir));
     assert.deepEqual((await readFile(join(process.cwd(), ".dockerignore"), "utf8")).split(/\n/u).filter(Boolean), [
@@ -268,8 +271,28 @@ exit 38
       "third_party/envoy-ext-authz-v1.38.3/protos/",
     ]);
     assert.deepEqual(await readdir(launcherControl), ["sandbox"]);
+    const hostileId = createHash("sha256").update(hostileState).digest("hex").slice(0, 12);
+    await mkdir(join(hostileState, "control"), { recursive: true, mode: 0o700 });
+    await writeFile(join(hostileState, ".cogs-insecure-owner"), `${hostileId}\n`, { mode: 0o600 });
+    await writeFile(join(hostileState, "container"), `cogs-insecure-${hostileId}\n`, { mode: 0o600 });
+    await writeFile(join(hostileState, "volume"), `cogs-insecure-workspace-${hostileId}\n`, { mode: 0o600 });
+    await writeFile(join(hostileState, "control", "client_ed25519_key"), "k\n", { mode: 0o600 });
+    await writeFile(join(hostileState, "control", "client_ed25519_key.pub"), "p\n", { mode: 0o600 });
+    await symlink("/tmp", join(hostileState, "docker-tool"));
+    await assert.rejects(() =>
+      execFileAsync("bash", ["dev/insecure-sandbox/driver.sh", "destroy"], {
+        cwd: process.cwd(),
+        timeout: 60_000,
+        env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ""}`, COGS_INSECURE_STATE_DIR: hostileState },
+      }),
+    );
+    assert.deepEqual((await readdir(join(hostileState, "control"))).sort(), [
+      "client_ed25519_key",
+      "client_ed25519_key.pub",
+    ]);
   } finally {
     await rm(stateDir, { recursive: true, force: true });
+    await rm(hostileState, { recursive: true, force: true });
     await rm(temp, { recursive: true, force: true });
   }
 });

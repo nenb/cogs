@@ -123,15 +123,15 @@ verify_private_dir() {
 }
 
 init_docker_tool_state() {
-  docker_control="$state/control"
-  docker_home="$docker_control/docker-home"
-  docker_config="$docker_control/docker-config"
-  buildx_config="$docker_control/buildx-config"
-  docker_cmd="$docker_control/docker-command"
+  docker_root="$state/docker-tool"
+  docker_home="$docker_root/home"
+  docker_config="$docker_root/config"
+  buildx_config="$docker_root/buildx"
+  docker_cmd="$docker_root/docker-command"
   verify_private_dir "$state"
-  verify_private_dir "$docker_control"
-  mkdir -p "$docker_home" "$docker_config" "$buildx_config"
-  chmod 0700 "$docker_home" "$docker_config" "$buildx_config"
+  mkdir -p "$docker_root" "$docker_home" "$docker_config" "$buildx_config"
+  chmod 0700 "$docker_root" "$docker_home" "$docker_config" "$buildx_config"
+  verify_private_dir "$docker_root"
   cat > "$docker_cmd" <<EOF
 #!/usr/bin/env bash
 exec env HOME="$docker_home" DOCKER_CONFIG="$docker_config" BUILDX_CONFIG="$buildx_config" docker "\$@"
@@ -141,6 +141,20 @@ EOF
   verify_private_dir "$docker_config"
   verify_private_dir "$buildx_config"
   [[ -f "$docker_cmd" && ! -L "$docker_cmd" && "$(realpath "$docker_cmd")" == "$docker_cmd" ]] || fail 'insecure-container docker state is invalid'
+}
+
+verify_control_key_inventory() {
+  local control="$state/control" entries first second
+  verify_private_dir "$control"
+  entries=$(find "$control" -mindepth 1 -maxdepth 1 -printf '%f\n' | LC_ALL=C sort | tr '\n' ' ')
+  [[ "$entries" == 'client_ed25519_key client_ed25519_key.pub ' ]] || fail 'insecure-container control inventory is invalid'
+  for key_file in "$control/client_ed25519_key" "$control/client_ed25519_key.pub"; do
+    [[ -f "$key_file" && ! -L "$key_file" && "$(realpath "$key_file")" == "$key_file" ]] \
+      || fail 'insecure-container control inventory is invalid'
+  done
+  first=$(mode_octal "$control/client_ed25519_key")
+  second=$(mode_octal "$control/client_ed25519_key.pub")
+  [[ "$first" == 600 && "$second" == 600 ]] || fail 'insecure-container control inventory is invalid'
 }
 
 container_present() {
@@ -294,6 +308,7 @@ create() {
   ssh-keygen -q -t ed25519 -N '' -C cogs-insecure-host -f "$input/ssh_host_ed25519_key"
   ssh-keygen -q -t ed25519 -N '' -C cogs-insecure-client -f "$control/client_ed25519_key"
   cp "$control/client_ed25519_key.pub" "$input/client_ed25519_key.pub"
+  verify_control_key_inventory
 
   if [[ ! "$http_proxy" =~ ^https?://[A-Za-z0-9.-]+:([0-9]{1,5})$ ]] \
       || (( 10#${BASH_REMATCH[1]:-0} < 1 || 10#${BASH_REMATCH[1]:-0} > 65535 )); then
@@ -413,6 +428,7 @@ verify() {
   verify_tsx
   validate_metadata
   init_docker_tool_state
+  verify_control_key_inventory
   [[ -s "$state/container" && -s "$state/volume" && -s "$state/port" ]] || fail 'insecure-container state is absent or incomplete'
   port=$(<"$state/port")
   [[ "$port" =~ ^[0-9]+$ ]] || fail 'insecure-container SSH port is invalid'
