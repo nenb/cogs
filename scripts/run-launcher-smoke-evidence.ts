@@ -128,7 +128,7 @@ export function reportFor(input: {
 
 export function validateSmokeJson(value: unknown, profile: Profile): void {
   const item = exactRecord(value, ["aborted", "complete", "inventory", "op"]);
-  const aborted = exactRecord(item.aborted, ["terminal"]);
+  const aborted = exactRecord(item.aborted, ["eventCount", "lastEventId", "terminal"]);
   const inv = exactRecord(item.inventory, [
     "authority",
     "cleanupRequired",
@@ -139,7 +139,14 @@ export function validateSmokeJson(value: unknown, profile: Profile): void {
     "recovery",
     "workerLive",
   ]);
-  if (item.op !== "smoke" || item.complete !== true || aborted.terminal !== "run_aborted") {
+  if (
+    item.op !== "smoke" ||
+    item.complete !== true ||
+    aborted.terminal !== "run_aborted" ||
+    !positiveBoundedInteger(aborted.lastEventId, 1000) ||
+    !positiveBoundedInteger(aborted.eventCount, 1000) ||
+    aborted.lastEventId < aborted.eventCount
+  ) {
     throw new Error("invalid launcher smoke metadata");
   }
   if (
@@ -397,6 +404,10 @@ async function validateReportFile(path: string) {
     throw new Error("invalid launcher smoke arguments");
   if ((await realpath(path)) !== path || stat.size < 1 || stat.size > 65536)
     throw new Error("invalid launcher smoke arguments");
+}
+
+function positiveBoundedInteger(value: unknown, max: number): value is number {
+  return Number.isSafeInteger(value) && typeof value === "number" && value > 0 && value <= max;
 }
 
 function exactRecord(value: unknown, keys: readonly string[]): Record<string, unknown> {

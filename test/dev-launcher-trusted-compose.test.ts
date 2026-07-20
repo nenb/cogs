@@ -26,6 +26,21 @@ test("trusted composition factory starts in exact order, proves ready, and close
       assert.fail(`${(error as Error).message}: ${calls.join(" > ")}`);
     }
     assert.equal(runtime.apiPort, 40123);
+    assert.equal(Object.getPrototypeOf(runtime), Object.prototype);
+    assert.equal(Object.isFrozen(runtime), true);
+    assert.deepEqual(Object.keys(runtime).sort(), ["apiPort", "close"]);
+    const apiPortDescriptor = Object.getOwnPropertyDescriptor(runtime, "apiPort");
+    const closeDescriptor = Object.getOwnPropertyDescriptor(runtime, "close");
+    assert.equal(apiPortDescriptor?.enumerable, true);
+    assert.equal(apiPortDescriptor?.writable, false);
+    assert.equal(apiPortDescriptor?.configurable, false);
+    assert.equal(closeDescriptor?.enumerable, true);
+    assert.equal(closeDescriptor?.writable, false);
+    assert.equal(closeDescriptor?.configurable, false);
+    assert.equal(Object.isFrozen(runtime.close), true);
+    assert.throws(() => Object.defineProperty(runtime, "close", { value: () => undefined }));
+    assert.equal(Reflect.deleteProperty(runtime, "close"), false);
+    assert.deepEqual(Object.keys(runtime).sort(), ["apiPort", "close"]);
     assert.deepEqual(calls.slice(0, 18), [
       "manifest",
       "descriptor",
