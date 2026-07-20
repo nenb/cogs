@@ -1,9 +1,6 @@
-import {
-  processWorkerChannel,
-  runWorkerChild,
-  unavailableWorkerRuntime,
-  type WorkerProvisionalRuntime,
-} from "./worker-process.ts";
+import type { LauncherState } from "./state.ts";
+import { createTrustedWorkerRuntime } from "./trusted-compose.ts";
+import { processWorkerChannel, runWorkerChild, type WorkerProvisionalRuntime } from "./worker-process.ts";
 
 const shutdown = new AbortController();
 let runtime: WorkerProvisionalRuntime | undefined;
@@ -16,7 +13,11 @@ const onTerminate = () => {
 };
 process.on("SIGTERM", onTerminate);
 
-void runWorkerChild(process.argv.slice(2), processWorkerChannel(), Object.freeze(unavailableWorkerRuntime), {
+const trustedRuntimeFactory = Object.freeze((state: LauncherState, signal: AbortSignal) =>
+  createTrustedWorkerRuntime(state, signal),
+);
+
+void runWorkerChild(process.argv.slice(2), processWorkerChannel(), trustedRuntimeFactory, {
   signal: shutdown.signal,
 }).then(
   (handle) => {

@@ -2,10 +2,11 @@ import assert from "node:assert/strict";
 import type { ChildProcess, spawn } from "node:child_process";
 import type { randomBytes } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { mkdir, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { canonicalJson } from "../dev/launcher/contract.ts";
 import {
   beginWorkerStartup,
   bindWorkerChild,
@@ -279,6 +280,31 @@ test("worker child rejects malformed out-of-order duplicate and hostile messages
   }
 });
 
+test("worker child rejects descriptor replacement after admission before invoking factory", async () => {
+  const { dir, state } = await sandboxReady();
+  try {
+    const startup = await beginWorkerStartup(state, startupSeams());
+    const channel = new TestChannel();
+    let starts = 0;
+    const { pending } = await startChild(startup, channel, state, async () => {
+      starts += 1;
+      return runtime(async () => undefined);
+    });
+    const hello = parseChildIdentityHello(channel.sent[0]);
+    await bindWorkerChild(state, hello, Object.freeze({ identity: Object.freeze(identityFor) }));
+    const bound = await readWorkerDescriptor(state);
+    await writeFile(
+      join(state.controlDir, "worker.json"),
+      canonicalJson(Object.freeze({ ...bound, childPid: childPid + 1 })),
+    );
+    channel.receive(createSupervisorAdmit(hello.startupDigest));
+    await assert.rejects(() => pending, /recovery required/u);
+    assert.equal(starts, 0);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("worker child bounds a hanging cleanup and reports close failure generically", async () => {
   for (const close of [
     Object.freeze(async () => {
@@ -312,8 +338,10 @@ test("worker child aborts a hanging factory and closes one late runtime without 
     const channel = new TestChannel();
     let resolveFactory: ((value: WorkerProvisionalRuntime) => void) | undefined;
     let factorySignal: AbortSignal | undefined;
+    let factoryState: unknown;
     let closes = 0;
-    const { pending } = await startChild(startup, channel, state, async (signal) => {
+    const { pending } = await startChild(startup, channel, state, async (loadedState, signal) => {
+      factoryState = loadedState;
       factorySignal = signal;
       return await new Promise<WorkerProvisionalRuntime>((resolve) => {
         resolveFactory = resolve;
@@ -322,6 +350,7 @@ test("worker child aborts a hanging factory and closes one late runtime without 
     void pending.catch(() => undefined);
     await bindFromHello(state, channel);
     await waitFor(() => factorySignal !== undefined);
+    assert.deepEqual(factoryState, state);
     channel.disconnect();
     await assert.rejects(() => pending, /recovery required/u);
     assert.equal(factorySignal?.aborted, true);
@@ -432,7 +461,7 @@ test("worker process rejects stale source coordinates and unfrozen runtime facto
   try {
     await beginWorkerStartup(second.state, startupSeams());
     const channel = new TestChannel();
-    const unfrozen = async (_signal: AbortSignal) => runtime(async () => undefined);
+    const unfrozen = async (_state: unknown, _signal: AbortSignal) => runtime(async () => undefined);
     await assert.rejects(() =>
       runWorkerChild(
         ["--cogs-launcher-worker-v1", second.state.root, second.state.name, second.state.sourceRevision],
@@ -915,6 +944,16 @@ test("supervisor abort and unavailable identity preserve starting descriptor wit
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test("worker entry statically wires trusted runtime factory only", async () => {
+  const source = await readFile(new URL("../dev/launcher/worker-entry.ts", import.meta.url), "utf8");
+  assert.match(source, /import \{ createTrustedWorkerRuntime \} from "\.\/trusted-compose\.ts";/u);
+  assert.match(
+    source,
+    /const trustedRuntimeFactory = Object\.freeze\(\(state: LauncherState, signal: AbortSignal\) =>\s*createTrustedWorkerRuntime\(state, signal\),\s*\);/u,
+  );
+  assert.doesNotMatch(source, /unavailableWorkerRuntime/u);
 });
 
 test("real inherited IPC child validates admission then fails closed with no default runtime", async () => {
