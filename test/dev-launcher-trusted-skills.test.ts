@@ -72,6 +72,54 @@ function manager(): SshConnectionManager {
   });
 }
 
+function launchDocument() {
+  return {
+    version: "cogs.dev/v1alpha1",
+    user_id: "alice",
+    session_id: "s",
+    workspace_id: "w",
+    sandbox: {
+      ssh_endpoint: "127.0.0.1:22",
+      ssh_host_key: `SHA256:${"A".repeat(43)}`,
+      client_key_path: "/run/cogs/ssh/launcher-test",
+      proxy_auth_handle: "p",
+    },
+    model: { provider: "anthropic", id: "claude-sonnet-4-5", credential_handle: "users/alice/model" },
+    skills: {
+      shared_revision: manifestDigest,
+      shared_path: "/shared/skills",
+      user_revision: bundleDigest,
+      user_path: "/user/skills",
+    },
+    integrations: [],
+    limits: { cpu: 1, memory_bytes: 1, tool_timeout_seconds: 1, max_tool_output_bytes: 1 },
+  } as const;
+}
+
+class CapturingManager extends SshConnectionManager {
+  public captured: { signal?: AbortSignal; operationTimeoutMs?: number } | undefined;
+  public constructor(private readonly onCapture?: (signal: AbortSignal | undefined) => void | Promise<void>) {
+    super({
+      config: {
+        endpoint: "127.0.0.1:22",
+        username: "root",
+        hostKeySha256: `SHA256:${"A".repeat(43)}`,
+        clientKeyPath: "/run/cogs/ssh/launcher-test",
+      },
+    });
+  }
+  public override async withSftp<T>(
+    input:
+      | { signal?: AbortSignal; openTimeoutMs?: number; closeTimeoutMs?: number; operationTimeoutMs?: number }
+      | undefined,
+    _operation: (port: never, signal: AbortSignal) => Promise<T>,
+  ): Promise<T> {
+    this.captured = input;
+    await this.onCapture?.(input?.signal);
+    throw new Error("trusted sftp seam rejected");
+  }
+}
+
 test("creates byte-exact real empty OCI and private provenance and removes exact inventory", async () => {
   const value = await setup();
   try {
@@ -122,6 +170,31 @@ test("creates byte-exact real empty OCI and private provenance and removes exact
     await first;
     await assert.rejects(lstat(value.staticRoot), { code: "ENOENT" });
     assert.deepEqual(await readdir(value.state.sandboxDir), []);
+  } finally {
+    await cleanup(value);
+  }
+});
+
+test("trusted skill preparer forwards exact bounded SFTP timeout and linked cancellation", async () => {
+  const value = await setup();
+  try {
+    const controller = new AbortController();
+    let linkedAborted = false;
+    const ssh = new CapturingManager(async (signal) => {
+      assert(signal instanceof AbortSignal);
+      assert.equal(signal.aborted, false);
+      controller.abort();
+      await Promise.resolve();
+      linkedAborted = signal.aborted;
+    });
+    const handle = await createTrustedSkillInputs(value.state);
+    const preparer = handle.createPreparer(ssh);
+    await assert.rejects(preparer.prepare({ launch: launchDocument(), signal: controller.signal }), /trusted skills/);
+    assert.equal(ssh.captured?.operationTimeoutMs, 10_000);
+    assert(ssh.captured?.signal instanceof AbortSignal);
+    assert.equal(linkedAborted, true);
+    await handle.close();
+    await assert.rejects(lstat(value.staticRoot), { code: "ENOENT" });
   } finally {
     await cleanup(value);
   }

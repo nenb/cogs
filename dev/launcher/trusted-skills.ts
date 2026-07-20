@@ -61,6 +61,7 @@ type InventoryItem = Readonly<{
 
 const ROOT_NAME = "trusted-skills";
 const SENTINEL_NAME = ".cogs-trusted-skills-owner";
+const TRUSTED_SKILL_SFTP_OPERATION_TIMEOUT_MS = 10_000;
 const MAX_STATIC_DEPTH = 8;
 const MAX_STATIC_ENTRIES = 64;
 const MAX_STATIC_PATH_BYTES = 512;
@@ -176,7 +177,12 @@ export async function createTrustedSkillInputs(
 
     const createPreparer = Object.freeze((manager: SshConnectionManager): CogsSkillPreparerPort => {
       if (closing || !(manager instanceof SshConnectionManager)) fail();
-      const real = createCogsSkillSessionPreparer({ ssh: manager, sharedResolver, privateStore });
+      const real = createCogsSkillSessionPreparer({
+        ssh: manager,
+        sharedResolver,
+        privateStore,
+        operationTimeoutMs: TRUSTED_SKILL_SFTP_OPERATION_TIMEOUT_MS,
+      });
       return Object.freeze({
         prepare: async (input: Parameters<CogsSkillPreparerPort["prepare"]>[0]) => {
           if (closing) fail();
