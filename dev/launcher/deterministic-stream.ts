@@ -21,12 +21,15 @@ export const LAUNCHER_DETERMINISTIC_TOOL_ARGUMENTS = Object.freeze({
   command: "printf cogs-launcher-deterministic",
 });
 export const LAUNCHER_DETERMINISTIC_FINAL_TEXT = "cogs launcher deterministic run complete" as const;
+export const LAUNCHER_DETERMINISTIC_S309_SETUP_PROMPT = "cogs launcher s3-09 setup" as const;
+export const LAUNCHER_DETERMINISTIC_S309_PROMPT = "cogs launcher s3-09 integrated" as const;
+export const LAUNCHER_DETERMINISTIC_S309_FINAL_TEXT = "cogs launcher s3-09 complete" as const;
 export const LAUNCHER_DETERMINISTIC_UNKNOWN_TEXT = "cogs launcher deterministic fallback response" as const;
 
 const GENERIC_ERROR = "launcher deterministic stream failed";
 const MAX_API_KEY_LENGTH = 4096;
 const MAX_PROMPT_LENGTH = 1024;
-const MAX_MESSAGES = 5;
+const MAX_MESSAGES = 9;
 const MAX_CONTENT_BLOCKS = 8;
 const MAX_RECORD_KEYS = 32;
 const DEFAULT_SEAMS = Object.freeze({});
@@ -35,9 +38,38 @@ const EVENT_TARGET_ADD = EventTarget.prototype.addEventListener;
 const EVENT_TARGET_REMOVE = EventTarget.prototype.removeEventListener;
 const MIN_TIMESTAMP = 0;
 const MAX_TIMESTAMP = 4_102_444_800_000; // 2100-01-01T00:00:00.000Z
+const S309_SETUP_TOOL = Object.freeze({
+  id: "launcher-s309-setup-1",
+  name: "bash",
+  arguments: Object.freeze({
+    command:
+      "set -eu\nmkdir -p /workspace/s3-09\nprintf 'alpha\\n' > /workspace/s3-09/proof.txt\ncd /workspace\ngit init -q\ngit config user.email cogs@example.invalid\ngit config user.name 'Cogs Launcher'\ngit add s3-09/proof.txt\ngit commit -q -m s3-09-baseline\nprintf s3-09-setup",
+  }),
+});
+const S309_READ_TOOL = Object.freeze({
+  id: "launcher-s309-read-1",
+  name: "read",
+  arguments: Object.freeze({ path: "/workspace/s3-09/proof.txt", offset: 0, limit: 10 }),
+});
+const S309_EDIT_TOOL = Object.freeze({
+  id: "launcher-s309-edit-1",
+  name: "edit",
+  arguments: Object.freeze({ path: "/workspace/s3-09/proof.txt", oldText: "alpha\n", newText: "alpha\nbeta\n" }),
+});
+function s309BashTool(port: number | undefined) {
+  if (port === undefined) throw new Error(GENERIC_ERROR);
+  return Object.freeze({
+    id: "launcher-s309-bash-1",
+    name: "bash",
+    arguments: Object.freeze({
+      command: `set -eu\ntest "$(cat /workspace/s3-09/proof.txt)" = "alpha\nbeta"\nallowed=$(curl -sS -o /dev/null -w '%{http_code}' --noproxy '' http://localhost:${port}/credential)\ndenied=$(curl -sS -o /dev/null -w '%{http_code}' --noproxy '' http://localhost:${port}/allowed || true)\ntest "$allowed" = 200\ntest "$denied" = 403\ncd /workspace\ngit add s3-09/proof.txt\ngit commit -q -m s3-09-integrated\nprintf 'allowed=200 denied=403 committed'`,
+    }),
+  });
+}
 
 export interface DeterministicLauncherStreamSeams {
   readonly now?: () => number;
+  readonly s309FixturePort?: number;
 }
 
 interface SnapshotOptions {
@@ -78,12 +110,23 @@ interface ContextSnapshot {
 
 interface RequestSnapshot {
   readonly modelId: string;
-  readonly mode: "tool" | "final" | "unknown" | "abort";
+  readonly mode:
+    | "tool"
+    | "final"
+    | "s309-setup-tool"
+    | "s309-setup-final"
+    | "s309-read"
+    | "s309-edit"
+    | "s309-bash"
+    | "s309-final"
+    | "unknown"
+    | "abort";
   readonly signal: AbortSignal;
 }
 
 export function createDeterministicLauncherStream(seams: DeterministicLauncherStreamSeams = DEFAULT_SEAMS): StreamFn {
   const clock = snapshotClock(seams);
+  const s309FixturePort = snapshotS309FixturePort(seams);
   const streamFn: StreamFn = (model, context, options) => {
     try {
       const request = snapshotRequest(model, context, options);
@@ -97,10 +140,18 @@ export function createDeterministicLauncherStream(seams: DeterministicLauncherSt
       if (nativeAborted(request.signal)) {
         return createErrorStream(request.modelId, timestamp);
       }
-      if (request.mode === "tool") {
-        return createToolStream(request.modelId, timestamp);
-      }
-      const text = request.mode === "final" ? LAUNCHER_DETERMINISTIC_FINAL_TEXT : LAUNCHER_DETERMINISTIC_UNKNOWN_TEXT;
+      if (request.mode === "tool") return createToolStream(request.modelId, timestamp);
+      if (request.mode === "s309-setup-tool") return createToolStream(request.modelId, timestamp, S309_SETUP_TOOL);
+      if (request.mode === "s309-read") return createToolStream(request.modelId, timestamp, S309_READ_TOOL);
+      if (request.mode === "s309-edit") return createToolStream(request.modelId, timestamp, S309_EDIT_TOOL);
+      if (request.mode === "s309-bash")
+        return createToolStream(request.modelId, timestamp, s309BashTool(s309FixturePort));
+      const text =
+        request.mode === "final"
+          ? LAUNCHER_DETERMINISTIC_FINAL_TEXT
+          : request.mode === "s309-final" || request.mode === "s309-setup-final"
+            ? LAUNCHER_DETERMINISTIC_S309_FINAL_TEXT
+            : LAUNCHER_DETERMINISTIC_UNKNOWN_TEXT;
       return createTextStream(request.modelId, timestamp, text);
     } catch {
       return createErrorStream(LAUNCHER_DETERMINISTIC_MODEL_ID, fallbackTimestamp());
@@ -111,11 +162,21 @@ export function createDeterministicLauncherStream(seams: DeterministicLauncherSt
 
 function snapshotClock(seams: DeterministicLauncherStreamSeams): () => number {
   if (!Object.isFrozen(seams)) throw new Error(GENERIC_ERROR);
-  const record = snapshotPlainRecord(seams, ["now"]);
+  const record = snapshotPlainRecord(seams, ["now", "s309FixturePort"]);
   const value = record.now;
   if (value === undefined) return Date.now;
   if (typeof value !== "function") throw new Error(GENERIC_ERROR);
   return value as () => number;
+}
+
+function snapshotS309FixturePort(seams: DeterministicLauncherStreamSeams): number | undefined {
+  if (!Object.isFrozen(seams)) throw new Error(GENERIC_ERROR);
+  const record = snapshotPlainRecord(seams, ["now", "s309FixturePort"]);
+  const value = record.s309FixturePort;
+  if (value === undefined) return undefined;
+  if (!Number.isSafeInteger(value) || (value as number) < 1 || (value as number) > 65535)
+    throw new Error(GENERIC_ERROR);
+  return value as number;
 }
 
 function snapshotRequest(model: Model<Api>, context: Context, options?: SimpleStreamOptions): RequestSnapshot {
@@ -245,28 +306,66 @@ function selectMode(context: ContextSnapshot): RequestSnapshot["mode"] {
   if (prompt === LAUNCHER_DETERMINISTIC_NORMAL_PROMPT) {
     if (context.messages.length === 1) return "tool";
     if (context.messages.length !== 3) throw new Error(GENERIC_ERROR);
-    const assistant = context.messages[1];
-    const result = context.messages[2];
-    if (assistant?.role !== "assistant" || result?.role !== "toolResult") throw new Error(GENERIC_ERROR);
-    const call = assistant.toolCall;
-    if (
-      assistant.api !== LAUNCHER_DETERMINISTIC_API ||
-      assistant.provider !== LAUNCHER_DETERMINISTIC_PROVIDER ||
-      assistant.model !== LAUNCHER_DETERMINISTIC_MODEL_ID ||
-      assistant.stopReason !== "toolUse" ||
-      call?.id !== LAUNCHER_DETERMINISTIC_TOOL_ID ||
-      call.name !== LAUNCHER_DETERMINISTIC_TOOL_NAME
-    ) {
-      throw new Error(GENERIC_ERROR);
-    }
-    if (result.toolCallId !== LAUNCHER_DETERMINISTIC_TOOL_ID || result.toolName !== LAUNCHER_DETERMINISTIC_TOOL_NAME) {
-      throw new Error(GENERIC_ERROR);
-    }
+    requireToolPair(context.messages, 1, LAUNCHER_DETERMINISTIC_TOOL_ID, LAUNCHER_DETERMINISTIC_TOOL_NAME);
     return "final";
+  }
+  if (prompt === LAUNCHER_DETERMINISTIC_S309_SETUP_PROMPT) {
+    if (context.messages.length === 1) return "s309-setup-tool";
+    if (context.messages.length !== 3) throw new Error(GENERIC_ERROR);
+    const result = requireToolPair(context.messages, 1, S309_SETUP_TOOL.id, S309_SETUP_TOOL.name);
+    if (!isSuccessfulBashWithStdout(result.text, "s3-09-setup")) throw new Error(GENERIC_ERROR);
+    return "s309-setup-final";
+  }
+  if (prompt === LAUNCHER_DETERMINISTIC_S309_PROMPT) {
+    if (context.messages.length === 1) return "s309-read";
+    if (context.messages.length === 3) {
+      const result = requireToolPair(context.messages, 1, S309_READ_TOOL.id, S309_READ_TOOL.name);
+      if (!isReadAlpha(result.text)) throw new Error(GENERIC_ERROR);
+      return "s309-edit";
+    }
+    if (context.messages.length === 5) {
+      const read = requireToolPair(context.messages, 1, S309_READ_TOOL.id, S309_READ_TOOL.name);
+      const result = requireToolPair(context.messages, 3, S309_EDIT_TOOL.id, S309_EDIT_TOOL.name);
+      if (!isReadAlpha(read.text) || !isEditOk(result.text)) throw new Error(GENERIC_ERROR);
+      return "s309-bash";
+    }
+    if (context.messages.length === 7) {
+      const read = requireToolPair(context.messages, 1, S309_READ_TOOL.id, S309_READ_TOOL.name);
+      const edit = requireToolPair(context.messages, 3, S309_EDIT_TOOL.id, S309_EDIT_TOOL.name);
+      const result = requireToolPair(context.messages, 5, "launcher-s309-bash-1", "bash");
+      if (!isReadAlpha(read.text) || !isEditOk(edit.text)) throw new Error(GENERIC_ERROR);
+      if (!isSuccessfulBashWithStdout(result.text, "allowed=200 denied=403 committed")) throw new Error(GENERIC_ERROR);
+      return "s309-final";
+    }
+    throw new Error(GENERIC_ERROR);
   }
   if (context.messages.length !== 1) throw new Error(GENERIC_ERROR);
   boundedString(prompt, 0, MAX_PROMPT_LENGTH);
   return "unknown";
+}
+
+function requireToolPair(
+  messages: readonly MessageSnapshot[],
+  assistantIndex: number,
+  id: string,
+  name: string,
+): ToolResultSnapshot {
+  const assistant = messages[assistantIndex];
+  const result = messages[assistantIndex + 1];
+  if (assistant?.role !== "assistant" || result?.role !== "toolResult") throw new Error(GENERIC_ERROR);
+  const call = assistant.toolCall;
+  if (
+    assistant.api !== LAUNCHER_DETERMINISTIC_API ||
+    assistant.provider !== LAUNCHER_DETERMINISTIC_PROVIDER ||
+    assistant.model !== LAUNCHER_DETERMINISTIC_MODEL_ID ||
+    assistant.stopReason !== "toolUse" ||
+    call?.id !== id ||
+    call.name !== name ||
+    result.toolCallId !== id ||
+    result.toolName !== name
+  )
+    throw new Error(GENERIC_ERROR);
+  return result;
 }
 
 function isFreshAbort(messages: readonly MessageSnapshot[]): boolean {
@@ -343,13 +442,52 @@ function isExactSuccessfulBashResult(text: string): boolean {
   }
 }
 
-function createToolStream(modelId: string, timestamp: number) {
+function isSuccessfulBashWithStdout(text: string, stdout: string): boolean {
+  try {
+    const value = JSON.parse(text) as Record<string, unknown>;
+    return value.ok === true && value.exitCode === 0 && value.signal === null && value.stdout === stdout;
+  } catch {
+    return false;
+  }
+}
+
+function isReadAlpha(text: string): boolean {
+  try {
+    const value = JSON.parse(text) as Record<string, unknown>;
+    return value.path === "/workspace/s3-09/proof.txt" && value.content === "alpha\n" && value.eof === true;
+  } catch {
+    return false;
+  }
+}
+
+function isEditOk(text: string): boolean {
+  try {
+    const value = JSON.parse(text) as Record<string, unknown>;
+    return value.ok === true && value.path === "/workspace/s3-09/proof.txt" && value.occurrences === 1;
+  } catch {
+    return false;
+  }
+}
+
+function createToolStream(
+  modelId: string,
+  timestamp: number,
+  tool: {
+    readonly id: string;
+    readonly name: string;
+    readonly arguments: Readonly<Record<string, unknown>>;
+  } = Object.freeze({
+    id: LAUNCHER_DETERMINISTIC_TOOL_ID,
+    name: LAUNCHER_DETERMINISTIC_TOOL_NAME,
+    arguments: LAUNCHER_DETERMINISTIC_TOOL_ARGUMENTS,
+  }),
+) {
   const stream = createAssistantMessageEventStream();
   const toolCall = deepFreeze({
     type: "toolCall" as const,
-    id: LAUNCHER_DETERMINISTIC_TOOL_ID,
-    name: LAUNCHER_DETERMINISTIC_TOOL_NAME,
-    arguments: { ...LAUNCHER_DETERMINISTIC_TOOL_ARGUMENTS },
+    id: tool.id,
+    name: tool.name,
+    arguments: { ...tool.arguments },
   }) satisfies ToolCall;
   const message = assistantMessage(modelId, [toolCall], "toolUse", timestamp);
   stream.push({ type: "start", partial: message });

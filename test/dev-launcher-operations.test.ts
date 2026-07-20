@@ -12,6 +12,8 @@ import { beginWorkerStartup, bindWorkerChild, createApiToken, promoteWorkerReady
 import {
   LAUNCHER_DETERMINISTIC_ABORT_PROMPT,
   LAUNCHER_DETERMINISTIC_NORMAL_PROMPT,
+  LAUNCHER_DETERMINISTIC_S309_PROMPT,
+  LAUNCHER_DETERMINISTIC_S309_SETUP_PROMPT,
 } from "../dev/launcher/deterministic-stream.ts";
 import {
   type LauncherOperationContext,
@@ -118,9 +120,13 @@ function client(calls: string[]): ApiClient {
       calls.push(aborted ? "event:run_aborted" : "event:run_settled");
       yield Object.freeze({
         id: 8,
-        data: Object.freeze({ kind: "run_settled", correlation_id: "old-corr" }),
+        data: Object.freeze({ kind: "run_settled", correlation_id: "old-corr", payload: {} }),
       }) as ApiEvent;
-      const data = Object.freeze({ kind: aborted ? "run_aborted" : "run_settled", correlation_id: correlation });
+      const data = Object.freeze({
+        kind: aborted ? "run_aborted" : "run_settled",
+        correlation_id: correlation,
+        payload: {},
+      });
       yield Object.freeze({ id: 9, data }) as ApiEvent;
     }) as ApiClient["events"],
   });
@@ -195,6 +201,7 @@ function opSeams(calls: string[]): Partial<LauncherOperationSeams> {
 
 test("launcher parser accepts exact start operation only", () => {
   assert.equal(parseLauncherArgs(["--profile", "linux-kvm", "--state", "s", "start"]).op, "start");
+  assert.equal(parseLauncherArgs(["--profile", "linux-kvm", "--state", "s", "s3-09"]).op, "s3-09");
   assert.throws(() => parseLauncherArgs(["--profile", "linux-kvm", "--state", "s", "start", "--prompt-file", "p"]));
 });
 
@@ -263,6 +270,146 @@ test("fixed smoke uses dispatcher sequence and leaves metadata-only output", asy
     assert(calls.includes(`content:${LAUNCHER_DETERMINISTIC_ABORT_PROMPT}`));
     assert.equal(JSON.stringify(result).includes("kept"), false);
     assert.equal(JSON.stringify(result).includes(ctx.launcherRoot), false);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("s3-09 runs fixed integrated KVM scenario with metadata-only proof", async () => {
+  const { dir, ctx } = await roots();
+  const calls: string[] = [];
+  let runCount = 0;
+  let scenarioTerminalSent = false;
+  try {
+    const seams = Object.freeze({
+      ...opSeams(calls),
+      createApiClient: Object.freeze(() =>
+        Object.freeze({
+          request: Object.freeze(async (op: string, input?: Readonly<Record<string, unknown>>) => {
+            calls.push(
+              `${op}:${Object.keys(input ?? {})
+                .sort()
+                .join("+")}`,
+            );
+            if (op === "run") {
+              runCount += 1;
+              calls.push(`content:${input?.content ?? ""}`);
+              return Object.freeze({
+                accepted: true,
+                duplicate: false,
+                run_state: "running",
+                correlation_id: `s309-${runCount}`,
+              });
+            }
+            if (op === "entries") {
+              const after = input?.after;
+              return after === undefined
+                ? Object.freeze({
+                    version: "cogs.entries/v1alpha1",
+                    entries: [{}, {}],
+                    next: `cursor.${"x".repeat(32)}`,
+                  })
+                : Object.freeze({ version: "cogs.entries/v1alpha1", entries: [{}, {}] });
+            }
+            if (op === "export")
+              return Object.freeze({
+                version: "cogs.export-response/v1alpha1",
+                sensitive: true,
+                bundle: Object.freeze({
+                  version: "cogs.export-descriptor/v1alpha1",
+                  mode: "raw",
+                  attachments_included: false,
+                  sensitive: true,
+                  sanitized: false,
+                  anonymized: false,
+                }),
+              });
+            if (op === "shutdown") return Object.freeze({ accepted: true });
+            throw new Error("unexpected");
+          }) as ApiClient["request"],
+          events: Object.freeze(async function* (after?: number) {
+            if (after === 0 && scenarioTerminalSent) throw new Error("launcher api replay gap");
+            if (runCount === 1) {
+              yield Object.freeze({
+                id: 1,
+                data: Object.freeze({ kind: "run_settled", correlation_id: "s309-1", payload: {} }),
+              }) as ApiEvent;
+              return;
+            }
+            yield Object.freeze({
+              id: 2,
+              data: Object.freeze({ kind: "git_mapping", correlation_id: "s309-2", payload: {} }),
+            }) as ApiEvent;
+            yield Object.freeze({
+              id: 3,
+              data: Object.freeze({ kind: "checkpoint", correlation_id: "s309-2", payload: {} }),
+            }) as ApiEvent;
+            yield Object.freeze({
+              id: 4,
+              data: Object.freeze({ kind: "tool_end", correlation_id: "s309-2", payload: {} }),
+            }) as ApiEvent;
+            yield Object.freeze({
+              id: 5,
+              data: Object.freeze({ kind: "tool_end", correlation_id: "s309-2", payload: {} }),
+            }) as ApiEvent;
+            yield Object.freeze({
+              id: 6,
+              data: Object.freeze({ kind: "tool_end", correlation_id: "s309-2", payload: {} }),
+            }) as ApiEvent;
+            scenarioTerminalSent = true;
+            yield Object.freeze({
+              id: 7,
+              data: Object.freeze({
+                kind: "run_settled",
+                correlation_id: "s309-2",
+                payload: Object.freeze({
+                  s3_09_proof: Object.freeze({
+                    version: "cogs.launcher.s3-09-proof/v1alpha1",
+                    scenario: "s3-09",
+                    profile: "linux-kvm",
+                    credential_route_200: true,
+                    denied_route_absent: true,
+                    total_exact_expected: true,
+                    fixture_ready: true,
+                    fixture_generation_zero: true,
+                  }),
+                }),
+              }),
+            }) as ApiEvent;
+          }) as ApiClient["events"],
+        }),
+      ) as never,
+    });
+    const result = await runLauncherOperation(
+      Object.freeze({ op: "s3-09", profile: "linux-kvm", state: "s309" }),
+      ctx,
+      seams,
+    );
+    assert.equal(result.complete, true);
+    assert.equal(result.egressProof, true);
+    assert.deepEqual(result.history, { pages: 2, entries: 4 });
+    assert.deepEqual(result.rawExport, { descriptorValidated: true, mode: "raw", sensitive: true });
+    assert(calls.includes(`content:${LAUNCHER_DETERMINISTIC_S309_SETUP_PROMPT}`));
+    assert(calls.includes(`content:${LAUNCHER_DETERMINISTIC_S309_PROMPT}`));
+    assert.equal(JSON.stringify(result).includes("credential"), false);
+    assert.equal(JSON.stringify(result).includes("localhost"), false);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("s3-09 rejects unsupported profiles before side effects", async () => {
+  const { dir, ctx } = await roots();
+  const calls: string[] = [];
+  try {
+    await assert.rejects(() =>
+      runLauncherOperation(
+        Object.freeze({ op: "s3-09", profile: "insecure-container", state: "bad" }),
+        ctx,
+        opSeams(calls),
+      ),
+    );
+    assert.deepEqual(calls, []);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

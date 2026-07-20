@@ -12,6 +12,9 @@ import {
   LAUNCHER_DETERMINISTIC_MODEL_ID,
   LAUNCHER_DETERMINISTIC_NORMAL_PROMPT,
   LAUNCHER_DETERMINISTIC_PROVIDER,
+  LAUNCHER_DETERMINISTIC_S309_FINAL_TEXT,
+  LAUNCHER_DETERMINISTIC_S309_PROMPT,
+  LAUNCHER_DETERMINISTIC_S309_SETUP_PROMPT,
   LAUNCHER_DETERMINISTIC_TOOL_ARGUMENTS,
   LAUNCHER_DETERMINISTIC_TOOL_ID,
   LAUNCHER_DETERMINISTIC_TOOL_NAME,
@@ -812,5 +815,131 @@ test("deterministic stream factory validates and freezes its seam", () => {
   assert.throws(
     () => createDeterministicLauncherStream(Object.freeze(Object.create(null)) as never),
     /launcher deterministic stream failed/,
+  );
+});
+
+function toolUse(id: string, name: string, args: Record<string, unknown>) {
+  return {
+    role: "assistant" as const,
+    api: LAUNCHER_DETERMINISTIC_API,
+    provider: LAUNCHER_DETERMINISTIC_PROVIDER,
+    model: LAUNCHER_DETERMINISTIC_MODEL_ID,
+    content: [{ type: "toolCall" as const, id, name, arguments: args }],
+    usage: zeroUsage(),
+    stopReason: "toolUse" as const,
+    timestamp: TIMESTAMP,
+  };
+}
+
+function result(id: string, name: string, value: Record<string, unknown>) {
+  return {
+    role: "toolResult" as const,
+    toolCallId: id,
+    toolName: name,
+    content: [{ type: "text" as const, text: JSON.stringify(value) }],
+    isError: false,
+    timestamp: TIMESTAMP,
+  };
+}
+
+const setupUse = () => toolUse("launcher-s309-setup-1", "bash", { command: "opaque" });
+const setupResult = () =>
+  result("launcher-s309-setup-1", "bash", { ok: true, exitCode: 0, signal: null, stdout: "s3-09-setup" });
+const readUse = () =>
+  toolUse("launcher-s309-read-1", "read", { path: "/workspace/s3-09/proof.txt", offset: 0, limit: 10 });
+const readResult = () =>
+  result("launcher-s309-read-1", "read", { path: "/workspace/s3-09/proof.txt", content: "alpha\n", eof: true });
+const editUse = () =>
+  toolUse("launcher-s309-edit-1", "edit", {
+    path: "/workspace/s3-09/proof.txt",
+    oldText: "alpha\n",
+    newText: "alpha\nbeta\n",
+  });
+const editResult = () =>
+  result("launcher-s309-edit-1", "edit", { ok: true, path: "/workspace/s3-09/proof.txt", occurrences: 1 });
+const bashUse = () => toolUse("launcher-s309-bash-1", "bash", { command: "opaque" });
+const bashResult = () =>
+  result("launcher-s309-bash-1", "bash", {
+    ok: true,
+    exitCode: 0,
+    signal: null,
+    stdout: "allowed=200 denied=403 committed",
+  });
+
+async function s309Events(context: Context) {
+  return collect(
+    await createDeterministicLauncherStream(Object.freeze({ now: () => TIMESTAMP, s309FixturePort: 3210 }))(
+      model(),
+      context,
+      options(),
+    ),
+  );
+}
+
+test("deterministic stream drives exact s3-09 setup and scenario tool transcript", async () => {
+  const setupFirst = await s309Events({ messages: [userMessage(LAUNCHER_DETERMINISTIC_S309_SETUP_PROMPT)] });
+  assert.equal(setupFirst[2]?.type, "toolcall_end");
+  if (setupFirst[2]?.type === "toolcall_end") {
+    assert.equal(setupFirst[2].toolCall.id, "launcher-s309-setup-1");
+    assert.equal(setupFirst[2].toolCall.name, "bash");
+    assert.match(String(setupFirst[2].toolCall.arguments.command), /git init -q/);
+  }
+  const setupFinal = await s309Events({
+    messages: [userMessage(LAUNCHER_DETERMINISTIC_S309_SETUP_PROMPT), setupUse(), setupResult()],
+  });
+  assert.equal(setupFinal[2]?.type, "text_delta");
+  if (setupFinal[2]?.type === "text_delta") assert.equal(setupFinal[2].delta, LAUNCHER_DETERMINISTIC_S309_FINAL_TEXT);
+
+  const read = await s309Events({ messages: [userMessage(LAUNCHER_DETERMINISTIC_S309_PROMPT)] });
+  assert.equal(read[2]?.type, "toolcall_end");
+  if (read[2]?.type === "toolcall_end") assert.equal(read[2].toolCall.name, "read");
+  const edit = await s309Events({
+    messages: [userMessage(LAUNCHER_DETERMINISTIC_S309_PROMPT), readUse(), readResult()],
+  });
+  if (edit[2]?.type === "toolcall_end") assert.equal(edit[2].toolCall.name, "edit");
+  const bash = await s309Events({
+    messages: [userMessage(LAUNCHER_DETERMINISTIC_S309_PROMPT), readUse(), readResult(), editUse(), editResult()],
+  });
+  if (bash[2]?.type === "toolcall_end") {
+    assert.equal(bash[2].toolCall.name, "bash");
+    assert.match(String(bash[2].toolCall.arguments.command), /localhost:3210\/credential/);
+    assert.match(String(bash[2].toolCall.arguments.command), /denied=403/);
+  }
+  const final = await s309Events({
+    messages: [
+      userMessage(LAUNCHER_DETERMINISTIC_S309_PROMPT),
+      readUse(),
+      readResult(),
+      editUse(),
+      editResult(),
+      bashUse(),
+      bashResult(),
+    ],
+  });
+  if (final[2]?.type === "text_delta") assert.equal(final[2].delta, LAUNCHER_DETERMINISTIC_S309_FINAL_TEXT);
+});
+
+test("deterministic stream rejects malformed s3-09 transcript before final", async () => {
+  assertGenericError(
+    await s309Events({
+      messages: [
+        userMessage(LAUNCHER_DETERMINISTIC_S309_PROMPT),
+        readUse(),
+        result("launcher-s309-read-1", "read", { content: "beta\n" }),
+      ],
+    }),
+  );
+  assertGenericError(
+    await s309Events({
+      messages: [
+        userMessage(LAUNCHER_DETERMINISTIC_S309_PROMPT),
+        readUse(),
+        readResult(),
+        editUse(),
+        editResult(),
+        bashUse(),
+        result("launcher-s309-bash-1", "bash", { ok: true, exitCode: 0, signal: null, stdout: "allowed=200" }),
+      ],
+    }),
   );
 });

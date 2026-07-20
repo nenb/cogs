@@ -100,7 +100,8 @@ function createApiClientChecked(options: {
         count += 1;
         if (count >= limit) return;
       }
-    } catch {
+    } catch (error) {
+      if (error instanceof Error && error.message === "launcher api replay gap") throw error;
       throw new Error("launcher api failed");
     } finally {
       if (reader) await cancelReader(reader);
@@ -185,6 +186,7 @@ async function fetchChecked(
     if (d.url?.get || d.redirected?.get || d.status?.get || d.headers?.get || d.body?.get) fail();
     const ct = res.headers.get("content-type")?.split(";")[0]?.trim();
     const len = res.headers.get("content-length");
+    if (accept === "text/event-stream" && res.status === 409) throw new Error("launcher api replay gap");
     if (
       res.url !== String(url) ||
       res.redirected ||
@@ -196,8 +198,9 @@ async function fetchChecked(
     )
       fail();
     return res;
-  } catch {
+  } catch (error) {
     if (res) await cancelBody(res);
+    if (error instanceof Error && error.message === "launcher api replay gap") throw error;
     throw new Error("launcher api failed");
   }
 }
