@@ -48,11 +48,17 @@ const MIN_ENVOY_BINARY_BYTES = 1024 * 1024;
 const MAX_ENVOY_BINARY_BYTES = 256 * 1024 * 1024;
 const LINUX_TMPFS_MAGIC = 0x01021994;
 
-type Exec = (args: readonly string[]) => Promise<{ status: number; stdout: string }>;
+type DeadlineOptions = Readonly<{ signal?: AbortSignal; deadlineAt?: number }>;
+type ExecOptions = Readonly<{ signal?: AbortSignal; deadlineAt?: number }>;
+type Exec = (args: readonly string[], options?: ExecOptions) => Promise<{ status: number; stdout: string }>;
+
+const abortSignalAborted = Object.getOwnPropertyDescriptor(AbortSignal.prototype, "aborted")?.get as
+  | ((this: AbortSignal) => boolean)
+  | undefined;
 
 export type EnvoyEgressSeams = Readonly<{
   docker?: Exec;
-  runVersion?: (path: string) => Promise<string>;
+  runVersion?: (path: string, options?: DeadlineOptions) => Promise<string>;
   startManager?: typeof startCogsEgressRuntimeManager;
   relay?: () => KvmRelay;
   validateTmpfs?: (root: string) => Promise<void>;
@@ -84,7 +90,7 @@ export type EnvoyEgressHandle = Readonly<{
     completions: { drained: number; classification: "none" | "present" | "replacement-required" };
   }>;
   proxyCapability: SecretHolder;
-  close(): Promise<void>;
+  close(options?: DeadlineOptions): Promise<void>;
 }>;
 
 type Options = Readonly<{
@@ -97,6 +103,8 @@ type Options = Readonly<{
   otlpLogsEndpoint: string;
   binary?: EnvoyBinaryDescriptor;
   seams?: EnvoyEgressSeams;
+  signal?: AbortSignal;
+  deadlineAt?: number;
 }>;
 
 type DockerInspection = Readonly<{
@@ -114,19 +122,26 @@ type ManagerProofResult = Readonly<{
 
 export async function prepareEnvoyBinary(
   state: LauncherState,
-  seams?: EnvoyEgressSeams,
+  optionsOrSeams?: EnvoyEgressSeams | (DeadlineOptions & { seams?: EnvoyEgressSeams }),
+  maybeSeams?: EnvoyEgressSeams,
 ): Promise<EnvoyBinaryDescriptor> {
+  let ownerCreated = false;
+  let finalCreated = false;
   try {
     await validateState(state);
 
-    const capturedSeams = captureSeams(seams);
-    const docker = (args: readonly string[]) => runDocker(capturedSeams.docker ?? defaultDocker(state.dir), args);
+    const prepareOptions = capturePrepareOptions(optionsOrSeams, maybeSeams);
+    checkCooperative(prepareOptions);
+    const capturedSeams = captureSeams(prepareOptions.seams);
+    const docker = (args: readonly string[]) =>
+      runDocker(capturedSeams.docker ?? defaultDocker(state.dir), args, prepareOptions);
     const stateRuntimeDir = runtimeDir(state);
     const ownerSentinel = ownerPath(state);
     const finalBinaryPath = binaryPath(state);
 
     await createRuntimeDirectory(state, stateRuntimeDir);
     await writeFile(ownerSentinel, `${state.stateId}\n`, { mode: 0o600, flag: "wx" });
+    ownerCreated = true;
     await fsyncPath(ownerSentinel);
     await fsyncPath(stateRuntimeDir);
     await validateOwnerSentinel(state);
@@ -158,6 +173,7 @@ export async function prepareEnvoyBinary(
       await validateSecureFile(tempBinaryPath, 0o500);
       await fsyncPath(tempBinaryPath);
       await rename(tempBinaryPath, finalBinaryPath);
+      finalCreated = true;
       await fsyncPath(stateRuntimeDir);
 
       const descriptor = Object.freeze({
@@ -168,7 +184,8 @@ export async function prepareEnvoyBinary(
       });
       await validateBinary(state, descriptor);
 
-      const versionOutput = await (capturedSeams.runVersion ?? runEnvoyVersion)(finalBinaryPath);
+      checkCooperative(prepareOptions);
+      const versionOutput = await (capturedSeams.runVersion ?? runEnvoyVersion)(finalBinaryPath, prepareOptions);
       if (!/Envoy\sversion:\s+1\.38\.3\//u.test(versionOutput)) {
         fail();
       }
@@ -182,6 +199,7 @@ export async function prepareEnvoyBinary(
       throw error;
     }
   } catch {
+    await cleanupPreparedBinaryAfterFailure(state, ownerCreated, finalCreated);
     throw fail();
   }
 }
@@ -199,6 +217,7 @@ export async function startEnvoyEgress(rawOptions: Options): Promise<EnvoyEgress
 
   try {
     const options = captureOptions(rawOptions);
+    checkCooperative(options);
     const seams = captureSeams(options.seams);
     capturedSeams = seams;
     capturedState = options.state;
@@ -212,7 +231,11 @@ export async function startEnvoyEgress(rawOptions: Options): Promise<EnvoyEgress
     const launch = validateLaunch(options.launchDocument, options.state, options.fixturePort);
     let binary = options.binary;
     if (!binary) {
-      internallyPreparedBinary = await prepareEnvoyBinary(options.state, seams);
+      internallyPreparedBinary = await prepareEnvoyBinary(options.state, {
+        ...(options.signal === undefined ? {} : { signal: options.signal }),
+        ...(options.deadlineAt === undefined ? {} : { deadlineAt: options.deadlineAt }),
+        seams,
+      });
       binary = internallyPreparedBinary;
     }
     await validateBinary(options.state, binary);
@@ -232,11 +255,16 @@ export async function startEnvoyEgress(rawOptions: Options): Promise<EnvoyEgress
       },
     });
 
-    manager = await startManager(managerOptions);
-    await validateManagerReady(manager, options.listenerPort);
+    manager = await startManager({
+      ...managerOptions,
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+    });
+    checkCooperative(options);
+    await validateManagerReady(manager, options.listenerPort, options);
 
     if (options.profile === "linux-kvm") {
-      relay = await startLinuxKvmRelay(seams, manager.listenerPort);
+      relay = (seams.relay ?? createLinuxKvmRelay)();
+      await startLinuxKvmRelay(relay, manager.listenerPort, options);
     }
 
     const proxyCapabilityHolder = secretHolder(
@@ -245,6 +273,7 @@ export async function startEnvoyEgress(rawOptions: Options): Promise<EnvoyEgress
         proxyCapability = value;
       },
     );
+    checkCooperative(options);
 
     return Object.freeze({
       snapshot: () =>
@@ -268,7 +297,8 @@ export async function startEnvoyEgress(rawOptions: Options): Promise<EnvoyEgress
           } as const,
         }),
       proxyCapability: proxyCapabilityHolder,
-      close: once(async () => {
+      close: once(async (closeOptions = Object.freeze({})) => {
+        const cleanup = cleanupOptions(closeOptions);
         closed = true;
         let failed = false;
         let managerClean = false;
@@ -282,7 +312,7 @@ export async function startEnvoyEgress(rawOptions: Options): Promise<EnvoyEgress
         }
 
         if (manager) {
-          const closeProof = await closeManagerAndProveCleanup(manager, seams);
+          const closeProof = await closeManagerAndProveCleanup(manager, seams, cleanup);
           failed = failed || closeProof.failed;
           managerClean = closeProof.clean;
 
@@ -319,14 +349,30 @@ export async function startEnvoyEgress(rawOptions: Options): Promise<EnvoyEgress
       }),
     });
   } catch {
-    await closeRelayAfterStartupFailure(relay);
+    const cleanup = cleanupOptions();
+    let failed = false;
+    try {
+      try {
+        await closeRelayAfterStartupFailure(relay);
+      } catch {
+        failed = true;
+      }
 
-    const managerClean = await closeManagerAfterStartupFailure(manager, capturedSeams);
-    if (managerClean && internallyPreparedBinary && capturedState) {
-      await cleanupEnvoyBinary(capturedState, internallyPreparedBinary).catch(() => undefined);
+      const managerClean = await closeManagerAfterStartupFailure(manager, capturedSeams, cleanup).catch(() => {
+        failed = true;
+        return false;
+      });
+      if (managerClean && internallyPreparedBinary && capturedState) {
+        try {
+          await cleanupEnvoyBinary(capturedState, internallyPreparedBinary);
+        } catch {
+          failed = true;
+        }
+      }
+    } finally {
+      proxyCapability = "";
     }
-
-    proxyCapability = "";
+    if (failed) throw fail();
     throw fail();
   }
 }
@@ -492,6 +538,24 @@ async function cleanupExtractionAttempt(
   await rm(tempBinaryPath, { force: true }).catch(() => undefined);
 }
 
+async function cleanupPreparedBinaryAfterFailure(
+  state: LauncherState,
+  ownerCreated: boolean,
+  finalCreated: boolean,
+): Promise<void> {
+  if (!ownerCreated) return;
+  const dir = runtimeDir(state);
+  await validateOwnerSentinel(state);
+  const entries = await readdir(dir);
+  if (finalCreated) {
+    if (entries.length !== 2 || !entries.includes(".cogs-envoy-owner") || !entries.includes("envoy")) fail();
+    await unlink(binaryPath(state));
+  } else if (entries.length !== 1 || entries[0] !== ".cogs-envoy-owner") fail();
+  await unlink(ownerPath(state));
+  await rmdir(dir);
+  await fsyncPath(state.dir);
+}
+
 function validateOpenBaoAuthority(snapshot: ReturnType<OpenBaoHandle["snapshot"]>): void {
   if (
     !snapshot.ready ||
@@ -507,20 +571,24 @@ function validateOpenBaoAuthority(snapshot: ReturnType<OpenBaoHandle["snapshot"]
   }
 }
 
-async function validateManagerReady(manager: CogsEgressRuntimeManager, expectedListenerPort: number): Promise<void> {
-  if (manager.ready === true && manager.listenerPort === expectedListenerPort) {
-    return;
-  }
-  await manager.close().catch(() => undefined);
+async function validateManagerReady(
+  manager: CogsEgressRuntimeManager,
+  expectedListenerPort: number,
+  options: DeadlineOptions,
+): Promise<void> {
+  checkCooperative(options);
+  if (manager.ready === true && manager.listenerPort === expectedListenerPort) return;
+  await manager.close(cleanupOptions()).catch(() => undefined);
   fail();
 }
 
-async function startLinuxKvmRelay(seams: EnvoyEgressSeams, listenerPort: number): Promise<KvmRelay> {
-  const relay = (seams.relay ?? createLinuxKvmRelay)();
-  await relay.start();
+async function startLinuxKvmRelay(relay: KvmRelay, listenerPort: number, options: DeadlineOptions): Promise<void> {
+  checkCooperative(options);
+  await relay.start(options);
+  checkCooperative(options);
   relay.registerTarget(listenerPort);
-  await relay.switchTo(listenerPort);
-  return relay;
+  await relay.switchTo(listenerPort, options);
+  checkCooperative(options);
 }
 
 function completionClassification(
@@ -536,11 +604,12 @@ function completionClassification(
 async function closeManagerAndProveCleanup(
   manager: CogsEgressRuntimeManager,
   seams: EnvoyEgressSeams,
+  options: DeadlineOptions,
 ): Promise<ManagerProofResult> {
   let failed = false;
 
   try {
-    await manager.close();
+    await manager.close(options);
   } catch {
     return { clean: false, failed: true, closeResolved: false };
   }
@@ -565,23 +634,20 @@ async function closeManagerAndProveCleanup(
 }
 
 async function closeRelayAfterStartupFailure(relay: KvmRelay | undefined): Promise<void> {
-  try {
-    if (relay) {
-      await relay.close();
-    }
-  } catch {}
+  if (relay) await relay.close();
 }
 
 async function closeManagerAfterStartupFailure(
   manager: CogsEgressRuntimeManager | undefined,
   seams: EnvoyEgressSeams,
+  options: DeadlineOptions,
 ): Promise<boolean> {
   if (!manager) {
     return true;
   }
 
   try {
-    await manager.close();
+    await manager.close(options);
   } catch {
     return false;
   }
@@ -617,7 +683,7 @@ function captureOptions(input: Options): Options {
     "profile",
     "state",
   ];
-  const allowedKeys = [...requiredKeys, "binary", "seams"];
+  const allowedKeys = [...requiredKeys, "binary", "deadlineAt", "seams", "signal"];
 
   if (keys.some((key) => typeof key !== "string" || !allowedKeys.includes(key))) {
     fail();
@@ -646,6 +712,7 @@ function captureOptions(input: Options): Options {
   if (!validPort(values.fixturePort) || !validPort(values.listenerPort)) {
     fail();
   }
+  validateCooperativeFields(values);
 
   try {
     otlpEndpoint(values.otlpLogsEndpoint, "logs", true);
@@ -670,6 +737,8 @@ function captureOptions(input: Options): Options {
     otlpLogsEndpoint: values.otlpLogsEndpoint,
     ...(values.binary === undefined ? {} : { binary: captureBinary(values.binary) }),
     ...(values.seams === undefined ? {} : { seams: captureSeams(values.seams) }),
+    ...(values.signal === undefined ? {} : { signal: values.signal }),
+    ...(values.deadlineAt === undefined ? {} : { deadlineAt: values.deadlineAt }),
   });
 }
 
@@ -949,33 +1018,35 @@ async function fsyncPath(path: string): Promise<void> {
 }
 
 function defaultDocker(cwd: string): Exec {
-  return async (args) => {
+  return async (args, options) => {
     const result = await runCommand(
       commandDescriptor({
         executable: "/usr/bin/docker",
         args: [...args].slice(1),
         cwd,
         env: { PATH: "/usr/bin:/bin" },
-        timeoutMs: 30000,
+        timeoutMs: remainingMs(options, 30000),
         maxOutputBytes: 8192,
         killGraceMs: 1000,
       }),
+      { ...(options?.signal === undefined ? {} : { signal: options.signal }) },
     );
     return { status: result.status === "ok" && !result.cleanupUncertain ? 0 : 1, stdout: result.stdout };
   };
 }
 
-async function runEnvoyVersion(path: string): Promise<string> {
+async function runEnvoyVersion(path: string, options?: DeadlineOptions): Promise<string> {
   const result = await runCommand(
     commandDescriptor({
       executable: path,
       args: ["--version"],
       cwd: dirname(path),
       env: {},
-      timeoutMs: 5000,
+      timeoutMs: remainingMs(options, 5000),
       maxOutputBytes: 4096,
       killGraceMs: 1000,
     }),
+    { ...(options?.signal === undefined ? {} : { signal: options.signal }) },
   );
   if (result.status !== "ok" || result.cleanupUncertain) {
     fail();
@@ -983,8 +1054,13 @@ async function runEnvoyVersion(path: string): Promise<string> {
   return result.stdout;
 }
 
-async function runDocker(exec: Exec, args: readonly string[]): Promise<{ status: number; stdout: string }> {
-  return exec(Object.freeze(["/usr/bin/docker", ...args]));
+async function runDocker(
+  exec: Exec,
+  args: readonly string[],
+  options?: ExecOptions,
+): Promise<{ status: number; stdout: string }> {
+  checkCooperative(options);
+  return exec(Object.freeze(["/usr/bin/docker", ...args]), options);
 }
 
 async function requireDockerSuccess(
@@ -1096,12 +1172,95 @@ async function proveClosed(port: number): Promise<void> {
   });
 }
 
-function once(fn: () => Promise<void>): () => Promise<void> {
+function once(fn: (options?: DeadlineOptions) => Promise<void>): (options?: DeadlineOptions) => Promise<void> {
   let pending: Promise<void> | undefined;
-  return () => {
-    pending ??= fn();
+  return (options = Object.freeze({})) => {
+    validateDeadlineOptions(options);
+    pending ??= fn(options);
     return pending;
   };
+}
+
+function validateDeadlineOptions(options: unknown): asserts options is DeadlineOptions {
+  if (!options || typeof options !== "object" || Object.getPrototypeOf(options) !== Object.prototype) fail();
+  const descriptors = Object.getOwnPropertyDescriptors(options);
+  if (Reflect.ownKeys(descriptors).some((key) => typeof key !== "string" || !["deadlineAt", "signal"].includes(key)))
+    fail();
+  validateCooperativeFields(options);
+}
+
+function validateCooperativeFields(options: unknown): void {
+  if (!options || typeof options !== "object" || Object.getPrototypeOf(options) !== Object.prototype) fail();
+  const descriptors = Object.getOwnPropertyDescriptors(options);
+  for (const key of ["signal", "deadlineAt"] as const) {
+    const descriptor = descriptors[key];
+    if (!descriptor) continue;
+    if (!descriptor.enumerable || !Object.hasOwn(descriptor, "value")) fail();
+  }
+  if (descriptors.signal?.value !== undefined && !(descriptors.signal.value instanceof AbortSignal)) fail();
+  const deadlineAt = descriptors.deadlineAt?.value;
+  if (deadlineAt !== undefined && (!Number.isSafeInteger(deadlineAt) || deadlineAt > Date.now() + 60_000)) fail();
+}
+
+function capturePrepareOptions(
+  optionsOrSeams?: EnvoyEgressSeams | (DeadlineOptions & { seams?: EnvoyEgressSeams }),
+  maybeSeams?: EnvoyEgressSeams,
+): DeadlineOptions & { seams?: EnvoyEgressSeams } {
+  if (maybeSeams !== undefined) {
+    const source = optionsOrSeams ?? {};
+    validateDeadlineOptions(source);
+    const descriptors = Object.getOwnPropertyDescriptors(source);
+    const signal = descriptors.signal?.value;
+    const deadlineAt = descriptors.deadlineAt?.value;
+    return Object.freeze({
+      ...(signal === undefined ? {} : { signal }),
+      ...(deadlineAt === undefined ? {} : { deadlineAt }),
+      seams: maybeSeams,
+    });
+  }
+  if (optionsOrSeams === undefined) return Object.freeze({});
+  const descriptors = Object.getOwnPropertyDescriptors(optionsOrSeams);
+  const keys = Reflect.ownKeys(descriptors);
+  if (keys.includes("signal") || keys.includes("deadlineAt") || keys.includes("seams")) {
+    if (keys.some((key) => typeof key !== "string" || !["deadlineAt", "seams", "signal"].includes(key))) fail();
+    for (const descriptor of Object.values(descriptors)) {
+      if (!descriptor.enumerable || !Object.hasOwn(descriptor, "value")) fail();
+    }
+    validateCooperativeFields(optionsOrSeams);
+    const signal = descriptors.signal?.value;
+    const deadlineAt = descriptors.deadlineAt?.value;
+    const seams = descriptors.seams?.value;
+    return Object.freeze({
+      ...(signal === undefined ? {} : { signal }),
+      ...(deadlineAt === undefined ? {} : { deadlineAt }),
+      ...(seams === undefined ? {} : { seams }),
+    });
+  }
+  return Object.freeze({ seams: optionsOrSeams as EnvoyEgressSeams });
+}
+
+function cleanupOptions(options: DeadlineOptions = Object.freeze({})): DeadlineOptions {
+  validateDeadlineOptions(options);
+  return Object.freeze({ deadlineAt: Date.now() + 15_000 });
+}
+
+function checkCooperative(options?: DeadlineOptions): void {
+  if (aborted(options?.signal) || (options?.deadlineAt !== undefined && Date.now() >= options.deadlineAt)) fail();
+}
+
+function remainingMs(options: DeadlineOptions | undefined, cap: number): number {
+  const remaining = options?.deadlineAt === undefined ? cap : Math.min(cap, options.deadlineAt - Date.now());
+  if (!Number.isSafeInteger(remaining) || remaining < 1) fail();
+  return remaining;
+}
+
+function aborted(signal: AbortSignal | undefined): boolean {
+  if (!signal) return false;
+  try {
+    return abortSignalAborted?.call(signal) === true;
+  } catch {
+    return true;
+  }
 }
 
 function fail(): never {

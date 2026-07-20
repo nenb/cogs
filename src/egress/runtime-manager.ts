@@ -44,12 +44,20 @@ const opaque = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const secret = /^[\x21-\x7e]{16,256}$/;
 const digest = /^sha256:[a-f0-9]{64}$/;
 
+export type CogsEgressRuntimeManagerCloseOptions = Readonly<{ signal?: AbortSignal; deadlineAt?: number }>;
+
+const abortSignalAborted = Object.getOwnPropertyDescriptor(AbortSignal.prototype, "aborted")?.get as
+  | ((this: AbortSignal) => boolean)
+  | undefined;
+const eventAdd = EventTarget.prototype.addEventListener;
+const eventRemove = EventTarget.prototype.removeEventListener;
+
 export type CogsEgressRuntimeManager = Readonly<{
   ready: boolean;
   listenerPort: number;
   replacementRequired: boolean;
   drainCompletions(limit: number): readonly CogsEgressCompletion[];
-  close(): Promise<void>;
+  close(options?: CogsEgressRuntimeManagerCloseOptions): Promise<void>;
 }>;
 
 type RuntimeMaterialPaths = Readonly<{
@@ -275,7 +283,7 @@ class RuntimeManager {
         return manager.replacement;
       },
       drainCompletions: (limit) => manager.drainCompletions(limit),
-      close: () => manager.close(),
+      close: (options) => manager.close(options),
     });
   }
 
@@ -418,7 +426,8 @@ class RuntimeManager {
     }
   }
 
-  public close(): Promise<void> {
+  public close(options?: CogsEgressRuntimeManagerCloseOptions): Promise<void> {
+    validCloseOptions(options);
     this.closePromise ??= this.closeOnce();
     return this.closePromise;
   }
@@ -431,14 +440,15 @@ class RuntimeManager {
     let failed = false;
     this.closing = true;
     this.readyState = false;
+    const cleanup = Object.freeze({});
     for (const step of [
-      () => this.closeWatcher(),
+      () => this.closeWatcher(cleanup),
       () => this.closeAuthz(),
       () => this.closeProcess(),
-      () => this.closeQueue(),
-      () => this.closeTelemetry(),
-      () => this.releaseScope(),
-      () => this.closeWal(),
+      () => this.closeQueue(cleanup),
+      () => this.closeTelemetry(cleanup),
+      () => this.releaseScope(cleanup),
+      () => this.closeWal(cleanup),
     ]) {
       try {
         await step();
@@ -451,9 +461,9 @@ class RuntimeManager {
     if (failed) throw new CogsEgressRuntimeManagerError();
   }
 
-  private async closeWatcher(): Promise<void> {
+  private async closeWatcher(options?: CogsEgressRuntimeManagerCloseOptions): Promise<void> {
     const watcher = this.watcher;
-    if (watcher) await this.withTimeout(() => watcher.close());
+    if (watcher) await this.withTimeout(() => watcher.close(), options?.signal, options?.deadlineAt);
     this.watcher = undefined;
   }
 
@@ -469,7 +479,7 @@ class RuntimeManager {
     this.process = undefined;
   }
 
-  private async closeQueue(): Promise<void> {
+  private async closeQueue(options?: CogsEgressRuntimeManagerCloseOptions): Promise<void> {
     let failed = false;
     try {
       this.captureFinalCompletions();
@@ -478,7 +488,7 @@ class RuntimeManager {
     }
     const queue = this.queue;
     try {
-      if (queue) await this.withTimeout(() => queue.close());
+      if (queue) await this.withTimeout(() => queue.close(), options?.signal, options?.deadlineAt);
       this.queue = undefined;
     } catch {
       failed = true;
@@ -486,21 +496,22 @@ class RuntimeManager {
     if (failed) throw new Error("queue cleanup failed");
   }
 
-  private async closeTelemetry(): Promise<void> {
+  private async closeTelemetry(options?: CogsEgressRuntimeManagerCloseOptions): Promise<void> {
     const telemetry = this.telemetry;
-    if (telemetry) await this.withTimeout((signal) => telemetry.close(signal));
+    if (telemetry) await this.withTimeout((signal) => telemetry.close(signal), options?.signal, options?.deadlineAt);
     this.telemetry = undefined;
   }
 
-  private async releaseScope(): Promise<void> {
+  private async releaseScope(options?: CogsEgressRuntimeManagerCloseOptions): Promise<void> {
     this.release?.();
     this.release = undefined;
-    if (this.scopePromise) await this.withTimeout(() => this.scopePromise ?? Promise.resolve());
+    if (this.scopePromise)
+      await this.withTimeout(() => this.scopePromise ?? Promise.resolve(), options?.signal, options?.deadlineAt);
   }
 
-  private async closeWal(): Promise<void> {
+  private async closeWal(options?: CogsEgressRuntimeManagerCloseOptions): Promise<void> {
     const wal = this.wal;
-    if (wal) await this.withTimeout(() => wal.close());
+    if (wal) await this.withTimeout(() => wal.close(), options?.signal, options?.deadlineAt);
     this.wal = undefined;
   }
 
@@ -510,36 +521,74 @@ class RuntimeManager {
     if (room > 0) this.finalCompletions.push(...this.queue.drain(room));
   }
 
-  private async withTimeout<T>(work: (signal: AbortSignal) => Promise<T>, parent?: AbortSignal): Promise<T> {
-    if (parent?.aborted) throw new Error("aborted");
+  private async withTimeout<T>(
+    work: (signal: AbortSignal) => Promise<T>,
+    parent?: AbortSignal,
+    deadlineAt?: number,
+  ): Promise<T> {
     const controller = new AbortController();
     const relay = () => controller.abort();
     let timer: unknown;
+    let cancelled = false;
+    let workPromise: Promise<T> | undefined;
+    const remaining =
+      deadlineAt === undefined
+        ? this.options.operationTimeoutMs
+        : Math.min(this.options.operationTimeoutMs, deadlineAt - Date.now());
+    if (!Number.isSafeInteger(remaining) || remaining < 1) throw new Error("timeout");
     try {
-      parent?.addEventListener("abort", relay, { once: true });
-      if (parent?.aborted) controller.abort();
-      return await new Promise<T>((resolve, reject) => {
-        timer = this.options.timers.setTimeout(() => {
-          controller.abort();
-          reject(new Error("timeout"));
-        }, this.options.operationTimeoutMs);
-        if (controller.signal.aborted) {
-          reject(new Error("aborted"));
-          return;
-        }
-        work(controller.signal).then(resolve, reject);
-      });
+      if (parent) eventAdd.call(parent, "abort", relay, { once: true });
+      if (aborted(parent)) controller.abort();
+      timer = this.options.timers.setTimeout(() => {
+        cancelled = true;
+        controller.abort();
+      }, remaining);
+      if (aborted(controller.signal)) throw new Error("aborted");
+      workPromise = work(controller.signal);
+      const value = await workPromise;
+      if (cancelled || aborted(parent) || aborted(controller.signal)) throw new Error("timeout");
+      return value;
     } finally {
-      parent?.removeEventListener("abort", relay);
+      if (workPromise && (cancelled || aborted(controller.signal))) await workPromise.catch(() => undefined);
+      if (parent) eventRemove.call(parent, "abort", relay);
       if (timer !== undefined) this.options.timers.clearTimeout(timer);
     }
+  }
+}
+
+function validCloseOptions(options?: CogsEgressRuntimeManagerCloseOptions): CogsEgressRuntimeManagerCloseOptions {
+  if (options === undefined) return Object.freeze({});
+  if (!plain(options as Record<string, unknown>)) throw new CogsEgressRuntimeManagerError();
+  const descriptors = Object.getOwnPropertyDescriptors(options);
+  try {
+    exactShape(options as Record<string, unknown>, [], ["deadlineAt", "signal"]);
+  } catch {
+    throw new CogsEgressRuntimeManagerError();
+  }
+  const signal = descriptors.signal?.value;
+  const deadlineAt = descriptors.deadlineAt?.value;
+  if (signal !== undefined && !(signal instanceof AbortSignal)) throw new CogsEgressRuntimeManagerError();
+  if (deadlineAt !== undefined && (!Number.isSafeInteger(deadlineAt) || deadlineAt > Date.now() + 60_000))
+    throw new CogsEgressRuntimeManagerError();
+  return Object.freeze({
+    ...(signal === undefined ? {} : { signal }),
+    ...(deadlineAt === undefined ? {} : { deadlineAt }),
+  });
+}
+
+function aborted(signal: AbortSignal | undefined): boolean {
+  if (!signal) return false;
+  try {
+    return abortSignalAborted?.call(signal) === true;
+  } catch {
+    return true;
   }
 }
 
 function capture(options: CogsEgressRuntimeManagerOptions): Captured {
   try {
     validateRequiredPorts(options);
-    if (options.signal?.aborted) throw new Error("aborted");
+    if (aborted(options.signal)) throw new Error("aborted");
     return Object.freeze({
       ...options,
       walPath: validPath(options.walPath),

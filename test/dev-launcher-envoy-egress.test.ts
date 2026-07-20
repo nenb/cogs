@@ -523,6 +523,391 @@ test("envoy egress preserves binary when post-close tmpfs proof is uncertain", a
   }
 });
 
+test("envoy egress cooperative abort after manager closes owned manager and preserves caller binary", async () => {
+  const { dir, state } = await launcherState("insecure-container");
+  try {
+    const runtime = join(state.dir, "runtime");
+    await mkdir(runtime, { mode: 0o700 });
+    await writeFile(join(runtime, ".cogs-envoy-owner"), `${state.stateId}\n`, { mode: 0o600 });
+    const bin = join(runtime, "envoy");
+    await writeFile(bin, fakeBin, { mode: 0o500 });
+    await chmod(bin, 0o500);
+    const events: string[] = [];
+    const controller = new AbortController();
+    await assert.rejects(
+      () =>
+        startEnvoyEgress({
+          state,
+          profile: "insecure-container",
+          openbao: openbao(),
+          fixturePort: 1,
+          launchDocument: launch(state.stateId, 1),
+          listenerPort: 18081,
+          otlpLogsEndpoint: "http://127.0.0.1:4318/v1/logs",
+          binary: { path: bin, sha256: fakeBinHash, image: ENVOY_IMAGE, cleanup: "owned" },
+          signal: controller.signal,
+          seams: Object.freeze({
+            validateTmpfs: Object.freeze(async () => undefined),
+            proveClosed: Object.freeze(async () => undefined),
+            startManager: Object.freeze(async () => {
+              events.push("manager.start");
+              queueMicrotask(() => controller.abort());
+              return Object.freeze({
+                ready: true,
+                listenerPort: 18081,
+                replacementRequired: false,
+                drainCompletions: () => Object.freeze([]),
+                close: async () => {
+                  events.push("manager.close");
+                },
+              });
+            }),
+          }),
+        }),
+      /launcher egress failed/,
+    );
+    assert.deepEqual(events, ["manager.start", "manager.close"]);
+    await lstat(bin);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("prepare envoy cooperative deadline after extraction cleans owned runtime", async () => {
+  const { dir, state } = await launcherState();
+  const id = "c".repeat(64);
+  const events: string[] = [];
+  try {
+    const seams: EnvoyEgressSeams = Object.freeze({
+      docker: Object.freeze(async (raw: readonly string[], options?: { deadlineAt?: number }) => {
+        events.push(`${raw.join(" ")}:${options?.deadlineAt ? "deadline" : "nodeadline"}`);
+        const args = raw.slice(1);
+        if (args[0] === "ps") return { status: 0, stdout: "" };
+        if (args[0] === "image")
+          return { status: 0, stdout: `${JSON.stringify([ENVOY_IMAGE.replace(":v1.38.3@", "@")])}\n` };
+        if (args[0] === "create") return { status: 0, stdout: `${id}\n` };
+        if (args[0] === "cp") {
+          await writeFile(String(args[2]), fakeBin);
+          return { status: 0, stdout: "" };
+        }
+        if (args[0] === "inspect")
+          return {
+            status: 0,
+            stdout: `${JSON.stringify({ Id: id, Name: `/cogs-envoy-extract-${state.stateId}`, Config: { Image: ENVOY_IMAGE, Labels: { "cogs.dev.launcher.envoy": state.stateId } } })}\n`,
+          };
+        if (args[0] === "rm") return { status: 0, stdout: "" };
+        return { status: 1, stdout: "" };
+      }),
+      runVersion: Object.freeze(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        await new Promise((resolve) => setTimeout(resolve, 80));
+        return "Envoy version: 1.38.3/clean";
+      }),
+    });
+    await assert.rejects(
+      () => prepareEnvoyBinary(state, { deadlineAt: Date.now() + 50, seams }),
+      /launcher egress failed/,
+    );
+    await assert.rejects(() => lstat(join(state.dir, "runtime")));
+    assert.ok(events.some((event) => event.endsWith(":deadline")));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("envoy close continues manager after relay failure and stays generic without secret leakage", async () => {
+  const { dir, state } = await launcherState("linux-kvm");
+  try {
+    const runtime = join(state.dir, "runtime");
+    await mkdir(runtime, { mode: 0o700 });
+    await writeFile(join(runtime, ".cogs-envoy-owner"), `${state.stateId}\n`, { mode: 0o600 });
+    const bin = join(runtime, "envoy");
+    await writeFile(bin, fakeBin, { mode: 0o500 });
+    await chmod(bin, 0o500);
+    const events: string[] = [];
+    const relay = Object.freeze({
+      start: async () => undefined,
+      registerTarget: () => undefined,
+      switchTo: async () => undefined,
+      clear: async () => {
+        events.push("relay.clear");
+        throw new Error("SECRET_TOKEN_SHOULD_NOT_LEAK");
+      },
+      close: async () => {
+        events.push("relay.close");
+      },
+      snapshot: () => Object.freeze({ bindPort: 18080 }),
+    }) as never;
+    const h = await startEnvoyEgress({
+      state,
+      profile: "linux-kvm",
+      openbao: openbao(),
+      fixturePort: 1,
+      launchDocument: launch(state.stateId, 1),
+      listenerPort: 18081,
+      otlpLogsEndpoint: "http://127.0.0.1:4318/v1/logs",
+      binary: { path: bin, sha256: fakeBinHash, image: ENVOY_IMAGE, cleanup: "owned" },
+      seams: Object.freeze({
+        validateTmpfs: Object.freeze(async () => undefined),
+        proveClosed: Object.freeze(async () => undefined),
+        relay: Object.freeze(() => relay),
+        startManager: Object.freeze(async () =>
+          Object.freeze({
+            ready: true,
+            listenerPort: 18081,
+            replacementRequired: false,
+            drainCompletions: () => Object.freeze([]),
+            close: async () => {
+              events.push("manager.close");
+            },
+          }),
+        ),
+      }),
+    });
+    const first = h.close({ deadlineAt: Date.now() + 5000 });
+    assert.equal(h.close(), first);
+    await assert.rejects(
+      first,
+      (error) => String(error).includes("launcher egress failed") && !JSON.stringify(error).includes("SECRET_TOKEN"),
+    );
+    assert.ok(events.includes("manager.close"));
+    assert.ok(events.includes("relay.close"));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("prepare envoy failure preserves pre-existing owned and hostile runtime roots", async () => {
+  for (const hostile of [false, true]) {
+    const { dir, state } = await launcherState();
+    try {
+      const runtime = join(state.dir, "runtime");
+      await mkdir(runtime, { mode: 0o700 });
+      await writeFile(join(runtime, ".cogs-envoy-owner"), `${state.stateId}\n`, { mode: 0o600 });
+      const bin = join(runtime, "envoy");
+      await writeFile(bin, fakeBin, { mode: 0o500 });
+      await chmod(bin, 0o500);
+      if (hostile) await writeFile(join(runtime, "extra"), "preserve");
+      await assert.rejects(
+        () =>
+          prepareEnvoyBinary(state, Object.freeze({ docker: Object.freeze(async () => ({ status: 1, stdout: "" })) })),
+        /launcher egress failed/,
+      );
+      await lstat(bin);
+      if (hostile) await lstat(join(runtime, "extra"));
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+});
+
+test("envoy start abort before handoff and hostile manager getter close exact acquired manager", async () => {
+  for (const mode of ["abort", "getter"] as const) {
+    const { dir, state } = await launcherState("insecure-container");
+    try {
+      const runtime = join(state.dir, "runtime");
+      await mkdir(runtime, { mode: 0o700 });
+      await writeFile(join(runtime, ".cogs-envoy-owner"), `${state.stateId}\n`, { mode: 0o600 });
+      const bin = join(runtime, "envoy");
+      await writeFile(bin, fakeBin, { mode: 0o500 });
+      await chmod(bin, 0o500);
+      const events: string[] = [];
+      const controller = new AbortController();
+      await assert.rejects(
+        () =>
+          startEnvoyEgress({
+            state,
+            profile: "insecure-container",
+            openbao: openbao(),
+            fixturePort: 1,
+            launchDocument: launch(state.stateId, 1),
+            listenerPort: 18081,
+            otlpLogsEndpoint: "http://127.0.0.1:4318/v1/logs",
+            binary: { path: bin, sha256: fakeBinHash, image: ENVOY_IMAGE, cleanup: "owned" },
+            ...(mode === "abort" ? { signal: controller.signal } : {}),
+            seams: Object.freeze({
+              validateTmpfs: Object.freeze(async () => undefined),
+              proveClosed: Object.freeze(async () => undefined),
+              startManager: Object.freeze(async () => {
+                if (mode === "abort") queueMicrotask(() => controller.abort());
+                return Object.freeze({
+                  get ready() {
+                    if (mode === "getter") throw new Error("hostile");
+                    return true;
+                  },
+                  listenerPort: 18081,
+                  replacementRequired: false,
+                  drainCompletions: () => Object.freeze([]),
+                  close: async () => {
+                    events.push("manager.close");
+                  },
+                });
+              }),
+            }),
+          }),
+        /launcher egress failed/,
+      );
+      assert.deepEqual(events, ["manager.close"]);
+      await lstat(bin);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+});
+
+test("envoy runVersion and relay startup receive cooperative cancellation", async () => {
+  const first = await launcherState();
+  try {
+    const controller = new AbortController();
+    let observed = false;
+    await assert.rejects(
+      () =>
+        prepareEnvoyBinary(first.state, {
+          signal: controller.signal,
+          seams: Object.freeze({
+            docker: Object.freeze(async (raw: readonly string[]) => {
+              const args = raw.slice(1);
+              if (args[0] === "ps") return { status: 0, stdout: "" };
+              if (args[0] === "image")
+                return { status: 0, stdout: `${JSON.stringify([ENVOY_IMAGE.replace(":v1.38.3@", "@")])}\n` };
+              if (args[0] === "create") return { status: 0, stdout: `${"d".repeat(64)}\n` };
+              if (args[0] === "cp") {
+                await writeFile(String(args[2]), fakeBin);
+                return { status: 0, stdout: "" };
+              }
+              if (args[0] === "inspect")
+                return {
+                  status: 0,
+                  stdout: `${JSON.stringify({ Id: "d".repeat(64), Name: `/cogs-envoy-extract-${first.state.stateId}`, Config: { Image: ENVOY_IMAGE, Labels: { "cogs.dev.launcher.envoy": first.state.stateId } } })}\n`,
+                };
+              if (args[0] === "rm") return { status: 0, stdout: "" };
+              return { status: 1, stdout: "" };
+            }),
+            runVersion: Object.freeze((_path: string, options?: { signal?: AbortSignal }) => {
+              queueMicrotask(() => controller.abort());
+              return new Promise<string>((_resolve, reject) =>
+                options?.signal?.addEventListener("abort", () => {
+                  observed = true;
+                  reject(new Error("aborted"));
+                }),
+              );
+            }),
+          }),
+        }),
+      /launcher egress failed/,
+    );
+    assert.equal(observed, true);
+  } finally {
+    await rm(first.dir, { recursive: true, force: true });
+  }
+
+  const second = await launcherState("linux-kvm");
+  try {
+    const runtime = join(second.state.dir, "runtime");
+    await mkdir(runtime, { mode: 0o700 });
+    await writeFile(join(runtime, ".cogs-envoy-owner"), `${second.state.stateId}\n`, { mode: 0o600 });
+    const bin = join(runtime, "envoy");
+    await writeFile(bin, fakeBin, { mode: 0o500 });
+    await chmod(bin, 0o500);
+    const controller = new AbortController();
+    const events: string[] = [];
+    const relay = Object.freeze({
+      start: (options?: { signal?: AbortSignal }) => {
+        queueMicrotask(() => controller.abort());
+        return new Promise<void>((_resolve, reject) =>
+          options?.signal?.addEventListener("abort", () => {
+            events.push("relay.abort");
+            reject(new Error("aborted"));
+          }),
+        );
+      },
+      registerTarget: () => undefined,
+      switchTo: async () => undefined,
+      clear: async () => undefined,
+      close: async () => {
+        events.push("relay.close");
+      },
+      snapshot: () => Object.freeze({ bindPort: 18080 }),
+    }) as never;
+    await assert.rejects(
+      () =>
+        startEnvoyEgress({
+          state: second.state,
+          profile: "linux-kvm",
+          openbao: openbao(),
+          fixturePort: 1,
+          launchDocument: launch(second.state.stateId, 1),
+          listenerPort: 18081,
+          otlpLogsEndpoint: "http://127.0.0.1:4318/v1/logs",
+          binary: { path: bin, sha256: fakeBinHash, image: ENVOY_IMAGE, cleanup: "owned" },
+          signal: controller.signal,
+          seams: Object.freeze({
+            validateTmpfs: Object.freeze(async () => undefined),
+            proveClosed: Object.freeze(async () => undefined),
+            relay: Object.freeze(() => relay),
+            startManager: Object.freeze(async () =>
+              Object.freeze({
+                ready: true,
+                listenerPort: 18081,
+                replacementRequired: false,
+                drainCompletions: () => Object.freeze([]),
+                close: async () => {
+                  events.push("manager.close");
+                },
+              }),
+            ),
+          }),
+        }),
+      /launcher egress failed/,
+    );
+    assert.deepEqual(events, ["relay.abort", "relay.close", "manager.close"]);
+  } finally {
+    await rm(second.dir, { recursive: true, force: true });
+  }
+});
+
+test("envoy close rejects hostile cooperative option bags before getters", async () => {
+  const { dir, state } = await launcherState("insecure-container");
+  try {
+    const runtime = join(state.dir, "runtime");
+    await mkdir(runtime, { mode: 0o700 });
+    await writeFile(join(runtime, ".cogs-envoy-owner"), `${state.stateId}\n`, { mode: 0o600 });
+    const bin = join(runtime, "envoy");
+    await writeFile(bin, fakeBin, { mode: 0o500 });
+    await chmod(bin, 0o500);
+    const h = await startEnvoyEgress({
+      state,
+      profile: "insecure-container",
+      openbao: openbao(),
+      fixturePort: 1,
+      launchDocument: launch(state.stateId, 1),
+      listenerPort: 18081,
+      otlpLogsEndpoint: "http://127.0.0.1:4318/v1/logs",
+      binary: { path: bin, sha256: fakeBinHash, image: ENVOY_IMAGE, cleanup: "owned" },
+      seams: Object.freeze({
+        validateTmpfs: Object.freeze(async () => undefined),
+        proveClosed: Object.freeze(async () => undefined),
+        startManager: Object.freeze(async () =>
+          Object.freeze({
+            ready: true,
+            listenerPort: 18081,
+            replacementRequired: false,
+            drainCompletions: () => Object.freeze([]),
+            close: async () => undefined,
+          }),
+        ),
+      }),
+    });
+    assert.throws(() => h.close({ extra: true } as never), /launcher egress failed/);
+    assert.throws(() =>
+      h.close(Object.defineProperty({}, "deadlineAt", { enumerable: true, get: () => Date.now() }) as never),
+    );
+    await h.close();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("envoy egress rejects non-exact model and integration semantics", async () => {
   const { dir, state } = await launcherState("insecure-container");
   try {
