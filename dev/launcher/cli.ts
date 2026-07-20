@@ -147,13 +147,17 @@ export async function writeSensitiveExport(
   value: unknown,
   maxBytes = 1024 * 1024,
 ): Promise<string> {
+  debugCliStage("export-writer-entry");
   const base = await ownedDir(root, 0o700);
   if (base !== root) throw new Error("invalid launcher export");
+  debugCliStage("export-writer-root-accepted");
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > 1024 * 1024)
     throw new Error("invalid launcher export");
   const path = await contained(base, parseRel(relPath));
   await validateParents(base, dirname(path), 0o700);
+  debugCliStage("export-writer-parent-accepted");
   const json = canonicalSensitive(value, maxBytes);
+  debugCliStage("export-writer-authority-accepted");
   const bytes = Buffer.from(json);
   if (bytes.length < 1 || bytes.length > maxBytes) throw new Error("invalid launcher export");
   const tmp = `${path}.tmp-${process.pid}-${Date.now()}`;
@@ -162,9 +166,12 @@ export async function writeSensitiveExport(
     constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW,
     0o600,
   );
+  debugCliStage("export-writer-opened");
   try {
     await handle.writeFile(bytes);
+    debugCliStage("export-writer-written");
     await handle.sync();
+    debugCliStage("export-writer-fsync");
     const tempStat = await handle.stat();
     if (
       !tempStat.isFile() ||
@@ -174,7 +181,9 @@ export async function writeSensitiveExport(
       (typeof process.geteuid === "function" && tempStat.uid !== process.geteuid())
     )
       throw new Error("invalid launcher export");
+    debugCliStage("export-writer-temp-accepted");
     await handle.close();
+    debugCliStage("export-writer-close");
     await lstat(path).then(
       () => {
         throw new Error("invalid launcher export");
@@ -183,6 +192,7 @@ export async function writeSensitiveExport(
         if (e.code !== "ENOENT") throw e;
       },
     );
+    debugCliStage("export-writer-target-missing");
     await link(tmp, path);
     await unlink(tmp);
     const finalStat = await lstat(path);
@@ -196,6 +206,7 @@ export async function writeSensitiveExport(
       (typeof process.geteuid === "function" && finalStat.uid !== process.geteuid())
     )
       throw new Error("invalid launcher export");
+    debugCliStage("export-writer-final-accepted");
     const parent = await open(dirname(path), constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
     try {
       await parent.sync();
@@ -204,6 +215,7 @@ export async function writeSensitiveExport(
       await parent.close().catch(() => undefined);
       throw error;
     }
+    debugCliStage("export-writer-return");
     return path;
   } catch (error) {
     await handle.close().catch(() => undefined);
@@ -230,6 +242,10 @@ function snapshotArgv(argv: readonly string[]): string[] {
     throw new Error("invalid launcher arguments");
   return out;
 }
+function debugCliStage(stage: string): void {
+  if (process.env.COGS_LAUNCHER_DEBUG_STAGE === "1") process.stderr.write(`launcher-debug-stage:${stage}\n`);
+}
+
 function req(map: Map<string, string | true>, key: string): string {
   const value = map.get(key);
   if (typeof value !== "string") throw new Error("invalid launcher arguments");

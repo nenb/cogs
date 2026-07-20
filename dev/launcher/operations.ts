@@ -192,11 +192,19 @@ async function apiExport(
   ctx: LauncherOperationContext,
   s: LauncherOperationSeams,
 ) {
+  debugSmokeStage("export-entry");
   if (!request.out) throw new Error("launcher operation failed");
   return await withReadyClient(options, request, ctx, s, async (client, signal) => {
+    debugSmokeStage("export-ready-accepted");
+    debugSmokeStage("export-token-client-created");
     const r = exactPlain(await client.request("export", Object.freeze({}), signal));
+    debugSmokeStage("export-request-returned");
+    debugSmokeStage("export-plain-response");
     if (r.sensitive !== true) throw new Error("launcher operation failed");
+    debugSmokeStage("export-sensitive-accepted");
+    debugSmokeStage("export-before-write");
     await s.writeSensitiveExport(ctx.exportRoot, request.out as string, r);
+    debugSmokeStage("export-after-write");
     return deepFreeze({ op: "export", written: true, sensitive: true });
   });
 }

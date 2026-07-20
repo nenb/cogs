@@ -79,7 +79,7 @@ test("launcher command descriptor uses exact node and minimal env with deadline"
 
 test("launcher debug smoke markers are fixed and allowlisted on debug branch only", async () => {
   const markerSources = await Promise.all([
-    ...["operations.ts", "supervisor.ts", "worker-process.ts", "trusted-compose.ts"].map((file) =>
+    ...["operations.ts", "supervisor.ts", "worker-process.ts", "trusted-compose.ts", "cli.ts"].map((file) =>
       readFile(join(process.cwd(), "dev/launcher", file), "utf8"),
     ),
     readFile(join(process.cwd(), "src/pi/session.ts"), "utf8"),
@@ -94,6 +94,26 @@ test("launcher debug smoke markers are fixed and allowlisted on debug branch onl
     "after-normal-run",
     "after-history",
     "after-export",
+    "export-entry",
+    "export-ready-accepted",
+    "export-token-client-created",
+    "export-request-returned",
+    "export-plain-response",
+    "export-sensitive-accepted",
+    "export-before-write",
+    "export-after-write",
+    "export-writer-entry",
+    "export-writer-root-accepted",
+    "export-writer-parent-accepted",
+    "export-writer-authority-accepted",
+    "export-writer-opened",
+    "export-writer-written",
+    "export-writer-fsync",
+    "export-writer-temp-accepted",
+    "export-writer-close",
+    "export-writer-target-missing",
+    "export-writer-final-accepted",
+    "export-writer-return",
     "after-abort-request",
     "after-abort-terminal",
     "after-shutdown",
@@ -210,7 +230,7 @@ test("launcher debug smoke markers are fixed and allowlisted on debug branch onl
       assert.match(
         sourceText,
         new RegExp(
-          `debugStartupStage\\("${stage}"\\)|debugSmokeStage\\("${stage}"\\)|debugPiStage\\("${stage}"\\)|debugSkillPrepStage\\("${stage}"\\)`,
+          `debugStartupStage\\("${stage}"\\)|debugSmokeStage\\("${stage}"\\)|debugPiStage\\("${stage}"\\)|debugSkillPrepStage\\("${stage}"\\)|debugCliStage\\("${stage}"\\)`,
         ),
       );
     }
