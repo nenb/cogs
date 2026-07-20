@@ -14,6 +14,7 @@ import {
   readApiToken,
   readReadyWorkerDescriptor,
   readWorkerDescriptor,
+  requireSessionControlsAbsent,
   verifyWorkerIdentity,
 } from "../dev/launcher/control.ts";
 import { startOtlpFixture } from "../dev/launcher/otlp-fixture.ts";
@@ -102,6 +103,43 @@ test("control writes 0600 token and worker descriptor without exposing token in 
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test("control debug inventory emits fixed categories without names", async () => {
+  const previous = process.env.COGS_LAUNCHER_DEBUG_STAGE;
+  const writes: string[] = [];
+  const originalWrite = process.stderr.write;
+  process.env.COGS_LAUNCHER_DEBUG_STAGE = "1";
+  process.stderr.write = ((chunk: string | Uint8Array) => {
+    writes.push(String(chunk));
+    return true;
+  }) as typeof process.stderr.write;
+  const clean = await state();
+  const known = await state();
+  const unknown = await state();
+  const multiple = await state();
+  try {
+    await requireSessionControlsAbsent(clean.state);
+    await mkdir(join(known.state.controlDir, ".docker"), { mode: 0o700 });
+    await assert.rejects(() => requireSessionControlsAbsent(known.state));
+    await writeFile(join(unknown.state.controlDir, "hostile-name"), "x", { mode: 0o600 });
+    await assert.rejects(() => requireSessionControlsAbsent(unknown.state));
+    await mkdir(join(multiple.state.controlDir, ".cache"), { mode: 0o700 });
+    await writeFile(join(multiple.state.controlDir, "other"), "x", { mode: 0o600 });
+    await assert.rejects(() => requireSessionControlsAbsent(multiple.state));
+  } finally {
+    process.stderr.write = originalWrite;
+    if (previous === undefined) delete process.env.COGS_LAUNCHER_DEBUG_STAGE;
+    else process.env.COGS_LAUNCHER_DEBUG_STAGE = previous;
+    await Promise.all([clean, known, unknown, multiple].map((item) => rm(item.dir, { recursive: true, force: true })));
+  }
+  const text = writes.join("");
+  assert.match(text, /launcher-debug-stage:control-first-inventory-sandbox-only\n/);
+  assert.match(text, /launcher-debug-stage:control-second-inventory-sandbox-only\n/);
+  assert.match(text, /launcher-debug-stage:control-first-inventory-known-tool\n/);
+  assert.match(text, /launcher-debug-stage:control-first-inventory-unknown\n/);
+  assert.match(text, /launcher-debug-stage:control-first-inventory-multiple\n/);
+  assert.doesNotMatch(text, /hostile-name|\.docker|other/u);
 });
 
 test("control rejects malformed token descriptor races links extras and identity changes", async () => {

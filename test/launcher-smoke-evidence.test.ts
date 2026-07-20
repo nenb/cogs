@@ -79,8 +79,8 @@ test("launcher command descriptor uses exact node and minimal env with deadline"
 
 test("launcher debug smoke markers are fixed and allowlisted on debug branch only", async () => {
   const markerSources = await Promise.all([
-    ...["operations.ts", "supervisor.ts", "worker-process.ts", "trusted-compose.ts", "cli.ts"].map((file) =>
-      readFile(join(process.cwd(), "dev/launcher", file), "utf8"),
+    ...["operations.ts", "supervisor.ts", "worker-process.ts", "trusted-compose.ts", "cli.ts", "control.ts"].map(
+      (file) => readFile(join(process.cwd(), "dev/launcher", file), "utf8"),
     ),
     readFile(join(process.cwd(), "src/pi/session.ts"), "utf8"),
     readFile(join(process.cwd(), "src/skills/session-preparer.ts"), "utf8"),
@@ -120,6 +120,20 @@ test("launcher debug smoke markers are fixed and allowlisted on debug branch onl
     "after-inventory",
     "after-destroy",
     "supervisor-manifest",
+    "control-manifest-accepted",
+    "control-recovery-absent",
+    "control-dir-accepted",
+    "control-sandbox-dir-accepted",
+    "control-first-inventory-sandbox-only",
+    "control-first-inventory-known-tool",
+    "control-first-inventory-unknown",
+    "control-first-inventory-multiple",
+    "control-worker-absent",
+    "control-token-absent",
+    "control-second-inventory-sandbox-only",
+    "control-second-inventory-known-tool",
+    "control-second-inventory-unknown",
+    "control-second-inventory-multiple",
     "supervisor-controls",
     "supervisor-token",
     "supervisor-startup-control",
@@ -226,11 +240,14 @@ test("launcher debug smoke markers are fixed and allowlisted on debug branch onl
       } else {
         assert.match(sourceText, new RegExp(`sftp-\\$\\{scope\\}-${suffix}`));
       }
+    } else if (/^control-(first|second)-inventory-/u.test(stage)) {
+      assert.match(sourceText, /debugControlInventory\("control-(first|second)-inventory"/);
+      assert.match(sourceText, new RegExp(stage.replace(/^control-(first|second)-inventory-/u, "")));
     } else {
       assert.match(
         sourceText,
         new RegExp(
-          `debugStartupStage\\("${stage}"\\)|debugSmokeStage\\("${stage}"\\)|debugPiStage\\("${stage}"\\)|debugSkillPrepStage\\("${stage}"\\)|debugCliStage\\("${stage}"\\)`,
+          `debugStartupStage\\("${stage}"\\)|debugSmokeStage\\("${stage}"\\)|debugPiStage\\("${stage}"\\)|debugSkillPrepStage\\("${stage}"\\)|debugCliStage\\("${stage}"\\)|debugControlStage\\("${stage}"\\)`,
         ),
       );
     }
@@ -238,7 +255,7 @@ test("launcher debug smoke markers are fixed and allowlisted on debug branch onl
   }
   assert.match(sourceText, /process\.env\.COGS_LAUNCHER_DEBUG_STAGE === "1"/);
   assert.match(harness, /line\.match\(\/\^launcher-debug-stage:\(\[a-z-\]\+\)\$\/u\)/);
-  assert.match(sourceText, /\(\?:worker\|child\|trusted\|supervisor\|pi\|skill-prep\|sftp\)-\[a-z-\]\+/);
+  assert.match(sourceText, /\(\?:worker\|child\|trusted\|supervisor\|pi\|skill-prep\|sftp\|control\)-\[a-z-\]\+/);
 });
 
 test("launcher smoke metadata validator requires exact cleanup and abort terminal without getters", () => {

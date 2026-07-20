@@ -176,13 +176,21 @@ export async function requireSessionControlsAbsent(state: LauncherState): Promis
   try {
     const manifest = await readManifest(state);
     if (manifest.phase === "worker-ready") fail();
+    debugControlStage("control-manifest-accepted");
     await validateControlDir(state);
+    debugControlStage("control-recovery-absent");
+    debugControlStage("control-dir-accepted");
     await validateSandboxDir(state);
+    debugControlStage("control-sandbox-dir-accepted");
     const firstEntries = await readdir(state.controlDir);
+    debugControlInventory("control-first-inventory", firstEntries);
     if (!onlySandboxEntry(firstEntries)) fail();
     if (await ownedStat(state, workerFile, false)) fail();
+    debugControlStage("control-worker-absent");
     if (await ownedStat(state, tokenFile, false)) fail();
+    debugControlStage("control-token-absent");
     const secondEntries = await readdir(state.controlDir);
+    debugControlInventory("control-second-inventory", secondEntries);
     if (!onlySandboxEntry(secondEntries)) fail();
   } catch {
     throw generic();
@@ -642,6 +650,32 @@ function captureSeams(seams?: Partial<ControlSeams>): ControlSeams {
 
 function onlySandboxEntry(entries: readonly string[]): boolean {
   return entries.length === 1 && entries[0] === "sandbox";
+}
+
+function debugControlStage(stage: string): void {
+  if (process.env.COGS_LAUNCHER_DEBUG_STAGE === "1") process.stderr.write(`launcher-debug-stage:${stage}\n`);
+}
+
+function debugControlInventory(
+  prefix: "control-first-inventory" | "control-second-inventory",
+  entries: readonly string[],
+): void {
+  if (process.env.COGS_LAUNCHER_DEBUG_STAGE !== "1") return;
+  const unexpected = entries.filter((entry) => entry !== "sandbox");
+  if (unexpected.length === 0 && entries.length === 1) {
+    debugControlStage(`${prefix}-sandbox-only`);
+    return;
+  }
+  const knownToolState = new Set([".cache", ".docker", ".npm", ".rnd", ".ssh"]);
+  if (unexpected.length === 1 && knownToolState.has(unexpected[0] ?? "")) {
+    debugControlStage(`${prefix}-known-tool`);
+    return;
+  }
+  if (unexpected.length === 1) {
+    debugControlStage(`${prefix}-unknown`);
+    return;
+  }
+  debugControlStage(`${prefix}-multiple`);
 }
 
 function identityForCleanup(descriptor: WorkerDescriptor): { pid: number; pidIdentity: string } {
