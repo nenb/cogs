@@ -242,24 +242,23 @@ test("launcher debug smoke markers are fixed and allowlisted on debug branch onl
 });
 
 test("launcher smoke metadata validator requires exact cleanup and abort terminal without getters", () => {
-  validateSmokeJson(
-    {
-      op: "smoke",
-      complete: true,
-      aborted: { terminal: "run_aborted" },
-      inventory: {
-        profile: "linux-kvm",
-        authority: "authoritative-local",
-        phase: "sandbox-ready",
-        descriptor: "none",
-        workerLive: false,
-        recovery: "absent",
-        cleanupRequired: false,
-        driverState: "absent",
-      },
+  const valid = {
+    op: "smoke",
+    complete: true,
+    aborted: { terminal: "run_aborted", lastEventId: 9, eventCount: 3 },
+    inventory: {
+      profile: "linux-kvm",
+      authority: "authoritative-local",
+      phase: "sandbox-ready",
+      descriptor: "none",
+      workerLive: false,
+      recovery: "absent",
+      cleanupRequired: false,
+      driverState: "absent",
     },
-    "linux-kvm",
-  );
+  };
+  validateSmokeJson(valid, "linux-kvm");
+
   let invoked = false;
   assert.throws(() =>
     validateSmokeJson(
@@ -276,26 +275,34 @@ test("launcher smoke metadata validator requires exact cleanup and abort termina
     ),
   );
   assert.equal(invoked, false);
-  assert.throws(() =>
-    validateSmokeJson(
-      {
-        op: "smoke",
-        complete: true,
-        aborted: { terminal: "run_settled" },
-        inventory: {
-          profile: "insecure-container",
-          authority: "functional-only",
-          phase: "sandbox-ready",
-          descriptor: "none",
-          workerLive: false,
-          recovery: "absent",
-          cleanupRequired: false,
-          driverState: "absent",
-        },
-      },
-      "insecure-container",
-    ),
-  );
+
+  for (const aborted of [
+    { terminal: "run_aborted" },
+    { terminal: "run_settled", lastEventId: 9, eventCount: 3 },
+    { terminal: "run_aborted", lastEventId: 0, eventCount: 3 },
+    { terminal: "run_aborted", lastEventId: 9, eventCount: 0 },
+    { terminal: "run_aborted", lastEventId: 1001, eventCount: 3 },
+    { terminal: "run_aborted", lastEventId: 2, eventCount: 3 },
+    { terminal: "run_aborted", lastEventId: 9.5, eventCount: 3 },
+    { terminal: "run_aborted", lastEventId: 9, eventCount: 3, extra: true },
+    Object.assign(Object.create(null), { terminal: "run_aborted", lastEventId: 9, eventCount: 3 }),
+  ]) {
+    assert.throws(() => validateSmokeJson({ ...valid, aborted }, "linux-kvm"));
+  }
+
+  const symbolAborted = { terminal: "run_aborted", lastEventId: 9, eventCount: 3, [Symbol("x")]: true };
+  assert.throws(() => validateSmokeJson({ ...valid, aborted: symbolAborted }, "linux-kvm"));
+
+  let abortedGetterInvoked = false;
+  const getterAborted = Object.defineProperty({ terminal: "run_aborted", eventCount: 3 }, "lastEventId", {
+    enumerable: true,
+    get() {
+      abortedGetterInvoked = true;
+      return 9;
+    },
+  });
+  assert.throws(() => validateSmokeJson({ ...valid, aborted: getterAborted }, "linux-kvm"));
+  assert.equal(abortedGetterInvoked, false);
 });
 
 test("launcher evidence helpers reject non-tmpfs and constrain report filename", () => {
