@@ -179,15 +179,24 @@ test("real profile descriptor uses driver-compatible direct .cogs-dev state and 
 });
 
 test("profile drivers use exact launcher-compatible local controls", async () => {
+  const insecureEntrypoint = await readFile(join(process.cwd(), "dev/insecure-sandbox/entrypoint.sh"), "utf8");
   const insecure = await readFile(join(process.cwd(), "dev/insecure-sandbox/driver.sh"), "utf8");
   assert(!/\bnpx\b|\bnpm\b/.test(insecure));
   assert.match(insecure, /tsx_bin="\$repo\/node_modules\/\.bin\/tsx"/);
   assert.match(insecure, /tsx_real=\$\(realpath "\$tsx_bin"\)/);
   assert.match(insecure, /"\$tsx_bin" "\$repo\/dev\/insecure-sandbox\/ssh-adapter-smoke\.ts"/);
+  for (const text of [insecureEntrypoint, insecure]) {
+    assert.match(text, /\/shared\/skills \/user\/skills/);
+    assert.match(text, /realpath -e "\$skill_root"/);
+    assert.match(text, /0:0:700:directory/);
+  }
 
   const kvm = await readFile(join(process.cwd(), "dev/linux-kvm/driver.sh"), "utf8");
   assert.match(kvm, /read -r host_key_type host_key_data ignored/);
   assert.match(kvm, /printf '%s %s %s\\n' "\$guest_ip" "\$host_key_type" "\$host_key_data"/);
+  assert.match(kvm, /\/shared\/skills, \/user\/skills/);
+  assert.match(kvm, /realpath -e "\$skill_root"/);
+  assert.match(kvm, /0:0:700:directory/);
   assert(!kvm.includes('"$(<"$state/control/host_ed25519_key.pub")"'));
 });
 

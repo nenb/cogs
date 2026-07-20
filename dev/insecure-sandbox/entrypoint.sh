@@ -15,8 +15,20 @@ for required in "$host_key" "$host_public" "$client_public" "$public_ca"; do
   fi
 done
 
-mkdir -p /workspace /run/sshd "$runtime"
-chmod 0700 /workspace "$runtime"
+mkdir -p /workspace /run/sshd "$runtime" /shared/skills /user/skills
+chmod 0700 /workspace "$runtime" /shared/skills /user/skills
+chown root:root /shared/skills /user/skills
+for skill_root in /shared/skills /user/skills; do
+  if [[ -L "$skill_root" || "$(realpath -e "$skill_root")" != "$skill_root" ]]; then
+    printf 'insecure-container: invalid skill root\n' >&2
+    exit 1
+  fi
+  skill_stat=$(stat -c '%u:%g:%a:%F' "$skill_root")
+  if [[ "$skill_stat" != '0:0:700:directory' ]]; then
+    printf 'insecure-container: invalid skill root\n' >&2
+    exit 1
+  fi
+done
 
 install -m 0600 "$host_key" "$runtime/ssh_host_ed25519_key"
 install -m 0644 "$host_public" "$runtime/ssh_host_ed25519_key.pub"

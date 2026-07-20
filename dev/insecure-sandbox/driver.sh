@@ -353,6 +353,17 @@ verify_runtime_identity() {
   [[ "$published" == "127.0.0.1:$port" ]] || fail 'recorded SSH endpoint is not the loopback-published container port'
 }
 
+verify_skill_roots() {
+  bounded 12s ssh "${SSH_OPTIONS[@]}" root@127.0.0.1 '
+    for skill_root in /shared/skills /user/skills; do
+      test -d "$skill_root" &&
+      test ! -L "$skill_root" &&
+      test "$(realpath -e "$skill_root")" = "$skill_root" &&
+      test "$(stat -c "%u:%g:%a:%F" "$skill_root")" = "0:0:700:directory"
+    done
+  ' >/dev/null || fail 'guest skill roots are not provisioned'
+}
+
 verify() {
   require ssh
   require ssh-keygen
@@ -365,6 +376,7 @@ verify() {
   [[ "$port" =~ ^[0-9]+$ ]] || fail 'insecure-container SSH port is invalid'
   verify_runtime_identity
   ssh_options
+  verify_skill_roots
 
   local observed transfer="$state/control/sftp-control.txt" roundtrip="$state/control/sftp-roundtrip.txt" host_fingerprint
   host_fingerprint=$(ssh-keygen -q -lf "$state/input/ssh_host_ed25519_key.pub" -E sha256 | awk 'NR == 1 {print $2}')
