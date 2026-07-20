@@ -322,7 +322,7 @@ function captureChildDebugStderr(child: ChildProcess, enabled: boolean): void {
 }
 
 function reemitDebugStage(line: string): void {
-  if (/^launcher-debug-stage:(?:worker|child|trusted|supervisor)-[a-z-]+$/u.test(line))
+  if (/^launcher-debug-stage:(?:worker|child|trusted|supervisor|pi)-[a-z-]+$/u.test(line))
     process.stderr.write(`${line}\n`);
 }
 

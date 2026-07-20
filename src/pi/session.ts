@@ -389,6 +389,10 @@ export function createLockedResourceLoader(
   };
 }
 
+function debugPiStage(stage: string): void {
+  if (process.env.COGS_LAUNCHER_DEBUG_STAGE === "1") process.stderr.write(`launcher-debug-stage:${stage}\n`);
+}
+
 export async function createAuthenticatedCogsPiSession({
   launchDocument,
   modelApiKeys,
@@ -398,13 +402,16 @@ export async function createAuthenticatedCogsPiSession({
   ...sessionOptions
 }: AuthenticatedCogsPiSessionOptions): Promise<CogsPiSessionPorts> {
   const launch = validateLaunchConfig(launchDocument);
+  debugPiStage("pi-launch-validated");
   const authenticatedGit = validateGitOptions(git);
   const prepareSkills = validateSkillPreparer(skillPreparer);
+  debugPiStage("pi-skill-preparer-validated");
   let preparedResources: CogsPreparedSkills;
   try {
     const rawPrepared = await prepareSkills({ launch, ...(signal === undefined ? {} : { signal }) });
     try {
       preparedResources = validatePreparedResources(rawPrepared);
+      debugPiStage("pi-skills-prepared");
     } catch (error) {
       await disposeMalformedPrepared(rawPrepared);
       throw error;
@@ -422,8 +429,9 @@ export async function createAuthenticatedCogsPiSession({
         credentialHandle: launch.model.credential_handle,
         ...(signal === undefined ? {} : { signal }),
       },
-      (apiKey) =>
-        createCogsPiSession({
+      async (apiKey) => {
+        debugPiStage("pi-credential-resolved");
+        const session = await createCogsPiSession({
           ...sessionOptions,
           userId: launch.user_id,
           sessionId: launch.session_id,
@@ -440,7 +448,10 @@ export async function createAuthenticatedCogsPiSession({
                   ...(authenticatedGit.enableNotes === undefined ? {} : { enableNotes: authenticatedGit.enableNotes }),
                 }),
               }),
-        }),
+        });
+        debugPiStage("pi-create-cogs-pi-return");
+        return session;
+      },
     );
   } catch (error) {
     let cleanupError: unknown;
@@ -456,6 +467,7 @@ export async function createAuthenticatedCogsPiSession({
 
 export async function createCogsPiSession(options: CogsPiSessionOptions): Promise<CogsPiSessionPorts> {
   validateOptions(options);
+  debugPiStage("pi-options");
   const cwd = options.cwd;
   const agentDir = options.agentDir;
   const userId = options.userId;
@@ -520,10 +532,12 @@ export async function createCogsPiSession(options: CogsPiSessionOptions): Promis
     authStorage.setRuntimeApiKey(modelProvider, secret.value);
     const modelRegistry = ModelRegistry.inMemory(authStorage);
     const model = modelRegistry.find(modelProvider, modelId);
+    debugPiStage("pi-model-found");
     if (!model) throw new Error("unknown model");
     if (modelRegistry.isUsingOAuth(model)) throw new Error("oauth model authentication is disabled");
 
     const sessionManager = await createContainedSessionManager(cwd, sessionRoot, sessionId, resumeFile);
+    debugPiStage("pi-session-manager");
     const sessionDir = sessionManager.getSessionDir();
     await ownedRuntime?.adoptSessionDir(sessionDir);
     const historyStore = createCogsJsonlHistoryStore({
@@ -532,6 +546,7 @@ export async function createCogsPiSession(options: CogsPiSessionOptions): Promis
       ...(ownedRuntime === undefined ? {} : { onOwnedHistoryMarker: ownedRuntime.recordSessionFile }),
     });
     await historyStore.initialize();
+    debugPiStage("pi-history");
     const gitMapStore =
       gitOptions === undefined
         ? undefined
@@ -564,7 +579,9 @@ export async function createCogsPiSession(options: CogsPiSessionOptions): Promis
           }),
     });
     startupLocalExporter = localExporter;
+    debugPiStage("pi-export");
     const adapterRef: { current?: PiSessionAdapter } = {};
+    debugPiStage("pi-git");
     const gitBinding =
       gitOptions === undefined || gitMapStore === undefined || gitObserver === undefined
         ? undefined
@@ -629,6 +646,7 @@ export async function createCogsPiSession(options: CogsPiSessionOptions): Promis
       sessionManager,
       settingsManager: SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false } }),
     });
+    debugPiStage("pi-session-created");
     const session = sessionResult.session;
 
     if (streamFn !== undefined) {
@@ -658,6 +676,7 @@ export async function createCogsPiSession(options: CogsPiSessionOptions): Promis
       ownedRuntime,
     });
     adapterRef.current = adapter;
+    debugPiStage("pi-ports-return");
     return adapter;
   } catch (error) {
     let cleanupError: unknown;

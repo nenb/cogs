@@ -78,11 +78,12 @@ test("launcher command descriptor uses exact node and minimal env with deadline"
 });
 
 test("launcher debug smoke markers are fixed and allowlisted on debug branch only", async () => {
-  const markerSources = await Promise.all(
-    ["operations.ts", "supervisor.ts", "worker-process.ts", "trusted-compose.ts"].map((file) =>
+  const markerSources = await Promise.all([
+    ...["operations.ts", "supervisor.ts", "worker-process.ts", "trusted-compose.ts"].map((file) =>
       readFile(join(process.cwd(), "dev/launcher", file), "utf8"),
     ),
-  );
+    readFile(join(process.cwd(), "src/pi/session.ts"), "utf8"),
+  ]);
   const sourceText = markerSources.join("\n");
   const harness = await readFile(join(process.cwd(), "scripts/run-launcher-smoke-evidence.ts"), "utf8");
   for (const stage of [
@@ -107,9 +108,30 @@ test("launcher debug smoke markers are fixed and allowlisted on debug branch onl
     "trusted-egress-root",
     "trusted-ssh-controls",
     "trusted-egress",
+    "trusted-before-create-pi",
+    "trusted-create-pi-return",
+    "trusted-verify-snapshot",
+    "trusted-verify-session-file",
+    "trusted-verify-prepared-metadata",
     "trusted-api-ready",
+    "pi-launch-validated",
+    "pi-skill-preparer-validated",
+    "pi-skills-prepared",
+    "pi-credential-resolved",
+    "pi-create-cogs-pi-return",
+    "pi-options",
+    "pi-model-found",
+    "pi-session-manager",
+    "pi-history",
+    "pi-git",
+    "pi-export",
+    "pi-session-created",
+    "pi-ports-return",
   ]) {
-    assert.match(sourceText, new RegExp(`debugStartupStage\\("${stage}"\\)|debugSmokeStage\\("${stage}"\\)`));
+    assert.match(
+      sourceText,
+      new RegExp(`debugStartupStage\\("${stage}"\\)|debugSmokeStage\\("${stage}"\\)|debugPiStage\\("${stage}"\\)`),
+    );
     assert.match(harness, new RegExp(`"${stage}"`));
   }
   assert.match(sourceText, /process\.env\.COGS_LAUNCHER_DEBUG_STAGE === "1"/);

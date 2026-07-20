@@ -436,6 +436,7 @@ export async function createTrustedWorkerRuntime(
 
     const filePorts = createSftpFileToolPorts({ manager: ssh });
     const bashPort = createSshBashToolPort({ manager: ssh });
+    debugStartupStage("trusted-before-create-pi");
     pi = await s.createPi({
       cwd: "/workspace",
       agentDir: roots.agentDir,
@@ -458,6 +459,7 @@ export async function createTrustedWorkerRuntime(
         checkpoint: Object.freeze({ enabled: false }),
       }),
     });
+    debugStartupStage("trusted-create-pi-return");
     await verifyPi(pi, roots.sessionRoot, skills);
     debugStartupStage("trusted-pi");
     checkCooperative(startup.signal, deadlineAt);
@@ -725,13 +727,16 @@ async function readyProof(
 
 async function verifyPi(pi: CogsPiSessionPorts, sessionRoot: string, skills: TrustedSkillInputs): Promise<void> {
   const state = plainRecord(await pi.state());
+  debugStartupStage("trusted-verify-snapshot");
   if (state.runState !== "idle") fail();
   if (pi.activeToolNames().join(",") !== "read,write,edit,bash") fail();
   const file = pi.sessionFile();
+  debugStartupStage("trusted-verify-session-file");
   if (typeof file !== "string") fail();
   const rel = relative(sessionRoot, file);
   if (rel.startsWith("..") || rel === "" || rel.startsWith("/")) fail();
   const metadata = plainRecord(pi.skillMetadata());
+  debugStartupStage("trusted-verify-prepared-metadata");
   const shared = plainRecord(metadata.shared);
   const user = plainRecord(metadata.user);
   if (
