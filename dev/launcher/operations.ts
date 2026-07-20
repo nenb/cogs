@@ -297,8 +297,10 @@ async function smoke(
   let started = false;
   try {
     base("create", meta(result(await s.createSandbox(options, ctx.signal)).manifest));
+    debugSmokeStage("after-create");
     await locked(options, (state) => s.startWorkerForState(state, ctx.signal));
     started = true;
+    debugSmokeStage("after-start");
     const first = await apiRun(
       Object.freeze({ ...request, op: "run", promptFile: "dev/launcher/smoke-prompt.txt" }),
       options,
@@ -306,21 +308,28 @@ async function smoke(
       s,
     );
     if (first.terminal !== "run_settled") throw new Error("launcher operation failed");
+    debugSmokeStage("after-normal-run");
     await apiRequest("history", Object.freeze({ ...request, op: "history", limit: 25 }), options, ctx, s);
+    debugSmokeStage("after-history");
     await apiExport(Object.freeze({ ...request, op: "export", out: "launcher-smoke.json" }), options, ctx, s);
+    debugSmokeStage("after-export");
     const aborted = await withReadyClient(options, request, ctx, s, async (client, signal) => {
       const correlation = runCorrelation(
         await client.request("run", Object.freeze({ content: LAUNCHER_DETERMINISTIC_ABORT_PROMPT }), signal),
       );
       const r = exactPlain(await client.request("abort", Object.freeze({}), signal));
+      debugSmokeStage("after-abort-request");
       if (bool(r.aborted) !== true) throw new Error("launcher operation failed");
       const terminal = await tailTerminal(client, correlation, signal);
       if (terminal.terminal !== "run_aborted") throw new Error("launcher operation failed");
+      debugSmokeStage("after-abort-terminal");
       return terminal;
     });
     await shutdown(options, ctx.signal, ctx.timeoutMs, s);
+    debugSmokeStage("after-shutdown");
     started = false;
     const inv = stripInventory((await status(options, s)).inventory);
+    debugSmokeStage("after-inventory");
     if (
       inv.descriptor !== "none" ||
       inv.workerLive !== false ||
@@ -330,12 +339,17 @@ async function smoke(
       throw new Error("launcher operation failed");
     if (bool(result(await s.destroySandbox(options, ctx.signal)).removed) !== true)
       throw new Error("launcher operation failed");
+    debugSmokeStage("after-destroy");
     return deepFreeze({ op: "smoke", complete: true, aborted, inventory: inv });
   } catch (error) {
     if (started) await stopOnly(options, s).catch(() => undefined);
     await s.destroySandbox(options, undefined).catch(() => undefined);
     throw error;
   }
+}
+
+function debugSmokeStage(stage: string): void {
+  if (process.env.COGS_LAUNCHER_DEBUG_STAGE === "1") process.stderr.write(`launcher-debug-stage:${stage}\n`);
 }
 
 function base(op: string, value: unknown) {

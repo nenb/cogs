@@ -43,7 +43,7 @@ export function launcherCommandDescriptor(profile: Profile, state: string, timeo
       String(timeoutMs),
     ]),
     cwd: root,
-    env: Object.freeze({ HOME: root, NO_COLOR: "1" }),
+    env: Object.freeze({ HOME: root, NO_COLOR: "1", COGS_LAUNCHER_DEBUG_STAGE: "1" }),
     timeoutMs: outerTimeoutMs,
     maxOutputBytes: 65536,
     killGraceMs: 120000,
@@ -270,6 +270,7 @@ async function checkedOutHead(): Promise<string> {
 
 async function runLauncher(profile: Profile, state: string, timeoutMs: number): Promise<string> {
   const result = await runCommand(launcherCommandDescriptor(profile, state, timeoutMs));
+  emitDebugStages(result.stderr);
   if (
     result.status !== "ok" ||
     result.exitCode !== 0 ||
@@ -280,6 +281,25 @@ async function runLauncher(profile: Profile, state: string, timeoutMs: number): 
     throw new Error("launcher smoke failed");
   }
   return result.stdout;
+}
+
+function emitDebugStages(stderr: string): void {
+  const allowed = new Set([
+    "after-create",
+    "after-start",
+    "after-normal-run",
+    "after-history",
+    "after-export",
+    "after-abort-request",
+    "after-abort-terminal",
+    "after-shutdown",
+    "after-inventory",
+    "after-destroy",
+  ]);
+  for (const line of stderr.split(/\n/u)) {
+    const match = line.match(/^launcher-debug-stage:([a-z-]+)$/u);
+    if (match?.[1] !== undefined && allowed.has(match[1])) process.stderr.write(`${line}\n`);
+  }
 }
 
 function lastJson(stdout: string): unknown {

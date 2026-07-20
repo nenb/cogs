@@ -59,7 +59,7 @@ test("launcher smoke evidence renderer is applicability-aware and non-release", 
 test("launcher command descriptor uses exact node and minimal env with deadline", () => {
   const descriptor = launcherCommandDescriptor("insecure-container", "state", 600000);
   assert.equal(descriptor.executable, process.execPath);
-  assert.deepEqual(descriptor.env, { HOME: process.cwd(), NO_COLOR: "1" });
+  assert.deepEqual(descriptor.env, { HOME: process.cwd(), NO_COLOR: "1", COGS_LAUNCHER_DEBUG_STAGE: "1" });
   assert.equal(descriptor.cwd, process.cwd());
   assert.equal(descriptor.timeoutMs, 720000);
   assert.equal(descriptor.killGraceMs, 120000);
@@ -75,6 +75,28 @@ test("launcher command descriptor uses exact node and minimal env with deadline"
     "600000",
   ]);
   assert.equal(descriptor.args[0], join(process.cwd(), "node_modules", "tsx", "dist", "cli.mjs"));
+});
+
+test("launcher debug smoke markers are fixed and allowlisted on debug branch only", async () => {
+  const operations = await readFile(join(process.cwd(), "dev/launcher/operations.ts"), "utf8");
+  const harness = await readFile(join(process.cwd(), "scripts/run-launcher-smoke-evidence.ts"), "utf8");
+  for (const stage of [
+    "after-create",
+    "after-start",
+    "after-normal-run",
+    "after-history",
+    "after-export",
+    "after-abort-request",
+    "after-abort-terminal",
+    "after-shutdown",
+    "after-inventory",
+    "after-destroy",
+  ]) {
+    assert.match(operations, new RegExp(`debugSmokeStage\\("${stage}"\\)`));
+    assert.match(harness, new RegExp(`"${stage}"`));
+  }
+  assert.match(operations, /process\.env\.COGS_LAUNCHER_DEBUG_STAGE === "1"/);
+  assert.match(harness, /line\.match\(\/\^launcher-debug-stage:\(\[a-z-\]\+\)\$\/u\)/);
 });
 
 test("launcher smoke metadata validator requires exact cleanup and abort terminal without getters", () => {
