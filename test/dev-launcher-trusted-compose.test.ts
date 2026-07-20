@@ -16,7 +16,15 @@ const emptyManifest = "sha256:726176e9bdb7524fbe935a0235fcbe5d509bf44592b9571421
 
 test("trusted composition factory starts in exact order, proves ready, and closes in reverse", async () => {
   const fixture = await makeFixture();
+  const previousDebug = process.env.COGS_LAUNCHER_DEBUG_STAGE;
+  const previousWrite = process.stderr.write;
+  const markers: string[] = [];
   try {
+    process.env.COGS_LAUNCHER_DEBUG_STAGE = "1";
+    process.stderr.write = ((chunk: string | Uint8Array) => {
+      markers.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write;
     const calls: string[] = [];
     const captured: Record<string, unknown> = {};
     let runtime: WorkerProvisionalRuntime;
@@ -49,6 +57,28 @@ test("trusted composition factory starts in exact order, proves ready, and close
     assert.equal(calls.includes("pi"), true);
     assert.equal(calls.includes("api-listen"), true);
     assert.equal(calls.includes("fetch-ready"), true);
+    const markerText = markers.join("");
+    for (const marker of [
+      "trusted-pi",
+      "trusted-post-pi-cooperative",
+      "trusted-post-pi-admission",
+      "trusted-api-token-callback",
+      "trusted-create-api-return",
+      "trusted-require-api",
+      "trusted-before-listen",
+      "trusted-listen-returned",
+      "trusted-ready-proof-request",
+      "trusted-ready-proof-response",
+      "trusted-ready-proof-status",
+      "trusted-ready-proof-shape",
+      "trusted-ready-proof-accepted",
+      "trusted-api-ready",
+      "trusted-lifecycle-postcheck",
+      "trusted-pi-postcheck",
+      "trusted-admission-postcheck",
+    ]) {
+      assert.match(markerText, new RegExp(`launcher-debug-stage:${marker}\\n`));
+    }
     const launch = captured.launch as {
       user_id: string;
       session_id: string;
@@ -81,6 +111,9 @@ test("trusted composition factory starts in exact order, proves ready, and close
       "ssh-key-close",
     ]);
   } finally {
+    process.stderr.write = previousWrite;
+    if (previousDebug === undefined) delete process.env.COGS_LAUNCHER_DEBUG_STAGE;
+    else process.env.COGS_LAUNCHER_DEBUG_STAGE = previousDebug;
     await rm(fixture.root, { recursive: true, force: true });
   }
 });

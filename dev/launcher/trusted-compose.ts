@@ -463,28 +463,39 @@ export async function createTrustedWorkerRuntime(
     await verifyPi(pi, roots.sessionRoot, skills);
     debugStartupStage("trusted-pi");
     checkCooperative(startup.signal, deadlineAt);
+    debugStartupStage("trusted-post-pi-cooperative");
     await checkAdmission();
+    debugStartupStage("trusted-post-pi-admission");
 
     let api: ApiServer | undefined;
-    api = apiToken.withToken((token) =>
-      s.createApi({
+    api = apiToken.withToken((token) => {
+      debugStartupStage("trusted-api-token-callback");
+      const created = s.createApi({
         lifecycle,
         session: pi as CogsPiSessionPorts,
         history: pi as CogsPiSessionPorts,
         exporter: pi as CogsPiSessionPorts,
         bearerToken: token,
         sessionId: `launcher-${state.stateId}`,
-      }),
-    );
+      });
+      debugStartupStage("trusted-create-api-return");
+      return created;
+    });
     cleanups.push({ name: "api", close: (options) => api?.close(options) });
     requireApi(api);
+    debugStartupStage("trusted-require-api");
+    debugStartupStage("trusted-before-listen");
     const listened = await api.listen(0, "127.0.0.1", { signal: startup.signal, deadlineAt });
+    debugStartupStage("trusted-listen-returned");
     const apiPort = port(listened.port);
     await readyProof(s.fetch, apiPort, apiToken, startup.signal);
     debugStartupStage("trusted-api-ready");
     if (!lifecycle.ready) fail();
+    debugStartupStage("trusted-lifecycle-postcheck");
     await verifyPi(pi, roots.sessionRoot, skills);
+    debugStartupStage("trusted-pi-postcheck");
     await checkAdmission();
+    debugStartupStage("trusted-admission-postcheck");
     if (cleanupRequested || outerCleanup !== undefined || aborted(startup.signal) || !lifecycle.ready) fail();
 
     cleanupStartupTimer(startupTimer, callerSignal, onAbort);
@@ -700,6 +711,7 @@ async function readyProof(
   token: ApiTokenHolder,
   signal: AbortSignal,
 ): Promise<void> {
+  debugStartupStage("trusted-ready-proof-request");
   const response = await token.withToken((bearer) =>
     fetchImpl(`http://127.0.0.1:${portValue}/health/ready`, {
       method: "GET",
@@ -708,18 +720,19 @@ async function readyProof(
       signal,
     }),
   );
+  debugStartupStage("trusted-ready-proof-response");
   try {
-    if (
-      response.status !== 200 ||
-      response.redirected ||
-      !/^application\/json(?:\s*;|$)/iu.test(response.headers.get("content-type") ?? "")
-    )
+    if (response.status !== 200) fail();
+    debugStartupStage("trusted-ready-proof-status");
+    if (response.redirected || !/^application\/json(?:\s*;|$)/iu.test(response.headers.get("content-type") ?? ""))
       fail();
+    debugStartupStage("trusted-ready-proof-shape");
     const text = await boundedResponseText(response, signal, 128);
     const parsed = JSON.parse(text) as unknown;
     const record = plainRecord(parsed);
     const keys = Object.keys(record).sort();
     if (keys.join(",") !== "closed,ready" || record.ready !== true || record.closed !== false) fail();
+    debugStartupStage("trusted-ready-proof-accepted");
   } finally {
     await response.body?.cancel().catch(() => undefined);
   }
