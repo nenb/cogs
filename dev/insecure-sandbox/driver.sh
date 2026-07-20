@@ -70,6 +70,21 @@ bounded() {
   "$timeout_command" --signal=TERM --kill-after=5s "$duration" "$@"
 }
 
+mode_octal() {
+  stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1"
+}
+
+verify_tsx() {
+  require realpath
+  tsx_bin="$repo/node_modules/.bin/tsx"
+  tsx_real=$(realpath "$tsx_bin")
+  [[ "$tsx_real" == "$repo/node_modules/tsx/dist/cli.mjs" ]] || fail 'repo-local tsx executable is not canonical'
+  [[ -f "$tsx_real" && -x "$tsx_real" ]] || fail 'repo-local tsx executable is missing or not executable'
+  local mode
+  mode=$(mode_octal "$tsx_real")
+  [[ "$mode" =~ ^[0-7]+$ && $((8#$mode & 0022)) -eq 0 ]] || fail 'repo-local tsx executable is writable by group or other'
+}
+
 acquire_lock() {
   local parent
   parent=$(dirname "$lock")
@@ -343,6 +358,7 @@ verify() {
   require ssh-keygen
   require sftp
   require cmp
+  verify_tsx
   validate_metadata
   [[ -s "$state/container" && -s "$state/volume" && -s "$state/port" ]] || fail 'insecure-container state is absent or incomplete'
   port=$(<"$state/port")
@@ -353,7 +369,7 @@ verify() {
   local observed transfer="$state/control/sftp-control.txt" roundtrip="$state/control/sftp-roundtrip.txt" host_fingerprint
   host_fingerprint=$(ssh-keygen -q -lf "$state/input/ssh_host_ed25519_key.pub" -E sha256 | awk 'NR == 1 {print $2}')
   [[ "$host_fingerprint" =~ ^SHA256:[A-Za-z0-9+/]{43}$ ]] || fail 'insecure-container host fingerprint is invalid'
-  bounded 20s npx --no-install tsx "$repo/dev/insecure-sandbox/ssh-adapter-smoke.ts" \
+  bounded 20s "$tsx_bin" "$repo/dev/insecure-sandbox/ssh-adapter-smoke.ts" \
     "127.0.0.1:$port" "$state/control/client_ed25519_key" "$host_fingerprint" \
     >/dev/null || fail 'production SSH adapter smoke failed'
 

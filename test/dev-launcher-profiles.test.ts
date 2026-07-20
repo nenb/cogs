@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { lstat, rm } from "node:fs/promises";
+import { lstat, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { test } from "node:test";
@@ -176,6 +176,14 @@ test("real profile descriptor uses driver-compatible direct .cogs-dev state and 
   } finally {
     await cleanup(launcherState);
   }
+});
+
+test("insecure driver invokes exact repo-local tsx without npm exec", async () => {
+  const text = await readFile(join(process.cwd(), "dev/insecure-sandbox/driver.sh"), "utf8");
+  assert(!/\bnpx\b|\bnpm\b/.test(text));
+  assert.match(text, /tsx_bin="\$repo\/node_modules\/\.bin\/tsx"/);
+  assert.match(text, /tsx_real=\$\(realpath "\$tsx_bin"\)/);
+  assert.match(text, /"\$tsx_bin" "\$repo\/dev\/insecure-sandbox\/ssh-adapter-smoke\.ts"/);
 });
 
 test("profile descriptor maps status to verify and never exposes arbitrary executable", async () => {
