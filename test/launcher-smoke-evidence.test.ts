@@ -145,28 +145,60 @@ test("launcher debug smoke markers are fixed and allowlisted on debug branch onl
     "skill-prep-preparer-returned",
     "sftp-shared-root-lstat",
     "sftp-shared-canonical-realpath",
+    "sftp-shared-write-signal-active",
+    "sftp-shared-write-signal-aborted",
+    "sftp-shared-write-open-returned",
+    "sftp-shared-write-bytes-written",
+    "sftp-shared-write-fstat-accepted",
+    "sftp-shared-write-fsync-returned",
+    "sftp-shared-write-close-returned",
+    "sftp-shared-write-chmod-returned",
+    "sftp-shared-write-reread-accepted",
     "sftp-shared-final-missing",
     "sftp-shared-staging-mkdir",
     "sftp-shared-metadata-write-read",
     "sftp-shared-rename",
     "sftp-shared-final-mode-read",
     "sftp-shared-return",
+    "sftp-shared-cleanup-entry",
+    "sftp-shared-cleanup-complete",
     "sftp-user-root-lstat",
     "sftp-user-canonical-realpath",
+    "sftp-user-write-signal-active",
+    "sftp-user-write-signal-aborted",
+    "sftp-user-write-open-returned",
+    "sftp-user-write-bytes-written",
+    "sftp-user-write-fstat-accepted",
+    "sftp-user-write-fsync-returned",
+    "sftp-user-write-close-returned",
+    "sftp-user-write-chmod-returned",
+    "sftp-user-write-reread-accepted",
     "sftp-user-final-missing",
     "sftp-user-staging-mkdir",
     "sftp-user-metadata-write-read",
     "sftp-user-rename",
     "sftp-user-final-mode-read",
     "sftp-user-return",
+    "sftp-user-cleanup-entry",
+    "sftp-user-cleanup-complete",
   ]) {
-    const sftpSuffix = stage.replace(/^sftp-(shared|user)-/u, "");
-    const sourcePattern = stage.startsWith("sftp-")
-      ? new RegExp(`debugSftpStage\\(\\\`sftp-\\$\\{scope\\}-${sftpSuffix}\\\`\\)`)
-      : new RegExp(
+    if (stage.startsWith("sftp-")) {
+      const suffix = stage.replace(/^sftp-(shared|user)-/u, "");
+      if (suffix === "write-signal-active" || suffix === "write-signal-aborted") {
+        assert.match(sourceText, /signal\.aborted \? "signal-aborted" : "signal-active"/);
+      } else if (suffix === "cleanup-entry" || suffix === "cleanup-complete") {
+        assert.match(sourceText, new RegExp(`sftp-\\$\\{cleanupScope\\}-${suffix}`));
+      } else {
+        assert.match(sourceText, new RegExp(`sftp-\\$\\{scope\\}-${suffix}`));
+      }
+    } else {
+      assert.match(
+        sourceText,
+        new RegExp(
           `debugStartupStage\\("${stage}"\\)|debugSmokeStage\\("${stage}"\\)|debugPiStage\\("${stage}"\\)|debugSkillPrepStage\\("${stage}"\\)`,
-        );
-    assert.match(sourceText, sourcePattern);
+        ),
+      );
+    }
     assert.match(harness, new RegExp(`"${stage}"`));
   }
   assert.match(sourceText, /process\.env\.COGS_LAUNCHER_DEBUG_STAGE === "1"/);

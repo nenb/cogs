@@ -77,7 +77,7 @@ export async function materializeCogsSkillBundleToGuest(input: {
     await mkdirTracked(sftp, staging, 0o700, dirs, signal);
     debugSftpStage(`sftp-${scope}-staging-mkdir`);
     dirs.pop();
-    await writeOne(sftp, `${staging}/.cogs-skills-bundle.json`, bundle.copyBytes(), 0o444, files, signal);
+    await writeOne(sftp, `${staging}/.cogs-skills-bundle.json`, bundle.copyBytes(), 0o444, files, signal, scope);
     const stagedBundle = await readFile(sftp, `${staging}/.cogs-skills-bundle.json`, bundle.byteLength, signal);
     debugSftpStage(`sftp-${scope}-metadata-write-read`);
     const verified = verifyCogsSkillBundle(stagedBundle);
@@ -88,7 +88,7 @@ export async function materializeCogsSkillBundleToGuest(input: {
       await ensureParentDirs(sftp, staging, file.path, dirs, signal);
       const bytes = bundle.copyFile(file.path);
       if (bytes.length !== file.size) throw new CogsSkillSftpMaterializerError();
-      await writeOne(sftp, target, bytes, file.executable ? 0o555 : 0o444, files, signal);
+      await writeOne(sftp, target, bytes, file.executable ? 0o555 : 0o444, files, signal, scope);
       materialized.push(
         Object.freeze({ bundlePath: file.path, guestPath: `${finalRoot}/${file.path}`, bytes: bytes.length }),
       );
@@ -121,6 +121,9 @@ export async function materializeCogsSkillBundleToGuest(input: {
     debugSftpStage(`sftp-${scope}-return`);
     return result;
   } catch (error) {
+    const cleanupScope =
+      input.guestRoot === "/shared/skills" ? "shared" : input.guestRoot === "/user/skills" ? "user" : undefined;
+    if (cleanupScope !== undefined) debugSftpStage(`sftp-${cleanupScope}-cleanup-entry`);
     if (sftp !== undefined && (finalPublished ? finalRoot : staging) !== "") {
       const cleanupSignal = new AbortController().signal;
       await cleanupKnown(
@@ -133,6 +136,7 @@ export async function materializeCogsSkillBundleToGuest(input: {
         throw new CogsSkillSftpMaterializerError();
       });
     }
+    if (cleanupScope !== undefined) debugSftpStage(`sftp-${cleanupScope}-cleanup-complete`);
     if (error instanceof CogsSkillSftpMaterializerError) throw error;
     throw new CogsSkillSftpMaterializerError();
   }
@@ -205,8 +209,11 @@ async function writeOne(
   mode: 0o444 | 0o555,
   files: string[],
   signal: AbortSignal,
+  scope: "shared" | "user",
 ) {
+  debugSftpStage(`sftp-${scope}-write-${signal.aborted ? "signal-aborted" : "signal-active"}`);
   const handle = await sftp.open(path, "wx", signal);
+  debugSftpStage(`sftp-${scope}-write-open-returned`);
   files.push(path);
   let closed = false;
   try {
@@ -217,14 +224,20 @@ async function writeOne(
       await sftp.write(handle, bytes, offset, length, offset, signal);
       offset += length;
     }
+    debugSftpStage(`sftp-${scope}-write-bytes-written`);
     const stat = await sftp.fstat(handle, signal);
     if (stat.type !== "file" || stat.size !== bytes.length) throw new CogsSkillSftpMaterializerError();
+    debugSftpStage(`sftp-${scope}-write-fstat-accepted`);
     await sftp.fsync(handle, signal);
+    debugSftpStage(`sftp-${scope}-write-fsync-returned`);
     await sftp.closeHandle(handle, signal);
     closed = true;
+    debugSftpStage(`sftp-${scope}-write-close-returned`);
     await sftp.setMode(path, mode, signal);
+    debugSftpStage(`sftp-${scope}-write-chmod-returned`);
     const reread = await readFile(sftp, path, bytes.length, signal);
     if (!reread.equals(bytes)) throw new CogsSkillSftpMaterializerError();
+    debugSftpStage(`sftp-${scope}-write-reread-accepted`);
   } finally {
     if (!closed) await sftp.closeHandle(handle, signal).catch(() => undefined);
   }

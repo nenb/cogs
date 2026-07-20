@@ -148,6 +148,53 @@ test("SFTP skill materializer writes digest subtree, exact bundle, readonly mode
   }
 });
 
+test("SFTP materializer debug markers are fixed scoped write milestones", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "cogs-sftp-skills-markers-"));
+  const previous = process.env.COGS_LAUNCHER_DEBUG_STAGE;
+  const previousWrite = process.stderr.write;
+  const lines: string[] = [];
+  try {
+    await mkdir(path.join(root, "user/skills"), { recursive: true });
+    process.env.COGS_LAUNCHER_DEBUG_STAGE = "1";
+    process.stderr.write = ((chunk: string | Uint8Array) => {
+      lines.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write;
+    const bundle = buildCogsSkillBundle({
+      entries: [
+        { path: "SKILL.md", executable: false, content: Buffer.from("---\nname: u\ndescription: u\n---\n# U\n") },
+      ],
+    });
+    const sftp = new LocalSftp(root);
+    const materialized = await materializeCogsSkillBundleToGuest({
+      sftp,
+      bundle,
+      guestRoot: "/user/skills",
+      signal: new AbortController().signal,
+    });
+    await cleanupCogsSkillMaterializedBundle(sftp, materialized, new AbortController().signal);
+    const markers = lines.join("").trim().split(/\n/u);
+    for (const marker of [
+      "launcher-debug-stage:sftp-user-write-signal-active",
+      "launcher-debug-stage:sftp-user-write-open-returned",
+      "launcher-debug-stage:sftp-user-write-bytes-written",
+      "launcher-debug-stage:sftp-user-write-fstat-accepted",
+      "launcher-debug-stage:sftp-user-write-fsync-returned",
+      "launcher-debug-stage:sftp-user-write-close-returned",
+      "launcher-debug-stage:sftp-user-write-chmod-returned",
+      "launcher-debug-stage:sftp-user-write-reread-accepted",
+    ]) {
+      assert(markers.includes(marker));
+    }
+    assert(!markers.some((marker) => marker.includes("/user/skills") || marker.includes(bundle.digest)));
+  } finally {
+    process.stderr.write = previousWrite;
+    if (previous === undefined) delete process.env.COGS_LAUNCHER_DEBUG_STAGE;
+    else process.env.COGS_LAUNCHER_DEBUG_STAGE = previous;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("SFTP materializer rejects forged handles, reserved paths, fsync/read faults, and cleans tracked paths", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "cogs-sftp-skills-fault-"));
   try {
