@@ -409,6 +409,7 @@ export async function createAuthenticatedCogsPiSession({
   let preparedResources: CogsPreparedSkills;
   try {
     const rawPrepared = await prepareSkills({ launch, ...(signal === undefined ? {} : { signal }) });
+    debugPiStage("pi-prepare-raw-returned");
     try {
       preparedResources = validatePreparedResources(rawPrepared);
       debugPiStage("pi-skills-prepared");

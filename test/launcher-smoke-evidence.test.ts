@@ -83,6 +83,8 @@ test("launcher debug smoke markers are fixed and allowlisted on debug branch onl
       readFile(join(process.cwd(), "dev/launcher", file), "utf8"),
     ),
     readFile(join(process.cwd(), "src/pi/session.ts"), "utf8"),
+    readFile(join(process.cwd(), "src/skills/session-preparer.ts"), "utf8"),
+    readFile(join(process.cwd(), "src/skills/sftp-materializer.ts"), "utf8"),
   ]);
   const sourceText = markerSources.join("\n");
   const harness = await readFile(join(process.cwd(), "scripts/run-launcher-smoke-evidence.ts"), "utf8");
@@ -116,6 +118,7 @@ test("launcher debug smoke markers are fixed and allowlisted on debug branch onl
     "trusted-api-ready",
     "pi-launch-validated",
     "pi-skill-preparer-validated",
+    "pi-prepare-raw-returned",
     "pi-skills-prepared",
     "pi-credential-resolved",
     "pi-create-cogs-pi-return",
@@ -127,15 +130,48 @@ test("launcher debug smoke markers are fixed and allowlisted on debug branch onl
     "pi-export",
     "pi-session-created",
     "pi-ports-return",
+    "skill-prep-callback-entered",
+    "skill-prep-entered",
+    "skill-prep-shared-resolved",
+    "skill-prep-private-snapshot",
+    "skill-prep-host-temp-done",
+    "skill-prep-bundles-loaded",
+    "skill-prep-before-withsftp",
+    "skill-prep-inside-withsftp",
+    "skill-prep-shared-materialized",
+    "skill-prep-user-materialized",
+    "skill-prep-agents-read",
+    "skill-prep-withsftp-returned",
+    "skill-prep-preparer-returned",
+    "sftp-shared-root-lstat",
+    "sftp-shared-canonical-realpath",
+    "sftp-shared-final-missing",
+    "sftp-shared-staging-mkdir",
+    "sftp-shared-metadata-write-read",
+    "sftp-shared-rename",
+    "sftp-shared-final-mode-read",
+    "sftp-shared-return",
+    "sftp-user-root-lstat",
+    "sftp-user-canonical-realpath",
+    "sftp-user-final-missing",
+    "sftp-user-staging-mkdir",
+    "sftp-user-metadata-write-read",
+    "sftp-user-rename",
+    "sftp-user-final-mode-read",
+    "sftp-user-return",
   ]) {
-    assert.match(
-      sourceText,
-      new RegExp(`debugStartupStage\\("${stage}"\\)|debugSmokeStage\\("${stage}"\\)|debugPiStage\\("${stage}"\\)`),
-    );
+    const sftpSuffix = stage.replace(/^sftp-(shared|user)-/u, "");
+    const sourcePattern = stage.startsWith("sftp-")
+      ? new RegExp(`debugSftpStage\\(\\\`sftp-\\$\\{scope\\}-${sftpSuffix}\\\`\\)`)
+      : new RegExp(
+          `debugStartupStage\\("${stage}"\\)|debugSmokeStage\\("${stage}"\\)|debugPiStage\\("${stage}"\\)|debugSkillPrepStage\\("${stage}"\\)`,
+        );
+    assert.match(sourceText, sourcePattern);
     assert.match(harness, new RegExp(`"${stage}"`));
   }
   assert.match(sourceText, /process\.env\.COGS_LAUNCHER_DEBUG_STAGE === "1"/);
   assert.match(harness, /line\.match\(\/\^launcher-debug-stage:\(\[a-z-\]\+\)\$\/u\)/);
+  assert.match(sourceText, /\(\?:worker\|child\|trusted\|supervisor\|pi\|skill-prep\|sftp\)-\[a-z-\]\+/);
 });
 
 test("launcher smoke metadata validator requires exact cleanup and abort terminal without getters", () => {

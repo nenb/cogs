@@ -59,10 +59,15 @@ export function createCogsSkillSessionPreparer(options: {
   const frozen = snapshotOptions(options);
   return Object.freeze({
     prepare: (input: { readonly launch: LaunchConfig; readonly signal?: AbortSignal }) => {
+      debugSkillPrepStage("skill-prep-callback-entered");
       const request = snapshotPrepareInput(input);
       return prepareSkills(frozen, request.launch, request.signal);
     },
   });
+}
+
+function debugSkillPrepStage(stage: string): void {
+  if (process.env.COGS_LAUNCHER_DEBUG_STAGE === "1") process.stderr.write(`launcher-debug-stage:${stage}\n`);
 }
 
 const MAX_SKILLS = 32;
@@ -86,19 +91,23 @@ async function prepareSkills(
   let userRemote: CogsSftpMaterializedBundle | undefined;
   let linked: ReturnType<typeof linkedSignal> | undefined;
   try {
+    debugSkillPrepStage("skill-prep-entered");
     validateOptionalSignal(signal);
     linked = linkedSignal(signal);
     throwIfAborted(linked.signal);
     const sharedRevision = asDigest(launch.skills.shared_revision);
     const userRevision = asDigest(launch.skills.user_revision);
     const shared = await options.sharedResolver.resolve({ manifestDigest: sharedRevision, signal: linked.signal });
+    debugSkillPrepStage("skill-prep-shared-resolved");
     const user = await options.privateStore.snapshot({
       userId: launch.user_id,
       expectedDigest: userRevision,
       signal: linked.signal,
     });
+    debugSkillPrepStage("skill-prep-private-snapshot");
     const sharedTemp = await materializeHostTemp("shared", shared.bundle, temps);
     const userTemp = await materializeHostTemp("user", user.bundle, temps);
+    debugSkillPrepStage("skill-prep-host-temp-done");
     const sharedGuestSubtree = derivedGuestSubtree(launch.skills.shared_path, shared.bundle.digest);
     const userGuestSubtree = derivedGuestSubtree(launch.skills.user_path, user.bundle.digest);
     const candidateBudget = { count: 0, bytes: 0 };
@@ -106,6 +115,7 @@ async function prepareSkills(
       await loadOneBundle("shared", shared.bundle, sharedTemp, sharedGuestSubtree, sharedRevision, candidateBudget),
       await loadOneBundle("user", user.bundle, userTemp, userGuestSubtree, userRevision, candidateBudget),
     ];
+    debugSkillPrepStage("skill-prep-bundles-loaded");
     const names = new Set<string>();
     const piSkills: Skill[] = [];
     const promptSkills: unknown[] = [];
@@ -124,17 +134,20 @@ async function prepareSkills(
       options.operationTimeoutMs === undefined
         ? { signal: linked.signal }
         : { signal: linked.signal, operationTimeoutMs: options.operationTimeoutMs };
+    debugSkillPrepStage("skill-prep-before-withsftp");
     const sftpResult: {
       sharedMat: CogsSftpMaterializedBundle;
       userMat: CogsSftpMaterializedBundle;
       agents: { status: CogsAgentsStatus; file?: CogsAgentsFile };
     } = await options.ssh.withSftp(sftpInput, async (sftp, opSignal) => {
+      debugSkillPrepStage("skill-prep-inside-withsftp");
       const sharedMat = await materializeCogsSkillBundleToGuest({
         sftp,
         bundle: shared.bundle,
         guestRoot: launch.skills.shared_path,
         signal: opSignal,
       });
+      debugSkillPrepStage("skill-prep-shared-materialized");
       if (sharedMat.guestSubtree !== sharedGuestSubtree) throw new CogsSkillPreparationError();
       sharedRemote = sharedMat;
       const userMat = await materializeCogsSkillBundleToGuest({
@@ -143,11 +156,14 @@ async function prepareSkills(
         guestRoot: launch.skills.user_path,
         signal: opSignal,
       });
+      debugSkillPrepStage("skill-prep-user-materialized");
       if (userMat.guestSubtree !== userGuestSubtree) throw new CogsSkillPreparationError();
       userRemote = userMat;
       const agents = await readAgentsFile(sftp, opSignal);
+      debugSkillPrepStage("skill-prep-agents-read");
       return { sharedMat, userMat, agents };
     });
+    debugSkillPrepStage("skill-prep-withsftp-returned");
     sharedRemote = sftpResult.sharedMat;
     userRemote = sftpResult.userMat;
     const sharedMaterialized = sharedRemote;
@@ -167,6 +183,7 @@ async function prepareSkills(
         disposeRemote(options.ssh, [sharedMaterialized, userMaterialized], options.operationTimeoutMs),
       ),
     });
+    debugSkillPrepStage("skill-prep-preparer-returned");
     return prepared;
   } catch (error) {
     await cleanupTemps(temps).catch(() => undefined);

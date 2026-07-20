@@ -37,6 +37,14 @@ type RequiredSftp = CogsSftpPort & {
   rmdir: (path: string, signal: AbortSignal) => Promise<void>;
 };
 
+function debugSftpStage(stage: string): void {
+  if (process.env.COGS_LAUNCHER_DEBUG_STAGE === "1") process.stderr.write(`launcher-debug-stage:${stage}\n`);
+}
+
+function sftpScope(root: "/shared/skills" | "/user/skills"): "shared" | "user" {
+  return root === "/shared/skills" ? "shared" : "user";
+}
+
 export async function materializeCogsSkillBundleToGuest(input: {
   readonly sftp: CogsSftpPort;
   readonly bundle: CogsSkillBundleHandle;
@@ -54,6 +62,7 @@ export async function materializeCogsSkillBundleToGuest(input: {
     sftp = requireDirectorySftp(input.sftp);
     signal = validateSignal(input.signal);
     const root = validateGuestRoot(input.guestRoot);
+    const scope = sftpScope(root);
     const bundle = verifyCogsSkillBundle(input.bundle.copyBytes());
     if (bundle.digest !== input.bundle.digest) throw new CogsSkillSftpMaterializerError();
     if (bundle.files.some((file) => file.path === ".cogs-skills-bundle.json"))
@@ -62,12 +71,15 @@ export async function materializeCogsSkillBundleToGuest(input: {
     staging = `${root}/.cogs-stage-${digestHex}-${randomBytes(12).toString("hex")}`;
     finalRoot = `${root}/${digestHex}`;
     throwIfAborted(signal);
-    await assertRootDirectory(sftp, root, signal);
+    await assertRootDirectory(sftp, root, signal, scope);
     await assertMissing(sftp, finalRoot, signal);
+    debugSftpStage(`sftp-${scope}-final-missing`);
     await mkdirTracked(sftp, staging, 0o700, dirs, signal);
+    debugSftpStage(`sftp-${scope}-staging-mkdir`);
     dirs.pop();
     await writeOne(sftp, `${staging}/.cogs-skills-bundle.json`, bundle.copyBytes(), 0o444, files, signal);
     const stagedBundle = await readFile(sftp, `${staging}/.cogs-skills-bundle.json`, bundle.byteLength, signal);
+    debugSftpStage(`sftp-${scope}-metadata-write-read`);
     const verified = verifyCogsSkillBundle(stagedBundle);
     if (verified.digest !== bundle.digest) throw new CogsSkillSftpMaterializerError();
     const materialized: { bundlePath: string; guestPath: string; bytes: number }[] = [];
@@ -83,11 +95,13 @@ export async function materializeCogsSkillBundleToGuest(input: {
     }
     await assertMissing(sftp, finalRoot, signal);
     await sftp.posixRename(staging, finalRoot, signal);
+    debugSftpStage(`sftp-${scope}-rename`);
     finalPublished = true;
     await sftp.setMode(finalRoot, 0o555, signal);
     for (const dir of [...dirs].reverse()) await sftp.setMode(dir.replace(staging, finalRoot), 0o555, signal);
     const finalBundle = await readFile(sftp, `${finalRoot}/.cogs-skills-bundle.json`, bundle.byteLength, signal);
     if (verifyCogsSkillBundle(finalBundle).digest !== bundle.digest) throw new CogsSkillSftpMaterializerError();
+    debugSftpStage(`sftp-${scope}-final-mode-read`);
     const result = Object.freeze({
       digest: bundle.digest,
       guestRoot: root,
@@ -104,6 +118,7 @@ export async function materializeCogsSkillBundleToGuest(input: {
       dirs: Object.freeze(dirs.map((p) => p.replace(staging, finalRoot))),
       cleaned: false,
     });
+    debugSftpStage(`sftp-${scope}-return`);
     return result;
   } catch (error) {
     if (sftp !== undefined && (finalPublished ? finalRoot : staging) !== "") {
@@ -129,9 +144,16 @@ function requireDirectorySftp(port: CogsSftpPort): RequiredSftp {
   return port as RequiredSftp;
 }
 
-async function assertRootDirectory(sftp: CogsSftpPort, path: string, signal: AbortSignal): Promise<void> {
+async function assertRootDirectory(
+  sftp: CogsSftpPort,
+  path: string,
+  signal: AbortSignal,
+  scope: "shared" | "user",
+): Promise<void> {
   await assertDirectory(sftp, path, signal);
+  debugSftpStage(`sftp-${scope}-root-lstat`);
   if ((await sftp.realpath(path, signal)) !== path) throw new CogsSkillSftpMaterializerError();
+  debugSftpStage(`sftp-${scope}-canonical-realpath`);
 }
 
 async function assertDirectory(sftp: CogsSftpPort, path: string, signal: AbortSignal): Promise<void> {
