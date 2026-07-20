@@ -341,7 +341,8 @@ function json(
       }
       return out;
     }
-    if (Object.getPrototypeOf(value) !== Object.prototype || Object.getOwnPropertySymbols(value).length !== 0)
+    const proto = Object.getPrototypeOf(value);
+    if ((proto !== Object.prototype && proto !== null) || Object.getOwnPropertySymbols(value).length !== 0)
       throw new Error("invalid launcher export");
     const descriptors = Object.getOwnPropertyDescriptors(value);
     const keys = Reflect.ownKeys(descriptors);

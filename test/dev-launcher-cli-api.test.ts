@@ -131,11 +131,21 @@ test("export writer preserves sensitive response and refuses overwrite/private-r
   try {
     await chmod(dir, 0o700);
     const root = await realpath(dir);
-    const out = await writeSensitiveExport(root, "out.json", {
-      version: "cogs.export-response/v1alpha1",
-      sensitive: true,
-      bundle: { token: "kept-local", nested: [1, { ok: true }] },
-    });
+    const nested = Object.freeze(Object.assign(Object.create(null) as Record<string, unknown>, { ok: true }));
+    const bundle = Object.freeze(
+      Object.assign(Object.create(null) as Record<string, unknown>, {
+        token: "kept-local",
+        nested: Object.freeze([1, nested]),
+      }),
+    );
+    const response = Object.freeze(
+      Object.assign(Object.create(null) as Record<string, unknown>, {
+        version: "cogs.export-response/v1alpha1",
+        sensitive: true,
+        bundle,
+      }),
+    );
+    const out = await writeSensitiveExport(root, "out.json", response);
     assert.match(await readFile(out, "utf8"), /kept-local/);
     await assert.rejects(() =>
       writeSensitiveExport(root, "out.json", { version: "cogs.export-response/v1alpha1", sensitive: true, bundle: {} }),
@@ -149,6 +159,25 @@ test("export writer preserves sensitive response and refuses overwrite/private-r
       enumerable: true,
     });
     await assert.rejects(() => writeSensitiveExport(root, "getter.json", hostile));
+    const custom = Object.create({ inherited: true }) as Record<string, unknown>;
+    custom.version = "cogs.export-response/v1alpha1";
+    custom.sensitive = true;
+    custom.bundle = {};
+    await assert.rejects(() => writeSensitiveExport(root, "custom.json", custom));
+    await assert.rejects(() =>
+      writeSensitiveExport(root, "date.json", {
+        version: "cogs.export-response/v1alpha1",
+        sensitive: true,
+        bundle: new Date(),
+      }),
+    );
+    await assert.rejects(() =>
+      writeSensitiveExport(root, "map.json", {
+        version: "cogs.export-response/v1alpha1",
+        sensitive: true,
+        bundle: new Map(),
+      }),
+    );
     await chmod(dir, 0o755);
     await assert.rejects(() => writeSensitiveExport(root, "x.json", { sensitive: true }));
   } finally {
