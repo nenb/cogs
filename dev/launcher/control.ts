@@ -227,7 +227,6 @@ export async function promoteWorkerReady(
   ready: unknown,
   seams?: Partial<ControlSeams>,
 ): Promise<ReadyWorkerDescriptor> {
-  let manifestPromoted = false;
   try {
     const capturedSeams = captureSeams(seams);
     const parsedReady = parseChildReady(ready);
@@ -239,7 +238,6 @@ export async function promoteWorkerReady(
     const manifest = await readManifest(state);
     if (manifest.phase !== "sandbox-ready") fail();
     await writePhase(state, manifest, "worker-ready");
-    manifestPromoted = true;
     const next = descriptorFor(state, {
       stateId: current.stateId,
       sourceRevision: current.sourceRevision,
@@ -257,7 +255,6 @@ export async function promoteWorkerReady(
     await replaceWorkerDescriptor(state, current, next, capturedSeams);
     return next as ReadyWorkerDescriptor;
   } catch {
-    if (manifestPromoted) throw generic();
     throw generic();
   }
 }
@@ -656,9 +653,9 @@ function exactOpen(value: unknown): Record<string, unknown> {
     fail();
   if (Object.getOwnPropertySymbols(value).length !== 0) fail();
   const descriptors = Object.getOwnPropertyDescriptors(value);
-  const output: Record<string, unknown> = {};
+  const output: Record<string, unknown> = Object.create(null);
   for (const key of Reflect.ownKeys(descriptors)) {
-    if (typeof key !== "string") fail();
+    if (typeof key !== "string" || key === "__proto__" || key === "constructor" || key === "prototype") fail();
     const descriptor = descriptors[key];
     if (!descriptor?.enumerable || !Object.hasOwn(descriptor, "value")) fail();
     output[key] = descriptor.value;

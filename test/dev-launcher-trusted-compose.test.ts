@@ -100,6 +100,57 @@ test("trusted composition factory starts in exact order, proves ready, and close
   }
 });
 
+test("trusted composition attempts all registered cleanup despite close failures", async () => {
+  const fixture = await makeFixture();
+  try {
+    const calls: string[] = [];
+    const base = seams(calls, {});
+    const wrapped = Object.freeze({
+      ...base,
+      createTelemetry: (...args: Parameters<NonNullable<typeof base.createTelemetry>>) => {
+        const telemetry = (base.createTelemetry as NonNullable<typeof base.createTelemetry>)(...args);
+        return Object.freeze({
+          ...telemetry,
+          close: async () => {
+            calls.push("bad-telemetry-close");
+            throw new Error("close failed");
+          },
+        }) as never;
+      },
+      createApi: (...args: Parameters<NonNullable<typeof base.createApi>>) => {
+        const api = (base.createApi as NonNullable<typeof base.createApi>)(...args);
+        return Object.freeze({
+          ...api,
+          close: async () => {
+            calls.push("bad-api-close");
+            throw new Error("close failed");
+          },
+        }) as never;
+      },
+    });
+    const runtime = await createTrustedWorkerRuntime(fixture.state, new AbortController().signal, wrapped);
+    calls.length = 0;
+    await assert.rejects(runtime.close(), /launcher trusted composition failed/);
+    assert.deepEqual(calls, [
+      "bad-api-close",
+      "pi-dispose",
+      "lifecycle-shutdown",
+      "egress-close",
+      "ssh-shutdown",
+      "bad-telemetry-close",
+      "fixture-close",
+      "otlp-reset",
+      "otlp-close",
+      "openbao-close",
+      "api-token-dispose",
+      "skills-close",
+      "ssh-key-close",
+    ]);
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
 test("trusted composition fails closed before OpenBao when preflight fails", async () => {
   const fixture = await makeFixture();
   try {
