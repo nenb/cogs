@@ -1075,8 +1075,11 @@ test("AWS apply and cleanup scripts preserve manual and tag-bound gates", () => 
   const installer = read("scripts/install-opentofu.sh");
   assert.match(apply, /COGS_AWS_APPLY_APPROVED/);
   assert.match(apply, /apply-one-cpu-instance/);
+  assert.match(apply, /tofu=\$\("\$root\/scripts\/install-opentofu\.sh"\)/);
   assert.match(apply, /destroy -auto-approve/);
+  assert.match(plan, /tofu=\$\("\$root\/scripts\/install-opentofu\.sh"\)/);
   assert.match(plan, /-var-file=\.state\/campaign\.auto\.tfvars\.json/);
+  assert.match(destroy, /tofu=\$\("\$root\/scripts\/install-opentofu\.sh"\)/);
   assert.match(destroy, /-var-file=\.state\/campaign\.auto\.tfvars\.json/);
   assert.match(inventory, /stage-2-nested-virtualization/);
   assert.match(inventory, /total == 0/);

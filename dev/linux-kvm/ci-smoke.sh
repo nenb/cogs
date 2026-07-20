@@ -43,30 +43,30 @@ trap cleanup EXIT INT TERM HUP
 "$driver" create >/dev/null
 "$driver" verify >/dev/null
 host_boot=$(cat /proc/sys/kernel/random/boot_id)
-guest_boot=$($driver ssh cat /proc/sys/kernel/random/boot_id)
+guest_boot=$("$driver" ssh cat /proc/sys/kernel/random/boot_id)
 [[ -n "$guest_boot" && "$guest_boot" != "$host_boot" ]]
-$driver ssh 'iptables -F 2>/dev/null || true; ip6tables -F 2>/dev/null || true; nft flush ruleset 2>/dev/null || true'
-! $driver ssh 'timeout 2 bash -c "</dev/tcp/192.0.2.1/22"' >/dev/null 2>&1
-! $driver ssh 'timeout 2 bash -c "</dev/tcp/1.1.1.1/443"' >/dev/null 2>&1
-! $driver ssh 'ip route show default | grep -q .'
+"$driver" ssh 'iptables -F 2>/dev/null || true; ip6tables -F 2>/dev/null || true; nft flush ruleset 2>/dev/null || true'
+! "$driver" ssh 'timeout 2 bash -c "</dev/tcp/192.0.2.1/22"' >/dev/null 2>&1
+! "$driver" ssh 'timeout 2 bash -c "</dev/tcp/1.1.1.1/443"' >/dev/null 2>&1
+! "$driver" ssh 'ip route show default | grep -q .'
 
 socat TCP-LISTEN:18080,bind=0.0.0.0,reuseaddr,fork EXEC:/bin/true &
 socat_pid=$!
 trap 'kill "$socat_pid" 2>/dev/null || true; cleanup' EXIT INT TERM HUP
 for _ in $(seq 1 20); do
-  $driver ssh 'timeout 1 bash -c "</dev/tcp/192.0.2.1/18080"' >/dev/null 2>&1 && break
+  "$driver" ssh 'timeout 1 bash -c "</dev/tcp/192.0.2.1/18080"' >/dev/null 2>&1 && break
   sleep 0.1
 done
-$driver ssh 'timeout 2 bash -c "</dev/tcp/192.0.2.1/18080"'
+"$driver" ssh 'timeout 2 bash -c "</dev/tcp/192.0.2.1/18080"'
 kill "$socat_pid" 2>/dev/null || true
 wait "$socat_pid" 2>/dev/null || true
 trap cleanup EXIT INT TERM HUP
 
 first_boot=$guest_boot
 "$driver" reset >/dev/null
-second_boot=$($driver ssh cat /proc/sys/kernel/random/boot_id)
+second_boot=$("$driver" ssh cat /proc/sys/kernel/random/boot_id)
 [[ -n "$second_boot" && "$second_boot" != "$first_boot" && "$second_boot" != "$host_boot" ]]
-$driver ssh grep -qx reset-persistent /workspace/reset-marker
+"$driver" ssh grep -qx reset-persistent /workspace/reset-marker
 "$driver" destroy >/dev/null
 write_report pass 'Active KVM booted a distinct root guest; host TAP policy survived guest-firewall removal, denied non-proxy traffic, allowed only the proxy port, and reset preserved the workspace on a fresh boot.'
 passed=true

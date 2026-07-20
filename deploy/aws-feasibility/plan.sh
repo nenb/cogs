@@ -2,7 +2,7 @@
 set -euo pipefail
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 directory="$root/deploy/aws-feasibility"
-tofu=$($root/scripts/install-opentofu.sh)
+tofu=$("$root/scripts/install-opentofu.sh")
 : "${COGS_AWS_BUDGET_EMAIL:?set COGS_AWS_BUDGET_EMAIL to the owner budget-alert address}"
 [[ $(git -C "$root" status --porcelain) == "" ]] || { printf 'refusing to plan from a dirty tree\n' >&2; exit 1; }
 revision=$(git -C "$root" rev-parse HEAD)

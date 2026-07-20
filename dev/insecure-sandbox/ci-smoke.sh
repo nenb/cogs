@@ -9,6 +9,7 @@ state=${COGS_INSECURE_STATE_DIR:-"$repo/.cogs-dev/insecure-sandbox"}
 started=$(date -u +%Y-%m-%dT%H:%M:%S.%6NZ)
 started_ms=$(date +%s%3N)
 status=0
+# Keep -e disabled: this smoke accumulates guarded step failures into one redacted evidence report.
 verify_passed=false
 cleanup_pending=true
 diagnostics=()

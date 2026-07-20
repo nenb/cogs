@@ -2,7 +2,7 @@
 set -euo pipefail
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 directory="$root/deploy/aws-feasibility"
-tofu=$($root/scripts/install-opentofu.sh)
+tofu=$("$root/scripts/install-opentofu.sh")
 : "${AWS_PROFILE:=nebula}"
 export AWS_PROFILE AWS_REGION=us-east-1
 [[ ${COGS_AWS_APPLY_APPROVED:-} == "apply-one-cpu-instance" ]] || {
