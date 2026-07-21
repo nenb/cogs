@@ -332,7 +332,7 @@ async function tailTerminal(client: ApiClient, correlation: string, signal?: Abo
 }
 
 function egressProof(terminal: Awaited<ReturnType<typeof tailTerminalEvent>>) {
-  const proof = exactPlain(exactPlain(terminal.payload).s3_09_proof);
+  const proof = exactJsonRecord(exactJsonRecord(terminal.payload).s3_09_proof);
   const keys = Object.keys(proof).sort().join(",");
   if (
     proof.version !== "cogs.launcher.s3-09-proof/v1alpha1" ||
@@ -391,13 +391,7 @@ async function tailTerminalEventFromLive(
       kind = enumValue(data.kind, eventKinds);
     if (data.correlation_id === correlation && kind === "git_mapping") gitMapping = true;
     if (terminalKinds.has(kind) && data.correlation_id === correlation)
-      return deepFreeze({
-        kind,
-        lastEventId: last,
-        eventCount: count,
-        payload: data.payload,
-        gitMapping,
-      });
+      return Object.freeze({ kind, lastEventId: last, eventCount: count, payload: data.payload, gitMapping });
     return undefined;
   };
   const first = await live.first;
@@ -434,13 +428,7 @@ async function tailTerminalEvent(
         kind = enumValue(data.kind, eventKinds);
       if (data.correlation_id === correlation && kind === "git_mapping") gitMapping = true;
       if (terminalKinds.has(kind) && data.correlation_id === correlation)
-        return deepFreeze({
-          kind,
-          lastEventId: last,
-          eventCount: count,
-          payload: data.payload,
-          gitMapping,
-        });
+        return Object.freeze({ kind, lastEventId: last, eventCount: count, payload: data.payload, gitMapping });
     }
     if (!saw) throw new Error("launcher operation failed");
   }
@@ -819,9 +807,25 @@ function exactPlain(input: unknown): Record<string, unknown> {
     Object.getOwnPropertySymbols(input).length !== 0
   )
     throw new Error("launcher operation failed");
+  return exactRecord(input);
+}
+function exactJsonRecord(input: unknown): Record<string, unknown> {
+  if (!input || typeof input !== "object" || Object.getPrototypeOf(input) !== null) failOp();
+  return exactRecord(input);
+}
+function exactRecord(input: object): Record<string, unknown> {
+  if (Object.getOwnPropertySymbols(input).length !== 0) failOp();
   const out: Record<string, unknown> = {};
   for (const [key, d] of Object.entries(Object.getOwnPropertyDescriptors(input))) {
-    if (!d || !("value" in d) || d.enumerable !== true) throw new Error("launcher operation failed");
+    if (
+      key === "__proto__" ||
+      key === "prototype" ||
+      key === "constructor" ||
+      !d ||
+      !("value" in d) ||
+      d.enumerable !== true
+    )
+      failOp();
     out[key] = d.value;
   }
   return out;

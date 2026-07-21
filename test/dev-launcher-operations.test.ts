@@ -93,6 +93,11 @@ async function ready(state: LauncherState) {
 }
 
 const identity = Object.freeze((pid: number) => (pid === 111 ? parentDigest : childDigest));
+function jsonRecord(values: Record<string, unknown> = {}): Record<string, unknown> {
+  const out = Object.create(null) as Record<string, unknown>;
+  for (const [key, value] of Object.entries(values)) out[key] = value;
+  return Object.freeze(out);
+}
 function client(calls: string[]): ApiClient {
   let aborted = false,
     correlation = "corr-1";
@@ -406,8 +411,8 @@ test("s3-09 runs fixed integrated KVM scenario with metadata-only proof", async 
               data: Object.freeze({
                 kind: "run_settled",
                 correlation_id: "s309-2",
-                payload: Object.freeze({
-                  s3_09_proof: Object.freeze({
+                payload: jsonRecord({
+                  s3_09_proof: jsonRecord({
                     version: "cogs.launcher.s3-09-proof/v1alpha1",
                     scenario: "s3-09",
                     profile: "linux-kvm",
@@ -487,8 +492,8 @@ test("s3-09 proof path rejects live proof at or below replay capacity 32", async
               data: Object.freeze({
                 kind: "run_settled",
                 correlation_id: "s309-short-2",
-                payload: Object.freeze({
-                  s3_09_proof: Object.freeze({
+                payload: jsonRecord({
+                  s3_09_proof: jsonRecord({
                     version: "cogs.launcher.s3-09-proof/v1alpha1",
                     scenario: "s3-09",
                     profile: "linux-kvm",
@@ -580,58 +585,40 @@ test("s3-09 proof path fails closed on missing terminal payload", async () => {
 });
 
 test("s3-09 proof path maps fixed egress reasons and rejects hostile proof shapes", async () => {
-  for (const [proof, expected] of [
-    [
-      Object.freeze({
-        version: "cogs.launcher.s3-09-proof/v1alpha1",
-        scenario: "s3-09",
-        profile: "linux-kvm",
-        outcome: "fail",
-        reason: "generation",
-      }),
-      "s3-egress-state",
-    ],
-    [
-      Object.freeze({
-        version: "cogs.launcher.s3-09-proof/v1alpha1",
-        scenario: "s3-09",
-        profile: "linux-kvm",
-        outcome: "fail",
-        reason: "credential-count",
-      }),
-      "s3-egress-credential",
-    ],
-    [
-      Object.freeze({
-        version: "cogs.launcher.s3-09-proof/v1alpha1",
-        scenario: "s3-09",
-        profile: "linux-kvm",
-        outcome: "fail",
-        reason: "denied-forwarded",
-      }),
-      "s3-egress-denied",
-    ],
-    [
-      Object.freeze({
-        version: "cogs.launcher.s3-09-proof/v1alpha1",
-        scenario: "s3-09",
-        profile: "linux-kvm",
-        outcome: "fail",
-        reason: "total-count",
-      }),
-      "s3-egress-total",
-    ],
-    [
-      Object.freeze({
-        version: "cogs.launcher.s3-09-proof/v1alpha1",
-        scenario: "s3-09",
-        profile: "linux-kvm",
-        outcome: "fail",
-        reason: "total-count",
-        extra: true,
-      }),
-      "s3-egress-shape",
-    ],
+  const failProof = (reason: string) =>
+    jsonRecord({
+      version: "cogs.launcher.s3-09-proof/v1alpha1",
+      scenario: "s3-09",
+      profile: "linux-kvm",
+      outcome: "fail",
+      reason,
+    });
+  const getterProof = Object.create(null) as Record<string, unknown>;
+  Object.defineProperty(getterProof, "version", {
+    enumerable: true,
+    get() {
+      throw new Error("getter must not run");
+    },
+  });
+  const symbolProof = Object.create(null) as Record<string | symbol, unknown>;
+  symbolProof.version = "cogs.launcher.s3-09-proof/v1alpha1";
+  symbolProof.scenario = "s3-09";
+  symbolProof.profile = "linux-kvm";
+  symbolProof.outcome = "fail";
+  symbolProof.reason = "generation";
+  symbolProof[Symbol("proof")] = true;
+  for (const [label, proof, expected] of [
+    ["fixture-not-ready", failProof("fixture-not-ready"), "s3-egress-state"],
+    ["generation", failProof("generation"), "s3-egress-state"],
+    ["inflight", failProof("inflight"), "s3-egress-state"],
+    ["credential-count", failProof("credential-count"), "s3-egress-credential"],
+    ["denied-forwarded", failProof("denied-forwarded"), "s3-egress-denied"],
+    ["total-count", failProof("total-count"), "s3-egress-total"],
+    ["extra", jsonRecord({ ...failProof("total-count"), extra: true }), "s3-egress-shape"],
+    ["plain", Object.freeze({ ...failProof("generation") }), "s3-egress-shape"],
+    ["getter", Object.freeze(getterProof), "s3-egress-shape"],
+    ["symbol", Object.freeze(symbolProof), "s3-egress-shape"],
+    ["array", Object.freeze([]), "s3-egress-shape"],
   ] as const) {
     const { dir, ctx } = await roots();
     let runCount = 0;
@@ -675,7 +662,7 @@ test("s3-09 proof path maps fixed egress reasons and rejects hostile proof shape
                       data: Object.freeze({
                         kind: "run_settled",
                         correlation_id: "s309-egress-2",
-                        payload: Object.freeze({ s3_09_proof: proof }),
+                        payload: jsonRecord({ s3_09_proof: proof }),
                       }),
                     }) as ApiEvent;
                   }) as ApiClient["events"],
@@ -684,7 +671,7 @@ test("s3-09 proof path maps fixed egress reasons and rejects hostile proof shape
             }),
           ),
         (error) => {
-          assert.equal(s309StageFromExitCode(s309StageExitCode(error)), expected);
+          assert.equal(s309StageFromExitCode(s309StageExitCode(error)), expected, label);
           return true;
         },
       );
