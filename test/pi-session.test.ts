@@ -463,6 +463,7 @@ test("Pi session adapter constructs locked runtime-only SDK components, only Cog
 
       const sessionFile = adapter.sessionFile();
       assert.ok(sessionFile);
+      assert.equal((await lstat(sessionFile)).mode & 0o777, 0o600);
       const jsonl = await readFile(sessionFile, "utf8");
       assert.equal(jsonl.includes(secret), false, "runtime API keys must not be persisted in Pi JSONL");
       const reopened = SessionManager.open(sessionFile, dirname(sessionFile));
@@ -486,6 +487,97 @@ test("Pi session adapter constructs locked runtime-only SDK components, only Cog
     if (priorMarker === undefined) delete process.env.COGS_CANARY_MARKER;
     else process.env.COGS_CANARY_MARKER = priorMarker;
     await rm(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test("Pi session secures owned native resume JSONL before opening", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "cogs-pi-secure-resume-"));
+  try {
+    const cwd = resolve(root, "workspace");
+    const agentDir = resolve(root, "agent");
+    const sessionRoot = resolve(root, "sessions");
+    const sessionId = "secure-resume-session";
+    const sessionDir = resolve(sessionRoot, sessionId);
+    const resumeFile = "resume.jsonl";
+    const sessionFile = resolve(sessionDir, resumeFile);
+    await mkdir(cwd, { recursive: true });
+    await mkdir(agentDir, { recursive: true });
+    await mkdir(sessionDir, { recursive: true });
+    await writeFile(
+      sessionFile,
+      `${JSON.stringify({ type: "session", version: 3, id: "native-resume", timestamp: new Date(0).toISOString(), cwd })}\n`,
+      { mode: 0o644 },
+    );
+    await chmod(sessionFile, 0o644);
+    const adapter = await createCogsPiSession(
+      withDefaults({
+        cwd,
+        agentDir,
+        sessionRoot,
+        sessionId,
+        resumeFile,
+        model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+        apiKey: "aaaaaaaa",
+        toolPorts: fakePorts([]),
+        streamFn: textStream(),
+      }),
+    );
+    try {
+      assert.equal(adapter.sessionFile(), await realpath(sessionFile));
+      assert.equal((await lstat(sessionFile)).mode & 0o777, 0o600);
+      assert.equal(SessionManager.open(sessionFile, sessionDir, cwd).getHeader()?.id, "native-resume");
+    } finally {
+      await adapter.dispose();
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Pi session rejects linked native resume JSONL before opening", async () => {
+  for (const kind of ["symlink", "hardlink"] as const) {
+    const root = await mkdtemp(resolve(tmpdir(), `cogs-pi-linked-resume-${kind}-`));
+    try {
+      const cwd = resolve(root, "workspace");
+      const agentDir = resolve(root, "agent");
+      const sessionRoot = resolve(root, "sessions");
+      const sessionId = "linked-resume-session";
+      const sessionDir = resolve(sessionRoot, sessionId);
+      const resumeFile = "resume.jsonl";
+      const sessionFile = resolve(sessionDir, resumeFile);
+      await mkdir(cwd, { recursive: true });
+      await mkdir(agentDir, { recursive: true });
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(
+        sessionFile,
+        `${JSON.stringify({ type: "session", version: 3, id: "native-resume", timestamp: new Date(0).toISOString(), cwd })}\n`,
+        { mode: 0o600 },
+      );
+      if (kind === "symlink") {
+        await unlink(sessionFile);
+        await symlink(resolve(root, "outside.jsonl"), sessionFile);
+      } else {
+        await link(sessionFile, resolve(sessionDir, "other.jsonl"));
+      }
+      await assert.rejects(
+        createCogsPiSession(
+          withDefaults({
+            cwd,
+            agentDir,
+            sessionRoot,
+            sessionId,
+            resumeFile,
+            model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+            apiKey: "aaaaaaaa",
+            toolPorts: fakePorts([]),
+            streamFn: textStream(),
+          }),
+        ),
+        /invalid session file/,
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   }
 });
 
@@ -1740,7 +1832,7 @@ test("Pi session queue, abort, timeout, publication failure, and containment fai
           toolPorts: fakePorts(calls),
         }),
       ),
-      /invalid resume file/,
+      /invalid/,
     );
 
     const linkDir = resolve(temporaryRoot, "linkdir");
@@ -4064,7 +4156,7 @@ async function makeTrackedOwnedRuntime(
   await mkdir(sessionDir, { mode: 0o700 });
   await tracker.adoptSessionDir(sessionDir);
   const file = resolve(sessionDir, "owned.jsonl");
-  await writeFile(file, '{"type":"session"}\n', { mode: 0o644, flag: "wx" });
+  await writeFile(file, '{"type":"session"}\n', { mode: 0o600, flag: "wx" });
   await tracker.recordSessionFile(await ownedMarkerForTest(file, "file"));
   return { agentDir, sessionRoot, sessionDir, file, tracker };
 }
@@ -4245,7 +4337,7 @@ test("Pi owned runtime failure hook rejects before broad deletion and after join
     await mkdir(sessionDir, { mode: 0o700 });
     await tracker.adoptSessionDir(sessionDir);
     const file = resolve(sessionDir, "owned.jsonl");
-    await writeFile(file, '{"type":"session"}\n', { mode: 0o644, flag: "wx" });
+    await writeFile(file, '{"type":"session"}\n', { mode: 0o600, flag: "wx" });
     await tracker.recordSessionFile(await ownedMarkerForTest(file, "file"));
     return { root, sessionRoot, sessionDir, file, tracker, seen };
   };
@@ -4467,7 +4559,7 @@ test("Pi owned runtime explicitly adopts contained resumed JSONL and cleans it a
     const ownedResume = resolve(ownedSessionDir, resumeName);
     await cp(sourceFile, ownedResume);
     await chmod(ownedResume, 0o644);
-    const adoptedIdentity = await ownedMarkerForTest(ownedResume, "file");
+    const preSecureIdentity = await ownedMarkerForTest(ownedResume, "file");
 
     const ownedCwd = resolve(ownedRoot, "workspace");
     await mkdir(ownedCwd, { recursive: true });
@@ -4486,7 +4578,10 @@ test("Pi owned runtime explicitly adopts contained resumed JSONL and cleans it a
       }),
     );
     assert.equal(resumed.sessionFile(), ownedResume);
-    assert.deepEqual(await ownedMarkerForTest(ownedResume, "file"), adoptedIdentity);
+    const securedIdentity = await ownedMarkerForTest(ownedResume, "file");
+    assert.equal(securedIdentity.dev, preSecureIdentity.dev);
+    assert.equal(securedIdentity.ino, preSecureIdentity.ino);
+    assert.equal(securedIdentity.mode, 0o600);
     assert.ok((await resumed.entries({ after: undefined, limit: 30 })).entries.length >= sourceEntries);
     await resumed.input({
       requestId: "resume-owned",
@@ -4541,9 +4636,10 @@ test("Pi owned runtime rejects hostile explicit resumed JSONL adoption before mu
         await unlink(resumePath);
         await symlink(sentinel, resumePath);
       } else if (hazard === "hardlink") await link(resumePath, resolve(sessionDir, "linked.jsonl"));
-      else if (hazard === "wrong-mode") await chmod(resumePath, 0o600);
+      else if (hazard === "wrong-mode") await chmod(resumePath, 0o666);
 
       if (hazard === "replace") {
+        await chmod(resumePath, 0o600);
         const tracker = createCogsPiOwnedRuntimeTracker({
           agentDir,
           sessionRoot,
@@ -4553,7 +4649,7 @@ test("Pi owned runtime rejects hostile explicit resumed JSONL adoption before mu
         });
         await tracker.begin();
         await unlink(resumePath);
-        await writeFile(resumePath, '{"type":"session"}\n', { mode: 0o644, flag: "wx" });
+        await writeFile(resumePath, '{"type":"session"}\n', { mode: 0o600, flag: "wx" });
         await assert.rejects(
           tracker.recordSessionFile(await ownedMarkerForTest(resumePath, "file")),
           /owned runtime cleanup failed/i,

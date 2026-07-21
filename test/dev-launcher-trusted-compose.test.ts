@@ -1,11 +1,15 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { chmod, link, mkdir, mkdtemp, realpath, rm, rmdir, symlink, unlink, writeFile } from "node:fs/promises";
+import { chmod, link, lstat, mkdir, mkdtemp, realpath, rm, rmdir, symlink, unlink, writeFile } from "node:fs/promises";
 import { createServer as createHttpServer } from "node:http";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import {
+  createDeterministicLauncherStream,
+  LAUNCHER_DETERMINISTIC_NORMAL_PROMPT,
+} from "../dev/launcher/deterministic-stream.ts";
 import type { LauncherState } from "../dev/launcher/state.ts";
 import {
   createRawExportOpeningVerifier,
@@ -14,6 +18,7 @@ import {
   type TrustedCompositionSeams,
 } from "../dev/launcher/trusted-compose.ts";
 import type { WorkerProvisionalRuntime } from "../dev/launcher/worker-process.ts";
+import { type CogsToolPorts, createCogsPiSession } from "../src/pi/session.ts";
 import { createCogsJsonlHistoryStore } from "../src/session/jsonl-history.ts";
 import { createCogsLocalExporter } from "../src/session/local-export.ts";
 import type { CogsPreparedSkillMetadata } from "../src/skills/session-preparer.ts";
@@ -1707,6 +1712,60 @@ test("raw export opening verifier accepts real local exporter bundle", async () 
   }
 });
 
+test("raw export opening verifier accepts real hardened Pi session export", async () => {
+  const root = await mkdtemp(join(tmpdir(), "cogs-real-pi-raw-open-"));
+  try {
+    const realRoot = await realpath(root);
+    const cwd = join(realRoot, "workspace");
+    const agentDir = join(realRoot, "agent");
+    const sessionRoot = join(realRoot, "sessions");
+    const sessionId = "cogs-session-1";
+    await mkdir(cwd, { recursive: true, mode: 0o700 });
+    await mkdir(agentDir, { recursive: true, mode: 0o700 });
+    await mkdir(sessionRoot, { recursive: true, mode: 0o700 });
+    const pi = await createCogsPiSession({
+      cwd,
+      agentDir,
+      sessionRoot,
+      sessionId,
+      userId: "user-1",
+      model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+      apiKey: "aaaaaaaa",
+      toolPorts: rawVerifierToolPorts,
+      streamFn: createDeterministicLauncherStream(Object.freeze({ now: () => 1780000000000 })),
+      preparedResources: realPreparedResources(),
+      emit: () => true,
+      onFatal: () => undefined,
+    });
+    try {
+      await pi.input({
+        requestId: "run",
+        correlationId: "corr",
+        kind: "prompt",
+        content: LAUNCHER_DETERMINISTIC_NORMAL_PROMPT,
+      });
+      for (let i = 0; i < 500 && (await pi.state()).runState !== "settled"; i += 1)
+        await new Promise((resolveTimer) => setTimeout(resolveTimer, 10));
+      assert.equal((await pi.state()).runState, "settled");
+      const live = pi.sessionFile();
+      assert.ok(live);
+      assert.equal((await lstat(live)).mode & 0o777, 0o600);
+      const result = await createRawExportOpeningVerifier(pi, sessionRoot, sessionId).createExport({
+        requestId: "req",
+        correlationId: "corr",
+      });
+      assert.equal(
+        (result as { raw_export_opening: { current_session: boolean } }).raw_export_opening.current_session,
+        true,
+      );
+    } finally {
+      await pi.dispose();
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("raw export opening verifier uses pinned Pi and emits only fixed metadata", async () => {
   const root = await mkdtemp(join(tmpdir(), "cogs-raw-open-"));
   try {
@@ -1917,6 +1976,23 @@ function exporter(
   }) as never;
 }
 
+const rawVerifierToolPorts: CogsToolPorts = Object.freeze({
+  read: async (input: Parameters<CogsToolPorts["read"]>[0]) => ({ path: input.path, content: "" }),
+  write: async (input: Parameters<CogsToolPorts["write"]>[0]) => ({ bytes: input.content.length }),
+  edit: async () => ({ ok: true }),
+  bash: async () => ({ exit_code: 0, stdout: "cogs-launcher-deterministic" }),
+});
+
+function realPreparedResources() {
+  return Object.freeze({
+    piSkills: Object.freeze([]),
+    eagerTrustedSkillPrompt: "",
+    agentsFiles: Object.freeze([]),
+    metadata: realExportSkillMetadata(),
+    dispose: async () => undefined,
+  });
+}
+
 function realExportSkillMetadata(): CogsPreparedSkillMetadata {
   const digest = (seed: string) => `sha256:${createHash("sha256").update(seed).digest("hex")}` as const;
   return Object.freeze({
@@ -1925,17 +2001,17 @@ function realExportSkillMetadata(): CogsPreparedSkillMetadata {
       revision: digest("shared"),
       bundleDigest: digest("shared-bundle"),
       guestRoot: "/shared/skills",
-      guestSubtree: "/shared/skills/x",
+      guestSubtree: `/shared/skills/${digest("shared-bundle").slice(7)}`,
       fileCount: 1,
       byteCount: 1,
       readOnlyEnforced: false,
     }),
     user: Object.freeze({
       scope: "user",
-      revision: digest("user"),
+      revision: digest("user-bundle"),
       bundleDigest: digest("user-bundle"),
       guestRoot: "/user/skills",
-      guestSubtree: "/user/skills/y",
+      guestSubtree: `/user/skills/${digest("user-bundle").slice(7)}`,
       fileCount: 1,
       byteCount: 1,
       readOnlyEnforced: false,
