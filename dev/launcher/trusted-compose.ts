@@ -567,37 +567,40 @@ function nonProducingDependencies(
 }
 
 export function createS309ProofEmitter(fixture: LocalFixture, profile: LauncherProfile): (event: ApiEvent) => ApiEvent {
-  let setupSettled = false;
+  if (profile !== "linux-kvm") return (event) => event;
+  const baseline = fixture.snapshot();
+  const baseCounts = baseline.counts;
+  const baseCredential = baseCounts["GET /credential 200"] ?? 0;
+  const baseDenied = baseCounts["GET /allowed 200"] ?? 0;
+  const baseTotal = Object.values(baseCounts).reduce((sum, value) => sum + value, 0);
   return (event) => {
-    if (profile !== "linux-kvm" || event.kind !== "run_settled") return event;
-    if (!setupSettled) {
-      fixture.reset();
-      setupSettled = true;
-      return event;
-    }
+    if (event.kind !== "run_settled") return event;
     const snap = fixture.snapshot();
     const counts = snap.counts;
-    const credential = counts["GET /credential 200"] ?? 0;
-    const deniedForwarded = counts["GET /allowed 200"] ?? 0;
-    const total = Object.values(counts).reduce((sum, value) => sum + value, 0);
+    const credential = (counts["GET /credential 200"] ?? 0) - baseCredential;
+    const deniedForwarded = (counts["GET /allowed 200"] ?? 0) - baseDenied;
+    const total = Object.values(counts).reduce((sum, value) => sum + value, 0) - baseTotal;
+    const snapTotal = snap.total - baseline.total;
     const reason =
       snap.ready !== true
         ? "fixture-not-ready"
-        : snap.generation !== 1
+        : snap.generation !== baseline.generation
           ? "generation"
           : snap.inflight !== 0
             ? "inflight"
-            : credential < 1
-              ? total === 0 && snap.total === 0
-                ? "credential-count"
-                : "total-count"
-              : credential > 1
-                ? "total-count"
-                : deniedForwarded !== 0
-                  ? "denied-forwarded"
-                  : total !== 1 || snap.total !== 1
-                    ? "total-count"
-                    : undefined;
+            : credential < 0 || deniedForwarded < 0 || total < 0 || snapTotal < 0
+              ? "total-count"
+              : credential < 1
+                ? total === 0 && snapTotal === 0
+                  ? "credential-count"
+                  : "total-count"
+                : credential > 1
+                  ? "total-count"
+                  : deniedForwarded !== 0
+                    ? "denied-forwarded"
+                    : total !== 1 || snapTotal !== 1
+                      ? "total-count"
+                      : undefined;
     return Object.freeze({
       ...event,
       payload: Object.freeze({
@@ -613,7 +616,7 @@ export function createS309ProofEmitter(fixture: LocalFixture, profile: LauncherP
                 denied_route_absent: true,
                 total_exact_expected: true,
                 fixture_ready: true,
-                fixture_baseline_reset: true,
+                fixture_baseline_captured: true,
               }
             : { outcome: "fail", reason }),
         }),

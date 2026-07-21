@@ -1602,21 +1602,22 @@ function fakeLifecycle(options: Parameters<TrustedCompositionSeams["createLifecy
   });
 }
 
-test("s3-09 trusted proof channel resets baseline and binds to serialized second settled run", () => {
-  let generation = 0;
+test("s3-09 trusted proof channel captures baseline and binds to serialized settled deltas", () => {
+  let resetCalls = 0;
+  let total = 5;
   let counts: Readonly<Record<string, number>> = Object.freeze({ "GET /credential 200": 4, "GET /health 200": 1 });
   const fixture = {
-    snapshot: () => Object.freeze({ ready: true, port: 1234, generation, inflight: 0, total: 1, counts }),
+    snapshot: () => Object.freeze({ ready: true, port: 1234, generation: 0, inflight: 0, total, counts }),
     reset: () => {
-      generation += 1;
-      counts = Object.freeze({ "GET /credential 200": 1 });
+      resetCalls += 1;
     },
   } as never;
   const emit = createS309ProofEmitter(fixture, "linux-kvm");
   const event = (correlation_id: string) =>
     Object.freeze({ kind: "run_settled", correlation_id, payload: Object.freeze({}) }) as never;
-  assert.equal("s3_09_proof" in emit(event("setup")).payload, false);
-  assert.equal(generation, 1);
+  assert.equal((emit(event("setup")).payload.s3_09_proof as { reason: string }).reason, "credential-count");
+  counts = Object.freeze({ "GET /credential 200": 5, "GET /health 200": 1 });
+  total = 6;
   const settled = emit(event("scenario"));
   assert.deepEqual(settled.payload.s3_09_proof, {
     version: "cogs.launcher.s3-09-proof/v1alpha1",
@@ -1627,46 +1628,64 @@ test("s3-09 trusted proof channel resets baseline and binds to serialized second
     denied_route_absent: true,
     total_exact_expected: true,
     fixture_ready: true,
-    fixture_baseline_reset: true,
+    fixture_baseline_captured: true,
   });
+  assert.equal(resetCalls, 0);
   assert.equal(JSON.stringify(settled).includes("1234"), false);
   assert.equal(JSON.stringify(settled).includes("credential"), true);
 });
 
 test("s3-09 trusted proof channel emits fixed failure reasons without metadata leakage", () => {
-  const make = (snapshot: Record<string, unknown>, reset = () => undefined) =>
-    ({ snapshot: () => Object.freeze(snapshot), reset }) as never;
+  const make = (baseline: Record<string, unknown>, snapshot: Record<string, unknown> = baseline) => {
+    let current = baseline;
+    return {
+      fixture: { snapshot: () => Object.freeze(current), reset: () => assert.fail("reset called") } as never,
+      advance: () => (current = snapshot),
+    };
+  };
   const settled = Object.freeze({
     kind: "run_settled",
     correlation_id: "scenario",
     payload: Object.freeze({}),
   }) as never;
-  const prime = (emit: ReturnType<typeof createS309ProofEmitter>) => {
-    emit(Object.freeze({ kind: "run_settled", correlation_id: "setup", payload: Object.freeze({}) }) as never);
-  };
-  for (const [snapshot, reason] of [
+  for (const [baseline, snapshot, reason] of [
     [
+      { ready: true, generation: 1, inflight: 0, total: 0, counts: Object.freeze({}) },
       { ready: false, generation: 1, inflight: 0, total: 1, counts: Object.freeze({ "GET /credential 200": 1 }) },
       "fixture-not-ready",
     ],
     [
-      { ready: true, generation: 0, inflight: 0, total: 1, counts: Object.freeze({ "GET /credential 200": 1 }) },
+      { ready: true, generation: 1, inflight: 0, total: 0, counts: Object.freeze({}) },
+      { ready: true, generation: 2, inflight: 0, total: 1, counts: Object.freeze({ "GET /credential 200": 1 }) },
       "generation",
     ],
     [
+      { ready: true, generation: 1, inflight: 0, total: 0, counts: Object.freeze({}) },
       { ready: true, generation: 1, inflight: 1, total: 1, counts: Object.freeze({ "GET /credential 200": 1 }) },
       "inflight",
     ],
-    [{ ready: true, generation: 1, inflight: 0, total: 0, counts: Object.freeze({}) }, "credential-count"],
     [
+      { ready: true, generation: 1, inflight: 0, total: 1, counts: Object.freeze({ "GET /credential 200": 1 }) },
+      { ready: true, generation: 1, inflight: 0, total: 0, counts: Object.freeze({}) },
+      "total-count",
+    ],
+    [
+      { ready: true, generation: 1, inflight: 0, total: 0, counts: Object.freeze({}) },
+      { ready: true, generation: 1, inflight: 0, total: 0, counts: Object.freeze({}) },
+      "credential-count",
+    ],
+    [
+      { ready: true, generation: 1, inflight: 0, total: 0, counts: Object.freeze({}) },
       { ready: true, generation: 1, inflight: 0, total: 1, counts: Object.freeze({ "GET /credential 401": 1 }) },
       "total-count",
     ],
     [
+      { ready: true, generation: 1, inflight: 0, total: 0, counts: Object.freeze({}) },
       { ready: true, generation: 1, inflight: 0, total: 2, counts: Object.freeze({ "GET /credential 200": 2 }) },
       "total-count",
     ],
     [
+      { ready: true, generation: 1, inflight: 0, total: 0, counts: Object.freeze({}) },
       {
         ready: true,
         generation: 1,
@@ -1677,12 +1696,14 @@ test("s3-09 trusted proof channel emits fixed failure reasons without metadata l
       "denied-forwarded",
     ],
     [
+      { ready: true, generation: 1, inflight: 0, total: 0, counts: Object.freeze({}) },
       { ready: true, generation: 1, inflight: 0, total: 2, counts: Object.freeze({ "GET /credential 200": 1 }) },
       "total-count",
     ],
   ] as const) {
-    const emit = createS309ProofEmitter(make(snapshot), "linux-kvm");
-    prime(emit);
+    const { fixture, advance } = make(baseline, snapshot);
+    const emit = createS309ProofEmitter(fixture, "linux-kvm");
+    advance();
     assert.deepEqual(emit(settled).payload.s3_09_proof, {
       version: "cogs.launcher.s3-09-proof/v1alpha1",
       scenario: "s3-09",
@@ -1691,37 +1712,30 @@ test("s3-09 trusted proof channel emits fixed failure reasons without metadata l
       reason,
     });
   }
-  const zeroCredential = createS309ProofEmitter(
-    make({ ready: true, generation: 1, inflight: 0, total: 0, counts: Object.freeze({}) }),
-    "linux-kvm",
+  const zeroCredential = make({ ready: true, generation: 1, inflight: 0, total: 0, counts: Object.freeze({}) });
+  assert.equal(
+    (createS309ProofEmitter(zeroCredential.fixture, "linux-kvm")(settled).payload.s3_09_proof as { reason: string })
+      .reason,
+    "credential-count",
   );
-  prime(zeroCredential);
-  assert.equal((zeroCredential(settled).payload.s3_09_proof as { reason: string }).reason, "credential-count");
-  const otherTraffic = createS309ProofEmitter(
-    make({ ready: true, generation: 1, inflight: 0, total: 1, counts: Object.freeze({}) }),
-    "linux-kvm",
+  const otherTraffic = make(
+    { ready: true, generation: 1, inflight: 0, total: 0, counts: Object.freeze({}) },
+    { ready: true, generation: 1, inflight: 0, total: 1, counts: Object.freeze({}) },
   );
-  prime(otherTraffic);
-  assert.equal((otherTraffic(settled).payload.s3_09_proof as { reason: string }).reason, "total-count");
-  const repeated = createS309ProofEmitter(
-    make({ ready: true, generation: 1, inflight: 0, total: 2, counts: Object.freeze({ "GET /credential 200": 1 }) }),
-    "linux-kvm",
+  const otherEmit = createS309ProofEmitter(otherTraffic.fixture, "linux-kvm");
+  otherTraffic.advance();
+  assert.equal((otherEmit(settled).payload.s3_09_proof as { reason: string }).reason, "total-count");
+  const wrongProfile = make({
+    ready: true,
+    generation: 0,
+    inflight: 0,
+    total: 1,
+    counts: Object.freeze({ "GET /credential 200": 1 }),
+  });
+  assert.equal(
+    "s3_09_proof" in createS309ProofEmitter(wrongProfile.fixture, "insecure-container")(settled).payload,
+    false,
   );
-  prime(repeated);
-  assert.equal((repeated(settled).payload.s3_09_proof as { reason: string }).reason, "total-count");
-  const wrongProfile = createS309ProofEmitter(
-    make({ ready: true, generation: 0, inflight: 0, total: 1, counts: Object.freeze({ "GET /credential 200": 1 }) }),
-    "insecure-container",
-  );
-  prime(wrongProfile);
-  assert.equal("s3_09_proof" in wrongProfile(settled).payload, false);
-  const resetFailure = createS309ProofEmitter(
-    make({ ready: true, generation: 0, inflight: 0, total: 0, counts: Object.freeze({}) }, () => {
-      throw new Error("reset failed");
-    }),
-    "linux-kvm",
-  );
-  assert.throws(() => prime(resetFailure), /reset failed/);
 });
 
 test("raw export opening verifier accepts real local exporter bundle", async () => {
