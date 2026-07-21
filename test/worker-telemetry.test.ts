@@ -301,7 +301,7 @@ test("worker telemetry batches FIFO, drops newest on overflow, and isolates late
     assert.equal(sink.span(second), true);
     assert.equal(sink.span(goodSpan("shutdown.prepare")), false);
     first.name = "shutdown.prepare";
-    await collector.waitFor(1);
+    await eventually(() => assert.equal(sink.snapshot().exported, 2));
     await sink.close();
     const spans = (
       collector.jsonFor("/v1/traces") as {
