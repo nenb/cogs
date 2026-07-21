@@ -53,34 +53,8 @@ jobs:
           COGS_SOURCE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
         run: dev/linux-kvm/ci-smoke.sh docs/security-evidence/generated/kvm-driver-smoke.json
 
-      - name: Create persistent isolated guest for authoritative conformance
-        id: guest
-        run: dev/linux-kvm/driver.sh create
-
-      - name: Run authoritative Stage 1 suite against Envoy
-        id: envoy_suite
-        continue-on-error: true
-        env:
-          COGS_SOURCE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
-          COGS_CONFORMANCE_PROFILE: linux-kvm
-        run: npx --no-install tsx test/egress-conformance/proxy-adapters/envoy/suite-smoke.ts docs/security-evidence/generated/envoy-kvm
-
-      - name: Run real Stage 3 runtime manager through KVM guest
-        id: real_runtime_kvm
-        continue-on-error: true
-        env:
-          COGS_SOURCE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
-          COGS_STAGE3_REAL_RUNTIME_PROFILE: linux-kvm
-        run: test/egress-conformance/stage3-real-runtime/ci-smoke.sh docs/security-evidence/generated/stage3-real-runtime-kvm
-
-      - name: Destroy isolated conformance guest
-        id: destroy
-        if: always() && steps.guest.outcome != 'skipped'
-        run: dev/linux-kvm/driver.sh destroy
-
       - name: Prepare exact pinned launcher images
         id: launcher_images
-        if: always() && steps.destroy.outcome == 'success'
         run: npx --no-install tsx scripts/prepare-launcher-images.ts
 
       - name: Provision explicit launcher tmpfs roots
@@ -134,6 +108,31 @@ jobs:
             ! mountpoint -q "$root"
           done
           sudo rmdir /run/cogs/ssh /run/cogs/egress /run/cogs
+
+      - name: Create persistent isolated guest for authoritative conformance
+        id: guest
+        run: dev/linux-kvm/driver.sh create
+
+      - name: Run authoritative Stage 1 suite against Envoy
+        id: envoy_suite
+        continue-on-error: true
+        env:
+          COGS_SOURCE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
+          COGS_CONFORMANCE_PROFILE: linux-kvm
+        run: npx --no-install tsx test/egress-conformance/proxy-adapters/envoy/suite-smoke.ts docs/security-evidence/generated/envoy-kvm
+
+      - name: Run real Stage 3 runtime manager through KVM guest
+        id: real_runtime_kvm
+        continue-on-error: true
+        env:
+          COGS_SOURCE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
+          COGS_STAGE3_REAL_RUNTIME_PROFILE: linux-kvm
+        run: test/egress-conformance/stage3-real-runtime/ci-smoke.sh docs/security-evidence/generated/stage3-real-runtime-kvm
+
+      - name: Destroy isolated conformance guest
+        id: destroy
+        if: always() && steps.guest.outcome != 'skipped'
+        run: dev/linux-kvm/driver.sh destroy
 
       - name: Validate applicability-aware reports
         id: evidence
