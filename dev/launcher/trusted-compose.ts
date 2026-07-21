@@ -588,7 +588,9 @@ export function createS309ProofEmitter(fixture: LocalFixture, profile: LauncherP
           : snap.inflight !== 0
             ? "inflight"
             : credential < 1
-              ? "credential-count"
+              ? total === 0 && snap.total === 0
+                ? "credential-count"
+                : "total-count"
               : credential > 1
                 ? "total-count"
                 : deniedForwarded !== 0
