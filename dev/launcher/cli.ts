@@ -15,6 +15,7 @@ export const cliOperations = [
   "shutdown",
   "destroy",
   "smoke",
+  "s3-09",
 ] as const;
 export type CliOperation = (typeof cliOperations)[number];
 export type CliRequest = Readonly<{
@@ -45,6 +46,7 @@ const flagSets: Record<CliOperation, readonly string[]> = Object.freeze({
   shutdown: ["timeout-ms"],
   destroy: ["timeout-ms"],
   smoke: ["timeout-ms"],
+  "s3-09": ["timeout-ms"],
 });
 
 export function parseLauncherArgs(argv: readonly string[]): CliRequest {

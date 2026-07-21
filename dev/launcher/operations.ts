@@ -1,12 +1,16 @@
 import { lstat, realpath } from "node:fs/promises";
 import type { ApiClient, ApiEvent, ApiSeams } from "./api-client.ts";
-import { createApiClient } from "./api-client.ts";
+import { createApiClient, isReplayGapError } from "./api-client.ts";
 import type { CliRequest } from "./cli.ts";
 import { readPromptFile, writeSensitiveExport } from "./cli.ts";
 import { deepFreeze, type LauncherAuthority, type LauncherPhase, type LauncherProfile } from "./contract.ts";
 import { readApiToken, readReadyWorkerDescriptor } from "./control.ts";
 import { createSandbox, destroySandbox, type LauncherCoreOptions, resetSandbox } from "./core.ts";
-import { LAUNCHER_DETERMINISTIC_ABORT_PROMPT } from "./deterministic-stream.ts";
+import {
+  LAUNCHER_DETERMINISTIC_ABORT_PROMPT,
+  LAUNCHER_DETERMINISTIC_S309_PROMPT,
+  LAUNCHER_DETERMINISTIC_S309_SETUP_PROMPT,
+} from "./deterministic-stream.ts";
 import { resolveLauncherState, withStateLock } from "./state.ts";
 import { launcherInventory, startWorkerForState, stopWorkerForState } from "./supervisor.ts";
 
@@ -73,6 +77,7 @@ const opSet = new Set([
   "shutdown",
   "destroy",
   "smoke",
+  "s3-09",
 ]);
 const profileSet = new Set(["insecure-container", "linux-kvm", "macos-vm"]);
 const phaseSet = new Set(["creating", "sandbox-ready", "worker-ready", "cleanup-required", "destroying"]);
@@ -114,6 +119,7 @@ export async function runLauncherOperation(
     if (req.op === "history") return await apiRequest("history", req, options, ctx, s);
     if (req.op === "export") return await apiExport(req, options, ctx, s);
     if (req.op === "smoke") return await smoke(req, ctx, options, s);
+    if (req.op === "s3-09") return await s309(req, ctx, options, s);
     throw new Error("launcher operation failed");
   } catch {
     throw new Error("launcher operation failed");
@@ -285,6 +291,215 @@ async function tailTerminal(client: ApiClient, correlation: string, signal?: Abo
         return deepFreeze({ terminal: kind, lastEventId: last, eventCount: count });
     }
     if (!saw) throw new Error("launcher operation failed");
+  }
+}
+
+async function tailTerminalProof(client: ApiClient, correlation: string, signal?: AbortSignal, live?: LiveEvents) {
+  const terminal = live
+    ? await tailTerminalEventFromLive(client, live, correlation, signal)
+    : await tailTerminalEvent(client, correlation, signal);
+  if (terminal.kind !== "run_settled" || terminal.gitMapping !== true) throw new Error("launcher operation failed");
+  const payload = exactPlain(terminal.payload);
+  const proof = exactPlain(payload.s3_09_proof);
+  if (
+    proof.version !== "cogs.launcher.s3-09-proof/v1alpha1" ||
+    proof.scenario !== "s3-09" ||
+    proof.profile !== "linux-kvm" ||
+    proof.credential_route_200 !== true ||
+    proof.denied_route_absent !== true ||
+    proof.total_exact_expected !== true ||
+    proof.fixture_ready !== true ||
+    proof.fixture_generation_zero !== true
+  )
+    throw new Error("launcher operation failed");
+  return deepFreeze({
+    terminal: terminal.kind,
+    lastEventId: terminal.lastEventId,
+    liveEventCount: terminal.eventCount,
+    egressProof: true,
+  });
+}
+
+type LiveEvents = {
+  readonly iterator: AsyncGenerator<ApiEvent>;
+  readonly first: Promise<IteratorResult<ApiEvent>>;
+  closed: boolean;
+};
+
+function startLiveEvents(client: ApiClient, signal?: AbortSignal): LiveEvents {
+  const iterator = client.events(0, 100, signal);
+  return { iterator, first: iterator.next(), closed: false };
+}
+
+async function tailTerminalEventFromLive(
+  client: ApiClient,
+  live: LiveEvents,
+  correlation: string,
+  signal?: AbortSignal,
+) {
+  let last = 0,
+    count = 0,
+    gitMapping = false;
+  const visit = (event: ApiEvent) => {
+    last = eventId(event);
+    count += 1;
+    if (count > 1000) throw new Error("launcher operation failed");
+    const data = eventData(event),
+      kind = enumValue(data.kind, eventKinds);
+    if (data.correlation_id === correlation && kind === "git_mapping") gitMapping = true;
+    if (terminalKinds.has(kind) && data.correlation_id === correlation)
+      return deepFreeze({
+        kind,
+        lastEventId: last,
+        eventCount: count,
+        payload: exactPlain(data.payload),
+        gitMapping,
+      });
+    return undefined;
+  };
+  const first = await live.first;
+  if (!first.done) {
+    const terminal = visit(first.value);
+    if (terminal) return terminal;
+  }
+  for await (const event of live.iterator) {
+    const terminal = visit(event);
+    if (terminal) return terminal;
+  }
+  return tailTerminalEvent(client, correlation, signal, last, count, gitMapping);
+}
+
+async function tailTerminalEvent(
+  client: ApiClient,
+  correlation: string,
+  signal?: AbortSignal,
+  startLast = 0,
+  startCount = 0,
+  startGitMapping = false,
+) {
+  let last = startLast,
+    count = startCount,
+    gitMapping = startGitMapping;
+  for (;;) {
+    let saw = false;
+    for await (const event of client.events(last, 100, signal)) {
+      saw = true;
+      last = eventId(event);
+      count += 1;
+      if (count > 1000) throw new Error("launcher operation failed");
+      const data = eventData(event),
+        kind = enumValue(data.kind, eventKinds);
+      if (data.correlation_id === correlation && kind === "git_mapping") gitMapping = true;
+      if (terminalKinds.has(kind) && data.correlation_id === correlation)
+        return deepFreeze({
+          kind,
+          lastEventId: last,
+          eventCount: count,
+          payload: exactPlain(data.payload),
+          gitMapping,
+        });
+    }
+    if (!saw) throw new Error("launcher operation failed");
+  }
+}
+
+async function assertReplayGap(client: ApiClient, signal?: AbortSignal): Promise<void> {
+  try {
+    for await (const _event of client.events(0, 1, signal)) return void failOp();
+  } catch (error) {
+    if (isReplayGapError(error)) return;
+    throw new Error("launcher operation failed");
+  }
+  failOp();
+}
+
+async function pagedHistory(client: ApiClient, signal?: AbortSignal) {
+  let after: string | undefined;
+  let pages = 0;
+  let entries = 0;
+  for (;;) {
+    const page = exactPlain(
+      await client.request("entries", deepFreeze({ ...(after ? { after } : {}), limit: 2 }), signal),
+    );
+    const list = Array.isArray(page.entries) ? page.entries : failOp();
+    entries += list.length;
+    pages += 1;
+    if (pages > 100 || entries > 200) throw new Error("launcher operation failed");
+    if (page.next === undefined) break;
+    after = typeof page.next === "string" && cursorRe.test(page.next) ? page.next : failOp();
+  }
+  if (pages < 2 || entries < 4) throw new Error("launcher operation failed");
+  return deepFreeze({ pages, entries });
+}
+
+function exportProof(value: unknown) {
+  const r = exactPlain(value);
+  const bundle = exactPlain(r.bundle);
+  if (r.sensitive !== true || r.version !== "cogs.export-response/v1alpha1")
+    throw new Error("launcher operation failed");
+  if (
+    bundle.version !== "cogs.export-descriptor/v1alpha1" ||
+    bundle.mode !== "raw" ||
+    bundle.attachments_included !== false ||
+    bundle.sensitive !== true ||
+    bundle.sanitized !== false ||
+    bundle.anonymized !== false
+  )
+    throw new Error("launcher operation failed");
+  return deepFreeze({ descriptorValidated: true, mode: "raw", sensitive: true });
+}
+
+function failOp(): never {
+  throw new Error("launcher operation failed");
+}
+
+async function s309(
+  request: CliRequest,
+  ctx: LauncherOperationContext & { timeoutMs: number },
+  options: LauncherCoreOptions,
+  s: LauncherOperationSeams,
+) {
+  if (request.profile !== "linux-kvm") throw new Error("launcher operation failed");
+  let started = false;
+  try {
+    base("create", meta(result(await s.createSandbox(options, ctx.signal)).manifest));
+    await locked(options, (state) => s.startWorkerForState(state, ctx.signal));
+    started = true;
+    const proof = await withReadyClient(options, request, ctx, s, async (client, signal) => {
+      const setupCorrelation = runCorrelation(
+        await client.request("run", Object.freeze({ content: LAUNCHER_DETERMINISTIC_S309_SETUP_PROMPT }), signal),
+      );
+      const setup = await tailTerminal(client, setupCorrelation, signal);
+      if (setup.terminal !== "run_settled") throw new Error("launcher operation failed");
+      const live = startLiveEvents(client, signal);
+      let correlation = "";
+      try {
+        correlation = runCorrelation(
+          await client.request("run", Object.freeze({ content: LAUNCHER_DETERMINISTIC_S309_PROMPT }), signal),
+        );
+        const terminal = await tailTerminalProof(client, correlation, signal, live);
+        live.closed = true;
+        await live.iterator.return?.(undefined);
+        await assertReplayGap(client, signal);
+        const history = await pagedHistory(client, signal);
+        const rawExport = exportProof(await client.request("export", Object.freeze({}), signal));
+        return deepFreeze({ ...terminal, history, rawExport });
+      } finally {
+        if (!live.closed) await live.iterator.return?.(undefined).catch(() => undefined);
+      }
+    });
+    await shutdown(options, ctx.signal, ctx.timeoutMs, s);
+    started = false;
+    const inv = stripInventory((await status(options, s)).inventory);
+    if (inv.descriptor !== "none" || inv.workerLive !== false || inv.recovery !== "absent")
+      throw new Error("launcher operation failed");
+    if (bool(result(await s.destroySandbox(options, ctx.signal)).removed) !== true)
+      throw new Error("launcher operation failed");
+    return deepFreeze({ op: "s3-09", complete: true, ...proof, inventory: inv });
+  } catch (error) {
+    if (started) await stopOnly(options, s).catch(() => undefined);
+    await s.destroySandbox(options, undefined).catch(() => undefined);
+    throw error;
   }
 }
 

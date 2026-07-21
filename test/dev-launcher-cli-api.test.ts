@@ -74,6 +74,11 @@ test("launcher cli parser uses profile state operation order and exact flags", (
   });
   assert.equal(parseLauncherArgs(["--profile", "insecure-container", "--state", "s", "status", "--json"]).json, true);
   assert.equal(parseLauncherArgs(["--profile", "linux-kvm", "--state", "s", "history", "--limit", "100"]).limit, 100);
+  assert.deepEqual(parseLauncherArgs(["--profile", "linux-kvm", "--state", "s", "s3-09"]), {
+    op: "s3-09",
+    profile: "linux-kvm",
+    state: "s",
+  });
   for (const bad of [
     ["run", "--profile", "linux-kvm", "--state", "s"],
     ["--profile=linux-kvm", "--state", "s", "status"],
@@ -222,10 +227,36 @@ test("api SSE client parses real server events and rejects replay mismatch", asy
     assert.equal(events[0]?.data.version, "cogs.event/v1alpha1");
     await assert.rejects(async () => {
       for await (const _ of client.events(99, 1)) break;
-    });
+    }, /launcher api replay gap/);
   } finally {
     await s.api.close();
   }
+});
+
+test("api SSE replay gap is specific to HTTP 409, not forged network messages", async () => {
+  const forged = createApiClient({
+    port: 9,
+    token,
+    seams: seams(
+      Object.freeze((async () => {
+        throw new Error("launcher api replay gap");
+      }) as unknown as typeof fetch),
+    ),
+  });
+  await assert.rejects(async () => {
+    for await (const _ of forged.events(0, 1)) break;
+  }, /launcher api failed/);
+  const http409 = createApiClient({
+    port: 9,
+    token,
+    seams: seams(
+      Object.freeze((async (url: URL) =>
+        jsonResponse(url, { version: "cogs.error/v1alpha1", error: "replay_gap" }, 409)) as unknown as typeof fetch),
+    ),
+  });
+  await assert.rejects(async () => {
+    for await (const _ of http409.events(0, 1)) break;
+  }, /launcher api replay gap/);
 });
 
 test("api client rejects redirect oversize malformed extras hanging body and parent abort", async () => {

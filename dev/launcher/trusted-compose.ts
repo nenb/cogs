@@ -3,7 +3,7 @@ import { constants } from "node:fs";
 import { type FileHandle, lstat, mkdir, open, readdir, realpath, rmdir, unlink } from "node:fs/promises";
 import { createServer, Socket } from "node:net";
 import { dirname, join, relative } from "node:path";
-import { type ApiServer, createApiServer } from "../../src/api/server.ts";
+import { type ApiEvent, type ApiServer, createApiServer } from "../../src/api/server.ts";
 import { OpenBaoModelApiKeyStore } from "../../src/auth/model-auth.ts";
 import { canonicalPresetPolicyRevision } from "../../src/egress/preset-revision.ts";
 import { type LaunchConfig, validateLaunchConfig } from "../../src/launch/config.ts";
@@ -14,6 +14,7 @@ import { createSshBashToolPort } from "../../src/ssh/bash-tool.ts";
 import { SshConnectionManager } from "../../src/ssh/connection.ts";
 import { createSftpFileToolPorts } from "../../src/ssh/file-tools.ts";
 import { createCogsWorkerTelemetrySink } from "../../src/telemetry/worker-telemetry.ts";
+import type { LauncherProfile } from "./contract.ts";
 import { type ApiTokenHolder, readApiToken, readWorkerDescriptor } from "./control.ts";
 import { createDeterministicLauncherStream } from "./deterministic-stream.ts";
 import {
@@ -435,6 +436,7 @@ export async function createTrustedWorkerRuntime(
 
     const filePorts = createSftpFileToolPorts({ manager: ssh });
     const bashPort = createSshBashToolPort({ manager: ssh });
+    const s309Emit = createS309ProofEmitter(fixture, admitted.profile);
     pi = await s.createPi({
       cwd: "/workspace",
       agentDir: roots.agentDir,
@@ -444,8 +446,8 @@ export async function createTrustedWorkerRuntime(
       skillPreparer: skills.createPreparer(ssh),
       signal: startup.signal,
       toolPorts: Object.freeze({ ...filePorts, ...bashPort }),
-      streamFn: createDeterministicLauncherStream(),
-      emit: (event) => api?.publish(event) ?? true,
+      streamFn: createDeterministicLauncherStream(Object.freeze({ s309FixturePort: fixture.snapshot().port })),
+      emit: (event) => api?.publish(s309Emit(event)) ?? true,
       onFatal: () => void cleanup().catch(() => undefined),
       policyAuthorizer: Object.freeze(authorizeCogsPolicyAction),
       telemetry,
@@ -552,6 +554,55 @@ function nonProducingDependencies(
     dep("auditWal", auditWalReady),
     dep("egressRuntime", () => egress.snapshot().ready === true),
   ]);
+}
+
+export function createS309ProofEmitter(fixture: LocalFixture, profile: LauncherProfile): (event: ApiEvent) => ApiEvent {
+  let setupSettled = false;
+  let scenarioToolEnds = 0;
+  let scenarioCorrelation = "";
+  return (event) => {
+    if (profile !== "linux-kvm") return event;
+    if (event.kind === "tool_end" && setupSettled) {
+      if (scenarioCorrelation === "") scenarioCorrelation = event.correlation_id;
+      if (event.correlation_id === scenarioCorrelation) scenarioToolEnds += 1;
+    }
+    if (event.kind !== "run_settled") return event;
+    if (!setupSettled) {
+      setupSettled = true;
+      return event;
+    }
+    if (event.correlation_id !== scenarioCorrelation || scenarioToolEnds !== 3) return event;
+    const snap = fixture.snapshot();
+    const counts = snap.counts;
+    const credential = counts["GET /credential 200"] ?? 0;
+    const deniedForwarded = counts["GET /allowed 200"] ?? 0;
+    if (
+      snap.ready !== true ||
+      snap.generation !== 0 ||
+      snap.inflight !== 0 ||
+      credential !== 1 ||
+      deniedForwarded !== 0
+    )
+      return event;
+    const total = Object.values(counts).reduce((sum, value) => sum + value, 0);
+    if (total !== 1 || snap.total !== 1) return event;
+    return Object.freeze({
+      ...event,
+      payload: Object.freeze({
+        ...event.payload,
+        s3_09_proof: Object.freeze({
+          version: "cogs.launcher.s3-09-proof/v1alpha1",
+          scenario: "s3-09",
+          profile: "linux-kvm",
+          credential_route_200: true,
+          denied_route_absent: true,
+          total_exact_expected: true,
+          fixture_ready: true,
+          fixture_generation_zero: true,
+        }),
+      }),
+    });
+  };
 }
 
 function buildLaunch(

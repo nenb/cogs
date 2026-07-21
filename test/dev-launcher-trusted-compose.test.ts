@@ -6,7 +6,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { LauncherState } from "../dev/launcher/state.ts";
-import { createTrustedWorkerRuntime, type TrustedCompositionSeams } from "../dev/launcher/trusted-compose.ts";
+import {
+  createS309ProofEmitter,
+  createTrustedWorkerRuntime,
+  type TrustedCompositionSeams,
+} from "../dev/launcher/trusted-compose.ts";
 import type { WorkerProvisionalRuntime } from "../dev/launcher/worker-process.ts";
 
 const sourceRevision = "a".repeat(40);
@@ -1585,3 +1589,73 @@ function fakeLifecycle(options: Parameters<TrustedCompositionSeams["createLifecy
     },
   });
 }
+
+test("s3-09 trusted proof channel is exact run-bound and fixture-bound", () => {
+  const fixture = {
+    snapshot: () =>
+      Object.freeze({
+        ready: true,
+        port: 1234,
+        generation: 0,
+        inflight: 0,
+        total: 1,
+        counts: Object.freeze({ "GET /credential 200": 1 }),
+      }),
+  } as never;
+  const emit = createS309ProofEmitter(fixture, "linux-kvm");
+  const event = (kind: "tool_end" | "run_settled", correlation_id: string) =>
+    Object.freeze({ kind, correlation_id, payload: Object.freeze({}) }) as never;
+  assert.equal("s3_09_proof" in emit(event("run_settled", "setup")).payload, false);
+  assert.equal("s3_09_proof" in emit(event("tool_end", "scenario")).payload, false);
+  assert.equal("s3_09_proof" in emit(event("tool_end", "scenario")).payload, false);
+  assert.equal("s3_09_proof" in emit(event("run_settled", "scenario")).payload, false);
+  assert.equal("s3_09_proof" in emit(event("tool_end", "scenario")).payload, false);
+  const settled = emit(event("run_settled", "scenario"));
+  assert.deepEqual(settled.payload.s3_09_proof, {
+    version: "cogs.launcher.s3-09-proof/v1alpha1",
+    scenario: "s3-09",
+    profile: "linux-kvm",
+    credential_route_200: true,
+    denied_route_absent: true,
+    total_exact_expected: true,
+    fixture_ready: true,
+    fixture_generation_zero: true,
+  });
+  assert.equal(JSON.stringify(settled).includes("1234"), false);
+  assert.equal(JSON.stringify(settled).includes("credential"), true);
+});
+
+test("s3-09 trusted proof channel rejects stale counts, wrong profile, and denied forwarding", () => {
+  const make = (snapshot: Record<string, unknown>) => ({ snapshot: () => Object.freeze(snapshot) }) as never;
+  const settled = Object.freeze({
+    kind: "run_settled",
+    correlation_id: "scenario",
+    payload: Object.freeze({}),
+  }) as never;
+  const prime = (emit: ReturnType<typeof createS309ProofEmitter>) => {
+    emit(Object.freeze({ kind: "run_settled", correlation_id: "setup", payload: Object.freeze({}) }) as never);
+    for (let i = 0; i < 3; i += 1)
+      emit(Object.freeze({ kind: "tool_end", correlation_id: "scenario", payload: Object.freeze({}) }) as never);
+  };
+  for (const snapshot of [
+    { ready: true, generation: 0, inflight: 0, total: 2, counts: Object.freeze({ "GET /credential 200": 2 }) },
+    {
+      ready: true,
+      generation: 0,
+      inflight: 0,
+      total: 2,
+      counts: Object.freeze({ "GET /credential 200": 1, "GET /allowed 200": 1 }),
+    },
+    { ready: true, generation: 1, inflight: 0, total: 1, counts: Object.freeze({ "GET /credential 200": 1 }) },
+  ]) {
+    const emit = createS309ProofEmitter(make(snapshot), "linux-kvm");
+    prime(emit);
+    assert.equal("s3_09_proof" in emit(settled).payload, false);
+  }
+  const wrongProfile = createS309ProofEmitter(
+    make({ ready: true, generation: 0, inflight: 0, total: 1, counts: Object.freeze({ "GET /credential 200": 1 }) }),
+    "insecure-container",
+  );
+  prime(wrongProfile);
+  assert.equal("s3_09_proof" in wrongProfile(settled).payload, false);
+});
