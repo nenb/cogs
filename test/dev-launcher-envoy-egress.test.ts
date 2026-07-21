@@ -377,6 +377,12 @@ test("linux-kvm profile switches relay after manager ready without fallback", as
     const binHash = fakeBinHash;
     const calls: string[] = [];
     const relay = Object.freeze({
+      configureProxyCapability: (holder: { withSecret<T>(op: (secret: string) => T): T }) => {
+        holder.withSecret((secret) => {
+          assert.match(secret, /^[A-Za-z0-9_-]{22,256}$/u);
+        });
+        calls.push("relay.capability");
+      },
       start: async () => {
         calls.push("relay.start");
       },
@@ -421,7 +427,13 @@ test("linux-kvm profile switches relay after manager ready without fallback", as
         }),
       }),
     });
-    assert.deepEqual(calls.slice(0, 4), ["manager.start", "relay.start", "relay.register:18081", "relay.switch:18081"]);
+    assert.deepEqual(calls.slice(0, 5), [
+      "manager.start",
+      "relay.capability",
+      "relay.start",
+      "relay.register:18081",
+      "relay.switch:18081",
+    ]);
     await h.close();
     assert.deepEqual(calls.slice(-3), ["relay.clear", "manager.close", "relay.close"]);
   } finally {
@@ -627,6 +639,7 @@ test("envoy close continues manager after relay failure and stays generic withou
     await chmod(bin, 0o500);
     const events: string[] = [];
     const relay = Object.freeze({
+      configureProxyCapability: () => undefined,
       start: async () => undefined,
       registerTarget: () => undefined,
       switchTo: async () => undefined,
@@ -813,16 +826,17 @@ test("envoy runVersion and relay startup receive cooperative cancellation", asyn
     const controller = new AbortController();
     const events: string[] = [];
     const relay = Object.freeze({
-      start: (options?: { signal?: AbortSignal }) => {
+      configureProxyCapability: () => undefined,
+      start: (options?: { signal?: AbortSignal; deadlineAt?: number }) => {
         assert(Object.isFrozen(options));
-        assert.deepEqual(Object.keys(options ?? {}), ["signal"]);
-        queueMicrotask(() => controller.abort());
-        return new Promise<void>((_resolve, reject) =>
+        assert(options?.signal instanceof AbortSignal);
+        return new Promise<void>((_resolve, reject) => {
           options?.signal?.addEventListener("abort", () => {
             events.push("relay.abort");
             reject(new Error("aborted"));
-          }),
-        );
+          });
+          queueMicrotask(() => controller.abort());
+        });
       },
       registerTarget: () => undefined,
       switchTo: async () => undefined,

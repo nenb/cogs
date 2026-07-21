@@ -263,17 +263,18 @@ export async function startEnvoyEgress(rawOptions: Options): Promise<EnvoyEgress
     checkCooperative(options);
     await validateManagerReady(manager, options.listenerPort, options);
 
-    if (options.profile === "linux-kvm") {
-      relay = (seams.relay ?? createLinuxKvmRelay)();
-      await startLinuxKvmRelay(relay, manager.listenerPort, options);
-    }
-
     const proxyCapabilityHolder = secretHolder(
       () => proxyCapability,
       (value) => {
         proxyCapability = value;
       },
     );
+
+    if (options.profile === "linux-kvm") {
+      relay = (seams.relay ?? createLinuxKvmRelay)();
+      relay.configureProxyCapability(proxyCapabilityHolder);
+      await startLinuxKvmRelay(relay, manager.listenerPort, options);
+    }
     checkCooperative(options);
 
     return Object.freeze({

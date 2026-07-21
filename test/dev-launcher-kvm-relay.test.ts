@@ -1,8 +1,21 @@
 import assert from "node:assert/strict";
 import { createServer, Socket } from "node:net";
 import { test } from "node:test";
-import { createLinuxKvmRelay, createLoopbackFunctionalRelay } from "../dev/launcher/kvm-relay.ts";
+import {
+  createLinuxKvmRelay,
+  createLinuxKvmRelayForTests,
+  createLoopbackFunctionalRelay,
+} from "../dev/launcher/kvm-relay.ts";
 
+function holder(secret = "abcdefghijklmnopqrstuvwxyz012345"): {
+  withSecret<T>(op: (secret: string) => T): T;
+  dispose(): void;
+} {
+  return Object.freeze({
+    withSecret: Object.freeze(<T>(op: (secret: string) => T) => op(secret)),
+    dispose: Object.freeze(() => {}),
+  });
+}
 async function echoServer() {
   const server = createServer((socket) => socket.pipe(socket));
   await new Promise<void>((resolve, reject) => server.listen(0, "127.0.0.1", resolve).once("error", reject));
@@ -31,6 +44,25 @@ async function roundTrip(port: number, body = "ping") {
   await new Promise((resolve) => setTimeout(resolve, 25));
   s.destroy();
   return Buffer.concat(chunks).toString("utf8");
+}
+async function readOnce(socket: Socket) {
+  const chunks: Buffer[] = [];
+  socket.on("data", (c) => chunks.push(Buffer.from(c)));
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  return Buffer.concat(chunks).toString("latin1");
+}
+async function captureServer() {
+  let captured = "";
+  const server = createServer((socket) => {
+    socket.once("data", (c) => {
+      captured = c.toString("latin1");
+      socket.write("HTTP/1.1 200 Connection Established\r\n\r\nup");
+    });
+  });
+  await new Promise<void>((resolve, reject) => server.listen(0, "127.0.0.1", resolve).once("error", reject));
+  const a = server.address();
+  const port = typeof a === "object" && a ? a.port : 0;
+  return { port, captured: () => captured, close: () => new Promise<void>((resolve) => server.close(() => resolve())) };
 }
 
 test("kvm relay exposes exact linux-kvm factory without binding during unit tests", () => {
@@ -71,6 +103,108 @@ test("loopback functional relay allows registered echo and metadata-only snapsho
     await r.close();
     await upstream.close();
   }
+});
+
+test("relay injects callback-scoped proxy capability into fragmented CONNECT only", async () => {
+  const upstream = await captureServer();
+  const r = createLinuxKvmRelayForTests();
+  r.configureProxyCapability(holder());
+  await r.start();
+  try {
+    r.registerTarget(upstream.port);
+    await r.switchTo(upstream.port);
+    const s = await socketTo(r.snapshot().bindPort);
+    s.write("CONNECT localhost:3210 HTTP/1.1\r\nHost: localhost:3210\r\n");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    s.write("User-Agent: curl\r\n\r\nbody");
+    assert.match(await readOnce(s), /200 Connection Established/u);
+    assert.match(upstream.captured(), /\r\nProxy-Authorization: Bearer abcdefghijklmnopqrstuvwxyz012345\r\n/u);
+    assert.equal((upstream.captured().match(/Proxy-Authorization/gu) ?? []).length, 1);
+    assert.match(upstream.captured(), /\r\n\r\nbody$/u);
+    assert.equal(JSON.stringify(r.snapshot()).includes("abcdefghijklmnopqrstuvwxyz"), false);
+    s.destroy();
+  } finally {
+    await r.close();
+    await upstream.close();
+  }
+});
+
+test("relay rejects ambiguous proxy CONNECT without leaking capability", async () => {
+  for (const bad of [
+    "GET / HTTP/1.1\r\nHost: localhost:3210\r\n\r\n",
+    "CONNECT localhost:3210 HTTP/1.1\r\nHost: localhost:3210\r\nProxy-Authorization: Bearer guest\r\n\r\n",
+    "CONNECT localhost:3210 HTTP/1.1\r\nHost: localhost:3210\r\nHost: localhost:3210\r\n\r\n",
+    "CONNECT localhost:3210 HTTP/1.1\nHost: localhost:3210\n\n",
+  ]) {
+    const upstream = await captureServer();
+    const r = createLinuxKvmRelayForTests();
+    r.configureProxyCapability(holder());
+    await r.start();
+    try {
+      r.registerTarget(upstream.port);
+      await r.switchTo(upstream.port);
+      const s = await socketTo(r.snapshot().bindPort);
+      s.end(bad);
+      await new Promise((resolve) => s.once("close", resolve));
+      assert.equal(r.snapshot().poisoned, true);
+      assert.equal(upstream.captured().includes("abcdefghijklmnopqrstuvwxyz"), false);
+    } finally {
+      await r.close();
+      await upstream.close();
+    }
+  }
+});
+
+test("relay fails closed when capability is disposed before handshake", async () => {
+  let secret = "abcdefghijklmnopqrstuvwxyz012345";
+  const h = Object.freeze({
+    withSecret: Object.freeze(<T>(op: (secret: string) => T) => op(secret)),
+    dispose: Object.freeze(() => {
+      secret = "";
+    }),
+  });
+  const upstream = await captureServer();
+  const r = createLinuxKvmRelayForTests();
+  r.configureProxyCapability(h);
+  await r.start();
+  try {
+    r.registerTarget(upstream.port);
+    await r.switchTo(upstream.port);
+    h.dispose();
+    const s = await socketTo(r.snapshot().bindPort);
+    s.end("CONNECT localhost:3210 HTTP/1.1\r\nHost: localhost:3210\r\n\r\n");
+    await new Promise((resolve) => s.once("close", resolve));
+    assert.equal(r.snapshot().poisoned, true);
+    assert.equal(upstream.captured(), "");
+  } finally {
+    await r.close();
+    await upstream.close();
+  }
+});
+
+test("relay rejects loopback proxy configuration, missing linux holder, and hostile holders", async () => {
+  assert.throws(() => createLoopbackFunctionalRelay().configureProxyCapability(holder()), /launcher relay failed/);
+  await assert.rejects(() => createLinuxKvmRelayForTests().start(), /launcher relay failed/);
+  assert.throws(
+    () =>
+      createLinuxKvmRelayForTests().configureProxyCapability(
+        Object.freeze({ withSecret: () => "x", dispose: () => {} }) as never,
+      ),
+    /launcher relay failed/,
+  );
+  assert.throws(
+    () =>
+      createLinuxKvmRelayForTests().configureProxyCapability(
+        Object.freeze({
+          withSecret: (op: (secret: string) => symbol) => {
+            op("abcdefghijklmnopqrstuvwxyz012345");
+            return op("abcdefghijklmnopqrstuvwxyz012345");
+          },
+          dispose: () => undefined,
+        }) as never,
+      ),
+    /launcher relay failed/,
+  );
 });
 
 test("switch and clear destroy active sockets and prove zero", async () => {

@@ -63,7 +63,7 @@ function s309BashTool(port: number | undefined) {
     id: "launcher-s309-bash-1",
     name: "bash",
     arguments: Object.freeze({
-      command: `set -eu\ntest "$(cat /workspace/s3-09/proof.txt)" = "alpha\nbeta"\nallowed=$(curl -sS -o /dev/null -w '%{http_code}' --noproxy '' http://localhost:${port}/credential)\ndenied=$(curl -sS -o /dev/null -w '%{http_code}' --noproxy '' http://localhost:${port}/allowed || true)\ntest "$allowed" = 200\ntest "$denied" = 403\ncd /workspace\ngit add s3-09/proof.txt\ngit commit -q -m s3-09-integrated\nprintf 'allowed=200 denied=403 committed'`,
+      command: `set -eu\ntest "$(cat /workspace/s3-09/proof.txt)" = "alpha\nbeta"\nallowed=$(curl -sS --proxy http://192.0.2.1:18080 --noproxy '' --insecure -o /dev/null -w '%{http_code}' https://localhost:${port}/credential)\ndenied=$(curl -sS --proxy http://192.0.2.1:18080 --noproxy '' --insecure -o /dev/null -w '%{http_code}' https://localhost:${port}/allowed || true)\ntest "$allowed" = 200\ntest "$denied" = 403\ncd /workspace\ngit add s3-09/proof.txt\ngit commit -q -m s3-09-integrated\nprintf 'allowed=200 denied=403 committed'`,
     }),
   });
 }

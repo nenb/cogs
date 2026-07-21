@@ -910,8 +910,11 @@ test("deterministic stream drives exact s3-09 setup and scenario tool transcript
   });
   if (bash[2]?.type === "toolcall_end") {
     assert.equal(bash[2].toolCall.name, "bash");
-    assert.match(String(bash[2].toolCall.arguments.command), /localhost:3210\/credential/);
-    assert.match(String(bash[2].toolCall.arguments.command), /denied=403/);
+    const command = String(bash[2].toolCall.arguments.command);
+    assert.match(command, /--proxy http:\/\/192\.0\.2\.1:18080 --noproxy '' --insecure/u);
+    assert.match(command, /https:\/\/localhost:3210\/credential/u);
+    assert.match(command, /denied=403/);
+    assert.doesNotMatch(command, /Proxy-Authorization|Bearer/u);
   }
   const final = await s309Events({
     messages: [
