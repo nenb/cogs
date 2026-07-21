@@ -4,6 +4,8 @@ umask 077
 
 operation=${1:-}
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+# shellcheck source=dev/linux-kvm/git-tools.sh
+source "$repo/dev/linux-kvm/git-tools.sh"
 state=${COGS_KVM_STATE_DIR:-$repo/.cogs-dev/linux-kvm}
 cache=${COGS_KVM_CACHE_DIR:-$repo/.cogs-dev/cache}
 image_name=debian-13-generic-amd64-20260712-2537.qcow2
@@ -148,7 +150,12 @@ write_files:
       PermitTunnel no
 mounts:
   - [LABEL=COGS_WORKSPACE, /workspace, auto, 'defaults,nosuid,nodev', '0', '2']
+  - [LABEL=COGS_GITTOOLS, /opt/cogs-git, auto, 'ro,nosuid,nodev', '0', '2']
 runcmd:
+  - [bash, -lc, 'mountpoint -q /opt/cogs-git && findmnt -rn -o OPTIONS /opt/cogs-git | grep -Eq "(^|,)ro(,|$)" && findmnt -rn -o OPTIONS /opt/cogs-git | grep -Eq "(^|,)nosuid(,|$)" && findmnt -rn -o OPTIONS /opt/cogs-git | grep -Eq "(^|,)nodev(,|$)"']
+  - [bash, -lc, 'test ! -e /usr/bin/git && test ! -L /usr/bin/git && ln -s /opt/cogs-git/bin/git /usr/bin/git']
+  - [chown, -h, root:root, /usr/bin/git]
+  - [bash, -lc, 'test -L /usr/bin/git && test "$(readlink /usr/bin/git)" = /opt/cogs-git/bin/git && test "$(stat -c "%u:%g:%F" /usr/bin/git)" = "0:0:symbolic link"']
   - [mkdir, -p, /shared/skills, /user/skills]
   - [chown, root:root, /shared/skills, /user/skills]
   - [chmod, '0700', /shared/skills, /user/skills]
@@ -179,7 +186,9 @@ prepare_disks() {
   qemu-img create -q -f qcow2 -F qcow2 -b "$cache/$image_name" "$state/root-overlay.qcow2" 12G
   qemu-img create -q -f raw "$state/workspace.img" 1G
   mkfs.ext4 -q -L COGS_WORKSPACE "$state/workspace.img"
+  prepare_git_tools_disk "$state" "$cache"
   chmod 0600 "$state/root-overlay.qcow2" "$state/workspace.img"
+  chmod 0400 "$state/git-tools.img"
 }
 
 prepare_network() {
@@ -206,6 +215,7 @@ start_vm() {
     -name cogs-stage1-linux-kvm -machine q35 -accel kvm -cpu host -smp 2 -m 2048M \
     -drive if=virtio,format=qcow2,file="$state/root-overlay.qcow2" \
     -drive if=virtio,format=raw,readonly=on,file="$state/seed.img" \
+    -drive if=virtio,format=raw,readonly=on,file="$state/git-tools.img" \
     -drive if=virtio,format=raw,file="$state/workspace.img" \
     -netdev tap,id=cogsnet,ifname="$tap",script=no,downscript=no \
     -device virtio-net-pci,netdev=cogsnet,mac=52:54:00:c0:65:01 \
@@ -241,12 +251,53 @@ with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as client:
 PY
 }
 
+verify_git_tools() {
+  local pid
+  pid=$(<"$state/qemu.pid")
+  tr '\0' ' ' < "/proc/$pid/cmdline" | grep -F -- "readonly=on,file=$state/git-tools.img" >/dev/null || {
+    echo 'FAIL: Git tools disk is not attached read-only' >&2; exit 1;
+  }
+  run_ssh 'set -euo pipefail
+    test "$(findmnt -rn -o TARGET /opt/cogs-git)" = /opt/cogs-git
+    findmnt -rn -o OPTIONS /opt/cogs-git | grep -Eq "(^|,)ro(,|$)"
+    findmnt -rn -o OPTIONS /opt/cogs-git | grep -Eq "(^|,)nosuid(,|$)"
+    findmnt -rn -o OPTIONS /opt/cogs-git | grep -Eq "(^|,)nodev(,|$)"
+    source=$(findmnt -rn -o SOURCE /opt/cogs-git)
+    test "$(blkid -s LABEL -o value "$source")" = COGS_GITTOOLS
+    test "$(blockdev --getro "$source")" = 1
+    test -L /usr/bin/git && test "$(readlink /usr/bin/git)" = /opt/cogs-git/bin/git
+    test "$(stat -c "%u:%g:%F" /usr/bin/git)" = "0:0:symbolic link"
+    test "$(stat -c "%u:%g:%a:%F" /opt/cogs-git/bin/git)" = "0:0:755:regular file"
+    ! find /opt/cogs-git -xdev \( ! -uid 0 -o ! -gid 0 -o -perm /0022 -o -type b -o -type c -o -type p -o -type s \) -print -quit | grep -q .
+    grep -qx $'"'"'git\t1:2.47.3-0+deb13u1\tamd64'"'"' /opt/cogs-git/cogs-git-tools-manifest.tsv
+    grep -qx $'"'"'libcurl3t64-gnutls\t8.14.1-2+deb13u4\tamd64'"'"' /opt/cogs-git/cogs-git-tools-manifest.tsv
+    grep -qx $'"'"'libngtcp2-16\t1.11.0-1+deb13u1\tamd64'"'"' /opt/cogs-git/cogs-git-tools-manifest.tsv
+    grep -qx $'"'"'libngtcp2-crypto-gnutls8\t1.11.0-1+deb13u1\tamd64'"'"' /opt/cogs-git/cogs-git-tools-manifest.tsv
+    test "$(git --version)" = "git version 2.47.3"
+    ! ldd /opt/cogs-git/usr/bin/git 2>/dev/null | grep -q "not found"
+    work=$(mktemp -d /tmp/cogs-git-verify.XXXXXX)
+    trap '\''rm -rf "$work"'\'' EXIT
+    cd "$work"
+    git init -q
+    git config user.email cogs@example.invalid
+    git config user.name cogs
+    printf proof > proof.txt
+    git add proof.txt
+    git commit -q -m proof
+    commit=$(git rev-parse --verify HEAD)
+    test "${#commit}" = 40
+    git notes --ref=cogs add -m note "$commit"
+    git notes --ref=cogs show "$commit" >/dev/null
+    git fsck --no-progress >/dev/null'
+}
+
 verify() {
   [[ -f "$sentinel" && ! -L "$sentinel" ]] || { echo 'FAIL: state sentinel missing' >&2; exit 1; }
   [[ -f "$state/qemu.pid" ]] && kill -0 "$(<"$state/qemu.pid")"
   query_kvm >/dev/null
   run_ssh 'test "$(id -u)" = 0'
   run_ssh 'test -d /workspace'
+  verify_git_tools
   run_ssh 'test -z "$(ip route show default)"'
   run_ssh 'test "$(cat /sys/class/net/eth0/address)" = 52:54:00:c0:65:01'
   run_ssh 'for skill_root in /shared/skills /user/skills; do test -d "$skill_root" && test ! -L "$skill_root" && test "$(realpath -e "$skill_root")" = "$skill_root" && test "$(stat -c "%u:%g:%a:%F" "$skill_root")" = "0:0:700:directory"; done'
@@ -268,7 +319,7 @@ case "$operation" in
     [[ ! -e "$state" ]] || { echo 'FAIL: linux-kvm state already exists' >&2; exit 1; }
     mkdir -p "$state"; chmod 0700 "$state"; : > "$sentinel"; chmod 0600 "$sentinel"
     trap 'status=$?; if [[ $status -ne 0 ]]; then cleanup_partial; rm -rf "$state"; fi; exit $status' EXIT
-    prepare_image; prepare_keys; prepare_seed; prepare_disks; start_vm; verify
+    prepare_image; prepare_keys; prepare_disks; prepare_seed; start_vm; verify
     trap - EXIT
     ;;
   verify) verify ;;
@@ -278,6 +329,8 @@ case "$operation" in
     stop_vm; remove_network
     rm -f "$state/root-overlay.qcow2" "$state/seed.img" "$state/user-data" "$state/meta-data" "$state/network-config"
     qemu-img create -q -f qcow2 -F qcow2 -b "$cache/$image_name" "$state/root-overlay.qcow2" 12G
+    cogs_git_tools_verify_image_file "$state/git-tools.img" 2>/dev/null || prepare_git_tools_disk "$state" "$cache"
+    cogs_git_tools_verify_image_file "$state/git-tools.img"
     prepare_seed; start_vm
     run_ssh grep -qx reset-persistent /workspace/reset-marker
     verify

@@ -2,7 +2,7 @@
 
 `driver.sh` creates a root Debian 13 guest from the immutable 2026-07-12 cloud image pinned by SHA-512. It has no TCG fallback.
 
-The trusted host generates both SSH client and guest host Ed25519 keys before boot. Cloud-init injects the keys, static `192.0.2.2/30` network, and a separately formatted persistent workspace disk. SSH always uses the precomputed host key with no password, agent, forwarding, or TOFU path.
+The trusted host generates both SSH client and guest host Ed25519 keys before boot. Cloud-init injects the keys, static `192.0.2.2/30` network, a separately formatted persistent workspace disk, and a dedicated ADR 0037 Git tools disk. The tools disk is built on the host from exactly four pinned Debian packages after size/SHA-256 and package metadata verification, attached read-only, and mounted read-only at `/opt/cogs-git` with `nosuid,nodev`; the guest does not use apt or network to obtain Git. SSH always uses the precomputed host key with no password, agent, forwarding, or TOFU path.
 
 A host-owned TAP interface has no NAT. Host INPUT permits only established SSH return traffic and the fixed candidate proxy port (`18080`); all other IPv4/IPv6 TAP input and forwarding is dropped. Guest root can replace its own firewall without changing host enforcement. Proxy processes, authorization/audit fixtures, real credentials, and CA private keys remain host-side.
 
