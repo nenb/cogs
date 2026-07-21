@@ -12,6 +12,8 @@ import {
   LAUNCHER_DETERMINISTIC_MODEL_ID,
   LAUNCHER_DETERMINISTIC_NORMAL_PROMPT,
   LAUNCHER_DETERMINISTIC_PROVIDER,
+  LAUNCHER_DETERMINISTIC_S309_BASH_MARKER,
+  LAUNCHER_DETERMINISTIC_S309_BASH_STDOUT,
   LAUNCHER_DETERMINISTIC_S309_FINAL_TEXT,
   LAUNCHER_DETERMINISTIC_S309_PROMPT,
   LAUNCHER_DETERMINISTIC_S309_SETUP_PROMPT,
@@ -871,7 +873,7 @@ const bashResult = () =>
     ok: true,
     exitCode: 0,
     signal: null,
-    stdout: "allowed=200 denied=403 committed",
+    stdout: LAUNCHER_DETERMINISTIC_S309_BASH_STDOUT,
   });
 
 async function s309Events(context: Context) {
@@ -914,6 +916,10 @@ test("deterministic stream drives exact s3-09 setup and scenario tool transcript
     assert.match(command, /--proxy http:\/\/192\.0\.2\.1:18080 --noproxy '' --insecure/u);
     assert.match(command, /https:\/\/localhost:3210\/credential/u);
     assert.match(command, /denied=403/);
+    assert.match(command, /while \[ "\$i" -lt 300 \]/u);
+    assert.match(command, /sleep 0\.02/u);
+    assert.equal(LAUNCHER_DETERMINISTIC_S309_BASH_STDOUT.split("u\n").length - 1, 300);
+    assert.match(command, new RegExp(`printf '${LAUNCHER_DETERMINISTIC_S309_BASH_MARKER}'`, "u"));
     assert.doesNotMatch(command, /Proxy-Authorization|Bearer/u);
   }
   const final = await s309Events({
@@ -930,7 +936,6 @@ test("deterministic stream drives exact s3-09 setup and scenario tool transcript
   const deltas = final.filter(
     (event): event is Extract<AssistantMessageEvent, { type: "text_delta" }> => event.type === "text_delta",
   );
-  assert.ok(final.length > 256);
   assert.equal(deltas.map((event) => event.delta).join(""), LAUNCHER_DETERMINISTIC_S309_FINAL_TEXT);
   assert.equal(final.at(-1)?.type, "done");
 });

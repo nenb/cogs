@@ -23,8 +23,13 @@ export const LAUNCHER_DETERMINISTIC_TOOL_ARGUMENTS = Object.freeze({
 export const LAUNCHER_DETERMINISTIC_FINAL_TEXT = "cogs launcher deterministic run complete" as const;
 export const LAUNCHER_DETERMINISTIC_S309_SETUP_PROMPT = "cogs launcher s3-09 setup" as const;
 export const LAUNCHER_DETERMINISTIC_S309_PROMPT = "cogs launcher s3-09 integrated" as const;
-export const LAUNCHER_DETERMINISTIC_S309_FINAL_TEXT =
-  `cogs launcher s3-09 complete ${"event-padding-".repeat(24)}` as const;
+export const LAUNCHER_DETERMINISTIC_S309_FINAL_TEXT = "cogs launcher s3-09 complete" as const;
+export const LAUNCHER_DETERMINISTIC_S309_UPDATE_COUNT = 300 as const;
+export const LAUNCHER_DETERMINISTIC_S309_UPDATE_DELAY = "0.02" as const;
+export const LAUNCHER_DETERMINISTIC_S309_UPDATE_LINE = "u\n" as const;
+export const LAUNCHER_DETERMINISTIC_S309_BASH_MARKER = "allowed=200 denied=403 committed updates=300" as const;
+export const LAUNCHER_DETERMINISTIC_S309_BASH_STDOUT =
+  `${LAUNCHER_DETERMINISTIC_S309_UPDATE_LINE.repeat(LAUNCHER_DETERMINISTIC_S309_UPDATE_COUNT)}${LAUNCHER_DETERMINISTIC_S309_BASH_MARKER}` as const;
 export const LAUNCHER_DETERMINISTIC_UNKNOWN_TEXT = "cogs launcher deterministic fallback response" as const;
 
 const GENERIC_ERROR = "launcher deterministic stream failed";
@@ -63,7 +68,7 @@ function s309BashTool(port: number | undefined) {
     id: "launcher-s309-bash-1",
     name: "bash",
     arguments: Object.freeze({
-      command: `set -eu\ntest "$(cat /workspace/s3-09/proof.txt)" = "alpha\nbeta"\nallowed=$(curl -sS --proxy http://192.0.2.1:18080 --noproxy '' --insecure -o /dev/null -w '%{http_code}' https://localhost:${port}/credential)\ndenied=$(curl -sS --proxy http://192.0.2.1:18080 --noproxy '' --insecure -o /dev/null -w '%{http_code}' https://localhost:${port}/allowed || true)\ntest "$allowed" = 200\ntest "$denied" = 403\ncd /workspace\ngit add s3-09/proof.txt\ngit commit -q -m s3-09-integrated\nprintf 'allowed=200 denied=403 committed'`,
+      command: `set -eu\ntest "$(cat /workspace/s3-09/proof.txt)" = "alpha\nbeta"\nallowed=$(curl -sS --proxy http://192.0.2.1:18080 --noproxy '' --insecure -o /dev/null -w '%{http_code}' https://localhost:${port}/credential)\ndenied=$(curl -sS --proxy http://192.0.2.1:18080 --noproxy '' --insecure -o /dev/null -w '%{http_code}' https://localhost:${port}/allowed || true)\ntest "$allowed" = 200\ntest "$denied" = 403\ncd /workspace\ngit add s3-09/proof.txt\ngit commit -q -m s3-09-integrated\ni=0; while [ "$i" -lt ${LAUNCHER_DETERMINISTIC_S309_UPDATE_COUNT} ]; do printf '${LAUNCHER_DETERMINISTIC_S309_UPDATE_LINE}'; sleep ${LAUNCHER_DETERMINISTIC_S309_UPDATE_DELAY}; i=$((i+1)); done\nprintf '${LAUNCHER_DETERMINISTIC_S309_BASH_MARKER}'`,
     }),
   });
 }
@@ -344,7 +349,8 @@ function selectMode(context: ContextSnapshot): RequestSnapshot["mode"] {
       const edit = requireToolPair(context.messages, 3, S309_EDIT_TOOL.id, S309_EDIT_TOOL.name);
       const result = requireToolPair(context.messages, 5, "launcher-s309-bash-1", "bash");
       if (!isReadAlpha(read.text) || !isEditOk(edit.text)) throw new Error(GENERIC_ERROR);
-      if (!isSuccessfulBashWithStdout(result.text, "allowed=200 denied=403 committed")) throw new Error(GENERIC_ERROR);
+      if (!isSuccessfulBashWithStdout(result.text, LAUNCHER_DETERMINISTIC_S309_BASH_STDOUT))
+        throw new Error(GENERIC_ERROR);
       return "s309-final";
     }
     throw new Error(GENERIC_ERROR);
