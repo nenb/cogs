@@ -111,6 +111,10 @@ export const s309FailureStages = Object.freeze([
   "s3-absence",
   "s3-destroy",
   "s3-cleanup",
+  "s3-trusted-relay-zero-wal-zero",
+  "s3-trusted-relay-zero-wal-pass",
+  "s3-trusted-relay-one-wal-zero",
+  "s3-trusted-relay-one-wal-pass",
 ] as const);
 export type S309FailureStage = (typeof s309FailureStages)[number];
 const s309Failures = new WeakMap<Error, S309FailureStage>();
@@ -118,6 +122,10 @@ const s309ProofFailStages: Record<string, S309FailureStage> = Object.freeze({
   "fixture-not-ready": "s3-egress-state",
   generation: "s3-egress-state",
   inflight: "s3-egress-state",
+  "relay-zero-wal-zero": "s3-trusted-relay-zero-wal-zero",
+  "relay-zero-wal-pass": "s3-trusted-relay-zero-wal-pass",
+  "relay-one-wal-zero": "s3-trusted-relay-one-wal-zero",
+  "relay-one-wal-pass": "s3-trusted-relay-one-wal-pass",
   "credential-count": "s3-egress-credential",
   "denied-forwarded": "s3-egress-denied",
   "total-count": "s3-egress-total",

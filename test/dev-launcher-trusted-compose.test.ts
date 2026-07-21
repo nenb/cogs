@@ -1780,19 +1780,19 @@ test("s3-09 trusted proof channel emits fixed failure reasons without metadata l
         "linux-kvm",
       )(settled).payload.s3_09_proof as { reason: string }
     ).reason,
-    "generation",
+    "relay-zero-wal-zero",
   );
-  for (const [pending, stage] of [
-    ["pending-relay-zero-wal-pass", "denied-forwarded"],
-    ["pending-relay-one-wal-zero", "credential-count"],
-    ["pending-relay-one-wal-pass", "total-count"],
+  for (const [pending, reason] of [
+    ["pending-relay-zero-wal-pass", "relay-zero-wal-pass"],
+    ["pending-relay-one-wal-zero", "relay-one-wal-zero"],
+    ["pending-relay-one-wal-pass", "relay-one-wal-pass"],
   ] as const) {
     assert.equal(
       (
         createS309ProofEmitter(zeroCredential.fixture, s309EgressProof(pending), "linux-kvm")(settled).payload
           .s3_09_proof as { reason: string }
       ).reason,
-      stage,
+      reason,
     );
   }
   assert.deepEqual(

@@ -106,7 +106,11 @@ test("s3-09 evidence maps only exact bounded launcher exit codes to metadata sta
   assert.equal(s3FailureStageFromLauncherExitCode(55), "s3-egress-total");
   assert.equal(s3FailureStageFromLauncherExitCode(58), "s3-export");
   assert.equal(s3FailureStageFromLauncherExitCode(62), "s3-cleanup");
-  for (const forged of [1, 39, 63, "40", { valueOf: () => 40 }, new Proxy({}, { get: () => 40 })]) {
+  assert.equal(s3FailureStageFromLauncherExitCode(63), "s3-trusted-relay-zero-wal-zero");
+  assert.equal(s3FailureStageFromLauncherExitCode(64), "s3-trusted-relay-zero-wal-pass");
+  assert.equal(s3FailureStageFromLauncherExitCode(65), "s3-trusted-relay-one-wal-zero");
+  assert.equal(s3FailureStageFromLauncherExitCode(66), "s3-trusted-relay-one-wal-pass");
+  for (const forged of [1, 39, 67, "40", { valueOf: () => 40 }, new Proxy({}, { get: () => 40 })]) {
     assert.equal(s3FailureStageFromLauncherExitCode(forged), undefined);
   }
   const report = reportFor({
@@ -117,9 +121,9 @@ test("s3-09 evidence maps only exact bounded launcher exit codes to metadata sta
     completedAt: "2026-01-01T00:00:01.000Z",
     durationMs: 1000,
     outcome: "fail",
-    diagnostics: "launcher smoke failed at s3-export",
+    diagnostics: "launcher smoke failed at s3-trusted-relay-one-wal-pass",
   });
-  assert.equal(report.tests[0]?.diagnostics_redacted, "launcher smoke failed at s3-export");
+  assert.equal(report.tests[0]?.diagnostics_redacted, "launcher smoke failed at s3-trusted-relay-one-wal-pass");
 });
 
 test("launcher command descriptor uses exact node and minimal env with deadline", () => {
