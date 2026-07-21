@@ -76,12 +76,15 @@ export type EnvoyBinaryDescriptor = Readonly<{
   cleanup: "owned";
 }>;
 
+type S309PendingReason =
+  | "relay-zero-wal-zero"
+  | "relay-zero-wal-pass"
+  | "relay-one-wal-zero"
+  | "relay-one-wal-pass"
+  | "wal";
+
 export type S309CompletionProof = Readonly<
-  | {
-      version: "cogs.launcher.s3-09-trusted-proof/v1alpha1";
-      outcome: "pending";
-      reason: "relay-zero" | "relay-one" | "wal";
-    }
+  | { version: "cogs.launcher.s3-09-trusted-proof/v1alpha1"; outcome: "pending"; reason: S309PendingReason }
   | {
       version: "cogs.launcher.s3-09-trusted-proof/v1alpha1";
       outcome: "pass";
@@ -234,7 +237,7 @@ export async function startEnvoyEgress(rawOptions: Options): Promise<EnvoyEgress
   let closed = false;
   let drainedCompletions = 0;
   let completionOutcome: S309CompletionProof["outcome"] = "pending";
-  let completionPendingReason: "relay-zero" | "relay-one" | "wal" = "relay-zero";
+  let completionPendingReason: S309PendingReason = "relay-zero-wal-zero";
   let completionMatchesSeen = 0;
   let completionFailReason: "generation" | "total-count" = "generation";
   let replacementEvents = 0;
@@ -342,12 +345,9 @@ export async function startEnvoyEgress(rawOptions: Options): Promise<EnvoyEgress
             ) {
               completionOutcome = "fail";
               completionFailReason = "total-count";
-            } else if (relayState !== "pass") {
+            } else if (relayState !== "pass" || walState !== "pass") {
               completionOutcome = "pending";
-              completionPendingReason = relayState;
-            } else if (walState !== "pass") {
-              completionOutcome = "pending";
-              completionPendingReason = "wal";
+              completionPendingReason = pendingReason(relayState, walState);
             } else {
               completionOutcome = "pass";
             }
@@ -684,6 +684,11 @@ function relayProof(relay: KvmRelay | undefined, target: number): "relay-zero" |
   )
     return "fail";
   return snap.acceptedConnections === 2 ? "pass" : snap.acceptedConnections === 1 ? "relay-one" : "relay-zero";
+}
+
+function pendingReason(relay: "relay-zero" | "relay-one" | "pass", wal: "pending" | "pass"): S309PendingReason {
+  if (relay === "pass") return "wal";
+  return `${relay}-wal-${wal === "pass" ? "pass" : "zero"}` as S309PendingReason;
 }
 
 function walProof(

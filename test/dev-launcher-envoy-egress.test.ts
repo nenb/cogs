@@ -331,7 +331,7 @@ test("envoy egress S3 completion proof is bounded, cached, and fail closed", asy
     assert.deepEqual(h.s309CompletionProof(), {
       version: "cogs.launcher.s3-09-trusted-proof/v1alpha1",
       outcome: "pending",
-      reason: "relay-zero",
+      reason: "relay-zero-wal-zero",
     });
     assert.deepEqual(h.s309CompletionProof(), {
       version: "cogs.launcher.s3-09-trusted-proof/v1alpha1",
@@ -399,9 +399,11 @@ test("envoy egress S3 completion proof keeps draining after pass and remains pas
 
 test("envoy egress S3 proof rejects relay and WAL anomalies", async () => {
   const cases = [
+    ["relay-zero-wal-pass", { relay: { acceptedConnections: 0 }, wal: {} }],
     ["relay-one", { relay: { acceptedConnections: 1 }, wal: {} }],
     ["relay-denied", { relay: { deniedConnections: 1 }, wal: {} }],
     ["relay-target", { relay: { activeTarget: 12345 }, wal: {} }],
+    ["relay-one-wal-zero", { relay: { acceptedConnections: 1 }, wal: { empty: true } }],
     ["wal-zero", { relay: {}, wal: { empty: true } }],
     ["wal-extra", { relay: {}, wal: { extra: true } }],
     ["wal-route", { relay: {}, wal: { route_id: "wrong" } }],
@@ -453,11 +455,18 @@ test("envoy egress S3 proof rejects relay and WAL anomalies", async () => {
       });
       assert.deepEqual(
         h.s309CompletionProof(),
-        name === "relay-one" || name === "wal-zero"
+        name === "relay-one" || name === "relay-zero-wal-pass" || name === "relay-one-wal-zero" || name === "wal-zero"
           ? {
               version: "cogs.launcher.s3-09-trusted-proof/v1alpha1",
               outcome: "pending",
-              reason: name === "wal-zero" ? "wal" : "relay-one",
+              reason:
+                name === "wal-zero"
+                  ? "wal"
+                  : name === "relay-one-wal-zero"
+                    ? "relay-one-wal-zero"
+                    : name === "relay-one"
+                      ? "relay-one-wal-pass"
+                      : "relay-zero-wal-pass",
             }
           : { version: "cogs.launcher.s3-09-trusted-proof/v1alpha1", outcome: "fail", reason: "total-count" },
         name,
