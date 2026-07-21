@@ -372,8 +372,8 @@ type LiveEvents = {
   closed: boolean;
 };
 
-function startLiveEvents(client: ApiClient, signal?: AbortSignal): LiveEvents {
-  const iterator = client.events(0, 1000, signal);
+function startLiveEvents(client: ApiClient, signal?: AbortSignal, after = 0): LiveEvents {
+  const iterator = client.events(after, 1000, signal);
   return { iterator, first: iterator.next(), closed: false };
 }
 
@@ -545,17 +545,24 @@ async function s309(
         });
         live.closed = true;
         await live.iterator.return?.(undefined);
-        stage = "s3-proof-run";
-        const proofCorrelation = runCorrelation(
-          await client.request("run", Object.freeze({ content: LAUNCHER_DETERMINISTIC_S309_PROOF_PROMPT }), signal),
-        );
-        if (proofCorrelation === setupCorrelation || proofCorrelation === correlation)
-          throw new Error("launcher operation failed");
-        stage = "s3-proof-terminal";
-        const proofObserved = await tailTerminalEvent(client, proofCorrelation, signal);
-        if (proofObserved.kind !== "run_settled") throw new Error("launcher operation failed");
-        stage = "s3-egress-shape";
-        egressProof(proofObserved);
+        const proofLive = startLiveEvents(client, signal, observed.lastEventId);
+        try {
+          stage = "s3-proof-run";
+          const proofCorrelation = runCorrelation(
+            await client.request("run", Object.freeze({ content: LAUNCHER_DETERMINISTIC_S309_PROOF_PROMPT }), signal),
+          );
+          if (proofCorrelation === setupCorrelation || proofCorrelation === correlation)
+            throw new Error("launcher operation failed");
+          stage = "s3-proof-terminal";
+          const proofObserved = await tailTerminalEventFromLive(client, proofLive, proofCorrelation, signal);
+          if (proofObserved.kind !== "run_settled") throw new Error("launcher operation failed");
+          proofLive.closed = true;
+          await proofLive.iterator.return?.(undefined);
+          stage = "s3-egress-shape";
+          egressProof(proofObserved);
+        } finally {
+          if (!proofLive.closed) await proofLive.iterator.return?.(undefined).catch(() => undefined);
+        }
         stage = "s3-replay-gap";
         await assertReplayGap(client, signal);
         stage = "s3-history";

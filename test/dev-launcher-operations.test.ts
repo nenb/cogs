@@ -386,6 +386,7 @@ test("s3-09 runs fixed integrated KVM scenario with metadata-only proof", async 
             calls.push(`events:${after ?? 0}:${limit ?? 0}`);
             if (runCount === 2 && after === 0 && !proofTerminalSent && limit !== 1000)
               throw new Error("unexpected live limit");
+            if (runCount >= 2 && after === 259 && limit !== 1000) throw new Error("unexpected proof live limit");
             if (after === 0 && proofTerminalSent) {
               const error = new Error("launcher api replay gap");
               Object.defineProperty(error, "code", { value: "COGS_LAUNCHER_API_REPLAY_GAP" });
@@ -398,21 +399,8 @@ test("s3-09 runs fixed integrated KVM scenario with metadata-only proof", async 
               }) as ApiEvent;
               return;
             }
-            yield Object.freeze({
-              id: 2,
-              data: Object.freeze({ kind: "git_mapping", correlation_id: "s309-2", payload: {} }),
-            }) as ApiEvent;
-            for (let id = 3; id <= 258; id += 1) {
-              yield Object.freeze({
-                id,
-                data: Object.freeze({ kind: "tool_update", correlation_id: "s309-2", payload: { chunk: "metadata" } }),
-              }) as ApiEvent;
-            }
-            yield Object.freeze({
-              id: 259,
-              data: Object.freeze({ kind: "run_settled", correlation_id: "s309-2", payload: {} }),
-            }) as ApiEvent;
-            if (runCount === 3) {
+            if (after === 259) {
+              while (runCount < 3) await new Promise((resolve) => setTimeout(resolve, 0));
               proofTerminalSent = true;
               yield Object.freeze({
                 id: 260,
@@ -434,7 +422,22 @@ test("s3-09 runs fixed integrated KVM scenario with metadata-only proof", async 
                   }),
                 }),
               }) as ApiEvent;
+              return;
             }
+            yield Object.freeze({
+              id: 2,
+              data: Object.freeze({ kind: "git_mapping", correlation_id: "s309-2", payload: {} }),
+            }) as ApiEvent;
+            for (let id = 3; id <= 258; id += 1) {
+              yield Object.freeze({
+                id,
+                data: Object.freeze({ kind: "tool_update", correlation_id: "s309-2", payload: { chunk: "metadata" } }),
+              }) as ApiEvent;
+            }
+            yield Object.freeze({
+              id: 259,
+              data: Object.freeze({ kind: "run_settled", correlation_id: "s309-2", payload: {} }),
+            }) as ApiEvent;
           }) as ApiClient["events"],
         }),
       ) as never,
@@ -448,7 +451,10 @@ test("s3-09 runs fixed integrated KVM scenario with metadata-only proof", async 
     assert.equal(result.egressProof, true);
     assert.equal(result.liveEventCount, 259);
     assert.equal(result.liveEventCount > 32, true);
+    const proofEventsIndex = calls.indexOf("events:259:1000");
+    const proofRunIndex = calls.indexOf(`content:${LAUNCHER_DETERMINISTIC_S309_PROOF_PROMPT}`);
     assert(calls.includes("events:0:1000"));
+    assert(proofEventsIndex >= 0 && proofRunIndex > proofEventsIndex);
     assert.deepEqual(result.history, { pages: 2, entries: 4 });
     assert.deepEqual(result.rawExport, {
       descriptorValidated: true,
@@ -552,18 +558,19 @@ test("s3-09 proof path fails closed on missing terminal payload", async () => {
               return Object.freeze({ version: "cogs.export-response/v1alpha1", sensitive: true, bundle: {} });
             throw new Error(String(input));
           }) as ApiClient["request"],
-          events: Object.freeze(async function* () {
+          events: Object.freeze(async function* (after?: number) {
+            if (after === 259) {
+              while (runCount < 3) await new Promise((resolve) => setTimeout(resolve, 0));
+              yield Object.freeze({
+                id: 260,
+                data: Object.freeze({ kind: "run_settled", correlation_id: "s309-bad-3" }),
+              }) as ApiEvent;
+              return;
+            }
             if (runCount === 1) {
               yield Object.freeze({
                 id: 1,
                 data: Object.freeze({ kind: "run_settled", correlation_id: "s309-bad-1" }),
-              }) as ApiEvent;
-              return;
-            }
-            if (runCount === 3) {
-              yield Object.freeze({
-                id: 260,
-                data: Object.freeze({ kind: "run_settled", correlation_id: "s309-bad-3" }),
               }) as ApiEvent;
               return;
             }
@@ -626,7 +633,11 @@ test("s3-09 proof observation run failures use fixed stages", async () => {
                       correlation_id: `proof-${runCount}`,
                     });
                   }) as ApiClient["request"],
-                  events: Object.freeze(async function* () {
+                  events: Object.freeze(async function* (after?: number) {
+                    if (after === 35) {
+                      while (runCount < 3) await new Promise((resolve) => setTimeout(resolve, 0));
+                      return;
+                    }
                     if (runCount === 1)
                       return yield Object.freeze({
                         id: 1,
@@ -723,13 +734,14 @@ test("s3-09 proof path maps fixed egress reasons and rejects hostile proof shape
                         })
                       : Object.freeze({ accepted: true }),
                   ) as ApiClient["request"],
-                  events: Object.freeze(async function* () {
+                  events: Object.freeze(async function* (after?: number) {
                     if (runCount === 1)
                       return yield Object.freeze({
                         id: 1,
                         data: Object.freeze({ kind: "run_settled", correlation_id: "s309-egress-1", payload: {} }),
                       }) as ApiEvent;
-                    if (runCount === 3)
+                    if (after === 35) {
+                      while (runCount < 3) await new Promise((resolve) => setTimeout(resolve, 0));
                       return yield Object.freeze({
                         id: 36,
                         data: Object.freeze({
@@ -738,6 +750,7 @@ test("s3-09 proof path maps fixed egress reasons and rejects hostile proof shape
                           payload: jsonRecord({ s3_09_proof: proof }),
                         }),
                       }) as ApiEvent;
+                    }
                     yield Object.freeze({
                       id: 2,
                       data: Object.freeze({ kind: "git_mapping", correlation_id: "s309-egress-2", payload: {} }),
