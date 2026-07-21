@@ -331,6 +331,7 @@ test("envoy egress S3 completion proof is bounded, cached, and fail closed", asy
     assert.deepEqual(h.s309CompletionProof(), {
       version: "cogs.launcher.s3-09-trusted-proof/v1alpha1",
       outcome: "pending",
+      reason: "relay",
     });
     assert.deepEqual(h.s309CompletionProof(), {
       version: "cogs.launcher.s3-09-trusted-proof/v1alpha1",
@@ -401,6 +402,7 @@ test("envoy egress S3 proof rejects relay and WAL anomalies", async () => {
     ["relay-one", { relay: { acceptedConnections: 1 }, wal: {} }],
     ["relay-denied", { relay: { deniedConnections: 1 }, wal: {} }],
     ["relay-target", { relay: { activeTarget: 12345 }, wal: {} }],
+    ["wal-zero", { relay: {}, wal: { empty: true } }],
     ["wal-extra", { relay: {}, wal: { extra: true } }],
     ["wal-route", { relay: {}, wal: { route_id: "wrong" } }],
     ["wal-method", { relay: {}, wal: { method: "POST" } }],
@@ -437,9 +439,11 @@ test("envoy egress S3 proof rejects relay and WAL anomalies", async () => {
               replacementRequired: false,
               auditRecords: () =>
                 Object.freeze(
-                  "extra" in value.wal
-                    ? [walRecord(routeId, doc.session_id), walRecord(routeId, doc.session_id, { sequence: 2 })]
-                    : [walRecord(routeId, doc.session_id, value.wal)],
+                  "empty" in value.wal
+                    ? []
+                    : "extra" in value.wal
+                      ? [walRecord(routeId, doc.session_id), walRecord(routeId, doc.session_id, { sequence: 2 })]
+                      : [walRecord(routeId, doc.session_id, value.wal)],
                 ),
               drainCompletions: () => Object.freeze([]),
               close: async () => undefined,
@@ -449,8 +453,12 @@ test("envoy egress S3 proof rejects relay and WAL anomalies", async () => {
       });
       assert.deepEqual(
         h.s309CompletionProof(),
-        name === "relay-one"
-          ? { version: "cogs.launcher.s3-09-trusted-proof/v1alpha1", outcome: "pending" }
+        name === "relay-one" || name === "wal-zero"
+          ? {
+              version: "cogs.launcher.s3-09-trusted-proof/v1alpha1",
+              outcome: "pending",
+              reason: name === "wal-zero" ? "wal" : "relay",
+            }
           : { version: "cogs.launcher.s3-09-trusted-proof/v1alpha1", outcome: "fail", reason: "total-count" },
         name,
       );

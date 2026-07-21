@@ -1461,6 +1461,7 @@ function seams(calls: string[], captured: Record<string, unknown>): Partial<Trus
           Object.freeze({
             version: "cogs.launcher.s3-09-trusted-proof/v1alpha1",
             outcome: "pending",
+            reason: "relay",
           }),
         proxyCapability: Object.freeze({
           withSecret: (op: (secret: string) => unknown) => op("PROXY_CAPABILITY_123"),
@@ -1607,7 +1608,9 @@ function fakeLifecycle(options: Parameters<TrustedCompositionSeams["createLifecy
   });
 }
 
-function s309EgressProof(...outcomes: readonly ("pending" | "pass" | "generation" | "total-count")[]) {
+function s309EgressProof(
+  ...outcomes: readonly ("pending" | "pending-relay" | "pending-wal" | "pass" | "generation" | "total-count")[]
+) {
   let calls = 0;
   return Object.freeze({
     s309CompletionProof: () => {
@@ -1621,8 +1624,8 @@ function s309EgressProof(...outcomes: readonly ("pending" | "pass" | "generation
               trusted_relay_exact: true,
               completion_observer_consistent: true,
             }
-          : outcome === "pending"
-            ? { outcome: "pending" }
+          : outcome === "pending" || outcome === "pending-relay" || outcome === "pending-wal"
+            ? { outcome: "pending", reason: outcome === "pending-wal" ? "wal" : "relay" }
             : { outcome: "fail", reason: outcome }),
       });
     },
@@ -1639,7 +1642,7 @@ test("s3-09 trusted proof channel captures baseline and binds to serialized sett
       resetCalls += 1;
     },
   } as never;
-  const emit = createS309ProofEmitter(fixture, s309EgressProof("pending", "pass"), "linux-kvm");
+  const emit = createS309ProofEmitter(fixture, s309EgressProof("pending-wal", "pass"), "linux-kvm");
   const event = (correlation_id: string) =>
     Object.freeze({ kind: "run_settled", correlation_id, payload: Object.freeze({}) }) as never;
   assert.equal((emit(event("setup")).payload.s3_09_proof as { reason: string }).reason, "credential-count");
@@ -1733,7 +1736,7 @@ test("s3-09 trusted proof channel emits fixed failure reasons without metadata l
     const { fixture, advance } = make(baseline, snapshot);
     const emit = createS309ProofEmitter(
       fixture,
-      s309EgressProof(reason === "credential-count" ? "pending" : "pass"),
+      s309EgressProof(reason === "credential-count" ? "pending-wal" : "pass"),
       "linux-kvm",
     );
     advance();
@@ -1751,10 +1754,17 @@ test("s3-09 trusted proof channel emits fixed failure reasons without metadata l
   assert.equal((lateExtra(settled).payload.s3_09_proof as { reason: string }).reason, "total-count");
   assert.equal(
     (
-      createS309ProofEmitter(zeroCredential.fixture, s309EgressProof("pending"), "linux-kvm")(settled).payload
+      createS309ProofEmitter(zeroCredential.fixture, s309EgressProof("pending-wal"), "linux-kvm")(settled).payload
         .s3_09_proof as { reason: string }
     ).reason,
     "credential-count",
+  );
+  assert.equal(
+    (
+      createS309ProofEmitter(zeroCredential.fixture, s309EgressProof("pending-relay"), "linux-kvm")(settled).payload
+        .s3_09_proof as { reason: string }
+    ).reason,
+    "generation",
   );
   assert.deepEqual(
     createS309ProofEmitter(zeroCredential.fixture, s309EgressProof("pass"), "linux-kvm")(settled).payload.s3_09_proof,

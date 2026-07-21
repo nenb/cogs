@@ -77,7 +77,7 @@ export type EnvoyBinaryDescriptor = Readonly<{
 }>;
 
 export type S309CompletionProof = Readonly<
-  | { version: "cogs.launcher.s3-09-trusted-proof/v1alpha1"; outcome: "pending" }
+  | { version: "cogs.launcher.s3-09-trusted-proof/v1alpha1"; outcome: "pending"; reason: "relay" | "wal" }
   | {
       version: "cogs.launcher.s3-09-trusted-proof/v1alpha1";
       outcome: "pass";
@@ -230,6 +230,7 @@ export async function startEnvoyEgress(rawOptions: Options): Promise<EnvoyEgress
   let closed = false;
   let drainedCompletions = 0;
   let completionOutcome: S309CompletionProof["outcome"] = "pending";
+  let completionPendingReason: "relay" | "wal" = "relay";
   let completionMatchesSeen = 0;
   let completionFailReason: "generation" | "total-count" = "generation";
   let replacementEvents = 0;
@@ -337,10 +338,14 @@ export async function startEnvoyEgress(rawOptions: Options): Promise<EnvoyEgress
             ) {
               completionOutcome = "fail";
               completionFailReason = "total-count";
-            } else if (relayState === "pass" && walState === "pass") {
-              completionOutcome = "pass";
-            } else {
+            } else if (relayState !== "pass") {
               completionOutcome = "pending";
+              completionPendingReason = "relay";
+            } else if (walState !== "pass") {
+              completionOutcome = "pending";
+              completionPendingReason = "wal";
+            } else {
+              completionOutcome = "pass";
             }
           } catch {
             completionOutcome = "fail";
@@ -357,6 +362,7 @@ export async function startEnvoyEgress(rawOptions: Options): Promise<EnvoyEgress
                 completion_observer_consistent: true as const,
               }
             : {}),
+          ...(completionOutcome === "pending" ? { reason: completionPendingReason } : {}),
           ...(completionOutcome === "fail" ? { reason: completionFailReason } : {}),
         }) as S309CompletionProof;
       },

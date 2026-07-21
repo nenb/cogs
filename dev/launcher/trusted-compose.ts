@@ -596,7 +596,9 @@ export function createS309ProofEmitter(
           : snap.inflight !== 0
             ? "inflight"
             : completion.outcome === "pending"
-              ? "credential-count"
+              ? completion.reason === "relay"
+                ? "generation"
+                : "credential-count"
               : completion.outcome === "fail"
                 ? completion.reason
                 : credential < 0 || deniedForwarded < 0 || total < 0 || snapTotal < 0
