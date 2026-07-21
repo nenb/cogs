@@ -310,7 +310,13 @@ function selectMode(context: ContextSnapshot): RequestSnapshot["mode"] {
   if (prompt === LAUNCHER_DETERMINISTIC_NORMAL_PROMPT) {
     if (context.messages.length === 1) return "tool";
     if (context.messages.length !== 3) throw new Error(GENERIC_ERROR);
-    requireToolPair(context.messages, 1, LAUNCHER_DETERMINISTIC_TOOL_ID, LAUNCHER_DETERMINISTIC_TOOL_NAME);
+    const result = requireToolPair(
+      context.messages,
+      1,
+      LAUNCHER_DETERMINISTIC_TOOL_ID,
+      LAUNCHER_DETERMINISTIC_TOOL_NAME,
+    );
+    if (!isExactSuccessfulBashResult(result.text)) throw new Error(GENERIC_ERROR);
     return "final";
   }
   if (prompt === LAUNCHER_DETERMINISTIC_S309_SETUP_PROMPT) {

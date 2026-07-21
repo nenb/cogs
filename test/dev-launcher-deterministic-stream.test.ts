@@ -572,6 +572,14 @@ test("deterministic stream accepts only pinned one-text-block user message conte
   assert.equal(invoked, false);
 });
 
+test("deterministic stream rejects normal final with wrong bash result", async () => {
+  const bad = matchingFinalContext();
+  const item = (bad.messages[2] as ReturnType<typeof toolResultMessage>).content[0];
+  if (item === undefined) throw new Error("missing result");
+  item.text = JSON.stringify({ ok: true, stdout: "wrong" });
+  assertGenericError(await eventsFor(bad));
+});
+
 test("deterministic stream rejects final-turn reorder, extra content, metadata mismatch, and errored results", async () => {
   const reordered = matchingFinalContext();
   const [firstMessage, secondMessage, thirdMessage] = reordered.messages;

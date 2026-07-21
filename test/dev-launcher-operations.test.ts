@@ -328,7 +328,11 @@ test("s3-09 runs fixed integrated KVM scenario with metadata-only proof", async 
             throw new Error("unexpected");
           }) as ApiClient["request"],
           events: Object.freeze(async function* (after?: number) {
-            if (after === 0 && scenarioTerminalSent) throw new Error("launcher api replay gap");
+            if (after === 0 && scenarioTerminalSent) {
+              const error = new Error("launcher api replay gap");
+              Object.defineProperty(error, "code", { value: "COGS_LAUNCHER_API_REPLAY_GAP" });
+              throw error;
+            }
             if (runCount === 1) {
               yield Object.freeze({
                 id: 1,
@@ -398,6 +402,56 @@ test("s3-09 runs fixed integrated KVM scenario with metadata-only proof", async 
   }
 });
 
+test("s3-09 proof path fails closed on missing terminal payload", async () => {
+  const { dir, ctx } = await roots();
+  let runCount = 0;
+  try {
+    const seams = Object.freeze({
+      ...opSeams([]),
+      createApiClient: Object.freeze(() =>
+        Object.freeze({
+          request: Object.freeze(async (op: string, input?: Readonly<Record<string, unknown>>) => {
+            if (op === "run")
+              return Object.freeze({
+                accepted: true,
+                duplicate: false,
+                run_state: "running",
+                correlation_id: `s309-bad-${++runCount}`,
+              });
+            if (op === "shutdown") return Object.freeze({ accepted: true });
+            if (op === "entries") return Object.freeze({ version: "cogs.entries/v1alpha1", entries: [{}, {}] });
+            if (op === "export")
+              return Object.freeze({ version: "cogs.export-response/v1alpha1", sensitive: true, bundle: {} });
+            throw new Error(String(input));
+          }) as ApiClient["request"],
+          events: Object.freeze(async function* () {
+            if (runCount === 1) {
+              yield Object.freeze({
+                id: 1,
+                data: Object.freeze({ kind: "run_settled", correlation_id: "s309-bad-1" }),
+              }) as ApiEvent;
+              return;
+            }
+            yield Object.freeze({
+              id: 2,
+              data: Object.freeze({ kind: "git_mapping", correlation_id: "s309-bad-2" }),
+            }) as ApiEvent;
+            yield Object.freeze({
+              id: 3,
+              data: Object.freeze({ kind: "run_settled", correlation_id: "s309-bad-2" }),
+            }) as ApiEvent;
+          }) as ApiClient["events"],
+        }),
+      ) as never,
+    });
+    await assert.rejects(() =>
+      runLauncherOperation(Object.freeze({ op: "s3-09", profile: "linux-kvm", state: "s309bad" }), ctx, seams),
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("s3-09 rejects unsupported profiles before side effects", async () => {
   const { dir, ctx } = await roots();
   const calls: string[] = [];
@@ -462,6 +516,51 @@ test("shutdown still stops when token read fails", async () => {
       ),
     );
     assert(calls.includes("stop"));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("run terminal tail preserves generic no-payload terminal handling", async () => {
+  const { dir, ctx } = await roots();
+  try {
+    await sandbox(ctx, "generic-terminal");
+    await ready(
+      await resolveLauncherState({ root: ctx.launcherRoot, name: "generic-terminal", sourceRevision: revision }),
+    );
+    const hostilePayload = new Proxy(Object.freeze({}), {
+      get() {
+        throw new Error("payload touched");
+      },
+    });
+    const seams = Object.freeze({
+      ...opSeams([]),
+      createApiClient: Object.freeze(() =>
+        Object.freeze({
+          request: Object.freeze(async () =>
+            Object.freeze({ correlation_id: "corr-generic", accepted: true }),
+          ) as ApiClient["request"],
+          events: Object.freeze(async function* () {
+            yield Object.freeze({
+              id: 1,
+              data: Object.freeze({ kind: "warning", correlation_id: "corr-generic", payload: hostilePayload }),
+            }) as ApiEvent;
+            yield Object.freeze({
+              id: 2,
+              data: Object.freeze({ kind: "run_aborted", correlation_id: "corr-generic" }),
+            }) as ApiEvent;
+          }) as ApiClient["events"],
+        }),
+      ) as never,
+    });
+    assert.deepEqual(
+      await runLauncherOperation(
+        Object.freeze({ op: "run", profile: "linux-kvm", state: "generic-terminal", promptFile: "p.txt" }),
+        ctx,
+        seams,
+      ),
+      { op: "run", terminal: "run_aborted", lastEventId: 2, eventCount: 2 },
+    );
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

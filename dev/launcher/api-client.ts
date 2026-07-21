@@ -23,6 +23,7 @@ const idRe = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
 const isoRe = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u;
 const runStates = new Set(["idle", "running", "settled", "aborting", "shutdown"]);
 const lifecycles = new Set(["created", "starting", "ready", "draining", "stopped", "failed"]);
+const replayGapCode = "COGS_LAUNCHER_API_REPLAY_GAP";
 const eventKinds = new Set([
   "pi_event",
   "tool_start",
@@ -38,6 +39,10 @@ const eventKinds = new Set([
   "run_aborted",
   "shutdown_ready",
 ]);
+
+export function isReplayGapError(error: unknown): boolean {
+  return error instanceof Error && (error as { code?: unknown }).code === replayGapCode;
+}
 
 export function createApiClient(options: {
   port: number;
@@ -101,7 +106,7 @@ function createApiClientChecked(options: {
         if (count >= limit) return;
       }
     } catch (error) {
-      if (error instanceof Error && error.message === "launcher api replay gap") throw error;
+      if (isReplayGapError(error)) throw error;
       throw new Error("launcher api failed");
     } finally {
       if (reader) await cancelReader(reader);
@@ -114,6 +119,12 @@ function createApiClientChecked(options: {
     }
   });
   return Object.freeze({ request, events });
+}
+
+function replayGapError(): Error {
+  const error = new Error("launcher api replay gap");
+  Object.defineProperty(error, "code", { value: replayGapCode, enumerable: false });
+  return error;
 }
 
 function context(timeoutMs: number, parent?: AbortSignal): Ctx {
@@ -186,7 +197,7 @@ async function fetchChecked(
     if (d.url?.get || d.redirected?.get || d.status?.get || d.headers?.get || d.body?.get) fail();
     const ct = res.headers.get("content-type")?.split(";")[0]?.trim();
     const len = res.headers.get("content-length");
-    if (accept === "text/event-stream" && res.status === 409) throw new Error("launcher api replay gap");
+    if (accept === "text/event-stream" && res.status === 409) throw replayGapError();
     if (
       res.url !== String(url) ||
       res.redirected ||
@@ -200,7 +211,7 @@ async function fetchChecked(
     return res;
   } catch (error) {
     if (res) await cancelBody(res);
-    if (error instanceof Error && error.message === "launcher api replay gap") throw error;
+    if (isReplayGapError(error)) throw error;
     throw new Error("launcher api failed");
   }
 }

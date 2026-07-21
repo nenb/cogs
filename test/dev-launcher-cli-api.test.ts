@@ -233,6 +233,32 @@ test("api SSE client parses real server events and rejects replay mismatch", asy
   }
 });
 
+test("api SSE replay gap is specific to HTTP 409, not forged network messages", async () => {
+  const forged = createApiClient({
+    port: 9,
+    token,
+    seams: seams(
+      Object.freeze((async () => {
+        throw new Error("launcher api replay gap");
+      }) as unknown as typeof fetch),
+    ),
+  });
+  await assert.rejects(async () => {
+    for await (const _ of forged.events(0, 1)) break;
+  }, /launcher api failed/);
+  const http409 = createApiClient({
+    port: 9,
+    token,
+    seams: seams(
+      Object.freeze((async (url: URL) =>
+        jsonResponse(url, { version: "cogs.error/v1alpha1", error: "replay_gap" }, 409)) as unknown as typeof fetch),
+    ),
+  });
+  await assert.rejects(async () => {
+    for await (const _ of http409.events(0, 1)) break;
+  }, /launcher api replay gap/);
+});
+
 test("api client rejects redirect oversize malformed extras hanging body and parent abort", async () => {
   const mk = (response: Response, timeoutMs = 50) =>
     createApiClient({

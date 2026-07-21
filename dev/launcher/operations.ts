@@ -1,6 +1,6 @@
 import { lstat, realpath } from "node:fs/promises";
 import type { ApiClient, ApiEvent, ApiSeams } from "./api-client.ts";
-import { createApiClient } from "./api-client.ts";
+import { createApiClient, isReplayGapError } from "./api-client.ts";
 import type { CliRequest } from "./cli.ts";
 import { readPromptFile, writeSensitiveExport } from "./cli.ts";
 import { deepFreeze, type LauncherAuthority, type LauncherPhase, type LauncherProfile } from "./contract.ts";
@@ -276,8 +276,22 @@ async function withReadyClient<T>(
 }
 
 async function tailTerminal(client: ApiClient, correlation: string, signal?: AbortSignal) {
-  const terminal = await tailTerminalEvent(client, correlation, signal);
-  return deepFreeze({ terminal: terminal.kind, lastEventId: terminal.lastEventId, eventCount: terminal.eventCount });
+  let last = 0,
+    count = 0;
+  for (;;) {
+    let saw = false;
+    for await (const event of client.events(last, 100, signal)) {
+      saw = true;
+      last = eventId(event);
+      count += 1;
+      if (count > 1000) throw new Error("launcher operation failed");
+      const data = eventData(event),
+        kind = enumValue(data.kind, eventKinds);
+      if (terminalKinds.has(kind) && data.correlation_id === correlation)
+        return deepFreeze({ terminal: kind, lastEventId: last, eventCount: count });
+    }
+    if (!saw) throw new Error("launcher operation failed");
+  }
 }
 
 async function tailTerminalProof(client: ApiClient, correlation: string, signal?: AbortSignal, live?: LiveEvents) {
@@ -325,8 +339,7 @@ async function tailTerminalEventFromLive(
 ) {
   let last = 0,
     count = 0,
-    gitMapping = false,
-    checkpoint = false;
+    gitMapping = false;
   const visit = (event: ApiEvent) => {
     last = eventId(event);
     count += 1;
@@ -334,7 +347,6 @@ async function tailTerminalEventFromLive(
     const data = eventData(event),
       kind = enumValue(data.kind, eventKinds);
     if (data.correlation_id === correlation && kind === "git_mapping") gitMapping = true;
-    if (data.correlation_id === correlation && kind === "checkpoint") checkpoint = true;
     if (terminalKinds.has(kind) && data.correlation_id === correlation)
       return deepFreeze({
         kind,
@@ -342,7 +354,6 @@ async function tailTerminalEventFromLive(
         eventCount: count,
         payload: exactPlain(data.payload),
         gitMapping,
-        checkpoint,
       });
     return undefined;
   };
@@ -355,7 +366,7 @@ async function tailTerminalEventFromLive(
     const terminal = visit(event);
     if (terminal) return terminal;
   }
-  return tailTerminalEvent(client, correlation, signal, last, count, gitMapping, checkpoint);
+  return tailTerminalEvent(client, correlation, signal, last, count, gitMapping);
 }
 
 async function tailTerminalEvent(
@@ -365,12 +376,10 @@ async function tailTerminalEvent(
   startLast = 0,
   startCount = 0,
   startGitMapping = false,
-  startCheckpoint = false,
 ) {
   let last = startLast,
     count = startCount,
-    gitMapping = startGitMapping,
-    checkpoint = startCheckpoint;
+    gitMapping = startGitMapping;
   for (;;) {
     let saw = false;
     for await (const event of client.events(last, 100, signal)) {
@@ -381,7 +390,6 @@ async function tailTerminalEvent(
       const data = eventData(event),
         kind = enumValue(data.kind, eventKinds);
       if (data.correlation_id === correlation && kind === "git_mapping") gitMapping = true;
-      if (data.correlation_id === correlation && kind === "checkpoint") checkpoint = true;
       if (terminalKinds.has(kind) && data.correlation_id === correlation)
         return deepFreeze({
           kind,
@@ -389,7 +397,6 @@ async function tailTerminalEvent(
           eventCount: count,
           payload: exactPlain(data.payload),
           gitMapping,
-          checkpoint,
         });
     }
     if (!saw) throw new Error("launcher operation failed");
@@ -400,7 +407,7 @@ async function assertReplayGap(client: ApiClient, signal?: AbortSignal): Promise
   try {
     for await (const _event of client.events(0, 1, signal)) return void failOp();
   } catch (error) {
-    if (error instanceof Error && error.message === "launcher api replay gap") return;
+    if (isReplayGapError(error)) return;
     throw new Error("launcher operation failed");
   }
   failOp();
