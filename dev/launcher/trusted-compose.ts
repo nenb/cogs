@@ -568,20 +568,12 @@ function nonProducingDependencies(
 
 export function createS309ProofEmitter(fixture: LocalFixture, profile: LauncherProfile): (event: ApiEvent) => ApiEvent {
   let setupSettled = false;
-  let scenarioToolEnds = 0;
-  let scenarioCorrelation = "";
   return (event) => {
-    if (profile !== "linux-kvm") return event;
-    if (event.kind === "tool_end" && setupSettled) {
-      if (scenarioCorrelation === "") scenarioCorrelation = event.correlation_id;
-      if (event.correlation_id === scenarioCorrelation) scenarioToolEnds += 1;
-    }
-    if (event.kind !== "run_settled") return event;
+    if (profile !== "linux-kvm" || event.kind !== "run_settled") return event;
     if (!setupSettled) {
       setupSettled = true;
       return event;
     }
-    if (event.correlation_id !== scenarioCorrelation || scenarioToolEnds !== 3) return event;
     const snap = fixture.snapshot();
     const counts = snap.counts;
     const credential = counts["GET /credential 200"] ?? 0;

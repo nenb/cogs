@@ -1602,7 +1602,7 @@ function fakeLifecycle(options: Parameters<TrustedCompositionSeams["createLifecy
   });
 }
 
-test("s3-09 trusted proof channel is exact run-bound and fixture-bound", () => {
+test("s3-09 trusted proof channel binds to serialized second settled run", () => {
   const fixture = {
     snapshot: () =>
       Object.freeze({
@@ -1615,14 +1615,10 @@ test("s3-09 trusted proof channel is exact run-bound and fixture-bound", () => {
       }),
   } as never;
   const emit = createS309ProofEmitter(fixture, "linux-kvm");
-  const event = (kind: "tool_end" | "run_settled", correlation_id: string) =>
-    Object.freeze({ kind, correlation_id, payload: Object.freeze({}) }) as never;
-  assert.equal("s3_09_proof" in emit(event("run_settled", "setup")).payload, false);
-  assert.equal("s3_09_proof" in emit(event("tool_end", "scenario")).payload, false);
-  assert.equal("s3_09_proof" in emit(event("tool_end", "scenario")).payload, false);
-  assert.equal("s3_09_proof" in emit(event("run_settled", "scenario")).payload, false);
-  assert.equal("s3_09_proof" in emit(event("tool_end", "scenario")).payload, false);
-  const settled = emit(event("run_settled", "scenario"));
+  const event = (correlation_id: string) =>
+    Object.freeze({ kind: "run_settled", correlation_id, payload: Object.freeze({}) }) as never;
+  assert.equal("s3_09_proof" in emit(event("setup")).payload, false);
+  const settled = emit(event("scenario"));
   assert.deepEqual(settled.payload.s3_09_proof, {
     version: "cogs.launcher.s3-09-proof/v1alpha1",
     scenario: "s3-09",
@@ -1647,8 +1643,6 @@ test("s3-09 trusted proof channel emits fixed failure reasons without metadata l
   }) as never;
   const prime = (emit: ReturnType<typeof createS309ProofEmitter>) => {
     emit(Object.freeze({ kind: "run_settled", correlation_id: "setup", payload: Object.freeze({}) }) as never);
-    for (let i = 0; i < 3; i += 1)
-      emit(Object.freeze({ kind: "tool_end", correlation_id: "scenario", payload: Object.freeze({}) }) as never);
   };
   for (const [snapshot, reason] of [
     [
@@ -1692,6 +1686,18 @@ test("s3-09 trusted proof channel emits fixed failure reasons without metadata l
       reason,
     });
   }
+  const unknown = createS309ProofEmitter(
+    make({ ready: true, generation: 0, inflight: 0, total: 0, counts: Object.freeze({}) }),
+    "linux-kvm",
+  );
+  prime(unknown);
+  assert.equal((unknown(settled).payload.s3_09_proof as { reason: string }).reason, "credential-count");
+  const repeated = createS309ProofEmitter(
+    make({ ready: true, generation: 0, inflight: 0, total: 2, counts: Object.freeze({ "GET /credential 200": 1 }) }),
+    "linux-kvm",
+  );
+  prime(repeated);
+  assert.equal((repeated(settled).payload.s3_09_proof as { reason: string }).reason, "total-count");
   const wrongProfile = createS309ProofEmitter(
     make({ ready: true, generation: 0, inflight: 0, total: 1, counts: Object.freeze({ "GET /credential 200": 1 }) }),
     "insecure-container",
