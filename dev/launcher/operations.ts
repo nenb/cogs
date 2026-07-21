@@ -298,7 +298,13 @@ async function tailTerminalProof(client: ApiClient, correlation: string, signal?
   const terminal = live
     ? await tailTerminalEventFromLive(client, live, correlation, signal)
     : await tailTerminalEvent(client, correlation, signal);
-  if (terminal.kind !== "run_settled" || terminal.gitMapping !== true) throw new Error("launcher operation failed");
+  if (
+    terminal.kind !== "run_settled" ||
+    terminal.gitMapping !== true ||
+    terminal.eventCount <= 256 ||
+    terminal.eventCount > 1000
+  )
+    throw new Error("launcher operation failed");
   const payload = exactPlain(terminal.payload);
   const proof = exactPlain(payload.s3_09_proof);
   if (
@@ -327,7 +333,7 @@ type LiveEvents = {
 };
 
 function startLiveEvents(client: ApiClient, signal?: AbortSignal): LiveEvents {
-  const iterator = client.events(0, 100, signal);
+  const iterator = client.events(0, 1000, signal);
   return { iterator, first: iterator.next(), closed: false };
 }
 

@@ -334,7 +334,10 @@ test("s3-09 runs fixed integrated KVM scenario with metadata-only proof", async 
             if (op === "shutdown") return Object.freeze({ accepted: true });
             throw new Error("unexpected");
           }) as ApiClient["request"],
-          events: Object.freeze(async function* (after?: number) {
+          events: Object.freeze(async function* (after?: number, limit?: number) {
+            calls.push(`events:${after ?? 0}:${limit ?? 0}`);
+            if (runCount === 2 && after === 0 && !scenarioTerminalSent && limit !== 1000)
+              throw new Error("unexpected live limit");
             if (after === 0 && scenarioTerminalSent) {
               const error = new Error("launcher api replay gap");
               Object.defineProperty(error, "code", { value: "COGS_LAUNCHER_API_REPLAY_GAP" });
@@ -351,25 +354,15 @@ test("s3-09 runs fixed integrated KVM scenario with metadata-only proof", async 
               id: 2,
               data: Object.freeze({ kind: "git_mapping", correlation_id: "s309-2", payload: {} }),
             }) as ApiEvent;
-            yield Object.freeze({
-              id: 3,
-              data: Object.freeze({ kind: "checkpoint", correlation_id: "s309-2", payload: {} }),
-            }) as ApiEvent;
-            yield Object.freeze({
-              id: 4,
-              data: Object.freeze({ kind: "tool_end", correlation_id: "s309-2", payload: {} }),
-            }) as ApiEvent;
-            yield Object.freeze({
-              id: 5,
-              data: Object.freeze({ kind: "tool_end", correlation_id: "s309-2", payload: {} }),
-            }) as ApiEvent;
-            yield Object.freeze({
-              id: 6,
-              data: Object.freeze({ kind: "tool_end", correlation_id: "s309-2", payload: {} }),
-            }) as ApiEvent;
+            for (let id = 3; id <= 258; id += 1) {
+              yield Object.freeze({
+                id,
+                data: Object.freeze({ kind: "tool_update", correlation_id: "s309-2", payload: { chunk: "metadata" } }),
+              }) as ApiEvent;
+            }
             scenarioTerminalSent = true;
             yield Object.freeze({
-              id: 7,
+              id: 259,
               data: Object.freeze({
                 kind: "run_settled",
                 correlation_id: "s309-2",
@@ -398,6 +391,8 @@ test("s3-09 runs fixed integrated KVM scenario with metadata-only proof", async 
     );
     assert.equal(result.complete, true);
     assert.equal(result.egressProof, true);
+    assert.equal(result.liveEventCount, 259);
+    assert(calls.includes("events:0:1000"));
     assert.deepEqual(result.history, { pages: 2, entries: 4 });
     assert.deepEqual(result.rawExport, {
       descriptorValidated: true,
@@ -409,6 +404,68 @@ test("s3-09 runs fixed integrated KVM scenario with metadata-only proof", async 
     assert(calls.includes(`content:${LAUNCHER_DETERMINISTIC_S309_PROMPT}`));
     assert.equal(JSON.stringify(result).includes("credential"), false);
     assert.equal(JSON.stringify(result).includes("localhost"), false);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("s3-09 proof path rejects live proof with replay-sized event count", async () => {
+  const { dir, ctx } = await roots();
+  let runCount = 0;
+  try {
+    const seams = Object.freeze({
+      ...opSeams([]),
+      createApiClient: Object.freeze(() =>
+        Object.freeze({
+          request: Object.freeze(async (op: string) => {
+            if (op === "run")
+              return Object.freeze({
+                accepted: true,
+                duplicate: false,
+                run_state: "running",
+                correlation_id: `s309-short-${++runCount}`,
+              });
+            if (op === "shutdown") return Object.freeze({ accepted: true });
+            throw new Error("unexpected");
+          }) as ApiClient["request"],
+          events: Object.freeze(async function* () {
+            if (runCount === 1) {
+              yield Object.freeze({
+                id: 1,
+                data: Object.freeze({ kind: "run_settled", correlation_id: "s309-short-1", payload: {} }),
+              }) as ApiEvent;
+              return;
+            }
+            yield Object.freeze({
+              id: 2,
+              data: Object.freeze({ kind: "git_mapping", correlation_id: "s309-short-2", payload: {} }),
+            }) as ApiEvent;
+            yield Object.freeze({
+              id: 3,
+              data: Object.freeze({
+                kind: "run_settled",
+                correlation_id: "s309-short-2",
+                payload: Object.freeze({
+                  s3_09_proof: Object.freeze({
+                    version: "cogs.launcher.s3-09-proof/v1alpha1",
+                    scenario: "s3-09",
+                    profile: "linux-kvm",
+                    credential_route_200: true,
+                    denied_route_absent: true,
+                    total_exact_expected: true,
+                    fixture_ready: true,
+                    fixture_generation_zero: true,
+                  }),
+                }),
+              }),
+            }) as ApiEvent;
+          }) as ApiClient["events"],
+        }),
+      ) as never,
+    });
+    await assert.rejects(() =>
+      runLauncherOperation(Object.freeze({ op: "s3-09", profile: "linux-kvm", state: "s309short" }), ctx, seams),
+    );
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

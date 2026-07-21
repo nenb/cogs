@@ -233,6 +233,58 @@ test("api SSE client parses real server events and rejects replay mismatch", asy
   }
 });
 
+test("api SSE client keeps one live connection through more than replay capacity", async () => {
+  const s = await server();
+  let fetches = 0;
+  try {
+    assert.equal(s.api.publish({ kind: "warning", correlation_id: "corr-live", payload: { code: "seed" } }), true);
+    const client = createApiClient({
+      port: s.port,
+      token,
+      maxBytes: 1024 * 1024,
+      seams: seams(
+        Object.freeze(((url: URL, init?: RequestInit) => {
+          fetches += 1;
+          return globalThis.fetch(url, init);
+        }) as typeof fetch),
+      ),
+    });
+    const iterator = client.events(0, 1000);
+    const first = await iterator.next();
+    assert.equal(first.done, false);
+    assert.equal(first.value?.id, 1);
+    for (let i = 0; i < 260; i += 1) {
+      assert.equal(
+        s.api.publish({ kind: "tool_update", correlation_id: "corr-live", payload: { chunk: "metadata" } }),
+        true,
+      );
+    }
+    assert.equal(s.api.publish({ kind: "run_settled", correlation_id: "corr-live", payload: { ok: true } }), true);
+    let terminal = 0;
+    let count = 1;
+    for await (const event of iterator) {
+      count += 1;
+      if (event.data.kind === "run_settled") {
+        terminal = event.id;
+        break;
+      }
+    }
+    await iterator.return?.(undefined);
+    assert.equal(fetches, 1);
+    assert.equal(count, 262);
+    assert.equal(terminal, 262);
+    assert.equal(s.api.publish({ kind: "warning", correlation_id: "corr-live", payload: { code: "post" } }), true);
+    await assert.rejects(async () => {
+      for await (const _ of client.events(0, 1)) break;
+    }, /launcher api replay gap/);
+    await assert.rejects(async () => {
+      for await (const _ of client.events(0, 1001)) break;
+    }, /launcher api failed/);
+  } finally {
+    await s.api.close();
+  }
+});
+
 test("api SSE replay gap is specific to HTTP 409, not forged network messages", async () => {
   const forged = createApiClient({
     port: 9,
