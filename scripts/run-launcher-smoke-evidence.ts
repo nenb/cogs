@@ -2,6 +2,7 @@ import { constants } from "node:fs";
 import { lstat, mkdir, open, readdir, readFile, realpath, rename, statfs, unlink, writeFile } from "node:fs/promises";
 import { arch, platform, release } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { type S309FailureStage, s309StageFromExitCode } from "../dev/launcher/operations.ts";
 import { type CommandDescriptor, commandDescriptor, runCommand } from "../dev/launcher/runner.ts";
 import { resolveLauncherState } from "../dev/launcher/state.ts";
 
@@ -12,6 +13,7 @@ type SmokeStage =
   | "runtime-root-preflight"
   | "state-resolution"
   | "launcher-command"
+  | S309FailureStage
   | "metadata-validation"
   | "sensitive-export-cleanup"
   | "state-absence"
@@ -235,6 +237,9 @@ export function validateReportPath(profile: Profile, path: string, scenario: Sce
 export function isTmpfsType(type: number | bigint): boolean {
   return BigInt(type) === BigInt(tmpfsMagic);
 }
+export function s3FailureStageFromLauncherExitCode(code: unknown): S309FailureStage | undefined {
+  return s309StageFromExitCode(code);
+}
 
 async function main() {
   const args = await parseArgs(process.argv.slice(2));
@@ -269,6 +274,7 @@ async function main() {
     outcome = "pass";
     diagnostics = "metadata-only launcher smoke passed; exact sensitive export and state cleanup verified";
   } catch (error) {
+    stage = s3StageOf(error) ?? stage;
     diagnostics = `launcher smoke failed at ${stage}`;
     pendingError = error;
   } finally {
@@ -359,9 +365,17 @@ async function runLauncher(profile: Profile, state: string, timeoutMs: number, s
     result.stdoutTruncated ||
     result.stderrTruncated
   ) {
-    throw new Error("launcher smoke failed");
+    const error = new Error("launcher smoke failed");
+    const s3Stage = scenario === "s3-09" ? s3FailureStageFromLauncherExitCode(result.exitCode) : undefined;
+    if (s3Stage) Object.defineProperty(error, "s3ExitCode", { value: result.exitCode });
+    throw error;
   }
   return result.stdout;
+}
+
+function s3StageOf(error: unknown): S309FailureStage | undefined {
+  const code = error instanceof Error ? Object.getOwnPropertyDescriptor(error, "s3ExitCode")?.value : undefined;
+  return s3FailureStageFromLauncherExitCode(code);
 }
 
 function lastJson(stdout: string): unknown {

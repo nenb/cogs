@@ -17,6 +17,7 @@ import {
   isTmpfsType,
   launcherCommandDescriptor,
   reportFor,
+  s3FailureStageFromLauncherExitCode,
   validateReportPath,
   validateS309Json,
   validateSmokeJson,
@@ -89,6 +90,26 @@ test("s3-09 launcher evidence report and command are fixed and metadata-only", (
   assert.throws(() =>
     validateReportPath("linux-kvm", "docs/security-evidence/generated/launcher-linux-kvm.json", "s3-09"),
   );
+});
+
+test("s3-09 evidence maps only exact bounded launcher exit codes to metadata stages", () => {
+  assert.equal(s3FailureStageFromLauncherExitCode(40), "s3-create");
+  assert.equal(s3FailureStageFromLauncherExitCode(49), "s3-export");
+  assert.equal(s3FailureStageFromLauncherExitCode(53), "s3-cleanup");
+  for (const forged of [1, 39, 54, "40", { valueOf: () => 40 }, new Proxy({}, { get: () => 40 })]) {
+    assert.equal(s3FailureStageFromLauncherExitCode(forged), undefined);
+  }
+  const report = reportFor({
+    profile: "linux-kvm",
+    scenario: "s3-09",
+    sourceRevision,
+    startedAt: "2026-01-01T00:00:00.000Z",
+    completedAt: "2026-01-01T00:00:01.000Z",
+    durationMs: 1000,
+    outcome: "fail",
+    diagnostics: "launcher smoke failed at s3-export",
+  });
+  assert.equal(report.tests[0]?.diagnostics_redacted, "launcher smoke failed at s3-export");
 });
 
 test("launcher command descriptor uses exact node and minimal env with deadline", () => {

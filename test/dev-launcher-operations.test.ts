@@ -19,6 +19,9 @@ import {
   type LauncherOperationContext,
   type LauncherOperationSeams,
   runLauncherOperation,
+  s309FailureStages,
+  s309StageExitCode,
+  s309StageFromExitCode,
 } from "../dev/launcher/operations.ts";
 import {
   createState,
@@ -270,6 +273,40 @@ test("fixed smoke uses dispatcher sequence and leaves metadata-only output", asy
     assert(calls.includes(`content:${LAUNCHER_DETERMINISTIC_ABORT_PROMPT}`));
     assert.equal(JSON.stringify(result).includes("kept"), false);
     assert.equal(JSON.stringify(result).includes(ctx.launcherRoot), false);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("s3-09 failure stages use authentic bounded exit codes only", async () => {
+  assert.deepEqual(
+    s309FailureStages.map((stage) => s309StageFromExitCode(s309StageExitCode(new Error(stage)))),
+    [...s309FailureStages.map(() => undefined)],
+  );
+  assert.deepEqual(
+    s309FailureStages.map((_stage, index) => s309StageFromExitCode(40 + index)),
+    [...s309FailureStages],
+  );
+  assert.equal(s309StageFromExitCode(40 + s309FailureStages.length), undefined);
+  const forged = Object.assign(new Error("x"), { code: 40, s3ExitCode: 40, s3Stage: "s3-create" });
+  assert.equal(s309StageExitCode(forged), 1);
+  assert.equal(s309StageExitCode(new Proxy(new Error("x"), { get: () => 40 })), 1);
+  const { dir, ctx } = await roots();
+  try {
+    await assert.rejects(
+      () =>
+        runLauncherOperation(
+          Object.freeze({ op: "s3-09", profile: "linux-kvm", state: "s309create" }),
+          ctx,
+          Object.freeze({
+            createSandbox: Object.freeze(async () => {
+              throw new Error("hostile proxy secret");
+            }) as never,
+            destroySandbox: Object.freeze(async () => Object.freeze({ removed: true })) as never,
+          }),
+        ),
+      (error) => s309StageFromExitCode(s309StageExitCode(error)) === "s3-create",
+    );
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

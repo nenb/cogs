@@ -86,6 +86,38 @@ const stateRe = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u;
 const cursorRe = /^[A-Za-z0-9_-]{1,768}\.[A-Za-z0-9_-]{32,256}$/u;
 const relRe = /^[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+){0,15}$/u;
 const abortGetter = Object.getOwnPropertyDescriptor(AbortSignal.prototype, "aborted")?.get;
+export const s309FailureStages = Object.freeze([
+  "s3-create",
+  "s3-start",
+  "s3-setup-run",
+  "s3-setup-terminal",
+  "s3-live-open",
+  "s3-scenario-run",
+  "s3-terminal-proof",
+  "s3-replay-gap",
+  "s3-history",
+  "s3-export",
+  "s3-shutdown",
+  "s3-absence",
+  "s3-destroy",
+  "s3-cleanup",
+] as const);
+export type S309FailureStage = (typeof s309FailureStages)[number];
+const s309Failures = new WeakMap<Error, S309FailureStage>();
+export function s309StageExitCode(error: unknown): number {
+  const stage = error instanceof Error ? s309Failures.get(error) : undefined;
+  return stage ? 40 + s309FailureStages.indexOf(stage) : 1;
+}
+export function s309StageFromExitCode(code: unknown): S309FailureStage | undefined {
+  return typeof code === "number" && code >= 40 && code < 40 + s309FailureStages.length
+    ? s309FailureStages[code - 40]
+    : undefined;
+}
+function s309Failure(stage: S309FailureStage): Error {
+  const error = new Error("launcher operation failed");
+  s309Failures.set(error, stage);
+  return error;
+}
 
 export async function runLauncherOperation(
   request: CliRequest,
@@ -121,7 +153,8 @@ export async function runLauncherOperation(
     if (req.op === "smoke") return await smoke(req, ctx, options, s);
     if (req.op === "s3-09") return await s309(req, ctx, options, s);
     throw new Error("launcher operation failed");
-  } catch {
+  } catch (error) {
+    if (s309StageExitCode(error) !== 1) throw error;
     throw new Error("launcher operation failed");
   } finally {
     done?.();
@@ -482,45 +515,58 @@ async function s309(
 ) {
   if (request.profile !== "linux-kvm") throw new Error("launcher operation failed");
   let started = false;
+  let stage: S309FailureStage = "s3-create";
   try {
     base("create", meta(result(await s.createSandbox(options, ctx.signal)).manifest));
+    stage = "s3-start";
     await locked(options, (state) => s.startWorkerForState(state, ctx.signal));
     started = true;
     const proof = await withReadyClient(options, request, ctx, s, async (client, signal) => {
+      stage = "s3-setup-run";
       const setupCorrelation = runCorrelation(
         await client.request("run", Object.freeze({ content: LAUNCHER_DETERMINISTIC_S309_SETUP_PROMPT }), signal),
       );
+      stage = "s3-setup-terminal";
       const setup = await tailTerminal(client, setupCorrelation, signal);
       if (setup.terminal !== "run_settled") throw new Error("launcher operation failed");
+      stage = "s3-live-open";
       const live = startLiveEvents(client, signal);
-      let correlation = "";
       try {
-        correlation = runCorrelation(
+        stage = "s3-scenario-run";
+        const correlation = runCorrelation(
           await client.request("run", Object.freeze({ content: LAUNCHER_DETERMINISTIC_S309_PROMPT }), signal),
         );
+        stage = "s3-terminal-proof";
         const terminal = await tailTerminalProof(client, correlation, signal, live);
         live.closed = true;
         await live.iterator.return?.(undefined);
+        stage = "s3-replay-gap";
         await assertReplayGap(client, signal);
+        stage = "s3-history";
         const history = await pagedHistory(client, signal);
+        stage = "s3-export";
         const rawExport = exportProof(await client.request("export", Object.freeze({}), signal), true);
         return deepFreeze({ ...terminal, history, rawExport });
       } finally {
         if (!live.closed) await live.iterator.return?.(undefined).catch(() => undefined);
       }
     });
+    stage = "s3-shutdown";
     await shutdown(options, ctx.signal, ctx.timeoutMs, s);
     started = false;
+    stage = "s3-absence";
     const inv = stripInventory((await status(options, s)).inventory);
     if (inv.descriptor !== "none" || inv.workerLive !== false || inv.recovery !== "absent")
       throw new Error("launcher operation failed");
+    stage = "s3-destroy";
     if (bool(result(await s.destroySandbox(options, ctx.signal)).removed) !== true)
       throw new Error("launcher operation failed");
     return deepFreeze({ op: "s3-09", complete: true, ...proof, inventory: inv });
-  } catch (error) {
-    if (started) await stopOnly(options, s).catch(() => undefined);
-    await s.destroySandbox(options, undefined).catch(() => undefined);
-    throw error;
+  } catch {
+    let failed: S309FailureStage = stage;
+    if (started) await stopOnly(options, s).catch(() => (failed = "s3-cleanup"));
+    await s.destroySandbox(options, undefined).catch(() => (failed = "s3-cleanup"));
+    throw s309Failure(failed);
   }
 }
 
