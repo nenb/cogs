@@ -1459,7 +1459,7 @@ function seams(calls: string[], captured: Record<string, unknown>): Partial<Trus
           }),
         s309CompletionProof: () =>
           Object.freeze({
-            version: "cogs.launcher.s3-09-completion/v1alpha1",
+            version: "cogs.launcher.s3-09-trusted-proof/v1alpha1",
             outcome: "pending",
           }),
         proxyCapability: Object.freeze({
@@ -1613,9 +1613,14 @@ function s309EgressProof(...outcomes: readonly ("pending" | "pass" | "generation
     s309CompletionProof: () => {
       const outcome = outcomes[Math.min(calls++, outcomes.length - 1)] ?? "pass";
       return Object.freeze({
-        version: "cogs.launcher.s3-09-completion/v1alpha1",
+        version: "cogs.launcher.s3-09-trusted-proof/v1alpha1",
         ...(outcome === "pass"
-          ? { outcome: "pass", trusted_completion_credential_200: true }
+          ? {
+              outcome: "pass",
+              trusted_authorization_credential: true,
+              trusted_relay_exact: true,
+              completion_observer_consistent: true,
+            }
           : outcome === "pending"
             ? { outcome: "pending" }
             : { outcome: "fail", reason: outcome }),
@@ -1646,7 +1651,9 @@ test("s3-09 trusted proof channel captures baseline and binds to serialized sett
     scenario: "s3-09",
     profile: "linux-kvm",
     outcome: "pass",
-    trusted_completion_credential_200: true,
+    trusted_authorization_credential: true,
+    trusted_relay_exact: true,
+    completion_observer_consistent: true,
     fixture_denied_route_absent: true,
     fixture_observer_consistent: true,
     fixture_ready: true,
@@ -1756,7 +1763,9 @@ test("s3-09 trusted proof channel emits fixed failure reasons without metadata l
       scenario: "s3-09",
       profile: "linux-kvm",
       outcome: "pass",
-      trusted_completion_credential_200: true,
+      trusted_authorization_credential: true,
+      trusted_relay_exact: true,
+      completion_observer_consistent: true,
       fixture_denied_route_absent: true,
       fixture_observer_consistent: true,
       fixture_ready: true,

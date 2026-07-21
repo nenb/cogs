@@ -124,7 +124,7 @@ const s309ProofFailStages: Record<string, S309FailureStage> = Object.freeze({
 });
 const s309ProofFailKeys = "outcome,profile,reason,scenario,version";
 const s309ProofPassKeys =
-  "fixture_baseline_captured,fixture_denied_route_absent,fixture_observer_consistent,fixture_ready,outcome,profile,scenario,trusted_completion_credential_200,version";
+  "completion_observer_consistent,fixture_baseline_captured,fixture_denied_route_absent,fixture_observer_consistent,fixture_ready,outcome,profile,scenario,trusted_authorization_credential,trusted_relay_exact,version";
 export function s309StageExitCode(error: unknown): number {
   const stage = error instanceof Error ? s309Failures.get(error) : undefined;
   return stage ? 40 + s309FailureStages.indexOf(stage) : 1;
@@ -351,7 +351,9 @@ function egressProof(terminal: Awaited<ReturnType<typeof tailTerminalEvent>>) {
   if (
     proof.outcome !== "pass" ||
     keys !== s309ProofPassKeys ||
-    proof.trusted_completion_credential_200 !== true ||
+    proof.trusted_authorization_credential !== true ||
+    proof.trusted_relay_exact !== true ||
+    proof.completion_observer_consistent !== true ||
     proof.fixture_denied_route_absent !== true ||
     proof.fixture_observer_consistent !== true ||
     proof.fixture_ready !== true ||

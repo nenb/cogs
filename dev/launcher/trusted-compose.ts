@@ -617,7 +617,9 @@ export function createS309ProofEmitter(
           ...(reason === undefined
             ? {
                 outcome: "pass",
-                trusted_completion_credential_200: true,
+                trusted_authorization_credential: true,
+                trusted_relay_exact: true,
+                completion_observer_consistent: true,
                 fixture_denied_route_absent: true,
                 fixture_observer_consistent: true,
                 fixture_ready: true,

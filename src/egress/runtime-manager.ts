@@ -3,7 +3,7 @@ import { isAbsolute, resolve } from "node:path";
 import type { LaunchConfig } from "../launch/config.ts";
 import { type CogsPolicyAuthorizer, requireCogsPolicyAllow } from "../policy/require-policy.ts";
 import { type CogsTelemetry, captureTelemetry } from "../telemetry/instrumentation.ts";
-import { type EgressAuditWal, openEgressAuditWal } from "./audit-wal.ts";
+import { type EgressAuditWal, type EgressAuditWalRecord, openEgressAuditWal } from "./audit-wal.ts";
 import {
   type CogsEgressCompletion,
   type CogsEgressCompletionQueue,
@@ -56,6 +56,7 @@ export type CogsEgressRuntimeManager = Readonly<{
   ready: boolean;
   listenerPort: number;
   replacementRequired: boolean;
+  auditRecords?(limit: number): readonly EgressAuditWalRecord[];
   drainCompletions(limit: number): readonly CogsEgressCompletion[];
   close(options?: CogsEgressRuntimeManagerCloseOptions): Promise<void>;
 }>;
@@ -282,6 +283,7 @@ class RuntimeManager {
       get replacementRequired() {
         return manager.replacement;
       },
+      auditRecords: (limit) => manager.auditRecords(limit),
       drainCompletions: (limit) => manager.drainCompletions(limit),
       close: (options) => manager.close(options),
     });
@@ -413,6 +415,16 @@ class RuntimeManager {
       );
     } catch {
       return false;
+    }
+  }
+
+  private auditRecords(limit: number): readonly EgressAuditWalRecord[] {
+    try {
+      const count = integer(limit, 1, 64);
+      if (!this.isReady() || !this.wal?.ready) throw new Error("not ready");
+      return Object.freeze(this.wal.records.slice(0, count));
+    } catch {
+      throw new CogsEgressRuntimeManagerError();
     }
   }
 
