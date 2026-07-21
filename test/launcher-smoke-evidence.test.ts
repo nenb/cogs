@@ -285,6 +285,13 @@ test("launcher image prerequisite uses exact pinned OpenBao and Envoy images", a
   const kvm = await readFile(join(process.cwd(), ".github/workflows/kvm-qualification.yml"), "utf8");
   assert.match(kvm, /id: launcher_images[\s\S]*npx --no-install tsx scripts\/prepare-launcher-images\.ts/);
   assert.match(kvm, /id: launcher_s309[\s\S]*--scenario s3-09[\s\S]*launcher-s3-09-linux-kvm\.json/);
+  assert.match(kvm, /id: launcher_smoke[\s\S]*launcher-linux-kvm\.json/);
+  assert(kvm.indexOf("id: launcher_s309") < kvm.indexOf("id: launcher_smoke"));
+  assert(kvm.indexOf("id: launcher_smoke") < kvm.indexOf("id: launcher_roots_cleanup"));
+  assert(kvm.indexOf("id: launcher_roots_cleanup") < kvm.indexOf("id: evidence"));
+  assert(kvm.indexOf("id: evidence") < kvm.indexOf("LAUNCHER_S309_OUTCOME"));
+  assert.match(kvm, /id: launcher_s309[\s\S]*--state s309-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/);
+  assert.match(kvm, /id: launcher_smoke[\s\S]*--state kvm-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/);
   assert.match(kvm, /LAUNCHER_IMAGES_OUTCOME: \$\{\{ steps\.launcher_images\.outcome \}\}/);
   assert.match(kvm, /LAUNCHER_S309_OUTCOME: \$\{\{ steps\.launcher_s309\.outcome \}\}/);
   assert.match(kvm, /test "\$LAUNCHER_IMAGES_OUTCOME" = success/);
