@@ -535,7 +535,7 @@ async function s309(
         stage = "s3-git-mapping";
         if (observed.gitMapping !== true) throw new Error("launcher operation failed");
         stage = "s3-live-count";
-        if (observed.eventCount <= 64 || observed.eventCount > 1000) throw new Error("launcher operation failed");
+        if (observed.eventCount <= 32 || observed.eventCount > 1000) throw new Error("launcher operation failed");
         stage = "s3-egress-proof";
         const terminal = egressProof(observed);
         live.closed = true;

@@ -205,7 +205,7 @@ export function validateS309Json(value: unknown): void {
     item.egressProof !== true ||
     !positiveBoundedInteger(item.lastEventId, 1000) ||
     !positiveBoundedInteger(item.liveEventCount, 1000) ||
-    item.liveEventCount <= 64 ||
+    item.liveEventCount <= 32 ||
     !positiveBoundedInteger(history.pages, 100) ||
     !positiveBoundedInteger(history.entries, 200) ||
     raw.descriptorValidated !== true ||

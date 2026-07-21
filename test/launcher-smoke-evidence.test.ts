@@ -206,8 +206,8 @@ test("s3-09 metadata validator requires raw export opening proof", () => {
     op: "s3-09",
     complete: true,
     terminal: "run_settled",
-    lastEventId: 70,
-    liveEventCount: 65,
+    lastEventId: 40,
+    liveEventCount: 33,
     egressProof: true,
     history: { pages: 2, entries: 4 },
     rawExport: { descriptorValidated: true, mode: "raw", sensitive: true, rawExportOpened: true },
@@ -223,7 +223,7 @@ test("s3-09 metadata validator requires raw export opening proof", () => {
     },
   };
   validateS309Json(valid);
-  assert.throws(() => validateS309Json({ ...valid, liveEventCount: 64 }));
+  assert.throws(() => validateS309Json({ ...valid, liveEventCount: 32 }));
   assert.throws(() =>
     validateS309Json({ ...valid, rawExport: { descriptorValidated: true, mode: "raw", sensitive: true } }),
   );

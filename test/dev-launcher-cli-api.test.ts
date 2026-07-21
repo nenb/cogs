@@ -234,8 +234,8 @@ test("api SSE client parses real server events and rejects replay mismatch", asy
   }
 });
 
-test("api SSE client keeps one live connection through fixed replay capacity 64", async () => {
-  const s = await server(64);
+test("api SSE client keeps one live connection through fixed replay capacity 32", async () => {
+  const s = await server(32);
   let fetches = 0;
   try {
     assert.equal(s.api.publish({ kind: "warning", correlation_id: "corr-live", payload: { code: "seed" } }), true);
@@ -254,7 +254,7 @@ test("api SSE client keeps one live connection through fixed replay capacity 64"
     const first = await iterator.next();
     assert.equal(first.done, false);
     assert.equal(first.value?.id, 1);
-    for (let i = 0; i < 70; i += 1) {
+    for (let i = 0; i < 40; i += 1) {
       assert.equal(
         s.api.publish({ kind: "tool_update", correlation_id: "corr-live", payload: { chunk: "metadata" } }),
         true,
@@ -272,8 +272,8 @@ test("api SSE client keeps one live connection through fixed replay capacity 64"
     }
     await iterator.return?.(undefined);
     assert.equal(fetches, 1);
-    assert.equal(count, 72);
-    assert.equal(terminal, 72);
+    assert.equal(count, 42);
+    assert.equal(terminal, 42);
     assert.equal(s.api.publish({ kind: "warning", correlation_id: "corr-live", payload: { code: "post" } }), true);
     await assert.rejects(async () => {
       for await (const _ of client.events(0, 1)) break;
