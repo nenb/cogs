@@ -74,6 +74,64 @@ test("kvm relay exposes exact linux-kvm factory without binding during unit test
   assert.equal(s.ready, false);
 });
 
+test("real linux-kvm relay rejects wildcard loopback listeners before bind", async () => {
+  const original = Socket.prototype.connect;
+  let probes = 0;
+  try {
+    Socket.prototype.connect = function patchedConnect(this: Socket, ..._args: unknown[]) {
+      probes++;
+      queueMicrotask(() => this.emit("connect"));
+      return this;
+    } as never;
+    const r = createLinuxKvmRelay();
+    r.configureProxyCapability(holder());
+    await assert.rejects(() => r.start(), /launcher relay failed/);
+    assert.equal(probes, 1);
+    assert.equal(r.snapshot().closed, true);
+    assert.equal(r.snapshot().ready, false);
+  } finally {
+    Socket.prototype.connect = original;
+  }
+});
+
+test("real linux-kvm relay fails closed when wildcard probe errors ambiguously", async () => {
+  const original = Socket.prototype.connect;
+  let probes = 0;
+  try {
+    Socket.prototype.connect = function patchedConnect(this: Socket, ..._args: unknown[]) {
+      probes++;
+      const error = Object.assign(new Error("ambiguous"), { code: "EACCES" });
+      queueMicrotask(() => this.emit("error", error));
+      return this;
+    } as never;
+    const r = createLinuxKvmRelay();
+    r.configureProxyCapability(holder());
+    await assert.rejects(() => r.start(), /launcher relay failed/);
+    assert.equal(probes, 1);
+    assert.equal(r.snapshot().closed, true);
+    assert.equal(r.snapshot().poisoned, true);
+  } finally {
+    Socket.prototype.connect = original;
+  }
+});
+
+test("linux-kvm loopback test relay does not use wildcard preflight", async () => {
+  const original = Socket.prototype.connect;
+  try {
+    Socket.prototype.connect = function patchedConnect(this: Socket, ..._args: unknown[]) {
+      throw new Error("unexpected wildcard probe");
+    } as never;
+    const r = createLinuxKvmRelayForTests();
+    r.configureProxyCapability(holder());
+    await r.start();
+    assert.equal(r.snapshot().bindHost, "127.0.0.1");
+    Socket.prototype.connect = original;
+    await r.close();
+  } finally {
+    Socket.prototype.connect = original;
+  }
+});
+
 test("loopback functional relay denies no-target and unregistered switch", async () => {
   const r = createLoopbackFunctionalRelay();
   await r.start();

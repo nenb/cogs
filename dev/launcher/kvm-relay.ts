@@ -97,6 +97,7 @@ export class KvmRelay {
       checkCooperative(cooperative);
       if (this.#started || this.#closed || this.#poisoned || (this.#profile === "linux-kvm" && !this.#proxyCapability))
         fail();
+      if (this.requiresWildcardPreflight()) await closedPort("127.0.0.1", 18080);
       let cancelled = false;
       let settleClosed: (() => void) | undefined;
       const relay = () => {
@@ -132,6 +133,7 @@ export class KvmRelay {
         await this.closeServer();
         throw fail();
       }
+      if (this.requiresWildcardPreflight()) await closedPort("127.0.0.1", 18080);
     } catch {
       this.#closed = true;
       this.poison();
@@ -331,6 +333,9 @@ export class KvmRelay {
     while (this.#sockets.size !== 0 && Date.now() < end) await new Promise((r) => setTimeout(r, 10));
     if (this.#sockets.size !== 0) fail();
   }
+  private requiresWildcardPreflight(): boolean {
+    return this.#profile === "linux-kvm" && this.#host === "192.0.2.1" && this.#requestedPort === 18080;
+  }
   private async closeServer(): Promise<void> {
     if (!this.#server.listening) return;
     await new Promise<void>((resolve) => this.#server.close(() => resolve()));
@@ -359,11 +364,11 @@ async function closedPort(host: string, port: number): Promise<void> {
       const done = (ok: boolean) => {
         if (timer) clearTimeout(timer);
         s.destroy();
-        ok ? resolve() : reject(fail());
+        ok ? resolve() : reject(new Error("launcher relay failed"));
       };
       timer = setTimeout(() => done(false), 500);
       s.once("connect", () => done(false));
-      s.once("error", () => done(true));
+      s.once("error", (error: NodeJS.ErrnoException) => done(error.code === "ECONNREFUSED"));
       s.connect(port, host);
     });
   } finally {
