@@ -263,10 +263,57 @@ test("renders deterministic contained Envoy bootstrap JSON with loopback authz m
     (cluster: { name: string }) => cluster.name === "upstream_route-a",
   );
   assert.equal(upstream.type, "STRICT_DNS");
+  assert.equal(
+    upstream.load_assignment.endpoints[0].lb_endpoints[0].endpoint.address.socket_address.address,
+    "github.com",
+  );
   assert.equal(upstream.transport_socket.typed_config.sni, "github.com");
   assert.deepEqual(
     upstream.transport_socket.typed_config.common_tls_context.validation_context.match_typed_subject_alt_names,
     [{ san_type: "DNS", matcher: { exact: "github.com" } }],
+  );
+});
+
+test("pins exact localhost upstream socket to IPv4 while preserving authority and SNI", async () => {
+  const localhost = JSON.parse(
+    (
+      await render({
+        ...baseOptions(),
+        routePlan: plan({ route: { host: "localhost" as never, port: 3210 as never } }),
+      })
+    ).bootstrapJson,
+  );
+  const localRoute =
+    localhost.static_resources.listeners[0].filter_chains[0].filters[0].typed_config.route_config.virtual_hosts[0]
+      .routes[0];
+  const localCluster = localhost.static_resources.clusters.find(
+    (cluster: { name: string }) => cluster.name === "upstream_route-a",
+  );
+  assert.deepEqual(localRoute.match.headers, [{ name: ":authority", string_match: { exact: "localhost:3210" } }]);
+  assert.equal(
+    localCluster.load_assignment.endpoints[0].lb_endpoints[0].endpoint.address.socket_address.address,
+    "127.0.0.1",
+  );
+  assert.equal(localCluster.transport_socket.typed_config.sni, "localhost");
+  assert.deepEqual(
+    localCluster.transport_socket.typed_config.common_tls_context.validation_context.match_typed_subject_alt_names,
+    [{ san_type: "DNS", matcher: { exact: "localhost" } }],
+  );
+
+  const lookalike = JSON.parse(
+    (
+      await render({
+        ...baseOptions(),
+        routePlan: plan({ route: { host: "localhost.example" as never, port: 443 } }),
+      })
+    ).bootstrapJson,
+  );
+  const lookalikeCluster = lookalike.static_resources.clusters.find(
+    (cluster: { name: string }) => cluster.name === "upstream_route-a",
+  );
+  assert.equal(
+    lookalikeCluster.load_assignment.endpoints[0].lb_endpoints[0].endpoint.address.socket_address.address,
+    "localhost.example",
   );
 });
 
