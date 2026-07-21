@@ -587,13 +587,15 @@ export function createS309ProofEmitter(fixture: LocalFixture, profile: LauncherP
           ? "generation"
           : snap.inflight !== 0
             ? "inflight"
-            : credential !== 1
+            : credential < 1
               ? "credential-count"
-              : deniedForwarded !== 0
-                ? "denied-forwarded"
-                : total !== 1 || snap.total !== 1
-                  ? "total-count"
-                  : undefined;
+              : credential > 1
+                ? "total-count"
+                : deniedForwarded !== 0
+                  ? "denied-forwarded"
+                  : total !== 1 || snap.total !== 1
+                    ? "total-count"
+                    : undefined;
     return Object.freeze({
       ...event,
       payload: Object.freeze({

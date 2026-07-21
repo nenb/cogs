@@ -1657,9 +1657,10 @@ test("s3-09 trusted proof channel emits fixed failure reasons without metadata l
       { ready: true, generation: 1, inflight: 1, total: 1, counts: Object.freeze({ "GET /credential 200": 1 }) },
       "inflight",
     ],
+    [{ ready: true, generation: 1, inflight: 0, total: 0, counts: Object.freeze({}) }, "credential-count"],
     [
       { ready: true, generation: 1, inflight: 0, total: 2, counts: Object.freeze({ "GET /credential 200": 2 }) },
-      "credential-count",
+      "total-count",
     ],
     [
       {
@@ -1686,12 +1687,12 @@ test("s3-09 trusted proof channel emits fixed failure reasons without metadata l
       reason,
     });
   }
-  const unknown = createS309ProofEmitter(
+  const zeroCredential = createS309ProofEmitter(
     make({ ready: true, generation: 1, inflight: 0, total: 0, counts: Object.freeze({}) }),
     "linux-kvm",
   );
-  prime(unknown);
-  assert.equal((unknown(settled).payload.s3_09_proof as { reason: string }).reason, "credential-count");
+  prime(zeroCredential);
+  assert.equal((zeroCredential(settled).payload.s3_09_proof as { reason: string }).reason, "credential-count");
   const repeated = createS309ProofEmitter(
     make({ ready: true, generation: 1, inflight: 0, total: 2, counts: Object.freeze({ "GET /credential 200": 1 }) }),
     "linux-kvm",
