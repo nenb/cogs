@@ -23,6 +23,7 @@ export const LAUNCHER_DETERMINISTIC_TOOL_ARGUMENTS = Object.freeze({
 export const LAUNCHER_DETERMINISTIC_FINAL_TEXT = "cogs launcher deterministic run complete" as const;
 export const LAUNCHER_DETERMINISTIC_S309_SETUP_PROMPT = "cogs launcher s3-09 setup" as const;
 export const LAUNCHER_DETERMINISTIC_S309_PROMPT = "cogs launcher s3-09 integrated" as const;
+export const LAUNCHER_DETERMINISTIC_S309_PROOF_PROMPT = "cogs launcher s3-09 proof" as const;
 export const LAUNCHER_DETERMINISTIC_S309_FINAL_TEXT = "cogs launcher s3-09 complete" as const;
 export const LAUNCHER_DETERMINISTIC_S309_UPDATE_COUNT = 300 as const;
 export const LAUNCHER_DETERMINISTIC_S309_UPDATE_DELAY = "0.02" as const;
@@ -125,6 +126,7 @@ interface RequestSnapshot {
     | "s309-edit"
     | "s309-bash"
     | "s309-final"
+    | "s309-proof-final"
     | "unknown"
     | "abort";
   readonly signal: AbortSignal;
@@ -155,6 +157,8 @@ export function createDeterministicLauncherStream(seams: DeterministicLauncherSt
       if (request.mode === "s309-final") {
         return createChunkedTextStream(request.modelId, timestamp, LAUNCHER_DETERMINISTIC_S309_FINAL_TEXT);
       }
+      if (request.mode === "s309-proof-final")
+        return createTextStream(request.modelId, timestamp, LAUNCHER_DETERMINISTIC_S309_FINAL_TEXT);
       const text =
         request.mode === "final"
           ? LAUNCHER_DETERMINISTIC_FINAL_TEXT
@@ -354,6 +358,10 @@ function selectMode(context: ContextSnapshot): RequestSnapshot["mode"] {
       return "s309-final";
     }
     throw new Error(GENERIC_ERROR);
+  }
+  if (prompt === LAUNCHER_DETERMINISTIC_S309_PROOF_PROMPT) {
+    if (context.messages.length !== 1) throw new Error(GENERIC_ERROR);
+    return "s309-proof-final";
   }
   if (context.messages.length !== 1) throw new Error(GENERIC_ERROR);
   boundedString(prompt, 0, MAX_PROMPT_LENGTH);

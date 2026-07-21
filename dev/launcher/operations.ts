@@ -9,6 +9,7 @@ import { createSandbox, destroySandbox, type LauncherCoreOptions, resetSandbox }
 import {
   LAUNCHER_DETERMINISTIC_ABORT_PROMPT,
   LAUNCHER_DETERMINISTIC_S309_PROMPT,
+  LAUNCHER_DETERMINISTIC_S309_PROOF_PROMPT,
   LAUNCHER_DETERMINISTIC_S309_SETUP_PROMPT,
 } from "./deterministic-stream.ts";
 import { resolveLauncherState, withStateLock } from "./state.ts";
@@ -96,6 +97,8 @@ export const s309FailureStages = Object.freeze([
   "s3-terminal-kind",
   "s3-git-mapping",
   "s3-live-count",
+  "s3-proof-run",
+  "s3-proof-terminal",
   "s3-egress-shape",
   "s3-egress-state",
   "s3-egress-credential",
@@ -535,17 +538,31 @@ async function s309(
         if (observed.gitMapping !== true) throw new Error("launcher operation failed");
         stage = "s3-live-count";
         if (observed.eventCount <= 32 || observed.eventCount > 1000) throw new Error("launcher operation failed");
-        stage = "s3-egress-shape";
-        const terminal = egressProof(observed);
+        const terminal = deepFreeze({
+          terminal: observed.kind,
+          lastEventId: observed.lastEventId,
+          liveEventCount: observed.eventCount,
+        });
         live.closed = true;
         await live.iterator.return?.(undefined);
+        stage = "s3-proof-run";
+        const proofCorrelation = runCorrelation(
+          await client.request("run", Object.freeze({ content: LAUNCHER_DETERMINISTIC_S309_PROOF_PROMPT }), signal),
+        );
+        if (proofCorrelation === setupCorrelation || proofCorrelation === correlation)
+          throw new Error("launcher operation failed");
+        stage = "s3-proof-terminal";
+        const proofObserved = await tailTerminalEvent(client, proofCorrelation, signal);
+        if (proofObserved.kind !== "run_settled") throw new Error("launcher operation failed");
+        stage = "s3-egress-shape";
+        egressProof(proofObserved);
         stage = "s3-replay-gap";
         await assertReplayGap(client, signal);
         stage = "s3-history";
         const history = await pagedHistory(client, signal);
         stage = "s3-export";
         const rawExport = exportProof(await client.request("export", Object.freeze({}), signal), true);
-        return deepFreeze({ ...terminal, history, rawExport });
+        return deepFreeze({ ...terminal, egressProof: true, history, rawExport });
       } finally {
         if (!live.closed) await live.iterator.return?.(undefined).catch(() => undefined);
       }

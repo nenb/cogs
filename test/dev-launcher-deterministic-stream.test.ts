@@ -16,6 +16,7 @@ import {
   LAUNCHER_DETERMINISTIC_S309_BASH_STDOUT,
   LAUNCHER_DETERMINISTIC_S309_FINAL_TEXT,
   LAUNCHER_DETERMINISTIC_S309_PROMPT,
+  LAUNCHER_DETERMINISTIC_S309_PROOF_PROMPT,
   LAUNCHER_DETERMINISTIC_S309_SETUP_PROMPT,
   LAUNCHER_DETERMINISTIC_TOOL_ARGUMENTS,
   LAUNCHER_DETERMINISTIC_TOOL_ID,
@@ -938,6 +939,26 @@ test("deterministic stream drives exact s3-09 setup and scenario tool transcript
   );
   assert.equal(deltas.map((event) => event.delta).join(""), LAUNCHER_DETERMINISTIC_S309_FINAL_TEXT);
   assert.equal(final.at(-1)?.type, "done");
+});
+
+test("deterministic stream accepts exact s3-09 proof observation prompt only as text", async () => {
+  const events = await s309Events({ messages: [userMessage(LAUNCHER_DETERMINISTIC_S309_PROOF_PROMPT)] });
+  assert.equal(
+    events.some((event) => event.type === "toolcall_end"),
+    false,
+  );
+  const deltas = events.filter(
+    (event): event is Extract<AssistantMessageEvent, { type: "text_delta" }> => event.type === "text_delta",
+  );
+  assert.equal(deltas.map((event) => event.delta).join(""), LAUNCHER_DETERMINISTIC_S309_FINAL_TEXT);
+  assertGenericError(
+    await s309Events({
+      messages: [
+        userMessage(LAUNCHER_DETERMINISTIC_S309_PROOF_PROMPT),
+        userMessage(LAUNCHER_DETERMINISTIC_S309_PROMPT),
+      ],
+    }),
+  );
 });
 
 test("deterministic stream rejects malformed s3-09 transcript before final", async () => {

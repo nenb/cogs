@@ -97,14 +97,16 @@ test("s3-09 evidence maps only exact bounded launcher exit codes to metadata sta
   assert.equal(s3FailureStageFromLauncherExitCode(46), "s3-terminal-kind");
   assert.equal(s3FailureStageFromLauncherExitCode(47), "s3-git-mapping");
   assert.equal(s3FailureStageFromLauncherExitCode(48), "s3-live-count");
-  assert.equal(s3FailureStageFromLauncherExitCode(49), "s3-egress-shape");
-  assert.equal(s3FailureStageFromLauncherExitCode(50), "s3-egress-state");
-  assert.equal(s3FailureStageFromLauncherExitCode(51), "s3-egress-credential");
-  assert.equal(s3FailureStageFromLauncherExitCode(52), "s3-egress-denied");
-  assert.equal(s3FailureStageFromLauncherExitCode(53), "s3-egress-total");
-  assert.equal(s3FailureStageFromLauncherExitCode(56), "s3-export");
-  assert.equal(s3FailureStageFromLauncherExitCode(60), "s3-cleanup");
-  for (const forged of [1, 39, 61, "40", { valueOf: () => 40 }, new Proxy({}, { get: () => 40 })]) {
+  assert.equal(s3FailureStageFromLauncherExitCode(49), "s3-proof-run");
+  assert.equal(s3FailureStageFromLauncherExitCode(50), "s3-proof-terminal");
+  assert.equal(s3FailureStageFromLauncherExitCode(51), "s3-egress-shape");
+  assert.equal(s3FailureStageFromLauncherExitCode(52), "s3-egress-state");
+  assert.equal(s3FailureStageFromLauncherExitCode(53), "s3-egress-credential");
+  assert.equal(s3FailureStageFromLauncherExitCode(54), "s3-egress-denied");
+  assert.equal(s3FailureStageFromLauncherExitCode(55), "s3-egress-total");
+  assert.equal(s3FailureStageFromLauncherExitCode(58), "s3-export");
+  assert.equal(s3FailureStageFromLauncherExitCode(62), "s3-cleanup");
+  for (const forged of [1, 39, 63, "40", { valueOf: () => 40 }, new Proxy({}, { get: () => 40 })]) {
     assert.equal(s3FailureStageFromLauncherExitCode(forged), undefined);
   }
   const report = reportFor({

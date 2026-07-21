@@ -13,6 +13,7 @@ import {
   LAUNCHER_DETERMINISTIC_ABORT_PROMPT,
   LAUNCHER_DETERMINISTIC_NORMAL_PROMPT,
   LAUNCHER_DETERMINISTIC_S309_PROMPT,
+  LAUNCHER_DETERMINISTIC_S309_PROOF_PROMPT,
   LAUNCHER_DETERMINISTIC_S309_SETUP_PROMPT,
 } from "../dev/launcher/deterministic-stream.ts";
 import {
@@ -294,6 +295,8 @@ test("s3-09 failure stages use authentic bounded exit codes only", async () => {
   );
   assert.equal(s309FailureStages.includes("s3-terminal-proof" as never), false);
   assert.equal(s309FailureStages.includes("s3-egress-proof" as never), false);
+  assert.equal(s309FailureStages.includes("s3-proof-run"), true);
+  assert.equal(s309FailureStages.includes("s3-proof-terminal"), true);
   assert.equal(s309FailureStages.includes("s3-egress-shape"), true);
   assert.equal(s309StageFromExitCode(40 + s309FailureStages.length), undefined);
   const forged = Object.assign(new Error("x"), { code: 40, s3ExitCode: 40, s3Stage: "s3-create" });
@@ -324,7 +327,7 @@ test("s3-09 runs fixed integrated KVM scenario with metadata-only proof", async 
   const { dir, ctx } = await roots();
   const calls: string[] = [];
   let runCount = 0;
-  let scenarioTerminalSent = false;
+  let proofTerminalSent = false;
   try {
     const seams = Object.freeze({
       ...opSeams(calls),
@@ -381,9 +384,9 @@ test("s3-09 runs fixed integrated KVM scenario with metadata-only proof", async 
           }) as ApiClient["request"],
           events: Object.freeze(async function* (after?: number, limit?: number) {
             calls.push(`events:${after ?? 0}:${limit ?? 0}`);
-            if (runCount === 2 && after === 0 && !scenarioTerminalSent && limit !== 1000)
+            if (runCount === 2 && after === 0 && !proofTerminalSent && limit !== 1000)
               throw new Error("unexpected live limit");
-            if (after === 0 && scenarioTerminalSent) {
+            if (after === 0 && proofTerminalSent) {
               const error = new Error("launcher api replay gap");
               Object.defineProperty(error, "code", { value: "COGS_LAUNCHER_API_REPLAY_GAP" });
               throw error;
@@ -405,27 +408,33 @@ test("s3-09 runs fixed integrated KVM scenario with metadata-only proof", async 
                 data: Object.freeze({ kind: "tool_update", correlation_id: "s309-2", payload: { chunk: "metadata" } }),
               }) as ApiEvent;
             }
-            scenarioTerminalSent = true;
             yield Object.freeze({
               id: 259,
-              data: Object.freeze({
-                kind: "run_settled",
-                correlation_id: "s309-2",
-                payload: jsonRecord({
-                  s3_09_proof: jsonRecord({
-                    version: "cogs.launcher.s3-09-proof/v1alpha1",
-                    scenario: "s3-09",
-                    profile: "linux-kvm",
-                    outcome: "pass",
-                    credential_route_200: true,
-                    denied_route_absent: true,
-                    total_exact_expected: true,
-                    fixture_ready: true,
-                    fixture_baseline_captured: true,
+              data: Object.freeze({ kind: "run_settled", correlation_id: "s309-2", payload: {} }),
+            }) as ApiEvent;
+            if (runCount === 3) {
+              proofTerminalSent = true;
+              yield Object.freeze({
+                id: 260,
+                data: Object.freeze({
+                  kind: "run_settled",
+                  correlation_id: "s309-3",
+                  payload: jsonRecord({
+                    s3_09_proof: jsonRecord({
+                      version: "cogs.launcher.s3-09-proof/v1alpha1",
+                      scenario: "s3-09",
+                      profile: "linux-kvm",
+                      outcome: "pass",
+                      credential_route_200: true,
+                      denied_route_absent: true,
+                      total_exact_expected: true,
+                      fixture_ready: true,
+                      fixture_baseline_captured: true,
+                    }),
                   }),
                 }),
-              }),
-            }) as ApiEvent;
+              }) as ApiEvent;
+            }
           }) as ApiClient["events"],
         }),
       ) as never,
@@ -449,6 +458,7 @@ test("s3-09 runs fixed integrated KVM scenario with metadata-only proof", async 
     });
     assert(calls.includes(`content:${LAUNCHER_DETERMINISTIC_S309_SETUP_PROMPT}`));
     assert(calls.includes(`content:${LAUNCHER_DETERMINISTIC_S309_PROMPT}`));
+    assert(calls.includes(`content:${LAUNCHER_DETERMINISTIC_S309_PROOF_PROMPT}`));
     assert.equal(JSON.stringify(result).includes("credential"), false);
     assert.equal(JSON.stringify(result).includes("localhost"), false);
   } finally {
@@ -550,6 +560,13 @@ test("s3-09 proof path fails closed on missing terminal payload", async () => {
               }) as ApiEvent;
               return;
             }
+            if (runCount === 3) {
+              yield Object.freeze({
+                id: 260,
+                data: Object.freeze({ kind: "run_settled", correlation_id: "s309-bad-3" }),
+              }) as ApiEvent;
+              return;
+            }
             yield Object.freeze({
               id: 2,
               data: Object.freeze({ kind: "git_mapping", correlation_id: "s309-bad-2" }),
@@ -581,6 +598,70 @@ test("s3-09 proof path fails closed on missing terminal payload", async () => {
     );
   } finally {
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("s3-09 proof observation run failures use fixed stages", async () => {
+  for (const fail of ["run", "terminal"] as const) {
+    const { dir, ctx } = await roots();
+    let runCount = 0;
+    try {
+      await assert.rejects(
+        () =>
+          runLauncherOperation(
+            Object.freeze({ op: "s3-09", profile: "linux-kvm", state: `s309-${fail}` }),
+            ctx,
+            Object.freeze({
+              ...opSeams([]),
+              createApiClient: Object.freeze(() =>
+                Object.freeze({
+                  request: Object.freeze(async (op: string) => {
+                    if (op !== "run") return Object.freeze({ accepted: true });
+                    runCount += 1;
+                    if (fail === "run" && runCount === 3) throw new Error("proof run failed");
+                    return Object.freeze({
+                      accepted: true,
+                      duplicate: false,
+                      run_state: "running",
+                      correlation_id: `proof-${runCount}`,
+                    });
+                  }) as ApiClient["request"],
+                  events: Object.freeze(async function* () {
+                    if (runCount === 1)
+                      return yield Object.freeze({
+                        id: 1,
+                        data: Object.freeze({ kind: "run_settled", correlation_id: "proof-1", payload: {} }),
+                      }) as ApiEvent;
+                    if (runCount === 3) return;
+                    yield Object.freeze({
+                      id: 2,
+                      data: Object.freeze({ kind: "git_mapping", correlation_id: "proof-2", payload: {} }),
+                    }) as ApiEvent;
+                    for (let id = 3; id <= 34; id += 1)
+                      yield Object.freeze({
+                        id,
+                        data: Object.freeze({ kind: "tool_update", correlation_id: "proof-2", payload: {} }),
+                      }) as ApiEvent;
+                    yield Object.freeze({
+                      id: 35,
+                      data: Object.freeze({ kind: "run_settled", correlation_id: "proof-2", payload: {} }),
+                    }) as ApiEvent;
+                  }) as ApiClient["events"],
+                }),
+              ) as never,
+            }),
+          ),
+        (error) => {
+          assert.equal(
+            s309StageFromExitCode(s309StageExitCode(error)),
+            fail === "run" ? "s3-proof-run" : "s3-proof-terminal",
+          );
+          return true;
+        },
+      );
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   }
 });
 
@@ -648,6 +729,15 @@ test("s3-09 proof path maps fixed egress reasons and rejects hostile proof shape
                         id: 1,
                         data: Object.freeze({ kind: "run_settled", correlation_id: "s309-egress-1", payload: {} }),
                       }) as ApiEvent;
+                    if (runCount === 3)
+                      return yield Object.freeze({
+                        id: 36,
+                        data: Object.freeze({
+                          kind: "run_settled",
+                          correlation_id: "s309-egress-3",
+                          payload: jsonRecord({ s3_09_proof: proof }),
+                        }),
+                      }) as ApiEvent;
                     yield Object.freeze({
                       id: 2,
                       data: Object.freeze({ kind: "git_mapping", correlation_id: "s309-egress-2", payload: {} }),
@@ -662,7 +752,7 @@ test("s3-09 proof path maps fixed egress reasons and rejects hostile proof shape
                       data: Object.freeze({
                         kind: "run_settled",
                         correlation_id: "s309-egress-2",
-                        payload: jsonRecord({ s3_09_proof: proof }),
+                        payload: {},
                       }),
                     }) as ApiEvent;
                   }) as ApiClient["events"],
