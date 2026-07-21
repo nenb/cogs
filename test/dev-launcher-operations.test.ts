@@ -99,6 +99,33 @@ function jsonRecord(values: Record<string, unknown> = {}): Record<string, unknow
   for (const [key, value] of Object.entries(values)) out[key] = value;
   return Object.freeze(out);
 }
+function s309RawOpening(values: Record<string, unknown> = {}): Record<string, unknown> {
+  return jsonRecord({
+    version: "cogs.launcher.raw-export-opening/v1alpha1",
+    opened_with: "pinned-pi-session-manager",
+    session_jsonl_openable: true,
+    current_session: true,
+    content_redacted: true,
+    ...values,
+  });
+}
+function s309ExportBundle(values: Record<string, unknown> = {}): Record<string, unknown> {
+  return jsonRecord({
+    version: "cogs.export-descriptor/v1alpha1",
+    bundle: "cogs-session-test",
+    manifest_sha256: `sha256:${"a".repeat(64)}`,
+    created_at: "2026-07-19T00:00:00.000Z",
+    mode: "raw",
+    attachments_included: false,
+    file_count: 6,
+    total_bytes: 123,
+    sensitive: true,
+    sanitized: false,
+    anonymized: false,
+    raw_export_opening: s309RawOpening(),
+    ...values,
+  });
+}
 function client(calls: string[]): ApiClient {
   let aborted = false,
     correlation = "corr-1";
@@ -137,6 +164,85 @@ function client(calls: string[]): ApiClient {
         payload: {},
       });
       yield Object.freeze({ id: 9, data }) as ApiEvent;
+    }) as ApiClient["events"],
+  });
+}
+
+function passingS309Client(exportValue: unknown): ApiClient {
+  let runCount = 0;
+  let proofTerminalSent = false;
+  return Object.freeze({
+    request: Object.freeze(async (op: string, input?: Readonly<Record<string, unknown>>) => {
+      if (op === "run")
+        return Object.freeze({
+          accepted: true,
+          duplicate: false,
+          run_state: "running",
+          correlation_id: `s309-export-${++runCount}`,
+        });
+      if (op === "entries") {
+        return input?.after === undefined
+          ? Object.freeze({ version: "cogs.entries/v1alpha1", entries: [{}, {}], next: `cursor.${"x".repeat(32)}` })
+          : Object.freeze({ version: "cogs.entries/v1alpha1", entries: [{}, {}] });
+      }
+      if (op === "export") return exportValue;
+      if (op === "shutdown") return Object.freeze({ accepted: true });
+      throw new Error("unexpected");
+    }) as ApiClient["request"],
+    events: Object.freeze(async function* (after?: number) {
+      if (after === 0 && proofTerminalSent) {
+        const error = new Error("launcher api replay gap");
+        Object.defineProperty(error, "code", { value: "COGS_LAUNCHER_API_REPLAY_GAP" });
+        throw error;
+      }
+      if (runCount === 1) {
+        yield Object.freeze({
+          id: 1,
+          data: Object.freeze({ kind: "run_settled", correlation_id: "s309-export-1", payload: {} }),
+        }) as ApiEvent;
+        return;
+      }
+      if (after === 259) {
+        while (runCount < 3) await new Promise((resolve) => setTimeout(resolve, 0));
+        proofTerminalSent = true;
+        yield Object.freeze({
+          id: 260,
+          data: Object.freeze({
+            kind: "run_settled",
+            correlation_id: "s309-export-3",
+            payload: jsonRecord({
+              s3_09_proof: jsonRecord({
+                version: "cogs.launcher.s3-09-proof/v1alpha1",
+                scenario: "s3-09",
+                profile: "linux-kvm",
+                outcome: "pass",
+                guest_proxy_fixture_attested: true,
+                runtime_observers_consistent: true,
+                completion_observer_consistent: true,
+                fixture_denied_route_absent: true,
+                fixture_observer_consistent: true,
+                fixture_ready: true,
+                fixture_baseline_captured: true,
+              }),
+            }),
+          }),
+        }) as ApiEvent;
+        return;
+      }
+      yield Object.freeze({
+        id: 2,
+        data: Object.freeze({ kind: "git_mapping", correlation_id: "s309-export-2", payload: {} }),
+      }) as ApiEvent;
+      for (let id = 3; id <= 258; id += 1) {
+        yield Object.freeze({
+          id,
+          data: Object.freeze({ kind: "tool_update", correlation_id: "s309-export-2", payload: { chunk: "metadata" } }),
+        }) as ApiEvent;
+      }
+      yield Object.freeze({
+        id: 259,
+        data: Object.freeze({ kind: "run_settled", correlation_id: "s309-export-2", payload: {} }),
+      }) as ApiEvent;
     }) as ApiClient["events"],
   });
 }
@@ -363,21 +469,7 @@ test("s3-09 runs fixed integrated KVM scenario with metadata-only proof", async 
               return Object.freeze({
                 version: "cogs.export-response/v1alpha1",
                 sensitive: true,
-                bundle: Object.freeze({
-                  version: "cogs.export-descriptor/v1alpha1",
-                  mode: "raw",
-                  attachments_included: false,
-                  sensitive: true,
-                  sanitized: false,
-                  anonymized: false,
-                  raw_export_opening: Object.freeze({
-                    version: "cogs.launcher.raw-export-opening/v1alpha1",
-                    opened_with: "pinned-pi-session-manager",
-                    session_jsonl_openable: true,
-                    current_session: true,
-                    content_redacted: true,
-                  }),
-                }),
+                bundle: s309ExportBundle(),
               });
             if (op === "shutdown") return Object.freeze({ accepted: true });
             throw new Error("unexpected");
@@ -471,6 +563,53 @@ test("s3-09 runs fixed integrated KVM scenario with metadata-only proof", async 
     assert.equal(JSON.stringify(result).includes("localhost"), false);
   } finally {
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("s3-09 raw export proof requires recursively validated null-prototype records", async () => {
+  const plainBundle = { ...s309ExportBundle() };
+  const plainOpening = s309ExportBundle({ raw_export_opening: { ...s309RawOpening() } });
+  const accessorOpening = Object.create(null) as Record<string, unknown>;
+  Object.defineProperty(accessorOpening, "version", {
+    enumerable: true,
+    get: () => "cogs.launcher.raw-export-opening/v1alpha1",
+  });
+  const symbolBundle = Object.create(null) as Record<string | symbol, unknown>;
+  for (const [key, value] of Object.entries(s309ExportBundle())) symbolBundle[key] = value;
+  Object.defineProperty(symbolBundle, Symbol.for("hostile"), { enumerable: true, value: true });
+  const extraBundle = s309ExportBundle({ extra: true });
+  const extraOpening = s309ExportBundle({ raw_export_opening: s309RawOpening({ extra: true }) });
+  for (const [name, bundle] of [
+    ["plain-bundle", plainBundle],
+    ["plain-opening", plainOpening],
+    ["accessor-opening", s309ExportBundle({ raw_export_opening: Object.freeze(accessorOpening) })],
+    ["symbol-bundle", symbolBundle],
+    ["array-bundle", Object.freeze([])],
+    ["extra-bundle", extraBundle],
+    ["extra-opening", extraOpening],
+  ] as const) {
+    const { dir, ctx } = await roots();
+    try {
+      await assert.rejects(
+        () =>
+          runLauncherOperation(
+            Object.freeze({ op: "s3-09", profile: "linux-kvm", state: `s309-${name}` }),
+            ctx,
+            Object.freeze({
+              ...opSeams([]),
+              createApiClient: Object.freeze(() =>
+                passingS309Client(Object.freeze({ version: "cogs.export-response/v1alpha1", sensitive: true, bundle })),
+              ) as never,
+            }),
+          ),
+        (error) => {
+          assert.equal(s309StageFromExitCode(s309StageExitCode(error)), "s3-export");
+          return true;
+        },
+      );
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   }
 });
 

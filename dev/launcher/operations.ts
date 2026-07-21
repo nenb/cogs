@@ -476,12 +476,16 @@ async function pagedHistory(client: ApiClient, signal?: AbortSignal) {
   return deepFreeze({ pages, entries });
 }
 
+const s309ExportBundleKeys =
+  "anonymized,attachments_included,bundle,created_at,file_count,manifest_sha256,mode,raw_export_opening,sanitized,sensitive,total_bytes,version";
+const s309RawOpeningKeys = "content_redacted,current_session,opened_with,session_jsonl_openable,version";
 function exportProof(value: unknown, requireOpening = false) {
   const r = exactPlain(value);
-  const bundle = exactPlain(r.bundle);
+  const bundle = exactJsonRecord(r.bundle);
   if (r.sensitive !== true || r.version !== "cogs.export-response/v1alpha1")
     throw new Error("launcher operation failed");
   if (
+    Object.keys(bundle).sort().join(",") !== s309ExportBundleKeys ||
     bundle.version !== "cogs.export-descriptor/v1alpha1" ||
     bundle.mode !== "raw" ||
     bundle.attachments_included !== false ||
@@ -490,10 +494,13 @@ function exportProof(value: unknown, requireOpening = false) {
     bundle.anonymized !== false
   )
     throw new Error("launcher operation failed");
-  const opening = requireOpening ? exactPlain(bundle.raw_export_opening) : undefined;
+  const opening = requireOpening ? exactJsonRecord(bundle.raw_export_opening) : undefined;
   if (
     requireOpening &&
-    (opening?.version !== "cogs.launcher.raw-export-opening/v1alpha1" ||
+    (Object.keys(opening ?? {})
+      .sort()
+      .join(",") !== s309RawOpeningKeys ||
+      opening?.version !== "cogs.launcher.raw-export-opening/v1alpha1" ||
       opening.opened_with !== "pinned-pi-session-manager" ||
       opening.session_jsonl_openable !== true ||
       opening.current_session !== true ||
