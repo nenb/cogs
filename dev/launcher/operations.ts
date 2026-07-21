@@ -121,7 +121,7 @@ const s309ProofFailStages: Record<string, S309FailureStage> = Object.freeze({
 });
 const s309ProofFailKeys = "outcome,profile,reason,scenario,version";
 const s309ProofPassKeys =
-  "credential_route_200,denied_route_absent,fixture_generation_zero,fixture_ready,outcome,profile,scenario,total_exact_expected,version";
+  "credential_route_200,denied_route_absent,fixture_baseline_reset,fixture_ready,outcome,profile,scenario,total_exact_expected,version";
 export function s309StageExitCode(error: unknown): number {
   const stage = error instanceof Error ? s309Failures.get(error) : undefined;
   return stage ? 40 + s309FailureStages.indexOf(stage) : 1;
@@ -352,7 +352,7 @@ function egressProof(terminal: Awaited<ReturnType<typeof tailTerminalEvent>>) {
     proof.denied_route_absent !== true ||
     proof.total_exact_expected !== true ||
     proof.fixture_ready !== true ||
-    proof.fixture_generation_zero !== true
+    proof.fixture_baseline_reset !== true
   )
     throw s309Failure("s3-egress-shape");
   return deepFreeze({

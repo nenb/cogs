@@ -1602,22 +1602,21 @@ function fakeLifecycle(options: Parameters<TrustedCompositionSeams["createLifecy
   });
 }
 
-test("s3-09 trusted proof channel binds to serialized second settled run", () => {
+test("s3-09 trusted proof channel resets baseline and binds to serialized second settled run", () => {
+  let generation = 0;
+  let counts: Readonly<Record<string, number>> = Object.freeze({ "GET /credential 200": 4, "GET /health 200": 1 });
   const fixture = {
-    snapshot: () =>
-      Object.freeze({
-        ready: true,
-        port: 1234,
-        generation: 0,
-        inflight: 0,
-        total: 1,
-        counts: Object.freeze({ "GET /credential 200": 1 }),
-      }),
+    snapshot: () => Object.freeze({ ready: true, port: 1234, generation, inflight: 0, total: 1, counts }),
+    reset: () => {
+      generation += 1;
+      counts = Object.freeze({ "GET /credential 200": 1 });
+    },
   } as never;
   const emit = createS309ProofEmitter(fixture, "linux-kvm");
   const event = (correlation_id: string) =>
     Object.freeze({ kind: "run_settled", correlation_id, payload: Object.freeze({}) }) as never;
   assert.equal("s3_09_proof" in emit(event("setup")).payload, false);
+  assert.equal(generation, 1);
   const settled = emit(event("scenario"));
   assert.deepEqual(settled.payload.s3_09_proof, {
     version: "cogs.launcher.s3-09-proof/v1alpha1",
@@ -1628,14 +1627,15 @@ test("s3-09 trusted proof channel binds to serialized second settled run", () =>
     denied_route_absent: true,
     total_exact_expected: true,
     fixture_ready: true,
-    fixture_generation_zero: true,
+    fixture_baseline_reset: true,
   });
   assert.equal(JSON.stringify(settled).includes("1234"), false);
   assert.equal(JSON.stringify(settled).includes("credential"), true);
 });
 
 test("s3-09 trusted proof channel emits fixed failure reasons without metadata leakage", () => {
-  const make = (snapshot: Record<string, unknown>) => ({ snapshot: () => Object.freeze(snapshot) }) as never;
+  const make = (snapshot: Record<string, unknown>, reset = () => undefined) =>
+    ({ snapshot: () => Object.freeze(snapshot), reset }) as never;
   const settled = Object.freeze({
     kind: "run_settled",
     correlation_id: "scenario",
@@ -1646,25 +1646,25 @@ test("s3-09 trusted proof channel emits fixed failure reasons without metadata l
   };
   for (const [snapshot, reason] of [
     [
-      { ready: false, generation: 0, inflight: 0, total: 1, counts: Object.freeze({ "GET /credential 200": 1 }) },
+      { ready: false, generation: 1, inflight: 0, total: 1, counts: Object.freeze({ "GET /credential 200": 1 }) },
       "fixture-not-ready",
     ],
     [
-      { ready: true, generation: 1, inflight: 0, total: 1, counts: Object.freeze({ "GET /credential 200": 1 }) },
+      { ready: true, generation: 0, inflight: 0, total: 1, counts: Object.freeze({ "GET /credential 200": 1 }) },
       "generation",
     ],
     [
-      { ready: true, generation: 0, inflight: 1, total: 1, counts: Object.freeze({ "GET /credential 200": 1 }) },
+      { ready: true, generation: 1, inflight: 1, total: 1, counts: Object.freeze({ "GET /credential 200": 1 }) },
       "inflight",
     ],
     [
-      { ready: true, generation: 0, inflight: 0, total: 2, counts: Object.freeze({ "GET /credential 200": 2 }) },
+      { ready: true, generation: 1, inflight: 0, total: 2, counts: Object.freeze({ "GET /credential 200": 2 }) },
       "credential-count",
     ],
     [
       {
         ready: true,
-        generation: 0,
+        generation: 1,
         inflight: 0,
         total: 2,
         counts: Object.freeze({ "GET /credential 200": 1, "GET /allowed 200": 1 }),
@@ -1672,7 +1672,7 @@ test("s3-09 trusted proof channel emits fixed failure reasons without metadata l
       "denied-forwarded",
     ],
     [
-      { ready: true, generation: 0, inflight: 0, total: 2, counts: Object.freeze({ "GET /credential 200": 1 }) },
+      { ready: true, generation: 1, inflight: 0, total: 2, counts: Object.freeze({ "GET /credential 200": 1 }) },
       "total-count",
     ],
   ] as const) {
@@ -1687,13 +1687,13 @@ test("s3-09 trusted proof channel emits fixed failure reasons without metadata l
     });
   }
   const unknown = createS309ProofEmitter(
-    make({ ready: true, generation: 0, inflight: 0, total: 0, counts: Object.freeze({}) }),
+    make({ ready: true, generation: 1, inflight: 0, total: 0, counts: Object.freeze({}) }),
     "linux-kvm",
   );
   prime(unknown);
   assert.equal((unknown(settled).payload.s3_09_proof as { reason: string }).reason, "credential-count");
   const repeated = createS309ProofEmitter(
-    make({ ready: true, generation: 0, inflight: 0, total: 2, counts: Object.freeze({ "GET /credential 200": 1 }) }),
+    make({ ready: true, generation: 1, inflight: 0, total: 2, counts: Object.freeze({ "GET /credential 200": 1 }) }),
     "linux-kvm",
   );
   prime(repeated);
@@ -1704,6 +1704,13 @@ test("s3-09 trusted proof channel emits fixed failure reasons without metadata l
   );
   prime(wrongProfile);
   assert.equal("s3_09_proof" in wrongProfile(settled).payload, false);
+  const resetFailure = createS309ProofEmitter(
+    make({ ready: true, generation: 0, inflight: 0, total: 0, counts: Object.freeze({}) }, () => {
+      throw new Error("reset failed");
+    }),
+    "linux-kvm",
+  );
+  assert.throws(() => prime(resetFailure), /reset failed/);
 });
 
 test("raw export opening verifier accepts real local exporter bundle", async () => {

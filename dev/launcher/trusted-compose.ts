@@ -571,6 +571,7 @@ export function createS309ProofEmitter(fixture: LocalFixture, profile: LauncherP
   return (event) => {
     if (profile !== "linux-kvm" || event.kind !== "run_settled") return event;
     if (!setupSettled) {
+      fixture.reset();
       setupSettled = true;
       return event;
     }
@@ -582,7 +583,7 @@ export function createS309ProofEmitter(fixture: LocalFixture, profile: LauncherP
     const reason =
       snap.ready !== true
         ? "fixture-not-ready"
-        : snap.generation !== 0
+        : snap.generation !== 1
           ? "generation"
           : snap.inflight !== 0
             ? "inflight"
@@ -608,7 +609,7 @@ export function createS309ProofEmitter(fixture: LocalFixture, profile: LauncherP
                 denied_route_absent: true,
                 total_exact_expected: true,
                 fixture_ready: true,
-                fixture_generation_zero: true,
+                fixture_baseline_reset: true,
               }
             : { outcome: "fail", reason }),
         }),
