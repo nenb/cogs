@@ -916,11 +916,15 @@ test("deterministic stream drives exact s3-09 setup and scenario tool transcript
     assert.match(command, /curl_path=\$\(command -v curl\)/u);
     assert.match(command, /test "\$curl_path" = \/usr\/bin\/curl/u);
     assert.match(command, /test -f "\$curl_path"\ntest ! -L "\$curl_path"\ntest -x "\$curl_path"/u);
+    assert.match(command, /stat -c '%u:%g:%a' "\$curl_path"\)" = 0:0:755/u);
+    assert.match(command, /curl_verify=\$\(\/usr\/bin\/dpkg --verify curl\)\ntest -z "\$curl_verify"/u);
+    assert.equal(command.match(/"\$curl_path" -q -sS/gmu)?.length, 2);
     assert.match(command, /--proxy http:\/\/192\.0\.2\.1:18080 --noproxy '' --insecure -D - -o \/dev\/null/u);
     assert.match(command, /https:\/\/localhost:3210\/credential/u);
     assert.match(command, /x-cogs-writeout: 200 1 192\.0\.2\.1 18080/u);
     assert.match(command, /x-cogs-writeout: 403 1 192\.0\.2\.1 18080/u);
-    assert.match(command, /grep -Fxc 'x-cogs-fixture-proof: launcher-v1'/u);
+    // The current random authority port binds the fixed proxy checks to this fixture instance.
+    assert.match(command, /grep -Fxc 'x-cogs-fixture-proof: launcher-v1-3210'/u);
     assert.match(command, /grep -Eiq '\^x-cogs-fixture-proof:'/u);
     assert.match(command, /while \[ "\$i" -lt 300 \]/u);
     assert.match(command, /sleep 0\.02/u);

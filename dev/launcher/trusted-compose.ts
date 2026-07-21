@@ -579,7 +579,7 @@ export function createS309ProofEmitter(
   const baseTotal = Object.values(baseCounts).reduce((sum, value) => sum + value, 0);
   let settledRuns = 0;
   return (event) => {
-    if (event.kind !== "run_settled" || ++settledRuns < 3) return event;
+    if (event.kind !== "run_settled" || ++settledRuns !== 3) return event;
     const snap = fixture.snapshot();
     const completion = egress.s309CompletionProof();
     const counts = snap.counts;

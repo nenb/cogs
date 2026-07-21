@@ -1678,6 +1678,13 @@ test("s3-09 trusted proof channel captures baseline and binds to serialized sett
   assert.equal(resetCalls, 0);
   assert.equal(JSON.stringify(settled).includes("1234"), false);
   assert.equal(JSON.stringify(settled).includes("credential"), false);
+  assert.equal("s3_09_proof" in emit(event("extra")).payload, false);
+  // An extra early settlement consumes the sole slot, so the fixed proof operation fails closed without proof.
+  const shifted = createS309ProofEmitter(fixture, s309EgressProof("pass"), "linux-kvm");
+  assert.equal("s3_09_proof" in shifted(event("extra-early")).payload, false);
+  assert.equal("s3_09_proof" in shifted(event("setup")).payload, false);
+  assert.equal("s3_09_proof" in shifted(event("scenario")).payload, true);
+  assert.equal("s3_09_proof" in shifted(event("proof")).payload, false);
 });
 
 test("s3-09 trusted proof channel emits fixed failure reasons without metadata leakage", () => {
@@ -1767,9 +1774,9 @@ test("s3-09 trusted proof channel emits fixed failure reasons without metadata l
     });
   }
   const zeroCredential = make({ ready: true, generation: 1, inflight: 0, total: 0, counts: Object.freeze({}) });
-  const lateExtra = createS309ProofEmitter(zeroCredential.fixture, s309EgressProof("pass", "total-count"), "linux-kvm");
-  assert.equal((proofOf(lateExtra) as { outcome: string }).outcome, "pass");
-  assert.equal((lateExtra(settled).payload.s3_09_proof as { reason: string }).reason, "total-count");
+  const exactOnce = createS309ProofEmitter(zeroCredential.fixture, s309EgressProof("pass", "total-count"), "linux-kvm");
+  assert.equal((proofOf(exactOnce) as { outcome: string }).outcome, "pass");
+  assert.equal("s3_09_proof" in exactOnce(settled).payload, false);
   assert.equal(
     (
       proofOf(createS309ProofEmitter(zeroCredential.fixture, s309EgressProof("pending-wal"), "linux-kvm")) as {
