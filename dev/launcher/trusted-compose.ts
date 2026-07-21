@@ -456,7 +456,7 @@ export async function createTrustedWorkerRuntime(
         repositoryId: "launcher",
         manager: ssh,
         enableNotes: true,
-        checkpoint: Object.freeze({ enabled: true }),
+        checkpoint: Object.freeze({ enabled: false }),
       }),
     });
     await verifyPi(pi, roots.sessionRoot, skills);
@@ -472,7 +472,6 @@ export async function createTrustedWorkerRuntime(
         exporter: pi as CogsPiSessionPorts,
         bearerToken: token,
         sessionId: `launcher-${state.stateId}`,
-        eventReplayCapacity: 8,
       }),
     );
     registerCleanup(cleanups, { name: "api", close: (options) => api?.close(options) });

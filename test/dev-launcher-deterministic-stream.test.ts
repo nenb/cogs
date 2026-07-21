@@ -916,7 +916,12 @@ test("deterministic stream drives exact s3-09 setup and scenario tool transcript
       bashResult(),
     ],
   });
-  if (final[2]?.type === "text_delta") assert.equal(final[2].delta, LAUNCHER_DETERMINISTIC_S309_FINAL_TEXT);
+  const deltas = final.filter(
+    (event): event is Extract<AssistantMessageEvent, { type: "text_delta" }> => event.type === "text_delta",
+  );
+  assert.ok(final.length > 256);
+  assert.equal(deltas.map((event) => event.delta).join(""), LAUNCHER_DETERMINISTIC_S309_FINAL_TEXT);
+  assert.equal(final.at(-1)?.type, "done");
 });
 
 test("deterministic stream rejects malformed s3-09 transcript before final", async () => {

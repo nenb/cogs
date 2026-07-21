@@ -23,7 +23,8 @@ export const LAUNCHER_DETERMINISTIC_TOOL_ARGUMENTS = Object.freeze({
 export const LAUNCHER_DETERMINISTIC_FINAL_TEXT = "cogs launcher deterministic run complete" as const;
 export const LAUNCHER_DETERMINISTIC_S309_SETUP_PROMPT = "cogs launcher s3-09 setup" as const;
 export const LAUNCHER_DETERMINISTIC_S309_PROMPT = "cogs launcher s3-09 integrated" as const;
-export const LAUNCHER_DETERMINISTIC_S309_FINAL_TEXT = "cogs launcher s3-09 complete" as const;
+export const LAUNCHER_DETERMINISTIC_S309_FINAL_TEXT =
+  `cogs launcher s3-09 complete ${"event-padding-".repeat(24)}` as const;
 export const LAUNCHER_DETERMINISTIC_UNKNOWN_TEXT = "cogs launcher deterministic fallback response" as const;
 
 const GENERIC_ERROR = "launcher deterministic stream failed";
@@ -146,10 +147,13 @@ export function createDeterministicLauncherStream(seams: DeterministicLauncherSt
       if (request.mode === "s309-edit") return createToolStream(request.modelId, timestamp, S309_EDIT_TOOL);
       if (request.mode === "s309-bash")
         return createToolStream(request.modelId, timestamp, s309BashTool(s309FixturePort));
+      if (request.mode === "s309-final") {
+        return createChunkedTextStream(request.modelId, timestamp, LAUNCHER_DETERMINISTIC_S309_FINAL_TEXT);
+      }
       const text =
         request.mode === "final"
           ? LAUNCHER_DETERMINISTIC_FINAL_TEXT
-          : request.mode === "s309-final" || request.mode === "s309-setup-final"
+          : request.mode === "s309-setup-final"
             ? LAUNCHER_DETERMINISTIC_S309_FINAL_TEXT
             : LAUNCHER_DETERMINISTIC_UNKNOWN_TEXT;
       return createTextStream(request.modelId, timestamp, text);
@@ -504,6 +508,18 @@ function createTextStream(modelId: string, timestamp: number, text: string) {
   stream.push({ type: "start", partial: message });
   stream.push({ type: "text_start", contentIndex: 0, partial: message });
   stream.push({ type: "text_delta", contentIndex: 0, delta: text, partial: message });
+  stream.push({ type: "text_end", contentIndex: 0, content: text, partial: message });
+  stream.push({ type: "done", reason: "stop", message });
+  stream.end();
+  return stream;
+}
+
+function createChunkedTextStream(modelId: string, timestamp: number, text: string) {
+  const stream = createAssistantMessageEventStream();
+  const message = assistantMessage(modelId, [{ type: "text", text }], "stop", timestamp);
+  stream.push({ type: "start", partial: message });
+  stream.push({ type: "text_start", contentIndex: 0, partial: message });
+  for (const delta of Array.from(text)) stream.push({ type: "text_delta", contentIndex: 0, delta, partial: message });
   stream.push({ type: "text_end", contentIndex: 0, content: text, partial: message });
   stream.push({ type: "done", reason: "stop", message });
   stream.end();
