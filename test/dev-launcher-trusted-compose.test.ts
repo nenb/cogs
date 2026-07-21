@@ -1675,7 +1675,7 @@ test("raw export opening verifier accepts real local exporter bundle", async () 
     await chmod(sessionRoot, 0o700);
     await chmod(sessionDir, 0o700);
     const sessionFile = join(sessionDir, "session.jsonl");
-    await writeFile(sessionFile, sessionJsonl("session-1"), { mode: 0o600 });
+    await writeFile(sessionFile, sessionJsonl("native-pi-session"), { mode: 0o600 });
     await chmod(sessionFile, 0o600);
     const history = createCogsJsonlHistoryStore({ sessionFile, sessionDir });
     await history.initialize();
@@ -1690,6 +1690,7 @@ test("raw export opening verifier accepts real local exporter bundle", async () 
       Object.freeze({
         createExport: async (input: { signal?: AbortSignal }) =>
           local.createExport(input.signal === undefined ? {} : { signal: input.signal }),
+        sessionFile: () => sessionFile,
       }) as never,
       sessionRoot,
       "session-1",
@@ -1710,8 +1711,8 @@ test("raw export opening verifier uses pinned Pi and emits only fixed metadata",
   const root = await mkdtemp(join(tmpdir(), "cogs-raw-open-"));
   try {
     const realRoot = await realpath(root);
-    await makeRawBundle(realRoot, "session-1");
-    const verifier = createRawExportOpeningVerifier(exporter("session-1"), realRoot, "session-1");
+    await makeRawBundle(realRoot, "session-1", undefined, "native-pi-session");
+    const verifier = createRawExportOpeningVerifier(exporter(realRoot, "session-1"), realRoot, "session-1");
     const result = await verifier.createExport({ requestId: "req", correlationId: "corr" });
     assert.deepEqual((result as { raw_export_opening: unknown }).raw_export_opening, {
       version: "cogs.launcher.raw-export-opening/v1alpha1",
@@ -1733,7 +1734,7 @@ test("raw export opening verifier accepts bounded large session JSONL", async ()
   try {
     const realRoot = await realpath(root);
     await makeRawBundle(realRoot, "session-1", 2 * 1024 * 1024 - 4096);
-    const verifier = createRawExportOpeningVerifier(exporter("session-1"), realRoot, "session-1");
+    const verifier = createRawExportOpeningVerifier(exporter(realRoot, "session-1"), realRoot, "session-1");
     const result = await verifier.createExport({ requestId: "req", correlationId: "corr" });
     assert.equal(
       (result as { raw_export_opening: { session_jsonl_openable: boolean } }).raw_export_opening.session_jsonl_openable,
@@ -1747,6 +1748,14 @@ test("raw export opening verifier accepts bounded large session JSONL", async ()
 test("raw export opening verifier fails closed on hostile bundle shapes", async () => {
   for (const kind of [
     "wrong-session",
+    "wrong-live-session",
+    "missing-live",
+    "live-outside",
+    "live-export-alias",
+    "live-symlink",
+    "live-hardlink",
+    "live-mode",
+    "live-oversize",
     "malformed-jsonl",
     "symlink",
     "hardlink",
@@ -1765,15 +1774,41 @@ test("raw export opening verifier fails closed on hostile bundle shapes", async 
       const realRoot = await realpath(root);
       await makeRawBundle(realRoot, "session-1");
       let descriptor = descriptorFor("session-1") as Record<string, unknown>;
+      let liveOverride: string | undefined | null;
       if (kind === "wrong-session") {
         await writeFile(
           join(root, "session-1", "exports", "cogs-session-session-1", "session.jsonl"),
-          sessionJsonl("session-2"),
+          sessionJsonl("native-session-2"),
           {
             mode: 0o600,
           },
         );
       }
+      if (kind === "wrong-live-session")
+        await writeFile(liveFileFor(root, "session-1"), sessionJsonl("native-session-2"), { mode: 0o600 });
+      if (kind === "missing-live") liveOverride = null;
+      if (kind === "live-outside") {
+        liveOverride = join(root, "outside.jsonl");
+        await writeFile(liveOverride, sessionJsonl("native-session-1"), { mode: 0o600 });
+        await chmod(liveOverride, 0o600);
+      }
+      if (kind === "live-export-alias")
+        liveOverride = join(root, "session-1", "exports", "cogs-session-session-1", "session.jsonl");
+      if (kind === "live-symlink") {
+        const live = liveFileFor(root, "session-1");
+        await unlink(live);
+        await symlink(join(root, "target"), live);
+      }
+      if (kind === "live-hardlink") await link(liveFileFor(root, "session-1"), join(root, "session-1", "other.jsonl"));
+      if (kind === "live-mode") await chmod(liveFileFor(root, "session-1"), 0o644);
+      if (kind === "live-oversize")
+        await writeFile(
+          liveFileFor(root, "session-1"),
+          `${sessionJsonl("native-session-1")}${"x".repeat(2 * 1024 * 1024)}\n`,
+          {
+            mode: 0o600,
+          },
+        );
       if (kind === "malformed-jsonl")
         await writeFile(join(root, "session-1", "exports", "cogs-session-session-1", "session.jsonl"), "not-json\n", {
           mode: 0o600,
@@ -1813,7 +1848,7 @@ test("raw export opening verifier fails closed on hostile bundle shapes", async 
       if (kind === "bad-count") descriptor = { ...descriptor, file_count: 5 };
       if (kind === "bad-total") descriptor = { ...descriptor, total_bytes: 72 * 1024 * 1024 + 1 };
       const verifier = createRawExportOpeningVerifier(
-        exporter("session-1", descriptor),
+        exporter(realRoot, "session-1", descriptor, liveOverride),
         kind === "wrong-root" ? join(realRoot, "missing") : realRoot,
         "session-1",
       );
@@ -1827,11 +1862,26 @@ test("raw export opening verifier fails closed on hostile bundle shapes", async 
   }
 });
 
-async function makeRawBundle(root: string, sessionId: string, contentBytes?: number): Promise<void> {
-  const bundle = join(root, sessionId, "exports", `cogs-session-${sessionId}`);
+async function makeRawBundle(
+  root: string,
+  sessionId: string,
+  contentBytes?: number,
+  nativeSessionId = "native-session-1",
+): Promise<void> {
+  const sessionDir = join(root, sessionId);
+  const bundle = join(sessionDir, "exports", `cogs-session-${sessionId}`);
   await mkdir(bundle, { recursive: true, mode: 0o700 });
-  await writeFile(join(bundle, "session.jsonl"), sessionJsonl(sessionId, contentBytes), { mode: 0o600 });
+  await chmod(sessionDir, 0o700);
+  await chmod(join(sessionDir, "exports"), 0o700);
+  await chmod(bundle, 0o700);
+  await writeFile(liveFileFor(root, sessionId), sessionJsonl(nativeSessionId), { mode: 0o600 });
+  await chmod(liveFileFor(root, sessionId), 0o600);
+  await writeFile(join(bundle, "session.jsonl"), sessionJsonl(nativeSessionId, contentBytes), { mode: 0o600 });
   await chmod(join(bundle, "session.jsonl"), 0o600);
+}
+
+function liveFileFor(root: string, sessionId: string): string {
+  return join(root, sessionId, "live-session.jsonl");
 }
 
 function sessionJsonl(sessionId: string, contentBytes?: number): string {
@@ -1855,9 +1905,15 @@ function descriptorFor(sessionId: string): Record<string, unknown> {
   };
 }
 
-function exporter(sessionId: string, descriptor: unknown = descriptorFor(sessionId)) {
+function exporter(
+  root: string,
+  sessionId: string,
+  descriptor: unknown = descriptorFor(sessionId),
+  liveSessionFile: string | undefined | null = liveFileFor(root, sessionId),
+) {
   return Object.freeze({
     createExport: async () => descriptor,
+    sessionFile: () => (liveSessionFile === null ? undefined : liveSessionFile),
   }) as never;
 }
 

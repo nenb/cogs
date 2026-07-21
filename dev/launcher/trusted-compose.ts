@@ -623,7 +623,7 @@ export function createRawExportOpeningVerifier(
     createExport: async (input: Parameters<ExportPort["createExport"]>[0]) => {
       try {
         const descriptor = plainRecord(await pi.createExport(input));
-        await verifyRawExportOpening(sessionRoot, sessionId, descriptor);
+        await verifyRawExportOpening(sessionRoot, sessionId, descriptor, pi.sessionFile());
         return Object.freeze({
           ...descriptor,
           raw_export_opening: Object.freeze({
@@ -641,8 +641,14 @@ export function createRawExportOpeningVerifier(
   });
 }
 
-async function verifyRawExportOpening(sessionRoot: string, sessionId: string, descriptor: Record<string, unknown>) {
+async function verifyRawExportOpening(
+  sessionRoot: string,
+  sessionId: string,
+  descriptor: Record<string, unknown>,
+  liveSessionFile: string | undefined,
+) {
   validateRawExportDescriptor(descriptor, sessionId);
+  if (typeof liveSessionFile !== "string" || liveSessionFile.length < 1) fail();
   const sessionDir = join(sessionRoot, sessionId);
   const exportsDir = join(sessionDir, "exports");
   const bundle = join(exportsDir, descriptor.bundle as string);
@@ -655,9 +661,25 @@ async function verifyRawExportOpening(sessionRoot: string, sessionId: string, de
   if (
     (await realpath(exportsDir)) !== exportsDir ||
     (await realpath(bundle)) !== bundle ||
-    (await realpath(file)) !== file
+    (await realpath(file)) !== file ||
+    (await realpath(liveSessionFile)) !== liveSessionFile
   )
     fail();
+  const liveRelative = relative(sessionDir, liveSessionFile);
+  if (
+    liveSessionFile === file ||
+    liveRelative.length < 1 ||
+    liveRelative.startsWith("..") ||
+    liveRelative.startsWith(`exports/`) ||
+    liveRelative === "exports"
+  )
+    fail();
+  const live = await openVerifiedPiJsonl(liveSessionFile, dirname(liveSessionFile));
+  const exported = await openVerifiedPiJsonl(file, bundle);
+  if (live.nativeSessionId !== exported.nativeSessionId) fail();
+}
+
+async function openVerifiedPiJsonl(file: string, sessionDir: string): Promise<{ readonly nativeSessionId: string }> {
   const before = await lstat(file);
   const handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
@@ -674,10 +696,12 @@ async function verifyRawExportOpening(sessionRoot: string, sessionId: string, de
       (typeof process.geteuid === "function" && opened.uid !== process.geteuid())
     )
       fail();
-    const manager = SessionManager.open(file, bundle, "/workspace");
+    const manager = SessionManager.open(file, sessionDir, "/workspace");
+    const nativeSessionId = manager.getSessionId();
     if (
-      manager.getSessionId() !== sessionId ||
-      manager.getHeader()?.id !== sessionId ||
+      typeof nativeSessionId !== "string" ||
+      nativeSessionId.length < 1 ||
+      manager.getHeader()?.id !== nativeSessionId ||
       manager.getSessionFile() !== file ||
       manager.getEntries().length < 1
     )
@@ -693,6 +717,7 @@ async function verifyRawExportOpening(sessionRoot: string, sessionId: string, de
       (await realpath(file)) !== file
     )
       fail();
+    return Object.freeze({ nativeSessionId });
   } finally {
     await handle.close().catch(() => undefined);
   }
