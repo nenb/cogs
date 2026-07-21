@@ -431,6 +431,7 @@ test("s3-09 runs fixed integrated KVM scenario with metadata-only proof", async 
     assert.equal(result.complete, true);
     assert.equal(result.egressProof, true);
     assert.equal(result.liveEventCount, 259);
+    assert.equal(result.liveEventCount > 64, true);
     assert(calls.includes("events:0:1000"));
     assert.deepEqual(result.history, { pages: 2, entries: 4 });
     assert.deepEqual(result.rawExport, {
@@ -448,7 +449,7 @@ test("s3-09 runs fixed integrated KVM scenario with metadata-only proof", async 
   }
 });
 
-test("s3-09 proof path rejects live proof with replay-sized event count", async () => {
+test("s3-09 proof path rejects live proof at or below replay capacity 64", async () => {
   const { dir, ctx } = await roots();
   let runCount = 0;
   try {

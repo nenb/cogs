@@ -78,6 +78,7 @@ test("trusted composition factory starts in exact order, proves ready, and close
     assert.equal(calls.includes("pi"), true);
     assert.equal(calls.includes("api-listen"), true);
     assert.equal(calls.includes("fetch-ready"), true);
+    assert.equal(captured.eventReplayCapacity, 64);
     const launch = captured.launch as {
       user_id: string;
       session_id: string;
@@ -1538,8 +1539,9 @@ function seams(calls: string[], captured: Record<string, unknown>): Partial<Trus
         resolveGitMapping: async () => undefined,
       }) as never;
     },
-    createApi: () => {
+    createApi: (options) => {
       assert.equal(captured.apiTokenActive, true);
+      captured.eventReplayCapacity = (options as { eventReplayCapacity?: unknown }).eventReplayCapacity;
       return Object.freeze({
         listen: async () => {
           calls.push("api-listen");

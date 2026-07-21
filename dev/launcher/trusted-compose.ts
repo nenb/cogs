@@ -481,6 +481,7 @@ export async function createTrustedWorkerRuntime(
             : (pi as CogsPiSessionPorts),
         bearerToken: token,
         sessionId: `launcher-${state.stateId}`,
+        eventReplayCapacity: 64,
       }),
     );
     registerCleanup(cleanups, { name: "api", close: (options) => api?.close(options) });
