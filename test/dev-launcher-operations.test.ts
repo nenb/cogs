@@ -322,6 +322,13 @@ test("s3-09 runs fixed integrated KVM scenario with metadata-only proof", async 
                   sensitive: true,
                   sanitized: false,
                   anonymized: false,
+                  raw_export_opening: Object.freeze({
+                    version: "cogs.launcher.raw-export-opening/v1alpha1",
+                    opened_with: "pinned-pi-session-manager",
+                    session_jsonl_openable: true,
+                    current_session: true,
+                    content_redacted: true,
+                  }),
                 }),
               });
             if (op === "shutdown") return Object.freeze({ accepted: true });
@@ -392,7 +399,12 @@ test("s3-09 runs fixed integrated KVM scenario with metadata-only proof", async 
     assert.equal(result.complete, true);
     assert.equal(result.egressProof, true);
     assert.deepEqual(result.history, { pages: 2, entries: 4 });
-    assert.deepEqual(result.rawExport, { descriptorValidated: true, mode: "raw", sensitive: true });
+    assert.deepEqual(result.rawExport, {
+      descriptorValidated: true,
+      mode: "raw",
+      sensitive: true,
+      rawExportOpened: true,
+    });
     assert(calls.includes(`content:${LAUNCHER_DETERMINISTIC_S309_SETUP_PROMPT}`));
     assert(calls.includes(`content:${LAUNCHER_DETERMINISTIC_S309_PROMPT}`));
     assert.equal(JSON.stringify(result).includes("credential"), false);

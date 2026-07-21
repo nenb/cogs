@@ -3,7 +3,8 @@ import { constants } from "node:fs";
 import { type FileHandle, lstat, mkdir, open, readdir, realpath, rmdir, unlink } from "node:fs/promises";
 import { createServer, Socket } from "node:net";
 import { dirname, join, relative } from "node:path";
-import { type ApiEvent, type ApiServer, createApiServer } from "../../src/api/server.ts";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { type ApiEvent, type ApiServer, createApiServer, type ExportPort } from "../../src/api/server.ts";
 import { OpenBaoModelApiKeyStore } from "../../src/auth/model-auth.ts";
 import { canonicalPresetPolicyRevision } from "../../src/egress/preset-revision.ts";
 import { type LaunchConfig, validateLaunchConfig } from "../../src/launch/config.ts";
@@ -124,6 +125,10 @@ const CLEANUP_ORDER = Object.freeze([
 ] as const);
 type CleanupName = (typeof CLEANUP_ORDER)[number];
 const CLEANUP_NAMES = new Set<string>(CLEANUP_ORDER);
+const RAW_EXPORT_TOTAL_BYTES_MAX = 72 * 1024 * 1024;
+const RAW_EXPORT_SESSION_JSONL_MAX = 2 * 1024 * 1024;
+const EXPORT_DIGEST = /^[a-f0-9]{64}$/u;
+const EXPORT_ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u;
 
 const DEFAULT_SEAMS: TrustedCompositionSeams = Object.freeze({
   readManifest,
@@ -463,13 +468,17 @@ export async function createTrustedWorkerRuntime(
     checkCooperative(startup.signal, deadlineAt);
     await checkAdmission();
 
+    const admittedProfile = admitted.profile;
     let api: ApiServer | undefined;
     api = apiToken.withToken((token) =>
       s.createApi({
         lifecycle,
         session: pi as CogsPiSessionPorts,
         history: pi as CogsPiSessionPorts,
-        exporter: pi as CogsPiSessionPorts,
+        exporter:
+          admittedProfile === "linux-kvm"
+            ? createRawExportOpeningVerifier(pi as CogsPiSessionPorts, roots.sessionRoot, launch.session_id)
+            : (pi as CogsPiSessionPorts),
         bearerToken: token,
         sessionId: `launcher-${state.stateId}`,
       }),
@@ -603,6 +612,139 @@ export function createS309ProofEmitter(fixture: LocalFixture, profile: LauncherP
       }),
     });
   };
+}
+
+export function createRawExportOpeningVerifier(
+  pi: CogsPiSessionPorts,
+  sessionRoot: string,
+  sessionId: string,
+): ExportPort {
+  return Object.freeze({
+    createExport: async (input: Parameters<ExportPort["createExport"]>[0]) => {
+      try {
+        const descriptor = plainRecord(await pi.createExport(input));
+        await verifyRawExportOpening(sessionRoot, sessionId, descriptor);
+        return Object.freeze({
+          ...descriptor,
+          raw_export_opening: Object.freeze({
+            version: "cogs.launcher.raw-export-opening/v1alpha1",
+            opened_with: "pinned-pi-session-manager",
+            session_jsonl_openable: true,
+            current_session: true,
+            content_redacted: true,
+          }),
+        });
+      } catch {
+        throw new Error(GENERIC);
+      }
+    },
+  });
+}
+
+async function verifyRawExportOpening(sessionRoot: string, sessionId: string, descriptor: Record<string, unknown>) {
+  validateRawExportDescriptor(descriptor, sessionId);
+  const sessionDir = join(sessionRoot, sessionId);
+  const exportsDir = join(sessionDir, "exports");
+  const bundle = join(exportsDir, descriptor.bundle as string);
+  const file = join(bundle, "session.jsonl");
+  await verifyDir(sessionRoot, 0o700);
+  await verifyDir(sessionDir, 0o700);
+  await verifyDir(exportsDir, 0o700);
+  await verifyDir(bundle, 0o700);
+  if ((await realpath(sessionRoot)) !== sessionRoot || (await realpath(sessionDir)) !== sessionDir) fail();
+  if (
+    (await realpath(exportsDir)) !== exportsDir ||
+    (await realpath(bundle)) !== bundle ||
+    (await realpath(file)) !== file
+  )
+    fail();
+  const before = await lstat(file);
+  const handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const opened = await handle.stat();
+    if (
+      before.dev !== opened.dev ||
+      before.ino !== opened.ino ||
+      !opened.isFile() ||
+      opened.isSymbolicLink() ||
+      opened.nlink !== 1 ||
+      (opened.mode & 0o777) !== 0o600 ||
+      opened.size < 1 ||
+      opened.size > RAW_EXPORT_SESSION_JSONL_MAX ||
+      (typeof process.geteuid === "function" && opened.uid !== process.geteuid())
+    )
+      fail();
+    const manager = SessionManager.open(file, bundle, "/workspace");
+    if (
+      manager.getSessionId() !== sessionId ||
+      manager.getHeader()?.id !== sessionId ||
+      manager.getSessionFile() !== file ||
+      manager.getEntries().length < 1
+    )
+      fail();
+    const afterPath = await lstat(file);
+    const after = await handle.stat();
+    if (
+      after.dev !== opened.dev ||
+      after.ino !== opened.ino ||
+      after.size !== opened.size ||
+      afterPath.dev !== opened.dev ||
+      afterPath.ino !== opened.ino ||
+      (await realpath(file)) !== file
+    )
+      fail();
+  } finally {
+    await handle.close().catch(() => undefined);
+  }
+}
+
+function validateRawExportDescriptor(descriptor: Record<string, unknown>, sessionId: string): void {
+  if (
+    Object.keys(descriptor).sort().join("\0") !==
+    [
+      "anonymized",
+      "attachments_included",
+      "bundle",
+      "created_at",
+      "file_count",
+      "manifest_sha256",
+      "mode",
+      "sanitized",
+      "sensitive",
+      "total_bytes",
+      "version",
+    ].join("\0")
+  )
+    fail();
+  if (
+    descriptor.version !== "cogs.export-descriptor/v1alpha1" ||
+    descriptor.bundle !== `cogs-session-${sessionId}` ||
+    typeof descriptor.manifest_sha256 !== "string" ||
+    !EXPORT_DIGEST.test(descriptor.manifest_sha256) ||
+    typeof descriptor.created_at !== "string" ||
+    !EXPORT_ISO.test(descriptor.created_at) ||
+    descriptor.mode !== "raw" ||
+    descriptor.attachments_included !== false ||
+    descriptor.file_count !== 6 ||
+    !Number.isSafeInteger(descriptor.total_bytes) ||
+    (descriptor.total_bytes as number) < 1 ||
+    (descriptor.total_bytes as number) > RAW_EXPORT_TOTAL_BYTES_MAX ||
+    descriptor.sensitive !== true ||
+    descriptor.sanitized !== false ||
+    descriptor.anonymized !== false
+  )
+    fail();
+}
+
+async function verifyDir(path: string, mode: number): Promise<void> {
+  const stat = await lstat(path);
+  if (
+    !stat.isDirectory() ||
+    stat.isSymbolicLink() ||
+    (stat.mode & 0o777) !== mode ||
+    (typeof process.geteuid === "function" && stat.uid !== process.geteuid())
+  )
+    fail();
 }
 
 function buildLaunch(

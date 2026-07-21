@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, realpath, rm, rmdir, unlink, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { chmod, link, mkdir, mkdtemp, realpath, rm, rmdir, symlink, unlink, writeFile } from "node:fs/promises";
 import { createServer as createHttpServer } from "node:http";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -7,11 +8,15 @@ import { join } from "node:path";
 import { test } from "node:test";
 import type { LauncherState } from "../dev/launcher/state.ts";
 import {
+  createRawExportOpeningVerifier,
   createS309ProofEmitter,
   createTrustedWorkerRuntime,
   type TrustedCompositionSeams,
 } from "../dev/launcher/trusted-compose.ts";
 import type { WorkerProvisionalRuntime } from "../dev/launcher/worker-process.ts";
+import { createCogsJsonlHistoryStore } from "../src/session/jsonl-history.ts";
+import { createCogsLocalExporter } from "../src/session/local-export.ts";
+import type { CogsPreparedSkillMetadata } from "../src/skills/session-preparer.ts";
 
 const sourceRevision = "a".repeat(40);
 const stateId = "b".repeat(64);
@@ -1659,3 +1664,227 @@ test("s3-09 trusted proof channel rejects stale counts, wrong profile, and denie
   prime(wrongProfile);
   assert.equal("s3_09_proof" in wrongProfile(settled).payload, false);
 });
+
+test("raw export opening verifier accepts real local exporter bundle", async () => {
+  const root = await mkdtemp(join(tmpdir(), "cogs-real-raw-open-"));
+  try {
+    const realRoot = await realpath(root);
+    const sessionRoot = join(realRoot, "sessions");
+    const sessionDir = join(sessionRoot, "session-1");
+    await mkdir(sessionDir, { recursive: true, mode: 0o700 });
+    await chmod(sessionRoot, 0o700);
+    await chmod(sessionDir, 0o700);
+    const sessionFile = join(sessionDir, "session.jsonl");
+    await writeFile(sessionFile, sessionJsonl("session-1"), { mode: 0o600 });
+    await chmod(sessionFile, 0o600);
+    const history = createCogsJsonlHistoryStore({ sessionFile, sessionDir });
+    await history.initialize();
+    const local = createCogsLocalExporter({
+      sessionDir,
+      sessionId: "session-1",
+      history,
+      skillMetadata: realExportSkillMetadata,
+      model: { provider: "test", id: "model" },
+    });
+    const verifier = createRawExportOpeningVerifier(
+      Object.freeze({
+        createExport: async (input: { signal?: AbortSignal }) =>
+          local.createExport(input.signal === undefined ? {} : { signal: input.signal }),
+      }) as never,
+      sessionRoot,
+      "session-1",
+    );
+    const result = await verifier.createExport({ requestId: "req", correlationId: "corr" });
+    assert.equal(
+      (result as { raw_export_opening: { current_session: boolean } }).raw_export_opening.current_session,
+      true,
+    );
+    assert.equal((result as { file_count: number }).file_count, 6);
+    await local.dispose();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("raw export opening verifier uses pinned Pi and emits only fixed metadata", async () => {
+  const root = await mkdtemp(join(tmpdir(), "cogs-raw-open-"));
+  try {
+    const realRoot = await realpath(root);
+    await makeRawBundle(realRoot, "session-1");
+    const verifier = createRawExportOpeningVerifier(exporter("session-1"), realRoot, "session-1");
+    const result = await verifier.createExport({ requestId: "req", correlationId: "corr" });
+    assert.deepEqual((result as { raw_export_opening: unknown }).raw_export_opening, {
+      version: "cogs.launcher.raw-export-opening/v1alpha1",
+      opened_with: "pinned-pi-session-manager",
+      session_jsonl_openable: true,
+      current_session: true,
+      content_redacted: true,
+    });
+    const serialized = JSON.stringify(result);
+    for (const forbidden of [root, "session.jsonl", "secret", "tool-output"])
+      assert.equal(serialized.includes(forbidden), false, forbidden);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("raw export opening verifier accepts bounded large session JSONL", async () => {
+  const root = await mkdtemp(join(tmpdir(), "cogs-raw-open-large-"));
+  try {
+    const realRoot = await realpath(root);
+    await makeRawBundle(realRoot, "session-1", 2 * 1024 * 1024 - 4096);
+    const verifier = createRawExportOpeningVerifier(exporter("session-1"), realRoot, "session-1");
+    const result = await verifier.createExport({ requestId: "req", correlationId: "corr" });
+    assert.equal(
+      (result as { raw_export_opening: { session_jsonl_openable: boolean } }).raw_export_opening.session_jsonl_openable,
+      true,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("raw export opening verifier fails closed on hostile bundle shapes", async () => {
+  for (const kind of [
+    "wrong-session",
+    "malformed-jsonl",
+    "symlink",
+    "hardlink",
+    "oversize",
+    "getter",
+    "extra",
+    "missing",
+    "bad-digest",
+    "bad-date",
+    "bad-count",
+    "bad-total",
+    "wrong-root",
+  ] as const) {
+    const root = await mkdtemp(join(tmpdir(), `cogs-raw-open-${kind}-`));
+    try {
+      const realRoot = await realpath(root);
+      await makeRawBundle(realRoot, "session-1");
+      let descriptor = descriptorFor("session-1") as Record<string, unknown>;
+      if (kind === "wrong-session") {
+        await writeFile(
+          join(root, "session-1", "exports", "cogs-session-session-1", "session.jsonl"),
+          sessionJsonl("session-2"),
+          {
+            mode: 0o600,
+          },
+        );
+      }
+      if (kind === "malformed-jsonl")
+        await writeFile(join(root, "session-1", "exports", "cogs-session-session-1", "session.jsonl"), "not-json\n", {
+          mode: 0o600,
+        });
+      if (kind === "symlink") {
+        const file = join(root, "session-1", "exports", "cogs-session-session-1", "session.jsonl");
+        await unlink(file);
+        await symlink(join(root, "target"), file);
+      }
+      if (kind === "hardlink")
+        await link(
+          join(root, "session-1", "exports", "cogs-session-session-1", "session.jsonl"),
+          join(root, "session-1", "exports", "cogs-session-session-1", "other.jsonl"),
+        );
+      if (kind === "oversize")
+        await writeFile(
+          join(root, "session-1", "exports", "cogs-session-session-1", "session.jsonl"),
+          `${sessionJsonl("session-1")}${"x".repeat(2 * 1024 * 1024)}\n`,
+          { mode: 0o600 },
+        );
+      if (kind === "getter")
+        descriptor = Object.freeze(
+          Object.defineProperty({}, "version", {
+            enumerable: true,
+            get() {
+              throw new Error("SECRET");
+            },
+          }),
+        ) as never;
+      if (kind === "extra") descriptor = { ...descriptor, extra: true };
+      if (kind === "missing") {
+        descriptor = { ...descriptor };
+        delete descriptor.total_bytes;
+      }
+      if (kind === "bad-digest") descriptor = { ...descriptor, manifest_sha256: "sha256:bad" };
+      if (kind === "bad-date") descriptor = { ...descriptor, created_at: "not-date" };
+      if (kind === "bad-count") descriptor = { ...descriptor, file_count: 5 };
+      if (kind === "bad-total") descriptor = { ...descriptor, total_bytes: 72 * 1024 * 1024 + 1 };
+      const verifier = createRawExportOpeningVerifier(
+        exporter("session-1", descriptor),
+        kind === "wrong-root" ? join(realRoot, "missing") : realRoot,
+        "session-1",
+      );
+      await assert.rejects(
+        () => verifier.createExport({ requestId: "req", correlationId: "corr" }),
+        /launcher trusted composition failed/,
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
+async function makeRawBundle(root: string, sessionId: string, contentBytes?: number): Promise<void> {
+  const bundle = join(root, sessionId, "exports", `cogs-session-${sessionId}`);
+  await mkdir(bundle, { recursive: true, mode: 0o700 });
+  await writeFile(join(bundle, "session.jsonl"), sessionJsonl(sessionId, contentBytes), { mode: 0o600 });
+  await chmod(join(bundle, "session.jsonl"), 0o600);
+}
+
+function sessionJsonl(sessionId: string, contentBytes?: number): string {
+  const content = contentBytes === undefined ? "secret" : "x".repeat(contentBytes);
+  return `${JSON.stringify({ type: "session", version: 3, id: sessionId, timestamp: "2026-01-01T00:00:00.000Z", cwd: "/workspace" })}\n${JSON.stringify({ type: "message", id: "aaaaaaaa", parentId: null, timestamp: "2026-01-01T00:00:01.000Z", message: { role: "user", content } })}\n`;
+}
+
+function descriptorFor(sessionId: string): Record<string, unknown> {
+  return {
+    version: "cogs.export-descriptor/v1alpha1",
+    bundle: `cogs-session-${sessionId}`,
+    manifest_sha256: "a".repeat(64),
+    created_at: "2026-01-01T00:00:00.000Z",
+    mode: "raw",
+    attachments_included: false,
+    file_count: 6,
+    total_bytes: 200,
+    sensitive: true,
+    sanitized: false,
+    anonymized: false,
+  };
+}
+
+function exporter(sessionId: string, descriptor: unknown = descriptorFor(sessionId)) {
+  return Object.freeze({
+    createExport: async () => descriptor,
+  }) as never;
+}
+
+function realExportSkillMetadata(): CogsPreparedSkillMetadata {
+  const digest = (seed: string) => `sha256:${createHash("sha256").update(seed).digest("hex")}` as const;
+  return Object.freeze({
+    shared: Object.freeze({
+      scope: "shared",
+      revision: digest("shared"),
+      bundleDigest: digest("shared-bundle"),
+      guestRoot: "/shared/skills",
+      guestSubtree: "/shared/skills/x",
+      fileCount: 1,
+      byteCount: 1,
+      readOnlyEnforced: false,
+    }),
+    user: Object.freeze({
+      scope: "user",
+      revision: digest("user"),
+      bundleDigest: digest("user-bundle"),
+      guestRoot: "/user/skills",
+      guestSubtree: "/user/skills/y",
+      fileCount: 1,
+      byteCount: 1,
+      readOnlyEnforced: false,
+    }),
+    agentsStatus: "missing",
+    skillCount: 0,
+  });
+}

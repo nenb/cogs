@@ -432,7 +432,7 @@ async function pagedHistory(client: ApiClient, signal?: AbortSignal) {
   return deepFreeze({ pages, entries });
 }
 
-function exportProof(value: unknown) {
+function exportProof(value: unknown, requireOpening = false) {
   const r = exactPlain(value);
   const bundle = exactPlain(r.bundle);
   if (r.sensitive !== true || r.version !== "cogs.export-response/v1alpha1")
@@ -446,7 +446,22 @@ function exportProof(value: unknown) {
     bundle.anonymized !== false
   )
     throw new Error("launcher operation failed");
-  return deepFreeze({ descriptorValidated: true, mode: "raw", sensitive: true });
+  const opening = requireOpening ? exactPlain(bundle.raw_export_opening) : undefined;
+  if (
+    requireOpening &&
+    (opening?.version !== "cogs.launcher.raw-export-opening/v1alpha1" ||
+      opening.opened_with !== "pinned-pi-session-manager" ||
+      opening.session_jsonl_openable !== true ||
+      opening.current_session !== true ||
+      opening.content_redacted !== true)
+  )
+    throw new Error("launcher operation failed");
+  return deepFreeze({
+    descriptorValidated: true,
+    mode: "raw",
+    sensitive: true,
+    ...(requireOpening ? { rawExportOpened: true } : {}),
+  });
 }
 
 function failOp(): never {
@@ -482,7 +497,7 @@ async function s309(
         await live.iterator.return?.(undefined);
         await assertReplayGap(client, signal);
         const history = await pagedHistory(client, signal);
-        const rawExport = exportProof(await client.request("export", Object.freeze({}), signal));
+        const rawExport = exportProof(await client.request("export", Object.freeze({}), signal), true);
         return deepFreeze({ ...terminal, history, rawExport });
       } finally {
         if (!live.closed) await live.iterator.return?.(undefined).catch(() => undefined);

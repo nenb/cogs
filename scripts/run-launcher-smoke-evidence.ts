@@ -7,6 +7,7 @@ import { resolveLauncherState } from "../dev/launcher/state.ts";
 
 type Profile = "insecure-container" | "linux-kvm";
 type Outcome = "pass" | "fail";
+type Scenario = "smoke" | "s3-09";
 type SmokeStage =
   | "runtime-root-preflight"
   | "state-resolution"
@@ -25,7 +26,12 @@ const runtimeRoots = ["/run/cogs/egress", "/run/cogs/ssh"] as const;
 const tmpfsMagic = 0x01021994;
 const noFollow = constants.O_NOFOLLOW ?? 0;
 
-export function launcherCommandDescriptor(profile: Profile, state: string, timeoutMs: number): CommandDescriptor {
+export function launcherCommandDescriptor(
+  profile: Profile,
+  state: string,
+  timeoutMs: number,
+  scenario: Scenario = "smoke",
+): CommandDescriptor {
   const outerTimeoutMs = timeoutMs + 120000;
   if (!Number.isSafeInteger(outerTimeoutMs) || outerTimeoutMs > 720000)
     throw new Error("invalid launcher smoke arguments");
@@ -38,7 +44,7 @@ export function launcherCommandDescriptor(profile: Profile, state: string, timeo
       profile,
       "--state",
       state,
-      "smoke",
+      scenario,
       "--timeout-ms",
       String(timeoutMs),
     ]),
@@ -52,6 +58,7 @@ export function launcherCommandDescriptor(profile: Profile, state: string, timeo
 
 export function reportFor(input: {
   profile: Profile;
+  scenario?: Scenario;
   sourceRevision: string;
   startedAt: string;
   completedAt: string;
@@ -59,6 +66,7 @@ export function reportFor(input: {
   outcome: Outcome;
   diagnostics: string;
 }) {
+  const scenario = input.scenario ?? "smoke";
   const authority = input.profile === "linux-kvm" ? "authoritative-local" : "functional-only";
   const dependencyModes = {
     authorization: "real",
@@ -108,7 +116,7 @@ export function reportFor(input: {
     },
     tests: [
       {
-        id: "launcher.smoke",
+        id: scenario === "s3-09" ? "launcher.s3-09.integrated" : "launcher.smoke",
         group: "development-launcher",
         result: input.outcome,
         release_eligible: false,
@@ -122,6 +130,9 @@ export function reportFor(input: {
       input.profile === "linux-kvm"
         ? "KVM booleans are prerequisites carried from the same workflow's validated qualification steps before launcher smoke; the launcher harness does not re-measure them"
         : "functional-only insecure-container profile; isolation evidence is not applicable",
+      ...(scenario === "s3-09"
+        ? ["external real-provider/API-key call is blocked/not-run; local deterministic pinned Pi stream used"]
+        : []),
     ],
   };
 }
@@ -161,13 +172,63 @@ export function validateSmokeJson(value: unknown, profile: Profile): void {
   }
 }
 
-export function expectedReportPath(profile: Profile): string {
-  return join(generatedRoot, `launcher-${profile}.json`);
+export function validateS309Json(value: unknown): void {
+  const item = exactRecord(value, [
+    "complete",
+    "egressProof",
+    "history",
+    "inventory",
+    "lastEventId",
+    "liveEventCount",
+    "op",
+    "rawExport",
+    "terminal",
+  ]);
+  const history = exactRecord(item.history, ["entries", "pages"]);
+  const raw = exactRecord(item.rawExport, ["descriptorValidated", "mode", "rawExportOpened", "sensitive"]);
+  const inv = exactRecord(item.inventory, [
+    "authority",
+    "cleanupRequired",
+    "descriptor",
+    "driverState",
+    "phase",
+    "profile",
+    "recovery",
+    "workerLive",
+  ]);
+  if (
+    item.op !== "s3-09" ||
+    item.complete !== true ||
+    item.terminal !== "run_settled" ||
+    item.egressProof !== true ||
+    !positiveBoundedInteger(item.lastEventId, 1000) ||
+    !positiveBoundedInteger(item.liveEventCount, 1000) ||
+    !positiveBoundedInteger(history.pages, 100) ||
+    !positiveBoundedInteger(history.entries, 200) ||
+    raw.descriptorValidated !== true ||
+    raw.mode !== "raw" ||
+    raw.sensitive !== true ||
+    raw.rawExportOpened !== true
+  )
+    throw new Error("invalid launcher smoke metadata");
+  if (
+    inv.profile !== "linux-kvm" ||
+    inv.authority !== "authoritative-local" ||
+    inv.descriptor !== "none" ||
+    inv.workerLive !== false ||
+    inv.recovery !== "absent" ||
+    inv.cleanupRequired !== false
+  )
+    throw new Error("invalid launcher smoke metadata");
 }
 
-export function validateReportPath(profile: Profile, path: string): string {
+export function expectedReportPath(profile: Profile, scenario: Scenario = "smoke"): string {
+  return join(generatedRoot, scenario === "s3-09" ? "launcher-s3-09-linux-kvm.json" : `launcher-${profile}.json`);
+}
+
+export function validateReportPath(profile: Profile, path: string, scenario: Scenario = "smoke"): string {
   const resolved = resolve(path);
-  if (resolved !== expectedReportPath(profile)) throw new Error("invalid launcher smoke arguments");
+  if (resolved !== expectedReportPath(profile, scenario)) throw new Error("invalid launcher smoke arguments");
   return resolved;
 }
 
@@ -192,9 +253,11 @@ async function main() {
       sourceRevision: args.sourceRevision,
     });
     stage = "launcher-command";
-    const stdout = await runLauncher(args.profile, args.state, args.timeoutMs);
+    const stdout = await runLauncher(args.profile, args.state, args.timeoutMs, args.scenario);
     stage = "metadata-validation";
-    validateSmokeJson(lastJson(stdout), args.profile);
+    const metadata = lastJson(stdout);
+    if (args.scenario === "s3-09") validateS309Json(metadata);
+    else validateSmokeJson(metadata, args.profile);
     stage = "sensitive-export-cleanup";
     await cleanupSensitiveExport(join(root, ".cogs-dev", "exports", "launcher-smoke.json"));
     stage = "state-absence";
@@ -221,6 +284,7 @@ async function main() {
       args.report,
       reportFor({
         profile: args.profile,
+        scenario: args.scenario,
         sourceRevision: args.sourceRevision,
         startedAt: started.toISOString(),
         completedAt: completed.toISOString(),
@@ -238,10 +302,11 @@ async function main() {
 
 async function parseArgs(argv: string[]) {
   const out = new Map<string, string>();
+  const allowed = new Set(["--profile", "--report", "--scenario", "--state", "--timeout-ms"]);
   for (let i = 0; i < argv.length; i += 2) {
     const key = argv[i];
     const value = argv[i + 1];
-    if (!key?.startsWith("--") || !value || value.startsWith("--") || out.has(key))
+    if (!key?.startsWith("--") || !allowed.has(key) || !value || value.startsWith("--") || out.has(key))
       throw new Error("invalid launcher smoke arguments");
     out.set(key, value);
   }
@@ -249,17 +314,27 @@ async function parseArgs(argv: string[]) {
   const state = out.get("--state");
   const report = out.get("--report");
   const timeoutRaw = out.get("--timeout-ms") ?? "600000";
+  const scenario = out.get("--scenario") ?? "smoke";
   const sourceRevision = process.env.COGS_SOURCE_REVISION ?? process.env.GITHUB_SHA ?? "";
   if (profile !== "insecure-container" && profile !== "linux-kvm") throw new Error("invalid launcher smoke arguments");
   if (!state || !stateRe.test(state) || !report || !/^[1-9]\d{0,5}$/u.test(timeoutRaw))
     throw new Error("invalid launcher smoke arguments");
   if (!revisionRe.test(sourceRevision) || sourceRevision !== (await checkedOutHead()))
     throw new Error("invalid launcher smoke arguments");
-  const reportPath = validateReportPath(profile, report);
+  if (scenario !== "smoke" && scenario !== "s3-09") throw new Error("invalid launcher smoke arguments");
+  if (scenario === "s3-09" && profile !== "linux-kvm") throw new Error("invalid launcher smoke arguments");
+  const reportPath = validateReportPath(profile, report, scenario);
   const timeoutMs = Number(timeoutRaw);
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 600000)
     throw new Error("invalid launcher smoke arguments");
-  return { profile: profile as Profile, state, report: reportPath, timeoutMs, sourceRevision };
+  return {
+    profile: profile as Profile,
+    state,
+    report: reportPath,
+    timeoutMs,
+    sourceRevision,
+    scenario: scenario as Scenario,
+  };
 }
 
 async function checkedOutHead(): Promise<string> {
@@ -275,8 +350,8 @@ async function checkedOutHead(): Promise<string> {
   return value;
 }
 
-async function runLauncher(profile: Profile, state: string, timeoutMs: number): Promise<string> {
-  const result = await runCommand(launcherCommandDescriptor(profile, state, timeoutMs));
+async function runLauncher(profile: Profile, state: string, timeoutMs: number, scenario: Scenario): Promise<string> {
+  const result = await runCommand(launcherCommandDescriptor(profile, state, timeoutMs, scenario));
   if (
     result.status !== "ok" ||
     result.exitCode !== 0 ||
