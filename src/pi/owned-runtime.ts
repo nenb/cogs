@@ -145,8 +145,9 @@ export function createCogsPiOwnedRuntimeTracker(input: {
       await requireNames(sessionRoot, [basename(sessionDir)], rootMark);
       sessionDirMark = await markExistingDir(sessionDir, 0o700);
       await requireNames(sessionDir, [resumeFile], sessionDirMark);
-      sessionFileMark = await markExistingFile(join(sessionDir, resumeFile));
-      if (sessionFileMark.mode !== 0o644) throw new CogsPiOwnedRuntimeError();
+      const resumeMark = await markExistingFile(join(sessionDir, resumeFile));
+      if (resumeMark.mode !== 0o644 && resumeMark.mode !== 0o600) throw new CogsPiOwnedRuntimeError();
+      if (resumeMark.mode === 0o600) sessionFileMark = resumeMark;
     },
     adoptSessionDir: async (path: string) => {
       const real = await realpath(path).catch(() => {
@@ -162,7 +163,7 @@ export function createCogsPiOwnedRuntimeTracker(input: {
       const resolved = resolve(owner.path);
       if (resolved !== join(sessionDir, basename(resolved)) || !resolved.endsWith(".jsonl"))
         throw new CogsPiOwnedRuntimeError();
-      const mark = await markOwnedFile(owner, 0o644);
+      const mark = await markOwnedFile(owner, 0o600);
       if (sessionFileMark === undefined) sessionFileMark = mark;
       else sessionFileMark = growMark(mark, sessionFileMark);
       sessionDirMark = await markExistingDir(sessionDir, 0o700);

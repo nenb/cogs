@@ -1,17 +1,27 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, realpath, rm, rmdir, unlink, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { chmod, link, lstat, mkdir, mkdtemp, realpath, rm, rmdir, symlink, unlink, writeFile } from "node:fs/promises";
 import { createServer as createHttpServer } from "node:http";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import {
+  createDeterministicLauncherStream,
+  LAUNCHER_DETERMINISTIC_NORMAL_PROMPT,
+} from "../dev/launcher/deterministic-stream.ts";
 import type { LauncherState } from "../dev/launcher/state.ts";
 import {
+  createRawExportOpeningVerifier,
   createS309ProofEmitter,
   createTrustedWorkerRuntime,
   type TrustedCompositionSeams,
 } from "../dev/launcher/trusted-compose.ts";
 import type { WorkerProvisionalRuntime } from "../dev/launcher/worker-process.ts";
+import { type CogsToolPorts, createCogsPiSession } from "../src/pi/session.ts";
+import { createCogsJsonlHistoryStore } from "../src/session/jsonl-history.ts";
+import { createCogsLocalExporter } from "../src/session/local-export.ts";
+import type { CogsPreparedSkillMetadata } from "../src/skills/session-preparer.ts";
 
 const sourceRevision = "a".repeat(40);
 const stateId = "b".repeat(64);
@@ -68,6 +78,7 @@ test("trusted composition factory starts in exact order, proves ready, and close
     assert.equal(calls.includes("pi"), true);
     assert.equal(calls.includes("api-listen"), true);
     assert.equal(calls.includes("fetch-ready"), true);
+    assert.equal(captured.eventReplayCapacity, 32);
     const launch = captured.launch as {
       user_id: string;
       session_id: string;
@@ -1446,6 +1457,12 @@ function seams(calls: string[], captured: Record<string, unknown>): Partial<Trus
             envoy: { image: "x", binarySha256: `sha256:${"3".repeat(64)}` },
             completions: { drained: 0, classification: "none" },
           }),
+        s309CompletionProof: () =>
+          Object.freeze({
+            version: "cogs.launcher.s3-09-trusted-proof/v1alpha1",
+            outcome: "pending",
+            reason: "relay-zero-wal-zero",
+          }),
         proxyCapability: Object.freeze({
           withSecret: (op: (secret: string) => unknown) => op("PROXY_CAPABILITY_123"),
           dispose: () => undefined,
@@ -1528,8 +1545,9 @@ function seams(calls: string[], captured: Record<string, unknown>): Partial<Trus
         resolveGitMapping: async () => undefined,
       }) as never;
     },
-    createApi: () => {
+    createApi: (options) => {
       assert.equal(captured.apiTokenActive, true);
+      captured.eventReplayCapacity = (options as { eventReplayCapacity?: unknown }).eventReplayCapacity;
       return Object.freeze({
         listen: async () => {
           calls.push("api-listen");
@@ -1590,72 +1608,594 @@ function fakeLifecycle(options: Parameters<TrustedCompositionSeams["createLifecy
   });
 }
 
-test("s3-09 trusted proof channel is exact run-bound and fixture-bound", () => {
+function s309EgressProof(
+  ...outcomes: readonly (
+    | "pending"
+    | "pending-relay-zero-wal-zero"
+    | "pending-relay-zero-wal-pass"
+    | "pending-relay-one-wal-zero"
+    | "pending-relay-one-wal-pass"
+    | "pending-wal"
+    | "pass"
+    | "generation"
+    | "total-count"
+  )[]
+) {
+  let calls = 0;
+  return Object.freeze({
+    s309CompletionProof: () => {
+      const outcome = outcomes[Math.min(calls++, outcomes.length - 1)] ?? "pass";
+      return Object.freeze({
+        version: "cogs.launcher.s3-09-trusted-proof/v1alpha1",
+        ...(outcome === "pass"
+          ? {
+              outcome: "pass",
+              runtime_observers_consistent: true,
+              completion_observer_consistent: true,
+            }
+          : outcome === "pending" || outcome.startsWith("pending-")
+            ? {
+                outcome: "pending",
+                reason: outcome === "pending" ? "relay-zero-wal-zero" : outcome.slice("pending-".length),
+              }
+            : { outcome: "fail", reason: outcome }),
+      });
+    },
+  }) as never;
+}
+
+test("s3-09 trusted proof channel captures baseline and binds to serialized settled deltas", () => {
+  let resetCalls = 0;
+  let total = 5;
+  let counts: Readonly<Record<string, number>> = Object.freeze({ "GET /credential 200": 4, "GET /health 200": 1 });
   const fixture = {
-    snapshot: () =>
-      Object.freeze({
-        ready: true,
-        port: 1234,
-        generation: 0,
-        inflight: 0,
-        total: 1,
-        counts: Object.freeze({ "GET /credential 200": 1 }),
-      }),
+    snapshot: () => Object.freeze({ ready: true, port: 1234, generation: 0, inflight: 0, total, counts }),
+    reset: () => {
+      resetCalls += 1;
+    },
   } as never;
-  const emit = createS309ProofEmitter(fixture, "linux-kvm");
-  const event = (kind: "tool_end" | "run_settled", correlation_id: string) =>
-    Object.freeze({ kind, correlation_id, payload: Object.freeze({}) }) as never;
-  assert.equal("s3_09_proof" in emit(event("run_settled", "setup")).payload, false);
-  assert.equal("s3_09_proof" in emit(event("tool_end", "scenario")).payload, false);
-  assert.equal("s3_09_proof" in emit(event("tool_end", "scenario")).payload, false);
-  assert.equal("s3_09_proof" in emit(event("run_settled", "scenario")).payload, false);
-  assert.equal("s3_09_proof" in emit(event("tool_end", "scenario")).payload, false);
-  const settled = emit(event("run_settled", "scenario"));
+  const emit = createS309ProofEmitter(fixture, s309EgressProof("pass"), "linux-kvm");
+  const event = (correlation_id: string) =>
+    Object.freeze({ kind: "run_settled", correlation_id, payload: Object.freeze({}) }) as never;
+  assert.equal("s3_09_proof" in emit(event("setup")).payload, false);
+  counts = Object.freeze({ "GET /credential 200": 5, "GET /health 200": 1 });
+  total = 6;
+  assert.equal("s3_09_proof" in emit(event("scenario")).payload, false);
+  const settled = emit(event("proof"));
   assert.deepEqual(settled.payload.s3_09_proof, {
     version: "cogs.launcher.s3-09-proof/v1alpha1",
     scenario: "s3-09",
     profile: "linux-kvm",
-    credential_route_200: true,
-    denied_route_absent: true,
-    total_exact_expected: true,
+    outcome: "pass",
+    guest_proxy_fixture_attested: true,
+    runtime_observers_consistent: true,
+    completion_observer_consistent: true,
+    fixture_denied_route_absent: true,
+    fixture_observer_consistent: true,
     fixture_ready: true,
-    fixture_generation_zero: true,
+    fixture_baseline_captured: true,
   });
+  assert.equal(resetCalls, 0);
   assert.equal(JSON.stringify(settled).includes("1234"), false);
-  assert.equal(JSON.stringify(settled).includes("credential"), true);
+  assert.equal(JSON.stringify(settled).includes("credential"), false);
+  assert.equal("s3_09_proof" in emit(event("extra")).payload, false);
+  // An extra early settlement consumes the sole slot, so the fixed proof operation fails closed without proof.
+  const shifted = createS309ProofEmitter(fixture, s309EgressProof("pass"), "linux-kvm");
+  assert.equal("s3_09_proof" in shifted(event("extra-early")).payload, false);
+  assert.equal("s3_09_proof" in shifted(event("setup")).payload, false);
+  assert.equal("s3_09_proof" in shifted(event("scenario")).payload, true);
+  assert.equal("s3_09_proof" in shifted(event("proof")).payload, false);
 });
 
-test("s3-09 trusted proof channel rejects stale counts, wrong profile, and denied forwarding", () => {
-  const make = (snapshot: Record<string, unknown>) => ({ snapshot: () => Object.freeze(snapshot) }) as never;
+test("s3-09 trusted proof channel emits fixed failure reasons without metadata leakage", () => {
+  const make = (baseline: Record<string, unknown>, snapshot: Record<string, unknown> = baseline) => {
+    let current = baseline;
+    return {
+      fixture: { snapshot: () => Object.freeze(current), reset: () => assert.fail("reset called") } as never,
+      advance: () => (current = snapshot),
+    };
+  };
   const settled = Object.freeze({
     kind: "run_settled",
     correlation_id: "scenario",
     payload: Object.freeze({}),
   }) as never;
-  const prime = (emit: ReturnType<typeof createS309ProofEmitter>) => {
-    emit(Object.freeze({ kind: "run_settled", correlation_id: "setup", payload: Object.freeze({}) }) as never);
-    for (let i = 0; i < 3; i += 1)
-      emit(Object.freeze({ kind: "tool_end", correlation_id: "scenario", payload: Object.freeze({}) }) as never);
-  };
-  for (const snapshot of [
-    { ready: true, generation: 0, inflight: 0, total: 2, counts: Object.freeze({ "GET /credential 200": 2 }) },
-    {
-      ready: true,
-      generation: 0,
-      inflight: 0,
-      total: 2,
-      counts: Object.freeze({ "GET /credential 200": 1, "GET /allowed 200": 1 }),
-    },
-    { ready: true, generation: 1, inflight: 0, total: 1, counts: Object.freeze({ "GET /credential 200": 1 }) },
-  ]) {
-    const emit = createS309ProofEmitter(make(snapshot), "linux-kvm");
-    prime(emit);
+  const proofOf = (emit: ReturnType<typeof createS309ProofEmitter>) => {
     assert.equal("s3_09_proof" in emit(settled).payload, false);
+    assert.equal("s3_09_proof" in emit(settled).payload, false);
+    return emit(settled).payload.s3_09_proof;
+  };
+  for (const [baseline, snapshot, reason] of [
+    [
+      { ready: true, generation: 1, inflight: 0, total: 0, counts: Object.freeze({}) },
+      { ready: false, generation: 1, inflight: 0, total: 1, counts: Object.freeze({ "GET /credential 200": 1 }) },
+      "fixture-not-ready",
+    ],
+    [
+      { ready: true, generation: 1, inflight: 0, total: 0, counts: Object.freeze({}) },
+      { ready: true, generation: 2, inflight: 0, total: 1, counts: Object.freeze({ "GET /credential 200": 1 }) },
+      "generation",
+    ],
+    [
+      { ready: true, generation: 1, inflight: 0, total: 0, counts: Object.freeze({}) },
+      { ready: true, generation: 1, inflight: 1, total: 1, counts: Object.freeze({ "GET /credential 200": 1 }) },
+      "inflight",
+    ],
+    [
+      { ready: true, generation: 1, inflight: 0, total: 1, counts: Object.freeze({ "GET /credential 200": 1 }) },
+      { ready: true, generation: 1, inflight: 0, total: 0, counts: Object.freeze({}) },
+      "total-count",
+    ],
+    [
+      { ready: true, generation: 1, inflight: 0, total: 0, counts: Object.freeze({}) },
+      { ready: true, generation: 1, inflight: 0, total: 0, counts: Object.freeze({}) },
+      "credential-count",
+    ],
+    [
+      { ready: true, generation: 1, inflight: 0, total: 0, counts: Object.freeze({}) },
+      { ready: true, generation: 1, inflight: 0, total: 1, counts: Object.freeze({ "GET /credential 401": 1 }) },
+      "total-count",
+    ],
+    [
+      { ready: true, generation: 1, inflight: 0, total: 0, counts: Object.freeze({}) },
+      { ready: true, generation: 1, inflight: 0, total: 2, counts: Object.freeze({ "GET /credential 200": 2 }) },
+      "total-count",
+    ],
+    [
+      { ready: true, generation: 1, inflight: 0, total: 0, counts: Object.freeze({}) },
+      {
+        ready: true,
+        generation: 1,
+        inflight: 0,
+        total: 2,
+        counts: Object.freeze({ "GET /credential 200": 1, "GET /allowed 200": 1 }),
+      },
+      "denied-forwarded",
+    ],
+    [
+      { ready: true, generation: 1, inflight: 0, total: 0, counts: Object.freeze({}) },
+      { ready: true, generation: 1, inflight: 0, total: 2, counts: Object.freeze({ "GET /credential 200": 1 }) },
+      "total-count",
+    ],
+  ] as const) {
+    const { fixture, advance } = make(baseline, snapshot);
+    const emit = createS309ProofEmitter(
+      fixture,
+      s309EgressProof(reason === "credential-count" ? "pending-wal" : "pass"),
+      "linux-kvm",
+    );
+    advance();
+    assert.deepEqual(proofOf(emit), {
+      version: "cogs.launcher.s3-09-proof/v1alpha1",
+      scenario: "s3-09",
+      profile: "linux-kvm",
+      outcome: "fail",
+      reason,
+    });
   }
-  const wrongProfile = createS309ProofEmitter(
-    make({ ready: true, generation: 0, inflight: 0, total: 1, counts: Object.freeze({ "GET /credential 200": 1 }) }),
-    "insecure-container",
+  const zeroCredential = make({ ready: true, generation: 1, inflight: 0, total: 0, counts: Object.freeze({}) });
+  const exactOnce = createS309ProofEmitter(zeroCredential.fixture, s309EgressProof("pass", "total-count"), "linux-kvm");
+  assert.equal((proofOf(exactOnce) as { outcome: string }).outcome, "pass");
+  assert.equal("s3_09_proof" in exactOnce(settled).payload, false);
+  assert.equal(
+    (
+      proofOf(createS309ProofEmitter(zeroCredential.fixture, s309EgressProof("pending-wal"), "linux-kvm")) as {
+        reason: string;
+      }
+    ).reason,
+    "credential-count",
   );
-  prime(wrongProfile);
-  assert.equal("s3_09_proof" in wrongProfile(settled).payload, false);
+  assert.equal(
+    (
+      proofOf(
+        createS309ProofEmitter(zeroCredential.fixture, s309EgressProof("pending-relay-zero-wal-zero"), "linux-kvm"),
+      ) as { reason: string }
+    ).reason,
+    "relay-zero-wal-zero",
+  );
+  for (const [pending, reason] of [
+    ["pending-relay-zero-wal-pass", "relay-zero-wal-pass"],
+    ["pending-relay-one-wal-zero", "relay-one-wal-zero"],
+    ["pending-relay-one-wal-pass", "relay-one-wal-pass"],
+  ] as const) {
+    assert.equal(
+      (
+        proofOf(createS309ProofEmitter(zeroCredential.fixture, s309EgressProof(pending), "linux-kvm")) as {
+          reason: string;
+        }
+      ).reason,
+      reason,
+    );
+  }
+  assert.deepEqual(proofOf(createS309ProofEmitter(zeroCredential.fixture, s309EgressProof("pass"), "linux-kvm")), {
+    version: "cogs.launcher.s3-09-proof/v1alpha1",
+    scenario: "s3-09",
+    profile: "linux-kvm",
+    outcome: "pass",
+    guest_proxy_fixture_attested: true,
+    runtime_observers_consistent: true,
+    completion_observer_consistent: true,
+    fixture_denied_route_absent: true,
+    fixture_observer_consistent: true,
+    fixture_ready: true,
+    fixture_baseline_captured: true,
+  });
+  assert.equal(
+    (
+      proofOf(createS309ProofEmitter(zeroCredential.fixture, s309EgressProof("generation"), "linux-kvm")) as {
+        reason: string;
+      }
+    ).reason,
+    "generation",
+  );
+  const otherTraffic = make(
+    { ready: true, generation: 1, inflight: 0, total: 0, counts: Object.freeze({}) },
+    { ready: true, generation: 1, inflight: 0, total: 1, counts: Object.freeze({}) },
+  );
+  const otherEmit = createS309ProofEmitter(otherTraffic.fixture, s309EgressProof("pass"), "linux-kvm");
+  otherTraffic.advance();
+  assert.equal((proofOf(otherEmit) as { reason: string }).reason, "total-count");
+  const wrongProfile = make({
+    ready: true,
+    generation: 0,
+    inflight: 0,
+    total: 1,
+    counts: Object.freeze({ "GET /credential 200": 1 }),
+  });
+  assert.equal(
+    "s3_09_proof" in
+      createS309ProofEmitter(wrongProfile.fixture, s309EgressProof("pass"), "insecure-container")(settled).payload,
+    false,
+  );
 });
+
+test("raw export opening verifier accepts real local exporter bundle", async () => {
+  const root = await mkdtemp(join(tmpdir(), "cogs-real-raw-open-"));
+  try {
+    const realRoot = await realpath(root);
+    const sessionRoot = join(realRoot, "sessions");
+    const sessionDir = join(sessionRoot, "session-1");
+    await mkdir(sessionDir, { recursive: true, mode: 0o700 });
+    await chmod(sessionRoot, 0o700);
+    await chmod(sessionDir, 0o700);
+    const sessionFile = join(sessionDir, "session.jsonl");
+    await writeFile(sessionFile, sessionJsonl("native-pi-session"), { mode: 0o600 });
+    await chmod(sessionFile, 0o600);
+    const history = createCogsJsonlHistoryStore({ sessionFile, sessionDir });
+    await history.initialize();
+    const local = createCogsLocalExporter({
+      sessionDir,
+      sessionId: "session-1",
+      history,
+      skillMetadata: realExportSkillMetadata,
+      model: { provider: "test", id: "model" },
+    });
+    const verifier = createRawExportOpeningVerifier(
+      Object.freeze({
+        createExport: async (input: { signal?: AbortSignal }) =>
+          local.createExport(input.signal === undefined ? {} : { signal: input.signal }),
+        sessionFile: () => sessionFile,
+      }) as never,
+      sessionRoot,
+      "session-1",
+    );
+    const result = await verifier.createExport({ requestId: "req", correlationId: "corr" });
+    assert.equal(
+      (result as { raw_export_opening: { current_session: boolean } }).raw_export_opening.current_session,
+      true,
+    );
+    assert.equal((result as { file_count: number }).file_count, 6);
+    await local.dispose();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("raw export opening verifier accepts real hardened Pi session export", async () => {
+  const root = await mkdtemp(join(tmpdir(), "cogs-real-pi-raw-open-"));
+  try {
+    const realRoot = await realpath(root);
+    const cwd = join(realRoot, "workspace");
+    const agentDir = join(realRoot, "agent");
+    const sessionRoot = join(realRoot, "sessions");
+    const sessionId = "cogs-session-1";
+    await mkdir(cwd, { recursive: true, mode: 0o700 });
+    await mkdir(agentDir, { recursive: true, mode: 0o700 });
+    await mkdir(sessionRoot, { recursive: true, mode: 0o700 });
+    const pi = await createCogsPiSession({
+      cwd,
+      agentDir,
+      sessionRoot,
+      sessionId,
+      userId: "user-1",
+      model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+      apiKey: "aaaaaaaa",
+      toolPorts: rawVerifierToolPorts,
+      streamFn: createDeterministicLauncherStream(Object.freeze({ now: () => 1780000000000 })),
+      preparedResources: realPreparedResources(),
+      emit: () => true,
+      onFatal: () => undefined,
+    });
+    try {
+      await pi.input({
+        requestId: "run",
+        correlationId: "corr",
+        kind: "prompt",
+        content: LAUNCHER_DETERMINISTIC_NORMAL_PROMPT,
+      });
+      for (let i = 0; i < 500 && (await pi.state()).runState !== "settled"; i += 1)
+        await new Promise((resolveTimer) => setTimeout(resolveTimer, 10));
+      assert.equal((await pi.state()).runState, "settled");
+      const live = pi.sessionFile();
+      assert.ok(live);
+      assert.equal((await lstat(live)).mode & 0o777, 0o600);
+      const result = await createRawExportOpeningVerifier(pi, sessionRoot, sessionId).createExport({
+        requestId: "req",
+        correlationId: "corr",
+      });
+      assert.equal(
+        (result as { raw_export_opening: { current_session: boolean } }).raw_export_opening.current_session,
+        true,
+      );
+    } finally {
+      await pi.dispose();
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("raw export opening verifier uses pinned Pi and emits only fixed metadata", async () => {
+  const root = await mkdtemp(join(tmpdir(), "cogs-raw-open-"));
+  try {
+    const realRoot = await realpath(root);
+    await makeRawBundle(realRoot, "session-1", undefined, "native-pi-session");
+    const verifier = createRawExportOpeningVerifier(exporter(realRoot, "session-1"), realRoot, "session-1");
+    const result = await verifier.createExport({ requestId: "req", correlationId: "corr" });
+    assert.deepEqual((result as { raw_export_opening: unknown }).raw_export_opening, {
+      version: "cogs.launcher.raw-export-opening/v1alpha1",
+      opened_with: "pinned-pi-session-manager",
+      session_jsonl_openable: true,
+      current_session: true,
+      content_redacted: true,
+    });
+    const serialized = JSON.stringify(result);
+    for (const forbidden of [root, "session.jsonl", "secret", "tool-output"])
+      assert.equal(serialized.includes(forbidden), false, forbidden);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("raw export opening verifier accepts bounded large session JSONL", async () => {
+  const root = await mkdtemp(join(tmpdir(), "cogs-raw-open-large-"));
+  try {
+    const realRoot = await realpath(root);
+    await makeRawBundle(realRoot, "session-1", 2 * 1024 * 1024 - 4096);
+    const verifier = createRawExportOpeningVerifier(exporter(realRoot, "session-1"), realRoot, "session-1");
+    const result = await verifier.createExport({ requestId: "req", correlationId: "corr" });
+    assert.equal(
+      (result as { raw_export_opening: { session_jsonl_openable: boolean } }).raw_export_opening.session_jsonl_openable,
+      true,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("raw export opening verifier fails closed on hostile bundle shapes", async () => {
+  for (const kind of [
+    "wrong-session",
+    "wrong-live-session",
+    "missing-live",
+    "live-outside",
+    "live-export-alias",
+    "live-symlink",
+    "live-hardlink",
+    "live-mode",
+    "live-oversize",
+    "malformed-jsonl",
+    "symlink",
+    "hardlink",
+    "oversize",
+    "getter",
+    "extra",
+    "missing",
+    "bad-digest",
+    "bad-date",
+    "bad-count",
+    "bad-total",
+    "wrong-root",
+  ] as const) {
+    const root = await mkdtemp(join(tmpdir(), `cogs-raw-open-${kind}-`));
+    try {
+      const realRoot = await realpath(root);
+      await makeRawBundle(realRoot, "session-1");
+      let descriptor = descriptorFor("session-1") as Record<string, unknown>;
+      let liveOverride: string | undefined | null;
+      if (kind === "wrong-session") {
+        await writeFile(
+          join(root, "session-1", "exports", "cogs-session-session-1", "session.jsonl"),
+          sessionJsonl("native-session-2"),
+          {
+            mode: 0o600,
+          },
+        );
+      }
+      if (kind === "wrong-live-session")
+        await writeFile(liveFileFor(root, "session-1"), sessionJsonl("native-session-2"), { mode: 0o600 });
+      if (kind === "missing-live") liveOverride = null;
+      if (kind === "live-outside") {
+        liveOverride = join(root, "outside.jsonl");
+        await writeFile(liveOverride, sessionJsonl("native-session-1"), { mode: 0o600 });
+        await chmod(liveOverride, 0o600);
+      }
+      if (kind === "live-export-alias")
+        liveOverride = join(root, "session-1", "exports", "cogs-session-session-1", "session.jsonl");
+      if (kind === "live-symlink") {
+        const live = liveFileFor(root, "session-1");
+        await unlink(live);
+        await symlink(join(root, "target"), live);
+      }
+      if (kind === "live-hardlink") await link(liveFileFor(root, "session-1"), join(root, "session-1", "other.jsonl"));
+      if (kind === "live-mode") await chmod(liveFileFor(root, "session-1"), 0o644);
+      if (kind === "live-oversize")
+        await writeFile(
+          liveFileFor(root, "session-1"),
+          `${sessionJsonl("native-session-1")}${"x".repeat(2 * 1024 * 1024)}\n`,
+          {
+            mode: 0o600,
+          },
+        );
+      if (kind === "malformed-jsonl")
+        await writeFile(join(root, "session-1", "exports", "cogs-session-session-1", "session.jsonl"), "not-json\n", {
+          mode: 0o600,
+        });
+      if (kind === "symlink") {
+        const file = join(root, "session-1", "exports", "cogs-session-session-1", "session.jsonl");
+        await unlink(file);
+        await symlink(join(root, "target"), file);
+      }
+      if (kind === "hardlink")
+        await link(
+          join(root, "session-1", "exports", "cogs-session-session-1", "session.jsonl"),
+          join(root, "session-1", "exports", "cogs-session-session-1", "other.jsonl"),
+        );
+      if (kind === "oversize")
+        await writeFile(
+          join(root, "session-1", "exports", "cogs-session-session-1", "session.jsonl"),
+          `${sessionJsonl("session-1")}${"x".repeat(2 * 1024 * 1024)}\n`,
+          { mode: 0o600 },
+        );
+      if (kind === "getter")
+        descriptor = Object.freeze(
+          Object.defineProperty({}, "version", {
+            enumerable: true,
+            get() {
+              throw new Error("SECRET");
+            },
+          }),
+        ) as never;
+      if (kind === "extra") descriptor = { ...descriptor, extra: true };
+      if (kind === "missing") {
+        descriptor = { ...descriptor };
+        delete descriptor.total_bytes;
+      }
+      if (kind === "bad-digest") descriptor = { ...descriptor, manifest_sha256: "sha256:bad" };
+      if (kind === "bad-date") descriptor = { ...descriptor, created_at: "not-date" };
+      if (kind === "bad-count") descriptor = { ...descriptor, file_count: 5 };
+      if (kind === "bad-total") descriptor = { ...descriptor, total_bytes: 72 * 1024 * 1024 + 1 };
+      const verifier = createRawExportOpeningVerifier(
+        exporter(realRoot, "session-1", descriptor, liveOverride),
+        kind === "wrong-root" ? join(realRoot, "missing") : realRoot,
+        "session-1",
+      );
+      await assert.rejects(
+        () => verifier.createExport({ requestId: "req", correlationId: "corr" }),
+        /launcher trusted composition failed/,
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
+async function makeRawBundle(
+  root: string,
+  sessionId: string,
+  contentBytes?: number,
+  nativeSessionId = "native-session-1",
+): Promise<void> {
+  const sessionDir = join(root, sessionId);
+  const bundle = join(sessionDir, "exports", `cogs-session-${sessionId}`);
+  await mkdir(bundle, { recursive: true, mode: 0o700 });
+  await chmod(sessionDir, 0o700);
+  await chmod(join(sessionDir, "exports"), 0o700);
+  await chmod(bundle, 0o700);
+  await writeFile(liveFileFor(root, sessionId), sessionJsonl(nativeSessionId), { mode: 0o600 });
+  await chmod(liveFileFor(root, sessionId), 0o600);
+  await writeFile(join(bundle, "session.jsonl"), sessionJsonl(nativeSessionId, contentBytes), { mode: 0o600 });
+  await chmod(join(bundle, "session.jsonl"), 0o600);
+}
+
+function liveFileFor(root: string, sessionId: string): string {
+  return join(root, sessionId, "live-session.jsonl");
+}
+
+function sessionJsonl(sessionId: string, contentBytes?: number): string {
+  const content = contentBytes === undefined ? "secret" : "x".repeat(contentBytes);
+  return `${JSON.stringify({ type: "session", version: 3, id: sessionId, timestamp: "2026-01-01T00:00:00.000Z", cwd: "/workspace" })}\n${JSON.stringify({ type: "message", id: "aaaaaaaa", parentId: null, timestamp: "2026-01-01T00:00:01.000Z", message: { role: "user", content } })}\n`;
+}
+
+function descriptorFor(sessionId: string): Record<string, unknown> {
+  return {
+    version: "cogs.export-descriptor/v1alpha1",
+    bundle: `cogs-session-${sessionId}`,
+    manifest_sha256: "a".repeat(64),
+    created_at: "2026-01-01T00:00:00.000Z",
+    mode: "raw",
+    attachments_included: false,
+    file_count: 6,
+    total_bytes: 200,
+    sensitive: true,
+    sanitized: false,
+    anonymized: false,
+  };
+}
+
+function exporter(
+  root: string,
+  sessionId: string,
+  descriptor: unknown = descriptorFor(sessionId),
+  liveSessionFile: string | undefined | null = liveFileFor(root, sessionId),
+) {
+  return Object.freeze({
+    createExport: async () => descriptor,
+    sessionFile: () => (liveSessionFile === null ? undefined : liveSessionFile),
+  }) as never;
+}
+
+const rawVerifierToolPorts: CogsToolPorts = Object.freeze({
+  read: async (input: Parameters<CogsToolPorts["read"]>[0]) => ({ path: input.path, content: "" }),
+  write: async (input: Parameters<CogsToolPorts["write"]>[0]) => ({ bytes: input.content.length }),
+  edit: async () => ({ ok: true }),
+  bash: async () => ({ exit_code: 0, stdout: "cogs-launcher-deterministic" }),
+});
+
+function realPreparedResources() {
+  return Object.freeze({
+    piSkills: Object.freeze([]),
+    eagerTrustedSkillPrompt: "",
+    agentsFiles: Object.freeze([]),
+    metadata: realExportSkillMetadata(),
+    dispose: async () => undefined,
+  });
+}
+
+function realExportSkillMetadata(): CogsPreparedSkillMetadata {
+  const digest = (seed: string) => `sha256:${createHash("sha256").update(seed).digest("hex")}` as const;
+  return Object.freeze({
+    shared: Object.freeze({
+      scope: "shared",
+      revision: digest("shared"),
+      bundleDigest: digest("shared-bundle"),
+      guestRoot: "/shared/skills",
+      guestSubtree: `/shared/skills/${digest("shared-bundle").slice(7)}`,
+      fileCount: 1,
+      byteCount: 1,
+      readOnlyEnforced: false,
+    }),
+    user: Object.freeze({
+      scope: "user",
+      revision: digest("user-bundle"),
+      bundleDigest: digest("user-bundle"),
+      guestRoot: "/user/skills",
+      guestSubtree: `/user/skills/${digest("user-bundle").slice(7)}`,
+      fileCount: 1,
+      byteCount: 1,
+      readOnlyEnforced: false,
+    }),
+    agentsStatus: "missing",
+    skillCount: 0,
+  });
+}

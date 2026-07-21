@@ -530,15 +530,25 @@ async function post(url: string, body = "", headers: Record<string, string> = {}
 test("local fixtures serve real loopback upstream routes with metadata-only snapshots", async () => {
   const f = await startLocalFixtures({ credential: "cogs-dev-egress-key" });
   try {
-    assert.equal((await fetch(`${f.endpoint()}/health`)).status, 200);
-    assert.equal((await fetch(`${f.endpoint()}/allowed`)).status, 200);
-    assert.equal((await post(`${f.endpoint()}/allowed`, "ignored body")).status, 200);
-    assert.equal(
-      (await post(`${f.endpoint()}/credential`, "ignored", { authorization: "Bearer cogs-dev-egress-key" })).status,
-      200,
-    );
+    const health = await fetch(`${f.endpoint()}/health`);
+    const allowed = await fetch(`${f.endpoint()}/allowed`);
+    const allowedPost = await post(`${f.endpoint()}/allowed`, "ignored body");
+    const credential = await fetch(`${f.endpoint()}/credential`, {
+      headers: { authorization: "Bearer cogs-dev-egress-key" },
+    });
+    const credentialPost = await post(`${f.endpoint()}/credential`, "ignored", {
+      authorization: "Bearer cogs-dev-egress-key",
+    });
+    assert.equal(health.status, 200);
+    assert.equal(allowed.status, 200);
+    assert.equal(allowedPost.status, 200);
+    assert.equal(credential.status, 200);
+    assert.equal(credentialPost.status, 200);
+    assert.equal(credential.headers.get("x-cogs-fixture-proof"), `launcher-v1-${f.snapshot().port}`);
+    for (const response of [health, allowed, allowedPost, credentialPost])
+      assert.equal(response.headers.get("x-cogs-fixture-proof"), null);
     const snap = f.snapshot();
-    assert.equal(snap.total, 4);
+    assert.equal(snap.total, 5);
     assert.equal(snap.counts["GET /health 200"], 1);
     assert.equal(JSON.stringify(snap).includes("ignored"), false);
     f.reset();
@@ -556,7 +566,9 @@ test("local fixtures reject credential malformed oversize duplicate headers and 
     maxRecords: 3,
   });
   try {
-    assert.equal((await post(`${f.endpoint()}/credential`, "", { authorization: "Bearer wrong" })).status, 401);
+    const unauthorized = await fetch(`${f.endpoint()}/credential`, { headers: { authorization: "Bearer wrong" } });
+    assert.equal(unauthorized.status, 401);
+    assert.equal(unauthorized.headers.get("x-cogs-fixture-proof"), null);
     assert.notEqual((await post(`${f.endpoint()}/nope`, "{}")).status, 200);
     assert.notEqual((await post(`${f.endpoint()}/allowed`, "x".repeat(300))).status, 200);
     assert.equal((await fetch(`${f.endpoint()}/allowed`)).status, 200);

@@ -9,6 +9,7 @@ import { createSandbox, destroySandbox, type LauncherCoreOptions, resetSandbox }
 import {
   LAUNCHER_DETERMINISTIC_ABORT_PROMPT,
   LAUNCHER_DETERMINISTIC_S309_PROMPT,
+  LAUNCHER_DETERMINISTIC_S309_PROOF_PROMPT,
   LAUNCHER_DETERMINISTIC_S309_SETUP_PROMPT,
 } from "./deterministic-stream.ts";
 import { resolveLauncherState, withStateLock } from "./state.ts";
@@ -86,6 +87,66 @@ const stateRe = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u;
 const cursorRe = /^[A-Za-z0-9_-]{1,768}\.[A-Za-z0-9_-]{32,256}$/u;
 const relRe = /^[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+){0,15}$/u;
 const abortGetter = Object.getOwnPropertyDescriptor(AbortSignal.prototype, "aborted")?.get;
+export const s309FailureStages = Object.freeze([
+  "s3-create",
+  "s3-start",
+  "s3-setup-run",
+  "s3-setup-terminal",
+  "s3-live-open",
+  "s3-scenario-run",
+  "s3-terminal-kind",
+  "s3-git-mapping",
+  "s3-live-count",
+  "s3-proof-run",
+  "s3-proof-terminal",
+  "s3-egress-shape",
+  "s3-egress-state",
+  "s3-egress-credential",
+  "s3-egress-denied",
+  "s3-egress-total",
+  "s3-replay-gap",
+  "s3-history",
+  "s3-export",
+  "s3-shutdown",
+  "s3-absence",
+  "s3-destroy",
+  "s3-cleanup",
+  "s3-trusted-relay-zero-wal-zero",
+  "s3-trusted-relay-zero-wal-pass",
+  "s3-trusted-relay-one-wal-zero",
+  "s3-trusted-relay-one-wal-pass",
+] as const);
+export type S309FailureStage = (typeof s309FailureStages)[number];
+const s309Failures = new WeakMap<Error, S309FailureStage>();
+const s309ProofFailStages: Record<string, S309FailureStage> = Object.freeze({
+  "fixture-not-ready": "s3-egress-state",
+  generation: "s3-egress-state",
+  inflight: "s3-egress-state",
+  "relay-zero-wal-zero": "s3-trusted-relay-zero-wal-zero",
+  "relay-zero-wal-pass": "s3-trusted-relay-zero-wal-pass",
+  "relay-one-wal-zero": "s3-trusted-relay-one-wal-zero",
+  "relay-one-wal-pass": "s3-trusted-relay-one-wal-pass",
+  "credential-count": "s3-egress-credential",
+  "denied-forwarded": "s3-egress-denied",
+  "total-count": "s3-egress-total",
+});
+const s309ProofFailKeys = "outcome,profile,reason,scenario,version";
+const s309ProofPassKeys =
+  "completion_observer_consistent,fixture_baseline_captured,fixture_denied_route_absent,fixture_observer_consistent,fixture_ready,guest_proxy_fixture_attested,outcome,profile,runtime_observers_consistent,scenario,version";
+export function s309StageExitCode(error: unknown): number {
+  const stage = error instanceof Error ? s309Failures.get(error) : undefined;
+  return stage ? 40 + s309FailureStages.indexOf(stage) : 1;
+}
+export function s309StageFromExitCode(code: unknown): S309FailureStage | undefined {
+  return typeof code === "number" && code >= 40 && code < 40 + s309FailureStages.length
+    ? s309FailureStages[code - 40]
+    : undefined;
+}
+function s309Failure(stage: S309FailureStage): Error {
+  const error = new Error("launcher operation failed");
+  s309Failures.set(error, stage);
+  return error;
+}
 
 export async function runLauncherOperation(
   request: CliRequest,
@@ -121,7 +182,8 @@ export async function runLauncherOperation(
     if (req.op === "smoke") return await smoke(req, ctx, options, s);
     if (req.op === "s3-09") return await s309(req, ctx, options, s);
     throw new Error("launcher operation failed");
-  } catch {
+  } catch (error) {
+    if (s309StageExitCode(error) !== 1) throw error;
     throw new Error("launcher operation failed");
   } finally {
     done?.();
@@ -276,42 +338,36 @@ async function withReadyClient<T>(
 }
 
 async function tailTerminal(client: ApiClient, correlation: string, signal?: AbortSignal) {
-  let last = 0,
-    count = 0;
-  for (;;) {
-    let saw = false;
-    for await (const event of client.events(last, 100, signal)) {
-      saw = true;
-      last = eventId(event);
-      count += 1;
-      if (count > 1000) throw new Error("launcher operation failed");
-      const data = eventData(event),
-        kind = enumValue(data.kind, eventKinds);
-      if (terminalKinds.has(kind) && data.correlation_id === correlation)
-        return deepFreeze({ terminal: kind, lastEventId: last, eventCount: count });
-    }
-    if (!saw) throw new Error("launcher operation failed");
-  }
+  const t = await tailTerminalEvent(client, correlation, signal);
+  return deepFreeze({ terminal: t.kind, lastEventId: t.lastEventId, eventCount: t.eventCount });
 }
 
-async function tailTerminalProof(client: ApiClient, correlation: string, signal?: AbortSignal, live?: LiveEvents) {
-  const terminal = live
-    ? await tailTerminalEventFromLive(client, live, correlation, signal)
-    : await tailTerminalEvent(client, correlation, signal);
-  if (terminal.kind !== "run_settled" || terminal.gitMapping !== true) throw new Error("launcher operation failed");
-  const payload = exactPlain(terminal.payload);
-  const proof = exactPlain(payload.s3_09_proof);
+function egressProof(terminal: Awaited<ReturnType<typeof tailTerminalEvent>>) {
+  const proof = exactJsonRecord(exactJsonRecord(terminal.payload).s3_09_proof);
+  const keys = Object.keys(proof).sort().join(",");
   if (
     proof.version !== "cogs.launcher.s3-09-proof/v1alpha1" ||
     proof.scenario !== "s3-09" ||
-    proof.profile !== "linux-kvm" ||
-    proof.credential_route_200 !== true ||
-    proof.denied_route_absent !== true ||
-    proof.total_exact_expected !== true ||
-    proof.fixture_ready !== true ||
-    proof.fixture_generation_zero !== true
+    proof.profile !== "linux-kvm"
   )
-    throw new Error("launcher operation failed");
+    throw s309Failure("s3-egress-shape");
+  if (proof.outcome === "fail") {
+    const stage = typeof proof.reason === "string" ? s309ProofFailStages[proof.reason] : undefined;
+    if (keys !== s309ProofFailKeys || stage === undefined) throw s309Failure("s3-egress-shape");
+    throw s309Failure(stage);
+  }
+  if (
+    proof.outcome !== "pass" ||
+    keys !== s309ProofPassKeys ||
+    proof.guest_proxy_fixture_attested !== true ||
+    proof.runtime_observers_consistent !== true ||
+    proof.completion_observer_consistent !== true ||
+    proof.fixture_denied_route_absent !== true ||
+    proof.fixture_observer_consistent !== true ||
+    proof.fixture_ready !== true ||
+    proof.fixture_baseline_captured !== true
+  )
+    throw s309Failure("s3-egress-shape");
   return deepFreeze({
     terminal: terminal.kind,
     lastEventId: terminal.lastEventId,
@@ -326,8 +382,8 @@ type LiveEvents = {
   closed: boolean;
 };
 
-function startLiveEvents(client: ApiClient, signal?: AbortSignal): LiveEvents {
-  const iterator = client.events(0, 100, signal);
+function startLiveEvents(client: ApiClient, signal?: AbortSignal, after = 0): LiveEvents {
+  const iterator = client.events(after, 1000, signal);
   return { iterator, first: iterator.next(), closed: false };
 }
 
@@ -348,13 +404,7 @@ async function tailTerminalEventFromLive(
       kind = enumValue(data.kind, eventKinds);
     if (data.correlation_id === correlation && kind === "git_mapping") gitMapping = true;
     if (terminalKinds.has(kind) && data.correlation_id === correlation)
-      return deepFreeze({
-        kind,
-        lastEventId: last,
-        eventCount: count,
-        payload: exactPlain(data.payload),
-        gitMapping,
-      });
+      return Object.freeze({ kind, lastEventId: last, eventCount: count, payload: data.payload, gitMapping });
     return undefined;
   };
   const first = await live.first;
@@ -391,13 +441,7 @@ async function tailTerminalEvent(
         kind = enumValue(data.kind, eventKinds);
       if (data.correlation_id === correlation && kind === "git_mapping") gitMapping = true;
       if (terminalKinds.has(kind) && data.correlation_id === correlation)
-        return deepFreeze({
-          kind,
-          lastEventId: last,
-          eventCount: count,
-          payload: exactPlain(data.payload),
-          gitMapping,
-        });
+        return Object.freeze({ kind, lastEventId: last, eventCount: count, payload: data.payload, gitMapping });
     }
     if (!saw) throw new Error("launcher operation failed");
   }
@@ -432,12 +476,16 @@ async function pagedHistory(client: ApiClient, signal?: AbortSignal) {
   return deepFreeze({ pages, entries });
 }
 
-function exportProof(value: unknown) {
+const s309ExportBundleKeys =
+  "anonymized,attachments_included,bundle,created_at,file_count,manifest_sha256,mode,raw_export_opening,sanitized,sensitive,total_bytes,version";
+const s309RawOpeningKeys = "content_redacted,current_session,opened_with,session_jsonl_openable,version";
+function exportProof(value: unknown, requireOpening = false) {
   const r = exactPlain(value);
-  const bundle = exactPlain(r.bundle);
+  const bundle = exactJsonRecord(r.bundle);
   if (r.sensitive !== true || r.version !== "cogs.export-response/v1alpha1")
     throw new Error("launcher operation failed");
   if (
+    Object.keys(bundle).sort().join(",") !== s309ExportBundleKeys ||
     bundle.version !== "cogs.export-descriptor/v1alpha1" ||
     bundle.mode !== "raw" ||
     bundle.attachments_included !== false ||
@@ -446,7 +494,25 @@ function exportProof(value: unknown) {
     bundle.anonymized !== false
   )
     throw new Error("launcher operation failed");
-  return deepFreeze({ descriptorValidated: true, mode: "raw", sensitive: true });
+  const opening = requireOpening ? exactJsonRecord(bundle.raw_export_opening) : undefined;
+  if (
+    requireOpening &&
+    (Object.keys(opening ?? {})
+      .sort()
+      .join(",") !== s309RawOpeningKeys ||
+      opening?.version !== "cogs.launcher.raw-export-opening/v1alpha1" ||
+      opening.opened_with !== "pinned-pi-session-manager" ||
+      opening.session_jsonl_openable !== true ||
+      opening.current_session !== true ||
+      opening.content_redacted !== true)
+  )
+    throw new Error("launcher operation failed");
+  return deepFreeze({
+    descriptorValidated: true,
+    mode: "raw",
+    sensitive: true,
+    ...(requireOpening ? { rawExportOpened: true } : {}),
+  });
 }
 
 function failOp(): never {
@@ -461,45 +527,86 @@ async function s309(
 ) {
   if (request.profile !== "linux-kvm") throw new Error("launcher operation failed");
   let started = false;
+  let stage: S309FailureStage = "s3-create";
   try {
     base("create", meta(result(await s.createSandbox(options, ctx.signal)).manifest));
+    stage = "s3-start";
     await locked(options, (state) => s.startWorkerForState(state, ctx.signal));
     started = true;
     const proof = await withReadyClient(options, request, ctx, s, async (client, signal) => {
+      stage = "s3-setup-run";
       const setupCorrelation = runCorrelation(
         await client.request("run", Object.freeze({ content: LAUNCHER_DETERMINISTIC_S309_SETUP_PROMPT }), signal),
       );
+      stage = "s3-setup-terminal";
       const setup = await tailTerminal(client, setupCorrelation, signal);
       if (setup.terminal !== "run_settled") throw new Error("launcher operation failed");
+      stage = "s3-live-open";
       const live = startLiveEvents(client, signal);
-      let correlation = "";
       try {
-        correlation = runCorrelation(
+        stage = "s3-scenario-run";
+        const correlation = runCorrelation(
           await client.request("run", Object.freeze({ content: LAUNCHER_DETERMINISTIC_S309_PROMPT }), signal),
         );
-        const terminal = await tailTerminalProof(client, correlation, signal, live);
+        const observed = await tailTerminalEventFromLive(client, live, correlation, signal);
+        stage = "s3-terminal-kind";
+        if (observed.kind !== "run_settled") throw new Error("launcher operation failed");
+        stage = "s3-git-mapping";
+        if (observed.gitMapping !== true) throw new Error("launcher operation failed");
+        stage = "s3-live-count";
+        if (observed.eventCount <= 32 || observed.eventCount > 1000) throw new Error("launcher operation failed");
+        const terminal = deepFreeze({
+          terminal: observed.kind,
+          lastEventId: observed.lastEventId,
+          liveEventCount: observed.eventCount,
+        });
         live.closed = true;
         await live.iterator.return?.(undefined);
+        const proofLive = startLiveEvents(client, signal, observed.lastEventId);
+        try {
+          stage = "s3-proof-run";
+          const proofCorrelation = runCorrelation(
+            await client.request("run", Object.freeze({ content: LAUNCHER_DETERMINISTIC_S309_PROOF_PROMPT }), signal),
+          );
+          if (proofCorrelation === setupCorrelation || proofCorrelation === correlation)
+            throw new Error("launcher operation failed");
+          stage = "s3-proof-terminal";
+          const proofObserved = await tailTerminalEventFromLive(client, proofLive, proofCorrelation, signal);
+          if (proofObserved.kind !== "run_settled") throw new Error("launcher operation failed");
+          proofLive.closed = true;
+          await proofLive.iterator.return?.(undefined);
+          stage = "s3-egress-shape";
+          egressProof(proofObserved);
+        } finally {
+          if (!proofLive.closed) await proofLive.iterator.return?.(undefined).catch(() => undefined);
+        }
+        stage = "s3-replay-gap";
         await assertReplayGap(client, signal);
+        stage = "s3-history";
         const history = await pagedHistory(client, signal);
-        const rawExport = exportProof(await client.request("export", Object.freeze({}), signal));
-        return deepFreeze({ ...terminal, history, rawExport });
+        stage = "s3-export";
+        const rawExport = exportProof(await client.request("export", Object.freeze({}), signal), true);
+        return deepFreeze({ ...terminal, egressProof: true, history, rawExport });
       } finally {
         if (!live.closed) await live.iterator.return?.(undefined).catch(() => undefined);
       }
     });
+    stage = "s3-shutdown";
     await shutdown(options, ctx.signal, ctx.timeoutMs, s);
     started = false;
+    stage = "s3-absence";
     const inv = stripInventory((await status(options, s)).inventory);
     if (inv.descriptor !== "none" || inv.workerLive !== false || inv.recovery !== "absent")
       throw new Error("launcher operation failed");
+    stage = "s3-destroy";
     if (bool(result(await s.destroySandbox(options, ctx.signal)).removed) !== true)
       throw new Error("launcher operation failed");
     return deepFreeze({ op: "s3-09", complete: true, ...proof, inventory: inv });
   } catch (error) {
-    if (started) await stopOnly(options, s).catch(() => undefined);
-    await s.destroySandbox(options, undefined).catch(() => undefined);
-    throw error;
+    let failed: S309FailureStage = error instanceof Error ? (s309Failures.get(error) ?? stage) : stage;
+    if (started) await stopOnly(options, s).catch(() => (failed = "s3-cleanup"));
+    await s.destroySandbox(options, undefined).catch(() => (failed = "s3-cleanup"));
+    throw s309Failure(failed);
   }
 }
 
@@ -741,9 +848,25 @@ function exactPlain(input: unknown): Record<string, unknown> {
     Object.getOwnPropertySymbols(input).length !== 0
   )
     throw new Error("launcher operation failed");
+  return exactRecord(input);
+}
+function exactJsonRecord(input: unknown): Record<string, unknown> {
+  if (!input || typeof input !== "object" || Object.getPrototypeOf(input) !== null) failOp();
+  return exactRecord(input);
+}
+function exactRecord(input: object): Record<string, unknown> {
+  if (Object.getOwnPropertySymbols(input).length !== 0) failOp();
   const out: Record<string, unknown> = {};
   for (const [key, d] of Object.entries(Object.getOwnPropertyDescriptors(input))) {
-    if (!d || !("value" in d) || d.enumerable !== true) throw new Error("launcher operation failed");
+    if (
+      key === "__proto__" ||
+      key === "prototype" ||
+      key === "constructor" ||
+      !d ||
+      !("value" in d) ||
+      d.enumerable !== true
+    )
+      failOp();
     out[key] = d.value;
   }
   return out;

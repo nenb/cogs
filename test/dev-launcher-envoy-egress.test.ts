@@ -13,6 +13,7 @@ import {
 import type { OpenBaoHandle, SecretHolder } from "../dev/launcher/openbao.ts";
 import { createState, resolveLauncherState, writePhase } from "../dev/launcher/state.ts";
 import { canonicalPresetPolicyRevision } from "../src/egress/preset-revision.ts";
+import { lowerLaunchEgressRoutePlan } from "../src/egress/route-policy.ts";
 import type { CogsEgressRuntimeManagerOptions } from "../src/egress/runtime-manager.ts";
 
 const sourceRevision = "a".repeat(40);
@@ -90,6 +91,69 @@ function holder(secret: string): SecretHolder {
     },
   });
 }
+function walRecord(routeId: string, sessionId: string, overrides: Record<string, unknown> = {}) {
+  return Object.freeze({
+    version: "cogs.egress-intent/v1alpha1",
+    sequence: 1,
+    intent_id: "intent-1",
+    timestamp_ms: 1,
+    session_id: sessionId,
+    integration_id: "stage3-localhost",
+    route_id: routeId,
+    method: "GET",
+    credential_required: true,
+    ...overrides,
+  });
+}
+
+function relaySeam(accepted: () => number, extra: Record<string, unknown> = {}) {
+  return Object.freeze(
+    () =>
+      Object.freeze({
+        snapshot: () =>
+          Object.freeze({
+            profile: "linux-kvm",
+            bindHost: "192.0.2.1",
+            bindPort: 18080,
+            activeTarget: 18081,
+            registeredTargets: Object.freeze([18081]),
+            acceptedConnections: accepted(),
+            deniedConnections: 0,
+            switchedTargets: 1,
+            activeSockets: 0,
+            maxActiveSockets: 16,
+            ready: true,
+            poisoned: false,
+            closed: false,
+            ...extra,
+          }),
+        configureProxyCapability: () => undefined,
+        registerTarget: () => undefined,
+        switchTo: async () => undefined,
+        clear: async () => undefined,
+        start: async () => undefined,
+        close: async () => undefined,
+      }) as never,
+  );
+}
+
+function completion(routeId: string, responseCode = 200) {
+  return Object.freeze({
+    intentId: "intent-1",
+    sequence: 1,
+    routeId,
+    responseCode,
+    durationMs: 1,
+    completedAtMs: 1,
+  });
+}
+
+function credentialRouteId(doc: ReturnType<typeof launch>) {
+  return lowerLaunchEgressRoutePlan(doc as never).integrations[0]?.routes.find(
+    (route) => route.ruleName === "credential" && route.method === "GET",
+  )?.routeId as string;
+}
+
 function openbao(): OpenBaoHandle {
   return Object.freeze({
     snapshot: () =>
@@ -216,6 +280,258 @@ test("envoy egress adapter wires production manager options and insecure loopbac
     await h.close();
   } finally {
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("envoy egress S3 completion proof is bounded, cached, and fail closed", async () => {
+  const { dir, state } = await launcherState();
+  try {
+    const runtime = join(state.dir, "runtime");
+    await mkdir(runtime, { mode: 0o700 });
+    await writeFile(join(runtime, ".cogs-envoy-owner"), `${state.stateId}\n`, { mode: 0o600 });
+    const bin = join(runtime, "envoy");
+    await writeFile(bin, fakeBin, { mode: 0o500 });
+    await chmod(bin, 0o500);
+    const doc = launch(state.stateId);
+    const routeId = credentialRouteId(doc);
+    const drained = [Object.freeze([]), Object.freeze([completion(routeId)]), Object.freeze([completion("wrong")])];
+    let observations = 0;
+    const h = await startEnvoyEgress({
+      state,
+      profile: "linux-kvm",
+      openbao: openbao(),
+      fixturePort: 31337,
+      launchDocument: doc,
+      listenerPort: 18081,
+      otlpLogsEndpoint: "http://127.0.0.1:4318/v1/logs",
+      binary: { path: bin, sha256: fakeBinHash, image: ENVOY_IMAGE, cleanup: "owned" },
+      seams: Object.freeze({
+        validateTmpfs: Object.freeze(async () => undefined),
+        proveClosed: Object.freeze(async () => undefined),
+        relay: relaySeam(() => (observations === 0 ? 0 : 2)),
+        startManager: Object.freeze(async () =>
+          Object.freeze({
+            ready: true,
+            listenerPort: 18081,
+            replacementRequired: false,
+            auditRecords: (limit: number) => {
+              assert.equal(limit, 64);
+              observations += 1;
+              return Object.freeze(observations === 1 ? [] : [walRecord(routeId, doc.session_id)]);
+            },
+            drainCompletions: (limit: number) => {
+              assert.equal(limit, 64);
+              return drained.shift() ?? Object.freeze([]);
+            },
+            close: async () => undefined,
+          }),
+        ),
+      }),
+    });
+    assert.deepEqual(h.s309CompletionProof(), {
+      version: "cogs.launcher.s3-09-trusted-proof/v1alpha1",
+      outcome: "pass",
+      runtime_observers_consistent: true,
+      completion_observer_consistent: true,
+    });
+    assert.deepEqual(h.s309CompletionProof(), {
+      version: "cogs.launcher.s3-09-trusted-proof/v1alpha1",
+      outcome: "pass",
+      runtime_observers_consistent: true,
+      completion_observer_consistent: true,
+    });
+    assert.deepEqual(h.s309CompletionProof(), {
+      version: "cogs.launcher.s3-09-trusted-proof/v1alpha1",
+      outcome: "fail",
+      reason: "total-count",
+    });
+    await h.close();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("envoy egress S3 completion proof keeps draining after pass and remains pass on empty", async () => {
+  const { dir, state } = await launcherState();
+  try {
+    const runtime = join(state.dir, "runtime");
+    await mkdir(runtime, { mode: 0o700 });
+    await writeFile(join(runtime, ".cogs-envoy-owner"), `${state.stateId}\n`, { mode: 0o600 });
+    const bin = join(runtime, "envoy");
+    await writeFile(bin, fakeBin, { mode: 0o500 });
+    await chmod(bin, 0o500);
+    const doc = launch(state.stateId);
+    const routeId = credentialRouteId(doc);
+    let drains = 0;
+    const h = await startEnvoyEgress({
+      state,
+      profile: "linux-kvm",
+      openbao: openbao(),
+      fixturePort: 31337,
+      launchDocument: doc,
+      listenerPort: 18081,
+      otlpLogsEndpoint: "http://127.0.0.1:4318/v1/logs",
+      binary: { path: bin, sha256: fakeBinHash, image: ENVOY_IMAGE, cleanup: "owned" },
+      seams: Object.freeze({
+        validateTmpfs: Object.freeze(async () => undefined),
+        proveClosed: Object.freeze(async () => undefined),
+        relay: relaySeam(() => 2),
+        startManager: Object.freeze(async () =>
+          Object.freeze({
+            ready: true,
+            listenerPort: 18081,
+            replacementRequired: false,
+            auditRecords: () => Object.freeze([walRecord(routeId, doc.session_id)]),
+            drainCompletions: () => Object.freeze(++drains === 1 ? [completion(routeId)] : []),
+            close: async () => undefined,
+          }),
+        ),
+      }),
+    });
+    assert.equal(h.s309CompletionProof().outcome, "pass");
+    assert.equal(h.s309CompletionProof().outcome, "pass");
+    assert.equal(drains, 2);
+    await h.close();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("envoy egress S3 proof rejects relay and WAL anomalies", async () => {
+  const cases = [
+    ["relay-zero-wal-pass", { relay: { acceptedConnections: 0 }, wal: {} }],
+    ["relay-one", { relay: { acceptedConnections: 1 }, wal: {} }],
+    ["relay-denied", { relay: { deniedConnections: 1 }, wal: {} }],
+    ["relay-target", { relay: { activeTarget: 12345 }, wal: {} }],
+    ["relay-one-wal-zero", { relay: { acceptedConnections: 1 }, wal: { empty: true } }],
+    ["wal-zero", { relay: {}, wal: { empty: true } }],
+    ["wal-extra", { relay: {}, wal: { extra: true } }],
+    ["wal-route", { relay: {}, wal: { route_id: "wrong" } }],
+    ["wal-method", { relay: {}, wal: { method: "POST" } }],
+    ["wal-credential", { relay: {}, wal: { credential_required: false } }],
+  ] as const;
+  for (const [name, value] of cases) {
+    const { dir, state } = await launcherState();
+    try {
+      const runtime = join(state.dir, "runtime");
+      await mkdir(runtime, { mode: 0o700 });
+      await writeFile(join(runtime, ".cogs-envoy-owner"), `${state.stateId}\n`, { mode: 0o600 });
+      const bin = join(runtime, "envoy");
+      await writeFile(bin, fakeBin, { mode: 0o500 });
+      await chmod(bin, 0o500);
+      const doc = launch(state.stateId);
+      const routeId = credentialRouteId(doc);
+      const h = await startEnvoyEgress({
+        state,
+        profile: "linux-kvm",
+        openbao: openbao(),
+        fixturePort: 31337,
+        launchDocument: doc,
+        listenerPort: 18081,
+        otlpLogsEndpoint: "http://127.0.0.1:4318/v1/logs",
+        binary: { path: bin, sha256: fakeBinHash, image: ENVOY_IMAGE, cleanup: "owned" },
+        seams: Object.freeze({
+          validateTmpfs: Object.freeze(async () => undefined),
+          proveClosed: Object.freeze(async () => undefined),
+          relay: relaySeam(() => 2, value.relay),
+          startManager: Object.freeze(async () =>
+            Object.freeze({
+              ready: true,
+              listenerPort: 18081,
+              replacementRequired: false,
+              auditRecords: () =>
+                Object.freeze(
+                  "empty" in value.wal
+                    ? []
+                    : "extra" in value.wal
+                      ? [walRecord(routeId, doc.session_id), walRecord(routeId, doc.session_id, { sequence: 2 })]
+                      : [walRecord(routeId, doc.session_id, value.wal)],
+                ),
+              drainCompletions: () => Object.freeze([]),
+              close: async () => undefined,
+            }),
+          ),
+        }),
+      });
+      assert.deepEqual(
+        h.s309CompletionProof(),
+        name === "relay-one" || name === "relay-zero-wal-pass" || name === "relay-one-wal-zero" || name === "wal-zero"
+          ? {
+              version: "cogs.launcher.s3-09-trusted-proof/v1alpha1",
+              outcome: "pending",
+              reason:
+                name === "wal-zero"
+                  ? "wal"
+                  : name === "relay-one-wal-zero"
+                    ? "relay-one-wal-zero"
+                    : name === "relay-one"
+                      ? "relay-one-wal-pass"
+                      : "relay-zero-wal-pass",
+            }
+          : { version: "cogs.launcher.s3-09-trusted-proof/v1alpha1", outcome: "fail", reason: "total-count" },
+        name,
+      );
+      await h.close();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+});
+
+test("envoy egress S3 completion proof rejects wrong duplicate status and hostile records", async () => {
+  const cases = [
+    ["wrong", (routeId: string) => [completion(`x-${routeId}`)]],
+    ["duplicate", (routeId: string) => [completion(routeId), completion(routeId)]],
+    ["status", (routeId: string) => [completion(routeId, 500)]],
+    ["hostile", () => [Object.freeze(Object.create(null, { routeId: { get: () => "x", enumerable: true } }))]],
+  ] as const;
+  for (const [name, records] of cases) {
+    const { dir, state } = await launcherState("insecure-container");
+    try {
+      const runtime = join(state.dir, "runtime");
+      await mkdir(runtime, { mode: 0o700 });
+      await writeFile(join(runtime, ".cogs-envoy-owner"), `${state.stateId}\n`, { mode: 0o600 });
+      const bin = join(runtime, "envoy");
+      await writeFile(bin, fakeBin, { mode: 0o500 });
+      await chmod(bin, 0o500);
+      const doc = launch(state.stateId);
+      const routeId = credentialRouteId(doc);
+      const h = await startEnvoyEgress({
+        state,
+        profile: "insecure-container",
+        openbao: openbao(),
+        fixturePort: 31337,
+        launchDocument: doc,
+        listenerPort: 18081,
+        otlpLogsEndpoint: "http://127.0.0.1:4318/v1/logs",
+        binary: { path: bin, sha256: fakeBinHash, image: ENVOY_IMAGE, cleanup: "owned" },
+        seams: Object.freeze({
+          validateTmpfs: Object.freeze(async () => undefined),
+          proveClosed: Object.freeze(async () => undefined),
+          startManager: Object.freeze(async () => {
+            return Object.freeze({
+              ready: true,
+              listenerPort: 18081,
+              replacementRequired: false,
+              drainCompletions: () => Object.freeze(records(routeId)) as never,
+              close: async () => undefined,
+            });
+          }),
+        }),
+      });
+      assert.deepEqual(
+        h.s309CompletionProof(),
+        {
+          version: "cogs.launcher.s3-09-trusted-proof/v1alpha1",
+          outcome: "fail",
+          reason: "total-count",
+        },
+        name,
+      );
+      await h.close();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   }
 });
 
@@ -377,6 +693,12 @@ test("linux-kvm profile switches relay after manager ready without fallback", as
     const binHash = fakeBinHash;
     const calls: string[] = [];
     const relay = Object.freeze({
+      configureProxyCapability: (holder: { withSecret<T>(op: (secret: string) => T): T }) => {
+        holder.withSecret((secret) => {
+          assert.match(secret, /^[A-Za-z0-9_-]{22,256}$/u);
+        });
+        calls.push("relay.capability");
+      },
       start: async () => {
         calls.push("relay.start");
       },
@@ -421,7 +743,13 @@ test("linux-kvm profile switches relay after manager ready without fallback", as
         }),
       }),
     });
-    assert.deepEqual(calls.slice(0, 4), ["manager.start", "relay.start", "relay.register:18081", "relay.switch:18081"]);
+    assert.deepEqual(calls.slice(0, 5), [
+      "manager.start",
+      "relay.capability",
+      "relay.start",
+      "relay.register:18081",
+      "relay.switch:18081",
+    ]);
     await h.close();
     assert.deepEqual(calls.slice(-3), ["relay.clear", "manager.close", "relay.close"]);
   } finally {
@@ -599,14 +927,14 @@ test("prepare envoy cooperative deadline after extraction cleans owned runtime",
         if (args[0] === "rm") return { status: 0, stdout: "" };
         return { status: 1, stdout: "" };
       }),
-      runVersion: Object.freeze(async () => {
-        await new Promise((resolve) => setTimeout(resolve, 5));
-        await new Promise((resolve) => setTimeout(resolve, 80));
+      runVersion: Object.freeze(async (_path: string, options?: { deadlineAt?: number }) => {
+        const wait = Math.max(1, (options?.deadlineAt ?? Date.now()) - Date.now() + 1);
+        await new Promise((resolve) => setTimeout(resolve, wait));
         return envoyVersion(join(state.dir, "runtime", "envoy"));
       }),
     });
     await assert.rejects(
-      () => prepareEnvoyBinary(state, { deadlineAt: Date.now() + 50, seams }),
+      () => prepareEnvoyBinary(state, { deadlineAt: Date.now() + 100, seams }),
       /launcher egress failed/,
     );
     await assert.rejects(() => lstat(join(state.dir, "runtime")));
@@ -627,6 +955,7 @@ test("envoy close continues manager after relay failure and stays generic withou
     await chmod(bin, 0o500);
     const events: string[] = [];
     const relay = Object.freeze({
+      configureProxyCapability: () => undefined,
       start: async () => undefined,
       registerTarget: () => undefined,
       switchTo: async () => undefined,
@@ -813,16 +1142,17 @@ test("envoy runVersion and relay startup receive cooperative cancellation", asyn
     const controller = new AbortController();
     const events: string[] = [];
     const relay = Object.freeze({
-      start: (options?: { signal?: AbortSignal }) => {
+      configureProxyCapability: () => undefined,
+      start: (options?: { signal?: AbortSignal; deadlineAt?: number }) => {
         assert(Object.isFrozen(options));
-        assert.deepEqual(Object.keys(options ?? {}), ["signal"]);
-        queueMicrotask(() => controller.abort());
-        return new Promise<void>((_resolve, reject) =>
+        assert(options?.signal instanceof AbortSignal);
+        return new Promise<void>((_resolve, reject) => {
           options?.signal?.addEventListener("abort", () => {
             events.push("relay.abort");
             reject(new Error("aborted"));
-          }),
-        );
+          });
+          queueMicrotask(() => controller.abort());
+        });
       },
       registerTarget: () => undefined,
       switchTo: async () => undefined,

@@ -19,7 +19,7 @@ import {
 import type { CogsEgressRoutePlan } from "../src/egress/route-policy.ts";
 
 const token = "internal-token-1";
-const capability = "Basic capability-token";
+const capability = "capability-token-0123456789";
 const session = "session-1";
 const routeId = "route-https";
 
@@ -211,6 +211,10 @@ test("loopback server authorizes capability without WAL or intent metadata", asy
       const ok = await call(server.target, capabilityRequest());
       assert.equal(intentId(ok), undefined);
       assert.equal(wal.records.length, 0);
+      assert.equal(
+        deniedCode(await call(server.target, capabilityRequest(`Bearer ${capability}`))),
+        "ProxyAuthenticationRequired",
+      );
       assert.equal(deniedCode(await call(server.target, capabilityRequest("wrong"))), "ProxyAuthenticationRequired");
       assert.equal(
         deniedCode(

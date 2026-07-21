@@ -1,6 +1,6 @@
 import { constants } from "node:fs";
-import { access, lstat, mkdir, realpath } from "node:fs/promises";
-import { resolve, sep } from "node:path";
+import { access, lstat, mkdir, open, realpath, unlink } from "node:fs/promises";
+import { dirname, resolve, sep } from "node:path";
 import type { StreamFn } from "@earendil-works/pi-agent-core";
 import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import {
@@ -630,6 +630,7 @@ export async function createCogsPiSession(options: CogsPiSessionOptions): Promis
       settingsManager: SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false } }),
     });
     const session = sessionResult.session;
+    await historyStore.flushSettled();
 
     if (streamFn !== undefined) {
       session.agent.streamFn = async (activeModel, context, streamOptions) => {
@@ -2319,15 +2320,131 @@ async function createContainedSessionManager(
   const realSessionRoot = await ensureRealDirectory(sessionRoot);
   const realSessionDir = await ensureRealDirectory(resolve(realSessionRoot, sessionId));
   if (!contained(realSessionRoot, realSessionDir)) throw new Error("session directory escapes root");
-  if (resumeFile === undefined) return SessionManager.create(cwd, realSessionDir);
+  if (resumeFile === undefined) return createNewSecureNativeSessionManager(cwd, realSessionDir);
   if (resumeFile !== basenameOnly(resumeFile)) throw new Error("invalid resume file");
   const candidate = resolve(realSessionDir, resumeFile);
-  const rawStat = await lstat(candidate);
-  if (!rawStat.isFile() || rawStat.isSymbolicLink()) throw new Error("invalid resume file");
-  const realCandidate = await realpath(candidate);
-  if (!contained(realSessionDir, realCandidate)) throw new Error("resume file escapes session directory");
+  const realCandidate = await secureNativeSessionFile(candidate, realSessionDir);
   await access(realCandidate, constants.R_OK);
   return SessionManager.open(realCandidate, realSessionDir, cwd);
+}
+
+async function createNewSecureNativeSessionManager(cwd: string, sessionDir: string): Promise<SessionManager> {
+  const pending = SessionManager.create(cwd, sessionDir);
+  const sessionFile = pending.getSessionFile();
+  const header = pending.getHeader();
+  if (
+    sessionFile === undefined ||
+    header?.type !== "session" ||
+    header.version !== 3 ||
+    header.id !== pending.getSessionId()
+  )
+    throw new Error("invalid session file");
+  await createSecureNativeSessionHeader(sessionFile, sessionDir, header);
+  const opened = SessionManager.open(sessionFile, sessionDir, cwd);
+  if (opened.getSessionId() !== pending.getSessionId() || opened.getHeader()?.id !== pending.getSessionId())
+    throw new Error("invalid session file");
+  return opened;
+}
+
+async function createSecureNativeSessionHeader(
+  path: string,
+  sessionDir: string,
+  header: ReturnType<SessionManager["getHeader"]>,
+): Promise<void> {
+  if (header === undefined) throw new Error("invalid session file");
+  let created: { readonly dev: number; readonly ino: number } | undefined;
+  try {
+    const realDir = await realpath(sessionDir);
+    if (realDir !== sessionDir || dirname(path) !== sessionDir || (await realpath(dirname(path))) !== sessionDir)
+      throw new Error("bad file");
+    const handle = await open(
+      path,
+      constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW,
+      0o600,
+    );
+    try {
+      const opened = await handle.stat();
+      created = { dev: opened.dev, ino: opened.ino };
+      if (
+        !opened.isFile() ||
+        opened.isSymbolicLink() ||
+        opened.nlink !== 1 ||
+        opened.size !== 0 ||
+        (opened.mode & 0o777) !== 0o600 ||
+        (typeof process.geteuid === "function" && opened.uid !== process.geteuid())
+      )
+        throw new Error("bad file");
+      await handle.writeFile(`${JSON.stringify(header)}\n`);
+      await handle.sync();
+      const afterPath = await lstat(path);
+      const after = await handle.stat();
+      if (
+        after.dev !== opened.dev ||
+        after.ino !== opened.ino ||
+        after.size < 1 ||
+        (after.mode & 0o777) !== 0o600 ||
+        afterPath.dev !== opened.dev ||
+        afterPath.ino !== opened.ino ||
+        (await realpath(path)) !== path
+      )
+        throw new Error("bad file");
+    } finally {
+      await handle.close().catch(() => undefined);
+    }
+  } catch {
+    if (created !== undefined) {
+      const current = await lstat(path).catch(() => undefined);
+      if (current !== undefined && current.dev === created.dev && current.ino === created.ino)
+        await unlink(path).catch(() => undefined);
+    }
+    throw new Error("invalid session file");
+  }
+}
+
+async function secureNativeSessionFile(path: string, sessionDir: string): Promise<string> {
+  try {
+    const realDir = await realpath(sessionDir);
+    if (realDir !== sessionDir) throw new Error("bad dir");
+    const raw = await lstat(path);
+    if (raw.isSymbolicLink()) throw new Error("bad file");
+    const realFile = await realpath(path);
+    if (dirname(realFile) !== sessionDir || !contained(sessionDir, realFile)) throw new Error("bad file");
+    const before = await lstat(realFile);
+    const handle = await open(realFile, constants.O_RDWR | constants.O_NOFOLLOW);
+    try {
+      const opened = await handle.stat();
+      if (
+        before.dev !== opened.dev ||
+        before.ino !== opened.ino ||
+        !opened.isFile() ||
+        opened.isSymbolicLink() ||
+        opened.nlink !== 1 ||
+        opened.size < 1 ||
+        opened.size > 64 * 1024 * 1024 ||
+        (typeof process.geteuid === "function" && opened.uid !== process.geteuid())
+      )
+        throw new Error("bad file");
+      await handle.chmod(0o600);
+      await handle.sync();
+      const afterPath = await lstat(realFile);
+      const after = await handle.stat();
+      if (
+        after.dev !== opened.dev ||
+        after.ino !== opened.ino ||
+        after.size !== opened.size ||
+        (after.mode & 0o777) !== 0o600 ||
+        afterPath.dev !== opened.dev ||
+        afterPath.ino !== opened.ino ||
+        (await realpath(realFile)) !== realFile
+      )
+        throw new Error("bad file");
+      return realFile;
+    } finally {
+      await handle.close().catch(() => undefined);
+    }
+  } catch {
+    throw new Error("invalid session file");
+  }
 }
 
 async function ensureRealDirectory(path: string): Promise<string> {

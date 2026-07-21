@@ -479,6 +479,7 @@ function authzCluster(target: { address: string; port: number }): Json {
   };
 }
 function upstreamCluster(route: CopiedRoute): Json {
+  const endpointHost = route.host === "localhost" ? "127.0.0.1" : route.host;
   return {
     name: `upstream_${route.routeId}`,
     type: "STRICT_DNS",
@@ -488,7 +489,7 @@ function upstreamCluster(route: CopiedRoute): Json {
       endpoints: [
         {
           lb_endpoints: [
-            { endpoint: { address: { socket_address: { address: route.host, port_value: route.port } } } },
+            { endpoint: { address: { socket_address: { address: endpointHost, port_value: route.port } } } },
           ],
         },
       ],

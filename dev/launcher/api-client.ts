@@ -90,7 +90,7 @@ function createApiClientChecked(options: {
     },
   );
   const events = Object.freeze(async function* (after = 0, limit: number, signal?: AbortSignal) {
-    if (!Number.isSafeInteger(after) || after < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 100) fail();
+    if (!Number.isSafeInteger(after) || after < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 1000) fail();
     const ctx = context(o.timeoutMs, signal);
     let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
     try {

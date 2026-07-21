@@ -3,7 +3,7 @@ import { lstat, mkdir, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseLauncherArgs } from "./cli.ts";
-import { runLauncherOperation } from "./operations.ts";
+import { runLauncherOperation, s309StageExitCode } from "./operations.ts";
 import { commandDescriptor, runCommand } from "./runner.ts";
 
 async function main(): Promise<void> {
@@ -56,7 +56,7 @@ async function currentRevision(repoRoot: string): Promise<string> {
   return revision;
 }
 
-main().catch(() => {
+main().catch((error) => {
   process.stderr.write("launcher failed\n");
-  process.exitCode = 1;
+  process.exitCode = s309StageExitCode(error);
 });

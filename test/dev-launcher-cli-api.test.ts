@@ -32,7 +32,7 @@ function fakeClient(body: unknown, status = 200) {
   });
 }
 
-async function server() {
+async function server(eventReplayCapacity?: number) {
   const calls: string[] = [];
   let runState: "idle" | "running" | "settled" | "aborting" | "shutdown" = "idle";
   const api = createApiServer({
@@ -60,6 +60,7 @@ async function server() {
     },
     history: { entries: async ({ limit }) => ({ entries: [{ n: limit }], nextAfter: "n1" }) },
     exporter: { createExport: async ({ requestId }) => ({ requestId, secret: "local-only" }) as JsonValue },
+    ...(eventReplayCapacity === undefined ? {} : { eventReplayCapacity }),
   });
   const { port } = await api.listen(0, "127.0.0.1");
   return { api, port, calls };
@@ -228,6 +229,58 @@ test("api SSE client parses real server events and rejects replay mismatch", asy
     await assert.rejects(async () => {
       for await (const _ of client.events(99, 1)) break;
     }, /launcher api replay gap/);
+  } finally {
+    await s.api.close();
+  }
+});
+
+test("api SSE client keeps one live connection through fixed replay capacity 32", async () => {
+  const s = await server(32);
+  let fetches = 0;
+  try {
+    assert.equal(s.api.publish({ kind: "warning", correlation_id: "corr-live", payload: { code: "seed" } }), true);
+    const client = createApiClient({
+      port: s.port,
+      token,
+      maxBytes: 1024 * 1024,
+      seams: seams(
+        Object.freeze(((url: URL, init?: RequestInit) => {
+          fetches += 1;
+          return globalThis.fetch(url, init);
+        }) as typeof fetch),
+      ),
+    });
+    const iterator = client.events(0, 1000);
+    const first = await iterator.next();
+    assert.equal(first.done, false);
+    assert.equal(first.value?.id, 1);
+    for (let i = 0; i < 40; i += 1) {
+      assert.equal(
+        s.api.publish({ kind: "tool_update", correlation_id: "corr-live", payload: { chunk: "metadata" } }),
+        true,
+      );
+    }
+    assert.equal(s.api.publish({ kind: "run_settled", correlation_id: "corr-live", payload: { ok: true } }), true);
+    let terminal = 0;
+    let count = 1;
+    for await (const event of iterator) {
+      count += 1;
+      if (event.data.kind === "run_settled") {
+        terminal = event.id;
+        break;
+      }
+    }
+    await iterator.return?.(undefined);
+    assert.equal(fetches, 1);
+    assert.equal(count, 42);
+    assert.equal(terminal, 42);
+    assert.equal(s.api.publish({ kind: "warning", correlation_id: "corr-live", payload: { code: "post" } }), true);
+    await assert.rejects(async () => {
+      for await (const _ of client.events(0, 1)) break;
+    }, /launcher api replay gap/);
+    await assert.rejects(async () => {
+      for await (const _ of client.events(0, 1001)) break;
+    }, /launcher api failed/);
   } finally {
     await s.api.close();
   }

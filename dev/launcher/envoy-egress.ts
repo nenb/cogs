@@ -17,8 +17,11 @@ import {
 } from "node:fs/promises";
 import { Socket } from "node:net";
 import { dirname, join } from "node:path";
+import type { EgressAuditWalRecord } from "../../src/egress/audit-wal.ts";
+import type { CogsEgressCompletion } from "../../src/egress/completion-queue.ts";
 import { createNodeCogsEnvoyProcessPort } from "../../src/egress/envoy-process.ts";
 import { OpenBaoEgressPkiSource } from "../../src/egress/openbao-pki.ts";
+import { lowerLaunchEgressRoutePlan } from "../../src/egress/route-policy.ts";
 import {
   type CogsEgressRuntimeManager,
   type CogsEgressRuntimeManagerOptions,
@@ -39,6 +42,7 @@ const ENVOY_LABEL_KEY = "cogs.dev.launcher.envoy";
 const EGRESS_TMPFS_ROOT = "/run/cogs/egress";
 const USER_ID = "alice";
 const MODEL_HANDLE = "users/alice/anthropic";
+const INTEGRATION_ID = "stage3-localhost";
 const EGRESS_HANDLE = "users/alice/integrations/stage3-localhost";
 const MODEL_PROVIDER = "anthropic";
 const MODEL_ID = "claude-sonnet-4-5";
@@ -72,6 +76,24 @@ export type EnvoyBinaryDescriptor = Readonly<{
   cleanup: "owned";
 }>;
 
+type S309PendingReason =
+  | "relay-zero-wal-zero"
+  | "relay-zero-wal-pass"
+  | "relay-one-wal-zero"
+  | "relay-one-wal-pass"
+  | "wal";
+
+export type S309CompletionProof = Readonly<
+  | { version: "cogs.launcher.s3-09-trusted-proof/v1alpha1"; outcome: "pending"; reason: S309PendingReason }
+  | {
+      version: "cogs.launcher.s3-09-trusted-proof/v1alpha1";
+      outcome: "pass";
+      runtime_observers_consistent: true;
+      completion_observer_consistent: true;
+    }
+  | { version: "cogs.launcher.s3-09-trusted-proof/v1alpha1"; outcome: "fail"; reason: "generation" | "total-count" }
+>;
+
 export type EnvoyEgressHandle = Readonly<{
   snapshot(): Readonly<{
     ready: boolean;
@@ -89,6 +111,7 @@ export type EnvoyEgressHandle = Readonly<{
     envoy: { image: typeof ENVOY_IMAGE; binarySha256: string };
     completions: { drained: number; classification: "none" | "present" | "replacement-required" };
   }>;
+  s309CompletionProof(): S309CompletionProof;
   proxyCapability: SecretHolder;
   close(options?: DeadlineOptions): Promise<void>;
 }>;
@@ -212,6 +235,10 @@ export async function startEnvoyEgress(rawOptions: Options): Promise<EnvoyEgress
   let proxyCapability = randomSecret(32);
   let closed = false;
   let drainedCompletions = 0;
+  let completionOutcome: S309CompletionProof["outcome"] = "pending";
+  let completionPendingReason: S309PendingReason = "relay-zero-wal-zero";
+  let completionMatchesSeen = 0;
+  let completionFailReason: "generation" | "total-count" = "generation";
   let replacementEvents = 0;
   let capturedSeams: EnvoyEgressSeams = Object.freeze({});
   let capturedState: LauncherState | undefined;
@@ -230,6 +257,7 @@ export async function startEnvoyEgress(rawOptions: Options): Promise<EnvoyEgress
     validateOpenBaoAuthority(openbaoSnapshot);
 
     const launch = validateLaunch(options.launchDocument, options.state, options.fixturePort);
+    const s309RouteId = s309CredentialRouteId(launch);
     let binary = options.binary;
     if (!binary) {
       internallyPreparedBinary = await prepareEnvoyBinary(options.state, {
@@ -263,17 +291,18 @@ export async function startEnvoyEgress(rawOptions: Options): Promise<EnvoyEgress
     checkCooperative(options);
     await validateManagerReady(manager, options.listenerPort, options);
 
-    if (options.profile === "linux-kvm") {
-      relay = (seams.relay ?? createLinuxKvmRelay)();
-      await startLinuxKvmRelay(relay, manager.listenerPort, options);
-    }
-
     const proxyCapabilityHolder = secretHolder(
       () => proxyCapability,
       (value) => {
         proxyCapability = value;
       },
     );
+
+    if (options.profile === "linux-kvm") {
+      relay = (seams.relay ?? createLinuxKvmRelay)();
+      relay.configureProxyCapability(proxyCapabilityHolder);
+      await startLinuxKvmRelay(relay, manager.listenerPort, options);
+    }
     checkCooperative(options);
 
     return Object.freeze({
@@ -297,6 +326,51 @@ export async function startEnvoyEgress(rawOptions: Options): Promise<EnvoyEgress
             classification: completionClassification(manager, drainedCompletions),
           } as const,
         }),
+      s309CompletionProof: () => {
+        if (completionOutcome !== "fail") {
+          try {
+            if (closed || manager?.ready !== true || manager.replacementRequired) throw new Error("bad state");
+            const relayState = relayProof(relay, manager.listenerPort);
+            const walState = walProof(manager.auditRecords?.(64), s309RouteId, launch.session_id);
+            const drained = manager.drainCompletions(64);
+            drainedCompletions = addSaturating(drainedCompletions, drained.length);
+            const matches = drained.filter((item) => completionMatches(item, s309RouteId)).length;
+            completionMatchesSeen = addSaturating(completionMatchesSeen, matches);
+            if (
+              relayState === "fail" ||
+              walState === "fail" ||
+              drained.length !== matches ||
+              completionMatchesSeen > 1
+            ) {
+              completionOutcome = "fail";
+              completionFailReason = "total-count";
+            } else if (
+              (relayState === "relay-zero" && walState === "zero") ||
+              (relayState === "pass" && walState === "pass")
+            ) {
+              completionOutcome = "pass";
+            } else {
+              completionOutcome = "pending";
+              completionPendingReason = pendingReason(relayState, walState);
+            }
+          } catch {
+            completionOutcome = "fail";
+            completionFailReason = "generation";
+          }
+        }
+        return Object.freeze({
+          version: "cogs.launcher.s3-09-trusted-proof/v1alpha1",
+          outcome: completionOutcome,
+          ...(completionOutcome === "pass"
+            ? {
+                runtime_observers_consistent: true as const,
+                completion_observer_consistent: true as const,
+              }
+            : {}),
+          ...(completionOutcome === "pending" ? { reason: completionPendingReason } : {}),
+          ...(completionOutcome === "fail" ? { reason: completionFailReason } : {}),
+        }) as S309CompletionProof;
+      },
       proxyCapability: proxyCapabilityHolder,
       close: once(async (closeOptions = Object.freeze({})) => {
         const cleanup = cleanupOptions(closeOptions);
@@ -594,6 +668,96 @@ async function startLinuxKvmRelay(relay: KvmRelay, listenerPort: number, options
   relay.registerTarget(listenerPort);
   await relay.switchTo(listenerPort, cooperative);
   checkCooperative(options);
+}
+
+function relayProof(relay: KvmRelay | undefined, target: number): "relay-zero" | "relay-one" | "pass" | "fail" {
+  if (!relay) return "relay-zero";
+  const snap = relay.snapshot();
+  if (
+    snap.ready !== true ||
+    snap.poisoned !== false ||
+    snap.closed !== false ||
+    snap.activeTarget !== target ||
+    snap.registeredTargets.length !== 1 ||
+    snap.registeredTargets[0] !== target ||
+    snap.deniedConnections !== 0 ||
+    snap.acceptedConnections > 2
+  )
+    return "fail";
+  return snap.acceptedConnections === 2 ? "pass" : snap.acceptedConnections === 1 ? "relay-one" : "relay-zero";
+}
+
+function pendingReason(
+  relay: "relay-zero" | "relay-one" | "pass",
+  wal: "missing" | "zero" | "pass",
+): S309PendingReason {
+  if (relay === "pass") return "wal";
+  return `${relay}-wal-${wal === "pass" ? "pass" : "zero"}` as S309PendingReason;
+}
+
+function walProof(
+  records: readonly EgressAuditWalRecord[] | undefined,
+  routeId: string,
+  sessionId: string,
+): "missing" | "zero" | "pass" | "fail" {
+  if (records === undefined) return "missing";
+  if (records.length === 0) return "zero";
+  if (records.length !== 1) return "fail";
+  return walRecordMatches(records[0], routeId, sessionId) ? "pass" : "fail";
+}
+
+function walRecordMatches(input: EgressAuditWalRecord | undefined, routeId: string, sessionId: string): boolean {
+  try {
+    if (!input || typeof input !== "object" || Object.getOwnPropertySymbols(input).length !== 0) fail();
+    const desc = Object.getOwnPropertyDescriptors(input);
+    if (
+      Object.keys(desc).sort().join(",") !==
+      "credential_required,integration_id,intent_id,method,route_id,sequence,session_id,timestamp_ms,version"
+    )
+      fail();
+    for (const d of Object.values(desc)) if (!d || !("value" in d) || d.enumerable !== true) fail();
+    return (
+      desc.version?.value === "cogs.egress-intent/v1alpha1" &&
+      desc.session_id?.value === sessionId &&
+      desc.integration_id?.value === INTEGRATION_ID &&
+      desc.route_id?.value === routeId &&
+      desc.method?.value === "GET" &&
+      desc.credential_required?.value === true
+    );
+  } catch {
+    return false;
+  }
+}
+
+function completionMatches(input: CogsEgressCompletion, routeId: string): boolean {
+  try {
+    if (!input || typeof input !== "object" || Object.getOwnPropertySymbols(input).length !== 0) fail();
+    const desc = Object.getOwnPropertyDescriptors(input);
+    if (Object.keys(desc).sort().join(",") !== "completedAtMs,durationMs,intentId,responseCode,routeId,sequence")
+      fail();
+    for (const d of Object.values(desc)) if (!d || !("value" in d) || d.enumerable !== true) fail();
+    return desc.routeId?.value === routeId && desc.responseCode?.value === 200;
+  } catch {
+    return false;
+  }
+}
+
+function s309CredentialRouteId(launch: LaunchConfig): string {
+  try {
+    const routes = lowerLaunchEgressRoutePlan(launch).integrations.flatMap((integration) => integration.routes);
+    const matches = routes.filter(
+      (route) =>
+        route.integrationId === INTEGRATION_ID &&
+        route.ruleName === "credential" &&
+        route.method === "GET" &&
+        route.pathPattern === "/credential" &&
+        route.credentialRequired === true,
+    );
+    if (matches.length !== 1) fail();
+    return matches[0]?.routeId ?? fail();
+  } catch {
+    fail();
+  }
 }
 
 function completionClassification(
@@ -1146,7 +1310,12 @@ function incrementSaturating(value: number): number {
 }
 
 function addSaturating(left: number, right: number): number {
-  if (Number.isSafeInteger(right) && right > 0 && left <= Number.MAX_SAFE_INTEGER - right) {
+  if (
+    Number.isSafeInteger(left) &&
+    Number.isSafeInteger(right) &&
+    right >= 0 &&
+    left <= Number.MAX_SAFE_INTEGER - right
+  ) {
     return left + right;
   }
   return Number.MAX_SAFE_INTEGER;

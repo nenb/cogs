@@ -53,34 +53,8 @@ jobs:
           COGS_SOURCE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
         run: dev/linux-kvm/ci-smoke.sh docs/security-evidence/generated/kvm-driver-smoke.json
 
-      - name: Create persistent isolated guest for authoritative conformance
-        id: guest
-        run: dev/linux-kvm/driver.sh create
-
-      - name: Run authoritative Stage 1 suite against Envoy
-        id: envoy_suite
-        continue-on-error: true
-        env:
-          COGS_SOURCE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
-          COGS_CONFORMANCE_PROFILE: linux-kvm
-        run: npx --no-install tsx test/egress-conformance/proxy-adapters/envoy/suite-smoke.ts docs/security-evidence/generated/envoy-kvm
-
-      - name: Run real Stage 3 runtime manager through KVM guest
-        id: real_runtime_kvm
-        continue-on-error: true
-        env:
-          COGS_SOURCE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
-          COGS_STAGE3_REAL_RUNTIME_PROFILE: linux-kvm
-        run: test/egress-conformance/stage3-real-runtime/ci-smoke.sh docs/security-evidence/generated/stage3-real-runtime-kvm
-
-      - name: Destroy isolated conformance guest
-        id: destroy
-        if: always() && steps.guest.outcome != 'skipped'
-        run: dev/linux-kvm/driver.sh destroy
-
       - name: Prepare exact pinned launcher images
         id: launcher_images
-        if: always() && steps.destroy.outcome == 'success'
         run: npx --no-install tsx scripts/prepare-launcher-images.ts
 
       - name: Provision explicit launcher tmpfs roots
@@ -92,6 +66,20 @@ jobs:
           sudo mount -t tmpfs -o "size=16m,mode=0700,uid=$(id -u),gid=$(id -g)" tmpfs /run/cogs/egress
           sudo mount -t tmpfs -o "size=16m,mode=0700,uid=$(id -u),gid=$(id -g)" tmpfs /run/cogs/ssh
           test "$(find /run/cogs/egress /run/cogs/ssh -mindepth 1 -maxdepth 1 | wc -l)" = 0
+
+      - name: Run integrated Stage 3 S3-09 launcher evidence
+        id: launcher_s309
+        if: always() && steps.launcher_roots.outcome == 'success'
+        continue-on-error: true
+        env:
+          COGS_SOURCE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: >-
+          npx --no-install tsx scripts/run-launcher-smoke-evidence.ts
+          --profile linux-kvm
+          --state s309-${{ github.run_id }}-${{ github.run_attempt }}
+          --timeout-ms 600000
+          --scenario s3-09
+          --report docs/security-evidence/generated/launcher-s3-09-linux-kvm.json
 
       - name: Run development launcher linux-kvm smoke
         id: launcher_smoke
@@ -121,6 +109,31 @@ jobs:
           done
           sudo rmdir /run/cogs/ssh /run/cogs/egress /run/cogs
 
+      - name: Create persistent isolated guest for authoritative conformance
+        id: guest
+        run: dev/linux-kvm/driver.sh create
+
+      - name: Run authoritative Stage 1 suite against Envoy
+        id: envoy_suite
+        continue-on-error: true
+        env:
+          COGS_SOURCE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
+          COGS_CONFORMANCE_PROFILE: linux-kvm
+        run: npx --no-install tsx test/egress-conformance/proxy-adapters/envoy/suite-smoke.ts docs/security-evidence/generated/envoy-kvm
+
+      - name: Run real Stage 3 runtime manager through KVM guest
+        id: real_runtime_kvm
+        continue-on-error: true
+        env:
+          COGS_SOURCE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
+          COGS_STAGE3_REAL_RUNTIME_PROFILE: linux-kvm
+        run: test/egress-conformance/stage3-real-runtime/ci-smoke.sh docs/security-evidence/generated/stage3-real-runtime-kvm
+
+      - name: Destroy isolated conformance guest
+        id: destroy
+        if: always() && steps.guest.outcome != 'skipped'
+        run: dev/linux-kvm/driver.sh destroy
+
       - name: Validate applicability-aware reports
         id: evidence
         if: always()
@@ -130,14 +143,15 @@ jobs:
             docs/security-evidence/generated/kvm-driver-smoke.json \
             docs/security-evidence/generated/envoy-kvm/envoy-suite-linux-kvm-*/report.json \
             docs/security-evidence/generated/stage3-real-runtime-kvm/stage3-real-runtime-linux-kvm-*/report.json \
-            docs/security-evidence/generated/launcher-linux-kvm.json
+            docs/security-evidence/generated/launcher-linux-kvm.json \
+            docs/security-evidence/generated/launcher-s3-09-linux-kvm.json
           shopt -s nullglob
           sidecars=(docs/security-evidence/generated/stage3-real-runtime-kvm/stage3-real-runtime-linux-kvm-*/stage3-real-runtime-sidecar.json)
           test "${#sidecars[@]}" -eq 1
           npx --no-install tsx scripts/validate-stage3-real-runtime-sidecars.ts "${sidecars[0]}"
 
       - name: Upload qualification evidence
-        if: always() && steps.evidence.outcome == 'success'
+        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: kvm-qualification-${{ github.run_id }}-${{ github.run_attempt }}
@@ -154,6 +168,7 @@ jobs:
           EVIDENCE_OUTCOME: ${{ steps.evidence.outcome }}
           LAUNCHER_IMAGES_OUTCOME: ${{ steps.launcher_images.outcome }}
           LAUNCHER_SMOKE_OUTCOME: ${{ steps.launcher_smoke.outcome }}
+          LAUNCHER_S309_OUTCOME: ${{ steps.launcher_s309.outcome }}
           LAUNCHER_ROOTS_CLEANUP_OUTCOME: ${{ steps.launcher_roots_cleanup.outcome }}
         run: |
           test "$ENVOY_OUTCOME" = success
@@ -161,5 +176,6 @@ jobs:
           test "$DESTROY_OUTCOME" = success
           test "$LAUNCHER_IMAGES_OUTCOME" = success
           test "$LAUNCHER_SMOKE_OUTCOME" = success
+          test "$LAUNCHER_S309_OUTCOME" = success
           test "$LAUNCHER_ROOTS_CLEANUP_OUTCOME" = success
           test "$EVIDENCE_OUTCOME" = success

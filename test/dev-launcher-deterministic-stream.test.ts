@@ -12,8 +12,11 @@ import {
   LAUNCHER_DETERMINISTIC_MODEL_ID,
   LAUNCHER_DETERMINISTIC_NORMAL_PROMPT,
   LAUNCHER_DETERMINISTIC_PROVIDER,
+  LAUNCHER_DETERMINISTIC_S309_BASH_MARKER,
+  LAUNCHER_DETERMINISTIC_S309_BASH_STDOUT,
   LAUNCHER_DETERMINISTIC_S309_FINAL_TEXT,
   LAUNCHER_DETERMINISTIC_S309_PROMPT,
+  LAUNCHER_DETERMINISTIC_S309_PROOF_PROMPT,
   LAUNCHER_DETERMINISTIC_S309_SETUP_PROMPT,
   LAUNCHER_DETERMINISTIC_TOOL_ARGUMENTS,
   LAUNCHER_DETERMINISTIC_TOOL_ID,
@@ -850,9 +853,13 @@ function result(id: string, name: string, value: Record<string, unknown>) {
   };
 }
 
+const exactBashValue = (stdout: string, overrides: Record<string, unknown> = {}) =>
+  JSON.parse(bashResultText({ stdout, stdoutBytes: Buffer.byteLength(stdout), ...overrides })) as Record<
+    string,
+    unknown
+  >;
 const setupUse = () => toolUse("launcher-s309-setup-1", "bash", { command: "opaque" });
-const setupResult = () =>
-  result("launcher-s309-setup-1", "bash", { ok: true, exitCode: 0, signal: null, stdout: "s3-09-setup" });
+const setupResult = () => result("launcher-s309-setup-1", "bash", exactBashValue("s3-09-setup"));
 const readUse = () =>
   toolUse("launcher-s309-read-1", "read", { path: "/workspace/s3-09/proof.txt", offset: 0, limit: 10 });
 const readResult = () =>
@@ -867,12 +874,7 @@ const editResult = () =>
   result("launcher-s309-edit-1", "edit", { ok: true, path: "/workspace/s3-09/proof.txt", occurrences: 1 });
 const bashUse = () => toolUse("launcher-s309-bash-1", "bash", { command: "opaque" });
 const bashResult = () =>
-  result("launcher-s309-bash-1", "bash", {
-    ok: true,
-    exitCode: 0,
-    signal: null,
-    stdout: "allowed=200 denied=403 committed",
-  });
+  result("launcher-s309-bash-1", "bash", exactBashValue(LAUNCHER_DETERMINISTIC_S309_BASH_STDOUT));
 
 async function s309Events(context: Context) {
   return collect(
@@ -910,8 +912,26 @@ test("deterministic stream drives exact s3-09 setup and scenario tool transcript
   });
   if (bash[2]?.type === "toolcall_end") {
     assert.equal(bash[2].toolCall.name, "bash");
-    assert.match(String(bash[2].toolCall.arguments.command), /localhost:3210\/credential/);
-    assert.match(String(bash[2].toolCall.arguments.command), /denied=403/);
+    const command = String(bash[2].toolCall.arguments.command);
+    assert.match(command, /curl_path=\$\(command -v curl\)/u);
+    assert.match(command, /test "\$curl_path" = \/usr\/bin\/curl/u);
+    assert.match(command, /test -f "\$curl_path"\ntest ! -L "\$curl_path"\ntest -x "\$curl_path"/u);
+    assert.match(command, /stat -c '%u:%g:%a' "\$curl_path"\)" = 0:0:755/u);
+    assert.match(command, /curl_verify=\$\(\/usr\/bin\/dpkg --verify curl\)\ntest -z "\$curl_verify"/u);
+    assert.equal(command.match(/"\$curl_path" -q -sS/gmu)?.length, 2);
+    assert.match(command, /--proxy http:\/\/192\.0\.2\.1:18080 --noproxy '' --insecure -D - -o \/dev\/null/u);
+    assert.match(command, /https:\/\/localhost:3210\/credential/u);
+    assert.match(command, /x-cogs-writeout: 200 1 192\.0\.2\.1 18080/u);
+    assert.match(command, /x-cogs-writeout: 403 1 192\.0\.2\.1 18080/u);
+    // The current random authority port binds the fixed proxy checks to this fixture instance.
+    assert.match(command, /grep -Fxc 'x-cogs-fixture-proof: launcher-v1-3210'/u);
+    assert.match(command, /grep -Eiq '\^x-cogs-fixture-proof:'/u);
+    assert.match(command, /while \[ "\$i" -lt 300 \]/u);
+    assert.match(command, /sleep 0\.02/u);
+    assert.equal(LAUNCHER_DETERMINISTIC_S309_BASH_MARKER, "allowed=200 denied=403 committed updates=300");
+    assert.equal(LAUNCHER_DETERMINISTIC_S309_BASH_STDOUT.split("u\n").length - 1, 300);
+    assert.match(command, new RegExp(`printf '${LAUNCHER_DETERMINISTIC_S309_BASH_MARKER}'`, "u"));
+    assert.doesNotMatch(command, /Proxy-Authorization|Bearer/u);
   }
   const final = await s309Events({
     messages: [
@@ -927,9 +947,28 @@ test("deterministic stream drives exact s3-09 setup and scenario tool transcript
   const deltas = final.filter(
     (event): event is Extract<AssistantMessageEvent, { type: "text_delta" }> => event.type === "text_delta",
   );
-  assert.ok(final.length > 256);
   assert.equal(deltas.map((event) => event.delta).join(""), LAUNCHER_DETERMINISTIC_S309_FINAL_TEXT);
   assert.equal(final.at(-1)?.type, "done");
+});
+
+test("deterministic stream accepts exact s3-09 proof observation prompt only as text", async () => {
+  const events = await s309Events({ messages: [userMessage(LAUNCHER_DETERMINISTIC_S309_PROOF_PROMPT)] });
+  assert.equal(
+    events.some((event) => event.type === "toolcall_end"),
+    false,
+  );
+  const deltas = events.filter(
+    (event): event is Extract<AssistantMessageEvent, { type: "text_delta" }> => event.type === "text_delta",
+  );
+  assert.equal(deltas.map((event) => event.delta).join(""), LAUNCHER_DETERMINISTIC_S309_FINAL_TEXT);
+  assertGenericError(
+    await s309Events({
+      messages: [
+        userMessage(LAUNCHER_DETERMINISTIC_S309_PROOF_PROMPT),
+        userMessage(LAUNCHER_DETERMINISTIC_S309_PROMPT),
+      ],
+    }),
+  );
 });
 
 test("deterministic stream rejects malformed s3-09 transcript before final", async () => {
@@ -942,17 +981,23 @@ test("deterministic stream rejects malformed s3-09 transcript before final", asy
       ],
     }),
   );
-  assertGenericError(
-    await s309Events({
-      messages: [
-        userMessage(LAUNCHER_DETERMINISTIC_S309_PROMPT),
-        readUse(),
-        readResult(),
-        editUse(),
-        editResult(),
-        bashUse(),
-        result("launcher-s309-bash-1", "bash", { ok: true, exitCode: 0, signal: null, stdout: "allowed=200" }),
-      ],
-    }),
-  );
+  for (const hostile of [
+    { ok: true, exitCode: 0, signal: null, stdout: LAUNCHER_DETERMINISTIC_S309_BASH_STDOUT },
+    exactBashValue(LAUNCHER_DETERMINISTIC_S309_BASH_STDOUT, { extra: "forged" }),
+    exactBashValue("allowed=200 denied=403 committed updates=300"),
+  ]) {
+    assertGenericError(
+      await s309Events({
+        messages: [
+          userMessage(LAUNCHER_DETERMINISTIC_S309_PROMPT),
+          readUse(),
+          readResult(),
+          editUse(),
+          editResult(),
+          bashUse(),
+          result("launcher-s309-bash-1", "bash", hostile),
+        ],
+      }),
+    );
+  }
 });

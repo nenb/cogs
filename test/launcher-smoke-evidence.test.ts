@@ -17,7 +17,9 @@ import {
   isTmpfsType,
   launcherCommandDescriptor,
   reportFor,
+  s3FailureStageFromLauncherExitCode,
   validateReportPath,
+  validateS309Json,
   validateSmokeJson,
 } from "../scripts/run-launcher-smoke-evidence.ts";
 
@@ -54,6 +56,74 @@ test("launcher smoke evidence renderer is applicability-aware and non-release", 
   assert(kvm.known_limitations.some((item) => item.includes("same workflow's validated qualification")));
   assert.equal(kvm.tests[0]?.release_eligible, false);
   assert.equal(kvm.tests[0]?.dependency_modes.network_enforcement, "real");
+});
+
+test("s3-09 launcher evidence report and command are fixed and metadata-only", () => {
+  const descriptor = launcherCommandDescriptor("linux-kvm", "s309", 600000, "s3-09");
+  assert.deepEqual(descriptor.args.slice(-3), ["s3-09", "--timeout-ms", "600000"]);
+  const report = reportFor({
+    profile: "linux-kvm",
+    scenario: "s3-09",
+    sourceRevision,
+    startedAt: "2026-01-01T00:00:00.000Z",
+    completedAt: "2026-01-01T00:00:01.000Z",
+    durationMs: 1000,
+    outcome: "pass",
+    diagnostics: "metadata-only s3-09 passed",
+  });
+  assert.equal(report.authority, "authoritative-local");
+  assert.equal(report.tests[0]?.id, "launcher.s3-09.integrated");
+  assert.equal(report.tests[0]?.release_eligible, false);
+  assert(report.known_limitations.some((item) => item.includes("blocked/not-run")));
+  const serialized = JSON.stringify(report);
+  for (const forbidden of ["session.jsonl", "credential", "/workspace", "sk-ant", "prompt"]) {
+    assert.equal(serialized.includes(forbidden), false, forbidden);
+  }
+  assert.equal(
+    expectedReportPath("linux-kvm", "s3-09"),
+    join(process.cwd(), "docs/security-evidence/generated/launcher-s3-09-linux-kvm.json"),
+  );
+  assert.equal(
+    validateReportPath("linux-kvm", "docs/security-evidence/generated/launcher-s3-09-linux-kvm.json", "s3-09"),
+    join(process.cwd(), "docs/security-evidence/generated/launcher-s3-09-linux-kvm.json"),
+  );
+  assert.throws(() =>
+    validateReportPath("linux-kvm", "docs/security-evidence/generated/launcher-linux-kvm.json", "s3-09"),
+  );
+});
+
+test("s3-09 evidence maps only exact bounded launcher exit codes to metadata stages", () => {
+  assert.equal(s3FailureStageFromLauncherExitCode(40), "s3-create");
+  assert.equal(s3FailureStageFromLauncherExitCode(46), "s3-terminal-kind");
+  assert.equal(s3FailureStageFromLauncherExitCode(47), "s3-git-mapping");
+  assert.equal(s3FailureStageFromLauncherExitCode(48), "s3-live-count");
+  assert.equal(s3FailureStageFromLauncherExitCode(49), "s3-proof-run");
+  assert.equal(s3FailureStageFromLauncherExitCode(50), "s3-proof-terminal");
+  assert.equal(s3FailureStageFromLauncherExitCode(51), "s3-egress-shape");
+  assert.equal(s3FailureStageFromLauncherExitCode(52), "s3-egress-state");
+  assert.equal(s3FailureStageFromLauncherExitCode(53), "s3-egress-credential");
+  assert.equal(s3FailureStageFromLauncherExitCode(54), "s3-egress-denied");
+  assert.equal(s3FailureStageFromLauncherExitCode(55), "s3-egress-total");
+  assert.equal(s3FailureStageFromLauncherExitCode(58), "s3-export");
+  assert.equal(s3FailureStageFromLauncherExitCode(62), "s3-cleanup");
+  assert.equal(s3FailureStageFromLauncherExitCode(63), "s3-trusted-relay-zero-wal-zero");
+  assert.equal(s3FailureStageFromLauncherExitCode(64), "s3-trusted-relay-zero-wal-pass");
+  assert.equal(s3FailureStageFromLauncherExitCode(65), "s3-trusted-relay-one-wal-zero");
+  assert.equal(s3FailureStageFromLauncherExitCode(66), "s3-trusted-relay-one-wal-pass");
+  for (const forged of [1, 39, 67, "40", { valueOf: () => 40 }, new Proxy({}, { get: () => 40 })]) {
+    assert.equal(s3FailureStageFromLauncherExitCode(forged), undefined);
+  }
+  const report = reportFor({
+    profile: "linux-kvm",
+    scenario: "s3-09",
+    sourceRevision,
+    startedAt: "2026-01-01T00:00:00.000Z",
+    completedAt: "2026-01-01T00:00:01.000Z",
+    durationMs: 1000,
+    outcome: "fail",
+    diagnostics: "launcher smoke failed at s3-trusted-relay-one-wal-pass",
+  });
+  assert.equal(report.tests[0]?.diagnostics_redacted, "launcher smoke failed at s3-trusted-relay-one-wal-pass");
 });
 
 test("launcher command descriptor uses exact node and minimal env with deadline", () => {
@@ -141,6 +211,49 @@ test("launcher smoke metadata validator requires exact cleanup and abort termina
   assert.equal(abortedGetterInvoked, false);
 });
 
+test("s3-09 metadata validator requires raw export opening proof", () => {
+  const valid = {
+    op: "s3-09",
+    complete: true,
+    terminal: "run_settled",
+    lastEventId: 40,
+    liveEventCount: 33,
+    egressProof: true,
+    history: { pages: 2, entries: 4 },
+    rawExport: { descriptorValidated: true, mode: "raw", sensitive: true, rawExportOpened: true },
+    inventory: {
+      profile: "linux-kvm",
+      authority: "authoritative-local",
+      phase: "sandbox-ready",
+      descriptor: "none",
+      workerLive: false,
+      recovery: "absent",
+      cleanupRequired: false,
+      driverState: "absent",
+    },
+  };
+  validateS309Json(valid);
+  assert.throws(() => validateS309Json({ ...valid, liveEventCount: 32 }));
+  assert.throws(() =>
+    validateS309Json({ ...valid, rawExport: { descriptorValidated: true, mode: "raw", sensitive: true } }),
+  );
+  let invoked = false;
+  assert.throws(() =>
+    validateS309Json(
+      Object.freeze(
+        Object.defineProperty({}, "op", {
+          enumerable: true,
+          get() {
+            invoked = true;
+            return "s3-09";
+          },
+        }),
+      ),
+    ),
+  );
+  assert.equal(invoked, false);
+});
+
 test("launcher evidence helpers reject non-tmpfs and constrain report filename", () => {
   assert.equal(isTmpfsType(0x01021994), true);
   assert.equal(isTmpfsType(0x6969), false);
@@ -175,8 +288,56 @@ test("launcher image prerequisite uses exact pinned OpenBao and Envoy images", a
   verifyImageInspect(OPENBAO_IMAGE, JSON.stringify([{ RepoDigests: [OPENBAO_IMAGE.replace(":2.6.0@", "@")] }]));
   const kvm = await readFile(join(process.cwd(), ".github/workflows/kvm-qualification.yml"), "utf8");
   assert.match(kvm, /id: launcher_images[\s\S]*npx --no-install tsx scripts\/prepare-launcher-images\.ts/);
-  assert.match(kvm, /LAUNCHER_IMAGES_OUTCOME: \$\{\{ steps\.launcher_images\.outcome \}\}/);
-  assert.match(kvm, /test "\$LAUNCHER_IMAGES_OUTCOME" = success/);
+  assert.match(kvm, /id: launcher_s309[\s\S]*--scenario s3-09[\s\S]*launcher-s3-09-linux-kvm\.json/);
+  assert.match(kvm, /id: launcher_smoke[\s\S]*launcher-linux-kvm\.json/);
+  const order = [
+    "Exercise the isolated Debian guest lifecycle",
+    "id: launcher_images",
+    "id: launcher_roots",
+    "id: launcher_s309",
+    "id: launcher_smoke",
+    "id: launcher_roots_cleanup",
+    "id: guest",
+    "id: envoy_suite",
+    "id: real_runtime_kvm",
+    "id: destroy",
+    "id: evidence",
+    "LAUNCHER_S309_OUTCOME",
+  ];
+  for (let index = 1; index < order.length; index += 1) {
+    assert(kvm.indexOf(order[index - 1] as string) < kvm.indexOf(order[index] as string));
+  }
+  assert.match(kvm, /id: launcher_images\n {8}run: npx --no-install tsx scripts\/prepare-launcher-images\.ts/);
+  assert.match(kvm, /id: launcher_roots\n {8}if: always\(\) && steps\.launcher_images\.outcome == 'success'/);
+  assert.match(
+    kvm,
+    /id: launcher_s309\n {8}if: always\(\) && steps\.launcher_roots\.outcome == 'success'\n {8}continue-on-error: true/,
+  );
+  assert.match(
+    kvm,
+    /id: launcher_smoke\n {8}if: always\(\) && steps\.launcher_roots\.outcome == 'success'\n {8}continue-on-error: true/,
+  );
+  assert.match(kvm, /id: launcher_roots_cleanup\n {8}if: always\(\) && steps\.launcher_roots\.outcome != 'skipped'/);
+  assert.match(kvm, /id: envoy_suite\n {8}continue-on-error: true/);
+  assert.match(kvm, /id: real_runtime_kvm\n {8}continue-on-error: true/);
+  assert.match(kvm, /id: destroy\n {8}if: always\(\) && steps\.guest\.outcome != 'skipped'/);
+  assert.match(kvm, /id: evidence\n {8}if: always\(\)/);
+  assert.match(kvm, /Enforce authoritative conformance after evidence publication\n {8}if: always\(\)/);
+  assert.match(kvm, /id: launcher_s309[\s\S]*--state s309-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/);
+  assert.match(kvm, /id: launcher_smoke[\s\S]*--state kvm-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/);
+  for (const [variable, step] of [
+    ["ENVOY_OUTCOME", "envoy_suite"],
+    ["REAL_RUNTIME_KVM_OUTCOME", "real_runtime_kvm"],
+    ["DESTROY_OUTCOME", "destroy"],
+    ["EVIDENCE_OUTCOME", "evidence"],
+    ["LAUNCHER_IMAGES_OUTCOME", "launcher_images"],
+    ["LAUNCHER_SMOKE_OUTCOME", "launcher_smoke"],
+    ["LAUNCHER_S309_OUTCOME", "launcher_s309"],
+    ["LAUNCHER_ROOTS_CLEANUP_OUTCOME", "launcher_roots_cleanup"],
+  ] as const) {
+    assert(kvm.includes(`${variable}: \${{ steps.${step}.outcome }}`));
+    assert(kvm.includes(`test "$${variable}" = success`));
+  }
 });
 
 test("launcher workflows preserve nonempty roots and use exact checkout", async () => {

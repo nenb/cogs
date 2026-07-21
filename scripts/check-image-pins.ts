@@ -49,6 +49,8 @@ for (const relativePath of dockerfiles) {
 
 const ciWorkflow = readFileSync(resolve(root, ".github/workflows/ci.yml"), "utf8");
 const kvmDriver = readFileSync(resolve(root, "dev/linux-kvm/driver.sh"), "utf8");
+const kvmGitTools = readFileSync(resolve(root, "dev/linux-kvm/git-tools.sh"), "utf8");
+const adr0037 = readFileSync(resolve(root, "docs/adr/0037-authorize-pinned-git-tools-disk-for-issue-71.md"), "utf8");
 const envoySuite = readFileSync(resolve(root, "test/egress-conformance/proxy-adapters/envoy/suite-smoke.ts"), "utf8");
 const openBaoSmoke = readFileSync(resolve(root, "dev/openbao-model-auth/ci-smoke.sh"), "utf8");
 const openBaoIgnore = readFileSync(resolve(root, ".trivyignore-openbao"), "utf8");
@@ -122,6 +124,26 @@ assert.ok(
   "mitmproxy authoritative evidence must bind the exact guest image digest",
 );
 assert.match(kvmDriver, /sha512sum --check --status/, "Linux/KVM guest image pin must be verified before boot");
+assert.ok(
+  adr0037.includes("debian-13-generic-amd64-20260712-2537.json") &&
+    adr0037.includes("curl` is present at version `8.14.1-2+deb13u4`") &&
+    adr0037.includes("but `git` is absent"),
+  "ADR0037 must record the exact offline Debian manifest prerequisite finding",
+);
+const gitToolPins = [
+  ["git", "1:2.47.3-0+deb13u1", "git_2.47.3-0+deb13u1_amd64.deb", "8861572"],
+  ["libcurl3t64-gnutls", "8.14.1-2+deb13u4", "libcurl3t64-gnutls_8.14.1-2+deb13u4_amd64.deb", "384336"],
+  ["libngtcp2-16", "1.11.0-1+deb13u1", "libngtcp2-16_1.11.0-1+deb13u1_amd64.deb", "131904"],
+  ["libngtcp2-crypto-gnutls8", "1.11.0-1+deb13u1", "libngtcp2-crypto-gnutls8_1.11.0-1+deb13u1_amd64.deb", "29524"],
+] as const;
+for (const [name, version, filename, size] of gitToolPins) {
+  assert.ok(
+    kvmGitTools.includes(`${name}\t${version}\tamd64\t${filename}\t${size}\thttps://deb.debian.org/debian/pool/`),
+  );
+  assert.ok(adr0037.includes(`\`${name}\``));
+  assert.ok(adr0037.includes(`\`${version}\``) && adr0037.includes(`\`${size}\``));
+}
+assert.match(kvmGitTools, /readonly COGS_GIT_PACKAGE_COUNT=4/, "Git tools package set must remain fixed");
 
 console.log(
   `Verified external base-image digest pinning for ${dockerfiles.length} image definitions, selected Envoy/OpenBao scanning, and inactive mitmproxy exception removal.`,
