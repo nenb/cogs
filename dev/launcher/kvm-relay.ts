@@ -456,7 +456,7 @@ function injectProxyAuthorization(raw: Buffer, secret: string): Buffer {
   }
   if (host !== 1 || !lines.some((line) => line.toLowerCase() === `host: localhost:${port}`)) fail();
   return Buffer.concat([
-    Buffer.from(`${lines.join("\r\n")}\r\nProxy-Authorization: Bearer ${secret}\r\n\r\n`, "latin1"),
+    Buffer.from(`${lines.join("\r\n")}\r\nProxy-Authorization: ${secret}\r\n\r\n`, "latin1"),
     rest,
   ]);
 }
