@@ -78,7 +78,7 @@ export type EnvoyBinaryDescriptor = Readonly<{
 export type S309CompletionProof = Readonly<
   | { version: "cogs.launcher.s3-09-completion/v1alpha1"; outcome: "pending" }
   | { version: "cogs.launcher.s3-09-completion/v1alpha1"; outcome: "pass"; trusted_completion_credential_200: true }
-  | { version: "cogs.launcher.s3-09-completion/v1alpha1"; outcome: "fail"; reason: "state" | "total-count" }
+  | { version: "cogs.launcher.s3-09-completion/v1alpha1"; outcome: "fail"; reason: "generation" | "total-count" }
 >;
 
 export type EnvoyEgressHandle = Readonly<{
@@ -223,7 +223,8 @@ export async function startEnvoyEgress(rawOptions: Options): Promise<EnvoyEgress
   let closed = false;
   let drainedCompletions = 0;
   let completionOutcome: S309CompletionProof["outcome"] = "pending";
-  let completionFailReason: "state" | "total-count" = "state";
+  let completionMatchesSeen = 0;
+  let completionFailReason: "generation" | "total-count" = "generation";
   let replacementEvents = 0;
   let capturedSeams: EnvoyEgressSeams = Object.freeze({});
   let capturedState: LauncherState | undefined;
@@ -312,21 +313,22 @@ export async function startEnvoyEgress(rawOptions: Options): Promise<EnvoyEgress
           } as const,
         }),
       s309CompletionProof: () => {
-        if (completionOutcome === "pending") {
+        if (completionOutcome !== "fail") {
           try {
             if (closed || manager?.ready !== true || manager.replacementRequired) throw new Error("bad state");
             const drained = manager.drainCompletions(64);
             drainedCompletions = addSaturating(drainedCompletions, drained.length);
-            const matches = drained.filter((item) => completionMatches(item, s309RouteId));
-            if (drained.some((item) => !completionMatches(item, s309RouteId)) || matches.length > 1) {
+            const matches = drained.filter((item) => completionMatches(item, s309RouteId)).length;
+            completionMatchesSeen = addSaturating(completionMatchesSeen, matches);
+            if (drained.length !== matches || completionMatchesSeen > 1) {
               completionOutcome = "fail";
               completionFailReason = "total-count";
-            } else if (matches.length === 1) {
-              completionOutcome = "pass";
+            } else {
+              completionOutcome = completionMatchesSeen === 1 ? "pass" : "pending";
             }
           } catch {
             completionOutcome = "fail";
-            completionFailReason = "state";
+            completionFailReason = "generation";
           }
         }
         return Object.freeze({
@@ -1216,7 +1218,12 @@ function incrementSaturating(value: number): number {
 }
 
 function addSaturating(left: number, right: number): number {
-  if (Number.isSafeInteger(right) && right > 0 && left <= Number.MAX_SAFE_INTEGER - right) {
+  if (
+    Number.isSafeInteger(left) &&
+    Number.isSafeInteger(right) &&
+    right >= 0 &&
+    left <= Number.MAX_SAFE_INTEGER - right
+  ) {
     return left + right;
   }
   return Number.MAX_SAFE_INTEGER;

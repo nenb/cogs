@@ -1607,7 +1607,7 @@ function fakeLifecycle(options: Parameters<TrustedCompositionSeams["createLifecy
   });
 }
 
-function s309EgressProof(...outcomes: readonly ("pending" | "pass" | "state" | "total-count")[]) {
+function s309EgressProof(...outcomes: readonly ("pending" | "pass" | "generation" | "total-count")[]) {
   let calls = 0;
   return Object.freeze({
     s309CompletionProof: () => {
@@ -1739,6 +1739,9 @@ test("s3-09 trusted proof channel emits fixed failure reasons without metadata l
     });
   }
   const zeroCredential = make({ ready: true, generation: 1, inflight: 0, total: 0, counts: Object.freeze({}) });
+  const lateExtra = createS309ProofEmitter(zeroCredential.fixture, s309EgressProof("pass", "total-count"), "linux-kvm");
+  assert.equal((lateExtra(settled).payload.s3_09_proof as { outcome: string }).outcome, "pass");
+  assert.equal((lateExtra(settled).payload.s3_09_proof as { reason: string }).reason, "total-count");
   assert.equal(
     (
       createS309ProofEmitter(zeroCredential.fixture, s309EgressProof("pending"), "linux-kvm")(settled).payload
@@ -1759,6 +1762,13 @@ test("s3-09 trusted proof channel emits fixed failure reasons without metadata l
       fixture_ready: true,
       fixture_baseline_captured: true,
     },
+  );
+  assert.equal(
+    (
+      createS309ProofEmitter(zeroCredential.fixture, s309EgressProof("generation"), "linux-kvm")(settled).payload
+        .s3_09_proof as { reason: string }
+    ).reason,
+    "generation",
   );
   const otherTraffic = make(
     { ready: true, generation: 1, inflight: 0, total: 0, counts: Object.freeze({}) },

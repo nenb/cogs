@@ -296,7 +296,55 @@ test("envoy egress S3 completion proof is bounded, cached, and fail closed", asy
       outcome: "pass",
       trusted_completion_credential_200: true,
     });
+    assert.deepEqual(h.s309CompletionProof(), {
+      version: "cogs.launcher.s3-09-completion/v1alpha1",
+      outcome: "fail",
+      reason: "total-count",
+    });
+    await h.close();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("envoy egress S3 completion proof keeps draining after pass and remains pass on empty", async () => {
+  const { dir, state } = await launcherState("insecure-container");
+  try {
+    const runtime = join(state.dir, "runtime");
+    await mkdir(runtime, { mode: 0o700 });
+    await writeFile(join(runtime, ".cogs-envoy-owner"), `${state.stateId}\n`, { mode: 0o600 });
+    const bin = join(runtime, "envoy");
+    await writeFile(bin, fakeBin, { mode: 0o500 });
+    await chmod(bin, 0o500);
+    const doc = launch(state.stateId);
+    const routeId = credentialRouteId(doc);
+    let drains = 0;
+    const h = await startEnvoyEgress({
+      state,
+      profile: "insecure-container",
+      openbao: openbao(),
+      fixturePort: 31337,
+      launchDocument: doc,
+      listenerPort: 18081,
+      otlpLogsEndpoint: "http://127.0.0.1:4318/v1/logs",
+      binary: { path: bin, sha256: fakeBinHash, image: ENVOY_IMAGE, cleanup: "owned" },
+      seams: Object.freeze({
+        validateTmpfs: Object.freeze(async () => undefined),
+        proveClosed: Object.freeze(async () => undefined),
+        startManager: Object.freeze(async () =>
+          Object.freeze({
+            ready: true,
+            listenerPort: 18081,
+            replacementRequired: false,
+            drainCompletions: () => Object.freeze(++drains === 1 ? [completion(routeId)] : []),
+            close: async () => undefined,
+          }),
+        ),
+      }),
+    });
     assert.equal(h.s309CompletionProof().outcome, "pass");
+    assert.equal(h.s309CompletionProof().outcome, "pass");
+    assert.equal(drains, 2);
     await h.close();
   } finally {
     await rm(dir, { recursive: true, force: true });
