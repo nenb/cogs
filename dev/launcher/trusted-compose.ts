@@ -441,7 +441,7 @@ export async function createTrustedWorkerRuntime(
 
     const filePorts = createSftpFileToolPorts({ manager: ssh });
     const bashPort = createSshBashToolPort({ manager: ssh });
-    const s309Emit = createS309ProofEmitter(fixture, admitted.profile);
+    const s309Emit = createS309ProofEmitter(fixture, egress, admitted.profile);
     pi = await s.createPi({
       cwd: "/workspace",
       agentDir: roots.agentDir,
@@ -566,7 +566,11 @@ function nonProducingDependencies(
   ]);
 }
 
-export function createS309ProofEmitter(fixture: LocalFixture, profile: LauncherProfile): (event: ApiEvent) => ApiEvent {
+export function createS309ProofEmitter(
+  fixture: LocalFixture,
+  egress: EnvoyEgressHandle,
+  profile: LauncherProfile,
+): (event: ApiEvent) => ApiEvent {
   if (profile !== "linux-kvm") return (event) => event;
   const baseline = fixture.snapshot();
   const baseCounts = baseline.counts;
@@ -576,11 +580,14 @@ export function createS309ProofEmitter(fixture: LocalFixture, profile: LauncherP
   return (event) => {
     if (event.kind !== "run_settled") return event;
     const snap = fixture.snapshot();
+    const completion = egress.s309CompletionProof();
     const counts = snap.counts;
     const credential = (counts["GET /credential 200"] ?? 0) - baseCredential;
     const deniedForwarded = (counts["GET /allowed 200"] ?? 0) - baseDenied;
     const total = Object.values(counts).reduce((sum, value) => sum + value, 0) - baseTotal;
     const snapTotal = snap.total - baseline.total;
+    const observerOk =
+      (credential === 1 && total === 1 && snapTotal === 1) || (credential === 0 && total === 0 && snapTotal === 0);
     const reason =
       snap.ready !== true
         ? "fixture-not-ready"
@@ -588,19 +595,17 @@ export function createS309ProofEmitter(fixture: LocalFixture, profile: LauncherP
           ? "generation"
           : snap.inflight !== 0
             ? "inflight"
-            : credential < 0 || deniedForwarded < 0 || total < 0 || snapTotal < 0
-              ? "total-count"
-              : credential < 1
-                ? total === 0 && snapTotal === 0
-                  ? "credential-count"
-                  : "total-count"
-                : credential > 1
+            : completion.outcome === "pending"
+              ? "credential-count"
+              : completion.outcome === "fail"
+                ? completion.reason
+                : credential < 0 || deniedForwarded < 0 || total < 0 || snapTotal < 0
                   ? "total-count"
                   : deniedForwarded !== 0
                     ? "denied-forwarded"
-                    : total !== 1 || snapTotal !== 1
-                      ? "total-count"
-                      : undefined;
+                    : observerOk
+                      ? undefined
+                      : "total-count";
     return Object.freeze({
       ...event,
       payload: Object.freeze({
@@ -612,9 +617,9 @@ export function createS309ProofEmitter(fixture: LocalFixture, profile: LauncherP
           ...(reason === undefined
             ? {
                 outcome: "pass",
-                credential_route_200: true,
-                denied_route_absent: true,
-                total_exact_expected: true,
+                trusted_completion_credential_200: true,
+                fixture_denied_route_absent: true,
+                fixture_observer_consistent: true,
                 fixture_ready: true,
                 fixture_baseline_captured: true,
               }
@@ -1463,6 +1468,7 @@ function requireEgress(
 ): void {
   requireFrozenPlain(value);
   ownFunction(value, "snapshot");
+  ownFunction(value, "s309CompletionProof");
   ownFunction(value, "close");
   const snap = plainRecord(value.snapshot());
   const authority = plainRecord(snap.authority);

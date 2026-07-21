@@ -17,8 +17,10 @@ import {
 } from "node:fs/promises";
 import { Socket } from "node:net";
 import { dirname, join } from "node:path";
+import type { CogsEgressCompletion } from "../../src/egress/completion-queue.ts";
 import { createNodeCogsEnvoyProcessPort } from "../../src/egress/envoy-process.ts";
 import { OpenBaoEgressPkiSource } from "../../src/egress/openbao-pki.ts";
+import { lowerLaunchEgressRoutePlan } from "../../src/egress/route-policy.ts";
 import {
   type CogsEgressRuntimeManager,
   type CogsEgressRuntimeManagerOptions,
@@ -39,6 +41,7 @@ const ENVOY_LABEL_KEY = "cogs.dev.launcher.envoy";
 const EGRESS_TMPFS_ROOT = "/run/cogs/egress";
 const USER_ID = "alice";
 const MODEL_HANDLE = "users/alice/anthropic";
+const INTEGRATION_ID = "stage3-localhost";
 const EGRESS_HANDLE = "users/alice/integrations/stage3-localhost";
 const MODEL_PROVIDER = "anthropic";
 const MODEL_ID = "claude-sonnet-4-5";
@@ -72,6 +75,12 @@ export type EnvoyBinaryDescriptor = Readonly<{
   cleanup: "owned";
 }>;
 
+export type S309CompletionProof = Readonly<
+  | { version: "cogs.launcher.s3-09-completion/v1alpha1"; outcome: "pending" }
+  | { version: "cogs.launcher.s3-09-completion/v1alpha1"; outcome: "pass"; trusted_completion_credential_200: true }
+  | { version: "cogs.launcher.s3-09-completion/v1alpha1"; outcome: "fail"; reason: "state" | "total-count" }
+>;
+
 export type EnvoyEgressHandle = Readonly<{
   snapshot(): Readonly<{
     ready: boolean;
@@ -89,6 +98,7 @@ export type EnvoyEgressHandle = Readonly<{
     envoy: { image: typeof ENVOY_IMAGE; binarySha256: string };
     completions: { drained: number; classification: "none" | "present" | "replacement-required" };
   }>;
+  s309CompletionProof(): S309CompletionProof;
   proxyCapability: SecretHolder;
   close(options?: DeadlineOptions): Promise<void>;
 }>;
@@ -212,6 +222,8 @@ export async function startEnvoyEgress(rawOptions: Options): Promise<EnvoyEgress
   let proxyCapability = randomSecret(32);
   let closed = false;
   let drainedCompletions = 0;
+  let completionOutcome: S309CompletionProof["outcome"] = "pending";
+  let completionFailReason: "state" | "total-count" = "state";
   let replacementEvents = 0;
   let capturedSeams: EnvoyEgressSeams = Object.freeze({});
   let capturedState: LauncherState | undefined;
@@ -230,6 +242,7 @@ export async function startEnvoyEgress(rawOptions: Options): Promise<EnvoyEgress
     validateOpenBaoAuthority(openbaoSnapshot);
 
     const launch = validateLaunch(options.launchDocument, options.state, options.fixturePort);
+    const s309RouteId = s309CredentialRouteId(launch);
     let binary = options.binary;
     if (!binary) {
       internallyPreparedBinary = await prepareEnvoyBinary(options.state, {
@@ -298,6 +311,31 @@ export async function startEnvoyEgress(rawOptions: Options): Promise<EnvoyEgress
             classification: completionClassification(manager, drainedCompletions),
           } as const,
         }),
+      s309CompletionProof: () => {
+        if (completionOutcome === "pending") {
+          try {
+            if (closed || manager?.ready !== true || manager.replacementRequired) throw new Error("bad state");
+            const drained = manager.drainCompletions(64);
+            drainedCompletions = addSaturating(drainedCompletions, drained.length);
+            const matches = drained.filter((item) => completionMatches(item, s309RouteId));
+            if (drained.some((item) => !completionMatches(item, s309RouteId)) || matches.length > 1) {
+              completionOutcome = "fail";
+              completionFailReason = "total-count";
+            } else if (matches.length === 1) {
+              completionOutcome = "pass";
+            }
+          } catch {
+            completionOutcome = "fail";
+            completionFailReason = "state";
+          }
+        }
+        return Object.freeze({
+          version: "cogs.launcher.s3-09-completion/v1alpha1",
+          outcome: completionOutcome,
+          ...(completionOutcome === "pass" ? { trusted_completion_credential_200: true as const } : {}),
+          ...(completionOutcome === "fail" ? { reason: completionFailReason } : {}),
+        }) as S309CompletionProof;
+      },
       proxyCapability: proxyCapabilityHolder,
       close: once(async (closeOptions = Object.freeze({})) => {
         const cleanup = cleanupOptions(closeOptions);
@@ -595,6 +633,37 @@ async function startLinuxKvmRelay(relay: KvmRelay, listenerPort: number, options
   relay.registerTarget(listenerPort);
   await relay.switchTo(listenerPort, cooperative);
   checkCooperative(options);
+}
+
+function completionMatches(input: CogsEgressCompletion, routeId: string): boolean {
+  try {
+    if (!input || typeof input !== "object" || Object.getOwnPropertySymbols(input).length !== 0) fail();
+    const desc = Object.getOwnPropertyDescriptors(input);
+    if (Object.keys(desc).sort().join(",") !== "completedAtMs,durationMs,intentId,responseCode,routeId,sequence")
+      fail();
+    for (const d of Object.values(desc)) if (!d || !("value" in d) || d.enumerable !== true) fail();
+    return desc.routeId?.value === routeId && desc.responseCode?.value === 200;
+  } catch {
+    return false;
+  }
+}
+
+function s309CredentialRouteId(launch: LaunchConfig): string {
+  try {
+    const routes = lowerLaunchEgressRoutePlan(launch).integrations.flatMap((integration) => integration.routes);
+    const matches = routes.filter(
+      (route) =>
+        route.integrationId === INTEGRATION_ID &&
+        route.ruleName === "credential" &&
+        route.method === "GET" &&
+        route.pathPattern === "/credential" &&
+        route.credentialRequired === true,
+    );
+    if (matches.length !== 1) fail();
+    return matches[0]?.routeId ?? fail();
+  } catch {
+    fail();
+  }
 }
 
 function completionClassification(

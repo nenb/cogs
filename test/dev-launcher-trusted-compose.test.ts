@@ -1457,6 +1457,11 @@ function seams(calls: string[], captured: Record<string, unknown>): Partial<Trus
             envoy: { image: "x", binarySha256: `sha256:${"3".repeat(64)}` },
             completions: { drained: 0, classification: "none" },
           }),
+        s309CompletionProof: () =>
+          Object.freeze({
+            version: "cogs.launcher.s3-09-completion/v1alpha1",
+            outcome: "pending",
+          }),
         proxyCapability: Object.freeze({
           withSecret: (op: (secret: string) => unknown) => op("PROXY_CAPABILITY_123"),
           dispose: () => undefined,
@@ -1602,6 +1607,23 @@ function fakeLifecycle(options: Parameters<TrustedCompositionSeams["createLifecy
   });
 }
 
+function s309EgressProof(...outcomes: readonly ("pending" | "pass" | "state" | "total-count")[]) {
+  let calls = 0;
+  return Object.freeze({
+    s309CompletionProof: () => {
+      const outcome = outcomes[Math.min(calls++, outcomes.length - 1)] ?? "pass";
+      return Object.freeze({
+        version: "cogs.launcher.s3-09-completion/v1alpha1",
+        ...(outcome === "pass"
+          ? { outcome: "pass", trusted_completion_credential_200: true }
+          : outcome === "pending"
+            ? { outcome: "pending" }
+            : { outcome: "fail", reason: outcome }),
+      });
+    },
+  }) as never;
+}
+
 test("s3-09 trusted proof channel captures baseline and binds to serialized settled deltas", () => {
   let resetCalls = 0;
   let total = 5;
@@ -1612,7 +1634,7 @@ test("s3-09 trusted proof channel captures baseline and binds to serialized sett
       resetCalls += 1;
     },
   } as never;
-  const emit = createS309ProofEmitter(fixture, "linux-kvm");
+  const emit = createS309ProofEmitter(fixture, s309EgressProof("pending", "pass"), "linux-kvm");
   const event = (correlation_id: string) =>
     Object.freeze({ kind: "run_settled", correlation_id, payload: Object.freeze({}) }) as never;
   assert.equal((emit(event("setup")).payload.s3_09_proof as { reason: string }).reason, "credential-count");
@@ -1624,9 +1646,9 @@ test("s3-09 trusted proof channel captures baseline and binds to serialized sett
     scenario: "s3-09",
     profile: "linux-kvm",
     outcome: "pass",
-    credential_route_200: true,
-    denied_route_absent: true,
-    total_exact_expected: true,
+    trusted_completion_credential_200: true,
+    fixture_denied_route_absent: true,
+    fixture_observer_consistent: true,
     fixture_ready: true,
     fixture_baseline_captured: true,
   });
@@ -1702,7 +1724,11 @@ test("s3-09 trusted proof channel emits fixed failure reasons without metadata l
     ],
   ] as const) {
     const { fixture, advance } = make(baseline, snapshot);
-    const emit = createS309ProofEmitter(fixture, "linux-kvm");
+    const emit = createS309ProofEmitter(
+      fixture,
+      s309EgressProof(reason === "credential-count" ? "pending" : "pass"),
+      "linux-kvm",
+    );
     advance();
     assert.deepEqual(emit(settled).payload.s3_09_proof, {
       version: "cogs.launcher.s3-09-proof/v1alpha1",
@@ -1714,15 +1740,31 @@ test("s3-09 trusted proof channel emits fixed failure reasons without metadata l
   }
   const zeroCredential = make({ ready: true, generation: 1, inflight: 0, total: 0, counts: Object.freeze({}) });
   assert.equal(
-    (createS309ProofEmitter(zeroCredential.fixture, "linux-kvm")(settled).payload.s3_09_proof as { reason: string })
-      .reason,
+    (
+      createS309ProofEmitter(zeroCredential.fixture, s309EgressProof("pending"), "linux-kvm")(settled).payload
+        .s3_09_proof as { reason: string }
+    ).reason,
     "credential-count",
+  );
+  assert.deepEqual(
+    createS309ProofEmitter(zeroCredential.fixture, s309EgressProof("pass"), "linux-kvm")(settled).payload.s3_09_proof,
+    {
+      version: "cogs.launcher.s3-09-proof/v1alpha1",
+      scenario: "s3-09",
+      profile: "linux-kvm",
+      outcome: "pass",
+      trusted_completion_credential_200: true,
+      fixture_denied_route_absent: true,
+      fixture_observer_consistent: true,
+      fixture_ready: true,
+      fixture_baseline_captured: true,
+    },
   );
   const otherTraffic = make(
     { ready: true, generation: 1, inflight: 0, total: 0, counts: Object.freeze({}) },
     { ready: true, generation: 1, inflight: 0, total: 1, counts: Object.freeze({}) },
   );
-  const otherEmit = createS309ProofEmitter(otherTraffic.fixture, "linux-kvm");
+  const otherEmit = createS309ProofEmitter(otherTraffic.fixture, s309EgressProof("pass"), "linux-kvm");
   otherTraffic.advance();
   assert.equal((otherEmit(settled).payload.s3_09_proof as { reason: string }).reason, "total-count");
   const wrongProfile = make({
@@ -1733,7 +1775,8 @@ test("s3-09 trusted proof channel emits fixed failure reasons without metadata l
     counts: Object.freeze({ "GET /credential 200": 1 }),
   });
   assert.equal(
-    "s3_09_proof" in createS309ProofEmitter(wrongProfile.fixture, "insecure-container")(settled).payload,
+    "s3_09_proof" in
+      createS309ProofEmitter(wrongProfile.fixture, s309EgressProof("pass"), "insecure-container")(settled).payload,
     false,
   );
 });
