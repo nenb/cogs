@@ -1461,7 +1461,7 @@ function seams(calls: string[], captured: Record<string, unknown>): Partial<Trus
           Object.freeze({
             version: "cogs.launcher.s3-09-trusted-proof/v1alpha1",
             outcome: "pending",
-            reason: "relay",
+            reason: "relay-zero",
           }),
         proxyCapability: Object.freeze({
           withSecret: (op: (secret: string) => unknown) => op("PROXY_CAPABILITY_123"),
@@ -1609,7 +1609,16 @@ function fakeLifecycle(options: Parameters<TrustedCompositionSeams["createLifecy
 }
 
 function s309EgressProof(
-  ...outcomes: readonly ("pending" | "pending-relay" | "pending-wal" | "pass" | "generation" | "total-count")[]
+  ...outcomes: readonly (
+    | "pending"
+    | "pending-relay"
+    | "pending-relay-zero"
+    | "pending-relay-one"
+    | "pending-wal"
+    | "pass"
+    | "generation"
+    | "total-count"
+  )[]
 ) {
   let calls = 0;
   return Object.freeze({
@@ -1624,8 +1633,16 @@ function s309EgressProof(
               trusted_relay_exact: true,
               completion_observer_consistent: true,
             }
-          : outcome === "pending" || outcome === "pending-relay" || outcome === "pending-wal"
-            ? { outcome: "pending", reason: outcome === "pending-wal" ? "wal" : "relay" }
+          : outcome === "pending" ||
+              outcome === "pending-relay" ||
+              outcome === "pending-relay-zero" ||
+              outcome === "pending-relay-one" ||
+              outcome === "pending-wal"
+            ? {
+                outcome: "pending",
+                reason:
+                  outcome === "pending-wal" ? "wal" : outcome === "pending-relay-one" ? "relay-one" : "relay-zero",
+              }
             : { outcome: "fail", reason: outcome }),
       });
     },
@@ -1761,10 +1778,17 @@ test("s3-09 trusted proof channel emits fixed failure reasons without metadata l
   );
   assert.equal(
     (
-      createS309ProofEmitter(zeroCredential.fixture, s309EgressProof("pending-relay"), "linux-kvm")(settled).payload
-        .s3_09_proof as { reason: string }
+      createS309ProofEmitter(zeroCredential.fixture, s309EgressProof("pending-relay-zero"), "linux-kvm")(settled)
+        .payload.s3_09_proof as { reason: string }
     ).reason,
     "generation",
+  );
+  assert.equal(
+    (
+      createS309ProofEmitter(zeroCredential.fixture, s309EgressProof("pending-relay-one"), "linux-kvm")(settled).payload
+        .s3_09_proof as { reason: string }
+    ).reason,
+    "credential-count",
   );
   assert.deepEqual(
     createS309ProofEmitter(zeroCredential.fixture, s309EgressProof("pass"), "linux-kvm")(settled).payload.s3_09_proof,

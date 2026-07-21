@@ -331,7 +331,7 @@ test("envoy egress S3 completion proof is bounded, cached, and fail closed", asy
     assert.deepEqual(h.s309CompletionProof(), {
       version: "cogs.launcher.s3-09-trusted-proof/v1alpha1",
       outcome: "pending",
-      reason: "relay",
+      reason: "relay-zero",
     });
     assert.deepEqual(h.s309CompletionProof(), {
       version: "cogs.launcher.s3-09-trusted-proof/v1alpha1",
@@ -457,7 +457,7 @@ test("envoy egress S3 proof rejects relay and WAL anomalies", async () => {
           ? {
               version: "cogs.launcher.s3-09-trusted-proof/v1alpha1",
               outcome: "pending",
-              reason: name === "wal-zero" ? "wal" : "relay",
+              reason: name === "wal-zero" ? "wal" : "relay-one",
             }
           : { version: "cogs.launcher.s3-09-trusted-proof/v1alpha1", outcome: "fail", reason: "total-count" },
         name,

@@ -77,7 +77,11 @@ export type EnvoyBinaryDescriptor = Readonly<{
 }>;
 
 export type S309CompletionProof = Readonly<
-  | { version: "cogs.launcher.s3-09-trusted-proof/v1alpha1"; outcome: "pending"; reason: "relay" | "wal" }
+  | {
+      version: "cogs.launcher.s3-09-trusted-proof/v1alpha1";
+      outcome: "pending";
+      reason: "relay-zero" | "relay-one" | "wal";
+    }
   | {
       version: "cogs.launcher.s3-09-trusted-proof/v1alpha1";
       outcome: "pass";
@@ -230,7 +234,7 @@ export async function startEnvoyEgress(rawOptions: Options): Promise<EnvoyEgress
   let closed = false;
   let drainedCompletions = 0;
   let completionOutcome: S309CompletionProof["outcome"] = "pending";
-  let completionPendingReason: "relay" | "wal" = "relay";
+  let completionPendingReason: "relay-zero" | "relay-one" | "wal" = "relay-zero";
   let completionMatchesSeen = 0;
   let completionFailReason: "generation" | "total-count" = "generation";
   let replacementEvents = 0;
@@ -340,7 +344,7 @@ export async function startEnvoyEgress(rawOptions: Options): Promise<EnvoyEgress
               completionFailReason = "total-count";
             } else if (relayState !== "pass") {
               completionOutcome = "pending";
-              completionPendingReason = "relay";
+              completionPendingReason = relayState;
             } else if (walState !== "pass") {
               completionOutcome = "pending";
               completionPendingReason = "wal";
@@ -665,8 +669,8 @@ async function startLinuxKvmRelay(relay: KvmRelay, listenerPort: number, options
   checkCooperative(options);
 }
 
-function relayProof(relay: KvmRelay | undefined, target: number): "pending" | "pass" | "fail" {
-  if (!relay) return "pending";
+function relayProof(relay: KvmRelay | undefined, target: number): "relay-zero" | "relay-one" | "pass" | "fail" {
+  if (!relay) return "relay-zero";
   const snap = relay.snapshot();
   if (
     snap.ready !== true ||
@@ -679,7 +683,7 @@ function relayProof(relay: KvmRelay | undefined, target: number): "pending" | "p
     snap.acceptedConnections > 2
   )
     return "fail";
-  return snap.acceptedConnections === 2 ? "pass" : "pending";
+  return snap.acceptedConnections === 2 ? "pass" : snap.acceptedConnections === 1 ? "relay-one" : "relay-zero";
 }
 
 function walProof(
