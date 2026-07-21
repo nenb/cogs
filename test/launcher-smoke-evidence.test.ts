@@ -94,9 +94,13 @@ test("s3-09 launcher evidence report and command are fixed and metadata-only", (
 
 test("s3-09 evidence maps only exact bounded launcher exit codes to metadata stages", () => {
   assert.equal(s3FailureStageFromLauncherExitCode(40), "s3-create");
-  assert.equal(s3FailureStageFromLauncherExitCode(49), "s3-export");
-  assert.equal(s3FailureStageFromLauncherExitCode(53), "s3-cleanup");
-  for (const forged of [1, 39, 54, "40", { valueOf: () => 40 }, new Proxy({}, { get: () => 40 })]) {
+  assert.equal(s3FailureStageFromLauncherExitCode(46), "s3-terminal-kind");
+  assert.equal(s3FailureStageFromLauncherExitCode(47), "s3-git-mapping");
+  assert.equal(s3FailureStageFromLauncherExitCode(48), "s3-live-count");
+  assert.equal(s3FailureStageFromLauncherExitCode(49), "s3-egress-proof");
+  assert.equal(s3FailureStageFromLauncherExitCode(52), "s3-export");
+  assert.equal(s3FailureStageFromLauncherExitCode(56), "s3-cleanup");
+  for (const forged of [1, 39, 57, "40", { valueOf: () => 40 }, new Proxy({}, { get: () => 40 })]) {
     assert.equal(s3FailureStageFromLauncherExitCode(forged), undefined);
   }
   const report = reportFor({

@@ -93,7 +93,10 @@ export const s309FailureStages = Object.freeze([
   "s3-setup-terminal",
   "s3-live-open",
   "s3-scenario-run",
-  "s3-terminal-proof",
+  "s3-terminal-kind",
+  "s3-git-mapping",
+  "s3-live-count",
+  "s3-egress-proof",
   "s3-replay-gap",
   "s3-history",
   "s3-export",
@@ -327,17 +330,7 @@ async function tailTerminal(client: ApiClient, correlation: string, signal?: Abo
   }
 }
 
-async function tailTerminalProof(client: ApiClient, correlation: string, signal?: AbortSignal, live?: LiveEvents) {
-  const terminal = live
-    ? await tailTerminalEventFromLive(client, live, correlation, signal)
-    : await tailTerminalEvent(client, correlation, signal);
-  if (
-    terminal.kind !== "run_settled" ||
-    terminal.gitMapping !== true ||
-    terminal.eventCount <= 256 ||
-    terminal.eventCount > 1000
-  )
-    throw new Error("launcher operation failed");
+function egressProof(terminal: Awaited<ReturnType<typeof tailTerminalEvent>>) {
   const payload = exactPlain(terminal.payload);
   const proof = exactPlain(payload.s3_09_proof);
   if (
@@ -391,7 +384,7 @@ async function tailTerminalEventFromLive(
         kind,
         lastEventId: last,
         eventCount: count,
-        payload: exactPlain(data.payload),
+        payload: data.payload,
         gitMapping,
       });
     return undefined;
@@ -434,7 +427,7 @@ async function tailTerminalEvent(
           kind,
           lastEventId: last,
           eventCount: count,
-          payload: exactPlain(data.payload),
+          payload: data.payload,
           gitMapping,
         });
     }
@@ -536,8 +529,15 @@ async function s309(
         const correlation = runCorrelation(
           await client.request("run", Object.freeze({ content: LAUNCHER_DETERMINISTIC_S309_PROMPT }), signal),
         );
-        stage = "s3-terminal-proof";
-        const terminal = await tailTerminalProof(client, correlation, signal, live);
+        const observed = await tailTerminalEventFromLive(client, live, correlation, signal);
+        stage = "s3-terminal-kind";
+        if (observed.kind !== "run_settled") throw new Error("launcher operation failed");
+        stage = "s3-git-mapping";
+        if (observed.gitMapping !== true) throw new Error("launcher operation failed");
+        stage = "s3-live-count";
+        if (observed.eventCount <= 256 || observed.eventCount > 1000) throw new Error("launcher operation failed");
+        stage = "s3-egress-proof";
+        const terminal = egressProof(observed);
         live.closed = true;
         await live.iterator.return?.(undefined);
         stage = "s3-replay-gap";
