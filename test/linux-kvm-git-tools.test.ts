@@ -106,6 +106,9 @@ test("Git tools postwalk accepts safe package symlinks but rejects traversal, de
     await mkdir(join(safe, "usr/bin"), { recursive: true });
     await writeFile(join(safe, "usr/bin/git"), "x", { mode: 0o755 });
     await symlink("git", join(safe, "usr/bin/git-link"));
+    if (process.platform === "linux") {
+      assert.equal((await lstat(join(safe, "usr/bin/git-link"))).mode & 0o777, 0o777);
+    }
     await mkdir(join(safe, "bin"));
     await mkdir(join(safe, "usr/lib/git-core"), { recursive: true });
     await mkdir(join(safe, "usr/share/git-core/templates"), { recursive: true });
@@ -132,6 +135,11 @@ test("Git tools postwalk accepts safe package symlinks but rejects traversal, de
     await writeFile(join(writable, "usr/bin/git"), "x", { mode: 0o660 });
     await chmod(join(writable, "usr/bin/git"), 0o660);
     assert.notEqual((await sourceGitTools(`cogs_git_tools_postwalk ${JSON.stringify(writable)}`)).status, 0);
+
+    const writableDir = join(dir, "writable-dir");
+    await mkdir(join(writableDir, "usr/bin"), { recursive: true });
+    await chmod(join(writableDir, "usr/bin"), 0o775);
+    assert.notEqual((await sourceGitTools(`cogs_git_tools_postwalk ${JSON.stringify(writableDir)}`)).status, 0);
 
     const unexpected = join(dir, "unexpected");
     await mkdir(join(unexpected, "home/user"), { recursive: true });
@@ -169,6 +177,16 @@ test("Git tools executable helpers preserve invalid cache and produce injection-
     assert.match(commands.stdout, /^set_inode_field \/ uid 0\nset_inode_field \/ gid 0\n/u);
     assert.doesNotMatch(commands.stdout, /[;'"`$\\]/u);
 
+    const buildState = join(dir, "state");
+    const emptyCache = join(dir, "empty-cache");
+    await mkdir(buildState, { mode: 0o700 });
+    await mkdir(emptyCache, { mode: 0o700 });
+    const build = await sourceGitTools(
+      `cogs_git_tools_build_image ${JSON.stringify(buildState)} ${JSON.stringify(emptyCache)}`,
+    );
+    assert.notEqual(build.status, 0);
+    assert.doesNotMatch(build.stderr, /unbound variable/u);
+
     const wrapperRoot = join(dir, "wrapper");
     const wrapper = await sourceGitTools(`cogs_git_tools_write_wrapper ${JSON.stringify(wrapperRoot)}`);
     assert.equal(wrapper.status, 0, wrapper.stderr);
@@ -195,7 +213,7 @@ test("Linux/KVM driver wires Git tools as read-only guest disk with fixed verifi
   assert.match(text, /blkid -s LABEL -o value/u);
   assert.match(text, /blockdev --getro "\$source"/u);
   assert.match(text, /findmnt -rn -o OPTIONS \/opt\/cogs-git/u);
-  assert.ok(text.includes("! find /opt/cogs-git -xdev \\( ! -uid 0 -o ! -gid 0 -o -perm /0022"));
+  assert.match(text, /! find \/opt\/cogs-git -xdev .* ! -type l -a -perm \/0022/u);
   assert.match(text, /git --version\)" = "git version 2\.47\.3"/u);
   assert.match(text, /ldd \/opt\/cogs-git\/usr\/bin\/git/u);
   assert.match(text, /git init -q/u);

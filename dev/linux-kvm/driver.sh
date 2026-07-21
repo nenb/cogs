@@ -268,7 +268,7 @@ verify_git_tools() {
     test -L /usr/bin/git && test "$(readlink /usr/bin/git)" = /opt/cogs-git/bin/git
     test "$(stat -c "%u:%g:%F" /usr/bin/git)" = "0:0:symbolic link"
     test "$(stat -c "%u:%g:%a:%F" /opt/cogs-git/bin/git)" = "0:0:755:regular file"
-    ! find /opt/cogs-git -xdev \( ! -uid 0 -o ! -gid 0 -o -perm /0022 -o -type b -o -type c -o -type p -o -type s \) -print -quit | grep -q .
+    ! find /opt/cogs-git -xdev \( ! -uid 0 -o ! -gid 0 -o \( ! -type l -a -perm /0022 \) -o -type b -o -type c -o -type p -o -type s \) -print -quit | grep -q .
     grep -qx $'"'"'git\t1:2.47.3-0+deb13u1\tamd64'"'"' /opt/cogs-git/cogs-git-tools-manifest.tsv
     grep -qx $'"'"'libcurl3t64-gnutls\t8.14.1-2+deb13u4\tamd64'"'"' /opt/cogs-git/cogs-git-tools-manifest.tsv
     grep -qx $'"'"'libngtcp2-16\t1.11.0-1+deb13u1\tamd64'"'"' /opt/cogs-git/cogs-git-tools-manifest.tsv

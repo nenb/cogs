@@ -36,7 +36,13 @@ PY
 }
 
 cogs_git_tools_verify_package() {
-  local file=$1 name=$2 version=$3 arch=$4 size=$5 sha256=$6 mode=$7
+  local file=$1
+  local name=$2
+  local version=$3
+  local arch=$4
+  local size=$5
+  local sha256=$6
+  local mode=$7
   python3 - "$file" "$mode" <<'PY' || return 1
 import os,stat,sys
 path,expected=sys.argv[1:]
@@ -58,7 +64,9 @@ PY
 }
 
 cogs_git_tools_cleanup_file_identity() {
-  local path=$1 dev=$2 ino=$3
+  local path=$1
+  local dev=$2
+  local ino=$3
   python3 - "$path" "$dev" "$ino" <<'PY' || return 0
 import os,sys
 path,dev,ino=sys.argv[1:]
@@ -70,7 +78,14 @@ PY
 }
 
 cogs_git_tools_prepare_package() {
-  local cache=$1 name=$2 version=$3 arch=$4 filename=$5 size=$6 url=$7 sha256=$8
+  local cache=$1
+  local name=$2
+  local version=$3
+  local arch=$4
+  local filename=$5
+  local size=$6
+  local url=$7
+  local sha256=$8
   local final="$cache/$filename"
   if [[ -e "$final" || -L "$final" ]]; then
     cogs_git_tools_verify_package "$final" "$name" "$version" "$arch" "$size" "$sha256" 0400 2>/dev/null || cogs_git_tools_fail
@@ -107,7 +122,8 @@ PY
 }
 
 cogs_git_tools_prepare_cache() {
-  local cache=$1 count=0
+  local cache=$1
+  local count=0
   mkdir -p "$cache" || cogs_git_tools_fail
   chmod 0700 "$cache" || cogs_git_tools_fail
   while IFS=$'\t' read -r name version arch filename size url sha256; do
@@ -161,14 +177,17 @@ for current, dirs, files in os.walk(root, topdown=True, followlinks=False):
         st=os.lstat(path)
         mode=st.st_mode
         entries += 1
-        if entries > max_entries or (mode & 0o022):
+        if entries > max_entries:
             raise SystemExit(1)
         if stat.S_ISREG(mode):
+            if mode & 0o022:
+                raise SystemExit(1)
             bytes_seen += st.st_size
             if bytes_seen > max_bytes:
                 raise SystemExit(1)
         elif stat.S_ISDIR(mode):
-            pass
+            if mode & 0o022:
+                raise SystemExit(1)
         elif stat.S_ISLNK(mode):
             target=os.readlink(path)
             if target.startswith('/'):
@@ -204,7 +223,9 @@ PY
 }
 
 cogs_git_tools_cleanup_staging() {
-  local state=$1 staging=$2 image_tmp=$3
+  local state=$1
+  local staging=$2
+  local image_tmp=$3
   python3 - "$state" "$staging" "$COGS_GIT_TOOLS_SENTINEL" "$image_tmp" <<'PY' || return 0
 import os,shutil,stat,sys
 state,staging,sentinel,tmp=sys.argv[1:]
@@ -241,7 +262,12 @@ PY
 }
 
 cogs_git_tools_build_image() {
-  local state=$1 cache=$2 image="$state/$COGS_GIT_TOOLS_IMAGE" image_tmp="$state/$COGS_GIT_TOOLS_IMAGE.tmp" staging="$state/git-tools.staging" root="$staging/root"
+  local state=$1
+  local cache=$2
+  local image="$state/$COGS_GIT_TOOLS_IMAGE"
+  local image_tmp="$state/$COGS_GIT_TOOLS_IMAGE.tmp"
+  local staging="$state/git-tools.staging"
+  local root="$staging/root"
   [[ ! -e "$staging" && ! -L "$staging" && ! -e "$image" && ! -L "$image" && ! -e "$image_tmp" && ! -L "$image_tmp" ]] || cogs_git_tools_fail
   mkdir -p "$root" || cogs_git_tools_fail
   : > "$staging/$COGS_GIT_TOOLS_SENTINEL" || { cogs_git_tools_cleanup_staging "$state" "$staging" "$image_tmp"; cogs_git_tools_fail; }
@@ -266,7 +292,8 @@ cogs_git_tools_build_image() {
 }
 
 prepare_git_tools_disk() {
-  local state=$1 cache=$2
+  local state=$1
+  local cache=$2
   cogs_git_tools_prepare_cache "$cache"
   cogs_git_tools_build_image "$state" "$cache"
 }
