@@ -330,14 +330,14 @@ test("envoy egress S3 completion proof is bounded, cached, and fail closed", asy
     });
     assert.deepEqual(h.s309CompletionProof(), {
       version: "cogs.launcher.s3-09-trusted-proof/v1alpha1",
-      outcome: "pending",
-      reason: "relay-zero-wal-zero",
+      outcome: "pass",
+      runtime_observers_consistent: true,
+      completion_observer_consistent: true,
     });
     assert.deepEqual(h.s309CompletionProof(), {
       version: "cogs.launcher.s3-09-trusted-proof/v1alpha1",
       outcome: "pass",
-      trusted_authorization_credential: true,
-      trusted_relay_exact: true,
+      runtime_observers_consistent: true,
       completion_observer_consistent: true,
     });
     assert.deepEqual(h.s309CompletionProof(), {

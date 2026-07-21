@@ -1630,8 +1630,7 @@ function s309EgressProof(
         ...(outcome === "pass"
           ? {
               outcome: "pass",
-              trusted_authorization_credential: true,
-              trusted_relay_exact: true,
+              runtime_observers_consistent: true,
               completion_observer_consistent: true,
             }
           : outcome === "pending" || outcome.startsWith("pending-")
@@ -1655,20 +1654,21 @@ test("s3-09 trusted proof channel captures baseline and binds to serialized sett
       resetCalls += 1;
     },
   } as never;
-  const emit = createS309ProofEmitter(fixture, s309EgressProof("pending-wal", "pass"), "linux-kvm");
+  const emit = createS309ProofEmitter(fixture, s309EgressProof("pass"), "linux-kvm");
   const event = (correlation_id: string) =>
     Object.freeze({ kind: "run_settled", correlation_id, payload: Object.freeze({}) }) as never;
-  assert.equal((emit(event("setup")).payload.s3_09_proof as { reason: string }).reason, "credential-count");
+  assert.equal("s3_09_proof" in emit(event("setup")).payload, false);
   counts = Object.freeze({ "GET /credential 200": 5, "GET /health 200": 1 });
   total = 6;
-  const settled = emit(event("scenario"));
+  assert.equal("s3_09_proof" in emit(event("scenario")).payload, false);
+  const settled = emit(event("proof"));
   assert.deepEqual(settled.payload.s3_09_proof, {
     version: "cogs.launcher.s3-09-proof/v1alpha1",
     scenario: "s3-09",
     profile: "linux-kvm",
     outcome: "pass",
-    trusted_authorization_credential: true,
-    trusted_relay_exact: true,
+    guest_proxy_fixture_attested: true,
+    runtime_observers_consistent: true,
     completion_observer_consistent: true,
     fixture_denied_route_absent: true,
     fixture_observer_consistent: true,
@@ -1677,7 +1677,7 @@ test("s3-09 trusted proof channel captures baseline and binds to serialized sett
   });
   assert.equal(resetCalls, 0);
   assert.equal(JSON.stringify(settled).includes("1234"), false);
-  assert.equal(JSON.stringify(settled).includes("credential"), true);
+  assert.equal(JSON.stringify(settled).includes("credential"), false);
 });
 
 test("s3-09 trusted proof channel emits fixed failure reasons without metadata leakage", () => {
@@ -1693,6 +1693,11 @@ test("s3-09 trusted proof channel emits fixed failure reasons without metadata l
     correlation_id: "scenario",
     payload: Object.freeze({}),
   }) as never;
+  const proofOf = (emit: ReturnType<typeof createS309ProofEmitter>) => {
+    assert.equal("s3_09_proof" in emit(settled).payload, false);
+    assert.equal("s3_09_proof" in emit(settled).payload, false);
+    return emit(settled).payload.s3_09_proof;
+  };
   for (const [baseline, snapshot, reason] of [
     [
       { ready: true, generation: 1, inflight: 0, total: 0, counts: Object.freeze({}) },
@@ -1753,7 +1758,7 @@ test("s3-09 trusted proof channel emits fixed failure reasons without metadata l
       "linux-kvm",
     );
     advance();
-    assert.deepEqual(emit(settled).payload.s3_09_proof, {
+    assert.deepEqual(proofOf(emit), {
       version: "cogs.launcher.s3-09-proof/v1alpha1",
       scenario: "s3-09",
       profile: "linux-kvm",
@@ -1763,22 +1768,21 @@ test("s3-09 trusted proof channel emits fixed failure reasons without metadata l
   }
   const zeroCredential = make({ ready: true, generation: 1, inflight: 0, total: 0, counts: Object.freeze({}) });
   const lateExtra = createS309ProofEmitter(zeroCredential.fixture, s309EgressProof("pass", "total-count"), "linux-kvm");
-  assert.equal((lateExtra(settled).payload.s3_09_proof as { outcome: string }).outcome, "pass");
+  assert.equal((proofOf(lateExtra) as { outcome: string }).outcome, "pass");
   assert.equal((lateExtra(settled).payload.s3_09_proof as { reason: string }).reason, "total-count");
   assert.equal(
     (
-      createS309ProofEmitter(zeroCredential.fixture, s309EgressProof("pending-wal"), "linux-kvm")(settled).payload
-        .s3_09_proof as { reason: string }
+      proofOf(createS309ProofEmitter(zeroCredential.fixture, s309EgressProof("pending-wal"), "linux-kvm")) as {
+        reason: string;
+      }
     ).reason,
     "credential-count",
   );
   assert.equal(
     (
-      createS309ProofEmitter(
-        zeroCredential.fixture,
-        s309EgressProof("pending-relay-zero-wal-zero"),
-        "linux-kvm",
-      )(settled).payload.s3_09_proof as { reason: string }
+      proofOf(
+        createS309ProofEmitter(zeroCredential.fixture, s309EgressProof("pending-relay-zero-wal-zero"), "linux-kvm"),
+      ) as { reason: string }
     ).reason,
     "relay-zero-wal-zero",
   );
@@ -1789,32 +1793,31 @@ test("s3-09 trusted proof channel emits fixed failure reasons without metadata l
   ] as const) {
     assert.equal(
       (
-        createS309ProofEmitter(zeroCredential.fixture, s309EgressProof(pending), "linux-kvm")(settled).payload
-          .s3_09_proof as { reason: string }
+        proofOf(createS309ProofEmitter(zeroCredential.fixture, s309EgressProof(pending), "linux-kvm")) as {
+          reason: string;
+        }
       ).reason,
       reason,
     );
   }
-  assert.deepEqual(
-    createS309ProofEmitter(zeroCredential.fixture, s309EgressProof("pass"), "linux-kvm")(settled).payload.s3_09_proof,
-    {
-      version: "cogs.launcher.s3-09-proof/v1alpha1",
-      scenario: "s3-09",
-      profile: "linux-kvm",
-      outcome: "pass",
-      trusted_authorization_credential: true,
-      trusted_relay_exact: true,
-      completion_observer_consistent: true,
-      fixture_denied_route_absent: true,
-      fixture_observer_consistent: true,
-      fixture_ready: true,
-      fixture_baseline_captured: true,
-    },
-  );
+  assert.deepEqual(proofOf(createS309ProofEmitter(zeroCredential.fixture, s309EgressProof("pass"), "linux-kvm")), {
+    version: "cogs.launcher.s3-09-proof/v1alpha1",
+    scenario: "s3-09",
+    profile: "linux-kvm",
+    outcome: "pass",
+    guest_proxy_fixture_attested: true,
+    runtime_observers_consistent: true,
+    completion_observer_consistent: true,
+    fixture_denied_route_absent: true,
+    fixture_observer_consistent: true,
+    fixture_ready: true,
+    fixture_baseline_captured: true,
+  });
   assert.equal(
     (
-      createS309ProofEmitter(zeroCredential.fixture, s309EgressProof("generation"), "linux-kvm")(settled).payload
-        .s3_09_proof as { reason: string }
+      proofOf(createS309ProofEmitter(zeroCredential.fixture, s309EgressProof("generation"), "linux-kvm")) as {
+        reason: string;
+      }
     ).reason,
     "generation",
   );
@@ -1824,7 +1827,7 @@ test("s3-09 trusted proof channel emits fixed failure reasons without metadata l
   );
   const otherEmit = createS309ProofEmitter(otherTraffic.fixture, s309EgressProof("pass"), "linux-kvm");
   otherTraffic.advance();
-  assert.equal((otherEmit(settled).payload.s3_09_proof as { reason: string }).reason, "total-count");
+  assert.equal((proofOf(otherEmit) as { reason: string }).reason, "total-count");
   const wrongProfile = make({
     ready: true,
     generation: 0,

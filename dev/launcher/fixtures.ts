@@ -87,7 +87,7 @@ export async function startLocalFixtures(options: {
       if (total + 1 > maxRecords) return reject(req, res, 429);
       total++;
       counts[`${method} ${path} ${status}`] = (counts[`${method} ${path} ${status}`] ?? 0) + 1;
-      return ok(res, status, status === 200 ? { ok: true } : undefined);
+      return ok(res, status, status === 200 ? { ok: true } : undefined, path === "/credential" && status === 200);
     } catch {
       reject(req, res, 400);
     } finally {
@@ -167,9 +167,10 @@ function badHeaders(req: IncomingMessage, max: number) {
     (len !== undefined && (!/^\d+$/u.test(len) || Number(len) > max))
   );
 }
-function ok(res: ServerResponse, status: number, body: unknown) {
+function ok(res: ServerResponse, status: number, body: unknown, credentialProof = false) {
   res.statusCode = status;
   res.setHeader("cache-control", "no-store");
+  if (credentialProof) res.setHeader("x-cogs-fixture-proof", "launcher-v1");
   if (body) {
     res.setHeader("content-type", "application/json");
     res.end(JSON.stringify(body));

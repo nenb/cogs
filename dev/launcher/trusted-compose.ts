@@ -577,8 +577,9 @@ export function createS309ProofEmitter(
   const baseCredential = baseCounts["GET /credential 200"] ?? 0;
   const baseDenied = baseCounts["GET /allowed 200"] ?? 0;
   const baseTotal = Object.values(baseCounts).reduce((sum, value) => sum + value, 0);
+  let settledRuns = 0;
   return (event) => {
-    if (event.kind !== "run_settled") return event;
+    if (event.kind !== "run_settled" || ++settledRuns < 3) return event;
     const snap = fixture.snapshot();
     const completion = egress.s309CompletionProof();
     const counts = snap.counts;
@@ -619,8 +620,8 @@ export function createS309ProofEmitter(
           ...(reason === undefined
             ? {
                 outcome: "pass",
-                trusted_authorization_credential: true,
-                trusted_relay_exact: true,
+                guest_proxy_fixture_attested: true,
+                runtime_observers_consistent: true,
                 completion_observer_consistent: true,
                 fixture_denied_route_absent: true,
                 fixture_observer_consistent: true,

@@ -88,8 +88,7 @@ export type S309CompletionProof = Readonly<
   | {
       version: "cogs.launcher.s3-09-trusted-proof/v1alpha1";
       outcome: "pass";
-      trusted_authorization_credential: true;
-      trusted_relay_exact: true;
+      runtime_observers_consistent: true;
       completion_observer_consistent: true;
     }
   | { version: "cogs.launcher.s3-09-trusted-proof/v1alpha1"; outcome: "fail"; reason: "generation" | "total-count" }
@@ -345,11 +344,14 @@ export async function startEnvoyEgress(rawOptions: Options): Promise<EnvoyEgress
             ) {
               completionOutcome = "fail";
               completionFailReason = "total-count";
-            } else if (relayState !== "pass" || walState !== "pass") {
+            } else if (
+              (relayState === "relay-zero" && walState === "zero") ||
+              (relayState === "pass" && walState === "pass")
+            ) {
+              completionOutcome = "pass";
+            } else {
               completionOutcome = "pending";
               completionPendingReason = pendingReason(relayState, walState);
-            } else {
-              completionOutcome = "pass";
             }
           } catch {
             completionOutcome = "fail";
@@ -361,8 +363,7 @@ export async function startEnvoyEgress(rawOptions: Options): Promise<EnvoyEgress
           outcome: completionOutcome,
           ...(completionOutcome === "pass"
             ? {
-                trusted_authorization_credential: true as const,
-                trusted_relay_exact: true as const,
+                runtime_observers_consistent: true as const,
                 completion_observer_consistent: true as const,
               }
             : {}),
@@ -686,7 +687,10 @@ function relayProof(relay: KvmRelay | undefined, target: number): "relay-zero" |
   return snap.acceptedConnections === 2 ? "pass" : snap.acceptedConnections === 1 ? "relay-one" : "relay-zero";
 }
 
-function pendingReason(relay: "relay-zero" | "relay-one" | "pass", wal: "pending" | "pass"): S309PendingReason {
+function pendingReason(
+  relay: "relay-zero" | "relay-one" | "pass",
+  wal: "missing" | "zero" | "pass",
+): S309PendingReason {
   if (relay === "pass") return "wal";
   return `${relay}-wal-${wal === "pass" ? "pass" : "zero"}` as S309PendingReason;
 }
@@ -695,9 +699,9 @@ function walProof(
   records: readonly EgressAuditWalRecord[] | undefined,
   routeId: string,
   sessionId: string,
-): "pending" | "pass" | "fail" {
-  if (records === undefined) return "pending";
-  if (records.length === 0) return "pending";
+): "missing" | "zero" | "pass" | "fail" {
+  if (records === undefined) return "missing";
+  if (records.length === 0) return "zero";
   if (records.length !== 1) return "fail";
   return walRecordMatches(records[0], routeId, sessionId) ? "pass" : "fail";
 }

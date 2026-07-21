@@ -69,7 +69,7 @@ function s309BashTool(port: number | undefined) {
     id: "launcher-s309-bash-1",
     name: "bash",
     arguments: Object.freeze({
-      command: `set -eu\ntest "$(cat /workspace/s3-09/proof.txt)" = "alpha\nbeta"\nallowed=$(curl -sS --proxy http://192.0.2.1:18080 --noproxy '' --insecure -o /dev/null -w '%{http_code}' https://localhost:${port}/credential)\ndenied=$(curl -sS --proxy http://192.0.2.1:18080 --noproxy '' --insecure -o /dev/null -w '%{http_code}' https://localhost:${port}/allowed || true)\ntest "$allowed" = 200\ntest "$denied" = 403\ncd /workspace\ngit add s3-09/proof.txt\ngit commit -q -m s3-09-integrated\ni=0; while [ "$i" -lt ${LAUNCHER_DETERMINISTIC_S309_UPDATE_COUNT} ]; do printf '${LAUNCHER_DETERMINISTIC_S309_UPDATE_LINE}'; sleep ${LAUNCHER_DETERMINISTIC_S309_UPDATE_DELAY}; i=$((i+1)); done\nprintf '${LAUNCHER_DETERMINISTIC_S309_BASH_MARKER}'`,
+      command: `set -eu\ntest "$(cat /workspace/s3-09/proof.txt)" = "alpha\nbeta"\ncurl_path=$(command -v curl)\ntest "$curl_path" = /usr/bin/curl\ntest -f "$curl_path"\ntest ! -L "$curl_path"\ntest -x "$curl_path"\nallowed=$("$curl_path" -sS --proxy http://192.0.2.1:18080 --noproxy '' --insecure -D - -o /dev/null -w '\\nx-cogs-writeout: %{http_code} %{proxy_used} %{remote_ip} %{remote_port}' https://localhost:${port}/credential)\ntest "$(printf '%s\\n' "$allowed" | tr -d '\\r' | grep -Fxc 'x-cogs-writeout: 200 1 192.0.2.1 18080')" = 1\ntest "$(printf '%s\\n' "$allowed" | tr -d '\\r' | grep -Fxc 'x-cogs-fixture-proof: launcher-v1')" = 1\ndenied=$("$curl_path" -sS --proxy http://192.0.2.1:18080 --noproxy '' --insecure -D - -o /dev/null -w '\\nx-cogs-writeout: %{http_code} %{proxy_used} %{remote_ip} %{remote_port}' https://localhost:${port}/allowed)\ntest "$(printf '%s\\n' "$denied" | tr -d '\\r' | grep -Fxc 'x-cogs-writeout: 403 1 192.0.2.1 18080')" = 1\n! printf '%s\\n' "$denied" | tr -d '\\r' | grep -Eiq '^x-cogs-fixture-proof:'\ncd /workspace\ngit add s3-09/proof.txt\ngit commit -q -m s3-09-integrated\ni=0; while [ "$i" -lt ${LAUNCHER_DETERMINISTIC_S309_UPDATE_COUNT} ]; do printf '${LAUNCHER_DETERMINISTIC_S309_UPDATE_LINE}'; sleep ${LAUNCHER_DETERMINISTIC_S309_UPDATE_DELAY}; i=$((i+1)); done\nprintf '${LAUNCHER_DETERMINISTIC_S309_BASH_MARKER}'`,
     }),
   });
 }
@@ -301,7 +301,7 @@ function snapshotToolResult(record: Record<string, unknown>): ToolResultSnapshot
   if (blocks.length !== 1) throw new Error(GENERIC_ERROR);
   const content = snapshotPlainRecord(blocks[0], []);
   if (content.type !== "text") throw new Error(GENERIC_ERROR);
-  const text = boundedString(content.text, 0, MAX_PROMPT_LENGTH);
+  const text = boundedString(content.text, 0, record.toolName === "bash" ? 2048 : MAX_PROMPT_LENGTH);
   if (record.isError !== false) throw new Error(GENERIC_ERROR);
   return Object.freeze({
     role: "toolResult",
@@ -428,19 +428,22 @@ function isCompletedNormalThenAbort(messages: readonly MessageSnapshot[]): boole
 }
 
 function isExactSuccessfulBashResult(text: string): boolean {
+  return isSuccessfulBashWithStdout(text, "cogs-launcher-deterministic");
+}
+
+function isSuccessfulBashWithStdout(text: string, stdout: string): boolean {
   try {
     const value = JSON.parse(text) as unknown;
     if (!value || typeof value !== "object" || Object.getPrototypeOf(value) !== Object.prototype) return false;
     const record = value as Record<string, unknown>;
-    const keys = Object.keys(record).sort().join(",");
     if (
-      keys !==
+      Object.keys(record).sort().join(",") !==
       "cancelled,elapsedMs,exitCode,idleTimedOut,ok,signal,stderr,stderrBytes,stderrDroppedBytes,stderrLossyUtf8,stderrResultOmittedUtf8Bytes,stderrTruncated,stdout,stdoutBytes,stdoutDroppedBytes,stdoutLossyUtf8,stdoutResultOmittedUtf8Bytes,stdoutTruncated,timedOut,updateDropped"
     )
       return false;
     return (
       record.ok === true &&
-      record.stdout === "cogs-launcher-deterministic" &&
+      record.stdout === stdout &&
       record.stderr === "" &&
       record.exitCode === 0 &&
       record.signal === null &&
@@ -449,7 +452,7 @@ function isExactSuccessfulBashResult(text: string): boolean {
       record.timedOut === false &&
       record.idleTimedOut === false &&
       record.cancelled === false &&
-      record.stdoutBytes === 27 &&
+      record.stdoutBytes === Buffer.byteLength(stdout) &&
       record.stderrBytes === 0 &&
       record.stdoutDroppedBytes === 0 &&
       record.stderrDroppedBytes === 0 &&
@@ -461,15 +464,6 @@ function isExactSuccessfulBashResult(text: string): boolean {
       record.stderrLossyUtf8 === false &&
       record.updateDropped === 0
     );
-  } catch {
-    return false;
-  }
-}
-
-function isSuccessfulBashWithStdout(text: string, stdout: string): boolean {
-  try {
-    const value = JSON.parse(text) as Record<string, unknown>;
-    return value.ok === true && value.exitCode === 0 && value.signal === null && value.stdout === stdout;
   } catch {
     return false;
   }
