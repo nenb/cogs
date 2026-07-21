@@ -96,7 +96,11 @@ export const s309FailureStages = Object.freeze([
   "s3-terminal-kind",
   "s3-git-mapping",
   "s3-live-count",
-  "s3-egress-proof",
+  "s3-egress-shape",
+  "s3-egress-state",
+  "s3-egress-credential",
+  "s3-egress-denied",
+  "s3-egress-total",
   "s3-replay-gap",
   "s3-history",
   "s3-export",
@@ -107,6 +111,17 @@ export const s309FailureStages = Object.freeze([
 ] as const);
 export type S309FailureStage = (typeof s309FailureStages)[number];
 const s309Failures = new WeakMap<Error, S309FailureStage>();
+const s309ProofFailStages: Record<string, S309FailureStage> = Object.freeze({
+  "fixture-not-ready": "s3-egress-state",
+  generation: "s3-egress-state",
+  inflight: "s3-egress-state",
+  "credential-count": "s3-egress-credential",
+  "denied-forwarded": "s3-egress-denied",
+  "total-count": "s3-egress-total",
+});
+const s309ProofFailKeys = "outcome,profile,reason,scenario,version";
+const s309ProofPassKeys =
+  "credential_route_200,denied_route_absent,fixture_generation_zero,fixture_ready,outcome,profile,scenario,total_exact_expected,version";
 export function s309StageExitCode(error: unknown): number {
   const stage = error instanceof Error ? s309Failures.get(error) : undefined;
   return stage ? 40 + s309FailureStages.indexOf(stage) : 1;
@@ -312,38 +327,34 @@ async function withReadyClient<T>(
 }
 
 async function tailTerminal(client: ApiClient, correlation: string, signal?: AbortSignal) {
-  let last = 0,
-    count = 0;
-  for (;;) {
-    let saw = false;
-    for await (const event of client.events(last, 100, signal)) {
-      saw = true;
-      last = eventId(event);
-      count += 1;
-      if (count > 1000) throw new Error("launcher operation failed");
-      const data = eventData(event),
-        kind = enumValue(data.kind, eventKinds);
-      if (terminalKinds.has(kind) && data.correlation_id === correlation)
-        return deepFreeze({ terminal: kind, lastEventId: last, eventCount: count });
-    }
-    if (!saw) throw new Error("launcher operation failed");
-  }
+  const t = await tailTerminalEvent(client, correlation, signal);
+  return deepFreeze({ terminal: t.kind, lastEventId: t.lastEventId, eventCount: t.eventCount });
 }
 
 function egressProof(terminal: Awaited<ReturnType<typeof tailTerminalEvent>>) {
-  const payload = exactPlain(terminal.payload);
-  const proof = exactPlain(payload.s3_09_proof);
+  const proof = exactPlain(exactPlain(terminal.payload).s3_09_proof);
+  const keys = Object.keys(proof).sort().join(",");
   if (
     proof.version !== "cogs.launcher.s3-09-proof/v1alpha1" ||
     proof.scenario !== "s3-09" ||
-    proof.profile !== "linux-kvm" ||
+    proof.profile !== "linux-kvm"
+  )
+    throw s309Failure("s3-egress-shape");
+  if (proof.outcome === "fail") {
+    const stage = typeof proof.reason === "string" ? s309ProofFailStages[proof.reason] : undefined;
+    if (keys !== s309ProofFailKeys || stage === undefined) throw s309Failure("s3-egress-shape");
+    throw s309Failure(stage);
+  }
+  if (
+    proof.outcome !== "pass" ||
+    keys !== s309ProofPassKeys ||
     proof.credential_route_200 !== true ||
     proof.denied_route_absent !== true ||
     proof.total_exact_expected !== true ||
     proof.fixture_ready !== true ||
     proof.fixture_generation_zero !== true
   )
-    throw new Error("launcher operation failed");
+    throw s309Failure("s3-egress-shape");
   return deepFreeze({
     terminal: terminal.kind,
     lastEventId: terminal.lastEventId,
@@ -536,7 +547,7 @@ async function s309(
         if (observed.gitMapping !== true) throw new Error("launcher operation failed");
         stage = "s3-live-count";
         if (observed.eventCount <= 32 || observed.eventCount > 1000) throw new Error("launcher operation failed");
-        stage = "s3-egress-proof";
+        stage = "s3-egress-shape";
         const terminal = egressProof(observed);
         live.closed = true;
         await live.iterator.return?.(undefined);
@@ -562,8 +573,8 @@ async function s309(
     if (bool(result(await s.destroySandbox(options, ctx.signal)).removed) !== true)
       throw new Error("launcher operation failed");
     return deepFreeze({ op: "s3-09", complete: true, ...proof, inventory: inv });
-  } catch {
-    let failed: S309FailureStage = stage;
+  } catch (error) {
+    let failed: S309FailureStage = error instanceof Error ? (s309Failures.get(error) ?? stage) : stage;
     if (started) await stopOnly(options, s).catch(() => (failed = "s3-cleanup"));
     await s.destroySandbox(options, undefined).catch(() => (failed = "s3-cleanup"));
     throw s309Failure(failed);

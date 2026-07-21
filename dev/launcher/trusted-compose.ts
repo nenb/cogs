@@ -586,16 +586,21 @@ export function createS309ProofEmitter(fixture: LocalFixture, profile: LauncherP
     const counts = snap.counts;
     const credential = counts["GET /credential 200"] ?? 0;
     const deniedForwarded = counts["GET /allowed 200"] ?? 0;
-    if (
-      snap.ready !== true ||
-      snap.generation !== 0 ||
-      snap.inflight !== 0 ||
-      credential !== 1 ||
-      deniedForwarded !== 0
-    )
-      return event;
     const total = Object.values(counts).reduce((sum, value) => sum + value, 0);
-    if (total !== 1 || snap.total !== 1) return event;
+    const reason =
+      snap.ready !== true
+        ? "fixture-not-ready"
+        : snap.generation !== 0
+          ? "generation"
+          : snap.inflight !== 0
+            ? "inflight"
+            : credential !== 1
+              ? "credential-count"
+              : deniedForwarded !== 0
+                ? "denied-forwarded"
+                : total !== 1 || snap.total !== 1
+                  ? "total-count"
+                  : undefined;
     return Object.freeze({
       ...event,
       payload: Object.freeze({
@@ -604,11 +609,16 @@ export function createS309ProofEmitter(fixture: LocalFixture, profile: LauncherP
           version: "cogs.launcher.s3-09-proof/v1alpha1",
           scenario: "s3-09",
           profile: "linux-kvm",
-          credential_route_200: true,
-          denied_route_absent: true,
-          total_exact_expected: true,
-          fixture_ready: true,
-          fixture_generation_zero: true,
+          ...(reason === undefined
+            ? {
+                outcome: "pass",
+                credential_route_200: true,
+                denied_route_absent: true,
+                total_exact_expected: true,
+                fixture_ready: true,
+                fixture_generation_zero: true,
+              }
+            : { outcome: "fail", reason }),
         }),
       }),
     });

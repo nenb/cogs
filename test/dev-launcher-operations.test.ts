@@ -288,7 +288,8 @@ test("s3-09 failure stages use authentic bounded exit codes only", async () => {
     [...s309FailureStages],
   );
   assert.equal(s309FailureStages.includes("s3-terminal-proof" as never), false);
-  assert.equal(s309FailureStages.includes("s3-egress-proof"), true);
+  assert.equal(s309FailureStages.includes("s3-egress-proof" as never), false);
+  assert.equal(s309FailureStages.includes("s3-egress-shape"), true);
   assert.equal(s309StageFromExitCode(40 + s309FailureStages.length), undefined);
   const forged = Object.assign(new Error("x"), { code: 40, s3ExitCode: 40, s3Stage: "s3-create" });
   assert.equal(s309StageExitCode(forged), 1);
@@ -410,6 +411,7 @@ test("s3-09 runs fixed integrated KVM scenario with metadata-only proof", async 
                     version: "cogs.launcher.s3-09-proof/v1alpha1",
                     scenario: "s3-09",
                     profile: "linux-kvm",
+                    outcome: "pass",
                     credential_route_200: true,
                     denied_route_absent: true,
                     total_exact_expected: true,
@@ -490,6 +492,7 @@ test("s3-09 proof path rejects live proof at or below replay capacity 32", async
                     version: "cogs.launcher.s3-09-proof/v1alpha1",
                     scenario: "s3-09",
                     profile: "linux-kvm",
+                    outcome: "pass",
                     credential_route_200: true,
                     denied_route_absent: true,
                     total_exact_expected: true,
@@ -567,12 +570,127 @@ test("s3-09 proof path fails closed on missing terminal payload", async () => {
     await assert.rejects(
       () => runLauncherOperation(Object.freeze({ op: "s3-09", profile: "linux-kvm", state: "s309bad" }), ctx, seams),
       (error) => {
-        assert.equal(s309StageFromExitCode(s309StageExitCode(error)), "s3-egress-proof");
+        assert.equal(s309StageFromExitCode(s309StageExitCode(error)), "s3-egress-shape");
         return true;
       },
     );
   } finally {
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("s3-09 proof path maps fixed egress reasons and rejects hostile proof shapes", async () => {
+  for (const [proof, expected] of [
+    [
+      Object.freeze({
+        version: "cogs.launcher.s3-09-proof/v1alpha1",
+        scenario: "s3-09",
+        profile: "linux-kvm",
+        outcome: "fail",
+        reason: "generation",
+      }),
+      "s3-egress-state",
+    ],
+    [
+      Object.freeze({
+        version: "cogs.launcher.s3-09-proof/v1alpha1",
+        scenario: "s3-09",
+        profile: "linux-kvm",
+        outcome: "fail",
+        reason: "credential-count",
+      }),
+      "s3-egress-credential",
+    ],
+    [
+      Object.freeze({
+        version: "cogs.launcher.s3-09-proof/v1alpha1",
+        scenario: "s3-09",
+        profile: "linux-kvm",
+        outcome: "fail",
+        reason: "denied-forwarded",
+      }),
+      "s3-egress-denied",
+    ],
+    [
+      Object.freeze({
+        version: "cogs.launcher.s3-09-proof/v1alpha1",
+        scenario: "s3-09",
+        profile: "linux-kvm",
+        outcome: "fail",
+        reason: "total-count",
+      }),
+      "s3-egress-total",
+    ],
+    [
+      Object.freeze({
+        version: "cogs.launcher.s3-09-proof/v1alpha1",
+        scenario: "s3-09",
+        profile: "linux-kvm",
+        outcome: "fail",
+        reason: "total-count",
+        extra: true,
+      }),
+      "s3-egress-shape",
+    ],
+  ] as const) {
+    const { dir, ctx } = await roots();
+    let runCount = 0;
+    try {
+      await assert.rejects(
+        () =>
+          runLauncherOperation(
+            Object.freeze({ op: "s3-09", profile: "linux-kvm", state: "s309egress" }),
+            ctx,
+            Object.freeze({
+              ...opSeams([]),
+              createApiClient: Object.freeze(() =>
+                Object.freeze({
+                  request: Object.freeze(async (op: string) =>
+                    op === "run"
+                      ? Object.freeze({
+                          accepted: true,
+                          duplicate: false,
+                          run_state: "running",
+                          correlation_id: `s309-egress-${++runCount}`,
+                        })
+                      : Object.freeze({ accepted: true }),
+                  ) as ApiClient["request"],
+                  events: Object.freeze(async function* () {
+                    if (runCount === 1)
+                      return yield Object.freeze({
+                        id: 1,
+                        data: Object.freeze({ kind: "run_settled", correlation_id: "s309-egress-1", payload: {} }),
+                      }) as ApiEvent;
+                    yield Object.freeze({
+                      id: 2,
+                      data: Object.freeze({ kind: "git_mapping", correlation_id: "s309-egress-2", payload: {} }),
+                    }) as ApiEvent;
+                    for (let id = 3; id <= 34; id += 1)
+                      yield Object.freeze({
+                        id,
+                        data: Object.freeze({ kind: "tool_update", correlation_id: "s309-egress-2", payload: {} }),
+                      }) as ApiEvent;
+                    yield Object.freeze({
+                      id: 35,
+                      data: Object.freeze({
+                        kind: "run_settled",
+                        correlation_id: "s309-egress-2",
+                        payload: Object.freeze({ s3_09_proof: proof }),
+                      }),
+                    }) as ApiEvent;
+                  }) as ApiClient["events"],
+                }),
+              ) as never,
+            }),
+          ),
+        (error) => {
+          assert.equal(s309StageFromExitCode(s309StageExitCode(error)), expected);
+          return true;
+        },
+      );
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   }
 });
 

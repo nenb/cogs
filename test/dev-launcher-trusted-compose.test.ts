@@ -1627,6 +1627,7 @@ test("s3-09 trusted proof channel is exact run-bound and fixture-bound", () => {
     version: "cogs.launcher.s3-09-proof/v1alpha1",
     scenario: "s3-09",
     profile: "linux-kvm",
+    outcome: "pass",
     credential_route_200: true,
     denied_route_absent: true,
     total_exact_expected: true,
@@ -1637,7 +1638,7 @@ test("s3-09 trusted proof channel is exact run-bound and fixture-bound", () => {
   assert.equal(JSON.stringify(settled).includes("credential"), true);
 });
 
-test("s3-09 trusted proof channel rejects stale counts, wrong profile, and denied forwarding", () => {
+test("s3-09 trusted proof channel emits fixed failure reasons without metadata leakage", () => {
   const make = (snapshot: Record<string, unknown>) => ({ snapshot: () => Object.freeze(snapshot) }) as never;
   const settled = Object.freeze({
     kind: "run_settled",
@@ -1649,20 +1650,47 @@ test("s3-09 trusted proof channel rejects stale counts, wrong profile, and denie
     for (let i = 0; i < 3; i += 1)
       emit(Object.freeze({ kind: "tool_end", correlation_id: "scenario", payload: Object.freeze({}) }) as never);
   };
-  for (const snapshot of [
-    { ready: true, generation: 0, inflight: 0, total: 2, counts: Object.freeze({ "GET /credential 200": 2 }) },
-    {
-      ready: true,
-      generation: 0,
-      inflight: 0,
-      total: 2,
-      counts: Object.freeze({ "GET /credential 200": 1, "GET /allowed 200": 1 }),
-    },
-    { ready: true, generation: 1, inflight: 0, total: 1, counts: Object.freeze({ "GET /credential 200": 1 }) },
-  ]) {
+  for (const [snapshot, reason] of [
+    [
+      { ready: false, generation: 0, inflight: 0, total: 1, counts: Object.freeze({ "GET /credential 200": 1 }) },
+      "fixture-not-ready",
+    ],
+    [
+      { ready: true, generation: 1, inflight: 0, total: 1, counts: Object.freeze({ "GET /credential 200": 1 }) },
+      "generation",
+    ],
+    [
+      { ready: true, generation: 0, inflight: 1, total: 1, counts: Object.freeze({ "GET /credential 200": 1 }) },
+      "inflight",
+    ],
+    [
+      { ready: true, generation: 0, inflight: 0, total: 2, counts: Object.freeze({ "GET /credential 200": 2 }) },
+      "credential-count",
+    ],
+    [
+      {
+        ready: true,
+        generation: 0,
+        inflight: 0,
+        total: 2,
+        counts: Object.freeze({ "GET /credential 200": 1, "GET /allowed 200": 1 }),
+      },
+      "denied-forwarded",
+    ],
+    [
+      { ready: true, generation: 0, inflight: 0, total: 2, counts: Object.freeze({ "GET /credential 200": 1 }) },
+      "total-count",
+    ],
+  ] as const) {
     const emit = createS309ProofEmitter(make(snapshot), "linux-kvm");
     prime(emit);
-    assert.equal("s3_09_proof" in emit(settled).payload, false);
+    assert.deepEqual(emit(settled).payload.s3_09_proof, {
+      version: "cogs.launcher.s3-09-proof/v1alpha1",
+      scenario: "s3-09",
+      profile: "linux-kvm",
+      outcome: "fail",
+      reason,
+    });
   }
   const wrongProfile = createS309ProofEmitter(
     make({ ready: true, generation: 0, inflight: 0, total: 1, counts: Object.freeze({ "GET /credential 200": 1 }) }),
