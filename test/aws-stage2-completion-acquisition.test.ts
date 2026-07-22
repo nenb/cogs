@@ -195,6 +195,41 @@ elif action=="token-protocol":
  redirect_route=route("final.bin",b"x","debian-inrelease","https://snapshot.debian.org/archive/debian/20260713T000000Z/final")
  redirect=Response(302,[("Transfer-Encoding","chunked"),("Location","/file/"+"a"*40)],b"")
  expect_failure(lambda:m._final_response(redirect_route,None,Transport([redirect]),time.monotonic()+10,10));assert redirect.closed
+elif action=="token-cookie":
+ base=Path(sys.argv[3]);body=b'{"token":"synthetic-token"}';cookies=[("Set-Cookie","a=b; Secure"),("set-cookie","c=d; HttpOnly")]
+ one=Response(200,head(body,"application/json")+cookies[:1],body)
+ assert m._anonymous_registry_token(Transport([one]),time.monotonic()+10,10)=="synthetic-token" and one.closed
+ many=Response(200,head(body,"application/json")+cookies,body);parsed=m._strict_headers(many,True)
+ assert "set-cookie" not in parsed and parsed==dict((name.lower(),value) for name,value in head(body,"application/json"))
+ many=Response(200,head(body,"application/json")+cookies,body)
+ assert m._anonymous_registry_token(Transport([many]),time.monotonic()+10,10)=="synthetic-token" and many.closed
+ route1=route("oci.bin",b"oci","oci-index","https://registry-1.docker.io/v2/library/debian/manifests/sha256:"+"a"*64)
+ transport=Transport([Response(200,head(body,"application/json")+cookies,body),artifact(b"oci")]);acquire([route1],base,transport)
+ assert len(transport.requests)==2 and all(name.lower()!="cookie" for request in transport.requests for name,_value in request.headers)
+ assert dict(transport.requests[1].headers)["Authorization"]=="Bearer synthetic-token"
+ token_stage=lambda response:failure_stage(lambda:m._anonymous_registry_token(Transport([response]),time.monotonic()+10,10))
+ non200=Response(401,head(b"","application/json")+cookies[:1],b"");assert token_stage(non200)=="token.header-authority" and non200.closed
+ count_exact=Response(200,head(body,"application/json")+[("Set-Cookie","x")]*62,body)
+ assert m._anonymous_registry_token(Transport([count_exact]),time.monotonic()+10,10)=="synthetic-token" and count_exact.closed
+ count_over=Response(200,head(body,"application/json")+[("Set-Cookie","x")]*63,body);assert token_stage(count_over)=="token.header-shape" and count_over.closed
+ fixed=head(body,"application/json");base_bytes=sum(len(name)+len(value.encode())+4 for name,value in fixed);cookie_overhead=len("Set-Cookie")+4
+ value_bytes=m.HEADER_BYTES_MAX-base_bytes-2*cookie_overhead;first=value_bytes//2;second=value_bytes-first
+ aggregate_cookies=[("Set-Cookie","x"*first),("set-cookie","x"*second)]
+ aggregate_exact=Response(200,fixed+aggregate_cookies,body)
+ assert m._anonymous_registry_token(Transport([aggregate_exact]),time.monotonic()+10,10)=="synthetic-token" and aggregate_exact.closed
+ aggregate_over=Response(200,fixed+aggregate_cookies[:1]+[("set-cookie","x"*(second+1))],body)
+ assert token_stage(aggregate_over)=="token.header-shape" and aggregate_over.closed
+ malformed=[("Set Cookie","x"),("Set-Cookie","x\t"),("Set-Cookie","é")]
+ for name,value in malformed:
+  response=Response(200,fixed+[(name,value)],body);assert token_stage(response)=="token.header-shape" and response.closed
+ authority=["Authorization","Proxy-Authorization","WWW-Authenticate","Proxy-Authenticate","Authentication-Info","Proxy-Authentication-Info"]
+ for name in authority:
+  response=Response(200,head(body,"application/json")+[(name,"x")],body);assert token_stage(response)=="token.header-authority" and response.closed
+ artifact_cookie=Response(200,head(b"x")+cookies[:1],b"x");debian=route("final.bin",b"x","debian-inrelease","https://snapshot.debian.org/archive/debian/20260713T000000Z/final")
+ assert failure_stage(lambda:m._final_response(debian,None,Transport([artifact_cookie]),time.monotonic()+10,10))=="artifact.headers" and artifact_cookie.closed
+ for cookie_name in ["Cookie","cookie","COOKIE","CoOkIe"]:
+  outbound=Transport([]);headers=(("Accept","application/json"),("User-Agent",m.USER_AGENT),("Connection","close"),(cookie_name,"x"))
+  assert failure_stage(lambda:m._request(outbound,m.TOKEN_URL,headers,time.monotonic()+10,10,"token.request","token.headers",True))=="token.request" and not outbound.requests
 elif action=="artifact-chunked":
  base=Path(sys.argv[3]);body=b"artifact";route1=route("final.bin",body,"debian-inrelease","https://snapshot.debian.org/archive/debian/20260713T000000Z/final")
  response=Response(200,[("Transfer-Encoding","chunked"),("Content-Type","application/octet-stream")],body)
@@ -217,7 +252,7 @@ elif action=="stage-map":
  token_stage=lambda response:failure_stage(lambda:m._anonymous_registry_token(Transport([response]),time.monotonic()+10,10))
  assert token_stage(Response(200,[("Content-Length","1"),("Content-Length","1")],b""))=="token.header-shape"
  assert token_stage(Response(200,head(body,"application/json")+[("Content-Encoding","gzip")],body))=="token.header-encoding"
- assert token_stage(Response(200,head(body,"application/json")+[("Set-Cookie","hostile")],body))=="token.header-authority"
+ assert token_stage(Response(200,head(body,"application/json")+[("Authentication-Info","hostile")],body))=="token.header-authority"
  assert token_stage(Response(401,head(b"","application/json"),b""))=="token.status"
  assert token_stage(Response(200,head(body,"text/plain"),body))=="token.content-type"
  assert token_stage(Response(200,[("Content-Length",str(len(body))),("Transfer-Encoding","chunked"),("Content-Type","application/json")],body))=="token.framing"
@@ -394,9 +429,13 @@ test("OCI CDN and Debian redirects are bounded and strip registry authorization"
   assert.equal(run("hostile-redirects").status, 0);
 });
 
-test("token framing accepts only bounded CL or chunked JSON with optional UTF-8 charset", async () => {
+test("token framing and discarded response cookies remain token-only and bounded", async () => {
   const tokenResult = run("token-protocol");
   assert.equal(tokenResult.status, 0, tokenResult.stderr);
+  await withTemp("cogs-acquire-cookie-", (dir) => {
+    const cookieResult = run("token-cookie", dir);
+    assert.equal(cookieResult.status, 0, cookieResult.stderr);
+  });
   await withTemp("cogs-acquire-chunked-", (dir) => {
     const artifactResult = run("artifact-chunked", dir);
     assert.equal(artifactResult.status, 0, artifactResult.stderr);
