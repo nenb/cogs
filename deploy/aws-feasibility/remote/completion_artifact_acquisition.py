@@ -64,7 +64,8 @@ STAGES = frozenset(
     {
         "preflight", "tls", "routes", "state", "token.request", "token.headers", "token.header-shape",
         "token.header-encoding", "token.header-authority", "token.status", "token.content-type", "token.framing",
-        "token.body", "token.json", "artifact.request", "artifact.headers", "artifact.body", "publish", "postverify",
+        "token.body", "token.json", "artifact.request", "artifact.headers", "artifact.response-headers",
+        "artifact.redirect", "artifact.final", "artifact.body", "publish", "postverify",
     }
 )
 
@@ -430,7 +431,7 @@ def _artifact_request(route, token, transport, current, deadline, metadata_timeo
         authorization = None
     return _request(
         transport, current, _fixed_headers(route.accept, authorization), deadline, metadata_timeout,
-        "artifact.request", "artifact.headers",
+        "artifact.request", "artifact.response-headers",
     )
 
 
@@ -464,7 +465,7 @@ def _final_response(route, token, transport, deadline, metadata_timeout):
         )
         if response.status == 200:
             try:
-                _stage("artifact.headers", lambda: _final_headers(route, response, headers))
+                _stage("artifact.headers", lambda: _stage("artifact.final", lambda: _final_headers(route, response, headers)))
             except Exception:
                 response.close()
                 raise
@@ -472,7 +473,10 @@ def _final_response(route, token, transport, deadline, metadata_timeout):
         try:
             current, redirects = _stage(
                 "artifact.headers",
-                lambda: _next_redirect(route, response, headers, current, seen, redirects, deadline),
+                lambda: _stage(
+                    "artifact.redirect",
+                    lambda: _next_redirect(route, response, headers, current, seen, redirects, deadline),
+                ),
             )
         finally:
             response.close()
