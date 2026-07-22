@@ -1,4 +1,9 @@
 # OpenBao v2.6.0 scan-only ignores reviewed 2026-07-15; review deadline 2026-08-15.
+# GHSA-hrxh-6v49-42gf is a real grpc-go v1.81.1 finding accepted only for exact OpenBao digest sha256:900bb64d0671cd1d82b693c56206f7263b582445f3a3bb6ba6e5213f524a6653.
+# Fixed boundary: file storage; no HA, xDS, cluster forwarding, or external plugins; host-loopback-only REST publication. Any boundary or image drift invalidates this exception.
+# Hard expiry: 2026-07-29T23:59:59Z. A fixed upstream image or expiry requires removal or a new explicit security decision.
+GHSA-hrxh-6v49-42gf
+
 # Trivy 0.70 false positive: parses OpenBao pseudo Go module v0.0.0-20260714163401-03e3a243b6f0 while pinned runtime is v2.6.0; fixed version <=2.5.4.
 CVE-2024-8185
 # Trivy 0.70 false positive: parses OpenBao pseudo Go module v0.0.0-20260714163401-03e3a243b6f0 while pinned runtime is v2.6.0; fixed version <=2.5.4.

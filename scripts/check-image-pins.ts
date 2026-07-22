@@ -53,6 +53,7 @@ const kvmGitTools = readFileSync(resolve(root, "dev/linux-kvm/git-tools.sh"), "u
 const adr0037 = readFileSync(resolve(root, "docs/adr/0037-authorize-pinned-git-tools-disk-for-issue-71.md"), "utf8");
 const envoySuite = readFileSync(resolve(root, "test/egress-conformance/proxy-adapters/envoy/suite-smoke.ts"), "utf8");
 const openBaoSmoke = readFileSync(resolve(root, "dev/openbao-model-auth/ci-smoke.sh"), "utf8");
+const openBaoConfig = readFileSync(resolve(root, "dev/openbao-model-auth/config.hcl"), "utf8");
 const openBaoIgnore = readFileSync(resolve(root, ".trivyignore-openbao"), "utf8");
 const insecureContainerWorkflow = readFileSync(resolve(root, ".github/workflows/insecure-container.yml"), "utf8");
 const mitmproxySuite = readFileSync(
@@ -71,7 +72,14 @@ assert.equal(
   "OpenBao model-auth smoke must use the accepted v2.6.0 digest",
 );
 assert.ok(ciWorkflow.includes(`OPENBAO_IMAGE: ${OPENBAO_IMAGE}`), "CI must scan and inventory the exact OpenBao pin");
-assert.ok(ciWorkflow.includes("Scan pinned OpenBao model-auth fixture"), "CI must Trivy-scan the OpenBao pin");
+const openBaoScan = ciWorkflow.match(
+  / {6}- name: Scan pinned OpenBao model-auth fixture\n[\s\S]*?(?=\n {6}- name:)/,
+)?.[0];
+assert.ok(openBaoScan, "CI must Trivy-scan the OpenBao pin");
+assert.match(openBaoScan, /image-ref: \$\{\{ env\.OPENBAO_IMAGE \}\}/, "OpenBao scan must use the exact pinned image");
+assert.ok(openBaoScan.includes('exit-code: "1"'), "OpenBao scan must fail on findings");
+assert.ok(openBaoScan.includes("severity: HIGH,CRITICAL"), "OpenBao scan must retain its severity boundary");
+assert.ok(openBaoScan.includes("trivyignores: .trivyignore-openbao"), "OpenBao scan must use its scoped ignore file");
 assert.equal(
   (ciWorkflow.match(/trivyignores: \.trivyignore-openbao/g) ?? []).length,
   1,
@@ -79,11 +87,28 @@ assert.equal(
 );
 assert.ok(ciWorkflow.includes("openbao-model-auth.spdx.json"), "CI must generate an OpenBao model-auth fixture SBOM");
 assert.ok(openBaoSmoke.includes(`OPENBAO_IMAGE="${OPENBAO_IMAGE}"`), "OpenBao smoke must run the exact scanned pin");
+assert.equal((openBaoSmoke.match(/--publish/g) ?? []).length, 1, "OpenBao smoke must publish exactly one port");
+assert.ok(openBaoSmoke.includes('--publish "127.0.0.1::8200"'), "OpenBao REST API must be host-loopback-only");
+assert.doesNotMatch(
+  openBaoSmoke,
+  /(?:--network[= ]+host|8201)/,
+  "OpenBao smoke must not expose host or cluster networking",
+);
+assert.equal(
+  openBaoConfig,
+  'disable_mlock = true\napi_addr = "http://127.0.0.1:8200"\n\nstorage "file" {\n  path = "/openbao/file"\n}\n\nlistener "tcp" {\n  address = "0.0.0.0:8200"\n  tls_disable = 1\n}\n',
+  "OpenBao advisory disposition requires the exact local file-storage configuration",
+);
+assert.doesNotMatch(
+  openBaoConfig,
+  /\b(?:ha_storage|cluster_addr|plugin_directory|xds)\b/i,
+  "OpenBao advisory disposition forbids HA, cluster, plugin, and xDS configuration",
+);
 assert.ok(
   insecureContainerWorkflow.includes("dev/openbao-model-auth/ci-smoke.sh"),
   "security-labelled smoke must run OpenBao model-auth fixture",
 );
-assert.ok(openBaoIgnore.includes("review deadline 2026-08-15"), "OpenBao Trivy ignore must carry review deadline");
+assert.ok(openBaoIgnore.includes("review deadline 2026-08-15"), "OpenBao CVE ignores must carry their review deadline");
 assert.equal(openBaoIgnore.includes("CVE-2026-39822"), false, "OpenBao ignore must not suppress Go stdlib CVE");
 assert.deepEqual(
   openBaoIgnore
@@ -91,7 +116,31 @@ assert.deepEqual(
     .filter((line) => line.startsWith("CVE-"))
     .sort(),
   ["CVE-2024-8185", "CVE-2024-9180", "CVE-2025-59043", "CVE-2025-64761", "CVE-2026-45808"],
-  "OpenBao Trivy ignore must contain only reviewed pseudo-module false positives",
+  "OpenBao Trivy ignore must contain only reviewed pseudo-module CVE false positives",
+);
+assert.deepEqual(
+  openBaoIgnore.split(/\r?\n/).filter((line) => line.startsWith("GHSA-")),
+  ["GHSA-hrxh-6v49-42gf"],
+  "OpenBao Trivy ignore must contain exactly the reviewed grpc-go advisory",
+);
+assert.ok(openBaoIgnore.includes("real grpc-go v1.81.1 finding"), "grpc-go disposition must identify a real finding");
+assert.ok(
+  openBaoIgnore.includes("sha256:900bb64d0671cd1d82b693c56206f7263b582445f3a3bb6ba6e5213f524a6653"),
+  "grpc-go disposition must bind the exact OpenBao digest",
+);
+assert.ok(
+  openBaoIgnore.includes("file storage; no HA, xDS, cluster forwarding, or external plugins; host-loopback-only REST"),
+  "grpc-go disposition must state the complete fixed fixture boundary",
+);
+assert.ok(openBaoIgnore.includes("Any boundary or image drift invalidates"), "grpc-go disposition must fail on drift");
+const grpcIgnoreDeadline = "2026-07-29T23:59:59Z";
+assert.ok(
+  openBaoIgnore.includes(`Hard expiry: ${grpcIgnoreDeadline}`),
+  "grpc-go disposition must state its hard expiry",
+);
+assert.ok(
+  Date.now() <= Date.parse(grpcIgnoreDeadline),
+  "grpc-go scan exception expired; remove it or record a new decision",
 );
 assert.ok(!ciWorkflow.includes("MITMPROXY_IMAGE"), "rejected mitmproxy must not be scanned as an active CI image");
 assert.ok(
