@@ -136,14 +136,18 @@ def read_stable_regular(path, mode, maximum):
     return b"".join(chunks)
 
 
-def load_json_file(path):
-    raw = read_stable_regular(path, 0o644, 32768)
+def strict_json(raw, maximum):
+    fail(type(raw) is bytes and len(raw) <= maximum)
     try:
         value = json.loads(raw, object_pairs_hook=unique_pairs, parse_constant=lambda _value: fail(False))
     except (UnicodeDecodeError, json.JSONDecodeError, TypeError, VerificationError) as error:
         raise VerificationError() from error
     reject_bool(value)
     return value
+
+
+def load_json_file(path):
+    return strict_json(read_stable_regular(path, 0o644, 32768), 32768)
 
 
 def check_url(value, host, prefix):
@@ -308,12 +312,264 @@ def verify_cache(contract_path, artifact_root):
     verify_cache_root(artifact_root, cache_entries(contract))
 
 
+def cached_bytes(cache, row, maximum):
+    fail(row["size"] <= maximum)
+    raw = read_stable_regular(cache / row["cache_name"], 0o400, maximum)
+    fail(len(raw) == row["size"] and hashlib.sha256(raw).hexdigest() == row["sha256"])
+    return raw
+
+
+def descriptor_matches(value, row):
+    return type(value) is dict and all(
+        value.get(key) == expected
+        for key, expected in (
+            ("mediaType", row["media_type"]),
+            ("digest", f"sha256:{row['sha256']}"),
+            ("size", row["size"]),
+        )
+    )
+
+
+def verify_oci_documents(contract, index_raw, manifest_raw, config_raw):
+    import base64
+
+    maximum = contract["bounds"]["max_file_bytes"]
+    index = strict_json(index_raw, maximum)
+    manifest = strict_json(manifest_raw, maximum)
+    config = strict_json(config_raw, maximum)
+    fail(type(index) is dict and index.get("schemaVersion") == 2)
+    fail(index.get("mediaType") == contract["oci"]["index"]["media_type"])
+    manifests = index.get("manifests")
+    fail(type(manifests) is list and 0 < len(manifests) <= 64)
+    fail(all(type(item) is dict for item in manifests))
+    candidates = [
+        item
+        for item in manifests
+        if type(item.get("platform")) is dict
+        and item["platform"].get("architecture") == "amd64"
+        and item["platform"].get("os") == "linux"
+    ]
+    fail(len(candidates) == 1)
+    selected = candidates[0]
+    fail(selected["platform"] == {"architecture": "amd64", "os": "linux"})
+    fail(descriptor_matches(selected, contract["oci"]["manifest"]))
+
+    fail(type(manifest) is dict and manifest.get("schemaVersion") == 2)
+    fail(manifest.get("mediaType") == contract["oci"]["manifest"]["media_type"])
+    fail(descriptor_matches(manifest.get("config"), contract["oci"]["config"]))
+    layers = manifest.get("layers")
+    fail(type(layers) is list and len(layers) == 1 and descriptor_matches(layers[0], contract["oci"]["layer"]))
+    embedded = manifest["config"].get("data")
+    fail(type(embedded) is str)
+    try:
+        decoded = base64.b64decode(embedded, validate=True)
+    except ValueError as error:
+        raise VerificationError() from error
+    fail(decoded == config_raw)
+
+    fail(type(config) is dict and config.get("os") == "linux" and config.get("architecture") == "amd64")
+    fail(config.get("rootfs") == {"type": "layers", "diff_ids": [f"sha256:{contract['oci']['layer']['diff_id']}"]})
+    fail(
+        config.get("config")
+        == {
+            "Env": ["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"],
+            "Entrypoint": [],
+            "Cmd": ["bash"],
+        }
+    )
+
+
+def verify_gzip_layer(path, row, maximum):
+    import zlib
+
+    pre = os.lstat(path)
+    fail(stat.S_ISREG(pre.st_mode) and pre.st_uid == os.geteuid() and pre.st_nlink == 1)
+    fail(stat.S_IMODE(pre.st_mode) == 0o400 and pre.st_size == row["size"])
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    compressed = hashlib.sha256()
+    expanded = hashlib.sha256()
+    decoder = zlib.decompressobj(16 + zlib.MAX_WBITS)
+    compressed_size = 0
+    expanded_size = 0
+    try:
+        fail(identity(os.fstat(descriptor)) == identity(pre))
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            fail(not decoder.eof)
+            compressed_size += len(chunk)
+            fail(compressed_size <= row["size"])
+            compressed.update(chunk)
+            output = decoder.decompress(chunk, maximum + 1 - expanded_size)
+            expanded_size += len(output)
+            fail(expanded_size <= maximum and not decoder.unconsumed_tail and not decoder.unused_data)
+            expanded.update(output)
+        fail(decoder.eof and not decoder.unconsumed_tail and not decoder.unused_data)
+    except zlib.error as error:
+        raise VerificationError() from error
+    finally:
+        os.close(descriptor)
+    fail(identity(os.lstat(path)) == identity(pre))
+    fail(compressed_size == row["size"] and compressed.hexdigest() == row["sha256"])
+    fail(expanded.hexdigest() == row["diff_id"])
+
+
+def clear_signed_body(raw):
+    fail(type(raw) is bytes and len(raw) <= 1024 * 1024 and raw.endswith(b"\n") and b"\r" not in raw)
+    try:
+        text = raw.decode("ascii")
+    except UnicodeDecodeError as error:
+        raise VerificationError() from error
+    fail(all(character == "\n" or 32 <= ord(character) <= 126 for character in text))
+    lines = text.splitlines()
+    fail(all(len(line) <= 65536 for line in lines))
+    fail(lines[:3] == ["-----BEGIN PGP SIGNED MESSAGE-----", "Hash: SHA256", ""])
+    fail(lines.count("-----BEGIN PGP SIGNED MESSAGE-----") == 1 and lines.count("Hash: SHA256") == 1)
+    fail(lines.count("-----BEGIN PGP SIGNATURE-----") == 1 and lines.count("-----END PGP SIGNATURE-----") == 1)
+    fail(lines[-1] == "-----END PGP SIGNATURE-----")
+    signature = lines.index("-----BEGIN PGP SIGNATURE-----")
+    signature_body = lines[signature + 1 : -1]
+    fail(signature > 3 and len(signature_body) > 1 and signature_body[0] == "")
+    fail(all(re.fullmatch(r"[A-Za-z0-9+/=]+", line) is not None for line in signature_body[1:]))
+    body = []
+    for line in lines[3:signature]:
+        if line.startswith("-"):
+            fail(line.startswith("- "))
+            line = line[2:]
+        body.append(line)
+    return body
+
+
+def verify_inrelease(contract, raw):
+    body = clear_signed_body(raw)
+    fail(body.count("SHA256:") == 1)
+    start = body.index("SHA256:") + 1
+    rows = []
+    while start < len(body) and body[start].startswith(" "):
+        fields = body[start].split()
+        fail(len(fields) == 3 and SHA256_RE.fullmatch(fields[0]) is not None and fields[1].isdigit())
+        rows.append(fields)
+        start += 1
+    expected = contract["snapshot"]["packages_index"]
+    release_path = expected["path"].removeprefix("dists/trixie/")
+    fail(release_path != expected["path"])
+    selected = [row for row in rows if row[2] == release_path]
+    fail(selected == [[expected["sha256"], str(expected["size"]), release_path]])
+
+
+def decompress_xz(raw, maximum):
+    import lzma
+
+    fail(type(raw) is bytes)
+    decoder = lzma.LZMADecompressor(format=lzma.FORMAT_XZ)
+    output = []
+    total = 0
+    try:
+        for offset in range(0, len(raw), 1024 * 1024):
+            fail(not decoder.eof)
+            chunk = raw[offset : offset + 1024 * 1024]
+            while chunk or (not decoder.needs_input and not decoder.eof):
+                expanded = decoder.decompress(chunk, maximum + 1 - total)
+                chunk = b""
+                total += len(expanded)
+                fail(total <= maximum and not decoder.unused_data)
+                output.append(expanded)
+        fail(decoder.eof and not decoder.unused_data)
+    except lzma.LZMAError as error:
+        raise VerificationError() from error
+    return b"".join(output)
+
+
+def debian_stanzas(raw, maximum):
+    fail(type(raw) is bytes and raw.endswith(b"\n") and b"\r" not in raw)
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise VerificationError() from error
+    fail(all(character in "\n\t" or 32 <= ord(character) < 127 or ord(character) >= 160 for character in text))
+    stanzas = []
+    current = {}
+    last = None
+    for line in text.splitlines():
+        fail(len(line.encode()) <= 131072)
+        if not line:
+            if current:
+                stanzas.append(current)
+                fail(len(stanzas) <= maximum)
+                current = {}
+                last = None
+            continue
+        if line[0] in " \t":
+            fail(last is not None)
+            current[last] += "\n" + line[1:]
+            continue
+        fail(":" in line)
+        name, value = line.split(":", 1)
+        fail(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]*", name) is not None and name not in current)
+        fail(value.startswith(" "))
+        current[name] = value[1:]
+        last = name
+    if current:
+        stanzas.append(current)
+    fail(0 < len(stanzas) <= maximum)
+    return stanzas
+
+
+def verify_packages_index(contract, raw):
+    expanded = decompress_xz(raw, contract["bounds"]["max_file_bytes"])
+    stanzas = debian_stanzas(expanded, contract["bounds"]["max_entries"])
+    selected = {row["name"]: [] for row in contract["packages"]}
+    for stanza in stanzas:
+        name = stanza.get("Package")
+        if name in selected:
+            selected[name].append(stanza)
+    total = 0
+    for expected in contract["packages"]:
+        rows = selected[expected["name"]]
+        fail(len(rows) == 1)
+        row = rows[0]
+        fail(
+            all(
+                row.get(field) == value
+                for field, value in (
+                    ("Version", expected["version"]),
+                    ("Architecture", expected["architecture"]),
+                    ("Filename", expected["path"]),
+                    ("Size", str(expected["size"])),
+                    ("SHA256", expected["sha256"]),
+                )
+            )
+        )
+        total += expected["size"]
+    fail(total == contract["package_total_bytes"])
+
+
+def verify_metadata(contract_path, artifact_root):
+    contract = verify_contract(contract_path)
+    verify_cache_root(artifact_root, cache_entries(contract))
+    cache = Path(artifact_root) / "cache"
+    maximum = contract["bounds"]["max_file_bytes"]
+    oci = contract["oci"]
+    index_raw = cached_bytes(cache, oci["index"], maximum)
+    manifest_raw = cached_bytes(cache, oci["manifest"], maximum)
+    config_raw = cached_bytes(cache, oci["config"], maximum)
+    verify_oci_documents(contract, index_raw, manifest_raw, config_raw)
+    verify_gzip_layer(cache / oci["layer"]["cache_name"], oci["layer"], contract["bounds"]["max_regular_bytes"])
+    snapshot = contract["snapshot"]
+    verify_inrelease(contract, cached_bytes(cache, snapshot["inrelease"], maximum))
+    packages_raw = cached_bytes(cache, snapshot["packages_index"], maximum)
+    verify_packages_index(contract, packages_raw)
+
+
 def main(argv):
     try:
         if argv == ["verify-contract"]:
             verify_contract(CONTRACT_PATH)
         elif argv == ["verify-cache"]:
             verify_cache(CONTRACT_PATH, ARTIFACT_ROOT)
+        elif argv == ["verify-metadata"]:
+            verify_metadata(CONTRACT_PATH, ARTIFACT_ROOT)
         else:
             raise VerificationError()
     except (OSError, VerificationError):
