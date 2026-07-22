@@ -1,0 +1,207 @@
+{
+  "version": "cogs.stage2-completion-artifacts/v1",
+  "platform": {
+    "os": "linux",
+    "architecture": "amd64"
+  },
+  "source_date_epoch": 1782172800,
+  "oci": {
+    "repository": "library/debian",
+    "index": {
+      "cache_name": "debian-13-slim-index.json",
+      "url": "https://registry-1.docker.io/v2/library/debian/manifests/sha256:28de0877c2189802884ccd20f15ee41c203573bd87bb6b883f5f46362d24c5c2",
+      "media_type": "application/vnd.oci.image.index.v1+json",
+      "size": 8973,
+      "sha256": "28de0877c2189802884ccd20f15ee41c203573bd87bb6b883f5f46362d24c5c2"
+    },
+    "manifest": {
+      "cache_name": "debian-13-slim-amd64-manifest.json",
+      "url": "https://registry-1.docker.io/v2/library/debian/manifests/sha256:a617c1cdde36a7e0194b2f07dff669e1753c03c3205356b94f9f350b0f9a57d1",
+      "media_type": "application/vnd.oci.image.manifest.v1+json",
+      "size": 1021,
+      "sha256": "a617c1cdde36a7e0194b2f07dff669e1753c03c3205356b94f9f350b0f9a57d1"
+    },
+    "config": {
+      "cache_name": "debian-13-slim-config.json",
+      "url": "https://registry-1.docker.io/v2/library/debian/blobs/sha256:84645f91e8d166d709fcef984301b2576198bf880c15eb3ce9f4c8fad305c4ea",
+      "media_type": "application/vnd.oci.image.config.v1+json",
+      "size": 451,
+      "sha256": "84645f91e8d166d709fcef984301b2576198bf880c15eb3ce9f4c8fad305c4ea"
+    },
+    "layer": {
+      "cache_name": "debian-13-slim-amd64-rootfs.tar.gz",
+      "url": "https://registry-1.docker.io/v2/library/debian/blobs/sha256:e95a6c7ea7d49b37920899b023ecd0e32796c976c1748491f76cae53ba86d13a",
+      "media_type": "application/vnd.oci.image.layer.v1.tar+gzip",
+      "size": 29785419,
+      "sha256": "e95a6c7ea7d49b37920899b023ecd0e32796c976c1748491f76cae53ba86d13a",
+      "diff_id": "3edb2192497af6e965b9b7e57dc6dbdce1f3ea721d14a98110419d4ded523298"
+    }
+  },
+  "snapshot": {
+    "timestamp": "20260713T000000Z",
+    "base_url": "https://snapshot.debian.org/archive/debian/20260713T000000Z/",
+    "inrelease": {
+      "cache_name": "debian-trixie-InRelease",
+      "path": "dists/trixie/InRelease",
+      "url": "https://snapshot.debian.org/archive/debian/20260713T000000Z/dists/trixie/InRelease",
+      "size": 140416,
+      "sha256": "98b25b5cd185c59d34aa6e4c3e9b5b8f01bbe9d104fe2dcfbcd30dc0a14a59ed"
+    },
+    "packages_index": {
+      "cache_name": "debian-trixie-Packages.xz",
+      "path": "dists/trixie/main/binary-amd64/Packages.xz",
+      "url": "https://snapshot.debian.org/archive/debian/20260713T000000Z/dists/trixie/main/binary-amd64/Packages.xz",
+      "size": 9672648,
+      "sha256": "3ab4e811cf4f3e5a335d382c58cc19d85f1abe7a4ef4689160ca1f637fa0e9b3"
+    }
+  },
+  "packages": [
+    {
+      "name": "git",
+      "version": "1:2.47.3-0+deb13u1",
+      "architecture": "amd64",
+      "path": "pool/main/g/git/git_2.47.3-0+deb13u1_amd64.deb",
+      "filename": "git_2.47.3-0+deb13u1_amd64.deb",
+      "cache_name": "git_2.47.3-0+deb13u1_amd64.deb",
+      "url": "https://snapshot.debian.org/archive/debian/20260713T000000Z/pool/main/g/git/git_2.47.3-0+deb13u1_amd64.deb",
+      "size": 8861572,
+      "sha256": "3e35662fd5c46add561703e54031a1d8ad9df45811927689f0a51122b13be722"
+    },
+    {
+      "name": "openssh-server",
+      "version": "1:10.0p1-7+deb13u4",
+      "architecture": "amd64",
+      "path": "pool/main/o/openssh/openssh-server_10.0p1-7+deb13u4_amd64.deb",
+      "filename": "openssh-server_10.0p1-7+deb13u4_amd64.deb",
+      "cache_name": "openssh-server_10.0p1-7+deb13u4_amd64.deb",
+      "url": "https://snapshot.debian.org/archive/debian/20260713T000000Z/pool/main/o/openssh/openssh-server_10.0p1-7+deb13u4_amd64.deb",
+      "size": 602372,
+      "sha256": "b4a02524fd2be375624d917ee8102a16567e9e8dd786b41c35e22360cdd37f9d"
+    },
+    {
+      "name": "libcom-err2",
+      "version": "1.47.2-3+b11",
+      "architecture": "amd64",
+      "path": "pool/main/e/e2fsprogs/libcom-err2_1.47.2-3+b11_amd64.deb",
+      "filename": "libcom-err2_1.47.2-3+b11_amd64.deb",
+      "cache_name": "libcom-err2_1.47.2-3+b11_amd64.deb",
+      "url": "https://snapshot.debian.org/archive/debian/20260713T000000Z/pool/main/e/e2fsprogs/libcom-err2_1.47.2-3+b11_amd64.deb",
+      "size": 25036,
+      "sha256": "e1feff126b3e8b3a7b18087e88681469b70d8f6d1b7c4e4b89d98577e1a2fdd7"
+    },
+    {
+      "name": "libgssapi-krb5-2",
+      "version": "1.21.3-5+deb13u1",
+      "architecture": "amd64",
+      "path": "pool/main/k/krb5/libgssapi-krb5-2_1.21.3-5+deb13u1_amd64.deb",
+      "filename": "libgssapi-krb5-2_1.21.3-5+deb13u1_amd64.deb",
+      "cache_name": "libgssapi-krb5-2_1.21.3-5+deb13u1_amd64.deb",
+      "url": "https://snapshot.debian.org/archive/debian/20260713T000000Z/pool/main/k/krb5/libgssapi-krb5-2_1.21.3-5+deb13u1_amd64.deb",
+      "size": 138356,
+      "sha256": "30847c1fde4240567d7ed3aeab4f655dd591203758b857e85e824045aae70299"
+    },
+    {
+      "name": "libk5crypto3",
+      "version": "1.21.3-5+deb13u1",
+      "architecture": "amd64",
+      "path": "pool/main/k/krb5/libk5crypto3_1.21.3-5+deb13u1_amd64.deb",
+      "filename": "libk5crypto3_1.21.3-5+deb13u1_amd64.deb",
+      "cache_name": "libk5crypto3_1.21.3-5+deb13u1_amd64.deb",
+      "url": "https://snapshot.debian.org/archive/debian/20260713T000000Z/pool/main/k/krb5/libk5crypto3_1.21.3-5+deb13u1_amd64.deb",
+      "size": 81152,
+      "sha256": "7da07ee674b47f1f0be7cc89317c25310086a1f1761217d0f72e6ae2c5a69b84"
+    },
+    {
+      "name": "libkeyutils1",
+      "version": "1.6.3-6",
+      "architecture": "amd64",
+      "path": "pool/main/k/keyutils/libkeyutils1_1.6.3-6_amd64.deb",
+      "filename": "libkeyutils1_1.6.3-6_amd64.deb",
+      "cache_name": "libkeyutils1_1.6.3-6_amd64.deb",
+      "url": "https://snapshot.debian.org/archive/debian/20260713T000000Z/pool/main/k/keyutils/libkeyutils1_1.6.3-6_amd64.deb",
+      "size": 9456,
+      "sha256": "0b11ad17be0300b63ad4eeb4c6450fed24d34b7b740f23e5363dcb29ee6d5eba"
+    },
+    {
+      "name": "libkrb5-3",
+      "version": "1.21.3-5+deb13u1",
+      "architecture": "amd64",
+      "path": "pool/main/k/krb5/libkrb5-3_1.21.3-5+deb13u1_amd64.deb",
+      "filename": "libkrb5-3_1.21.3-5+deb13u1_amd64.deb",
+      "cache_name": "libkrb5-3_1.21.3-5+deb13u1_amd64.deb",
+      "url": "https://snapshot.debian.org/archive/debian/20260713T000000Z/pool/main/k/krb5/libkrb5-3_1.21.3-5+deb13u1_amd64.deb",
+      "size": 326056,
+      "sha256": "47d71d6a7f2e59b9bae5f89602397594805113b95889ad18fa703cd53abafc97"
+    },
+    {
+      "name": "libkrb5support0",
+      "version": "1.21.3-5+deb13u1",
+      "architecture": "amd64",
+      "path": "pool/main/k/krb5/libkrb5support0_1.21.3-5+deb13u1_amd64.deb",
+      "filename": "libkrb5support0_1.21.3-5+deb13u1_amd64.deb",
+      "cache_name": "libkrb5support0_1.21.3-5+deb13u1_amd64.deb",
+      "url": "https://snapshot.debian.org/archive/debian/20260713T000000Z/pool/main/k/krb5/libkrb5support0_1.21.3-5+deb13u1_amd64.deb",
+      "size": 33124,
+      "sha256": "3a0acd8b37955c0e102c756b52c97df2a31f67b96453c35dab70df218d309117"
+    },
+    {
+      "name": "libwrap0",
+      "version": "7.6.q-36",
+      "architecture": "amd64",
+      "path": "pool/main/t/tcp-wrappers/libwrap0_7.6.q-36_amd64.deb",
+      "filename": "libwrap0_7.6.q-36_amd64.deb",
+      "cache_name": "libwrap0_7.6.q-36_amd64.deb",
+      "url": "https://snapshot.debian.org/archive/debian/20260713T000000Z/pool/main/t/tcp-wrappers/libwrap0_7.6.q-36_amd64.deb",
+      "size": 55256,
+      "sha256": "cde12afa15d6b1556c5e0564d22edf3b99e6b8fa94c59ccd8b8eebbb62dc19ec"
+    },
+    {
+      "name": "libwtmpdb0",
+      "version": "0.73.0-3+deb13u1",
+      "architecture": "amd64",
+      "path": "pool/main/w/wtmpdb/libwtmpdb0_0.73.0-3+deb13u1_amd64.deb",
+      "filename": "libwtmpdb0_0.73.0-3+deb13u1_amd64.deb",
+      "cache_name": "libwtmpdb0_0.73.0-3+deb13u1_amd64.deb",
+      "url": "https://snapshot.debian.org/archive/debian/20260713T000000Z/pool/main/w/wtmpdb/libwtmpdb0_0.73.0-3+deb13u1_amd64.deb",
+      "size": 13056,
+      "sha256": "8d6bc1c961d734da58b2d4c35b0a3cd6ad2fe81655bd982c655a97c2255b1c9b"
+    }
+  ],
+  "package_total_bytes": 10145436,
+  "bounds": {
+    "artifact_count": 16,
+    "max_entries": 100000,
+    "max_regular_bytes": 536870912,
+    "max_file_bytes": 134217728,
+    "max_path_bytes": 4096,
+    "max_component_bytes": 255
+  },
+  "fixtures": {
+    "git": {
+      "version": "cogs-stage2-git-v1",
+      "file_count": 512,
+      "lines_per_file": 128,
+      "modified_count": 32,
+      "untracked_count": 8
+    },
+    "package": {
+      "name": "cogs-stage2-fixture",
+      "version": "1.0",
+      "architecture": "all",
+      "file_count": 256,
+      "file_bytes": 4096
+    }
+  },
+  "tools": {
+    "python3": "/usr/bin/python3",
+    "dpkg_deb": "/usr/bin/dpkg-deb",
+    "dpkg": "/usr/bin/dpkg",
+    "git": "/usr/bin/git",
+    "sshd": "/usr/sbin/sshd"
+  },
+  "timeouts_seconds": {
+    "metadata": 10,
+    "artifact_read": 120,
+    "build": 300
+  }
+}
