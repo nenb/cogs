@@ -573,6 +573,17 @@ def verify_package_archives(contract_path, artifact_root):
         raise VerificationError() from error
 
 
+def acquire_completion_artifacts(contract_path, artifact_root):
+    contract = verify_contract(contract_path)
+    from completion_artifact_acquisition import AcquisitionError, acquire_artifacts
+
+    try:
+        acquire_artifacts(contract, artifact_root)
+    except AcquisitionError as error:
+        raise VerificationError() from error
+    verify_package_archives(contract_path, artifact_root)
+
+
 def main(argv):
     try:
         if argv == ["verify-contract"]:
@@ -583,6 +594,8 @@ def main(argv):
             verify_metadata(CONTRACT_PATH, ARTIFACT_ROOT)
         elif argv == ["verify-package-archives"]:
             verify_package_archives(CONTRACT_PATH, ARTIFACT_ROOT)
+        elif argv == ["acquire-artifacts"]:
+            acquire_completion_artifacts(CONTRACT_PATH, ARTIFACT_ROOT)
         else:
             raise VerificationError()
     except (OSError, VerificationError):
