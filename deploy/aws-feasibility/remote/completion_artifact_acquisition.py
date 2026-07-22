@@ -86,25 +86,37 @@ class Route:
 
 
 class _LiveResponse:
-    def __init__(self, connection, response):
+    def __init__(self, connection, response, read_socket):
         self.connection = connection
         self.response = response
+        self.read_socket = read_socket
+        self.closed = False
         self.version = response.version
         self.status = response.status
         self.headers = tuple(response.getheaders())
 
     def read(self, size, deadline):
         remaining = deadline - time.monotonic()
-        _fail(remaining > 0)
-        _fail(self.connection.sock is not None)
-        self.connection.sock.settimeout(remaining)
-        return self.response.read(size)
+        _fail(remaining > 0 and self.read_socket is not None)
+        self.read_socket.settimeout(remaining)
+        body = self.response.read(size)
+        _fail(type(body) is bytes)
+        return body
 
     def close(self):
-        try:
-            self.response.close()
-        finally:
-            self.connection.close()
+        if self.closed:
+            return
+        self.closed = True
+        self.read_socket = None
+        first_error = None
+        for target in (self.response, self.connection):
+            try:
+                target.close()
+            except Exception as error:
+                if first_error is None:
+                    first_error = error
+        if first_error is not None:
+            raise first_error
 
 
 class _HttpsTransport:
@@ -121,8 +133,10 @@ class _HttpsTransport:
             for name, value in request.headers:
                 connection.putheader(name, value)
             connection.endheaders()
+            read_socket = connection.sock
+            _fail(read_socket is not None)
             response = connection.getresponse()
-            return _LiveResponse(connection, response)
+            return _LiveResponse(connection, response, read_socket)
         except Exception:
             connection.close()
             raise

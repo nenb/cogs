@@ -63,17 +63,21 @@ elif action=="outbound":
  context=m._tls_context();assert context.check_hostname and context.verify_mode==m.ssl.CERT_REQUIRED
  assert context.minimum_version>=m.ssl.TLSVersion.TLSv1_2
  calls=[]
+ class Wire:
+  def __init__(self):self.timeouts=[]
+  def settimeout(self,value):self.timeouts.append(value)
  class Raw:
   version=11;status=200
-  def getheaders(self):return [("Content-Length","0"),("Content-Type","application/octet-stream")]
-  def close(self):pass
-  def read(self,size):return b""
+  def __init__(self,body=b""):self.body=body;self.closed=0
+  def getheaders(self):return [("Content-Length",str(len(self.body))),("Content-Type","application/octet-stream")]
+  def close(self):self.closed+=1
+  def read(self,size):chunk=self.body[:size];self.body=self.body[len(chunk):];return chunk
  class Connection:
-  def __init__(self,host,port,timeout,context):self.host=host;self.port=port;self.timeout=timeout;self.context=context;self.sock=type("Sock",(),{"settimeout":lambda self,value:None})()
+  def __init__(self,host,port,timeout,context):self.host=host;self.port=port;self.timeout=timeout;self.context=context;self.sock=Wire();self.raw=Raw(b"x")
   def putrequest(self,*args,**kwargs):calls.append(("request",args,kwargs))
   def putheader(self,*args):calls.append(("header",args))
   def endheaders(self):calls.append(("end",))
-  def getresponse(self):return Raw()
+  def getresponse(self):self.wire=self.sock;self.sock=None;return self.raw
   def close(self):calls.append(("close",))
  original=m.http.client.HTTPSConnection;m.http.client.HTTPSConnection=Connection
  try:
@@ -81,8 +85,41 @@ elif action=="outbound":
   assert calls[0]==("request",("GET","/path"),{"skip_host":True,"skip_accept_encoding":True})
   assert [item[1] for item in calls if item[0]=="header"]==[("Host","registry-1.docker.io"),("Accept","type"),("User-Agent",m.USER_AGENT),("Connection","close")]
   assert all("Accept-Encoding" not in str(item) and "Authorization" not in str(item) for item in calls)
-  response.close()
+  assert response.connection.sock is None and response.read(1,time.monotonic()+5)==b"x" and response.read_socket.timeouts
+  expect_failure(lambda:response.read(1,time.monotonic()-1))
+  response.close();response.close();assert response.read_socket is None and response.response.closed==1 and calls.count(("close",))==1
+  class Detached:
+   sock=None
+   def __init__(self):self.closed=0
+   def close(self):self.closed+=1
+  class Bad:
+   version=11;status=200
+   def __init__(self):self.closed=0
+   def getheaders(self):return []
+   def read(self,size):return "bad"
+   def close(self):self.closed+=1
+  wire=Wire();connection=Detached();bad=Bad();invalid=m._LiveResponse(connection,bad,wire)
+  expect_failure(lambda:invalid.read(1,time.monotonic()+5));invalid.close();invalid.close()
+  assert invalid.read_socket is None and bad.closed==1 and connection.closed==1
  finally:m.http.client.HTTPSConnection=original
+elif action=="connection-close-artifact":
+ base=Path(sys.argv[3]);body=b"artifact";route1=route("final.bin",body,"debian-inrelease","https://snapshot.debian.org/archive/debian/20260713T000000Z/final")
+ class Wire:
+  def __init__(self):self.timeouts=[]
+  def settimeout(self,value):self.timeouts.append(value)
+ class Raw:
+  version=11;status=200
+  def __init__(self):self.offset=0;self.closed=0
+  def getheaders(self):return head(body)
+  def read(self,size):chunk=body[self.offset:self.offset+size];self.offset+=len(chunk);return chunk
+  def close(self):self.closed+=1
+ class Connection:
+  sock=None
+  def __init__(self):self.closed=0
+  def close(self):self.closed+=1
+ wire=Wire();raw=Raw();connection=Connection();live=m._LiveResponse(connection,raw,wire)
+ acquire([route1],base,Transport([live]));final=artifact_root(base)/"cache"/"final.bin"
+ assert final.read_bytes()==body and wire.timeouts and raw.closed==1 and connection.closed==1 and live.read_socket is None
 elif action=="complete":
  base=Path(sys.argv[3]);oci=b"oci";deb=b"debian"
  routes=[route("oci.bin",oci,"oci-index","https://registry-1.docker.io/v2/library/debian/manifests/sha256:"+"a"*64,"application/vnd.oci.image.index.v1+json"),route("deb.bin",deb,"debian-inrelease","https://snapshot.debian.org/archive/debian/20260713T000000Z/dists/trixie/InRelease")]
@@ -256,9 +293,13 @@ test("acquisition gate and ambient authority fail before TLS, state, or transpor
   });
 });
 
-test("low-level HTTPS request emits only exact headers and disables implicit compression", () => {
+test("HTTPS response retains its captured wire across Connection-close detachment", async () => {
   const result = run("outbound");
   assert.equal(result.status, 0, result.stderr);
+  await withTemp("cogs-acquire-close-", (dir) => {
+    const artifactResult = run("connection-close-artifact", dir);
+    assert.equal(artifactResult.status, 0, artifactResult.stderr);
+  });
 });
 
 test("fake acquisition creates private cache, binds auth by host, and resumes without HTTP", async () => {
