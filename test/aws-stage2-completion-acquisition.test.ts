@@ -9,7 +9,7 @@ const root = process.cwd();
 const verifier = join(root, "deploy/aws-feasibility/remote/verify-completion-artifacts.py");
 const helperPath = join(root, "deploy/aws-feasibility/remote/completion_artifact_acquisition.py");
 const pythonHelper = String.raw`
-import contextlib,hashlib,importlib.util,io,json,os,stat,sys,time
+import contextlib,hashlib,http.client,importlib.util,io,json,os,socketserver,stat,sys,threading,time
 from pathlib import Path
 sys.dont_write_bytecode=True
 spec=importlib.util.spec_from_file_location("acquisition",sys.argv[1])
@@ -72,10 +72,11 @@ elif action=="outbound":
   def settimeout(self,value):self.timeouts.append(value)
  class Raw:
   version=11;status=200
-  def __init__(self,body=b""):self.body=body;self.closed=0
+  def __init__(self,body=b""):self.body=body;self.closed=0;self.finished=False
   def getheaders(self):return [("Content-Length",str(len(self.body))),("Content-Type","application/octet-stream")]
-  def close(self):self.closed+=1
-  def read(self,size):chunk=self.body[:size];self.body=self.body[len(chunk):];return chunk
+  def isclosed(self):return self.finished
+  def close(self):self.closed+=1;self.finished=True
+  def read(self,size):chunk=self.body[:size];self.body=self.body[len(chunk):];self.finished=not self.body;return chunk
  class Connection:
   def __init__(self,host,port,timeout,context):self.host=host;self.port=port;self.timeout=timeout;self.context=context;self.sock=Wire();self.raw=Raw(b"x")
   def putrequest(self,*args,**kwargs):calls.append(("request",args,kwargs))
@@ -89,9 +90,11 @@ elif action=="outbound":
   assert calls[0]==("request",("GET","/path"),{"skip_host":True,"skip_accept_encoding":True})
   assert [item[1] for item in calls if item[0]=="header"]==[("Host","registry-1.docker.io"),("Accept","type"),("User-Agent",m.USER_AGENT),("Connection","close")]
   assert all("Accept-Encoding" not in str(item) and "Authorization" not in str(item) for item in calls)
-  assert response.connection.sock is None and response.read(1,time.monotonic()+5)==b"x" and response.read_socket.timeouts
-  expect_failure(lambda:response.read(1,time.monotonic()-1))
+  assert response.connection.sock is None;expect_failure(lambda:response.read(1,time.monotonic()-1))
+  assert response.read(1,time.monotonic()+5)==b"x" and response.read_socket.timeouts
+  assert response.read(1,time.monotonic()-1)==b""
   response.close();response.close();assert response.read_socket is None and response.response.closed==1 and calls.count(("close",))==1
+  expect_failure(lambda:response.read(1,time.monotonic()+5))
   class Detached:
    sock=None
    def __init__(self):self.closed=0
@@ -100,12 +103,34 @@ elif action=="outbound":
    version=11;status=200
    def __init__(self):self.closed=0
    def getheaders(self):return []
+   def isclosed(self):return False
    def read(self,size):return "bad"
    def close(self):self.closed+=1
   wire=Wire();connection=Detached();bad=Bad();invalid=m._LiveResponse(connection,bad,wire)
   expect_failure(lambda:invalid.read(1,time.monotonic()+5));invalid.close();invalid.close()
   assert invalid.read_socket is None and bad.closed==1 and connection.closed==1
+  class EqualEmpty:
+   def __eq__(self,other):return True
+  for hostile in [b"x",bytearray(),EqualEmpty()]:
+   closed_bad=Bad();closed_bad.isclosed=lambda:True;closed_bad.read=lambda size,hostile=hostile:hostile;wire=Wire();invalid=m._LiveResponse(Detached(),closed_bad,wire)
+   expect_failure(lambda:invalid.read(1,time.monotonic()-1));assert not wire.timeouts;invalid.close()
  finally:m.http.client.HTTPSConnection=original
+elif action=="local-eof-lifecycle":
+ payloads=[b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\nConnection: close\r\n\r\nabc",b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n3\r\nabc\r\n0\r\n\r\n"]
+ for payload in payloads:
+  class Handler(socketserver.BaseRequestHandler):
+   def handle(self):self.request.recv(4096);self.request.sendall(payload)
+  class Server(socketserver.TCPServer):allow_reuse_address=True
+  server=Server(("127.0.0.1",0),Handler);thread=threading.Thread(target=server.handle_request);thread.start();connection=None;live=None
+  try:
+   connection=http.client.HTTPConnection("127.0.0.1",server.server_address[1],timeout=5);connection.request("GET","/",headers={"Connection":"close"});wire=connection.sock;raw=connection.getresponse()
+   assert connection.sock is None and not raw.isclosed();live=m._LiveResponse(connection,raw,wire)
+   assert live.read(100,time.monotonic()+5)==b"abc" and raw.isclosed() and wire.fileno()==-1
+   assert live.read(1,time.monotonic()-1)==b""
+  finally:
+   if live is not None:live.close()
+   elif connection is not None:connection.close()
+   thread.join(5);server.server_close();assert not thread.is_alive()
 elif action=="connection-close-artifact":
  base=Path(sys.argv[3]);body=b"artifact";route1=route("final.bin",body,"debian-inrelease","https://snapshot.debian.org/archive/debian/20260713T000000Z/final")
  class Wire:
@@ -113,10 +138,11 @@ elif action=="connection-close-artifact":
   def settimeout(self,value):self.timeouts.append(value)
  class Raw:
   version=11;status=200
-  def __init__(self):self.offset=0;self.closed=0
+  def __init__(self):self.offset=0;self.closed=0;self.finished=False
   def getheaders(self):return head(body)
-  def read(self,size):chunk=body[self.offset:self.offset+size];self.offset+=len(chunk);return chunk
-  def close(self):self.closed+=1
+  def isclosed(self):return self.finished
+  def read(self,size):chunk=body[self.offset:self.offset+size];self.offset+=len(chunk);self.finished=self.offset==len(body);return chunk
+  def close(self):self.closed+=1;self.finished=True
  class Connection:
   sock=None
   def __init__(self):self.closed=0
@@ -405,9 +431,11 @@ test("acquisition gate and ambient authority fail before TLS, state, or transpor
   });
 });
 
-test("HTTPS response retains its captured wire across Connection-close detachment", async () => {
+test("HTTPS response retains its captured wire and closed EOF lifecycle", async () => {
   const result = run("outbound");
   assert.equal(result.status, 0, result.stderr);
+  const lifecycleResult = run("local-eof-lifecycle");
+  assert.equal(lifecycleResult.status, 0, lifecycleResult.stderr);
   await withTemp("cogs-acquire-close-", (dir) => {
     const artifactResult = run("connection-close-artifact", dir);
     assert.equal(artifactResult.status, 0, artifactResult.stderr);
