@@ -117,6 +117,12 @@ class _LiveResponse:
         self.headers = tuple(response.getheaders())
 
     def read(self, size, deadline):
+        closed = self.response.isclosed()
+        _fail(type(closed) is bool)
+        if not self.closed and closed:
+            body = self.response.read(size)
+            _fail(type(body) is bytes and body == b"")
+            return body
         remaining = deadline - time.monotonic()
         _fail(remaining > 0 and self.read_socket is not None)
         self.read_socket.settimeout(remaining)
