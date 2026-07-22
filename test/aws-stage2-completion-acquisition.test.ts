@@ -9,7 +9,7 @@ const root = process.cwd();
 const verifier = join(root, "deploy/aws-feasibility/remote/verify-completion-artifacts.py");
 const helperPath = join(root, "deploy/aws-feasibility/remote/completion_artifact_acquisition.py");
 const pythonHelper = String.raw`
-import hashlib,importlib.util,json,os,stat,sys,time
+import contextlib,hashlib,importlib.util,io,json,os,stat,sys,time
 from pathlib import Path
 sys.dont_write_bytecode=True
 spec=importlib.util.spec_from_file_location("acquisition",sys.argv[1])
@@ -46,6 +46,10 @@ def expect_failure(callback):
  try:callback()
  except Exception:return
  raise AssertionError("expected failure")
+def failure_stage(callback):
+ try:callback()
+ except m.AcquisitionError as error:return error.stage
+ raise AssertionError("expected acquisition failure")
 
 action=sys.argv[2]
 if action=="environment":
@@ -196,6 +200,67 @@ elif action=="artifact-chunked":
  response=Response(200,[("Transfer-Encoding","chunked"),("Content-Type","application/octet-stream")],body)
  expect_failure(lambda:acquire([route1],base,Transport([response])));assert response.closed
  cache=artifact_root(base)/"cache";assert not (cache/"final.bin").exists() and not (cache/".final.bin.partial").exists()
+elif action=="stage-map":
+ base=Path(sys.argv[3]);body=b'{"token":"synthetic-token"}'
+ assert m.STAGES==frozenset({"preflight","tls","routes","state","token.request","token.headers","token.body","token.json","artifact.request","artifact.headers","artifact.body","publish","postverify"})
+ original_env=dict(os.environ);original_tls=m._tls_context;original_routes=m._artifact_routes
+ def boom(*_args):raise RuntimeError()
+ try:
+  os.environ.clear();os.environ[m.APPROVAL_NAME]="wrong"
+  assert failure_stage(lambda:m.acquire_artifacts({},artifact_root(base/"preflight")))=="preflight"
+  os.environ[m.APPROVAL_NAME]=m.APPROVAL_VALUE;m._tls_context=boom
+  assert failure_stage(lambda:m.acquire_artifacts({},artifact_root(base/"tls")))=="tls"
+  m._tls_context=lambda:object();m._artifact_routes=boom
+  assert failure_stage(lambda:m.acquire_artifacts({},artifact_root(base/"routes")))=="routes"
+ finally:
+  os.environ.clear();os.environ.update(original_env);m._tls_context=original_tls;m._artifact_routes=original_routes
+ token_stage=lambda response:failure_stage(lambda:m._anonymous_registry_token(Transport([response]),time.monotonic()+10,10))
+ assert token_stage(Response(401,head(b"","application/json"),b""))=="token.headers"
+ assert token_stage(Response(200,[("Content-Length",str(len(body)+1)),("Content-Type","application/json")],body))=="token.body"
+ assert token_stage(Response(200,head(b"{","application/json"),b"{"))=="token.json"
+ assert failure_stage(lambda:m._anonymous_registry_token(Transport([]),time.monotonic()+10,10))=="token.request"
+ route1=route("final.bin",b"good","debian-inrelease","https://snapshot.debian.org/archive/debian/20260713T000000Z/final")
+ assert failure_stage(lambda:m._final_response(route1,None,Transport([]),time.monotonic()+10,10))=="artifact.request"
+ chunked=Response(200,[("Transfer-Encoding","chunked"),("Content-Type","application/octet-stream")],b"good")
+ assert failure_stage(lambda:m._final_response(route1,None,Transport([chunked]),time.monotonic()+10,10))=="artifact.headers" and chunked.closed
+ short=Response(200,head(b"good"),b"bad");bodybase=base/"body";bodybase.mkdir()
+ assert failure_stage(lambda:acquire([route1],bodybase,Transport([short])))=="artifact.body" and short.closed
+ racebase=base/"race";racebase.mkdir();original=m.os.link
+ def race(*args,**kwargs):raise FileExistsError()
+ m.os.link=race
+ try:assert failure_stage(lambda:acquire([route1],racebase,Transport([artifact(b"good")])))=="publish"
+ finally:m.os.link=original
+ outside=base/"outside";outside.mkdir();statebase=base/"state";statebase.mkdir();(statebase/".state").symlink_to(outside,target_is_directory=True)
+ assert failure_stage(lambda:acquire([route1],statebase,Transport([])))=="state"
+ assert failure_stage(lambda:m._stage("publish",lambda:m._fail(False,"artifact.body")))=="artifact.body"
+ assert m.AcquisitionError("hostile").stage is None
+elif action=="cli-stage":
+ specv=importlib.util.spec_from_file_location("verifier",sys.argv[3]);v=importlib.util.module_from_spec(specv);specv.loader.exec_module(v)
+ assert v.ACQUISITION_STAGES==m.STAGES
+ sys.modules["completion_artifact_acquisition"]=m;v.verify_contract=lambda _path:{}
+ def acquisition_failure(*_args):raise m.AcquisitionError("token.body")
+ m.acquire_artifacts=acquisition_failure
+ try:v.acquire_completion_artifacts("contract","root")
+ except v.VerificationError as error:assert error.stage=="token.body"
+ else:raise AssertionError("expected staged verification failure")
+ m.acquire_artifacts=lambda *_args:None
+ def postverify_failure(*_args):raise v.VerificationError()
+ v.verify_package_archives=postverify_failure
+ try:v.acquire_completion_artifacts("contract","root")
+ except v.VerificationError as error:assert error.stage=="postverify"
+ else:raise AssertionError("expected postverify failure")
+ dynamic="https://hostile.invalid Authorization Bearer secret "+"a"*64
+ def staged(*_args):
+  try:raise RuntimeError(dynamic)
+  except RuntimeError as error:raise v.VerificationError("token.body") from error
+ v.acquire_completion_artifacts=staged;stderr=io.StringIO()
+ with contextlib.redirect_stderr(stderr):code=v.main(["acquire-artifacts"])
+ lines=stderr.getvalue().splitlines();assert code==1 and lines==["completion artifact verification failed","completion artifact acquisition stage: token.body"]
+ assert dynamic not in stderr.getvalue() and "https://" not in stderr.getvalue() and "Bearer" not in stderr.getvalue() and not any(part in stderr.getvalue() for part in ["registry-1.docker.io","snapshot.debian.org"])
+ def ordinary(*_args):raise v.VerificationError("token.body")
+ v.verify_contract=ordinary;stderr=io.StringIO()
+ with contextlib.redirect_stderr(stderr):code=v.main(["verify-contract"])
+ assert code==1 and stderr.getvalue()=="completion artifact verification failed\n"
 elif action=="response-close":
  body=b"x";route1=route("final.bin",body,"debian-inrelease","https://snapshot.debian.org/archive/debian/20260713T000000Z/final")
  bad_type=Response(200,head(body,"text/hostile"),body);transport=Transport([bad_type])
@@ -324,6 +389,15 @@ test("token framing accepts only bounded CL or chunked JSON with optional UTF-8 
     const artifactResult = run("artifact-chunked", dir);
     assert.equal(artifactResult.status, 0, artifactResult.stderr);
   });
+});
+
+test("closed acquisition stages preserve first failure and CLI emits constants only", async () => {
+  await withTemp("cogs-acquire-stage-", (dir) => {
+    const result = run("stage-map", dir);
+    assert.equal(result.status, 0, result.stderr);
+  });
+  const cliResult = run("cli-stage", verifier);
+  assert.equal(cliResult.status, 0, cliResult.stderr);
 });
 
 test("duplicate authority headers and hostile framing fail before body acceptance", () => {
