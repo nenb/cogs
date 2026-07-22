@@ -62,8 +62,9 @@ HEX40 = re.compile(r"^/file/[a-f0-9]{40}$")
 TOKEN_TEXT = re.compile(r"^[!-~]{1,8192}$")
 STAGES = frozenset(
     {
-        "preflight", "tls", "routes", "state", "token.request", "token.headers", "token.body", "token.json",
-        "artifact.request", "artifact.headers", "artifact.body", "publish", "postverify",
+        "preflight", "tls", "routes", "state", "token.request", "token.headers", "token.header-shape",
+        "token.header-encoding", "token.header-authority", "token.status", "token.content-type", "token.framing",
+        "token.body", "token.json", "artifact.request", "artifact.headers", "artifact.body", "publish", "postverify",
     }
 )
 
@@ -196,30 +197,33 @@ def _strict_url(value):
     return parsed
 
 
-def _strict_headers(response):
-    _fail(response.version == 11 and type(response.status) is int)
+def _strict_headers(response, token_detail=False):
+    shape = "token.header-shape" if token_detail else None
+    encoding = "token.header-encoding" if token_detail else None
+    authority = "token.header-authority" if token_detail else None
+    _fail(response.version == 11 and type(response.status) is int, shape)
     raw = response.headers
-    _fail(type(raw) in {tuple, list} and len(raw) <= HEADER_COUNT_MAX)
+    _fail(type(raw) in {tuple, list} and len(raw) <= HEADER_COUNT_MAX, shape)
     result = {}
     total = 0
     for pair in raw:
-        _fail(type(pair) in {tuple, list} and len(pair) == 2)
+        _fail(type(pair) in {tuple, list} and len(pair) == 2, shape)
         name, value = pair
-        _fail(type(name) is str and type(value) is str and HEADER_NAME.fullmatch(name) is not None)
+        _fail(type(name) is str and type(value) is str and HEADER_NAME.fullmatch(name) is not None, shape)
         try:
             encoded = value.encode("ascii")
         except UnicodeEncodeError as error:
-            raise AcquisitionError() from error
-        _fail(all(byte == 32 or 33 <= byte <= 126 for byte in encoded))
+            raise AcquisitionError(shape) from error
+        _fail(all(byte == 32 or 33 <= byte <= 126 for byte in encoded), shape)
         lowered = name.lower()
-        _fail(lowered not in result)
+        _fail(lowered not in result, shape)
         total += len(name) + len(encoded) + 4
-        _fail(total <= HEADER_BYTES_MAX)
+        _fail(total <= HEADER_BYTES_MAX, shape)
         trimmed = value.strip(" ")
         no_ows = {"content-length", "location", "transfer-encoding", "content-encoding", "authorization", "proxy-authorization"}
-        _fail(lowered not in no_ows or value == trimmed)
+        _fail(lowered not in no_ows or value == trimmed, shape)
         result[lowered] = trimmed
-    _fail("content-encoding" not in result)
+    _fail("content-encoding" not in result, encoding)
     forbidden = {
         "authorization",
         "proxy-authorization",
@@ -229,7 +233,7 @@ def _strict_headers(response):
         "authentication-info",
         "proxy-authentication-info",
     }
-    _fail(not forbidden.intersection(result))
+    _fail(not forbidden.intersection(result), authority)
     return result
 
 
@@ -252,7 +256,7 @@ def _remaining(deadline, maximum):
     return min(value, maximum)
 
 
-def _request(transport, url, headers, deadline, metadata_timeout, request_stage, headers_stage):
+def _request(transport, url, headers, deadline, metadata_timeout, request_stage, headers_stage, token_detail=False):
     def send():
         allowed = {"Accept", "User-Agent", "Connection", "Authorization"}
         _fail(type(headers) is tuple and all(name in allowed for name, _value in headers))
@@ -261,7 +265,7 @@ def _request(transport, url, headers, deadline, metadata_timeout, request_stage,
 
     response = _stage(request_stage, send)
     try:
-        parsed_headers = _stage(headers_stage, lambda: _strict_headers(response))
+        parsed_headers = _stage(headers_stage, lambda: _strict_headers(response, token_detail))
     except Exception:
         response.close()
         raise
@@ -317,9 +321,7 @@ def _unique_pairs(pairs):
     return value
 
 
-def _token_framing(response, headers):
-    _fail(response.status == 200)
-    _token_content_type(headers.get("content-type", ""))
+def _token_framing(headers):
     transfer = headers.get("transfer-encoding")
     if transfer is None:
         return _content_length(headers, TOKEN_BODY_MAX)
@@ -348,10 +350,15 @@ def _anonymous_registry_token(transport, deadline, metadata_timeout):
     token_deadline = min(deadline, time.monotonic() + metadata_timeout)
     response, headers = _request(
         transport, TOKEN_URL, _fixed_headers("application/json"), token_deadline, metadata_timeout,
-        "token.request", "token.headers",
+        "token.request", "token.headers", True,
     )
     try:
-        length = _stage("token.headers", lambda: _token_framing(response, headers))
+        def validate_headers():
+            _fail(response.status == 200, "token.status")
+            _stage("token.content-type", lambda: _token_content_type(headers.get("content-type", "")))
+            return _stage("token.framing", lambda: _token_framing(headers))
+
+        length = _stage("token.headers", validate_headers)
         reader = lambda: _read_bounded_eof(response, TOKEN_BODY_MAX, token_deadline)
         if length is not None:
             reader = lambda: _read_memory(response, length, token_deadline)

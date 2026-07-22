@@ -202,7 +202,7 @@ elif action=="artifact-chunked":
  cache=artifact_root(base)/"cache";assert not (cache/"final.bin").exists() and not (cache/".final.bin.partial").exists()
 elif action=="stage-map":
  base=Path(sys.argv[3]);body=b'{"token":"synthetic-token"}'
- assert m.STAGES==frozenset({"preflight","tls","routes","state","token.request","token.headers","token.body","token.json","artifact.request","artifact.headers","artifact.body","publish","postverify"})
+ assert m.STAGES==frozenset({"preflight","tls","routes","state","token.request","token.headers","token.header-shape","token.header-encoding","token.header-authority","token.status","token.content-type","token.framing","token.body","token.json","artifact.request","artifact.headers","artifact.body","publish","postverify"})
  original_env=dict(os.environ);original_tls=m._tls_context;original_routes=m._artifact_routes
  def boom(*_args):raise RuntimeError()
  try:
@@ -215,7 +215,19 @@ elif action=="stage-map":
  finally:
   os.environ.clear();os.environ.update(original_env);m._tls_context=original_tls;m._artifact_routes=original_routes
  token_stage=lambda response:failure_stage(lambda:m._anonymous_registry_token(Transport([response]),time.monotonic()+10,10))
- assert token_stage(Response(401,head(b"","application/json"),b""))=="token.headers"
+ assert token_stage(Response(200,[("Content-Length","1"),("Content-Length","1")],b""))=="token.header-shape"
+ assert token_stage(Response(200,head(body,"application/json")+[("Content-Encoding","gzip")],body))=="token.header-encoding"
+ assert token_stage(Response(200,head(body,"application/json")+[("Set-Cookie","hostile")],body))=="token.header-authority"
+ assert token_stage(Response(401,head(b"","application/json"),b""))=="token.status"
+ assert token_stage(Response(200,head(body,"text/plain"),body))=="token.content-type"
+ assert token_stage(Response(200,[("Content-Length",str(len(body))),("Transfer-Encoding","chunked"),("Content-Type","application/json")],body))=="token.framing"
+ class BrokenHeaders:
+  version=11;status=200
+  def __init__(self):self.closed=False
+  @property
+  def headers(self):raise RuntimeError()
+  def close(self):self.closed=True
+ broken=BrokenHeaders();assert token_stage(broken)=="token.headers" and broken.closed
  assert token_stage(Response(200,[("Content-Length",str(len(body)+1)),("Content-Type","application/json")],body))=="token.body"
  assert token_stage(Response(200,head(b"{","application/json"),b"{"))=="token.json"
  assert failure_stage(lambda:m._anonymous_registry_token(Transport([]),time.monotonic()+10,10))=="token.request"
@@ -238,10 +250,10 @@ elif action=="cli-stage":
  specv=importlib.util.spec_from_file_location("verifier",sys.argv[3]);v=importlib.util.module_from_spec(specv);specv.loader.exec_module(v)
  assert v.ACQUISITION_STAGES==m.STAGES
  sys.modules["completion_artifact_acquisition"]=m;v.verify_contract=lambda _path:{}
- def acquisition_failure(*_args):raise m.AcquisitionError("token.body")
+ def acquisition_failure(*_args):raise m.AcquisitionError("token.header-shape")
  m.acquire_artifacts=acquisition_failure
  try:v.acquire_completion_artifacts("contract","root")
- except v.VerificationError as error:assert error.stage=="token.body"
+ except v.VerificationError as error:assert error.stage=="token.header-shape"
  else:raise AssertionError("expected staged verification failure")
  m.acquire_artifacts=lambda *_args:None
  def postverify_failure(*_args):raise v.VerificationError()
@@ -252,12 +264,12 @@ elif action=="cli-stage":
  dynamic="https://hostile.invalid Authorization Bearer secret "+"a"*64
  def staged(*_args):
   try:raise RuntimeError(dynamic)
-  except RuntimeError as error:raise v.VerificationError("token.body") from error
+  except RuntimeError as error:raise v.VerificationError("token.header-shape") from error
  v.acquire_completion_artifacts=staged;stderr=io.StringIO()
  with contextlib.redirect_stderr(stderr):code=v.main(["acquire-artifacts"])
- lines=stderr.getvalue().splitlines();assert code==1 and lines==["completion artifact verification failed","completion artifact acquisition stage: token.body"]
+ lines=stderr.getvalue().splitlines();assert code==1 and lines==["completion artifact verification failed","completion artifact acquisition stage: token.header-shape"]
  assert dynamic not in stderr.getvalue() and "https://" not in stderr.getvalue() and "Bearer" not in stderr.getvalue() and not any(part in stderr.getvalue() for part in ["registry-1.docker.io","snapshot.debian.org"])
- def ordinary(*_args):raise v.VerificationError("token.body")
+ def ordinary(*_args):raise v.VerificationError("token.header-shape")
  v.verify_contract=ordinary;stderr=io.StringIO()
  with contextlib.redirect_stderr(stderr):code=v.main(["verify-contract"])
  assert code==1 and stderr.getvalue()=="completion artifact verification failed\n"

@@ -20,8 +20,9 @@ ARTIFACT_ROOT = Path(__file__).resolve().parents[1] / ".state" / "completion-v1"
 SHA256_RE = re.compile(r"^[a-f0-9]{64}$")
 ACQUISITION_STAGES = frozenset(
     {
-        "preflight", "tls", "routes", "state", "token.request", "token.headers", "token.body", "token.json",
-        "artifact.request", "artifact.headers", "artifact.body", "publish", "postverify",
+        "preflight", "tls", "routes", "state", "token.request", "token.headers", "token.header-shape",
+        "token.header-encoding", "token.header-authority", "token.status", "token.content-type", "token.framing",
+        "token.body", "token.json", "artifact.request", "artifact.headers", "artifact.body", "publish", "postverify",
     }
 )
 
