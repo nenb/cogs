@@ -252,7 +252,7 @@ elif action=="token-cookie":
  for name in authority:
   response=Response(200,head(body,"application/json")+[(name,"x")],body);assert token_stage(response)=="token.header-authority" and response.closed
  artifact_cookie=Response(200,head(b"x")+cookies[:1],b"x");debian=route("final.bin",b"x","debian-inrelease","https://snapshot.debian.org/archive/debian/20260713T000000Z/final")
- assert failure_stage(lambda:m._final_response(debian,None,Transport([artifact_cookie]),time.monotonic()+10,10))=="artifact.headers" and artifact_cookie.closed
+ assert failure_stage(lambda:m._final_response(debian,None,Transport([artifact_cookie]),time.monotonic()+10,10))=="artifact.response-headers" and artifact_cookie.closed
  for cookie_name in ["Cookie","cookie","COOKIE","CoOkIe"]:
   outbound=Transport([]);headers=(("Accept","application/json"),("User-Agent",m.USER_AGENT),("Connection","close"),(cookie_name,"x"))
   assert failure_stage(lambda:m._request(outbound,m.TOKEN_URL,headers,time.monotonic()+10,10,"token.request","token.headers",True))=="token.request" and not outbound.requests
@@ -263,7 +263,7 @@ elif action=="artifact-chunked":
  cache=artifact_root(base)/"cache";assert not (cache/"final.bin").exists() and not (cache/".final.bin.partial").exists()
 elif action=="stage-map":
  base=Path(sys.argv[3]);body=b'{"token":"synthetic-token"}'
- assert m.STAGES==frozenset({"preflight","tls","routes","state","token.request","token.headers","token.header-shape","token.header-encoding","token.header-authority","token.status","token.content-type","token.framing","token.body","token.json","artifact.request","artifact.headers","artifact.body","publish","postverify"})
+ assert m.STAGES==frozenset({"preflight","tls","routes","state","token.request","token.headers","token.header-shape","token.header-encoding","token.header-authority","token.status","token.content-type","token.framing","token.body","token.json","artifact.request","artifact.headers","artifact.response-headers","artifact.redirect","artifact.final","artifact.body","publish","postverify"})
  original_env=dict(os.environ);original_tls=m._tls_context;original_routes=m._artifact_routes
  def boom(*_args):raise RuntimeError()
  try:
@@ -294,8 +294,14 @@ elif action=="stage-map":
  assert failure_stage(lambda:m._anonymous_registry_token(Transport([]),time.monotonic()+10,10))=="token.request"
  route1=route("final.bin",b"good","debian-inrelease","https://snapshot.debian.org/archive/debian/20260713T000000Z/final")
  assert failure_stage(lambda:m._final_response(route1,None,Transport([]),time.monotonic()+10,10))=="artifact.request"
+ duplicate=Response(200,[("Content-Length","4"),("Content-Length","4"),("Content-Type","application/octet-stream")],b"good")
+ assert failure_stage(lambda:m._final_response(route1,None,Transport([duplicate]),time.monotonic()+10,10))=="artifact.response-headers" and duplicate.closed
+ redirect=Response(302,[("Content-Length","0"),("Location","https://hostile.invalid/file")],b"")
+ assert failure_stage(lambda:m._final_response(route1,None,Transport([redirect]),time.monotonic()+10,10))=="artifact.redirect" and redirect.closed
  chunked=Response(200,[("Transfer-Encoding","chunked"),("Content-Type","application/octet-stream")],b"good")
- assert failure_stage(lambda:m._final_response(route1,None,Transport([chunked]),time.monotonic()+10,10))=="artifact.headers" and chunked.closed
+ assert failure_stage(lambda:m._final_response(route1,None,Transport([chunked]),time.monotonic()+10,10))=="artifact.final" and chunked.closed
+ assert failure_stage(lambda:m._stage("artifact.headers",lambda:m._fail(False)))=="artifact.headers"
+ assert failure_stage(lambda:m._stage("artifact.headers",lambda:m._fail(False,"artifact.final")))=="artifact.final"
  short=Response(200,head(b"good"),b"bad");bodybase=base/"body";bodybase.mkdir()
  assert failure_stage(lambda:acquire([route1],bodybase,Transport([short])))=="artifact.body" and short.closed
  racebase=base/"race";racebase.mkdir();original=m.os.link
@@ -311,10 +317,10 @@ elif action=="cli-stage":
  specv=importlib.util.spec_from_file_location("verifier",sys.argv[3]);v=importlib.util.module_from_spec(specv);specv.loader.exec_module(v)
  assert v.ACQUISITION_STAGES==m.STAGES
  sys.modules["completion_artifact_acquisition"]=m;v.verify_contract=lambda _path:{}
- def acquisition_failure(*_args):raise m.AcquisitionError("token.header-shape")
+ def acquisition_failure(*_args):raise m.AcquisitionError("artifact.final")
  m.acquire_artifacts=acquisition_failure
  try:v.acquire_completion_artifacts("contract","root")
- except v.VerificationError as error:assert error.stage=="token.header-shape"
+ except v.VerificationError as error:assert error.stage=="artifact.final"
  else:raise AssertionError("expected staged verification failure")
  m.acquire_artifacts=lambda *_args:None
  def postverify_failure(*_args):raise v.VerificationError()
@@ -325,12 +331,12 @@ elif action=="cli-stage":
  dynamic="https://hostile.invalid Authorization Bearer secret "+"a"*64
  def staged(*_args):
   try:raise RuntimeError(dynamic)
-  except RuntimeError as error:raise v.VerificationError("token.header-shape") from error
+  except RuntimeError as error:raise v.VerificationError("artifact.final") from error
  v.acquire_completion_artifacts=staged;stderr=io.StringIO()
  with contextlib.redirect_stderr(stderr):code=v.main(["acquire-artifacts"])
- lines=stderr.getvalue().splitlines();assert code==1 and lines==["completion artifact verification failed","completion artifact acquisition stage: token.header-shape"]
+ lines=stderr.getvalue().splitlines();assert code==1 and lines==["completion artifact verification failed","completion artifact acquisition stage: artifact.final"]
  assert dynamic not in stderr.getvalue() and "https://" not in stderr.getvalue() and "Bearer" not in stderr.getvalue() and not any(part in stderr.getvalue() for part in ["registry-1.docker.io","snapshot.debian.org"])
- def ordinary(*_args):raise v.VerificationError("token.header-shape")
+ def ordinary(*_args):raise v.VerificationError("artifact.final")
  v.verify_contract=ordinary;stderr=io.StringIO()
  with contextlib.redirect_stderr(stderr):code=v.main(["verify-contract"])
  assert code==1 and stderr.getvalue()=="completion artifact verification failed\n"

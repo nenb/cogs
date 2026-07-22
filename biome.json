@@ -1,7 +1,14 @@
 {
   "$schema": "https://biomejs.dev/schemas/2.5.3/schema.json",
   "files": {
-    "includes": ["**", "!!.cogs-dev", "!!node_modules", "!!package-lock.json", "!!LICENSE"]
+    "includes": [
+      "**",
+      "!!.cogs-dev",
+      "!!node_modules",
+      "!!package-lock.json",
+      "!!LICENSE",
+      "!!deploy/aws-feasibility/.state"
+    ]
   },
   "formatter": {
     "enabled": true,

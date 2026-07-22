@@ -9,6 +9,7 @@ import { test } from "node:test";
 const root = process.cwd();
 const script = join(root, "deploy/aws-feasibility/remote/verify-completion-artifacts.py");
 const contractPath = join(root, "deploy/aws-feasibility/remote/stage2-completion-artifacts-v1.json");
+const biomePath = join(root, "biome.json");
 const pythonHelper = `
 import importlib.util,json,sys
 from pathlib import Path
@@ -103,6 +104,18 @@ async function makeCache(dir: string, content = "abc") {
     entries: [{ cache_name: "artifact.bin", size: 3, sha256: digest("abc") }],
   };
 }
+
+test("Biome excludes the exact ignored AWS feasibility private-state boundary", async () => {
+  const biome = JSON.parse(await readFile(biomePath, "utf8")) as { files?: { includes?: unknown } };
+  assert.deepEqual(biome.files?.includes, [
+    "**",
+    "!!.cogs-dev",
+    "!!node_modules",
+    "!!package-lock.json",
+    "!!LICENSE",
+    "!!deploy/aws-feasibility/.state",
+  ]);
+});
 
 test("Stage 2 completion artifact contract is exact, ordered, and fully pinned", async () => {
   const contract = JSON.parse(await readFile(contractPath, "utf8")) as Contract;
