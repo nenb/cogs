@@ -216,13 +216,15 @@ def _strict_headers(response, token_detail=False):
             raise AcquisitionError(shape) from error
         _fail(all(byte == 32 or 33 <= byte <= 126 for byte in encoded), shape)
         lowered = name.lower()
-        _fail(lowered not in result, shape)
+        discard_cookie = token_detail and response.status == 200 and lowered == "set-cookie"
+        _fail(discard_cookie or lowered not in result, shape)
         total += len(name) + len(encoded) + 4
         _fail(total <= HEADER_BYTES_MAX, shape)
         trimmed = value.strip(" ")
         no_ows = {"content-length", "location", "transfer-encoding", "content-encoding", "authorization", "proxy-authorization"}
         _fail(lowered not in no_ows or value == trimmed, shape)
-        result[lowered] = trimmed
+        if not discard_cookie:
+            result[lowered] = trimmed
     _fail("content-encoding" not in result, encoding)
     forbidden = {
         "authorization",
