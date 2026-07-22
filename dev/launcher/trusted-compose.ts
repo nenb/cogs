@@ -352,9 +352,7 @@ export async function createTrustedWorkerRuntime(
     await proveSessionRootsEmpty(roots);
     auditWalReady = true;
 
-    const reservation = await (s.reserveLoopbackPort === DEFAULT_SEAMS.reserveLoopbackPort
-      ? reserveLoopbackPort(startup.signal, deadlineAt, s.createNetServer)
-      : s.reserveLoopbackPort(startup.signal, deadlineAt));
+    const reservation = await s.reserveLoopbackPort(startup.signal, deadlineAt);
     let reservationOwned = true;
     registerCleanup(cleanups, {
       name: "listener-reservation",
@@ -1353,7 +1351,7 @@ function captureSeams(seams?: Partial<TrustedCompositionSeams>): TrustedComposit
     const out: Record<string, unknown> = { ...DEFAULT_SEAMS };
     const descriptors = Object.getOwnPropertyDescriptors(seams);
     for (const key of Reflect.ownKeys(descriptors)) {
-      if (typeof key !== "string" || !(key in DEFAULT_SEAMS)) fail();
+      if (typeof key !== "string" || !Object.hasOwn(DEFAULT_SEAMS, key)) fail();
       const descriptor = descriptors[key];
       if (
         !descriptor ||
@@ -1363,6 +1361,12 @@ function captureSeams(seams?: Partial<TrustedCompositionSeams>): TrustedComposit
       )
         fail();
       out[key] = descriptor.value;
+    }
+    if (!Object.hasOwn(descriptors, "reserveLoopbackPort")) {
+      const createNetServer = out.createNetServer as typeof createServer;
+      out.reserveLoopbackPort = Object.freeze((signal: AbortSignal, deadlineAt: number) =>
+        reserveLoopbackPort(signal, deadlineAt, createNetServer),
+      );
     }
     return Object.freeze(out) as TrustedCompositionSeams;
   } catch {
