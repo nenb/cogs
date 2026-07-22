@@ -194,8 +194,13 @@ test("trusted composition releases real port reservation before egress bind", as
   try {
     const calls: string[] = [];
     const base = seams(calls, {});
+    let factoryInvoked = false;
     const wrapped = Object.freeze({
       ...base,
+      createNetServer: () => {
+        factoryInvoked = true;
+        throw new Error("unexpected server factory");
+      },
       reserveLoopbackPort: async () => {
         const server = createServer();
         await new Promise<void>((resolve, reject) => {
@@ -221,6 +226,7 @@ test("trusted composition releases real port reservation before egress bind", as
     });
     const runtime = await createTrustedWorkerRuntime(fixture.state, new AbortController().signal, wrapped);
     await runtime.close();
+    assert.equal(factoryInvoked, false);
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
   }
@@ -396,18 +402,32 @@ test("trusted composition rejects unfrozen or hostile seam bags generically", as
       createTrustedWorkerRuntime(fixture.state, new AbortController().signal, {}),
       /launcher trusted composition failed/,
     );
+    let getterInvoked = false;
     const hostile = {} as Partial<TrustedCompositionSeams>;
     Object.defineProperty(hostile, "startOpenBao", {
       get: () => {
-        throw new Error("SECRET");
+        getterInvoked = true;
+        return async () => undefined as never;
       },
       enumerable: true,
     });
     Object.freeze(hostile);
-    await assert.rejects(
-      createTrustedWorkerRuntime(fixture.state, new AbortController().signal, hostile),
-      /launcher trusted composition failed/,
-    );
+    for (const seams of [
+      hostile,
+      Object.freeze({ unknownSeam: () => undefined }),
+      Object.freeze({ constructor: () => undefined }),
+      Object.freeze({ [Symbol("hostile")]: () => undefined }),
+    ]) {
+      await assert.rejects(
+        createTrustedWorkerRuntime(
+          fixture.state,
+          new AbortController().signal,
+          seams as unknown as Partial<TrustedCompositionSeams>,
+        ),
+        /launcher trusted composition failed/,
+      );
+    }
+    assert.equal(getterInvoked, false);
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
   }
