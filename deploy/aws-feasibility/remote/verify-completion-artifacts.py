@@ -18,6 +18,12 @@ SENTINEL_BYTES = b"cogs-stage2-completion-artifacts-v1\n"
 CONTRACT_PATH = Path(__file__).with_name("stage2-completion-artifacts-v1.json")
 ARTIFACT_ROOT = Path(__file__).resolve().parents[1] / ".state" / "completion-v1" / "artifacts"
 SHA256_RE = re.compile(r"^[a-f0-9]{64}$")
+ACQUISITION_STAGES = frozenset(
+    {
+        "preflight", "tls", "routes", "state", "token.request", "token.headers", "token.body", "token.json",
+        "artifact.request", "artifact.headers", "artifact.body", "publish", "postverify",
+    }
+)
 
 OCI_EXPECTED = {
     "index": (
@@ -78,7 +84,9 @@ PACKAGE_EXPECTED = (
 
 
 class VerificationError(Exception):
-    pass
+    def __init__(self, stage=None):
+        self.stage = stage if type(stage) is str and stage in ACQUISITION_STAGES else None
+        super().__init__()
 
 
 def fail(condition):
@@ -574,14 +582,20 @@ def verify_package_archives(contract_path, artifact_root):
 
 
 def acquire_completion_artifacts(contract_path, artifact_root):
-    contract = verify_contract(contract_path)
+    try:
+        contract = verify_contract(contract_path)
+    except (OSError, VerificationError) as error:
+        raise VerificationError("preflight") from error
     from completion_artifact_acquisition import AcquisitionError, acquire_artifacts
 
     try:
         acquire_artifacts(contract, artifact_root)
     except AcquisitionError as error:
-        raise VerificationError() from error
-    verify_package_archives(contract_path, artifact_root)
+        raise VerificationError(error.stage) from error
+    try:
+        verify_package_archives(contract_path, artifact_root)
+    except (OSError, VerificationError) as error:
+        raise VerificationError("postverify") from error
 
 
 def main(argv):
@@ -598,8 +612,11 @@ def main(argv):
             acquire_completion_artifacts(CONTRACT_PATH, ARTIFACT_ROOT)
         else:
             raise VerificationError()
-    except (OSError, VerificationError):
+    except (OSError, VerificationError) as error:
         print("completion artifact verification failed", file=sys.stderr)
+        stage = error.stage if isinstance(error, VerificationError) else None
+        if argv == ["acquire-artifacts"] and stage in ACQUISITION_STAGES:
+            print(f"completion artifact acquisition stage: {stage}", file=sys.stderr)
         return 1
     print("Verified fixed Stage 2 completion artifact contract and cache boundary.")
     return 0

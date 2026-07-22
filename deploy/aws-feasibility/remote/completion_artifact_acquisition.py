@@ -60,15 +60,35 @@ DENIED_ENV = {
 HEADER_NAME = re.compile(r"^[A-Za-z0-9!#$%&'*+.^_`|~-]+$")
 HEX40 = re.compile(r"^/file/[a-f0-9]{40}$")
 TOKEN_TEXT = re.compile(r"^[!-~]{1,8192}$")
+STAGES = frozenset(
+    {
+        "preflight", "tls", "routes", "state", "token.request", "token.headers", "token.body", "token.json",
+        "artifact.request", "artifact.headers", "artifact.body", "publish", "postverify",
+    }
+)
 
 
 class AcquisitionError(Exception):
-    pass
+    def __init__(self, stage=None):
+        self.stage = stage if type(stage) is str and stage in STAGES else None
+        super().__init__()
 
 
-def _fail(condition):
+def _fail(condition, stage=None):
     if not condition:
-        raise AcquisitionError()
+        raise AcquisitionError(stage)
+
+
+def _stage(stage, callback):
+    _fail(stage in STAGES)
+    try:
+        return callback()
+    except AcquisitionError as error:
+        if error.stage is None:
+            raise AcquisitionError(stage) from error
+        raise
+    except Exception as error:
+        raise AcquisitionError(stage) from error
 
 
 @dataclass(frozen=True)
@@ -232,13 +252,16 @@ def _remaining(deadline, maximum):
     return min(value, maximum)
 
 
-def _request(transport, url, headers, deadline, metadata_timeout):
-    allowed = {"Accept", "User-Agent", "Connection", "Authorization"}
-    _fail(type(headers) is tuple and all(name in allowed for name, _value in headers))
-    _fail(len({name for name, _value in headers}) == len(headers))
-    response = transport.request(Request(url, headers), _remaining(deadline, metadata_timeout))
+def _request(transport, url, headers, deadline, metadata_timeout, request_stage, headers_stage):
+    def send():
+        allowed = {"Accept", "User-Agent", "Connection", "Authorization"}
+        _fail(type(headers) is tuple and all(name in allowed for name, _value in headers))
+        _fail(len({name for name, _value in headers}) == len(headers))
+        return transport.request(Request(url, headers), _remaining(deadline, metadata_timeout))
+
+    response = _stage(request_stage, send)
     try:
-        parsed_headers = _strict_headers(response)
+        parsed_headers = _stage(headers_stage, lambda: _strict_headers(response))
     except Exception:
         response.close()
         raise
@@ -294,33 +317,46 @@ def _unique_pairs(pairs):
     return value
 
 
+def _token_framing(response, headers):
+    _fail(response.status == 200)
+    _token_content_type(headers.get("content-type", ""))
+    transfer = headers.get("transfer-encoding")
+    if transfer is None:
+        return _content_length(headers, TOKEN_BODY_MAX)
+    _fail(transfer.lower() == "chunked" and "content-length" not in headers)
+    return None
+
+
+def _token_value(raw):
+    try:
+        value = json.loads(raw, object_pairs_hook=_unique_pairs, parse_constant=lambda _item: _fail(False))
+    except (UnicodeDecodeError, json.JSONDecodeError, TypeError, AcquisitionError) as error:
+        raise AcquisitionError() from error
+    _fail(type(value) is dict)
+    token = value.get("token")
+    access = value.get("access_token")
+    _fail(token is not None or access is not None)
+    _fail(token is None or type(token) is str)
+    _fail(access is None or type(access) is str)
+    _fail(token is None or access is None or token == access)
+    selected = token if token is not None else access
+    _fail(TOKEN_TEXT.fullmatch(selected) is not None)
+    return selected
+
+
 def _anonymous_registry_token(transport, deadline, metadata_timeout):
     token_deadline = min(deadline, time.monotonic() + metadata_timeout)
-    response, headers = _request(transport, TOKEN_URL, _fixed_headers("application/json"), token_deadline, metadata_timeout)
+    response, headers = _request(
+        transport, TOKEN_URL, _fixed_headers("application/json"), token_deadline, metadata_timeout,
+        "token.request", "token.headers",
+    )
     try:
-        _fail(response.status == 200)
-        _token_content_type(headers.get("content-type", ""))
-        transfer = headers.get("transfer-encoding")
-        if transfer is None:
-            length = _content_length(headers, TOKEN_BODY_MAX)
-            raw = _read_memory(response, length, token_deadline)
-        else:
-            _fail(transfer.lower() == "chunked" and "content-length" not in headers)
-            raw = _read_bounded_eof(response, TOKEN_BODY_MAX, token_deadline)
-        try:
-            value = json.loads(raw, object_pairs_hook=_unique_pairs, parse_constant=lambda _item: _fail(False))
-        except (UnicodeDecodeError, json.JSONDecodeError, TypeError, AcquisitionError) as error:
-            raise AcquisitionError() from error
-        _fail(type(value) is dict)
-        token = value.get("token")
-        access = value.get("access_token")
-        _fail(token is not None or access is not None)
-        _fail(token is None or type(token) is str)
-        _fail(access is None or type(access) is str)
-        _fail(token is None or access is None or token == access)
-        selected = token if token is not None else access
-        _fail(TOKEN_TEXT.fullmatch(selected) is not None)
-        return selected
+        length = _stage("token.headers", lambda: _token_framing(response, headers))
+        reader = lambda: _read_bounded_eof(response, TOKEN_BODY_MAX, token_deadline)
+        if length is not None:
+            reader = lambda: _read_memory(response, length, token_deadline)
+        raw = _stage("token.body", reader)
+        return _stage("token.json", lambda: _token_value(raw))
     finally:
         response.close()
 
@@ -369,43 +405,60 @@ def _oci_redirect(route, location):
     return location
 
 
+def _artifact_request(route, token, transport, current, deadline, metadata_timeout):
+    parsed = _strict_url(current)
+    if route.source.startswith("oci-"):
+        _fail(parsed.hostname == REGISTRY_HOST or parsed.hostname in CDN_HOSTS)
+        authorization = token if parsed.hostname == REGISTRY_HOST else None
+    else:
+        _fail(parsed.hostname == SNAPSHOT_HOST)
+        authorization = None
+    return _request(
+        transport, current, _fixed_headers(route.accept, authorization), deadline, metadata_timeout,
+        "artifact.request", "artifact.headers",
+    )
+
+
+def _final_headers(route, response, headers):
+    _fail("transfer-encoding" not in headers and response.status == 200)
+    _content_length(headers, route.row["size"], route.row["size"])
+    _fail(headers.get("content-type", "").strip().lower() in route.content_types)
+
+
+def _next_redirect(route, response, headers, current, seen, redirects, deadline):
+    _fail("transfer-encoding" not in headers)
+    location = _redirect_headers(response, headers)
+    _fail(response.read(1, deadline) == b"")
+    redirects += 1
+    if route.source.startswith("oci-"):
+        _fail(redirects == 1 and response.status == 307)
+        return _oci_redirect(route, location), redirects
+    _fail(redirects <= 3)
+    target = _debian_redirect(current, location, seen)
+    seen.add(target)
+    return target, redirects
+
+
 def _final_response(route, token, transport, deadline, metadata_timeout):
     current = route.row["url"]
     seen = {current}
     redirects = 0
     while True:
-        parsed = _strict_url(current)
-        if route.source.startswith("oci-"):
-            _fail(parsed.hostname == REGISTRY_HOST or parsed.hostname in CDN_HOSTS)
-            authorization = token if parsed.hostname == REGISTRY_HOST else None
-        else:
-            _fail(parsed.hostname == SNAPSHOT_HOST)
-            authorization = None
-        response, headers = _request(transport, current, _fixed_headers(route.accept, authorization), deadline, metadata_timeout)
-        if "transfer-encoding" in headers:
-            response.close()
-            raise AcquisitionError()
+        response, headers = _stage(
+            "artifact.request", lambda: _artifact_request(route, token, transport, current, deadline, metadata_timeout)
+        )
         if response.status == 200:
             try:
-                _content_length(headers, route.row["size"], route.row["size"])
-                content_type = headers.get("content-type", "").strip().lower()
-                _fail(content_type in route.content_types)
+                _stage("artifact.headers", lambda: _final_headers(route, response, headers))
             except Exception:
                 response.close()
                 raise
             return response
         try:
-            location = _redirect_headers(response, headers)
-            _fail(response.read(1, deadline) == b"")
-            if route.source.startswith("oci-"):
-                redirects += 1
-                _fail(redirects == 1 and response.status == 307)
-                current = _oci_redirect(route, location)
-            else:
-                redirects += 1
-                _fail(redirects <= 3)
-                current = _debian_redirect(current, location, seen)
-                seen.add(current)
+            current, redirects = _stage(
+                "artifact.headers",
+                lambda: _next_redirect(route, response, headers, current, seen, redirects, deadline),
+            )
         finally:
             response.close()
 
@@ -581,7 +634,7 @@ def _download_one(route, token, transport, cache_fd, global_deadline, timeouts):
         _fail(stat.S_IMODE(opened.st_mode) == 0o600 and opened.st_size == 0)
         deadline = min(global_deadline, time.monotonic() + timeouts["artifact_read"])
         response = _final_response(route, token, transport, deadline, timeouts["metadata"])
-        _stream_partial(response, descriptor, row, deadline)
+        _stage("artifact.body", lambda: _stream_partial(response, descriptor, row, deadline))
         os.fsync(descriptor)
         os.fchmod(descriptor, 0o400)
         os.fsync(descriptor)
@@ -605,28 +658,25 @@ def _download_one(route, token, transport, cache_fd, global_deadline, timeouts):
 
 
 def _acquire_rows(routes, artifact_root, transport, timeouts):
-    descriptors = _open_private_chain(artifact_root)
+    descriptors = _stage("state", lambda: _open_private_chain(artifact_root))
     global_deadline = time.monotonic() + GLOBAL_SECONDS
     try:
         artifacts_fd, cache_fd = descriptors[-2:]
-        _sentinel(artifacts_fd)
-        present = _existing(cache_fd, routes)
+        _stage("state", lambda: _sentinel(artifacts_fd))
+        present = _stage("state", lambda: _existing(cache_fd, routes))
         missing_oci = any(route.source.startswith("oci-") and route.row["cache_name"] not in present for route in routes)
         token = _anonymous_registry_token(transport, global_deadline, timeouts["metadata"]) if missing_oci else None
         for route in routes:
             if route.row["cache_name"] not in present:
-                _download_one(route, token, transport, cache_fd, global_deadline, timeouts)
-        _fail(set(os.listdir(cache_fd)) == {route.row["cache_name"] for route in routes})
+                _stage("publish", lambda route=route: _download_one(route, token, transport, cache_fd, global_deadline, timeouts))
+        _stage("state", lambda: _fail(set(os.listdir(cache_fd)) == {route.row["cache_name"] for route in routes}))
     finally:
         for descriptor in reversed(descriptors):
             os.close(descriptor)
 
 
 def acquire_artifacts(contract, artifact_root):
-    _reject_ambient_authority(os.environ)
-    try:
-        context = _tls_context()
-        routes = _artifact_routes(contract)
-        _acquire_rows(routes, artifact_root, _HttpsTransport(context), contract["timeouts_seconds"])
-    except (OSError, http.client.HTTPException, ssl.SSLError, TimeoutError, AcquisitionError) as error:
-        raise AcquisitionError() from error
+    _stage("preflight", lambda: _reject_ambient_authority(os.environ))
+    context = _stage("tls", _tls_context)
+    routes = _stage("routes", lambda: _artifact_routes(contract))
+    _stage("state", lambda: _acquire_rows(routes, artifact_root, _HttpsTransport(context), contract["timeouts_seconds"]))
