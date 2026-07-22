@@ -34,6 +34,108 @@ test("AWS fixture has no inbound rule and requires three independent termination
   assert.match(main, /limit_amount = "20"/);
 });
 
+test("ADR 0038 accepts only the bounded local Stage 2 completion capability", () => {
+  const adr = read("docs/adr/0038-authorize-stage-2-completion-campaign.md");
+  const index = read("docs/adr/README.md");
+  const main = read("deploy/aws-feasibility/main.tf");
+  const checker = read("deploy/aws-feasibility/check-plan.py");
+
+  assert.match(adr, /Status: Accepted/);
+  assert.match(adr, /Date: 2026-07-22/);
+  assert.doesNotMatch(adr, /Status: Proposed/);
+  assert.match(index, /0038-authorize-stage-2-completion-campaign\.md.*Accepted/);
+  assert.match(adr, /seven fresh, sequential create\/measure\/destroy cycles/);
+  assert.match(adr, /At most one EC2 instance and the existing exact 16 managed resources/);
+  assert.match(adr, /one absolute expiry no more than four hours/);
+  assert.match(adr, /normal batch deadline is 90 minutes/);
+  assert.match(adr, /Expected aggregate cost must remain below USD 0\.25/);
+  assert.match(adr, /Publishable aggregate estimated cost must remain below USD 0\.50/);
+  assert.match(adr, /zero inventory before the next plan/);
+  assert.match(adr, /separate independent zero inventory after cycle 7/);
+
+  assert.match(adr, /Kata-launch-to-authenticated-SSH/);
+  assert.match(adr, /--with-ns network:\/run\/netns\/cogs-stage2-ssh/);
+  assert.match(adr, /internetworking_model=tcfilter/);
+  assert.match(adr, /192\.0\.2\.1\/30/);
+  assert.match(adr, /192\.0\.2\.2\/30/);
+  assert.match(adr, /no EC2 ingress, public SSH, EC2 key pair, host network namespace, CNI/);
+  assert.match(adr, /fresh Ed25519 client and OpenSSH host keys/);
+  assert.match(adr, /constructs `known_hosts`.*before launch/);
+  assert.match(adr, /Password, keyboard-interactive, PAM, agent, TCP\/stream-local forwarding/);
+  assert.match(adr, /TOFU/);
+
+  for (const pin of [
+    "28de0877c2189802884ccd20f15ee41c203573bd87bb6b883f5f46362d24c5c2",
+    "a617c1cdde36a7e0194b2f07dff669e1753c03c3205356b94f9f350b0f9a57d1",
+    "84645f91e8d166d709fcef984301b2576198bf880c15eb3ce9f4c8fad305c4ea",
+    "e95a6c7ea7d49b37920899b023ecd0e32796c976c1748491f76cae53ba86d13a",
+    "3edb2192497af6e965b9b7e57dc6dbdce1f3ea721d14a98110419d4ded523298",
+    "3ab4e811cf4f3e5a335d382c58cc19d85f1abe7a4ef4689160ca1f637fa0e9b3",
+  ]) {
+    assert.match(adr, new RegExp(pin));
+  }
+  for (const [name, version, bytes, sha256] of [
+    ["git", "1:2.47.3-0+deb13u1", "8,861,572", "3e35662fd5c46add561703e54031a1d8ad9df45811927689f0a51122b13be722"],
+    [
+      "openssh-server",
+      "1:10.0p1-7+deb13u4",
+      "602,372",
+      "b4a02524fd2be375624d917ee8102a16567e9e8dd786b41c35e22360cdd37f9d",
+    ],
+    ["libcom-err2", "1.47.2-3+b11", "25,036", "e1feff126b3e8b3a7b18087e88681469b70d8f6d1b7c4e4b89d98577e1a2fdd7"],
+    [
+      "libgssapi-krb5-2",
+      "1.21.3-5+deb13u1",
+      "138,356",
+      "30847c1fde4240567d7ed3aeab4f655dd591203758b857e85e824045aae70299",
+    ],
+    ["libk5crypto3", "1.21.3-5+deb13u1", "81,152", "7da07ee674b47f1f0be7cc89317c25310086a1f1761217d0f72e6ae2c5a69b84"],
+    ["libkeyutils1", "1.6.3-6", "9,456", "0b11ad17be0300b63ad4eeb4c6450fed24d34b7b740f23e5363dcb29ee6d5eba"],
+    ["libkrb5-3", "1.21.3-5+deb13u1", "326,056", "47d71d6a7f2e59b9bae5f89602397594805113b95889ad18fa703cd53abafc97"],
+    [
+      "libkrb5support0",
+      "1.21.3-5+deb13u1",
+      "33,124",
+      "3a0acd8b37955c0e102c756b52c97df2a31f67b96453c35dab70df218d309117",
+    ],
+    ["libwrap0", "7.6.q-36", "55,256", "cde12afa15d6b1556c5e0564d22edf3b99e6b8fa94c59ccd8b8eebbb62dc19ec"],
+    ["libwtmpdb0", "0.73.0-3+deb13u1", "13,056", "8d6bc1c961d734da58b2d4c35b0a3cd6ad2fe81655bd982c655a97c2255b1c9b"],
+  ]) {
+    assert.ok(adr.includes(`| \`${name}\` | \`${version}\` | ${bytes} | \`${sha256}\` |`));
+  }
+  assert.match(adr, /selected exact pinned candidate extraction set to qualify, not a proven operational closure/);
+  assert.match(adr, /Checked implementation has not yet proven this candidate set's runtime sufficiency/);
+  assert.match(adr, /Any missing dependency is a stop-and-replan condition requiring a new decision/);
+  assert.match(adr, /must not silently add an eleventh package/);
+  assert.match(adr, /added package inputs total exactly 10,145,436 bytes/);
+  assert.match(adr, /dpkg-deb --build --root-owner-group/);
+  assert.match(adr, /no compiler is required/);
+  assert.match(adr, /synthetic and contains no Cogs or user source/);
+  assert.match(adr, /No remote Git helper, URL, credential, or guest network/);
+
+  assert.match(adr, /cogs\.aws-stage2-measurement-evidence\/v1alpha1.*remain historical and unchanged/);
+  assert.match(adr, /new strict schema\/version and separate validator\/renderer/);
+  assert.match(adr, /COGS_AWS_STAGE2_COMPLETION_APPROVED=run-seven-sequential-stage2-completion-launches/);
+  assert.match(adr, /No such execution approval exists in this ADR/);
+  assert.match(adr, /Preferred cumulative target: 4,600 lines/);
+  assert.match(adr, /Hard cumulative cap: 5,100 lines/);
+  assert.match(adr, /two clean rootfs builds.*identical output digest/);
+  assert.match(adr, /local KVM with Kata 3\.32\.0\/containerd 2\.2\.1/);
+  assert.match(adr, /does not create AWS resources, authorize planning\/apply\/inventory/);
+  assert.match(adr, /does not authorize or establish EKS, Kubernetes/);
+  assert.match(adr, /release, production, compliance, general availability/);
+
+  assert.equal((main.match(/resource "aws_instance"/g) ?? []).length, 1);
+  assert.doesNotMatch(main, /\bingress\s*\{/);
+  assert.doesNotMatch(main, /resource "aws_(?:eks|nat_gateway|eip|lb|efs|autoscaling|spot_fleet|sagemaker)/);
+  const allowlist = checker.match(/ALLOWED = \{([\s\S]*?)\n\}/)?.[1] ?? "";
+  const managedMaximum = [...allowlist.matchAll(/"aws_[^"]+": (\d+)/g)].reduce(
+    (total, match) => total + Number(match[1]),
+    0,
+  );
+  assert.equal(managedMaximum, 16);
+});
+
 test("AWS runtime validation requires active KVM and a distinct root Kata guest", () => {
   const remote = read("deploy/aws-feasibility/remote/validate-runtime.sh");
   const controller = read("deploy/aws-feasibility/run-runtime-validation.sh");
