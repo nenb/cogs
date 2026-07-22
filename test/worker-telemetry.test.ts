@@ -112,7 +112,7 @@ test("worker telemetry emits exact trace and metric OTLP envelopes without forbi
     });
     assert.equal(sink.span(goodSpan()), true);
     assert.equal(sink.metric(goodMetric()), true);
-    await collector.waitFor(2);
+    await eventually(() => assert.equal(sink.snapshot().exported, 2));
     await sink.close();
     assert.equal(sink.snapshot().exported, 2);
     const trace = collector.jsonFor("/v1/traces") as {
