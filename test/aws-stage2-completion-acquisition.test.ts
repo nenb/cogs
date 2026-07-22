@@ -114,7 +114,7 @@ elif action=="hostile-headers":
  invalid=[
   Response(200,[("Content-Length","1"),("Content-Length","1")]),
   Response(200,[("Content-Length"," 1")]),
-  Response(200,[("Transfer-Encoding","chunked")]),
+  Response(200,[("Transfer-Encoding","chunked"),("Transfer-Encoding","chunked")]),
   Response(200,[("Content-Encoding","gzip")]),
   Response(200,[("Authorization","secret")]),
   Response(200,[("Set-Cookie","secret")]),
@@ -128,6 +128,37 @@ elif action=="hostile-token":
  for body in bodies:
   expect_failure(lambda body=body:m._anonymous_registry_token(Transport([Response(200,head(body,"application/json"),body)]),time.monotonic()+10,10))
  expect_failure(lambda:m._anonymous_registry_token(Transport([Response(401,[("Content-Length","0"),("WWW-Authenticate","Bearer realm=hostile")],b"")]),time.monotonic()+10,10))
+elif action=="token-protocol":
+ body=b'{"token":"synthetic-token"}'
+ valid=[
+  Response(200,[("Transfer-Encoding","chunked"),("Content-Type","application/json")],body),
+  Response(200,head(body,"application/json; charset=utf-8"),body),
+  Response(200,head(body,"Application/JSON; Charset=UTF-8"),body),
+ ]
+ for response in valid:
+  assert m._anonymous_registry_token(Transport([response]),time.monotonic()+10,10)=="synthetic-token" and response.closed
+ hostile=[
+  Response(200,[("Content-Length",str(len(body))),("Transfer-Encoding","chunked"),("Content-Type","application/json")],body),
+  Response(200,[("Transfer-Encoding","gzip"),("Content-Type","application/json")],body),
+  Response(200,[("Transfer-Encoding","chunked, gzip"),("Content-Type","application/json")],body),
+  Response(200,[("Transfer-Encoding","chunked; hostile"),("Content-Type","application/json")],body),
+  Response(200,[("Transfer-Encoding","chunked"),("Transfer-Encoding","chunked"),("Content-Type","application/json")],body),
+  Response(200,[("Transfer-Encoding","chunked"),("Content-Encoding","gzip"),("Content-Type","application/json")],body),
+  Response(200,[("Transfer-Encoding","chunked"),("Content-Type","application/json")],b"x"*(m.TOKEN_BODY_MAX+1)),
+  Response(200,head(body,"application/json; charset=ascii"),body),
+  Response(200,head(body,"application/json; charset=utf-8; hostile=x"),body),
+  Response(200,head(body,"text/json"),body),
+ ]
+ for response in hostile:
+  expect_failure(lambda response=response:m._anonymous_registry_token(Transport([response]),time.monotonic()+10,10));assert response.closed
+ redirect_route=route("final.bin",b"x","debian-inrelease","https://snapshot.debian.org/archive/debian/20260713T000000Z/final")
+ redirect=Response(302,[("Transfer-Encoding","chunked"),("Location","/file/"+"a"*40)],b"")
+ expect_failure(lambda:m._final_response(redirect_route,None,Transport([redirect]),time.monotonic()+10,10));assert redirect.closed
+elif action=="artifact-chunked":
+ base=Path(sys.argv[3]);body=b"artifact";route1=route("final.bin",body,"debian-inrelease","https://snapshot.debian.org/archive/debian/20260713T000000Z/final")
+ response=Response(200,[("Transfer-Encoding","chunked"),("Content-Type","application/octet-stream")],body)
+ expect_failure(lambda:acquire([route1],base,Transport([response])));assert response.closed
+ cache=artifact_root(base)/"cache";assert not (cache/"final.bin").exists() and not (cache/".final.bin.partial").exists()
 elif action=="response-close":
  body=b"x";route1=route("final.bin",body,"debian-inrelease","https://snapshot.debian.org/archive/debian/20260713T000000Z/final")
  bad_type=Response(200,head(body,"text/hostile"),body);transport=Transport([bad_type])
@@ -243,6 +274,15 @@ test("OCI CDN and Debian redirects are bounded and strip registry authorization"
     assert.equal(result.status, 0, result.stderr);
   });
   assert.equal(run("hostile-redirects").status, 0);
+});
+
+test("token framing accepts only bounded CL or chunked JSON with optional UTF-8 charset", async () => {
+  const tokenResult = run("token-protocol");
+  assert.equal(tokenResult.status, 0, tokenResult.stderr);
+  await withTemp("cogs-acquire-chunked-", (dir) => {
+    const artifactResult = run("artifact-chunked", dir);
+    assert.equal(artifactResult.status, 0, artifactResult.stderr);
+  });
 });
 
 test("duplicate authority headers and hostile framing fail before body acceptance", () => {

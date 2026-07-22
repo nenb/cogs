@@ -185,7 +185,7 @@ def _strict_headers(response):
         no_ows = {"content-length", "location", "transfer-encoding", "content-encoding", "authorization", "proxy-authorization"}
         _fail(lowered not in no_ows or value == trimmed)
         result[lowered] = trimmed
-    _fail("transfer-encoding" not in result and "content-encoding" not in result)
+    _fail("content-encoding" not in result)
     forbidden = {
         "authorization",
         "proxy-authorization",
@@ -252,6 +252,26 @@ def _read_memory(response, length, deadline):
     return b"".join(chunks)
 
 
+def _read_bounded_eof(response, maximum, deadline):
+    chunks = []
+    total = 0
+    while True:
+        chunk = response.read(min(CHUNK, maximum + 1 - total), deadline)
+        _fail(type(chunk) is bytes)
+        if not chunk:
+            break
+        total += len(chunk)
+        _fail(total <= maximum)
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _token_content_type(value):
+    _fail(type(value) is str)
+    pattern = r"(?i:application/json(?: *; *charset *= *utf-8)?)"
+    _fail(re.fullmatch(pattern, value) is not None)
+
+
 def _unique_pairs(pairs):
     value = {}
     for key, item in pairs:
@@ -264,9 +284,15 @@ def _anonymous_registry_token(transport, deadline, metadata_timeout):
     token_deadline = min(deadline, time.monotonic() + metadata_timeout)
     response, headers = _request(transport, TOKEN_URL, _fixed_headers("application/json"), token_deadline, metadata_timeout)
     try:
-        _fail(response.status == 200 and headers.get("content-type", "").lower() == "application/json")
-        length = _content_length(headers, TOKEN_BODY_MAX)
-        raw = _read_memory(response, length, token_deadline)
+        _fail(response.status == 200)
+        _token_content_type(headers.get("content-type", ""))
+        transfer = headers.get("transfer-encoding")
+        if transfer is None:
+            length = _content_length(headers, TOKEN_BODY_MAX)
+            raw = _read_memory(response, length, token_deadline)
+        else:
+            _fail(transfer.lower() == "chunked" and "content-length" not in headers)
+            raw = _read_bounded_eof(response, TOKEN_BODY_MAX, token_deadline)
         try:
             value = json.loads(raw, object_pairs_hook=_unique_pairs, parse_constant=lambda _item: _fail(False))
         except (UnicodeDecodeError, json.JSONDecodeError, TypeError, AcquisitionError) as error:
@@ -342,6 +368,9 @@ def _final_response(route, token, transport, deadline, metadata_timeout):
             _fail(parsed.hostname == SNAPSHOT_HOST)
             authorization = None
         response, headers = _request(transport, current, _fixed_headers(route.accept, authorization), deadline, metadata_timeout)
+        if "transfer-encoding" in headers:
+            response.close()
+            raise AcquisitionError()
         if response.status == 200:
             try:
                 _content_length(headers, route.row["size"], route.row["size"])
