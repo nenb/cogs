@@ -562,6 +562,17 @@ def verify_metadata(contract_path, artifact_root):
     verify_packages_index(contract, packages_raw)
 
 
+def verify_package_archives(contract_path, artifact_root):
+    verify_metadata(contract_path, artifact_root)
+    contract = verify_contract(contract_path)
+    from completion_archive_preflight import ArchivePreflightError, verify_package_archives as preflight_packages
+
+    try:
+        preflight_packages(contract, Path(artifact_root) / "cache")
+    except ArchivePreflightError as error:
+        raise VerificationError() from error
+
+
 def main(argv):
     try:
         if argv == ["verify-contract"]:
@@ -570,6 +581,8 @@ def main(argv):
             verify_cache(CONTRACT_PATH, ARTIFACT_ROOT)
         elif argv == ["verify-metadata"]:
             verify_metadata(CONTRACT_PATH, ARTIFACT_ROOT)
+        elif argv == ["verify-package-archives"]:
+            verify_package_archives(CONTRACT_PATH, ARTIFACT_ROOT)
         else:
             raise VerificationError()
     except (OSError, VerificationError):
