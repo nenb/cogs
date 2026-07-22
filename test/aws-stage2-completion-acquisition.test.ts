@@ -169,8 +169,8 @@ elif action=="redirects":
  oci=m.Route({**row("blob.bin",blob,"https://registry-1.docker.io/v2/library/debian/blobs/sha256:"+digest),"sha256":digest},"oci-layer","application/vnd.oci.image.layer.v1.tar+gzip",("application/octet-stream",))
  cdn=f"https://production.cloudflare.docker.com/registry-v2/docker/registry/v2/blobs/sha256/{digest[:2]}/{digest}/data?signature=x"
  debbody=b"snapshot";deb=route("snapshot.bin",debbody,"debian-inrelease","https://snapshot.debian.org/archive/debian/20260713T000000Z/file")
- redirect=lambda location:Response(307,[("Content-Length","0"),("Location",location)],b"")
- snapshot_redirect=Response(302,[("Content-Length","0"),("Location","/file/"+"a"*40)],b"")
+ redirect=lambda location:Response(307,[("Content-Length","0"),("Location",location),("Content-Type","text/html; charset=utf-8")],b"")
+ snapshot_redirect=Response(302,[("Content-Length","0"),("Location","/file/"+"a"*40),("Content-Type","application/octet-stream")],b"")
  transport=Transport([token(),redirect(cdn),artifact(blob),snapshot_redirect,artifact(debbody)])
  acquire([oci,deb],base,transport)
  assert "Authorization" in dict(transport.requests[1].headers)
@@ -296,10 +296,28 @@ elif action=="stage-map":
  assert failure_stage(lambda:m._final_response(route1,None,Transport([]),time.monotonic()+10,10))=="artifact.request"
  duplicate=Response(200,[("Content-Length","4"),("Content-Length","4"),("Content-Type","application/octet-stream")],b"good")
  assert failure_stage(lambda:m._final_response(route1,None,Transport([duplicate]),time.monotonic()+10,10))=="artifact.response-headers" and duplicate.closed
- redirect=Response(302,[("Content-Length","0"),("Location","https://hostile.invalid/file")],b"")
- assert failure_stage(lambda:m._final_response(route1,None,Transport([redirect]),time.monotonic()+10,10))=="artifact.redirect" and redirect.closed
+ valid_redirect=Response(302,[("Content-Length","0"),("Location","/file/"+"a"*40),("Content-Type","text/plain; charset=utf-8")],b"");final=artifact(b"good");transport=Transport([valid_redirect,final])
+ returned=m._final_response(route1,None,transport,time.monotonic()+10,10);assert returned is final and valid_redirect.closed
+ assert all(name.lower()!="content-type" for request in transport.requests for name,_value in request.headers);returned.close()
+ redirects=[
+  Response(302,[("Content-Length","1"),("Location","/file/"+"a"*40),("Content-Type","text/plain")],b"x"),
+  Response(302,[("Transfer-Encoding","chunked"),("Location","/file/"+"a"*40),("Content-Type","text/plain")],b""),
+  Response(302,[("Content-Length","0"),("Location","/file/"+"a"*40),("Content-Type","text/plain")],b"x"),
+  Response(302,[("Content-Length","0"),("Location","https://hostile.invalid/file"),("Content-Type","text/plain")],b""),
+ ]
+ for redirect in redirects:
+  assert failure_stage(lambda redirect=redirect:m._final_response(route1,None,Transport([redirect]),time.monotonic()+10,10))=="artifact.redirect" and redirect.closed
+ hostile_headers=[
+  Response(302,[("Content-Length","0"),("Location","/file/"+"a"*40),("Content-Encoding","gzip")],b""),
+  Response(302,[("Content-Length","0"),("Location","/file/"+"a"*40),("Set-Cookie","x")],b""),
+  Response(302,[("Content-Length","0"),("Location","/file/"+"a"*40),("Content-Type","text/plain"),("cOnTeNt-TyPe","text/html")],b""),
+ ]
+ for redirect in hostile_headers:
+  assert failure_stage(lambda redirect=redirect:m._final_response(route1,None,Transport([redirect]),time.monotonic()+10,10))=="artifact.response-headers" and redirect.closed
  chunked=Response(200,[("Transfer-Encoding","chunked"),("Content-Type","application/octet-stream")],b"good")
  assert failure_stage(lambda:m._final_response(route1,None,Transport([chunked]),time.monotonic()+10,10))=="artifact.final" and chunked.closed
+ wrong_type=Response(200,head(b"good","text/plain"),b"good")
+ assert failure_stage(lambda:m._final_response(route1,None,Transport([wrong_type]),time.monotonic()+10,10))=="artifact.final" and wrong_type.closed
  assert failure_stage(lambda:m._stage("artifact.headers",lambda:m._fail(False)))=="artifact.headers"
  assert failure_stage(lambda:m._stage("artifact.headers",lambda:m._fail(False,"artifact.final")))=="artifact.final"
  short=Response(200,head(b"good"),b"bad");bodybase=base/"body";bodybase.mkdir()
