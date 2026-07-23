@@ -62,6 +62,14 @@ class PreflightedTar:
 
 
 @dataclass(frozen=True)
+class PreflightedDeb:
+    raw: bytes
+    members: tuple[tuple[str, int, str], ...]
+    data_member: str
+    payload: PreflightedTar
+
+
+@dataclass(frozen=True)
 class _RawMember:
     name: str
     linkname: str
@@ -530,17 +538,24 @@ def preflight_oci_layer_bytes(raw, bounds):
     return _preflight_material_tar(raw, bounds, "oci")
 
 
-def preflight_deb_payload(raw, expected, bounds):
+def preflight_fixed_deb(raw, expected, bounds):
+    _fail(type(raw) is bytes)
     members = _ar_members(raw)
+    identities = tuple((name, len(body), hashlib.sha256(body).hexdigest()) for name, body in members)
     control_raw = _decompress_tar(members[1][0], members[1][1], bounds["max_regular_bytes"])
     _, control = _preflight_tar(control_raw, bounds, control=True)
     _control_stanza(control, expected)
-    data_raw = _decompress_tar(members[2][0], members[2][1], bounds["max_regular_bytes"])
-    return _preflight_material_tar(data_raw, bounds, "package")
+    data_name, data_body = members[2]
+    data_raw = _decompress_tar(data_name, data_body, bounds["max_regular_bytes"])
+    return PreflightedDeb(raw, identities, data_name, _preflight_material_tar(data_raw, bounds, "package"))
+
+
+def preflight_deb_payload(raw, expected, bounds):
+    return preflight_fixed_deb(raw, expected, bounds).payload
 
 
 def preflight_deb_bytes(raw, expected, bounds):
-    return preflight_deb_payload(raw, expected, bounds).archive_records
+    return preflight_fixed_deb(raw, expected, bounds).payload.archive_records
 
 
 def verify_package_archives(contract, cache):
