@@ -300,15 +300,25 @@ elif action=="stage-map":
   valid_redirect=Response(302,[("Location","/file/"+"a"*digest_length),("Content-Type","text/plain; charset=utf-8")],b"");final=artifact(b"good");transport=Transport([valid_redirect,final])
   returned=m._final_response(route1,None,transport,time.monotonic()+10,10);assert returned is final and valid_redirect.closed
   assert all(name.lower()!="content-type" for request in transport.requests for name,_value in request.headers);returned.close()
+ inrelease_route=route("inrelease",b"good","debian-inrelease","https://snapshot.debian.org/archive/debian/20260713T000000Z/dists/trixie/InRelease")
+ index_route=route("index",b"good","debian-index","https://snapshot.debian.org/archive/debian/20260713T000000Z/dists/trixie/main/binary-amd64/Packages.xz")
+ package_route=route("package",b"good","debian-package","https://snapshot.debian.org/archive/debian/20260713T000000Z/pool/main/g/git/git_2.47.3-0+deb13u1_amd64.deb")
  named_routes=[
-  (route("inrelease",b"good","debian-inrelease","https://snapshot.debian.org/archive/debian/20260713T000000Z/dists/trixie/InRelease"),"a"*40+"/InRelease"),
-  (route("index",b"good","debian-index","https://snapshot.debian.org/archive/debian/20260713T000000Z/dists/trixie/main/binary-amd64/Packages.xz"),"b"*64+"/Packages.xz"),
-  (route("package",b"good","debian-package","https://snapshot.debian.org/archive/debian/20260713T000000Z/pool/main/g/git/git_2.47.3-0+deb13u1_amd64.deb"),"c"*40+"/git_2.47.3-0%2Bdeb13u1_amd64.deb"),
+  (inrelease_route,"a"*40+"/InRelease"),
+  (index_route,"b"*64+"/Packages.xz"),
+  (package_route,"c"*40+"/git_2.47.3-0%2Bdeb13u1_amd64.deb"),
  ]
  for named_route,named_path in named_routes:
   valid_redirect=Response(302,[("Content-Length","0"),("Location","/file/"+named_path)],b"");final=artifact(b"good");transport=Transport([valid_redirect,final])
   returned=m._final_response(named_route,None,transport,time.monotonic()+10,10)
   assert returned is final and valid_redirect.closed and len(transport.requests)==2 and transport.requests[1].url.endswith("/file/"+named_path);returned.close()
+ byhash_path="d"*40+"/"+index_route.row["sha256"];byhash_redirect=Response(302,[("Content-Length","0"),("Location","/file/"+byhash_path)],b"");byhash_response=artifact(b"good")
+ byhashbase=base/"index-byhash";byhashbase.mkdir();byhash_transport=Transport([byhash_redirect,byhash_response]);acquire([index_route],byhashbase,byhash_transport)
+ byhash_final=artifact_root(byhashbase)/"cache"/"index";assert byhash_final.read_bytes()==b"good" and stat.S_IMODE(byhash_final.stat().st_mode)==0o400 and byhash_redirect.closed and byhash_response.closed
+ assert len(byhash_transport.requests)==2 and byhash_transport.requests[1].url.endswith("/file/"+byhash_path)
+ mismatchbase=base/"index-byhash-mismatch";mismatchbase.mkdir();mismatch_redirect=Response(302,[("Content-Length","0"),("Location","/file/"+byhash_path)],b"");mismatch_final=artifact(b"baad")
+ assert failure_stage(lambda:acquire([index_route],mismatchbase,Transport([mismatch_redirect,mismatch_final])))=="artifact.body" and mismatch_redirect.closed and mismatch_final.closed
+ mismatchcache=artifact_root(mismatchbase)/"cache";assert not (mismatchcache/"index").exists() and not (mismatchcache/".index.partial").exists()
  hashbase=base/"redirect-hash";hashbase.mkdir();hash_redirect=Response(302,[("Content-Length","0"),("Location","/file/"+"a"*64+"/final")],b"");hash_final=artifact(b"baad")
  assert failure_stage(lambda:acquire([route1],hashbase,Transport([hash_redirect,hash_final])))=="artifact.body" and hash_redirect.closed and hash_final.closed
  hashcache=artifact_root(hashbase)/"cache";assert not (hashcache/"final.bin").exists() and not (hashcache/".final.bin.partial").exists()
@@ -327,7 +337,6 @@ elif action=="stage-map":
  for expected,location in debian_locations:
   redirect=Response(302,[("Content-Length","0"),("Location",location)],b"")
   assert failure_stage(lambda:m._final_response(route1,None,Transport([redirect]),time.monotonic()+10,10))==expected and redirect.closed
- package_route=route("package",b"good","debian-package","https://snapshot.debian.org/archive/debian/20260713T000000Z/pool/main/g/git/git_2.47.3-0+deb13u1_amd64.deb")
  exact_debian_locations=[
   ("artifact.redirect.location-shape",route1,""),
   ("artifact.redirect.location.path.other",route1,"https://snapshot.debian.org/not-allowed"),
@@ -343,6 +352,9 @@ elif action=="stage-map":
   ("artifact.redirect.location.path.filename",route1,"/file/"+"a"*40+"/"),
   ("artifact.redirect.location.path.filename",route1,"/file/"+"a"*40+"/final/extra"),
   ("artifact.redirect.location.path.filename",route1,"/file/"+"a"*40+"/final/"),
+  ("artifact.redirect.location.path.filename",index_route,"/file/"+"a"*40+"/"+"0"*64),
+  ("artifact.redirect.location.path.filename",inrelease_route,"/file/"+"a"*40+"/"+inrelease_route.row["sha256"]),
+  ("artifact.redirect.location.path.filename",index_route,"/file/"+"a"*40+"/"+index_route.row["sha256"]+"/extra"),
   ("artifact.redirect.location.query",route1,"/file/"+"a"*40+"/final?x=1"),
   ("artifact.redirect.location.path.percent",route1,"/file/"+"a"*39+"%61"),
   ("artifact.redirect.location.path.percent",route1,"/file/"+"a"*39+"%61/final"),
