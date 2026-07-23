@@ -488,6 +488,7 @@ def _artifact_request(route, token, transport, current, deadline, metadata_timeo
 
 
 def _final_content_type(route, headers):
+    if "content-type" not in headers and route.source in {"debian-inrelease", "debian-index", "debian-package"}: return
     value = headers.get("content-type", "").strip().lower()
     if value in route.content_types:
         return

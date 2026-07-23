@@ -459,7 +459,6 @@ elif action=="stage-map":
   Response(200,[("Content-Length","4"),("Transfer-Encoding","chunked"),("Content-Type","application/octet-stream")],b"good"),
   Response(200,[("Content-Type","application/octet-stream")],b"good"),
   *[Response(200,[("Content-Length",value),("Content-Type","application/octet-stream")],b"good") for value in ["3","5","04","x"]],
-  Response(200,[("Content-Length","4")],b"good"),
   Response(200,[("Content-Length","4"),("Content-Type","")],b"good"),
   Response(200,head(b"good","application/json"),b"good"),
   Response(200,head(b"good","text/plain"),b"good"),
@@ -477,12 +476,32 @@ elif action=="stage-map":
   assert before==after
  normalized=Response(200,[("Content-Length","4"),("Content-Type"," Application/Octet-Stream ")],b"good")
  returned=m._final_response(route1,None,Transport([normalized]),time.monotonic()+10,10);assert returned is normalized;returned.close()
+ absentbase=base/"debian-absent-content-type";absentbase.mkdir()
+ absent_routes=[
+  route("inrelease",b"inrelease","debian-inrelease","https://snapshot.debian.org/archive/debian/20260713T000000Z/dists/trixie/InRelease"),
+  route("index",b"index","debian-index","https://snapshot.debian.org/archive/debian/20260713T000000Z/dists/trixie/main/binary-amd64/Packages.xz"),
+  route("package",b"package","debian-package","https://snapshot.debian.org/archive/debian/20260713T000000Z/pool/main/g/git/git.deb"),
+ ]
+ absent_transport=Transport([Response(200,[("Content-Length",str(item.row["size"]))],body) for item,body in zip(absent_routes,[b"inrelease",b"index",b"package"])])
+ acquire(absent_routes,absentbase,absent_transport);absentcache=artifact_root(absentbase)/"cache"
+ assert len(absent_transport.requests)==3 and all((absentcache/item.row["cache_name"]).read_bytes()==body and stat.S_IMODE((absentcache/item.row["cache_name"]).stat().st_mode)==0o400 for item,body in zip(absent_routes,[b"inrelease",b"index",b"package"]))
+ absenthashbase=base/"debian-absent-content-type-hash";absenthashbase.mkdir();absenthash=Response(200,[("Content-Length","4")],b"baad");later=artifact(b"good");transport=Transport([absenthash,later])
+ assert failure_stage(lambda:acquire([route1],absenthashbase,transport))=="artifact.body" and absenthash.closed
+ absenthashcache=artifact_root(absenthashbase)/"cache";assert not (absenthashcache/"final.bin").exists() and not (absenthashcache/".final.bin.partial").exists()
+ assert len(transport.requests)==1 and transport.responses==[later] and not later.closed
+ ocibase=base/"oci-absent-content-type";ocibase.mkdir();ociroute=route("oci.bin",b"good","oci-index","https://registry-1.docker.io/v2/library/debian/manifests/sha256:"+"a"*64);ociresponse=Response(200,[("Content-Length","4")],b"good");later=artifact(b"good");transport=Transport([token(),ociresponse,later])
+ assert failure_stage(lambda:acquire([ociroute],ocibase,transport))=="artifact.final.content-type.missing" and ociresponse.closed
+ ocicache=artifact_root(ocibase)/"cache";assert not (ocicache/"oci.bin").exists() and not (ocicache/".oci.bin.partial").exists()
+ assert len(transport.requests)==2 and transport.responses==[later] and not later.closed
+ hostilebase=base/"hostile-debian-source-absent-content-type";hostilebase.mkdir();hostileroute=route("hostile.bin",b"good","debian-hostile","https://snapshot.debian.org/archive/debian/20260713T000000Z/hostile");hostileresponse=Response(200,[("Content-Length","4")],b"good");later=artifact(b"good");transport=Transport([hostileresponse,later])
+ assert failure_stage(lambda:acquire([hostileroute],hostilebase,transport))=="artifact.final.content-type.missing" and hostileresponse.closed
+ hostilecache=artifact_root(hostilebase)/"cache";assert not (hostilecache/"hostile.bin").exists() and not (hostilecache/".hostile.bin.partial").exists()
+ assert len(transport.requests)==1 and transport.responses==[later] and not later.closed
  final_failures=[
   ("artifact.final.transfer",Response(200,[("Transfer-Encoding","chunked"),("Content-Type","application/octet-stream")],b"good")),
   ("artifact.final.transfer",Response(200,[("Content-Length","4"),("Transfer-Encoding","chunked"),("Content-Type","application/octet-stream")],b"good")),
   ("artifact.final.length",Response(200,[("Content-Type","application/octet-stream")],b"good")),
   *[("artifact.final.length",Response(200,[("Content-Length",value),("Content-Type","application/octet-stream")],b"good")) for value in ["3","5","04","x"]],
-  ("artifact.final.content-type.missing",Response(200,[("Content-Length","4")],b"good")),
   ("artifact.final.content-type.missing",Response(200,[("Content-Length","4"),("Content-Type","")],b"good")),
   ("artifact.final.content-type.missing",Response(200,[("Content-Length","4"),("Content-Type"," ")],b"good")),
   ("artifact.final.content-type.parameterized",Response(200,head(b"good","application/octet-stream; charset=utf-8"),b"good")),
