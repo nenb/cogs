@@ -29,8 +29,9 @@ ACQUISITION_STAGES = frozenset(
         "artifact.redirect.location.host-other", "artifact.redirect.location.query", "artifact.redirect.location.path",
         "artifact.redirect.framing", "artifact.redirect.framing.transfer", "artifact.redirect.framing.length",
         "artifact.redirect.framing.body", "artifact.redirect.count", "artifact.final", "artifact.final.transfer",
-        "artifact.final.length", "artifact.final.content-type", "artifact.body", "publish",
-        "postverify",
+        "artifact.final.length", "artifact.final.content-type", "artifact.final.content-type.missing",
+        "artifact.final.content-type.parameterized", "artifact.final.content-type.application",
+        "artifact.final.content-type.text", "artifact.final.content-type.other", "artifact.body", "publish", "postverify",
     }
 )
 
