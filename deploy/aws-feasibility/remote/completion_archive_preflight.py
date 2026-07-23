@@ -49,16 +49,36 @@ class MaterialRecord:
 
 
 @dataclass(frozen=True)
+class ArchiveRoot:
+    kind: str
+    mode: int
+    uid: int
+    gid: int
+    mtime: int
+    archive_size: int
+
+
+@dataclass(frozen=True)
 class PreflightedTar:
     raw: bytes
+    root: ArchiveRoot
     records: tuple[MaterialRecord, ...]
     archive_records: tuple[ArchiveRecord, ...]
 
     def content(self, record):
-        _fail(record in self.records and record.kind == "file" and record.archive_size >= 0)
+        _fail(any(item is record for item in self.records))
+        _fail(record.kind == "file" and record.archive_size >= 0)
         value = memoryview(self.raw)[record.data_offset : record.data_offset + record.archive_size]
         _fail(len(value) == record.archive_size and hashlib.sha256(value).hexdigest() == record.content_sha256)
         return value
+
+
+@dataclass(frozen=True)
+class PreflightedDeb:
+    raw: bytes
+    members: tuple[tuple[str, int, str], ...]
+    data_member: str
+    payload: PreflightedTar
 
 
 @dataclass(frozen=True)
@@ -73,6 +93,7 @@ class _RawMember:
     size: int
     data_offset: int
     pax: tuple[tuple[str, str], ...]
+    extensions: tuple[str, ...]
 
 
 def _identity(value):
@@ -331,7 +352,19 @@ def _raw_tar_frames(raw, bounds):
         link = (pax or {}).get("linkpath", long_link if long_link is not None else _text(header[157:257]))
         _fail("linkpath" not in (pax or {}) or kind_byte in {b"1", b"2"})
         members.append(
-            _RawMember(name, link, kinds[kind_byte], mode, uid, gid, mtime, size, start, tuple((pax or {}).items()))
+            _RawMember(
+                name,
+                link,
+                kinds[kind_byte],
+                mode,
+                uid,
+                gid,
+                mtime,
+                size,
+                start,
+                tuple((pax or {}).items()),
+                tuple(extension_order),
+            )
         )
         _fail(len(members) <= bounds["max_entries"])
         pax = None
@@ -401,7 +434,7 @@ def _semantic_tar_records(raw, frames, bounds, control, profile="package", inclu
     seen = set()
     regular_total = 0
     control_bytes = None
-    root_seen = False
+    root = None
     for frame, info in zip(frames, infos, strict=True):
         raw_path = _normalize_path(frame.name, frame.kind, bounds)
         if raw_path is None:
@@ -416,8 +449,8 @@ def _semantic_tar_records(raw, frames, bounds, control, profile="package", inclu
         semantic_kind = "file" if info.isfile() else "directory" if info.isdir() else "symlink" if info.issym() else "hardlink" if info.islnk() else None
         _fail(semantic_kind == frame.kind)
         if path is None:
-            _fail(not root_seen)
-            root_seen = True
+            _fail(root is None and frame.name == "./" and not frame.pax and not frame.extensions and frame.size == 0)
+            root = ArchiveRoot(frame.kind, frame.mode, frame.uid, frame.gid, frame.mtime, frame.size)
             continue
         _fail(path not in seen)
         seen.add(path)
@@ -475,22 +508,23 @@ def _semantic_tar_records(raw, frames, bounds, control, profile="package", inclu
                 (record.mode, record.uid, record.gid, record.mtime)
                 == (target.mode, target.uid, target.gid, target.mtime)
             )
-    _fail(not control or control_bytes is not None)
+    _fail(root is not None and (not control or control_bytes is not None))
     archived = tuple(records)
     if include_material:
-        return archived, control_bytes, tuple(material)
-    return archived, control_bytes
+        return root, archived, control_bytes, tuple(material)
+    return root, archived, control_bytes
 
 
 def _preflight_tar(raw, bounds, control=False):
     frames = _raw_tar_frames(raw, bounds)
-    return _semantic_tar_records(raw, frames, bounds, control)
+    _root, records, control_bytes = _semantic_tar_records(raw, frames, bounds, control)
+    return records, control_bytes
 
 
 def _preflight_material_tar(raw, bounds, profile):
     frames = _raw_tar_frames(raw, bounds)
-    records, _, material = _semantic_tar_records(raw, frames, bounds, False, profile, True)
-    return PreflightedTar(raw, material, records)
+    root, records, _, material = _semantic_tar_records(raw, frames, bounds, False, profile, True)
+    return PreflightedTar(raw, root, material, records)
 
 
 def _control_stanza(raw, expected):
@@ -530,17 +564,24 @@ def preflight_oci_layer_bytes(raw, bounds):
     return _preflight_material_tar(raw, bounds, "oci")
 
 
-def preflight_deb_payload(raw, expected, bounds):
+def preflight_fixed_deb(raw, expected, bounds):
+    _fail(type(raw) is bytes)
     members = _ar_members(raw)
+    identities = tuple((name, len(body), hashlib.sha256(body).hexdigest()) for name, body in members)
     control_raw = _decompress_tar(members[1][0], members[1][1], bounds["max_regular_bytes"])
     _, control = _preflight_tar(control_raw, bounds, control=True)
     _control_stanza(control, expected)
-    data_raw = _decompress_tar(members[2][0], members[2][1], bounds["max_regular_bytes"])
-    return _preflight_material_tar(data_raw, bounds, "package")
+    data_name, data_body = members[2]
+    data_raw = _decompress_tar(data_name, data_body, bounds["max_regular_bytes"])
+    return PreflightedDeb(raw, identities, data_name, _preflight_material_tar(data_raw, bounds, "package"))
+
+
+def preflight_deb_payload(raw, expected, bounds):
+    return preflight_fixed_deb(raw, expected, bounds).payload
 
 
 def preflight_deb_bytes(raw, expected, bounds):
-    return preflight_deb_payload(raw, expected, bounds).archive_records
+    return preflight_fixed_deb(raw, expected, bounds).payload.archive_records
 
 
 def verify_package_archives(contract, cache):

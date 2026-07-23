@@ -17,7 +17,7 @@ const bounds = {
 };
 
 const helper = String.raw`
-import dataclasses,hashlib,importlib.util,json,sys
+import dataclasses,hashlib,importlib.util,json,os,sys,types
 from pathlib import Path
 sys.dont_write_bytecode=True
 remote=Path(sys.argv[1]).parent
@@ -38,7 +38,54 @@ try:
  elif action=="accept": archive(sys.argv[5],sys.argv[6])
  elif action=="plan":
   base=archive(sys.argv[5],"oci"); packages=tuple((f"package-{i}",archive(path,"package")) for i,path in enumerate(sys.argv[6:])); value=p.plan_sources(base,packages)
-  print(json.dumps({"sources":value.source_order,"entries":[(e.record.path,e.record.kind,e.source) for e in value.entries]},sort_keys=True))
+  print(json.dumps({"root":dataclasses.asdict(value.root),"sources":value.source_order,"entries":[(e.record.path,e.record.kind,e.source) for e in value.entries]},sort_keys=True))
+ elif action=="foreign":
+  value=archive(sys.argv[5],"oci");record=next(item for item in value.records if item.kind=="file");equal=dataclasses.replace(record);other=archive(sys.argv[5],"oci")
+  assert equal==record and equal is not record and bytes(value.content(record))
+  for hostile in (equal,next(item for item in other.records if item==record)):
+   try:value.content(hostile);raise AssertionError()
+   except m.ArchivePreflightError:pass
+ elif action=="inputs":
+  work=Path(sys.argv[5]);artifact=work/"artifacts";cache_dir=artifact/"cache";cache_dir.mkdir(parents=True);contract_path=work/"contract.json";contract_path.write_bytes(b"{}\n")
+  def row_bytes(name):return (name+"-owned-bytes").encode()
+  package_rows=[];cache_rows=[]
+  layer=row_bytes("layer");layer_row={"cache_name":"layer","size":len(layer),"sha256":hashlib.sha256(layer).hexdigest(),"diff_id":hashlib.sha256(layer).hexdigest()};cache_rows.append(layer_row)
+  for index,name in enumerate(p.PACKAGE_ORDER):
+   raw=row_bytes(name);row={"name":name,"version":"1","architecture":"amd64","path":f"pool/{name}.deb","filename":f"{name}.deb","cache_name":f"{name}.deb","url":f"https://invalid/{name}","size":len(raw),"sha256":hashlib.sha256(raw).hexdigest()};package_rows.append(row);cache_rows.append(row)
+  for index in range(5):
+   raw=row_bytes(f"extra-{index}");cache_rows.append({"cache_name":f"extra-{index}","size":len(raw),"sha256":hashlib.sha256(raw).hexdigest()})
+  for row in cache_rows:(cache_dir/row["cache_name"]).write_bytes(row_bytes(row["cache_name"].removesuffix(".deb")) if row["cache_name"]!="layer" else layer)
+  contract={"oci":{"layer":layer_row},"packages":package_rows,"bounds":{"artifact_count":16,"max_regular_bytes":1048576}}
+  def stat_identity(value):return (value.st_dev,value.st_ino,value.st_mode,value.st_uid,value.st_gid,value.st_nlink,value.st_size,value.st_mtime_ns,value.st_ctime_ns)
+  fake=types.SimpleNamespace(ARTIFACT_ROOT=artifact,CONTRACT_PATH=contract_path,verify_package_archives=lambda *args:None,verify_contract=lambda path:contract,cache_entries=lambda value:tuple(cache_rows),identity=stat_identity,read_stable_regular=lambda path,mode,maximum:Path(path).read_bytes(),strict_json=lambda raw,maximum:contract)
+  def material(path,body):
+   record=m.MaterialRecord(path,"file",0o644,0,0,1,len(body),None,None,None,hashlib.sha256(body).hexdigest(),0)
+   return m.PreflightedTar(body,m.ArchiveRoot("directory",0o755,0,0,99,0),(record,),())
+  def base_archive():
+   body=b"base";records=(m.MaterialRecord("etc","directory",0o755,0,0,1,0,None,None,None,None,0),m.MaterialRecord("etc/ssh","directory",0o755,0,0,1,0,None,None,None,None,0),m.MaterialRecord("run","directory",0o755,0,0,1,0,None,None,None,None,0),m.MaterialRecord("base","file",0o644,0,0,1,len(body),None,None,None,hashlib.sha256(body).hexdigest(),0));return m.PreflightedTar(body,p.ROOT_POLICY,records,())
+  def fixed(raw,expected,bounds):
+   names=("debian-binary","control.tar.xz","data.tar.xz");members=tuple((name,1,hashlib.sha256(name.encode()).hexdigest()) for name in names);return m.PreflightedDeb(raw,members,"data.tar.xz",material(f"pkg-{expected['name']}",expected["name"].encode()))
+  def transitions(source):
+   values=(p.Transition("etc/ssh/sshd_config","create",None,p._generated_file("etc/ssh/sshd_config",b"fixed",0o600)),p.Transition("run/cogs-stage2-ssh","create",None,p._generated_directory("run/cogs-stage2-ssh",0o700)),p.Transition("run/sshd","create",None,p._generated_directory("run/sshd",0o755)));return tuple(sorted(values,key=lambda item:item.path.encode()))
+  p._load_verifier=lambda:fake;p._decompress_layer=lambda raw,row,maximum:raw;p.preflight_oci_layer_bytes=lambda raw,bounds:base_archive();p.preflight_fixed_deb=fixed;p._ACCOUNT_EXPECTED={};p.fixed_transitions=transitions
+  first=p.load_verified_build_inputs();second=p.load_verified_build_inputs();assert first is not second and first.cache is not second.cache and first.packages is not second.packages and first.plan is not second.plan
+  assert all(left is not right and left.deb is not right.deb and left.deb.payload is not right.deb.payload for left,right in zip(first.packages,second.packages,strict=True));first_base=next(item.owner for item in first.plan.entries if item.source=="oci-layer");second_base=next(item.owner for item in second.plan.entries if item.source=="oci-layer");assert first_base is not second_base
+  copy=first.packages[0].row.expected();copy["name"]="copy";package_rows[0]["name"]="changed";assert first.packages[0].row.name==p.PACKAGE_ORDER[0];package_rows[0]["name"]=p.PACKAGE_ORDER[0]
+  validated=p.revalidate_build_inputs(first);assert validated is not first
+  def reject(value):
+   try:p.revalidate_build_inputs(value);raise AssertionError()
+   except p.RootfsPlanError:pass
+  def package_change(item):
+   values=list(first.packages);values[0]=item;return dataclasses.replace(first,packages=tuple(values))
+  def generated_change(path,content=None,mode=None):
+   entries=list(first.plan.entries);index=next(i for i,item in enumerate(entries) if item.record.path==path);old=entries[index];raw=old.generated_content if content is None else content;record=dataclasses.replace(old.record,mode=old.record.mode if mode is None else mode,archive_size=old.record.archive_size if raw is None else len(raw),content_sha256=old.record.content_sha256 if raw is None else hashlib.sha256(raw).hexdigest());replacement=dataclasses.replace(old,record=record,generated_content=raw);entries[index]=replacement;changes=tuple(dataclasses.replace(item,result=replacement) if item.path==path else item for item in first.plan.transitions);return dataclasses.replace(first,plan=dataclasses.replace(first.plan,entries=tuple(entries),transitions=changes))
+  package=first.packages[0];members=list(package.deb.members);members[1]=(members[1][0],members[1][1]+1,members[1][2]);payload=dataclasses.replace(package.deb.payload,root=dataclasses.replace(package.deb.payload.root,mtime=100))
+  owner_entries=list(first.plan.entries);owner_index=next(i for i,item in enumerate(owner_entries) if item.source==package.row.name);owner_entries[owner_index]=dataclasses.replace(owner_entries[owner_index],owner=first.packages[1].deb.payload)
+  hostile=(dataclasses.replace(first,contract_sha256="0"*64),dataclasses.replace(first,cache=(dataclasses.replace(first.cache[0],sha256="f"*64),)+first.cache[1:]),package_change(dataclasses.replace(package,row=dataclasses.replace(package.row,version="2"))),package_change(dataclasses.replace(package,deb=dataclasses.replace(package.deb,members=tuple(members)))),package_change(dataclasses.replace(package,deb=dataclasses.replace(package.deb,raw=b"X"+package.deb.raw[1:]))),package_change(dataclasses.replace(package,deb=dataclasses.replace(package.deb,payload=payload))),generated_change("etc/ssh/sshd_config",b"HOSTILE\n"),generated_change("run/sshd",mode=0o700),dataclasses.replace(first,plan=dataclasses.replace(first.plan,root=dataclasses.replace(first.plan.root,mode=0o700))),dataclasses.replace(first,plan=dataclasses.replace(first.plan,source_order=tuple(reversed(first.plan.source_order)))),dataclasses.replace(first,plan=dataclasses.replace(first.plan,transitions=tuple(reversed(first.plan.transitions)))),dataclasses.replace(first,plan=dataclasses.replace(first.plan,entries=tuple(owner_entries))))
+  for value in hostile:reject(value)
+  drift=cache_dir/cache_rows[-1]["cache_name"];raw=drift.read_bytes();drift.write_bytes(b"X"+raw[1:])
+  try:p.load_verified_build_inputs();raise AssertionError()
+  except p.RootfsPlanError:pass
  elif action=="transition":
   source=p.plan_sources(archive(sys.argv[5],"oci"),())
   entries={e.record.path:e for e in source.entries}; scenario=sys.argv[6]
@@ -115,7 +162,7 @@ function run(action: string, ...args: string[]) {
   });
 }
 
-const rootDir: TarEntry = { name: "./", type: "5", mode: 0o755 };
+const rootDir: TarEntry = { name: "./", type: "5", mode: 0o755, mtime: 1782172800 };
 
 test("immutable OCI result owns bytes and separates literal, resolved, hardlink, and archive-size semantics", async () => {
   const dir = await mkdtemp(join(tmpdir(), "cogs-rootfs-records-"));
@@ -160,6 +207,55 @@ test("immutable OCI result owns bytes and separates literal, resolved, hardlink,
     assert.equal(hardlinkResult.status, 0, hardlinkResult.stderr);
     assert.equal(JSON.parse(hardlinkResult.stdout).archive_size, 0);
     assert.equal(JSON.parse(hardlinkResult.stdout).hardlink, "target");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("archive roots are mandatory and only the exact OCI root controls the final plan", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "cogs-rootfs-root-policy-"));
+  try {
+    const validBase = await put(dir, "base.tar", [rootDir, { name: "base", body: "base" }]);
+    const missing = await put(dir, "missing.tar", [{ name: "file", body: "x" }]);
+    const duplicate = await put(dir, "duplicate.tar", [rootDir, rootDir, { name: "file", body: "x" }]);
+    const wrongBase = await put(dir, "wrong-base.tar", [
+      { ...rootDir, mode: 0o700 },
+      { name: "base", body: "x" },
+    ]);
+    const wrongPackage = await put(dir, "wrong-package.tar", [
+      { ...rootDir, mode: 0o700 },
+      { name: "package", body: "x" },
+    ]);
+    const packageMtime = await put(dir, "package-mtime.tar", [
+      { ...rootDir, mtime: 99 },
+      { name: "package", body: "x" },
+    ]);
+
+    assert.notEqual(run("accept", missing, "oci").status, 0);
+    assert.notEqual(run("accept", duplicate, "oci").status, 0);
+    assert.notEqual(run("plan", wrongBase).status, 0);
+    assert.notEqual(run("plan", validBase, wrongPackage).status, 0);
+    const accepted = run("plan", validBase, packageMtime);
+    assert.equal(accepted.status, 0, accepted.stderr);
+    assert.deepEqual(JSON.parse(accepted.stdout).root, {
+      archive_size: 0,
+      gid: 0,
+      kind: "directory",
+      mode: 0o755,
+      mtime: 1782172800,
+      uid: 0,
+    });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("owned content rejects value-equal records from copies and foreign archives", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "cogs-rootfs-record-owner-"));
+  try {
+    const archive = await put(dir, "owner.tar", [rootDir, { name: "file", body: "owned" }]);
+    const result = run("foreign", archive);
+    assert.equal(result.status, 0, result.stderr);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -262,10 +358,22 @@ test("exact transitions default-retain and reject drift, broad replacement, and 
   }
 });
 
-test("R1 production planner is fixed, read-only, local, and has no R2/R3 mechanism", async () => {
+test("fixed input loads are deeply independent and reject cache drift", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "cogs-rootfs-input-loads-"));
+  try {
+    const result = run("inputs", dir);
+    assert.equal(result.status, 0, result.stderr);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("D-R2.1 production is fixed, read-only, local, and has no materializer or publication mechanism", async () => {
   const text = await readFile(planPath, "utf8");
   assert.match(text, /argv != \["verify-plan"\]/u);
   assert.match(text, /fixed_transitions/u);
+  assert.match(text, /load_verified_build_inputs/u);
+  assert.match(text, /ROOT_POLICY/u);
   assert.doesNotMatch(
     text,
     /subprocess|Popen|dpkg-deb|extractall|\.extract\(|memfd|renameat|mkdir|unlink|rmtree|socket|requests|urllib\.request/u,

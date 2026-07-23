@@ -19,6 +19,9 @@ m=importlib.util.module_from_spec(spec);sys.modules[spec.name]=m;spec.loader.exe
 try:
  action=sys.argv[2]
  if action=="deb": m.preflight_deb_bytes(Path(sys.argv[3]).read_bytes(),json.loads(sys.argv[4]),json.loads(sys.argv[5]))
+ elif action=="fixed":
+  raw=Path(sys.argv[3]).read_bytes();value=m.preflight_fixed_deb(raw,json.loads(sys.argv[4]),json.loads(sys.argv[5]));assert value.raw is raw
+  print(json.dumps({"members":[item[0] for item in value.members],"data":value.data_member,"root":value.payload.root.__dict__},sort_keys=True))
  elif action=="tar": m._preflight_tar(Path(sys.argv[3]).read_bytes(),json.loads(sys.argv[4]),sys.argv[5]=="control")
  elif action=="file": m._read_fixed_package(Path(sys.argv[3]),json.loads(sys.argv[4]))
  elif action=="decompress": m._decompress_tar(sys.argv[3],Path(sys.argv[4]).read_bytes(),int(sys.argv[5]))
@@ -213,6 +216,23 @@ test("package preflight accepts strict raw, gzip, and xz archives and leaves scr
   }
 });
 
+test("fixed package result owns full bytes, member identities, payload, and package root", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "cogs-package-fixed-result-"));
+  try {
+    const bytes = deb("xz", "xz");
+    const path = await put(dir, "fixed.deb", bytes);
+    const result = run("fixed", path, JSON.stringify(expected), JSON.stringify(bounds));
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), {
+      data: "data.tar.xz",
+      members: ["debian-binary", "control.tar.xz", "data.tar.xz"],
+      root: { archive_size: 0, gid: 0, kind: "directory", mode: 0o755, mtime: 1, uid: 0 },
+    });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("strict ar framing rejects hostile magic, headers, names, order, padding, members, and version", async () => {
   const dir = await mkdtemp(join(tmpdir(), "cogs-package-ar-"));
   const valid = deb("raw", "raw");
@@ -321,7 +341,13 @@ test("raw tar framing rejects checksum, numeric, padding, body, and terminal amb
     Buffer.alloc(1024),
   ]);
   const secondArchive = Buffer.concat([validData, tar([{ name: "late", body: "" }])]);
-  const rolloverData = tar([{ name: "ok", body: Buffer.alloc(18 * 512) }], 21);
+  const rolloverData = tar(
+    [
+      { name: "./", type: "5", mode: 0o755 },
+      { name: "ok", body: Buffer.alloc(18 * 512) },
+    ],
+    21,
+  );
   const cases = [
     badChecksum,
     badBase256,
@@ -347,23 +373,38 @@ test("raw tar framing rejects checksum, numeric, padding, body, and terminal amb
 test("PAX and GNU names are bounded overrides while pseudo-members remain outside the path graph", async () => {
   const dir = await mkdtemp(join(tmpdir(), "cogs-package-extensions-"));
   const paxPath = "usr/share/pax-name";
+  const rootDir: TarEntry = { name: "./", type: "5", mode: 0o755 };
   const pax = tar([
+    rootDir,
     { name: "./PaxHeaders/item", type: "x", body: paxRecord("path", paxPath) },
     { name: "placeholder", body: "pax\n" },
   ]);
   const longPath = `usr/share/${"long-".repeat(20)}name`;
   const gnu = tar([
+    rootDir,
     { name: "././@LongLink", type: "L", body: Buffer.from(`${longPath}\0`) },
     { name: "placeholder", body: "gnu\n" },
   ]);
   const paxLink = tar([
+    rootDir,
     { name: "./PaxHeaders/link", type: "x", body: paxRecord("linkpath", "target") },
     { name: "usr/bin/link", type: "2", link: "placeholder" },
   ]);
   const gnuLink = tar([
+    rootDir,
     { name: "././@LongLink", type: "L", body: Buffer.from(`${longPath}\0`) },
     { name: "././@LongLink", type: "K", body: Buffer.from("target\0") },
     { name: "placeholder", type: "2", link: "placeholder" },
+  ]);
+  const paxRoot = tar([
+    { name: "./PaxHeaders/root", type: "x", body: paxRecord("path", "./") },
+    { name: "placeholder", type: "5", mode: 0o755 },
+    { name: "file", body: "x" },
+  ]);
+  const gnuRoot = tar([
+    { name: "././@LongLink", type: "L", body: Buffer.from("./\0") },
+    { name: "placeholder", type: "5", mode: 0o755 },
+    { name: "file", body: "x" },
   ]);
   const hostile = [
     tar([
@@ -408,6 +449,8 @@ test("PAX and GNU names are bounded overrides while pseudo-members remain outsid
     assert.equal(gnuResult.status, 0, gnuResult.stderr);
     assert.equal((await runDeb(dir, replaceTarInDeb(controlTar(), paxLink))).status, 0);
     assert.equal((await runDeb(dir, replaceTarInDeb(controlTar(), gnuLink))).status, 0);
+    assert.notEqual((await runDeb(dir, replaceTarInDeb(controlTar(), paxRoot))).status, 0);
+    assert.notEqual((await runDeb(dir, replaceTarInDeb(controlTar(), gnuRoot))).status, 0);
     for (const [index, data] of hostile.entries()) {
       assert.notEqual((await runDeb(dir, replaceTarInDeb(controlTar(), data))).status, 0, `case ${index}`);
     }
