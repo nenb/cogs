@@ -77,9 +77,11 @@ def prepare_real_workspace():
         "completion_rootfs_builder.py",
         "completion_rootfs_materializer.py",
         "completion_rootfs_canonical.py",
+        "completion_rootfs_publish.py",
         "completion_rootfs_build.py",
         "verify-completion-artifacts.py",
         "stage2-completion-artifacts-v1.json",
+        "stage2-completion-rootfs-v1.json",
     )
     manifest_entries = [
         {"path": "deploy", "kind": "directory", "mode": 0o700, "size": 0, "sha256": None},
@@ -147,6 +149,7 @@ def real_two_builds():
     builder = load("completion_rootfs_builder", remote / "completion_rootfs_builder.py")
     load("completion_rootfs_materializer", remote / "completion_rootfs_materializer.py")
     load("completion_rootfs_canonical", remote / "completion_rootfs_canonical.py")
+    publication = load("completion_rootfs_publish", remote / "completion_rootfs_publish.py")
     build = load("completion_rootfs_build", remote / "completion_rootfs_build.py")
     patch_overlay(fs)
     approval = fs.SourceApproval(revision, manifest_digest)
@@ -155,12 +158,34 @@ def real_two_builds():
     state = builder._bootstrap(chain, approval, outer)
     fs._close_node(state)
     fs._close_chain(chain)
-    candidate = build._two_build_candidate(approval, outer)
+    accepted_path = Path("/var/lib/cogs/stage2-completion-v1/accepted")
+    accepted_path.mkdir(mode=0o700)
+    identity = fs.CheckedFd(os.open(accepted_path, fs.IDENTITY_FLAGS), "accepted-identity")
+    operation = fs.CheckedFd(os.open(accepted_path, fs.DIRECTORY_FLAGS), "accepted-directory")
+    accepted = fs.HeldNode(identity, operation, fs._observe_node(identity, operation, outer))
+    candidate = build._pinned_publication(approval, accepted, outer)
     cache = FIXED / "deploy/aws-feasibility/.state/completion-v1/artifacts/cache"
     after = tuple((path.name, path.stat().st_size, hashlib.sha256(path.read_bytes()).hexdigest()) for path in sorted(cache.iterdir()))
     assert before == after and len(after) == 16
     state_root = FIXED / "deploy/aws-feasibility/.state/completion-v1/rootfs-v1"
     assert sorted(path.name for path in state_root.iterdir()) == sorted((builder.STATE_SENTINEL_NAME.text, builder.LOCK_NAME.text))
+    accepted_files = sorted(accepted_path.iterdir())
+    assert [path.name for path in accepted_files] == ["rootfs.manifest.json", "rootfs.metadata.json", "rootfs.tar"]
+    for path in accepted_files:
+        observed = path.stat()
+        assert observed.st_mode & 0o7777 == 0o400 and observed.st_nlink == 1 and observed.st_uid == observed.st_gid == 0
+    pins = json.loads((accepted_path / "rootfs.metadata.json").read_bytes())
+    manifest_bytes = (accepted_path / "rootfs.manifest.json").read_bytes()
+    ustar_bytes = (accepted_path / "rootfs.tar").read_bytes()
+    assert hashlib.sha256(manifest_bytes).hexdigest() == pins["manifest"]["sha256"]
+    assert hashlib.sha256(ustar_bytes).hexdigest() == pins["ustar"]["sha256"]
+    try:
+        publication._publish(accepted, manifest_bytes, ustar_bytes, publication._load_pins(), outer)
+    except publication.PublicationError:
+        pass
+    else:
+        raise AssertionError("existing accepted publication replaced")
+    fs._close_node(accepted)
     print(json.dumps(dataclasses.asdict(candidate), sort_keys=True, separators=(",", ":")))
 
 

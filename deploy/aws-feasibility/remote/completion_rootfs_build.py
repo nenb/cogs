@@ -14,6 +14,7 @@ import completion_rootfs_canonical as canonical
 import completion_rootfs_fs as fs
 import completion_rootfs_materializer as materializer
 import completion_rootfs_plan as plan
+import completion_rootfs_publish as publication
 
 BUILD_SECONDS = 300
 OUTER_SECONDS = 1200
@@ -177,7 +178,7 @@ def _build_once(approval, token, outer_control):
         raise error
 
 
-def _two_build_candidate(approval, outer_control):
+def _two_build_outputs(approval, outer_control):
     _fail(type(approval) is fs.SourceApproval and type(outer_control) is fs.OperationControl)
     first = _build_once(approval, secrets.token_hex(32), outer_control)
     second = _build_once(approval, secrets.token_hex(32), outer_control)
@@ -187,6 +188,10 @@ def _two_build_candidate(approval, outer_control):
     _fail(first.ustar_sha256 == second.ustar_sha256)
     _fail(first.ustar_size == second.ustar_size and first.entry_count == second.entry_count)
     _fail(first.cache == second.cache and len(first.cache) == 16)
+    return first, second
+
+
+def _candidate_metadata(first):
     return TwoBuildCandidate(
         first.manifest_sha256,
         len(first.manifest),
@@ -195,3 +200,20 @@ def _two_build_candidate(approval, outer_control):
         first.entry_count,
         len(first.cache),
     )
+
+
+def _two_build_candidate(approval, outer_control):
+    first, _second = _two_build_outputs(approval, outer_control)
+    return _candidate_metadata(first)
+
+
+def _pinned_publication(approval, accepted_directory, outer_control):
+    pins = publication._load_pins()
+    first, second = _two_build_outputs(approval, outer_control)
+    candidate = _candidate_metadata(first)
+    _fail(candidate.entry_count == pins.entry_count)
+    _fail(candidate.manifest_sha256 == pins.manifest_sha256 and candidate.manifest_size == pins.manifest_size)
+    _fail(candidate.ustar_sha256 == pins.ustar_sha256 and candidate.ustar_size == pins.ustar_size)
+    published = publication._publish(accepted_directory, second.manifest, second.ustar, pins, outer_control)
+    _fail(published.entry_count == candidate.entry_count)
+    return published
