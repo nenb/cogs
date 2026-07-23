@@ -263,7 +263,7 @@ elif action=="artifact-chunked":
  cache=artifact_root(base)/"cache";assert not (cache/"final.bin").exists() and not (cache/".final.bin.partial").exists()
 elif action=="stage-map":
  base=Path(sys.argv[3]);body=b'{"token":"synthetic-token"}'
- assert m.STAGES==frozenset({"preflight","tls","routes","state","token.request","token.headers","token.header-shape","token.header-encoding","token.header-authority","token.status","token.content-type","token.framing","token.body","token.json","artifact.request","artifact.headers","artifact.response-headers","artifact.redirect","artifact.redirect.status","artifact.redirect.location","artifact.redirect.location-shape","artifact.redirect.location.url","artifact.redirect.location.host","artifact.redirect.location.host-docker-com","artifact.redirect.location.host-cloudflare-storage","artifact.redirect.location.host-docker-io","artifact.redirect.location.host-other","artifact.redirect.location.query","artifact.redirect.location.path","artifact.redirect.framing","artifact.redirect.framing.transfer","artifact.redirect.framing.length","artifact.redirect.framing.body","artifact.redirect.count","artifact.final","artifact.body","publish","postverify"})
+ assert m.STAGES==frozenset({"preflight","tls","routes","state","token.request","token.headers","token.header-shape","token.header-encoding","token.header-authority","token.status","token.content-type","token.framing","token.body","token.json","artifact.request","artifact.headers","artifact.response-headers","artifact.redirect","artifact.redirect.status","artifact.redirect.location","artifact.redirect.location-shape","artifact.redirect.location.url","artifact.redirect.location.host","artifact.redirect.location.host-docker-com","artifact.redirect.location.host-cloudflare-storage","artifact.redirect.location.host-docker-io","artifact.redirect.location.host-other","artifact.redirect.location.query","artifact.redirect.location.path","artifact.redirect.framing","artifact.redirect.framing.transfer","artifact.redirect.framing.length","artifact.redirect.framing.body","artifact.redirect.count","artifact.final","artifact.final.transfer","artifact.final.length","artifact.final.content-type","artifact.body","publish","postverify"})
  original_env=dict(os.environ);original_tls=m._tls_context;original_routes=m._artifact_routes
  def boom(*_args):raise RuntimeError()
  try:
@@ -447,10 +447,49 @@ elif action=="stage-map":
  ]
  for redirect in hostile_headers:
   assert failure_stage(lambda redirect=redirect:m._final_response(route1,None,Transport([redirect]),time.monotonic()+10,10))=="artifact.response-headers" and redirect.closed
- chunked=Response(200,[("Transfer-Encoding","chunked"),("Content-Type","application/octet-stream")],b"good")
- assert failure_stage(lambda:m._final_response(route1,None,Transport([chunked]),time.monotonic()+10,10))=="artifact.final" and chunked.closed
- wrong_type=Response(200,head(b"good","text/plain"),b"good")
- assert failure_stage(lambda:m._final_response(route1,None,Transport([wrong_type]),time.monotonic()+10,10))=="artifact.final" and wrong_type.closed
+ def old_final_headers(route,response,headers):
+  m._fail("transfer-encoding" not in headers and response.status==200)
+  m._content_length(headers,route.row["size"],route.row["size"])
+  m._fail(headers.get("content-type","").strip().lower() in route.content_types)
+ equivalence=[
+  Response(200,head(b"good"),b"good"),
+  Response(200,[("Content-Length","4"),("Content-Type"," Application/Octet-Stream ")],b"good"),
+  Response(201,head(b"good"),b"good"),
+  Response(200,[("Transfer-Encoding","chunked"),("Content-Type","application/octet-stream")],b"good"),
+  Response(200,[("Content-Length","4"),("Transfer-Encoding","chunked"),("Content-Type","application/octet-stream")],b"good"),
+  Response(200,[("Content-Type","application/octet-stream")],b"good"),
+  *[Response(200,[("Content-Length",value),("Content-Type","application/octet-stream")],b"good") for value in ["3","5","04","x"]],
+  Response(200,[("Content-Length","4")],b"good"),
+  Response(200,head(b"good","text/plain"),b"good"),
+  Response(200,head(b"good","text/plain; charset=utf-8"),b"good"),
+  Response(200,head(b"good","application/octet-stream; charset=utf-8"),b"good"),
+ ]
+ for response in equivalence:
+  headers={name.lower():value.strip(" ") for name,value in response.headers}
+  before=after=True
+  try:old_final_headers(route1,response,headers)
+  except m.AcquisitionError:before=False
+  try:m._final_headers(route1,response,headers)
+  except m.AcquisitionError:after=False
+  assert before==after
+ normalized=Response(200,[("Content-Length","4"),("Content-Type"," Application/Octet-Stream ")],b"good")
+ returned=m._final_response(route1,None,Transport([normalized]),time.monotonic()+10,10);assert returned is normalized;returned.close()
+ final_failures=[
+  ("artifact.final.transfer",Response(200,[("Transfer-Encoding","chunked"),("Content-Type","application/octet-stream")],b"good")),
+  ("artifact.final.transfer",Response(200,[("Content-Length","4"),("Transfer-Encoding","chunked"),("Content-Type","application/octet-stream")],b"good")),
+  ("artifact.final.length",Response(200,[("Content-Type","application/octet-stream")],b"good")),
+  *[("artifact.final.length",Response(200,[("Content-Length",value),("Content-Type","application/octet-stream")],b"good")) for value in ["3","5","04","x"]],
+  ("artifact.final.content-type",Response(200,[("Content-Length","4")],b"good")),
+  ("artifact.final.content-type",Response(200,head(b"good","text/plain"),b"good")),
+  ("artifact.final.content-type",Response(200,head(b"good","application/octet-stream; charset=utf-8"),b"good")),
+ ]
+ for index,(expected,response) in enumerate(final_failures):
+  finalbase=base/f"final-detail-{index}";finalbase.mkdir();later=artifact(b"good");transport=Transport([response,later])
+  assert failure_stage(lambda:acquire([route1],finalbase,transport))==expected and response.closed
+  cache=artifact_root(finalbase)/"cache";assert not (cache/"final.bin").exists() and not (cache/".final.bin.partial").exists()
+  assert len(transport.requests)==1 and transport.responses==[later] and not later.closed
+ assert failure_stage(lambda:m._stage("artifact.final",lambda:m._fail(False)))=="artifact.final"
+ assert failure_stage(lambda:m._stage("artifact.final",lambda:m._fail(False,"artifact.final.length")))=="artifact.final.length"
  assert failure_stage(lambda:m._stage("artifact.headers",lambda:m._fail(False)))=="artifact.headers"
  assert failure_stage(lambda:m._stage("artifact.headers",lambda:m._fail(False,"artifact.final")))=="artifact.final"
  short=Response(200,head(b"good"),b"bad");bodybase=base/"body";bodybase.mkdir()
@@ -480,13 +519,14 @@ elif action=="cli-stage":
  except v.VerificationError as error:assert error.stage=="postverify"
  else:raise AssertionError("expected postverify failure")
  dynamic="https://hostile.invalid Authorization Bearer secret "+"a"*64
- def staged(*_args):
-  try:raise RuntimeError(dynamic)
-  except RuntimeError as error:raise v.VerificationError("artifact.redirect.framing.body") from error
- v.acquire_completion_artifacts=staged;stderr=io.StringIO()
- with contextlib.redirect_stderr(stderr):code=v.main(["acquire-artifacts"])
- lines=stderr.getvalue().splitlines();assert code==1 and lines==["completion artifact verification failed","completion artifact acquisition stage: artifact.redirect.framing.body"]
- assert dynamic not in stderr.getvalue() and "https://" not in stderr.getvalue() and "Bearer" not in stderr.getvalue() and not any(part in stderr.getvalue() for part in ["registry-1.docker.io","snapshot.debian.org"])
+ for reported_stage in ["artifact.final.transfer","artifact.final.length","artifact.final.content-type"]:
+  def staged(*_args):
+   try:raise RuntimeError(dynamic)
+   except RuntimeError as error:raise v.VerificationError(reported_stage) from error
+  v.acquire_completion_artifacts=staged;stderr=io.StringIO()
+  with contextlib.redirect_stderr(stderr):code=v.main(["acquire-artifacts"])
+  lines=stderr.getvalue().splitlines();assert code==1 and lines==["completion artifact verification failed","completion artifact acquisition stage: "+reported_stage]
+  assert dynamic not in stderr.getvalue() and "https://" not in stderr.getvalue() and "Bearer" not in stderr.getvalue() and not any(part in stderr.getvalue() for part in ["registry-1.docker.io","snapshot.debian.org"])
  def ordinary(*_args):raise v.VerificationError("artifact.redirect.framing.body")
  v.verify_contract=ordinary;stderr=io.StringIO()
  with contextlib.redirect_stderr(stderr):code=v.main(["verify-contract"])
