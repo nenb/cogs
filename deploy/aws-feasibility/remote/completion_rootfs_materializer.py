@@ -243,7 +243,7 @@ def _fresh_chain_to_parent(owned, root, relative_parent, control):
         + (fs.ChainComponent(fs._name(owned.operation_name), operation),)
         + (fs.ChainComponent(builder.ROOT_NAME, retained),),
     )
-    parent = root
+    parent = retained
     opened = []
     if relative_parent:
         for part in relative_parent.split("/"):
