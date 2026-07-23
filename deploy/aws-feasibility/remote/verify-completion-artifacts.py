@@ -23,8 +23,10 @@ ACQUISITION_STAGES = frozenset(
         "preflight", "tls", "routes", "state", "token.request", "token.headers", "token.header-shape",
         "token.header-encoding", "token.header-authority", "token.status", "token.content-type", "token.framing",
         "token.body", "token.json", "artifact.request", "artifact.headers", "artifact.response-headers",
-        "artifact.redirect", "artifact.redirect.status", "artifact.redirect.location", "artifact.redirect.framing",
-        "artifact.redirect.count", "artifact.final", "artifact.body", "publish", "postverify",
+        "artifact.redirect", "artifact.redirect.status", "artifact.redirect.location", "artifact.redirect.location-shape",
+        "artifact.redirect.location.url", "artifact.redirect.location.host", "artifact.redirect.location.query",
+        "artifact.redirect.location.path", "artifact.redirect.framing", "artifact.redirect.count", "artifact.final",
+        "artifact.body", "publish", "postverify",
     }
 )
 
