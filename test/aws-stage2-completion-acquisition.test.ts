@@ -334,8 +334,13 @@ elif action=="stage-map":
  oci_status=Response(302,[("Content-Length","0"),("Location","https://production.cloudflare.docker.com/blobs/sha256/x")],b"")
  assert failure_stage(lambda:m._final_response(oci,"synthetic-token",Transport([oci_status]),time.monotonic()+10,10))=="artifact.redirect.status" and oci_status.closed
  oci_digest=oci.row["sha256"];oci_path=f"/blobs/sha256/{oci_digest[:2]}/{oci_digest}/data";oci_base="https://production.cloudflare.docker.com"
+ assert m.CDN_HOSTS=={"production.cloudflare.docker.com","production.cloudfront.docker.com","docker-images-prod.6aa30f8b08e16409b46e0173d6de2f56.r2.cloudflarestorage.com"}
  for host in m.CDN_HOSTS:
-  allowed=f"https://{host}{oci_path}?x=1";assert m._oci_redirect(oci,allowed)==allowed
+  allowed=f"https://{host}{oci_path}?x=1";redirect=Response(307,[("Content-Length","0"),("Location",allowed)],b"");final=artifact(b"good");transport=Transport([redirect,final])
+  returned=m._final_response(oci,"synthetic-token",transport,time.monotonic()+10,10);assert returned is final and redirect.closed
+  first_names={name.lower() for name,_value in transport.requests[0].headers};redirected_names={name.lower() for name,_value in transport.requests[1].headers}
+  assert len(transport.requests)==2 and transport.requests[1].url==allowed and "authorization" in first_names
+  assert not {"authorization","cookie","content-type"}&redirected_names;returned.close()
  oci_locations=[
   ("artifact.redirect.location-shape","x"*16385),
   ("artifact.redirect.location.url","http://production.cloudflare.docker.com"+oci_path),
@@ -349,6 +354,14 @@ elif action=="stage-map":
  for expected,location in oci_locations:
   redirect=Response(307,[("Content-Length","0"),("Location",location)],b"")
   assert failure_stage(lambda:m._final_response(oci,"synthetic-token",Transport([redirect]),time.monotonic()+10,10))==expected and redirect.closed
+ cloudfront_locations=[
+  ("artifact.redirect.location.host-docker-com","https://evil.production.cloudfront.docker.com"+oci_path),
+  ("artifact.redirect.location.host-other","https://production.cloudfront.docker.com.evil"+oci_path),
+ ]
+ for expected,location in cloudfront_locations:
+  redirect=Response(307,[("Content-Length","0"),("Location",location)],b"");later=artifact(b"good");transport=Transport([redirect,later])
+  assert failure_stage(lambda:m._final_response(oci,"synthetic-token",transport,time.monotonic()+10,10))==expected and redirect.closed
+  assert len(transport.requests)==1 and "Authorization" in dict(transport.requests[0].headers) and transport.responses==[later] and not later.closed
  for host in ["evilcloudflarestorage.com","cloudflarestorage.com.evil","evildocker.com","docker.com.evil","evildocker.io","docker.io.evil"]:
   redirect=Response(307,[("Content-Length","0"),("Location",f"https://{host}{oci_path}")],b"");later=artifact(b"good");transport=Transport([redirect,later])
   assert failure_stage(lambda:m._final_response(oci,"synthetic-token",transport,time.monotonic()+10,10))=="artifact.redirect.location.host-other" and redirect.closed

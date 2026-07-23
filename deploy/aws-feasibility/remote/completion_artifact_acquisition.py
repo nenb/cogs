@@ -19,6 +19,7 @@ REGISTRY_HOST = "registry-1.docker.io"
 SNAPSHOT_HOST = "snapshot.debian.org"
 CDN_HOSTS = {
     "production.cloudflare.docker.com",
+    "production.cloudfront.docker.com",
     "docker-images-prod.6aa30f8b08e16409b46e0173d6de2f56.r2.cloudflarestorage.com",
 }
 USER_AGENT = "cogs-stage2-acquisition/1"
