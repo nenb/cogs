@@ -57,6 +57,15 @@ class ActiveLedger:
     writer: ledger.LedgerWriterState
 
 
+@dataclass(frozen=True)
+class OwnedOperation:
+    locked: LockedState
+    active: ActiveLedger
+    operation: fs.HeldNode
+    root: fs.HeldNode
+    operation_name: str
+
+
 def _check(control):
     control.check()
 
@@ -337,7 +346,7 @@ def _token(active):
     return active.records[0].body_value()["token"]
 
 
-def _start_operation(chain, approval, token, control):
+def _begin_operation(chain, approval, token, control):
     _fail(type(approval) is fs.SourceApproval)
     ledger._token(token)
     fs._verify_source_bundle(_source(chain), approval, control)
@@ -377,13 +386,30 @@ def _start_operation(chain, approval, token, control):
         active, sentinel = _create_ledger_entry(active, operation, OPERATION_SENTINEL_NAME.text, OPERATION_SENTINEL_NAME, "file", OPERATION_SENTINEL, control)
         _close(sentinel)
         active, root = _create_ledger_entry(active, operation, ROOT_NAME.text, ROOT_NAME, "directory", None, control)
-        _close(root)
-        _close(operation)
-        _close(active.node)
-        _release_lock(locked)
-        return operation_name.text
+        return OwnedOperation(locked, active, operation, root, operation_name.text)
     except BaseException as error:
         _release_lock(locked, error)
+
+
+def _start_operation(chain, approval, token, control):
+    owned = _begin_operation(chain, approval, token, control)
+    error = None
+    for node in (owned.root, owned.operation, owned.active.node):
+        try:
+            _close(node)
+        except BaseException as close_error:
+            error = fs.RootfsFsError(error, close_error)
+    try:
+        _release_lock(owned.locked)
+    except BaseException as close_error:
+        error = fs.RootfsFsError(error, close_error)
+    try:
+        _close(owned.locked.state)
+    except BaseException as close_error:
+        error = fs.RootfsFsError(error, close_error)
+    if error is not None:
+        raise error
+    return owned.operation_name
 
 
 def _walk_entries(operation, control):
@@ -460,7 +486,7 @@ def _finish_remove(active, operation, path, expected, intent_exists, control):
         observed = {"token": _token(active), "path": path, "kind": kind, "parent": _p(post), "target_path": None, "target": None}
         active = _append(active, "remove-observed", observed, control)
         active = _append(active, "remove-settled", observed, control)
-        return active
+        return active, post.generation
     finally:
         for node in reversed(opened):
             _close(node)
@@ -514,10 +540,71 @@ def _unlink_ledger(active, locked, control):
     return None
 
 
+def _finish_hardlink_remove(active, operation, alias_path, target_path, target_generation, control):
+    alias_parent, alias_opened, alias_name = _open_relative_parent(operation, alias_path, control)
+    target_parent, target_opened, target_name = _open_relative_parent(operation, target_path, control)
+    target = fs._open_path_node(target_parent, target_name, "file", control)
+    try:
+        alias = fs._observe_child(alias_parent, alias_name, control)
+        _fail(alias.key == target_generation.key and alias == target_generation)
+        pre = _parent(alias_parent, control)
+        body = {
+            "token": _token(active),
+            "path": alias_path,
+            "kind": "hardlink",
+            "parent": _p(pre),
+            "child": _g(alias),
+            "target_path": target_path,
+        }
+        active = _append(active, "remove-intent", body, control)
+        _check(control)
+        os.unlink(alias_name.raw, dir_fd=alias_parent.operation_fd.number)
+        _check(control)
+        builder_target = fs._observe_node(target.identity_fd, target.operation_fd, control)
+        ledger._hardlink_generation_change(target_generation, builder_target, -1)
+        _fsync(target.operation_fd, control)
+        _fsync(alias_parent.operation_fd, control)
+        post = _parent(alias_parent, control)
+        observed = {
+            "token": _token(active),
+            "path": alias_path,
+            "kind": "hardlink",
+            "parent": _p(post),
+            "target_path": target_path,
+            "target": _g(builder_target),
+        }
+        active = _append(active, "remove-observed", observed, control)
+        active = _append(active, "remove-settled", observed, control)
+        return active, builder_target, post.generation
+    finally:
+        fs._close_node(target)
+        for node in reversed(alias_opened + target_opened):
+            fs._close_node(node)
+
+
 def _cleanup_active(active, locked, operation, state, control):
     owned = dict(state.owned)
-    for path in sorted(owned, key=lambda value: (value.count("/"), value.encode("utf-8")), reverse=True):
-        active = _finish_remove(active, operation, path, owned[path], False, control)
+    groups = []
+    for record in active.records:
+        if record.record_type == "hardlink-group":
+            body = record.body_value()
+            groups.append((body["target_path"], tuple(body["aliases"])))
+    for target_path, aliases in reversed(groups):
+        target_generation = owned[target_path]
+        for alias_path in reversed(aliases):
+            active, target_generation, parent_generation = _finish_hardlink_remove(
+                active, operation, alias_path, target_path, target_generation, control
+            )
+            owned.pop(alias_path)
+            parent_path = alias_path.rpartition("/")[0]
+            if parent_path in owned:
+                owned[parent_path] = parent_generation
+        owned[target_path] = target_generation
+    for path in sorted(tuple(owned), key=lambda value: (value.count("/"), value.encode("utf-8")), reverse=True):
+        active, parent_generation = _finish_remove(active, operation, path, owned[path], False, control)
+        parent_path = path.rpartition("/")[0]
+        if parent_path in owned:
+            owned[parent_path] = parent_generation
     return _retire(active, locked, operation, control)
 
 
@@ -525,7 +612,7 @@ def _resume_entry_remove(active, locked, operation, reconciled, control):
     intent = active.records[-1].body_value()
     if reconciled.status == "remove-retry":
         expected = ledger._parse_generation(intent["child"])
-        active = _finish_remove(active, operation, intent["path"], expected, True, control)
+        active, _parent_generation = _finish_remove(active, operation, intent["path"], expected, True, control)
     else:
         active = _finish_absent_remove(active, operation, control)
     entries, parents = _walk_entries(operation, control)
@@ -547,6 +634,23 @@ def _finish_operation_absent(active, locked, control):
     active = _append(active, "operation-absent", body, control)
     active = _append(active, "retired", {"token": token, "state_parent": _p(post)}, control)
     return _unlink_ledger(active, locked, control)
+
+
+def _cleanup_owned(owned, active, control):
+    _fail(type(owned) is OwnedOperation and type(active) is ActiveLedger)
+    _close(owned.root)
+    entries, parents = _walk_entries(owned.operation, control)
+    observations = ledger.ReconcileObservations(
+        _parent(owned.locked.state, control),
+        ((owned.operation_name, fs._observe_node(owned.operation.identity_fd, owned.operation.operation_fd, control)),),
+        entries,
+        parents,
+    )
+    reconciled = ledger._reconcile_ledger(active.records, observations)
+    _fail(reconciled.status == "active")
+    _cleanup_active(active, owned.locked, owned.operation, reconciled, control)
+    _release_lock(owned.locked)
+    _close(owned.locked.state)
 
 
 def _abort(active, locked, record_type, control):

@@ -180,7 +180,15 @@ def codec_and_reconcile_tests():
 
     desired = dataclasses.replace(child, mode=0o755, ctime_ns=2)
     metadata = [
-        ledger.LedgerProposal.create("metadata-intent", {"token": TOKEN, "path": "rootfs", "before": gvalue(child), "desired": gvalue(desired)}),
+        ledger.LedgerProposal.create(
+            "metadata-intent",
+            {
+                "token": TOKEN,
+                "path": "rootfs",
+                "before": gvalue(child),
+                "desired": ledger._metadata_value(desired.mode, desired.uid, desired.gid, desired.size, desired.mtime_ns),
+            },
+        ),
         ledger.LedgerProposal.create("metadata-observed", {"token": TOKEN, "path": "rootfs", "child": gvalue(desired)}),
         ledger.LedgerProposal.create("metadata-settled", {"token": TOKEN, "path": "rootfs", "child": gvalue(desired)}),
     ]

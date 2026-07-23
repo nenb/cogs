@@ -61,6 +61,7 @@ KINDS = frozenset({"directory", "file", "symlink", "hardlink", "infrastructure"}
 UNCERTAIN_REASONS = frozenset({"malformed", "contradictory", "replaced", "unknown", "incomplete", "mount-drift"})
 GENERATION_KEYS = ("mount_id", "device", "inode", "kind", "mode", "uid", "gid", "nlink", "size", "mtime_ns", "ctime_ns")
 PARENT_KEYS = ("generation", "names")
+METADATA_KEYS = ("mode", "uid", "gid", "size", "mtime_ns")
 ENVELOPE_KEYS = (
     "version",
     "sequence",
@@ -217,6 +218,15 @@ class LedgerParent:
         _fail(encoded == tuple(sorted(set(encoded))))
         for item in self.names:
             _name(item)
+
+
+def _metadata_value(mode, uid, gid, size, mtime_ns):
+    return {"mode": mode, "uid": uid, "gid": gid, "size": size, "mtime_ns": mtime_ns}
+
+
+def _parse_metadata(value):
+    _exact_keys(value, METADATA_KEYS)
+    return tuple(_integer(value[key], 0, 0o7777 if key == "mode" else (1 << 64) - 1) for key in METADATA_KEYS)
 
 
 def _parent_value(value):
@@ -498,7 +508,7 @@ def _validate_body(record_type, body):
         _exact_keys(body, ("token", "path", "before", "desired"))
         _graph_path(body["path"])
         _parse_generation(body["before"])
-        _parse_generation(body["desired"])
+        _parse_metadata(body["desired"])
     elif record_type in {"metadata-observed", "metadata-settled"}:
         _exact_keys(body, ("token", "path", "child"))
         _graph_path(body["path"])
@@ -685,7 +695,10 @@ def _matching_transition(previous, current):
         _parent_delta("create", left["path"].split("/")[-1], _parse_parent(left["parent"]), _parse_parent(right["parent"]))
         _fail(_parse_generation(right["child"]).key.kind == ("file" if left["kind"] == "hardlink" else left["kind"]))
     elif previous.record_type == "metadata-intent":
-        _fail(_parse_generation(right["child"]) == _parse_generation(left["desired"]))
+        before = _parse_generation(left["before"])
+        child = _parse_generation(right["child"])
+        _fail(before.key == child.key)
+        _fail((child.mode, child.uid, child.gid, child.size, child.mtime_ns) == _parse_metadata(left["desired"]))
     elif previous.record_type == "hardlink-create-intent":
         _fail(_parse_generation(left["target"]) == _parse_generation(right["target_before"]))
         _parent_delta("hardlink", left["alias"].split("/")[-1], _parse_parent(left["parent"]), _parse_parent(right["parent"]))
@@ -725,9 +738,19 @@ def _reconcile_ledger(records, observations):
         elif kind in {"create-settled", "metadata-settled"}:
             owned[body["path"]] = _parse_generation(body["child"])
         elif kind == "hardlink-create-settled":
-            owned[body["alias"]] = _parse_generation(body["alias_generation"])
+            linked = _parse_generation(body["alias_generation"])
+            owned[body["alias"]] = linked
+            if body["target_path"] in owned:
+                owned[body["target_path"]] = linked
+            else:
+                operation_consistent = False
         elif kind == "remove-settled":
             owned.pop(body["path"], None)
+            if body["target_path"] is not None and body["target"] is not None:
+                if body["target_path"] in owned:
+                    owned[body["target_path"]] = _parse_generation(body["target"])
+                else:
+                    operation_consistent = False
         if kind in {"create-settled", "hardlink-create-settled", "remove-settled"}:
             path = body.get("path", body.get("alias"))
             parent_path = path.rpartition("/")[0]
