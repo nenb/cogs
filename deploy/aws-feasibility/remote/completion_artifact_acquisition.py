@@ -444,7 +444,8 @@ def _snapshot_named_file_path(route, path):
     filename = origin.path.rsplit("/", 1)[-1]
     _fail(filename)
     prefix, separator, candidate = path.rpartition("/")
-    return separator == "/" and SNAPSHOT_FILE_PATH.fullmatch(prefix) is not None and candidate == quote(filename, safe="")
+    by_hash = route.source == "debian-index" and re.fullmatch(r"[a-f0-9]{64}", candidate) is not None and candidate == route.row["sha256"]
+    return separator == "/" and SNAPSHOT_FILE_PATH.fullmatch(prefix) is not None and (candidate == quote(filename, safe="") or by_hash)
 
 
 def _debian_redirect(route, current, location):
