@@ -2,10 +2,18 @@
 FROM debian:13-slim@sha256:28de0877c2189802884ccd20f15ee41c203573bd87bb6b883f5f46362d24c5c2
 
 ARG DEBIAN_SNAPSHOT=20260713T000000Z
+ARG DEBIAN_SECURITY_SNAPSHOT=20260723T000000Z
 RUN printf '%s\n' \
       'Types: deb' \
       "URIs: http://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}/" \
       'Suites: trixie' \
+      'Components: main' \
+      'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
+      'Check-Valid-Until: no' \
+      '' \
+      'Types: deb' \
+      "URIs: http://snapshot.debian.org/archive/debian-security/${DEBIAN_SECURITY_SNAPSHOT}/" \
+      'Suites: trixie-security' \
       'Components: main' \
       'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
       'Check-Valid-Until: no' \
