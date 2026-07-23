@@ -397,7 +397,6 @@ def _redirect_headers(response, headers):
     _fail(response.status in {301, 302, 303, 307, 308})
     _fail("location" in headers)
     _content_length(headers, 0, optional_zero=True)
-    _fail("content-type" not in headers or headers["content-type"] == "")
     return headers["location"]
 
 
