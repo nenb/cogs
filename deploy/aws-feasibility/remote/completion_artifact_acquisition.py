@@ -60,7 +60,7 @@ DENIED_ENV = {
     "AWS_ROLE_ARN",
 }
 HEADER_NAME = re.compile(r"^[A-Za-z0-9!#$%&'*+.^_`|~-]+$")
-HEX40 = re.compile(r"^/file/[a-f0-9]{40}$")
+SNAPSHOT_FILE_PATH = re.compile(r"^/file/(?:[a-f0-9]{40}|[a-f0-9]{64})$")
 TOKEN_TEXT = re.compile(r"^[!-~]{1,8192}$")
 STAGES = frozenset(
     {
@@ -442,7 +442,7 @@ def _debian_redirect(current, location):
     _stage("artifact.redirect.location.host", lambda: _redirect_location_host(parsed.hostname, (SNAPSHOT_HOST,)))
     _stage("artifact.redirect.location.query", lambda: _fail(not parsed.query))
     _stage("artifact.redirect.location.path", lambda: _fail("%" not in parsed.path))
-    allowed = parsed.path.startswith("/archive/debian/20260713T000000Z/") or HEX40.fullmatch(parsed.path) is not None
+    allowed = parsed.path.startswith("/archive/debian/20260713T000000Z/") or SNAPSHOT_FILE_PATH.fullmatch(parsed.path) is not None
     _stage("artifact.redirect.location.path", lambda: _fail(allowed))
     return target
 
