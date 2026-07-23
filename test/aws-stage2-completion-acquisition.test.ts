@@ -296,9 +296,13 @@ elif action=="stage-map":
  assert failure_stage(lambda:m._final_response(route1,None,Transport([]),time.monotonic()+10,10))=="artifact.request"
  duplicate=Response(200,[("Content-Length","4"),("Content-Length","4"),("Content-Type","application/octet-stream")],b"good")
  assert failure_stage(lambda:m._final_response(route1,None,Transport([duplicate]),time.monotonic()+10,10))=="artifact.response-headers" and duplicate.closed
- valid_redirect=Response(302,[("Location","/file/"+"a"*40),("Content-Type","text/plain; charset=utf-8")],b"");final=artifact(b"good");transport=Transport([valid_redirect,final])
- returned=m._final_response(route1,None,transport,time.monotonic()+10,10);assert returned is final and valid_redirect.closed
- assert all(name.lower()!="content-type" for request in transport.requests for name,_value in request.headers);returned.close()
+ for digest_length in [40,64]:
+  valid_redirect=Response(302,[("Location","/file/"+"a"*digest_length),("Content-Type","text/plain; charset=utf-8")],b"");final=artifact(b"good");transport=Transport([valid_redirect,final])
+  returned=m._final_response(route1,None,transport,time.monotonic()+10,10);assert returned is final and valid_redirect.closed
+  assert all(name.lower()!="content-type" for request in transport.requests for name,_value in request.headers);returned.close()
+ hashbase=base/"redirect-hash";hashbase.mkdir();hash_redirect=Response(302,[("Content-Length","0"),("Location","/file/"+"a"*64)],b"");hash_final=artifact(b"baad")
+ assert failure_stage(lambda:acquire([route1],hashbase,Transport([hash_redirect,hash_final])))=="artifact.body" and hash_redirect.closed and hash_final.closed
+ hashcache=artifact_root(hashbase)/"cache";assert not (hashcache/"final.bin").exists() and not (hashcache/".final.bin.partial").exists()
  invalid_status=Response(304,[("Content-Length","0"),("Location","/file/"+"a"*40)],b"")
  assert failure_stage(lambda:m._final_response(route1,None,Transport([invalid_status]),time.monotonic()+10,10))=="artifact.redirect.status" and invalid_status.closed
  missing_location=Response(302,[("Content-Length","0")],b"")
@@ -315,6 +319,14 @@ elif action=="stage-map":
   redirect=Response(302,[("Content-Length","0"),("Location",location)],b"")
   assert failure_stage(lambda:m._final_response(route1,None,Transport([redirect]),time.monotonic()+10,10))==expected and redirect.closed
  exact_debian_locations=[("artifact.redirect.location-shape",""),("artifact.redirect.location.path","https://snapshot.debian.org/not-allowed")]
+ exact_debian_locations += [("artifact.redirect.location.path","/file/"+"a"*length) for length in [39,41,63,65]]
+ exact_debian_locations += [
+  ("artifact.redirect.location.path","/file/"+"A"*40),
+  ("artifact.redirect.location.path","/file/"+"a"*39+"g"),
+  ("artifact.redirect.location.path","/file/"+"a"*40+"/extra"),
+  ("artifact.redirect.location.query","/file/"+"a"*40+"?x=1"),
+  ("artifact.redirect.location.path","/file/"+"a"*39+"%61"),
+ ]
  for expected,location in exact_debian_locations:
   redirect=Response(302,[("Content-Length","0"),("Location",location)],b"");later=artifact(b"good");transport=Transport([redirect,later])
   assert failure_stage(lambda:m._final_response(route1,None,transport,time.monotonic()+10,10))==expected and redirect.closed
