@@ -24,8 +24,10 @@ ACQUISITION_STAGES = frozenset(
         "token.header-encoding", "token.header-authority", "token.status", "token.content-type", "token.framing",
         "token.body", "token.json", "artifact.request", "artifact.headers", "artifact.response-headers",
         "artifact.redirect", "artifact.redirect.status", "artifact.redirect.location", "artifact.redirect.location-shape",
-        "artifact.redirect.location.url", "artifact.redirect.location.host", "artifact.redirect.location.query",
-        "artifact.redirect.location.path", "artifact.redirect.framing", "artifact.redirect.count", "artifact.final",
+        "artifact.redirect.location.url", "artifact.redirect.location.host", "artifact.redirect.location.host-docker-com",
+        "artifact.redirect.location.host-cloudflare-storage", "artifact.redirect.location.host-docker-io",
+        "artifact.redirect.location.host-other", "artifact.redirect.location.query", "artifact.redirect.location.path",
+        "artifact.redirect.framing", "artifact.redirect.count", "artifact.final",
         "artifact.body", "publish", "postverify",
     }
 )
