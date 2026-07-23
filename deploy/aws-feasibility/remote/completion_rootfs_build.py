@@ -1,4 +1,4 @@
-"""Two independent fixed rootfs candidate builds without publication or pins."""
+"""Two independent fixed rootfs builds and pinned publication coordination."""
 
 from dataclasses import dataclass
 import hashlib
@@ -89,7 +89,7 @@ def _cache_values(authority):
     return tuple((item.name, item.identity, item.sha256) for item in authority.cache)
 
 
-def _build_once(approval, token, outer_control):
+def _build_once_unmasked(approval, token, outer_control):
     _fail(type(approval) is fs.SourceApproval)
     control = _build_control(outer_control)
     authority = plan.load_verified_build_inputs()
@@ -166,7 +166,7 @@ def _build_once(approval, token, outer_control):
     except BaseException as error:
         if owned is not None:
             try:
-                materializer._reload_and_cleanup(owned, fs.OperationControl(control.deadline_ns, lambda: False))
+                materializer._reload_and_cleanup(owned, materializer._fresh_cleanup_control())
                 owned = None
             except BaseException as cleanup_error:
                 error = fs.RootfsFsError(error, cleanup_error)
@@ -176,6 +176,10 @@ def _build_once(approval, token, outer_control):
             except BaseException as close_error:
                 error = fs.RootfsFsError(error, close_error)
         raise error
+
+
+def _build_once(approval, token, outer_control):
+    return builder._fixed_umask(_build_once_unmasked, approval, token, outer_control)
 
 
 def _two_build_outputs(approval, outer_control):
@@ -207,13 +211,13 @@ def _two_build_candidate(approval, outer_control):
     return _candidate_metadata(first)
 
 
-def _pinned_publication(approval, accepted_directory, outer_control):
+def _pinned_publication(approval, destination_parent, outer_control):
     pins = publication._load_pins()
     first, second = _two_build_outputs(approval, outer_control)
     candidate = _candidate_metadata(first)
     _fail(candidate.entry_count == pins.entry_count)
     _fail(candidate.manifest_sha256 == pins.manifest_sha256 and candidate.manifest_size == pins.manifest_size)
     _fail(candidate.ustar_sha256 == pins.ustar_sha256 and candidate.ustar_size == pins.ustar_size)
-    published = publication._publish(accepted_directory, second.manifest, second.ustar, pins, outer_control)
+    published = publication._publish(destination_parent, second.manifest, second.ustar, pins, outer_control)
     _fail(published.entry_count == candidate.entry_count)
     return published

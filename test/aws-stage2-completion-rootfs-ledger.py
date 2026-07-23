@@ -26,6 +26,7 @@ def load(name, path):
 
 fs = load("completion_rootfs_fs", REMOTE / "completion_rootfs_fs.py")
 ledger = load("completion_rootfs_ledger", REMOTE / "completion_rootfs_ledger.py")
+builder = load("completion_rootfs_builder_ledger_test", REMOTE / "completion_rootfs_builder.py")
 TOKEN = "a" * 64
 REVISION = "b" * 40
 MANIFEST = "c" * 64
@@ -165,6 +166,9 @@ def codec_and_reconcile_tests():
     absent_observations = dataclasses.replace(observations, parents=(("", operation_parent_before),))
     absent = ledger._reconcile_ledger(create_intent_records, absent_observations)
     assert absent.status == "entry-absent" and absent.cleanup_allowed
+    create_abort = ledger.LedgerProposal.create("create-abort", create_intent.body_value())
+    aborted_create = ledger._parse_ledger(encoded(proposals + [create_intent, create_abort]))
+    assert ledger._reconcile_ledger(aborted_create, absent_observations).status == "active"
     assert ledger._reconcile_ledger(create_intent_records, dataclasses.replace(absent_observations, entries=(("rootfs", child),))).status == "preserve"
     created_proposals = proposals + [create_intent, create_observed, create_settled]
     created = ledger._parse_ledger(encoded(created_proposals))
@@ -279,7 +283,19 @@ def codec_and_reconcile_tests():
             {"token": TOKEN, "path": "alias", "kind": "hardlink", "parent": pvalue(link_parent_before), "target_path": "target", "target": gvalue(target)},
         ),
     ]
-    ledger._parse_ledger(encoded(proposals + hardlink_records))
+    complete_hardlink_records = ledger._parse_ledger(encoded(proposals + hardlink_records))
+    assert builder._settled_hardlink_groups(complete_hardlink_records) == (("target", ()),)
+    group_only = ledger._parse_ledger(encoded(proposals + hardlink_records[:1]))
+    assert builder._settled_hardlink_groups(group_only) == (("target", ()),)
+    intent_only = ledger._parse_ledger(encoded(proposals + hardlink_records[:2]))
+    observed_only = ledger._parse_ledger(encoded(proposals + hardlink_records[:3]))
+    assert builder._settled_hardlink_groups(intent_only) == builder._settled_hardlink_groups(observed_only) == (("target", ()),)
+    assert ledger._reconcile_ledger(observed_only, observations).status == "preserve"
+    settled_prefix = ledger._parse_ledger(encoded(proposals + hardlink_records[:4]))
+    assert builder._settled_hardlink_groups(settled_prefix) == (("target", ("alias",)),)
+    hardlink_abort = ledger.LedgerProposal.create("hardlink-create-abort", hardlink_records[1].body_value())
+    aborted_hardlink = ledger._parse_ledger(encoded(proposals + hardlink_records[:2] + [hardlink_abort]))
+    assert ledger._reconcile_ledger(aborted_hardlink, observations).status == "active"
     wrong_alias = dataclasses.replace(hardlink_records[1], body=ledger.LedgerProposal.create(
         "hardlink-create-intent",
         {"token": TOKEN, "target_path": "target", "alias": "other", "index": 0, "target": gvalue(target), "parent": pvalue(link_parent_before)},

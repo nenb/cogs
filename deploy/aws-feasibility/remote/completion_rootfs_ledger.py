@@ -39,6 +39,7 @@ RECORD_TYPES = frozenset(
         "operation-create-settled",
         "operation-abort",
         "create-intent",
+        "create-abort",
         "create-observed",
         "create-settled",
         "metadata-intent",
@@ -46,6 +47,7 @@ RECORD_TYPES = frozenset(
         "metadata-settled",
         "hardlink-group",
         "hardlink-create-intent",
+        "hardlink-create-abort",
         "hardlink-create-observed",
         "hardlink-create-settled",
         "remove-intent",
@@ -495,7 +497,7 @@ def _validate_body(record_type, body):
         _fail(body["operation_name"] == _operation_name(token))
         _parse_parent(body["state_parent"])
         _parse_generation(body["operation"])
-    elif record_type == "create-intent":
+    elif record_type in {"create-intent", "create-abort"}:
         _exact_keys(body, ("token", "path", "kind", "parent"))
         _entry_common(body)
         _parse_parent(body["parent"])
@@ -524,7 +526,7 @@ def _validate_body(record_type, body):
         _fail(tuple(item.encode("utf-8") for item in aliases) == tuple(sorted(item.encode("utf-8") for item in aliases)))
         _digest(body["content_sha256"])
         _fail(_parse_generation(body["target"]).key.kind == "file")
-    elif record_type == "hardlink-create-intent":
+    elif record_type in {"hardlink-create-intent", "hardlink-create-abort"}:
         _exact_keys(body, ("token", "target_path", "alias", "index", "target", "parent"))
         _hardlink_common(body)
         _parse_generation(body["target"])
@@ -654,10 +656,16 @@ def _validate_legal_records(records):
                 pending = record
                 phase = kind.removesuffix("-intent") + "-intent"
         elif phase.endswith("-intent"):
-            _fail(kind == phase.removesuffix("intent") + "observed")
-            _matching_transition(pending, record)
-            pending = record
-            phase = phase.removesuffix("intent") + "observed"
+            abort_kind = phase.removesuffix("intent") + "abort"
+            _fail(kind in {abort_kind, phase.removesuffix("intent") + "observed"})
+            if kind == abort_kind:
+                _fail(body == _body(pending))
+                pending = None
+                phase = "active"
+            else:
+                _matching_transition(pending, record)
+                pending = record
+                phase = phase.removesuffix("intent") + "observed"
         elif phase.endswith("-observed"):
             _fail(kind == phase.removesuffix("observed") + "settled")
             _matching_transition(pending, record)
@@ -765,7 +773,7 @@ def _reconcile_ledger(records, observations):
             operation_consistent = operation_consistent and operation_generation == _parse_generation(body["operation"])
         if kind.endswith("-intent"):
             pending = record
-        elif kind.endswith("-settled") or kind in {"genesis-abort", "operation-abort", "operation-absent", "retired", "uncertain"}:
+        elif kind.endswith("-settled") or kind.endswith("-abort") or kind in {"operation-absent", "retired", "uncertain"}:
             pending = None
     status = "preserve"
     parent_matches = state_parent == observations.state_parent

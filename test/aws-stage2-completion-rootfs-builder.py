@@ -1,18 +1,20 @@
 #!/usr/bin/env python3
-"""Portable policy tests and isolated Linux qualification for D-R2.2c."""
+"""Portable policy tests and non-authoritative Docker functional tests."""
 
 import hashlib
 import importlib.util
 import json
 import os
 from pathlib import Path
-import shutil
+import stat
 import sys
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
 REMOTE = ROOT / "deploy/aws-feasibility/remote"
 FIXED = Path("/var/lib/cogs/stage2-completion-v1/source")
+CONTAINER_SENTINEL = Path("/cogs-rootfs-functional-test-v1")
+CONTAINER_SENTINEL_RAW = b"cogs-rootfs-functional-test-v1\n"
 
 
 def load(name, path):
@@ -62,6 +64,20 @@ def portable_tests():
             raise AssertionError("close uncertainty accepted")
     finally:
         builder._close = real_close
+    original_umask = os.umask(0o027)
+    try:
+        def fixed_boundary():
+            observed = os.umask(0o077)
+            os.umask(observed)
+            assert observed == 0o077
+
+        builder._fixed_umask(fixed_boundary)
+        rejected(lambda: builder._fixed_umask(lambda: (_ for _ in ()).throw(RuntimeError("stop"))))
+        restored = os.umask(0o027)
+        os.umask(restored)
+        assert restored == 0o027
+    finally:
+        os.umask(original_umask)
 
 
 def canonical_manifest(entries, revision):
@@ -69,9 +85,17 @@ def canonical_manifest(entries, revision):
     return json.dumps(value, separators=(",", ":")).encode() + b"\n"
 
 
+def require_disposable_container():
+    assert sys.platform == "linux" and os.geteuid() == 0 and Path("/.dockerenv").is_file()
+    observed = CONTAINER_SENTINEL.stat(follow_symlinks=False)
+    assert stat.S_ISREG(observed.st_mode) and stat.S_IMODE(observed.st_mode) == 0o400
+    assert observed.st_uid == observed.st_gid == 0 and observed.st_nlink == 1
+    assert CONTAINER_SENTINEL.read_bytes() == CONTAINER_SENTINEL_RAW
+    assert not FIXED.parent.exists()
+
+
 def prepare_fixed_workspace():
-    if Path("/var/lib/cogs").exists():
-        shutil.rmtree("/var/lib/cogs")
+    require_disposable_container()
     remote = FIXED / "deploy/aws-feasibility/remote"
     cache = FIXED / "deploy/aws-feasibility/.state/completion-v1/artifacts/cache"
     remote.mkdir(parents=True, mode=0o700)
@@ -119,7 +143,7 @@ def prepare_fixed_workspace():
     return revision, hashlib.sha256(raw).hexdigest(), hashlib.sha256(artifact.read_bytes()).hexdigest()
 
 
-def patch_overlay(fs, builder):
+def accommodate_docker_overlay(fs, builder):
     def anchor(control):
         assert sys.platform == "linux" and os.geteuid() == 0
         return fs._open_root_node(control)
@@ -147,14 +171,14 @@ def patch_overlay(fs, builder):
     return original
 
 
-def linux_qualification():
+def linux_functional_test():
     revision, digest, artifact_digest = prepare_fixed_workspace()
     fixed_remote = FIXED / "deploy/aws-feasibility/remote"
     sys.path.insert(0, str(fixed_remote))
     fs = load("completion_rootfs_fs", fixed_remote / "completion_rootfs_fs.py")
     load("completion_rootfs_ledger", fixed_remote / "completion_rootfs_ledger.py")
     builder = load("completion_rootfs_builder", fixed_remote / "completion_rootfs_builder.py")
-    patch_overlay(fs, builder)
+    accommodate_docker_overlay(fs, builder)
     approval = fs.SourceApproval(revision, digest)
     control = fs.OperationControl(time.monotonic_ns() + 60_000_000_000, lambda: False)
     state_path = FIXED / "deploy/aws-feasibility/.state/completion-v1/rootfs-v1"
@@ -211,16 +235,18 @@ def linux_qualification():
     assert unknown.read_bytes() == b"preserve"
     unknown.unlink()
 
-    shutil.rmtree(state_path)
+    (state_path / builder.STATE_SENTINEL_NAME.text).unlink()
+    (state_path / builder.LOCK_NAME.text).unlink()
+    state_path.rmdir()
     state_path.mkdir(mode=0o700)
     assert builder.main(["recover-owned"]) == 1
     assert state_path.is_dir() and not any(state_path.iterdir())
     assert hashlib.sha256(artifact.read_bytes()).hexdigest() == artifact_digest
-    print("completion rootfs builder Linux qualification passed")
+    print("completion rootfs builder Docker functional test passed")
 
 
 if len(sys.argv) == 2 and sys.argv[1] == "--linux":
-    linux_qualification()
+    linux_functional_test()
 else:
     portable_tests()
     print("completion rootfs builder portable tests passed")

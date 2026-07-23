@@ -38,6 +38,15 @@ def _fail(condition):
         raise BuilderError()
 
 
+def _fixed_umask(function, *args):
+    # os.umask is process-wide: coordinators require a single-threaded process.
+    previous = os.umask(0o077)
+    try:
+        return function(*args)
+    finally:
+        _fail(os.umask(previous) == 0o077)
+
+
 @dataclass
 class CancellationLatch:
     cancelled: bool = False
@@ -177,7 +186,7 @@ def _source(chain):
     return chain.components[SOURCE_INDEX].node
 
 
-def _bootstrap(chain, approval, control):
+def _bootstrap_unmasked(chain, approval, control):
     _fail(type(approval) is fs.SourceApproval)
     fs._verify_source_bundle(_source(chain), approval, control)
     completion = _completion(chain)
@@ -200,6 +209,10 @@ def _bootstrap(chain, approval, control):
         if state.identity_fd.disposition == "open":
             _close(state, error)
         raise
+
+
+def _bootstrap(chain, approval, control):
+    return _fixed_umask(_bootstrap_unmasked, chain, approval, control)
 
 
 def _open_state(chain, control):
@@ -346,7 +359,7 @@ def _token(active):
     return active.records[0].body_value()["token"]
 
 
-def _begin_operation(chain, approval, token, control):
+def _begin_operation_unmasked(chain, approval, token, control):
     _fail(type(approval) is fs.SourceApproval)
     ledger._token(token)
     fs._verify_source_bundle(_source(chain), approval, control)
@@ -389,6 +402,10 @@ def _begin_operation(chain, approval, token, control):
         return OwnedOperation(locked, active, operation, root, operation_name.text)
     except BaseException as error:
         _release_lock(locked, error)
+
+
+def _begin_operation(chain, approval, token, control):
+    return _fixed_umask(_begin_operation_unmasked, chain, approval, token, control)
 
 
 def _start_operation(chain, approval, token, control):
@@ -582,13 +599,27 @@ def _finish_hardlink_remove(active, operation, alias_path, target_path, target_g
             fs._close_node(node)
 
 
+def _settled_hardlink_groups(records):
+    groups = []
+    by_target = {}
+    for record in records:
+        body = record.body_value()
+        if record.record_type == "hardlink-group":
+            group = [body["target_path"], []]
+            groups.append(group)
+            by_target[body["target_path"]] = group
+        elif record.record_type == "hardlink-create-settled":
+            by_target[body["target_path"]][1].append(body["alias"])
+        elif record.record_type == "remove-settled" and body["target_path"] is not None:
+            aliases = by_target[body["target_path"]][1]
+            _fail(aliases and aliases[-1] == body["path"])
+            aliases.pop()
+    return tuple((target, tuple(aliases)) for target, aliases in groups)
+
+
 def _cleanup_active(active, locked, operation, state, control):
     owned = dict(state.owned)
-    groups = []
-    for record in active.records:
-        if record.record_type == "hardlink-group":
-            body = record.body_value()
-            groups.append((body["target_path"], tuple(body["aliases"])))
+    groups = _settled_hardlink_groups(active.records)
     for target_path, aliases in reversed(groups):
         target_generation = owned[target_path]
         for alias_path in reversed(aliases):
@@ -627,6 +658,22 @@ def _resume_entry_remove(active, locked, operation, reconciled, control):
     return _cleanup_active(active, locked, operation, state, control)
 
 
+def _resume_absent_create(active, locked, operation, control):
+    intent = active.records[-1]
+    _fail(intent.record_type in {"create-intent", "hardlink-create-intent"})
+    active = _append(active, intent.record_type.removesuffix("intent") + "abort", intent.body_value(), control)
+    entries, parents = _walk_entries(operation, control)
+    observations = ledger.ReconcileObservations(
+        _parent(locked.state, control),
+        ((_operation_name(_token(active)).text, fs._observe_node(operation.identity_fd, operation.operation_fd, control)),),
+        entries,
+        parents,
+    )
+    state = ledger._reconcile_ledger(active.records, observations)
+    _fail(state.status == "active")
+    return _cleanup_active(active, locked, operation, state, control)
+
+
 def _finish_operation_absent(active, locked, control):
     token = _token(active)
     post = _parent(locked.state, control)
@@ -647,8 +694,11 @@ def _cleanup_owned(owned, active, control):
         parents,
     )
     reconciled = ledger._reconcile_ledger(active.records, observations)
-    _fail(reconciled.status == "active")
-    _cleanup_active(active, owned.locked, owned.operation, reconciled, control)
+    if reconciled.status == "entry-absent":
+        _resume_absent_create(active, owned.locked, owned.operation, control)
+    else:
+        _fail(reconciled.status == "active")
+        _cleanup_active(active, owned.locked, owned.operation, reconciled, control)
     _release_lock(owned.locked)
     _close(owned.locked.state)
 
@@ -688,6 +738,10 @@ def _recover_locked(chain, state, control):
             _fail(operation is not None)
             _cleanup_active(active, locked, operation, reconciled, control)
             operation = None
+        elif reconciled.status == "entry-absent":
+            _fail(operation is not None)
+            _resume_absent_create(active, locked, operation, control)
+            operation = None
         elif reconciled.status in {"remove-retry", "remove-absence-settleable"}:
             _fail(operation is not None)
             _resume_entry_remove(active, locked, operation, reconciled, control)
@@ -722,7 +776,7 @@ def _recover_locked(chain, state, control):
         _release_lock(locked, error)
 
 
-def _recover_fixed(control):
+def _recover_fixed_unmasked(control):
     _fail(Path(__file__).resolve() == FIXED_MODULE)
     chain = _open_base_chain(control)
     try:
@@ -742,6 +796,10 @@ def _recover_fixed(control):
         if chain.anchor.identity_fd.disposition == "open":
             fs._close_chain(chain, error)
         raise
+
+
+def _recover_fixed(control):
+    return _fixed_umask(_recover_fixed_unmasked, control)
 
 
 def _run_recovery():

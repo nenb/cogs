@@ -40,8 +40,9 @@ for hostile in (
     else:
         raise AssertionError("hostile rootfs pins accepted")
 source = (REMOTE / "completion_rootfs_publish.py").read_text()
-assert "O_CREAT | os.O_EXCL" in source and "os.link(" in source
-assert "rootfs.metadata.json" in source and "_require_accepted" in source
-for forbidden in ("argparse", "sys.argv", "if __name__", "rmtree", "os.walk", "glob", "subprocess", "socket", "rename"):
+assert "O_CREAT | os.O_EXCL" in source and "renameat2" in source and "_rename_noreplace" in source
+assert "rootfs.metadata.json" in source and "_verify_candidate" in source and "_cleanup_candidate" in source
+assert b"qualification" not in raw and b"functional_test_image" in raw
+for forbidden in ("argparse", "sys.argv", "if __name__", "rmtree", "os.walk", "glob", "subprocess", "socket"):
     assert forbidden not in source
 print("completion rootfs publication tests passed")

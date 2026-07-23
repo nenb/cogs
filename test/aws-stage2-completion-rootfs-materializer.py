@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Small synthetic direct-writer tests and Linux qualification for D-R2.3."""
+"""Small direct-writer tests and non-authoritative Docker functional tests."""
 
 import dataclasses
 import hashlib
@@ -7,13 +7,15 @@ import importlib.util
 import json
 import os
 from pathlib import Path
-import shutil
+import stat
 import sys
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
 REMOTE = ROOT / "deploy/aws-feasibility/remote"
 FIXED = Path("/var/lib/cogs/stage2-completion-v1/source")
+CONTAINER_SENTINEL = Path("/cogs-rootfs-functional-test-v1")
+CONTAINER_SENTINEL_RAW = b"cogs-rootfs-functional-test-v1\n"
 
 
 def load(name, path):
@@ -34,8 +36,12 @@ def portable():
 
 
 def prepare():
-    if Path("/var/lib/cogs").exists():
-        shutil.rmtree("/var/lib/cogs")
+    assert sys.platform == "linux" and os.geteuid() == 0 and Path("/.dockerenv").is_file()
+    observed = CONTAINER_SENTINEL.stat(follow_symlinks=False)
+    assert stat.S_ISREG(observed.st_mode) and stat.S_IMODE(observed.st_mode) == 0o400
+    assert observed.st_uid == observed.st_gid == 0 and observed.st_nlink == 1
+    assert CONTAINER_SENTINEL.read_bytes() == CONTAINER_SENTINEL_RAW
+    assert not FIXED.parent.exists()
     remote = FIXED / "deploy/aws-feasibility/remote"
     cache = FIXED / "deploy/aws-feasibility/.state/completion-v1/artifacts/cache"
     remote.mkdir(parents=True, mode=0o700)
@@ -82,7 +88,7 @@ def prepare():
     return revision, hashlib.sha256(raw).hexdigest(), hashlib.sha256(artifact.read_bytes()).hexdigest()
 
 
-def patch_overlay(fs):
+def accommodate_docker_overlay(fs):
     original_xattrs = fs._require_empty_fd_xattrs
     ancestors = {(os.lstat(path).st_dev, os.lstat(path).st_ino) for path in ("/", "/var", "/var/lib")}
     fs._open_workspace_anchor = lambda control: fs._open_root_node(control)
@@ -128,17 +134,57 @@ def linux():
     load("completion_rootfs_ledger", remote / "completion_rootfs_ledger.py")
     builder = load("completion_rootfs_builder", remote / "completion_rootfs_builder.py")
     materializer = load("completion_rootfs_materializer", remote / "completion_rootfs_materializer.py")
-    patch_overlay(fs)
+    accommodate_docker_overlay(fs)
     approval = fs.SourceApproval(revision, digest)
     control = fs.OperationControl(time.monotonic_ns() + 120_000_000_000, lambda: False)
     chain = builder._open_base_chain(control)
     state = builder._bootstrap(chain, approval, control)
     fs._close_node(state)
     fs._close_chain(chain)
+    state_path = FIXED / "deploy/aws-feasibility/.state/completion-v1/rootfs-v1"
+
+    def recover_absent_intent(token, hardlink):
+        pending_chain = builder._open_base_chain(control)
+        owned = builder._begin_operation(pending_chain, approval, token * 64, control)
+        parent = builder._parent(owned.root, control)
+        if hardlink:
+            target = fs._open_path_node(owned.operation, builder.OPERATION_SENTINEL_NAME, "file", control)
+            group = {
+                "token": builder._token(owned.active),
+                "target_path": builder.OPERATION_SENTINEL_NAME.text,
+                "aliases": ["rootfs/alias"],
+                "content_sha256": hashlib.sha256(builder.OPERATION_SENTINEL).hexdigest(),
+                "target": builder._g(target.generation),
+            }
+            active = builder._append(owned.active, "hardlink-group", group, control)
+            body = {
+                "token": builder._token(active),
+                "target_path": builder.OPERATION_SENTINEL_NAME.text,
+                "alias": "rootfs/alias",
+                "index": 0,
+                "target": builder._g(target.generation),
+                "parent": builder._p(parent),
+            }
+            fs._close_node(target)
+            active = builder._append(active, "hardlink-create-intent", body, control)
+        else:
+            body = {"token": builder._token(owned.active), "path": "rootfs/absent", "kind": "file", "parent": builder._p(parent)}
+            active = builder._append(owned.active, "create-intent", body, control)
+        for node in (owned.root, owned.operation, active.node):
+            fs._close_node(node)
+        builder._release_lock(owned.locked)
+        fs._close_node(owned.locked.state)
+        fs._close_chain(pending_chain)
+        builder._recover_fixed(control)
+        assert sorted(path.name for path in state_path.iterdir()) == sorted((builder.STATE_SENTINEL_NAME.text, builder.LOCK_NAME.text))
+
+    recover_absent_intent("7", False)
+    recover_absent_intent("8", True)
     chain = builder._open_base_chain(control)
     authority = synthetic(plan_module, preflight)
     materializer.plan.revalidate_build_inputs = lambda _value: dataclasses.replace(authority)
 
+    hostile_umask = os.umask(0o777)
     owned = builder._begin_operation(chain, approval, "1" * 64, control)
     real_write = builder.os.write
     builder.os.write = lambda fd, raw: real_write(fd, raw[:5])
@@ -146,6 +192,7 @@ def linux():
         result = materializer._materialize(authority, owned, control)
     finally:
         builder.os.write = real_write
+        os.umask(hostile_umask)
     assert result.entry_count == 5
     root_path = FIXED / "deploy/aws-feasibility/.state/completion-v1/rootfs-v1" / owned.operation_name / "rootfs"
     assert (root_path / "bin/tool").read_bytes() == b"hello rootfs\n"
@@ -167,23 +214,45 @@ def linux():
         pass
     else:
         raise AssertionError("hostile content accepted")
-    state_path = FIXED / "deploy/aws-feasibility/.state/completion-v1/rootfs-v1"
     assert sorted(path.name for path in state_path.iterdir()) == sorted((builder.STATE_SENTINEL_NAME.text, builder.LOCK_NAME.text))
 
-    owned = builder._begin_operation(chain, approval, "3" * 64, control)
     materializer.plan.revalidate_build_inputs = lambda _value: dataclasses.replace(authority)
-    cancelled = fs.OperationControl(time.monotonic_ns() + 60_000_000_000, lambda: True)
-    try:
-        materializer._materialize(authority, owned, cancelled)
-    except BaseException:
-        pass
-    else:
-        raise AssertionError("cancelled materialization accepted")
-    assert sorted(path.name for path in state_path.iterdir()) == sorted((builder.STATE_SENTINEL_NAME.text, builder.LOCK_NAME.text))
+
+    def fail_after_record(token, record_type, expire=False):
+        owned = builder._begin_operation(chain, approval, token * 64, control)
+        latch = {"cancelled": False}
+        deadline = time.monotonic_ns() + (30_000_000 if expire else 60_000_000_000)
+        interrupted = fs.OperationControl(deadline, lambda: latch["cancelled"])
+        real_append = builder._append
+
+        def append(active, kind, body, current_control):
+            result = real_append(active, kind, body, current_control)
+            if kind == record_type:
+                if expire:
+                    time.sleep(0.04)
+                else:
+                    latch["cancelled"] = True
+            return result
+
+        builder._append = append
+        try:
+            materializer._materialize(authority, owned, interrupted)
+        except BaseException:
+            pass
+        else:
+            raise AssertionError("interrupted materialization accepted")
+        finally:
+            builder._append = real_append
+        assert sorted(path.name for path in state_path.iterdir()) == sorted((builder.STATE_SENTINEL_NAME.text, builder.LOCK_NAME.text))
+
+    fail_after_record("3", "create-intent", True)
+    fail_after_record("4", "hardlink-group")
+    fail_after_record("5", "hardlink-create-intent")
+    fail_after_record("6", "hardlink-create-settled")
     artifact = FIXED / "deploy/aws-feasibility/.state/completion-v1/artifacts/cache/immutable.bin"
     assert hashlib.sha256(artifact.read_bytes()).hexdigest() == artifact_digest
     fs._close_chain(chain)
-    print("completion rootfs materializer Linux qualification passed")
+    print("completion rootfs materializer Docker functional test passed")
 
 
 if len(sys.argv) == 2 and sys.argv[1] == "--linux":

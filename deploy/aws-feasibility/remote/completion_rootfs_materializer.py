@@ -15,6 +15,7 @@ import completion_rootfs_ledger as ledger
 import completion_rootfs_plan as plan
 
 MATERIALIZE_SECONDS = 300
+CLEANUP_SECONDS = 120
 
 
 class MaterializerError(Exception):
@@ -391,6 +392,10 @@ def _postwalk(owned, root, authority, control):
     return len(observed)
 
 
+def _fresh_cleanup_control():
+    return fs.OperationControl(time.monotonic_ns() + CLEANUP_SECONDS * 1_000_000_000, lambda: False)
+
+
 def _reload_and_cleanup(owned, control):
     error = None
     for node in (owned.root, owned.operation, owned.active.node):
@@ -408,7 +413,7 @@ def _reload_and_cleanup(owned, control):
     builder._cleanup_owned(refreshed, active, control)
 
 
-def _materialize(authority, owned, control):
+def _materialize_unmasked(authority, owned, control):
     _fail(type(owned) is builder.OwnedOperation and type(control) is fs.OperationControl)
     fresh = plan.revalidate_build_inputs(authority)
     _fail(type(fresh) is plan.RootfsBuildInputs and fresh is not authority)
@@ -437,9 +442,13 @@ def _materialize(authority, owned, control):
         count = _postwalk(refreshed, root, fresh, control)
         return MaterializedRoot(refreshed, active, count)
     except BaseException as error:
-        cleanup_control = fs.OperationControl(control.deadline_ns, lambda: False)
+        cleanup_control = _fresh_cleanup_control()
         try:
             _reload_and_cleanup(owned, cleanup_control)
         except BaseException as cleanup_error:
             raise fs.RootfsFsError(error, cleanup_error) from cleanup_error
         raise
+
+
+def _materialize(authority, owned, control):
+    return builder._fixed_umask(_materialize_unmasked, authority, owned, control)
