@@ -263,7 +263,7 @@ elif action=="artifact-chunked":
  cache=artifact_root(base)/"cache";assert not (cache/"final.bin").exists() and not (cache/".final.bin.partial").exists()
 elif action=="stage-map":
  base=Path(sys.argv[3]);body=b'{"token":"synthetic-token"}'
- assert m.STAGES==frozenset({"preflight","tls","routes","state","token.request","token.headers","token.header-shape","token.header-encoding","token.header-authority","token.status","token.content-type","token.framing","token.body","token.json","artifact.request","artifact.headers","artifact.response-headers","artifact.redirect","artifact.redirect.status","artifact.redirect.location","artifact.redirect.location-shape","artifact.redirect.location.url","artifact.redirect.location.host","artifact.redirect.location.host-docker-com","artifact.redirect.location.host-cloudflare-storage","artifact.redirect.location.host-docker-io","artifact.redirect.location.host-other","artifact.redirect.location.query","artifact.redirect.location.path","artifact.redirect.framing","artifact.redirect.count","artifact.final","artifact.body","publish","postverify"})
+ assert m.STAGES==frozenset({"preflight","tls","routes","state","token.request","token.headers","token.header-shape","token.header-encoding","token.header-authority","token.status","token.content-type","token.framing","token.body","token.json","artifact.request","artifact.headers","artifact.response-headers","artifact.redirect","artifact.redirect.status","artifact.redirect.location","artifact.redirect.location-shape","artifact.redirect.location.url","artifact.redirect.location.host","artifact.redirect.location.host-docker-com","artifact.redirect.location.host-cloudflare-storage","artifact.redirect.location.host-docker-io","artifact.redirect.location.host-other","artifact.redirect.location.query","artifact.redirect.location.path","artifact.redirect.framing","artifact.redirect.framing.transfer","artifact.redirect.framing.length","artifact.redirect.framing.body","artifact.redirect.count","artifact.final","artifact.body","publish","postverify"})
  original_env=dict(os.environ);original_tls=m._tls_context;original_routes=m._artifact_routes
  def boom(*_args):raise RuntimeError()
  try:
@@ -320,12 +320,34 @@ elif action=="stage-map":
   assert failure_stage(lambda:m._final_response(route1,None,transport,time.monotonic()+10,10))==expected and redirect.closed
   assert len(transport.requests)==1 and transport.responses==[later] and not later.closed
  framings=[
-  Response(302,[("Content-Length","1"),("Location","/file/"+"a"*40),("Content-Type","text/plain")],b"x"),
-  Response(302,[("Transfer-Encoding","chunked"),("Location","/file/"+"a"*40),("Content-Type","text/plain")],b""),
-  Response(302,[("Content-Length","0"),("Location","/file/"+"a"*40),("Content-Type","text/plain")],b"x"),
+  ("artifact.redirect.framing.length",Response(302,[("Content-Length","1"),("Location","/file/"+"a"*40),("Content-Type","text/plain")],b"x")),
+  ("artifact.redirect.framing.length",Response(302,[("Content-Length","00"),("Location","/file/"+"a"*40),("Content-Type","text/plain")],b"")),
+  *[("artifact.redirect.framing.transfer",Response(302,[("Transfer-Encoding",value),("Location","/file/"+"a"*40),("Content-Type","text/plain")],b"")) for value in ["chunked","gzip","chunked, gzip"]],
+  ("artifact.redirect.framing.body",Response(302,[("Content-Length","0"),("Location","/file/"+"a"*40),("Content-Type","text/plain")],b"x")),
  ]
- for redirect in framings:
-  assert failure_stage(lambda redirect=redirect:m._final_response(route1,None,Transport([redirect]),time.monotonic()+10,10))=="artifact.redirect.framing" and redirect.closed
+ for expected,redirect in framings:
+  later=artifact(b"good");transport=Transport([redirect,later])
+  assert failure_stage(lambda:m._final_response(route1,None,transport,time.monotonic()+10,10))==expected and redirect.closed
+  assert len(transport.requests)==1 and transport.responses==[later] and not later.closed
+ class DeadlineRedirect(Response):
+  def read(self,size,deadline):
+   if deadline<=time.monotonic():raise TimeoutError()
+   return super().read(size,deadline)
+ class ThrowingRedirect(Response):
+  def read(self,_size,_deadline):raise OSError("fixed")
+ original_monotonic=m.time.monotonic;ticks=iter([0,20]);m.time.monotonic=lambda:next(ticks)
+ try:
+  expired=DeadlineRedirect(302,[("Content-Length","0"),("Location","/file/"+"a"*40)],b"");later=artifact(b"good");transport=Transport([expired,later])
+  assert failure_stage(lambda:m._final_response(route1,None,transport,10,10))=="artifact.redirect.framing.body" and expired.closed
+  assert len(transport.requests)==1 and transport.responses==[later] and not later.closed
+ finally:m.time.monotonic=original_monotonic
+ throwing=ThrowingRedirect(302,[("Content-Length","0"),("Location","/file/"+"a"*40)],b"");later=artifact(b"good");transport=Transport([throwing,later])
+ assert failure_stage(lambda:m._final_response(route1,None,transport,time.monotonic()+10,10))=="artifact.redirect.framing.body" and throwing.closed
+ assert len(transport.requests)==1 and transport.responses==[later] and not later.closed
+ duplicate_framing=Response(302,[("Content-Length","0"),("content-length","0"),("Location","/file/"+"a"*40)],b"");later=artifact(b"good");transport=Transport([duplicate_framing,later])
+ assert failure_stage(lambda:m._final_response(route1,None,transport,time.monotonic()+10,10))=="artifact.response-headers" and duplicate_framing.closed
+ assert len(transport.requests)==1 and transport.responses==[later] and not later.closed
+ assert failure_stage(lambda:m._stage("artifact.redirect.framing",lambda:m._fail(False)))=="artifact.redirect.framing"
  cycle=[Response(302,[("Content-Length","0"),("Location","/file/"+"a"*40)],b"") for _item in range(2)]
  assert failure_stage(lambda:m._final_response(route1,None,Transport(cycle),time.monotonic()+10,10))=="artifact.redirect.count" and all(item.closed for item in cycle)
  excessive=[Response(302,[("Content-Length","0"),("Location","/file/"+character*40)],b"") for character in "abcd"]
@@ -399,10 +421,10 @@ elif action=="cli-stage":
  specv=importlib.util.spec_from_file_location("verifier",sys.argv[3]);v=importlib.util.module_from_spec(specv);specv.loader.exec_module(v)
  assert v.ACQUISITION_STAGES==m.STAGES
  sys.modules["completion_artifact_acquisition"]=m;v.verify_contract=lambda _path:{}
- def acquisition_failure(*_args):raise m.AcquisitionError("artifact.redirect.location.host-other")
+ def acquisition_failure(*_args):raise m.AcquisitionError("artifact.redirect.framing.body")
  m.acquire_artifacts=acquisition_failure
  try:v.acquire_completion_artifacts("contract","root")
- except v.VerificationError as error:assert error.stage=="artifact.redirect.location.host-other"
+ except v.VerificationError as error:assert error.stage=="artifact.redirect.framing.body"
  else:raise AssertionError("expected staged verification failure")
  m.acquire_artifacts=lambda *_args:None
  def postverify_failure(*_args):raise v.VerificationError()
@@ -413,12 +435,12 @@ elif action=="cli-stage":
  dynamic="https://hostile.invalid Authorization Bearer secret "+"a"*64
  def staged(*_args):
   try:raise RuntimeError(dynamic)
-  except RuntimeError as error:raise v.VerificationError("artifact.redirect.location.host-other") from error
+  except RuntimeError as error:raise v.VerificationError("artifact.redirect.framing.body") from error
  v.acquire_completion_artifacts=staged;stderr=io.StringIO()
  with contextlib.redirect_stderr(stderr):code=v.main(["acquire-artifacts"])
- lines=stderr.getvalue().splitlines();assert code==1 and lines==["completion artifact verification failed","completion artifact acquisition stage: artifact.redirect.location.host-other"]
+ lines=stderr.getvalue().splitlines();assert code==1 and lines==["completion artifact verification failed","completion artifact acquisition stage: artifact.redirect.framing.body"]
  assert dynamic not in stderr.getvalue() and "https://" not in stderr.getvalue() and "Bearer" not in stderr.getvalue() and not any(part in stderr.getvalue() for part in ["registry-1.docker.io","snapshot.debian.org"])
- def ordinary(*_args):raise v.VerificationError("artifact.redirect.location.host-other")
+ def ordinary(*_args):raise v.VerificationError("artifact.redirect.framing.body")
  v.verify_contract=ordinary;stderr=io.StringIO()
  with contextlib.redirect_stderr(stderr):code=v.main(["verify-contract"])
  assert code==1 and stderr.getvalue()=="completion artifact verification failed\n"
