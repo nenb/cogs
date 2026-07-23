@@ -65,8 +65,10 @@ STAGES = frozenset(
         "preflight", "tls", "routes", "state", "token.request", "token.headers", "token.header-shape",
         "token.header-encoding", "token.header-authority", "token.status", "token.content-type", "token.framing",
         "token.body", "token.json", "artifact.request", "artifact.headers", "artifact.response-headers",
-        "artifact.redirect", "artifact.redirect.status", "artifact.redirect.location", "artifact.redirect.framing",
-        "artifact.redirect.count", "artifact.final", "artifact.body", "publish", "postverify",
+        "artifact.redirect", "artifact.redirect.status", "artifact.redirect.location", "artifact.redirect.location-shape",
+        "artifact.redirect.location.url", "artifact.redirect.location.host", "artifact.redirect.location.query",
+        "artifact.redirect.location.path", "artifact.redirect.framing", "artifact.redirect.count", "artifact.final",
+        "artifact.body", "publish", "postverify",
     }
 )
 
@@ -405,22 +407,35 @@ def _redirect_framing(response, headers, deadline):
     _fail(response.read(1, deadline) == b"")
 
 
-def _debian_redirect(current, location):
-    _fail(type(location) is str and len(location) <= 16384)
+def _redirect_location_shape(location):
+    _fail(type(location) is str and 0 < len(location) <= 16384)
+
+
+def _debian_redirect_url(current, location):
     target = urljoin(current, location)
-    parsed = _strict_url(target)
-    _fail(parsed.hostname == SNAPSHOT_HOST and not parsed.query and "%" not in parsed.path)
-    _fail(parsed.path.startswith("/archive/debian/20260713T000000Z/") or HEX40.fullmatch(parsed.path) is not None)
+    return target, _strict_url(target)
+
+
+def _debian_redirect(current, location):
+    _stage("artifact.redirect.location-shape", lambda: _redirect_location_shape(location))
+    target, parsed = _stage("artifact.redirect.location.url", lambda: _debian_redirect_url(current, location))
+    _stage("artifact.redirect.location.host", lambda: _fail(parsed.hostname == SNAPSHOT_HOST))
+    _stage("artifact.redirect.location.query", lambda: _fail(not parsed.query))
+    _stage("artifact.redirect.location.path", lambda: _fail("%" not in parsed.path))
+    allowed = parsed.path.startswith("/archive/debian/20260713T000000Z/") or HEX40.fullmatch(parsed.path) is not None
+    _stage("artifact.redirect.location.path", lambda: _fail(allowed))
     return target
 
 
 def _oci_redirect(route, location):
     _fail(route.source in {"oci-config", "oci-layer"})
-    parsed = _strict_url(location)
-    _fail(parsed.hostname in CDN_HOSTS and len(parsed.query.encode()) <= 8192)
+    _stage("artifact.redirect.location-shape", lambda: _redirect_location_shape(location))
+    parsed = _stage("artifact.redirect.location.url", lambda: _strict_url(location))
+    _stage("artifact.redirect.location.host", lambda: _fail(parsed.hostname in CDN_HOSTS))
+    _stage("artifact.redirect.location.query", lambda: _fail(len(parsed.query.encode()) <= 8192))
     digest = route.row["sha256"]
     expected = f"/blobs/sha256/{digest[:2]}/{digest}/data"
-    _fail(expected in parsed.path)
+    _stage("artifact.redirect.location.path", lambda: _fail(expected in parsed.path))
     return location
 
 
