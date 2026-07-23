@@ -70,7 +70,8 @@ STAGES = frozenset(
         "artifact.redirect.location.url", "artifact.redirect.location.host", "artifact.redirect.location.host-docker-com",
         "artifact.redirect.location.host-cloudflare-storage", "artifact.redirect.location.host-docker-io",
         "artifact.redirect.location.host-other", "artifact.redirect.location.query", "artifact.redirect.location.path",
-        "artifact.redirect.framing", "artifact.redirect.count", "artifact.final",
+        "artifact.redirect.framing", "artifact.redirect.framing.transfer", "artifact.redirect.framing.length",
+        "artifact.redirect.framing.body", "artifact.redirect.count", "artifact.final",
         "artifact.body", "publish", "postverify",
     }
 )
@@ -405,9 +406,9 @@ def _redirect_location(headers):
 
 
 def _redirect_framing(response, headers, deadline):
-    _fail("transfer-encoding" not in headers)
-    _content_length(headers, 0, optional_zero=True)
-    _fail(response.read(1, deadline) == b"")
+    _stage("artifact.redirect.framing.transfer", lambda: _fail("transfer-encoding" not in headers))
+    _stage("artifact.redirect.framing.length", lambda: _content_length(headers, 0, optional_zero=True))
+    _stage("artifact.redirect.framing.body", lambda: _fail(response.read(1, deadline) == b""))
 
 
 def _redirect_location_shape(location):
