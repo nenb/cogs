@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import hashlib
 import importlib.util
 import json
+import os
 import sys
 from pathlib import Path
 import zlib
@@ -12,10 +13,12 @@ import zlib
 sys.dont_write_bytecode = True
 
 from completion_archive_preflight import (
+    ArchiveRecord,
+    ArchiveRoot,
     MaterialRecord,
+    PreflightedDeb,
     PreflightedTar,
-    _read_fixed_package,
-    preflight_deb_payload,
+    preflight_fixed_deb,
     preflight_oci_layer_bytes,
 )
 
@@ -23,6 +26,7 @@ VERSION = "cogs.stage2-completion-rootfs-plan/v1"
 SOURCE_DATE_EPOCH = 1782172800
 REMOTE = Path(__file__).resolve().parent
 VERIFIER_PATH = REMOTE / "verify-completion-artifacts.py"
+ROOT_POLICY = ArchiveRoot("directory", 0o755, 0, 0, SOURCE_DATE_EPOCH, 0)
 PACKAGE_ORDER = (
     "git",
     "openssh-server",
@@ -86,9 +90,47 @@ class Transition:
 
 @dataclass(frozen=True)
 class RootfsPlan:
+    root: ArchiveRoot
     source_order: tuple[str, ...]
     entries: tuple[PlannedEntry, ...]
     transitions: tuple[Transition, ...]
+
+
+@dataclass(frozen=True)
+class FixedPackageRow:
+    name: str
+    version: str
+    architecture: str
+    path: str
+    filename: str
+    cache_name: str
+    url: str
+    size: int
+    sha256: str
+
+    def expected(self):
+        return {field: getattr(self, field) for field in self.__dataclass_fields__}
+
+
+@dataclass(frozen=True)
+class CacheIdentity:
+    name: str
+    identity: tuple[int, ...]
+    sha256: str
+
+
+@dataclass(frozen=True)
+class FixedPackageInput:
+    row: FixedPackageRow
+    deb: PreflightedDeb
+
+
+@dataclass(frozen=True)
+class RootfsBuildInputs:
+    contract_sha256: str
+    cache: tuple[CacheIdentity, ...]
+    packages: tuple[FixedPackageInput, ...]
+    plan: RootfsPlan
 
 
 def _file_identity(mode, gid, mtime, size, digest):
@@ -212,13 +254,23 @@ def _check_graph(entries):
             )
 
 
+def _valid_package_root(root):
+    return (
+        type(root) is ArchiveRoot
+        and (root.kind, root.mode, root.uid, root.gid, root.archive_size) == ("directory", 0o755, 0, 0, 0)
+        and type(root.mtime) is int
+    )
+
+
 def plan_sources(base, packages):
-    _fail(type(base) is PreflightedTar and type(packages) is tuple)
+    _fail(type(base) is PreflightedTar and type(packages) is tuple and base.root == ROOT_POLICY)
     names = ("oci-layer",) + tuple(name for name, _archive in packages)
     _fail(len(names) == len(set(names)) and all(type(name) is str and name for name in names))
     entries = {}
     for source, archive in (("oci-layer", base), *packages):
         _fail(type(archive) is PreflightedTar)
+        if source != "oci-layer":
+            _fail(_valid_package_root(archive.root))
         for record in archive.records:
             current = entries.get(record.path)
             if current is not None:
@@ -226,7 +278,7 @@ def plan_sources(base, packages):
             entries[record.path] = PlannedEntry(source, archive, record)
     _check_graph(entries)
     ordered = tuple(entries[path] for path in sorted(entries, key=lambda value: value.encode("utf-8")))
-    return RootfsPlan(names, ordered, ())
+    return RootfsPlan(base.root, names, ordered, ())
 
 
 def apply_transitions(source_plan, transitions):
@@ -254,7 +306,7 @@ def apply_transitions(source_plan, transitions):
             entries[path] = transition.result
     _check_graph(entries)
     ordered = tuple(entries[path] for path in sorted(entries, key=lambda value: value.encode("utf-8")))
-    return RootfsPlan(source_plan.source_order, ordered, transitions)
+    return RootfsPlan(source_plan.root, source_plan.source_order, ordered, transitions)
 
 
 def _generated_file(path, content, mode, gid=0):
@@ -358,22 +410,167 @@ def _decompress_layer(raw, row, maximum):
     return expanded
 
 
-def load_verified_plan():
+def _fixed_package_row(row):
+    fields = tuple(FixedPackageRow.__dataclass_fields__)
+    _fail(type(row) is dict and tuple(row) == fields)
+    values = tuple(row[field] for field in fields)
+    _fail(all(type(value) is str for value in values[:-2]))
+    _fail(type(values[-2]) is int and type(values[-1]) is str)
+    return FixedPackageRow(*values)
+
+
+def _cache_snapshot(verifier, contract):
+    cache_root = verifier.ARTIFACT_ROOT / "cache"
+    identities = []
+    contents = {}
+    for row in verifier.cache_entries(contract):
+        path = cache_root / row["cache_name"]
+        before = os.lstat(path)
+        raw = verifier.read_stable_regular(path, 0o400, row["size"])
+        after = os.lstat(path)
+        digest = hashlib.sha256(raw).hexdigest()
+        _fail(verifier.identity(before) == verifier.identity(after))
+        _fail(len(raw) == row["size"] and digest == row["sha256"] and row["cache_name"] not in contents)
+        identities.append(CacheIdentity(row["cache_name"], verifier.identity(after), digest))
+        contents[row["cache_name"]] = raw
+    _fail(len(identities) == contract["bounds"]["artifact_count"])
+    return tuple(identities), contents
+
+
+def _valid_archive(archive):
+    return (
+        type(archive) is PreflightedTar
+        and type(archive.raw) is bytes
+        and type(archive.root) is ArchiveRoot
+        and type(archive.records) is tuple
+        and all(type(record) is MaterialRecord for record in archive.records)
+        and type(archive.archive_records) is tuple
+        and all(type(record) is ArchiveRecord for record in archive.archive_records)
+    )
+
+
+def _authority_values(inputs):
+    _fail(type(inputs) is RootfsBuildInputs and type(inputs.plan) is RootfsPlan and inputs.plan.root == ROOT_POLICY)
+    _fail(type(inputs.contract_sha256) is str and len(inputs.contract_sha256) == 64)
+    _fail(all(character in "0123456789abcdef" for character in inputs.contract_sha256))
+    _fail(len(inputs.cache) == 16 and len({item.name for item in inputs.cache}) == 16)
+    _fail(
+        all(
+            type(item) is CacheIdentity
+            and type(item.name) is str
+            and type(item.identity) is tuple
+            and all(type(value) is int for value in item.identity)
+            and type(item.sha256) is str
+            and len(item.sha256) == 64
+            for item in inputs.cache
+        )
+    )
+    _fail(tuple(item.row.name for item in inputs.packages) == PACKAGE_ORDER)
+    member_names = ("debian-binary", "control.tar.xz", "data.tar.xz")
+    for item in inputs.packages:
+        _fail(type(item) is FixedPackageInput and type(item.row) is FixedPackageRow and type(item.deb) is PreflightedDeb)
+        row_values = tuple(getattr(item.row, field) for field in item.row.__dataclass_fields__)
+        _fail(all(type(value) is str for value in row_values[:-2]))
+        _fail(type(item.row.size) is int and type(item.row.sha256) is str)
+        _fail(type(item.deb.raw) is bytes and type(item.deb.members) is tuple)
+        _fail(all(type(member) is tuple and len(member) == 3 for member in item.deb.members))
+        _fail(all(type(name) is str and type(size) is int and type(digest) is str for name, size, digest in item.deb.members))
+        _fail(tuple(member[0] for member in item.deb.members) == member_names and _valid_archive(item.deb.payload))
+        _fail(len(item.deb.raw) == item.row.size and hashlib.sha256(item.deb.raw).hexdigest() == item.row.sha256)
+        _fail(item.deb.data_member == "data.tar.xz" and _valid_package_root(item.deb.payload.root))
+    package_owners = {item.row.name: item.deb.payload for item in inputs.packages}
+    plan = inputs.plan
+    _fail(type(plan.entries) is tuple and all(type(entry) is PlannedEntry for entry in plan.entries))
+    _fail(type(plan.transitions) is tuple and all(type(item) is Transition for item in plan.transitions))
+    _fail(plan.source_order == ("oci-layer",) + PACKAGE_ORDER)
+    entries = _entry_map(plan)
+    _fail(len(entries) == len(plan.entries))
+    _fail(tuple(entries) == tuple(sorted(entries, key=lambda value: value.encode("utf-8"))))
+    _check_graph(entries)
+    base_owner = None
+    for entry in plan.entries:
+        _fail(type(entry.source) is str and type(entry.record) is MaterialRecord)
+        if entry.source == "generated":
+            _fail(entry.owner is None and entry.record.kind in {"file", "directory"})
+            _fail((entry.record.kind == "file") == (type(entry.generated_content) is bytes))
+        else:
+            _fail(entry.generated_content is None and _valid_archive(entry.owner))
+            if entry.source == "oci-layer":
+                base_owner = entry.owner if base_owner is None else base_owner
+                _fail(entry.owner is base_owner)
+            else:
+                _fail(entry.owner is package_owners.get(entry.source))
+            _fail(any(record is entry.record for record in entry.owner.records))
+        if entry.record.kind == "file":
+            _fail(hashlib.sha256(entry.content()).hexdigest() == entry.record.content_sha256)
+    _fail(base_owner is not None)
+    expected_actions = {
+        **{path: "replace" for path in _ACCOUNT_EXPECTED},
+        "etc/ssh/sshd_config": "create",
+        "run/cogs-stage2-ssh": "create",
+        "run/sshd": "create",
+    }
+    _fail(len(plan.transitions) == len(expected_actions))
+    _fail({transition.path: transition.action for transition in plan.transitions} == expected_actions)
+    for transition in plan.transitions:
+        expected = _ACCOUNT_EXPECTED.get(transition.path)
+        _fail(transition.expected == expected and transition.result is entries[transition.path])
+    package_values = tuple(
+        (item.row, item.deb.raw, item.deb.members, item.deb.data_member, item.deb.payload)
+        for item in inputs.packages
+    )
+    plan_values = (
+        plan.root,
+        plan.source_order,
+        tuple((entry.source, entry.record, entry.generated_content) for entry in plan.entries),
+        tuple((item.path, item.action, item.expected, item.result.record.path) for item in plan.transitions),
+    )
+    return (inputs.contract_sha256, inputs.cache, package_values, base_owner, plan_values)
+
+
+def revalidate_build_inputs(foreign):
+    authority = load_verified_build_inputs()
+    _fail(_authority_values(authority) == _authority_values(foreign))
+    return authority
+
+
+def _load_fixed_build_inputs():
     verifier = _load_verifier()
     verifier.verify_package_archives(verifier.CONTRACT_PATH, verifier.ARTIFACT_ROOT)
+    contract_before = os.lstat(verifier.CONTRACT_PATH)
     contract = verifier.verify_contract(verifier.CONTRACT_PATH)
-    cache = verifier.ARTIFACT_ROOT / "cache"
+    contract_raw = verifier.read_stable_regular(verifier.CONTRACT_PATH, 0o644, 32768)
+    contract_after = os.lstat(verifier.CONTRACT_PATH)
+    _fail(verifier.identity(contract_before) == verifier.identity(contract_after))
+    _fail(verifier.strict_json(contract_raw, 32768) == contract)
+    cache, contents = _cache_snapshot(verifier, contract)
     layer_row = contract["oci"]["layer"]
-    layer_raw = verifier.cached_bytes(cache, layer_row, contract["bounds"]["max_file_bytes"])
-    base_raw = _decompress_layer(layer_raw, layer_row, contract["bounds"]["max_regular_bytes"])
+    base_raw = _decompress_layer(contents[layer_row["cache_name"]], layer_row, contract["bounds"]["max_regular_bytes"])
     base = preflight_oci_layer_bytes(base_raw, contract["bounds"])
-    packages = []
     _fail(tuple(row["name"] for row in contract["packages"]) == PACKAGE_ORDER)
-    for row in contract["packages"]:
-        package_raw = _read_fixed_package(cache / row["cache_name"], row)
-        packages.append((row["name"], preflight_deb_payload(package_raw, row, contract["bounds"])))
-    source_plan = plan_sources(base, tuple(packages))
-    return apply_transitions(source_plan, fixed_transitions(source_plan))
+    packages = []
+    for mutable_row in contract["packages"]:
+        row = _fixed_package_row(mutable_row)
+        deb = preflight_fixed_deb(contents[row.cache_name], row.expected(), contract["bounds"])
+        packages.append(FixedPackageInput(row, deb))
+    member_names = ("debian-binary", "control.tar.xz", "data.tar.xz")
+    _fail(all(tuple(member[0] for member in item.deb.members) == member_names for item in packages))
+    source_plan = plan_sources(base, tuple((item.row.name, item.deb.payload) for item in packages))
+    plan = apply_transitions(source_plan, fixed_transitions(source_plan))
+    value = RootfsBuildInputs(hashlib.sha256(contract_raw).hexdigest(), cache, tuple(packages), plan)
+    _authority_values(value)
+    return value
+
+
+def load_verified_build_inputs():
+    first = _load_fixed_build_inputs()
+    second = _load_fixed_build_inputs()
+    _fail(_authority_values(first) == _authority_values(second))
+    return second
+
+
+def load_verified_plan():
+    return load_verified_build_inputs().plan
 
 
 def summary(plan):
