@@ -311,7 +311,7 @@ def _raw_tar_frames(raw, bounds):
         extension_order = []
     _fail(pax is None and long_name is None and long_link is None and not extension_order)
     terminal = (len(raw) - offset) // 512
-    _fail(2 <= terminal <= 20 and raw[offset:] == zero * terminal)
+    _fail(2 <= terminal <= 21 and raw[offset:] == zero * terminal)
     return tuple(members)
 
 

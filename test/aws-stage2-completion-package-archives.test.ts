@@ -321,6 +321,7 @@ test("raw tar framing rejects checksum, numeric, padding, body, and terminal amb
     Buffer.alloc(1024),
   ]);
   const secondArchive = Buffer.concat([validData, tar([{ name: "late", body: "" }])]);
+  const rolloverData = tar([{ name: "ok", body: Buffer.alloc(18 * 512) }], 21);
   const cases = [
     badChecksum,
     badBase256,
@@ -330,9 +331,10 @@ test("raw tar framing rejects checksum, numeric, padding, body, and terminal amb
     validData.subarray(0, -1),
     oneThenMember,
     secondArchive,
-    tar([{ name: "ok", body: "" }], 21),
+    tar([{ name: "ok", body: Buffer.alloc(18 * 512) }], 22),
   ];
   try {
+    assert.equal((await runDeb(dir, replaceTarInDeb(validControl, rolloverData))).status, 0);
     for (const [index, data] of cases.entries()) {
       const bytes = replaceTarInDeb(validControl, data);
       assert.notEqual((await runDeb(dir, bytes)).status, 0, `case ${index}`);
