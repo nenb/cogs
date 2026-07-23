@@ -711,6 +711,7 @@ def _reconcile_ledger(records, observations):
     pending = None
     operation_generation = None
     operation_intended = False
+    operation_consistent = True
     state_parent = None
     for record in records:
         body = _body(record)
@@ -727,12 +728,25 @@ def _reconcile_ledger(records, observations):
             owned[body["alias"]] = _parse_generation(body["alias_generation"])
         elif kind == "remove-settled":
             owned.pop(body["path"], None)
+        if kind in {"create-settled", "hardlink-create-settled", "remove-settled"}:
+            path = body.get("path", body.get("alias"))
+            parent_path = path.rpartition("/")[0]
+            parent_generation = _parse_parent(body["parent"]).generation
+            if parent_path:
+                operation_consistent = operation_consistent and parent_path in owned
+                if parent_path in owned:
+                    owned[parent_path] = parent_generation
+            else:
+                operation_generation = parent_generation
+        if kind == "operation-remove-intent":
+            operation_consistent = operation_consistent and operation_generation == _parse_generation(body["operation"])
         if kind.endswith("-intent"):
             pending = record
         elif kind.endswith("-settled") or kind in {"genesis-abort", "operation-abort", "operation-absent", "retired", "uncertain"}:
             pending = None
     status = "preserve"
     parent_matches = state_parent == observations.state_parent
+    parent_matches = parent_matches and operation_consistent
     if phase == "ready" and not operations and not entries and parent_matches:
         status = "genesis-abortable"
     elif phase == "operation-intent" and not operations and not entries and parent_matches:
@@ -759,15 +773,18 @@ def _reconcile_ledger(records, observations):
         if pending.record_type in {"create-intent", "hardlink-create-intent"} and path not in entries and entries == owned and exact_operation:
             if observed_parent == expected_parent:
                 status = "entry-absent"
-        elif pending.record_type == "remove-intent" and exact_operation:
+        elif pending.record_type == "remove-intent":
             expected = _parse_generation(body["child"])
-            if entries == owned and entries.get(path) == expected and observed_parent == expected_parent:
+            if exact_operation and entries == owned and entries.get(path) == expected and observed_parent == expected_parent:
                 status = "remove-retry"
             elif path not in entries:
                 remaining = dict(owned)
                 remaining.pop(path, None)
                 action = "rmdir" if body["kind"] == "directory" else "unlink"
-                if entries == remaining and _valid_parent_delta(action, path.split("/")[-1], expected_parent, observed_parent):
+                absence_operation = exact_operation
+                if parent_path == "" and observed_parent is not None:
+                    absence_operation = operations == {operation_name: observed_parent.generation}
+                if absence_operation and entries == remaining and _valid_parent_delta(action, path.split("/")[-1], expected_parent, observed_parent):
                     status = "remove-absence-settleable"
     cleanup_allowed = status in {"active", "entry-absent", "remove-retry", "remove-absence-settleable", "operation-remove-retry"}
     return LedgerState(status, token, operation_name if operation_intended else None, tuple(sorted(owned.items())), cleanup_allowed, records[-1].record_type)

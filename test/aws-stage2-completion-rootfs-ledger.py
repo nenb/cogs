@@ -168,7 +168,12 @@ def codec_and_reconcile_tests():
     assert ledger._reconcile_ledger(create_intent_records, dataclasses.replace(absent_observations, entries=(("rootfs", child),))).status == "preserve"
     created_proposals = proposals + [create_intent, create_observed, create_settled]
     created = ledger._parse_ledger(encoded(created_proposals))
-    created_observations = dataclasses.replace(observations, entries=(("rootfs", child),))
+    operation_after_create = operation_parent_after.generation
+    created_observations = dataclasses.replace(
+        observations,
+        operations=((ledger._operation_name(TOKEN), operation_after_create),),
+        entries=(("rootfs", child),),
+    )
     assert ledger._reconcile_ledger(created, created_observations).status == "active"
     observed_only = ledger._parse_ledger(encoded(proposals + [create_intent, create_observed]))
     assert ledger._reconcile_ledger(observed_only, created_observations).status == "preserve"
@@ -180,7 +185,7 @@ def codec_and_reconcile_tests():
         ledger.LedgerProposal.create("metadata-settled", {"token": TOKEN, "path": "rootfs", "child": gvalue(desired)}),
     ]
     metadata_records = ledger._parse_ledger(encoded(created_proposals + metadata))
-    desired_observations = dataclasses.replace(observations, entries=(("rootfs", desired),))
+    desired_observations = dataclasses.replace(created_observations, entries=(("rootfs", desired),))
     assert ledger._reconcile_ledger(metadata_records, desired_observations).status == "active"
 
     remove_intent = ledger.LedgerProposal.create(
@@ -198,7 +203,8 @@ def codec_and_reconcile_tests():
     remove_present = dataclasses.replace(desired_observations, parents=(("", operation_parent_after),))
     remove_absent = dataclasses.replace(observations, parents=(("", operation_parent_before),))
     assert ledger._reconcile_ledger(remove_intent_records, remove_present).status == "remove-retry"
-    assert ledger._reconcile_ledger(remove_intent_records, remove_absent).status == "remove-absence-settleable"
+    remove_absent_state = ledger._reconcile_ledger(remove_intent_records, remove_absent)
+    assert remove_absent_state.status == "remove-absence-settleable", remove_absent_state
     remove_observed = ledger.LedgerProposal.create(
         "remove-observed",
         {"token": TOKEN, "path": "rootfs", "kind": "directory", "parent": pvalue(operation_parent_before), "target_path": None, "target": None},
