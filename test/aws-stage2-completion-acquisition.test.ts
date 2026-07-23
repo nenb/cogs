@@ -319,10 +319,21 @@ elif action=="stage-map":
   redirect=Response(302,[("Content-Length","0"),("Location",location)],b"");later=artifact(b"good");transport=Transport([redirect,later])
   assert failure_stage(lambda:m._final_response(route1,None,transport,time.monotonic()+10,10))==expected and redirect.closed
   assert len(transport.requests)==1 and transport.responses==[later] and not later.closed
+ assert m.REDIRECT_BODY_MAX==4096 and m.REDIRECT_BODY_MAX*16*3==196608
+ for metadata in [b"\x00\xff",bytes(range(256))*16]:
+  redirect=Response(302,[("Content-Length",str(len(metadata))),("Location","/file/"+"a"*40),("Content-Type","text/plain")],metadata);final=artifact(b"good");transport=Transport([redirect,final])
+  returned=m._final_response(route1,None,transport,time.monotonic()+10,10)
+  assert returned is final and redirect.closed and redirect.offset==len(metadata) and len(transport.requests)==2;returned.close()
+ strict_target_body=b"metadata";strict_target=Response(302,[("Content-Length",str(len(strict_target_body))),("Location","/not-allowed")],strict_target_body);later=artifact(b"good");transport=Transport([strict_target,later])
+ assert failure_stage(lambda:m._final_response(route1,None,transport,time.monotonic()+10,10))=="artifact.redirect.location.path" and strict_target.closed and strict_target.offset==len(strict_target_body)
+ assert len(transport.requests)==1 and transport.responses==[later] and not later.closed
  framings=[
-  ("artifact.redirect.framing.length",Response(302,[("Content-Length","1"),("Location","/file/"+"a"*40),("Content-Type","text/plain")],b"x")),
   ("artifact.redirect.framing.length",Response(302,[("Content-Length","00"),("Location","/file/"+"a"*40),("Content-Type","text/plain")],b"")),
+  ("artifact.redirect.framing.length",Response(302,[("Content-Length",str(m.REDIRECT_BODY_MAX+1)),("Location","/file/"+"a"*40)],b"")),
   *[("artifact.redirect.framing.transfer",Response(302,[("Transfer-Encoding",value),("Location","/file/"+"a"*40),("Content-Type","text/plain")],b"")) for value in ["chunked","gzip","chunked, gzip"]],
+  ("artifact.redirect.framing.transfer",Response(302,[("Transfer-Encoding","chunked"),("Content-Length","1"),("Location","/file/"+"a"*40)],b"x")),
+  ("artifact.redirect.framing.body",Response(302,[("Content-Length","4"),("Location","/file/"+"a"*40)],b"x")),
+  ("artifact.redirect.framing.body",Response(302,[("Content-Length","1"),("Location","/file/"+"a"*40)],b"xx")),
   ("artifact.redirect.framing.body",Response(302,[("Content-Length","0"),("Location","/file/"+"a"*40),("Content-Type","text/plain")],b"x")),
  ]
  for expected,redirect in framings:
@@ -337,11 +348,11 @@ elif action=="stage-map":
   def read(self,_size,_deadline):raise OSError("fixed")
  original_monotonic=m.time.monotonic;ticks=iter([0,20]);m.time.monotonic=lambda:next(ticks)
  try:
-  expired=DeadlineRedirect(302,[("Content-Length","0"),("Location","/file/"+"a"*40)],b"");later=artifact(b"good");transport=Transport([expired,later])
+  expired=DeadlineRedirect(302,[("Content-Length","1"),("Location","/file/"+"a"*40)],b"x");later=artifact(b"good");transport=Transport([expired,later])
   assert failure_stage(lambda:m._final_response(route1,None,transport,10,10))=="artifact.redirect.framing.body" and expired.closed
   assert len(transport.requests)==1 and transport.responses==[later] and not later.closed
  finally:m.time.monotonic=original_monotonic
- throwing=ThrowingRedirect(302,[("Content-Length","0"),("Location","/file/"+"a"*40)],b"");later=artifact(b"good");transport=Transport([throwing,later])
+ throwing=ThrowingRedirect(302,[("Content-Length","1"),("Location","/file/"+"a"*40)],b"x");later=artifact(b"good");transport=Transport([throwing,later])
  assert failure_stage(lambda:m._final_response(route1,None,transport,time.monotonic()+10,10))=="artifact.redirect.framing.body" and throwing.closed
  assert len(transport.requests)==1 and transport.responses==[later] and not later.closed
  duplicate_framing=Response(302,[("Content-Length","0"),("content-length","0"),("Location","/file/"+"a"*40)],b"");later=artifact(b"good");transport=Transport([duplicate_framing,later])
