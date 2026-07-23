@@ -263,7 +263,7 @@ elif action=="artifact-chunked":
  cache=artifact_root(base)/"cache";assert not (cache/"final.bin").exists() and not (cache/".final.bin.partial").exists()
 elif action=="stage-map":
  base=Path(sys.argv[3]);body=b'{"token":"synthetic-token"}'
- assert m.STAGES==frozenset({"preflight","tls","routes","state","token.request","token.headers","token.header-shape","token.header-encoding","token.header-authority","token.status","token.content-type","token.framing","token.body","token.json","artifact.request","artifact.headers","artifact.response-headers","artifact.redirect","artifact.final","artifact.body","publish","postverify"})
+ assert m.STAGES==frozenset({"preflight","tls","routes","state","token.request","token.headers","token.header-shape","token.header-encoding","token.header-authority","token.status","token.content-type","token.framing","token.body","token.json","artifact.request","artifact.headers","artifact.response-headers","artifact.redirect","artifact.redirect.status","artifact.redirect.location","artifact.redirect.framing","artifact.redirect.count","artifact.final","artifact.body","publish","postverify"})
  original_env=dict(os.environ);original_tls=m._tls_context;original_routes=m._artifact_routes
  def boom(*_args):raise RuntimeError()
  try:
@@ -296,17 +296,35 @@ elif action=="stage-map":
  assert failure_stage(lambda:m._final_response(route1,None,Transport([]),time.monotonic()+10,10))=="artifact.request"
  duplicate=Response(200,[("Content-Length","4"),("Content-Length","4"),("Content-Type","application/octet-stream")],b"good")
  assert failure_stage(lambda:m._final_response(route1,None,Transport([duplicate]),time.monotonic()+10,10))=="artifact.response-headers" and duplicate.closed
- valid_redirect=Response(302,[("Content-Length","0"),("Location","/file/"+"a"*40),("Content-Type","text/plain; charset=utf-8")],b"");final=artifact(b"good");transport=Transport([valid_redirect,final])
+ valid_redirect=Response(302,[("Location","/file/"+"a"*40),("Content-Type","text/plain; charset=utf-8")],b"");final=artifact(b"good");transport=Transport([valid_redirect,final])
  returned=m._final_response(route1,None,transport,time.monotonic()+10,10);assert returned is final and valid_redirect.closed
  assert all(name.lower()!="content-type" for request in transport.requests for name,_value in request.headers);returned.close()
- redirects=[
+ invalid_status=Response(304,[("Content-Length","0"),("Location","/file/"+"a"*40)],b"")
+ assert failure_stage(lambda:m._final_response(route1,None,Transport([invalid_status]),time.monotonic()+10,10))=="artifact.redirect.status" and invalid_status.closed
+ locations=[Response(302,[("Content-Length","0")],b""),Response(302,[("Content-Length","0"),("Location","https://hostile.invalid/file")],b"")]
+ for redirect in locations:
+  assert failure_stage(lambda redirect=redirect:m._final_response(route1,None,Transport([redirect]),time.monotonic()+10,10))=="artifact.redirect.location" and redirect.closed
+ framings=[
   Response(302,[("Content-Length","1"),("Location","/file/"+"a"*40),("Content-Type","text/plain")],b"x"),
   Response(302,[("Transfer-Encoding","chunked"),("Location","/file/"+"a"*40),("Content-Type","text/plain")],b""),
   Response(302,[("Content-Length","0"),("Location","/file/"+"a"*40),("Content-Type","text/plain")],b"x"),
-  Response(302,[("Content-Length","0"),("Location","https://hostile.invalid/file"),("Content-Type","text/plain")],b""),
  ]
- for redirect in redirects:
-  assert failure_stage(lambda redirect=redirect:m._final_response(route1,None,Transport([redirect]),time.monotonic()+10,10))=="artifact.redirect" and redirect.closed
+ for redirect in framings:
+  assert failure_stage(lambda redirect=redirect:m._final_response(route1,None,Transport([redirect]),time.monotonic()+10,10))=="artifact.redirect.framing" and redirect.closed
+ cycle=[Response(302,[("Content-Length","0"),("Location","/file/"+"a"*40)],b"") for _item in range(2)]
+ assert failure_stage(lambda:m._final_response(route1,None,Transport(cycle),time.monotonic()+10,10))=="artifact.redirect.count" and all(item.closed for item in cycle)
+ excessive=[Response(302,[("Content-Length","0"),("Location","/file/"+character*40)],b"") for character in "abcd"]
+ assert failure_stage(lambda:m._final_response(route1,None,Transport(excessive),time.monotonic()+10,10))=="artifact.redirect.count" and all(item.closed for item in excessive)
+ oci=route("oci.bin",b"good","oci-layer","https://registry-1.docker.io/v2/library/debian/blobs/sha256:"+"a"*64)
+ oci_status=Response(302,[("Content-Length","0"),("Location","https://production.cloudflare.docker.com/blobs/sha256/x")],b"")
+ assert failure_stage(lambda:m._final_response(oci,"synthetic-token",Transport([oci_status]),time.monotonic()+10,10))=="artifact.redirect.status" and oci_status.closed
+ oci_location=Response(307,[("Content-Length","0"),("Location","https://production.cloudflare.docker.com/blobs/sha256/x")],b"")
+ assert failure_stage(lambda:m._final_response(oci,"synthetic-token",Transport([oci_location]),time.monotonic()+10,10))=="artifact.redirect.location" and oci_location.closed
+ oci_digest=oci.row["sha256"];oci_target=f"https://production.cloudflare.docker.com/blobs/sha256/{oci_digest[:2]}/{oci_digest}/data?x=1"
+ oci_redirects=[Response(307,[("Content-Length","0"),("Location",oci_target)],b"") for _item in range(2)];oci_transport=Transport(oci_redirects)
+ assert failure_stage(lambda:m._final_response(oci,"synthetic-token",oci_transport,time.monotonic()+10,10))=="artifact.redirect.count" and all(item.closed for item in oci_redirects)
+ assert [request.url for request in oci_transport.requests]==[oci.row["url"],oci_target]
+ assert "Authorization" in dict(oci_transport.requests[0].headers) and "Authorization" not in dict(oci_transport.requests[1].headers)
  hostile_headers=[
   Response(302,[("Content-Length","0"),("Location","/file/"+"a"*40),("Content-Encoding","gzip")],b""),
   Response(302,[("Content-Length","0"),("Location","/file/"+"a"*40),("Set-Cookie","x")],b""),
@@ -335,10 +353,10 @@ elif action=="cli-stage":
  specv=importlib.util.spec_from_file_location("verifier",sys.argv[3]);v=importlib.util.module_from_spec(specv);specv.loader.exec_module(v)
  assert v.ACQUISITION_STAGES==m.STAGES
  sys.modules["completion_artifact_acquisition"]=m;v.verify_contract=lambda _path:{}
- def acquisition_failure(*_args):raise m.AcquisitionError("artifact.final")
+ def acquisition_failure(*_args):raise m.AcquisitionError("artifact.redirect.location")
  m.acquire_artifacts=acquisition_failure
  try:v.acquire_completion_artifacts("contract","root")
- except v.VerificationError as error:assert error.stage=="artifact.final"
+ except v.VerificationError as error:assert error.stage=="artifact.redirect.location"
  else:raise AssertionError("expected staged verification failure")
  m.acquire_artifacts=lambda *_args:None
  def postverify_failure(*_args):raise v.VerificationError()
@@ -349,12 +367,12 @@ elif action=="cli-stage":
  dynamic="https://hostile.invalid Authorization Bearer secret "+"a"*64
  def staged(*_args):
   try:raise RuntimeError(dynamic)
-  except RuntimeError as error:raise v.VerificationError("artifact.final") from error
+  except RuntimeError as error:raise v.VerificationError("artifact.redirect.location") from error
  v.acquire_completion_artifacts=staged;stderr=io.StringIO()
  with contextlib.redirect_stderr(stderr):code=v.main(["acquire-artifacts"])
- lines=stderr.getvalue().splitlines();assert code==1 and lines==["completion artifact verification failed","completion artifact acquisition stage: artifact.final"]
+ lines=stderr.getvalue().splitlines();assert code==1 and lines==["completion artifact verification failed","completion artifact acquisition stage: artifact.redirect.location"]
  assert dynamic not in stderr.getvalue() and "https://" not in stderr.getvalue() and "Bearer" not in stderr.getvalue() and not any(part in stderr.getvalue() for part in ["registry-1.docker.io","snapshot.debian.org"])
- def ordinary(*_args):raise v.VerificationError("artifact.final")
+ def ordinary(*_args):raise v.VerificationError("artifact.redirect.location")
  v.verify_contract=ordinary;stderr=io.StringIO()
  with contextlib.redirect_stderr(stderr):code=v.main(["verify-contract"])
  assert code==1 and stderr.getvalue()=="completion artifact verification failed\n"
@@ -371,7 +389,7 @@ elif action=="hostile-redirects":
   expect_failure(lambda location=location:m._oci_redirect(oci,location))
  current="https://snapshot.debian.org/archive/debian/20260713T000000Z/a"
  for location in ["https://evil.example/file/"+"a"*40,"http://snapshot.debian.org/file/"+"a"*40,"https://snapshot.debian.org:444/file/"+"a"*40,"https://snapshot.debian.org/file/"+"a"*40+"?x=1","https://snapshot.debian.org/archive/debian/20260713T000000Z/%2e%2e/hostile"]:
-  expect_failure(lambda location=location:m._debian_redirect(current,location,{current}))
+  expect_failure(lambda location=location:m._debian_redirect(current,location))
 elif action=="cleanup":
  base=Path(sys.argv[3]);good=b"good";bad=b"baad";first=b"first"
  routes=[route("first.bin",first,"debian-inrelease","https://snapshot.debian.org/archive/debian/20260713T000000Z/first"),route("bad.bin",good,"debian-inrelease","https://snapshot.debian.org/archive/debian/20260713T000000Z/bad")]

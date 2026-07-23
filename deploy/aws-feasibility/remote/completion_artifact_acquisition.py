@@ -65,7 +65,8 @@ STAGES = frozenset(
         "preflight", "tls", "routes", "state", "token.request", "token.headers", "token.header-shape",
         "token.header-encoding", "token.header-authority", "token.status", "token.content-type", "token.framing",
         "token.body", "token.json", "artifact.request", "artifact.headers", "artifact.response-headers",
-        "artifact.redirect", "artifact.final", "artifact.body", "publish", "postverify",
+        "artifact.redirect", "artifact.redirect.status", "artifact.redirect.location", "artifact.redirect.framing",
+        "artifact.redirect.count", "artifact.final", "artifact.body", "publish", "postverify",
     }
 )
 
@@ -393,20 +394,23 @@ def _artifact_routes(contract):
     return tuple(routes)
 
 
-def _redirect_headers(response, headers):
-    _fail(response.status in {301, 302, 303, 307, 308})
+def _redirect_location(headers):
     _fail("location" in headers)
-    _content_length(headers, 0, optional_zero=True)
     return headers["location"]
 
 
-def _debian_redirect(current, location, seen):
+def _redirect_framing(response, headers, deadline):
+    _fail("transfer-encoding" not in headers)
+    _content_length(headers, 0, optional_zero=True)
+    _fail(response.read(1, deadline) == b"")
+
+
+def _debian_redirect(current, location):
     _fail(type(location) is str and len(location) <= 16384)
     target = urljoin(current, location)
     parsed = _strict_url(target)
     _fail(parsed.hostname == SNAPSHOT_HOST and not parsed.query and "%" not in parsed.path)
     _fail(parsed.path.startswith("/archive/debian/20260713T000000Z/") or HEX40.fullmatch(parsed.path) is not None)
-    _fail(target not in seen)
     return target
 
 
@@ -441,15 +445,17 @@ def _final_headers(route, response, headers):
 
 
 def _next_redirect(route, response, headers, current, seen, redirects, deadline):
-    _fail("transfer-encoding" not in headers)
-    location = _redirect_headers(response, headers)
-    _fail(response.read(1, deadline) == b"")
+    _stage("artifact.redirect.status", lambda: _fail(response.status in {301, 302, 303, 307, 308}))
+    location = _stage("artifact.redirect.location", lambda: _redirect_location(headers))
+    _stage("artifact.redirect.framing", lambda: _redirect_framing(response, headers, deadline))
     redirects += 1
     if route.source.startswith("oci-"):
-        _fail(redirects == 1 and response.status == 307)
-        return _oci_redirect(route, location), redirects
-    _fail(redirects <= 3)
-    target = _debian_redirect(current, location, seen)
+        _stage("artifact.redirect.status", lambda: _fail(response.status == 307))
+        _stage("artifact.redirect.count", lambda: _fail(redirects == 1))
+        return _stage("artifact.redirect.location", lambda: _oci_redirect(route, location)), redirects
+    _stage("artifact.redirect.count", lambda: _fail(redirects <= 3))
+    target = _stage("artifact.redirect.location", lambda: _debian_redirect(current, location))
+    _stage("artifact.redirect.count", lambda: _fail(target not in seen))
     seen.add(target)
     return target, redirects
 
