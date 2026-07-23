@@ -162,7 +162,7 @@ function dataTar(extra: TarEntry[] = []) {
     { name: "./", type: "5", mode: 0o755 },
     { name: "./usr/", type: "5", mode: 0o755 },
     { name: "./usr/bin/", type: "5", mode: 0o755 },
-    { name: "./usr/bin/tool-copy", type: "1", link: "usr/bin/tool" },
+    { name: "./usr/bin/tool-copy", type: "1", link: "usr/bin/tool", mode: 0o755 },
     { name: "./usr/bin/tool", body: "tool\n", mode: 0o755 },
     { name: "./usr/bin/tool-link", type: "2", link: "tool" },
     ...extra,
