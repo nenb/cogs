@@ -72,8 +72,9 @@ STAGES = frozenset(
         "artifact.redirect.location.host-cloudflare-storage", "artifact.redirect.location.host-docker-io",
         "artifact.redirect.location.host-other", "artifact.redirect.location.query", "artifact.redirect.location.path",
         "artifact.redirect.framing", "artifact.redirect.framing.transfer", "artifact.redirect.framing.length",
-        "artifact.redirect.framing.body", "artifact.redirect.count", "artifact.final",
-        "artifact.body", "publish", "postverify",
+        "artifact.redirect.framing.body", "artifact.redirect.count", "artifact.final", "artifact.final.transfer",
+        "artifact.final.length", "artifact.final.content-type", "artifact.body", "publish",
+        "postverify",
     }
 )
 
@@ -486,9 +487,12 @@ def _artifact_request(route, token, transport, current, deadline, metadata_timeo
 
 
 def _final_headers(route, response, headers):
-    _fail("transfer-encoding" not in headers and response.status == 200)
-    _content_length(headers, route.row["size"], route.row["size"])
-    _fail(headers.get("content-type", "").strip().lower() in route.content_types)
+    _stage("artifact.final.transfer", lambda: _fail("transfer-encoding" not in headers and response.status == 200))
+    _stage("artifact.final.length", lambda: _content_length(headers, route.row["size"], route.row["size"]))
+    _stage(
+        "artifact.final.content-type",
+        lambda: _fail(headers.get("content-type", "").strip().lower() in route.content_types),
+    )
 
 
 def _next_redirect(route, response, headers, current, seen, redirects, deadline):
