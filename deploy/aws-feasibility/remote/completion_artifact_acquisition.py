@@ -26,6 +26,7 @@ USER_AGENT = "cogs-stage2-acquisition/1"
 SENTINEL = ".cogs-stage2-completion-artifacts-v1"
 SENTINEL_BYTES = b"cogs-stage2-completion-artifacts-v1\n"
 TOKEN_BODY_MAX = 16384
+REDIRECT_BODY_MAX = 4096
 HEADER_COUNT_MAX = 64
 HEADER_BYTES_MAX = 32768
 GLOBAL_SECONDS = 1200
@@ -407,8 +408,11 @@ def _redirect_location(headers):
 
 def _redirect_framing(response, headers, deadline):
     _stage("artifact.redirect.framing.transfer", lambda: _fail("transfer-encoding" not in headers))
-    _stage("artifact.redirect.framing.length", lambda: _content_length(headers, 0, optional_zero=True))
-    _stage("artifact.redirect.framing.body", lambda: _fail(response.read(1, deadline) == b""))
+    length = _stage(
+        "artifact.redirect.framing.length",
+        lambda: _content_length(headers, REDIRECT_BODY_MAX) if "content-length" in headers else 0,
+    )
+    _stage("artifact.redirect.framing.body", lambda: _read_memory(response, length, deadline))
 
 
 def _redirect_location_shape(location):
