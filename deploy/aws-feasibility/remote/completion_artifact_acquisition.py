@@ -10,7 +10,7 @@ import re
 import ssl
 import stat
 import time
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import quote, urljoin, urlsplit
 
 APPROVAL_NAME = "COGS_STAGE2_ARTIFACT_ACQUISITION_APPROVED"
 APPROVAL_VALUE = "download-16-fixed-public-stage2-artifacts"
@@ -436,14 +436,26 @@ def _redirect_location_host(host, allowed):
     _stage(stage, lambda: _fail(False))
 
 
-def _debian_redirect(current, location):
+def _snapshot_named_file_path(route, path):
+    origin = _strict_url(route.row["url"])
+    filename = origin.path.rsplit("/", 1)[-1]
+    _fail(filename)
+    prefix, separator, candidate = path.rpartition("/")
+    return separator == "/" and SNAPSHOT_FILE_PATH.fullmatch(prefix) is not None and candidate == quote(filename, safe="")
+
+
+def _debian_redirect(route, current, location):
     _stage("artifact.redirect.location-shape", lambda: _redirect_location_shape(location))
     target, parsed = _stage("artifact.redirect.location.url", lambda: _debian_redirect_url(current, location))
     _stage("artifact.redirect.location.host", lambda: _redirect_location_host(parsed.hostname, (SNAPSHOT_HOST,)))
     _stage("artifact.redirect.location.query", lambda: _fail(not parsed.query))
-    _stage("artifact.redirect.location.path", lambda: _fail("%" not in parsed.path))
-    allowed = parsed.path.startswith("/archive/debian/20260713T000000Z/") or SNAPSHOT_FILE_PATH.fullmatch(parsed.path) is not None
-    _stage("artifact.redirect.location.path", lambda: _fail(allowed))
+
+    def validate_path():
+        archive = parsed.path.startswith("/archive/debian/20260713T000000Z/") and "%" not in parsed.path
+        content_file = SNAPSHOT_FILE_PATH.fullmatch(parsed.path) is not None or _snapshot_named_file_path(route, parsed.path)
+        _fail(archive or content_file)
+
+    _stage("artifact.redirect.location.path", validate_path)
     return target
 
 
@@ -489,7 +501,7 @@ def _next_redirect(route, response, headers, current, seen, redirects, deadline)
         _stage("artifact.redirect.count", lambda: _fail(redirects == 1))
         return _stage("artifact.redirect.location", lambda: _oci_redirect(route, location)), redirects
     _stage("artifact.redirect.count", lambda: _fail(redirects <= 3))
-    target = _stage("artifact.redirect.location", lambda: _debian_redirect(current, location))
+    target = _stage("artifact.redirect.location", lambda: _debian_redirect(route, current, location))
     _stage("artifact.redirect.count", lambda: _fail(target not in seen))
     seen.add(target)
     return target, redirects
