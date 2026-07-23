@@ -27,6 +27,7 @@ ACQUISITION_STAGES = frozenset(
         "artifact.redirect.location.url", "artifact.redirect.location.host", "artifact.redirect.location.host-docker-com",
         "artifact.redirect.location.host-cloudflare-storage", "artifact.redirect.location.host-docker-io",
         "artifact.redirect.location.host-other", "artifact.redirect.location.query", "artifact.redirect.location.path",
+        "artifact.redirect.location.path.percent", "artifact.redirect.location.path.filename", "artifact.redirect.location.path.archive", "artifact.redirect.location.path.other",
         "artifact.redirect.framing", "artifact.redirect.framing.transfer", "artifact.redirect.framing.length",
         "artifact.redirect.framing.body", "artifact.redirect.count", "artifact.final", "artifact.final.transfer",
         "artifact.final.length", "artifact.final.content-type", "artifact.final.content-type.missing",

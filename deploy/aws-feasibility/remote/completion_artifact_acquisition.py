@@ -71,6 +71,7 @@ STAGES = frozenset(
         "artifact.redirect.location.url", "artifact.redirect.location.host", "artifact.redirect.location.host-docker-com",
         "artifact.redirect.location.host-cloudflare-storage", "artifact.redirect.location.host-docker-io",
         "artifact.redirect.location.host-other", "artifact.redirect.location.query", "artifact.redirect.location.path",
+        "artifact.redirect.location.path.percent", "artifact.redirect.location.path.filename", "artifact.redirect.location.path.archive", "artifact.redirect.location.path.other",
         "artifact.redirect.framing", "artifact.redirect.framing.transfer", "artifact.redirect.framing.length",
         "artifact.redirect.framing.body", "artifact.redirect.count", "artifact.final", "artifact.final.transfer",
         "artifact.final.length", "artifact.final.content-type", "artifact.final.content-type.missing",
@@ -455,7 +456,12 @@ def _debian_redirect(route, current, location):
     def validate_path():
         archive = parsed.path.startswith("/archive/debian/20260713T000000Z/") and "%" not in parsed.path
         content_file = SNAPSHOT_FILE_PATH.fullmatch(parsed.path) is not None or _snapshot_named_file_path(route, parsed.path)
-        _fail(archive or content_file)
+        if archive or content_file: return
+        if "%" in parsed.path: stage = "artifact.redirect.location.path.percent"
+        elif re.match(r"^/file/(?:[a-f0-9]{40}|[a-f0-9]{64})/", parsed.path): stage = "artifact.redirect.location.path.filename"
+        elif parsed.path.startswith("/archive/"): stage = "artifact.redirect.location.path.archive"
+        else: stage = "artifact.redirect.location.path.other"
+        _stage(stage, lambda: _fail(False))
 
     _stage("artifact.redirect.location.path", validate_path)
     return target

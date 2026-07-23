@@ -263,7 +263,7 @@ elif action=="artifact-chunked":
  cache=artifact_root(base)/"cache";assert not (cache/"final.bin").exists() and not (cache/".final.bin.partial").exists()
 elif action=="stage-map":
  base=Path(sys.argv[3]);body=b'{"token":"synthetic-token"}'
- assert m.STAGES==frozenset({"preflight","tls","routes","state","token.request","token.headers","token.header-shape","token.header-encoding","token.header-authority","token.status","token.content-type","token.framing","token.body","token.json","artifact.request","artifact.headers","artifact.response-headers","artifact.redirect","artifact.redirect.status","artifact.redirect.location","artifact.redirect.location-shape","artifact.redirect.location.url","artifact.redirect.location.host","artifact.redirect.location.host-docker-com","artifact.redirect.location.host-cloudflare-storage","artifact.redirect.location.host-docker-io","artifact.redirect.location.host-other","artifact.redirect.location.query","artifact.redirect.location.path","artifact.redirect.framing","artifact.redirect.framing.transfer","artifact.redirect.framing.length","artifact.redirect.framing.body","artifact.redirect.count","artifact.final","artifact.final.transfer","artifact.final.length","artifact.final.content-type","artifact.final.content-type.missing","artifact.final.content-type.parameterized","artifact.final.content-type.application","artifact.final.content-type.text","artifact.final.content-type.other","artifact.body","publish","postverify"})
+ assert m.STAGES==frozenset({"preflight","tls","routes","state","token.request","token.headers","token.header-shape","token.header-encoding","token.header-authority","token.status","token.content-type","token.framing","token.body","token.json","artifact.request","artifact.headers","artifact.response-headers","artifact.redirect","artifact.redirect.status","artifact.redirect.location","artifact.redirect.location-shape","artifact.redirect.location.url","artifact.redirect.location.host","artifact.redirect.location.host-docker-com","artifact.redirect.location.host-cloudflare-storage","artifact.redirect.location.host-docker-io","artifact.redirect.location.host-other","artifact.redirect.location.query","artifact.redirect.location.path","artifact.redirect.location.path.percent","artifact.redirect.location.path.filename","artifact.redirect.location.path.archive","artifact.redirect.location.path.other","artifact.redirect.framing","artifact.redirect.framing.transfer","artifact.redirect.framing.length","artifact.redirect.framing.body","artifact.redirect.count","artifact.final","artifact.final.transfer","artifact.final.length","artifact.final.content-type","artifact.final.content-type.missing","artifact.final.content-type.parameterized","artifact.final.content-type.application","artifact.final.content-type.text","artifact.final.content-type.other","artifact.body","publish","postverify"})
  original_env=dict(os.environ);original_tls=m._tls_context;original_routes=m._artifact_routes
  def boom(*_args):raise RuntimeError()
  try:
@@ -322,7 +322,7 @@ elif action=="stage-map":
   ("artifact.redirect.location.url","http://snapshot.debian.org"+debian_path),
   ("artifact.redirect.location.host-other","https://hostile.invalid"+debian_path),
   ("artifact.redirect.location.query","https://snapshot.debian.org"+debian_path+"?x=1"),
-  ("artifact.redirect.location.path","https://snapshot.debian.org/archive/debian/20260713T000000Z/%2e%2e/hostile"),
+  ("artifact.redirect.location.path.percent","https://snapshot.debian.org/archive/debian/20260713T000000Z/%2e%2e/hostile"),
  ]
  for expected,location in debian_locations:
   redirect=Response(302,[("Content-Length","0"),("Location",location)],b"")
@@ -330,27 +330,41 @@ elif action=="stage-map":
  package_route=route("package",b"good","debian-package","https://snapshot.debian.org/archive/debian/20260713T000000Z/pool/main/g/git/git_2.47.3-0+deb13u1_amd64.deb")
  exact_debian_locations=[
   ("artifact.redirect.location-shape",route1,""),
-  ("artifact.redirect.location.path",route1,"https://snapshot.debian.org/not-allowed"),
-  *[("artifact.redirect.location.path",route1,"/file/"+"a"*length) for length in [39,41,63,65]],
-  *[("artifact.redirect.location.path",route1,"/file/"+"a"*length+"/final") for length in [39,41,63,65]],
-  ("artifact.redirect.location.path",route1,"/file/"+"A"*40),
-  ("artifact.redirect.location.path",route1,"/file/"+"A"*40+"/final"),
-  ("artifact.redirect.location.path",route1,"/file/"+"a"*39+"g"),
-  ("artifact.redirect.location.path",route1,"/file/"+"a"*39+"g/final"),
-  ("artifact.redirect.location.path",route1,"/file/"+"a"*40+"/wrong"),
-  ("artifact.redirect.location.path",route1,"/file/"+"a"*40+"/InRelease"),
-  ("artifact.redirect.location.path",route1,"/file/"+"a"*40+"/"),
-  ("artifact.redirect.location.path",route1,"/file/"+"a"*40+"/final/extra"),
-  ("artifact.redirect.location.path",route1,"/file/"+"a"*40+"/final/"),
+  ("artifact.redirect.location.path.other",route1,"https://snapshot.debian.org/not-allowed"),
+  ("artifact.redirect.location.path.archive",route1,"/archive/debian/20260712T000000Z/dists/trixie/InRelease"),
+  *[("artifact.redirect.location.path.other",route1,"/file/"+"a"*length) for length in [39,41,63,65]],
+  *[("artifact.redirect.location.path.other",route1,"/file/"+"a"*length+"/final") for length in [39,41,63,65]],
+  ("artifact.redirect.location.path.other",route1,"/file/"+"A"*40),
+  ("artifact.redirect.location.path.other",route1,"/file/"+"A"*40+"/final"),
+  ("artifact.redirect.location.path.other",route1,"/file/"+"a"*39+"g"),
+  ("artifact.redirect.location.path.other",route1,"/file/"+"a"*39+"g/final"),
+  ("artifact.redirect.location.path.filename",route1,"/file/"+"a"*40+"/wrong"),
+  ("artifact.redirect.location.path.filename",route1,"/file/"+"a"*40+"/InRelease"),
+  ("artifact.redirect.location.path.filename",route1,"/file/"+"a"*40+"/"),
+  ("artifact.redirect.location.path.filename",route1,"/file/"+"a"*40+"/final/extra"),
+  ("artifact.redirect.location.path.filename",route1,"/file/"+"a"*40+"/final/"),
   ("artifact.redirect.location.query",route1,"/file/"+"a"*40+"/final?x=1"),
-  ("artifact.redirect.location.path",route1,"/file/"+"a"*39+"%61"),
-  ("artifact.redirect.location.path",route1,"/file/"+"a"*39+"%61/final"),
-  ("artifact.redirect.location.path",route1,"/file/"+"a"*40+"/fin%61l"),
-  ("artifact.redirect.location.path",route1,"/file/"+"a"*40+"/final%2Fextra"),
-  ("artifact.redirect.location.path",package_route,"/file/"+"a"*40+"/git_2.47.3-0%2bdeb13u1_amd64.deb"),
-  ("artifact.redirect.location.path",package_route,"/file/"+"a"*40+"/git_2.47.3-0+deb13u1_amd64.deb"),
-  ("artifact.redirect.location.path",package_route,"/file/"+"a"*40+"/git_2.47.3-0%252Bdeb13u1_amd64.deb"),
+  ("artifact.redirect.location.path.percent",route1,"/file/"+"a"*39+"%61"),
+  ("artifact.redirect.location.path.percent",route1,"/file/"+"a"*39+"%61/final"),
+  ("artifact.redirect.location.path.percent",route1,"/file/"+"a"*40+"/fin%61l"),
+  ("artifact.redirect.location.path.percent",route1,"/file/"+"a"*40+"/final%2Fextra"),
+  ("artifact.redirect.location.path.percent",package_route,"/file/"+"a"*40+"/git_2.47.3-0%2bdeb13u1_amd64.deb"),
+  ("artifact.redirect.location.path.filename",package_route,"/file/"+"a"*40+"/git_2.47.3-0+deb13u1_amd64.deb"),
+  ("artifact.redirect.location.path.percent",package_route,"/file/"+"a"*40+"/git_2.47.3-0%252Bdeb13u1_amd64.deb"),
  ]
+ path_equivalence=[
+  (route1,"/archive/debian/20260713T000000Z/dists/trixie/InRelease"),
+  (route1,"/file/"+"a"*40),
+  (route1,"/file/"+"a"*64+"/final"),
+  (package_route,"/file/"+"a"*40+"/git_2.47.3-0%2Bdeb13u1_amd64.deb"),
+  *[(checked_route,location) for expected,checked_route,location in exact_debian_locations if expected.startswith("artifact.redirect.location.path.")],
+ ]
+ for checked_route,location in path_equivalence:
+  parsed=m._strict_url(m.urljoin(checked_route.row["url"],location));archive=parsed.path.startswith("/archive/debian/20260713T000000Z/") and "%" not in parsed.path
+  before=archive or m.SNAPSHOT_FILE_PATH.fullmatch(parsed.path) is not None or m._snapshot_named_file_path(checked_route,parsed.path);after=True
+  try:m._debian_redirect(checked_route,checked_route.row["url"],location)
+  except m.AcquisitionError:after=False
+  assert before==after
  for expected,rejected_route,location in exact_debian_locations:
   redirect=Response(302,[("Content-Length","0"),("Location",location)],b"");later=artifact(b"good");transport=Transport([redirect,later])
   assert failure_stage(lambda:m._final_response(rejected_route,None,transport,time.monotonic()+10,10))==expected and redirect.closed
@@ -361,7 +375,7 @@ elif action=="stage-map":
   returned=m._final_response(route1,None,transport,time.monotonic()+10,10)
   assert returned is final and redirect.closed and redirect.offset==len(metadata) and len(transport.requests)==2;returned.close()
  strict_target_body=b"metadata";strict_target=Response(302,[("Content-Length",str(len(strict_target_body))),("Location","/not-allowed")],strict_target_body);later=artifact(b"good");transport=Transport([strict_target,later])
- assert failure_stage(lambda:m._final_response(route1,None,transport,time.monotonic()+10,10))=="artifact.redirect.location.path" and strict_target.closed and strict_target.offset==len(strict_target_body)
+ assert failure_stage(lambda:m._final_response(route1,None,transport,time.monotonic()+10,10))=="artifact.redirect.location.path.other" and strict_target.closed and strict_target.offset==len(strict_target_body)
  assert len(transport.requests)==1 and transport.responses==[later] and not later.closed
  framings=[
   ("artifact.redirect.framing.length",Response(302,[("Content-Length","00"),("Location","/file/"+"a"*40),("Content-Type","text/plain")],b"")),
@@ -552,7 +566,7 @@ elif action=="cli-stage":
  except v.VerificationError as error:assert error.stage=="postverify"
  else:raise AssertionError("expected postverify failure")
  dynamic="https://hostile.invalid Authorization Bearer secret "+"a"*64
- for reported_stage in ["artifact.final.transfer","artifact.final.length","artifact.final.content-type","artifact.final.content-type.missing","artifact.final.content-type.parameterized","artifact.final.content-type.application","artifact.final.content-type.text","artifact.final.content-type.other"]:
+ for reported_stage in ["artifact.redirect.location.path.percent","artifact.redirect.location.path.filename","artifact.redirect.location.path.archive","artifact.redirect.location.path.other","artifact.final.transfer","artifact.final.length","artifact.final.content-type","artifact.final.content-type.missing","artifact.final.content-type.parameterized","artifact.final.content-type.application","artifact.final.content-type.text","artifact.final.content-type.other"]:
   def staged(*_args):
    try:raise RuntimeError(dynamic)
    except RuntimeError as error:raise v.VerificationError(reported_stage) from error
