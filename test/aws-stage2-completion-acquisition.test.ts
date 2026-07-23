@@ -300,7 +300,16 @@ elif action=="stage-map":
   valid_redirect=Response(302,[("Location","/file/"+"a"*digest_length),("Content-Type","text/plain; charset=utf-8")],b"");final=artifact(b"good");transport=Transport([valid_redirect,final])
   returned=m._final_response(route1,None,transport,time.monotonic()+10,10);assert returned is final and valid_redirect.closed
   assert all(name.lower()!="content-type" for request in transport.requests for name,_value in request.headers);returned.close()
- hashbase=base/"redirect-hash";hashbase.mkdir();hash_redirect=Response(302,[("Content-Length","0"),("Location","/file/"+"a"*64)],b"");hash_final=artifact(b"baad")
+ named_routes=[
+  (route("inrelease",b"good","debian-inrelease","https://snapshot.debian.org/archive/debian/20260713T000000Z/dists/trixie/InRelease"),"a"*40+"/InRelease"),
+  (route("index",b"good","debian-index","https://snapshot.debian.org/archive/debian/20260713T000000Z/dists/trixie/main/binary-amd64/Packages.xz"),"b"*64+"/Packages.xz"),
+  (route("package",b"good","debian-package","https://snapshot.debian.org/archive/debian/20260713T000000Z/pool/main/g/git/git_2.47.3-0+deb13u1_amd64.deb"),"c"*40+"/git_2.47.3-0%2Bdeb13u1_amd64.deb"),
+ ]
+ for named_route,named_path in named_routes:
+  valid_redirect=Response(302,[("Content-Length","0"),("Location","/file/"+named_path)],b"");final=artifact(b"good");transport=Transport([valid_redirect,final])
+  returned=m._final_response(named_route,None,transport,time.monotonic()+10,10)
+  assert returned is final and valid_redirect.closed and len(transport.requests)==2 and transport.requests[1].url.endswith("/file/"+named_path);returned.close()
+ hashbase=base/"redirect-hash";hashbase.mkdir();hash_redirect=Response(302,[("Content-Length","0"),("Location","/file/"+"a"*64+"/final")],b"");hash_final=artifact(b"baad")
  assert failure_stage(lambda:acquire([route1],hashbase,Transport([hash_redirect,hash_final])))=="artifact.body" and hash_redirect.closed and hash_final.closed
  hashcache=artifact_root(hashbase)/"cache";assert not (hashcache/"final.bin").exists() and not (hashcache/".final.bin.partial").exists()
  invalid_status=Response(304,[("Content-Length","0"),("Location","/file/"+"a"*40)],b"")
@@ -318,18 +327,33 @@ elif action=="stage-map":
  for expected,location in debian_locations:
   redirect=Response(302,[("Content-Length","0"),("Location",location)],b"")
   assert failure_stage(lambda:m._final_response(route1,None,Transport([redirect]),time.monotonic()+10,10))==expected and redirect.closed
- exact_debian_locations=[("artifact.redirect.location-shape",""),("artifact.redirect.location.path","https://snapshot.debian.org/not-allowed")]
- exact_debian_locations += [("artifact.redirect.location.path","/file/"+"a"*length) for length in [39,41,63,65]]
- exact_debian_locations += [
-  ("artifact.redirect.location.path","/file/"+"A"*40),
-  ("artifact.redirect.location.path","/file/"+"a"*39+"g"),
-  ("artifact.redirect.location.path","/file/"+"a"*40+"/extra"),
-  ("artifact.redirect.location.query","/file/"+"a"*40+"?x=1"),
-  ("artifact.redirect.location.path","/file/"+"a"*39+"%61"),
+ package_route=route("package",b"good","debian-package","https://snapshot.debian.org/archive/debian/20260713T000000Z/pool/main/g/git/git_2.47.3-0+deb13u1_amd64.deb")
+ exact_debian_locations=[
+  ("artifact.redirect.location-shape",route1,""),
+  ("artifact.redirect.location.path",route1,"https://snapshot.debian.org/not-allowed"),
+  *[("artifact.redirect.location.path",route1,"/file/"+"a"*length) for length in [39,41,63,65]],
+  *[("artifact.redirect.location.path",route1,"/file/"+"a"*length+"/final") for length in [39,41,63,65]],
+  ("artifact.redirect.location.path",route1,"/file/"+"A"*40),
+  ("artifact.redirect.location.path",route1,"/file/"+"A"*40+"/final"),
+  ("artifact.redirect.location.path",route1,"/file/"+"a"*39+"g"),
+  ("artifact.redirect.location.path",route1,"/file/"+"a"*39+"g/final"),
+  ("artifact.redirect.location.path",route1,"/file/"+"a"*40+"/wrong"),
+  ("artifact.redirect.location.path",route1,"/file/"+"a"*40+"/InRelease"),
+  ("artifact.redirect.location.path",route1,"/file/"+"a"*40+"/"),
+  ("artifact.redirect.location.path",route1,"/file/"+"a"*40+"/final/extra"),
+  ("artifact.redirect.location.path",route1,"/file/"+"a"*40+"/final/"),
+  ("artifact.redirect.location.query",route1,"/file/"+"a"*40+"/final?x=1"),
+  ("artifact.redirect.location.path",route1,"/file/"+"a"*39+"%61"),
+  ("artifact.redirect.location.path",route1,"/file/"+"a"*39+"%61/final"),
+  ("artifact.redirect.location.path",route1,"/file/"+"a"*40+"/fin%61l"),
+  ("artifact.redirect.location.path",route1,"/file/"+"a"*40+"/final%2Fextra"),
+  ("artifact.redirect.location.path",package_route,"/file/"+"a"*40+"/git_2.47.3-0%2bdeb13u1_amd64.deb"),
+  ("artifact.redirect.location.path",package_route,"/file/"+"a"*40+"/git_2.47.3-0+deb13u1_amd64.deb"),
+  ("artifact.redirect.location.path",package_route,"/file/"+"a"*40+"/git_2.47.3-0%252Bdeb13u1_amd64.deb"),
  ]
- for expected,location in exact_debian_locations:
+ for expected,rejected_route,location in exact_debian_locations:
   redirect=Response(302,[("Content-Length","0"),("Location",location)],b"");later=artifact(b"good");transport=Transport([redirect,later])
-  assert failure_stage(lambda:m._final_response(route1,None,transport,time.monotonic()+10,10))==expected and redirect.closed
+  assert failure_stage(lambda:m._final_response(rejected_route,None,transport,time.monotonic()+10,10))==expected and redirect.closed
   assert len(transport.requests)==1 and transport.responses==[later] and not later.closed
  assert m.REDIRECT_BODY_MAX==4096 and m.REDIRECT_BODY_MAX*16*3==196608
  for metadata in [b"\x00\xff",bytes(range(256))*16]:
@@ -478,9 +502,9 @@ elif action=="hostile-redirects":
  oci=m.Route({**row("x",body,baseurl),"sha256":digest},"oci-layer","type",("application/octet-stream",))
  for location in ["http://production.cloudflare.docker.com/x","https://evil.example/x",f"https://production.cloudflare.docker.com/wrong/{digest}/data",f"https://user@production.cloudflare.docker.com/blobs/sha256/{digest[:2]}/{digest}/data"]:
   expect_failure(lambda location=location:m._oci_redirect(oci,location))
- current="https://snapshot.debian.org/archive/debian/20260713T000000Z/a"
+ current="https://snapshot.debian.org/archive/debian/20260713T000000Z/a";debian=route("a",body,"debian-inrelease",current)
  for location in ["https://evil.example/file/"+"a"*40,"http://snapshot.debian.org/file/"+"a"*40,"https://snapshot.debian.org:444/file/"+"a"*40,"https://snapshot.debian.org/file/"+"a"*40+"?x=1","https://snapshot.debian.org/archive/debian/20260713T000000Z/%2e%2e/hostile"]:
-  expect_failure(lambda location=location:m._debian_redirect(current,location))
+  expect_failure(lambda location=location:m._debian_redirect(debian,current,location))
 elif action=="cleanup":
  base=Path(sys.argv[3]);good=b"good";bad=b"baad";first=b"first"
  routes=[route("first.bin",first,"debian-inrelease","https://snapshot.debian.org/archive/debian/20260713T000000Z/first"),route("bad.bin",good,"debian-inrelease","https://snapshot.debian.org/archive/debian/20260713T000000Z/bad")]
