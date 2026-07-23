@@ -263,7 +263,7 @@ elif action=="artifact-chunked":
  cache=artifact_root(base)/"cache";assert not (cache/"final.bin").exists() and not (cache/".final.bin.partial").exists()
 elif action=="stage-map":
  base=Path(sys.argv[3]);body=b'{"token":"synthetic-token"}'
- assert m.STAGES==frozenset({"preflight","tls","routes","state","token.request","token.headers","token.header-shape","token.header-encoding","token.header-authority","token.status","token.content-type","token.framing","token.body","token.json","artifact.request","artifact.headers","artifact.response-headers","artifact.redirect","artifact.redirect.status","artifact.redirect.location","artifact.redirect.location-shape","artifact.redirect.location.url","artifact.redirect.location.host","artifact.redirect.location.host-docker-com","artifact.redirect.location.host-cloudflare-storage","artifact.redirect.location.host-docker-io","artifact.redirect.location.host-other","artifact.redirect.location.query","artifact.redirect.location.path","artifact.redirect.framing","artifact.redirect.framing.transfer","artifact.redirect.framing.length","artifact.redirect.framing.body","artifact.redirect.count","artifact.final","artifact.final.transfer","artifact.final.length","artifact.final.content-type","artifact.body","publish","postverify"})
+ assert m.STAGES==frozenset({"preflight","tls","routes","state","token.request","token.headers","token.header-shape","token.header-encoding","token.header-authority","token.status","token.content-type","token.framing","token.body","token.json","artifact.request","artifact.headers","artifact.response-headers","artifact.redirect","artifact.redirect.status","artifact.redirect.location","artifact.redirect.location-shape","artifact.redirect.location.url","artifact.redirect.location.host","artifact.redirect.location.host-docker-com","artifact.redirect.location.host-cloudflare-storage","artifact.redirect.location.host-docker-io","artifact.redirect.location.host-other","artifact.redirect.location.query","artifact.redirect.location.path","artifact.redirect.framing","artifact.redirect.framing.transfer","artifact.redirect.framing.length","artifact.redirect.framing.body","artifact.redirect.count","artifact.final","artifact.final.transfer","artifact.final.length","artifact.final.content-type","artifact.final.content-type.missing","artifact.final.content-type.parameterized","artifact.final.content-type.application","artifact.final.content-type.text","artifact.final.content-type.other","artifact.body","publish","postverify"})
  original_env=dict(os.environ);original_tls=m._tls_context;original_routes=m._artifact_routes
  def boom(*_args):raise RuntimeError()
  try:
@@ -460,7 +460,10 @@ elif action=="stage-map":
   Response(200,[("Content-Type","application/octet-stream")],b"good"),
   *[Response(200,[("Content-Length",value),("Content-Type","application/octet-stream")],b"good") for value in ["3","5","04","x"]],
   Response(200,[("Content-Length","4")],b"good"),
+  Response(200,[("Content-Length","4"),("Content-Type","")],b"good"),
+  Response(200,head(b"good","application/json"),b"good"),
   Response(200,head(b"good","text/plain"),b"good"),
+  Response(200,head(b"good","image/png"),b"good"),
   Response(200,head(b"good","text/plain; charset=utf-8"),b"good"),
   Response(200,head(b"good","application/octet-stream; charset=utf-8"),b"good"),
  ]
@@ -479,9 +482,19 @@ elif action=="stage-map":
   ("artifact.final.transfer",Response(200,[("Content-Length","4"),("Transfer-Encoding","chunked"),("Content-Type","application/octet-stream")],b"good")),
   ("artifact.final.length",Response(200,[("Content-Type","application/octet-stream")],b"good")),
   *[("artifact.final.length",Response(200,[("Content-Length",value),("Content-Type","application/octet-stream")],b"good")) for value in ["3","5","04","x"]],
-  ("artifact.final.content-type",Response(200,[("Content-Length","4")],b"good")),
-  ("artifact.final.content-type",Response(200,head(b"good","text/plain"),b"good")),
-  ("artifact.final.content-type",Response(200,head(b"good","application/octet-stream; charset=utf-8"),b"good")),
+  ("artifact.final.content-type.missing",Response(200,[("Content-Length","4")],b"good")),
+  ("artifact.final.content-type.missing",Response(200,[("Content-Length","4"),("Content-Type","")],b"good")),
+  ("artifact.final.content-type.missing",Response(200,[("Content-Length","4"),("Content-Type"," ")],b"good")),
+  ("artifact.final.content-type.parameterized",Response(200,head(b"good","application/octet-stream; charset=utf-8"),b"good")),
+  ("artifact.final.content-type.parameterized",Response(200,head(b"good","text/plain; charset=utf-8"),b"good")),
+  ("artifact.final.content-type.parameterized",Response(200,head(b"good",";"),b"good")),
+  ("artifact.final.content-type.application",Response(200,head(b"good","application/json"),b"good")),
+  ("artifact.final.content-type.application",Response(200,head(b"good","Application/JSON"),b"good")),
+  ("artifact.final.content-type.application",Response(200,head(b"good","application/"),b"good")),
+  ("artifact.final.content-type.text",Response(200,head(b"good","text/plain"),b"good")),
+  ("artifact.final.content-type.text",Response(200,head(b"good","Text/Plain"),b"good")),
+  ("artifact.final.content-type.text",Response(200,head(b"good","text/"),b"good")),
+  *[("artifact.final.content-type.other",Response(200,head(b"good",value),b"good")) for value in ["image/png","IMAGE/PNG","application","applicationx/json","xapplication/json","text","textual/plain","xtext/plain"]],
  ]
  for index,(expected,response) in enumerate(final_failures):
   finalbase=base/f"final-detail-{index}";finalbase.mkdir();later=artifact(b"good");transport=Transport([response,later])
@@ -490,6 +503,7 @@ elif action=="stage-map":
   assert len(transport.requests)==1 and transport.responses==[later] and not later.closed
  assert failure_stage(lambda:m._stage("artifact.final",lambda:m._fail(False)))=="artifact.final"
  assert failure_stage(lambda:m._stage("artifact.final",lambda:m._fail(False,"artifact.final.length")))=="artifact.final.length"
+ assert failure_stage(lambda:m._stage("artifact.final.content-type",lambda:m._fail(False,"artifact.final.content-type.other")))=="artifact.final.content-type.other"
  assert failure_stage(lambda:m._stage("artifact.headers",lambda:m._fail(False)))=="artifact.headers"
  assert failure_stage(lambda:m._stage("artifact.headers",lambda:m._fail(False,"artifact.final")))=="artifact.final"
  short=Response(200,head(b"good"),b"bad");bodybase=base/"body";bodybase.mkdir()
@@ -519,7 +533,7 @@ elif action=="cli-stage":
  except v.VerificationError as error:assert error.stage=="postverify"
  else:raise AssertionError("expected postverify failure")
  dynamic="https://hostile.invalid Authorization Bearer secret "+"a"*64
- for reported_stage in ["artifact.final.transfer","artifact.final.length","artifact.final.content-type"]:
+ for reported_stage in ["artifact.final.transfer","artifact.final.length","artifact.final.content-type","artifact.final.content-type.missing","artifact.final.content-type.parameterized","artifact.final.content-type.application","artifact.final.content-type.text","artifact.final.content-type.other"]:
   def staged(*_args):
    try:raise RuntimeError(dynamic)
    except RuntimeError as error:raise v.VerificationError(reported_stage) from error

@@ -73,8 +73,9 @@ STAGES = frozenset(
         "artifact.redirect.location.host-other", "artifact.redirect.location.query", "artifact.redirect.location.path",
         "artifact.redirect.framing", "artifact.redirect.framing.transfer", "artifact.redirect.framing.length",
         "artifact.redirect.framing.body", "artifact.redirect.count", "artifact.final", "artifact.final.transfer",
-        "artifact.final.length", "artifact.final.content-type", "artifact.body", "publish",
-        "postverify",
+        "artifact.final.length", "artifact.final.content-type", "artifact.final.content-type.missing",
+        "artifact.final.content-type.parameterized", "artifact.final.content-type.application",
+        "artifact.final.content-type.text", "artifact.final.content-type.other", "artifact.body", "publish", "postverify",
     }
 )
 
@@ -486,13 +487,27 @@ def _artifact_request(route, token, transport, current, deadline, metadata_timeo
     )
 
 
+def _final_content_type(route, headers):
+    value = headers.get("content-type", "").strip().lower()
+    if value in route.content_types:
+        return
+    if not value:
+        stage = "artifact.final.content-type.missing"
+    elif ";" in value:
+        stage = "artifact.final.content-type.parameterized"
+    elif value.startswith("application/"):
+        stage = "artifact.final.content-type.application"
+    elif value.startswith("text/"):
+        stage = "artifact.final.content-type.text"
+    else:
+        stage = "artifact.final.content-type.other"
+    _stage(stage, lambda: _fail(False))
+
+
 def _final_headers(route, response, headers):
     _stage("artifact.final.transfer", lambda: _fail("transfer-encoding" not in headers and response.status == 200))
     _stage("artifact.final.length", lambda: _content_length(headers, route.row["size"], route.row["size"]))
-    _stage(
-        "artifact.final.content-type",
-        lambda: _fail(headers.get("content-type", "").strip().lower() in route.content_types),
-    )
+    _stage("artifact.final.content-type", lambda: _final_content_type(route, headers))
 
 
 def _next_redirect(route, response, headers, current, seen, redirects, deadline):
