@@ -66,8 +66,10 @@ STAGES = frozenset(
         "token.header-encoding", "token.header-authority", "token.status", "token.content-type", "token.framing",
         "token.body", "token.json", "artifact.request", "artifact.headers", "artifact.response-headers",
         "artifact.redirect", "artifact.redirect.status", "artifact.redirect.location", "artifact.redirect.location-shape",
-        "artifact.redirect.location.url", "artifact.redirect.location.host", "artifact.redirect.location.query",
-        "artifact.redirect.location.path", "artifact.redirect.framing", "artifact.redirect.count", "artifact.final",
+        "artifact.redirect.location.url", "artifact.redirect.location.host", "artifact.redirect.location.host-docker-com",
+        "artifact.redirect.location.host-cloudflare-storage", "artifact.redirect.location.host-docker-io",
+        "artifact.redirect.location.host-other", "artifact.redirect.location.query", "artifact.redirect.location.path",
+        "artifact.redirect.framing", "artifact.redirect.count", "artifact.final",
         "artifact.body", "publish", "postverify",
     }
 )
@@ -416,10 +418,22 @@ def _debian_redirect_url(current, location):
     return target, _strict_url(target)
 
 
+def _redirect_location_host(host, allowed):
+    if host in allowed:
+        return
+    families = (
+        (".docker.com", "artifact.redirect.location.host-docker-com"),
+        (".cloudflarestorage.com", "artifact.redirect.location.host-cloudflare-storage"),
+        (".docker.io", "artifact.redirect.location.host-docker-io"),
+    )
+    stage = next((stage for suffix, stage in families if host.endswith(suffix)), "artifact.redirect.location.host-other")
+    _stage(stage, lambda: _fail(False))
+
+
 def _debian_redirect(current, location):
     _stage("artifact.redirect.location-shape", lambda: _redirect_location_shape(location))
     target, parsed = _stage("artifact.redirect.location.url", lambda: _debian_redirect_url(current, location))
-    _stage("artifact.redirect.location.host", lambda: _fail(parsed.hostname == SNAPSHOT_HOST))
+    _stage("artifact.redirect.location.host", lambda: _redirect_location_host(parsed.hostname, (SNAPSHOT_HOST,)))
     _stage("artifact.redirect.location.query", lambda: _fail(not parsed.query))
     _stage("artifact.redirect.location.path", lambda: _fail("%" not in parsed.path))
     allowed = parsed.path.startswith("/archive/debian/20260713T000000Z/") or HEX40.fullmatch(parsed.path) is not None
@@ -431,7 +445,7 @@ def _oci_redirect(route, location):
     _fail(route.source in {"oci-config", "oci-layer"})
     _stage("artifact.redirect.location-shape", lambda: _redirect_location_shape(location))
     parsed = _stage("artifact.redirect.location.url", lambda: _strict_url(location))
-    _stage("artifact.redirect.location.host", lambda: _fail(parsed.hostname in CDN_HOSTS))
+    _stage("artifact.redirect.location.host", lambda: _redirect_location_host(parsed.hostname, CDN_HOSTS))
     _stage("artifact.redirect.location.query", lambda: _fail(len(parsed.query.encode()) <= 8192))
     digest = route.row["sha256"]
     expected = f"/blobs/sha256/{digest[:2]}/{digest}/data"

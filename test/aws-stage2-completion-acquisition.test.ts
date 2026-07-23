@@ -263,7 +263,7 @@ elif action=="artifact-chunked":
  cache=artifact_root(base)/"cache";assert not (cache/"final.bin").exists() and not (cache/".final.bin.partial").exists()
 elif action=="stage-map":
  base=Path(sys.argv[3]);body=b'{"token":"synthetic-token"}'
- assert m.STAGES==frozenset({"preflight","tls","routes","state","token.request","token.headers","token.header-shape","token.header-encoding","token.header-authority","token.status","token.content-type","token.framing","token.body","token.json","artifact.request","artifact.headers","artifact.response-headers","artifact.redirect","artifact.redirect.status","artifact.redirect.location","artifact.redirect.location-shape","artifact.redirect.location.url","artifact.redirect.location.host","artifact.redirect.location.query","artifact.redirect.location.path","artifact.redirect.framing","artifact.redirect.count","artifact.final","artifact.body","publish","postverify"})
+ assert m.STAGES==frozenset({"preflight","tls","routes","state","token.request","token.headers","token.header-shape","token.header-encoding","token.header-authority","token.status","token.content-type","token.framing","token.body","token.json","artifact.request","artifact.headers","artifact.response-headers","artifact.redirect","artifact.redirect.status","artifact.redirect.location","artifact.redirect.location-shape","artifact.redirect.location.url","artifact.redirect.location.host","artifact.redirect.location.host-docker-com","artifact.redirect.location.host-cloudflare-storage","artifact.redirect.location.host-docker-io","artifact.redirect.location.host-other","artifact.redirect.location.query","artifact.redirect.location.path","artifact.redirect.framing","artifact.redirect.count","artifact.final","artifact.body","publish","postverify"})
  original_env=dict(os.environ);original_tls=m._tls_context;original_routes=m._artifact_routes
  def boom(*_args):raise RuntimeError()
  try:
@@ -307,7 +307,7 @@ elif action=="stage-map":
  debian_locations=[
   ("artifact.redirect.location-shape","x"*16385),
   ("artifact.redirect.location.url","http://snapshot.debian.org"+debian_path),
-  ("artifact.redirect.location.host","https://hostile.invalid"+debian_path),
+  ("artifact.redirect.location.host-other","https://hostile.invalid"+debian_path),
   ("artifact.redirect.location.query","https://snapshot.debian.org"+debian_path+"?x=1"),
   ("artifact.redirect.location.path","https://snapshot.debian.org/archive/debian/20260713T000000Z/%2e%2e/hostile"),
  ]
@@ -334,16 +334,25 @@ elif action=="stage-map":
  oci_status=Response(302,[("Content-Length","0"),("Location","https://production.cloudflare.docker.com/blobs/sha256/x")],b"")
  assert failure_stage(lambda:m._final_response(oci,"synthetic-token",Transport([oci_status]),time.monotonic()+10,10))=="artifact.redirect.status" and oci_status.closed
  oci_digest=oci.row["sha256"];oci_path=f"/blobs/sha256/{oci_digest[:2]}/{oci_digest}/data";oci_base="https://production.cloudflare.docker.com"
+ for host in m.CDN_HOSTS:
+  allowed=f"https://{host}{oci_path}?x=1";assert m._oci_redirect(oci,allowed)==allowed
  oci_locations=[
   ("artifact.redirect.location-shape","x"*16385),
   ("artifact.redirect.location.url","http://production.cloudflare.docker.com"+oci_path),
-  ("artifact.redirect.location.host","https://hostile.invalid"+oci_path),
+  ("artifact.redirect.location.host-docker-com","https://hostile.docker.com"+oci_path),
+  ("artifact.redirect.location.host-cloudflare-storage","https://hostile.cloudflarestorage.com"+oci_path),
+  ("artifact.redirect.location.host-docker-io","https://hostile.docker.io"+oci_path),
+  ("artifact.redirect.location.host-other","https://docker.com"+oci_path),
   ("artifact.redirect.location.query",oci_base+oci_path+"?x="+"a"*8193),
   ("artifact.redirect.location.path",oci_base+"/blobs/sha256/x"),
  ]
  for expected,location in oci_locations:
   redirect=Response(307,[("Content-Length","0"),("Location",location)],b"")
   assert failure_stage(lambda:m._final_response(oci,"synthetic-token",Transport([redirect]),time.monotonic()+10,10))==expected and redirect.closed
+ for host in ["evilcloudflarestorage.com","cloudflarestorage.com.evil","evildocker.com","docker.com.evil","evildocker.io","docker.io.evil"]:
+  redirect=Response(307,[("Content-Length","0"),("Location",f"https://{host}{oci_path}")],b"");later=artifact(b"good");transport=Transport([redirect,later])
+  assert failure_stage(lambda:m._final_response(oci,"synthetic-token",transport,time.monotonic()+10,10))=="artifact.redirect.location.host-other" and redirect.closed
+  assert len(transport.requests)==1 and transport.responses==[later] and not later.closed
  oci_target=oci_base+oci_path+"?x=1"
  oci_redirects=[Response(307,[("Content-Length","0"),("Location",oci_target)],b"") for _item in range(2)];oci_transport=Transport(oci_redirects)
  assert failure_stage(lambda:m._final_response(oci,"synthetic-token",oci_transport,time.monotonic()+10,10))=="artifact.redirect.count" and all(item.closed for item in oci_redirects)
@@ -377,10 +386,10 @@ elif action=="cli-stage":
  specv=importlib.util.spec_from_file_location("verifier",sys.argv[3]);v=importlib.util.module_from_spec(specv);specv.loader.exec_module(v)
  assert v.ACQUISITION_STAGES==m.STAGES
  sys.modules["completion_artifact_acquisition"]=m;v.verify_contract=lambda _path:{}
- def acquisition_failure(*_args):raise m.AcquisitionError("artifact.redirect.location.path")
+ def acquisition_failure(*_args):raise m.AcquisitionError("artifact.redirect.location.host-other")
  m.acquire_artifacts=acquisition_failure
  try:v.acquire_completion_artifacts("contract","root")
- except v.VerificationError as error:assert error.stage=="artifact.redirect.location.path"
+ except v.VerificationError as error:assert error.stage=="artifact.redirect.location.host-other"
  else:raise AssertionError("expected staged verification failure")
  m.acquire_artifacts=lambda *_args:None
  def postverify_failure(*_args):raise v.VerificationError()
@@ -391,12 +400,12 @@ elif action=="cli-stage":
  dynamic="https://hostile.invalid Authorization Bearer secret "+"a"*64
  def staged(*_args):
   try:raise RuntimeError(dynamic)
-  except RuntimeError as error:raise v.VerificationError("artifact.redirect.location.path") from error
+  except RuntimeError as error:raise v.VerificationError("artifact.redirect.location.host-other") from error
  v.acquire_completion_artifacts=staged;stderr=io.StringIO()
  with contextlib.redirect_stderr(stderr):code=v.main(["acquire-artifacts"])
- lines=stderr.getvalue().splitlines();assert code==1 and lines==["completion artifact verification failed","completion artifact acquisition stage: artifact.redirect.location.path"]
+ lines=stderr.getvalue().splitlines();assert code==1 and lines==["completion artifact verification failed","completion artifact acquisition stage: artifact.redirect.location.host-other"]
  assert dynamic not in stderr.getvalue() and "https://" not in stderr.getvalue() and "Bearer" not in stderr.getvalue() and not any(part in stderr.getvalue() for part in ["registry-1.docker.io","snapshot.debian.org"])
- def ordinary(*_args):raise v.VerificationError("artifact.redirect.location.path")
+ def ordinary(*_args):raise v.VerificationError("artifact.redirect.location.host-other")
  v.verify_contract=ordinary;stderr=io.StringIO()
  with contextlib.redirect_stderr(stderr):code=v.main(["verify-contract"])
  assert code==1 and stderr.getvalue()=="completion artifact verification failed\n"
