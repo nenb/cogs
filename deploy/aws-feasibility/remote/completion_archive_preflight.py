@@ -33,6 +33,35 @@ class ArchiveRecord:
 
 
 @dataclass(frozen=True)
+class MaterialRecord:
+    path: str
+    kind: str
+    mode: int
+    uid: int
+    gid: int
+    mtime: int
+    archive_size: int
+    link_text: str | None
+    resolved_link_path: str | None
+    hardlink_target: str | None
+    content_sha256: str | None
+    data_offset: int
+
+
+@dataclass(frozen=True)
+class PreflightedTar:
+    raw: bytes
+    records: tuple[MaterialRecord, ...]
+    archive_records: tuple[ArchiveRecord, ...]
+
+    def content(self, record):
+        _fail(record in self.records and record.kind == "file" and record.archive_size >= 0)
+        value = memoryview(self.raw)[record.data_offset : record.data_offset + record.archive_size]
+        _fail(len(value) == record.archive_size and hashlib.sha256(value).hexdigest() == record.content_sha256)
+        return value
+
+
+@dataclass(frozen=True)
 class _RawMember:
     name: str
     linkname: str
@@ -333,26 +362,33 @@ def _normalize_path(value, kind, bounds):
     return "/".join(parts)
 
 
-def _normalize_symlink(path, target, bounds):
+def _normalize_symlink(path, target, bounds, allow_guest_absolute=False):
     _safe_text(target, bounds["max_path_bytes"])
-    _fail(not target.startswith("/"))
-    result = path.split("/")[:-1]
-    for part in target.split("/"):
-        _fail(part != "" and len(part.encode("utf-8")) <= bounds["max_component_bytes"])
-        if part == ".":
-            continue
-        if part == "..":
-            _fail(result)
-            result.pop()
-        else:
-            result.append(part)
-    _fail(result)
-    normalized = "/".join(result)
-    _safe_text(normalized, bounds["max_path_bytes"])
-    return normalized
+    if target.startswith("/"):
+        _fail(allow_guest_absolute)
+        parts = target[1:].split("/")
+        _fail(parts and all(part not in {"", ".", ".."} for part in parts))
+        _fail(all(len(part.encode("utf-8")) <= bounds["max_component_bytes"] for part in parts))
+        resolved = "/".join(parts)
+    else:
+        result = path.split("/")[:-1]
+        for part in target.split("/"):
+            _fail(part != "" and len(part.encode("utf-8")) <= bounds["max_component_bytes"])
+            if part == ".":
+                continue
+            if part == "..":
+                _fail(result)
+                result.pop()
+            else:
+                result.append(part)
+        _fail(result)
+        resolved = "/".join(result)
+    _safe_text(resolved, bounds["max_path_bytes"])
+    return target, resolved
 
 
-def _semantic_tar_records(raw, frames, bounds, control):
+def _semantic_tar_records(raw, frames, bounds, control, profile="package", include_material=False):
+    _fail(profile in {"package", "oci"})
     try:
         with tarfile.open(fileobj=io.BytesIO(raw), mode="r:", encoding="utf-8", errors="strict") as archive:
             _fail(not archive.pax_headers)
@@ -361,6 +397,7 @@ def _semantic_tar_records(raw, frames, bounds, control):
         raise ArchivePreflightError() from error
     _fail(len(infos) == len(frames))
     records = []
+    material = []
     seen = set()
     regular_total = 0
     control_bytes = None
@@ -386,33 +423,74 @@ def _semantic_tar_records(raw, frames, bounds, control):
         seen.add(path)
         _fail(frame.kind == "file" or frame.size == 0)
         link_target = None
+        link_text = None
+        resolved_link_path = None
+        hardlink_target = None
+        content_sha256 = None
         if frame.kind == "symlink":
-            link_target = _normalize_symlink(path, info.linkname, bounds)
+            link_text, resolved_link_path = _normalize_symlink(
+                path, info.linkname, bounds, allow_guest_absolute=profile == "oci"
+            )
+            link_target = resolved_link_path
         elif frame.kind == "hardlink":
-            link_target = _normalize_path(info.linkname, "file", bounds)
-            _fail(link_target is not None)
-        if frame.kind == "file":
+            hardlink_target = _normalize_path(info.linkname, "file", bounds)
+            _fail(hardlink_target is not None)
+            link_target = hardlink_target
+        elif frame.kind == "file":
             _fail(frame.size <= bounds["max_file_bytes"])
             regular_total += frame.size
             _fail(regular_total <= bounds["max_regular_bytes"])
+            content_sha256 = hashlib.sha256(raw[frame.data_offset : frame.data_offset + frame.size]).hexdigest()
         if control:
             _fail(frame.kind in {"file", "directory"})
             if path == "control":
                 _fail(frame.kind == "file" and control_bytes is None)
                 control_bytes = raw[frame.data_offset : frame.data_offset + frame.size]
         records.append(ArchiveRecord(path, frame.kind, frame.mode, frame.uid, frame.gid, frame.mtime, frame.size, link_target))
-    by_path = {record.path: record for record in records}
-    for record in records:
+        material.append(
+            MaterialRecord(
+                path=path,
+                kind=frame.kind,
+                mode=frame.mode,
+                uid=frame.uid,
+                gid=frame.gid,
+                mtime=frame.mtime,
+                archive_size=frame.size,
+                link_text=link_text,
+                resolved_link_path=resolved_link_path,
+                hardlink_target=hardlink_target,
+                content_sha256=content_sha256,
+                data_offset=frame.data_offset,
+            )
+        )
+    by_path = {record.path: record for record in material}
+    symlinks = {record.path for record in material if record.kind == "symlink"}
+    for record in material:
+        parts = record.path.split("/")
+        _fail(all("/".join(parts[:index]) not in symlinks for index in range(1, len(parts))))
         if record.kind == "hardlink":
-            target = by_path.get(record.link_target)
+            target = by_path.get(record.hardlink_target)
             _fail(target is not None and target.kind == "file")
+            _fail(
+                (record.mode, record.uid, record.gid, record.mtime)
+                == (target.mode, target.uid, target.gid, target.mtime)
+            )
     _fail(not control or control_bytes is not None)
-    return tuple(records), control_bytes
+    archived = tuple(records)
+    if include_material:
+        return archived, control_bytes, tuple(material)
+    return archived, control_bytes
 
 
 def _preflight_tar(raw, bounds, control=False):
     frames = _raw_tar_frames(raw, bounds)
     return _semantic_tar_records(raw, frames, bounds, control)
+
+
+def _preflight_material_tar(raw, bounds, profile):
+    frames = _raw_tar_frames(raw, bounds)
+    records, _, material = _semantic_tar_records(raw, frames, bounds, False, profile, True)
+    return PreflightedTar(raw, material, records)
 
 
 def _control_stanza(raw, expected):
@@ -448,14 +526,21 @@ def _control_stanza(raw, expected):
     )
 
 
-def preflight_deb_bytes(raw, expected, bounds):
+def preflight_oci_layer_bytes(raw, bounds):
+    return _preflight_material_tar(raw, bounds, "oci")
+
+
+def preflight_deb_payload(raw, expected, bounds):
     members = _ar_members(raw)
     control_raw = _decompress_tar(members[1][0], members[1][1], bounds["max_regular_bytes"])
     _, control = _preflight_tar(control_raw, bounds, control=True)
     _control_stanza(control, expected)
     data_raw = _decompress_tar(members[2][0], members[2][1], bounds["max_regular_bytes"])
-    records, _ = _preflight_tar(data_raw, bounds)
-    return records
+    return _preflight_material_tar(data_raw, bounds, "package")
+
+
+def preflight_deb_bytes(raw, expected, bounds):
+    return preflight_deb_payload(raw, expected, bounds).archive_records
 
 
 def verify_package_archives(contract, cache):
