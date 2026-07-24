@@ -47,18 +47,21 @@ for hostile in (
         raise AssertionError("hostile rootfs pins accepted")
 names = tuple(name.text for name, _content in publish._contents(b"manifest", b"ustar", pins))
 identity = {"mount_id": 1, "device": 1, "inode": 2, "kind": "directory", "mode": 0o700, "uid": 0, "gid": 0, "nlink": 2, "size": 4096, "mtime_ns": 1, "ctime_ns": 1}
+def directory_authority(generation_value, inode_version=7):
+    serialized = publish._generation_value(generation_value) if type(generation_value) is fs.HostGeneration else generation_value
+    return {"generation": serialized, "inode_version": inode_version}
 generation = {"mount_id": 1, "device": 1, "inode": 3, "kind": "file", "mode": 0o400, "uid": 0, "gid": 0, "nlink": 1, "size": 1, "mtime_ns": 1, "ctime_ns": 1}
 anonymous_generation = {**generation, "nlink": 0, "ctime_ns": 0}
 ready = {"generation": anonymous_generation, "sha256": "0" * 64, "size": 1}
 values = []
 previous = publish.ZERO_SHA256
-events = [("intent", None, None), ("candidate-intent", None, None), ("candidate", None, identity)]
+events = [("intent", None, None), ("candidate-intent", None, None), ("candidate", None, directory_authority(identity))]
 for index, name in enumerate(names, 2):
     next_identity = {**identity, "mtime_ns": index, "ctime_ns": index}
-    events.extend((("file-intent", name, identity), ("file-ready", name, ready), ("file", name, generation), ("candidate-generation", None, next_identity)))
+    events.extend((("file-intent", name, directory_authority(identity)), ("file-ready", name, ready), ("file", name, generation), ("candidate-generation", None, directory_authority(next_identity))))
     identity = next_identity
 accepted_identity = {**identity, "ctime_ns": identity["ctime_ns"] + 1}
-events.extend((("prepared", None, None), ("rename", None, None), ("accepted", None, accepted_identity)))
+events.extend((("prepared", None, None), ("rename", None, None), ("accepted", None, directory_authority(accepted_identity))))
 for phase, name, item_identity in events:
     value = publish._record(len(values), previous, phase, name, item_identity)
     line = publish._canonical(value)
@@ -68,7 +71,7 @@ for phase, name, item_identity in events:
 restart_values = []
 previous = publish.ZERO_SHA256
 replacement_ready = {**ready, "generation": {**anonymous_generation, "inode": 4}}
-for phase, name, item_identity in (("intent", None, None), ("candidate-intent", None, None), ("candidate", None, identity), ("file-intent", names[0], identity), ("file-ready", names[0], ready), ("file-ready", names[0], replacement_ready)):
+for phase, name, item_identity in (("intent", None, None), ("candidate-intent", None, None), ("candidate", None, directory_authority(identity)), ("file-intent", names[0], directory_authority(identity)), ("file-ready", names[0], ready), ("file-ready", names[0], replacement_ready)):
     value = publish._record(len(restart_values), previous, phase, name, item_identity)
     line = publish._canonical(value)
     restart_values.append(line)
@@ -80,7 +83,7 @@ for field, regressed in (("size", 4095), ("mtime_ns", 9), ("ctime_ns", 9)):
     parser_after = {**parser_prior, "mtime_ns": 11, "ctime_ns": 11, field: regressed}
     parser_lines = []
     parser_previous = publish.ZERO_SHA256
-    parser_events = (("intent", None, None), ("candidate-intent", None, None), ("candidate", None, parser_prior), ("file-intent", names[0], parser_prior), ("file-ready", names[0], parser_ready), ("file", names[0], generation), ("candidate-generation", None, parser_after))
+    parser_events = (("intent", None, None), ("candidate-intent", None, None), ("candidate", None, directory_authority(parser_prior)), ("file-intent", names[0], directory_authority(parser_prior)), ("file-ready", names[0], parser_ready), ("file", names[0], generation), ("candidate-generation", None, directory_authority(parser_after)))
     for parser_phase, parser_name, parser_identity in parser_events:
         parser_value = publish._record(len(parser_lines), parser_previous, parser_phase, parser_name, parser_identity)
         parser_line = publish._canonical(parser_value)
@@ -92,6 +95,27 @@ for field, regressed in (("size", 4095), ("mtime_ns", 9), ("ctime_ns", 9)):
         pass
     else:
         raise AssertionError(f"candidate {field} regression accepted by transaction parser")
+version_drift_lines = []
+version_previous = publish.ZERO_SHA256
+version_events = (("intent", None, None), ("candidate-intent", None, None), ("candidate", None, directory_authority(parser_prior)), ("file-intent", names[0], directory_authority(parser_prior)), ("file-ready", names[0], parser_ready), ("file", names[0], generation), ("candidate-generation", None, directory_authority({**parser_prior, "mtime_ns": 11, "ctime_ns": 11}, 8)))
+for version_phase, version_name, version_identity in version_events:
+    version_value = publish._record(len(version_drift_lines), version_previous, version_phase, version_name, version_identity)
+    version_line = publish._canonical(version_value)
+    version_drift_lines.append(version_line)
+    version_previous = hashlib.sha256(version_line).hexdigest()
+try:
+    publish._parse_transaction(b"".join(version_drift_lines), (names[0],))
+except publish.PublicationError:
+    pass
+else:
+    raise AssertionError("candidate inode-version transition accepted")
+for malformed_authority in ({"generation": parser_prior}, {"generation": parser_prior, "inode_version": True}, {"generation": parser_prior, "inode_version": 0x100000000}):
+    try:
+        publish._parse_directory_authority(malformed_authority)
+    except publish.PublicationError:
+        pass
+    else:
+        raise AssertionError("malformed directory authority accepted")
 anonymous_key = fs.HostKey(1, 1, 9, "file")
 anonymous_host = fs.HostGeneration(anonymous_key, 0o400, 0, 0, 0, 1, 1, 1)
 linked_host = fs.HostGeneration(anonymous_key, 0o400, 0, 0, 1, 1, 1, 2)
@@ -127,28 +151,61 @@ reuse_key = fs.HostKey(1, 1, 44, "directory")
 recorded_directory = fs.HostGeneration(reuse_key, 0o700, 0, 0, 2, 4096, 10, 10)
 reused_directory = fs.HostGeneration(reuse_key, 0o700, 0, 0, 2, 4096, 10, 11)
 reuse_node = fs.HeldNode(fs.CheckedFd(reuse_identity_read, "reuse-identity"), fs.CheckedFd(reuse_operation_read, "reuse-operation"), reused_directory)
-real_observe = fs._observe_node
-fs._observe_node = lambda _identity, _operation, _control: reused_directory
-assert publish._require_rename_generation(reuse_node, publish._generation_value(recorded_directory), object()) == reused_directory
+real_observe_authority = publish._observe_directory_authority
+publish._observe_directory_authority = lambda _node, _control: publish.DirectoryAuthority(reused_directory, 7)
+assert publish._require_rename_generation(reuse_node, directory_authority(recorded_directory), object()) == publish.DirectoryAuthority(reused_directory, 7)
 try:
-    publish._require_directory_generation(reuse_node, publish._generation_value(recorded_directory), object())
+    publish._require_directory_generation(reuse_node, directory_authority(recorded_directory), object())
 except publish.PublicationError:
     pass
 else:
     raise AssertionError("same-inode candidate replacement accepted")
-finally:
-    fs._observe_node = real_observe
-replacement_after_rename = fs.HostGeneration(reuse_key, 0o700, 0, 0, 2, 4097, 10, 12)
-fs._observe_node = lambda _identity, _operation, _control: replacement_after_rename
+publish._observe_directory_authority = lambda _node, _control: publish.DirectoryAuthority(recorded_directory, 8)
 try:
-    publish._require_rename_generation(reuse_node, publish._generation_value(recorded_directory), object())
+    publish._require_directory_generation(reuse_node, directory_authority(recorded_directory), object())
+except publish.PublicationError:
+    pass
+else:
+    raise AssertionError("candidate inode-version replacement accepted")
+replacement_after_rename = fs.HostGeneration(reuse_key, 0o700, 0, 0, 2, 4097, 10, 12)
+publish._observe_directory_authority = lambda _node, _control: publish.DirectoryAuthority(replacement_after_rename, 7)
+try:
+    publish._require_rename_generation(reuse_node, directory_authority(recorded_directory), object())
 except publish.PublicationError:
     pass
 else:
     raise AssertionError("same-inode accepted replacement authorized as rename")
 finally:
-    fs._observe_node = real_observe
+    publish._observe_directory_authority = real_observe_authority
     fs._close_node(reuse_node)
+ioctl_identity_read, ioctl_identity_write = os.pipe()
+ioctl_operation_read, ioctl_operation_write = os.pipe()
+os.close(ioctl_identity_write)
+os.close(ioctl_operation_write)
+ioctl_node = fs.HeldNode(fs.CheckedFd(ioctl_identity_read, "ioctl-identity"), fs.CheckedFd(ioctl_operation_read, "ioctl-operation"), recorded_directory)
+real_ioctl = publish.fcntl.ioctl
+real_platform = publish.sys.platform
+ioctl_control = SimpleNamespace(check=lambda: None)
+
+def mock_ioctl(_descriptor, request, raw, mutate):
+    assert request == 0x80087601 and len(raw) == 8 and mutate is True
+    raw[:] = publish.struct.pack("@L", 42)
+    return 0
+
+publish.sys.platform = "linux"
+publish.fcntl.ioctl = mock_ioctl
+assert publish._inode_version(ioctl_node, ioctl_control) == 42
+publish.fcntl.ioctl = lambda _descriptor, _request, raw, _mutate: (raw.__setitem__(slice(None), publish.struct.pack("@L", 0x100000000)) or 0)
+try:
+    publish._inode_version(ioctl_node, ioctl_control)
+except publish.PublicationError:
+    pass
+else:
+    raise AssertionError("overlong inode version accepted")
+finally:
+    publish.fcntl.ioctl = real_ioctl
+    publish.sys.platform = real_platform
+    fs._close_node(ioctl_node)
 if sys.platform == "linux":
     ext4_fixture = os.environ.get("COGS_APPROVED_EXT4_FIXTURE")
     if ext4_fixture is not None:
@@ -396,22 +453,36 @@ if sys.platform == "linux":
 
         for hostile_case in ("extra", "name", "inode", "content", "prior"):
             ext4_hostile_case(hostile_case)
-    with tempfile.TemporaryDirectory(dir=ext4_fixture) as temporary:
-        candidate_path = Path(temporary) / "candidate"
-        candidate_path.mkdir()
-        first = candidate_path.stat()
-        candidate_path.rmdir()
-        reused_stat = None
-        for _attempt in range(4096):
+        with tempfile.TemporaryDirectory(dir=ext4_fixture) as temporary:
+            candidate_path = Path(temporary) / "candidate"
+
+            def path_inode_version(path):
+                version_control = fs.OperationControl(time.monotonic_ns() + 120_000_000_000, lambda: False)
+                version_identity = fs.CheckedFd(os.open(path, fs.IDENTITY_FLAGS), "version-identity")
+                version_operation = fs.CheckedFd(os.open(path, fs.DIRECTORY_FLAGS), "version-directory")
+                version_node = fs.HeldNode(version_identity, version_operation, fs._observe_node(version_identity, version_operation, version_control))
+                try:
+                    return publish._inode_version(version_node, version_control)
+                finally:
+                    fs._close_node(version_node)
+
             candidate_path.mkdir()
-            current = candidate_path.stat()
-            if current.st_ino == first.st_ino:
-                reused_stat = current
-                candidate_path.rmdir()
-                break
+            first = candidate_path.stat()
+            first_version = path_inode_version(candidate_path)
             candidate_path.rmdir()
-        assert reused_stat is not None, "approved Linux fixture did not reuse the candidate inode"
-        assert (reused_stat.st_mode, reused_stat.st_uid, reused_stat.st_gid, reused_stat.st_nlink, reused_stat.st_size, reused_stat.st_mtime_ns, reused_stat.st_ctime_ns) != (first.st_mode, first.st_uid, first.st_gid, first.st_nlink, first.st_size, first.st_mtime_ns, first.st_ctime_ns)
+            reused_stat = None
+            reused_version = None
+            for _attempt in range(4096):
+                candidate_path.mkdir()
+                current = candidate_path.stat()
+                if current.st_ino == first.st_ino:
+                    reused_stat = current
+                    reused_version = path_inode_version(candidate_path)
+                    candidate_path.rmdir()
+                    break
+                candidate_path.rmdir()
+            assert reused_stat is not None, "approved Linux fixture did not reuse the candidate inode"
+            assert reused_version != first_version, "reused ext4 inode retained its publication inode version"
 identity_read, identity_write = os.pipe()
 operation_read, operation_write = os.pipe()
 os.close(identity_write)
@@ -437,6 +508,7 @@ assert opened.identity_fd.disposition == opened.operation_fd.disposition == "clo
 source = (REMOTE / "completion_rootfs_publish.py").read_text()
 assert "os.O_TMPFILE | os.O_RDWR" in source and "linkat" in source and "0x1000" in source and "_rename_noreplace" in source
 assert "file-ready" in source and "publication-anonymous" in source
+assert "0x80087601" in source and "_inode_version" in source and "inode_version" in source
 assert "file-abort" not in source and "def _create_file" not in source
 assert "rootfs.metadata.json" in source and "_parse_transaction" in source and "_transition_control" in source
 assert b"qualification" not in raw and b"functional_test_image" in raw

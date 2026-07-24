@@ -3,10 +3,12 @@
 import ctypes
 from contextlib import contextmanager
 from dataclasses import dataclass
+import fcntl
 import hashlib
 import json
 import os
 from pathlib import Path
+import struct
 import sys
 import time
 
@@ -83,6 +85,12 @@ class Transaction:
 class AnonymousFile:
     operation_fd: fs.CheckedFd
     generation: fs.HostGeneration
+
+
+@dataclass(frozen=True)
+class DirectoryAuthority:
+    generation: fs.HostGeneration
+    inode_version: int
 
 
 def _close_nodes(nodes, primary=None):
@@ -175,6 +183,22 @@ def _parse_directory_generation(value):
     return fs.HostGeneration(key, value["mode"], value["uid"], value["gid"], value["nlink"], value["size"], value["mtime_ns"], value["ctime_ns"])
 
 
+def _directory_authority_value(value):
+    return {"generation": _generation_value(value.generation), "inode_version": value.inode_version}
+
+
+def _parse_directory_authority(value):
+    _fail(type(value) is dict and tuple(value) == ("generation", "inode_version"))
+    generation = _parse_directory_generation(value["generation"])
+    _fail(type(value["inode_version"]) is int and not isinstance(value["inode_version"], bool) and 0 <= value["inode_version"] <= 0xFFFFFFFF)
+    return DirectoryAuthority(generation, value["inode_version"])
+
+
+def _authority_transition(before, after, transition):
+    _fail(before.inode_version == after.inode_version)
+    transition(before.generation, after.generation)
+
+
 def _directory_generation_change(before, after):
     _fail(before.key == after.key and before.key.kind == "directory")
     _fail((before.mode, before.uid, before.gid, before.nlink) == (after.mode, after.uid, after.gid, after.nlink))
@@ -262,12 +286,12 @@ def _parse_transaction(raw, content_names):
             state = "candidate-intent"
         elif state == "candidate-intent":
             _fail(phase == "candidate")
-            candidate_generation = _parse_directory_generation(value["identity"])
+            candidate_authority = _parse_directory_authority(value["identity"])
             state = "candidate"
             file_index = 0
         elif state == "candidate" and phase == "file-intent":
             _fail(file_index < len(content_names) and value["name"] == content_names[file_index])
-            _fail(_parse_directory_generation(value["identity"]) == candidate_generation)
+            _fail(_parse_directory_authority(value["identity"]) == candidate_authority)
             state = "file-intent"
         elif state == "file-intent":
             _fail(phase == "file-ready" and value["name"] == content_names[file_index])
@@ -283,9 +307,9 @@ def _parse_transaction(raw, content_names):
             state = "candidate-generation"
         elif state == "candidate-generation":
             _fail(phase == "candidate-generation")
-            next_generation = _parse_directory_generation(value["identity"])
-            _directory_link_change(candidate_generation, next_generation)
-            candidate_generation = next_generation
+            next_authority = _parse_directory_authority(value["identity"])
+            _authority_transition(candidate_authority, next_authority, _directory_link_change)
+            candidate_authority = next_authority
             file_index += 1
             state = "candidate"
         elif state == "candidate" and phase == "prepared":
@@ -296,8 +320,8 @@ def _parse_transaction(raw, content_names):
             state = "rename"
         elif state == "rename":
             _fail(phase == "accepted")
-            accepted_generation = _parse_directory_generation(value["identity"])
-            _rename_generation_change(candidate_generation, accepted_generation)
+            accepted_authority = _parse_directory_authority(value["identity"])
+            _authority_transition(candidate_authority, accepted_authority, _rename_generation_change)
             state = "accepted"
         else:
             raise PublicationError()
@@ -318,17 +342,37 @@ def _cycle(records):
     return candidate_record, files
 
 
+def _inode_version(node, control):
+    _fail(sys.platform == "linux" and struct.calcsize("@l") == struct.calcsize("@L") == 8)
+    control.check()
+    raw = bytearray(8)
+    result = fcntl.ioctl(node.operation_fd.number, 0x80087601, raw, True)
+    control.check()
+    signed = struct.unpack("@l", raw)[0]
+    unsigned = struct.unpack("@L", raw)[0]
+    _fail(type(result) is int and result == 0 and signed == unsigned and 0 <= unsigned <= 0xFFFFFFFF)
+    return unsigned
+
+
+def _observe_directory_authority(node, control):
+    before = fs._observe_node(node.identity_fd, node.operation_fd, control)
+    version = _inode_version(node, control)
+    after = fs._observe_node(node.identity_fd, node.operation_fd, control)
+    _fail(before == after and before.key.kind == "directory")
+    return DirectoryAuthority(after, version)
+
+
 def _require_directory_generation(node, value, control):
-    expected = _parse_directory_generation(value)
-    actual = fs._observe_node(node.identity_fd, node.operation_fd, control)
+    expected = _parse_directory_authority(value)
+    actual = _observe_directory_authority(node, control)
     _fail(actual == expected)
     return actual
 
 
 def _require_rename_generation(node, value, control):
-    before = _parse_directory_generation(value)
-    after = fs._observe_node(node.identity_fd, node.operation_fd, control)
-    _rename_generation_change(before, after)
+    before = _parse_directory_authority(value)
+    after = _observe_directory_authority(node, control)
+    _authority_transition(before, after, _rename_generation_change)
     return after
 
 
@@ -591,7 +635,7 @@ def _durable_event(parent, content_names, phase, name, key, control):
     record = transaction.records[-1]
     if record["phase"] != phase or record["name"] != name:
         return False
-    identity = _parse_directory_generation(record["identity"]) if phase == "candidate" else _parse_generation(record["identity"]).key
+    identity = _parse_directory_authority(record["identity"]) if phase == "candidate" else _parse_generation(record["identity"]).key
     return identity == key
 
 
@@ -654,19 +698,21 @@ def _publish_unmasked(parent, manifest, ustar, pins, work_control):
             elif phase == "candidate-intent":
                 _fail(CANDIDATE_NAME.raw not in names and ACCEPTED_NAME.raw not in names)
                 created_candidate = False
+                candidate_authority = None
                 try:
                     os.mkdir(CANDIDATE_NAME.raw, 0o700, dir_fd=parent.operation_fd.number)
                     created_candidate = True
                     candidate = _directory(parent, CANDIDATE_NAME, control)
+                    candidate_authority = _observe_directory_authority(candidate, control)
                     os.fsync(parent.operation_fd.number)
-                    transaction = _append_transaction(transaction, parent, content_names, "candidate", control, identity=_generation_value(candidate.generation))
+                    transaction = _append_transaction(transaction, parent, content_names, "candidate", control, identity=_directory_authority_value(candidate_authority))
                     owned_progress = True
                     work_control.check()
                 except BaseException as error:
                     cleanup_control = _transition_control()
                     if created_candidate:
                         try:
-                            durable = candidate is not None and _durable_event(parent, content_names, "candidate", None, candidate.generation, cleanup_control)
+                            durable = candidate is not None and candidate_authority is not None and _durable_event(parent, content_names, "candidate", None, candidate_authority, cleanup_control)
                             if not durable:
                                 if candidate is not None:
                                     _cleanup_empty_candidate(parent, candidate, cleanup_control)
@@ -690,7 +736,7 @@ def _publish_unmasked(parent, manifest, ustar, pins, work_control):
                 if len(file_records) < len(contents):
                     owned_progress = True
                     name = contents[len(file_records)][0]
-                    transaction = _append_transaction(transaction, parent, content_names, "file-intent", control, name.text, _generation_value(current_candidate))
+                    transaction = _append_transaction(transaction, parent, content_names, "file-intent", control, name.text, _directory_authority_value(current_candidate))
                 else:
                     os.fsync(candidate.operation_fd.number)
                     transaction = _append_transaction(transaction, parent, content_names, "prepared", control)
@@ -709,15 +755,17 @@ def _publish_unmasked(parent, manifest, ustar, pins, work_control):
                 _fail(CANDIDATE_NAME.raw in names and ACCEPTED_NAME.raw not in names)
                 if candidate is None:
                     candidate = _directory(parent, CANDIDATE_NAME, control)
-                before_candidate = _parse_directory_generation(candidate_record["identity"])
+                before_candidate = _parse_directory_authority(candidate_record["identity"])
                 name, raw = contents[len(file_records)]
                 ready_generation, ready_sha256, ready_size = _parse_ready(transaction.records[-1]["identity"])
                 _fail(ready_sha256 == hashlib.sha256(raw).hexdigest() and ready_size == len(raw))
                 snapshot = fs._enumerate_stable(candidate, control)
+                snapshot_authority = _observe_directory_authority(candidate, control)
+                _fail(snapshot_authority.generation == snapshot.generation)
                 prior_names = tuple(sorted(item.raw for item, _raw in contents[: len(file_records)]))
                 linked_names = tuple(sorted(prior_names + (name.raw,)))
                 if snapshot.raw_names == prior_names:
-                    _fail(snapshot.generation == before_candidate)
+                    _fail(snapshot_authority == before_candidate)
                     _verify_inventory(candidate, contents, file_records, False, control)
                     if anonymous is None or anonymous.generation != ready_generation:
                         if anonymous is not None:
@@ -729,15 +777,15 @@ def _publish_unmasked(parent, manifest, ustar, pins, work_control):
                     _link_anonymous(candidate, name, anonymous, control)
                     continue
                 _fail(snapshot.raw_names == linked_names)
-                _directory_link_change(before_candidate, snapshot.generation)
+                _authority_transition(before_candidate, snapshot_authority, _directory_link_change)
                 _verify_inventory(candidate, contents, file_records, False, control, (name.raw,))
                 linked = _file(candidate, name, raw, control)
                 with _owned_nodes(lambda: (linked,)):
                     _linked_generation_change(ready_generation, linked.generation)
                     os.fsync(candidate.operation_fd.number)
-                    after_candidate = fs._observe_node(candidate.identity_fd, candidate.operation_fd, control)
-                    _fail(after_candidate == snapshot.generation)
-                    transaction = _append_records(transaction, parent, content_names, (("file", name.text, _generation_value(linked.generation)), ("candidate-generation", None, _generation_value(after_candidate))), control)
+                    after_candidate = _observe_directory_authority(candidate, control)
+                    _fail(after_candidate == snapshot_authority)
+                    transaction = _append_records(transaction, parent, content_names, (("file", name.text, _generation_value(linked.generation)), ("candidate-generation", None, _directory_authority_value(after_candidate))), control)
                 if anonymous is not None:
                     _close_anonymous(anonymous)
                     anonymous = None
@@ -765,7 +813,7 @@ def _publish_unmasked(parent, manifest, ustar, pins, work_control):
                     accepted_generation = _require_rename_generation(accepted, candidate_record["identity"], control)
                     _verify_inventory(accepted, contents, file_records, True, control)
                     os.fsync(parent.operation_fd.number)
-                    transaction = _append_transaction(transaction, parent, content_names, "accepted", control, identity=_generation_value(accepted_generation))
+                    transaction = _append_transaction(transaction, parent, content_names, "accepted", control, identity=_directory_authority_value(accepted_generation))
             else:
                 _fail(phase == "accepted" and CANDIDATE_NAME.raw not in names and ACCEPTED_NAME.raw in names)
                 accepted = _directory(parent, ACCEPTED_NAME, control)

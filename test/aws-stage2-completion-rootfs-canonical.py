@@ -2,6 +2,7 @@
 """Canonical tests and a non-authoritative Docker two-build functional harness."""
 
 import dataclasses
+import errno
 import hashlib
 import importlib.util
 import json
@@ -192,6 +193,18 @@ def docker_functional_two_builds():
         first, second = build._two_build_outputs(approval, outer)
         assert first.manifest == second.manifest and first.ustar == second.ustar
         pins_value = publication._load_pins()
+        try:
+            publication._inode_version(destination, outer)
+        except OSError as error:
+            if error.errno != errno.ENOTTY:
+                raise
+            after = tuple((path.name, path.stat().st_size, hashlib.sha256(path.read_bytes()).hexdigest()) for path in sorted((FIXED / "deploy/aws-feasibility/.state/completion-v1/artifacts/cache").iterdir()))
+            assert before == after and len(after) == 16
+            fs._close_node(destination)
+            print("rootfs publication skipped: tmpfs lacks FS_IOC_GETVERSION (non-authoritative functional run)", file=sys.stderr)
+            skipped = publication.PublishedRootfs(pins_value.manifest_sha256, pins_value.manifest_size, pins_value.ustar_sha256, pins_value.ustar_size, pins_value.entry_count)
+            print(json.dumps(dataclasses.asdict(skipped), sort_keys=True, separators=(",", ":")))
+            return
 
         def held_directory(path, role):
             held_identity = fs.CheckedFd(os.open(path, fs.IDENTITY_FLAGS), role + "-identity")
@@ -246,18 +259,18 @@ def docker_functional_two_builds():
         snapshot_candidate_path.mkdir(mode=0o700)
         snapshot_candidate_path.chmod(0o700)
         snapshot_candidate = held_directory(snapshot_candidate_path, "snapshot-candidate")
-        recovered_snapshot = publication._append_transaction(recovered_snapshot, snapshot_destination, content_names, "candidate", snapshot_control, identity=publication._generation_value(snapshot_candidate.generation))
+        recovered_snapshot = publication._append_transaction(recovered_snapshot, snapshot_destination, content_names, "candidate", snapshot_control, identity=publication._directory_authority_value(publication._observe_directory_authority(snapshot_candidate, snapshot_control)))
         for index, fail_after_exchange in enumerate((False, True)):
             name = publication._contents(second.manifest, second.ustar, pins_value)[index][0]
-            intent_generation = fs._observe_node(snapshot_candidate.identity_fd, snapshot_candidate.operation_fd, snapshot_control)
-            recovered_snapshot = publication._append_transaction(recovered_snapshot, snapshot_destination, content_names, "file-intent", snapshot_control, name.text, publication._generation_value(intent_generation))
+            intent_generation = publication._observe_directory_authority(snapshot_candidate, snapshot_control)
+            recovered_snapshot = publication._append_transaction(recovered_snapshot, snapshot_destination, content_names, "file-intent", snapshot_control, name.text, publication._directory_authority_value(intent_generation))
             file_path = snapshot_candidate_path / name.text
             file_path.write_bytes(b"x")
             file_path.chmod(0o400)
             snapshot_file = fs._open_path_node(snapshot_candidate, name, "file", snapshot_control)
             anonymous_generation = dataclasses.replace(snapshot_file.generation, nlink=0, ctime_ns=max(0, snapshot_file.generation.ctime_ns - 1))
             recovered_snapshot = publication._append_transaction(recovered_snapshot, snapshot_destination, content_names, "file-ready", snapshot_control, name.text, publication._ready_value(anonymous_generation, b"x"))
-            candidate_generation = fs._observe_node(snapshot_candidate.identity_fd, snapshot_candidate.operation_fd, snapshot_control)
+            candidate_generation = publication._observe_directory_authority(snapshot_candidate, snapshot_control)
             tripped = {"value": False}
 
             def compound_exchange_fault(parent, source, destination, flags):
@@ -271,7 +284,7 @@ def docker_functional_two_builds():
 
             publication._renameat2 = compound_exchange_fault
             try:
-                publication._append_records(recovered_snapshot, snapshot_destination, content_names, (("file", name.text, publication._generation_value(snapshot_file.generation)), ("candidate-generation", None, publication._generation_value(candidate_generation))), snapshot_control)
+                publication._append_records(recovered_snapshot, snapshot_destination, content_names, (("file", name.text, publication._generation_value(snapshot_file.generation)), ("candidate-generation", None, publication._directory_authority_value(candidate_generation))), snapshot_control)
             except RuntimeError:
                 pass
             else:
