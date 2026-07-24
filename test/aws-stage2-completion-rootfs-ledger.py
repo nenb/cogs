@@ -119,8 +119,12 @@ def codec_and_reconcile_tests():
     proposals, state_before, state_after, operation = lifecycle_prefix()
     active_raw = encoded(proposals)
     active = ledger._parse_ledger(active_raw)
-    assert len(active) == 5 and active[-1].record_type == "operation-create-settled"
     observations = ledger.ReconcileObservations(state_after, ((ledger._operation_name(TOKEN), operation),), ())
+    genesis_only = ledger._parse_ledger(encoded(proposals[:1]))
+    assert ledger._reconcile_ledger(genesis_only, ledger.ReconcileObservations(state_before, (), ())).status == "genesis-settleable"
+    operation_observed = ledger._parse_ledger(encoded(proposals[:4]))
+    assert ledger._reconcile_ledger(operation_observed, observations).status == "operation-create-settleable"
+    assert len(active) == 5 and active[-1].record_type == "operation-create-settled"
     state = ledger._reconcile_ledger(active, observations)
     assert state.status == "active" and state.cleanup_allowed
 
@@ -177,10 +181,11 @@ def codec_and_reconcile_tests():
         observations,
         operations=((ledger._operation_name(TOKEN), operation_after_create),),
         entries=(("rootfs", child),),
+        parents=(("", operation_parent_after),),
     )
     assert ledger._reconcile_ledger(created, created_observations).status == "active"
     observed_only = ledger._parse_ledger(encoded(proposals + [create_intent, create_observed]))
-    assert ledger._reconcile_ledger(observed_only, created_observations).status == "preserve"
+    assert ledger._reconcile_ledger(observed_only, created_observations).status == "create-settleable"
 
     desired = dataclasses.replace(child, mode=0o755, ctime_ns=2)
     metadata = [
@@ -199,6 +204,8 @@ def codec_and_reconcile_tests():
     metadata_records = ledger._parse_ledger(encoded(created_proposals + metadata))
     desired_observations = dataclasses.replace(created_observations, entries=(("rootfs", desired),))
     assert ledger._reconcile_ledger(metadata_records, desired_observations).status == "active"
+    metadata_observed = ledger._parse_ledger(encoded(created_proposals + metadata[:2]))
+    assert ledger._reconcile_ledger(metadata_observed, desired_observations).status == "metadata-settleable"
 
     remove_intent = ledger.LedgerProposal.create(
         "remove-intent",
@@ -228,6 +235,8 @@ def codec_and_reconcile_tests():
     removed_proposals = created_proposals + metadata + [remove_intent, remove_observed, remove_settled]
     removed = ledger._parse_ledger(encoded(removed_proposals))
     assert ledger._reconcile_ledger(removed, observations).status == "active"
+    remove_observed_records = ledger._parse_ledger(encoded(created_proposals + metadata + [remove_intent, remove_observed]))
+    assert ledger._reconcile_ledger(remove_observed_records, dataclasses.replace(observations, parents=(("", operation_parent_before),))).status == "remove-settleable"
 
     operation_name = ledger._operation_name(TOKEN)
     remove_operation = ledger.LedgerProposal.create(

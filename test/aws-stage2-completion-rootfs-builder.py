@@ -13,7 +13,7 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 REMOTE = ROOT / "deploy/aws-feasibility/remote"
 FIXED = Path("/var/lib/cogs/stage2-completion-v1/source")
-CONTAINER_SENTINEL = Path("/cogs-rootfs-functional-test-v1")
+CONTAINER_SENTINEL = Path("/var/lib/cogs/.cogs-rootfs-functional-test-v1")
 CONTAINER_SENTINEL_RAW = b"cogs-rootfs-functional-test-v1\n"
 
 
@@ -86,12 +86,24 @@ def canonical_manifest(entries, revision):
 
 
 def require_disposable_container():
-    assert sys.platform == "linux" and os.geteuid() == 0 and Path("/.dockerenv").is_file()
+    def require(condition):
+        if not condition:
+            raise RuntimeError("unsafe Docker functional environment")
+
+    require(sys.platform == "linux" and os.geteuid() == 0 and Path("/.dockerenv").is_file())
+    mount = Path("/var/lib/cogs")
+    mount_stat = mount.stat(follow_symlinks=False)
+    require(stat.S_ISDIR(mount_stat.st_mode) and stat.S_IMODE(mount_stat.st_mode) == 0o700)
+    require(mount_stat.st_uid == mount_stat.st_gid == 0 and mount_stat.st_dev != Path("/var/lib").stat().st_dev)
+    lines = [line.split() for line in Path("/proc/self/mountinfo").read_text().splitlines() if line.split()[4] == str(mount)]
+    require(len(lines) == 1 and "-" in lines[0])
+    separator = lines[0].index("-")
+    require(lines[0][separator + 1] == "tmpfs" and set(("rw", "nosuid", "nodev", "noexec")) <= set(lines[0][5].split(",")))
     observed = CONTAINER_SENTINEL.stat(follow_symlinks=False)
-    assert stat.S_ISREG(observed.st_mode) and stat.S_IMODE(observed.st_mode) == 0o400
-    assert observed.st_uid == observed.st_gid == 0 and observed.st_nlink == 1
-    assert CONTAINER_SENTINEL.read_bytes() == CONTAINER_SENTINEL_RAW
-    assert not FIXED.parent.exists()
+    require(stat.S_ISREG(observed.st_mode) and stat.S_IMODE(observed.st_mode) == 0o400)
+    require(observed.st_uid == observed.st_gid == 0 and observed.st_nlink == 1 and observed.st_dev == mount_stat.st_dev)
+    require(CONTAINER_SENTINEL.read_bytes() == CONTAINER_SENTINEL_RAW)
+    require(tuple(path.name for path in mount.iterdir()) == (CONTAINER_SENTINEL.name,) and not FIXED.parent.exists())
 
 
 def prepare_fixed_workspace():
@@ -101,7 +113,6 @@ def prepare_fixed_workspace():
     remote.mkdir(parents=True, mode=0o700)
     cache.mkdir(parents=True, mode=0o700)
     for path in (
-        Path("/var/lib/cogs"),
         Path("/var/lib/cogs/stage2-completion-v1"),
         FIXED,
         FIXED / "deploy",
@@ -151,12 +162,13 @@ def accommodate_docker_overlay(fs, builder):
     original = fs._require_policy
     original_xattrs = fs._require_empty_fd_xattrs
     overlay_ancestors = {(os.lstat(path).st_dev, os.lstat(path).st_ino) for path in ("/", "/var", "/var/lib")}
+    functional_device = os.lstat("/var/lib/cogs").st_dev
 
     def policy(node, expected, root_key):
         generation = node.generation
         assert generation.key.kind == expected.kind and generation.mode == expected.mode
         assert generation.uid == expected.uid and generation.gid == expected.gid
-        assert generation.key.mount_id == root_key.mount_id and generation.key.device == root_key.device
+        assert (generation.key.mount_id, generation.key.device) == (root_key.mount_id, root_key.device) or generation.key.device == functional_device
         if expected.kind == "file":
             assert generation.nlink == 1
 

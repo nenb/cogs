@@ -14,7 +14,7 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 REMOTE = ROOT / "deploy/aws-feasibility/remote"
 FIXED = Path("/var/lib/cogs/stage2-completion-v1/source")
-CONTAINER_SENTINEL = Path("/cogs-rootfs-functional-test-v1")
+CONTAINER_SENTINEL = Path("/var/lib/cogs/.cogs-rootfs-functional-test-v1")
 CONTAINER_SENTINEL_RAW = b"cogs-rootfs-functional-test-v1\n"
 
 
@@ -36,17 +36,29 @@ def portable():
 
 
 def prepare():
-    assert sys.platform == "linux" and os.geteuid() == 0 and Path("/.dockerenv").is_file()
+    def require(condition):
+        if not condition:
+            raise RuntimeError("unsafe Docker functional environment")
+
+    require(sys.platform == "linux" and os.geteuid() == 0 and Path("/.dockerenv").is_file())
+    mount = Path("/var/lib/cogs")
+    mount_stat = mount.stat(follow_symlinks=False)
+    require(stat.S_ISDIR(mount_stat.st_mode) and stat.S_IMODE(mount_stat.st_mode) == 0o700)
+    require(mount_stat.st_uid == mount_stat.st_gid == 0 and mount_stat.st_dev != Path("/var/lib").stat().st_dev)
+    lines = [line.split() for line in Path("/proc/self/mountinfo").read_text().splitlines() if line.split()[4] == str(mount)]
+    require(len(lines) == 1 and "-" in lines[0])
+    separator = lines[0].index("-")
+    require(lines[0][separator + 1] == "tmpfs" and {"rw", "nosuid", "nodev", "noexec"} <= set(lines[0][5].split(",")))
     observed = CONTAINER_SENTINEL.stat(follow_symlinks=False)
-    assert stat.S_ISREG(observed.st_mode) and stat.S_IMODE(observed.st_mode) == 0o400
-    assert observed.st_uid == observed.st_gid == 0 and observed.st_nlink == 1
-    assert CONTAINER_SENTINEL.read_bytes() == CONTAINER_SENTINEL_RAW
-    assert not FIXED.parent.exists()
+    require(stat.S_ISREG(observed.st_mode) and stat.S_IMODE(observed.st_mode) == 0o400)
+    require(observed.st_uid == observed.st_gid == 0 and observed.st_nlink == 1 and observed.st_dev == mount_stat.st_dev)
+    require(CONTAINER_SENTINEL.read_bytes() == CONTAINER_SENTINEL_RAW)
+    require(tuple(path.name for path in mount.iterdir()) == (CONTAINER_SENTINEL.name,) and not FIXED.parent.exists())
     remote = FIXED / "deploy/aws-feasibility/remote"
     cache = FIXED / "deploy/aws-feasibility/.state/completion-v1/artifacts/cache"
     remote.mkdir(parents=True, mode=0o700)
     cache.mkdir(parents=True, mode=0o700)
-    paths = [Path("/var/lib/cogs"), Path("/var/lib/cogs/stage2-completion-v1"), FIXED, FIXED / "deploy", FIXED / "deploy/aws-feasibility", remote, FIXED / "deploy/aws-feasibility/.state", FIXED / "deploy/aws-feasibility/.state/completion-v1", cache.parent, cache]
+    paths = [Path("/var/lib/cogs/stage2-completion-v1"), FIXED, FIXED / "deploy", FIXED / "deploy/aws-feasibility", remote, FIXED / "deploy/aws-feasibility/.state", FIXED / "deploy/aws-feasibility/.state/completion-v1", cache.parent, cache]
     for path in paths:
         path.chmod(0o700)
     copied = []
@@ -91,13 +103,14 @@ def prepare():
 def accommodate_docker_overlay(fs):
     original_xattrs = fs._require_empty_fd_xattrs
     ancestors = {(os.lstat(path).st_dev, os.lstat(path).st_ino) for path in ("/", "/var", "/var/lib")}
+    functional_device = os.lstat("/var/lib/cogs").st_dev
     fs._open_workspace_anchor = lambda control: fs._open_root_node(control)
 
     def policy(node, expected, root_key):
         generation = node.generation
         assert generation.key.kind == expected.kind and generation.mode == expected.mode
         assert generation.uid == expected.uid and generation.gid == expected.gid
-        assert generation.key.mount_id == root_key.mount_id and generation.key.device == root_key.device
+        assert (generation.key.mount_id, generation.key.device) == (root_key.mount_id, root_key.device) or generation.key.device == functional_device
         if expected.kind == "file":
             assert generation.nlink == 1
 
@@ -184,6 +197,46 @@ def linux():
     authority = synthetic(plan_module, preflight)
     materializer.plan.revalidate_build_inputs = lambda _value: dataclasses.replace(authority)
 
+    def startup_fault(token_number, record_type, occurrence=1):
+        real_append = builder._append
+        seen = {"count": 0}
+
+        def append(active, kind, body, current_control):
+            value = real_append(active, kind, body, current_control)
+            if kind == record_type:
+                seen["count"] += 1
+                if seen["count"] == occurrence:
+                    raise RuntimeError("startup fault")
+            return value
+
+        builder._append = append
+        try:
+            builder._begin_operation(chain, approval, f"{token_number:064x}", control)
+        except BaseException:
+            pass
+        else:
+            raise AssertionError("startup fault was not observed")
+        finally:
+            builder._append = real_append
+        assert seen["count"] == occurrence
+        assert sorted(path.name for path in state_path.iterdir()) == sorted((builder.STATE_SENTINEL_NAME.text, builder.LOCK_NAME.text))
+
+    startup_cases = (
+        ("genesis", 1),
+        ("genesis-settled", 1),
+        ("operation-create-intent", 1),
+        ("operation-create-observed", 1),
+        ("operation-create-settled", 1),
+        ("create-intent", 1),
+        ("create-observed", 1),
+        ("create-settled", 1),
+        ("create-intent", 2),
+        ("create-observed", 2),
+        ("create-settled", 2),
+    )
+    for index, (record_type, occurrence) in enumerate(startup_cases, 20):
+        startup_fault(index, record_type, occurrence)
+
     hostile_umask = os.umask(0o777)
     owned = builder._begin_operation(chain, approval, "1" * 64, control)
     real_write = builder.os.write
@@ -246,9 +299,41 @@ def linux():
         assert sorted(path.name for path in state_path.iterdir()) == sorted((builder.STATE_SENTINEL_NAME.text, builder.LOCK_NAME.text))
 
     fail_after_record("3", "create-intent", True)
-    fail_after_record("4", "hardlink-group")
-    fail_after_record("5", "hardlink-create-intent")
-    fail_after_record("6", "hardlink-create-settled")
+    fail_after_record("4", "create-observed")
+    fail_after_record("5", "metadata-observed")
+    fail_after_record("6", "hardlink-group")
+    fail_after_record("9", "hardlink-create-intent")
+    fail_after_record("a", "hardlink-create-observed")
+    fail_after_record("b", "hardlink-create-settled")
+
+    owned = builder._begin_operation(chain, approval, "c" * 64, control)
+    result = materializer._materialize(authority, owned, control)
+    real_append = builder._append
+    tripped = {"value": False}
+
+    def fail_remove_observed(active, kind, body, current_control):
+        value = real_append(active, kind, body, current_control)
+        if kind == "remove-observed" and not tripped["value"]:
+            tripped["value"] = True
+            raise RuntimeError("remove observed fault")
+        return value
+
+    builder._append = fail_remove_observed
+    try:
+        builder._cleanup_owned(result.owned, result.active, control)
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("remove observed fault was not observed")
+    finally:
+        builder._append = real_append
+    for node in (result.owned.operation, result.active.node):
+        if node.identity_fd.disposition == "open":
+            fs._close_node(node)
+    builder._release_lock(result.owned.locked)
+    fs._close_node(result.owned.locked.state)
+    builder._recover_fixed(builder._fresh_recovery_control())
+    assert sorted(path.name for path in state_path.iterdir()) == sorted((builder.STATE_SENTINEL_NAME.text, builder.LOCK_NAME.text))
     artifact = FIXED / "deploy/aws-feasibility/.state/completion-v1/artifacts/cache/immutable.bin"
     assert hashlib.sha256(artifact.read_bytes()).hexdigest() == artifact_digest
     fs._close_chain(chain)

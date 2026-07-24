@@ -778,12 +778,54 @@ def _reconcile_ledger(records, observations):
     status = "preserve"
     parent_matches = state_parent == observations.state_parent
     parent_matches = parent_matches and operation_consistent
-    if phase == "ready" and not operations and not entries and parent_matches:
+    if phase == "genesis" and not operations and not entries and parent_matches:
+        status = "genesis-settleable"
+    elif phase == "ready" and not operations and not entries and parent_matches:
         status = "genesis-abortable"
     elif phase == "operation-intent" and not operations and not entries and parent_matches:
         status = "operation-abortable"
+    elif phase == "operation-observed" and not entries and parent_matches:
+        observed = _body(records[-1])
+        recorded = _parse_generation(observed["operation"])
+        if operations == {operation_name: recorded} and observations.state_parent == _parse_parent(observed["state_parent"]):
+            status = "operation-create-settleable"
     elif phase == "active" and operations == {operation_name: operation_generation} and parent_matches:
         status = "active" if entries == owned else "preserve"
+    elif phase.endswith("-observed") and operation_generation is not None and parent_matches:
+        body = _body(records[-1])
+        kind = records[-1].record_type
+        expected = dict(owned)
+        expected_operation = operation_generation
+        path = body.get("path", body.get("alias"))
+        parent_path = path.rpartition("/")[0]
+        recorded_parent = _parse_parent(body["parent"]) if "parent" in body else None
+        intent = _body(records[-2])
+        eligible = False
+        if kind == "create-observed":
+            eligible = path not in owned
+            expected[path] = _parse_generation(body["child"])
+        elif kind == "metadata-observed":
+            eligible = path in owned and owned[path] == _parse_generation(intent["before"])
+            expected[path] = _parse_generation(body["child"])
+        elif kind == "hardlink-create-observed":
+            target_path = body["target_path"]
+            eligible = path not in owned and target_path in owned and owned[target_path] == _parse_generation(body["target_before"])
+            expected[path] = _parse_generation(body["alias_generation"])
+            expected[target_path] = _parse_generation(body["target_after"])
+        elif kind == "remove-observed":
+            eligible = path in owned and owned[path] == _parse_generation(intent["child"])
+            expected.pop(path, None)
+            if body["target"] is not None:
+                eligible = eligible and body["target_path"] in owned
+                expected[body["target_path"]] = _parse_generation(body["target"])
+        if recorded_parent is not None:
+            if parent_path:
+                expected[parent_path] = recorded_parent.generation
+            else:
+                expected_operation = recorded_parent.generation
+        exact_parent = recorded_parent is None or parents.get(parent_path) == recorded_parent
+        if eligible and entries == expected and operations == {operation_name: expected_operation} and exact_parent:
+            status = kind.removesuffix("-observed") + "-settleable"
     elif phase == "operation-remove" and operations == {operation_name: operation_generation} and entries == owned == {} and parent_matches:
         status = "operation-remove-retry"
     elif phase == "operation-remove" and not operations and not entries:

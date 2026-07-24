@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 REMOTE = ROOT / "deploy/aws-feasibility/remote"
 FIXED = Path("/var/lib/cogs/stage2-completion-v1/source")
 CACHE_SOURCE = ROOT / "deploy/aws-feasibility/.state/completion-v1/artifacts"
-CONTAINER_SENTINEL = Path("/cogs-rootfs-functional-test-v1")
+CONTAINER_SENTINEL = Path("/var/lib/cogs/.cogs-rootfs-functional-test-v1")
 CONTAINER_SENTINEL_RAW = b"cogs-rootfs-functional-test-v1\n"
 
 
@@ -62,18 +62,30 @@ def portable():
 
 
 def prepare_real_workspace():
-    assert sys.platform == "linux" and os.geteuid() == 0 and Path("/.dockerenv").is_file()
+    def require(condition):
+        if not condition:
+            raise RuntimeError("unsafe Docker functional environment")
+
+    require(sys.platform == "linux" and os.geteuid() == 0 and Path("/.dockerenv").is_file())
+    mount = Path("/var/lib/cogs")
+    mount_stat = mount.stat(follow_symlinks=False)
+    require(stat.S_ISDIR(mount_stat.st_mode) and stat.S_IMODE(mount_stat.st_mode) == 0o700)
+    require(mount_stat.st_uid == mount_stat.st_gid == 0 and mount_stat.st_dev != Path("/var/lib").stat().st_dev)
+    lines = [line.split() for line in Path("/proc/self/mountinfo").read_text().splitlines() if line.split()[4] == str(mount)]
+    require(len(lines) == 1 and "-" in lines[0])
+    separator = lines[0].index("-")
+    require(lines[0][separator + 1] == "tmpfs" and {"rw", "nosuid", "nodev", "noexec"} <= set(lines[0][5].split(",")))
     observed = CONTAINER_SENTINEL.stat(follow_symlinks=False)
-    assert stat.S_ISREG(observed.st_mode) and stat.S_IMODE(observed.st_mode) == 0o400
-    assert observed.st_uid == observed.st_gid == 0 and observed.st_nlink == 1
-    assert CONTAINER_SENTINEL.read_bytes() == CONTAINER_SENTINEL_RAW
-    assert not FIXED.parent.exists()
+    require(stat.S_ISREG(observed.st_mode) and stat.S_IMODE(observed.st_mode) == 0o400)
+    require(observed.st_uid == observed.st_gid == 0 and observed.st_nlink == 1 and observed.st_dev == mount_stat.st_dev)
+    require(CONTAINER_SENTINEL.read_bytes() == CONTAINER_SENTINEL_RAW)
+    require(tuple(path.name for path in mount.iterdir()) == (CONTAINER_SENTINEL.name,) and not FIXED.parent.exists())
     remote = FIXED / "deploy/aws-feasibility/remote"
     artifact_root = FIXED / "deploy/aws-feasibility/.state/completion-v1/artifacts"
     cache = artifact_root / "cache"
     remote.mkdir(parents=True, mode=0o700)
     cache.mkdir(parents=True, mode=0o700)
-    directories = [Path("/var/lib/cogs"), Path("/var/lib/cogs/stage2-completion-v1"), FIXED, FIXED / "deploy", FIXED / "deploy/aws-feasibility", remote, FIXED / "deploy/aws-feasibility/.state", FIXED / "deploy/aws-feasibility/.state/completion-v1", artifact_root, cache]
+    directories = [Path("/var/lib/cogs/stage2-completion-v1"), FIXED, FIXED / "deploy", FIXED / "deploy/aws-feasibility", remote, FIXED / "deploy/aws-feasibility/.state", FIXED / "deploy/aws-feasibility/.state/completion-v1", artifact_root, cache]
     for path in directories:
         path.chmod(0o700)
     names = (
@@ -127,13 +139,14 @@ def prepare_real_workspace():
 def accommodate_docker_overlay(fs):
     original_xattrs = fs._require_empty_fd_xattrs
     ancestors = {(os.lstat(path).st_dev, os.lstat(path).st_ino) for path in ("/", "/var", "/var/lib")}
+    functional_device = os.lstat("/var/lib/cogs").st_dev
     fs._open_workspace_anchor = lambda control: fs._open_root_node(control)
 
     def policy(node, expected, root_key):
         value = node.generation
         assert value.key.kind == expected.kind and value.mode == expected.mode
         assert value.uid == expected.uid and value.gid == expected.gid
-        assert value.key.mount_id == root_key.mount_id and value.key.device == root_key.device
+        assert (value.key.mount_id, value.key.device) == (root_key.mount_id, root_key.device) or value.key.device == functional_device
         if expected.kind == "file":
             assert value.nlink == 1
 
@@ -169,18 +182,127 @@ def docker_functional_two_builds():
     identity = fs.CheckedFd(os.open(destination_path, fs.IDENTITY_FLAGS), "destination-identity")
     operation = fs.CheckedFd(os.open(destination_path, fs.DIRECTORY_FLAGS), "destination-directory")
     destination = fs.HeldNode(identity, operation, fs._observe_node(identity, operation, outer))
-    stale_candidate = destination_path / ".accepted-candidate-v1"
-    stale_candidate.mkdir(mode=0o700)
-    stale_sentinel = stale_candidate / ".cogs-rootfs-publication-v1"
-    stale_sentinel.write_bytes(b"cogs-rootfs-publication-v1\n")
-    stale_sentinel.chmod(0o400)
     assert not (destination_path / "accepted").exists()
     hostile_umask = os.umask(0o777)
     try:
-        candidate = build._pinned_publication(approval, destination, outer)
+        first, second = build._two_build_outputs(approval, outer)
+        assert first.manifest == second.manifest and first.ustar == second.ustar
+        pins_value = publication._load_pins()
+
+        def held_directory(path, role):
+            held_identity = fs.CheckedFd(os.open(path, fs.IDENTITY_FLAGS), role + "-identity")
+            held_operation = fs.CheckedFd(os.open(path, fs.DIRECTORY_FLAGS), role + "-directory")
+            return fs.HeldNode(held_identity, held_operation, fs._observe_node(held_identity, held_operation, outer))
+
+        hostile_path = Path("/var/lib/cogs/publication-hostile")
+        hostile_path.mkdir(mode=0o700)
+        hostile_path.chmod(0o700)
+        hostile_destination = held_directory(hostile_path, "hostile-publication")
+        (hostile_path / ".accepted-candidate-v1").mkdir(mode=0o700)
+        (hostile_path / ".accepted-candidate-v1").chmod(0o700)
+        try:
+            publication._publish(hostile_destination, second.manifest, second.ustar, pins_value, outer)
+        except publication.PublicationError:
+            pass
+        else:
+            raise AssertionError("unrecorded candidate identity was accepted")
+        assert (hostile_path / ".accepted-candidate-v1").is_dir()
+        fs._close_node(hostile_destination)
+        (hostile_path / ".accepted-candidate-v1").rmdir()
+        (hostile_path / ".accepted-transaction-v1").unlink()
+        hostile_path.rmdir()
+
+        replaced_path = Path("/var/lib/cogs/publication-replaced")
+        replaced_path.mkdir(mode=0o700)
+        replaced_path.chmod(0o700)
+        replaced_destination = held_directory(replaced_path, "replaced-publication")
+        original_append = publication._append_transaction
+
+        def capture_then_fail(transaction, phase, control, name=None, identity=None):
+            result = original_append(transaction, phase, control, name, identity)
+            if phase == "candidate":
+                raise RuntimeError("candidate captured")
+            return result
+
+        publication._append_transaction = capture_then_fail
+        try:
+            publication._publish(replaced_destination, second.manifest, second.ustar, pins_value, outer)
+        except RuntimeError:
+            pass
+        finally:
+            publication._append_transaction = original_append
+        (replaced_path / ".accepted-candidate-v1").rmdir()
+        (replaced_path / ".accepted-candidate-v1").mkdir(mode=0o700)
+        (replaced_path / ".accepted-candidate-v1").chmod(0o700)
+        try:
+            publication._publish(replaced_destination, second.manifest, second.ustar, pins_value, outer)
+        except publication.PublicationError:
+            pass
+        else:
+            raise AssertionError("replaced candidate identity was accepted")
+        fs._close_node(replaced_destination)
+        (replaced_path / ".accepted-candidate-v1").rmdir()
+        (replaced_path / ".accepted-transaction-v1").unlink()
+        replaced_path.rmdir()
+
+        original_append = publication._append_transaction
+        for fault_phase in ("intent", "candidate", "file", "file", "file", "file", "prepared", "rename"):
+            tripped = {"value": False}
+
+            def append_with_fault(transaction, phase, control, name=None, identity=None):
+                result = original_append(transaction, phase, control, name, identity)
+                if phase == fault_phase and not tripped["value"]:
+                    tripped["value"] = True
+                    raise RuntimeError("publication phase fault")
+                return result
+
+            publication._append_transaction = append_with_fault
+            try:
+                publication._publish(destination, second.manifest, second.ustar, pins_value, outer)
+            except RuntimeError:
+                pass
+            else:
+                raise AssertionError("publication phase fault was not observed")
+            finally:
+                publication._append_transaction = original_append
+            assert tripped["value"]
+        original_rename = publication._rename_noreplace
+
+        def rename_then_fail(parent):
+            original_rename(parent)
+            raise RuntimeError("uncertain rename fault")
+
+        publication._rename_noreplace = rename_then_fail
+        try:
+            publication._publish(destination, second.manifest, second.ustar, pins_value, outer)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("uncertain rename fault was not observed")
+        finally:
+            publication._rename_noreplace = original_rename
+        tripped = {"value": False}
+
+        def accepted_then_fail(transaction, phase, control, name=None, identity=None):
+            result = original_append(transaction, phase, control, name, identity)
+            if phase == "accepted":
+                tripped["value"] = True
+                raise RuntimeError("accepted phase fault")
+            return result
+
+        publication._append_transaction = accepted_then_fail
+        try:
+            publication._publish(destination, second.manifest, second.ustar, pins_value, outer)
+        except RuntimeError:
+            pass
+        finally:
+            publication._append_transaction = original_append
+        assert tripped["value"]
+        candidate = publication._publish(destination, second.manifest, second.ustar, pins_value, outer)
     finally:
         os.umask(hostile_umask)
     accepted_path = destination_path / "accepted"
+    assert not (destination_path / ".accepted-candidate-v1").exists()
     cache = FIXED / "deploy/aws-feasibility/.state/completion-v1/artifacts/cache"
     after = tuple((path.name, path.stat().st_size, hashlib.sha256(path.read_bytes()).hexdigest()) for path in sorted(cache.iterdir()))
     assert before == after and len(after) == 16
@@ -196,12 +318,11 @@ def docker_functional_two_builds():
     ustar_bytes = (accepted_path / "rootfs.tar").read_bytes()
     assert hashlib.sha256(manifest_bytes).hexdigest() == pins["manifest"]["sha256"]
     assert hashlib.sha256(ustar_bytes).hexdigest() == pins["ustar"]["sha256"]
-    try:
-        publication._publish(destination, manifest_bytes, ustar_bytes, publication._load_pins(), outer)
-    except publication.PublicationError:
-        pass
-    else:
-        raise AssertionError("existing accepted publication replaced")
+    transaction_path = destination_path / ".accepted-transaction-v1"
+    transaction_before = transaction_path.read_bytes()
+    repeated = publication._publish(destination, manifest_bytes, ustar_bytes, publication._load_pins(), outer)
+    assert repeated == candidate and transaction_path.read_bytes() == transaction_before
+    assert transaction_path.stat().st_mode & 0o7777 == 0o400
     fs._close_node(destination)
     print(json.dumps(dataclasses.asdict(candidate), sort_keys=True, separators=(",", ":")))
 
