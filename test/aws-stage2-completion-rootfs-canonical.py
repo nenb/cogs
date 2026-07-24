@@ -202,8 +202,9 @@ def docker_functional_two_builds():
             assert before == after and len(after) == 16
             fs._close_node(destination)
             print("rootfs publication skipped: tmpfs lacks FS_IOC_GETVERSION (non-authoritative functional run)", file=sys.stderr)
-            skipped = publication.PublishedRootfs(pins_value.manifest_sha256, pins_value.manifest_size, pins_value.ustar_sha256, pins_value.ustar_size, pins_value.entry_count)
-            print(json.dumps(dataclasses.asdict(skipped), sort_keys=True, separators=(",", ":")))
+            skipped = {"status": "skipped", "reason": "FS_IOC_GETVERSION unsupported", "authority": "functional-only"}
+            assert set(skipped) != {"manifest_sha256", "manifest_size", "ustar_sha256", "ustar_size", "entry_count"}
+            print(json.dumps(skipped, sort_keys=True, separators=(",", ":")))
             return
 
         def held_directory(path, role):

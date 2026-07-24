@@ -470,18 +470,24 @@ if sys.platform == "linux":
             first = candidate_path.stat()
             first_version = path_inode_version(candidate_path)
             candidate_path.rmdir()
+            def ordinary_authority(observed):
+                return (
+                    observed.st_dev, observed.st_ino, observed.st_mode, observed.st_uid, observed.st_gid,
+                    observed.st_nlink, observed.st_size, observed.st_mtime_ns, observed.st_ctime_ns,
+                )
+
             reused_stat = None
             reused_version = None
             for _attempt in range(4096):
                 candidate_path.mkdir()
                 current = candidate_path.stat()
-                if current.st_ino == first.st_ino:
+                if ordinary_authority(current) == ordinary_authority(first):
                     reused_stat = current
                     reused_version = path_inode_version(candidate_path)
                     candidate_path.rmdir()
                     break
                 candidate_path.rmdir()
-            assert reused_stat is not None, "approved Linux fixture did not reuse the candidate inode"
+            assert reused_stat is not None, "approved ext4 fixture did not reproduce identical ordinary-stat inode reuse"
             assert reused_version != first_version, "reused ext4 inode retained its publication inode version"
 identity_read, identity_write = os.pipe()
 operation_read, operation_write = os.pipe()
