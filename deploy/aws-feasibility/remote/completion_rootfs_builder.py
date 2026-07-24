@@ -1,5 +1,6 @@
 """Fixed rootfs ownership lifecycle and exact recover-owned command for ADR 0040."""
 
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 import fcntl
 import hashlib
@@ -120,35 +121,109 @@ def _close(node, primary=None):
     fs._close_node(node, primary)
 
 
+def _close_nodes(nodes, primary=None):
+    error = primary
+    for node in reversed(tuple(node for node in nodes if node is not None)):
+        try:
+            _close(node)
+        except BaseException as close_error:
+            error = fs.RootfsFsError(error, close_error)
+    if error is not None:
+        raise error
+
+
+@contextmanager
+def _owned_nodes(nodes):
+    try:
+        yield
+    except BaseException as error:
+        _close_nodes(nodes(), error)
+    else:
+        _close_nodes(nodes())
+
+
 def _create_directory(parent, name, control):
-    _check(control)
-    os.mkdir(name.raw, 0o700, dir_fd=parent.operation_fd.number)
-    _check(control)
-    node = fs._open_path_node(parent, name, "directory", control)
-    _policy(node, "directory", 0o700, parent.generation.key)
-    fs._require_empty_fd_xattrs(node, control)
-    return node
+    node = None
+    created = False
+    try:
+        _check(control)
+        os.mkdir(name.raw, 0o700, dir_fd=parent.operation_fd.number)
+        created = True
+        _check(control)
+        node = fs._open_path_node(parent, name, "directory", control)
+        _policy(node, "directory", 0o700, parent.generation.key)
+        fs._require_empty_fd_xattrs(node, control)
+        return node
+    except BaseException as error:
+        if created:
+            cleanup = _transition_control()
+            try:
+                current = fs._observe_child(parent, name, cleanup)
+                if node is not None:
+                    _fail(current.key == node.generation.key)
+                    _close(node)
+                _remove_name(parent, name, current, cleanup)
+            except BaseException as cleanup_error:
+                error = fs.RootfsFsError(error, cleanup_error)
+                if node is not None and node.identity_fd.disposition == "open":
+                    try:
+                        _close(node)
+                    except BaseException as close_error:
+                        error = fs.RootfsFsError(error, close_error)
+        raise error
 
 
 def _create_file(parent, name, content, control):
     _fail(type(content) is bytes)
     flags = os.O_RDWR | os.O_CREAT | os.O_EXCL | fs._O_NOFOLLOW | fs._O_CLOEXEC
-    _check(control)
-    descriptor = fs.CheckedFd(os.open(name.raw, flags, 0o600, dir_fd=parent.operation_fd.number), "created-file")
+    descriptor = None
+    node = None
+    key = None
+    created = False
     try:
+        _check(control)
+        descriptor = fs.CheckedFd(os.open(name.raw, flags, 0o600, dir_fd=parent.operation_fd.number), "created-file")
+        created = True
+        key_stat = os.fstat(descriptor.number)
+        key = (key_stat.st_dev, key_stat.st_ino)
         _check(control)
         _write_all(descriptor, content, control)
         _fsync(descriptor, control)
         descriptor.close()
+        descriptor = None
+        node = fs._open_path_node(parent, name, "file", control)
+        _fail((node.generation.key.device, node.generation.key.inode) == key)
+        _policy(node, "file", 0o600, parent.generation.key)
+        fs._require_empty_fd_xattrs(node, control)
+        _fail(fs._read_regular(node, max(1, len(content)), control) == content)
+        return node
     except BaseException as error:
-        if descriptor.disposition == "open":
-            descriptor.close(error)
-        raise
-    node = fs._open_path_node(parent, name, "file", control)
-    _policy(node, "file", 0o600, parent.generation.key)
-    fs._require_empty_fd_xattrs(node, control)
-    _fail(fs._read_regular(node, max(1, len(content)), control) == content)
-    return node
+        cleanup = _transition_control()
+        if key is None and descriptor is not None and descriptor.disposition == "open":
+            try:
+                observed = os.fstat(descriptor.number)
+                key = (observed.st_dev, observed.st_ino)
+            except BaseException as identity_error:
+                error = fs.RootfsFsError(error, identity_error)
+        for owned in (node, descriptor):
+            try:
+                if type(owned) is fs.HeldNode and owned.identity_fd.disposition == "open":
+                    _close(owned)
+                elif type(owned) is fs.CheckedFd and owned.disposition == "open":
+                    owned.close()
+            except BaseException as close_error:
+                error = fs.RootfsFsError(error, close_error)
+        if created:
+            try:
+                current = fs._observe_child(parent, name, cleanup)
+                _fail(current.key.kind == "file")
+                if key is not None:
+                    _fail((current.key.device, current.key.inode) == key)
+                os.unlink(name.raw, dir_fd=parent.operation_fd.number)
+                _fsync(parent.operation_fd, cleanup)
+            except BaseException as cleanup_error:
+                error = fs.RootfsFsError(error, cleanup_error)
+        raise error
 
 
 def _remove_name(parent, name, expected, control):
@@ -423,7 +498,7 @@ def _operation_name(token):
     return fs._name(ledger._operation_name(token))
 
 
-def _durable_terminal(active, control):
+def _durable_records(active, control):
     control.check()
     observed = os.fstat(active.node.operation_fd.number)
     _fail((observed.st_dev, observed.st_ino) == (active.writer.stable_key.device, active.writer.stable_key.inode))
@@ -431,7 +506,11 @@ def _durable_terminal(active, control):
     raw = os.pread(active.node.operation_fd.number, observed.st_size, 0)
     control.check()
     _fail(len(raw) == observed.st_size)
-    return ledger._parse_ledger(raw)[-1]
+    return ledger._parse_ledger(raw)
+
+
+def _durable_terminal(active, control):
+    return _durable_records(active, control)[-1]
 
 
 def _create_ledger_entry(active, operation, path, name, kind, content, control):
@@ -450,6 +529,16 @@ def _create_ledger_entry(active, operation, path, name, kind, content, control):
         control.check()
         return active, child
     except BaseException as error:
+        if child is None:
+            cleanup_control = _transition_control()
+            try:
+                terminal = _durable_terminal(active, cleanup_control)
+                if terminal.record_type == "create-intent" and terminal.body_value()["path"] == path:
+                    intent = terminal.body_value()
+                    intent["parent"] = _p(_parent(operation, cleanup_control))
+                    active = _append(active, "create-abort", intent, cleanup_control)
+            except BaseException as cleanup_error:
+                error = fs.RootfsFsError(error, cleanup_error)
         if child is not None and child.identity_fd.disposition == "open":
             cleanup_control = _transition_control()
             try:
@@ -460,6 +549,9 @@ def _create_ledger_entry(active, operation, path, name, kind, content, control):
                     _close(child)
                 else:
                     _remove_name(operation, name, fs._observe_node(child.identity_fd, child.operation_fd, cleanup_control), cleanup_control)
+                    intent = terminal.body_value()
+                    intent["parent"] = _p(_parent(operation, cleanup_control))
+                    active = _append(active, "create-abort", intent, cleanup_control)
                     _close(child)
             except BaseException as cleanup_error:
                 error = fs.RootfsFsError(error, cleanup_error)
@@ -666,7 +758,7 @@ def _finish_absent_remove(active, operation, control):
     target = None
     target_opened = ()
     transition = _transition_control()
-    try:
+    with _owned_nodes(lambda: opened + target_opened + (() if target is None else (target,))):
         _fail(name.raw not in fs._enumerate_stable(parent, transition).raw_names)
         post = _parent(parent, transition)
         _fail(ledger._valid_parent_delta("rmdir" if intent["kind"] == "directory" else "unlink", name.text, ledger._parse_parent(intent["parent"]), post))
@@ -690,11 +782,6 @@ def _finish_absent_remove(active, operation, control):
         active = _append(active, "remove-settled", observed, transition)
         control.check()
         return active
-    finally:
-        if target is not None:
-            _close(target)
-        for node in reversed(opened + target_opened):
-            _close(node)
 
 
 def _retire(active, locked, operation, control, intent_exists=False):
@@ -735,7 +822,7 @@ def _finish_hardlink_remove(active, operation, alias_path, target_path, target_g
     alias_parent, alias_opened, alias_name = _open_relative_parent(operation, alias_path, control)
     target_parent, target_opened, target_name = _open_relative_parent(operation, target_path, control)
     target = fs._open_path_node(target_parent, target_name, "file", control)
-    try:
+    with _owned_nodes(lambda: alias_opened + target_opened + (target,)):
         alias = fs._observe_child(alias_parent, alias_name, control)
         _fail(alias.key == target_generation.key and alias == target_generation)
         pre = _parent(alias_parent, control)
@@ -769,10 +856,6 @@ def _finish_hardlink_remove(active, operation, alias_path, target_path, target_g
         active = _append(active, "remove-settled", observed, transition)
         control.check()
         return active, builder_target, post.generation
-    finally:
-        fs._close_node(target)
-        for node in reversed(alias_opened + target_opened):
-            fs._close_node(node)
 
 
 def _settled_hardlink_groups(records):
@@ -845,7 +928,7 @@ def _resume_observed(active, locked, operation, control):
     parent, opened, name = _open_relative_parent(operation, path, control)
     extra_opened = ()
     child = None
-    try:
+    with _owned_nodes(lambda: opened + extra_opened + (() if child is None else (child,))):
         if kind in {"create-observed", "metadata-observed"}:
             expected = ledger._parse_generation(body["child"])
             child = fs._open_path_node(parent, name, expected.key.kind, control)
@@ -868,11 +951,6 @@ def _resume_observed(active, locked, operation, control):
                 _fsync(child.operation_fd, control)
         _fsync(parent.operation_fd, control)
         active = _append(active, kind.removesuffix("observed") + "settled", body, control)
-    finally:
-        if child is not None:
-            fs._close_node(child)
-        for node in reversed(opened + extra_opened):
-            fs._close_node(node)
     entries, parents = _walk_entries(operation, control)
     observations = ledger.ReconcileObservations(
         _parent(locked.state, control),
@@ -888,7 +966,14 @@ def _resume_observed(active, locked, operation, control):
 def _resume_absent_create(active, locked, operation, control):
     intent = active.records[-1]
     _fail(intent.record_type in {"create-intent", "hardlink-create-intent"})
-    active = _append(active, intent.record_type.removesuffix("intent") + "abort", intent.body_value(), control)
+    body = intent.body_value()
+    path = body.get("path", body.get("alias"))
+    parent, opened, _name_value = _open_relative_parent(operation, path, control)
+    try:
+        body["parent"] = _p(_parent(parent, control))
+    finally:
+        _close_nodes(opened)
+    active = _append(active, intent.record_type.removesuffix("intent") + "abort", body, control)
     entries, parents = _walk_entries(operation, control)
     observations = ledger.ReconcileObservations(
         _parent(locked.state, control),

@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import sys
+import time
 
 sys.dont_write_bytecode = True
 
@@ -659,7 +660,14 @@ def _validate_legal_records(records):
             abort_kind = phase.removesuffix("intent") + "abort"
             _fail(kind in {abort_kind, phase.removesuffix("intent") + "observed"})
             if kind == abort_kind:
-                _fail(body == _body(pending))
+                intent_body = _body(pending)
+                excluded = {"parent", "target"} if kind == "hardlink-create-abort" else {"parent"}
+                _fail(all(body[key] == intent_body[key] for key in body if key not in excluded))
+                if kind == "hardlink-create-abort":
+                    _fail(_same_fields(_parse_generation(body["target"]), _parse_generation(intent_body["target"]), {"ctime_ns"}))
+                before_parent = _parse_parent(intent_body["parent"])
+                after_parent = _parse_parent(body["parent"])
+                _fail(before_parent.names == after_parent.names and _same_fields(before_parent.generation, after_parent.generation, {"mtime_ns", "ctime_ns"}))
                 pending = None
                 phase = "active"
             else:
@@ -761,6 +769,18 @@ def _reconcile_ledger(records, observations):
                     operation_consistent = False
         if kind in {"create-settled", "hardlink-create-settled", "remove-settled"}:
             path = body.get("path", body.get("alias"))
+            parent_path = path.rpartition("/")[0]
+            parent_generation = _parse_parent(body["parent"]).generation
+            if parent_path:
+                operation_consistent = operation_consistent and parent_path in owned
+                if parent_path in owned:
+                    owned[parent_path] = parent_generation
+            else:
+                operation_generation = parent_generation
+        if kind in {"create-abort", "hardlink-create-abort"}:
+            path = body.get("path", body.get("alias"))
+            if kind == "hardlink-create-abort" and body["target_path"] in owned:
+                owned[body["target_path"]] = _parse_generation(body["target"])
             parent_path = path.rpartition("/")[0]
             parent_generation = _parse_parent(body["parent"]).generation
             if parent_path:
@@ -885,34 +905,59 @@ def _append_record(writer_state, proposal, control):
     _fail(type(writer_state) is LedgerWriterState and type(proposal) is LedgerProposal)
     _fail(type(control) is OperationControl)
     node = writer_state.node
-    before = _observe_node(node.identity_fd, node.operation_fd, control)
-    _require_ledger_generation(before, writer_state.stable_key)
-    _fail(before == writer_state.generation and before.size == writer_state.settled.offset)
-    _require_empty_fd_xattrs(node, control)
-    control.check()
-    _fail(os.lseek(node.operation_fd.number, 0, os.SEEK_CUR) == writer_state.settled.offset)
-    control.check()
-    raw = _encode_proposal(proposal, writer_state.settled)
-    written = 0
-    while written < len(raw):
+    try:
+        before = _observe_node(node.identity_fd, node.operation_fd, control)
+        _require_ledger_generation(before, writer_state.stable_key)
+        _fail(_same_fields(before, writer_state.generation, {"mtime_ns", "ctime_ns"}) and before.size == writer_state.settled.offset)
+        _require_empty_fd_xattrs(node, control)
         control.check()
-        count = os.write(node.operation_fd.number, raw[written:])
+        _fail(os.lseek(node.operation_fd.number, 0, os.SEEK_CUR) == writer_state.settled.offset)
         control.check()
-        _fail(type(count) is int and 0 < count <= len(raw) - written)
-        written += count
-    control.check()
-    os.fsync(node.operation_fd.number)
-    control.check()
-    after = _observe_node(node.identity_fd, node.operation_fd, control)
-    _require_ledger_generation(after, writer_state.stable_key)
-    _fail(_same_fields(before, after, {"size", "mtime_ns", "ctime_ns"}))
-    _fail(after.size == writer_state.settled.offset + len(raw))
-    _require_empty_fd_xattrs(node, control)
-    control.check()
-    _fail(os.lseek(node.operation_fd.number, 0, os.SEEK_CUR) == after.size)
-    control.check()
-    settled = SettledBytes(writer_state.settled.sequence + 1, after.size, hashlib.sha256(raw).hexdigest())
-    return LedgerWriterState(node, writer_state.stable_key, settled, after)
+        raw = _encode_proposal(proposal, writer_state.settled)
+        written = 0
+        while written < len(raw):
+            control.check()
+            count = os.write(node.operation_fd.number, raw[written:])
+            control.check()
+            _fail(type(count) is int and 0 < count <= len(raw) - written)
+            written += count
+        control.check()
+        os.fsync(node.operation_fd.number)
+        control.check()
+        after = _observe_node(node.identity_fd, node.operation_fd, control)
+        _require_ledger_generation(after, writer_state.stable_key)
+        _fail(_same_fields(before, after, {"size", "mtime_ns", "ctime_ns"}))
+        _fail(after.size == writer_state.settled.offset + len(raw))
+        _require_empty_fd_xattrs(node, control)
+        control.check()
+        _fail(os.lseek(node.operation_fd.number, 0, os.SEEK_CUR) == after.size)
+        control.check()
+        settled = SettledBytes(writer_state.settled.sequence + 1, after.size, hashlib.sha256(raw).hexdigest())
+        return LedgerWriterState(node, writer_state.stable_key, settled, after)
+    except BaseException as error:
+        cleanup = OperationControl(time.monotonic_ns() + 120 * 1_000_000_000, lambda: False)
+        try:
+            current = _observe_node(node.identity_fd, node.operation_fd, cleanup)
+            _require_ledger_generation(current, writer_state.stable_key)
+            _fail(writer_state.settled.offset <= current.size <= MAX_LEDGER_BYTES)
+            prefix = os.pread(node.operation_fd.number, writer_state.settled.offset, 0)
+            cleanup.check()
+            _fail(len(prefix) == writer_state.settled.offset)
+            if prefix:
+                records = _parse_ledger(prefix)
+                last = records[-1]
+                _fail((last.sequence, last.next_offset, last.line_sha256) == (writer_state.settled.sequence, writer_state.settled.offset, writer_state.settled.line_sha256))
+            else:
+                _fail(writer_state.settled == INITIAL_BYTES)
+            os.ftruncate(node.operation_fd.number, writer_state.settled.offset)
+            os.fsync(node.operation_fd.number)
+            _fail(os.lseek(node.operation_fd.number, writer_state.settled.offset, os.SEEK_SET) == writer_state.settled.offset)
+            restored = _observe_node(node.identity_fd, node.operation_fd, cleanup)
+            _require_ledger_generation(restored, writer_state.stable_key)
+            _fail(restored.size == writer_state.settled.offset)
+        except BaseException as rollback_error:
+            error = RootfsFsError(error, rollback_error)
+        raise error
 
 
 def _hardlink_plan(value):

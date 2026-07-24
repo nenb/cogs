@@ -222,21 +222,27 @@ def _cycle(records):
 
 def _directory(parent, name, control):
     node = fs._open_path_node(parent, name, "directory", control)
-    generation = node.generation
-    _fail(generation.uid == generation.gid == 0 and generation.mode == 0o700 and generation.nlink >= 2)
-    _fail(generation.key.device == parent.generation.key.device and generation.key.mount_id == parent.generation.key.mount_id)
-    fs._require_empty_fd_xattrs(node, control)
-    return node
+    try:
+        generation = node.generation
+        _fail(generation.uid == generation.gid == 0 and generation.mode == 0o700 and generation.nlink >= 2)
+        _fail(generation.key.device == parent.generation.key.device and generation.key.mount_id == parent.generation.key.mount_id)
+        fs._require_empty_fd_xattrs(node, control)
+        return node
+    except BaseException as error:
+        fs._close_node(node, error)
 
 
 def _file(directory, name, expected, control):
     node = fs._open_path_node(directory, name, "file", control)
-    generation = node.generation
-    _fail(generation.uid == generation.gid == 0 and generation.mode == 0o400 and generation.nlink == 1)
-    _fail(generation.key.device == directory.generation.key.device and generation.size == len(expected))
-    fs._require_empty_fd_xattrs(node, control)
-    _fail(fs._read_regular(node, len(expected), control) == expected)
-    return node
+    try:
+        generation = node.generation
+        _fail(generation.uid == generation.gid == 0 and generation.mode == 0o400 and generation.nlink == 1)
+        _fail(generation.key.device == directory.generation.key.device and generation.size == len(expected))
+        fs._require_empty_fd_xattrs(node, control)
+        _fail(fs._read_regular(node, len(expected), control) == expected)
+        return node
+    except BaseException as error:
+        fs._close_node(node, error)
 
 
 def _remove_created_file(directory, name, node, control):
@@ -250,14 +256,18 @@ def _remove_created_file(directory, name, node, control):
 def _create_file(directory, name, raw, control):
     flags = os.O_RDWR | os.O_CREAT | os.O_EXCL | fs._O_NOFOLLOW | fs._O_CLOEXEC
     descriptor = None
+    node = None
     key = None
+    created = False
     try:
         descriptor = fs.CheckedFd(os.open(name.raw, flags, 0o400, dir_fd=directory.operation_fd.number), "publication-file")
+        created = True
         descriptor_stat = os.fstat(descriptor.number)
         key = (descriptor_stat.st_dev, descriptor_stat.st_ino)
         node = fs._open_path_node(directory, name, "file", control)
         _fail((node.generation.key.device, node.generation.key.inode) == key)
         fs._close_node(node)
+        node = None
         _write_all(descriptor, raw, control)
         os.fsync(descriptor.number)
         descriptor.close()
@@ -266,15 +276,29 @@ def _create_file(directory, name, raw, control):
         _fail((node.generation.key.device, node.generation.key.inode) == key)
         return node
     except BaseException as error:
+        cleanup = _transition_control()
+        if key is None and descriptor is not None and descriptor.disposition == "open":
+            try:
+                observed = os.fstat(descriptor.number)
+                key = (observed.st_dev, observed.st_ino)
+            except BaseException as identity_error:
+                error = fs.RootfsFsError(error, identity_error)
+        if node is not None and node.identity_fd.disposition == "open":
+            try:
+                fs._close_node(node)
+            except BaseException as close_error:
+                error = fs.RootfsFsError(error, close_error)
         if descriptor is not None and descriptor.disposition == "open":
             try:
                 descriptor.close()
             except BaseException as close_error:
                 error = fs.RootfsFsError(error, close_error)
-        if key is not None:
+        if created:
             try:
-                current = fs._observe_child(directory, name, control)
-                _fail((current.key.device, current.key.inode) == key)
+                current = fs._observe_child(directory, name, cleanup)
+                _fail(current.key.kind == "file")
+                if key is not None:
+                    _fail((current.key.device, current.key.inode) == key)
                 os.unlink(name.raw, dir_fd=directory.operation_fd.number)
                 os.fsync(directory.operation_fd.number)
             except BaseException as cleanup_error:
@@ -288,13 +312,16 @@ def _contents(manifest, ustar, pins):
 
 def _snapshot_node(parent, name, control):
     node = fs._open_path_node(parent, name, "file", control)
-    generation = node.generation
-    _fail(generation.mode == 0o400 and generation.uid == generation.gid == 0 and generation.nlink == 1)
-    _fail(generation.key.device == parent.generation.key.device and generation.key.mount_id == parent.generation.key.mount_id)
-    _fail(0 < generation.size <= MAX_TRANSACTION_BYTES)
-    fs._require_empty_fd_xattrs(node, control)
-    raw = fs._read_regular(node, MAX_TRANSACTION_BYTES, control)
-    return node, raw
+    try:
+        generation = node.generation
+        _fail(generation.mode == 0o400 and generation.uid == generation.gid == 0 and generation.nlink == 1)
+        _fail(generation.key.device == parent.generation.key.device and generation.key.mount_id == parent.generation.key.mount_id)
+        _fail(0 < generation.size <= MAX_TRANSACTION_BYTES)
+        fs._require_empty_fd_xattrs(node, control)
+        raw = fs._read_regular(node, MAX_TRANSACTION_BYTES, control)
+        return node, raw
+    except BaseException as error:
+        fs._close_node(node, error)
 
 
 def _remove_snapshot(parent, name, node, control):
@@ -308,9 +335,12 @@ def _remove_snapshot(parent, name, node, control):
 def _write_snapshot(parent, raw, control):
     flags = os.O_RDWR | os.O_CREAT | os.O_EXCL | fs._O_NOFOLLOW | fs._O_CLOEXEC
     descriptor = None
+    node = None
     key = None
+    created = False
     try:
         descriptor = fs.CheckedFd(os.open(TRANSACTION_NEXT_NAME.raw, flags, 0o400, dir_fd=parent.operation_fd.number), "publication-snapshot")
+        created = True
         observed = os.fstat(descriptor.number)
         key = (observed.st_dev, observed.st_ino)
         _write_all(descriptor, raw, control)
@@ -322,15 +352,29 @@ def _write_snapshot(parent, raw, control):
         os.fsync(parent.operation_fd.number)
         return node
     except BaseException as error:
+        cleanup = _transition_control()
+        if node is not None and node.identity_fd.disposition == "open":
+            try:
+                fs._close_node(node)
+            except BaseException as close_error:
+                error = fs.RootfsFsError(error, close_error)
+        if key is None and descriptor is not None and descriptor.disposition == "open":
+            try:
+                observed = os.fstat(descriptor.number)
+                key = (observed.st_dev, observed.st_ino)
+            except BaseException as identity_error:
+                error = fs.RootfsFsError(error, identity_error)
         if descriptor is not None and descriptor.disposition == "open":
             try:
                 descriptor.close()
             except BaseException as close_error:
                 error = fs.RootfsFsError(error, close_error)
-        if key is not None:
+        if created:
             try:
-                current = fs._observe_child(parent, TRANSACTION_NEXT_NAME, control)
-                _fail((current.key.device, current.key.inode) == key)
+                current = fs._observe_child(parent, TRANSACTION_NEXT_NAME, cleanup)
+                _fail(current.key.kind == "file")
+                if key is not None:
+                    _fail((current.key.device, current.key.inode) == key)
                 os.unlink(TRANSACTION_NEXT_NAME.raw, dir_fd=parent.operation_fd.number)
                 os.fsync(parent.operation_fd.number)
             except BaseException as cleanup_error:
@@ -499,22 +543,31 @@ def _publish_unmasked(parent, manifest, ustar, pins, work_control):
                 transaction = _append_transaction(transaction, parent, content_names, "candidate-intent", control)
             elif phase == "candidate-intent":
                 _fail(CANDIDATE_NAME.raw not in names and ACCEPTED_NAME.raw not in names)
-                os.mkdir(CANDIDATE_NAME.raw, 0o700, dir_fd=parent.operation_fd.number)
-                candidate = _directory(parent, CANDIDATE_NAME, control)
+                created_candidate = False
                 try:
+                    os.mkdir(CANDIDATE_NAME.raw, 0o700, dir_fd=parent.operation_fd.number)
+                    created_candidate = True
+                    candidate = _directory(parent, CANDIDATE_NAME, control)
                     os.fsync(parent.operation_fd.number)
                     transaction = _append_transaction(transaction, parent, content_names, "candidate", control, identity=_key_value(candidate.generation.key))
                     owned_progress = True
                     work_control.check()
                 except BaseException as error:
                     cleanup_control = _transition_control()
-                    try:
-                        durable = _durable_event(parent, content_names, "candidate", None, candidate.generation.key, cleanup_control)
-                        if not durable:
-                            _cleanup_candidate(parent, candidate, contents, (), cleanup_control)
-                            candidate = None
-                    except BaseException as cleanup_error:
-                        error = fs.RootfsFsError(error, cleanup_error)
+                    if created_candidate:
+                        try:
+                            durable = candidate is not None and _durable_event(parent, content_names, "candidate", None, candidate.generation.key, cleanup_control)
+                            if not durable:
+                                if candidate is not None:
+                                    _cleanup_candidate(parent, candidate, contents, (), cleanup_control)
+                                    candidate = None
+                                else:
+                                    current = fs._observe_child(parent, CANDIDATE_NAME, cleanup_control)
+                                    _fail(current.key.kind == "directory")
+                                    os.rmdir(CANDIDATE_NAME.raw, dir_fd=parent.operation_fd.number)
+                                    os.fsync(parent.operation_fd.number)
+                        except BaseException as cleanup_error:
+                            error = fs.RootfsFsError(error, cleanup_error)
                     raise error
             elif phase in {"candidate", "file"}:
                 _fail(ACCEPTED_NAME.raw not in names)

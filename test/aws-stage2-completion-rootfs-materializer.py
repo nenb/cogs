@@ -223,7 +223,8 @@ def linux():
         finally:
             builder._append = real_append
         assert seen["count"] == occurrence
-        assert sorted(path.name for path in state_path.iterdir()) == sorted((builder.STATE_SENTINEL_NAME.text, builder.LOCK_NAME.text))
+        observed_state = sorted(path.name for path in state_path.iterdir())
+        assert observed_state == sorted((builder.STATE_SENTINEL_NAME.text, builder.LOCK_NAME.text)), (record_type, occurrence, observed_state)
 
     def genesis_fault(token_number, stage):
         real_write = builder.os.write
@@ -381,6 +382,96 @@ def linux():
 
     for index, syscall_name in enumerate(("mkdir", "open", "link", "symlink"), 100):
         cancel_inside_named(index, syscall_name)
+
+    def fault_after_named_create(token_number, seam):
+        owned = builder._begin_operation(chain, approval, f"{token_number:064x}", control)
+        real_open = fs._open_path_node
+        real_xattrs = fs._require_empty_fd_xattrs
+        real_observe = fs._observe_child
+        tripped = {"value": False}
+
+        def open_fault(parent, name, kind, current_control):
+            if not tripped["value"] and ((seam == "directory-open" and name.text == "bin" and kind == "directory") or (seam == "symlink-open" and name.text == "message" and kind == "symlink")):
+                tripped["value"] = True
+                raise OSError("post-create open fault")
+            return real_open(parent, name, kind, current_control)
+
+        def xattr_fault(node, current_control):
+            if seam == "file-xattr" and not tripped["value"] and node.generation.key.kind == "file" and node.generation.mode == 0o600:
+                tripped["value"] = True
+                raise OSError("post-create xattr fault")
+            return real_xattrs(node, current_control)
+
+        def observe_fault(parent, name, current_control):
+            if seam == "hardlink-observe" and not tripped["value"] and name.text == "tool-copy":
+                tripped["value"] = True
+                raise OSError("post-link observe fault")
+            return real_observe(parent, name, current_control)
+
+        fs._open_path_node = open_fault
+        fs._require_empty_fd_xattrs = xattr_fault
+        fs._observe_child = observe_fault
+        try:
+            materializer._materialize(authority, owned, control)
+        except BaseException:
+            pass
+        else:
+            raise AssertionError("post-create fault was not observed")
+        finally:
+            fs._open_path_node = real_open
+            fs._require_empty_fd_xattrs = real_xattrs
+            fs._observe_child = real_observe
+        assert tripped["value"]
+        observed_state = sorted(path.name for path in state_path.iterdir())
+        assert observed_state == sorted((builder.STATE_SENTINEL_NAME.text, builder.LOCK_NAME.text)), (seam, observed_state)
+
+    for index, seam in enumerate(("directory-open", "file-xattr", "hardlink-observe", "symlink-open"), 130):
+        fault_after_named_create(index, seam)
+
+    def cancel_inside_metadata(token_number, target_path, syscall_name):
+        owned = builder._begin_operation(chain, approval, f"{token_number:064x}", control)
+        latch = {"cancelled": False}
+        current = {"path": None}
+        interrupted = fs.OperationControl(time.monotonic_ns() + 60_000_000_000, lambda: latch["cancelled"])
+        real_metadata = materializer._metadata
+        original = getattr(materializer.os, syscall_name)
+
+        def tracked_metadata(active, node, path, record, parent, current_control, symlink_name=None):
+            current["path"] = path
+            try:
+                return real_metadata(active, node, path, record, parent, current_control, symlink_name)
+            finally:
+                current["path"] = None
+
+        def mutate_then_cancel(*args, **kwargs):
+            result = original(*args, **kwargs)
+            if current["path"] == target_path:
+                latch["cancelled"] = True
+            return result
+
+        materializer._metadata = tracked_metadata
+        setattr(materializer.os, syscall_name, mutate_then_cancel)
+        try:
+            materializer._materialize(authority, owned, interrupted)
+        except BaseException:
+            pass
+        else:
+            raise AssertionError("metadata cancellation was not observed")
+        finally:
+            materializer._metadata = real_metadata
+            setattr(materializer.os, syscall_name, original)
+        assert latch["cancelled"]
+        assert sorted(path.name for path in state_path.iterdir()) == sorted((builder.STATE_SENTINEL_NAME.text, builder.LOCK_NAME.text))
+
+    metadata_cases = (
+        ("rootfs/bin/tool", "fchown"),
+        ("rootfs/bin", "fchmod"),
+        ("rootfs", "utime"),
+        ("rootfs/etc/message", "chown"),
+        ("rootfs/etc/message", "utime"),
+    )
+    for index, (target_path, syscall_name) in enumerate(metadata_cases, 120):
+        cancel_inside_metadata(index, target_path, syscall_name)
 
     owned = builder._begin_operation(chain, approval, "c" * 64, control)
     result = materializer._materialize(authority, owned, control)

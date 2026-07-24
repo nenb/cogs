@@ -396,6 +396,7 @@ def writer_tests():
         real_observe = ledger._observe_node
         real_xattrs = ledger._require_empty_fd_xattrs
         real_write = ledger.os.write
+        real_fsync = ledger.os.fsync
         ledger._observe_node = observe
         ledger._require_empty_fd_xattrs = lambda _node, _control: None
         try:
@@ -406,6 +407,41 @@ def writer_tests():
             ledger.os.write = lambda _fd, _raw: 0
             rejected(lambda: ledger._append_record(state, proposal, control()))
             assert os.fstat(operation_fd.number).st_size == 0
+            writes = {"count": 0}
+
+            def partial_then_fail(fd, raw):
+                writes["count"] += 1
+                if writes["count"] == 1:
+                    return real_write(fd, raw[:7])
+                raise OSError("partial append")
+
+            ledger.os.write = partial_then_fail
+            rejected(lambda: ledger._append_record(state, proposal, control()))
+            assert os.fstat(operation_fd.number).st_size == 0
+            ledger.os.write = real_write
+            syncs = {"count": 0}
+
+            def fsync_then_fail(fd):
+                syncs["count"] += 1
+                if syncs["count"] == 1:
+                    raise OSError("append fsync")
+                return real_fsync(fd)
+
+            ledger.os.fsync = fsync_then_fail
+            rejected(lambda: ledger._append_record(state, proposal, control()))
+            assert os.fstat(operation_fd.number).st_size == 0
+            ledger.os.fsync = real_fsync
+            latch = {"cancelled": False}
+
+            def write_then_cancel(fd, raw):
+                count = real_write(fd, raw)
+                latch["cancelled"] = True
+                return count
+
+            ledger.os.write = write_then_cancel
+            interrupted = fs.OperationControl(time.monotonic_ns() + 30_000_000_000, lambda: latch["cancelled"])
+            rejected(lambda: ledger._append_record(state, proposal, interrupted))
+            assert os.fstat(operation_fd.number).st_size == 0
             ledger.os.write = lambda fd, raw: real_write(fd, raw[:7])
             state = ledger._append_record(state, proposal, control())
             raw = os.pread(operation_fd.number, state.settled.offset, 0)
@@ -415,6 +451,7 @@ def writer_tests():
             rejected(lambda: ledger._append_record(state, proposal, control()))
         finally:
             ledger.os.write = real_write
+            ledger.os.fsync = real_fsync
             ledger._observe_node = real_observe
             ledger._require_empty_fd_xattrs = real_xattrs
             identity_fd.close()

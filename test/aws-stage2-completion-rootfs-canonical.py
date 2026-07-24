@@ -336,6 +336,26 @@ def docker_functional_two_builds():
         assert closes["tripped"]
         assert not any((destination_path / name).exists() for name in (".accepted-transaction-v1", ".accepted-transaction-next-v1", ".accepted-candidate-v1"))
 
+        real_fstat = publication.os.fstat
+        stats = {"count": 0}
+
+        def fstat_once_then_fail(descriptor):
+            target = os.readlink(f"/proc/self/fd/{descriptor}")
+            if target.endswith(".accepted-transaction-next-v1"):
+                stats["count"] += 1
+                if stats["count"] == 1:
+                    raise OSError("snapshot identity fault")
+            return real_fstat(descriptor)
+
+        publication.os.fstat = fstat_once_then_fail
+        try:
+            publication._publish(destination, second.manifest, second.ustar, pins_value, outer)
+        except OSError:
+            pass
+        finally:
+            publication.os.fstat = real_fstat
+        assert not any((destination_path / name).exists() for name in (".accepted-transaction-v1", ".accepted-transaction-next-v1", ".accepted-candidate-v1"))
+
         original_append = publication._append_transaction
         for fault_phase in ("intent", "candidate-intent", "candidate", "cleaned", "file-intent", "file", "prepared", "rename"):
             tripped = {"value": False}

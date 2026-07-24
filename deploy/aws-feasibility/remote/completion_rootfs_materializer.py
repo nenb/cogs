@@ -67,6 +67,16 @@ def _close_opened(opened, primary=None):
         raise error
 
 
+def _close_final(opened):
+    primary = sys.exception()
+    try:
+        _close_opened(opened)
+    except BaseException as close_error:
+        if primary is not None:
+            raise fs.RootfsFsError(primary, close_error) from close_error
+        raise
+
+
 def _desired(record, host_size):
     size = record.archive_size if record.kind == "file" else host_size
     return ledger._metadata_value(record.mode, record.uid, record.gid, size, record.mtime * 1_000_000_000)
@@ -85,32 +95,34 @@ def _metadata(active, node, path, record, parent, control, symlink_name=None):
         {"token": builder._token(active), "path": path, "before": builder._g(before), "desired": desired},
         control,
     )
+    transition = builder._transition_control()
     if symlink_name is None:
-        _check(control)
+        _check(transition)
         os.fchown(node.operation_fd.number, record.uid, record.gid)
-        _check(control)
+        _check(transition)
         os.fchmod(node.operation_fd.number, record.mode)
-        _check(control)
+        _check(transition)
         os.utime(node.operation_fd.number, ns=(record.mtime * 1_000_000_000,) * 2)
-        _check(control)
-        builder._fsync(node.operation_fd, control)
+        _check(transition)
+        builder._fsync(node.operation_fd, transition)
     else:
-        _check(control)
+        _check(transition)
         os.chown(symlink_name.raw, record.uid, record.gid, dir_fd=parent.operation_fd.number, follow_symlinks=False)
-        _check(control)
+        _check(transition)
         os.utime(
             symlink_name.raw,
             ns=(record.mtime * 1_000_000_000,) * 2,
             dir_fd=parent.operation_fd.number,
             follow_symlinks=False,
         )
-        _check(control)
-        builder._fsync(parent.operation_fd, control)
-    after = fs._observe_child(parent, symlink_name, control) if symlink_name is not None else _generation(node, control)
+        _check(transition)
+        builder._fsync(parent.operation_fd, transition)
+    after = fs._observe_child(parent, symlink_name, transition) if symlink_name is not None else _generation(node, transition)
     _fail((after.mode, after.uid, after.gid, after.size, after.mtime_ns) == ledger._parse_metadata(desired))
     observed = {"token": builder._token(active), "path": path, "child": builder._g(after)}
-    active = _append(active, "metadata-observed", observed, control)
-    active = _append(active, "metadata-settled", observed, control)
+    active = _append(active, "metadata-observed", observed, transition)
+    active = _append(active, "metadata-settled", observed, transition)
+    control.check()
     return active, after
 
 
@@ -122,7 +134,7 @@ def _create_directory(active, root, entry, control):
         fs._close_node(child)
         return active
     finally:
-        _close_opened(opened)
+        _close_final(opened)
 
 
 def _create_file(active, root, entry, control):
@@ -146,7 +158,7 @@ def _create_file(active, root, entry, control):
             fs._close_node(child, error)
         raise
     finally:
-        _close_opened(opened)
+        _close_final(opened)
 
 
 def _snapshot(node, control):
@@ -177,6 +189,7 @@ def _create_hardlinks(active, root, authority, control):
             active = _append(active, "hardlink-group", body, control)
             for index, alias_path in enumerate(group.aliases):
                 parent, opened, alias_name = _open_parent(root, alias_path, control)
+                alias_created = False
                 try:
                     before_parent = _snapshot(parent, control)
                     before_target = _generation(target, control)
@@ -198,6 +211,7 @@ def _create_hardlinks(active, root, authority, control):
                         dst_dir_fd=parent.operation_fd.number,
                         follow_symlinks=False,
                     )
+                    alias_created = True
                     _check(transition)
                     after_parent = _snapshot(parent, transition)
                     after_target = _generation(target, transition)
@@ -230,11 +244,30 @@ def _create_hardlinks(active, root, authority, control):
                     control.check()
                     state = ledger._settle_hardlink(state, model_transition)
                     _fail(entries[alias_path].record.hardlink_target == group.target_path)
+                except BaseException as error:
+                    if alias_created:
+                        cleanup = builder._transition_control()
+                        try:
+                            terminal = builder._durable_terminal(active, cleanup)
+                            terminal_body = terminal.body_value()
+                            durable = terminal.record_type in {"hardlink-create-observed", "hardlink-create-settled"} and terminal_body["alias"] == "rootfs/" + alias_path
+                            if not durable:
+                                current = fs._observe_child(parent, alias_name, cleanup)
+                                _fail(current.key == target.generation.key)
+                                os.unlink(alias_name.raw, dir_fd=parent.operation_fd.number)
+                                builder._fsync(target.operation_fd, cleanup)
+                                builder._fsync(parent.operation_fd, cleanup)
+                                intent_body = terminal.body_value()
+                                intent_body["parent"] = _parent_value(_snapshot(parent, cleanup))
+                                intent_body["target"] = builder._g(_generation(target, cleanup))
+                                active = _append(active, "hardlink-create-abort", intent_body, cleanup)
+                        except BaseException as cleanup_error:
+                            error = fs.RootfsFsError(error, cleanup_error)
+                    raise error
                 finally:
-                    _close_opened(opened)
+                    _close_final(opened)
         finally:
-            fs._close_node(target)
-            _close_opened(target_opened)
+            _close_final(target_opened + (target,))
     return active
 
 
@@ -269,6 +302,7 @@ def _create_symlink(active, owned, root, entry, control):
     parent_path, _separator, base = record.path.rpartition("/")
     parent, opened, name = _open_parent(root, record.path, control)
     child = None
+    created = False
     try:
         before = _snapshot(parent, control)
         active = _append(
@@ -280,6 +314,7 @@ def _create_symlink(active, owned, root, entry, control):
         transition = builder._transition_control()
         _check(transition)
         os.symlink(record.link_text, name.raw, dir_fd=parent.operation_fd.number)
+        created = True
         _check(transition)
         child = fs._open_path_node(parent, name, "symlink", transition)
         after = _snapshot(parent, transition)
@@ -300,24 +335,35 @@ def _create_symlink(active, owned, root, entry, control):
         try:
             fs._require_empty_symlink_xattrs(chain, chain_parent, name, child, control)
         finally:
-            _close_opened(chain_opened)
+            _close_final(chain_opened)
         fs._close_node(child)
         child = None
         return active
     except BaseException as error:
-        if child is not None and child.identity_fd.disposition == "open":
+        if created:
             cleanup_control = builder._transition_control()
             try:
-                terminal = builder._durable_terminal(active, cleanup_control)
-                body = terminal.body_value()
-                durable = terminal.record_type in {"create-observed", "create-settled"} and body["path"] == path and ledger._parse_generation(body["child"]).key == child.generation.key
+                records = builder._durable_records(active, cleanup_control)
+                durable = False
+                for ledger_record in records:
+                    if ledger_record.record_type in {"create-observed", "create-settled"}:
+                        body = ledger_record.body_value()
+                        if body["path"] == path and (child is None or ledger._parse_generation(body["child"]).key == child.generation.key):
+                            durable = True
+                current = fs._observe_child(parent, name, cleanup_control)
+                if child is not None:
+                    _fail(current.key == child.generation.key)
                 if not durable:
-                    _fail(fs._observe_child(parent, name, cleanup_control).key == child.generation.key)
+                    _fail(current.key.kind == "symlink")
                     os.unlink(name.raw, dir_fd=parent.operation_fd.number)
                     builder._fsync(parent.operation_fd, cleanup_control)
-                fs._close_node(child)
+                    intent = records[-1].body_value()
+                    intent["parent"] = _parent_value(_snapshot(parent, cleanup_control))
+                    active = _append(active, "create-abort", intent, cleanup_control)
+                if child is not None and child.identity_fd.disposition == "open":
+                    fs._close_node(child)
             except BaseException as cleanup_error:
-                if child.identity_fd.disposition == "open":
+                if child is not None and child.identity_fd.disposition == "open":
                     try:
                         fs._close_node(child)
                     except BaseException as close_error:
@@ -325,20 +371,21 @@ def _create_symlink(active, owned, root, entry, control):
                 error = fs.RootfsFsError(error, cleanup_error)
         raise error
     finally:
-        _close_opened(opened)
+        _close_final(opened)
 
 
 def _finalize_directory(active, root, entry, control):
     path = "rootfs/" + entry.record.path
     parent, opened, name = _open_parent(root, entry.record.path, control)
-    node = fs._open_path_node(parent, name, "directory", control)
+    node = None
     try:
+        node = fs._open_path_node(parent, name, "directory", control)
         active, _generation_value = _metadata(active, node, path, entry.record, parent, control)
         fs._require_empty_fd_xattrs(node, control)
-        fs._close_node(node)
-        return active
-    finally:
-        _close_opened(opened)
+    except BaseException as error:
+        _close_opened(opened + (() if node is None else (node,)), error)
+    _close_opened(opened + (node,))
+    return active
 
 
 def _record_matches(generation, record):
