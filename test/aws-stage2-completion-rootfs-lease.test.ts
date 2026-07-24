@@ -23,7 +23,8 @@ test("Stage A retained rootfs lease is private, fixed, and preservation-only", a
   const harness = await readFile(testPath, "utf8");
   assert.match(harness, /if argv == \["--real"\]/u);
   assert.match(harness, /elif not argv:/u);
-  assert.doesNotMatch(harness, /build_module\.BUILD_SECONDS\s*=/u);
+  // Harness-only correction: reject assignment without treating equality as assignment.
+  assert.doesNotMatch(harness, /build_module\.BUILD_SECONDS\s*=(?!=)/u);
   assert.ok(
     harness.indexOf("lease_module._close_preserving(held.retained)") <
       harness.indexOf('builder_module.main(["recover-owned"])'),

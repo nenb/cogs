@@ -99,6 +99,7 @@ def prepare_real_workspace():
         "completion_rootfs_canonical.py",
         "completion_rootfs_publish.py",
         "completion_rootfs_build.py",
+        "completion_kata_operation.py",
         "completion_rootfs_lease.py",
         "verify-completion-artifacts.py",
         "stage2-completion-artifacts-v1.json",

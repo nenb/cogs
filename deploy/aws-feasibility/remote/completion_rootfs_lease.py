@@ -10,6 +10,7 @@ import sys
 
 sys.dont_write_bytecode = True
 
+import completion_kata_operation as kata_operation
 import completion_rootfs_build as build
 import completion_rootfs_builder as builder
 import completion_rootfs_canonical as canonical
@@ -353,6 +354,53 @@ def _acquire(approval, outer):
         if boundary:
             _close_preserving(retained, error)
         _abandon_active(retained, error)
+
+
+def _reopen_kata_reserved(permit, control):
+    grant = kata_operation._claim_rootfs_reopen(permit)
+    held = None
+
+    def rootfs_route(token, route_control):
+        ledger._token(token)
+        chain = builder._open_base_chain(route_control)
+        state = locked = active = operation = root = None
+        try:
+            state = builder._open_state(chain, route_control)
+            _fail(state is not None)
+            locked = builder._acquire_lock(chain, state, route_control)
+            active = builder._read_active_ledger(state, route_control)
+            observations, operation = builder._observations(
+                locked, active.records, builder._current_ledger(active, route_control), route_control,
+            )
+            reconciled = ledger._reconcile_ledger(active.records, observations)
+            _fail(reconciled.status == "leased" and reconciled.lease_seen and not reconciled.release_authorized)
+            _fail(builder._token(active) == token and operation is not None)
+            root = fs._open_path_node(operation, builder.ROOT_NAME, "directory", route_control)
+            _fail(type(reconciled.lease_snapshot) is ledger.LeaseSnapshot and root.generation == reconciled.lease_snapshot.root)
+            owned = builder.OwnedOperation(locked, active, operation, root, ledger._operation_name(token))
+            retained = build.RetainedBuild(owned, chain)
+            retained.disposition = "transferred"
+            routed = RetainedRootfsLease(_reference(owned, active), retained)
+            _stable_lease_pass(routed, route_control)
+            return routed
+        except BaseException as error:
+            for node in (root, operation, None if active is None else active.node, None if locked is None else locked.lock, state):
+                if node is not None and node.identity_fd.disposition == "open":
+                    try: fs._close_node(node)
+                    except BaseException as close_error: error = _merge(error, close_error)
+            try: fs._close_chain(chain)
+            except BaseException as close_error: error = _merge(error, close_error)
+            raise error
+
+    try:
+        held = kata_operation._invoke_rootfs_reopen_route(grant, rootfs_route, control)
+        _verify(held, control)
+        kata_operation._settle_rootfs_reopen(grant, held.reference)
+        return held
+    except BaseException as error:
+        if held is not None and held.disposition == "held":
+            _close_preserving(held.retained, error)
+        raise
 
 
 def _verify(lease, control):

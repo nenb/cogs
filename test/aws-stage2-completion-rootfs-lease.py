@@ -956,7 +956,7 @@ def source_tests():
     allowed = {
         "completion_rootfs_ledger.py": {"<module>", "__post_init__", "_validate_body", "_lease_history", "_validate_legal_records", "_reconcile_ledger", "_write_record", "_append_record", "_append_leased_record"},
         "completion_rootfs_builder.py": {"_append", "_mark_leased", "_unlink_ledger", "_resume_entry_remove", "_resume_observed", "_recover_locked"},
-        "completion_rootfs_lease.py": {"_stable_graph", "_stable_lease_pass", "_reference"},
+        "completion_rootfs_lease.py": {"_stable_graph", "_stable_lease_pass", "_reference", "rootfs_route"},
     }
     assert all(owner in allowed.get(path, set()) for path, owner in control_owners)
 
@@ -983,7 +983,10 @@ def docker_real_lease_test():
     load("completion_rootfs_canonical", fixed_remote / "completion_rootfs_canonical.py")
     publication_module = load("completion_rootfs_publish", fixed_remote / "completion_rootfs_publish.py")
     build_module = load("completion_rootfs_build", fixed_remote / "completion_rootfs_build.py")
+    operation_module = load("completion_kata_operation", fixed_remote / "completion_kata_operation.py")
     lease_module = load("completion_rootfs_lease", fixed_remote / "completion_rootfs_lease.py")
+    assert Path(operation_module.__file__).parent == Path(lease_module.__file__).parent == fixed_remote
+    assert lease_module.kata_operation is operation_module
     harness.accommodate_docker_overlay(fs_module)
     assert build_module.BUILD_SECONDS == 300
 
@@ -1024,6 +1027,111 @@ def docker_real_lease_test():
     # therefore must decide from the durable leased ledger, not flock contention.
     lease_module._close_preserving(held.retained)
     preserved()
+
+    # Compose the real fixed operation owner with the real durable rootfs owner.
+    def operation_journal(include_leased=False, mismatch=False):
+        # Test-only fixed filesystem fixture. Production exposes no generic owner.
+        state_path = harness.FIXED / "deploy/aws-feasibility/.state/completion-v1" / operation_module.STATE_NAME.text
+        state_path.mkdir(mode=0o700, exist_ok=True)
+        os.chmod(state_path, 0o700)
+        sentinel_path = state_path / operation_module.SENTINEL_NAME.text
+        lock_path = state_path / operation_module.LOCK_NAME.text
+        journal_path = state_path / operation_module.JOURNAL_NAME.text
+        sentinel_path.write_bytes(operation_module.SENTINEL)
+        lock_path.touch(exist_ok=True)
+        os.chmod(sentinel_path, 0o600)
+        os.chmod(lock_path, 0o600)
+        if journal_path.exists():
+            journal_path.unlink()
+        journal_path.touch(mode=0o600)
+        os.chmod(journal_path, 0o600)
+
+        fixture_control = fs_module.OperationControl(time.monotonic_ns() + 30_000_000_000, lambda: False)
+        chain = builder_module._open_base_chain(fixture_control)
+        state = journal = None
+        try:
+            state = fs_module._open_path_node(
+                chain.components[-1].node, operation_module.STATE_NAME, "directory", fixture_control,
+            )
+            journal = fs_module._open_path_node(
+                state, operation_module.JOURNAL_NAME, "file", fixture_control,
+            )
+            journal_key = operation_module._key_value(journal.generation.key)
+            state_generation = operation_module._generation_value(state.generation)
+        finally:
+            if journal is not None:
+                fs_module._close_node(journal)
+            if state is not None:
+                fs_module._close_node(state)
+            fs_module._close_chain(chain)
+
+        genesis = {
+            **operation_module.FIXED, "operation_token": "8" * 64,
+            "rootfs_token": reference.token,
+            "host_boot_id": "11111111-1111-1111-1111-111111111111",
+            "source_revision": revision, "source_manifest_sha256": source_digest,
+            "journal_key": journal_key, "rootfs_pin": operation_module.ROOTFS_PIN,
+            "mount_list_sha256": operation_module.MOUNT_SHA,
+        }
+        records = ()
+        raw = b""
+        bodies = [("GENESIS", genesis), ("GENESIS_SETTLED", {
+            "operation_token": "8" * 64, "journal_key": journal_key,
+            "state_parent": state_generation,
+        }), ("ROOTFS_ACQUIRE_INTENT", {
+            "operation_token": "8" * 64, "rootfs_token": reference.token,
+            "rootfs_baseline_sha256": "7" * 64,
+        })]
+        if include_leased:
+            digest = reference.leased_settled.line_sha256
+            if mismatch:
+                digest = ("0" if digest[0] != "0" else "1") + digest[1:]
+            bodies.append(("ROOTFS_LEASED", {
+                "operation_token": "8" * 64, "rootfs_token": reference.token,
+                "rootfs_ledger_key": operation_module._key_value(reference.ledger_key),
+                "leased_sequence": reference.leased_settled.sequence,
+                "leased_offset": f"{reference.leased_settled.offset:016x}",
+                "leased_sha256": digest,
+                "state_generation": operation_module._generation_value(reference.state_generation),
+                "operation_generation": operation_module._generation_value(reference.operation_generation),
+                "root_generation": operation_module._generation_value(reference.root_generation),
+                "rootfs_pin": operation_module.ROOTFS_PIN,
+            }))
+        for kind, value in bodies:
+            line = operation_module._encode(kind, value, records)
+            raw += line
+            records = operation_module._parse(raw)
+        descriptor = os.open(journal_path, os.O_WRONLY | os.O_TRUNC)
+        try:
+            offset = 0
+            while offset < len(raw):
+                offset += os.write(descriptor, raw[offset:])
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        directory = os.open(state_path, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+        return journal_path
+
+    bad_journal = operation_journal(True, True)
+    authority = operation_module._open_fixed_operation()
+    rejected(lambda: lease_module._reopen_kata_reserved(authority.reserve_rootfs(), control))
+    authority.close()
+    bad_journal.unlink()
+    operation_journal()
+    authority = operation_module._open_fixed_operation()
+    reopened = lease_module._reopen_kata_reserved(authority.reserve_rootfs(), control)
+    lease_module._close_preserving(reopened.retained)
+    authority.close()
+    authority = operation_module._open_fixed_operation()
+    reopened = lease_module._reopen_kata_reserved(authority.reserve_rootfs(), control)
+    lease_module._close_preserving(reopened.retained)
+    authority.close()
+    preserved()
+
     assert builder_module.main(["recover-owned"]) == 1
     preserved()
     rejected(lambda: builder_module._recover_fixed(fs_module.OperationControl(time.monotonic_ns() + 30_000_000_000, lambda: False)))
