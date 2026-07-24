@@ -1,0 +1,348 @@
+#!/usr/bin/env python3
+"""Portable contract snapshots and Linux direct-child supervisor tests."""
+import errno
+import hashlib
+import json
+import os
+from pathlib import Path
+import platform
+import resource
+import subprocess
+import sys
+import time
+from unittest.mock import patch
+
+if sys.flags.optimize:
+    raise RuntimeError("process tests refuse Python optimization")
+ROOT = Path(__file__).resolve().parents[1]
+REMOTE = ROOT / "deploy/aws-feasibility/remote"
+sys.path.insert(0, str(REMOTE))
+import completion_kata_process as process
+
+
+def rejected(function):
+    try:
+        function()
+    except BaseException:
+        return
+    raise AssertionError("hostile process case accepted")
+
+
+def contract_rejected(raw):
+    try:
+        process._parse_contract(raw, hashlib.sha256(raw).hexdigest())
+    except process.ProcessError:
+        return
+    except BaseException as error:
+        raise AssertionError(f"contract failure was not normalized: {type(error).__name__}") from error
+    raise AssertionError("hostile contract accepted")
+
+
+# Closed production snapshots contain no caller-selected token.  These exact
+# values are future actions only; no production execution issuer exists.
+snapshots = {name: (argv, stdin, deadline, fds) for name, argv, stdin, deadline, fds in process._fixed_spec_snapshots_for_tests()}
+assert snapshots["CTR_TASK_TERM"] == (("/usr/bin/ctr", "--namespace", "cogs-stage2-completion-v1", "tasks", "kill", "--signal", "SIGTERM", "cogs-stage2-ssh-v1"), b"", "task-term", ())
+assert process.NFT_INPUT.endswith(b'add rule inet cogs_stage2_ssh_v1 forward oifname "c42h0" drop\n')
+unissued = {item.command_id: item for item in process._unissued_spec_snapshots_for_tests()}
+assert unissued["IP_NETNS_ADD"].tool_contract == "ip"
+assert unissued["IP_NETNS_ADD"].argv_tail == ("netns", "add", "cogs-stage2-ssh")
+assert unissued["IP_PEER_ADDRGEN_NONE"].argv_tail[-2:] == ("addrgenmode", "none")
+assert unissued["NFT_INSTALL"].tool_contract == "nft"
+assert unissued["NFT_INSTALL"].argv_tail == ("-f", "-")
+assert unissued["NFT_INSTALL"].stdin == process.NFT_INPUT
+assert snapshots["SSH_READY"][0][-2:] == ("root@192.0.2.2", "printf '%s\\n' COGS_STAGE2_SSH_READY_V1")
+assert snapshots["SSH_READY"][2:] == ("ssh", (200, 201))
+assert len(snapshots) == 8
+rejected(lambda: process._spec("IP_NETNS_ADD"))
+rejected(lambda: process._test_spec("ok"))
+BOOT_A = "12345678-1234-1234-1234-123456789abc"
+BOOT_B = "abcdefab-cdef-abcd-efab-cdefabcdefab"
+fake_identity = process.ProcessIdentity(10, 1, 10, 10, 99, BOOT_A, True)
+exact = process.RecoveryObservation(process.ObservationKind.EXACT, (10, 1, 10, 10, 99))
+mismatch = process.RecoveryObservation(process.ObservationKind.EXACT, (10, 1, 10, 10, 100))
+absent = process.RecoveryObservation(process.ObservationKind.ABSENT)
+unknown = process.RecoveryObservation(process.ObservationKind.UNKNOWN)
+assert process._recovery_class(fake_identity, BOOT_A, exact) == "exact_live"
+assert process._recovery_class(fake_identity, BOOT_B, exact) == "recovery_absent"
+assert process._recovery_class(fake_identity, BOOT_A, absent) == "recovery_absent"
+assert process._recovery_class(fake_identity, BOOT_A, unknown) == "uncertain"
+assert process._recovery_class(fake_identity, BOOT_A, mismatch) == "uncertain"
+rejected(lambda: process._recovery_class(fake_identity, "boot-a", absent))
+rejected(lambda: process._recovery_class(fake_identity, BOOT_A, None))
+rejected(lambda: process._recovery_class(fake_identity, BOOT_A, process.RecoveryObservation(process.ObservationKind.ABSENT, (1,))))
+for command in (
+    process.CommandId.IP_NETNS_ADD,
+    process.CommandId.NFT_INSTALL,
+    process.CommandId.SSH_KEYGEN_CLIENT,
+    process.CommandId.SSH_PUBLIC_CLIENT,
+):
+    rejected(lambda command=command: process._spec(command))
+
+# Contract decoding requires canonical, digest-bound, exact typed records.
+def canonical(value):
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode() + b"\n"
+
+
+def contract_for(path, command="TEST_HELPER"):
+    raw = path.read_bytes()
+    artifact = {
+        "logical_path": str(path), "role": "executable", "sha256": hashlib.sha256(raw).hexdigest(),
+        "size": len(raw), "soname": None,
+    }
+    body = {
+        "architecture": "x86_64", "command_id": command, "dynamic_tags": [],
+        "executable": artifact, "libraries": [], "loader": None,
+        "version": process.CONTRACT_VERSION,
+    }
+    value = {**body, "closure_sha256": hashlib.sha256(canonical(body)).hexdigest()}
+    encoded = canonical(value)
+    return encoded, hashlib.sha256(encoded).hexdigest()
+
+
+placeholder = Path(process.TEST_PATH)
+value = {
+    "architecture": "x86_64", "closure_sha256": "1" * 64, "command_id": "TEST_HELPER",
+    "dynamic_tags": [], "executable": {
+        "logical_path": process.TEST_PATH, "role": "executable", "sha256": "2" * 64,
+        "size": 1, "soname": None,
+    }, "libraries": [], "loader": None, "version": process.CONTRACT_VERSION,
+}
+encoded = canonical(value)
+rejected(lambda: process._parse_contract(encoded, "0" * 64))
+rejected(lambda: process._parse_contract(encoded.replace(b'"version"', b'"version" '), hashlib.sha256(encoded.replace(b'"version"', b'"version" ')).hexdigest()))
+duplicate = encoded.replace(b'{', b'{"version":"duplicate",', 1)
+rejected(lambda: process._parse_contract(duplicate, hashlib.sha256(duplicate).hexdigest()))
+for tags in (["RPATH"], ["RUNPATH"], ["AUDIT"], [{"unhashable": True}], ["A", 1]):
+    hostile = {**value, "dynamic_tags": tags}
+    raw = canonical(hostile)
+    contract_rejected(raw)
+for command in (None, "", "caller-selected", "A" * 65):
+    hostile = {**value, "command_id": command}
+    raw = canonical(hostile)
+    contract_rejected(raw)
+for soname in ("libx.so/evil", "libx so.1", "libx..so.1", ".", "x.so.1", "libx.so.latest", "libx.so\x00.1"):
+    artifact = {**value["executable"], "role": "library", "soname": soname}
+    rejected(lambda artifact=artifact: process._artifact(artifact, "library"))
+large = 128 * 1024 * 1024
+libraries = [{"logical_path": f"/lib/libx{i}.so.1", "role": "library", "sha256": f"{i + 3:x}" * 64,
+              "size": large, "soname": f"libx{i}.so.1"} for i in range(4)]
+loader = {"logical_path": "/lib/ld-test.so", "role": "loader", "sha256": "9" * 64, "size": 1, "soname": None}
+overflow_body = {name: item for name, item in value.items() if name != "closure_sha256"}
+overflow_body.update({"libraries": libraries, "loader": loader})
+overflow = {**overflow_body, "closure_sha256": hashlib.sha256(canonical(overflow_body)).hexdigest()}
+raw = canonical(overflow)
+contract_rejected(raw)
+deeply_nested = b"[" * 1_200 + b"0" + b"]" * 1_200
+contract_rejected(deeply_nested)
+
+
+HELPER = r'''#include <errno.h>
+#include <fcntl.h>
+#include <signal.h>
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
+int main(int argc, char **argv) {
+  if (argc != 2) return 90;
+  if (!strcmp(argv[1], "ok")) { write(1, "ok\n", 3); return 0; }
+  if (!strcmp(argv[1], "stderr")) { write(2, "fixed-error\n", 12); return 0; }
+  if (!strcmp(argv[1], "exit7")) return 7;
+  if (!strcmp(argv[1], "flood")) { char x = 'x'; for (int i=0;i<65537;i++) write(1,&x,1); return 0; }
+  if (!strcmp(argv[1], "dual-flood")) { char out[4096], err[4096]; memset(out,'o',sizeof(out)); memset(err,'e',sizeof(err)); for (int i=0;i<20;i++) { write(1,out,sizeof(out)); write(2,err,sizeof(err)); } return 0; }
+  if (!strcmp(argv[1], "sleep")) { signal(SIGTERM, SIG_IGN); sleep(30); return 0; }
+  if (!strcmp(argv[1], "held-pipe")) { pid_t child=fork(); if (child<0) return 93; if (!child) { usleep(800000); _exit(0); } return 0; }
+  if (!strcmp(argv[1], "fd")) { if (fcntl(198, F_GETFD) == -1 && errno == EBADF) { write(1,"closed\n",7); return 0; } return 91; }
+  if (!strcmp(argv[1], "high-fd")) { if (fcntl(4096, F_GETFD) == -1 && errno == EBADF) { write(1,"high-closed\n",12); return 0; } return 94; }
+  return 92;
+}
+'''
+
+
+def linux_supervisor_tests():
+    if platform.system() != "Linux" or platform.machine() != "x86_64":
+        return
+    cc = Path("/usr/bin/cc")
+    if not cc.exists():
+        raise AssertionError("fixed local C compiler is required for the Linux process test")
+    directory = placeholder.parent
+    directory.mkdir(mode=0o700, parents=False, exist_ok=True)
+    source = directory / "helper.c"
+    source.write_text(HELPER, encoding="ascii")
+    os.chmod(source, 0o600)
+    compile_result = subprocess.run(
+        [str(cc), "-static", "-O2", "-Wall", "-Wextra", "-Werror", "-o", str(placeholder), str(source)],
+        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30, check=False,
+    )
+    assert compile_result.returncode == 0, compile_result.stderr.decode(errors="replace")
+    os.chmod(placeholder, 0o500)
+    raw, digest = contract_for(placeholder)
+    os.environ["COGS_KATA_PROCESS_TESTING_V1"] = "1"
+
+    def issue(action):
+        return process._make_test_issuer(raw, digest)(action)
+
+    result = issue(process._TestAction.OK)
+    assert result.outcome == "exited" and result.status == 0 and result.stdout == b"ok\n"
+    assert result.stderr == b"" and result.reaped and not result.errors
+    assert result.identity.pid == result.identity.pgid == result.identity.sid
+    assert result.identity.ppid == os.getpid() and result.identity.starttime > 0
+    assert result.stdout_sha256 == hashlib.sha256(b"ok\n").hexdigest()
+
+    authority = process._make_test_issuer(raw, digest)
+    authority(process._TestAction.OK)
+    rejected(lambda: authority(process._TestAction.OK))
+
+    result = issue(process._TestAction.STDERR)
+    assert result.status == 0 and result.stderr == b"fixed-error\n" and result.reaped
+    result = issue(process._TestAction.EXIT7)
+    assert result.status == 7 and result.errors == ("exit:7",) and result.reaped
+    result = issue(process._TestAction.FLOOD)
+    assert len(result.stdout) == process.MAX_STREAM and result.stdout_truncated
+    assert "output-cap" in result.errors and result.reaped
+    result = issue(process._TestAction.DUAL_FLOOD)
+    assert len(result.stdout) == len(result.stderr) == process.MAX_STREAM
+    assert result.stdout_truncated and result.stderr_truncated and result.reaped
+
+    started = time.monotonic()
+    result = issue(process._TestAction.SLEEP)
+    assert result.timed_out and result.leader_timed_out and not result.pipe_timed_out
+    assert result.outcome == "signaled" and result.status == signal.SIGKILL
+    assert result.reaped and time.monotonic() - started < 5
+
+    started = time.monotonic()
+    result = issue(process._TestAction.HELD_PIPE)
+    assert result.reaped and result.pipe_timed_out and not result.leader_timed_out
+    assert result.outcome == "uncertain" and "pipe-deadline" in result.errors
+    assert time.monotonic() - started < 1
+
+    held = os.open("/dev/null", os.O_RDONLY | os.O_CLOEXEC)
+    try:
+        os.dup2(held, 198, inheritable=True)
+        result = issue(process._TestAction.FD)
+        assert result.status == 0 and result.stdout == b"closed\n"
+    finally:
+        os.close(198)
+        os.close(held)
+
+    # close_range reaches inherited descriptors above a subsequently lowered limit.
+    base = os.open("/dev/null", os.O_RDONLY | os.O_CLOEXEC)
+    high = __import__("fcntl").fcntl(base, __import__("fcntl").F_DUPFD, 4096)
+    os.set_inheritable(high, True)
+    old_limit = resource.getrlimit(resource.RLIMIT_NOFILE)
+    try:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (256, old_limit[1]))
+        result = issue(process._TestAction.HIGH_FD)
+        assert result.status == 0 and result.stdout == b"high-closed\n"
+    finally:
+        resource.setrlimit(resource.RLIMIT_NOFILE, old_limit)
+        os.close(high)
+        os.close(base)
+
+    # A child-side pre-exec failure is a fixed-size errno result and is reaped.
+    with patch.object(process, "_execveat", side_effect=OSError(errno.ENOEXEC, "fixed injected exec failure")):
+        result = issue(process._TestAction.OK)
+    assert result.outcome == "exec_failed" and result.errno == errno.ENOEXEC and result.reaped
+
+    # A fake mismatching snapshot prevents release. Closing the release pipe lets
+    # the directly-owned blocked child exit, and the parent still reaps it.
+    child = []
+    real_identity = process._identity
+    def mismatch(pid, reported):
+        child.append(pid)
+        raise process.ProcessError("fake PID mismatch")
+    with patch.object(process, "_identity", side_effect=mismatch):
+        rejected(lambda: issue(process._TestAction.OK))
+    assert len(child) == 1
+    try:
+        os.waitpid(child[0], os.WNOHANG)
+    except ChildProcessError:
+        pass
+    else:
+        raise AssertionError("PID mismatch child was not reaped")
+    assert real_identity
+
+    # Setup timeout cleanup closes release, tolerates EINTR, and boundedly reaps.
+    cleanup_seen = []
+    real_cleanup = process._cleanup_child
+    real_waitpid = os.waitpid
+    interrupted = [False]
+    def wait_once_interrupted(pid, options):
+        if not interrupted[0]:
+            interrupted[0] = True
+            raise OSError(errno.EINTR, "fixed injected wait interruption")
+        return real_waitpid(pid, options)
+    def observe_cleanup(*args):
+        result = real_cleanup(*args)
+        cleanup_seen.append((args[0], result))
+        return result
+    with patch.object(process, "_read_setup", side_effect=process.ProcessError("fixed setup timeout")), \
+         patch.object(process, "_cleanup_child", side_effect=observe_cleanup), \
+         patch.object(process.os, "waitpid", side_effect=wait_once_interrupted):
+        rejected(lambda: issue(process._TestAction.OK))
+    assert len(cleanup_seen) == 1 and cleanup_seen[0][1][0] is not None
+    assert any("eintr" in item for item in cleanup_seen[0][1][1])
+    try:
+        os.waitpid(cleanup_seen[0][0], os.WNOHANG)
+    except ChildProcessError:
+        pass
+    else:
+        raise AssertionError("setup-timeout child was not reaped")
+
+    # ECHILD and identity-observation failures are recorded, never thrown.
+    wait_errors = []
+    _, done = process._wait_nohang(os.getpid(), wait_errors, "injected", time.monotonic() + 0.1)
+    assert done and wait_errors == ["injected:echild"]
+    observation_child = os.fork()
+    if observation_child == 0:
+        time.sleep(0.25)
+        os._exit(0)
+    observation_identity = process.ProcessIdentity(observation_child, os.getpid(), observation_child,
+                                                   observation_child, 1, process._boot_id(), False)
+    with patch.object(process, "_same_identity", return_value="uncertain"):
+        observed_status, cleanup_errors = process._cleanup_child(observation_child, observation_identity, None, True)
+    assert observed_status is not None and "identity-uncertain-before-term" in cleanup_errors
+
+    # A close failure is aggregated after the descriptor was actually closed.
+    real_close = os.close
+    injected = [False]
+    def close_then_error(descriptor):
+        real_close(descriptor)
+        if not injected[0]:
+            injected[0] = True
+            raise OSError(errno.EIO, "fixed injected close failure")
+    close_authority = process._make_test_issuer(raw, digest)
+    with patch.object(process.os, "close", side_effect=close_then_error):
+        result = close_authority(process._TestAction.OK)
+    assert "close:5" in result.errors and result.reaped
+
+    # The issued object is the sealed bytes, even if the source path changes.
+    original = placeholder.read_bytes()
+    sealed_authority = process._make_test_issuer(raw, digest)
+    os.chmod(placeholder, 0o600)
+    placeholder.write_bytes(b"not-the-sealed-helper")
+    try:
+        result = sealed_authority(process._TestAction.OK)
+        assert result.status == 0 and result.stdout == b"ok\n"
+    finally:
+        placeholder.write_bytes(original)
+        os.chmod(placeholder, 0o500)
+
+    # A replacement also fails a new binding before fork.
+    os.chmod(placeholder, 0o600)
+    placeholder.write_bytes(original + b"x")
+    rejected(lambda: process._make_test_issuer(raw, digest))
+    placeholder.write_bytes(original)
+    os.chmod(placeholder, 0o500)
+
+
+# Imported late so the portable portion does not imply process use on macOS.
+import signal
+required = os.environ.get("COGS_REQUIRE_LINUX_PROCESS_TESTS_V1") == "1"
+qualified = platform.system() == "Linux" and platform.machine() == "x86_64"
+if required and not qualified:
+    raise RuntimeError("Linux amd64 process qualification was required")
+if qualified:
+    linux_supervisor_tests()
+    print("completion Kata process LINUX AMD64 QUALIFIED matrix passed")
+else:
+    print("completion Kata process portable matrix passed; Linux amd64 supervisor matrix SKIPPED")
