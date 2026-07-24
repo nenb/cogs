@@ -357,7 +357,8 @@ def docker_functional_two_builds():
         assert not any((destination_path / name).exists() for name in (".accepted-transaction-v1", ".accepted-transaction-next-v1", ".accepted-candidate-v1"))
 
         original_append = publication._append_transaction
-        for fault_phase in ("intent", "candidate-intent", "candidate", "file-intent", "file", "prepared", "rename"):
+        original_append_records = publication._append_records
+        for fault_phase in ("intent", "candidate-intent", "candidate", "file-intent", "file", "candidate-generation", "prepared", "rename"):
             tripped = {"value": False}
 
             def append_with_fault(transaction, parent, content_names, phase, control, name=None, identity=None):
@@ -367,7 +368,15 @@ def docker_functional_two_builds():
                     raise RuntimeError("publication phase fault")
                 return result
 
+            def append_records_with_fault(transaction, parent, content_names, additions, control):
+                result = original_append_records(transaction, parent, content_names, additions, control)
+                if any(phase == fault_phase for phase, _name, _identity in additions) and not tripped["value"]:
+                    tripped["value"] = True
+                    raise RuntimeError("publication compound phase fault")
+                return result
+
             publication._append_transaction = append_with_fault
+            publication._append_records = append_records_with_fault
             try:
                 publication._publish(destination, second.manifest, second.ustar, pins_value, outer)
             except RuntimeError:
@@ -376,6 +385,7 @@ def docker_functional_two_builds():
                 raise AssertionError("publication phase fault was not observed")
             finally:
                 publication._append_transaction = original_append
+                publication._append_records = original_append_records
             assert tripped["value"]
         original_rename = publication._rename_noreplace
 

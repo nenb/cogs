@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 from types import SimpleNamespace
 import sys
+import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 REMOTE = ROOT / "deploy/aws-feasibility/remote"
@@ -43,13 +44,15 @@ for hostile in (
     else:
         raise AssertionError("hostile rootfs pins accepted")
 names = tuple(name.text for name, _content in publish._contents(b"manifest", b"ustar", pins))
-identity = {"mount_id": 1, "device": 1, "inode": 2, "kind": "directory"}
+identity = {"mount_id": 1, "device": 1, "inode": 2, "kind": "directory", "mode": 0o700, "uid": 0, "gid": 0, "nlink": 2, "size": 4096, "mtime_ns": 1, "ctime_ns": 1}
 generation = {"mount_id": 1, "device": 1, "inode": 3, "kind": "file", "mode": 0o400, "uid": 0, "gid": 0, "nlink": 1, "size": 1, "mtime_ns": 1, "ctime_ns": 1}
 values = []
 previous = publish.ZERO_SHA256
 events = [("intent", None, None), ("candidate-intent", None, None), ("candidate", None, identity)]
-for name in names:
-    events.extend((("file-intent", name, None), ("file", name, generation)))
+for index, name in enumerate(names, 2):
+    next_identity = {**identity, "mtime_ns": index, "ctime_ns": index}
+    events.extend((("file-intent", name, None), ("file", name, generation), ("candidate-generation", None, next_identity)))
+    identity = next_identity
 events.extend((("prepared", None, None), ("rename", None, None), ("accepted", None, None)))
 for phase, name, item_identity in events:
     value = publish._record(len(values), previous, phase, name, item_identity)
@@ -63,6 +66,39 @@ except publish.PublicationError:
     pass
 else:
     raise AssertionError("hostile publication transaction accepted")
+reuse_identity_read, reuse_identity_write = os.pipe()
+reuse_operation_read, reuse_operation_write = os.pipe()
+os.close(reuse_identity_write)
+os.close(reuse_operation_write)
+reuse_key = fs.HostKey(1, 1, 44, "directory")
+recorded_directory = fs.HostGeneration(reuse_key, 0o700, 0, 0, 2, 4096, 10, 10)
+reused_directory = fs.HostGeneration(reuse_key, 0o700, 0, 0, 2, 4096, 10, 11)
+reuse_node = fs.HeldNode(fs.CheckedFd(reuse_identity_read, "reuse-identity"), fs.CheckedFd(reuse_operation_read, "reuse-operation"), reused_directory)
+real_observe = fs._observe_node
+fs._observe_node = lambda _identity, _operation, _control: reused_directory
+try:
+    publish._require_directory_generation(reuse_node, publish._generation_value(recorded_directory), object())
+except publish.PublicationError:
+    pass
+else:
+    raise AssertionError("same-inode candidate replacement accepted")
+finally:
+    fs._observe_node = real_observe
+    fs._close_node(reuse_node)
+if sys.platform == "linux":
+    with tempfile.TemporaryDirectory() as temporary:
+        candidate_path = Path(temporary) / "candidate"
+        candidate_path.mkdir()
+        first = candidate_path.stat()
+        candidate_path.rmdir()
+        for _attempt in range(4096):
+            candidate_path.mkdir()
+            reused = candidate_path.stat()
+            if reused.st_ino == first.st_ino:
+                assert (reused.st_mode, reused.st_uid, reused.st_gid, reused.st_nlink, reused.st_size, reused.st_mtime_ns, reused.st_ctime_ns) != (first.st_mode, first.st_uid, first.st_gid, first.st_nlink, first.st_size, first.st_mtime_ns, first.st_ctime_ns)
+                candidate_path.rmdir()
+                break
+            candidate_path.rmdir()
 identity_read, identity_write = os.pipe()
 operation_read, operation_write = os.pipe()
 os.close(identity_write)
