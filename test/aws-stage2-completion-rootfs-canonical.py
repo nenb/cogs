@@ -357,7 +357,7 @@ def docker_functional_two_builds():
         assert not any((destination_path / name).exists() for name in (".accepted-transaction-v1", ".accepted-transaction-next-v1", ".accepted-candidate-v1"))
 
         original_append = publication._append_transaction
-        for fault_phase in ("intent", "candidate-intent", "candidate", "cleaned", "file-intent", "file", "prepared", "rename"):
+        for fault_phase in ("intent", "candidate-intent", "candidate", "file-intent", "file", "prepared", "rename"):
             tripped = {"value": False}
 
             def append_with_fault(transaction, parent, content_names, phase, control, name=None, identity=None):

@@ -509,8 +509,28 @@ def _durable_records(active, control):
     return ledger._parse_ledger(raw)
 
 
+def _refresh_active(active, control):
+    records = _durable_records(active, control)
+    last = records[-1]
+    settled = ledger.SettledBytes(last.sequence, last.next_offset, last.line_sha256)
+    current = fs._observe_node(active.node.identity_fd, active.node.operation_fd, control)
+    os.lseek(active.node.operation_fd.number, settled.offset, os.SEEK_SET)
+    writer = ledger.LedgerWriterState(active.node, active.writer.stable_key, settled, current)
+    return ActiveLedger(active.node, records, writer)
+
+
 def _durable_terminal(active, control):
     return _durable_records(active, control)[-1]
+
+
+def _absence_abort_body(intent, parent, name, control):
+    before = ledger._parse_parent(intent["parent"])
+    first = _parent(parent, control)
+    _fail(name.text not in first.names and ledger._valid_abort_parent(before, first))
+    _fail(_parent(parent, control) == first)
+    body = dict(intent)
+    body["parent"] = _p(first)
+    return body
 
 
 def _create_ledger_entry(active, operation, path, name, kind, content, control):
@@ -534,9 +554,8 @@ def _create_ledger_entry(active, operation, path, name, kind, content, control):
             try:
                 terminal = _durable_terminal(active, cleanup_control)
                 if terminal.record_type == "create-intent" and terminal.body_value()["path"] == path:
-                    intent = terminal.body_value()
-                    intent["parent"] = _p(_parent(operation, cleanup_control))
-                    active = _append(active, "create-abort", intent, cleanup_control)
+                    abort = _absence_abort_body(terminal.body_value(), operation, name, cleanup_control)
+                    active = _append(active, "create-abort", abort, cleanup_control)
             except BaseException as cleanup_error:
                 error = fs.RootfsFsError(error, cleanup_error)
         if child is not None and child.identity_fd.disposition == "open":
@@ -549,9 +568,8 @@ def _create_ledger_entry(active, operation, path, name, kind, content, control):
                     _close(child)
                 else:
                     _remove_name(operation, name, fs._observe_node(child.identity_fd, child.operation_fd, cleanup_control), cleanup_control)
-                    intent = terminal.body_value()
-                    intent["parent"] = _p(_parent(operation, cleanup_control))
-                    active = _append(active, "create-abort", intent, cleanup_control)
+                    abort = _absence_abort_body(terminal.body_value(), operation, name, cleanup_control)
+                    active = _append(active, "create-abort", abort, cleanup_control)
                     _close(child)
             except BaseException as cleanup_error:
                 error = fs.RootfsFsError(error, cleanup_error)
@@ -727,7 +745,7 @@ def _open_relative_parent(operation, path, control):
 
 def _finish_remove(active, operation, path, expected, intent_exists, control):
     parent, opened, name = _open_relative_parent(operation, path, control)
-    try:
+    with _owned_nodes(lambda: opened):
         pre = _parent(parent, control)
         if not intent_exists:
             kind = "directory" if expected.key.kind == "directory" else "infrastructure"
@@ -746,9 +764,6 @@ def _finish_remove(active, operation, path, expected, intent_exists, control):
         active = _append(active, "remove-settled", observed, transition)
         control.check()
         return active, post.generation
-    finally:
-        for node in reversed(opened):
-            _close(node)
 
 
 def _finish_absent_remove(active, operation, control):
@@ -968,11 +983,9 @@ def _resume_absent_create(active, locked, operation, control):
     _fail(intent.record_type in {"create-intent", "hardlink-create-intent"})
     body = intent.body_value()
     path = body.get("path", body.get("alias"))
-    parent, opened, _name_value = _open_relative_parent(operation, path, control)
-    try:
-        body["parent"] = _p(_parent(parent, control))
-    finally:
-        _close_nodes(opened)
+    parent, opened, name = _open_relative_parent(operation, path, control)
+    with _owned_nodes(lambda: opened):
+        body = _absence_abort_body(body, parent, name, control)
     active = _append(active, intent.record_type.removesuffix("intent") + "abort", body, control)
     entries, parents = _walk_entries(operation, control)
     observations = ledger.ReconcileObservations(

@@ -86,44 +86,63 @@ def _append(active, record_type, body, control):
     return builder._append(active, record_type, body, control)
 
 
+def _apply_metadata(node, parent, symlink_name, record, desired, control):
+    if symlink_name is None:
+        _check(control)
+        os.fchown(node.operation_fd.number, record.uid, record.gid)
+        _check(control)
+        os.fchmod(node.operation_fd.number, record.mode)
+        _check(control)
+        os.utime(node.operation_fd.number, ns=(record.mtime * 1_000_000_000,) * 2)
+        _check(control)
+        builder._fsync(node.operation_fd, control)
+        after = _generation(node, control)
+    else:
+        _check(control)
+        os.chown(symlink_name.raw, record.uid, record.gid, dir_fd=parent.operation_fd.number, follow_symlinks=False)
+        _check(control)
+        os.utime(symlink_name.raw, ns=(record.mtime * 1_000_000_000,) * 2, dir_fd=parent.operation_fd.number, follow_symlinks=False)
+        _check(control)
+        builder._fsync(parent.operation_fd, control)
+        after = fs._observe_child(parent, symlink_name, control)
+    _fail((after.mode, after.uid, after.gid, after.size, after.mtime_ns) == ledger._parse_metadata(desired))
+    return after
+
+
 def _metadata(active, node, path, record, parent, control, symlink_name=None):
     before = _generation(node, control)
     desired = _desired(record, before.size)
-    active = _append(
-        active,
-        "metadata-intent",
-        {"token": builder._token(active), "path": path, "before": builder._g(before), "desired": desired},
-        control,
-    )
+    active = _append(active, "metadata-intent", {"token": builder._token(active), "path": path, "before": builder._g(before), "desired": desired}, control)
     transition = builder._transition_control()
-    if symlink_name is None:
-        _check(transition)
-        os.fchown(node.operation_fd.number, record.uid, record.gid)
-        _check(transition)
-        os.fchmod(node.operation_fd.number, record.mode)
-        _check(transition)
-        os.utime(node.operation_fd.number, ns=(record.mtime * 1_000_000_000,) * 2)
-        _check(transition)
-        builder._fsync(node.operation_fd, transition)
-    else:
-        _check(transition)
-        os.chown(symlink_name.raw, record.uid, record.gid, dir_fd=parent.operation_fd.number, follow_symlinks=False)
-        _check(transition)
-        os.utime(
-            symlink_name.raw,
-            ns=(record.mtime * 1_000_000_000,) * 2,
-            dir_fd=parent.operation_fd.number,
-            follow_symlinks=False,
-        )
-        _check(transition)
-        builder._fsync(parent.operation_fd, transition)
-    after = fs._observe_child(parent, symlink_name, transition) if symlink_name is not None else _generation(node, transition)
-    _fail((after.mode, after.uid, after.gid, after.size, after.mtime_ns) == ledger._parse_metadata(desired))
-    observed = {"token": builder._token(active), "path": path, "child": builder._g(after)}
-    active = _append(active, "metadata-observed", observed, transition)
-    active = _append(active, "metadata-settled", observed, transition)
-    control.check()
-    return active, after
+    try:
+        after = _apply_metadata(node, parent, symlink_name, record, desired, transition)
+        observed = {"token": builder._token(active), "path": path, "child": builder._g(after)}
+        active = _append(active, "metadata-observed", observed, transition)
+        active = _append(active, "metadata-settled", observed, transition)
+        control.check()
+        return active, after
+    except BaseException as error:
+        recovery = builder._transition_control()
+        try:
+            refreshed = builder._refresh_active(active, recovery)
+            terminal = refreshed.records[-1]
+            body = terminal.body_value()
+            _fail(body["path"] == path and terminal.record_type in {"metadata-intent", "metadata-observed", "metadata-settled"})
+            current = fs._observe_child(parent, symlink_name, recovery) if symlink_name is not None else _generation(node, recovery)
+            intent = next(item.body_value() for item in reversed(refreshed.records) if item.record_type == "metadata-intent" and item.body_value()["path"] == path)
+            _fail(current.key == ledger._parse_generation(intent["before"]).key)
+            if terminal.record_type == "metadata-intent":
+                current = _apply_metadata(node, parent, symlink_name, record, desired, recovery)
+                observed = {"token": builder._token(refreshed), "path": path, "child": builder._g(current)}
+                refreshed = _append(refreshed, "metadata-observed", observed, recovery)
+                _append(refreshed, "metadata-settled", observed, recovery)
+            else:
+                _fail(current == ledger._parse_generation(body["child"]))
+                if terminal.record_type == "metadata-observed":
+                    _append(refreshed, "metadata-settled", body, recovery)
+        except BaseException as recovery_error:
+            error = fs.RootfsFsError(error, recovery_error)
+        raise error
 
 
 def _create_directory(active, root, entry, control):
@@ -257,8 +276,7 @@ def _create_hardlinks(active, root, authority, control):
                                 os.unlink(alias_name.raw, dir_fd=parent.operation_fd.number)
                                 builder._fsync(target.operation_fd, cleanup)
                                 builder._fsync(parent.operation_fd, cleanup)
-                                intent_body = terminal.body_value()
-                                intent_body["parent"] = _parent_value(_snapshot(parent, cleanup))
+                                intent_body = builder._absence_abort_body(terminal.body_value(), parent, alias_name, cleanup)
                                 intent_body["target"] = builder._g(_generation(target, cleanup))
                                 active = _append(active, "hardlink-create-abort", intent_body, cleanup)
                         except BaseException as cleanup_error:
@@ -357,8 +375,7 @@ def _create_symlink(active, owned, root, entry, control):
                     _fail(current.key.kind == "symlink")
                     os.unlink(name.raw, dir_fd=parent.operation_fd.number)
                     builder._fsync(parent.operation_fd, cleanup_control)
-                    intent = records[-1].body_value()
-                    intent["parent"] = _parent_value(_snapshot(parent, cleanup_control))
+                    intent = builder._absence_abort_body(records[-1].body_value(), parent, name, cleanup_control)
                     active = _append(active, "create-abort", intent, cleanup_control)
                 if child is not None and child.identity_fd.disposition == "open":
                     fs._close_node(child)

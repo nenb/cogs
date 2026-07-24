@@ -428,10 +428,11 @@ def linux():
     for index, seam in enumerate(("directory-open", "file-xattr", "hardlink-observe", "symlink-open"), 130):
         fault_after_named_create(index, seam)
 
-    def cancel_inside_metadata(token_number, target_path, syscall_name):
+    def interrupt_inside_metadata(token_number, target_path, syscall_name, raise_after):
         owned = builder._begin_operation(chain, approval, f"{token_number:064x}", control)
         latch = {"cancelled": False}
         current = {"path": None}
+        tripped = {"value": False}
         interrupted = fs.OperationControl(time.monotonic_ns() + 60_000_000_000, lambda: latch["cancelled"])
         real_metadata = materializer._metadata
         original = getattr(materializer.os, syscall_name)
@@ -443,25 +444,29 @@ def linux():
             finally:
                 current["path"] = None
 
-        def mutate_then_cancel(*args, **kwargs):
+        def mutate_then_interrupt(*args, **kwargs):
             result = original(*args, **kwargs)
-            if current["path"] == target_path:
+            if current["path"] == target_path and not tripped["value"]:
+                tripped["value"] = True
+                if raise_after:
+                    raise OSError("metadata syscall fault")
                 latch["cancelled"] = True
             return result
 
         materializer._metadata = tracked_metadata
-        setattr(materializer.os, syscall_name, mutate_then_cancel)
+        setattr(materializer.os, syscall_name, mutate_then_interrupt)
         try:
             materializer._materialize(authority, owned, interrupted)
         except BaseException:
             pass
         else:
-            raise AssertionError("metadata cancellation was not observed")
+            raise AssertionError("metadata interruption was not observed")
         finally:
             materializer._metadata = real_metadata
             setattr(materializer.os, syscall_name, original)
-        assert latch["cancelled"]
-        assert sorted(path.name for path in state_path.iterdir()) == sorted((builder.STATE_SENTINEL_NAME.text, builder.LOCK_NAME.text))
+        assert latch["cancelled"] or raise_after
+        observed_state = sorted(path.name for path in state_path.iterdir())
+        assert observed_state == sorted((builder.STATE_SENTINEL_NAME.text, builder.LOCK_NAME.text)), (target_path, syscall_name, raise_after, observed_state)
 
     metadata_cases = (
         ("rootfs/bin/tool", "fchown"),
@@ -471,7 +476,9 @@ def linux():
         ("rootfs/etc/message", "utime"),
     )
     for index, (target_path, syscall_name) in enumerate(metadata_cases, 120):
-        cancel_inside_metadata(index, target_path, syscall_name)
+        interrupt_inside_metadata(index, target_path, syscall_name, False)
+    for index, (target_path, syscall_name) in enumerate(metadata_cases, 140):
+        interrupt_inside_metadata(index, target_path, syscall_name, True)
 
     owned = builder._begin_operation(chain, approval, "c" * 64, control)
     result = materializer._materialize(authority, owned, control)

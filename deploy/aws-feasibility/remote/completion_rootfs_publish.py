@@ -1,6 +1,7 @@
 """Strict rootfs pins and recoverable atomic fixed-directory publication."""
 
 import ctypes
+from contextlib import contextmanager
 from dataclasses import dataclass
 import hashlib
 import json
@@ -76,6 +77,28 @@ class PublishedRootfs:
 @dataclass(frozen=True)
 class Transaction:
     records: tuple
+
+
+def _close_nodes(nodes, primary=None):
+    error = primary
+    for node in reversed(tuple(node for node in nodes if node is not None)):
+        if node.identity_fd.disposition == "open":
+            try:
+                fs._close_node(node)
+            except BaseException as close_error:
+                error = fs.RootfsFsError(error, close_error)
+    if error is not None:
+        raise error
+
+
+@contextmanager
+def _owned_nodes(nodes):
+    try:
+        yield
+    except BaseException as error:
+        _close_nodes(nodes(), error)
+    else:
+        _close_nodes(nodes())
 
 
 def _unique_pairs(pairs):
@@ -191,9 +214,6 @@ def _parse_transaction(raw, content_names):
             _parse_generation(value["identity"])
             file_index += 1
             state = "candidate"
-        elif state == "candidate" and phase == "cleaned":
-            _fail(file_index < len(content_names))
-            state = "absent"
         elif state == "candidate" and phase == "prepared":
             _fail(file_index == len(content_names))
             state = "prepared"
@@ -418,7 +438,7 @@ def _open_transaction(parent, content_names, control):
     if not has_main and not has_next:
         return _append_transaction(Transaction(()), parent, content_names, "intent", control)
     main = next_node = None
-    try:
+    with _owned_nodes(lambda: (main, next_node)):
         main_records = next_records = None
         if has_main:
             main, raw = _snapshot_node(parent, TRANSACTION_NAME, control)
@@ -442,10 +462,6 @@ def _open_transaction(parent, content_names, control):
         fs._close_node(main)
         main = None
         return Transaction(main_records)
-    finally:
-        for node in (main, next_node):
-            if node is not None and node.identity_fd.disposition == "open":
-                fs._close_node(node)
 
 
 def _append_transaction(transaction, parent, content_names, phase, control, name=None, identity=None):
@@ -456,7 +472,7 @@ def _append_transaction(transaction, parent, content_names, phase, control, name
     _parse_transaction(raw, content_names)
     next_node = _write_snapshot(parent, raw, control)
     main = None
-    try:
+    with _owned_nodes(lambda: (main, next_node)):
         names = fs._enumerate_stable(parent, control).raw_names
         if TRANSACTION_NAME.raw in names:
             main, current = _snapshot_node(parent, TRANSACTION_NAME, control)
@@ -468,10 +484,6 @@ def _append_transaction(transaction, parent, content_names, phase, control, name
             _finish_snapshot(parent, None, next_node, False, control)
             next_node = None
         return Transaction(records)
-    finally:
-        for node in (main, next_node):
-            if node is not None and node.identity_fd.disposition == "open":
-                fs._close_node(node)
 
 
 def _durable_event(parent, content_names, phase, name, key, control):
@@ -494,12 +506,8 @@ def _verify_inventory(directory, contents, recorded, complete, control):
         fs._close_node(node)
 
 
-def _cleanup_candidate(parent, candidate, contents, recorded, control):
-    _verify_inventory(candidate, contents, recorded, False, control)
-    for index in range(len(recorded) - 1, -1, -1):
-        name = contents[index][0]
-        _fail(fs._observe_child(candidate, name, control) == _parse_generation(recorded[index]["identity"]))
-        os.unlink(name.raw, dir_fd=candidate.operation_fd.number)
+def _cleanup_empty_candidate(parent, candidate, control):
+    _fail(not fs._enumerate_stable(candidate, control).names)
     os.fsync(candidate.operation_fd.number)
     expected = fs._observe_node(candidate.identity_fd, candidate.operation_fd, control)
     fs._close_node(candidate)
@@ -538,7 +546,7 @@ def _publish_unmasked(parent, manifest, ustar, pins, work_control):
         while True:
             phase = transaction.records[-1]["phase"]
             names = fs._enumerate_stable(parent, control).raw_names
-            if phase in {"intent", "cleaned"}:
+            if phase == "intent":
                 _fail(CANDIDATE_NAME.raw not in names and ACCEPTED_NAME.raw not in names)
                 transaction = _append_transaction(transaction, parent, content_names, "candidate-intent", control)
             elif phase == "candidate-intent":
@@ -559,7 +567,7 @@ def _publish_unmasked(parent, manifest, ustar, pins, work_control):
                             durable = candidate is not None and _durable_event(parent, content_names, "candidate", None, candidate.generation.key, cleanup_control)
                             if not durable:
                                 if candidate is not None:
-                                    _cleanup_candidate(parent, candidate, contents, (), cleanup_control)
+                                    _cleanup_empty_candidate(parent, candidate, cleanup_control)
                                     candidate = None
                                 else:
                                     current = fs._observe_child(parent, CANDIDATE_NAME, cleanup_control)
@@ -572,20 +580,14 @@ def _publish_unmasked(parent, manifest, ustar, pins, work_control):
             elif phase in {"candidate", "file"}:
                 _fail(ACCEPTED_NAME.raw not in names)
                 candidate_record, file_records = _cycle(transaction.records)
-                if CANDIDATE_NAME.raw not in names:
-                    _fail(len(file_records) < len(contents))
-                    transaction = _append_transaction(transaction, parent, content_names, "cleaned", control)
-                    continue
+                _fail(CANDIDATE_NAME.raw in names)
                 if candidate is None:
                     candidate = _directory(parent, CANDIDATE_NAME, control)
                 candidate_key = _parse_key(candidate_record["identity"], "directory")
                 _fail(candidate.generation.key == candidate_key)
                 _verify_inventory(candidate, contents, file_records, len(file_records) == len(contents), control)
-                if len(file_records) < len(contents) and not owned_progress:
-                    _cleanup_candidate(parent, candidate, contents, file_records, control)
-                    candidate = None
-                    transaction = _append_transaction(transaction, parent, content_names, "cleaned", control)
-                elif len(file_records) < len(contents):
+                if len(file_records) < len(contents):
+                    owned_progress = True
                     name = contents[len(file_records)][0]
                     transaction = _append_transaction(transaction, parent, content_names, "file-intent", control, name.text)
                 else:
@@ -633,23 +635,19 @@ def _publish_unmasked(parent, manifest, ustar, pins, work_control):
                     continue
                 _fail(CANDIDATE_NAME.raw not in names and ACCEPTED_NAME.raw in names)
                 accepted = _directory(parent, ACCEPTED_NAME, control)
-                try:
+                with _owned_nodes(lambda: (accepted,)):
                     _fail(accepted.generation.key == candidate_key)
                     _verify_inventory(accepted, contents, file_records, True, control)
                     os.fsync(parent.operation_fd.number)
                     transaction = _append_transaction(transaction, parent, content_names, "accepted", control)
-                finally:
-                    fs._close_node(accepted)
             else:
                 _fail(phase == "accepted" and CANDIDATE_NAME.raw not in names and ACCEPTED_NAME.raw in names)
                 accepted = _directory(parent, ACCEPTED_NAME, control)
-                try:
+                with _owned_nodes(lambda: (accepted,)):
                     candidate_record, file_records = _cycle(transaction.records)
                     _fail(accepted.generation.key == _parse_key(candidate_record["identity"], "directory"))
                     _verify_inventory(accepted, contents, file_records, True, control)
                     os.fsync(parent.operation_fd.number)
-                finally:
-                    fs._close_node(accepted)
                 return _published(pins)
     finally:
         primary = sys.exception()

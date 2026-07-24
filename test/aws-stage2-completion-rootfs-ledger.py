@@ -418,6 +418,29 @@ def writer_tests():
             ledger.os.write = partial_then_fail
             rejected(lambda: ledger._append_record(state, proposal, control()))
             assert os.fstat(operation_fd.number).st_size == 0
+            hostile_calls = {"count": 0}
+
+            def hostile_suffix(fd, _raw):
+                hostile_calls["count"] += 1
+                if hostile_calls["count"] == 1:
+                    return real_write(fd, b"x")
+                raise OSError("hostile suffix")
+
+            ledger.os.write = hostile_suffix
+            rejected(lambda: ledger._append_record(state, proposal, control()))
+            assert os.pread(operation_fd.number, 1, 0) == b"x"
+            os.ftruncate(operation_fd.number, 0)
+            os.lseek(operation_fd.number, 0, os.SEEK_SET)
+
+            def overlong_suffix(fd, raw):
+                real_write(fd, raw + b"x")
+                return len(raw) + 1
+
+            ledger.os.write = overlong_suffix
+            rejected(lambda: ledger._append_record(state, proposal, control()))
+            assert os.fstat(operation_fd.number).st_size > 0
+            os.ftruncate(operation_fd.number, 0)
+            os.lseek(operation_fd.number, 0, os.SEEK_SET)
             ledger.os.write = real_write
             syncs = {"count": 0}
 

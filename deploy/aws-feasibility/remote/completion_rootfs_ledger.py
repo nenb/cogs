@@ -259,6 +259,10 @@ def _parent_delta(action, name, before, after):
         _fail(action == "metadata" and before_names == after_names)
 
 
+def _valid_abort_parent(before, after):
+    return before.names == after.names and _same_fields(before.generation, after.generation, {"mtime_ns", "ctime_ns"})
+
+
 def _valid_parent_delta(action, name, before, after):
     try:
         _parent_delta(action, name, before, after)
@@ -667,7 +671,7 @@ def _validate_legal_records(records):
                     _fail(_same_fields(_parse_generation(body["target"]), _parse_generation(intent_body["target"]), {"ctime_ns"}))
                 before_parent = _parse_parent(intent_body["parent"])
                 after_parent = _parse_parent(body["parent"])
-                _fail(before_parent.names == after_parent.names and _same_fields(before_parent.generation, after_parent.generation, {"mtime_ns", "ctime_ns"}))
+                _fail(_valid_abort_parent(before_parent, after_parent))
                 pending = None
                 phase = "active"
             else:
@@ -905,6 +909,7 @@ def _append_record(writer_state, proposal, control):
     _fail(type(writer_state) is LedgerWriterState and type(proposal) is LedgerProposal)
     _fail(type(control) is OperationControl)
     node = writer_state.node
+    raw = None
     try:
         before = _observe_node(node.identity_fd, node.operation_fd, control)
         _require_ledger_generation(before, writer_state.stable_key)
@@ -939,7 +944,13 @@ def _append_record(writer_state, proposal, control):
         try:
             current = _observe_node(node.identity_fd, node.operation_fd, cleanup)
             _require_ledger_generation(current, writer_state.stable_key)
-            _fail(writer_state.settled.offset <= current.size <= MAX_LEDGER_BYTES)
+            if raw is None:
+                _fail(current.size == writer_state.settled.offset)
+            else:
+                _fail(writer_state.settled.offset <= current.size <= writer_state.settled.offset + len(raw))
+                suffix_size = current.size - writer_state.settled.offset
+                suffix = os.pread(node.operation_fd.number, suffix_size, writer_state.settled.offset)
+                _fail(suffix == raw[:suffix_size])
             prefix = os.pread(node.operation_fd.number, writer_state.settled.offset, 0)
             cleanup.check()
             _fail(len(prefix) == writer_state.settled.offset)
@@ -952,6 +963,12 @@ def _append_record(writer_state, proposal, control):
             os.ftruncate(node.operation_fd.number, writer_state.settled.offset)
             os.fsync(node.operation_fd.number)
             _fail(os.lseek(node.operation_fd.number, writer_state.settled.offset, os.SEEK_SET) == writer_state.settled.offset)
+            restored_prefix = os.pread(node.operation_fd.number, writer_state.settled.offset, 0)
+            _fail(restored_prefix == prefix)
+            if restored_prefix:
+                restored_records = _parse_ledger(restored_prefix)
+                restored_last = restored_records[-1]
+                _fail((restored_last.sequence, restored_last.next_offset, restored_last.line_sha256) == (writer_state.settled.sequence, writer_state.settled.offset, writer_state.settled.line_sha256))
             restored = _observe_node(node.identity_fd, node.operation_fd, cleanup)
             _require_ledger_generation(restored, writer_state.stable_key)
             _fail(restored.size == writer_state.settled.offset)

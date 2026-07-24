@@ -160,6 +160,17 @@ def _ordered_entries(rootfs_plan):
     return tuple(directories + files + symlinks + hardlinks)
 
 
+def _close_nodes(nodes, primary=None):
+    error = primary
+    for node in reversed(nodes):
+        try:
+            fs._close_node(node)
+        except BaseException as close_error:
+            error = fs.RootfsFsError(error, close_error)
+    if error is not None:
+        raise error
+
+
 def _write_ustar(root, rootfs_plan, descriptor, control):
     _fail(type(root) is fs.HeldNode and type(descriptor) is fs.CheckedFd)
     digest = hashlib.sha256()
@@ -195,14 +206,9 @@ def _write_ustar(root, rootfs_plan, descriptor, control):
                     emit(raw[offset : offset + 1024 * 1024])
                 if len(raw) % BLOCK:
                     emit(b"\0" * ((-len(raw)) % BLOCK))
-                fs._close_node(node)
             except BaseException as error:
-                if node.identity_fd.disposition == "open":
-                    fs._close_node(node, error)
-                raise
-            finally:
-                for opened_node in reversed(opened):
-                    fs._close_node(opened_node)
+                _close_nodes(opened + (node,), error)
+            _close_nodes(opened + (node,))
         elif record.kind == "symlink":
             emit(_header(record.path, record, b"2", 0, os.fsencode(record.link_text)))
         else:
