@@ -101,6 +101,10 @@ def prepare():
 
 
 def accommodate_docker_overlay(fs):
+    def check(condition):
+        if not condition:
+            raise RuntimeError("Docker functional policy mismatch")
+
     original_xattrs = fs._require_empty_fd_xattrs
     ancestors = {(os.lstat(path).st_dev, os.lstat(path).st_ino) for path in ("/", "/var", "/var/lib")}
     functional_device = os.lstat("/var/lib/cogs").st_dev
@@ -108,11 +112,11 @@ def accommodate_docker_overlay(fs):
 
     def policy(node, expected, root_key):
         generation = node.generation
-        assert generation.key.kind == expected.kind and generation.mode == expected.mode
-        assert generation.uid == expected.uid and generation.gid == expected.gid
-        assert (generation.key.mount_id, generation.key.device) == (root_key.mount_id, root_key.device) or generation.key.device == functional_device
+        check(generation.key.kind == expected.kind and generation.mode == expected.mode)
+        check(generation.uid == expected.uid and generation.gid == expected.gid)
+        check((generation.key.mount_id, generation.key.device) == (root_key.mount_id, root_key.device) or generation.key.device == functional_device)
         if expected.kind == "file":
-            assert generation.nlink == 1
+            check(generation.nlink == 1)
 
     def xattrs(node, control):
         if (node.generation.key.device, node.generation.key.inode) not in ancestors:
@@ -221,8 +225,52 @@ def linux():
         assert seen["count"] == occurrence
         assert sorted(path.name for path in state_path.iterdir()) == sorted((builder.STATE_SENTINEL_NAME.text, builder.LOCK_NAME.text))
 
+    def genesis_fault(token_number, stage):
+        real_write = builder.os.write
+        real_fsync = builder.os.fsync
+        real_fstat = builder.os.fstat
+        calls = {"value": 0}
+
+        def write_then_fail(descriptor, raw):
+            calls["value"] += 1
+            if calls["value"] == 1:
+                return real_write(descriptor, raw[: max(1, len(raw) // 2)])
+            raise OSError("genesis write fault")
+
+        def fsync_then_fail(descriptor):
+            calls["value"] += 1
+            if calls["value"] == (1 if stage == "ledger-fsync" else 2):
+                raise OSError("genesis fsync fault")
+            return real_fsync(descriptor)
+
+        def fstat_then_fail(descriptor):
+            if calls["value"] == 0:
+                calls["value"] = 1
+                raise OSError("genesis post-open fault")
+            return real_fstat(descriptor)
+
+        if stage == "write":
+            builder.os.write = write_then_fail
+        elif stage in {"ledger-fsync", "parent-fsync"}:
+            builder.os.fsync = fsync_then_fail
+        else:
+            builder.os.fstat = fstat_then_fail
+        try:
+            builder._begin_operation(chain, approval, f"{token_number:064x}", control)
+        except BaseException:
+            pass
+        else:
+            raise AssertionError("genesis fault was not observed")
+        finally:
+            builder.os.write = real_write
+            builder.os.fsync = real_fsync
+            builder.os.fstat = real_fstat
+        assert sorted(path.name for path in state_path.iterdir()) == sorted((builder.STATE_SENTINEL_NAME.text, builder.LOCK_NAME.text))
+
+    for index, stage in enumerate(("post-open", "write", "ledger-fsync", "parent-fsync"), 10):
+        genesis_fault(index, stage)
+
     startup_cases = (
-        ("genesis", 1),
         ("genesis-settled", 1),
         ("operation-create-intent", 1),
         ("operation-create-observed", 1),
@@ -306,6 +354,34 @@ def linux():
     fail_after_record("a", "hardlink-create-observed")
     fail_after_record("b", "hardlink-create-settled")
 
+    def cancel_inside_named(token_number, syscall_name):
+        owned = builder._begin_operation(chain, approval, f"{token_number:064x}", control)
+        latch = {"cancelled": False}
+        interrupted = fs.OperationControl(time.monotonic_ns() + 60_000_000_000, lambda: latch["cancelled"])
+        module = materializer.os if syscall_name in {"link", "symlink"} else builder.os
+        original = getattr(module, syscall_name)
+
+        def mutate_then_cancel(*args, **kwargs):
+            result = original(*args, **kwargs)
+            if syscall_name != "open" or args[1] & os.O_CREAT:
+                latch["cancelled"] = True
+            return result
+
+        setattr(module, syscall_name, mutate_then_cancel)
+        try:
+            materializer._materialize(authority, owned, interrupted)
+        except BaseException:
+            pass
+        else:
+            raise AssertionError("named mutation cancellation was not observed")
+        finally:
+            setattr(module, syscall_name, original)
+        assert latch["cancelled"]
+        assert sorted(path.name for path in state_path.iterdir()) == sorted((builder.STATE_SENTINEL_NAME.text, builder.LOCK_NAME.text))
+
+    for index, syscall_name in enumerate(("mkdir", "open", "link", "symlink"), 100):
+        cancel_inside_named(index, syscall_name)
+
     owned = builder._begin_operation(chain, approval, "c" * 64, control)
     result = materializer._materialize(authority, owned, control)
     real_append = builder._append
@@ -333,6 +409,68 @@ def linux():
     builder._release_lock(result.owned.locked)
     fs._close_node(result.owned.locked.state)
     builder._recover_fixed(builder._fresh_recovery_control())
+    assert sorted(path.name for path in state_path.iterdir()) == sorted((builder.STATE_SENTINEL_NAME.text, builder.LOCK_NAME.text))
+
+    def cancel_inside_removal(token_number, syscall_name):
+        owned = builder._begin_operation(chain, approval, f"{token_number:064x}", control)
+        result = materializer._materialize(authority, owned, control)
+        latch = {"cancelled": False}
+        interrupted = fs.OperationControl(time.monotonic_ns() + 60_000_000_000, lambda: latch["cancelled"])
+        original = getattr(builder.os, syscall_name)
+
+        def mutate_then_cancel(*args, **kwargs):
+            value = original(*args, **kwargs)
+            latch["cancelled"] = True
+            return value
+
+        setattr(builder.os, syscall_name, mutate_then_cancel)
+        try:
+            builder._cleanup_owned(result.owned, result.active, interrupted)
+        except BaseException:
+            pass
+        else:
+            raise AssertionError("removal cancellation was not observed")
+        finally:
+            setattr(builder.os, syscall_name, original)
+        for node in (result.owned.operation, result.active.node):
+            if node.identity_fd.disposition == "open":
+                fs._close_node(node)
+        if result.owned.locked.lock.identity_fd.disposition == "open":
+            builder._release_lock(result.owned.locked)
+        if result.owned.locked.state.identity_fd.disposition == "open":
+            fs._close_node(result.owned.locked.state)
+        builder._recover_fixed(builder._fresh_recovery_control())
+        assert latch["cancelled"]
+        assert sorted(path.name for path in state_path.iterdir()) == sorted((builder.STATE_SENTINEL_NAME.text, builder.LOCK_NAME.text))
+
+    cancel_inside_removal(110, "unlink")
+    cancel_inside_removal(111, "rmdir")
+
+    owned = builder._begin_operation(chain, approval, f"{112:064x}", control)
+    result = materializer._materialize(authority, owned, control)
+    real_append = builder._append
+    tripped = {"value": False}
+
+    def fail_before_remove_observed(active, kind, body, current_control):
+        if kind == "remove-observed" and not tripped["value"]:
+            tripped["value"] = True
+            raise RuntimeError("pre-observed remove fault")
+        return real_append(active, kind, body, current_control)
+
+    builder._append = fail_before_remove_observed
+    try:
+        builder._cleanup_owned(result.owned, result.active, control)
+    except RuntimeError:
+        pass
+    finally:
+        builder._append = real_append
+    for node in (result.owned.operation, result.active.node):
+        if node.identity_fd.disposition == "open":
+            fs._close_node(node)
+    builder._release_lock(result.owned.locked)
+    fs._close_node(result.owned.locked.state)
+    builder._recover_fixed(builder._fresh_recovery_control())
+    assert tripped["value"]
     assert sorted(path.name for path in state_path.iterdir()) == sorted((builder.STATE_SENTINEL_NAME.text, builder.LOCK_NAME.text))
     artifact = FIXED / "deploy/aws-feasibility/.state/completion-v1/artifacts/cache/immutable.bin"
     assert hashlib.sha256(artifact.read_bytes()).hexdigest() == artifact_digest

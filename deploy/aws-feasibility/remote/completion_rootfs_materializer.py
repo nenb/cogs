@@ -46,11 +46,14 @@ def _open_parent(root, path, control):
     parts = path.split("/")
     parent = root
     opened = []
-    for part in parts[:-1]:
-        node = fs._open_path_node(parent, fs._name(part), "directory", control)
-        opened.append(node)
-        parent = node
-    return parent, tuple(opened), fs._name(parts[-1])
+    try:
+        for part in parts[:-1]:
+            node = fs._open_path_node(parent, fs._name(part), "directory", control)
+            opened.append(node)
+            parent = node
+        return parent, tuple(opened), fs._name(parts[-1])
+    except BaseException as error:
+        _close_opened(opened, error)
 
 
 def _close_opened(opened, primary=None):
@@ -186,7 +189,8 @@ def _create_hardlinks(active, root, authority, control):
                         "parent": _parent_value(before_parent),
                     }
                     active = _append(active, "hardlink-create-intent", intent, control)
-                    _check(control)
+                    transition = builder._transition_control()
+                    _check(transition)
                     os.link(
                         target_name.raw,
                         alias_name.raw,
@@ -194,12 +198,12 @@ def _create_hardlinks(active, root, authority, control):
                         dst_dir_fd=parent.operation_fd.number,
                         follow_symlinks=False,
                     )
-                    _check(control)
-                    after_parent = _snapshot(parent, control)
-                    after_target = _generation(target, control)
-                    alias = fs._observe_child(parent, alias_name, control)
+                    _check(transition)
+                    after_parent = _snapshot(parent, transition)
+                    after_target = _generation(target, transition)
+                    alias = fs._observe_child(parent, alias_name, transition)
                     delta = fs.ParentDelta("hardlink", alias_name, before_parent, after_parent)
-                    transition = ledger._hardlink_transition(
+                    model_transition = ledger._hardlink_transition(
                         state,
                         "create",
                         index,
@@ -207,7 +211,7 @@ def _create_hardlinks(active, root, authority, control):
                         after_target,
                         alias,
                         delta,
-                        hashlib.sha256(fs._read_regular(target, group.size, control)).hexdigest(),
+                        hashlib.sha256(fs._read_regular(target, group.size, transition)).hexdigest(),
                     )
                     observed = {
                         "token": builder._token(active),
@@ -219,11 +223,12 @@ def _create_hardlinks(active, root, authority, control):
                         "alias_generation": builder._g(alias),
                         "parent": _parent_value(after_parent),
                     }
-                    active = _append(active, "hardlink-create-observed", observed, control)
-                    builder._fsync(target.operation_fd, control)
-                    builder._fsync(parent.operation_fd, control)
-                    active = _append(active, "hardlink-create-settled", observed, control)
-                    state = ledger._settle_hardlink(state, transition)
+                    active = _append(active, "hardlink-create-observed", observed, transition)
+                    builder._fsync(target.operation_fd, transition)
+                    builder._fsync(parent.operation_fd, transition)
+                    active = _append(active, "hardlink-create-settled", observed, transition)
+                    control.check()
+                    state = ledger._settle_hardlink(state, model_transition)
                     _fail(entries[alias_path].record.hardlink_target == group.target_path)
                 finally:
                     _close_opened(opened)
@@ -246,13 +251,16 @@ def _fresh_chain_to_parent(owned, root, relative_parent, control):
     )
     parent = retained
     opened = []
-    if relative_parent:
-        for part in relative_parent.split("/"):
-            node = fs._open_path_node(parent, fs._name(part), "directory", control)
-            opened.append(node)
-            chain = fs.HeldChain(chain.anchor, chain.components + (fs.ChainComponent(fs._name(part), node),))
-            parent = node
-    return chain, parent, tuple(opened)
+    try:
+        if relative_parent:
+            for part in relative_parent.split("/"):
+                node = fs._open_path_node(parent, fs._name(part), "directory", control)
+                opened.append(node)
+                chain = fs.HeldChain(chain.anchor, chain.components + (fs.ChainComponent(fs._name(part), node),))
+                parent = node
+        return chain, parent, tuple(opened)
+    except BaseException as error:
+        _close_opened(opened, error)
 
 
 def _create_symlink(active, owned, root, entry, control):
@@ -269,11 +277,12 @@ def _create_symlink(active, owned, root, entry, control):
             {"token": builder._token(active), "path": path, "kind": "symlink", "parent": _parent_value(before)},
             control,
         )
-        _check(control)
+        transition = builder._transition_control()
+        _check(transition)
         os.symlink(record.link_text, name.raw, dir_fd=parent.operation_fd.number)
-        _check(control)
-        child = fs._open_path_node(parent, name, "symlink", control)
-        after = _snapshot(parent, control)
+        _check(transition)
+        child = fs._open_path_node(parent, name, "symlink", transition)
+        after = _snapshot(parent, transition)
         observed = {
             "token": builder._token(active),
             "path": path,
@@ -281,9 +290,10 @@ def _create_symlink(active, owned, root, entry, control):
             "parent": _parent_value(after),
             "child": builder._g(child.generation),
         }
-        active = _append(active, "create-observed", observed, control)
-        builder._fsync(parent.operation_fd, control)
-        active = _append(active, "create-settled", observed, control)
+        active = _append(active, "create-observed", observed, transition)
+        builder._fsync(parent.operation_fd, transition)
+        active = _append(active, "create-settled", observed, transition)
+        control.check()
         active, generation = _metadata(active, child, path, record, parent, control, name)
         child = replace(child, generation=generation)
         chain, chain_parent, chain_opened = _fresh_chain_to_parent(owned, root, parent_path, control)
@@ -296,8 +306,24 @@ def _create_symlink(active, owned, root, entry, control):
         return active
     except BaseException as error:
         if child is not None and child.identity_fd.disposition == "open":
-            fs._close_node(child, error)
-        raise
+            cleanup_control = builder._transition_control()
+            try:
+                terminal = builder._durable_terminal(active, cleanup_control)
+                body = terminal.body_value()
+                durable = terminal.record_type in {"create-observed", "create-settled"} and body["path"] == path and ledger._parse_generation(body["child"]).key == child.generation.key
+                if not durable:
+                    _fail(fs._observe_child(parent, name, cleanup_control).key == child.generation.key)
+                    os.unlink(name.raw, dir_fd=parent.operation_fd.number)
+                    builder._fsync(parent.operation_fd, cleanup_control)
+                fs._close_node(child)
+            except BaseException as cleanup_error:
+                if child.identity_fd.disposition == "open":
+                    try:
+                        fs._close_node(child)
+                    except BaseException as close_error:
+                        cleanup_error = fs.RootfsFsError(cleanup_error, close_error)
+                error = fs.RootfsFsError(error, cleanup_error)
+        raise error
     finally:
         _close_opened(opened)
 
@@ -368,12 +394,20 @@ def _postwalk(owned, root, authority, control):
                 _check(control)
                 _fail(type(literal) is bytes and literal == os.fsencode(record.link_text))
                 child = fs._open_path_node(directory, name, "symlink", control)
-                chain, parent, opened = _fresh_chain_to_parent(owned, root, prefix, control)
+                opened = ()
+                error = None
                 try:
+                    chain, parent, opened = _fresh_chain_to_parent(owned, root, prefix, control)
                     fs._require_empty_symlink_xattrs(chain, parent, name, child, control)
-                    fs._close_node(child)
-                finally:
-                    _close_opened(opened)
+                except BaseException as primary:
+                    error = primary
+                for retained in (child,) + tuple(reversed(opened)):
+                    try:
+                        fs._close_node(retained)
+                    except BaseException as close_error:
+                        error = fs.RootfsFsError(error, close_error)
+                if error is not None:
+                    raise error
 
     visit(root, "")
     _fail(set(observed) == set(expected))

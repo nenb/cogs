@@ -155,8 +155,12 @@ def prepare_fixed_workspace():
 
 
 def accommodate_docker_overlay(fs, builder):
+    def check(condition):
+        if not condition:
+            raise RuntimeError("Docker functional policy mismatch")
+
     def anchor(control):
-        assert sys.platform == "linux" and os.geteuid() == 0
+        check(sys.platform == "linux" and os.geteuid() == 0)
         return fs._open_root_node(control)
 
     original = fs._require_policy
@@ -166,11 +170,11 @@ def accommodate_docker_overlay(fs, builder):
 
     def policy(node, expected, root_key):
         generation = node.generation
-        assert generation.key.kind == expected.kind and generation.mode == expected.mode
-        assert generation.uid == expected.uid and generation.gid == expected.gid
-        assert (generation.key.mount_id, generation.key.device) == (root_key.mount_id, root_key.device) or generation.key.device == functional_device
+        check(generation.key.kind == expected.kind and generation.mode == expected.mode)
+        check(generation.uid == expected.uid and generation.gid == expected.gid)
+        check((generation.key.mount_id, generation.key.device) == (root_key.mount_id, root_key.device) or generation.key.device == functional_device)
         if expected.kind == "file":
-            assert generation.nlink == 1
+            check(generation.nlink == 1)
 
     def xattrs(node, control):
         key = (node.generation.key.device, node.generation.key.inode)

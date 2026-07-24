@@ -137,6 +137,10 @@ def prepare_real_workspace():
 
 
 def accommodate_docker_overlay(fs):
+    def check(condition):
+        if not condition:
+            raise RuntimeError("Docker functional policy mismatch")
+
     original_xattrs = fs._require_empty_fd_xattrs
     ancestors = {(os.lstat(path).st_dev, os.lstat(path).st_ino) for path in ("/", "/var", "/var/lib")}
     functional_device = os.lstat("/var/lib/cogs").st_dev
@@ -144,11 +148,11 @@ def accommodate_docker_overlay(fs):
 
     def policy(node, expected, root_key):
         value = node.generation
-        assert value.key.kind == expected.kind and value.mode == expected.mode
-        assert value.uid == expected.uid and value.gid == expected.gid
-        assert (value.key.mount_id, value.key.device) == (root_key.mount_id, root_key.device) or value.key.device == functional_device
+        check(value.key.kind == expected.kind and value.mode == expected.mode)
+        check(value.uid == expected.uid and value.gid == expected.gid)
+        check((value.key.mount_id, value.key.device) == (root_key.mount_id, root_key.device) or value.key.device == functional_device)
         if expected.kind == "file":
-            assert value.nlink == 1
+            check(value.nlink == 1)
 
     def xattrs(node, control):
         if (node.generation.key.device, node.generation.key.inode) not in ancestors:
@@ -212,14 +216,45 @@ def docker_functional_two_builds():
         (hostile_path / ".accepted-transaction-v1").unlink()
         hostile_path.rmdir()
 
+        snapshot_path = Path("/var/lib/cogs/publication-snapshot")
+        snapshot_path.mkdir(mode=0o700)
+        snapshot_path.chmod(0o700)
+        snapshot_destination = held_directory(snapshot_path, "snapshot-publication")
+        snapshot_umask = os.umask(0o077)
+        content_names = tuple(name.text for name, _raw in publication._contents(second.manifest, second.ustar, pins_value))
+        snapshot_control = publication._transition_control()
+        snapshot_transaction = publication._open_transaction(snapshot_destination, content_names, snapshot_control)
+        original_renameat2 = publication._renameat2
+
+        def exchange_then_fail(parent, source, destination, flags):
+            original_renameat2(parent, source, destination, flags)
+            if flags == 2:
+                raise RuntimeError("snapshot exchange fault")
+
+        publication._renameat2 = exchange_then_fail
+        try:
+            publication._append_transaction(snapshot_transaction, snapshot_destination, content_names, "candidate-intent", snapshot_control)
+        except RuntimeError:
+            pass
+        finally:
+            publication._renameat2 = original_renameat2
+        assert (snapshot_path / ".accepted-transaction-next-v1").is_file()
+        recovered_snapshot = publication._open_transaction(snapshot_destination, content_names, snapshot_control)
+        assert recovered_snapshot.records[-1]["phase"] == "candidate-intent"
+        assert not (snapshot_path / ".accepted-transaction-next-v1").exists()
+        fs._close_node(snapshot_destination)
+        (snapshot_path / ".accepted-transaction-v1").unlink()
+        snapshot_path.rmdir()
+        os.umask(snapshot_umask)
+
         replaced_path = Path("/var/lib/cogs/publication-replaced")
         replaced_path.mkdir(mode=0o700)
         replaced_path.chmod(0o700)
         replaced_destination = held_directory(replaced_path, "replaced-publication")
         original_append = publication._append_transaction
 
-        def capture_then_fail(transaction, phase, control, name=None, identity=None):
-            result = original_append(transaction, phase, control, name, identity)
+        def capture_then_fail(transaction, parent, content_names, phase, control, name=None, identity=None):
+            result = original_append(transaction, parent, content_names, phase, control, name, identity)
             if phase == "candidate":
                 raise RuntimeError("candidate captured")
             return result
@@ -245,12 +280,68 @@ def docker_functional_two_builds():
         (replaced_path / ".accepted-transaction-v1").unlink()
         replaced_path.rmdir()
 
+        real_write = publication.os.write
+        writes = {"count": 0}
+
+        def short_then_fail(descriptor, raw):
+            writes["count"] += 1
+            if writes["count"] == 1:
+                return real_write(descriptor, raw[: max(1, len(raw) // 2)])
+            raise OSError("snapshot write fault")
+
+        publication.os.write = short_then_fail
+        try:
+            publication._publish(destination, second.manifest, second.ustar, pins_value, outer)
+        except OSError:
+            pass
+        finally:
+            publication.os.write = real_write
+        assert not any((destination_path / name).exists() for name in (".accepted-transaction-v1", ".accepted-transaction-next-v1", ".accepted-candidate-v1"))
+
+        real_fsync = publication.os.fsync
+        syncs = {"count": 0}
+
+        def fsync_once_then_fail(descriptor):
+            syncs["count"] += 1
+            if syncs["count"] == 1:
+                raise OSError("snapshot fsync fault")
+            return real_fsync(descriptor)
+
+        publication.os.fsync = fsync_once_then_fail
+        try:
+            publication._publish(destination, second.manifest, second.ustar, pins_value, outer)
+        except OSError:
+            pass
+        finally:
+            publication.os.fsync = real_fsync
+        assert not any((destination_path / name).exists() for name in (".accepted-transaction-v1", ".accepted-transaction-next-v1", ".accepted-candidate-v1"))
+
+        real_close = fs.CheckedFd.close
+        closes = {"tripped": False}
+
+        def close_once_then_fail(descriptor, primary_error=None):
+            result = real_close(descriptor, primary_error)
+            if descriptor.role == "publication-snapshot" and not closes["tripped"]:
+                closes["tripped"] = True
+                raise OSError("snapshot close fault")
+            return result
+
+        fs.CheckedFd.close = close_once_then_fail
+        try:
+            publication._publish(destination, second.manifest, second.ustar, pins_value, outer)
+        except OSError:
+            pass
+        finally:
+            fs.CheckedFd.close = real_close
+        assert closes["tripped"]
+        assert not any((destination_path / name).exists() for name in (".accepted-transaction-v1", ".accepted-transaction-next-v1", ".accepted-candidate-v1"))
+
         original_append = publication._append_transaction
-        for fault_phase in ("intent", "candidate", "file", "file", "file", "file", "prepared", "rename"):
+        for fault_phase in ("intent", "candidate-intent", "candidate", "cleaned", "file-intent", "file", "prepared", "rename"):
             tripped = {"value": False}
 
-            def append_with_fault(transaction, phase, control, name=None, identity=None):
-                result = original_append(transaction, phase, control, name, identity)
+            def append_with_fault(transaction, parent, content_names, phase, control, name=None, identity=None):
+                result = original_append(transaction, parent, content_names, phase, control, name, identity)
                 if phase == fault_phase and not tripped["value"]:
                     tripped["value"] = True
                     raise RuntimeError("publication phase fault")
@@ -283,8 +374,8 @@ def docker_functional_two_builds():
             publication._rename_noreplace = original_rename
         tripped = {"value": False}
 
-        def accepted_then_fail(transaction, phase, control, name=None, identity=None):
-            result = original_append(transaction, phase, control, name, identity)
+        def accepted_then_fail(transaction, parent, content_names, phase, control, name=None, identity=None):
+            result = original_append(transaction, parent, content_names, phase, control, name, identity)
             if phase == "accepted":
                 tripped["value"] = True
                 raise RuntimeError("accepted phase fault")
@@ -303,6 +394,7 @@ def docker_functional_two_builds():
         os.umask(hostile_umask)
     accepted_path = destination_path / "accepted"
     assert not (destination_path / ".accepted-candidate-v1").exists()
+    assert not (destination_path / ".accepted-transaction-next-v1").exists()
     cache = FIXED / "deploy/aws-feasibility/.state/completion-v1/artifacts/cache"
     after = tuple((path.name, path.stat().st_size, hashlib.sha256(path.read_bytes()).hexdigest()) for path in sorted(cache.iterdir()))
     assert before == after and len(after) == 16

@@ -857,9 +857,21 @@ def _reconcile_ledger(records, observations):
                 absence_operation = exact_operation
                 if parent_path == "" and observed_parent is not None:
                     absence_operation = operations == {operation_name: observed_parent.generation}
-                if absence_operation and entries == remaining and _valid_parent_delta(action, path.split("/")[-1], expected_parent, observed_parent):
+                elif parent_path in remaining and observed_parent is not None:
+                    remaining[parent_path] = observed_parent.generation
+                if body["target_path"] is not None and body["target_path"] in remaining:
+                    current_target = entries.get(body["target_path"])
+                    try:
+                        _hardlink_generation_change(expected, current_target, -1)
+                        remaining[body["target_path"]] = current_target
+                        hardlink_exact = True
+                    except (LedgerError, RootfsFsError, TypeError, AttributeError):
+                        hardlink_exact = False
+                    if absence_operation and hardlink_exact and entries == remaining and _valid_parent_delta(action, path.split("/")[-1], expected_parent, observed_parent):
+                        status = "hardlink-remove-absence-settleable"
+                elif absence_operation and entries == remaining and _valid_parent_delta(action, path.split("/")[-1], expected_parent, observed_parent):
                     status = "remove-absence-settleable"
-    cleanup_allowed = status in {"active", "entry-absent", "remove-retry", "remove-absence-settleable", "operation-remove-retry"}
+    cleanup_allowed = status in {"active", "entry-absent", "remove-retry", "remove-absence-settleable", "hardlink-remove-absence-settleable", "operation-remove-retry"}
     return LedgerState(status, token, operation_name if operation_intended else None, tuple(sorted(owned.items())), cleanup_allowed, records[-1].record_type)
 
 

@@ -45,7 +45,11 @@ identity = {"mount_id": 1, "device": 1, "inode": 2, "kind": "directory"}
 generation = {"mount_id": 1, "device": 1, "inode": 3, "kind": "file", "mode": 0o400, "uid": 0, "gid": 0, "nlink": 1, "size": 1, "mtime_ns": 1, "ctime_ns": 1}
 values = []
 previous = publish.ZERO_SHA256
-for phase, name, item_identity in (("intent", None, None), ("candidate", None, identity)) + tuple(("file", name, generation) for name in names) + (("prepared", None, None), ("rename", None, None), ("accepted", None, None)):
+events = [("intent", None, None), ("candidate-intent", None, None), ("candidate", None, identity)]
+for name in names:
+    events.extend((("file-intent", name, None), ("file", name, generation)))
+events.extend((("prepared", None, None), ("rename", None, None), ("accepted", None, None)))
+for phase, name, item_identity in events:
     value = publish._record(len(values), previous, phase, name, item_identity)
     line = publish._canonical(value)
     values.append(line)
