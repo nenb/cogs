@@ -26,6 +26,7 @@ SENTINEL = b"cogs-rootfs-publication-v1\n"
 MANIFEST_NAME = fs._name(b"rootfs.manifest.json")
 USTAR_NAME = fs._name(b"rootfs.tar")
 METADATA_NAME = fs._name(b"rootfs.metadata.json")
+ANONYMOUS_FDINFO_FLAGS = (b"022440002", b"022300002")
 VERSION = "cogs.rootfs-publication-transaction/v1"
 ZERO_SHA256 = "0" * 64
 MAX_TRANSACTION_BYTES = 64 * 1024
@@ -407,8 +408,8 @@ def _observe_anonymous(subject, control):
     os.lseek(operation.number, 0, os.SEEK_SET)
     flags = os.O_TMPFILE | os.O_RDWR | fs._O_CLOEXEC
     _fail(flags == 0o22200002)
-    expected_flags = b"022440002"
-    mount_id = fs._mount_id(operation, control, expected_flags)
+    # Qualified amd64 runtimes expose exactly these two O_TMPFILE fdinfo forms.
+    mount_id = fs._mount_id(operation, control, ANONYMOUS_FDINFO_FLAGS)
     return fs._generation(operation, mount_id, control)
 
 

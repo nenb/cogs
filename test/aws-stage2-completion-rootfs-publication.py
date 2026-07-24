@@ -28,6 +28,36 @@ fs = load("completion_rootfs_fs", REMOTE / "completion_rootfs_fs.py")
 publish = load("completion_rootfs_publish", REMOTE / "completion_rootfs_publish.py")
 raw = (REMOTE / "stage2-completion-rootfs-v1.json").read_bytes()
 pins = publish._parse_pins(raw)
+assert publish.ANONYMOUS_FDINFO_FLAGS == (b"022440002", b"022300002")
+anonymous_fd = fs.CheckedFd(99, "anonymous-boundary-test")
+anonymous_seen = {}
+real_lseek = publish.os.lseek
+real_tmpfile = getattr(publish.os, "O_TMPFILE", None)
+real_cloexec = fs._O_CLOEXEC
+real_mount_id = fs._mount_id
+real_generation = fs._generation
+def capture_anonymous_mount_id(descriptor, control, expected_flags):
+    anonymous_seen["flags"] = expected_flags
+    return 1
+
+publish.os.lseek = lambda descriptor, offset, whence: 0
+publish.os.O_TMPFILE = 0o20200000
+fs._O_CLOEXEC = 0o2000000
+fs._mount_id = capture_anonymous_mount_id
+fs._generation = lambda descriptor, mount_id, control: "observed-anonymous"
+try:
+    assert publish._observe_anonymous(anonymous_fd, object()) == "observed-anonymous"
+finally:
+    publish.os.lseek = real_lseek
+    if real_tmpfile is None:
+        del publish.os.O_TMPFILE
+    else:
+        publish.os.O_TMPFILE = real_tmpfile
+    fs._O_CLOEXEC = real_cloexec
+    fs._mount_id = real_mount_id
+    fs._generation = real_generation
+    anonymous_fd.disposition = "closed"
+assert anonymous_seen == {"flags": publish.ANONYMOUS_FDINFO_FLAGS}
 assert pins.entry_count == 4353
 assert pins.manifest_size == 1049443 and pins.ustar_size == 136905728
 assert publish._load_pins() == pins

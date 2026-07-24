@@ -318,7 +318,15 @@ def _parse_fdinfo(raw, inode, expected_flags=None):
         _fail(line.startswith(prefix) and line.count(b":") == 1)
         values.append(line[len(prefix) :])
     _fail(values[0] == b"0")
-    _fail(values[1] in FDINFO_IDENTITY_FLAGS if expected_flags is None else values[1] == expected_flags)
+    if expected_flags is None:
+        accepted_flags = FDINFO_IDENTITY_FLAGS
+    elif type(expected_flags) is bytes:
+        accepted_flags = (expected_flags,)
+    else:
+        _fail(type(expected_flags) is tuple and 1 <= len(expected_flags) <= 2)
+        _fail(all(type(value) is bytes for value in expected_flags) and len(set(expected_flags)) == len(expected_flags))
+        accepted_flags = expected_flags
+    _fail(values[1] in accepted_flags)
     mount_id = _parse_decimal(values[2], 1)
     _fail(_parse_decimal(values[3], 1) == inode)
     return mount_id

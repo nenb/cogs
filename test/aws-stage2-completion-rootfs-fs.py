@@ -57,8 +57,14 @@ def pure_tests():
     assert module._parse_fdinfo(raw, 9) == module._parse_fdinfo(nofollow_raw, 9) == 42
     assert module._parse_fdinfo(raw, 9, module.FDINFO_FLAGS) == 42
     rejected(lambda: module._parse_fdinfo(nofollow_raw, 9, module.FDINFO_FLAGS))
-    custom_raw = raw.replace(module.FDINFO_FLAGS, b"022440002")
-    assert module._parse_fdinfo(custom_raw, 9, b"022440002") == 42
+    custom_flags = (b"022440002", b"022300002")
+    custom_raw = raw.replace(module.FDINFO_FLAGS, custom_flags[0])
+    alternate_custom_raw = raw.replace(module.FDINFO_FLAGS, custom_flags[1])
+    assert module._parse_fdinfo(custom_raw, 9, custom_flags[0]) == 42
+    assert module._parse_fdinfo(custom_raw, 9, custom_flags) == module._parse_fdinfo(alternate_custom_raw, 9, custom_flags) == 42
+    rejected(lambda: module._parse_fdinfo(raw.replace(module.FDINFO_FLAGS, b"022500002"), 9, custom_flags))
+    for invalid_expected in ((), (b"a", b"a"), (b"a", b"b", b"c"), [b"a"], (b"a", "b")):
+        rejected(lambda invalid_expected=invalid_expected: module._parse_fdinfo(raw, 9, invalid_expected))
     hostile_fdinfo = (
         raw.replace(module.FDINFO_FLAGS, b"0"),
         raw.replace(module.FDINFO_FLAGS, b"012500000"),
