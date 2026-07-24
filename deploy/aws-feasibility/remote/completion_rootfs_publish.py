@@ -501,9 +501,9 @@ def _verify_inventory(directory, contents, recorded, complete, control):
     _fail(snapshot.raw_names == tuple(sorted(expected_names)) if not complete else snapshot.raw_names == tuple(sorted(name.raw for name, _raw in contents)))
     for index, (name, raw) in enumerate(contents[: len(recorded)] if not complete else contents):
         node = _file(directory, name, raw, control)
-        if index < len(recorded):
-            _fail(node.generation == _parse_generation(recorded[index]["identity"]))
-        fs._close_node(node)
+        with _owned_nodes(lambda: (node,)):
+            if index < len(recorded):
+                _fail(node.generation == _parse_generation(recorded[index]["identity"]))
 
 
 def _cleanup_empty_candidate(parent, candidate, control):

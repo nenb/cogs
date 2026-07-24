@@ -304,9 +304,12 @@ def _open_state(chain, control):
     if STATE_NAME.raw not in snapshot.raw_names:
         return None
     state = fs._open_path_node(completion, STATE_NAME, "directory", control)
-    _policy(state, "directory", 0o700, completion.generation.key)
-    fs._require_empty_fd_xattrs(state, control)
-    return state
+    transferred = False
+    with _owned_nodes(lambda: () if transferred else (state,)):
+        _policy(state, "directory", 0o700, completion.generation.key)
+        fs._require_empty_fd_xattrs(state, control)
+        transferred = True
+        return state
 
 
 def _verify_fixed_file(parent, name, content, control):
@@ -713,15 +716,19 @@ def _observations(locked, records, control):
     if not operation_names:
         return ledger.ReconcileObservations(_parent(locked.state, control), (), ()), None
     _fail(len(operation_names) == 1 and operation_names[0] == operation_name)
-    operation = fs._open_path_node(locked.state, operation_name, "directory", control)
-    entries, parents = _walk_entries(operation, control)
-    value = ledger.ReconcileObservations(
-        _parent(locked.state, control),
-        ((operation_name.text, operation.generation),),
-        entries,
-        parents,
-    )
-    return value, operation
+    operation = None
+    transferred = False
+    with _owned_nodes(lambda: () if transferred or operation is None else (operation,)):
+        operation = fs._open_path_node(locked.state, operation_name, "directory", control)
+        entries, parents = _walk_entries(operation, control)
+        value = ledger.ReconcileObservations(
+            _parent(locked.state, control),
+            ((operation_name.text, operation.generation),),
+            entries,
+            parents,
+        )
+        transferred = True
+        return value, operation
 
 
 def _open_relative_parent(operation, path, control):
@@ -835,9 +842,11 @@ def _unlink_ledger(active, locked, control):
 
 def _finish_hardlink_remove(active, operation, alias_path, target_path, target_generation, control):
     alias_parent, alias_opened, alias_name = _open_relative_parent(operation, alias_path, control)
-    target_parent, target_opened, target_name = _open_relative_parent(operation, target_path, control)
-    target = fs._open_path_node(target_parent, target_name, "file", control)
-    with _owned_nodes(lambda: alias_opened + target_opened + (target,)):
+    target_opened = ()
+    target = None
+    with _owned_nodes(lambda: alias_opened + target_opened + (() if target is None else (target,))):
+        target_parent, target_opened, target_name = _open_relative_parent(operation, target_path, control)
+        target = fs._open_path_node(target_parent, target_name, "file", control)
         alias = fs._observe_child(alias_parent, alias_name, control)
         _fail(alias.key == target_generation.key and alias == target_generation)
         pre = _parent(alias_parent, control)

@@ -3,7 +3,9 @@
 
 import hashlib
 import importlib.util
+import os
 from pathlib import Path
+from types import SimpleNamespace
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -19,7 +21,7 @@ def load(name, path):
     return module
 
 
-load("completion_rootfs_fs", REMOTE / "completion_rootfs_fs.py")
+fs = load("completion_rootfs_fs", REMOTE / "completion_rootfs_fs.py")
 publish = load("completion_rootfs_publish", REMOTE / "completion_rootfs_publish.py")
 raw = (REMOTE / "stage2-completion-rootfs-v1.json").read_bytes()
 pins = publish._parse_pins(raw)
@@ -61,6 +63,28 @@ except publish.PublicationError:
     pass
 else:
     raise AssertionError("hostile publication transaction accepted")
+identity_read, identity_write = os.pipe()
+operation_read, operation_write = os.pipe()
+os.close(identity_write)
+os.close(operation_write)
+key = fs.HostKey(1, 1, 1, "file")
+opened_generation = fs.HostGeneration(key, 0o400, 0, 0, 1, 1, 1, 1)
+opened = fs.HeldNode(fs.CheckedFd(identity_read, "test-identity"), fs.CheckedFd(operation_read, "test-operation"), opened_generation)
+recorded_generation = fs.HostGeneration(fs.HostKey(1, 1, 2, "file"), 0o400, 0, 0, 1, 1, 1, 1)
+real_file = publish._file
+real_enumerate = fs._enumerate_stable
+publish._file = lambda _directory, _name, _raw, _control: opened
+fs._enumerate_stable = lambda _directory, _control: SimpleNamespace(raw_names=(publish.SENTINEL_NAME.raw,))
+try:
+    publish._verify_inventory(object(), ((publish.SENTINEL_NAME, b"x"),), ({"identity": publish._generation_value(recorded_generation)},), False, object())
+except publish.PublicationError:
+    pass
+else:
+    raise AssertionError("replacement publication identity accepted")
+finally:
+    publish._file = real_file
+    fs._enumerate_stable = real_enumerate
+assert opened.identity_fd.disposition == opened.operation_fd.disposition == "closed"
 source = (REMOTE / "completion_rootfs_publish.py").read_text()
 assert "O_CREAT | os.O_EXCL" in source and "renameat2" in source and "_rename_noreplace" in source
 assert "rootfs.metadata.json" in source and "_parse_transaction" in source and "_transition_control" in source

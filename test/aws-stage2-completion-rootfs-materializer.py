@@ -30,6 +30,7 @@ def portable():
     source = (REMOTE / "completion_rootfs_materializer.py").read_text()
     assert "def _materialize(" in source and "revalidate_build_inputs" in source and "def _postwalk(" in source
     assert "if __name__" not in source and "sys.argv" not in source
+    assert "target_opened + (() if target is None" in source and "(active.node,) +" in source
     for forbidden in ("rmtree", "os.walk", "glob", "subprocess", "socket", "tarfile", "extractall", "rename"):
         assert forbidden not in source
     print("completion rootfs materializer portable tests passed")

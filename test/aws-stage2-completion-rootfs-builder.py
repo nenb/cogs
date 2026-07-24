@@ -51,6 +51,9 @@ def portable_tests():
     assert 'argv != ["recover-owned"]' in source
     assert "FIXED_MODULE" in source and "RECOVER_SECONDS = 120" in source
     assert "def _bootstrap(" in source and "_bootstrap(" not in source.split("def main", 1)[1]
+    assert "alias_opened + target_opened" in source and "transferred or operation is None" in source
+    build_source = (REMOTE / "completion_rootfs_build.py").read_text()
+    assert "observed = operation = None" in build_source and "fs._close_node(observed)" in build_source
     locked = builder.LockedState(None, None, object())
     primary = RuntimeError("primary")
     real_close = builder._close

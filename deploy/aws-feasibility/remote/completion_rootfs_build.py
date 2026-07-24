@@ -58,14 +58,31 @@ def _build_control(outer):
 
 
 def _writable_file(parent, name, control):
-    observed = fs._open_path_node(parent, name, "file", control)
-    observed.operation_fd.close()
-    flags = os.O_RDWR | fs._O_NOFOLLOW | fs._O_CLOEXEC
-    control.check()
-    operation = fs.CheckedFd(os.open(name.raw, flags, dir_fd=parent.operation_fd.number), "candidate-writer")
-    control.check()
-    generation = fs._observe_node(observed.identity_fd, operation, control)
-    return fs.HeldNode(observed.identity_fd, operation, generation)
+    observed = None
+    operation = None
+    try:
+        observed = fs._open_path_node(parent, name, "file", control)
+        observed.operation_fd.close()
+        flags = os.O_RDWR | fs._O_NOFOLLOW | fs._O_CLOEXEC
+        control.check()
+        operation = fs.CheckedFd(os.open(name.raw, flags, dir_fd=parent.operation_fd.number), "candidate-writer")
+        control.check()
+        generation = fs._observe_node(observed.identity_fd, operation, control)
+        result = fs.HeldNode(observed.identity_fd, operation, generation)
+        observed = operation = None
+        return result
+    except BaseException as error:
+        if operation is not None and operation.disposition == "open":
+            try:
+                operation.close()
+            except BaseException as close_error:
+                error = fs.RootfsFsError(error, close_error)
+        if observed is not None and observed.identity_fd.disposition == "open":
+            try:
+                fs._close_node(observed)
+            except BaseException as close_error:
+                error = fs.RootfsFsError(error, close_error)
+        raise error
 
 
 def _candidate_record(preflight_module, path, size, digest):

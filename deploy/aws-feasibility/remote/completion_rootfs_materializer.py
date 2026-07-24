@@ -193,9 +193,11 @@ def _create_hardlinks(active, root, authority, control):
     plans = ledger._plan_hardlink_groups(authority)
     entries = {entry.record.path: entry for entry in authority.plan.entries}
     for group in plans:
-        target_parent, target_opened, target_name = _open_parent(root, group.target_path, control)
-        target = fs._open_path_node(target_parent, target_name, "file", control)
-        try:
+        target_opened = ()
+        target = None
+        with builder._owned_nodes(lambda: target_opened + (() if target is None else (target,))):
+            target_parent, target_opened, target_name = _open_parent(root, group.target_path, control)
+            target = fs._open_path_node(target_parent, target_name, "file", control)
             content = fs._read_regular(target, group.size, control)
             state = ledger._new_hardlink_group(group, _generation(target, control), hashlib.sha256(content).hexdigest())
             body = {
@@ -284,8 +286,6 @@ def _create_hardlinks(active, root, authority, control):
                     raise error
                 finally:
                     _close_final(opened)
-        finally:
-            _close_final(target_opened + (target,))
     return active
 
 
@@ -505,10 +505,13 @@ def _reload_and_cleanup(owned, control):
     if error is not None:
         raise error
     active = builder._read_active_ledger(owned.locked.state, control)
-    operation = fs._open_path_node(owned.locked.state, fs._name(owned.operation_name), "directory", control)
-    root = fs._open_path_node(operation, builder.ROOT_NAME, "directory", control)
-    refreshed = builder.OwnedOperation(owned.locked, active, operation, root, owned.operation_name)
-    builder._cleanup_owned(refreshed, active, control)
+    operation = None
+    root = None
+    with builder._owned_nodes(lambda: (active.node,) + (() if operation is None else (operation,)) + (() if root is None else (root,))):
+        operation = fs._open_path_node(owned.locked.state, fs._name(owned.operation_name), "directory", control)
+        root = fs._open_path_node(operation, builder.ROOT_NAME, "directory", control)
+        refreshed = builder.OwnedOperation(owned.locked, active, operation, root, owned.operation_name)
+        builder._cleanup_owned(refreshed, active, control)
 
 
 def _materialize_unmasked(authority, owned, control):
