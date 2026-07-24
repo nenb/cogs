@@ -79,6 +79,12 @@ class Transaction:
     records: tuple
 
 
+@dataclass(frozen=True)
+class AnonymousFile:
+    operation_fd: fs.CheckedFd
+    generation: fs.HostGeneration
+
+
 def _close_nodes(nodes, primary=None):
     error = primary
     for node in reversed(tuple(node for node in nodes if node is not None)):
@@ -180,12 +186,40 @@ def _rename_generation_change(before, after):
     _fail(after.ctime_ns >= before.ctime_ns)
 
 
-def _parse_generation(value):
+def _parse_anonymous_generation(value):
+    generation = _parse_file_generation(value, 0)
+    return generation
+
+
+def _parse_ready(value):
+    _fail(type(value) is dict and tuple(value) == ("generation", "sha256", "size"))
+    generation = _parse_anonymous_generation(value["generation"])
+    _fail(type(value["sha256"]) is str and len(value["sha256"]) == 64 and all(character in "0123456789abcdef" for character in value["sha256"]))
+    _fail(type(value["size"]) is int and not isinstance(value["size"], bool) and value["size"] >= 0 and generation.size == value["size"])
+    return generation, value["sha256"], value["size"]
+
+
+def _ready_value(generation, raw):
+    return {"generation": _generation_value(generation), "sha256": hashlib.sha256(raw).hexdigest(), "size": len(raw)}
+
+
+def _parse_file_generation(value, nlink):
     _fail(type(value) is dict and tuple(value) == ("mount_id", "device", "inode", "kind", "mode", "uid", "gid", "nlink", "size", "mtime_ns", "ctime_ns"))
     key = _parse_key({name: value[name] for name in ("mount_id", "device", "inode", "kind")}, "file")
     _fail(all(type(value[name]) is int and value[name] >= 0 for name in ("mode", "uid", "gid", "nlink", "size", "mtime_ns", "ctime_ns")))
-    _fail(value["mode"] == 0o400 and value["uid"] == value["gid"] == 0 and value["nlink"] == 1)
+    _fail(value["mode"] == 0o400 and value["uid"] == value["gid"] == 0 and value["nlink"] == nlink)
     return fs.HostGeneration(key, value["mode"], value["uid"], value["gid"], value["nlink"], value["size"], value["mtime_ns"], value["ctime_ns"])
+
+
+def _parse_generation(value):
+    return _parse_file_generation(value, 1)
+
+
+def _linked_generation_change(before, after):
+    _fail(before.key == after.key and before.key.kind == "file")
+    _fail(before.nlink == 0 and after.nlink == 1)
+    _fail((before.mode, before.uid, before.gid, before.size, before.mtime_ns) == (after.mode, after.uid, after.gid, after.size, after.mtime_ns))
+    _fail(after.ctime_ns >= before.ctime_ns)
 
 
 def _canonical(value):
@@ -227,16 +261,19 @@ def _parse_transaction(raw, content_names):
             file_index = 0
         elif state == "candidate" and phase == "file-intent":
             _fail(file_index < len(content_names) and value["name"] == content_names[file_index])
+            _fail(_parse_directory_generation(value["identity"]) == candidate_generation)
             state = "file-intent"
-        elif state == "file-intent" and phase == "file-abort":
-            _fail(value["name"] == content_names[file_index])
-            next_generation = _parse_directory_generation(value["identity"])
-            _directory_generation_change(candidate_generation, next_generation)
-            candidate_generation = next_generation
-            state = "candidate"
         elif state == "file-intent":
+            _fail(phase == "file-ready" and value["name"] == content_names[file_index])
+            ready_generation, _ready_sha256, _ready_size = _parse_ready(value["identity"])
+            state = "file-ready"
+        elif state == "file-ready" and phase == "file-ready":
+            _fail(value["name"] == content_names[file_index])
+            ready_generation, _ready_sha256, _ready_size = _parse_ready(value["identity"])
+        elif state == "file-ready":
             _fail(phase == "file" and value["name"] == content_names[file_index])
-            _parse_generation(value["identity"])
+            linked_generation = _parse_generation(value["identity"])
+            _linked_generation_change(ready_generation, linked_generation)
             state = "candidate-generation"
         elif state == "candidate-generation":
             _fail(phase == "candidate-generation")
@@ -258,9 +295,9 @@ def _parse_transaction(raw, content_names):
             state = "accepted"
         else:
             raise PublicationError()
-        if phase not in {"file-intent", "file", "file-abort"}:
+        if phase not in {"file-intent", "file-ready", "file"}:
             _fail(value["name"] is None)
-        if phase not in {"candidate", "candidate-generation", "file", "file-abort", "accepted"}:
+        if phase not in {"candidate", "candidate-generation", "file-intent", "file-ready", "file", "accepted"}:
             _fail(value["identity"] is None)
         previous = hashlib.sha256(line).hexdigest()
         records.append(value)
@@ -270,7 +307,7 @@ def _parse_transaction(raw, content_names):
 def _cycle(records):
     candidate_index = max(index for index, record in enumerate(records) if record["phase"] == "candidate")
     cycle = records[candidate_index:]
-    candidate_record = next(record for record in reversed(cycle) if record["phase"] in {"candidate", "candidate-generation", "file-abort"})
+    candidate_record = next(record for record in reversed(cycle) if record["phase"] in {"candidate", "candidate-generation"})
     files = tuple(record for record in cycle if record["phase"] == "file")
     return candidate_record, files
 
@@ -314,65 +351,68 @@ def _file(directory, name, expected, control):
         fs._close_node(node, error)
 
 
-def _remove_created_file(directory, name, node, control):
-    expected = fs._observe_node(node.identity_fd, node.operation_fd, control)
-    fs._close_node(node)
-    _fail(fs._observe_child(directory, name, control) == expected)
-    os.unlink(name.raw, dir_fd=directory.operation_fd.number)
-    os.fsync(directory.operation_fd.number)
+def _observe_anonymous(subject, control):
+    operation = subject.operation_fd if type(subject) is AnonymousFile else subject
+    _fail(type(operation) is fs.CheckedFd and operation.disposition == "open")
+    os.lseek(operation.number, 0, os.SEEK_SET)
+    flags = os.O_TMPFILE | os.O_RDWR | fs._O_CLOEXEC
+    _fail(flags == 0o22200002)
+    expected_flags = b"022440002"
+    mount_id = fs._mount_id(operation, control, expected_flags)
+    return fs._generation(operation, mount_id, control)
 
 
-def _create_file(directory, name, raw, control):
-    flags = os.O_RDWR | os.O_CREAT | os.O_EXCL | fs._O_NOFOLLOW | fs._O_CLOEXEC
-    descriptor = None
-    node = None
-    key = None
-    created = False
-    try:
-        descriptor = fs.CheckedFd(os.open(name.raw, flags, 0o400, dir_fd=directory.operation_fd.number), "publication-file")
-        created = True
-        descriptor_stat = os.fstat(descriptor.number)
-        key = (descriptor_stat.st_dev, descriptor_stat.st_ino)
-        node = fs._open_path_node(directory, name, "file", control)
-        _fail((node.generation.key.device, node.generation.key.inode) == key)
-        fs._close_node(node)
-        node = None
-        _write_all(descriptor, raw, control)
-        os.fsync(descriptor.number)
-        descriptor.close()
-        descriptor = None
-        node = _file(directory, name, raw, control)
-        _fail((node.generation.key.device, node.generation.key.inode) == key)
-        return node
-    except BaseException as error:
-        cleanup = _transition_control()
-        if key is None and descriptor is not None and descriptor.disposition == "open":
-            try:
-                observed = os.fstat(descriptor.number)
-                key = (observed.st_dev, observed.st_ino)
-            except BaseException as identity_error:
-                error = fs.RootfsFsError(error, identity_error)
-        if node is not None and node.identity_fd.disposition == "open":
-            try:
-                fs._close_node(node)
-            except BaseException as close_error:
-                error = fs.RootfsFsError(error, close_error)
-        if descriptor is not None and descriptor.disposition == "open":
-            try:
-                descriptor.close()
-            except BaseException as close_error:
-                error = fs.RootfsFsError(error, close_error)
-        if created:
-            try:
-                current = fs._observe_child(directory, name, cleanup)
-                _fail(current.key.kind == "file")
-                if key is not None:
-                    _fail((current.key.device, current.key.inode) == key)
-                os.unlink(name.raw, dir_fd=directory.operation_fd.number)
-                os.fsync(directory.operation_fd.number)
-            except BaseException as cleanup_error:
-                error = fs.RootfsFsError(error, cleanup_error)
+def _close_anonymous(anonymous, primary=None):
+    error = primary
+    if anonymous is not None and anonymous.operation_fd.disposition == "open":
+        try:
+            anonymous.operation_fd.close()
+        except BaseException as close_error:
+            error = fs.RootfsFsError(error, close_error)
+    if error is not None:
         raise error
+
+
+def _prepare_anonymous(directory, raw, control):
+    _fail(sys.platform == "linux" and hasattr(os, "O_TMPFILE"))
+    operation = None
+    try:
+        flags = os.O_TMPFILE | os.O_RDWR | fs._O_CLOEXEC
+        operation = fs.CheckedFd(os.open(b".", flags, 0o400, dir_fd=directory.operation_fd.number), "publication-anonymous")
+        _write_all(operation, raw, control)
+        os.fchown(operation.number, 0, 0)
+        os.fchmod(operation.number, 0o400)
+        os.utime(operation.number, ns=(0, 0))
+        os.fsync(operation.number)
+        generation = _observe_anonymous(operation, control)
+        anonymous = AnonymousFile(operation, generation)
+        _fail(generation.key.kind == "file" and generation.mode == 0o400 and generation.uid == generation.gid == 0 and generation.nlink == 0 and generation.size == len(raw))
+        _fail(generation.key.device == directory.generation.key.device and generation.key.mount_id == directory.generation.key.mount_id)
+        before = _observe_anonymous(anonymous, control)
+        flistxattr, _unused = fs._load_xattrs()
+        fs._zero_xattrs(flistxattr, operation.number, control)
+        _fail(_observe_anonymous(anonymous, control) == before)
+        os.lseek(operation.number, 0, os.SEEK_SET)
+        observed = fs._read_bounded(operation.number, len(raw), control)
+        _fail(observed == raw and hashlib.sha256(observed).hexdigest() == hashlib.sha256(raw).hexdigest())
+        return anonymous
+    except BaseException as error:
+        if operation is not None and operation.disposition == "open":
+            operation.close(error)
+        raise
+
+
+def _link_anonymous(directory, name, anonymous, control):
+    _fail(sys.platform == "linux" and anonymous.generation.nlink == 0)
+    control.check()
+    libc = ctypes.CDLL(None, use_errno=True)
+    linkat = libc.linkat
+    linkat.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_int)
+    linkat.restype = ctypes.c_int
+    result = linkat(anonymous.operation_fd.number, b"", directory.operation_fd.number, name.raw, 0x1000)
+    if result != 0:
+        code = ctypes.get_errno()
+        raise OSError(code, os.strerror(code))
 
 
 def _contents(manifest, ustar, pins):
@@ -549,16 +589,6 @@ def _durable_event(parent, content_names, phase, name, key, control):
     return identity == key
 
 
-def _durable_file_completion(parent, content_names, name, file_key, candidate_generation, control):
-    transaction = _open_transaction(parent, content_names, control)
-    if len(transaction.records) < 2:
-        return False
-    file_record, candidate_record = transaction.records[-2:]
-    if file_record["phase"] != "file" or file_record["name"] != name or candidate_record["phase"] != "candidate-generation":
-        return False
-    return _parse_generation(file_record["identity"]).key == file_key and _parse_directory_generation(candidate_record["identity"]) == candidate_generation
-
-
 def _verify_inventory(directory, contents, recorded, complete, control):
     expected_names = tuple(name.raw for name, _raw in contents[: len(recorded)])
     snapshot = fs._enumerate_stable(directory, control)
@@ -605,6 +635,7 @@ def _publish_unmasked(parent, manifest, ustar, pins, work_control):
     control = _transition_control()
     transaction = _open_transaction(parent, content_names, control)
     candidate = None
+    anonymous = None
     owned_progress = False
     try:
         while True:
@@ -647,16 +678,16 @@ def _publish_unmasked(parent, manifest, ustar, pins, work_control):
                 _fail(CANDIDATE_NAME.raw in names)
                 if candidate is None:
                     candidate = _directory(parent, CANDIDATE_NAME, control)
-                _require_directory_generation(candidate, candidate_record["identity"], control)
+                current_candidate = _require_directory_generation(candidate, candidate_record["identity"], control)
                 _verify_inventory(candidate, contents, file_records, len(file_records) == len(contents), control)
                 if len(file_records) < len(contents):
                     owned_progress = True
                     name = contents[len(file_records)][0]
-                    transaction = _append_transaction(transaction, parent, content_names, "file-intent", control, name.text)
+                    transaction = _append_transaction(transaction, parent, content_names, "file-intent", control, name.text, _generation_value(current_candidate))
                 else:
                     os.fsync(candidate.operation_fd.number)
                     transaction = _append_transaction(transaction, parent, content_names, "prepared", control)
-            elif phase == "file-intent":
+            elif phase in {"file-intent", "file-ready"}:
                 candidate_record, file_records = _cycle(transaction.records)
                 _fail(CANDIDATE_NAME.raw in names and ACCEPTED_NAME.raw not in names)
                 if candidate is None:
@@ -664,37 +695,34 @@ def _publish_unmasked(parent, manifest, ustar, pins, work_control):
                 before_candidate = _require_directory_generation(candidate, candidate_record["identity"], control)
                 _verify_inventory(candidate, contents, file_records, False, control)
                 name, raw = contents[len(file_records)]
-                _fail(name.raw not in fs._enumerate_stable(candidate, control).raw_names)
-                created = None
-                after_candidate = None
-                try:
-                    created = _create_file(candidate, name, raw, control)
+                candidate_names = fs._enumerate_stable(candidate, control).raw_names
+                if phase == "file-intent":
+                    _fail(name.raw not in candidate_names)
+                    anonymous = _prepare_anonymous(candidate, raw, control)
+                    transaction = _append_transaction(transaction, parent, content_names, "file-ready", control, name.text, _ready_value(anonymous.generation, raw))
+                    continue
+                ready_generation, ready_sha256, ready_size = _parse_ready(transaction.records[-1]["identity"])
+                _fail(ready_sha256 == hashlib.sha256(raw).hexdigest() and ready_size == len(raw))
+                if name.raw not in candidate_names:
+                    if anonymous is None or anonymous.generation != ready_generation:
+                        if anonymous is not None:
+                            _close_anonymous(anonymous)
+                        anonymous = _prepare_anonymous(candidate, raw, control)
+                        transaction = _append_transaction(transaction, parent, content_names, "file-ready", control, name.text, _ready_value(anonymous.generation, raw))
+                        continue
+                    _fail(_observe_anonymous(anonymous, control) == ready_generation)
+                    _link_anonymous(candidate, name, anonymous, control)
+                linked = _file(candidate, name, raw, control)
+                with _owned_nodes(lambda: (linked,)):
+                    _linked_generation_change(ready_generation, linked.generation)
                     os.fsync(candidate.operation_fd.number)
                     after_candidate = fs._observe_node(candidate.identity_fd, candidate.operation_fd, control)
                     _directory_generation_change(before_candidate, after_candidate)
-                    transaction = _append_records(transaction, parent, content_names, (("file", name.text, _generation_value(created.generation)), ("candidate-generation", None, _generation_value(after_candidate))), control)
-                    fs._close_node(created)
-                    work_control.check()
-                except BaseException as error:
-                    cleanup_control = _transition_control()
-                    try:
-                        durable = created is not None and after_candidate is not None and _durable_file_completion(parent, content_names, name.text, created.generation.key, after_candidate, cleanup_control)
-                        if durable:
-                            if created.identity_fd.disposition == "open":
-                                fs._close_node(created)
-                        else:
-                            if created is not None and created.identity_fd.disposition == "open":
-                                _remove_created_file(candidate, name, created, cleanup_control)
-                            else:
-                                _fail(name.raw not in fs._enumerate_stable(candidate, cleanup_control).raw_names)
-                            os.fsync(candidate.operation_fd.number)
-                            aborted_candidate = fs._observe_node(candidate.identity_fd, candidate.operation_fd, cleanup_control)
-                            _directory_generation_change(before_candidate, aborted_candidate)
-                            _verify_inventory(candidate, contents, file_records, False, cleanup_control)
-                            _append_transaction(transaction, parent, content_names, "file-abort", cleanup_control, name.text, _generation_value(aborted_candidate))
-                    except BaseException as cleanup_error:
-                        error = fs.RootfsFsError(error, cleanup_error)
-                    raise error
+                    transaction = _append_records(transaction, parent, content_names, (("file", name.text, _generation_value(linked.generation)), ("candidate-generation", None, _generation_value(after_candidate))), control)
+                if anonymous is not None:
+                    _close_anonymous(anonymous)
+                    anonymous = None
+                work_control.check()
             elif phase == "prepared":
                 _fail(CANDIDATE_NAME.raw in names and ACCEPTED_NAME.raw not in names)
                 candidate_record, file_records = _cycle(transaction.records)
@@ -731,12 +759,16 @@ def _publish_unmasked(parent, manifest, ustar, pins, work_control):
     finally:
         primary = sys.exception()
         error = None
-        for node in (candidate,):
-            if node is not None and node.identity_fd.disposition == "open":
-                try:
-                    fs._close_node(node)
-                except BaseException as close_error:
-                    error = fs.RootfsFsError(primary if error is None else error, close_error)
+        if anonymous is not None and anonymous.operation_fd.disposition == "open":
+            try:
+                _close_anonymous(anonymous)
+            except BaseException as close_error:
+                error = fs.RootfsFsError(primary, close_error)
+        if candidate is not None and candidate.identity_fd.disposition == "open":
+            try:
+                fs._close_node(candidate)
+            except BaseException as close_error:
+                error = fs.RootfsFsError(primary if error is None else error, close_error)
         if error is not None:
             raise error
 

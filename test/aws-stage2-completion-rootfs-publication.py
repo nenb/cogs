@@ -46,12 +46,14 @@ for hostile in (
 names = tuple(name.text for name, _content in publish._contents(b"manifest", b"ustar", pins))
 identity = {"mount_id": 1, "device": 1, "inode": 2, "kind": "directory", "mode": 0o700, "uid": 0, "gid": 0, "nlink": 2, "size": 4096, "mtime_ns": 1, "ctime_ns": 1}
 generation = {"mount_id": 1, "device": 1, "inode": 3, "kind": "file", "mode": 0o400, "uid": 0, "gid": 0, "nlink": 1, "size": 1, "mtime_ns": 1, "ctime_ns": 1}
+anonymous_generation = {**generation, "nlink": 0, "ctime_ns": 0}
+ready = {"generation": anonymous_generation, "sha256": "0" * 64, "size": 1}
 values = []
 previous = publish.ZERO_SHA256
 events = [("intent", None, None), ("candidate-intent", None, None), ("candidate", None, identity)]
 for index, name in enumerate(names, 2):
     next_identity = {**identity, "mtime_ns": index, "ctime_ns": index}
-    events.extend((("file-intent", name, None), ("file", name, generation), ("candidate-generation", None, next_identity)))
+    events.extend((("file-intent", name, identity), ("file-ready", name, ready), ("file", name, generation), ("candidate-generation", None, next_identity)))
     identity = next_identity
 accepted_identity = {**identity, "ctime_ns": identity["ctime_ns"] + 1}
 events.extend((("prepared", None, None), ("rename", None, None), ("accepted", None, accepted_identity)))
@@ -61,15 +63,26 @@ for phase, name, item_identity in events:
     values.append(line)
     previous = hashlib.sha256(line).hexdigest()
     assert len(publish._parse_transaction(b"".join(values), names)) == len(values)
-abort_values = []
+restart_values = []
 previous = publish.ZERO_SHA256
-abort_identity = {**identity, "mtime_ns": identity["mtime_ns"] + 1, "ctime_ns": identity["ctime_ns"] + 1}
-for phase, name, item_identity in (("intent", None, None), ("candidate-intent", None, None), ("candidate", None, identity), ("file-intent", names[0], None), ("file-abort", names[0], abort_identity), ("file-intent", names[0], None)):
-    value = publish._record(len(abort_values), previous, phase, name, item_identity)
+replacement_ready = {**ready, "generation": {**anonymous_generation, "inode": 4}}
+for phase, name, item_identity in (("intent", None, None), ("candidate-intent", None, None), ("candidate", None, identity), ("file-intent", names[0], identity), ("file-ready", names[0], ready), ("file-ready", names[0], replacement_ready)):
+    value = publish._record(len(restart_values), previous, phase, name, item_identity)
     line = publish._canonical(value)
-    abort_values.append(line)
+    restart_values.append(line)
     previous = hashlib.sha256(line).hexdigest()
-publish._parse_transaction(b"".join(abort_values), names)
+publish._parse_transaction(b"".join(restart_values), names)
+anonymous_key = fs.HostKey(1, 1, 9, "file")
+anonymous_host = fs.HostGeneration(anonymous_key, 0o400, 0, 0, 0, 1, 1, 1)
+linked_host = fs.HostGeneration(anonymous_key, 0o400, 0, 0, 1, 1, 1, 2)
+publish._linked_generation_change(anonymous_host, linked_host)
+for replacement in (fs.HostGeneration(anonymous_key, 0o400, 0, 0, 1, 2, 1, 2), fs.HostGeneration(fs.HostKey(1, 1, 10, "file"), 0o400, 0, 0, 1, 1, 1, 2)):
+    try:
+        publish._linked_generation_change(anonymous_host, replacement)
+    except publish.PublicationError:
+        pass
+    else:
+        raise AssertionError("hostile anonymous-to-linked transition accepted")
 try:
     publish._parse_transaction(b"".join(values).replace(b'"phase":"rename"', b'"phase":"accepted"'), names)
 except publish.PublicationError:
@@ -146,7 +159,9 @@ finally:
     fs._enumerate_stable = real_enumerate
 assert opened.identity_fd.disposition == opened.operation_fd.disposition == "closed"
 source = (REMOTE / "completion_rootfs_publish.py").read_text()
-assert "O_CREAT | os.O_EXCL" in source and "renameat2" in source and "_rename_noreplace" in source
+assert "os.O_TMPFILE | os.O_RDWR" in source and "linkat" in source and "0x1000" in source and "_rename_noreplace" in source
+assert "file-ready" in source and "publication-anonymous" in source
+assert "file-abort" not in source and "def _create_file" not in source
 assert "rootfs.metadata.json" in source and "_parse_transaction" in source and "_transition_control" in source
 assert b"qualification" not in raw and b"functional_test_image" in raw
 for forbidden in ("argparse", "sys.argv", "if __name__", "rmtree", "os.walk", "glob", "subprocess", "socket"):

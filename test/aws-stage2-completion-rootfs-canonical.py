@@ -249,11 +249,14 @@ def docker_functional_two_builds():
         recovered_snapshot = publication._append_transaction(recovered_snapshot, snapshot_destination, content_names, "candidate", snapshot_control, identity=publication._generation_value(snapshot_candidate.generation))
         for index, fail_after_exchange in enumerate((False, True)):
             name = publication._contents(second.manifest, second.ustar, pins_value)[index][0]
-            recovered_snapshot = publication._append_transaction(recovered_snapshot, snapshot_destination, content_names, "file-intent", snapshot_control, name.text)
+            intent_generation = fs._observe_node(snapshot_candidate.identity_fd, snapshot_candidate.operation_fd, snapshot_control)
+            recovered_snapshot = publication._append_transaction(recovered_snapshot, snapshot_destination, content_names, "file-intent", snapshot_control, name.text, publication._generation_value(intent_generation))
             file_path = snapshot_candidate_path / name.text
             file_path.write_bytes(b"x")
             file_path.chmod(0o400)
             snapshot_file = fs._open_path_node(snapshot_candidate, name, "file", snapshot_control)
+            anonymous_generation = dataclasses.replace(snapshot_file.generation, nlink=0, ctime_ns=max(0, snapshot_file.generation.ctime_ns - 1))
+            recovered_snapshot = publication._append_transaction(recovered_snapshot, snapshot_destination, content_names, "file-ready", snapshot_control, name.text, publication._ready_value(anonymous_generation, b"x"))
             candidate_generation = fs._observe_node(snapshot_candidate.identity_fd, snapshot_candidate.operation_fd, snapshot_control)
             tripped = {"value": False}
 
@@ -333,22 +336,12 @@ def docker_functional_two_builds():
         write_fault = {"tripped": False}
 
         def publication_file_write_fault(descriptor, raw, control):
-            if descriptor.role == "publication-file" and not write_fault["tripped"]:
+            if descriptor.role == "publication-anonymous" and not write_fault["tripped"]:
                 write_fault["tripped"] = True
-                raise OSError("publication file write fault")
+                raise OSError("anonymous publication write fault")
             return real_write_all(descriptor, raw, control)
 
-        abort_record_fault = {"tripped": False}
-
-        def file_abort_record_fault(transaction, parent, content_names, phase, control, name=None, identity=None):
-            result = original_append(transaction, parent, content_names, phase, control, name, identity)
-            if phase == "file-abort" and not abort_record_fault["tripped"]:
-                abort_record_fault["tripped"] = True
-                raise OSError("file-abort record fault")
-            return result
-
         publication._write_all = publication_file_write_fault
-        publication._append_transaction = file_abort_record_fault
         try:
             publication._publish_unmasked(rollback_destination, tiny_manifest, tiny_ustar, tiny_pins, outer)
         except BaseException:
@@ -357,11 +350,44 @@ def docker_functional_two_builds():
             raise AssertionError("publication file rollback fault was not observed")
         finally:
             publication._write_all = real_write_all
-            publication._append_transaction = original_append
-        assert write_fault["tripped"] and abort_record_fault["tripped"]
+        assert write_fault["tripped"]
         rollback_names = tuple(name.text for name, _raw in publication._contents(tiny_manifest, tiny_ustar, tiny_pins))
         rollback_transaction = publication._open_transaction(rollback_destination, rollback_names, publication._transition_control())
-        assert rollback_transaction.records[-1]["phase"] == "file-abort"
+        assert rollback_transaction.records[-1]["phase"] == "file-intent"
+        original_link_anonymous = publication._link_anonymous
+        link_fault = {"tripped": False}
+
+        def link_then_fail(directory, name, anonymous, control):
+            original_link_anonymous(directory, name, anonymous, control)
+            if not link_fault["tripped"]:
+                link_fault["tripped"] = True
+                raise OSError("uncertain anonymous link fault")
+
+        publication._link_anonymous = link_then_fail
+        try:
+            publication._publish_unmasked(rollback_destination, tiny_manifest, tiny_ustar, tiny_pins, outer)
+        except OSError:
+            pass
+        finally:
+            publication._link_anonymous = original_link_anonymous
+        assert link_fault["tripped"]
+        original_append_records = publication._append_records
+        compound_fault = {"tripped": False}
+
+        def compound_before_snapshot(transaction, parent, content_names, additions, control):
+            if additions[0][0] == "file" and not compound_fault["tripped"]:
+                compound_fault["tripped"] = True
+                raise OSError("compound pre-snapshot fault")
+            return original_append_records(transaction, parent, content_names, additions, control)
+
+        publication._append_records = compound_before_snapshot
+        try:
+            publication._publish_unmasked(rollback_destination, tiny_manifest, tiny_ustar, tiny_pins, outer)
+        except OSError:
+            pass
+        finally:
+            publication._append_records = original_append_records
+        assert compound_fault["tripped"]
         assert publication._publish_unmasked(rollback_destination, tiny_manifest, tiny_ustar, tiny_pins, outer) == publication._publish_unmasked(rollback_destination, tiny_manifest, tiny_ustar, tiny_pins, outer)
         fs._close_node(rollback_destination)
         for child in (rollback_path / "accepted").iterdir():
@@ -448,7 +474,7 @@ def docker_functional_two_builds():
 
         original_append = publication._append_transaction
         original_append_records = publication._append_records
-        for fault_phase in ("intent", "candidate-intent", "candidate", "file-intent", "file", "candidate-generation", "prepared", "rename"):
+        for fault_phase in ("intent", "candidate-intent", "candidate", "file-intent", "file-ready", "file", "candidate-generation", "prepared", "rename"):
             tripped = {"value": False}
 
             def append_with_fault(transaction, parent, content_names, phase, control, name=None, identity=None):

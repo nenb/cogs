@@ -97,7 +97,7 @@ class HostGeneration:
         _exact_int(self.mode, 0, 0o7777)
         _exact_int(self.uid)
         _exact_int(self.gid)
-        _exact_int(self.nlink, 1)
+        _exact_int(self.nlink, 0)
         _exact_int(self.size)
         _exact_int(self.mtime_ns)
         _exact_int(self.ctime_ns)
@@ -347,7 +347,7 @@ def _open_fd(path, flags, role, control, dir_fd=None):
     return descriptor
 
 
-def _mount_id(opath_fd, control):
+def _mount_id(opath_fd, control, expected_flags=FDINFO_FLAGS):
     _fail(type(opath_fd) is CheckedFd and opath_fd.disposition == "open")
     control.check()
     before = os.fstat(opath_fd.number)
@@ -364,7 +364,7 @@ def _mount_id(opath_fd, control):
     after = os.fstat(opath_fd.number)
     control.check()
     _fail(_same_stat(before, after))
-    return _parse_fdinfo(raw, before.st_ino)
+    return _parse_fdinfo(raw, before.st_ino, expected_flags)
 
 
 def _generation(descriptor, mount_id, control):
