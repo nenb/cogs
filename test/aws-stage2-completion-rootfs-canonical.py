@@ -343,6 +343,7 @@ def docker_functional_two_builds():
         rollback_path.mkdir(mode=0o700)
         rollback_path.chmod(0o700)
         rollback_destination = held_directory(rollback_path, "rollback-publication")
+        rollback_umask = os.umask(0o077)
         tiny_manifest = b"manifest\n"
         tiny_ustar = b"ustar\n"
         tiny_pins = publication.RootfsPins(b"", hashlib.sha256(tiny_manifest).hexdigest(), len(tiny_manifest), hashlib.sha256(tiny_ustar).hexdigest(), len(tiny_ustar), 1)
@@ -409,6 +410,7 @@ def docker_functional_two_builds():
         (rollback_path / "accepted").rmdir()
         (rollback_path / ".accepted-transaction-v1").unlink()
         rollback_path.rmdir()
+        os.umask(rollback_umask)
 
         real_write = publication.os.write
         writes = {"count": 0}
