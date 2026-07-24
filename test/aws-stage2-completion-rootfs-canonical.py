@@ -99,6 +99,7 @@ def prepare_real_workspace():
         "completion_rootfs_canonical.py",
         "completion_rootfs_publish.py",
         "completion_rootfs_build.py",
+        "completion_rootfs_lease.py",
         "verify-completion-artifacts.py",
         "stage2-completion-artifacts-v1.json",
         "stage2-completion-rootfs-v1.json",
@@ -581,7 +582,14 @@ def docker_functional_two_builds():
     print(json.dumps(dataclasses.asdict(candidate), sort_keys=True, separators=(",", ":")))
 
 
-if len(sys.argv) == 2 and sys.argv[1] == "--real":
-    docker_functional_two_builds()
-else:
-    portable()
+def main(argv):
+    if argv == ["--real"]:
+        docker_functional_two_builds()
+    elif not argv:
+        portable()
+    else:
+        raise SystemExit("usage: aws-stage2-completion-rootfs-canonical.py [--real]")
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

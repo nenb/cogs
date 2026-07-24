@@ -36,7 +36,7 @@ def rejected(function):
 def portable_tests():
     sys.path.insert(0, str(REMOTE))
     fs = load("completion_rootfs_fs", REMOTE / "completion_rootfs_fs.py")
-    load("completion_rootfs_ledger", REMOTE / "completion_rootfs_ledger.py")
+    ledger = load("completion_rootfs_ledger", REMOTE / "completion_rootfs_ledger.py")
     builder = load("completion_rootfs_builder_portable", REMOTE / "completion_rootfs_builder.py")
     assert builder.main([]) == 1
     assert builder.main(["recover-owned", "extra"]) == 1
@@ -52,8 +52,19 @@ def portable_tests():
     assert "FIXED_MODULE" in source and "RECOVER_SECONDS = 120" in source
     assert "def _bootstrap(" in source and "_bootstrap(" not in source.split("def main", 1)[1]
     assert "alias_opened + target_opened" in source and "transferred or operation is None" in source
+    assert "def _stable_active(" in source and "def _mark_leased(" in source
+    assert 'record_type not in {"leased", "release-authorized"}' in source
+    assert "_append_mechanical" not in source and source.count("ledger._append_record(") == 1
+    assert source.count("ledger._append_leased_record(") == 1
+    assert "ledger._validate_legal_records(active.records + (record,))" in source
+    assert "def _authorize" not in source
+    rejected(lambda: builder._append(None, "leased", {}, control))
+    rejected(lambda: builder._append(None, "release-authorized", {}, control))
+    rejected(lambda: ledger._settled_record(0, 1, "a" * 64, 1))
     build_source = (REMOTE / "completion_rootfs_build.py").read_text()
     assert "observed = operation = None" in build_source and "fs._close_node(observed)" in build_source
+    assert "class RetainedBuild" in build_source and "def _build_once_retained(" in build_source
+    assert "def _require_equal_builds(" in build_source and "def _require_pinned(" in build_source
     locked = builder.LockedState(None, None, object())
     primary = RuntimeError("primary")
     real_close = builder._close

@@ -4,6 +4,7 @@
 import dataclasses
 import hashlib
 import importlib.util
+import inspect
 import json
 import os
 from pathlib import Path
@@ -27,6 +28,17 @@ def load(name, path):
 fs = load("completion_rootfs_fs", REMOTE / "completion_rootfs_fs.py")
 ledger = load("completion_rootfs_ledger", REMOTE / "completion_rootfs_ledger.py")
 builder = load("completion_rootfs_builder_ledger_test", REMOTE / "completion_rootfs_builder.py")
+RECONCILE_EMISSIONS = set()
+_reconcile = ledger._reconcile_ledger
+
+
+def recording_reconcile(records, observations):
+    state = _reconcile(records, observations)
+    RECONCILE_EMISSIONS.add((state.status, state.cleanup_origin, state.cleanup_allowed))
+    return state
+
+
+ledger._reconcile_ledger = recording_reconcile
 TOKEN = "a" * 64
 REVISION = "b" * 40
 MANIFEST = "c" * 64
@@ -50,6 +62,10 @@ def generation(inode, kind="directory", mode=0o700, nlink=2, size=0, ctime=1, mt
 
 def parent(inode, names, ctime=1):
     return ledger.LedgerParent(generation(inode, ctime=ctime), tuple(sorted(names, key=lambda value: value.encode())))
+
+
+def ledger_file(size=1):
+    return generation(99, "file", 0o600, 1, size)
 
 
 def pvalue(value):
@@ -119,9 +135,9 @@ def codec_and_reconcile_tests():
     proposals, state_before, state_after, operation = lifecycle_prefix()
     active_raw = encoded(proposals)
     active = ledger._parse_ledger(active_raw)
-    observations = ledger.ReconcileObservations(state_after, ((ledger._operation_name(TOKEN), operation),), ())
+    observations = ledger.ReconcileObservations(state_after, ((ledger._operation_name(TOKEN), operation),), (), ledger_file())
     genesis_only = ledger._parse_ledger(encoded(proposals[:1]))
-    assert ledger._reconcile_ledger(genesis_only, ledger.ReconcileObservations(state_before, (), ())).status == "genesis-settleable"
+    assert ledger._reconcile_ledger(genesis_only, ledger.ReconcileObservations(state_before, (), (), ledger_file())).status == "genesis-settleable"
     operation_observed = ledger._parse_ledger(encoded(proposals[:4]))
     assert ledger._reconcile_ledger(operation_observed, observations).status == "operation-create-settleable"
     assert len(active) == 5 and active[-1].record_type == "operation-create-settled"
@@ -130,16 +146,16 @@ def codec_and_reconcile_tests():
 
     genesis = proposals[:2]
     ready = ledger._parse_ledger(encoded(genesis))
-    assert ledger._reconcile_ledger(ready, ledger.ReconcileObservations(state_before, (), ())).status == "genesis-abortable"
+    assert ledger._reconcile_ledger(ready, ledger.ReconcileObservations(state_before, (), (), ledger_file())).status == "genesis-abortable"
     genesis_abort = genesis + [
         ledger.LedgerProposal.create("genesis-abort", {"token": TOKEN, "state_parent": pvalue(state_before)}),
         ledger.LedgerProposal.create("retired", {"token": TOKEN, "state_parent": pvalue(state_before)}),
     ]
-    assert ledger._reconcile_ledger(ledger._parse_ledger(encoded(genesis_abort)), ledger.ReconcileObservations(state_before, (), ())).status == "retired"
+    assert ledger._reconcile_ledger(ledger._parse_ledger(encoded(genesis_abort)), ledger.ReconcileObservations(state_before, (), (), ledger_file())).status == "retired"
 
     operation_intent = proposals[:3]
     intent_records = ledger._parse_ledger(encoded(operation_intent))
-    assert ledger._reconcile_ledger(intent_records, ledger.ReconcileObservations(state_before, (), ())).status == "operation-abortable"
+    assert ledger._reconcile_ledger(intent_records, ledger.ReconcileObservations(state_before, (), (), ledger_file())).status == "operation-abortable"
     assert ledger._reconcile_ledger(intent_records, observations).status == "preserve"
     operation_abort = operation_intent + [
         ledger.LedgerProposal.create(
@@ -149,7 +165,7 @@ def codec_and_reconcile_tests():
         ledger.LedgerProposal.create("retired", {"token": TOKEN, "state_parent": pvalue(state_before)}),
     ]
     ledger._parse_ledger(encoded(operation_abort))
-    assert ledger._reconcile_ledger(active, ledger.ReconcileObservations(state_before, observations.operations, ())).status == "preserve"
+    assert ledger._reconcile_ledger(active, ledger.ReconcileObservations(state_before, observations.operations, (), ledger_file())).status == "preserve"
 
     operation_parent_before = parent(2, ("sentinel",))
     operation_parent_after = parent(2, ("rootfs", "sentinel"), ctime=2)
@@ -250,18 +266,47 @@ def codec_and_reconcile_tests():
     )
     remove_operation_records = ledger._parse_ledger(encoded(removed_proposals + [remove_operation]))
     assert ledger._reconcile_ledger(remove_operation_records, observations).status == "operation-remove-retry"
-    absent_operation_observation = ledger.ReconcileObservations(operation_absent_parent, (), ())
+    absent_operation_observation = ledger.ReconcileObservations(operation_absent_parent, (), (), ledger_file())
     assert ledger._reconcile_ledger(remove_operation_records, absent_operation_observation).status == "operation-absence-settleable"
     absent_records = ledger._parse_ledger(encoded(removed_proposals + [remove_operation, operation_absent]))
-    assert ledger._reconcile_ledger(absent_records, ledger.ReconcileObservations(operation_absent_parent, (), ())).status == "retirable"
+    assert ledger._reconcile_ledger(absent_records, ledger.ReconcileObservations(operation_absent_parent, (), (), ledger_file())).status == "retirable"
     retired = ledger.LedgerProposal.create("retired", {"token": TOKEN, "state_parent": pvalue(operation_absent_parent)})
     retired_records = ledger._parse_ledger(encoded(removed_proposals + [remove_operation, operation_absent, retired]))
-    assert ledger._reconcile_ledger(retired_records, ledger.ReconcileObservations(operation_absent_parent, (), ())).status == "retired"
+    assert ledger._reconcile_ledger(retired_records, ledger.ReconcileObservations(operation_absent_parent, (), (), ledger_file())).status == "retired"
 
     target = generation(30, "file", 0o644, 1, 7, mtime=5_000_000_000)
     linked = dataclasses.replace(target, nlink=2, ctime_ns=2)
     link_parent_before = parent(2, ())
     link_parent_after = parent(2, ("alias",), ctime=2)
+    target_parent = parent(2, ("target",), ctime=2)
+    alias_parent = parent(2, ("alias", "target"), ctime=3)
+    target_create = [
+        ledger.LedgerProposal.create("create-intent", {"token": TOKEN, "path": "target", "kind": "file", "parent": pvalue(link_parent_before)}),
+        ledger.LedgerProposal.create("create-observed", {"token": TOKEN, "path": "target", "kind": "file", "parent": pvalue(target_parent), "child": gvalue(target)}),
+        ledger.LedgerProposal.create("create-settled", {"token": TOKEN, "path": "target", "kind": "file", "parent": pvalue(target_parent), "child": gvalue(target)}),
+    ]
+    hardlink_create = [
+        ledger.LedgerProposal.create("hardlink-group", {"token": TOKEN, "target_path": "target", "aliases": ["alias"], "content_sha256": "d" * 64, "target": gvalue(target)}),
+        ledger.LedgerProposal.create("hardlink-create-intent", {"token": TOKEN, "target_path": "target", "alias": "alias", "index": 0, "target": gvalue(target), "parent": pvalue(target_parent)}),
+        ledger.LedgerProposal.create("hardlink-create-observed", {"token": TOKEN, "target_path": "target", "alias": "alias", "index": 0, "target_before": gvalue(target), "target_after": gvalue(linked), "alias_generation": gvalue(linked), "parent": pvalue(alias_parent)}),
+    ]
+    linked_observations = ledger.ReconcileObservations(
+        state_after, ((ledger._operation_name(TOKEN), alias_parent.generation),),
+        (("alias", linked), ("target", linked)), ledger_file(), (("", alias_parent),),
+    )
+    hardlink_observed = ledger._parse_ledger(encoded(proposals + target_create + hardlink_create))
+    assert ledger._reconcile_ledger(hardlink_observed, linked_observations).status == "hardlink-create-settleable"
+    hardlink_settled = ledger.LedgerProposal.create("hardlink-create-settled", hardlink_create[-1].body_value())
+    hardlink_remove = ledger.LedgerProposal.create(
+        "remove-intent", {"token": TOKEN, "path": "alias", "kind": "hardlink", "parent": pvalue(alias_parent), "child": gvalue(linked), "target_path": "target"},
+    )
+    hardlink_removing = ledger._parse_ledger(encoded(proposals + target_create + hardlink_create + [hardlink_settled, hardlink_remove]))
+    target_only = ledger.ReconcileObservations(
+        state_after, ((ledger._operation_name(TOKEN), target_parent.generation),),
+        (("target", target),), ledger_file(), (("", target_parent),),
+    )
+    assert ledger._reconcile_ledger(hardlink_removing, target_only).status == "hardlink-remove-absence-settleable"
+
     hardlink_records = [
         ledger.LedgerProposal.create(
             "hardlink-group",
@@ -313,6 +358,213 @@ def codec_and_reconcile_tests():
 
     uncertain = proposals + [ledger.LedgerProposal.create("uncertain", {"token": TOKEN, "reason": "incomplete"})]
     assert ledger._reconcile_ledger(ledger._parse_ledger(encoded(uncertain)), observations).status == "preserve"
+
+
+def lease_codec_and_origin_tests():
+    proposals, _state_before, state_after, operation = lifecycle_prefix()
+    operation_before = parent(2, ("sentinel",))
+    operation_after = parent(2, ("rootfs", "sentinel"), ctime=2)
+    root = generation(3)
+    create = [
+        ledger.LedgerProposal.create(
+            "create-intent",
+            {"token": TOKEN, "path": "rootfs", "kind": "directory", "parent": pvalue(operation_before)},
+        ),
+        ledger.LedgerProposal.create(
+            "create-observed",
+            {"token": TOKEN, "path": "rootfs", "kind": "directory", "parent": pvalue(operation_after), "child": gvalue(root)},
+        ),
+        ledger.LedgerProposal.create(
+            "create-settled",
+            {"token": TOKEN, "path": "rootfs", "kind": "directory", "parent": pvalue(operation_after), "child": gvalue(root)},
+        ),
+    ]
+    operation_current = operation_after.generation
+    lease_body = {
+        "token": TOKEN,
+        "operation_name": ledger._operation_name(TOKEN),
+        "state_parent": pvalue(state_after),
+        "operation": gvalue(operation_current),
+        "root": gvalue(root),
+        "ledger_key": {"mount_id": 1, "device": 1, "inode": 99, "kind": "file"},
+        "manifest_sha256": "d" * 64,
+        "manifest_size": 7,
+        "ustar_sha256": "e" * 64,
+        "ustar_size": 512,
+        "entry_count": 1,
+    }
+    leased_proposals = proposals + create + [ledger.LedgerProposal.create("leased", lease_body)]
+    leased = ledger._parse_ledger(encoded(leased_proposals))
+    leased_terminal = leased[-1]
+    observations = ledger.ReconcileObservations(
+        state_after,
+        ((ledger._operation_name(TOKEN), operation_current),),
+        (("rootfs", root),),
+        ledger_file(),
+        (("", operation_after),),
+    )
+    state = ledger._reconcile_ledger(leased, observations)
+    assert state.status == "leased" and state.cleanup_origin == "none" and not state.cleanup_allowed
+    assert state.lease_seen and not state.release_authorized
+    assert state.lease_snapshot.root == root and state.lease_snapshot.owned == (("rootfs", root),)
+    replaced_ledger = dataclasses.replace(observations, ledger_generation=generation(100, "file", 0o600, 1, 1))
+    assert ledger._reconcile_ledger(leased, replaced_ledger).status == "preserve"
+    assert ledger._reconcile_ledger(leased, dataclasses.replace(observations, entries=())).status == "preserve"
+
+    authorization = ledger.LedgerProposal.create(
+        "release-authorized",
+        {
+            "token": TOKEN,
+            "operation_name": ledger._operation_name(TOKEN),
+            "lease_sequence": leased_terminal.sequence,
+            "lease_offset": leased_terminal.next_offset,
+            "lease_sha256": leased_terminal.line_sha256,
+            "kata_operation_token": "f" * 64,
+            "kata_ledger_key": {"mount_id": 1, "device": 1, "inode": 101, "kind": "file"},
+            "kata_release_sequence": 1,
+            "kata_release_offset": 123,
+            "kata_release_sha256": "1" * 64,
+        },
+    )
+    authorized_proposals = leased_proposals + [authorization]
+    authorized = ledger._parse_ledger(encoded(authorized_proposals))
+    state = ledger._reconcile_ledger(authorized, observations)
+    assert state.status == "release-authorized" and state.cleanup_origin == "release-authorized" and state.cleanup_allowed
+    assert state.lease_seen and state.release_authorized
+
+    remove_intent = ledger.LedgerProposal.create(
+        "remove-intent",
+        {"token": TOKEN, "path": "rootfs", "kind": "directory", "parent": pvalue(operation_after), "child": gvalue(root), "target_path": None},
+    )
+    removing = ledger._parse_ledger(encoded(authorized_proposals + [remove_intent]))
+    state = ledger._reconcile_ledger(removing, observations)
+    assert state.status == "remove-retry" and state.cleanup_origin == "release-authorized" and state.cleanup_allowed
+    authorized_absent = ledger.ReconcileObservations(
+        state_after, ((ledger._operation_name(TOKEN), operation_before.generation),), (), ledger_file(), (("", operation_before),),
+    )
+    assert ledger._reconcile_ledger(removing, authorized_absent).status == "remove-absence-settleable"
+    remove_observed = ledger.LedgerProposal.create(
+        "remove-observed",
+        {"token": TOKEN, "path": "rootfs", "kind": "directory", "parent": pvalue(operation_before), "target_path": None, "target": None},
+    )
+    remove_settled = ledger.LedgerProposal.create("remove-settled", remove_observed.body_value())
+    authorized_observed = ledger._parse_ledger(encoded(authorized_proposals + [remove_intent, remove_observed]))
+    assert ledger._reconcile_ledger(authorized_observed, authorized_absent).status == "remove-settleable"
+    reduced_proposals = authorized_proposals + [remove_intent, remove_observed, remove_settled]
+    reduced = ledger._parse_ledger(encoded(reduced_proposals))
+    reduced_observations = ledger.ReconcileObservations(
+        state_after, ((ledger._operation_name(TOKEN), operation_before.generation),), (), ledger_file(), (("", operation_before),)
+    )
+    state = ledger._reconcile_ledger(reduced, reduced_observations)
+    assert state.status == "release-authorized" and state.cleanup_allowed
+    assert state.lease_snapshot.root == root and state.lease_snapshot.operation == operation_current
+
+    operation_remove = ledger.LedgerProposal.create(
+        "operation-remove-intent",
+        {
+            "token": TOKEN,
+            "operation_name": ledger._operation_name(TOKEN),
+            "state_parent": pvalue(state_after),
+            "operation": gvalue(operation_before.generation),
+        },
+    )
+    operation_removing = ledger._parse_ledger(encoded(reduced_proposals + [operation_remove]))
+    state = ledger._reconcile_ledger(operation_removing, reduced_observations)
+    assert state.status == "operation-remove-retry" and state.cleanup_origin == "release-authorized"
+    state_absent = parent(1, ("active-ledger", "lock", "sentinel"), ctime=3)
+    absent_observations = ledger.ReconcileObservations(state_absent, (), (), ledger_file())
+    state = ledger._reconcile_ledger(operation_removing, absent_observations)
+    assert state.status == "operation-absence-settleable" and state.cleanup_origin == "release-authorized"
+    assert state.lease_snapshot.operation == operation_current and state.lease_snapshot.root == root
+    assert ledger._reconcile_ledger(
+        operation_removing,
+        dataclasses.replace(absent_observations, ledger_generation=generation(102, "file", 0o600, 1, 1)),
+    ).status == "preserve"
+    operation_absent = ledger.LedgerProposal.create(
+        "operation-absent", {"token": TOKEN, "operation_name": ledger._operation_name(TOKEN), "state_parent": pvalue(state_absent)},
+    )
+    authorized_absent_records = ledger._parse_ledger(encoded(reduced_proposals + [operation_remove, operation_absent]))
+    assert ledger._reconcile_ledger(authorized_absent_records, absent_observations).status == "retirable"
+    authorized_retired = ledger._parse_ledger(encoded(reduced_proposals + [operation_remove, operation_absent, ledger.LedgerProposal.create(
+        "retired", {"token": TOKEN, "state_parent": pvalue(state_absent)},
+    )]))
+    assert ledger._reconcile_ledger(authorized_retired, absent_observations).status == "retired"
+
+    target = generation(30, "file", 0o644, 1, 7, mtime=5_000_000_000)
+    linked = dataclasses.replace(target, nlink=2, ctime_ns=2)
+    target_parent = parent(2, ("rootfs", "sentinel", "target"), ctime=3)
+    alias_parent = parent(2, ("alias", "rootfs", "sentinel", "target"), ctime=4)
+    target_create = [
+        ledger.LedgerProposal.create("create-intent", {"token": TOKEN, "path": "target", "kind": "file", "parent": pvalue(operation_after)}),
+        ledger.LedgerProposal.create("create-observed", {"token": TOKEN, "path": "target", "kind": "file", "parent": pvalue(target_parent), "child": gvalue(target)}),
+        ledger.LedgerProposal.create("create-settled", {"token": TOKEN, "path": "target", "kind": "file", "parent": pvalue(target_parent), "child": gvalue(target)}),
+        ledger.LedgerProposal.create("hardlink-group", {"token": TOKEN, "target_path": "target", "aliases": ["alias"], "content_sha256": "2" * 64, "target": gvalue(target)}),
+        ledger.LedgerProposal.create("hardlink-create-intent", {"token": TOKEN, "target_path": "target", "alias": "alias", "index": 0, "target": gvalue(target), "parent": pvalue(target_parent)}),
+        ledger.LedgerProposal.create("hardlink-create-observed", {"token": TOKEN, "target_path": "target", "alias": "alias", "index": 0, "target_before": gvalue(target), "target_after": gvalue(linked), "alias_generation": gvalue(linked), "parent": pvalue(alias_parent)}),
+        ledger.LedgerProposal.create("hardlink-create-settled", {"token": TOKEN, "target_path": "target", "alias": "alias", "index": 0, "target_before": gvalue(target), "target_after": gvalue(linked), "alias_generation": gvalue(linked), "parent": pvalue(alias_parent)}),
+    ]
+    hardlink_lease_body = dict(lease_body, operation=gvalue(alias_parent.generation))
+    hardlink_leased_proposals = proposals + create + target_create + [ledger.LedgerProposal.create("leased", hardlink_lease_body)]
+    hardlink_leased = ledger._parse_ledger(encoded(hardlink_leased_proposals))
+    hardlink_terminal = hardlink_leased[-1]
+    hardlink_authorization = dict(
+        authorization.body_value(), lease_sequence=hardlink_terminal.sequence,
+        lease_offset=hardlink_terminal.next_offset, lease_sha256=hardlink_terminal.line_sha256,
+    )
+    hardlink_remove = ledger.LedgerProposal.create(
+        "remove-intent", {"token": TOKEN, "path": "alias", "kind": "hardlink", "parent": pvalue(alias_parent), "child": gvalue(linked), "target_path": "target"},
+    )
+    hardlink_removing = ledger._parse_ledger(encoded(hardlink_leased_proposals + [
+        ledger.LedgerProposal.create("release-authorized", hardlink_authorization), hardlink_remove,
+    ]))
+    hardlink_absent = ledger.ReconcileObservations(
+        state_after, ((ledger._operation_name(TOKEN), target_parent.generation),),
+        (("rootfs", root), ("target", target)), ledger_file(), (("", target_parent),),
+    )
+    state = ledger._reconcile_ledger(hardlink_removing, hardlink_absent)
+    assert state.status == "hardlink-remove-absence-settleable" and state.cleanup_origin == "release-authorized"
+
+    rejected(lambda: ledger._parse_ledger(encoded(proposals + [authorization])))
+    rejected(lambda: ledger._parse_ledger(encoded(leased_proposals + [leased_proposals[-1]])))
+    rejected(lambda: ledger._parse_ledger(encoded(leased_proposals + [create[0]])))
+    wrong = dict(authorization.body_value())
+    wrong["lease_offset"] += 1
+    rejected(lambda: ledger._parse_ledger(encoded(leased_proposals + [ledger.LedgerProposal.create("release-authorized", wrong)])))
+    for key, value in (("manifest_size", True), ("ustar_size", 513), ("entry_count", 0), ("manifest_sha256", "0" * 64)):
+        hostile = dict(lease_body)
+        hostile[key] = value
+        rejected(lambda hostile=hostile: ledger.LedgerProposal.create("leased", hostile))
+    assert ledger._settled_record(0, 1, "2" * 64).sequence == 0
+    rejected(lambda: ledger._settled_record(0, 1, "2" * 64, 1))
+
+
+def status_matrix_tests():
+    prelease = {
+        "genesis-settleable", "genesis-abortable", "operation-abortable", "operation-create-settleable",
+        "entry-absent", "create-settleable", "metadata-settleable", "hardlink-create-settleable", "active",
+    }
+    removal = {
+        "remove-retry", "remove-absence-settleable", "hardlink-remove-absence-settleable", "remove-settleable",
+        "operation-remove-retry", "operation-absence-settleable", "retirable", "retired",
+    }
+    snapshot = ledger.LeaseSnapshot(
+        parent(1, ("ledger",)), generation(2), generation(3), (("rootfs", generation(3)),),
+        fs.HostKey(1, 1, 99, "file"), ledger._settled_record(1, 2, "a" * 64),
+    )
+    for status in prelease | removal:
+        state = ledger.LedgerState(status, TOKEN, ledger._operation_name(TOKEN), (), True, "prelease", False, False, "fixture")
+        assert state.cleanup_allowed
+    for status in removal | {"release-authorized"}:
+        state = ledger.LedgerState(status, TOKEN, ledger._operation_name(TOKEN), (), True, "release-authorized", True, True, "fixture", snapshot)
+        assert state.cleanup_allowed
+    assert not ledger.LedgerState("leased", TOKEN, ledger._operation_name(TOKEN), snapshot.owned, False, "none", True, False, "leased", snapshot).cleanup_allowed
+    assert not ledger.LedgerState("preserve", TOKEN, ledger._operation_name(TOKEN), (), False, "none", False, False, "uncertain").cleanup_allowed
+    all_statuses = prelease | removal | {"release-authorized", "leased", "preserve"}
+    for status in all_statuses:
+        for origin in {"none", "prelease", "release-authorized"}:
+            valid = (status in prelease | removal and origin == "prelease") or (status in removal | {"release-authorized"} and origin == "release-authorized") or (status in {"leased", "preserve"} and origin == "none")
+            if not valid:
+                rejected(lambda status=status, origin=origin: ledger.LedgerState(status, TOKEN, None, (), True, origin, True, True, "fixture", snapshot))
 
 
 def hostile_codec_tests():
@@ -404,6 +656,48 @@ def writer_tests():
             node = fs.HeldNode(identity_fd, operation_fd, initial)
             state = ledger.LedgerWriterState(node, key, ledger.INITIAL_BYTES, initial)
             proposal = ledger.LedgerProposal.create("genesis", genesis_body(parent(1, ("active-ledger",))))
+            leased = ledger.LedgerProposal.create("leased", {
+                "token": TOKEN, "operation_name": ledger._operation_name(TOKEN), "state_parent": pvalue(parent(1, ())),
+                "operation": gvalue(generation(2)), "root": gvalue(generation(3)),
+                "ledger_key": {"mount_id": 1, "device": 1, "inode": 99, "kind": "file"},
+                "manifest_sha256": "d" * 64, "manifest_size": 1, "ustar_sha256": "e" * 64,
+                "ustar_size": 512, "entry_count": 1,
+            })
+            authorized = ledger.LedgerProposal.create("release-authorized", {
+                "token": TOKEN, "operation_name": ledger._operation_name(TOKEN), "lease_sequence": 1,
+                "lease_offset": 2, "lease_sha256": "f" * 64, "kata_operation_token": "1" * 64,
+                "kata_ledger_key": {"mount_id": 1, "device": 1, "inode": 100, "kind": "file"},
+                "kata_release_sequence": 1, "kata_release_offset": 2, "kata_release_sha256": "2" * 64,
+            })
+            for control_proposal in (leased, authorized):
+                rejected(lambda control_proposal=control_proposal: ledger._append_record(state, control_proposal, control()))
+                assert os.fstat(operation_fd.number).st_size == 0
+
+            pending = [value for value in vars(ledger).values() if inspect.isfunction(value)]
+            reachable = []
+            seen = set()
+            while pending:
+                function = pending.pop()
+                if id(function) in seen:
+                    continue
+                seen.add(id(function))
+                reachable.append(function)
+                for cell in function.__closure__ or ():
+                    try:
+                        value = cell.cell_contents
+                    except ValueError:
+                        continue
+                    if inspect.isfunction(value):
+                        pending.append(value)
+            generic_writers = [
+                function for function in reachable
+                if tuple(inspect.signature(function).parameters) == ("writer_state", "proposal", "control")
+            ]
+            assert {function.__name__ for function in generic_writers} == {"_append_record", "_write_record"}
+            for function in generic_writers:
+                rejected(lambda function=function: function(state, authorized, control()))
+                assert os.fstat(operation_fd.number).st_size == 0
+            assert "body" not in inspect.signature(ledger._append_leased_record).parameters
             ledger.os.write = lambda _fd, _raw: 0
             rejected(lambda: ledger._append_record(state, proposal, control()))
             assert os.fstat(operation_fd.number).st_size == 0
@@ -481,6 +775,27 @@ def writer_tests():
             operation_fd.close()
 
 
+def reconcile_emission_tests():
+    required = {
+        ("genesis-settleable", "prelease", True), ("genesis-abortable", "prelease", True),
+        ("operation-abortable", "prelease", True), ("operation-create-settleable", "prelease", True),
+        ("entry-absent", "prelease", True), ("create-settleable", "prelease", True),
+        ("metadata-settleable", "prelease", True), ("hardlink-create-settleable", "prelease", True),
+        ("active", "prelease", True), ("remove-retry", "prelease", True),
+        ("remove-absence-settleable", "prelease", True), ("hardlink-remove-absence-settleable", "prelease", True),
+        ("remove-settleable", "prelease", True), ("operation-remove-retry", "prelease", True),
+        ("operation-absence-settleable", "prelease", True), ("retirable", "prelease", True), ("retired", "prelease", True),
+        ("leased", "none", False), ("release-authorized", "release-authorized", True),
+        ("remove-retry", "release-authorized", True), ("remove-absence-settleable", "release-authorized", True),
+        ("hardlink-remove-absence-settleable", "release-authorized", True),
+        ("remove-settleable", "release-authorized", True), ("operation-remove-retry", "release-authorized", True),
+        ("operation-absence-settleable", "release-authorized", True),
+        ("retirable", "release-authorized", True), ("retired", "release-authorized", True),
+        ("preserve", "none", False),
+    }
+    assert RECONCILE_EMISSIONS == required, (required - RECONCILE_EMISSIONS, RECONCILE_EMISSIONS - required)
+
+
 def static_tests():
     source = (REMOTE / "completion_rootfs_ledger.py").read_text()
     for forbidden in ("os.mkdir", "os.makedirs", "os.open", "os.unlink", "os.remove", "os.rmdir", "os.rename", "subprocess", "socket", "argparse", "sys.argv", "if __name__"):
@@ -490,8 +805,11 @@ def static_tests():
 
 
 codec_and_reconcile_tests()
+lease_codec_and_origin_tests()
+status_matrix_tests()
 hostile_codec_tests()
 hardlink_tests()
 writer_tests()
+reconcile_emission_tests()
 static_tests()
 print("completion rootfs ledger tests passed")

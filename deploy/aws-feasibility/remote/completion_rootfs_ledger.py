@@ -57,6 +57,8 @@ RECORD_TYPES = frozenset(
         "operation-remove-intent",
         "operation-absent",
         "retired",
+        "leased",
+        "release-authorized",
         "uncertain",
     }
 )
@@ -284,6 +286,14 @@ class SettledBytes:
         _fail((self.sequence == -1) == (self.offset == 0 and self.line_sha256 == ZERO_SHA256))
 
 
+def _settled_record(sequence, offset, line_sha256, minimum_sequence=0):
+    _integer(minimum_sequence, 0, MAX_RECORDS - 1)
+    _integer(sequence, minimum_sequence, MAX_RECORDS - 1)
+    _integer(offset, 1, MAX_LEDGER_BYTES)
+    _digest(line_sha256)
+    return SettledBytes(sequence, offset, line_sha256)
+
+
 INITIAL_BYTES = SettledBytes(-1, 0, ZERO_SHA256)
 
 
@@ -336,10 +346,12 @@ class ReconcileObservations:
     state_parent: LedgerParent
     operations: tuple[tuple[str, HostGeneration], ...]
     entries: tuple[tuple[str, HostGeneration], ...]
+    ledger_generation: HostGeneration
     parents: tuple[tuple[str, LedgerParent], ...] = ()
 
     def __post_init__(self):
         _fail(type(self.state_parent) is LedgerParent)
+        _fail(type(self.ledger_generation) is HostGeneration and self.ledger_generation.key.kind == "file")
         for values in (self.operations, self.entries):
             _fail(type(values) is tuple)
             _fail(all(type(item) is tuple and len(item) == 2 and type(item[0]) is str and type(item[1]) is HostGeneration for item in values))
@@ -355,13 +367,52 @@ class ReconcileObservations:
 
 
 @dataclass(frozen=True)
+class LeaseSnapshot:
+    state_parent: LedgerParent
+    operation: HostGeneration
+    root: HostGeneration
+    owned: tuple[tuple[str, HostGeneration], ...]
+    ledger_key: HostKey
+    settled: SettledBytes
+
+    def __post_init__(self):
+        _fail(type(self.state_parent) is LedgerParent and type(self.operation) is HostGeneration)
+        _fail(type(self.root) is HostGeneration and self.root.key.kind == "directory")
+        _fail(type(self.owned) is tuple and dict(self.owned).get("rootfs") == self.root)
+        _fail(type(self.ledger_key) is HostKey and self.ledger_key.kind == "file")
+        _fail(type(self.settled) is SettledBytes)
+
+
+@dataclass(frozen=True)
 class LedgerState:
     status: str
     token: str
     operation_name: str | None
     owned: tuple[tuple[str, HostGeneration], ...]
     cleanup_allowed: bool
+    cleanup_origin: str
+    lease_seen: bool
+    release_authorized: bool
     terminal_record: str
+    lease_snapshot: LeaseSnapshot | None = None
+
+    def __post_init__(self):
+        _fail(type(self.status) is str and type(self.cleanup_allowed) is bool)
+        _fail(type(self.cleanup_origin) is str and self.cleanup_origin in {"none", "prelease", "release-authorized"})
+        _fail(type(self.lease_seen) is bool and type(self.release_authorized) is bool)
+        _fail(self.lease_snapshot is None or type(self.lease_snapshot) is LeaseSnapshot)
+        prelease = {"genesis-settleable", "genesis-abortable", "operation-abortable", "operation-create-settleable", "entry-absent", "create-settleable", "metadata-settleable", "hardlink-create-settleable", "active"}
+        removal = {"remove-retry", "remove-absence-settleable", "hardlink-remove-absence-settleable", "remove-settleable", "operation-remove-retry", "operation-absence-settleable", "retirable", "retired"}
+        valid = ((self.status in prelease or self.status in removal) and self.cleanup_origin == "prelease" and self.cleanup_allowed)
+        valid = valid or ((self.status == "release-authorized" or self.status in removal) and self.cleanup_origin == "release-authorized" and self.cleanup_allowed)
+        valid = valid or (self.status in {"leased", "preserve"} and self.cleanup_origin == "none" and not self.cleanup_allowed)
+        _fail(valid and (not self.release_authorized or self.lease_seen))
+        if self.status == "leased":
+            _fail(self.lease_seen and not self.release_authorized and type(self.lease_snapshot) is LeaseSnapshot)
+        if self.cleanup_origin == "prelease":
+            _fail(not self.lease_seen and not self.release_authorized)
+        if self.cleanup_origin == "release-authorized":
+            _fail(self.lease_seen and self.release_authorized and type(self.lease_snapshot) is LeaseSnapshot)
 
 
 @dataclass(frozen=True)
@@ -493,6 +544,25 @@ def _validate_body(record_type, body):
     elif record_type in {"genesis-settled", "genesis-abort", "retired"}:
         _exact_keys(body, ("token", "state_parent"))
         _parse_parent(body["state_parent"])
+    elif record_type == "leased":
+        _exact_keys(body, ("token", "operation_name", "state_parent", "operation", "root", "ledger_key", "manifest_sha256", "manifest_size", "ustar_sha256", "ustar_size", "entry_count"))
+        _fail(body["operation_name"] == _operation_name(token))
+        _parse_parent(body["state_parent"])
+        _fail(_parse_generation(body["operation"]).key.kind == "directory")
+        _fail(_parse_generation(body["root"]).key.kind == "directory")
+        _parse_key(body["ledger_key"], "file")
+        _digest(body["manifest_sha256"])
+        _integer(body["manifest_size"], 1)
+        _digest(body["ustar_sha256"])
+        _fail(_integer(body["ustar_size"], 1) % 512 == 0)
+        _integer(body["entry_count"], 1)
+    elif record_type == "release-authorized":
+        _exact_keys(body, ("token", "operation_name", "lease_sequence", "lease_offset", "lease_sha256", "kata_operation_token", "kata_ledger_key", "kata_release_sequence", "kata_release_offset", "kata_release_sha256"))
+        _fail(body["operation_name"] == _operation_name(token))
+        _settled_record(body["lease_sequence"], body["lease_offset"], body["lease_sha256"])
+        _token(body["kata_operation_token"])
+        _parse_key(body["kata_ledger_key"], "file")
+        _settled_record(body["kata_release_sequence"], body["kata_release_offset"], body["kata_release_sha256"], 1)
     elif record_type in {"operation-create-intent", "operation-abort", "operation-absent"}:
         _exact_keys(body, ("token", "operation_name", "state_parent"))
         _fail(body["operation_name"] == _operation_name(token))
@@ -567,6 +637,12 @@ def _validate_body(record_type, body):
     return body
 
 
+def _parse_key(value, expected_kind):
+    _exact_keys(value, ("mount_id", "device", "inode", "kind"))
+    _fail(type(expected_kind) is str and value["kind"] == expected_kind)
+    return HostKey(_integer(value["mount_id"], 1), _integer(value["device"]), _integer(value["inode"], 1), value["kind"])
+
+
 def _entry_common(body):
     _graph_path(body["path"])
     _fail(body["kind"] in KINDS)
@@ -599,6 +675,74 @@ def _hardlink_generation_change(before, after, delta):
     _fail(after.nlink == before.nlink + delta)
 
 
+def _replay_graph(records):
+    state_parent = None
+    operation = None
+    owned = {}
+    consistent = True
+    for record in records:
+        body = _body(record)
+        kind = record.record_type
+        if "state_parent" in body:
+            state_parent = _parse_parent(body["state_parent"])
+        if kind == "operation-create-settled":
+            operation = _parse_generation(body["operation"])
+        elif kind in {"create-settled", "metadata-settled"}:
+            owned[body["path"]] = _parse_generation(body["child"])
+        elif kind == "hardlink-create-settled":
+            linked = _parse_generation(body["alias_generation"])
+            owned[body["alias"]] = linked
+            if body["target_path"] in owned:
+                owned[body["target_path"]] = linked
+            else:
+                consistent = False
+        elif kind == "remove-settled":
+            owned.pop(body["path"], None)
+            if body["target"] is not None:
+                if body["target_path"] in owned:
+                    owned[body["target_path"]] = _parse_generation(body["target"])
+                else:
+                    consistent = False
+        if kind in {"create-settled", "hardlink-create-settled", "remove-settled", "create-abort", "hardlink-create-abort"}:
+            path = body.get("path", body.get("alias"))
+            if kind == "hardlink-create-abort" and body["target_path"] in owned:
+                owned[body["target_path"]] = _parse_generation(body["target"])
+            parent_path = path.rpartition("/")[0]
+            parent_generation = _parse_parent(body["parent"]).generation
+            if parent_path:
+                consistent = consistent and parent_path in owned
+                if parent_path in owned:
+                    owned[parent_path] = parent_generation
+            else:
+                operation = parent_generation
+        if kind == "operation-remove-intent":
+            consistent = consistent and operation == _parse_generation(body["operation"])
+        elif kind == "operation-absent":
+            operation = None
+    return state_parent, operation, owned, consistent
+
+
+def _lease_from_record(records, record):
+    state_parent, operation, owned, consistent = _replay_graph(records[: record.sequence])
+    body = _body(record)
+    key = _parse_key(_body(records[0])["ledger_key"], "file")
+    _fail(consistent and operation is not None and "rootfs" in owned)
+    _fail(_parse_parent(body["state_parent"]) == state_parent)
+    _fail(_parse_generation(body["operation"]) == operation)
+    _fail(_parse_generation(body["root"]) == owned["rootfs"])
+    _fail(_parse_key(body["ledger_key"], "file") == key)
+    settled = _settled_record(record.sequence, record.next_offset, record.line_sha256)
+    return LeaseSnapshot(state_parent, operation, owned["rootfs"], tuple(sorted(owned.items())), key, settled)
+
+
+def _lease_history(records):
+    leased = next((record for record in records if record.record_type == "leased"), None)
+    snapshot = None if leased is None else _lease_from_record(records, leased)
+    authorized = next((record for record in records if record.record_type == "release-authorized"), None)
+    started = authorized is not None and any(record.sequence > authorized.sequence and record.record_type in {"remove-intent", "operation-remove-intent"} for record in records)
+    return snapshot, authorized is not None, started
+
+
 def _validate_legal_records(records):
     _fail(type(records) is tuple and records and records[0].record_type == "genesis")
     token = _body(records[0])["token"]
@@ -606,6 +750,8 @@ def _validate_legal_records(records):
     operation_name = None
     groups = {}
     pending = None
+    return_phase = None
+    lease_snapshot = None
     for record in records[1:]:
         body = _body(record)
         _fail(body["token"] == token and phase not in {"retired", "uncertain"})
@@ -614,8 +760,7 @@ def _validate_legal_records(records):
             phase = "uncertain"
             continue
         if phase == "genesis":
-            _fail(kind == "genesis-settled")
-            _fail(body["state_parent"] == _body(records[0])["state_parent"])
+            _fail(kind == "genesis-settled" and body["state_parent"] == _body(records[0])["state_parent"])
             phase = "ready"
         elif phase == "ready":
             _fail(kind in {"genesis-abort", "operation-create-intent"})
@@ -628,8 +773,7 @@ def _validate_legal_records(records):
             _fail(kind == "retired")
             phase = "retired"
         elif phase == "operation-intent":
-            _fail(kind in {"operation-create-observed", "operation-abort"})
-            _fail(body["operation_name"] == operation_name)
+            _fail(kind in {"operation-create-observed", "operation-abort"} and body["operation_name"] == operation_name)
             if kind == "operation-create-observed":
                 intent = _body(records[record.sequence - 1])
                 _parent_delta("create", operation_name, _parse_parent(intent["state_parent"]), _parse_parent(body["state_parent"]))
@@ -640,40 +784,50 @@ def _validate_legal_records(records):
             _fail(kind == "operation-create-settled" and body["operation_name"] == operation_name)
             _fail(body == _body(records[record.sequence - 1]))
             phase = "active"
-        elif phase == "active":
-            if kind == "operation-remove-intent":
+        elif phase in {"active", "release-authorized"}:
+            if kind == "leased":
+                _fail(phase == "active" and pending is None and lease_snapshot is None)
+                lease_snapshot = _lease_from_record(records, record)
+                phase = "leased"
+            elif kind == "operation-remove-intent":
                 _fail(body["operation_name"] == operation_name)
+                return_phase = phase
                 phase = "operation-remove"
             elif kind == "hardlink-group":
+                _fail(phase == "active")
                 target = body["target_path"]
                 _fail(target not in groups)
                 groups[target] = (tuple(body["aliases"]), 0)
             else:
-                _fail(kind in {"create-intent", "metadata-intent", "hardlink-create-intent", "remove-intent"})
+                allowed = {"remove-intent"} if phase == "release-authorized" else {"create-intent", "metadata-intent", "hardlink-create-intent", "remove-intent"}
+                _fail(kind in allowed)
                 if kind == "hardlink-create-intent":
                     target = body["target_path"]
-                    _fail(target in groups and body["index"] == groups[target][1])
-                    _fail(body["alias"] == groups[target][0][groups[target][1]])
+                    _fail(target in groups and body["index"] == groups[target][1] and body["alias"] == groups[target][0][groups[target][1]])
                 if kind == "remove-intent" and body["target_path"] is not None:
                     target = body["target_path"]
-                    _fail(target in groups and groups[target][1] > 0)
-                    _fail(body["path"] == groups[target][0][groups[target][1] - 1])
+                    _fail(target in groups and groups[target][1] > 0 and body["path"] == groups[target][0][groups[target][1] - 1])
                 pending = record
+                return_phase = phase
                 phase = kind.removesuffix("-intent") + "-intent"
+        elif phase == "leased":
+            _fail(kind == "release-authorized" and lease_snapshot is not None)
+            actual = lease_snapshot.settled
+            _fail((body["lease_sequence"], body["lease_offset"], body["lease_sha256"]) == (actual.sequence, actual.offset, actual.line_sha256))
+            phase = "release-authorized"
         elif phase.endswith("-intent"):
             abort_kind = phase.removesuffix("intent") + "abort"
             _fail(kind in {abort_kind, phase.removesuffix("intent") + "observed"})
             if kind == abort_kind:
+                _fail(return_phase == "active")
                 intent_body = _body(pending)
                 excluded = {"parent", "target"} if kind == "hardlink-create-abort" else {"parent"}
                 _fail(all(body[key] == intent_body[key] for key in body if key not in excluded))
                 if kind == "hardlink-create-abort":
                     _fail(_same_fields(_parse_generation(body["target"]), _parse_generation(intent_body["target"]), {"ctime_ns"}))
-                before_parent = _parse_parent(intent_body["parent"])
-                after_parent = _parse_parent(body["parent"])
-                _fail(_valid_abort_parent(before_parent, after_parent))
+                _fail(_valid_abort_parent(_parse_parent(intent_body["parent"]), _parse_parent(body["parent"])))
                 pending = None
-                phase = "active"
+                phase = return_phase
             else:
                 _matching_transition(pending, record)
                 pending = record
@@ -688,7 +842,7 @@ def _validate_legal_records(records):
                 target = body["target_path"]
                 groups[target] = (groups[target][0], groups[target][1] - 1)
             pending = None
-            phase = "active"
+            phase = return_phase
         elif phase == "operation-remove":
             _fail(kind == "operation-absent" and body["operation_name"] == operation_name)
             intent = _body(records[record.sequence - 1])
@@ -737,6 +891,11 @@ def _reconcile_ledger(records, observations):
     phase = _validate_legal_records(records)
     token = _body(records[0])["token"]
     operation_name = _operation_name(token)
+    lease_snapshot, release_authorized, authorized_removal_started = _lease_history(records)
+    genesis_key = _parse_key(_body(records[0])["ledger_key"], "file")
+    ledger_matches = observations.ledger_generation.key == genesis_key
+    if lease_snapshot is not None:
+        ledger_matches = ledger_matches and observations.ledger_generation.key == lease_snapshot.ledger_key
     operations = dict(observations.operations)
     entries = dict(observations.entries)
     parents = dict(observations.parents)
@@ -801,7 +960,7 @@ def _reconcile_ledger(records, observations):
             pending = None
     status = "preserve"
     parent_matches = state_parent == observations.state_parent
-    parent_matches = parent_matches and operation_consistent
+    parent_matches = parent_matches and operation_consistent and ledger_matches
     if phase == "genesis" and not operations and not entries and parent_matches:
         status = "genesis-settleable"
     elif phase == "ready" and not operations and not entries and parent_matches:
@@ -813,8 +972,18 @@ def _reconcile_ledger(records, observations):
         recorded = _parse_generation(observed["operation"])
         if operations == {operation_name: recorded} and observations.state_parent == _parse_parent(observed["state_parent"]):
             status = "operation-create-settleable"
-    elif phase == "active" and operations == {operation_name: operation_generation} and parent_matches:
-        status = "active" if entries == owned else "preserve"
+    elif phase in {"active", "release-authorized", "leased"} and operations == {operation_name: operation_generation} and parent_matches:
+        if entries == owned:
+            status = phase
+        if lease_snapshot is not None and not authorized_removal_started:
+            exact_snapshot = (
+                state_parent == lease_snapshot.state_parent
+                and operation_generation == lease_snapshot.operation
+                and tuple(sorted(owned.items())) == lease_snapshot.owned
+                and owned.get("rootfs") == lease_snapshot.root
+            )
+            if not exact_snapshot:
+                status = "preserve"
     elif phase.endswith("-observed") and operation_generation is not None and parent_matches:
         body = _body(records[-1])
         kind = records[-1].record_type
@@ -852,7 +1021,7 @@ def _reconcile_ledger(records, observations):
             status = kind.removesuffix("-observed") + "-settleable"
     elif phase == "operation-remove" and operations == {operation_name: operation_generation} and entries == owned == {} and parent_matches:
         status = "operation-remove-retry"
-    elif phase == "operation-remove" and not operations and not entries:
+    elif phase == "operation-remove" and not operations and not entries and ledger_matches and operation_consistent:
         intent_parent = _parse_parent(_body(records[-1])["state_parent"])
         if _valid_parent_delta("rmdir", operation_name, intent_parent, observations.state_parent):
             status = "operation-absence-settleable"
@@ -895,8 +1064,29 @@ def _reconcile_ledger(records, observations):
                         status = "hardlink-remove-absence-settleable"
                 elif absence_operation and entries == remaining and _valid_parent_delta(action, path.split("/")[-1], expected_parent, observed_parent):
                     status = "remove-absence-settleable"
-    cleanup_allowed = status in {"active", "entry-absent", "remove-retry", "remove-absence-settleable", "hardlink-remove-absence-settleable", "operation-remove-retry"}
-    return LedgerState(status, token, operation_name if operation_intended else None, tuple(sorted(owned.items())), cleanup_allowed, records[-1].record_type)
+    prelease_statuses = {
+        "genesis-settleable", "genesis-abortable", "operation-abortable", "operation-create-settleable",
+        "entry-absent", "create-settleable", "metadata-settleable", "hardlink-create-settleable", "active",
+    }
+    removal_statuses = {
+        "remove-retry", "remove-absence-settleable", "hardlink-remove-absence-settleable", "remove-settleable",
+        "operation-remove-retry", "operation-absence-settleable", "retirable", "retired",
+    }
+    if status in prelease_statuses:
+        origin = "prelease"
+    elif status == "release-authorized" or status in removal_statuses and release_authorized:
+        origin = "release-authorized"
+    elif status in removal_statuses:
+        origin = "prelease"
+    else:
+        origin = "none"
+    cleanup_allowed = origin != "none" and status in prelease_statuses | removal_statuses | {"release-authorized"}
+    if phase == "uncertain" or status == "preserve":
+        status, origin, cleanup_allowed = "preserve", "none", False
+    return LedgerState(
+        status, token, operation_name if operation_intended else None, tuple(sorted(owned.items())), cleanup_allowed,
+        origin, lease_snapshot is not None, release_authorized, records[-1].record_type, lease_snapshot,
+    )
 
 
 def _require_ledger_generation(generation, stable_key):
@@ -905,76 +1095,104 @@ def _require_ledger_generation(generation, stable_key):
     _fail(generation.uid == generation.gid == 0 and generation.nlink == 1)
 
 
-def _append_record(writer_state, proposal, control):
-    _fail(type(writer_state) is LedgerWriterState and type(proposal) is LedgerProposal)
-    _fail(type(control) is OperationControl)
-    node = writer_state.node
-    raw = None
-    try:
-        before = _observe_node(node.identity_fd, node.operation_fd, control)
-        _require_ledger_generation(before, writer_state.stable_key)
-        _fail(_same_fields(before, writer_state.generation, {"mtime_ns", "ctime_ns"}) and before.size == writer_state.settled.offset)
-        _require_empty_fd_xattrs(node, control)
-        control.check()
-        _fail(os.lseek(node.operation_fd.number, 0, os.SEEK_CUR) == writer_state.settled.offset)
-        control.check()
-        raw = _encode_proposal(proposal, writer_state.settled)
-        written = 0
-        while written < len(raw):
-            control.check()
-            count = os.write(node.operation_fd.number, raw[written:])
-            control.check()
-            _fail(type(count) is int and 0 < count <= len(raw) - written)
-            written += count
-        control.check()
-        os.fsync(node.operation_fd.number)
-        control.check()
-        after = _observe_node(node.identity_fd, node.operation_fd, control)
-        _require_ledger_generation(after, writer_state.stable_key)
-        _fail(_same_fields(before, after, {"size", "mtime_ns", "ctime_ns"}))
-        _fail(after.size == writer_state.settled.offset + len(raw))
-        _require_empty_fd_xattrs(node, control)
-        control.check()
-        _fail(os.lseek(node.operation_fd.number, 0, os.SEEK_CUR) == after.size)
-        control.check()
-        settled = SettledBytes(writer_state.settled.sequence + 1, after.size, hashlib.sha256(raw).hexdigest())
-        return LedgerWriterState(node, writer_state.stable_key, settled, after)
-    except BaseException as error:
-        cleanup = OperationControl(time.monotonic_ns() + 120 * 1_000_000_000, lambda: False)
+def _append_capabilities():
+    def _write_record(writer_state, proposal, control):
+        _fail(type(writer_state) is LedgerWriterState and type(proposal) is LedgerProposal)
+        _fail(type(control) is OperationControl)
+        _fail(proposal.record_type != "release-authorized")
+        node = writer_state.node
+        raw = None
         try:
-            current = _observe_node(node.identity_fd, node.operation_fd, cleanup)
-            _require_ledger_generation(current, writer_state.stable_key)
-            if raw is None:
-                _fail(current.size == writer_state.settled.offset)
-            else:
-                _fail(writer_state.settled.offset <= current.size <= writer_state.settled.offset + len(raw))
-                suffix_size = current.size - writer_state.settled.offset
-                suffix = os.pread(node.operation_fd.number, suffix_size, writer_state.settled.offset)
-                _fail(suffix == raw[:suffix_size])
-            prefix = os.pread(node.operation_fd.number, writer_state.settled.offset, 0)
-            cleanup.check()
-            _fail(len(prefix) == writer_state.settled.offset)
-            if prefix:
-                records = _parse_ledger(prefix)
-                last = records[-1]
-                _fail((last.sequence, last.next_offset, last.line_sha256) == (writer_state.settled.sequence, writer_state.settled.offset, writer_state.settled.line_sha256))
-            else:
-                _fail(writer_state.settled == INITIAL_BYTES)
-            os.ftruncate(node.operation_fd.number, writer_state.settled.offset)
+            before = _observe_node(node.identity_fd, node.operation_fd, control)
+            _require_ledger_generation(before, writer_state.stable_key)
+            _fail(_same_fields(before, writer_state.generation, {"mtime_ns", "ctime_ns"}) and before.size == writer_state.settled.offset)
+            _require_empty_fd_xattrs(node, control)
+            control.check()
+            _fail(os.lseek(node.operation_fd.number, 0, os.SEEK_CUR) == writer_state.settled.offset)
+            control.check()
+            raw = _encode_proposal(proposal, writer_state.settled)
+            written = 0
+            while written < len(raw):
+                control.check()
+                count = os.write(node.operation_fd.number, raw[written:])
+                control.check()
+                _fail(type(count) is int and 0 < count <= len(raw) - written)
+                written += count
+            control.check()
             os.fsync(node.operation_fd.number)
-            _fail(os.lseek(node.operation_fd.number, writer_state.settled.offset, os.SEEK_SET) == writer_state.settled.offset)
-            restored_prefix = os.pread(node.operation_fd.number, writer_state.settled.offset, 0)
-            _fail(restored_prefix == prefix)
-            if restored_prefix:
-                restored_records = _parse_ledger(restored_prefix)
-                restored_last = restored_records[-1]
-                _fail((restored_last.sequence, restored_last.next_offset, restored_last.line_sha256) == (writer_state.settled.sequence, writer_state.settled.offset, writer_state.settled.line_sha256))
-            restored = _observe_node(node.identity_fd, node.operation_fd, cleanup)
-            _require_ledger_generation(restored, writer_state.stable_key)
-            _fail(restored.size == writer_state.settled.offset)
-        except BaseException as rollback_error:
-            error = RootfsFsError(error, rollback_error)
-        raise error
+            control.check()
+            after = _observe_node(node.identity_fd, node.operation_fd, control)
+            _require_ledger_generation(after, writer_state.stable_key)
+            _fail(_same_fields(before, after, {"size", "mtime_ns", "ctime_ns"}))
+            _fail(after.size == writer_state.settled.offset + len(raw))
+            _require_empty_fd_xattrs(node, control)
+            control.check()
+            _fail(os.lseek(node.operation_fd.number, 0, os.SEEK_CUR) == after.size)
+            control.check()
+            settled = SettledBytes(writer_state.settled.sequence + 1, after.size, hashlib.sha256(raw).hexdigest())
+            return LedgerWriterState(node, writer_state.stable_key, settled, after)
+        except BaseException as error:
+            cleanup = OperationControl(time.monotonic_ns() + 120 * 1_000_000_000, lambda: False)
+            try:
+                current = _observe_node(node.identity_fd, node.operation_fd, cleanup)
+                _require_ledger_generation(current, writer_state.stable_key)
+                if raw is None:
+                    _fail(current.size == writer_state.settled.offset)
+                else:
+                    _fail(writer_state.settled.offset <= current.size <= writer_state.settled.offset + len(raw))
+                    suffix_size = current.size - writer_state.settled.offset
+                    suffix = os.pread(node.operation_fd.number, suffix_size, writer_state.settled.offset)
+                    _fail(suffix == raw[:suffix_size])
+                prefix = os.pread(node.operation_fd.number, writer_state.settled.offset, 0)
+                cleanup.check()
+                _fail(len(prefix) == writer_state.settled.offset)
+                if prefix:
+                    records = _parse_ledger(prefix)
+                    last = records[-1]
+                    _fail((last.sequence, last.next_offset, last.line_sha256) == (writer_state.settled.sequence, writer_state.settled.offset, writer_state.settled.line_sha256))
+                else:
+                    _fail(writer_state.settled == INITIAL_BYTES)
+                os.ftruncate(node.operation_fd.number, writer_state.settled.offset)
+                os.fsync(node.operation_fd.number)
+                _fail(os.lseek(node.operation_fd.number, writer_state.settled.offset, os.SEEK_SET) == writer_state.settled.offset)
+                restored_prefix = os.pread(node.operation_fd.number, writer_state.settled.offset, 0)
+                _fail(restored_prefix == prefix)
+                if restored_prefix:
+                    restored_records = _parse_ledger(restored_prefix)
+                    restored_last = restored_records[-1]
+                    _fail((restored_last.sequence, restored_last.next_offset, restored_last.line_sha256) == (writer_state.settled.sequence, writer_state.settled.offset, writer_state.settled.line_sha256))
+                restored = _observe_node(node.identity_fd, node.operation_fd, cleanup)
+                _require_ledger_generation(restored, writer_state.stable_key)
+                _fail(restored.size == writer_state.settled.offset)
+            except BaseException as rollback_error:
+                error = RootfsFsError(error, rollback_error)
+            raise error
+
+    def _append_record(writer_state, proposal, control):
+        _fail(type(proposal) is LedgerProposal and proposal.record_type not in {"leased", "release-authorized"})
+        return _write_record(writer_state, proposal, control)
+
+    def _append_leased_record(
+        writer_state, token, operation_name, state_parent, operation, root,
+        manifest_sha256, manifest_size, ustar_sha256, ustar_size, entry_count, control,
+    ):
+        _fail(type(writer_state) is LedgerWriterState and type(state_parent) is LedgerParent)
+        _fail(type(operation) is HostGeneration and type(root) is HostGeneration)
+        key = writer_state.stable_key
+        body = {
+            "token": token, "operation_name": operation_name, "state_parent": _parent_value(state_parent),
+            "operation": _generation_value(operation), "root": _generation_value(root),
+            "ledger_key": {"mount_id": key.mount_id, "device": key.device, "inode": key.inode, "kind": key.kind},
+            "manifest_sha256": manifest_sha256, "manifest_size": manifest_size,
+            "ustar_sha256": ustar_sha256, "ustar_size": ustar_size, "entry_count": entry_count,
+        }
+        return _write_record(writer_state, LedgerProposal.create("leased", body), control)
+
+    return _append_record, _append_leased_record
+
+
+_append_record, _append_leased_record = _append_capabilities()
+del _append_capabilities
 
 
 def _hardlink_plan(value):
