@@ -53,13 +53,23 @@ for index, name in enumerate(names, 2):
     next_identity = {**identity, "mtime_ns": index, "ctime_ns": index}
     events.extend((("file-intent", name, None), ("file", name, generation), ("candidate-generation", None, next_identity)))
     identity = next_identity
-events.extend((("prepared", None, None), ("rename", None, None), ("accepted", None, None)))
+accepted_identity = {**identity, "ctime_ns": identity["ctime_ns"] + 1}
+events.extend((("prepared", None, None), ("rename", None, None), ("accepted", None, accepted_identity)))
 for phase, name, item_identity in events:
     value = publish._record(len(values), previous, phase, name, item_identity)
     line = publish._canonical(value)
     values.append(line)
     previous = hashlib.sha256(line).hexdigest()
     assert len(publish._parse_transaction(b"".join(values), names)) == len(values)
+abort_values = []
+previous = publish.ZERO_SHA256
+abort_identity = {**identity, "mtime_ns": identity["mtime_ns"] + 1, "ctime_ns": identity["ctime_ns"] + 1}
+for phase, name, item_identity in (("intent", None, None), ("candidate-intent", None, None), ("candidate", None, identity), ("file-intent", names[0], None), ("file-abort", names[0], abort_identity), ("file-intent", names[0], None)):
+    value = publish._record(len(abort_values), previous, phase, name, item_identity)
+    line = publish._canonical(value)
+    abort_values.append(line)
+    previous = hashlib.sha256(line).hexdigest()
+publish._parse_transaction(b"".join(abort_values), names)
 try:
     publish._parse_transaction(b"".join(values).replace(b'"phase":"rename"', b'"phase":"accepted"'), names)
 except publish.PublicationError:
@@ -76,12 +86,23 @@ reused_directory = fs.HostGeneration(reuse_key, 0o700, 0, 0, 2, 4096, 10, 11)
 reuse_node = fs.HeldNode(fs.CheckedFd(reuse_identity_read, "reuse-identity"), fs.CheckedFd(reuse_operation_read, "reuse-operation"), reused_directory)
 real_observe = fs._observe_node
 fs._observe_node = lambda _identity, _operation, _control: reused_directory
+assert publish._require_rename_generation(reuse_node, publish._generation_value(recorded_directory), object()) == reused_directory
 try:
     publish._require_directory_generation(reuse_node, publish._generation_value(recorded_directory), object())
 except publish.PublicationError:
     pass
 else:
     raise AssertionError("same-inode candidate replacement accepted")
+finally:
+    fs._observe_node = real_observe
+replacement_after_rename = fs.HostGeneration(reuse_key, 0o700, 0, 0, 2, 4097, 10, 12)
+fs._observe_node = lambda _identity, _operation, _control: replacement_after_rename
+try:
+    publish._require_rename_generation(reuse_node, publish._generation_value(recorded_directory), object())
+except publish.PublicationError:
+    pass
+else:
+    raise AssertionError("same-inode accepted replacement authorized as rename")
 finally:
     fs._observe_node = real_observe
     fs._close_node(reuse_node)
@@ -91,14 +112,17 @@ if sys.platform == "linux":
         candidate_path.mkdir()
         first = candidate_path.stat()
         candidate_path.rmdir()
+        reused_stat = None
         for _attempt in range(4096):
             candidate_path.mkdir()
-            reused = candidate_path.stat()
-            if reused.st_ino == first.st_ino:
-                assert (reused.st_mode, reused.st_uid, reused.st_gid, reused.st_nlink, reused.st_size, reused.st_mtime_ns, reused.st_ctime_ns) != (first.st_mode, first.st_uid, first.st_gid, first.st_nlink, first.st_size, first.st_mtime_ns, first.st_ctime_ns)
+            current = candidate_path.stat()
+            if current.st_ino == first.st_ino:
+                reused_stat = current
                 candidate_path.rmdir()
                 break
             candidate_path.rmdir()
+        assert reused_stat is not None, "approved Linux fixture did not reuse the candidate inode"
+        assert (reused_stat.st_mode, reused_stat.st_uid, reused_stat.st_gid, reused_stat.st_nlink, reused_stat.st_size, reused_stat.st_mtime_ns, reused_stat.st_ctime_ns) != (first.st_mode, first.st_uid, first.st_gid, first.st_nlink, first.st_size, first.st_mtime_ns, first.st_ctime_ns)
 identity_read, identity_write = os.pipe()
 operation_read, operation_write = os.pipe()
 os.close(identity_write)

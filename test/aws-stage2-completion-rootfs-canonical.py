@@ -242,6 +242,48 @@ def docker_functional_two_builds():
         recovered_snapshot = publication._open_transaction(snapshot_destination, content_names, snapshot_control)
         assert recovered_snapshot.records[-1]["phase"] == "candidate-intent"
         assert not (snapshot_path / ".accepted-transaction-next-v1").exists()
+        snapshot_candidate_path = snapshot_path / ".accepted-candidate-v1"
+        snapshot_candidate_path.mkdir(mode=0o700)
+        snapshot_candidate_path.chmod(0o700)
+        snapshot_candidate = held_directory(snapshot_candidate_path, "snapshot-candidate")
+        recovered_snapshot = publication._append_transaction(recovered_snapshot, snapshot_destination, content_names, "candidate", snapshot_control, identity=publication._generation_value(snapshot_candidate.generation))
+        for index, fail_after_exchange in enumerate((False, True)):
+            name = publication._contents(second.manifest, second.ustar, pins_value)[index][0]
+            recovered_snapshot = publication._append_transaction(recovered_snapshot, snapshot_destination, content_names, "file-intent", snapshot_control, name.text)
+            file_path = snapshot_candidate_path / name.text
+            file_path.write_bytes(b"x")
+            file_path.chmod(0o400)
+            snapshot_file = fs._open_path_node(snapshot_candidate, name, "file", snapshot_control)
+            candidate_generation = fs._observe_node(snapshot_candidate.identity_fd, snapshot_candidate.operation_fd, snapshot_control)
+            tripped = {"value": False}
+
+            def compound_exchange_fault(parent, source, destination, flags):
+                if flags == 2 and not tripped["value"]:
+                    tripped["value"] = True
+                    if not fail_after_exchange:
+                        raise RuntimeError("compound pre-exchange fault")
+                    original_renameat2(parent, source, destination, flags)
+                    raise RuntimeError("compound post-exchange fault")
+                return original_renameat2(parent, source, destination, flags)
+
+            publication._renameat2 = compound_exchange_fault
+            try:
+                publication._append_records(recovered_snapshot, snapshot_destination, content_names, (("file", name.text, publication._generation_value(snapshot_file.generation)), ("candidate-generation", None, publication._generation_value(candidate_generation))), snapshot_control)
+            except RuntimeError:
+                pass
+            else:
+                raise AssertionError("compound exchange fault was not observed")
+            finally:
+                publication._renameat2 = original_renameat2
+                fs._close_node(snapshot_file)
+            assert tripped["value"]
+            recovered_snapshot = publication._open_transaction(snapshot_destination, content_names, snapshot_control)
+            assert recovered_snapshot.records[-1]["phase"] == "candidate-generation"
+            assert not (snapshot_path / ".accepted-transaction-next-v1").exists()
+        fs._close_node(snapshot_candidate)
+        for name in content_names[:2]:
+            (snapshot_candidate_path / name).unlink()
+        snapshot_candidate_path.rmdir()
         fs._close_node(snapshot_destination)
         (snapshot_path / ".accepted-transaction-v1").unlink()
         snapshot_path.rmdir()
@@ -279,6 +321,54 @@ def docker_functional_two_builds():
         (replaced_path / ".accepted-candidate-v1").rmdir()
         (replaced_path / ".accepted-transaction-v1").unlink()
         replaced_path.rmdir()
+
+        rollback_path = Path("/var/lib/cogs/publication-rollback")
+        rollback_path.mkdir(mode=0o700)
+        rollback_path.chmod(0o700)
+        rollback_destination = held_directory(rollback_path, "rollback-publication")
+        tiny_manifest = b"manifest\n"
+        tiny_ustar = b"ustar\n"
+        tiny_pins = publication.RootfsPins(b"", hashlib.sha256(tiny_manifest).hexdigest(), len(tiny_manifest), hashlib.sha256(tiny_ustar).hexdigest(), len(tiny_ustar), 1)
+        real_write_all = publication._write_all
+        write_fault = {"tripped": False}
+
+        def publication_file_write_fault(descriptor, raw, control):
+            if descriptor.role == "publication-file" and not write_fault["tripped"]:
+                write_fault["tripped"] = True
+                raise OSError("publication file write fault")
+            return real_write_all(descriptor, raw, control)
+
+        abort_record_fault = {"tripped": False}
+
+        def file_abort_record_fault(transaction, parent, content_names, phase, control, name=None, identity=None):
+            result = original_append(transaction, parent, content_names, phase, control, name, identity)
+            if phase == "file-abort" and not abort_record_fault["tripped"]:
+                abort_record_fault["tripped"] = True
+                raise OSError("file-abort record fault")
+            return result
+
+        publication._write_all = publication_file_write_fault
+        publication._append_transaction = file_abort_record_fault
+        try:
+            publication._publish_unmasked(rollback_destination, tiny_manifest, tiny_ustar, tiny_pins, outer)
+        except BaseException:
+            pass
+        else:
+            raise AssertionError("publication file rollback fault was not observed")
+        finally:
+            publication._write_all = real_write_all
+            publication._append_transaction = original_append
+        assert write_fault["tripped"] and abort_record_fault["tripped"]
+        rollback_names = tuple(name.text for name, _raw in publication._contents(tiny_manifest, tiny_ustar, tiny_pins))
+        rollback_transaction = publication._open_transaction(rollback_destination, rollback_names, publication._transition_control())
+        assert rollback_transaction.records[-1]["phase"] == "file-abort"
+        assert publication._publish_unmasked(rollback_destination, tiny_manifest, tiny_ustar, tiny_pins, outer) == publication._publish_unmasked(rollback_destination, tiny_manifest, tiny_ustar, tiny_pins, outer)
+        fs._close_node(rollback_destination)
+        for child in (rollback_path / "accepted").iterdir():
+            child.unlink()
+        (rollback_path / "accepted").rmdir()
+        (rollback_path / ".accepted-transaction-v1").unlink()
+        rollback_path.rmdir()
 
         real_write = publication.os.write
         writes = {"count": 0}
