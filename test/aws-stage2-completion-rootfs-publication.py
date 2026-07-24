@@ -9,6 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 import sys
 import tempfile
+import time
 
 ROOT = Path(__file__).resolve().parents[1]
 REMOTE = ROOT / "deploy/aws-feasibility/remote"
@@ -73,6 +74,24 @@ for phase, name, item_identity in (("intent", None, None), ("candidate-intent", 
     restart_values.append(line)
     previous = hashlib.sha256(line).hexdigest()
 publish._parse_transaction(b"".join(restart_values), names)
+parser_prior = {**identity, "size": 4096, "mtime_ns": 10, "ctime_ns": 10}
+parser_ready = {"generation": anonymous_generation, "sha256": "0" * 64, "size": 1}
+for field, regressed in (("size", 4095), ("mtime_ns", 9), ("ctime_ns", 9)):
+    parser_after = {**parser_prior, "mtime_ns": 11, "ctime_ns": 11, field: regressed}
+    parser_lines = []
+    parser_previous = publish.ZERO_SHA256
+    parser_events = (("intent", None, None), ("candidate-intent", None, None), ("candidate", None, parser_prior), ("file-intent", names[0], parser_prior), ("file-ready", names[0], parser_ready), ("file", names[0], generation), ("candidate-generation", None, parser_after))
+    for parser_phase, parser_name, parser_identity in parser_events:
+        parser_value = publish._record(len(parser_lines), parser_previous, parser_phase, parser_name, parser_identity)
+        parser_line = publish._canonical(parser_value)
+        parser_lines.append(parser_line)
+        parser_previous = hashlib.sha256(parser_line).hexdigest()
+    try:
+        publish._parse_transaction(b"".join(parser_lines), (names[0],))
+    except publish.PublicationError:
+        pass
+    else:
+        raise AssertionError(f"candidate {field} regression accepted by transaction parser")
 anonymous_key = fs.HostKey(1, 1, 9, "file")
 anonymous_host = fs.HostGeneration(anonymous_key, 0o400, 0, 0, 0, 1, 1, 1)
 linked_host = fs.HostGeneration(anonymous_key, 0o400, 0, 0, 1, 1, 1, 2)
@@ -139,6 +158,244 @@ if sys.platform == "linux":
         observed_fs = StatFs()
         assert ctypes.CDLL(None, use_errno=True).statfs(os.fsencode(ext4_fixture), ctypes.byref(observed_fs)) == 0
         assert observed_fs.f_type == 0xEF53, "approved publication fixture is not ext4"
+
+        tiny_manifest = b"manifest\n"
+        tiny_ustar = b"ustar\n"
+        tiny_pins = publish.RootfsPins(b"{}\n", hashlib.sha256(tiny_manifest).hexdigest(), len(tiny_manifest), hashlib.sha256(tiny_ustar).hexdigest(), len(tiny_ustar), 1)
+        intended_name = publish._contents(tiny_manifest, tiny_ustar, tiny_pins)[0][0]
+
+        def ext4_publish_once(path):
+            publication_fs = StatFs()
+            assert ctypes.CDLL(None, use_errno=True).statfs(os.fsencode(path), ctypes.byref(publication_fs)) == 0 and publication_fs.f_type == 0xEF53
+            control = fs.OperationControl(time.monotonic_ns() + 120_000_000_000, lambda: False)
+            held_identity = fs.CheckedFd(os.open(path, fs.IDENTITY_FLAGS), "ext4-publication-identity")
+            held_operation = fs.CheckedFd(os.open(path, fs.DIRECTORY_FLAGS), "ext4-publication-directory")
+            parent = fs.HeldNode(held_identity, held_operation, fs._observe_node(held_identity, held_operation, control))
+            try:
+                return publish._publish_unmasked(parent, tiny_manifest, tiny_ustar, tiny_pins, control)
+            finally:
+                fs._close_node(parent)
+
+        def ext4_fault_case(case):
+            with tempfile.TemporaryDirectory(dir=ext4_fixture) as publication_directory:
+                publication_path = Path(publication_directory)
+                publication_path.chmod(0o700)
+                link_calls = {"count": 0}
+                real_link = publish._link_anonymous
+
+                def link_then_fail(directory, name, anonymous, control):
+                    if name == intended_name:
+                        link_calls["count"] += 1
+                    real_link(directory, name, anonymous, control)
+                    if name == intended_name and link_calls["count"] == 1:
+                        raise OSError("ext4 post-link fault")
+
+                publish._link_anonymous = link_then_fail
+                try:
+                    try:
+                        ext4_publish_once(publication_path)
+                    except OSError:
+                        pass
+                    else:
+                        raise AssertionError("ext4 post-link fault was not observed")
+                finally:
+                    publish._link_anonymous = real_link
+
+                candidate_fs = StatFs()
+                candidate_path = publication_path / publish.CANDIDATE_NAME.text
+                assert ctypes.CDLL(None, use_errno=True).statfs(os.fsencode(candidate_path), ctypes.byref(candidate_fs)) == 0 and candidate_fs.f_type == 0xEF53
+
+                def count_retry_link(directory, name, anonymous, control):
+                    if name == intended_name:
+                        link_calls["count"] += 1
+                    return real_link(directory, name, anonymous, control)
+
+                publish._link_anonymous = count_retry_link
+                tripped = {"value": False}
+                real_file = publish._file
+                real_read = fs._read_regular
+                real_xattrs = fs._require_empty_fd_xattrs
+                real_fsync = publish.os.fsync
+                real_observe_node = fs._observe_node
+                real_append_records = publish._append_records
+                real_write = publish.os.write
+                real_close = fs.CheckedFd.close
+                real_snapshot_node = publish._snapshot_node
+                real_renameat2 = publish._renameat2
+                armed = {"observe": False}
+
+                def target_file(directory, name, expected, control):
+                    if name == intended_name and not tripped["value"] and case == "open":
+                        tripped["value"] = True
+                        raise OSError("linked open fault")
+                    if name == intended_name and not tripped["value"] and case in {"read", "xattr"}:
+                        target = "read" if case == "read" else "xattr"
+                        if target == "read":
+                            fs._read_regular = lambda *_args: (_ for _ in ()).throw(OSError("linked read fault"))
+                        else:
+                            fs._require_empty_fd_xattrs = lambda *_args: (_ for _ in ()).throw(OSError("linked xattr fault"))
+                        tripped["value"] = True
+                        try:
+                            return real_file(directory, name, expected, control)
+                        finally:
+                            fs._read_regular = real_read
+                            fs._require_empty_fd_xattrs = real_xattrs
+                    return real_file(directory, name, expected, control)
+
+                def candidate_fsync(descriptor):
+                    target = os.readlink(f"/proc/self/fd/{descriptor}")
+                    if target.endswith("/.accepted-candidate-v1") and case in {"candidate-fsync", "candidate-observe"}:
+                        if case == "candidate-fsync" and not tripped["value"]:
+                            tripped["value"] = True
+                            raise OSError("candidate fsync fault")
+                        armed["observe"] = True
+                    return real_fsync(descriptor)
+
+                def candidate_observe(identity_fd, operation_fd, control):
+                    if case == "candidate-observe" and armed["observe"] and not tripped["value"] and operation_fd is not None:
+                        target = os.readlink(f"/proc/self/fd/{operation_fd.number}")
+                        if target.endswith("/.accepted-candidate-v1"):
+                            tripped["value"] = True
+                            raise OSError("candidate observe fault")
+                    return real_observe_node(identity_fd, operation_fd, control)
+
+                def compound_fault(transaction, parent, content_names, additions, control):
+                    if additions[0][0] != "file" or case not in {"write", "file-fsync", "close", "readback", "parent-fsync", "exchange"}:
+                        return real_append_records(transaction, parent, content_names, additions, control)
+                    syncs = {"count": 0}
+
+                    def fail_write(*_args):
+                        tripped["value"] = True
+                        raise OSError("compound write fault")
+
+                    def fail_sync(descriptor):
+                        syncs["count"] += 1
+                        threshold = 1 if case == "file-fsync" else 2
+                        if syncs["count"] == threshold:
+                            tripped["value"] = True
+                            raise OSError("compound fsync fault")
+                        return real_fsync(descriptor)
+
+                    def fail_close(descriptor, primary_error=None):
+                        result = real_close(descriptor, primary_error)
+                        if descriptor.role == "publication-snapshot" and not tripped["value"]:
+                            tripped["value"] = True
+                            raise OSError("compound close fault")
+                        return result
+
+                    def fail_readback(parent, name, inner_control):
+                        if name == publish.TRANSACTION_NEXT_NAME and not tripped["value"]:
+                            tripped["value"] = True
+                            raise OSError("compound readback fault")
+                        return real_snapshot_node(parent, name, inner_control)
+
+                    def fail_exchange(parent, source, destination, flags):
+                        result = real_renameat2(parent, source, destination, flags)
+                        if flags == 2 and not tripped["value"]:
+                            tripped["value"] = True
+                            raise OSError("compound exchange fault")
+                        return result
+
+                    if case == "write":
+                        publish.os.write = fail_write
+                    if case in {"file-fsync", "parent-fsync"}:
+                        publish.os.fsync = fail_sync
+                    if case == "close":
+                        fs.CheckedFd.close = fail_close
+                    if case == "readback":
+                        publish._snapshot_node = fail_readback
+                    if case == "exchange":
+                        publish._renameat2 = fail_exchange
+                    try:
+                        return real_append_records(transaction, parent, content_names, additions, control)
+                    finally:
+                        publish.os.write = real_write
+                        publish.os.fsync = real_fsync
+                        fs.CheckedFd.close = real_close
+                        publish._snapshot_node = real_snapshot_node
+                        publish._renameat2 = real_renameat2
+
+                publish._file = target_file
+                publish.os.fsync = candidate_fsync
+                fs._observe_node = candidate_observe
+                publish._append_records = compound_fault
+                try:
+                    try:
+                        ext4_publish_once(publication_path)
+                    except OSError:
+                        pass
+                    else:
+                        raise AssertionError(f"ext4 {case} fault was not observed")
+                finally:
+                    publish._file = real_file
+                    publish.os.fsync = real_fsync
+                    fs._observe_node = real_observe_node
+                    publish._append_records = real_append_records
+                    publish.os.write = real_write
+                    fs.CheckedFd.close = real_close
+                    publish._snapshot_node = real_snapshot_node
+                    publish._renameat2 = real_renameat2
+                assert tripped["value"], f"ext4 {case} fault did not trip"
+                first_published = ext4_publish_once(publication_path)
+                assert first_published == ext4_publish_once(publication_path)
+                assert link_calls["count"] == 1, "post-link retry attempted a second linkat"
+                publish._link_anonymous = real_link
+
+        for fault_case in ("open", "read", "xattr", "candidate-fsync", "candidate-observe", "write", "file-fsync", "close", "readback", "parent-fsync", "exchange"):
+            ext4_fault_case(fault_case)
+
+        def ext4_hostile_case(case):
+            with tempfile.TemporaryDirectory(dir=ext4_fixture) as publication_directory:
+                publication_path = Path(publication_directory)
+                publication_path.chmod(0o700)
+                real_link = publish._link_anonymous
+                links = {"count": 0}
+                stop_at = 2 if case == "prior" else 1
+
+                def stop_after_link(directory, name, anonymous, control):
+                    real_link(directory, name, anonymous, control)
+                    links["count"] += 1
+                    if links["count"] == stop_at:
+                        raise OSError("hostile setup post-link fault")
+
+                publish._link_anonymous = stop_after_link
+                try:
+                    try:
+                        ext4_publish_once(publication_path)
+                    except OSError:
+                        pass
+                finally:
+                    publish._link_anonymous = real_link
+                candidate_path = publication_path / publish.CANDIDATE_NAME.text
+                target = candidate_path / intended_name.text
+                if case == "extra":
+                    extra = candidate_path / "hostile-extra"
+                    extra.write_bytes(b"extra")
+                    extra.chmod(0o400)
+                elif case == "name":
+                    target.rename(candidate_path / "hostile-name")
+                elif case == "inode":
+                    target.unlink()
+                    target.write_bytes(publish.SENTINEL)
+                    target.chmod(0o400)
+                    os.chown(target, 0, 0)
+                    os.utime(target, ns=(0, 0))
+                else:
+                    prior_name = intended_name if case == "prior" else intended_name
+                    hostile_target = candidate_path / prior_name.text
+                    hostile_target.chmod(0o600)
+                    hostile_target.write_bytes(b"hostile")
+                    hostile_target.chmod(0o400)
+                try:
+                    ext4_publish_once(publication_path)
+                except publish.PublicationError:
+                    pass
+                else:
+                    raise AssertionError(f"hostile ext4 {case} state was accepted")
+                assert candidate_path.is_dir()
+
+        for hostile_case in ("extra", "name", "inode", "content", "prior"):
+            ext4_hostile_case(hostile_case)
     with tempfile.TemporaryDirectory(dir=ext4_fixture) as temporary:
         candidate_path = Path(temporary) / "candidate"
         candidate_path.mkdir()

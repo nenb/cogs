@@ -284,7 +284,7 @@ def _parse_transaction(raw, content_names):
         elif state == "candidate-generation":
             _fail(phase == "candidate-generation")
             next_generation = _parse_directory_generation(value["identity"])
-            _directory_generation_change(candidate_generation, next_generation)
+            _directory_link_change(candidate_generation, next_generation)
             candidate_generation = next_generation
             file_index += 1
             state = "candidate"
