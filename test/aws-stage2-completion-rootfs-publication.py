@@ -2,6 +2,7 @@
 """Strict pin and publication-boundary tests."""
 
 import hashlib
+import ctypes
 import importlib.util
 import os
 from pathlib import Path
@@ -76,6 +77,16 @@ anonymous_key = fs.HostKey(1, 1, 9, "file")
 anonymous_host = fs.HostGeneration(anonymous_key, 0o400, 0, 0, 0, 1, 1, 1)
 linked_host = fs.HostGeneration(anonymous_key, 0o400, 0, 0, 1, 1, 1, 2)
 publish._linked_generation_change(anonymous_host, linked_host)
+prior_directory = fs.HostGeneration(fs.HostKey(1, 1, 11, "directory"), 0o700, 0, 0, 2, 4096, 10, 10)
+linked_directory = fs.HostGeneration(prior_directory.key, 0o700, 0, 0, 2, 8192, 11, 11)
+publish._directory_link_change(prior_directory, linked_directory)
+for hostile_directory in (fs.HostGeneration(prior_directory.key, 0o700, 0, 0, 2, 4095, 11, 11), fs.HostGeneration(prior_directory.key, 0o700, 0, 0, 2, 4096, 9, 11)):
+    try:
+        publish._directory_link_change(prior_directory, hostile_directory)
+    except publish.PublicationError:
+        pass
+    else:
+        raise AssertionError("hostile candidate link transition accepted")
 for replacement in (fs.HostGeneration(anonymous_key, 0o400, 0, 0, 1, 2, 1, 2), fs.HostGeneration(fs.HostKey(1, 1, 10, "file"), 0o400, 0, 0, 1, 1, 1, 2)):
     try:
         publish._linked_generation_change(anonymous_host, replacement)
@@ -120,7 +131,15 @@ finally:
     fs._observe_node = real_observe
     fs._close_node(reuse_node)
 if sys.platform == "linux":
-    with tempfile.TemporaryDirectory() as temporary:
+    ext4_fixture = os.environ.get("COGS_APPROVED_EXT4_FIXTURE")
+    if ext4_fixture is not None:
+        class StatFs(ctypes.Structure):
+            _fields_ = (("f_type", ctypes.c_long), ("remaining", ctypes.c_byte * 248))
+
+        observed_fs = StatFs()
+        assert ctypes.CDLL(None, use_errno=True).statfs(os.fsencode(ext4_fixture), ctypes.byref(observed_fs)) == 0
+        assert observed_fs.f_type == 0xEF53, "approved publication fixture is not ext4"
+    with tempfile.TemporaryDirectory(dir=ext4_fixture) as temporary:
         candidate_path = Path(temporary) / "candidate"
         candidate_path.mkdir()
         first = candidate_path.stat()

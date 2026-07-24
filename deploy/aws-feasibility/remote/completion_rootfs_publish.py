@@ -180,6 +180,12 @@ def _directory_generation_change(before, after):
     _fail((before.mode, before.uid, before.gid, before.nlink) == (after.mode, after.uid, after.gid, after.nlink))
 
 
+def _directory_link_change(before, after):
+    _fail(before.key == after.key and before.key.kind == "directory")
+    _fail((before.mode, before.uid, before.gid, before.nlink) == (after.mode, after.uid, after.gid, after.nlink))
+    _fail(after.size >= before.size and after.mtime_ns >= before.mtime_ns and after.ctime_ns >= before.ctime_ns)
+
+
 def _rename_generation_change(before, after):
     _fail(before.key == after.key and before.key.kind == "directory")
     _fail((before.mode, before.uid, before.gid, before.nlink, before.size, before.mtime_ns) == (after.mode, after.uid, after.gid, after.nlink, after.size, after.mtime_ns))
@@ -589,15 +595,16 @@ def _durable_event(parent, content_names, phase, name, key, control):
     return identity == key
 
 
-def _verify_inventory(directory, contents, recorded, complete, control):
-    expected_names = tuple(name.raw for name, _raw in contents[: len(recorded)])
+def _verify_inventory(directory, contents, recorded, complete, control, additional=()):
+    expected_names = tuple(name.raw for name, _raw in contents[: len(recorded)]) + tuple(additional)
     snapshot = fs._enumerate_stable(directory, control)
-    _fail(snapshot.raw_names == tuple(sorted(expected_names)) if not complete else snapshot.raw_names == tuple(sorted(name.raw for name, _raw in contents)))
+    _fail(snapshot.raw_names == tuple(sorted(expected_names)) if not complete else not additional and snapshot.raw_names == tuple(sorted(name.raw for name, _raw in contents)))
     for index, (name, raw) in enumerate(contents[: len(recorded)] if not complete else contents):
         node = _file(directory, name, raw, control)
         with _owned_nodes(lambda: (node,)):
             if index < len(recorded):
                 _fail(node.generation == _parse_generation(recorded[index]["identity"]))
+    return snapshot.generation
 
 
 def _cleanup_empty_candidate(parent, candidate, control):
@@ -687,23 +694,31 @@ def _publish_unmasked(parent, manifest, ustar, pins, work_control):
                 else:
                     os.fsync(candidate.operation_fd.number)
                     transaction = _append_transaction(transaction, parent, content_names, "prepared", control)
-            elif phase in {"file-intent", "file-ready"}:
+            elif phase == "file-intent":
                 candidate_record, file_records = _cycle(transaction.records)
                 _fail(CANDIDATE_NAME.raw in names and ACCEPTED_NAME.raw not in names)
                 if candidate is None:
                     candidate = _directory(parent, CANDIDATE_NAME, control)
-                before_candidate = _require_directory_generation(candidate, candidate_record["identity"], control)
+                _require_directory_generation(candidate, candidate_record["identity"], control)
                 _verify_inventory(candidate, contents, file_records, False, control)
                 name, raw = contents[len(file_records)]
-                candidate_names = fs._enumerate_stable(candidate, control).raw_names
-                if phase == "file-intent":
-                    _fail(name.raw not in candidate_names)
-                    anonymous = _prepare_anonymous(candidate, raw, control)
-                    transaction = _append_transaction(transaction, parent, content_names, "file-ready", control, name.text, _ready_value(anonymous.generation, raw))
-                    continue
+                anonymous = _prepare_anonymous(candidate, raw, control)
+                transaction = _append_transaction(transaction, parent, content_names, "file-ready", control, name.text, _ready_value(anonymous.generation, raw))
+            elif phase == "file-ready":
+                candidate_record, file_records = _cycle(transaction.records)
+                _fail(CANDIDATE_NAME.raw in names and ACCEPTED_NAME.raw not in names)
+                if candidate is None:
+                    candidate = _directory(parent, CANDIDATE_NAME, control)
+                before_candidate = _parse_directory_generation(candidate_record["identity"])
+                name, raw = contents[len(file_records)]
                 ready_generation, ready_sha256, ready_size = _parse_ready(transaction.records[-1]["identity"])
                 _fail(ready_sha256 == hashlib.sha256(raw).hexdigest() and ready_size == len(raw))
-                if name.raw not in candidate_names:
+                snapshot = fs._enumerate_stable(candidate, control)
+                prior_names = tuple(sorted(item.raw for item, _raw in contents[: len(file_records)]))
+                linked_names = tuple(sorted(prior_names + (name.raw,)))
+                if snapshot.raw_names == prior_names:
+                    _fail(snapshot.generation == before_candidate)
+                    _verify_inventory(candidate, contents, file_records, False, control)
                     if anonymous is None or anonymous.generation != ready_generation:
                         if anonymous is not None:
                             _close_anonymous(anonymous)
@@ -712,12 +727,16 @@ def _publish_unmasked(parent, manifest, ustar, pins, work_control):
                         continue
                     _fail(_observe_anonymous(anonymous, control) == ready_generation)
                     _link_anonymous(candidate, name, anonymous, control)
+                    continue
+                _fail(snapshot.raw_names == linked_names)
+                _directory_link_change(before_candidate, snapshot.generation)
+                _verify_inventory(candidate, contents, file_records, False, control, (name.raw,))
                 linked = _file(candidate, name, raw, control)
                 with _owned_nodes(lambda: (linked,)):
                     _linked_generation_change(ready_generation, linked.generation)
                     os.fsync(candidate.operation_fd.number)
                     after_candidate = fs._observe_node(candidate.identity_fd, candidate.operation_fd, control)
-                    _directory_generation_change(before_candidate, after_candidate)
+                    _fail(after_candidate == snapshot.generation)
                     transaction = _append_records(transaction, parent, content_names, (("file", name.text, _generation_value(linked.generation)), ("candidate-generation", None, _generation_value(after_candidate))), control)
                 if anonymous is not None:
                     _close_anonymous(anonymous)
