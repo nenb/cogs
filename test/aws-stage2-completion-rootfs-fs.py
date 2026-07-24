@@ -51,8 +51,17 @@ def manifest_bytes(revision, entries):
 
 def pure_tests():
     raw = b"pos:\t0\nflags:\t" + module.FDINFO_FLAGS + b"\nmnt_id:\t42\nino:\t9\n"
-    assert module._parse_fdinfo(raw, 9) == 42
+    nofollow_raw = raw.replace(module.FDINFO_FLAGS, module.FDINFO_NOFOLLOW_FLAGS)
+    assert module.FDINFO_FLAGS == b"012100000"
+    assert module.FDINFO_NOFOLLOW_FLAGS == b"012400000"
+    assert module._parse_fdinfo(raw, 9) == module._parse_fdinfo(nofollow_raw, 9) == 42
+    assert module._parse_fdinfo(raw, 9, module.FDINFO_FLAGS) == 42
+    rejected(lambda: module._parse_fdinfo(nofollow_raw, 9, module.FDINFO_FLAGS))
+    custom_raw = raw.replace(module.FDINFO_FLAGS, b"022440002")
+    assert module._parse_fdinfo(custom_raw, 9, b"022440002") == 42
     hostile_fdinfo = (
+        raw.replace(module.FDINFO_FLAGS, b"0"),
+        raw.replace(module.FDINFO_FLAGS, b"012500000"),
         raw.replace(b"mnt_id:\t42", b"mnt_id:\t042"),
         raw.replace(b"mnt_id:\t42", b"mnt_id:\t0"),
         raw.replace(b"ino:\t9", b"ino:\t8"),

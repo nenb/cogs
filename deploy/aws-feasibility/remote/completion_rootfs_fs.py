@@ -35,9 +35,12 @@ _O_DIRECTORY = getattr(os, "O_DIRECTORY", 0)
 IDENTITY_FLAGS = _O_PATH | _O_NOFOLLOW | _O_CLOEXEC
 DIRECTORY_FLAGS = os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW | _O_CLOEXEC
 FILE_FLAGS = os.O_RDONLY | _O_NOFOLLOW | _O_CLOEXEC
-# Approved amd64 fdinfo retains O_LARGEFILE, O_PATH, and O_CLOEXEC, but not open-time O_NOFOLLOW.
-FDINFO_STATUS_FLAGS = _O_PATH | _O_CLOEXEC | 0o100000
-FDINFO_FLAGS = ("0" + format(FDINFO_STATUS_FLAGS, "o")).encode("ascii")
+# Qualified amd64 runtimes expose one of two fixed O_PATH fdinfo forms: the
+# approved Linux form retains O_LARGEFILE, while the QEMU guest form retains
+# open-time O_NOFOLLOW. No kernel-age boundary is assumed.
+FDINFO_FLAGS = b"012100000"
+FDINFO_NOFOLLOW_FLAGS = b"012400000"
+FDINFO_IDENTITY_FLAGS = (FDINFO_FLAGS, FDINFO_NOFOLLOW_FLAGS)
 
 
 class RootfsFsError(Exception):
@@ -300,7 +303,7 @@ def _parse_decimal(raw, minimum=0):
     return _exact_int(value, minimum)
 
 
-def _parse_fdinfo(raw, inode, expected_flags=FDINFO_FLAGS):
+def _parse_fdinfo(raw, inode, expected_flags=None):
     _fail(type(raw) is bytes and 0 < len(raw) <= MAX_FDINFO_BYTES and raw.endswith(b"\n") and b"\x00" not in raw)
     try:
         raw.decode("ascii", "strict")
@@ -314,7 +317,8 @@ def _parse_fdinfo(raw, inode, expected_flags=FDINFO_FLAGS):
         prefix = key + b":\t"
         _fail(line.startswith(prefix) and line.count(b":") == 1)
         values.append(line[len(prefix) :])
-    _fail(values[0] == b"0" and values[1] == expected_flags)
+    _fail(values[0] == b"0")
+    _fail(values[1] in FDINFO_IDENTITY_FLAGS if expected_flags is None else values[1] == expected_flags)
     mount_id = _parse_decimal(values[2], 1)
     _fail(_parse_decimal(values[3], 1) == inode)
     return mount_id
@@ -347,7 +351,7 @@ def _open_fd(path, flags, role, control, dir_fd=None):
     return descriptor
 
 
-def _mount_id(opath_fd, control, expected_flags=FDINFO_FLAGS):
+def _mount_id(opath_fd, control, expected_flags=None):
     _fail(type(opath_fd) is CheckedFd and opath_fd.disposition == "open")
     control.check()
     before = os.fstat(opath_fd.number)
