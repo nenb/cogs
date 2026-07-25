@@ -195,7 +195,7 @@ def linux_supervisor_tests():
 
     result = issue(process._TestAction.OK)
     assert result.outcome == "exited" and result.status == 0 and result.stdout == b"ok\n", (
-        f"unexpected OK outcome: outcome={result.outcome!r} status={result.status!r} "
+        f"unexpected OK outcome: outcome={result.outcome!r} status={result.status!r} errno={result.errno!r} "
         f"stdout={result.stdout!r} stderr={result.stderr!r} errors={result.errors!r}"
     )
     assert result.stderr == b"" and result.reaped and not result.errors
