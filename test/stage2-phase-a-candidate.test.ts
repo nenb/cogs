@@ -110,6 +110,8 @@ test("candidate output schema enforces metadata-only non-authority", async () =>
   assert.match(runner, /ownership\.jsonl/u);
   assert.match(runner, /\.cogs-stage2-phase-a-anchor-v1\.json/u);
   assert.match(runner, /include_size=False, include_nlink=False/u);
+  assert.match(runner, /_same_rootfs_lifecycle\(_snapshot_rootfs_lifecycle\(\), rootfs_owned\)/u);
+  assert.match(runner, /_same_directory_authority\(os\.fstat\(root\), lifecycle\["root"\]\)/u);
   assert.match(runner, /_verify_fixed_source\(anchor\["source_revision"\], anchor\["source_manifest_sha256"\]\)/u);
   assert.match(runner, /authority": "candidate"/u);
   assert.match(runner, /"qualified": False/u);

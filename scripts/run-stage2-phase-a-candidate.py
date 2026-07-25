@@ -885,12 +885,55 @@ def _snapshot_rootfs_lifecycle():
         os.close(root)
 
 
+def _same_rootfs_lifecycle(observed, expected):
+    if (type(observed) is not dict or type(expected) is not dict or
+            set(observed) != {"root", "files"} or set(expected) != {"root", "files"}):
+        return False
+    try:
+        root_matches = _same_directory_authority(_stat_value(observed["root"]), expected["root"])
+    except (KeyError, TypeError):
+        return False
+    return root_matches and observed["files"] == expected["files"]
+
+
+def _rootfs_call(code, callback):
+    try:
+        return callback()
+    except BaseException as error:
+        raise CandidateError(code) from error
+
+
 def _verify_candidate_pair(build, completion_rootfs_publish, first, second):
-    build._require_equal_builds(first, second)
-    pins = completion_rootfs_publish._load_pins()
-    build._require_pinned(first, pins)
-    build._require_pinned(second, pins)
+    _rootfs_call("rootfs-equality", lambda: build._require_equal_builds(first, second))
+    pins = _rootfs_call("rootfs-pin", completion_rootfs_publish._load_pins)
+    _rootfs_call("rootfs-pin", lambda: build._require_pinned(first, pins))
+    _rootfs_call("rootfs-pin", lambda: build._require_pinned(second, pins))
     return pins
+
+
+def _bootstrap_rootfs(builder, fs, approval, control):
+    chain = None
+    state = None
+    error = None
+    try:
+        chain = builder._open_base_chain(control)
+        state = builder._bootstrap(chain, approval, control)
+    except BaseException as caught:
+        error = caught
+    if state is not None:
+        try:
+            fs._close_node(state)
+            state = None
+        except BaseException as caught:
+            error = caught if error is None else fs.RootfsFsError(error, caught)
+    if chain is not None:
+        try:
+            fs._close_chain(chain)
+            chain = None
+        except BaseException as caught:
+            error = caught if error is None else fs.RootfsFsError(error, caught)
+    if error is not None or state is not None or chain is not None:
+        raise CandidateError("rootfs-bootstrap") from error
 
 
 def _acquisition_failure_code(stage):
@@ -942,6 +985,7 @@ def _load_artifact_verifier():
 def _rootfs_candidates(revision, manifest_sha256, outer_deadline):
     sys.path.insert(0, str(REMOTE))
     import completion_rootfs_build as build
+    import completion_rootfs_builder as builder
     import completion_rootfs_fs as fs
     import completion_rootfs_publish
     verifier = _load_artifact_verifier()
@@ -965,14 +1009,17 @@ def _rootfs_candidates(revision, manifest_sha256, outer_deadline):
     remaining_ns = int((outer_deadline - time.monotonic()) * 1_000_000_000)
     _fail(remaining_ns > 0, "observe-timeout")
     control = fs.OperationControl(time.monotonic_ns() + min(1_200_000_000_000, remaining_ns), lambda: False)
-    first, second = build._two_build_outputs(approval, control)
+    _bootstrap_rootfs(builder, fs, approval, control)
+    rootfs_owned = _rootfs_call("rootfs-bootstrap", _snapshot_rootfs_lifecycle)
+    _append_journal("rootfs-lifecycle-owned", rootfs_owned)
+    first, second = _rootfs_call("rootfs-build", lambda: build._two_build_outputs(approval, control))
     _verify_candidate_pair(build, completion_rootfs_publish, first, second)
     _verifier_call(
-        verifier, "cache-postverify",
+        verifier, "rootfs-postverify",
         lambda: verifier.verify_package_archives(verifier.CONTRACT_PATH, verifier.ARTIFACT_ROOT),
     )
-    _fail(_snapshot_cache(contract) == cache_owned, "cache-drift")
-    _append_journal("rootfs-lifecycle-owned", _snapshot_rootfs_lifecycle())
+    _fail(_snapshot_cache(contract) == cache_owned, "rootfs-postverify")
+    _fail(_same_rootfs_lifecycle(_snapshot_rootfs_lifecycle(), rootfs_owned), "rootfs-postverify")
     return {"candidate_count": 2, "cache_count": len(first.cache), "entry_count": first.entry_count,
             "manifest_size": len(first.manifest), "manifest_sha256": first.manifest_sha256,
             "ustar_size": first.ustar_size, "ustar_sha256": first.ustar_sha256,
@@ -1161,7 +1208,7 @@ def _cleanup_rootfs(records):
     root = _open_dir(ROOTFS_STATE)
     held = []
     try:
-        _fail(_same_identity(os.fstat(root), lifecycle["root"]), "rootfs-cleanup-replaced")
+        _fail(_same_directory_authority(os.fstat(root), lifecycle["root"]), "rootfs-cleanup-replaced")
         _fail(set(os.listdir(root)) == {item["name"] for item in lifecycle["files"]}, "rootfs-cleanup-unknown")
         for item in lifecycle["files"]:
             descriptor = _owned_file(root, item["name"], item["identity"], item["sha256"])

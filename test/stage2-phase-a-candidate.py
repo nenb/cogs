@@ -105,46 +105,111 @@ class FakePublication:
 assert module._verify_candidate_pair(FakeBuild, FakePublication, "same", "same") == "committed-pins"
 assert calls == ["equal", "pins", ("pin", "same", "committed-pins"), ("pin", "same", "committed-pins")]
 calls.clear()
-rejected(lambda: module._verify_candidate_pair(FakeBuild, FakePublication, "first", "mismatch"))
+assert failure_code(lambda: module._verify_candidate_pair(
+    FakeBuild, FakePublication, "first", "mismatch",
+)) == "rootfs-equality"
 assert calls == ["equal"]
+for code in ("rootfs-bootstrap", "rootfs-build", "rootfs-equality", "rootfs-pin", "rootfs-postverify"):
+    assert failure_code(lambda code=code: module._rootfs_call(
+        code, lambda: (_ for _ in ()).throw(RuntimeError("must-not-escape")),
+    )) == code
 
 remote = ROOT / "deploy/aws-feasibility/remote"
 sys.path.insert(0, str(remote))
 import completion_rootfs_build as actual_build
+import completion_rootfs_builder as actual_builder
 import completion_rootfs_publish as actual_publish
 assert actual_build.publication is actual_publish
+assert all(callable(getattr(actual_builder, name)) for name in ("_open_base_chain", "_bootstrap"))
+
+bootstrap_events = []
+bad_close_builder = types.SimpleNamespace(
+    _open_base_chain=lambda _control: "chain",
+    _bootstrap=lambda _chain, _approval, _control: "state",
+)
+class CloseErrorFs:
+    RootfsFsError = Exception
+    @staticmethod
+    def _close_node(_state):
+        bootstrap_events.append("close-state")
+        raise OSError()
+    @staticmethod
+    def _close_chain(_chain):
+        bootstrap_events.append("close-chain")
+assert failure_code(lambda: module._bootstrap_rootfs(
+    bad_close_builder, CloseErrorFs, "approval", "control",
+)) == "rootfs-bootstrap"
+assert bootstrap_events == ["close-state", "close-chain"]
 
 candidate = types.SimpleNamespace(
     cache=tuple(range(16)), entry_count=4353, manifest=b"m" * 1049443,
     manifest_sha256="8" * 64, ustar_size=136905728, ustar_sha256="4" * 64,
 )
+order = []
 fake_build = types.ModuleType("completion_rootfs_build")
-fake_build._two_build_outputs = lambda _approval, _control: (candidate, candidate)
-fake_build._require_equal_builds = lambda first, second: None if first is second else (_ for _ in ()).throw(AssertionError())
-fake_build._require_pinned = lambda _candidate, _pins: None
+fake_build._two_build_outputs = lambda _approval, _control: (order.append("build") or (candidate, candidate))
+fake_build._require_equal_builds = lambda first, second: order.append("equal") if first is second else (_ for _ in ()).throw(AssertionError())
+fake_build._require_pinned = lambda _candidate, _pins: order.append("pin")
+fake_builder = types.ModuleType("completion_rootfs_builder")
+fake_builder._open_base_chain = lambda _control: (order.append("open") or "chain")
+fake_builder._bootstrap = lambda chain, _approval, _control: (order.append("bootstrap") or "state") if chain == "chain" else None
 fake_fs = types.ModuleType("completion_rootfs_fs")
 fake_fs.SourceApproval = lambda revision, digest: (revision, digest)
 fake_fs.OperationControl = lambda deadline, cancelled: (deadline, cancelled)
+fake_fs.RootfsFsError = Exception
+fake_fs._close_node = lambda state: order.append("close-state") if state == "state" else None
+fake_fs._close_chain = lambda chain: order.append("close-chain") if chain == "chain" else None
 fake_publish = types.ModuleType("completion_rootfs_publish")
-fake_publish._load_pins = lambda: object()
+fake_publish._load_pins = lambda: (order.append("pins") or object())
 fake_verifier = types.SimpleNamespace(
     CONTRACT_PATH="contract", ARTIFACT_ROOT="artifacts", verify_contract=lambda _path: {"fixed": True},
     acquire_completion_artifacts=lambda *_args: None, verify_package_archives=lambda *_args: None,
 )
+rootfs_owned = {
+    "root": {"dev": 1, "ino": 2, "kind": "directory", "mode": 0o700,
+             "uid": 0, "gid": 0, "nlink": 2, "size": 64},
+    "files": [{"name": "fixed", "identity": {"dev": 1, "ino": 3, "kind": "file", "mode": 0o600,
+                "uid": 0, "gid": 0, "nlink": 1, "size": 5}, "sha256": "c" * 64}],
+}
+rootfs_after = {"root": {**rootfs_owned["root"], "nlink": 99, "size": 4096},
+                "files": rootfs_owned["files"]}
+assert module._same_rootfs_lifecycle(rootfs_after, rootfs_owned)
+for field, value in (
+    ("dev", 10), ("ino", 20), ("kind", "file"), ("mode", 0o755), ("uid", 1), ("gid", 1),
+):
+    hostile = {"root": {**rootfs_after["root"], field: value}, "files": rootfs_after["files"]}
+    assert not module._same_rootfs_lifecycle(hostile, rootfs_owned)
+assert not module._same_rootfs_lifecycle(
+    {"root": rootfs_after["root"], "files": rootfs_after["files"] + [{"name": "extra"}]}, rootfs_owned,
+)
+changed_file = {**rootfs_after["files"][0], "sha256": "d" * 64}
+assert not module._same_rootfs_lifecycle(
+    {"root": rootfs_after["root"], "files": [changed_file]}, rootfs_owned,
+)
+changed_identity = {**rootfs_after["files"][0],
+                    "identity": {**rootfs_after["files"][0]["identity"], "size": 6}}
+assert not module._same_rootfs_lifecycle(
+    {"root": rootfs_after["root"], "files": [changed_identity]}, rootfs_owned,
+)
 original_modules = {name: sys.modules.get(name) for name in
-                    ("completion_rootfs_build", "completion_rootfs_fs", "completion_rootfs_publish")}
+                    ("completion_rootfs_build", "completion_rootfs_builder", "completion_rootfs_fs",
+                     "completion_rootfs_publish")}
 original_helpers = (module._load_artifact_verifier, module._append_journal,
                     module._snapshot_cache, module._snapshot_rootfs_lifecycle)
 try:
     sys.modules["completion_rootfs_build"] = fake_build
+    sys.modules["completion_rootfs_builder"] = fake_builder
     sys.modules["completion_rootfs_fs"] = fake_fs
     sys.modules["completion_rootfs_publish"] = fake_publish
     module._load_artifact_verifier = lambda: fake_verifier
     module._append_journal = lambda *_args: None
     module._snapshot_cache = lambda _contract: {"cache": "fixed"}
-    module._snapshot_rootfs_lifecycle = lambda: {"rootfs": "fixed"}
+    rootfs_snapshots = iter((rootfs_owned, rootfs_after))
+    module._snapshot_rootfs_lifecycle = lambda: (order.append("snapshot") or next(rootfs_snapshots))
     result = module._rootfs_candidates("a" * 40, "b" * 64, time.monotonic() + 10)
     assert result["equal"] is True and result["pins_match"] is True and result["cache_count"] == 16
+    assert order == ["open", "bootstrap", "close-state", "close-chain", "snapshot", "build",
+                     "equal", "pins", "pin", "pin", "snapshot"]
 finally:
     module._load_artifact_verifier, module._append_journal, module._snapshot_cache, module._snapshot_rootfs_lifecycle = original_helpers
     for name, value in original_modules.items():

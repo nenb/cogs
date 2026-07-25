@@ -114,7 +114,7 @@ def prepare_real_workspace():
         content = (REMOTE / name).read_bytes()
         target = remote / name
         target.write_bytes(content)
-        mode = 0o644 if name == "stage2-completion-artifacts-v1.json" else 0o400
+        mode = 0o400
         target.chmod(mode)
         manifest_entries.append({"path": f"deploy/aws-feasibility/remote/{name}", "kind": "file", "mode": mode, "size": len(content), "sha256": hashlib.sha256(content).hexdigest()})
     sentinel_raw = b"cogs-stage2-source-v1\n"
