@@ -93,86 +93,105 @@ def _append(active, record_type, body, control):
     return builder._append(active, record_type, body, control)
 
 
-def _apply_metadata(node, parent, symlink_name, record, desired, control):
+def _apply_metadata(node, parent, symlink_name, record, desired, control, node_chain):
+    _fail(type(node_chain) is fs.HeldChain and node_chain.components[-1].node.generation == node.generation)
+
+    def observe():
+        return fs._observe_child(parent, symlink_name, control) if symlink_name is not None else _generation(node, control)
+
+    def mutate(chain, action):
+        fs._revalidate_chain(chain, control)
+        before = observe()
+        _fail(before == chain.components[-1].node.generation)
+        _check(control)
+        action()
+        _check(control)
+        after = observe()
+        chain = builder._chain_after_parent(chain, before, after)
+        fs._revalidate_chain(chain, control)
+        return chain, after
+
+    chain = node_chain
     if symlink_name is None:
-        _check(control)
-        os.fchown(node.operation_fd.number, record.uid, record.gid)
-        _check(control)
-        os.fchmod(node.operation_fd.number, record.mode)
-        _check(control)
-        os.utime(node.operation_fd.number, ns=(record.mtime * 1_000_000_000,) * 2)
-        _check(control)
+        chain, _after = mutate(chain, lambda: os.fchown(node.operation_fd.number, record.uid, record.gid))
+        chain, _after = mutate(chain, lambda: os.fchmod(node.operation_fd.number, record.mode))
+        chain, after = mutate(
+            chain, lambda: os.utime(node.operation_fd.number, ns=(record.mtime * 1_000_000_000,) * 2),
+        )
         builder._fsync(node.operation_fd, control)
-        after = _generation(node, control)
     else:
-        _check(control)
-        os.chown(symlink_name.raw, record.uid, record.gid, dir_fd=parent.operation_fd.number, follow_symlinks=False)
-        _check(control)
-        os.utime(symlink_name.raw, ns=(record.mtime * 1_000_000_000,) * 2, dir_fd=parent.operation_fd.number, follow_symlinks=False)
-        _check(control)
+        chain, _after = mutate(
+            chain,
+            lambda: os.chown(
+                symlink_name.raw, record.uid, record.gid,
+                dir_fd=parent.operation_fd.number, follow_symlinks=False,
+            ),
+        )
+        chain, after = mutate(
+            chain,
+            lambda: os.utime(
+                symlink_name.raw, ns=(record.mtime * 1_000_000_000,) * 2,
+                dir_fd=parent.operation_fd.number, follow_symlinks=False,
+            ),
+        )
         builder._fsync(parent.operation_fd, control)
-        after = fs._observe_child(parent, symlink_name, control)
+    _fail(observe() == after)
+    fs._revalidate_chain(chain, control)
     _fail((after.mode, after.uid, after.gid, after.size, after.mtime_ns) == ledger._parse_metadata(desired))
-    return after
+    return after, chain
 
 
-def _metadata(active, node, path, record, parent, control, symlink_name=None):
+def _metadata(active, node, path, record, parent, control, node_chain, symlink_name=None):
+    _fail(type(node_chain) is fs.HeldChain and node_chain.components[-1].node.generation == node.generation)
+    fs._revalidate_chain(node_chain, control)
     before = _generation(node, control)
+    _fail(before == node_chain.components[-1].node.generation)
     desired = _desired(record, before.size)
+    fs._revalidate_chain(node_chain, control)
     active = _append(active, "metadata-intent", {"token": builder._token(active), "path": path, "before": builder._g(before), "desired": desired}, control)
     transition = builder._transition_control()
-    try:
-        after = _apply_metadata(node, parent, symlink_name, record, desired, transition)
-        observed = {"token": builder._token(active), "path": path, "child": builder._g(after)}
-        active = _append(active, "metadata-observed", observed, transition)
-        active = _append(active, "metadata-settled", observed, transition)
-        control.check()
-        return active, after
-    except BaseException as error:
-        recovery = builder._transition_control()
-        try:
-            refreshed = builder._refresh_active(active, recovery)
-            terminal = refreshed.records[-1]
-            body = terminal.body_value()
-            _fail(body["path"] == path and terminal.record_type in {"metadata-intent", "metadata-observed", "metadata-settled"})
-            current = fs._observe_child(parent, symlink_name, recovery) if symlink_name is not None else _generation(node, recovery)
-            intent = next(item.body_value() for item in reversed(refreshed.records) if item.record_type == "metadata-intent" and item.body_value()["path"] == path)
-            _fail(current.key == ledger._parse_generation(intent["before"]).key)
-            if terminal.record_type == "metadata-intent":
-                current = _apply_metadata(node, parent, symlink_name, record, desired, recovery)
-                observed = {"token": builder._token(refreshed), "path": path, "child": builder._g(current)}
-                refreshed = _append(refreshed, "metadata-observed", observed, recovery)
-                _append(refreshed, "metadata-settled", observed, recovery)
-            else:
-                _fail(current == ledger._parse_generation(body["child"]))
-                if terminal.record_type == "metadata-observed":
-                    _append(refreshed, "metadata-settled", body, recovery)
-        except BaseException as recovery_error:
-            error = fs.RootfsFsError(error, recovery_error)
-        raise error
+    fs._revalidate_chain(node_chain, transition)
+    after, node_chain = _apply_metadata(node, parent, symlink_name, record, desired, transition, node_chain)
+    observed = {"token": builder._token(active), "path": path, "child": builder._g(after)}
+    fs._revalidate_chain(node_chain, transition)
+    active = _append(active, "metadata-observed", observed, transition)
+    fs._revalidate_chain(node_chain, transition)
+    active = _append(active, "metadata-settled", observed, transition)
+    fs._revalidate_chain(node_chain, control)
+    control.check()
+    return active, after
 
 
-def _create_directory(active, root, entry, control):
+def _create_directory(active, owned, root, entry, control):
     path = "rootfs/" + entry.record.path
-    parent, opened, name = _open_parent(root, entry.record.path, control)
+    relative_parent, _separator, base = entry.record.path.rpartition("/")
+    chain, _parent, opened = _fresh_chain_to_parent(owned, root, relative_parent, control)
+    name = fs._name(base)
     try:
-        active, child = builder._create_ledger_entry(active, parent, path, name, "directory", None, control)
+        active, child = builder._create_ledger_entry(active, chain, path, name, "directory", None, control)
         fs._close_node(child)
         return active
     finally:
         _close_final(opened)
 
 
-def _create_file(active, root, entry, control):
+def _create_file(active, owned, root, entry, control):
     path = "rootfs/" + entry.record.path
-    parent, opened, name = _open_parent(root, entry.record.path, control)
+    relative_parent, _separator, base = entry.record.path.rpartition("/")
+    chain, parent, opened = _fresh_chain_to_parent(owned, root, relative_parent, control)
+    name = fs._name(base)
     child = None
     try:
         content = bytes(entry.content())
         _fail(len(content) == entry.record.archive_size)
         _fail(hashlib.sha256(content).hexdigest() == entry.record.content_sha256)
-        active, child = builder._create_ledger_entry(active, parent, path, name, "file", content, control)
-        active, _after = _metadata(active, child, path, entry.record, parent, control)
+        active, child = builder._create_ledger_entry(active, chain, path, name, "file", content, control)
+        current_parent = _generation(parent, control)
+        current_chain = builder._chain_after_parent(
+            chain, chain.components[-1].node.generation, current_parent,
+        )
+        node_chain = builder._chain_with_child(current_chain, name, child)
+        active, _after = _metadata(active, child, path, entry.record, parent, control, node_chain)
         actual = fs._read_regular(child, entry.record.archive_size, control)
         _fail(hashlib.sha256(actual).hexdigest() == entry.record.content_sha256)
         fs._require_empty_fd_xattrs(child, control)
@@ -191,21 +210,33 @@ def _snapshot(node, control):
     return fs._enumerate_stable(node, control)
 
 
+def _parent_snapshot(node, control):
+    return fs._enumerate_names_stable(node, control)
+
+
 def _parent_value(snapshot):
     value = ledger.LedgerParent(snapshot.generation, tuple(item.text for item in snapshot.names))
     return ledger._parent_value(value)
 
 
-def _create_hardlinks(active, root, authority, control):
+def _create_hardlinks(active, owned, root, authority, control):
     plans = ledger._plan_hardlink_groups(authority)
     entries = {entry.record.path: entry for entry in authority.plan.entries}
     for group in plans:
         target_opened = ()
         target = None
         with builder._owned_nodes(lambda: target_opened + (() if target is None else (target,))):
-            target_parent, target_opened, target_name = _open_parent(root, group.target_path, control)
+            target_relative, _separator, target_base = group.target_path.rpartition("/")
+            target_chain, target_parent, target_opened = _fresh_chain_to_parent(
+                owned, root, target_relative, control,
+            )
+            target_name = fs._name(target_base)
+            fs._revalidate_chain(target_chain, control)
             target = fs._open_path_node(target_parent, target_name, "file", control)
+            target_node_chain = builder._chain_with_child(target_chain, target_name, target)
+            fs._revalidate_chain(target_node_chain, control)
             content = fs._read_regular(target, group.size, control)
+            fs._revalidate_chain(target_node_chain, control)
             state = ledger._new_hardlink_group(group, _generation(target, control), hashlib.sha256(content).hexdigest())
             body = {
                 "token": builder._token(active),
@@ -214,12 +245,20 @@ def _create_hardlinks(active, root, authority, control):
                 "content_sha256": group.content_sha256,
                 "target": builder._g(state.target),
             }
+            fs._revalidate_chain(target_node_chain, control)
             active = _append(active, "hardlink-group", body, control)
             for index, alias_path in enumerate(group.aliases):
-                parent, opened, alias_name = _open_parent(root, alias_path, control)
+                alias_relative, _separator, alias_base = alias_path.rpartition("/")
+                alias_chain, parent, opened = _fresh_chain_to_parent(owned, root, alias_relative, control)
+                alias_name = fs._name(alias_base)
                 alias_created = False
+                alias_node = None
+                delta = None
                 try:
-                    before_parent = _snapshot(parent, control)
+                    fs._revalidate_chain(target_chain, control)
+                    fs._revalidate_chain(alias_chain, control)
+                    before_parent = _parent_snapshot(parent, control)
+                    fs._revalidate_chain(alias_chain, control)
                     before_target = _generation(target, control)
                     intent = {
                         "token": builder._token(active),
@@ -231,6 +270,8 @@ def _create_hardlinks(active, root, authority, control):
                     }
                     active = _append(active, "hardlink-create-intent", intent, control)
                     transition = builder._transition_control()
+                    fs._revalidate_chain(target_chain, transition)
+                    fs._revalidate_chain(alias_chain, transition)
                     _check(transition)
                     os.link(
                         target_name.raw,
@@ -241,10 +282,25 @@ def _create_hardlinks(active, root, authority, control):
                     )
                     alias_created = True
                     _check(transition)
-                    after_parent = _snapshot(parent, transition)
+                    after_parent = _parent_snapshot(parent, transition)
                     after_target = _generation(target, transition)
-                    alias = fs._observe_child(parent, alias_name, transition)
+                    alias_node = fs._open_path_node(parent, alias_name, "file", transition)
+                    alias = alias_node.generation
                     delta = fs.ParentDelta("hardlink", alias_name, before_parent, after_parent)
+                    fs._revalidate_chain(alias_chain, transition, delta)
+                    target_delta = builder._delta_for_chain(target_chain, delta)
+                    fs._revalidate_chain(target_chain, transition, target_delta)
+                    current_alias_chain = builder._chain_after_parent(
+                        alias_chain, before_parent.generation, after_parent.generation,
+                    )
+                    alias_node_chain = builder._chain_with_child(current_alias_chain, alias_name, alias_node)
+                    current_target_chain = target_chain if target_delta is None else builder._chain_after_parent(
+                        target_chain, before_parent.generation, after_parent.generation,
+                    )
+                    target_node = fs.HeldNode(target.identity_fd, target.operation_fd, after_target)
+                    target_node_chain = builder._chain_with_child(current_target_chain, target_name, target_node)
+                    fs._revalidate_chain(alias_node_chain, transition)
+                    fs._revalidate_chain(target_node_chain, transition)
                     model_transition = ledger._hardlink_transition(
                         state,
                         "create",
@@ -268,8 +324,15 @@ def _create_hardlinks(active, root, authority, control):
                     active = _append(active, "hardlink-create-observed", observed, transition)
                     builder._fsync(target.operation_fd, transition)
                     builder._fsync(parent.operation_fd, transition)
+                    fs._revalidate_chain(alias_node_chain, transition)
+                    fs._revalidate_chain(target_node_chain, transition)
                     active = _append(active, "hardlink-create-settled", observed, transition)
+                    fs._revalidate_chain(alias_node_chain, transition)
+                    fs._revalidate_chain(target_node_chain, transition)
                     control.check()
+                    if target_delta is not None:
+                        target_chain = current_target_chain
+                        target_parent = target_chain.components[-1].node
                     state = ledger._settle_hardlink(state, model_transition)
                     _fail(entries[alias_path].record.hardlink_target == group.target_path)
                 except BaseException as error:
@@ -280,19 +343,50 @@ def _create_hardlinks(active, root, authority, control):
                             terminal_body = terminal.body_value()
                             durable = terminal.record_type in {"hardlink-create-observed", "hardlink-create-settled"} and terminal_body["alias"] == "rootfs/" + alias_path
                             if not durable:
+                                _fail(type(delta) is fs.ParentDelta)
+                                current_chain = builder._chain_after_parent(
+                                    alias_chain, delta.before.generation, delta.after.generation,
+                                )
+                                fs._revalidate_chain(current_chain, cleanup)
+                                before_remove = _parent_snapshot(parent, cleanup)
+                                _fail(before_remove == delta.after)
                                 current = fs._observe_child(parent, alias_name, cleanup)
                                 _fail(current.key == target.generation.key)
+                                fs._revalidate_chain(current_chain, cleanup)
                                 os.unlink(alias_name.raw, dir_fd=parent.operation_fd.number)
+                                after_remove = _parent_snapshot(parent, cleanup)
+                                remove_delta = fs.ParentDelta("unlink", alias_name, before_remove, after_remove)
+                                fs._revalidate_chain(current_chain, cleanup, remove_delta)
+                                final_alias_chain = builder._chain_after_parent(
+                                    current_chain, before_remove.generation, after_remove.generation,
+                                )
                                 builder._fsync(target.operation_fd, cleanup)
                                 builder._fsync(parent.operation_fd, cleanup)
-                                intent_body = builder._absence_abort_body(terminal.body_value(), parent, alias_name, cleanup)
-                                intent_body["target"] = builder._g(_generation(target, cleanup))
-                                active = _append(active, "hardlink-create-abort", intent_body, cleanup)
+                                current_target = _generation(target, cleanup)
+                                proof_chain, _proof_parent, proof_opened = _fresh_chain_to_parent(
+                                    owned, root, target_relative, cleanup,
+                                )
+                                try:
+                                    target_proof = builder._chain_with_child(
+                                        proof_chain, target_name,
+                                        fs.HeldNode(target.identity_fd, target.operation_fd, current_target),
+                                    )
+                                    fs._revalidate_chain(final_alias_chain, cleanup)
+                                    fs._revalidate_chain(target_proof, cleanup)
+                                    intent_body = builder._abort_body_from_snapshot(
+                                        terminal.body_value(), alias_name, after_remove,
+                                    )
+                                    intent_body["target"] = builder._g(current_target)
+                                    active = _append(active, "hardlink-create-abort", intent_body, cleanup)
+                                    fs._revalidate_chain(final_alias_chain, cleanup)
+                                    fs._revalidate_chain(target_proof, cleanup)
+                                finally:
+                                    _close_final(proof_opened)
                         except BaseException as cleanup_error:
                             error = fs.RootfsFsError(error, cleanup_error)
                     raise error
                 finally:
-                    _close_final(opened)
+                    _close_final(opened + (() if alias_node is None else (alias_node,)))
     return active
 
 
@@ -325,11 +419,15 @@ def _create_symlink(active, owned, root, entry, control):
     record = entry.record
     path = "rootfs/" + record.path
     parent_path, _separator, base = record.path.rpartition("/")
-    parent, opened, name = _open_parent(root, record.path, control)
+    parent_chain, parent, opened = _fresh_chain_to_parent(owned, root, parent_path, control)
+    name = fs._name(base)
     child = None
     created = False
+    delta = None
     try:
-        before = _snapshot(parent, control)
+        fs._revalidate_chain(parent_chain, control)
+        before = _parent_snapshot(parent, control)
+        fs._revalidate_chain(parent_chain, control)
         active = _append(
             active,
             "create-intent",
@@ -337,12 +435,20 @@ def _create_symlink(active, owned, root, entry, control):
             control,
         )
         transition = builder._transition_control()
+        fs._revalidate_chain(parent_chain, transition)
         _check(transition)
         os.symlink(record.link_text, name.raw, dir_fd=parent.operation_fd.number)
         created = True
         _check(transition)
         child = fs._open_path_node(parent, name, "symlink", transition)
-        after = _snapshot(parent, transition)
+        after = _parent_snapshot(parent, transition)
+        delta = fs.ParentDelta("create", name, before, after)
+        fs._revalidate_chain(parent_chain, transition, delta)
+        metadata_parent_chain = builder._chain_after_parent(
+            parent_chain, before.generation, after.generation,
+        )
+        node_chain = builder._chain_with_child(metadata_parent_chain, name, child)
+        fs._revalidate_chain(node_chain, transition)
         observed = {
             "token": builder._token(active),
             "path": path,
@@ -352,9 +458,13 @@ def _create_symlink(active, owned, root, entry, control):
         }
         active = _append(active, "create-observed", observed, transition)
         builder._fsync(parent.operation_fd, transition)
+        fs._revalidate_chain(node_chain, transition)
         active = _append(active, "create-settled", observed, transition)
+        fs._revalidate_chain(node_chain, transition)
         control.check()
-        active, generation = _metadata(active, child, path, record, parent, control, name)
+        active, generation = _metadata(
+            active, child, path, record, parent, control, node_chain, name,
+        )
         child = replace(child, generation=generation)
         chain, chain_parent, chain_opened = _fresh_chain_to_parent(owned, root, parent_path, control)
         try:
@@ -379,11 +489,26 @@ def _create_symlink(active, owned, root, entry, control):
                 if child is not None:
                     _fail(current.key == child.generation.key)
                 if not durable:
-                    _fail(current.key.kind == "symlink")
+                    _fail(type(delta) is fs.ParentDelta)
+                    current_chain = builder._chain_after_parent(
+                        parent_chain, delta.before.generation, delta.after.generation,
+                    )
+                    fs._revalidate_chain(current_chain, cleanup_control)
+                    before_remove = _parent_snapshot(parent, cleanup_control)
+                    _fail(before_remove == delta.after and current.key.kind == "symlink")
+                    fs._revalidate_chain(current_chain, cleanup_control)
                     os.unlink(name.raw, dir_fd=parent.operation_fd.number)
+                    after_remove = _parent_snapshot(parent, cleanup_control)
+                    remove_delta = fs.ParentDelta("unlink", name, before_remove, after_remove)
+                    fs._revalidate_chain(current_chain, cleanup_control, remove_delta)
+                    final_chain = builder._chain_after_parent(
+                        current_chain, before_remove.generation, after_remove.generation,
+                    )
                     builder._fsync(parent.operation_fd, cleanup_control)
-                    intent = builder._absence_abort_body(records[-1].body_value(), parent, name, cleanup_control)
+                    intent = builder._abort_body_from_snapshot(records[-1].body_value(), name, after_remove)
+                    fs._revalidate_chain(final_chain, cleanup_control)
                     active = _append(active, "create-abort", intent, cleanup_control)
+                    fs._revalidate_chain(final_chain, cleanup_control)
                 if child is not None and child.identity_fd.disposition == "open":
                     fs._close_node(child)
             except BaseException as cleanup_error:
@@ -398,13 +523,18 @@ def _create_symlink(active, owned, root, entry, control):
         _close_final(opened)
 
 
-def _finalize_directory(active, root, entry, control):
+def _finalize_directory(active, owned, root, entry, control):
     path = "rootfs/" + entry.record.path
-    parent, opened, name = _open_parent(root, entry.record.path, control)
+    relative_parent, _separator, base = entry.record.path.rpartition("/")
+    parent_chain, parent, opened = _fresh_chain_to_parent(owned, root, relative_parent, control)
+    name = fs._name(base)
     node = None
     try:
+        fs._revalidate_chain(parent_chain, control)
         node = fs._open_path_node(parent, name, "directory", control)
-        active, _generation_value = _metadata(active, node, path, entry.record, parent, control)
+        node_chain = builder._chain_with_child(parent_chain, name, node)
+        fs._revalidate_chain(node_chain, control)
+        active, _generation_value = _metadata(active, node, path, entry.record, parent, control, node_chain)
         fs._require_empty_fd_xattrs(node, control)
     except BaseException as error:
         _close_opened(opened + (() if node is None else (node,)), error)
@@ -426,6 +556,10 @@ def _record_matches(generation, record):
 
 
 def _postwalk(owned, root, authority, control):
+    fs._structural_increment("complete_walks")
+    root_chain, _root_parent, root_opened = _fresh_chain_to_parent(owned, root, "", control)
+    _fail(not root_opened)
+    fs._revalidate_chain(root_chain, control)
     expected = {entry.record.path: entry for entry in authority.plan.entries}
     observed = {}
 
@@ -494,6 +628,7 @@ def _postwalk(owned, root, authority, control):
         root_record.mtime * 1_000_000_000,
     ))
     fs._require_empty_fd_xattrs(root, control)
+    fs._revalidate_chain(root_chain, control)
     return len(observed)
 
 
@@ -564,17 +699,22 @@ def _materialize_unmasked(authority, owned, outer_control):
         hardlinks = [entry for entry in entries if entry.record.kind == "hardlink"]
         symlinks = [entry for entry in entries if entry.record.kind == "symlink"]
         for entry in sorted(directories, key=lambda item: (item.record.path.count("/"), item.record.path.encode("utf-8"))):
-            active = _create_directory(active, root, entry, control)
+            active = _create_directory(active, owned, root, entry, control)
         for entry in sorted(files, key=lambda item: item.record.path.encode("utf-8")):
-            active = _create_file(active, root, entry, control)
+            active = _create_file(active, owned, root, entry, control)
         if hardlinks:
-            active = _create_hardlinks(active, root, fresh, control)
+            active = _create_hardlinks(active, owned, root, fresh, control)
         for entry in sorted(symlinks, key=lambda item: item.record.path.encode("utf-8")):
             active = _create_symlink(active, owned, root, entry, control)
         for entry in sorted(directories, key=lambda item: (-item.record.path.count("/"), item.record.path.encode("utf-8"))):
-            active = _finalize_directory(active, root, entry, control)
+            active = _finalize_directory(active, owned, root, entry, control)
         root_entry = plan.PlannedEntry("root", None, plan.MaterialRecord("rootfs", "directory", fresh.plan.root.mode, fresh.plan.root.uid, fresh.plan.root.gid, fresh.plan.root.mtime, 0, None, None, None, None, -1))
-        active, root_generation = _metadata(active, root, "rootfs", root_entry.record, owned.operation, control)
+        root_chain, _root_parent, root_opened = _fresh_chain_to_parent(owned, root, "", control)
+        _fail(not root_opened and root_chain.components[-1].node.generation == _generation(root, control))
+        metadata_root = replace(root, generation=root_chain.components[-1].node.generation)
+        active, root_generation = _metadata(
+            active, metadata_root, "rootfs", root_entry.record, owned.operation, control, root_chain,
+        )
         root = replace(root, generation=root_generation)
         refreshed = replace(owned, active=active, root=root)
         count = _postwalk(refreshed, root, fresh, control)

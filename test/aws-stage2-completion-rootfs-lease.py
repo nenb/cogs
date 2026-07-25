@@ -142,10 +142,19 @@ def behavioral_fault_tests():
     def run_unlink(parents):
         values = iter(parents)
         transitions.clear()
+
+        def parent_snapshot(*_args):
+            value = next(values)
+            return fs.DirectoryNamesSnapshot(
+                value.generation, tuple(fs._name(name) for name in value.names),
+            )
+
         with patched(
             (builder, "_fresh_cleanup_authority", lambda *_args: (object(), observations)),
+            (builder, "_state_chain", lambda *_args: object()),
+            (builder.fs, "_revalidate_chain", lambda *_args: None),
             (builder.fs, "_observe_node", lambda *_args: generation(20, "file", 0o600, 1)),
-            (builder, "_parent", lambda *_args: next(values)),
+            (builder, "_parent_snapshot", parent_snapshot),
             (builder, "_close", lambda _node: transitions.append("close")),
             (builder, "_remove_name", lambda *_args: transitions.append("unlink")),
         ):
@@ -220,11 +229,61 @@ def successful_behavior_tests():
 
     token = "6" * 64
     operation_name = ledger._operation_name(token)
-    state_parent = ledger.LedgerParent(generation(40), (builder.LEDGER_NAME.text, builder.LOCK_NAME.text, operation_name))
-    operation_generation = generation(41)
+    state_before = ledger.LedgerParent(
+        generation(40), (builder.LEDGER_NAME.text, builder.LOCK_NAME.text),
+    )
+    state_parent = ledger.LedgerParent(
+        generation(40, ctime=2), (builder.LEDGER_NAME.text, builder.LOCK_NAME.text, operation_name),
+    )
+    operation_generation = generation(41, ctime=2)
+    operation_before = ledger.LedgerParent(operation_generation, ())
+    operation_after = ledger.LedgerParent(operation_generation, (builder.ROOT_NAME.text,))
     root_generation = generation(42, mode=0o755)
-    ledger_generation = generation(43, "file", 0o600, 1, 1)
-    settled = ledger._settled_record(0, 1, "3" * 64)
+    ledger_key = fs.HostKey(1, 1, 43, "file")
+    bodies = (
+        ("genesis", {
+            "token": token, "source_revision": "1" * 40, "source_manifest_sha256": "2" * 64,
+            "state_parent": ledger._parent_value(state_before),
+            "ledger_key": {"mount_id": 1, "device": 1, "inode": 43, "kind": "file"},
+        }),
+        ("genesis-settled", {"token": token, "state_parent": ledger._parent_value(state_before)}),
+        ("operation-create-intent", {
+            "token": token, "operation_name": operation_name,
+            "state_parent": ledger._parent_value(state_before),
+        }),
+        ("operation-create-observed", {
+            "token": token, "operation_name": operation_name,
+            "state_parent": ledger._parent_value(state_parent),
+            "operation": ledger._generation_value(operation_generation),
+        }),
+        ("operation-create-settled", {
+            "token": token, "operation_name": operation_name,
+            "state_parent": ledger._parent_value(state_parent),
+            "operation": ledger._generation_value(operation_generation),
+        }),
+        ("create-intent", {
+            "token": token, "path": builder.ROOT_NAME.text, "kind": "directory",
+            "parent": ledger._parent_value(operation_before),
+        }),
+        ("create-observed", {
+            "token": token, "path": builder.ROOT_NAME.text, "kind": "directory",
+            "parent": ledger._parent_value(operation_after), "child": ledger._generation_value(root_generation),
+        }),
+        ("create-settled", {
+            "token": token, "path": builder.ROOT_NAME.text, "kind": "directory",
+            "parent": ledger._parent_value(operation_after), "child": ledger._generation_value(root_generation),
+        }),
+    )
+    raw = b""
+    settled = ledger.INITIAL_BYTES
+    for record_type, body in bodies:
+        line = ledger._encode_proposal(ledger.LedgerProposal.create(record_type, body), settled)
+        raw += line
+        settled = ledger.SettledBytes(
+            settled.sequence + 1, settled.offset + len(line), hashlib.sha256(line).hexdigest(),
+        )
+    history = ledger._parse_ledger_history(raw)
+    ledger_generation = fs.HostGeneration(ledger_key, 0o600, 0, 0, 1, settled.offset, 1, 1)
     with tempfile.TemporaryFile() as file_object:
         node = fs.HeldNode(
             fs.CheckedFd(os.dup(file_object.fileno()), "mark-identity"),
@@ -232,7 +291,7 @@ def successful_behavior_tests():
             ledger_generation,
         )
         writer = ledger.LedgerWriterState(node, ledger_generation.key, settled, ledger_generation)
-        active = builder.ActiveLedger(node, (SimpleNamespace(body_value=lambda: {"token": token}),), writer)
+        active = builder.ActiveLedger(node, history, writer)
         locked = SimpleNamespace(state=object())
         operation = SimpleNamespace(identity_fd=object(), operation_fd=object())
         root = SimpleNamespace(identity_fd=object(), operation_fd=object())
@@ -249,8 +308,21 @@ def successful_behavior_tests():
         def append_leased(writer_state, *args):
             appended.append(args)
             assert writer_state is writer and len(args) == 11 and args[-1] is control
-            next_settled = ledger._settled_record(1, 2, "4" * 64)
-            next_generation = dataclasses.replace(ledger_generation, size=2, mtime_ns=2, ctime_ns=2)
+            body = {
+                "token": args[0], "operation_name": args[1],
+                "state_parent": ledger._parent_value(args[2]), "operation": ledger._generation_value(args[3]),
+                "root": ledger._generation_value(args[4]),
+                "ledger_key": {"mount_id": 1, "device": 1, "inode": 43, "kind": "file"},
+                "manifest_sha256": args[5], "manifest_size": args[6],
+                "ustar_sha256": args[7], "ustar_size": args[8], "entry_count": args[9],
+            }
+            line = ledger._encode_proposal(ledger.LedgerProposal.create("leased", body), writer_state.settled)
+            next_settled = ledger.SettledBytes(
+                writer_state.settled.sequence + 1, writer_state.settled.offset + len(line), hashlib.sha256(line).hexdigest(),
+            )
+            next_generation = dataclasses.replace(
+                ledger_generation, size=next_settled.offset, mtime_ns=2, ctime_ns=2,
+            )
             return ledger.LedgerWriterState(node, ledger_generation.key, next_settled, next_generation)
 
         with patched(
@@ -260,12 +332,11 @@ def successful_behavior_tests():
             (builder, "_current_ledger", lambda *_args: ledger_generation),
             (fs, "_observe_node", observe),
             (ledger, "_reconcile_ledger", lambda *_args: next(reconciliations)),
-            (ledger, "_validate_legal_records", lambda *_args: "leased"),
             (ledger, "_append_leased_record", append_leased),
         ):
             marked = builder._mark_leased(owned, "5" * 64, 7, "7" * 64, 512, 1, control)
         matrix_case()
-        assert marked.active.records[-1].record_type == "leased" and len(appended) == 1
+        assert builder._terminal_record(marked.active).record_type == "leased" and len(appended) == 1
         assert appended[0] == (
             token, operation_name, state_parent, operation_generation, root_generation,
             "5" * 64, 7, "7" * 64, 512, 1, control,
@@ -440,7 +511,9 @@ def stable_terminal_replacement_test():
 
     base = fs.HeldChain(node(1), (fs.ChainComponent(fs._name("base"), node(2)),))
     state, lock, ledger_node, operation, root = node(3), node(4, "file", 0o600, 1), node(5, "file", 0o600, 1), node(6), node(7, mode=0o755)
-    active = SimpleNamespace(node=ledger_node, records=(object(),), writer=SimpleNamespace(generation=ledger_node.generation, settled=object()))
+    active = builder.ActiveLedger(
+        ledger_node, (object(),), SimpleNamespace(generation=ledger_node.generation, settled=object()),
+    )
     owned = SimpleNamespace(
         locked=SimpleNamespace(state=state, lock=lock), active=active, operation=operation, root=root,
         operation_name="operation-" + "a" * 64,
@@ -781,9 +854,9 @@ def preservation_route_tests():
         active_node = held_node(152, "recovery-ledger", "file", 0o600, 1, 1)
         operation = held_node(153, "recovery-operation")
         locked = SimpleNamespace(state=state, lock=lock)
-        active = SimpleNamespace(node=active_node, records=(SimpleNamespace(body_value=lambda: {
+        active = builder.ActiveLedger(active_node, (SimpleNamespace(body_value=lambda: {
             "token": "a" * 64, "source_revision": approval.revision, "source_manifest_sha256": approval.manifest_sha256,
-        }),))
+        }),), None)
         leased_state = SimpleNamespace(status="leased", release_authorized=False)
         mutations = []
 
@@ -861,6 +934,8 @@ def authorized_cleanup_boundary_tests():
         ("authorized-remove", "remove-settled", "release-authorized"),
         ("operation-remove", "operation-absent", "release-authorized"),
         ("retire", "retired", "release-authorized"),
+        ("create-abort", "create-abort", "prelease"),
+        ("operation-abort", "operation-abort", "prelease"),
     )
     boundaries = ("before-write", "partial-write", "after-write-before-sync", "after-sync", "rollback-success", "rollback-failure", "observed", "settled")
     for transition_class, record_type, origin in classes:
@@ -877,9 +952,14 @@ def authorized_cleanup_boundary_tests():
 
             def fresh(current, locked, operation, expected_origin, passed_control):
                 events.append(("fresh", expected_origin, current.prefix))
-                assert current is appended and expected_origin == origin
-                if boundary == "observed":
-                    raise OSError("crash after durable append")
+                assert expected_origin == origin
+                if current is active:
+                    if boundary == "before-write":
+                        raise OSError("detached before append")
+                else:
+                    assert current is appended
+                    if boundary == "observed":
+                        raise OSError("crash after durable append")
                 return SimpleNamespace(cleanup_allowed=True, cleanup_origin=origin)
 
             with patched((builder, "_append", append), (builder, "_fresh_cleanup", fresh)):
@@ -887,10 +967,16 @@ def authorized_cleanup_boundary_tests():
                     assert builder._cleanup_append(active, object(), object(), record_type, {}, origin, object()) is appended
                 else:
                     rejected(lambda: builder._cleanup_append(active, object(), object(), record_type, {}, origin, object()))
-            if boundary in {"observed", "settled"}:
-                assert events[0][0] == "append" and events[1][0] == "fresh" and events[1][1] == origin
+            if boundary == "before-write":
+                assert events == [("fresh", origin, active.prefix)]
+            elif boundary in {"observed", "settled"}:
+                assert [event[0] for event in events] == ["fresh", "append", "fresh"]
+                assert events[0] == ("fresh", origin, active.prefix)
+                assert events[2] == ("fresh", origin, appended.prefix)
             else:
-                assert events == [("append", record_type, origin, boundary)]
+                assert events == [
+                    ("fresh", origin, active.prefix), ("append", record_type, origin, boundary),
+                ]
             matrix_case()
 
 
@@ -946,6 +1032,11 @@ def source_tests():
     assert "def _recover_kata_release(" in source
     assert "authority.reserve_rootfs()" in source and "authority.reserve_rootfs_release()" in source
     assert "_append_release_authorized_record(" in source
+    release_route = source.split("def _authorize_kata_release(", 1)[1].split("def _recover_kata_release(", 1)[0]
+    assert release_route.index("prospective = ledger._advance_history(active.records, record)") < release_route.index(
+        "written = ledger._append_release_authorized_record("
+    ) < release_route.index("history = ledger._parse_ledger_history(raw)")
+    assert "_fail(history.legal == prospective.legal)" in release_route
     for forbidden in (
         "subprocess", "os.system", "tarfile", "shutil", "copyfile", "rename(", "replace(",
         "chmod", "chown", "os.mount", "/proc/self/fd", "__del__", "__enter__", "__exit__",
@@ -999,7 +1090,7 @@ def source_tests():
         ("completion_rootfs_ledger.py", "_lease_history"),
         ("completion_rootfs_ledger.py", "_reconcile_ledger"),
         ("completion_rootfs_ledger.py", "_validate_body"),
-        ("completion_rootfs_ledger.py", "_validate_legal_records"),
+        ("completion_rootfs_ledger.py", "_advance_history"),
         ("completion_rootfs_ledger.py", "_write_record"),
     }
 

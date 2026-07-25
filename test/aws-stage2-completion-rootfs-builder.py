@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Portable policy tests and non-authoritative Docker functional tests."""
 
+import dataclasses
 import hashlib
 import importlib.util
 import json
@@ -56,7 +57,39 @@ def portable_tests():
     assert 'record_type not in {"leased", "release-authorized"}' in source
     assert "_append_mechanical" not in source and source.count("ledger._append_record(") == 1
     assert source.count("ledger._append_leased_record(") == 1
-    assert "ledger._validate_legal_records(active.records + (record,))" in source
+    assert "active.records + (record,)" not in source
+    assert source.count("ledger._advance_history(active.records, record)") == 2
+    assert "return fs._enumerate_names_stable(node, control)" in source
+    assert source.count("fs._revalidate_chain(parent_chain") >= 4
+    for function_name in ("_finish_remove", "_finish_hardlink_remove", "_retire", "_unlink_ledger"):
+        function_source = source.split(f"def {function_name}(", 1)[1].split("\ndef ", 1)[0]
+        assert "fs._revalidate_chain(" in function_source, function_name
+    assert 'fs._structural_increment("complete_walks")' in source
+    for helper_name in ("_create_directory", "_create_file"):
+        helper_source = source.split(f"def {helper_name}(", 1)[1].split("\ndef ", 1)[0]
+        assert "parent_chain" in helper_source and "fs._revalidate_chain(" in helper_source
+    assert "state_snapshot = fs._enumerate_stable(locked.state, control)" in source
+    materializer_source = (REMOTE / "completion_rootfs_materializer.py").read_text()
+    assert "return fs._enumerate_names_stable(node, control)" in materializer_source
+    assert "return fs._enumerate_stable(node, control)" in materializer_source
+    assert 'alias_node = fs._open_path_node(parent, alias_name, "file", transition)' in materializer_source
+    assert 'child = fs._open_path_node(parent, name, "symlink", transition)' in materializer_source
+    assert "for name, generation in snapshot.children:" in materializer_source
+    assert materializer_source.count("fs._revalidate_chain(parent_chain") >= 4
+    metadata_source = materializer_source.split("def _metadata(", 1)[1].split("\ndef ", 1)[0]
+    assert metadata_source.index("fs._revalidate_chain(node_chain, control)") < metadata_source.index(
+        'active = _append(active, "metadata-intent"'
+    )
+    assert metadata_source.index("fs._revalidate_chain(node_chain, transition)", metadata_source.index("metadata-observed")) < metadata_source.index(
+        'active = _append(active, "metadata-settled"'
+    )
+    assert "root_chain" in materializer_source and "def _finalize_directory(active, owned" in materializer_source
+    assert materializer_source.count("fs._revalidate_chain(alias_chain") >= 4
+    assert "target_chain" in materializer_source and "_chain_after_parent(" in materializer_source
+    assert "target_parent.generation.key ==" not in materializer_source
+    assert "builder._delta_for_chain(target_chain, delta)" in materializer_source
+    assert "_delta_for_chain(target_chain, delta)" in source
+    assert 'fs._structural_increment("complete_walks")' in materializer_source
     assert "def _authorize" not in source
     rejected(lambda: builder._append(None, "leased", {}, control))
     rejected(lambda: builder._append(None, "release-authorized", {}, control))
@@ -78,6 +111,68 @@ def portable_tests():
             raise AssertionError("close uncertainty accepted")
     finally:
         builder._close = real_close
+    fake_fd = fs.CheckedFd(999, "chain-test")
+
+    def directory_generation(inode, ctime=1):
+        return fs.HostGeneration(fs.HostKey(1, 1, inode, "directory"), 0o700, 0, 0, 2, 0, 1, ctime)
+
+    def chain(*generations):
+        anchor = fs.HeldNode(fake_fd, fake_fd, directory_generation(900))
+        components = tuple(
+            fs.ChainComponent(fs._name(f"part-{index}"), fs.HeldNode(fake_fd, fake_fd, value))
+            for index, value in enumerate(generations)
+        )
+        return fs.HeldChain(anchor, components)
+
+    alias_parent = directory_generation(901)
+    target_parent = directory_generation(902)
+    disjoint_parent = directory_generation(903)
+    for action in ("hardlink", "unlink"):
+        if action == "hardlink":
+            before_names, after_names = (), (fs._name("alias"),)
+        else:
+            before_names, after_names = (fs._name("alias"),), ()
+        delta = fs.ParentDelta(
+            action, fs._name("alias"),
+            fs.DirectoryNamesSnapshot(alias_parent, before_names),
+            fs.DirectoryNamesSnapshot(dataclasses.replace(alias_parent, ctime_ns=2), after_names),
+        )
+        assert builder._delta_for_chain(chain(alias_parent), delta) is delta
+        assert builder._delta_for_chain(chain(disjoint_parent), delta) is None
+        assert builder._delta_for_chain(chain(alias_parent, target_parent), delta) is delta
+        assert builder._delta_for_chain(chain(target_parent), delta) is None
+        reciprocal = fs.ParentDelta(
+            action, fs._name("alias"),
+            fs.DirectoryNamesSnapshot(target_parent, before_names),
+            fs.DirectoryNamesSnapshot(dataclasses.replace(target_parent, ctime_ns=2), after_names),
+        )
+        assert builder._delta_for_chain(chain(target_parent, alias_parent), reciprocal) is reciprocal
+        rejected(lambda: builder._delta_for_chain(chain(alias_parent, alias_parent), delta))
+
+    detached_chain = chain(alias_parent)
+    detached_parent = detached_chain.components[-1].node
+    detached_events = []
+    real_revalidate = fs._revalidate_chain
+    real_mkdir = builder.os.mkdir
+    real_open = builder.os.open
+    try:
+        fs._revalidate_chain = lambda *_args: (
+            detached_events.append("detached"), (_ for _ in ()).throw(fs.RootfsFsError()),
+        )[1]
+        builder.os.mkdir = lambda *_args, **_kwargs: detached_events.append("mkdir")
+        builder.os.open = lambda *_args, **_kwargs: detached_events.append("open")
+        rejected(lambda: builder._create_directory(
+            detached_parent, fs._name("directory"), control, detached_chain,
+        ))
+        rejected(lambda: builder._create_file(
+            detached_parent, fs._name("file"), b"content", control, detached_chain,
+        ))
+        assert detached_events == ["detached", "detached"]
+    finally:
+        fs._revalidate_chain = real_revalidate
+        builder.os.mkdir = real_mkdir
+        builder.os.open = real_open
+
     original_umask = os.umask(0o027)
     try:
         def fixed_boundary():

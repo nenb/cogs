@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import stat
+from types import SimpleNamespace
 import sys
 import time
 
@@ -33,6 +34,49 @@ def portable():
     assert "target_opened + (() if target is None" in source and "(active.node,) +" in source
     for forbidden in ("rmtree", "os.walk", "glob", "subprocess", "socket", "tarfile", "extractall", "rename"):
         assert forbidden not in source
+
+    sys.path.insert(0, str(REMOTE))
+    fs = load("completion_rootfs_fs_metadata_probe", REMOTE / "completion_rootfs_fs.py")
+    sys.modules["completion_rootfs_fs"] = fs
+    load("completion_rootfs_ledger", REMOTE / "completion_rootfs_ledger.py")
+    builder = load("completion_rootfs_builder", REMOTE / "completion_rootfs_builder.py")
+    materializer = load("completion_rootfs_materializer_probe", REMOTE / "completion_rootfs_materializer.py")
+    fake_fd = fs.CheckedFd(999, "detached-probe")
+
+    def generation(inode, kind, mode):
+        return fs.HostGeneration(fs.HostKey(1, 1, inode, kind), mode, 0, 0, 1 if kind != "directory" else 2, 0, 1, 1)
+
+    parent = fs.HeldNode(fake_fd, fake_fd, generation(10, "directory", 0o700))
+    original_revalidate = fs._revalidate_chain
+    original_append = materializer._append
+    try:
+        for label, kind, mode, symlink in (
+            ("regular", "file", 0o600, None),
+            ("directory", "directory", 0o700, None),
+            ("root", "directory", 0o755, None),
+            ("symlink", "symlink", 0o777, fs._name("link")),
+        ):
+            node = fs.HeldNode(fake_fd, None if kind == "symlink" else fake_fd, generation(20, kind, mode))
+            chain = fs.HeldChain(parent, (fs.ChainComponent(fs._name(label), node),))
+            events = []
+
+            def detached(*_args):
+                events.append("detached")
+                raise fs.RootfsFsError()
+
+            fs._revalidate_chain = detached
+            materializer._append = lambda *_args: events.append("append")
+            record = SimpleNamespace(kind=kind, archive_size=0, mode=mode, uid=0, gid=0, mtime=1)
+            try:
+                materializer._metadata(None, node, label, record, parent, object(), chain, symlink)
+            except fs.RootfsFsError:
+                pass
+            else:
+                raise AssertionError(f"detached {label} metadata accepted")
+            assert events == ["detached"]
+    finally:
+        fs._revalidate_chain = original_revalidate
+        materializer._append = original_append
     print("completion rootfs materializer portable tests passed")
 
 

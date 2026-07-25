@@ -2,6 +2,7 @@
 """Portable hostile tests and Linux syscall qualification for D-R2.2a."""
 
 import ast
+import dataclasses
 import hashlib
 import importlib.util
 import json
@@ -41,7 +42,7 @@ def generation(inode=1, ctime=1):
 def snapshot(names, value=None):
     value = value or generation()
     checked = tuple(module._name(name) for name in sorted(names))
-    return module.DirectorySnapshot(value, checked, tuple((name, generation(index + 2)) for index, name in enumerate(checked)))
+    return module.DirectoryNamesSnapshot(value, checked)
 
 
 def manifest_bytes(revision, entries):
@@ -87,11 +88,29 @@ def pure_tests():
     assert unicodedata.normalize("NFC", module._name("é").text) == "é"
 
     before = snapshot((b"a",))
-    after = snapshot((b"a", b"b"), generation(1, 2))
+    after_generation = generation(1, 2)
+    after = snapshot((b"a", b"b"), after_generation)
     module.ParentDelta("create", module._name(b"b"), before, after)
-    module.ParentDelta("metadata", module._name(b"a"), before, snapshot((b"a",), generation(1, 2)))
+    module.ParentDelta("metadata", module._name(b"a"), before, snapshot((b"a",), after_generation))
+    module.ParentDelta("unlink", module._name(b"a"), before, snapshot((), after_generation))
+    for changed in (
+        dataclasses.replace(after_generation, nlink=3),
+        dataclasses.replace(after_generation, size=4096),
+        dataclasses.replace(after_generation, mtime_ns=3),
+        dataclasses.replace(after_generation, ctime_ns=3),
+    ):
+        module.ParentDelta("create", module._name(b"b"), before, snapshot((b"a", b"b"), changed))
     rejected(lambda: module.ParentDelta("unlink", module._name(b"b"), before, after))
     rejected(lambda: module.ParentDelta("create", module._name(b"b"), before, snapshot((b"a", b"b", b"c"))))
+    for changed in (
+        dataclasses.replace(after_generation, key=module.HostKey(1, 1, 2, "directory")),
+        dataclasses.replace(after_generation, mode=0o755),
+        dataclasses.replace(after_generation, uid=1),
+        dataclasses.replace(after_generation, gid=1),
+    ):
+        rejected(lambda changed=changed: module.ParentDelta(
+            "create", module._name(b"b"), before, snapshot((b"a", b"b"), changed),
+        ))
 
     fake_fd = module.CheckedFd(100, "fake")
     fake_node = module.HeldNode(fake_fd, fake_fd, generation())
@@ -99,12 +118,100 @@ def pure_tests():
     real_observe = module._observe_node
     real_child = module._observe_child
     try:
-        values = iter((["b", "a"], ["a", "b"], ["b", "a"]))
-        module.os.listdir = lambda _fd: next(values)
-        module._observe_node = lambda *_args: generation()
+        names = [f"name-{index:04d}" for index in range(526)]
+        listings = iter((list(reversed(names)), list(names), list(reversed(names))))
+        calls = {"lists": 0, "observes": 0, "children": 0}
+
+        def listdir(_fd):
+            calls["lists"] += 1
+            return next(listings)
+
+        def observe(*_args):
+            calls["observes"] += 1
+            return generation()
+
+        def child(*_args):
+            calls["children"] += 1
+            raise AssertionError("name-only snapshot opened an unaffected sibling")
+
+        module.os.listdir = listdir
+        module._observe_node = observe
+        module._observe_child = child
+        counters_before = module.structural_counter_snapshot()
+        names_only = module._enumerate_names_stable(fake_node, control())
+        counters_after = module.structural_counter_snapshot()
+        assert names_only.raw_names == tuple(name.encode() for name in names)
+        assert calls == {"lists": 3, "observes": 4, "children": 0}
+        counter_delta = module.structural_counter_delta(counters_before, counters_after)
+        assert counter_delta["parent_snapshots"] == 1
+        assert counter_delta["listed_names"] == 3 * 526
+        assert all(counter_delta[key] == 0 for key in module.ROOTFS_STRUCTURAL_COUNTER_KEYS if key not in {
+            "listed_names", "parent_snapshots",
+        })
+        assert tuple(counters_after) == module.ROOTFS_STRUCTURAL_COUNTER_KEYS
+        assert all(type(value) is int and value >= 0 for value in counters_after.values())
+        rejected(lambda: module.structural_counter_delta(counters_after, counters_before))
+
+        for values in (
+            (["a"], ["a", "b"], ["a"]),
+            (["a"], ["a"], ["a", "b"]),
+            (["a"], ["b"], ["a"]),
+        ):
+            listings = iter(values)
+            rejected(lambda: module._enumerate_names_stable(fake_node, control()))
+
+        stable = generation()
+        for seam in range(4):
+            generations = [stable] * 4
+            generations[seam] = dataclasses.replace(stable, ctime_ns=2)
+            observed = iter(generations)
+            listings = iter((["a"], ["a"], ["a"]))
+            module._observe_node = lambda *_args, observed=observed: next(observed)
+            rejected(lambda: module._enumerate_names_stable(fake_node, control()))
+        for drifted in (
+            dataclasses.replace(stable, key=module.HostKey(2, 2, 2, "directory")),
+            dataclasses.replace(stable, mode=0o755), dataclasses.replace(stable, uid=1),
+            dataclasses.replace(stable, gid=1), dataclasses.replace(stable, nlink=3),
+            dataclasses.replace(stable, size=4096), dataclasses.replace(stable, mtime_ns=2),
+            dataclasses.replace(stable, ctime_ns=2),
+        ):
+            observed = iter((stable, drifted, stable, stable))
+            listings = iter((["a"], ["a"], ["a"]))
+            module._observe_node = lambda *_args, observed=observed: next(observed)
+            rejected(lambda: module._enumerate_names_stable(fake_node, control()))
+
+        listings = iter((["duplicate", "duplicate"],) * 3)
+        module._observe_node = lambda *_args: stable
+        rejected(lambda: module._enumerate_names_stable(fake_node, control()))
+        for hostile_name in (".", "..", "a/b", "e\u0301", "line\n", "\udcff", "x" * 256):
+            listings = iter(([hostile_name], [hostile_name], [hostile_name]))
+            module._observe_node = lambda *_args: stable
+            rejected(lambda: module._enumerate_names_stable(fake_node, control()))
+
+        class FailAt:
+            def __init__(self, seam):
+                self.seam = seam
+                self.calls = 0
+
+            def check(self):
+                self.calls += 1
+                if self.calls == self.seam:
+                    raise module.RootfsFsError()
+
+        def checked_observe(_identity, _operation, checked):
+            checked.check()
+            return stable
+
+        module._observe_node = checked_observe
+        for seam in range(1, 11):
+            listings = iter((["a"], ["a"], ["a"]))
+            rejected(lambda seam=seam: module._enumerate_names_stable(fake_node, FailAt(seam)))
+
+        listings = iter((["b", "a"], ["a", "b"], ["b", "a"]))
+        module._observe_node = lambda *_args: stable
         module._observe_child = lambda _parent, _name, _control: generation(2)
         assert module._enumerate_stable(fake_node, control()).raw_names == (b"a", b"b")
-        values = iter((["a"], ["a", "b"]))
+        listings = iter((["a"], ["a", "b"]))
         rejected(lambda: module._enumerate_stable(fake_node, control()))
     finally:
         module.os.listdir = real_listdir
@@ -220,9 +327,24 @@ def linux_tests():
         chain = module.HeldChain(anchor, tuple(components))
         directory = chain.components[-1].node
         try:
+            names_snapshot = module._enumerate_names_stable(directory, active)
             snapshot_value = module._enumerate_stable(directory, active)
+            assert (names_snapshot.generation, names_snapshot.raw_names) == (
+                snapshot_value.generation, snapshot_value.raw_names,
+            )
             assert snapshot_value.raw_names == tuple(sorted(snapshot_value.raw_names))
             assert b"regular" in snapshot_value.raw_names and b"link" in snapshot_value.raw_names
+
+            detached = Path(temporary + "-detached")
+            os.rename(temporary, detached)
+            Path(temporary).mkdir(mode=0o700)
+            try:
+                assert module._enumerate_names_stable(directory, active).raw_names == names_snapshot.raw_names
+                rejected(lambda: module._revalidate_chain(chain, active))
+            finally:
+                Path(temporary).rmdir()
+                os.rename(detached, temporary)
+            module._revalidate_chain(chain, active)
 
             regular = module._open_path_node(directory, b"regular", "file", active)
             try:

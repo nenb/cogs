@@ -143,7 +143,7 @@ def _build_once_unmasked(approval, token, outer_control, retain=False):
         manifest = canonical._manifest(authority.plan)
         active, manifest_node = builder._create_ledger_entry(
             result.active,
-            owned.operation,
+            builder._operation_chain(owned, control),
             MANIFEST_NAME.text,
             MANIFEST_NAME,
             "file",
@@ -153,7 +153,7 @@ def _build_once_unmasked(approval, token, outer_control, retain=False):
         fs._close_node(manifest_node)
         active, empty_tar = builder._create_ledger_entry(
             active,
-            owned.operation,
+            builder._operation_chain(owned, control),
             USTAR_NAME.text,
             USTAR_NAME,
             "file",

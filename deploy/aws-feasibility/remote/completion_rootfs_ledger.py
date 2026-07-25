@@ -10,7 +10,6 @@ import time
 sys.dont_write_bytecode = True
 
 from completion_rootfs_fs import (
-    DirectorySnapshot,
     HeldNode,
     HostGeneration,
     HostKey,
@@ -23,6 +22,7 @@ from completion_rootfs_fs import (
     _observe_node,
     _path,
     _require_empty_fd_xattrs,
+    _structural_increment,
 )
 
 VERSION = "cogs.stage2-rootfs-ledger/v1"
@@ -386,6 +386,251 @@ class LeaseSnapshot:
 
 
 @dataclass(frozen=True)
+class LegalHardlinkCursor:
+    target_path: str
+    aliases: tuple[str, ...]
+    next_index: int
+
+    def __post_init__(self):
+        _graph_path(self.target_path)
+        _fail(type(self.aliases) is tuple and self.aliases)
+        for alias in self.aliases:
+            _fail(type(alias) is str)
+            _graph_path(alias)
+        encoded = tuple(alias.encode("utf-8") for alias in self.aliases)
+        _fail(self.target_path not in self.aliases and encoded == tuple(sorted(set(encoded))))
+        _integer(self.next_index, 0, len(self.aliases))
+
+
+@dataclass(frozen=True)
+class PersistentMapEntry:
+    key: str
+    value: object
+
+    def __post_init__(self):
+        _fail(type(self.key) is str and len(self.key.encode("utf-8")) <= 4096)
+        _fail(type(self.value) in {LegalHardlinkCursor, LedgerParent} or self.value is _MISSING)
+
+
+@dataclass(frozen=True)
+class PersistentMapNode:
+    zero: object = None
+    one: object = None
+    entry: PersistentMapEntry | None = None
+
+    def __post_init__(self):
+        _fail(self.zero is None or type(self.zero) is PersistentMapNode)
+        _fail(self.one is None or type(self.one) is PersistentMapNode)
+        _fail(self.entry is None or type(self.entry) is PersistentMapEntry)
+
+
+@dataclass(frozen=True)
+class PersistentMap:
+    root: PersistentMapNode | None
+    count: int
+
+    def __post_init__(self):
+        _fail(self.root is None or type(self.root) is PersistentMapNode)
+        _integer(self.count, 0, MAX_RECORDS)
+        _fail((self.root is None) == (self.count == 0))
+
+
+_EMPTY_MAP = PersistentMap(None, 0)
+_MISSING = object()
+
+
+def _key_bits(raw):
+    for value in raw:
+        for shift in range(7, -1, -1):
+            yield (value >> shift) & 1
+
+
+def _collision_get(root, key, group_metric=False):
+    node = root
+    for bit in _key_bits(key.encode("utf-8")):
+        if group_metric:
+            _structural_increment("group_lookup_steps")
+        if node is None:
+            return _MISSING
+        node = node.one if bit else node.zero
+    if node is None or node.entry is None or node.entry.key != key:
+        return _MISSING
+    return node.entry.value
+
+
+def _collision_set(root, key, value):
+    nodes = []
+    node = root
+    bits = tuple(_key_bits(key.encode("utf-8")))
+    for bit in bits:
+        nodes.append(node)
+        node = None if node is None else (node.one if bit else node.zero)
+    child = PersistentMapNode(
+        None if node is None else node.zero,
+        None if node is None else node.one,
+        PersistentMapEntry(key, value),
+    )
+    copies = 1
+    for bit, previous in reversed(tuple(zip(bits, nodes))):
+        zero = None if previous is None else previous.zero
+        one = None if previous is None else previous.one
+        child = PersistentMapNode(zero if bit else child, child if bit else one, None if previous is None else previous.entry)
+        copies += 1
+    return child, copies
+
+
+def _map_leaf_get(entry, collisions, key, group_metric=False):
+    if entry is not None and entry.key == key:
+        return entry.value
+    if collisions is not None:
+        return _collision_get(collisions, key, group_metric)
+    return _MISSING
+
+
+def _map_get(mapping, key, group_metric=False):
+    _fail(type(mapping) is PersistentMap and type(key) is str)
+    node = mapping.root
+    for bit in _key_bits(hashlib.sha256(key.encode("utf-8")).digest()):
+        if group_metric:
+            _structural_increment("group_lookup_steps")
+        if node is None:
+            return _MISSING
+        node = node.one if bit else node.zero
+    if node is None:
+        return _MISSING
+    return _map_leaf_get(node.entry, node.zero, key, group_metric)
+
+
+def _map_set(mapping, key, value, group_metric=False):
+    _fail(type(mapping) is PersistentMap and type(key) is str)
+    bits = tuple(_key_bits(hashlib.sha256(key.encode("utf-8")).digest()))
+    nodes = []
+    node = mapping.root
+    for bit in bits:
+        nodes.append(node)
+        node = None if node is None else (node.one if bit else node.zero)
+    previous = _MISSING if node is None else _map_leaf_get(node.entry, node.zero, key, group_metric)
+    if previous is _MISSING and value is _MISSING:
+        return mapping
+    entry = None if node is None else node.entry
+    collisions = None if node is None else node.zero
+    collision_copies = 0
+    if entry is None:
+        entry = PersistentMapEntry(key, value)
+    elif entry.key == key:
+        entry = PersistentMapEntry(key, value)
+    else:
+        collisions, copied = _collision_set(collisions, entry.key, entry.value)
+        collision_copies += copied
+        collisions, copied = _collision_set(collisions, key, value)
+        collision_copies += copied
+    child = PersistentMapNode(collisions, None, entry)
+    copies = 1
+    for bit, old in reversed(tuple(zip(bits, nodes))):
+        zero = None if old is None else old.zero
+        one = None if old is None else old.one
+        child = PersistentMapNode(zero if bit else child, child if bit else one, None if old is None else old.entry)
+        copies += 1
+    if group_metric:
+        _structural_increment("group_node_copies", copies + collision_copies)
+    count = mapping.count + (previous is _MISSING and value is not _MISSING) - (
+        previous is not _MISSING and value is _MISSING
+    )
+    return _EMPTY_MAP if count == 0 else PersistentMap(child, count)
+
+
+def _map_without(mapping, key):
+    if _map_get(mapping, key) is _MISSING:
+        return mapping
+    return _map_set(mapping, key, _MISSING)
+
+
+@dataclass(frozen=True)
+class LedgerLegalState:
+    settled: SettledBytes
+    token: str
+    phase: str
+    operation_name: str | None
+    state_parent: LedgerParent
+    operation_parent: LedgerParent | None
+    groups: PersistentMap
+    parents: PersistentMap
+    pending: LedgerRecord | None
+    return_phase: str | None
+    lease_snapshot: LeaseSnapshot | None
+    previous: LedgerRecord
+
+    def __post_init__(self):
+        _fail(type(self.settled) is SettledBytes and type(self.phase) is str)
+        _token(self.token)
+        entry_phases = {
+            "create-intent", "create-observed", "metadata-intent", "metadata-observed",
+            "hardlink-create-intent", "hardlink-create-observed", "remove-intent", "remove-observed",
+        }
+        phases = entry_phases | {
+            "genesis", "ready", "aborted", "retired", "operation-intent", "operation-observed",
+            "active", "leased", "release-authorized", "operation-remove", "operation-absent", "uncertain",
+        }
+        _fail(self.phase in phases)
+        _fail(self.operation_name is None or self.operation_name == _operation_name(self.token))
+        if self.phase not in {"genesis", "ready", "aborted", "retired", "uncertain"}:
+            _fail(self.operation_name == _operation_name(self.token))
+        _fail(type(self.state_parent) is LedgerParent)
+        _fail(self.operation_parent is None or type(self.operation_parent) is LedgerParent)
+        if self.phase in {
+            "operation-observed", "active", "leased", "release-authorized", "operation-remove",
+            *entry_phases,
+        }:
+            _fail(type(self.operation_parent) is LedgerParent)
+        if self.phase in {"genesis", "ready", "operation-intent", "aborted", "operation-absent", "retired"}:
+            _fail(self.operation_parent is None)
+        _fail(type(self.groups) is PersistentMap and type(self.parents) is PersistentMap)
+        if self.phase in entry_phases:
+            _fail(type(self.pending) is LedgerRecord and self.pending.record_type == self.phase)
+            _fail(self.return_phase in {"active", "release-authorized"})
+        elif self.phase == "operation-remove":
+            _fail(self.pending is None and self.return_phase in {"active", "release-authorized"})
+        else:
+            _fail(self.pending is None and self.return_phase is None)
+        _fail(self.lease_snapshot is None or type(self.lease_snapshot) is LeaseSnapshot)
+        if self.phase in {
+            "genesis", "ready", "aborted", "operation-intent", "operation-observed", "active",
+        } or self.return_phase == "active":
+            _fail(self.lease_snapshot is None)
+        if self.phase in {"leased", "release-authorized"} or self.return_phase == "release-authorized":
+            _fail(type(self.lease_snapshot) is LeaseSnapshot)
+        _fail(type(self.previous) is LedgerRecord)
+        _fail((self.previous.sequence, self.previous.next_offset, self.previous.line_sha256) ==
+              (self.settled.sequence, self.settled.offset, self.settled.line_sha256))
+
+
+@dataclass(frozen=True, eq=False)
+class LedgerHistory:
+    previous: object = field(compare=False, repr=False)
+    first: LedgerRecord
+    terminal: LedgerRecord
+    count: int
+    legal: LedgerLegalState
+
+    def __post_init__(self):
+        _fail(self.previous is None or type(self.previous) is LedgerHistory)
+        _fail(type(self.first) is LedgerRecord and type(self.terminal) is LedgerRecord)
+        _integer(self.count, 1, MAX_RECORDS)
+        _fail(type(self.legal) is LedgerLegalState and self.terminal is self.legal.previous)
+        _fail((self.previous is None) == (self.count == 1))
+        if self.previous is None:
+            _fail(self.first is self.terminal)
+        else:
+            _fail(self.first is self.previous.first and self.count == self.previous.count + 1)
+
+    def __reversed__(self):
+        current = self
+        while current is not None:
+            yield current.terminal
+            current = current.previous
+
+
+@dataclass(frozen=True)
 class LedgerState:
     status: str
     token: str
@@ -504,7 +749,7 @@ def _load_line(raw):
     return value
 
 
-def _parse_ledger(raw):
+def _decode_ledger(raw):
     _fail(type(raw) is bytes and 0 < len(raw) <= MAX_LEDGER_BYTES and raw.endswith(b"\n") and b"\x00" not in raw)
     lines = raw.splitlines(keepends=True)
     _fail(0 < len(lines) <= MAX_RECORDS and all(line.endswith(b"\n") and 0 < len(line) <= MAX_LINE_BYTES for line in lines))
@@ -526,8 +771,15 @@ def _parse_ledger(raw):
         records.append(LedgerRecord(sequence, previous_sequence, previous_offset, previous_sha256, next_offset, value["record_type"], _freeze(body), digest))
         settled = SettledBytes(sequence, next_offset, digest)
     _fail(settled.offset == len(raw))
-    _validate_legal_records(tuple(records))
     return tuple(records)
+
+
+def _parse_ledger_history(raw):
+    return _validated_history(_decode_ledger(raw))
+
+
+def _parse_ledger(raw):
+    return _history_records(_parse_ledger_history(raw))
 
 
 def _validate_body(record_type, body):
@@ -745,119 +997,257 @@ def _lease_history(records):
     return snapshot, authorized is not None, started
 
 
-def _validate_legal_records(records):
-    _fail(type(records) is tuple and records and records[0].record_type == "genesis")
-    token = _body(records[0])["token"]
-    phase = "genesis"
-    operation_name = None
-    groups = {}
-    pending = None
-    return_phase = None
-    lease_snapshot = None
-    for record in records[1:]:
-        body = _body(record)
-        _fail(body["token"] == token and phase not in {"retired", "uncertain"})
-        kind = record.record_type
-        if kind == "uncertain":
-            phase = "uncertain"
-            continue
-        if phase == "genesis":
-            _fail(kind == "genesis-settled" and body["state_parent"] == _body(records[0])["state_parent"])
-            phase = "ready"
-        elif phase == "ready":
-            _fail(kind in {"genesis-abort", "operation-create-intent"})
-            if kind == "genesis-abort":
-                _fail(body["state_parent"] == _body(records[record.sequence - 1])["state_parent"])
-                phase = "aborted"
-            else:
-                operation_name = body["operation_name"]
-                phase = "operation-intent"
-        elif phase == "aborted":
-            _fail(kind == "retired" and body["state_parent"] == _body(records[record.sequence - 1])["state_parent"])
-            phase = "retired"
-        elif phase == "operation-intent":
-            _fail(kind in {"operation-create-observed", "operation-abort"} and body["operation_name"] == operation_name)
-            intent = _body(records[record.sequence - 1])
-            if kind == "operation-create-observed":
-                _parent_delta("create", operation_name, _parse_parent(intent["state_parent"]), _parse_parent(body["state_parent"]))
-                phase = "operation-observed"
-            else:
-                _fail(body["state_parent"] == intent["state_parent"])
-                phase = "aborted"
-        elif phase == "operation-observed":
-            _fail(kind == "operation-create-settled" and body["operation_name"] == operation_name)
-            _fail(body == _body(records[record.sequence - 1]))
-            phase = "active"
-        elif phase in {"active", "release-authorized"}:
-            if kind == "leased":
-                _fail(phase == "active" and pending is None and lease_snapshot is None)
-                lease_snapshot = _lease_from_record(records, record)
-                phase = "leased"
-            elif kind == "operation-remove-intent":
-                _fail(body["operation_name"] == operation_name)
-                return_phase = phase
-                phase = "operation-remove"
-            elif kind == "hardlink-group":
-                _fail(phase == "active")
-                target = body["target_path"]
-                _fail(target not in groups)
-                groups[target] = (tuple(body["aliases"]), 0)
-            else:
-                allowed = {"remove-intent"} if phase == "release-authorized" else {"create-intent", "metadata-intent", "hardlink-create-intent", "remove-intent"}
-                _fail(kind in allowed)
-                if kind == "hardlink-create-intent":
-                    target = body["target_path"]
-                    _fail(target in groups and body["index"] == groups[target][1] and body["alias"] == groups[target][0][groups[target][1]])
-                if kind == "remove-intent" and body["target_path"] is not None:
-                    target = body["target_path"]
-                    _fail(target in groups and groups[target][1] > 0 and body["path"] == groups[target][0][groups[target][1] - 1])
-                pending = record
-                return_phase = phase
-                phase = kind.removesuffix("-intent") + "-intent"
-        elif phase == "leased":
-            _fail(kind == "release-authorized" and lease_snapshot is not None)
-            actual = lease_snapshot.settled
-            _fail((body["lease_sequence"], body["lease_offset"], body["lease_sha256"]) == (actual.sequence, actual.offset, actual.line_sha256))
-            phase = "release-authorized"
-        elif phase.endswith("-intent"):
-            abort_kind = phase.removesuffix("intent") + "abort"
-            _fail(kind in {abort_kind, phase.removesuffix("intent") + "observed"})
-            if kind == abort_kind:
-                _fail(return_phase == "active")
-                intent_body = _body(pending)
-                excluded = {"parent", "target"} if kind == "hardlink-create-abort" else {"parent"}
-                _fail(all(body[key] == intent_body[key] for key in body if key not in excluded))
-                if kind == "hardlink-create-abort":
-                    _fail(_same_fields(_parse_generation(body["target"]), _parse_generation(intent_body["target"]), {"ctime_ns"}))
-                _fail(_valid_abort_parent(_parse_parent(intent_body["parent"]), _parse_parent(body["parent"])))
-                pending = None
-                phase = return_phase
-            else:
-                _matching_transition(pending, record)
-                pending = record
-                phase = phase.removesuffix("intent") + "observed"
-        elif phase.endswith("-observed"):
-            _fail(kind == phase.removesuffix("observed") + "settled")
-            _matching_transition(pending, record)
-            if kind == "hardlink-create-settled":
-                target = body["target_path"]
-                groups[target] = (groups[target][0], groups[target][1] + 1)
-            if kind == "remove-settled" and body["target"] is not None:
-                target = body["target_path"]
-                groups[target] = (groups[target][0], groups[target][1] - 1)
-            pending = None
-            phase = return_phase
-        elif phase == "operation-remove":
-            _fail(kind == "operation-absent" and body["operation_name"] == operation_name)
-            intent = _body(records[record.sequence - 1])
-            _parent_delta("rmdir", operation_name, _parse_parent(intent["state_parent"]), _parse_parent(body["state_parent"]))
-            phase = "operation-absent"
-        elif phase == "operation-absent":
-            _fail(kind == "retired" and body["state_parent"] == _body(records[record.sequence - 1])["state_parent"])
-            phase = "retired"
+def _record_settled(record):
+    return SettledBytes(record.sequence, record.next_offset, record.line_sha256)
+
+
+def _history_records(history):
+    _fail(type(history) is LedgerHistory)
+    values = [None] * history.count
+    current = history
+    index = history.count - 1
+    while current is not None:
+        _fail(current.count == index + 1)
+        values[index] = current.terminal
+        current = current.previous
+        index -= 1
+    _fail(index == -1 and all(type(record) is LedgerRecord for record in values))
+    return tuple(values)
+
+
+def _history_with_record(history, record):
+    _fail(type(history) is LedgerHistory and type(record) is LedgerRecord)
+    values = [None] * (history.count + 1)
+    current = history
+    index = history.count - 1
+    while current is not None:
+        values[index] = current.terminal
+        current = current.previous
+        index -= 1
+    _fail(index == -1)
+    values[-1] = record
+    _structural_increment("active_history_record_copies", 2 * (history.count + 1))
+    return tuple(values)
+
+
+def _initial_history(record):
+    _fail(type(record) is LedgerRecord and record.record_type == "genesis")
+    _fail((record.sequence, record.previous_sequence, record.previous_offset, record.previous_sha256) ==
+          (0, -1, 0, ZERO_SHA256))
+    state = LedgerLegalState(
+        _record_settled(record), _body(record)["token"], "genesis", None,
+        _parse_parent(_body(record)["state_parent"]), None,
+        _EMPTY_MAP, _EMPTY_MAP, None, None, None, record,
+    )
+    return LedgerHistory(None, record, record, 1, state)
+
+
+def _group_get(groups, target):
+    value = _map_get(groups, target, True)
+    _fail(value is _MISSING or type(value) is LegalHardlinkCursor)
+    return None if value is _MISSING else value
+
+
+def _group_set(groups, target, value):
+    _fail(type(value) is LegalHardlinkCursor and value.target_path == target)
+    return _map_set(groups, target, value, True)
+
+
+def _entry_parent_path(body):
+    path = body.get("alias", body.get("path"))
+    _graph_path(path)
+    return path.rpartition("/")[0]
+
+
+def _require_parent_continuity(parents, operation_parent, body):
+    path = _entry_parent_path(body)
+    expected = operation_parent if path == "" else _map_get(parents, path)
+    _fail(type(expected) is LedgerParent and expected == _parse_parent(body["parent"]))
+
+
+def _settle_parent(parents, operation_parent, body):
+    path = _entry_parent_path(body)
+    parent = _parse_parent(body["parent"])
+    if path == "":
+        operation_parent = parent
+    else:
+        parents = _map_set(parents, path, parent)
+    if body.get("kind") == "directory" and "child" in body:
+        parents = _map_set(parents, body["path"], LedgerParent(_parse_generation(body["child"]), ()))
+    if body.get("kind") == "directory" and body.get("target") is None and "child" not in body:
+        parents = _map_without(parents, body["path"])
+    return parents, operation_parent
+
+
+def _settle_metadata_parent(parents, body):
+    current = _map_get(parents, body["path"])
+    if current is _MISSING:
+        return parents
+    _fail(type(current) is LedgerParent)
+    return _map_set(parents, body["path"], LedgerParent(_parse_generation(body["child"]), current.names))
+
+
+def _advance_history(history, record, count_incremental=True, replay_records=None):
+    _fail(type(history) is LedgerHistory and type(record) is LedgerRecord)
+    state = history.legal
+    _fail((record.sequence, record.previous_sequence, record.previous_offset, record.previous_sha256) == (
+        state.settled.sequence + 1, state.settled.sequence, state.settled.offset, state.settled.line_sha256,
+    ))
+    body = _body(record)
+    _fail(body["token"] == state.token and state.phase not in {"retired", "uncertain"})
+    kind = record.record_type
+    phase = state.phase
+    operation_name = state.operation_name
+    state_parent = state.state_parent
+    operation_parent = state.operation_parent
+    groups = state.groups
+    parents = state.parents
+    pending = state.pending
+    return_phase = state.return_phase
+    lease_snapshot = state.lease_snapshot
+    previous_body = _body(state.previous)
+    if kind == "uncertain":
+        phase, pending, return_phase = "uncertain", None, None
+    elif phase == "genesis":
+        _fail(kind == "genesis-settled" and _parse_parent(body["state_parent"]) == state_parent)
+        phase = "ready"
+    elif phase == "ready":
+        _fail(kind in {"genesis-abort", "operation-create-intent"})
+        _fail(_parse_parent(body["state_parent"]) == state_parent)
+        if kind == "genesis-abort":
+            phase = "aborted"
         else:
-            raise LedgerError()
-    return phase
+            operation_name = body["operation_name"]
+            phase = "operation-intent"
+    elif phase == "aborted":
+        _fail(kind == "retired" and _parse_parent(body["state_parent"]) == state_parent)
+        phase = "retired"
+    elif phase == "operation-intent":
+        _fail(kind in {"operation-create-observed", "operation-abort"} and body["operation_name"] == operation_name)
+        if kind == "operation-create-observed":
+            after = _parse_parent(body["state_parent"])
+            _parent_delta("create", operation_name, state_parent, after)
+            state_parent = after
+            operation_parent = LedgerParent(_parse_generation(body["operation"]), ())
+            phase = "operation-observed"
+        else:
+            _fail(_parse_parent(body["state_parent"]) == state_parent)
+            phase = "aborted"
+    elif phase == "operation-observed":
+        _fail(kind == "operation-create-settled" and body["operation_name"] == operation_name)
+        _fail(body == previous_body)
+        phase = "active"
+    elif phase in {"active", "release-authorized"}:
+        if kind == "leased":
+            _fail(phase == "active" and pending is None and lease_snapshot is None)
+            _fail(_parse_parent(body["state_parent"]) == state_parent)
+            _fail(operation_parent is not None and _parse_generation(body["operation"]) == operation_parent.generation)
+            if replay_records is None:
+                replay_records = _history_with_record(history, record)
+            else:
+                _fail(type(replay_records) is tuple and replay_records[record.sequence] == record)
+            lease_snapshot = _lease_from_record(replay_records, record)
+            phase = "leased"
+        elif kind == "operation-remove-intent":
+            _fail(body["operation_name"] == operation_name and _parse_parent(body["state_parent"]) == state_parent)
+            _fail(operation_parent is not None and operation_parent.names == ())
+            _fail(_parse_generation(body["operation"]) == operation_parent.generation)
+            return_phase, phase = phase, "operation-remove"
+        elif kind == "hardlink-group":
+            _fail(phase == "active")
+            target = body["target_path"]
+            _fail(_group_get(groups, target) is None)
+            groups = _group_set(groups, target, LegalHardlinkCursor(target, tuple(body["aliases"]), 0))
+        else:
+            allowed = {"remove-intent"} if phase == "release-authorized" else {
+                "create-intent", "metadata-intent", "hardlink-create-intent", "remove-intent",
+            }
+            _fail(kind in allowed)
+            if "parent" in body:
+                _require_parent_continuity(parents, operation_parent, body)
+            if kind == "hardlink-create-intent":
+                target = body["target_path"]
+                group = _group_get(groups, target)
+                _fail(group is not None and group.next_index < len(group.aliases))
+                _fail(body["index"] == group.next_index and body["alias"] == group.aliases[group.next_index])
+            if kind == "remove-intent" and body["target_path"] is not None:
+                target = body["target_path"]
+                group = _group_get(groups, target)
+                _fail(group is not None and group.next_index > 0 and body["path"] == group.aliases[group.next_index - 1])
+            pending, return_phase = record, phase
+            phase = kind.removesuffix("-intent") + "-intent"
+    elif phase == "leased":
+        _fail(kind == "release-authorized" and lease_snapshot is not None)
+        actual = lease_snapshot.settled
+        _fail((body["lease_sequence"], body["lease_offset"], body["lease_sha256"]) ==
+              (actual.sequence, actual.offset, actual.line_sha256))
+        phase = "release-authorized"
+    elif phase.endswith("-intent"):
+        abort_kind = phase.removesuffix("intent") + "abort"
+        _fail(kind in {abort_kind, phase.removesuffix("intent") + "observed"} and pending is not None)
+        if kind == abort_kind:
+            _fail(return_phase == "active")
+            intent_body = _body(pending)
+            excluded = {"parent", "target"} if kind == "hardlink-create-abort" else {"parent"}
+            _fail(all(body[key] == intent_body[key] for key in body if key not in excluded))
+            if kind == "hardlink-create-abort":
+                _fail(_same_fields(_parse_generation(body["target"]), _parse_generation(intent_body["target"]), {"ctime_ns"}))
+            _fail(_valid_abort_parent(_parse_parent(intent_body["parent"]), _parse_parent(body["parent"])))
+            parents, operation_parent = _settle_parent(parents, operation_parent, body)
+            pending, phase, return_phase = None, return_phase, None
+        else:
+            _matching_transition(pending, record)
+            pending = record
+            phase = phase.removesuffix("intent") + "observed"
+    elif phase.endswith("-observed"):
+        _fail(kind == phase.removesuffix("observed") + "settled" and pending is not None)
+        _matching_transition(pending, record)
+        if kind == "hardlink-create-settled":
+            target = body["target_path"]
+            group = _group_get(groups, target)
+            _fail(group is not None)
+            groups = _group_set(groups, target, replace(group, next_index=group.next_index + 1))
+        if kind == "remove-settled" and body["target"] is not None:
+            target = body["target_path"]
+            group = _group_get(groups, target)
+            _fail(group is not None)
+            groups = _group_set(groups, target, replace(group, next_index=group.next_index - 1))
+        if kind == "metadata-settled":
+            parents = _settle_metadata_parent(parents, body)
+        elif "parent" in body:
+            parents, operation_parent = _settle_parent(parents, operation_parent, body)
+        pending, phase, return_phase = None, return_phase, None
+    elif phase == "operation-remove":
+        _fail(kind == "operation-absent" and body["operation_name"] == operation_name)
+        after = _parse_parent(body["state_parent"])
+        _parent_delta("rmdir", operation_name, state_parent, after)
+        state_parent, operation_parent = after, None
+        phase, return_phase = "operation-absent", None
+    elif phase == "operation-absent":
+        _fail(kind == "retired" and _parse_parent(body["state_parent"]) == state_parent)
+        phase = "retired"
+    else:
+        raise LedgerError()
+    legal = LedgerLegalState(
+        _record_settled(record), state.token, phase, operation_name, state_parent, operation_parent,
+        groups, parents, pending, return_phase, lease_snapshot, record,
+    )
+    if count_incremental:
+        _structural_increment("incremental_records")
+    return LedgerHistory(history, history.first, record, history.count + 1, legal)
+
+
+def _validated_history(records):
+    _fail(type(records) is tuple and records)
+    _structural_increment("complete_legal_folds")
+    history = _initial_history(records[0])
+    for record in records[1:]:
+        history = _advance_history(history, record, False, records)
+    return history
+
+
+def _validate_legal_records(records):
+    return _validated_history(records).legal.phase
 
 
 def _matching_transition(previous, current):

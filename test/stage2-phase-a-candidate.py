@@ -663,9 +663,9 @@ with tempfile.TemporaryDirectory(prefix="cogs-phase-a-assets-cleanup-",
     final.write_bytes(body)
     final.chmod(0o400)
     file_identity = module._identity(final.stat(follow_symlinks=False))
-    populated_directory = module._identity(assets.stat(follow_symlinks=False))
-    assert (populated_directory["size"], populated_directory["nlink"]) != (
-        directory_identity["size"], directory_identity["nlink"])
+    assert module._same_directory_authority(
+        assets.stat(follow_symlinks=False), directory_identity,
+    )
     records = [
         {"kind": "asset-directory-owned", "body": {"identity": directory_identity}},
         {"kind": "asset-final-owned", "body": {
@@ -691,9 +691,9 @@ with tempfile.TemporaryDirectory(prefix="cogs-phase-a-export-cleanup-",
     raw_export = b'{"authority":"candidate","qualified":false}\n'
     exported.write_bytes(raw_export)
     exported.chmod(0o444)
-    populated_directory = module._identity(export_root.stat(follow_symlinks=False))
-    assert (populated_directory["size"], populated_directory["nlink"]) != (
-        directory_identity["size"], directory_identity["nlink"])
+    assert module._same_directory_authority(
+        export_root.stat(follow_symlinks=False), directory_identity,
+    )
     owned = {
         "directory": directory_identity, "file": module._identity(exported.stat(follow_symlinks=False)),
         "sha256": module.hashlib.sha256(raw_export).hexdigest(),

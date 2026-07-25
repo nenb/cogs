@@ -43,6 +43,43 @@ FILE_FLAGS = os.O_RDONLY | _O_NOFOLLOW | _O_CLOEXEC
 FDINFO_FLAGS = b"012100000"
 FDINFO_NOFOLLOW_FLAGS = b"012400000"
 FDINFO_IDENTITY_FLAGS = (FDINFO_FLAGS, FDINFO_NOFOLLOW_FLAGS)
+ROOTFS_STRUCTURAL_COUNTER_KEYS = (
+    "active_history_record_copies", "listed_names", "parent_snapshots", "complete_legal_folds",
+    "complete_walks", "incremental_records", "group_node_copies", "group_lookup_steps",
+)
+
+
+class StructuralCounterProvider:
+    def __init__(self):
+        self._values = {key: 0 for key in ROOTFS_STRUCTURAL_COUNTER_KEYS}
+
+    def add(self, key, amount=1):
+        _fail(key in self._values and type(amount) is int and amount >= 0)
+        value = self._values[key] + amount
+        _fail(value <= (1 << 63) - 1)
+        self._values[key] = value
+
+    def snapshot(self):
+        return {key: self._values[key] for key in ROOTFS_STRUCTURAL_COUNTER_KEYS}
+
+
+_STRUCTURAL_COUNTERS = StructuralCounterProvider()
+
+
+def _structural_increment(key, amount=1):
+    _STRUCTURAL_COUNTERS.add(key, amount)
+
+
+def structural_counter_snapshot():
+    return _STRUCTURAL_COUNTERS.snapshot()
+
+
+def structural_counter_delta(before, after):
+    _fail(type(before) is dict and type(after) is dict)
+    _fail(tuple(before) == ROOTFS_STRUCTURAL_COUNTER_KEYS and tuple(after) == ROOTFS_STRUCTURAL_COUNTER_KEYS)
+    _fail(all(type(before[key]) is int and 0 <= before[key] <= after[key] for key in ROOTFS_STRUCTURAL_COUNTER_KEYS))
+    _fail(all(type(after[key]) is int and after[key] <= (1 << 63) - 1 for key in ROOTFS_STRUCTURAL_COUNTER_KEYS))
+    return {key: after[key] - before[key] for key in ROOTFS_STRUCTURAL_COUNTER_KEYS}
 
 
 class RootfsFsError(Exception):
@@ -138,16 +175,32 @@ class DirectorySnapshot:
 
 
 @dataclass(frozen=True)
+class DirectoryNamesSnapshot:
+    generation: HostGeneration
+    names: tuple[ValidatedName, ...]
+
+    def __post_init__(self):
+        _fail(type(self.generation) is HostGeneration and self.generation.key.kind == "directory")
+        raw = tuple(item.raw for item in self.names)
+        _fail(type(self.names) is tuple and all(type(item) is ValidatedName for item in self.names))
+        _fail(raw == tuple(sorted(set(raw))))
+
+    @property
+    def raw_names(self):
+        return tuple(item.raw for item in self.names)
+
+
+@dataclass(frozen=True)
 class ParentDelta:
     action: str
     name: ValidatedName
-    before: DirectorySnapshot
-    after: DirectorySnapshot
+    before: DirectoryNamesSnapshot
+    after: DirectoryNamesSnapshot
 
     def __post_init__(self):
         _fail(self.action in {"create", "hardlink", "unlink", "rmdir", "metadata"})
         _fail(type(self.name) is ValidatedName)
-        _fail(type(self.before) is DirectorySnapshot and type(self.after) is DirectorySnapshot)
+        _fail(type(self.before) is DirectoryNamesSnapshot and type(self.after) is DirectoryNamesSnapshot)
         _fail(self.before.generation.key == self.after.generation.key)
         stable = ("mode", "uid", "gid")
         _fail(all(getattr(self.before.generation, key) == getattr(self.after.generation, key) for key in stable))
@@ -530,6 +583,7 @@ def _list_names(node, control):
     values = os.listdir(node.operation_fd.number)
     control.check()
     _fail(type(values) is list)
+    _structural_increment("listed_names", len(values))
     names = tuple(_name(value) for value in values)
     _fail(all(type(value) is str for value in values))
     _fail(len({item.raw for item in names}) == len(names))
@@ -546,6 +600,18 @@ def _observe_child(parent, name, control):
         if identity.disposition == "open":
             identity.close(error)
         raise
+
+
+def _enumerate_names_stable(directory_node, control):
+    _structural_increment("parent_snapshots")
+    generation = _observe_node(directory_node.identity_fd, directory_node.operation_fd, control)
+    first = _list_names(directory_node, control)
+    _fail(_observe_node(directory_node.identity_fd, directory_node.operation_fd, control) == generation)
+    second = _list_names(directory_node, control)
+    _fail(second == first and _observe_node(directory_node.identity_fd, directory_node.operation_fd, control) == generation)
+    third = _list_names(directory_node, control)
+    _fail(third == first and _observe_node(directory_node.identity_fd, directory_node.operation_fd, control) == generation)
+    return DirectoryNamesSnapshot(generation, first)
 
 
 def _enumerate_stable(directory_node, control):

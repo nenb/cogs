@@ -29,6 +29,7 @@ fs = load("completion_rootfs_fs", REMOTE / "completion_rootfs_fs.py")
 ledger = load("completion_rootfs_ledger", REMOTE / "completion_rootfs_ledger.py")
 builder = load("completion_rootfs_builder_ledger_test", REMOTE / "completion_rootfs_builder.py")
 RECONCILE_EMISSIONS = set()
+ENCODED_CASES = []
 _reconcile = ledger._reconcile_ledger
 
 
@@ -128,13 +129,27 @@ def encoded(proposals):
         line = ledger._encode_proposal(proposal, settled)
         chunks.append(line)
         settled = ledger.SettledBytes(settled.sequence + 1, settled.offset + len(line), hashlib.sha256(line).hexdigest())
-    return b"".join(chunks)
+    raw = b"".join(chunks)
+    ENCODED_CASES.append(raw)
+    return raw
+
+
+def next_record(history, proposal):
+    raw = ledger._encode_proposal(proposal, history.legal.settled)
+    settled = history.legal.settled
+    return ledger.LedgerRecord(
+        settled.sequence + 1, settled.sequence, settled.offset, settled.line_sha256,
+        settled.offset + len(raw), proposal.record_type, proposal.body, hashlib.sha256(raw).hexdigest(),
+    )
 
 
 def codec_and_reconcile_tests():
     proposals, state_before, state_after, operation = lifecycle_prefix()
     active_raw = encoded(proposals)
     active = ledger._parse_ledger(active_raw)
+    active_history = ledger._parse_ledger_history(active_raw)
+    assert active_history.legal.state_parent == state_after
+    assert active_history.legal.operation_parent == ledger.LedgerParent(operation, ())
     observations = ledger.ReconcileObservations(state_after, ((ledger._operation_name(TOKEN), operation),), (), ledger_file())
     genesis_only = ledger._parse_ledger(encoded(proposals[:1]))
     assert ledger._reconcile_ledger(genesis_only, ledger.ReconcileObservations(state_before, (), (), ledger_file())).status == "genesis-settleable"
@@ -171,6 +186,15 @@ def codec_and_reconcile_tests():
     ).status == "retired"
 
     operation_intent = proposals[:3]
+    drifted_operation_intent = list(operation_intent)
+    drifted_operation_intent[-1] = ledger.LedgerProposal.create(
+        "operation-create-intent",
+        {
+            "token": TOKEN, "operation_name": ledger._operation_name(TOKEN),
+            "state_parent": pvalue(drifted_parent),
+        },
+    )
+    rejected(lambda: ledger._parse_ledger(encoded(drifted_operation_intent)))
     intent_records = ledger._parse_ledger(encoded(operation_intent))
     assert ledger._reconcile_ledger(intent_records, exact_absence).status == "operation-abortable"
     assert ledger._reconcile_ledger(intent_records, observations).status == "preserve"
@@ -216,8 +240,14 @@ def codec_and_reconcile_tests():
             )
     assert ledger._reconcile_ledger(active, ledger.ReconcileObservations(state_before, observations.operations, (), ledger_file())).status == "preserve"
 
-    operation_parent_before = parent(2, ("sentinel",))
-    operation_parent_after = parent(2, ("rootfs", "sentinel"), ctime=2)
+    operation_parent_before = parent(2, ())
+    operation_parent_after = parent(2, ("rootfs",), ctime=2)
+    drifted_first_parent = parent(2, (), ctime=999)
+    hostile_first_intent = ledger.LedgerProposal.create(
+        "create-intent",
+        {"token": TOKEN, "path": "rootfs", "kind": "directory", "parent": pvalue(drifted_first_parent)},
+    )
+    rejected(lambda: ledger._parse_ledger(encoded(proposals + [hostile_first_intent])))
     child = generation(3)
     create_intent = ledger.LedgerProposal.create(
         "create-intent",
@@ -241,6 +271,12 @@ def codec_and_reconcile_tests():
     assert ledger._reconcile_ledger(create_intent_records, dataclasses.replace(absent_observations, entries=(("rootfs", child),))).status == "preserve"
     created_proposals = proposals + [create_intent, create_observed, create_settled]
     created = ledger._parse_ledger(encoded(created_proposals))
+    drifted_next_parent = parent(2, operation_parent_after.names, ctime=99)
+    discontinuous_sibling = ledger.LedgerProposal.create(
+        "create-intent",
+        {"token": TOKEN, "path": "sibling", "kind": "file", "parent": pvalue(drifted_next_parent)},
+    )
+    rejected(lambda: ledger._parse_ledger(encoded(created_proposals + [discontinuous_sibling])))
     operation_after_create = operation_parent_after.generation
     created_observations = dataclasses.replace(
         observations,
@@ -411,8 +447,8 @@ def codec_and_reconcile_tests():
 
 def lease_codec_and_origin_tests():
     proposals, _state_before, state_after, operation = lifecycle_prefix()
-    operation_before = parent(2, ("sentinel",))
-    operation_after = parent(2, ("rootfs", "sentinel"), ctime=2)
+    operation_before = parent(2, ())
+    operation_after = parent(2, ("rootfs",), ctime=2)
     root = generation(3)
     create = [
         ledger.LedgerProposal.create(
@@ -445,6 +481,14 @@ def lease_codec_and_origin_tests():
     leased_proposals = proposals + create + [ledger.LedgerProposal.create("leased", lease_body)]
     leased = ledger._parse_ledger(encoded(leased_proposals))
     leased_terminal = leased[-1]
+    active_history = ledger._parse_ledger_history(encoded(leased_proposals[:-1]))
+    lease_counter_before = fs.structural_counter_snapshot()
+    speculative_lease = ledger._advance_history(active_history, leased_terminal)
+    lease_counter_delta = fs.structural_counter_delta(lease_counter_before, fs.structural_counter_snapshot())
+    assert speculative_lease.legal.phase == "leased"
+    assert lease_counter_delta["active_history_record_copies"] == 2 * (active_history.count + 1)
+    assert lease_counter_delta["incremental_records"] == 1
+    assert lease_counter_delta["complete_legal_folds"] == 0
     observations = ledger.ReconcileObservations(
         state_after,
         ((ledger._operation_name(TOKEN), operation_current),),
@@ -541,8 +585,8 @@ def lease_codec_and_origin_tests():
 
     target = generation(30, "file", 0o644, 1, 7, mtime=5_000_000_000)
     linked = dataclasses.replace(target, nlink=2, ctime_ns=2)
-    target_parent = parent(2, ("rootfs", "sentinel", "target"), ctime=3)
-    alias_parent = parent(2, ("alias", "rootfs", "sentinel", "target"), ctime=4)
+    target_parent = parent(2, ("rootfs", "target"), ctime=3)
+    alias_parent = parent(2, ("alias", "rootfs", "target"), ctime=4)
     target_create = [
         ledger.LedgerProposal.create("create-intent", {"token": TOKEN, "path": "target", "kind": "file", "parent": pvalue(operation_after)}),
         ledger.LedgerProposal.create("create-observed", {"token": TOKEN, "path": "target", "kind": "file", "parent": pvalue(target_parent), "child": gvalue(target)}),
@@ -585,6 +629,546 @@ def lease_codec_and_origin_tests():
         rejected(lambda hostile=hostile: ledger.LedgerProposal.create("leased", hostile))
     assert ledger._settled_record(0, 1, "2" * 64).sequence == 0
     rejected(lambda: ledger._settled_record(0, 1, "2" * 64, 1))
+
+
+def reference_matching(previous, current):
+    left = previous.body_value()
+    right = current.body_value()
+    for key in ("path", "kind", "target_path", "alias", "index", "operation_name"):
+        if key in left or key in right:
+            assert left.get(key) == right.get(key)
+    if previous.record_type.endswith("-observed"):
+        assert left == right
+        return
+    if previous.record_type == "create-intent":
+        ledger._parent_delta("create", left["path"].split("/")[-1], ledger._parse_parent(left["parent"]), ledger._parse_parent(right["parent"]))
+    elif previous.record_type == "metadata-intent":
+        before = ledger._parse_generation(left["before"])
+        child = ledger._parse_generation(right["child"])
+        assert before.key == child.key
+        assert (child.mode, child.uid, child.gid, child.size, child.mtime_ns) == ledger._parse_metadata(left["desired"])
+    elif previous.record_type == "hardlink-create-intent":
+        assert ledger._parse_generation(left["target"]) == ledger._parse_generation(right["target_before"])
+        ledger._parent_delta("hardlink", left["alias"].split("/")[-1], ledger._parse_parent(left["parent"]), ledger._parse_parent(right["parent"]))
+    elif previous.record_type == "remove-intent":
+        action = "rmdir" if left["kind"] == "directory" else "unlink"
+        ledger._parent_delta(action, left["path"].split("/")[-1], ledger._parse_parent(left["parent"]), ledger._parse_parent(right["parent"]))
+        assert (left["target_path"] is None) == (right["target"] is None)
+        if right["target"] is not None:
+            ledger._hardlink_generation_change(ledger._parse_generation(left["child"]), ledger._parse_generation(right["target"]), -1)
+
+
+def reference_validate(records):
+    assert type(records) is tuple and records and records[0].record_type == "genesis"
+    token = records[0].body_value()["token"]
+    phase, operation_name = "genesis", None
+    state_parent = ledger._parse_parent(records[0].body_value()["state_parent"])
+    operation_parent = None
+    groups, parents = {}, {}
+    pending = return_phase = lease_snapshot = None
+
+    def parent_path(body):
+        return body.get("alias", body.get("path")).rpartition("/")[0]
+
+    def require_parent(body):
+        path = parent_path(body)
+        expected = operation_parent if path == "" else parents.get(path)
+        assert expected == ledger._parse_parent(body["parent"])
+
+    def settle_parent(body):
+        nonlocal operation_parent
+        path = parent_path(body)
+        if path == "":
+            operation_parent = ledger._parse_parent(body["parent"])
+        else:
+            parents[path] = ledger._parse_parent(body["parent"])
+        if body.get("kind") == "directory" and "child" in body:
+            parents[body["path"]] = ledger.LedgerParent(ledger._parse_generation(body["child"]), ())
+        if body.get("kind") == "directory" and body.get("target") is None and "child" not in body:
+            parents.pop(body["path"], None)
+
+    settled = ledger._record_settled(records[0])
+    for record in records[1:]:
+        assert (record.sequence, record.previous_sequence, record.previous_offset, record.previous_sha256) == (
+            settled.sequence + 1, settled.sequence, settled.offset, settled.line_sha256,
+        )
+        body = record.body_value()
+        assert body["token"] == token and phase not in {"retired", "uncertain"}
+        if "operation_name" in body:
+            assert body["operation_name"] == ledger._operation_name(token)
+        kind = record.record_type
+        previous_body = records[record.sequence - 1].body_value()
+        if kind == "uncertain":
+            phase, pending, return_phase = "uncertain", None, None
+        elif phase == "genesis":
+            assert kind == "genesis-settled" and ledger._parse_parent(body["state_parent"]) == state_parent
+            phase = "ready"
+        elif phase == "ready":
+            assert kind in {"genesis-abort", "operation-create-intent"}
+            assert ledger._parse_parent(body["state_parent"]) == state_parent
+            if kind == "genesis-abort":
+                phase = "aborted"
+            else:
+                operation_name, phase = body["operation_name"], "operation-intent"
+        elif phase == "aborted":
+            assert kind == "retired" and ledger._parse_parent(body["state_parent"]) == state_parent
+            phase = "retired"
+        elif phase == "operation-intent":
+            assert kind in {"operation-create-observed", "operation-abort"} and body["operation_name"] == operation_name
+            if kind == "operation-create-observed":
+                after = ledger._parse_parent(body["state_parent"])
+                ledger._parent_delta("create", operation_name, state_parent, after)
+                state_parent = after
+                operation_parent = ledger.LedgerParent(ledger._parse_generation(body["operation"]), ())
+                phase = "operation-observed"
+            else:
+                assert ledger._parse_parent(body["state_parent"]) == state_parent
+                phase = "aborted"
+        elif phase == "operation-observed":
+            assert kind == "operation-create-settled" and body["operation_name"] == operation_name and body == previous_body
+            phase = "active"
+        elif phase in {"active", "release-authorized"}:
+            if kind == "leased":
+                assert phase == "active" and pending is None and lease_snapshot is None
+                assert ledger._parse_parent(body["state_parent"]) == state_parent
+                assert ledger._parse_generation(body["operation"]) == operation_parent.generation
+                lease_snapshot = ledger._lease_from_record(records, record)
+                phase = "leased"
+            elif kind == "operation-remove-intent":
+                assert body["operation_name"] == operation_name
+                assert ledger._parse_parent(body["state_parent"]) == state_parent
+                assert operation_parent.names == () and ledger._parse_generation(body["operation"]) == operation_parent.generation
+                return_phase, phase = phase, "operation-remove"
+            elif kind == "hardlink-group":
+                assert phase == "active" and body["target_path"] not in groups
+                groups[body["target_path"]] = [tuple(body["aliases"]), 0]
+            else:
+                allowed = {"remove-intent"} if phase == "release-authorized" else {
+                    "create-intent", "metadata-intent", "hardlink-create-intent", "remove-intent",
+                }
+                assert kind in allowed
+                if "parent" in body:
+                    require_parent(body)
+                if kind == "hardlink-create-intent":
+                    aliases, index = groups[body["target_path"]]
+                    assert body["index"] == index and body["alias"] == aliases[index]
+                if kind == "remove-intent" and body["target_path"] is not None:
+                    aliases, index = groups[body["target_path"]]
+                    assert index > 0 and body["path"] == aliases[index - 1]
+                pending, return_phase = record, phase
+                phase = kind.removesuffix("-intent") + "-intent"
+        elif phase == "leased":
+            assert kind == "release-authorized" and lease_snapshot is not None
+            actual = lease_snapshot.settled
+            assert (body["lease_sequence"], body["lease_offset"], body["lease_sha256"]) == (
+                actual.sequence, actual.offset, actual.line_sha256,
+            )
+            phase = "release-authorized"
+        elif phase.endswith("-intent"):
+            abort_kind = phase.removesuffix("intent") + "abort"
+            assert kind in {abort_kind, phase.removesuffix("intent") + "observed"} and pending is not None
+            if kind == abort_kind:
+                assert return_phase == "active"
+                intent = pending.body_value()
+                excluded = {"parent", "target"} if kind == "hardlink-create-abort" else {"parent"}
+                assert all(body[key] == intent[key] for key in body if key not in excluded)
+                if kind == "hardlink-create-abort":
+                    assert ledger._same_fields(
+                        ledger._parse_generation(body["target"]), ledger._parse_generation(intent["target"]), {"ctime_ns"},
+                    )
+                assert ledger._valid_abort_parent(ledger._parse_parent(intent["parent"]), ledger._parse_parent(body["parent"]))
+                settle_parent(body)
+                pending, phase, return_phase = None, return_phase, None
+            else:
+                reference_matching(pending, record)
+                pending = record
+                phase = phase.removesuffix("intent") + "observed"
+        elif phase.endswith("-observed"):
+            assert kind == phase.removesuffix("observed") + "settled" and pending is not None
+            reference_matching(pending, record)
+            if kind == "hardlink-create-settled":
+                groups[body["target_path"]][1] += 1
+            if kind == "remove-settled" and body["target"] is not None:
+                groups[body["target_path"]][1] -= 1
+            if kind == "metadata-settled" and body["path"] in parents:
+                current = parents[body["path"]]
+                parents[body["path"]] = ledger.LedgerParent(ledger._parse_generation(body["child"]), current.names)
+            elif "parent" in body:
+                settle_parent(body)
+            pending, phase, return_phase = None, return_phase, None
+        elif phase == "operation-remove":
+            assert kind == "operation-absent" and body["operation_name"] == operation_name
+            after = ledger._parse_parent(body["state_parent"])
+            ledger._parent_delta("rmdir", operation_name, state_parent, after)
+            state_parent, operation_parent = after, None
+            phase, return_phase = "operation-absent", None
+        elif phase == "operation-absent":
+            assert kind == "retired" and ledger._parse_parent(body["state_parent"]) == state_parent
+            phase = "retired"
+        else:
+            raise AssertionError("unknown reference phase")
+        settled = ledger._record_settled(record)
+    return phase
+
+
+def incremental_validation_tests():
+    phases = set()
+    record_types = set()
+    accepted = []
+    for raw in tuple(ENCODED_CASES):
+        records = ledger._decode_ledger(raw)
+        try:
+            full = ledger._validated_history(records)
+        except ledger.LedgerError:
+            try:
+                incremental = ledger._initial_history(records[0])
+                for record in records[1:]:
+                    incremental = ledger._advance_history(incremental, record)
+            except ledger.LedgerError:
+                continue
+            raise AssertionError("incremental validation accepted a full-replay rejection")
+        incremental = ledger._initial_history(records[0])
+        phases.add(incremental.legal.phase)
+        record_types.add(records[0].record_type)
+        for record in records[1:]:
+            previous = incremental
+            incremental = ledger._advance_history(incremental, record)
+            assert incremental.previous is previous
+            phases.add(incremental.legal.phase)
+            record_types.add(record.record_type)
+        assert incremental.legal == full.legal
+        assert ledger._history_records(incremental) == records
+        parsed = ledger._parse_ledger_history(raw)
+        assert parsed.legal == full.legal and ledger._history_records(parsed) == records
+        settled = ledger.INITIAL_BYTES
+        offset = 0
+        for record in records:
+            proposal = ledger.LedgerProposal.create(record.record_type, record.body_value())
+            line = ledger._encode_proposal(proposal, settled)
+            assert raw[offset:record.next_offset] == line
+            offset = record.next_offset
+            settled = ledger.SettledBytes(record.sequence, record.next_offset, record.line_sha256)
+        accepted.append((records, incremental))
+
+    assert record_types == ledger.RECORD_TYPES, ledger.RECORD_TYPES - record_types
+    assert phases == {
+        "genesis", "ready", "aborted", "retired", "operation-intent", "operation-observed",
+        "active", "create-intent", "create-observed", "metadata-intent", "metadata-observed",
+        "hardlink-create-intent", "hardlink-create-observed", "remove-intent", "remove-observed",
+        "leased", "release-authorized", "operation-remove", "operation-absent", "uncertain",
+    }, phases
+
+    expected_next = {
+        "genesis": {"genesis-settled"},
+        "ready": {"genesis-abort", "operation-create-intent"},
+        "aborted": {"retired"},
+        "operation-intent": {"operation-create-observed", "operation-abort"},
+        "operation-observed": {"operation-create-settled"},
+        "active": {
+            "leased", "operation-remove-intent", "hardlink-group", "create-intent",
+            "metadata-intent", "hardlink-create-intent", "remove-intent",
+        },
+        "create-intent": {"create-observed", "create-abort"},
+        "create-observed": {"create-settled"},
+        "metadata-intent": {"metadata-observed"},
+        "metadata-observed": {"metadata-settled"},
+        "hardlink-create-intent": {"hardlink-create-observed", "hardlink-create-abort"},
+        "hardlink-create-observed": {"hardlink-create-settled"},
+        "remove-intent": {"remove-observed"},
+        "remove-observed": {"remove-settled"},
+        "leased": {"release-authorized"},
+        "release-authorized": {"remove-intent", "operation-remove-intent"},
+        "operation-remove": {"operation-absent"},
+        "operation-absent": {"retired"},
+        "retired": set(),
+        "uncertain": set(),
+    }
+    for phase in expected_next:
+        if phase not in {"retired", "uncertain"}:
+            expected_next[phase].add("uncertain")
+
+    prefixes = {}
+    templates = {}
+    positive_edges = set()
+    positive_cases = []
+    for records, _history in accepted:
+        previous = ledger._initial_history(records[0])
+        for record in records[1:]:
+            positive_edges.add((previous.legal.phase, record.record_type))
+            positive_cases.append((ledger._history_records(previous), record))
+            previous = ledger._advance_history(previous, record, False, records)
+        for index, record in enumerate(records):
+            templates.setdefault(record.record_type, record)
+            prefix = records[:index + 1]
+            try:
+                current = ledger._validated_history(prefix)
+            except BaseException:
+                continue
+            prefixes.setdefault((current.legal.phase, index, record.line_sha256), prefix)
+    assert set(templates) == ledger.RECORD_TYPES
+    required_edges = {
+        (phase, kind) for phase, kinds in expected_next.items() for kind in kinds if kind != "uncertain"
+    }
+    assert required_edges <= positive_edges, required_edges - positive_edges
+    for prefix, record in positive_cases:
+        expected = reference_validate(prefix + (record,))
+        assert ledger._validated_history(prefix + (record,)).legal.phase == expected
+        hostile_chain = dataclasses.replace(record, previous_sha256="6" * 64)
+        foreign = dict(record.body_value())
+        foreign["token"] = "9" * 64
+        if "operation_name" in foreign:
+            foreign["operation_name"] = ledger._operation_name(foreign["token"])
+        hostile_token = dataclasses.replace(record, body=ledger._freeze(foreign))
+        for hostile in (hostile_chain, hostile_token):
+            rejected(lambda prefix=prefix, hostile=hostile: ledger._validated_history(prefix + (hostile,)))
+
+    def rebase(template, prefix, body=None):
+        terminal = prefix[-1]
+        return dataclasses.replace(
+            template,
+            sequence=terminal.sequence + 1,
+            previous_sequence=terminal.sequence,
+            previous_offset=terminal.next_offset,
+            previous_sha256=terminal.line_sha256,
+            next_offset=terminal.next_offset + 1,
+            body=template.body if body is None else ledger._freeze(body),
+            line_sha256="7" * 64,
+        )
+
+    for phase in expected_next:
+        if phase in {"retired", "uncertain"}:
+            continue
+        prefix = next(value for value in prefixes.values() if ledger._validated_history(value).legal.phase == phase)
+        candidate = rebase(templates["uncertain"], prefix)
+        assert reference_validate(prefix + (candidate,)) == "uncertain"
+        assert ledger._validated_history(prefix + (candidate,)).legal.phase == "uncertain"
+
+    def mutations(template):
+        original = template.body_value()
+        values = []
+        foreign = dict(original)
+        foreign["token"] = "9" * 64
+        if "operation_name" in foreign:
+            foreign["operation_name"] = ledger._operation_name(foreign["token"])
+        values.append(foreign)
+        for key in ("path", "alias", "target_path"):
+            if key in original and original[key] is not None:
+                changed = dict(original)
+                changed[key] = original[key] + "-foreign"
+                values.append(changed)
+        if "index" in original:
+            changed = dict(original)
+            changed["index"] += 1
+            values.append(changed)
+        for key in ("lease_sequence", "lease_offset", "kata_release_sequence", "kata_release_offset"):
+            if key in original:
+                changed = dict(original)
+                changed[key] += 1
+                values.append(changed)
+        for key in ("lease_sha256", "kata_release_sha256"):
+            if key in original:
+                changed = dict(original)
+                changed[key] = "6" * 64
+                values.append(changed)
+        if "parent" in original:
+            changed = dict(original)
+            altered = dict(original["parent"])
+            altered_generation = dict(altered["generation"])
+            altered_generation["ctime_ns"] += 1
+            altered["generation"] = altered_generation
+            changed["parent"] = altered
+            values.append(changed)
+        for key in ("child", "before", "target", "target_before", "target_after", "alias_generation", "operation"):
+            if key in original and original[key] is not None:
+                changed = dict(original)
+                altered = dict(original[key])
+                altered["inode"] += 100_000
+                changed[key] = altered
+                values.append(changed)
+        return values
+
+    forbidden_checked = set()
+    for prefix in prefixes.values():
+        current_phase = ledger._validated_history(prefix).legal.phase
+        for record_type, template in templates.items():
+            candidates = [rebase(template, prefix)] + [
+                rebase(template, prefix, body) for body in mutations(template)
+            ]
+            for candidate in candidates:
+                reference_result = current_result = None
+                try:
+                    reference_result = reference_validate(prefix + (candidate,))
+                except BaseException:
+                    pass
+                try:
+                    current_result = ledger._validated_history(prefix + (candidate,)).legal.phase
+                except BaseException:
+                    pass
+                assert current_result == reference_result, (
+                    current_phase, record_type, candidate.body_value(), reference_result, current_result,
+                )
+                if record_type not in expected_next[current_phase]:
+                    forbidden_checked.add((current_phase, record_type))
+                    assert current_result is None
+    expected_forbidden = {
+        (phase, kind) for phase in phases for kind in ledger.RECORD_TYPES
+        if kind not in expected_next[phase]
+    }
+    assert forbidden_checked == expected_forbidden
+
+    for records, history in accepted:
+        proposal = ledger.LedgerProposal.create("uncertain", {"token": TOKEN, "reason": "incomplete"})
+        candidate = next_record(history, proposal)
+        if history.legal.phase not in {"retired", "uncertain"}:
+            advanced = ledger._advance_history(history, candidate)
+            replayed = ledger._validated_history(records + (candidate,))
+            assert advanced.legal == replayed.legal and advanced.legal.phase == "uncertain"
+        else:
+            rejected(lambda history=history, candidate=candidate: ledger._advance_history(history, candidate))
+            rejected(lambda records=records, candidate=candidate: ledger._validated_history(records + (candidate,)))
+        for hostile in (
+            dataclasses.replace(candidate, sequence=candidate.sequence + 1),
+            dataclasses.replace(candidate, previous_sequence=candidate.previous_sequence - 1),
+            dataclasses.replace(candidate, previous_offset=candidate.previous_offset + 1),
+            dataclasses.replace(candidate, previous_sha256="f" * 64),
+        ):
+            rejected(lambda history=history, hostile=hostile: ledger._advance_history(history, hostile))
+            rejected(lambda records=records, hostile=hostile: ledger._validated_history(records + (hostile,)))
+        foreign = ledger.LedgerProposal.create("uncertain", {"token": "9" * 64, "reason": "incomplete"})
+        hostile = dataclasses.replace(candidate, body=foreign.body)
+        rejected(lambda history=history, hostile=hostile: ledger._advance_history(history, hostile))
+        rejected(lambda records=records, hostile=hostile: ledger._validated_history(records + (hostile,)))
+
+    proposals, _state_before, _state_after, _operation = lifecycle_prefix()
+    fold_before = fs.structural_counter_snapshot()
+    history = ledger._parse_ledger_history(encoded(proposals))
+    fold_delta = fs.structural_counter_delta(fold_before, fs.structural_counter_snapshot())
+    assert fold_delta["complete_legal_folds"] == 1
+    assert fold_delta["incremental_records"] == 0
+    group_history = history
+    group_generation = generation(9000, "file", 0o644, 1, 1)
+    before_counters = fs.structural_counter_snapshot()
+    for index in range(2_000):
+        target = f"group-target-{index:04d}"
+        proposal = ledger.LedgerProposal.create("hardlink-group", {
+            "token": TOKEN, "target_path": target, "aliases": [f"group-alias-{index:04d}"],
+            "content_sha256": "8" * 64, "target": gvalue(group_generation),
+        })
+        group_history = ledger._advance_history(group_history, next_record(group_history, proposal))
+    after_counters = fs.structural_counter_snapshot()
+    assert group_history.legal.groups.count == 2_000
+    assert after_counters["group_node_copies"] - before_counters["group_node_copies"] == 514_000
+    lookup_steps = after_counters["group_lookup_steps"] - before_counters["group_lookup_steps"]
+    assert 0 < lookup_steps <= 512_000
+    assert after_counters["active_history_record_copies"] - before_counters["active_history_record_copies"] == 0
+
+    class CollidingDigest:
+        def digest(self):
+            return b"\x00" * 32
+
+    real_sha256 = ledger.hashlib.sha256
+    try:
+        ledger.hashlib.sha256 = lambda _raw: CollidingDigest()
+        collision_counter_before = fs.structural_counter_snapshot()
+        for order in (("z", "ab", "a"), ("z", "a", "ab"), ("ab", "a", "z")):
+            collision_map = ledger._EMPTY_MAP
+            expected = {}
+            for key in order:
+                value = ledger.LegalHardlinkCursor(key, (f"alias-{key}",), 0)
+                collision_map = ledger._map_set(collision_map, key, value, True)
+                expected[key] = value
+            assert collision_map.count == 3
+            assert all(ledger._map_get(collision_map, key) == value for key, value in expected.items())
+            updated = dataclasses.replace(expected[order[1]], next_index=1)
+            collision_map = ledger._map_set(collision_map, order[1], updated, True)
+            expected[order[1]] = updated
+            for key in order:
+                collision_map = ledger._map_set(collision_map, key, ledger._MISSING, True)
+                assert collision_map.count == 2
+                assert ledger._map_get(collision_map, key) is ledger._MISSING
+                collision_map = ledger._map_set(collision_map, key, expected[key], True)
+                assert collision_map.count == 3
+                assert all(ledger._map_get(collision_map, item) == value for item, value in expected.items())
+        collision_history = history
+        for index, key in enumerate(("z", "ab", "a")):
+            ledger.hashlib.sha256 = real_sha256
+            proposal = ledger.LedgerProposal.create("hardlink-group", {
+                "token": TOKEN, "target_path": key, "aliases": [f"linked-{key}"],
+                "content_sha256": "5" * 64, "target": gvalue(group_generation),
+            })
+            record = next_record(collision_history, proposal)
+            ledger.hashlib.sha256 = lambda _raw: CollidingDigest()
+            collision_history = ledger._advance_history(collision_history, record)
+            assert collision_history.legal.groups.count == index + 1
+        assert all(ledger._group_get(collision_history.legal.groups, key) is not None for key in ("z", "ab", "a"))
+        collision_counter_delta = fs.structural_counter_delta(
+            collision_counter_before, fs.structural_counter_snapshot(),
+        )
+        assert 3 * 3 * 257 < collision_counter_delta["group_node_copies"] <= 30_000
+        assert 0 < collision_counter_delta["group_lookup_steps"] <= 30_000
+    finally:
+        ledger.hashlib.sha256 = real_sha256
+
+    operation_parent = parent(2, ())
+    copied_prefixes = {"count": 0}
+    real_materialize = ledger._history_records
+
+    def forbidden_materialize(_history):
+        copied_prefixes["count"] += 1
+        raise AssertionError("ordinary incremental append materialized its record prefix")
+
+    ledger._history_records = forbidden_materialize
+    incremental_before = fs.structural_counter_snapshot()
+    try:
+        for index in range(5_000):
+            path = f"probe-{index:04d}"
+            intent = ledger.LedgerProposal.create(
+                "create-intent",
+                {"token": TOKEN, "path": path, "kind": "file", "parent": pvalue(operation_parent)},
+            )
+            previous = history
+            history = ledger._advance_history(history, next_record(history, intent))
+            assert history.previous is previous
+            abort = ledger.LedgerProposal.create("create-abort", intent.body_value())
+            previous = history
+            history = ledger._advance_history(history, next_record(history, abort))
+            assert history.previous is previous and history.legal.phase == "active"
+    finally:
+        ledger._history_records = real_materialize
+    incremental_delta = fs.structural_counter_delta(incremental_before, fs.structural_counter_snapshot())
+    assert incremental_delta["incremental_records"] == 10_000
+    assert incremental_delta["complete_legal_folds"] == 0
+    assert incremental_delta["complete_walks"] == 0
+    assert incremental_delta["parent_snapshots"] == 0
+    assert incremental_delta["active_history_record_copies"] == 0
+    assert copied_prefixes["count"] == 0 and history.count == 10_005
+    assert len(ledger._history_records(history)) == history.count
+    assert not any(name in ledger.LedgerHistory.__dict__ for name in ("__add__", "__iter__", "__getitem__"))
+    rejected(lambda: dataclasses.replace(history.legal, phase="foreign"))
+    rejected(lambda: dataclasses.replace(history.legal, operation_name="foreign"))
+    rejected(lambda: dataclasses.replace(history.legal, pending=history.terminal))
+    rejected(lambda: dataclasses.replace(history.legal, return_phase="release-authorized"))
+    rejected(lambda: ledger.LegalHardlinkCursor("target", ("alias", "alias"), 0))
+    rejected(lambda: ledger.LegalHardlinkCursor("target", ("target",), 0))
+    try:
+        history.count = 1
+    except dataclasses.FrozenInstanceError:
+        pass
+    else:
+        raise AssertionError("immutable history accepted mutation")
+
+    proposal = ledger.LedgerProposal.create(
+        "create-intent", {"token": TOKEN, "path": "unpublished", "kind": "file", "parent": pvalue(operation_parent)},
+    )
+    active = builder.ActiveLedger(object(), history, type("Writer", (), {"settled": history.legal.settled})())
+    old_history = active.records
+    real_append = ledger._append_record
+    try:
+        ledger._append_record = lambda *_args: (_ for _ in ()).throw(OSError("append failed"))
+        rejected(lambda: builder._append(active, "create-intent", proposal.body_value(), control()))
+        assert active.records is old_history
+    finally:
+        ledger._append_record = real_append
 
 
 def status_matrix_tests():
@@ -655,8 +1239,7 @@ def hostile_codec_tests():
 def snapshot(inode, names, ctime=1):
     names = tuple(sorted(names))
     checked = tuple(fs._name(name) for name in names)
-    children = tuple((name, generation(index + 100)) for index, name in enumerate(checked))
-    return fs.DirectorySnapshot(generation(inode, ctime=ctime), checked, children)
+    return fs.DirectoryNamesSnapshot(generation(inode, ctime=ctime), checked)
 
 
 def hardlink_tests():
@@ -872,6 +1455,7 @@ lease_codec_and_origin_tests()
 status_matrix_tests()
 hostile_codec_tests()
 hardlink_tests()
+incremental_validation_tests()
 writer_tests()
 reconcile_emission_tests()
 static_tests()
