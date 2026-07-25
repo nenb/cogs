@@ -194,7 +194,10 @@ def linux_supervisor_tests():
         return process._make_test_issuer(raw, digest)(action)
 
     result = issue(process._TestAction.OK)
-    assert result.outcome == "exited" and result.status == 0 and result.stdout == b"ok\n"
+    assert result.outcome == "exited" and result.status == 0 and result.stdout == b"ok\n", (
+        f"unexpected OK outcome: outcome={result.outcome!r} status={result.status!r} "
+        f"stdout={result.stdout!r} stderr={result.stderr!r} errors={result.errors!r}"
+    )
     assert result.stderr == b"" and result.reaped and not result.errors
     assert result.identity.pid == result.identity.pgid == result.identity.sid
     assert result.identity.ppid == os.getpid() and result.identity.starttime > 0
