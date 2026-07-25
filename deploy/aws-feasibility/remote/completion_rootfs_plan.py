@@ -539,7 +539,7 @@ def _load_fixed_build_inputs():
     verifier.verify_package_archives(verifier.CONTRACT_PATH, verifier.ARTIFACT_ROOT)
     contract_before = os.lstat(verifier.CONTRACT_PATH)
     contract = verifier.verify_contract(verifier.CONTRACT_PATH)
-    contract_raw = verifier.read_stable_regular(verifier.CONTRACT_PATH, 0o644, 32768)
+    contract_raw = verifier.read_contract_bytes(verifier.CONTRACT_PATH)
     contract_after = os.lstat(verifier.CONTRACT_PATH)
     _fail(verifier.identity(contract_before) == verifier.identity(contract_after))
     _fail(verifier.strict_json(contract_raw, 32768) == contract)

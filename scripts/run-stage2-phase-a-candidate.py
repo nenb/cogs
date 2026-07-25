@@ -849,9 +849,9 @@ def _snapshot_cache(contract):
                 files.append({"name": row["cache_name"], "identity": identity, "sha256": row["sha256"]})
             finally:
                 os.close(descriptor)
-        sentinel = _read_regular(ARTIFACT_ROOT / ".cogs-stage2-completion-artifacts-v1", 128, 0o400)
+        sentinel = _read_regular(ARTIFACT_ROOT / ".cogs-stage2-completion-artifacts-v1", 128, 0o600)
         sentinel_identity = _identity(os.stat(ARTIFACT_ROOT / ".cogs-stage2-completion-artifacts-v1", follow_symlinks=False))
-        _fail(sentinel_identity["kind"] == "file" and sentinel_identity["mode"] == 0o400 and
+        _fail(sentinel_identity["kind"] == "file" and sentinel_identity["mode"] == 0o600 and
               sentinel_identity["uid"] == sentinel_identity["gid"] == 0 and sentinel_identity["nlink"] == 1,
               "cache-identity")
         return {"root": _identity(os.fstat(root)), "cache": cache_identity, "sentinel": {
@@ -893,6 +893,42 @@ def _verify_candidate_pair(build, completion_rootfs_publish, first, second):
     return pins
 
 
+def _acquisition_failure_code(stage):
+    if stage in {"preflight"}:
+        return "cache-acquisition-preflight"
+    if stage in {"tls"}:
+        return "cache-acquisition-tls"
+    if stage in {"routes"}:
+        return "cache-acquisition-routes"
+    if stage in {"state"}:
+        return "cache-acquisition-state"
+    if stage in {"publish"}:
+        return "cache-acquisition-publish"
+    if stage in {"postverify"}:
+        return "cache-postverify"
+    if type(stage) is str and stage.startswith("token."):
+        return "cache-acquisition-token"
+    if type(stage) is str and stage.startswith("artifact.redirect"):
+        return "cache-acquisition-redirect"
+    if stage == "artifact.body":
+        return "cache-acquisition-body"
+    if type(stage) is str and stage.startswith("artifact."):
+        return "cache-acquisition-response"
+    return "cache-acquisition-unknown"
+
+
+def _verifier_call(verifier, default_code, callback, acquisition=False):
+    try:
+        return callback()
+    except CandidateError:
+        raise
+    except verifier.VerificationError as error:
+        code = _acquisition_failure_code(error.stage) if acquisition else default_code
+        raise CandidateError(code) from error
+    except OSError as error:
+        raise CandidateError(default_code) from error
+
+
 def _load_artifact_verifier():
     import importlib.util
     verifier_path = REMOTE / "verify-completion-artifacts.py"
@@ -910,10 +946,18 @@ def _rootfs_candidates(revision, manifest_sha256, outer_deadline):
     import completion_rootfs_publish
     verifier = _load_artifact_verifier()
 
-    contract = verifier.verify_contract(verifier.CONTRACT_PATH)
+    contract = _verifier_call(
+        verifier, "rootfs-contract-preflight", lambda: verifier.verify_contract(verifier.CONTRACT_PATH),
+    )
     _append_journal("cache-intent", {"artifact_count": 16})
-    verifier.acquire_completion_artifacts(verifier.CONTRACT_PATH, verifier.ARTIFACT_ROOT)
-    verifier.verify_package_archives(verifier.CONTRACT_PATH, verifier.ARTIFACT_ROOT)
+    _verifier_call(
+        verifier, "cache-acquisition-unknown",
+        lambda: verifier.acquire_completion_artifacts(verifier.CONTRACT_PATH, verifier.ARTIFACT_ROOT), True,
+    )
+    _verifier_call(
+        verifier, "cache-postverify",
+        lambda: verifier.verify_package_archives(verifier.CONTRACT_PATH, verifier.ARTIFACT_ROOT),
+    )
     cache_owned = _snapshot_cache(contract)
     _append_journal("cache-owned", cache_owned)
     _append_journal("rootfs-intent", {"baseline": "absent"})
@@ -923,7 +967,10 @@ def _rootfs_candidates(revision, manifest_sha256, outer_deadline):
     control = fs.OperationControl(time.monotonic_ns() + min(1_200_000_000_000, remaining_ns), lambda: False)
     first, second = build._two_build_outputs(approval, control)
     _verify_candidate_pair(build, completion_rootfs_publish, first, second)
-    verifier.verify_package_archives(verifier.CONTRACT_PATH, verifier.ARTIFACT_ROOT)
+    _verifier_call(
+        verifier, "cache-postverify",
+        lambda: verifier.verify_package_archives(verifier.CONTRACT_PATH, verifier.ARTIFACT_ROOT),
+    )
     _fail(_snapshot_cache(contract) == cache_owned, "cache-drift")
     _append_journal("rootfs-lifecycle-owned", _snapshot_rootfs_lifecycle())
     return {"candidate_count": 2, "cache_count": len(first.cache), "entry_count": first.entry_count,

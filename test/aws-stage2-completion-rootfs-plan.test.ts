@@ -57,7 +57,7 @@ try:
   for row in cache_rows:(cache_dir/row["cache_name"]).write_bytes(row_bytes(row["cache_name"].removesuffix(".deb")) if row["cache_name"]!="layer" else layer)
   contract={"oci":{"layer":layer_row},"packages":package_rows,"bounds":{"artifact_count":16,"max_regular_bytes":1048576}}
   def stat_identity(value):return (value.st_dev,value.st_ino,value.st_mode,value.st_uid,value.st_gid,value.st_nlink,value.st_size,value.st_mtime_ns,value.st_ctime_ns)
-  fake=types.SimpleNamespace(ARTIFACT_ROOT=artifact,CONTRACT_PATH=contract_path,verify_package_archives=lambda *args:None,verify_contract=lambda path:contract,cache_entries=lambda value:tuple(cache_rows),identity=stat_identity,read_stable_regular=lambda path,mode,maximum:Path(path).read_bytes(),strict_json=lambda raw,maximum:contract)
+  fake=types.SimpleNamespace(ARTIFACT_ROOT=artifact,CONTRACT_PATH=contract_path,verify_package_archives=lambda *args:None,verify_contract=lambda path:contract,cache_entries=lambda value:tuple(cache_rows),identity=stat_identity,read_stable_regular=lambda path,mode,maximum:Path(path).read_bytes(),read_contract_bytes=lambda path:Path(path).read_bytes(),strict_json=lambda raw,maximum:contract)
   def material(path,body):
    record=m.MaterialRecord(path,"file",0o644,0,0,1,len(body),None,None,None,hashlib.sha256(body).hexdigest(),0)
    return m.PreflightedTar(body,m.ArchiveRoot("directory",0o755,0,0,99,0),(record,),())
@@ -374,6 +374,8 @@ test("D-R2.1 production is fixed, read-only, local, and has no materializer or p
   assert.match(text, /fixed_transitions/u);
   assert.match(text, /load_verified_build_inputs/u);
   assert.match(text, /ROOT_POLICY/u);
+  assert.match(text, /verifier\.read_contract_bytes\(verifier\.CONTRACT_PATH\)/u);
+  assert.doesNotMatch(text, /read_stable_regular\(verifier\.CONTRACT_PATH,\s*0o644/u);
   assert.doesNotMatch(
     text,
     /subprocess|Popen|dpkg-deb|extractall|\.extract\(|memfd|renameat|mkdir|unlink|rmtree|socket|requests|urllib\.request/u,

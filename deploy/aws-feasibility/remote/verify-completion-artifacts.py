@@ -16,6 +16,8 @@ SNAPSHOT_BASE = f"https://snapshot.debian.org/archive/debian/{SNAPSHOT}/"
 SENTINEL = ".cogs-stage2-completion-artifacts-v1"
 SENTINEL_BYTES = b"cogs-stage2-completion-artifacts-v1\n"
 CONTRACT_PATH = Path(__file__).with_name("stage2-completion-artifacts-v1.json")
+FIXED_SOURCE_ROOT = Path("/var/lib/cogs/stage2-completion-v1/source")
+FIXED_CONTRACT_PATH = FIXED_SOURCE_ROOT.joinpath(*CONTRACT_PATH.parts[-4:])
 ARTIFACT_ROOT = Path(__file__).resolve().parents[1] / ".state" / "completion-v1" / "artifacts"
 SHA256_RE = re.compile(r"^[a-f0-9]{64}$")
 ACQUISITION_STAGES = frozenset(
@@ -165,8 +167,16 @@ def strict_json(raw, maximum):
     return value
 
 
+def contract_mode(path):
+    return 0o400 if Path(path) == FIXED_CONTRACT_PATH else 0o644
+
+
+def read_contract_bytes(path):
+    return read_stable_regular(path, contract_mode(path), 32768)
+
+
 def load_json_file(path):
-    return strict_json(read_stable_regular(path, 0o644, 32768), 32768)
+    return strict_json(read_contract_bytes(path), 32768)
 
 
 def check_url(value, host, prefix):

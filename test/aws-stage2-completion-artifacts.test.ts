@@ -19,7 +19,10 @@ module=importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 try:
     if sys.argv[2] == "contract": module.verify_contract(Path(sys.argv[3]))
+    elif sys.argv[2] == "fixed-contract":
+        module.FIXED_CONTRACT_PATH=Path(sys.argv[3]); module.verify_contract(Path(sys.argv[3]))
     elif sys.argv[2] == "cache": module.verify_cache_root(Path(sys.argv[3]), json.loads(sys.argv[4]))
+    elif sys.argv[2] == "contract-mode": print(oct(module.contract_mode(Path(sys.argv[3]))))
     else: raise RuntimeError()
 except Exception:
     raise SystemExit(1)
@@ -52,7 +55,11 @@ type Contract = {
 };
 type CacheEntry = { cache_name: string; size: number; sha256: string };
 
-function runPython(mode: "contract" | "cache", path: string, entries: CacheEntry[] = []) {
+function runPython(
+  mode: "contract" | "fixed-contract" | "cache" | "contract-mode",
+  path: string,
+  entries: CacheEntry[] = [],
+) {
   return spawnSync("python3", ["-c", pythonHelper, script, mode, path, JSON.stringify(entries)], {
     cwd: root,
     env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" },
@@ -149,6 +156,39 @@ test("Stage 2 completion artifact contract is exact, ordered, and fully pinned",
     assert.match(row.sha256, /^[a-f0-9]{64}$/u);
   }
   assert.doesNotMatch(await readFile(contractPath, "utf8"), /UNRESOLVED|stage2-completion-sshd_config/u);
+});
+
+test("contract mode is 0400 only at the exact fixed-source path and 0644 everywhere else", async () => {
+  const fixed =
+    "/var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote/stage2-completion-artifacts-v1.json";
+  assert.equal(runPython("contract-mode", fixed).stdout.trim(), "0o400");
+  for (const hostile of [
+    `${fixed}.copy`,
+    "/var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote/../remote/stage2-completion-artifacts-v1.json",
+    "/var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/stage2-completion-artifacts-v1.json",
+    contractPath,
+  ]) {
+    const result = runPython("contract-mode", hostile);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout.trim(), "0o644");
+  }
+
+  const valid = JSON.parse(await readFile(contractPath, "utf8")) as Contract;
+  const dir = await mkdtemp(join(tmpdir(), "cogs-stage2-contract-mode-"));
+  try {
+    const path = await writeContract(dir, valid);
+    assert.equal(runPython("contract", path).status, 0);
+    await chmod(path, 0o400);
+    assert.equal(runPython("fixed-contract", path).status, 0);
+    await chmod(path, 0o644);
+    assert.notEqual(runPython("fixed-contract", path).status, 0, "exact fixed path rejects checkout mode");
+    for (const mode of [0o400, 0o600]) {
+      await chmod(path, mode);
+      assert.notEqual(runPython("contract", path).status, 0, `non-fixed mode ${mode.toString(8)}`);
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test("contract verification rejects hostile shape, types, order, duplicates, totals, URLs, paths, and hashes", async () => {

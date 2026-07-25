@@ -66,6 +66,27 @@ for changed in (
 ):
     rejected(lambda changed=changed: module._canonical_report(changed))
 
+class FakeVerificationError(Exception):
+    def __init__(self, stage=None):
+        self.stage = stage
+
+fake_verification_module = types.SimpleNamespace(VerificationError=FakeVerificationError)
+for stage, expected in (
+    (None, "cache-acquisition-unknown"),
+    ("preflight", "cache-acquisition-preflight"),
+    ("tls", "cache-acquisition-tls"),
+    ("token.status", "cache-acquisition-token"),
+    ("artifact.redirect.location", "cache-acquisition-redirect"),
+    ("artifact.body", "cache-acquisition-body"),
+    ("artifact.final.length", "cache-acquisition-response"),
+    ("postverify", "cache-postverify"),
+):
+    code = failure_code(lambda stage=stage: module._verifier_call(
+        fake_verification_module, "rootfs-contract-preflight",
+        lambda: (_ for _ in ()).throw(FakeVerificationError(stage)), acquisition=stage is not None,
+    ))
+    assert code == ("rootfs-contract-preflight" if stage is None else expected)
+
 calls = []
 class FakeBuild:
     @staticmethod
@@ -302,4 +323,5 @@ assert "runtime-extraction-unsafe-or-unknown" in source
 assert "build._require_equal_builds(first, second)" in source
 assert "start_new_session=True" in source and "os.killpg(process.pid" in source
 assert "EXPORT_REPORT" in source and '"export-owned"' in source
+assert '128, 0o600' in source and 'sentinel_identity["mode"] == 0o600' in source
 print("stage2 phase-a candidate portable tests passed")
