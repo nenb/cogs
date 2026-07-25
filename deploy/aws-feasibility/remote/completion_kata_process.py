@@ -325,10 +325,7 @@ def _sealed_memfd(artifact, executable=False):
     if not hasattr(os, "memfd_create"):
         raise ProcessError("sealed memfd is unavailable")
     raw = _read_exact_source(artifact)
-    flags = os.MFD_ALLOW_SEALING | os.MFD_CLOEXEC
-    if executable:
-        flags |= getattr(os, "MFD_EXEC", 0x0010)
-    descriptor = os.memfd_create("cogs-kata-tool-v1", flags)
+    descriptor = os.memfd_create("cogs-kata-tool-v1", os.MFD_ALLOW_SEALING | os.MFD_CLOEXEC)
     try:
         os.fchmod(descriptor, 0o500 if executable else 0o400)
         offset = 0

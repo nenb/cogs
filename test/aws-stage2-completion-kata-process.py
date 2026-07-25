@@ -193,10 +193,29 @@ def linux_supervisor_tests():
     def issue(action):
         return process._make_test_issuer(raw, digest)(action)
 
-    result = issue(process._TestAction.OK)
+    def tagged(function, code):
+        def invoke(*args):
+            try:
+                return function(*args)
+            except OSError as error:
+                raise OSError(code, "tagged child setup failure") from error
+        return invoke
+
+    child_stages = (
+        ("relocate", process._relocate_child_internals, 64_001),
+        ("install", process._install_inherited_fds, 64_002),
+        ("close-range", process._close_except, 64_003),
+        ("execveat", process._execveat, 64_004),
+    )
+    with patch.object(process, "_relocate_child_internals", side_effect=tagged(child_stages[0][1], 64_001)), \
+         patch.object(process, "_install_inherited_fds", side_effect=tagged(child_stages[1][1], 64_002)), \
+         patch.object(process, "_close_except", side_effect=tagged(child_stages[2][1], 64_003)), \
+         patch.object(process, "_execveat", side_effect=tagged(child_stages[3][1], 64_004)):
+        result = issue(process._TestAction.OK)
+    stage = next((name for name, _function, code in child_stages if result.errno == code), None)
     assert result.outcome == "exited" and result.status == 0 and result.stdout == b"ok\n", (
         f"unexpected OK outcome: outcome={result.outcome!r} status={result.status!r} errno={result.errno!r} "
-        f"stdout={result.stdout!r} stderr={result.stderr!r} errors={result.errors!r}"
+        f"child_stage={stage!r} stdout={result.stdout!r} stderr={result.stderr!r} errors={result.errors!r}"
     )
     assert result.stderr == b"" and result.reaped and not result.errors
     assert result.identity.pid == result.identity.pgid == result.identity.sid

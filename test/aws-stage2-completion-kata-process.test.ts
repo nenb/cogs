@@ -38,7 +38,6 @@ test("S1 closed process owner and fixed local supervisor fail closed", async () 
   assert.match(source, /CommandId = actions\.CommandId/u);
   assert.match(source, /def _parse_contract\(raw, expected_sha256\):/u);
   assert.match(source, /F_SEAL_WRITE \| fcntl\.F_SEAL_GROW \| fcntl\.F_SEAL_SHRINK \| fcntl\.F_SEAL_SEAL/u);
-  assert.match(source, /flags \|= getattr\(os, "MFD_EXEC", 0x0010\)/u);
   assert.match(source, /os\.setsid\(\)/u);
   assert.match(source, /os\.fork\(\)/u);
   assert.match(source, /os\.pidfd_open\(pid, 0\)/u);
