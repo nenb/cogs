@@ -82,6 +82,49 @@ def structural_counter_delta(before, after):
     return {key: after[key] - before[key] for key in ROOTFS_STRUCTURAL_COUNTER_KEYS}
 
 
+def _phase_structural_counter_provider(allowed_phases):
+    _fail(type(allowed_phases) is tuple and allowed_phases and
+          all(type(phase) is str and phase for phase in allowed_phases) and
+          len(set(allowed_phases)) == len(allowed_phases))
+    snapshot, delta = structural_counter_snapshot, structural_counter_delta
+    tickets = {}
+    first_ticket = id(tickets) * 32 + 1
+    next_ticket = first_ticket
+    projection = (
+        ("active_history_record_copies", "record_reference_copies"),
+        ("listed_names", "byte_names_returned"),
+        ("parent_snapshots", "parent_snapshots"),
+        ("complete_legal_folds", "complete_legal_record_folds"),
+        ("complete_walks", "complete_filesystem_walks"),
+        ("incremental_records", "incrementally_advanced_ledger_records"),
+    )
+
+    def start(phase):
+        nonlocal next_ticket
+        _fail(type(phase) is str and phase in allowed_phases and next_ticket < first_ticket + 32)
+        before = snapshot()
+        delta(before, before)
+        ticket = next_ticket
+        next_ticket += 1
+        tickets[ticket] = (phase, before)
+        return ticket
+
+    def read(phase, ticket):
+        _fail(type(ticket) is int and ticket in tickets)
+        bound_phase, before = tickets.pop(ticket)
+        _fail(type(phase) is str and phase == bound_phase)
+        values = delta(before, snapshot())
+        _fail(tuple(values) == ROOTFS_STRUCTURAL_COUNTER_KEYS and all(
+            type(values[key]) is int and 0 <= values[key] <= (1 << 63) - 1
+            for key in ROOTFS_STRUCTURAL_COUNTER_KEYS
+        ))
+        result = {public: values[internal] for internal, public in projection}
+        _fail(all(type(value) is int and 0 <= value <= 1_000_000_000 for value in result.values()))
+        return result
+
+    return start, read
+
+
 class RootfsFsError(Exception):
     def __init__(self, primary=None, close_error=None):
         self.primary = primary

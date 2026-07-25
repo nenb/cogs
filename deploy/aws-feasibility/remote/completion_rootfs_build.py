@@ -20,6 +20,10 @@ BUILD_SECONDS = 900
 OUTER_SECONDS = 2400
 MANIFEST_NAME = fs._name(b".cogs-rootfs-candidate-manifest-v1.json")
 USTAR_NAME = fs._name(b".cogs-rootfs-candidate-v1.tar")
+_start_phase_structural_counters, _read_phase_structural_counters = fs._phase_structural_counter_provider((
+    "first-build-work", "first-inline-cleanup", "second-build-work", "second-inline-cleanup",
+    "equality", "pin", "post-verification", "settlement",
+))
 
 
 class BuildError(Exception):

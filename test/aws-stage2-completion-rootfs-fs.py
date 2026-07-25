@@ -50,7 +50,107 @@ def manifest_bytes(revision, entries):
     return json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode() + b"\n"
 
 
+def counter_snapshot(value=0, **changes):
+    return {key: changes.get(key, value) for key in module.ROOTFS_STRUCTURAL_COUNTER_KEYS}
+
+
+def counter_provider_tests():
+    saved_values = dict(module._STRUCTURAL_COUNTERS._values)
+    saved_snapshot = module.structural_counter_snapshot
+    saved_delta = module.structural_counter_delta
+    phases = ("work", "cleanup")
+    try:
+        module._STRUCTURAL_COUNTERS._values = counter_snapshot()
+        start, read = module._phase_structural_counter_provider(phases)
+        ticket = start("work")
+        for index, key in enumerate(module.ROOTFS_STRUCTURAL_COUNTER_KEYS, 1):
+            module._structural_increment(key, index)
+        assert read("work", ticket) == {
+            "record_reference_copies": 1, "byte_names_returned": 2, "parent_snapshots": 3,
+            "complete_legal_record_folds": 4, "complete_filesystem_walks": 5,
+            "incrementally_advanced_ledger_records": 6,
+        }
+        for malformed in ((), ["work"], ("work", "work"), ("",), (True,), ("work", 1)):
+            rejected(lambda malformed=malformed: module._phase_structural_counter_provider(malformed))
+        for phase in ("unknown", 1, True, None):
+            rejected(lambda phase=phase: start(phase))
+        for hostile_ticket in (True, False, 0, -1, "1", None):
+            rejected(lambda hostile_ticket=hostile_ticket: read("work", hostile_ticket))
+
+        other_start, other_read = module._phase_structural_counter_provider(phases)
+        own = start("work")
+        other = other_start("work")
+        rejected(lambda: read("work", other))
+        rejected(lambda: other_read("work", own))
+        read("work", own); other_read("work", other)
+        replaced = start("cleanup")
+        rejected(lambda: read("work", replaced))
+        rejected(lambda: read("cleanup", replaced))
+        malformed_phase = start("work")
+        rejected(lambda: read(True, malformed_phase))
+        rejected(lambda: read("work", malformed_phase))
+        duplicate = start("work")
+        read("work", duplicate)
+        rejected(lambda: read("work", duplicate))
+        rejected(lambda: read("work", 999999999))
+
+        outer = start("work")
+        module._structural_increment("active_history_record_copies", 2)
+        inner = start("cleanup")
+        module._structural_increment("active_history_record_copies", 3)
+        assert read("cleanup", inner)["record_reference_copies"] == 3
+        module._structural_increment("active_history_record_copies", 5)
+        assert read("work", outer)["record_reference_copies"] == 10
+
+        captured_start, captured_read = module._phase_structural_counter_provider(("captured",))
+        module.structural_counter_snapshot = lambda: (_ for _ in ()).throw(AssertionError("replaced snapshot"))
+        module.structural_counter_delta = lambda *_args: (_ for _ in ()).throw(AssertionError("replaced delta"))
+        captured = captured_start("captured")
+        assert captured_read("captured", captured) == {
+            "record_reference_copies": 0, "byte_names_returned": 0, "parent_snapshots": 0,
+            "complete_legal_record_folds": 0, "complete_filesystem_walks": 0,
+            "incrementally_advanced_ledger_records": 0,
+        }
+        module.structural_counter_snapshot, module.structural_counter_delta = saved_snapshot, saved_delta
+
+        def provider_from_snapshots(*snapshots):
+            values = iter(snapshots)
+            module.structural_counter_snapshot = lambda: next(values)
+            provider = module._phase_structural_counter_provider(("fault",))
+            module.structural_counter_snapshot = saved_snapshot
+            return provider
+
+        overflowing_start, _unused = provider_from_snapshots(counter_snapshot(value=(1 << 63)))
+        rejected(lambda: overflowing_start("fault"))
+        faults = (
+            (counter_snapshot(), counter_snapshot(value=(1 << 63))),
+            (counter_snapshot(value=1), counter_snapshot()),
+            (counter_snapshot(), counter_snapshot(active_history_record_copies=1_000_000_001)),
+            (counter_snapshot(), counter_snapshot(group_node_copies=(1 << 63))),
+            (counter_snapshot(), {**counter_snapshot(), "group_lookup_steps": True}),
+        )
+        for before, after in faults:
+            fault_start, fault_read = provider_from_snapshots(before, after)
+            fault_ticket = fault_start("fault")
+            rejected(lambda fault_read=fault_read, fault_ticket=fault_ticket: fault_read("fault", fault_ticket))
+            rejected(lambda fault_read=fault_read, fault_ticket=fault_ticket: fault_read("fault", fault_ticket))
+
+        internal = module.StructuralCounterProvider()
+        internal._values["group_lookup_steps"] = (1 << 63) - 1
+        rejected(lambda: internal.add("group_lookup_steps"))
+
+        ceiling_start, ceiling_read = module._phase_structural_counter_provider(("ceiling",))
+        issued = [ceiling_start("ceiling") for _index in range(32)]
+        assert len(set(issued)) == 32 and all(type(ticket) is int and ticket > 0 for ticket in issued)
+        ceiling_read("ceiling", issued[0])
+        rejected(lambda: ceiling_start("ceiling"))
+    finally:
+        module.structural_counter_snapshot, module.structural_counter_delta = saved_snapshot, saved_delta
+        module._STRUCTURAL_COUNTERS._values = saved_values
+
+
 def pure_tests():
+    counter_provider_tests()
     raw = b"pos:\t0\nflags:\t" + module.FDINFO_FLAGS + b"\nmnt_id:\t42\nino:\t9\n"
     nofollow_raw = raw.replace(module.FDINFO_FLAGS, module.FDINFO_NOFOLLOW_FLAGS)
     assert module.FDINFO_FLAGS == b"012100000"

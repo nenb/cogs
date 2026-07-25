@@ -292,7 +292,22 @@ test("candidate output schema enforces metadata-only non-authority", async () =>
   assert.match(runner, /build\._require_equal_builds\(first, second\)/u);
   assert.match(runner, /type\(token\) is str and HEX\.fullmatch\(token\) is not None/u);
   assert.doesNotMatch(runner, /elapsed_ms >= build\.BUILD_SECONDS \* 1000|time\.monotonic\(\)/u);
-  assert.match(runner, /total_elapsed_ns - cleanup_elapsed_ns/u);
+  assert.match(runner, /total_elapsed_ns - cleanup_span_ns/u);
+  const candidateBuild = runner.slice(
+    runner.indexOf("def _candidate_build"),
+    runner.indexOf("def _timed_rootfs_phase"),
+  );
+  const timedCleanup = candidateBuild.slice(candidateBuild.indexOf("def timed_cleanup"));
+  assert.match(
+    timedCleanup,
+    /span_started = time\.monotonic_ns\(\)[\s\S]*ticket = _counter_start\(build, cleanup_name\)[\s\S]*callback\(\*args\)[\s\S]*_counter_read\(ticket\)[\s\S]*span_elapsed = _elapsed_ns\(span_started\)/u,
+  );
+  assert.match(candidateBuild, /work_counters = _subtract_counters\(work_total, cleanup_counters\)/u);
+  assert.match(runner, /all\(subtrahend\[name\] <= minuend\[name\] for name in STRUCTURAL_COUNTERS\)/u);
+  assert.doesNotMatch(
+    candidateBuild.slice(0, candidateBuild.indexOf("def timed_cleanup")),
+    /_counter_start\(build, cleanup_name\)/u,
+  );
   assert.match(runner, /ROOTFS_PHASES = \([\s\S]*"settlement"/u);
   assert.match(runner, /_start_phase_structural_counters/u);
   assert.match(runner, /_read_phase_structural_counters/u);

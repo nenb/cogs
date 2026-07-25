@@ -1017,6 +1017,22 @@ def _validated_counters(value):
     return dict(value)
 
 
+def _zero_counters():
+    return {name: 0 for name in STRUCTURAL_COUNTERS}
+
+
+def _add_counters(left, right):
+    left, right = _validated_counters(left), _validated_counters(right)
+    return _validated_counters({name: left[name] + right[name] for name in STRUCTURAL_COUNTERS})
+
+
+def _subtract_counters(minuend, subtrahend):
+    minuend, subtrahend = _validated_counters(minuend), _validated_counters(subtrahend)
+    _fail(all(subtrahend[name] <= minuend[name] for name in STRUCTURAL_COUNTERS),
+          "rootfs-counter-contract")
+    return _validated_counters({name: minuend[name] - subtrahend[name] for name in STRUCTURAL_COUNTERS})
+
+
 def _counter_start(provider, name):
     expected_provider = "completion_rootfs_builder" if name == "recovery-attempt-1" else "completion_rootfs_build"
     _fail(type(provider) is type(sys) and provider.__name__ == expected_provider and name in ROOTFS_PHASES,
@@ -1084,71 +1100,126 @@ def _candidate_build(build, approval, control, ordinal, token, phases):
           "rootfs-build-contract")
     try:
         work_counter = _counter_start(build, work_name)
-        cleanup_counter = _counter_start(build, cleanup_name)
     except BaseException:
         _poison_phase(phases, work_name)
         raise
     materializer, builder = build.materializer, build.builder
     original_reload, original_cleanup = materializer._reload_and_cleanup, builder._cleanup_owned
-    cleanup_depth = 0
-    cleanup_elapsed_ns = 0
+    cleanup_depth = cleanup_elapsed_ns = cleanup_span_ns = cleanup_attempts = 0
     cleanup_statuses = []
+    cleanup_counters = _zero_counters()
+    evidence_fault = None
+
+    def poison(caught):
+        nonlocal evidence_fault
+        evidence_fault = caught if evidence_fault is None else evidence_fault
+        _poison_phase(phases, work_name)
+        _poison_phase(phases, cleanup_name)
 
     def timed_cleanup(callback, *args):
-        nonlocal cleanup_depth, cleanup_elapsed_ns
+        nonlocal cleanup_depth, cleanup_elapsed_ns, cleanup_span_ns, cleanup_attempts, cleanup_counters
         if cleanup_depth:
             return callback(*args)
-        cleanup_depth = 1
-        started = time.monotonic_ns()
+        cleanup_attempts += 1
         try:
-            result = callback(*args)
-            cleanup_statuses.append("success")
-            return result
-        except BaseException:
-            cleanup_statuses.append("failure")
+            span_started = time.monotonic_ns()
+        except BaseException as caught:
+            poison(caught)
             raise
-        finally:
-            cleanup_elapsed_ns += _elapsed_ns(started)
-            cleanup_depth = 0
+        ticket = callback_started = callback_elapsed = counters = None
+        result = callback_error = instrumentation_error = None
+        try:
+            try:
+                ticket = _counter_start(build, cleanup_name)
+                callback_started = time.monotonic_ns()
+                cleanup_depth = 1
+                try:
+                    result = callback(*args)
+                    cleanup_statuses.append("success")
+                except BaseException as caught:
+                    callback_error = caught
+                    cleanup_statuses.append("failure")
+                finally:
+                    try:
+                        callback_elapsed = _elapsed_ns(callback_started)
+                    except BaseException as caught:
+                        instrumentation_error = caught
+                    cleanup_depth = 0
+            except BaseException as caught:
+                instrumentation_error = caught
+            if ticket is not None:
+                try:
+                    counters = _counter_read(ticket)
+                except BaseException as caught:
+                    instrumentation_error = caught if instrumentation_error is None else instrumentation_error
+            try:
+                span_elapsed = _elapsed_ns(span_started)
+            except BaseException as caught:
+                span_elapsed = None
+                instrumentation_error = caught if instrumentation_error is None else instrumentation_error
+            if instrumentation_error is None:
+                _fail(callback_elapsed <= span_elapsed, "rootfs-build-contract")
+                cleanup_counters = _add_counters(cleanup_counters, counters)
+                cleanup_elapsed_ns += callback_elapsed
+                cleanup_span_ns += span_elapsed
+        except BaseException as caught:
+            instrumentation_error = caught if instrumentation_error is None else instrumentation_error
+        if instrumentation_error is not None:
+            poison(instrumentation_error)
+            raise instrumentation_error
+        if callback_error is not None:
+            raise callback_error
+        return result
 
     materializer._reload_and_cleanup = lambda *args: timed_cleanup(original_reload, *args)
     builder._cleanup_owned = lambda *args: timed_cleanup(original_cleanup, *args)
-    started_ns = time.monotonic_ns()
+    started_ns = total_elapsed_ns = None
     error = None
     try:
-        candidate = build._build_once(approval, token, control)
-    except BaseException as caught:
-        error = caught
-        candidate = None
+        try:
+            started_ns = time.monotonic_ns()
+        except BaseException as caught:
+            poison(caught)
+            error = caught
+            candidate = None
+        else:
+            try:
+                candidate = build._build_once(approval, token, control)
+            except BaseException as caught:
+                error = caught
+                candidate = None
+        if started_ns is not None:
+            try:
+                total_elapsed_ns = _elapsed_ns(started_ns)
+            except BaseException as caught:
+                poison(caught)
     finally:
-        total_elapsed_ns = _elapsed_ns(started_ns)
         materializer._reload_and_cleanup, builder._cleanup_owned = original_reload, original_cleanup
+    try:
+        work_total = _counter_read(work_counter)
+        if evidence_fault is None:
+            work_counters = _subtract_counters(work_total, cleanup_counters)
+            _fail(cleanup_span_ns <= total_elapsed_ns, "rootfs-build-contract")
+    except BaseException as caught:
+        poison(caught)
+    if evidence_fault is not None:
+        raise evidence_fault
     attempt_error = getattr(build, "BuildAttemptError", None)
     work_outcome = error.work_outcome if type(attempt_error) is type and type(error) is attempt_error else (
         "success" if error is None else "failed"
     )
-    _fail(work_outcome in {"cancelled", "deadline", "failed", "not-started", "success"} and
-          cleanup_elapsed_ns <= total_elapsed_ns, "rootfs-build-contract")
+    _fail(work_outcome in {"cancelled", "deadline", "failed", "not-started", "success"},
+          "rootfs-build-contract")
     postwork = error is not None and work_outcome == "success"
     work_status = "success" if error is None else "failure"
     work_category = "success" if error is None else ("postwork" if postwork else work_outcome)
-    try:
-        work_counters = _counter_read(work_counter)
-    except BaseException:
-        _poison_phase(phases, work_name)
-        raise
-    _set_phase(phases, work_name, work_status, work_category, total_elapsed_ns - cleanup_elapsed_ns,
-               work_counters)
     cleanup_failed = "failure" in cleanup_statuses
-    if not cleanup_statuses:
+    _set_phase(phases, work_name, work_status, work_category, total_elapsed_ns - cleanup_span_ns,
+               work_counters)
+    if not cleanup_attempts:
         _set_phase(phases, cleanup_name, "blocked", "prerequisite-failed")
     else:
         cleanup_status = "failure" if cleanup_failed else "success"
-        try:
-            cleanup_counters = _counter_read(cleanup_counter)
-        except BaseException:
-            _poison_phase(phases, cleanup_name)
-            raise
         _set_phase(phases, cleanup_name, cleanup_status, "failed" if cleanup_failed else "success",
                    cleanup_elapsed_ns, cleanup_counters)
     if error is not None:
@@ -1164,23 +1235,34 @@ def _timed_rootfs_phase(phases, name, code, provider, callback):
     except BaseException:
         _poison_phase(phases, name)
         raise
-    started_ns = time.monotonic_ns()
-    error = None
+    timing_error = callback_error = None
+    started_ns = elapsed_ns = None
+    value = None
     try:
-        value = callback()
+        started_ns = time.monotonic_ns()
+        try:
+            value = callback()
+        except BaseException as caught:
+            callback_error = caught
+        elapsed_ns = _elapsed_ns(started_ns)
     except BaseException as caught:
-        error = caught
-        value = None
+        timing_error = caught
     try:
         counters = _counter_read(ticket)
+    except BaseException as caught:
+        if timing_error is None:
+            timing_error = caught
+    if timing_error is not None:
+        _poison_phase(phases, name)
+        raise timing_error
+    try:
+        _set_phase(phases, name, "failure" if callback_error is not None else "success",
+                   "failed" if callback_error is not None else "success", elapsed_ns, counters)
     except BaseException:
         _poison_phase(phases, name)
         raise
-    elapsed_ns = _elapsed_ns(started_ns)
-    if error is not None:
-        _set_phase(phases, name, "failure", "failed", elapsed_ns, counters)
-        raise CandidateError(code) from error
-    _set_phase(phases, name, "success", "success", elapsed_ns, counters)
+    if callback_error is not None:
+        raise CandidateError(code) from callback_error
     return value
 
 
@@ -1521,18 +1603,16 @@ def _retry_exact_recovery(callback, bound_ns, outcomes, attempts=ROOTFS_RECOVERY
         started_ns = time.monotonic_ns()
         try:
             callback()
-            elapsed_ns = _elapsed_ns(started_ns)
-            if elapsed_ns >= bound_ns:
-                outcomes.append({"attempt": attempt, "outcome": "over-bound", "elapsed_ms": _elapsed_ms(elapsed_ns)})
-                error = CandidateError("rootfs-recovery-over-bound")
-                continue
-            outcomes.append({"attempt": attempt, "outcome": "success", "elapsed_ms": _elapsed_ms(elapsed_ns)})
-            return
         except BaseException as caught:
-            elapsed_ns = _elapsed_ns(started_ns)
-            outcome = "over-bound" if elapsed_ns >= bound_ns else "nondeadline"
-            outcomes.append({"attempt": attempt, "outcome": outcome, "elapsed_ms": _elapsed_ms(elapsed_ns)})
             error = caught
+        elapsed_ns = _elapsed_ns(started_ns)
+        over_bound = elapsed_ns >= bound_ns
+        outcome = "over-bound" if over_bound else ("success" if error is None else "nondeadline")
+        outcomes.append({"attempt": attempt, "outcome": outcome, "elapsed_ms": _elapsed_ms(elapsed_ns)})
+        if error is None and not over_bound:
+            return
+        if error is None:
+            error = CandidateError("rootfs-recovery-over-bound")
     raise CandidateError("rootfs-recovery-exhausted") from error
 
 
@@ -1540,11 +1620,35 @@ def _recover_rootfs(outcomes):
     sys.path.insert(0, str(REMOTE))
     import completion_rootfs_builder as builder
     ticket = _counter_start(builder, "recovery-attempt-1")
+    primary = shape_error = read_error = None
     try:
         _retry_exact_recovery(builder._run_recovery, builder.RECOVER_SECONDS * NS_PER_SECOND, outcomes)
-    finally:
-        for row in outcomes:
-            row["structural_counters"] = _counter_read(ticket)
+    except BaseException as caught:
+        primary = caught
+    try:
+        _fail(type(outcomes) is list and len(outcomes) == 1 and type(outcomes[0]) is dict and
+              set(outcomes[0]) == {"attempt", "outcome", "elapsed_ms"} and
+              type(outcomes[0]["attempt"]) is int and outcomes[0]["attempt"] == 1 and
+              outcomes[0]["outcome"] in {"success", "over-bound", "nondeadline"} and
+              type(outcomes[0]["elapsed_ms"]) is int and 0 <= outcomes[0]["elapsed_ms"] <= 5_400_000,
+              "rootfs-recovery-contract")
+    except BaseException as caught:
+        shape_error = caught
+    try:
+        counters = _counter_read(ticket)
+    except BaseException as caught:
+        read_error = caught
+    expected_failure = type(primary) is CandidateError and primary.code == "rootfs-recovery-exhausted"
+    if shape_error is None and read_error is None and (primary is None or expected_failure):
+        outcomes[0]["structural_counters"] = counters
+    elif shape_error is not None:
+        outcomes.clear()
+    if primary is not None:
+        raise primary
+    if shape_error is not None:
+        raise shape_error
+    if read_error is not None:
+        raise read_error
 
 
 def _cleanup_rootfs(records):

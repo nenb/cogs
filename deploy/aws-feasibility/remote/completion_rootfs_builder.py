@@ -28,6 +28,9 @@ RECOVER_SECONDS = 600
 FIXED_MODULE = Path("/var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote/completion_rootfs_builder.py")
 SOURCE_INDEX = 4
 COMPLETION_INDEX = 8
+_start_phase_structural_counters, _read_phase_structural_counters = fs._phase_structural_counter_provider((
+    "recovery-attempt-1",
+))
 
 
 class BuilderError(Exception):

@@ -42,6 +42,14 @@ def failure_code(callback):
     raise AssertionError("expected candidate failure")
 
 
+def thrown(callback):
+    try:
+        callback()
+    except BaseException as error:
+        return error
+    raise AssertionError("expected failure")
+
+
 def budget_rejected(callback):
     try:
         callback()
@@ -105,21 +113,43 @@ base = module._base_report()
 raw = module._canonical_report(base)
 assert json.loads(raw) == base
 valid_counters = {name: index for index, name in enumerate(module.STRUCTURAL_COUNTERS)}
+def counter_values(value=0):
+    return {name: value for name in module.STRUCTURAL_COUNTERS}
+
+
 def trusted_counter_provider(name="completion_rootfs_build", counters=valid_counters,
-                             start_error=None, read_error=None):
+                             start_error=None, read_error=None, deltas=None,
+                             start_faults=(), read_faults=(), clock=None,
+                             start_delay_ns=0, read_delay_ns=0):
     provider = types.ModuleType(name)
     handles = {}
+    issued = 0
+    starts = reads = 0
+    scripted = None if deltas is None else list(deltas)
+    provider.counter_events = []
     def start(phase):
-        if start_error is not None:
-            raise start_error
-        handle = len(handles) + 1
-        handles[handle] = phase
-        return handle
+        nonlocal issued, starts
+        starts += 1
+        provider.counter_events.append(("start", phase))
+        if clock is not None:
+            clock[0] += start_delay_ns
+        if start_error is not None or starts in start_faults:
+            raise start_error or RuntimeError("scripted-start-fault")
+        issued += 1
+        value = counters if scripted is None else scripted[issued - 1]
+        handles[issued] = (phase, value)
+        return issued
     def read(phase, handle):
-        assert handles.pop(handle) == phase
-        if read_error is not None:
-            raise read_error
-        return dict(counters)
+        nonlocal reads
+        reads += 1
+        provider.counter_events.append(("read", phase, handle))
+        if clock is not None:
+            clock[0] += read_delay_ns
+        bound, value = handles.pop(handle)
+        assert bound == phase
+        if read_error is not None or reads in read_faults:
+            raise read_error or RuntimeError("scripted-read-fault")
+        return dict(value)
     provider._start_phase_structural_counters = start
     provider._read_phase_structural_counters = read
     return provider
@@ -142,6 +172,60 @@ for fault_at in ("start", "read"):
     assert fault_events == ([] if fault_at == "start" else ["callback"])
     assert module._phase(fault_phases, "equality")["status"] == "evidence-failure"
     rejected(lambda fault_phases=fault_phases: module._validate_phase_graph(fault_phases, None))
+
+timed_originals = module.time.monotonic_ns, module._elapsed_ms
+try:
+    timed_faults = (
+        ("start-clock", lambda: (_ for _ in ()).throw(RuntimeError("start-clock")),
+         RuntimeError, "start-clock", True),
+        ("end-clock", iter((10, RuntimeError("end-clock"))), RuntimeError, "end-clock", False),
+        ("elapsed-bound", iter((10, 10 + 5_400 * module.NS_PER_SECOND + 1)),
+         module.CandidateError, "timing-metadata", True),
+    )
+    for name, clock_script, error_type, detail, read_fault in timed_faults:
+        timed_provider = trusted_counter_provider(
+            read_error=RuntimeError("secondary-read") if read_fault else None,
+        )
+        timed_phases = module._empty_phases()
+        callback_events = []
+        if callable(clock_script):
+            module.time.monotonic_ns = clock_script
+        else:
+            def scripted_clock(clock_script=clock_script):
+                value = next(clock_script)
+                if isinstance(value, BaseException):
+                    raise value
+                return value
+            module.time.monotonic_ns = scripted_clock
+        error = thrown(lambda timed_provider=timed_provider, timed_phases=timed_phases:
+                       module._timed_rootfs_phase(
+                           timed_phases, "pin", "rootfs-pin", timed_provider,
+                           lambda: callback_events.append("callback"),
+                       ))
+        assert type(error) is error_type
+        assert (error.code if type(error) is module.CandidateError else str(error)) == detail
+        assert timed_provider.counter_events == [("start", "pin"), ("read", "pin", 1)]
+        assert callback_events == ([] if name == "start-clock" else ["callback"])
+        assert module._phase(timed_phases, "pin")["status"] == "evidence-failure"
+        rejected(lambda timed_phases=timed_phases: module._canonical_report(
+            {**module._base_report(), "rootfs_phases": timed_phases},
+        ))
+
+    accounting_provider = trusted_counter_provider()
+    accounting_phases = module._empty_phases()
+    accounting_clock = iter((10, 20))
+    module.time.monotonic_ns = lambda: next(accounting_clock)
+    module._elapsed_ms = lambda _elapsed: (_ for _ in ()).throw(module.CandidateError("timing-metadata"))
+    assert failure_code(lambda: module._timed_rootfs_phase(
+        accounting_phases, "settlement", "rootfs-settlement", accounting_provider, lambda: None,
+    )) == "timing-metadata"
+    assert accounting_provider.counter_events == [
+        ("start", "settlement"), ("read", "settlement", 1),
+    ]
+    assert module._phase(accounting_phases, "settlement")["status"] == "evidence-failure"
+finally:
+    module.time.monotonic_ns, module._elapsed_ms = timed_originals
+
 settled_without_result = [
     row if row["phase"] == "recovery-attempt-1" else
     {**row, "status": "success", "outcome": "success", "elapsed_ms": 1,
@@ -278,15 +362,21 @@ try:
 finally:
     module.time.monotonic_ns = original_monotonic_ns
 
-postwork_build = trusted_counter_provider("completion_rootfs_build")
+postwork_clock = [0]
+postwork_build = trusted_counter_provider(
+    "completion_rootfs_build", deltas=(counter_values(20), counter_values(3), counter_values(4)),
+    clock=postwork_clock, start_delay_ns=2_000_000, read_delay_ns=3_000_000,
+)
 postwork_build.BUILD_SECONDS = 900
 postwork_build.BuildAttemptError = FakeBuildAttemptError
 postwork_events = []
 def normal_cleanup(*_args):
     postwork_events.append("cleanup-failure")
+    postwork_clock[0] += 30_000_000
     raise RuntimeError("primary cleanup uncertainty")
 def fallback_cleanup(*_args):
     postwork_events.append("cleanup-success")
+    postwork_clock[0] += 40_000_000
 postwork_build.builder = types.SimpleNamespace(_cleanup_owned=normal_cleanup)
 postwork_build.materializer = types.SimpleNamespace(_reload_and_cleanup=fallback_cleanup)
 def postwork_failure(*_args):
@@ -297,15 +387,219 @@ def postwork_failure(*_args):
     raise FakeBuildAttemptError("success")
 postwork_build._build_once = postwork_failure
 postwork_phases = module._empty_phases()
-assert failure_code(lambda: module._candidate_build(
-    postwork_build, "approval", "control", "first", "e" * 64, postwork_phases,
-)) == "rootfs-first-build-inline-cleanup"
+module.time.monotonic_ns = lambda: postwork_clock[0]
+try:
+    assert failure_code(lambda: module._candidate_build(
+        postwork_build, "approval", "control", "first", "e" * 64, postwork_phases,
+    )) == "rootfs-first-build-inline-cleanup"
+finally:
+    module.time.monotonic_ns = original_monotonic_ns
 assert postwork_events == ["cleanup-failure", "cleanup-success"]
 assert (module._phase(postwork_phases, "first-build-work")["status"],
         module._phase(postwork_phases, "first-build-work")["outcome"]) == ("failure", "postwork")
 assert (module._phase(postwork_phases, "first-inline-cleanup")["status"],
         module._phase(postwork_phases, "first-inline-cleanup")["outcome"]) == ("failure", "failed")
-assert module._phase(postwork_phases, "first-inline-cleanup")["structural_counters"] == valid_counters
+assert module._phase(postwork_phases, "first-inline-cleanup")["structural_counters"] == counter_values(7)
+assert module._phase(postwork_phases, "first-build-work")["structural_counters"] == counter_values(13)
+assert module._phase(postwork_phases, "first-inline-cleanup")["elapsed_ms"] == 70
+assert module._phase(postwork_phases, "first-build-work")["elapsed_ms"] == 0
+
+
+def counter_build(deltas, callback, **provider_options):
+    value = trusted_counter_provider("completion_rootfs_build", deltas=deltas, **provider_options)
+    value.BUILD_SECONDS = 900
+    value.BuildAttemptError = FakeBuildAttemptError
+    value.materializer = types.SimpleNamespace(_reload_and_cleanup=lambda *_args: None)
+    value.builder = types.SimpleNamespace(_cleanup_owned=lambda *_args: None)
+    value._build_once = lambda *_args: callback(value)
+    return value
+
+
+def poisoned_report(phases):
+    report = module._base_report()
+    report["rootfs_phases"] = phases
+    return report
+
+successful_clock = [0]
+def successful_cleanup(*_args):
+    successful_clock[0] += 10_000_000
+successful = counter_build(
+    (counter_values(10), counter_values(3)),
+    lambda build: (build.builder._cleanup_owned(None), "candidate")[1],
+    clock=successful_clock, start_delay_ns=20_000_000, read_delay_ns=100_000_000,
+)
+successful.builder._cleanup_owned = successful_cleanup
+successful._build_once = lambda *_args: (successful.builder._cleanup_owned(None), "candidate")[1]
+successful_phases = module._empty_phases()
+module.time.monotonic_ns = lambda: successful_clock[0]
+try:
+    assert module._candidate_build(
+        successful, "approval", "control", "first", "e" * 64, successful_phases,
+    ) == "candidate"
+finally:
+    module.time.monotonic_ns = original_monotonic_ns
+assert module._phase(successful_phases, "first-build-work")["structural_counters"] == counter_values(7)
+assert module._phase(successful_phases, "first-inline-cleanup")["structural_counters"] == counter_values(3)
+assert module._phase(successful_phases, "first-inline-cleanup")["elapsed_ms"] == 10
+assert module._phase(successful_phases, "first-build-work")["elapsed_ms"] == 0
+assert successful.counter_events == [
+    ("start", "first-build-work"), ("start", "first-inline-cleanup"),
+    ("read", "first-inline-cleanup", 2), ("read", "first-build-work", 1),
+]
+
+nested_events = []
+nested_clock = [0]
+nested = counter_build(
+    (counter_values(8), counter_values(2)), lambda _build: None,
+    clock=nested_clock, start_delay_ns=5_000_000, read_delay_ns=7_000_000,
+)
+def nested_once(*_args):
+    nested_events.append("top")
+    nested_clock[0] += 10_000_000
+    nested.materializer._reload_and_cleanup(None)
+nested.builder._cleanup_owned = nested_once
+nested._build_once = lambda *_args: (nested.builder._cleanup_owned(None), "candidate")[1]
+nested_phases = module._empty_phases()
+module.time.monotonic_ns = lambda: nested_clock[0]
+try:
+    module._candidate_build(nested, "approval", "control", "first", "e" * 64, nested_phases)
+finally:
+    module.time.monotonic_ns = original_monotonic_ns
+assert [event for event in nested.counter_events if event[0] == "start"] == [
+    ("start", "first-build-work"), ("start", "first-inline-cleanup"),
+]
+assert nested_events == ["top"]
+assert module._phase(nested_phases, "first-inline-cleanup")["elapsed_ms"] == 10
+assert module._phase(nested_phases, "first-build-work")["elapsed_ms"] == 0
+
+prevented = []
+start_fault = counter_build(
+    (counter_values(10),), lambda build: build.builder._cleanup_owned(None), start_faults=(2,),
+)
+start_fault.builder._cleanup_owned = lambda *_args: prevented.append("callback")
+start_fault._build_once = lambda *_args: start_fault.builder._cleanup_owned(None)
+start_fault_phases = module._empty_phases()
+assert failure_code(lambda: module._candidate_build(
+    start_fault, "approval", "control", "first", "e" * 64, start_fault_phases,
+)) == "rootfs-counter-contract"
+assert prevented == []
+assert all(module._phase(start_fault_phases, name)["status"] == "evidence-failure"
+           for name in ("first-build-work", "first-inline-cleanup"))
+rejected(lambda: module._canonical_report(poisoned_report(start_fault_phases)))
+
+for fault_read in (1, 2):
+    attempts = []
+    faulting = counter_build(
+        (counter_values(20), counter_values(3), counter_values(4)), lambda _build: None,
+        read_faults=(fault_read,),
+    )
+    faulting.builder._cleanup_owned = lambda *_args: (attempts.append("primary"),
+        (_ for _ in ()).throw(RuntimeError("primary")))[1]
+    faulting.materializer._reload_and_cleanup = lambda *_args: attempts.append("fallback")
+    def two_attempts(*_args, faulting=faulting):
+        try:
+            faulting.builder._cleanup_owned(None)
+        except BaseException:
+            faulting.materializer._reload_and_cleanup(None)
+        raise FakeBuildAttemptError("success")
+    faulting._build_once = two_attempts
+    fault_phases = module._empty_phases()
+    assert failure_code(lambda faulting=faulting, fault_phases=fault_phases: module._candidate_build(
+        faulting, "approval", "control", "first", "e" * 64, fault_phases,
+    )) == "rootfs-counter-contract"
+    assert attempts == ["primary", "fallback"]
+    assert all(module._phase(fault_phases, name)["status"] == "evidence-failure"
+               for name in ("first-build-work", "first-inline-cleanup"))
+    rejected(lambda fault_phases=fault_phases: module._canonical_report(poisoned_report(fault_phases)))
+
+for deltas in (
+    (counter_values(1_000_000_000), counter_values(600_000_000), counter_values(600_000_000)),
+    (counter_values(2), counter_values(3)),
+):
+    hostile = counter_build(deltas, lambda _build: None)
+    if len(deltas) == 3:
+        hostile._build_once = lambda *_args, hostile=hostile: (
+            hostile.builder._cleanup_owned(None), hostile.materializer._reload_and_cleanup(None),
+            (_ for _ in ()).throw(FakeBuildAttemptError("success")),
+        )[-1]
+    else:
+        hostile._build_once = lambda *_args, hostile=hostile: hostile.builder._cleanup_owned(None)
+    hostile_phases = module._empty_phases()
+    assert failure_code(lambda hostile=hostile, hostile_phases=hostile_phases: module._candidate_build(
+        hostile, "approval", "control", "first", "e" * 64, hostile_phases,
+    )) == "rootfs-counter-contract"
+    assert all(module._phase(hostile_phases, name)["status"] == "evidence-failure"
+               for name in ("first-build-work", "first-inline-cleanup"))
+
+work_read_fault = counter_build(
+    (counter_values(10), counter_values(3)),
+    lambda build: (build.builder._cleanup_owned(None), "candidate")[1], read_faults=(2,),
+)
+work_fault_phases = module._empty_phases()
+assert failure_code(lambda: module._candidate_build(
+    work_read_fault, "approval", "control", "first", "e" * 64, work_fault_phases,
+)) == "rootfs-counter-contract"
+assert all(module._phase(work_fault_phases, name)["status"] == "evidence-failure"
+           for name in ("first-build-work", "first-inline-cleanup"))
+
+bound_clock = [0]
+bound_events = []
+bound_fault = counter_build(
+    (counter_values(20), counter_values(3), counter_values(4)), lambda _build: None,
+    clock=bound_clock, start_delay_ns=1, read_delay_ns=1,
+)
+def over_bound_cleanup(*_args):
+    bound_events.append("over-bound")
+    bound_clock[0] += 5_400 * module.NS_PER_SECOND + 1
+def after_bound_cleanup(*_args):
+    bound_events.append("fallback")
+bound_fault.builder._cleanup_owned = over_bound_cleanup
+bound_fault.materializer._reload_and_cleanup = after_bound_cleanup
+original_bound_cleanup = bound_fault.builder._cleanup_owned
+original_bound_reload = bound_fault.materializer._reload_and_cleanup
+def bound_attempt(*_args):
+    try:
+        bound_fault.builder._cleanup_owned(None)
+    except BaseException:
+        bound_fault.materializer._reload_and_cleanup(None)
+    raise FakeBuildAttemptError("success")
+bound_fault._build_once = bound_attempt
+bound_phases = module._empty_phases()
+module.time.monotonic_ns = lambda: bound_clock[0]
+try:
+    assert failure_code(lambda: module._candidate_build(
+        bound_fault, "approval", "control", "first", "e" * 64, bound_phases,
+    )) == "timing-metadata"
+finally:
+    module.time.monotonic_ns = original_monotonic_ns
+assert bound_fault.builder._cleanup_owned is original_bound_cleanup
+assert bound_fault.materializer._reload_and_cleanup is original_bound_reload
+assert bound_events == ["over-bound", "fallback"]
+assert [event[0] for event in bound_fault.counter_events] == [
+    "start", "start", "read", "start", "read", "read",
+]
+assert all(module._phase(bound_phases, name)["status"] == "evidence-failure"
+           for name in ("first-build-work", "first-inline-cleanup"))
+rejected(lambda: module._canonical_report(poisoned_report(bound_phases)))
+
+clock = [100]
+module.time.monotonic_ns = lambda: clock[0]
+try:
+    for name in ("equality", "pin", "post-verification", "settlement"):
+        timing_provider = trusted_counter_provider()
+        original_read = timing_provider._read_phase_structural_counters
+        def delayed_read(phase, handle, original_read=original_read):
+            clock[0] += 1_000_000_000
+            return original_read(phase, handle)
+        timing_provider._read_phase_structural_counters = delayed_read
+        timing_phases = module._empty_phases()
+        assert module._timed_rootfs_phase(
+            timing_phases, name, "rootfs-timed", timing_provider,
+            lambda: (clock.__setitem__(0, clock[0] + 7_000_000), "value")[1],
+        ) == "value"
+        assert module._phase(timing_phases, name)["elapsed_ms"] == 7
+finally:
+    module.time.monotonic_ns = original_monotonic_ns
 
 socket_monotonic_ns = module.time.monotonic_ns
 try:
@@ -436,10 +730,33 @@ assert actual_build.publication is actual_publish
 assert (actual_build.BUILD_SECONDS, actual_build.OUTER_SECONDS) == (900, 2400)
 assert (actual_materializer.MATERIALIZE_SECONDS, actual_materializer.CLEANUP_SECONDS) == (900, 600)
 assert actual_builder.RECOVER_SECONDS == 600
-assert failure_code(lambda: module._counter_start(actual_build, "first-build-work")) == \
-    "rootfs-counter-contract"
-assert failure_code(lambda: module._counter_start(actual_builder, "recovery-attempt-1")) == \
-    "rootfs-counter-contract"
+build_phases = (
+    "first-build-work", "first-inline-cleanup", "second-build-work", "second-inline-cleanup",
+    "equality", "pin", "post-verification", "settlement",
+)
+for phase in build_phases:
+    assert set(module._counter_read(module._counter_start(actual_build, phase))) == set(module.STRUCTURAL_COUNTERS)
+assert set(module._counter_read(module._counter_start(actual_builder, "recovery-attempt-1"))) == \
+    set(module.STRUCTURAL_COUNTERS)
+for phase in ("recovery-attempt-1", "unknown", True, None):
+    rejected(lambda phase=phase: module._counter_start(actual_build, phase))
+for phase in (*build_phases, "unknown", True, None):
+    rejected(lambda phase=phase: module._counter_start(actual_builder, phase))
+build_ticket = module._counter_start(actual_build, "equality")
+recovery_ticket = module._counter_start(actual_builder, "recovery-attempt-1")
+rejected(lambda: module._counter_read((actual_build._read_phase_structural_counters,
+                                       "equality", recovery_ticket[2])))
+rejected(lambda: module._counter_read((actual_builder._read_phase_structural_counters,
+                                       "recovery-attempt-1", build_ticket[2])))
+module._counter_read(build_ticket); module._counter_read(recovery_ticket)
+duplicate = module._counter_start(actual_build, "pin")
+module._counter_read(duplicate)
+rejected(lambda: module._counter_read(duplicate))
+replaced = module._counter_start(actual_build, "post-verification")
+rejected(lambda: module._counter_read((actual_build._read_phase_structural_counters,
+                                       "settlement", replaced[2])))
+rejected(lambda: module._counter_read(replaced))
+rejected(lambda: module._counter_read((actual_build._read_phase_structural_counters, "equality", 0)))
 assert (module.OBSERVE_SECONDS, module.ROOTFS_RECOVERY_ATTEMPTS) == (3300, 1)
 materializer_monotonic_ns = actual_materializer.time.monotonic_ns
 try:
@@ -684,6 +1001,109 @@ try:
         "structural_counters": valid_counters,
     }]
 finally:
+    if original_recovery_module is None:
+        del sys.modules["completion_rootfs_builder"]
+    else:
+        sys.modules["completion_rootfs_builder"] = original_recovery_module
+
+for fault_at in ("start", "read"):
+    faulting_recovery = trusted_counter_provider(
+        "completion_rootfs_builder",
+        start_error=RuntimeError("start") if fault_at == "start" else None,
+        read_error=RuntimeError("read") if fault_at == "read" else None,
+    )
+    faulting_recovery.RECOVER_SECONDS = 600
+    recovery_mutations = []
+    faulting_recovery._run_recovery = lambda: recovery_mutations.append("attempt")
+    faulting_outcomes = []
+    try:
+        sys.modules["completion_rootfs_builder"] = faulting_recovery
+        assert failure_code(lambda: module._recover_rootfs(faulting_outcomes)) == "rootfs-counter-contract"
+    finally:
+        if original_recovery_module is None:
+            del sys.modules["completion_rootfs_builder"]
+        else:
+            sys.modules["completion_rootfs_builder"] = original_recovery_module
+    assert recovery_mutations == ([] if fault_at == "start" else ["attempt"])
+    assert faulting_outcomes == ([] if fault_at == "start" else [{
+        "attempt": 1, "outcome": "success", "elapsed_ms": faulting_outcomes[0]["elapsed_ms"],
+    }])
+    rejected(lambda faulting_outcomes=faulting_outcomes: module._merge_recovery_attempt(
+        module._empty_phases(), None, {"recovery_attempts": faulting_outcomes},
+    ))
+
+recovery_timing_originals = module.time.monotonic_ns, module._elapsed_ms, module._retry_exact_recovery
+try:
+    recovery_timing_faults = (
+        ("start-clock", lambda: (_ for _ in ()).throw(RuntimeError("recovery-start")),
+         RuntimeError, "recovery-start", False),
+        ("end-clock", iter((10, RuntimeError("recovery-end"))),
+         RuntimeError, "recovery-end", False),
+        ("elapsed-bound", iter((10, 10 + 5_400 * module.NS_PER_SECOND + 1)),
+         module.CandidateError, "timing-metadata", True),
+    )
+    for name, clock_script, error_type, detail, read_fault in recovery_timing_faults:
+        recovery_provider = trusted_counter_provider(
+            "completion_rootfs_builder",
+            read_error=RuntimeError("secondary-read") if read_fault else None,
+        )
+        recovery_provider.RECOVER_SECONDS = 600
+        recovery_events = []
+        recovery_provider._run_recovery = lambda: recovery_events.append("attempt")
+        if callable(clock_script):
+            module.time.monotonic_ns = clock_script
+        else:
+            def recovery_clock(clock_script=clock_script):
+                value = next(clock_script)
+                if isinstance(value, BaseException):
+                    raise value
+                return value
+            module.time.monotonic_ns = recovery_clock
+        outcomes = []
+        sys.modules["completion_rootfs_builder"] = recovery_provider
+        error = thrown(lambda outcomes=outcomes: module._recover_rootfs(outcomes))
+        assert type(error) is error_type
+        assert (error.code if type(error) is module.CandidateError else str(error)) == detail
+        assert recovery_provider.counter_events == [
+            ("start", "recovery-attempt-1"), ("read", "recovery-attempt-1", 1),
+        ]
+        assert recovery_events == ([] if name == "start-clock" else ["attempt"])
+        assert outcomes == []
+        rejected(lambda outcomes=outcomes: module._merge_recovery_attempt(
+            module._empty_phases(), None, {"recovery_attempts": outcomes},
+        ))
+
+    accounting_provider = trusted_counter_provider("completion_rootfs_builder")
+    accounting_provider.RECOVER_SECONDS = 600
+    accounting_provider._run_recovery = lambda: None
+    accounting_clock = iter((10, 20))
+    module.time.monotonic_ns = lambda: next(accounting_clock)
+    module._elapsed_ms = lambda _elapsed: (_ for _ in ()).throw(module.CandidateError("timing-metadata"))
+    accounting_outcomes = []
+    sys.modules["completion_rootfs_builder"] = accounting_provider
+    assert failure_code(lambda: module._recover_rootfs(accounting_outcomes)) == "timing-metadata"
+    assert accounting_provider.counter_events == [
+        ("start", "recovery-attempt-1"), ("read", "recovery-attempt-1", 1),
+    ]
+    assert accounting_outcomes == []
+
+    malformed_provider = trusted_counter_provider(
+        "completion_rootfs_builder", read_error=RuntimeError("secondary-read"),
+    )
+    malformed_provider.RECOVER_SECONDS = 600
+    malformed_provider._run_recovery = lambda: None
+    module._retry_exact_recovery = lambda _callback, _bound, outcomes: outcomes.append({
+        "attempt": True, "outcome": "success", "elapsed_ms": 0,
+    })
+    malformed_outcomes = []
+    sys.modules["completion_rootfs_builder"] = malformed_provider
+    assert failure_code(lambda: module._recover_rootfs(malformed_outcomes)) == "rootfs-recovery-contract"
+    assert malformed_provider.counter_events == [
+        ("start", "recovery-attempt-1"), ("read", "recovery-attempt-1", 1),
+    ]
+    assert malformed_outcomes == []
+finally:
+    module.time.monotonic_ns, module._elapsed_ms, module._retry_exact_recovery = recovery_timing_originals
     if original_recovery_module is None:
         del sys.modules["completion_rootfs_builder"]
     else:
