@@ -14,12 +14,19 @@ import completion_rootfs_fs as fs
 import completion_rootfs_ledger as ledger
 import completion_rootfs_plan as plan
 
-MATERIALIZE_SECONDS = 300
-CLEANUP_SECONDS = 120
+MATERIALIZE_SECONDS = 900
+CLEANUP_SECONDS = 600
 
 
 class MaterializerError(Exception):
     pass
+
+
+class MaterializerWorkError(MaterializerError):
+    def __init__(self, work_outcome):
+        _fail(work_outcome in {"cancelled", "deadline", "failed"})
+        self.work_outcome = work_outcome
+        super().__init__()
 
 
 def _fail(condition):
@@ -494,6 +501,35 @@ def _fresh_cleanup_control():
     return fs.OperationControl(time.monotonic_ns() + CLEANUP_SECONDS * 1_000_000_000, lambda: False)
 
 
+def _materialize_control(outer):
+    now_ns = time.monotonic_ns()
+    deadline_ns = min(outer.deadline_ns, now_ns + MATERIALIZE_SECONDS * 1_000_000_000)
+    return fs.OperationControl(deadline_ns, outer.cancelled)
+
+
+def _work_failure(control):
+    now_ns = time.monotonic_ns()
+    try:
+        cancelled = control.cancelled()
+    except BaseException:
+        return "failed"
+    if type(cancelled) is not bool:
+        return "failed"
+    if cancelled:
+        return "cancelled"
+    return "deadline" if now_ns >= control.deadline_ns else "failed"
+
+
+def _raise_work_failure(owned, control, primary):
+    work_outcome = _work_failure(control)
+    cleanup_control = _fresh_cleanup_control()
+    try:
+        _reload_and_cleanup(owned, cleanup_control)
+    except BaseException as cleanup_error:
+        primary = fs.RootfsFsError(primary, cleanup_error)
+    raise MaterializerWorkError(work_outcome) from primary
+
+
 def _reload_and_cleanup(owned, control):
     error = None
     for node in (owned.root, owned.operation, owned.active.node):
@@ -514,13 +550,14 @@ def _reload_and_cleanup(owned, control):
         builder._cleanup_owned(refreshed, active, control)
 
 
-def _materialize_unmasked(authority, owned, control):
-    _fail(type(owned) is builder.OwnedOperation and type(control) is fs.OperationControl)
-    fresh = plan.revalidate_build_inputs(authority)
-    _fail(type(fresh) is plan.RootfsBuildInputs and fresh is not authority)
+def _materialize_unmasked(authority, owned, outer_control):
+    _fail(type(owned) is builder.OwnedOperation and type(outer_control) is fs.OperationControl)
+    control = _materialize_control(outer_control)
     active = owned.active
     root = owned.root
     try:
+        fresh = plan.revalidate_build_inputs(authority)
+        _fail(type(fresh) is plan.RootfsBuildInputs and fresh is not authority)
         entries = fresh.plan.entries
         directories = [entry for entry in entries if entry.record.kind == "directory"]
         files = [entry for entry in entries if entry.record.kind == "file"]
@@ -543,12 +580,7 @@ def _materialize_unmasked(authority, owned, control):
         count = _postwalk(refreshed, root, fresh, control)
         return MaterializedRoot(refreshed, active, count)
     except BaseException as error:
-        cleanup_control = _fresh_cleanup_control()
-        try:
-            _reload_and_cleanup(owned, cleanup_control)
-        except BaseException as cleanup_error:
-            raise fs.RootfsFsError(error, cleanup_error) from cleanup_error
-        raise
+        _raise_work_failure(owned, control, error)
 
 
 def _materialize(authority, owned, control):

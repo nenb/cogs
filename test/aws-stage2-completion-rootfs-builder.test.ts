@@ -20,7 +20,7 @@ test("D-R2.2c exposes only fixed recover-owned and keeps bootstrap private", asy
 
   const source = await readFile(modulePath, "utf8");
   assert.match(source, /argv != \["recover-owned"\]/u);
-  assert.match(source, /RECOVER_SECONDS = 120/u);
+  assert.match(source, /RECOVER_SECONDS = 600/u);
   assert.match(source, /LOCK_EX \| fcntl\.LOCK_NB/u);
   assert.doesNotMatch(source, /rmtree|os\.walk|glob|subprocess|socket|os\.environ|os\.getenv|argparse/u);
   assert.doesNotMatch(source, /boto3?|terraform|requests|urllib/u);

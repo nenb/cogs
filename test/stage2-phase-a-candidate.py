@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Portable pure tests for the ADR0046 Phase A candidate runner."""
+"""Portable pure tests for the ADR0047 Phase A candidate runner."""
 
 import importlib.util
 import json
@@ -19,6 +19,12 @@ module = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = module
 spec.loader.exec_module(module)
 
+BUDGET = ROOT / "scripts/stage2-phase-a-budget.py"
+budget_spec = importlib.util.spec_from_file_location("stage2_phase_a_budget", BUDGET)
+assert budget_spec is not None and budget_spec.loader is not None
+budget = importlib.util.module_from_spec(budget_spec)
+budget_spec.loader.exec_module(budget)
+
 
 def rejected(callback):
     try:
@@ -35,6 +41,35 @@ def failure_code(callback):
         return error.code
     raise AssertionError("expected candidate failure")
 
+
+def budget_rejected(callback):
+    try:
+        callback()
+    except budget.BudgetError:
+        return
+    raise AssertionError("hostile scheduling budget accepted")
+
+
+assert budget.BOUNDARIES == {
+    "source": 600, "observe": 3900, "cleanup": 5100, "residue": 5160, "render": 5200,
+    "validate": 5240, "export": 5280, "upload": 5290, "export-cleanup": 5390, "final": 5400,
+}
+assert budget.BOUNDARIES["final"] - budget.BOUNDARIES["cleanup"] == 300
+assert list(budget.BOUNDARIES.values()) == sorted(budget.BOUNDARIES.values())
+assert budget.BOUNDARIES["upload"] + 60 < budget.BOUNDARIES["export-cleanup"]
+anchor = 1_000_000_000
+assert budget.timeout_seconds(str(anchor), "source", anchor) == 595
+assert budget.timeout_seconds(str(anchor), "observe", anchor) == 3895
+assert budget.timeout_seconds(str(anchor), "cleanup", anchor) == 5095
+for boundary, seconds in budget.BOUNDARIES.items():
+    budget.check(str(anchor), boundary, anchor + seconds * 1_000_000_000)
+    budget_rejected(lambda boundary=boundary, seconds=seconds: budget.check(
+        str(anchor), boundary, anchor + seconds * 1_000_000_000 + 1,
+    ))
+for hostile_anchor in (None, "", "0", "01", "-1", "+1", "1.0", "a", "9" * 21):
+    budget_rejected(lambda hostile_anchor=hostile_anchor: budget.check(hostile_anchor, "final", anchor))
+budget_rejected(lambda: budget.check(str(anchor + 1), "final", anchor))
+budget_rejected(lambda: budget.timeout_seconds(str(anchor), "source", anchor + 595 * 1_000_000_000))
 
 assert tuple((item.component, item.release, item.size, item.sha256) for item in module.RUNTIME_ASSETS) == (
     ("kata", "3.32.0", 1547940938, "1449ecea50bd91fa73a94648db195d18950fe869ba4b1f12d05f55f1fa7c1b01"),
@@ -62,6 +97,20 @@ for changed in (
     {**base, "qualified": True},
     {**base, "claims": {**base["claims"], "runtime": True}},
     {**base, "blockers": []},
+    {**base, "rootfs_builds": {
+        "first": {"outcome": "failed", "work_outcome": "deadline", "total_elapsed_ms": 1},
+        "second": {"outcome": "success", "work_outcome": "success", "total_elapsed_ms": 1},
+    }},
+    {**base, "rootfs_builds": {
+        "first": {"outcome": "blocked", "work_outcome": "blocked", "total_elapsed_ms": 1},
+        "second": module._empty_build_outcomes()["second"],
+    }},
+    {**base, "rootfs_builds": {
+        "first": {"outcome": "failed", "work_outcome": "blocked", "total_elapsed_ms": 1},
+        "second": module._empty_build_outcomes()["second"],
+    }},
+    {**base, "recovery_attempts": [{"attempt": True, "outcome": "success", "elapsed_ms": 1}]},
+    {**base, "recovery_attempts": [{"attempt": 2, "outcome": "success", "elapsed_ms": 1}]},
     {**base, "unexpected": True},
 ):
     rejected(lambda changed=changed: module._canonical_report(changed))
@@ -114,34 +163,103 @@ for code in ("rootfs-bootstrap", "rootfs-build", "rootfs-equality", "rootfs-pin"
         code, lambda: (_ for _ in ()).throw(RuntimeError("must-not-escape")),
     )) == code
 
-failing_build = types.SimpleNamespace(
-    BUILD_SECONDS=300,
-    _build_once=lambda *_args: (_ for _ in ()).throw(RuntimeError("fixed failure")),
-)
-original_monotonic = module.time.monotonic
+class FakeBuildAttemptError(Exception):
+    def __init__(self, work_outcome):
+        self.work_outcome = work_outcome
+
+original_monotonic_ns = module.time.monotonic_ns
 try:
-    for ordinal, elapsed, expected in (
-        ("first", 299.999, "rootfs-first-build-nondeadline"),
-        ("first", 300.0, "rootfs-first-build-over-bound"),
-        ("second", 299.999, "rootfs-second-build-nondeadline"),
-        ("second", 300.0, "rootfs-second-build-over-bound"),
+    for ordinal, work_outcome, elapsed_ns in (
+        ("first", "deadline", 200_000_000_001),
+        ("first", "failed", 950_000_999_999),
+        ("second", "cancelled", 300_000_000_000),
     ):
-        values = iter((10.0, 10.0 + elapsed))
-        module.time.monotonic = lambda: next(values)
-        assert failure_code(lambda ordinal=ordinal: module._candidate_build(
-            failing_build, "approval", "control", ordinal, "e" * 64,
-        )) == expected
+        failing_build = types.SimpleNamespace(
+            BUILD_SECONDS=900,
+            BuildAttemptError=FakeBuildAttemptError,
+            _build_once=lambda *_args, outcome=work_outcome: (_ for _ in ()).throw(FakeBuildAttemptError(outcome)),
+        )
+        values = iter((10, 10 + elapsed_ns))
+        module.time.monotonic_ns = lambda: next(values)
+        outcomes = module._empty_build_outcomes()
+        if ordinal == "second":
+            outcomes["first"] = {"outcome": "success", "work_outcome": "success", "total_elapsed_ms": 1}
+        assert failure_code(lambda ordinal=ordinal, outcomes=outcomes: module._candidate_build(
+            failing_build, "approval", "control", ordinal, "e" * 64, outcomes,
+        )) == f"rootfs-{ordinal}-build-{work_outcome}"
+        assert outcomes[ordinal] == {
+            "outcome": "failed", "work_outcome": work_outcome,
+            "total_elapsed_ms": elapsed_ns // module.NS_PER_MILLISECOND,
+        }
 finally:
-    module.time.monotonic = original_monotonic
+    module.time.monotonic_ns = original_monotonic_ns
+
+socket_monotonic_ns = module.time.monotonic_ns
+try:
+    module.time.monotonic_ns = lambda: 1
+    assert module._socket_timeout_seconds(2 * module.NS_PER_SECOND + 1) == 2
+    assert module._socket_timeout_seconds(2 * module.NS_PER_SECOND) == 1
+    rejected(lambda: module._socket_timeout_seconds(module.NS_PER_SECOND))
+finally:
+    module.time.monotonic_ns = socket_monotonic_ns
+
+publication_stages = (
+    "after-final-eof", "after-content-fsync", "after-redigest", "before-link", "after-link",
+    "after-unlink", "after-directory-fsync", "after-final-redigest", "before-journal",
+    "after-journal", "before-return",
+)
+publication_originals = module.time.monotonic_ns, module._check_asset_deadline, module._append_journal
+try:
+    for target_stage in publication_stages:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory_path = Path(temporary)
+            partial = directory_path / ".asset.partial"
+            final = directory_path / "asset.bin"
+            directory = os.open(directory_path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+            descriptor = os.open(partial.name, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC,
+                                 0o600, dir_fd=directory)
+            try:
+                partial_identity = module._identity(os.fstat(descriptor))
+                content = b"fixed-publication-content"
+                assert os.write(descriptor, content) == len(content)
+                asset = module.Asset(
+                    "test", "1", final.name, "https://github.com/fixed", len(content),
+                    module.hashlib.sha256(content).hexdigest(),
+                )
+                deadline_ns = 1_000_000
+                observed_stage = [None]
+                journal = []
+                original_check = publication_originals[1]
+                def staged_check(deadline, stage):
+                    observed_stage[0] = stage
+                    return original_check(deadline, stage)
+                module._check_asset_deadline = staged_check
+                module.time.monotonic_ns = lambda: deadline_ns if observed_stage[0] == target_stage else deadline_ns - 1
+                module._append_journal = lambda kind, body: journal.append((kind, body))
+                publication = {"journaled": False}
+                assert failure_code(lambda: module._finish_asset_publication(
+                    asset, directory, descriptor, partial, final, partial_identity, deadline_ns, publication,
+                )) == "asset-timeout"
+                module._cleanup_failed_asset_publication(directory, descriptor, partial, final, publication)
+                retained = target_stage in {"after-journal", "before-return"}
+                assert set(os.listdir(directory)) == ({final.name} if retained else set())
+                assert [kind for kind, _body in journal] == (["asset-final-owned"] if retained else [])
+                if retained:
+                    module._cleanup_held_asset(directory, final.name, descriptor)
+            finally:
+                os.close(descriptor)
+                os.close(directory)
+finally:
+    module.time.monotonic_ns, module._check_asset_deadline, module._append_journal = publication_originals
 
 token_build_calls = []
 token_build = types.SimpleNamespace(
-    BUILD_SECONDS=300,
+    BUILD_SECONDS=900,
     _build_once=lambda *_args: token_build_calls.append("build"),
 )
 for hostile_token in (None, "a" * 63, "a" * 65, "A" * 64, "g" * 64):
     assert failure_code(lambda hostile_token=hostile_token: module._candidate_build(
-        token_build, "approval", "control", "first", hostile_token,
+        token_build, "approval", "control", "first", hostile_token, module._empty_build_outcomes(),
     )) == "rootfs-build-contract"
 assert token_build_calls == []
 
@@ -149,8 +267,112 @@ remote = ROOT / "deploy/aws-feasibility/remote"
 sys.path.insert(0, str(remote))
 import completion_rootfs_build as actual_build
 import completion_rootfs_builder as actual_builder
+import completion_rootfs_materializer as actual_materializer
 import completion_rootfs_publish as actual_publish
 assert actual_build.publication is actual_publish
+assert (actual_build.BUILD_SECONDS, actual_build.OUTER_SECONDS) == (900, 2400)
+assert (actual_materializer.MATERIALIZE_SECONDS, actual_materializer.CLEANUP_SECONDS) == (900, 600)
+assert actual_builder.RECOVER_SECONDS == 600
+assert (module.OBSERVE_SECONDS, module.ROOTFS_RECOVERY_ATTEMPTS) == (3300, 1)
+materializer_monotonic_ns = actual_materializer.time.monotonic_ns
+try:
+    actual_materializer.time.monotonic_ns = lambda: 100
+    long_outer = actual_build.fs.OperationControl(2_000_000_000_100, lambda: False)
+    short_outer = actual_build.fs.OperationControl(800_000_000_100, lambda: False)
+    assert actual_materializer._materialize_control(long_outer).deadline_ns == 900_000_000_100
+    assert actual_materializer._materialize_control(short_outer).deadline_ns == short_outer.deadline_ns
+    assert actual_materializer._work_failure(
+        actual_build.fs.OperationControl(100, lambda: False),
+    ) == "deadline"
+    assert actual_materializer._work_failure(
+        actual_build.fs.OperationControl(101, lambda: False),
+    ) == "failed"
+    assert actual_materializer._work_failure(
+        actual_build.fs.OperationControl(101, lambda: True),
+    ) == "cancelled"
+finally:
+    actual_materializer.time.monotonic_ns = materializer_monotonic_ns
+
+materializer_failure_originals = (
+    actual_materializer.time.monotonic_ns, actual_materializer._fresh_cleanup_control,
+    actual_materializer._reload_and_cleanup,
+)
+def materializer_failure(cleanup_error):
+    events = []
+    control = actual_build.fs.OperationControl(
+        100, lambda: (events.append("cancelled"), False)[1],
+    )
+    actual_materializer.time.monotonic_ns = lambda: (events.append("captured"), 100)[1]
+    actual_materializer._fresh_cleanup_control = lambda: (events.append("fresh-cleanup"), "cleanup-control")[1]
+    def cleanup(_owned, cleanup_control):
+        events.append(("cleanup", cleanup_control))
+        if cleanup_error is not None:
+            raise cleanup_error
+    actual_materializer._reload_and_cleanup = cleanup
+    primary = RuntimeError("raw primary")
+    try:
+        actual_materializer._raise_work_failure("owned", control, primary)
+    except actual_materializer.MaterializerWorkError as error:
+        assert error.work_outcome == "deadline" and error.args == () and str(error) == ""
+        assert events == ["captured", "cancelled", "fresh-cleanup", ("cleanup", "cleanup-control")]
+        return error, primary
+    raise AssertionError("materializer work failure escaped")
+try:
+    captured, primary = materializer_failure(None)
+    assert captured.__cause__ is primary
+    cleanup_error = OSError("raw cleanup")
+    captured, primary = materializer_failure(cleanup_error)
+    assert type(captured.__cause__) is actual_build.fs.RootfsFsError
+    assert captured.__cause__.primary is primary and captured.__cause__.close_error is cleanup_error
+finally:
+    (actual_materializer.time.monotonic_ns, actual_materializer._fresh_cleanup_control,
+     actual_materializer._reload_and_cleanup) = materializer_failure_originals
+
+build_attempt_originals = (
+    actual_build.plan.load_verified_build_inputs, actual_build._cache_values,
+    actual_build.builder._open_base_chain, actual_build.builder._begin_operation,
+    actual_build.materializer._materialize, actual_build.materializer._reload_and_cleanup,
+    actual_build.canonical._manifest, actual_build.fs._close_chain,
+)
+build_events = []
+authority = types.SimpleNamespace(plan="plan")
+owned = types.SimpleNamespace()
+approval = actual_build.fs.SourceApproval("a" * 40, "b" * 64)
+outer_control = actual_build.fs.OperationControl(time.monotonic_ns() + 60_000_000_000, lambda: False)
+try:
+    actual_build.plan.load_verified_build_inputs = lambda: authority
+    actual_build._cache_values = lambda _authority: ()
+    actual_build.builder._open_base_chain = lambda _control: "chain"
+    actual_build.builder._begin_operation = lambda *_args: owned
+    actual_build.materializer._reload_and_cleanup = lambda *_args: build_events.append("cleanup")
+    actual_build.fs._close_chain = lambda _chain: build_events.append("close")
+    actual_build.materializer._materialize = lambda *_args: (_ for _ in ()).throw(
+        actual_materializer.MaterializerWorkError("deadline")
+    )
+    try:
+        actual_build._build_once_unmasked(approval, "1" * 64, outer_control)
+    except actual_build.BuildAttemptError as error:
+        assert error.work_outcome == "deadline" and error.args == () and str(error) == ""
+    else:
+        raise AssertionError("typed materializer failure escaped build boundary")
+    assert build_events == ["close"]
+
+    build_events.clear()
+    actual_build.materializer._materialize = lambda *_args: types.SimpleNamespace(owned=owned)
+    actual_build.canonical._manifest = lambda _plan: (_ for _ in ()).throw(RuntimeError("raw postwork"))
+    try:
+        actual_build._build_once_unmasked(approval, "2" * 64, outer_control)
+    except actual_build.BuildAttemptError as error:
+        assert error.work_outcome == "success" and error.args == () and str(error) == ""
+    else:
+        raise AssertionError("post-materialization failure escaped build boundary")
+    assert build_events == ["cleanup", "close"]
+finally:
+    (actual_build.plan.load_verified_build_inputs, actual_build._cache_values,
+     actual_build.builder._open_base_chain, actual_build.builder._begin_operation,
+     actual_build.materializer._materialize, actual_build.materializer._reload_and_cleanup,
+     actual_build.canonical._manifest, actual_build.fs._close_chain) = build_attempt_originals
+
 assert all(callable(getattr(actual_builder, name)) for name in ("_open_base_chain", "_bootstrap"))
 
 bootstrap_events = []
@@ -178,7 +400,8 @@ candidate = types.SimpleNamespace(
 )
 order = []
 fake_build = types.ModuleType("completion_rootfs_build")
-fake_build.BUILD_SECONDS = 300
+fake_build.BUILD_SECONDS = 900
+fake_build.OUTER_SECONDS = 2400
 fake_build._build_once = lambda _approval, token, _control: (order.append(("build", token)) or candidate)
 fake_build._require_equal_builds = lambda first, second: order.append("equal") if first is second else (_ for _ in ()).throw(AssertionError())
 fake_build._require_pinned = lambda _candidate, _pins: order.append("pin")
@@ -240,8 +463,12 @@ try:
     module._snapshot_rootfs_lifecycle = lambda: (order.append("snapshot") or next(rootfs_snapshots))
     tokens = iter(("1" * 64, "2" * 64))
     module.secrets.token_hex = lambda size: (order.append(("token", value := next(tokens))) or value) if size == 32 else None
-    result = module._rootfs_candidates("a" * 40, "b" * 64, time.monotonic() + 10)
+    build_outcomes = module._empty_build_outcomes()
+    result = module._rootfs_candidates(
+        "a" * 40, "b" * 64, time.monotonic_ns() + 10_000_000_000, build_outcomes,
+    )
     assert result["equal"] is True and result["pins_match"] is True and result["cache_count"] == 16
+    assert build_outcomes["first"]["outcome"] == build_outcomes["second"]["outcome"] == "success"
     assert order == ["open", "bootstrap", "close-state", "close-chain", "snapshot",
                      ("token", "1" * 64), ("token", "2" * 64),
                      ("build", "1" * 64), ("build", "2" * 64),
@@ -251,9 +478,11 @@ try:
     rootfs_snapshots = iter((rootfs_owned,))
     repeated = "f" * 64
     module.secrets.token_hex = lambda size: (order.append(("token", repeated)) or repeated) if size == 32 else None
+    rejected_outcomes = module._empty_build_outcomes()
     assert failure_code(lambda: module._rootfs_candidates(
-        "a" * 40, "b" * 64, time.monotonic() + 10,
+        "a" * 40, "b" * 64, time.monotonic_ns() + 10_000_000_000, rejected_outcomes,
     )) == "rootfs-build-token"
+    assert rejected_outcomes == module._empty_build_outcomes()
     assert order == ["open", "bootstrap", "close-state", "close-chain", "snapshot",
                      ("token", repeated), ("token", repeated)]
 finally:
@@ -266,17 +495,58 @@ finally:
             sys.modules[name] = value
 
 recovery_calls = []
-def eventually_recovers():
+def recovers_once():
     recovery_calls.append("recover")
-    if len(recovery_calls) < 2:
-        raise RuntimeError("bounded recovery failure")
-module._retry_exact_recovery(eventually_recovers)
-assert recovery_calls == ["recover", "recover"]
+recovery_outcomes = []
+module._retry_exact_recovery(recovers_once, 600 * module.NS_PER_SECOND, recovery_outcomes)
+assert recovery_calls == ["recover"]
+assert [item["outcome"] for item in recovery_outcomes] == ["success"]
 recovery_calls.clear()
+recovery_outcomes = []
 assert failure_code(lambda: module._retry_exact_recovery(
     lambda: (recovery_calls.append("recover"), (_ for _ in ()).throw(RuntimeError("preserve")))[1],
+    600 * module.NS_PER_SECOND,
+    recovery_outcomes,
 )) == "rootfs-recovery-exhausted"
 assert recovery_calls == ["recover"] * module.ROOTFS_RECOVERY_ATTEMPTS
+assert [item["outcome"] for item in recovery_outcomes] == ["nondeadline"] * module.ROOTFS_RECOVERY_ATTEMPTS
+
+original_monotonic_ns = module.time.monotonic_ns
+try:
+    for elapsed_ns, outcome, elapsed_ms, fails in (
+        (600 * module.NS_PER_SECOND - 1, "success", 599_999, False),
+        (600 * module.NS_PER_SECOND, "over-bound", 600_000, True),
+    ):
+        values = iter((10, 10 + elapsed_ns))
+        module.time.monotonic_ns = lambda: next(values)
+        recovery_outcomes = []
+        callback = lambda: None
+        if fails:
+            assert failure_code(lambda: module._retry_exact_recovery(
+                callback, 600 * module.NS_PER_SECOND, recovery_outcomes,
+            )) == "rootfs-recovery-exhausted"
+        else:
+            module._retry_exact_recovery(callback, 600 * module.NS_PER_SECOND, recovery_outcomes)
+        assert recovery_outcomes == [
+            {"attempt": 1, "outcome": outcome, "elapsed_ms": elapsed_ms},
+        ]
+
+    for elapsed_ns, outcome, elapsed_ms in (
+        (600 * module.NS_PER_SECOND - 1, "nondeadline", 599_999),
+        (600 * module.NS_PER_SECOND, "over-bound", 600_000),
+    ):
+        values = iter((10, 10 + elapsed_ns))
+        module.time.monotonic_ns = lambda: next(values)
+        recovery_outcomes = []
+        assert failure_code(lambda: module._retry_exact_recovery(
+            lambda: (_ for _ in ()).throw(RuntimeError("bounded timeout")),
+            600 * module.NS_PER_SECOND, recovery_outcomes,
+        )) == "rootfs-recovery-exhausted"
+        assert recovery_outcomes == [
+            {"attempt": 1, "outcome": outcome, "elapsed_ms": elapsed_ms},
+        ]
+finally:
+    module.time.monotonic_ns = original_monotonic_ns
 
 cleanup_originals = (
     module._fixed_preflight, module._require_state, module._recover_rootfs, module._cleanup_rootfs,
@@ -287,8 +557,9 @@ cleanup_outputs = []
 try:
     module._fixed_preflight = lambda approval: cleanup_calls.append(("preflight", approval))
     module._require_state = lambda: ["fixed-records"]
-    module._recover_rootfs = lambda: (cleanup_calls.append("recover"),
-                                      (_ for _ in ()).throw(RuntimeError("preserve")))[1]
+    module._recover_rootfs = lambda outcomes: (cleanup_calls.append("recover"),
+                                               outcomes.append({"attempt": 1, "outcome": "nondeadline", "elapsed_ms": 1}),
+                                               (_ for _ in ()).throw(RuntimeError("preserve")))[2]
     module._cleanup_rootfs = lambda _records: cleanup_calls.append("foundation")
     module._cleanup_assets = lambda _records: (cleanup_calls.append("assets"),
                                                 (_ for _ in ()).throw(RuntimeError("replacement")))[1]
@@ -300,13 +571,14 @@ try:
     assert cleanup_outputs == [(module.CLEANUP, {
         "success": False,
         "codes": ["rootfs-recovery-exhausted", "asset-cleanup-uncertainty", "cache-cleanup-uncertainty"],
+        "recovery_attempts": [{"attempt": 1, "outcome": "nondeadline", "elapsed_ms": 1}],
     }, "cleanup-owned")]
 finally:
     (module._fixed_preflight, module._require_state, module._recover_rootfs, module._cleanup_rootfs,
      module._cleanup_assets, module._cleanup_artifacts, module._write_json_once) = cleanup_originals
 
 original_timeout = module.HOST_TOOL_SECONDS
-module.HOST_TOOL_SECONDS = 0.2
+module.HOST_TOOL_SECONDS = 1
 started = time.monotonic()
 try:
     rejected(lambda: module._stream_command(sys.executable, ("-c", "import os,signal,time; child=os.fork(); "

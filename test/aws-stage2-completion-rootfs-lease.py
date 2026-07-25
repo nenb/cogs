@@ -1031,7 +1031,7 @@ def docker_real_lease_test():
     assert Path(operation_module.__file__).parent == Path(lease_module.__file__).parent == fixed_remote
     assert lease_module.kata_operation is operation_module
     harness.accommodate_docker_overlay(fs_module)
-    assert build_module.BUILD_SECONDS == 300
+    assert build_module.BUILD_SECONDS == 900
 
     approval = fs_module.SourceApproval(revision, source_digest)
     control = fs_module.OperationControl(time.monotonic_ns() + 3600 * 1_000_000_000, lambda: False)

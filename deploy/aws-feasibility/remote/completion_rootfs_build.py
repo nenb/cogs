@@ -16,14 +16,21 @@ import completion_rootfs_materializer as materializer
 import completion_rootfs_plan as plan
 import completion_rootfs_publish as publication
 
-BUILD_SECONDS = 300
-OUTER_SECONDS = 1200
+BUILD_SECONDS = 900
+OUTER_SECONDS = 2400
 MANIFEST_NAME = fs._name(b".cogs-rootfs-candidate-manifest-v1.json")
 USTAR_NAME = fs._name(b".cogs-rootfs-candidate-v1.tar")
 
 
 class BuildError(Exception):
     pass
+
+
+class BuildAttemptError(BuildError):
+    def __init__(self, work_outcome):
+        _fail(work_outcome in {"cancelled", "deadline", "failed", "not-started", "success"})
+        self.work_outcome = work_outcome
+        super().__init__()
 
 
 def _fail(condition):
@@ -60,8 +67,9 @@ class RetainedBuild:
 
 
 def _build_control(outer):
-    deadline = min(outer.deadline_ns, time.monotonic_ns() + BUILD_SECONDS * 1_000_000_000)
-    return fs.OperationControl(deadline, outer.cancelled)
+    now_ns = time.monotonic_ns()
+    deadline_ns = min(outer.deadline_ns, now_ns + BUILD_SECONDS * 1_000_000_000)
+    return fs.OperationControl(deadline_ns, outer.cancelled)
 
 
 def _writable_file(parent, name, control):
@@ -121,11 +129,14 @@ def _build_once_unmasked(approval, token, outer_control, retain=False):
     chain = builder._open_base_chain(control)
     owned = None
     result = None
+    work_outcome = "not-started"
     try:
         owned = builder._begin_operation(chain, approval, token, control)
         try:
             result = materializer._materialize(authority, owned, control)
-        except BaseException:
+            work_outcome = "success"
+        except materializer.MaterializerWorkError as error:
+            work_outcome = error.work_outcome
             owned = None
             raise
         owned = result.owned
@@ -200,7 +211,7 @@ def _build_once_unmasked(approval, token, outer_control, retain=False):
             fs._close_chain(chain)
         except BaseException as close_error:
             error = fs.RootfsFsError(error, close_error)
-        raise error
+        raise BuildAttemptError(work_outcome) from error
 
 
 def _build_once(approval, token, outer_control):

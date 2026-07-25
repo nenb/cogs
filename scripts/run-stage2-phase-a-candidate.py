@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ADR0046 Phase A metadata-only candidate observer.
+"""ADR0047 Phase A metadata-only candidate observer.
 
 This fixed-path program deliberately stops before runtime extraction.  It never
 invokes the Kata coordinator and cannot issue runtime, network, SSH, or
@@ -51,8 +51,10 @@ MAX_TOOL_BYTES = 128 * 1024 * 1024
 MAX_TOOL_OUTPUT = 4096
 HOST_TOOL_SECONDS = 10
 DOWNLOAD_SECONDS = 1200
-OBSERVE_SECONDS = 4200
-ROOTFS_RECOVERY_ATTEMPTS = 3
+OBSERVE_SECONDS = 3300
+ROOTFS_RECOVERY_ATTEMPTS = 1
+NS_PER_SECOND = 1_000_000_000
+NS_PER_MILLISECOND = 1_000_000
 KVM_GET_API_VERSION = 0xAE00
 APPROVAL_NAME = "COGS_STAGE2_ARTIFACT_ACQUISITION_APPROVED"
 APPROVAL_VALUE = "download-16-fixed-public-stage2-artifacts"
@@ -518,6 +520,7 @@ def _terminate_group(process):
 
 
 def _stream_command(path, arguments, allowed):
+    _fail(type(HOST_TOOL_SECONDS) is int and HOST_TOOL_SECONDS > 0, "host-tool-timeout")
     process = subprocess.Popen(
         (path, *arguments), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         env={"HOME": "/nonexistent", "LC_ALL": "C", "PATH": "/usr/sbin:/usr/bin:/sbin:/bin"},
@@ -525,7 +528,7 @@ def _stream_command(path, arguments, allowed):
     )
     output = bytearray()
     selector = selectors.DefaultSelector()
-    deadline = time.monotonic() + HOST_TOOL_SECONDS
+    deadline_ns = time.monotonic_ns() + HOST_TOOL_SECONDS * NS_PER_SECOND
     try:
         _fail(process.stdout is not None, "host-tool-output")
         descriptor = process.stdout.fileno()
@@ -533,11 +536,10 @@ def _stream_command(path, arguments, allowed):
         selector.register(descriptor, selectors.EVENT_READ)
         eof = False
         while not eof:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
+            if time.monotonic_ns() >= deadline_ns:
                 _terminate_group(process)
                 raise CandidateError("host-tool-timeout")
-            events = selector.select(min(remaining, 0.1))
+            events = selector.select(0.1)
             if not events:
                 continue
             for key, _mask in events:
@@ -553,11 +555,14 @@ def _stream_command(path, arguments, allowed):
                 if len(output) > MAX_TOOL_OUTPUT:
                     _terminate_group(process)
                     raise CandidateError("host-tool-output")
-        try:
-            process.wait(timeout=max(0.001, deadline - time.monotonic()))
-        except subprocess.TimeoutExpired as error:
-            _terminate_group(process)
-            raise CandidateError("host-tool-timeout") from error
+        while process.poll() is None:
+            if time.monotonic_ns() >= deadline_ns:
+                _terminate_group(process)
+                raise CandidateError("host-tool-timeout")
+            try:
+                process.wait(timeout=0.1)
+            except subprocess.TimeoutExpired:
+                pass
         _fail(process.returncode in allowed, "host-tool-output")
         if not _group_absent(process.pid):
             _terminate_group(process)
@@ -666,14 +671,22 @@ def _headers(response):
     return values
 
 
-def _request(url, deadline):
+def _socket_timeout_seconds(deadline_ns):
+    _fail(type(deadline_ns) is int, "asset-timeout")
+    remaining_ns = deadline_ns - time.monotonic_ns()
+    _fail(remaining_ns > 0, "asset-timeout")
+    seconds = remaining_ns // NS_PER_SECOND
+    _fail(seconds > 0 and seconds * NS_PER_SECOND <= remaining_ns, "asset-timeout")
+    return seconds
+
+
+def _request(url, deadline_ns):
     parsed = _strict_url(url)
-    remaining = deadline - time.monotonic()
-    _fail(remaining > 0, "asset-timeout")
+    timeout_seconds = _socket_timeout_seconds(deadline_ns)
     context = ssl.create_default_context(purpose=ssl.Purpose.SERVER_AUTH)
     context.minimum_version = ssl.TLSVersion.TLSv1_2
     _fail(context.check_hostname and context.verify_mode == ssl.CERT_REQUIRED, "asset-tls")
-    connection = http.client.HTTPSConnection(parsed.hostname, 443, timeout=remaining, context=context)
+    connection = http.client.HTTPSConnection(parsed.hostname, 443, timeout=timeout_seconds, context=context)
     try:
         target = parsed.path + ("?" + parsed.query if parsed.query else "")
         connection.putrequest("GET", target, skip_host=True, skip_accept_encoding=True)
@@ -681,8 +694,13 @@ def _request(url, deadline):
         connection.putheader("User-Agent", "cogs-stage2-phase-a/1")
         connection.putheader("Accept", "application/octet-stream")
         connection.putheader("Connection", "close")
+        connection.timeout = _socket_timeout_seconds(deadline_ns)
         connection.endheaders()
+        timeout_seconds = _socket_timeout_seconds(deadline_ns)
+        if connection.sock is not None:
+            connection.sock.settimeout(timeout_seconds)
         response = connection.getresponse()
+        _fail(time.monotonic_ns() < deadline_ns, "asset-timeout")
         return connection, response
     except Exception:
         connection.close()
@@ -724,7 +742,7 @@ def _owned_file(directory, name, expected, digest):
         raise
 
 
-def _cleanup_held_partial(directory, name, descriptor):
+def _cleanup_held_asset(directory, name, descriptor):
     held = os.fstat(descriptor)
     try:
         named = os.stat(name, dir_fd=directory, follow_symlinks=False)
@@ -736,8 +754,71 @@ def _cleanup_held_partial(directory, name, descriptor):
     os.fsync(directory)
 
 
-def _download_asset(asset, outer_deadline):
-    _fail(type(asset) is Asset and HEX.fullmatch(asset.sha256) is not None, "asset-contract")
+def _check_asset_deadline(deadline_ns, stage):
+    _fail(type(deadline_ns) is int and type(stage) is str and time.monotonic_ns() < deadline_ns, "asset-timeout")
+
+
+def _publish_asset(asset, assets_fd, descriptor, partial, final, partial_identity, deadline_ns, publication):
+    _check_asset_deadline(deadline_ns, "after-final-eof")
+    os.fsync(descriptor)
+    _check_asset_deadline(deadline_ns, "after-content-fsync")
+    os.fchmod(descriptor, 0o400)
+    os.fsync(descriptor)
+    held = os.fstat(descriptor)
+    _fail(_same_identity(held, {**partial_identity, "mode": 0o400, "size": asset.size}) and
+          _digest_descriptor(descriptor, asset.size) == asset.sha256, "asset-publish")
+    _check_asset_deadline(deadline_ns, "after-redigest")
+    _check_asset_deadline(deadline_ns, "before-link")
+    os.link(partial.name, final.name, src_dir_fd=assets_fd, dst_dir_fd=assets_fd, follow_symlinks=False)
+    linked = os.stat(final.name, dir_fd=assets_fd, follow_symlinks=False)
+    _fail((linked.st_dev, linked.st_ino) == (held.st_dev, held.st_ino) and linked.st_nlink == 2,
+          "asset-publish")
+    _check_asset_deadline(deadline_ns, "after-link")
+    os.unlink(partial.name, dir_fd=assets_fd)
+    _check_asset_deadline(deadline_ns, "after-unlink")
+    os.fsync(assets_fd)
+    _check_asset_deadline(deadline_ns, "after-directory-fsync")
+    final_identity = _identity(os.stat(final.name, dir_fd=assets_fd, follow_symlinks=False))
+    held_final = os.fstat(descriptor)
+    _fail(_same_identity(held_final, final_identity) and final_identity["nlink"] == 1 and
+          _digest_descriptor(descriptor, asset.size) == asset.sha256, "asset-publish")
+    _check_asset_deadline(deadline_ns, "after-final-redigest")
+    _check_asset_deadline(deadline_ns, "before-journal")
+    _append_journal("asset-final-owned", {
+        "component": asset.component, "name": final.name, "identity": final_identity, "sha256": asset.sha256,
+    })
+    publication["journaled"] = True
+    _check_asset_deadline(deadline_ns, "after-journal")
+    return {"component": asset.component, "release": asset.release, "name": asset.name,
+            "size": asset.size, "sha256": asset.sha256, "downloaded": True, "extracted": False}
+
+
+def _finish_asset_publication(asset, assets_fd, descriptor, partial, final, partial_identity,
+                              deadline_ns, publication):
+    result = _publish_asset(
+        asset, assets_fd, descriptor, partial, final, partial_identity, deadline_ns, publication,
+    )
+    _check_asset_deadline(deadline_ns, "before-return")
+    return result
+
+
+def _cleanup_failed_asset_publication(assets_fd, descriptor, partial, final, publication):
+    if publication["journaled"]:
+        return
+    for name in (final.name, partial.name):
+        try:
+            _cleanup_held_asset(assets_fd, name, descriptor)
+        except BaseException:
+            pass
+
+
+def _download_asset(asset, outer_deadline_ns):
+    _fail(type(asset) is Asset and HEX.fullmatch(asset.sha256) is not None and
+          type(DOWNLOAD_SECONDS) is int and DOWNLOAD_SECONDS > 0, "asset-contract")
+    _fail(type(outer_deadline_ns) is int, "asset-timeout")
+    now_ns = time.monotonic_ns()
+    deadline_ns = min(outer_deadline_ns, now_ns + DOWNLOAD_SECONDS * NS_PER_SECOND)
+    _fail(now_ns < deadline_ns, "asset-timeout")
     final = ASSETS / asset.name
     partial = ASSETS / ("." + asset.name + ".partial")
     _append_journal("asset-intent", {"component": asset.component, "partial": partial.name, "final": final.name})
@@ -749,20 +830,23 @@ def _download_asset(asset, outer_deadline):
     _append_journal("asset-partial-owned", {
         "component": asset.component, "name": partial.name, "identity": partial_identity,
     })
-    deadline = min(outer_deadline, time.monotonic() + DOWNLOAD_SECONDS)
     connection = response = None
     published = False
+    publication = {"journaled": False}
     try:
-        connection, response = _request(asset.url, deadline)
+        connection, response = _request(asset.url, deadline_ns)
         headers = _headers(response)
         _fail(response.status in {301, 302, 303, 307, 308}, "asset-redirect")
         _fail(headers.get("content-length") is not None and headers["content-length"].isdigit() and
               int(headers["content-length"]) <= 4096 and "transfer-encoding" not in headers, "asset-redirect")
+        timeout_seconds = _socket_timeout_seconds(deadline_ns)
+        if connection.sock is not None:
+            connection.sock.settimeout(timeout_seconds)
         body = response.read(4097)
         _fail(len(body) == int(headers["content-length"]), "asset-redirect")
         target = _redirect_target(asset, headers.get("location", ""))
         response.close(); connection.close(); response = connection = None
-        connection, response = _request(target, deadline)
+        connection, response = _request(target, deadline_ns)
         headers = _headers(response)
         _fail(response.status == 200 and headers.get("content-length") == str(asset.size) and
               headers.get("content-type", "").strip().lower() == "application/octet-stream" and
@@ -770,10 +854,9 @@ def _download_asset(asset, outer_deadline):
         digest = hashlib.sha256()
         total = 0
         while total < asset.size:
-            remaining = deadline - time.monotonic()
-            _fail(remaining > 0, "asset-timeout")
+            timeout_seconds = _socket_timeout_seconds(deadline_ns)
             if connection.sock is not None:
-                connection.sock.settimeout(remaining)
+                connection.sock.settimeout(timeout_seconds)
             chunk = response.read(min(1024 * 1024, asset.size - total))
             _fail(type(chunk) is bytes and chunk, "asset-body")
             offset = 0
@@ -783,39 +866,22 @@ def _download_asset(asset, outer_deadline):
                 offset += written
             digest.update(chunk)
             total += len(chunk)
+        timeout_seconds = _socket_timeout_seconds(deadline_ns)
+        if connection.sock is not None:
+            connection.sock.settimeout(timeout_seconds)
         _fail(response.read(1) == b"" and total == asset.size and digest.hexdigest() == asset.sha256, "asset-digest")
-        os.fsync(descriptor)
-        os.fchmod(descriptor, 0o400)
-        os.fsync(descriptor)
-        held = os.fstat(descriptor)
-        _fail(_same_identity(held, {**partial_identity, "mode": 0o400, "size": asset.size}) and
-              _digest_descriptor(descriptor, asset.size) == asset.sha256, "asset-publish")
-        os.link(partial.name, final.name, src_dir_fd=assets_fd, dst_dir_fd=assets_fd, follow_symlinks=False)
-        linked = os.stat(final.name, dir_fd=assets_fd, follow_symlinks=False)
-        _fail((linked.st_dev, linked.st_ino) == (held.st_dev, held.st_ino) and linked.st_nlink == 2,
-              "asset-publish")
-        os.unlink(partial.name, dir_fd=assets_fd)
-        os.fsync(assets_fd)
-        final_identity = _identity(os.stat(final.name, dir_fd=assets_fd, follow_symlinks=False))
-        held_final = os.fstat(descriptor)
-        _fail(_same_identity(held_final, final_identity) and final_identity["nlink"] == 1 and
-              _digest_descriptor(descriptor, asset.size) == asset.sha256, "asset-publish")
-        _append_journal("asset-final-owned", {
-            "component": asset.component, "name": final.name, "identity": final_identity, "sha256": asset.sha256,
-        })
+        result = _finish_asset_publication(
+            asset, assets_fd, descriptor, partial, final, partial_identity, deadline_ns, publication,
+        )
         published = True
-        return {"component": asset.component, "release": asset.release, "name": asset.name,
-                "size": asset.size, "sha256": asset.sha256, "downloaded": True, "extracted": False}
+        return result
     finally:
         if response is not None:
             response.close()
         if connection is not None:
             connection.close()
         if not published:
-            try:
-                _cleanup_held_partial(assets_fd, partial.name, descriptor)
-            except BaseException:
-                pass
+            _cleanup_failed_asset_publication(assets_fd, descriptor, partial, final, publication)
         os.close(descriptor)
         os.close(assets_fd)
 
@@ -905,16 +971,51 @@ def _rootfs_call(code, callback):
         raise CandidateError(code) from error
 
 
-def _candidate_build(build, approval, control, ordinal, token):
+def _empty_build_outcomes():
+    return {
+        "first": {"outcome": "blocked", "work_outcome": "blocked", "total_elapsed_ms": 0},
+        "second": {"outcome": "blocked", "work_outcome": "blocked", "total_elapsed_ms": 0},
+    }
+
+
+def _elapsed_ns(started_ns):
+    _fail(type(started_ns) is int, "timing-metadata")
+    elapsed_ns = max(0, time.monotonic_ns() - started_ns)
+    _fail(elapsed_ns <= 5_400 * NS_PER_SECOND, "timing-metadata")
+    return elapsed_ns
+
+
+def _elapsed_ms(elapsed_ns):
+    _fail(type(elapsed_ns) is int and elapsed_ns >= 0, "timing-metadata")
+    return elapsed_ns // NS_PER_MILLISECOND
+
+
+def _candidate_build(build, approval, control, ordinal, token, outcomes):
+    valid_state = outcomes == _empty_build_outcomes() if ordinal == "first" else (
+        type(outcomes) is dict and outcomes.get("first", {}).get("outcome") == "success" and
+        outcomes.get("second") == _empty_build_outcomes()["second"]
+    )
     _fail(ordinal in {"first", "second"} and type(build.BUILD_SECONDS) is int and build.BUILD_SECONDS > 0 and
-          type(token) is str and HEX.fullmatch(token) is not None, "rootfs-build-contract")
-    started = time.monotonic()
+          type(token) is str and HEX.fullmatch(token) is not None and valid_state, "rootfs-build-contract")
+    started_ns = time.monotonic_ns()
     try:
-        return build._build_once(approval, token, control)
+        candidate = build._build_once(approval, token, control)
+        elapsed_ns = _elapsed_ns(started_ns)
+        outcomes[ordinal] = {
+            "outcome": "success", "work_outcome": "success", "total_elapsed_ms": _elapsed_ms(elapsed_ns),
+        }
+        return candidate
     except BaseException as error:
-        elapsed = max(0.0, time.monotonic() - started)
-        suffix = "over-bound" if elapsed >= build.BUILD_SECONDS else "nondeadline"
-        raise CandidateError(f"rootfs-{ordinal}-build-{suffix}") from error
+        attempt_error = getattr(build, "BuildAttemptError", None)
+        work_outcome = error.work_outcome if type(attempt_error) is type and type(error) is attempt_error else "failed"
+        _fail(work_outcome in {"cancelled", "deadline", "failed", "not-started", "success"},
+              "rootfs-build-contract")
+        elapsed_ns = _elapsed_ns(started_ns)
+        outcomes[ordinal] = {
+            "outcome": "failed", "work_outcome": work_outcome, "total_elapsed_ms": _elapsed_ms(elapsed_ns),
+        }
+        failure_category = "postwork" if work_outcome == "success" else work_outcome
+        raise CandidateError(f"rootfs-{ordinal}-build-{failure_category}") from error
 
 
 def _verify_candidate_pair(build, completion_rootfs_publish, first, second):
@@ -996,7 +1097,7 @@ def _load_artifact_verifier():
     return verifier
 
 
-def _rootfs_candidates(revision, manifest_sha256, outer_deadline):
+def _rootfs_candidates(revision, manifest_sha256, outer_deadline_ns, build_outcomes):
     sys.path.insert(0, str(REMOTE))
     import completion_rootfs_build as build
     import completion_rootfs_builder as builder
@@ -1020,9 +1121,11 @@ def _rootfs_candidates(revision, manifest_sha256, outer_deadline):
     _append_journal("cache-owned", cache_owned)
     _append_journal("rootfs-intent", {"baseline": "absent"})
     approval = fs.SourceApproval(revision, manifest_sha256)
-    remaining_ns = int((outer_deadline - time.monotonic()) * 1_000_000_000)
-    _fail(remaining_ns > 0, "observe-timeout")
-    control = fs.OperationControl(time.monotonic_ns() + min(1_200_000_000_000, remaining_ns), lambda: False)
+    now_ns = time.monotonic_ns()
+    _fail(type(outer_deadline_ns) is int, "observe-timeout")
+    deadline_ns = min(outer_deadline_ns, now_ns + build.OUTER_SECONDS * 1_000_000_000)
+    _fail(now_ns < deadline_ns, "observe-timeout")
+    control = fs.OperationControl(deadline_ns, lambda: False)
     _bootstrap_rootfs(builder, fs, approval, control)
     rootfs_owned = _rootfs_call("rootfs-bootstrap", _snapshot_rootfs_lifecycle)
     _append_journal("rootfs-lifecycle-owned", rootfs_owned)
@@ -1031,8 +1134,8 @@ def _rootfs_candidates(revision, manifest_sha256, outer_deadline):
     _fail(type(first_token) is str and HEX.fullmatch(first_token) is not None and
           type(second_token) is str and HEX.fullmatch(second_token) is not None and
           first_token != second_token, "rootfs-build-token")
-    first = _candidate_build(build, approval, control, "first", first_token)
-    second = _candidate_build(build, approval, control, "second", second_token)
+    first = _candidate_build(build, approval, control, "first", first_token, build_outcomes)
+    second = _candidate_build(build, approval, control, "second", second_token, build_outcomes)
     _verify_candidate_pair(build, completion_rootfs_publish, first, second)
     _verifier_call(
         verifier, "rootfs-postverify",
@@ -1052,13 +1155,16 @@ def _observe():
     _verify_fixed_source(revision, manifest_sha256)
     _initialize_state(revision, manifest_sha256)
     started = time.monotonic_ns()
-    outer_deadline = time.monotonic() + OBSERVE_SECONDS
+    outer_deadline_ns = started + OBSERVE_SECONDS * 1_000_000_000
     observation = {"status": "failed", "codes": [], "revision": revision, "source_manifest_sha256": manifest_sha256,
-                   "host_tools": [], "kvm": None, "rootfs": None, "assets": []}
+                   "host_tools": [], "kvm": None, "rootfs": None, "rootfs_builds": _empty_build_outcomes(),
+                   "assets": []}
     try:
         observation["host_tools"], host_tool_codes = _host_tools()
         observation["kvm"] = _prove_kvm()
-        observation["rootfs"] = _rootfs_candidates(revision, manifest_sha256, outer_deadline)
+        observation["rootfs"] = _rootfs_candidates(
+            revision, manifest_sha256, outer_deadline_ns, observation["rootfs_builds"],
+        )
         _append_journal("asset-directory-intent", {"name": ASSETS.name})
         _fail(not os.path.lexists(ASSETS), "asset-directory-preexisting")
         os.mkdir(ASSETS, 0o700)
@@ -1067,7 +1173,9 @@ def _observe():
         _fail(asset_dir_identity["uid"] == asset_dir_identity["gid"] == 0 and
               asset_dir_identity["mode"] == 0o700, "asset-directory-policy")
         _append_journal("asset-directory-owned", {"identity": asset_dir_identity})
-        observation["assets"] = [_download_asset(asset, outer_deadline) for asset in RUNTIME_ASSETS]
+        observation["assets"] = [
+            _download_asset(asset, outer_deadline_ns) for asset in RUNTIME_ASSETS
+        ]
         observation["status"] = "observed"
         observation["codes"] = ["committed-attestations-absent", "qmp-kvm-attestation-not-collected",
                                 "runtime-extraction-unsafe-or-unknown", "runtime-lifecycle-not-executed",
@@ -1214,23 +1322,34 @@ def _cleanup_artifacts(records):
     _rmdir_exact(ARTIFACT_ROOT, owned["root"])
 
 
-def _retry_exact_recovery(callback, attempts=ROOTFS_RECOVERY_ATTEMPTS):
-    _fail(callable(callback) and type(attempts) is int and attempts == ROOTFS_RECOVERY_ATTEMPTS,
-          "rootfs-recovery-contract")
+def _retry_exact_recovery(callback, bound_ns, outcomes, attempts=ROOTFS_RECOVERY_ATTEMPTS):
+    _fail(callable(callback) and type(bound_ns) is int and bound_ns > 0 and
+          type(outcomes) is list and outcomes == [] and
+          type(attempts) is int and attempts == ROOTFS_RECOVERY_ATTEMPTS, "rootfs-recovery-contract")
     error = None
-    for _attempt in range(attempts):
+    for attempt in range(1, attempts + 1):
+        started_ns = time.monotonic_ns()
         try:
             callback()
+            elapsed_ns = _elapsed_ns(started_ns)
+            if elapsed_ns >= bound_ns:
+                outcomes.append({"attempt": attempt, "outcome": "over-bound", "elapsed_ms": _elapsed_ms(elapsed_ns)})
+                error = CandidateError("rootfs-recovery-over-bound")
+                continue
+            outcomes.append({"attempt": attempt, "outcome": "success", "elapsed_ms": _elapsed_ms(elapsed_ns)})
             return
         except BaseException as caught:
+            elapsed_ns = _elapsed_ns(started_ns)
+            outcome = "over-bound" if elapsed_ns >= bound_ns else "nondeadline"
+            outcomes.append({"attempt": attempt, "outcome": outcome, "elapsed_ms": _elapsed_ms(elapsed_ns)})
             error = caught
     raise CandidateError("rootfs-recovery-exhausted") from error
 
 
-def _recover_rootfs():
+def _recover_rootfs(outcomes):
     sys.path.insert(0, str(REMOTE))
     import completion_rootfs_builder as builder
-    _retry_exact_recovery(builder._run_recovery)
+    _retry_exact_recovery(builder._run_recovery, builder.RECOVER_SECONDS * NS_PER_SECOND, outcomes)
 
 
 def _cleanup_rootfs(records):
@@ -1269,12 +1388,15 @@ def _cleanup():
     _fixed_preflight(False)
     records = _require_state()
     codes = []
-    recovered = _cleanup_attempt("rootfs-recovery-exhausted", _recover_rootfs, codes)
+    recovery_attempts = []
+    recovered = _cleanup_attempt(
+        "rootfs-recovery-exhausted", lambda: _recover_rootfs(recovery_attempts), codes,
+    )
     if recovered:
         _cleanup_attempt("rootfs-foundation-uncertainty", lambda: _cleanup_rootfs(records), codes)
     _cleanup_attempt("asset-cleanup-uncertainty", lambda: _cleanup_assets(records), codes)
     _cleanup_attempt("cache-cleanup-uncertainty", lambda: _cleanup_artifacts(records), codes)
-    value = {"success": not codes, "codes": codes}
+    value = {"success": not codes, "codes": codes, "recovery_attempts": recovery_attempts}
     _write_json_once(CLEANUP, value, "cleanup-owned")
     _fail(not codes, "cleanup-uncertainty")
     return 0
@@ -1325,7 +1447,8 @@ def _base_report():
         "checks": {"platform": "fail", "root": "fail", "source": "fail", "kvm": "unknown",
                    "artifact_cache": "unknown", "rootfs_candidates": "unknown", "runtime_assets": "unknown",
                    "host_tools": "unknown", "cleanup": "unknown", "residue": "unknown"},
-        "rootfs": None, "runtime_assets": [], "host_tools": [],
+        "rootfs": None, "rootfs_builds": _empty_build_outcomes(), "recovery_attempts": [],
+        "runtime_assets": [], "host_tools": [],
         "kvm": {"device_present": False, "device_accessible": False, "api_version": None},
         "claims": {"runtime": False, "network": False, "ssh": False, "coordinator_invoked": False},
         "diagnostic_codes": [],
@@ -1353,6 +1476,29 @@ def _canonical_report(report):
     checks = report["checks"]
     _fail(type(checks) is dict and set(checks) == set(_base_report()["checks"]) and
           set(checks.values()) <= {"pass", "fail", "blocked", "unknown"}, "report-schema")
+    builds = report["rootfs_builds"]
+    _fail(type(builds) is dict and set(builds) == {"first", "second"}, "report-schema")
+    for name in ("first", "second"):
+        row = builds[name]
+        _fail(type(row) is dict and set(row) == {"outcome", "work_outcome", "total_elapsed_ms"} and
+              row["outcome"] in {"blocked", "success", "failed"} and
+              row["work_outcome"] in {"blocked", "success", "cancelled", "deadline", "failed",
+                                      "not-started"} and
+              type(row["total_elapsed_ms"]) is int and 0 <= row["total_elapsed_ms"] <= 5_400_000 and
+              (row["outcome"] == "blocked") ==
+              (row == {"outcome": "blocked", "work_outcome": "blocked", "total_elapsed_ms": 0}) and
+              (row["work_outcome"] == "blocked") == (row["outcome"] == "blocked") and
+              (row["outcome"] != "success" or row["work_outcome"] == "success"), "report-schema")
+    _fail(builds["first"]["outcome"] == "success" or builds["second"] == _empty_build_outcomes()["second"],
+          "report-schema")
+    recovery = report["recovery_attempts"]
+    _fail(type(recovery) is list and len(recovery) <= ROOTFS_RECOVERY_ATTEMPTS, "report-schema")
+    for index, row in enumerate(recovery, 1):
+        _fail(type(row) is dict and set(row) == {"attempt", "outcome", "elapsed_ms"} and
+              type(row["attempt"]) is int and row["attempt"] == index and
+              row["outcome"] in {"success", "over-bound", "nondeadline"} and
+              type(row["elapsed_ms"]) is int and 0 <= row["elapsed_ms"] <= 5_400_000, "report-schema")
+    _fail(not any(row["outcome"] == "success" for row in recovery[:-1]), "report-schema")
     rootfs = report["rootfs"]
     if rootfs is not None:
         _fail(rootfs == {
@@ -1408,6 +1554,8 @@ def _render():
         report["host_tools"] = observation.get("host_tools", [])
         report["runtime_assets"] = observation.get("assets", [])
         report["rootfs"] = observation.get("rootfs")
+        report["rootfs_builds"] = observation.get("rootfs_builds", _empty_build_outcomes())
+        report["recovery_attempts"] = cleanup.get("recovery_attempts", [])
         observed_kvm = observation.get("kvm")
         if type(observed_kvm) is dict:
             report["kvm"] = {

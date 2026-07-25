@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://cogs.invalid/schemas/stage2-phase-a-candidate-v1.json",
-  "title": "ADR0046 Stage 2 Phase A Candidate",
+  "title": "ADR0047 Stage 2 Phase A Candidate",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -14,11 +14,53 @@
     "blockers",
     "checks",
     "rootfs",
+    "rootfs_builds",
+    "recovery_attempts",
     "runtime_assets",
     "host_tools",
     "kvm",
     "claims",
     "diagnostic_codes"
+  ],
+  "allOf": [
+    {
+      "if": {
+        "type": "object",
+        "properties": {
+          "rootfs_builds": {
+            "type": "object",
+            "properties": {
+              "first": {
+                "type": "object",
+                "properties": { "outcome": { "enum": ["blocked", "failed"] } },
+                "required": ["outcome"]
+              }
+            },
+            "required": ["first"]
+          }
+        },
+        "required": ["rootfs_builds"]
+      },
+      "then": {
+        "type": "object",
+        "properties": {
+          "rootfs_builds": {
+            "type": "object",
+            "properties": {
+              "second": {
+                "type": "object",
+                "properties": {
+                  "outcome": { "const": "blocked" },
+                  "work_outcome": { "const": "blocked" },
+                  "total_elapsed_ms": { "const": 0 }
+                },
+                "required": ["outcome", "work_outcome", "total_elapsed_ms"]
+              }
+            }
+          }
+        }
+      }
+    }
   ],
   "properties": {
     "version": { "const": "cogs.stage2-phase-a-candidate/v1" },
@@ -97,6 +139,20 @@
         }
       ]
     },
+    "rootfs_builds": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["first", "second"],
+      "properties": {
+        "first": { "$ref": "#/$defs/buildOutcome" },
+        "second": { "$ref": "#/$defs/buildOutcome" }
+      }
+    },
+    "recovery_attempts": {
+      "type": "array",
+      "maxItems": 1,
+      "items": { "$ref": "#/$defs/recoveryOutcome" }
+    },
     "runtime_assets": {
       "type": "array",
       "maxItems": 2,
@@ -165,6 +221,48 @@
   "$defs": {
     "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
     "code": { "type": "string", "pattern": "^[a-z0-9-]{1,64}$" },
-    "outcome": { "enum": ["pass", "fail", "blocked", "unknown"] }
+    "outcome": { "enum": ["pass", "fail", "blocked", "unknown"] },
+    "buildOutcome": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["outcome", "work_outcome", "total_elapsed_ms"],
+          "properties": {
+            "outcome": { "const": "blocked" },
+            "work_outcome": { "const": "blocked" },
+            "total_elapsed_ms": { "const": 0 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["outcome", "work_outcome", "total_elapsed_ms"],
+          "properties": {
+            "outcome": { "enum": ["success", "failed"] },
+            "work_outcome": {
+              "enum": ["success", "cancelled", "deadline", "failed", "not-started"]
+            },
+            "total_elapsed_ms": { "type": "integer", "minimum": 0, "maximum": 5400000 }
+          },
+          "allOf": [
+            {
+              "if": { "properties": { "outcome": { "const": "success" } }, "required": ["outcome"] },
+              "then": { "properties": { "work_outcome": { "const": "success" } } }
+            }
+          ]
+        }
+      ]
+    },
+    "recoveryOutcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["attempt", "outcome", "elapsed_ms"],
+      "properties": {
+        "attempt": { "const": 1 },
+        "outcome": { "enum": ["success", "over-bound", "nondeadline"] },
+        "elapsed_ms": { "type": "integer", "minimum": 0, "maximum": 5400000 }
+      }
+    }
   }
 }

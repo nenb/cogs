@@ -9,6 +9,7 @@ import type { Ajv as AjvCore, Options } from "ajv";
 const root = process.cwd();
 const workflowPath = join(root, ".github/workflows/stage2-phase-a-candidate.yml");
 const runnerPath = join(root, "scripts/run-stage2-phase-a-candidate.py");
+const budgetPath = join(root, "scripts/stage2-phase-a-budget.py");
 const schemaPath = join(root, "schemas/stage2-phase-a-candidate-v1.json");
 const pythonTest = join(root, "test/stage2-phase-a-candidate.py");
 
@@ -34,6 +35,20 @@ test("Phase A workflow is exact-head, same-repository, PR-only, and package-muta
   assert.match(workflow, /runs-on: ubuntu-24\.04/u);
   assert.match(workflow, /timeout-minutes: 90/u);
   assert.match(workflow, /cancel-in-progress: false/u);
+  assert.ok(
+    workflow.indexOf("Establish scheduling-only monotonic budget anchor") <
+      workflow.indexOf("Check out exact pull request head"),
+  );
+  assert.match(workflow, /stage2-phase-a-budget\.py timeout source[\s\S]*stage2-phase-a-budget\.py check source/u);
+  assert.match(workflow, /stage2-phase-a-budget\.py timeout observe[\s\S]*stage2-phase-a-budget\.py check observe/u);
+  assert.match(workflow, /stage2-phase-a-budget\.py timeout cleanup[\s\S]*stage2-phase-a-budget\.py check cleanup/u);
+  for (const boundary of ["residue", "render", "validate", "export", "export-cleanup"]) {
+    assert.match(workflow, new RegExp(`stage2-phase-a-budget\\.py timeout ${boundary}`, "u"));
+  }
+  assert.match(workflow, /stage2-phase-a-budget\.py check upload/u);
+  assert.match(workflow, /timeout-minutes: 1[\s\S]*actions\/upload-artifact@/u);
+  assert.match(workflow, /stage2-phase-a-budget\.py check final/u);
+  assert.match(workflow, /--kill-after=5s/u);
   assert.match(workflow, /permissions:\n {2}contents: read/u);
   assert.match(workflow, /ref: \$\{\{ github\.event\.pull_request\.head\.sha \}\}/u);
   assert.match(workflow, /persist-credentials: false/u);
@@ -89,6 +104,11 @@ test("candidate output schema enforces metadata-only non-authority", async () =>
       equal: true,
       pins_match: true,
     },
+    rootfs_builds: {
+      first: { outcome: "success", work_outcome: "success", total_elapsed_ms: 800_000 },
+      second: { outcome: "success", work_outcome: "success", total_elapsed_ms: 810_000 },
+    },
+    recovery_attempts: [{ attempt: 1, outcome: "success", elapsed_ms: 400_000 }],
     runtime_assets: [],
     host_tools: [],
     kvm: { device_present: true, device_accessible: true, api_version: 12 },
@@ -98,21 +118,50 @@ test("candidate output schema enforces metadata-only non-authority", async () =>
   assert.equal(validate(report), true, ajv.errorsText(validate.errors));
   assert.equal(validate({ ...report, qualified: true }), false);
   assert.equal(validate({ ...report, claims: { ...report.claims, runtime: true } }), false);
+  assert.equal(
+    validate({
+      ...report,
+      rootfs_builds: {
+        first: { outcome: "failed", work_outcome: "deadline", total_elapsed_ms: 1 },
+        second: { outcome: "success", work_outcome: "success", total_elapsed_ms: 1 },
+      },
+    }),
+    false,
+  );
+  assert.equal(
+    validate({ ...report, recovery_attempts: [{ attempt: true, outcome: "success", elapsed_ms: 1 }] }),
+    false,
+  );
+  assert.equal(validate({ ...report, recovery_attempts: [{ attempt: 2, outcome: "success", elapsed_ms: 1 }] }), false);
+  assert.equal(
+    validate({
+      ...report,
+      recovery_attempts: [
+        { attempt: 1, outcome: "nondeadline", elapsed_ms: 1 },
+        { attempt: 2, outcome: "success", elapsed_ms: 1 },
+      ],
+    }),
+    false,
+  );
   assert.equal(validate({ ...report, archive_bytes: "forbidden" }), false);
 
-  const runner = await readFile(runnerPath, "utf8");
+  const [runner, budget] = await Promise.all([readFile(runnerPath, "utf8"), readFile(budgetPath, "utf8")]);
   assert.doesNotMatch(runner, /\b(?:apt-get|apt|dnf|yum|apk|brew|systemctl)\b/u);
   assert.doesNotMatch(runner, /completion_kata_coordinator|extractall|\.extract\(/u);
   assert.doesNotMatch(runner, /subprocess\.run\([^)]*PIPE/su);
   assert.match(
     runner,
-    /first_token = secrets\.token_hex\(32\)[\s\S]*second_token = secrets\.token_hex\(32\)[\s\S]*first_token != second_token[\s\S]*first = _candidate_build\(build, approval, control, "first", first_token\)[\s\S]*second = _candidate_build\(build, approval, control, "second", second_token\)/u,
+    /first_token = secrets\.token_hex\(32\)[\s\S]*second_token = secrets\.token_hex\(32\)[\s\S]*first_token != second_token[\s\S]*first = _candidate_build\(build, approval, control, "first", first_token, build_outcomes\)[\s\S]*second = _candidate_build\(build, approval, control, "second", second_token, build_outcomes\)/u,
   );
   assert.doesNotMatch(runner, /build\._two_build_outputs/u);
   assert.match(runner, /build\._require_equal_builds\(first, second\)/u);
   assert.match(runner, /type\(token\) is str and HEX\.fullmatch\(token\) is not None/u);
-  assert.match(runner, /elapsed >= build\.BUILD_SECONDS/u);
-  assert.match(runner, /ROOTFS_RECOVERY_ATTEMPTS = 3/u);
+  assert.doesNotMatch(runner, /elapsed_ms >= build\.BUILD_SECONDS \* 1000|time\.monotonic\(\)/u);
+  assert.match(runner, /"work_outcome": work_outcome, "total_elapsed_ms": _elapsed_ms\(elapsed_ns\)/u);
+  assert.match(runner, /remaining_ns \/\/ NS_PER_SECOND/u);
+  assert.doesNotMatch(runner, /outer_deadline_ns \/ 1_000_000_000/u);
+  assert.match(runner, /OBSERVE_SECONDS = 3300/u);
+  assert.match(runner, /ROOTFS_RECOVERY_ATTEMPTS = 1/u);
   assert.match(runner, /rootfs-recovery-exhausted/u);
   assert.match(runner, /rootfs-foundation-uncertainty/u);
   assert.match(runner, /asset-cleanup-uncertainty/u);
@@ -127,4 +176,7 @@ test("candidate output schema enforces metadata-only non-authority", async () =>
   assert.match(runner, /_verify_fixed_source\(anchor\["source_revision"\], anchor\["source_manifest_sha256"\]\)/u);
   assert.match(runner, /authority": "candidate"/u);
   assert.match(runner, /"qualified": False/u);
+  assert.doesNotMatch(runner, /COGS_STAGE2_PHASE_A_BUDGET_ANCHOR_NS/u);
+  assert.match(budget, /"cleanup": 5100,[\s\S]*"residue": 5160,[\s\S]*"upload": 5290,[\s\S]*"final": 5400/u);
+  assert.match(budget, /Scheduling-only monotonic guards/u);
 });

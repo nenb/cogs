@@ -49,7 +49,7 @@ def portable_tests():
     for forbidden in ("rmtree", "os.walk", "glob", "subprocess", "socket", "os.environ", "os.getenv", "argparse"):
         assert forbidden not in source
     assert 'argv != ["recover-owned"]' in source
-    assert "FIXED_MODULE" in source and "RECOVER_SECONDS = 120" in source
+    assert "FIXED_MODULE" in source and "RECOVER_SECONDS = 600" in source
     assert "def _bootstrap(" in source and "_bootstrap(" not in source.split("def main", 1)[1]
     assert "alias_opened + target_opened" in source and "transferred or operation is None" in source
     assert "def _stable_active(" in source and "def _mark_leased(" in source
