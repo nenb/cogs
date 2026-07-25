@@ -65,6 +65,47 @@ def portable_tests():
         function_source = source.split(f"def {function_name}(", 1)[1].split("\ndef ", 1)[0]
         assert "fs._revalidate_chain(" in function_source, function_name
     assert 'fs._structural_increment("complete_walks")' in source
+    assert "class CleanupSession:" in source
+    assert all(name not in source for name in ("def _fresh_cleanup(", "def _cleanup_append(", "def _fresh_cleanup_authority("))
+    session_append = source.split("def _session_append(", 1)[1].split("\ndef ", 1)[0]
+    assert "os.pread(" in session_append and session_append.count("_append(") == 1
+    assert all(name not in session_append for name in ("_parse_ledger", "_walk_entries", "_reconcile_ledger"))
+    walker = source.split("def _walk_entries(", 1)[1].split("\ndef ", 1)[0]
+    assert "parents[prefix] = ledger.LedgerParent(snapshot.generation" in walker
+    assert "current = _parent(directory" not in walker
+    entrance = source.split("def _open_cleanup_session(", 1)[1].split("\ndef ", 1)[0]
+    assert entrance.count("_stable_active(") == entrance.count("_walk_entries(") == entrance.count("_reconcile_ledger(") == 1
+    assert "_require_cleanup_model(" in entrance
+    for helper_name in ("_finish_remove", "_finish_hardlink_remove"):
+        scalar = source.split(f"def {helper_name}(", 1)[1].split("\ndef ", 1)[0]
+        assert scalar.count("_session_append(") == 3
+        assert all(record in scalar for record in ("remove-intent", "remove-observed", "remove-settled"))
+        pre_index = scalar.index("pre_snapshot =")
+        assert pre_index < scalar.index("fs._revalidate_chain(", pre_index) < scalar.index('"remove-intent"', pre_index)
+        if helper_name == "_finish_hardlink_remove":
+            assert scalar.count("fs._revalidate_chain(alias_node_chain") == 3
+            assert scalar.count("fs._revalidate_chain(target_node_chain") == 3
+            assert scalar.count("fs._revalidate_chain(current_alias_chain") == 3
+            assert scalar.count("fs._revalidate_chain(current_target_chain") == 4
+    absent_remove = source.split("def _finish_absent_remove(", 1)[1].split("\ndef ", 1)[0]
+    assert absent_remove.index("post = _parent(") < absent_remove.index("fs._revalidate_chain(", absent_remove.index("post = _parent(")) < absent_remove.index('"remove-observed"')
+    retire = source.split("def _retire(", 1)[1].split("\ndef ", 1)[0]
+    assert retire.index("pre_snapshot =") < retire.index("fs._revalidate_chain(", retire.index("pre_snapshot =")) < retire.index('"operation-remove-intent"')
+    cleanup_loop = source.split("def _cleanup_active(", 1)[1].split("\ndef ", 1)[0]
+    assert cleanup_loop.count("_open_cleanup_session(") == 1
+    assert all(name not in cleanup_loop for name in ("_stable_active", "_walk_entries", "_reconcile_ledger"))
+    retirement = source.split("def _retire_absent(", 1)[1].split("\ndef ", 1)[0]
+    assert retirement.count("_open_cleanup_session(") == 2
+    resumed = source.split("def _resume_observed(", 1)[1].split("\ndef ", 1)[0]
+    assert resumed.count("_relative_parent_chain(") == resumed.count("_chain_with_child(") == 3
+    final_zero = source.split("def _unlink_ledger(", 1)[1].split("\ndef ", 1)[0]
+    assert final_zero.index('_session_require(session, "retired")') < final_zero.index("_remove_name(")
+    assert "_enumerate_stable(session.locked.state" in final_zero and "STATE_SENTINEL_NAME" in final_zero
+    poisoned = {"_session_append", "_finish_remove", "_finish_absent_remove", "_finish_hardlink_remove",
+                "_cleanup_active", "_resume_entry_remove", "_resume_observed", "_resume_absent_create",
+                "_unlink_ledger", "_retire_absent", "_retire", "_finish_operation_absent", "_abort", "_settle_startup"}
+    assert all(f"@_poisoned\ndef {name}(" in source for name in poisoned)
+    assert '_fail(session.disposition == "active")' in source.split("def _poisoned(", 1)[1].split("\ndef ", 1)[0]
     for helper_name in ("_create_directory", "_create_file"):
         helper_source = source.split(f"def {helper_name}(", 1)[1].split("\ndef ", 1)[0]
         assert "parent_chain" in helper_source and "fs._revalidate_chain(" in helper_source

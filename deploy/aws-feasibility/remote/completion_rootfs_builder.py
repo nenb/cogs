@@ -107,6 +107,21 @@ class OwnedOperation:
     operation_name: str
 
 
+@dataclass
+class CleanupSession:
+    active: ActiveLedger
+    locked: LockedState
+    operation: fs.HeldNode | None
+    origin: str
+    status: str
+    owned: dict
+    parents: dict
+    groups: dict
+    operation_generation: fs.HostGeneration | None
+    state_parent: ledger.LedgerParent
+    disposition: str = "active"
+
+
 def _check(control):
     control.check()
 
@@ -891,9 +906,8 @@ def _walk_entries(operation, control):
     parents = {}
 
     def visit(directory, prefix):
-        current = _parent(directory, control)
-        parents[prefix] = current
         snapshot = fs._enumerate_stable(directory, control)
+        parents[prefix] = ledger.LedgerParent(snapshot.generation, tuple(name.text for name in snapshot.names))
         for name, generation in snapshot.children:
             path = name.text if not prefix else prefix + "/" + name.text
             entries[path] = generation
@@ -1037,21 +1051,206 @@ def _open_relative_parent(operation, path, control):
         raise error
 
 
-def _finish_remove(active, locked, operation, path, expected, intent_exists, origin, control):
-    _fresh_cleanup(active, locked, operation, origin, control)
-    parent, opened, name = _open_relative_parent(operation, path, control)
+def _poisoned(function):
+    def guarded(session, *args, **kwargs):
+        _fail(session.disposition == "active")
+        try:
+            return function(session, *args, **kwargs)
+        except BaseException:
+            session.disposition = "invalid"; raise
+    return guarded
+
+def _session_require(session, phase=None):
+    _fail(type(session) is CleanupSession and session.disposition == "active")
+    _fail(session.origin in {"prelease", "release-authorized"})
+    _fail(type(session.active) is ActiveLedger and type(session.active.records) is ledger.LedgerHistory)
+    legal = session.active.records.legal
+    _fail(session.active.node is session.active.writer.node and legal.settled == session.active.writer.settled)
+    if phase is None:
+        origin_phase = "active" if session.origin == "prelease" else "release-authorized"
+        _fail(legal.phase == origin_phase or legal.return_phase == origin_phase)
+    else:
+        phases = phase if type(phase) is tuple else (phase,)
+        _fail(legal.phase in phases)
+
+def _ledger_binding(session, control, phase=None):
+    _session_require(session, phase)
+    state_chain = _state_chain(session.locked, control)
+    fs._revalidate_chain(state_chain, control)
+    active = session.active
+    current = _current_ledger(active, control)
+    _fail(current == active.writer.generation)
+    _fail(fs._observe_child(session.locked.state, LEDGER_NAME, control) == current)
+    _fail(os.lseek(active.node.operation_fd.number, 0, os.SEEK_CUR) == active.writer.settled.offset)
+    fs._revalidate_chain(state_chain, control)
+
+def _session_binding(session, control, phase=None):
+    _ledger_binding(session, control, phase)
+    _fail(_parent(session.locked.state, control) == session.state_parent)
+    if session.operation is not None:
+        _fail(fs._observe_node(session.operation.identity_fd, session.operation.operation_fd, control) == session.operation_generation)
+
+def _settled_hardlink_groups(records):
+    groups = {}
+    for record in records:
+        body = record.body_value()
+        if record.record_type == "hardlink-group":
+            groups[body["target_path"]] = []
+        elif record.record_type == "hardlink-create-settled":
+            groups[body["target_path"]].append(body["alias"])
+        elif record.record_type == "remove-settled" and body["target_path"] is not None:
+            _fail(groups[body["target_path"]].pop() == body["path"])
+    return tuple((target, tuple(aliases)) for target, aliases in groups.items())
+
+def _require_cleanup_model(state, observations, history, groups):
+    entries = dict(observations.entries)
+    parents = dict(observations.parents)
+    operations = dict(observations.operations)
+    legal = history.legal
+    _fail(state.terminal_record == history.terminal.record_type)
+    phases = {
+        "genesis-settleable": {"genesis"}, "genesis-abortable": {"ready"},
+        "operation-abortable": {"operation-intent"}, "operation-create-settleable": {"operation-observed"},
+        "entry-absent": {"create-intent", "hardlink-create-intent"},
+        "create-settleable": {"create-observed"}, "metadata-settleable": {"metadata-observed"},
+        "hardlink-create-settleable": {"hardlink-create-observed"},
+        "active": {"active"}, "release-authorized": {"release-authorized"},
+        "remove-retry": {"remove-intent"}, "remove-absence-settleable": {"remove-intent"},
+        "hardlink-remove-absence-settleable": {"remove-intent"}, "remove-settleable": {"remove-observed"},
+        "operation-remove-retry": {"operation-remove"}, "operation-absence-settleable": {"operation-remove"},
+        "retirable": {"aborted", "operation-absent"}, "retired": {"retired"},
+    }
+    _fail(legal.phase in phases[state.status])
+    entry_phases = {"create-intent", "create-observed", "metadata-intent", "metadata-observed", "hardlink-create-intent", "hardlink-create-observed", "remove-intent", "remove-observed"}
+    if legal.phase in entry_phases:
+        _fail(legal.pending is history.terminal)
+    else:
+        _fail(legal.pending is None)
+    if operations:
+        _fail(len(operations) == 1 and "" in parents)
+        _fail(next(iter(operations.values())) == parents[""].generation)
+    else:
+        _fail(not entries and not parents)
+    for path, parent in parents.items():
+        names = tuple(sorted((name.rpartition("/")[2] for name in entries if name.rpartition("/")[0] == path), key=lambda value: value.encode("utf-8")))
+        _fail(parent.names == names)
+        if path:
+            _fail(entries.get(path) == parent.generation and parent.generation.key.kind == "directory")
+    stable = {"active", "release-authorized", "entry-absent", "remove-retry", "operation-remove-retry"}
+    if state.status in stable:
+        _fail(entries == dict(state.owned))
+    body = history.terminal.body_value()
+    affected = set()
+    if legal.phase.startswith(("create-", "metadata-", "hardlink-create-", "remove-")):
+        path = body.get("path", body.get("alias"))
+        if legal.phase == "metadata-observed":
+            affected.add(path)
+        else:
+            affected.add(path.rpartition("/")[0])
+            if legal.phase == "create-observed" and body["kind"] == "directory":
+                affected.add(path)
+    for path, parent in parents.items():
+        if path not in affected:
+            expected = legal.operation_parent if path == "" else ledger._map_get(legal.parents, path)
+            _fail(expected == parent)
+    pending_removed = body.get("path") if state.status in {"hardlink-remove-absence-settleable", "remove-settleable"} and body.get("target_path") is not None else None
+    for target, aliases in groups.items():
+        cursor = ledger._group_get(legal.groups, target)
+        _fail(cursor is not None and tuple(aliases) == cursor.aliases[:cursor.next_index])
+        _fail(not aliases or target in entries)
+        for alias in aliases:
+            _fail(alias == pending_removed and alias not in entries or entries.get(alias) == entries[target])
+
+
+def _open_cleanup_session(active, locked, operation, origin, control):
+    stable = _stable_active(active, locked.state, control)
+    state_chain = _state_chain(locked, control)
+    fs._revalidate_chain(state_chain, control)
+    operation_chain = None if operation is None else _held_operation_chain(stable, locked, operation, control)
+    if operation_chain is not None:
+        fs._revalidate_chain(operation_chain, control)
+    entries, parents = ((), ()) if operation is None else _walk_entries(operation, control)
+    operation_generation = None if operation is None else fs._observe_node(operation.identity_fd, operation.operation_fd, control)
+    operations = () if operation is None else ((_operation_name(_token(stable)).text, operation_generation),)
+    observations = ledger.ReconcileObservations(_parent(locked.state, control), operations, entries, _current_ledger(stable, control), parents)
+    if operation_chain is not None:
+        fs._revalidate_chain(operation_chain, control)
+    fs._revalidate_chain(state_chain, control)
+    state = ledger._reconcile_ledger(_records(stable), observations)
+    _fail(state.cleanup_allowed and state.cleanup_origin == origin)
+    groups = {target: list(aliases) for target, aliases in _settled_hardlink_groups(_records(stable))}
+    _require_cleanup_model(state, observations, stable.records, groups)
+    session = CleanupSession(stable, locked, operation, origin, state.status, dict(entries), dict(parents), groups, operation_generation, observations.state_parent)
+    named_boundary = {"genesis-settleable", "genesis-abortable", "operation-abortable", "operation-create-settleable", "retirable", "retired"}
+    boundary_phase = stable.records.legal.phase if state.status in named_boundary else None
+    _session_binding(session, control, boundary_phase)
+    return session
+
+@_poisoned
+def _session_append(session, record_type, body, control):
+    boundaries = {
+        "genesis-settled": ("genesis", "ready"), "genesis-abort": ("ready", "aborted"),
+        "operation-abort": ("operation-intent", "aborted"),
+        "operation-create-settled": ("operation-observed", "active"),
+        "operation-absent": ("operation-remove", "operation-absent"),
+        "retired": (("aborted", "operation-absent"), "retired"),
+    }
+    before_phase, after_phase = boundaries.get(record_type, (None, None))
+    _ledger_binding(session, control, before_phase)
+    previous = session.active.writer.settled
+    proposal = ledger.LedgerProposal.create(record_type, body)
+    raw = ledger._encode_proposal(proposal, previous)
+    active = _append(session.active, record_type, body, control)
+    _fail(active.writer.settled.offset == previous.offset + len(raw))
+    control.check()
+    _fail(os.pread(active.node.operation_fd.number, len(raw), previous.offset) == raw)
+    control.check()
+    session.active = active
+    _ledger_binding(session, control, after_phase)
+
+def _session_parent(session, path, expected, control):
+    _session_binding(session, control)
+    parent, opened, name = _open_relative_parent(session.operation, path, control)
+    chain = _relative_parent_chain(session.active, session.locked, session.operation, path, opened, control)
+    fs._revalidate_chain(chain, control)
+    _fail(chain.components[-len(opened) - 1].node.generation == session.operation_generation)
+    _fail(_parent(parent, control) == session.parents[path.rpartition("/")[0]])
+    _fail(fs._observe_child(parent, name, control) == expected)
+    fs._revalidate_chain(chain, control)
+    return parent, opened, name, chain
+
+def _settle_removed_model(session, path, post, target_path=None, target=None):
+    _fail(session.owned.pop(path) is not None)
+    parent_path = path.rpartition("/")[0]
+    session.parents[parent_path] = post
+    if parent_path:
+        _fail(parent_path in session.owned)
+        session.owned[parent_path] = post.generation
+    else:
+        session.operation_generation = post.generation
+    session.parents.pop(path, None)
+    if target_path is not None:
+        _fail(target_path in session.owned and type(target) is fs.HostGeneration)
+        session.owned[target_path] = target
+        for alias in session.groups[target_path]:
+            if alias in session.owned:
+                session.owned[alias] = target
+
+@_poisoned
+def _finish_remove(session, path, expected, intent_exists, control):
+    _session_require(session, "remove-intent" if intent_exists else None)
+    parent, opened, name, parent_chain = _session_parent(session, path, expected, control)
     with _owned_nodes(lambda: opened):
-        parent_chain = _relative_parent_chain(active, locked, operation, path, opened, control)
-        fs._revalidate_chain(parent_chain, control)
         pre_snapshot = _parent_snapshot(parent, control)
-        fs._revalidate_chain(parent_chain, control)
         pre = _parent_value(pre_snapshot)
+        _fail(pre == session.parents[path.rpartition("/")[0]])
+        fs._revalidate_chain(parent_chain, control)
         if not intent_exists:
             kind = "directory" if expected.key.kind == "directory" else "infrastructure"
-            body = {"token": _token(active), "path": path, "kind": kind, "parent": _p(pre), "child": _g(expected), "target_path": None}
-            active = _cleanup_append(active, locked, operation, "remove-intent", body, origin, control)
+            body = {"token": _token(session.active), "path": path, "kind": kind, "parent": _p(pre), "child": _g(expected), "target_path": None}
+            _session_append(session, "remove-intent", body, control)
         else:
-            intent = _terminal_record(active).body_value()
+            intent = _terminal_record(session.active).body_value()
             _fail(intent["path"] == path and ledger._parse_generation(intent["child"]) == expected)
             _fail(ledger._parse_parent(intent["parent"]) == pre)
         transition = _transition_control()
@@ -1060,446 +1259,353 @@ def _finish_remove(active, locked, operation, path, expected, intent_exists, ori
         post_snapshot = _parent_snapshot(parent, transition)
         delta = fs.ParentDelta("rmdir" if expected.key.kind == "directory" else "unlink", name, pre_snapshot, post_snapshot)
         fs._revalidate_chain(parent_chain, transition, delta)
-        _fresh_cleanup(active, locked, operation, origin, transition)
+        parent_chain = _chain_after_parent(parent_chain, pre_snapshot.generation, post_snapshot.generation)
+        fs._revalidate_chain(parent_chain, transition)
+        _fail(name.raw not in post_snapshot.raw_names)
         post = _parent_value(post_snapshot)
         kind = "directory" if expected.key.kind == "directory" else "infrastructure"
-        observed = {"token": _token(active), "path": path, "kind": kind, "parent": _p(post), "target_path": None, "target": None}
-        active = _cleanup_append(active, locked, operation, "remove-observed", observed, origin, transition)
-        active = _cleanup_append(active, locked, operation, "remove-settled", observed, origin, transition)
+        observed = {"token": _token(session.active), "path": path, "kind": kind, "parent": _p(post), "target_path": None, "target": None}
+        _session_append(session, "remove-observed", observed, transition)
+        _settle_removed_model(session, path, post)
+        fs._revalidate_chain(parent_chain, transition)
+        _session_append(session, "remove-settled", observed, transition)
+        fs._revalidate_chain(parent_chain, transition)
+        _session_require(session)
         control.check()
-        return active, post.generation
 
-
-def _finish_absent_remove(active, locked, operation, origin, control):
-    _fresh_cleanup(active, locked, operation, origin, control)
-    intent = _terminal_record(active).body_value()
+@_poisoned
+def _finish_absent_remove(session, control):
+    _session_require(session, "remove-intent")
+    _session_binding(session, control)
+    intent = _terminal_record(session.active).body_value()
     path = intent["path"]
-    parent, opened, name = _open_relative_parent(operation, path, control)
+    parent, opened, name = _open_relative_parent(session.operation, path, control)
     target = None
     target_opened = ()
     transition = _transition_control()
     with _owned_nodes(lambda: opened + target_opened + (() if target is None else (target,))):
-        parent_chain = _relative_parent_chain(active, locked, operation, path, opened, transition)
+        parent_chain = _relative_parent_chain(session.active, session.locked, session.operation, path, opened, transition)
         fs._revalidate_chain(parent_chain, transition)
         _fail(name.raw not in fs._enumerate_stable(parent, transition).raw_names)
         post = _parent(parent, transition)
+        _fail(post == session.parents[path.rpartition("/")[0]])
         fs._revalidate_chain(parent_chain, transition)
         _fail(ledger._valid_parent_delta("rmdir" if intent["kind"] == "directory" else "unlink", name.text, ledger._parse_parent(intent["parent"]), post))
         target_generation = None
         if intent["target_path"] is not None:
-            target_parent, target_opened, target_name = _open_relative_parent(operation, intent["target_path"], transition)
-            target_chain = _relative_parent_chain(
-                active, locked, operation, intent["target_path"], target_opened, transition,
-            )
+            target_parent, target_opened, target_name = _open_relative_parent(session.operation, intent["target_path"], transition)
+            target_chain = _relative_parent_chain(session.active, session.locked, session.operation, intent["target_path"], target_opened, transition)
             fs._revalidate_chain(target_chain, transition)
             target = fs._open_path_node(target_parent, target_name, "file", transition)
             target_generation = fs._observe_node(target.identity_fd, target.operation_fd, transition)
+            _fail(target.generation == target_generation == session.owned[intent["target_path"]])
             ledger._hardlink_generation_change(ledger._parse_generation(intent["child"]), target_generation, -1)
             _fsync(target.operation_fd, transition)
+            fs._revalidate_chain(_chain_with_child(target_chain, target_name, target), transition)
         _fsync(parent.operation_fd, transition)
-        observed = {
-            "token": _token(active),
-            "path": path,
-            "kind": intent["kind"],
-            "parent": _p(post),
-            "target_path": intent["target_path"],
-            "target": None if target_generation is None else _g(target_generation),
-        }
-        active = _cleanup_append(active, locked, operation, "remove-observed", observed, origin, transition)
-        active = _cleanup_append(active, locked, operation, "remove-settled", observed, origin, transition)
+        fs._revalidate_chain(parent_chain, transition)
+        observed = {"token": _token(session.active), "path": path, "kind": intent["kind"], "parent": _p(post), "target_path": intent["target_path"], "target": None if target_generation is None else _g(target_generation)}
+        _session_append(session, "remove-observed", observed, transition)
+        fs._revalidate_chain(parent_chain, transition)
+        if target is not None: fs._revalidate_chain(_chain_with_child(target_chain, target_name, target), transition)
+        _session_append(session, "remove-settled", observed, transition)
+        fs._revalidate_chain(parent_chain, transition)
+        if target is not None: fs._revalidate_chain(_chain_with_child(target_chain, target_name, target), transition)
+        if intent["target_path"] is not None:
+            aliases = session.groups[intent["target_path"]]
+            _fail(aliases.pop() == path)
+        _session_require(session)
         control.check()
-        return active
 
-
-def _retire(active, locked, operation, origin, control, intent_exists=False):
-    _fresh_cleanup(active, locked, operation, origin, control)
-    operation_chain = _held_operation_chain(active, locked, operation, control)
-    fs._revalidate_chain(operation_chain, control)
-    _fail(not fs._enumerate_stable(operation, control).names)
-    fs._revalidate_chain(operation_chain, control)
-    token = _token(active)
-    operation_name = _operation_name(token)
-    state_chain = _state_chain(locked, control)
-    fs._revalidate_chain(state_chain, control)
-    pre_snapshot = _parent_snapshot(locked.state, control)
-    fs._revalidate_chain(state_chain, control)
-    pre = _parent_value(pre_snapshot)
-    if not intent_exists:
-        active = _cleanup_append(
-            active, locked, operation, "operation-remove-intent",
-            {"token": token, "operation_name": operation_name.text, "state_parent": _p(pre), "operation": _g(operation_chain.components[-1].node.generation)},
-            origin, control,
-        )
-    else:
-        intent = _terminal_record(active).body_value()
-        _fail(ledger._parse_parent(intent["state_parent"]) == pre)
-        _fail(ledger._parse_generation(intent["operation"]) == fs._observe_node(operation.identity_fd, operation.operation_fd, control))
-    transition = _transition_control()
-    fs._revalidate_chain(operation_chain, transition)
-    fs._revalidate_chain(state_chain, transition)
-    expected = fs._observe_node(operation.identity_fd, operation.operation_fd, transition)
-    _fail(expected == operation_chain.components[-1].node.generation)
-    _close(operation)
-    _remove_name(locked.state, operation_name, expected, transition)
-    post_snapshot = _parent_snapshot(locked.state, transition)
-    delta = fs.ParentDelta("rmdir", operation_name, pre_snapshot, post_snapshot)
-    fs._revalidate_chain(state_chain, transition, delta)
-    _fresh_cleanup(active, locked, None, origin, transition)
-    post = _parent_value(post_snapshot)
-    active = _cleanup_append(active, locked, None, "operation-absent", {"token": token, "operation_name": operation_name.text, "state_parent": _p(post)}, origin, transition)
-    active = _cleanup_append(active, locked, None, "retired", {"token": token, "state_parent": _p(post)}, origin, transition)
-    control.check()
-    return _unlink_ledger(active, locked, origin, control)
-
-
-def _unlink_ledger(active, locked, origin, control):
-    _state, observations = _fresh_cleanup_authority(active, locked, None, origin, control)
-    state_chain = _state_chain(locked, control)
-    fs._revalidate_chain(state_chain, control)
-    expected = fs._observe_node(active.node.identity_fd, active.node.operation_fd, control)
-    before_snapshot = _parent_snapshot(locked.state, control)
-    before = _parent_value(before_snapshot)
-    _fail(before == observations.state_parent)
-    fs._revalidate_chain(state_chain, control)
-    _close(active.node)
-    _remove_name(locked.state, LEDGER_NAME, expected, control)
-    after_snapshot = _parent_snapshot(locked.state, control)
-    delta = fs.ParentDelta("unlink", LEDGER_NAME, before_snapshot, after_snapshot)
-    fs._revalidate_chain(state_chain, control, delta)
-    after = _parent_value(after_snapshot)
-    _fail(ledger._valid_parent_delta("unlink", LEDGER_NAME.text, observations.state_parent, after))
-    authorized = ledger._lease_history(_records(active))[1]
-    _fail(origin == ("release-authorized" if authorized else "prelease"))
-    return None
-
-
-def _finish_hardlink_remove(active, locked, operation, alias_path, target_path, target_generation, origin, control):
-    _fresh_cleanup(active, locked, operation, origin, control)
-    alias_parent, alias_opened, alias_name = _open_relative_parent(operation, alias_path, control)
+@_poisoned
+def _finish_hardlink_remove(session, alias_path, target_path, target_generation, control, intent_exists=False):
+    _session_require(session, "remove-intent" if intent_exists else None)
+    alias_parent, alias_opened, alias_name, alias_chain = _session_parent(session, alias_path, target_generation, control)
     target_opened = ()
     target = alias_node = None
     with _owned_nodes(lambda: alias_opened + target_opened + (() if target is None else (target,)) + (() if alias_node is None else (alias_node,))):
-        alias_chain = _relative_parent_chain(active, locked, operation, alias_path, alias_opened, control)
-        fs._revalidate_chain(alias_chain, control)
-        target_parent, target_opened, target_name = _open_relative_parent(operation, target_path, control)
-        target_chain = _relative_parent_chain(active, locked, operation, target_path, target_opened, control)
+        target_parent, target_opened, target_name = _open_relative_parent(session.operation, target_path, control)
+        target_chain = _relative_parent_chain(session.active, session.locked, session.operation, target_path, target_opened, control)
         fs._revalidate_chain(target_chain, control)
         target = fs._open_path_node(target_parent, target_name, "file", control)
         alias_node = fs._open_path_node(alias_parent, alias_name, "file", control)
-        alias = alias_node.generation
-        _fail(alias.key == target_generation.key and alias == target_generation)
+        _fail(alias_node.generation == session.owned[alias_path] == target.generation == target_generation == session.owned[target_path])
         alias_node_chain = _chain_with_child(alias_chain, alias_name, alias_node)
         target_node_chain = _chain_with_child(target_chain, target_name, target)
         fs._revalidate_chain(alias_node_chain, control)
         fs._revalidate_chain(target_node_chain, control)
         pre_snapshot = _parent_snapshot(alias_parent, control)
-        fs._revalidate_chain(alias_chain, control)
         pre = _parent_value(pre_snapshot)
-        body = {
-            "token": _token(active),
-            "path": alias_path,
-            "kind": "hardlink",
-            "parent": _p(pre),
-            "child": _g(alias),
-            "target_path": target_path,
-        }
-        active = _cleanup_append(active, locked, operation, "remove-intent", body, origin, control)
+        _fail(pre == session.parents[alias_path.rpartition("/")[0]])
+        fs._revalidate_chain(alias_node_chain, control)
+        fs._revalidate_chain(target_node_chain, control)
+        body = {"token": _token(session.active), "path": alias_path, "kind": "hardlink", "parent": _p(pre), "child": _g(target_generation), "target_path": target_path}
+        if intent_exists:
+            _fail(_terminal_record(session.active).body_value() == body)
+        else:
+            _session_append(session, "remove-intent", body, control)
         transition = _transition_control()
         fs._revalidate_chain(alias_node_chain, transition)
         fs._revalidate_chain(target_node_chain, transition)
         _check(transition)
         os.unlink(alias_name.raw, dir_fd=alias_parent.operation_fd.number)
         _check(transition)
-        builder_target = fs._observe_node(target.identity_fd, target.operation_fd, transition)
-        ledger._hardlink_generation_change(target_generation, builder_target, -1)
+        current_target = fs._observe_node(target.identity_fd, target.operation_fd, transition)
+        ledger._hardlink_generation_change(target_generation, current_target, -1)
         _fsync(target.operation_fd, transition)
         _fsync(alias_parent.operation_fd, transition)
         post_snapshot = _parent_snapshot(alias_parent, transition)
         delta = fs.ParentDelta("unlink", alias_name, pre_snapshot, post_snapshot)
         fs._revalidate_chain(alias_chain, transition, delta)
+        current_alias_chain = _chain_after_parent(alias_chain, pre_snapshot.generation, post_snapshot.generation)
+        fs._revalidate_chain(current_alias_chain, transition)
         target_delta = _delta_for_chain(target_chain, delta)
         fs._revalidate_chain(target_chain, transition, target_delta)
-        current_target_chain = target_chain if target_delta is None else _chain_after_parent(
-            target_chain, pre_snapshot.generation, post_snapshot.generation,
-        )
-        current_target = fs.HeldNode(target.identity_fd, target.operation_fd, builder_target)
-        current_target_chain = _chain_with_child(current_target_chain, target_name, current_target)
+        current_chain = target_chain if target_delta is None else _chain_after_parent(target_chain, pre_snapshot.generation, post_snapshot.generation)
+        current_target_chain = _chain_with_child(current_chain, target_name, fs.HeldNode(target.identity_fd, target.operation_fd, current_target))
         fs._revalidate_chain(current_target_chain, transition)
-        _fresh_cleanup(active, locked, operation, origin, transition)
         post = _parent_value(post_snapshot)
-        observed = {
-            "token": _token(active),
-            "path": alias_path,
-            "kind": "hardlink",
-            "parent": _p(post),
-            "target_path": target_path,
-            "target": _g(builder_target),
-        }
+        observed = {"token": _token(session.active), "path": alias_path, "kind": "hardlink", "parent": _p(post), "target_path": target_path, "target": _g(current_target)}
+        _session_append(session, "remove-observed", observed, transition)
+        fs._revalidate_chain(current_alias_chain, transition)
         fs._revalidate_chain(current_target_chain, transition)
-        active = _cleanup_append(active, locked, operation, "remove-observed", observed, origin, transition)
+        _settle_removed_model(session, alias_path, post, target_path, current_target)
         fs._revalidate_chain(current_target_chain, transition)
-        active = _cleanup_append(active, locked, operation, "remove-settled", observed, origin, transition)
+        _session_append(session, "remove-settled", observed, transition)
+        fs._revalidate_chain(current_alias_chain, transition)
         fs._revalidate_chain(current_target_chain, transition)
+        _fail(session.groups[target_path].pop() == alias_path)
+        _session_require(session)
         control.check()
-        return active, builder_target, post.generation
 
+@_poisoned
+def _cleanup_active(session, control):
+    _session_require(session)
+    for target_path, aliases in reversed(tuple(session.groups.items())):
+        for alias_path in reversed(tuple(aliases)):
+            _finish_hardlink_remove(session, alias_path, target_path, session.owned[target_path], control)
+    for path in sorted(tuple(session.owned), key=lambda value: (value.count("/"), value.encode("utf-8")), reverse=True):
+        _finish_remove(session, path, session.owned[path], False, control)
+    _fail(not session.owned and all(not aliases for aliases in session.groups.values()))
+    boundary = _open_cleanup_session(session.active, session.locked, session.operation, session.origin, control)
+    session.disposition = "finished"
+    _fail(boundary.status in {"active", "release-authorized"} and not boundary.owned)
+    return _retire(boundary, control)
 
-def _settled_hardlink_groups(records):
-    groups = []
-    by_target = {}
-    for record in records:
-        body = record.body_value()
-        if record.record_type == "hardlink-group":
-            group = [body["target_path"], []]
-            groups.append(group)
-            by_target[body["target_path"]] = group
-        elif record.record_type == "hardlink-create-settled":
-            by_target[body["target_path"]][1].append(body["alias"])
-        elif record.record_type == "remove-settled" and body["target_path"] is not None:
-            aliases = by_target[body["target_path"]][1]
-            _fail(aliases and aliases[-1] == body["path"])
-            aliases.pop()
-    return tuple((target, tuple(aliases)) for target, aliases in groups)
-
-
-def _require_cleanup(state, origin):
-    _fail(type(state) is ledger.LedgerState and type(origin) is str)
-    _fail(state.cleanup_allowed and state.cleanup_origin == origin)
-
-
-def _fresh_cleanup_authority(active, locked, operation, origin, control):
-    stable = _stable_active(active, locked.state, control)
-    state_chain = _state_chain(locked, control)
-    fs._revalidate_chain(state_chain, control)
-    operation_chain = None if operation is None else _held_operation_chain(active, locked, operation, control)
-    if operation_chain is not None:
-        fs._revalidate_chain(operation_chain, control)
-    records = _records(active)
-    _fail(_records(stable) == records and stable.writer.settled == active.writer.settled)
-    ledger._validate_legal_records(records)
-    entries, parents = ((), ()) if operation is None else _walk_entries(operation, control)
-    if operation_chain is not None:
-        fs._revalidate_chain(operation_chain, control)
-    fs._revalidate_chain(state_chain, control)
-    operations = () if operation is None else (
-        ((_operation_name(_token(active)).text, fs._observe_node(operation.identity_fd, operation.operation_fd, control))),
-    )
-    state_parent = _parent(locked.state, control)
-    fs._revalidate_chain(state_chain, control)
-    observations = ledger.ReconcileObservations(
-        state_parent, operations, entries, _current_ledger(active, control), parents,
-    )
-    if operation_chain is not None:
-        fs._revalidate_chain(operation_chain, control)
-    state = ledger._reconcile_ledger(records, observations)
-    _require_cleanup(state, origin)
-    return state, observations
-
-
-def _fresh_cleanup(active, locked, operation, origin, control):
-    return _fresh_cleanup_authority(active, locked, operation, origin, control)[0]
-
-
-def _cleanup_append(active, locked, operation, record_type, body, origin, control):
-    _fresh_cleanup(active, locked, operation, origin, control)
-    active = _append(active, record_type, body, control)
-    _fresh_cleanup(active, locked, operation, origin, control)
-    return active
-
-
-def _cleanup_active(active, locked, operation, origin, control):
-    state = _fresh_cleanup(active, locked, operation, origin, control)
-    owned = dict(state.owned)
-    groups = _settled_hardlink_groups(_records(active))
-    for target_path, aliases in reversed(groups):
-        if not aliases:
-            continue
-        target_generation = owned[target_path]
-        for alias_path in reversed(aliases):
-            active, target_generation, parent_generation = _finish_hardlink_remove(
-                active, locked, operation, alias_path, target_path, target_generation, origin, control
-            )
-            owned.pop(alias_path)
-            parent_path = alias_path.rpartition("/")[0]
-            if parent_path in owned:
-                owned[parent_path] = parent_generation
-        owned[target_path] = target_generation
-    for path in sorted(tuple(owned), key=lambda value: (value.count("/"), value.encode("utf-8")), reverse=True):
-        active, parent_generation = _finish_remove(active, locked, operation, path, owned[path], False, origin, control)
-        parent_path = path.rpartition("/")[0]
-        if parent_path in owned:
-            owned[parent_path] = parent_generation
-    return _retire(active, locked, operation, origin, control)
-
-
-def _resume_entry_remove(active, locked, operation, reconciled, origin, control):
-    _require_cleanup(reconciled, origin)
-    _fresh_cleanup(active, locked, operation, origin, control)
-    intent = _terminal_record(active).body_value()
-    if reconciled.status == "remove-retry":
+@_poisoned
+def _resume_entry_remove(session, control):
+    _session_require(session, "remove-intent")
+    intent = _terminal_record(session.active).body_value()
+    if session.status == "remove-retry":
         expected = ledger._parse_generation(intent["child"])
-        active, _parent_generation = _finish_remove(active, locked, operation, intent["path"], expected, True, origin, control)
+        if intent["target_path"] is None:
+            _finish_remove(session, intent["path"], expected, True, control)
+        else:
+            _finish_hardlink_remove(session, intent["path"], intent["target_path"], expected, control, True)
     else:
-        active = _finish_absent_remove(active, locked, operation, origin, control)
-    entries, parents = _walk_entries(operation, control)
-    observations = ledger.ReconcileObservations(
-        _parent(locked.state, control),
-        ((_operation_name(_token(active)).text, fs._observe_node(operation.identity_fd, operation.operation_fd, control)),),
-        entries, _current_ledger(active, control), parents,
-    )
-    state = ledger._reconcile_ledger(_records(active), observations)
-    _require_cleanup(state, origin)
-    _fail(state.status == ("active" if origin == "prelease" else "release-authorized"))
-    return _cleanup_active(active, locked, operation, origin, control)
+        _finish_absent_remove(session, control)
+    return _cleanup_active(session, control)
 
-
-def _resume_observed(active, locked, operation, reconciled, origin, control):
-    _require_cleanup(reconciled, origin)
-    _fresh_cleanup(active, locked, operation, origin, control)
-    record = _terminal_record(active)
+@_poisoned
+def _resume_observed(session, control):
+    _session_binding(session, control)
+    record = _terminal_record(session.active)
     body = record.body_value()
     kind = record.record_type
+    _session_require(session, kind)
     _fail(kind in {"create-observed", "metadata-observed", "hardlink-create-observed", "remove-observed"})
     path = body.get("path", body.get("alias"))
-    parent, opened, name = _open_relative_parent(operation, path, control)
-    extra_opened = ()
-    child = None
+    parent, opened, name = _open_relative_parent(session.operation, path, control)
+    extra_opened, child, child_chain = (), None, None
     with _owned_nodes(lambda: opened + extra_opened + (() if child is None else (child,))):
+        chain = _relative_parent_chain(session.active, session.locked, session.operation, path, opened, control)
+        fs._revalidate_chain(chain, control)
+        _fail(_parent(parent, control) == session.parents[path.rpartition("/")[0]])
         if kind in {"create-observed", "metadata-observed"}:
             expected = ledger._parse_generation(body["child"])
             child = fs._open_path_node(parent, name, expected.key.kind, control)
-            _fail(child.generation == expected)
+            _fail(child.generation == expected == session.owned[path])
+            child_chain = _chain_with_child(chain, name, child)
             if child.operation_fd is not None:
                 _fsync(child.operation_fd, control)
         elif kind == "hardlink-create-observed":
             expected = ledger._parse_generation(body["alias_generation"])
-            _fail(fs._observe_child(parent, name, control) == expected)
-            target_parent, extra_opened, target_name = _open_relative_parent(operation, body["target_path"], control)
+            _fail(fs._observe_child(parent, name, control) == expected == session.owned[path])
+            target_parent, extra_opened, target_name = _open_relative_parent(session.operation, body["target_path"], control)
+            target_chain = _relative_parent_chain(session.active, session.locked, session.operation, body["target_path"], extra_opened, control)
+            fs._revalidate_chain(target_chain, control)
             child = fs._open_path_node(target_parent, target_name, "file", control)
-            _fail(child.generation == ledger._parse_generation(body["target_after"]))
+            _fail(child.generation == ledger._parse_generation(body["target_after"]) == session.owned[body["target_path"]])
+            child_chain = _chain_with_child(target_chain, target_name, child)
+            fs._revalidate_chain(child_chain, control)
             _fsync(child.operation_fd, control)
         else:
-            _fail(name.raw not in fs._enumerate_stable(parent, control).raw_names)
+            _fail(name.raw not in fs._enumerate_stable(parent, control).raw_names and path not in session.owned)
             if body["target"] is not None:
-                target_parent, extra_opened, target_name = _open_relative_parent(operation, body["target_path"], control)
+                target_parent, extra_opened, target_name = _open_relative_parent(session.operation, body["target_path"], control)
+                target_chain = _relative_parent_chain(session.active, session.locked, session.operation, body["target_path"], extra_opened, control)
+                fs._revalidate_chain(target_chain, control)
                 child = fs._open_path_node(target_parent, target_name, "file", control)
-                _fail(child.generation == ledger._parse_generation(body["target"]))
+                _fail(child.generation == ledger._parse_generation(body["target"]) == session.owned[body["target_path"]])
+                child_chain = _chain_with_child(target_chain, target_name, child)
+                fs._revalidate_chain(child_chain, control)
                 _fsync(child.operation_fd, control)
         _fsync(parent.operation_fd, control)
-        active = _cleanup_append(active, locked, operation, kind.removesuffix("observed") + "settled", body, origin, control)
-    entries, parents = _walk_entries(operation, control)
-    observations = ledger.ReconcileObservations(
-        _parent(locked.state, control),
-        ((_operation_name(_token(active)).text, fs._observe_node(operation.identity_fd, operation.operation_fd, control)),),
-        entries, _current_ledger(active, control), parents,
-    )
-    state = ledger._reconcile_ledger(_records(active), observations)
-    _require_cleanup(state, origin)
-    _fail(state.status == ("active" if origin == "prelease" else "release-authorized"))
-    return _cleanup_active(active, locked, operation, origin, control)
+        fs._revalidate_chain(chain, control)
+        if child_chain is not None: fs._revalidate_chain(child_chain, control)
+        _session_append(session, kind.removesuffix("observed") + "settled", body, control)
+        fs._revalidate_chain(chain, control)
+        if child_chain is not None: fs._revalidate_chain(child_chain, control)
+        if kind == "hardlink-create-observed":
+            session.groups[body["target_path"]].append(path)
+        elif kind == "remove-observed" and body["target_path"] is not None:
+            _fail(session.groups[body["target_path"]].pop() == path)
+    return _cleanup_active(session, control)
 
-
-def _resume_absent_create(active, locked, operation, reconciled, control):
-    _require_cleanup(reconciled, "prelease")
-    _fresh_cleanup(active, locked, operation, "prelease", control)
-    intent = _terminal_record(active)
+@_poisoned
+def _resume_absent_create(session, control):
+    _session_binding(session, control)
+    intent = _terminal_record(session.active)
+    _session_require(session, intent.record_type)
     _fail(intent.record_type in {"create-intent", "hardlink-create-intent"})
     body = intent.body_value()
     path = body.get("path", body.get("alias"))
-    _parent, opened, name = _open_relative_parent(operation, path, control)
+    _parent_node, opened, name = _open_relative_parent(session.operation, path, control)
     with _owned_nodes(lambda: opened):
-        parent_chain = _relative_parent_chain(active, locked, operation, path, opened, control)
-        body = _absence_abort_body(body, parent_chain, name, control)
-    active = _cleanup_append(active, locked, operation, intent.record_type.removesuffix("intent") + "abort", body, "prelease", control)
-    entries, parents = _walk_entries(operation, control)
-    observations = ledger.ReconcileObservations(
-        _parent(locked.state, control),
-        ((_operation_name(_token(active)).text, fs._observe_node(operation.identity_fd, operation.operation_fd, control)),),
-        entries, _current_ledger(active, control), parents,
-    )
-    state = ledger._reconcile_ledger(_records(active), observations)
-    _require_cleanup(state, "prelease")
-    _fail(state.status == "active")
-    return _cleanup_active(active, locked, operation, "prelease", control)
+        chain = _relative_parent_chain(session.active, session.locked, session.operation, path, opened, control)
+        body = _absence_abort_body(body, chain, name, control)
+    _session_append(session, intent.record_type.removesuffix("intent") + "abort", body, control)
+    return _cleanup_active(session, control)
 
+@_poisoned
+def _unlink_ledger(session, control):
+    _session_require(session, "retired")
+    _session_binding(session, control, "retired")
+    state_chain = _state_chain(session.locked, control)
+    before_snapshot = _parent_snapshot(session.locked.state, control)
+    _fail(_parent_value(before_snapshot) == session.state_parent)
+    fs._revalidate_chain(state_chain, control)
+    expected = fs._observe_node(session.active.node.identity_fd, session.active.node.operation_fd, control)
+    _close(session.active.node)
+    _remove_name(session.locked.state, LEDGER_NAME, expected, control)
+    after_snapshot = _parent_snapshot(session.locked.state, control)
+    delta = fs.ParentDelta("unlink", LEDGER_NAME, before_snapshot, after_snapshot)
+    fs._revalidate_chain(state_chain, control, delta)
+    _fail(after_snapshot.raw_names == tuple(sorted((STATE_SENTINEL_NAME.raw, LOCK_NAME.raw))))
+    sentinel = _verify_fixed_file(session.locked.state, STATE_SENTINEL_NAME, STATE_SENTINEL, control)
+    _close(sentinel)
+    _fail(fs._observe_child(session.locked.state, LOCK_NAME, control) == session.locked.lock.generation)
+    _fail(fs._enumerate_stable(session.locked.state, control).raw_names == after_snapshot.raw_names)
+    session.disposition = "finished"
 
-def _finish_operation_absent(active, locked, origin, control):
-    token = _token(active)
+@_poisoned
+def _retire_absent(session, control):
+    _session_require(session, ("aborted", "operation-absent"))
+    boundary = _open_cleanup_session(session.active, session.locked, None, session.origin, control)
+    session.disposition = "finished"
+    _fail(boundary.status == "retirable")
+    _session_append(boundary, "retired", {"token": _token(boundary.active), "state_parent": _p(boundary.state_parent)}, control)
+    final = _open_cleanup_session(boundary.active, boundary.locked, None, boundary.origin, control)
+    boundary.disposition = "finished"
+    _fail(final.status == "retired")
+    return _unlink_ledger(final, control)
+
+@_poisoned
+def _retire(session, control, intent_exists=False):
+    _session_require(session, "operation-remove" if intent_exists else None)
+    _fail(session.operation is not None and not session.owned)
+    operation_chain = _held_operation_chain(session.active, session.locked, session.operation, control)
+    fs._revalidate_chain(operation_chain, control)
+    _fail(operation_chain.components[-1].node.generation == session.operation_generation)
+    _fail(not fs._enumerate_stable(session.operation, control).names)
+    token = _token(session.active)
+    operation_name = _operation_name(token)
+    state_chain = _state_chain(session.locked, control)
+    fs._revalidate_chain(state_chain, control)
+    pre_snapshot = _parent_snapshot(session.locked.state, control)
+    pre = _parent_value(pre_snapshot)
+    _fail(pre == session.state_parent)
+    fs._revalidate_chain(state_chain, control)
+    fs._revalidate_chain(operation_chain, control)
+    if not intent_exists:
+        _session_append(session, "operation-remove-intent", {"token": token, "operation_name": operation_name.text, "state_parent": _p(pre), "operation": _g(session.operation_generation)}, control)
+    else:
+        intent = _terminal_record(session.active).body_value()
+        _fail(ledger._parse_parent(intent["state_parent"]) == pre)
+        _fail(ledger._parse_generation(intent["operation"]) == session.operation_generation)
     transition = _transition_control()
-    _fresh_cleanup(active, locked, None, origin, transition)
-    _fsync(locked.state.operation_fd, transition)
-    post = _parent(locked.state, transition)
-    body = {"token": token, "operation_name": _operation_name(token).text, "state_parent": _p(post)}
-    active = _cleanup_append(active, locked, None, "operation-absent", body, origin, transition)
-    active = _cleanup_append(active, locked, None, "retired", {"token": token, "state_parent": _p(post)}, origin, transition)
+    fs._revalidate_chain(operation_chain, transition)
+    expected = fs._observe_node(session.operation.identity_fd, session.operation.operation_fd, transition)
+    _fail(expected == session.operation_generation)
+    _close(session.operation)
+    _remove_name(session.locked.state, operation_name, expected, transition)
+    post_snapshot = _parent_snapshot(session.locked.state, transition)
+    delta = fs.ParentDelta("rmdir", operation_name, pre_snapshot, post_snapshot)
+    fs._revalidate_chain(state_chain, transition, delta)
+    session.operation = None
+    session.operation_generation = None
+    session.state_parent = _parent_value(post_snapshot)
+    _session_append(session, "operation-absent", {"token": token, "operation_name": operation_name.text, "state_parent": _p(session.state_parent)}, transition)
     control.check()
-    return _unlink_ledger(active, locked, origin, control)
+    return _retire_absent(session, control)
 
+@_poisoned
+def _finish_operation_absent(session, control):
+    _session_require(session, "operation-remove")
+    _fail(session.operation is None)
+    transition = _transition_control()
+    _fsync(session.locked.state.operation_fd, transition)
+    post = _parent(session.locked.state, transition)
+    _fail(post == session.state_parent)
+    token = _token(session.active)
+    _session_append(session, "operation-absent", {"token": token, "operation_name": _operation_name(token).text, "state_parent": _p(post)}, transition)
+    control.check()
+    return _retire_absent(session, control)
+
+@_poisoned
+def _abort(session, record_type, control):
+    token = _token(session.active)
+    body = {"token": token, "state_parent": _p(session.state_parent)}
+    if record_type == "operation-abort":
+        body = {"token": token, "operation_name": _operation_name(token).text, "state_parent": _p(session.state_parent)}
+    _session_append(session, record_type, body, control)
+    return _retire_absent(session, control)
+
+@_poisoned
+def _settle_startup(session, control):
+    token = _token(session.active)
+    if session.status == "genesis-settleable":
+        _session_append(session, "genesis-settled", {"token": token, "state_parent": _terminal_record(session.active).body_value()["state_parent"]}, control)
+        return _abort(session, "genesis-abort", control)
+    _fail(session.status == "operation-create-settleable" and session.operation is not None)
+    body = _terminal_record(session.active).body_value()
+    _fail(fs._observe_node(session.operation.identity_fd, session.operation.operation_fd, control) == ledger._parse_generation(body["operation"]) == session.operation_generation)
+    _fsync(session.operation.operation_fd, control)
+    _fsync(session.locked.state.operation_fd, control)
+    _session_append(session, "operation-create-settled", body, control)
+    return _cleanup_active(session, control)
 
 def _cleanup_owned(owned, active, control):
     _fail(type(owned) is OwnedOperation and type(active) is ActiveLedger)
-    _close(owned.root)
-    entries, parents = _walk_entries(owned.operation, control)
-    observations = ledger.ReconcileObservations(
-        _parent(owned.locked.state, control),
-        ((owned.operation_name, fs._observe_node(owned.operation.identity_fd, owned.operation.operation_fd, control)),),
-        entries, _current_ledger(active, control), parents,
-    )
-    reconciled = ledger._reconcile_ledger(_records(active), observations)
-    _require_cleanup(reconciled, "prelease")
-    if reconciled.status == "entry-absent":
-        _resume_absent_create(active, owned.locked, owned.operation, reconciled, control)
-    elif reconciled.status in {"create-settleable", "metadata-settleable", "hardlink-create-settleable", "remove-settleable"}:
-        _resume_observed(active, owned.locked, owned.operation, reconciled, "prelease", control)
+    session = _open_cleanup_session(active, owned.locked, owned.operation, "prelease", control)
+    try:
+        _close(owned.root)
+    except BaseException:
+        session.disposition = "invalid"
+        raise
+    if session.status == "entry-absent":
+        _resume_absent_create(session, control)
+    elif session.status in {"create-settleable", "metadata-settleable", "hardlink-create-settleable", "remove-settleable"}:
+        _resume_observed(session, control)
     else:
-        _fail(reconciled.status == "active")
-        _cleanup_active(active, owned.locked, owned.operation, "prelease", control)
+        _fail(session.status == "active")
+        _cleanup_active(session, control)
     _release_lock(owned.locked)
     _close(owned.locked.state)
 
-
-def _abort(active, locked, record_type, origin, control):
-    _fresh_cleanup(active, locked, None, origin, control)
-    token = _token(active)
-    body = {"token": token, "state_parent": _p(_parent(locked.state, control))}
-    if record_type == "operation-abort":
-        body = {"token": token, "operation_name": _operation_name(token).text, "state_parent": body["state_parent"]}
-    active = _cleanup_append(active, locked, None, record_type, body, origin, control)
-    active = _cleanup_append(active, locked, None, "retired", {"token": token, "state_parent": _p(_parent(locked.state, control))}, origin, control)
-    return _unlink_ledger(active, locked, origin, control)
-
-
-def _settle_startup(active, locked, operation, reconciled, control):
-    _require_cleanup(reconciled, "prelease")
-    _fresh_cleanup(active, locked, operation, "prelease", control)
-    status = reconciled.status
-    token = _token(active)
-    if status == "genesis-settleable":
-        body = {"token": token, "state_parent": _terminal_record(active).body_value()["state_parent"]}
-        active = _cleanup_append(active, locked, None, "genesis-settled", body, "prelease", control)
-        return _abort(active, locked, "genesis-abort", "prelease", control)
-    _fail(status == "operation-create-settleable" and operation is not None)
-    body = _terminal_record(active).body_value()
-    _fail(fs._observe_node(operation.identity_fd, operation.operation_fd, control) == ledger._parse_generation(body["operation"]))
-    _fsync(operation.operation_fd, control)
-    _fsync(locked.state.operation_fd, control)
-    active = _cleanup_append(active, locked, operation, "operation-create-settled", body, "prelease", control)
-    entries, parents = _walk_entries(operation, control)
-    observations = ledger.ReconcileObservations(
-        _parent(locked.state, control),
-        ((_operation_name(token).text, fs._observe_node(operation.identity_fd, operation.operation_fd, control)),),
-        entries, _current_ledger(active, control), parents,
-    )
-    reconciled = ledger._reconcile_ledger(_records(active), observations)
-    _require_cleanup(reconciled, "prelease")
-    _fail(reconciled.status == "active")
-    return _cleanup_active(active, locked, operation, "prelease", control)
-
-
 def _recover_locked(chain, state, control):
     locked = _acquire_lock(chain, state, control)
-    active = None
-    operation = None
+    active = operation = None
     try:
         names = fs._enumerate_stable(state, control).raw_names
         fixed_idle = tuple(sorted((STATE_SENTINEL_NAME.raw, LOCK_NAME.raw)))
@@ -1509,65 +1615,41 @@ def _recover_locked(chain, state, control):
         _fail(LEDGER_NAME.raw in names)
         active = _read_active_ledger(state, control)
         genesis = _first_record(active).body_value()
-        approval = fs.SourceApproval(genesis["source_revision"], genesis["source_manifest_sha256"])
-        fs._verify_source_bundle(_source(chain), approval, control)
-        records = _records(active)
-        observations, operation = _observations(locked, records, _current_ledger(active, control), control)
-        reconciled = ledger._reconcile_ledger(records, observations)
-        origin = "release-authorized" if reconciled.release_authorized else "prelease"
-        if reconciled.status == "genesis-settleable":
-            _require_cleanup(reconciled, "prelease")
-            _settle_startup(active, locked, operation, reconciled, control)
-        elif reconciled.status == "genesis-abortable":
-            _require_cleanup(reconciled, "prelease")
-            _abort(active, locked, "genesis-abort", "prelease", control)
-        elif reconciled.status == "operation-abortable":
-            _require_cleanup(reconciled, "prelease")
-            _abort(active, locked, "operation-abort", "prelease", control)
-        elif reconciled.status == "operation-create-settleable":
-            _require_cleanup(reconciled, "prelease")
+        fs._verify_source_bundle(_source(chain), fs.SourceApproval(genesis["source_revision"], genesis["source_manifest_sha256"]), control)
+        state_snapshot = fs._enumerate_stable(locked.state, control)
+        operation_names = [item for item in state_snapshot.names if item.raw not in {STATE_SENTINEL_NAME.raw, LOCK_NAME.raw, LEDGER_NAME.raw}]
+        if operation_names:
+            _fail(operation_names == [_operation_name(_token(active))])
+            operation = fs._open_path_node(locked.state, operation_names[0], "directory", control)
+        session = _open_cleanup_session(active, locked, operation, "release-authorized" if active.records.legal.phase == "release-authorized" or active.records.legal.return_phase == "release-authorized" or active.records.legal.lease_snapshot is not None else "prelease", control)
+        active = session.active
+        status = session.status
+        if status in {"genesis-settleable", "operation-create-settleable"}:
+            _settle_startup(session, control)
+        elif status == "genesis-abortable":
+            _abort(session, "genesis-abort", control)
+        elif status == "operation-abortable":
+            _abort(session, "operation-abort", control)
+        elif status in {"active", "release-authorized"}:
             _fail(operation is not None)
-            _settle_startup(active, locked, operation, reconciled, control)
-            operation = None
-        elif reconciled.status in {"active", "release-authorized"}:
-            _require_cleanup(reconciled, "prelease" if reconciled.status == "active" else "release-authorized")
-            _fail(operation is not None)
-            _cleanup_active(active, locked, operation, "prelease" if reconciled.status == "active" else "release-authorized", control)
-            operation = None
-        elif reconciled.status == "entry-absent":
-            _require_cleanup(reconciled, "prelease")
-            _fail(operation is not None)
-            _resume_absent_create(active, locked, operation, reconciled, control)
-            operation = None
-        elif reconciled.status in {"create-settleable", "metadata-settleable", "hardlink-create-settleable", "remove-settleable"}:
-            _require_cleanup(reconciled, origin)
-            _fail(operation is not None)
-            _resume_observed(active, locked, operation, reconciled, origin, control)
-            operation = None
-        elif reconciled.status in {"remove-retry", "remove-absence-settleable", "hardlink-remove-absence-settleable"}:
-            _require_cleanup(reconciled, origin)
-            _fail(operation is not None)
-            _resume_entry_remove(active, locked, operation, reconciled, origin, control)
-            operation = None
-        elif reconciled.status == "operation-remove-retry":
-            _require_cleanup(reconciled, origin)
-            _fail(operation is not None)
-            _retire(active, locked, operation, origin, control, intent_exists=True)
-            operation = None
-        elif reconciled.status == "operation-absence-settleable":
-            _require_cleanup(reconciled, origin)
-            _fail(operation is None)
-            _finish_operation_absent(active, locked, origin, control)
-        elif reconciled.status == "retirable":
-            _require_cleanup(reconciled, origin)
-            active = _cleanup_append(active, locked, None, "retired", {"token": _token(active), "state_parent": _p(_parent(state, control))}, origin, control)
-            _unlink_ledger(active, locked, origin, control)
-        elif reconciled.status == "retired":
-            _require_cleanup(reconciled, origin)
-            _unlink_ledger(active, locked, origin, control)
+            _cleanup_active(session, control)
+        elif status == "entry-absent":
+            _resume_absent_create(session, control)
+        elif status in {"create-settleable", "metadata-settleable", "hardlink-create-settleable", "remove-settleable"}:
+            _resume_observed(session, control)
+        elif status in {"remove-retry", "remove-absence-settleable", "hardlink-remove-absence-settleable"}:
+            _resume_entry_remove(session, control)
+        elif status == "operation-remove-retry":
+            _retire(session, control, True)
+        elif status == "operation-absence-settleable":
+            _finish_operation_absent(session, control)
+        elif status == "retirable":
+            _retire_absent(session, control)
+        elif status == "retired":
+            _unlink_ledger(session, control)
         else:
             raise BuilderError()
-        active = None
+        active = operation = None
         _release_lock(locked)
     except BaseException as error:
         if operation is not None and operation.identity_fd.disposition == "open":
@@ -1581,8 +1663,6 @@ def _recover_locked(chain, state, control):
             except BaseException as close_error:
                 error = fs.RootfsFsError(error, close_error)
         _release_lock(locked, error)
-
-
 def _recover_fixed_unmasked(control):
     _fail(Path(__file__).resolve() == FIXED_MODULE)
     chain = _open_base_chain(control)

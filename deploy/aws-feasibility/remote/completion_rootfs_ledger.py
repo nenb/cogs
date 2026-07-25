@@ -933,6 +933,7 @@ def _replay_graph(records):
     state_parent = None
     operation = None
     owned = {}
+    hardlink_aliases = {}
     consistent = True
     for record in records:
         body = _body(record)
@@ -941,6 +942,8 @@ def _replay_graph(records):
             state_parent = _parse_parent(body["state_parent"])
         if kind == "operation-create-settled":
             operation = _parse_generation(body["operation"])
+        elif kind == "hardlink-group":
+            hardlink_aliases[body["target_path"]] = tuple(body["aliases"])
         elif kind in {"create-settled", "metadata-settled"}:
             owned[body["path"]] = _parse_generation(body["child"])
         elif kind == "hardlink-create-settled":
@@ -948,19 +951,30 @@ def _replay_graph(records):
             owned[body["alias"]] = linked
             if body["target_path"] in owned:
                 owned[body["target_path"]] = linked
+                for alias in hardlink_aliases[body["target_path"]]:
+                    if alias in owned:
+                        owned[alias] = linked
             else:
                 consistent = False
         elif kind == "remove-settled":
             owned.pop(body["path"], None)
             if body["target"] is not None:
                 if body["target_path"] in owned:
-                    owned[body["target_path"]] = _parse_generation(body["target"])
+                    target = _parse_generation(body["target"])
+                    owned[body["target_path"]] = target
+                    for alias in hardlink_aliases[body["target_path"]]:
+                        if alias in owned:
+                            owned[alias] = target
                 else:
                     consistent = False
         if kind in {"create-settled", "hardlink-create-settled", "remove-settled", "create-abort", "hardlink-create-abort"}:
             path = body.get("path", body.get("alias"))
             if kind == "hardlink-create-abort" and body["target_path"] in owned:
-                owned[body["target_path"]] = _parse_generation(body["target"])
+                target = _parse_generation(body["target"])
+                owned[body["target_path"]] = target
+                for alias in hardlink_aliases[body["target_path"]]:
+                    if alias in owned:
+                        owned[alias] = target
             parent_path = path.rpartition("/")[0]
             parent_generation = _parse_parent(body["parent"]).generation
             if parent_path:
@@ -1294,6 +1308,7 @@ def _reconcile_ledger(records, observations):
     entries = dict(observations.entries)
     parents = dict(observations.parents)
     owned = {}
+    hardlink_aliases = {}
     pending = None
     operation_generation = None
     operation_intended = False
@@ -1306,6 +1321,8 @@ def _reconcile_ledger(records, observations):
             state_parent = _parse_parent(body["state_parent"])
         if kind == "operation-create-intent":
             operation_intended = True
+        if kind == "hardlink-group":
+            hardlink_aliases[body["target_path"]] = tuple(body["aliases"])
         if kind == "operation-create-settled":
             operation_generation = _parse_generation(body["operation"])
         elif kind in {"create-settled", "metadata-settled"}:
@@ -1315,13 +1332,20 @@ def _reconcile_ledger(records, observations):
             owned[body["alias"]] = linked
             if body["target_path"] in owned:
                 owned[body["target_path"]] = linked
+                for alias in hardlink_aliases[body["target_path"]]:
+                    if alias in owned:
+                        owned[alias] = linked
             else:
                 operation_consistent = False
         elif kind == "remove-settled":
             owned.pop(body["path"], None)
             if body["target_path"] is not None and body["target"] is not None:
                 if body["target_path"] in owned:
-                    owned[body["target_path"]] = _parse_generation(body["target"])
+                    target = _parse_generation(body["target"])
+                    owned[body["target_path"]] = target
+                    for alias in hardlink_aliases[body["target_path"]]:
+                        if alias in owned:
+                            owned[alias] = target
                 else:
                     operation_consistent = False
         if kind in {"create-settled", "hardlink-create-settled", "remove-settled"}:
@@ -1337,7 +1361,11 @@ def _reconcile_ledger(records, observations):
         if kind in {"create-abort", "hardlink-create-abort"}:
             path = body.get("path", body.get("alias"))
             if kind == "hardlink-create-abort" and body["target_path"] in owned:
-                owned[body["target_path"]] = _parse_generation(body["target"])
+                target = _parse_generation(body["target"])
+                owned[body["target_path"]] = target
+                for alias in hardlink_aliases[body["target_path"]]:
+                    if alias in owned:
+                        owned[alias] = target
             parent_path = path.rpartition("/")[0]
             parent_generation = _parse_parent(body["parent"]).generation
             if parent_path:
@@ -1399,14 +1427,22 @@ def _reconcile_ledger(records, observations):
         elif kind == "hardlink-create-observed":
             target_path = body["target_path"]
             eligible = path not in owned and target_path in owned and owned[target_path] == _parse_generation(body["target_before"])
-            expected[path] = _parse_generation(body["alias_generation"])
-            expected[target_path] = _parse_generation(body["target_after"])
+            linked = _parse_generation(body["target_after"])
+            expected[path] = linked
+            expected[target_path] = linked
+            for alias in hardlink_aliases[target_path]:
+                if alias in expected:
+                    expected[alias] = linked
         elif kind == "remove-observed":
             eligible = path in owned and owned[path] == _parse_generation(intent["child"])
             expected.pop(path, None)
             if body["target"] is not None:
                 eligible = eligible and body["target_path"] in owned
-                expected[body["target_path"]] = _parse_generation(body["target"])
+                target = _parse_generation(body["target"])
+                expected[body["target_path"]] = target
+                for alias in hardlink_aliases[body["target_path"]]:
+                    if alias in expected:
+                        expected[alias] = target
         if recorded_parent is not None:
             if parent_path:
                 expected[parent_path] = recorded_parent.generation
@@ -1453,6 +1489,9 @@ def _reconcile_ledger(records, observations):
                     try:
                         _hardlink_generation_change(expected, current_target, -1)
                         remaining[body["target_path"]] = current_target
+                        for alias in hardlink_aliases[body["target_path"]]:
+                            if alias in remaining:
+                                remaining[alias] = current_target
                         hardlink_exact = True
                     except (LedgerError, RootfsFsError, TypeError, AttributeError):
                         hardlink_exact = False

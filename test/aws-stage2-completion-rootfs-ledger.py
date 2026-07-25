@@ -445,6 +445,76 @@ def codec_and_reconcile_tests():
     assert ledger._reconcile_ledger(ledger._parse_ledger(encoded(uncertain)), observations).status == "preserve"
 
 
+def multi_alias_replay_tests():
+    proposals, _state_before, state_after, _operation = lifecycle_prefix()
+    before = parent(2, ())
+    target_parent = parent(2, ("target",), ctime=2)
+    first_parent = parent(2, ("alias-one", "target"), ctime=3)
+    second_parent = parent(2, ("alias-one", "alias-two", "target"), ctime=4)
+    target = generation(30, "file", 0o644, 1, 7)
+    linked_two = dataclasses.replace(target, nlink=2, ctime_ns=2)
+    linked_three = dataclasses.replace(target, nlink=3, ctime_ns=3)
+    values = proposals + [
+        ledger.LedgerProposal.create("create-intent", {"token": TOKEN, "path": "target", "kind": "file", "parent": pvalue(before)}),
+        ledger.LedgerProposal.create("create-observed", {"token": TOKEN, "path": "target", "kind": "file", "parent": pvalue(target_parent), "child": gvalue(target)}),
+        ledger.LedgerProposal.create("create-settled", {"token": TOKEN, "path": "target", "kind": "file", "parent": pvalue(target_parent), "child": gvalue(target)}),
+        ledger.LedgerProposal.create("hardlink-group", {"token": TOKEN, "target_path": "target", "aliases": ["alias-one", "alias-two"], "content_sha256": "d" * 64, "target": gvalue(target)}),
+        ledger.LedgerProposal.create("hardlink-create-intent", {"token": TOKEN, "target_path": "target", "alias": "alias-one", "index": 0, "target": gvalue(target), "parent": pvalue(target_parent)}),
+        ledger.LedgerProposal.create("hardlink-create-observed", {"token": TOKEN, "target_path": "target", "alias": "alias-one", "index": 0, "target_before": gvalue(target), "target_after": gvalue(linked_two), "alias_generation": gvalue(linked_two), "parent": pvalue(first_parent)}),
+        ledger.LedgerProposal.create("hardlink-create-settled", {"token": TOKEN, "target_path": "target", "alias": "alias-one", "index": 0, "target_before": gvalue(target), "target_after": gvalue(linked_two), "alias_generation": gvalue(linked_two), "parent": pvalue(first_parent)}),
+        ledger.LedgerProposal.create("hardlink-create-intent", {"token": TOKEN, "target_path": "target", "alias": "alias-two", "index": 1, "target": gvalue(linked_two), "parent": pvalue(first_parent)}),
+        ledger.LedgerProposal.create("hardlink-create-observed", {"token": TOKEN, "target_path": "target", "alias": "alias-two", "index": 1, "target_before": gvalue(linked_two), "target_after": gvalue(linked_three), "alias_generation": gvalue(linked_three), "parent": pvalue(second_parent)}),
+        ledger.LedgerProposal.create("hardlink-create-settled", {"token": TOKEN, "target_path": "target", "alias": "alias-two", "index": 1, "target_before": gvalue(linked_two), "target_after": gvalue(linked_three), "alias_generation": gvalue(linked_three), "parent": pvalue(second_parent)}),
+    ]
+    second_observed = ledger._parse_ledger(encoded(values[:-1]))
+    second_observations = ledger.ReconcileObservations(
+        state_after, ((ledger._operation_name(TOKEN), second_parent.generation),),
+        (("alias-one", linked_three), ("alias-two", linked_three), ("target", linked_three)),
+        ledger_file(), (("", second_parent),),
+    )
+    assert ledger._reconcile_ledger(second_observed, second_observations).status == "hardlink-create-settleable"
+    records = ledger._parse_ledger(encoded(values))
+    _state, operation, owned, consistent = ledger._replay_graph(records)
+    assert consistent and operation == second_parent.generation
+    assert owned == {"alias-one": linked_three, "alias-two": linked_three, "target": linked_three}
+    observations = ledger.ReconcileObservations(
+        state_after, ((ledger._operation_name(TOKEN), second_parent.generation),), tuple(owned.items()),
+        ledger_file(), (("", second_parent),),
+    )
+    assert ledger._reconcile_ledger(records, observations).status == "active"
+
+    current_parent = second_parent
+    current_target = linked_three
+    current = values
+    for alias, after_parent, after_target in (
+        ("alias-two", first_parent, linked_two), ("alias-one", target_parent, target),
+    ):
+        intent = ledger.LedgerProposal.create("remove-intent", {
+            "token": TOKEN, "path": alias, "kind": "hardlink", "parent": pvalue(current_parent),
+            "child": gvalue(current_target), "target_path": "target",
+        })
+        observed = ledger.LedgerProposal.create("remove-observed", {
+            "token": TOKEN, "path": alias, "kind": "hardlink", "parent": pvalue(after_parent),
+            "target_path": "target", "target": gvalue(after_target),
+        })
+        remaining = {path: after_target for path in ({"alias-one", "target"} if alias == "alias-two" else {"target"})}
+        absent_observations = ledger.ReconcileObservations(
+            state_after, ((ledger._operation_name(TOKEN), after_parent.generation),), tuple(remaining.items()),
+            ledger_file(), (("", after_parent),),
+        )
+        intent_records = ledger._parse_ledger(encoded(current + [intent]))
+        assert ledger._reconcile_ledger(intent_records, absent_observations).status == "hardlink-remove-absence-settleable"
+        observed_records = ledger._parse_ledger(encoded(current + [intent, observed]))
+        assert ledger._reconcile_ledger(observed_records, absent_observations).status == "remove-settleable"
+        current += [intent, observed, ledger.LedgerProposal.create("remove-settled", observed.body_value())]
+        records = ledger._parse_ledger(encoded(current))
+        _state, operation, owned, consistent = ledger._replay_graph(records)
+        assert consistent and operation == after_parent.generation
+        assert all(value == after_target for value in owned.values())
+        current_parent, current_target = after_parent, after_target
+    assert owned == {"target": target}
+
+
 def lease_codec_and_origin_tests():
     proposals, _state_before, state_after, operation = lifecycle_prefix()
     operation_before = parent(2, ())
@@ -1451,6 +1521,7 @@ def static_tests():
 
 
 codec_and_reconcile_tests()
+multi_alias_replay_tests()
 lease_codec_and_origin_tests()
 status_matrix_tests()
 hostile_codec_tests()

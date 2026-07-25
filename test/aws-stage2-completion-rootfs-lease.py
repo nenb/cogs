@@ -134,23 +134,22 @@ def behavioral_fault_tests():
     authorized = ledger.LedgerParent(generation(10), tuple(sorted((ledger_name, "lock"))))
     drifted = ledger.LedgerParent(dataclasses.replace(authorized.generation, ctime_ns=2), tuple(sorted((*authorized.names, "drift"))))
     hostile_after = ledger.LedgerParent(dataclasses.replace(authorized.generation, ctime_ns=3), ("drift", "lock"))
-    active = SimpleNamespace(node=SimpleNamespace(identity_fd=object(), operation_fd=object()), records=())
-    locked = SimpleNamespace(state=object())
-    observations = SimpleNamespace(state_parent=authorized)
+    active = SimpleNamespace(node=SimpleNamespace(identity_fd=object(), operation_fd=object()))
+    locked = SimpleNamespace(state=object(), lock=SimpleNamespace(generation=generation(21, "file", 0o600, 1)))
     transitions = []
 
     def run_unlink(parents):
         values = iter(parents)
         transitions.clear()
+        session = SimpleNamespace(disposition="active", active=active, locked=locked, state_parent=authorized)
 
         def parent_snapshot(*_args):
             value = next(values)
-            return fs.DirectoryNamesSnapshot(
-                value.generation, tuple(fs._name(name) for name in value.names),
-            )
+            return fs.DirectoryNamesSnapshot(value.generation, tuple(fs._name(name) for name in value.names))
 
         with patched(
-            (builder, "_fresh_cleanup_authority", lambda *_args: (object(), observations)),
+            (builder, "_session_require", lambda *_args: None),
+            (builder, "_session_binding", lambda *_args: None),
             (builder, "_state_chain", lambda *_args: object()),
             (builder.fs, "_revalidate_chain", lambda *_args: None),
             (builder.fs, "_observe_node", lambda *_args: generation(20, "file", 0o600, 1)),
@@ -158,7 +157,8 @@ def behavioral_fault_tests():
             (builder, "_close", lambda _node: transitions.append("close")),
             (builder, "_remove_name", lambda *_args: transitions.append("unlink")),
         ):
-            rejected(lambda: builder._unlink_ledger(active, locked, "prelease", control))
+            rejected(lambda: builder._unlink_ledger(session, control))
+        assert session.disposition == "invalid"
 
     matrix_case(2)
     run_unlink((drifted,))
@@ -854,10 +854,10 @@ def preservation_route_tests():
         active_node = held_node(152, "recovery-ledger", "file", 0o600, 1, 1)
         operation = held_node(153, "recovery-operation")
         locked = SimpleNamespace(state=state, lock=lock)
-        active = builder.ActiveLedger(active_node, (SimpleNamespace(body_value=lambda: {
-            "token": "a" * 64, "source_revision": approval.revision, "source_manifest_sha256": approval.manifest_sha256,
-        }),), None)
-        leased_state = SimpleNamespace(status="leased", release_authorized=False)
+        active = SimpleNamespace(
+            node=active_node,
+            records=SimpleNamespace(legal=SimpleNamespace(phase="leased", return_phase=None, lease_snapshot=object())),
+        )
         mutations = []
 
         def forbidden(*_args):
@@ -878,11 +878,12 @@ def preservation_route_tests():
             (builder, "_acquire_lock", lambda *_args: locked),
             (builder.fs, "_enumerate_stable", lambda *_args: SimpleNamespace(raw_names=(builder.LEDGER_NAME.raw,))),
             (builder, "_read_active_ledger", lambda *_args: active),
+            (builder, "_first_record", lambda *_args: SimpleNamespace(body_value=lambda: {
+                "source_revision": approval.revision, "source_manifest_sha256": approval.manifest_sha256,
+            })),
             (builder.fs, "_verify_source_bundle", lambda *_args: None),
             (builder, "_source", lambda *_args: object()),
-            (builder, "_current_ledger", lambda *_args: generation(900, "file", 0o600, 1, 1)),
-            (builder, "_observations", lambda *_args: (object(), operation)),
-            (ledger, "_reconcile_ledger", lambda *_args: leased_state),
+            (builder, "_open_cleanup_session", lambda *_args: (_ for _ in ()).throw(builder.BuilderError())),
             (builder, "_close", close),
             (builder, "_release_lock", release),
             (builder, "_cleanup_active", forbidden),
@@ -891,7 +892,6 @@ def preservation_route_tests():
             (builder, "_retire", forbidden),
             (builder, "_finish_operation_absent", forbidden),
             (builder, "_unlink_ledger", forbidden),
-            (builder, "_cleanup_append", forbidden),
         ):
             try:
                 builder._recover_locked(object(), state, control)
@@ -924,6 +924,51 @@ def preservation_route_tests():
     assert exact == (durable["ledger"], durable["ledger_key"], durable["root"])
 
 
+def assert_fresh_recovery_route(status):
+    operation_name = ledger._operation_name("a" * 64)
+    state = object()
+    operation = SimpleNamespace(identity_fd=SimpleNamespace(disposition="open"))
+    locked = SimpleNamespace(state=state)
+    active = SimpleNamespace(
+        records=SimpleNamespace(legal=SimpleNamespace(phase="active", return_phase=None, lease_snapshot=None)),
+    )
+    session = SimpleNamespace(status=status, active=active)
+    state_names = [builder.STATE_SENTINEL_NAME.text, builder.LOCK_NAME.text, builder.LEDGER_NAME.text]
+    if status not in {"operation-absence-settleable", "retirable", "retired"}:
+        state_names.append(operation_name)
+    names = tuple(fs._name(name) for name in state_names)
+    snapshot = SimpleNamespace(raw_names=tuple(name.raw for name in names), names=names)
+    routes = []
+
+    def route(name):
+        return lambda *_args: routes.append(name)
+
+    with patched(
+        (builder, "_acquire_lock", lambda *_args: locked),
+        (builder.fs, "_enumerate_stable", lambda *_args: snapshot),
+        (builder, "_read_active_ledger", lambda *_args: active),
+        (builder, "_first_record", lambda *_args: SimpleNamespace(body_value=lambda: {
+            "source_revision": "b" * 40, "source_manifest_sha256": "c" * 64,
+        })),
+        (builder.fs, "_verify_source_bundle", lambda *_args: None), (builder, "_source", lambda *_args: object()),
+        (builder, "_token", lambda *_args: "a" * 64), (builder.fs, "_open_path_node", lambda *_args: operation),
+        (builder, "_open_cleanup_session", lambda *_args: (routes.append("fresh-open") or session)),
+        (builder, "_cleanup_active", route("active")), (builder, "_resume_absent_create", route("entry-absent")),
+        (builder, "_resume_observed", route("observed")), (builder, "_resume_entry_remove", route("remove")),
+        (builder, "_retire", route("operation-remove")),
+        (builder, "_finish_operation_absent", route("operation-absent")),
+        (builder, "_retire_absent", route("retirable")), (builder, "_unlink_ledger", route("retired")),
+        (builder, "_release_lock", lambda *_args: None),
+    ):
+        builder._recover_locked(object(), state, object())
+    expected = "active" if status in {"active", "release-authorized"} else (
+        "entry-absent" if status == "entry-absent" else "observed" if status.endswith("settleable") and not status.startswith(("remove-absence", "hardlink-remove-absence", "operation-absence")) else
+        "remove" if status in {"remove-retry", "remove-absence-settleable", "hardlink-remove-absence-settleable"} else
+        "operation-remove" if status == "operation-remove-retry" else "operation-absent" if status == "operation-absence-settleable" else status
+    )
+    assert routes == ["fresh-open", expected]
+
+
 def authorized_cleanup_boundary_tests():
     classes = (
         ("startup", "genesis-settled", "prelease"),
@@ -937,48 +982,647 @@ def authorized_cleanup_boundary_tests():
         ("create-abort", "create-abort", "prelease"),
         ("operation-abort", "operation-abort", "prelease"),
     )
-    boundaries = ("before-write", "partial-write", "after-write-before-sync", "after-sync", "rollback-success", "rollback-failure", "observed", "settled")
+    boundaries = (
+        "identity-before", "before-write", "partial-write", "after-write-before-fsync",
+        "fsync", "rollback-success", "rollback-failure", "readback", "identity-after", "success",
+    )
     for transition_class, record_type, origin in classes:
         for boundary in boundaries:
             events = []
-            active = SimpleNamespace(prefix=(transition_class,))
-            appended = SimpleNamespace(prefix=(transition_class, record_type))
+            previous = ledger.SettledBytes(2, 10, "a" * 64)
+            following = ledger.SettledBytes(3, 16, "b" * 64)
+            active = SimpleNamespace(writer=SimpleNamespace(settled=previous), node=SimpleNamespace(operation_fd=SimpleNamespace(number=7)))
+            appended = SimpleNamespace(writer=SimpleNamespace(settled=following), node=active.node)
+            session = SimpleNamespace(disposition="active", active=active, origin=origin)
+            fake_control = SimpleNamespace(check=lambda: None)
+            bindings = {"count": 0}
 
-            def append(current, kind, body, passed_control):
-                events.append(("append", kind, origin, boundary))
-                if boundary not in {"observed", "settled"}:
+            def binding(current, _control, _phase=None):
+                assert current is session and current.disposition == "active"
+                bindings["count"] += 1
+                events.append(("identity", bindings["count"]))
+                if boundary == "identity-before" and bindings["count"] == 1:
+                    raise OSError(boundary)
+                if boundary == "identity-after" and bindings["count"] == 2:
+                    raise OSError(boundary)
+
+            def append(current, kind, _body, _control):
+                events.append(("append", kind))
+                if boundary in {"before-write", "partial-write", "after-write-before-fsync", "fsync", "rollback-success", "rollback-failure"}:
                     raise OSError(boundary)
                 return appended
 
-            def fresh(current, locked, operation, expected_origin, passed_control):
-                events.append(("fresh", expected_origin, current.prefix))
-                assert expected_origin == origin
-                if current is active:
-                    if boundary == "before-write":
-                        raise OSError("detached before append")
-                else:
-                    assert current is appended
-                    if boundary == "observed":
-                        raise OSError("crash after durable append")
-                return SimpleNamespace(cleanup_allowed=True, cleanup_origin=origin)
+            def pread(*_args):
+                events.append(("readback", boundary))
+                return b"bad" if boundary == "readback" else b"record"
 
-            with patched((builder, "_append", append), (builder, "_fresh_cleanup", fresh)):
-                if boundary == "settled":
-                    assert builder._cleanup_append(active, object(), object(), record_type, {}, origin, object()) is appended
+            counter_before = fs.structural_counter_snapshot()
+            with patched(
+                (builder, "_ledger_binding", binding),
+                (builder, "_append", append),
+                (builder.ledger.LedgerProposal, "create", lambda *_args: object()),
+                (builder.ledger, "_encode_proposal", lambda *_args: b"record"),
+                (builder.os, "pread", pread),
+            ):
+                if boundary == "success":
+                    builder._session_append(session, record_type, {}, fake_control)
+                    assert session.active is appended and session.disposition == "active"
                 else:
-                    rejected(lambda: builder._cleanup_append(active, object(), object(), record_type, {}, origin, object()))
-            if boundary == "before-write":
-                assert events == [("fresh", origin, active.prefix)]
-            elif boundary in {"observed", "settled"}:
-                assert [event[0] for event in events] == ["fresh", "append", "fresh"]
-                assert events[0] == ("fresh", origin, active.prefix)
-                assert events[2] == ("fresh", origin, appended.prefix)
-            else:
-                assert events == [
-                    ("fresh", origin, active.prefix), ("append", record_type, origin, boundary),
-                ]
+                    rejected(lambda: builder._session_append(session, record_type, {}, fake_control))
+                    assert session.disposition == "invalid"
+                    assert session.active is (appended if boundary == "identity-after" else active)
+                    rejected(lambda: builder._session_append(session, record_type, {}, fake_control))
+            delta = fs.structural_counter_delta(counter_before, fs.structural_counter_snapshot())
+            assert delta["complete_legal_folds"] == delta["complete_walks"] == 0
             matrix_case()
 
+def cleanup_regular_fault_tests():
+    seams = (
+        "identity", "deadline", "cancellation", "pre-snapshot-chain", "intent", "mutation",
+        "parent-fsync", "post-snapshot-chain", "observed", "settled", "close",
+    )
+    for seam in seams:
+        child = generation(260, "file", 0o600, 1)
+        operation = generation(261)
+        names = {"child"}
+        session = SimpleNamespace(
+            disposition="active", origin="prelease", active=object(), locked=object(), operation=object(),
+            owned={"child": child}, parents={"": ledger.LedgerParent(operation, ("child",))},
+            groups={}, operation_generation=operation,
+        )
+        events = []
+        revalidations = {"count": 0}
+
+        def require(current, _phase=None):
+            assert current.disposition == "active"
+
+        def session_parent(*_args):
+            events.append("identity")
+            if seam in {"identity", "deadline", "cancellation"}:
+                raise OSError(seam)
+            return object(), (object(),), fs._name("child"), object()
+
+        def snapshot(*_args):
+            return fs.DirectoryNamesSnapshot(
+                session.operation_generation, tuple(fs._name(name) for name in sorted(names)),
+            )
+
+        def revalidate(*_args):
+            revalidations["count"] += 1
+            label = "pre-snapshot-chain" if revalidations["count"] == 1 else "post-snapshot-chain" if revalidations["count"] == 3 else None
+            if seam == label:
+                raise OSError(seam)
+
+        def append(_session, record_type, _body, _control):
+            events.append("attempt-" + record_type)
+            if seam == {"remove-intent": "intent", "remove-observed": "observed", "remove-settled": "settled"}[record_type]:
+                raise OSError(seam)
+            events.append(record_type)
+
+        def remove(_parent, _name, _expected, _control):
+            events.append("mutation")
+            names.remove("child")
+            session.operation_generation = dataclasses.replace(operation, ctime_ns=2)
+            if seam in {"mutation", "parent-fsync"}:
+                events.append("parent-fsync")
+                raise OSError(seam)
+
+        def close(_node):
+            events.append("close")
+            if seam == "close":
+                raise OSError(seam)
+
+        with patched(
+            (builder, "_session_require", require), (builder, "_session_parent", session_parent),
+            (builder, "_parent_snapshot", snapshot), (builder.fs, "_revalidate_chain", revalidate),
+            (builder, "_session_append", append), (builder, "_remove_name", remove),
+            (builder, "_chain_after_parent", lambda chain, *_args: chain),
+            (builder, "_token", lambda *_args: "a" * 64), (builder, "_close", close),
+        ):
+            rejected(lambda: builder._finish_remove(session, "child", child, False, SimpleNamespace(check=lambda: None)))
+            mutations = events.count("mutation")
+            rejected(lambda: builder._finish_remove(session, "child", child, False, SimpleNamespace(check=lambda: None)))
+        assert session.disposition == "invalid" and events.count("mutation") == mutations <= 1
+        durable = [event for event in events if event in {"remove-intent", "remove-observed", "remove-settled"}]
+        fresh = "active"
+        if "remove-settled" in durable:
+            fresh = "active-absent"
+        elif "remove-observed" in durable:
+            fresh = "remove-settleable"
+        elif "remove-intent" in durable:
+            fresh = "remove-absence-settleable" if "child" not in names else "remove-retry"
+        assert fresh in {"active", "active-absent", "remove-settleable", "remove-absence-settleable", "remove-retry"}
+        assert_fresh_recovery_route("active" if fresh == "active-absent" else fresh)
+        matrix_case()
+
+
+def cleanup_hardlink_fault_tests():
+    for seam in ("identity", "intent", "post-intent-alias-drift", "post-intent-target-drift", "mutation", "target-fsync", "parent-fsync", "observed", "settled", "close"):
+        operation = generation(270)
+        linked = generation(271, "file", 0o600, 3)
+        reduced = dataclasses.replace(linked, nlink=2, ctime_ns=2)
+        names = {"alias-one", "alias-two", "target"}
+        parent_node = SimpleNamespace(operation_fd=SimpleNamespace(role="parent", number=8))
+        target_parent_node = SimpleNamespace(operation_fd=SimpleNamespace(role="target-parent", number=9))
+        target_node = SimpleNamespace(generation=linked, identity_fd=object(), operation_fd=SimpleNamespace(role="target"))
+        alias_node = SimpleNamespace(generation=linked, identity_fd=object(), operation_fd=SimpleNamespace(role="alias"))
+        session = SimpleNamespace(
+            disposition="active", origin="prelease", active=object(), locked=object(), operation=object(),
+            owned={name: linked for name in names}, parents={"": ledger.LedgerParent(operation, tuple(sorted(names)))},
+            groups={"target": ["alias-one", "alias-two"]}, operation_generation=operation,
+        )
+        events = []
+
+        def require(current, _phase=None):
+            assert current.disposition == "active"
+
+        def session_parent(*_args):
+            if seam == "identity":
+                raise OSError(seam)
+            return parent_node, (object(),), fs._name("alias-two"), "alias-parent-chain"
+
+        def snapshot(*_args):
+            return fs.DirectoryNamesSnapshot(session.operation_generation, tuple(fs._name(name) for name in sorted(names)))
+
+        def append(_session, record_type, _body, _control):
+            events.append("attempt-" + record_type)
+            if seam == {"remove-intent": "intent", "remove-observed": "observed", "remove-settled": "settled"}[record_type]:
+                raise OSError(seam)
+            events.append(record_type)
+
+        def unlink(*_args, **_kwargs):
+            events.append("mutation")
+            names.remove("alias-two")
+            session.operation_generation = dataclasses.replace(operation, ctime_ns=2)
+            if seam == "mutation":
+                raise OSError(seam)
+
+        def fsync(descriptor, _control):
+            events.append(descriptor.role + "-fsync")
+            if seam == descriptor.role + "-fsync":
+                raise OSError(seam)
+
+        def open_node(_parent, name, _kind, _control):
+            return target_node if name.text == "target" else alias_node
+
+        child_checks = {"alias-two": 0, "target": 0}
+
+        def revalidate(chain, *_args):
+            if type(chain) is tuple and chain[0] == "child":
+                child_checks[chain[1]] += 1
+                expected = "post-intent-alias-drift" if chain[1] == "alias-two" else "post-intent-target-drift"
+                if seam == expected and child_checks[chain[1]] == 3:
+                    raise OSError(seam)
+
+        def close(_node):
+            events.append("close")
+            if seam == "close":
+                raise OSError(seam)
+
+        caught = []
+        with patched(
+            (builder, "_session_require", require), (builder, "_session_parent", session_parent),
+            (builder, "_open_relative_parent", lambda *_args: (target_parent_node, (), fs._name("target"))),
+            (builder, "_relative_parent_chain", lambda *_args: "target-parent-chain"),
+            (builder, "_parent_snapshot", snapshot), (builder, "_session_append", append),
+            (builder.fs, "_revalidate_chain", revalidate),
+            (builder.fs, "_open_path_node", open_node), (builder.fs, "_observe_node", lambda *_args: reduced),
+            (builder, "_fsync", fsync), (builder.os, "unlink", unlink),
+            (builder, "_delta_for_chain", lambda *_args: None),
+            (builder, "_chain_after_parent", lambda chain, *_args: chain),
+            (builder, "_chain_with_child", lambda chain, name, _node: ("child", name.text, chain)),
+            (builder, "_token", lambda *_args: "a" * 64), (builder, "_close", close),
+        ):
+            try:
+                builder._finish_hardlink_remove(session, "alias-two", "target", linked, SimpleNamespace(check=lambda: None))
+            except BaseException as error:
+                caught.append(error)
+            else:
+                raise AssertionError("hardlink fault accepted")
+            mutations = events.count("mutation")
+            rejected(lambda: builder._finish_hardlink_remove(
+                session, "alias-two", "target", linked, SimpleNamespace(check=lambda: None),
+            ))
+        assert session.disposition == "invalid" and events.count("mutation") == mutations <= 1
+        if seam in {"post-intent-alias-drift", "post-intent-target-drift"}:
+            assert mutations == 0 and "remove-intent" in events
+        if "remove-observed" in events or "remove-settled" in events or seam == "close":
+            assert session.owned.get("alias-one") == session.owned.get("target") == reduced, (seam, session.owned, events, caught, getattr(caught[0], "primary", None))
+        durable = [event for event in events if event in {"remove-intent", "remove-observed", "remove-settled"}]
+        recovered = "active" if "remove-settled" in durable else "remove-settleable" if "remove-observed" in durable else "hardlink-remove-absence-settleable" if "mutation" in events and "remove-intent" in durable else "remove-retry" if "remove-intent" in durable else "active"
+        assert_fresh_recovery_route(recovered)
+        matrix_case()
+
+
+def cleanup_absent_fault_tests():
+    for seam in ("identity", "post-snapshot-chain", "target-fsync", "parent-fsync", "observed", "settled", "close"):
+        operation = generation(280)
+        linked = generation(281, "file", 0o600, 2)
+        target_generation = dataclasses.replace(linked, nlink=1, ctime_ns=2)
+        post = ledger.LedgerParent(operation, ("target",))
+        parent_node = SimpleNamespace(operation_fd=SimpleNamespace(role="parent"))
+        target = SimpleNamespace(generation=target_generation, identity_fd=object(), operation_fd=SimpleNamespace(role="target"))
+        intent = {
+            "token": "a" * 64, "path": "alias", "kind": "hardlink",
+            "parent": ledger._parent_value(ledger.LedgerParent(dataclasses.replace(operation, ctime_ns=0), ("alias", "target"))),
+            "child": ledger._generation_value(linked), "target_path": "target",
+        }
+        session = SimpleNamespace(
+            disposition="active", origin="prelease", active=object(), locked=object(), operation=object(),
+            owned={"target": target_generation}, parents={"": post}, groups={"target": ["alias"]},
+            operation_generation=operation,
+        )
+        events = []
+        revalidations = {"count": 0}
+
+        def require(current, _phase=None):
+            assert current.disposition == "active"
+
+        def binding(*_args):
+            if seam == "identity":
+                raise OSError(seam)
+
+        def revalidate(*_args):
+            revalidations["count"] += 1
+            if seam == "post-snapshot-chain" and revalidations["count"] == 2:
+                raise OSError(seam)
+
+        def fsync(descriptor, _control):
+            events.append(descriptor.role + "-fsync")
+            if seam == descriptor.role + "-fsync":
+                raise OSError(seam)
+
+        def append(_session, record_type, _body, _control):
+            events.append("attempt-" + record_type)
+            if seam == {"remove-observed": "observed", "remove-settled": "settled"}[record_type]:
+                raise OSError(seam)
+            events.append(record_type)
+
+        def close(_node):
+            events.append("close")
+            if seam == "close":
+                raise OSError(seam)
+
+        with patched(
+            (builder, "_session_require", require), (builder, "_session_binding", binding),
+            (builder, "_terminal_record", lambda *_args: SimpleNamespace(body_value=lambda: intent)),
+            (builder, "_open_relative_parent", lambda _operation, path, _control: (
+                parent_node, (), fs._name(path.rpartition("/")[2]),
+            )),
+            (builder, "_relative_parent_chain", lambda *_args: object()),
+            (builder.fs, "_revalidate_chain", revalidate),
+            (builder.fs, "_enumerate_stable", lambda *_args: SimpleNamespace(raw_names=(b"target",))),
+            (builder, "_parent", lambda *_args: post),
+            (builder.fs, "_open_path_node", lambda *_args: target),
+            (builder.fs, "_observe_node", lambda *_args: target_generation),
+            (builder, "_chain_with_child", lambda *_args: object()),
+            (builder, "_fsync", fsync), (builder, "_session_append", append),
+            (builder, "_token", lambda *_args: "a" * 64), (builder, "_close", close),
+        ):
+            rejected(lambda: builder._finish_absent_remove(session, SimpleNamespace(check=lambda: None)))
+            appends = tuple(event for event in events if event.startswith("attempt-"))
+            rejected(lambda: builder._finish_absent_remove(session, SimpleNamespace(check=lambda: None)))
+        assert session.disposition == "invalid"
+        assert tuple(event for event in events if event.startswith("attempt-")) == appends
+        recovered = "active" if "remove-settled" in events else "remove-settleable" if "remove-observed" in events else "hardlink-remove-absence-settleable"
+        assert_fresh_recovery_route(recovered)
+        matrix_case()
+
+
+def cleanup_retirement_fault_tests():
+    for seam in ("operation-child-drift", "pre-snapshot-chain", "intent", "close", "mutation", "parent-fsync", "post-snapshot-chain", "operation-absent", "boundary-B"):
+        operation_generation = generation(290)
+        state_generation = generation(291)
+        operation_name = ledger._operation_name("a" * 64)
+        names = {builder.LEDGER_NAME.text, builder.LOCK_NAME.text, builder.STATE_SENTINEL_NAME.text, operation_name}
+        operation = SimpleNamespace(identity_fd=object(), operation_fd=SimpleNamespace(role="operation"))
+        locked = SimpleNamespace(state=SimpleNamespace(operation_fd=SimpleNamespace(role="state")))
+        session = SimpleNamespace(
+            disposition="active", origin="prelease", active=object(), locked=locked, operation=operation,
+            owned={}, groups={}, operation_generation=operation_generation,
+            state_parent=ledger.LedgerParent(state_generation, tuple(sorted(names))),
+        )
+        events = []
+        revalidations = {"count": 0}
+        chain_generation = dataclasses.replace(operation_generation, ctime_ns=2) if seam == "operation-child-drift" else operation_generation
+        operation_chain = SimpleNamespace(components=(SimpleNamespace(node=SimpleNamespace(generation=chain_generation)),))
+
+        def require(current, _phase=None):
+            assert current.disposition == "active"
+
+        def snapshot(*_args):
+            return fs.DirectoryNamesSnapshot(state_generation, tuple(fs._name(name) for name in sorted(names)))
+
+        def revalidate(*_args):
+            revalidations["count"] += 1
+            label = "pre-snapshot-chain" if revalidations["count"] == 3 else "post-snapshot-chain" if revalidations["count"] == 6 else None
+            if seam == label:
+                raise OSError(seam)
+
+        def append(_session, record_type, _body, _control):
+            events.append("attempt-" + record_type)
+            label = "intent" if record_type == "operation-remove-intent" else "operation-absent"
+            if seam == label:
+                raise OSError(seam)
+            events.append(record_type)
+
+        def close(_node):
+            events.append("close")
+            if seam == "close":
+                raise OSError(seam)
+
+        def remove(*_args):
+            events.append("mutation")
+            names.remove(operation_name)
+            if seam in {"mutation", "parent-fsync"}:
+                raise OSError(seam)
+
+        def boundary(*_args):
+            events.append("boundary-B")
+            if seam == "boundary-B":
+                raise OSError(seam)
+
+        with patched(
+            (builder, "_session_require", require), (builder, "_held_operation_chain", lambda *_args: operation_chain),
+            (builder, "_state_chain", lambda *_args: object()),
+            (builder.fs, "_revalidate_chain", revalidate),
+            (builder.fs, "_enumerate_stable", lambda *_args: SimpleNamespace(names=())),
+            (builder, "_parent_snapshot", snapshot), (builder, "_session_append", append),
+            (builder.fs, "_observe_node", lambda *_args: operation_generation),
+            (builder, "_close", close), (builder, "_remove_name", remove),
+            (builder, "_retire_absent", boundary), (builder, "_token", lambda *_args: "a" * 64),
+        ):
+            rejected(lambda: builder._retire(session, SimpleNamespace(check=lambda: None)))
+            mutations = events.count("mutation")
+            rejected(lambda: builder._retire(session, SimpleNamespace(check=lambda: None)))
+        assert session.disposition == "invalid" and events.count("mutation") == mutations <= 1
+        if seam == "operation-child-drift":
+            assert mutations == 0 and "attempt-operation-remove-intent" not in events
+        recovered = "retirable" if "operation-absent" in events else "operation-absence-settleable" if "mutation" in events and "operation-remove-intent" in events else "operation-remove-retry" if "operation-remove-intent" in events else "active"
+        assert_fresh_recovery_route(recovered)
+        matrix_case()
+
+    for seam in ("boundary-B", "retired", "boundary-C", "ledger-close", "ledger-unlink", "final-zero"):
+        incoming = SimpleNamespace(disposition="active", active=object(), locked=object(), origin="prelease")
+        events = []
+        opens = {"count": 0}
+
+        def opening(*_args):
+            opens["count"] += 1
+            label = "boundary-B" if opens["count"] == 1 else "boundary-C"
+            events.append(label)
+            if seam == label:
+                raise OSError(seam)
+            return SimpleNamespace(
+                disposition="active", active=object(), locked=object(), origin="prelease",
+                status="retirable" if opens["count"] == 1 else "retired", state_parent=object(),
+            )
+
+        def append(*_args):
+            events.append("retired")
+            if seam == "retired":
+                raise OSError(seam)
+
+        def unlink(*_args):
+            for label in ("ledger-close", "ledger-unlink", "final-zero"):
+                events.append(label)
+                if seam == label:
+                    raise OSError(seam)
+
+        with patched(
+            (builder, "_open_cleanup_session", opening), (builder, "_session_append", append),
+            (builder, "_unlink_ledger", unlink), (builder, "_token", lambda *_args: "a" * 64),
+            (builder, "_p", lambda *_args: {}),
+        ):
+            rejected(lambda: builder._retire_absent(incoming, object()))
+            previous = tuple(events)
+            rejected(lambda: builder._retire_absent(incoming, object()))
+        assert incoming.disposition == "invalid" and tuple(events) == previous
+        assert_fresh_recovery_route("retired" if "retired" in events else "retirable")
+        matrix_case()
+
+def cleanup_model_tests():
+    operation = generation(300)
+    directory = generation(301)
+    child = generation(302, "file", 0o600, 1)
+    changed_directory = dataclasses.replace(directory, ctime_ns=2)
+    post = ledger.LedgerParent(changed_directory, ())
+    session = SimpleNamespace(
+        owned={"dir": directory, "dir/child": child},
+        parents={"": ledger.LedgerParent(operation, ("dir",)), "dir": ledger.LedgerParent(directory, ("child",))},
+        operation_generation=operation,
+    )
+    builder._settle_removed_model(session, "dir/child", post)
+    assert session.owned == {"dir": changed_directory} and session.parents["dir"] == post
+    assert session.operation_generation == operation
+
+    linked = generation(303, "file", 0o600, 3)
+    target = dataclasses.replace(linked, nlink=2, ctime_ns=2)
+    changed_operation = dataclasses.replace(operation, ctime_ns=2)
+    top = SimpleNamespace(
+        owned={"alias": linked, "alias-two": linked, "target": linked},
+        parents={"": ledger.LedgerParent(operation, ("alias", "alias-two", "target"))},
+        groups={"target": ["alias", "alias-two"]},
+        operation_generation=operation,
+    )
+    top_post = ledger.LedgerParent(changed_operation, ("alias", "target"))
+    builder._settle_removed_model(top, "alias-two", top_post, "target", target)
+    assert top.groups["target"].pop() == "alias-two"
+    assert top.owned == {"alias": target, "target": target} and top.parents == {"": top_post}
+    final_target = dataclasses.replace(target, nlink=1, ctime_ns=3)
+    final_operation = dataclasses.replace(changed_operation, ctime_ns=3)
+    final_parent = ledger.LedgerParent(final_operation, ("target",))
+    builder._settle_removed_model(top, "alias", final_parent, "target", final_target)
+    assert top.groups["target"].pop() == "alias"
+    assert top.owned == {"target": final_target} and top.parents == {"": final_parent}
+    assert top.operation_generation == final_operation
+    matrix_case(3)
+
+
+def cleanup_phase_truth_table_tests():
+    token = "7" * 64
+    operation_name = ledger._operation_name(token)
+    before = ledger.LedgerParent(generation(360), (builder.LEDGER_NAME.text, builder.LOCK_NAME.text))
+    state_parent = ledger.LedgerParent(generation(360, ctime=2), (builder.LEDGER_NAME.text, builder.LOCK_NAME.text, operation_name))
+    absent_parent = ledger.LedgerParent(generation(360, ctime=3), (builder.LEDGER_NAME.text, builder.LOCK_NAME.text))
+    operation = generation(361)
+    operation_parent = ledger.LedgerParent(operation, ())
+    genesis = ("genesis", {
+        "token": token, "source_revision": "1" * 40, "source_manifest_sha256": "2" * 64,
+        "state_parent": ledger._parent_value(before),
+        "ledger_key": {"mount_id": 1, "device": 1, "inode": 362, "kind": "file"},
+    })
+    ready = ("genesis-settled", {"token": token, "state_parent": ledger._parent_value(before)})
+    active_bodies = (
+        genesis, ready,
+        ("operation-create-intent", {"token": token, "operation_name": operation_name, "state_parent": ledger._parent_value(before)}),
+        ("operation-create-observed", {"token": token, "operation_name": operation_name, "state_parent": ledger._parent_value(state_parent), "operation": ledger._generation_value(operation)}),
+        ("operation-create-settled", {"token": token, "operation_name": operation_name, "state_parent": ledger._parent_value(state_parent), "operation": ledger._generation_value(operation)}),
+    )
+    cases = {
+        "active": active_bodies,
+        "intent": active_bodies + (("create-intent", {"token": token, "path": "child", "kind": "file", "parent": ledger._parent_value(operation_parent)}),),
+        "operation-remove": active_bodies + (("operation-remove-intent", {"token": token, "operation_name": operation_name, "state_parent": ledger._parent_value(state_parent), "operation": ledger._generation_value(operation)}),),
+        "operation-absent": active_bodies + (
+            ("operation-remove-intent", {"token": token, "operation_name": operation_name, "state_parent": ledger._parent_value(state_parent), "operation": ledger._generation_value(operation)}),
+            ("operation-absent", {"token": token, "operation_name": operation_name, "state_parent": ledger._parent_value(absent_parent)}),
+        ),
+        "aborted": (genesis, ready, ("genesis-abort", {"token": token, "state_parent": ledger._parent_value(before)})),
+        "retired": (genesis, ready, ("genesis-abort", {"token": token, "state_parent": ledger._parent_value(before)}),
+                    ("retired", {"token": token, "state_parent": ledger._parent_value(before)})),
+    }
+    sessions = {}
+    for name, bodies in cases.items():
+        raw = b""
+        settled = ledger.INITIAL_BYTES
+        for record_type, body in bodies:
+            line = ledger._encode_proposal(ledger.LedgerProposal.create(record_type, body), settled)
+            raw += line
+            settled = ledger.SettledBytes(settled.sequence + 1, settled.offset + len(line), hashlib.sha256(line).hexdigest())
+        history = ledger._parse_ledger_history(raw)
+        node = held_node(700 + len(sessions), "phase-" + name, "file", 0o600, 1, settled.offset)
+        writer = ledger.LedgerWriterState(node, node.generation.key, settled, node.generation)
+        sessions[name] = builder.CleanupSession(
+            builder.ActiveLedger(node, history, writer), None, None, "prelease", name, {}, {}, {}, None, before,
+        )
+    builder._session_require(sessions["active"])
+    builder._session_require(sessions["intent"])
+    builder._session_require(sessions["operation-remove"])
+    for name in ("operation-absent", "aborted", "retired"):
+        rejected(lambda name=name: builder._session_require(sessions[name]))
+    builder._session_require(sessions["operation-absent"], "operation-absent")
+    builder._session_require(sessions["aborted"], ("aborted", "operation-absent"))
+    builder._session_require(sessions["retired"], "retired")
+    released = dataclasses.replace(sessions["active"], origin="release-authorized")
+    rejected(lambda: builder._session_require(released))
+    for session in sessions.values():
+        close_if_open(session.active.node)
+    matrix_case(10)
+
+
+def cleanup_session_entrance_tests():
+    operation = generation(320)
+    child = generation(321, "file", 0o600, 1)
+    root_parent = ledger.LedgerParent(operation, ("child",))
+    state_parent = ledger.LedgerParent(generation(319), tuple(sorted((builder.LEDGER_NAME.text, builder.LOCK_NAME.text, ledger._operation_name("a" * 64)))))
+    observations = ledger.ReconcileObservations(
+        state_parent, ((ledger._operation_name("a" * 64), operation),), (("child", child),),
+        generation(322, "file", 0o600, 1, 1), (("", root_parent),),
+    )
+    terminal = SimpleNamespace(record_type="fixture", body_value=lambda: {})
+    legal = SimpleNamespace(phase="active", pending=None, operation_parent=root_parent,
+                            parents=ledger._EMPTY_MAP, groups=ledger._EMPTY_MAP)
+    history = SimpleNamespace(legal=legal, terminal=terminal)
+    state = ledger.LedgerState(
+        "active", "a" * 64, ledger._operation_name("a" * 64), (("child", child),),
+        True, "prelease", False, False, "fixture",
+    )
+    builder._require_cleanup_model(state, observations, history, {})
+    hostile_parent = ledger.LedgerParent(operation, ("foreign",))
+    rejected(lambda: builder._require_cleanup_model(
+        state, dataclasses.replace(observations, parents=(("", hostile_parent),)), history, {},
+    ))
+    hostile_state = dataclasses.replace(state, owned=())
+    rejected(lambda: builder._require_cleanup_model(hostile_state, observations, history, {}))
+
+    created_operation = dataclasses.replace(operation, ctime_ns=2)
+    created_parent = ledger.LedgerParent(created_operation, ("child",))
+    observed_terminal = SimpleNamespace(record_type="create-observed", body_value=lambda: {
+        "token": "a" * 64, "path": "child", "kind": "file",
+        "parent": ledger._parent_value(created_parent), "child": ledger._generation_value(child),
+    })
+    observed_history = SimpleNamespace(
+        terminal=observed_terminal,
+        legal=SimpleNamespace(phase="create-observed", pending=observed_terminal,
+                              operation_parent=ledger.LedgerParent(operation, ()),
+                              parents=ledger._EMPTY_MAP, groups=ledger._EMPTY_MAP),
+    )
+    observed_state = ledger.LedgerState(
+        "create-settleable", "a" * 64, ledger._operation_name("a" * 64), (),
+        True, "prelease", False, False, "create-observed",
+    )
+    observed = dataclasses.replace(
+        observations, operations=((ledger._operation_name("a" * 64), created_operation),),
+        parents=(("", created_parent),),
+    )
+    builder._require_cleanup_model(observed_state, observed, observed_history, {})
+    observed_history.legal.pending = None
+    rejected(lambda: builder._require_cleanup_model(observed_state, observed, observed_history, {}))
+
+    snapshot = fs.DirectorySnapshot(operation, (fs._name("child"),), ((fs._name("child"), child),))
+    with patched(
+        (builder.fs, "_enumerate_stable", lambda *_args: snapshot),
+        (builder, "_parent", lambda *_args: (_ for _ in ()).throw(AssertionError("second parent snapshot"))),
+    ):
+        entries, parents = builder._walk_entries(object(), object())
+    assert entries == (("child", child),) and parents == (("", root_parent),)
+    matrix_case(4)
+
+
+def cleanup_complexity_tests():
+    count = 128
+    names = {f"entry-{index:03d}" for index in range(count)}
+    operation = generation(340)
+    children = {name: generation(400 + index, "file", 0o600, 1) for index, name in enumerate(sorted(names))}
+    session = SimpleNamespace(
+        disposition="active", origin="prelease", active=object(), locked=object(), operation=object(),
+        groups={}, owned=dict(children), parents={"": ledger.LedgerParent(operation, tuple(sorted(names)))},
+        operation_generation=operation,
+    )
+    events = []
+    parent_node = object()
+
+    def require(current, _phase=None):
+        assert current.disposition == "active"
+
+    def session_parent(current, path, expected, _control):
+        assert path in names and children[path] == expected == current.owned[path]
+        return parent_node, (), fs._name(path), object()
+
+    def snapshot(_parent, _control):
+        return fs.DirectoryNamesSnapshot(
+            session.operation_generation, tuple(fs._name(name) for name in sorted(names)),
+        )
+
+    def remove_name(_parent, name, expected, _control):
+        assert name.text in names and children[name.text] == expected
+        names.remove(name.text)
+        session.operation_generation = dataclasses.replace(
+            session.operation_generation, ctime_ns=session.operation_generation.ctime_ns + 1,
+        )
+        events.append(("mutation", name.text))
+
+    def append(_session, record_type, _body, _control):
+        events.append(("append", record_type))
+
+    boundaries = {"count": 0}
+
+    def boundary(*_args):
+        boundaries["count"] += 1
+        return SimpleNamespace(disposition="active", status="active", owned={})
+
+    before = fs.structural_counter_snapshot()
+    with patched(
+        (builder, "_session_require", require), (builder, "_session_parent", session_parent),
+        (builder, "_parent_snapshot", snapshot), (builder, "_session_append", append),
+        (builder, "_remove_name", remove_name), (builder, "_chain_after_parent", lambda chain, *_args: chain),
+        (builder, "_token", lambda *_args: "a" * 64),
+        (builder.fs, "_revalidate_chain", lambda *_args: None),
+        (builder, "_open_cleanup_session", boundary),
+        (builder, "_retire", lambda *_args: events.append(("retire", None))),
+    ):
+        builder._cleanup_active(session, SimpleNamespace(check=lambda: None))
+    delta = fs.structural_counter_delta(before, fs.structural_counter_snapshot())
+    assert sum(event[0] == "mutation" for event in events) == count
+    assert [event[1] for event in events if event[0] == "append"] == [
+        record for _index in range(count) for record in ("remove-intent", "remove-observed", "remove-settled")
+    ]
+    assert delta["complete_legal_folds"] == delta["complete_walks"] == 0
+    complexity_source = Path(__file__).read_text().split("def cleanup_complexity_tests()", 1)[1].split("\ndef ", 1)[0]
+    assert "_structural_" + "increment" not in complexity_source
+    assert boundaries["count"] == 1 and events[-1] == ("retire", None)
+    assert session.disposition == "finished" and not names and not session.owned
+    matrix_case()
 
 def model_tests():
     token = "a" * 64
@@ -1072,9 +1716,9 @@ def source_tests():
         ("completion_rootfs_builder.py", "_append"),
         ("completion_rootfs_builder.py", "_mark_leased"),
         ("completion_rootfs_builder.py", "_recover_locked"),
-        ("completion_rootfs_builder.py", "_resume_entry_remove"),
-        ("completion_rootfs_builder.py", "_resume_observed"),
-        ("completion_rootfs_builder.py", "_unlink_ledger"),
+        ("completion_rootfs_builder.py", "_cleanup_active"),
+        ("completion_rootfs_builder.py", "_require_cleanup_model"),
+        ("completion_rootfs_builder.py", "_session_require"),
         ("completion_rootfs_lease.py", "_classify_release_crash_for_tests"),
         ("completion_rootfs_lease.py", "_reference"),
         ("completion_rootfs_lease.py", "_stable_graph"),
@@ -1343,6 +1987,14 @@ def main(argv):
         verify_order_and_drift_tests()
         preservation_route_tests()
         authorized_cleanup_boundary_tests()
+        cleanup_regular_fault_tests()
+        cleanup_hardlink_fault_tests()
+        cleanup_absent_fault_tests()
+        cleanup_retirement_fault_tests()
+        cleanup_model_tests()
+        cleanup_phase_truth_table_tests()
+        cleanup_session_entrance_tests()
+        cleanup_complexity_tests()
         source_tests()
         assert MATRIX_CASES > 0
         print(f"completion rootfs lease portable behavioral matrix: {MATRIX_CASES} finite cases")
