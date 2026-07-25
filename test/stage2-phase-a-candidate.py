@@ -114,6 +114,37 @@ for code in ("rootfs-bootstrap", "rootfs-build", "rootfs-equality", "rootfs-pin"
         code, lambda: (_ for _ in ()).throw(RuntimeError("must-not-escape")),
     )) == code
 
+failing_build = types.SimpleNamespace(
+    BUILD_SECONDS=300,
+    _build_once=lambda *_args: (_ for _ in ()).throw(RuntimeError("fixed failure")),
+)
+original_monotonic = module.time.monotonic
+try:
+    for ordinal, elapsed, expected in (
+        ("first", 299.999, "rootfs-first-build-nondeadline"),
+        ("first", 300.0, "rootfs-first-build-over-bound"),
+        ("second", 299.999, "rootfs-second-build-nondeadline"),
+        ("second", 300.0, "rootfs-second-build-over-bound"),
+    ):
+        values = iter((10.0, 10.0 + elapsed))
+        module.time.monotonic = lambda: next(values)
+        assert failure_code(lambda ordinal=ordinal: module._candidate_build(
+            failing_build, "approval", "control", ordinal, "e" * 64,
+        )) == expected
+finally:
+    module.time.monotonic = original_monotonic
+
+token_build_calls = []
+token_build = types.SimpleNamespace(
+    BUILD_SECONDS=300,
+    _build_once=lambda *_args: token_build_calls.append("build"),
+)
+for hostile_token in (None, "a" * 63, "a" * 65, "A" * 64, "g" * 64):
+    assert failure_code(lambda hostile_token=hostile_token: module._candidate_build(
+        token_build, "approval", "control", "first", hostile_token,
+    )) == "rootfs-build-contract"
+assert token_build_calls == []
+
 remote = ROOT / "deploy/aws-feasibility/remote"
 sys.path.insert(0, str(remote))
 import completion_rootfs_build as actual_build
@@ -147,7 +178,8 @@ candidate = types.SimpleNamespace(
 )
 order = []
 fake_build = types.ModuleType("completion_rootfs_build")
-fake_build._two_build_outputs = lambda _approval, _control: (order.append("build") or (candidate, candidate))
+fake_build.BUILD_SECONDS = 300
+fake_build._build_once = lambda _approval, token, _control: (order.append(("build", token)) or candidate)
 fake_build._require_equal_builds = lambda first, second: order.append("equal") if first is second else (_ for _ in ()).throw(AssertionError())
 fake_build._require_pinned = lambda _candidate, _pins: order.append("pin")
 fake_builder = types.ModuleType("completion_rootfs_builder")
@@ -195,7 +227,7 @@ original_modules = {name: sys.modules.get(name) for name in
                     ("completion_rootfs_build", "completion_rootfs_builder", "completion_rootfs_fs",
                      "completion_rootfs_publish")}
 original_helpers = (module._load_artifact_verifier, module._append_journal,
-                    module._snapshot_cache, module._snapshot_rootfs_lifecycle)
+                    module._snapshot_cache, module._snapshot_rootfs_lifecycle, module.secrets.token_hex)
 try:
     sys.modules["completion_rootfs_build"] = fake_build
     sys.modules["completion_rootfs_builder"] = fake_builder
@@ -206,17 +238,72 @@ try:
     module._snapshot_cache = lambda _contract: {"cache": "fixed"}
     rootfs_snapshots = iter((rootfs_owned, rootfs_after))
     module._snapshot_rootfs_lifecycle = lambda: (order.append("snapshot") or next(rootfs_snapshots))
+    tokens = iter(("1" * 64, "2" * 64))
+    module.secrets.token_hex = lambda size: (order.append(("token", value := next(tokens))) or value) if size == 32 else None
     result = module._rootfs_candidates("a" * 40, "b" * 64, time.monotonic() + 10)
     assert result["equal"] is True and result["pins_match"] is True and result["cache_count"] == 16
-    assert order == ["open", "bootstrap", "close-state", "close-chain", "snapshot", "build",
+    assert order == ["open", "bootstrap", "close-state", "close-chain", "snapshot",
+                     ("token", "1" * 64), ("token", "2" * 64),
+                     ("build", "1" * 64), ("build", "2" * 64),
                      "equal", "pins", "pin", "pin", "snapshot"]
+
+    order.clear()
+    rootfs_snapshots = iter((rootfs_owned,))
+    repeated = "f" * 64
+    module.secrets.token_hex = lambda size: (order.append(("token", repeated)) or repeated) if size == 32 else None
+    assert failure_code(lambda: module._rootfs_candidates(
+        "a" * 40, "b" * 64, time.monotonic() + 10,
+    )) == "rootfs-build-token"
+    assert order == ["open", "bootstrap", "close-state", "close-chain", "snapshot",
+                     ("token", repeated), ("token", repeated)]
 finally:
-    module._load_artifact_verifier, module._append_journal, module._snapshot_cache, module._snapshot_rootfs_lifecycle = original_helpers
+    (module._load_artifact_verifier, module._append_journal, module._snapshot_cache,
+     module._snapshot_rootfs_lifecycle, module.secrets.token_hex) = original_helpers
     for name, value in original_modules.items():
         if value is None:
             del sys.modules[name]
         else:
             sys.modules[name] = value
+
+recovery_calls = []
+def eventually_recovers():
+    recovery_calls.append("recover")
+    if len(recovery_calls) < 2:
+        raise RuntimeError("bounded recovery failure")
+module._retry_exact_recovery(eventually_recovers)
+assert recovery_calls == ["recover", "recover"]
+recovery_calls.clear()
+assert failure_code(lambda: module._retry_exact_recovery(
+    lambda: (recovery_calls.append("recover"), (_ for _ in ()).throw(RuntimeError("preserve")))[1],
+)) == "rootfs-recovery-exhausted"
+assert recovery_calls == ["recover"] * module.ROOTFS_RECOVERY_ATTEMPTS
+
+cleanup_originals = (
+    module._fixed_preflight, module._require_state, module._recover_rootfs, module._cleanup_rootfs,
+    module._cleanup_assets, module._cleanup_artifacts, module._write_json_once,
+)
+cleanup_calls = []
+cleanup_outputs = []
+try:
+    module._fixed_preflight = lambda approval: cleanup_calls.append(("preflight", approval))
+    module._require_state = lambda: ["fixed-records"]
+    module._recover_rootfs = lambda: (cleanup_calls.append("recover"),
+                                      (_ for _ in ()).throw(RuntimeError("preserve")))[1]
+    module._cleanup_rootfs = lambda _records: cleanup_calls.append("foundation")
+    module._cleanup_assets = lambda _records: (cleanup_calls.append("assets"),
+                                                (_ for _ in ()).throw(RuntimeError("replacement")))[1]
+    module._cleanup_artifacts = lambda _records: (cleanup_calls.append("cache"),
+                                                   (_ for _ in ()).throw(RuntimeError("unknown")))[1]
+    module._write_json_once = lambda path, value, kind: cleanup_outputs.append((path, value, kind))
+    assert failure_code(module._cleanup) == "cleanup-uncertainty"
+    assert cleanup_calls == [("preflight", False), "recover", "assets", "cache"]
+    assert cleanup_outputs == [(module.CLEANUP, {
+        "success": False,
+        "codes": ["rootfs-recovery-exhausted", "asset-cleanup-uncertainty", "cache-cleanup-uncertainty"],
+    }, "cleanup-owned")]
+finally:
+    (module._fixed_preflight, module._require_state, module._recover_rootfs, module._cleanup_rootfs,
+     module._cleanup_assets, module._cleanup_artifacts, module._write_json_once) = cleanup_originals
 
 original_timeout = module.HOST_TOOL_SECONDS
 module.HOST_TOOL_SECONDS = 0.2

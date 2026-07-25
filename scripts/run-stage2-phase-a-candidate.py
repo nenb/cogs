@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 import platform
 import re
+import secrets
 import selectors
 import signal
 import ssl
@@ -51,6 +52,7 @@ MAX_TOOL_OUTPUT = 4096
 HOST_TOOL_SECONDS = 10
 DOWNLOAD_SECONDS = 1200
 OBSERVE_SECONDS = 4200
+ROOTFS_RECOVERY_ATTEMPTS = 3
 KVM_GET_API_VERSION = 0xAE00
 APPROVAL_NAME = "COGS_STAGE2_ARTIFACT_ACQUISITION_APPROVED"
 APPROVAL_VALUE = "download-16-fixed-public-stage2-artifacts"
@@ -903,6 +905,18 @@ def _rootfs_call(code, callback):
         raise CandidateError(code) from error
 
 
+def _candidate_build(build, approval, control, ordinal, token):
+    _fail(ordinal in {"first", "second"} and type(build.BUILD_SECONDS) is int and build.BUILD_SECONDS > 0 and
+          type(token) is str and HEX.fullmatch(token) is not None, "rootfs-build-contract")
+    started = time.monotonic()
+    try:
+        return build._build_once(approval, token, control)
+    except BaseException as error:
+        elapsed = max(0.0, time.monotonic() - started)
+        suffix = "over-bound" if elapsed >= build.BUILD_SECONDS else "nondeadline"
+        raise CandidateError(f"rootfs-{ordinal}-build-{suffix}") from error
+
+
 def _verify_candidate_pair(build, completion_rootfs_publish, first, second):
     _rootfs_call("rootfs-equality", lambda: build._require_equal_builds(first, second))
     pins = _rootfs_call("rootfs-pin", completion_rootfs_publish._load_pins)
@@ -1012,7 +1026,13 @@ def _rootfs_candidates(revision, manifest_sha256, outer_deadline):
     _bootstrap_rootfs(builder, fs, approval, control)
     rootfs_owned = _rootfs_call("rootfs-bootstrap", _snapshot_rootfs_lifecycle)
     _append_journal("rootfs-lifecycle-owned", rootfs_owned)
-    first, second = _rootfs_call("rootfs-build", lambda: build._two_build_outputs(approval, control))
+    first_token = secrets.token_hex(32)
+    second_token = secrets.token_hex(32)
+    _fail(type(first_token) is str and HEX.fullmatch(first_token) is not None and
+          type(second_token) is str and HEX.fullmatch(second_token) is not None and
+          first_token != second_token, "rootfs-build-token")
+    first = _candidate_build(build, approval, control, "first", first_token)
+    second = _candidate_build(build, approval, control, "second", second_token)
     _verify_candidate_pair(build, completion_rootfs_publish, first, second)
     _verifier_call(
         verifier, "rootfs-postverify",
@@ -1194,10 +1214,23 @@ def _cleanup_artifacts(records):
     _rmdir_exact(ARTIFACT_ROOT, owned["root"])
 
 
+def _retry_exact_recovery(callback, attempts=ROOTFS_RECOVERY_ATTEMPTS):
+    _fail(callable(callback) and type(attempts) is int and attempts == ROOTFS_RECOVERY_ATTEMPTS,
+          "rootfs-recovery-contract")
+    error = None
+    for _attempt in range(attempts):
+        try:
+            callback()
+            return
+        except BaseException as caught:
+            error = caught
+    raise CandidateError("rootfs-recovery-exhausted") from error
+
+
 def _recover_rootfs():
     sys.path.insert(0, str(REMOTE))
     import completion_rootfs_builder as builder
-    builder._run_recovery()
+    _retry_exact_recovery(builder._run_recovery)
 
 
 def _cleanup_rootfs(records):
@@ -1222,25 +1255,28 @@ def _cleanup_rootfs(records):
     _rmdir_exact(ROOTFS_STATE, lifecycle["root"])
 
 
+def _cleanup_attempt(code, callback, codes):
+    _fail(type(code) is str and callable(callback) and type(codes) is list, "cleanup-contract")
+    try:
+        callback()
+        return True
+    except BaseException:
+        codes.append(code)
+        return False
+
+
 def _cleanup():
     _fixed_preflight(False)
-    _require_state()
-    value = {"success": False, "codes": []}
-    try:
-        records = _require_state()
-        _recover_rootfs()
-        _cleanup_rootfs(records)
-        _cleanup_assets(records)
-        _cleanup_artifacts(records)
-        value["success"] = True
-    except CandidateError as error:
-        value["codes"] = [error.code]
-        raise
-    except BaseException as error:
-        value["codes"] = ["cleanup-uncertainty"]
-        raise CandidateError("cleanup-uncertainty") from error
-    finally:
-        _write_json_once(CLEANUP, value, "cleanup-owned")
+    records = _require_state()
+    codes = []
+    recovered = _cleanup_attempt("rootfs-recovery-exhausted", _recover_rootfs, codes)
+    if recovered:
+        _cleanup_attempt("rootfs-foundation-uncertainty", lambda: _cleanup_rootfs(records), codes)
+    _cleanup_attempt("asset-cleanup-uncertainty", lambda: _cleanup_assets(records), codes)
+    _cleanup_attempt("cache-cleanup-uncertainty", lambda: _cleanup_artifacts(records), codes)
+    value = {"success": not codes, "codes": codes}
+    _write_json_once(CLEANUP, value, "cleanup-owned")
+    _fail(not codes, "cleanup-uncertainty")
     return 0
 
 

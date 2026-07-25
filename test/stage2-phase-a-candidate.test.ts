@@ -104,7 +104,19 @@ test("candidate output schema enforces metadata-only non-authority", async () =>
   assert.doesNotMatch(runner, /\b(?:apt-get|apt|dnf|yum|apk|brew|systemctl)\b/u);
   assert.doesNotMatch(runner, /completion_kata_coordinator|extractall|\.extract\(/u);
   assert.doesNotMatch(runner, /subprocess\.run\([^)]*PIPE/su);
+  assert.match(
+    runner,
+    /first_token = secrets\.token_hex\(32\)[\s\S]*second_token = secrets\.token_hex\(32\)[\s\S]*first_token != second_token[\s\S]*first = _candidate_build\(build, approval, control, "first", first_token\)[\s\S]*second = _candidate_build\(build, approval, control, "second", second_token\)/u,
+  );
+  assert.doesNotMatch(runner, /build\._two_build_outputs/u);
   assert.match(runner, /build\._require_equal_builds\(first, second\)/u);
+  assert.match(runner, /type\(token\) is str and HEX\.fullmatch\(token\) is not None/u);
+  assert.match(runner, /elapsed >= build\.BUILD_SECONDS/u);
+  assert.match(runner, /ROOTFS_RECOVERY_ATTEMPTS = 3/u);
+  assert.match(runner, /rootfs-recovery-exhausted/u);
+  assert.match(runner, /rootfs-foundation-uncertainty/u);
+  assert.match(runner, /asset-cleanup-uncertainty/u);
+  assert.match(runner, /cache-cleanup-uncertainty/u);
   assert.match(runner, /import completion_rootfs_publish\n/u);
   assert.doesNotMatch(runner, /import completion_rootfs_publication/u);
   assert.match(runner, /ownership\.jsonl/u);
