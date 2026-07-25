@@ -458,7 +458,8 @@ def _child(executable_fd, spec, release_r, setup_w, status_w, stdout_w, stderr_w
         os.setsid()
         report = struct.pack("!QQQQ", os.getpid(), os.getppid(), os.getpgrp(), os.getsid(0))
         os.write(setup_w, report)
-        _install_inherited_fds(spec.inherited_fds)
+        if spec.inherited_fds:
+            _install_inherited_fds(spec.inherited_fds)
         os.dup2(stdin_r, 0)
         os.dup2(stdout_w, 1)
         os.dup2(stderr_w, 2)
