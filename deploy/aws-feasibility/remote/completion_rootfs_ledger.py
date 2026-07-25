@@ -767,20 +767,22 @@ def _validate_legal_records(records):
         elif phase == "ready":
             _fail(kind in {"genesis-abort", "operation-create-intent"})
             if kind == "genesis-abort":
+                _fail(body["state_parent"] == _body(records[record.sequence - 1])["state_parent"])
                 phase = "aborted"
             else:
                 operation_name = body["operation_name"]
                 phase = "operation-intent"
         elif phase == "aborted":
-            _fail(kind == "retired")
+            _fail(kind == "retired" and body["state_parent"] == _body(records[record.sequence - 1])["state_parent"])
             phase = "retired"
         elif phase == "operation-intent":
             _fail(kind in {"operation-create-observed", "operation-abort"} and body["operation_name"] == operation_name)
+            intent = _body(records[record.sequence - 1])
             if kind == "operation-create-observed":
-                intent = _body(records[record.sequence - 1])
                 _parent_delta("create", operation_name, _parse_parent(intent["state_parent"]), _parse_parent(body["state_parent"]))
                 phase = "operation-observed"
             else:
+                _fail(body["state_parent"] == intent["state_parent"])
                 phase = "aborted"
         elif phase == "operation-observed":
             _fail(kind == "operation-create-settled" and body["operation_name"] == operation_name)
@@ -969,6 +971,8 @@ def _reconcile_ledger(records, observations):
         status = "genesis-abortable"
     elif phase == "operation-intent" and not operations and not entries and parent_matches:
         status = "operation-abortable"
+    elif phase == "aborted" and not operations and not entries and parent_matches:
+        status = "retirable"
     elif phase == "operation-observed" and not entries and parent_matches:
         observed = _body(records[-1])
         recorded = _parse_generation(observed["operation"])

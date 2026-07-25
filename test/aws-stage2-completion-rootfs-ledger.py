@@ -147,24 +147,73 @@ def codec_and_reconcile_tests():
     genesis = proposals[:2]
     ready = ledger._parse_ledger(encoded(genesis))
     assert ledger._reconcile_ledger(ready, ledger.ReconcileObservations(state_before, (), (), ledger_file())).status == "genesis-abortable"
-    genesis_abort = genesis + [
+    drifted_parent = parent(1, state_before.names, ctime=2)
+    mismatched_genesis_abort = genesis + [
+        ledger.LedgerProposal.create("genesis-abort", {"token": TOKEN, "state_parent": pvalue(drifted_parent)}),
+    ]
+    rejected(lambda: ledger._parse_ledger(encoded(mismatched_genesis_abort)))
+    genesis_abort_prefix = genesis + [
         ledger.LedgerProposal.create("genesis-abort", {"token": TOKEN, "state_parent": pvalue(state_before)}),
+    ]
+    genesis_aborted = ledger._parse_ledger(encoded(genesis_abort_prefix))
+    exact_absence = ledger.ReconcileObservations(state_before, (), (), ledger_file())
+    state = ledger._reconcile_ledger(genesis_aborted, exact_absence)
+    assert (state.status, state.cleanup_origin, state.cleanup_allowed) == ("retirable", "prelease", True)
+    mismatched_genesis_retired = genesis_abort_prefix + [
+        ledger.LedgerProposal.create("retired", {"token": TOKEN, "state_parent": pvalue(drifted_parent)}),
+    ]
+    rejected(lambda: ledger._parse_ledger(encoded(mismatched_genesis_retired)))
+    genesis_abort = genesis_abort_prefix + [
         ledger.LedgerProposal.create("retired", {"token": TOKEN, "state_parent": pvalue(state_before)}),
     ]
-    assert ledger._reconcile_ledger(ledger._parse_ledger(encoded(genesis_abort)), ledger.ReconcileObservations(state_before, (), (), ledger_file())).status == "retired"
+    assert ledger._reconcile_ledger(
+        ledger._parse_ledger(encoded(genesis_abort)), exact_absence,
+    ).status == "retired"
 
     operation_intent = proposals[:3]
     intent_records = ledger._parse_ledger(encoded(operation_intent))
-    assert ledger._reconcile_ledger(intent_records, ledger.ReconcileObservations(state_before, (), (), ledger_file())).status == "operation-abortable"
+    assert ledger._reconcile_ledger(intent_records, exact_absence).status == "operation-abortable"
     assert ledger._reconcile_ledger(intent_records, observations).status == "preserve"
-    operation_abort = operation_intent + [
+    mismatched_operation_abort = operation_intent + [
+        ledger.LedgerProposal.create(
+            "operation-abort",
+            {"token": TOKEN, "operation_name": ledger._operation_name(TOKEN), "state_parent": pvalue(drifted_parent)},
+        ),
+    ]
+    rejected(lambda: ledger._parse_ledger(encoded(mismatched_operation_abort)))
+    operation_abort_prefix = operation_intent + [
         ledger.LedgerProposal.create(
             "operation-abort",
             {"token": TOKEN, "operation_name": ledger._operation_name(TOKEN), "state_parent": pvalue(state_before)},
         ),
+    ]
+    operation_aborted = ledger._parse_ledger(encoded(operation_abort_prefix))
+    state = ledger._reconcile_ledger(operation_aborted, exact_absence)
+    assert (state.status, state.cleanup_origin, state.cleanup_allowed) == ("retirable", "prelease", True)
+    mismatched_operation_retired = operation_abort_prefix + [
+        ledger.LedgerProposal.create("retired", {"token": TOKEN, "state_parent": pvalue(drifted_parent)}),
+    ]
+    rejected(lambda: ledger._parse_ledger(encoded(mismatched_operation_retired)))
+    operation_abort = operation_abort_prefix + [
         ledger.LedgerProposal.create("retired", {"token": TOKEN, "state_parent": pvalue(state_before)}),
     ]
-    ledger._parse_ledger(encoded(operation_abort))
+    assert ledger._reconcile_ledger(
+        ledger._parse_ledger(encoded(operation_abort)), exact_absence,
+    ).status == "retired"
+
+    abort_drift = (
+        dataclasses.replace(exact_absence, state_parent=drifted_parent),
+        dataclasses.replace(exact_absence, state_parent=parent(1, (*state_before.names, "unknown"), ctime=2)),
+        dataclasses.replace(exact_absence, operations=((ledger._operation_name(TOKEN), operation),)),
+        dataclasses.replace(exact_absence, entries=(("unknown", generation(50, "file", 0o600, 1)),)),
+        dataclasses.replace(exact_absence, ledger_generation=generation(100, "file", 0o600, 1, 1)),
+    )
+    for aborted in (genesis_aborted, operation_aborted):
+        for hostile in abort_drift:
+            preserved = ledger._reconcile_ledger(aborted, hostile)
+            assert (preserved.status, preserved.cleanup_origin, preserved.cleanup_allowed) == (
+                "preserve", "none", False,
+            )
     assert ledger._reconcile_ledger(active, ledger.ReconcileObservations(state_before, observations.operations, (), ledger_file())).status == "preserve"
 
     operation_parent_before = parent(2, ("sentinel",))
