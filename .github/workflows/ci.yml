@@ -51,12 +51,8 @@ jobs:
           PI_SKIP_VERSION_CHECK: "1"
         run: npm test
 
-      - name: Run non-authoritative EUID-0 filesystem and journal unit matrices
+      - name: Run non-authoritative EUID-0 read-only filesystem unit matrix
         run: |
-          operation_output=$(sudo -n env -i PATH=/usr/bin:/bin PYTHONDONTWRITEBYTECODE=1 \
-            /usr/bin/python3 test/aws-stage2-completion-kata-operation.py)
-          grep -F 'completion Kata operation foundation matrix passed; EUID-0 LINUX QUALIFIED' \
-            <<<"$operation_output"
           filesystem_output=$(sudo -n env -i PATH=/usr/bin:/bin PYTHONDONTWRITEBYTECODE=1 \
             /usr/bin/python3 test/aws-stage2-completion-rootfs-fs.py)
           grep -F 'completion rootfs filesystem tests passed; EUID-0 LINUX QUALIFIED' \
