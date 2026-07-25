@@ -1,0 +1,587 @@
+{
+  "version": "cogs.stage2-phase-a-phase-graph-fixtures/v1",
+  "valid": [
+    {
+      "statuses": [
+        "not-reached",
+        "not-reached",
+        "not-reached",
+        "not-reached",
+        "not-reached",
+        "not-reached",
+        "not-reached",
+        "not-reached",
+        "not-reached"
+      ],
+      "rootfs": false
+    },
+    {
+      "statuses": [
+        "not-reached",
+        "not-reached",
+        "not-reached",
+        "not-reached",
+        "success",
+        "not-reached",
+        "not-reached",
+        "not-reached",
+        "not-reached"
+      ],
+      "rootfs": false
+    },
+    {
+      "statuses": [
+        "not-reached",
+        "not-reached",
+        "not-reached",
+        "not-reached",
+        "failure",
+        "not-reached",
+        "not-reached",
+        "not-reached",
+        "not-reached"
+      ],
+      "rootfs": false
+    },
+    {
+      "statuses": [
+        "success",
+        "success",
+        "not-reached",
+        "not-reached",
+        "not-reached",
+        "not-reached",
+        "not-reached",
+        "not-reached",
+        "not-reached"
+      ],
+      "rootfs": false
+    },
+    {
+      "statuses": [
+        "success",
+        "success",
+        "not-reached",
+        "not-reached",
+        "success",
+        "not-reached",
+        "not-reached",
+        "not-reached",
+        "not-reached"
+      ],
+      "rootfs": false
+    },
+    {
+      "statuses": [
+        "success",
+        "success",
+        "not-reached",
+        "not-reached",
+        "failure",
+        "not-reached",
+        "not-reached",
+        "not-reached",
+        "not-reached"
+      ],
+      "rootfs": false
+    },
+    {
+      "statuses": [
+        "success",
+        "success",
+        "success",
+        "success",
+        "not-reached",
+        "not-reached",
+        "not-reached",
+        "not-reached",
+        "not-reached"
+      ],
+      "rootfs": false
+    },
+    {
+      "statuses": [
+        "success",
+        "success",
+        "success",
+        "success",
+        "success",
+        "not-reached",
+        "not-reached",
+        "not-reached",
+        "not-reached"
+      ],
+      "rootfs": false
+    },
+    {
+      "statuses": [
+        "success",
+        "success",
+        "success",
+        "success",
+        "failure",
+        "not-reached",
+        "not-reached",
+        "not-reached",
+        "not-reached"
+      ],
+      "rootfs": false
+    },
+    {
+      "statuses": [
+        "success",
+        "success",
+        "success",
+        "success",
+        "not-reached",
+        "success",
+        "not-reached",
+        "not-reached",
+        "not-reached"
+      ],
+      "rootfs": false
+    },
+    {
+      "statuses": [
+        "success",
+        "success",
+        "success",
+        "success",
+        "success",
+        "success",
+        "not-reached",
+        "not-reached",
+        "not-reached"
+      ],
+      "rootfs": false
+    },
+    {
+      "statuses": [
+        "success",
+        "success",
+        "success",
+        "success",
+        "failure",
+        "success",
+        "not-reached",
+        "not-reached",
+        "not-reached"
+      ],
+      "rootfs": false
+    },
+    {
+      "statuses": [
+        "success",
+        "success",
+        "success",
+        "success",
+        "not-reached",
+        "success",
+        "success",
+        "not-reached",
+        "not-reached"
+      ],
+      "rootfs": false
+    },
+    {
+      "statuses": [
+        "success",
+        "success",
+        "success",
+        "success",
+        "success",
+        "success",
+        "success",
+        "not-reached",
+        "not-reached"
+      ],
+      "rootfs": false
+    },
+    {
+      "statuses": [
+        "success",
+        "success",
+        "success",
+        "success",
+        "failure",
+        "success",
+        "success",
+        "not-reached",
+        "not-reached"
+      ],
+      "rootfs": false
+    },
+    {
+      "statuses": [
+        "success",
+        "success",
+        "success",
+        "success",
+        "not-reached",
+        "success",
+        "success",
+        "success",
+        "not-reached"
+      ],
+      "rootfs": false
+    },
+    {
+      "statuses": [
+        "success",
+        "success",
+        "success",
+        "success",
+        "success",
+        "success",
+        "success",
+        "success",
+        "not-reached"
+      ],
+      "rootfs": false
+    },
+    {
+      "statuses": [
+        "success",
+        "success",
+        "success",
+        "success",
+        "failure",
+        "success",
+        "success",
+        "success",
+        "not-reached"
+      ],
+      "rootfs": false
+    },
+    {
+      "statuses": [
+        "failure",
+        "blocked",
+        "blocked",
+        "blocked",
+        "not-reached",
+        "blocked",
+        "blocked",
+        "blocked",
+        "blocked"
+      ],
+      "rootfs": false
+    },
+    {
+      "statuses": ["failure", "blocked", "blocked", "blocked", "success", "blocked", "blocked", "blocked", "blocked"],
+      "rootfs": false
+    },
+    {
+      "statuses": ["failure", "blocked", "blocked", "blocked", "failure", "blocked", "blocked", "blocked", "blocked"],
+      "rootfs": false
+    },
+    {
+      "statuses": [
+        "failure",
+        "success",
+        "blocked",
+        "blocked",
+        "not-reached",
+        "blocked",
+        "blocked",
+        "blocked",
+        "blocked"
+      ],
+      "rootfs": false
+    },
+    {
+      "statuses": ["failure", "success", "blocked", "blocked", "success", "blocked", "blocked", "blocked", "blocked"],
+      "rootfs": false
+    },
+    {
+      "statuses": ["failure", "success", "blocked", "blocked", "failure", "blocked", "blocked", "blocked", "blocked"],
+      "rootfs": false
+    },
+    {
+      "statuses": [
+        "failure",
+        "failure",
+        "blocked",
+        "blocked",
+        "not-reached",
+        "blocked",
+        "blocked",
+        "blocked",
+        "blocked"
+      ],
+      "rootfs": false
+    },
+    {
+      "statuses": ["failure", "failure", "blocked", "blocked", "success", "blocked", "blocked", "blocked", "blocked"],
+      "rootfs": false
+    },
+    {
+      "statuses": ["failure", "failure", "blocked", "blocked", "failure", "blocked", "blocked", "blocked", "blocked"],
+      "rootfs": false
+    },
+    {
+      "statuses": [
+        "success",
+        "blocked",
+        "blocked",
+        "blocked",
+        "not-reached",
+        "blocked",
+        "blocked",
+        "blocked",
+        "blocked"
+      ],
+      "rootfs": false
+    },
+    {
+      "statuses": ["success", "blocked", "blocked", "blocked", "success", "blocked", "blocked", "blocked", "blocked"],
+      "rootfs": false
+    },
+    {
+      "statuses": ["success", "blocked", "blocked", "blocked", "failure", "blocked", "blocked", "blocked", "blocked"],
+      "rootfs": false
+    },
+    {
+      "statuses": [
+        "success",
+        "failure",
+        "blocked",
+        "blocked",
+        "not-reached",
+        "blocked",
+        "blocked",
+        "blocked",
+        "blocked"
+      ],
+      "rootfs": false
+    },
+    {
+      "statuses": ["success", "failure", "blocked", "blocked", "success", "blocked", "blocked", "blocked", "blocked"],
+      "rootfs": false
+    },
+    {
+      "statuses": ["success", "failure", "blocked", "blocked", "failure", "blocked", "blocked", "blocked", "blocked"],
+      "rootfs": false
+    },
+    {
+      "statuses": [
+        "success",
+        "success",
+        "failure",
+        "blocked",
+        "not-reached",
+        "blocked",
+        "blocked",
+        "blocked",
+        "blocked"
+      ],
+      "rootfs": false
+    },
+    {
+      "statuses": ["success", "success", "failure", "blocked", "success", "blocked", "blocked", "blocked", "blocked"],
+      "rootfs": false
+    },
+    {
+      "statuses": ["success", "success", "failure", "blocked", "failure", "blocked", "blocked", "blocked", "blocked"],
+      "rootfs": false
+    },
+    {
+      "statuses": [
+        "success",
+        "success",
+        "failure",
+        "success",
+        "not-reached",
+        "blocked",
+        "blocked",
+        "blocked",
+        "blocked"
+      ],
+      "rootfs": false
+    },
+    {
+      "statuses": ["success", "success", "failure", "success", "success", "blocked", "blocked", "blocked", "blocked"],
+      "rootfs": false
+    },
+    {
+      "statuses": ["success", "success", "failure", "success", "failure", "blocked", "blocked", "blocked", "blocked"],
+      "rootfs": false
+    },
+    {
+      "statuses": [
+        "success",
+        "success",
+        "failure",
+        "failure",
+        "not-reached",
+        "blocked",
+        "blocked",
+        "blocked",
+        "blocked"
+      ],
+      "rootfs": false
+    },
+    {
+      "statuses": ["success", "success", "failure", "failure", "success", "blocked", "blocked", "blocked", "blocked"],
+      "rootfs": false
+    },
+    {
+      "statuses": ["success", "success", "failure", "failure", "failure", "blocked", "blocked", "blocked", "blocked"],
+      "rootfs": false
+    },
+    {
+      "statuses": [
+        "success",
+        "success",
+        "success",
+        "blocked",
+        "not-reached",
+        "blocked",
+        "blocked",
+        "blocked",
+        "blocked"
+      ],
+      "rootfs": false
+    },
+    {
+      "statuses": ["success", "success", "success", "blocked", "success", "blocked", "blocked", "blocked", "blocked"],
+      "rootfs": false
+    },
+    {
+      "statuses": ["success", "success", "success", "blocked", "failure", "blocked", "blocked", "blocked", "blocked"],
+      "rootfs": false
+    },
+    {
+      "statuses": [
+        "success",
+        "success",
+        "success",
+        "failure",
+        "not-reached",
+        "blocked",
+        "blocked",
+        "blocked",
+        "blocked"
+      ],
+      "rootfs": false
+    },
+    {
+      "statuses": ["success", "success", "success", "failure", "success", "blocked", "blocked", "blocked", "blocked"],
+      "rootfs": false
+    },
+    {
+      "statuses": ["success", "success", "success", "failure", "failure", "blocked", "blocked", "blocked", "blocked"],
+      "rootfs": false
+    },
+    {
+      "statuses": [
+        "success",
+        "success",
+        "success",
+        "success",
+        "not-reached",
+        "failure",
+        "blocked",
+        "blocked",
+        "blocked"
+      ],
+      "rootfs": false
+    },
+    {
+      "statuses": ["success", "success", "success", "success", "success", "failure", "blocked", "blocked", "blocked"],
+      "rootfs": false
+    },
+    {
+      "statuses": ["success", "success", "success", "success", "failure", "failure", "blocked", "blocked", "blocked"],
+      "rootfs": false
+    },
+    {
+      "statuses": [
+        "success",
+        "success",
+        "success",
+        "success",
+        "not-reached",
+        "success",
+        "failure",
+        "blocked",
+        "blocked"
+      ],
+      "rootfs": false
+    },
+    {
+      "statuses": ["success", "success", "success", "success", "success", "success", "failure", "blocked", "blocked"],
+      "rootfs": false
+    },
+    {
+      "statuses": ["success", "success", "success", "success", "failure", "success", "failure", "blocked", "blocked"],
+      "rootfs": false
+    },
+    {
+      "statuses": [
+        "success",
+        "success",
+        "success",
+        "success",
+        "not-reached",
+        "success",
+        "success",
+        "failure",
+        "blocked"
+      ],
+      "rootfs": false
+    },
+    {
+      "statuses": ["success", "success", "success", "success", "success", "success", "success", "failure", "blocked"],
+      "rootfs": false
+    },
+    {
+      "statuses": ["success", "success", "success", "success", "failure", "success", "success", "failure", "blocked"],
+      "rootfs": false
+    },
+    {
+      "statuses": [
+        "success",
+        "success",
+        "success",
+        "success",
+        "not-reached",
+        "success",
+        "success",
+        "success",
+        "failure"
+      ],
+      "rootfs": false
+    },
+    {
+      "statuses": ["success", "success", "success", "success", "success", "success", "success", "success", "failure"],
+      "rootfs": false
+    },
+    {
+      "statuses": ["success", "success", "success", "success", "failure", "success", "success", "success", "failure"],
+      "rootfs": false
+    },
+    {
+      "statuses": [
+        "success",
+        "success",
+        "success",
+        "success",
+        "not-reached",
+        "success",
+        "success",
+        "success",
+        "success"
+      ],
+      "rootfs": true
+    },
+    {
+      "statuses": ["success", "success", "success", "success", "success", "success", "success", "success", "success"],
+      "rootfs": true
+    },
+    {
+      "statuses": ["success", "success", "success", "success", "failure", "success", "success", "success", "success"],
+      "rootfs": true
+    }
+  ]
+}

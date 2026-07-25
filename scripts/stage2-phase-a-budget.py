@@ -16,7 +16,9 @@ BOUNDARIES = {
     "validate": 5240,
     "export": 5280,
     "upload": 5290,
-    "export-cleanup": 5390,
+    "export-cleanup": 5380,
+    "post-export-residue-start": 5380,
+    "post-export-residue": 5400,
     "final": 5400,
 }
 KILL_RESERVE_SECONDS = 5

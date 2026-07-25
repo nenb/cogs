@@ -145,8 +145,8 @@ jobs:
         timeout-minutes: 1
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: stage2-phase-a-candidate-${{ github.run_id }}-${{ github.run_attempt }}
-          path: /var/tmp/cogs-stage2-phase-a-candidate-v1/candidate.json
+          name: stage2-phase-a-candidate-v2-${{ github.run_id }}-${{ github.run_attempt }}
+          path: /var/tmp/cogs-stage2-phase-a-candidate-v2/candidate.json
           if-no-files-found: error
           retention-days: 7
 
@@ -162,7 +162,20 @@ jobs:
             /var/lib/cogs/stage2-completion-v1/source/scripts/run-stage2-phase-a-candidate.py cleanup-export
           /usr/bin/python3 -I scripts/stage2-phase-a-budget.py check export-cleanup
 
-      - name: Enforce observation, cleanup, residue, validation, export, upload, and export cleanup certainty
+      - name: Independent read-only post-export-cleanup residue observation
+        id: post_export_residue
+        if: always()
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          /usr/bin/python3 -I scripts/stage2-phase-a-budget.py check post-export-residue-start
+          residue_timeout=$(/usr/bin/python3 -I scripts/stage2-phase-a-budget.py timeout post-export-residue)
+          sudo -n /usr/bin/timeout --signal=TERM --kill-after=5s "${residue_timeout}s" \
+            env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin /usr/bin/python3 -I \
+            /var/lib/cogs/stage2-completion-v1/source/scripts/run-stage2-phase-a-candidate.py post-export-residue
+          /usr/bin/python3 -I scripts/stage2-phase-a-budget.py check post-export-residue
+
+      - name: Enforce observation, cleanup, residue, validation, export, upload, export cleanup, and final residue certainty
         if: always()
         env:
           OBSERVE_OUTCOME: ${{ steps.observe.outcome }}
@@ -173,6 +186,7 @@ jobs:
           EXPORT_OUTCOME: ${{ steps.export.outcome }}
           UPLOAD_OUTCOME: ${{ steps.upload.outcome }}
           EXPORT_CLEANUP_OUTCOME: ${{ steps.export_cleanup.outcome }}
+          POST_EXPORT_RESIDUE_OUTCOME: ${{ steps.post_export_residue.outcome }}
         run: |
           set -euo pipefail
           /usr/bin/python3 -I scripts/stage2-phase-a-budget.py check final
@@ -184,4 +198,5 @@ jobs:
           test "$EXPORT_OUTCOME" = success
           test "$UPLOAD_OUTCOME" = success
           test "$EXPORT_CLEANUP_OUTCOME" = success
+          test "$POST_EXPORT_RESIDUE_OUTCOME" = success
           /usr/bin/python3 -I scripts/stage2-phase-a-budget.py check final

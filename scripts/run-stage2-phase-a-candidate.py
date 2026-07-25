@@ -30,20 +30,20 @@ sys.dont_write_bytecode = True
 FIXED_SOURCE = Path("/var/lib/cogs/stage2-completion-v1/source")
 FIXED_SCRIPT = FIXED_SOURCE / "scripts/run-stage2-phase-a-candidate.py"
 REMOTE = FIXED_SOURCE / "deploy/aws-feasibility/remote"
-STATE = FIXED_SOURCE / "deploy/aws-feasibility/.state/completion-v1/phase-a-candidate-v1"
-ANCHOR = STATE.parent / ".cogs-stage2-phase-a-anchor-v1.json"
+STATE = FIXED_SOURCE / "deploy/aws-feasibility/.state/completion-v1/phase-a-candidate-v2"
+ANCHOR = STATE.parent / ".cogs-stage2-phase-a-anchor-v2.json"
 JOURNAL = STATE / "ownership.jsonl"
 ASSETS = STATE / "assets"
 OBSERVATION = STATE / "observation.json"
 CLEANUP = STATE / "cleanup.json"
 RESIDUE = STATE / "residue.json"
 REPORT = STATE / "candidate.json"
-EXPORT_ROOT = Path("/var/tmp/cogs-stage2-phase-a-candidate-v1")
+EXPORT_ROOT = Path("/var/tmp/cogs-stage2-phase-a-candidate-v2")
 EXPORT_REPORT = EXPORT_ROOT / "candidate.json"
 SOURCE_MANIFEST = FIXED_SOURCE / ".cogs-stage2-source-manifest-v1.json"
 ARTIFACT_ROOT = FIXED_SOURCE / "deploy/aws-feasibility/.state/completion-v1/artifacts"
 ROOTFS_STATE = FIXED_SOURCE / "deploy/aws-feasibility/.state/completion-v1/rootfs-v1"
-VERSION = "cogs.stage2-phase-a-candidate/v1"
+VERSION = "cogs.stage2-phase-a-candidate/v2"
 MAX_JSON = 64 * 1024
 MAX_JOURNAL = 512 * 1024
 MAX_SOURCE_MANIFEST = 16 * 1024 * 1024
@@ -53,6 +53,15 @@ HOST_TOOL_SECONDS = 10
 DOWNLOAD_SECONDS = 1200
 OBSERVE_SECONDS = 3300
 ROOTFS_RECOVERY_ATTEMPTS = 1
+ROOTFS_PHASES = (
+    "first-build-work", "first-inline-cleanup", "second-build-work", "second-inline-cleanup",
+    "recovery-attempt-1", "equality", "pin", "post-verification", "settlement",
+)
+STRUCTURAL_COUNTERS = (
+    "record_reference_copies", "byte_names_returned", "parent_snapshots", "complete_legal_record_folds",
+    "complete_filesystem_walks", "incrementally_advanced_ledger_records",
+)
+OBSERVATION_PHASES = tuple(name for name in ROOTFS_PHASES if name != "recovery-attempt-1")
 NS_PER_SECOND = 1_000_000_000
 NS_PER_MILLISECOND = 1_000_000
 KVM_GET_API_VERSION = 0xAE00
@@ -264,18 +273,19 @@ def _parse_journal(raw):
 def _trusted_chain(path):
     path = Path(path)
     _fail(path.is_absolute(), "anchor-invalid")
-    descriptor = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
-    root_identity = _identity(os.fstat(descriptor))
-    _fail(root_identity["kind"] == "directory" and root_identity["uid"] == root_identity["gid"] == 0 and
-          root_identity["mode"] & 0o022 == 0, "anchor-chain-policy")
-    values = [{"path": "/", "identity": root_identity}]
-    current = Path("/")
+    descriptors = []
     try:
+        descriptor = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        descriptors.append(descriptor)
+        root_identity = _identity(os.fstat(descriptor))
+        _fail(root_identity["kind"] == "directory" and root_identity["uid"] == root_identity["gid"] == 0 and
+              root_identity["mode"] & 0o022 == 0, "anchor-chain-policy")
+        values = [{"path": "/", "identity": root_identity}]
+        current = Path("/")
         for component in path.parts[1:]:
-            child = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
-                            dir_fd=descriptor)
-            os.close(descriptor)
-            descriptor = child
+            descriptor = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                                 dir_fd=descriptor)
+            descriptors.append(descriptor)
             current /= component
             identity = _identity(os.fstat(descriptor))
             _fail(identity["kind"] == "directory" and identity["uid"] == identity["gid"] == 0 and
@@ -283,7 +293,8 @@ def _trusted_chain(path):
             values.append({"path": str(current), "identity": identity})
         return values
     finally:
-        os.close(descriptor)
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
 
 
 def _verify_trusted_chain(expected):
@@ -311,7 +322,7 @@ def _parse_anchor(raw):
     _fail(type(value) is dict and set(value) == {
         "version", "source_revision", "source_manifest_sha256", "trusted_parent_chain", "state", "journal",
     }, "anchor-invalid")
-    _fail(value["version"] == "cogs.stage2-phase-a-anchor/v1" and
+    _fail(value["version"] == "cogs.stage2-phase-a-anchor/v2" and
           type(value["source_revision"]) is str and re.fullmatch(r"[0-9a-f]{40}", value["source_revision"]) and
           type(value["source_manifest_sha256"]) is str and HEX.fullmatch(value["source_manifest_sha256"]) and
           _canonical(value) + b"\n" == raw, "anchor-invalid")
@@ -377,14 +388,18 @@ def _append_journal(kind, body):
     record = _journal_record(len(records), records[-1]["sha256"], kind, body)
     raw = _canonical(record) + b"\n"
     state = _open_dir(STATE)
-    descriptor = os.open(JOURNAL.name, os.O_WRONLY | os.O_APPEND | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=state)
+    descriptor = None
     try:
+        descriptor = os.open(
+            JOURNAL.name, os.O_WRONLY | os.O_APPEND | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=state,
+        )
         before = os.fstat(descriptor)
         _fail(_same_identity(before, records[0]["body"]["journal"], include_size=False), "journal-replaced")
         _write_all(descriptor, raw)
         os.fsync(descriptor)
     finally:
-        os.close(descriptor)
+        if descriptor is not None:
+            os.close(descriptor)
         os.close(state)
     _fail(_read_journal_unanchored()[-1] == record, "journal-invalid")
     return record
@@ -393,29 +408,34 @@ def _append_journal(kind, body):
 def _initialize_state(revision, manifest_sha256):
     state_parent = FIXED_SOURCE / "deploy/aws-feasibility/.state"
     completion = STATE.parent
-    _fail(not os.path.lexists(ROOTFS_STATE), "rootfs-baseline-present")
-    _fail(not os.path.lexists(ANCHOR), "anchor-preexisting")
-    state_parent_created, state_parent_identity = _mkdir_policy(state_parent, create=not os.path.lexists(state_parent))
-    completion_created, completion_identity = _mkdir_policy(completion, create=not os.path.lexists(completion))
-    _fail(not os.path.lexists(STATE), "state-preexisting")
+    _fail(_held_path_absent(ROOTFS_STATE), "rootfs-baseline-present")
+    _fail(_held_path_absent(ANCHOR), "anchor-preexisting")
+    state_parent_created, state_parent_identity = _mkdir_policy(
+        state_parent, create=_held_path_absent(state_parent),
+    )
+    completion_created, completion_identity = _mkdir_policy(
+        completion, create=_held_path_absent(completion),
+    )
+    _fail(_held_path_absent(STATE), "state-preexisting")
     os.mkdir(STATE, 0o700)
     state_identity = _identity(os.stat(STATE, follow_symlinks=False))
     _fail(state_identity["uid"] == state_identity["gid"] == 0 and state_identity["mode"] == 0o700, "state-policy")
     journal = os.open(JOURNAL, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
-    anchor = os.open(ANCHOR, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    anchor = None
     try:
+        anchor = os.open(ANCHOR, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
         os.fchmod(journal, 0o600); os.fchmod(anchor, 0o400)
         journal_identity = _identity(os.fstat(journal))
-        anchor_identity = _identity(os.fstat(anchor))
         anchor_value = {
-            "version": "cogs.stage2-phase-a-anchor/v1", "source_revision": revision,
+            "version": "cogs.stage2-phase-a-anchor/v2", "source_revision": revision,
             "source_manifest_sha256": manifest_sha256, "trusted_parent_chain": _trusted_chain(STATE.parent),
             "state": state_identity, "journal": journal_identity,
         }
         anchor_raw = _canonical(anchor_value) + b"\n"
         _write_all(anchor, anchor_raw); os.fsync(anchor)
+        anchor_identity = _identity(os.fstat(anchor))
         body = {
-            "version": "cogs.stage2-phase-a-ownership/v1", "state": state_identity,
+            "version": "cogs.stage2-phase-a-ownership/v2", "state": state_identity,
             "journal": journal_identity, "anchor": anchor_identity,
             "anchor_sha256": hashlib.sha256(anchor_raw).hexdigest(), "rootfs_baseline": {"present": False},
             "created_parents": {
@@ -426,7 +446,9 @@ def _initialize_state(revision, manifest_sha256):
         _write_all(journal, _canonical(_journal_record(0, "0" * 64, "genesis", body)) + b"\n")
         os.fsync(journal)
     finally:
-        os.close(anchor); os.close(journal)
+        if anchor is not None:
+            os.close(anchor)
+        os.close(journal)
     _fsync_directory(STATE); _fsync_directory(STATE.parent)
     _fsync_directory(STATE.parent.parent); _fsync_directory(STATE.parent.parent.parent)
     _require_state()
@@ -435,7 +457,7 @@ def _initialize_state(revision, manifest_sha256):
 def _validate_anchor_journal(anchor, anchor_sha256, genesis, anchor_observed):
     _fail(genesis.get("anchor_sha256") == anchor_sha256 and genesis.get("state") == anchor["state"] and
           genesis.get("journal") == anchor["journal"] and
-          _same_identity(anchor_observed, genesis.get("anchor"), include_size=False), "anchor-journal-mismatch")
+          _same_identity(anchor_observed, genesis.get("anchor")), "anchor-journal-mismatch")
 
 
 def _require_state():
@@ -822,18 +844,22 @@ def _download_asset(asset, outer_deadline_ns):
     final = ASSETS / asset.name
     partial = ASSETS / ("." + asset.name + ".partial")
     _append_journal("asset-intent", {"component": asset.component, "partial": partial.name, "final": final.name})
-    assets_fd = _open_dir(ASSETS)
-    _fail(not os.path.lexists(final) and not os.path.lexists(partial), "asset-no-overwrite")
-    descriptor = os.open(partial.name, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
-                         0o600, dir_fd=assets_fd)
-    partial_identity = _identity(os.fstat(descriptor))
-    _append_journal("asset-partial-owned", {
-        "component": asset.component, "name": partial.name, "identity": partial_identity,
-    })
+    descriptor = None
+    partial_identity = None
     connection = response = None
     published = False
     publication = {"journaled": False}
+    assets_fd = _open_dir(ASSETS)
     try:
+        _fail(_held_path_absent(final) and _held_path_absent(partial), "asset-no-overwrite")
+        descriptor = os.open(
+            partial.name, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+            0o600, dir_fd=assets_fd,
+        )
+        partial_identity = _identity(os.fstat(descriptor))
+        _append_journal("asset-partial-owned", {
+            "component": asset.component, "name": partial.name, "identity": partial_identity,
+        })
         connection, response = _request(asset.url, deadline_ns)
         headers = _headers(response)
         _fail(response.status in {301, 302, 303, 307, 308}, "asset-redirect")
@@ -880,9 +906,10 @@ def _download_asset(asset, outer_deadline_ns):
             response.close()
         if connection is not None:
             connection.close()
-        if not published:
+        if not published and descriptor is not None and partial_identity is not None:
             _cleanup_failed_asset_publication(assets_fd, descriptor, partial, final, publication)
-        os.close(descriptor)
+        if descriptor is not None:
+            os.close(descriptor)
         os.close(assets_fd)
 
 
@@ -971,11 +998,70 @@ def _rootfs_call(code, callback):
         raise CandidateError(code) from error
 
 
-def _empty_build_outcomes():
-    return {
-        "first": {"outcome": "blocked", "work_outcome": "blocked", "total_elapsed_ms": 0},
-        "second": {"outcome": "blocked", "work_outcome": "blocked", "total_elapsed_ms": 0},
-    }
+def _empty_phases():
+    return [{"phase": name, "status": "not-reached", "outcome": "observer-ended",
+             "elapsed_ms": 0, "structural_counters": None} for name in ROOTFS_PHASES]
+
+
+def _phase(phases, name):
+    _fail(type(phases) is list and len(phases) == len(ROOTFS_PHASES), "rootfs-phase-contract")
+    index = ROOTFS_PHASES.index(name)
+    _fail(phases[index].get("phase") == name, "rootfs-phase-contract")
+    return phases[index]
+
+
+def _validated_counters(value):
+    _fail(type(value) is dict and set(value) == set(STRUCTURAL_COUNTERS) and all(
+        type(item) is int and 0 <= item <= 1_000_000_000 for item in value.values()
+    ), "rootfs-counter-contract")
+    return dict(value)
+
+
+def _counter_start(provider, name):
+    expected_provider = "completion_rootfs_builder" if name == "recovery-attempt-1" else "completion_rootfs_build"
+    _fail(type(provider) is type(sys) and provider.__name__ == expected_provider and name in ROOTFS_PHASES,
+          "rootfs-counter-contract")
+    start = getattr(provider, "_start_phase_structural_counters", None)
+    read = getattr(provider, "_read_phase_structural_counters", None)
+    _fail(callable(start) and callable(read), "rootfs-counter-contract")
+    try:
+        handle = start(name)
+    except BaseException as error:
+        raise CandidateError("rootfs-counter-contract") from error
+    _fail(type(handle) is int and 0 <= handle <= (1 << 63) - 1, "rootfs-counter-contract")
+    return read, name, handle
+
+
+def _counter_read(ticket):
+    _fail(type(ticket) is tuple and len(ticket) == 3 and callable(ticket[0]), "rootfs-counter-contract")
+    read, name, handle = ticket
+    try:
+        value = read(name, handle)
+    except BaseException as error:
+        raise CandidateError("rootfs-counter-contract") from error
+    return _validated_counters(value)
+
+
+def _poison_phase(phases, name):
+    row = _phase(phases, name)
+    row.update({"status": "evidence-failure", "outcome": "counter-fault",
+                "elapsed_ms": 0, "structural_counters": None})
+
+
+def _set_phase(phases, name, status, outcome, elapsed_ns=0, counters=None):
+    row = _phase(phases, name)
+    attempted = status in {"success", "failure"}
+    _fail(row["status"] == "not-reached" and status in {"success", "failure", "blocked"} and
+          attempted == (counters is not None), "rootfs-phase-contract")
+    row.update({"status": status, "outcome": outcome,
+                "elapsed_ms": _elapsed_ms(elapsed_ns),
+                "structural_counters": _validated_counters(counters) if attempted else None})
+
+
+def _block_phases(phases, names):
+    for name in names:
+        if _phase(phases, name)["status"] == "not-reached":
+            _set_phase(phases, name, "blocked", "prerequisite-failed")
 
 
 def _elapsed_ns(started_ns):
@@ -990,40 +1076,112 @@ def _elapsed_ms(elapsed_ns):
     return elapsed_ns // NS_PER_MILLISECOND
 
 
-def _candidate_build(build, approval, control, ordinal, token, outcomes):
-    valid_state = outcomes == _empty_build_outcomes() if ordinal == "first" else (
-        type(outcomes) is dict and outcomes.get("first", {}).get("outcome") == "success" and
-        outcomes.get("second") == _empty_build_outcomes()["second"]
-    )
+def _candidate_build(build, approval, control, ordinal, token, phases):
+    work_name, cleanup_name = f"{ordinal}-build-work", f"{ordinal}-inline-cleanup"
     _fail(ordinal in {"first", "second"} and type(build.BUILD_SECONDS) is int and build.BUILD_SECONDS > 0 and
-          type(token) is str and HEX.fullmatch(token) is not None and valid_state, "rootfs-build-contract")
+          type(token) is str and HEX.fullmatch(token) is not None and
+          _phase(phases, work_name)["status"] == _phase(phases, cleanup_name)["status"] == "not-reached",
+          "rootfs-build-contract")
+    try:
+        work_counter = _counter_start(build, work_name)
+        cleanup_counter = _counter_start(build, cleanup_name)
+    except BaseException:
+        _poison_phase(phases, work_name)
+        raise
+    materializer, builder = build.materializer, build.builder
+    original_reload, original_cleanup = materializer._reload_and_cleanup, builder._cleanup_owned
+    cleanup_depth = 0
+    cleanup_elapsed_ns = 0
+    cleanup_statuses = []
+
+    def timed_cleanup(callback, *args):
+        nonlocal cleanup_depth, cleanup_elapsed_ns
+        if cleanup_depth:
+            return callback(*args)
+        cleanup_depth = 1
+        started = time.monotonic_ns()
+        try:
+            result = callback(*args)
+            cleanup_statuses.append("success")
+            return result
+        except BaseException:
+            cleanup_statuses.append("failure")
+            raise
+        finally:
+            cleanup_elapsed_ns += _elapsed_ns(started)
+            cleanup_depth = 0
+
+    materializer._reload_and_cleanup = lambda *args: timed_cleanup(original_reload, *args)
+    builder._cleanup_owned = lambda *args: timed_cleanup(original_cleanup, *args)
     started_ns = time.monotonic_ns()
+    error = None
     try:
         candidate = build._build_once(approval, token, control)
-        elapsed_ns = _elapsed_ns(started_ns)
-        outcomes[ordinal] = {
-            "outcome": "success", "work_outcome": "success", "total_elapsed_ms": _elapsed_ms(elapsed_ns),
-        }
-        return candidate
-    except BaseException as error:
-        attempt_error = getattr(build, "BuildAttemptError", None)
-        work_outcome = error.work_outcome if type(attempt_error) is type and type(error) is attempt_error else "failed"
-        _fail(work_outcome in {"cancelled", "deadline", "failed", "not-started", "success"},
-              "rootfs-build-contract")
-        elapsed_ns = _elapsed_ns(started_ns)
-        outcomes[ordinal] = {
-            "outcome": "failed", "work_outcome": work_outcome, "total_elapsed_ms": _elapsed_ms(elapsed_ns),
-        }
-        failure_category = "postwork" if work_outcome == "success" else work_outcome
-        raise CandidateError(f"rootfs-{ordinal}-build-{failure_category}") from error
+    except BaseException as caught:
+        error = caught
+        candidate = None
+    finally:
+        total_elapsed_ns = _elapsed_ns(started_ns)
+        materializer._reload_and_cleanup, builder._cleanup_owned = original_reload, original_cleanup
+    attempt_error = getattr(build, "BuildAttemptError", None)
+    work_outcome = error.work_outcome if type(attempt_error) is type and type(error) is attempt_error else (
+        "success" if error is None else "failed"
+    )
+    _fail(work_outcome in {"cancelled", "deadline", "failed", "not-started", "success"} and
+          cleanup_elapsed_ns <= total_elapsed_ns, "rootfs-build-contract")
+    postwork = error is not None and work_outcome == "success"
+    work_status = "success" if error is None else "failure"
+    work_category = "success" if error is None else ("postwork" if postwork else work_outcome)
+    try:
+        work_counters = _counter_read(work_counter)
+    except BaseException:
+        _poison_phase(phases, work_name)
+        raise
+    _set_phase(phases, work_name, work_status, work_category, total_elapsed_ns - cleanup_elapsed_ns,
+               work_counters)
+    cleanup_failed = "failure" in cleanup_statuses
+    if not cleanup_statuses:
+        _set_phase(phases, cleanup_name, "blocked", "prerequisite-failed")
+    else:
+        cleanup_status = "failure" if cleanup_failed else "success"
+        try:
+            cleanup_counters = _counter_read(cleanup_counter)
+        except BaseException:
+            _poison_phase(phases, cleanup_name)
+            raise
+        _set_phase(phases, cleanup_name, cleanup_status, "failed" if cleanup_failed else "success",
+                   cleanup_elapsed_ns, cleanup_counters)
+    if error is not None:
+        category = "inline-cleanup" if cleanup_failed else work_category
+        raise CandidateError(f"rootfs-{ordinal}-build-{category}") from error
+    _fail(cleanup_statuses == ["success"], "rootfs-build-contract")
+    return candidate
 
 
-def _verify_candidate_pair(build, completion_rootfs_publish, first, second):
-    _rootfs_call("rootfs-equality", lambda: build._require_equal_builds(first, second))
-    pins = _rootfs_call("rootfs-pin", completion_rootfs_publish._load_pins)
-    _rootfs_call("rootfs-pin", lambda: build._require_pinned(first, pins))
-    _rootfs_call("rootfs-pin", lambda: build._require_pinned(second, pins))
-    return pins
+def _timed_rootfs_phase(phases, name, code, provider, callback):
+    try:
+        ticket = _counter_start(provider, name)
+    except BaseException:
+        _poison_phase(phases, name)
+        raise
+    started_ns = time.monotonic_ns()
+    error = None
+    try:
+        value = callback()
+    except BaseException as caught:
+        error = caught
+        value = None
+    try:
+        counters = _counter_read(ticket)
+    except BaseException:
+        _poison_phase(phases, name)
+        raise
+    elapsed_ns = _elapsed_ns(started_ns)
+    if error is not None:
+        _set_phase(phases, name, "failure", "failed", elapsed_ns, counters)
+        raise CandidateError(code) from error
+    _set_phase(phases, name, "success", "success", elapsed_ns, counters)
+    return value
 
 
 def _bootstrap_rootfs(builder, fs, approval, control):
@@ -1097,7 +1255,7 @@ def _load_artifact_verifier():
     return verifier
 
 
-def _rootfs_candidates(revision, manifest_sha256, outer_deadline_ns, build_outcomes):
+def _rootfs_candidates(revision, manifest_sha256, outer_deadline_ns, phases):
     sys.path.insert(0, str(REMOTE))
     import completion_rootfs_build as build
     import completion_rootfs_builder as builder
@@ -1134,19 +1292,43 @@ def _rootfs_candidates(revision, manifest_sha256, outer_deadline_ns, build_outco
     _fail(type(first_token) is str and HEX.fullmatch(first_token) is not None and
           type(second_token) is str and HEX.fullmatch(second_token) is not None and
           first_token != second_token, "rootfs-build-token")
-    first = _candidate_build(build, approval, control, "first", first_token, build_outcomes)
-    second = _candidate_build(build, approval, control, "second", second_token, build_outcomes)
-    _verify_candidate_pair(build, completion_rootfs_publish, first, second)
-    _verifier_call(
-        verifier, "rootfs-postverify",
-        lambda: verifier.verify_package_archives(verifier.CONTRACT_PATH, verifier.ARTIFACT_ROOT),
-    )
-    _fail(_snapshot_cache(contract) == cache_owned, "rootfs-postverify")
-    _fail(_same_rootfs_lifecycle(_snapshot_rootfs_lifecycle(), rootfs_owned), "rootfs-postverify")
-    return {"candidate_count": 2, "cache_count": len(first.cache), "entry_count": first.entry_count,
-            "manifest_size": len(first.manifest), "manifest_sha256": first.manifest_sha256,
-            "ustar_size": first.ustar_size, "ustar_sha256": first.ustar_sha256,
-            "equal": True, "pins_match": True}
+    try:
+        first = _candidate_build(build, approval, control, "first", first_token, phases)
+    except BaseException:
+        _block_phases(phases, ("second-build-work", "second-inline-cleanup", "equality", "pin",
+                               "post-verification", "settlement"))
+        raise
+    try:
+        second = _candidate_build(build, approval, control, "second", second_token, phases)
+    except BaseException:
+        _block_phases(phases, ("equality", "pin", "post-verification", "settlement"))
+        raise
+    try:
+        _timed_rootfs_phase(phases, "equality", "rootfs-equality", build,
+                            lambda: build._require_equal_builds(first, second))
+        def pinned():
+            pins = completion_rootfs_publish._load_pins()
+            build._require_pinned(first, pins)
+            build._require_pinned(second, pins)
+        _timed_rootfs_phase(phases, "pin", "rootfs-pin", build, pinned)
+        def postverify():
+            _verifier_call(verifier, "rootfs-postverify", lambda: verifier.verify_package_archives(
+                verifier.CONTRACT_PATH, verifier.ARTIFACT_ROOT,
+            ))
+            _fail(_snapshot_cache(contract) == cache_owned, "rootfs-postverify")
+        _timed_rootfs_phase(phases, "post-verification", "rootfs-postverify", build, postverify)
+        def settle():
+            _fail(_same_rootfs_lifecycle(_snapshot_rootfs_lifecycle(), rootfs_owned), "rootfs-settlement")
+            return {
+                "candidate_count": 2, "cache_count": len(first.cache), "entry_count": first.entry_count,
+                "manifest_size": len(first.manifest), "manifest_sha256": first.manifest_sha256,
+                "ustar_size": first.ustar_size, "ustar_sha256": first.ustar_sha256,
+                "equal": True, "pins_match": True,
+            }
+        return _timed_rootfs_phase(phases, "settlement", "rootfs-settlement", build, settle)
+    except BaseException:
+        _block_phases(phases, ("equality", "pin", "post-verification", "settlement"))
+        raise
 
 
 def _observe():
@@ -1157,16 +1339,16 @@ def _observe():
     started = time.monotonic_ns()
     outer_deadline_ns = started + OBSERVE_SECONDS * 1_000_000_000
     observation = {"status": "failed", "codes": [], "revision": revision, "source_manifest_sha256": manifest_sha256,
-                   "host_tools": [], "kvm": None, "rootfs": None, "rootfs_builds": _empty_build_outcomes(),
+                   "host_tools": [], "kvm": None, "rootfs": None, "rootfs_phases": _empty_phases(),
                    "assets": []}
     try:
         observation["host_tools"], host_tool_codes = _host_tools()
         observation["kvm"] = _prove_kvm()
         observation["rootfs"] = _rootfs_candidates(
-            revision, manifest_sha256, outer_deadline_ns, observation["rootfs_builds"],
+            revision, manifest_sha256, outer_deadline_ns, observation["rootfs_phases"],
         )
         _append_journal("asset-directory-intent", {"name": ASSETS.name})
-        _fail(not os.path.lexists(ASSETS), "asset-directory-preexisting")
+        _fail(_held_path_absent(ASSETS), "asset-directory-preexisting")
         os.mkdir(ASSETS, 0o700)
         _fsync_directory(STATE)
         asset_dir_identity = _identity(os.stat(ASSETS, follow_symlinks=False))
@@ -1204,7 +1386,11 @@ def _open_directory_nofollow(path):
         for component in path.parts[1:]:
             child = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
                             dir_fd=descriptor)
-            os.close(descriptor)
+            try:
+                os.close(descriptor)
+            except BaseException:
+                os.close(child)
+                raise
             descriptor = child
         return descriptor
     except BaseException:
@@ -1214,10 +1400,14 @@ def _open_directory_nofollow(path):
 
 def _open_dir(path):
     descriptor = _open_directory_nofollow(path)
-    observed = os.fstat(descriptor)
-    _fail(stat.S_ISDIR(observed.st_mode) and observed.st_uid == observed.st_gid == 0 and
-          stat.S_IMODE(observed.st_mode) == 0o700, "cleanup-policy")
-    return descriptor
+    try:
+        observed = os.fstat(descriptor)
+        _fail(stat.S_ISDIR(observed.st_mode) and observed.st_uid == observed.st_gid == 0 and
+              stat.S_IMODE(observed.st_mode) == 0o700, "cleanup-policy")
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
 
 
 def _rmdir_exact(path, expected):
@@ -1251,7 +1441,7 @@ def _unlink_exact(directory, name, descriptor, expected, digest=None, include_si
 
 def _cleanup_assets(records):
     directory_record = _one_record(records, "asset-directory-owned")
-    if not os.path.lexists(ASSETS):
+    if _held_path_absent(ASSETS):
         return
     _fail(directory_record is not None, "cleanup-unowned")
     directory = _open_dir(ASSETS)
@@ -1272,11 +1462,11 @@ def _cleanup_assets(records):
             descriptor = _owned_file(directory, name, identity, digest) if complete else os.open(
                 name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=directory,
             )
+            held_files.append((name, descriptor, identity, digest, complete))
             if not complete:
                 observed = os.fstat(descriptor)
                 _fail(_same_identity(observed, identity, include_size=False, include_nlink=False) and
                       observed.st_nlink == 1, "cleanup-replaced")
-            held_files.append((name, descriptor, identity, digest, complete))
         for name, descriptor, identity, digest, complete in held_files:
             _unlink_exact(directory, name, descriptor, identity, digest, include_size=complete)
     finally:
@@ -1288,7 +1478,7 @@ def _cleanup_assets(records):
 
 def _cleanup_artifacts(records):
     owned = _one_record(records, "cache-owned")
-    if not os.path.lexists(ARTIFACT_ROOT):
+    if _held_path_absent(ARTIFACT_ROOT):
         return
     _fail(owned is not None, "cleanup-unowned")
     root = _open_dir(ARTIFACT_ROOT)
@@ -1349,12 +1539,17 @@ def _retry_exact_recovery(callback, bound_ns, outcomes, attempts=ROOTFS_RECOVERY
 def _recover_rootfs(outcomes):
     sys.path.insert(0, str(REMOTE))
     import completion_rootfs_builder as builder
-    _retry_exact_recovery(builder._run_recovery, builder.RECOVER_SECONDS * NS_PER_SECOND, outcomes)
+    ticket = _counter_start(builder, "recovery-attempt-1")
+    try:
+        _retry_exact_recovery(builder._run_recovery, builder.RECOVER_SECONDS * NS_PER_SECOND, outcomes)
+    finally:
+        for row in outcomes:
+            row["structural_counters"] = _counter_read(ticket)
 
 
 def _cleanup_rootfs(records):
     lifecycle = _one_record(records, "rootfs-lifecycle-owned")
-    if not os.path.lexists(ROOTFS_STATE):
+    if _held_path_absent(ROOTFS_STATE):
         return
     _fail(lifecycle is not None, "rootfs-cleanup-unowned")
     root = _open_dir(ROOTFS_STATE)
@@ -1427,8 +1622,11 @@ def _residue():
     codes = []
     for path, code in ((ASSETS, "asset-residue"), (ARTIFACT_ROOT, "cache-residue"),
                        (ROOTFS_STATE, "rootfs-baseline-not-restored")):
-        if os.path.lexists(path):
-            codes.append(code)
+        try:
+            if not _held_path_absent(path):
+                codes.append(code)
+        except BaseException:
+            codes.append("residue-observation-uncertainty")
     try:
         _verify_state_metadata(_require_state())
     except BaseException:
@@ -1447,12 +1645,71 @@ def _base_report():
         "checks": {"platform": "fail", "root": "fail", "source": "fail", "kvm": "unknown",
                    "artifact_cache": "unknown", "rootfs_candidates": "unknown", "runtime_assets": "unknown",
                    "host_tools": "unknown", "cleanup": "unknown", "residue": "unknown"},
-        "rootfs": None, "rootfs_builds": _empty_build_outcomes(), "recovery_attempts": [],
+        "rootfs": None, "rootfs_phases": _empty_phases(),
         "runtime_assets": [], "host_tools": [],
         "kvm": {"device_present": False, "device_accessible": False, "api_version": None},
         "claims": {"runtime": False, "network": False, "ssh": False, "coordinator_invoked": False},
         "diagnostic_codes": [],
     }
+
+
+def _allowed_observation_statuses():
+    blocked = "blocked"
+    patterns = [("not-reached",) * len(OBSERVATION_PHASES)]
+    for prefix in (("success", "success"), ("success",) * 4, ("success",) * 5,
+                   ("success",) * 6, ("success",) * 7):
+        patterns.append(prefix + ("not-reached",) * (len(OBSERVATION_PHASES) - len(prefix)))
+    patterns.extend((
+        ("failure", cleanup) + (blocked,) * 6 for cleanup in (blocked, "success", "failure")
+    ))
+    patterns.extend((
+        ("success", cleanup) + (blocked,) * 6 for cleanup in (blocked, "failure")
+    ))
+    patterns.extend((
+        ("success", "success", "failure", cleanup) + (blocked,) * 4
+        for cleanup in (blocked, "success", "failure")
+    ))
+    patterns.extend((
+        ("success", "success", "success", cleanup) + (blocked,) * 4
+        for cleanup in (blocked, "failure")
+    ))
+    for index in range(4, 8):
+        patterns.append(("success",) * index + ("failure",) + (blocked,) * (7 - index))
+    patterns.append(("success",) * 8)
+    return frozenset(patterns)
+
+
+ALLOWED_OBSERVATION_STATUSES = _allowed_observation_statuses()
+
+
+def _validate_phase_graph(phases, rootfs):
+    _fail(type(phases) is list and len(phases) == len(ROOTFS_PHASES), "report-schema")
+    for name, row in zip(ROOTFS_PHASES, phases, strict=True):
+        _fail(type(row) is dict and set(row) == {
+            "phase", "status", "outcome", "elapsed_ms", "structural_counters",
+        } and row["phase"] == name and row["status"] in {
+            "success", "failure", "blocked", "not-reached",
+        } and row["outcome"] in {
+            "success", "failed", "cancelled", "deadline", "not-started", "postwork", "over-bound",
+            "prerequisite-failed", "observer-ended",
+        } and type(row["elapsed_ms"]) is int and 0 <= row["elapsed_ms"] <= 5_400_000 and
+              (row["status"] == "success") == (row["outcome"] == "success") and
+              (row["status"] == "blocked") == (row["outcome"] == "prerequisite-failed") and
+              (row["status"] == "not-reached") == (row["outcome"] == "observer-ended") and
+              (row["status"] not in {"blocked", "not-reached"} or row["elapsed_ms"] == 0), "report-schema")
+        if row["status"] in {"success", "failure"}:
+            _validated_counters(row["structural_counters"])
+        else:
+            _fail(row["structural_counters"] is None, "report-schema")
+    statuses = tuple(_phase(phases, name)["status"] for name in OBSERVATION_PHASES)
+    _fail(statuses in ALLOWED_OBSERVATION_STATUSES and
+          _phase(phases, "recovery-attempt-1")["status"] in {"success", "failure", "not-reached"},
+          "report-schema")
+    settled = _phase(phases, "settlement")["status"] == "success"
+    _fail(settled == (rootfs is not None), "report-schema")
+    if rootfs is not None:
+        _fail(all(_phase(phases, name)["status"] == "success" for name in ROOTFS_PHASES
+                  if name != "recovery-attempt-1"), "report-schema")
 
 
 def _canonical_report(report):
@@ -1476,30 +1733,9 @@ def _canonical_report(report):
     checks = report["checks"]
     _fail(type(checks) is dict and set(checks) == set(_base_report()["checks"]) and
           set(checks.values()) <= {"pass", "fail", "blocked", "unknown"}, "report-schema")
-    builds = report["rootfs_builds"]
-    _fail(type(builds) is dict and set(builds) == {"first", "second"}, "report-schema")
-    for name in ("first", "second"):
-        row = builds[name]
-        _fail(type(row) is dict and set(row) == {"outcome", "work_outcome", "total_elapsed_ms"} and
-              row["outcome"] in {"blocked", "success", "failed"} and
-              row["work_outcome"] in {"blocked", "success", "cancelled", "deadline", "failed",
-                                      "not-started"} and
-              type(row["total_elapsed_ms"]) is int and 0 <= row["total_elapsed_ms"] <= 5_400_000 and
-              (row["outcome"] == "blocked") ==
-              (row == {"outcome": "blocked", "work_outcome": "blocked", "total_elapsed_ms": 0}) and
-              (row["work_outcome"] == "blocked") == (row["outcome"] == "blocked") and
-              (row["outcome"] != "success" or row["work_outcome"] == "success"), "report-schema")
-    _fail(builds["first"]["outcome"] == "success" or builds["second"] == _empty_build_outcomes()["second"],
-          "report-schema")
-    recovery = report["recovery_attempts"]
-    _fail(type(recovery) is list and len(recovery) <= ROOTFS_RECOVERY_ATTEMPTS, "report-schema")
-    for index, row in enumerate(recovery, 1):
-        _fail(type(row) is dict and set(row) == {"attempt", "outcome", "elapsed_ms"} and
-              type(row["attempt"]) is int and row["attempt"] == index and
-              row["outcome"] in {"success", "over-bound", "nondeadline"} and
-              type(row["elapsed_ms"]) is int and 0 <= row["elapsed_ms"] <= 5_400_000, "report-schema")
-    _fail(not any(row["outcome"] == "success" for row in recovery[:-1]), "report-schema")
+    phases = report["rootfs_phases"]
     rootfs = report["rootfs"]
+    _validate_phase_graph(phases, rootfs)
     if rootfs is not None:
         _fail(rootfs == {
             "candidate_count": 2, "cache_count": 16, "entry_count": 4353,
@@ -1539,23 +1775,61 @@ def _canonical_report(report):
     return raw
 
 
+def _bounded_codes(value):
+    _fail(type(value) is list and len(value) <= 16 and len(value) == len(set(value)) and
+          all(type(item) is str and re.fullmatch(r"[a-z0-9-]{1,64}", item) for item in value),
+          "report-input-uncertainty")
+    return list(value)
+
+
+def _merge_recovery_attempt(phases, rootfs, cleanup):
+    _fail(type(cleanup) is dict and "recovery_attempts" in cleanup, "report-input-uncertainty")
+    attempts = cleanup["recovery_attempts"]
+    _fail(type(attempts) is list and len(attempts) == 1, "report-input-uncertainty")
+    attempt = attempts[0]
+    _fail(type(attempt) is dict and set(attempt) == {
+        "attempt", "outcome", "elapsed_ms", "structural_counters",
+    } and attempt["attempt"] == 1 and type(attempt["attempt"]) is int and
+          attempt["outcome"] in {"success", "over-bound", "nondeadline"} and
+          type(attempt["elapsed_ms"]) is int and 0 <= attempt["elapsed_ms"] <= 5_400_000,
+          "report-input-uncertainty")
+    merged = [{**row, "structural_counters": None if row["structural_counters"] is None else
+               dict(row["structural_counters"])} for row in phases]
+    status = "success" if attempt["outcome"] == "success" else "failure"
+    outcome = {"success": "success", "over-bound": "over-bound", "nondeadline": "failed"}[attempt["outcome"]]
+    row = _phase(merged, "recovery-attempt-1")
+    _fail(row["status"] == "not-reached", "report-input-uncertainty")
+    row.update({"status": status, "outcome": outcome, "elapsed_ms": attempt["elapsed_ms"],
+                "structural_counters": _validated_counters(attempt["structural_counters"])})
+    _validate_phase_graph(merged, rootfs)
+    return merged
+
+
 def _render():
     _fixed_preflight(False)
     _require_state()
     report = _base_report()
-    codes = []
+    diagnostics = []
+    observation_codes = []
+    observed = cleanup_success = residue_clean = False
     try:
         observation = _strict_json(_read_regular(OBSERVATION, MAX_JSON, 0o400))
-        cleanup = _strict_json(_read_regular(CLEANUP, MAX_JSON, 0o400))
-        residue = _strict_json(_read_regular(RESIDUE, MAX_JSON, 0o400))
+        _fail(type(observation) is dict, "report-input-uncertainty")
+        phases, rootfs = observation.get("rootfs_phases"), observation.get("rootfs")
+        _validate_phase_graph(phases, rootfs)
+    except BaseException as error:
+        raise CandidateError("observation-phase-input-uncertainty") from error
+    report["rootfs"], report["rootfs_phases"] = rootfs, phases
+    try:
+        observation_codes = _bounded_codes(observation.get("codes"))
+        _fail(type(observation.get("duration_ms")) is int and
+              type(observation.get("host_tools")) is list and type(observation.get("assets")) is list,
+              "report-input-uncertainty")
         report["source_revision"] = observation.get("revision")
         report["source_manifest_sha256"] = observation.get("source_manifest_sha256")
-        report["duration_ms"] = observation.get("duration_ms", 0)
-        report["host_tools"] = observation.get("host_tools", [])
-        report["runtime_assets"] = observation.get("assets", [])
-        report["rootfs"] = observation.get("rootfs")
-        report["rootfs_builds"] = observation.get("rootfs_builds", _empty_build_outcomes())
-        report["recovery_attempts"] = cleanup.get("recovery_attempts", [])
+        report["duration_ms"] = observation.get("duration_ms")
+        report["host_tools"] = observation.get("host_tools")
+        report["runtime_assets"] = observation.get("assets")
         observed_kvm = observation.get("kvm")
         if type(observed_kvm) is dict:
             report["kvm"] = {
@@ -1564,27 +1838,53 @@ def _render():
                 "api_version": observed_kvm.get("api_version") if observed_kvm.get("api_version") == 12 else None,
             }
         observed = observation.get("status") == "observed"
-        report["checks"].update({
-            "platform": "pass", "root": "pass", "source": "pass",
-            "kvm": "pass" if report["kvm"]["api_version"] == 12 else "fail",
-            "artifact_cache": "pass" if type(report["rootfs"]) is dict and report["rootfs"].get("cache_count") == 16 else "fail",
-            "rootfs_candidates": "pass" if type(report["rootfs"]) is dict and report["rootfs"].get("pins_match") is True else "fail",
-            "runtime_assets": "pass" if len(report["runtime_assets"]) == 2 and all(row.get("downloaded") is True for row in report["runtime_assets"]) else "fail",
-            "host_tools": "blocked", "cleanup": "pass" if cleanup.get("success") is True else "fail",
-            "residue": "pass" if residue.get("clean") is True else "fail",
-        })
-        blockers = list(observation.get("codes", []))
-        if not observed:
-            blockers.append("observe-uncertainty")
-        if cleanup.get("success") is not True:
-            blockers.append("cleanup-uncertainty")
-        if residue.get("clean") is not True:
-            blockers.append("residue-uncertainty")
-        report["blockers"] = list(dict.fromkeys(blockers))
-        codes.extend(cleanup.get("codes", [])); codes.extend(residue.get("codes", []))
     except BaseException:
-        codes.append("report-input-uncertainty")
-    report["diagnostic_codes"] = list(dict.fromkeys(codes))
+        diagnostics.append("observation-input-uncertainty")
+    try:
+        cleanup = _strict_json(_read_regular(CLEANUP, MAX_JSON, 0o400))
+        report["rootfs_phases"] = _merge_recovery_attempt(
+            report["rootfs_phases"], report["rootfs"], cleanup,
+        )
+    except BaseException as error:
+        raise CandidateError("recovery-phase-input-uncertainty") from error
+    try:
+        _fail(set(cleanup) == {"success", "codes", "recovery_attempts"} and
+              type(cleanup["success"]) is bool, "report-input-uncertainty")
+        cleanup_codes = _bounded_codes(cleanup["codes"])
+        cleanup_success = cleanup["success"]
+        diagnostics.extend(cleanup_codes)
+    except BaseException:
+        diagnostics.append("cleanup-summary-input-uncertainty")
+    try:
+        residue = _strict_json(_read_regular(RESIDUE, MAX_JSON, 0o400))
+        _fail(type(residue) is dict and set(residue) == {"clean", "codes"} and type(residue["clean"]) is bool,
+              "report-input-uncertainty")
+        residue_clean = residue["clean"]
+        diagnostics.extend(_bounded_codes(residue["codes"]))
+    except BaseException:
+        diagnostics.append("residue-input-uncertainty")
+    report["checks"].update({
+        "platform": "pass" if report["source_revision"] is not None else "fail",
+        "root": "pass" if report["source_revision"] is not None else "fail",
+        "source": "pass" if report["source_revision"] is not None else "fail",
+        "kvm": "pass" if report["kvm"]["api_version"] == 12 else "fail",
+        "artifact_cache": "pass" if type(report["rootfs"]) is dict and report["rootfs"].get("cache_count") == 16 else "fail",
+        "rootfs_candidates": "pass" if type(report["rootfs"]) is dict and report["rootfs"].get("pins_match") is True else "fail",
+        "runtime_assets": "pass" if len(report["runtime_assets"]) == 2 and all(
+            row.get("downloaded") is True for row in report["runtime_assets"]
+        ) else "fail",
+        "host_tools": "blocked", "cleanup": "pass" if cleanup_success else "fail",
+        "residue": "pass" if residue_clean else "fail",
+    })
+    blockers = observation_codes
+    if not observed:
+        blockers.append("observe-uncertainty")
+    if not cleanup_success:
+        blockers.append("cleanup-uncertainty")
+    if not residue_clean:
+        blockers.append("residue-uncertainty")
+    report["blockers"] = list(dict.fromkeys(blockers))
+    report["diagnostic_codes"] = list(dict.fromkeys(diagnostics))
     raw = _canonical_report(report)
     _write_json_once(REPORT, report, "report-owned")
     _fail(_read_regular(REPORT, MAX_JSON, 0o400) == raw, "report-validation")
@@ -1602,7 +1902,7 @@ def _validate():
 def _export():
     _validate()
     _append_journal("export-intent", {"root": str(EXPORT_ROOT), "name": EXPORT_REPORT.name})
-    _fail(not os.path.lexists(EXPORT_ROOT), "export-preexisting")
+    _fail(_held_path_absent(EXPORT_ROOT), "export-preexisting")
     os.mkdir(EXPORT_ROOT, 0o755)
     _fsync_directory(EXPORT_ROOT.parent)
     directory_identity = _identity(os.stat(EXPORT_ROOT, follow_symlinks=False))
@@ -1629,27 +1929,133 @@ def _export():
     return 0
 
 
+def _cleanup_evidence_state(records):
+    metadata = [_one_record(records, kind, True) for kind in (
+        "observation-owned", "cleanup-owned", "residue-owned", "report-owned",
+    )]
+    genesis = records[0]["body"]
+    parent = _open_dir(STATE.parent)
+    state = anchor = journal = None
+    held = []
+    try:
+        state = os.open(STATE.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent)
+        anchor = os.open(ANCHOR.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent)
+        _fail(_same_directory_authority(os.fstat(state), genesis["state"]), "state-replaced")
+        _fail(set(os.listdir(state)) == {JOURNAL.name} | {item["name"] for item in metadata},
+              "state-metadata-unknown")
+        for item in metadata:
+            descriptor = _owned_file(state, item["name"], item["identity"], item["sha256"])
+            held.append((item, descriptor))
+        journal = os.open(JOURNAL.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=state)
+        _fail(_same_identity(os.fstat(journal), genesis["journal"], include_size=False), "journal-replaced")
+        _fail(_same_identity(os.fstat(anchor), genesis["anchor"]), "anchor-node-replaced")
+        for item, descriptor in held:
+            _unlink_exact(state, item["name"], descriptor, item["identity"], item["sha256"])
+        _unlink_exact(state, JOURNAL.name, journal, genesis["journal"], include_size=False)
+        held_state = os.fstat(state)
+        named_state = os.stat(STATE.name, dir_fd=parent, follow_symlinks=False)
+        _fail(_same_directory_authority(held_state, genesis["state"]) and
+              _same_directory_authority(named_state, genesis["state"]) and
+              _same_directory_authority(named_state, _identity(held_state)), "state-replaced")
+        os.rmdir(STATE.name, dir_fd=parent)
+        os.fsync(parent)
+        _unlink_exact(parent, ANCHOR.name, anchor, genesis["anchor"], genesis["anchor_sha256"])
+    finally:
+        for _item, descriptor in held:
+            os.close(descriptor)
+        for descriptor in (journal, anchor, state, parent):
+            if descriptor is not None:
+                os.close(descriptor)
+
+
 def _cleanup_export():
     _fixed_preflight(False)
-    _require_state()
-    owned = _one_record(_require_state(), "export-owned")
-    if not os.path.lexists(EXPORT_ROOT):
+    records = _require_state()
+    owned = _one_record(records, "export-owned")
+    if _held_path_absent(EXPORT_ROOT):
         _fail(owned is None, "export-residue-unknown")
-        return 0
-    _fail(owned is not None, "export-cleanup-unowned")
-    directory = os.open(EXPORT_ROOT, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
-    descriptor = None
+    else:
+        _fail(owned is not None, "export-cleanup-unowned")
+        directory = os.open(EXPORT_ROOT, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        descriptor = None
+        try:
+            _fail(_same_directory_authority(os.fstat(directory), owned["directory"]), "export-cleanup-replaced")
+            _fail(set(os.listdir(directory)) == {EXPORT_REPORT.name}, "export-cleanup-unknown")
+            descriptor = _owned_file(directory, EXPORT_REPORT.name, owned["file"], owned["sha256"])
+            _unlink_exact(directory, EXPORT_REPORT.name, descriptor, owned["file"], owned["sha256"])
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+            os.close(directory)
+        _rmdir_exact(EXPORT_ROOT, owned["directory"])
+        _append_journal("export-cleaned", {"sha256": owned["sha256"]})
+        records = _require_state()
+    _cleanup_evidence_state(records)
+    return 0
+
+
+def _held_path_absent(path):
+    path = Path(path)
+    _fail(path.is_absolute(), "residue-observation-uncertainty")
+    descriptors = []
+    bindings = []
+    missing = None
     try:
-        _fail(_same_directory_authority(os.fstat(directory), owned["directory"]), "export-cleanup-replaced")
-        _fail(set(os.listdir(directory)) == {EXPORT_REPORT.name}, "export-cleanup-unknown")
-        descriptor = _owned_file(directory, EXPORT_REPORT.name, owned["file"], owned["sha256"])
-        _unlink_exact(directory, EXPORT_REPORT.name, descriptor, owned["file"], owned["sha256"])
+        current = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        descriptors.append((current, None))
+        descriptors[-1] = (current, _identity(os.fstat(current)))
+        for component in path.parts[1:-1]:
+            try:
+                child = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                                dir_fd=current)
+            except FileNotFoundError:
+                missing = (current, component)
+                break
+            descriptors.append((child, None))
+            expected = _identity(os.fstat(child))
+            descriptors[-1] = (child, expected)
+            bindings.append((current, component, child, expected))
+            current = child
+        if missing is None:
+            try:
+                os.stat(path.name, dir_fd=current, follow_symlinks=False)
+                absent = False
+            except FileNotFoundError:
+                missing = (current, path.name)
+                absent = True
+        else:
+            absent = True
+        for descriptor, expected in descriptors:
+            _fail(_same_identity(os.fstat(descriptor), expected, include_size=False, include_nlink=False),
+                  "residue-observation-uncertainty")
+        for parent, name, child, expected in bindings:
+            named = os.stat(name, dir_fd=parent, follow_symlinks=False)
+            _fail(_same_identity(os.fstat(child), expected, include_size=False, include_nlink=False) and
+                  _same_identity(named, expected, include_size=False, include_nlink=False),
+                  "residue-observation-uncertainty")
+        if missing is not None:
+            try:
+                os.stat(missing[1], dir_fd=missing[0], follow_symlinks=False)
+            except FileNotFoundError:
+                return absent
+            raise CandidateError("residue-observation-uncertainty")
+        return absent
+    except CandidateError:
+        raise
+    except OSError as error:
+        raise CandidateError("residue-observation-uncertainty") from error
     finally:
-        if descriptor is not None:
+        for descriptor, _expected in reversed(descriptors):
             os.close(descriptor)
-        os.close(directory)
-    _rmdir_exact(EXPORT_ROOT, owned["directory"])
-    _append_journal("export-cleaned", {"sha256": owned["sha256"]})
+
+
+def _post_export_residue():
+    for path, code in (
+        (ROOTFS_STATE, "rootfs-baseline-not-restored"), (ARTIFACT_ROOT, "cache-residue"),
+        (ASSETS, "asset-residue"), (STATE, "state-residue"), (ANCHOR, "state-residue"),
+        (EXPORT_ROOT, "export-residue"),
+    ):
+        _fail(_held_path_absent(path), code)
     return 0
 
 
@@ -1657,6 +2063,7 @@ def main(argv):
     actions = {
         "observe": _observe, "cleanup": _cleanup, "residue": _residue, "render": _render,
         "validate": _validate, "export": _export, "cleanup-export": _cleanup_export,
+        "post-export-residue": _post_export_residue,
     }
     _fail(len(argv) == 1 and argv[0] in actions, "arguments")
     return actions[argv[0]]()

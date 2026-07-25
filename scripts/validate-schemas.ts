@@ -155,6 +155,10 @@ function validatorFor(file: string): ValidateFunction {
   return validator;
 }
 
+// Compile every registered schema, including historical and candidate evidence
+// versions that do not belong in the general-purpose valid sample table.
+for (const name of schemaFiles) validatorFor(name);
+
 for (const [file, sample] of Object.entries(validSamples)) {
   const validate = validatorFor(file);
   assert.equal(validate(sample), true, `${file}: ${ajv.errorsText(validate.errors)}`);
