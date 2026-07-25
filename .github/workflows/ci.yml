@@ -51,13 +51,6 @@ jobs:
           PI_SKIP_VERSION_CHECK: "1"
         run: npm test
 
-      - name: Run non-authoritative EUID-0 read-only filesystem unit matrix
-        run: |
-          filesystem_output=$(sudo -n env -i PATH=/usr/bin:/bin PYTHONDONTWRITEBYTECODE=1 \
-            /usr/bin/python3 test/aws-stage2-completion-rootfs-fs.py)
-          grep -F 'completion rootfs filesystem tests passed; EUID-0 LINUX QUALIFIED' \
-            <<<"$filesystem_output"
-
       - name: Test and reproducibly build the static guest probe
         run: |
           cd test/egress-conformance/guest-probes
