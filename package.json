@@ -24,7 +24,7 @@
     "images:check": "tsx scripts/check-image-pins.ts",
     "lock:check": "tsx scripts/check-lock-integrity.ts",
     "licenses": "tsx scripts/check-licenses.ts",
-    "audit": "npm audit --audit-level=high",
+    "audit": "tsx scripts/check-npm-audit.ts",
     "evidence:issue68": "tsx scripts/benchmark-issue68-checkpoints.ts",
     "launcher": "tsx dev/launcher/main.ts"
   },
