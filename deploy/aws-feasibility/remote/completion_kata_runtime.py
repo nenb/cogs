@@ -12,6 +12,7 @@ import copy
 import hashlib
 import json
 import re
+import completion_kata_actions as actions
 
 BASE = "/var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/.state/completion-v1"
 INPUT_SHARE = BASE + "/kata-input-v1/share"
@@ -67,7 +68,7 @@ class MountRecord:
 
 @dataclass(frozen=True)
 class CommandSpec:
-    command_id: str
+    command_id: actions.CommandId
     argv: tuple[str, ...]
     stdin: bytes
     deadline_class: str
@@ -266,7 +267,7 @@ def ctr_run_spec(permit):
         *custom_mount_argv(), state["root"], CONTAINER_ID,
         "/bin/sh", "-c", BOOTSTRAP.decode("ascii"),
     )
-    return CommandSpec("CTR_RUN", argv, b"", "runtime-start")
+    return CommandSpec(actions.CommandId.CTR_RUN, argv, b"", "runtime-start")
 
 
 def fixed_command_specs_for_tests():
@@ -274,13 +275,13 @@ def fixed_command_specs_for_tests():
     ctr = "/usr/bin/ctr"
     prefix = (ctr, "--namespace", NAMESPACE)
     rows = (
-        ("CTR_CONTAINER_INFO", prefix + ("containers", "info", CONTAINER_ID), "observer"),
-        ("CTR_CONTAINER_LIST", prefix + ("containers", "list"), "observer"),
-        ("CTR_TASK_LIST", prefix + ("tasks", "list"), "observer"),
-        ("CTR_TASK_TERM", prefix + ("tasks", "kill", "--signal", "SIGTERM", CONTAINER_ID), "task-term"),
-        ("CTR_TASK_KILL", prefix + ("tasks", "kill", "--signal", "SIGKILL", CONTAINER_ID), "task-kill"),
-        ("CTR_TASK_REMOVE", prefix + ("tasks", "rm", CONTAINER_ID), "remove"),
-        ("CTR_CONTAINER_REMOVE", prefix + ("containers", "rm", CONTAINER_ID), "remove"),
+        (actions.CommandId.CTR_CONTAINER_INFO, prefix + ("containers", "info", CONTAINER_ID), "observer"),
+        (actions.CommandId.CTR_CONTAINER_LIST, prefix + ("containers", "list"), "observer"),
+        (actions.CommandId.CTR_TASK_LIST, prefix + ("tasks", "list"), "observer"),
+        (actions.CommandId.CTR_TASK_TERM, prefix + ("tasks", "kill", "--signal", "SIGTERM", CONTAINER_ID), "task-term"),
+        (actions.CommandId.CTR_TASK_KILL, prefix + ("tasks", "kill", "--signal", "SIGKILL", CONTAINER_ID), "task-kill"),
+        (actions.CommandId.CTR_TASK_REMOVE, prefix + ("tasks", "rm", CONTAINER_ID), "remove"),
+        (actions.CommandId.CTR_CONTAINER_REMOVE, prefix + ("containers", "rm", CONTAINER_ID), "remove"),
     )
     return tuple(CommandSpec(command, argv, b"", deadline) for command, argv, deadline in rows)
 

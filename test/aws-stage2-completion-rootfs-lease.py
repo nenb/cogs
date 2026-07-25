@@ -741,6 +741,27 @@ def verify_order_and_drift_tests():
     for fault, expected in expected_stops.items():
         matrix_case()
         assert run(fault) == expected
+
+    # A freshly reopened durable authorization receives the same full content
+    # verification, but both graph passes require the authorized phase.
+    active = retained.owned.active
+    authorized_terminal = SimpleNamespace(record_type="release-authorized")
+    retained.owned = dataclasses.replace(
+        retained.owned, active=dataclasses.replace(active, records=(authorized_terminal,)),
+    )
+    phases = []
+    with patched(
+        (lease, "_stable_graph", lambda value, ref, passed_control, status: phases.append(status)),
+        (lease, "_stable_lease_pass", lambda *_args: (_ for _ in ()).throw(AssertionError("leased-only pass"))),
+        (plan, "load_verified_build_inputs", lambda: authority),
+        (materializer, "_postwalk", lambda *_args: 1),
+        (plan, "revalidate_build_inputs", lambda loaded: fresh),
+        (canonical, "_manifest", lambda value: manifest),
+        (publication, "_load_pins", lambda: exact_pins),
+    ):
+        assert lease._verify(held, control) is reference
+    assert phases == ["release-authorized", "release-authorized"]
+    matrix_case()
     close_graph_nodes(retained)
 
 
@@ -921,8 +942,10 @@ def source_tests():
     assert "retained.disposition = \"uncertain\"" in source
     assert source.index("retained.disposition = \"uncertain\"") < source.index("builder._mark_leased(")
     assert "publication._load_pins()" in source and "publication._publish" not in source
-    assert "release-authorized" not in source
-    assert "def release" not in source and "def _authorize" not in source
+    assert "def _authorize_kata_release(" in source
+    assert "def _recover_kata_release(" in source
+    assert "authority.reserve_rootfs()" in source and "authority.reserve_rootfs_release()" in source
+    assert "_append_release_authorized_record(" in source
     for forbidden in (
         "subprocess", "os.system", "tarfile", "shutil", "copyfile", "rename(", "replace(",
         "chmod", "chown", "os.mount", "/proc/self/fd", "__del__", "__enter__", "__exit__",
@@ -945,20 +968,40 @@ def source_tests():
             while owner in parents and not isinstance(parents[owner], (ast.FunctionDef, ast.ClassDef)):
                 owner = parents[owner]
             owner_name = getattr(parents.get(owner), "name", "<module>")
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in {"_append_record", "_append_leased_record"}:
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in {"_append_record", "_append_leased_record", "_append_release_authorized_record"}:
                 writer_calls.append((path.name, owner_name, node.func.attr))
             if isinstance(node, ast.Constant) and node.value in {"leased", "release-authorized"}:
                 control_owners.append((path.name, owner_name))
     assert sorted(writer_calls) == [
         ("completion_rootfs_builder.py", "_append", "_append_record"),
         ("completion_rootfs_builder.py", "_mark_leased", "_append_leased_record"),
+        ("completion_rootfs_lease.py", "route", "_append_release_authorized_record"),
     ]
-    allowed = {
-        "completion_rootfs_ledger.py": {"<module>", "__post_init__", "_validate_body", "_lease_history", "_validate_legal_records", "_reconcile_ledger", "_write_record", "_append_record", "_append_leased_record"},
-        "completion_rootfs_builder.py": {"_append", "_mark_leased", "_unlink_ledger", "_resume_entry_remove", "_resume_observed", "_recover_locked"},
-        "completion_rootfs_lease.py": {"_stable_graph", "_stable_lease_pass", "_reference", "rootfs_route"},
+    assert set(control_owners) == {
+        ("completion_rootfs_builder.py", "_append"),
+        ("completion_rootfs_builder.py", "_mark_leased"),
+        ("completion_rootfs_builder.py", "_recover_locked"),
+        ("completion_rootfs_builder.py", "_resume_entry_remove"),
+        ("completion_rootfs_builder.py", "_resume_observed"),
+        ("completion_rootfs_builder.py", "_unlink_ledger"),
+        ("completion_rootfs_lease.py", "_classify_release_crash_for_tests"),
+        ("completion_rootfs_lease.py", "_reference"),
+        ("completion_rootfs_lease.py", "_stable_graph"),
+        ("completion_rootfs_lease.py", "_stable_lease_pass"),
+        ("completion_rootfs_lease.py", "_verify"),
+        ("completion_rootfs_lease.py", "rootfs_route"),
+        ("completion_rootfs_lease.py", "route"),
+        ("completion_rootfs_ledger.py", "<module>"),
+        ("completion_rootfs_ledger.py", "__post_init__"),
+        ("completion_rootfs_ledger.py", "_append_leased_record"),
+        ("completion_rootfs_ledger.py", "_append_record"),
+        ("completion_rootfs_ledger.py", "_append_release_authorized_record"),
+        ("completion_rootfs_ledger.py", "_lease_history"),
+        ("completion_rootfs_ledger.py", "_reconcile_ledger"),
+        ("completion_rootfs_ledger.py", "_validate_body"),
+        ("completion_rootfs_ledger.py", "_validate_legal_records"),
+        ("completion_rootfs_ledger.py", "_write_record"),
     }
-    assert all(owner in allowed.get(path, set()) for path, owner in control_owners)
 
 
 def load(name, path):
@@ -1162,7 +1205,7 @@ def docker_real_lease_test():
     proposal = ledger_module.LedgerProposal.create("release-authorized", body)
     raw = ledger_module._encode_proposal(proposal, reference.leased_settled)
     # Test-only exact reopen after owner death. Production intentionally has no
-    # authorization appender or pathname-adoption API.
+    # No generic authorization appender or pathname-adoption API; the narrow typed appender is expected.
     flags = os.O_RDWR | fs_module._O_NOFOLLOW | fs_module._O_CLOEXEC
     directory_descriptor = os.open(ledger_path.parent, os.O_RDONLY | os.O_DIRECTORY | fs_module._O_CLOEXEC)
     descriptor = None

@@ -20,6 +20,7 @@ def check(condition, message):
 
 ROOT = Path(__file__).resolve().parents[1]
 MODULE_PATH = ROOT / "deploy/aws-feasibility/remote/completion_kata_runtime.py"
+sys.path.insert(0, str(MODULE_PATH.parent))
 spec = importlib.util.spec_from_file_location("completion_kata_runtime_test", MODULE_PATH)
 runtime = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = runtime
@@ -237,7 +238,7 @@ exec /usr/sbin/sshd -D -e -f /etc/ssh/sshd_config
 check(runtime.BOOTSTRAP == bootstrap, "bootstrap bytes drifted")
 permit = runtime._make_fake_launch_permit_for_tests()
 run = runtime.ctr_run_spec(permit)
-check(run.command_id == "CTR_RUN" and run.stdin == b"", "run command envelope")
+check(run.command_id is runtime.actions.CommandId.CTR_RUN and run.stdin == b"", "run command envelope")
 check(run.argv[:14] == (
     "/usr/bin/ctr", "--namespace", runtime.NAMESPACE, "run", "--runtime", runtime.RUNTIME,
     "--runtime-config-path", runtime.RUNTIME_CONFIG, "--rootfs", "--read-only", "--detach",
@@ -248,7 +249,7 @@ check(run.argv[-5:] == (
 ), "run argv positional suffix")
 rejected(lambda: runtime.ctr_run_spec(permit))
 rejected(runtime._open_production_owner)
-commands = {item.command_id: item for item in runtime.fixed_command_specs_for_tests()}
+commands = {item.command_id.value: item for item in runtime.fixed_command_specs_for_tests()}
 check(len(commands) == 7, "fixed command count")
 check(commands["CTR_TASK_TERM"].argv[-4:] == ("kill", "--signal", "SIGTERM", runtime.CONTAINER_ID), "TERM argv")
 check(commands["CTR_TASK_KILL"].argv[-4:] == ("kill", "--signal", "SIGKILL", runtime.CONTAINER_ID), "KILL argv")

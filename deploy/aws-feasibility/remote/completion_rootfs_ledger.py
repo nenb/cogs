@@ -17,6 +17,8 @@ from completion_rootfs_fs import (
     OperationControl,
     ParentDelta,
     RootfsFsError,
+    ROOTFS_LEDGER_MAX_BYTES,
+    ROOTFS_LEDGER_MAX_RECORDS,
     _name,
     _observe_node,
     _path,
@@ -25,8 +27,8 @@ from completion_rootfs_fs import (
 
 VERSION = "cogs.stage2-rootfs-ledger/v1"
 MAX_LINE_BYTES = 16_384
-MAX_LEDGER_BYTES = 64 * 1024 * 1024
-MAX_RECORDS = 65_536
+MAX_LEDGER_BYTES = ROOTFS_LEDGER_MAX_BYTES
+MAX_RECORDS = ROOTFS_LEDGER_MAX_RECORDS
 OFFSET_WIDTH = 16
 ZERO_SHA256 = "0" * 64
 TOKEN_LENGTH = 64
@@ -1096,10 +1098,11 @@ def _require_ledger_generation(generation, stable_key):
 
 
 def _append_capabilities():
-    def _write_record(writer_state, proposal, control):
+    route_seal = object()
+    def write_core(writer_state, proposal, control, route):
+        _fail(route is route_seal)
         _fail(type(writer_state) is LedgerWriterState and type(proposal) is LedgerProposal)
         _fail(type(control) is OperationControl)
-        _fail(proposal.record_type != "release-authorized")
         node = writer_state.node
         raw = None
         try:
@@ -1168,9 +1171,14 @@ def _append_capabilities():
                 error = RootfsFsError(error, rollback_error)
             raise error
 
+    def _write_record(writer_state, proposal, control, route=None):
+        _fail(route is route_seal)
+        _fail(type(proposal) is LedgerProposal and proposal.record_type != "release-authorized")
+        return write_core(writer_state, proposal, control, route_seal)
+
     def _append_record(writer_state, proposal, control):
-        _fail(type(proposal) is LedgerProposal and proposal.record_type not in {"leased", "release-authorized"})
-        return _write_record(writer_state, proposal, control)
+        _fail(type(proposal) is LedgerProposal and proposal.record_type != "leased")
+        return _write_record(writer_state, proposal, control, route_seal)
 
     def _append_leased_record(
         writer_state, token, operation_name, state_parent, operation, root,
@@ -1186,12 +1194,34 @@ def _append_capabilities():
             "manifest_sha256": manifest_sha256, "manifest_size": manifest_size,
             "ustar_sha256": ustar_sha256, "ustar_size": ustar_size, "entry_count": entry_count,
         }
-        return _write_record(writer_state, LedgerProposal.create("leased", body), control)
+        return _write_record(writer_state, LedgerProposal.create("leased", body), control, route_seal)
 
-    return _append_record, _append_leased_record
+    def _append_release_authorized_record(writer_state, token, operation_name, lease,
+                                           kata_operation_token, kata_ledger_key,
+                                           kata_release, control):
+        _fail(type(lease) is SettledBytes and type(kata_release) is SettledBytes)
+        _fail(type(kata_ledger_key) is HostKey and kata_ledger_key.kind == "file")
+        body = {
+            "token": token, "operation_name": operation_name,
+            "lease_sequence": lease.sequence, "lease_offset": lease.offset,
+            "lease_sha256": lease.line_sha256,
+            "kata_operation_token": kata_operation_token,
+            "kata_ledger_key": {"mount_id": kata_ledger_key.mount_id, "device": kata_ledger_key.device,
+                                "inode": kata_ledger_key.inode, "kind": kata_ledger_key.kind},
+            "kata_release_sequence": kata_release.sequence,
+            "kata_release_offset": kata_release.offset,
+            "kata_release_sha256": kata_release.line_sha256,
+        }
+        # write_core is closure-private: no flag or caller-created proposal can
+        # cross the generic writer's release rejection.
+        return write_core(writer_state, LedgerProposal.create("release-authorized", body),
+                          control, route_seal)
+
+    return _append_record, _append_leased_record, _append_release_authorized_record
 
 
-_append_record, _append_leased_record = _append_capabilities()
+(_append_record, _append_leased_record,
+ _append_release_authorized_record) = _append_capabilities()
 del _append_capabilities
 
 

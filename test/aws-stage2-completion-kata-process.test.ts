@@ -35,7 +35,7 @@ test("S1 closed process owner and fixed local supervisor fail closed", async () 
   const source = await readFile(productionPath, "utf8");
   const productionLines = source.split("\n").length - 1;
   assert.ok(productionLines <= 900, `S1 production exceeds hard 900: ${productionLines}`);
-  assert.match(source, /class CommandId\(Enum\):/u);
+  assert.match(source, /CommandId = actions\.CommandId/u);
   assert.match(source, /def _parse_contract\(raw, expected_sha256\):/u);
   assert.match(source, /F_SEAL_WRITE \| fcntl\.F_SEAL_GROW \| fcntl\.F_SEAL_SHRINK \| fcntl\.F_SEAL_SEAL/u);
   assert.match(source, /os\.setsid\(\)/u);

@@ -21,6 +21,9 @@ import signal
 import stat
 import struct
 import time
+import completion_kata_actions as actions
+import completion_kata_fdmap as fdmap
+import completion_kata_ssh as kata_ssh
 
 CONTRACT_VERSION = "cogs.stage2-kata-tool-closure/v1"
 TEST_PATH = "/tmp/cogs-kata-process-s1-v1/helper"
@@ -44,34 +47,8 @@ class ProcessError(Exception):
     """A closed command could not be safely supervised."""
 
 
-class CommandId(Enum):
-    IP_NETNS_ADD = "IP_NETNS_ADD"
-    IP_LINK_ADD = "IP_LINK_ADD"
-    IP_LINK_MOVE = "IP_LINK_MOVE"
-    IP_HOST_ADDRESS_ADD = "IP_HOST_ADDRESS_ADD"
-    IP_HOST_LINK_UP = "IP_HOST_LINK_UP"
-    IP_PEER_RENAME = "IP_PEER_RENAME"
-    IP_PEER_ADDRGEN_NONE = "IP_PEER_ADDRGEN_NONE"
-    IP_LOOPBACK_UP = "IP_LOOPBACK_UP"
-    IP_GUEST_ADDRESS_ADD = "IP_GUEST_ADDRESS_ADD"
-    IP_GUEST_LINK_UP = "IP_GUEST_LINK_UP"
-    NFT_INSTALL = "NFT_INSTALL"
-    NFT_REMOVE = "NFT_REMOVE"
-    SSH_KEYGEN_CLIENT = "SSH_KEYGEN_CLIENT"
-    SSH_KEYGEN_SERVER = "SSH_KEYGEN_SERVER"
-    SSH_PUBLIC_CLIENT = "SSH_PUBLIC_CLIENT"
-    SSH_PUBLIC_SERVER = "SSH_PUBLIC_SERVER"
-    CTR_CONTAINER_INFO = "CTR_CONTAINER_INFO"
-    CTR_CONTAINER_LIST = "CTR_CONTAINER_LIST"
-    CTR_TASK_LIST = "CTR_TASK_LIST"
-    CTR_TASK_TERM = "CTR_TASK_TERM"
-    CTR_TASK_KILL = "CTR_TASK_KILL"
-    CTR_TASK_REMOVE = "CTR_TASK_REMOVE"
-    CTR_CONTAINER_REMOVE = "CTR_CONTAINER_REMOVE"
-    SSH_READY = "SSH_READY"
-
-
-COMMAND_IDS = frozenset(item.value for item in CommandId) | {"TEST_HELPER"}
+CommandId = actions.CommandId
+COMMAND_IDS = actions.COMMAND_IDS | {"TEST_HELPER"}
 
 
 class _TestAction(Enum):
@@ -84,6 +61,7 @@ class _TestAction(Enum):
     HELD_PIPE = "held-pipe"
     FD = "fd"
     HIGH_FD = "high-fd"
+    INHERITED = "inherited"
 
 
 class ObservationKind(Enum):
@@ -196,22 +174,9 @@ def _spec(command_id):
         CommandId.CTR_CONTAINER_REMOVE: ((ctr, "--namespace", "cogs-stage2-completion-v1", "containers", "rm", "cogs-stage2-ssh-v1"), b"", "remove"),
     }
     if command_id is CommandId.SSH_READY:
-        argv = (
-            "/usr/bin/ssh", "-F", "/dev/null", "-n", "-T",
-            "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "IdentityAgent=none",
-            "-o", "PreferredAuthentications=publickey", "-o", "PubkeyAuthentication=yes",
-            "-o", "PasswordAuthentication=no", "-o", "KbdInteractiveAuthentication=no",
-            "-o", "StrictHostKeyChecking=yes", "-o", "UserKnownHostsFile=/proc/self/fd/201",
-            "-o", "GlobalKnownHostsFile=/dev/null", "-o", "HostKeyAlias=cogs-stage2-ssh-v1",
-            "-o", "CheckHostIP=no", "-o", "ConnectionAttempts=1", "-o", "ConnectTimeout=5",
-            "-o", "ControlMaster=no", "-o", "ControlPath=none", "-o", "ProxyCommand=none",
-            "-o", "ProxyJump=none", "-o", "PermitLocalCommand=no", "-o", "CanonicalizeHostname=no",
-            "-o", "ClearAllForwardings=yes", "-o", "ForwardAgent=no", "-o", "ForwardX11=no",
-            "-o", "ForwardX11Trusted=no", "-o", "Tunnel=no", "-o", "RequestTTY=no",
-            "-o", "EscapeChar=none", "-o", "LogLevel=ERROR", "-p", "22", "-i",
-            "/proc/self/fd/200", "root@192.0.2.2", "printf '%s\\n' COGS_STAGE2_SSH_READY_V1",
-        )
-        return _Spec(command_id.value, argv, b"", "ssh", DEADLINE_SECONDS["ssh"], (200, 201))
+        fixed_ssh = kata_ssh.command_spec()
+        return _Spec(command_id.value, fixed_ssh.argv, fixed_ssh.stdin,
+                     fixed_ssh.deadline_class, DEADLINE_SECONDS["ssh"], fixed_ssh.inherited_fds)
     if command_id not in fixed:
         raise ProcessError("fixed action awaits its committed closure/spec composition")
     argv, stdin, deadline = fixed[command_id]
@@ -453,6 +418,19 @@ def _close_except(allowed):
         _close_range(cursor, UINT_MAX)
 
 
+_fd_identity = fdmap.identity
+_seal_inherited_inputs_for_tests = fdmap.make_input_owner_for_tests
+_install_inherited_fds = fdmap.install
+_relocate_child_internals = fdmap.relocate_internals
+
+
+def _claim_inherited_fds(spec, owner):
+    try:
+        return fdmap.claim(spec.inherited_fds, owner)
+    except fdmap.FdMapError as error:
+        raise ProcessError("invalid inherited descriptor map") from error
+
+
 def _write_child_error(descriptor, value):
     try:
         os.write(descriptor, struct.pack("!I", min(max(int(value), 1), 65535)))
@@ -473,13 +451,19 @@ def _execveat(descriptor, argv):
 
 def _child(executable_fd, spec, release_r, setup_w, status_w, stdout_w, stderr_w, stdin_r):
     try:
+        (executable_fd, release_r, setup_w, status_w, stdout_w, stderr_w,
+         stdin_r) = _relocate_child_internals((
+             executable_fd, release_r, setup_w, status_w, stdout_w, stderr_w, stdin_r,
+         ))
         os.setsid()
         report = struct.pack("!QQQQ", os.getpid(), os.getppid(), os.getpgrp(), os.getsid(0))
         os.write(setup_w, report)
+        _install_inherited_fds(spec.inherited_fds)
         os.dup2(stdin_r, 0)
         os.dup2(stdout_w, 1)
         os.dup2(stderr_w, 2)
-        allowed = {0, 1, 2, executable_fd, release_r, status_w}
+        allowed = {0, 1, 2, executable_fd, release_r, status_w,
+                   *(row.target_fd for row in spec.inherited_fds)}
         _close_except(allowed)
         if os.read(release_r, 1) != b"R":
             os._exit(125)
@@ -688,7 +672,12 @@ def _close_owned(descriptor, owned, errors, label="close"):
             owned.remove(descriptor)
 
 
-def _supervise(executable_fd, spec):
+def _supervise(executable_fd, spec, inherited=None):
+    bindings = _claim_inherited_fds(spec, inherited) if spec.inherited_fds else ()
+    if not spec.inherited_fds and inherited is not None:
+        raise ProcessError("unexpected inherited descriptors")
+    spec = _Spec(spec.command_id, spec.argv, spec.stdin, spec.deadline_class,
+                 spec.deadline_seconds, bindings)
     pipes = []
     def owned_pipe():
         pair = os.pipe2(os.O_CLOEXEC)
@@ -786,7 +775,9 @@ def _test_spec(action):
     if type(action) is not _TestAction:
         raise ProcessError("closed test action required")
     timeout = 0.2 if action in {_TestAction.SLEEP, _TestAction.HELD_PIPE} else 5
-    return _Spec("TEST_" + action.name, (TEST_PATH, action.value), b"", "test", timeout)
+    inherited = ((kata_ssh.KEY_FD, kata_ssh.KNOWN_HOSTS_FD)
+                 if action is _TestAction.INHERITED else ())
+    return _Spec("TEST_" + action.name, (TEST_PATH, action.value), b"", "test", timeout, inherited)
 
 
 def _make_test_issuer(contract_raw, expected_sha256):
@@ -799,13 +790,13 @@ def _make_test_issuer(contract_raw, expected_sha256):
     executable_fd = _sealed_memfd(contract.executable, True)
     used = False
 
-    def issue(action):
+    def issue(action, inherited=None):
         nonlocal used
         if used:
             raise ProcessError("test authority already consumed")
         used = True
         try:
-            return _supervise(executable_fd, _test_spec(action))
+            return _supervise(executable_fd, _test_spec(action), inherited)
         finally:
             os.close(executable_fd)
 
@@ -813,8 +804,29 @@ def _make_test_issuer(contract_raw, expected_sha256):
 
 
 def _unissued_spec_snapshots_for_tests():
-    commands = tuple(CommandId)[0:12]
+    commands = (
+        CommandId.IP_NETNS_ADD, CommandId.IP_LINK_ADD, CommandId.IP_LINK_MOVE,
+        CommandId.IP_HOST_ADDRESS_ADD, CommandId.IP_HOST_LINK_UP,
+        CommandId.IP_PEER_RENAME, CommandId.IP_PEER_ADDRGEN_NONE,
+        CommandId.IP_LOOPBACK_UP, CommandId.IP_GUEST_ADDRESS_ADD,
+        CommandId.IP_GUEST_LINK_UP, CommandId.NFT_INSTALL, CommandId.NFT_REMOVE,
+    )
     return tuple(_unissued_network_spec(item) for item in commands)
+
+
+def adapt_ssh_process_outcome(outcome):
+    """The sole ProcessOutcome-to-SSH adapter; every uncertainty remains visible."""
+    if type(outcome) is not ProcessOutcome or outcome.command_id != "SSH_READY":
+        raise ProcessError("exact SSH process outcome required")
+    return kata_ssh.SshOutcome(
+        outcome.command_id, outcome.outcome, outcome.status, outcome.stdout, outcome.stderr,
+        outcome.stdout_truncated, outcome.stderr_truncated, outcome.timed_out, outcome.reaped,
+        outcome.errors,
+    )
+
+
+def open_fixed_process_owner():
+    raise ProcessError("production process permits unavailable: committed preflight/closure absent")
 
 
 def _fixed_spec_snapshots_for_tests():

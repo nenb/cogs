@@ -693,11 +693,16 @@ def writer_tests():
                 function for function in reachable
                 if tuple(inspect.signature(function).parameters) == ("writer_state", "proposal", "control")
             ]
-            assert {function.__name__ for function in generic_writers} == {"_append_record", "_write_record"}
+            assert {function.__name__ for function in generic_writers} == {"_append_record"}
             for function in generic_writers:
                 rejected(lambda function=function: function(state, authorized, control()))
                 assert os.fstat(operation_fd.number).st_size == 0
+            private_writers = [function for function in reachable if function.__name__ == "_write_record"]
+            assert len(private_writers) == 1
+            rejected(lambda: private_writers[0](state, authorized, control()))
+            assert os.fstat(operation_fd.number).st_size == 0
             assert "body" not in inspect.signature(ledger._append_leased_record).parameters
+            assert "body" not in inspect.signature(ledger._append_release_authorized_record).parameters
             ledger.os.write = lambda _fd, _raw: 0
             rejected(lambda: ledger._append_record(state, proposal, control()))
             assert os.fstat(operation_fd.number).st_size == 0
@@ -711,6 +716,15 @@ def writer_tests():
 
             ledger.os.write = partial_then_fail
             rejected(lambda: ledger._append_record(state, proposal, control()))
+            assert os.fstat(operation_fd.number).st_size == 0
+            # The closure-private release writer uses the same rollback core;
+            # exercise its actual encoded suffix rather than a generic lookalike.
+            writes["count"] = 0
+            rejected(lambda: ledger._append_release_authorized_record(
+                state, TOKEN, ledger._operation_name(TOKEN),
+                ledger.SettledBytes(8, 1234, "f" * 64), "1" * 64,
+                fs.HostKey(1, 2, 3, "file"), ledger.SettledBytes(9, 2345, "2" * 64),
+                control()))
             assert os.fstat(operation_fd.number).st_size == 0
             hostile_calls = {"count": 0}
 

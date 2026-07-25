@@ -98,6 +98,47 @@ def leased_prefix():
     return append(raw, "ROOTFS_LEASED", leased), intent, leased
 
 
+def release_bodies(authorized=False):
+    _raw, intent, leased = leased_prefix()
+    token = "a" * 64
+    proof = lambda value: {"operation_token": token, "proof_sha256": value * 64}
+    bodies = [
+        ("ROOTFS_ACQUIRE_INTENT", intent), ("ROOTFS_LEASED", leased),
+        ("BASELINES_CAPTURED", proof("1")), ("NETWORK_READY", proof("2")),
+        ("RUNTIME_READY", proof("3")),
+        ("SSH_READY", {**proof("4"),
+            "marker_sha256": hashlib.sha256(operation.FIXED["ssh_marker"].encode()).hexdigest(),
+            "authentication_attempts": 1}),
+        ("READINESS_REVOKED", {"operation_token": token}),
+        ("OWNERSHIP_OBSERVED", {**proof("5"), "task": "exact-owned",
+            "container": "exact-owned", "runtime": "exact-owned", "share": "exact-owned"}),
+        ("TASK_STOPPED", proof("6")), ("NETWORK_ABSENT", proof("7")),
+        ("TASK_ABSENT", proof("8")), ("CONTAINER_ABSENT", proof("9")),
+        ("RUNTIME_ABSENT", proof("a")), ("SHARE_ABSENT", proof("b")),
+        ("FIREWALL_ABSENT", proof("c")), ("INPUT_REMOVED", proof("d")),
+    ]
+    raw = settled_genesis()
+    for kind, body in bodies:
+        raw = append(raw, kind, body)
+    previous = operation._parse(raw)[-1]
+    ready = {
+        "operation_token": token, "rootfs_token": "b" * 64,
+        "rootfs_ledger_key": leased["rootfs_ledger_key"],
+        "leased_sequence": leased["leased_sequence"], "leased_offset": leased["leased_offset"],
+        "leased_sha256": leased["leased_sha256"], "input_removed_sha256": previous.body["proof_sha256"],
+    }
+    bodies.append(("ROOTFS_RELEASE_READY", ready)); raw = append(raw, "ROOTFS_RELEASE_READY", ready)
+    if authorized:
+        ready_record = operation._parse(raw)[-1]
+        bodies.append(("ROOTFS_RELEASE_AUTHORIZED", {
+            "operation_token": token, "rootfs_token": "b" * 64,
+            "rootfs_authorized_sequence": 9, "rootfs_authorized_offset": "0000000000002222",
+            "rootfs_authorized_sha256": "e" * 64,
+            "release_ready_sha256": ready_record.line_sha256,
+        }))
+    return tuple(bodies)
+
+
 def command_body(serial=0):
     return {
         "operation_token": "a" * 64,
@@ -192,6 +233,20 @@ assert operation.FIXED["kata_version"] == "3.32.0"
 bad_pin = genesis_body()
 bad_pin["rootfs_pin"] = {**operation.ROOTFS_PIN, "entry_count": True}
 rejected(lambda: operation._encode("GENESIS", bad_pin, ()))
+# Cross-ledger coordinates use the rootfs ledger's 65,536/64MiB bounds, not
+# this operation journal's smaller bounds; include the pinned 4,353-entry case.
+full, _intent, leased_body = leased_prefix()
+acquire_prefix = b"".join(full.splitlines(keepends=True)[:3])
+wide = {**leased_body, "leased_sequence": 4353,
+        "leased_offset": f"{operation.fs.ROOTFS_LEDGER_MAX_BYTES:016x}"}
+operation._parse(append(acquire_prefix, "ROOTFS_LEASED", wide))
+rejected(lambda: append(acquire_prefix, "ROOTFS_LEASED", {
+    **wide, "leased_sequence": operation.fs.ROOTFS_LEDGER_MAX_RECORDS,
+}))
+operation.RootfsAuthorization("b" * 64, operation.fs.ROOTFS_LEDGER_MAX_RECORDS - 1,
+                              operation.fs.ROOTFS_LEDGER_MAX_BYTES, "d" * 64)
+rejected(lambda: operation.RootfsAuthorization("b" * 64, operation.fs.ROOTFS_LEDGER_MAX_RECORDS,
+                                               1, "d" * 64))
 for kind, body, field in (
     ("UNCERTAIN", {"operation_token": "a" * 64, "reason": []}, "reason"),
     ("FS_INTENT", {**fs_intent, "resource_id": []}, "resource_id"),
@@ -277,17 +332,60 @@ exited = {
 outcome_raw = append(preexec_raw, "COMMAND_OUTCOME", exited)
 next_intent = append(outcome_raw, "COMMAND_INTENT", command_body(1))
 operation._parse(next_intent)
+
+# Command state is independent: every complete command triple returns the
+# exact prior lifecycle phase, including startup-failure cleanup cuts.
+interleaved = append(prefix, "BASELINES_CAPTURED", {
+    "operation_token": "a" * 64, "proof_sha256": "1" * 64,
+})
+serial = 0
+def command_cut(raw, expected_phase):
+    global serial
+    command = command_body(serial)
+    raw = append(raw, "COMMAND_INTENT", command)
+    assert operation._legal(operation._parse(raw)) == expected_phase
+    raw = append(raw, "COMMAND_OUTCOME", zero_outcome(command))
+    assert operation._legal(operation._parse(raw)) == expected_phase
+    serial += 1
+    return raw
+
+for expected_phase, kind, body in (
+    ("BASELINES_CAPTURED", "NETWORK_READY", {"operation_token": "a" * 64, "proof_sha256": "2" * 64}),
+    ("NETWORK_READY", "READINESS_REVOKED", {"operation_token": "a" * 64}),
+    ("READINESS_REVOKED", "OWNERSHIP_OBSERVED", {
+        "operation_token": "a" * 64, "proof_sha256": "3" * 64,
+        "task": "exact-owned", "container": "exact-owned", "runtime": "exact-owned", "share": "exact-owned",
+    }),
+    ("OWNERSHIP_OBSERVED", "TASK_STOPPED", {"operation_token": "a" * 64, "proof_sha256": "4" * 64}),
+    ("TASK_STOPPED", "NETWORK_ABSENT", {"operation_token": "a" * 64, "proof_sha256": "5" * 64}),
+):
+    interleaved = command_cut(interleaved, expected_phase)
+    interleaved = append(interleaved, kind, body)
+
+# A failed/interrupted ctr start with exact task absence skips stop; an exact
+# partial task requires stop. Unknown/boolean ownership cannot authorize either.
+partial = append(append(prefix, "BASELINES_CAPTURED", {
+    "operation_token": "a" * 64, "proof_sha256": "6" * 64}),
+    "READINESS_REVOKED", {"operation_token": "a" * 64})
+absent_owner = {"operation_token": "a" * 64, "proof_sha256": "7" * 64,
+                "task": "absent", "container": "exact-owned", "runtime": "exact-owned", "share": "exact-owned"}
+partial = append(partial, "OWNERSHIP_OBSERVED", absent_owner)
+rejected(lambda: append(partial, "TASK_STOPPED", {"operation_token": "a" * 64, "proof_sha256": "8" * 64}))
+operation._parse(append(partial, "NETWORK_ABSENT", {"operation_token": "a" * 64, "proof_sha256": "8" * 64}))
+for hostile_owner in ({**absent_owner, "task": "unknown"}, {**absent_owner, "task": False}):
+    base = append(append(prefix, "BASELINES_CAPTURED", {
+        "operation_token": "a" * 64, "proof_sha256": "9" * 64}),
+        "READINESS_REVOKED", {"operation_token": "a" * 64})
+    rejected(lambda hostile_owner=hostile_owner, base=base: append(base, "OWNERSHIP_OBSERVED", hostile_owner))
+
 uncertain = append(prefix, "UNCERTAIN", {"operation_token": "a" * 64, "reason": "unknown"})
 rejected(lambda: append(uncertain, "COMMAND_INTENT", command_body(0)))
 
-# Retirement requires a copied final-baseline transition.
+# Final baselines cannot bypass the closed lifecycle and release handshake.
 final = {"operation_token": "a" * 64, "final_baselines_sha256": "d" * 64}
 retire = {**final, "journal_key": key()}
-final_raw = append(prefix, "FINAL_BASELINES", final)
-retire_raw = append(final_raw, "RETIRE_INTENT", retire)
-operation._parse(append(retire_raw, "RETIRED", retire))
+rejected(lambda: append(prefix, "FINAL_BASELINES", final))
 rejected(lambda: append(prefix, "RETIRE_INTENT", retire))
-rejected(lambda: append(final_raw, "RETIRE_INTENT", {**retire, "final_baselines_sha256": "e" * 64}))
 
 
 # Production host modules are trusted; guest/campaign input cannot import host
@@ -541,6 +639,47 @@ def production_owner_test():
             assert calls == ["claim", "reopen", "verify", "settle"]
             rejected(lambda: lease._reopen_kata_reserved(permit, object()))
             authority.close()
+
+            # Both durable release suffixes are freshly reservable through the
+            # production authority and carry exact phase/cross-ledger pointers.
+            input_root = completion / "kata-input-v1"
+            input_root.rmdir()
+            for authorized in (False, True):
+                fixture_journal(completion, release_bodies(authorized))
+                release_owner = operation._open_fixed_operation()
+                reopen_grant = operation._claim_rootfs_reopen(release_owner.reserve_rootfs())
+                routed = []
+                reference = rootfs_reference()
+                returned = operation._invoke_rootfs_reopen_route(
+                    reopen_grant,
+                    lambda context, control: (routed.append(context) or reference),
+                    object(),
+                )
+                assert returned is reference and routed[0].operation_phase == (
+                    "ROOTFS_RELEASE_AUTHORIZED" if authorized else "ROOTFS_RELEASE_READY"
+                )
+                if authorized:
+                    assert (routed[0].authorized_sequence, routed[0].authorized_offset,
+                            routed[0].authorized_sha256) == (9, 0x2222, "e" * 64)
+                operation._settle_rootfs_reopen(reopen_grant, reference)
+                release_grant = operation._claim_rootfs_release(
+                    release_owner.reserve_rootfs_release(),
+                )
+                release_context = []
+                root_authorization = operation._invoke_rootfs_release(
+                    release_grant,
+                    lambda context: (release_context.append(context) or operation.RootfsAuthorization(
+                        context.rootfs_token, 9, 0x2222, "e" * 64,
+                    )),
+                )
+                operation._settle_rootfs_release(release_grant, root_authorization)
+                assert operation._parse(fixture_journal_path(completion).read_bytes())[-1].record_type == \
+                    "ROOTFS_RELEASE_AUTHORIZED"
+                assert release_context[0].operation_phase == (
+                    "ROOTFS_RELEASE_AUTHORIZED" if authorized else "ROOTFS_RELEASE_READY"
+                )
+                release_owner.close()
+            input_root.mkdir(mode=0o700)
 
             # Construction/read faults fail closed, and no lock or owner escapes.
             with patch.object(fs, "_read_regular", side_effect=OSError("injected read")):

@@ -8,7 +8,7 @@ const root = process.cwd();
 const modulePath = join(root, "deploy/aws-feasibility/remote/completion_rootfs_lease.py");
 const testPath = join(root, "test/aws-stage2-completion-rootfs-lease.py");
 
-test("Stage A retained rootfs lease is private, fixed, and preservation-only", async () => {
+test("retained rootfs lease and closure-private Stage B release remain fixed", async () => {
   const result = spawnSync("python3", [testPath], {
     cwd: root,
     env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" },
@@ -31,5 +31,7 @@ test("Stage A retained rootfs lease is private, fixed, and preservation-only", a
   );
   assert.match(source, /def _stable_lease_pass/u);
   assert.match(source, /LOCK_EX \| fcntl\.LOCK_NB/u);
-  assert.doesNotMatch(source, /release-authorized|subprocess|\/proc\/self\/fd|resolve\(\)/u);
+  assert.match(source, /def _authorize_kata_release\(permit, held, control\):/u);
+  assert.match(source, /_append_release_authorized_record/u);
+  assert.doesNotMatch(source, /subprocess|\/proc\/self\/fd|resolve\(\)/u);
 });

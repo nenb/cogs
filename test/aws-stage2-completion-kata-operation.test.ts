@@ -29,8 +29,8 @@ test("S0 fixed operation foundation fails closed", async () => {
   const operationLines = operation.split("\n").length - 1;
   const leaseExtension = lease.split("\n").length - 1 - 376;
   assert.ok(
-    operationLines + leaseExtension <= 1200,
-    `S0 production exceeds hard 1200: ${operationLines + leaseExtension}`,
+    operationLines + leaseExtension <= 1500,
+    `S0/S5 operation and lease extension exceeds hard 1500: ${operationLines + leaseExtension}`,
   );
 
   assert.match(operation, /def _make_authority\(\):[\s\S]*class _FixedJournal:/u);

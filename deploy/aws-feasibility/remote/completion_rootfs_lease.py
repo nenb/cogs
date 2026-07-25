@@ -209,7 +209,7 @@ def _fresh_fixed_chain(operation_name, control):
 
 def _stable_graph(retained, reference, control, expected_status):
     owned = _topology(retained, reference)
-    _fail(type(control) is fs.OperationControl and expected_status in {"active", "leased"})
+    _fail(type(control) is fs.OperationControl and expected_status in {"active", "leased", "release-authorized"})
     sentinel = builder._verify_fixed_file(owned.locked.state, builder.STATE_SENTINEL_NAME, builder.STATE_SENTINEL, control)
     fs._close_node(sentinel)
     held_state = fs._observe_node(owned.locked.state.identity_fd, owned.locked.state.operation_fd, control)
@@ -262,10 +262,12 @@ def _stable_graph(retained, reference, control, expected_status):
         if expected_status == "active":
             _fail(reconciled.cleanup_allowed and reconciled.cleanup_origin == "prelease")
         else:
-            _fail(reconciled.lease_seen and not reconciled.release_authorized and not reconciled.cleanup_allowed)
-            terminal = active.records[-1]
+            _fail(reconciled.lease_seen and reference is not None)
+            _fail(reconciled.release_authorized == (expected_status == "release-authorized"))
+            _fail(reconciled.cleanup_allowed == (expected_status == "release-authorized"))
+            terminal = next(item for item in active.records if item.record_type == "leased")
             body = terminal.body_value()
-            _fail(terminal.record_type == "leased" and reference is not None)
+            _fail(terminal.record_type == "leased")
             snapshot = reconciled.lease_snapshot
             _fail(type(snapshot) is ledger.LeaseSnapshot)
             _fail((snapshot.ledger_key, snapshot.settled, snapshot.state_parent.generation, snapshot.operation, snapshot.root) == (
@@ -309,9 +311,9 @@ def _stable_lease_pass(lease, control):
 
 
 def _reference(owned, active):
-    terminal = active.records[-1]
+    _fail(active.records[-1].record_type in {"leased", "release-authorized"})
+    terminal = next(item for item in active.records if item.record_type == "leased")
     body = terminal.body_value()
-    _fail(terminal.record_type == "leased")
     snapshot = ledger._lease_from_record(active.records, terminal)
     return RuntimeRootfsReference(
         FIXED_PREFIX + owned.operation_name + "/rootfs", body["token"], owned.operation_name,
@@ -360,7 +362,9 @@ def _reopen_kata_reserved(permit, control):
     grant = kata_operation._claim_rootfs_reopen(permit)
     held = None
 
-    def rootfs_route(token, route_control):
+    def rootfs_route(argument, route_control):
+        context = argument if type(argument) is kata_operation.RootfsReleaseContext else None
+        token = context.rootfs_token if context is not None else argument
         ledger._token(token)
         chain = builder._open_base_chain(route_control)
         state = locked = active = operation = root = None
@@ -373,15 +377,43 @@ def _reopen_kata_reserved(permit, control):
                 locked, active.records, builder._current_ledger(active, route_control), route_control,
             )
             reconciled = ledger._reconcile_ledger(active.records, observations)
-            _fail(reconciled.status == "leased" and reconciled.lease_seen and not reconciled.release_authorized)
+            _fail(reconciled.status in {"leased", "release-authorized"} and reconciled.lease_seen)
             _fail(builder._token(active) == token and operation is not None)
+            leased = next(item for item in active.records if item.record_type == "leased")
+            if context is None:
+                _fail(not reconciled.release_authorized)
+            else:
+                leased_body = leased.body_value()
+                _fail((context.rootfs_ledger_key, context.leased_sequence,
+                       context.leased_offset, context.leased_sha256) ==
+                      (leased_body["ledger_key"], leased.sequence,
+                       leased.next_offset, leased.line_sha256))
+                if reconciled.release_authorized:
+                    authorized_record = active.records[-1]
+                    authorized = authorized_record.body_value()
+                    _fail((authorized["kata_operation_token"], authorized["kata_ledger_key"],
+                           authorized["kata_release_sequence"], authorized["kata_release_offset"],
+                           authorized["kata_release_sha256"]) ==
+                          (context.operation_token, context.kata_ledger_key,
+                           context.kata_release_sequence, context.kata_release_offset,
+                           context.kata_release_sha256))
+                    if context.operation_phase == "ROOTFS_RELEASE_AUTHORIZED":
+                        _fail((authorized_record.sequence, authorized_record.next_offset,
+                               authorized_record.line_sha256) ==
+                              (context.authorized_sequence, context.authorized_offset,
+                               context.authorized_sha256))
+                if context.operation_phase == "ROOTFS_RELEASE_AUTHORIZED":
+                    _fail(reconciled.release_authorized)
             root = fs._open_path_node(operation, builder.ROOT_NAME, "directory", route_control)
             _fail(type(reconciled.lease_snapshot) is ledger.LeaseSnapshot and root.generation == reconciled.lease_snapshot.root)
             owned = builder.OwnedOperation(locked, active, operation, root, ledger._operation_name(token))
             retained = build.RetainedBuild(owned, chain)
             retained.disposition = "transferred"
             routed = RetainedRootfsLease(_reference(owned, active), retained)
-            _stable_lease_pass(routed, route_control)
+            if reconciled.release_authorized:
+                _stable_graph(retained, routed.reference, route_control, "release-authorized")
+            else:
+                _stable_lease_pass(routed, route_control)
             return routed
         except BaseException as error:
             for node in (root, operation, None if active is None else active.node, None if locked is None else locked.lock, state):
@@ -403,8 +435,124 @@ def _reopen_kata_reserved(permit, control):
         raise
 
 
+def _classify_release_crash_for_tests(operation_raw, rootfs_raw):
+    """Pure two-ledger crash matrix; malformed or mismatched suffixes preserve."""
+    try:
+        operations = kata_operation._parse(operation_raw)
+        roots = ledger._parse_ledger(rootfs_raw)
+        operation_terminal = operations[-1]
+        _fail(operation_terminal.record_type in {"ROOTFS_RELEASE_READY", "ROOTFS_RELEASE_AUTHORIZED"})
+        ready = (operation_terminal if operation_terminal.record_type == "ROOTFS_RELEASE_READY" else
+                 operations[-2])
+        _fail(ready.record_type == "ROOTFS_RELEASE_READY")
+        context = ready.body
+        leased = next(item for item in roots if item.record_type == "leased")
+        lease_body = leased.body_value()
+        _fail((context["rootfs_token"], context["rootfs_ledger_key"], context["leased_sequence"],
+               int(context["leased_offset"], 16), context["leased_sha256"]) ==
+              (lease_body["token"], lease_body["ledger_key"], leased.sequence,
+               leased.next_offset, leased.line_sha256))
+        authorized = tuple(item for item in roots if item.record_type == "release-authorized")
+        if not authorized:
+            _fail(operation_terminal.record_type == "ROOTFS_RELEASE_READY" and roots[-1] is leased)
+            return "append-rootfs-authorization"
+        _fail(len(authorized) == 1 and roots[-1] is authorized[0])
+        body = authorized[0].body_value()
+        _fail((body["kata_operation_token"], body["kata_ledger_key"],
+               body["kata_release_sequence"], body["kata_release_offset"], body["kata_release_sha256"]) ==
+              (operations[0].body["operation_token"], operations[0].body["journal_key"],
+               ready.sequence, ready.next_offset, ready.line_sha256))
+        if operation_terminal.record_type == "ROOTFS_RELEASE_READY":
+            return "settle-operation-authorization"
+        _fail((operation_terminal.body["rootfs_authorized_sequence"],
+               int(operation_terminal.body["rootfs_authorized_offset"], 16),
+               operation_terminal.body["rootfs_authorized_sha256"],
+               operation_terminal.body["release_ready_sha256"]) ==
+              (authorized[0].sequence, authorized[0].next_offset,
+               authorized[0].line_sha256, ready.line_sha256))
+        return "authorized"
+    except BaseException as error:
+        if type(error) is LeaseError:
+            raise
+        raise LeaseError() from error
+
+
+def _authorize_kata_release(permit, held, control):
+    """Closure-routed Stage B append after the exact Kata release-ready suffix."""
+    _fail(type(held) is RetainedRootfsLease and held.disposition == "held")
+    _fail(type(control) is fs.OperationControl)
+    grant = kata_operation._claim_rootfs_release(permit)
+
+    def route(context):
+        _fail(type(context) is kata_operation.RootfsReleaseContext)
+        reference = held.reference
+        expected_key = {"mount_id": reference.ledger_key.mount_id, "device": reference.ledger_key.device,
+                        "inode": reference.ledger_key.inode, "kind": reference.ledger_key.kind}
+        _fail((context.operation_token, context.rootfs_token, context.rootfs_ledger_key,
+               context.leased_sequence, context.leased_offset, context.leased_sha256) ==
+              (context.operation_token, reference.token, expected_key, reference.leased_settled.sequence,
+               reference.leased_settled.offset, reference.leased_settled.line_sha256))
+        terminal = held.retained.owned.active.records[-1]
+        status = "release-authorized" if terminal.record_type == "release-authorized" else "leased"
+        active, reconciled = _stable_graph(held.retained, reference, control, status)
+        kata_key = fs.HostKey(context.kata_ledger_key["mount_id"], context.kata_ledger_key["device"],
+                             context.kata_ledger_key["inode"], context.kata_ledger_key["kind"])
+        kata_settled = ledger.SettledBytes(context.kata_release_sequence,
+                                           context.kata_release_offset,
+                                           context.kata_release_sha256)
+        if reconciled.release_authorized:
+            body = terminal.body_value()
+            _fail((body["kata_operation_token"], body["kata_ledger_key"],
+                   body["kata_release_sequence"], body["kata_release_offset"],
+                   body["kata_release_sha256"]) ==
+                  (context.operation_token, context.kata_ledger_key,
+                   kata_settled.sequence, kata_settled.offset, kata_settled.line_sha256))
+            return kata_operation.RootfsAuthorization(reference.token, terminal.sequence,
+                                                       terminal.next_offset, terminal.line_sha256)
+        _fail(active.records[-1].record_type == "leased")
+        written = ledger._append_release_authorized_record(
+            active.writer, reference.token, reference.operation_name, reference.leased_settled,
+            context.operation_token, kata_key, kata_settled, control,
+        )
+        raw = os.pread(written.node.operation_fd.number, written.settled.offset, 0)
+        records = ledger._parse_ledger(raw)
+        node = fs.HeldNode(active.node.identity_fd, active.node.operation_fd, written.generation)
+        writer = ledger.LedgerWriterState(node, written.stable_key, written.settled, written.generation)
+        owned = held.retained.owned
+        held.retained.owned = builder.OwnedOperation(
+            owned.locked, builder.ActiveLedger(node, records, writer),
+            owned.operation, owned.root, owned.operation_name,
+        )
+        _stable_graph(held.retained, reference, control, "release-authorized")
+        return kata_operation.RootfsAuthorization(reference.token, written.settled.sequence,
+                                                   written.settled.offset, written.settled.line_sha256)
+
+    authorization = kata_operation._invoke_rootfs_release(grant, route)
+    kata_operation._settle_rootfs_release(grant, authorization)
+    return authorization
+
+
+def _recover_kata_release(authority, control):
+    """Fresh-owner replay from exact operation/rootfs cross-pointers."""
+    _fail(type(control) is fs.OperationControl)
+    held = _reopen_kata_reserved(authority.reserve_rootfs(), control)
+    try:
+        authorization = _authorize_kata_release(authority.reserve_rootfs_release(), held, control)
+        return held, authorization
+    except BaseException as error:
+        if held.disposition == "held":
+            _close_preserving(held.retained, error)
+        raise
+
+
 def _verify(lease, control):
-    _stable_lease_pass(lease, control)
+    terminal = lease.retained.owned.active.records[-1].record_type
+    _fail(terminal in {"leased", "release-authorized"})
+    expected_status = "release-authorized" if terminal == "release-authorized" else "leased"
+    if expected_status == "leased":
+        _stable_lease_pass(lease, control)
+    else:
+        _stable_graph(lease.retained, lease.reference, control, expected_status)
     authority = plan.load_verified_build_inputs()
     count = materializer._postwalk(lease.retained.owned, lease.retained.owned.root, authority, control)
     _fail(count == lease.reference.entry_count)
@@ -419,6 +567,9 @@ def _verify(lease, control):
     _fail((pins.manifest_sha256, pins.manifest_size, pins.ustar_sha256, pins.ustar_size, pins.entry_count) == (
         reference.manifest_sha256, reference.manifest_size, reference.ustar_sha256, reference.ustar_size, reference.entry_count,
     ))
-    _stable_lease_pass(lease, control)
+    if expected_status == "leased":
+        _stable_lease_pass(lease, control)
+    else:
+        _stable_graph(lease.retained, lease.reference, control, expected_status)
     _fail(type(lease.reference) is RuntimeRootfsReference)
     return lease.reference

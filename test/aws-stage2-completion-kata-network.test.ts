@@ -31,7 +31,8 @@ test("S3 fixed network/firewall owner is closed and identity-conservative", asyn
   const source = await readFile(productionPath, "utf8");
   const lines = source.split("\n").length - 1;
   assert.ok(lines <= 1100, `S3 production exceeds revised hard 1100: ${lines}`);
-  assert.match(source, /class Action\(Enum\):/u);
+  assert.match(source, /Action = actions\.CommandId/u);
+  assert.match(source, /TcObservation = actions\.CommandId/u);
   assert.match(source, /NFT_TRANSACTION = b'''add table inet cogs_stage2_ssh_v1/u);
   assert.match(source, /QUALIFICATION_CANDIDATE = "UNQUALIFIED_FIXED_HOST_TOOL_OUTPUT_CANDIDATE_V1"/u);
   assert.match(source, /def parse_nft_snapshot\(raw\):/u);

@@ -11,6 +11,7 @@ import ipaddress
 import json
 import os
 import re
+import completion_kata_actions as actions
 
 NETNS = "cogs-stage2-ssh"
 NETNS_PATH = "/run/netns/cogs-stage2-ssh"
@@ -49,34 +50,8 @@ class NetworkError(Exception):
     """A command request, snapshot, or ownership transition was not exact."""
 
 
-class Action(Enum):
-    NETNS_ADD = "NETNS_ADD"
-    LINK_ADD = "LINK_ADD"
-    LINK_MOVE = "LINK_MOVE"
-    HOST_ADDRESS_ADD = "HOST_ADDRESS_ADD"
-    HOST_LINK_UP = "HOST_LINK_UP"
-    PEER_RENAME = "PEER_RENAME"
-    PEER_ADDRGEN_NONE = "PEER_ADDRGEN_NONE"
-    LOOPBACK_UP = "LOOPBACK_UP"
-    GUEST_ADDRESS_ADD = "GUEST_ADDRESS_ADD"
-    GUEST_LINK_UP = "GUEST_LINK_UP"
-    NFT_INSTALL = "NFT_INSTALL"
-    NFT_REMOVE = "NFT_REMOVE"
-    NETNS_REMOVE = "NETNS_REMOVE"
-    HOST_LINKS = "HOST_LINKS"
-    HOST_ADDRESSES = "HOST_ADDRESSES"
-    HOST_ROUTES4 = "HOST_ROUTES4"
-    HOST_ROUTES6 = "HOST_ROUTES6"
-    NS_LINKS = "NS_LINKS"
-    NS_ADDRESSES = "NS_ADDRESSES"
-    NS_ROUTES4 = "NS_ROUTES4"
-    NS_ROUTES6 = "NS_ROUTES6"
-    NFT_TABLE = "NFT_TABLE"
-
-
-class TcObservation(Enum):
-    QDISC = "QDISC"
-    INGRESS_FILTER = "INGRESS_FILTER"
+Action = actions.CommandId
+TcObservation = actions.CommandId
 
 
 @dataclass(frozen=True)

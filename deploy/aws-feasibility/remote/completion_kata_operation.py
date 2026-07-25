@@ -15,6 +15,7 @@ import json
 import os
 import time
 import unicodedata
+import completion_kata_actions as actions
 import completion_rootfs_fs as fs
 
 VERSION = "cogs.stage2-kata-operation/v1"
@@ -74,12 +75,7 @@ RESOURCE_TARGETS = {
 RESOURCES = frozenset(RESOURCE_TARGETS)
 MAX_OBSERVED_NAMES = 64
 ACTIONS = frozenset({"create", "metadata", "link", "remove"})
-COMMANDS = frozenset({
-    "IP_NETNS_ADD", "IP_LINK_ADD", "IP_LINK_MOVE", "IP_ADDRESS_ADD", "IP_LINK_UP", "NFT_INSTALL",
-    "NFT_REMOVE", "SSH_KEYGEN_CLIENT", "SSH_KEYGEN_SERVER", "SSH_PUBLIC_CLIENT", "SSH_PUBLIC_SERVER",
-    "CTR_RUN", "CTR_CONTAINER_INFO", "CTR_CONTAINER_LIST", "CTR_TASK_LIST", "CTR_TASK_TERM",
-    "CTR_TASK_KILL", "CTR_TASK_REMOVE", "CTR_CONTAINER_REMOVE", "SSH_READY",
-})
+COMMANDS = actions.COMMAND_IDS
 DEADLINES = frozenset({
     "observer", "network", "keygen", "runtime-start", "task-term", "task-kill", "remove", "listener",
     "ssh", "runtime-absence",
@@ -88,6 +84,18 @@ UNCERTAIN_REASONS = frozenset({
     "malformed", "contradictory", "identity-mismatch", "old-boot", "unknown", "replaced", "incomplete",
 })
 OUTCOMES = frozenset({"not_started", "exec_failed", "exited", "signaled", "recovery_absent", "uncertain"})
+LIFECYCLE = (
+    "BASELINES_CAPTURED", "NETWORK_READY", "RUNTIME_READY", "SSH_READY",
+    "READINESS_REVOKED", "OWNERSHIP_OBSERVED", "TASK_STOPPED", "NETWORK_ABSENT",
+    "TASK_ABSENT", "CONTAINER_ABSENT", "RUNTIME_ABSENT", "SHARE_ABSENT",
+    "FIREWALL_ABSENT", "INPUT_REMOVED", "ROOTFS_RELEASE_READY",
+    "ROOTFS_RELEASE_AUTHORIZED", "ROOTFS_ABSENT",
+)
+PROOF_LIFECYCLE = frozenset({
+    "BASELINES_CAPTURED", "NETWORK_READY", "RUNTIME_READY", "TASK_STOPPED",
+    "NETWORK_ABSENT", "TASK_ABSENT", "CONTAINER_ABSENT", "RUNTIME_ABSENT",
+    "SHARE_ABSENT", "FIREWALL_ABSENT", "INPUT_REMOVED", "ROOTFS_ABSENT",
+})
 
 class OperationError(Exception):
     pass
@@ -206,8 +214,9 @@ def _validate_body(kind, body):
         _hex(body["operation_token"])
         _hex(body["rootfs_token"])
         _key(body["rootfs_ledger_key"])
-        _uint(body["leased_sequence"], MAX_RECORDS - 1)
+        _uint(body["leased_sequence"], fs.ROOTFS_LEDGER_MAX_RECORDS - 1)
         _fail(type(body["leased_offset"]) is str and len(body["leased_offset"]) == 16 and set(body["leased_offset"]) <= HEX)
+        _uint(int(body["leased_offset"], 16), fs.ROOTFS_LEDGER_MAX_BYTES, 1)
         _hex(body["leased_sha256"])
         for name in ("state_generation", "operation_generation", "root_generation"):
             _generation(body[name])
@@ -300,6 +309,43 @@ def _validate_body(kind, body):
         elif body["outcome"] in {"exited", "signaled"}:
             _fail(type(body["status"]) is int and body["errno"] is None)
             _fail(body["wait_result"] == "waited" and body["reap_result"] == "reaped")
+    elif kind in PROOF_LIFECYCLE:
+        _keys(body, ("operation_token", "proof_sha256"))
+        _hex(body["operation_token"])
+        _hex(body["proof_sha256"])
+    elif kind == "SSH_READY":
+        _keys(body, ("operation_token", "proof_sha256", "marker_sha256", "authentication_attempts"))
+        _hex(body["operation_token"])
+        _hex(body["proof_sha256"])
+        _fail(body["marker_sha256"] == hashlib.sha256(FIXED["ssh_marker"].encode("ascii")).hexdigest())
+        _fail(type(body["authentication_attempts"]) is int and body["authentication_attempts"] == 1)
+    elif kind == "READINESS_REVOKED":
+        _keys(body, ("operation_token",))
+        _hex(body["operation_token"])
+    elif kind == "OWNERSHIP_OBSERVED":
+        _keys(body, ("operation_token", "proof_sha256", "task", "container", "runtime", "share"))
+        _hex(body["operation_token"]); _hex(body["proof_sha256"])
+        for name in ("task", "container", "runtime", "share"):
+            _choice(body[name], {"exact-owned", "absent"})
+    elif kind == "ROOTFS_RELEASE_READY":
+        names = ("operation_token", "rootfs_token", "rootfs_ledger_key", "leased_sequence",
+                 "leased_offset", "leased_sha256", "input_removed_sha256")
+        _keys(body, names)
+        _hex(body["operation_token"]); _hex(body["rootfs_token"])
+        _key(body["rootfs_ledger_key"]); _fail(body["rootfs_ledger_key"]["kind"] == "file")
+        _uint(body["leased_sequence"], fs.ROOTFS_LEDGER_MAX_RECORDS - 1)
+        _fail(type(body["leased_offset"]) is str and len(body["leased_offset"]) == 16 and set(body["leased_offset"]) <= HEX)
+        _uint(int(body["leased_offset"], 16), fs.ROOTFS_LEDGER_MAX_BYTES, 1)
+        _hex(body["leased_sha256"]); _hex(body["input_removed_sha256"])
+    elif kind == "ROOTFS_RELEASE_AUTHORIZED":
+        names = ("operation_token", "rootfs_token", "rootfs_authorized_sequence",
+                 "rootfs_authorized_offset", "rootfs_authorized_sha256", "release_ready_sha256")
+        _keys(body, names)
+        _hex(body["operation_token"]); _hex(body["rootfs_token"])
+        _uint(body["rootfs_authorized_sequence"], fs.ROOTFS_LEDGER_MAX_RECORDS - 1)
+        _fail(type(body["rootfs_authorized_offset"]) is str and len(body["rootfs_authorized_offset"]) == 16 and set(body["rootfs_authorized_offset"]) <= HEX)
+        _uint(int(body["rootfs_authorized_offset"], 16), fs.ROOTFS_LEDGER_MAX_BYTES, 1)
+        _hex(body["rootfs_authorized_sha256"]); _hex(body["release_ready_sha256"])
     elif kind == "UNCERTAIN":
         _keys(body, ("operation_token", "reason"))
         _hex(body["operation_token"])
@@ -336,6 +382,37 @@ class Record:
     line_sha256: str
     record_type: str
     body: dict
+
+@dataclass(frozen=True)
+class RootfsReleaseContext:
+    operation_token: str
+    rootfs_token: str
+    rootfs_ledger_key: dict
+    leased_sequence: int
+    leased_offset: int
+    leased_sha256: str
+    kata_ledger_key: dict
+    kata_release_sequence: int
+    kata_release_offset: int
+    kata_release_sha256: str
+    operation_phase: str
+    authorized_sequence: int | None
+    authorized_offset: int | None
+    authorized_sha256: str | None
+
+@dataclass(frozen=True)
+class RootfsAuthorization:
+    rootfs_token: str
+    sequence: int
+    offset: int
+    line_sha256: str
+
+    def __post_init__(self):
+        _hex(self.rootfs_token)
+        _uint(self.sequence, fs.ROOTFS_LEDGER_MAX_RECORDS - 1)
+        _uint(self.offset, fs.ROOTFS_LEDGER_MAX_BYTES, 1)
+        _hex(self.line_sha256)
+
 def _same_intent(left, right):
     names = ("operation_token", "resource_id", "action", "expected_parent_generation", "names_sha256")
     return all(left[name] == right[name] for name in names)
@@ -348,6 +425,9 @@ def _legal(records):
     key = genesis["journal_key"]
     phase = "GENESIS"
     pending = None
+    command_phase = None
+    command_pending = None
+    ownership = None
     rootfs = False
     next_serial = 0
     for index, record in enumerate(records[1:], 1):
@@ -356,6 +436,29 @@ def _legal(records):
         _fail(body["operation_token"] == token)
         if phase in {"UNCERTAIN", "RETIRED"}:
             raise OperationError()
+        if kind == "COMMAND_INTENT":
+            _fail(rootfs and command_phase is None and phase in {
+                "ROOTFS_LEASED", "FS_SETTLED", *LIFECYCLE[:14],
+            })
+            _fail(body["command_serial"] == next_serial)
+            next_serial += 1
+            command_phase, command_pending = "COMMAND_INTENT", record
+            continue
+        if kind == "COMMAND_PREEXEC":
+            _fail(command_phase == "COMMAND_INTENT" and command_pending is not None)
+            _fail(_same_command(body, command_pending.body))
+            command_phase, command_pending = "COMMAND_PREEXEC", record
+            continue
+        if kind == "COMMAND_OUTCOME":
+            _fail(command_phase in {"COMMAND_INTENT", "COMMAND_PREEXEC"} and command_pending is not None)
+            _fail(_same_command(body, command_pending.body))
+            _fail((command_phase == "COMMAND_INTENT" and body["outcome"] == "not_started") or
+                  (command_phase == "COMMAND_PREEXEC" and body["outcome"] != "not_started"))
+            command_phase = command_pending = None
+            if body["outcome"] == "uncertain":
+                phase = "UNCERTAIN"
+            continue
+        _fail(command_phase is None)
         if phase == "GENESIS":
             _fail(index == 1 and kind == "GENESIS_SETTLED" and body["journal_key"] == key)
             phase = kind
@@ -370,7 +473,7 @@ def _legal(records):
             pending = None
             rootfs = True
         elif kind == "FS_INTENT":
-            _fail(rootfs and phase in {"ROOTFS_LEASED", "FS_SETTLED", "COMMAND_OUTCOME"})
+            _fail(rootfs and phase in {"ROOTFS_LEASED", "FS_SETTLED"})
             phase = kind
             pending = record
         elif kind in {"FS_OBSERVED", "FS_ABSENT"}:
@@ -381,30 +484,58 @@ def _legal(records):
             _fail(phase in {"FS_OBSERVED", "FS_ABSENT"} and pending is not None and body == pending.body)
             phase = kind
             pending = None
-        elif kind == "COMMAND_INTENT":
-            _fail(rootfs and phase in {"ROOTFS_LEASED", "FS_SETTLED", "COMMAND_OUTCOME"})
-            _fail(body["command_serial"] == next_serial)
-            next_serial += 1
-            phase = kind
-            pending = record
-        elif kind == "COMMAND_PREEXEC":
-            _fail(phase == "COMMAND_INTENT" and pending is not None and _same_command(body, pending.body))
-            phase = kind
-            pending = record
-        elif kind == "COMMAND_OUTCOME":
-            _fail(phase in {"COMMAND_INTENT", "COMMAND_PREEXEC"} and pending is not None)
-            _fail(_same_command(body, pending.body))
-            if phase == "COMMAND_INTENT":
-                _fail(body["outcome"] == "not_started")
-            else:
-                _fail(body["outcome"] != "not_started")
-            phase = "UNCERTAIN" if body["outcome"] == "uncertain" else kind
-            pending = None
         elif kind == "UNCERTAIN":
             phase = kind
             pending = None
+        elif kind in LIFECYCLE:
+            _fail(rootfs)
+            seen = {item.record_type for item in records[:index]}
+            if kind == "BASELINES_CAPTURED":
+                _fail(phase in {"ROOTFS_LEASED", "FS_SETTLED"})
+            elif kind == "NETWORK_READY":
+                _fail(phase == "BASELINES_CAPTURED")
+            elif kind == "RUNTIME_READY":
+                _fail(phase == "NETWORK_READY")
+            elif kind == "SSH_READY":
+                _fail(phase == "RUNTIME_READY")
+            elif kind == "READINESS_REVOKED":
+                _fail(phase in {"BASELINES_CAPTURED", "NETWORK_READY", "RUNTIME_READY", "SSH_READY"})
+            elif kind == "OWNERSHIP_OBSERVED":
+                _fail(phase == "READINESS_REVOKED" and ownership is None)
+                ownership = body
+            elif kind == "TASK_STOPPED":
+                _fail(phase == "OWNERSHIP_OBSERVED" and ownership["task"] == "exact-owned")
+            elif kind == "NETWORK_ABSENT":
+                _fail(ownership is not None and (phase == "TASK_STOPPED" or
+                      phase == "OWNERSHIP_OBSERVED" and ownership["task"] == "absent"))
+            elif kind == "TASK_ABSENT":
+                _fail(phase == "NETWORK_ABSENT")
+            elif kind == "CONTAINER_ABSENT":
+                _fail(phase == "TASK_ABSENT")
+            elif kind == "RUNTIME_ABSENT":
+                _fail(phase == "CONTAINER_ABSENT")
+            elif kind == "SHARE_ABSENT":
+                _fail(phase == "RUNTIME_ABSENT")
+            elif kind == "FIREWALL_ABSENT":
+                _fail(phase == "SHARE_ABSENT")
+            elif kind == "INPUT_REMOVED":
+                _fail(phase == "FIREWALL_ABSENT")
+            elif kind == "ROOTFS_RELEASE_READY":
+                _fail(phase == "INPUT_REMOVED")
+                leased = next(item for item in records if item.record_type == "ROOTFS_LEASED").body
+                _fail(body["rootfs_token"] == genesis["rootfs_token"])
+                _fail(all(body[name] == leased[name] for name in
+                          ("rootfs_ledger_key", "leased_sequence", "leased_offset", "leased_sha256")))
+                _fail(body["input_removed_sha256"] == records[index - 1].body["proof_sha256"])
+            elif kind == "ROOTFS_RELEASE_AUTHORIZED":
+                _fail(phase == "ROOTFS_RELEASE_READY" and body["rootfs_token"] == genesis["rootfs_token"])
+                _fail(body["release_ready_sha256"] == records[index - 1].line_sha256)
+            else:
+                _fail(kind == "ROOTFS_ABSENT" and phase == "ROOTFS_RELEASE_AUTHORIZED")
+            phase = kind
+            pending = record
         elif kind == "FINAL_BASELINES":
-            _fail(rootfs and phase in {"ROOTFS_LEASED", "FS_SETTLED", "COMMAND_OUTCOME"})
+            _fail(rootfs and phase == "ROOTFS_ABSENT")
             phase = kind
             pending = record
         elif kind == "RETIRE_INTENT":
@@ -528,6 +659,7 @@ def _open_base_chain(control):
 def _make_authority():
     seal = object()
     owners, closed, permits, grants = {}, set(), {}, {}
+    release_permits, release_grants = {}, {}
     class _FixedJournal:
         """One idempotently-closeable owner for the fixed state, lock, and journal."""
         def __init__(self):
@@ -610,12 +742,17 @@ def _make_authority():
                 phase = _legal(records)
                 if len(records) > 1:
                     _fail(_generation_value(self.state.generation) == records[1].body["state_parent"])
-                if phase not in {"GENESIS", "GENESIS_SETTLED"}:
+                if phase not in {"GENESIS", "GENESIS_SETTLED", "ROOTFS_ABSENT",
+                                 "FINAL_BASELINES", "RETIRE_INTENT", "RETIRED"}:
                     _fail(ROOTFS_NAME.raw in names)
-                if phase in {"FS_OBSERVED", "FS_ABSENT", "FS_SETTLED", "COMMAND_INTENT",
-                             "COMMAND_PREEXEC", "COMMAND_OUTCOME", "FINAL_BASELINES",
-                             "RETIRE_INTENT", "RETIRED"}:
+                input_required = {"FS_OBSERVED", "FS_ABSENT", "FS_SETTLED", "COMMAND_INTENT",
+                                  "COMMAND_PREEXEC", "COMMAND_OUTCOME", *LIFECYCLE[:13]}
+                if phase in input_required:
                     _fail(INPUT_NAME.raw in names)
+                if phase in set(LIFECYCLE[13:]) | {"FINAL_BASELINES", "RETIRE_INTENT", "RETIRED"}:
+                    _fail(INPUT_NAME.raw not in names)
+                if phase in {"ROOTFS_ABSENT", "FINAL_BASELINES", "RETIRE_INTENT", "RETIRED"}:
+                    _fail(ROOTFS_NAME.raw not in names)
             fs._revalidate_chain(self.chain, self.control)
         def _reopen_base(self):
             old = self.chain
@@ -813,6 +950,16 @@ def _make_authority():
         def __new__(cls, key=None):
             _fail(key is seal)
             return super().__new__(cls)
+    class RootfsReleasePermit:
+        __slots__ = ()
+        def __new__(cls, key=None):
+            _fail(key is seal)
+            return super().__new__(cls)
+    class RootfsReleaseGrant:
+        __slots__ = ()
+        def __new__(cls, key=None):
+            _fail(key is seal)
+            return super().__new__(cls)
     def owner(authority):
         state = owners.get(authority)
         _fail(state is not None and authority not in closed)
@@ -836,7 +983,7 @@ def _make_authority():
         else:
             state[1:] = [records, "exact"]
         return state
-    def append(authority, kind, body):
+    def write_validated(authority, kind, body):
         io, records, status = reload(authority)
         _fail(status == "exact" and records)
         line = _encode(kind, body, records)
@@ -849,6 +996,26 @@ def _make_authority():
         io.create(body)
         _io, fresh, fresh_status = reload(authority)
         _fail(fresh_status == "exact" and len(fresh) == 1 and fresh[0].record_type == "GENESIS")
+    def release_context(records):
+        phase = records[-1].record_type
+        _fail(phase in {"ROOTFS_RELEASE_READY", "ROOTFS_RELEASE_AUTHORIZED"})
+        ready = records[-1] if phase == "ROOTFS_RELEASE_READY" else records[-2]
+        _fail(ready.record_type == "ROOTFS_RELEASE_READY")
+        body, genesis = ready.body, records[0].body
+        authorized = None if phase == "ROOTFS_RELEASE_READY" else records[-1]
+        return RootfsReleaseContext(
+            genesis["operation_token"], genesis["rootfs_token"], body["rootfs_ledger_key"],
+            body["leased_sequence"], int(body["leased_offset"], 16), body["leased_sha256"],
+            genesis["journal_key"], ready.sequence, ready.next_offset, ready.line_sha256,
+            phase, None if authorized is None else authorized.body["rootfs_authorized_sequence"],
+            None if authorized is None else int(authorized.body["rootfs_authorized_offset"], 16),
+            None if authorized is None else authorized.body["rootfs_authorized_sha256"],
+        )
+    def issue_release(records, settle):
+        context = release_context(records)
+        permit = RootfsReleasePermit(seal)
+        release_permits[permit] = [context, settle, False]
+        return permit
     class OperationAuthority:
         __slots__ = ()
         def __new__(cls, key=None):
@@ -858,13 +1025,28 @@ def _make_authority():
             _io, records, status = reload(self)
             _fail(status == "exact" and records)
             phase = records[-1].record_type
-            _fail(phase in {"ROOTFS_ACQUIRE_INTENT", "ROOTFS_LEASED"})
+            _fail(phase in {"ROOTFS_ACQUIRE_INTENT", "ROOTFS_LEASED", "ROOTFS_RELEASE_READY",
+                            "ROOTFS_RELEASE_AUTHORIZED"})
             _fail(not any(value[0] is self and not value[4] for value in permits.values()))
             _fail(not any(value[0] is self and not value[5] for value in grants.values()))
             permit = RootfsPermit(seal)
             permits[permit] = [self, records[0].body["operation_token"],
                                len(records) - 1, phase, False]
             return permit
+        def reserve_rootfs_release(self):
+            _io, records, status = reload(self)
+            _fail(status == "exact" and records[-1].record_type in {
+                "ROOTFS_RELEASE_READY", "ROOTFS_RELEASE_AUTHORIZED",
+            })
+            phase = records[-1].record_type
+            def settle(body):
+                if phase == "ROOTFS_RELEASE_READY":
+                    write_validated(self, "ROOTFS_RELEASE_AUTHORIZED", body)
+                else:
+                    _io, fresh, fresh_status = reload(self)
+                    _fail(fresh_status == "exact" and fresh[-1].record_type == phase)
+                    _fail(fresh[-1].body == body)
+            return issue_release(records, settle)
         def close(self):
             if self in closed:
                 return
@@ -901,7 +1083,10 @@ def _make_authority():
         state, records = grant_records(grant)
         _fail(not state[4] and not state[5] and type(route) is type(invoke_rootfs_reopen_route))
         state[4] = True
-        return route(records[0].body["rootfs_token"], control)
+        argument = (release_context(records) if state[3] in {
+            "ROOTFS_RELEASE_READY", "ROOTFS_RELEASE_AUTHORIZED",
+        } else records[0].body["rootfs_token"])
+        return route(argument, control)
     def settle_rootfs_reopen(grant, reference):
         state, records = grant_records(grant)
         _fail(state[4] and not state[5])
@@ -910,7 +1095,7 @@ def _make_authority():
         _fail(records[0].body["operation_token"] == operation_token and reference.token == token)
         if phase == "ROOTFS_ACQUIRE_INTENT":
             settled = reference.leased_settled
-            append(authority, "ROOTFS_LEASED", {
+            write_validated(authority, "ROOTFS_LEASED", {
                 "operation_token": operation_token, "rootfs_token": token,
                 "rootfs_ledger_key": _key_value(reference.ledger_key),
                 "leased_sequence": settled.sequence, "leased_offset": f"{settled.offset:016x}",
@@ -920,7 +1105,8 @@ def _make_authority():
                 "root_generation": _generation_value(reference.root_generation), "rootfs_pin": ROOTFS_PIN,
             })
         else:
-            expected = records[-1].body
+            leased_record = next(item for item in records if item.record_type == "ROOTFS_LEASED")
+            expected = leased_record.body
             actual = {
                 "rootfs_ledger_key": _key_value(reference.ledger_key),
                 "leased_sequence": reference.leased_settled.sequence,
@@ -932,6 +1118,96 @@ def _make_authority():
             }
             _fail(all(expected[name] == value for name, value in actual.items()))
         state[5] = True
+    def claim_rootfs_release(permit):
+        state = release_permits.get(permit)
+        _fail(type(permit) is RootfsReleasePermit and state is not None and not state[2])
+        state[2] = True
+        grant = RootfsReleaseGrant(seal)
+        release_grants[grant] = [state[0], state[1], False, False]
+        return grant
+    def invoke_rootfs_release(grant, route):
+        state = release_grants.get(grant)
+        _fail(type(grant) is RootfsReleaseGrant and state is not None and not state[2] and not state[3])
+        _fail(type(route) is type(invoke_rootfs_release))
+        state[2] = True
+        return route(state[0])
+    def settle_rootfs_release(grant, authorization):
+        state = release_grants.get(grant)
+        _fail(type(grant) is RootfsReleaseGrant and state is not None and state[2] and not state[3])
+        context = state[0]
+        _fail(type(authorization) is RootfsAuthorization and authorization.rootfs_token == context.rootfs_token)
+        _uint(authorization.sequence, fs.ROOTFS_LEDGER_MAX_RECORDS - 1)
+        _uint(authorization.offset, fs.ROOTFS_LEDGER_MAX_BYTES, 1)
+        _hex(authorization.line_sha256)
+        body = {
+            "operation_token": context.operation_token, "rootfs_token": context.rootfs_token,
+            "rootfs_authorized_sequence": authorization.sequence,
+            "rootfs_authorized_offset": f"{authorization.offset:016x}",
+            "rootfs_authorized_sha256": authorization.line_sha256,
+            "release_ready_sha256": context.kata_release_sha256,
+        }
+        state[1](body)
+        state[3] = True
+    def make_fake_lifecycle(raw):
+        records = list(_parse(raw))
+        _fail(records[-1].record_type in {"ROOTFS_LEASED", "ROOTFS_RELEASE_READY",
+                                         "ROOTFS_RELEASE_AUTHORIZED"})
+        state = {"records": records, "raw": raw, "release": False}
+        def record(kind, body):
+            line = _encode(kind, body, tuple(state["records"]))
+            state["raw"] += line
+            state["records"] = list(_parse(state["raw"]))
+        def proof(kind, digest):
+            _hex(digest)
+            record(kind, {"operation_token": records[0].body["operation_token"], "proof_sha256": digest})
+        class FakeLifecycle:
+            __slots__ = ()
+            def __new__(cls, key=None):
+                _fail(key is seal)
+                return super().__new__(cls)
+            def baselines_captured(self, digest): proof("BASELINES_CAPTURED", digest)
+            def network_ready(self, digest): proof("NETWORK_READY", digest)
+            def runtime_ready(self, digest): proof("RUNTIME_READY", digest)
+            def ssh_ready(self, digest):
+                record("SSH_READY", {"operation_token": records[0].body["operation_token"],
+                    "proof_sha256": digest, "marker_sha256": hashlib.sha256(FIXED["ssh_marker"].encode()).hexdigest(),
+                    "authentication_attempts": 1})
+            def revoke_readiness(self): record("READINESS_REVOKED", {"operation_token": records[0].body["operation_token"]})
+            def ownership_observed(self, digest, task="exact-owned", container="exact-owned",
+                                   runtime="exact-owned", share="exact-owned"):
+                record("OWNERSHIP_OBSERVED", {"operation_token": records[0].body["operation_token"],
+                    "proof_sha256": digest, "task": task, "container": container,
+                    "runtime": runtime, "share": share})
+            def task_stopped(self, digest): proof("TASK_STOPPED", digest)
+            def network_absent(self, digest): proof("NETWORK_ABSENT", digest)
+            def task_absent(self, digest): proof("TASK_ABSENT", digest)
+            def container_absent(self, digest): proof("CONTAINER_ABSENT", digest)
+            def runtime_absent(self, digest): proof("RUNTIME_ABSENT", digest)
+            def share_absent(self, digest): proof("SHARE_ABSENT", digest)
+            def firewall_absent(self, digest): proof("FIREWALL_ABSENT", digest)
+            def input_removed(self, digest): proof("INPUT_REMOVED", digest)
+            def rootfs_release_ready(self):
+                leased = next(item.body for item in state["records"] if item.record_type == "ROOTFS_LEASED")
+                removed = state["records"][-1]
+                record("ROOTFS_RELEASE_READY", {"operation_token": records[0].body["operation_token"],
+                    "rootfs_token": records[0].body["rootfs_token"], "rootfs_ledger_key": leased["rootfs_ledger_key"],
+                    "leased_sequence": leased["leased_sequence"], "leased_offset": leased["leased_offset"],
+                    "leased_sha256": leased["leased_sha256"], "input_removed_sha256": removed.body["proof_sha256"]})
+                _fail(not state["release"]); state["release"] = True
+                return issue_release(tuple(state["records"]), lambda body: record("ROOTFS_RELEASE_AUTHORIZED", body))
+            def resume_rootfs_release_ready(self):
+                _fail(state["records"][-1].record_type == "ROOTFS_RELEASE_READY" and not state["release"])
+                state["release"] = True
+                return issue_release(tuple(state["records"]), lambda body: record("ROOTFS_RELEASE_AUTHORIZED", body))
+            def rootfs_absent(self, digest): proof("ROOTFS_ABSENT", digest)
+            def retire(self, final_digest):
+                token = records[0].body["operation_token"]
+                record("FINAL_BASELINES", {"operation_token": token, "final_baselines_sha256": final_digest})
+                body = {"operation_token": token, "journal_key": records[0].body["journal_key"],
+                        "final_baselines_sha256": final_digest}
+                record("RETIRE_INTENT", body); record("RETIRED", body)
+            def journal_bytes(self): return bytes(state["raw"])
+        return FakeLifecycle(seal)
     def _open_fixed_operation():
         io = _open_io()
         authority = OperationAuthority(seal)
@@ -945,11 +1221,13 @@ def _make_authority():
             io.close(error)
     return (
         _open_fixed_operation, create_fixed_operation_test_local, claim_rootfs_reopen,
-        invoke_rootfs_reopen_route, settle_rootfs_reopen,
+        invoke_rootfs_reopen_route, settle_rootfs_reopen, claim_rootfs_release,
+        invoke_rootfs_release, settle_rootfs_release, make_fake_lifecycle,
     )
 
 (
     _open_fixed_operation, _create_fixed_operation_test_local, _claim_rootfs_reopen,
-    _invoke_rootfs_reopen_route, _settle_rootfs_reopen,
+    _invoke_rootfs_reopen_route, _settle_rootfs_reopen, _claim_rootfs_release,
+    _invoke_rootfs_release, _settle_rootfs_release, _make_fake_lifecycle_for_tests,
 ) = _make_authority()
 del _make_authority

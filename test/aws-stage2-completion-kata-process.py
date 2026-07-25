@@ -153,6 +153,7 @@ int main(int argc, char **argv) {
   if (!strcmp(argv[1], "held-pipe")) { pid_t child=fork(); if (child<0) return 93; if (!child) { usleep(800000); _exit(0); } return 0; }
   if (!strcmp(argv[1], "fd")) { if (fcntl(198, F_GETFD) == -1 && errno == EBADF) { write(1,"closed\n",7); return 0; } return 91; }
   if (!strcmp(argv[1], "high-fd")) { if (fcntl(4096, F_GETFD) == -1 && errno == EBADF) { write(1,"high-closed\n",12); return 0; } return 94; }
+  if (!strcmp(argv[1], "inherited")) { char a=0,b=0; if (read(200,&a,1)==1 && read(201,&b,1)==1 && a=='K' && b=='H' && fcntl(202,F_GETFD)==-1 && errno==EBADF) { write(1,"inherited\n",10); return 0; } return 95; }
   return 92;
 }
 '''
@@ -223,6 +224,34 @@ def linux_supervisor_tests():
     finally:
         os.close(198)
         os.close(held)
+
+    # Collision-safe inherited mapping survives exec only at exact 200/201;
+    # source CLOEXEC flags remain unchanged and every extra fd is closed.
+    key_r, key_w = os.pipe2(os.O_CLOEXEC)
+    hosts_r, hosts_w = os.pipe2(os.O_CLOEXEC)
+    os.write(key_w, b"K"); os.write(hosts_w, b"H")
+    os.close(key_w); os.close(hosts_w)
+    saved = {}
+    try:
+        for target in (200, 201):
+            try: saved[target] = os.dup(target)
+            except OSError: saved[target] = None
+        os.dup2(hosts_r, 200, inheritable=False)
+        os.dup2(key_r, 201, inheritable=False)
+        owner = process._seal_inherited_inputs_for_tests(
+            201, 200, process._fd_identity(201), process._fd_identity(200),
+        )
+        result = process._make_test_issuer(raw, digest)(process._TestAction.INHERITED, owner)
+        assert result.status == 0 and result.stdout == b"inherited\n" and not result.errors
+        assert not os.get_inheritable(200) and not os.get_inheritable(201)
+    finally:
+        for target, original in saved.items():
+            if original is None:
+                try: os.close(target)
+                except OSError: pass
+            else:
+                os.dup2(original, target); os.close(original)
+        os.close(key_r); os.close(hosts_r)
 
     # close_range reaches inherited descriptors above a subsequently lowered limit.
     base = os.open("/dev/null", os.O_RDONLY | os.O_CLOEXEC)
