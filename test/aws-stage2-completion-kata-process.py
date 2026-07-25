@@ -142,18 +142,29 @@ HELPER = r'''#include <errno.h>
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+static int write_all(int descriptor, const void *buffer, size_t size) {
+  const char *next = buffer;
+  while (size > 0) {
+    ssize_t written = write(descriptor, next, size);
+    if (written < 0 && errno == EINTR) continue;
+    if (written <= 0) return -1;
+    next += written;
+    size -= (size_t)written;
+  }
+  return 0;
+}
 int main(int argc, char **argv) {
   if (argc != 2) return 90;
-  if (!strcmp(argv[1], "ok")) { write(1, "ok\n", 3); return 0; }
-  if (!strcmp(argv[1], "stderr")) { write(2, "fixed-error\n", 12); return 0; }
+  if (!strcmp(argv[1], "ok")) return write_all(1, "ok\n", 3) == 0 ? 0 : 96;
+  if (!strcmp(argv[1], "stderr")) return write_all(2, "fixed-error\n", 12) == 0 ? 0 : 96;
   if (!strcmp(argv[1], "exit7")) return 7;
-  if (!strcmp(argv[1], "flood")) { char x = 'x'; for (int i=0;i<65537;i++) write(1,&x,1); return 0; }
-  if (!strcmp(argv[1], "dual-flood")) { char out[4096], err[4096]; memset(out,'o',sizeof(out)); memset(err,'e',sizeof(err)); for (int i=0;i<20;i++) { write(1,out,sizeof(out)); write(2,err,sizeof(err)); } return 0; }
+  if (!strcmp(argv[1], "flood")) { char x = 'x'; for (int i=0;i<65537;i++) if (write_all(1,&x,1)) return 96; return 0; }
+  if (!strcmp(argv[1], "dual-flood")) { char out[4096], err[4096]; memset(out,'o',sizeof(out)); memset(err,'e',sizeof(err)); for (int i=0;i<20;i++) if (write_all(1,out,sizeof(out)) || write_all(2,err,sizeof(err))) return 96; return 0; }
   if (!strcmp(argv[1], "sleep")) { signal(SIGTERM, SIG_IGN); sleep(30); return 0; }
   if (!strcmp(argv[1], "held-pipe")) { pid_t child=fork(); if (child<0) return 93; if (!child) { usleep(800000); _exit(0); } return 0; }
-  if (!strcmp(argv[1], "fd")) { if (fcntl(198, F_GETFD) == -1 && errno == EBADF) { write(1,"closed\n",7); return 0; } return 91; }
-  if (!strcmp(argv[1], "high-fd")) { if (fcntl(4096, F_GETFD) == -1 && errno == EBADF) { write(1,"high-closed\n",12); return 0; } return 94; }
-  if (!strcmp(argv[1], "inherited")) { char a=0,b=0; if (read(200,&a,1)==1 && read(201,&b,1)==1 && a=='K' && b=='H' && fcntl(202,F_GETFD)==-1 && errno==EBADF) { write(1,"inherited\n",10); return 0; } return 95; }
+  if (!strcmp(argv[1], "fd")) { if (fcntl(198, F_GETFD) == -1 && errno == EBADF) return write_all(1,"closed\n",7) == 0 ? 0 : 96; return 91; }
+  if (!strcmp(argv[1], "high-fd")) { if (fcntl(4096, F_GETFD) == -1 && errno == EBADF) return write_all(1,"high-closed\n",12) == 0 ? 0 : 96; return 94; }
+  if (!strcmp(argv[1], "inherited")) { char a=0,b=0; if (read(200,&a,1)==1 && read(201,&b,1)==1 && a=='K' && b=='H' && fcntl(202,F_GETFD)==-1 && errno==EBADF) return write_all(1,"inherited\n",10) == 0 ? 0 : 96; return 95; }
   return 92;
 }
 '''

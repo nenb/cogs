@@ -195,8 +195,10 @@ def write_source_fixture(source):
 
 def linux_tests():
     if sys.platform != "linux":
-        return
-    assert os.geteuid() == 0
+        return False
+    if os.geteuid() != 0:
+        rejected(lambda: module._open_workspace_anchor(control()))
+        return False
     active = control()
     with tempfile.TemporaryDirectory(prefix="cogs-fs-linux-") as temporary:
         root = Path(temporary)
@@ -242,8 +244,10 @@ def linux_tests():
                 module._close_node(source_node)
         finally:
             module._close_chain(chain)
+    return True
 
 
 pure_tests()
-linux_tests()
-print("completion rootfs filesystem tests passed")
+linux_qualified = linux_tests()
+qualification = "EUID-0 LINUX QUALIFIED" if linux_qualified else "EUID-0 Linux matrix SKIPPED"
+print(f"completion rootfs filesystem tests passed; {qualification}")

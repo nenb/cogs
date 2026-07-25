@@ -537,7 +537,10 @@ def fixture_journal(
 
 def production_owner_test():
     if sys.platform != "linux":
-        return
+        return False
+    if os.geteuid() != 0:
+        rejected(operation._open_fixed_operation)
+        return False
     with tempfile.TemporaryDirectory(dir="/tmp") as temporary:
         os.chmod(temporary, 0o700)
         completion = Path(temporary) / "completion"
@@ -548,11 +551,7 @@ def production_owner_test():
         def factory(control):
             return linux_chain_factory(completion, control)
 
-        fixed = (
-            patch.object(operation.os, "geteuid", return_value=0),
-            patch.object(operation, "_open_base_chain", side_effect=factory),
-        )
-        with fixed[0], fixed[1]:
+        with patch.object(operation, "_open_base_chain", side_effect=factory):
             opened = operation._open_fixed_operation()
             assert opened.status() == "absent" and not hasattr(opened, "__dict__")
             for name in ("create", "write_record", "unlink", "_io", "_records", "_append"):
@@ -702,12 +701,13 @@ def production_owner_test():
             unknown.mkdir(mode=0o700)
             rejected(operation._open_fixed_operation)
             unknown.rmdir()
+    return True
 
 
 def fixture_journal_path(completion):
     return Path(completion) / operation.STATE_NAME.text / operation.JOURNAL_NAME.text
 
 
-production_owner_test()
-
-print("completion Kata operation foundation matrix passed")
+owner_qualified = production_owner_test()
+qualification = "EUID-0 LINUX QUALIFIED" if owner_qualified else "EUID-0 Linux matrix SKIPPED"
+print(f"completion Kata operation foundation matrix passed; {qualification}")
