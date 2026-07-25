@@ -93,8 +93,10 @@ def release_ledger_prefix():
     before = parent(41, ("active-ledger", "lock", "sentinel"))
     after = parent(41, ("active-ledger", "lock", operation_name, "sentinel"), 3)
     operation_generation = host_generation(42)
-    operation_before = parent(42, ("sentinel",))
-    operation_after = parent(42, ("rootfs", "sentinel"), 3)
+    operation_empty = rootfs_ledger.LedgerParent(operation_generation, ())
+    operation_before = parent(42, ("sentinel",), 3)
+    operation_after = parent(42, ("rootfs", "sentinel"), 4)
+    sentinel_generation = host_generation(44, "file", 0o600)
     root_generation = host_generation(43, mode=0o755)
     pvalue, gvalue = rootfs_ledger._parent_value, rootfs_ledger._generation_value
     proposals = [
@@ -110,6 +112,12 @@ def release_ledger_prefix():
         rootfs_ledger.LedgerProposal.create("operation-create-settled", {"token": token,
             "operation_name": operation_name, "state_parent": pvalue(after),
             "operation": gvalue(operation_generation)}),
+        rootfs_ledger.LedgerProposal.create("create-intent", {"token": token, "path": "sentinel",
+            "kind": "file", "parent": pvalue(operation_empty)}),
+        rootfs_ledger.LedgerProposal.create("create-observed", {"token": token, "path": "sentinel",
+            "kind": "file", "parent": pvalue(operation_before), "child": gvalue(sentinel_generation)}),
+        rootfs_ledger.LedgerProposal.create("create-settled", {"token": token, "path": "sentinel",
+            "kind": "file", "parent": pvalue(operation_before), "child": gvalue(sentinel_generation)}),
         rootfs_ledger.LedgerProposal.create("create-intent", {"token": token, "path": "rootfs",
             "kind": "directory", "parent": pvalue(operation_before)}),
         rootfs_ledger.LedgerProposal.create("create-observed", {"token": token, "path": "rootfs",
