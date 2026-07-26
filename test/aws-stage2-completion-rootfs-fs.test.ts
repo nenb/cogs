@@ -30,7 +30,10 @@ test("D-R2.2a rejects hostile models and remains read-only", async () => {
   );
   const anonymousDefinitions = source.split("def _open_anonymous(");
   assert.equal(anonymousDefinitions.length, 2);
-  const anonymousBody = anonymousDefinitions[1].split("\ndef ", 1)[0];
+  const anonymousDefinition = anonymousDefinitions[1];
+  assert.ok(anonymousDefinition);
+  const [anonymousBody] = anonymousDefinition.split("\ndef ", 1);
+  assert.ok(anonymousBody);
   assert.equal(source.match(/\bO_RDWR\b/gu)?.length, 1);
   assert.match(anonymousBody, /flags = os\.O_TMPFILE \| os\.O_RDWR \| _O_CLOEXEC/u);
   assert.match(anonymousBody, /_fail\(flags == 0o22200002\)/u);
