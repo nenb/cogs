@@ -1,8 +1,10 @@
 # ADR 0061: Raise the hosted failure-path cap after exact-head review
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-26
 - Decision owner: Nick Byrne
+- Accepted by: Delegated project lead on 2026-07-26 under Nick Byrne's standing bounded-local delegation, after independent hostile review reported no P0–P3 findings.
+- Acceptance record: [GitHub pull request #232](https://github.com/nenb/cogs/pull/232).
 - Amendment scope: This ADR amends only ADR 0060's absolute gross-addition maximum for `test/aws-stage2-completion-rootfs-candidate.py`, from 470 to 570, and the corresponding excluded three-file total maximum, from 610 to 710. The TypeScript wrapper maximum remains 30 and the workflow maximum remains 110. Every other ADR 0057–0060 requirement remains binding.
 
 ## Context
