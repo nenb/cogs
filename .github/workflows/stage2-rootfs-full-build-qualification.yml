@@ -95,7 +95,7 @@ jobs:
             COGS_STAGE2_ARTIFACT_ACQUISITION_APPROVED=download-16-fixed-public-stage2-artifacts \
             COGS_ADR0057_SOURCE_REVISION="$COGS_ADR0057_SOURCE_REVISION" \
             COGS_ADR0057_SOURCE_MANIFEST_SHA256="$COGS_ADR0057_SOURCE_MANIFEST_SHA256" \
-            /usr/bin/python3 -I /var/lib/cogs/stage2-completion-v1/source/test/aws-stage2-completion-rootfs-candidate.py \
+            /usr/bin/python3 -I -B /var/lib/cogs/stage2-completion-v1/source/test/aws-stage2-completion-rootfs-candidate.py \
             --hosted-exact
 
       - name: Enforce exact result and final close budget
