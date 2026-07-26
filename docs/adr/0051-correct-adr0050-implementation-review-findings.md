@@ -1,10 +1,11 @@
 # ADR 0051: Correct ADR 0050 implementation-review findings without adding a candidate
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-26
 - Decision owner: Nick Byrne
-- Acceptance required: Nick Byrne, or the delegated project lead acting under Nick Byrne's standing bounded-local delegation.
-- Amendment scope: If accepted, this ADR amends only the implementation, qualification, and counted-line provisions of accepted ADR 0050 that are named below. Every non-conflicting ADR 0050 requirement remains binding.
+- Accepted by: Delegated project lead on 2026-07-26 under Nick Byrne's standing bounded-local delegation, after independent hostile review reported no P0–P3 findings.
+- Acceptance record: [GitHub pull request #220](https://github.com/nenb/cogs/pull/220).
+- Amendment scope: This ADR amends only the implementation, qualification, and counted-line provisions of accepted ADR 0050 that are named below. Every non-conflicting ADR 0050 requirement remains binding.
 
 ## Context
 

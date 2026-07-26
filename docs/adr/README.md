@@ -54,6 +54,6 @@ ADRs 0001–0010 were accepted by Nick Byrne on 2026-07-10. ADR 0011 was accepte
 | [0048](0048-linearize-stage2-rootfs-qualification.md) | Reduce Stage 2 rootfs qualification replay cost without weakening recovery | Accepted; numeric cap superseded by ADR 0049; minimal evidence correction, next-candidate stop, and no-batching/no-timeout boundaries retained |
 | [0049](0049-raise-stage-2-cap-after-local-rootfs-and-evidence-slices.md) | Raise Stage 2 cap after local rootfs and evidence slices | Accepted; current issue #42 numeric cap only; all scope, qualification, stage, workflow, campaign, production, and cloud gates retained |
 | [0050](0050-authorize-post-candidate-stage2-corrections.md) | Authorize narrow Stage 2 post-candidate corrections and one final candidate | Accepted; C1–C4 and one operationally selected non-authoritative candidate only; proposed implementation corrections in ADR 0051 |
-| [0051](0051-correct-adr0050-implementation-review-findings.md) | Correct ADR 0050 implementation-review findings without adding a candidate | Proposed; R1 and narrow C1–C3 qualification corrections only; no additional candidate or workflow change |
+| [0051](0051-correct-adr0050-implementation-review-findings.md) | Correct ADR 0050 implementation-review findings without adding a candidate | Accepted; R1 and narrow C1–C3 qualification corrections only; no additional candidate or workflow change |
 
 Implementation pauses for every boundary listed in `IMPLEMENTATION.md` section 47. Superseding an accepted ADR requires a new ADR rather than editing history.
