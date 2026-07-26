@@ -1,8 +1,10 @@
 # ADR 0058: Authorize atomic-candidate Python test companions
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-26
 - Decision owner: Nick Byrne
+- Accepted by: Delegated project lead on 2026-07-26 under Nick Byrne's standing bounded-local delegation, after corrected independent review reported no P0–P3 findings.
+- Acceptance record: [GitHub pull request #228](https://github.com/nenb/cogs/pull/228).
 - Amendment scope: This single combined amendment changes only ADR 0057's omitted companion-test file scope. It permits necessary ordinary-readable updates in exactly five existing Python tests. Every production, qualification, review, execution, budget, stage, and stop boundary of ADR 0057 remains binding.
 
 ## Context
