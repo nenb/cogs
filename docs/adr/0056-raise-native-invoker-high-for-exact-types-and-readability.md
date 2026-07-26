@@ -1,9 +1,11 @@
 # ADR 0056: Raise the native-invoker high for exact JSON types and readability
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-26
 - Decision owner: Nick Byrne
-- Amendment scope: If accepted, this ADR amends only ADR 0055's numeric gross-addition high for `test/aws-stage2-completion-rootfs-builder-native.py`, from 260 to 340, and its corresponding exact three-file total high, from 360 to 440. The workflow high remains 45 and the companion-test high remains 55. Every other ADR 0055 requirement and every retained requirement and stop from ADRs 0038–0054 remains binding.
+- Accepted by: Delegated project lead on 2026-07-26 under Nick Byrne's standing bounded-local delegation, after independent hostile review reported no P0–P3 findings.
+- Acceptance record: [GitHub pull request #225](https://github.com/nenb/cogs/pull/225).
+- Amendment scope: This ADR amends only ADR 0055's numeric gross-addition high for `test/aws-stage2-completion-rootfs-builder-native.py`, from 260 to 340, and its corresponding exact three-file total high, from 360 to 440. The workflow high remains 45 and the companion-test high remains 55. Every other ADR 0055 requirement and every retained requirement and stop from ADRs 0038–0054 remains binding.
 
 ## Context
 
