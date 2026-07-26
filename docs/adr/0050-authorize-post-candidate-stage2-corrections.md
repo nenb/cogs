@@ -1,11 +1,11 @@
 # ADR 0050: Authorize narrow Stage 2 post-candidate corrections and one final candidate
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-26
 - Decision owner: Nick Byrne
 - Acceptance authority: Nick Byrne, or the delegated project lead acting under Nick Byrne's standing bounded-local delegation.
-- Accepted by: Not accepted.
-- Acceptance record: None. Before this status can change, this header must name the accepter, acceptance date, and durable GitHub issue or pull-request record. Proposal or merge status alone grants no authority.
+- Accepted by: Delegated project lead on 2026-07-26 under Nick Byrne's standing instruction to continue bounded local qualification, make required project decisions, and stop before AWS.
+- Acceptance record: [GitHub pull request #219](https://github.com/nenb/cogs/pull/219), after corrected independent hostile review reported no P0–P3 findings. This acceptance grants only C1–C4 and the operationally selected one further non-authoritative candidate described below.
 
 ## Context
 
