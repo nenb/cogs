@@ -119,25 +119,47 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-      - name: Observe workflow-bound native C1 gate
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+  native-c1:
+    name: Native C1
+    needs: quality
+    if: github.run_attempt == 1 && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      COGS_C1_EXPECTED_REPOSITORY: ${{ github.repository }}
+      COGS_C1_EXPECTED_WORKFLOW_FILE: .github/workflows/ci.yml
+      COGS_C1_EXPECTED_JOB: native-c1
+      COGS_C1_EXPECTED_EVENT: pull_request
+      COGS_C1_EXPECTED_ACTION: ${{ github.event.action }}
+      COGS_C1_EXPECTED_RUN_ID: ${{ github.run_id }}
+      COGS_C1_EXPECTED_RUN_ATTEMPT: ${{ github.run_attempt }}
+      COGS_C1_EXPECTED_ENVELOPE_SHA: ${{ github.sha }}
+      COGS_C1_EXPECTED_EVENT_MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+      COGS_C1_EXPECTED_WORKFLOW_REF: ${{ github.workflow_ref }}
+      COGS_C1_EXPECTED_WORKFLOW_SHA: ${{ github.workflow_sha }}
+      COGS_C1_EXPECTED_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      COGS_C1_EXPECTED_PR_NUMBER: ${{ github.event.pull_request.number }}
+      COGS_C1_EXPECTED_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+      COGS_C1_EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      COGS_C1_EXPECTED_CHECKED_OUT_SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - name: Check out exact pull request head
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Verify exact same-repository pull request head
         env:
-          COGS_C1_EXPECTED_REPOSITORY: ${{ github.repository }}
-          COGS_C1_EXPECTED_WORKFLOW_FILE: .github/workflows/ci.yml
-          COGS_C1_EXPECTED_JOB: quality
-          COGS_C1_EXPECTED_EVENT: pull_request
-          COGS_C1_EXPECTED_ACTION: ${{ github.event.action }}
-          COGS_C1_EXPECTED_RUN_ID: ${{ github.run_id }}
-          COGS_C1_EXPECTED_RUN_ATTEMPT: ${{ github.run_attempt }}
-          COGS_C1_EXPECTED_ENVELOPE_SHA: ${{ github.sha }}
-          COGS_C1_EXPECTED_EVENT_MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
-          COGS_C1_EXPECTED_WORKFLOW_REF: ${{ github.workflow_ref }}
-          COGS_C1_EXPECTED_WORKFLOW_SHA: ${{ github.workflow_sha }}
-          COGS_C1_EXPECTED_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          COGS_C1_EXPECTED_PR_NUMBER: ${{ github.event.pull_request.number }}
-          COGS_C1_EXPECTED_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
-          COGS_C1_EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          COGS_C1_EXPECTED_CHECKED_OUT_SHA: ${{ github.event.pull_request.head.sha }}
+          EXPECTED_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          EXPECTED_REPOSITORY: ${{ github.repository }}
+          EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          test "$EXPECTED_HEAD_REPOSITORY" = "$EXPECTED_REPOSITORY"
+          [[ "$EXPECTED_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(/usr/bin/git rev-parse --verify HEAD)" = "$EXPECTED_HEAD_SHA"
+      - name: Invoke workflow-bound native C1 gate
+        env:
           COGS_C1_EXPECTED_WORKFLOW_BLOB_DIGEST: ${{ hashFiles('.github/workflows/ci.yml') }}
         run: /usr/bin/python3 -I test/aws-stage2-completion-rootfs-builder-native.py --workflow-bound
 
