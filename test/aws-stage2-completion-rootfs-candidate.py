@@ -8,8 +8,11 @@ import os
 from pathlib import Path
 import shutil
 import signal
+import select
 import stat
+import struct
 import sys
+import tempfile
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -46,6 +49,7 @@ def portable_tests():
     assert "builder._recover_fixed(" not in candidate_source
     assert "_parse_ledger" not in candidate_source
     assert "subprocess" not in candidate_source and "socket" not in candidate_source
+    portable_supervisor_tests()
     print("completion rootfs candidate portable/static tests passed")
 
 
@@ -331,227 +335,780 @@ def linux_synthetic_faults():
 
 
 NS = 1_000_000_000
+CHAIN_NAMES = (".state", "completion-v1", "artifacts", "cache")
+SENTINEL_NAME = ".cogs-stage2-completion-artifacts-v1"
+SENTINEL_BYTES = b"cogs-stage2-completion-artifacts-v1\n"
+FRAME = struct.Struct("!4sBBBBB")
+FRAME_MAGIC = b"CGS2"
+FRAME_VERSION = 1
+PHASE_ACQUIRED, PHASE_BOOTSTRAP, PHASE_BUILDS, PHASE_EQUALITY, PHASE_PINS = range(1, 6)
+PHASE_TERMINAL = 6
+CUT_PHASES = tuple(range(16, 22))
+PROGRESS_PHASES = (PHASE_ACQUIRED, PHASE_BOOTSTRAP, PHASE_BUILDS, PHASE_EQUALITY, PHASE_PINS)
+MAX_FRAMES = len(PROGRESS_PHASES) + 2
 
 
-def arm_deadline(deadline, signal_frame=None):
-    remaining = 0 if signal_frame is not None else deadline - time.monotonic_ns()
-    if remaining <= 0:
-        raise TimeoutError("hosted qualification deadline")
-    signal.setitimer(signal.ITIMER_REAL, remaining / NS)
+def checked(deadline, callback):
+    if time.monotonic_ns() >= deadline:
+        raise TimeoutError("supervisor phase deadline")
+    value = callback()
+    if time.monotonic_ns() >= deadline:
+        raise TimeoutError("supervisor phase deadline")
+    return value
 
 
-def partial_cache_snapshot(runner, verifier, contract, directories):
-    def fixed_file(directory, name, mode, size, digest):
-        identity = runner._identity(os.stat(name, dir_fd=directory, follow_symlinks=False))
-        assert (identity["kind"], identity["mode"], identity["uid"], identity["gid"],
-                identity["nlink"], identity["size"]) == ("file", mode, 0, 0, 1, size)
-        descriptor = runner._owned_file(directory, name, identity, digest)
-        os.close(descriptor)
-        return identity
+def exact_identity(observed):
+    return (observed.st_dev, observed.st_ino, stat.S_IFMT(observed.st_mode),
+            stat.S_IMODE(observed.st_mode), observed.st_uid, observed.st_gid,
+            observed.st_nlink, observed.st_size)
 
-    root = runner._open_dir(runner.ARTIFACT_ROOT)
-    cache = None
+
+def directory_identity(descriptor):
+    value = exact_identity(os.fstat(descriptor))
+    assert value[2] == stat.S_IFDIR and value[4] == os.geteuid()
+    assert value[5] == os.getegid() and value[3] == 0o700 and value[6] >= 2
+    return value
+
+
+def inventory(descriptor):
+    return tuple(sorted(os.listdir(descriptor), key=os.fsencode))
+
+
+def cloexec_pipe():
+    descriptors = os.pipe()
+    assert all(not os.get_inheritable(item) for item in descriptors)
+    return descriptors
+
+
+def prepare_private_chain(base, deadline):
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    base_fd = checked(deadline, lambda: os.open(base, flags))
+    descriptors = [base_fd]
+    identities = []
+    retained_inventory = []
+    created_from = None
     try:
-        sentinel_name = ".cogs-stage2-completion-artifacts-v1"
-        assert verifier.SENTINEL == sentinel_name
-        assert verifier.SENTINEL_BYTES == b"cogs-stage2-completion-artifacts-v1\n"
-        assert runner._same_directory_authority(os.fstat(root), directories["root"])
-        assert set(os.listdir(root)) == {"cache", sentinel_name}
-        cache = os.open("cache", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=root)
-        assert runner._same_directory_authority(os.fstat(cache), directories["cache"])
-        rows = {row["cache_name"]: row for row in runner._artifact_rows(contract)}
-        names = set(os.listdir(cache))
-        assert names <= set(rows)
-        files = []
-        for name in sorted(names):
-            row = rows[name]
-            identity = fixed_file(cache, name, 0o400, row["size"], row["sha256"])
-            files.append({"name": name, "identity": identity, "sha256": row["sha256"]})
-        sentinel_digest = hashlib.sha256(verifier.SENTINEL_BYTES).hexdigest()
-        sentinel_identity = fixed_file(
-            root, sentinel_name, 0o600, len(verifier.SENTINEL_BYTES), sentinel_digest)
-        return {"root": runner._identity(os.fstat(root)), "cache": runner._identity(os.fstat(cache)),
-                "sentinel": {"identity": sentinel_identity, "sha256": sentinel_digest}, "files": files}
+        identities.append(checked(deadline, lambda: directory_identity(base_fd)))
+        retained_inventory.append(checked(deadline, lambda: inventory(base_fd)))
+        for index, name in enumerate(CHAIN_NAMES, 1):
+            parent = descriptors[-1]
+            try:
+                observed = checked(deadline, lambda name=name, parent=parent:
+                                   os.stat(name, dir_fd=parent, follow_symlinks=False))
+            except FileNotFoundError:
+                created_from = index
+                break
+            assert stat.S_ISDIR(observed.st_mode)
+            descriptor = checked(deadline, lambda name=name, parent=parent:
+                                 os.open(name, flags, dir_fd=parent))
+            descriptors.append(descriptor)
+            identities.append(checked(deadline, lambda descriptor=descriptor:
+                                      directory_identity(descriptor)))
+            retained_inventory.append(checked(deadline, lambda descriptor=descriptor:
+                                              inventory(descriptor)))
+        if created_from is None or created_from > 3:
+            raise AssertionError("preexisting artifact baseline")
+        for index in range(created_from, len(CHAIN_NAMES) + 1):
+            name, parent = CHAIN_NAMES[index - 1], descriptors[-1]
+            checked(deadline, lambda name=name, parent=parent:
+                    os.mkdir(name, 0o700, dir_fd=parent))
+            checked(deadline, lambda parent=parent: os.fsync(parent))
+            descriptor = checked(deadline, lambda name=name, parent=parent:
+                                 os.open(name, flags, dir_fd=parent))
+            descriptors.append(descriptor)
+            identities.append(checked(deadline, lambda descriptor=descriptor:
+                                      directory_identity(descriptor)))
+            assert checked(deadline, lambda descriptor=descriptor: inventory(descriptor)) == ()
+        assert len(descriptors) == 5 and created_from in {1, 2, 3}
+        retained_identities = tuple(identities[:created_from])
+        identities = [checked(deadline, lambda descriptor=descriptor:
+                              directory_identity(descriptor)) for descriptor in descriptors]
+        for index, descriptor in enumerate(descriptors):
+            before = retained_inventory[index] if index < created_from else ()
+            child = CHAIN_NAMES[index] if index < 4 and index >= created_from - 1 else None
+            expected = tuple(sorted(before + (() if child is None else (child,)), key=os.fsencode))
+            assert checked(deadline, lambda descriptor=descriptor: inventory(descriptor)) == expected
+        return {"fds": descriptors, "identities": identities,
+                "retained_identities": retained_identities,
+                "retained": retained_inventory, "created_from": created_from}
+    except BaseException:
+        for descriptor in reversed(descriptors):
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        raise
+
+
+def validate_bound_chain(chain, deadline, final=False):
+    descriptors = chain["fds"]
+    for index, descriptor in enumerate(descriptors):
+        if descriptor < 0:
+            continue
+        expected = (chain["retained_identities"][index]
+                    if final and index < chain["created_from"] else chain["identities"][index])
+        width = 7 if final and index < chain["created_from"] else 6
+        assert checked(deadline, lambda descriptor=descriptor:
+                       directory_identity(descriptor))[:width] == expected[:width]
+        if final and index < chain["created_from"]:
+            assert checked(deadline, lambda descriptor=descriptor: inventory(descriptor)) == chain["retained"][index]
+
+
+def close_chain(chain, deadline, errors, closer=os.close):
+    for index in range(len(chain["fds"]) - 1, -1, -1):
+        descriptor = chain["fds"][index]
+        if descriptor >= 0:
+            try:
+                checked(deadline, lambda descriptor=descriptor: closer(descriptor))
+                chain["fds"][index] = -1
+            except BaseException:
+                errors.append("descriptor-close")
+
+
+def encode_frame(phase, ordinal, result=255, recovery=255):
+    assert phase in PROGRESS_PHASES + CUT_PHASES + (PHASE_TERMINAL,)
+    assert 1 <= ordinal <= MAX_FRAMES
+    if phase == PHASE_TERMINAL:
+        assert result in {0, 1} and recovery in {0, 1}
+    else:
+        assert result == recovery == 255
+    return FRAME.pack(FRAME_MAGIC, FRAME_VERSION, phase, ordinal, result, recovery)
+
+
+def send_frame(descriptor, phase, ordinal, result=255, recovery=255):
+    raw = encode_frame(phase, ordinal, result, recovery)
+    offset = 0
+    while offset < len(raw):
+        count = os.write(descriptor, raw[offset:])
+        if count <= 0:
+            raise OSError("fixed protocol write")
+        offset += count
+
+
+class PipeRecord:
+    def __init__(self):
+        self.raw, self.frames = bytearray(), []
+        self.error = self.eof = False
+        self.terminal = None
+
+    def accept(self, raw):
+        if self.eof or len(self.raw) + len(raw) > FRAME.size * MAX_FRAMES:
+            self.error = True
+            return
+        self.raw.extend(raw)
+        while len(self.raw) >= FRAME.size and not self.error:
+            fields = FRAME.unpack(bytes(self.raw[:FRAME.size]))
+            del self.raw[:FRAME.size]
+            magic, version, phase, ordinal, result, recovery = fields
+            prior = tuple(item[0] for item in self.frames)
+            prefix = prior == PROGRESS_PHASES[:len(prior)]
+            progress = (prefix and len(prior) < len(PROGRESS_PHASES) and
+                        phase == PROGRESS_PHASES[len(prior)] and result == recovery == 255)
+            cut = prefix and phase in CUT_PHASES and result == recovery == 255
+            terminal = phase == PHASE_TERMINAL and (prefix or prior[-1:] in tuple(
+                (item,) for item in CUT_PHASES)) and result in {0, 1} and recovery in {0, 1}
+            valid = (magic == FRAME_MAGIC and version == FRAME_VERSION and
+                     ordinal == len(self.frames) + 1 and (progress or cut or terminal))
+            if not valid or len(self.frames) == MAX_FRAMES:
+                self.error = True
+            else:
+                frame = (phase, result, recovery)
+                self.frames.append(frame)
+                if phase == PHASE_TERMINAL:
+                    self.terminal = frame
+
+    def finish(self):
+        self.eof = True
+        self.error = self.error or bool(self.raw) or self.terminal is None
+        return not self.error
+
+    @property
+    def acquired(self):
+        return bool(self.frames and self.frames[0][0] == PHASE_ACQUIRED)
+
+
+def drain_pipe(descriptor, record):
+    while True:
+        try:
+            raw = os.read(descriptor, FRAME.size * MAX_FRAMES)
+        except BlockingIOError:
+            return
+        if not raw:
+            record.eof = True
+            return
+        record.accept(raw)
+
+
+def supervise_child(pid, descriptor, source_deadline, build_deadline, grace_ns=5 * NS):
+    assert 0 < grace_ns <= 5 * NS and source_deadline < build_deadline
+    os.set_blocking(descriptor, False)
+    poller = select.poll()
+    poller.register(descriptor, select.POLLIN | select.POLLHUP | select.POLLERR)
+    record = PipeRecord()
+    status = None
+    reaped = False
+    termination = None
+
+    def reap():
+        nonlocal status, reaped
+        if not reaped:
+            observed, value = os.waitpid(pid, os.WNOHANG)
+            if observed:
+                assert observed == pid
+                status, reaped = value, True
+
+    def wait_slice(until):
+        remaining = max(0, until - time.monotonic_ns())
+        poller.poll(min(50, (remaining + 999_999) // 1_000_000))
+        drain_pipe(descriptor, record)
+        reap()
+
+    while not reaped:
+        drain_pipe(descriptor, record)
+        reap()
+        if reaped:
+            break
+        hard = build_deadline if record.acquired else source_deadline
+        if record.error or time.monotonic_ns() >= hard - grace_ns:
+            termination = "protocol" if record.error else (
+                "build-timeout" if record.acquired else "acquisition-timeout")
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            grace_end = min(hard, time.monotonic_ns() + grace_ns)
+            while not reaped and time.monotonic_ns() < grace_end:
+                wait_slice(grace_end)
+            if not reaped:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                while not reaped and time.monotonic_ns() < hard:
+                    wait_slice(hard)
+            break
+        wait_slice(hard - grace_ns)
+    drain_pipe(descriptor, record)
+    if reaped:
+        for _unused in range(4):
+            if record.eof:
+                break
+            wait_slice(time.monotonic_ns() + 10_000_000)
+    valid = reaped and record.eof and record.finish()
+    terminal = record.terminal
+    coherent = valid and terminal is not None
+    if coherent and terminal[1] == 0:
+        coherent = os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0
+    elif coherent and termination is None:
+        coherent = os.WIFEXITED(status) and os.WEXITSTATUS(status) != 0
+    return {"pid": pid, "reaped": reaped, "status": status, "record": record,
+            "valid": coherent, "terminal": terminal, "termination": termination}
+
+
+def digest_fd(descriptor, size, deadline):
+    checked(deadline, lambda: os.lseek(descriptor, 0, os.SEEK_SET))
+    digest = hashlib.sha256()
+    total = 0
+    while total < size:
+        raw = checked(deadline, lambda: os.read(descriptor, min(1024 * 1024, size - total)))
+        assert raw
+        total += len(raw)
+        digest.update(raw)
+    assert checked(deadline, lambda: os.read(descriptor, 1)) == b""
+    return digest.hexdigest()
+
+
+def open_stable_file(parent, name, deadline):
+    before = checked(deadline, lambda: os.stat(name, dir_fd=parent, follow_symlinks=False))
+    assert stat.S_ISREG(before.st_mode) and before.st_uid == os.geteuid()
+    assert before.st_gid == os.getegid()
+    descriptor = checked(deadline, lambda: os.open(
+        name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent))
+    assert checked(deadline, lambda: exact_identity(os.fstat(descriptor))) == exact_identity(before)
+    after = checked(deadline, lambda: os.stat(name, dir_fd=parent, follow_symlinks=False))
+    assert exact_identity(after) == exact_identity(before)
+    return descriptor, exact_identity(before)
+
+
+def cache_cleanup_plan(chain, rows, deadline):
+    artifacts, cache = chain["fds"][3], chain["fds"][4]
+    assert directory_identity(artifacts)[:6] == chain["identities"][3][:6]
+    assert directory_identity(cache)[:6] == chain["identities"][4][:6]
+    root_names = set(checked(deadline, lambda: os.listdir(artifacts)))
+    assert root_names in ({"cache"}, {"cache", SENTINEL_NAME})
+    fixed = {row["name"]: row for row in rows}
+    allowed = set(fixed) | {f".{name}.partial" for name in fixed}
+    names = set(checked(deadline, lambda: os.listdir(cache)))
+    assert names <= allowed
+    held = {}
+    sentinel = None
+    try:
+        for name in sorted(names, key=os.fsencode):
+            descriptor, identity = open_stable_file(cache, name, deadline)
+            held[name] = (descriptor, identity)
+        if SENTINEL_NAME in root_names:
+            sentinel = open_stable_file(artifacts, SENTINEL_NAME, deadline)
+            descriptor, identity = sentinel
+            assert identity[3:] == (0o600, os.geteuid(), os.getegid(), 1,
+                                    len(SENTINEL_BYTES))
+            assert digest_fd(descriptor, identity[7], deadline) == hashlib.sha256(
+                SENTINEL_BYTES).hexdigest()
+        for name, row in fixed.items():
+            final = held.get(name)
+            partial = held.get(f".{name}.partial")
+            if final is not None:
+                identity = final[1]
+                assert identity[3:] == (0o400, os.geteuid(), os.getegid(),
+                                        2 if partial else 1, row["size"])
+                assert digest_fd(final[0], row["size"], deadline) == row["sha256"]
+            if partial is not None:
+                identity = partial[1]
+                if final is not None:
+                    assert identity[:7] == final[1][:7] and identity[7] == row["size"]
+                    assert digest_fd(partial[0], row["size"], deadline) == row["sha256"]
+                elif identity[3] == 0o600:
+                    assert identity[6] == 1 and identity[7] <= row["size"]
+                else:
+                    assert identity[3:] == (0o400, os.geteuid(), os.getegid(), 1, row["size"])
+                    assert digest_fd(partial[0], row["size"], deadline) == row["sha256"]
+        for name, (descriptor, identity) in held.items():
+            assert exact_identity(os.fstat(descriptor)) == identity
+            assert exact_identity(os.stat(name, dir_fd=cache, follow_symlinks=False)) == identity
+        return held, sentinel
+    except BaseException:
+        for descriptor, _identity in held.values():
+            os.close(descriptor)
+        if sentinel is not None:
+            os.close(sentinel[0])
+        raise
+
+
+def cleanup_private_chain(chain, rows, deadline):
+    held, sentinel = cache_cleanup_plan(chain, rows, deadline)
+    cache, artifacts = chain["fds"][4], chain["fds"][3]
+    try:
+        for row in sorted(rows, key=lambda item: os.fsencode(item["name"])):
+            names = (f".{row['name']}.partial", row["name"])
+            for name in names:
+                if name not in held:
+                    continue
+                descriptor, identity = held[name]
+                current = checked(deadline, lambda name=name:
+                                  os.stat(name, dir_fd=cache, follow_symlinks=False))
+                assert (current.st_dev, current.st_ino) == identity[:2]
+                assert exact_identity(os.fstat(descriptor))[:6] == identity[:6]
+                checked(deadline, lambda name=name: os.unlink(name, dir_fd=cache))
+                checked(deadline, lambda: os.fsync(cache))
+        if sentinel is not None:
+            current = checked(deadline, lambda: os.stat(
+                SENTINEL_NAME, dir_fd=artifacts, follow_symlinks=False))
+            assert (current.st_dev, current.st_ino) == sentinel[1][:2]
+            checked(deadline, lambda: os.unlink(SENTINEL_NAME, dir_fd=artifacts))
+            checked(deadline, lambda: os.fsync(artifacts))
     finally:
-        if cache is not None:
-            os.close(cache)
+        for descriptor, _identity in held.values():
+            checked(deadline, lambda descriptor=descriptor: os.close(descriptor))
+        if sentinel is not None:
+            checked(deadline, lambda: os.close(sentinel[0]))
+    for index in range(4, chain["created_from"] - 1, -1):
+        descriptor, parent = chain["fds"][index], chain["fds"][index - 1]
+        assert checked(deadline, lambda descriptor=descriptor:
+                       directory_identity(descriptor))[:6] == chain["identities"][index][:6]
+        assert checked(deadline, lambda descriptor=descriptor: inventory(descriptor)) == ()
+        checked(deadline, lambda descriptor=descriptor: os.close(descriptor))
+        chain["fds"][index] = -1
+        checked(deadline, lambda index=index, parent=parent:
+                os.rmdir(CHAIN_NAMES[index - 1], dir_fd=parent))
+        checked(deadline, lambda parent=parent: os.fsync(parent))
+    validate_bound_chain(chain, deadline, True)
+
+
+def rootfs_observation(completion_fd, builder, deadline):
+    name = "rootfs-v1"
+    try:
+        observed = checked(deadline, lambda: os.stat(
+            name, dir_fd=completion_fd, follow_symlinks=False))
+    except FileNotFoundError:
+        return "absent"
+    if (not stat.S_ISDIR(observed.st_mode) or observed.st_uid != os.geteuid() or
+            observed.st_gid != os.getegid() or stat.S_IMODE(observed.st_mode) != 0o700):
+        return "invalid"
+    root = checked(deadline, lambda: os.open(
+        name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+        dir_fd=completion_fd))
+    try:
+        names = set(checked(deadline, lambda: os.listdir(root)))
+        fixed = {builder.STATE_SENTINEL_NAME.text, builder.LOCK_NAME.text}
+        if not fixed <= names:
+            return "invalid"
+        expected = ((builder.STATE_SENTINEL_NAME.text, builder.STATE_SENTINEL),
+                    (builder.LOCK_NAME.text, b""))
+        for child, raw in expected:
+            descriptor, identity = open_stable_file(root, child, deadline)
+            try:
+                if identity[3:] != (0o600, os.geteuid(), os.getegid(), 1, len(raw)):
+                    return "invalid"
+                if digest_fd(descriptor, len(raw), deadline) != hashlib.sha256(raw).hexdigest():
+                    return "invalid"
+            finally:
+                os.close(descriptor)
+        if names == fixed:
+            return "idle"
+        ledger_name = builder.LEDGER_NAME.text
+        extras = names - fixed
+        operations = [item for item in extras if item.startswith("operation-") and
+                      len(item) == 74 and all(char in "0123456789abcdef" for char in item[10:])]
+        if extras != {ledger_name, *operations} or len(operations) > 1:
+            return "invalid"
+        descriptor, identity = open_stable_file(root, ledger_name, deadline)
+        try:
+            if identity[3] != 0o600 or identity[6] != 1 or not 0 < identity[7] <= 128 * 1024 * 1024:
+                return "invalid"
+            checked(deadline, lambda: os.lseek(descriptor, 0, os.SEEK_SET))
+            chunks, total = [], 0
+            while total < identity[7]:
+                raw = checked(deadline, lambda: os.read(
+                    descriptor, min(1024 * 1024, identity[7] - total)))
+                if not raw:
+                    return "invalid"
+                chunks.append(raw)
+                total += len(raw)
+            history = builder.ledger._parse_ledger_history(b"".join(chunks))
+            token = history.first.body_value()["token"]
+            expected_operation = builder._operation_name(token).text
+            if operations and operations != [expected_operation]:
+                return "invalid"
+        finally:
+            os.close(descriptor)
+        if operations:
+            child = os.stat(operations[0], dir_fd=root, follow_symlinks=False)
+            if (not stat.S_ISDIR(child.st_mode) or stat.S_IMODE(child.st_mode) != 0o700 or
+                    child.st_uid != os.geteuid() or child.st_gid != os.getegid()):
+                return "invalid"
+        return "needed"
+    except BaseException:
+        return "invalid"
+    finally:
         os.close(root)
+
+
+def terminal_recovery_count(result):
+    return result["terminal"][2] if result.get("valid") and result.get("terminal") else None
+
+
+def child_hosted(write_fd, runner, verifier, contract, revision, manifest_sha256, build_deadline):
+    ordinal = 0
+    recovery_count = 0
+    builder = None
+
+    def emit(phase):
+        nonlocal ordinal
+        ordinal += 1
+        send_frame(write_fd, phase, ordinal)
+
+    try:
+        runner._verifier_call(verifier, "cache-acquisition-unknown", lambda:
+            verifier.acquire_completion_artifacts(verifier.CONTRACT_PATH, verifier.ARTIFACT_ROOT), True)
+        runner._verifier_call(verifier, "cache-postverify", lambda:
+            verifier.verify_package_archives(verifier.CONTRACT_PATH, verifier.ARTIFACT_ROOT))
+        emit(PHASE_ACQUIRED)
+        sys.path.insert(0, str(runner.REMOTE))
+        fs = __import__("completion_rootfs_fs")
+        builder = __import__("completion_rootfs_builder")
+        build = __import__("completion_rootfs_build")
+        publication = __import__("completion_rootfs_publish")
+        approval = fs.SourceApproval(revision, manifest_sha256)
+        now = time.monotonic_ns()
+        control = fs.OperationControl(min(build_deadline, now + build.OUTER_SECONDS * NS), lambda: False)
+        assert now < control.deadline_ns
+        runner._bootstrap_rootfs(builder, fs, approval, control)
+        emit(PHASE_BOOTSTRAP)
+        recovery = [0]
+        recovery_code = builder._recover_fixed.__code__
+
+        def count_recovery(frame, event, _argument):
+            if event == "call" and frame.f_code is recovery_code:
+                recovery[0] += 1
+
+        sys.setprofile(count_recovery)
+        try:
+            first, second = build._two_build_outputs(approval, control)
+        finally:
+            sys.setprofile(None)
+        recovery_count = recovery[0]
+        assert recovery_count in {0, 1}
+        emit(PHASE_BUILDS)
+        build._require_equal_builds(first, second)
+        emit(PHASE_EQUALITY)
+        pins = publication._load_pins()
+        build._require_pinned(first, pins)
+        build._require_pinned(second, pins)
+        runner._verifier_call(verifier, "rootfs-postverify", lambda:
+            verifier.verify_package_archives(verifier.CONTRACT_PATH, verifier.ARTIFACT_ROOT))
+        assert runner._snapshot_cache(contract)["files"]
+        emit(PHASE_PINS)
+        ordinal += 1
+        send_frame(write_fd, PHASE_TERMINAL, ordinal, 0, recovery_count)
+        os.close(write_fd)
+        os._exit(0)
+    except BaseException:
+        try:
+            sys.setprofile(None)
+            if recovery_count in {0, 1}:
+                ordinal += 1
+                send_frame(write_fd, PHASE_TERMINAL, ordinal, 1, recovery_count)
+        except BaseException:
+            pass
+        try:
+            os.close(write_fd)
+        except OSError:
+            pass
+        os._exit(1)
+
+
+def wait_for_boundary(start, end):
+    while time.monotonic_ns() < start:
+        remaining = start - time.monotonic_ns()
+        select.poll().poll(min(1000, (remaining + 999_999) // 1_000_000))
+    if time.monotonic_ns() >= end:
+        raise TimeoutError("supervisor phase unavailable")
 
 
 def hosted_exact_input():
     raw_anchor = os.environ["COGS_STAGE2_PHASE_A_BUDGET_ANCHOR_NS"]
     assert raw_anchor.isascii() and raw_anchor.isdigit() and raw_anchor[0] != "0"
     anchor = int(raw_anchor)
-    assert anchor <= time.monotonic_ns() and anchor <= (1 << 63) - 1
+    now = time.monotonic_ns()
+    assert anchor <= now and anchor <= (1 << 63) - 1
     deadlines = tuple(anchor + seconds * NS for seconds in (600, 3900, 4500, 5100, 5400))
     source_deadline, build_deadline, recovery_deadline, cleanup_deadline, final_deadline = deadlines
-    runner = verifier = fs = builder = build = publication = None
-    contract = cache_owned = cache_directories = rootfs_baseline = first = second = None
-    cache_baseline = temporary_baseline = descriptors_before = None
-    temporary_paths = ()
-    candidate_keys, recovery_uses = [], []
-    bootstrap_started = False
     errors = []
-
-    def capture_link(directory, name, anonymous, control):
-        observed = os.fstat(anonymous.number)
-        candidate_keys.append((observed.st_dev, observed.st_ino))
-        return real_link(directory, name, anonymous, control)
-
-    def mark_recovery():
-        recovery_uses.append(time.monotonic_ns())
-        assert len(recovery_uses) == 1
-
-    def counted_recovery(control):
-        mark_recovery()
-        return real_recovery(control)
-
-    def cleanup_cache():
-        nonlocal cache_owned
-        assert runner is not None
-        if cache_owned is None and cache_directories is not None and contract is not None:
-            cache_owned = partial_cache_snapshot(runner, verifier, contract, cache_directories)
-        if cache_owned is not None:
-            runner._cleanup_artifacts(({"kind": "cache-owned", "body": cache_owned},))
-        else:
-            assert runner._held_path_absent(runner.ARTIFACT_ROOT)
-
-    def rootfs_restored():
-        if runner is None:
-            return not os.path.lexists(STATE)
-        if rootfs_baseline is None:
-            return runner._held_path_absent(runner.ROOTFS_STATE)
-        return runner._same_rootfs_lifecycle(runner._snapshot_rootfs_lifecycle(), rootfs_baseline)
-
-    previous_alarm = signal.signal(signal.SIGALRM, arm_deadline)
+    chain = None
+    descriptors_before = fd_inventory()
     try:
-        try:
-            arm_deadline(source_deadline)
-            descriptors_before = fd_inventory()
-            assert os.environ.get("GITHUB_ACTIONS") == "true"
-            assert os.environ.get("COGS_ADR0057_HOSTED_EXACT") == "1"
-            runner = load("hosted_stage2_runner", FIXED / "scripts/run-stage2-phase-a-candidate.py")
-            runner._fixed_preflight(True)
-            revision, manifest_sha256 = runner._source_approval()
-            assert revision == os.environ["COGS_ADR0057_SOURCE_REVISION"]
-            assert manifest_sha256 == os.environ["COGS_ADR0057_SOURCE_MANIFEST_SHA256"]
-            runner._verify_fixed_source(revision, manifest_sha256)
-            verifier = runner._load_artifact_verifier()
-            module_names = ("completion_rootfs_fs", "completion_rootfs_builder",
-                            "completion_rootfs_build", "completion_rootfs_publish")
-            fs, builder, build, publication = map(__import__, module_names)
-            approval = fs.SourceApproval(revision, manifest_sha256)
-            temporary_paths = (runner.STATE, runner.ANCHOR)
-            cache_baseline = runner._held_path_absent(runner.ARTIFACT_ROOT)
-            temporary_baseline = tuple(runner._held_path_absent(path) for path in temporary_paths)
-            assert cache_baseline and all(temporary_baseline) and runner._held_path_absent(runner.ROOTFS_STATE)
-            contract = runner._verifier_call(
-                verifier, "rootfs-contract-preflight", lambda: verifier.verify_contract(verifier.CONTRACT_PATH))
-            acquisition = __import__("completion_artifact_acquisition")
-            real_private_chain = acquisition._open_private_chain
-
-            def capture_private_chain(path):
-                nonlocal cache_directories
-                chain = real_private_chain(path)
+        assert os.environ.get("GITHUB_ACTIONS") == "true"
+        assert os.environ.get("COGS_ADR0057_HOSTED_EXACT") == "1"
+        runner = load("hosted_stage2_runner", FIXED / "scripts/run-stage2-phase-a-candidate.py")
+        checked(source_deadline, lambda: runner._fixed_preflight(True))
+        revision, manifest_sha256 = checked(source_deadline, runner._source_approval)
+        assert revision == os.environ["COGS_ADR0057_SOURCE_REVISION"]
+        assert manifest_sha256 == os.environ["COGS_ADR0057_SOURCE_MANIFEST_SHA256"]
+        checked(source_deadline, lambda: runner._verify_fixed_source(revision, manifest_sha256))
+        verifier = checked(source_deadline, runner._load_artifact_verifier)
+        contract = checked(source_deadline, lambda: runner._verifier_call(
+            verifier, "rootfs-contract-preflight",
+            lambda: verifier.verify_contract(verifier.CONTRACT_PATH)))
+        assert runner.ARTIFACT_ROOT == FIXED / "deploy/aws-feasibility/.state/completion-v1/artifacts"
+        assert runner.ROOTFS_STATE == STATE
+        assert runner._held_path_absent(runner.ARTIFACT_ROOT)
+        assert runner._held_path_absent(runner.ROOTFS_STATE)
+        temporary_paths = (runner.STATE, runner.ANCHOR)
+        assert all(runner._held_path_absent(path) for path in temporary_paths)
+        chain = prepare_private_chain(runner.ARTIFACT_ROOT.parents[2], source_deadline)
+        validate_bound_chain(chain, source_deadline)
+        checked(source_deadline, lambda: runner._verify_fixed_source(revision, manifest_sha256))
+        read_fd, write_fd = checked(source_deadline, cloexec_pipe)
+        pid = checked(source_deadline, os.fork)
+        if pid == 0:
+            os.close(read_fd)
+            child_hosted(write_fd, runner, verifier, contract, revision, manifest_sha256, build_deadline)
+        os.close(write_fd)
+        result = supervise_child(pid, read_fd, source_deadline, build_deadline)
+        os.close(read_fd)
+        if not result["reaped"]:
+            errors.append("child-unreaped")
+        if not result["valid"]:
+            errors.append("protocol-or-status")
+        elif result["terminal"][1] != 0:
+            errors.append("child-failure")
+        if result["reaped"]:
+            wait_for_boundary(build_deadline, recovery_deadline)
+            sys.path.insert(0, str(runner.REMOTE))
+            builder = __import__("completion_rootfs_builder")
+            root_state = rootfs_observation(chain["fds"][2], builder, recovery_deadline)
+            if terminal_recovery_count(result) == 0 and root_state == "needed":
+                checked(recovery_deadline, lambda: runner._recover_rootfs([]))
+            elif root_state == "needed":
+                errors.append("rootfs-preserved")
+            elif root_state == "invalid":
+                errors.append("rootfs-invalid")
+            wait_for_boundary(recovery_deadline, cleanup_deadline)
+            if result["valid"]:
+                root_state = rootfs_observation(chain["fds"][2], builder, cleanup_deadline)
+                if root_state == "idle":
+                    lifecycle = checked(cleanup_deadline, runner._snapshot_rootfs_lifecycle)
+                    checked(cleanup_deadline, lambda: runner._cleanup_rootfs((
+                        {"kind": "rootfs-lifecycle-owned", "body": lifecycle},)))
+                elif root_state != "absent":
+                    errors.append("rootfs-cleanup-preserved")
                 try:
-                    assert Path(path) == runner.ARTIFACT_ROOT and cache_directories is None
-                    cache_directories = {"root": runner._identity(os.fstat(chain[-2])),
-                                         "cache": runner._identity(os.fstat(chain[-1]))}
-                    assert all(identity["kind"] == "directory" and identity["mode"] == 0o700 and
-                               identity["uid"] == identity["gid"] == 0
-                               for identity in cache_directories.values())
-                    assert set(os.listdir(chain[-2])) == {"cache"} and not os.listdir(chain[-1])
-                    return chain
+                    rows = tuple({"name": row["cache_name"], "size": row["size"],
+                                  "sha256": row["sha256"]}
+                                 for row in runner._artifact_rows(contract))
+                    cleanup_private_chain(chain, rows, cleanup_deadline)
                 except BaseException:
-                    for descriptor in reversed(chain):
-                        os.close(descriptor)
-                    raise
-
-            acquisition._open_private_chain = capture_private_chain
-            try:
-                acquire = lambda: verifier.acquire_completion_artifacts(
-                    verifier.CONTRACT_PATH, verifier.ARTIFACT_ROOT)
-                runner._verifier_call(verifier, "cache-acquisition-unknown", acquire, True)
-            finally:
-                acquisition._open_private_chain = real_private_chain
-            runner._verifier_call(
-                verifier, "cache-postverify",
-                lambda: verifier.verify_package_archives(verifier.CONTRACT_PATH, verifier.ARTIFACT_ROOT))
-            cache_owned = runner._snapshot_cache(contract)
-            now = time.monotonic_ns()
-            outer_deadline = min(now + build.OUTER_SECONDS * NS, build_deadline)
-            assert now < outer_deadline
-            outer = fs.OperationControl(outer_deadline, lambda: False)
-            bootstrap_started = True
-            runner._bootstrap_rootfs(builder, fs, approval, outer)
-            rootfs_baseline = runner._snapshot_rootfs_lifecycle()
-            arm_deadline(build_deadline)
-            real_link, real_recovery = fs._link_anonymous, builder._recover_fixed
-            fs._link_anonymous = capture_link
-            builder._recover_fixed = counted_recovery
-            try:
-                first, second = build._two_build_outputs(approval, outer)
-            finally:
-                builder._recover_fixed = real_recovery
-                fs._link_anonymous = real_link
-            pins = publication._load_pins()
-            build._require_pinned(first, pins)
-            build._require_pinned(second, pins)
-            assert len(candidate_keys) == 2 and candidate_keys[0] != candidate_keys[1]
-            assert runner._snapshot_cache(contract) == cache_owned
-        except BaseException as error:
-            errors.append(error)
-
-        if errors and bootstrap_started and not recovery_uses:
-            try:
-                assert time.monotonic_ns() + (builder.RECOVER_SECONDS + 1) * NS <= recovery_deadline
-                arm_deadline(recovery_deadline)
-                mark_recovery()
-                runner._recover_rootfs([])
-            except BaseException as error:
-                errors.append(error)
-
-        cleanup_actions = (
-            cleanup_cache,
-            rootfs_restored,
-            lambda: cache_baseline is not None and
-                    runner._held_path_absent(runner.ARTIFACT_ROOT) == cache_baseline,
-            lambda: temporary_baseline is not None and tuple(
-                runner._held_path_absent(path) for path in temporary_paths) == temporary_baseline,
-            lambda: descriptors_before is not None and fd_inventory() == descriptors_before,
-        )
-        for action in cleanup_actions:
-            try:
-                arm_deadline(cleanup_deadline)
-                assert action() is not False
-            except BaseException as error:
-                errors.append(error)
-
-        try:
-            arm_deadline(final_deadline)
-        except BaseException as error:
-            errors.append(error)
-    except BaseException as error:
-        errors.append(error)
+                    errors.append("cache-cleanup-preserved")
+            close_chain(chain, cleanup_deadline, errors)
+            checked(cleanup_deadline, lambda: runner._verify_fixed_source(revision, manifest_sha256))
+            assert runner._held_path_absent(runner.ARTIFACT_ROOT)
+            assert runner._held_path_absent(runner.ROOTFS_STATE)
+            assert all(runner._held_path_absent(path) for path in temporary_paths)
+            assert fd_inventory() == descriptors_before
+        wait_for_boundary(cleanup_deadline, final_deadline)
+    except BaseException:
+        errors.append("parent-failure")
     finally:
-        for close_signal in (
-                lambda: signal.setitimer(signal.ITIMER_REAL, 0),
-                lambda: signal.signal(signal.SIGALRM, previous_alarm)):
-            try:
-                close_signal()
-            except BaseException as error:
-                errors.append(error)
+        if chain is not None and any(item >= 0 for item in chain["fds"]):
+            close_chain(chain, final_deadline, errors)
+    if errors:
+        raise RuntimeError("hosted supervisor: " + ",".join(sorted(set(errors))))
+    print("hosted qualification supervisor passed")
 
-    if errors and fs is None:
-        raise BaseExceptionGroup("hosted qualification failures", errors)
-    error = None
-    for added in errors:
-        error = added if error is None else fs.RootfsFsError(error, added)
-    if error is not None:
-        raise error
-    result = {"entry_count": first.entry_count, "manifest_sha256": first.manifest_sha256,
-              "ustar_sha256": first.ustar_sha256, "ustar_size": first.ustar_size}
-    print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+
+def portable_child(write_fd, artifacts_fd, cache_fd, kind, row, recovery):
+    try:
+        sentinel = os.open(SENTINEL_NAME, os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                           0o600, dir_fd=artifacts_fd)
+        os.write(sentinel, SENTINEL_BYTES)
+        os.close(sentinel)
+        partial = f".{row['name']}.partial"
+        descriptor = os.open(partial, os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                             0o600, dir_fd=cache_fd)
+        if kind == "writing":
+            os.write(descriptor, row["raw"][:3])
+        else:
+            os.write(descriptor, row["raw"])
+            if kind not in {"pre-flush"}:
+                os.fsync(descriptor)
+                os.fchmod(descriptor, 0o400)
+                os.fsync(descriptor)
+            if kind in {"post-publication", "post-settlement", "success"}:
+                os.link(partial, row["name"], src_dir_fd=cache_fd,
+                        dst_dir_fd=cache_fd, follow_symlinks=False)
+            if kind in {"post-settlement", "success"}:
+                os.unlink(partial, dir_fd=cache_fd)
+        os.close(descriptor)
+        send_frame(write_fd, PHASE_ACQUIRED, 1)
+        if kind == "success":
+            for ordinal, phase in enumerate(PROGRESS_PHASES[1:], 2):
+                send_frame(write_fd, phase, ordinal)
+            send_frame(write_fd, PHASE_TERMINAL, 6, 0, recovery)
+            os.close(write_fd)
+            os._exit(0)
+        cut = ("writing", "pre-flush", "pre-publication", "publication-intent",
+               "post-publication", "post-settlement").index(kind)
+        send_frame(write_fd, CUT_PHASES[cut], 2)
+        send_frame(write_fd, PHASE_TERMINAL, 3, 1, recovery)
+        signal.pause()
+    except BaseException:
+        os._exit(2)
+
+
+def portable_fds():
+    root = "/proc/self/fd" if Path("/proc/self/fd").is_dir() else "/dev/fd"
+    values = []
+    for name in os.listdir(root):
+        try:
+            os.fstat(int(name))
+            values.append(int(name))
+        except OSError:
+            pass
+    return tuple(sorted(values))
+
+
+def rejected_unchanged(callback, observe):
+    before = observe()
+    try:
+        callback()
+    except AssertionError:
+        assert observe() == before
+        return
+    raise AssertionError("hostile supervisor state accepted")
+
+
+def portable_supervisor_tests():
+    kinds = ("writing", "pre-flush", "pre-publication", "publication-intent",
+             "post-publication", "post-settlement", "success")
+    raw = b"portable fixed contract\n"
+    row = {"name": "fixed.bin", "raw": raw, "size": len(raw),
+           "sha256": hashlib.sha256(raw).hexdigest()}
+    for prefix in range(3):
+        for kind in kinds:
+            with tempfile.TemporaryDirectory() as temporary:
+                base = Path(temporary)
+                os.chmod(base, 0o700)
+                current = base
+                for name in CHAIN_NAMES[:prefix]:
+                    current /= name
+                    current.mkdir(mode=0o700)
+                before = portable_fds()
+                deadline = time.monotonic_ns() + 2 * NS
+                chain = prepare_private_chain(base, deadline)
+                assert chain["created_from"] == prefix + 1
+                read_fd, write_fd = cloexec_pipe()
+                pid = os.fork()
+                if pid == 0:
+                    os.close(read_fd)
+                    portable_child(write_fd, chain["fds"][3], chain["fds"][4], kind, row,
+                                   1 if kind == "post-settlement" else 0)
+                os.close(write_fd)
+                phase = time.monotonic_ns() + 80_000_000
+                result = supervise_child(pid, read_fd, phase, phase + 80_000_000, 30_000_000)
+                os.close(read_fd)
+                assert result["reaped"] and result["valid"]
+                assert terminal_recovery_count(result) == (
+                    1 if kind == "post-settlement" else 0)
+                cleanup_private_chain(chain, (row,), time.monotonic_ns() + NS)
+                errors = []
+                close_chain(chain, time.monotonic_ns() + NS, errors)
+                assert not errors and portable_fds() == before
+                assert tuple(sorted(os.listdir(base), key=os.fsencode)) == chain["retained"][0]
+    with tempfile.TemporaryDirectory() as temporary:
+        for with_cache in (False, True):
+            base = Path(temporary) / ("cache" if with_cache else "artifacts")
+            base.mkdir(mode=0o700)
+            inherited = base / ".state/completion-v1/artifacts"
+            inherited.mkdir(parents=True, mode=0o700)
+            if with_cache:
+                (inherited / "cache").mkdir(mode=0o700)
+            rejected_unchanged(
+                lambda: prepare_private_chain(base, time.monotonic_ns() + NS),
+                lambda: state_tree(base),
+            )
+    record = PipeRecord()
+    record.accept(encode_frame(PHASE_ACQUIRED, 1))
+    record.accept(encode_frame(CUT_PHASES[0], 2))
+    record.accept(encode_frame(PHASE_TERMINAL, 3, 1, 0))
+    assert record.finish() and record.terminal[2] == 0
+    for hostile in (b"x", encode_frame(PHASE_ACQUIRED, 1)[:-1],
+                    encode_frame(PHASE_ACQUIRED, 1) + b"x"):
+        uncertain = PipeRecord()
+        uncertain.accept(hostile)
+        assert not uncertain.finish()
+    assert terminal_recovery_count({"valid": True, "terminal": (PHASE_TERMINAL, 1, 0)}) == 0
+    assert terminal_recovery_count({"valid": True, "terminal": (PHASE_TERMINAL, 1, 1)}) == 1
+    for mismatch in (False, True):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            os.chmod(base, 0o700)
+            chain = prepare_private_chain(base, time.monotonic_ns() + NS)
+            hostile = row["name"] if mismatch else "unknown"
+            descriptor = os.open(hostile, os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                                 0o600, dir_fd=chain["fds"][4])
+            os.write(descriptor, b"mismatch")
+            os.close(descriptor)
+            rejected_unchanged(
+                lambda: cleanup_private_chain(chain, (row,), time.monotonic_ns() + NS),
+                lambda: state_tree(base),
+            )
+            errors = []
+            close_chain(chain, time.monotonic_ns() + NS, errors)
+            assert not errors
+
+
+def state_tree(base):
+    paths = sorted(Path(base).rglob("*"), key=lambda item: os.fsencode(str(item)))
+    return tuple((str(path.relative_to(base)), exact_identity(os.lstat(path))) for path in paths)
 
 
 if sys.argv == [sys.argv[0]]:
