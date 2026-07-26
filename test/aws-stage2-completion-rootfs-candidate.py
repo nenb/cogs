@@ -724,82 +724,80 @@ def cleanup_private_chain(chain, rows, deadline):
 
 
 def rootfs_observation(completion_fd, builder, deadline):
-    name = "rootfs-v1"
+    chain = state = locked = active = operation = None
+    result = "invalid"
+    control = builder.fs.OperationControl(deadline, lambda: False)
     try:
-        observed = checked(deadline, lambda: os.stat(
-            name, dir_fd=completion_fd, follow_symlinks=False))
-    except FileNotFoundError:
-        return "absent"
-    if (not stat.S_ISDIR(observed.st_mode) or observed.st_uid != os.geteuid() or
-            observed.st_gid != os.getegid() or stat.S_IMODE(observed.st_mode) != 0o700):
-        return "invalid"
-    root = checked(deadline, lambda: os.open(
-        name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
-        dir_fd=completion_fd))
-    try:
-        names = set(checked(deadline, lambda: os.listdir(root)))
-        fixed = {builder.STATE_SENTINEL_NAME.text, builder.LOCK_NAME.text}
-        if not fixed <= names:
-            return "invalid"
-        expected = ((builder.STATE_SENTINEL_NAME.text, builder.STATE_SENTINEL),
-                    (builder.LOCK_NAME.text, b""))
-        for child, raw in expected:
-            descriptor, identity = open_stable_file(root, child, deadline)
-            try:
-                if identity[3:] != (0o600, os.geteuid(), os.getegid(), 1, len(raw)):
-                    return "invalid"
-                if digest_fd(descriptor, len(raw), deadline) != hashlib.sha256(raw).hexdigest():
-                    return "invalid"
-            finally:
-                os.close(descriptor)
-        if names == fixed:
-            return "idle"
-        ledger_name = builder.LEDGER_NAME.text
-        extras = names - fixed
-        operations = [item for item in extras if item.startswith("operation-") and
-                      len(item) == 74 and all(char in "0123456789abcdef" for char in item[10:])]
-        if extras != {ledger_name, *operations} or len(operations) > 1:
-            return "invalid"
-        descriptor, identity = open_stable_file(root, ledger_name, deadline)
-        try:
-            if identity[3] != 0o600 or identity[6] != 1 or not 0 < identity[7] <= 128 * 1024 * 1024:
-                return "invalid"
-            checked(deadline, lambda: os.lseek(descriptor, 0, os.SEEK_SET))
-            chunks, total = [], 0
-            while total < identity[7]:
-                raw = checked(deadline, lambda: os.read(
-                    descriptor, min(1024 * 1024, identity[7] - total)))
-                if not raw:
-                    return "invalid"
-                chunks.append(raw)
-                total += len(raw)
-            history = builder.ledger._parse_ledger_history(b"".join(chunks))
-            token = history.first.body_value()["token"]
-            expected_operation = builder._operation_name(token).text
-            if operations and operations != [expected_operation]:
-                return "invalid"
-        finally:
-            os.close(descriptor)
-        if operations:
-            child = os.stat(operations[0], dir_fd=root, follow_symlinks=False)
-            if (not stat.S_ISDIR(child.st_mode) or stat.S_IMODE(child.st_mode) != 0o700 or
-                    child.st_uid != os.geteuid() or child.st_gid != os.getegid()):
-                return "invalid"
-        return "needed"
+        chain = builder._open_base_chain(control)
+        production = builder._completion(chain)
+        builder._fail(exact_identity(os.fstat(completion_fd)) ==
+                      exact_identity(os.fstat(production.operation_fd.number)))
+        state = builder._open_state(chain, control)
+        if state is None:
+            result = "absent"
+        else:
+            locked = builder._acquire_lock(chain, state, control)
+            names = builder.fs._enumerate_stable(state, control).raw_names
+            fixed = tuple(sorted((builder.STATE_SENTINEL_NAME.raw, builder.LOCK_NAME.raw)))
+            if names == fixed:
+                result = "idle"
+            else:
+                builder._fail(builder.LEDGER_NAME.raw in names)
+                active = builder._read_active_ledger(state, control)
+                genesis = builder._first_record(active).body_value()
+                approval = builder.fs.SourceApproval(
+                    genesis["source_revision"], genesis["source_manifest_sha256"])
+                builder.fs._verify_source_bundle(builder._source(chain), approval, control)
+                snapshot = builder.fs._enumerate_stable(locked.state, control)
+                extras = [item for item in snapshot.names if item.raw not in {
+                    builder.STATE_SENTINEL_NAME.raw, builder.LOCK_NAME.raw,
+                    builder.LEDGER_NAME.raw}]
+                if extras:
+                    builder._fail(extras == [builder._operation_name(builder._token(active))])
+                    operation = builder.fs._open_path_node(
+                        locked.state, extras[0], "directory", control)
+                legal = active.records.legal
+                origin = "release-authorized" if (legal.phase == "release-authorized" or
+                    legal.return_phase == "release-authorized" or
+                    legal.lease_snapshot is not None) else "prelease"
+                session = builder._open_cleanup_session(
+                    active, locked, operation, origin, control)
+                active, result = session.active, "needed"
     except BaseException:
-        return "invalid"
+        result = "invalid"
     finally:
-        os.close(root)
+        closers = (
+            lambda: builder._close(operation), lambda: builder._close(active.node),
+            lambda: builder._release_lock(locked), lambda: builder._close(state),
+            lambda: builder.fs._close_chain(chain),
+        )
+        owned = (
+            operation is not None and operation.identity_fd.disposition == "open",
+            active is not None and active.node.identity_fd.disposition == "open",
+            locked is not None and locked.lock.identity_fd.disposition == "open",
+            state is not None and state.identity_fd.disposition == "open",
+            chain is not None and chain.anchor.identity_fd.disposition == "open",
+        )
+        for present, close in zip(owned, closers):
+            if present:
+                try:
+                    close()
+                except BaseException:
+                    result = "invalid"
+    return result
 
 
 def terminal_recovery_count(result):
     return result["terminal"][2] if result.get("valid") and result.get("terminal") else None
 
 
+def recovery_allowed(result, root_state):
+    return terminal_recovery_count(result) == 0 and root_state == "needed"
+
+
 def child_hosted(write_fd, runner, verifier, contract, revision, manifest_sha256, build_deadline):
     ordinal = 0
-    recovery_count = 0
-    builder = None
+    recovery = [0]
 
     def emit(phase):
         nonlocal ordinal
@@ -823,20 +821,18 @@ def child_hosted(write_fd, runner, verifier, contract, revision, manifest_sha256
         assert now < control.deadline_ns
         runner._bootstrap_rootfs(builder, fs, approval, control)
         emit(PHASE_BOOTSTRAP)
-        recovery = [0]
-        recovery_code = builder._recover_fixed.__code__
+        authentic_recover = builder._recover_fixed
 
-        def count_recovery(frame, event, _argument):
-            if event == "call" and frame.f_code is recovery_code:
-                recovery[0] += 1
+        def counted_recover(recovery_control):
+            recovery[0] += 1
+            return authentic_recover(recovery_control)
 
-        sys.setprofile(count_recovery)
+        builder._recover_fixed = counted_recover
         try:
             first, second = build._two_build_outputs(approval, control)
         finally:
-            sys.setprofile(None)
-        recovery_count = recovery[0]
-        assert recovery_count in {0, 1}
+            builder._recover_fixed = authentic_recover
+        assert recovery[0] in {0, 1}
         emit(PHASE_BUILDS)
         build._require_equal_builds(first, second)
         emit(PHASE_EQUALITY)
@@ -848,15 +844,14 @@ def child_hosted(write_fd, runner, verifier, contract, revision, manifest_sha256
         assert runner._snapshot_cache(contract)["files"]
         emit(PHASE_PINS)
         ordinal += 1
-        send_frame(write_fd, PHASE_TERMINAL, ordinal, 0, recovery_count)
+        send_frame(write_fd, PHASE_TERMINAL, ordinal, 0, recovery[0])
         os.close(write_fd)
         os._exit(0)
     except BaseException:
         try:
-            sys.setprofile(None)
-            if recovery_count in {0, 1}:
+            if recovery[0] in {0, 1}:
                 ordinal += 1
-                send_frame(write_fd, PHASE_TERMINAL, ordinal, 1, recovery_count)
+                send_frame(write_fd, PHASE_TERMINAL, ordinal, 1, recovery[0])
         except BaseException:
             pass
         try:
@@ -926,7 +921,7 @@ def hosted_exact_input():
             sys.path.insert(0, str(runner.REMOTE))
             builder = __import__("completion_rootfs_builder")
             root_state = rootfs_observation(chain["fds"][2], builder, recovery_deadline)
-            if terminal_recovery_count(result) == 0 and root_state == "needed":
+            if recovery_allowed(result, root_state):
                 checked(recovery_deadline, lambda: runner._recover_rootfs([]))
             elif root_state == "needed":
                 errors.append("rootfs-preserved")
@@ -970,24 +965,34 @@ def portable_child(write_fd, artifacts_fd, cache_fd, kind, row, recovery):
         sentinel = os.open(SENTINEL_NAME, os.O_WRONLY | os.O_CREAT | os.O_EXCL,
                            0o600, dir_fd=artifacts_fd)
         os.write(sentinel, SENTINEL_BYTES)
+        os.fsync(sentinel)
         os.close(sentinel)
+        os.fsync(artifacts_fd)
         partial = f".{row['name']}.partial"
-        descriptor = os.open(partial, os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+        descriptor = os.open(partial, os.O_RDWR | os.O_CREAT | os.O_EXCL,
                              0o600, dir_fd=cache_fd)
-        if kind == "writing":
-            os.write(descriptor, row["raw"][:3])
-        else:
-            os.write(descriptor, row["raw"])
-            if kind not in {"pre-flush"}:
-                os.fsync(descriptor)
-                os.fchmod(descriptor, 0o400)
-                os.fsync(descriptor)
-            if kind in {"post-publication", "post-settlement", "success"}:
+        os.write(descriptor, row["raw"][:3] if kind == "writing" else row["raw"])
+        if kind not in {"writing", "pre-flush"}:
+            os.fsync(descriptor)
+            os.fchmod(descriptor, 0o400)
+            os.fsync(descriptor)
+            os.close(descriptor)
+            descriptor = -1
+            verified, identity = open_stable_file(cache_fd, partial, time.monotonic_ns() + NS)
+            assert digest_fd(verified, row["size"], time.monotonic_ns() + NS) == row["sha256"]
+            assert exact_identity(os.fstat(verified)) == identity == exact_identity(
+                os.stat(partial, dir_fd=cache_fd, follow_symlinks=False))
+            os.close(verified)
+            if kind in {"publication-intent", "post-publication", "post-settlement", "success"}:
                 os.link(partial, row["name"], src_dir_fd=cache_fd,
                         dst_dir_fd=cache_fd, follow_symlinks=False)
+            if kind in {"post-publication", "post-settlement", "success"}:
+                os.fsync(cache_fd)
             if kind in {"post-settlement", "success"}:
                 os.unlink(partial, dir_fd=cache_fd)
-        os.close(descriptor)
+                os.fsync(cache_fd)
+        if descriptor >= 0:
+            os.close(descriptor)
         send_frame(write_fd, PHASE_ACQUIRED, 1)
         if kind == "success":
             for ordinal, phase in enumerate(PROGRESS_PHASES[1:], 2):
@@ -1058,6 +1063,15 @@ def portable_supervisor_tests():
                 assert result["reaped"] and result["valid"]
                 assert terminal_recovery_count(result) == (
                     1 if kind == "post-settlement" else 0)
+                if kind in {"publication-intent", "post-settlement"}:
+                    preserved, attempts, authority = state_tree(base), [], result
+                    if kind == "publication-intent":
+                        malformed = PipeRecord()
+                        malformed.accept(b"x")
+                        authority = {"valid": malformed.finish(), "terminal": malformed.terminal}
+                    if recovery_allowed(authority, "needed"):
+                        attempts.append("recovered")
+                    assert not attempts and state_tree(base) == preserved
                 cleanup_private_chain(chain, (row,), time.monotonic_ns() + NS)
                 errors = []
                 close_chain(chain, time.monotonic_ns() + NS, errors)
