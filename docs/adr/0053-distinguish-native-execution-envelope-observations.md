@@ -1,9 +1,10 @@
 # ADR 0053: Distinguish native execution-envelope observations
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-26
 - Decision owner: Nick Byrne
-- Acceptance authority: Nick Byrne, or the delegated project lead acting under Nick Byrne's standing bounded-local delegation.
+- Accepted by: Delegated project lead on 2026-07-26 under Nick Byrne's standing bounded-local delegation, after independent hostile review reported no P0–P3 findings.
+- Acceptance record: [GitHub pull request #222](https://github.com/nenb/cogs/pull/222).
 - Amendment scope: This ADR amends only ADR 0052's requirement that the GitHub `github.sha` execution-envelope observation equal the event payload's `pull_request.merge_commit_sha`. Every other ADR 0050–0052 requirement remains binding.
 
 ## Context
