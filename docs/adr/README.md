@@ -58,6 +58,6 @@ ADRs 0001–0010 were accepted by Nick Byrne on 2026-07-10. ADR 0011 was accepte
 | [0052](0052-clarify-stage2-producer-and-native-authority.md) | Clarify Stage 2 producer states and native qualification authority | Accepted; one narrow same-repo PR CI quality route for native C1 only; envelope semantics amended by ADR 0053; no additional candidate |
 | [0053](0053-distinguish-native-execution-envelope-observations.md) | Distinguish native execution-envelope observations | Accepted; test-invoker assertion correction with companion scope amended by ADR 0054 |
 | [0054](0054-authorize-native-invoker-companion-assertions.md) | Authorize native-invoker companion assertions | Accepted; exact TypeScript companion assertions only, maximum ten gross raw added lines; no source weakening or candidate change |
-| [0055](0055-move-native-c1-to-fresh-post-quality-job.md) | Move native C1 to a fresh post-quality job and harden its invoker | Proposed; exact `native-c1` job, invoker, and existing companion only; no candidate, security-label, AWS, or stop change |
+| [0055](0055-move-native-c1-to-fresh-post-quality-job.md) | Move native C1 to a fresh post-quality job and harden its invoker | Accepted; exact `native-c1` job, invoker, and existing companion only; no candidate, security-label, AWS, or stop change |
 
 Implementation pauses for every boundary listed in `IMPLEMENTATION.md` section 47. Superseding an accepted ADR requires a new ADR rather than editing history.

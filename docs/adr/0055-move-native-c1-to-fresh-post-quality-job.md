@@ -1,9 +1,11 @@
 # ADR 0055: Move native C1 to a fresh post-quality job and harden its invoker
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-26
 - Decision owner: Nick Byrne
-- Amendment scope: If accepted, this ADR amends ADR 0052's placement and job identity for workflow-bound native C1, ADR 0053's invoker correction and invocation scope, and ADR 0054's companion-test file, invocation, assertion, and line scope only as specified below. ADR 0051–0052's native observation requirements are clarified by the exact permission split below; every other non-conflicting requirement of ADRs 0050–0054 remains binding.
+- Accepted by: Delegated project lead on 2026-07-26 under Nick Byrne's standing bounded-local delegation, after independent hostile re-review reported no P0–P3 findings.
+- Acceptance record: [GitHub pull request #224](https://github.com/nenb/cogs/pull/224).
+- Amendment scope: This ADR amends ADR 0052's placement and job identity for workflow-bound native C1, ADR 0053's invoker correction and invocation scope, and ADR 0054's companion-test file, invocation, assertion, and line scope only as specified below. ADR 0051–0052's native observation requirements are clarified by the exact permission split below; every other non-conflicting requirement of ADRs 0050–0054 remains binding.
 
 ## Context
 
