@@ -154,9 +154,118 @@ def portable_tests():
     rejected(lambda: builder._append(None, "release-authorized", {}, control))
     rejected(lambda: ledger._settled_record(0, 1, "a" * 64, 1))
     build_source = (REMOTE / "completion_rootfs_build.py").read_text()
-    assert "observed = operation = None" in build_source and "fs._close_node(observed)" in build_source
+    assert "candidate_tar._create_candidate(active, owned, authority, manifest, control)" in build_source
+    assert "active = candidate.active" in build_source and "ustar = candidate.raw" in build_source
+    assert all(stale not in build_source for stale in (
+        "def _writable_file", "def _candidate_record", "EMPTY_TAR", "materializer._metadata(",
+    ))
     assert "class RetainedBuild" in build_source and "def _build_once_retained(" in build_source
     assert "def _require_equal_builds(" in build_source and "def _require_pinned(" in build_source
+    assert "for path in sorted(tuple(session.owned)" in source
+
+    def candidate_generation(inode, kind="directory", mode=0o700, nlink=2, size=0, ctime=1):
+        key = fs.HostKey(1, 1, inode, kind)
+        return fs.HostGeneration(key, mode, 0, 0, nlink, size, 1, ctime)
+
+    def candidate_fixture(terminal):
+        token = "a" * 64
+        operation_name = ledger._operation_name(token)
+        state_before = ledger.LedgerParent(candidate_generation(1), ("active-ledger", "lock", "sentinel"))
+        state_names = ("active-ledger", "lock", operation_name, "sentinel")
+        state_after = ledger.LedgerParent(dataclasses.replace(state_before.generation, ctime_ns=2), state_names)
+        operation = candidate_generation(2)
+        pre_parent = ledger.LedgerParent(operation, ())
+        post_parent = ledger.LedgerParent(dataclasses.replace(operation, ctime_ns=2), (ledger.CANDIDATE_TAR_PATH,))
+        anonymous = candidate_generation(70, "file", 0o600, 0, ledger.CANDIDATE_TAR_SIZE, 10)
+        linked = dataclasses.replace(anonymous, nlink=1, ctime_ns=11)
+        state_value = ledger._parent_value(state_before)
+        operation_value = {
+            "token": token, "operation_name": operation_name,
+            "state_parent": ledger._parent_value(state_after), "operation": ledger._generation_value(operation),
+        }
+        create_intent = dict(operation_value)
+        create_intent.pop("operation")
+        create_intent["state_parent"] = state_value
+        proposals = [
+            ledger.LedgerProposal.create("genesis", {
+                "token": token, "source_revision": "b" * 40, "source_manifest_sha256": "c" * 64,
+                "state_parent": state_value,
+                "ledger_key": {"mount_id": 1, "device": 1, "inode": 99, "kind": "file"},
+            }),
+            ledger.LedgerProposal.create("genesis-settled", {"token": token, "state_parent": state_value}),
+            ledger.LedgerProposal.create("operation-create-intent", create_intent),
+            ledger.LedgerProposal.create("operation-create-observed", operation_value),
+            ledger.LedgerProposal.create("operation-create-settled", operation_value),
+        ]
+        intent = {
+            "token": token, "path": ledger.CANDIDATE_TAR_PATH,
+            "parent": ledger._parent_value(pre_parent), "anonymous": ledger._generation_value(anonymous),
+            "size": ledger.CANDIDATE_TAR_SIZE, "sha256": "7" * 64,
+        }
+        observed = {
+            "token": token, "path": ledger.CANDIDATE_TAR_PATH,
+            "parent": ledger._parent_value(post_parent),
+            "anonymous": ledger._generation_value(anonymous), "linked": ledger._generation_value(linked),
+            "size": ledger.CANDIDATE_TAR_SIZE, "sha256": "7" * 64,
+        }
+        proposals.append(ledger.LedgerProposal.create("candidate-tar-intent", intent))
+        if terminal == "observed":
+            proposals.append(ledger.LedgerProposal.create("candidate-tar-observed", observed))
+        settled_bytes, chunks = ledger.INITIAL_BYTES, []
+        for proposal in proposals:
+            line = ledger._encode_proposal(proposal, settled_bytes)
+            chunks.append(line)
+            settled_bytes = ledger.SettledBytes(
+                settled_bytes.sequence + 1, settled_bytes.offset + len(line), hashlib.sha256(line).hexdigest(),
+            )
+        raw = b"".join(chunks)
+        history = ledger._parse_ledger_history(raw)
+        ledger_file = candidate_generation(99, "file", 0o600, 1, len(raw))
+        observations = ledger.ReconcileObservations(
+            state_after,
+            ((operation_name, operation if terminal == "absent" else post_parent.generation),),
+            () if terminal == "absent" else ((ledger.CANDIDATE_TAR_PATH, linked),),
+            ledger_file, (("", pre_parent if terminal == "absent" else post_parent),),
+            None if terminal == "absent" else (ledger.CANDIDATE_TAR_SIZE, "7" * 64),
+        )
+        state = ledger._reconcile_ledger(ledger._history_records(history), observations)
+        return history, state, state_after, operation, post_parent, linked
+
+    appended = []
+    real_candidate_helpers = (
+        builder._session_require, builder._session_binding, builder._session_append,
+        builder._cleanup_active, fs._open_path_node, builder._fsync, builder._close,)
+    no_descriptor_work = lambda *_args: None
+    builder._session_require = builder._session_binding = no_descriptor_work
+    builder._fsync = no_descriptor_work
+    builder._session_append = lambda _session, record, body, _control: (
+        ledger.LedgerProposal.create(record, body), appended.append(record),
+    )
+    builder._cleanup_active = lambda session, _control: setattr(session, "disposition", "finished")
+    try:
+        for terminal, expected_status, expected_records in (
+            ("absent", "candidate-tar-abortable", ("candidate-tar-abort",)),
+            ("intent", "candidate-tar-observeable", ("candidate-tar-observed", "candidate-tar-settled")),
+            ("observed", "candidate-tar-settleable", ("candidate-tar-settled",)),):
+            history, state, state_parent, operation, post_parent, linked = candidate_fixture(terminal)
+            assert state.status == expected_status and not state.owned
+            descriptor = fs.CheckedFd(998, "candidate-dispatch")
+            node = fs.HeldNode(descriptor, descriptor, linked)
+            fs._open_path_node = lambda *_args, node=node: node
+            builder._close = lambda value, *_args: setattr(value.identity_fd, "disposition", "closed")
+            session = builder.CleanupSession(
+                builder.ActiveLedger(None, history, None), object(), node, "prelease", state.status,
+                {} if terminal == "absent" else {ledger.CANDIDATE_TAR_PATH: linked},
+                {"": post_parent}, {}, operation, state_parent,
+                None if terminal == "absent" else (ledger.CANDIDATE_TAR_SIZE, "7" * 64),
+            )
+            before = len(appended)
+            builder._resume_candidate_tar(session, control)
+            assert tuple(appended[before:]) == expected_records and session.disposition == "finished"
+    finally:
+        (builder._session_require, builder._session_binding, builder._session_append,
+         builder._cleanup_active, fs._open_path_node, builder._fsync, builder._close) = real_candidate_helpers
+
     locked = builder.LockedState(None, None, object())
     primary = RuntimeError("primary")
     real_close = builder._close
