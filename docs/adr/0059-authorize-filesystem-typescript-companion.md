@@ -1,8 +1,10 @@
 # ADR 0059: Authorize the filesystem TypeScript companion
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-26
 - Decision owner: Nick Byrne
+- Accepted by: Delegated project lead on 2026-07-26 under Nick Byrne's standing bounded-local delegation, after corrected independent review reported no P0–P3 findings.
+- Acceptance record: [GitHub pull request #229](https://github.com/nenb/cogs/pull/229).
 - Amendment scope: This ADR amends only ADR 0058's omitted companion scope for exactly `test/aws-stage2-completion-rootfs-fs.test.ts`. Every other ADR 0057–0058 scope, test, execution, review, budget, cap, stage, and stop boundary remains binding.
 
 ## Context
