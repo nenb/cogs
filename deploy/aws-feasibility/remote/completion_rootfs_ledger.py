@@ -270,6 +270,8 @@ def _candidate_transition(anonymous, linked):
 def _candidate_parent_transition(before, after):
     _parent_delta("hardlink", CANDIDATE_TAR_PATH, before, after)
     _fail(_same_fields(before.generation, after.generation, {"size", "mtime_ns", "ctime_ns"}))
+    for field_name in ("size", "mtime_ns", "ctime_ns"):
+        _fail(getattr(after.generation, field_name) >= getattr(before.generation, field_name))
 
 
 def _parent_delta(action, name, before, after):
