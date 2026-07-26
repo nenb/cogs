@@ -73,8 +73,10 @@ jobs:
               parse_constant=lambda _x: (_ for _ in ()).throw(ValueError()))
           if set(result)!={"version","revision","manifest_sha256","entries","authority"}: raise SystemExit(2)
           if result["revision"]!=sys.argv[1]: raise SystemExit(2)
-          if result["authority"]!="qualification-only-fixed-source": raise SystemExit(2)' \
-            "$EXACT_PR_HEAD" <<<"$result"
+          if result["authority"]!="qualification-only-fixed-source": raise SystemExit(2)
+          print("COGS_ADR0057_SOURCE_REVISION="+result["revision"])
+          print("COGS_ADR0057_SOURCE_MANIFEST_SHA256="+result["manifest_sha256"])' \
+            "$EXACT_PR_HEAD" <<<"$result" >>"$GITHUB_ENV"
           /usr/bin/python3 -I scripts/stage2-phase-a-budget.py check source
 
       # The fixed hosted driver owns the +3900 invocation boundary, optional
@@ -87,8 +89,12 @@ jobs:
           final_timeout=$(/usr/bin/python3 -I scripts/stage2-phase-a-budget.py timeout final)
           sudo -n /usr/bin/timeout --signal=TERM --kill-after=5s "${final_timeout}s" \
             env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin \
+            GITHUB_ACTIONS=true \
+            COGS_ADR0057_HOSTED_EXACT=1 \
             COGS_STAGE2_PHASE_A_BUDGET_ANCHOR_NS="$COGS_STAGE2_PHASE_A_BUDGET_ANCHOR_NS" \
             COGS_STAGE2_ARTIFACT_ACQUISITION_APPROVED=download-16-fixed-public-stage2-artifacts \
+            COGS_ADR0057_SOURCE_REVISION="$COGS_ADR0057_SOURCE_REVISION" \
+            COGS_ADR0057_SOURCE_MANIFEST_SHA256="$COGS_ADR0057_SOURCE_MANIFEST_SHA256" \
             /usr/bin/python3 -I /var/lib/cogs/stage2-completion-v1/source/test/aws-stage2-completion-rootfs-candidate.py \
             --hosted-exact
 
