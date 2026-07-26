@@ -1,73 +1,154 @@
 name: Stage 2 Phase A candidate
+run-name: phase-b-discovery
 
 on:
   pull_request:
-    types: [labeled, reopened, synchronize]
+    branches: [feat/issue42-deterministic-rootfs]
+    types: [labeled]
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   candidate:
     if: >-
-      contains(github.event.pull_request.labels.*.name, 'security') &&
-      github.event.pull_request.head.repo.full_name == github.repository
+      github.event_name == 'pull_request' &&
+      github.event.action == 'labeled' &&
+      github.event.label.name == 'security' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.base.repo.full_name == github.repository &&
+      github.event.pull_request.base.ref == 'feat/issue42-deterministic-rootfs' &&
+      github.event.pull_request.base.sha == '8caab23bb4277121a77d80dc043b3c2c43b07ced' &&
+      github.event.pull_request.number == 230 &&
+      github.event.pull_request.head.sha == vars.STAGE2_PHASEB_REVIEWED_HEAD &&
+      github.run_attempt == 1
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     concurrency:
-      group: stage2-phase-a-${{ github.event.pull_request.number }}
+      group: stage2-phase-b-${{ github.event.pull_request.number }}
       cancel-in-progress: false
     steps:
-      - name: Establish scheduling-only monotonic budget anchor
+      - name: Establish absolute non-borrowing monotonic budget anchor
         run: |
           set -euo pipefail
           anchor=$(/usr/bin/python3 -I -c 'import time; print(time.monotonic_ns())')
           [[ "$anchor" =~ ^[1-9][0-9]{0,19}$ ]]
           printf 'COGS_STAGE2_PHASE_A_BUDGET_ANCHOR_NS=%s\n' "$anchor" >>"$GITHUB_ENV"
 
-      - name: Check out exact pull request head
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          persist-credentials: false
+      - name: Reject every non-earliest exact-head and exact-stage run before mutation
+        env:
+          GH_API_TOKEN: ${{ github.token }}
+          EXACT_HEAD: ${{ github.event.pull_request.head.sha }}
+          EXACT_RUN_ID: ${{ github.run_id }}
+          EXACT_RUN_NAME: phase-b-discovery
+          EXACT_REPOSITORY: ${{ github.repository }}
+          EXACT_REVIEWED_HEAD: ${{ vars.STAGE2_PHASEB_REVIEWED_HEAD }}
+        run: |
+          /usr/bin/python3 -I - <<'PY'
+          import json, os, time, urllib.parse, urllib.request
+          def fail():
+              print("earliest-run guard fail run_id=" + os.environ.get("EXACT_RUN_ID", "unknown"))
+              raise SystemExit(2)
+          try:
+              token, repo = os.environ["GH_API_TOKEN"], os.environ["EXACT_REPOSITORY"]
+              head, title = os.environ["EXACT_HEAD"], os.environ["EXACT_RUN_NAME"]
+              current = int(os.environ["EXACT_RUN_ID"])
+              anchor = int(os.environ["COGS_STAGE2_PHASE_A_BUDGET_ANCHOR_NS"])
+              if not token or not repo or head != os.environ["EXACT_REVIEWED_HEAD"] or len(head) != 40 or \
+                      title != "phase-b-discovery" or current < 1 or not 0 <= time.monotonic_ns() - anchor < 600_000_000_000: fail()
+              workflow = urllib.parse.quote("stage2-phase-a-candidate.yml", safe="")
+              base = f"https://api.github.com/repos/{repo}/actions/workflows/{workflow}/runs"
+              headers = {"Accept": "application/vnd.github+json", "Authorization": "Bearer " + token,
+                         "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "cogs-stage2-guard"}
+              records, ids, total, page = [], set(), None, 1
+              while True:
+                  query = urllib.parse.urlencode({"event": "pull_request", "head_sha": head,
+                                                  "per_page": 100, "page": page})
+                  remaining = (anchor + 600_000_000_000 - time.monotonic_ns()) / 1_000_000_000
+                  if remaining <= 1: fail()
+                  with urllib.request.urlopen(urllib.request.Request(base + "?" + query, headers=headers),
+                                              timeout=min(20, remaining)) as response:
+                      if response.status != 200: fail()
+                      value = json.load(response)
+                  if type(value) is not dict or type(value.get("total_count")) is not int or \
+                          type(value.get("workflow_runs")) is not list: fail()
+                  if total is None: total = value["total_count"]
+                  if value["total_count"] != total or len(value["workflow_runs"]) > 100: fail()
+                  for row in value["workflow_runs"]:
+                      if type(row) is not dict or type(row.get("id")) is not int or row["id"] < 1 or \
+                              type(row.get("event")) is not str or type(row.get("head_sha")) is not str or \
+                              type(row.get("display_title")) is not str or row["id"] in ids: fail()
+                      ids.add(row["id"]); records.append(row)
+                  if len(value["workflow_runs"]) < 100: break
+                  page += 1
+                  if page > 10000: fail()
+              if len(records) != total: fail()
+              exact = [row["id"] for row in records if row["event"] == "pull_request" and
+                       row["head_sha"] == head and row["display_title"] == title]
+              if not exact or current not in exact or current != min(exact): fail()
+          except SystemExit:
+              raise
+          except BaseException:
+              fail()
+          print("earliest-run guard pass run_id=" + str(current))
+          PY
 
-      - name: Materialize and bind fixed source to exact pull request head
+      - name: Check out exact reviewed pull request head without credentials
         env:
           EXACT_PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          STAGE2_PHASEB_REVIEWED_HEAD: ${{ vars.STAGE2_PHASEB_REVIEWED_HEAD }}
+        run: |
+          set -euo pipefail
+          /usr/bin/python3 -I -c 'import os,time
+          anchor=int(os.environ["COGS_STAGE2_PHASE_A_BUDGET_ANCHOR_NS"])
+          if not 0 <= time.monotonic_ns()-anchor < 600_000_000_000: raise SystemExit(2)'
+          test "$EXACT_PR_HEAD" = "$STAGE2_PHASEB_REVIEWED_HEAD"
+          /usr/bin/git -c credential.helper= -c core.askPass= init .
+          /usr/bin/git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          GIT_TERMINAL_PROMPT=0 /usr/bin/git -c credential.helper= -c core.askPass= \
+            fetch --no-tags --depth=1 origin "$EXACT_PR_HEAD"
+          /usr/bin/git -c credential.helper= -c core.askPass= checkout --detach FETCH_HEAD
+          test "$(/usr/bin/git rev-parse HEAD)" = "$STAGE2_PHASEB_REVIEWED_HEAD"
+
+      - name: Materialize and bind fixed source to reviewed head
+        env:
+          EXACT_PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          STAGE2_PHASEB_REVIEWED_HEAD: ${{ vars.STAGE2_PHASEB_REVIEWED_HEAD }}
         run: |
           set -euo pipefail
           source_timeout=$(/usr/bin/python3 -I scripts/stage2-phase-a-budget.py timeout source)
           preparation=$(sudo -n /usr/bin/timeout --signal=TERM --kill-after=5s "${source_timeout}s" \
-            env -i PATH=/usr/bin:/bin \
-            /usr/bin/python3 -I "$GITHUB_WORKSPACE/scripts/prepare-stage2-fixed-source.py")
+            env -i PATH=/usr/bin:/bin /usr/bin/python3 -I -B \
+            "$GITHUB_WORKSPACE/scripts/prepare-stage2-fixed-source.py")
           /usr/bin/python3 -I -c 'import json,sys
           def pairs(rows):
               value={}
               for key,item in rows:
-                  if key in value: raise ValueError()
+                  if type(key) is not str or key in value: raise ValueError()
                   value[key]=item
               return value
-          result=json.loads(sys.stdin.buffer.read(),object_pairs_hook=pairs,parse_constant=lambda _x: (_ for _ in ()).throw(ValueError()))
-          if set(result)!={"version","revision","manifest_sha256","entries","authority"}: raise SystemExit(2)
-          if result["revision"]!=sys.argv[1]: raise SystemExit(2)
-          if result["authority"]!="qualification-only-fixed-source": raise SystemExit(2)' \
-            "$EXACT_PR_HEAD" <<<"$preparation"
+          value=json.loads(sys.stdin.buffer.read(),object_pairs_hook=pairs,
+                           parse_constant=lambda _x: (_ for _ in ()).throw(ValueError()))
+          if type(value) is not dict or set(value)!={"version","revision","manifest_sha256","entries","authority"}: raise SystemExit(2)
+          if value["revision"]!=sys.argv[1] or value["revision"]!=sys.argv[2]: raise SystemExit(2)
+          if value["authority"]!="qualification-only-fixed-source": raise SystemExit(2)' \
+            "$EXACT_PR_HEAD" "$STAGE2_PHASEB_REVIEWED_HEAD" <<<"$preparation"
           /usr/bin/python3 -I scripts/stage2-phase-a-budget.py check source
 
-      - name: Observe non-authoritative Phase A candidate
+      - name: Collect metadata-only Phase B discovery candidate without rootfs build
         id: observe
         continue-on-error: true
         run: |
           set -euo pipefail
           observe_timeout=$(/usr/bin/python3 -I scripts/stage2-phase-a-budget.py timeout observe)
           sudo -n /usr/bin/timeout --signal=TERM --kill-after=5s "${observe_timeout}s" \
-            env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin \
-            COGS_STAGE2_ARTIFACT_ACQUISITION_APPROVED=download-16-fixed-public-stage2-artifacts \
-            /usr/bin/python3 -I \
-            /var/lib/cogs/stage2-completion-v1/source/scripts/run-stage2-phase-a-candidate.py observe
+            env -i -C /var/lib/cogs/stage2-completion-v1/source PATH=/usr/sbin:/usr/bin:/sbin:/bin \
+            COGS_STAGE2_ARTIFACT_ACQUISITION_APPROVED=download-2-fixed-public-runtime-assets \
+            /usr/bin/python3 -I -B scripts/run-stage2-phase-a-candidate.py phase-b-discovery observe
           /usr/bin/python3 -I scripts/stage2-phase-a-budget.py check observe
 
-      - name: Exact-owned cleanup
+      - name: Exact qualification and runtime-asset cleanup
         id: cleanup
         if: always()
         continue-on-error: true
@@ -75,12 +156,11 @@ jobs:
           set -euo pipefail
           cleanup_timeout=$(/usr/bin/python3 -I scripts/stage2-phase-a-budget.py timeout cleanup)
           sudo -n /usr/bin/timeout --signal=TERM --kill-after=5s "${cleanup_timeout}s" \
-            env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin \
-            /usr/bin/python3 -I \
-            /var/lib/cogs/stage2-completion-v1/source/scripts/run-stage2-phase-a-candidate.py cleanup
+            env -i -C /var/lib/cogs/stage2-completion-v1/source PATH=/usr/sbin:/usr/bin:/sbin:/bin \
+            /usr/bin/python3 -I -B scripts/run-stage2-phase-a-candidate.py phase-b-discovery cleanup
           /usr/bin/python3 -I scripts/stage2-phase-a-budget.py check cleanup
 
-      - name: Independent read-only residue observation
+      - name: Independent qualification residue observation
         id: residue
         if: always()
         continue-on-error: true
@@ -88,115 +168,93 @@ jobs:
           set -euo pipefail
           residue_timeout=$(/usr/bin/python3 -I scripts/stage2-phase-a-budget.py timeout residue)
           sudo -n /usr/bin/timeout --signal=TERM --kill-after=5s "${residue_timeout}s" \
-            env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin /usr/bin/python3 -I \
-            /var/lib/cogs/stage2-completion-v1/source/scripts/run-stage2-phase-a-candidate.py residue
+            env -i -C /var/lib/cogs/stage2-completion-v1/source PATH=/usr/sbin:/usr/bin:/sbin:/bin \
+            /usr/bin/python3 -I -B scripts/run-stage2-phase-a-candidate.py phase-b-discovery residue
           /usr/bin/python3 -I scripts/stage2-phase-a-budget.py check residue
 
-      - name: Render metadata-only candidate output
+      - name: Render strict canonical discovery metadata
         id: render
         if: always()
         continue-on-error: true
         run: |
-          set -euo pipefail
           render_timeout=$(/usr/bin/python3 -I scripts/stage2-phase-a-budget.py timeout render)
-          sudo -n /usr/bin/timeout --signal=TERM --kill-after=5s "${render_timeout}s" \
-            env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin /usr/bin/python3 -I \
-            /var/lib/cogs/stage2-completion-v1/source/scripts/run-stage2-phase-a-candidate.py render
+          sudo -n /usr/bin/timeout --signal=TERM --kill-after=5s "${render_timeout}s" env -i \
+            -C /var/lib/cogs/stage2-completion-v1/source PATH=/usr/sbin:/usr/bin:/sbin:/bin \
+            /usr/bin/python3 -I -B scripts/run-stage2-phase-a-candidate.py phase-b-discovery render
           /usr/bin/python3 -I scripts/stage2-phase-a-budget.py check render
 
-      - name: Strictly validate sanitized candidate JSON
-        id: validate
-        if: always()
-        continue-on-error: true
-        run: |
-          set -euo pipefail
-          validate_timeout=$(/usr/bin/python3 -I scripts/stage2-phase-a-budget.py timeout validate)
-          sudo -n /usr/bin/timeout --signal=TERM --kill-after=5s "${validate_timeout}s" \
-            env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin /usr/bin/python3 -I \
-            /var/lib/cogs/stage2-completion-v1/source/scripts/run-stage2-phase-a-candidate.py validate
-          /usr/bin/python3 -I scripts/stage2-phase-a-budget.py check validate
-
-      - name: Export canonical report to runner-readable staging
+      - name: Validate and export canonical discovery metadata
         id: export
-        if: always() && steps.validate.outcome == 'success'
+        if: always() && steps.render.outcome == 'success'
         continue-on-error: true
         run: |
-          set -euo pipefail
+          validate_timeout=$(/usr/bin/python3 -I scripts/stage2-phase-a-budget.py timeout validate)
+          sudo -n /usr/bin/timeout --signal=TERM --kill-after=5s "${validate_timeout}s" env -i \
+            -C /var/lib/cogs/stage2-completion-v1/source PATH=/usr/sbin:/usr/bin:/sbin:/bin \
+            /usr/bin/python3 -I -B scripts/run-stage2-phase-a-candidate.py phase-b-discovery validate
+          /usr/bin/python3 -I scripts/stage2-phase-a-budget.py check validate
           export_timeout=$(/usr/bin/python3 -I scripts/stage2-phase-a-budget.py timeout export)
-          sudo -n /usr/bin/timeout --signal=TERM --kill-after=5s "${export_timeout}s" \
-            env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin /usr/bin/python3 -I \
-            /var/lib/cogs/stage2-completion-v1/source/scripts/run-stage2-phase-a-candidate.py export
+          sudo -n /usr/bin/timeout --signal=TERM --kill-after=5s "${export_timeout}s" env -i \
+            -C /var/lib/cogs/stage2-completion-v1/source PATH=/usr/sbin:/usr/bin:/sbin:/bin \
+            /usr/bin/python3 -I -B scripts/run-stage2-phase-a-candidate.py phase-b-discovery export
           /usr/bin/python3 -I scripts/stage2-phase-a-budget.py check export
 
-      - name: Check absolute upload start budget
+      - name: Check upload budget
         id: upload_budget
-        if: always() && steps.validate.outcome == 'success' && steps.export.outcome == 'success'
+        if: always() && steps.export.outcome == 'success'
         continue-on-error: true
         run: /usr/bin/python3 -I scripts/stage2-phase-a-budget.py check upload
 
-      # Pinned action timeout is the strongest supported step guard. Platform
-      # cancellation remains a failed run and can never create authority.
-      - name: Upload validated staged candidate JSON only
+      - name: Upload validated Phase B discovery metadata only
         id: upload
-        if: >-
-          always() && steps.validate.outcome == 'success' &&
-          steps.export.outcome == 'success' && steps.upload_budget.outcome == 'success'
+        if: always() && steps.export.outcome == 'success' && steps.upload_budget.outcome == 'success'
         continue-on-error: true
         timeout-minutes: 1
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: stage2-phase-a-candidate-v2-${{ github.run_id }}-${{ github.run_attempt }}
-          path: /var/tmp/cogs-stage2-phase-a-candidate-v2/candidate.json
+          name: stage2-phase-b-discovery-${{ github.run_id }}-1
+          path: /var/tmp/cogs-stage2-phase-b-qualification-v1/qualification.json
           if-no-files-found: error
           retention-days: 7
 
-      - name: Exact-identity cleanup of exported report
+      - name: Exact exported-report cleanup
         id: export_cleanup
         if: always()
         continue-on-error: true
         run: |
-          set -euo pipefail
           export_cleanup_timeout=$(/usr/bin/python3 -I scripts/stage2-phase-a-budget.py timeout export-cleanup)
-          sudo -n /usr/bin/timeout --signal=TERM --kill-after=5s "${export_cleanup_timeout}s" \
-            env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin /usr/bin/python3 -I \
-            /var/lib/cogs/stage2-completion-v1/source/scripts/run-stage2-phase-a-candidate.py cleanup-export
+          sudo -n /usr/bin/timeout --signal=TERM --kill-after=5s "${export_cleanup_timeout}s" env -i \
+            -C /var/lib/cogs/stage2-completion-v1/source PATH=/usr/sbin:/usr/bin:/sbin:/bin \
+            /usr/bin/python3 -I -B scripts/run-stage2-phase-a-candidate.py phase-b-discovery cleanup-export
           /usr/bin/python3 -I scripts/stage2-phase-a-budget.py check export-cleanup
 
-      - name: Independent read-only post-export-cleanup residue observation
-        id: post_export_residue
+      - name: Independent final qualification and export residue observation
+        id: final_residue
         if: always()
         continue-on-error: true
         run: |
-          set -euo pipefail
           /usr/bin/python3 -I scripts/stage2-phase-a-budget.py check post-export-residue-start
           residue_timeout=$(/usr/bin/python3 -I scripts/stage2-phase-a-budget.py timeout post-export-residue)
-          sudo -n /usr/bin/timeout --signal=TERM --kill-after=5s "${residue_timeout}s" \
-            env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin /usr/bin/python3 -I \
-            /var/lib/cogs/stage2-completion-v1/source/scripts/run-stage2-phase-a-candidate.py post-export-residue
+          sudo -n /usr/bin/timeout --signal=TERM --kill-after=5s "${residue_timeout}s" env -i \
+            -C /var/lib/cogs/stage2-completion-v1/source PATH=/usr/sbin:/usr/bin:/sbin:/bin \
+            /usr/bin/python3 -I -B scripts/run-stage2-phase-a-candidate.py phase-b-discovery post-export-residue
           /usr/bin/python3 -I scripts/stage2-phase-a-budget.py check post-export-residue
 
-      - name: Enforce observation, cleanup, residue, validation, export, upload, export cleanup, and final residue certainty
+      - name: Enforce candidate, cleanup, residue, render, export, upload, and final certainty
         if: always()
         env:
           OBSERVE_OUTCOME: ${{ steps.observe.outcome }}
           CLEANUP_OUTCOME: ${{ steps.cleanup.outcome }}
           RESIDUE_OUTCOME: ${{ steps.residue.outcome }}
           RENDER_OUTCOME: ${{ steps.render.outcome }}
-          VALIDATE_OUTCOME: ${{ steps.validate.outcome }}
           EXPORT_OUTCOME: ${{ steps.export.outcome }}
           UPLOAD_OUTCOME: ${{ steps.upload.outcome }}
           EXPORT_CLEANUP_OUTCOME: ${{ steps.export_cleanup.outcome }}
-          POST_EXPORT_RESIDUE_OUTCOME: ${{ steps.post_export_residue.outcome }}
+          FINAL_RESIDUE_OUTCOME: ${{ steps.final_residue.outcome }}
         run: |
           set -euo pipefail
           /usr/bin/python3 -I scripts/stage2-phase-a-budget.py check final
-          test "$OBSERVE_OUTCOME" = success
-          test "$CLEANUP_OUTCOME" = success
-          test "$RESIDUE_OUTCOME" = success
-          test "$RENDER_OUTCOME" = success
-          test "$VALIDATE_OUTCOME" = success
-          test "$EXPORT_OUTCOME" = success
-          test "$UPLOAD_OUTCOME" = success
-          test "$EXPORT_CLEANUP_OUTCOME" = success
-          test "$POST_EXPORT_RESIDUE_OUTCOME" = success
-          /usr/bin/python3 -I scripts/stage2-phase-a-budget.py check final
+          for outcome in "$OBSERVE_OUTCOME" "$CLEANUP_OUTCOME" "$RESIDUE_OUTCOME" "$RENDER_OUTCOME" \
+            "$EXPORT_OUTCOME" "$UPLOAD_OUTCOME" "$EXPORT_CLEANUP_OUTCOME" "$FINAL_RESIDUE_OUTCOME"; do
+            test "$outcome" = success
+          done

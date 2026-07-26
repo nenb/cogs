@@ -44,6 +44,8 @@ SOURCE_MANIFEST = FIXED_SOURCE / ".cogs-stage2-source-manifest-v1.json"
 ARTIFACT_ROOT = FIXED_SOURCE / "deploy/aws-feasibility/.state/completion-v1/artifacts"
 ROOTFS_STATE = FIXED_SOURCE / "deploy/aws-feasibility/.state/completion-v1/rootfs-v1"
 VERSION = "cogs.stage2-phase-a-candidate/v2"
+ANCHOR_VERSION, PHASE_B_STAGE = "cogs.stage2-phase-a-anchor/v2", "phase-b-discovery"
+PHASE_B_VERSION, PHASE_B_STATE = "cogs.stage2-phase-b-qualification/v1", STATE.parent / "phase-a-v2"
 MAX_JSON = 64 * 1024
 MAX_JOURNAL = 512 * 1024
 MAX_SOURCE_MANIFEST = 16 * 1024 * 1024
@@ -133,7 +135,7 @@ TOOL_COMMANDS = (
 )
 
 
-def _fixed_preflight(require_approval):
+def _fixed_preflight(require_approval, approval_value=APPROVAL_VALUE):
     _fail(platform.system() == "Linux", "wrong-platform")
     _fail(platform.machine() == "x86_64", "wrong-architecture")
     _fail(os.geteuid() == 0, "not-root")
@@ -143,7 +145,7 @@ def _fixed_preflight(require_approval):
         upper = name.upper()
         _fail(not (upper in DENIED_ENV or upper.startswith("AWS_")), "ambient-authority")
     if require_approval:
-        _fail(os.environ.get(APPROVAL_NAME) == APPROVAL_VALUE, "artifact-approval-missing")
+        _fail(os.environ.get(APPROVAL_NAME) == approval_value, "artifact-approval-missing")
     else:
         _fail(APPROVAL_NAME not in os.environ, "ambient-authority")
 
@@ -363,7 +365,7 @@ def _parse_anchor(raw):
     _fail(type(value) is dict and set(value) == {
         "version", "source_revision", "source_manifest_sha256", "trusted_parent_chain", "state", "journal",
     }, "anchor-invalid")
-    _fail(value["version"] == "cogs.stage2-phase-a-anchor/v2" and
+    _fail(value["version"] == ANCHOR_VERSION and
           type(value["source_revision"]) is str and re.fullmatch(r"[0-9a-f]{40}", value["source_revision"]) and
           type(value["source_manifest_sha256"]) is str and HEX.fullmatch(value["source_manifest_sha256"]) and
           _canonical(value) + b"\n" == raw, "anchor-invalid")
@@ -468,7 +470,7 @@ def _initialize_state(revision, manifest_sha256):
         os.fchmod(journal, 0o600); os.fchmod(anchor, 0o400)
         journal_identity = _identity(os.fstat(journal))
         anchor_value = {
-            "version": "cogs.stage2-phase-a-anchor/v2", "source_revision": revision,
+            "version": ANCHOR_VERSION, "source_revision": revision,
             "source_manifest_sha256": manifest_sha256, "trusted_parent_chain": _trusted_chain(STATE.parent),
             "state": state_identity, "journal": journal_identity,
         }
@@ -513,6 +515,9 @@ def _require_state():
 def _write_json_once(path, value, record_kind=None):
     raw = _canonical(value) + b"\n"
     _fail(len(raw) <= MAX_JSON, "state-json")
+    if record_kind is not None and VERSION == PHASE_B_VERSION:
+        _fail(record_kind.endswith("-owned"), "journal-invalid")
+        _append_journal(record_kind[:-5] + "intent", {"name": path.name, "size": len(raw), "sha256": hashlib.sha256(raw).hexdigest()})
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
     try:
         _write_all(descriptor, raw)
@@ -1934,6 +1939,8 @@ def _residue():
     _fixed_preflight(False)
     _require_state()
     codes = []
+    if VERSION == PHASE_B_VERSION:
+        _cleanup_attempt("qualification-residue", _qualification_residue, codes)
     for path, code in ((ASSETS, "asset-residue"), (ARTIFACT_ROOT, "cache-residue"),
                        (ROOTFS_STATE, "rootfs-baseline-not-restored")):
         try:
@@ -2305,7 +2312,7 @@ def _validate():
     _fixed_preflight(False)
     _require_state()
     raw = _read_regular(REPORT, MAX_JSON, 0o400)
-    _fail(_canonical_report(_strict_json(raw)) == raw, "report-validation")
+    _fail((_phase_b_canonical if VERSION == PHASE_B_VERSION else _canonical_report)(_strict_json(raw)) == raw, "report-validation")
     return 0
 
 
@@ -2318,7 +2325,7 @@ def _export():
     directory_identity = _identity(os.stat(EXPORT_ROOT, follow_symlinks=False))
     _fail(directory_identity["uid"] == directory_identity["gid"] == 0 and
           directory_identity["mode"] == 0o755, "export-policy")
-    raw = _canonical_report(_strict_json(_read_regular(REPORT, MAX_JSON, 0o400)))
+    raw = (_phase_b_canonical if VERSION == PHASE_B_VERSION else _canonical_report)(_strict_json(_read_regular(REPORT, MAX_JSON, 0o400)))
     descriptor = os.open(EXPORT_REPORT, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
     try:
         _write_all(descriptor, raw)
@@ -2340,9 +2347,9 @@ def _export():
 
 
 def _cleanup_evidence_state(records):
-    metadata = [_one_record(records, kind, True) for kind in (
-        "observation-owned", "cleanup-owned", "residue-owned", "report-owned",
-    )]
+    kinds = ("observation", "cleanup", "residue", "report")
+    intents = {kind: _one_record(records, kind + "-intent") for kind in kinds}
+    metadata = [_one_record(records, kind + "-owned") for kind in kinds]
     genesis = records[0]["body"]
     parent = _open_dir(STATE.parent)
     state = anchor = journal = None
@@ -2351,16 +2358,28 @@ def _cleanup_evidence_state(records):
         state = os.open(STATE.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent)
         anchor = os.open(ANCHOR.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent)
         _fail(_same_directory_authority(os.fstat(state), genesis["state"]), "state-replaced")
-        _fail(set(os.listdir(state)) == {JOURNAL.name} | {item["name"] for item in metadata},
-              "state-metadata-unknown")
-        for item in metadata:
-            descriptor = _owned_file(state, item["name"], item["identity"], item["sha256"])
-            held.append((item, descriptor))
+        present = set(os.listdir(state))
+        expected = {JOURNAL.name} | {item["name"] for item in metadata if item is not None}
+        expected |= {item["name"] for item in intents.values() if item is not None}
+        _fail(present <= expected, "state-metadata-unknown")
+        for kind, item in zip(kinds, metadata, strict=True):
+            intent = intents[kind]
+            _fail(item is None or VERSION != PHASE_B_VERSION or intent is not None and
+                  item["name"] == intent["name"] and item["sha256"] == intent["sha256"], "journal-state")
+            candidate = item if item is not None else intent
+            if candidate is None or candidate["name"] not in present:
+                continue
+            descriptor = os.open(candidate["name"], os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=state)
+            observed = os.fstat(descriptor)
+            _fail(item is not None or stat.S_ISREG(observed.st_mode) and observed.st_uid == observed.st_gid == 0 and
+                  observed.st_nlink == 1 and observed.st_size <= intent["size"], "cleanup-replaced")
+            held.append((candidate, descriptor))
         journal = os.open(JOURNAL.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=state)
         _fail(_same_identity(os.fstat(journal), genesis["journal"], include_size=False), "journal-replaced")
         _fail(_same_identity(os.fstat(anchor), genesis["anchor"]), "anchor-node-replaced")
         for item, descriptor in held:
-            _unlink_exact(state, item["name"], descriptor, item["identity"], item["sha256"])
+            _unlink_exact(state, item["name"], descriptor, item.get("identity", _identity(os.fstat(descriptor))),
+                          item.get("sha256") if "identity" in item else None)
         _unlink_exact(state, JOURNAL.name, journal, genesis["journal"], include_size=False)
         held_state = os.fstat(state)
         named_state = os.stat(STATE.name, dir_fd=parent, follow_symlinks=False)
@@ -2376,30 +2395,47 @@ def _cleanup_evidence_state(records):
         for descriptor in (journal, anchor, state, parent):
             if descriptor is not None:
                 os.close(descriptor)
+    created = genesis.get("created_parents", {})
+    if created.get("completion") is True:
+        _rmdir_exact(STATE.parent, created["completion_identity"])
+    if created.get("state_parent") is True:
+        _rmdir_exact(STATE.parent.parent, created["state_parent_identity"])
 
 
 def _cleanup_export():
     _fixed_preflight(False)
     records = _require_state()
-    owned = _one_record(records, "export-owned")
+    intent, owned = _one_record(records, "export-intent"), _one_record(records, "export-owned")
     if _held_path_absent(EXPORT_ROOT):
         _fail(owned is None, "export-residue-unknown")
     else:
-        _fail(owned is not None, "export-cleanup-unowned")
+        _fail(owned is not None or intent is not None and intent.get("name") == EXPORT_REPORT.name,
+              "export-cleanup-unowned")
         directory = os.open(EXPORT_ROOT, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
         descriptor = None
         try:
-            _fail(_same_directory_authority(os.fstat(directory), owned["directory"]), "export-cleanup-replaced")
-            _fail(set(os.listdir(directory)) == {EXPORT_REPORT.name}, "export-cleanup-unknown")
-            descriptor = _owned_file(directory, EXPORT_REPORT.name, owned["file"], owned["sha256"])
-            _unlink_exact(directory, EXPORT_REPORT.name, descriptor, owned["file"], owned["sha256"])
+            observed = os.fstat(directory)
+            _fail((owned is not None and _same_directory_authority(observed, owned["directory"]) or
+                  owned is None and stat.S_ISDIR(observed.st_mode) and observed.st_uid == observed.st_gid == 0 and
+                  stat.S_IMODE(observed.st_mode) == 0o755) and
+                  set(os.listdir(directory)) <= {EXPORT_REPORT.name}, "export-cleanup-replaced")
+            if EXPORT_REPORT.name in os.listdir(directory):
+                descriptor = os.open(EXPORT_REPORT.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                                     dir_fd=directory)
+                exported = os.fstat(descriptor)
+                _fail(owned is not None or stat.S_ISREG(exported.st_mode) and exported.st_uid == exported.st_gid == 0
+                      and exported.st_nlink == 1 and exported.st_size <= MAX_JSON, "export-cleanup-replaced")
+                _unlink_exact(directory, EXPORT_REPORT.name, descriptor,
+                              owned["file"] if owned is not None else _identity(exported),
+                              owned["sha256"] if owned is not None else None)
         finally:
             if descriptor is not None:
                 os.close(descriptor)
             os.close(directory)
-        _rmdir_exact(EXPORT_ROOT, owned["directory"])
-        _append_journal("export-cleaned", {"sha256": owned["sha256"]})
-        records = _require_state()
+        _rmdir_exact(EXPORT_ROOT, owned["directory"] if owned is not None else _identity(observed))
+        if owned is not None:
+            _append_journal("export-cleaned", {"sha256": owned["sha256"]})
+            records = _require_state()
     _cleanup_evidence_state(records)
     return 0
 
@@ -2459,6 +2495,161 @@ def _held_path_absent(path):
             os.close(descriptor)
 
 
+def _use_phase_b_paths():
+    global STATE, ANCHOR, JOURNAL, ASSETS, OBSERVATION, CLEANUP, RESIDUE, REPORT, EXPORT_ROOT, EXPORT_REPORT, VERSION, ANCHOR_VERSION
+    STATE, ANCHOR = PHASE_B_STATE, PHASE_B_STATE.parent / ".cogs-stage2-phase-b-anchor-v1.json"
+    JOURNAL, ASSETS = STATE / "ownership.jsonl", STATE / "assets"
+    OBSERVATION, CLEANUP, RESIDUE = STATE / "observation.json", STATE / "cleanup.json", STATE / "residue.json"
+    REPORT, EXPORT_ROOT = STATE / "qualification.json", Path("/var/tmp/cogs-stage2-phase-b-qualification-v1")
+    EXPORT_REPORT, VERSION = EXPORT_ROOT / "qualification.json", PHASE_B_VERSION
+    ANCHOR_VERSION = "cogs.stage2-phase-b-anchor/v1"
+
+
+def _qualification_module():
+    import completion_kata_qualification as qualification
+    return qualification
+
+
+def _exact_metadata(value, contract):
+    if callable(contract):
+        return bool(contract(value))
+    if type(contract) is range:
+        return type(value) is int and value in contract
+    if type(contract) is re.Pattern:
+        return type(value) is str and contract.fullmatch(value) is not None
+    if type(contract) is dict:
+        return type(value) is dict and set(value) == set(contract) and all(_exact_metadata(value[name], contract[name]) for name in contract)
+    if type(contract) is list:
+        return type(value) is list and len(value) == len(contract) and all(_exact_metadata(value[i], contract[i]) for i in range(len(contract)))
+    return type(value) is type(contract) and value == contract
+
+
+def _candidate_metadata(value, revision, manifest_sha256):
+    positive, count, mode = range(1, 1 << 63), range(1, 20_001), range(0, 0o10000)
+    version = {"length": range(1, 4097), "sha256": HEX, "exit_status": range(2)}
+    tool = lambda name: {"name": name, "closure_sha256": HEX, "version": version}
+    file = {"mode": mode, "size": positive, "sha256": HEX}
+    archive = lambda component: {"component": component, "archive": {"size": positive, "sha256": HEX},
+        "preflight": {"entry_count": count, "sha256": HEX}, "layout": {"entry_count": count, "sha256": HEX}}
+    host = {"tools": [tool(name) for name in ("ctr", "ip", "tc", "nft", "ssh", "ssh-keygen")],
+            "extraction_helpers": [tool(name) for name in ("tar", "zstd")]}
+    files = ("kata_config", "kata_runtime", "kata_shim", "qemu", "virtiofsd", "containerd", "ctr")
+    runtime = {"archives": [archive("kata"), archive("containerd")], "runtime_files": {name: file for name in files},
+        "private_versions": {"containerd": version, "ctr": version},
+        "private_config": {"size": positive, "sha256": HEX}, "shared_fs": "virtio-fs",
+        "kvm": {"api_version": 12, "device_accessible": True},
+        "qmp": {"present": True, "enabled": True, "acceleration": "kvm", "tcg": False},
+        "fixture_digests": {name: HEX for name in ("network", "runtime", "process", "share")}}
+    contract = {"version": "cogs.stage2-phase-b-attestation-candidate/v1", "authority": "candidate",
+        "qualified": False, "gate_opened": False, "owner_opened": False,
+        "source": {"revision": revision, "manifest_sha256": manifest_sha256}, "host": host,
+        "runtime": runtime, "metadata_only": True}
+    _fail(_exact_metadata(value, contract) and len(_canonical(value)) <= MAX_JSON, "qualification-report")
+    return value
+
+
+def _qualification_residue():
+    expected = {"version": "cogs.stage2-phase-b-attestation-candidate/v1", "authority": "candidate", "clean": True, "codes": []}
+    _fail(_qualification_module().candidate_attestation_residue() == expected, "qualification-residue")
+
+
+def _phase_b_observe():
+    _fixed_preflight(True, "download-2-fixed-public-runtime-assets")
+    revision, manifest_sha256 = _source_approval()
+    _verify_fixed_source(revision, manifest_sha256)
+    _fail(_held_path_absent(STATE.parent) and _held_path_absent(STATE.parent.parent), "state-baseline-present")
+    _initialize_state(revision, manifest_sha256)
+    started = time.monotonic_ns()
+    immediate = {asset.component: "not-required" for asset in RUNTIME_ASSETS}
+    value = {"revision": revision, "source_manifest_sha256": manifest_sha256, "duration_ms": 0,
+             "assets": [], "attestation": None, "codes": [], "immediate_cleanup": immediate}
+    error = None
+    try:
+        _append_journal("asset-directory-intent", {"name": ASSETS.name})
+        created, identity = _mkdir_policy(ASSETS)
+        _fail(created, "asset-directory-policy")
+        _append_journal("asset-directory-owned", {"identity": identity})
+        deadline = started + OBSERVE_SECONDS * NS_PER_SECOND
+        value["assets"] = [_download_asset(asset, deadline, immediate) for asset in RUNTIME_ASSETS]
+        value["attestation"] = _candidate_metadata(
+            _qualification_module().candidate_attestation_report(), revision, manifest_sha256)
+    except BaseException as caught:
+        error = caught
+        value["codes"] = [caught.code if type(caught) is CandidateError else "qualification-uncertainty"]
+    finally:
+        value["duration_ms"] = _elapsed_ms(_elapsed_ns(started))
+        _write_json_once(OBSERVATION, value, "observation-owned")
+    if error is not None:
+        raise CandidateError(value["codes"][0]) from error
+    return 0
+
+
+def _phase_b_cleanup():
+    _fixed_preflight(False)
+    records = _require_state()
+    codes = []
+    try:
+        immediate = _owned_immediate(records)
+    except BaseException:
+        immediate = _diagnosed(codes, "observation-cleanup-uncertainty", None)
+    expected = {"version": "cogs.stage2-phase-b-attestation-candidate/v1", "authority": "candidate", "cleaned": True, "roots_removed": 2}
+    cleanup = lambda: _fail(_qualification_module().candidate_attestation_cleanup() == expected, "qualification-cleanup-uncertainty")
+    _cleanup_attempt("qualification-cleanup-uncertainty", cleanup, codes)
+    if immediate is not None:
+        _cleanup_attempt("asset-cleanup-uncertainty", lambda: _cleanup_assets(records, immediate), codes)
+    _write_json_once(CLEANUP, {"success": not codes, "codes": list(dict.fromkeys(codes))}, "cleanup-owned")
+    _fail(not codes, "cleanup-uncertainty")
+    return 0
+
+
+def _phase_b_canonical(report):
+    assets = [{"component": item.component, "release": item.release, "name": item.name, "size": item.size,
+               "sha256": item.sha256, "downloaded": True, "extracted": False} for item in RUNTIME_ASSETS]
+    checks = {name: "pass" for name in ("runtime_assets", "attestation", "cleanup", "residue")}
+    contract = {"version": PHASE_B_VERSION, "stage": PHASE_B_STAGE, "authority": "candidate",
+        "qualified": False, "promotion": False, "source_revision": re.compile(r"[0-9a-f]{40}"),
+        "source_manifest_sha256": HEX, "duration_ms": range(5_400_001), "checks": checks,
+        "runtime_assets": assets, "candidate_attestation_report": lambda value: _candidate_metadata(
+            value, report["source_revision"], report["source_manifest_sha256"]) == value,
+        "blockers": ["candidate-non-authoritative"]}
+    _fail(_exact_metadata(report, contract), "report-schema")
+    raw = _canonical(report) + b"\n"
+    _fail(len(raw) <= MAX_JSON, "report-schema")
+    return raw
+
+
+def _phase_b_render():
+    _fixed_preflight(False)
+    _require_state()
+    observation = _strict_json(_read_regular(OBSERVATION, MAX_JSON, 0o400))
+    cleanup = _strict_json(_read_regular(CLEANUP, MAX_JSON, 0o400))
+    residue = _strict_json(_read_regular(RESIDUE, MAX_JSON, 0o400))
+    _fail(observation.get("codes") == [] and cleanup == {"success": True, "codes": []} and
+          residue == {"clean": True, "codes": []}, "report-input-uncertainty")
+    report = {"version": PHASE_B_VERSION, "stage": PHASE_B_STAGE, "authority": "candidate",
+        "qualified": False, "promotion": False, "source_revision": observation["revision"],
+        "source_manifest_sha256": observation["source_manifest_sha256"],
+        "duration_ms": observation["duration_ms"],
+        "checks": {name: "pass" for name in ("runtime_assets", "attestation", "cleanup", "residue")},
+        "runtime_assets": observation["assets"], "candidate_attestation_report": observation["attestation"],
+        "blockers": ["candidate-non-authoritative"]}
+    raw = _phase_b_canonical(report)
+    _write_json_once(REPORT, report, "report-owned")
+    _fail(_read_regular(REPORT, MAX_JSON, 0o400) == raw, "report-validation")
+    return 0
+
+
+def _phase_b_final_residue():
+    descriptors = set(os.listdir("/proc/self/fd"))
+    revision, manifest_sha256 = _source_approval()
+    _verify_fixed_source(revision, manifest_sha256)
+    _qualification_residue()
+    _post_export_residue()
+    _fail(_held_path_absent(STATE.parent) and _held_path_absent(STATE.parent.parent), "state-parent-residue")
+    _fail(set(os.listdir("/proc/self/fd")) == descriptors, "descriptor-residue")
+    return 0
+
+
 def _post_export_residue():
     for path, code in (
         (ROOTFS_STATE, "rootfs-baseline-not-restored"), (ARTIFACT_ROOT, "cache-residue"),
@@ -2475,6 +2666,11 @@ def main(argv):
         "validate": _validate, "export": _export, "cleanup-export": _cleanup_export,
         "post-export-residue": _post_export_residue,
     }
+    if len(argv) == 2 and argv[0] == PHASE_B_STAGE:
+        _use_phase_b_paths()
+        actions.update({"observe": _phase_b_observe, "cleanup": _phase_b_cleanup,
+                        "render": _phase_b_render, "post-export-residue": _phase_b_final_residue})
+        argv = argv[1:]
     _fail(len(argv) == 1 and argv[0] in actions, "arguments")
     return actions[argv[0]]()
 
