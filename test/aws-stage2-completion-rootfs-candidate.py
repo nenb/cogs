@@ -340,63 +340,140 @@ def arm_deadline(deadline, signal_frame=None):
     signal.setitimer(signal.ITIMER_REAL, remaining / NS)
 
 
+def partial_cache_snapshot(runner, verifier, contract, directories):
+    def fixed_file(directory, name, mode, size, digest):
+        identity = runner._identity(os.stat(name, dir_fd=directory, follow_symlinks=False))
+        assert (identity["kind"], identity["mode"], identity["uid"], identity["gid"],
+                identity["nlink"], identity["size"]) == ("file", mode, 0, 0, 1, size)
+        descriptor = runner._owned_file(directory, name, identity, digest)
+        os.close(descriptor)
+        return identity
+
+    root = runner._open_dir(runner.ARTIFACT_ROOT)
+    cache = None
+    try:
+        sentinel_name = ".cogs-stage2-completion-artifacts-v1"
+        assert verifier.SENTINEL == sentinel_name
+        assert verifier.SENTINEL_BYTES == b"cogs-stage2-completion-artifacts-v1\n"
+        assert runner._same_directory_authority(os.fstat(root), directories["root"])
+        assert set(os.listdir(root)) == {"cache", sentinel_name}
+        cache = os.open("cache", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=root)
+        assert runner._same_directory_authority(os.fstat(cache), directories["cache"])
+        rows = {row["cache_name"]: row for row in runner._artifact_rows(contract)}
+        names = set(os.listdir(cache))
+        assert names <= set(rows)
+        files = []
+        for name in sorted(names):
+            row = rows[name]
+            identity = fixed_file(cache, name, 0o400, row["size"], row["sha256"])
+            files.append({"name": name, "identity": identity, "sha256": row["sha256"]})
+        sentinel_digest = hashlib.sha256(verifier.SENTINEL_BYTES).hexdigest()
+        sentinel_identity = fixed_file(
+            root, sentinel_name, 0o600, len(verifier.SENTINEL_BYTES), sentinel_digest)
+        return {"root": runner._identity(os.fstat(root)), "cache": runner._identity(os.fstat(cache)),
+                "sentinel": {"identity": sentinel_identity, "sha256": sentinel_digest}, "files": files}
+    finally:
+        if cache is not None:
+            os.close(cache)
+        os.close(root)
+
+
 def hosted_exact_input():
-    assert os.environ.get("GITHUB_ACTIONS") == "true"
-    assert os.environ.get("COGS_ADR0057_HOSTED_EXACT") == "1"
     raw_anchor = os.environ["COGS_STAGE2_PHASE_A_BUDGET_ANCHOR_NS"]
     assert raw_anchor.isascii() and raw_anchor.isdigit() and raw_anchor[0] != "0"
     anchor = int(raw_anchor)
     assert anchor <= time.monotonic_ns() and anchor <= (1 << 63) - 1
     deadlines = tuple(anchor + seconds * NS for seconds in (600, 3900, 4500, 5100, 5400))
     source_deadline, build_deadline, recovery_deadline, cleanup_deadline, final_deadline = deadlines
-    runner = load("hosted_stage2_runner", FIXED / "scripts/run-stage2-phase-a-candidate.py")
-    runner._fixed_preflight(True)
-    revision, manifest_sha256 = runner._source_approval()
-    assert revision == os.environ["COGS_ADR0057_SOURCE_REVISION"]
-    assert manifest_sha256 == os.environ["COGS_ADR0057_SOURCE_MANIFEST_SHA256"]
-    runner._verify_fixed_source(revision, manifest_sha256)
-    verifier = runner._load_artifact_verifier()
-    module_names = ("completion_rootfs_fs", "completion_rootfs_builder",
-                    "completion_rootfs_build", "completion_rootfs_publish")
-    fs, builder, build, publication = map(__import__, module_names)
-    approval = fs.SourceApproval(revision, manifest_sha256)
-    temporary_paths = (runner.STATE, runner.ANCHOR)
-    cache_baseline = runner._held_path_absent(runner.ARTIFACT_ROOT)
-    temporary_baseline = tuple(runner._held_path_absent(path) for path in temporary_paths)
-    descriptors_before = fd_inventory()
-    assert cache_baseline and all(temporary_baseline) and runner._held_path_absent(runner.ROOTFS_STATE)
-    contract = cache_owned = rootfs_baseline = first = second = None
-    candidate_keys = []
-    recovery_uses = []
+    runner = verifier = fs = builder = build = publication = None
+    contract = cache_owned = cache_directories = rootfs_baseline = first = second = None
+    cache_baseline = temporary_baseline = descriptors_before = None
+    temporary_paths = ()
+    candidate_keys, recovery_uses = [], []
+    bootstrap_started = False
     errors = []
-    real_link, real_recovery = fs._link_anonymous, builder._recover_fixed
 
     def capture_link(directory, name, anonymous, control):
         observed = os.fstat(anonymous.number)
         candidate_keys.append((observed.st_dev, observed.st_ino))
         return real_link(directory, name, anonymous, control)
 
-    def counted_recovery(control):
+    def mark_recovery():
         recovery_uses.append(time.monotonic_ns())
         assert len(recovery_uses) == 1
+
+    def counted_recovery(control):
+        mark_recovery()
         return real_recovery(control)
 
     def cleanup_cache():
         nonlocal cache_owned
-        if cache_owned is None and contract is not None:
-            cache_owned = runner._snapshot_cache(contract)
+        assert runner is not None
+        if cache_owned is None and cache_directories is not None and contract is not None:
+            cache_owned = partial_cache_snapshot(runner, verifier, contract, cache_directories)
         if cache_owned is not None:
             runner._cleanup_artifacts(({"kind": "cache-owned", "body": cache_owned},))
+        else:
+            assert runner._held_path_absent(runner.ARTIFACT_ROOT)
+
+    def rootfs_restored():
+        if runner is None:
+            return not os.path.lexists(STATE)
+        if rootfs_baseline is None:
+            return runner._held_path_absent(runner.ROOTFS_STATE)
+        return runner._same_rootfs_lifecycle(runner._snapshot_rootfs_lifecycle(), rootfs_baseline)
 
     previous_alarm = signal.signal(signal.SIGALRM, arm_deadline)
     try:
         try:
             arm_deadline(source_deadline)
+            descriptors_before = fd_inventory()
+            assert os.environ.get("GITHUB_ACTIONS") == "true"
+            assert os.environ.get("COGS_ADR0057_HOSTED_EXACT") == "1"
+            runner = load("hosted_stage2_runner", FIXED / "scripts/run-stage2-phase-a-candidate.py")
+            runner._fixed_preflight(True)
+            revision, manifest_sha256 = runner._source_approval()
+            assert revision == os.environ["COGS_ADR0057_SOURCE_REVISION"]
+            assert manifest_sha256 == os.environ["COGS_ADR0057_SOURCE_MANIFEST_SHA256"]
+            runner._verify_fixed_source(revision, manifest_sha256)
+            verifier = runner._load_artifact_verifier()
+            module_names = ("completion_rootfs_fs", "completion_rootfs_builder",
+                            "completion_rootfs_build", "completion_rootfs_publish")
+            fs, builder, build, publication = map(__import__, module_names)
+            approval = fs.SourceApproval(revision, manifest_sha256)
+            temporary_paths = (runner.STATE, runner.ANCHOR)
+            cache_baseline = runner._held_path_absent(runner.ARTIFACT_ROOT)
+            temporary_baseline = tuple(runner._held_path_absent(path) for path in temporary_paths)
+            assert cache_baseline and all(temporary_baseline) and runner._held_path_absent(runner.ROOTFS_STATE)
             contract = runner._verifier_call(
                 verifier, "rootfs-contract-preflight", lambda: verifier.verify_contract(verifier.CONTRACT_PATH))
-            acquire = lambda: verifier.acquire_completion_artifacts(
-                verifier.CONTRACT_PATH, verifier.ARTIFACT_ROOT)
-            runner._verifier_call(verifier, "cache-acquisition-unknown", acquire, True)
+            acquisition = __import__("completion_artifact_acquisition")
+            real_private_chain = acquisition._open_private_chain
+
+            def capture_private_chain(path):
+                nonlocal cache_directories
+                chain = real_private_chain(path)
+                try:
+                    assert Path(path) == runner.ARTIFACT_ROOT and cache_directories is None
+                    cache_directories = {"root": runner._identity(os.fstat(chain[-2])),
+                                         "cache": runner._identity(os.fstat(chain[-1]))}
+                    assert all(identity["kind"] == "directory" and identity["mode"] == 0o700 and
+                               identity["uid"] == identity["gid"] == 0
+                               for identity in cache_directories.values())
+                    assert set(os.listdir(chain[-2])) == {"cache"} and not os.listdir(chain[-1])
+                    return chain
+                except BaseException:
+                    for descriptor in reversed(chain):
+                        os.close(descriptor)
+                    raise
+
+            acquisition._open_private_chain = capture_private_chain
+            try:
+                acquire = lambda: verifier.acquire_completion_artifacts(
+                    verifier.CONTRACT_PATH, verifier.ARTIFACT_ROOT)
+                runner._verifier_call(verifier, "cache-acquisition-unknown", acquire, True)
+            finally:
+                acquisition._open_private_chain = real_private_chain
             runner._verifier_call(
                 verifier, "cache-postverify",
                 lambda: verifier.verify_package_archives(verifier.CONTRACT_PATH, verifier.ARTIFACT_ROOT))
@@ -405,9 +482,11 @@ def hosted_exact_input():
             outer_deadline = min(now + build.OUTER_SECONDS * NS, build_deadline)
             assert now < outer_deadline
             outer = fs.OperationControl(outer_deadline, lambda: False)
+            bootstrap_started = True
             runner._bootstrap_rootfs(builder, fs, approval, outer)
             rootfs_baseline = runner._snapshot_rootfs_lifecycle()
             arm_deadline(build_deadline)
+            real_link, real_recovery = fs._link_anonymous, builder._recover_fixed
             fs._link_anonymous = capture_link
             builder._recover_fixed = counted_recovery
             try:
@@ -423,21 +502,23 @@ def hosted_exact_input():
         except BaseException as error:
             errors.append(error)
 
-        if errors and not recovery_uses:
+        if errors and bootstrap_started and not recovery_uses:
             try:
                 assert time.monotonic_ns() + (builder.RECOVER_SECONDS + 1) * NS <= recovery_deadline
                 arm_deadline(recovery_deadline)
+                mark_recovery()
                 runner._recover_rootfs([])
             except BaseException as error:
                 errors.append(error)
 
         cleanup_actions = (
             cleanup_cache,
-            lambda: rootfs_baseline is not None and runner._same_rootfs_lifecycle(
-                runner._snapshot_rootfs_lifecycle(), rootfs_baseline),
-            lambda: runner._held_path_absent(runner.ARTIFACT_ROOT) == cache_baseline,
-            lambda: tuple(runner._held_path_absent(path) for path in temporary_paths) == temporary_baseline,
-            lambda: fd_inventory() == descriptors_before,
+            rootfs_restored,
+            lambda: cache_baseline is not None and
+                    runner._held_path_absent(runner.ARTIFACT_ROOT) == cache_baseline,
+            lambda: temporary_baseline is not None and tuple(
+                runner._held_path_absent(path) for path in temporary_paths) == temporary_baseline,
+            lambda: descriptors_before is not None and fd_inventory() == descriptors_before,
         )
         for action in cleanup_actions:
             try:
@@ -446,18 +527,31 @@ def hosted_exact_input():
             except BaseException as error:
                 errors.append(error)
 
-        arm_deadline(final_deadline)
-        error = None
-        for added in errors:
-            error = added if error is None else fs.RootfsFsError(error, added)
-        if error is not None:
-            raise error
-        result = {"entry_count": first.entry_count, "manifest_sha256": first.manifest_sha256,
-                  "ustar_sha256": first.ustar_sha256, "ustar_size": first.ustar_size}
-        print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+        try:
+            arm_deadline(final_deadline)
+        except BaseException as error:
+            errors.append(error)
+    except BaseException as error:
+        errors.append(error)
     finally:
-        signal.setitimer(signal.ITIMER_REAL, 0)
-        signal.signal(signal.SIGALRM, previous_alarm)
+        for close_signal in (
+                lambda: signal.setitimer(signal.ITIMER_REAL, 0),
+                lambda: signal.signal(signal.SIGALRM, previous_alarm)):
+            try:
+                close_signal()
+            except BaseException as error:
+                errors.append(error)
+
+    if errors and fs is None:
+        raise BaseExceptionGroup("hosted qualification failures", errors)
+    error = None
+    for added in errors:
+        error = added if error is None else fs.RootfsFsError(error, added)
+    if error is not None:
+        raise error
+    result = {"entry_count": first.entry_count, "manifest_sha256": first.manifest_sha256,
+              "ustar_sha256": first.ustar_sha256, "ustar_size": first.ustar_size}
+    print(json.dumps(result, sort_keys=True, separators=(",", ":")))
 
 
 if sys.argv == [sys.argv[0]]:
