@@ -170,19 +170,6 @@ def accommodate_docker_overlay(fs, builder):
 
     fs._require_policy = policy
     fs._require_empty_fd_xattrs = xattrs
-    original_new_ledger = builder._new_active_ledger
-
-    def new_ledger(locked, *args):
-        active = original_new_ledger(locked, *args)
-        refreshed_chain = builder._state_chain(locked, builder._transition_control())
-        object.__setattr__(locked, "chain", refreshed_chain)
-        object.__setattr__(locked, "state", refreshed_chain.components[-1].node)
-        return active
-
-    # Docker tmpfs/overlay eagerly changes the held state directory generation
-    # when the ledger name is created; carry that exact observed generation into
-    # the fixture owner rather than weakening production chain validation.
-    builder._new_active_ledger = new_ledger
 
 
 def synthetic(plan_module, preflight):
@@ -2007,7 +1994,33 @@ def linux():
     for index, syscall_name in enumerate(("mkdir", "open", "link", "symlink"), 100):
         cancel_inside_named(index, syscall_name)
 
+    def retained_inventory():
+        values = []
+        for path in sorted(state_path.rglob("*"), key=lambda item: str(item).encode()):
+            descriptor = os.open(path, getattr(os, "O_PATH", 0o10000000) | os.O_NOFOLLOW)
+            try:
+                observed = os.fstat(descriptor)
+                rows = dict(line.split(":\t", 1) for line in Path(
+                    f"/proc/self/fdinfo/{descriptor}"
+                ).read_text().splitlines())
+            finally:
+                os.close(descriptor)
+            kind = ("file" if stat.S_ISREG(observed.st_mode) else
+                    "directory" if stat.S_ISDIR(observed.st_mode) else
+                    "symlink" if stat.S_ISLNK(observed.st_mode) else "other")
+            xattrs = tuple((name, os.getxattr(path, name, follow_symlinks=False))
+                           for name in sorted(os.listxattr(path, follow_symlinks=False)))
+            values.append((
+                str(path.relative_to(state_path)), int(rows["mnt_id"]), observed.st_dev,
+                observed.st_ino, kind, stat.S_IMODE(observed.st_mode), observed.st_uid,
+                observed.st_gid, observed.st_nlink, observed.st_size, observed.st_mtime_ns,
+                observed.st_ctime_ns, xattrs, path.read_bytes() if kind == "file" else None,
+                os.readlink(path) if kind == "symlink" else None,
+            ))
+        return tuple(values)
+
     def fault_after_named_create(token_number, seam):
+        nonlocal chain
         owned = builder._begin_operation(chain, approval, f"{token_number:064x}", control)
         real_open = fs._open_path_node
         real_xattrs = fs._require_empty_fd_xattrs
@@ -2047,12 +2060,33 @@ def linux():
             fs._observe_child = real_observe
         assert tripped["value"]
         observed_state = sorted(path.name for path in state_path.iterdir())
-        assert observed_state == sorted((builder.STATE_SENTINEL_NAME.text, builder.LOCK_NAME.text)), (seam, observed_state)
+        idle = sorted((builder.STATE_SENTINEL_NAME.text, builder.LOCK_NAME.text))
+        if seam == "symlink-open":
+            preserved = retained_inventory()
+            builder._release_lock(owned.locked)
+            fs._close_node(owned.locked.state)
+            rejected = False
+            try:
+                builder._recover_fixed(builder._fresh_recovery_control())
+            except BaseException:
+                rejected = True
+            assert rejected and preserved == retained_inventory()
+            fs._close_chain(chain)
+            shutil.rmtree(state_path)
+            chain = builder._open_base_chain(control)
+            state = builder._bootstrap(chain, approval, control)
+            fs._close_node(state)
+            fs._close_chain(chain)
+            chain = builder._open_base_chain(control)
+            assert sorted(path.name for path in state_path.iterdir()) == idle
+        else:
+            assert observed_state == idle, (seam, observed_state)
 
     for index, seam in enumerate(("directory-open", "file-xattr", "hardlink-observe", "symlink-open"), 130):
         fault_after_named_create(index, seam)
 
     def interrupt_inside_metadata(token_number, target_path, syscall_name, raise_after):
+        nonlocal chain
         owned = builder._begin_operation(chain, approval, f"{token_number:064x}", control)
         latch = {"cancelled": False}
         current = {"path": None}
@@ -2061,10 +2095,10 @@ def linux():
         real_metadata = materializer._metadata
         original = getattr(materializer.os, syscall_name)
 
-        def tracked_metadata(active, node, path, record, parent, current_control, symlink_name=None):
+        def tracked_metadata(active, node, path, record, parent, current_control, node_chain, symlink_name=None):
             current["path"] = path
             try:
-                return real_metadata(active, node, path, record, parent, current_control, symlink_name)
+                return real_metadata(active, node, path, record, parent, current_control, node_chain, symlink_name)
             finally:
                 current["path"] = None
 
@@ -2079,18 +2113,39 @@ def linux():
 
         materializer._metadata = tracked_metadata
         setattr(materializer.os, syscall_name, mutate_then_interrupt)
+        failure = None
         try:
             materializer._materialize(authority, owned, interrupted)
-        except BaseException:
-            pass
+        except BaseException as caught:
+            failure = caught
         else:
             raise AssertionError("metadata interruption was not observed")
         finally:
             materializer._metadata = real_metadata
             setattr(materializer.os, syscall_name, original)
-        assert latch["cancelled"] or raise_after
+        assert latch["cancelled"] or raise_after, (target_path, syscall_name, repr(failure), repr(failure.__cause__))
         observed_state = sorted(path.name for path in state_path.iterdir())
-        assert observed_state == sorted((builder.STATE_SENTINEL_NAME.text, builder.LOCK_NAME.text)), (target_path, syscall_name, raise_after, observed_state)
+        idle = sorted((builder.STATE_SENTINEL_NAME.text, builder.LOCK_NAME.text))
+        if raise_after:
+            preserved = retained_inventory()
+            builder._release_lock(owned.locked)
+            fs._close_node(owned.locked.state)
+            try:
+                builder._recover_fixed(builder._fresh_recovery_control())
+            except BaseException:
+                pass
+            else:
+                raise AssertionError("uncertain metadata syscall was adopted")
+            assert preserved == retained_inventory()
+            fs._close_chain(chain)
+            shutil.rmtree(state_path)
+            chain = builder._open_base_chain(control)
+            state = builder._bootstrap(chain, approval, control)
+            fs._close_node(state)
+            fs._close_chain(chain)
+            chain = builder._open_base_chain(control)
+        else:
+            assert observed_state == idle, (target_path, syscall_name, raise_after, observed_state)
 
     metadata_cases = (
         ("rootfs/bin/tool", "fchown"),

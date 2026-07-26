@@ -7,6 +7,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shutil
 import stat
 import sys
 import time
@@ -110,6 +111,23 @@ def portable_tests():
         helper_source = source.split(f"def {helper_name}(", 1)[1].split("\ndef ", 1)[0]
         assert "parent_chain" in helper_source and "fs._revalidate_chain(" in helper_source
     assert "state_snapshot = fs._enumerate_stable(locked.state, control)" in source
+    assert "object.__setattr__" not in source
+    new_ledger_source = source.split("def _new_active_ledger(", 1)[1].split("\ndef ", 1)[0]
+    assert "rebound = _rebound_locked_state(" in new_ledger_source
+    assert "return active, rebound" in new_ledger_source
+    begin_source = source.split("def _begin_operation_unmasked(", 1)[1].split("\ndef ", 1)[0]
+    transition_limited = begin_source.split("establishment_start =", 1)[1].split("transition =", 1)[0]
+    assert "active, locked = _new_active_ledger(" in transition_limited
+    assert "state = locked.state" in transition_limited
+    assert "_state_chain(" not in transition_limited
+    assert transition_limited.index("active, locked =") < transition_limited.index('"genesis-settled"')
+    assert transition_limited.index('"operation-create-intent"') < transition_limited.index(
+        "_operation_establishment_checkpoint("
+    )
+    checkpoint_source = source.split("def _operation_establishment_checkpoint(", 1)[1].split("\ndef ", 1)[0]
+    assert 'checkpoint.parent_snapshots == 3' in checkpoint_source
+    assert 'checkpoint.incremental_records == 2' in checkpoint_source
+    assert 'checkpoint.complete_walks == 0' in checkpoint_source
     materializer_source = (REMOTE / "completion_rootfs_materializer.py").read_text()
     assert "return fs._enumerate_names_stable(node, control)" in materializer_source
     assert "return fs._enumerate_stable(node, control)" in materializer_source
@@ -190,6 +208,35 @@ def portable_tests():
         assert builder._delta_for_chain(chain(target_parent, alias_parent), reciprocal) is reciprocal
         rejected(lambda: builder._delta_for_chain(chain(alias_parent, alias_parent), delta))
 
+    state_before = directory_generation(904)
+    state_after = dataclasses.replace(state_before, ctime_ns=2)
+    anchor = fs.HeldNode(fake_fd, fake_fd, directory_generation(900))
+    prefix = fs.ChainComponent(fs._name("prefix"), fs.HeldNode(fake_fd, fake_fd, directory_generation(905)))
+    state_node = fs.HeldNode(fake_fd, fake_fd, state_before)
+    state_component = fs.ChainComponent(builder.STATE_NAME, state_node)
+    locked_chain = fs.HeldChain(anchor, (prefix, state_component))
+    lock = object()
+    locked = builder.LockedState(locked_chain, state_node, lock)
+    observed_state = fs.HeldNode(state_node.identity_fd, state_node.operation_fd, state_before)
+    observed_chain = fs.HeldChain(anchor, (prefix, fs.ChainComponent(builder.STATE_NAME, observed_state)))
+    rebound = builder._rebound_locked_state(locked, observed_chain, state_before, state_after)
+    assert rebound is not locked and rebound.chain is not locked.chain
+    assert rebound.state is rebound.chain.components[-1].node
+    assert rebound.state.generation == state_after and rebound.lock is lock
+    assert rebound.state.identity_fd is locked.state.identity_fd
+    assert rebound.state.operation_fd is locked.state.operation_fd
+    assert locked.state.generation == state_before and locked.chain.components[-1].node is state_node
+    rejected(lambda: builder._rebound_locked_state(locked, observed_chain, directory_generation(999), state_after))
+    duplicate = fs.HeldChain(anchor, (
+        fs.ChainComponent(fs._name("hostile"), fs.HeldNode(fake_fd, fake_fd, state_before)),
+        fs.ChainComponent(builder.STATE_NAME, observed_state),
+    ))
+    duplicate_locked = builder.LockedState(duplicate, observed_state, lock)
+    rejected(lambda: builder._rebound_locked_state(duplicate_locked, duplicate, state_before, state_after))
+    wrong_anchor = fs.HeldNode(fake_fd, fake_fd, directory_generation(999))
+    hostile_chain = fs.HeldChain(wrong_anchor, observed_chain.components)
+    rejected(lambda: builder._rebound_locked_state(locked, hostile_chain, state_before, state_after))
+
     detached_chain = chain(alias_parent)
     detached_parent = detached_chain.components[-1].node
     detached_events = []
@@ -256,8 +303,60 @@ def require_disposable_container():
     require(tuple(path.name for path in mount.iterdir()) == (CONTAINER_SENTINEL.name,) and not FIXED.parent.exists())
 
 
-def prepare_fixed_workspace():
-    require_disposable_container()
+def require_native_linux_host():
+    def require(condition, message):
+        if not condition:
+            raise RuntimeError(f"native Linux C1 preflight: {message}")
+
+    require(sys.platform == "linux" and os.geteuid() == 0, "requires Linux EUID 0")
+    for namespace in ("mnt", "user", "pid"):
+        current = os.stat(f"/proc/self/ns/{namespace}")
+        initial = os.stat(f"/proc/1/ns/{namespace}")
+        require((current.st_dev, current.st_ino) == (initial.st_dev, initial.st_ino),
+                f"does not share PID 1 {namespace} namespace")
+    markers = ("/.dockerenv", "/.containerenv", "/run/.containerenv", "/run/systemd/container")
+    require(not any(Path(path).exists() for path in markers), "container marker present")
+    container_tokens = (b"docker", b"kubepods", b"containerd", b"libpod", b"podman", b"lxc")
+    cgroups = Path("/proc/self/cgroup").read_bytes() + Path("/proc/1/cgroup").read_bytes()
+    require(not any(token in cgroups.lower() for token in container_tokens), "container cgroup present")
+    init_environment = Path("/proc/1/environ").read_bytes().split(b"\0")
+    require(not any(value.lower().startswith(b"container=") for value in init_environment),
+            "PID 1 container environment present")
+    root_rows = []
+    for line in Path("/proc/self/mountinfo").read_text().splitlines():
+        fields = line.split()
+        if len(fields) >= 10 and fields[4] == "/" and "-" in fields:
+            separator = fields.index("-")
+            root_rows.append((fields, separator))
+    require(len(root_rows) == 1, "root mount is not unique")
+    fields, separator = root_rows[0]
+    require(fields[3] == "/" and fields[separator + 1] not in {"overlay", "aufs"},
+            "root is overlay-backed or not the filesystem root")
+    require("rw" in fields[5].split(","), "root mount is not writable")
+
+    mount_ids = set()
+    for path, mode in (("/", 0o755), ("/var", 0o755), ("/var/lib", 0o755)):
+        observed = os.lstat(path)
+        require(stat.S_ISDIR(observed.st_mode) and stat.S_IMODE(observed.st_mode) == mode,
+                f"{path} does not have production directory policy")
+        require(observed.st_uid == observed.st_gid == 0 and not os.listxattr(path, follow_symlinks=False),
+                f"{path} does not have production ownership/xattr policy")
+        descriptor = os.open(path, getattr(os, "O_PATH", 0o10000000) | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            rows = dict(line.split(":\t", 1) for line in Path(f"/proc/self/fdinfo/{descriptor}").read_text().splitlines())
+            mount_ids.add(int(rows["mnt_id"]))
+        finally:
+            os.close(descriptor)
+    require(mount_ids == {int(fields[0])}, "production path is not on the native root mount")
+    require(not Path("/var/lib/cogs").exists(), "requires absent /var/lib/cogs")
+
+
+def prepare_fixed_workspace(native=False):
+    if native:
+        require_native_linux_host()
+        Path("/var/lib/cogs").mkdir(mode=0o700)
+    else:
+        require_disposable_container()
     remote = FIXED / "deploy/aws-feasibility/remote"
     cache = FIXED / "deploy/aws-feasibility/.state/completion-v1/artifacts/cache"
     remote.mkdir(parents=True, mode=0o700)
@@ -296,7 +395,8 @@ def prepare_fixed_workspace():
     for path, content in copied:
         entries.append({"path": path, "kind": "file", "mode": 0o400, "size": len(content), "sha256": hashlib.sha256(content).hexdigest()})
     entries.sort(key=lambda item: item["path"].encode())
-    revision = "d" * 40
+    revision = os.environ.get("COGS_C1_EXPECTED_HEAD_SHA", "") if native else "d" * 40
+    assert len(revision) == 40 and all(value in "0123456789abcdef" for value in revision)
     raw = canonical_manifest(entries, revision)
     manifest = FIXED / ".cogs-stage2-source-manifest-v1.json"
     manifest.write_bytes(raw)
@@ -335,6 +435,193 @@ def accommodate_docker_overlay(fs, builder):
     fs._require_policy = policy
     fs._require_empty_fd_xattrs = xattrs
     return original
+
+
+def native_linux_c1_test():
+    revision = digest = None
+    owned_root = not Path("/var/lib/cogs").exists()
+    try:
+        revision, digest, _artifact_digest = prepare_fixed_workspace(True)
+        fixed_remote = FIXED / "deploy/aws-feasibility/remote"
+        sys.path.insert(0, str(fixed_remote))
+        fs = load("completion_rootfs_fs", fixed_remote / "completion_rootfs_fs.py")
+        load("completion_rootfs_ledger", fixed_remote / "completion_rootfs_ledger.py")
+        builder = load("completion_rootfs_builder", fixed_remote / "completion_rootfs_builder.py")
+        approval = fs.SourceApproval(revision, digest)
+        control = fs.OperationControl(time.monotonic_ns() + 60_000_000_000, lambda: False)
+        state_path = FIXED / "deploy/aws-feasibility/.state/completion-v1/rootfs-v1"
+        idle = tuple(sorted((builder.STATE_SENTINEL_NAME.text, builder.LOCK_NAME.text)))
+
+        def inventory():
+            values = []
+            for path in sorted(state_path.iterdir(), key=lambda item: item.name.encode()):
+                descriptor = os.open(path, getattr(os, "O_PATH", 0o10000000) | os.O_NOFOLLOW)
+                try:
+                    observed = os.fstat(descriptor)
+                    rows = dict(line.split(":\t", 1) for line in Path(
+                        f"/proc/self/fdinfo/{descriptor}"
+                    ).read_text().splitlines())
+                finally:
+                    os.close(descriptor)
+                kind = ("file" if stat.S_ISREG(observed.st_mode) else
+                        "directory" if stat.S_ISDIR(observed.st_mode) else
+                        "symlink" if stat.S_ISLNK(observed.st_mode) else "other")
+                xattrs = tuple((name, os.getxattr(path, name, follow_symlinks=False))
+                               for name in sorted(os.listxattr(path, follow_symlinks=False)))
+                content = path.read_bytes() if kind == "file" else None
+                generation = (int(rows["mnt_id"]), observed.st_dev, observed.st_ino, kind,
+                              stat.S_IMODE(observed.st_mode), observed.st_uid, observed.st_gid,
+                              observed.st_nlink, observed.st_size, observed.st_mtime_ns,
+                              observed.st_ctime_ns)
+                values.append((path.name, generation, xattrs, content))
+            return tuple(values)
+
+        def reset_state():
+            if state_path.exists():
+                shutil.rmtree(state_path)
+            chain = builder._open_base_chain(control)
+            state = builder._bootstrap(chain, approval, control)
+            fs._close_node(state)
+            fs._close_chain(chain)
+            baseline = inventory()
+            assert tuple(item[0] for item in baseline) == idle
+            assert dict((item[0], item[3]) for item in baseline)[builder.STATE_SENTINEL_NAME.text] == builder.STATE_SENTINEL
+            return baseline
+
+        policy_chain = builder._open_base_chain(control)
+        assert len(policy_chain.components) == len(fs._fixed_policies())
+        assert all(component.node.generation.key.mount_id == policy_chain.anchor.generation.key.mount_id
+                   and component.node.generation.key.device == policy_chain.anchor.generation.key.device
+                   for component in policy_chain.components)
+        fs._close_chain(policy_chain)
+
+        baseline = reset_state()
+        reports = []
+        real_checkpoint = builder._operation_establishment_checkpoint
+
+        def capture_checkpoint(*args):
+            report = real_checkpoint(*args)
+            reports.append(report)
+            return report
+
+        builder._operation_establishment_checkpoint = capture_checkpoint
+        chain = builder._open_base_chain(control)
+        owned = builder._begin_operation(chain, approval, "a" * 64, control)
+        builder._operation_establishment_checkpoint = real_checkpoint
+        assert len(reports) == 1
+        report = reports[0]
+        assert (report.parent_snapshots, report.incremental_records, report.complete_walks) == (3, 2, 0)
+        genesis_parent = builder.ledger._parse_parent(builder._first_record(owned.active).body_value()["state_parent"])
+        assert report.ledger_state_generation == genesis_parent.generation
+        assert owned.locked.state is owned.locked.chain.components[-1].node
+        assert owned.locked.state.generation == report.ledger_state_generation
+        builder._cleanup_owned(owned, owned.active, control)
+        fs._close_chain(chain)
+        assert inventory() == baseline
+
+        def crash_at(seam, token_number):
+            pid = os.fork()
+            if pid == 0:
+                try:
+                    child_chain = builder._open_base_chain(control)
+                    real_new = builder._new_active_ledger
+                    real_rebound = builder._rebound_locked_state
+                    real_append = builder._append
+                    real_revalidate = fs._revalidate_chain
+                    real_open = builder.os.open
+                    armed = {"proof": False}
+
+                    def cut():
+                        os._exit(91)
+
+                    def new_ledger(*args):
+                        if seam == "ledger-before":
+                            cut()
+                        value = real_new(*args)
+                        if seam == "ledger-after":
+                            cut()
+                        return value
+
+                    def rebound(*args):
+                        if seam == "rebound-before":
+                            cut()
+                        value = real_rebound(*args)
+                        if seam == "rebound-after":
+                            cut()
+                        return value
+
+                    def append(active, kind, body, current_control):
+                        if seam == f"{kind}-before":
+                            cut()
+                        value = real_append(active, kind, body, current_control)
+                        if kind == "genesis-settled":
+                            armed["proof"] = True
+                        if seam == f"{kind}-after":
+                            cut()
+                        return value
+
+                    def revalidate(*args, **kwargs):
+                        if armed["proof"] and seam == "next-proof-before":
+                            cut()
+                        value = real_revalidate(*args, **kwargs)
+                        if armed["proof"] and seam == "next-proof-after":
+                            cut()
+                        return value
+
+                    def open_name(name, flags, *args, **kwargs):
+                        if name == builder.LEDGER_NAME.raw and flags & os.O_CREAT:
+                            if seam == "ledger-name-before":
+                                cut()
+                            value = real_open(name, flags, *args, **kwargs)
+                            if seam == "ledger-name-after":
+                                cut()
+                            return value
+                        return real_open(name, flags, *args, **kwargs)
+
+                    builder._new_active_ledger = new_ledger
+                    builder._rebound_locked_state = rebound
+                    builder._append = append
+                    fs._revalidate_chain = revalidate
+                    builder.os.open = open_name
+                    builder._begin_operation(child_chain, approval, f"{token_number:064x}", control)
+                except BaseException:
+                    os._exit(92)
+                os._exit(93)
+            _pid, status = os.waitpid(pid, 0)
+            assert os.waitstatus_to_exitcode(status) == 91, seam
+
+        recoverable = (
+            "ledger-name-before", "ledger-before", "ledger-after",
+            "rebound-before", "rebound-after",
+            "genesis-settled-before", "genesis-settled-after",
+            "next-proof-before", "next-proof-after",
+            "operation-create-intent-before", "operation-create-intent-after",
+        )
+        for token_number, seam in enumerate(recoverable, 100):
+            baseline = reset_state()
+            crash_at(seam, token_number)
+            builder._recover_fixed(builder._fresh_recovery_control())
+            assert inventory() == baseline, seam
+
+        baseline = reset_state()
+        crash_at("ledger-name-after", 200)
+        uncertain = inventory()
+        assert uncertain != baseline
+        rejected(lambda: builder._recover_fixed(builder._fresh_recovery_control()))
+        assert inventory() == uncertain
+        print(json.dumps({
+            "classification": "observation-only",
+            "source_sha": revision,
+            "observations": [
+                "counter-3-2-0",
+                "descriptor-continuity",
+                "exact-baseline-recovery",
+                "uncertain-state-preservation",
+            ],
+        }, sort_keys=True, separators=(",", ":")))
+    finally:
+        if owned_root and Path("/var/lib/cogs").exists():
+            shutil.rmtree("/var/lib/cogs")
 
 
 def linux_functional_test():
@@ -387,6 +674,280 @@ def linux_functional_test():
     fs._close_node(state)
     fs._close_chain(chain)
 
+    def state_inventory():
+        values = []
+        for path in sorted(state_path.rglob("*"), key=lambda item: str(item).encode()):
+            descriptor = os.open(path, getattr(os, "O_PATH", 0o10000000) | os.O_NOFOLLOW)
+            try:
+                observed = os.fstat(descriptor)
+                rows = dict(line.split(":\t", 1) for line in Path(
+                    f"/proc/self/fdinfo/{descriptor}"
+                ).read_text().splitlines())
+            finally:
+                os.close(descriptor)
+            kind = ("file" if stat.S_ISREG(observed.st_mode) else
+                    "directory" if stat.S_ISDIR(observed.st_mode) else
+                    "symlink" if stat.S_ISLNK(observed.st_mode) else "other")
+            xattrs = tuple((name, os.getxattr(path, name, follow_symlinks=False))
+                           for name in sorted(os.listxattr(path, follow_symlinks=False)))
+            values.append((
+                str(path.relative_to(state_path)), int(rows["mnt_id"]), observed.st_dev,
+                observed.st_ino, kind, stat.S_IMODE(observed.st_mode), observed.st_uid,
+                observed.st_gid, observed.st_nlink, observed.st_size, observed.st_mtime_ns,
+                observed.st_ctime_ns, xattrs, path.read_bytes() if kind == "file" else None,
+                os.readlink(path) if kind == "symlink" else None,
+            ))
+        return tuple(values)
+
+    def reset_preserved_state():
+        shutil.rmtree(state_path)
+        reset_chain = builder._open_base_chain(control)
+        reset = builder._bootstrap(reset_chain, approval, control)
+        fs._close_node(reset)
+        fs._close_chain(reset_chain)
+
+    def rollback_cut(token_number, kind, route, seam):
+        baseline = state_inventory()
+        owner_chain = builder._open_base_chain(control)
+        owned = builder._begin_operation(owner_chain, approval, f"{token_number:064x}", control)
+        operation_chain = builder._held_operation_chain(
+            owned.active, owned.locked, owned.operation, control,
+        )
+        root = fs.HeldNode(
+            owned.root.identity_fd, owned.root.operation_fd,
+            fs._observe_node(owned.root.identity_fd, owned.root.operation_fd, control),
+        )
+        root_chain = builder._chain_with_child(operation_chain, builder.ROOT_NAME, root)
+        name = fs._name(f"rollback-{kind}-{route}")
+        content = b"rollback-file" if kind == "file" else None
+        gate = {"primary": False, "returned": False, "removed": False, "removal": None,
+                "rebound": False, "final_chain": None, "target": None, "closed": False,
+                "abort": False, "abort_observations": 0, "absence": 0,
+                "tripped": False, "authority": None}
+        originals = (
+            fs._open_path_node, fs._require_empty_fd_xattrs, builder._close, builder.os.rmdir,
+            builder.os.unlink, builder._parent_snapshot, fs.ParentDelta.__init__, fs._revalidate_chain,
+            builder._chain_after_parent, builder._CreateRollbackError, builder._append,
+            builder.ledger._observe_node, builder.ledger.os.fsync, builder._create_directory,
+            builder._create_file, builder.os.mkdir, builder._absence_abort_body,
+        )
+
+        def cut(label):
+            if seam == label:
+                gate["tripped"] = True
+                raise OSError(label)
+
+        def absence(*args):
+            gate["absence"] += 1
+            return originals[16](*args)
+
+        def mkdir(*args, **kwargs):
+            return originals[15](*args, **kwargs)
+
+        def open_node(parent, selected, selected_kind, current_control):
+            value = originals[0](parent, selected, selected_kind, current_control)
+            if selected == name and gate["target"] is None:
+                gate["target"] = value
+            return value
+
+        def xattrs(node, current_control):
+            if node is gate["target"] and route == "helper-error" and not gate["primary"]:
+                gate["primary"] = True
+                raise OSError(f"{kind}-helper-error")
+            return originals[1](node, current_control)
+
+        def close(node, primary=None):
+            if node is gate["target"]:
+                cut("close-before")
+                value = originals[2](node, primary)
+                gate["closed"] = True
+                cut("close-after")
+                return value
+            return originals[2](node, primary)
+
+        def remove(original, *args, **kwargs):
+            if gate["primary"] and args and args[0] == name.raw:
+                cut("remove-before")
+            value = original(*args, **kwargs)
+            if gate["primary"] and args and args[0] == name.raw:
+                gate["removed"] = True
+                cut("remove-after")
+            return value
+
+        def rmdir(*args, **kwargs):
+            return remove(originals[3], *args, **kwargs)
+
+        def unlink(*args, **kwargs):
+            return remove(originals[4], *args, **kwargs)
+
+        def snapshot(*args):
+            if gate["removed"]:
+                cut("post-snapshot-before")
+            value = originals[5](*args)
+            if gate["removed"]:
+                cut("post-snapshot-after")
+            return value
+
+        def parent_delta(self, action, selected, before, after):
+            if action in {"rmdir", "unlink"}:
+                cut("remove-delta-before")
+            originals[6](self, action, selected, before, after)
+            if action in {"rmdir", "unlink"}:
+                gate["removal"] = self
+                cut("remove-delta-after")
+
+        def revalidate(chain_value, current_control, parent_delta_value=None):
+            if (route == "post-return" and gate["returned"] and not gate["primary"] and
+                    parent_delta_value is not None and parent_delta_value.action == "create"):
+                gate["primary"] = True
+                raise OSError(f"{kind}-post-return-error")
+            if parent_delta_value is not None and parent_delta_value.action in {"rmdir", "unlink"}:
+                gate["removal"] = parent_delta_value
+                cut("remove-proof-before")
+            if gate["rebound"] and parent_delta_value is None:
+                cut("final-proof-before")
+            value = originals[7](chain_value, current_control, parent_delta_value)
+            if parent_delta_value is not None and parent_delta_value.action in {"rmdir", "unlink"}:
+                cut("remove-proof-after")
+            if gate["rebound"] and parent_delta_value is None:
+                cut("final-proof-after")
+            return value
+
+        def chain_after(chain_value, before, after):
+            removal = gate["removal"]
+            is_rebind = removal is not None and before == removal.before.generation and after == removal.after.generation
+            if is_rebind:
+                cut("rebind-before")
+            value = originals[8](chain_value, before, after)
+            if is_rebind:
+                gate["rebound"] = True
+                gate["final_chain"] = value
+                cut("rebind-after")
+            return value
+
+        def create_helper(original, *args):
+            try:
+                value = original(*args)
+                gate["returned"] = True
+                return value
+            except BaseException as error:
+                if type(error) is originals[9]:
+                    gate["authority"] = error
+                raise
+
+        def create_directory(*args):
+            return create_helper(originals[13], *args)
+
+        def create_file(*args):
+            return create_helper(originals[14], *args)
+
+        def append(active, kind, body, current_control):
+            if kind == "create-abort":
+                removal = gate["removal"]
+                final_chain = gate["final_chain"]
+                if gate["authority"] is not None:
+                    assert gate["authority"].removal == removal
+                    assert gate["authority"].chain == final_chain
+                assert removal.after.generation == builder.ledger._parse_parent(body["parent"]).generation
+                assert final_chain.components[-1].node.generation == removal.after.generation
+                assert gate["closed"] and gate["target"].identity_fd.disposition == "closed"
+                cut("abort-before")
+                gate["abort"] = True
+            value = originals[10](active, kind, body, current_control)
+            if kind == "create-abort":
+                cut("abort-after")
+            return value
+
+        def observe(*args):
+            if gate["abort"]:
+                gate["abort_observations"] += 1
+                if gate["abort_observations"] == 2:
+                    cut("abort-readback-before")
+            value = originals[11](*args)
+            if gate["abort"] and gate["abort_observations"] == 2:
+                cut("abort-readback-after")
+            return value
+
+        def fsync(descriptor):
+            if gate["removed"] and gate["removal"] is None:
+                cut("remove-sync-before")
+            if gate["abort"]:
+                cut("abort-sync-before")
+            value = originals[12](descriptor)
+            if gate["removed"] and gate["removal"] is None:
+                cut("remove-sync-after")
+            if gate["abort"]:
+                cut("abort-sync-after")
+            return value
+
+        fs._open_path_node, fs._require_empty_fd_xattrs = open_node, xattrs
+        fs.ParentDelta.__init__ = parent_delta
+        builder._close, builder.os.rmdir, builder.os.unlink, builder.os.mkdir = close, rmdir, unlink, mkdir
+        builder._parent_snapshot = snapshot
+        fs._revalidate_chain = revalidate
+        builder._chain_after_parent = chain_after
+        builder._create_directory, builder._create_file = create_directory, create_file
+        builder._append, builder._absence_abort_body = append, absence
+        builder.ledger._observe_node, builder.ledger.os.fsync = observe, fsync
+        failure = None
+        try:
+            builder._create_ledger_entry(
+                owned.active, root_chain, "rootfs/" + name.text, name, kind, content, control,
+            )
+        except BaseException as caught:
+            failure = caught
+        else:
+            raise AssertionError("rollback cut accepted")
+        finally:
+            (fs._open_path_node, fs._require_empty_fd_xattrs, builder._close, builder.os.rmdir,
+             builder.os.unlink, builder._parent_snapshot, fs.ParentDelta.__init__, fs._revalidate_chain,
+             builder._chain_after_parent, _rollback_type_unused, builder._append,
+             builder.ledger._observe_node, builder.ledger.os.fsync,
+             builder._create_directory, builder._create_file, builder.os.mkdir,
+             builder._absence_abort_body) = originals
+        label = (kind, route, seam)
+        if seam == "success":
+            assert gate["abort"] and gate["removed"] and gate["closed"], (
+                repr(failure), repr(getattr(failure, "primary", None)), gate,
+            )
+            assert (gate["authority"] is not None) == (route == "helper-error"), label
+        else:
+            assert gate["tripped"], label
+            if not seam.startswith("abort-"):
+                assert not gate["abort"], label
+        if route == "post-return" and seam in {"close-before", "close-after"}:
+            assert gate["removed"] and not gate["abort"], label
+        assert gate["absence"] == 0, label
+        for node in (owned.root, owned.operation, owned.active.node):
+            if node.identity_fd.disposition == "open":
+                fs._close_node(node)
+        if owned.locked.lock.identity_fd.disposition == "open":
+            builder._release_lock(owned.locked)
+        if owned.locked.state.identity_fd.disposition == "open":
+            fs._close_node(owned.locked.state)
+        fs._close_chain(owner_chain)
+        before_recovery = state_inventory()
+        try:
+            builder._recover_fixed(builder._fresh_recovery_control())
+        except BaseException:
+            assert state_inventory() == before_recovery and before_recovery != baseline, label
+            reset_preserved_state()
+        else:
+            assert state_inventory() == baseline, label
+
+    rollback_cases = (
+        "success", "close-before", "close-after", "remove-before", "remove-after",
+        "remove-sync-before", "remove-sync-after", "post-snapshot-before", "post-snapshot-after",
+        "remove-delta-before", "remove-delta-after", "remove-proof-before", "remove-proof-after",
+        "rebind-before", "rebind-after", "final-proof-before", "final-proof-after",
+        "abort-before", "abort-after", "abort-sync-before", "abort-sync-after",
+        "abort-readback-before", "abort-readback-after",
+    )
+    matrix = ((kind, route, seam) for kind in ("directory", "file")
+              for route in ("helper-error", "post-return") for seam in rollback_cases)
+    for index, (kind, route, seam) in enumerate(matrix, 300):
+        rollback_cut(index, kind, route, seam)
+
     for name in ("operation-one", "operation-two"):
         (state_path / name).mkdir(mode=0o700)
     assert builder.main(["recover-owned"]) == 1
@@ -413,6 +974,8 @@ def linux_functional_test():
 
 if len(sys.argv) == 2 and sys.argv[1] == "--linux":
     linux_functional_test()
+elif len(sys.argv) == 2 and sys.argv[1] == "--native-linux-c1":
+    native_linux_c1_test()
 else:
     portable_tests()
     print("completion rootfs builder portable tests passed")

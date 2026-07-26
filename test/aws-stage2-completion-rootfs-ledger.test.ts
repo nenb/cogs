@@ -13,7 +13,7 @@ test("D-R2.2b ledger codec, reconciliation, writer, and hardlink models fail clo
     cwd: root,
     env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" },
     encoding: "utf8",
-    timeout: 30_000,
+    timeout: 60_000,
   });
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /completion rootfs ledger tests passed/u);

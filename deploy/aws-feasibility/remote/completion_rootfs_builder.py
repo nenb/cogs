@@ -78,6 +78,23 @@ class ActiveLedger:
     writer: ledger.LedgerWriterState
 
 
+@dataclass(frozen=True)
+class OperationEstablishmentCheckpoint:
+    ledger_state_generation: fs.HostGeneration
+    parent_snapshots: int
+    incremental_records: int
+    complete_walks: int
+
+
+class _CreateRollbackError(Exception):
+    def __init__(self, primary, chain=None, removal=None, child=None):
+        self.primary = primary
+        self.chain = chain
+        self.removal = removal
+        self.child = child
+        super().__init__()
+
+
 def _records(active):
     _fail(type(active) is ActiveLedger)
     if type(active.records) is ledger.LedgerHistory:
@@ -190,11 +207,14 @@ def _owned_nodes(nodes):
 def _create_directory(parent, name, control, parent_chain):
     node = None
     delta = None
+    rollback = None
+    created = False
     try:
         fs._revalidate_chain(parent_chain, control)
         before = _parent_snapshot(parent, control)
         fs._revalidate_chain(parent_chain, control)
         _check(control)
+        created = True
         os.mkdir(name.raw, 0o700, dir_fd=parent.operation_fd.number)
         after = _parent_snapshot(parent, control)
         delta = fs.ParentDelta("create", name, before, after)
@@ -215,14 +235,28 @@ def _create_directory(parent, name, control, parent_chain):
                     _fail(current.key == node.generation.key)
                     _close(node)
                 before_remove = _parent_snapshot(parent, cleanup)
+                _fail(before_remove == delta.after)
+                fs._revalidate_chain(current_chain, cleanup)
                 _remove_name(parent, name, current, cleanup)
                 after_remove = _parent_snapshot(parent, cleanup)
                 remove_delta = fs.ParentDelta("rmdir", name, before_remove, after_remove)
                 fs._revalidate_chain(current_chain, cleanup, remove_delta)
+                final_chain = _chain_after_parent(
+                    current_chain, before_remove.generation, after_remove.generation,
+                )
+                fs._revalidate_chain(final_chain, cleanup)
+                rollback = _CreateRollbackError(error, final_chain, remove_delta, current)
             except BaseException as cleanup_error:
                 error = fs.RootfsFsError(error, cleanup_error)
         if node is not None and node.identity_fd.disposition == "open":
-            _close(node, error)
+            try:
+                _close(node)
+            except BaseException as close_error:
+                error = fs.RootfsFsError(error, close_error)
+        if rollback is not None:
+            raise rollback
+        if created:
+            raise _CreateRollbackError(error)
         raise error
 
 
@@ -230,12 +264,14 @@ def _create_file(parent, name, content, control, parent_chain):
     _fail(type(content) is bytes)
     flags = os.O_RDWR | os.O_CREAT | os.O_EXCL | fs._O_NOFOLLOW | fs._O_CLOEXEC
     descriptor = node = None
-    key = delta = None
+    key = delta = rollback = None
+    created = close_uncertain = False
     try:
         fs._revalidate_chain(parent_chain, control)
         before = _parent_snapshot(parent, control)
         fs._revalidate_chain(parent_chain, control)
         _check(control)
+        created = True
         descriptor = fs.CheckedFd(os.open(name.raw, flags, 0o600, dir_fd=parent.operation_fd.number), "created-file")
         key_stat = os.fstat(descriptor.number)
         key = (key_stat.st_dev, key_stat.st_ino)
@@ -262,7 +298,8 @@ def _create_file(parent, name, content, control, parent_chain):
                     owned.close()
             except BaseException as close_error:
                 error = fs.RootfsFsError(error, close_error)
-        if delta is not None:
+                close_uncertain = True
+        if delta is not None and not close_uncertain:
             cleanup = _transition_control()
             try:
                 current_chain = _chain_after_parent(parent_chain, delta.before.generation, delta.after.generation)
@@ -270,13 +307,24 @@ def _create_file(parent, name, content, control, parent_chain):
                 current = fs._observe_child(parent, name, cleanup)
                 _fail(current.key.kind == "file" and (key is None or (current.key.device, current.key.inode) == key))
                 before_remove = _parent_snapshot(parent, cleanup)
+                _fail(before_remove == delta.after)
+                fs._revalidate_chain(current_chain, cleanup)
                 os.unlink(name.raw, dir_fd=parent.operation_fd.number)
                 _fsync(parent.operation_fd, cleanup)
                 after_remove = _parent_snapshot(parent, cleanup)
                 remove_delta = fs.ParentDelta("unlink", name, before_remove, after_remove)
                 fs._revalidate_chain(current_chain, cleanup, remove_delta)
+                final_chain = _chain_after_parent(
+                    current_chain, before_remove.generation, after_remove.generation,
+                )
+                fs._revalidate_chain(final_chain, cleanup)
+                rollback = _CreateRollbackError(error, final_chain, remove_delta, current)
             except BaseException as cleanup_error:
                 error = fs.RootfsFsError(error, cleanup_error)
+        if rollback is not None:
+            raise rollback
+        if created:
+            raise _CreateRollbackError(error)
         raise error
 
 
@@ -441,6 +489,53 @@ def _ledger_node(state, control):
         raise error
 
 
+def _rebound_locked_state(locked, state_chain, before_generation, after_generation):
+    _fail(type(locked) is LockedState and type(state_chain) is fs.HeldChain)
+    _fail(type(before_generation) is fs.HostGeneration and type(after_generation) is fs.HostGeneration)
+    _fail(state_chain.anchor is locked.chain.anchor)
+    _fail(len(state_chain.components) == len(locked.chain.components) and state_chain.components)
+    _fail(state_chain.components[-1].name == STATE_NAME)
+    _fail(state_chain.components[-1].node.identity_fd is locked.state.identity_fd)
+    _fail(state_chain.components[-1].node.operation_fd is locked.state.operation_fd)
+    rebound_chain = _chain_after_parent(state_chain, before_generation, after_generation)
+    rebound_state = rebound_chain.components[-1].node
+    _fail(rebound_state.generation == after_generation)
+    _fail(rebound_state.identity_fd is locked.state.identity_fd)
+    _fail(rebound_state.operation_fd is locked.state.operation_fd)
+    rebound = LockedState(rebound_chain, rebound_state, locked.lock)
+    _fail(rebound is not locked and rebound.chain is rebound_chain)
+    _fail(rebound.state is rebound.chain.components[-1].node and rebound.lock is locked.lock)
+    return rebound
+
+
+def _operation_establishment_start():
+    before = fs.structural_counter_snapshot()
+    _fail(type(before) is dict and tuple(before) == fs.ROOTFS_STRUCTURAL_COUNTER_KEYS)
+    _fail(all(type(value) is int and 0 <= value <= (1 << 63) - 1 for value in before.values()))
+    return before
+
+
+def _operation_establishment_checkpoint(before, active, locked):
+    _fail(type(active) is ActiveLedger and type(locked) is LockedState)
+    genesis_parent = ledger._parse_parent(_first_record(active).body_value()["state_parent"])
+    retained_generation = locked.chain.components[-1].node.generation
+    _fail(locked.state is locked.chain.components[-1].node)
+    _fail(retained_generation == genesis_parent.generation)
+    after = fs.structural_counter_snapshot()
+    values = fs.structural_counter_delta(before, after)
+    checkpoint = OperationEstablishmentCheckpoint(
+        genesis_parent.generation,
+        values["parent_snapshots"],
+        values["incremental_records"],
+        values["complete_walks"],
+    )
+    _fail(checkpoint.parent_snapshots == 3)
+    _fail(checkpoint.incremental_records == 2)
+    _fail(checkpoint.complete_walks == 0)
+    _fail(checkpoint.ledger_state_generation == retained_generation)
+    return checkpoint
+
+
 def _new_active_ledger(locked, approval, token, work_control):
     _fail(type(locked) is LockedState)
     state = locked.state
@@ -489,7 +584,11 @@ def _new_active_ledger(locked, approval, token, work_control):
         current = fs._observe_node(node.identity_fd, node.operation_fd, control)
         writer = ledger.LedgerWriterState(node, current.key, ledger.SettledBytes(0, len(raw), hashlib.sha256(raw).hexdigest()), current)
         work_control.check()
-        return ActiveLedger(node, history, writer)
+        active = ActiveLedger(node, history, writer)
+        rebound = _rebound_locked_state(
+            locked, state_chain, before_snapshot.generation, after_snapshot.generation,
+        )
+        return active, rebound
     except BaseException as primary:
         error = primary
     if key is None and descriptor is not None and descriptor.disposition == "open":
@@ -730,14 +829,42 @@ def _create_ledger_entry(active, parent_chain, path, name, kind, content, contro
         control.check()
         return active, child
     except BaseException as error:
+        rollback = error if type(error) is _CreateRollbackError else None
+        if rollback is not None:
+            error = rollback.primary
         if child is None:
             cleanup_control = _transition_control()
             try:
                 terminal = _durable_terminal(active, cleanup_control)
                 if terminal.record_type == "create-intent" and terminal.body_value()["path"] == path:
-                    abort = _absence_abort_body(terminal.body_value(), parent_chain, name, cleanup_control)
-                    fs._revalidate_chain(parent_chain, cleanup_control)
-                    active = _append(active, "create-abort", abort, cleanup_control)
+                    abort = None
+                    if rollback is None:
+                        abort = _absence_abort_body(terminal.body_value(), parent_chain, name, cleanup_control)
+                        fs._revalidate_chain(parent_chain, cleanup_control)
+                    elif rollback.chain is not None:
+                        _fail(rollback.child.key.kind == kind)
+                        _fail(rollback.removal.action == ("rmdir" if kind == "directory" else "unlink") and
+                              rollback.removal.name == name)
+                        _fail(rollback.chain.anchor is parent_chain.anchor)
+                        _fail(len(rollback.chain.components) == len(parent_chain.components) and all(
+                            actual.name == prior.name and actual.node.identity_fd is prior.node.identity_fd and
+                            actual.node.operation_fd is prior.node.operation_fd
+                            for actual, prior in zip(rollback.chain.components, parent_chain.components)
+                        ))
+                        _fail(all(
+                            actual.node.generation == prior.node.generation
+                            for actual, prior in zip(rollback.chain.components[:-1], parent_chain.components[:-1])
+                        ))
+                        _fail(parent_chain.components[-1].node.generation == pre_snapshot.generation)
+                        _fail(rollback.chain.components[-1].node.generation == rollback.removal.after.generation)
+                        abort = _abort_body_from_snapshot(terminal.body_value(), name, rollback.removal.after)
+                        fs._revalidate_chain(rollback.chain, cleanup_control)
+                    else:
+                        _fail(rollback.removal is rollback.child is None)
+                    if abort is not None:
+                        active = _append(active, "create-abort", abort, cleanup_control)
+                        if rollback is not None:
+                            fs._revalidate_chain(rollback.chain, cleanup_control)
             except BaseException as cleanup_error:
                 error = fs.RootfsFsError(error, cleanup_error)
         if child is not None and child.identity_fd.disposition == "open":
@@ -768,8 +895,8 @@ def _create_ledger_entry(active, parent_chain, path, name, kind, content, contro
                     )
                     abort = _abort_body_from_snapshot(terminal.body_value(), name, after_remove)
                     fs._revalidate_chain(final_chain, cleanup_control)
-                    active = _append(active, "create-abort", abort, cleanup_control)
                     _close(child)
+                    active = _append(active, "create-abort", abort, cleanup_control)
             except BaseException as cleanup_error:
                 error = fs.RootfsFsError(error, cleanup_error)
                 if child.identity_fd.disposition == "open":
@@ -799,9 +926,10 @@ def _begin_operation_unmasked(chain, approval, token, control):
         locked = _acquire_lock(chain, state, control)
         names = fs._enumerate_stable(state, control).raw_names
         _fail(names == tuple(sorted((STATE_SENTINEL_NAME.raw, LOCK_NAME.raw))))
-        active = _new_active_ledger(locked, approval, token, control)
+        establishment_start = _operation_establishment_start()
+        active, locked = _new_active_ledger(locked, approval, token, control)
+        state = locked.state
         state_parent = ledger._parse_parent(_first_record(active).body_value()["state_parent"])
-        fs._revalidate_chain(_state_chain(locked, control), control)
         active = _append(active, "genesis-settled", {"token": token, "state_parent": _p(state_parent)}, control)
         operation_name = _operation_name(token)
         fs._revalidate_chain(locked.chain, control)
@@ -809,6 +937,7 @@ def _begin_operation_unmasked(chain, approval, token, control):
         fs._revalidate_chain(locked.chain, control)
         pre = _parent_value(pre_snapshot)
         active = _append(active, "operation-create-intent", {"token": token, "operation_name": operation_name.text, "state_parent": _p(pre)}, control)
+        _operation_establishment_checkpoint(establishment_start, active, locked)
         transition = _transition_control()
         fs._revalidate_chain(locked.chain, transition)
         operation = _create_directory(state, operation_name, transition, locked.chain)
