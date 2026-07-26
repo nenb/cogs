@@ -56,7 +56,7 @@ ADRs 0001–0010 were accepted by Nick Byrne on 2026-07-10. ADR 0011 was accepte
 | [0050](0050-authorize-post-candidate-stage2-corrections.md) | Authorize narrow Stage 2 post-candidate corrections and one final candidate | Accepted; C1–C4 and one operationally selected non-authoritative candidate only; implementation corrections in ADRs 0051–0052 |
 | [0051](0051-correct-adr0050-implementation-review-findings.md) | Correct ADR 0050 implementation-review findings without adding a candidate | Accepted; R1 and narrow C1–C3 qualification corrections only; C3 bounds and native authority clarified by ADR 0052 |
 | [0052](0052-clarify-stage2-producer-and-native-authority.md) | Clarify Stage 2 producer states and native qualification authority | Accepted; one narrow same-repo PR CI quality route for native C1 only; envelope semantics amended by ADR 0053; no additional candidate |
-| [0053](0053-distinguish-native-execution-envelope-observations.md) | Distinguish native execution-envelope observations | Accepted; test-invoker assertion correction only; companion assertions proposed by ADR 0054 |
-| [0054](0054-authorize-native-invoker-companion-assertions.md) | Authorize native-invoker companion assertions | Proposed; exact TypeScript companion assertions only, maximum ten gross raw added lines; no source weakening or candidate change |
+| [0053](0053-distinguish-native-execution-envelope-observations.md) | Distinguish native execution-envelope observations | Accepted; test-invoker assertion correction with companion scope amended by ADR 0054 |
+| [0054](0054-authorize-native-invoker-companion-assertions.md) | Authorize native-invoker companion assertions | Accepted; exact TypeScript companion assertions only, maximum ten gross raw added lines; no source weakening or candidate change |
 
 Implementation pauses for every boundary listed in `IMPLEMENTATION.md` section 47. Superseding an accepted ADR requires a new ADR rather than editing history.

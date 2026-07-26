@@ -1,9 +1,10 @@
 # ADR 0054: Authorize native-invoker companion assertions
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-26
 - Decision owner: Nick Byrne
-- Acceptance authority: Nick Byrne, or the delegated project lead acting under Nick Byrne's standing bounded-local delegation.
+- Accepted by: Delegated project lead on 2026-07-26 under Nick Byrne's standing bounded-local delegation, after independent hostile review reported no P0–P3 findings.
+- Acceptance record: [GitHub pull request #223](https://github.com/nenb/cogs/pull/223).
 - Amendment scope: This ADR amends only ADR 0053's exact authorized-correction scope to permit the bounded companion assertions below in `test/aws-stage2-completion-rootfs-builder.test.ts`. Every other ADR 0050–0053 requirement remains binding.
 
 ## Context
