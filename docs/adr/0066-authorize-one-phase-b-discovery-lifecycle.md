@@ -1,6 +1,6 @@
 # ADR 0066: Authorize one Phase B discovery lifecycle
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-27
 - Decision owner: Nick Byrne
 - Amendment scope: One candidate-only lifecycle for ADR 0065 Phase B discovery. Every non-conflicting ADR 0038–0065 requirement remains binding.
