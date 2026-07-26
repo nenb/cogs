@@ -121,7 +121,7 @@ test("D-R2.2c exposes only fixed recover-owned and keeps bootstrap private", asy
   assert.doesNotMatch(nativeInvoker, /native-host|native-qualified|external_authority/u);
   assert.doesNotMatch(nativeInvokerPath, /\.test\.ts$/u);
 
-  assert.match(nativeInvoker, /\[str\(PYTHON\), "-I", str\(BUILDER_TEST\), "--native-linux-c1"\]/u);
+  assert.match(nativeInvoker, /\[str\(PYTHON\), "-I", "-B", str\(BUILDER_TEST\), "--native-linux-c1"\]/u);
   assert.match(nativeInvoker, /return \[str\(PYTHON\), "-I", str\(Path\(__file__\)\.resolve\(\)\), "--privileged"/u);
 
   const portable = spawnSync("python3", ["-I", nativeInvokerPath, "--portable-tests"], {

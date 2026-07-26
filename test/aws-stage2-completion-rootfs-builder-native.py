@@ -444,7 +444,7 @@ def privileged(expected_uid, expected_gid, expected_digest):
     require(package["workflow"] == child_workflow, "parent/child workflow observations differ")
     child_local = complete_local_observations(package["parent_local"])
     result = subprocess.run(
-        [str(PYTHON), "-I", str(BUILDER_TEST), "--native-linux-c1"], cwd=ROOT,
+        [str(PYTHON), "-I", "-B", str(BUILDER_TEST), "--native-linux-c1"], cwd=ROOT,
         env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}, text=True, capture_output=True,
         timeout=900, check=False,
     )
