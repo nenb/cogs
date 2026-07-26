@@ -1,8 +1,10 @@
 # ADR 0060: Raise the hosted qualification driver cap after final review
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-26
 - Decision owner: Nick Byrne
+- Accepted by: Delegated project lead on 2026-07-26 under Nick Byrne's standing bounded-local delegation, after independent review reported no P0–P3 findings.
+- Acceptance record: [GitHub pull request #231](https://github.com/nenb/cogs/pull/231).
 - Amendment scope: This ADR amends only ADR 0057's absolute gross-addition maximum for `test/aws-stage2-completion-rootfs-candidate.py`, from 370 to 470, and the corresponding excluded three-file total maximum, from 510 to 610. It authorizes only the P1 hosted-driver and P2 per-fault fd-observation corrections below. The workflow maximum remains 110. Every other ADR 0057–0059 requirement remains binding.
 
 ## Context
