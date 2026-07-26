@@ -77,6 +77,48 @@ def gvalue(value):
     return ledger._generation_value(value)
 
 
+def candidate_records(operation):
+    before = ledger.LedgerParent(operation, ())
+    after = ledger.LedgerParent(dataclasses.replace(operation, ctime_ns=2), (ledger.CANDIDATE_TAR_PATH,))
+    anonymous = generation(70, "file", 0o600, 0, ledger.CANDIDATE_TAR_SIZE, ctime=10)
+    linked = dataclasses.replace(anonymous, nlink=1, ctime_ns=11)
+    intent_body = {
+        "token": TOKEN, "path": ledger.CANDIDATE_TAR_PATH, "parent": pvalue(before),
+        "anonymous": gvalue(anonymous), "size": ledger.CANDIDATE_TAR_SIZE, "sha256": "7" * 64,
+    }
+    observed_body = {
+        "token": TOKEN, "path": ledger.CANDIDATE_TAR_PATH, "parent": pvalue(after),
+        "anonymous": gvalue(anonymous), "linked": gvalue(linked),
+        "size": ledger.CANDIDATE_TAR_SIZE, "sha256": "7" * 64,
+    }
+    return (
+        ledger.LedgerProposal.create("candidate-tar-intent", intent_body),
+        ledger.LedgerProposal.create("candidate-tar-abort", intent_body),
+        ledger.LedgerProposal.create("candidate-tar-observed", observed_body),
+        ledger.LedgerProposal.create("candidate-tar-settled", observed_body),
+        before, after, anonymous, linked,
+    )
+
+
+def mutate_encoded(proposals, index, mutate):
+    values = [json.loads(line) for line in encoded(proposals).splitlines()]
+    mutate(values[index]["body"])
+    chunks = []
+    settled = ledger.INITIAL_BYTES
+    for sequence, value in enumerate(values):
+        value.update({
+            "sequence": sequence, "previous_sequence": settled.sequence,
+            "previous_offset": f"{settled.offset:0{ledger.OFFSET_WIDTH}d}",
+            "previous_sha256": settled.line_sha256, "next_offset": "0" * ledger.OFFSET_WIDTH,
+        })
+        placeholder = ledger._canonical_line(value)
+        value["next_offset"] = f"{settled.offset + len(placeholder):0{ledger.OFFSET_WIDTH}d}"
+        line = ledger._canonical_line(value)
+        chunks.append(line)
+        settled = ledger.SettledBytes(sequence, settled.offset + len(line), hashlib.sha256(line).hexdigest())
+    return b"".join(chunks)
+
+
 def genesis_body(state_parent):
     return {
         "token": TOKEN,
@@ -87,12 +129,12 @@ def genesis_body(state_parent):
     }
 
 
-def lifecycle_prefix():
+def lifecycle_prefix(operation_size=0):
     ledger_name = "active-ledger"
     operation_name = ledger._operation_name(TOKEN)
     state_before = parent(1, (ledger_name, "lock", "sentinel"))
     state_after = parent(1, (ledger_name, "lock", operation_name, "sentinel"), ctime=2)
-    operation = generation(2)
+    operation = generation(2, size=operation_size)
     proposals = [
         ledger.LedgerProposal.create("genesis", genesis_body(state_before)),
         ledger.LedgerProposal.create("genesis-settled", {"token": TOKEN, "state_parent": pvalue(state_before)}),
@@ -158,6 +200,54 @@ def codec_and_reconcile_tests():
     assert len(active) == 5 and active[-1].record_type == "operation-create-settled"
     state = ledger._reconcile_ledger(active, observations)
     assert state.status == "active" and state.cleanup_allowed
+
+    intent, abort, observed, settled, candidate_before, candidate_after, anonymous, linked = candidate_records(operation)
+    abort_raw = encoded(proposals + [intent, abort])
+    abort_history = ledger._parse_ledger_history(abort_raw)
+    assert ledger._parse_ledger(abort_raw) == ledger._history_records(abort_history)
+    assert abort_history.legal.phase == "active" and abort_history.legal.operation_parent == candidate_before
+    linked_raw = encoded(proposals + [intent, observed, settled])
+    linked_history = ledger._parse_ledger_history(linked_raw)
+    linked_records = ledger._parse_ledger(linked_raw)
+    assert linked_records == ledger._history_records(linked_history)
+    assert linked_history.legal.phase == "active" and linked_history.legal.operation_parent == candidate_after
+    intent_records = ledger._parse_ledger(encoded(proposals + [intent]))
+    absent_candidate = dataclasses.replace(observations, parents=(("", candidate_before),))
+    candidate_state = ledger._reconcile_ledger(intent_records, absent_candidate)
+    assert (candidate_state.status, candidate_state.owned) == ("candidate-tar-abortable", ())
+    linked_candidate = ledger.ReconcileObservations(
+        state_after, ((ledger._operation_name(TOKEN), candidate_after.generation),),
+        ((ledger.CANDIDATE_TAR_PATH, linked),), ledger_file(), (("", candidate_after),),
+        (ledger.CANDIDATE_TAR_SIZE, "7" * 64),
+    )
+    candidate_state = ledger._reconcile_ledger(intent_records, linked_candidate)
+    assert (candidate_state.status, candidate_state.owned) == ("candidate-tar-observeable", ())
+    observed_records = ledger._parse_ledger(encoded(proposals + [intent, observed]))
+    candidate_state = ledger._reconcile_ledger(observed_records, linked_candidate)
+    assert (candidate_state.status, candidate_state.owned) == ("candidate-tar-settleable", ())
+    settled_state = ledger._reconcile_ledger(linked_records, linked_candidate)
+    assert settled_state.status == "active"
+    assert settled_state.owned == ((ledger.CANDIDATE_TAR_PATH, linked),)
+    assert ledger._replay_graph(linked_records)[1:3] == (
+        candidate_after.generation, {ledger.CANDIDATE_TAR_PATH: linked},
+    )
+    candidate_mismatches = (
+        dataclasses.replace(absent_candidate, candidate_tar=(ledger.CANDIDATE_TAR_SIZE, "7" * 64)),
+        dataclasses.replace(linked_candidate, entries=()),
+        dataclasses.replace(linked_candidate, entries=(("other", linked),)),
+        dataclasses.replace(linked_candidate, entries=((ledger.CANDIDATE_TAR_PATH, dataclasses.replace(
+            linked, key=dataclasses.replace(linked.key, inode=71),
+        )),)),
+        dataclasses.replace(linked_candidate, candidate_tar=(ledger.CANDIDATE_TAR_SIZE - 1, None)),
+        dataclasses.replace(linked_candidate, candidate_tar=(ledger.CANDIDATE_TAR_SIZE, "8" * 64)),
+        dataclasses.replace(linked_candidate, parents=(("", candidate_before),)),
+        dataclasses.replace(linked_candidate, operations=observations.operations),
+        dataclasses.replace(linked_candidate, ledger_generation=generation(100, "file", 0o600, 1, 1)),
+        dataclasses.replace(linked_candidate, state_parent=parent(1, (*state_after.names, "other"), ctime=3)),
+    )
+    for hostile in candidate_mismatches:
+        assert ledger._reconcile_ledger(intent_records, hostile).status == "preserve"
+        assert ledger._reconcile_ledger(observed_records, hostile).status == "preserve"
 
     genesis = proposals[:2]
     ready = ledger._parse_ledger(encoded(genesis))
@@ -710,7 +800,15 @@ def reference_matching(previous, current):
     if previous.record_type.endswith("-observed"):
         assert left == right
         return
-    if previous.record_type == "create-intent":
+    if previous.record_type == "candidate-tar-intent":
+        assert (right["token"], right["path"], right["anonymous"], right["size"], right["sha256"]) == (
+            left["token"], left["path"], left["anonymous"], left["size"], left["sha256"],
+        )
+        ledger._candidate_parent_transition(ledger._parse_parent(left["parent"]), ledger._parse_parent(right["parent"]))
+        ledger._candidate_transition(
+            ledger._candidate_generation(left["anonymous"], 0), ledger._candidate_generation(right["linked"], 1),
+        )
+    elif previous.record_type == "create-intent":
         ledger._parent_delta("create", left["path"].split("/")[-1], ledger._parse_parent(left["parent"]), ledger._parse_parent(right["parent"]))
     elif previous.record_type == "metadata-intent":
         before = ledger._parse_generation(left["before"])
@@ -812,6 +910,11 @@ def reference_validate(records):
             elif kind == "hardlink-group":
                 assert phase == "active" and body["target_path"] not in groups
                 groups[body["target_path"]] = [tuple(body["aliases"]), 0]
+            elif kind == "candidate-tar-intent":
+                assert phase == "active" and pending is None and lease_snapshot is None
+                require_parent(body)
+                assert body["path"] not in operation_parent.names
+                pending, return_phase, phase = record, "active", "candidate-tar-intent"
             else:
                 allowed = {"remove-intent"} if phase == "release-authorized" else {
                     "create-intent", "metadata-intent", "hardlink-create-intent", "remove-intent",
@@ -834,6 +937,19 @@ def reference_validate(records):
                 actual.sequence, actual.offset, actual.line_sha256,
             )
             phase = "release-authorized"
+        elif phase == "candidate-tar-intent":
+            assert kind in {"candidate-tar-abort", "candidate-tar-observed"} and pending is not None
+            if kind == "candidate-tar-abort":
+                assert body == pending.body_value()
+                pending, phase, return_phase = None, "active", None
+            else:
+                reference_matching(pending, record)
+                pending, phase = record, "candidate-tar-observed"
+        elif phase == "candidate-tar-observed":
+            assert kind == "candidate-tar-settled" and pending is not None
+            reference_matching(pending, record)
+            operation_parent = ledger._parse_parent(body["parent"])
+            pending, phase, return_phase = None, "active", None
         elif phase.endswith("-intent"):
             abort_kind = phase.removesuffix("intent") + "abort"
             assert kind in {abort_kind, phase.removesuffix("intent") + "observed"} and pending is not None
@@ -925,7 +1041,8 @@ def incremental_validation_tests():
         "genesis", "ready", "aborted", "retired", "operation-intent", "operation-observed",
         "active", "create-intent", "create-observed", "metadata-intent", "metadata-observed",
         "hardlink-create-intent", "hardlink-create-observed", "remove-intent", "remove-observed",
-        "leased", "release-authorized", "operation-remove", "operation-absent", "uncertain",
+        "candidate-tar-intent", "candidate-tar-observed", "leased", "release-authorized",
+        "operation-remove", "operation-absent", "uncertain",
     }, phases
 
     expected_next = {
@@ -936,8 +1053,10 @@ def incremental_validation_tests():
         "operation-observed": {"operation-create-settled"},
         "active": {
             "leased", "operation-remove-intent", "hardlink-group", "create-intent",
-            "metadata-intent", "hardlink-create-intent", "remove-intent",
+            "metadata-intent", "hardlink-create-intent", "remove-intent", "candidate-tar-intent",
         },
+        "candidate-tar-intent": {"candidate-tar-observed", "candidate-tar-abort"},
+        "candidate-tar-observed": {"candidate-tar-settled"},
         "create-intent": {"create-observed", "create-abort"},
         "create-observed": {"create-settled"},
         "metadata-intent": {"metadata-observed"},
@@ -1244,7 +1363,8 @@ def incremental_validation_tests():
 def status_matrix_tests():
     prelease = {
         "genesis-settleable", "genesis-abortable", "operation-abortable", "operation-create-settleable",
-        "entry-absent", "create-settleable", "metadata-settleable", "hardlink-create-settleable", "active",
+        "entry-absent", "create-settleable", "metadata-settleable", "hardlink-create-settleable",
+        "candidate-tar-abortable", "candidate-tar-observeable", "candidate-tar-settleable", "active",
     }
     removal = {
         "remove-retry", "remove-absence-settleable", "hardlink-remove-absence-settleable", "remove-settleable",
@@ -1268,6 +1388,61 @@ def status_matrix_tests():
             valid = (status in prelease | removal and origin == "prelease") or (status in removal | {"release-authorized"} and origin == "release-authorized") or (status in {"leased", "preserve"} and origin == "none")
             if not valid:
                 rejected(lambda status=status, origin=origin: ledger.LedgerState(status, TOKEN, None, (), True, origin, True, True, "fixture", snapshot))
+
+
+def candidate_malformed_parser_tests():
+    proposals, _state_before, _state_after, operation = lifecycle_prefix(operation_size=1)
+    intent, abort, observed, settled, _before, _after, _anonymous, _linked = candidate_records(operation)
+
+    def rejected_mutation(suffix, index, mutate):
+        rejected(lambda: ledger._parse_ledger(mutate_encoded(proposals + suffix, len(proposals) + index, mutate)))
+
+    intent_mutations = (
+        lambda body: body.pop("sha256"),
+        lambda body: body.update(extra=0),
+        lambda body: body.update(path="other"),
+        lambda body: body.update(token="9" * 64),
+        lambda body: body.update(size=ledger.CANDIDATE_TAR_SIZE - 1),
+        lambda body: body.update(sha256="not-a-digest"),
+        lambda body: body["anonymous"].update(mode=0o400),
+        lambda body: body["anonymous"].update(uid=1),
+        lambda body: body["anonymous"].update(gid=1),
+        lambda body: body["anonymous"].update(kind="directory"),
+        lambda body: body["anonymous"].update(nlink=1),
+    )
+    for mutate in intent_mutations:
+        rejected_mutation([intent], 0, mutate)
+    rejected_mutation([intent, abort], 1, lambda body: body.update(sha256="8" * 64))
+
+    observed_mutations = (
+        lambda body: body.pop("linked"),
+        lambda body: body.update(extra=0),
+        lambda body: body["linked"].update(mount_id=2),
+        lambda body: body["linked"].update(device=2),
+        lambda body: body["linked"].update(inode=71),
+        lambda body: body["linked"].update(mode=0o400),
+        lambda body: body["linked"].update(uid=1),
+        lambda body: body["linked"].update(gid=1),
+        lambda body: body["linked"].update(kind="directory"),
+        lambda body: body["linked"].update(nlink=2),
+        lambda body: body["linked"].update(mtime_ns=2),
+        lambda body: body["linked"].update(ctime_ns=9),
+        lambda body: body["parent"]["generation"].update(inode=999),
+        lambda body: body["parent"]["generation"].update(mode=0o755),
+        lambda body: body["parent"]["generation"].update(uid=1),
+        lambda body: body["parent"]["generation"].update(gid=1),
+        lambda body: body["parent"]["generation"].update(nlink=3),
+        lambda body: body["parent"]["generation"].update(size=0),
+        lambda body: body["parent"]["generation"].update(mtime_ns=0),
+        lambda body: body["parent"]["generation"].update(ctime_ns=0),
+        lambda body: body["parent"].update(names=[ledger.CANDIDATE_TAR_PATH, "unrelated"]),
+    )
+    for index, mutate in enumerate(observed_mutations):
+        try:
+            rejected_mutation([intent, observed], 1, mutate)
+        except AssertionError as error:
+            raise AssertionError(f"candidate observed mutation {index} accepted") from error
+    rejected_mutation([intent, observed, settled], 2, lambda body: body.update(sha256="8" * 64))
 
 
 def hostile_codec_tests():
@@ -1497,6 +1672,8 @@ def reconcile_emission_tests():
         ("operation-abortable", "prelease", True), ("operation-create-settleable", "prelease", True),
         ("entry-absent", "prelease", True), ("create-settleable", "prelease", True),
         ("metadata-settleable", "prelease", True), ("hardlink-create-settleable", "prelease", True),
+        ("candidate-tar-abortable", "prelease", True), ("candidate-tar-observeable", "prelease", True),
+        ("candidate-tar-settleable", "prelease", True),
         ("active", "prelease", True), ("remove-retry", "prelease", True),
         ("remove-absence-settleable", "prelease", True), ("hardlink-remove-absence-settleable", "prelease", True),
         ("remove-settleable", "prelease", True), ("operation-remove-retry", "prelease", True),
@@ -1525,6 +1702,7 @@ multi_alias_replay_tests()
 lease_codec_and_origin_tests()
 status_matrix_tests()
 hostile_codec_tests()
+candidate_malformed_parser_tests()
 hardlink_tests()
 incremental_validation_tests()
 writer_tests()

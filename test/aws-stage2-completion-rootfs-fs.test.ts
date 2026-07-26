@@ -28,9 +28,16 @@ test("D-R2.2a rejects hostile models and remains read-only", async () => {
     source,
     /os\.(?:mkdir|makedirs|unlink|remove|rmdir|rename|replace|link|symlink|write|pwrite|fsync|fdatasync|flock|chmod|chown)\s*\(/u,
   );
+  const anonymousDefinitions = source.split("def _open_anonymous(");
+  assert.equal(anonymousDefinitions.length, 2);
+  const anonymousBody = anonymousDefinitions[1].split("\ndef ", 1)[0];
+  assert.equal(source.match(/\bO_RDWR\b/gu)?.length, 1);
+  assert.match(anonymousBody, /flags = os\.O_TMPFILE \| os\.O_RDWR \| _O_CLOEXEC/u);
+  assert.match(anonymousBody, /_fail\(flags == 0o22200002\)/u);
+  assert.match(anonymousBody, /os\.open\(b"\.", flags, mode, dir_fd=directory\.operation_fd\.number\)/u);
   assert.doesNotMatch(
     source,
-    /O_CREAT|O_EXCL|O_TRUNC|O_WRONLY|O_RDWR|rmtree|os\.walk|glob|subprocess|socket|boto3?|terraform/u,
+    /O_CREAT|O_EXCL|O_TRUNC|O_WRONLY|rmtree|os\.walk|glob|subprocess|socket|boto3?|terraform/u,
   );
   assert.doesNotMatch(source, /if __name__|argparse|sys\.argv|os\.environ|os\.getenv/u);
 });

@@ -28,36 +28,27 @@ fs = load("completion_rootfs_fs", REMOTE / "completion_rootfs_fs.py")
 publish = load("completion_rootfs_publish", REMOTE / "completion_rootfs_publish.py")
 raw = (REMOTE / "stage2-completion-rootfs-v1.json").read_bytes()
 pins = publish._parse_pins(raw)
-assert publish.ANONYMOUS_FDINFO_FLAGS == (b"022440002", b"022300002")
+assert fs.ANONYMOUS_FDINFO_FLAGS == (b"022440002", b"022300002")
 anonymous_fd = fs.CheckedFd(99, "anonymous-boundary-test")
 anonymous_seen = {}
-real_lseek = publish.os.lseek
-real_tmpfile = getattr(publish.os, "O_TMPFILE", None)
-real_cloexec = fs._O_CLOEXEC
+real_lseek = fs.os.lseek
 real_mount_id = fs._mount_id
 real_generation = fs._generation
 def capture_anonymous_mount_id(descriptor, control, expected_flags):
     anonymous_seen["flags"] = expected_flags
     return 1
 
-publish.os.lseek = lambda descriptor, offset, whence: 0
-publish.os.O_TMPFILE = 0o20200000
-fs._O_CLOEXEC = 0o2000000
+fs.os.lseek = lambda descriptor, offset, whence: 0
 fs._mount_id = capture_anonymous_mount_id
 fs._generation = lambda descriptor, mount_id, control: "observed-anonymous"
 try:
-    assert publish._observe_anonymous(anonymous_fd, object()) == "observed-anonymous"
+    assert fs._observe_anonymous(anonymous_fd, type("Control", (), {"check": lambda self: None})()) == "observed-anonymous"
 finally:
-    publish.os.lseek = real_lseek
-    if real_tmpfile is None:
-        del publish.os.O_TMPFILE
-    else:
-        publish.os.O_TMPFILE = real_tmpfile
-    fs._O_CLOEXEC = real_cloexec
+    fs.os.lseek = real_lseek
     fs._mount_id = real_mount_id
     fs._generation = real_generation
     anonymous_fd.disposition = "closed"
-assert anonymous_seen == {"flags": publish.ANONYMOUS_FDINFO_FLAGS}
+assert anonymous_seen == {"flags": fs.ANONYMOUS_FDINFO_FLAGS}
 assert pins.entry_count == 4353
 assert pins.manifest_size == 1049443 and pins.ustar_size == 136905728
 assert publish._load_pins() == pins
@@ -268,7 +259,7 @@ if sys.platform == "linux":
                 publication_path = Path(publication_directory)
                 publication_path.chmod(0o700)
                 link_calls = {"count": 0}
-                real_link = publish._link_anonymous
+                real_link = fs._link_anonymous
 
                 def link_then_fail(directory, name, anonymous, control):
                     if name == intended_name:
@@ -277,7 +268,7 @@ if sys.platform == "linux":
                     if name == intended_name and link_calls["count"] == 1:
                         raise OSError("ext4 post-link fault")
 
-                publish._link_anonymous = link_then_fail
+                fs._link_anonymous = link_then_fail
                 try:
                     try:
                         ext4_publish_once(publication_path)
@@ -286,7 +277,7 @@ if sys.platform == "linux":
                     else:
                         raise AssertionError("ext4 post-link fault was not observed")
                 finally:
-                    publish._link_anonymous = real_link
+                    fs._link_anonymous = real_link
 
                 candidate_fs = StatFs()
                 candidate_path = publication_path / publish.CANDIDATE_NAME.text
@@ -297,7 +288,7 @@ if sys.platform == "linux":
                         link_calls["count"] += 1
                     return real_link(directory, name, anonymous, control)
 
-                publish._link_anonymous = count_retry_link
+                fs._link_anonymous = count_retry_link
                 tripped = {"value": False}
                 real_file = publish._file
                 real_read = fs._read_regular
@@ -426,7 +417,7 @@ if sys.platform == "linux":
                 first_published = ext4_publish_once(publication_path)
                 assert first_published == ext4_publish_once(publication_path)
                 assert link_calls["count"] == 1, "post-link retry attempted a second linkat"
-                publish._link_anonymous = real_link
+                fs._link_anonymous = real_link
 
         for fault_case in ("open", "read", "xattr", "candidate-fsync", "candidate-observe", "write", "file-fsync", "close", "readback", "parent-fsync", "exchange"):
             ext4_fault_case(fault_case)
@@ -435,7 +426,7 @@ if sys.platform == "linux":
             with tempfile.TemporaryDirectory(dir=ext4_fixture) as publication_directory:
                 publication_path = Path(publication_directory)
                 publication_path.chmod(0o700)
-                real_link = publish._link_anonymous
+                real_link = fs._link_anonymous
                 links = {"count": 0}
                 stop_at = 2 if case == "prior" else 1
 
@@ -445,14 +436,14 @@ if sys.platform == "linux":
                     if links["count"] == stop_at:
                         raise OSError("hostile setup post-link fault")
 
-                publish._link_anonymous = stop_after_link
+                fs._link_anonymous = stop_after_link
                 try:
                     try:
                         ext4_publish_once(publication_path)
                     except OSError:
                         pass
                 finally:
-                    publish._link_anonymous = real_link
+                    fs._link_anonymous = real_link
                 candidate_path = publication_path / publish.CANDIDATE_NAME.text
                 target = candidate_path / intended_name.text
                 if case == "extra":
@@ -542,7 +533,12 @@ finally:
     fs._enumerate_stable = real_enumerate
 assert opened.identity_fd.disposition == opened.operation_fd.disposition == "closed"
 source = (REMOTE / "completion_rootfs_publish.py").read_text()
-assert "os.O_TMPFILE | os.O_RDWR" in source and "linkat" in source and "0x1000" in source and "_rename_noreplace" in source
+filesystem_source = (REMOTE / "completion_rootfs_fs.py").read_text()
+assert "fs._open_anonymous(" in source and "fs._observe_anonymous(" in source
+assert "fs._close_anonymous(" in source and "fs._link_anonymous(" in source
+assert "def _open_anonymous" not in source and "def _link_anonymous" not in source
+assert "os.O_TMPFILE | os.O_RDWR" in filesystem_source and "linkat" in filesystem_source and "0x1000" in filesystem_source
+assert "_rename_noreplace" in source
 assert "file-ready" in source and "publication-anonymous" in source
 assert "0x80087601" in source and "_inode_version" in source and "inode_version" in source
 assert "file-abort" not in source and "def _create_file" not in source

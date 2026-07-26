@@ -1,0 +1,102 @@
+name: Stage 2 rootfs full-build qualification
+
+on:
+  pull_request:
+    branches: [feat/issue42-deterministic-rootfs]
+    types: [ready_for_review]
+
+permissions:
+  contents: read
+
+jobs:
+  full-build:
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.action == 'ready_for_review' &&
+      github.run_attempt == 1 &&
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.base.ref == 'feat/issue42-deterministic-rootfs' &&
+      github.event.pull_request.base.sha == '8caab23bb4277121a77d80dc043b3c2c43b07ced' &&
+      github.event.pull_request.head.sha == vars.STAGE2_ROOTFS_REVIEWED_HEAD &&
+      !contains(github.event.pull_request.labels.*.name, 'security')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    concurrency:
+      group: stage2-rootfs-full-build-${{ github.event.pull_request.number }}
+      cancel-in-progress: false
+    env:
+      EXACT_REVIEWED_HEAD: ${{ vars.STAGE2_ROOTFS_REVIEWED_HEAD }}
+    steps:
+      - name: Establish nonborrowing monotonic budget anchor
+        run: |
+          set -euo pipefail
+          anchor=$(/usr/bin/python3 -I -c 'import time; print(time.monotonic_ns())')
+          [[ "$anchor" =~ ^[1-9][0-9]{0,19}$ ]]
+          printf 'COGS_STAGE2_PHASE_A_BUDGET_ANCHOR_NS=%s\n' "$anchor" >>"$GITHUB_ENV"
+
+      - name: Check out exact reviewed head
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Revalidate event, review, base, and checked-out head
+        env:
+          EVENT_HEAD: ${{ github.event.pull_request.head.sha }}
+          EVENT_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXACT_REVIEWED_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          test "$EVENT_HEAD" = "$EXACT_REVIEWED_HEAD"
+          test "$EVENT_BASE_SHA" = 8caab23bb4277121a77d80dc043b3c2c43b07ced
+          test "$(/usr/bin/git rev-parse HEAD)" = "$EXACT_REVIEWED_HEAD"
+          test "${GITHUB_RUN_ATTEMPT}" = 1
+
+      - name: Prepare and bind the existing hardened fixed source
+        env:
+          EXACT_PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          source_timeout=$(/usr/bin/python3 -I scripts/stage2-phase-a-budget.py timeout source)
+          result=$(sudo -n /usr/bin/timeout --signal=TERM --kill-after=5s "${source_timeout}s" \
+            env -i PATH=/usr/bin:/bin /usr/bin/python3 -I \
+            "$GITHUB_WORKSPACE/scripts/prepare-stage2-fixed-source.py")
+          /usr/bin/python3 -I -c 'import json,sys
+          def pairs(rows):
+              value={}
+              for key,item in rows:
+                  if key in value: raise ValueError()
+                  value[key]=item
+              return value
+          result=json.loads(sys.stdin.buffer.read(),object_pairs_hook=pairs,
+              parse_constant=lambda _x: (_ for _ in ()).throw(ValueError()))
+          if set(result)!={"version","revision","manifest_sha256","entries","authority"}: raise SystemExit(2)
+          if result["revision"]!=sys.argv[1]: raise SystemExit(2)
+          if result["authority"]!="qualification-only-fixed-source": raise SystemExit(2)' \
+            "$EXACT_PR_HEAD" <<<"$result"
+          /usr/bin/python3 -I scripts/stage2-phase-a-budget.py check source
+
+      # The fixed hosted driver owns the +3900 invocation boundary, optional
+      # +4500 recovery, +5100 cleanup/final observation, and +5400 close bound.
+      - name: Run exact acquisition, two builds, cleanup, and final observation
+        id: qualification
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          final_timeout=$(/usr/bin/python3 -I scripts/stage2-phase-a-budget.py timeout final)
+          sudo -n /usr/bin/timeout --signal=TERM --kill-after=5s "${final_timeout}s" \
+            env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin \
+            COGS_STAGE2_PHASE_A_BUDGET_ANCHOR_NS="$COGS_STAGE2_PHASE_A_BUDGET_ANCHOR_NS" \
+            COGS_STAGE2_ARTIFACT_ACQUISITION_APPROVED=download-16-fixed-public-stage2-artifacts \
+            /usr/bin/python3 -I /var/lib/cogs/stage2-completion-v1/source/test/aws-stage2-completion-rootfs-candidate.py \
+            --hosted-exact
+
+      - name: Enforce exact result and final close budget
+        if: always()
+        env:
+          QUALIFICATION_OUTCOME: ${{ steps.qualification.outcome }}
+        run: |
+          set -euo pipefail
+          /usr/bin/python3 -I scripts/stage2-phase-a-budget.py check final
+          test "$QUALIFICATION_OUTCOME" = success

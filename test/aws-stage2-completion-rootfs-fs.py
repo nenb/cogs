@@ -155,6 +155,7 @@ def pure_tests():
     nofollow_raw = raw.replace(module.FDINFO_FLAGS, module.FDINFO_NOFOLLOW_FLAGS)
     assert module.FDINFO_FLAGS == b"012100000"
     assert module.FDINFO_NOFOLLOW_FLAGS == b"012400000"
+    assert module.ANONYMOUS_FDINFO_FLAGS == (b"022440002", b"022300002")
     assert module._parse_fdinfo(raw, 9) == module._parse_fdinfo(nofollow_raw, 9) == 42
     assert module._parse_fdinfo(raw, 9, module.FDINFO_FLAGS) == 42
     rejected(lambda: module._parse_fdinfo(nofollow_raw, 9, module.FDINFO_FLAGS))
@@ -371,8 +372,13 @@ def pure_tests():
     for node in ast.walk(tree):
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name):
             assert not (node.func.value.id == "os" and node.func.attr in banned), node.func.attr
+    anonymous_open = source.split("def _open_anonymous(", 1)[1].split("\ndef ", 1)[0]
+    assert "flags = os.O_TMPFILE | os.O_RDWR | _O_CLOEXEC" in anonymous_open
+    assert "flags == 0o22200002" in anonymous_open
+    assert "os.open(b\".\", flags, mode, dir_fd=directory.operation_fd.number)" in anonymous_open
+    assert source.count("O_TMPFILE") == 2 and source.count("O_RDWR") == 1
     assert "if __name__" not in source and "argparse" not in source and "subprocess" not in source
-    assert "O_CREAT" not in source and "O_TRUNC" not in source and "O_WRONLY" not in source and "O_RDWR" not in source
+    assert "O_CREAT" not in source and "O_TRUNC" not in source and "O_WRONLY" not in source
     assert module.PRIVILEGED_MUTATOR_EXCLUSION.startswith("Concurrent EUID-0")
 
 

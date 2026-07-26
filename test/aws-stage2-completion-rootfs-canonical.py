@@ -98,6 +98,7 @@ def prepare_real_workspace():
         "completion_rootfs_materializer.py",
         "completion_rootfs_canonical.py",
         "completion_rootfs_publish.py",
+        "completion_rootfs_candidate.py",
         "completion_rootfs_build.py",
         "completion_kata_operation.py",
         "completion_rootfs_lease.py",
@@ -371,7 +372,7 @@ def docker_functional_two_builds():
         rollback_names = tuple(name.text for name, _raw in publication._contents(tiny_manifest, tiny_ustar, tiny_pins))
         rollback_transaction = publication._open_transaction(rollback_destination, rollback_names, publication._transition_control())
         assert rollback_transaction.records[-1]["phase"] == "file-intent"
-        original_link_anonymous = publication._link_anonymous
+        original_link_anonymous = fs._link_anonymous
         link_fault = {"tripped": False}
 
         def link_then_fail(directory, name, anonymous, control):
@@ -380,13 +381,13 @@ def docker_functional_two_builds():
                 link_fault["tripped"] = True
                 raise OSError("uncertain anonymous link fault")
 
-        publication._link_anonymous = link_then_fail
+        fs._link_anonymous = link_then_fail
         try:
             publication._publish_unmasked(rollback_destination, tiny_manifest, tiny_ustar, tiny_pins, outer)
         except OSError:
             pass
         finally:
-            publication._link_anonymous = original_link_anonymous
+            fs._link_anonymous = original_link_anonymous
         assert link_fault["tripped"]
         original_append_records = publication._append_records
         compound_fault = {"tripped": False}
