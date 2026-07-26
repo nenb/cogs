@@ -1,10 +1,11 @@
 # ADR 0052: Clarify Stage 2 producer states and native qualification authority
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-26
 - Decision owner: Nick Byrne
-- Acceptance authority: Nick Byrne, or the delegated project lead acting under Nick Byrne's standing bounded-local delegation.
-- Amendment scope: If accepted, this ADR amends only ADR 0051's C3 producer semantics, C1 native-qualification authority (including the one narrow existing-CI workflow change specified below), and counted-line highs. Every non-conflicting ADR 0050 and ADR 0051 requirement remains binding.
+- Accepted by: Delegated project lead on 2026-07-26 under Nick Byrne's standing bounded-local delegation, after corrected independent review reported no P0–P3 findings.
+- Acceptance record: [GitHub pull request #221](https://github.com/nenb/cogs/pull/221).
+- Amendment scope: This ADR amends only ADR 0051's C3 producer semantics, C1 native-qualification authority (including the one narrow existing-CI workflow change specified below), and counted-line highs. Every non-conflicting ADR 0050 and ADR 0051 requirement remains binding.
 
 ## Context
 
