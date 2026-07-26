@@ -32,6 +32,11 @@ MAX_RECORDS = ROOTFS_LEDGER_MAX_RECORDS
 OFFSET_WIDTH = 16
 ZERO_SHA256 = "0" * 64
 TOKEN_LENGTH = 64
+CANDIDATE_TAR_PATH = ".cogs-rootfs-candidate-v1.tar"
+CANDIDATE_TAR_SIZE = 136_905_728
+CANDIDATE_RECORD_TYPES = frozenset({
+    "candidate-tar-intent", "candidate-tar-abort", "candidate-tar-observed", "candidate-tar-settled",
+})
 RECORD_TYPES = frozenset(
     {
         "genesis",
@@ -45,6 +50,7 @@ RECORD_TYPES = frozenset(
         "create-abort",
         "create-observed",
         "create-settled",
+        *CANDIDATE_RECORD_TYPES,
         "metadata-intent",
         "metadata-observed",
         "metadata-settled",
@@ -191,7 +197,7 @@ def _generation_value(value):
     }
 
 
-def _parse_generation(value):
+def _parse_generation(value, minimum_nlink=1):
     _exact_keys(value, GENERATION_KEYS)
     kind = value["kind"]
     _fail(kind in {"directory", "file", "symlink", "other"})
@@ -206,7 +212,7 @@ def _parse_generation(value):
         _integer(value["mode"], 0, 0o7777),
         _integer(value["uid"]),
         _integer(value["gid"]),
-        _integer(value["nlink"], 1),
+        _integer(value["nlink"], minimum_nlink),
         _integer(value["size"]),
         _integer(value["mtime_ns"]),
         _integer(value["ctime_ns"]),
@@ -246,6 +252,24 @@ def _parse_parent(value):
     names = value["names"]
     _fail(type(names) is list)
     return LedgerParent(_parse_generation(value["generation"]), tuple(names))
+
+
+def _candidate_generation(value, nlink):
+    generation = _parse_generation(value, 0)
+    _fail(generation.key.kind == "file" and generation.nlink == nlink)
+    _fail(generation.mode == 0o600 and generation.uid == generation.gid == 0)
+    return generation
+
+
+def _candidate_transition(anonymous, linked):
+    _fail(anonymous.key == linked.key and anonymous.nlink == 0 and linked.nlink == 1)
+    _fail(_same_fields(anonymous, linked, {"nlink", "ctime_ns"}))
+    _fail(linked.ctime_ns >= anonymous.ctime_ns)
+
+
+def _candidate_parent_transition(before, after):
+    _parent_delta("hardlink", CANDIDATE_TAR_PATH, before, after)
+    _fail(_same_fields(before.generation, after.generation, {"size", "mtime_ns", "ctime_ns"}))
 
 
 def _parent_delta(action, name, before, after):
@@ -350,6 +374,7 @@ class ReconcileObservations:
     entries: tuple[tuple[str, HostGeneration], ...]
     ledger_generation: HostGeneration
     parents: tuple[tuple[str, LedgerParent], ...] = ()
+    candidate_tar: tuple[int, str | None] | None = None
 
     def __post_init__(self):
         _fail(type(self.state_parent) is LedgerParent)
@@ -366,6 +391,12 @@ class ReconcileObservations:
             _fail(path == "" or _graph_path(path) == path)
         for path, _generation in self.entries:
             _graph_path(path)
+        _fail(self.candidate_tar is None or type(self.candidate_tar) is tuple and len(self.candidate_tar) == 2)
+        if self.candidate_tar is not None:
+            _integer(self.candidate_tar[0])
+            _fail(self.candidate_tar[1] is None or type(self.candidate_tar[1]) is str)
+            if self.candidate_tar[1] is not None:
+                _digest(self.candidate_tar[1])
 
 
 @dataclass(frozen=True)
@@ -566,6 +597,7 @@ class LedgerLegalState:
         entry_phases = {
             "create-intent", "create-observed", "metadata-intent", "metadata-observed",
             "hardlink-create-intent", "hardlink-create-observed", "remove-intent", "remove-observed",
+            "candidate-tar-intent", "candidate-tar-observed",
         }
         phases = entry_phases | {
             "genesis", "ready", "aborted", "retired", "operation-intent", "operation-observed",
@@ -648,7 +680,7 @@ class LedgerState:
         _fail(type(self.cleanup_origin) is str and self.cleanup_origin in {"none", "prelease", "release-authorized"})
         _fail(type(self.lease_seen) is bool and type(self.release_authorized) is bool)
         _fail(self.lease_snapshot is None or type(self.lease_snapshot) is LeaseSnapshot)
-        prelease = {"genesis-settleable", "genesis-abortable", "operation-abortable", "operation-create-settleable", "entry-absent", "create-settleable", "metadata-settleable", "hardlink-create-settleable", "active"}
+        prelease = {"genesis-settleable", "genesis-abortable", "operation-abortable", "operation-create-settleable", "entry-absent", "create-settleable", "metadata-settleable", "hardlink-create-settleable", "candidate-tar-abortable", "candidate-tar-observeable", "candidate-tar-settleable", "active"}
         removal = {"remove-retry", "remove-absence-settleable", "hardlink-remove-absence-settleable", "remove-settleable", "operation-remove-retry", "operation-absence-settleable", "retirable", "retired"}
         valid = ((self.status in prelease or self.status in removal) and self.cleanup_origin == "prelease" and self.cleanup_allowed)
         valid = valid or ((self.status == "release-authorized" or self.status in removal) and self.cleanup_origin == "release-authorized" and self.cleanup_allowed)
@@ -835,6 +867,20 @@ def _validate_body(record_type, body):
         _entry_common(body)
         _parse_parent(body["parent"])
         _parse_generation(body["child"])
+    elif record_type in CANDIDATE_RECORD_TYPES:
+        intent_keys = ("token", "path", "parent", "anonymous", "size", "sha256")
+        observed_keys = ("token", "path", "parent", "anonymous", "linked", "size", "sha256")
+        _exact_keys(body, intent_keys if record_type in {"candidate-tar-intent", "candidate-tar-abort"} else observed_keys)
+        _fail(body["path"] == CANDIDATE_TAR_PATH)
+        _parse_parent(body["parent"])
+        anonymous = _candidate_generation(body["anonymous"], 0)
+        size = _integer(body["size"], 1, CANDIDATE_TAR_SIZE)
+        _fail(size == CANDIDATE_TAR_SIZE and anonymous.size == size)
+        _digest(body["sha256"])
+        if "linked" in body:
+            linked = _candidate_generation(body["linked"], 1)
+            _fail(linked.size == size)
+            _candidate_transition(anonymous, linked)
     elif record_type == "metadata-intent":
         _exact_keys(body, ("token", "path", "before", "desired"))
         _graph_path(body["path"])
@@ -946,6 +992,8 @@ def _replay_graph(records):
             hardlink_aliases[body["target_path"]] = tuple(body["aliases"])
         elif kind in {"create-settled", "metadata-settled"}:
             owned[body["path"]] = _parse_generation(body["child"])
+        elif kind == "candidate-tar-settled":
+            owned[body["path"]] = _candidate_generation(body["linked"], 1)
         elif kind == "hardlink-create-settled":
             linked = _parse_generation(body["alias_generation"])
             owned[body["alias"]] = linked
@@ -967,7 +1015,7 @@ def _replay_graph(records):
                             owned[alias] = target
                 else:
                     consistent = False
-        if kind in {"create-settled", "hardlink-create-settled", "remove-settled", "create-abort", "hardlink-create-abort"}:
+        if kind in {"create-settled", "hardlink-create-settled", "remove-settled", "create-abort", "hardlink-create-abort", "candidate-tar-settled"}:
             path = body.get("path", body.get("alias"))
             if kind == "hardlink-create-abort" and body["target_path"] in owned:
                 target = _parse_generation(body["target"])
@@ -1172,6 +1220,11 @@ def _advance_history(history, record, count_incremental=True, replay_records=Non
             target = body["target_path"]
             _fail(_group_get(groups, target) is None)
             groups = _group_set(groups, target, LegalHardlinkCursor(target, tuple(body["aliases"]), 0))
+        elif kind == "candidate-tar-intent":
+            _fail(phase == "active" and pending is None and lease_snapshot is None)
+            _fail(operation_parent == _parse_parent(body["parent"]))
+            _fail(body["path"] not in operation_parent.names)
+            pending, return_phase, phase = record, "active", "candidate-tar-intent"
         else:
             allowed = {"remove-intent"} if phase == "release-authorized" else {
                 "create-intent", "metadata-intent", "hardlink-create-intent", "remove-intent",
@@ -1196,6 +1249,20 @@ def _advance_history(history, record, count_incremental=True, replay_records=Non
         _fail((body["lease_sequence"], body["lease_offset"], body["lease_sha256"]) ==
               (actual.sequence, actual.offset, actual.line_sha256))
         phase = "release-authorized"
+    elif phase == "candidate-tar-intent":
+        _fail(pending is not None and kind in {"candidate-tar-abort", "candidate-tar-observed"})
+        intent = _body(pending)
+        if kind == "candidate-tar-abort":
+            _fail(body == intent and _parse_parent(body["parent"]) == operation_parent)
+            pending, phase, return_phase = None, "active", None
+        else:
+            _matching_transition(pending, record)
+            pending, phase = record, "candidate-tar-observed"
+    elif phase == "candidate-tar-observed":
+        _fail(kind == "candidate-tar-settled" and pending is not None)
+        _matching_transition(pending, record)
+        operation_parent = _parse_parent(body["parent"])
+        pending, phase, return_phase = None, "active", None
     elif phase.endswith("-intent"):
         abort_kind = phase.removesuffix("intent") + "abort"
         _fail(kind in {abort_kind, phase.removesuffix("intent") + "observed"} and pending is not None)
@@ -1273,7 +1340,15 @@ def _matching_transition(previous, current):
     if previous.record_type.endswith("-observed"):
         _fail(left == right)
         return
-    if previous.record_type == "create-intent":
+    if previous.record_type == "candidate-tar-intent":
+        _fail(right["token"] == left["token"] and right["path"] == left["path"])
+        _fail(right["anonymous"] == left["anonymous"] and right["size"] == left["size"])
+        _fail(right["sha256"] == left["sha256"])
+        before, after = _parse_parent(left["parent"]), _parse_parent(right["parent"])
+        _candidate_parent_transition(before, after)
+        _candidate_transition(_candidate_generation(left["anonymous"], 0),
+                              _candidate_generation(right["linked"], 1))
+    elif previous.record_type == "create-intent":
         _parent_delta("create", left["path"].split("/")[-1], _parse_parent(left["parent"]), _parse_parent(right["parent"]))
         _fail(_parse_generation(right["child"]).key.kind == ("file" if left["kind"] == "hardlink" else left["kind"]))
     elif previous.record_type == "metadata-intent":
@@ -1327,6 +1402,8 @@ def _reconcile_ledger(records, observations):
             operation_generation = _parse_generation(body["operation"])
         elif kind in {"create-settled", "metadata-settled"}:
             owned[body["path"]] = _parse_generation(body["child"])
+        elif kind == "candidate-tar-settled":
+            owned[body["path"]] = _candidate_generation(body["linked"], 1)
         elif kind == "hardlink-create-settled":
             linked = _parse_generation(body["alias_generation"])
             owned[body["alias"]] = linked
@@ -1348,7 +1425,7 @@ def _reconcile_ledger(records, observations):
                             owned[alias] = target
                 else:
                     operation_consistent = False
-        if kind in {"create-settled", "hardlink-create-settled", "remove-settled"}:
+        if kind in {"create-settled", "hardlink-create-settled", "remove-settled", "candidate-tar-settled"}:
             path = body.get("path", body.get("alias"))
             parent_path = path.rpartition("/")[0]
             parent_generation = _parse_parent(body["parent"]).generation
@@ -1396,6 +1473,35 @@ def _reconcile_ledger(records, observations):
         recorded = _parse_generation(observed["operation"])
         if operations == {operation_name: recorded} and observations.state_parent == _parse_parent(observed["state_parent"]):
             status = "operation-create-settleable"
+    elif phase in {"candidate-tar-intent", "candidate-tar-observed"} and parent_matches:
+        record = records[-1]
+        intent = _body(records[-2] if phase == "candidate-tar-observed" else record)
+        pre_parent = _parse_parent(intent["parent"])
+        anonymous = _candidate_generation(intent["anonymous"], 0)
+        absent = entries == owned and operations == {operation_name: operation_generation}
+        absent = absent and parents.get("") == pre_parent and observations.candidate_tar is None
+        if phase == "candidate-tar-intent" and absent:
+            status = "candidate-tar-abortable"
+        linked_body = None if phase == "candidate-tar-intent" else _body(record)
+        linked = entries.get(CANDIDATE_TAR_PATH)
+        post_parent = parents.get("")
+        try:
+            _candidate_transition(anonymous, linked)
+            _candidate_parent_transition(pre_parent, post_parent)
+            expected = dict(owned)
+            expected[CANDIDATE_TAR_PATH] = linked
+            exact_link = entries == expected and operations == {operation_name: post_parent.generation}
+            exact_link = exact_link and observations.candidate_tar == (intent["size"], intent["sha256"])
+            if linked_body is not None:
+                exact_link = exact_link and linked_body == {
+                    "token": intent["token"], "path": intent["path"], "parent": _parent_value(post_parent),
+                    "anonymous": intent["anonymous"], "linked": _generation_value(linked),
+                    "size": intent["size"], "sha256": intent["sha256"],
+                }
+        except (LedgerError, RootfsFsError, TypeError, AttributeError):
+            exact_link = False
+        if exact_link:
+            status = "candidate-tar-observeable" if phase == "candidate-tar-intent" else "candidate-tar-settleable"
     elif phase in {"active", "release-authorized", "leased"} and operations == {operation_name: operation_generation} and parent_matches:
         if entries == owned:
             status = phase
@@ -1501,7 +1607,8 @@ def _reconcile_ledger(records, observations):
                     status = "remove-absence-settleable"
     prelease_statuses = {
         "genesis-settleable", "genesis-abortable", "operation-abortable", "operation-create-settleable",
-        "entry-absent", "create-settleable", "metadata-settleable", "hardlink-create-settleable", "active",
+        "entry-absent", "create-settleable", "metadata-settleable", "hardlink-create-settleable",
+        "candidate-tar-abortable", "candidate-tar-observeable", "candidate-tar-settleable", "active",
     }
     removal_statuses = {
         "remove-retry", "remove-absence-settleable", "hardlink-remove-absence-settleable", "remove-settleable",

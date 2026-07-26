@@ -43,6 +43,7 @@ FILE_FLAGS = os.O_RDONLY | _O_NOFOLLOW | _O_CLOEXEC
 FDINFO_FLAGS = b"012100000"
 FDINFO_NOFOLLOW_FLAGS = b"012400000"
 FDINFO_IDENTITY_FLAGS = (FDINFO_FLAGS, FDINFO_NOFOLLOW_FLAGS)
+ANONYMOUS_FDINFO_FLAGS = (b"022440002", b"022300002")
 ROOTFS_STRUCTURAL_COUNTER_KEYS = (
     "active_history_record_copies", "listed_names", "parent_snapshots", "complete_legal_folds",
     "complete_walks", "incremental_records", "group_node_copies", "group_lookup_steps",
@@ -486,6 +487,59 @@ def _generation(descriptor, mount_id, control):
         stat.S_IMODE(observed.st_mode), observed.st_uid, observed.st_gid, observed.st_nlink,
         observed.st_size, observed.st_mtime_ns, observed.st_ctime_ns,
     )
+
+
+def _open_anonymous(directory, role, mode, control):
+    _fail(sys.platform == "linux" and hasattr(os, "O_TMPFILE"))
+    _fail(type(directory) is HeldNode and directory.operation_fd is not None)
+    _fail(type(role) is str and role and type(mode) is int and 0 <= mode <= 0o7777)
+    flags = os.O_TMPFILE | os.O_RDWR | _O_CLOEXEC
+    _fail(flags == 0o22200002)
+    control.check()
+    descriptor = CheckedFd(os.open(b".", flags, mode, dir_fd=directory.operation_fd.number), role)
+    try:
+        control.check()
+        generation = _observe_anonymous(descriptor, control)
+        _fail(generation.key.kind == "file" and generation.nlink == 0)
+        _fail((generation.key.mount_id, generation.key.device) ==
+              (directory.generation.key.mount_id, directory.generation.key.device))
+        return descriptor
+    except BaseException as error:
+        _close_anonymous(descriptor, error)
+
+
+def _observe_anonymous(operation, control):
+    _fail(type(operation) is CheckedFd and operation.disposition == "open")
+    control.check()
+    _fail(os.lseek(operation.number, 0, os.SEEK_SET) == 0)
+    mount_id = _mount_id(operation, control, ANONYMOUS_FDINFO_FLAGS)
+    return _generation(operation, mount_id, control)
+
+
+def _close_anonymous(operation, primary=None):
+    error = primary
+    if operation is not None and operation.disposition == "open":
+        try:
+            operation.close()
+        except BaseException as close_error:
+            error = RootfsFsError(error, close_error)
+    if error is not None:
+        raise error
+
+
+def _link_anonymous(directory, name, operation, control):
+    _fail(sys.platform == "linux" and type(directory) is HeldNode)
+    _fail(type(name) is ValidatedName and type(operation) is CheckedFd)
+    _fail(directory.operation_fd is not None and operation.disposition == "open")
+    control.check()
+    library = ctypes.CDLL(None, use_errno=True)
+    linkat = library.linkat
+    linkat.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_int)
+    linkat.restype = ctypes.c_int
+    result = linkat(operation.number, b"", directory.operation_fd.number, name.raw, 0x1000)
+    if result != 0:
+        code = ctypes.get_errno()
+        raise OSError(code, os.strerror(code))
 
 
 def _observe_node(opath_fd, operation_fd, control):
