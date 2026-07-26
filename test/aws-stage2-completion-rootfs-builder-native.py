@@ -95,16 +95,23 @@ def nested(value, *keys):
 
 def validate_revision_domains(envelope_sha, event_merge_sha, head_sha, base_sha, workflow_sha,
                               checked_out_sha):
-    values = (envelope_sha, event_merge_sha, head_sha, base_sha, workflow_sha, checked_out_sha)
+    for name, value in (("envelope", envelope_sha), ("event merge", event_merge_sha)):
+        require(SHA_PATTERN.fullmatch(value) is not None, f"malformed {name} revision")
+        require(value not in {head_sha, base_sha},
+                f"{name} revision collapsed into source domain")
+    values = (head_sha, base_sha, workflow_sha, checked_out_sha)
     require(all(SHA_PATTERN.fullmatch(value) is not None for value in values),
-            "malformed revision domain")
-    require(envelope_sha == event_merge_sha, "synthetic envelope observations differ")
-    require(envelope_sha not in {head_sha, base_sha},
-            "synthetic envelope collapsed into source domain")
+            "malformed source or workflow revision domain")
     require(head_sha != base_sha, "head and base source revisions collapsed")
     require(checked_out_sha == head_sha, "checked-out source revision differs")
     require(workflow_sha in {envelope_sha, head_sha} and workflow_sha != base_sha,
             "workflow revision is outside the execution/source domains")
+
+
+def validate_synthetic_context(envelope_sha, event_merge_sha, github_sha, event_payload_merge_sha):
+    require(envelope_sha == github_sha, "envelope revision differs from GitHub SHA context")
+    require(event_merge_sha == event_payload_merge_sha,
+            "event merge revision differs from event payload context")
 
 
 def workflow_observations():
@@ -154,6 +161,10 @@ def workflow_observations():
         "head_repository": nested(event, "pull_request", "head", "repo", "full_name"),
         "head_sha": nested(event, "pull_request", "head", "sha"),
     }
+    validate_synthetic_context(
+        expected["envelope_sha"], expected["event_merge_sha"],
+        os.environ.get("GITHUB_SHA", ""), str(event_pairs["event_merge_sha"]),
+    )
     for name, value in event_pairs.items():
         require(str(value) == expected[name], f"event {name} mismatch")
 
@@ -185,7 +196,8 @@ def workflow_observations():
         "repository": expected["repository"], "workflow_file": expected["workflow_file"],
         "job": expected["job"], "event": expected["event"], "action": expected["action"],
         "run_id": expected["run_id"], "run_attempt": expected["run_attempt"],
-        "synthetic_merge_sha": expected["envelope_sha"],
+        "envelope_sha": expected["envelope_sha"],
+        "event_merge_sha": expected["event_merge_sha"],
         "workflow_ref": expected["workflow_ref"], "workflow_sha": expected["workflow_sha"],
         "base_sha": expected["base_sha"],
         "pull_request_number": expected["pr_number"],
@@ -198,7 +210,8 @@ def workflow_observations():
         "workflow_blob_digest": expected["workflow_blob_digest"],
         "workflow_file_sha256": file_hash.hex(), "git_blobs": blobs,
     }
-    require(envelope["synthetic_merge_sha"] != source["source_sha"],
+    require(all(envelope[name] not in {source["source_sha"], envelope["base_sha"]}
+                for name in ("envelope_sha", "event_merge_sha")),
             "execution and source domains are not distinct")
     return {"execution_envelope": envelope, "source": source,
             "runner_environment": fixed_environment}
@@ -350,26 +363,49 @@ def invoke_workflow():
 
 
 def portable_tests():
-    envelope_sha, source_sha, base_sha = "a" * 40, "b" * 40, "c" * 40
-    validate_revision_domains(envelope_sha, envelope_sha, source_sha, base_sha, source_sha,
-                              source_sha)
-    validate_revision_domains(envelope_sha, envelope_sha, source_sha, base_sha, envelope_sha,
-                              source_sha)
+    envelope_sha, event_merge_sha = "a" * 40, "d" * 40
+    source_sha, base_sha = "b" * 40, "c" * 40
+    equal_values = (envelope_sha, envelope_sha, source_sha, base_sha, source_sha, source_sha)
+    unequal_values = (envelope_sha, event_merge_sha, source_sha, base_sha, envelope_sha, source_sha)
+    validate_revision_domains(*equal_values)
+    validate_synthetic_context(envelope_sha, envelope_sha, envelope_sha, envelope_sha)
+    validate_revision_domains(*unequal_values)
+    validate_synthetic_context(envelope_sha, event_merge_sha, envelope_sha, event_merge_sha)
 
-    def rejected(*values):
+    def rejected_domains(*values):
         try:
             validate_revision_domains(*values)
         except RuntimeError:
             return
         raise AssertionError("invalid revision domains accepted")
 
-    rejected(source_sha, source_sha, source_sha, base_sha, source_sha, source_sha)
-    rejected(envelope_sha, "d" * 40, source_sha, base_sha, source_sha, source_sha)
-    rejected(envelope_sha, envelope_sha, source_sha, source_sha, source_sha, source_sha)
-    rejected(envelope_sha, envelope_sha, source_sha, base_sha, base_sha, source_sha)
-    rejected(envelope_sha, envelope_sha, source_sha, base_sha, "d" * 40, source_sha)
-    rejected(envelope_sha, envelope_sha, source_sha, base_sha, source_sha, base_sha)
-    rejected("malformed", envelope_sha, source_sha, base_sha, source_sha, source_sha)
+    def rejected_context(*values):
+        try:
+            validate_synthetic_context(*values)
+        except RuntimeError:
+            return
+        raise AssertionError("substituted synthetic context accepted")
+
+    rejected_domains("", event_merge_sha, source_sha, base_sha, source_sha, source_sha)
+    rejected_domains(envelope_sha, "", source_sha, base_sha, source_sha, source_sha)
+    rejected_domains("A" * 40, event_merge_sha, source_sha, base_sha, source_sha, source_sha)
+    rejected_domains(envelope_sha, "malformed", source_sha, base_sha, source_sha, source_sha)
+    for collapsed in (source_sha, base_sha):
+        rejected_domains(collapsed, event_merge_sha, source_sha, base_sha, source_sha, source_sha)
+        rejected_domains(envelope_sha, collapsed, source_sha, base_sha, source_sha, source_sha)
+    rejected_domains(envelope_sha, event_merge_sha, source_sha, source_sha, source_sha, source_sha)
+    rejected_domains(envelope_sha, event_merge_sha, source_sha, base_sha, base_sha, source_sha)
+    rejected_domains(envelope_sha, event_merge_sha, source_sha, base_sha, event_merge_sha,
+                     source_sha)
+    rejected_domains(envelope_sha, event_merge_sha, source_sha, base_sha, source_sha, base_sha)
+    rejected_domains(envelope_sha, event_merge_sha, source_sha, base_sha, source_sha, envelope_sha)
+    rejected_context(envelope_sha, event_merge_sha, "", event_merge_sha)
+    rejected_context(envelope_sha, event_merge_sha, envelope_sha, "")
+    rejected_context(envelope_sha, event_merge_sha, event_merge_sha, event_merge_sha)
+    rejected_context(envelope_sha, event_merge_sha, envelope_sha, envelope_sha)
+    rejected_context(envelope_sha, event_merge_sha, event_merge_sha, envelope_sha)
+    rejected_context(envelope_sha, event_merge_sha, source_sha, event_merge_sha)
+    rejected_context(envelope_sha, event_merge_sha, envelope_sha, base_sha)
     local = {"classification": "observation-only", "context": "unit-supplied"}
     require(local["classification"] == "observation-only", "local classification changed")
     print("native C1 envelope/source domain portable tests passed")

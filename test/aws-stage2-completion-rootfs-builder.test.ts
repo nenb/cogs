@@ -79,8 +79,13 @@ test("D-R2.2c exposes only fixed recover-owned and keeps bootstrap private", asy
   assert.match(nativeInvoker, /\/usr\/bin\/sudo/u);
   assert.match(nativeInvoker, /NAMESPACES = \("pid", "mnt", "user", "cgroup"\)/u);
   assert.match(nativeInvoker, /validate_revision_domains/u);
+  assert.match(nativeInvoker, /validate_synthetic_context/u);
   assert.match(nativeInvoker, /"classification": "observation-only"/u);
-  assert.match(nativeInvoker, /"synthetic_merge_sha"/u);
+  assert.match(nativeInvoker, /"envelope_sha": expected\["envelope_sha"\]/u);
+  assert.match(nativeInvoker, /"event_merge_sha": expected\["event_merge_sha"\]/u);
+  assert.match(nativeInvoker, /envelope_sha == github_sha/u);
+  assert.match(nativeInvoker, /event_merge_sha == event_payload_merge_sha/u);
+  assert.doesNotMatch(nativeInvoker, /envelope_sha == event_merge_sha/u);
   assert.match(nativeInvoker, /"workflow_blob_digest"/u);
   assert.doesNotMatch(nativeInvoker, /native-host|native-qualified|external_authority/u);
   assert.doesNotMatch(nativeInvokerPath, /\.test\.ts$/u);
