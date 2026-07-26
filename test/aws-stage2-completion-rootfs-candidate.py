@@ -15,6 +15,8 @@ import sys
 import tempfile
 import time
 
+sys.dont_write_bytecode = True
+
 ROOT = Path(__file__).resolve().parents[1]
 REMOTE = ROOT / "deploy/aws-feasibility/remote"
 FIXED = Path("/var/lib/cogs/stage2-completion-v1/source")
@@ -42,6 +44,16 @@ def load(name, path):
 
 
 def portable_tests():
+    qualification_source = Path(__file__).read_text()
+    assert sys.dont_write_bytecode is True
+    assert qualification_source.index("sys.dont_write_bytecode = True") < qualification_source.index("def load(")
+    with tempfile.TemporaryDirectory() as temporary:
+        base = Path(temporary)
+        module_path = base / "guarded_module.py"
+        module_path.write_text("VALUE = 1\n")
+        before = state_tree(base)
+        assert load("portable_bytecode_guard", module_path).VALUE == 1
+        assert state_tree(base) == before and not (base / "__pycache__").exists()
     candidate_source = (REMOTE / "completion_rootfs_candidate.py").read_text()
     transaction_calls = ("canonical._canonical_metadata(", "fs._open_anonymous(",
                          "fs._link_anonymous(", "builder._append_candidate(")
