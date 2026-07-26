@@ -1,9 +1,11 @@
 # ADR 0057: Authorize atomic unnamed candidate-tar remediation
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-26
 - Decision owner: Nick Byrne
-- Scope: One exact-base correction, local portable/static and six-fault qualification, one clean final exact-head review, and one hosted authentic two-build execution. This proposal performs none of them.
+- Accepted by: Delegated project lead on 2026-07-26 under Nick Byrne's standing bounded-local delegation, after corrected independent hostile review reported no P0–P3 findings.
+- Acceptance record: [GitHub pull request #226](https://github.com/nenb/cogs/pull/226).
+- Scope: One exact-base correction, local portable/static and six-fault qualification, one clean final exact-head review, and one hosted authentic two-build execution.
 
 ## Context
 
