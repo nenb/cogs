@@ -1,8 +1,10 @@
 # ADR 0062: Raise the hosted driver cap for signal-safe failure handling
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-26
 - Decision owner: Nick Byrne
+- Accepted by: Delegated project lead on 2026-07-26 under Nick Byrne's standing bounded-local delegation, after fresh independent hostile rereview reported no P0–P3 findings.
+- Acceptance record: [GitHub pull request #233](https://github.com/nenb/cogs/pull/233).
 - Amendment scope: This ADR amends only ADR 0061's absolute gross-addition maximum for `test/aws-stage2-completion-rootfs-candidate.py`, from 570 to 1,100, and the corresponding excluded three-file total maximum, from 710 to 1,250. It authorizes only the narrow signal-safe hosted-driver correction and committed portable coverage below. Every other ADR 0057–0061 requirement remains binding.
 
 ## Context
