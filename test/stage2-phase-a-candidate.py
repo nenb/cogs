@@ -112,6 +112,100 @@ for hostile in (
 base = module._base_report()
 raw = module._canonical_report(base)
 assert json.loads(raw) == base
+stage_cases = (
+    ("success", "success", "complete", "pass", "pass"),
+    ("success", "failure", "complete", "pass", "fail"),
+    ("success", "blocked", "rootfs-bootstrap", "pass", "blocked"),
+    ("success", "blocked", "operation-establishment", "pass", "blocked"),
+    ("success", "blocked", "materializer-dispatch", "pass", "blocked"),
+    ("success", "blocked", "complete", "pass", "blocked"),
+    ("failure", "blocked", "fixed-input", "fail", "blocked"),
+    ("blocked", "blocked", "not-reached", "blocked", "blocked"),
+    ("not-reached", "not-reached", "not-reached", "unknown", "unknown"),
+)
+successful_rootfs = {
+    "candidate_count": 2, "cache_count": 16, "entry_count": 4353, "manifest_size": 1049443,
+    "manifest_sha256": "8783c292f232842a3d1d2d35e7ac2268d591fa6e947d3984868fe33ca006e691",
+    "ustar_size": 136905728,
+    "ustar_sha256": "47b0ab5752ae50da6bc9840345aa9ba6285bde3e5ae186c0c548acbaa83768d3",
+    "equal": True, "pins_match": True,
+}
+def causal_report(cache, runtime, setup, cache_check, runtime_check):
+    candidate = module._base_report()
+    candidate["stage_evidence"] = {
+        "artifact_cache": {"status": cache, "elapsed_ms": 1 if cache in {"success", "failure"} else 0},
+        "runtime_assets": {"status": runtime, "elapsed_ms": 1 if runtime in {"success", "failure"} else 0},
+    }
+    candidate["first_build_setup"] = setup
+    candidate["checks"].update({"artifact_cache": cache_check, "runtime_assets": runtime_check})
+    counters = {name: 0 for name in module.STRUCTURAL_COUNTERS}
+    if setup == "complete":
+        module._set_phase(candidate["rootfs_phases"], "first-build-work", "failure", "failed", 1, counters)
+        module._block_phases(candidate["rootfs_phases"], tuple(
+            name for name in module.ROOTFS_PHASES[1:] if name != "recovery-attempt-1"
+        ))
+    if runtime in {"success", "failure"}:
+        candidate["rootfs_phases"] = module._empty_phases()
+        for name in module.ROOTFS_PHASES:
+            if name != "recovery-attempt-1":
+                module._set_phase(candidate["rootfs_phases"], name, "success", "success", 1, counters)
+        candidate["rootfs"] = successful_rootfs
+    if runtime == "success":
+        candidate["runtime_assets"] = [{"component": item.component, "release": item.release, "name": item.name,
+            "size": item.size, "sha256": item.sha256, "downloaded": True, "extracted": False}
+            for item in module.RUNTIME_ASSETS]
+    return candidate
+for case in stage_cases:
+    module._canonical_report(causal_report(*case))
+
+causal_failures = []
+cache_failure_attempted = causal_report("failure", "blocked", "fixed-input", "fail", "blocked")
+cache_failure_attempted["rootfs_phases"] = causal_report(
+    "success", "blocked", "complete", "pass", "blocked",
+)["rootfs_phases"]
+causal_failures.append(cache_failure_attempted)
+for prephase_setup in ("rootfs-bootstrap", "operation-establishment", "materializer-dispatch"):
+    prephase_with_work = causal_report("success", "blocked", "complete", "pass", "blocked")
+    prephase_with_work["first_build_setup"] = prephase_setup
+    causal_failures.append(prephase_with_work)
+for prephase_setup in ("rootfs-bootstrap", "operation-establishment", "materializer-dispatch"):
+    unresolved_runtime = causal_report(
+        "success", "not-reached", prephase_setup, "pass", "unknown",
+    )
+    causal_failures.append(unresolved_runtime)
+complete_without_work = causal_report(
+    "success", "not-reached", "rootfs-bootstrap", "pass", "unknown",
+)
+complete_without_work["first_build_setup"] = "complete"
+causal_failures.append(complete_without_work)
+settled_blocked = causal_report("success", "failure", "complete", "pass", "fail")
+settled_blocked["stage_evidence"]["runtime_assets"] = {"status": "blocked", "elapsed_ms": 0}
+settled_blocked["checks"]["runtime_assets"] = "blocked"
+causal_failures.append(settled_blocked)
+unsettled_runtime = causal_report("success", "blocked", "complete", "pass", "blocked")
+unsettled_runtime["stage_evidence"]["runtime_assets"] = {"status": "failure", "elapsed_ms": 1}
+unsettled_runtime["checks"]["runtime_assets"] = "fail"
+causal_failures.append(unsettled_runtime)
+failed_runtime_not_reached = causal_report("success", "blocked", "complete", "pass", "blocked")
+failed_runtime_not_reached["stage_evidence"]["runtime_assets"] = {"status": "not-reached", "elapsed_ms": 0}
+failed_runtime_not_reached["checks"]["runtime_assets"] = "unknown"
+causal_failures.append(failed_runtime_not_reached)
+for impossible in causal_failures:
+    rejected(lambda impossible=impossible: module._canonical_report(impossible))
+
+rejected(lambda: module._canonical_report({**module._base_report(), "stage_evidence": {
+    "artifact_cache": {"status": "failure", "elapsed_ms": 1},
+    "runtime_assets": {"status": "blocked", "elapsed_ms": 0}}, "first_build_setup": "fixed-input"}))
+for hostile_stage in (
+    {"artifact_cache": {"status": "success", "elapsed_ms": 1}},
+    {"artifact_cache": {"status": "failure", "elapsed_ms": 1},
+     "runtime_assets": {"status": "failure", "elapsed_ms": 1}},
+    {"artifact_cache": {"status": "blocked", "elapsed_ms": 1},
+     "runtime_assets": {"status": "blocked", "elapsed_ms": 0}},
+):
+    rejected(lambda hostile_stage=hostile_stage: module._canonical_report(
+        {**module._base_report(), "stage_evidence": hostile_stage},
+    ))
 valid_counters = {name: index for index, name in enumerate(module.STRUCTURAL_COUNTERS)}
 def counter_values(value=0):
     return {name: value for name in module.STRUCTURAL_COUNTERS}
@@ -362,6 +456,20 @@ try:
 finally:
     module.time.monotonic_ns = original_monotonic_ns
 
+setup_build = trusted_counter_provider("completion_rootfs_build")
+setup_build.BUILD_SECONDS = 900
+setup_build.BuildAttemptError = FakeBuildAttemptError
+setup_build.builder = types.SimpleNamespace(_cleanup_owned=lambda *_args: None,
+                                            _begin_operation=lambda *_args: "must-not-run")
+setup_build.materializer = types.SimpleNamespace(_reload_and_cleanup=lambda *_args: None,
+                                                _materialize_unmasked=lambda *_args: "must-not-run")
+setup_build._build_once = lambda *_args: (_ for _ in ()).throw(FakeBuildAttemptError("not-started"))
+setup_marker = {"value": "operation-establishment"}
+assert failure_code(lambda: module._candidate_build(
+    setup_build, "approval", "control", "first", "e" * 64, module._empty_phases(), setup_marker,
+)) == "rootfs-first-build-not-started"
+assert setup_marker == {"value": "operation-establishment"}
+
 postwork_clock = [0]
 postwork_build = trusted_counter_provider(
     "completion_rootfs_build", deltas=(counter_values(20), counter_values(3), counter_values(4)),
@@ -610,54 +718,319 @@ try:
 finally:
     module.time.monotonic_ns = socket_monotonic_ns
 
-publication_stages = (
-    "after-final-eof", "after-content-fsync", "after-redigest", "before-link", "after-link",
-    "after-unlink", "after-directory-fsync", "after-final-redigest", "before-journal",
-    "after-journal", "before-return",
-)
-publication_originals = module.time.monotonic_ns, module._check_asset_deadline, module._append_journal
+publication_originals = module._asset_generation, module._check_asset_deadline, module._append_journal
+with tempfile.TemporaryDirectory() as temporary:
+    directory_path = Path(temporary)
+    partial, final = directory_path / ".asset.partial", directory_path / "asset.bin"
+    directory = os.open(directory_path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    descriptor = os.open(partial.name, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o600, dir_fd=directory)
+    content = b"fixed-publication-content"
+    assert os.write(descriptor, content) == len(content)
+    asset = module.Asset("test", "1", final.name, "https://github.com/fixed", len(content),
+                         module.hashlib.sha256(content).hexdigest())
+    stable_generation = []
+    def portable_generation(fd, _deadline, mount_id=None):
+        observed = os.fstat(fd)
+        if not stable_generation:
+            stable_generation.append({"mount_id": 1, "dev": observed.st_dev, "ino": observed.st_ino,
+                "kind": "file", "mode": 0o400, "uid": 0,
+                "gid": 0, "nlink": observed.st_nlink, "size": observed.st_size,
+                "mtime_ns": observed.st_mtime_ns, "ctime_ns": observed.st_ctime_ns})
+        return dict(stable_generation[0])
+    journal = []
+    try:
+        module._asset_generation = portable_generation
+        module._check_asset_deadline = lambda *_args: None
+        module._append_journal = lambda kind, body: journal.append((kind, body))
+        publication = {"journaled": False, "writer_close_attempted": False, "partial_final": None,
+                       "retained": None, "linked": False, "partial_unlinked": False}
+        result = module._finish_asset_publication(
+            asset, directory, descriptor, partial, final, module._identity(os.fstat(descriptor)), 10**30, publication,
+        )
+        assert result["downloaded"] and final.read_bytes() == content and not partial.exists()
+        assert [kind for kind, _body in journal] == ["asset-partial-final-owned", "asset-final-owned"]
+        os.close(publication["retained"])
+    finally:
+        os.close(directory)
+        module._asset_generation, module._check_asset_deadline, module._append_journal = publication_originals
+
+fixed_asset = module.RUNTIME_ASSETS[0]
+fixed_generation = {"mount_id": 1, "dev": 2, "ino": 3, "kind": "file", "mode": 0o400,
+                    "uid": 0, "gid": 0, "nlink": 1, "size": fixed_asset.size, "mtime_ns": 4, "ctime_ns": 5}
+def partial_records(generation=fixed_generation):
+    partial_name = "." + fixed_asset.name + ".partial"
+    return [
+        {"kind": "asset-partial-owned", "body": {"component": fixed_asset.component,
+         "name": partial_name, "identity": {}}},
+        {"kind": "asset-partial-final-owned", "body": {"component": fixed_asset.component,
+         "name": partial_name, "generation": generation}},
+    ]
+assert module._asset_records(partial_records())[0][fixed_asset.component]["generation"] == fixed_generation
+
+class GenerationNode:
+    def __init__(self, device, inode):
+        self.st_dev = device; self.st_ino = inode; self.st_mode = 0o100400
+        self.st_uid = self.st_gid = 0; self.st_nlink = 1; self.st_size = 7
+        self.st_mtime_ns = 8; self.st_ctime_ns = 9
+
+mount_originals = module.fcntl.fcntl, module.os.fstat, module.os.open, module.os.read, module.os.close
 try:
-    for target_stage in publication_stages:
-        with tempfile.TemporaryDirectory() as temporary:
-            directory_path = Path(temporary)
-            partial = directory_path / ".asset.partial"
-            final = directory_path / "asset.bin"
-            directory = os.open(directory_path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
-            descriptor = os.open(partial.name, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC,
-                                 0o600, dir_fd=directory)
-            try:
-                partial_identity = module._identity(os.fstat(descriptor))
-                content = b"fixed-publication-content"
-                assert os.write(descriptor, content) == len(content)
-                asset = module.Asset(
-                    "test", "1", final.name, "https://github.com/fixed", len(content),
-                    module.hashlib.sha256(content).hexdigest(),
-                )
-                deadline_ns = 1_000_000
-                observed_stage = [None]
-                journal = []
-                original_check = publication_originals[1]
-                def staged_check(deadline, stage):
-                    observed_stage[0] = stage
-                    return original_check(deadline, stage)
-                module._check_asset_deadline = staged_check
-                module.time.monotonic_ns = lambda: deadline_ns if observed_stage[0] == target_stage else deadline_ns - 1
-                module._append_journal = lambda kind, body: journal.append((kind, body))
-                publication = {"journaled": False}
-                assert failure_code(lambda: module._finish_asset_publication(
-                    asset, directory, descriptor, partial, final, partial_identity, deadline_ns, publication,
-                )) == "asset-timeout"
-                module._cleanup_failed_asset_publication(directory, descriptor, partial, final, publication)
-                retained = target_stage in {"after-journal", "before-return"}
-                assert set(os.listdir(directory)) == ({final.name} if retained else set())
-                assert [kind for kind, _body in journal] == (["asset-final-owned"] if retained else [])
-                if retained:
-                    module._cleanup_held_asset(directory, final.name, descriptor)
-            finally:
-                os.close(descriptor)
-                os.close(directory)
+    nodes = {110: GenerationNode(20, 30), 111: GenerationNode(21, 31)}
+    info = {1110: b"pos:\t0\nflags:\t010000000\nmnt_id:\t41\nino:\t30\n",
+            1111: b"pos:\t0\nflags:\t010000000\nmnt_id:\t42\nino:\t31\n"}
+    closed = []
+    module.fcntl.fcntl = lambda descriptor, command, minimum: descriptor + 100
+    module.os.fstat = lambda descriptor: nodes[descriptor]
+    module.os.open = lambda path, _flags: int(path.rsplit("/", 1)[1]) + 1000
+    module.os.read = lambda descriptor, _size: info.pop(descriptor, b"")
+    module.os.close = lambda descriptor: closed.append(descriptor)
+    first_generation = module._asset_generation(10, 10**30)
+    second_generation = module._asset_generation(11, 10**30)
+    assert (first_generation["mount_id"], first_generation["dev"], first_generation["ino"]) == (41, 20, 30)
+    assert (second_generation["mount_id"], second_generation["dev"], second_generation["ino"]) == (42, 21, 31)
+    assert closed == [1110, 110, 1111, 111]
 finally:
-    module.time.monotonic_ns, module._check_asset_deadline, module._append_journal = publication_originals
+    module.fcntl.fcntl, module.os.fstat, module.os.open, module.os.read, module.os.close = mount_originals
+def drift_generation(generation, field):
+    return {**generation, field: "directory" if field == "kind" else generation[field] + 1}
+
+
+def freeze_generation_cut(cut, field):
+    content = b"authentic-final-generation"
+    asset = module.Asset("matrix", "1", "asset.bin", "https://github.com/fixed", len(content),
+                         module.hashlib.sha256(content).hexdigest())
+    base = {**fixed_generation, "size": len(content)}
+    drift = drift_generation(base, field)
+    scripts = {
+        "writer-continuity": (base, drift),
+        "name-observation": (base, base, drift, base),
+        "held-observation": (base, base, base, drift),
+    }
+    with tempfile.TemporaryDirectory() as temporary:
+        partial = Path(temporary, ".asset.partial"); partial.write_bytes(content)
+        directory = os.open(temporary, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        writer = os.open(partial.name, os.O_RDWR | os.O_CLOEXEC, dir_fd=directory)
+        values = iter(scripts[cut]); journal = []
+        publication = {"journaled": False, "writer_close_attempted": False, "partial_final": None,
+                       "retained": None, "linked": False, "partial_unlinked": False}
+        originals = module._asset_generation, module._check_asset_deadline, module._append_journal
+        try:
+            module._asset_generation = lambda *_args: dict(next(values))
+            module._check_asset_deadline = lambda *_args: None
+            module._append_journal = lambda kind, body: journal.append((kind, body))
+            assert failure_code(lambda: module._freeze_partial(
+                asset, directory, writer, partial, 10**30, publication,
+            )) == "asset-partial-replaced"
+            assert partial.read_bytes() == content and journal == [] and publication["partial_final"] is None
+        finally:
+            module._asset_generation, module._check_asset_deadline, module._append_journal = originals
+            if not publication["writer_close_attempted"]: os.close(writer)
+            os.close(directory)
+
+
+for generation_cut in ("writer-continuity", "name-observation", "held-observation"):
+    for generation_field in module.FULL_GENERATION:
+        freeze_generation_cut(generation_cut, generation_field)
+
+for cleanup_cut in ("cleanup-reopen", "cleanup-revalidation"):
+    for generation_field in module.FULL_GENERATION:
+        with tempfile.TemporaryDirectory() as temporary:
+            assets = Path(temporary, "assets"); assets.mkdir(mode=0o700)
+            partial = assets / ("." + fixed_asset.name + ".partial"); partial.write_bytes(b"preserve")
+            directory_identity = module._identity(assets.stat(follow_symlinks=False))
+            records = [{"kind": "asset-directory-owned", "body": {"identity": directory_identity}},
+                       *partial_records()]
+            drift = drift_generation(fixed_generation, generation_field)
+            values = iter((drift,) if cleanup_cut == "cleanup-reopen" else (fixed_generation, drift))
+            originals = module.ASSETS, module._open_dir, module._asset_generation
+            try:
+                module.ASSETS = assets
+                module._open_dir = lambda path: os.open(
+                    path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                )
+                module._asset_generation = lambda *_args: dict(next(values))
+                rejected(lambda: module._cleanup_assets(
+                    records, {item.component: "not-required" for item in module.RUNTIME_ASSETS},
+                ))
+                assert partial.read_bytes() == b"preserve"
+            finally:
+                module.ASSETS, module._open_dir, module._asset_generation = originals
+
+for identity_field in ("mount_id", "dev", "ino"):
+    freeze_generation_cut("writer-continuity", identity_field)
+
+with tempfile.TemporaryDirectory() as temporary:
+    partial = Path(temporary) / ("." + fixed_asset.name + ".partial")
+    partial.write_bytes(b"owned-final-generation")
+    directory = os.open(temporary, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    immediate = {fixed_asset.component: "not-required"}
+    original_generation = module._asset_generation
+    try:
+        module._asset_generation = lambda *_args: fixed_generation
+        module._cleanup_failed_asset_publication(directory, partial, {
+            "journaled": False, "partial_unlinked": False, "linked": False, "partial_final": fixed_generation,
+        }, immediate, fixed_asset.component, 10**30)
+        assert immediate[fixed_asset.component] == "success" and not partial.exists()
+    finally:
+        module._asset_generation = original_generation
+        os.close(directory)
+rejected(lambda: module._asset_records(list(reversed(partial_records()))))
+rejected(lambda: module._asset_records(partial_records() + [{"kind": "asset-partial-final-owned",
+         "body": partial_records()[1]["body"]}]))
+
+for immediate_boundary in ("unlink", "unlink-after-effect", "fsync", "close"):
+    with tempfile.TemporaryDirectory() as temporary:
+        partial = Path(temporary) / ("." + fixed_asset.name + ".partial")
+        partial.write_bytes(b"owned-final-generation")
+        directory = os.open(temporary, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        immediate = {fixed_asset.component: "not-required"}
+        publication = {"journaled": False, "partial_unlinked": False, "linked": False,
+                       "partial_final": fixed_generation}
+        originals = module._asset_generation, module.os.unlink, module.os.fsync, module.os.close
+        real_unlink, real_fsync, real_close = module.os.unlink, module.os.fsync, module.os.close
+        try:
+            module._asset_generation = lambda *_args: fixed_generation
+            if immediate_boundary == "unlink":
+                module.os.unlink = lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("unlink-cut"))
+            if immediate_boundary == "unlink-after-effect":
+                def unlink_after_effect(*args, **kwargs):
+                    real_unlink(*args, **kwargs)
+                    raise OSError("unlink-after-effect")
+                module.os.unlink = unlink_after_effect
+            if immediate_boundary == "fsync":
+                module.os.fsync = lambda *_args: (_ for _ in ()).throw(OSError("fsync-cut"))
+            if immediate_boundary == "close":
+                close_once = [False]
+                def immediate_close(descriptor):
+                    if not close_once[0]:
+                        close_once[0] = True; real_close(descriptor); raise OSError("close-cut")
+                    return real_close(descriptor)
+                module.os.close = immediate_close
+            thrown(lambda: module._cleanup_failed_asset_publication(
+                directory, partial, publication, immediate, fixed_asset.component, 10**30,
+            ))
+            assert publication["partial_unlinked"]
+            assert partial.exists() == (immediate_boundary == "unlink")
+            assert immediate[fixed_asset.component] == "post-unlink-uncertainty"
+        finally:
+            module._asset_generation, module.os.unlink, module.os.fsync, module.os.close = originals
+            os.close(directory)
+
+
+for freeze_boundary in ("fsync-1", "fsync-2", "retained-open", "writer-close", "journal-append"):
+    with tempfile.TemporaryDirectory() as temporary:
+        content = b"freeze-primitive-boundary"
+        asset = module.Asset("boundary", "1", "asset.bin", "https://github.com/fixed", len(content),
+                             module.hashlib.sha256(content).hexdigest())
+        generation = {**fixed_generation, "size": len(content)}
+        partial = Path(temporary, ".asset.partial"); partial.write_bytes(content)
+        directory = os.open(temporary, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        writer = os.open(partial.name, os.O_RDWR | os.O_CLOEXEC, dir_fd=directory)
+        publication = {"journaled": False, "writer_close_attempted": False, "partial_final": None,
+                       "retained": None, "linked": False, "partial_unlinked": False}
+        originals = module._asset_generation, module._check_asset_deadline, module._append_journal,
+        originals += (module.os.fsync, module.os.open, module.os.close)
+        real_open, real_close, real_fsync = module.os.open, module.os.close, module.os.fsync
+        try:
+            module._asset_generation = lambda *_args: dict(generation)
+            module._check_asset_deadline = lambda *_args: None
+            fsync_calls = [0]
+            if freeze_boundary.startswith("fsync-"):
+                target_call = int(freeze_boundary[-1])
+                def freeze_fsync(descriptor):
+                    fsync_calls[0] += 1
+                    if fsync_calls[0] == target_call: raise OSError("writer-fsync-cut")
+                    return real_fsync(descriptor)
+                module.os.fsync = freeze_fsync
+            if freeze_boundary == "retained-open":
+                module.os.open = lambda path, *args, **kwargs: (
+                    (_ for _ in ()).throw(OSError("retained-open-cut")) if path == partial.name else
+                    real_open(path, *args, **kwargs)
+                )
+            if freeze_boundary == "writer-close":
+                module.os.close = lambda descriptor: (
+                    (_ for _ in ()).throw(OSError("writer-close-cut")) if descriptor == writer else
+                    real_close(descriptor)
+                )
+            if freeze_boundary == "journal-append":
+                module._append_journal = lambda *_args: (_ for _ in ()).throw(OSError("journal-append-cut"))
+            thrown(lambda: module._freeze_partial(asset, directory, writer, partial, 10**30, publication))
+            immediate = {fixed_asset.component: "not-required"}
+            module._cleanup_failed_asset_publication(
+                directory, partial, publication, immediate, fixed_asset.component, 10**30,
+            )
+            assert immediate[fixed_asset.component] == "preserved" and partial.exists()
+            if freeze_boundary.startswith("fsync-"):
+                assert fsync_calls[0] == int(freeze_boundary[-1])
+        finally:
+            (module._asset_generation, module._check_asset_deadline, module._append_journal,
+             module.os.fsync, module.os.open, module.os.close) = originals
+            if not publication["writer_close_attempted"] or freeze_boundary == "writer-close": os.close(writer)
+            os.close(directory)
+
+
+def publication_cut(target):
+    content = b"publication-boundary"
+    asset = module.Asset("boundary", "1", "asset.bin", "https://github.com/fixed", len(content),
+                         module.hashlib.sha256(content).hexdigest())
+    generation = {**fixed_generation, "size": len(content)}
+    with tempfile.TemporaryDirectory() as temporary:
+        partial, final = Path(temporary, ".asset.partial"), Path(temporary, "asset.bin")
+        partial.write_bytes(content)
+        directory = os.open(temporary, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        writer = os.open(partial.name, os.O_RDWR | os.O_CLOEXEC, dir_fd=directory)
+        publication = {"journaled": False, "writer_close_attempted": False, "partial_final": None,
+                       "retained": None, "linked": False, "partial_unlinked": False}
+        reached = []
+        originals = module._asset_generation, module._check_asset_deadline, module._append_journal, module.os.unlink
+        real_unlink = module.os.unlink
+        try:
+            module._asset_generation = lambda *_args: dict(generation)
+            def cut(_deadline, stage):
+                reached.append(stage)
+                if stage == target: raise module.CandidateError("injected-cut")
+            module._check_asset_deadline = cut
+            module._append_journal = lambda kind, body: reached.append(kind)
+            if target == "unlink-after-effect":
+                def unlink_after_effect(*args, **kwargs):
+                    real_unlink(*args, **kwargs); reached.append(target)
+                    raise OSError("unlink-after-effect")
+                module.os.unlink = unlink_after_effect
+            error = thrown(lambda: module._finish_asset_publication(
+                asset, directory, writer, partial, final, {}, 10**30, publication,
+            ))
+            assert (isinstance(error, OSError) if target == "unlink-after-effect" else
+                    isinstance(error, module.CandidateError) and error.code == "injected-cut")
+            immediate = {fixed_asset.component: "not-required"}
+            if publication["partial_unlinked"]:
+                assert failure_code(lambda: module._cleanup_failed_asset_publication(
+                    directory, partial, publication, immediate, fixed_asset.component, 10**30,
+                )) == "asset-immediate-cleanup-uncertainty"
+                assert immediate[fixed_asset.component] == "post-unlink-uncertainty" and not partial.exists()
+            else:
+                module._cleanup_failed_asset_publication(
+                    directory, partial, publication, immediate, fixed_asset.component, 10**30,
+                )
+                expected = "success" if publication["partial_final"] is not None else "preserved"
+                assert immediate[fixed_asset.component] == expected
+                assert partial.exists() == (expected == "preserved")
+            assert target in reached
+        finally:
+            (module._asset_generation, module._check_asset_deadline,
+             module._append_journal, module.os.unlink) = originals
+            if publication["retained"] is not None:
+                try: os.close(publication["retained"])
+                except OSError: pass
+            if not publication["writer_close_attempted"]: os.close(writer)
+            os.close(directory)
+
+
+for preunlink_boundary in ("after-final-eof", "after-content-fsync", "after-retained-open",
+                           "after-writer-close", "after-held-name-proof", "after-partial-final-journal"):
+    publication_cut(preunlink_boundary)
+for postunlink_boundary in ("unlink-after-effect", "after-unlink", "after-directory-fsync",
+                            "after-final-redigest", "before-journal", "after-journal", "before-return"):
+    publication_cut(postunlink_boundary)
 
 download_originals = (
     module._append_journal, module._open_dir, module._held_path_absent,
@@ -671,7 +1044,7 @@ try:
     module._open_dir = lambda _path: 40
     module._held_path_absent = lambda _path: (_ for _ in ()).throw(module.CandidateError("asset-path"))
     module.os.close = lambda descriptor: closed.append(descriptor)
-    assert failure_code(lambda: module._download_asset(asset, deadline)) == "asset-path"
+    assert failure_code(lambda: module._download_asset(asset, deadline, {asset.component: "not-required"})) == "asset-path"
     assert closed == [40]
 
     closed = []
@@ -680,8 +1053,9 @@ try:
     module.os.open = lambda *_args, **_kwargs: 41
     module.os.fstat = lambda _descriptor: (_ for _ in ()).throw(OSError("partial-identity"))
     module._cleanup_failed_asset_publication = lambda *_args: cleanup_calls.append("cleanup")
-    expect_oserror(lambda: module._download_asset(asset, deadline))
-    assert closed == [41, 40] and cleanup_calls == []
+    fstat_immediate = {asset.component: "not-required"}
+    expect_oserror(lambda: module._download_asset(asset, deadline, fstat_immediate))
+    assert closed == [41, 40] and cleanup_calls == [] and fstat_immediate[asset.component] == "preserved"
 
     class PartialNode:
         st_dev = 1
@@ -701,7 +1075,7 @@ try:
             raise module.CandidateError("journal-invalid")
     module._append_journal = partial_journal
     module._cleanup_failed_asset_publication = lambda *_args: cleanup_calls.append("cleanup")
-    assert failure_code(lambda: module._download_asset(asset, deadline)) == "journal-invalid"
+    assert failure_code(lambda: module._download_asset(asset, deadline, {asset.component: "not-required"})) == "journal-invalid"
     assert journal_calls == ["asset-intent", "asset-partial-owned"]
     assert cleanup_calls == ["cleanup"] and closed == [41, 40]
 finally:
@@ -727,6 +1101,48 @@ import completion_rootfs_builder as actual_builder
 import completion_rootfs_materializer as actual_materializer
 import completion_rootfs_publish as actual_publish
 assert actual_build.publication is actual_publish
+if sys.platform.startswith("linux"):
+    with tempfile.TemporaryDirectory(prefix="cogs-phase-a-linux-replacement-") as temporary:
+        partial = Path(temporary) / ("." + fixed_asset.name + ".partial")
+        partial.write_bytes(b"owned"); partial.chmod(0o400)
+        directory = os.open(temporary, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        retained = os.open(partial.name, module.O_PATH | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=directory)
+        generation = module._asset_generation(retained, time.monotonic_ns() + module.NS_PER_SECOND)
+        partial.unlink(); partial.write_bytes(b"replacement"); partial.chmod(0o400)
+        replacement = os.open(partial.name, module.O_PATH | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=directory)
+        assert module._asset_generation(replacement, time.monotonic_ns() + module.NS_PER_SECOND) != generation
+        immediate = {fixed_asset.component: "not-required"}
+        rejected(lambda: module._cleanup_failed_asset_publication(directory, partial, {
+            "journaled": False, "partial_unlinked": False, "linked": False, "partial_final": generation,
+        }, immediate, fixed_asset.component, time.monotonic_ns() + module.NS_PER_SECOND))
+        assert partial.read_bytes() == b"replacement" and immediate[fixed_asset.component] == "preserved"
+        os.close(replacement); os.close(retained); os.close(directory)
+    for replacement_stage in ("after-content-fsync", "after-retained-open"):
+        with tempfile.TemporaryDirectory(prefix="cogs-phase-a-linux-freeze-replacement-") as temporary:
+            content = b"native-freeze-owned"
+            asset = module.Asset("native", "1", "asset.bin", "https://github.com/fixed", len(content),
+                                 module.hashlib.sha256(content).hexdigest())
+            partial = Path(temporary, ".asset.partial"); partial.write_bytes(content)
+            directory = os.open(temporary, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+            writer = os.open(partial.name, os.O_RDWR | os.O_CLOEXEC, dir_fd=directory)
+            publication = {"journaled": False, "writer_close_attempted": False, "partial_final": None,
+                           "retained": None, "linked": False, "partial_unlinked": False}
+            original_deadline = module._check_asset_deadline
+            replaced = [False]
+            try:
+                def native_replace(_deadline, stage):
+                    if stage == replacement_stage and not replaced[0]:
+                        partial.unlink(); partial.write_bytes(b"native-replacement"); partial.chmod(0o400)
+                        replaced[0] = True
+                module._check_asset_deadline = native_replace
+                assert failure_code(lambda: module._freeze_partial(
+                    asset, directory, writer, partial, time.monotonic_ns() + module.NS_PER_SECOND, publication,
+                )) == "asset-partial-replaced"
+                assert replaced == [True] and partial.read_bytes() == b"native-replacement"
+            finally:
+                module._check_asset_deadline = original_deadline
+                if not publication["writer_close_attempted"]: os.close(writer)
+                os.close(directory)
 assert (actual_build.BUILD_SECONDS, actual_build.OUTER_SECONDS) == (900, 2400)
 assert (actual_materializer.MATERIALIZE_SECONDS, actual_materializer.CLEANUP_SECONDS) == (900, 600)
 assert actual_builder.RECOVER_SECONDS == 600
@@ -857,6 +1273,66 @@ finally:
      actual_build.materializer._materialize, actual_build.materializer._reload_and_cleanup,
      actual_build.canonical._manifest, actual_build.fs._close_chain) = build_attempt_originals
 
+setup_boundary_originals = (
+    actual_build.plan.load_verified_build_inputs, actual_build._cache_values,
+    actual_build.builder._open_base_chain, actual_build.builder._begin_operation,
+    actual_build.materializer._materialize, actual_build.materializer._materialize_unmasked,
+    actual_build.materializer._reload_and_cleanup, actual_build.fs._close_chain,
+)
+try:
+    actual_build._cache_values = lambda _authority: ()
+    actual_build.builder._open_base_chain = lambda _control: "chain"
+    actual_build.materializer._reload_and_cleanup = lambda *_args: None
+    actual_build.fs._close_chain = lambda _chain: None
+    for boundary in ("repeated-plan-load", "begin-entry", "begin-return", "materializer-entry"):
+        setup = {"value": "operation-establishment"}; setup_events = []
+        def repeated_load(boundary=boundary):
+            setup_events.append(("plan", setup["value"]))
+            if boundary == "repeated-plan-load": raise RuntimeError("repeated-load-cut")
+            return authority
+        def begin(*_args, boundary=boundary):
+            setup_events.append(("begin-entry", setup["value"]))
+            if boundary == "begin-entry": raise RuntimeError("begin-cut")
+            return owned
+        original_materialize_route = setup_boundary_originals[4]
+        def materialize_work(*_args):
+            setup_events.append(("materializer-work-entry", setup["value"]))
+            raise RuntimeError("materializer-cut")
+        def materialize_entry(*args, boundary=boundary):
+            setup_events.append(("materializer-dispatch-entry", setup["value"]))
+            if boundary == "begin-return": raise RuntimeError("after-begin-return-cut")
+            return original_materialize_route(*args)
+        actual_build.plan.load_verified_build_inputs = repeated_load
+        actual_build.builder._begin_operation = begin
+        actual_build.materializer._materialize = materialize_entry
+        actual_build.materializer._materialize_unmasked = materialize_work
+        boundary_phases = module._empty_phases()
+        assert failure_code(lambda: module._candidate_build(
+            actual_build, approval, outer_control, "first", "3" * 64, boundary_phases, setup,
+        )).startswith("rootfs-first-build-")
+        assert setup_events[0] == ("plan", "operation-establishment")
+        if boundary != "repeated-plan-load":
+            assert ("begin-entry", "operation-establishment") in setup_events
+        if boundary in {"begin-return", "materializer-entry"}:
+            assert ("materializer-dispatch-entry", "materializer-dispatch") in setup_events
+            if boundary == "materializer-entry":
+                assert ("materializer-work-entry", "complete") in setup_events
+                assert setup["value"] == "complete"
+            else:
+                assert not any(event[0] == "materializer-work-entry" for event in setup_events)
+                assert setup["value"] == "materializer-dispatch"
+        elif boundary == "begin-entry":
+            assert setup["value"] == "operation-establishment"
+        if boundary == "materializer-entry":
+            assert module._phase(boundary_phases, "first-build-work")["status"] == "failure"
+        else:
+            assert boundary_phases == module._empty_phases()
+finally:
+    (actual_build.plan.load_verified_build_inputs, actual_build._cache_values,
+     actual_build.builder._open_base_chain, actual_build.builder._begin_operation,
+     actual_build.materializer._materialize, actual_build.materializer._materialize_unmasked,
+     actual_build.materializer._reload_and_cleanup, actual_build.fs._close_chain) = setup_boundary_originals
+
 assert all(callable(getattr(actual_builder, name)) for name in ("_open_base_chain", "_bootstrap"))
 
 bootstrap_events = []
@@ -887,7 +1363,10 @@ fake_builder = types.ModuleType("completion_rootfs_builder")
 fake_builder._open_base_chain = lambda _control: (order.append("open") or "chain")
 fake_builder._bootstrap = lambda chain, _approval, _control: (order.append("bootstrap") or "state") if chain == "chain" else None
 fake_builder._cleanup_owned = lambda *_args: order.append("inline-cleanup")
-fake_materializer = types.SimpleNamespace(_reload_and_cleanup=lambda *_args: order.append("reload-cleanup"))
+fake_builder._begin_operation = lambda *_args: "owned-operation"
+fake_materializer = types.SimpleNamespace(_reload_and_cleanup=lambda *_args: order.append("reload-cleanup"),
+                                          _materialize_unmasked=lambda *_args: candidate)
+fake_materializer._materialize = lambda *args: fake_materializer._materialize_unmasked(*args)
 fake_build = trusted_counter_provider("completion_rootfs_build")
 fake_build.BUILD_SECONDS = 900
 fake_build.OUTER_SECONDS = 2400
@@ -896,7 +1375,8 @@ fake_build.materializer = fake_materializer
 def fake_build_once(_approval, token, _control):
     order.append(("build", token))
     fake_builder._cleanup_owned(None)
-    return candidate
+    owned = fake_builder._begin_operation(None)
+    return fake_materializer._materialize(None, owned, None)
 fake_build._build_once = fake_build_once
 fake_build._require_equal_builds = lambda first, second: order.append("equal") if first is second else (_ for _ in ()).throw(AssertionError())
 fake_build._require_pinned = lambda _candidate, _pins: order.append("pin")
@@ -942,7 +1422,8 @@ original_modules = {name: sys.modules.get(name) for name in
                     ("completion_rootfs_build", "completion_rootfs_builder", "completion_rootfs_fs",
                      "completion_rootfs_publish")}
 original_helpers = (module._load_artifact_verifier, module._append_journal,
-                    module._snapshot_cache, module._snapshot_rootfs_lifecycle, module.secrets.token_hex)
+                    module._snapshot_cache, module._snapshot_rootfs_lifecycle, module.secrets.token_hex,
+                    module._elapsed_ns)
 try:
     sys.modules["completion_rootfs_build"] = fake_build
     sys.modules["completion_rootfs_builder"] = fake_builder
@@ -956,10 +1437,13 @@ try:
     tokens = iter(("1" * 64, "2" * 64))
     module.secrets.token_hex = lambda size: (order.append(("token", value := next(tokens))) or value) if size == 32 else None
     phases = module._empty_phases()
+    stages = {name: {"status": "blocked", "elapsed_ms": 0} for name in ("artifact_cache", "runtime_assets")}
+    setup = {"value": "not-reached"}
     result = module._rootfs_candidates(
-        "a" * 40, "b" * 64, time.monotonic_ns() + 10_000_000_000, phases,
+        "a" * 40, "b" * 64, time.monotonic_ns() + 10_000_000_000, phases, stages, setup,
     )
     assert result["equal"] is True and result["pins_match"] is True and result["cache_count"] == 16
+    assert stages["artifact_cache"]["status"] == "success" and setup["value"] == "complete"
     assert all(module._phase(phases, name)["status"] == "success" for name in module.ROOTFS_PHASES
                if name != "recovery-attempt-1")
     assert order == ["open", "bootstrap", "close-state", "close-chain", "snapshot",
@@ -973,15 +1457,37 @@ try:
     repeated = "f" * 64
     module.secrets.token_hex = lambda size: (order.append(("token", repeated)) or repeated) if size == 32 else None
     rejected_phases = module._empty_phases()
+    rejected_stages = {name: {"status": "blocked", "elapsed_ms": 0} for name in ("artifact_cache", "runtime_assets")}
+    rejected_setup = {"value": "not-reached"}
     assert failure_code(lambda: module._rootfs_candidates(
         "a" * 40, "b" * 64, time.monotonic_ns() + 10_000_000_000, rejected_phases,
+        rejected_stages, rejected_setup,
     )) == "rootfs-build-token"
     assert rejected_phases == module._empty_phases()
+    assert rejected_setup["value"] == "operation-establishment"
+    assert rejected_stages["artifact_cache"]["status"] == "success"
     assert order == ["open", "bootstrap", "close-state", "close-chain", "snapshot",
                      ("token", repeated), ("token", repeated)]
+
+    cache_setup = {"value": "not-reached"}; cache_events = []
+    module._append_journal = lambda kind, _body: cache_events.append(kind)
+    def cache_elapsed(_started):
+        cache_events.append(("cache-success-timing", cache_setup["value"]))
+        raise module.CandidateError("cache-timing-cut")
+    module._elapsed_ns = cache_elapsed
+    cache_stages = {
+        name: {"status": "not-reached", "elapsed_ms": 0}
+        for name in ("artifact_cache", "runtime_assets")
+    }
+    assert failure_code(lambda: module._rootfs_candidates(
+        "a" * 40, "b" * 64, time.monotonic_ns() + 10_000_000_000, module._empty_phases(),
+        cache_stages, cache_setup,
+    )) == "cache-timing-cut"
+    assert cache_events[-2:] == ["cache-owned", ("cache-success-timing", "rootfs-bootstrap")]
+    assert cache_stages["artifact_cache"] is None
 finally:
     (module._load_artifact_verifier, module._append_journal, module._snapshot_cache,
-     module._snapshot_rootfs_lifecycle, module.secrets.token_hex) = original_helpers
+     module._snapshot_rootfs_lifecycle, module.secrets.token_hex, module._elapsed_ns) = original_helpers
     for name, value in original_modules.items():
         if value is None:
             del sys.modules[name]
@@ -1165,7 +1671,7 @@ finally:
 
 cleanup_originals = (
     module._fixed_preflight, module._require_state, module._recover_rootfs, module._cleanup_rootfs,
-    module._cleanup_assets, module._cleanup_artifacts, module._write_json_once,
+    module._cleanup_assets, module._cleanup_artifacts, module._write_json_once, module._owned_immediate,
 )
 cleanup_calls = []
 cleanup_outputs = []
@@ -1176,7 +1682,8 @@ try:
                                                outcomes.append({"attempt": 1, "outcome": "nondeadline", "elapsed_ms": 1}),
                                                (_ for _ in ()).throw(RuntimeError("preserve")))[2]
     module._cleanup_rootfs = lambda _records: cleanup_calls.append("foundation")
-    module._cleanup_assets = lambda _records: (cleanup_calls.append("assets"),
+    module._owned_immediate = lambda _records: {item.component: "success" for item in module.RUNTIME_ASSETS}
+    module._cleanup_assets = lambda _records, _immediate: (cleanup_calls.append("assets"),
                                                 (_ for _ in ()).throw(RuntimeError("replacement")))[1]
     module._cleanup_artifacts = lambda _records: (cleanup_calls.append("cache"),
                                                    (_ for _ in ()).throw(RuntimeError("unknown")))[1]
@@ -1187,29 +1694,48 @@ try:
         "success": False,
         "codes": ["rootfs-recovery-exhausted", "asset-cleanup-uncertainty", "cache-cleanup-uncertainty"],
         "recovery_attempts": [{"attempt": 1, "outcome": "nondeadline", "elapsed_ms": 1}],
+        "immediate_cleanup": {item.component: "success" for item in module.RUNTIME_ASSETS},
     }, "cleanup-owned")]
+    cleanup_calls.clear(); cleanup_outputs.clear()
+    module._owned_immediate = lambda _records: {"kata": "preserved", "containerd": "success"}
+    module._cleanup_assets = lambda *_args: cleanup_calls.append("later-assets-success")
+    assert failure_code(module._cleanup) == "cleanup-uncertainty"
+    assert "later-assets-success" in cleanup_calls
+    assert "asset-immediate-cleanup-uncertainty" in cleanup_outputs[0][1]["codes"]
+    cleanup_calls.clear(); cleanup_outputs.clear()
+    module._owned_immediate = lambda _records: (_ for _ in ()).throw(RuntimeError("missing-owned-observation"))
+    assert failure_code(module._cleanup) == "cleanup-uncertainty"
+    assert "later-assets-success" not in cleanup_calls
+    assert "observation-cleanup-uncertainty" in cleanup_outputs[0][1]["codes"]
 finally:
     (module._fixed_preflight, module._require_state, module._recover_rootfs, module._cleanup_rootfs,
-     module._cleanup_assets, module._cleanup_artifacts, module._write_json_once) = cleanup_originals
+     module._cleanup_assets, module._cleanup_artifacts, module._write_json_once,
+     module._owned_immediate) = cleanup_originals
 
-observation_phases = phases_for([
-    "failure", "success", "blocked", "blocked", "not-reached", "blocked", "blocked", "blocked", "blocked",
-])
+observation_phases = module._empty_phases()
 observation_input = {
     "status": "failed", "codes": ["rootfs-first-build-deadline"], "revision": "a" * 40,
     "source_manifest_sha256": "b" * 64, "duration_ms": 12, "host_tools": [], "kvm": None,
     "rootfs": None, "rootfs_phases": observation_phases, "assets": [],
+    "stage_evidence": {"artifact_cache": {"status": "success", "elapsed_ms": 1},
+                       "runtime_assets": {"status": "blocked", "elapsed_ms": 0}},
+    "first_build_setup": "rootfs-bootstrap",
+    "immediate_cleanup": {item.component: "not-required" for item in module.RUNTIME_ASSETS},
 }
 valid_cleanup_input = {
-    "success": True, "codes": [], "recovery_attempts": [{
+    "success": True, "codes": [], "immediate_cleanup": {
+        item.component: "not-required" for item in module.RUNTIME_ASSETS
+    }, "recovery_attempts": [{
         "attempt": 1, "outcome": "success", "elapsed_ms": 2, "structural_counters": valid_counters,
     }],
 }
 render_writes = []
+render_prevalidated = []
 def render_with(observation_value, cleanup_raw, residue_raw):
-    originals = module._fixed_preflight, module._require_state, module._read_regular, module._write_json_once
+    originals = (module._fixed_preflight, module._require_state, module._read_regular,
+                 module._write_json_once, module._canonical_report)
     written = render_writes
-    written.clear()
+    written.clear(); render_prevalidated.clear()
     observation_raw = observation_value if type(observation_value) is bytes else \
         module._canonical(observation_value) + b"\n"
     inputs = {module.OBSERVATION: observation_raw, module.RESIDUE: residue_raw}
@@ -1224,31 +1750,296 @@ def render_with(observation_value, cleanup_raw, residue_raw):
             return inputs[path]
         module._read_regular = read_input
         module._write_json_once = lambda _path, value, _kind: written.append(value)
+        canonical_report = originals[-1]
+        def capture_report(value):
+            render_prevalidated.append(json.loads(module._canonical(value)))
+            return canonical_report(value)
+        module._canonical_report = capture_report
         assert module._render() == 0
         return written[-1]
     finally:
-        module._fixed_preflight, module._require_state, module._read_regular, module._write_json_once = originals
-assert failure_code(lambda: render_with(
+        (module._fixed_preflight, module._require_state, module._read_regular,
+         module._write_json_once, module._canonical_report) = originals
+
+# Inject each cut at the dependency called by the real _rootfs_candidates route.
+# Every resulting observation must survive rendering and canonical validation.
+producer_originals = (
+    module._fixed_preflight, module._source_approval, module._verify_fixed_source,
+    module._initialize_state, module._host_tools, module._prove_kvm,
+    module._load_artifact_verifier, module._snapshot_cache,
+    module._snapshot_rootfs_lifecycle, module._append_journal,
+    module.secrets.token_hex, module._write_json_once,
+    actual_builder._open_base_chain, actual_builder._bootstrap,
+    actual_builder._begin_operation, actual_builder._cleanup_owned,
+    actual_build.plan.load_verified_build_inputs, actual_build._cache_values,
+    actual_materializer._materialize, actual_materializer._materialize_unmasked,
+    actual_materializer._reload_and_cleanup,
+    actual_build.fs._close_node, actual_build.fs._close_chain,
+)
+producer_verifier = types.SimpleNamespace(
+    CONTRACT_PATH="contract",
+    ARTIFACT_ROOT="artifacts",
+    verify_contract=lambda _path: {"fixed": True},
+    acquire_completion_artifacts=lambda *_args: None,
+    verify_package_archives=lambda *_args: None,
+)
+producer_boundaries = (
+    ("rootfs-intent", "rootfs-bootstrap", "rootfs-intent"),
+    ("rootfs-open", "rootfs-bootstrap", "rootfs-bootstrap"),
+    ("rootfs-bootstrap", "rootfs-bootstrap", "rootfs-bootstrap"),
+    ("rootfs-close-state", "rootfs-bootstrap", "rootfs-bootstrap"),
+    ("rootfs-close-chain", "rootfs-bootstrap", "rootfs-bootstrap"),
+    ("rootfs-lifecycle-observation", "rootfs-bootstrap", "rootfs-bootstrap"),
+    ("rootfs-lifecycle-ownership", "rootfs-bootstrap", "rootfs-bootstrap"),
+    ("rootfs-token-first", "operation-establishment", "rootfs-build-token"),
+    ("rootfs-token-second", "operation-establishment", "rootfs-build-token"),
+    ("rootfs-token-validation", "operation-establishment", "rootfs-build-token"),
+    ("repeated-fixed-input", "operation-establishment", "rootfs-first-build-failed"),
+    ("operation-establishment", "operation-establishment", "rootfs-first-build-not-started"),
+    ("materializer-dispatch", "materializer-dispatch", "rootfs-first-build-not-started"),
+    ("materializer-work", "complete", "rootfs-first-build-not-started"),
+)
+try:
+    module._fixed_preflight = lambda _approval: None
+    module._source_approval = lambda: ("a" * 40, "b" * 64)
+    module._verify_fixed_source = lambda *_args: None
+    module._initialize_state = lambda *_args: None
+    module._host_tools = lambda: ([], [])
+    module._prove_kvm = lambda: {
+        "device_present": False, "device_accessible": False, "api_version": None,
+    }
+    module._load_artifact_verifier = lambda: producer_verifier
+    module._snapshot_cache = lambda _contract: {"cache": "owned"}
+    actual_builder._cleanup_owned = lambda *_args: None
+    actual_build._cache_values = lambda _authority: ()
+    actual_materializer._reload_and_cleanup = lambda *_args: None
+
+    for boundary, expected_setup, expected_code in producer_boundaries:
+        events = []
+        produced = []
+
+        def cut(name):
+            events.append(name)
+            raise RuntimeError(name)
+
+        def append_journal(kind, _body):
+            events.append(kind)
+            if boundary == "rootfs-intent" and kind == "rootfs-intent":
+                cut(boundary)
+            if boundary == "rootfs-lifecycle-ownership" and kind == "rootfs-lifecycle-owned":
+                cut(boundary)
+
+        def open_chain(_control):
+            events.append("rootfs-open")
+            if boundary == "rootfs-open":
+                cut(boundary)
+            return "chain"
+
+        def bootstrap(_chain, _approval, _control):
+            events.append("rootfs-bootstrap")
+            if boundary == "rootfs-bootstrap":
+                cut(boundary)
+            return "state"
+
+        def close_node(_state):
+            events.append("rootfs-close-state")
+            if boundary == "rootfs-close-state":
+                cut(boundary)
+
+        def close_chain(_chain):
+            events.append("rootfs-close-chain")
+            if boundary == "rootfs-close-chain":
+                cut(boundary)
+
+        def lifecycle_snapshot():
+            events.append("rootfs-lifecycle-observation")
+            if boundary == "rootfs-lifecycle-observation":
+                cut(boundary)
+            return rootfs_owned
+
+        issued_tokens = []
+        def token_hex(size):
+            assert size == 32
+            token_number = len(issued_tokens) + 1
+            issued_tokens.append(token_number)
+            events.append(f"rootfs-token-{token_number}")
+            token_boundary = f"rootfs-token-{['first', 'second'][token_number - 1]}"
+            if boundary == token_boundary:
+                cut(boundary)
+            if boundary == "rootfs-token-validation":
+                if token_number == 2:
+                    events.append(boundary)
+                return "1" * 64
+            return str(token_number) * 64
+
+        def repeated_load():
+            events.append("repeated-fixed-input")
+            if boundary == "repeated-fixed-input":
+                cut(boundary)
+            return authority
+
+        def begin_operation(*_args):
+            events.append("operation-establishment")
+            if boundary == "operation-establishment":
+                cut(boundary)
+            return owned
+
+        def materializer_dispatch(*args):
+            events.append("materializer-dispatch")
+            if boundary == "materializer-dispatch":
+                cut(boundary)
+            return actual_materializer._materialize_unmasked(*args)
+
+        module._append_journal = append_journal
+        module._snapshot_rootfs_lifecycle = lifecycle_snapshot
+        module.secrets.token_hex = token_hex
+        module._write_json_once = lambda _path, value, _kind: produced.append(value)
+        actual_builder._open_base_chain = open_chain
+        actual_builder._bootstrap = bootstrap
+        actual_builder._begin_operation = begin_operation
+        actual_build.plan.load_verified_build_inputs = repeated_load
+        actual_materializer._materialize = materializer_dispatch
+        actual_materializer._materialize_unmasked = lambda *_args: cut("materializer-work")
+        actual_build.fs._close_node = close_node
+        actual_build.fs._close_chain = close_chain
+
+        actual_code = failure_code(module._observe)
+        assert actual_code == expected_code, (boundary, actual_code, events)
+        assert boundary in events
+        assert len(produced) == 1
+        observed = produced[0]
+        assert observed["codes"] == [expected_code]
+        assert observed["first_build_setup"] == expected_setup
+        if boundary == "materializer-work":
+            assert module._phase(observed["rootfs_phases"], "first-build-work")["status"] == "failure"
+            assert module._phase(observed["rootfs_phases"], "first-inline-cleanup")["status"] == "success"
+        else:
+            assert observed["rootfs_phases"] == module._empty_phases()
+        assert observed["stage_evidence"]["artifact_cache"]["status"] == "success"
+        assert observed["stage_evidence"]["runtime_assets"] == {
+            "status": "blocked", "elapsed_ms": 0,
+        }
+        rendered_prephase = render_with(
+            observed, module._canonical(valid_cleanup_input) + b"\n",
+            module._canonical({"clean": True, "codes": []}) + b"\n",
+        )
+        assert rendered_prephase["first_build_setup"] == expected_setup
+        assert rendered_prephase["checks"]["runtime_assets"] == "blocked"
+        module._canonical_report(rendered_prephase)
+        print("producer-boundary-report " + json.dumps({
+            "boundary": boundary, "report": rendered_prephase,
+        }, sort_keys=True, separators=(",", ":")))
+finally:
+    (
+        module._fixed_preflight, module._source_approval, module._verify_fixed_source,
+        module._initialize_state, module._host_tools, module._prove_kvm,
+        module._load_artifact_verifier, module._snapshot_cache,
+        module._snapshot_rootfs_lifecycle, module._append_journal,
+        module.secrets.token_hex, module._write_json_once,
+        actual_builder._open_base_chain, actual_builder._bootstrap,
+        actual_builder._begin_operation, actual_builder._cleanup_owned,
+        actual_build.plan.load_verified_build_inputs, actual_build._cache_values,
+        actual_materializer._materialize, actual_materializer._materialize_unmasked,
+        actual_materializer._reload_and_cleanup,
+        actual_build.fs._close_node, actual_build.fs._close_chain,
+    ) = producer_originals
+
+# Runtime publication completion is bound before timing. A timing cut leaves the row
+# unavailable, maps only the summary to unknown, and prevents report production.
+with tempfile.TemporaryDirectory(dir="/private/tmp" if Path("/private/tmp").is_dir() else "/tmp") as temporary:
+    runtime_observations = []
+    runtime_originals = (
+        module.ASSETS, module._fixed_preflight, module._source_approval,
+        module._verify_fixed_source, module._initialize_state, module._host_tools,
+        module._prove_kvm, module._rootfs_candidates, module._append_journal,
+        module._held_path_absent, module._fsync_directory, module._identity,
+        module._download_asset, module._elapsed_ns, module._write_json_once,
+    )
+    try:
+        module.ASSETS = Path(temporary, "assets")
+        module._fixed_preflight = lambda _approval: None
+        module._source_approval = lambda: ("a" * 40, "b" * 64)
+        module._verify_fixed_source = lambda *_args: None
+        module._initialize_state = lambda *_args: None
+        module._host_tools = lambda: ([], [])
+        module._prove_kvm = lambda: {
+            "device_present": False, "device_accessible": False, "api_version": None,
+        }
+        def settled_for_runtime(_revision, _digest, _deadline, phases, stages, setup):
+            stages["artifact_cache"] = {"status": "success", "elapsed_ms": 1}
+            setup["value"] = "complete"
+            counters = {name: 0 for name in module.STRUCTURAL_COUNTERS}
+            for phase_name in module.ROOTFS_PHASES:
+                if phase_name != "recovery-attempt-1":
+                    module._set_phase(phases, phase_name, "success", "success", 1, counters)
+            return successful_rootfs
+        module._rootfs_candidates = settled_for_runtime
+        module._append_journal = lambda *_args: None
+        module._held_path_absent = lambda _path: True
+        module._fsync_directory = lambda _path: None
+        module._identity = lambda _observed: {
+            "dev": 1, "ino": 2, "kind": "directory", "mode": 0o700,
+            "uid": 0, "gid": 0, "nlink": 2, "size": 0,
+        }
+        module._download_asset = lambda asset, _deadline, _immediate: {
+            "component": asset.component, "release": asset.release, "name": asset.name,
+            "size": asset.size, "sha256": asset.sha256, "downloaded": True, "extracted": False,
+        }
+        module._elapsed_ns = lambda _started: (_ for _ in ()).throw(
+            module.CandidateError("runtime-timing-cut")
+        )
+        module._write_json_once = lambda _path, value, _kind: runtime_observations.append(value)
+        assert failure_code(module._observe) == "runtime-timing-cut"
+    finally:
+        (module.ASSETS, module._fixed_preflight, module._source_approval,
+         module._verify_fixed_source, module._initialize_state, module._host_tools,
+         module._prove_kvm, module._rootfs_candidates, module._append_journal,
+         module._held_path_absent, module._fsync_directory, module._identity,
+         module._download_asset, module._elapsed_ns, module._write_json_once) = runtime_originals
+assert len(runtime_observations) == 1
+runtime_timing_observation = runtime_observations[0]
+assert len(runtime_timing_observation["assets"]) == 2
+assert runtime_timing_observation["stage_evidence"]["artifact_cache"]["status"] == "success"
+assert runtime_timing_observation["stage_evidence"]["runtime_assets"] is None
+for unavailable_observation, unavailable_check in (
+    (runtime_timing_observation, "runtime_assets"),
+    ({**observation_input, "stage_evidence": {
+        "artifact_cache": None,
+        "runtime_assets": {"status": "blocked", "elapsed_ms": 0},
+    }}, "artifact_cache"),
+):
+    assert failure_code(lambda unavailable_observation=unavailable_observation: render_with(
+        unavailable_observation, module._canonical(valid_cleanup_input) + b"\n",
+        module._canonical({"clean": True, "codes": []}) + b"\n",
+    )) == "report-schema"
+    assert render_writes == [] and len(render_prevalidated) == 1
+    assert render_prevalidated[0]["checks"][unavailable_check] == "unknown"
+
+rendered = render_with(
     observation_input, b"{malformed", module._canonical({"clean": True, "codes": []}) + b"\n",
-)) == "recovery-phase-input-uncertainty"
-assert render_writes == []
+)
+assert "cleanup-input-uncertainty" in rendered["diagnostic_codes"]
+assert "recovery-phase-input-uncertainty" in rendered["diagnostic_codes"]
 assert failure_code(lambda: render_with(
     b"{malformed", module._canonical(valid_cleanup_input) + b"\n",
     module._canonical({"clean": True, "codes": []}) + b"\n",
-)) == "observation-phase-input-uncertainty"
+)) == "report-schema"
 assert render_writes == []
-assert failure_code(lambda: render_with(
+rendered = render_with(
     observation_input, None, module._canonical({"clean": True, "codes": []}) + b"\n",
-)) == "recovery-phase-input-uncertainty"
-assert render_writes == []
-assert failure_code(lambda: render_with(
+)
+assert "cleanup-input-uncertainty" in rendered["diagnostic_codes"]
+assert "recovery-phase-input-uncertainty" in rendered["diagnostic_codes"]
+rendered = render_with(
     {**observation_input, "rootfs_phases": fault_phases},
     module._canonical(valid_cleanup_input) + b"\n",
     module._canonical({"clean": True, "codes": []}) + b"\n",
-)) == "observation-phase-input-uncertainty"
-assert render_writes == []
+)
+assert "observation-phase-input-uncertainty" in rendered["diagnostic_codes"]
+assert rendered["stage_evidence"] == observation_input["stage_evidence"]
+assert rendered["first_build_setup"] == observation_input["first_build_setup"]
 rendered = render_with(observation_input, module._canonical(valid_cleanup_input) + b"\n", b"{malformed")
-assert module._phase(rendered["rootfs_phases"], "first-build-work")["status"] == "failure"
+assert module._phase(rendered["rootfs_phases"], "first-build-work")["status"] == "not-reached"
 assert module._phase(rendered["rootfs_phases"], "recovery-attempt-1")["status"] == "success"
 assert "residue-input-uncertainty" in rendered["diagnostic_codes"]
 rendered = render_with(
@@ -1256,11 +2047,222 @@ rendered = render_with(
     module._canonical({**valid_cleanup_input, "codes": "malformed"}) + b"\n",
     module._canonical({"clean": True, "codes": []}) + b"\n",
 )
-assert module._phase(rendered["rootfs_phases"], "first-build-work")["status"] == "failure"
+assert module._phase(rendered["rootfs_phases"], "first-build-work")["status"] == "not-reached"
 assert module._phase(rendered["rootfs_phases"], "recovery-attempt-1")["status"] == "success"
-assert "observation-input-uncertainty" in rendered["diagnostic_codes"]
-assert "cleanup-summary-input-uncertainty" in rendered["diagnostic_codes"]
-assert rendered["checks"]["cleanup"] == "fail"
+assert rendered["stage_evidence"] == observation_input["stage_evidence"]
+assert rendered["first_build_setup"] == "rootfs-bootstrap"
+assert "observation-codes-input-uncertainty" in rendered["diagnostic_codes"]
+assert "cleanup-codes-input-uncertainty" in rendered["diagnostic_codes"]
+assert rendered["checks"]["cleanup"] == "pass"
+for malformed_field, malformed_value in (("host_tools", [{}]), ("assets", [{"component": "kata"}])):
+    rendered = render_with(
+        {**observation_input, malformed_field: malformed_value},
+        module._canonical(valid_cleanup_input) + b"\n",
+        module._canonical({"clean": True, "codes": []}) + b"\n",
+    )
+    assert rendered["stage_evidence"] == observation_input["stage_evidence"]
+    assert rendered["first_build_setup"] == "rootfs-bootstrap"
+    assert ("host-tools-input-uncertainty" if malformed_field == "host_tools" else
+            "assets-input-uncertainty") in rendered["diagnostic_codes"]
+
+unrelated_malformed = (
+    ("duration_ms", True, "duration-input-uncertainty"),
+    ("revision", "wrong", "source-input-uncertainty"),
+    ("source_manifest_sha256", "wrong", "source-input-uncertainty"),
+    ("kvm", {"api_version": 12}, "kvm-input-uncertainty"),
+    ("status", [], "observation-status-input-uncertainty"),
+    ("codes", {}, "observation-codes-input-uncertainty"),
+)
+for malformed_field, malformed_value, diagnostic in unrelated_malformed:
+    rendered = render_with(
+        {**observation_input, malformed_field: malformed_value},
+        module._canonical(valid_cleanup_input) + b"\n",
+        module._canonical({"clean": True, "codes": []}) + b"\n",
+    )
+    assert module._phase(rendered["rootfs_phases"], "first-build-work")["status"] == "not-reached"
+    assert module._phase(rendered["rootfs_phases"], "recovery-attempt-1")["status"] == "success"
+    assert rendered["stage_evidence"] == observation_input["stage_evidence"]
+    assert rendered["first_build_setup"] == observation_input["first_build_setup"]
+    assert rendered["checks"]["cleanup"] == rendered["checks"]["residue"] == "pass"
+    assert diagnostic in rendered["diagnostic_codes"]
+
+for bad_stage in ("artifact_cache", "runtime_assets"):
+    hostile_stages = {name: dict(row) for name, row in observation_input["stage_evidence"].items()}
+    hostile_stages[bad_stage] = {"status": "malformed", "elapsed_ms": 0}
+    assert failure_code(lambda hostile_stages=hostile_stages: render_with(
+        {**observation_input, "stage_evidence": hostile_stages},
+        module._canonical(valid_cleanup_input) + b"\n",
+        module._canonical({"clean": True, "codes": []}) + b"\n",
+    )) == "report-schema"
+    assert render_writes == []
+assert failure_code(lambda: render_with(
+    {**observation_input, "first_build_setup": "malformed"},
+    module._canonical(valid_cleanup_input) + b"\n",
+    module._canonical({"clean": True, "codes": []}) + b"\n",
+)) == "report-schema"
+assert render_writes == []
+
+# Start from one canonical render and isolate every bounded rendering surface.
+matrix_phases = module._empty_phases()
+matrix_counters = {name: 0 for name in module.STRUCTURAL_COUNTERS}
+for phase_name in module.ROOTFS_PHASES:
+    if phase_name != "recovery-attempt-1":
+        module._set_phase(matrix_phases, phase_name, "success", "success", 1, matrix_counters)
+matrix_input = {
+    **observation_input, "codes": [], "duration_ms": 0, "rootfs": successful_rootfs,
+    "rootfs_phases": matrix_phases, "first_build_setup": "complete",
+    "stage_evidence": {"artifact_cache": {"status": "success", "elapsed_ms": 1},
+                       "runtime_assets": {"status": "failure", "elapsed_ms": 1}},
+    "kvm": {"device_present": True, "device_accessible": True, "api_version": 12},
+}
+cleanup_raw = module._canonical(valid_cleanup_input) + b"\n"
+residue_raw = module._canonical({"clean": True, "codes": []}) + b"\n"
+baseline_render = render_with(matrix_input, cleanup_raw, residue_raw)
+baseline_bytes = module._canonical(baseline_render)
+assert baseline_render["diagnostic_codes"] == [] and module._canonical_report(baseline_render)
+assert set(baseline_render["checks"]) == set(module._base_report()["checks"])
+
+def report_path(value, path):
+    current = value
+    for component in path[:-1]: current = current[component]
+    return current, path[-1]
+
+def assert_render_isolated(observed, diagnostic, changed_paths=()):
+    candidate = json.loads(module._canonical(observed))
+    assert candidate["diagnostic_codes"] == ([diagnostic] if diagnostic else []), candidate["diagnostic_codes"]
+    candidate["diagnostic_codes"] = []
+    for path in changed_paths:
+        target, key = report_path(candidate, path)
+        baseline_target, baseline_key = report_path(baseline_render, path)
+        target[key] = baseline_target[baseline_key]
+    assert module._canonical(candidate) == baseline_bytes
+
+phase_bad_values = {
+    "phase": "malformed", "status": "malformed", "outcome": "malformed",
+    "elapsed_ms": True, "structural_counters": {},
+}
+for index, row in enumerate(matrix_input["rootfs_phases"]):
+    for field, bad_value in phase_bad_values.items():
+        hostile_rows = [dict(item) for item in matrix_input["rootfs_phases"]]
+        hostile_rows[index] = {**row, field: bad_value}
+        assert failure_code(lambda hostile_rows=hostile_rows: render_with(
+            {**matrix_input, "rootfs_phases": hostile_rows}, cleanup_raw, residue_raw,
+        )) == "report-schema"
+        assert render_writes == [] and len(render_prevalidated) == 1
+        assert_render_isolated(render_prevalidated[0], "observation-phase-input-uncertainty", (
+            ("rootfs",), ("rootfs_phases",), ("checks", "rootfs_candidates"),
+        ))
+
+for field in successful_rootfs:
+    hostile_rootfs = {**successful_rootfs, field: None}
+    assert failure_code(lambda hostile_rootfs=hostile_rootfs: render_with(
+        {**matrix_input, "rootfs": hostile_rootfs}, cleanup_raw, residue_raw,
+    )) == "report-schema"
+    assert render_writes == [] and len(render_prevalidated) == 1
+    assert_render_isolated(render_prevalidated[0], None, (
+        ("rootfs",), ("checks", "rootfs_candidates"),
+    ))
+assert failure_code(lambda: render_with(
+    {**matrix_input, "rootfs": None}, cleanup_raw, residue_raw,
+)) == "report-schema"
+assert render_writes == [] and len(render_prevalidated) == 1
+assert_render_isolated(render_prevalidated[0], "observation-phase-input-uncertainty", (
+    ("rootfs",), ("rootfs_phases",), ("checks", "rootfs_candidates"),
+))
+
+valid_tool = {"name": "ctr", "path": "/usr/bin/ctr", "present": True, "size": 1,
+              "sha256": "c" * 64, "version": "fixed"}
+for field, bad_value in (("name", "wrong"), ("path", "/wrong"), ("present", "yes"),
+                         ("size", -1), ("sha256", "wrong"), ("version", "")):
+    observed = render_with({**matrix_input, "host_tools": [{**valid_tool, field: bad_value}]},
+                           cleanup_raw, residue_raw)
+    assert_render_isolated(observed, "host-tools-input-uncertainty")
+
+asset = module.RUNTIME_ASSETS[0]
+valid_asset = {"component": asset.component, "release": asset.release, "name": asset.name,
+               "size": asset.size, "sha256": asset.sha256, "downloaded": True, "extracted": False}
+for field, bad_value in (("component", "wrong"), ("release", "wrong"), ("name", "wrong"),
+                         ("size", True), ("sha256", "wrong"), ("downloaded", False),
+                         ("extracted", True)):
+    observed = render_with({**matrix_input, "assets": [{**valid_asset, field: bad_value}]},
+                           cleanup_raw, residue_raw)
+    assert_render_isolated(observed, "assets-input-uncertainty")
+
+for field, bad_value in (("device_present", "yes"), ("device_accessible", "yes"),
+                         ("api_version", 13)):
+    observed = render_with({**matrix_input, "kvm": {**matrix_input["kvm"], field: bad_value}},
+                           cleanup_raw, residue_raw)
+    assert_render_isolated(observed, "kvm-input-uncertainty", (
+        ("kvm",), ("checks", "kvm"),
+    ))
+
+for field, diagnostic in (("duration_ms", "duration-input-uncertainty"),
+                          ("status", "observation-status-input-uncertainty"),
+                          ("codes", "observation-codes-input-uncertainty")):
+    observed = render_with({**matrix_input, field: True}, cleanup_raw, residue_raw)
+    assert_render_isolated(observed, diagnostic)
+for field in ("revision", "source_manifest_sha256"):
+    observed = render_with({**matrix_input, field: "wrong"}, cleanup_raw, residue_raw)
+    assert_render_isolated(observed, "source-input-uncertainty", (
+        ("source_revision",), ("source_manifest_sha256",),
+        ("checks", "platform"), ("checks", "root"), ("checks", "source"),
+    ))
+
+for stage_name in ("artifact_cache", "runtime_assets"):
+    for field, bad_value in (("status", "malformed"), ("elapsed_ms", True)):
+        hostile_stages = {name: dict(row) for name, row in matrix_input["stage_evidence"].items()}
+        hostile_stages[stage_name] = {**hostile_stages[stage_name], field: bad_value}
+        assert failure_code(lambda hostile_stages=hostile_stages: render_with(
+            {**matrix_input, "stage_evidence": hostile_stages}, cleanup_raw, residue_raw,
+        )) == "report-schema"
+        assert render_writes == [] and len(render_prevalidated) == 1
+        assert_render_isolated(render_prevalidated[0], stage_name.replace("_", "-") +
+                               "-stage-input-uncertainty", (
+            ("stage_evidence", stage_name), ("checks", stage_name),
+        ))
+
+assert failure_code(lambda: render_with(
+    {**matrix_input, "first_build_setup": "malformed"}, cleanup_raw, residue_raw,
+)) == "report-schema"
+assert render_writes == [] and len(render_prevalidated) == 1
+assert_render_isolated(render_prevalidated[0], "setup-input-uncertainty", (("first_build_setup",),))
+
+for field, bad_value, diagnostic, changed in (
+    ("success", "yes", "cleanup-summary-input-uncertainty", (("checks", "cleanup"), ("blockers",))),
+    ("codes", "bad", "cleanup-codes-input-uncertainty", ()),
+    ("immediate_cleanup", {}, "immediate-cleanup-input-uncertainty", ()),
+):
+    hostile_cleanup = {**valid_cleanup_input, field: bad_value}
+    observed = render_with(matrix_input, module._canonical(hostile_cleanup) + b"\n", residue_raw)
+    assert_render_isolated(observed, diagnostic, changed)
+cleanup_code_survives = render_with(matrix_input, module._canonical({
+    **valid_cleanup_input, "success": "yes", "codes": ["fixed-cleanup-code"],
+}) + b"\n", residue_raw)
+assert set(cleanup_code_survives["diagnostic_codes"]) == {
+    "cleanup-summary-input-uncertainty", "fixed-cleanup-code",
+}
+for field, bad_value in (("attempt", 2), ("outcome", "bad"), ("elapsed_ms", True),
+                         ("structural_counters", {})):
+    attempt = {**valid_cleanup_input["recovery_attempts"][0], field: bad_value}
+    hostile_cleanup = {**valid_cleanup_input, "recovery_attempts": [attempt]}
+    observed = render_with(matrix_input, module._canonical(hostile_cleanup) + b"\n", residue_raw)
+    assert_render_isolated(observed, "recovery-phase-input-uncertainty", (("rootfs_phases",),))
+
+for field, bad_value, diagnostic, changed in (
+    ("clean", "yes", "residue-summary-input-uncertainty", (("checks", "residue"), ("blockers",))),
+    ("codes", "bad", "residue-codes-input-uncertainty", ()),
+):
+    hostile_residue = {"clean": True, "codes": []}
+    hostile_residue[field] = bad_value
+    observed = render_with(matrix_input, cleanup_raw, module._canonical(hostile_residue) + b"\n")
+    assert_render_isolated(observed, diagnostic, changed)
+
+residue_code_survives = render_with(
+    matrix_input, cleanup_raw, module._canonical({"clean": "yes", "codes": ["fixed-residue-code"]}) + b"\n",
+)
+assert set(residue_code_survives["diagnostic_codes"]) == {
+    "residue-summary-input-uncertainty", "fixed-residue-code",
+}
 
 original_timeout = module.HOST_TOOL_SECONDS
 module.HOST_TOOL_SECONDS = 1
@@ -1296,6 +2298,192 @@ class Node:
     st_gid = 0
     st_nlink = 2
     st_size = 64
+
+immediate_originals = module._read_regular, module.os.stat
+try:
+    valid_immediate = {item.component: "success" for item in module.RUNTIME_ASSETS}
+    observation_raw = module._canonical({"immediate_cleanup": valid_immediate}) + b"\n"
+    observation_record = [{"kind": "observation-owned", "body": {
+        "name": module.OBSERVATION.name, "identity": module._identity(Node()),
+        "sha256": module.hashlib.sha256(observation_raw).hexdigest()}}]
+    module._read_regular = lambda *_args: observation_raw
+    module.os.stat = lambda *_args, **_kwargs: Node()
+    assert module._owned_immediate(observation_record) == valid_immediate
+    module._read_regular = lambda *_args: module._canonical({"immediate_cleanup": {"kata": "success"}}) + b"\n"
+    rejected(lambda: module._owned_immediate(observation_record))
+    rejected(lambda: module._owned_immediate([]))
+finally:
+    module._read_regular, module.os.stat = immediate_originals
+
+for observation_boundary in ("write", "file-fsync-1", "file-fsync-2", "file-close", "directory-fsync", "journal"):
+    with tempfile.TemporaryDirectory(dir="/private/tmp" if Path("/private/tmp").is_dir() else "/tmp") as temporary:
+        observation_path = Path(temporary, "observation.json")
+        publication = {"journaled": False, "partial_unlinked": True, "linked": True,
+                       "partial_final": fixed_generation}
+        immediate = {fixed_asset.component: "not-required"}
+        assert failure_code(lambda: module._cleanup_failed_asset_publication(
+            -1, Path(".already-unlinked"), publication, immediate, fixed_asset.component, 10**30,
+        )) == "asset-immediate-cleanup-uncertainty"
+        assert immediate[fixed_asset.component] == "post-unlink-uncertainty"
+        originals = (module.OBSERVATION, module._write_all, module.os.fsync, module.os.close,
+                     module._fsync_directory, module._append_journal)
+        real_write, real_fsync, real_close = module._write_all, module.os.fsync, module.os.close
+        try:
+            module.OBSERVATION = observation_path
+            if observation_boundary == "write":
+                module._write_all = lambda *_args: (_ for _ in ()).throw(OSError("write-cut"))
+            file_fsync_calls = [0]
+            if observation_boundary.startswith("file-fsync-"):
+                target_call = int(observation_boundary[-1])
+                def observation_fsync(descriptor):
+                    file_fsync_calls[0] += 1
+                    if file_fsync_calls[0] == target_call: raise OSError("fsync-cut")
+                    return real_fsync(descriptor)
+                module.os.fsync = observation_fsync
+            if observation_boundary == "file-close":
+                closed_once = [False]
+                def close_cut(descriptor):
+                    if not closed_once[0]:
+                        closed_once[0] = True
+                        real_close(descriptor)
+                        raise OSError("close-cut")
+                    return real_close(descriptor)
+                module.os.close = close_cut
+            if observation_boundary == "directory-fsync":
+                module._fsync_directory = lambda *_args: (_ for _ in ()).throw(OSError("directory-fsync-cut"))
+            if observation_boundary == "journal":
+                module._append_journal = lambda *_args: (_ for _ in ()).throw(OSError("journal-cut"))
+            error = thrown(lambda: module._write_json_once(
+                observation_path, {"immediate_cleanup": immediate}, "observation-owned",
+            ))
+            assert isinstance(error, OSError)
+            if observation_boundary.startswith("file-fsync-"):
+                assert file_fsync_calls[0] == int(observation_boundary[-1])
+            rejected(lambda: module._owned_immediate([]))
+        finally:
+            (module.OBSERVATION, module._write_all, module.os.fsync, module.os.close,
+             module._fsync_directory, module._append_journal) = originals
+
+with tempfile.TemporaryDirectory(dir="/private/tmp" if Path("/private/tmp").is_dir() else "/tmp") as temporary:
+    observation_path = Path(temporary, "observation.json")
+    immediate = {item.component: "success" for item in module.RUNTIME_ASSETS}
+    records = []
+    originals = module.OBSERVATION, module._append_journal
+    try:
+        module.OBSERVATION = observation_path
+        module._append_journal = lambda kind, body: records.append({"kind": kind, "body": body})
+        module._write_json_once(observation_path, {"immediate_cleanup": immediate}, "observation-owned")
+        assert module._owned_immediate(records) == immediate
+        observation_path.chmod(0o600); observation_path.write_bytes(b'{"immediate_cleanup":{}}\n')
+        observation_path.chmod(0o400)
+        rejected(lambda: module._owned_immediate(records))
+    finally:
+        module.OBSERVATION, module._append_journal = originals
+
+# One production route carries a real publication unlink through observe's finally,
+# durable observation ownership, exact append readback, and later owned readback.
+with tempfile.TemporaryDirectory(dir="/private/tmp" if Path("/private/tmp").is_dir() else "/tmp") as temporary:
+    root = Path(temporary); state = root / "state"; state.mkdir(mode=0o700)
+    journal_path = state / "ownership.jsonl"; journal_path.touch(mode=0o600)
+    state_identity = module._identity(state.stat())
+    journal_identity = module._identity(journal_path.stat())
+    seed = module._journal_record(0, "0" * 64, "genesis", {
+        "state": state_identity, "journal": journal_identity,
+    })
+    journal_path.write_bytes(module._canonical(seed) + b"\n")
+    observation_path = state / "observation.json"
+    assets_path = state / "assets"
+    readbacks = []
+    originals = (
+        module.STATE, module.JOURNAL, module.OBSERVATION, module.ASSETS,
+        module._fixed_preflight, module._source_approval, module._verify_fixed_source,
+        module._initialize_state, module._host_tools, module._prove_kvm,
+        module._rootfs_candidates, module._download_asset, module._check_asset_deadline,
+        module._asset_generation, module._read_journal_unanchored, module._open_dir,
+        module.os.stat,
+    )
+    real_stat = module.os.stat
+    try:
+        module.STATE, module.JOURNAL = state, journal_path
+        module.OBSERVATION, module.ASSETS = observation_path, assets_path
+        module._fixed_preflight = lambda _approval: None
+        module._source_approval = lambda: ("a" * 40, "b" * 64)
+        module._verify_fixed_source = lambda *_args: None
+        module._initialize_state = lambda *_args: None
+        module._host_tools = lambda: ([], [])
+        module._prove_kvm = lambda: {"device_present": False, "device_accessible": False, "api_version": None}
+        def settled_rootfs(_revision, _digest, _deadline, phases, stages, setup):
+            stages["artifact_cache"] = {"status": "success", "elapsed_ms": 1}
+            setup["value"] = "complete"
+            counters = {name: 0 for name in module.STRUCTURAL_COUNTERS}
+            for name in module.ROOTFS_PHASES:
+                if name != "recovery-attempt-1":
+                    module._set_phase(phases, name, "success", "success", 1, counters)
+            return successful_rootfs
+        module._rootfs_candidates = settled_rootfs
+        module._check_asset_deadline = lambda _deadline, stage: (
+            (_ for _ in ()).throw(module.CandidateError("after-unlink-cut")) if stage == "after-unlink" else None
+        )
+        module._asset_generation = lambda descriptor, _deadline: {
+            **fixed_generation, "size": os.fstat(descriptor).st_size,
+        }
+        def read_journal():
+            records = module._parse_journal(journal_path.read_bytes())
+            readbacks.append(records[-1]["kind"])
+            return records
+        module._read_journal_unanchored = read_journal
+        module._open_dir = lambda path: os.open(
+            path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+        )
+        def owned_stat(path, *args, **kwargs):
+            observed = real_stat(path, *args, **kwargs)
+            if Path(path) == assets_path:
+                class RootOwned:
+                    pass
+                copied = RootOwned()
+                for name in ("st_dev", "st_ino", "st_mode", "st_nlink", "st_size", "st_mtime_ns", "st_ctime_ns"):
+                    setattr(copied, name, getattr(observed, name))
+                copied.st_uid = copied.st_gid = 0
+                return copied
+            return observed
+        module.os.stat = owned_stat
+        def unlinking_download(asset, deadline, immediate):
+            partial, final = assets_path / ("." + asset.name + ".partial"), assets_path / asset.name
+            content = b"observe-publication-route"
+            partial.write_bytes(content)
+            directory = os.open(assets_path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+            writer = os.open(partial.name, os.O_RDWR | os.O_CLOEXEC, dir_fd=directory)
+            publication = {"journaled": False, "writer_close_attempted": False, "partial_final": None,
+                           "retained": None, "linked": False, "partial_unlinked": False}
+            routed = module.Asset(asset.component, asset.release, asset.name, asset.url, len(content),
+                                  module.hashlib.sha256(content).hexdigest())
+            try:
+                return module._finish_asset_publication(
+                    routed, directory, writer, partial, final, {}, deadline, publication,
+                )
+            finally:
+                try:
+                    module._cleanup_failed_asset_publication(
+                        directory, partial, publication, immediate, asset.component, deadline,
+                    )
+                finally:
+                    if publication["retained"] is not None: os.close(publication["retained"])
+                    if not publication["writer_close_attempted"]: os.close(writer)
+                    os.close(directory)
+        module._download_asset = unlinking_download
+        assert failure_code(module._observe) == "asset-immediate-cleanup-uncertainty"
+        assert not (assets_path / ("." + module.RUNTIME_ASSETS[0].name + ".partial")).exists()
+        records = module._parse_journal(journal_path.read_bytes())
+        assert records[-1]["kind"] == "observation-owned" and readbacks[-1] == "observation-owned"
+        owned = module._owned_immediate(records)
+        assert owned["kata"] == "post-unlink-uncertainty" and owned["containerd"] == "not-required"
+    finally:
+        (module.STATE, module.JOURNAL, module.OBSERVATION, module.ASSETS,
+         module._fixed_preflight, module._source_approval, module._verify_fixed_source,
+         module._initialize_state, module._host_tools, module._prove_kvm,
+         module._rootfs_candidates, module._download_asset, module._check_asset_deadline,
+         module._asset_generation, module._read_journal_unanchored, module._open_dir,
+         module.os.stat) = originals
 
 chain_originals = module.os.open, module.os.fstat, module.os.close
 try:
@@ -1387,6 +2575,74 @@ finally:
     (module._read_journal_unanchored, module._open_dir, module.os.open,
      module.os.fstat, module.os.close) = append_originals
 
+journal_boundary_originals = (
+    module.STATE, module.JOURNAL, module._read_journal_unanchored, module._open_dir,
+    module._write_all, module.os.fsync,
+)
+real_write_all, real_fsync = module._write_all, module.os.fsync
+try:
+    for journal_boundary in ("append", "fsync", "readback"):
+        for generation_field in module.FULL_GENERATION:
+            with tempfile.TemporaryDirectory() as temporary:
+                state = Path(temporary); journal_path = state / "journal"
+                journal_path.touch(mode=0o600)
+                seed = module._journal_record(0, "0" * 64, "genesis", {
+                    "journal": module._identity(journal_path.stat(follow_symlinks=False)),
+                })
+                journal_path.write_bytes(module._canonical(seed) + b"\n")
+                body = {"component": fixed_asset.component, "name": ".fixed.partial",
+                        "generation": fixed_generation}
+                expected = module._journal_record(1, seed["sha256"], "asset-partial-final-owned", body)
+                reads = [0]; events = []
+                def drift_record(record):
+                    drifted_body = {**record["body"], "generation": drift_generation(
+                        record["body"]["generation"], generation_field,
+                    )}
+                    return module._journal_record(
+                        record["sequence"], record["previous"], record["kind"], drifted_body,
+                    )
+                def drift_persisted(transition):
+                    records = module._parse_journal(journal_path.read_bytes())
+                    records[-1] = drift_record(records[-1])
+                    journal_path.write_bytes(b"".join(module._canonical(item) + b"\n" for item in records))
+                    events.append(("persisted-field-drift", transition, generation_field))
+                def journal_read():
+                    reads[0] += 1
+                    if journal_boundary == "readback" and reads[0] == 2:
+                        drift_persisted("readback")
+                    return module._parse_journal(journal_path.read_bytes())
+                module.STATE, module.JOURNAL = state, journal_path
+                module._read_journal_unanchored = journal_read
+                module._open_dir = lambda _path: os.open(
+                    state, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC,
+                )
+                def journal_write(descriptor, raw):
+                    events.append("append")
+                    if journal_boundary == "append":
+                        raw = module._canonical(drift_record(module._strict_json(raw))) + b"\n"
+                        events.append(("persisted-field-drift", "append", generation_field))
+                    real_write_all(descriptor, raw)
+                module._write_all = journal_write
+                def journal_fsync(descriptor):
+                    events.append("fsync")
+                    if journal_boundary == "fsync": drift_persisted("fsync")
+                    real_fsync(descriptor)
+                module.os.fsync = journal_fsync
+                assert failure_code(lambda: module._append_journal(
+                    "asset-partial-final-owned", body,
+                )) == "journal-invalid"
+                persisted = module._parse_journal(journal_path.read_bytes())[-1]
+                assert persisted != expected
+                assert persisted["body"]["generation"] == drift_generation(
+                    fixed_generation, generation_field,
+                )
+                assert events[0] == "append" and "fsync" in events
+                assert ("persisted-field-drift", journal_boundary, generation_field) in events
+                assert reads[0] == 2
+finally:
+    (module.STATE, module.JOURNAL, module._read_journal_unanchored, module._open_dir,
+     module._write_all, module.os.fsync) = journal_boundary_originals
+
 initialize_originals = (
     module._held_path_absent, module._mkdir_policy, module.os.mkdir, module.os.stat,
     module.os.open, module.os.close,
@@ -1429,18 +2685,21 @@ with tempfile.TemporaryDirectory(prefix="cogs-phase-a-partial-replacement-",
                                  dir="/private/tmp" if Path("/private/tmp").is_dir() else "/tmp") as temporary:
     directory_path = Path(temporary)
     partial = directory_path / ".asset.partial"
-    final = directory_path / "asset.bin"
-    partial.write_bytes(b"owned")
-    directory = os.open(directory_path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
-    descriptor = os.open(partial.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=directory)
-    partial.unlink()
     partial.write_bytes(b"replacement")
-    module._cleanup_failed_asset_publication(
-        directory, descriptor, partial, final, {"journaled": False},
-    )
-    assert partial.read_bytes() == b"replacement"
-    os.close(descriptor)
-    os.close(directory)
+    directory = os.open(directory_path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    immediate = {"kata": "not-required"}
+    publication = {"journaled": False, "partial_unlinked": False, "linked": False,
+                   "partial_final": fixed_generation}
+    original_generation = module._asset_generation
+    try:
+        module._asset_generation = lambda *_args: {**fixed_generation, "ino": fixed_generation["ino"] + 1}
+        rejected(lambda: module._cleanup_failed_asset_publication(
+            directory, partial, publication, immediate, "kata", 10**30,
+        ))
+        assert immediate["kata"] == "preserved" and partial.read_bytes() == b"replacement"
+    finally:
+        module._asset_generation = original_generation
+        os.close(directory)
 
 with tempfile.TemporaryDirectory(prefix="cogs-phase-a-assets-cleanup-",
                                  dir="/private/tmp" if Path("/private/tmp").is_dir() else "/tmp") as temporary:
@@ -1448,7 +2707,7 @@ with tempfile.TemporaryDirectory(prefix="cogs-phase-a-assets-cleanup-",
     assets.mkdir(mode=0o700)
     directory_identity = module._identity(assets.stat(follow_symlinks=False))
     body = b"asset-bytes"
-    final = assets / "fixed.bin"
+    final = assets / fixed_asset.name
     final.write_bytes(body)
     final.chmod(0o400)
     file_identity = module._identity(final.stat(follow_symlinks=False))
@@ -1457,16 +2716,16 @@ with tempfile.TemporaryDirectory(prefix="cogs-phase-a-assets-cleanup-",
     )
     records = [
         {"kind": "asset-directory-owned", "body": {"identity": directory_identity}},
-        {"kind": "asset-final-owned", "body": {
-            "name": final.name, "identity": file_identity, "sha256": module.hashlib.sha256(body).hexdigest(),
-        }},
+        *partial_records(),
+        {"kind": "asset-final-owned", "body": {"component": fixed_asset.component,
+            "name": final.name, "identity": file_identity, "sha256": module.hashlib.sha256(body).hexdigest()}},
     ]
     original_assets, original_open_dir = module.ASSETS, module._open_dir
     try:
         module.ASSETS = assets
         module._open_dir = lambda path: os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
         assert module._cleanup_assets.__globals__["ASSETS"] == assets
-        module._cleanup_assets(records)
+        module._cleanup_assets(records, {item.component: "not-required" for item in module.RUNTIME_ASSETS})
         assert not assets.exists()
     finally:
         module.ASSETS, module._open_dir = original_assets, original_open_dir
@@ -1501,11 +2760,69 @@ with tempfile.TemporaryDirectory(prefix="cogs-phase-a-incomplete-replacement-",
         module._open_dir = lambda path: original_open(
             path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
         )
-        rejected(lambda: module._cleanup_assets(records))
-        assert opened_incomplete and opened_incomplete[0] in closed
+        rejected(lambda: module._cleanup_assets(records, {item.component: "preserved" for item in module.RUNTIME_ASSETS}))
+        assert opened_incomplete == []
         assert partial.read_bytes() == b"replacement"
     finally:
         module.ASSETS, module._open_dir, module.os.open, module.os.close = originals
+
+with tempfile.TemporaryDirectory(prefix="cogs-phase-a-absent-final-record-",
+                                 dir="/private/tmp" if Path("/private/tmp").is_dir() else "/tmp") as temporary:
+    original_assets = module.ASSETS
+    try:
+        module.ASSETS = Path(temporary, "absent-assets")
+        rejected(lambda: module._cleanup_assets(
+            partial_records(), {item.component: "preserved" for item in module.RUNTIME_ASSETS},
+        ))
+        module._cleanup_assets(
+            partial_records(), {item.component: "success" for item in module.RUNTIME_ASSETS},
+        )
+    finally:
+        module.ASSETS = original_assets
+
+for absent_partial_outcome in ("not-required", "preserved", "success"):
+    with tempfile.TemporaryDirectory(prefix="cogs-phase-a-present-assets-absent-partial-",
+                                     dir="/private/tmp" if Path("/private/tmp").is_dir() else "/tmp") as temporary:
+        assets = Path(temporary, "assets"); assets.mkdir(mode=0o700)
+        records = [{"kind": "asset-directory-owned", "body": {
+            "identity": module._identity(assets.stat(follow_symlinks=False))}}, *partial_records()]
+        originals = module.ASSETS, module._open_dir
+        try:
+            module.ASSETS = assets
+            module._open_dir = lambda path: os.open(
+                path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+            )
+            immediate = {item.component: "not-required" for item in module.RUNTIME_ASSETS}
+            immediate[fixed_asset.component] = absent_partial_outcome
+            if absent_partial_outcome == "success":
+                module._cleanup_assets(records, immediate)
+                assert not assets.exists()
+            else:
+                rejected(lambda: module._cleanup_assets(records, immediate))
+                assert assets.is_dir()
+        finally:
+            module.ASSETS, module._open_dir = originals
+
+with tempfile.TemporaryDirectory(prefix="cogs-phase-a-nlink2-",
+                                 dir="/private/tmp" if Path("/private/tmp").is_dir() else "/tmp") as temporary:
+    assets = Path(temporary, "assets")
+    assets.mkdir(mode=0o700)
+    partial = assets / ("." + fixed_asset.name + ".partial")
+    final = assets / fixed_asset.name
+    partial.write_bytes(b"linked-preserve")
+    os.link(partial, final)
+    records = [{"kind": "asset-directory-owned", "body": {
+        "identity": module._identity(assets.stat(follow_symlinks=False))}}, *partial_records()]
+    originals = module.ASSETS, module._open_dir
+    try:
+        module.ASSETS = assets
+        module._open_dir = lambda path: os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        rejected(lambda: module._cleanup_assets(
+            records, {item.component: "preserved" for item in module.RUNTIME_ASSETS},
+        ))
+        assert partial.stat().st_nlink == final.stat().st_nlink == 2
+    finally:
+        module.ASSETS, module._open_dir = originals
 
 with tempfile.TemporaryDirectory(prefix="cogs-phase-a-state-cleanup-",
                                  dir="/private/tmp" if Path("/private/tmp").is_dir() else "/tmp") as temporary:

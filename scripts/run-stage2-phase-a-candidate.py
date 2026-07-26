@@ -74,6 +74,17 @@ DENIED_ENV = frozenset({
     "BEARER_TOKEN", "REGISTRY_TOKEN", "GITHUB_TOKEN", "GH_TOKEN",
 })
 HEX = re.compile(r"^[0-9a-f]{64}$")
+FULL_GENERATION = (
+    "mount_id", "dev", "ino", "kind", "mode", "uid", "gid", "nlink", "size", "mtime_ns", "ctime_ns",
+)
+STAGE_CHECK = {"success": "pass", "failure": "fail", "blocked": "blocked", "not-reached": "unknown"}
+STAGE_NAMES = ("artifact_cache", "runtime_assets")
+SETUP_STATES = {
+    "not-reached", "fixed-input", "rootfs-bootstrap", "operation-establishment", "materializer-dispatch", "complete",
+}
+PREPHASE_SETUPS = {"rootfs-bootstrap", "operation-establishment", "materializer-dispatch"}
+IMMEDIATE_OUTCOMES = {"not-required", "success", "preserved", "post-unlink-uncertainty"}
+O_PATH = getattr(os, "O_PATH", os.O_RDONLY)
 
 
 class CandidateError(Exception):
@@ -198,6 +209,36 @@ def _identity(observed):
         "mode": stat.S_IMODE(observed.st_mode), "uid": observed.st_uid, "gid": observed.st_gid,
         "nlink": observed.st_nlink, "size": observed.st_size,
     }
+
+
+def _asset_generation(descriptor, deadline_ns):
+    _fail(type(descriptor) is int and type(deadline_ns) is int and
+          time.monotonic_ns() < deadline_ns, "asset-generation")
+    duplicate = fcntl.fcntl(descriptor, fcntl.F_DUPFD_CLOEXEC, 0)
+    try:
+        before = os.fstat(duplicate)
+        fdinfo = os.open(f"/proc/self/fdinfo/{duplicate}", os.O_RDONLY | os.O_CLOEXEC)
+        try:
+            raw = os.read(fdinfo, 4097)
+        finally:
+            os.close(fdinfo)
+        after = os.fstat(duplicate)
+        fields = {}
+        for name, value in (line.split(b":", 1) for line in raw.splitlines() if b":" in line):
+            fields.setdefault(name, []).append(value.strip())
+        _fail(
+            len(raw) <= 4096 and len(fields.get(b"mnt_id", ())) == 1 and len(fields.get(b"ino", ())) == 1 and
+            fields[b"mnt_id"][0].isdigit() and fields[b"ino"][0].isdigit() and
+            int(fields[b"mnt_id"][0]) > 0 and int(fields[b"ino"][0]) == before.st_ino and
+            _identity(before) == _identity(after) and before.st_mtime_ns == after.st_mtime_ns and
+            before.st_ctime_ns == after.st_ctime_ns and time.monotonic_ns() < deadline_ns,
+            "asset-generation",
+        )
+        return dict(zip(FULL_GENERATION, (int(fields[b"mnt_id"][0]), before.st_dev, before.st_ino,
+            _kind(before), stat.S_IMODE(before.st_mode), before.st_uid, before.st_gid, before.st_nlink,
+            before.st_size, before.st_mtime_ns, before.st_ctime_ns), strict=True))
+    finally:
+        os.close(duplicate)
 
 
 def _same_identity(observed, expected, include_size=True, include_nlink=True):
@@ -764,46 +805,62 @@ def _owned_file(directory, name, expected, digest):
         raise
 
 
-def _cleanup_held_asset(directory, name, descriptor):
-    held = os.fstat(descriptor)
-    try:
-        named = os.stat(name, dir_fd=directory, follow_symlinks=False)
-    except FileNotFoundError:
-        return
-    _fail((named.st_dev, named.st_ino, named.st_uid) == (held.st_dev, held.st_ino, held.st_uid) and
-          stat.S_ISREG(named.st_mode), "asset-partial-replaced")
-    os.unlink(name, dir_fd=directory)
-    os.fsync(directory)
-
-
 def _check_asset_deadline(deadline_ns, stage):
     _fail(type(deadline_ns) is int and type(stage) is str and time.monotonic_ns() < deadline_ns, "asset-timeout")
 
 
-def _publish_asset(asset, assets_fd, descriptor, partial, final, partial_identity, deadline_ns, publication):
+def _freeze_partial(asset, assets_fd, descriptor, partial, deadline_ns, publication):
     _check_asset_deadline(deadline_ns, "after-final-eof")
     os.fsync(descriptor)
-    _check_asset_deadline(deadline_ns, "after-content-fsync")
     os.fchmod(descriptor, 0o400)
     os.fsync(descriptor)
+    _check_asset_deadline(deadline_ns, "after-content-fsync")
+    _fail(_digest_descriptor(descriptor, asset.size) == asset.sha256, "asset-publish")
+    retained = os.open(partial.name, O_PATH | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=assets_fd)
+    try:
+        held = _asset_generation(retained, deadline_ns)
+        _fail(_asset_generation(descriptor, deadline_ns) == held, "asset-partial-replaced")
+        _check_asset_deadline(deadline_ns, "after-retained-open")
+        publication["writer_close_attempted"] = True
+        os.close(descriptor)
+        _check_asset_deadline(deadline_ns, "after-writer-close")
+        named_fd = os.open(partial.name, O_PATH | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=assets_fd)
+        with os.fdopen(named_fd, "rb", closefd=True) as named:
+            named_generation = _asset_generation(named.fileno(), deadline_ns)
+        _fail(_asset_generation(retained, deadline_ns) == held == named_generation and
+              tuple(held[name] for name in ("kind", "mode", "uid", "gid", "nlink", "size")) ==
+              ("file", 0o400, 0, 0, 1, asset.size), "asset-partial-replaced")
+        _check_asset_deadline(deadline_ns, "after-held-name-proof")
+        _append_journal("asset-partial-final-owned",
+                        {"component": asset.component, "name": partial.name, "generation": held})
+        _check_asset_deadline(deadline_ns, "after-partial-final-journal")
+        publication.update({"partial_final": held, "retained": retained})
+        return retained
+    except BaseException:
+        os.close(retained)
+        raise
+
+
+def _publish_asset(asset, assets_fd, descriptor, partial, final, partial_identity, deadline_ns, publication):
+    descriptor = _freeze_partial(asset, assets_fd, descriptor, partial, deadline_ns, publication)
     held = os.fstat(descriptor)
-    _fail(_same_identity(held, {**partial_identity, "mode": 0o400, "size": asset.size}) and
-          _digest_descriptor(descriptor, asset.size) == asset.sha256, "asset-publish")
     _check_asset_deadline(deadline_ns, "after-redigest")
     _check_asset_deadline(deadline_ns, "before-link")
     os.link(partial.name, final.name, src_dir_fd=assets_fd, dst_dir_fd=assets_fd, follow_symlinks=False)
+    publication["linked"] = True
     linked = os.stat(final.name, dir_fd=assets_fd, follow_symlinks=False)
     _fail((linked.st_dev, linked.st_ino) == (held.st_dev, held.st_ino) and linked.st_nlink == 2,
           "asset-publish")
     _check_asset_deadline(deadline_ns, "after-link")
+    publication["partial_unlinked"] = True
     os.unlink(partial.name, dir_fd=assets_fd)
     _check_asset_deadline(deadline_ns, "after-unlink")
     os.fsync(assets_fd)
     _check_asset_deadline(deadline_ns, "after-directory-fsync")
     final_identity = _identity(os.stat(final.name, dir_fd=assets_fd, follow_symlinks=False))
-    held_final = os.fstat(descriptor)
-    _fail(_same_identity(held_final, final_identity) and final_identity["nlink"] == 1 and
-          _digest_descriptor(descriptor, asset.size) == asset.sha256, "asset-publish")
+    reader = _owned_file(assets_fd, final.name, final_identity, asset.sha256)
+    os.close(reader)
+    _fail(final_identity["nlink"] == 1, "asset-publish")
     _check_asset_deadline(deadline_ns, "after-final-redigest")
     _check_asset_deadline(deadline_ns, "before-journal")
     _append_journal("asset-final-owned", {
@@ -824,17 +881,36 @@ def _finish_asset_publication(asset, assets_fd, descriptor, partial, final, part
     return result
 
 
-def _cleanup_failed_asset_publication(assets_fd, descriptor, partial, final, publication):
+def _cleanup_failed_asset_publication(assets_fd, partial, publication, immediate, component, deadline_ns):
+    if publication["partial_unlinked"]:
+        immediate[component] = "post-unlink-uncertainty"
+        raise CandidateError("asset-immediate-cleanup-uncertainty")
     if publication["journaled"]:
         return
-    for name in (final.name, partial.name):
-        try:
-            _cleanup_held_asset(assets_fd, name, descriptor)
-        except BaseException:
-            pass
+    generation = publication["partial_final"]
+    if generation is None or publication["linked"]:
+        immediate[component] = "preserved"
+        return
+    descriptor = os.open(partial.name, O_PATH | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=assets_fd)
+    close_attempted = False
+    try:
+        _fail(_asset_generation(descriptor, deadline_ns) == generation and generation["nlink"] == 1,
+              "asset-partial-replaced")
+        publication["partial_unlinked"] = True
+        os.unlink(partial.name, dir_fd=assets_fd)
+        os.fsync(assets_fd)
+        close_attempted = True
+        os.close(descriptor)
+        immediate[component] = "success"
+    except BaseException:
+        immediate[component] = "post-unlink-uncertainty" if publication["partial_unlinked"] else "preserved"
+        raise
+    finally:
+        if not close_attempted:
+            os.close(descriptor)
 
 
-def _download_asset(asset, outer_deadline_ns):
+def _download_asset(asset, outer_deadline_ns, immediate):
     _fail(type(asset) is Asset and HEX.fullmatch(asset.sha256) is not None and
           type(DOWNLOAD_SECONDS) is int and DOWNLOAD_SECONDS > 0, "asset-contract")
     _fail(type(outer_deadline_ns) is int, "asset-timeout")
@@ -848,7 +924,8 @@ def _download_asset(asset, outer_deadline_ns):
     partial_identity = None
     connection = response = None
     published = False
-    publication = {"journaled": False}
+    publication = {"journaled": False, "writer_close_attempted": False, "partial_final": None,
+                   "retained": None, "linked": False, "partial_unlinked": False}
     assets_fd = _open_dir(ASSETS)
     try:
         _fail(_held_path_absent(final) and _held_path_absent(partial), "asset-no-overwrite")
@@ -906,11 +983,19 @@ def _download_asset(asset, outer_deadline_ns):
             response.close()
         if connection is not None:
             connection.close()
-        if not published and descriptor is not None and partial_identity is not None:
-            _cleanup_failed_asset_publication(assets_fd, descriptor, partial, final, publication)
-        if descriptor is not None:
-            os.close(descriptor)
-        os.close(assets_fd)
+        try:
+            if not published and descriptor is not None:
+                if partial_identity is None: immediate[asset.component] = "preserved"
+                else: _cleanup_failed_asset_publication(assets_fd, partial, publication, immediate,
+                                                        asset.component, deadline_ns)
+        finally:
+            try:
+                if descriptor is not None and not publication["writer_close_attempted"]: os.close(descriptor)
+                if publication["retained"] is not None: os.close(publication["retained"])
+                os.close(assets_fd)
+            except BaseException:
+                if publication["partial_unlinked"]: immediate[asset.component] = "post-unlink-uncertainty"
+                raise
 
 
 def _artifact_rows(contract):
@@ -1092,7 +1177,29 @@ def _elapsed_ms(elapsed_ns):
     return elapsed_ns // NS_PER_MILLISECOND
 
 
-def _candidate_build(build, approval, control, ordinal, token, phases):
+def _stage(stages, name, status):
+    if status == "attempting":
+        stages[name] = {"status": status, "elapsed_ms": time.monotonic_ns()}
+        return
+    started = stages[name]["elapsed_ms"]
+    elapsed_ms = _elapsed_ms(_elapsed_ns(started)) if status == "failure" else 0
+    stages[name] = {"status": status, "elapsed_ms": elapsed_ms}
+
+
+def _complete_stage_effect(stages, name):
+    row = stages[name]
+    _fail(type(row) is dict and row.get("status") == "attempting", "stage-timing-metadata")
+    started = row.get("elapsed_ms")
+    row["status"] = "effect-complete"
+    try:
+        elapsed_ms = _elapsed_ms(_elapsed_ns(started))
+    except BaseException:
+        stages[name] = None
+        raise
+    stages[name] = {"status": "success", "elapsed_ms": elapsed_ms}
+
+
+def _candidate_build(build, approval, control, ordinal, token, phases, setup=None):
     work_name, cleanup_name = f"{ordinal}-build-work", f"{ordinal}-inline-cleanup"
     _fail(ordinal in {"first", "second"} and type(build.BUILD_SECONDS) is int and build.BUILD_SECONDS > 0 and
           type(token) is str and HEX.fullmatch(token) is not None and
@@ -1105,6 +1212,17 @@ def _candidate_build(build, approval, control, ordinal, token, phases):
         raise
     materializer, builder = build.materializer, build.builder
     original_reload, original_cleanup = materializer._reload_and_cleanup, builder._cleanup_owned
+    original_begin = original_materialize = None
+    if setup is not None:
+        original_begin, original_materialize = builder._begin_operation, materializer._materialize_unmasked
+        def marked_begin(*args):
+            value = original_begin(*args)
+            setup["value"] = "materializer-dispatch"
+            return value
+        def marked_materialize(*args):
+            setup["value"] = "complete"
+            return original_materialize(*args)
+        builder._begin_operation, materializer._materialize_unmasked = marked_begin, marked_materialize
     cleanup_depth = cleanup_elapsed_ns = cleanup_span_ns = cleanup_attempts = 0
     cleanup_statuses = []
     cleanup_counters = _zero_counters()
@@ -1195,6 +1313,8 @@ def _candidate_build(build, approval, control, ordinal, token, phases):
                 poison(caught)
     finally:
         materializer._reload_and_cleanup, builder._cleanup_owned = original_reload, original_cleanup
+        if setup is not None:
+            builder._begin_operation, materializer._materialize_unmasked = original_begin, original_materialize
     try:
         work_total = _counter_read(work_counter)
         if evidence_fault is None:
@@ -1214,6 +1334,9 @@ def _candidate_build(build, approval, control, ordinal, token, phases):
     work_status = "success" if error is None else "failure"
     work_category = "success" if error is None else ("postwork" if postwork else work_outcome)
     cleanup_failed = "failure" in cleanup_statuses
+    if setup is not None and setup["value"] != "complete":
+        _fail(error is not None, "rootfs-build-contract")
+        raise CandidateError(f"rootfs-{ordinal}-build-{work_category}") from error
     _set_phase(phases, work_name, work_status, work_category, total_elapsed_ns - cleanup_span_ns,
                work_counters)
     if not cleanup_attempts:
@@ -1337,13 +1460,15 @@ def _load_artifact_verifier():
     return verifier
 
 
-def _rootfs_candidates(revision, manifest_sha256, outer_deadline_ns, phases):
+def _rootfs_candidates(revision, manifest_sha256, outer_deadline_ns, phases, stages, setup):
     sys.path.insert(0, str(REMOTE))
     import completion_rootfs_build as build
     import completion_rootfs_builder as builder
     import completion_rootfs_fs as fs
     import completion_rootfs_publish
     verifier = _load_artifact_verifier()
+    _stage(stages, "artifact_cache", "attempting")
+    setup["value"] = "fixed-input"
 
     contract = _verifier_call(
         verifier, "rootfs-contract-preflight", lambda: verifier.verify_contract(verifier.CONTRACT_PATH),
@@ -1359,26 +1484,30 @@ def _rootfs_candidates(revision, manifest_sha256, outer_deadline_ns, phases):
     )
     cache_owned = _snapshot_cache(contract)
     _append_journal("cache-owned", cache_owned)
-    _append_journal("rootfs-intent", {"baseline": "absent"})
-    approval = fs.SourceApproval(revision, manifest_sha256)
-    now_ns = time.monotonic_ns()
+    setup["value"] = "rootfs-bootstrap"
+    _complete_stage_effect(stages, "artifact_cache")
+    _rootfs_call("rootfs-intent", lambda: _append_journal("rootfs-intent", {"baseline": "absent"}))
+    approval = _rootfs_call("rootfs-bootstrap", lambda: fs.SourceApproval(revision, manifest_sha256))
+    now_ns = _rootfs_call("rootfs-bootstrap", time.monotonic_ns)
     _fail(type(outer_deadline_ns) is int, "observe-timeout")
     deadline_ns = min(outer_deadline_ns, now_ns + build.OUTER_SECONDS * 1_000_000_000)
     _fail(now_ns < deadline_ns, "observe-timeout")
-    control = fs.OperationControl(deadline_ns, lambda: False)
+    control = _rootfs_call("rootfs-bootstrap", lambda: fs.OperationControl(deadline_ns, lambda: False))
     _bootstrap_rootfs(builder, fs, approval, control)
     rootfs_owned = _rootfs_call("rootfs-bootstrap", _snapshot_rootfs_lifecycle)
-    _append_journal("rootfs-lifecycle-owned", rootfs_owned)
-    first_token = secrets.token_hex(32)
-    second_token = secrets.token_hex(32)
+    _rootfs_call("rootfs-bootstrap", lambda: _append_journal("rootfs-lifecycle-owned", rootfs_owned))
+    setup["value"] = "operation-establishment"
+    first_token = _rootfs_call("rootfs-build-token", lambda: secrets.token_hex(32))
+    second_token = _rootfs_call("rootfs-build-token", lambda: secrets.token_hex(32))
     _fail(type(first_token) is str and HEX.fullmatch(first_token) is not None and
           type(second_token) is str and HEX.fullmatch(second_token) is not None and
           first_token != second_token, "rootfs-build-token")
     try:
-        first = _candidate_build(build, approval, control, "first", first_token, phases)
+        first = _candidate_build(build, approval, control, "first", first_token, phases, setup)
     except BaseException:
-        _block_phases(phases, ("second-build-work", "second-inline-cleanup", "equality", "pin",
-                               "post-verification", "settlement"))
+        if setup["value"] == "complete":
+            _block_phases(phases, ("second-build-work", "second-inline-cleanup", "equality", "pin",
+                                   "post-verification", "settlement"))
         raise
     try:
         second = _candidate_build(build, approval, control, "second", second_token, phases)
@@ -1420,15 +1549,20 @@ def _observe():
     _initialize_state(revision, manifest_sha256)
     started = time.monotonic_ns()
     outer_deadline_ns = started + OBSERVE_SECONDS * 1_000_000_000
+    immediate = {item.component: "not-required" for item in RUNTIME_ASSETS}
+    stages = {name: {"status": "not-reached", "elapsed_ms": 0} for name in STAGE_NAMES}
+    setup = {"value": "not-reached"}
     observation = {"status": "failed", "codes": [], "revision": revision, "source_manifest_sha256": manifest_sha256,
                    "host_tools": [], "kvm": None, "rootfs": None, "rootfs_phases": _empty_phases(),
-                   "assets": []}
+                   "immediate_cleanup": immediate, "stage_evidence": stages,
+                   "first_build_setup": "not-reached", "assets": []}
     try:
         observation["host_tools"], host_tool_codes = _host_tools()
         observation["kvm"] = _prove_kvm()
         observation["rootfs"] = _rootfs_candidates(
-            revision, manifest_sha256, outer_deadline_ns, observation["rootfs_phases"],
+            revision, manifest_sha256, outer_deadline_ns, observation["rootfs_phases"], stages, setup,
         )
+        _stage(stages, "runtime_assets", "attempting")
         _append_journal("asset-directory-intent", {"name": ASSETS.name})
         _fail(_held_path_absent(ASSETS), "asset-directory-preexisting")
         os.mkdir(ASSETS, 0o700)
@@ -1438,8 +1572,9 @@ def _observe():
               asset_dir_identity["mode"] == 0o700, "asset-directory-policy")
         _append_journal("asset-directory-owned", {"identity": asset_dir_identity})
         observation["assets"] = [
-            _download_asset(asset, outer_deadline_ns) for asset in RUNTIME_ASSETS
+            _download_asset(asset, outer_deadline_ns, immediate) for asset in RUNTIME_ASSETS
         ]
+        _complete_stage_effect(stages, "runtime_assets")
         observation["status"] = "observed"
         observation["codes"] = ["committed-attestations-absent", "qmp-kvm-attestation-not-collected",
                                 "runtime-extraction-unsafe-or-unknown", "runtime-lifecycle-not-executed",
@@ -1449,12 +1584,25 @@ def _observe():
             observation["codes"].append("host-tool-missing")
         observation["codes"] = list(dict.fromkeys(observation["codes"]))
     except CandidateError as error:
+        for name in ("artifact_cache", "runtime_assets"):
+            row = stages[name]
+            if type(row) is dict and row["status"] == "attempting":
+                _stage(stages, name, "failure")
+            elif type(row) is dict and row["status"] == "not-reached":
+                stages[name] = {"status": "blocked", "elapsed_ms": 0}
         observation["codes"] = [error.code]
         raise
     except BaseException as error:
+        cache_row = stages["artifact_cache"]
+        runtime_row = stages["runtime_assets"]
+        if (type(cache_row) is dict and cache_row.get("status") == "success" and
+                setup["value"] in PREPHASE_SETUPS and
+                type(runtime_row) is dict and runtime_row.get("status") == "not-reached"):
+            stages["runtime_assets"] = {"status": "blocked", "elapsed_ms": 0}
         observation["codes"] = ["candidate-uncertainty"]
         raise CandidateError() from error
     finally:
+        observation["first_build_setup"] = setup["value"]
         observation["duration_ms"] = max(0, (time.monotonic_ns() - started) // 1_000_000)
         _write_json_once(OBSERVATION, observation, "observation-owned")
     return 0
@@ -1521,9 +1669,38 @@ def _unlink_exact(directory, name, descriptor, expected, digest=None, include_si
     os.fsync(directory)
 
 
-def _cleanup_assets(records):
+def _asset_records(records):
+    fixed = {asset.component: ("." + asset.name + ".partial", asset.name, asset.size) for asset in RUNTIME_ASSETS}
+    initial, final, sealed = set(), {}, set()
+    for record in records:
+        kind, body = record["kind"], record["body"]
+        key = body.get("component") if type(body) is dict else None
+        if kind == "asset-partial-owned":
+            _fail(key in fixed and body.get("name") == fixed[key][0] and key not in initial, "journal-state")
+            initial.add(key)
+        elif kind == "asset-partial-final-owned":
+            generation = body.get("generation") if type(body) is dict else None
+            policy = ("file", 0o400, 0, 0, 1, fixed.get(key, (None, None, None))[2])
+            _fail(key in initial and key not in final and key not in sealed and set(body) ==
+                  {"component", "name", "generation"} and body["name"] == fixed[key][0] and
+                  type(generation) is dict and set(generation) == set(FULL_GENERATION) and
+                  tuple(generation[name] for name in ("kind", "mode", "uid", "gid", "nlink", "size")) ==
+                  policy and all(type(value) is int and value >= 0 for name, value in generation.items()
+                                 if name != "kind") and generation["mount_id"] > 0 and
+                  generation["ino"] > 0, "journal-state")
+            final[key] = body
+        elif kind == "asset-final-owned":
+            _fail(key in final and key not in sealed and body.get("name") == fixed[key][1], "journal-state")
+            sealed.add(key)
+    return final, sealed
+
+
+def _cleanup_assets(records, immediate):
     directory_record = _one_record(records, "asset-directory-owned")
+    partials, sealed = _asset_records(records)
     if _held_path_absent(ASSETS):
+        _fail(all(component in sealed or immediate[component] == "success" for component in partials),
+              "cleanup-uncertainty")
         return
     _fail(directory_record is not None, "cleanup-unowned")
     directory = _open_dir(ASSETS)
@@ -1535,22 +1712,30 @@ def _cleanup_assets(records):
             body = record["body"]
             if record["kind"] == "asset-final-owned":
                 owned[body["name"]] = (body["identity"], body["sha256"], True)
-            elif record["kind"] == "asset-partial-owned" and body["name"] not in owned:
-                owned[body["name"]] = (body["identity"], None, False)
+        for component, body in partials.items():
+            if component not in sealed:
+                owned[body["name"]] = (body["generation"], None, False)
         names = set(os.listdir(directory))
-        _fail(names <= set(owned), "cleanup-unknown")
+        _fail(names <= set(owned) and all(component in sealed or body["name"] in names or
+              immediate[component] == "success" for component, body in partials.items()),
+              "cleanup-uncertainty")
         for name in sorted(names):
             identity, digest, complete = owned[name]
             descriptor = _owned_file(directory, name, identity, digest) if complete else os.open(
-                name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=directory,
+                name, O_PATH | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=directory,
             )
             held_files.append((name, descriptor, identity, digest, complete))
             if not complete:
-                observed = os.fstat(descriptor)
-                _fail(_same_identity(observed, identity, include_size=False, include_nlink=False) and
-                      observed.st_nlink == 1, "cleanup-replaced")
+                _fail(_asset_generation(descriptor, time.monotonic_ns() + 600 * NS_PER_SECOND) == identity,
+                      "cleanup-replaced")
         for name, descriptor, identity, digest, complete in held_files:
-            _unlink_exact(directory, name, descriptor, identity, digest, include_size=complete)
+            if complete:
+                _unlink_exact(directory, name, descriptor, identity, digest)
+            else:
+                _fail(_asset_generation(descriptor, time.monotonic_ns() + 600 * NS_PER_SECOND) == identity,
+                      "cleanup-replaced")
+                os.unlink(name, dir_fd=directory)
+                os.fsync(directory)
     finally:
         for _name, descriptor, _identity_value, _digest, _complete in held_files:
             os.close(descriptor)
@@ -1673,6 +1858,23 @@ def _cleanup_rootfs(records):
     _rmdir_exact(ROOTFS_STATE, lifecycle["root"])
 
 
+def _owned_immediate(records):
+    owned = _one_record(records, "observation-owned", True)
+    raw = _read_regular(OBSERVATION, MAX_JSON, 0o400)
+    immediate = _strict_json(raw).get("immediate_cleanup")
+    _fail(owned["name"] == OBSERVATION.name and
+          _same_identity(os.stat(OBSERVATION, follow_symlinks=False), owned["identity"]) and
+          hashlib.sha256(raw).hexdigest() == owned["sha256"] and type(immediate) is dict and set(immediate) ==
+          {item.component for item in RUNTIME_ASSETS} and set(immediate.values()) <= IMMEDIATE_OUTCOMES,
+          "observation-cleanup-uncertainty")
+    return immediate
+
+
+def _diagnosed(values, code, fallback):
+    values.append(code)
+    return fallback
+
+
 def _cleanup_attempt(code, callback, codes):
     _fail(type(code) is str and callable(callback) and type(codes) is list, "cleanup-contract")
     try:
@@ -1688,14 +1890,22 @@ def _cleanup():
     records = _require_state()
     codes = []
     recovery_attempts = []
+    try:
+        immediate = _owned_immediate(records)
+    except BaseException:
+        immediate = _diagnosed(codes, "observation-cleanup-uncertainty", None)
     recovered = _cleanup_attempt(
         "rootfs-recovery-exhausted", lambda: _recover_rootfs(recovery_attempts), codes,
     )
     if recovered:
         _cleanup_attempt("rootfs-foundation-uncertainty", lambda: _cleanup_rootfs(records), codes)
-    _cleanup_attempt("asset-cleanup-uncertainty", lambda: _cleanup_assets(records), codes)
+    if immediate is not None:
+        if set(immediate.values()) & {"preserved", "post-unlink-uncertainty"}:
+            codes.append("asset-immediate-cleanup-uncertainty")
+        _cleanup_attempt("asset-cleanup-uncertainty", lambda: _cleanup_assets(records, immediate), codes)
     _cleanup_attempt("cache-cleanup-uncertainty", lambda: _cleanup_artifacts(records), codes)
-    value = {"success": not codes, "codes": codes, "recovery_attempts": recovery_attempts}
+    value = {"success": not codes, "codes": list(dict.fromkeys(codes)),
+             "recovery_attempts": recovery_attempts, "immediate_cleanup": immediate}
     _write_json_once(CLEANUP, value, "cleanup-owned")
     _fail(not codes, "cleanup-uncertainty")
     return 0
@@ -1750,6 +1960,8 @@ def _base_report():
                    "artifact_cache": "unknown", "rootfs_candidates": "unknown", "runtime_assets": "unknown",
                    "host_tools": "unknown", "cleanup": "unknown", "residue": "unknown"},
         "rootfs": None, "rootfs_phases": _empty_phases(),
+        "stage_evidence": {name: {"status": "not-reached", "elapsed_ms": 0} for name in STAGE_NAMES},
+        "first_build_setup": "not-reached",
         "runtime_assets": [], "host_tools": [],
         "kvm": {"device_present": False, "device_accessible": False, "api_version": None},
         "claims": {"runtime": False, "network": False, "ssh": False, "coordinator_invoked": False},
@@ -1816,6 +2028,13 @@ def _validate_phase_graph(phases, rootfs):
                   if name != "recovery-attempt-1"), "report-schema")
 
 
+def _valid_stage_row(row):
+    return (type(row) is dict and set(row) == {"status", "elapsed_ms"} and
+            row["status"] in STAGE_CHECK and type(row["elapsed_ms"]) is int and
+            0 <= row["elapsed_ms"] <= 3_300_000 and
+            (row["status"] not in {"blocked", "not-reached"} or row["elapsed_ms"] == 0))
+
+
 def _canonical_report(report):
     expected = set(_base_report())
     _fail(type(report) is dict and set(report) == expected, "report-schema")
@@ -1837,9 +2056,34 @@ def _canonical_report(report):
     checks = report["checks"]
     _fail(type(checks) is dict and set(checks) == set(_base_report()["checks"]) and
           set(checks.values()) <= {"pass", "fail", "blocked", "unknown"}, "report-schema")
-    phases = report["rootfs_phases"]
-    rootfs = report["rootfs"]
+    stages, setup = report["stage_evidence"], report["first_build_setup"]
+    _fail(type(stages) is dict and set(stages) == {"artifact_cache", "runtime_assets"} and
+          all(_valid_stage_row(row) for row in stages.values()), "report-schema")
+    cache_status = stages["artifact_cache"]["status"]
+    runtime_status = stages["runtime_assets"]["status"]
+    _fail(runtime_status in {"success": set(STAGE_CHECK), "failure": {"blocked"},
+          "blocked": {"blocked"}, "not-reached": {"not-reached"}}[cache_status] and
+          all(checks[name] == STAGE_CHECK[stages[name]["status"]] for name in stages) and
+          setup in SETUP_STATES and (runtime_status not in {"blocked", "not-reached"} or
+          report["runtime_assets"] == []) and (runtime_status != "success" or
+          len(report["runtime_assets"]) == 2), "report-schema")
+    phases, rootfs = report["rootfs_phases"], report["rootfs"]
     _validate_phase_graph(phases, rootfs)
+    first_status = _phase(phases, "first-build-work")["status"]
+    settlement_status = _phase(phases, "settlement")["status"]
+    resolved_block = cache_status in {"failure", "blocked"} or any(
+        row["status"] in {"failure", "blocked"} for row in phases
+    )
+    prephase_setup = setup in PREPHASE_SETUPS
+    setup_boundary = {
+        "not-reached": cache_status in {"blocked", "not-reached"} and first_status == "not-reached",
+        "fixed-input": cache_status == "failure" and first_status == "not-reached",
+        **dict.fromkeys(PREPHASE_SETUPS, cache_status == "success" and first_status == "not-reached"),
+        "complete": cache_status == "success" and first_status in {"success", "failure"},
+    }
+    allowed_runtime = ({"success", "failure", "not-reached"} if settlement_status == "success" else
+                       {"blocked"} if resolved_block or prephase_setup else {"not-reached"})
+    _fail(setup_boundary[setup] and runtime_status in allowed_runtime, "report-schema")
     if rootfs is not None:
         _fail(rootfs == {
             "candidate_count": 2, "cache_count": 16, "entry_count": 4353,
@@ -1853,7 +2097,8 @@ def _canonical_report(report):
     _fail(type(assets) is list and len(assets) <= 2, "report-schema")
     expected_assets = {item.component: item for item in RUNTIME_ASSETS}
     for row in assets:
-        _fail(type(row) is dict and set(row) == {"component", "release", "name", "size", "sha256", "downloaded", "extracted"}, "report-schema")
+        _fail(type(row) is dict and set(row) ==
+              {"component", "release", "name", "size", "sha256", "downloaded", "extracted"}, "report-schema")
         asset = expected_assets.get(row["component"])
         _fail(asset is not None and row == {"component": asset.component, "release": asset.release,
               "name": asset.name, "size": asset.size, "sha256": asset.sha256,
@@ -1914,79 +2159,140 @@ def _render():
     _require_state()
     report = _base_report()
     diagnostics = []
-    observation_codes = []
-    observed = cleanup_success = residue_clean = False
     try:
         observation = _strict_json(_read_regular(OBSERVATION, MAX_JSON, 0o400))
         _fail(type(observation) is dict, "report-input-uncertainty")
+    except BaseException:
+        observation = _diagnosed(diagnostics, "observation-input-uncertainty", {})
+    try:
         phases, rootfs = observation.get("rootfs_phases"), observation.get("rootfs")
         _validate_phase_graph(phases, rootfs)
-    except BaseException as error:
-        raise CandidateError("observation-phase-input-uncertainty") from error
-    report["rootfs"], report["rootfs_phases"] = rootfs, phases
+        report["rootfs"], report["rootfs_phases"] = rootfs, phases
+    except BaseException:
+        diagnostics.append("observation-phase-input-uncertainty")
+    stages = observation.get("stage_evidence")
+    for name in ("artifact_cache", "runtime_assets"):
+        try:
+            row = stages.get(name) if type(stages) is dict else None
+            _fail(_valid_stage_row(row), "report-input-uncertainty")
+            report["stage_evidence"][name] = dict(row)
+        except BaseException:
+            report["stage_evidence"][name] = None
+            diagnostics.append(name.replace("_", "-") + "-stage-input-uncertainty")
+    try:
+        setup = observation.get("first_build_setup")
+        _fail(setup in SETUP_STATES, "report-input-uncertainty")
+        report["first_build_setup"] = setup
+    except BaseException:
+        report["first_build_setup"] = _diagnosed(diagnostics, "setup-input-uncertainty", None)
     try:
         observation_codes = _bounded_codes(observation.get("codes"))
-        _fail(type(observation.get("duration_ms")) is int and
-              type(observation.get("host_tools")) is list and type(observation.get("assets")) is list,
-              "report-input-uncertainty")
-        report["source_revision"] = observation.get("revision")
-        report["source_manifest_sha256"] = observation.get("source_manifest_sha256")
-        report["duration_ms"] = observation.get("duration_ms")
-        report["host_tools"] = observation.get("host_tools")
-        report["runtime_assets"] = observation.get("assets")
-        observed_kvm = observation.get("kvm")
-        if type(observed_kvm) is dict:
-            report["kvm"] = {
-                "device_present": observed_kvm.get("device_present") is True,
-                "device_accessible": observed_kvm.get("device_accessible") is True,
-                "api_version": observed_kvm.get("api_version") if observed_kvm.get("api_version") == 12 else None,
-            }
-        observed = observation.get("status") == "observed"
     except BaseException:
-        diagnostics.append("observation-input-uncertainty")
+        observation_codes = _diagnosed(diagnostics, "observation-codes-input-uncertainty", [])
+    try:
+        duration = observation.get("duration_ms")
+        _fail(type(duration) is int and 0 <= duration <= 5_400_000, "report-input-uncertainty")
+        report["duration_ms"] = duration
+    except BaseException:
+        diagnostics.append("duration-input-uncertainty")
+    try:
+        revision, digest = observation.get("revision"), observation.get("source_manifest_sha256")
+        _fail(type(revision) is str and re.fullmatch(r"[0-9a-f]{40}", revision) and
+              type(digest) is str and HEX.fullmatch(digest), "report-input-uncertainty")
+        report["source_revision"], report["source_manifest_sha256"] = revision, digest
+    except BaseException:
+        diagnostics.append("source-input-uncertainty")
+    try:
+        tools = observation.get("host_tools")
+        expected_tools = dict((name, path) for name, path, _arguments in TOOL_COMMANDS)
+        _fail(type(tools) is list and len(tools) <= len(TOOL_COMMANDS) and all(
+              type(row) is dict and set(row) == {"name", "path", "present", "size", "sha256", "version"} and
+              expected_tools.get(row["name"]) == row["path"] and type(row["present"]) is bool and
+              ((row["present"] and type(row["size"]) is int and 0 < row["size"] <= MAX_TOOL_BYTES and
+                type(row["sha256"]) is str and HEX.fullmatch(row["sha256"]) and type(row["version"]) is str and
+                0 < len(row["version"]) <= 256) or (not row["present"] and
+                row["size"] is row["sha256"] is row["version"] is None)) for row in tools),
+              "report-input-uncertainty")
+        report["host_tools"] = tools
+    except BaseException:
+        diagnostics.append("host-tools-input-uncertainty")
+    try:
+        assets = observation.get("assets")
+        expected_assets = {item.component: item for item in RUNTIME_ASSETS}
+        _fail(type(assets) is list and len(assets) <= len(RUNTIME_ASSETS) and all(
+              type(row) is dict and (asset := expected_assets.get(row.get("component"))) is not None and
+              row == {"component": asset.component, "release": asset.release, "name": asset.name,
+                      "size": asset.size, "sha256": asset.sha256, "downloaded": True, "extracted": False}
+              for row in assets), "report-input-uncertainty")
+        report["runtime_assets"] = assets
+    except BaseException:
+        diagnostics.append("assets-input-uncertainty")
+    try:
+        kvm = observation.get("kvm")
+        _fail(type(kvm) is dict and set(kvm) == {"device_present", "device_accessible", "api_version"} and
+              type(kvm["device_present"]) is bool and type(kvm["device_accessible"]) is bool and
+              kvm["api_version"] in {None, 12}, "report-input-uncertainty")
+        report["kvm"] = dict(kvm)
+    except BaseException:
+        diagnostics.append("kvm-input-uncertainty")
+    try:
+        _fail(observation.get("status") in {"failed", "observed"}, "report-input-uncertainty")
+        observed = observation["status"] == "observed"
+    except BaseException:
+        observed = _diagnosed(diagnostics, "observation-status-input-uncertainty", False)
     try:
         cleanup = _strict_json(_read_regular(CLEANUP, MAX_JSON, 0o400))
-        report["rootfs_phases"] = _merge_recovery_attempt(
-            report["rootfs_phases"], report["rootfs"], cleanup,
-        )
-    except BaseException as error:
-        raise CandidateError("recovery-phase-input-uncertainty") from error
-    try:
-        _fail(set(cleanup) == {"success", "codes", "recovery_attempts"} and
-              type(cleanup["success"]) is bool, "report-input-uncertainty")
-        cleanup_codes = _bounded_codes(cleanup["codes"])
-        cleanup_success = cleanup["success"]
-        diagnostics.extend(cleanup_codes)
     except BaseException:
-        diagnostics.append("cleanup-summary-input-uncertainty")
+        cleanup = _diagnosed(diagnostics, "cleanup-input-uncertainty", {})
+    if type(cleanup) is not dict or set(cleanup) != {
+        "success", "codes", "recovery_attempts", "immediate_cleanup",
+    }: diagnostics.append("cleanup-input-uncertainty")
+    try:
+        report["rootfs_phases"] = _merge_recovery_attempt(report["rootfs_phases"], report["rootfs"], cleanup)
+    except BaseException:
+        diagnostics.append("recovery-phase-input-uncertainty")
+    try:
+        _fail(type(cleanup.get("success")) is bool, "report-input-uncertainty")
+        cleanup_success = cleanup["success"]
+    except BaseException:
+        cleanup_success = _diagnosed(diagnostics, "cleanup-summary-input-uncertainty", False)
+    try: diagnostics.extend(_bounded_codes(cleanup.get("codes")))
+    except BaseException: diagnostics.append("cleanup-codes-input-uncertainty")
+    try:
+        immediate = cleanup.get("immediate_cleanup")
+        _fail(immediate is None or type(immediate) is dict and set(immediate) ==
+              {item.component for item in RUNTIME_ASSETS} and
+              set(immediate.values()) <= IMMEDIATE_OUTCOMES, "report-input-uncertainty")
+    except BaseException: diagnostics.append("immediate-cleanup-input-uncertainty")
     try:
         residue = _strict_json(_read_regular(RESIDUE, MAX_JSON, 0o400))
-        _fail(type(residue) is dict and set(residue) == {"clean", "codes"} and type(residue["clean"]) is bool,
-              "report-input-uncertainty")
-        residue_clean = residue["clean"]
-        diagnostics.extend(_bounded_codes(residue["codes"]))
     except BaseException:
+        residue = _diagnosed(diagnostics, "residue-input-uncertainty", {})
+    if type(residue) is not dict or set(residue) != {"clean", "codes"}:
         diagnostics.append("residue-input-uncertainty")
+    try:
+        _fail(type(residue.get("clean")) is bool, "report-input-uncertainty")
+        residue_clean = residue["clean"]
+    except BaseException:
+        residue_clean = _diagnosed(diagnostics, "residue-summary-input-uncertainty", False)
+    try: diagnostics.extend(_bounded_codes(residue.get("codes")))
+    except BaseException: diagnostics.append("residue-codes-input-uncertainty")
+    source_ok = report["source_revision"] is not None and report["source_manifest_sha256"] is not None
+    for name in ("platform", "root", "source"):
+        report["checks"][name] = "pass" if source_ok else "fail"
+    report["checks"]["kvm"] = "pass" if report["kvm"]["api_version"] == 12 else "fail"
+    for name in ("artifact_cache", "runtime_assets"):
+        try: report["checks"][name] = STAGE_CHECK[report["stage_evidence"][name]["status"]]
+        except BaseException: report["checks"][name] = "unknown"
     report["checks"].update({
-        "platform": "pass" if report["source_revision"] is not None else "fail",
-        "root": "pass" if report["source_revision"] is not None else "fail",
-        "source": "pass" if report["source_revision"] is not None else "fail",
-        "kvm": "pass" if report["kvm"]["api_version"] == 12 else "fail",
-        "artifact_cache": "pass" if type(report["rootfs"]) is dict and report["rootfs"].get("cache_count") == 16 else "fail",
-        "rootfs_candidates": "pass" if type(report["rootfs"]) is dict and report["rootfs"].get("pins_match") is True else "fail",
-        "runtime_assets": "pass" if len(report["runtime_assets"]) == 2 and all(
-            row.get("downloaded") is True for row in report["runtime_assets"]
-        ) else "fail",
-        "host_tools": "blocked", "cleanup": "pass" if cleanup_success else "fail",
-        "residue": "pass" if residue_clean else "fail",
+        "rootfs_candidates": "pass" if type(report["rootfs"]) is dict and
+        report["rootfs"].get("pins_match") is True else "fail", "host_tools": "blocked",
+        "cleanup": "pass" if cleanup_success else "fail", "residue": "pass" if residue_clean else "fail",
     })
-    blockers = observation_codes
-    if not observed:
-        blockers.append("observe-uncertainty")
-    if not cleanup_success:
-        blockers.append("cleanup-uncertainty")
-    if not residue_clean:
-        blockers.append("residue-uncertainty")
+    blockers = list(observation_codes)
+    if not observed: blockers.append("observe-uncertainty")
+    if not cleanup_success: blockers.append("cleanup-uncertainty")
+    if not residue_clean: blockers.append("residue-uncertainty")
     report["blockers"] = list(dict.fromkeys(blockers))
     report["diagnostic_codes"] = list(dict.fromkeys(diagnostics))
     raw = _canonical_report(report)

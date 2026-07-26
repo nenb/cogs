@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { join } from "node:path";
@@ -12,6 +14,7 @@ const runnerPath = join(root, "scripts/run-stage2-phase-a-candidate.py");
 const budgetPath = join(root, "scripts/stage2-phase-a-budget.py");
 const schemaV1Path = join(root, "schemas/stage2-phase-a-candidate-v1.json");
 const schemaV2Path = join(root, "schemas/stage2-phase-a-candidate-v2.json");
+const historicalReportPath = join(root, "docs/test-reports/stage-2-phase-a-candidate-30180567797.canonical-json");
 const phaseGraphFixturePath = join(root, "test/fixtures/stage2-phase-a-v2-phase-graphs.json");
 const pythonTest = join(root, "test/stage2-phase-a-candidate.py");
 
@@ -27,6 +30,23 @@ test("Phase A pure downloader, KVM ioctl, and non-authority policies", () => {
   });
   assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
   assert.match(result.stdout, /stage2 phase-a candidate portable tests passed/u);
+  const produced = result.stdout
+    .split("\n")
+    .filter((line) => line.startsWith("producer-boundary-report "))
+    .map(
+      (line) =>
+        JSON.parse(line.slice("producer-boundary-report ".length)) as {
+          boundary: string;
+          report: unknown;
+        },
+    );
+  assert.equal(produced.length, 14);
+  assert.equal(new Set(produced.map(({ boundary }) => boundary)).size, 14);
+  const ajv = new Ajv2020({ allErrors: true, strict: true });
+  const validate = ajv.compile(JSON.parse(readFileSync(schemaV2Path, "utf8")));
+  for (const { boundary, report } of produced) {
+    assert.equal(validate(report), true, `${boundary}: ${ajv.errorsText(validate.errors)}`);
+  }
 });
 
 test("Phase A workflow is exact-head, same-repository, PR-only, and package-mutation-free", async () => {
@@ -90,6 +110,10 @@ test("historical Phase A v1 schema remains immutable and validates v1 reports on
   });
   assert.equal(committed.status, 0, committed.stderr);
   assert.equal(v1Raw, committed.stdout);
+  assert.equal(
+    createHash("sha256").update(v1Raw).digest("hex"),
+    "7fb0d1e29f3e3789dcfc4a17e5f753fd7ad88c227f04d15c8003d870d4b72286",
+  );
   const ajv = new Ajv2020({ allErrors: true, strict: true });
   const validateV1 = ajv.compile(JSON.parse(v1Raw));
   const v1 = {
@@ -129,8 +153,15 @@ test("historical Phase A v1 schema remains immutable and validates v1 reports on
 
 test("candidate output schema enforces metadata-only non-authority", async () => {
   const schema = JSON.parse(await readFile(schemaV2Path, "utf8"));
+  const historical = await readFile(historicalReportPath);
+  assert.equal(historical.byteLength, 3255);
+  assert.equal(
+    createHash("sha256").update(historical).digest("hex"),
+    "d54c4c08dc3388f7d25426cc3294fed483f8c14438d1daa942053f26816f637e",
+  );
   const ajv = new Ajv2020({ allErrors: true, strict: true });
   const validate = ajv.compile(schema);
+  assert.equal(validate(JSON.parse(historical.toString("utf8"))), false);
   const report = {
     version: "cogs.stage2-phase-a-candidate/v2",
     authority: "candidate",
@@ -146,7 +177,7 @@ test("candidate output schema enforces metadata-only non-authority", async () =>
       kvm: "pass",
       artifact_cache: "pass",
       rootfs_candidates: "pass",
-      runtime_assets: "pass",
+      runtime_assets: "fail",
       host_tools: "blocked",
       cleanup: "pass",
       residue: "pass",
@@ -186,6 +217,11 @@ test("candidate output schema enforces metadata-only non-authority", async () =>
         incrementally_advanced_ledger_records: 5,
       },
     })),
+    stage_evidence: {
+      artifact_cache: { status: "success", elapsed_ms: 1 },
+      runtime_assets: { status: "failure", elapsed_ms: 1 },
+    },
+    first_build_setup: "complete",
     runtime_assets: [],
     host_tools: [],
     kvm: { device_present: true, device_accessible: true, api_version: 12 },
@@ -193,6 +229,226 @@ test("candidate output schema enforces metadata-only non-authority", async () =>
     diagnostic_codes: [],
   };
   assert.equal(validate(report), true, ajv.errorsText(validate.errors));
+  type PhaseRow = (typeof report.rootfs_phases)[number];
+  const mutableReport = () => JSON.parse(JSON.stringify(report));
+  const allNotReached = Array<string>(9).fill("not-reached");
+  const firstBuildFailed = [
+    "failure",
+    "blocked",
+    "blocked",
+    "blocked",
+    "not-reached",
+    ...Array<string>(4).fill("blocked"),
+  ];
+  const observerEndedAfterFirst = ["success", "success", ...Array<string>(7).fill("not-reached")];
+  const allSettled = ["success", "success", "success", "success", "not-reached", ...Array<string>(4).fill("success")];
+  const stageCases = [
+    ["success", "success", "complete", "pass", "pass", allSettled],
+    ["success", "failure", "complete", "pass", "fail", allSettled],
+    ["success", "blocked", "rootfs-bootstrap", "pass", "blocked", allNotReached],
+    ["success", "blocked", "operation-establishment", "pass", "blocked", allNotReached],
+    ["success", "blocked", "materializer-dispatch", "pass", "blocked", allNotReached],
+    ["success", "blocked", "complete", "pass", "blocked", firstBuildFailed],
+    ["success", "not-reached", "complete", "pass", "unknown", observerEndedAfterFirst],
+    ["failure", "blocked", "fixed-input", "fail", "blocked", allNotReached],
+    ["blocked", "blocked", "not-reached", "blocked", "blocked", allNotReached],
+    ["not-reached", "not-reached", "not-reached", "unknown", "unknown", allNotReached],
+  ] as const;
+  const assetRows = [
+    {
+      component: "kata",
+      release: "3.32.0",
+      name: "kata-static-3.32.0-amd64.tar.zst",
+      size: 1547940938,
+      sha256: "1449ecea50bd91fa73a94648db195d18950fe869ba4b1f12d05f55f1fa7c1b01",
+      downloaded: true,
+      extracted: false,
+    },
+    {
+      component: "containerd",
+      release: "2.2.1",
+      name: "containerd-static-2.2.1-linux-amd64.tar.gz",
+      size: 33645699,
+      sha256: "af3e82bac6abed58d45956c653244aa2be583359a9753614278ef652012f2883",
+      downloaded: true,
+      extracted: false,
+    },
+  ];
+  for (const [cache, runtime, setup, cacheCheck, runtimeCheck, statuses] of stageCases) {
+    const candidate = mutableReport();
+    candidate.stage_evidence = {
+      artifact_cache: { status: cache, elapsed_ms: cache === "success" || cache === "failure" ? 1 : 0 },
+      runtime_assets: { status: runtime, elapsed_ms: runtime === "success" || runtime === "failure" ? 1 : 0 },
+    };
+    candidate.first_build_setup = setup;
+    candidate.checks.artifact_cache = cacheCheck;
+    candidate.checks.runtime_assets = runtimeCheck;
+    candidate.rootfs_phases = candidate.rootfs_phases.map((row: PhaseRow, index: number) => {
+      const status = statuses[index];
+      assert.ok(status);
+      return {
+        ...row,
+        status,
+        outcome:
+          status === "success"
+            ? "success"
+            : status === "failure"
+              ? "failed"
+              : status === "blocked"
+                ? "prerequisite-failed"
+                : "observer-ended",
+        elapsed_ms: status === "success" || status === "failure" ? 1 : 0,
+        structural_counters: status === "success" || status === "failure" ? row.structural_counters : null,
+      };
+    });
+    candidate.rootfs = statuses[8] === "success" ? report.rootfs : null;
+    (candidate as { runtime_assets: unknown[] }).runtime_assets = runtime === "success" ? assetRows : [];
+    assert.equal(validate(candidate), true, `${cache}/${runtime}/${setup}: ${ajv.errorsText(validate.errors)}`);
+    if (statuses === allNotReached && cache === "success") {
+      const unresolvedRuntime = structuredClone(candidate);
+      unresolvedRuntime.stage_evidence.runtime_assets = { status: "not-reached", elapsed_ms: 0 };
+      unresolvedRuntime.checks.runtime_assets = "unknown";
+      assert.equal(validate(unresolvedRuntime), false, `${setup} accepted unresolved runtime`);
+    }
+    for (const wrong of ["pass", "fail", "blocked", "unknown"].filter((value) => value !== cacheCheck)) {
+      const hostile = structuredClone(candidate);
+      hostile.checks.artifact_cache = wrong;
+      assert.equal(validate(hostile), false, `cache ${cache} incorrectly mapped to ${wrong}`);
+    }
+    for (const wrong of ["pass", "fail", "blocked", "unknown"].filter((value) => value !== runtimeCheck)) {
+      const hostile = structuredClone(candidate);
+      hostile.checks.runtime_assets = wrong;
+      assert.equal(validate(hostile), false, `runtime ${runtime} incorrectly mapped to ${wrong}`);
+    }
+    const allowedSetups = new Set(
+      allNotReached === statuses && cache === "success"
+        ? ["rootfs-bootstrap", "operation-establishment", "materializer-dispatch"]
+        : [setup],
+    );
+    for (const setupValue of [
+      "not-reached",
+      "fixed-input",
+      "rootfs-bootstrap",
+      "operation-establishment",
+      "materializer-dispatch",
+      "complete",
+    ]) {
+      const setupCandidate = structuredClone(candidate);
+      setupCandidate.first_build_setup = setupValue;
+      assert.equal(validate(setupCandidate), allowedSetups.has(setupValue), `${cache}/${runtime}/${setupValue}`);
+    }
+  }
+  const statusCheck = { success: "pass", failure: "fail", blocked: "blocked", "not-reached": "unknown" } as const;
+  const allowedRuntime = {
+    success: new Set(["success", "failure", "blocked", "not-reached"]),
+    failure: new Set(["blocked"]),
+    blocked: new Set(["blocked"]),
+    "not-reached": new Set(["not-reached"]),
+  } as const;
+  for (const cache of Object.keys(statusCheck) as Array<keyof typeof statusCheck>) {
+    for (const runtime of Object.keys(statusCheck) as Array<keyof typeof statusCheck>) {
+      const candidate = mutableReport();
+      const statuses =
+        cache !== "success"
+          ? allNotReached
+          : runtime === "not-reached"
+            ? observerEndedAfterFirst
+            : runtime === "blocked"
+              ? firstBuildFailed
+              : allSettled;
+      candidate.stage_evidence = {
+        artifact_cache: { status: cache, elapsed_ms: cache === "success" || cache === "failure" ? 1 : 0 },
+        runtime_assets: { status: runtime, elapsed_ms: runtime === "success" || runtime === "failure" ? 1 : 0 },
+      };
+      candidate.checks.artifact_cache = statusCheck[cache];
+      candidate.checks.runtime_assets = statusCheck[runtime];
+      candidate.first_build_setup =
+        cache === "success"
+          ? statuses === allNotReached
+            ? "rootfs-bootstrap"
+            : "complete"
+          : cache === "failure"
+            ? "fixed-input"
+            : "not-reached";
+      candidate.rootfs = statuses === allSettled ? report.rootfs : null;
+      candidate.rootfs_phases = candidate.rootfs_phases.map((row: PhaseRow, index: number) => {
+        const status = statuses[index];
+        assert.ok(status);
+        return {
+          ...row,
+          status,
+          outcome:
+            status === "success"
+              ? "success"
+              : status === "failure"
+                ? "failed"
+                : status === "blocked"
+                  ? "prerequisite-failed"
+                  : "observer-ended",
+          elapsed_ms: status === "success" || status === "failure" ? 1 : 0,
+          structural_counters: status === "success" || status === "failure" ? row.structural_counters : null,
+        };
+      });
+      candidate.runtime_assets = runtime === "success" ? assetRows : [];
+      assert.equal(validate(candidate), allowedRuntime[cache].has(runtime), `${cache}/${runtime}`);
+    }
+  }
+  const blockedWithAttemptedRootfs = mutableReport();
+  blockedWithAttemptedRootfs.stage_evidence = {
+    artifact_cache: { status: "blocked", elapsed_ms: 0 },
+    runtime_assets: { status: "blocked", elapsed_ms: 0 },
+  };
+  blockedWithAttemptedRootfs.checks.artifact_cache = "blocked";
+  blockedWithAttemptedRootfs.checks.runtime_assets = "blocked";
+  blockedWithAttemptedRootfs.first_build_setup = "not-reached";
+  blockedWithAttemptedRootfs.rootfs = null;
+  assert.equal(validate(blockedWithAttemptedRootfs), false);
+
+  for (const hostile of [
+    { ...structuredClone(report), stage_evidence: { artifact_cache: { status: "success", elapsed_ms: 1 } } },
+    {
+      ...structuredClone(report),
+      stage_evidence: { ...report.stage_evidence, runtime_assets: { status: "blocked", elapsed_ms: 1 } },
+    },
+    { ...structuredClone(report), stage_evidence: { ...report.stage_evidence, unexpected: true } },
+    {
+      ...structuredClone(report),
+      stage_evidence: {
+        artifact_cache: { status: "failure", elapsed_ms: 1 },
+        runtime_assets: { status: "failure", elapsed_ms: 1 },
+      },
+      first_build_setup: "fixed-input",
+    },
+    {
+      ...structuredClone(report),
+      stage_evidence: {
+        artifact_cache: { status: "success", elapsed_ms: 1 },
+        runtime_assets: { status: "blocked", elapsed_ms: 0 },
+      },
+      checks: { ...report.checks, artifact_cache: "fail", runtime_assets: "pass" },
+      first_build_setup: "operation-establishment",
+    },
+    {
+      ...structuredClone(report),
+      stage_evidence: {
+        artifact_cache: { status: "failure", elapsed_ms: 1 },
+        runtime_assets: { status: "blocked", elapsed_ms: 0 },
+      },
+      checks: { ...report.checks, artifact_cache: "fail", runtime_assets: "blocked" },
+      first_build_setup: "complete",
+    },
+    {
+      ...structuredClone(report),
+      stage_evidence: {
+        artifact_cache: { status: "success", elapsed_ms: 1 },
+        runtime_assets: { status: "blocked", elapsed_ms: 0 },
+      },
+      checks: { ...report.checks, artifact_cache: "pass", runtime_assets: "blocked" },
+      first_build_setup: "operation-establishment",
+      runtime_assets: assetRows,
+    },
+  ])
+    assert.equal(validate(hostile), false);
   const fixture = JSON.parse(await readFile(phaseGraphFixturePath, "utf8")) as {
     version: string;
     valid: Array<{ statuses: string[]; rootfs: boolean }>;
@@ -211,17 +467,40 @@ test("candidate output schema enforces metadata-only non-authority", async () =>
   const outcomes = Object.fromEntries(
     Object.entries(allowedOutcomes).map(([status, values]) => [status, [...values][0]]),
   ) as Record<string, string>;
-  const graphReport = (statuses: string[], hasRootfs: boolean) => ({
-    ...report,
-    rootfs: hasRootfs ? report.rootfs : null,
-    rootfs_phases: report.rootfs_phases.map((row, index) => ({
-      ...row,
-      status: statuses[index],
-      outcome: outcomes[statuses[index] ?? ""] ?? "invalid",
-      elapsed_ms: statuses[index] === "success" || statuses[index] === "failure" ? 1 : 0,
-      structural_counters: statuses[index] === "success" || statuses[index] === "failure" ? counters : null,
-    })),
-  });
+  const graphReport = (statuses: string[], hasRootfs: boolean) => {
+    const runtimeStatus = hasRootfs
+      ? "failure"
+      : statuses[0] === "not-reached" || statuses.some((status) => status === "failure" || status === "blocked")
+        ? "blocked"
+        : "not-reached";
+    return {
+      ...report,
+      rootfs: hasRootfs ? report.rootfs : null,
+      stage_evidence: {
+        artifact_cache: { status: "success", elapsed_ms: 1 },
+        runtime_assets: { status: runtimeStatus, elapsed_ms: hasRootfs ? 1 : 0 },
+      },
+      first_build_setup: statuses[0] === "not-reached" ? "rootfs-bootstrap" : "complete",
+      checks: { ...report.checks, artifact_cache: "pass", runtime_assets: statusCheck[runtimeStatus] },
+      rootfs_phases: report.rootfs_phases.map((row, index) => ({
+        ...row,
+        status: statuses[index],
+        outcome: outcomes[statuses[index] ?? ""] ?? "invalid",
+        elapsed_ms: statuses[index] === "success" || statuses[index] === "failure" ? 1 : 0,
+        structural_counters: statuses[index] === "success" || statuses[index] === "failure" ? counters : null,
+      })),
+    };
+  };
+  const resolvedRootfsBlock = graphReport(firstBuildFailed, false);
+  for (const [status, elapsed_ms, check] of [
+    ["not-reached", 0, "unknown"],
+    ["failure", 1, "fail"],
+  ] as const) {
+    const hostile = structuredClone(resolvedRootfsBlock);
+    hostile.stage_evidence.runtime_assets = { status, elapsed_ms };
+    hostile.checks.runtime_assets = check;
+    assert.equal(validate(hostile), false, `unsettled rootfs accepted runtime ${status}`);
+  }
   for (const item of fixture.valid) {
     assert.equal(validate(graphReport(item.statuses, item.rootfs)), true, ajv.errorsText(validate.errors));
     for (const [index, current] of item.statuses.entries()) {
@@ -286,7 +565,7 @@ test("candidate output schema enforces metadata-only non-authority", async () =>
   assert.doesNotMatch(runner, /subprocess\.run\([^)]*PIPE/su);
   assert.match(
     runner,
-    /first_token = secrets\.token_hex\(32\)[\s\S]*second_token = secrets\.token_hex\(32\)[\s\S]*first_token != second_token[\s\S]*first = _candidate_build\(build, approval, control, "first", first_token, phases\)[\s\S]*second = _candidate_build\(build, approval, control, "second", second_token, phases\)/u,
+    /first_token = _rootfs_call\("rootfs-build-token", lambda: secrets\.token_hex\(32\)\)[\s\S]*second_token = _rootfs_call\("rootfs-build-token", lambda: secrets\.token_hex\(32\)\)[\s\S]*first_token != second_token[\s\S]*first = _candidate_build\(build, approval, control, "first", first_token, phases, setup\)[\s\S]*second = _candidate_build\(build, approval, control, "second", second_token, phases\)/u,
   );
   assert.doesNotMatch(runner, /build\._two_build_outputs/u);
   assert.match(runner, /build\._require_equal_builds\(first, second\)/u);
@@ -326,6 +605,11 @@ test("candidate output schema enforces metadata-only non-authority", async () =>
   );
   assert.match(finalResidue, /_held_path_absent/u);
   assert.match(runner, /remaining_ns \/\/ NS_PER_SECOND/u);
+  const assetGeneration = runner.slice(runner.indexOf("def _asset_generation"), runner.indexOf("def _same_identity"));
+  assert.match(assetGeneration, /F_DUPFD_CLOEXEC[\s\S]*\/proc\/self\/fdinfo\/[{]duplicate[}][\s\S]*mnt_id/u);
+  assert.doesNotMatch(assetGeneration, /completion_rootfs_fs|_raw_generation|mount_id=None/u);
+  assert.match(runner, /_asset_generation\(descriptor, deadline_ns\) == held/u);
+  assert.doesNotMatch(runner, /_asset_generation\(descriptor, deadline_ns, held\["mount_id"\]\)/u);
   assert.doesNotMatch(runner, /outer_deadline_ns \/ 1_000_000_000/u);
   assert.match(runner, /OBSERVE_SECONDS = 3300/u);
   assert.match(runner, /ROOTFS_RECOVERY_ATTEMPTS = 1/u);
