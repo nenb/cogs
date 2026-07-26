@@ -24,6 +24,7 @@ LEDGER_NAME = fs._name(b".cogs-stage2-rootfs-ledger-v1")
 OPERATION_SENTINEL_NAME = fs._name(b".cogs-stage2-rootfs-operation-v1")
 OPERATION_SENTINEL = b"cogs-stage2-rootfs-operation-v1\n"
 ROOT_NAME = fs._name(b"rootfs")
+CANDIDATE_TAR_NAME = fs._name(b".cogs-rootfs-candidate-v1.tar")
 RECOVER_SECONDS = 600
 FIXED_MODULE = Path("/var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote/completion_rootfs_builder.py")
 SOURCE_INDEX = 4
@@ -136,6 +137,7 @@ class CleanupSession:
     groups: dict
     operation_generation: fs.HostGeneration | None
     state_parent: ledger.LedgerParent
+    candidate_tar: tuple[int, str] | None = None
     disposition: str = "active"
 
 
@@ -1075,6 +1077,13 @@ def _append_capabilities():
         _fail(history.legal.settled == written.settled)
         return ActiveLedger(node, history, writer)
 
+    def _append_candidate(active, record_type, body, control):
+        _fail(record_type in ledger.CANDIDATE_RECORD_TYPES)
+        result = _append(active, record_type, body, control)
+        terminal = _durable_terminal(result, control)
+        _fail(terminal.record_type == record_type and terminal.body_value() == body)
+        return result
+
     def _mark_leased(owned, manifest_sha256, manifest_size, ustar_sha256, ustar_size, entry_count, control):
         _fail(type(owned) is OwnedOperation and type(control) is fs.OperationControl)
         _fail(all(type(value) is int and value > 0 for value in (manifest_size, ustar_size, entry_count)))
@@ -1120,10 +1129,10 @@ def _append_capabilities():
         _fail(reconciled.status == "leased" and reconciled.lease_seen and not reconciled.cleanup_allowed)
         return OwnedOperation(owned.locked, active, owned.operation, owned.root, owned.operation_name)
 
-    return _append, _mark_leased
+    return _append, _append_candidate, _mark_leased
 
 
-_append, _mark_leased = _append_capabilities()
+_append, _append_candidate, _mark_leased = _append_capabilities()
 del _append_capabilities
 
 
@@ -1243,6 +1252,9 @@ def _require_cleanup_model(state, observations, history, groups):
         "entry-absent": {"create-intent", "hardlink-create-intent"},
         "create-settleable": {"create-observed"}, "metadata-settleable": {"metadata-observed"},
         "hardlink-create-settleable": {"hardlink-create-observed"},
+        "candidate-tar-abortable": {"candidate-tar-intent"},
+        "candidate-tar-observeable": {"candidate-tar-intent"},
+        "candidate-tar-settleable": {"candidate-tar-observed"},
         "active": {"active"}, "release-authorized": {"release-authorized"},
         "remove-retry": {"remove-intent"}, "remove-absence-settleable": {"remove-intent"},
         "hardlink-remove-absence-settleable": {"remove-intent"}, "remove-settleable": {"remove-observed"},
@@ -1250,7 +1262,7 @@ def _require_cleanup_model(state, observations, history, groups):
         "retirable": {"aborted", "operation-absent"}, "retired": {"retired"},
     }
     _fail(legal.phase in phases[state.status])
-    entry_phases = {"create-intent", "create-observed", "metadata-intent", "metadata-observed", "hardlink-create-intent", "hardlink-create-observed", "remove-intent", "remove-observed"}
+    entry_phases = {"create-intent", "create-observed", "metadata-intent", "metadata-observed", "hardlink-create-intent", "hardlink-create-observed", "remove-intent", "remove-observed", "candidate-tar-intent", "candidate-tar-observed"}
     if legal.phase in entry_phases:
         _fail(legal.pending is history.terminal)
     else:
@@ -1265,15 +1277,17 @@ def _require_cleanup_model(state, observations, history, groups):
         _fail(parent.names == names)
         if path:
             _fail(entries.get(path) == parent.generation and parent.generation.key.kind == "directory")
-    stable = {"active", "release-authorized", "entry-absent", "remove-retry", "operation-remove-retry"}
+    stable = {"active", "release-authorized", "entry-absent", "remove-retry", "operation-remove-retry", "candidate-tar-abortable"}
     if state.status in stable:
         _fail(entries == dict(state.owned))
     body = history.terminal.body_value()
     affected = set()
-    if legal.phase.startswith(("create-", "metadata-", "hardlink-create-", "remove-")):
+    if legal.phase.startswith(("create-", "metadata-", "hardlink-create-", "remove-", "candidate-tar-")):
         path = body.get("path", body.get("alias"))
         if legal.phase == "metadata-observed":
             affected.add(path)
+        elif legal.phase.startswith("candidate-tar-"):
+            affected.add("")
         else:
             affected.add(path.rpartition("/")[0])
             if legal.phase == "create-observed" and body["kind"] == "directory":
@@ -1291,6 +1305,30 @@ def _require_cleanup_model(state, observations, history, groups):
             _fail(alias == pending_removed and alias not in entries or entries.get(alias) == entries[target])
 
 
+def _candidate_tar_observation(operation, entries, legal, control):
+    if legal.phase not in {"candidate-tar-intent", "candidate-tar-observed"}:
+        return None
+    generation = dict(entries).get(CANDIDATE_TAR_NAME.text)
+    if generation is None:
+        return None
+    expected_size = legal.pending.body_value()["size"]
+    _fail(generation.key.kind == "file")
+    node = fs._open_path_node(operation, CANDIDATE_TAR_NAME, "file", control)
+    try:
+        _fail(node.generation == generation)
+        if generation.size != expected_size:
+            value = (generation.size, None)
+        else:
+            raw = fs._read_regular(node, expected_size, control)
+            value = (len(raw), hashlib.sha256(raw).hexdigest())
+        _close(node)
+        return value
+    except BaseException as error:
+        if node.identity_fd.disposition == "open":
+            _close(node, error)
+        raise
+
+
 def _open_cleanup_session(active, locked, operation, origin, control):
     stable = _stable_active(active, locked.state, control)
     state_chain = _state_chain(locked, control)
@@ -1301,7 +1339,13 @@ def _open_cleanup_session(active, locked, operation, origin, control):
     entries, parents = ((), ()) if operation is None else _walk_entries(operation, control)
     operation_generation = None if operation is None else fs._observe_node(operation.identity_fd, operation.operation_fd, control)
     operations = () if operation is None else ((_operation_name(_token(stable)).text, operation_generation),)
-    observations = ledger.ReconcileObservations(_parent(locked.state, control), operations, entries, _current_ledger(stable, control), parents)
+    candidate_tar = None if operation is None else _candidate_tar_observation(
+        operation, entries, stable.records.legal, control,
+    )
+    observations = ledger.ReconcileObservations(
+        _parent(locked.state, control), operations, entries, _current_ledger(stable, control),
+        parents, candidate_tar,
+    )
     if operation_chain is not None:
         fs._revalidate_chain(operation_chain, control)
     fs._revalidate_chain(state_chain, control)
@@ -1309,7 +1353,10 @@ def _open_cleanup_session(active, locked, operation, origin, control):
     _fail(state.cleanup_allowed and state.cleanup_origin == origin)
     groups = {target: list(aliases) for target, aliases in _settled_hardlink_groups(_records(stable))}
     _require_cleanup_model(state, observations, stable.records, groups)
-    session = CleanupSession(stable, locked, operation, origin, state.status, dict(entries), dict(parents), groups, operation_generation, observations.state_parent)
+    session = CleanupSession(
+        stable, locked, operation, origin, state.status, dict(entries), dict(parents), groups,
+        operation_generation, observations.state_parent, candidate_tar,
+    )
     named_boundary = {"genesis-settleable", "genesis-abortable", "operation-abortable", "operation-create-settleable", "retirable", "retired"}
     boundary_phase = stable.records.legal.phase if state.status in named_boundary else None
     _session_binding(session, control, boundary_phase)
@@ -1321,6 +1368,9 @@ def _session_append(session, record_type, body, control):
         "genesis-settled": ("genesis", "ready"), "genesis-abort": ("ready", "aborted"),
         "operation-abort": ("operation-intent", "aborted"),
         "operation-create-settled": ("operation-observed", "active"),
+        "candidate-tar-abort": ("candidate-tar-intent", "active"),
+        "candidate-tar-observed": ("candidate-tar-intent", "candidate-tar-observed"),
+        "candidate-tar-settled": ("candidate-tar-observed", "active"),
         "operation-absent": ("operation-remove", "operation-absent"),
         "retired": (("aborted", "operation-absent"), "retired"),
     }
@@ -1506,6 +1556,44 @@ def _finish_hardlink_remove(session, alias_path, target_path, target_generation,
         _fail(session.groups[target_path].pop() == alias_path)
         _session_require(session)
         control.check()
+
+@_poisoned
+def _resume_candidate_tar(session, control):
+    _session_binding(session, control)
+    terminal = _terminal_record(session.active)
+    _session_require(session, terminal.record_type)
+    _fail(terminal.record_type in {"candidate-tar-intent", "candidate-tar-observed"})
+    if session.status == "candidate-tar-abortable":
+        _fail(terminal.record_type == "candidate-tar-intent")
+        _session_append(session, "candidate-tar-abort", terminal.body_value(), control)
+        return _cleanup_active(session, control)
+    intent = terminal.body_value()
+    if terminal.record_type == "candidate-tar-observed":
+        intent = session.active.records.previous.terminal.body_value()
+    linked = session.owned[CANDIDATE_TAR_NAME.text]
+    _fail(session.candidate_tar == (intent["size"], intent["sha256"]))
+    node = fs._open_path_node(session.operation, CANDIDATE_TAR_NAME, "file", control)
+    try:
+        _fail(node.generation == linked)
+        _fsync(node.operation_fd, control)
+        _fsync(session.operation.operation_fd, control)
+        body = {
+            "token": intent["token"], "path": intent["path"],
+            "parent": _p(session.parents[""]), "anonymous": intent["anonymous"],
+            "linked": _g(linked), "size": intent["size"], "sha256": intent["sha256"],
+        }
+        if terminal.record_type == "candidate-tar-intent":
+            _session_append(session, "candidate-tar-observed", body, control)
+        else:
+            _fail(terminal.body_value() == body)
+        _session_append(session, "candidate-tar-settled", body, control)
+        _close(node)
+    except BaseException as error:
+        if node.identity_fd.disposition == "open":
+            _close(node, error)
+        raise
+    return _cleanup_active(session, control)
+
 
 @_poisoned
 def _cleanup_active(session, control):
@@ -1724,6 +1812,8 @@ def _cleanup_owned(owned, active, control):
         raise
     if session.status == "entry-absent":
         _resume_absent_create(session, control)
+    elif session.status in {"candidate-tar-abortable", "candidate-tar-observeable", "candidate-tar-settleable"}:
+        _resume_candidate_tar(session, control)
     elif session.status in {"create-settleable", "metadata-settleable", "hardlink-create-settleable", "remove-settleable"}:
         _resume_observed(session, control)
     else:
@@ -1764,6 +1854,8 @@ def _recover_locked(chain, state, control):
             _cleanup_active(session, control)
         elif status == "entry-absent":
             _resume_absent_create(session, control)
+        elif status in {"candidate-tar-abortable", "candidate-tar-observeable", "candidate-tar-settleable"}:
+            _resume_candidate_tar(session, control)
         elif status in {"create-settleable", "metadata-settleable", "hardlink-create-settleable", "remove-settleable"}:
             _resume_observed(session, control)
         elif status in {"remove-retry", "remove-absence-settleable", "hardlink-remove-absence-settleable"}:

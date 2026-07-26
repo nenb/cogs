@@ -1,8 +1,6 @@
 """Two independent fixed rootfs builds and pinned publication coordination."""
 
 from dataclasses import dataclass, field
-import hashlib
-import os
 import secrets
 import sys
 import time
@@ -11,6 +9,7 @@ sys.dont_write_bytecode = True
 
 import completion_rootfs_builder as builder
 import completion_rootfs_canonical as canonical
+import completion_rootfs_candidate as candidate_tar
 import completion_rootfs_fs as fs
 import completion_rootfs_materializer as materializer
 import completion_rootfs_plan as plan
@@ -19,7 +18,6 @@ import completion_rootfs_publish as publication
 BUILD_SECONDS = 900
 OUTER_SECONDS = 2400
 MANIFEST_NAME = fs._name(b".cogs-rootfs-candidate-manifest-v1.json")
-USTAR_NAME = fs._name(b".cogs-rootfs-candidate-v1.tar")
 _start_phase_structural_counters, _read_phase_structural_counters = fs._phase_structural_counter_provider((
     "first-build-work", "first-inline-cleanup", "second-build-work", "second-inline-cleanup",
     "equality", "pin", "post-verification", "settlement",
@@ -76,51 +74,6 @@ def _build_control(outer):
     return fs.OperationControl(deadline_ns, outer.cancelled)
 
 
-def _writable_file(parent, name, control):
-    observed = None
-    operation = None
-    try:
-        observed = fs._open_path_node(parent, name, "file", control)
-        observed.operation_fd.close()
-        flags = os.O_RDWR | fs._O_NOFOLLOW | fs._O_CLOEXEC
-        control.check()
-        operation = fs.CheckedFd(os.open(name.raw, flags, dir_fd=parent.operation_fd.number), "candidate-writer")
-        control.check()
-        generation = fs._observe_node(observed.identity_fd, operation, control)
-        result = fs.HeldNode(observed.identity_fd, operation, generation)
-        observed = operation = None
-        return result
-    except BaseException as error:
-        if operation is not None and operation.disposition == "open":
-            try:
-                operation.close()
-            except BaseException as close_error:
-                error = fs.RootfsFsError(error, close_error)
-        if observed is not None and observed.identity_fd.disposition == "open":
-            try:
-                fs._close_node(observed)
-            except BaseException as close_error:
-                error = fs.RootfsFsError(error, close_error)
-        raise error
-
-
-def _candidate_record(preflight_module, path, size, digest):
-    return preflight_module.MaterialRecord(
-        path,
-        "file",
-        0o600,
-        0,
-        0,
-        plan.SOURCE_DATE_EPOCH,
-        size,
-        None,
-        None,
-        None,
-        digest,
-        -1,
-    )
-
-
 def _cache_values(authority):
     return tuple((item.name, item.identity, item.sha256) for item in authority.cache)
 
@@ -155,37 +108,10 @@ def _build_once_unmasked(approval, token, outer_control, retain=False):
             control,
         )
         fs._close_node(manifest_node)
-        active, empty_tar = builder._create_ledger_entry(
-            active,
-            builder._operation_chain(owned, control),
-            USTAR_NAME.text,
-            USTAR_NAME,
-            "file",
-            b"",
-            control,
-        )
-        fs._close_node(empty_tar)
-        tar_node = _writable_file(owned.operation, USTAR_NAME, control)
-        try:
-            os.lseek(tar_node.operation_fd.number, 0, os.SEEK_SET)
-            metadata = canonical._canonical_metadata(owned.root, authority, tar_node.operation_fd, control)
-            _fail(metadata.manifest == manifest)
-            record = _candidate_record(plan, USTAR_NAME.text, metadata.ustar_size, metadata.ustar_sha256)
-            active, _generation = materializer._metadata(
-                active,
-                tar_node,
-                USTAR_NAME.text,
-                record,
-                owned.operation,
-                control,
-            )
-            ustar = fs._read_regular(tar_node, metadata.ustar_size, control)
-            _fail(hashlib.sha256(ustar).hexdigest() == metadata.ustar_sha256)
-            fs._close_node(tar_node)
-        except BaseException as error:
-            if tar_node.identity_fd.disposition == "open":
-                fs._close_node(tar_node, error)
-            raise
+        candidate = candidate_tar._create_candidate(active, owned, authority, manifest, control)
+        active = candidate.active
+        metadata = candidate
+        ustar = candidate.raw
         cache_after_authority = plan.load_verified_build_inputs()
         cache_after = _cache_values(cache_after_authority)
         _fail(cache_after == cache_before)
