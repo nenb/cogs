@@ -50,6 +50,25 @@ const integration = {
 };
 
 const validSamples: Record<string, unknown> = {
+  "trusted-runtime-closure-v1.json": {
+    version: "cogs.trusted-runtime-closure/v1",
+    closure_sha256: "a".repeat(64),
+    tools: [
+      ["python3-parser", false, null],
+      ["zstd", true, "linux-memfd-exec-seals-v1"],
+      ["gzip", true, "linux-memfd-exec-seals-v1"],
+    ].map(([tool, sealed_executable, seal_profile]) => ({
+      tool,
+      sealed_executable,
+      seal_profile,
+      closure_sha256: "b".repeat(64),
+      mapping_sha256: "c".repeat(64),
+      objects: [
+        { role: "executable", size: 1, sha256: "d".repeat(64), soname: null, needed: [] },
+        { role: "loader", size: 1, sha256: "e".repeat(64), soname: "ld.so", needed: [] },
+      ],
+    })),
+  },
   "egress-case-manifest-v1alpha1.json": {
     version: "cogs.egress-cases/v1alpha1",
     cases: [

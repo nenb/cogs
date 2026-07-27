@@ -1,0 +1,122 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.dev/schemas/trusted-runtime-closure-v1.json",
+  "title": "Cogs trusted runtime closure v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["closure_sha256", "tools", "version"],
+  "properties": {
+    "closure_sha256": { "$ref": "#/$defs/sha256" },
+    "tools": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "prefixItems": [{ "$ref": "#/$defs/pythonTool" }, { "$ref": "#/$defs/zstdTool" }, { "$ref": "#/$defs/gzipTool" }],
+      "items": false
+    },
+    "version": { "const": "cogs.trusted-runtime-closure/v1" }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "soname": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255,
+      "pattern": "^[A-Za-z0-9._+\\-]+$"
+    },
+    "object": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["needed", "role", "sha256", "size", "soname"],
+      "properties": {
+        "needed": {
+          "type": "array",
+          "maxItems": 128,
+          "items": { "$ref": "#/$defs/soname" },
+          "uniqueItems": true
+        },
+        "role": { "enum": ["executable", "loader", "library"] },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "size": { "type": "integer", "minimum": 1, "maximum": 134217728 },
+        "soname": {
+          "oneOf": [{ "$ref": "#/$defs/soname" }, { "type": "null" }]
+        }
+      }
+    },
+    "objects": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 128,
+      "items": { "$ref": "#/$defs/object" },
+      "allOf": [
+        {
+          "contains": { "type": "object", "properties": { "role": { "const": "executable" } } },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": { "type": "object", "properties": { "role": { "const": "loader" } } },
+          "minContains": 1,
+          "maxContains": 1
+        }
+      ]
+    },
+    "tool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["closure_sha256", "mapping_sha256", "objects", "seal_profile", "sealed_executable", "tool"],
+      "properties": {
+        "closure_sha256": { "$ref": "#/$defs/sha256" },
+        "mapping_sha256": { "$ref": "#/$defs/sha256" },
+        "objects": { "$ref": "#/$defs/objects" },
+        "seal_profile": {
+          "oneOf": [{ "const": "linux-memfd-exec-seals-v1" }, { "type": "null" }]
+        },
+        "sealed_executable": { "type": "boolean" },
+        "tool": { "enum": ["python3-parser", "zstd", "gzip"] }
+      }
+    },
+    "pythonTool": {
+      "allOf": [
+        { "$ref": "#/$defs/tool" },
+        {
+          "type": "object",
+          "properties": {
+            "seal_profile": { "type": "null" },
+            "sealed_executable": { "const": false },
+            "tool": { "const": "python3-parser" }
+          }
+        }
+      ]
+    },
+    "zstdTool": {
+      "allOf": [
+        { "$ref": "#/$defs/tool" },
+        {
+          "type": "object",
+          "properties": {
+            "seal_profile": { "const": "linux-memfd-exec-seals-v1" },
+            "sealed_executable": { "const": true },
+            "tool": { "const": "zstd" }
+          }
+        }
+      ]
+    },
+    "gzipTool": {
+      "allOf": [
+        { "$ref": "#/$defs/tool" },
+        {
+          "type": "object",
+          "properties": {
+            "seal_profile": { "const": "linux-memfd-exec-seals-v1" },
+            "sealed_executable": { "const": true },
+            "tool": { "const": "gzip" }
+          }
+        }
+      ]
+    }
+  }
+}
