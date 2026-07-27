@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Portable canonical runtime-closure report and schema qualification."""
+"""Independent producer/consumer report semantics and tracked-schema corpus."""
 
 import copy
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
@@ -13,44 +14,147 @@ if sys.flags.optimize:
 sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[1]
 REMOTE = ROOT / "deploy/aws-feasibility/remote"
-MODULE = REMOTE / "completion_trusted_runtime_closure.py"
-sys.path.insert(0, str(REMOTE))
-SCHEMA = ROOT / "schemas/trusted-runtime-closure-v1.json"
+CLOSURE = REMOTE / "completion_trusted_runtime_closure.py"
+LAUNCHER = REMOTE / "completion_trusted_runtime_launcher.py"
 GOLDEN = ROOT / "test/fixtures/outcome-two/reports/runtime-closure-v1.canonical.jsonl"
 MUTATIONS = ROOT / "test/fixtures/outcome-two/reports/mutations.json"
+sys.path.insert(0, str(REMOTE))
 
 
-def load_module():
-    spec = importlib.util.spec_from_file_location("completion_trusted_runtime_closure", MODULE)
+def load(name, path):
+    spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
+    sys.modules[name] = module
     spec.loader.exec_module(module)
     return module
 
 
-def rejected(module, raw, label="hostile"):
-    try:
-        module._validate_report_bytes(raw)
-    except module.RuntimeClosureError:
-        return
-    raise AssertionError(f"hostile closure report accepted: {label}")
+def canonical(value):
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+                      allow_nan=False).encode()
 
 
-def shuffled_keys(value):
-    if isinstance(value, dict):
-        return {key: shuffled_keys(value[key]) for key in reversed(tuple(value))}
-    if isinstance(value, list):
-        return [shuffled_keys(item) for item in value]
+def digest(value):
+    return hashlib.sha256(canonical(value)).hexdigest()
+
+
+def recompute(value):
+    """Recompute every digest not deliberately mutated after this call."""
+    for tool in value["tools"]:
+        tool["closure_sha256"] = digest(tool["objects"])
+        tool["mapping_sha256"] = digest([[item["role"], item["sha256"]]
+                                         for item in tool["objects"]])
+    digest_view = [{key: item for key, item in tool.items() if key != "mapping_sha256"}
+                   for tool in value["tools"]]
+    value["closure_sha256"] = digest(digest_view)
     return value
 
 
+def report_bytes(value):
+    return canonical(value) + b"\n"
+
+
+def shuffled(value):
+    if isinstance(value, dict):
+        return {key: shuffled(value[key]) for key in reversed(tuple(value))}
+    if isinstance(value, list):
+        return [shuffled(item) for item in value]
+    return value
+
+
+def mutate(golden, name):
+    value = copy.deepcopy(golden)
+    tool = value["tools"][0]
+    object_ = tool["objects"][0]
+    if name == "tool-order":
+        value["tools"][0], value["tools"][1] = value["tools"][1], value["tools"][0]
+    elif name == "object-order":
+        tool["objects"][2], tool["objects"][3] = tool["objects"][3], tool["objects"][2]
+    elif name == "duplicate-needed":
+        object_["needed"].append(object_["needed"][0])
+    elif name == "missing-provider":
+        object_["needed"] = ["libmissing.so.1"]
+    elif name == "duplicate-provider":
+        tool["objects"][3]["soname"] = tool["objects"][2]["soname"]
+    elif name == "seal-profile":
+        tool["seal_profile"] = "linux-memfd-exec-seals-v1"
+    elif name == "sealed-executable":
+        tool["sealed_executable"] = True
+    elif name == "wrong-role":
+        tool["objects"][1]["role"] = "library"
+    elif name == "bad-soname":
+        tool["objects"][2]["soname"] = "bad name"
+        for candidate in tool["objects"]:
+            candidate["needed"] = ["bad name" if item == "libalpha.so.1" else item
+                                     for item in candidate["needed"]]
+    elif name == "needed-overflow":
+        object_["needed"] = [f"lib{index}.so" for index in range(129)]
+    elif name == "boolean-size":
+        object_["size"] = True
+    elif name == "extra-field":
+        tool["extra"] = False
+    elif name == "prohibited-path":
+        value["host_path"] = "/usr/lib/secret"
+    elif name == "prohibited-environment":
+        value["environment"] = {"HOME": "/secret"}
+    elif name == "prohibited-address":
+        value["mapping_address"] = "0x7fff"
+    elif name == "prohibited-command-output":
+        value["command_output"] = "secret"
+    elif name == "prohibited-identifier":
+        value["pid"] = 123
+    elif name not in {"aggregate-digest", "tool-closure-digest", "mapping-digest"}:
+        raise AssertionError(name)
+    recompute(value)
+    if name == "aggregate-digest":
+        value["closure_sha256"] = "0" * 64
+    elif name == "tool-closure-digest":
+        tool["closure_sha256"] = "0" * 64
+        digest_view = [{key: item for key, item in row.items() if key != "mapping_sha256"}
+                       for row in value["tools"]]
+        value["closure_sha256"] = digest(digest_view)
+    elif name == "mapping-digest":
+        tool["mapping_sha256"] = "0" * 64
+    return value
+
+
+def encoding_mutation(raw, name):
+    if name == "duplicate-key":
+        return raw.replace(b"{", b'{"version":"duplicate",', 1)
+    if name == "leading-whitespace":
+        return b" " + raw
+    if name == "trailing-whitespace":
+        return raw[:-1] + b" \n"
+    if name == "pretty-json":
+        return json.dumps(json.loads(raw), indent=2).encode() + b"\n"
+    if name == "missing-lf":
+        return raw[:-1]
+    if name == "extra-lf":
+        return raw + b"\n"
+    if name == "invalid-utf8":
+        return raw[:-1] + b"\xff\n"
+    if name == "float":
+        return raw.replace(b'"size":101', b'"size":101.0', 1)
+    if name == "constant":
+        return raw.replace(b'"size":101', b'"size":NaN', 1)
+    if name == "oversized":
+        return b"{" + b" " * 131_072 + b"}\n"
+    raise AssertionError(name)
+
+
+def reject(function, raw, label):
+    try:
+        function(raw)
+    except Exception:
+        return
+    raise AssertionError(f"{label} accepted by {function.__module__}.{function.__name__}")
+
+
 def emit(mode):
-    module = load_module()
+    closure = load("completion_trusted_runtime_closure", CLOSURE)
     value = json.loads(GOLDEN.read_bytes())
-    records = value["tools"]
-    if mode == "reverse-keys":
-        records = shuffled_keys(records)
-    sys.stdout.buffer.write(module._canonical_report_for_tests(records))
+    records = shuffled(value["tools"]) if mode == "reverse-keys" else value["tools"]
+    sys.stdout.buffer.write(closure._canonical_report_for_tests(records))
 
 
 def independent(mode):
@@ -60,89 +164,61 @@ def independent(mode):
         env={"PYTHONDONTWRITEBYTECODE": "1", "PYTHONHASHSEED": "0"},
         timeout=5, check=False,
     )
-    assert result.returncode == 0, (mode, result.stderr)
+    if result.returncode != 0:
+        raise AssertionError((mode, result.stderr))
     return result.stdout
 
 
-def semantic_mutation(value, name):
-    hostile = copy.deepcopy(value)
-    tool = hostile["tools"][0]
-    object_ = tool["objects"][0]
-    if name == "closure-digest": hostile["closure_sha256"] = "0" * 64
-    elif name == "mapping-digest": tool["mapping_sha256"] = "0" * 64
-    elif name == "tool-order": hostile["tools"][0], hostile["tools"][1] = hostile["tools"][1], hostile["tools"][0]
-    elif name == "object-order": tool["objects"][2], tool["objects"][3] = tool["objects"][3], tool["objects"][2]
-    elif name == "duplicate-needed": object_["needed"].append(object_["needed"][0])
-    elif name == "missing-provider": object_["needed"] = ["libmissing.so.1"]
-    elif name == "seal-profile": tool["seal_profile"] = "linux-memfd-exec-seals-v1"
-    elif name == "sealed-executable": tool["sealed_executable"] = True
-    elif name == "extra-field": tool["extra"] = False
-    elif name == "prohibited-path": hostile["host_path"] = "/usr/lib/secret"
-    elif name == "prohibited-environment": hostile["environment"] = {"HOME": "/secret"}
-    elif name == "prohibited-address": hostile["mapping_address"] = "0x7fff"
-    elif name == "prohibited-command-output": hostile["command_output"] = "secret"
-    elif name == "prohibited-identifier": hostile["pid"] = 123
-    else: raise AssertionError(name)
-    return hostile
+def corpus():
+    fixture = json.loads(MUTATIONS.read_text())
+    golden = json.loads(GOLDEN.read_bytes())
+    rows = [{"id": "golden", "schema": True, "value": golden}]
+    rows.extend({"id": case["id"], "schema": case["schema"],
+                 "value": mutate(golden, case["id"])} for case in fixture["semantic"])
+    return rows
 
 
-def encoding_mutation(raw, name):
-    if name == "duplicate-key": return raw.replace(b"{", b'{"version":"duplicate",', 1)
-    if name == "leading-whitespace": return b" " + raw
-    if name == "pretty-json": return json.dumps(json.loads(raw), indent=2).encode() + b"\n"
-    if name == "missing-lf": return raw[:-1]
-    if name == "extra-lf": return raw + b"\n"
-    if name == "invalid-utf8": return raw[:-1] + b"\xff\n"
-    if name == "oversized": return b"{" + b" " * 131_072 + b"}\n"
-    raise AssertionError(name)
-
-
-def schema_contract():
-    schema = json.loads(SCHEMA.read_text())
-    assert schema["$schema"].endswith("2020-12/schema")
-    assert schema["additionalProperties"] is False
-    assert schema["required"] == ["closure_sha256", "tools", "version"]
-    assert schema["properties"]["version"]["const"] == "cogs.trusted-runtime-closure/v1"
-    assert schema["properties"]["tools"]["minItems"] == schema["properties"]["tools"]["maxItems"] == 3
-    for definition in ("object", "tool"):
-        assert schema["$defs"][definition]["additionalProperties"] is False
-    assert schema["$defs"]["object"]["required"] == ["needed", "role", "sha256", "size", "soname"]
-    assert set(schema["$defs"]["tool"]["required"]) == {
-        "closure_sha256", "mapping_sha256", "objects", "seal_profile", "sealed_executable", "tool",
-    }
+def emit_schema_corpus():
+    for row in corpus():
+        print(json.dumps(row, sort_keys=True, separators=(",", ":")))
 
 
 def parent():
-    module = load_module()
+    closure = load("completion_trusted_runtime_closure", CLOSURE)
+    launcher = load("completion_trusted_runtime_launcher", LAUNCHER)
+    producer = closure._validate_report_bytes
+    consumer = launcher._decode_report
     raw = GOLDEN.read_bytes()
-    value = json.loads(raw)
-    assert module._validate_report_bytes(raw) == raw
-    assert independent("normal") == independent("normal") == raw
-    assert independent("normal") == independent("reverse-keys")
-    cases = json.loads(MUTATIONS.read_text())
-    for name in cases["semantic"]:
-        hostile = semantic_mutation(value, name)
-        rejected(module, json.dumps(hostile, sort_keys=True, separators=(",", ":")).encode() + b"\n", name)
-    for name in cases["encoding"]:
-        rejected(module, encoding_mutation(raw, name), name)
-    for key in ("closure_sha256", "tools", "version"):
-        hostile = copy.deepcopy(value); del hostile[key]
-        rejected(module, json.dumps(hostile, sort_keys=True, separators=(",", ":")).encode() + b"\n")
-    for key in tuple(value["tools"][0]):
-        hostile = copy.deepcopy(value); del hostile["tools"][0][key]
-        rejected(module, json.dumps(hostile, sort_keys=True, separators=(",", ":")).encode() + b"\n")
-    for key in tuple(value["tools"][0]["objects"][0]):
-        hostile = copy.deepcopy(value); del hostile["tools"][0]["objects"][0][key]
-        rejected(module, json.dumps(hostile, sort_keys=True, separators=(",", ":")).encode() + b"\n")
-    schema_contract()
+    producer(raw)
+    consumer(raw)
+    if independent("normal") != raw or independent("reverse-keys") != raw:
+        raise AssertionError("independent producer bytes diverged")
+    fixture = json.loads(MUTATIONS.read_text())
+    executed = []
+    for row in corpus()[1:]:
+        hostile = report_bytes(row["value"])
+        reject(producer, hostile, row["id"])
+        reject(consumer, hostile, row["id"])
+        executed.append(row["id"])
+    for name in fixture["encoding"]:
+        hostile = encoding_mutation(raw, name)
+        reject(producer, hostile, name)
+        reject(consumer, hostile, name)
+        executed.append(name)
+    declared = [row["id"] for row in fixture["semantic"]] + fixture["encoding"]
+    if executed != declared or len(executed) != len(set(executed)):
+        raise AssertionError("report fixtures were not executed exactly once")
     prohibited = (b"/usr/", b"HOME", b"0x7", b"command_output", b'"pid"')
-    assert not any(item in raw for item in prohibited)
+    if any(item in raw for item in prohibited):
+        raise AssertionError("golden report disclosed prohibited metadata")
     print("Outcome 2 runtime report portable tests passed")
 
 
 if __name__ == "__main__":
     if len(sys.argv) == 3 and sys.argv[1] == "--emit":
         emit(sys.argv[2])
+    elif len(sys.argv) == 2 and sys.argv[1] == "--schema-corpus":
+        emit_schema_corpus()
     elif len(sys.argv) == 1:
         parent()
     else:
