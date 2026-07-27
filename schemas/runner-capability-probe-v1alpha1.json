@@ -9,6 +9,7 @@
     "authority",
     "cleanup",
     "descriptors",
+    "envelope",
     "kernel",
     "kvm",
     "namespaces",
@@ -89,6 +90,38 @@
           }
         },
         "inherited_baseline_restored": { "type": "boolean" }
+      }
+    },
+    "envelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "action",
+        "base_sha",
+        "event",
+        "event_merge_sha",
+        "github_sha",
+        "github_workflow_sha",
+        "job",
+        "pull_request_number",
+        "repository",
+        "run_attempt",
+        "run_id",
+        "workflow"
+      ],
+      "properties": {
+        "action": { "const": "labeled" },
+        "base_sha": { "$ref": "#/$defs/sha1" },
+        "event": { "const": "pull_request" },
+        "event_merge_sha": { "$ref": "#/$defs/sha1" },
+        "github_sha": { "$ref": "#/$defs/sha1" },
+        "github_workflow_sha": { "$ref": "#/$defs/sha1" },
+        "job": { "const": "runner-capability-probe" },
+        "pull_request_number": { "type": "integer", "minimum": 1, "maximum": 2147483647 },
+        "repository": { "const": "nenb/cogs" },
+        "run_attempt": { "type": "integer", "minimum": 1, "maximum": 255 },
+        "run_id": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$", "maxLength": 20 },
+        "workflow": { "const": ".github/workflows/outcome-two-runner-capability.yml" }
       }
     },
     "kernel": {
@@ -268,13 +301,19 @@
     "source": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["head_sha", "repository", "run_attempt", "run_id", "workflow_sha256"],
+      "required": [
+        "checkout_sha",
+        "driver_sha256",
+        "pr_head_sha",
+        "schema_sha256",
+        "source_head_workflow_blob_sha256"
+      ],
       "properties": {
-        "head_sha": { "$ref": "#/$defs/sha1" },
-        "repository": { "const": "nenb/cogs" },
-        "run_attempt": { "type": "integer", "minimum": 1, "maximum": 255 },
-        "run_id": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$", "maxLength": 20 },
-        "workflow_sha256": { "$ref": "#/$defs/sha256" }
+        "checkout_sha": { "$ref": "#/$defs/sha1" },
+        "driver_sha256": { "$ref": "#/$defs/sha256" },
+        "pr_head_sha": { "$ref": "#/$defs/sha1" },
+        "schema_sha256": { "$ref": "#/$defs/sha256" },
+        "source_head_workflow_blob_sha256": { "$ref": "#/$defs/sha256" }
       }
     },
     "sudo": {
@@ -307,18 +346,7 @@
         "executable": {
           "allOf": [
             { "$ref": "#/$defs/toolIdentity" },
-            {
-              "type": "object",
-              "properties": {
-                "path": { "const": "/usr/bin/sudo" },
-                "version_line": {
-                  "oneOf": [
-                    { "type": "null" },
-                    { "type": "string", "pattern": "^Sudo version [0-9][A-Za-z0-9.+:~_-]{0,95}$" }
-                  ]
-                }
-              }
-            }
+            { "properties": { "path": { "const": "/usr/bin/sudo" } } }
           ]
         },
         "noninteractive": { "$ref": "#/$defs/probeStatus" }
@@ -341,72 +369,25 @@
         "gzip": {
           "allOf": [
             { "$ref": "#/$defs/toolIdentity" },
-            {
-              "type": "object",
-              "properties": {
-                "path": { "const": "/usr/bin/gzip" },
-                "version_line": {
-                  "oneOf": [{ "type": "null" }, { "type": "string", "pattern": "^gzip [0-9][A-Za-z0-9.+:~_-]{0,95}$" }]
-                }
-              }
-            }
+            { "properties": { "path": { "const": "/usr/bin/gzip" } } }
           ]
         },
         "python3": {
           "allOf": [
             { "$ref": "#/$defs/toolIdentity" },
-            {
-              "type": "object",
-              "properties": {
-                "path": { "const": "/usr/bin/python3" },
-                "version_line": {
-                  "oneOf": [
-                    { "type": "null" },
-                    { "type": "string", "pattern": "^Python 3\\.[0-9]+\\.[0-9]+[A-Za-z0-9.+:~_-]{0,64}$" }
-                  ]
-                }
-              }
-            }
+            { "properties": { "path": { "const": "/usr/bin/python3" } } }
           ]
         },
         "unshare": {
           "allOf": [
             { "$ref": "#/$defs/toolIdentity" },
-            {
-              "type": "object",
-              "properties": {
-                "path": { "const": "/usr/bin/unshare" },
-                "version_line": {
-                  "oneOf": [
-                    { "type": "null" },
-                    {
-                      "type": "string",
-                      "pattern": "^unshare from util-linux [0-9][A-Za-z0-9.+:~_-]{0,95}$"
-                    }
-                  ]
-                }
-              }
-            }
+            { "properties": { "path": { "const": "/usr/bin/unshare" } } }
           ]
         },
         "zstd": {
           "allOf": [
             { "$ref": "#/$defs/toolIdentity" },
-            {
-              "type": "object",
-              "properties": {
-                "path": { "const": "/usr/bin/zstd" },
-                "version_line": {
-                  "oneOf": [
-                    { "type": "null" },
-                    {
-                      "type": "string",
-                      "pattern": "^\\*\\*\\* Zstandard CLI \\([A-Za-z0-9_-]{1,32}\\) v[0-9]+\\.[0-9]+\\.[0-9]+, by Yann Collet \\*\\*\\*$"
-                    }
-                  ]
-                }
-              }
-            }
+            { "properties": { "path": { "const": "/usr/bin/zstd" } } }
           ]
         }
       }
@@ -479,10 +460,6 @@
       "type": "string",
       "pattern": "^[\\x20-\\x7E]{1,128}$"
     },
-    "printableAscii160": {
-      "type": "string",
-      "pattern": "^[\\x20-\\x7E]{1,160}$"
-    },
     "probeStatus": {
       "type": "object",
       "additionalProperties": false,
@@ -495,11 +472,9 @@
       },
       "oneOf": [
         {
-          "type": "object",
           "properties": { "errno": { "type": "null" }, "state": { "enum": ["ok", "blocked", "mismatch"] } }
         },
         {
-          "type": "object",
           "properties": {
             "errno": {
               "oneOf": [{ "type": "null" }, { "enum": [38, 95] }]
@@ -508,11 +483,9 @@
           }
         },
         {
-          "type": "object",
           "properties": { "errno": { "enum": [1, 13] }, "state": { "const": "denied" } }
         },
         {
-          "type": "object",
           "properties": {
             "errno": {
               "type": "integer",
@@ -574,9 +547,7 @@
         "regular_file",
         "root_owned",
         "sha256",
-        "size",
-        "version_line",
-        "version_output_sha256"
+        "size"
       ],
       "properties": {
         "mode": {
@@ -592,12 +563,6 @@
         },
         "size": {
           "oneOf": [{ "type": "null" }, { "type": "integer", "minimum": 1, "maximum": 134217728 }]
-        },
-        "version_line": {
-          "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/printableAscii160" }]
-        },
-        "version_output_sha256": {
-          "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/sha256" }]
         }
       }
     },
