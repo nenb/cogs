@@ -149,7 +149,7 @@ test("runtime-discovery workflow has the exact PR 230 one-shot guard and cleanup
   const nativeJob = ci.slice(ci.indexOf("  native-runtime-preflight:"));
   assert.match(
     nativeJob,
-    /mount -t tmpfs[\s\S]*mount -t proc[\s\S]*exec \/usr\/bin\/unshare --user --map-user=0 --map-group=0 --mount --mount-proc="\$root\/proc"/u,
+    /mount -t tmpfs[\s\S]*mount -t proc[\s\S]*exec \/usr\/bin\/unshare --user --map-user=0 --map-group=0 --mount --pid --fork --mount-proc="\$root\/proc"/u,
   );
   const sandbox = nativeJob.slice(nativeJob.indexOf("SANDBOX'"), nativeJob.indexOf("          SANDBOX"));
   const rootLauncherStart = nativeJob.indexOf("descriptor_launcher = r'''");
@@ -248,7 +248,7 @@ test("runtime-discovery workflow has the exact PR 230 one-shot guard and cleanup
   assert.match(sandbox, /"\$checkout_gid" before\n[\s\S]*"\$root\/src" bind/u);
   assert.match(
     sandbox,
-    / {10}VERIFY\n {10}exec 3>&-\n {10}\/usr\/bin\/python3 -I -c "\$descriptor_observer" "\$checkout_dev" "\$checkout_ino" "\$checkout_uid" "\$checkout_gid" after[\s\S]*final identity map[\s\S]*final proc before[\s\S]*libc\.mount\(None,os\.fsencode\(target\),None,47,None\)[\s\S]*final proc after[\s\S]*exec \/usr\/bin\/unshare --user --map-user=0 --map-group=0 --mount --mount-proc="\$root\/proc"/u,
+    / {10}VERIFY\n {10}exec 3>&-\n {10}\/usr\/bin\/python3 -I -c "\$descriptor_observer" "\$checkout_dev" "\$checkout_ino" "\$checkout_uid" "\$checkout_gid" after[\s\S]*final identity map[\s\S]*final proc before[\s\S]*libc\.mount\(None,os\.fsencode\(target\),None,47,None\)[\s\S]*final proc after[\s\S]*exec \/usr\/bin\/unshare --user --map-user=0 --map-group=0 --mount --pid --fork --mount-proc="\$root\/proc"/u,
   );
   assert.match(nativeJob, /classes = \(\(b"checkout identity"[\s\S]*\(b"Traceback","python"\)\)/u);
   assert.doesNotMatch(nativeJob, /diagnostic\.decode|print\(diagnostic|os\.write\([^\n]*diagnostic/u);

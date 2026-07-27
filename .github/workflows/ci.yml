@@ -543,7 +543,7 @@ jobs:
           IFS= read -r parent_proc_id < <(/usr/bin/findmnt --noheadings --raw --output ID --target "$root/proc")
           IFS= read -r -d '' final_launcher <<'FINAL' || test "$?" = 1
           import ctypes, os, sys; target, root, old_id, test_path, seccomp = sys.argv[1:]
-          if any(open("/proc/self/"+name, encoding="ascii").read().split() != ["0","0","1"] for name in ("uid_map","gid_map")): raise RuntimeError("final identity map")
+          if any(open("/proc/self/"+name, encoding="ascii").read().split() != ["0","0","1"] for name in ("uid_map","gid_map")) or dict(line.split(":",1) for line in open("/proc/self/status", encoding="ascii") if ":" in line)["NSpid"].split()[-1] != "1": raise RuntimeError("final identity map")
           def mount():
               rows = [raw.rstrip("\n").split() for raw in open("/proc/self/mountinfo", encoding="ascii") if raw.rstrip("\n").split()[4] == target]
               if len(rows) != 1 or "-" not in rows[0]: raise RuntimeError("final proc count")
@@ -556,7 +556,7 @@ jobs:
           if after[:4] != before[:4] or after[4:] != (frozenset(("ro","nosuid","nodev","noexec","relatime")),(),"proc","proc",frozenset(("ro",))): raise RuntimeError("final proc after")
           os.execve("/usr/sbin/chroot",("/usr/sbin/chroot",root,"/usr/bin/setpriv","--securebits","+noroot,+noroot_locked","--bounding-set=-all","--inh-caps=-all","--ambient-caps=-all","--reuid=0","--regid=0","--keep-groups","--no-new-privs","/usr/bin/timeout","--signal=KILL","240","/usr/bin/python3","-I","-B","-c",seccomp),{"COGS_NATIVE_TEST_PATH":test_path})
           FINAL
-          exec /usr/bin/unshare --user --map-user=0 --map-group=0 --mount --mount-proc="$root/proc" /usr/bin/python3 -I -c "$final_launcher" "$root/proc" "$root" "$parent_proc_id" "$test_path" "$seccomp_launcher"
+          exec /usr/bin/unshare --user --map-user=0 --map-group=0 --mount --pid --fork --mount-proc="$root/proc" /usr/bin/python3 -I -c "$final_launcher" "$root/proc" "$root" "$parent_proc_id" "$test_path" "$seccomp_launcher"
           SANDBOX
           run_preflight() {
             /usr/bin/python3 -I - "$RUNNER_TEMP" "$checkout" "$checkout_root" "$1" "$2" "$trusted_sandbox_v1" <<'OUTER'
