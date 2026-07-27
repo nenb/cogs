@@ -1,7 +1,7 @@
 # Outcome 2 capability tests — hostile review
 
-**Reviewed head:** `9c86bc5` (`review/cap-tests`)  
-**Accounting predecessor:** `bec0a19b0b984f88ab9c2effc5059f3737915caa`  
+**Reviewed head:** `9c86bc5` (`review/cap-tests`)
+**Accounting predecessor:** `bec0a19b0b984f88ab9c2effc5059f3737915caa`
 **Scope:** accepted ADR 0087, `OUTCOME-TWO-PLAN.md`, `.pi/outcome-two/capability-implementation-gate.md`, and the exact five capability implementation surfaces. Production was not changed.
 
 ## Verdict

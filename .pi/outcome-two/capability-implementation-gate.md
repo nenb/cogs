@@ -1,7 +1,7 @@
 # Outcome 2 capability implementation gate — hostile review
 
-**Status:** implementation and execution are blocked until the contract below is accepted.  
-**Scope:** the proposed metadata-only GitHub-hosted runner capability probe, its tracked driver, closed schema, portable tests, and thin workflow.  
+**Status:** implementation and execution are blocked until the contract below is accepted.
+**Scope:** the proposed metadata-only GitHub-hosted runner capability probe, its tracked driver, closed schema, portable tests, and thin workflow.
 **Not authority:** this review does not authorize implementation, a workflow event, a probe attempt, native qualification, production closure work, artifacts, or any Outcome 2 claim.
 
 ## Authorities reviewed

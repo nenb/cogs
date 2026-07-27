@@ -1,9 +1,9 @@
 # Outcome 2 capability implementation — holistic hostile review
 
-**Reviewed head:** `9c86bc5add169fadd86574fd8468422a46ee3ed0`  
-**Accounting predecessor:** `bec0a19b0b984f88ab9c2effc5059f3737915caa`  
-**Authorities:** accepted ADR 0087, `OUTCOME-TWO-PLAN.md`, and `.pi/outcome-two/capability-implementation-gate.md`  
-**Implementation reviewed:** the exact five capability surfaces named by ADR 0087  
+**Reviewed head:** `9c86bc5add169fadd86574fd8468422a46ee3ed0`
+**Accounting predecessor:** `bec0a19b0b984f88ab9c2effc5059f3737915caa`
+**Authorities:** accepted ADR 0087, `OUTCOME-TWO-PLAN.md`, and `.pi/outcome-two/capability-implementation-gate.md`
+**Implementation reviewed:** the exact five capability surfaces named by ADR 0087
 **Production changes:** none made by this review
 
 ## Verdict

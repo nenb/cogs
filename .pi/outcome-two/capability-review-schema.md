@@ -1,8 +1,8 @@
 # Outcome 2 capability schema/driver hostile review
 
-**Review target:** `9c86bc5add169fadd86574fd8468422a46ee3ed0` (`review/cap-schema`)  
-**Authorities:** accepted `docs/adr/0087-prepare-runtime-closure-before-capability-drop.md`, `OUTCOME-TWO-PLAN.md`, and `.pi/outcome-two/capability-implementation-gate.md`  
-**Implementation reviewed:** the five capability surfaces authorized by ADR 0087  
+**Review target:** `9c86bc5add169fadd86574fd8468422a46ee3ed0` (`review/cap-schema`)
+**Authorities:** accepted `docs/adr/0087-prepare-runtime-closure-before-capability-drop.md`, `OUTCOME-TWO-PLAN.md`, and `.pi/outcome-two/capability-implementation-gate.md`
+**Implementation reviewed:** the five capability surfaces authorized by ADR 0087
 **Disposition:** review only; no production or workflow implementation changed
 
 ## Verdict
