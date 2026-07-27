@@ -40,17 +40,15 @@ const mapFilesCase = (proc_mount_created_in: "host" | "parent-userns" | "child-u
   maps_read: unsupported(),
   proc_mount_created_in,
 });
-const toolIdentity = (path: string) => ({
-  mode: null,
-  observation: unsupported(),
+const toolIdentity = (path: string, present = false) => ({
+  mode: present ? "0755" : null,
+  observation: present ? ok() : unsupported(),
   path,
-  present: false,
-  regular_file: null,
-  root_owned: null,
-  sha256: null,
-  size: null,
-  version_line: null,
-  version_output_sha256: null,
+  present,
+  regular_file: present ? true : null,
+  root_owned: present ? true : null,
+  sha256: present ? "9".repeat(64) : null,
+  size: present ? 123_456 : null,
 });
 
 function validReport(): Record<string, unknown> {
@@ -87,6 +85,20 @@ function validReport(): Record<string, unknown> {
         non_cloexec_fd_198_survived: true,
       },
       inherited_baseline_restored: true,
+    },
+    envelope: {
+      action: "labeled",
+      base_sha: "d".repeat(40),
+      event: "pull_request",
+      event_merge_sha: "e".repeat(40),
+      github_sha: "e".repeat(40),
+      github_workflow_sha: "f".repeat(40),
+      job: "runner-capability-probe",
+      pull_request_number: 230,
+      repository: "nenb/cogs",
+      run_attempt: 1,
+      run_id: "0",
+      workflow: ".github/workflows/outcome-two-runner-capability.yml",
     },
     kernel: {
       machine: "x86_64",
@@ -163,11 +175,11 @@ function validReport(): Record<string, unknown> {
       set_no_new_privs: ok(),
     },
     source: {
-      head_sha: "a".repeat(40),
-      repository: "nenb/cogs",
-      run_attempt: 1,
-      run_id: "0",
-      workflow_sha256: "b".repeat(64),
+      checkout_sha: "a".repeat(40),
+      driver_sha256: "b".repeat(64),
+      pr_head_sha: "a".repeat(40),
+      schema_sha256: "c".repeat(64),
+      source_head_workflow_blob_sha256: "d".repeat(64),
     },
     sudo: {
       close_from_3: { exit_code: null, fd3_closed: null, fd4_closed: null, invocation: unsupported() },
@@ -178,7 +190,7 @@ function validReport(): Record<string, unknown> {
     temporary_files: { private_tmpfs: nullableCase(), runner_temp: nullableCase() },
     tools: {
       gzip: toolIdentity("/usr/bin/gzip"),
-      python3: toolIdentity("/usr/bin/python3"),
+      python3: toolIdentity("/usr/bin/python3", true),
       unshare: toolIdentity("/usr/bin/unshare"),
       zstd: toolIdentity("/usr/bin/zstd"),
     },
@@ -188,16 +200,6 @@ function validReport(): Record<string, unknown> {
 function compileSchema(): { ajv: AjvCore; validate: ValidateFunction } {
   const ajv = new Ajv2020({ allErrors: true, strict: true, strictRequired: false });
   return { ajv, validate: ajv.compile(JSON.parse(readFileSync(schemaPath, "utf8"))) };
-}
-
-function canonicalJson(value: unknown): string {
-  if (value === null || typeof value !== "object") return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  const object = value as Record<string, unknown>;
-  return `{${Object.keys(object)
-    .sort()
-    .map((key) => `${JSON.stringify(key)}:${canonicalJson(object[key])}`)
-    .join(",")}}`;
 }
 
 function assertInvalid(validate: ValidateFunction, candidate: unknown, message: string): void {
@@ -210,6 +212,35 @@ function setPath(candidate: Record<string, unknown>, path: string[], value: unkn
   let cursor = candidate;
   for (const segment of path.slice(0, -1)) cursor = cursor[segment] as Record<string, unknown>;
   cursor[field] = value;
+}
+
+function statusSemantics(value: unknown): boolean {
+  if (value === null || typeof value !== "object" || Object.keys(value).sort().join(",") !== "errno,state") return false;
+  const { errno, state } = value as { errno: number | null; state: string };
+  if (state === "ok" || state === "blocked" || state === "mismatch") return errno === null;
+  if (state === "unsupported") return errno === null || errno === 38 || errno === 95;
+  if (state === "denied") return errno === 1 || errno === 13;
+  return state === "error" && Number.isInteger(errno) && errno! >= 1 && errno! <= 4095 && ![1, 13, 38, 95].includes(errno!);
+}
+
+function reportSemantics(candidate: Record<string, unknown>): boolean {
+  const cleanup = candidate.cleanup as Record<string, unknown>;
+  const source = candidate.source as Record<string, unknown>;
+  const envelope = candidate.envelope as Record<string, unknown>;
+  const python = (candidate.tools as Record<string, Record<string, unknown>>).python3!;
+  const low = (candidate.descriptors as Record<string, Record<string, unknown>>).close_range_low!;
+  const exactCleanup =
+    ["children_reaped", "descriptors_restored", "mounts_gone", "temporary_names_gone"].every(
+      (field) => cleanup[field] === true,
+    ) && cleanup.namespace_handles_retained === false && cleanup.uncertainty === false;
+  return (
+    candidate.outcome === (exactCleanup ? "complete" : "incomplete") &&
+    source.pr_head_sha === source.checkout_sha &&
+    envelope.github_sha === envelope.event_merge_sha &&
+    python.present === true &&
+    (python.observation as { state: string }).state === "ok" &&
+    ((low.invocation as { state: string }).state !== "ok" || low.known_fd_closed === true)
+  );
 }
 
 test("runner capability schema is closed, bounded, and permanently non-authoritative", () => {
@@ -226,13 +257,11 @@ test("runner capability schema is closed, bounded, and permanently non-authorita
     assertInvalid(validate, { ...structuredClone(report), [field]: value }, `${field} must remain fixed`);
   }
 
-  const versioned = structuredClone(report);
-  setPath(versioned, ["sudo", "executable", "version_line"], "Sudo version 1.9.15p5");
-  setPath(versioned, ["tools", "gzip", "version_line"], "gzip 1.12");
-  setPath(versioned, ["tools", "python3", "version_line"], "Python 3.12.3");
-  setPath(versioned, ["tools", "unshare", "version_line"], "unshare from util-linux 2.39.3");
-  setPath(versioned, ["tools", "zstd", "version_line"], "*** Zstandard CLI (64-bit) v1.5.5, by Yann Collet ***");
-  assert.equal(validate(versioned), true, ajv.errorsText(validate.errors));
+  for (const field of ["version_line", "version_output_sha256"]) {
+    const versioned = structuredClone(report);
+    setPath(versioned, ["tools", "gzip", field], field === "version_line" ? "gzip 1.12" : "f".repeat(64));
+    assertInvalid(validate, versioned, `${field} was removed from ToolIdentity`);
+  }
 
   const objectPaths: Array<Array<string | number>> = [];
   const visit = (value: unknown, path: Array<string | number>): void => {
@@ -250,9 +279,10 @@ test("runner capability schema is closed, bounded, and permanently non-authorita
   }
 
   const mutations: Array<[string, string[], unknown]> = [
-    ["noncanonical run ID", ["source", "run_id"], "01"],
-    ["run attempt bound", ["source", "run_attempt"], 256],
-    ["lowercase hashes", ["source", "head_sha"], "A".repeat(40)],
+    ["noncanonical run ID", ["envelope", "run_id"], "01"],
+    ["run attempt bound", ["envelope", "run_attempt"], 256],
+    ["lowercase source hashes", ["source", "pr_head_sha"], "A".repeat(40)],
+    ["lowercase envelope hashes", ["envelope", "github_sha"], "A".repeat(40)],
     ["printable kernel release", ["kernel", "release"], "bad\nrelease"],
     ["kernel release byte bound", ["kernel", "release"], "x".repeat(129)],
     ["rlimit bound", ["rlimit_nofile", "hard"], 1e20],
@@ -264,7 +294,6 @@ test("runner capability schema is closed, bounded, and permanently non-authorita
     ["tool byte bound", ["tools", "gzip", "size"], 134217729],
     ["tool path substitution", ["tools", "gzip", "path"], "/bin/gzip"],
     ["mode canonicality", ["tools", "gzip", "mode"], "600"],
-    ["version output controls", ["tools", "gzip", "version_line"], "secret=value"],
     ["KVM extension bound", ["kvm", "user_memory_extension"], 2147483648],
     ["retained namespace authority", ["cleanup", "namespace_handles_retained"], true],
   ];
@@ -296,7 +325,22 @@ test("runner capability schema is closed, bounded, and permanently non-authorita
   for (const [status, expected] of statusCases) {
     const candidate = structuredClone(report);
     setPath(candidate, ["kernel", "uname_status"], status);
-    assert.equal(validate(candidate), expected, `ProbeStatus accepted invalid semantics: ${JSON.stringify(status)}`);
+    assert.equal(validate(candidate), expected, `ProbeStatus schema accepted invalid semantics: ${JSON.stringify(status)}`);
+    assert.equal(statusSemantics(status), expected, `independent status semantics disagreed: ${JSON.stringify(status)}`);
+  }
+
+  assert.equal(reportSemantics(report), true);
+  for (const [path, value] of [
+    [["outcome"], "incomplete"],
+    [["cleanup", "uncertainty"], true],
+    [["source", "checkout_sha"], "7".repeat(40)],
+    [["envelope", "event_merge_sha"], "8".repeat(40)],
+    [["tools", "python3", "present"], false],
+    [["descriptors", "close_range_low", "known_fd_closed"], false],
+  ] as Array<[string[], unknown]>) {
+    const candidate = structuredClone(report);
+    setPath(candidate, path, value);
+    assert.equal(reportSemantics(candidate), false, `independent semantics accepted ${path.join(".")}`);
   }
 });
 
@@ -315,40 +359,33 @@ test("runner capability probe source keeps the metadata-only execution boundary"
   assert.doesNotMatch(source, /\b(?:apt|apt-get|dnf|yum|apk|brew|snap|dpkg)\b/u);
   assert.doesNotMatch(source, /socket\.socket\s*\(|urllib|requests|http\.client|ftplib/u);
   assert.doesNotMatch(source, /rm\s+-rf|MNT_DETACH|killall|pkill/u);
+  assert.match(source, /--workflow-bound/u);
+  assert.doesNotMatch(source, /\b__file__\b/u, "root and namespace helpers must not reopen the checkout driver");
+  assert.doesNotMatch(source, /version_line|version_output_sha256|["']--version["']/u);
+  assert.doesNotMatch(
+    source,
+    /except (?:BaseException|\(Exception, KeyboardInterrupt\)):[\s\S]{0,400}(?:fake_report|report\s*=|output\s*=\s*canonical_bytes)/u,
+    "an exception must not fabricate or emit a report",
+  );
 });
 
-test("runner capability probe self-test and default report are portable and canonical", () => {
-  const selfTest = spawnSync("/usr/bin/python3", [probePath, "--self-test"], {
-    cwd: root,
-    env: { LC_ALL: "C", PYTHONDONTWRITEBYTECODE: "1" },
-    encoding: "utf8",
-    timeout: 30_000,
-  });
+test("runner capability probe exposes only bounded self-test and workflow modes", () => {
+  const run = (argv: string[]) =>
+    spawnSync("/usr/bin/python3", ["-I", "-B", probePath, ...argv], {
+      cwd: root,
+      env: { LC_ALL: "C", PYTHONDONTWRITEBYTECODE: "1" },
+      encoding: "utf8",
+      timeout: 30_000,
+    });
+  const selfTest = run(["--self-test"]);
   assert.equal(selfTest.status, 0, `${selfTest.stdout}\n${selfTest.stderr}`);
-  assert.equal(selfTest.signal, null);
   assert.equal(selfTest.stderr, "");
-  assert.ok(Buffer.byteLength(selfTest.stdout) <= 4096, "self-test output exceeded the command-output bound");
+  assert.ok(Buffer.byteLength(selfTest.stdout) <= 4096);
 
-  const result = spawnSync("/usr/bin/python3", [probePath], {
-    cwd: root,
-    env: { LC_ALL: "C", PYTHONDONTWRITEBYTECODE: "1" },
-    timeout: 130_000,
-  });
-  assert.equal(result.status, 0, result.stderr?.toString("utf8"));
-  assert.equal(result.signal, null);
-  assert.ok(result.stdout);
-  assert.ok(result.stderr);
-  assert.equal(result.stderr.length, 0, "raw diagnostics must not reach stderr");
-  assert.ok(result.stdout.length <= 32_768, "canonical report exceeded 32,768 bytes including LF");
-  const text = new TextDecoder("utf-8", { fatal: true }).decode(result.stdout);
-  assert.match(text, /^\{[^\r\n]*\}\n$/u, "probe must emit exactly one JSON line with one trailing LF");
-  const report: unknown = JSON.parse(text);
-  assert.equal(text, `${canonicalJson(report)}\n`, "report keys, separators, numbers, or duplicates are not canonical");
-  const { ajv, validate } = compileSchema();
-  assert.equal(validate(report), true, ajv.errorsText(validate.errors));
-  const fields = report as Record<string, unknown>;
-  assert.deepEqual(
-    { authority: fields.authority, qualified: fields.qualified },
-    { authority: "none", qualified: false },
-  );
+  assert.match(readFileSync(probePath, "utf8"), /(?:arguments|argv) (?:==|!=) \["--workflow-bound"\]/u);
+  for (const argv of [[], ["unknown-mode"], ["--workflow-bound", "extra"], ["--workflow-bound"]]) {
+    const rejected = run(argv);
+    assert.notEqual(rejected.status, 0, `${argv.join(" ") || "default"} invalid invocation was accepted`);
+    assert.equal(rejected.stdout, "", "invalid invocations must not fabricate an exception report");
+  }
 });
