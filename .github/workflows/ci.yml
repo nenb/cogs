@@ -604,7 +604,6 @@ jobs:
               os.fsync(temp_fd)
               anonymous_parent = identity(os.fstat(parent_fd))
               if anonymous_parent[:6] != parent_identity[:6] or anonymous_parent[6] != 0: raise RuntimeError("private parent remained linked")
-              # unshare's waiter remains outside; bash is namespace PID 1 and terminally execs chroot.
               command = ["/usr/bin/sudo","-n","--close-from=4","/usr/bin/setpriv","--reuid","0","--regid","0","--clear-groups","--no-new-privs","/usr/bin/unshare","--user","--map-users=0:0:1","--map-groups=0:0:1","--net","--pid","--fork","--mount","/usr/bin/env","-i","/usr/bin/bash","--noprofile","--norc","-c",sandbox,"--",f"{checkout_identity.st_dev}",f"{checkout_identity.st_ino}",f"{checkout_identity.st_uid}",f"{checkout_identity.st_gid}",test_path]
               launched = True
               result = subprocess.run(command, stdin=subprocess.DEVNULL, stdout=output_fd, stderr=subprocess.STDOUT, close_fds=True, pass_fds=(3,), env={}, check=False)
@@ -617,7 +616,9 @@ jobs:
               if result.returncode != 0 or compared.returncode != 0:
                   os.lseek(output_fd, 0, os.SEEK_SET)
                   diagnostic = os.read(output_fd, 65_537)
-                  raise RuntimeError(f"preflight status {result.returncode}/{compared.returncode} bytes {len(diagnostic)}")
+                  classes = ((b"native seccomp launcher failed","seccomp"),(b"native-process-failure:","process"),(b"--no-canonicalize","mount-option"),(b"unshare:","unshare"),(b"Traceback","python"))
+                  label = next((value for needle,value in classes if needle in diagnostic),"other")
+                  raise RuntimeError(f"preflight status {result.returncode}/{compared.returncode} class {label} bytes {len(diagnostic)}")
               print(marker, flush=True)
           finally:
               cleanup_failure = None
