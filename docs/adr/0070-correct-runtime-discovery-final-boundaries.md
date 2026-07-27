@@ -1,6 +1,6 @@
 # ADR 0070: Correct runtime-discovery final boundaries
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-27
 - Decision owner: Nick Byrne
 - Amendment scope: Amend four ADR 0069 non-transferable Phase B per-file gross-addition maxima; authorize only the existing `scripts/stage2-phase-a-budget.py` plus the existing candidate workflow's fixed literal profile wiring to set the exact runtime-discovery internal schedule below; and clarify the independent responsibilities of the Phase B JSON schema and strict production canonical codec. The absolute Phase B high remains 3,310, the outer workflow timeout remains 5,400 seconds, and every non-conflicting ADR 0065–0069 requirement remains binding.
