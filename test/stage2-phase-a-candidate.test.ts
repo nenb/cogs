@@ -174,7 +174,7 @@ test("runtime-discovery workflow has the exact PR 230 one-shot guard and cleanup
   );
   assert.match(
     rootLauncher,
-    /os\.open\(checkout,os\.O_PATH\|os\.O_DIRECTORY\|os\.O_NOFOLLOW\|os\.O_CLOEXEC\)[\s\S]*identity\(os\.stat\(checkout,follow_symlinks=False\)\) != wanted/u,
+    /identity\(os\.stat\(checkout,follow_symlinks=False\)\) != wanted[\s\S]*child_launcher = r"""[\s\S]*os\.open\(checkout,os\.O_PATH\|os\.O_DIRECTORY\|os\.O_NOFOLLOW\|os\.O_CLOEXEC\)[\s\S]*identity\(os\.stat\(checkout,follow_symlinks=False\)\) != wanted/u,
   );
   assert.match(
     rootLauncher,
@@ -186,10 +186,14 @@ test("runtime-discovery workflow has the exact PR 230 one-shot guard and cleanup
   );
   assert.match(
     rootLauncher,
-    /"\/usr\/bin\/setpriv","--reuid","0","--regid","0","--clear-groups","--no-new-privs","\/usr\/bin\/unshare","--user","--map-users=0:0:1","--map-groups=0:0:1","--net","--pid","--fork","--mount","\/usr\/bin\/env","-i","\/usr\/bin\/bash","--noprofile","--norc","-c",sandbox,"--",\*raw_identity,test_path/u,
+    /"\/usr\/bin\/setpriv","--reuid","0","--regid","0","--clear-groups","--no-new-privs","\/usr\/bin\/unshare","--user","--map-users=0:0:1","--map-groups=0:0:1","--net","--pid","--fork","--mount","\/usr\/bin\/python3","-I","-c",child_launcher,checkout,\*raw_identity,test_path,sandbox/u,
+  );
+  assert.match(
+    rootLauncher,
+    /child_launcher = r"""[\s\S]*os\.execve\("\/usr\/bin\/env",\("\/usr\/bin\/env","-i","\/usr\/bin\/bash"/u,
   );
   assert.match(rootLauncher, /os\.execve\("\/usr\/bin\/setpriv",command,\{\}\)/u);
-  assert.equal(rootLauncher.match(/os\.execve/gu)?.length, 1);
+  assert.equal(rootLauncher.match(/os\.execve/gu)?.length, 2);
   assert.doesNotMatch(rootLauncher, /os\.environ|os\.getenv|importlib|runpy|__import__|SourceFileLoader|pass_fds/u);
   const observerMatch = sandbox.match(/<<'DESCRIPTOR'[\s\S]*?\n {10}DESCRIPTOR/u);
   assert.ok(observerMatch);
