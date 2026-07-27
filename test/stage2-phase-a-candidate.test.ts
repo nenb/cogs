@@ -243,7 +243,8 @@ test("runtime-discovery workflow has the exact PR 230 one-shot guard and cleanup
     sandbox,
     / {10}VERIFY\n {10}exec 3>&-\n {10}\/usr\/bin\/python3 -I -c "\$descriptor_observer" "\$checkout_dev" "\$checkout_ino" "\$checkout_uid" "\$checkout_gid" after\n {10}COGS_NATIVE_TEST_PATH=\$test_path exec \/usr\/sbin\/chroot/u,
   );
-  assert.doesNotMatch(nativeJob, /launcher-fds|terminal-fds|classes =/u);
+  assert.match(nativeJob, /classes = \(\(b"descriptor observer authority"[\s\S]*\(b"Traceback","python"\)\)/u);
+  assert.doesNotMatch(nativeJob, /diagnostic\.decode|print\(diagnostic|os\.write\([^\n]*diagnostic/u);
   assert.equal(nativeJob.match(/--close-from=/gu)?.length, 1);
   assert.doesNotMatch(nativeJob, /preexec_fn|stdin=None|--close-from=4|-C 4|"-C"|--preserve-env/u);
   assert.doesNotMatch(
