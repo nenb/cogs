@@ -1,4 +1,5 @@
 {
+  "version": "cogs.outcome-two-maps-cases/v1",
   "objects": {
     "00400000-00401000": { "fixture": "valid-executable.elf", "identity": [8, 101] },
     "7f000000-7f001000": { "fixture": "valid-loader.elf", "identity": [8, 102] },
@@ -6,16 +7,28 @@
     "7f002000-7f003000": { "fixture": "valid-libbeta.elf", "identity": [8, 104] },
     "7f003000-7f004000": { "fixture": "valid-libbeta.elf", "identity": [8, 105] }
   },
-  "hostile": [
-    { "name": "maps-changed", "after": "changed/maps-after.txt" },
-    { "name": "unknown-executable", "mapping": "7f003000-7f004000", "identity": [8, 105] },
-    { "name": "unopenable-executable", "fault": "map-open-eacces" },
-    { "name": "ambiguous-fingerprint", "fault": "two-roles-same-fingerprint" },
-    { "name": "mapped-generation-drift", "fault": "fstat-generation-change" },
-    { "name": "missing-loader", "remove": "7f000000-7f001000" },
-    { "name": "missing-dependency", "remove": "7f002000-7f003000" },
-    { "name": "maps-byte-bound", "fault": "maps-over-4m" },
-    { "name": "maps-line-bound", "fault": "maps-over-4096-lines" },
-    { "name": "mapping-object-bound", "fault": "129-unique-objects" }
+  "cases": [
+    { "id": "stable", "expect": "accept" },
+    { "id": "maps-changed", "expect": "reject", "after": "changed/maps-after.txt" },
+    { "id": "unknown-executable", "expect": "reject", "mapping": "7f003000-7f004000" },
+    { "id": "unopenable-executable", "expect": "reject", "fault": "map-open-eacces" },
+    { "id": "ambiguous-fingerprint", "expect": "reject", "fault": "two-roles-same-fingerprint" },
+    { "id": "mapped-generation-drift", "expect": "reject", "fault": "fstat-generation-change" },
+    { "id": "missing-loader", "expect": "reject", "remove": "7f000000-7f001000" },
+    { "id": "missing-dependency", "expect": "reject", "remove": "7f002000-7f003000" },
+    { "id": "maps-byte-bound", "expect": "reject", "fault": "maps-over-4m" },
+    { "id": "maps-line-bound", "expect": "reject", "fault": "maps-over-4096-lines" },
+    { "id": "mapping-object-bound", "expect": "reject", "fault": "129-unique-objects" },
+    { "id": "missing-terminal-lf", "expect": "reject", "fault": "missing-lf" },
+    { "id": "bad-address", "expect": "reject", "row": "0040000g-00401000 r-xp 00000000 08:01 101 /bad" },
+    { "id": "reversed-address", "expect": "reject", "row": "00401000-00400000 r-xp 00000000 08:01 101 /bad" },
+    { "id": "overlapping-address", "expect": "reject", "fault": "overlapping-row" },
+    { "id": "bad-permissions", "expect": "reject", "row": "00400000-00401000 r-xq 00000000 08:01 101 /bad" },
+    { "id": "bad-offset", "expect": "reject", "row": "00400000-00401000 r-xp 00000001 08:01 101 /bad" },
+    { "id": "bad-device", "expect": "reject", "row": "00400000-00401000 r-xp 00000000 xx:01 101 /bad" },
+    { "id": "bad-inode", "expect": "reject", "row": "00400000-00401000 r-xp 00000000 08:01 -1 /bad" },
+    { "id": "unknown-synthetic", "expect": "reject", "row": "7fff0000-7fff1000 r-xp 00000000 00:00 0 [unknown]" },
+    { "id": "primary-plus-maps-close", "expect": "reject", "fault": "maps-read-and-close" },
+    { "id": "primary-plus-map-file-close", "expect": "reject", "fault": "map-parse-and-close" }
   ]
 }

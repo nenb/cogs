@@ -1,4 +1,5 @@
 {
+  "version": "cogs.outcome-two-closure-cases/v1",
   "fixed_paths": {
     "/usr/bin/python3": "valid-executable.elf",
     "/usr/bin/zstd": "valid-executable.elf",
@@ -7,26 +8,34 @@
     "/lib/x86_64-linux-gnu/libalpha.so.1": "valid-libalpha.elf",
     "/lib/x86_64-linux-gnu/libbeta.so.1": "valid-libbeta.elf"
   },
-  "hostile": [
-    { "name": "missing-loader", "remove": ["/lib64/ld-linux-x86-64.so.2"] },
-    { "name": "missing-library", "remove": ["/lib/x86_64-linux-gnu/libbeta.so.1"] },
-    {
-      "name": "duplicate-library-candidate",
-      "add": { "/usr/lib/x86_64-linux-gnu/libalpha.so.1": "valid-libalpha.elf" },
-      "distinct_identity": true
-    },
-    {
-      "name": "same-inode-alias",
-      "add": { "/usr/lib/x86_64-linux-gnu/libalpha.so.1": "valid-libalpha.elf" },
-      "distinct_identity": false
-    },
-    { "name": "unknown-interpreter", "replace": { "/usr/bin/python3": "unknown-interpreter.elf" } },
-    { "name": "forbidden-tag", "replace": { "/usr/bin/python3": "forbidden-runpath.elf" } },
-    { "name": "short-read", "fault": "read-eof-before-size" },
-    { "name": "generation-drift", "fault": "fstat-generation-change" },
-    { "name": "mutable-mode", "fault": "group-writable" },
-    { "name": "wrong-owner", "fault": "non-root-owner" },
-    { "name": "object-bound", "fault": "object-count-129" },
-    { "name": "byte-bound", "fault": "aggregate-bytes-over-512m" }
+  "cases": [
+    { "id": "stable", "expect": "accept" },
+    { "id": "missing-loader", "expect": "reject", "remove": ["/lib64/ld-linux-x86-64.so.2"] },
+    { "id": "missing-library", "expect": "reject", "remove": ["/lib/x86_64-linux-gnu/libbeta.so.1"] },
+    { "id": "distinct-provider", "expect": "reject", "add": "/usr/lib/x86_64-linux-gnu/libalpha.so.1", "distinct": true },
+    { "id": "same-identity-alias", "expect": "accept", "add": "/usr/lib/x86_64-linux-gnu/libalpha.so.1", "distinct": false },
+    { "id": "unknown-interpreter", "expect": "reject", "replace": ["/usr/bin/python3", "unknown-interpreter.elf"] },
+    { "id": "forbidden-tag", "expect": "reject", "replace": ["/usr/bin/python3", "forbidden-runpath.elf"] },
+    { "id": "short-read-before", "expect": "reject", "fault": "short-before" },
+    { "id": "short-read-during", "expect": "reject", "fault": "short-during" },
+    { "id": "short-read-after", "expect": "reject", "fault": "grew-after" },
+    { "id": "generation-during-read", "expect": "reject", "fault": "generation-after" },
+    { "id": "chmod-during-read", "expect": "reject", "fault": "chmod-after" },
+    { "id": "chown-during-read", "expect": "reject", "fault": "chown-after" },
+    { "id": "ancestor-open-race", "expect": "reject", "fault": "ancestor-open-race" },
+    { "id": "final-open-race", "expect": "reject", "fault": "final-open-race" },
+    { "id": "second-resolution-drift", "expect": "reject", "fault": "second-resolution" },
+    { "id": "relative-symlink", "expect": "accept", "symlink": ["/usr/bin/python3", "python3.real"] },
+    { "id": "absolute-symlink", "expect": "accept", "symlink": ["/usr/bin/python3", "/opt/python3.real"] },
+    { "id": "parent-symlink", "expect": "accept", "symlink": ["/usr/bin/python3", "../libexec/python3.real"] },
+    { "id": "symlink-root-escape", "expect": "reject", "symlink": ["/usr/bin/python3", "../../../escape"] },
+    { "id": "symlink-loop", "expect": "reject", "symlink": ["/usr/bin/python3", "python3"] },
+    { "id": "symlink-target-race", "expect": "reject", "symlink": ["/usr/bin/python3", "python3.real"], "fault": "symlink-target-race" },
+    { "id": "symlink-bound", "expect": "reject", "fault": "symlink-bound" },
+    { "id": "component-bound", "expect": "reject", "fault": "component-bound" },
+    { "id": "object-bound-129", "expect": "reject", "fault": "object-bound" },
+    { "id": "per-tool-byte-bound", "expect": "reject", "fault": "tool-byte-bound" },
+    { "id": "three-tool-aggregate-bound", "expect": "reject", "fault": "aggregate-byte-bound" },
+    { "id": "cross-tool-role-alias", "expect": "reject", "fault": "cross-role-alias" }
   ]
 }

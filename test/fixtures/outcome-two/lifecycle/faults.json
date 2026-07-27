@@ -1,25 +1,62 @@
 {
-  "authentication_open_numbers": [1, 2, 3, 4, 5, 6, 7],
-  "helper_start_faults": [
-    "gate-pipe",
-    "status-pipe",
-    "devnull-open",
-    "fork",
-    "pidfd-open",
-    "exec-status-poll",
-    "exec-status-read",
-    "proc-stat-open",
-    "proc-stat-read",
-    "session-read"
+  "version": "cogs.outcome-two-lifecycle-faults/v1",
+  "fd_baseline_cases": [
+    { "id": "fd-baseline-stable", "expect": "accept" },
+    { "id": "fd-enumerator-number-changes", "expect": "accept", "fault": "enumerator-reuse" },
+    { "id": "fd-dir-multichunk", "expect": "accept", "fault": "dirent-chunks" },
+    { "id": "fd-dir-open", "expect": "reject", "fault": "fd-dir-open" },
+    { "id": "fd-dir-read", "expect": "reject", "fault": "fd-dir-read" },
+    { "id": "fd-dir-malformed", "expect": "reject", "fault": "fd-dir-malformed" },
+    { "id": "fd-dir-duplicate", "expect": "reject", "fault": "fd-dir-duplicate" },
+    { "id": "fd-dir-bound", "expect": "reject", "fault": "fd-dir-bound" },
+    { "id": "fd-dir-close", "expect": "reject", "fault": "fd-dir-close" },
+    { "id": "fd-dir-primary-close", "expect": "reject", "fault": "fd-dir-read-close" }
   ],
-  "child_faults": ["child-setup", "child-exec"],
-  "stop_faults": ["term", "wait", "kill", "reap"],
-  "stop_open_faults": ["children-open", "identity-stat-open", "identity-exe-open"],
-  "cleanup": [
-    "primary-plus-three-close-errors",
-    "close-after-fd-number-reuse",
-    "double-close",
-    "duplicate-registration",
-    "unexpected-owned-child"
+  "helper_cases": [
+    { "id": "helper-success", "expect": "accept" },
+    { "id": "gate-pipe", "expect": "reject", "fault": "gate-pipe" },
+    { "id": "status-pipe", "expect": "reject", "fault": "status-pipe" },
+    { "id": "devnull-open", "expect": "reject", "fault": "devnull-open" },
+    { "id": "spawn-before", "expect": "reject", "fault": "spawn-before" },
+    { "id": "spawn-after", "expect": "reject", "fault": "spawn-after" },
+    { "id": "pidfd-open", "expect": "reject", "fault": "pidfd-open" },
+    { "id": "status-timeout", "expect": "reject", "fault": "status-timeout" },
+    { "id": "status-read", "expect": "reject", "fault": "status-read" },
+    { "id": "stat-open", "expect": "reject", "fault": "stat-open" },
+    { "id": "stat-read", "expect": "reject", "fault": "stat-read" },
+    { "id": "session-read", "expect": "reject", "fault": "session-read" },
+    { "id": "closed-stdin", "expect": "accept", "fault": "closed-stdin" },
+    { "id": "closed-stdout", "expect": "accept", "fault": "closed-stdout" },
+    { "id": "closed-stderr", "expect": "accept", "fault": "closed-stderr" },
+    { "id": "ambient-inherited-fd", "expect": "accept", "fault": "ambient-fd" }
+  ],
+  "stop_cases": [
+    { "id": "stop-success", "expect": "accept" },
+    { "id": "children-open", "expect": "reject", "fault": "children-open" },
+    { "id": "direct-descendant", "expect": "reject", "fault": "direct-descendant" },
+    { "id": "grandchild", "expect": "reject", "fault": "grandchild" },
+    { "id": "unstable-descendants", "expect": "reject", "fault": "unstable-descendants" },
+    { "id": "start-time-drift", "expect": "reject", "fault": "start-time-drift" },
+    { "id": "session-drift", "expect": "reject", "fault": "session-drift" },
+    { "id": "process-group-drift", "expect": "reject", "fault": "process-group-drift" },
+    { "id": "executable-drift", "expect": "reject", "fault": "executable-drift" },
+    { "id": "term-error", "expect": "reject", "fault": "term-error" },
+    { "id": "term-exit", "expect": "accept", "fault": "term-exit" },
+    { "id": "term-timeout-kill-exit", "expect": "accept", "fault": "term-timeout-kill-exit" },
+    { "id": "identity-drift-before-kill", "expect": "reject", "fault": "identity-drift-before-kill" },
+    { "id": "kill-error", "expect": "reject", "fault": "kill-error" },
+    { "id": "kill-timeout", "expect": "reject", "fault": "kill-timeout" },
+    { "id": "wait-error", "expect": "reject", "fault": "wait-error" },
+    { "id": "reap-lost", "expect": "reject", "fault": "reap-lost" },
+    { "id": "eof-while-live", "expect": "reject", "fault": "eof-while-live" },
+    { "id": "pidfd-close-while-live", "expect": "reject", "fault": "pidfd-close-while-live" }
+  ],
+  "cleanup_cases": [
+    { "id": "primary-plus-three-close-errors", "expect": "reject", "fault": "three-close-errors" },
+    { "id": "close-after-fd-number-reuse", "expect": "reject", "fault": "close-after-reuse" },
+    { "id": "double-close", "expect": "reject", "fault": "double-close" },
+    { "id": "duplicate-registration", "expect": "reject", "fault": "duplicate-registration" },
+    { "id": "unexpected-owned-child", "expect": "reject", "fault": "unexpected-child" },
+    { "id": "cleanup-after-poison", "expect": "reject", "fault": "cleanup-after" }
   ]
 }

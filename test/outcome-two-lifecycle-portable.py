@@ -1,17 +1,16 @@
 #!/usr/bin/env python3
-"""Portable hostile descriptor, helper, and owner lifecycle qualification."""
+"""Production lifecycle state machines over an independent deterministic kernel model."""
 
 import errno
 import hashlib
 import importlib
 import json
-import os
 from pathlib import Path
 import signal
 import stat
+import struct
 import sys
 from types import SimpleNamespace
-from unittest.mock import patch
 
 if not __debug__:
     raise SystemExit("optimized mode is forbidden")
@@ -25,242 +24,371 @@ elf = importlib.import_module("completion_elf")
 closure = importlib.import_module("completion_trusted_runtime_closure")
 MATRIX = json.loads((FIXTURES / "lifecycle/faults.json").read_text())
 RAW = (FIXTURES / "elf/valid-executable.elf").read_bytes()
-
-
-class ChildExit(BaseException):
-    pass
-
-
-def rejected(call, label):
-    try:
-        call()
-    except (closure.RuntimeClosureError, OSError, ChildExit):
-        return
-    raise AssertionError(f"lifecycle fault accepted: {label}")
-
-
-class AuthOps(closure._Ops):
-    def __init__(self, fail_open):
-        self.fail_open = fail_open
-        self.opens = 0
-        self.next_fd = 10
-        self.live = {}
-        self.dirs = {"/", "/usr", "/usr/bin"}
-
-    def _path(self, path, dir_fd=None):
-        if path.startswith("/"): return os.path.normpath(path)
-        return os.path.normpath(self.live[dir_fd].rstrip("/") + "/" + path)
-
-    def _stat(self, path):
-        if path not in self.dirs and path != "/usr/bin/python3": raise FileNotFoundError(path)
-        directory = path in self.dirs
-        return SimpleNamespace(st_dev=8, st_ino=hash(path) & 0xffff,
-            st_size=0 if directory else len(RAW), st_mtime_ns=1, st_ctime_ns=1,
-            st_mode=(stat.S_IFDIR | 0o755) if directory else (stat.S_IFREG | 0o755),
-            st_uid=0, st_gid=0)
-
-    def open(self, path, flags, mode=0o600, *, dir_fd=None):
-        del flags, mode
-        self.opens += 1
-        if self.opens == self.fail_open: raise OSError(errno.EMFILE, "injected open exhaustion")
-        full = self._path(path, dir_fd)
-        self._stat(full)
-        fd = self.next_fd; self.next_fd += 1; self.live[fd] = full
-        return fd
-
-    def stat(self, path, *, dir_fd, follow_symlinks):
-        del follow_symlinks
-        return self._stat(self._path(path, dir_fd))
-
-    def fstat(self, fd): return self._stat(self.live[fd])
-    def pread(self, fd, size, offset): return RAW[offset:offset + size]
-    def close(self, fd):
-        assert fd in self.live, "authentication double close"
-        del self.live[fd]
-
-
-for open_number in MATRIX["authentication_open_numbers"]:
-    ops = AuthOps(open_number)
-    rejected(lambda ops=ops: closure._authenticate(ops, "/usr/bin/python3", "executable"),
-             f"authenticate open {open_number}")
-    assert not ops.live, f"fd residue at open {open_number}"
-
-
 GENERATION = closure.SourceGeneration(8, 101, len(RAW), 1, 1, stat.S_IFREG | 0o755, 0, 0)
 OBJECT = closure.AuthenticatedObject(
-    "executable", "/usr/bin/python3", 900, GENERATION, len(RAW),
+    "executable", "/usr/bin/python3", 900, GENERATION, (), len(RAW),
     hashlib.sha256(RAW).hexdigest(), elf.parse_elf64(RAW),
 )
 RESOLVED = closure.ResolvedToolClosure("python3-parser", OBJECT, OBJECT, ())
-STAT_ROW = b"123 (helper) " + b" ".join([b"S"] + [b"1"] * 19)
+def stat_row(start=10):
+    return b"123 (fixed helper) S " + b" ".join([b"1"] * 18 + [str(start).encode()]) + b"\n"
 
 
-class ProcessOps(closure._Ops):
-    def __init__(self, fault=None, child=False):
-        self.fault = fault
-        self.child = child
-        self.next_fd = 20
-        self.live = {}
-        self.positions = {}
-        self.pipe_calls = 0
+def dirent(name):
+    raw_name = str(name).encode() + b"\0"
+    length = 19 + len(raw_name)
+    aligned = (length + 7) & ~7
+    return struct.pack("=QqHB", 1, 0, aligned, 0) + raw_name + b"\0" * (aligned - length)
+
+
+class Process:
+    def __init__(self):
+        self.live = True
+        self.reaped = False
+        self.start = 10
+        self.session = 123
+        self.group = 123
+        self.executable = (8, 101)
+        self.children = ()
         self.signals = []
-        self.wait_calls = 0
-        self.exec_called = False
-        self.writes = []
+
+
+class KernelOps(closure._Ops):
+    """Fd objects, pidfds, processes, clocks, and owner leases are independent."""
+    def __init__(self, fault=None):
+        self.fault = fault
+        self.next_fd = 10
+        self.fds = {0: "stdio", 1: "stdio", 2: "stdio", 88: "ambient"}
+        self.fd_data = {}
+        self.positions = {}
+        self.processes = {}
+        self.pidfds = {}
+        self.close_attempts = []
         self.clock = 0.0
+        self.pipe_count = 0
+        self.status_reads = 0
+        self.children_reads = 0
+        self.dir_reads = 0
+        self.enumerator_round = 0
+        self.close_ranges = []
+        if fault in {"closed-stdin", "closed-stdout", "closed-stderr"}:
+            self.fds.pop({"closed-stdin": 0, "closed-stdout": 1, "closed-stderr": 2}[fault])
 
-    def _new(self, kind, content=b""):
-        fd = self.next_fd; self.next_fd += 1
-        self.live[fd] = (kind, content); self.positions[fd] = 0
+    def allocate(self, kind, data=b"", preferred=None):
+        if preferred is None:
+            while self.next_fd in self.fds:
+                self.next_fd += 1
+            fd = self.next_fd
+            self.next_fd += 1
+        else:
+            fd = preferred
+        self.fds[fd] = kind
+        self.fd_data[fd] = data
+        self.positions[fd] = 0
         return fd
-
-    def pipe(self):
-        self.pipe_calls += 1
-        if self.fault == ("gate-pipe" if self.pipe_calls == 1 else "status-pipe"):
-            raise OSError(errno.EMFILE, "pipe exhaustion")
-        return self._new("pipe-r"), self._new("pipe-w")
 
     def open(self, path, flags, mode=0o600, *, dir_fd=None):
         del flags, mode, dir_fd
+        if path == "/proc/self/fd":
+            if self.fault == "fd-dir-open":
+                raise OSError(errno.EMFILE, "fd directory")
+            preferred = 20 + self.enumerator_round if self.fault == "enumerator-reuse" else None
+            self.enumerator_round += 1
+            return self.allocate("fd-directory", preferred=preferred)
         if path == "/dev/null":
-            if self.fault == "devnull-open": raise OSError(errno.EMFILE, "devnull exhaustion")
-            return self._new("devnull")
+            if self.fault == "devnull-open":
+                raise OSError(errno.EMFILE, "devnull")
+            for candidate in range(3):
+                if candidate not in self.fds:
+                    return self.allocate("devnull", preferred=candidate)
+            return self.allocate("devnull")
         if path.endswith("/stat"):
-            if self.fault in {"proc-stat-open", "identity-stat-open"}:
-                raise OSError(errno.EMFILE, "proc exhaustion")
-            return self._new("stat", STAT_ROW)
+            if self.fault == "stat-open":
+                raise OSError(errno.EMFILE, "stat")
+            start = self.processes[123].start
+            return self.allocate("proc-stat", stat_row(start))
         if path.endswith("/children"):
-            if self.fault == "children-open": raise OSError(errno.EMFILE, "children exhaustion")
-            return self._new("children", b"")
+            if self.fault == "children-open":
+                raise OSError(errno.EMFILE, "children")
+            process = self.processes[123]
+            children = process.children
+            if self.fault == "unstable-descendants":
+                self.children_reads += 1
+                children = () if self.children_reads == 1 else (124,)
+            raw = b" ".join(str(value).encode() for value in children)
+            return self.allocate("children", raw + (b"\n" if raw else b""))
         if path.endswith("/exe"):
-            if self.fault == "identity-exe-open": raise OSError(errno.EMFILE, "exe exhaustion")
-            return self._new("exe")
-        raise AssertionError(path)
+            return self.allocate("exe")
+        raise AssertionError(f"unexpected open: {path}")
 
     def close(self, fd):
-        assert fd in self.live, f"helper double close: {fd}"
-        del self.live[fd]
+        self.close_attempts.append(fd)
+        if fd not in self.fds:
+            raise AssertionError("production double-closed a descriptor number")
+        if self.fault in {"fd-dir-close", "fd-dir-read-close"} and self.fds[fd] == "fd-directory":
+            del self.fds[fd]
+            raise OSError("fd directory close")
+        del self.fds[fd]
+        self.fd_data.pop(fd, None)
+        self.positions.pop(fd, None)
 
-    def fork(self):
-        if self.fault == "fork": raise OSError("fork fault")
-        return 0 if self.child else 123
+    def getdents(self, fd, maximum=32768):
+        del maximum
+        if self.fault in {"fd-dir-read", "fd-dir-read-close"}:
+            raise OSError("getdents")
+        if self.fault == "dirent-tail":
+            self.fault = None
+            self.dir_reads += 1
+            return self.fd_data.pop(fd)
+        if self.dir_reads:
+            return b""
+        self.dir_reads += 1
+        names = sorted(self.fds)
+        if self.fault == "fd-dir-malformed":
+            return b"bad"
+        if self.fault == "fd-dir-duplicate":
+            names.append(names[0])
+        if self.fault == "fd-dir-bound":
+            names = range(closure._MAX_FDS + 1)
+        raw = b"".join(dirent(value) for value in names)
+        if self.fault == "dirent-chunks" and len(names) > 2:
+            split_at = len(dirent(names[0])) + len(dirent(names[1]))
+            value, self.fd_data[fd] = raw[:split_at], raw[split_at:]
+            self.fault = "dirent-tail"
+            return value
+        return raw
 
-    def pidfd_open(self, pid):
-        assert pid == 123
-        if self.fault == "pidfd-open": raise OSError(errno.EMFILE, "pidfd exhaustion")
-        return self._new("pidfd")
+    def pipe(self):
+        self.pipe_count += 1
+        if self.fault == ("gate-pipe" if self.pipe_count == 1 else "status-pipe"):
+            raise OSError(errno.EMFILE, "pipe")
+        return self.allocate("pipe-read"), self.allocate("pipe-write")
+
+    def clone3_pidfd(self):
+        if self.fault == "spawn-before":
+            raise OSError("clone before effect")
+        if self.fault == "pidfd-open":
+            raise OSError(errno.EMFILE, "atomic pidfd result")
+        process = Process()
+        self.processes[123] = process
+        pidfd = self.allocate("pidfd")
+        self.pidfds[pidfd] = process
+        if self.fault == "spawn-after":
+            raise OSError("clone after effect")
+        return 123, pidfd
 
     def poll_readable(self, fd, seconds):
         del fd, seconds
-        return self.fault != "exec-status-poll"
+        return self.fault != "status-timeout"
 
     def read(self, fd, size):
-        if self.fault == "exec-status-read": raise OSError("status read fault")
-        if self.fault == "proc-stat-read" and self.live[fd][0] == "stat": raise OSError("stat read fault")
-        kind, raw = self.live[fd]; offset = self.positions[fd]
-        self.positions[fd] += min(size, len(raw) - offset)
-        return raw[offset:offset + size]
+        kind = self.fds[fd]
+        if self.fault == "status-read" and kind == "pipe-read":
+            raise OSError("status")
+        if self.fault == "stat-read" and kind == "proc-stat":
+            raise OSError("stat")
+        if kind == "pipe-read":
+            self.status_reads += 1
+            return b"R\n" if self.status_reads == 1 else b""
+        raw = self.fd_data.get(fd, b"")
+        offset = self.positions.get(fd, 0)
+        value = raw[offset:offset + size]
+        self.positions[fd] = offset + len(value)
+        return value
 
-    def getsid(self, pid):
-        if self.fault == "session-read": raise OSError("session fault")
-        return pid
-    def getpgid(self, pid): return pid
-    def kill(self, pid, signum): self.signals.append((pid, signum))
-    def waitpid(self, pid, options):
-        self.wait_calls += 1
-        if self.fault == "wait": raise OSError("wait fault")
-        if self.fault in {"kill", "reap"}: return (0, 0)
-        return (pid, 0)
+    def write(self, fd, data):
+        del fd
+        return len(data)
+
     def fstat(self, fd):
-        if self.live[fd][0] == "exe":
-            return SimpleNamespace(st_dev=8, st_ino=101)
-        raise AssertionError("unexpected helper fstat")
+        if fd not in self.fds:
+            raise OSError(errno.EBADF, "closed")
+        if self.fds[fd] == "exe":
+            process = self.processes[123]
+            return SimpleNamespace(st_dev=process.executable[0], st_ino=process.executable[1])
+        return SimpleNamespace(st_dev=1, st_ino=fd, st_size=0, st_mtime_ns=1,
+                               st_ctime_ns=1, st_mode=stat.S_IFREG | 0o600, st_uid=0, st_gid=0)
+
+    def dup2(self, source, target, inheritable=True):
+        del inheritable
+        self.fds[target] = self.fds[source]
+    def close_range(self, first, last): self.close_ranges.append((first, last))
+    def getpid(self): return 7
+    def getsid(self, pid):
+        if self.fault == "session-read": raise OSError("session")
+        process = self.processes[pid]
+        return process.session + (1 if self.fault == "session-drift" else 0)
+    def getpgid(self, pid):
+        process = self.processes[pid]
+        return process.group + (1 if self.fault == "process-group-drift" else 0)
+    def monotonic(self):
+        self.clock += 0.4
+        return self.clock
+    def sleep(self, seconds): self.clock += seconds
+
     def pidfd_signal(self, pidfd, signum):
-        assert self.live[pidfd][0] == "pidfd"
-        self.signals.append((pidfd, signum))
-        if self.fault == "term" and signum == signal.SIGTERM: raise OSError("term fault")
-        if self.fault == "kill" and signum == signal.SIGKILL: raise OSError("kill fault")
-    def monotonic(self): self.clock += 0.6; return self.clock
-    def setsid(self):
-        if self.fault == "child-setup": raise OSError("setsid fault")
-    def getppid(self): return os.getpid()
-    def dup2(self, source, target): del source, target
-    def execve(self, fd, argv, environment):
-        del fd, argv, environment
-        self.exec_called = True
-        raise OSError("exec fault") if self.fault == "child-exec" else ChildExit()
-    def write(self, fd, data): self.writes.append((fd, data)); return len(data)
-    def exit_child(self, status):
-        self.live.clear()
-        raise ChildExit(status)
+        process = self.pidfds[pidfd]
+        if self.fault == "term-error" and signum == signal.SIGTERM: raise OSError("TERM")
+        if self.fault == "kill-error" and signum == signal.SIGKILL: raise OSError("KILL")
+        process.signals.append(signum)
+        if self.fault == "identity-drift-before-kill" and signum == signal.SIGTERM:
+            process.start += 1
+
+    def wait_pidfd_nohang(self, pidfd):
+        if self.fault == "wait-error": raise OSError("wait")
+        if self.fault == "reap-lost": raise ChildProcessError()
+        process = self.pidfds[pidfd]
+        if not process.signals:
+            return False
+        last = process.signals[-1]
+        exits = self.fault not in {
+            "term-timeout-kill-exit", "identity-drift-before-kill",
+            "kill-error", "kill-timeout", "eof-while-live", "pidfd-close-while-live",
+        }
+        if last == signal.SIGKILL and self.fault == "term-timeout-kill-exit": exits = True
+        if exits:
+            process.live = False
+            process.reaped = True
+            return True
+        return False
 
 
-for fault in MATRIX["helper_start_faults"]:
-    ops = ProcessOps(fault)
-    rejected(lambda ops=ops: closure._spawn_helper(ops, RESOLVED), fault)
-    assert not ops.live and (fault in {"gate-pipe", "status-pipe", "devnull-open", "fork"} or ops.wait_calls)
+def fd_case(case):
+    ops = KernelOps(case.get("fault"))
+    try:
+        first = closure._snapshot_fds(ops)
+        ops.dir_reads = 0
+        second = closure._snapshot_fds(ops)
+    except BaseException as error:
+        if case["expect"] != "reject": raise
+        if case.get("fault") == "fd-dir-read-close" and not isinstance(error, closure.RuntimeClosureCleanupError):
+            raise AssertionError("fd primary/close failures were not aggregated") from error
+    else:
+        if case["expect"] != "accept": raise AssertionError(f"fd case accepted: {case['id']}")
+        if first != second or first != frozenset({0, 1, 2, 88}):
+            raise AssertionError("enumeration descriptor contaminated the baseline")
 
 
-class Libc:
-    def prctl(self, *args): del args; return 0
+def start(ops):
+    closure._reserve_stdio(ops)
+    baseline = frozenset(ops.fds)
+    preparation = closure.PreparationLease(ops, baseline, ())
+    helper = closure._spawn_helper(ops, preparation, RESOLVED)
+    if helper not in preparation.helpers or helper.state is not closure._HelperState.EXEC_IDENTIFIED:
+        raise AssertionError("helper was not registered and identified")
+    return preparation, helper
 
 
-for fault in MATRIX["child_faults"]:
-    ops = ProcessOps(fault, child=True)
-    with patch.object(closure.ctypes, "CDLL", return_value=Libc()):
-        rejected(lambda ops=ops: closure._spawn_helper(ops, RESOLVED), fault)
-    assert not ops.live and ops.writes and ops.writes[-1][1] == b"E"
-    assert ops.exec_called == (fault == "child-exec")
+def helper_case(case):
+    ops = KernelOps(case.get("fault"))
+    closure._reserve_stdio(ops)
+    preparation = closure.PreparationLease(ops, frozenset(ops.fds), ())
+    try:
+        helper = closure._spawn_helper(ops, preparation, RESOLVED)
+        if case.get("fault") == "ambient-fd":
+            closure._close_complement(ops, (0, 1, 2, 900))
+            if not any(first <= 88 <= last for first, last in ops.close_ranges):
+                raise AssertionError("ambient fd was not in the closed complement")
+        closure._stop_helper(ops, preparation, helper)
+    except BaseException:
+        if case["expect"] != "reject":
+            raise
+    else:
+        if case["expect"] != "accept":
+            raise AssertionError(f"helper case accepted: {case['id']}")
+        if ops.processes[123].live or not ops.processes[123].reaped:
+            raise AssertionError("helper success did not reap the independent process")
+    if 123 in ops.processes and ops.processes[123].live:
+        retained = any(helper.pid == 123 and helper.pidfd.state is closure._FdState.OWNED
+                       for helper in preparation.helpers)
+        if not retained and case.get("fault") != "spawn-after":
+            raise AssertionError(f"live helper lacks retained recovery authority: {case['id']}")
 
 
-def started_ops(fault=None):
-    ops = ProcessOps(fault)
-    child, gate = closure._spawn_helper(ops, RESOLVED)
-    assert set(kind for kind, _raw in ops.live.values()) == {"pipe-w", "pidfd"}
-    return ops, child, gate
-
-
-ops, child, gate = started_ops()
-closure._stop_helper(ops, child, gate)
-assert child.reaped and not ops.live
-for fault in MATRIX["stop_faults"]:
-    ops, child, gate = started_ops(fault)
-    rejected(lambda ops=ops, child=child, gate=gate: closure._stop_helper(ops, child, gate), fault)
-    assert not ops.live, f"stop residue after {fault}"
-for fault in MATRIX["stop_open_faults"]:
-    ops, child, gate = started_ops()
+def stop_case(case):
+    ops = KernelOps()
+    preparation, helper = start(ops)
+    fault = case.get("fault")
     ops.fault = fault
-    rejected(lambda ops=ops, child=child, gate=gate: closure._stop_helper(ops, child, gate), fault)
-    assert not ops.live, f"stop-open residue after {fault}"
+    process = ops.processes[123]
+    if fault == "direct-descendant": process.children = (124,)
+    if fault == "grandchild": process.children = (124, 125)
+    if fault == "start-time-drift": process.start += 1
+    if fault == "executable-drift": process.executable = (8, 999)
+    try:
+        closure._stop_helper(ops, preparation, helper)
+    except BaseException:
+        if case["expect"] != "reject": raise
+    else:
+        if case["expect"] != "accept": raise AssertionError(f"stop case accepted: {case['id']}")
+    if process.signals and fault in {"start-time-drift", "session-drift", "process-group-drift", "executable-drift"}:
+        raise AssertionError("production signaled after identity drift")
+    if fault == "pidfd-close-while-live" and helper.pidfd.fd in ops.close_attempts:
+        raise AssertionError("pidfd was discarded while the child could remain live")
 
 
-class CloseOps(closure._Ops):
-    def __init__(self, fail=False): self.live = set(); self.closed = []; self.fail = fail
-    def close(self, fd):
-        assert fd in self.live, "owner double close"
-        self.live.remove(fd); self.closed.append(fd)
-        if self.fail: raise OSError(f"close-{fd}")
+def cleanup_case(case):
+    fault = case["fault"]
+    ops = KernelOps()
+    if fault == "three-close-errors":
+        leases = [closure.FdLease(ops.allocate("owned"), str(index)) for index in range(3)]
+        original = ops.close
+        def failing(fd):
+            original(fd)
+            raise OSError(f"close-{fd}")
+        ops.close = failing
+        try: closure._finish_fds(ops, leases, ValueError("primary"))
+        except closure.RuntimeClosureCleanupError as error:
+            if len(error.failures) != 4: raise AssertionError("cleanup aggregation lost failures")
+        else: raise AssertionError("cleanup errors accepted")
+    elif fault == "close-after-reuse":
+        fd = ops.allocate("owned")
+        lease = closure.FdLease(fd, "reuse")
+        original = ops.close
+        def reused(value):
+            original(value)
+            ops.fds[value] = "foreign"
+            raise OSError("after effect")
+        ops.close = reused
+        first = None
+        try: lease.close(ops)
+        except OSError as error: first = error
+        try: lease.close(ops)
+        except OSError as error:
+            if error is not first or ops.close_attempts.count(fd) != 1 or ops.fds[fd] != "foreign":
+                raise AssertionError("uncertain close was not poison-stable")
+    elif fault == "double-close":
+        fd = ops.allocate("owned")
+        lease = closure.FdLease(fd, "double")
+        lease.close(ops)
+        lease.close(ops)
+        if ops.close_attempts.count(fd) != 1: raise AssertionError("proved close was repeated")
+    elif fault == "duplicate-registration":
+        preparation = closure.PreparationLease(ops, frozenset(), ())
+        fd = ops.allocate("owned")
+        preparation.register_fd(fd, "one")
+        try: preparation.register_fd(fd, "two")
+        except closure.RuntimeClosureError: pass
+        else: raise AssertionError("duplicate registration accepted")
+    elif fault == "unexpected-child":
+        preparation = closure.PreparationLease(ops, frozenset(), ())
+        process = Process()
+        ops.processes[123] = process
+        if not process.live: raise AssertionError("independent process model collapsed into registry")
+    elif fault == "cleanup-after":
+        lease = closure.FdLease(ops.allocate("owned"), "cleanup")
+        lease.close(ops)
+        if lease.state is not closure._FdState.CLOSED: raise AssertionError("close did not settle last")
+    else: raise AssertionError(f"unimplemented cleanup row: {fault}")
 
 
-ops = CloseOps(True); registry = closure._Registry(ops)
-for fd in (30, 31, 32): ops.live.add(fd); registry.add(fd)
-failures = registry.close_all()
-assert len(failures) == 3 and ops.closed == [32, 31, 30] and not ops.live
-ops.live.update((30, 31, 32))
-try:
-    closure._close_local(ops, (30, 31, 32), ValueError("primary"))
-except closure.RuntimeClosureCleanupError as error:
-    assert len(error.failures) == 4 and isinstance(error.failures[0], ValueError)
-else:
-    raise AssertionError("primary and cleanup failures were not aggregated")
-ops.live.add(32)  # the kernel reused a number after the failed close
-assert registry.close_all() == () and ops.live == {32}
-rejected(lambda: (registry.add(40), registry.add(40)), "duplicate registration")
-
-ops = CloseOps(); owner = closure.PreparedRuntimeClosure(closure._PRIVATE_CONSTRUCTOR, ops)
-owner._state = closure._State.READY; owner._fd_baseline = frozenset(); owner._child_baseline = b""
-ops.list_fds = lambda: frozenset(ops.live); ops.child_baseline = lambda: b""
-owner.close(); owner.close()
-assert not ops.closed and not ops.live
-
+executed = []
+for group, runner in (("fd_baseline_cases", fd_case), ("helper_cases", helper_case),
+                      ("stop_cases", stop_case), ("cleanup_cases", cleanup_case)):
+    for case in MATRIX[group]:
+        runner(case)
+        executed.append(case["id"])
+declared = [case["id"] for group in MATRIX if group.endswith("_cases") for case in MATRIX[group]]
+if executed != declared or len(executed) != len(set(executed)):
+    raise AssertionError("lifecycle manifest rows were not executed exactly once")
 print("Outcome 2 lifecycle portable tests passed")

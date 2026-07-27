@@ -49,26 +49,14 @@ const integration = {
   },
 };
 
+type ClosureTool = Record<string, unknown> & { objects: Array<Record<string, unknown>> };
+type ClosureReport = Record<string, unknown> & { tools: ClosureTool[] };
+const closureGolden = JSON.parse(
+  readFileSync(resolve(root, "test/fixtures/outcome-two/reports/runtime-closure-v1.canonical.jsonl"), "utf8"),
+) as ClosureReport;
+
 const validSamples: Record<string, unknown> = {
-  "trusted-runtime-closure-v1.json": {
-    version: "cogs.trusted-runtime-closure/v1",
-    closure_sha256: "a".repeat(64),
-    tools: [
-      ["python3-parser", false, null],
-      ["zstd", true, "linux-memfd-exec-seals-v1"],
-      ["gzip", true, "linux-memfd-exec-seals-v1"],
-    ].map(([tool, sealed_executable, seal_profile]) => ({
-      tool,
-      sealed_executable,
-      seal_profile,
-      closure_sha256: "b".repeat(64),
-      mapping_sha256: "c".repeat(64),
-      objects: [
-        { role: "executable", size: 1, sha256: "d".repeat(64), soname: null, needed: [] },
-        { role: "loader", size: 1, sha256: "e".repeat(64), soname: "ld.so", needed: [] },
-      ],
-    })),
-  },
+  "trusted-runtime-closure-v1.json": closureGolden,
   "egress-case-manifest-v1alpha1.json": {
     version: "cogs.egress-cases/v1alpha1",
     cases: [
@@ -185,6 +173,20 @@ for (const [file, sample] of Object.entries(validSamples)) {
   const withUnknown = { ...(sample as Record<string, unknown>), unexpected_security_field: true };
   assert.equal(validate(withUnknown), false, `${file} must reject unknown top-level fields`);
 }
+
+function closureMutation(scope: string): ClosureReport {
+  const value = structuredClone(closureGolden);
+  if (scope === "report") value.source_generations = [];
+  if (scope === "object") value.tools[0].objects[0].source_generation = {};
+  if (scope === "role") value.tools[0].objects[1].role = "library";
+  if (scope === "soname") value.tools[0].objects[2].soname = "bad name";
+  if (scope === "needed") value.tools[0].objects[0].needed = Array(129).fill("lib.so");
+  if (scope === "tool") value.tools.reverse();
+  return value;
+}
+const closureMutations = ["report", "object", "role", "soname", "needed", "tool"].map(closureMutation);
+const closureValidator = validatorFor("trusted-runtime-closure-v1.json");
+for (const mutation of closureMutations) assert.equal(closureValidator(mutation), false);
 
 const decisionValidator = validatorFor("policy-decision-v1alpha1.json");
 for (const invalidDecision of [
