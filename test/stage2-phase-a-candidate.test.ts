@@ -177,7 +177,7 @@ test("runtime-discovery workflow has the exact PR 230 one-shot guard and cleanup
   );
   assert.match(
     rootLauncher,
-    /identity\(os\.stat\(checkout,follow_symlinks=False\)\) != wanted[\s\S]*child_launcher = r"""[\s\S]*os\.open\(checkout,os\.O_PATH\|os\.O_DIRECTORY\|os\.O_NOFOLLOW\|os\.O_CLOEXEC\)[\s\S]*identity\(os\.stat\(checkout,follow_symlinks=False\)\) != wanted/u,
+    /identity\(os\.stat\(checkout,follow_symlinks=False\)\) != wanted[\s\S]*child_launcher = r"""[\s\S]*resource\.getrlimit\(resource\.RLIMIT_NOFILE\)[\s\S]*hard < 8193[\s\S]*resource\.setrlimit\(resource\.RLIMIT_NOFILE,\(8193,hard\)\)[\s\S]*os\.open\(checkout,os\.O_PATH\|os\.O_DIRECTORY\|os\.O_NOFOLLOW\|os\.O_CLOEXEC\)[\s\S]*identity\(os\.stat\(checkout,follow_symlinks=False\)\) != wanted/u,
   );
   assert.match(
     rootLauncher,
