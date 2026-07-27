@@ -1,0 +1,58 @@
+name: Outcome 2 runner capability observation
+
+on:
+  pull_request:
+    types: [labeled]
+
+permissions:
+  contents: read
+
+jobs:
+  runner-capability-probe:
+    name: Non-authoritative runner capability observation
+    if: >-
+      github.run_attempt == 1 &&
+      github.repository == 'nenb/cogs' &&
+      github.event.label.name == 'outcome-two-runner-capability' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - name: Check out exact pull request head
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Observe and validate one non-authoritative canonical report
+        env:
+          EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          EXPECTED_REPOSITORY: ${{ github.repository }}
+          PROBE_RUN_ATTEMPT: ${{ github.run_attempt }}
+          PROBE_RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          report="$RUNNER_TEMP/outcome-two-runner-capability.json"
+          test ! -e "$report"
+          test "$(/usr/bin/git rev-parse HEAD)" = "$EXPECTED_HEAD_SHA"
+          umask 077
+          env -i /usr/bin/timeout --signal=TERM --kill-after=5s 120s \
+            /usr/bin/python3 -I "$GITHUB_WORKSPACE/scripts/runner-capability-probe.py" run \
+            --repository "$EXPECTED_REPOSITORY" \
+            --head-sha "$EXPECTED_HEAD_SHA" \
+            --workflow .github/workflows/outcome-two-runner-capability.yml \
+            --run-id "$PROBE_RUN_ID" \
+            --run-attempt "$PROBE_RUN_ATTEMPT" \
+            --image-os "${ImageOS-}" \
+            --image-version "${ImageVersion-}" \
+            --runner-arch "${RUNNER_ARCH-}" \
+            --runner-environment "${RUNNER_ENVIRONMENT-}" </dev/null >"$report"
+          env -i /usr/bin/timeout --signal=TERM --kill-after=1s 5s \
+            /usr/bin/python3 -I "$GITHUB_WORKSPACE/scripts/runner-capability-probe.py" validate \
+            --report "$report" \
+            --expected-authority none \
+            --expected-qualified false >/dev/null
+          /bin/cat -- "$report"
+
+      # The probe design permits only the validated JSON line in the ordinary
+      # job log. It does not permit publication as an evidence artifact.
