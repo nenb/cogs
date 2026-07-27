@@ -1,6 +1,6 @@
 # ADR 0068: Split Phase B discovery into runtime and lifecycle slices
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-27
 - Decision owner: Nick Byrne
 - Amendment scope: Supersede ADR 0066 only where it combines runtime-asset discovery and authentic lifecycle discovery into one `phase-b-discovery` lifecycle/event. Amend ADR 0065's Phase B ordering and hosted-gate count and ADR 0067's retained singular-stage/event-count clauses accordingly. Every other non-conflicting ADR 0065–0067 requirement remains binding.
