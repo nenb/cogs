@@ -227,9 +227,9 @@ test("runtime-discovery workflow has the exact PR 230 one-shot guard and cleanup
   const acceptsNonCloexec = observer.replace(" or not flags & os.O_CLOEXEC", "");
   assert.notEqual(acceptsNonCloexec, observer);
   assert.doesNotMatch(acceptsNonCloexec, /not flags & os\.O_CLOEXEC/u);
-  assert.equal(
-    sandbox.match(/^ {10}\/usr\/bin\/mount --no-canonicalize --bind \/proc\/self\/fd\/3 "\$root\/src"$/gmu)?.length,
-    1,
+  assert.match(
+    sandbox,
+    /libc\.mount\.argtypes[\s\S]*libc\.mount\(b"\/proc\/self\/fd\/3",os\.fsencode\(target\),None,4096,None\)[\s\S]*access = "rw"/u,
   );
   assert.equal(sandbox.match(/\/proc\/self\/fd\/3/gu)?.length, 1);
   assert.match(
@@ -238,7 +238,7 @@ test("runtime-discovery workflow has the exact PR 230 one-shot guard and cleanup
   );
   assert.equal(sandbox.match(/\/usr\/bin\/python3 -I -c "\$verify_checkout_bind"/gu)?.length, 2);
   assert.equal(sandbox.match(/\/usr\/bin\/python3 -I -c "\$descriptor_observer"/gu)?.length, 2);
-  assert.match(sandbox, /"\$checkout_gid" before\n[\s\S]*\/usr\/bin\/mount --no-canonicalize/u);
+  assert.match(sandbox, /"\$checkout_gid" before\n[\s\S]*"\$root\/src" bind/u);
   assert.match(
     sandbox,
     / {10}VERIFY\n {10}exec 3>&-\n {10}\/usr\/bin\/python3 -I -c "\$descriptor_observer" "\$checkout_dev" "\$checkout_ino" "\$checkout_uid" "\$checkout_gid" after\n {10}COGS_NATIVE_TEST_PATH=\$test_path exec \/usr\/sbin\/chroot/u,

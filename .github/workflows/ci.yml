@@ -390,9 +390,13 @@ jobs:
             fi
           done
           IFS= read -r -d '' verify_checkout_bind <<'BINDVERIFY' || test "$?" = 1
-          import os, posixpath, re, stat, sys
+          import ctypes, os, posixpath, re, stat, sys
           dev, ino, host_uid, host_gid = map(int, sys.argv[1:5])
           target, access = sys.argv[5], sys.argv[6]
+          if access == "bind":
+              libc = ctypes.CDLL(None, use_errno=True); libc.mount.argtypes = (ctypes.c_char_p,ctypes.c_char_p,ctypes.c_char_p,ctypes.c_ulong,ctypes.c_void_p); libc.mount.restype = ctypes.c_int
+              if libc.mount(b"/proc/self/fd/3",os.fsencode(target),None,4096,None) != 0: raise OSError(ctypes.get_errno(),"descriptor bind")
+              access = "rw"
           escapes = {r"\040":" ",r"\011":"\t",r"\012":"\n",r"\134":"\\"}
           def decode(value):
               if re.search(r"\\(?!040|011|012|134)", value): raise RuntimeError("mountinfo escape")
@@ -437,8 +441,7 @@ jobs:
                   or not bound["root"].startswith("/") or posixpath.normpath(bound["root"]) != bound["root"]):
               raise RuntimeError("checkout mount identity")
           BINDVERIFY
-          /usr/bin/mount --no-canonicalize --bind /proc/self/fd/3 "$root/src"
-          /usr/bin/python3 -I -c "$verify_checkout_bind" "$checkout_dev" "$checkout_ino" "$checkout_uid" "$checkout_gid" "$root/src" rw
+          /usr/bin/python3 -I -c "$verify_checkout_bind" "$checkout_dev" "$checkout_ino" "$checkout_uid" "$checkout_gid" "$root/src" bind
           /usr/bin/mount -o remount,bind,ro,nosuid,nodev,noexec "$root/src"
           /usr/bin/python3 -I -c "$verify_checkout_bind" "$checkout_dev" "$checkout_ino" "$checkout_uid" "$checkout_gid" "$root/src" ro
           /usr/bin/mount -t tmpfs -o size=16m,mode=1777,nosuid,nodev,noexec cogs-native-runtime-tmp "$root/tmp"
@@ -476,10 +479,6 @@ jobs:
               try: os.write(2,b"native seccomp launcher failed\n")
               finally: os._exit(126)
           SECCOMP
-          case "$test_path" in
-            /src/test/aws-stage2-completion-kata-process.py|/src/test/stage2-phase-a-candidate.py) ;;
-            *) exit 82;;
-          esac
           /usr/bin/python3 -I - "$old_tmp_device" "$old_tmp_mount_id" <<'VERIFY'
           import json, os, posixpath, re, stat, sys
           old_device, old_mount_id = int(sys.argv[1]), int(sys.argv[2])
