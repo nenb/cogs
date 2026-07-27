@@ -117,10 +117,10 @@
         "github_sha": { "$ref": "#/$defs/sha1" },
         "github_workflow_sha": { "$ref": "#/$defs/sha1" },
         "job": { "const": "runner-capability-probe" },
-        "pull_request_number": { "type": "integer", "minimum": 1, "maximum": 2147483647 },
+        "pull_request_number": { "type": "integer", "minimum": 1, "maximum": 9999999999 },
         "repository": { "const": "nenb/cogs" },
         "run_attempt": { "type": "integer", "minimum": 1, "maximum": 255 },
-        "run_id": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$", "maxLength": 20 },
+        "run_id": { "type": "string", "pattern": "^[1-9][0-9]{0,19}$", "maxLength": 20 },
         "workflow": { "const": ".github/workflows/outcome-two-runner-capability.yml" }
       }
     },
@@ -190,13 +190,12 @@
         "user_direct_root": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["create", "gid_map", "gid_map_status", "setgroups", "uid_map", "uid_map_status"],
+          "required": ["create", "exact_root_mapping", "gid_map_status", "setgroups", "uid_map_status"],
           "properties": {
             "create": { "$ref": "#/$defs/probeStatus" },
-            "gid_map": { "$ref": "#/$defs/nullableIdMap" },
+            "exact_root_mapping": { "$ref": "#/$defs/nullableBoolean" },
             "gid_map_status": { "$ref": "#/$defs/probeStatus" },
             "setgroups": { "enum": ["deny", "allow", "absent", "unexpected"] },
-            "uid_map": { "$ref": "#/$defs/nullableIdMap" },
             "uid_map_status": { "$ref": "#/$defs/probeStatus" }
           }
         }
@@ -219,6 +218,7 @@
         "child_owned_proc_after_cap_drop",
         "child_owned_proc_before_cap_drop",
         "child_proc_distinct_from_parent",
+        "child_proc_distinct_from_parent_status",
         "child_proc_read_only",
         "child_proc_view_has_pid_1",
         "child_userns_parent_proc_after_cap_drop",
@@ -231,6 +231,7 @@
         "child_owned_proc_after_cap_drop": { "$ref": "#/$defs/mapFilesCase" },
         "child_owned_proc_before_cap_drop": { "$ref": "#/$defs/mapFilesCase" },
         "child_proc_distinct_from_parent": { "$ref": "#/$defs/nullableBoolean" },
+        "child_proc_distinct_from_parent_status": { "$ref": "#/$defs/probeStatus" },
         "child_proc_read_only": { "$ref": "#/$defs/nullableBoolean" },
         "child_proc_view_has_pid_1": { "$ref": "#/$defs/nullableBoolean" },
         "child_userns_parent_proc_after_cap_drop": { "$ref": "#/$defs/mapFilesCase" },
@@ -244,10 +245,11 @@
     "rlimit_nofile": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["hard", "high_fd_4096_possible", "soft"],
+      "required": ["hard", "high_fd_4096_possible", "high_fd_4096_status", "soft"],
       "properties": {
         "hard": { "$ref": "#/$defs/rlimitValue" },
         "high_fd_4096_possible": { "type": "boolean" },
+        "high_fd_4096_status": { "$ref": "#/$defs/probeStatus" },
         "soft": { "$ref": "#/$defs/rlimitValue" }
       }
     },
@@ -282,7 +284,9 @@
       "required": [
         "final_mode",
         "initial_mode",
+        "initial_mode_status",
         "initial_no_new_privs",
+        "initial_no_new_privs_status",
         "install_filter",
         "network_syscalls_policy",
         "set_no_new_privs"
@@ -291,8 +295,14 @@
         "final_mode": {
           "oneOf": [{ "type": "null" }, { "enum": [0, 1, 2] }]
         },
-        "initial_mode": { "enum": [0, 1, 2] },
-        "initial_no_new_privs": { "enum": [0, 1] },
+        "initial_mode": {
+          "oneOf": [{ "type": "null" }, { "enum": [0, 1, 2] }]
+        },
+        "initial_mode_status": { "$ref": "#/$defs/probeStatus" },
+        "initial_no_new_privs": {
+          "oneOf": [{ "type": "null" }, { "enum": [0, 1] }]
+        },
+        "initial_no_new_privs_status": { "$ref": "#/$defs/probeStatus" },
         "install_filter": { "$ref": "#/$defs/probeStatus" },
         "network_syscalls_policy": { "enum": ["fixed-eperm-filter-installed", "filter-unavailable"] },
         "set_no_new_privs": { "$ref": "#/$defs/probeStatus" }
@@ -388,16 +398,64 @@
     }
   },
   "$defs": {
-    "idMap": {
-      "type": "array",
-      "maxItems": 5,
-      "items": {
-        "type": "array",
-        "minItems": 3,
-        "maxItems": 3,
-        "prefixItems": [{ "$ref": "#/$defs/uint32" }, { "$ref": "#/$defs/uint32" }, { "$ref": "#/$defs/uint32" }],
-        "items": false
-      }
+    "blockedBy": {
+      "type": "string",
+      "enum": [
+        "descriptors.close_range_high.invocation",
+        "descriptors.close_range_low.invocation",
+        "descriptors.exec_cloexec.invocation",
+        "kernel.uname_status",
+        "kvm.check_extension_user_memory",
+        "kvm.get_api_version",
+        "kvm.open_read_write",
+        "namespaces.combined_user_mount_pid_fork.cleanup",
+        "namespaces.combined_user_mount_pid_fork.create",
+        "namespaces.combined_user_mount_pid_fork.proc_mount",
+        "namespaces.mount.create",
+        "namespaces.network.create",
+        "namespaces.pid.create",
+        "namespaces.user_direct_root.create",
+        "namespaces.user_direct_root.gid_map_status",
+        "namespaces.user_direct_root.uid_map_status",
+        "opath.across_mount_namespace.bind_mount_from_proc_fd",
+        "opath.across_mount_namespace.cleanup",
+        "opath.across_mount_namespace.open_opath_directory",
+        "opath.same_mount_namespace.bind_mount_from_proc_fd",
+        "opath.same_mount_namespace.cleanup",
+        "opath.same_mount_namespace.open_opath_directory",
+        "procfs.child_owned_proc_after_cap_drop.maps_read",
+        "procfs.child_owned_proc_after_cap_drop.setup",
+        "procfs.child_owned_proc_before_cap_drop.maps_read",
+        "procfs.child_owned_proc_before_cap_drop.setup",
+        "procfs.child_proc_distinct_from_parent_status",
+        "procfs.child_userns_parent_proc_after_cap_drop.maps_read",
+        "procfs.child_userns_parent_proc_after_cap_drop.setup",
+        "procfs.child_userns_parent_proc_before_cap_drop.maps_read",
+        "procfs.child_userns_parent_proc_before_cap_drop.setup",
+        "procfs.host_runner.maps_read",
+        "procfs.host_runner.setup",
+        "procfs.host_sudo_root.maps_read",
+        "procfs.host_sudo_root.setup",
+        "rlimit_nofile.high_fd_4096_status",
+        "seccomp.initial_mode_status",
+        "seccomp.initial_no_new_privs_status",
+        "seccomp.install_filter",
+        "seccomp.set_no_new_privs",
+        "sudo.close_from_3.invocation",
+        "sudo.close_from_4.invocation",
+        "sudo.executable.observation",
+        "sudo.noninteractive",
+        "temporary_files.private_tmpfs.cleanup",
+        "temporary_files.private_tmpfs.linkat_empty_path",
+        "temporary_files.private_tmpfs.open_otmpfile",
+        "temporary_files.runner_temp.cleanup",
+        "temporary_files.runner_temp.linkat_empty_path",
+        "temporary_files.runner_temp.open_otmpfile",
+        "tools.gzip.observation",
+        "tools.python3.observation",
+        "tools.unshare.observation",
+        "tools.zstd.observation"
+      ]
     },
     "mapFilesCase": {
       "type": "object",
@@ -409,7 +467,8 @@
         "first_open_failure",
         "map_files_opened",
         "maps_read",
-        "proc_mount_created_in"
+        "proc_mount_created_in",
+        "setup"
       ],
       "properties": {
         "all_opened_descriptors_closed": { "type": "boolean" },
@@ -420,14 +479,12 @@
         },
         "map_files_opened": { "type": "integer", "minimum": 0, "maximum": 8 },
         "maps_read": { "$ref": "#/$defs/probeStatus" },
-        "proc_mount_created_in": { "enum": ["host", "parent-userns", "child-userns"] }
+        "proc_mount_created_in": { "enum": ["host", "parent-userns", "child-userns"] },
+        "setup": { "$ref": "#/$defs/probeStatus" }
       }
     },
     "nullableBoolean": {
       "oneOf": [{ "type": "null" }, { "type": "boolean" }]
-    },
-    "nullableIdMap": {
-      "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/idMap" }]
     },
     "nullableUint8": {
       "oneOf": [{ "type": "null" }, { "type": "integer", "minimum": 0, "maximum": 255 }]
@@ -457,8 +514,11 @@
     "probeStatus": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["errno", "state"],
+      "required": ["blocked_by", "errno", "state"],
       "properties": {
+        "blocked_by": {
+          "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/blockedBy" }]
+        },
         "errno": {
           "oneOf": [{ "type": "null" }, { "type": "integer", "minimum": 1, "maximum": 4095 }]
         },
@@ -467,11 +527,24 @@
       "oneOf": [
         {
           "type": "object",
-          "properties": { "errno": { "type": "null" }, "state": { "enum": ["ok", "blocked", "mismatch"] } }
+          "properties": {
+            "blocked_by": { "type": "null" },
+            "errno": { "type": "null" },
+            "state": { "enum": ["ok", "mismatch"] }
+          }
         },
         {
           "type": "object",
           "properties": {
+            "blocked_by": { "$ref": "#/$defs/blockedBy" },
+            "errno": { "type": "null" },
+            "state": { "const": "blocked" }
+          }
+        },
+        {
+          "type": "object",
+          "properties": {
+            "blocked_by": { "type": "null" },
             "errno": {
               "oneOf": [{ "type": "null" }, { "enum": [38, 95] }]
             },
@@ -480,11 +553,16 @@
         },
         {
           "type": "object",
-          "properties": { "errno": { "enum": [1, 13] }, "state": { "const": "denied" } }
+          "properties": {
+            "blocked_by": { "type": "null" },
+            "errno": { "enum": [1, 13] },
+            "state": { "const": "denied" }
+          }
         },
         {
           "type": "object",
           "properties": {
+            "blocked_by": { "type": "null" },
             "errno": {
               "type": "integer",
               "minimum": 1,
@@ -554,7 +632,6 @@
           "oneOf": [{ "type": "null" }, { "type": "integer", "minimum": 1, "maximum": 134217728 }]
         }
       }
-    },
-    "uint32": { "type": "integer", "minimum": 0, "maximum": 4294967295 }
+    }
   }
 }
