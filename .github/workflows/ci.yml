@@ -616,7 +616,7 @@ jobs:
               if result.returncode != 0 or compared.returncode != 0:
                   os.lseek(output_fd, 0, os.SEEK_SET)
                   diagnostic = os.read(output_fd, 65_537)
-                  classes = ((b"native seccomp launcher failed","seccomp"),(b"native-process-failure:","process"),(b"--no-canonicalize","mount-option"),(b"unshare:","unshare"),(b"Traceback","python"))
+                  classes = ((b"launcher descriptor set","launcher-fds"),(b"non-root-only identity map","identity-map"),(b"mapped runner identity","runner-map"),(b"checkout descriptor identity","checkout-fd"),(b"checkout descriptor flags","checkout-flags"),(b"checkout fdinfo","checkout-fdinfo"),(b"checkout target identity","checkout-target"),(b"checkout mount identity","checkout-mount"),(b"terminal descriptor set","terminal-fds"),(b"checkout identity","checkout-identity"),(b"launcher arguments","launcher-args"),(b"launcher authority","launcher-authority"),(b"descriptor normalization","descriptor-normalization"),(b"descriptor closure","descriptor-closure"),(b"native seccomp launcher failed","seccomp"),(b"native-process-failure:","process"),(b"--no-canonicalize","mount-option"),(b"unshare:","unshare"),(b"Traceback","python"))
                   label = next((value for needle,value in classes if needle in diagnostic),"other")
                   raise RuntimeError(f"preflight status {result.returncode}/{compared.returncode} class {label} bytes {len(diagnostic)}")
               print(marker, flush=True)
