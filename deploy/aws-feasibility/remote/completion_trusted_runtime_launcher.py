@@ -295,7 +295,7 @@ def _validate_report(report: dict[str, object]) -> None:
     if type(tools) is not list or len(tools) != 3:
         raise RuntimeLauncherError("closure report tool cardinality mismatch")
     expected_tools = ("python3-parser", "zstd", "gzip")
-    for index, (raw_tool, expected_tool) in enumerate(zip(tools, expected_tools, strict=True)):
+    for index, (raw_tool, expected_tool) in enumerate(zip(tools, expected_tools)):
         tool = _exact_keys(raw_tool, {"closure_sha256", "mapping_sha256", "objects", "seal_profile", "sealed_executable", "tool"})
         sealed = expected_tool != "python3-parser"
         if tool["tool"] != expected_tool or type(tool["sealed_executable"]) is not bool or tool["sealed_executable"] is not sealed:
@@ -419,7 +419,7 @@ def _run_fixed_tool(role: str, descriptors: tuple[int, int, int], payload: bytes
                 raise OSError(errno.ESRCH, "parent changed")
             os.close(stdin_w); os.close(stdout_r); os.close(status_r)
             duplicates = tuple(fcntl.fcntl(fd, fcntl.F_DUPFD_CLOEXEC, 256) for fd in (*descriptors, stdin_r, stdout_w, status_w))
-            for source, (_name, target) in zip(duplicates[:3], _FIXED_FD_MAP, strict=True):
+            for source, (_name, target) in zip(duplicates[:3], _FIXED_FD_MAP):
                 os.dup2(source, target, inheritable=False)
             input_fd, output_fd, error_fd = duplicates[3:]
             os.dup2(input_fd, 0, inheritable=True); os.dup2(output_fd, 1, inheritable=True)
@@ -532,7 +532,7 @@ def _launch_with_adapter_for_tests(handoff: object, adapter: object) -> RuntimeQ
     try:
         baseline = adapter.baseline(descriptors)
         revision = adapter.authenticate_tracked_source(handoff)
-        for (role, _target), descriptor in zip(_FIXED_FD_MAP, descriptors, strict=True):
+        for (role, _target), descriptor in zip(_FIXED_FD_MAP, descriptors):
             adapter.inspect_descriptor(role, descriptor)
         report = _decode_report(adapter.read_report(descriptors[2]))
         gzip = adapter.run_tool("gzip", descriptors, _GZIP_INPUT)

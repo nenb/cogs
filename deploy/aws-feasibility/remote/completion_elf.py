@@ -1,5 +1,5 @@
 """Pure, bounded parser for the fixed Linux x86-64 ELF profile."""
-
+from __future__ import annotations
 from dataclasses import dataclass
 import struct
 
@@ -51,7 +51,7 @@ class ElfParseError(Exception):
     """The input is not in the accepted fixed ELF64 profile."""
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class ElfMetadata:
     """Immutable dependency metadata authenticated by the caller's byte source."""
 

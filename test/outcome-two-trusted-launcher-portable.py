@@ -14,7 +14,7 @@ sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[1]
 MODULE = ROOT / "deploy/aws-feasibility/remote/completion_trusted_runtime_launcher.py"
 FIXTURES = ROOT / "test/fixtures/outcome-two/launcher/cases.json"
-GOLDEN = ROOT / "test/fixtures/outcome-two/reports/runtime-closure-v1.canonical.json"
+GOLDEN = ROOT / "test/fixtures/outcome-two/reports/runtime-closure-v1.canonical.jsonl"
 
 
 def load_module():

@@ -8,25 +8,25 @@
     "/lib/x86_64-linux-gnu/libbeta.so.1": "valid-libbeta.elf"
   },
   "hostile": [
-    {"name": "missing-loader", "remove": ["/lib64/ld-linux-x86-64.so.2"]},
-    {"name": "missing-library", "remove": ["/lib/x86_64-linux-gnu/libbeta.so.1"]},
+    { "name": "missing-loader", "remove": ["/lib64/ld-linux-x86-64.so.2"] },
+    { "name": "missing-library", "remove": ["/lib/x86_64-linux-gnu/libbeta.so.1"] },
     {
       "name": "duplicate-library-candidate",
-      "add": {"/usr/lib/x86_64-linux-gnu/libalpha.so.1": "valid-libalpha.elf"},
+      "add": { "/usr/lib/x86_64-linux-gnu/libalpha.so.1": "valid-libalpha.elf" },
       "distinct_identity": true
     },
     {
       "name": "same-inode-alias",
-      "add": {"/usr/lib/x86_64-linux-gnu/libalpha.so.1": "valid-libalpha.elf"},
+      "add": { "/usr/lib/x86_64-linux-gnu/libalpha.so.1": "valid-libalpha.elf" },
       "distinct_identity": false
     },
-    {"name": "unknown-interpreter", "replace": {"/usr/bin/python3": "unknown-interpreter.elf"}},
-    {"name": "forbidden-tag", "replace": {"/usr/bin/python3": "forbidden-runpath.elf"}},
-    {"name": "short-read", "fault": "read-eof-before-size"},
-    {"name": "generation-drift", "fault": "fstat-generation-change"},
-    {"name": "mutable-mode", "fault": "group-writable"},
-    {"name": "wrong-owner", "fault": "non-root-owner"},
-    {"name": "object-bound", "fault": "object-count-129"},
-    {"name": "byte-bound", "fault": "aggregate-bytes-over-512m"}
+    { "name": "unknown-interpreter", "replace": { "/usr/bin/python3": "unknown-interpreter.elf" } },
+    { "name": "forbidden-tag", "replace": { "/usr/bin/python3": "forbidden-runpath.elf" } },
+    { "name": "short-read", "fault": "read-eof-before-size" },
+    { "name": "generation-drift", "fault": "fstat-generation-change" },
+    { "name": "mutable-mode", "fault": "group-writable" },
+    { "name": "wrong-owner", "fault": "non-root-owner" },
+    { "name": "object-bound", "fault": "object-count-129" },
+    { "name": "byte-bound", "fault": "aggregate-bytes-over-512m" }
   ]
 }

@@ -16,7 +16,7 @@ REMOTE = ROOT / "deploy/aws-feasibility/remote"
 MODULE = REMOTE / "completion_trusted_runtime_closure.py"
 sys.path.insert(0, str(REMOTE))
 SCHEMA = ROOT / "schemas/trusted-runtime-closure-v1.json"
-GOLDEN = ROOT / "test/fixtures/outcome-two/reports/runtime-closure-v1.canonical.json"
+GOLDEN = ROOT / "test/fixtures/outcome-two/reports/runtime-closure-v1.canonical.jsonl"
 MUTATIONS = ROOT / "test/fixtures/outcome-two/reports/mutations.json"
 
 
