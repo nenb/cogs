@@ -277,10 +277,22 @@ def _native_runtime_preflight():
     _NATIVE_PHASE = "descriptor-inherit"
     os.set_inheritable(high, True)
     try:
+        closures = []
         for tool, path in process._HOST_TOOLS:
             _NATIVE_PHASE = "host-closure-" + tool
-            _, cache, _ = process._host_closure(tool, path)
+            closure, cache, root = process._host_closure(tool, path)
+            closures.append(closure)
+            if tool == "python3-parser":
+                _NATIVE_PHASE = "host-mapped"
+                process._mapped_closure(os.getpid(), closure, False)
+            else:
+                _NATIVE_PHASE = "host-sealed-" + tool
+                sealed = process._sealed_bound(root)
+                os.close(sealed)
+                process._DISCOVERY_FDS.discard(sealed)
             process._close_host_bounds(cache.values(), "native host closure close")
+        _NATIVE_PHASE = "host-aggregate"
+        assert sum(item.total_bytes for item in closures) <= process.MAX_ARTIFACT_BYTES
         _NATIVE_PHASE = "host-init"
         owner = process._RuntimeDiscoveryHost()
         try:
