@@ -148,19 +148,49 @@ test("runtime-discovery workflow has the exact PR 230 one-shot guard and cleanup
 
   const nativeJob = ci.slice(ci.indexOf("  native-runtime-preflight:"));
   assert.match(nativeJob, /mount -t tmpfs[\s\S]*mount -t proc[\s\S]*exec \/usr\/sbin\/chroot/u);
-  assert.match(
-    nativeJob,
-    /"\/usr\/bin\/sudo","-n","--close-from=4","\/usr\/bin\/setpriv","--reuid","0","--regid","0","--clear-groups","--no-new-privs","\/usr\/bin\/unshare","--user","--map-users=0:0:1","--map-groups=0:0:1","--net","--pid","--fork","--mount"/u,
-  );
   const sandbox = nativeJob.slice(nativeJob.indexOf("SANDBOX'"), nativeJob.indexOf("          SANDBOX"));
-  assert.match(nativeJob, /os\.open\(checkout, os\.O_PATH\|os\.O_DIRECTORY\|os\.O_NOFOLLOW\|os\.O_CLOEXEC\)/u);
-  assert.match(nativeJob, /os\.stat\(checkout, follow_symlinks=False\)/u);
-  assert.match(nativeJob, /os\.dup2\(checkout_fd, 3, inheritable=False\)[\s\S]*os\.close\(checkout_fd\)/u);
-  assert.match(nativeJob, /else:\n {14}os\.set_inheritable\(3, False\)[\s\S]*checkout_identity = os\.fstat\(3\)/u);
+  const rootLauncherStart = nativeJob.indexOf("descriptor_launcher = r'''");
+  const rootLauncher = nativeJob.slice(rootLauncherStart, nativeJob.indexOf("          '''", rootLauncherStart));
+  const outer = nativeJob.slice(nativeJob.indexOf("<<'OUTER'"), rootLauncherStart);
+  assert.ok(rootLauncherStart > 0 && rootLauncher.length > 0);
+  assert.match(
+    outer,
+    /os\.stat\(checkout, follow_symlinks=False\)[\s\S]*checkout != checkout_root[\s\S]*os\.path\.realpath\(os\.fsencode\(checkout\)\)[\s\S]*checkout_captured = tuple\(str\(value\) for value in authenticated\)/u,
+  );
+  assert.doesNotMatch(outer, /os\.open\(checkout|dup2\([^\n]*3|set_inheritable\(3|pass_fds/u);
+  assert.ok(outer.indexOf("path_identity = os.stat(checkout") < nativeJob.indexOf("temp_fd = os.open"));
   assert.match(
     nativeJob,
-    /stdin=subprocess\.DEVNULL, stdout=output_fd, stderr=subprocess\.STDOUT, close_fds=True, pass_fds=\(3,\), env=\{\}/u,
+    /\["\/usr\/bin\/sudo","-n","--close-from=3","\/usr\/bin\/python3","-I","-c",descriptor_launcher,checkout,\*checkout_captured,test_path,sandbox\]/u,
   );
+  assert.match(
+    nativeJob,
+    /stdin=subprocess\.DEVNULL, stdout=output_fd, stderr=subprocess\.STDOUT, close_fds=True, env=\{\}, check=False/u,
+  );
+  assert.match(rootLauncher, /len\(sys\.argv\) != 8[\s\S]*str\(int\(raw\)\) != raw[\s\S]*int\(raw\) > 2\*\*64-1/u);
+  assert.match(
+    rootLauncher,
+    /os\.path\.realpath\(encoded\) != encoded[\s\S]*expected\[2\] == 0[\s\S]*expected\[3\] == 0/u,
+  );
+  assert.match(
+    rootLauncher,
+    /os\.open\(checkout,os\.O_PATH\|os\.O_DIRECTORY\|os\.O_NOFOLLOW\|os\.O_CLOEXEC\)[\s\S]*identity\(os\.stat\(checkout,follow_symlinks=False\)\) != wanted/u,
+  );
+  assert.match(
+    rootLauncher,
+    /os\.dup2\(checkout_fd,3,inheritable=True\)\n {14}os\.close\(checkout_fd\)[\s\S]*os\.set_inheritable\(3,True\)[\s\S]*fcntl\.FD_CLOEXEC/u,
+  );
+  assert.match(
+    rootLauncher,
+    /set\(map\(int,os\.listdir\("\/proc\/self\/fd"\)\)\)-\{0,1,2,3\}[\s\S]*\{"0","1","2","3","4"\}[\s\S]*os\.path\.exists\("\/proc\/self\/fd\/4"\)/u,
+  );
+  assert.match(
+    rootLauncher,
+    /"\/usr\/bin\/setpriv","--reuid","0","--regid","0","--clear-groups","--no-new-privs","\/usr\/bin\/unshare","--user","--map-users=0:0:1","--map-groups=0:0:1","--net","--pid","--fork","--mount","\/usr\/bin\/env","-i","\/usr\/bin\/bash","--noprofile","--norc","-c",sandbox,"--",\*raw_identity,test_path/u,
+  );
+  assert.match(rootLauncher, /os\.execve\("\/usr\/bin\/setpriv",command,\{\}\)/u);
+  assert.equal(rootLauncher.match(/os\.execve/gu)?.length, 1);
+  assert.doesNotMatch(rootLauncher, /os\.environ|os\.getenv|importlib|runpy|__import__|SourceFileLoader|pass_fds/u);
   assert.match(sandbox, /parent = os\.getppid\(\)[\s\S]*parent != 1[\s\S]*\{"0","1","2","3"\}/u);
   assert.match(sandbox, /fdinfo\/3[\s\S]*flags & required != required[\s\S]*fcntl\.FD_CLOEXEC/u);
   assert.match(sandbox, /\/proc\/sys\/kernel\/overflow[\s\S]*stat\.S_IFDIR/u);
@@ -178,7 +208,8 @@ test("runtime-discovery workflow has the exact PR 230 one-shot guard and cleanup
     sandbox,
     / {10}VERIFY\n {10}exec 3>&-\n {10}\/usr\/bin\/python3 -I - <<'CLOSED'[\s\S]*parent != 1[\s\S]*\{"0","1","2"\}[\s\S]* {10}CLOSED\n {10}COGS_NATIVE_TEST_PATH=\$test_path exec \/usr\/sbin\/chroot/u,
   );
-  assert.doesNotMatch(nativeJob, /preexec_fn|stdin=None|--close-from=3|--preserve-env|"-C"/u);
+  assert.equal(nativeJob.match(/--close-from=/gu)?.length, 1);
+  assert.doesNotMatch(nativeJob, /preexec_fn|stdin=None|--close-from=4|-C 4|"-C"|--preserve-env/u);
   assert.doesNotMatch(
     sandbox,
     /close_inherited_fds|\/proc\/\$\$\/fd\/\*|mount --bind "\$checkout"|\/home\/runner\/work|readlink[^\n]*checkout|realpath[^\n]*checkout/u,

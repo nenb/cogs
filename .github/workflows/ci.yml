@@ -322,13 +322,7 @@ jobs:
           IFS= read -r actual_head < <(/usr/bin/git rev-parse --verify HEAD)
           test "$actual_head" = "$EXPECTED_HEAD_SHA"
           IFS= read -r checkout < <(/usr/bin/pwd -P)
-          IFS= read -r canonical_checkout < <(/usr/bin/realpath --canonicalize-existing "$checkout")
           IFS= read -r checkout_root < <(/usr/bin/git rev-parse --show-toplevel)
-          test "$checkout" = "$canonical_checkout" && test "$checkout" = "$checkout_root"
-          uid=$(/usr/bin/id -u)
-          gid=$(/usr/bin/id -g)
-          [[ "$uid" =~ ^[0-9]+$ && "$gid" =~ ^[0-9]+$ ]]
-          test "$uid" -ne 0 && test "$gid" -ne 0
           IFS= read -r -d '' trusted_sandbox_v1 <<'SANDBOX' || test "$?" = 1
           set -Eeuo pipefail
           umask 077
@@ -547,29 +541,35 @@ jobs:
           COGS_NATIVE_TEST_PATH=$test_path exec /usr/sbin/chroot /tmp/cogs-native-runtime-root /usr/bin/setpriv --securebits +noroot,+noroot_locked --bounding-set=-all --inh-caps=-all --ambient-caps=-all --reuid=0 --regid=0 --clear-groups --no-new-privs /usr/bin/timeout --signal=KILL 240 /usr/bin/python3 -I -B -c "$seccomp_launcher"
           SANDBOX
           run_preflight() {
-            /usr/bin/python3 -I - "$RUNNER_TEMP" "$checkout" "$uid" "$gid" "$1" "$2" "$trusted_sandbox_v1" <<'OUTER'
+            /usr/bin/python3 -I - "$RUNNER_TEMP" "$checkout" "$checkout_root" "$1" "$2" "$trusted_sandbox_v1" <<'OUTER'
           import os, stat, subprocess, sys
-          temporary, checkout, uid, gid, test_path, marker, sandbox = sys.argv[1:]
-          uid, gid = int(uid), int(gid); name = "cogs-native-runtime-evidence"; descriptors = []
-          checkout_fd = os.open(checkout, os.O_PATH|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC)
-          checkout_identity = os.fstat(checkout_fd)
-          authenticated = (checkout_identity.st_dev,checkout_identity.st_ino,checkout_identity.st_uid,checkout_identity.st_gid)
-          path_identity = os.stat(checkout, follow_symlinks=False)
-          named = (path_identity.st_dev,path_identity.st_ino,path_identity.st_uid,path_identity.st_gid)
-          if (not os.path.isabs(checkout) or os.path.realpath(checkout) != checkout
-                  or not stat.S_ISDIR(checkout_identity.st_mode) or authenticated != named
-                  or authenticated[2:] != (uid,gid)):
-              raise RuntimeError("checkout identity")
-          if checkout_fd != 3:
-              os.dup2(checkout_fd, 3, inheritable=False)
-              os.close(checkout_fd)
-          else:
-              os.set_inheritable(3, False)
-          checkout_identity = os.fstat(3)
-          normalized = (checkout_identity.st_dev,checkout_identity.st_ino,checkout_identity.st_uid,checkout_identity.st_gid)
-          if normalized != authenticated or stat.S_IFMT(checkout_identity.st_mode) != stat.S_IFDIR or os.get_inheritable(3):
-              raise RuntimeError("normalized checkout descriptor")
+          temporary, checkout, checkout_root, test_path, marker, sandbox = sys.argv[1:]
+          uid, gid = os.getuid(), os.getgid(); name = "cogs-native-runtime-evidence"; descriptors = []
+          path_identity = os.stat(checkout, follow_symlinks=False); authenticated = (path_identity.st_dev,path_identity.st_ino,path_identity.st_uid,path_identity.st_gid)
+          if (checkout != checkout_root or not os.path.isabs(checkout) or os.path.realpath(os.fsencode(checkout)) != os.fsencode(checkout) or not stat.S_ISDIR(path_identity.st_mode)
+                  or authenticated[2:] != (uid,gid) or (uid,gid) != (os.getuid(),os.getgid()) or uid == 0 or gid == 0): raise RuntimeError("checkout identity")
+          checkout_captured = tuple(str(value) for value in authenticated)
           if not os.path.isabs(temporary) or os.path.realpath(temporary) != temporary: raise RuntimeError("runner temp not canonical")
+          descriptor_launcher = r'''import fcntl, os, stat, sys
+          if len(sys.argv) != 8: raise RuntimeError("launcher arguments")
+          checkout, *raw_identity, test_path, sandbox = sys.argv[1:]
+          if any(not raw or any(character not in "0123456789" for character in raw) or str(int(raw)) != raw or int(raw) > 2**64-1 for raw in raw_identity): raise RuntimeError("noncanonical decimal")
+          expected = tuple(map(int,raw_identity)); encoded = os.fsencode(checkout)
+          if (not os.path.isabs(encoded) or os.path.realpath(encoded) != encoded or expected[2] == 0 or expected[3] == 0 or not hasattr(os,"O_PATH") or test_path not in ("/src/test/aws-stage2-completion-kata-process.py","/src/test/stage2-phase-a-candidate.py")): raise RuntimeError("launcher authority")
+          checkout_fd = os.open(checkout,os.O_PATH|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC)
+          identity = lambda row: (row.st_dev,row.st_ino,row.st_uid,row.st_gid,stat.S_IFMT(row.st_mode)); wanted = (*expected,stat.S_IFDIR)
+          if identity(os.fstat(checkout_fd)) != wanted or identity(os.stat(checkout,follow_symlinks=False)) != wanted: raise RuntimeError("checkout identity")
+          if checkout_fd != 3:
+              os.dup2(checkout_fd,3,inheritable=True)
+              os.close(checkout_fd)
+          else: os.set_inheritable(3,True)
+          if identity(os.fstat(3)) != wanted or not os.get_inheritable(3) or fcntl.fcntl(3,fcntl.F_GETFD) & fcntl.FD_CLOEXEC: raise RuntimeError("descriptor normalization")
+          for alias in set(map(int,os.listdir("/proc/self/fd")))-{0,1,2,3}:
+              if os.path.exists(f"/proc/self/fd/{alias}"): os.close(alias)
+          if set(os.listdir("/proc/self/fd")) != {"0","1","2","3","4"} or os.path.exists("/proc/self/fd/4") or identity(os.fstat(3)) != wanted: raise RuntimeError("descriptor closure")
+          command = ("/usr/bin/setpriv","--reuid","0","--regid","0","--clear-groups","--no-new-privs","/usr/bin/unshare","--user","--map-users=0:0:1","--map-groups=0:0:1","--net","--pid","--fork","--mount","/usr/bin/env","-i","/usr/bin/bash","--noprofile","--norc","-c",sandbox,"--",*raw_identity,test_path)
+          os.execve("/usr/bin/setpriv",command,{})
+          '''
           temp_fd = os.open(temporary, os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC)
           temp_identity = os.fstat(temp_fd)
           if (temp_identity.st_dev,temp_identity.st_ino) != (os.stat(temporary, follow_symlinks=False).st_dev,os.stat(temporary, follow_symlinks=False).st_ino) or (temp_identity.st_uid,temp_identity.st_gid) != (uid,gid): raise RuntimeError("runner temp identity")
@@ -604,9 +604,9 @@ jobs:
               os.fsync(temp_fd)
               anonymous_parent = identity(os.fstat(parent_fd))
               if anonymous_parent[:6] != parent_identity[:6] or anonymous_parent[6] != 0: raise RuntimeError("private parent remained linked")
-              command = ["/usr/bin/sudo","-n","--close-from=4","/usr/bin/setpriv","--reuid","0","--regid","0","--clear-groups","--no-new-privs","/usr/bin/unshare","--user","--map-users=0:0:1","--map-groups=0:0:1","--net","--pid","--fork","--mount","/usr/bin/env","-i","/usr/bin/bash","--noprofile","--norc","-c",sandbox,"--",f"{checkout_identity.st_dev}",f"{checkout_identity.st_ino}",f"{checkout_identity.st_uid}",f"{checkout_identity.st_gid}",test_path]
+              command = ["/usr/bin/sudo","-n","--close-from=3","/usr/bin/python3","-I","-c",descriptor_launcher,checkout,*checkout_captured,test_path,sandbox]
               launched = True
-              result = subprocess.run(command, stdin=subprocess.DEVNULL, stdout=output_fd, stderr=subprocess.STDOUT, close_fds=True, pass_fds=(3,), env={}, check=False)
+              result = subprocess.run(command, stdin=subprocess.DEVNULL, stdout=output_fd, stderr=subprocess.STDOUT, close_fds=True, env={}, check=False)
               for fd, captured_identity in zip(descriptors, captured):
                   observed = identity(os.fstat(fd))
                   if observed[:2] != captured_identity or observed[2:] != (uid,gid,stat.S_IFREG,0o600,0): raise RuntimeError("anonymous evidence changed")
