@@ -150,9 +150,43 @@ test("runtime-discovery workflow has the exact PR 230 one-shot guard and cleanup
   assert.match(nativeJob, /mount -t tmpfs[\s\S]*mount -t proc[\s\S]*exec \/usr\/sbin\/chroot/u);
   assert.match(
     nativeJob,
-    /"\/usr\/bin\/sudo","-n","--close-from=3","\/usr\/bin\/setpriv","--reuid","0","--regid","0","--clear-groups","--no-new-privs","\/usr\/bin\/unshare","--user","--map-users=0:0:1","--map-groups=0:0:1","--net","--pid","--fork","--mount"/u,
+    /"\/usr\/bin\/sudo","-n","--close-from=4","\/usr\/bin\/setpriv","--reuid","0","--regid","0","--clear-groups","--no-new-privs","\/usr\/bin\/unshare","--user","--map-users=0:0:1","--map-groups=0:0:1","--net","--pid","--fork","--mount"/u,
   );
-  assert.doesNotMatch(nativeJob, /map-root-user|str\(uid\)|str\(gid\)|newuidmap|newgidmap|chown|RootView|copyfile/u);
+  const sandbox = nativeJob.slice(nativeJob.indexOf("SANDBOX'"), nativeJob.indexOf("          SANDBOX"));
+  assert.match(nativeJob, /os\.open\(checkout, os\.O_PATH\|os\.O_DIRECTORY\|os\.O_NOFOLLOW\|os\.O_CLOEXEC\)/u);
+  assert.match(nativeJob, /os\.stat\(checkout, follow_symlinks=False\)/u);
+  assert.match(nativeJob, /os\.dup2\(checkout_fd, 3, inheritable=False\)[\s\S]*os\.close\(checkout_fd\)/u);
+  assert.match(nativeJob, /else:\n {14}os\.set_inheritable\(3, False\)[\s\S]*checkout_identity = os\.fstat\(3\)/u);
+  assert.match(
+    nativeJob,
+    /stdin=subprocess\.DEVNULL, stdout=output_fd, stderr=subprocess\.STDOUT, close_fds=True, pass_fds=\(3,\), env=\{\}/u,
+  );
+  assert.match(sandbox, /parent = os\.getppid\(\)[\s\S]*parent != 1[\s\S]*\{"0","1","2","3"\}/u);
+  assert.match(sandbox, /fdinfo\/3[\s\S]*flags & required != required[\s\S]*fcntl\.FD_CLOEXEC/u);
+  assert.match(sandbox, /\/proc\/sys\/kernel\/overflow[\s\S]*stat\.S_IFDIR/u);
+  assert.equal(
+    sandbox.match(/^ {10}\/usr\/bin\/mount --no-canonicalize --bind \/proc\/self\/fd\/3 "\$root\/src"$/gmu)?.length,
+    1,
+  );
+  assert.equal(sandbox.match(/\/proc\/self\/fd\/3/gu)?.length, 1);
+  assert.match(
+    sandbox,
+    /source = one\([\s\S]*bound = one\([\s\S]*target_stat = os\.stat\(target, follow_symlinks=False\)/u,
+  );
+  assert.equal(sandbox.match(/\/usr\/bin\/python3 -I -c "\$verify_checkout_bind"/gu)?.length, 2);
+  assert.match(
+    sandbox,
+    / {10}VERIFY\n {10}exec 3>&-\n {10}\/usr\/bin\/python3 -I - <<'CLOSED'[\s\S]*parent != 1[\s\S]*\{"0","1","2"\}[\s\S]* {10}CLOSED\n {10}COGS_NATIVE_TEST_PATH=\$test_path exec \/usr\/sbin\/chroot/u,
+  );
+  assert.doesNotMatch(nativeJob, /preexec_fn|stdin=None|--close-from=3|--preserve-env|"-C"/u);
+  assert.doesNotMatch(
+    sandbox,
+    /close_inherited_fds|\/proc\/\$\$\/fd\/\*|mount --bind "\$checkout"|\/home\/runner\/work|readlink[^\n]*checkout|realpath[^\n]*checkout/u,
+  );
+  assert.doesNotMatch(
+    nativeJob,
+    /map-root-user|str\(uid\)|str\(gid\)|newuidmap|newgidmap|chown|chmod|setfacl|RootView|copyfile/u,
+  );
   assert.match(nativeJob, /raw\.count\("\\n"\) != 1 or raw\.split\(\) != \["0", "0", "1"\]/u);
   assert.match(
     nativeJob,

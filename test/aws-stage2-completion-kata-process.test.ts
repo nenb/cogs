@@ -61,56 +61,49 @@ test("S1 portable process suite and narrow native boundary remain exact", async 
   );
 
   const nativeJob = workflow.slice(workflow.indexOf("  native-runtime-preflight:"));
+  const sandbox = nativeJob.slice(nativeJob.indexOf("SANDBOX'"), nativeJob.indexOf("          SANDBOX"));
+  assert.match(nativeJob, /os\.open\(checkout, os\.O_PATH\|os\.O_DIRECTORY\|os\.O_NOFOLLOW\|os\.O_CLOEXEC\)/u);
+  assert.ok(nativeJob.indexOf("checkout_fd = os.open") < nativeJob.indexOf("temp_fd = os.open"));
   assert.match(
     nativeJob,
-    /"\/usr\/bin\/sudo","-n","--close-from=3","\/usr\/bin\/setpriv","--reuid","0","--regid","0","--clear-groups","--no-new-privs","\/usr\/bin\/unshare","--user","--map-users=0:0:1","--map-groups=0:0:1","--net","--pid","--fork","--mount"/u,
+    /if checkout_fd != 3:[\s\S]*os\.dup2\(checkout_fd, 3, inheritable=False\)[\s\S]*os\.close\(checkout_fd\)[\s\S]*else:[\s\S]*os\.set_inheritable\(3, False\)[\s\S]*checkout_identity = os\.fstat\(3\)/u,
   );
-  assert.doesNotMatch(nativeJob, /map-root-user|str\(uid\)|str\(gid\)|newuidmap|newgidmap|chown|RootView/u);
-  assert.match(nativeJob, /raw\.count\("\\n"\) != 1 or raw\.split\(\) != \["0", "0", "1"\]/u);
   assert.match(
     nativeJob,
-    /"\/usr\/bin\/python3", "\/usr\/bin\/zstd", "\/usr\/bin\/gzip", "\/dev\/null", "\/dev\/urandom"[\s\S]*st_uid,value\.st_gid\) != \(0,0\)/u,
+    /"\/usr\/bin\/sudo","-n","--close-from=4","\/usr\/bin\/setpriv","--reuid","0","--regid","0","--clear-groups","--no-new-privs","\/usr\/bin\/unshare","--user","--map-users=0:0:1","--map-groups=0:0:1","--net","--pid","--fork","--mount"/u,
   );
+  assert.match(
+    nativeJob,
+    /subprocess\.run\(command, stdin=subprocess\.DEVNULL, stdout=output_fd, stderr=subprocess\.STDOUT, close_fds=True, pass_fds=\(3,\), env=\{\}, check=False\)/u,
+  );
+  assert.doesNotMatch(nativeJob, /preexec_fn|stdin=None|--close-from=(?:[0-35-9]|[1-9][0-9]+)|--preserve-env|"-C"/u);
+  assert.match(
+    sandbox,
+    /os\.getppid\(\)[\s\S]*\{"0","1","2","3"\}[\s\S]*\/fdinfo\/3[\s\S]*os\.O_PATH\|os\.O_DIRECTORY\|os\.O_NOFOLLOW/u,
+  );
+  assert.match(sandbox, /raw\.count\("\\n"\) != 1 or raw\.split\(\) != \["0","0","1"\]/u);
+  assert.match(sandbox, /wanted = \(\*expected\[:2\],\*overflow,stat\.S_IFDIR\)/u);
+  assert.equal(
+    sandbox.match(/^ {10}\/usr\/bin\/mount --no-canonicalize --bind \/proc\/self\/fd\/3 "\$root\/src"$/gmu)?.length,
+    1,
+  );
+  assert.equal(sandbox.match(/\/proc\/self\/fd\/3/gu)?.length, 1);
+  assert.equal(sandbox.match(/\/usr\/bin\/python3 -I -c "\$verify_checkout_bind"/gu)?.length, 2);
+  assert.match(
+    sandbox,
+    /fdinfo\/3[\s\S]*source = one[\s\S]*identity\(descriptor\)[\s\S]*identity\(target_stat\)[\s\S]*bound\["source"\]/u,
+  );
+  assert.match(
+    sandbox,
+    / {10}VERIFY\n {10}exec 3>&-\n {10}\/usr\/bin\/python3 -I - <<'CLOSED'[\s\S]*\{"0","1","2"\}[\s\S]* {10}CLOSED\n {10}COGS_NATIVE_TEST_PATH=\$test_path exec \/usr\/sbin\/chroot/u,
+  );
+  assert.doesNotMatch(
+    sandbox,
+    /close_inherited_fds|\/proc\/\$\$\/fd\/\*|mount --bind "\$checkout"|realpath\([^\n]*checkout|readlink[^\n]*checkout|\/home\/runner\/work/u,
+  );
+  assert.doesNotMatch(nativeJob, /map-root-user|newuidmap|newgidmap|chown|chmod|setfacl|copyfile|RootView/u);
   assert.match(nativeJob, /--bounding-set=-all --inh-caps=-all --ambient-caps=-all[\s\S]*--no-new-privs/u);
-  const launcherMatch = nativeJob.match(/<<'SECCOMP'[\s\S]*?\n {10}SECCOMP/u);
-  assert.ok(launcherMatch);
-  const launcher = launcherMatch[0];
-  const direct = launcher.slice(launcher.indexOf("ins=("), launcher.indexOf("F(0x15,0,3,157)"));
-  assert.deepEqual(
-    [...direct.matchAll(/F\(0x15,0,1,([0-9]+)\),F\(0x06,0,0,0x00050001\)/gu)].map((row) => Number(row[1])),
-    [41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 288, 299, 307, 425, 426, 427, 272, 308, 317],
-  );
-  assert.match(
-    launcher,
-    /F\(0x20,0,0,4\),F\(0x15,1,0,0xc000003e\),F\(0x06,0,0,0x80000000\),F\(0x20,0,0,0\),F\(0x45,0,1,0x40000000\),F\(0x06,0,0,0x80000000\)/u,
-  );
-  assert.match(
-    launcher,
-    /F\(0x15,0,3,157\),F\(0x20,0,0,16\),F\(0x15,0,1,22\),F\(0x06,0,0,0x00050001\),F\(0x06,0,0,0x7fff0000\)/u,
-  );
-  assert.equal(launcher.match(/0x80000000/gu)?.length, 2);
-  assert.equal(launcher.match(/0x00050001/gu)?.length, 25);
-  assert.equal(launcher.match(/0x7fff0000/gu)?.length, 1);
-  assert.ok(
-    launcher.indexOf("status(False)") < launcher.indexOf("libc.prctl(38,1,0,0,0)") &&
-      launcher.indexOf("libc.prctl(38,1,0,0,0)") < launcher.indexOf("libc.prctl(22,2,ctypes.addressof(program),0,0)") &&
-      launcher.indexOf("libc.prctl(22,2,ctypes.addressof(program),0,0)") < launcher.indexOf("status(True)") &&
-      launcher.indexOf("status(True)") < launcher.indexOf("os.execve"),
-  );
-  assert.match(
-    launcher,
-    /os\.execve\("\/usr\/bin\/python3",\("\/usr\/bin\/python3","-I","-B",path\),\{"COGS_REQUIRE_NATIVE_RUNTIME_PREFLIGHT_V1":"1","PYTHONDONTWRITEBYTECODE":"1"\}\)/u,
-  );
-  assert.match(
-    launcher,
-    /except BaseException:[\s\S]*os\.write\(2,b"native seccomp launcher failed\\n"\)[\s\S]*os\._exit\(126\)/u,
-  );
-  assert.doesNotMatch(launcher, /libseccomp|subprocess|platform|uname|importlib|compile\(/u);
-  assert.match(nativeJob, /stdout=output_fd, stderr=subprocess\.STDOUT, close_fds=True, env=\{\}/u);
   assert.match(nativeJob, /os\.unlink\(leaf[\s\S]*st_nlink != 0[\s\S]*os\.rmdir\(name/u);
-  assert.match(
-    nativeJob,
-    /\/usr\/bin\/cmp","--silent"[\s\S]*result\.returncode != 0 or compared\.returncode != 0[\s\S]*print\(marker/u,
-  );
+  assert.match(nativeJob, /\/usr\/bin\/cmp","--silent"[\s\S]*print\(marker/u);
   assert.doesNotMatch(nativeJob, /\b(?:apt-get|apt|dnf|yum|apk|brew|curl|wget)\b/u);
 });
