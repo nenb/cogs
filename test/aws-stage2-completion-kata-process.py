@@ -21,6 +21,8 @@ if sys.flags.optimize:
 ROOT = Path(__file__).resolve().parents[1]
 REMOTE = ROOT / "deploy/aws-feasibility/remote"
 sys.path.insert(0, str(REMOTE))
+if os.getenv("COGS_REQUIRE_NATIVE_RUNTIME_PREFLIGHT_V1") == "1":
+    sys.excepthook = lambda *_args: os.write(2, b"native-process-failure:bootstrap\n")
 import completion_kata_process as process
 
 
