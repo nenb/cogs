@@ -81,6 +81,6 @@ test("S1 portable process suite and narrow native boundary remain exact", async 
   assert.doesNotMatch(acceptsNonCloexec, /not flags & os\.O_CLOEXEC/u);
   assert.match(
     nativeJob,
-    /exec 3>&-\n {10}\/usr\/bin\/python3 -I -c "\$descriptor_observer"[^\n]+ after\n {10}COGS_NATIVE_TEST_PATH=\$test_path exec \/usr\/bin\/unshare --user --map-user=0 --map-group=0 \/usr\/sbin\/chroot/u,
+    /exec 3>&-\n {10}\/usr\/bin\/python3 -I -c "\$descriptor_observer"[^\n]+ after[\s\S]*final proc after[\s\S]*exec \/usr\/bin\/unshare --user --map-user=0 --map-group=0 --mount --mount-proc="\$root\/proc"/u,
   );
 });
