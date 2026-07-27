@@ -147,7 +147,10 @@ test("runtime-discovery workflow has the exact PR 230 one-shot guard and cleanup
   assert.equal(companion.match(/print\(_NATIVE_MARKER/gu)?.length, 1);
 
   const nativeJob = ci.slice(ci.indexOf("  native-runtime-preflight:"));
-  assert.match(nativeJob, /mount -t tmpfs[\s\S]*mount -t proc[\s\S]*exec \/usr\/sbin\/chroot/u);
+  assert.match(
+    nativeJob,
+    /mount -t tmpfs[\s\S]*mount -t proc[\s\S]*exec \/usr\/bin\/unshare --user --map-user=0 --map-group=0 \/usr\/sbin\/chroot/u,
+  );
   const sandbox = nativeJob.slice(nativeJob.indexOf("SANDBOX'"), nativeJob.indexOf("          SANDBOX"));
   const rootLauncherStart = nativeJob.indexOf("descriptor_launcher = r'''");
   const rootLauncher = nativeJob.slice(rootLauncherStart, nativeJob.indexOf("          '''", rootLauncherStart));
@@ -186,7 +189,7 @@ test("runtime-discovery workflow has the exact PR 230 one-shot guard and cleanup
   );
   assert.match(
     rootLauncher,
-    /"\/usr\/bin\/setpriv","--reuid","0","--regid","0","--clear-groups","--no-new-privs","\/usr\/bin\/unshare","--user","--map-users=0:0:1",f"--map-users=\{expected\[2\]\}:\{expected\[2\]\}:1","--map-groups=0:0:1",f"--map-groups=\{expected\[3\]\}:\{expected\[3\]\}:1","--net","--pid","--fork","--mount","\/usr\/bin\/python3","-I","-c",child_launcher,checkout,\*raw_identity,test_path,sandbox/u,
+    /"\/usr\/bin\/setpriv","--reuid","0","--regid","0","--clear-groups","--no-new-privs","\/usr\/bin\/unshare","--net","--pid","--fork","--mount","\/usr\/bin\/python3","-I","-c",child_launcher,checkout,\*raw_identity,test_path,sandbox/u,
   );
   assert.match(
     rootLauncher,
@@ -220,7 +223,7 @@ test("runtime-discovery workflow has the exact PR 230 one-shot guard and cleanup
   );
   assert.match(
     observer,
-    /\(\("uid_map",expected\[2\]\),\("gid_map",expected\[3\]\)\)[\s\S]*\{\("0","0","1"\),\(str\(owner\),str\(owner\),"1"\)\}[\s\S]*number == 3 and sys\.argv\[5\] == "before"[\s\S]*identity\(before\) != \(\*expected,stat\.S_IFDIR\)[\s\S]*flags & os\.O_CLOEXEC/u,
+    /for name in \("uid_map","gid_map"\)[\s\S]*raw\.split\(\) != \["0","0","4294967295"\][\s\S]*number == 3 and sys\.argv\[5\] == "before"[\s\S]*identity\(before\) != \(\*expected,stat\.S_IFDIR\)[\s\S]*flags & os\.O_CLOEXEC/u,
   );
   assert.match(
     observer,
@@ -245,7 +248,7 @@ test("runtime-discovery workflow has the exact PR 230 one-shot guard and cleanup
   assert.match(sandbox, /"\$checkout_gid" before\n[\s\S]*"\$root\/src" bind/u);
   assert.match(
     sandbox,
-    / {10}VERIFY\n {10}exec 3>&-\n {10}\/usr\/bin\/python3 -I -c "\$descriptor_observer" "\$checkout_dev" "\$checkout_ino" "\$checkout_uid" "\$checkout_gid" after\n {10}COGS_NATIVE_TEST_PATH=\$test_path exec \/usr\/sbin\/chroot/u,
+    / {10}VERIFY\n {10}exec 3>&-\n {10}\/usr\/bin\/python3 -I -c "\$descriptor_observer" "\$checkout_dev" "\$checkout_ino" "\$checkout_uid" "\$checkout_gid" after\n {10}COGS_NATIVE_TEST_PATH=\$test_path exec \/usr\/bin\/unshare --user --map-user=0 --map-group=0 \/usr\/sbin\/chroot/u,
   );
   assert.match(nativeJob, /classes = \(\(b"checkout identity"[\s\S]*\(b"Traceback","python"\)\)/u);
   assert.doesNotMatch(nativeJob, /diagnostic\.decode|print\(diagnostic|os\.write\([^\n]*diagnostic/u);
@@ -259,7 +262,11 @@ test("runtime-discovery workflow has the exact PR 230 one-shot guard and cleanup
     nativeJob,
     /map-root-user|str\(uid\)|str\(gid\)|newuidmap|newgidmap|chown|chmod|setfacl|RootView|copyfile/u,
   );
-  assert.match(nativeJob, /raw\.count\("\\n"\) != 1 or raw\.split\(\) != \["0", "0", "1"\]/u);
+  assert.match(nativeJob, /raw\.split\(\) != \["0", "0", "4294967295"\][\s\S]*unexpected initial identity map/u);
+  assert.match(
+    nativeJob,
+    /with open\("\/proc\/self\/"\+name[\s\S]*mapped\.split\(\) != \["0","0","1"\][\s\S]*root-only identity map/u,
+  );
   assert.match(
     nativeJob,
     /"\/usr\/bin\/python3", "\/usr\/bin\/zstd", "\/usr\/bin\/gzip", "\/dev\/null", "\/dev\/urandom"[\s\S]*st_uid,value\.st_gid\) != \(0,0\)[\s\S]*target_stat\.st_uid,target_stat\.st_gid[\s\S]*!= \(0,0\)/u,

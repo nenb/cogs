@@ -333,9 +333,9 @@ jobs:
           base = f"/proc/{int(dict(line.split(':',1) for line in open('/proc/self/status', encoding='ascii') if ':' in line)['PPid'])}"
           parent_nspid = dict(line.split(':',1) for line in open(base+"/status", encoding="ascii") if ':' in line)["NSpid"].split()
           if not parent_nspid or parent_nspid[-1] != "1" or sys.argv[5] not in ("before","after"): raise RuntimeError("descriptor observer authority")
-          for name, owner in (("uid_map",expected[2]),("gid_map",expected[3])):
+          for name in ("uid_map","gid_map"):
               raw = open(base+"/"+name, encoding="ascii").read()
-              if {tuple(line.split()) for line in raw.splitlines()} != {("0","0","1"),(str(owner),str(owner),"1")}: raise RuntimeError("identity-map-exact-two")
+              if raw.split() != ["0","0","4294967295"]: raise RuntimeError("initial-identity-map")
           names = set(os.listdir(base+"/fd"))
           if not {"0","1","2"}.issubset(names) or any(not name.isdigit() or str(int(name)) != name for name in names): raise RuntimeError("parent descriptor names")
           identity = lambda row: (row.st_dev,row.st_ino,row.st_uid,row.st_gid,stat.S_IFMT(row.st_mode))
@@ -373,7 +373,7 @@ jobs:
           import json, os, stat
           for name in ("uid_map", "gid_map"):
               raw = open("/proc/self/" + name, encoding="ascii").read()
-              if raw.count("\n") != 1 or raw.split() != ["0", "0", "1"]: raise RuntimeError("non-root-only identity map")
+              if raw.split() != ["0", "0", "4294967295"]: raise RuntimeError("unexpected initial identity map")
           tools = ("/usr/bin/python3", "/usr/bin/zstd", "/usr/bin/gzip", "/dev/null", "/dev/urandom")
           if any((value.st_uid,value.st_gid) != (0,0) for path in tools for value in (os.stat(path),)): raise RuntimeError("host tool ownership")
           paths = ["/usr", "/dev/null", "/dev/urandom", *(path for path in ("/lib", "/lib64") if os.path.exists(path))]
@@ -426,9 +426,8 @@ jobs:
           parent = one(lambda row: row["target"] == posixpath.dirname(target))
           descriptor = os.fstat(3)
           target_stat = os.stat(target, follow_symlinks=False)
-          overflow = tuple(int(open("/proc/sys/kernel/overflow"+kind, encoding="ascii").read()) for kind in ("uid","gid"))
           identity = lambda row: (row.st_dev,row.st_ino,row.st_uid,row.st_gid,stat.S_IFMT(row.st_mode))
-          wanted = (dev,ino,*overflow,stat.S_IFDIR)
+          wanted = (dev,ino,host_uid,host_gid,stat.S_IFDIR)
           required = source["vfs"] if access == "rw" else (source["vfs"]-{"rw","ro"})|{"ro","nosuid","nodev","noexec"}
           device = f"{os.major(descriptor.st_dev)}:{os.minor(descriptor.st_dev)}"
           if host_uid == 0 or host_gid == 0 or identity(descriptor) != wanted or identity(target_stat) != wanted:
@@ -464,6 +463,9 @@ jobs:
                           if key in rows: raise RuntimeError("duplicate status")
                           rows[key]=value.strip()
                   if set(rows)!={"Uid","Gid","Groups","CapInh","CapPrm","CapEff","CapBnd","CapAmb","NoNewPrivs","Seccomp"} or rows["Uid"]!="0\t0\t0\t0" or rows["Gid"]!="0\t0\t0\t0" or rows["Groups"] or rows["NoNewPrivs"]!="1" or any(int(rows[key],16) for key in ("CapInh","CapPrm","CapEff","CapBnd","CapAmb")) or rows["Seccomp"] != ("2" if filtered else "0"): raise RuntimeError("process boundary")
+                  for name in ("uid_map","gid_map"):
+                      with open("/proc/self/"+name, encoding="ascii") as mapping: mapped = mapping.read()
+                      if mapped.split() != ["0","0","1"]: raise RuntimeError("root-only identity map")
               status(False)
               class F(ctypes.Structure): _fields_=(('code',ctypes.c_ushort),('jt',ctypes.c_ubyte),('jf',ctypes.c_ubyte),('k',ctypes.c_uint))
               class P(ctypes.Structure): _fields_=(('len',ctypes.c_ushort),('filter',ctypes.POINTER(F)))
@@ -538,7 +540,7 @@ jobs:
           VERIFY
           exec 3>&-
           /usr/bin/python3 -I -c "$descriptor_observer" "$checkout_dev" "$checkout_ino" "$checkout_uid" "$checkout_gid" after
-          COGS_NATIVE_TEST_PATH=$test_path exec /usr/sbin/chroot /tmp/cogs-native-runtime-root /usr/bin/setpriv --securebits +noroot,+noroot_locked --bounding-set=-all --inh-caps=-all --ambient-caps=-all --reuid=0 --regid=0 --clear-groups --no-new-privs /usr/bin/timeout --signal=KILL 240 /usr/bin/python3 -I -B -c "$seccomp_launcher"
+          COGS_NATIVE_TEST_PATH=$test_path exec /usr/bin/unshare --user --map-user=0 --map-group=0 /usr/sbin/chroot /tmp/cogs-native-runtime-root /usr/bin/setpriv --securebits +noroot,+noroot_locked --bounding-set=-all --inh-caps=-all --ambient-caps=-all --reuid=0 --regid=0 --clear-groups --no-new-privs /usr/bin/timeout --signal=KILL 240 /usr/bin/python3 -I -B -c "$seccomp_launcher"
           SANDBOX
           run_preflight() {
             /usr/bin/python3 -I - "$RUNNER_TEMP" "$checkout" "$checkout_root" "$1" "$2" "$trusted_sandbox_v1" <<'OUTER'
@@ -573,7 +575,7 @@ jobs:
           if set(os.listdir("/proc/self/fd")) != {"0","1","2","3","4"} or os.path.exists("/proc/self/fd/4") or identity(os.fstat(3)) != wanted: raise RuntimeError("descriptor closure")
           os.execve("/usr/bin/env",("/usr/bin/env","-i","/usr/bin/bash","--noprofile","--norc","-c",sandbox,"--",*raw_identity,test_path),{})
           """
-          command = ("/usr/bin/setpriv","--reuid","0","--regid","0","--clear-groups","--no-new-privs","/usr/bin/unshare","--user","--map-users=0:0:1",f"--map-users={expected[2]}:{expected[2]}:1","--map-groups=0:0:1",f"--map-groups={expected[3]}:{expected[3]}:1","--net","--pid","--fork","--mount","/usr/bin/python3","-I","-c",child_launcher,checkout,*raw_identity,test_path,sandbox)
+          command = ("/usr/bin/setpriv","--reuid","0","--regid","0","--clear-groups","--no-new-privs","/usr/bin/unshare","--net","--pid","--fork","--mount","/usr/bin/python3","-I","-c",child_launcher,checkout,*raw_identity,test_path,sandbox)
           os.execve("/usr/bin/setpriv",command,{})
           '''
           temp_fd = os.open(temporary, os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC)
@@ -621,7 +623,7 @@ jobs:
               compared = subprocess.run(["/usr/bin/cmp","--silent","--",f"/proc/self/fd/{expected_fd}",f"/proc/self/fd/{output_fd}"], pass_fds=(expected_fd,output_fd), close_fds=True, env={}, check=False)
               if result.returncode != 0 or compared.returncode != 0:
                   os.lseek(output_fd, 0, os.SEEK_SET)
-                  diagnostic = os.read(output_fd, 65_537); classes = ((b"checkout identity","checkout-identity"),(b"launcher arguments","launcher-args"),(b"noncanonical decimal","launcher-decimal"),(b"launcher authority","launcher-authority"),(b"descriptor normalization","descriptor-normalization"),(b"descriptor closure","descriptor-closure"),(b"identity-map-exact-two","map-exact-two"),(b"identity-map-lines","map-lines"),(b"identity-map-fields","map-fields"),(b"identity-map-inner","map-inner"),(b"identity-map-outer","map-outer"),(b"identity-map-count","map-count"),(b"non-root-only identity map","identity-map"),(b"host tool ownership","tool-owner"),(b"checkout mount count","checkout-mount-count"),(b"checkout fdinfo","checkout-fdinfo"),(b"checkout target identity","checkout-target"),(b"checkout mount identity","checkout-mount"),(b"fresh tmpfs identity","tmpfs"),(b"staging ancestry","mount-ancestry"),(b"fresh mount alias","mount-alias"),(b"proc identity","proc"),(b"bind identity ","bind"),(b"device identity","device"),(b"unexamined pre-bind source","source-set"),(b"bound host tool ownership","bound-owner"),(b"unexpected or old mount","mount-view"),(b"terminal descriptor set","terminal-fds"),(b"descriptor observer authority","observer-authority"),(b"parent descriptor names","fd-names"),(b"parent descriptor fdinfo","fdinfo"),(b"unsafe parent descriptor object","fd-object"),(b"checkout descriptor authentication","checkout-auth"),(b"unsafe parent descriptor flags","fd-flags"),(b"unstable parent descriptor table","fd-unstable"),(b"checkout descriptor lifecycle","fd-lifecycle"),(b"/proc/self/fd/3","mount-fd3"),(b"cogs-native-runtime-root","mount-root"),(b"cogs-native-stage","mount-stage"),(b"cogs-native-runtime-tmp","mount-tmp"),(b"Errno 1] descriptor bind","bind-eperm"),(b"Errno 2] descriptor bind","bind-enoent"),(b"Errno 13] descriptor bind","bind-eacces"),(b"Errno 20] descriptor bind","bind-enotdir"),(b"Errno 22] descriptor bind","bind-einval"),(b"descriptor bind","bind-syscall"),(b"mount:","mount"),(b"unshare:","unshare"),(b"setpriv:","setpriv"),(b"overlapping ranges","map-overlap"),(b"map range","map-range"),(b"failed to execute","exec-failed"),(b"Operation not permitted","eperm"),(b"Invalid argument","einval"),(b"native seccomp launcher failed","seccomp"),(b"native-process-failure:","process"),(b"IndentationError","indentation"),(b"SyntaxError","syntax"),(b"NameError","name"),(b"FileNotFoundError","missing"),(b"PermissionError","permission"),(b"uid","uid-text"),(b"gid","gid-text"),(b"map","map-text"),(b"range","range-text"),(b"extent","extent-text"),(b"user","user-text"),(b"group","group-text"),(b"failed","failed-text"),(b"error","error-text"),(b"sudo","sudo-text"),(b"python","python-text"),(b"env","env-text"),(b"Traceback","python"))
+                  diagnostic = os.read(output_fd, 65_537); classes = ((b"checkout identity","checkout-identity"),(b"launcher arguments","launcher-args"),(b"noncanonical decimal","launcher-decimal"),(b"launcher authority","launcher-authority"),(b"descriptor normalization","descriptor-normalization"),(b"descriptor closure","descriptor-closure"),(b"initial-identity-map","initial-map"),(b"root-only identity map","root-map"),(b"identity-map-exact-two","map-exact-two"),(b"identity-map-lines","map-lines"),(b"identity-map-fields","map-fields"),(b"identity-map-inner","map-inner"),(b"identity-map-outer","map-outer"),(b"identity-map-count","map-count"),(b"non-root-only identity map","identity-map"),(b"host tool ownership","tool-owner"),(b"checkout mount count","checkout-mount-count"),(b"checkout fdinfo","checkout-fdinfo"),(b"checkout target identity","checkout-target"),(b"checkout mount identity","checkout-mount"),(b"fresh tmpfs identity","tmpfs"),(b"staging ancestry","mount-ancestry"),(b"fresh mount alias","mount-alias"),(b"proc identity","proc"),(b"bind identity ","bind"),(b"device identity","device"),(b"unexamined pre-bind source","source-set"),(b"bound host tool ownership","bound-owner"),(b"unexpected or old mount","mount-view"),(b"terminal descriptor set","terminal-fds"),(b"descriptor observer authority","observer-authority"),(b"parent descriptor names","fd-names"),(b"parent descriptor fdinfo","fdinfo"),(b"unsafe parent descriptor object","fd-object"),(b"checkout descriptor authentication","checkout-auth"),(b"unsafe parent descriptor flags","fd-flags"),(b"unstable parent descriptor table","fd-unstable"),(b"checkout descriptor lifecycle","fd-lifecycle"),(b"/proc/self/fd/3","mount-fd3"),(b"cogs-native-runtime-root","mount-root"),(b"cogs-native-stage","mount-stage"),(b"cogs-native-runtime-tmp","mount-tmp"),(b"Errno 1] descriptor bind","bind-eperm"),(b"Errno 2] descriptor bind","bind-enoent"),(b"Errno 13] descriptor bind","bind-eacces"),(b"Errno 20] descriptor bind","bind-enotdir"),(b"Errno 22] descriptor bind","bind-einval"),(b"descriptor bind","bind-syscall"),(b"mount:","mount"),(b"unshare:","unshare"),(b"setpriv:","setpriv"),(b"overlapping ranges","map-overlap"),(b"map range","map-range"),(b"failed to execute","exec-failed"),(b"Operation not permitted","eperm"),(b"Invalid argument","einval"),(b"native seccomp launcher failed","seccomp"),(b"native-process-failure:","process"),(b"IndentationError","indentation"),(b"SyntaxError","syntax"),(b"NameError","name"),(b"FileNotFoundError","missing"),(b"PermissionError","permission"),(b"uid","uid-text"),(b"gid","gid-text"),(b"map","map-text"),(b"range","range-text"),(b"extent","extent-text"),(b"user","user-text"),(b"group","group-text"),(b"failed","failed-text"),(b"error","error-text"),(b"sudo","sudo-text"),(b"python","python-text"),(b"env","env-text"),(b"Traceback","python"))
                   label = next((value for needle,value in classes if needle in diagnostic),"other"); raise RuntimeError(f"preflight status {result.returncode}/{compared.returncode} class {label} bytes {len(diagnostic)} sha256 {hashlib.sha256(diagnostic).hexdigest()}")
               print(marker, flush=True)
           finally:

@@ -67,10 +67,7 @@ test("S1 portable process suite and narrow native boundary remain exact", async 
   const observer = observerMatch[0];
   assert.match(observer, /\['PPid'\][\s\S]*\["NSpid"\]\.split\(\)[\s\S]*names = set\(os\.listdir\(base\+"\/fd"\)\)/u);
   assert.match(observer, /open\(base\+"\/fdinfo\/"\+name[\s\S]*row\[0\]=="flags:"[\s\S]*flags = int\(values\[0\],8\)/u);
-  assert.match(
-    observer,
-    /\(\("uid_map",expected\[2\]\),\("gid_map",expected\[3\]\)\)[\s\S]*\{\("0","0","1"\),\(str\(owner\),str\(owner\),"1"\)\}/u,
-  );
+  assert.match(observer, /for name in \("uid_map","gid_map"\)[\s\S]*raw\.split\(\) != \["0","0","4294967295"\]/u);
   assert.match(
     observer,
     /number == 3 and sys\.argv\[5\] == "before"[\s\S]*identity\(before\) != \(\*expected,stat\.S_IFDIR\)[\s\S]*flags & os\.O_CLOEXEC/u,
@@ -84,6 +81,6 @@ test("S1 portable process suite and narrow native boundary remain exact", async 
   assert.doesNotMatch(acceptsNonCloexec, /not flags & os\.O_CLOEXEC/u);
   assert.match(
     nativeJob,
-    /exec 3>&-\n {10}\/usr\/bin\/python3 -I -c "\$descriptor_observer"[^\n]+ after\n {10}COGS_NATIVE_TEST_PATH=\$test_path exec \/usr\/sbin\/chroot/u,
+    /exec 3>&-\n {10}\/usr\/bin\/python3 -I -c "\$descriptor_observer"[^\n]+ after\n {10}COGS_NATIVE_TEST_PATH=\$test_path exec \/usr\/bin\/unshare --user --map-user=0 --map-group=0 \/usr\/sbin\/chroot/u,
   );
 });
