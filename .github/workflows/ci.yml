@@ -636,7 +636,6 @@ jobs:
                           os.rmdir(name, dir_fd=temp_fd); os.fsync(temp_fd)
                       if identity(os.fstat(temp_fd))[:2] != identity(temp_identity)[:2]: raise RuntimeError("runner temp changed")
                   except BaseException as error: cleanup_failure = cleanup_failure or error
-              # Once launch begins, cleanup is descriptor closure only; all evidence identities are anonymous.
               for fd in reversed(descriptors):
                   try: os.close(fd)
                   except BaseException as error: cleanup_failure = cleanup_failure or error
