@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
 """Portable contract snapshots and Linux direct-child supervisor tests."""
 import errno
+import fcntl
+import gzip
 import hashlib
 import json
 import os
 from pathlib import Path
 import platform
-import resource
-import subprocess
+import select
+import signal
+import struct
 import sys
+import tempfile
 import time
 from unittest.mock import patch
 
@@ -18,6 +22,271 @@ ROOT = Path(__file__).resolve().parents[1]
 REMOTE = ROOT / "deploy/aws-feasibility/remote"
 sys.path.insert(0, str(REMOTE))
 import completion_kata_process as process
+
+
+_NATIVE_SELECTOR = "COGS_REQUIRE_NATIVE_RUNTIME_PREFLIGHT_V1"
+_NATIVE_MARKER = "completion Kata process LINUX AMD64 QUALIFIED matrix passed"
+_ZSTD_RAW = b"cogs-native-zstd\n"
+_ZSTD_STREAM = bytes.fromhex(
+    "28b52ffd0458890000636f67732d6e61746976652d7a7374640a2c9648cf"
+)
+
+
+def _native_selected():
+    value = os.getenv(_NATIVE_SELECTOR)
+    if value is None:
+        return False
+    if value != "1":
+        raise RuntimeError("native runtime preflight selector must be exactly 1")
+    entries = Path("/proc/self/environ").read_bytes().split(b"\0")
+    selected = [entry for entry in entries if entry.startswith((_NATIVE_SELECTOR + "=").encode())]
+    if selected != [(_NATIVE_SELECTOR + "=1").encode()]:
+        raise RuntimeError("native runtime preflight selector must occur exactly once")
+    return True
+
+
+def _native_envelope(pid=None, expected_parent=None):
+    target = "self" if pid is None else str(pid)
+    fields = {}
+    for line in Path(f"/proc/{target}/status").read_text(encoding="ascii").splitlines():
+        if ":" in line:
+            name, value = line.split(":", 1)
+            fields[name] = value.strip()
+    if pid is None:
+        assert platform.system() == "Linux" and platform.machine() == "x86_64"
+        assert os.getuid() == os.geteuid() == os.getgid() == os.getegid() == 0
+        assert os.getgroups() == []
+        assert fields["NoNewPrivs"] == "1"
+        assert len(fields["NSpid"].split()) == 1 and int(fields["NSpid"]) > 1
+    else:
+        row = process._proc_row(pid)
+        assert row[0] == pid and row[1] == expected_parent and row[2] == row[3] == pid
+        assert len(fields["NSpid"].split()) == 1 and int(fields["NSpid"]) > 1
+    assert fields["Uid"].split() == ["0"] * 4
+    assert fields["Gid"].split() == ["0"] * 4
+    for name in ("CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"):
+        assert int(fields[name], 16) == 0
+    if pid is None:
+        for path in ("/usr/bin/python3", "/usr/bin/zstd", "/usr/bin/gzip"):
+            observed = os.stat(path, follow_symlinks=False)
+            if observed.st_uid != 0 or observed.st_gid != 0:
+                raise RuntimeError("native sandbox host-root ownership mapping architecture blocker")
+
+
+def _bounded_read(descriptor, size, seconds=10):
+    deadline = time.monotonic() + seconds
+    body = bytearray()
+    while len(body) < size:
+        remaining = deadline - time.monotonic()
+        assert remaining > 0
+        ready, _, _ = select.select((descriptor,), (), (), remaining)
+        assert ready
+        part = os.read(descriptor, size - len(body))
+        assert part
+        body.extend(part)
+    return bytes(body)
+
+
+def _bounded_wait(pid, seconds=10):
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        observed, status = os.waitpid(pid, os.WNOHANG)
+        if observed == pid:
+            return status
+        time.sleep(0.005)
+    raise AssertionError(f"bounded wait expired for {pid}")
+
+
+def _archive_bytes(asset):
+    if asset is process.kata_runtime.FixedArchive.KATA_ZSTD:
+        return _ZSTD_STREAM, _ZSTD_RAW
+    raw = b"cogs-native-gzip\n"
+    return gzip.compress(raw, mtime=0), raw
+
+
+def _native_archive_success(owner, asset, inherited):
+    compressed, expected = _archive_bytes(asset)
+    assert 0 < len(compressed) <= 65_536 and len(expected) <= 65_536
+    callbacks = []
+    opened = []
+    with tempfile.TemporaryFile() as archive:
+        archive.write(compressed)
+        archive.flush()
+        archive.seek(0)
+        real_gate = process._wait_for_preinput_read
+        real_mapped = process._mapped_closure
+        real_open = process.os.open
+
+        def intent(value):
+            callbacks.append(("intent", value))
+            return "9" * 64
+
+        def started(value):
+            _native_envelope(value.process.pid, os.getpid())
+            callbacks.append(("started", value))
+            return "a" * 64
+
+        def settled(value):
+            callbacks.append(("settled", value))
+            return "b" * 64
+
+        def read_gate(pid, deadline_ns):
+            result = real_gate(pid, deadline_ns)
+            assert archive.tell() == 0
+            callbacks.append(("read-gate", pid))
+            return result
+
+        def tracking_open(path, *args, **kwargs):
+            descriptor = real_open(path, *args, **kwargs)
+            if path == f"/proc/{callbacks[1][1].process.pid}" or kwargs.get("dir_fd") in opened:
+                opened.append(descriptor)
+            return descriptor
+
+        def mapped_closure(pid, closure):
+            assert callbacks[-1] == ("read-gate", pid) and archive.tell() == 0
+            _native_envelope(pid, os.getpid())
+            assert process._proc_row(pid) == tuple(
+                getattr(callbacks[1][1].process, name)
+                for name in ("pid", "ppid", "pgid", "sid", "starttime")
+            )
+            for descriptor in inherited:
+                try:
+                    os.stat(f"/proc/{pid}/fd/{descriptor}")
+                except FileNotFoundError:
+                    pass
+                else:
+                    raise AssertionError(f"archive child inherited fd {descriptor}")
+            before = set(os.listdir("/proc/self/fd"))
+            with patch.object(process.os, "open", side_effect=tracking_open):
+                result = real_mapped(pid, closure)
+            assert set(os.listdir("/proc/self/fd")) == before
+            assert opened
+            for descriptor in opened:
+                try:
+                    os.fstat(descriptor)
+                except OSError as error:
+                    assert error.errno == errno.EBADF
+                else:
+                    raise AssertionError(f"mapped-closure fd {descriptor} remained open")
+            callbacks.append(("mapped", pid))
+            return result
+
+        deadline_ns = time.monotonic_ns() + 20_000_000_000
+        with patch.object(process, "_wait_for_preinput_read", side_effect=read_gate), \
+             patch.object(process, "_mapped_closure", side_effect=mapped_closure):
+            stream = owner.open_archive_stream(
+                asset, archive.fileno(), intent, started, settled, deadline_ns,
+            )
+        output = bytearray()
+        while True:
+            chunk = stream.read()
+            if not chunk:
+                break
+            output.extend(chunk)
+            assert len(output) <= 65_536
+        outcome = stream.settle()
+    assert bytes(output) == expected
+    assert [name for name, _value in callbacks] == [
+        "intent", "started", "read-gate", "mapped", "settled",
+    ]
+    assert outcome.status == 0 and outcome.reaped and outcome.descendants_absent
+    assert outcome.stdout_bytes == len(expected) and outcome.errors == ()
+    identity = callbacks[1][1].process
+    assert not Path(f"/proc/{identity.pid}").exists()
+    assert process._archive_processes(identity) == ()
+
+
+def _death_report(stage, identity, descriptor):
+    row = process._proc_row(identity.process.pid)
+    assert row == (
+        identity.process.pid, identity.process.ppid, identity.process.pgid,
+        identity.process.sid, identity.process.starttime,
+    )
+    body = struct.pack("!6Q", stage, *row)
+    assert os.write(descriptor, body) == len(body)
+
+
+def _native_parent_death(after_release):
+    report_r, report_w = os.pipe2(os.O_CLOEXEC)
+    supervisor = os.fork()
+    if supervisor == 0:
+        os.close(report_r)
+        try:
+            owner = process._RuntimeDiscoveryHost()
+            compressed, _raw = _archive_bytes(process.kata_runtime.FixedArchive.KATA_ZSTD)
+            archive = tempfile.TemporaryFile()
+            archive.write(compressed)
+            archive.seek(0)
+            started_identity = [None]
+
+            def started(identity):
+                started_identity[0] = identity
+                if not after_release:
+                    _death_report(0, identity, report_w)
+                    os._exit(0)
+                return "d" * 64
+
+            real_mapped = process._mapped_closure
+
+            def mapped(pid, closure):
+                assert started_identity[0] is not None and pid == started_identity[0].process.pid
+                _death_report(1, started_identity[0], report_w)
+                os._exit(0)
+
+            with patch.object(process, "_mapped_closure", side_effect=mapped if after_release else real_mapped):
+                owner.open_archive_stream(
+                    process.kata_runtime.FixedArchive.KATA_ZSTD,
+                    archive.fileno(), lambda _value: "c" * 64, started,
+                    lambda _value: "e" * 64, time.monotonic_ns() + 20_000_000_000,
+                )
+        except BaseException:
+            os._exit(90)
+        os._exit(91)
+    os.close(report_w)
+    raw = _bounded_read(report_r, 48)
+    os.close(report_r)
+    stage, child, ppid, pgid, sid, starttime = struct.unpack("!6Q", raw)
+    assert stage == int(after_release) and ppid == supervisor and child == pgid == sid
+    assert _bounded_wait(supervisor) == 0
+    child_status = _bounded_wait(child)
+    assert os.WIFSIGNALED(child_status) and os.WTERMSIG(child_status) == signal.SIGKILL
+    assert not Path(f"/proc/{child}").exists()
+    identity = process.ProcessIdentity(
+        child, ppid, pgid, sid, starttime, process._boot_id(), False,
+    )
+    assert process._archive_processes(identity) == ()
+    assert process._runtime_discovery_process_residue()
+
+
+def _native_runtime_preflight():
+    _native_envelope()
+    baseline = set(os.listdir("/proc/self/fd"))
+    base = os.open("/dev/null", os.O_RDONLY | os.O_CLOEXEC)
+    os.dup2(base, 198, inheritable=True)
+    high = fcntl.fcntl(base, fcntl.F_DUPFD, 4096)
+    assert high == 4096
+    os.set_inheritable(high, True)
+    try:
+        owner = process._RuntimeDiscoveryHost()
+        try:
+            _native_archive_success(owner, process.kata_runtime.FixedArchive.KATA_ZSTD, (198, 4096))
+            _native_archive_success(owner, process.kata_runtime.FixedArchive.CONTAINERD_GZIP, (198, 4096))
+        finally:
+            owner.close()
+        _native_parent_death(False)
+        _native_parent_death(True)
+        assert process._runtime_discovery_process_residue()
+    finally:
+        os.close(4096)
+        os.close(198)
+        os.close(base)
+    assert set(os.listdir("/proc/self/fd")) == baseline
+
+
+if _native_selected():
+    _native_runtime_preflight()
+    print(_NATIVE_MARKER, flush=True)
+    raise SystemExit(0)
 
 
 def rejected(function):
@@ -136,256 +405,117 @@ deeply_nested = b"[" * 1_200 + b"0" + b"]" * 1_200
 contract_rejected(deeply_nested)
 
 
-HELPER = r'''#include <errno.h>
-#include <fcntl.h>
-#include <signal.h>
-#include <stdio.h>
-#include <string.h>
-#include <unistd.h>
-static int write_all(int descriptor, const void *buffer, size_t size) {
-  const char *next = buffer;
-  while (size > 0) {
-    ssize_t written = write(descriptor, next, size);
-    if (written < 0 && errno == EINTR) continue;
-    if (written <= 0) return -1;
-    next += written;
-    size -= (size_t)written;
-  }
-  return 0;
+# Every production host-closure close path attempts all descriptors and turns
+# close uncertainty into a failed transition.
+real_close = os.close
+
+
+def close_fault(descriptor):
+    real_close(descriptor)
+    raise OSError(errno.EIO, "fixed injected descriptor close failure")
+
+
+proc_r, proc_w = os.pipe()
+maps_r, maps_w = os.pipe()
+mapped_closes = []
+
+
+def mapped_close_fault(descriptor):
+    mapped_closes.append(descriptor)
+    close_fault(descriptor)
+
+
+try:
+    with patch.object(process.os, "open", side_effect=(proc_r, maps_r)), \
+         patch.object(process.os, "read", side_effect=OSError(errno.EIO, "fixed maps read failure")), \
+         patch.object(process.os, "close", side_effect=mapped_close_fault):
+        try:
+            process._mapped_closure(123, None)
+        except process.ProcessError as error:
+            mapped_error = str(error)
+        else:
+            raise AssertionError("mapped closure close faults were accepted")
+    assert set(mapped_closes) == {maps_r, proc_r}
+    assert all(f"fd={descriptor}" in mapped_error for descriptor in (maps_r, proc_r))
+finally:
+    os.close(proc_w)
+    os.close(maps_w)
+
+root_r, root_w = os.pipe()
+loader_r, loader_w = os.pipe()
+root_bound = process._HostBound(
+    "/fixed/gzip", root_r, (1, 1, 1, 1, 1), b"root", process._HOST_INTERP, None, ())
+loader_bound = process._HostBound(
+    process._HOST_INTERP, loader_r, (1, 2, 1, 1, 1), b"loader", None, None, ())
+process._DISCOVERY_FDS.update((root_r, loader_r))
+host_closes = []
+
+
+def host_close_fault(descriptor):
+    host_closes.append(descriptor)
+    close_fault(descriptor)
+
+
+try:
+    with patch.object(process, "_host_read", side_effect=(root_bound, loader_bound)), \
+         patch.object(process, "_canonical", side_effect=process.ProcessError("fixed proof failure")), \
+         patch.object(process.os, "close", side_effect=host_close_fault):
+        try:
+            process._host_closure("gzip", "/fixed/gzip")
+        except process.ProcessError as error:
+            host_error = str(error)
+        else:
+            raise AssertionError("host closure close faults were accepted")
+    assert set(host_closes) == {root_r, loader_r}
+    assert "/fixed/gzip" in host_error and process._HOST_INTERP in host_error
+    assert not {root_r, loader_r} & process._DISCOVERY_FDS
+finally:
+    os.close(root_w)
+    os.close(loader_w)
+
+host_pairs = [os.pipe() for _unused in range(4)]
+host_readers = [pair[0] for pair in host_pairs]
+host_writers = [pair[1] for pair in host_pairs]
+fake_host = object.__new__(process._RuntimeDiscoveryHost)
+fake_host._closures = []
+fake_host._bounds = [
+    process._HostBound(f"/fixed/bound-{index}", descriptor, (1, index, 1, 1, 1), b"", None, None, ())
+    for index, descriptor in enumerate(host_readers[2:])
+]
+fake_host._executables = {
+    process.kata_runtime.FixedArchive.KATA_ZSTD: host_readers[0],
+    process.kata_runtime.FixedArchive.CONTAINERD_GZIP: host_readers[1],
 }
-int main(int argc, char **argv) {
-  if (argc != 2) return 90;
-  if (!strcmp(argv[1], "ok")) return write_all(1, "ok\n", 3) == 0 ? 0 : 96;
-  if (!strcmp(argv[1], "stderr")) return write_all(2, "fixed-error\n", 12) == 0 ? 0 : 96;
-  if (!strcmp(argv[1], "exit7")) return 7;
-  if (!strcmp(argv[1], "flood")) { char x = 'x'; for (int i=0;i<65537;i++) if (write_all(1,&x,1)) return 96; return 0; }
-  if (!strcmp(argv[1], "dual-flood")) { char out[4096], err[4096]; memset(out,'o',sizeof(out)); memset(err,'e',sizeof(err)); for (int i=0;i<20;i++) if (write_all(1,out,sizeof(out)) || write_all(2,err,sizeof(err))) return 96; return 0; }
-  if (!strcmp(argv[1], "sleep")) { signal(SIGTERM, SIG_IGN); sleep(30); return 0; }
-  if (!strcmp(argv[1], "held-pipe")) { pid_t child=fork(); if (child<0) return 93; if (!child) { usleep(800000); _exit(0); } return 0; }
-  if (!strcmp(argv[1], "fd")) { if (fcntl(198, F_GETFD) == -1 && errno == EBADF) return write_all(1,"closed\n",7) == 0 ? 0 : 96; return 91; }
-  if (!strcmp(argv[1], "high-fd")) { if (fcntl(4096, F_GETFD) == -1 && errno == EBADF) return write_all(1,"high-closed\n",12) == 0 ? 0 : 96; return 94; }
-  if (!strcmp(argv[1], "inherited")) { char a=0,b=0; if (read(200,&a,1)==1 && read(201,&b,1)==1 && a=='K' && b=='H' && fcntl(202,F_GETFD)==-1 && errno==EBADF) return write_all(1,"inherited\n",10) == 0 ? 0 : 96; return 95; }
-  return 92;
-}
-'''
+fake_host._next = 0
+fake_host._closed = False
+fake_host._close_failure = None
+process._DISCOVERY_FDS.update(host_readers)
+runtime_closes = []
 
 
-def linux_supervisor_tests():
-    if platform.system() != "Linux" or platform.machine() != "x86_64":
-        return
-    cc = Path("/usr/bin/cc")
-    if not cc.exists():
-        raise AssertionError("fixed local C compiler is required for the Linux process test")
-    directory = placeholder.parent
-    directory.mkdir(mode=0o700, parents=False, exist_ok=True)
-    source = directory / "helper.c"
-    source.write_text(HELPER, encoding="ascii")
-    os.chmod(source, 0o600)
-    compile_result = subprocess.run(
-        [str(cc), "-static", "-O2", "-Wall", "-Wextra", "-Werror", "-o", str(placeholder), str(source)],
-        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30, check=False,
-    )
-    assert compile_result.returncode == 0, compile_result.stderr.decode(errors="replace")
-    os.chmod(placeholder, 0o500)
-    raw, digest = contract_for(placeholder)
-    os.environ["COGS_KATA_PROCESS_TESTING_V1"] = "1"
-
-    def issue(action):
-        return process._make_test_issuer(raw, digest)(action)
-
-    result = issue(process._TestAction.OK)
-    assert result.outcome == "exited" and result.status == 0 and result.stdout == b"ok\n", (
-        f"unexpected OK outcome: outcome={result.outcome!r} status={result.status!r} errno={result.errno!r} "
-        f"stdout={result.stdout!r} stderr={result.stderr!r} errors={result.errors!r}"
-    )
-    assert result.stderr == b"" and result.reaped and not result.errors
-    assert result.identity.pid == result.identity.pgid == result.identity.sid
-    assert result.identity.ppid == os.getpid() and result.identity.starttime > 0
-    assert result.stdout_sha256 == hashlib.sha256(b"ok\n").hexdigest()
-
-    authority = process._make_test_issuer(raw, digest)
-    authority(process._TestAction.OK)
-    rejected(lambda: authority(process._TestAction.OK))
-
-    result = issue(process._TestAction.STDERR)
-    assert result.status == 0 and result.stderr == b"fixed-error\n" and result.reaped
-    result = issue(process._TestAction.EXIT7)
-    assert result.status == 7 and result.errors == ("exit:7",) and result.reaped
-    result = issue(process._TestAction.FLOOD)
-    assert len(result.stdout) == process.MAX_STREAM and result.stdout_truncated
-    assert "output-cap" in result.errors and result.reaped
-    result = issue(process._TestAction.DUAL_FLOOD)
-    assert len(result.stdout) == len(result.stderr) == process.MAX_STREAM
-    assert result.stdout_truncated and result.stderr_truncated and result.reaped
-
-    started = time.monotonic()
-    result = issue(process._TestAction.SLEEP)
-    assert result.timed_out and result.leader_timed_out and not result.pipe_timed_out
-    assert result.outcome == "signaled" and result.status == signal.SIGKILL
-    assert result.reaped and time.monotonic() - started < 5
-
-    started = time.monotonic()
-    result = issue(process._TestAction.HELD_PIPE)
-    assert result.reaped and result.pipe_timed_out and not result.leader_timed_out
-    assert result.outcome == "uncertain" and "pipe-deadline" in result.errors
-    assert time.monotonic() - started < 1
-
-    held = os.open("/dev/null", os.O_RDONLY | os.O_CLOEXEC)
-    try:
-        os.dup2(held, 198, inheritable=True)
-        result = issue(process._TestAction.FD)
-        assert result.status == 0 and result.stdout == b"closed\n"
-    finally:
-        os.close(198)
-        os.close(held)
-
-    # Collision-safe inherited mapping survives exec only at exact 200/201;
-    # source CLOEXEC flags remain unchanged and every extra fd is closed.
-    key_r, key_w = os.pipe2(os.O_CLOEXEC)
-    hosts_r, hosts_w = os.pipe2(os.O_CLOEXEC)
-    os.write(key_w, b"K"); os.write(hosts_w, b"H")
-    os.close(key_w); os.close(hosts_w)
-    saved = {}
-    try:
-        for target in (200, 201):
-            try: saved[target] = os.dup(target)
-            except OSError: saved[target] = None
-        os.dup2(hosts_r, 200, inheritable=False)
-        os.dup2(key_r, 201, inheritable=False)
-        owner = process._seal_inherited_inputs_for_tests(
-            201, 200, process._fd_identity(201), process._fd_identity(200),
-        )
-        result = process._make_test_issuer(raw, digest)(process._TestAction.INHERITED, owner)
-        assert result.status == 0 and result.stdout == b"inherited\n" and not result.errors
-        assert not os.get_inheritable(200) and not os.get_inheritable(201)
-    finally:
-        for target, original in saved.items():
-            if original is None:
-                try: os.close(target)
-                except OSError: pass
-            else:
-                os.dup2(original, target); os.close(original)
-        os.close(key_r); os.close(hosts_r)
-
-    # close_range reaches inherited descriptors above a subsequently lowered limit.
-    base = os.open("/dev/null", os.O_RDONLY | os.O_CLOEXEC)
-    high = __import__("fcntl").fcntl(base, __import__("fcntl").F_DUPFD, 4096)
-    os.set_inheritable(high, True)
-    old_limit = resource.getrlimit(resource.RLIMIT_NOFILE)
-    try:
-        resource.setrlimit(resource.RLIMIT_NOFILE, (256, old_limit[1]))
-        result = issue(process._TestAction.HIGH_FD)
-        assert result.status == 0 and result.stdout == b"high-closed\n"
-    finally:
-        resource.setrlimit(resource.RLIMIT_NOFILE, old_limit)
-        os.close(high)
-        os.close(base)
-
-    # A child-side pre-exec failure is a fixed-size errno result and is reaped.
-    with patch.object(process, "_execveat", side_effect=OSError(errno.ENOEXEC, "fixed injected exec failure")):
-        result = issue(process._TestAction.OK)
-    assert result.outcome == "exec_failed" and result.errno == errno.ENOEXEC and result.reaped
-
-    # A fake mismatching snapshot prevents release. Closing the release pipe lets
-    # the directly-owned blocked child exit, and the parent still reaps it.
-    child = []
-    real_identity = process._identity
-    def mismatch(pid, reported):
-        child.append(pid)
-        raise process.ProcessError("fake PID mismatch")
-    with patch.object(process, "_identity", side_effect=mismatch):
-        rejected(lambda: issue(process._TestAction.OK))
-    assert len(child) == 1
-    try:
-        os.waitpid(child[0], os.WNOHANG)
-    except ChildProcessError:
-        pass
-    else:
-        raise AssertionError("PID mismatch child was not reaped")
-    assert real_identity
-
-    # Setup timeout cleanup closes release, tolerates EINTR, and boundedly reaps.
-    cleanup_seen = []
-    real_cleanup = process._cleanup_child
-    real_waitpid = os.waitpid
-    interrupted = [False]
-    def wait_once_interrupted(pid, options):
-        if not interrupted[0]:
-            interrupted[0] = True
-            raise OSError(errno.EINTR, "fixed injected wait interruption")
-        return real_waitpid(pid, options)
-    def observe_cleanup(*args):
-        result = real_cleanup(*args)
-        cleanup_seen.append((args[0], result))
-        return result
-    with patch.object(process, "_read_setup", side_effect=process.ProcessError("fixed setup timeout")), \
-         patch.object(process, "_cleanup_child", side_effect=observe_cleanup), \
-         patch.object(process.os, "waitpid", side_effect=wait_once_interrupted):
-        rejected(lambda: issue(process._TestAction.OK))
-    assert len(cleanup_seen) == 1 and cleanup_seen[0][1][0] is not None
-    assert any("eintr" in item for item in cleanup_seen[0][1][1])
-    try:
-        os.waitpid(cleanup_seen[0][0], os.WNOHANG)
-    except ChildProcessError:
-        pass
-    else:
-        raise AssertionError("setup-timeout child was not reaped")
-
-    # ECHILD and identity-observation failures are recorded, never thrown.
-    wait_errors = []
-    _, done = process._wait_nohang(os.getpid(), wait_errors, "injected", time.monotonic() + 0.1)
-    assert done and wait_errors == ["injected:echild"]
-    observation_child = os.fork()
-    if observation_child == 0:
-        time.sleep(0.25)
-        os._exit(0)
-    observation_identity = process.ProcessIdentity(observation_child, os.getpid(), observation_child,
-                                                   observation_child, 1, process._boot_id(), False)
-    with patch.object(process, "_same_identity", return_value="uncertain"):
-        observed_status, cleanup_errors = process._cleanup_child(observation_child, observation_identity, None, True)
-    assert observed_status is not None and "identity-uncertain-before-term" in cleanup_errors
-
-    # A close failure is aggregated after the descriptor was actually closed.
-    real_close = os.close
-    injected = [False]
-    def close_then_error(descriptor):
-        real_close(descriptor)
-        if not injected[0]:
-            injected[0] = True
-            raise OSError(errno.EIO, "fixed injected close failure")
-    close_authority = process._make_test_issuer(raw, digest)
-    with patch.object(process.os, "close", side_effect=close_then_error):
-        result = close_authority(process._TestAction.OK)
-    assert "close:5" in result.errors and result.reaped
-
-    # The issued object is the sealed bytes, even if the source path changes.
-    original = placeholder.read_bytes()
-    sealed_authority = process._make_test_issuer(raw, digest)
-    os.chmod(placeholder, 0o600)
-    placeholder.write_bytes(b"not-the-sealed-helper")
-    try:
-        result = sealed_authority(process._TestAction.OK)
-        assert result.status == 0 and result.stdout == b"ok\n"
-    finally:
-        placeholder.write_bytes(original)
-        os.chmod(placeholder, 0o500)
-
-    # A replacement also fails a new binding before fork.
-    os.chmod(placeholder, 0o600)
-    placeholder.write_bytes(original + b"x")
-    rejected(lambda: process._make_test_issuer(raw, digest))
-    placeholder.write_bytes(original)
-    os.chmod(placeholder, 0o500)
+def runtime_close_fault(descriptor):
+    runtime_closes.append(descriptor)
+    close_fault(descriptor)
 
 
-# Imported late so the portable portion does not imply process use on macOS.
-import signal
-required = os.environ.get("COGS_REQUIRE_LINUX_PROCESS_TESTS_V1") == "1"
-qualified = platform.system() == "Linux" and platform.machine() == "x86_64"
-if required and not qualified:
-    raise RuntimeError("Linux amd64 process qualification was required")
-if qualified:
-    linux_supervisor_tests()
-    print("completion Kata process LINUX AMD64 QUALIFIED matrix passed")
-else:
-    print("completion Kata process portable matrix passed; Linux amd64 supervisor matrix SKIPPED")
+try:
+    with patch.object(process.os, "close", side_effect=runtime_close_fault):
+        try:
+            fake_host.close()
+        except process.ProcessError as error:
+            runtime_close_error = str(error)
+        else:
+            raise AssertionError("runtime host close faults were accepted")
+    assert set(runtime_closes) == set(host_readers)
+    assert all(str(descriptor) in runtime_close_error for descriptor in host_readers[:2])
+    assert "/fixed/bound-0" in runtime_close_error
+    assert "/fixed/bound-1" in runtime_close_error
+    assert not fake_host._closed and not set(host_readers) & process._DISCOVERY_FDS
+    rejected(fake_host.close)
+    assert set(runtime_closes) == set(host_readers)
+finally:
+    for descriptor in host_writers:
+        os.close(descriptor)
+
+
+print("completion Kata process portable matrix passed; native runtime preflight SKIPPED")

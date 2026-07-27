@@ -14,22 +14,35 @@ const runnerPath = join(root, "scripts/run-stage2-phase-a-candidate.py");
 const budgetPath = join(root, "scripts/stage2-phase-a-budget.py");
 const schemaV1Path = join(root, "schemas/stage2-phase-a-candidate-v1.json");
 const schemaV2Path = join(root, "schemas/stage2-phase-a-candidate-v2.json");
+const runtimeSchemaPath = join(root, "schemas/stage2-phase-b-qualification-v1.json");
 const historicalReportPath = join(root, "docs/test-reports/stage-2-phase-a-candidate-30180567797.canonical-json");
 const phaseGraphFixturePath = join(root, "test/fixtures/stage2-phase-a-v2-phase-graphs.json");
 const pythonTest = join(root, "test/stage2-phase-a-candidate.py");
+const ciPath = join(root, ".github/workflows/ci.yml");
+const nativeSelector = "COGS_REQUIRE_NATIVE_RUNTIME_PREFLIGHT_V1";
 
 const require = createRequire(import.meta.url);
 const Ajv2020 = require("ajv/dist/2020.js") as new (options?: Options) => AjvCore;
 
 test("Phase A pure downloader, KVM ioctl, and non-authority policies", () => {
+  const env: NodeJS.ProcessEnv = { ...process.env, PYTHONDONTWRITEBYTECODE: "1" };
+  delete env[nativeSelector];
   const result = spawnSync("python3", [pythonTest], {
     cwd: root,
-    env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" },
+    env,
     encoding: "utf8",
     timeout: 20_000,
   });
   assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
-  assert.match(result.stdout, /stage2 phase-a candidate portable tests passed/u);
+  assert.equal(result.stdout.match(/stage2 phase-a candidate portable tests passed/gu)?.length, 1);
+  const nonExact = spawnSync("python3", [pythonTest], {
+    cwd: root,
+    env: { ...env, [nativeSelector]: "true" },
+    encoding: "utf8",
+    timeout: 10_000,
+  });
+  assert.notEqual(nonExact.status, 0);
+  assert.equal(nonExact.stdout, "");
   const produced = result.stdout
     .split("\n")
     .filter((line) => line.startsWith("producer-boundary-report "))
@@ -49,57 +62,347 @@ test("Phase A pure downloader, KVM ioctl, and non-authority policies", () => {
   }
 });
 
-test("Phase A workflow is exact-head, same-repository, PR-only, and package-mutation-free", async () => {
+test("runtime-discovery workflow has the exact PR 230 one-shot guard and cleanup order", async () => {
   const workflow = await readFile(workflowPath, "utf8");
-  assert.match(workflow, /^on:\n {2}pull_request:/mu);
-  assert.match(workflow, /contains\(github\.event\.pull_request\.labels\.\*\.name, 'security'\)/u);
-  assert.match(workflow, /github\.event\.pull_request\.head\.repo\.full_name == github\.repository/u);
-  assert.match(workflow, /runs-on: ubuntu-24\.04/u);
-  assert.match(workflow, /timeout-minutes: 90/u);
+  assert.match(workflow, /^run-name: phase-b-runtime-discovery$/mu);
+  assert.match(
+    workflow,
+    /^on:\n {2}pull_request:\n {4}branches: \[feat\/issue42-deterministic-rootfs\]\n {4}types: \[labeled\]$/mu,
+  );
+  for (const gate of [
+    "github.event_name == 'pull_request'",
+    "github.event.action == 'labeled'",
+    "github.event.label.name == 'security'",
+    "github.event.pull_request.head.repo.full_name == github.repository",
+    "github.event.pull_request.base.sha == '8caab23bb4277121a77d80dc043b3c2c43b07ced'",
+    "github.event.pull_request.number == 230",
+    "github.run_attempt == 1",
+  ])
+    assert.ok(workflow.includes(gate), gate);
+  assert.match(workflow, /permissions:\n {2}contents: read\n {2}actions: read/u);
+  assert.match(workflow, /EXACT_RUN_NAME: phase-b-runtime-discovery/u);
+  assert.match(workflow, /current != min\(row\["id"\] for row in marker\)/u);
+  assert.match(workflow, /len\(records\) != total/u);
+  assert.doesNotMatch(workflow, /"head_sha": head/u);
+  assert.equal(workflow.match(/\$\{\{ github\.token \}\}/gu)?.length, 1);
+  assert.doesNotMatch(workflow, /actions\/checkout|persist-credentials|contains\(|reopened|synchronize/u);
+  assert.match(workflow, /credential\.helper= -c core\.askPass=[\s\S]*GIT_TERMINAL_PROMPT=0/u);
+  assert.match(workflow, /download-2-fixed-public-runtime-assets/u);
+  assert.match(workflow, /COGS_REQUIRE_LINUX_PROCESS_TESTS_V1=1[\s\S]*test\/aws-stage2-completion-kata-process\.py/u);
+  assert.match(workflow, /COGS_REQUIRE_ROOT_RUNTIME_CRASH_MATRIX_V1=1[\s\S]*test\/stage2-phase-a-candidate\.py/u);
+  assert.equal(workflow.match(/COGS_STAGE2_BUDGET_PROFILE=phase-b-runtime-discovery/gu)?.length, 1);
+  assert.doesNotMatch(workflow, /check post-export-residue-start/u);
+  assert.doesNotMatch(workflow, /download-16-fixed-public-stage2-artifacts/u);
+  const commands = ["observe", "cleanup", "residue", "validate", "export", "cleanup-export", "post-export-residue"];
+  for (const command of commands) assert.match(workflow, new RegExp(`phase-b-runtime-discovery ${command}`, "u"));
+  const positions = commands.map((command) => workflow.indexOf(`phase-b-runtime-discovery ${command}`));
+  assert.deepEqual(
+    positions,
+    [...positions].sort((left, right) => left - right),
+  );
+  assert.match(workflow, /path: \/var\/tmp\/cogs-stage2-phase-b-runtime-discovery-v1\.qualification\.json/u);
+  assert.equal(
+    workflow.match(/^ {10}path: \/var\/tmp\/cogs-stage2-phase-b-runtime-discovery-v1\.qualification\.json$/gmu)?.length,
+    1,
+  );
+  assert.match(workflow, /timeout-minutes: 1[\s\S]*actions\/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a/u);
   assert.match(workflow, /cancel-in-progress: false/u);
-  assert.ok(
-    workflow.indexOf("Establish scheduling-only monotonic budget anchor") <
-      workflow.indexOf("Check out exact pull request head"),
+  assert.match(workflow, /elapsed < 5_280_000_000_000/u);
+  assert.doesNotMatch(workflow, /apt(?:-get)?|dnf|yum|apk|brew|snap|dpkg|systemctl|\/dev\/kvm|ssh\s|aws\s/u);
+  const [runner, companion, ci] = await Promise.all([
+    readFile(runnerPath, "utf8"),
+    readFile(pythonTest, "utf8"),
+    readFile(ciPath, "utf8"),
+  ]);
+  const runtimeRoute = runner.slice(runner.indexOf("def _runtime_open_anonymous"), runner.indexOf("def main"));
+  assert.match(runtimeRoute, /os\.O_TMPFILE \| os\.O_RDWR/u);
+  assert.match(runtimeRoute, /_read_regular\(RUNTIME_REPORT, MAX_JSON, 0o400\)/u);
+  assert.match(
+    runner,
+    /RUNTIME_EXPORT = Path\("\/var\/tmp\/cogs-stage2-phase-b-runtime-discovery-v1\.qualification\.json"\)/u,
   );
-  assert.match(workflow, /stage2-phase-a-budget\.py timeout source[\s\S]*stage2-phase-a-budget\.py check source/u);
-  assert.match(workflow, /stage2-phase-a-budget\.py timeout observe[\s\S]*stage2-phase-a-budget\.py check observe/u);
-  assert.match(workflow, /stage2-phase-a-budget\.py timeout cleanup[\s\S]*stage2-phase-a-budget\.py check cleanup/u);
-  for (const boundary of ["residue", "render", "validate", "export", "export-cleanup", "post-export-residue"]) {
-    assert.match(workflow, new RegExp(`stage2-phase-a-budget\\.py timeout ${boundary}`, "u"));
+  assert.match(runtimeRoute, /def _runtime_export\(\):[\s\S]*os\.fchmod\(descriptor, 0o444\)/u);
+  assert.match(runtimeRoute, /collector = qualification\.bind_runtime_discovery\(\)/u);
+  assert.match(runtimeRoute, /tuple\(descriptors\), journal\.intent, journal\.started, journal\.settled, deadline_ns/u);
+  assert.doesNotMatch(runtimeRoute, /\.partial|asset-final-owned/u);
+  assert.match(runner, /_recover_runtime_discovery_children/u);
+  assert.doesNotMatch(
+    runtimeRoute,
+    /_prove_kvm|_rootfs_candidates|_recover_rootfs|completion_kata_coordinator|extractall|tarfile|subprocess|killpg|\/dev\/kvm/u,
+  );
+
+  assert.match(
+    workflow,
+    /\/usr\/bin\/python3 -I - <<'PY'[\s\S]*urllib\.request\.urlopen\(request, timeout=min\(20, remaining\)\)/u,
+  );
+
+  assert.match(companion, /value = os\.getenv\(_NATIVE_SELECTOR\)/u);
+  assert.match(companion, /selected != \[\(_NATIVE_SELECTOR \+ "=1"\)\.encode\(\)\]/u);
+  assert.match(companion, /CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb/u);
+  assert.match(companion, /_runtime_open_anonymous\(parent, 0o600\)[\s\S]*os\.fchmod\(descriptor, 0o400\)/u);
+  assert.match(companion, /_runtime_link_anonymous\(parent, descriptor, name\)[\s\S]*_owned_file[\s\S]*_unlink_exact/u);
+  assert.match(companion, /st_nlink, initial\.st_size\) == \(0, 0, 0o600, 0, 0\)/u);
+  assert.match(companion, /named\.st_nlink, named\.st_size\) == \(0, 0, 0o400, 1, len\(fixture\)\)/u);
+  assert.ok(companion.indexOf("if _native_selected():") < companion.indexOf("BUDGET ="));
+  assert.equal(companion.match(/print\(_NATIVE_MARKER/gu)?.length, 1);
+
+  const nativeJob = ci.slice(ci.indexOf("  native-runtime-preflight:"));
+  assert.match(nativeJob, /mount -t tmpfs[\s\S]*mount -t proc[\s\S]*exec \/usr\/sbin\/chroot/u);
+  assert.match(
+    nativeJob,
+    /"\/usr\/bin\/sudo","-n","--close-from=3","\/usr\/bin\/setpriv","--reuid","0","--regid","0","--clear-groups","--no-new-privs","\/usr\/bin\/unshare","--user","--map-users=0:0:1","--map-groups=0:0:1","--net","--pid","--fork","--mount"/u,
+  );
+  assert.doesNotMatch(nativeJob, /map-root-user|str\(uid\)|str\(gid\)|newuidmap|newgidmap|chown|RootView|copyfile/u);
+  assert.match(nativeJob, /raw\.count\("\\n"\) != 1 or raw\.split\(\) != \["0", "0", "1"\]/u);
+  assert.match(
+    nativeJob,
+    /"\/usr\/bin\/python3", "\/usr\/bin\/zstd", "\/usr\/bin\/gzip", "\/dev\/null", "\/dev\/urandom"[\s\S]*st_uid,value\.st_gid\) != \(0,0\)[\s\S]*target_stat\.st_uid,target_stat\.st_gid[\s\S]*!= \(0,0\)/u,
+  );
+  assert.match(
+    nativeJob,
+    /--securebits \+noroot,\+noroot_locked[\s\S]*--bounding-set=-all --inh-caps=-all --ambient-caps=-all[\s\S]*--clear-groups --no-new-privs[\s\S]*\/usr\/bin\/timeout --signal=KILL 240 \/usr\/bin\/python3 -I -B -c/u,
+  );
+  const launcherMatch = nativeJob.match(/<<'SECCOMP'[\s\S]*?\n {10}SECCOMP/u);
+  assert.ok(launcherMatch);
+  const launcher = launcherMatch[0];
+  const direct = launcher.slice(launcher.indexOf("ins=("), launcher.indexOf("F(0x15,0,3,157)"));
+  assert.deepEqual(
+    [...direct.matchAll(/F\(0x15,0,1,([0-9]+)\),F\(0x06,0,0,0x00050001\)/gu)].map((row) => Number(row[1])),
+    [41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 288, 299, 307, 425, 426, 427, 272, 308, 317],
+  );
+  assert.match(
+    launcher,
+    /F\(0x20,0,0,4\),F\(0x15,1,0,0xc000003e\),F\(0x06,0,0,0x80000000\),F\(0x20,0,0,0\),F\(0x45,0,1,0x40000000\),F\(0x06,0,0,0x80000000\)/u,
+  );
+  assert.match(
+    launcher,
+    /F\(0x15,0,3,157\),F\(0x20,0,0,16\),F\(0x15,0,1,22\),F\(0x06,0,0,0x00050001\),F\(0x06,0,0,0x7fff0000\)/u,
+  );
+  assert.match(
+    launcher,
+    /"Uid","Gid","Groups","CapInh","CapPrm","CapEff","CapBnd","CapAmb","NoNewPrivs","Seccomp"[\s\S]*rows\["Seccomp"\] != \("2" if filtered else "0"\)/u,
+  );
+  assert.match(launcher, /if len\(ins\)!=59: raise RuntimeError\("filter length"\)/u);
+  assert.ok(
+    launcher.indexOf("status(False)") < launcher.indexOf("libc.prctl(38,1,0,0,0)") &&
+      launcher.indexOf("libc.prctl(38,1,0,0,0)") < launcher.indexOf("libc.prctl(22,2,ctypes.addressof(program),0,0)") &&
+      launcher.indexOf("libc.prctl(22,2,ctypes.addressof(program),0,0)") < launcher.indexOf("status(True)") &&
+      launcher.indexOf("status(True)") < launcher.indexOf("os.execve"),
+  );
+  assert.match(
+    launcher,
+    /path not in \("\/src\/test\/aws-stage2-completion-kata-process\.py","\/src\/test\/stage2-phase-a-candidate\.py"\)/u,
+  );
+  assert.match(
+    launcher,
+    /os\.execve\("\/usr\/bin\/python3",\("\/usr\/bin\/python3","-I","-B",path\),\{"COGS_REQUIRE_NATIVE_RUNTIME_PREFLIGHT_V1":"1","PYTHONDONTWRITEBYTECODE":"1"\}\)/u,
+  );
+  assert.match(launcher, /except BaseException:[\s\S]*native seccomp launcher failed[\s\S]*os\._exit\(126\)/u);
+  assert.doesNotMatch(launcher, /libseccomp|subprocess|platform|uname|importlib|compile\(/u);
+  assert.match(
+    nativeJob,
+    /run_preflight \/src\/test\/stage2-phase-a-candidate\.py 'stage2 phase-a candidate portable tests passed'/u,
+  );
+  assert.match(nativeJob, /os\.ftruncate\(expected_fd, 0\)[\s\S]*\/usr\/bin\/cmp[\s\S]*print\(marker, flush=True\)/u);
+  assert.doesNotMatch(nativeJob, /\b(?:apt-get|apt|dnf|yum|apk|brew|curl|wget)\b/u);
+});
+
+test("runtime-discovery schema is structurally exact and codec separately enforces semantics", async () => {
+  const ajv = new Ajv2020({ allErrors: true, strict: true, strictTuples: false });
+  const validate = ajv.compile(JSON.parse(await readFile(runtimeSchemaPath, "utf8")));
+  const digest = "a".repeat(64);
+  const canonical = (value: unknown): string => {
+    if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+    if (value !== null && typeof value === "object") {
+      const row = value as Record<string, unknown>;
+      return `{${Object.keys(row)
+        .sort()
+        .map((key) => `${JSON.stringify(key)}:${canonical(row[key])}`)
+        .join(",")}}`;
+    }
+    return JSON.stringify(value);
+  };
+  const first = <T>(values: T[]): T => {
+    const value = values[0];
+    assert.ok(value);
+    return value;
+  };
+  const members: Record<string, string> = {
+    "kata-runtime": "opt/kata/bin/kata-runtime",
+    "kata-shim": "opt/kata/bin/containerd-shim-kata-v2",
+    qemu: "opt/kata/bin/qemu-system-x86_64",
+    virtiofsd: "opt/kata/libexec/virtiofsd",
+    "kata-config": "opt/kata/share/defaults/kata-containers/configuration-qemu.toml",
+    containerd: "bin/containerd",
+    ctr: "bin/ctr",
+  };
+  const roles = (names: string[]) =>
+    names.map((role) => {
+      const member = members[role];
+      assert.ok(member);
+      return { role, member, kind: "file" };
+    });
+  const archive = (roleNames: string[]) => ({
+    stream_bytes: 1024,
+    member_count: 1,
+    member_bytes: 1,
+    type_counts: { directory: 0, file: 1, hardlink: 0, symlink: 0 },
+    rejected_type_count: 0,
+    manifest_sha256: digest,
+    links: {
+      counts: {
+        "symlink-relative-in-root": 0,
+        "symlink-absolute": 0,
+        "symlink-escape": 0,
+        "hardlink-member": 0,
+        "hardlink-missing": 0,
+        "hardlink-absolute": 0,
+        "hardlink-escape": 0,
+      },
+      sha256: digest,
+    },
+    roles: roles(roleNames),
+    blockers: [],
+  });
+  const objects = [
+    { role: "executable", soname: null, size: 1, sha256: "1".repeat(64), needed: ["libfixed.so"] },
+    { role: "library", soname: "libfixed.so", size: 1, sha256: "2".repeat(64), needed: [] },
+    { role: "loader", soname: "ld-fixed.so", size: 1, sha256: "3".repeat(64), needed: [] },
+  ];
+  const closureDigest = createHash("sha256")
+    .update(`${canonical(objects)}\n`)
+    .digest("hex");
+  const supervision = { direct_children: 1, helper_descendants: 0, status: 0, reaped: true };
+  const report = {
+    version: "cogs.stage2-phase-b-runtime-discovery/v1",
+    stage: "phase-b-runtime-discovery",
+    authority: "candidate",
+    qualified: false,
+    promotion: false,
+    source: { revision: "b".repeat(40), manifest_sha256: digest },
+    duration_ms: 1,
+    checks: {
+      assets: "pass",
+      archive_enumeration: "pass",
+      host_elf_closures: "pass",
+      supervision: "pass",
+      cleanup: "pass",
+      residue: "pass",
+    },
+    assets: [
+      {
+        component: "kata",
+        release: "3.32.0",
+        name: "kata-static-3.32.0-amd64.tar.zst",
+        compression: "zstd",
+        size: 1547940938,
+        sha256: "1449ecea50bd91fa73a94648db195d18950fe869ba4b1f12d05f55f1fa7c1b01",
+        archive: archive(["kata-runtime", "kata-shim", "qemu", "virtiofsd", "kata-config"]),
+        supervision,
+      },
+      {
+        component: "containerd",
+        release: "2.2.1",
+        name: "containerd-static-2.2.1-linux-amd64.tar.gz",
+        compression: "gzip",
+        size: 33645699,
+        sha256: "af3e82bac6abed58d45956c653244aa2be583359a9753614278ef652012f2883",
+        archive: archive(["containerd", "ctr"]),
+        supervision,
+      },
+    ],
+    host_elf_closures: ["python3-parser", "zstd", "gzip"].map((tool) => ({
+      tool,
+      objects,
+      total_bytes: 3,
+      closure_sha256: closureDigest,
+    })),
+    claims: { rootfs: false, kvm: false, lifecycle: false, extraction: false, publication: false, production: false },
+    blockers: ["candidate-non-authoritative", "runtime-layout-uncommitted"],
+  };
+  const strictAccepts = (value: unknown) =>
+    spawnSync(
+      "python3",
+      [
+        "-I",
+        "-c",
+        "import sys;sys.path.insert(0,sys.argv[1]);import completion_kata_qualification as q;q.load_runtime_discovery_report(sys.stdin.buffer.read())",
+        join(root, "deploy/aws-feasibility/remote"),
+      ],
+      { input: `${canonical(value)}\n`, encoding: "utf8" },
+    ).status === 0;
+  assert.equal(validate(report), true, ajv.errorsText(validate.errors));
+  assert.equal(strictAccepts(report), true);
+
+  const hostileValues = [
+    { ...structuredClone(report), qualified: true },
+    { ...structuredClone(report), path: "/host" },
+    { ...structuredClone(report), blockers: ["candidate-non-authoritative"] },
+    { ...structuredClone(report), assets: [...report.assets].reverse() },
+    { ...structuredClone(report), claims: { ...report.claims, extraction: true } },
+  ];
+  const wrongKind = structuredClone(report);
+  first(first(wrongKind.assets).archive.roles).kind = "symlink";
+  hostileValues.push(wrongKind);
+  const missingRole = structuredClone(report);
+  first(missingRole.assets).archive.roles.pop();
+  hostileValues.push(missingRole);
+  const missingLoader = structuredClone(report);
+  const missingLoaderClosure = first(missingLoader.host_elf_closures);
+  missingLoaderClosure.objects = missingLoaderClosure.objects.slice(0, 2);
+  hostileValues.push(missingLoader);
+  for (const hostile of hostileValues) {
+    assert.equal(validate(hostile), false, "schema accepted structurally hostile report");
   }
-  assert.match(workflow, /stage2-phase-a-budget\.py check upload/u);
-  assert.match(workflow, /stage2-phase-a-budget\.py check post-export-residue-start/u);
-  assert.match(workflow, /timeout-minutes: 1[\s\S]*actions\/upload-artifact@/u);
-  assert.match(workflow, /stage2-phase-a-budget\.py check final/u);
-  assert.match(workflow, /--kill-after=5s/u);
-  assert.match(workflow, /permissions:\n {2}contents: read/u);
-  assert.match(workflow, /ref: \$\{\{ github\.event\.pull_request\.head\.sha \}\}/u);
-  assert.match(workflow, /persist-credentials: false/u);
-  assert.match(workflow, /prepare-stage2-fixed-source\.py[\s\S]*result\["revision"\]!=sys\.argv\[1\]/u);
-  assert.match(workflow, /EXACT_PR_HEAD: \$\{\{ github\.event\.pull_request\.head\.sha \}\}/u);
-  assert.match(workflow, /prepare-stage2-fixed-source\.py[\s\S]*run-stage2-phase-a-candidate\.py observe/u);
-  assert.match(workflow, /if: always\(\)[\s\S]*run-stage2-phase-a-candidate\.py cleanup/u);
-  assert.match(workflow, /run-stage2-phase-a-candidate\.py residue/u);
-  assert.match(workflow, /actions\/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0/u);
-  assert.match(workflow, /actions\/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a/u);
-  assert.match(workflow, /steps\.validate\.outcome == 'success' && steps\.export\.outcome == 'success'/u);
-  assert.match(workflow, /path: \/var\/tmp\/cogs-stage2-phase-a-candidate-v2\/candidate\.json/u);
-  assert.match(workflow, /run-stage2-phase-a-candidate\.py cleanup-export/u);
-  assert.match(workflow, /run-stage2-phase-a-candidate\.py post-export-residue/u);
-  assert.ok(
-    workflow.indexOf("Upload validated staged candidate JSON only") <
-      workflow.indexOf("Exact-identity cleanup of exported report") &&
-      workflow.indexOf("Exact-identity cleanup of exported report") <
-        workflow.indexOf("Independent read-only post-export-cleanup residue observation") &&
-      workflow.indexOf("Independent read-only post-export-cleanup residue observation") <
-        workflow.indexOf("Enforce observation"),
-  );
-  assert.match(workflow, /POST_EXPORT_RESIDUE_OUTCOME[\s\S]*test "\$POST_EXPORT_RESIDUE_OUTCOME" = success/u);
-  assert.doesNotMatch(workflow, /path: \/var\/lib\/cogs\/stage2-completion-v1\/source/u);
-  assert.doesNotMatch(workflow, /workflow_dispatch|schedule:|\bpush:|setup-node|npm|node_modules/u);
-  assert.doesNotMatch(workflow, /apt(?:-get)?|dnf|yum|apk|brew|snap|dpkg|systemctl/u);
-  assert.doesNotMatch(workflow, /configure-aws-credentials|opentofu|terraform|tofu|workflow_call/u);
-  assert.doesNotMatch(workflow, /cancel-in-progress: true/u);
+  for (const hostile of hostileValues) {
+    assert.equal(strictAccepts(hostile), false, "codec accepted structurally hostile report");
+  }
+
+  const reversedBlockers = structuredClone(report);
+  reversedBlockers.blockers.reverse();
+  assert.equal(validate(reversedBlockers), false, "schema accepted reversed fixed blocker prefix");
+  assert.equal(strictAccepts(reversedBlockers), false, "production validation accepted reversed blocker prefix");
+  const maximumDuration = structuredClone(report);
+  maximumDuration.duration_ms = 5_280_000;
+  assert.equal(validate(maximumDuration), true, ajv.errorsText(validate.errors));
+  assert.equal(strictAccepts(maximumDuration), true);
+  const excessiveDuration = structuredClone(report);
+  excessiveDuration.duration_ms = 5_280_001;
+  assert.equal(validate(excessiveDuration), false, "schema accepted excessive duration");
+  assert.equal(strictAccepts(excessiveDuration), false, "production validation accepted excessive duration");
+  const unresolvedNeeded = structuredClone(report);
+  first(first(unresolvedNeeded.host_elf_closures).objects).needed = ["missing.so"];
+  const wrongDigest = structuredClone(report);
+  first(wrongDigest.host_elf_closures).closure_sha256 = digest;
+  const wrongTotal = structuredClone(report);
+  first(wrongTotal.host_elf_closures).total_bytes = 4;
+  const wrongOrder = structuredClone(report);
+  first(wrongOrder.host_elf_closures).objects.reverse();
+  const wrongTypeArithmetic = structuredClone(report);
+  first(wrongTypeArithmetic.assets).archive.member_count = 2;
+  const wrongLinkArithmetic = structuredClone(report);
+  first(wrongLinkArithmetic.assets).archive.links.counts["hardlink-member"] = 1;
+  const wrongAggregate = structuredClone(report);
+  for (const closure of wrongAggregate.host_elf_closures) {
+    for (const object of closure.objects) object.size = 100_000_000;
+    closure.total_bytes = 300_000_000;
+    closure.closure_sha256 = createHash("sha256")
+      .update(`${canonical(closure.objects)}\n`)
+      .digest("hex");
+  }
+  const codecSemanticValues = [
+    unresolvedNeeded,
+    wrongDigest,
+    wrongTotal,
+    wrongOrder,
+    wrongTypeArithmetic,
+    wrongLinkArithmetic,
+    wrongAggregate,
+  ];
+  for (const hostile of codecSemanticValues) {
+    assert.equal(validate(hostile), true, ajv.errorsText(validate.errors));
+    assert.equal(strictAccepts(hostile), false, "codec accepted semantically hostile report");
+  }
 });
 
 test("historical Phase A v1 schema remains immutable and validates v1 reports only", async () => {
@@ -594,7 +897,7 @@ test("candidate output schema enforces metadata-only non-authority", async () =>
   assert.match(runner, /type\(item\) is int and 0 <= item <= 1_000_000_000/u);
   const finalResidue = runner.slice(
     runner.indexOf("def _post_export_residue"),
-    runner.indexOf("def main", runner.indexOf("def _post_export_residue")),
+    runner.indexOf("def _use_runtime_paths", runner.indexOf("def _post_export_residue")),
   );
   for (const path of ["ROOTFS_STATE", "ARTIFACT_ROOT", "ASSETS", "STATE", "ANCHOR", "EXPORT_ROOT"]) {
     assert.match(finalResidue, new RegExp(`\\(${path},`, "u"));
@@ -633,6 +936,10 @@ test("candidate output schema enforces metadata-only non-authority", async () =>
   assert.match(
     budget,
     /"cleanup": 5100,[\s\S]*"residue": 5160,[\s\S]*"upload": 5290,[\s\S]*"export-cleanup": 5380,[\s\S]*"post-export-residue-start": 5380,[\s\S]*"post-export-residue": 5400,[\s\S]*"final": 5400/u,
+  );
+  assert.match(
+    budget,
+    /RUNTIME_PROFILE = "phase-b-runtime-discovery"[\s\S]*"cleanup": 4980,[\s\S]*"residue": 5040,[\s\S]*"export": 5160,[\s\S]*"upload": 5170,[\s\S]*"export-cleanup": 5260,[\s\S]*"post-export-residue": 5275,[\s\S]*"final": 5280/u,
   );
   assert.match(budget, /Scheduling-only monotonic guards/u);
 });

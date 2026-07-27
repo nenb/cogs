@@ -19,6 +19,96 @@ module = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = module
 spec.loader.exec_module(module)
 
+_NATIVE_SELECTOR = "COGS_REQUIRE_NATIVE_RUNTIME_PREFLIGHT_V1"
+_NATIVE_MARKER = "stage2 phase-a candidate portable tests passed"
+
+
+def _native_selected():
+    value = os.getenv(_NATIVE_SELECTOR)
+    if value is None:
+        return False
+    if value != "1":
+        raise RuntimeError("native runtime preflight selector must be exactly 1")
+    entries = Path("/proc/self/environ").read_bytes().split(b"\0")
+    selected = [entry for entry in entries if entry.startswith((_NATIVE_SELECTOR + "=").encode())]
+    if selected != [(_NATIVE_SELECTOR + "=1").encode()]:
+        raise RuntimeError("native runtime preflight selector must occur exactly once")
+    return True
+
+
+def _native_envelope():
+    fields = {}
+    for line in Path("/proc/self/status").read_text(encoding="ascii").splitlines():
+        if ":" in line:
+            name, value = line.split(":", 1)
+            fields[name] = value.strip()
+    assert sys.platform.startswith("linux") and os.uname().machine == "x86_64"
+    assert os.getuid() == os.geteuid() == os.getgid() == os.getegid() == 0
+    assert os.getgroups() == []
+    assert fields["Uid"].split() == ["0"] * 4
+    assert fields["Gid"].split() == ["0"] * 4
+    assert fields["NoNewPrivs"] == "1"
+    assert len(fields["NSpid"].split()) == 1 and int(fields["NSpid"]) > 1
+    for name in ("CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"):
+        assert int(fields[name], 16) == 0
+
+
+def _native_anonymous_publication():
+    _native_envelope()
+    fixture = b"native production anonymous publication\n"
+    assert len(fixture) <= 65_536
+    descriptor = reader = parent = None
+    baseline_fds = set(os.listdir("/proc/self/fd"))
+    baseline_names = set(os.listdir("/tmp"))
+    temporary_path = None
+    with tempfile.TemporaryDirectory(prefix="cogs-native-publication-", dir="/tmp") as temporary:
+        temporary_path = Path(temporary)
+        directory = temporary_path.stat()
+        assert directory.st_uid == directory.st_gid == 0
+        assert module.stat.S_IMODE(directory.st_mode) == 0o700
+        parent = os.open(temporary, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        try:
+            descriptor = module._runtime_open_anonymous(parent, 0o600)
+            initial = os.fstat(descriptor)
+            assert module.stat.S_ISREG(initial.st_mode)
+            assert (initial.st_uid, initial.st_gid, module.stat.S_IMODE(initial.st_mode),
+                    initial.st_nlink, initial.st_size) == (0, 0, 0o600, 0, 0)
+            assert os.listdir(temporary) == []
+            module._write_all(descriptor, fixture)
+            os.fsync(descriptor)
+            os.fchmod(descriptor, 0o400)
+            os.fsync(descriptor)
+            anonymous = os.fstat(descriptor)
+            assert (anonymous.st_dev, anonymous.st_ino) == (initial.st_dev, initial.st_ino)
+            assert (anonymous.st_uid, anonymous.st_gid, module.stat.S_IMODE(anonymous.st_mode),
+                    anonymous.st_nlink, anonymous.st_size) == (0, 0, 0o400, 0, len(fixture))
+            digest = module.hashlib.sha256(fixture).hexdigest()
+            name = "published"
+            module._runtime_link_anonymous(parent, descriptor, name)
+            named = os.stat(name, dir_fd=parent, follow_symlinks=False)
+            assert (named.st_dev, named.st_ino) == (anonymous.st_dev, anonymous.st_ino)
+            assert (named.st_uid, named.st_gid, module.stat.S_IMODE(named.st_mode),
+                    named.st_nlink, named.st_size) == (0, 0, 0o400, 1, len(fixture))
+            identity = module._identity(named)
+            reader = module._owned_file(parent, name, identity, digest)
+            assert (os.fstat(reader).st_dev, os.fstat(reader).st_ino) == (named.st_dev, named.st_ino)
+            assert os.pread(reader, len(fixture), 0) == fixture
+            module._unlink_exact(parent, name, reader, identity, digest)
+            assert not (temporary_path / name).exists()
+            assert os.fstat(descriptor).st_nlink == os.fstat(reader).st_nlink == 0
+            assert os.listdir(temporary) == []
+        finally:
+            module._runtime_close_all(reader, descriptor, parent)
+    assert temporary_path is not None and not temporary_path.exists()
+    assert set(os.listdir("/tmp")) == baseline_names
+    assert set(os.listdir("/proc/self/fd")) == baseline_fds
+
+
+if _native_selected():
+    _native_anonymous_publication()
+    print(_NATIVE_MARKER, flush=True)
+    raise SystemExit(0)
+
 BUDGET = ROOT / "scripts/stage2-phase-a-budget.py"
 budget_spec = importlib.util.spec_from_file_location("stage2_phase_a_budget", BUDGET)
 assert budget_spec is not None and budget_spec.loader is not None
@@ -90,6 +180,29 @@ for hostile_anchor in (None, "", "0", "01", "-1", "+1", "1.0", "a", "9" * 21):
     budget_rejected(lambda hostile_anchor=hostile_anchor: budget.check(hostile_anchor, "final", anchor))
 budget_rejected(lambda: budget.check(str(anchor + 1), "final", anchor))
 budget_rejected(lambda: budget.timeout_seconds(str(anchor), "source", anchor + 595 * 1_000_000_000))
+
+original_budget_profile = os.environ.get("COGS_STAGE2_BUDGET_PROFILE")
+try:
+    os.environ["COGS_STAGE2_BUDGET_PROFILE"] = budget.RUNTIME_PROFILE
+    assert budget.RUNTIME_BOUNDARIES == {
+        "source": 600, "observe": 3900, "cleanup": 4980, "residue": 5040,
+        "render": 5080, "validate": 5120, "export": 5160, "upload": 5170,
+        "export-cleanup": 5260, "post-export-residue": 5275, "final": 5280,
+    }
+    assert list(budget.RUNTIME_BOUNDARIES.values()) == sorted(budget.RUNTIME_BOUNDARIES.values())
+    assert "post-export-residue-start" not in budget.RUNTIME_BOUNDARIES
+    for boundary, seconds in budget.RUNTIME_BOUNDARIES.items():
+        budget.check(str(anchor), boundary, anchor + seconds * module.NS_PER_SECOND)
+        budget_rejected(lambda boundary=boundary, seconds=seconds: budget.check(
+            str(anchor), boundary, anchor + seconds * module.NS_PER_SECOND + 1))
+    for hostile_profile in ("", "phase-b-discovery", " phase-b-runtime-discovery"):
+        os.environ["COGS_STAGE2_BUDGET_PROFILE"] = hostile_profile
+        budget_rejected(lambda: budget.check(str(anchor), "source", anchor))
+finally:
+    if original_budget_profile is None:
+        os.environ.pop("COGS_STAGE2_BUDGET_PROFILE", None)
+    else:
+        os.environ["COGS_STAGE2_BUDGET_PROFILE"] = original_budget_profile
 
 assert tuple((item.component, item.release, item.size, item.sha256) for item in module.RUNTIME_ASSETS) == (
     ("kata", "3.32.0", 1547940938, "1449ecea50bd91fa73a94648db195d18950fe869ba4b1f12d05f55f1fa7c1b01"),
@@ -3053,4 +3166,72 @@ anchor_write = source.index('_write_all(anchor, anchor_raw); os.fsync(anchor)')
 anchor_identity = source.index('anchor_identity = _identity(os.fstat(anchor))')
 assert anchor_write < anchor_identity < source.index('"anchor": anchor_identity')
 assert '128, 0o600' in source and 'sentinel_identity["mode"] == 0o600' in source
+
+# Phase B is a literal private route over one durable global owner and anonymous assets.
+assert module.RUNTIME_STAGE == "phase-b-runtime-discovery"
+assert module.RUNTIME_APPROVAL == "download-2-fixed-public-runtime-assets"
+assert module.RUNTIME_OWNER.parent == Path("/var/tmp")
+assert module.main.__name__ == "main"
+rejected(lambda: module.main([module.RUNTIME_STAGE, "render"]))
+rejected(lambda: module.main(["phase-b-discovery", "observe"]))
+
+journal_calls = []
+original_runtime_append = module._runtime_append
+try:
+    def runtime_append(kind, body):
+        journal_calls.append((kind, body))
+        return {"sha256": f"{len(journal_calls):064x}"}
+    module._runtime_append = runtime_append
+    generations = {item.component: {"mount_id": index + 1} for index, item in enumerate(module.RUNTIME_ASSETS)}
+    owner = module._RuntimeJournalOwner(generations)
+    process = types.SimpleNamespace(pid=10, ppid=1, pgid=10, sid=10, starttime=20,
+                                    boot_id="a" * 36, pidfd_supported=True)
+    identity = types.SimpleNamespace(component="kata", process=process, executable_device=2,
+                                     executable_inode=3, spec_sha256="b" * 64,
+                                     closure_sha256="c" * 64)
+    intent = types.SimpleNamespace(component="kata", spec_sha256="b" * 64, closure_sha256="c" * 64)
+    assert owner.intent(intent) == f"{1:064x}"
+    started_digest = owner.started(identity)
+    outcome = types.SimpleNamespace(identity=identity, status=0, stdout_bytes=512,
+                                    stderr_sha256="d" * 64, descendants_absent=True, reaped=True,
+                                    errors=())
+    assert owner.settled(outcome) == f"{3:064x}"
+    assert [kind for kind, _body in journal_calls] == [
+        "runtime-stream-intent", "runtime-stream-started", "runtime-stream-settled",
+    ]
+    assert journal_calls[0][1]["asset_generation"] == {"mount_id": 1}
+    assert journal_calls[1][1]["process"]["pid"] == 10
+    assert journal_calls[2][1]["started_sha256"] == started_digest
+    rejected(lambda: owner.started(identity))
+    for changed in (
+        {"status": 1}, {"reaped": False}, {"descendants_absent": False},
+        {"errors": ("archive-child-unreaped",)},
+    ):
+        failed = types.SimpleNamespace(**{**vars(outcome), **changed})
+        rejected(lambda failed=failed: owner.settled(failed))
+    assert len(journal_calls) == 3
+finally:
+    module._runtime_append = original_runtime_append
+
+# A foreign owner inode is rejected before its bytes can become root authority.
+with tempfile.TemporaryDirectory(prefix="cogs-runtime-foreign-owner-") as temporary:
+    owner_path = Path(temporary, "owner.jsonl")
+    owner_path.write_bytes(b"{}\n")
+    os.chmod(owner_path, 0o644 if os.geteuid() == 0 else 0o600)
+    owner_fd = os.open(owner_path, os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        rejected(lambda: module._runtime_read_owner(owner_fd))
+    finally:
+        os.close(owner_fd)
+
+# Native-sensitive publication runs only under the exact preflight selector above.
+phase_b_source = source[source.index("def _runtime_open_anonymous"):source.index("def main")]
+for forbidden in ("_prove_kvm", "_rootfs_candidates", "_recover_rootfs", "completion_kata_coordinator",
+                  "extractall", "subprocess", "killpg", "/dev/kvm", ".partial", "asset-final-owned"):
+    assert forbidden not in phase_b_source
+assert "collector = qualification.bind_runtime_discovery()" in phase_b_source
+assert "tuple(descriptors), journal.intent, journal.started, journal.settled, deadline_ns" in phase_b_source
+assert "os.O_TMPFILE | os.O_RDWR" in phase_b_source
+assert "_recover_runtime_discovery_children" in source
+assert source.count('RUNTIME_STAGE = "phase-b-runtime-discovery"') == 0
 print("stage2 phase-a candidate portable tests passed")

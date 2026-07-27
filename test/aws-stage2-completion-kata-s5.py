@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Offline S5 SSH/lifecycle/qualification hostile matrix; no host actions."""
+import dataclasses
 import hashlib
 import json
 import os
@@ -426,6 +427,71 @@ assert qualified_fake["qualified"] and qualified_fake["external_mutations_invoke
 assert qualified_fake["authority"] == "offline-fake"
 actual = qualification.committed_report()
 assert actual["authority"] == "committed-local-preflight"
+
+# The independent runtime-discovery candidate codec is permanently
+# non-authoritative and accepts only typed, arithmetic-consistent facts after
+# cleanup/residue. It neither claims nor opens the committed gate.
+elf_objects = (process.HostElfObject("executable", None, 1, "1" * 64, ()),
+               process.HostElfObject("loader", "ld-test.so.1", 1, "2" * 64, ()))
+elf_rows = [{"needed": [], "role": item.role, "sha256": item.sha256,
+             "size": item.size, "soname": item.soname} for item in elf_objects]
+elf_digest = hashlib.sha256(qualification._discovery_canonical(elf_rows)).hexdigest()
+closures = tuple(process.HostElfClosure(tool, elf_objects, 2, elf_digest)
+                 for tool in ("python3-parser", "zstd", "gzip"))
+link_facts = runtime.LinkFacts(tuple((name, 0) for name in qualification._DISCOVERY_LINKS), "2" * 64)
+archives, streams = [], []
+for index, (component, compression) in enumerate((("kata", "zstd"), ("containerd", "gzip"))):
+    roles = tuple(runtime.RoleMember(role, member, "file")
+                  for role, member in qualification._DISCOVERY_MEMBERS[index])
+    archives.append(runtime.ArchiveFacts(component, compression, 1024, 1, 1,
+        (("directory", 0), ("file", 1), ("hardlink", 0), ("symlink", 0)), 0,
+        "3" * 64, link_facts, roles, ()))
+    child_identity = process.ProcessIdentity(index + 10, 1, index + 10, index + 10, 1,
+        "11111111-1111-1111-1111-111111111111", False)
+    archive_identity = process.ArchiveChildIdentity(component, child_identity, 1, 1,
+                                                     "4" * 64, elf_digest)
+    streams.append(process.ArchiveStreamOutcome(archive_identity, 0, 1024,
+        hashlib.sha256(b"").hexdigest(), True, True, ()))
+exact_role_archive = archives[0]
+qualification._validate_archive(
+    exact_role_archive, qualification._ASSET_PINS[0], qualification._DISCOVERY_ROLES[0])
+wrong_roles = list(exact_role_archive.roles)
+wrong_roles[0] = runtime.RoleMember("kata-runtime", "other/bin/kata-runtime", "file")
+wrong_role_archive = dataclasses.replace(exact_role_archive, roles=tuple(wrong_roles))
+reject(lambda: qualification._validate_archive(
+    wrong_role_archive, qualification._ASSET_PINS[0], qualification._DISCOVERY_ROLES[0]))
+discovery = qualification.RuntimeDiscoveryFacts(
+    tuple(dict(item) for item in qualification._ASSET_PINS), tuple(archives), closures, tuple(streams))
+reject(lambda: qualification.canonical_runtime_discovery_report(
+    discovery, "5" * 40, "6" * 64, 1, False, True))
+discovery_raw = qualification.canonical_runtime_discovery_report(
+    discovery, "5" * 40, "6" * 64, 1, True, True)
+discovery_report = qualification.load_runtime_discovery_report(discovery_raw)
+schema = qualification._runtime_schema()
+assert runtime._validate_phase_b_schema(discovery_report, schema) is True
+structural_hostile = {**discovery_report, "duration_ms": 5_280_001}
+reject(lambda: runtime._validate_phase_b_schema(structural_hostile, schema))
+semantic_hostile = json.loads(json.dumps(discovery_report))
+semantic_hostile["host_elf_closures"][0]["total_bytes"] += 1
+assert runtime._validate_phase_b_schema(semantic_hostile, schema) is True
+reject(lambda: qualification._validate_runtime_report(semantic_hostile))
+unsupported_schema = {**schema, "not": {}}
+reject(lambda: runtime._validate_phase_b_schema(discovery_report, unsupported_schema))
+original_schema_path = qualification._DISCOVERY_SCHEMA
+with tempfile.TemporaryDirectory(prefix="cogs-runtime-schema-") as temporary:
+    duplicate_schema = Path(temporary, "schema.json")
+    duplicate_schema.write_text('{"type":"object","type":"object"}', encoding="utf-8")
+    qualification._DISCOVERY_SCHEMA = str(duplicate_schema)
+    reject(qualification._runtime_schema)
+qualification._DISCOVERY_SCHEMA = original_schema_path
+assert discovery_report["authority"] == "candidate" and discovery_report["qualified"] is False
+assert discovery_report["promotion"] is False and discovery_report["checks"]["archive_enumeration"] == "pass"
+assert discovery_report["claims"] == {name: False for name in
+    ("extraction", "kvm", "lifecycle", "production", "publication", "rootfs")}
+for hostile in (discovery_raw.replace(b'"qualified":false', b'"qualified":true'),
+                discovery_raw.replace(b'"duration_ms":1', b'"duration_ms":true'),
+                discovery_raw[:-1], discovery_raw + b"{}\n"):
+    reject(lambda hostile=hostile: qualification.load_runtime_discovery_report(hostile))
 for blocker in ("host-tools-unqualified", "runtime-fixtures-unqualified",
                 "network-fixtures-unqualified", "ssh-fixture-unqualified",
                 "kvm-missing-or-unqualified"):

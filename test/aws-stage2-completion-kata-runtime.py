@@ -5,7 +5,9 @@ import copy
 import dataclasses
 import hashlib
 import importlib.util
+import io
 import json
+import tarfile
 from pathlib import Path
 import sys
 
@@ -388,5 +390,170 @@ check(runtime.recovery_class(foreign) == "preserve_no_adoption", "name-only adop
 clean = runtime.RuntimeSnapshot(True, O.ABSENT, "absent", O.ABSENT, O.ABSENT,
                                 O.ABSENT, O.EXACT, O.ABSENT, True)
 check(runtime.next_teardown_action(clean) is runtime.TeardownAction.COMPLETE, "closed teardown")
+
+# ADR 0069 byte-stream enumeration is invariant to chunk boundaries while its
+# manifest preserves the accepted header/extension encoding.
+def exact_tar_end(raw):
+    zero_blocks = 0
+    for offset in range(0, len(raw), 512):
+        zero_blocks = zero_blocks + 1 if raw[offset:offset + 512] == bytes(512) else 0
+        if zero_blocks == 2:
+            return raw[:offset + 512]
+    raise AssertionError("tar writer omitted its end blocks")
+
+
+def discovery_tar(format_, extra_name=None, pax_headers=None, role_link=False,
+                  global_pax_headers=None):
+    output = io.BytesIO()
+    with tarfile.open(fileobj=output, mode="w", format=format_,
+                      pax_headers=global_pax_headers) as archive:
+        names = (
+            "opt/kata/bin/kata-runtime", "opt/kata/bin/containerd-shim-kata-v2",
+            "opt/kata/bin/qemu-system-x86_64", "opt/kata/libexec/virtiofsd",
+            "opt/kata/share/defaults/kata-containers/configuration-qemu.toml",
+        )
+        for index, name in enumerate(names):
+            member = tarfile.TarInfo(name)
+            member.mode = 0o400 if name.endswith(".toml") else 0o500
+            member.size = index + 1
+            if index == 0 and pax_headers is not None:
+                member.pax_headers = pax_headers
+            if index == 0 and role_link:
+                member.type = tarfile.SYMTYPE
+                member.linkname = "kata-target"
+                member.size = 0
+                archive.addfile(member)
+            else:
+                archive.addfile(member, io.BytesIO(bytes((index,)) * member.size))
+        if extra_name is not None:
+            member = tarfile.TarInfo(extra_name)
+            member.mode = 0o400
+            member.size = 1
+            archive.addfile(member, io.BytesIO(b"x"))
+        link = tarfile.TarInfo("opt/kata/bin/runtime-link")
+        link.type = tarfile.SYMTYPE
+        link.linkname = "kata-runtime"
+        archive.addfile(link)
+    return exact_tar_end(output.getvalue())
+
+
+def enumerate_tar(raw, boundary):
+    owner = runtime._new_fixed_tar_enumerator(runtime.FixedArchive.KATA_ZSTD)
+    for offset in range(0, len(raw), boundary): owner.feed(raw[offset:offset + boundary])
+    return owner.finish()
+
+
+facts = []
+for format_ in (tarfile.USTAR_FORMAT, tarfile.PAX_FORMAT, tarfile.GNU_FORMAT):
+    raw = discovery_tar(format_)
+    variants = [enumerate_tar(raw, boundary) for boundary in (1, 511, 512, 513, 997)]
+    assert all(item == variants[0] for item in variants)
+    assert tuple(item.role for item in variants[0].roles) == (
+        "kata-runtime", "kata-shim", "qemu", "virtiofsd", "kata-config")
+    assert dict(variants[0].links.counts)["symlink-relative-in-root"] == 1
+    facts.append(variants[0])
+assert len({item.manifest_sha256 for item in facts}) == 2
+assert len({item.links.sha256 for item in facts}) == 1
+
+# These names exceed both the 100-byte name field and the ustar split policy,
+# so the accepted streams contain real local PAX and GNU long-name records.
+long_name = "unrelated/" + "segment-" * 30 + "payload"
+pax_long = discovery_tar(tarfile.PAX_FORMAT, long_name)
+gnu_long = discovery_tar(tarfile.GNU_FORMAT, long_name)
+assert b"path=" + long_name.encode() in pax_long
+assert b"././@LongLink" in gnu_long
+pax_facts = enumerate_tar(pax_long, 97)
+gnu_facts = enumerate_tar(gnu_long, 97)
+assert pax_facts.manifest_sha256 != gnu_facts.manifest_sha256
+
+base = discovery_tar(tarfile.USTAR_FORMAT)
+for hostile in (base[:511], base[:600], base[:-1], base + b"\0", base + bytes(512), base + b"x"):
+    rejected(lambda hostile=hostile: enumerate_tar(hostile, 513))
+bad_checksum = bytearray(base)
+bad_checksum[0] ^= 1
+rejected(lambda: enumerate_tar(bytes(bad_checksum), 511))
+
+# A checksum-valid hidden suffix after a fixed-field NUL is malformed.
+hidden = bytearray(base)
+name_nul = hidden[:100].index(0)
+hidden[name_nul + 1] = ord("X")
+hidden[148:156] = b"        "
+hidden[148:156] = f"{sum(hidden[:512]):06o}\0 ".encode()
+rejected(lambda: enumerate_tar(bytes(hidden), 512))
+unknown_pax = discovery_tar(tarfile.PAX_FORMAT, pax_headers={"VENDOR.unreviewed": "ignored"})
+rejected(lambda: enumerate_tar(unknown_pax, 512))
+global_pax = discovery_tar(
+    tarfile.PAX_FORMAT, global_pax_headers={"VENDOR.global": "ignored"})
+assert global_pax[156:157] == b"g"
+rejected(lambda: enumerate_tar(global_pax, 512))
+
+# GNU sparse S and every other alphabetic extension semantic outside exact
+# local x and GNU L/K are parser errors, never ordinary rejected members.
+for extension_code in b"SDMNVQ":
+    unknown_extension = bytearray(base)
+    unknown_extension[156] = extension_code
+    unknown_extension[148:156] = b"        "
+    unknown_extension[148:156] = f"{sum(unknown_extension[:512]):06o}\0 ".encode()
+    rejected(lambda unknown_extension=unknown_extension: enumerate_tar(bytes(unknown_extension), 512))
+
+# Rebuild a genuine local PAX extension with its path record repeated. The
+# duplicate remains length-correct and checksum-correct, but is not canonical.
+path_record = pax_long.index(b"path=" + long_name.encode())
+pax_payload_offset = (path_record // 512) * 512
+pax_header_offset = pax_payload_offset - 512
+pax_header = bytearray(pax_long[pax_header_offset:pax_payload_offset])
+pax_size = int(bytes(pax_header[124:136]).rstrip(b"\0 "), 8)
+pax_payload = pax_long[pax_payload_offset:pax_payload_offset + pax_size]
+first_record_size = int(pax_payload.split(b" ", 1)[0])
+duplicate_payload = pax_payload + pax_payload[:first_record_size]
+pax_header[124:136] = f"{len(duplicate_payload):011o}\0".encode()
+pax_header[148:156] = b"        "
+pax_header[148:156] = f"{sum(pax_header):06o}\0 ".encode()
+old_span = ((pax_size + 511) // 512) * 512
+duplicate_pax = (pax_long[:pax_header_offset] + bytes(pax_header) + duplicate_payload +
+                 bytes((-len(duplicate_payload)) % 512) +
+                 pax_long[pax_payload_offset + old_span:])
+rejected(lambda: enumerate_tar(duplicate_pax, 512))
+
+# Two individually valid local x headers are duplicate extension semantics.
+local_extension = pax_long[pax_header_offset:pax_payload_offset + old_span]
+stacked_local_pax = (pax_long[:pax_header_offset] + local_extension +
+                     pax_long[pax_header_offset:])
+rejected(lambda: enumerate_tar(stacked_local_pax, 512))
+
+# A real GNU long-link record cannot be consumed by a following regular file.
+long_link_output = io.BytesIO()
+with tarfile.open(fileobj=long_link_output, mode="w", format=tarfile.GNU_FORMAT) as archive:
+    long_link = tarfile.TarInfo("unrelated-link")
+    long_link.type = tarfile.SYMTYPE
+    long_link.linkname = "target/" + "segment-" * 30
+    archive.addfile(long_link)
+long_link_tar = bytearray(exact_tar_end(long_link_output.getvalue()))
+assert long_link_tar[156:157] == b"K"
+long_link_size = int(bytes(long_link_tar[124:136]).rstrip(b"\0 "), 8)
+regular_header_offset = 512 + ((long_link_size + 511) // 512) * 512
+long_link_tar[regular_header_offset + 156] = ord("0")
+long_link_tar[regular_header_offset + 148:regular_header_offset + 156] = b"        "
+header = long_link_tar[regular_header_offset:regular_header_offset + 512]
+long_link_tar[regular_header_offset + 148:regular_header_offset + 156] = \
+    f"{sum(header):06o}\0 ".encode()
+rejected(lambda: enumerate_tar(bytes(long_link_tar), 512))
+
+# Role identity belongs to the selected member itself; links and lookalike
+# suffixes do not substitute for the fixed asset path.
+linked_facts = enumerate_tar(discovery_tar(tarfile.USTAR_FORMAT, role_link=True), 512)
+assert "role-type-kata-runtime" in linked_facts.blockers
+extra = discovery_tar(tarfile.USTAR_FORMAT, "other/bin/kata-runtime")
+assert "role-extra-kata-runtime" in enumerate_tar(extra, 512).blockers
+
+# A checksum-valid device remains an enumerable policy blocker, never payload.
+device = bytearray(base)
+device[156] = ord("3")
+device[148:156] = b"        "
+device[148:156] = f"{sum(device[:512]):06o}\0 ".encode()
+device_facts = enumerate_tar(bytes(device), 512)
+assert device_facts.rejected_type_count == 1
+assert "archive-rejected-types" in device_facts.blockers
+assert not hasattr(runtime._TarEnumerator, "extract")
 
 print("completion Kata runtime S4 hostile offline matrix passed")

@@ -7,6 +7,7 @@ qualification authority.
 """
 
 from dataclasses import dataclass
+import ctypes
 import fcntl
 import hashlib
 import http.client
@@ -44,6 +45,12 @@ SOURCE_MANIFEST = FIXED_SOURCE / ".cogs-stage2-source-manifest-v1.json"
 ARTIFACT_ROOT = FIXED_SOURCE / "deploy/aws-feasibility/.state/completion-v1/artifacts"
 ROOTFS_STATE = FIXED_SOURCE / "deploy/aws-feasibility/.state/completion-v1/rootfs-v1"
 VERSION = "cogs.stage2-phase-a-candidate/v2"
+RUNTIME_STAGE, RUNTIME_VERSION = "phase-b-runtime-discovery", "cogs.stage2-phase-b-runtime-discovery/v1"
+RUNTIME_APPROVAL = "download-2-fixed-public-runtime-assets"
+RUNTIME_TEMP = Path("/var/tmp/cogs-stage2-phase-b-runtime-layout-v1")
+RUNTIME_OWNER = Path("/var/tmp/.cogs-stage2-phase-b-runtime-owner-v1.jsonl")
+RUNTIME_REPORT = Path("/var/tmp/.cogs-stage2-phase-b-runtime-report-v1.json")
+RUNTIME_EXPORT = Path("/var/tmp/cogs-stage2-phase-b-runtime-discovery-v1.qualification.json")
 MAX_JSON = 64 * 1024
 MAX_JOURNAL = 512 * 1024
 MAX_SOURCE_MANIFEST = 16 * 1024 * 1024
@@ -133,7 +140,7 @@ TOOL_COMMANDS = (
 )
 
 
-def _fixed_preflight(require_approval):
+def _fixed_preflight(require_approval, approval_value=APPROVAL_VALUE):
     _fail(platform.system() == "Linux", "wrong-platform")
     _fail(platform.machine() == "x86_64", "wrong-architecture")
     _fail(os.geteuid() == 0, "not-root")
@@ -143,7 +150,7 @@ def _fixed_preflight(require_approval):
         upper = name.upper()
         _fail(not (upper in DENIED_ENV or upper.startswith("AWS_")), "ambient-authority")
     if require_approval:
-        _fail(os.environ.get(APPROVAL_NAME) == APPROVAL_VALUE, "artifact-approval-missing")
+        _fail(os.environ.get(APPROVAL_NAME) == approval_value, "artifact-approval-missing")
     else:
         _fail(APPROVAL_NAME not in os.environ, "ambient-authority")
 
@@ -2469,12 +2476,510 @@ def _post_export_residue():
     return 0
 
 
+def _use_runtime_paths():
+    global STATE, ANCHOR
+    STATE = FIXED_SOURCE / "deploy/aws-feasibility/.state/completion-v1/phase-b-runtime-discovery-v1"
+    ANCHOR = STATE.parent / ".cogs-stage2-phase-b-runtime-anchor-v1.json"
+
+
+def _runtime_modules():
+    import completion_kata_qualification as qualification
+    import completion_kata_process as process
+    return qualification, process
+
+
+def _runtime_source_baseline():
+    existing = STATE.parent
+    missing = []
+    while _held_path_absent(existing):
+        missing.insert(0, existing.name)
+        existing = existing.parent
+    _fail(existing == FIXED_SOURCE or FIXED_SOURCE in existing.parents, "runtime-baseline")
+    return {"chain": _trusted_chain(existing), "missing": missing}
+
+
+def _runtime_baseline_matches(expected):
+    actual = _runtime_source_baseline()
+    if type(expected) is not dict or actual["missing"] != expected.get("missing"):
+        return False
+    if len(actual["chain"]) != len(expected.get("chain", ())):
+        return False
+    for left, right in zip(actual["chain"], expected["chain"], strict=True):
+        same_path = left["path"] == right.get("path")
+        same_identity = _same_directory_authority(
+            _stat_value(left["identity"]), right.get("identity"),
+        )
+        if not same_path or not same_identity:
+            return False
+    return True
+
+
+def _runtime_open_anonymous(parent, mode):
+    _fail(sys.platform.startswith("linux") and hasattr(os, "O_TMPFILE"), "runtime-anonymous")
+    descriptor = os.open(".", os.O_TMPFILE | os.O_RDWR | os.O_CLOEXEC, mode, dir_fd=parent)
+    try:
+        observed = os.fstat(descriptor)
+        _fail(stat.S_ISREG(observed.st_mode) and observed.st_nlink == 0, "runtime-anonymous")
+        return descriptor
+    except BaseException:
+        _runtime_close_all(descriptor)
+        raise
+
+
+def _runtime_link_anonymous(parent, descriptor, name):
+    library = ctypes.CDLL(None, use_errno=True)
+    linkat = library.linkat
+    linkat.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_int)
+    linkat.restype = ctypes.c_int
+    result = linkat(descriptor, b"", parent, os.fsencode(name), 0x1000)
+    _fail(result == 0, "runtime-publication")
+    os.fsync(parent)
+
+
+def _runtime_close_all(*resources):
+    error = None
+    for resource in resources:
+        if resource is None:
+            continue
+        try:
+            if type(resource) is int:
+                os.close(resource)
+            else:
+                resource.close()
+        except BaseException as caught:
+            error = error or caught
+    if error is not None:
+        raise error
+
+
+def _runtime_initialize(revision, manifest_sha256):
+    _fail(_held_path_absent(RUNTIME_OWNER) and _held_path_absent(RUNTIME_REPORT) and
+          _held_path_absent(RUNTIME_EXPORT), "runtime-preexisting")
+    _fail(_held_path_absent(STATE) and _held_path_absent(ANCHOR), "runtime-source-state")
+    parent = _open_directory_nofollow(RUNTIME_OWNER.parent)
+    descriptor = None
+    try:
+        parent_identity = _identity(os.fstat(parent))
+        _fail(RUNTIME_OWNER.parent == Path("/var/tmp") and parent_identity["kind"] == "directory" and
+              parent_identity["uid"] == parent_identity["gid"] == 0 and
+              parent_identity["mode"] == 0o1777, "runtime-parent")
+        descriptor = _runtime_open_anonymous(parent, 0o600)
+        os.fchmod(descriptor, 0o600)
+        owner_identity = _identity(os.fstat(descriptor))
+        owner_identity.pop("size")
+        body = {
+            "version": "cogs.stage2-phase-b-runtime-owner/v1",
+            "source_revision": revision,
+            "source_manifest_sha256": manifest_sha256,
+            "parent": parent_identity,
+            "owner": owner_identity,
+            "owner_name": RUNTIME_OWNER.name,
+            "report_name": RUNTIME_REPORT.name,
+            "export_name": RUNTIME_EXPORT.name,
+            "source_parent": _runtime_source_baseline(),
+            "source_state_name": STATE.name,
+            "source_anchor_name": ANCHOR.name,
+        }
+        raw = _canonical(_journal_record(0, "0" * 64, "genesis", body)) + b"\n"
+        _write_all(descriptor, raw)
+        os.fsync(descriptor)
+        _runtime_link_anonymous(parent, descriptor, RUNTIME_OWNER.name)
+        named = os.stat(RUNTIME_OWNER.name, dir_fd=parent, follow_symlinks=False)
+        _fail(_same_identity(named, owner_identity, include_size=False, include_nlink=False),
+              "runtime-publication")
+    finally:
+        _runtime_close_all(descriptor, parent)
+    _runtime_load()
+
+
+def _runtime_read_owner(descriptor, repair=False):
+    observed = os.fstat(descriptor)
+    _fail(stat.S_ISREG(observed.st_mode) and observed.st_uid == observed.st_gid == 0 and
+          stat.S_IMODE(observed.st_mode) == 0o600 and observed.st_nlink == 1 and observed.st_size <= MAX_JOURNAL, "runtime-owner")
+    raw = os.pread(descriptor, observed.st_size, 0)
+    try:
+        records = _parse_journal(raw)
+    except CandidateError:
+        cut = raw.rfind(b"\n") + 1
+        _fail(repair and cut > 0 and cut < len(raw) and b"\n" not in raw[cut:], "runtime-owner")
+        records = _parse_journal(raw[:cut])
+        os.ftruncate(descriptor, cut)
+        os.fsync(descriptor)
+    genesis = records[0]["body"]
+    _fail(genesis.get("version") == "cogs.stage2-phase-b-runtime-owner/v1" and
+          genesis.get("owner_name") == RUNTIME_OWNER.name and
+          genesis.get("report_name") == RUNTIME_REPORT.name and
+          genesis.get("export_name") == RUNTIME_EXPORT.name and
+          genesis.get("source_state_name") == STATE.name and
+          genesis.get("source_anchor_name") == ANCHOR.name,
+          "runtime-owner")
+    _fail(_same_identity(os.fstat(descriptor), genesis.get("owner"),
+                         include_size=False, include_nlink=False), "runtime-owner")
+    _verify_fixed_source(genesis.get("source_revision"), genesis.get("source_manifest_sha256"))
+    _fail(_runtime_baseline_matches(genesis.get("source_parent")), "runtime-baseline")
+    return records
+
+
+def _runtime_load(repair=False):
+    parent = _open_directory_nofollow(RUNTIME_OWNER.parent)
+    descriptor = None
+    try:
+        descriptor = os.open(
+            RUNTIME_OWNER.name,
+            os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC,
+            dir_fd=parent,
+        )
+        records = _runtime_read_owner(descriptor, repair)
+        genesis = records[0]["body"]
+        parent_observed = os.fstat(parent)
+        _fail(RUNTIME_OWNER.parent == Path("/var/tmp") and stat.S_IMODE(parent_observed.st_mode) == 0o1777 and
+              _same_directory_authority(parent_observed, genesis.get("parent")), "runtime-parent")
+        named = os.stat(RUNTIME_OWNER.name, dir_fd=parent, follow_symlinks=False)
+        _fail(_same_identity(named, genesis["owner"], include_size=False, include_nlink=False),
+              "runtime-owner")
+        return records
+    finally:
+        _runtime_close_all(descriptor, parent)
+
+
+def _runtime_append(kind, body):
+    records = _runtime_load(True)
+    record = _journal_record(len(records), records[-1]["sha256"], kind, body)
+    raw = _canonical(record) + b"\n"
+    descriptor = os.open(RUNTIME_OWNER, os.O_RDWR | os.O_APPEND | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        _runtime_read_owner(descriptor)
+        _fail(os.write(descriptor, raw) == len(raw), "runtime-journal")
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    _fail(_runtime_load()[-1] == record, "runtime-journal")
+    return record
+
+
+def _runtime_download(asset, outer_deadline_ns):
+    now_ns = time.monotonic_ns()
+    deadline_ns = min(outer_deadline_ns, now_ns + DOWNLOAD_SECONDS * NS_PER_SECOND)
+    _fail(type(asset) is Asset and now_ns < deadline_ns, "asset-contract")
+    parent = _open_directory_nofollow(RUNTIME_OWNER.parent)
+    writer = None
+    reader = None
+    connection = None
+    response = None
+    try:
+        writer = _runtime_open_anonymous(parent, 0o600)
+        connection, response = _request(asset.url, deadline_ns)
+        headers = _headers(response)
+        _fail(response.status in {301, 302, 303, 307, 308}, "asset-redirect")
+        _fail(headers.get("content-length", "").isdigit() and
+              int(headers["content-length"]) <= 4096 and "transfer-encoding" not in headers,
+              "asset-redirect")
+        body = response.read(4097)
+        _fail(len(body) == int(headers["content-length"]), "asset-redirect")
+        target = _redirect_target(asset, headers.get("location", ""))
+        response.close()
+        connection.close()
+        response = None
+        connection = None
+        connection, response = _request(target, deadline_ns)
+        headers = _headers(response)
+        _fail(response.status == 200 and headers.get("content-length") == str(asset.size) and
+              headers.get("content-type", "").strip().lower() == "application/octet-stream" and
+              "transfer-encoding" not in headers, "asset-response")
+        digest = hashlib.sha256()
+        total = 0
+        while total < asset.size:
+            chunk = response.read(min(1024 * 1024, asset.size - total))
+            _fail(type(chunk) is bytes and chunk, "asset-body")
+            _write_all(writer, chunk)
+            digest.update(chunk)
+            total += len(chunk)
+        _fail(response.read(1) == b"" and total == asset.size and
+              digest.hexdigest() == asset.sha256, "asset-digest")
+        os.fsync(writer)
+        os.fchmod(writer, 0o400)
+        os.fsync(writer)
+        observed = os.fstat(writer)
+        _fail(observed.st_nlink == 0 and observed.st_size == asset.size and
+              _digest_descriptor(writer, asset.size) == asset.sha256, "asset-digest")
+        reader = os.open(f"/proc/self/fd/{writer}", os.O_RDONLY | os.O_CLOEXEC)
+        reader_observed = os.fstat(reader)
+        _fail(reader_observed.st_dev == observed.st_dev, "asset-anonymous-reopen")
+        _fail(reader_observed.st_ino == observed.st_ino, "asset-anonymous-reopen")
+        _fail(reader_observed.st_nlink == 0, "asset-anonymous-reopen")
+        os.close(writer)
+        writer = None
+        return reader, _asset_generation(reader, deadline_ns)
+    finally:
+        _runtime_close_all(response, connection, writer, parent)
+
+
+class _RuntimeJournalOwner:
+    def __init__(self, generations):
+        self.generations = generations
+        self.intents = {}
+        self.started_digests = {}
+
+    def intent(self, intent):
+        component = intent.component
+        _fail(component in self.generations and component not in self.intents, "runtime-journal")
+        common = {"component": component, "closure_sha256": intent.closure_sha256,
+                  "spec_sha256": intent.spec_sha256}
+        record = _runtime_append("runtime-stream-intent", {
+            **common, "asset_generation": self.generations[component],
+        })
+        self.intents[component] = common
+        return record["sha256"]
+
+    def started(self, identity):
+        component = identity.component
+        process = identity.process
+        common = {"component": component, "closure_sha256": identity.closure_sha256,
+                  "spec_sha256": identity.spec_sha256}
+        _fail(self.intents.get(component) == common and component not in self.started_digests,
+              "runtime-journal")
+        fields = ("pid", "ppid", "pgid", "sid", "starttime", "boot_id", "pidfd_supported")
+        body = {
+            **common,
+            "process": {name: getattr(process, name) for name in fields},
+            "executable_device": identity.executable_device,
+            "executable_inode": identity.executable_inode,
+        }
+        record = _runtime_append("runtime-stream-started", body)
+        self.started_digests[component] = record["sha256"]
+        return record["sha256"]
+
+    def settled(self, outcome):
+        component = outcome.identity.component
+        _fail(outcome.status == 0 and outcome.reaped is True and outcome.descendants_absent is True and
+              outcome.errors == (), "runtime-settlement")
+        body = {
+            "component": component,
+            "started_sha256": self.started_digests.get(component),
+            "status": outcome.status,
+            "stdout_bytes": outcome.stdout_bytes,
+            "stderr_sha256": outcome.stderr_sha256,
+            "descendants_absent": outcome.descendants_absent,
+            "reaped": outcome.reaped,
+        }
+        return _runtime_append("runtime-stream-settled", body)["sha256"]
+
+
+def _runtime_recover(records, deadline_ns):
+    stream = [row for row in records if row["kind"].startswith("runtime-stream-")]
+    components = {asset.component for asset in RUNTIME_ASSETS}
+    _fail(all(row["body"].get("component") in components for row in stream), "journal-state")
+    started = tuple(
+        {**row["body"], "started_sha256": row["sha256"]}
+        for row in stream if row["kind"] == "runtime-stream-started"
+    )
+    settled = [row["body"] for row in stream
+               if row["kind"] in {"runtime-stream-settled", "runtime-stream-recovered"}]
+    outcomes = _runtime_modules()[1]._recover_runtime_discovery_children(
+        started, tuple(settled), deadline_ns,
+    )
+    for outcome in outcomes:
+        _fail(set(outcome) <= {"component", "started_sha256", "outcome", "errors"} and
+              not outcome.get("errors"), "runtime-recovery")
+        _runtime_append("runtime-stream-recovered", {
+            name: outcome[name] for name in ("component", "started_sha256", "outcome")
+        })
+    return started
+
+
+def _runtime_residue(started):
+    before = set(os.listdir("/proc/self/fd"))
+    qualification = _runtime_modules()[0]
+    _fail(qualification.runtime_discovery_residue(started) is True, "runtime-process-residue")
+    _fail(_held_path_absent(STATE) and _held_path_absent(ANCHOR) and
+          _held_path_absent(RUNTIME_TEMP), "runtime-state-residue")
+    _fail(set(os.listdir("/proc/self/fd")) == before, "runtime-descriptor-residue")
+
+
+def _runtime_publish_report(raw):
+    _fail(type(raw) is bytes and len(raw) <= MAX_JSON and _held_path_absent(RUNTIME_REPORT),
+          "report-publication")
+    parent = _open_directory_nofollow(RUNTIME_REPORT.parent)
+    descriptor = None
+    try:
+        descriptor = _runtime_open_anonymous(parent, 0o600)
+        _write_all(descriptor, raw)
+        os.fsync(descriptor)
+        os.fchmod(descriptor, 0o400)
+        os.fsync(descriptor)
+        identity = _identity(os.fstat(descriptor))
+        _fail(identity["nlink"] == 0 and identity["size"] == len(raw), "report-publication")
+        digest = hashlib.sha256(raw).hexdigest()
+        _runtime_append("report-ready", {"identity": identity, "sha256": digest})
+        _runtime_link_anonymous(parent, descriptor, RUNTIME_REPORT.name)
+        named = os.stat(RUNTIME_REPORT.name, dir_fd=parent, follow_symlinks=False)
+        _fail(_same_identity(named, identity, include_nlink=False), "report-publication")
+    finally:
+        _runtime_close_all(descriptor, parent)
+
+
+def _runtime_report():
+    records = _runtime_load()
+    ready = _one_record(records, "report-ready", True)
+    raw = _read_regular(RUNTIME_REPORT, MAX_JSON, 0o400)
+    _fail(hashlib.sha256(raw).hexdigest() == ready["sha256"], "report-ownership")
+    return raw
+
+
+def _runtime_observe():
+    _fixed_preflight(True, RUNTIME_APPROVAL)
+    revision, manifest_sha256 = _source_approval()
+    _verify_fixed_source(revision, manifest_sha256)
+    _runtime_initialize(revision, manifest_sha256)
+    started_ns = time.monotonic_ns()
+    deadline_ns = started_ns + OBSERVE_SECONDS * NS_PER_SECOND
+    descriptors = []
+    try:
+        generations = {}
+        for asset in RUNTIME_ASSETS:
+            descriptor, generation = _runtime_download(asset, deadline_ns)
+            descriptors.append(descriptor)
+            generations[asset.component] = generation
+        qualification = _runtime_modules()[0]
+        collector = qualification.bind_runtime_discovery()
+        journal = _RuntimeJournalOwner(generations)
+        facts = collector.collect(
+            tuple(descriptors), journal.intent, journal.started, journal.settled, deadline_ns,
+        )
+    finally:
+        _runtime_close_all(*descriptors)
+    _runtime_residue(_runtime_recover(_runtime_load(True), deadline_ns))
+    duration_ms = _elapsed_ms(_elapsed_ns(started_ns))
+    raw = _runtime_modules()[0].canonical_runtime_discovery_report(
+        facts, revision, manifest_sha256, duration_ms, True, True,
+    )
+    _runtime_modules()[0].load_runtime_discovery_report(raw)
+    _runtime_publish_report(raw)
+    return 0
+
+
+def _runtime_cleanup():
+    _fixed_preflight(False)
+    if _held_path_absent(RUNTIME_OWNER):
+        _fail(_held_path_absent(RUNTIME_REPORT) and _held_path_absent(RUNTIME_EXPORT), "runtime-owner-missing")
+        return 0
+    deadline_ns = time.monotonic_ns() + 300 * NS_PER_SECOND
+    _runtime_residue(_runtime_recover(_runtime_load(True), deadline_ns))
+    return 0
+
+
+def _runtime_residue_command():
+    _fixed_preflight(False)
+    if _held_path_absent(RUNTIME_OWNER):
+        _fail(_held_path_absent(RUNTIME_REPORT) and _held_path_absent(RUNTIME_EXPORT), "runtime-owner-missing")
+        return 0
+    _runtime_residue(_runtime_recover(
+        _runtime_load(True), time.monotonic_ns() + 300 * NS_PER_SECOND))
+    return 0
+
+
+def _runtime_validate():
+    _fixed_preflight(False)
+    _runtime_modules()[0].load_runtime_discovery_report(_runtime_report())
+    return 0
+
+
+def _runtime_export():
+    _runtime_validate()
+    raw = _runtime_report()
+    _fail(_held_path_absent(RUNTIME_EXPORT), "export-preexisting")
+    parent = _open_directory_nofollow(RUNTIME_EXPORT.parent)
+    descriptor = None
+    try:
+        descriptor = _runtime_open_anonymous(parent, 0o600)
+        _write_all(descriptor, raw)
+        os.fsync(descriptor)
+        os.fchmod(descriptor, 0o444)
+        os.fsync(descriptor)
+        identity = _identity(os.fstat(descriptor))
+        _fail(identity["nlink"] == 0 and identity["size"] == len(raw), "export-publication")
+        digest = hashlib.sha256(raw).hexdigest()
+        _runtime_append("export-ready", {"identity": identity, "sha256": digest})
+        _runtime_link_anonymous(parent, descriptor, RUNTIME_EXPORT.name)
+        named = os.stat(RUNTIME_EXPORT.name, dir_fd=parent, follow_symlinks=False)
+        _fail(_same_identity(named, identity, include_nlink=False), "export-publication")
+    finally:
+        _runtime_close_all(descriptor, parent)
+    return 0
+
+
+def _runtime_cleanup_export():
+    _fixed_preflight(False)
+    if _held_path_absent(RUNTIME_OWNER):
+        _fail(_held_path_absent(RUNTIME_REPORT) and _held_path_absent(RUNTIME_EXPORT), "runtime-owner-missing")
+        return 0
+    records = _runtime_load(True)
+    ready = _one_record(records, "report-ready")
+    exported = _one_record(records, "export-ready")
+    parent = _open_directory_nofollow(RUNTIME_OWNER.parent)
+    export = None
+    report = None
+    owner = None
+    try:
+        if not _held_path_absent(RUNTIME_EXPORT):
+            _fail(exported is not None, "export-unowned")
+            export = os.open(RUNTIME_EXPORT.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent)
+            export_observed = os.fstat(export)
+            _fail(_same_identity(export_observed, exported["identity"], include_nlink=False),
+                  "export-replaced")
+            export_digest = _digest_descriptor(export, export_observed.st_size)
+            _fail(export_digest == exported["sha256"], "export-replaced")
+            _unlink_exact(parent, RUNTIME_EXPORT.name, export, _identity(export_observed), exported["sha256"])
+        if not _held_path_absent(RUNTIME_REPORT):
+            _fail(ready is not None, "report-unowned")
+            report = os.open(RUNTIME_REPORT.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent)
+            report_observed = os.fstat(report)
+            _fail(_same_identity(report_observed, ready["identity"], include_nlink=False),
+                  "report-replaced")
+            report_digest = _digest_descriptor(report, report_observed.st_size)
+            _fail(report_digest == ready["sha256"], "report-replaced")
+            _unlink_exact(parent, RUNTIME_REPORT.name, report, _identity(report_observed), ready["sha256"])
+        owner = os.open(RUNTIME_OWNER.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent)
+        genesis = records[0]["body"]
+        owner_observed = os.fstat(owner)
+        _fail(_same_identity(owner_observed, genesis["owner"], include_size=False, include_nlink=False),
+              "runtime-owner")
+        _unlink_exact(parent, RUNTIME_OWNER.name, owner, _identity(owner_observed), include_size=False)
+    finally:
+        _runtime_close_all(export, report, owner, parent)
+    return 0
+
+
+def _runtime_final_residue():
+    paths = (RUNTIME_OWNER, RUNTIME_REPORT, RUNTIME_EXPORT, STATE, ANCHOR, EXPORT_ROOT, RUNTIME_TEMP)
+    for path in paths:
+        _fail(_held_path_absent(path), "runtime-final-residue")
+    return 0
+
 def main(argv):
     actions = {
-        "observe": _observe, "cleanup": _cleanup, "residue": _residue, "render": _render,
-        "validate": _validate, "export": _export, "cleanup-export": _cleanup_export,
+        "observe": _observe,
+        "cleanup": _cleanup,
+        "residue": _residue,
+        "render": _render,
+        "validate": _validate,
+        "export": _export,
+        "cleanup-export": _cleanup_export,
         "post-export-residue": _post_export_residue,
     }
+    if len(argv) == 2 and argv[0] == RUNTIME_STAGE:
+        _use_runtime_paths()
+        actions.update({
+            "observe": _runtime_observe,
+            "cleanup": _runtime_cleanup,
+            "residue": _runtime_residue_command,
+            "validate": _runtime_validate,
+            "export": _runtime_export,
+            "cleanup-export": _runtime_cleanup_export,
+            "post-export-residue": _runtime_final_residue,
+        })
+        actions.pop("render")
+        argv = argv[1:]
     _fail(len(argv) == 1 and argv[0] in actions, "arguments")
     return actions[argv[0]]()
 

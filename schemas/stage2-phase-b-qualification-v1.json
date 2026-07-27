@@ -1,0 +1,296 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.invalid/schemas/stage2-phase-b-qualification-v1.json",
+  "title": "ADR0069 Stage 2 Phase B Runtime Discovery Candidate",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "stage",
+    "authority",
+    "qualified",
+    "promotion",
+    "source",
+    "duration_ms",
+    "checks",
+    "assets",
+    "host_elf_closures",
+    "claims",
+    "blockers"
+  ],
+  "properties": {
+    "version": { "const": "cogs.stage2-phase-b-runtime-discovery/v1" },
+    "stage": { "const": "phase-b-runtime-discovery" },
+    "authority": { "const": "candidate" },
+    "qualified": { "const": false },
+    "promotion": { "const": false },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["revision", "manifest_sha256"],
+      "properties": {
+        "revision": { "$ref": "#/$defs/revision" },
+        "manifest_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "duration_ms": { "type": "integer", "minimum": 0, "maximum": 5280000 },
+    "checks": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["assets", "archive_enumeration", "host_elf_closures", "supervision", "cleanup", "residue"],
+      "properties": {
+        "assets": { "const": "pass" },
+        "archive_enumeration": { "enum": ["pass", "fail"] },
+        "host_elf_closures": { "const": "pass" },
+        "supervision": { "const": "pass" },
+        "cleanup": { "const": "pass" },
+        "residue": { "const": "pass" }
+      }
+    },
+    "assets": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "prefixItems": [
+        {
+          "$ref": "#/$defs/asset",
+          "type": "object",
+          "properties": {
+            "component": { "const": "kata" },
+            "release": { "const": "3.32.0" },
+            "name": { "const": "kata-static-3.32.0-amd64.tar.zst" },
+            "compression": { "const": "zstd" },
+            "size": { "const": 1547940938 },
+            "sha256": { "const": "1449ecea50bd91fa73a94648db195d18950fe869ba4b1f12d05f55f1fa7c1b01" },
+            "archive": { "$ref": "#/$defs/kataArchive" }
+          }
+        },
+        {
+          "$ref": "#/$defs/asset",
+          "type": "object",
+          "properties": {
+            "component": { "const": "containerd" },
+            "release": { "const": "2.2.1" },
+            "name": { "const": "containerd-static-2.2.1-linux-amd64.tar.gz" },
+            "compression": { "const": "gzip" },
+            "size": { "const": 33645699 },
+            "sha256": { "const": "af3e82bac6abed58d45956c653244aa2be583359a9753614278ef652012f2883" },
+            "archive": { "$ref": "#/$defs/containerdArchive" }
+          }
+        }
+      ],
+      "items": false
+    },
+    "host_elf_closures": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "prefixItems": [
+        { "$ref": "#/$defs/closure", "type": "object", "properties": { "tool": { "const": "python3-parser" } } },
+        { "$ref": "#/$defs/closure", "type": "object", "properties": { "tool": { "const": "zstd" } } },
+        { "$ref": "#/$defs/closure", "type": "object", "properties": { "tool": { "const": "gzip" } } }
+      ],
+      "items": false
+    },
+    "claims": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rootfs", "kvm", "lifecycle", "extraction", "publication", "production"],
+      "properties": {
+        "rootfs": { "const": false },
+        "kvm": { "const": false },
+        "lifecycle": { "const": false },
+        "extraction": { "const": false },
+        "publication": { "const": false },
+        "production": { "const": false }
+      }
+    },
+    "blockers": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 18,
+      "uniqueItems": true,
+      "prefixItems": [{ "const": "candidate-non-authoritative" }, { "const": "runtime-layout-uncommitted" }],
+      "items": { "$ref": "#/$defs/code" }
+    }
+  },
+  "$defs": {
+    "revision": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "code": { "type": "string", "pattern": "^[a-z0-9-]{1,64}$" },
+    "count": { "type": "integer", "minimum": 0, "maximum": 20000 },
+    "typeCounts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["directory", "file", "hardlink", "symlink"],
+      "properties": {
+        "directory": { "$ref": "#/$defs/count" },
+        "file": { "$ref": "#/$defs/count" },
+        "hardlink": { "$ref": "#/$defs/count" },
+        "symlink": { "$ref": "#/$defs/count" }
+      }
+    },
+    "linkCounts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "symlink-relative-in-root",
+        "symlink-absolute",
+        "symlink-escape",
+        "hardlink-member",
+        "hardlink-missing",
+        "hardlink-absolute",
+        "hardlink-escape"
+      ],
+      "properties": {
+        "symlink-relative-in-root": { "$ref": "#/$defs/count" },
+        "symlink-absolute": { "$ref": "#/$defs/count" },
+        "symlink-escape": { "$ref": "#/$defs/count" },
+        "hardlink-member": { "$ref": "#/$defs/count" },
+        "hardlink-missing": { "$ref": "#/$defs/count" },
+        "hardlink-absolute": { "$ref": "#/$defs/count" },
+        "hardlink-escape": { "$ref": "#/$defs/count" }
+      }
+    },
+    "archive": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "stream_bytes",
+        "member_count",
+        "member_bytes",
+        "type_counts",
+        "rejected_type_count",
+        "manifest_sha256",
+        "links",
+        "roles",
+        "blockers"
+      ],
+      "properties": {
+        "stream_bytes": { "type": "integer", "minimum": 1, "maximum": 17179869184 },
+        "member_count": { "type": "integer", "minimum": 1, "maximum": 20000 },
+        "member_bytes": { "type": "integer", "minimum": 0, "maximum": 17179869184 },
+        "type_counts": { "$ref": "#/$defs/typeCounts" },
+        "rejected_type_count": { "$ref": "#/$defs/count" },
+        "manifest_sha256": { "$ref": "#/$defs/sha256" },
+        "links": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["counts", "sha256"],
+          "properties": {
+            "counts": { "$ref": "#/$defs/linkCounts" },
+            "sha256": { "$ref": "#/$defs/sha256" }
+          }
+        },
+        "roles": { "type": "array" },
+        "blockers": {
+          "type": "array",
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/code" }
+        }
+      }
+    },
+    "kataArchive": {
+      "$ref": "#/$defs/archive",
+      "type": "object",
+      "properties": {
+        "roles": {
+          "const": [
+            { "role": "kata-runtime", "member": "opt/kata/bin/kata-runtime", "kind": "file" },
+            { "role": "kata-shim", "member": "opt/kata/bin/containerd-shim-kata-v2", "kind": "file" },
+            { "role": "qemu", "member": "opt/kata/bin/qemu-system-x86_64", "kind": "file" },
+            { "role": "virtiofsd", "member": "opt/kata/libexec/virtiofsd", "kind": "file" },
+            {
+              "role": "kata-config",
+              "member": "opt/kata/share/defaults/kata-containers/configuration-qemu.toml",
+              "kind": "file"
+            }
+          ]
+        }
+      }
+    },
+    "containerdArchive": {
+      "$ref": "#/$defs/archive",
+      "type": "object",
+      "properties": {
+        "roles": {
+          "const": [
+            { "role": "containerd", "member": "bin/containerd", "kind": "file" },
+            { "role": "ctr", "member": "bin/ctr", "kind": "file" }
+          ]
+        }
+      }
+    },
+    "asset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["component", "release", "name", "compression", "size", "sha256", "archive", "supervision"],
+      "properties": {
+        "component": { "type": "string" },
+        "release": { "type": "string" },
+        "name": { "type": "string" },
+        "compression": { "enum": ["zstd", "gzip"] },
+        "size": { "type": "integer", "minimum": 1 },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "archive": { "$ref": "#/$defs/archive" },
+        "supervision": { "const": { "direct_children": 1, "helper_descendants": 0, "status": 0, "reaped": true } }
+      }
+    },
+    "soname": { "type": "string", "minLength": 1, "maxLength": 255, "pattern": "^[A-Za-z0-9_.+-]+$" },
+    "elfObject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "soname", "size", "sha256", "needed"],
+      "properties": {
+        "role": { "enum": ["executable", "loader", "library"] },
+        "soname": { "anyOf": [{ "$ref": "#/$defs/soname" }, { "type": "null" }] },
+        "size": { "type": "integer", "minimum": 1, "maximum": 134217728 },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "needed": {
+          "type": "array",
+          "maxItems": 128,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/soname" }
+        }
+      }
+    },
+    "closure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tool", "objects", "total_bytes", "closure_sha256"],
+      "properties": {
+        "tool": { "enum": ["python3-parser", "zstd", "gzip"] },
+        "objects": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 128,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/elfObject" },
+          "allOf": [
+            {
+              "contains": {
+                "$ref": "#/$defs/elfObject",
+                "type": "object",
+                "properties": { "role": { "const": "executable" } }
+              },
+              "minContains": 1,
+              "maxContains": 1
+            },
+            {
+              "contains": {
+                "$ref": "#/$defs/elfObject",
+                "type": "object",
+                "properties": { "role": { "const": "loader" } }
+              },
+              "minContains": 1,
+              "maxContains": 1
+            }
+          ]
+        },
+        "total_bytes": { "type": "integer", "minimum": 1, "maximum": 536870912 },
+        "closure_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    }
+  }
+}

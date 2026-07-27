@@ -296,3 +296,271 @@ jobs:
             *.spdx.json
           if-no-files-found: error
           retention-days: 30
+
+  native-runtime-preflight:
+    name: Native runtime preflight
+    needs: quality
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Check out exact pull request head
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Run exact-head native runtime preflight in trusted sandbox
+        shell: /usr/bin/bash --noprofile --norc -euo pipefail {0}
+        env:
+          EXPECTED_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          EXPECTED_REPOSITORY: ${{ github.repository }}
+          EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          test "$EXPECTED_HEAD_REPOSITORY" = "$EXPECTED_REPOSITORY"
+          [[ "$EXPECTED_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
+          IFS= read -r actual_head < <(/usr/bin/git rev-parse --verify HEAD)
+          test "$actual_head" = "$EXPECTED_HEAD_SHA"
+          IFS= read -r checkout < <(/usr/bin/pwd -P)
+          IFS= read -r canonical_checkout < <(/usr/bin/realpath --canonicalize-existing "$checkout")
+          IFS= read -r checkout_root < <(/usr/bin/git rev-parse --show-toplevel)
+          test "$checkout" = "$canonical_checkout" && test "$checkout" = "$checkout_root"
+          uid=$(/usr/bin/id -u)
+          gid=$(/usr/bin/id -g)
+          [[ "$uid" =~ ^[0-9]+$ && "$gid" =~ ^[0-9]+$ ]]
+          test "$uid" -ne 0 && test "$gid" -ne 0
+          IFS= read -r -d '' trusted_sandbox_v1 <<'SANDBOX' || test "$?" = 1
+          set -Eeuo pipefail
+          umask 077
+          checkout=$1
+          test_path=$2
+          close_inherited_fds() {
+            for entry in /proc/$$/fd/*; do
+              fd=${entry##*/}; [[ "$fd" =~ ^[0-9]+$ ]] || exit 80
+              if ((fd >= 3)); then eval "exec ${fd}>&-"; fi
+            done
+          }
+          close_inherited_fds
+          case "$test_path" in
+            /src/test/aws-stage2-completion-kata-process.py|/src/test/stage2-phase-a-candidate.py) ;;
+            *) exit 81;;
+          esac
+          IFS= read -r old_tmp_device < <(/usr/bin/stat --printf='%d\n' /tmp)
+          IFS= read -r old_tmp_mount_id < <(/usr/bin/findmnt --noheadings --raw --output ID --target /tmp)
+          [[ "$old_tmp_device" =~ ^[0-9]+$ && "$old_tmp_mount_id" =~ ^[0-9]+$ ]]
+          /usr/bin/mount --make-rprivate /
+          /usr/bin/mount -t tmpfs -o size=32m,mode=0700,nosuid,nodev,noexec cogs-native-stage /tmp
+          /usr/bin/mkdir -m 0700 /tmp/cogs-native-runtime-root
+          /usr/bin/mount -t tmpfs -o size=16m,mode=0700,nosuid,nodev cogs-native-runtime-root /tmp/cogs-native-runtime-root
+          root=/tmp/cogs-native-runtime-root
+          /usr/bin/mkdir -m 0755 "$root/usr" "$root/src" "$root/dev" "$root/proc"
+          /usr/bin/mkdir -m 1777 "$root/tmp"
+          /usr/bin/python3 -I - "$checkout" > /tmp/cogs-native-source-identities <<'SOURCES'
+          import json, os, stat, sys
+          for name in ("uid_map", "gid_map"):
+              raw = open("/proc/self/" + name, encoding="ascii").read()
+              if raw.count("\n") != 1 or raw.split() != ["0", "0", "1"]: raise RuntimeError("non-root-only identity map")
+          tools = ("/usr/bin/python3", "/usr/bin/zstd", "/usr/bin/gzip", "/dev/null", "/dev/urandom")
+          if any((value.st_uid,value.st_gid) != (0,0) for path in tools for value in (os.stat(path),)): raise RuntimeError("host tool ownership")
+          paths = ["/usr", "/dev/null", "/dev/urandom", sys.argv[1], *(path for path in ("/lib", "/lib64") if os.path.exists(path))]
+          print(json.dumps({os.path.realpath(path): [value.st_dev,value.st_ino,value.st_rdev,stat.S_IFMT(value.st_mode),value.st_uid,value.st_gid] for path in paths for value in (os.stat(path),)}, sort_keys=True))
+          SOURCES
+          /usr/bin/mount --bind /usr "$root/usr"
+          /usr/bin/mount -o remount,bind,ro,nosuid,nodev "$root/usr"
+          for library in /lib /lib64; do
+            if test -e "$library"; then
+              /usr/bin/mkdir -m 0755 "$root$library"
+              /usr/bin/mount --bind "$library" "$root$library"
+              /usr/bin/mount -o remount,bind,ro,nosuid,nodev "$root$library"
+            fi
+          done
+          /usr/bin/mount --bind "$checkout" "$root/src"
+          /usr/bin/mount -o remount,bind,ro,nosuid,nodev,noexec "$root/src"
+          /usr/bin/mount -t tmpfs -o size=16m,mode=1777,nosuid,nodev,noexec cogs-native-runtime-tmp "$root/tmp"
+          /usr/bin/mount -t proc -o ro,nosuid,nodev,noexec proc "$root/proc"
+          /usr/bin/touch "$root/dev/null" "$root/dev/urandom"
+          for device in null urandom; do
+            /usr/bin/mount --bind "/dev/$device" "$root/dev/$device"
+            /usr/bin/mount -o remount,bind,ro,nosuid,noexec "$root/dev/$device"
+          done
+          /usr/bin/python3 -I - "$checkout" "$old_tmp_device" "$old_tmp_mount_id" <<'VERIFY'
+          import json, os, posixpath, re, stat, sys
+          checkout, old_device, old_mount_id = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+          with open("/tmp/cogs-native-source-identities", encoding="ascii") as source_file: source_identities = json.load(source_file)
+          future = "/tmp/cogs-native-runtime-root"
+          escapes = {r"\040": " ", r"\011": "\t", r"\012": "\n", r"\134": "\\"}
+          def decode(value):
+              if re.search(r"\\(?!040|011|012|134)", value): raise RuntimeError("mountinfo escape")
+              for encoded, decoded in escapes.items(): value = value.replace(encoded, decoded)
+              return value
+          def options(value):
+              rows = value.split(",")
+              if not rows or any(not row or " " in row for row in rows) or len(rows) != len(set(rows)): raise RuntimeError("mountinfo options")
+              return frozenset(rows)
+          records = []
+          for raw in open("/proc/self/mountinfo", encoding="ascii"):
+              halves = raw.rstrip("\n").split(" - ")
+              if len(halves) != 2: raise RuntimeError("mountinfo separator")
+              left, right = halves[0].split(), halves[1].split()
+              if len(left) < 6 or len(right) != 3 or not left[0].isdigit() or not left[1].isdigit() or not re.fullmatch(r"[0-9]+:[0-9]+", left[2]): raise RuntimeError("mountinfo record")
+              optional = tuple(decode(item) for item in left[6:])
+              if any(not re.fullmatch(r"(?:shared|master|propagate_from):[0-9]+|unbindable", item) for item in optional): raise RuntimeError("mountinfo optional")
+              records.append({"id": int(left[0]), "parent": int(left[1]), "dev": left[2], "root": decode(left[3]), "target": decode(left[4]), "vfs": options(left[5]), "optional": optional, "type": decode(right[0]), "source": decode(right[1]), "super": options(right[2])})
+          def one(target):
+              found = [row for row in records if row["target"] == target]
+              if len(found) != 1: raise RuntimeError("missing or duplicate mount " + target)
+              return found[0]
+          def device(path):
+              value = os.stat(path, follow_symlinks=False).st_dev
+              return f"{os.major(value)}:{os.minor(value)}"
+          host_root, stage, root = one("/"), one("/tmp"), one(future)
+          fresh = ((stage, "cogs-native-stage", "32768k", "700", {"rw","nosuid","nodev","noexec","relatime"}), (root, "cogs-native-runtime-root", "16384k", "700", {"rw","nosuid","nodev","relatime"}), (one(future+"/tmp"), "cogs-native-runtime-tmp", "16384k", "1777", {"rw","nosuid","nodev","noexec","relatime"}))
+          for row, source, size, mode, vfs in fresh:
+              if row["type"] != "tmpfs" or row["source"] != source or row["root"] != "/" or row["vfs"] != vfs or row["super"] != {"rw","size="+size,"mode="+mode,"inode64"} or row["optional"] or row["dev"] != device(row["target"]): raise RuntimeError("fresh tmpfs identity")
+          if stage["parent"] != old_mount_id or root["parent"] != stage["id"] or fresh[2][0]["parent"] != root["id"] or os.stat("/tmp").st_dev == old_device: raise RuntimeError("staging ancestry")
+          if len({row["id"] for row, *_ in fresh}) != 3 or len({row["dev"] for row, *_ in fresh}) != 3 or any(row["id"] == old_mount_id for row, *_ in fresh): raise RuntimeError("fresh mount alias")
+          expected = {future, *(future+name for name in ("/usr","/src","/tmp","/proc","/dev/null","/dev/urandom"))}
+          binds = [("/usr", future+"/usr", {"ro","nosuid","nodev"}), (checkout, future+"/src", {"ro","nosuid","nodev","noexec"}), ("/dev/null", future+"/dev/null", {"ro","nosuid","noexec"}), ("/dev/urandom", future+"/dev/urandom", {"ro","nosuid","noexec"})]
+          for library in ("/lib", "/lib64"):
+              if os.path.exists(library): binds.append((library, future+library, {"ro","nosuid","nodev"})); expected.add(future+library)
+          proc = one(future+"/proc")
+          if proc["parent"] != root["id"] or proc["root"] != "/" or proc["type"] != "proc" or proc["source"] != "proc" or proc["vfs"] != {"ro","nosuid","nodev","noexec","relatime"} or proc["super"] != {"rw"} or proc["optional"] or proc["dev"] != device(future+"/proc"): raise RuntimeError("proc identity")
+          for source, target, required in binds:
+              source = os.path.realpath(source); source_row = max((row for row in records if (source == row["target"] or source.startswith(row["target"].rstrip("/")+"/")) and not row["target"].startswith(future)), key=lambda row: len(row["target"]))
+              target_row = one(target); relative = posixpath.relpath(source, source_row["target"])
+              expected_root = posixpath.normpath(posixpath.join(source_row["root"], relative))
+              expected_vfs = (source_row["vfs"] - {"rw","ro"}) | required
+              source_stat, target_stat = os.stat(source), os.stat(target, follow_symlinks=False)
+              captured_source = source_identities.pop(source, None)
+              if captured_source != [source_stat.st_dev,source_stat.st_ino,source_stat.st_rdev,stat.S_IFMT(source_stat.st_mode),source_stat.st_uid,source_stat.st_gid] or target_row["parent"] != root["id"] or target_row["root"] != expected_root or target_row["type"] != source_row["type"] or target_row["source"] != source_row["source"] or target_row["dev"] != source_row["dev"] or target_row["vfs"] != expected_vfs or target_row["super"] != source_row["super"] or target_row["optional"] or (source_stat.st_dev, source_stat.st_ino,source_stat.st_uid,source_stat.st_gid) != (target_stat.st_dev, target_stat.st_ino,target_stat.st_uid,target_stat.st_gid) or target_row["dev"] != device(target): raise RuntimeError("bind identity " + target)
+              if target.endswith(("/null", "/urandom")) and (not stat.S_ISCHR(target_stat.st_mode) or target_stat.st_rdev != source_stat.st_rdev): raise RuntimeError("device identity")
+          if source_identities: raise RuntimeError("unexamined pre-bind source")
+          for path in ("/usr/bin/python3", "/usr/bin/zstd", "/usr/bin/gzip", "/dev/null", "/dev/urandom"):
+              source_stat, target_stat = os.stat(path), os.stat(future+path)
+              if (source_stat.st_dev,source_stat.st_ino,source_stat.st_uid,source_stat.st_gid) != (target_stat.st_dev,target_stat.st_ino,target_stat.st_uid,target_stat.st_gid) or (target_stat.st_uid,target_stat.st_gid) != (0,0): raise RuntimeError("bound host tool ownership")
+          actual = {row["target"] for row in records if row["target"] == future or row["target"].startswith(future+"/")}
+          if actual != expected or any(row["id"] == old_mount_id for row in map(one, expected)): raise RuntimeError("unexpected or old mount")
+          VERIFY
+          IFS= read -r -d '' seccomp_launcher <<'SECCOMP' || test "$?" = 1
+          import ctypes, os
+          try:
+              path=os.environ.get("COGS_NATIVE_TEST_PATH")
+              if path not in ("/src/test/aws-stage2-completion-kata-process.py","/src/test/stage2-phase-a-candidate.py"): raise RuntimeError("path")
+              def status(filtered):
+                  fd=os.open("/proc/self/status",os.O_RDONLY|os.O_CLOEXEC); raw=os.read(fd,16384); os.close(fd); rows={}
+                  if not raw or len(raw)>=16384 or not raw.endswith(b"\n"): raise RuntimeError("status framing")
+                  for line in raw.decode("ascii").splitlines():
+                      key,sep,value=line.partition(":")
+                      if sep and key in {"Uid","Gid","Groups","CapInh","CapPrm","CapEff","CapBnd","CapAmb","NoNewPrivs","Seccomp"}:
+                          if key in rows: raise RuntimeError("duplicate status")
+                          rows[key]=value.strip()
+                  if set(rows)!={"Uid","Gid","Groups","CapInh","CapPrm","CapEff","CapBnd","CapAmb","NoNewPrivs","Seccomp"} or rows["Uid"]!="0\t0\t0\t0" or rows["Gid"]!="0\t0\t0\t0" or rows["Groups"] or rows["NoNewPrivs"]!="1" or any(int(rows[key],16) for key in ("CapInh","CapPrm","CapEff","CapBnd","CapAmb")) or rows["Seccomp"] != ("2" if filtered else "0"): raise RuntimeError("process boundary")
+              status(False)
+              class F(ctypes.Structure): _fields_=(('code',ctypes.c_ushort),('jt',ctypes.c_ubyte),('jf',ctypes.c_ubyte),('k',ctypes.c_uint))
+              class P(ctypes.Structure): _fields_=(('len',ctypes.c_ushort),('filter',ctypes.POINTER(F)))
+              ins=(F(0x20,0,0,4),F(0x15,1,0,0xc000003e),F(0x06,0,0,0x80000000),F(0x20,0,0,0),F(0x45,0,1,0x40000000),F(0x06,0,0,0x80000000),F(0x15,0,1,41),F(0x06,0,0,0x00050001),F(0x15,0,1,42),F(0x06,0,0,0x00050001),F(0x15,0,1,43),F(0x06,0,0,0x00050001),F(0x15,0,1,44),F(0x06,0,0,0x00050001),F(0x15,0,1,45),F(0x06,0,0,0x00050001),F(0x15,0,1,46),F(0x06,0,0,0x00050001),F(0x15,0,1,47),F(0x06,0,0,0x00050001),F(0x15,0,1,48),F(0x06,0,0,0x00050001),F(0x15,0,1,49),F(0x06,0,0,0x00050001),F(0x15,0,1,50),F(0x06,0,0,0x00050001),F(0x15,0,1,51),F(0x06,0,0,0x00050001),F(0x15,0,1,52),F(0x06,0,0,0x00050001),F(0x15,0,1,53),F(0x06,0,0,0x00050001),F(0x15,0,1,54),F(0x06,0,0,0x00050001),F(0x15,0,1,55),F(0x06,0,0,0x00050001),F(0x15,0,1,288),F(0x06,0,0,0x00050001),F(0x15,0,1,299),F(0x06,0,0,0x00050001),F(0x15,0,1,307),F(0x06,0,0,0x00050001),F(0x15,0,1,425),F(0x06,0,0,0x00050001),F(0x15,0,1,426),F(0x06,0,0,0x00050001),F(0x15,0,1,427),F(0x06,0,0,0x00050001),F(0x15,0,1,272),F(0x06,0,0,0x00050001),F(0x15,0,1,308),F(0x06,0,0,0x00050001),F(0x15,0,1,317),F(0x06,0,0,0x00050001),F(0x15,0,3,157),F(0x20,0,0,16),F(0x15,0,1,22),F(0x06,0,0,0x00050001),F(0x06,0,0,0x7fff0000))
+              if len(ins)!=59: raise RuntimeError("filter length")
+              array=(F*len(ins))(*ins); program=P(len(ins),array); libc=ctypes.CDLL(None,use_errno=True); libc.prctl.argtypes=(ctypes.c_int,ctypes.c_ulong,ctypes.c_ulong,ctypes.c_ulong,ctypes.c_ulong); libc.prctl.restype=ctypes.c_int
+              if libc.prctl(38,1,0,0,0)!=0: saved=ctypes.get_errno(); raise OSError(saved,os.strerror(saved))
+              if libc.prctl(22,2,ctypes.addressof(program),0,0)!=0: saved=ctypes.get_errno(); raise OSError(saved,os.strerror(saved))
+              status(True)
+              os.execve("/usr/bin/python3",("/usr/bin/python3","-I","-B",path),{"COGS_REQUIRE_NATIVE_RUNTIME_PREFLIGHT_V1":"1","PYTHONDONTWRITEBYTECODE":"1"})
+          except BaseException:
+              try: os.write(2,b"native seccomp launcher failed\n")
+              finally: os._exit(126)
+          SECCOMP
+          case "$test_path" in
+            /src/test/aws-stage2-completion-kata-process.py|/src/test/stage2-phase-a-candidate.py) ;;
+            *) exit 82;;
+          esac
+          close_inherited_fds
+          COGS_NATIVE_TEST_PATH=$test_path exec /usr/sbin/chroot /tmp/cogs-native-runtime-root /usr/bin/setpriv --securebits +noroot,+noroot_locked --bounding-set=-all --inh-caps=-all --ambient-caps=-all --reuid=0 --regid=0 --clear-groups --no-new-privs /usr/bin/timeout --signal=KILL 240 /usr/bin/python3 -I -B -c "$seccomp_launcher"
+          SANDBOX
+          run_preflight() {
+            /usr/bin/python3 -I - "$RUNNER_TEMP" "$checkout" "$uid" "$gid" "$1" "$2" "$trusted_sandbox_v1" <<'OUTER'
+          import os, stat, subprocess, sys
+          temporary, checkout, uid, gid, test_path, marker, sandbox = sys.argv[1:]
+          uid, gid = int(uid), int(gid); name = "cogs-native-runtime-evidence"; descriptors = []
+          if not os.path.isabs(temporary) or os.path.realpath(temporary) != temporary: raise RuntimeError("runner temp not canonical")
+          temp_fd = os.open(temporary, os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC)
+          temp_identity = os.fstat(temp_fd)
+          if (temp_identity.st_dev,temp_identity.st_ino) != (os.stat(temporary, follow_symlinks=False).st_dev,os.stat(temporary, follow_symlinks=False).st_ino) or (temp_identity.st_uid,temp_identity.st_gid) != (uid,gid): raise RuntimeError("runner temp identity")
+          parent_fd = -1; parent_identity = None; parent_created = False; launched = False; linked = set()
+          def identity(value): return (value.st_dev,value.st_ino,value.st_uid,value.st_gid,stat.S_IFMT(value.st_mode),stat.S_IMODE(value.st_mode),value.st_nlink)
+          def write_all(fd, body):
+              offset = 0
+              while offset < len(body):
+                  written = os.write(fd, body[offset:])
+                  if written <= 0: raise RuntimeError("short write")
+                  offset += written
+          try:
+              os.mkdir(name, 0o700, dir_fd=temp_fd); parent_created = True
+              parent_fd = os.open(name, os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC, dir_fd=temp_fd)
+              parent_identity = identity(os.fstat(parent_fd))
+              if parent_identity != identity(os.stat(name, dir_fd=temp_fd, follow_symlinks=False)) or parent_identity[2:] != (uid,gid,stat.S_IFDIR,0o700,2): raise RuntimeError("private parent identity")
+              for leaf in ("expected","output"):
+                  fd = os.open(leaf, os.O_RDWR|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW|os.O_CLOEXEC, 0o600, dir_fd=parent_fd); descriptors.append(fd); linked.add(leaf)
+                  observed = os.fstat(fd)
+                  if identity(observed) != identity(os.stat(leaf, dir_fd=parent_fd, follow_symlinks=False)) or identity(observed)[2:] != (uid,gid,stat.S_IFREG,0o600,1): raise RuntimeError("evidence leaf identity")
+              expected_fd, output_fd = descriptors; literal = marker.encode("ascii") + b"\n"
+              write_all(expected_fd, literal); os.fsync(expected_fd)
+              if os.fstat(output_fd).st_size != 0: raise RuntimeError("output not empty")
+              captured = tuple(identity(os.fstat(fd))[:2] for fd in descriptors)
+              for leaf in ("expected","output"): os.unlink(leaf, dir_fd=parent_fd); linked.remove(leaf)
+              os.fsync(parent_fd)
+              if any(os.fstat(fd).st_nlink != 0 for fd in descriptors): raise RuntimeError("evidence remained linked")
+              captured_parent = identity(os.fstat(parent_fd))
+              named_parent = identity(os.stat(name, dir_fd=temp_fd, follow_symlinks=False))
+              if captured_parent != parent_identity or named_parent != parent_identity: raise RuntimeError("private parent changed before unlink")
+              os.rmdir(name, dir_fd=temp_fd); parent_created = False
+              os.fsync(temp_fd)
+              anonymous_parent = identity(os.fstat(parent_fd))
+              if anonymous_parent[:6] != parent_identity[:6] or anonymous_parent[6] != 0: raise RuntimeError("private parent remained linked")
+              # unshare's waiter stays in the ancestor PID namespace; its bash child is namespace PID 1 and terminally execs chroot.
+              command = ["/usr/bin/sudo","-n","--close-from=3","/usr/bin/setpriv","--reuid","0","--regid","0","--clear-groups","--no-new-privs","/usr/bin/unshare","--user","--map-users=0:0:1","--map-groups=0:0:1","--net","--pid","--fork","--mount","/usr/bin/env","-i","/usr/bin/bash","--noprofile","--norc","-c",sandbox,"--",checkout,test_path]
+              launched = True
+              result = subprocess.run(command, stdin=None, stdout=output_fd, stderr=subprocess.STDOUT, close_fds=True, env={}, preexec_fn=lambda: os.close(0), check=False)
+              for fd, captured_identity in zip(descriptors, captured):
+                  observed = os.fstat(fd)
+                  if identity(observed)[:2] != captured_identity or identity(observed)[2:] != (uid,gid,stat.S_IFREG,0o600,0): raise RuntimeError("anonymous evidence changed")
+              os.ftruncate(expected_fd, 0); os.lseek(expected_fd, 0, os.SEEK_SET); write_all(expected_fd, literal); os.fsync(expected_fd)
+              os.lseek(expected_fd, 0, os.SEEK_SET); os.lseek(output_fd, 0, os.SEEK_SET)
+              compared = subprocess.run(["/usr/bin/cmp","--silent","--",f"/proc/self/fd/{expected_fd}",f"/proc/self/fd/{output_fd}"], pass_fds=(expected_fd,output_fd), close_fds=True, env={}, check=False)
+              if result.returncode != 0 or compared.returncode != 0: raise RuntimeError(f"preflight status {result.returncode}/{compared.returncode}")
+              print(marker, flush=True)
+          finally:
+              cleanup_failure = None
+              if not launched:
+                  for leaf in tuple(linked):
+                      try:
+                          path_identity = identity(os.stat(leaf, dir_fd=parent_fd, follow_symlinks=False))[:2]
+                          descriptor_identity = identity(os.fstat(descriptors[("expected","output").index(leaf)]))[:2]
+                          if path_identity == descriptor_identity: os.unlink(leaf, dir_fd=parent_fd)
+                      except FileNotFoundError: pass
+                      except BaseException as error: cleanup_failure = cleanup_failure or error
+                  try:
+                      if parent_created:
+                          if parent_identity is None or identity(os.fstat(parent_fd)) != parent_identity or identity(os.stat(name, dir_fd=temp_fd, follow_symlinks=False)) != parent_identity: raise RuntimeError("private parent changed")
+                          os.rmdir(name, dir_fd=temp_fd); os.fsync(temp_fd)
+                      if identity(os.fstat(temp_fd))[:2] != identity(temp_identity)[:2]: raise RuntimeError("runner temp changed")
+                  except BaseException as error: cleanup_failure = cleanup_failure or error
+              # Once launch begins, cleanup is descriptor closure only: all three retained evidence identities are anonymous.
+              for fd in reversed(descriptors):
+                  try: os.close(fd)
+                  except BaseException as error: cleanup_failure = cleanup_failure or error
+              if parent_fd >= 0:
+                  try: os.close(parent_fd)
+                  except BaseException as error: cleanup_failure = cleanup_failure or error
+              try: os.close(temp_fd)
+              except BaseException as error: cleanup_failure = cleanup_failure or error
+              if cleanup_failure is not None: raise cleanup_failure
+          OUTER
+          }
+          run_preflight /src/test/aws-stage2-completion-kata-process.py 'completion Kata process LINUX AMD64 QUALIFIED matrix passed'
+          run_preflight /src/test/stage2-phase-a-candidate.py 'stage2 phase-a candidate portable tests passed'
+          set +e
+          /usr/bin/git status --porcelain=v1 --untracked-files=all | /usr/bin/grep -q .
+          clean_status=("${PIPESTATUS[@]}")
+          set -e
+          test "${clean_status[0]}" = 0 && test "${clean_status[1]}" = 1

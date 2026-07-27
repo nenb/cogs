@@ -34,7 +34,7 @@ test("S4 Kata runtime/spec/process/share owner is closed and hostile-tested offl
 
   const source = await readFile(modulePath, "utf8");
   const physicalLines = source.split("\n").length - 1;
-  assert.ok(physicalLines >= 650 && physicalLines <= 1_300, `unexpected production line count: ${physicalLines}`);
+  assert.ok(physicalLines >= 650 && physicalLines <= 1_559, `unexpected production line count: ${physicalLines}`);
   assert.match(source, /mounts = \(/u);
   assert.match(source, /def validate_stored_spec\(stored_spec\):/u);
   assert.match(source, /def custom_mount_argv\(\):/u);

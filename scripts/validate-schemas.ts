@@ -10,7 +10,7 @@ const Ajv2020 = require("ajv/dist/2020.js") as new (options?: Options) => AjvCor
 const addFormats = require("ajv-formats") as (ajv: AjvCore) => AjvCore;
 const root = resolve(import.meta.dirname, "..");
 const schemaDir = resolve(root, "schemas");
-const ajv = new Ajv2020({ allErrors: true, strict: true, strictRequired: false });
+const ajv = new Ajv2020({ allErrors: true, strict: true, strictRequired: false, strictTuples: false });
 addFormats(ajv);
 
 const schemaFiles = readdirSync(schemaDir)

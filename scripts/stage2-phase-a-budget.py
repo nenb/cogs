@@ -21,6 +21,12 @@ BOUNDARIES = {
     "post-export-residue": 5400,
     "final": 5400,
 }
+RUNTIME_PROFILE = "phase-b-runtime-discovery"
+RUNTIME_BOUNDARIES = {
+    "source": 600, "observe": 3900, "cleanup": 4980, "residue": 5040,
+    "render": 5080, "validate": 5120, "export": 5160, "upload": 5170,
+    "export-cleanup": 5260, "post-export-residue": 5275, "final": 5280,
+}
 KILL_RESERVE_SECONDS = 5
 
 
@@ -40,9 +46,16 @@ def _anchor(raw):
     return value
 
 
+def _selected_boundaries():
+    profile = os.environ.get("COGS_STAGE2_BUDGET_PROFILE")
+    _fail(profile is None or profile == RUNTIME_PROFILE)
+    return BOUNDARIES if profile is None else RUNTIME_BOUNDARIES
+
+
 def _deadline(anchor_raw, boundary):
-    _fail(boundary in BOUNDARIES)
-    return _anchor(anchor_raw) + BOUNDARIES[boundary] * 1_000_000_000
+    boundaries = _selected_boundaries()
+    _fail(boundary in boundaries)
+    return _anchor(anchor_raw) + boundaries[boundary] * 1_000_000_000
 
 
 def check(anchor_raw, boundary, now_ns):
@@ -57,7 +70,7 @@ def timeout_seconds(anchor_raw, boundary, now_ns):
 
 
 def main(argv):
-    _fail(len(argv) == 2 and argv[0] in {"check", "timeout"} and argv[1] in BOUNDARIES)
+    _fail(len(argv) == 2 and argv[0] in {"check", "timeout"})
     anchor = os.environ.get(ANCHOR_ENV)
     now = time.monotonic_ns()
     if argv[0] == "check":
