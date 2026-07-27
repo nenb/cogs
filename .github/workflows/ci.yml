@@ -546,7 +546,7 @@ jobs:
           VERIFY
           exec 3>&-
           /usr/bin/python3 -I -c "$descriptor_observer" "$checkout_dev" "$checkout_ino" "$checkout_uid" "$checkout_gid" after
-          COGS_NATIVE_TEST_PATH=$test_path exec /usr/bin/unshare --user --map-user=0 --map-group=0 /usr/sbin/chroot /tmp/cogs-native-runtime-root /usr/bin/setpriv --securebits +noroot,+noroot_locked --bounding-set=-all --inh-caps=-all --ambient-caps=-all --reuid=0 --regid=0 --clear-groups --no-new-privs /usr/bin/timeout --signal=KILL 240 /usr/bin/python3 -I -B -c "$seccomp_launcher"
+          COGS_NATIVE_TEST_PATH=$test_path exec /usr/bin/unshare --user --map-user=0 --map-group=0 /usr/sbin/chroot /tmp/cogs-native-runtime-root /usr/bin/setpriv --securebits +noroot,+noroot_locked --bounding-set=-all --inh-caps=-all --ambient-caps=-all --reuid=0 --regid=0 --keep-groups --no-new-privs /usr/bin/timeout --signal=KILL 240 /usr/bin/python3 -I -B -c "$seccomp_launcher"
           SANDBOX
           run_preflight() {
             /usr/bin/python3 -I - "$RUNNER_TEMP" "$checkout" "$checkout_root" "$1" "$2" "$trusted_sandbox_v1" <<'OUTER'

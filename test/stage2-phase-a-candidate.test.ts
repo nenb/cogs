@@ -273,7 +273,7 @@ test("runtime-discovery workflow has the exact PR 230 one-shot guard and cleanup
   );
   assert.match(
     nativeJob,
-    /--securebits \+noroot,\+noroot_locked[\s\S]*--bounding-set=-all --inh-caps=-all --ambient-caps=-all[\s\S]*--clear-groups --no-new-privs[\s\S]*\/usr\/bin\/timeout --signal=KILL 240 \/usr\/bin\/python3 -I -B -c/u,
+    /--securebits \+noroot,\+noroot_locked[\s\S]*--bounding-set=-all --inh-caps=-all --ambient-caps=-all[\s\S]*--keep-groups --no-new-privs[\s\S]*\/usr\/bin\/timeout --signal=KILL 240 \/usr\/bin\/python3 -I -B -c/u,
   );
   const launcherMatch = nativeJob.match(/<<'SECCOMP'[\s\S]*?\n {10}SECCOMP/u);
   assert.ok(launcherMatch);
