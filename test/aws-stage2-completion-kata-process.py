@@ -265,14 +265,19 @@ def _native_runtime_preflight():
     global _NATIVE_PHASE
     _NATIVE_PHASE = "envelope"
     _native_envelope()
-    _NATIVE_PHASE = "descriptor-setup"
+    _NATIVE_PHASE = "descriptor-baseline"
     baseline = set(os.listdir("/proc/self/fd"))
+    _NATIVE_PHASE = "descriptor-open"
     base = os.open("/dev/null", os.O_RDONLY | os.O_CLOEXEC)
+    _NATIVE_PHASE = "descriptor-dup2"
     os.dup2(base, 198, inheritable=True)
+    _NATIVE_PHASE = "descriptor-fcntl"
     high = fcntl.fcntl(base, fcntl.F_DUPFD, 4096)
     assert high == 4096
+    _NATIVE_PHASE = "descriptor-inherit"
     os.set_inheritable(high, True)
     try:
+        _NATIVE_PHASE = "host-init"
         owner = process._RuntimeDiscoveryHost()
         try:
             _NATIVE_PHASE = "zstd"
