@@ -61,4 +61,22 @@ test("S1 portable process suite and narrow native boundary remain exact", async 
   );
 
   assert.match(workflow, /^ {2}native-runtime-preflight:$/mu);
+  const nativeJob = workflow.slice(workflow.indexOf("  native-runtime-preflight:"));
+  const observerMatch = nativeJob.match(/<<'DESCRIPTOR'[\s\S]*?\n {10}DESCRIPTOR/u);
+  assert.ok(observerMatch);
+  const observer = observerMatch[0];
+  assert.match(observer, /parent = os\.getppid\(\)[\s\S]*names = set\(os\.listdir\(base\+"\/fd"\)\)/u);
+  assert.match(observer, /open\(base\+"\/fdinfo\/"\+name[\s\S]*row\[0\]=="flags:"[\s\S]*flags = int\(values\[0\],8\)/u);
+  assert.match(observer, /number == 3 and sys\.argv\[5\] == "before"[\s\S]*flags & os\.O_CLOEXEC/u);
+  assert.match(observer, /stat\.S_ISSOCK\(before\.st_mode\)[\s\S]*object_id in namespaces/u);
+  assert.match(observer, /elif object_id == expected\[:2\] or not flags & os\.O_CLOEXEC/u);
+  assert.match(observer, /unstable parent descriptor table[\s\S]*checkout descriptor lifecycle/u);
+  assert.doesNotMatch(observer, /F_GETFL|set\(os\.listdir\([^)]*\)\) != \{"0","1","2"/u);
+  const acceptsNonCloexec = observer.replace(" or not flags & os.O_CLOEXEC", "");
+  assert.notEqual(acceptsNonCloexec, observer);
+  assert.doesNotMatch(acceptsNonCloexec, /not flags & os\.O_CLOEXEC/u);
+  assert.match(
+    nativeJob,
+    /exec 3>&-\n {10}\/usr\/bin\/python3 -I -c "\$descriptor_observer"[^\n]+ after\n {10}COGS_NATIVE_TEST_PATH=\$test_path exec \/usr\/sbin\/chroot/u,
+  );
 });

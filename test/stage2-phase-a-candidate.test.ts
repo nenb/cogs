@@ -191,9 +191,42 @@ test("runtime-discovery workflow has the exact PR 230 one-shot guard and cleanup
   assert.match(rootLauncher, /os\.execve\("\/usr\/bin\/setpriv",command,\{\}\)/u);
   assert.equal(rootLauncher.match(/os\.execve/gu)?.length, 1);
   assert.doesNotMatch(rootLauncher, /os\.environ|os\.getenv|importlib|runpy|__import__|SourceFileLoader|pass_fds/u);
-  assert.match(sandbox, /parent = os\.getppid\(\)[\s\S]*parent != 1[\s\S]*\{"0","1","2","3"\}/u);
-  assert.match(sandbox, /fdinfo\/3[\s\S]*flags & required != required[\s\S]*fcntl\.FD_CLOEXEC/u);
-  assert.match(sandbox, /\/proc\/sys\/kernel\/overflow[\s\S]*stat\.S_IFDIR/u);
+  const observerMatch = sandbox.match(/<<'DESCRIPTOR'[\s\S]*?\n {10}DESCRIPTOR/u);
+  assert.ok(observerMatch);
+  const observer = observerMatch[0];
+  assert.match(
+    observer,
+    /parent = os\.getppid\(\)[\s\S]*parent != 1[\s\S]*sys\.argv\[5\] not in \("before","after"\)/u,
+  );
+  assert.match(
+    observer,
+    /names = set\(os\.listdir\(base\+"\/fd"\)\)[\s\S]*name\.isdigit\(\)[\s\S]*str\(int\(name\)\) != name/u,
+  );
+  assert.match(
+    observer,
+    /open\(base\+"\/fdinfo\/"\+name[\s\S]*row\[0\]=="flags:"[\s\S]*len\(values\) != 1[\s\S]*int\(values\[0\],8\)/u,
+  );
+  assert.match(
+    observer,
+    /before = os\.stat\(base\+"\/fd\/"\+name\)[\s\S]*after = os\.stat\(base\+"\/fd\/"\+name\)[\s\S]*before != after/u,
+  );
+  assert.match(
+    observer,
+    /os\.listdir\(base\+"\/ns"\)[\s\S]*stat\.S_ISSOCK\(before\.st_mode\)[\s\S]*object_id in namespaces/u,
+  );
+  assert.match(
+    observer,
+    /number == 3 and sys\.argv\[5\] == "before"[\s\S]*identity\(before\) != \(\*expected\[:2\],\*overflow,stat\.S_IFDIR\)[\s\S]*flags & os\.O_CLOEXEC/u,
+  );
+  assert.match(
+    observer,
+    /elif object_id == expected\[:2\] or not flags & os\.O_CLOEXEC:[\s\S]*unsafe parent descriptor flags/u,
+  );
+  assert.match(observer, /names != set\(os\.listdir\(base\+"\/fd"\)\)[\s\S]*\("3" in names\)/u);
+  assert.doesNotMatch(observer, /fcntl|F_GETFL|set\(os\.listdir\([^)]*\)\) != \{"0","1","2"/u);
+  const acceptsNonCloexec = observer.replace(" or not flags & os.O_CLOEXEC", "");
+  assert.notEqual(acceptsNonCloexec, observer);
+  assert.doesNotMatch(acceptsNonCloexec, /not flags & os\.O_CLOEXEC/u);
   assert.equal(
     sandbox.match(/^ {10}\/usr\/bin\/mount --no-canonicalize --bind \/proc\/self\/fd\/3 "\$root\/src"$/gmu)?.length,
     1,
@@ -204,10 +237,13 @@ test("runtime-discovery workflow has the exact PR 230 one-shot guard and cleanup
     /source = one\([\s\S]*bound = one\([\s\S]*target_stat = os\.stat\(target, follow_symlinks=False\)/u,
   );
   assert.equal(sandbox.match(/\/usr\/bin\/python3 -I -c "\$verify_checkout_bind"/gu)?.length, 2);
+  assert.equal(sandbox.match(/\/usr\/bin\/python3 -I -c "\$descriptor_observer"/gu)?.length, 2);
+  assert.match(sandbox, /"\$checkout_gid" before\n[\s\S]*\/usr\/bin\/mount --no-canonicalize/u);
   assert.match(
     sandbox,
-    / {10}VERIFY\n {10}exec 3>&-\n {10}IFS= read -r -d '' closed_observer <<'CLOSED'[\s\S]*parent != 1[\s\S]*\{"0","1","2"\}[\s\S]* {10}CLOSED\n {10}\/usr\/bin\/python3 -I -c "\$closed_observer"\n {10}COGS_NATIVE_TEST_PATH=\$test_path exec \/usr\/sbin\/chroot/u,
+    / {10}VERIFY\n {10}exec 3>&-\n {10}\/usr\/bin\/python3 -I -c "\$descriptor_observer" "\$checkout_dev" "\$checkout_ino" "\$checkout_uid" "\$checkout_gid" after\n {10}COGS_NATIVE_TEST_PATH=\$test_path exec \/usr\/sbin\/chroot/u,
   );
+  assert.doesNotMatch(nativeJob, /launcher-fds|terminal-fds|classes =/u);
   assert.equal(nativeJob.match(/--close-from=/gu)?.length, 1);
   assert.doesNotMatch(nativeJob, /preexec_fn|stdin=None|--close-from=4|-C 4|"-C"|--preserve-env/u);
   assert.doesNotMatch(

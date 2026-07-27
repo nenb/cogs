@@ -328,29 +328,38 @@ jobs:
           umask 077
           checkout_dev=$1 checkout_ino=$2 checkout_uid=$3 checkout_gid=$4 test_path=$5
           IFS= read -r -d '' descriptor_observer <<'DESCRIPTOR' || test "$?" = 1
-          import fcntl, os, stat, sys
-          expected = tuple(map(int, sys.argv[1:]))
+          import os, stat, sys
+          expected = tuple(map(int, sys.argv[1:5]))
           parent = os.getppid()
           base = f"/proc/{parent}"
-          if parent != 1 or set(os.listdir(base+"/fd")) != {"0","1","2","3"}: raise RuntimeError("launcher descriptor set")
+          if parent != 1 or sys.argv[5] not in ("before","after"): raise RuntimeError("descriptor observer authority")
           for name in ("uid_map","gid_map"):
               raw = open(base+"/"+name, encoding="ascii").read()
               if raw.count("\n") != 1 or raw.split() != ["0","0","1"]: raise RuntimeError("non-root-only identity map")
-          if expected[2] == 0 or expected[3] == 0: raise RuntimeError("mapped runner identity")
+          names = set(os.listdir(base+"/fd"))
+          if not {"0","1","2"}.issubset(names) or any(not name.isdigit() or str(int(name)) != name for name in names): raise RuntimeError("parent descriptor names")
           overflow = tuple(int(open("/proc/sys/kernel/overflow"+kind, encoding="ascii").read()) for kind in ("uid","gid"))
           identity = lambda row: (row.st_dev,row.st_ino,row.st_uid,row.st_gid,stat.S_IFMT(row.st_mode))
-          wanted = (*expected[:2],*overflow,stat.S_IFDIR)
-          if identity(os.fstat(3)) != wanted or identity(os.stat(base+"/fd/3")) != wanted: raise RuntimeError("checkout descriptor identity")
-          rows = (line.split() for line in open(base+"/fdinfo/3", encoding="ascii"))
-          fields = {row[0][:-1]:row[1] for row in rows if len(row)==2 and row[0] in ("flags:","mnt_id:")}
-          flags = int(fields.get("flags","-1"),8)
-          required = os.O_PATH|os.O_DIRECTORY|os.O_NOFOLLOW
-          if (set(fields) != {"flags","mnt_id"} or not fields["mnt_id"].isdigit()
-                  or flags & required != required or flags & os.O_CLOEXEC
-                  or fcntl.fcntl(3,fcntl.F_GETFD) & fcntl.FD_CLOEXEC):
-              raise RuntimeError("checkout descriptor flags")
+          namespaces = {(row.st_dev,row.st_ino) for name in os.listdir(base+"/ns") for row in (os.stat(base+"/ns/"+name),)}
+          for name in names:
+              number = int(name)
+              if number < 3: continue
+              before = os.stat(base+"/fd/"+name)
+              values = [row[1] for line in open(base+"/fdinfo/"+name, encoding="ascii") for row in (line.split(),) if len(row)==2 and row[0]=="flags:"]
+              if len(values) != 1: raise RuntimeError("parent descriptor fdinfo")
+              flags = int(values[0],8)
+              after = os.stat(base+"/fd/"+name)
+              object_id = (before.st_dev,before.st_ino)
+              if before != after or stat.S_ISSOCK(before.st_mode) or object_id in namespaces: raise RuntimeError("unsafe parent descriptor object")
+              if number == 3 and sys.argv[5] == "before":
+                  required = os.O_PATH|os.O_DIRECTORY|os.O_NOFOLLOW
+                  if identity(before) != (*expected[:2],*overflow,stat.S_IFDIR) or flags & required != required or flags & os.O_CLOEXEC: raise RuntimeError("checkout descriptor authentication")
+              elif object_id == expected[:2] or not flags & os.O_CLOEXEC:
+                  raise RuntimeError("unsafe parent descriptor flags")
+          if names != set(os.listdir(base+"/fd")): raise RuntimeError("unstable parent descriptor table")
+          if (sys.argv[5] == "before") != ("3" in names): raise RuntimeError("checkout descriptor lifecycle")
           DESCRIPTOR
-          /usr/bin/python3 -I -c "$descriptor_observer" "$checkout_dev" "$checkout_ino" "$checkout_uid" "$checkout_gid"
+          /usr/bin/python3 -I -c "$descriptor_observer" "$checkout_dev" "$checkout_ino" "$checkout_uid" "$checkout_gid" before
           IFS= read -r old_tmp_device < <(/usr/bin/stat --printf='%d\n' /tmp)
           IFS= read -r old_tmp_mount_id < <(/usr/bin/findmnt --noheadings --raw --output ID --target /tmp)
           [[ "$old_tmp_device" =~ ^[0-9]+$ && "$old_tmp_mount_id" =~ ^[0-9]+$ ]]
@@ -530,12 +539,7 @@ jobs:
           if actual != expected or any(row["id"] == old_mount_id for row in map(one, expected)): raise RuntimeError("unexpected or old mount")
           VERIFY
           exec 3>&-
-          IFS= read -r -d '' closed_observer <<'CLOSED' || test "$?" = 1
-          import os
-          parent = os.getppid()
-          if parent != 1 or set(os.listdir(f"/proc/{parent}/fd")) != {"0","1","2"}: raise RuntimeError("terminal descriptor set")
-          CLOSED
-          /usr/bin/python3 -I -c "$closed_observer"
+          /usr/bin/python3 -I -c "$descriptor_observer" "$checkout_dev" "$checkout_ino" "$checkout_uid" "$checkout_gid" after
           COGS_NATIVE_TEST_PATH=$test_path exec /usr/sbin/chroot /tmp/cogs-native-runtime-root /usr/bin/setpriv --securebits +noroot,+noroot_locked --bounding-set=-all --inh-caps=-all --ambient-caps=-all --reuid=0 --regid=0 --clear-groups --no-new-privs /usr/bin/timeout --signal=KILL 240 /usr/bin/python3 -I -B -c "$seccomp_launcher"
           SANDBOX
           run_preflight() {
@@ -614,9 +618,7 @@ jobs:
               if result.returncode != 0 or compared.returncode != 0:
                   os.lseek(output_fd, 0, os.SEEK_SET)
                   diagnostic = os.read(output_fd, 65_537)
-                  classes = ((b"launcher descriptor set","launcher-fds"),(b"non-root-only identity map","identity-map"),(b"mapped runner identity","runner-map"),(b"checkout descriptor identity","checkout-fd"),(b"checkout descriptor flags","checkout-flags"),(b"checkout fdinfo","checkout-fdinfo"),(b"checkout target identity","checkout-target"),(b"checkout mount identity","checkout-mount"),(b"terminal descriptor set","terminal-fds"),(b"checkout identity","checkout-identity"),(b"launcher arguments","launcher-args"),(b"launcher authority","launcher-authority"),(b"descriptor normalization","descriptor-normalization"),(b"descriptor closure","descriptor-closure"),(b"native seccomp launcher failed","seccomp"),(b"native-process-failure:","process"),(b"--no-canonicalize","mount-option"),(b"unshare:","unshare"),(b"Traceback","python"))
-                  label = next((value for needle,value in classes if needle in diagnostic),"other")
-                  raise RuntimeError(f"preflight status {result.returncode}/{compared.returncode} class {label} bytes {len(diagnostic)}")
+                  raise RuntimeError(f"preflight status {result.returncode}/{compared.returncode} bytes {len(diagnostic)}")
               print(marker, flush=True)
           finally:
               cleanup_failure = None
