@@ -527,7 +527,11 @@ jobs:
               os.ftruncate(expected_fd, 0); os.lseek(expected_fd, 0, os.SEEK_SET); write_all(expected_fd, literal); os.fsync(expected_fd)
               os.lseek(expected_fd, 0, os.SEEK_SET); os.lseek(output_fd, 0, os.SEEK_SET)
               compared = subprocess.run(["/usr/bin/cmp","--silent","--",f"/proc/self/fd/{expected_fd}",f"/proc/self/fd/{output_fd}"], pass_fds=(expected_fd,output_fd), close_fds=True, env={}, check=False)
-              if result.returncode != 0 or compared.returncode != 0: raise RuntimeError(f"preflight status {result.returncode}/{compared.returncode}")
+              if result.returncode != 0 or compared.returncode != 0:
+                  os.lseek(output_fd, 0, os.SEEK_SET); diagnostic = os.read(output_fd, 65_537)
+                  classes = ((b"unshare:","unshare"),(b"mount:","mount"),(b"native seccomp launcher failed", "seccomp"),(b"Traceback", "python"))
+                  label = next((value for needle,value in classes if needle in diagnostic), "other")
+                  raise RuntimeError(f"preflight status {result.returncode}/{compared.returncode} class {label} bytes {len(diagnostic)}")
               print(marker, flush=True)
           finally:
               cleanup_failure = None
