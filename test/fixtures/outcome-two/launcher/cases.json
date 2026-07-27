@@ -1,0 +1,32 @@
+{
+  "version": "cogs.outcome-two-launcher-cases/v1",
+  "fixed_fd_map": [["gzip", 198], ["zstd", 199], ["report", 200]],
+  "success_steps": [
+    "baseline",
+    "authenticate_tracked_source",
+    "inspect_descriptor:gzip",
+    "inspect_descriptor:zstd",
+    "inspect_descriptor:report",
+    "read_report",
+    "run_tool:gzip",
+    "run_tool:zstd",
+    "close_descriptor",
+    "close_descriptor",
+    "close_descriptor",
+    "prove_restored"
+  ],
+  "fault_steps": [
+    "baseline",
+    "authenticate_tracked_source",
+    "inspect_descriptor:gzip",
+    "inspect_descriptor:zstd",
+    "inspect_descriptor:report",
+    "read_report",
+    "run_tool:gzip",
+    "run_tool:zstd",
+    "close_descriptor:first",
+    "close_descriptor:second",
+    "close_descriptor:third",
+    "prove_restored"
+  ]
+}

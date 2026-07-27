@@ -1,0 +1,28 @@
+{
+  "version": "cogs.outcome-two-report-mutations/v1",
+  "semantic": [
+    "closure-digest",
+    "mapping-digest",
+    "tool-order",
+    "object-order",
+    "duplicate-needed",
+    "missing-provider",
+    "seal-profile",
+    "sealed-executable",
+    "extra-field",
+    "prohibited-path",
+    "prohibited-environment",
+    "prohibited-address",
+    "prohibited-command-output",
+    "prohibited-identifier"
+  ],
+  "encoding": [
+    "duplicate-key",
+    "leading-whitespace",
+    "pretty-json",
+    "missing-lf",
+    "extra-lf",
+    "invalid-utf8",
+    "oversized"
+  ]
+}

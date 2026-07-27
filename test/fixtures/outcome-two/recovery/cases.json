@@ -1,0 +1,18 @@
+{
+  "version": "cogs.outcome-two-recovery-cases/v1",
+  "state_cuts": ["state.preparing", "state.ready", "cleanup.before", "cleanup.after"],
+  "preparation_cuts": [
+    "resolve.python3-parser.before", "resolve.python3-parser.after",
+    "resolve.zstd.before", "resolve.zstd.after",
+    "resolve.gzip.before", "resolve.gzip.after",
+    "mapping.python3-parser.before-spawn", "mapping.python3-parser.before-capture",
+    "mapping.python3-parser.after-capture", "mapping.python3-parser.after-cleanup",
+    "mapping.zstd.before-spawn", "mapping.zstd.before-capture",
+    "mapping.zstd.after-capture", "mapping.zstd.after-cleanup",
+    "mapping.gzip.before-spawn", "mapping.gzip.before-capture",
+    "mapping.gzip.after-capture", "mapping.gzip.after-cleanup",
+    "seal.gzip.before", "seal.gzip.after", "seal.zstd.before", "seal.zstd.after"
+  ],
+  "publication_cuts": ["report.before-seal", "report.after-seal", "report.before-publish"],
+  "handoff_cuts": ["handoff.before-revalidate", "handoff.before-transfer"]
+}
