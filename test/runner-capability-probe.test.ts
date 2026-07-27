@@ -215,24 +215,36 @@ function setPath(candidate: Record<string, unknown>, path: string[], value: unkn
 }
 
 function statusSemantics(value: unknown): boolean {
-  if (value === null || typeof value !== "object" || Object.keys(value).sort().join(",") !== "errno,state") return false;
+  if (value === null || typeof value !== "object" || Object.keys(value).sort().join(",") !== "errno,state")
+    return false;
   const { errno, state } = value as { errno: number | null; state: string };
   if (state === "ok" || state === "blocked" || state === "mismatch") return errno === null;
   if (state === "unsupported") return errno === null || errno === 38 || errno === 95;
   if (state === "denied") return errno === 1 || errno === 13;
-  return state === "error" && Number.isInteger(errno) && errno! >= 1 && errno! <= 4095 && ![1, 13, 38, 95].includes(errno!);
+  return (
+    state === "error" &&
+    typeof errno === "number" &&
+    Number.isInteger(errno) &&
+    errno >= 1 &&
+    errno <= 4095 &&
+    ![1, 13, 38, 95].includes(errno)
+  );
 }
 
 function reportSemantics(candidate: Record<string, unknown>): boolean {
   const cleanup = candidate.cleanup as Record<string, unknown>;
   const source = candidate.source as Record<string, unknown>;
   const envelope = candidate.envelope as Record<string, unknown>;
-  const python = (candidate.tools as Record<string, Record<string, unknown>>).python3!;
-  const low = (candidate.descriptors as Record<string, Record<string, unknown>>).close_range_low!;
+  const python = (candidate.tools as Record<string, Record<string, unknown>>).python3;
+  const low = (candidate.descriptors as Record<string, Record<string, unknown>>).close_range_low;
+  assert.ok(python);
+  assert.ok(low);
   const exactCleanup =
     ["children_reaped", "descriptors_restored", "mounts_gone", "temporary_names_gone"].every(
       (field) => cleanup[field] === true,
-    ) && cleanup.namespace_handles_retained === false && cleanup.uncertainty === false;
+    ) &&
+    cleanup.namespace_handles_retained === false &&
+    cleanup.uncertainty === false;
   return (
     candidate.outcome === (exactCleanup ? "complete" : "incomplete") &&
     source.pr_head_sha === source.checkout_sha &&
@@ -325,8 +337,16 @@ test("runner capability schema is closed, bounded, and permanently non-authorita
   for (const [status, expected] of statusCases) {
     const candidate = structuredClone(report);
     setPath(candidate, ["kernel", "uname_status"], status);
-    assert.equal(validate(candidate), expected, `ProbeStatus schema accepted invalid semantics: ${JSON.stringify(status)}`);
-    assert.equal(statusSemantics(status), expected, `independent status semantics disagreed: ${JSON.stringify(status)}`);
+    assert.equal(
+      validate(candidate),
+      expected,
+      `ProbeStatus schema accepted invalid semantics: ${JSON.stringify(status)}`,
+    );
+    assert.equal(
+      statusSemantics(status),
+      expected,
+      `independent status semantics disagreed: ${JSON.stringify(status)}`,
+    );
   }
 
   assert.equal(reportSemantics(report), true);

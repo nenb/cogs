@@ -301,13 +301,7 @@
     "source": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "checkout_sha",
-        "driver_sha256",
-        "pr_head_sha",
-        "schema_sha256",
-        "source_head_workflow_blob_sha256"
-      ],
+      "required": ["checkout_sha", "driver_sha256", "pr_head_sha", "schema_sha256", "source_head_workflow_blob_sha256"],
       "properties": {
         "checkout_sha": { "$ref": "#/$defs/sha1" },
         "driver_sha256": { "$ref": "#/$defs/sha256" },
@@ -543,16 +537,7 @@
     "toolIdentity": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "mode",
-        "observation",
-        "path",
-        "present",
-        "regular_file",
-        "root_owned",
-        "sha256",
-        "size"
-      ],
+      "required": ["mode", "observation", "path", "present", "regular_file", "root_owned", "sha256", "size"],
       "properties": {
         "mode": {
           "oneOf": [{ "type": "null" }, { "type": "string", "pattern": "^[0-7]{4}$" }]

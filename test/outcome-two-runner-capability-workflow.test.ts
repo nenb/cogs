@@ -61,11 +61,15 @@ test("fixed shell gate proves head, clean checkout, credentials, and three blob 
 test("driver receives only workflow-bound public controls and no report artifact", async () => {
   const workflow = await workflowSource();
 
-  assert.match(workflow, /\/usr\/bin\/env -i[\s\S]*\/usr\/bin\/python3 -I -B scripts\/runner-capability-probe\.py --workflow-bound/u);
-  assert.equal(workflow.match(/\/usr\/bin\/python3/gmu)?.length, 1);
-  const controlKeys = "REPOSITORY WORKFLOW JOB EVENT ACTION RUN_ID RUN_ATTEMPT PULL_REQUEST_NUMBER PR_HEAD_REPOSITORY PR_HEAD_SHA CHECKOUT_SHA BASE_SHA GITHUB_SHA GITHUB_WORKFLOW_SHA EVENT_MERGE_SHA IMAGE_OS IMAGE_VERSION RUNNER_ARCH RUNNER_ENVIRONMENT DRIVER_SHA256 SCHEMA_SHA256 SOURCE_HEAD_WORKFLOW_BLOB_SHA256".split(
-    " ",
+  assert.match(
+    workflow,
+    /\/usr\/bin\/env -i[\s\S]*\/usr\/bin\/python3 -I -B scripts\/runner-capability-probe\.py --workflow-bound/u,
   );
+  assert.equal(workflow.match(/\/usr\/bin\/python3/gmu)?.length, 1);
+  const controlKeys =
+    "REPOSITORY WORKFLOW JOB EVENT ACTION RUN_ID RUN_ATTEMPT PULL_REQUEST_NUMBER PR_HEAD_REPOSITORY PR_HEAD_SHA CHECKOUT_SHA BASE_SHA GITHUB_SHA GITHUB_WORKFLOW_SHA EVENT_MERGE_SHA IMAGE_OS IMAGE_VERSION RUNNER_ARCH RUNNER_ENVIRONMENT DRIVER_SHA256 SCHEMA_SHA256 SOURCE_HEAD_WORKFLOW_BLOB_SHA256".split(
+      " ",
+    );
   assert.deepEqual(
     [...workflow.matchAll(/\b(COGS_CAP_[A-Z0-9_]+)=/gu)].map((match) => match[1]),
     controlKeys.map((key) => `COGS_CAP_${key}`),
@@ -88,7 +92,10 @@ test("driver receives only workflow-bound public controls and no report artifact
   ]) {
     assert.match(workflow, new RegExp(control.replaceAll(".", "\\."), "u"), `${control} is not bound`);
   }
-  assert.doesNotMatch(workflow, /workflow_dispatch|workflow_call|schedule:|\bpush:|secrets\.|github\.token|GITHUB_TOKEN/u);
+  assert.doesNotMatch(
+    workflow,
+    /workflow_dispatch|workflow_call|schedule:|\bpush:|secrets\.|github\.token|GITHUB_TOKEN/u,
+  );
   assert.doesNotMatch(workflow, /^\s*(?:services|container):|^\s+needs:|continue-on-error:|always\(\)/mu);
   assert.doesNotMatch(workflow, /setup-|\bcache:|npm\s|npx\s|pip\s|apt(?:-get)?\s|curl\s|wget\s|docker\s|podman\s/u);
   assert.doesNotMatch(workflow, /upload|download|artifact|step-summary|\bvalidate\b|--version|\/bin\/cat/u);
