@@ -1,36 +1,33 @@
-"""Trusted, fixed host runtime-closure preparation for Outcome 2.
-Host discovery is completed here, while trusted fixed paths and procfs are
-available.  The only production result is three sealed, CLOEXEC descriptors;
-callers cannot select paths, commands, policy, descriptor numbers, or report
-fields.
+"""Admitted fixed runtime-closure preparation.
+This module is inert when imported normally.  The launcher bootstrap loads its exact
+bytes in an authenticated private package and calls only the private admitted entry.
+All authority remains behind private adapters and one issuer transaction.
 """
 from __future__ import annotations
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 import ctypes
 import fcntl
 import hashlib
 import json
 import os
+import platform
+import re
 import select
 import signal
 import stat
+import struct
 import time
-from typing import Any, Iterable, NoReturn, Sequence
-from completion_elf import ElfMetadata, parse_elf64
-FIXED_TOOL_TABLE = (
-    ("python3-parser", "/usr/bin/python3"),
-    ("zstd", "/usr/bin/zstd"),
-    ("gzip", "/usr/bin/gzip"),
-)
-_VERSION = "cogs.trusted-runtime-closure/v1"
-_INTERPRETER = "/lib64/ld-linux-x86-64.so.2"
-_LIBRARY_ROOTS = (
-    "/lib/x86_64-linux-gnu",
-    "/usr/lib/x86_64-linux-gnu",
-    "/lib64",
-    "/usr/lib64",
-)
+from typing import Any, NoReturn, Sequence
+try:
+    from .completion_elf import ElfMetadata, parse_elf64
+except (ImportError, ValueError):
+    from completion_elf import ElfMetadata, parse_elf64
+FIXED_TOOL_TABLE = (('python3-parser', '/usr/bin/python3'), ('zstd', '/usr/bin/zstd'), ('gzip', '/usr/bin/gzip'))
+_VERSION = 'cogs.trusted-runtime-closure/v1'
+_HANDOFF_VERSION = 'cogs.runtime-handoff/v1'
+_INTERPRETER = '/lib64/ld-linux-x86-64.so.2'
+_LIBRARY_ROOTS = ('/lib/x86_64-linux-gnu', '/usr/lib/x86_64-linux-gnu', '/lib64', '/usr/lib64')
 _MAX_OBJECT_SIZE = 128 * 1024 * 1024
 _MAX_OBJECTS = 128
 _MAX_TOOL_BYTES = 512 * 1024 * 1024
@@ -40,47 +37,52 @@ _MAX_MAP_BYTES = 4 * 1024 * 1024
 _MAX_MAP_LINES = 4096
 _MAX_COMPONENTS = 256
 _MAX_SYMLINKS = 40
+_MAX_FDS = 16384
 _IO_CHUNK = 1024 * 1024
 _HELPER_START_SECONDS = 5.0
 _HELPER_TERM_SECONDS = 1.0
 _HELPER_KILL_SECONDS = 1.0
-_SEAL_PROFILE = "linux-memfd-exec-seals-v1"
-_O_CLOEXEC = getattr(os, "O_CLOEXEC", 0)
-_O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
-_O_DIRECTORY = getattr(os, "O_DIRECTORY", 0)
-_MFD_CLOEXEC = 0x0001
-_MFD_ALLOW_SEALING = 0x0002
-_MFD_EXEC = 0x0010
+_SEAL_PROFILE = 'linux-memfd-exec-seals-v1'
+_O_CLOEXEC = getattr(os, 'O_CLOEXEC', 0)
+_O_NOFOLLOW = getattr(os, 'O_NOFOLLOW', 0)
+_O_DIRECTORY = getattr(os, 'O_DIRECTORY', 0)
+_MFD_CLOEXEC = 1
+_MFD_ALLOW_SEALING = 2
+_MFD_EXEC = 16
 _F_ADD_SEALS = 1033
 _F_GET_SEALS = 1034
-_F_SEAL_SEAL = 0x0001
-_F_SEAL_SHRINK = 0x0002
-_F_SEAL_GROW = 0x0004
-_F_SEAL_WRITE = 0x0008
-_F_SEAL_FUTURE_WRITE = 0x0010
-_F_SEAL_EXEC = 0x0020
-_DATA_SEALS = (
-    _F_SEAL_WRITE | _F_SEAL_GROW | _F_SEAL_SHRINK |
-    _F_SEAL_FUTURE_WRITE | _F_SEAL_SEAL
-)
+_F_GETFL = 3
+_F_SEAL_SEAL = 1
+_F_SEAL_SHRINK = 2
+_F_SEAL_GROW = 4
+_F_SEAL_WRITE = 8
+_F_SEAL_FUTURE_WRITE = 16
+_F_SEAL_EXEC = 32
+_DATA_SEALS = _F_SEAL_WRITE | _F_SEAL_GROW | _F_SEAL_SHRINK | _F_SEAL_FUTURE_WRITE | _F_SEAL_SEAL
 _EXEC_SEALS = _DATA_SEALS | _F_SEAL_EXEC
 _PR_SET_PDEATHSIG = 1
-_KERNEL_EXECUTABLE_MAPPINGS = frozenset(("[vdso]", "[vsyscall]"))
+_CLONE_PIDFD = 4096
+_SYS_CLONE3 = 435
+_SYS_CLOSE_RANGE = 436
+_SYS_GETDENTS64 = 217
+_UINT_MAX = (1 << 32) - 1
+_KERNEL_EXECUTABLE_MAPPINGS = frozenset(('[vdso]', '[vsyscall]'))
+_SONAME = re.compile('^[A-Za-z0-9][A-Za-z0-9._+~-]{0,254}$')
 
 class RuntimeClosureError(RuntimeError):
     """A fixed closure requirement was not satisfied."""
 
-class RuntimeClosureCleanupError(RuntimeClosureError):
-    """Cleanup was incomplete or uncertain."""
-    def __init__(self, failures: Sequence[BaseException]):
-        self.failures = tuple(failures)
-        super().__init__(f"runtime closure cleanup failed ({len(self.failures)} errors)")
+class RuntimeClosureUnavailable(RuntimeClosureError):
+    """The exact fixed Linux primitive is unavailable."""
 
-@dataclass(frozen=True)
-class RuntimeClosureHandoff:
-    gzip_executable_fd: int
-    zstd_executable_fd: int
-    report_fd: int
+class RuntimeClosureCleanupError(RuntimeClosureError):
+    """Cleanup failed or ownership became uncertain."""
+
+    def __init__(self, failures: Sequence[BaseException]):
+        if not failures:
+            raise ValueError('cleanup failure aggregate cannot be empty')
+        self.failures = tuple(failures)
+        super().__init__(f'runtime closure cleanup failed ({len(self.failures)} errors)')
 
 @dataclass(frozen=True)
 class SourceGeneration:
@@ -94,14 +96,24 @@ class SourceGeneration:
     gid: int
 
 @dataclass(frozen=True)
+class _PathObservation:
+    parent: tuple[int, int]
+    component: str
+    kind: str
+    generation: SourceGeneration
+    link: str | None = None
+
+@dataclass(frozen=True)
 class AuthenticatedObject:
     role: str
     logical_path: str
     held_fd: int
     generation: SourceGeneration
+    transcript: tuple[_PathObservation, ...]
     size: int
     sha256: str
     elf: ElfMetadata
+
     @property
     def identity(self) -> tuple[int, int]:
         return (self.generation.device, self.generation.inode)
@@ -112,6 +124,7 @@ class ResolvedToolClosure:
     executable: AuthenticatedObject
     loader: AuthenticatedObject
     libraries: tuple[AuthenticatedObject, ...]
+
     @property
     def objects(self) -> tuple[AuthenticatedObject, ...]:
         return (self.executable, self.loader, *self.libraries)
@@ -123,977 +136,1363 @@ class MappedToolClosure:
     mapping_sha256: str
 
 @dataclass(frozen=True)
-class SealedExecutable:
-    tool: str
+class SealedObject:
     fd: int
     source_generation: SourceGeneration
     size: int
     sha256: str
+    elf: ElfMetadata
     seals: int
 
 @dataclass(frozen=True)
-class _PathObservation:
-    kind: str
-    generation: SourceGeneration
-    link: str | None
+class _PrivateGenerationRow:
+    tool_index: int
+    object_index: int
+    role: str
+    descriptor_index: int
+    source_generation: SourceGeneration
+    size: int
+    sha256: str
+    soname: str | None
+    needed: tuple[str, ...]
+    seal_profile: str = _SEAL_PROFILE
+
+@dataclass(frozen=True)
+class _IssuanceReceipt:
+    version: str
+    report_sha256: str
+    closure_sha256: str
+    binding_sha256: str
+    generation_sha256: str
+    descriptor_count: int
+    issuer_pid: int
+    consumer_pid: int
+
+class _FdState(Enum):
+    OWNED = 'OWNED'
+    TRANSFERRED = 'TRANSFERRED'
+    CLOSED = 'CLOSED'
+    CLOSE_UNCERTAIN = 'CLOSE_UNCERTAIN'
 
 @dataclass
-class _Child:
-    pid: int
-    pidfd: int
-    start_time: int
-    session: int
-    process_group: int
-    executable_identity: tuple[int, int]
-    reaped: bool = False
+class FdLease:
+    fd: int
+    purpose: str
+    state: _FdState = _FdState.OWNED
+    close_error: BaseException | None = None
 
-class _State(Enum):
-    NEW = "NEW"
-    PREPARING = "PREPARING"
-    READY = "READY"
-    HANDED_OFF = "HANDED_OFF"
-    CLOSED = "CLOSED"
-    POISONED = "POISONED"
+    def close(self, ops: '_Ops') -> None:
+        if self.state is _FdState.CLOSED:
+            return
+        if self.state is _FdState.CLOSE_UNCERTAIN:
+            if self.close_error is None:
+                raise RuntimeClosureError('uncertain descriptor lost its error')
+            raise self.close_error
+        if self.state is not _FdState.OWNED:
+            raise RuntimeClosureError('transferred descriptor cannot be closed by former owner')
+        try:
+            ops.close(self.fd)
+        except BaseException as error:
+            self.state = _FdState.CLOSE_UNCERTAIN
+            self.close_error = error
+            raise
+        self.state = _FdState.CLOSED
+
+    def transfer(self) -> None:
+        if self.state is not _FdState.OWNED:
+            raise RuntimeClosureError('descriptor is not transferable')
+        self.state = _FdState.TRANSFERRED
+
+class _HelperState(Enum):
+    ALLOCATED = 'ALLOCATED'
+    SPAWNED = 'SPAWNED'
+    PREEXEC_IDENTIFIED = 'PREEXEC_IDENTIFIED'
+    EXEC_IDENTIFIED = 'EXEC_IDENTIFIED'
+    STOPPING = 'STOPPING'
+    REAPED = 'REAPED'
+    UNCERTAIN = 'UNCERTAIN'
+
+@dataclass
+class HelperLease:
+    pid: int
+    pidfd: FdLease
+    input_gate: FdLease
+    release_gate: FdLease
+    status_gate: FdLease
+    state: _HelperState = _HelperState.SPAWNED
+    start_time: int | None = None
+    session: int | None = None
+    process_group: int | None = None
+    executable_identity: tuple[int, int] | None = None
+    target_executable_identity: tuple[int, int] | None = None
+    release_attempted: bool = False
+    descendants: tuple[int, ...] = ()
+
+    @property
+    def reaped(self) -> bool:
+        return self.state is _HelperState.REAPED
+
+@dataclass
+class PreparationLease:
+    ops: '_Ops'
+    fd_baseline: frozenset[int]
+    child_baseline: tuple[int, ...]
+    fds: list[FdLease] = field(default_factory=list)
+    helpers: list[HelperLease] = field(default_factory=list)
+    uncertainty: list[BaseException] = field(default_factory=list)
+
+    def register_fd(self, fd: int, purpose: str) -> FdLease:
+        if type(fd) is not int or fd < 0:
+            raise RuntimeClosureError('invalid descriptor registration')
+        if any((item.fd == fd and item.state is _FdState.OWNED for item in self.fds)):
+            raise RuntimeClosureError('duplicate owned descriptor registration')
+        lease = FdLease(fd, purpose)
+        self.fds.append(lease)
+        return lease
+
+    def owned_fds(self) -> tuple[int, ...]:
+        return tuple((item.fd for item in self.fds if item.state is _FdState.OWNED))
+
+    def close_many(self, leases: Sequence[FdLease], primary: BaseException | None=None) -> None:
+        failures: list[BaseException] = []
+        if primary is not None:
+            failures.append(primary)
+        for lease in reversed(tuple(leases)):
+            if lease.state is not _FdState.OWNED:
+                continue
+            try:
+                lease.close(self.ops)
+            except BaseException as error:
+                failures.append(error)
+                self.uncertainty.append(error)
+        if len(failures) > 1 or (failures and primary is None):
+            raise RuntimeClosureCleanupError(failures)
+        if failures:
+            raise failures[0]
+
+    def close_owned(self, primary: BaseException | None=None) -> None:
+        self.close_many(tuple(self.fds), primary)
+
+class _OwnerState(Enum):
+    NEW = 'NEW'
+    PREPARING = 'PREPARING'
+    READY = 'READY'
+    ISSUING = 'ISSUING'
+    CONSUMED = 'CONSUMED'
+    CLOSED = 'CLOSED'
+    POISONED = 'POISONED'
 
 class _Ops:
-    """Private syscall/fault adapter; production constructs the system form only."""
-    cut_names = (
-        "state.preparing", "resolve.<tool>.before", "resolve.<tool>.after",
-        "mapping.<tool>.before-spawn", "mapping.<tool>.before-capture",
-        "mapping.<tool>.after-capture", "mapping.<tool>.after-cleanup",
-        "seal.<gzip|zstd>.before", "seal.<gzip|zstd>.after",
-        "report.before-seal", "report.after-seal", "report.before-publish",
-        "state.ready", "handoff.before-revalidate", "handoff.before-transfer",
-        "cleanup.before", "cleanup.after",
-    )
+    """Private primitive adapter.  Public production never accepts an instance."""
+    cut_names = ('state.preparing', 'resolve.<tool>.before', 'resolve.<tool>.after', 'mapping.<tool>.before-spawn', 'mapping.<tool>.before-capture', 'mapping.<tool>.after-capture', 'mapping.<tool>.after-cleanup', 'seal.<tool>.before', 'seal.<tool>.after', 'report.before-seal', 'report.after-seal', 'report.before-publish', 'state.ready', 'issue.before-revalidate', 'issue.before-transfer', 'cleanup.before', 'cleanup.after')
+
     def checkpoint(self, name: str) -> None:
         del name
+
     def order(self, name: str, values: Sequence[Any]) -> tuple[Any, ...]:
         del name
         return tuple(values)
+
     def report_candidate(self, data: bytes) -> bytes:
         return data
-    def open(self, path: str, flags: int, mode: int = 0o600,
-             *, dir_fd: int | None = None) -> int:
+
+    def open(self, path: str, flags: int, mode: int=384, *, dir_fd: int | None=None) -> int:
         return os.open(path, flags, mode, dir_fd=dir_fd)
+
     def close(self, fd: int) -> None:
         os.close(fd)
-    def dup(self, fd: int) -> int:
-        return os.dup(fd)
+
     def fstat(self, fd: int) -> os.stat_result:
         return os.fstat(fd)
+
     def stat(self, path: str, *, dir_fd: int, follow_symlinks: bool) -> os.stat_result:
         return os.stat(path, dir_fd=dir_fd, follow_symlinks=follow_symlinks)
+
     def readlink(self, path: str, *, dir_fd: int) -> str:
         return os.readlink(path, dir_fd=dir_fd)
+
     def pread(self, fd: int, size: int, offset: int) -> bytes:
         return os.pread(fd, size, offset)
+
     def pwrite(self, fd: int, data: bytes, offset: int) -> int:
         return os.pwrite(fd, data, offset)
+
     def read(self, fd: int, size: int) -> bytes:
         return os.read(fd, size)
+
     def write(self, fd: int, data: bytes) -> int:
         return os.write(fd, data)
+
     def fchmod(self, fd: int, mode: int) -> None:
         os.fchmod(fd, mode)
+
     def fsync(self, fd: int) -> None:
         os.fsync(fd)
-    def fcntl(self, fd: int, command: int, argument: int = 0) -> int:
+
+    def fcntl(self, fd: int, command: int, argument: int=0) -> int:
         return fcntl.fcntl(fd, command, argument)
+
     def memfd_create(self, name: str, flags: int) -> int:
         return os.memfd_create(name, flags)
+
     def pipe(self) -> tuple[int, int]:
         return os.pipe2(_O_CLOEXEC)
-    def fork(self) -> int:
-        return os.fork()
-    def dup2(self, source: int, target: int) -> None:
-        os.dup2(source, target, inheritable=True)
-    def execve(self, fd: int, argv: Sequence[str], environment: dict[str, str]) -> NoReturn:
-        os.execve(fd, list(argv), environment)
-    def exit_child(self, status: int) -> NoReturn:
-        os._exit(status)
-    def pidfd_open(self, pid: int) -> int:
-        return os.pidfd_open(pid, 0)
-    def pidfd_signal(self, pidfd: int, signum: int) -> None:
-        signal.pidfd_send_signal(pidfd, signum)
-    def kill(self, pid: int, signum: int) -> None:
-        os.kill(pid, signum)
-    def waitpid(self, pid: int, options: int) -> tuple[int, int]:
-        return os.waitpid(pid, options)
+
+    def dup2(self, source: int, target: int, inheritable: bool=True) -> None:
+        os.dup2(source, target, inheritable=inheritable)
+
     def getsid(self, pid: int) -> int:
         return os.getsid(pid)
+
     def getpgid(self, pid: int) -> int:
         return os.getpgid(pid)
-    def setsid(self) -> None:
-        os.setsid()
-    def getppid(self) -> int:
-        return os.getppid()
+
     def getpid(self) -> int:
         return os.getpid()
+
+    def getppid(self) -> int:
+        return os.getppid()
+
+    def setsid(self) -> None:
+        os.setsid()
+
+    def monotonic(self) -> float:
+        return time.monotonic()
+
     def sleep(self, seconds: float) -> None:
         time.sleep(seconds)
+
     def poll_readable(self, fd: int, seconds: float) -> bool:
         poller = select.poll()
         poller.register(fd, select.POLLIN | select.POLLHUP | select.POLLERR)
         return bool(poller.poll(max(0, int(seconds * 1000))))
-    def monotonic(self) -> float:
-        return time.monotonic()
-    def list_fds(self) -> frozenset[int]:
-        values = os.listdir("/proc/self/fd")
-        if len(values) > 16384:
-            raise RuntimeClosureError("descriptor baseline bound")
-        return frozenset(int(value) for value in values)
-    def child_baseline(self) -> bytes:
-        fd = self.open("/proc/self/task/self/children", os.O_RDONLY | _O_CLOEXEC)
-        try:
-            data = self.read(fd, 65537)
-            if len(data) > 65536 or self.read(fd, 1):
-                raise RuntimeClosureError("child baseline bound")
-            return data
-        finally:
-            self.close(fd)
 
-class _Registry:
-    def __init__(self, ops: _Ops) -> None:
-        self._ops = ops
-        self._fds: list[int] = []
-    def add(self, fd: int) -> int:
-        if type(fd) is not int or fd < 0 or fd in self._fds:
-            raise RuntimeClosureError("invalid descriptor registration")
-        self._fds.append(fd)
-        return fd
-    def remove(self, fd: int) -> None:
-        if fd not in self._fds:
-            raise RuntimeClosureError("descriptor ownership mismatch")
-        self._fds.remove(fd)
-    def close_all(self) -> tuple[BaseException, ...]:
-        failures: list[BaseException] = []
-        while self._fds:
-            fd = self._fds.pop()
-            try:
-                self._ops.close(fd)
-            except BaseException as error:
-                failures.append(error)
-        return tuple(failures)
-    def values(self) -> tuple[int, ...]:
-        return tuple(self._fds)
+    def pidfd_signal(self, pidfd: int, signum: int) -> None:
+        signal.pidfd_send_signal(pidfd, signum)
+
+    def wait_pidfd_nohang(self, pidfd: int) -> bool:
+        result = os.waitid(os.P_PIDFD, pidfd, os.WEXITED | os.WNOHANG)
+        return result is not None
+
+    def execve(self, fd: int, argv: Sequence[str], environment: dict[str, str]) -> NoReturn:
+        os.execve(fd, list(argv), environment)
+
+    def exit_child(self, status: int) -> NoReturn:
+        os._exit(status)
+
+    def architecture_gate(self) -> None:
+        if platform.system() != 'Linux' or platform.machine() != 'x86_64':
+            raise RuntimeClosureUnavailable('fixed closure requires Linux x86-64')
+
+    def _syscall(self, number: int, *arguments: Any) -> int:
+        self.architecture_gate()
+        libc = ctypes.CDLL(None, use_errno=True)
+        result = libc.syscall(number, *arguments)
+        if result < 0:
+            error = ctypes.get_errno()
+            raise OSError(error, os.strerror(error))
+        return int(result)
+
+    def getdents(self, fd: int, maximum: int=32768) -> bytes:
+        buffer = ctypes.create_string_buffer(maximum)
+        count = self._syscall(_SYS_GETDENTS64, fd, ctypes.byref(buffer), maximum)
+        return bytes(buffer.raw[:count])
+
+    def close_range(self, first: int, last: int) -> None:
+        self._syscall(_SYS_CLOSE_RANGE, first, last, 0)
+
+    def clone3_pidfd(self) -> tuple[int, int]:
+        pidfd = ctypes.c_int(-1)
+        values = (_CLONE_PIDFD, ctypes.addressof(pidfd), 0, 0, 0, signal.SIGCHLD, 0, 0, 0, 0, 0)
+        raw = struct.pack('=11Q', *values)
+        arguments = ctypes.create_string_buffer(raw)
+        pid = self._syscall(_SYS_CLONE3, ctypes.byref(arguments), len(raw))
+        return (pid, int(pidfd.value))
+
+    def set_parent_death_signal(self, signum: int) -> None:
+        self.architecture_gate()
+        libc = ctypes.CDLL(None, use_errno=True)
+        if libc.prctl(_PR_SET_PDEATHSIG, signum, 0, 0, 0) != 0:
+            error = ctypes.get_errno()
+            raise OSError(error, os.strerror(error))
+
+    def socketpair_seqpacket(self) -> tuple[Any, Any]:
+        import socket
+        return socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET | socket.SOCK_CLOEXEC)
+
 def _generation(value: os.stat_result) -> SourceGeneration:
-    return SourceGeneration(
-        value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns,
-        value.st_ctime_ns, value.st_mode, value.st_uid, value.st_gid,
-    )
-def _require_component(value: os.stat_result, *, directory: bool = False) -> None:
-    if value.st_uid != 0 or value.st_mode & 0o022:
-        raise RuntimeClosureError("insecure fixed path component")
-    if directory and not stat.S_ISDIR(value.st_mode):
-        raise RuntimeClosureError("fixed path component is not a directory")
+    return SourceGeneration(value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns, value.st_mode, value.st_uid, value.st_gid)
+
+def _require_component(value: os.stat_result, *, directory: bool=False) -> None:
+    if value.st_uid != 0 or value.st_mode & 18:
+        raise RuntimeClosureError('insecure fixed path component')
+    if directory and (not stat.S_ISDIR(value.st_mode)):
+        raise RuntimeClosureError('fixed path component is not a directory')
+
 def _require_source(value: os.stat_result) -> None:
     if not stat.S_ISREG(value.st_mode):
-        raise RuntimeClosureError("runtime object is not regular")
-    if value.st_uid != 0 or value.st_mode & 0o022:
-        raise RuntimeClosureError("runtime object has insecure ownership or mode")
+        raise RuntimeClosureError('runtime object is not regular')
+    if value.st_uid != 0 or value.st_mode & 18:
+        raise RuntimeClosureError('runtime object has insecure ownership or mode')
     if not 1 <= value.st_size <= _MAX_OBJECT_SIZE:
-        raise RuntimeClosureError("runtime object size bound")
-def _close_local(ops: _Ops, descriptors: Iterable[int], primary: BaseException | None = None) -> None:
+        raise RuntimeClosureError('runtime object size bound')
+
+def _finish_fds(ops: _Ops, leases: Sequence[FdLease], primary: BaseException | None=None) -> None:
     failures: list[BaseException] = []
-    for fd in reversed(tuple(descriptors)):
+    if primary is not None:
+        failures.append(primary)
+    for lease in reversed(tuple(leases)):
+        if lease.state is not _FdState.OWNED:
+            continue
         try:
-            ops.close(fd)
+            lease.close(ops)
         except BaseException as error:
             failures.append(error)
-    if failures:
-        if primary is not None:
-            failures.insert(0, primary)
+    if len(failures) > 1 or (failures and primary is None):
         raise RuntimeClosureCleanupError(failures)
-    if primary is not None:
-        raise primary
-def _split_path(path: str) -> list[str]:
-    if type(path) is not str or not path.startswith("/") or "\0" in path:
-        raise RuntimeClosureError("invalid fixed absolute path")
-    parts = path.split("/")[1:]
-    if not parts or any(part in ("", ".") for part in parts):
-        raise RuntimeClosureError("invalid fixed path components")
-    return parts
-def _resolve_once(ops: _Ops, path: str, *, open_source: bool = True) -> tuple[int | None, SourceGeneration, tuple[_PathObservation, ...]]:
-    queue = _split_path(path)
-    directories: list[int] = []
-    observations: list[_PathObservation] = []
-    final_fd: int | None = None
-    primary: BaseException | None = None
-    try:
-        root = ops.open("/", os.O_RDONLY | _O_DIRECTORY | _O_CLOEXEC | _O_NOFOLLOW)
-        directories.append(root)
-        root_before = ops.fstat(root)
-        _require_component(root_before, directory=True)
-        observations.append(_PathObservation("directory", _generation(root_before), None))
-        symlinks = 0
-        components = 0
-        while queue:
-            components += 1
-            if components > _MAX_COMPONENTS:
-                raise RuntimeClosureError("fixed path component bound")
-            part = queue.pop(0)
-            if part == "..":
-                if len(directories) == 1:
-                    raise RuntimeClosureError("fixed path escapes root")
-                ops.close(directories[-1])
-                directories.pop()
-                continue
-            if part in ("", ".") or "/" in part:
-                raise RuntimeClosureError("invalid resolved path component")
-            before = ops.stat(part, dir_fd=directories[-1], follow_symlinks=False)
-            if stat.S_ISLNK(before.st_mode):
-                if before.st_uid != 0:
-                    raise RuntimeClosureError("fixed symlink is not root owned")
-                symlinks += 1
-                if symlinks > _MAX_SYMLINKS:
-                    raise RuntimeClosureError("fixed symlink bound")
-                target = ops.readlink(part, dir_fd=directories[-1])
-                after = ops.stat(part, dir_fd=directories[-1], follow_symlinks=False)
-                if _generation(before) != _generation(after) or not target or "\0" in target:
-                    raise RuntimeClosureError("fixed symlink changed")
-                observations.append(_PathObservation("symlink", _generation(after), target))
-                target_parts = target.split("/")
-                if target.startswith("/"):
-                    while len(directories) > 1:
-                        ops.close(directories[-1])
-                        directories.pop()
-                    target_parts = target_parts[1:]
-                if any(value in ("", ".") for value in target_parts):
-                    raise RuntimeClosureError("invalid fixed symlink target")
-                queue = target_parts + queue
-                continue
-            if queue:
-                _require_component(before, directory=True)
-                opened = ops.open(
-                    part, os.O_RDONLY | _O_DIRECTORY | _O_CLOEXEC | _O_NOFOLLOW,
-                    dir_fd=directories[-1],
-                )
-                directories.append(opened)
-                after = ops.fstat(opened)
-                _require_component(after, directory=True)
-                if _generation(before) != _generation(after):
-                    raise RuntimeClosureError("fixed directory changed")
-                observations.append(_PathObservation("directory", _generation(after), None))
-            else:
-                _require_source(before)
-                final_generation = _generation(before)
-                if open_source:
-                    final_fd = ops.open(part, os.O_RDONLY | _O_CLOEXEC | _O_NOFOLLOW,
-                                        dir_fd=directories[-1])
-                    after = ops.fstat(final_fd)
-                    _require_source(after)
-                    if _generation(after) != final_generation:
-                        raise RuntimeClosureError("fixed runtime object changed")
-        if open_source and final_fd is None:
-            raise RuntimeClosureError("fixed path has no final object")
-        root_after = ops.fstat(directories[0])
-        _require_component(root_after, directory=True)
-        if _generation(root_before) != _generation(root_after):
-            raise RuntimeClosureError("fixed root changed")
-    except BaseException as error:
-        primary = error
-    try:
-        _close_local(ops, directories, primary)
-    except BaseException as cleanup:
-        if final_fd is None:
-            raise
-        try:
-            ops.close(final_fd)
-        except BaseException as final_error:
-            raise RuntimeClosureCleanupError((cleanup, final_error)) from cleanup
-        raise
-    return final_fd, final_generation, tuple(observations)
+    if failures:
+        raise failures[0]
+
 def _read_complete(ops: _Ops, fd: int, expected_size: int) -> bytes:
     chunks: list[bytes] = []
     offset = 0
     while offset < expected_size:
         chunk = ops.pread(fd, min(_IO_CHUNK, expected_size - offset), offset)
         if not chunk:
-            raise RuntimeClosureError("short runtime object read")
+            raise RuntimeClosureError('short runtime object read')
         chunks.append(chunk)
         offset += len(chunk)
     if ops.pread(fd, 1, expected_size):
-        raise RuntimeClosureError("runtime object grew during read")
-    return b"".join(chunks)
+        raise RuntimeClosureError('runtime object grew during read')
+    return b''.join(chunks)
+
+def _split_path(path: str) -> list[str]:
+    if type(path) is not str or not path.startswith('/') or '\x00' in path:
+        raise RuntimeClosureError('invalid fixed absolute path')
+    parts = path.split('/')[1:]
+    if not parts or any((part in ('', '.', '..') for part in parts)):
+        raise RuntimeClosureError('invalid fixed path components')
+    return parts
+
+def _resolve_once(ops: _Ops, path: str, *, open_source: bool=True) -> tuple[int | None, SourceGeneration, tuple[_PathObservation, ...]]:
+    queue = _split_path(path)
+    directories: list[FdLease] = []
+    transcript: list[_PathObservation] = []
+    final: FdLease | None = None
+    primary: BaseException | None = None
+    final_generation: SourceGeneration | None = None
+    try:
+        root = FdLease(ops.open('/', os.O_RDONLY | _O_DIRECTORY | _O_CLOEXEC | _O_NOFOLLOW), 'resolution-root')
+        directories.append(root)
+        root_stat = ops.fstat(root.fd)
+        _require_component(root_stat, directory=True)
+        root_generation = _generation(root_stat)
+        transcript.append(_PathObservation((root_stat.st_dev, root_stat.st_ino), '/', 'directory', root_generation))
+        symlinks = 0
+        components = 0
+        while queue:
+            components += 1
+            if components > _MAX_COMPONENTS:
+                raise RuntimeClosureError('fixed path component bound')
+            component = queue.pop(0)
+            if component == '..':
+                if len(directories) == 1:
+                    raise RuntimeClosureError('fixed path escapes root')
+                closing = directories.pop()
+                closing.close(ops)
+                continue
+            if component in ('', '.') or '/' in component:
+                raise RuntimeClosureError('invalid resolved path component')
+            parent_stat = ops.fstat(directories[-1].fd)
+            parent_identity = (parent_stat.st_dev, parent_stat.st_ino)
+            before = ops.stat(component, dir_fd=directories[-1].fd, follow_symlinks=False)
+            before_generation = _generation(before)
+            if stat.S_ISLNK(before.st_mode):
+                if before.st_uid != 0:
+                    raise RuntimeClosureError('fixed symlink is not root owned')
+                symlinks += 1
+                if symlinks > _MAX_SYMLINKS:
+                    raise RuntimeClosureError('fixed symlink bound')
+                target = ops.readlink(component, dir_fd=directories[-1].fd)
+                after = ops.stat(component, dir_fd=directories[-1].fd, follow_symlinks=False)
+                if _generation(after) != before_generation or not target or '\x00' in target:
+                    raise RuntimeClosureError('fixed symlink changed')
+                transcript.append(_PathObservation(parent_identity, component, 'symlink', before_generation, target))
+                target_parts = target.split('/')
+                if target.startswith('/'):
+                    while len(directories) > 1:
+                        directories.pop().close(ops)
+                    target_parts = target_parts[1:]
+                if any((part in ('', '.') for part in target_parts)):
+                    raise RuntimeClosureError('invalid fixed symlink target')
+                queue = target_parts + queue
+                continue
+            if queue:
+                _require_component(before, directory=True)
+                opened = FdLease(ops.open(component, os.O_RDONLY | _O_DIRECTORY | _O_CLOEXEC | _O_NOFOLLOW, dir_fd=directories[-1].fd), 'path-component')
+                directories.append(opened)
+                after = ops.fstat(opened.fd)
+                _require_component(after, directory=True)
+                if _generation(after) != before_generation:
+                    raise RuntimeClosureError('fixed directory changed')
+                transcript.append(_PathObservation(parent_identity, component, 'directory', before_generation))
+                continue
+            _require_source(before)
+            final_generation = before_generation
+            transcript.append(_PathObservation(parent_identity, component, 'file', before_generation))
+            if open_source:
+                final = FdLease(ops.open(component, os.O_RDONLY | _O_CLOEXEC | _O_NOFOLLOW, dir_fd=directories[-1].fd), 'runtime-source')
+                after = ops.fstat(final.fd)
+                _require_source(after)
+                if _generation(after) != final_generation:
+                    raise RuntimeClosureError('fixed runtime object changed')
+        if final_generation is None or (open_source and final is None):
+            raise RuntimeClosureError('fixed path has no final object')
+        if _generation(ops.fstat(directories[0].fd)) != root_generation:
+            raise RuntimeClosureError('fixed root changed')
+    except BaseException as error:
+        primary = error
+    try:
+        _finish_fds(ops, directories, primary)
+    except BaseException as error:
+        if final is None:
+            raise
+        _finish_fds(ops, (final,), error)
+        raise RuntimeClosureError('unreachable')
+    if final_generation is None:
+        raise RuntimeClosureError('missing final path generation')
+    return (None if final is None else final.fd, final_generation, tuple(transcript))
+
 def _authenticate(ops: _Ops, path: str, role: str) -> AuthenticatedObject:
     fd: int | None = None
-    second_fd: int | None = None
     try:
-        fd, generation, observations = _resolve_once(ops, path)
-        assert fd is not None
+        (fd, generation, transcript) = _resolve_once(ops, path)
+        if fd is None:
+            raise RuntimeClosureError('authenticated source descriptor missing')
         raw = _read_complete(ops, fd, generation.size)
         after = ops.fstat(fd)
         _require_source(after)
         if _generation(after) != generation:
-            raise RuntimeClosureError("runtime source generation changed")
+            raise RuntimeClosureError('runtime source generation changed')
         metadata = parse_elf64(raw)
-        second_fd, second_generation, second_observations = _resolve_once(
-            ops, path, open_source=False,
-        )
-        assert second_fd is None
-        if second_generation != generation or second_observations != observations:
-            raise RuntimeClosureError("fixed logical path changed")
-        return AuthenticatedObject(
-            role, path, fd, generation, len(raw), hashlib.sha256(raw).hexdigest(), metadata,
-        )
+        (second_fd, second_generation, second_transcript) = _resolve_once(ops, path, open_source=False)
+        if second_fd is not None:
+            raise RuntimeClosureError('observation traversal opened final source')
+        if second_generation != generation or second_transcript != transcript:
+            raise RuntimeClosureError('fixed logical path transcript changed')
+        return AuthenticatedObject(role, path, fd, generation, transcript, len(raw), hashlib.sha256(raw).hexdigest(), metadata)
     except BaseException as primary:
-        descriptors = [value for value in (second_fd, fd) if value is not None]
-        _close_local(ops, descriptors, primary)
-        raise AssertionError("unreachable")
-def _metadata(object_: AuthenticatedObject) -> tuple[str | None, str | None, tuple[str, ...]]:
-    interpreter = object_.elf.interpreter
-    soname = object_.elf.soname
-    needed = tuple(object_.elf.needed)
-    if len(needed) != len(set(needed)) or len(needed) > _MAX_OBJECTS:
-        raise RuntimeClosureError("invalid ordered dependency metadata")
-    return interpreter, soname, needed
-def _close_object(ops: _Ops, object_: AuthenticatedObject) -> None:
-    ops.close(object_.held_fd)
+        if fd is not None:
+            _finish_fds(ops, (FdLease(fd, 'failed-authentication'),), primary)
+        raise
+
+def _metadata(value: AuthenticatedObject) -> tuple[str | None, str | None, tuple[str, ...]]:
+    needed = tuple(value.elf.needed)
+    if len(needed) > _MAX_OBJECTS or len(needed) != len(set(needed)):
+        raise RuntimeClosureError('invalid ordered dependency metadata')
+    for name in needed:
+        _require_soname(name)
+    if value.elf.soname is not None:
+        _require_soname(value.elf.soname)
+    return (value.elf.interpreter, value.elf.soname, needed)
+
+def _require_soname(value: str) -> None:
+    if type(value) is not str or _SONAME.fullmatch(value) is None:
+        raise RuntimeClosureError('invalid dependency SONAME')
+
+def _close_objects(ops: _Ops, values: Sequence[AuthenticatedObject], primary: BaseException | None=None) -> None:
+    leases = tuple((FdLease(value.held_fd, f'source:{value.role}') for value in values))
+    _finish_fds(ops, leases, primary)
+
 def _resolve_library(ops: _Ops, soname: str) -> AuthenticatedObject:
-    if type(soname) is not str or not soname or "/" in soname or len(soname.encode("ascii")) > 255:
-        raise RuntimeClosureError("invalid dependency SONAME")
+    _require_soname(soname)
     candidates: list[AuthenticatedObject] = []
-    primary: BaseException | None = None
     try:
-        roots = ops.order("library-roots", _LIBRARY_ROOTS)
-        if set(roots) != set(_LIBRARY_ROOTS) or len(roots) != len(_LIBRARY_ROOTS):
-            raise RuntimeClosureError("library root enumeration changed")
+        roots = ops.order('library-roots', _LIBRARY_ROOTS)
+        if len(roots) != len(_LIBRARY_ROOTS) or set(roots) != set(_LIBRARY_ROOTS):
+            raise RuntimeClosureError('library root enumeration changed')
         for root in roots:
             try:
-                candidate = _authenticate(ops, f"{root}/{soname}", "library")
+                candidate = _authenticate(ops, f'{root}/{soname}', 'library')
             except FileNotFoundError:
                 continue
             if _metadata(candidate)[1] != soname:
-                _close_object(ops, candidate)
-                raise RuntimeClosureError("dependency SONAME mismatch")
-            if any(item.identity == candidate.identity for item in candidates):
-                _close_object(ops, candidate)
-            else:
+                _close_objects(ops, (candidate,))
+                raise RuntimeClosureError('dependency SONAME mismatch')
+            duplicate = next((value for value in candidates if value.identity == candidate.identity), None)
+            if duplicate is None:
                 candidates.append(candidate)
+                continue
+            if duplicate.generation != candidate.generation or duplicate.sha256 != candidate.sha256 or duplicate.elf != candidate.elf:
+                _close_objects(ops, (candidate,))
+                raise RuntimeClosureError('same-identity provider changed')
+            _close_objects(ops, (candidate,))
         if len(candidates) != 1:
-            raise RuntimeClosureError("missing or ambiguous library provider")
+            raise RuntimeClosureError('missing or distinct-identity ambiguous provider')
         return candidates.pop()
-    except BaseException as error:
-        primary = error
-    failures: list[BaseException] = [primary] if primary is not None else []
-    for candidate in reversed(candidates):
-        try:
-            _close_object(ops, candidate)
-        except BaseException as error:
-            failures.append(error)
-    if len(failures) > 1:
-        raise RuntimeClosureCleanupError(failures)
-    raise failures[0]
+    except BaseException as primary:
+        _close_objects(ops, candidates, primary)
+        raise
+
 def _resolve_tool(ops: _Ops, tool: str, path: str) -> ResolvedToolClosure:
     owned: list[AuthenticatedObject] = []
     try:
-        executable = _authenticate(ops, path, "executable")
+        executable = _authenticate(ops, path, 'executable')
         owned.append(executable)
-        interpreter, _soname, _needed = _metadata(executable)
-        if interpreter != _INTERPRETER:
-            raise RuntimeClosureError("unknown or missing interpreter")
-        loader = _authenticate(ops, _INTERPRETER, "loader")
+        if _metadata(executable)[0] != _INTERPRETER:
+            raise RuntimeClosureError('unknown or missing interpreter')
+        loader = _authenticate(ops, _INTERPRETER, 'loader')
         owned.append(loader)
         if loader.identity == executable.identity or _metadata(loader)[0] is not None:
-            raise RuntimeClosureError("loader role ambiguity")
-        objects: dict[tuple[int, int], AuthenticatedObject] = {
-            executable.identity: executable,
-            loader.identity: loader,
-        }
+            raise RuntimeClosureError('loader role ambiguity')
+        objects: dict[tuple[int, int], AuthenticatedObject] = {executable.identity: executable, loader.identity: loader}
         providers: dict[str, AuthenticatedObject] = {}
-        for object_ in (executable, loader):
-            soname = _metadata(object_)[1]
+        pending: list[str] = []
+        for value in (executable, loader):
+            (_interpreter, soname, needed) = _metadata(value)
+            pending.extend(needed)
             if soname is not None:
-                if soname in providers and providers[soname].identity != object_.identity:
-                    raise RuntimeClosureError("duplicate SONAME provider")
-                providers[soname] = object_
-        pending = list(_metadata(executable)[2]) + list(_metadata(loader)[2])
+                if soname in providers and providers[soname].identity != value.identity:
+                    raise RuntimeClosureError('duplicate SONAME provider')
+                providers[soname] = value
         examined: set[tuple[int, int]] = set()
         while pending:
-            needed = pending.pop(0)
-            if needed in providers:
-                provider = providers[needed]
-            else:
-                provider = _resolve_library(ops, needed)
-                if provider.identity in objects:
-                    _close_object(ops, provider)
-                    provider = objects[provider.identity]
+            name = pending.pop(0)
+            provider = providers.get(name)
+            if provider is None:
+                provider = _resolve_library(ops, name)
+                existing = objects.get(provider.identity)
+                if existing is not None:
+                    if existing.role != 'library':
+                        _close_objects(ops, (provider,))
+                        raise RuntimeClosureError('cross-role identity alias')
+                    _close_objects(ops, (provider,))
+                    provider = existing
                 else:
                     if _metadata(provider)[0] is not None:
-                        _close_object(ops, provider)
-                        raise RuntimeClosureError("library declares an interpreter")
+                        _close_objects(ops, (provider,))
+                        raise RuntimeClosureError('library declares an interpreter')
                     owned.append(provider)
                     objects[provider.identity] = provider
-                declared = _metadata(provider)[1]
-                if declared != needed:
-                    raise RuntimeClosureError("library provider mismatch")
-                if needed in providers and providers[needed].identity != provider.identity:
-                    raise RuntimeClosureError("ambiguous SONAME provider")
-                providers[needed] = provider
+                if _metadata(provider)[1] != name:
+                    raise RuntimeClosureError('library provider mismatch')
+                providers[name] = provider
             if provider.identity not in examined:
                 examined.add(provider.identity)
                 pending.extend(_metadata(provider)[2])
             if len(objects) > _MAX_OBJECTS:
-                raise RuntimeClosureError("tool closure object bound")
-            if sum(item.size for item in objects.values()) > _MAX_TOOL_BYTES:
-                raise RuntimeClosureError("tool closure byte bound")
-        for object_ in objects.values():
-            for needed in _metadata(object_)[2]:
-                if needed not in providers:
-                    raise RuntimeClosureError("unresolved closure dependency")
-        libraries = tuple(sorted(
-            (item for item in objects.values() if item.identity not in
-             (executable.identity, loader.identity)),
-            key=lambda item: ((_metadata(item)[1] or "").encode("utf-8"), item.sha256),
-        ))
+                raise RuntimeClosureError('tool closure object bound')
+            if sum((value.size for value in objects.values())) > _MAX_TOOL_BYTES:
+                raise RuntimeClosureError('tool closure byte bound')
+        for value in objects.values():
+            if any((name not in providers for name in _metadata(value)[2])):
+                raise RuntimeClosureError('unresolved closure dependency')
+        libraries = tuple(sorted((value for value in objects.values() if value.identity not in (executable.identity, loader.identity)), key=lambda value: ((_metadata(value)[1] or '').encode(), value.sha256)))
         return ResolvedToolClosure(tool, executable, loader, libraries)
     except BaseException as primary:
-        failures: list[BaseException] = [primary]
-        for object_ in reversed(owned):
-            try:
-                _close_object(ops, object_)
-            except BaseException as error:
-                failures.append(error)
-        if len(failures) > 1:
-            raise RuntimeClosureCleanupError(failures)
+        _close_objects(ops, owned, primary)
         raise
+
+def _parse_dirents(raw: bytes) -> tuple[int, ...]:
+    offset = 0
+    names: list[int] = []
+    while offset < len(raw):
+        if len(raw) - offset < 19:
+            raise RuntimeClosureError('truncated descriptor dirent')
+        (_inode, _position, record_length, _kind) = struct.unpack_from('=QqHB', raw, offset)
+        if record_length < 20 or offset + record_length > len(raw):
+            raise RuntimeClosureError('malformed descriptor dirent')
+        field = raw[offset + 19:offset + record_length]
+        nul = field.find(b'\x00')
+        if nul < 0:
+            raise RuntimeClosureError('unterminated descriptor dirent name')
+        name = field[:nul]
+        if name not in (b'.', b'..'):
+            if not name or not name.isdigit() or (len(name) > 1 and name.startswith(b'0')):
+                raise RuntimeClosureError('invalid descriptor name')
+            value = int(name)
+            if value > 2147483647 or value in names:
+                raise RuntimeClosureError('duplicate or out-of-range descriptor')
+            names.append(value)
+        offset += record_length
+    return tuple(names)
+
+def _snapshot_fds(ops: _Ops) -> frozenset[int]:
+    directory = FdLease(ops.open('/proc/self/fd', os.O_RDONLY | _O_DIRECTORY | _O_CLOEXEC | _O_NOFOLLOW), 'fd-enumerator')
+    values: list[int] = []
+    primary: BaseException | None = None
+    try:
+        while True:
+            chunk = ops.getdents(directory.fd)
+            if not chunk:
+                break
+            values.extend(_parse_dirents(chunk))
+            if len(values) > _MAX_FDS:
+                raise RuntimeClosureError('descriptor baseline bound')
+        if values.count(directory.fd) != 1:
+            raise RuntimeClosureError('descriptor enumerator was not observed exactly once')
+    except BaseException as error:
+        primary = error
+    _finish_fds(ops, (directory,), primary)
+    return frozenset((value for value in values if value != directory.fd))
+
 def _read_stream_bounded(ops: _Ops, fd: int, maximum: int) -> bytes:
     chunks: list[bytes] = []
     total = 0
     while True:
         chunk = ops.read(fd, min(65536, maximum + 1 - total))
         if not chunk:
-            return b"".join(chunks)
+            return b''.join(chunks)
         chunks.append(chunk)
         total += len(chunk)
         if total > maximum:
-            raise RuntimeClosureError("proc stream byte bound")
-def _proc_start_time(raw: bytes) -> int:
-    close = raw.rfind(b")")
-    fields = raw[close + 2:].split() if close >= 0 else []
-    if len(fields) < 20:
-        raise RuntimeClosureError("malformed process stat")
-    try:
-        return int(fields[19])
-    except ValueError as error:
-        raise RuntimeClosureError("malformed process start time") from error
+            raise RuntimeClosureError('proc stream byte bound')
+
 def _read_proc(ops: _Ops, path: str, maximum: int) -> bytes:
-    fd = ops.open(path, os.O_RDONLY | _O_CLOEXEC)
+    lease = FdLease(ops.open(path, os.O_RDONLY | _O_CLOEXEC | _O_NOFOLLOW), f'proc:{path}')
+    primary: BaseException | None = None
+    result = b''
     try:
-        return _read_stream_bounded(ops, fd, maximum)
-    finally:
-        ops.close(fd)
+        result = _read_stream_bounded(ops, lease.fd, maximum)
+    except BaseException as error:
+        primary = error
+    _finish_fds(ops, (lease,), primary)
+    return result
+
+def _parse_proc_stat(raw: bytes, expected_pid: int) -> int:
+    if not raw.endswith(b'\n') or raw.count(b'\n') != 1 or b'\x00' in raw:
+        raise RuntimeClosureError('malformed process stat framing')
+    prefix = str(expected_pid).encode() + b' ('
+    if not raw.startswith(prefix):
+        raise RuntimeClosureError('process stat PID mismatch')
+    close = raw.rfind(b') ')
+    if close < len(prefix) - 1:
+        raise RuntimeClosureError('malformed process stat command')
+    fields = raw[close + 2:-1].split(b' ')
+    if len(fields) < 20 or any((not field for field in fields)):
+        raise RuntimeClosureError('truncated process stat')
+    if len(fields[0]) != 1 or fields[0] not in b'RSDZTWtXxKPI':
+        raise RuntimeClosureError('invalid process state')
+    for field in fields[1:19]:
+        lexical = field[1:] if field.startswith(b'-') else field
+        if not lexical.isdigit():
+            raise RuntimeClosureError('malformed process stat field')
+    if not fields[19].isdigit():
+        raise RuntimeClosureError('malformed process start time')
+    start = int(fields[19])
+    if start < 0 or start >= 1 << 64:
+        raise RuntimeClosureError('process start time bound')
+    return start
+
+def _parse_children(raw: bytes) -> tuple[int, ...]:
+    if b'\x00' in raw or raw.count(b'\n') > 1 or (b'\n' in raw and (not raw.endswith(b'\n'))):
+        raise RuntimeClosureError('malformed children framing')
+    body = raw[:-1] if raw.endswith(b'\n') else raw
+    if body.endswith(b' '):
+        body = body[:-1]
+    if not body:
+        return ()
+    fields = body.split(b' ')
+    if any((not value or not value.isdigit() for value in fields)):
+        raise RuntimeClosureError('malformed children record')
+    values = tuple((int(value) for value in fields))
+    if any((value <= 0 or value > 2147483647 for value in values)) or len(set(values)) != len(values):
+        raise RuntimeClosureError('invalid child identity')
+    return values
+
+@dataclass(frozen=True)
+class _MapRow:
+    start: int
+    end: int
+    permissions: bytes
+    offset: int
+    major: int
+    minor: int
+    inode: int
+    path: str
+
+def _parse_maps(raw: bytes) -> tuple[_MapRow, ...]:
+    if not raw.endswith(b'\n') or len(raw.splitlines()) > _MAX_MAP_LINES:
+        raise RuntimeClosureError('incomplete or oversized maps snapshot')
+    rows: list[_MapRow] = []
+    previous_end = 0
+    for line in raw.splitlines():
+        fields = line.split(None, 5)
+        if len(fields) < 5:
+            raise RuntimeClosureError('malformed maps row')
+        (address, permissions, offset_raw, device_raw, inode_raw) = fields[:5]
+        try:
+            (start_raw, end_raw) = address.split(b'-', 1)
+            (major_raw, minor_raw) = device_raw.split(b':', 1)
+            start = int(start_raw, 16)
+            end = int(end_raw, 16)
+            file_offset = int(offset_raw, 16)
+            major = int(major_raw, 16)
+            minor = int(minor_raw, 16)
+            inode = int(inode_raw, 10)
+        except (ValueError, TypeError) as error:
+            raise RuntimeClosureError('malformed maps identity') from error
+        if start <= 0 or start >= end or start < previous_end or (len(permissions) != 4) or (permissions[0:1] not in (b'r', b'-')) or (permissions[1:2] not in (b'w', b'-')) or (permissions[2:3] not in (b'x', b'-')) or (permissions[3:4] not in (b'p', b's')) or file_offset % 4096 or (major < 0) or (minor < 0) or (inode < 0):
+            raise RuntimeClosureError('invalid maps extent or metadata')
+        path = fields[5].decode('utf-8', 'strict') if len(fields) == 6 else ''
+        rows.append(_MapRow(start, end, permissions, file_offset, major, minor, inode, path))
+        previous_end = end
+    return tuple(rows)
+
 def _child_argv(tool: str) -> tuple[str, ...]:
-    if tool == "python3-parser":
-        return ("python3", "-I", "-B", "-c", "import os;os.read(0,1)")
-    if tool == "gzip":
-        return ("gzip", "-dc")
-    if tool == "zstd":
-        return ("zstd", "-dc", "--no-progress")
-    raise RuntimeClosureError("unknown fixed helper")
-def _child_fail(ops: _Ops, status_fd: int) -> NoReturn:
+    if tool == 'python3-parser':
+        return ('python3', '-I', '-B', '-c', 'import os;os.read(0,1)')
+    if tool == 'gzip':
+        return ('gzip', '-dc')
+    if tool == 'zstd':
+        return ('zstd', '-dc', '--no-progress')
+    raise RuntimeClosureError('unknown fixed helper')
+
+def _reserve_stdio(ops: _Ops) -> None:
+    for target in range(3):
+        try:
+            ops.fstat(target)
+            continue
+        except OSError as error:
+            if error.errno != 9:
+                raise
+        opened = FdLease(ops.open('/dev/null', os.O_RDWR | _O_CLOEXEC | _O_NOFOLLOW), f'stdio-{target}')
+        if opened.fd == target:
+            opened.state = _FdState.TRANSFERRED
+            continue
+        try:
+            ops.dup2(opened.fd, target, inheritable=True)
+        except BaseException as primary:
+            _finish_fds(ops, (opened,), primary)
+        opened.close(ops)
+
+def _close_complement(ops: _Ops, allowed: Sequence[int]) -> None:
+    keep = sorted(set(allowed))
+    if any((value < 0 for value in keep)):
+        raise RuntimeClosureError('invalid child descriptor allowlist')
+    first = 0
+    for value in keep:
+        if first < value:
+            ops.close_range(first, value - 1)
+        first = value + 1
+    if first <= _UINT_MAX:
+        ops.close_range(first, _UINT_MAX)
+
+def _child_fail(ops: _Ops, status_fd: int, code: bytes) -> NoReturn:
     try:
-        ops.write(status_fd, b"E")
+        if len(code) != 2 or not code.endswith(b'\n'):
+            code = b'E\n'
+        ops.write(status_fd, code)
     except BaseException:
         pass
     ops.exit_child(127)
-def _spawn_helper(ops: _Ops, closure: ResolvedToolClosure) -> tuple[_Child, int]:
-    gate_read = gate_write = status_read = status_write = devnull = pidfd = None
+
+def _spawn_helper(ops: _Ops, preparation: PreparationLease, closure: ResolvedToolClosure) -> HelperLease:
+    input_read = input_write = release_read = release_write = None
+    status_read = status_write = devnull = None
+    created: list[FdLease] = []
     pid: int | None = None
     try:
-        gate_read, gate_write = ops.pipe()
-        status_read, status_write = ops.pipe()
-        devnull = ops.open("/dev/null", os.O_RDWR | _O_CLOEXEC | _O_NOFOLLOW)
-        parent_before = ops.getpid()
-        pid = ops.fork()
+        for purpose in ('input', 'release', 'status'):
+            (read_fd, write_fd) = ops.pipe()
+            read_lease = preparation.register_fd(read_fd, f'helper-{purpose}-read')
+            write_lease = preparation.register_fd(write_fd, f'helper-{purpose}-write')
+            created.extend((read_lease, write_lease))
+            if purpose == 'input':
+                (input_read, input_write) = (read_lease, write_lease)
+            elif purpose == 'release':
+                (release_read, release_write) = (read_lease, write_lease)
+            else:
+                (status_read, status_write) = (read_lease, write_lease)
+        devnull = preparation.register_fd(ops.open('/dev/null', os.O_RDWR | _O_CLOEXEC | _O_NOFOLLOW), 'helper-devnull')
+        created.append(devnull)
+        parent = ops.getpid()
+        (pid, pidfd_number) = ops.clone3_pidfd()
         if pid == 0:
             try:
-                ops.close(gate_write)
-                ops.close(status_read)
+                if None in (input_read, input_write, release_read, release_write, status_read, status_write):
+                    _child_fail(ops, -1, b'E\n')
+                input_write.close(ops)
+                release_write.close(ops)
+                status_read.close(ops)
                 ops.setsid()
-                libc = ctypes.CDLL(None, use_errno=True)
-                if libc.prctl(_PR_SET_PDEATHSIG, signal.SIGKILL, 0, 0, 0) != 0:
-                    _child_fail(ops, status_write)
-                if ops.getppid() != parent_before:
-                    _child_fail(ops, status_write)
-                ops.dup2(gate_read, 0)
-                ops.dup2(devnull, 1)
-                ops.dup2(devnull, 2)
-                for fd in (gate_read, devnull):
-                    if fd not in (0, 1, 2, closure.executable.held_fd, status_write):
-                        ops.close(fd)
+                ops.set_parent_death_signal(signal.SIGKILL)
+                if ops.getppid() != parent:
+                    _child_fail(ops, status_write.fd, b'P\n')
+                ops.dup2(input_read.fd, 0, inheritable=True)
+                ops.dup2(devnull.fd, 1, inheritable=True)
+                ops.dup2(devnull.fd, 2, inheritable=True)
+                allowed = (0, 1, 2, release_read.fd, status_write.fd, closure.executable.held_fd)
+                _close_complement(ops, allowed)
+                if ops.write(status_write.fd, b'R\n') != 2:
+                    _child_fail(ops, status_write.fd, b'W\n')
+                if ops.read(release_read.fd, 2) != b'G\n':
+                    _child_fail(ops, status_write.fd, b'G\n')
                 ops.execve(closure.executable.held_fd, _child_argv(closure.tool), {})
             except BaseException:
-                _child_fail(ops, status_write)
-        ops.close(gate_read)
-        gate_read = None
-        ops.close(status_write)
-        status_write = None
-        ops.close(devnull)
-        devnull = None
-        pidfd = ops.pidfd_open(pid)
+                _child_fail(ops, status_write.fd if status_write is not None else -1, b'E\n')
+        pidfd = preparation.register_fd(pidfd_number, 'helper-pidfd')
+        helper = HelperLease(pid, pidfd, input_write, release_write, status_read, target_executable_identity=closure.executable.identity)
+        preparation.helpers.append(helper)
+        for lease in (input_read, release_read, status_write, devnull):
+            if lease is not None:
+                lease.close(ops)
         deadline = ops.monotonic() + _HELPER_START_SECONDS
-        if not ops.poll_readable(status_read, deadline - ops.monotonic()):
-            raise RuntimeClosureError("helper exec handshake timeout")
-        status = _read_stream_bounded(ops, status_read, 1)
-        if status:
-            raise RuntimeClosureError("fixed helper exec failed")
-        ops.close(status_read)
-        status_read = None
-        stat_raw = _read_proc(ops, f"/proc/{pid}/stat", 4096)
-        child = _Child(
-            pid, pidfd, _proc_start_time(stat_raw), ops.getsid(pid), ops.getpgid(pid),
-            closure.executable.identity,
-        )
-        if child.session != pid or child.process_group != pid:
-            raise RuntimeClosureError("helper does not own its session")
-        pidfd = None
-        return child, gate_write
+        if not ops.poll_readable(status_read.fd, deadline - ops.monotonic()):
+            raise RuntimeClosureError('helper pre-exec readiness timeout')
+        if _read_exact_status(ops, status_read.fd) != b'R\n':
+            raise RuntimeClosureError('helper pre-exec readiness failed')
+        helper.start_time = _parse_proc_stat(_read_proc(ops, f'/proc/{pid}/stat', 4096), pid)
+        helper.session = ops.getsid(pid)
+        helper.process_group = ops.getpgid(pid)
+        helper.executable_identity = _proc_executable_identity(ops, pid)
+        if helper.session != pid or helper.process_group != pid:
+            raise RuntimeClosureError('helper does not own its session')
+        helper.state = _HelperState.PREEXEC_IDENTIFIED
+        helper.release_attempted = True
+        if ops.write(release_write.fd, b'G\n') != 2:
+            raise RuntimeClosureError('helper release write failed')
+        release_write.close(ops)
+        if not ops.poll_readable(status_read.fd, deadline - ops.monotonic()):
+            raise RuntimeClosureError('helper exec handshake timeout')
+        if _read_stream_bounded(ops, status_read.fd, 2):
+            raise RuntimeClosureError('fixed helper exec failed')
+        status_read.close(ops)
+        helper.executable_identity = closure.executable.identity
+        if not _matching_child(ops, helper):
+            raise RuntimeClosureError('helper post-exec identity mismatch')
+        helper.state = _HelperState.EXEC_IDENTIFIED
+        return helper
     except BaseException as primary:
         failures: list[BaseException] = [primary]
-        for fd in (pidfd, status_write, status_read, gate_write, gate_read, devnull):
-            if fd is not None:
-                try:
-                    ops.close(fd)
-                except BaseException as error:
-                    failures.append(error)
-        if pid not in (None, 0):
+        helper = preparation.helpers[-1] if preparation.helpers and preparation.helpers[-1].pid == pid else None
+        if helper is not None:
             try:
-                ops.kill(pid, signal.SIGKILL)
-                ops.waitpid(pid, 0)
-            except BaseException as error:
-                failures.append(error)
+                _stop_helper(ops, preparation, helper)
+            except BaseException as cleanup:
+                failures.append(cleanup)
+        else:
+            for lease in reversed(created):
+                if lease.state is _FdState.OWNED:
+                    try:
+                        lease.close(ops)
+                    except BaseException as cleanup:
+                        failures.append(cleanup)
         if len(failures) > 1:
-            raise RuntimeClosureCleanupError(failures)
+            raise RuntimeClosureCleanupError(failures) from primary
         raise
-def _matching_child(ops: _Ops, child: _Child) -> bool:
-    if child.reaped:
+
+def _read_exact_status(ops: _Ops, fd: int) -> bytes:
+    raw = ops.read(fd, 3)
+    if raw not in (b'R\n', b'E\n', b'P\n', b'W\n', b'G\n'):
+        raise RuntimeClosureError('malformed helper status record')
+    return raw
+
+def _proc_executable_identity(ops: _Ops, pid: int) -> tuple[int, int]:
+    lease = FdLease(ops.open(f'/proc/{pid}/exe', os.O_RDONLY | _O_CLOEXEC), 'proc-exe')
+    primary: BaseException | None = None
+    identity = (-1, -1)
+    try:
+        value = ops.fstat(lease.fd)
+        identity = (value.st_dev, value.st_ino)
+    except BaseException as error:
+        primary = error
+    _finish_fds(ops, (lease,), primary)
+    return identity
+
+def _descendant_census(ops: _Ops, root_pid: int) -> tuple[int, ...]:
+
+    def capture() -> tuple[int, ...]:
+        pending = [root_pid]
+        observed: list[int] = []
+        while pending:
+            parent = pending.pop(0)
+            children = _parse_children(_read_proc(ops, f'/proc/{parent}/task/{parent}/children', 65536))
+            for child in children:
+                if child == root_pid or child in observed:
+                    raise RuntimeClosureError('duplicate or cyclic descendant identity')
+                observed.append(child)
+                pending.append(child)
+                if len(observed) > _MAX_OBJECTS:
+                    raise RuntimeClosureError('helper descendant bound')
+        return tuple(observed)
+    first = capture()
+    second = capture()
+    if first != second:
+        raise RuntimeClosureError('helper descendant census changed')
+    return first
+
+def _observe_helper(ops: _Ops, helper: HelperLease) -> bool:
+    if helper.reaped or helper.start_time is None or helper.executable_identity is None:
         return False
     try:
-        if _proc_start_time(_read_proc(ops, f"/proc/{child.pid}/stat", 4096)) != child.start_time:
+        start = _parse_proc_stat(_read_proc(ops, f'/proc/{helper.pid}/stat', 4096), helper.pid)
+        if start != helper.start_time:
             return False
-        if ops.getsid(child.pid) != child.session or ops.getpgid(child.pid) != child.process_group:
+        if ops.getsid(helper.pid) != helper.session or ops.getpgid(helper.pid) != helper.process_group:
             return False
-        fd = ops.open(f"/proc/{child.pid}/exe", os.O_RDONLY | _O_CLOEXEC)
-        try:
-            value = ops.fstat(fd)
-            return (value.st_dev, value.st_ino) == child.executable_identity
-        finally:
-            ops.close(fd)
+        observed_executable = _proc_executable_identity(ops, helper.pid)
+        allowed_executables = {helper.executable_identity}
+        if helper.release_attempted and helper.target_executable_identity is not None:
+            allowed_executables.add(helper.target_executable_identity)
+        if observed_executable not in allowed_executables:
+            return False
+        helper.descendants = _descendant_census(ops, helper.pid)
+        return not helper.descendants
     except (FileNotFoundError, ProcessLookupError):
         return False
-def _wait_child(ops: _Ops, child: _Child, deadline: float) -> bool:
+
+def _matching_child(ops: _Ops, helper: HelperLease) -> bool:
+    return _observe_helper(ops, helper)
+
+def _wait_helper(ops: _Ops, helper: HelperLease, deadline: float) -> bool:
     while True:
-        waited, _status = ops.waitpid(child.pid, os.WNOHANG)
-        if waited == child.pid:
-            child.reaped = True
-            return True
-        if waited != 0:
-            raise RuntimeClosureError("unexpected helper wait result")
-        if ops.monotonic() >= deadline:
+        try:
+            if ops.wait_pidfd_nohang(helper.pidfd.fd):
+                helper.state = _HelperState.REAPED
+                return True
+        except ChildProcessError as error:
+            raise RuntimeClosureError('helper reap ownership lost') from error
+        now = ops.monotonic()
+        if now >= deadline:
             return False
-        ops.sleep(0.01)
-def _stop_helper(ops: _Ops, child: _Child, gate_write: int) -> None:
+        ops.sleep(min(0.01, deadline - now))
+
+def _stop_helper(ops: _Ops, preparation: PreparationLease, helper: HelperLease) -> None:
     failures: list[BaseException] = []
+    identity_complete = all((value is not None for value in (helper.start_time, helper.session, helper.process_group, helper.executable_identity)))
+    helper.state = _HelperState.STOPPING
+    for gate in (helper.release_gate, helper.status_gate, helper.input_gate):
+        if gate.state is _FdState.OWNED:
+            try:
+                gate.close(ops)
+            except BaseException as error:
+                failures.append(error)
     try:
-        children = _read_proc(ops, f"/proc/{child.pid}/task/{child.pid}/children", 65536)
-        if children.strip() or not _matching_child(ops, child):
-            raise RuntimeClosureError("helper identity or descendants changed")
-        ops.close(gate_write)
-        gate_write = -1
-        ops.pidfd_signal(child.pidfd, signal.SIGTERM)
-        if not _wait_child(ops, child, ops.monotonic() + _HELPER_TERM_SECONDS):
-            if not _matching_child(ops, child):
-                raise RuntimeClosureError("helper identity changed before KILL")
-            ops.pidfd_signal(child.pidfd, signal.SIGKILL)
-            if not _wait_child(ops, child, ops.monotonic() + _HELPER_KILL_SECONDS):
-                raise RuntimeClosureError("helper reap timeout")
-    except ChildProcessError:
-        failures.append(RuntimeClosureError("helper reap ownership lost"))
+        if not identity_complete:
+            if not _wait_helper(ops, helper, ops.monotonic()):
+                ops.pidfd_signal(helper.pidfd.fd, signal.SIGKILL)
+                if not _wait_helper(ops, helper, ops.monotonic() + _HELPER_KILL_SECONDS):
+                    raise RuntimeClosureError('unreleased helper bounded reap timeout')
+        else:
+            if not _matching_child(ops, helper):
+                raise RuntimeClosureError('helper identity or descendants changed before TERM')
+            ops.pidfd_signal(helper.pidfd.fd, signal.SIGTERM)
+            if not _wait_helper(ops, helper, ops.monotonic() + _HELPER_TERM_SECONDS):
+                if not _matching_child(ops, helper):
+                    raise RuntimeClosureError('helper identity changed before KILL')
+                ops.pidfd_signal(helper.pidfd.fd, signal.SIGKILL)
+                if not _wait_helper(ops, helper, ops.monotonic() + _HELPER_KILL_SECONDS):
+                    raise RuntimeClosureError('helper bounded reap timeout')
     except BaseException as error:
         failures.append(error)
-    if gate_write >= 0:
+        helper.state = _HelperState.UNCERTAIN
+    if helper.reaped and helper.pidfd.state is _FdState.OWNED:
         try:
-            ops.close(gate_write)
+            helper.pidfd.close(ops)
         except BaseException as error:
             failures.append(error)
-    if failures and not child.reaped:
-        try:
-            ops.pidfd_signal(child.pidfd, signal.SIGKILL)
-            if not _wait_child(ops, child, ops.monotonic() + _HELPER_KILL_SECONDS):
-                failures.append(RuntimeClosureError("emergency helper reap timeout"))
-        except BaseException as error:
-            failures.append(error)
-    try:
-        ops.close(child.pidfd)
-    except BaseException as error:
-        failures.append(error)
+    if helper.reaped and helper in preparation.helpers:
+        preparation.helpers.remove(helper)
     if failures:
         raise RuntimeClosureCleanupError(failures)
-def _maps_snapshot(ops: _Ops, pid: int) -> bytes:
-    raw = _read_proc(ops, f"/proc/{pid}/maps", _MAX_MAP_BYTES)
-    lines = raw.splitlines()
-    if not raw.endswith(b"\n") or len(lines) > _MAX_MAP_LINES:
-        raise RuntimeClosureError("incomplete or oversized maps snapshot")
-    return raw
-def _mapped_closure(ops: _Ops, child: _Child,
-                    closure: ResolvedToolClosure) -> MappedToolClosure:
-    expected = {item.identity: item for item in closure.objects}
-    before = _maps_snapshot(ops, child.pid)
+
+def _maps_snapshot(ops: _Ops, pid: int) -> tuple[bytes, tuple[_MapRow, ...]]:
+    raw = _read_proc(ops, f'/proc/{pid}/maps', _MAX_MAP_BYTES)
+    return (raw, _parse_maps(raw))
+
+def _mapped_closure(ops: _Ops, helper: HelperLease, closure: ResolvedToolClosure) -> MappedToolClosure:
+    expected = {value.identity: value for value in closure.objects}
+    (before, rows) = _maps_snapshot(ops, helper.pid)
     seen: set[tuple[int, int]] = set()
-    for line in before.splitlines():
-        fields = line.split(None, 5)
-        if len(fields) < 5:
-            raise RuntimeClosureError("malformed maps row")
-        address, permissions, _offset, _device, inode_raw = fields[:5]
-        path = fields[5].decode("utf-8", "strict") if len(fields) == 6 else ""
-        try:
-            inode = int(inode_raw)
-            start_raw, end_raw = address.split(b"-", 1)
-            start, end = int(start_raw, 16), int(end_raw, 16)
-        except (ValueError, TypeError) as error:
-            raise RuntimeClosureError("malformed maps identity") from error
-        if start >= end or len(permissions) != 4:
-            raise RuntimeClosureError("malformed maps extent")
-        if b"x" not in permissions:
+    fingerprints: dict[tuple[str, int], tuple[int, int]] = {}
+    for row in rows:
+        if row.permissions[2:3] != b'x':
             continue
-        if inode == 0:
-            if path not in _KERNEL_EXECUTABLE_MAPPINGS:
-                raise RuntimeClosureError("unknown synthetic executable mapping")
+        if row.inode == 0:
+            if row.path not in _KERNEL_EXECUTABLE_MAPPINGS:
+                raise RuntimeClosureError('unknown synthetic executable mapping')
             continue
-        mapped_fd = ops.open(
-            f"/proc/{child.pid}/map_files/{start:x}-{end:x}",
-            os.O_RDONLY | _O_CLOEXEC,
-        )
+        lease = FdLease(ops.open(f'/proc/{helper.pid}/map_files/{row.start:x}-{row.end:x}', os.O_RDONLY | _O_CLOEXEC), 'map-file')
+        primary: BaseException | None = None
         try:
-            before_stat = ops.fstat(mapped_fd)
+            before_stat = ops.fstat(lease.fd)
             _require_source(before_stat)
             generation = _generation(before_stat)
-            raw = _read_complete(ops, mapped_fd, generation.size)
-            after_stat = ops.fstat(mapped_fd)
+            if os.major(generation.device) != row.major or os.minor(generation.device) != row.minor:
+                raise RuntimeClosureError('maps device differs from map_files')
+            if generation.inode != row.inode:
+                raise RuntimeClosureError('maps inode differs from map_files')
+            raw = _read_complete(ops, lease.fd, generation.size)
+            after_stat = ops.fstat(lease.fd)
             _require_source(after_stat)
             if _generation(after_stat) != generation:
-                raise RuntimeClosureError("mapped object generation changed")
+                raise RuntimeClosureError('mapped object generation changed')
             identity = (generation.device, generation.inode)
             object_ = expected.get(identity)
             digest = hashlib.sha256(raw).hexdigest()
-            if object_ is None or object_.generation != generation or object_.sha256 != digest:
-                raise RuntimeClosureError("unknown or changed executable mapping")
-            parsed = parse_elf64(raw)
-            if parsed != object_.elf:
-                raise RuntimeClosureError("mapped ELF metadata changed")
-            if identity not in seen:
-                seen.add(identity)
-        finally:
-            ops.close(mapped_fd)
-    after = _maps_snapshot(ops, child.pid)
+            fingerprint = (digest, len(raw))
+            other = fingerprints.get(fingerprint)
+            if other is not None and other != identity:
+                raise RuntimeClosureError('ambiguous mapped fingerprint')
+            fingerprints[fingerprint] = identity
+            if object_ is None or object_.generation != generation or object_.sha256 != digest or (parse_elf64(raw) != object_.elf):
+                raise RuntimeClosureError('unknown or changed executable mapping')
+            seen.add(identity)
+        except BaseException as error:
+            primary = error
+        _finish_fds(ops, (lease,), primary)
+    (after, _after_rows) = _maps_snapshot(ops, helper.pid)
     if before != after:
-        raise RuntimeClosureError("helper mappings drifted")
+        raise RuntimeClosureError('helper mappings drifted')
     if seen != set(expected):
-        raise RuntimeClosureError("resolved and mapped closures differ")
-    sequence = tuple((item.role, item.sha256) for item in closure.objects)
-    digest = hashlib.sha256(_canonical(sequence)).hexdigest()
-    return MappedToolClosure(closure.tool, sequence, digest)
-def _seal_source(ops: _Ops, source: AuthenticatedObject, tool: str) -> SealedExecutable:
-    fd = ops.memfd_create("cogs-runtime", _MFD_CLOEXEC | _MFD_ALLOW_SEALING | _MFD_EXEC)
+        raise RuntimeClosureError('resolved and mapped closures differ')
+    sequence = tuple(((value.role, value.sha256) for value in closure.objects))
+    return MappedToolClosure(closure.tool, sequence, hashlib.sha256(_canonical(sequence)).hexdigest())
+
+def _seal_object(ops: _Ops, source: AuthenticatedObject) -> SealedObject:
+    lease = FdLease(ops.memfd_create('cogs-runtime-object', _MFD_CLOEXEC | _MFD_ALLOW_SEALING | _MFD_EXEC), 'sealed-object')
     try:
         if _generation(ops.fstat(source.held_fd)) != source.generation:
-            raise RuntimeClosureError("source changed before sealing")
+            raise RuntimeClosureError('source changed before sealing')
         offset = 0
         while offset < source.size:
             chunk = ops.pread(source.held_fd, min(_IO_CHUNK, source.size - offset), offset)
             if not chunk:
-                raise RuntimeClosureError("short source read while sealing")
+                raise RuntimeClosureError('short source read while sealing')
             written = 0
             while written < len(chunk):
-                count = ops.pwrite(fd, chunk[written:], offset + written)
+                count = ops.pwrite(lease.fd, chunk[written:], offset + written)
                 if count <= 0:
-                    raise RuntimeClosureError("short sealed executable write")
+                    raise RuntimeClosureError('short sealed object write')
                 written += count
             offset += len(chunk)
         if ops.pread(source.held_fd, 1, source.size):
-            raise RuntimeClosureError("source grew while sealing")
-        ops.fchmod(fd, 0o555)
-        ops.fsync(fd)
-        copied = _read_complete(ops, fd, source.size)
+            raise RuntimeClosureError('source grew while sealing')
+        ops.fchmod(lease.fd, 365)
+        ops.fsync(lease.fd)
+        copied = _read_complete(ops, lease.fd, source.size)
         if hashlib.sha256(copied).hexdigest() != source.sha256:
-            raise RuntimeClosureError("sealed executable readback mismatch")
+            raise RuntimeClosureError('sealed object readback mismatch')
+        if parse_elf64(copied) != source.elf:
+            raise RuntimeClosureError('sealed object ELF mismatch')
         if _generation(ops.fstat(source.held_fd)) != source.generation:
-            raise RuntimeClosureError("source changed during sealing")
-        ops.fcntl(fd, _F_ADD_SEALS, _EXEC_SEALS)
-        seals = ops.fcntl(fd, _F_GET_SEALS)
-        if seals != _EXEC_SEALS:
-            raise RuntimeClosureError("exact executable seal profile unavailable")
-        value = ops.fstat(fd)
-        if not stat.S_ISREG(value.st_mode) or value.st_size != source.size or value.st_mode & 0o777 != 0o555:
-            raise RuntimeClosureError("sealed executable metadata mismatch")
-        return SealedExecutable(tool, fd, source.generation, source.size, source.sha256, seals)
+            raise RuntimeClosureError('source changed during sealing')
+        ops.fcntl(lease.fd, _F_ADD_SEALS, _EXEC_SEALS)
+        seals = ops.fcntl(lease.fd, _F_GET_SEALS)
+        value = ops.fstat(lease.fd)
+        if seals != _EXEC_SEALS or not stat.S_ISREG(value.st_mode) or value.st_size != source.size or (value.st_mode & 511 != 365):
+            raise RuntimeClosureError('sealed object metadata or seals mismatch')
+        return SealedObject(lease.fd, source.generation, source.size, source.sha256, source.elf, seals)
     except BaseException as primary:
-        _close_local(ops, (fd,), primary)
-        raise AssertionError("unreachable")
+        _finish_fds(ops, (lease,), primary)
+        raise
+
+def _seal_source(ops: _Ops, source: AuthenticatedObject, tool: str) -> SealedObject:
+    """Compatibility name for private portable tests; every object uses this path."""
+    del tool
+    return _seal_object(ops, source)
 
 def _seal_report(ops: _Ops, report: bytes) -> int:
-    fd = ops.memfd_create("cogs-runtime-report", _MFD_CLOEXEC | _MFD_ALLOW_SEALING)
-    read_fd: int | None = None
+    writable = FdLease(ops.memfd_create('cogs-runtime-report', _MFD_CLOEXEC | _MFD_ALLOW_SEALING), 'report-writable')
+    readable: FdLease | None = None
     try:
         offset = 0
         while offset < len(report):
-            count = ops.pwrite(fd, report[offset:], offset)
+            count = ops.pwrite(writable.fd, report[offset:], offset)
             if count <= 0:
-                raise RuntimeClosureError("short report write")
+                raise RuntimeClosureError('short report write')
             offset += count
-        ops.fchmod(fd, 0o444)
-        ops.fsync(fd)
-        if _read_complete(ops, fd, len(report)) != report:
-            raise RuntimeClosureError("report readback mismatch")
-        ops.fcntl(fd, _F_ADD_SEALS, _DATA_SEALS)
-        if ops.fcntl(fd, _F_GET_SEALS) != _DATA_SEALS:
-            raise RuntimeClosureError("exact report seal profile unavailable")
-        read_fd = ops.open(f"/proc/self/fd/{fd}", os.O_RDONLY | _O_CLOEXEC)
-        if _generation(ops.fstat(read_fd)) != _generation(ops.fstat(fd)):
-            raise RuntimeClosureError("read-only report descriptor identity mismatch")
-        if ops.fcntl(read_fd, _F_GET_SEALS) != _DATA_SEALS:
-            raise RuntimeClosureError("read-only report seals mismatch")
-        ops.close(fd)
-        return read_fd
+        ops.fchmod(writable.fd, 292)
+        ops.fsync(writable.fd)
+        if _read_complete(ops, writable.fd, len(report)) != report:
+            raise RuntimeClosureError('report readback mismatch')
+        ops.fcntl(writable.fd, _F_ADD_SEALS, _DATA_SEALS)
+        if ops.fcntl(writable.fd, _F_GET_SEALS) != _DATA_SEALS:
+            raise RuntimeClosureError('exact report seal profile unavailable')
+        readable = FdLease(ops.open(f'/proc/self/fd/{writable.fd}', os.O_RDONLY | _O_CLOEXEC), 'report-readable')
+        writable_generation = _generation(ops.fstat(writable.fd))
+        if _generation(ops.fstat(readable.fd)) != writable_generation:
+            raise RuntimeClosureError('read-only report descriptor identity mismatch')
+        if ops.fcntl(readable.fd, _F_GET_SEALS) != _DATA_SEALS:
+            raise RuntimeClosureError('read-only report seals mismatch')
+        if ops.fcntl(readable.fd, _F_GETFL) & os.O_ACCMODE != os.O_RDONLY:
+            raise RuntimeClosureError('report descriptor is not read-only')
+        try:
+            writable.close(ops)
+        except BaseException as close_error:
+            _finish_fds(ops, (readable,), close_error)
+        return readable.fd
     except BaseException as primary:
-        _close_local(ops, (value for value in (read_fd, fd) if value is not None), primary)
-        raise AssertionError("unreachable")
+        leases = tuple((value for value in (readable, writable) if value is not None))
+        _finish_fds(ops, leases, primary)
+        raise
 
 def _canonical(value: Any) -> bytes:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"),
-                      ensure_ascii=False, allow_nan=False).encode("utf-8")
+    return json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=False, allow_nan=False).encode('utf-8')
 
-def _object_report(object_: AuthenticatedObject) -> dict[str, Any]:
-    _interpreter, soname, needed = _metadata(object_)
-    return {
-        "needed": list(needed),
-        "role": object_.role,
-        "sha256": object_.sha256,
-        "size": object_.size,
-        "soname": soname,
-    }
+def _object_report(value: AuthenticatedObject) -> dict[str, Any]:
+    (_interpreter, soname, needed) = _metadata(value)
+    return {'needed': list(needed), 'role': value.role, 'sha256': value.sha256, 'size': value.size, 'soname': soname}
 
-def _encode_report(closures: Sequence[ResolvedToolClosure],
-                   mappings: Sequence[MappedToolClosure]) -> bytes:
-    mapping_by_tool = {item.tool: item for item in mappings}
+def _encode_report(closures: Sequence[ResolvedToolClosure], mappings: Sequence[MappedToolClosure]) -> bytes:
+    mapping_by_tool = {value.tool: value for value in mappings}
     tools: list[dict[str, Any]] = []
     for closure in closures:
-        objects = [_object_report(item) for item in closure.objects]
-        tools.append({
-            "closure_sha256": hashlib.sha256(_canonical(objects)).hexdigest(),
-            "mapping_sha256": mapping_by_tool[closure.tool].mapping_sha256,
-            "objects": objects,
-            "seal_profile": None if closure.tool == "python3-parser" else _SEAL_PROFILE,
-            "sealed_executable": closure.tool != "python3-parser",
-            "tool": closure.tool,
-        })
-    digest_view = [
-        {key: value for key, value in tool.items() if key != "mapping_sha256"}
-        for tool in tools
-    ]
-    value = {
-        "closure_sha256": hashlib.sha256(_canonical(digest_view)).hexdigest(),
-        "tools": tools,
-        "version": _VERSION,
-    }
-    return _canonical(value) + b"\n"
+        objects = [_object_report(value) for value in closure.objects]
+        tools.append({'closure_sha256': hashlib.sha256(_canonical(objects)).hexdigest(), 'mapping_sha256': mapping_by_tool[closure.tool].mapping_sha256, 'objects': objects, 'seal_profile': None if closure.tool == 'python3-parser' else _SEAL_PROFILE, 'sealed_executable': closure.tool != 'python3-parser', 'tool': closure.tool})
+    digest_view = [{key: value for (key, value) in tool.items() if key != 'mapping_sha256'} for tool in tools]
+    return _canonical({'closure_sha256': hashlib.sha256(_canonical(digest_view)).hexdigest(), 'tools': tools, 'version': _VERSION}) + b'\n'
 
 def _strict_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     result: dict[str, Any] = {}
-    for key, value in pairs:
+    for (key, value) in pairs:
         if key in result:
-            raise RuntimeClosureError("duplicate report key")
+            raise RuntimeClosureError('duplicate report key')
         result[key] = value
     return result
 
 def _hex(value: Any) -> bool:
-    return type(value) is str and len(value) == 64 and all(character in "0123456789abcdef" for character in value)
+    return type(value) is str and len(value) == 64 and all((character in '0123456789abcdef' for character in value))
 
 def _validate_report_value(value: Any) -> None:
-    if type(value) is not dict or set(value) != {"closure_sha256", "tools", "version"}:
-        raise RuntimeClosureError("invalid closure report object")
-    if value["version"] != _VERSION or not _hex(value["closure_sha256"]):
-        raise RuntimeClosureError("invalid closure report identity")
-    tools = value["tools"]
-    if type(tools) is not list or [item.get("tool") for item in tools if type(item) is dict] != [
-        "python3-parser", "zstd", "gzip",
-    ]:
-        raise RuntimeClosureError("invalid closure report tool order")
-    expected_keys = {
-        "closure_sha256", "mapping_sha256", "objects", "seal_profile",
-        "sealed_executable", "tool",
-    }
-    for index, tool in enumerate(tools):
-        if type(tool) is not dict or set(tool) != expected_keys:
-            raise RuntimeClosureError("invalid tool report")
-        if not _hex(tool["closure_sha256"]) or not _hex(tool["mapping_sha256"]):
-            raise RuntimeClosureError("invalid tool digest")
-        sealed = index != 0
-        if type(tool["sealed_executable"]) is not bool or tool["sealed_executable"] != sealed:
-            raise RuntimeClosureError("invalid sealed executable declaration")
-        if tool["seal_profile"] != (_SEAL_PROFILE if sealed else None):
-            raise RuntimeClosureError("invalid seal profile")
-        objects = tool["objects"]
+    if type(value) is not dict or set(value) != {'closure_sha256', 'tools', 'version'}:
+        raise RuntimeClosureError('invalid closure report object')
+    if value['version'] != _VERSION or not _hex(value['closure_sha256']):
+        raise RuntimeClosureError('invalid closure report identity')
+    tools = value['tools']
+    expected_tools = ['python3-parser', 'zstd', 'gzip']
+    if type(tools) is not list or [item.get('tool') for item in tools if type(item) is dict] != expected_tools:
+        raise RuntimeClosureError('invalid closure report tool order')
+    tool_keys = {'closure_sha256', 'mapping_sha256', 'objects', 'seal_profile', 'sealed_executable', 'tool'}
+    for (tool_index, tool) in enumerate(tools):
+        if type(tool) is not dict or set(tool) != tool_keys:
+            raise RuntimeClosureError('invalid tool report')
+        if not _hex(tool['closure_sha256']) or not _hex(tool['mapping_sha256']):
+            raise RuntimeClosureError('invalid tool digest')
+        sealed = tool_index != 0
+        if type(tool['sealed_executable']) is not bool or tool['sealed_executable'] != sealed:
+            raise RuntimeClosureError('invalid sealed executable declaration')
+        if tool['seal_profile'] != (_SEAL_PROFILE if sealed else None):
+            raise RuntimeClosureError('invalid seal profile')
+        objects = tool['objects']
         if type(objects) is not list or not 2 <= len(objects) <= _MAX_OBJECTS:
-            raise RuntimeClosureError("invalid report object count")
-        if [item.get("role") for item in objects[:2] if type(item) is dict] != ["executable", "loader"]:
-            raise RuntimeClosureError("invalid object role order")
-        providers: dict[str, int] = {}
+            raise RuntimeClosureError('invalid report object count')
+        if [item.get('role') for item in objects[:2] if type(item) is dict] != ['executable', 'loader']:
+            raise RuntimeClosureError('invalid object role order')
+        providers: set[str] = set()
         identities: set[tuple[str, int]] = set()
         previous_library: tuple[bytes, str] | None = None
-        for object_index, object_ in enumerate(objects):
-            if type(object_) is not dict or set(object_) != {"needed", "role", "sha256", "size", "soname"}:
-                raise RuntimeClosureError("invalid reported runtime object")
-            role = object_["role"]
-            if role not in ("executable", "loader", "library") or (object_index >= 2) != (role == "library"):
-                raise RuntimeClosureError("invalid reported role")
-            if type(object_["size"]) is not int or not 1 <= object_["size"] <= _MAX_OBJECT_SIZE:
-                raise RuntimeClosureError("invalid reported size")
-            if not _hex(object_["sha256"]):
-                raise RuntimeClosureError("invalid object digest")
-            soname = object_["soname"]
-            if soname is not None and (type(soname) is not str or not soname or "/" in soname):
-                raise RuntimeClosureError("invalid reported SONAME")
-            needed = object_["needed"]
-            if type(needed) is not list or any(type(item) is not str or not item or "/" in item for item in needed):
-                raise RuntimeClosureError("invalid reported dependencies")
+        for (index, object_) in enumerate(objects):
+            if type(object_) is not dict or set(object_) != {'needed', 'role', 'sha256', 'size', 'soname'}:
+                raise RuntimeClosureError('invalid reported runtime object')
+            role = object_['role']
+            if role not in ('executable', 'loader', 'library') or (index >= 2) != (role == 'library'):
+                raise RuntimeClosureError('invalid reported role')
+            if type(object_['size']) is not int or not 1 <= object_['size'] <= _MAX_OBJECT_SIZE:
+                raise RuntimeClosureError('invalid reported size')
+            if not _hex(object_['sha256']):
+                raise RuntimeClosureError('invalid object digest')
+            soname = object_['soname']
+            if soname is not None:
+                _require_soname(soname)
+            needed = object_['needed']
+            if type(needed) is not list or len(needed) > _MAX_OBJECTS:
+                raise RuntimeClosureError('invalid reported dependencies')
+            for name in needed:
+                _require_soname(name)
             if len(needed) != len(set(needed)):
-                raise RuntimeClosureError("duplicate reported dependency")
-            identity = (object_["sha256"], object_["size"])
+                raise RuntimeClosureError('duplicate reported dependency')
+            identity = (object_['sha256'], object_['size'])
             if identity in identities:
-                raise RuntimeClosureError("duplicate reported object")
+                raise RuntimeClosureError('duplicate reported object')
             identities.add(identity)
             if soname is not None:
                 if soname in providers:
-                    raise RuntimeClosureError("duplicate reported provider")
-                providers[soname] = object_index
-            if role == "library":
-                order = ((soname or "").encode("utf-8"), object_["sha256"])
+                    raise RuntimeClosureError('duplicate reported provider')
+                providers.add(soname)
+            if role == 'library':
+                order = ((soname or '').encode(), object_['sha256'])
                 if previous_library is not None and order <= previous_library:
-                    raise RuntimeClosureError("invalid library order")
+                    raise RuntimeClosureError('invalid library order')
                 previous_library = order
-        if any(needed not in providers for object_ in objects for needed in object_["needed"]):
-            raise RuntimeClosureError("unresolved reported dependency")
-        if hashlib.sha256(_canonical(objects)).hexdigest() != tool["closure_sha256"]:
-            raise RuntimeClosureError("tool closure digest mismatch")
-        mapped = [[item["role"], item["sha256"]] for item in objects]
-        if hashlib.sha256(_canonical(mapped)).hexdigest() != tool["mapping_sha256"]:
-            raise RuntimeClosureError("tool mapping digest mismatch")
-    digest_view = [
-        {key: item for key, item in tool.items() if key != "mapping_sha256"}
-        for tool in tools
-    ]
-    if hashlib.sha256(_canonical(digest_view)).hexdigest() != value["closure_sha256"]:
-        raise RuntimeClosureError("aggregate closure digest mismatch")
+        if any((name not in providers for object_ in objects for name in object_['needed'])):
+            raise RuntimeClosureError('unresolved reported dependency')
+        if hashlib.sha256(_canonical(objects)).hexdigest() != tool['closure_sha256']:
+            raise RuntimeClosureError('tool closure digest mismatch')
+        mapped = [[item['role'], item['sha256']] for item in objects]
+        if hashlib.sha256(_canonical(mapped)).hexdigest() != tool['mapping_sha256']:
+            raise RuntimeClosureError('tool mapping digest mismatch')
+    digest_view = [{key: item for (key, item) in tool.items() if key != 'mapping_sha256'} for tool in tools]
+    if hashlib.sha256(_canonical(digest_view)).hexdigest() != value['closure_sha256']:
+        raise RuntimeClosureError('aggregate closure digest mismatch')
 
 def _decode_report(data: bytes) -> dict[str, Any]:
-    if type(data) is not bytes or not data.endswith(b"\n") or data.endswith(b"\n\n") or len(data) > _MAX_REPORT:
-        raise RuntimeClosureError("invalid canonical report framing")
+    if type(data) is not bytes or not data.endswith(b'\n') or data.endswith(b'\n\n') or (len(data) > _MAX_REPORT):
+        raise RuntimeClosureError('invalid canonical report framing')
     try:
-        text = data[:-1].decode("utf-8", "strict")
-        value = json.loads(text, object_pairs_hook=_strict_object,
-                           parse_float=lambda _value: (_ for _ in ()).throw(RuntimeClosureError("float in report")),
-                           parse_constant=lambda _value: (_ for _ in ()).throw(RuntimeClosureError("constant in report")))
+        value = json.loads(data[:-1].decode('utf-8', 'strict'), object_pairs_hook=_strict_object, parse_float=lambda _value: (_ for _ in ()).throw(RuntimeClosureError('float in report')), parse_constant=lambda _value: (_ for _ in ()).throw(RuntimeClosureError('constant in report')))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise RuntimeClosureError("invalid report JSON") from error
+        raise RuntimeClosureError('invalid report JSON') from error
     _validate_report_value(value)
-    if _canonical(value) + b"\n" != data:
-        raise RuntimeClosureError("noncanonical closure report")
+    if _canonical(value) + b'\n' != data:
+        raise RuntimeClosureError('noncanonical closure report')
     return value
 
 def _validate_report_bytes(data: bytes) -> bytes:
     _decode_report(data)
     return data
 
+def _apply_schema_validator(admission: object, candidate: bytes) -> None:
+    validator = getattr(admission, '_validate_tracked_schema', None)
+    if not callable(validator):
+        raise RuntimeClosureError('admission lacks independent schema validator')
+    if validator(candidate) is not None:
+        raise RuntimeClosureError('independent schema validator returned data')
+
 def _canonical_report_for_tests(tool_records: Sequence[dict[str, Any]]) -> bytes:
-    """Private deterministic codec seam; recompute all closure digests."""
     tools = json.loads(json.dumps(list(tool_records)))
-    if type(tools) is not list:
-        raise RuntimeClosureError("test tool records must be a sequence")
     for tool in tools:
-        tool["closure_sha256"] = hashlib.sha256(_canonical(tool["objects"])).hexdigest()
-    digest_view = [
-        {key: value for key, value in tool.items() if key != "mapping_sha256"}
-        for tool in tools
-    ]
-    report = _canonical({
-        "closure_sha256": hashlib.sha256(_canonical(digest_view)).hexdigest(),
-        "tools": tools,
-        "version": _VERSION,
-    }) + b"\n"
+        tool['closure_sha256'] = hashlib.sha256(_canonical(tool['objects'])).hexdigest()
+    digest_view = [{key: value for (key, value) in tool.items() if key != 'mapping_sha256'} for tool in tools]
+    report = _canonical({'closure_sha256': hashlib.sha256(_canonical(digest_view)).hexdigest(), 'tools': tools, 'version': _VERSION}) + b'\n'
     return _validate_report_bytes(report)
 
+def _binding_digest(rows: Sequence[_PrivateGenerationRow]) -> str:
+    value = [{'descriptor_index': row.descriptor_index, 'needed': list(row.needed), 'object_index': row.object_index, 'role': row.role, 'seal_profile': row.seal_profile, 'sha256': row.sha256, 'size': row.size, 'soname': row.soname, 'tool_index': row.tool_index} for row in rows]
+    return hashlib.sha256(_canonical(value)).hexdigest()
+
+def _generation_digest(rows: Sequence[_PrivateGenerationRow]) -> str:
+    framed = []
+    for row in rows:
+        value = row.source_generation
+        framed.append([row.tool_index, row.object_index, row.descriptor_index, value.device, value.inode, value.size, value.mtime_ns, value.ctime_ns, value.mode, value.uid, value.gid])
+    return hashlib.sha256(_canonical(framed)).hexdigest()
+
+def _validate_issuance_receipt(receipt: object, report: bytes, rows: Sequence[_PrivateGenerationRow], descriptor_count: int) -> None:
+    report_value = _decode_report(report)
+    checks = (getattr(receipt, 'version', None) == _HANDOFF_VERSION, getattr(receipt, 'report_sha256', None) == hashlib.sha256(report).hexdigest(), getattr(receipt, 'closure_sha256', None) == report_value['closure_sha256'], getattr(receipt, 'binding_sha256', None) == _binding_digest(rows), getattr(receipt, 'generation_sha256', None) == _generation_digest(rows), getattr(receipt, 'descriptor_count', None) == descriptor_count, type(getattr(receipt, 'issuer_pid', None)) is int, getattr(receipt, 'issuer_pid', 0) > 0, type(getattr(receipt, 'consumer_pid', None)) is int, getattr(receipt, 'consumer_pid', 0) > 0)
+    if not all(checks):
+        raise RuntimeClosureError('private issuer receipt mismatch')
+
 class PreparedRuntimeClosure:
-    def __init__(self, token: object, ops: _Ops) -> None:
+    """Private admitted owner; it exposes data only while READY."""
+
+    def __init__(self, token: object, ops: _Ops, preparation: PreparationLease):
         if token is not _PRIVATE_CONSTRUCTOR:
-            raise RuntimeClosureError("use prepare_fixed_runtime_closure")
+            raise RuntimeClosureError('runtime closure owner is private')
         self._ops = ops
-        self._state = _State.NEW
-        self._sources = _Registry(ops)
-        self._outputs = _Registry(ops)
-        self._children: list[_Child] = []
+        self._preparation = preparation
+        self._state = _OwnerState.PREPARING
         self._report: bytes | None = None
-        self._sealed: dict[str, SealedExecutable] = {}
+        self._bundle: list[FdLease] = []
+        self._rows: tuple[_PrivateGenerationRow, ...] = ()
         self._poison: BaseException | None = None
-        self._fd_baseline: frozenset[int] = frozenset()
-        self._child_baseline = b""
+
     @property
     def canonical_report(self) -> bytes:
-        if self._state is not _State.READY or self._report is None:
-            raise RuntimeClosureError("canonical report is available only in READY")
+        if self._state is not _OwnerState.READY or self._report is None:
+            raise RuntimeClosureError('canonical report is available only in READY')
         return self._report
-    def settle_fixed_handoff(self) -> RuntimeClosureHandoff:
-        if self._state is not _State.READY:
-            raise RuntimeClosureError("runtime closure is not ready for handoff")
-        self._ops.checkpoint("handoff.before-revalidate")
-        gzip = self._sealed["gzip"]
-        zstd = self._sealed["zstd"]
-        report_fd = next(fd for fd in self._outputs.values() if fd not in (gzip.fd, zstd.fd))
-        if self._ops.fcntl(gzip.fd, _F_GET_SEALS) != _EXEC_SEALS:
-            raise RuntimeClosureError("gzip seals changed before handoff")
-        if self._ops.fcntl(zstd.fd, _F_GET_SEALS) != _EXEC_SEALS:
-            raise RuntimeClosureError("zstd seals changed before handoff")
-        if self._ops.fcntl(report_fd, _F_GET_SEALS) != _DATA_SEALS:
-            raise RuntimeClosureError("report seals changed before handoff")
-        if _read_complete(self._ops, report_fd, len(self.canonical_report)) != self.canonical_report:
-            raise RuntimeClosureError("report changed before handoff")
-        self._prove_ready_baseline()
-        self._ops.checkpoint("handoff.before-transfer")
-        handoff = RuntimeClosureHandoff(gzip.fd, zstd.fd, report_fd)
-        for fd in (gzip.fd, zstd.fd, report_fd):
-            self._outputs.remove(fd)
-        self._state = _State.HANDED_OFF
-        return handoff
+
+    def _prove_ready_baseline(self) -> None:
+        expected = self._preparation.fd_baseline | frozenset((lease.fd for lease in self._bundle if lease.state is _FdState.OWNED))
+        other_owned = set(self._preparation.owned_fds()) - set(expected)
+        if other_owned or self._preparation.helpers:
+            raise RuntimeClosureError('preparation authority remains at readiness')
+        if _snapshot_fds(self._ops) != expected:
+            raise RuntimeClosureError('unexpected descriptor at readiness')
+        if _child_baseline(self._ops) != self._preparation.child_baseline:
+            raise RuntimeClosureError('helper baseline not restored')
+
+    def _issue_once(self, issuer: object) -> _IssuanceReceipt:
+        if self._state is not _OwnerState.READY:
+            raise RuntimeClosureError('runtime closure is not ready for issuance')
+        accept = getattr(issuer, '_accept_runtime_closure', None)
+        if not callable(accept):
+            raise RuntimeClosureError('private issuer endpoint is unavailable')
+        self._state = _OwnerState.ISSUING
+        try:
+            self._ops.checkpoint('issue.before-revalidate')
+            for lease in self._bundle:
+                expected_seals = _DATA_SEALS if lease.purpose == 'sealed-report' else _EXEC_SEALS
+                if self._ops.fcntl(lease.fd, _F_GET_SEALS) != expected_seals:
+                    raise RuntimeClosureError('issued descriptor seals changed')
+            report_lease = self._bundle[0]
+            report = self.canonical_report if self._state is _OwnerState.READY else self._report
+            if report is None or _read_complete(self._ops, report_lease.fd, len(report)) != report:
+                raise RuntimeClosureError('issued report bytes changed')
+            self._prove_ready_baseline_for_issue()
+            self._ops.checkpoint('issue.before-transfer')
+            descriptors = tuple((lease.fd for lease in self._bundle))
+            receipt = accept(report, descriptors, self._rows)
+            _validate_issuance_receipt(receipt, report, self._rows, len(descriptors))
+            for lease in self._bundle:
+                lease.transfer()
+            self._state = _OwnerState.CONSUMED
+            return receipt
+        except BaseException as error:
+            self._poison_owner(error)
+            raise self._poison if self._poison is not None else error
+
+    def _prove_ready_baseline_for_issue(self) -> None:
+        expected = self._preparation.fd_baseline | frozenset((lease.fd for lease in self._bundle if lease.state is _FdState.OWNED))
+        if _snapshot_fds(self._ops) != expected:
+            raise RuntimeClosureError('issuer descriptor baseline changed')
+        if _child_baseline(self._ops) != self._preparation.child_baseline:
+            raise RuntimeClosureError('issuer child baseline changed')
+
+    def _poison_owner(self, primary: BaseException) -> None:
+        failures: list[BaseException] = [primary]
+        for lease in reversed(self._bundle):
+            if lease.state is _FdState.OWNED:
+                try:
+                    lease.close(self._ops)
+                except BaseException as error:
+                    failures.append(error)
+        self._poison = RuntimeClosureCleanupError(failures)
+        self._state = _OwnerState.POISONED
+
     def close(self) -> None:
-        if self._state is _State.CLOSED:
+        if self._state is _OwnerState.CLOSED:
             return
-        if self._state is _State.POISONED:
-            assert self._poison is not None
+        if self._state is _OwnerState.POISONED:
+            if self._poison is None:
+                raise RuntimeClosureError('poisoned owner lost its failure')
             raise self._poison
-        self._ops.checkpoint("cleanup.before")
-        failures = list(self._outputs.close_all()) + list(self._sources.close_all())
-        if self._children:
-            failures.append(RuntimeClosureError("registered helper remains during close"))
-        if self._state is not _State.HANDED_OFF:
+        self._ops.checkpoint('cleanup.before')
+        failures: list[BaseException] = []
+        for lease in reversed(self._bundle):
+            if lease.state is _FdState.OWNED:
+                try:
+                    lease.close(self._ops)
+                except BaseException as error:
+                    failures.append(error)
+        if self._preparation.helpers:
+            failures.append(RuntimeClosureError('registered helper remains during close'))
+        if self._state is not _OwnerState.CONSUMED:
             try:
-                if self._ops.list_fds() != self._fd_baseline:
-                    failures.append(RuntimeClosureError("descriptor baseline not restored"))
-                if self._ops.child_baseline() != self._child_baseline:
-                    failures.append(RuntimeClosureError("child baseline not restored"))
+                if _snapshot_fds(self._ops) != self._preparation.fd_baseline:
+                    failures.append(RuntimeClosureError('descriptor baseline not restored'))
+                if _child_baseline(self._ops) != self._preparation.child_baseline:
+                    failures.append(RuntimeClosureError('child baseline not restored'))
             except BaseException as error:
                 failures.append(error)
+        try:
+            self._ops.checkpoint('cleanup.after')
+        except BaseException as error:
+            failures.append(error)
         if failures:
             self._poison = RuntimeClosureCleanupError(failures)
-            self._state = _State.POISONED
+            self._state = _OwnerState.POISONED
             raise self._poison
-        self._state = _State.CLOSED
-        self._ops.checkpoint("cleanup.after")
-    def __enter__(self) -> "PreparedRuntimeClosure":
-        if self._state is not _State.READY:
-            raise RuntimeClosureError("runtime closure context is not ready")
+        self._state = _OwnerState.CLOSED
+
+    def __enter__(self) -> 'PreparedRuntimeClosure':
+        if self._state is not _OwnerState.READY:
+            raise RuntimeClosureError('runtime closure context is not ready')
         return self
+
     def __exit__(self, exc_type: Any, exc: BaseException | None, traceback: Any) -> None:
         del exc_type, traceback
         try:
@@ -1102,119 +1501,196 @@ class PreparedRuntimeClosure:
             if exc is not None:
                 raise RuntimeClosureCleanupError((exc, cleanup)) from exc
             raise
-    def _prove_ready_baseline(self) -> None:
-        expected = self._fd_baseline | frozenset(self._outputs.values())
-        if self._sources.values() or self._children:
-            raise RuntimeClosureError("preparation authority remains at readiness")
-        if self._ops.list_fds() != expected:
-            raise RuntimeClosureError("unexpected descriptor at readiness")
-        if self._ops.child_baseline() != self._child_baseline:
-            raise RuntimeClosureError("helper baseline not restored")
-
 _PRIVATE_CONSTRUCTOR = object()
 
-def _prepare(ops: _Ops) -> PreparedRuntimeClosure:
-    owner = PreparedRuntimeClosure(_PRIVATE_CONSTRUCTOR, ops)
-    owner._fd_baseline = ops.list_fds()
-    owner._child_baseline = ops.child_baseline()
-    owner._state = _State.PREPARING
-    ops.checkpoint("state.preparing")
-    primary: BaseException | None = None
+def _child_baseline(ops: _Ops) -> tuple[int, ...]:
+    return _parse_children(_read_proc(ops, '/proc/self/task/self/children', 65536))
+
+def _claim_admission(admission: object) -> None:
+    claim = getattr(admission, '_claim_runtime_closure_admission', None)
+    if not callable(claim) or claim() is not True:
+        raise RuntimeClosureError('missing or consumed runtime source admission')
+    for name in ('revision', 'source_set_sha256', 'bootstrap_sha256'):
+        value = getattr(admission, name, None)
+        length = 40 if name == 'revision' else 64
+        if type(value) is not str or len(value) != length:
+            raise RuntimeClosureError('invalid runtime source admission identity')
+        if any((character not in '0123456789abcdef' for character in value)):
+            raise RuntimeClosureError('invalid runtime source admission encoding')
+
+def _validate_closure_bounds(tool_objects: Sequence[Sequence[tuple[tuple[int, int], int]]]) -> None:
+    """Pure object-count/per-tool/deduplicated aggregate bound gate."""
+    global_sizes: dict[tuple[int, int], int] = {}
+    for objects in tool_objects:
+        if len(objects) > _MAX_OBJECTS:
+            raise RuntimeClosureError('tool closure object bound')
+        identities: set[tuple[int, int]] = set()
+        total = 0
+        for (identity, size) in objects:
+            if type(identity) is not tuple or len(identity) != 2 or type(size) is not int:
+                raise RuntimeClosureError('invalid closure bound record')
+            if identity in identities or not 1 <= size <= _MAX_OBJECT_SIZE:
+                raise RuntimeClosureError('duplicate identity or object size bound')
+            identities.add(identity)
+            total += size
+            previous = global_sizes.setdefault(identity, size)
+            if previous != size:
+                raise RuntimeClosureError('same identity has conflicting sizes')
+        if total > _MAX_TOOL_BYTES:
+            raise RuntimeClosureError('tool closure byte bound')
+    if sum(global_sizes.values()) > _MAX_TOTAL_BYTES:
+        raise RuntimeClosureError('deduplicated fixed closure byte bound')
+
+def _enforce_global_alias_policy(closures: Sequence[ResolvedToolClosure]) -> None:
+    roles: dict[tuple[int, int], str] = {}
+    generations: dict[tuple[int, int], tuple[SourceGeneration, str, ElfMetadata]] = {}
+    executable_identities: set[tuple[int, int]] = set()
+    for closure in closures:
+        for value in closure.objects:
+            prior_role = roles.get(value.identity)
+            if prior_role is not None and prior_role != value.role:
+                raise RuntimeClosureError('global cross-role identity alias')
+            prior = generations.get(value.identity)
+            current = (value.generation, value.sha256, value.elf)
+            if prior is not None and prior != current:
+                raise RuntimeClosureError('global same-identity generation drift')
+            roles[value.identity] = value.role
+            generations[value.identity] = current
+        if closure.executable.identity in executable_identities:
+            raise RuntimeClosureError('fixed executable identities must be distinct')
+        executable_identities.add(closure.executable.identity)
+
+def _build_bundle(ops: _Ops, preparation: PreparationLease, closures: Sequence[ResolvedToolClosure]) -> tuple[list[FdLease], tuple[_PrivateGenerationRow, ...]]:
+    bundle: list[FdLease] = []
+    rows: list[_PrivateGenerationRow] = []
+    sealed_by_identity: dict[tuple[int, int], tuple[int, SealedObject]] = {}
+    for (tool_index, closure) in enumerate(closures):
+        if closure.tool == 'python3-parser':
+            continue
+        for (object_index, source) in enumerate(closure.objects):
+            existing = sealed_by_identity.get(source.identity)
+            if existing is None:
+                sealed = _seal_object(ops, source)
+                lease = preparation.register_fd(sealed.fd, 'sealed-object')
+                bundle.append(lease)
+                descriptor_index = len(bundle)
+                sealed_by_identity[source.identity] = (descriptor_index, sealed)
+            else:
+                (descriptor_index, sealed) = existing
+                if sealed.source_generation != source.generation or sealed.sha256 != source.sha256:
+                    raise RuntimeClosureError('shared sealed generation mismatch')
+            (_interpreter, soname, needed) = _metadata(source)
+            rows.append(_PrivateGenerationRow(tool_index, object_index, source.role, descriptor_index, source.generation, source.size, source.sha256, soname, needed))
+    return (bundle, tuple(rows))
+
+def _prepare_state_machine(ops: _Ops, admission: object, issuer: object) -> PreparedRuntimeClosure:
+    del issuer
+    _claim_admission(admission)
+    ops.architecture_gate()
+    _reserve_stdio(ops)
+    preparation = PreparationLease(ops, _snapshot_fds(ops), _child_baseline(ops))
+    owner = PreparedRuntimeClosure(_PRIVATE_CONSTRUCTOR, ops, preparation)
+    ops.checkpoint('state.preparing')
+    closures: list[ResolvedToolClosure] = []
+    sources: list[FdLease] = []
     try:
-        closures: list[ResolvedToolClosure] = []
-        for tool, path in FIXED_TOOL_TABLE:
-            ops.checkpoint(f"resolve.{tool}.before")
+        for (tool, path) in FIXED_TOOL_TABLE:
+            ops.checkpoint(f'resolve.{tool}.before')
             closure = _resolve_tool(ops, tool, path)
             closures.append(closure)
-            for object_ in closure.objects:
-                if object_.held_fd not in owner._sources.values():
-                    owner._sources.add(object_.held_fd)
-            ops.checkpoint(f"resolve.{tool}.after")
-        unique = {
-            item.identity: item.size for closure in closures for item in closure.objects
-        }
-        if sum(unique.values()) > _MAX_TOTAL_BYTES:
-            raise RuntimeClosureError("deduplicated fixed closure byte bound")
+            for value in closure.objects:
+                lease = preparation.register_fd(value.held_fd, f'source:{tool}:{value.role}')
+                sources.append(lease)
+            ops.checkpoint(f'resolve.{tool}.after')
+        _enforce_global_alias_policy(closures)
+        _validate_closure_bounds(tuple((tuple(((value.identity, value.size) for value in closure.objects)) for closure in closures)))
         mappings: list[MappedToolClosure] = []
         for closure in closures:
-            ops.checkpoint(f"mapping.{closure.tool}.before-spawn")
-            child, gate = _spawn_helper(ops, closure)
-            owner._children.append(child)
+            ops.checkpoint(f'mapping.{closure.tool}.before-spawn')
+            helper = _spawn_helper(ops, preparation, closure)
             mapping_error: BaseException | None = None
             try:
-                ops.checkpoint(f"mapping.{closure.tool}.before-capture")
-                mappings.append(_mapped_closure(ops, child, closure))
-                ops.checkpoint(f"mapping.{closure.tool}.after-capture")
+                ops.checkpoint(f'mapping.{closure.tool}.before-capture')
+                mappings.append(_mapped_closure(ops, helper, closure))
+                ops.checkpoint(f'mapping.{closure.tool}.after-capture')
             except BaseException as error:
                 mapping_error = error
             try:
-                _stop_helper(ops, child, gate)
-            except BaseException as cleanup_error:
+                _stop_helper(ops, preparation, helper)
+            except BaseException as cleanup:
                 if mapping_error is not None:
-                    raise RuntimeClosureCleanupError((mapping_error, cleanup_error)) from mapping_error
+                    raise RuntimeClosureCleanupError((mapping_error, cleanup)) from mapping_error
                 raise
-            finally:
-                if child.reaped and child in owner._children:
-                    owner._children.remove(child)
             if mapping_error is not None:
                 raise mapping_error
-            ops.checkpoint(f"mapping.{closure.tool}.after-cleanup")
-        for tool in ("gzip", "zstd"):
-            source = next(item.executable for item in closures if item.tool == tool)
-            ops.checkpoint(f"seal.{tool}.before")
-            sealed = _seal_source(ops, source, tool)
-            owner._outputs.add(sealed.fd)
-            owner._sealed[tool] = sealed
-            ops.checkpoint(f"seal.{tool}.after")
-        candidate = _encode_report(closures, mappings)
-        candidate = ops.report_candidate(candidate)
-        first = _validate_report_bytes(candidate)
-        second = _validate_report_bytes(bytes(first))
-        if first != second:
-            raise RuntimeClosureError("independent report validation changed bytes")
-        owner._report = first
-        ops.checkpoint("report.before-seal")
-        owner._outputs.add(_seal_report(ops, first))
-        ops.checkpoint("report.after-seal")
-        source_failures = owner._sources.close_all()
-        if source_failures:
-            raise RuntimeClosureCleanupError(source_failures)
+            ops.checkpoint(f'mapping.{closure.tool}.after-cleanup')
+        (bundle, rows) = _build_bundle(ops, preparation, closures)
+        for lease in bundle:
+            ops.checkpoint('seal.object.after')
+        candidate = ops.report_candidate(_encode_report(closures, mappings))
+        first_value = _decode_report(candidate)
+        first_encoding = _canonical(first_value) + b'\n'
+        _apply_schema_validator(admission, candidate)
+        second_value = _decode_report(bytes(candidate))
+        second_encoding = _canonical(second_value) + b'\n'
+        if first_encoding != candidate or second_encoding != candidate or first_value is second_value:
+            raise RuntimeClosureError('independent report codec agreement failed')
+        owner._report = candidate
+        owner._bundle = bundle
+        owner._rows = rows
+        ops.checkpoint('report.before-seal')
+        report_fd = _seal_report(ops, candidate)
+        report_lease = preparation.register_fd(report_fd, 'sealed-report')
+        owner._bundle.insert(0, report_lease)
+        ops.checkpoint('report.after-seal')
+        preparation.close_many(sources)
         owner._prove_ready_baseline()
-        ops.checkpoint("report.before-publish")
-        owner._state = _State.READY
-        ops.checkpoint("state.ready")
+        ops.checkpoint('report.before-publish')
+        owner._state = _OwnerState.READY
+        ops.checkpoint('state.ready')
         return owner
-    except BaseException as error:
-        primary = error
-    failures: list[BaseException] = [primary] if primary is not None else []
-    failures.extend(owner._outputs.close_all())
-    failures.extend(owner._sources.close_all())
-    if owner._children:
-        failures.append(RuntimeClosureError("helper cleanup remained after preparation failure"))
-    try:
-        if ops.list_fds() != owner._fd_baseline:
-            failures.append(RuntimeClosureError("failure descriptor baseline not restored"))
-        if ops.child_baseline() != owner._child_baseline:
-            failures.append(RuntimeClosureError("failure child baseline not restored"))
-    except BaseException as error:
-        failures.append(error)
-    owner._poison = RuntimeClosureCleanupError(failures)
-    owner._state = _State.POISONED
-    raise owner._poison from primary
+    except BaseException as primary:
+        failures: list[BaseException] = [primary]
+        for helper in tuple(preparation.helpers):
+            try:
+                _stop_helper(ops, preparation, helper)
+            except BaseException as error:
+                failures.append(error)
+        for lease in reversed(preparation.fds):
+            if lease.state is _FdState.OWNED:
+                try:
+                    lease.close(ops)
+                except BaseException as error:
+                    failures.append(error)
+        try:
+            if _snapshot_fds(ops) != preparation.fd_baseline:
+                failures.append(RuntimeClosureError('failure descriptor baseline not restored'))
+            if _child_baseline(ops) != preparation.child_baseline:
+                failures.append(RuntimeClosureError('failure child baseline not restored'))
+        except BaseException as error:
+            failures.append(error)
+        owner._poison = RuntimeClosureCleanupError(failures)
+        owner._state = _OwnerState.POISONED
+        raise owner._poison from primary
 
-def _prepare_with_adapter_for_tests(adapter: _Ops) -> PreparedRuntimeClosure:
-    """Private scripted-adapter constructor for portable tests only."""
+def _prepare_admitted_fixed_runtime_closure(admission: object, issuer: object) -> PreparedRuntimeClosure:
+    """Private fixed entry called only by the authenticated launcher worker."""
+    return _prepare_state_machine(_Ops(), admission, issuer)
+
+def _prepare_with_adapter_for_tests(adapter: _Ops, admission: object, issuer: object) -> PreparedRuntimeClosure:
+    """Drive the exact production state machine with primitive scripted operations."""
     if not isinstance(adapter, _Ops):
-        raise TypeError("private test constructor requires _Ops")
-    return _prepare(adapter)
+        raise TypeError('private test constructor requires _Ops')
+    return _prepare_state_machine(adapter, admission, issuer)
 _prepare_fixed_runtime_closure_for_test = _prepare_with_adapter_for_tests
 
-def prepare_fixed_runtime_closure() -> PreparedRuntimeClosure:
-    """Authenticate and prepare the one compile-time runtime closure."""
-    return _prepare(_Ops())
+def _drive_fixed_report_seal_with_adapter_for_tests(adapter: _Ops, report: bytes) -> int:
+    return _seal_report(adapter, report)
 
-__all__ = (
-    "PreparedRuntimeClosure",
-    "RuntimeClosureHandoff",
-    "prepare_fixed_runtime_closure",
-)
+def _drive_fixed_handoff_with_adapter_for_tests(owner: PreparedRuntimeClosure, issuer: object) -> _IssuanceReceipt:
+    return owner._issue_once(issuer)
+
+def prepare_fixed_runtime_closure() -> NoReturn:
+    """Ambient preparation is forbidden and fails before any authority-bearing effect."""
+    raise RuntimeClosureError('runtime closure requires the admitted private launcher entry')
+__all__ = ()
