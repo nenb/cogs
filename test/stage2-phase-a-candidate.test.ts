@@ -206,7 +206,7 @@ test("runtime-discovery workflow has the exact PR 230 one-shot guard and cleanup
   assert.equal(sandbox.match(/\/usr\/bin\/python3 -I -c "\$verify_checkout_bind"/gu)?.length, 2);
   assert.match(
     sandbox,
-    / {10}VERIFY\n {10}exec 3>&-\n {10}\/usr\/bin\/python3 -I - <<'CLOSED'[\s\S]*parent != 1[\s\S]*\{"0","1","2"\}[\s\S]* {10}CLOSED\n {10}COGS_NATIVE_TEST_PATH=\$test_path exec \/usr\/sbin\/chroot/u,
+    / {10}VERIFY\n {10}exec 3>&-\n {10}IFS= read -r -d '' closed_observer <<'CLOSED'[\s\S]*parent != 1[\s\S]*\{"0","1","2"\}[\s\S]* {10}CLOSED\n {10}\/usr\/bin\/python3 -I -c "\$closed_observer"\n {10}COGS_NATIVE_TEST_PATH=\$test_path exec \/usr\/sbin\/chroot/u,
   );
   assert.equal(nativeJob.match(/--close-from=/gu)?.length, 1);
   assert.doesNotMatch(nativeJob, /preexec_fn|stdin=None|--close-from=4|-C 4|"-C"|--preserve-env/u);

@@ -327,11 +327,7 @@ jobs:
           set -Eeuo pipefail
           umask 077
           checkout_dev=$1 checkout_ino=$2 checkout_uid=$3 checkout_gid=$4 test_path=$5
-          case "$test_path" in
-            /src/test/aws-stage2-completion-kata-process.py|/src/test/stage2-phase-a-candidate.py) ;;
-            *) exit 81;;
-          esac
-          /usr/bin/python3 -I - "$checkout_dev" "$checkout_ino" "$checkout_uid" "$checkout_gid" <<'DESCRIPTOR'
+          IFS= read -r -d '' descriptor_observer <<'DESCRIPTOR' || test "$?" = 1
           import fcntl, os, stat, sys
           expected = tuple(map(int, sys.argv[1:]))
           parent = os.getppid()
@@ -354,6 +350,7 @@ jobs:
                   or fcntl.fcntl(3,fcntl.F_GETFD) & fcntl.FD_CLOEXEC):
               raise RuntimeError("checkout descriptor flags")
           DESCRIPTOR
+          /usr/bin/python3 -I -c "$descriptor_observer" "$checkout_dev" "$checkout_ino" "$checkout_uid" "$checkout_gid"
           IFS= read -r old_tmp_device < <(/usr/bin/stat --printf='%d\n' /tmp)
           IFS= read -r old_tmp_mount_id < <(/usr/bin/findmnt --noheadings --raw --output ID --target /tmp)
           [[ "$old_tmp_device" =~ ^[0-9]+$ && "$old_tmp_mount_id" =~ ^[0-9]+$ ]]
@@ -533,11 +530,12 @@ jobs:
           if actual != expected or any(row["id"] == old_mount_id for row in map(one, expected)): raise RuntimeError("unexpected or old mount")
           VERIFY
           exec 3>&-
-          /usr/bin/python3 -I - <<'CLOSED'
+          IFS= read -r -d '' closed_observer <<'CLOSED' || test "$?" = 1
           import os
           parent = os.getppid()
           if parent != 1 or set(os.listdir(f"/proc/{parent}/fd")) != {"0","1","2"}: raise RuntimeError("terminal descriptor set")
           CLOSED
+          /usr/bin/python3 -I -c "$closed_observer"
           COGS_NATIVE_TEST_PATH=$test_path exec /usr/sbin/chroot /tmp/cogs-native-runtime-root /usr/bin/setpriv --securebits +noroot,+noroot_locked --bounding-set=-all --inh-caps=-all --ambient-caps=-all --reuid=0 --regid=0 --clear-groups --no-new-privs /usr/bin/timeout --signal=KILL 240 /usr/bin/python3 -I -B -c "$seccomp_launcher"
           SANDBOX
           run_preflight() {
