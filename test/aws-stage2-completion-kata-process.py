@@ -277,6 +277,10 @@ def _native_runtime_preflight():
     _NATIVE_PHASE = "descriptor-inherit"
     os.set_inheritable(high, True)
     try:
+        for tool, path in process._HOST_TOOLS:
+            _NATIVE_PHASE = "host-closure-" + tool
+            _, cache, _ = process._host_closure(tool, path)
+            process._close_host_bounds(cache.values(), "native host closure close")
         _NATIVE_PHASE = "host-init"
         owner = process._RuntimeDiscoveryHost()
         try:
