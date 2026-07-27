@@ -26,7 +26,6 @@ SENTINEL = b"cogs-rootfs-publication-v1\n"
 MANIFEST_NAME = fs._name(b"rootfs.manifest.json")
 USTAR_NAME = fs._name(b"rootfs.tar")
 METADATA_NAME = fs._name(b"rootfs.metadata.json")
-ANONYMOUS_FDINFO_FLAGS = (b"022440002", b"022300002")
 VERSION = "cogs.rootfs-publication-transaction/v1"
 ZERO_SHA256 = "0" * 64
 MAX_TRANSACTION_BYTES = 64 * 1024
@@ -402,68 +401,28 @@ def _file(directory, name, expected, control):
         fs._close_node(node, error)
 
 
-def _observe_anonymous(subject, control):
-    operation = subject.operation_fd if type(subject) is AnonymousFile else subject
-    _fail(type(operation) is fs.CheckedFd and operation.disposition == "open")
-    os.lseek(operation.number, 0, os.SEEK_SET)
-    flags = os.O_TMPFILE | os.O_RDWR | fs._O_CLOEXEC
-    _fail(flags == 0o22200002)
-    # Qualified amd64 runtimes expose exactly these two O_TMPFILE fdinfo forms.
-    mount_id = fs._mount_id(operation, control, ANONYMOUS_FDINFO_FLAGS)
-    return fs._generation(operation, mount_id, control)
-
-
-def _close_anonymous(anonymous, primary=None):
-    error = primary
-    if anonymous is not None and anonymous.operation_fd.disposition == "open":
-        try:
-            anonymous.operation_fd.close()
-        except BaseException as close_error:
-            error = fs.RootfsFsError(error, close_error)
-    if error is not None:
-        raise error
-
-
 def _prepare_anonymous(directory, raw, control):
-    _fail(sys.platform == "linux" and hasattr(os, "O_TMPFILE"))
     operation = None
     try:
-        flags = os.O_TMPFILE | os.O_RDWR | fs._O_CLOEXEC
-        operation = fs.CheckedFd(os.open(b".", flags, 0o400, dir_fd=directory.operation_fd.number), "publication-anonymous")
+        operation = fs._open_anonymous(directory, "publication-anonymous", 0o400, control)
         _write_all(operation, raw, control)
         os.fchown(operation.number, 0, 0)
         os.fchmod(operation.number, 0o400)
         os.utime(operation.number, ns=(0, 0))
         os.fsync(operation.number)
-        generation = _observe_anonymous(operation, control)
+        generation = fs._observe_anonymous(operation, control)
         anonymous = AnonymousFile(operation, generation)
         _fail(generation.key.kind == "file" and generation.mode == 0o400 and generation.uid == generation.gid == 0 and generation.nlink == 0 and generation.size == len(raw))
         _fail(generation.key.device == directory.generation.key.device and generation.key.mount_id == directory.generation.key.mount_id)
-        before = _observe_anonymous(anonymous, control)
+        before = fs._observe_anonymous(operation, control)
         flistxattr, _unused = fs._load_xattrs()
         fs._zero_xattrs(flistxattr, operation.number, control)
-        _fail(_observe_anonymous(anonymous, control) == before)
-        os.lseek(operation.number, 0, os.SEEK_SET)
+        _fail(fs._observe_anonymous(operation, control) == before)
         observed = fs._read_bounded(operation.number, len(raw), control)
         _fail(observed == raw and hashlib.sha256(observed).hexdigest() == hashlib.sha256(raw).hexdigest())
         return anonymous
     except BaseException as error:
-        if operation is not None and operation.disposition == "open":
-            operation.close(error)
-        raise
-
-
-def _link_anonymous(directory, name, anonymous, control):
-    _fail(sys.platform == "linux" and anonymous.generation.nlink == 0)
-    control.check()
-    libc = ctypes.CDLL(None, use_errno=True)
-    linkat = libc.linkat
-    linkat.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_int)
-    linkat.restype = ctypes.c_int
-    result = linkat(anonymous.operation_fd.number, b"", directory.operation_fd.number, name.raw, 0x1000)
-    if result != 0:
-        code = ctypes.get_errno()
-        raise OSError(code, os.strerror(code))
+        fs._close_anonymous(operation, error)
 
 
 def _contents(manifest, ustar, pins):
@@ -770,12 +729,12 @@ def _publish_unmasked(parent, manifest, ustar, pins, work_control):
                     _verify_inventory(candidate, contents, file_records, False, control)
                     if anonymous is None or anonymous.generation != ready_generation:
                         if anonymous is not None:
-                            _close_anonymous(anonymous)
+                            fs._close_anonymous(anonymous.operation_fd)
                         anonymous = _prepare_anonymous(candidate, raw, control)
                         transaction = _append_transaction(transaction, parent, content_names, "file-ready", control, name.text, _ready_value(anonymous.generation, raw))
                         continue
-                    _fail(_observe_anonymous(anonymous, control) == ready_generation)
-                    _link_anonymous(candidate, name, anonymous, control)
+                    _fail(fs._observe_anonymous(anonymous.operation_fd, control) == ready_generation)
+                    fs._link_anonymous(candidate, name, anonymous.operation_fd, control)
                     continue
                 _fail(snapshot.raw_names == linked_names)
                 _authority_transition(before_candidate, snapshot_authority, _directory_link_change)
@@ -788,7 +747,7 @@ def _publish_unmasked(parent, manifest, ustar, pins, work_control):
                     _fail(after_candidate == snapshot_authority)
                     transaction = _append_records(transaction, parent, content_names, (("file", name.text, _generation_value(linked.generation)), ("candidate-generation", None, _directory_authority_value(after_candidate))), control)
                 if anonymous is not None:
-                    _close_anonymous(anonymous)
+                    fs._close_anonymous(anonymous.operation_fd)
                     anonymous = None
                 work_control.check()
             elif phase == "prepared":
@@ -829,7 +788,7 @@ def _publish_unmasked(parent, manifest, ustar, pins, work_control):
         error = None
         if anonymous is not None and anonymous.operation_fd.disposition == "open":
             try:
-                _close_anonymous(anonymous)
+                fs._close_anonymous(anonymous.operation_fd)
             except BaseException as close_error:
                 error = fs.RootfsFsError(primary, close_error)
         if candidate is not None and candidate.identity_fd.disposition == "open":
