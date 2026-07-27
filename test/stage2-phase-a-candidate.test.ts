@@ -186,7 +186,7 @@ test("runtime-discovery workflow has the exact PR 230 one-shot guard and cleanup
   );
   assert.match(
     rootLauncher,
-    /"\/usr\/bin\/setpriv","--reuid","0","--regid","0","--clear-groups","--no-new-privs","\/usr\/bin\/unshare","--user","--map-users=0:0:1","--map-groups=0:0:1","--net","--pid","--fork","--mount","\/usr\/bin\/python3","-I","-c",child_launcher,checkout,\*raw_identity,test_path,sandbox/u,
+    /"\/usr\/bin\/setpriv","--reuid","0","--regid","0","--clear-groups","--no-new-privs","\/usr\/bin\/unshare","--user","--map-users=0:0:1",f"--map-users=\{expected\[2\]\}:\{expected\[2\]\}:1","--map-groups=0:0:1",f"--map-groups=\{expected\[3\]\}:\{expected\[3\]\}:1","--net","--pid","--fork","--mount","\/usr\/bin\/python3","-I","-c",child_launcher,checkout,\*raw_identity,test_path,sandbox/u,
   );
   assert.match(
     rootLauncher,
@@ -220,7 +220,7 @@ test("runtime-discovery workflow has the exact PR 230 one-shot guard and cleanup
   );
   assert.match(
     observer,
-    /number == 3 and sys\.argv\[5\] == "before"[\s\S]*identity\(before\) != \(\*expected\[:2\],\*overflow,stat\.S_IFDIR\)[\s\S]*flags & os\.O_CLOEXEC/u,
+    /\(\("uid_map",expected\[2\]\),\("gid_map",expected\[3\]\)\)[\s\S]*\{\("0","0","1"\),\(str\(owner\),str\(owner\),"1"\)\}[\s\S]*number == 3 and sys\.argv\[5\] == "before"[\s\S]*identity\(before\) != \(\*expected,stat\.S_IFDIR\)[\s\S]*flags & os\.O_CLOEXEC/u,
   );
   assert.match(
     observer,

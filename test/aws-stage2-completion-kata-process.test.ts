@@ -67,7 +67,14 @@ test("S1 portable process suite and narrow native boundary remain exact", async 
   const observer = observerMatch[0];
   assert.match(observer, /\['PPid'\][\s\S]*\["NSpid"\]\.split\(\)[\s\S]*names = set\(os\.listdir\(base\+"\/fd"\)\)/u);
   assert.match(observer, /open\(base\+"\/fdinfo\/"\+name[\s\S]*row\[0\]=="flags:"[\s\S]*flags = int\(values\[0\],8\)/u);
-  assert.match(observer, /number == 3 and sys\.argv\[5\] == "before"[\s\S]*flags & os\.O_CLOEXEC/u);
+  assert.match(
+    observer,
+    /\(\("uid_map",expected\[2\]\),\("gid_map",expected\[3\]\)\)[\s\S]*\{\("0","0","1"\),\(str\(owner\),str\(owner\),"1"\)\}/u,
+  );
+  assert.match(
+    observer,
+    /number == 3 and sys\.argv\[5\] == "before"[\s\S]*identity\(before\) != \(\*expected,stat\.S_IFDIR\)[\s\S]*flags & os\.O_CLOEXEC/u,
+  );
   assert.match(observer, /stat\.S_ISSOCK\(before\.st_mode\)[\s\S]*object_id in namespaces/u);
   assert.match(observer, /elif object_id == expected\[:2\] or not flags & os\.O_CLOEXEC/u);
   assert.match(observer, /unstable parent descriptor table[\s\S]*checkout descriptor lifecycle/u);
