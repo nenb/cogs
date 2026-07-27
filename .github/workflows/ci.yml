@@ -513,7 +513,7 @@ jobs:
           host_root, stage, root = one("/"), one("/tmp"), one(future)
           fresh = ((stage, "cogs-native-stage", "32768k", "700", {"rw","nosuid","nodev","noexec","relatime"}), (root, "cogs-native-runtime-root", "16384k", "700", {"rw","nosuid","nodev","relatime"}), (one(future+"/tmp"), "cogs-native-runtime-tmp", "16384k", "1777", {"rw","nosuid","nodev","noexec","relatime"}))
           for row, source, size, mode, vfs in fresh:
-              checks = (("type",row["type"] == "tmpfs"),("source",row["source"] == source),("root",row["root"] == "/"),("vfs",row["vfs"] == vfs),("super",row["super"] == {"rw","size="+size,"mode="+mode,"inode64"}),("optional",not row["optional"]),("device",row["dev"] == device(row["target"])))
+              checks = (("type",row["type"] == "tmpfs"),("source",row["source"] == source),("root",row["root"] == "/"),("vfs",row["vfs"] == vfs),("super",row["super"] == {"rw","size="+size,"inode64",*(("mode="+mode,) if mode != "1777" else ())}),("optional",not row["optional"]),("device",row["dev"] == device(row["target"])))
               failed = [name for name, valid in checks if not valid]
               if failed: raise RuntimeError("fresh tmpfs identity " + source + " " + ",".join(failed))
           if stage["parent"] != old_mount_id or root["parent"] != stage["id"] or fresh[2][0]["parent"] != root["id"] or os.stat("/tmp").st_dev == old_device: raise RuntimeError("staging ancestry")
