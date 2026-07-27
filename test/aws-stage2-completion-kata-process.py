@@ -26,6 +26,7 @@ import completion_kata_process as process
 
 _NATIVE_SELECTOR = "COGS_REQUIRE_NATIVE_RUNTIME_PREFLIGHT_V1"
 _NATIVE_MARKER = "completion Kata process LINUX AMD64 QUALIFIED matrix passed"
+_NATIVE_PHASE = "selector"
 _ZSTD_RAW = b"cogs-native-zstd\n"
 _ZSTD_STREAM = bytes.fromhex(
     "28b52ffd0458890000636f67732d6e61746976652d7a7374640a2c9648cf"
@@ -259,7 +260,10 @@ def _native_parent_death(after_release):
 
 
 def _native_runtime_preflight():
+    global _NATIVE_PHASE
+    _NATIVE_PHASE = "envelope"
     _native_envelope()
+    _NATIVE_PHASE = "descriptor-setup"
     baseline = set(os.listdir("/proc/self/fd"))
     base = os.open("/dev/null", os.O_RDONLY | os.O_CLOEXEC)
     os.dup2(base, 198, inheritable=True)
@@ -269,12 +273,17 @@ def _native_runtime_preflight():
     try:
         owner = process._RuntimeDiscoveryHost()
         try:
+            _NATIVE_PHASE = "zstd"
             _native_archive_success(owner, process.kata_runtime.FixedArchive.KATA_ZSTD, (198, 4096))
+            _NATIVE_PHASE = "gzip"
             _native_archive_success(owner, process.kata_runtime.FixedArchive.CONTAINERD_GZIP, (198, 4096))
         finally:
             owner.close()
+        _NATIVE_PHASE = "pdeath-before"
         _native_parent_death(False)
+        _NATIVE_PHASE = "pdeath-after"
         _native_parent_death(True)
+        _NATIVE_PHASE = "residue"
         assert process._runtime_discovery_process_residue()
     finally:
         os.close(4096)
@@ -284,7 +293,11 @@ def _native_runtime_preflight():
 
 
 if _native_selected():
-    _native_runtime_preflight()
+    try:
+        _native_runtime_preflight()
+    except BaseException:
+        os.write(2, f"native-process-failure:{_NATIVE_PHASE}\n".encode("ascii"))
+        raise SystemExit(1)
     print(_NATIVE_MARKER, flush=True)
     raise SystemExit(0)
 
