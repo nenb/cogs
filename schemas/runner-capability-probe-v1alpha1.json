@@ -346,7 +346,7 @@
         "executable": {
           "allOf": [
             { "$ref": "#/$defs/toolIdentity" },
-            { "properties": { "path": { "const": "/usr/bin/sudo" } } }
+            { "type": "object", "properties": { "path": { "const": "/usr/bin/sudo" } } }
           ]
         },
         "noninteractive": { "$ref": "#/$defs/probeStatus" }
@@ -369,25 +369,25 @@
         "gzip": {
           "allOf": [
             { "$ref": "#/$defs/toolIdentity" },
-            { "properties": { "path": { "const": "/usr/bin/gzip" } } }
+            { "type": "object", "properties": { "path": { "const": "/usr/bin/gzip" } } }
           ]
         },
         "python3": {
           "allOf": [
             { "$ref": "#/$defs/toolIdentity" },
-            { "properties": { "path": { "const": "/usr/bin/python3" } } }
+            { "type": "object", "properties": { "path": { "const": "/usr/bin/python3" } } }
           ]
         },
         "unshare": {
           "allOf": [
             { "$ref": "#/$defs/toolIdentity" },
-            { "properties": { "path": { "const": "/usr/bin/unshare" } } }
+            { "type": "object", "properties": { "path": { "const": "/usr/bin/unshare" } } }
           ]
         },
         "zstd": {
           "allOf": [
             { "$ref": "#/$defs/toolIdentity" },
-            { "properties": { "path": { "const": "/usr/bin/zstd" } } }
+            { "type": "object", "properties": { "path": { "const": "/usr/bin/zstd" } } }
           ]
         }
       }
@@ -472,9 +472,11 @@
       },
       "oneOf": [
         {
+          "type": "object",
           "properties": { "errno": { "type": "null" }, "state": { "enum": ["ok", "blocked", "mismatch"] } }
         },
         {
+          "type": "object",
           "properties": {
             "errno": {
               "oneOf": [{ "type": "null" }, { "enum": [38, 95] }]
@@ -483,9 +485,11 @@
           }
         },
         {
+          "type": "object",
           "properties": { "errno": { "enum": [1, 13] }, "state": { "const": "denied" } }
         },
         {
+          "type": "object",
           "properties": {
             "errno": {
               "type": "integer",
