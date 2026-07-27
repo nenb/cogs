@@ -7,12 +7,17 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: outcome-two-runner-capability-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
 jobs:
   runner-capability-probe:
     name: Non-authoritative runner capability observation
     if: >-
       github.run_attempt == 1 &&
       github.repository == 'nenb/cogs' &&
+      github.event.action == 'labeled' &&
       github.event.label.name == 'outcome-two-runner-capability' &&
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-24.04
@@ -24,35 +29,46 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
 
-      - name: Observe and validate one non-authoritative canonical report
+      - name: Admit exact clean source blobs
+        id: gate
+        shell: /bin/bash --noprofile --norc -euo pipefail {0}
         env:
+          EXPECTED_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
           EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           EXPECTED_REPOSITORY: ${{ github.repository }}
-          PROBE_RUN_ATTEMPT: ${{ github.run_attempt }}
-          PROBE_RUN_ID: ${{ github.run_id }}
         run: |
-          set -euo pipefail
-          report="$RUNNER_TEMP/outcome-two-runner-capability.json"
-          test ! -e "$report"
-          test "$(/usr/bin/git rev-parse HEAD)" = "$EXPECTED_HEAD_SHA"
-          umask 077
-          env -i /usr/bin/timeout --signal=TERM --kill-after=5s 120s \
-            /usr/bin/python3 -I "$GITHUB_WORKSPACE/scripts/runner-capability-probe.py" run \
-            --repository "$EXPECTED_REPOSITORY" \
-            --head-sha "$EXPECTED_HEAD_SHA" \
-            --workflow .github/workflows/outcome-two-runner-capability.yml \
-            --run-id "$PROBE_RUN_ID" \
-            --run-attempt "$PROBE_RUN_ATTEMPT" \
-            --image-os "${ImageOS-}" \
-            --image-version "${ImageVersion-}" \
-            --runner-arch "${RUNNER_ARCH-}" \
-            --runner-environment "${RUNNER_ENVIRONMENT-}" </dev/null >"$report"
-          env -i /usr/bin/timeout --signal=TERM --kill-after=1s 5s \
-            /usr/bin/python3 -I "$GITHUB_WORKSPACE/scripts/runner-capability-probe.py" validate \
-            --report "$report" \
-            --expected-authority none \
-            --expected-qualified false >/dev/null
-          /bin/cat -- "$report"
+          [[ "$EXPECTED_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$EXPECTED_REPOSITORY" = nenb/cogs
+          test "$EXPECTED_HEAD_REPOSITORY" = "$EXPECTED_REPOSITORY"
+          checkout_sha="$(/usr/bin/git rev-parse --verify HEAD)"
+          test "$checkout_sha" = "$EXPECTED_HEAD_SHA"
+          printf 'checkout_sha=%s\n' "$checkout_sha" >>"$GITHUB_OUTPUT"
+          test "$(/usr/bin/git remote)" = origin
+          test "$(/usr/bin/git remote get-url --all origin)" = "https://github.com/$EXPECTED_REPOSITORY"
+          # Reject credential.helper/all credential settings and every HTTP extraheader.
+          credential_config="$({ /usr/bin/git config --show-origin --name-only --get-regexp '^(credential\.|http\..*\.extraheader$)' || test "$?" -eq 1; } 2>/dev/null)"
+          test -z "$credential_config"
+          test -z "$(/usr/bin/git status --porcelain=v1 --untracked-files=all --ignored=matching)"
+          verify_blob() {
+            local path="$1" output="$2" checkout_digest source_digest
+            test -f "$path" && test ! -L "$path"
+            checkout_digest="$(/usr/bin/sha256sum -- "$path")"; checkout_digest="${checkout_digest%% *}"
+            source_digest="$(/usr/bin/git cat-file blob "$EXPECTED_HEAD_SHA:$path" | /usr/bin/sha256sum)"; source_digest="${source_digest%% *}"
+            [[ "$source_digest" =~ ^[0-9a-f]{64}$ ]] && test "$checkout_digest" = "$source_digest"
+            printf '%s=%s\n' "$output" "$source_digest" >>"$GITHUB_OUTPUT"
+          }
+          verify_blob scripts/runner-capability-probe.py driver_sha256
+          verify_blob schemas/runner-capability-probe-v1alpha1.json schema_sha256
+          verify_blob .github/workflows/outcome-two-runner-capability.yml source_head_workflow_blob_sha256
 
-      # The probe design permits only the validated JSON line in the ordinary
-      # job log. It does not permit publication as an evidence artifact.
+      - name: Emit one non-authoritative canonical observation
+        shell: /bin/bash --noprofile --norc -euo pipefail {0}
+        run: |
+          /usr/bin/env -i \
+            COGS_CAP_REPOSITORY='${{ github.repository }}' COGS_CAP_WORKFLOW='.github/workflows/outcome-two-runner-capability.yml' COGS_CAP_JOB='runner-capability-probe' \
+            COGS_CAP_EVENT='${{ github.event_name }}' COGS_CAP_ACTION='${{ github.event.action }}' COGS_CAP_RUN_ID='${{ github.run_id }}' COGS_CAP_RUN_ATTEMPT='${{ github.run_attempt }}' COGS_CAP_PULL_REQUEST_NUMBER='${{ github.event.pull_request.number }}' \
+            COGS_CAP_PR_HEAD_REPOSITORY='${{ github.event.pull_request.head.repo.full_name }}' COGS_CAP_PR_HEAD_SHA='${{ github.event.pull_request.head.sha }}' COGS_CAP_CHECKOUT_SHA='${{ steps.gate.outputs.checkout_sha }}' COGS_CAP_BASE_SHA='${{ github.event.pull_request.base.sha }}' \
+            COGS_CAP_GITHUB_SHA='${{ github.sha }}' COGS_CAP_GITHUB_WORKFLOW_SHA='${{ github.workflow_sha }}' COGS_CAP_EVENT_MERGE_SHA='${{ github.event.pull_request.merge_commit_sha }}' \
+            COGS_CAP_IMAGE_OS="${ImageOS-}" COGS_CAP_IMAGE_VERSION="${ImageVersion-}" COGS_CAP_RUNNER_ARCH="${RUNNER_ARCH-}" COGS_CAP_RUNNER_ENVIRONMENT="${RUNNER_ENVIRONMENT-}" \
+            COGS_CAP_DRIVER_SHA256='${{ steps.gate.outputs.driver_sha256 }}' COGS_CAP_SCHEMA_SHA256='${{ steps.gate.outputs.schema_sha256 }}' COGS_CAP_SOURCE_HEAD_WORKFLOW_BLOB_SHA256='${{ steps.gate.outputs.source_head_workflow_blob_sha256 }}' \
+            /usr/bin/python3 -I -B scripts/runner-capability-probe.py --workflow-bound </dev/null
