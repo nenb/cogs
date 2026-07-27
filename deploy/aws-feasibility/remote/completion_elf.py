@@ -12,6 +12,8 @@ _MAX_DYNAMIC_SIZE = 64 * 1024
 _MAX_INTERPRETER_SIZE = 256
 _MAX_NAME_SIZE = 255
 _MAX_NEEDED = 128
+_PAGE_SIZE = 4096
+_PAGE_MASK = _PAGE_SIZE - 1
 _U64_MAX = (1 << 64) - 1
 
 _PT_LOAD = 1
@@ -60,6 +62,35 @@ class ElfMetadata:
     needed: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class _Load:
+    """One ordered Linux load mapping, including its rounded page extents."""
+
+    virtual_start: int
+    virtual_end: int
+    file_start: int
+    file_end: int
+    virtual_page_start: int
+    memory_page_end: int
+    file_page_start: int
+    file_page_end: int
+    bss_start: int | None
+
+    @property
+    def delta(self) -> int:
+        return self.file_page_start - self.virtual_page_start
+
+    @property
+    def virtual_file_page_end(self) -> int:
+        return self.virtual_page_start + self.file_page_end - self.file_page_start
+
+    @property
+    def file_identity_end(self) -> int:
+        if self.bss_start is not None:
+            return self.bss_start
+        return self.virtual_file_page_end
+
+
 def _require(condition: bool) -> None:
     if not condition:
         raise ElfParseError()
@@ -72,6 +103,16 @@ def _span(start: int, size: int, limit: int) -> tuple[int, int]:
     end = start + size
     _require(end <= limit)
     return start, end
+
+
+def _page_start(value: int) -> int:
+    return value & ~_PAGE_MASK
+
+
+def _page_end(value: int) -> int:
+    rounded = (value + _PAGE_MASK) & ~_PAGE_MASK
+    _require(rounded <= _U64_MAX)
+    return rounded
 
 
 def _parse_elf64(data: bytes) -> ElfMetadata:
@@ -127,7 +168,24 @@ def _parse_elf64(data: bytes) -> ElfMetadata:
         segment = (address, memory_end, file_offset, file_end)
         if kind == _PT_LOAD:
             _require(file_size > 0 and memory_size > 0)
-            loads.append(segment)
+            _require(alignment >= _PAGE_SIZE)
+            _require(file_offset % _PAGE_SIZE == address % _PAGE_SIZE)
+            load = _Load(
+                address,
+                memory_end,
+                file_offset,
+                file_end,
+                _page_start(address),
+                _page_end(memory_end),
+                _page_start(file_offset),
+                _page_end(file_end),
+                address + file_size if file_size < memory_size else None,
+            )
+            _require(load.virtual_file_page_end <= load.memory_page_end)
+            if loads:
+                _require(loads[-1].virtual_page_start < load.virtual_page_start)
+                _require(loads[-1].file_page_start <= load.file_page_start)
+            loads.append(load)
         elif kind == _PT_DYNAMIC:
             _require(file_size == memory_size)
             dynamic_segments.append(segment)
@@ -139,18 +197,26 @@ def _parse_elf64(data: bytes) -> ElfMetadata:
     _require(len(interpreter_segments) <= 1)
     for index, left in enumerate(loads):
         for right in loads[index + 1 :]:
-            _require(left[1] <= right[0] or right[1] <= left[0])
-            _require(left[3] <= right[2] or right[3] <= left[2])
+            virtual_start = max(left.virtual_page_start, right.virtual_page_start)
+            virtual_end = min(left.memory_page_end, right.memory_page_end)
+            if virtual_start < virtual_end:
+                _require(left.delta == right.delta)
+                _require(virtual_end <= left.file_identity_end)
+                _require(virtual_end <= right.file_identity_end)
+            file_start = max(left.file_page_start, right.file_page_start)
+            file_end = min(left.file_page_end, right.file_page_end)
+            if file_start < file_end:
+                _require(left.delta == right.delta)
 
     def mapped(address: int, size: int) -> int:
         _, end = _span(address, size, _U64_MAX)
-        offsets = []
-        for virtual, _memory_end, file_offset, file_end in loads:
-            file_memory_end = virtual + file_end - file_offset
-            if virtual <= address and end <= file_memory_end:
-                offsets.append(file_offset + address - virtual)
+        offsets = set()
+        for load in loads:
+            declared_file_end = load.virtual_start + load.file_end - load.file_start
+            if load.virtual_start <= address and end <= declared_file_end:
+                offsets.add(load.file_start + address - load.virtual_start)
         _require(len(offsets) == 1)
-        return offsets[0]
+        return offsets.pop()
 
     interpreter = None
     if interpreter_segments:
