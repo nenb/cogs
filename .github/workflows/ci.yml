@@ -523,7 +523,7 @@ jobs:
           for library in ("/lib", "/lib64"):
               if os.path.exists(library): binds.append((library, future+library, {"ro","nosuid","nodev"})); expected.add(future+library)
           proc = one(future+"/proc")
-          proc_checks = (("parent",proc["parent"] == root["id"]),("root",proc["root"] == "/"),("type",proc["type"] == "proc"),("source",proc["source"] == "proc"),("vfs",proc["vfs"] == {"ro","nosuid","nodev","noexec","relatime"}),("super",proc["super"] == {"rw"}),("optional",not proc["optional"]),("device",proc["dev"] == device(future+"/proc")))
+          proc_checks = (("parent",proc["parent"] == root["id"]),("root",proc["root"] == "/"),("type",proc["type"] == "proc"),("source",proc["source"] == "proc"),("vfs",proc["vfs"] == {"ro","nosuid","nodev","noexec","relatime"}),("super",proc["super"] == {"ro"}),("optional",not proc["optional"]),("device",proc["dev"] == device(future+"/proc")))
           proc_failed = [name for name, valid in proc_checks if not valid]
           if proc_failed == ["super"]:
               detail = "hidepid-invisible" if proc["super"] == {"rw","hidepid=invisible"} else "hidepid-2" if proc["super"] == {"rw","hidepid=2"} else "hidepid-1" if proc["super"] == {"rw","hidepid=1"} else "extra" if "rw" in proc["super"] and len(proc["super"]) > 1 else "other"; raise RuntimeError("proc identity super " + detail)
