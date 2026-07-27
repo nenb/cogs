@@ -1,6 +1,6 @@
 # ADR 0069: Reallocate runtime-discovery correction highs
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-27
 - Decision owner: Nick Byrne
 - Amendment scope: Amend four non-transferable ADR 0068 Phase B per-file gross-addition maxima: `scripts/run-stage2-phase-a-candidate.py` from 240 to 450, `completion_kata_qualification.py` from 320 to 450, `completion_kata_process.py` from 600 to 850, and the Phase B schema from 220 to 300. Also authorize exactly one bounded local pre-event actual-size evidence execution and move only the final internal software boundary from 5,400 to at most 5,280 seconds while retaining the 5,400-second outer timeout. `completion_kata_runtime.py` remains 800, every other per-file high and the absolute Phase B high of 3,310 remain unchanged. Every non-conflicting ADR 0065–0068 requirement remains binding.
