@@ -1,0 +1,25 @@
+{
+  "authentication_open_numbers": [1, 2, 3, 4, 5, 6, 7],
+  "helper_start_faults": [
+    "gate-pipe",
+    "status-pipe",
+    "devnull-open",
+    "fork",
+    "pidfd-open",
+    "exec-status-poll",
+    "exec-status-read",
+    "proc-stat-open",
+    "proc-stat-read",
+    "session-read"
+  ],
+  "child_faults": ["child-setup", "child-exec"],
+  "stop_faults": ["term", "wait", "kill", "reap"],
+  "stop_open_faults": ["children-open", "identity-stat-open", "identity-exe-open"],
+  "cleanup": [
+    "primary-plus-three-close-errors",
+    "close-after-fd-number-reuse",
+    "double-close",
+    "duplicate-registration",
+    "unexpected-owned-child"
+  ]
+}

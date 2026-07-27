@@ -1,0 +1,39 @@
+{
+  "required_seals": [
+    "F_SEAL_WRITE",
+    "F_SEAL_GROW",
+    "F_SEAL_SHRINK",
+    "F_SEAL_FUTURE_WRITE",
+    "F_SEAL_EXEC",
+    "F_SEAL_SEAL"
+  ],
+  "success": {
+    "source": "valid-executable.elf",
+    "mode": 365,
+    "source_descriptor_only": true
+  },
+  "faults": [
+    "memfd-create",
+    "fchmod",
+    "source-pread-error",
+    "source-pread-short",
+    "destination-write-error",
+    "destination-write-zero",
+    "destination-write-partial-then-error",
+    "fsync",
+    "destination-pread-error",
+    "destination-pread-short",
+    "readback-digest-mismatch",
+    "source-generation-before-copy",
+    "source-generation-after-copy",
+    "add-seals",
+    "get-seals",
+    "get-seals-missing-write",
+    "get-seals-missing-grow",
+    "get-seals-missing-shrink",
+    "get-seals-missing-future-write",
+    "get-seals-missing-exec",
+    "get-seals-missing-seal",
+    "destination-close"
+  ]
+}
