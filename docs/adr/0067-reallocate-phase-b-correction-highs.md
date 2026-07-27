@@ -1,6 +1,6 @@
 # ADR 0067: Reallocate Phase B correction highs
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-27
 - Decision owner: Nick Byrne
 - Amendment scope: This ADR amends only four non-transferable ADR 0066 Phase B per-file gross-addition maxima: `completion_kata_operation.py` from 360 to 400, `completion_kata_process.py` from 430 to 600, `completion_kata_runtime.py` from 520 to 800, and `scripts/run-stage2-phase-a-candidate.py` from 220 to 240. Every other per-file high and the absolute Phase B high of 3,310 remain unchanged. Every non-conflicting ADR 0065–0066 requirement remains binding.
