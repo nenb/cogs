@@ -283,6 +283,22 @@ def _native_runtime_preflight():
             closure, cache, root = process._host_closure(tool, path)
             closures.append(closure)
             if tool == "python3-parser":
+                _NATIVE_PHASE = "mapped-proc"
+                proc = os.open(f"/proc/{os.getpid()}", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+                try:
+                    _NATIVE_PHASE = "mapped-maps"
+                    with open(f"/proc/self/fd/{proc}/maps", "rb") as maps_file:
+                        maps = maps_file.read(4 * 1024 * 1024)
+                    _NATIVE_PHASE = "mapped-exe"
+                    os.stat("exe", dir_fd=proc)
+                    _NATIVE_PHASE = "mapped-files"
+                    for line in maps.splitlines():
+                        fields = line.split(maxsplit=5)
+                        if len(fields) >= 5 and b"x" in fields[1] and fields[4] != b"0":
+                            descriptor = os.open("map_files/" + fields[0].decode("ascii"), os.O_RDONLY | os.O_CLOEXEC, dir_fd=proc)
+                            os.close(descriptor)
+                finally:
+                    os.close(proc)
                 _NATIVE_PHASE = "host-mapped"
                 process._mapped_closure(os.getpid(), closure, False)
             else:
