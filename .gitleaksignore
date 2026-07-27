@@ -1,0 +1,2 @@
+# Deterministic RFC 8032 test-vector key synthesized only inside the hostile fixture.
+7377a8bf73dc181827bf61a8a1edee8c31cf9b96:test/aws-stage2-completion-kata-inputs.py:private-key:54
