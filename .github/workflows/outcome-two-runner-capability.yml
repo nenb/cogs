@@ -44,10 +44,22 @@ jobs:
           test "$checkout_sha" = "$EXPECTED_HEAD_SHA"
           printf 'checkout_sha=%s\n' "$checkout_sha" >>"$GITHUB_OUTPUT"
           test "$(/usr/bin/git remote)" = origin
-          test "$(/usr/bin/git remote get-url --all origin)" = "https://github.com/$EXPECTED_REPOSITORY"
-          # Reject credential.helper/all credential settings and every HTTP extraheader.
-          credential_config="$({ /usr/bin/git config --show-origin --name-only --get-regexp '^(credential\.|http\..*\.extraheader$)' || test "$?" -eq 1; } 2>/dev/null)"
-          test -z "$credential_config"
+          expected_url="https://github.com/$EXPECTED_REPOSITORY"
+          fetch_url="$(/usr/bin/git remote get-url --all origin 2>/dev/null)"
+          case "$fetch_url" in *://*@*) exit 1 ;; esac
+          test "$fetch_url" = "$expected_url"
+          push_url="$(/usr/bin/git remote get-url --push --all origin 2>/dev/null)"
+          case "$push_url" in *://*@*) exit 1 ;; esac
+          test "$push_url" = "$expected_url"
+          reject_git_config() {
+            if /usr/bin/git config --name-only --get-regexp "$1" >/dev/null 2>&1; then
+              return 1
+            else
+              test "$?" -eq 1
+            fi
+          }
+          reject_git_config '^credential(\..*)?\.helper$'
+          reject_git_config '^http(\..*)?\.extraheader$'
           test -z "$(/usr/bin/git status --porcelain=v1 --untracked-files=all --ignored=matching)"
           verify_blob() {
             local path="$1" output="$2" checkout_digest source_digest
