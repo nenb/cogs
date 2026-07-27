@@ -1,0 +1,606 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.invalid/schemas/runner-capability-probe-v1alpha1.json",
+  "title": "Cogs Runner Capability Probe v1alpha1",
+  "description": "Closed, metadata-only, non-authoritative runner capability observation.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "authority",
+    "cleanup",
+    "descriptors",
+    "kernel",
+    "kvm",
+    "namespaces",
+    "opath",
+    "outcome",
+    "procfs",
+    "qualified",
+    "rlimit_nofile",
+    "runner",
+    "schema",
+    "seccomp",
+    "source",
+    "sudo",
+    "temporary_files",
+    "tools"
+  ],
+  "properties": {
+    "authority": { "const": "none" },
+    "cleanup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "children_reaped",
+        "descriptors_restored",
+        "mounts_gone",
+        "namespace_handles_retained",
+        "temporary_names_gone",
+        "uncertainty"
+      ],
+      "properties": {
+        "children_reaped": { "type": "boolean" },
+        "descriptors_restored": { "type": "boolean" },
+        "mounts_gone": { "type": "boolean" },
+        "namespace_handles_retained": { "const": false },
+        "temporary_names_gone": { "type": "boolean" },
+        "uncertainty": { "type": "boolean" }
+      }
+    },
+    "descriptors": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["close_range_high", "close_range_low", "exec_cloexec", "inherited_baseline_restored"],
+      "properties": {
+        "close_range_high": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["first", "flags", "invocation", "known_fd_closed", "last", "syscall_number_amd64"],
+          "properties": {
+            "first": { "const": 4096 },
+            "flags": { "const": 0 },
+            "invocation": { "$ref": "#/$defs/probeStatus" },
+            "known_fd_closed": { "$ref": "#/$defs/nullableBoolean" },
+            "last": { "const": 4096 },
+            "syscall_number_amd64": { "const": 436 }
+          }
+        },
+        "close_range_low": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["first", "flags", "invocation", "known_fd_closed", "last", "syscall_number_amd64"],
+          "properties": {
+            "first": { "const": 198 },
+            "flags": { "const": 0 },
+            "invocation": { "$ref": "#/$defs/probeStatus" },
+            "known_fd_closed": { "$ref": "#/$defs/nullableBoolean" },
+            "last": { "const": 198 },
+            "syscall_number_amd64": { "const": 436 }
+          }
+        },
+        "exec_cloexec": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["cloexec_fd_199_closed", "invocation", "non_cloexec_fd_198_survived"],
+          "properties": {
+            "cloexec_fd_199_closed": { "$ref": "#/$defs/nullableBoolean" },
+            "invocation": { "$ref": "#/$defs/probeStatus" },
+            "non_cloexec_fd_198_survived": { "$ref": "#/$defs/nullableBoolean" }
+          }
+        },
+        "inherited_baseline_restored": { "type": "boolean" }
+      }
+    },
+    "kernel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["machine", "release", "sysname", "uname_status"],
+      "properties": {
+        "machine": { "enum": ["x86_64", "unexpected"] },
+        "release": { "$ref": "#/$defs/printableAscii128" },
+        "sysname": { "enum": ["Linux", "unexpected"] },
+        "uname_status": { "$ref": "#/$defs/probeStatus" }
+      }
+    },
+    "kvm": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "api_version",
+        "character_device",
+        "check_extension_user_memory",
+        "device_present",
+        "get_api_version",
+        "open_read_write",
+        "user_memory_extension"
+      ],
+      "properties": {
+        "api_version": { "$ref": "#/$defs/nullableUint8" },
+        "character_device": { "$ref": "#/$defs/nullableBoolean" },
+        "check_extension_user_memory": { "$ref": "#/$defs/probeStatus" },
+        "device_present": { "type": "boolean" },
+        "get_api_version": { "$ref": "#/$defs/probeStatus" },
+        "open_read_write": { "$ref": "#/$defs/probeStatus" },
+        "user_memory_extension": {
+          "oneOf": [{ "type": "null" }, { "type": "integer", "minimum": 0, "maximum": 2147483647 }]
+        }
+      }
+    },
+    "namespaces": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["combined_user_mount_pid_fork", "mount", "network", "pid", "user_direct_root"],
+      "properties": {
+        "combined_user_mount_pid_fork": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["child_is_namespace_pid_1", "cleanup", "create", "proc_mount"],
+          "properties": {
+            "child_is_namespace_pid_1": { "$ref": "#/$defs/nullableBoolean" },
+            "cleanup": { "$ref": "#/$defs/probeStatus" },
+            "create": { "$ref": "#/$defs/probeStatus" },
+            "proc_mount": { "$ref": "#/$defs/probeStatus" }
+          }
+        },
+        "mount": { "$ref": "#/$defs/simpleNamespaceCase" },
+        "network": { "$ref": "#/$defs/simpleNamespaceCase" },
+        "pid": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["child_is_namespace_pid_1", "create", "nspid_final_component_is_1"],
+          "properties": {
+            "child_is_namespace_pid_1": { "$ref": "#/$defs/nullableBoolean" },
+            "create": { "$ref": "#/$defs/probeStatus" },
+            "nspid_final_component_is_1": { "$ref": "#/$defs/nullableBoolean" }
+          }
+        },
+        "user_direct_root": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["create", "gid_map", "gid_map_status", "setgroups", "uid_map", "uid_map_status"],
+          "properties": {
+            "create": { "$ref": "#/$defs/probeStatus" },
+            "gid_map": { "$ref": "#/$defs/nullableIdMap" },
+            "gid_map_status": { "$ref": "#/$defs/probeStatus" },
+            "setgroups": { "enum": ["deny", "allow", "absent", "unexpected"] },
+            "uid_map": { "$ref": "#/$defs/nullableIdMap" },
+            "uid_map_status": { "$ref": "#/$defs/probeStatus" }
+          }
+        }
+      }
+    },
+    "opath": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["across_mount_namespace", "same_mount_namespace"],
+      "properties": {
+        "across_mount_namespace": { "$ref": "#/$defs/opathCase" },
+        "same_mount_namespace": { "$ref": "#/$defs/opathCase" }
+      }
+    },
+    "outcome": { "enum": ["complete", "incomplete"] },
+    "procfs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "child_owned_proc_after_cap_drop",
+        "child_owned_proc_before_cap_drop",
+        "child_proc_distinct_from_parent",
+        "child_proc_read_only",
+        "child_proc_view_has_pid_1",
+        "child_userns_parent_proc_after_cap_drop",
+        "child_userns_parent_proc_before_cap_drop",
+        "host_runner",
+        "host_sudo_root",
+        "parent_proc_read_only"
+      ],
+      "properties": {
+        "child_owned_proc_after_cap_drop": { "$ref": "#/$defs/mapFilesCase" },
+        "child_owned_proc_before_cap_drop": { "$ref": "#/$defs/mapFilesCase" },
+        "child_proc_distinct_from_parent": { "$ref": "#/$defs/nullableBoolean" },
+        "child_proc_read_only": { "$ref": "#/$defs/nullableBoolean" },
+        "child_proc_view_has_pid_1": { "$ref": "#/$defs/nullableBoolean" },
+        "child_userns_parent_proc_after_cap_drop": { "$ref": "#/$defs/mapFilesCase" },
+        "child_userns_parent_proc_before_cap_drop": { "$ref": "#/$defs/mapFilesCase" },
+        "host_runner": { "$ref": "#/$defs/mapFilesCase" },
+        "host_sudo_root": { "$ref": "#/$defs/mapFilesCase" },
+        "parent_proc_read_only": { "$ref": "#/$defs/nullableBoolean" }
+      }
+    },
+    "qualified": { "const": false },
+    "rlimit_nofile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["hard", "high_fd_4096_possible", "soft"],
+      "properties": {
+        "hard": { "$ref": "#/$defs/rlimitValue" },
+        "high_fd_4096_possible": { "type": "boolean" },
+        "soft": { "$ref": "#/$defs/rlimitValue" }
+      }
+    },
+    "runner": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "environment",
+        "image_metadata_status",
+        "image_os",
+        "image_version",
+        "requested_label",
+        "runner_arch"
+      ],
+      "properties": {
+        "environment": { "enum": ["github-hosted", "unexpected"] },
+        "image_metadata_status": { "$ref": "#/$defs/probeStatus" },
+        "image_os": {
+          "oneOf": [{ "type": "null" }, { "type": "string", "pattern": "^[a-z0-9.-]{1,32}$" }]
+        },
+        "image_version": {
+          "oneOf": [{ "type": "null" }, { "type": "string", "pattern": "^[A-Za-z0-9._-]{1,64}$" }]
+        },
+        "requested_label": { "const": "ubuntu-24.04" },
+        "runner_arch": { "enum": ["X64", "unexpected"] }
+      }
+    },
+    "schema": { "const": "cogs.runner-capability-probe/v1alpha1" },
+    "seccomp": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "final_mode",
+        "initial_mode",
+        "initial_no_new_privs",
+        "install_filter",
+        "network_syscalls_policy",
+        "set_no_new_privs"
+      ],
+      "properties": {
+        "final_mode": {
+          "oneOf": [{ "type": "null" }, { "enum": [0, 1, 2] }]
+        },
+        "initial_mode": { "enum": [0, 1, 2] },
+        "initial_no_new_privs": { "enum": [0, 1] },
+        "install_filter": { "$ref": "#/$defs/probeStatus" },
+        "network_syscalls_policy": { "enum": ["fixed-eperm-filter-installed", "filter-unavailable"] },
+        "set_no_new_privs": { "$ref": "#/$defs/probeStatus" }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["head_sha", "repository", "run_attempt", "run_id", "workflow_sha256"],
+      "properties": {
+        "head_sha": { "$ref": "#/$defs/sha1" },
+        "repository": { "const": "nenb/cogs" },
+        "run_attempt": { "type": "integer", "minimum": 1, "maximum": 255 },
+        "run_id": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$", "maxLength": 20 },
+        "workflow_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "sudo": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["close_from_3", "close_from_4", "executable", "noninteractive"],
+      "properties": {
+        "close_from_3": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["exit_code", "fd3_closed", "fd4_closed", "invocation"],
+          "properties": {
+            "exit_code": { "$ref": "#/$defs/nullableUint8" },
+            "fd3_closed": { "$ref": "#/$defs/nullableBoolean" },
+            "fd4_closed": { "$ref": "#/$defs/nullableBoolean" },
+            "invocation": { "$ref": "#/$defs/probeStatus" }
+          }
+        },
+        "close_from_4": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["exit_code", "fd3_preserved", "fd4_closed", "invocation"],
+          "properties": {
+            "exit_code": { "$ref": "#/$defs/nullableUint8" },
+            "fd3_preserved": { "$ref": "#/$defs/nullableBoolean" },
+            "fd4_closed": { "$ref": "#/$defs/nullableBoolean" },
+            "invocation": { "$ref": "#/$defs/probeStatus" }
+          }
+        },
+        "executable": {
+          "allOf": [
+            { "$ref": "#/$defs/toolIdentity" },
+            {
+              "type": "object",
+              "properties": {
+                "path": { "const": "/usr/bin/sudo" },
+                "version_line": {
+                  "oneOf": [
+                    { "type": "null" },
+                    { "type": "string", "pattern": "^Sudo version [0-9][A-Za-z0-9.+:~_-]{0,95}$" }
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        "noninteractive": { "$ref": "#/$defs/probeStatus" }
+      }
+    },
+    "temporary_files": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["private_tmpfs", "runner_temp"],
+      "properties": {
+        "private_tmpfs": { "$ref": "#/$defs/tmpfileCase" },
+        "runner_temp": { "$ref": "#/$defs/tmpfileCase" }
+      }
+    },
+    "tools": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["gzip", "python3", "unshare", "zstd"],
+      "properties": {
+        "gzip": {
+          "allOf": [
+            { "$ref": "#/$defs/toolIdentity" },
+            {
+              "type": "object",
+              "properties": {
+                "path": { "const": "/usr/bin/gzip" },
+                "version_line": {
+                  "oneOf": [{ "type": "null" }, { "type": "string", "pattern": "^gzip [0-9][A-Za-z0-9.+:~_-]{0,95}$" }]
+                }
+              }
+            }
+          ]
+        },
+        "python3": {
+          "allOf": [
+            { "$ref": "#/$defs/toolIdentity" },
+            {
+              "type": "object",
+              "properties": {
+                "path": { "const": "/usr/bin/python3" },
+                "version_line": {
+                  "oneOf": [
+                    { "type": "null" },
+                    { "type": "string", "pattern": "^Python 3\\.[0-9]+\\.[0-9]+[A-Za-z0-9.+:~_-]{0,64}$" }
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        "unshare": {
+          "allOf": [
+            { "$ref": "#/$defs/toolIdentity" },
+            {
+              "type": "object",
+              "properties": {
+                "path": { "const": "/usr/bin/unshare" },
+                "version_line": {
+                  "oneOf": [
+                    { "type": "null" },
+                    {
+                      "type": "string",
+                      "pattern": "^unshare from util-linux [0-9][A-Za-z0-9.+:~_-]{0,95}$"
+                    }
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        "zstd": {
+          "allOf": [
+            { "$ref": "#/$defs/toolIdentity" },
+            {
+              "type": "object",
+              "properties": {
+                "path": { "const": "/usr/bin/zstd" },
+                "version_line": {
+                  "oneOf": [
+                    { "type": "null" },
+                    {
+                      "type": "string",
+                      "pattern": "^\\*\\*\\* Zstandard CLI \\([A-Za-z0-9_-]{1,32}\\) v[0-9]+\\.[0-9]+\\.[0-9]+, by Yann Collet \\*\\*\\*$"
+                    }
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  },
+  "$defs": {
+    "idMap": {
+      "type": "array",
+      "maxItems": 5,
+      "items": {
+        "type": "array",
+        "minItems": 3,
+        "maxItems": 3,
+        "prefixItems": [{ "$ref": "#/$defs/uint32" }, { "$ref": "#/$defs/uint32" }, { "$ref": "#/$defs/uint32" }],
+        "items": false
+      }
+    },
+    "mapFilesCase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "all_opened_descriptors_closed",
+        "capability_sets_zero",
+        "executable_mappings_selected",
+        "first_open_failure",
+        "map_files_opened",
+        "maps_read",
+        "proc_mount_created_in"
+      ],
+      "properties": {
+        "all_opened_descriptors_closed": { "type": "boolean" },
+        "capability_sets_zero": { "type": "boolean" },
+        "executable_mappings_selected": { "type": "integer", "minimum": 0, "maximum": 8 },
+        "first_open_failure": {
+          "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/probeStatus" }]
+        },
+        "map_files_opened": { "type": "integer", "minimum": 0, "maximum": 8 },
+        "maps_read": { "$ref": "#/$defs/probeStatus" },
+        "proc_mount_created_in": { "enum": ["host", "parent-userns", "child-userns"] }
+      }
+    },
+    "nullableBoolean": {
+      "oneOf": [{ "type": "null" }, { "type": "boolean" }]
+    },
+    "nullableIdMap": {
+      "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/idMap" }]
+    },
+    "nullableUint8": {
+      "oneOf": [{ "type": "null" }, { "type": "integer", "minimum": 0, "maximum": 255 }]
+    },
+    "opathCase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "bind_mount_from_proc_fd",
+        "bind_target_identity_matches",
+        "cleanup",
+        "fstat_stable",
+        "open_opath_directory"
+      ],
+      "properties": {
+        "bind_mount_from_proc_fd": { "$ref": "#/$defs/probeStatus" },
+        "bind_target_identity_matches": { "$ref": "#/$defs/nullableBoolean" },
+        "cleanup": { "$ref": "#/$defs/probeStatus" },
+        "fstat_stable": { "$ref": "#/$defs/nullableBoolean" },
+        "open_opath_directory": { "$ref": "#/$defs/probeStatus" }
+      }
+    },
+    "printableAscii128": {
+      "type": "string",
+      "pattern": "^[\\x20-\\x7E]{1,128}$"
+    },
+    "printableAscii160": {
+      "type": "string",
+      "pattern": "^[\\x20-\\x7E]{1,160}$"
+    },
+    "probeStatus": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["errno", "state"],
+      "properties": {
+        "errno": {
+          "oneOf": [{ "type": "null" }, { "type": "integer", "minimum": 1, "maximum": 4095 }]
+        },
+        "state": { "enum": ["ok", "unsupported", "denied", "blocked", "mismatch", "error"] }
+      },
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": { "errno": { "type": "null" }, "state": { "enum": ["ok", "blocked", "mismatch"] } }
+        },
+        {
+          "type": "object",
+          "properties": {
+            "errno": {
+              "oneOf": [{ "type": "null" }, { "enum": [38, 95] }]
+            },
+            "state": { "const": "unsupported" }
+          }
+        },
+        {
+          "type": "object",
+          "properties": { "errno": { "enum": [1, 13] }, "state": { "const": "denied" } }
+        },
+        {
+          "type": "object",
+          "properties": {
+            "errno": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 4095,
+              "not": { "enum": [1, 13, 38, 95] }
+            },
+            "state": { "const": "error" }
+          }
+        }
+      ]
+    },
+    "rlimitValue": {
+      "oneOf": [{ "type": "integer", "minimum": 0, "maximum": 9223372036854775807 }, { "const": "infinity" }]
+    },
+    "sha1": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "simpleNamespaceCase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["create", "distinct_from_parent"],
+      "properties": {
+        "create": { "$ref": "#/$defs/probeStatus" },
+        "distinct_from_parent": { "$ref": "#/$defs/nullableBoolean" }
+      }
+    },
+    "tmpfileCase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cleanup",
+        "filesystem",
+        "initial_mode_0600",
+        "initial_nlink_zero",
+        "linkat_empty_path",
+        "linked_identity_matches",
+        "open_otmpfile",
+        "owner_is_probe_identity"
+      ],
+      "properties": {
+        "cleanup": { "$ref": "#/$defs/probeStatus" },
+        "filesystem": { "enum": ["ext4", "xfs", "tmpfs", "other", "unknown"] },
+        "initial_mode_0600": { "$ref": "#/$defs/nullableBoolean" },
+        "initial_nlink_zero": { "$ref": "#/$defs/nullableBoolean" },
+        "linkat_empty_path": { "$ref": "#/$defs/probeStatus" },
+        "linked_identity_matches": { "$ref": "#/$defs/nullableBoolean" },
+        "open_otmpfile": { "$ref": "#/$defs/probeStatus" },
+        "owner_is_probe_identity": { "$ref": "#/$defs/nullableBoolean" }
+      }
+    },
+    "toolIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "observation",
+        "path",
+        "present",
+        "regular_file",
+        "root_owned",
+        "sha256",
+        "size",
+        "version_line",
+        "version_output_sha256"
+      ],
+      "properties": {
+        "mode": {
+          "oneOf": [{ "type": "null" }, { "type": "string", "pattern": "^[0-7]{4}$" }]
+        },
+        "observation": { "$ref": "#/$defs/probeStatus" },
+        "path": { "enum": ["/usr/bin/gzip", "/usr/bin/python3", "/usr/bin/sudo", "/usr/bin/unshare", "/usr/bin/zstd"] },
+        "present": { "type": "boolean" },
+        "regular_file": { "$ref": "#/$defs/nullableBoolean" },
+        "root_owned": { "$ref": "#/$defs/nullableBoolean" },
+        "sha256": {
+          "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/sha256" }]
+        },
+        "size": {
+          "oneOf": [{ "type": "null" }, { "type": "integer", "minimum": 1, "maximum": 134217728 }]
+        },
+        "version_line": {
+          "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/printableAscii160" }]
+        },
+        "version_output_sha256": {
+          "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/sha256" }]
+        }
+      }
+    },
+    "uint32": { "type": "integer", "minimum": 0, "maximum": 4294967295 }
+  }
+}
