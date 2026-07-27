@@ -7,9 +7,7 @@ import { test } from "node:test";
 import type { Ajv as AjvCore, Options } from "ajv";
 
 const require = createRequire(import.meta.url);
-const Ajv2020 = require("ajv/dist/2020.js") as new (
-  options?: Options,
-) => AjvCore;
+const Ajv2020 = require("ajv/dist/2020.js") as new (options?: Options) => AjvCore;
 const root = process.cwd();
 const python = "/usr/bin/python3";
 const suites = [
@@ -59,33 +57,17 @@ test("Outcome 2 portable hostile suites are bounded and optimization-safe", () =
 });
 
 test("Outcome 2 tracked schema independently validates the exact mutation corpus", () => {
-  const reportSuite = join(
-    root,
-    "test",
-    "outcome-two-runtime-report-portable.py",
-  );
+  const reportSuite = join(root, "test", "outcome-two-runtime-report-portable.py");
   const result = run(["-I", "-B", reportSuite, "--schema-corpus"], 5_000);
   requireSuccess(result, "report schema corpus producer");
   const rows = result.stdout
     .trimEnd()
     .split("\n")
-    .map(
-      (line) =>
-        JSON.parse(line) as { id: string; schema: boolean; value: unknown },
-    );
+    .map((line) => JSON.parse(line) as { id: string; schema: boolean; value: unknown });
   assert.ok(rows.length > 1);
-  assert.equal(
-    new Set(rows.map((row) => row.id)).size,
-    rows.length,
-    "duplicate schema case",
-  );
+  assert.equal(new Set(rows.map((row) => row.id)).size, rows.length, "duplicate schema case");
 
-  const schema = JSON.parse(
-    readFileSync(
-      join(root, "schemas", "trusted-runtime-closure-v1.json"),
-      "utf8",
-    ),
-  ) as object;
+  const schema = JSON.parse(readFileSync(join(root, "schemas", "trusted-runtime-closure-v1.json"), "utf8")) as object;
   const validate = new Ajv2020({
     allErrors: true,
     strict: true,

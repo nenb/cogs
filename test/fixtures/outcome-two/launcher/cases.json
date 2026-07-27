@@ -1,10 +1,6 @@
 {
   "version": "cogs.outcome-two-launcher-cases/v2",
-  "fixed_fd_map": [
-    ["gzip", 198],
-    ["zstd", 199],
-    ["report", 200]
-  ],
+  "fixed_fd_map": [["gzip", 198], ["zstd", 199], ["report", 200]],
   "bootstrap_attacks": [
     "ambient-direct-prepare",
     "missing-capability",

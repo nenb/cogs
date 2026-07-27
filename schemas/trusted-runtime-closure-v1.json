@@ -11,11 +11,7 @@
       "type": "array",
       "minItems": 3,
       "maxItems": 3,
-      "prefixItems": [
-        { "$ref": "#/$defs/pythonTool" },
-        { "$ref": "#/$defs/zstdTool" },
-        { "$ref": "#/$defs/gzipTool" }
-      ],
+      "prefixItems": [{ "$ref": "#/$defs/pythonTool" }, { "$ref": "#/$defs/zstdTool" }, { "$ref": "#/$defs/gzipTool" }],
       "items": false
     },
     "version": { "const": "cogs.trusted-runtime-closure/v1" }
@@ -80,23 +76,13 @@
     "tool": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "closure_sha256",
-        "mapping_sha256",
-        "objects",
-        "seal_profile",
-        "sealed_executable",
-        "tool"
-      ],
+      "required": ["closure_sha256", "mapping_sha256", "objects", "seal_profile", "sealed_executable", "tool"],
       "properties": {
         "closure_sha256": { "$ref": "#/$defs/sha256" },
         "mapping_sha256": { "$ref": "#/$defs/sha256" },
         "objects": { "$ref": "#/$defs/objects" },
         "seal_profile": {
-          "oneOf": [
-            { "const": "linux-memfd-exec-seals-v1" },
-            { "type": "null" }
-          ]
+          "oneOf": [{ "const": "linux-memfd-exec-seals-v1" }, { "type": "null" }]
         },
         "sealed_executable": { "type": "boolean" },
         "tool": { "enum": ["python3-parser", "zstd", "gzip"] }

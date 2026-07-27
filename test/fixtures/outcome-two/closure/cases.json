@@ -12,8 +12,18 @@
     { "id": "stable", "expect": "accept" },
     { "id": "missing-loader", "expect": "reject", "remove": ["/lib64/ld-linux-x86-64.so.2"] },
     { "id": "missing-library", "expect": "reject", "remove": ["/lib/x86_64-linux-gnu/libbeta.so.1"] },
-    { "id": "distinct-provider", "expect": "reject", "add": "/usr/lib/x86_64-linux-gnu/libalpha.so.1", "distinct": true },
-    { "id": "same-identity-alias", "expect": "accept", "add": "/usr/lib/x86_64-linux-gnu/libalpha.so.1", "distinct": false },
+    {
+      "id": "distinct-provider",
+      "expect": "reject",
+      "add": "/usr/lib/x86_64-linux-gnu/libalpha.so.1",
+      "distinct": true
+    },
+    {
+      "id": "same-identity-alias",
+      "expect": "accept",
+      "add": "/usr/lib/x86_64-linux-gnu/libalpha.so.1",
+      "distinct": false
+    },
     { "id": "unknown-interpreter", "expect": "reject", "replace": ["/usr/bin/python3", "unknown-interpreter.elf"] },
     { "id": "forbidden-tag", "expect": "reject", "replace": ["/usr/bin/python3", "forbidden-runpath.elf"] },
     { "id": "short-read-before", "expect": "reject", "fault": "short-before" },
@@ -30,7 +40,12 @@
     { "id": "parent-symlink", "expect": "accept", "symlink": ["/usr/bin/python3", "../libexec/python3.real"] },
     { "id": "symlink-root-escape", "expect": "reject", "symlink": ["/usr/bin/python3", "../../../escape"] },
     { "id": "symlink-loop", "expect": "reject", "symlink": ["/usr/bin/python3", "python3"] },
-    { "id": "symlink-target-race", "expect": "reject", "symlink": ["/usr/bin/python3", "python3.real"], "fault": "symlink-target-race" },
+    {
+      "id": "symlink-target-race",
+      "expect": "reject",
+      "symlink": ["/usr/bin/python3", "python3.real"],
+      "fault": "symlink-target-race"
+    },
     { "id": "symlink-bound", "expect": "reject", "fault": "symlink-bound" },
     { "id": "component-bound", "expect": "reject", "fault": "component-bound" },
     { "id": "object-bound-129", "expect": "reject", "fault": "object-bound" },

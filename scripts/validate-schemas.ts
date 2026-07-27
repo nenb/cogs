@@ -176,11 +176,17 @@ for (const [file, sample] of Object.entries(validSamples)) {
 
 function closureMutation(scope: string): ClosureReport {
   const value = structuredClone(closureGolden);
+  const firstTool = value.tools.at(0);
+  assert.ok(firstTool);
+  const [executable, loader, library] = firstTool.objects;
+  assert.ok(executable);
+  assert.ok(loader);
+  assert.ok(library);
   if (scope === "report") value.source_generations = [];
-  if (scope === "object") value.tools[0].objects[0].source_generation = {};
-  if (scope === "role") value.tools[0].objects[1].role = "library";
-  if (scope === "soname") value.tools[0].objects[2].soname = "bad name";
-  if (scope === "needed") value.tools[0].objects[0].needed = Array(129).fill("lib.so");
+  if (scope === "object") executable.source_generation = {};
+  if (scope === "role") loader.role = "library";
+  if (scope === "soname") library.soname = "bad name";
+  if (scope === "needed") executable.needed = Array(129).fill("lib.so");
   if (scope === "tool") value.tools.reverse();
   return value;
 }
