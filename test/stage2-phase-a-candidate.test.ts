@@ -14,7 +14,6 @@ const runnerPath = join(root, "scripts/run-stage2-phase-a-candidate.py");
 const budgetPath = join(root, "scripts/stage2-phase-a-budget.py");
 const schemaV1Path = join(root, "schemas/stage2-phase-a-candidate-v1.json");
 const schemaV2Path = join(root, "schemas/stage2-phase-a-candidate-v2.json");
-const schemaPhaseBPath = join(root, "schemas/stage2-phase-b-qualification-v1.json");
 const historicalReportPath = join(root, "docs/test-reports/stage-2-phase-a-candidate-30180567797.canonical-json");
 const phaseGraphFixturePath = join(root, "test/fixtures/stage2-phase-a-v2-phase-graphs.json");
 const pythonTest = join(root, "test/stage2-phase-a-candidate.py");
@@ -50,181 +49,57 @@ test("Phase A pure downloader, KVM ioctl, and non-authority policies", () => {
   }
 });
 
-test("singular workflow exposes only the fixed Phase B discovery route", async () => {
+test("Phase A workflow is exact-head, same-repository, PR-only, and package-mutation-free", async () => {
   const workflow = await readFile(workflowPath, "utf8");
-  assert.match(workflow, /^run-name: phase-b-discovery$/mu);
-  assert.match(
-    workflow,
-    /^on:\n {2}pull_request:\n {4}branches: \[feat\/issue42-deterministic-rootfs\]\n {4}types: \[labeled\]$/mu,
-  );
-  for (const gate of [
-    "github.event_name == 'pull_request'",
-    "github.event.action == 'labeled'",
-    "github.event.label.name == 'security'",
-    "github.event.pull_request.head.repo.full_name == github.repository",
-    "github.event.pull_request.base.repo.full_name == github.repository",
-    "github.event.pull_request.base.ref == 'feat/issue42-deterministic-rootfs'",
-    "github.event.pull_request.base.sha == '8caab23bb4277121a77d80dc043b3c2c43b07ced'",
-    "github.event.pull_request.number == 230",
-    "github.event.pull_request.head.sha == vars.STAGE2_PHASEB_REVIEWED_HEAD",
-    "github.run_attempt == 1",
-  ]) {
-    assert.ok(workflow.includes(gate), gate);
-  }
-  assert.match(workflow, /permissions:\n {2}contents: read\n {2}actions: read/u);
+  assert.match(workflow, /^on:\n {2}pull_request:/mu);
+  assert.match(workflow, /contains\(github\.event\.pull_request\.labels\.\*\.name, 'security'\)/u);
+  assert.match(workflow, /github\.event\.pull_request\.head\.repo\.full_name == github\.repository/u);
   assert.match(workflow, /runs-on: ubuntu-24\.04/u);
   assert.match(workflow, /timeout-minutes: 90/u);
   assert.match(workflow, /cancel-in-progress: false/u);
-  assert.ok(workflow.indexOf("Establish absolute non-borrowing") < workflow.indexOf("Reject every non-earliest"));
   assert.ok(
-    workflow.indexOf("Reject every non-earliest") <
-      workflow.indexOf("Check out exact reviewed pull request head without credentials"),
+    workflow.indexOf("Establish scheduling-only monotonic budget anchor") <
+      workflow.indexOf("Check out exact pull request head"),
   );
-  assert.match(workflow, /quote\("stage2-phase-a-candidate\.yml"/u);
-  assert.match(workflow, /COGS_STAGE2_PHASE_A_BUDGET_ANCHOR_NS/u);
-  assert.match(workflow, /object_pairs_hook=pairs/u);
-  assert.match(workflow, /actions\/workflows\/\{workflow\}\/runs/u);
-  assert.match(workflow, /"event": "pull_request", "head_sha": head/u);
-  assert.match(workflow, /row\["display_title"\] == title/u);
-  assert.match(workflow, /current != min\(exact\)/u);
-  assert.match(workflow, /GH_API_TOKEN: \$\{\{ github\.token \}\}/u);
-  assert.equal(workflow.match(/GH_API_TOKEN:/gu)?.length, 1);
-  assert.doesNotMatch(workflow, /actions\/checkout@|persist-credentials/u);
-  assert.match(workflow, /credential\.helper= -c core\.askPass=/u);
-  assert.match(workflow, /STAGE2_PHASEB_REVIEWED_HEAD: \$\{\{ vars\.STAGE2_PHASEB_REVIEWED_HEAD \}\}/u);
-  assert.match(workflow, /prepare-stage2-fixed-source\.py/u);
-  assert.doesNotMatch(workflow, /download-16-fixed-public-stage2-artifacts|rootfs_candidates/u);
-  for (const operation of [
-    "observe",
-    "cleanup",
-    "residue",
-    "render",
-    "validate",
-    "export",
-    "cleanup-export",
-    "post-export-residue",
-  ]) {
-    assert.match(workflow, new RegExp(`phase-b-discovery ${operation}`, "u"));
+  assert.match(workflow, /stage2-phase-a-budget\.py timeout source[\s\S]*stage2-phase-a-budget\.py check source/u);
+  assert.match(workflow, /stage2-phase-a-budget\.py timeout observe[\s\S]*stage2-phase-a-budget\.py check observe/u);
+  assert.match(workflow, /stage2-phase-a-budget\.py timeout cleanup[\s\S]*stage2-phase-a-budget\.py check cleanup/u);
+  for (const boundary of ["residue", "render", "validate", "export", "export-cleanup", "post-export-residue"]) {
+    assert.match(workflow, new RegExp(`stage2-phase-a-budget\\.py timeout ${boundary}`, "u"));
   }
+  assert.match(workflow, /stage2-phase-a-budget\.py check upload/u);
+  assert.match(workflow, /stage2-phase-a-budget\.py check post-export-residue-start/u);
+  assert.match(workflow, /timeout-minutes: 1[\s\S]*actions\/upload-artifact@/u);
+  assert.match(workflow, /stage2-phase-a-budget\.py check final/u);
+  assert.match(workflow, /--kill-after=5s/u);
+  assert.match(workflow, /permissions:\n {2}contents: read/u);
+  assert.match(workflow, /ref: \$\{\{ github\.event\.pull_request\.head\.sha \}\}/u);
+  assert.match(workflow, /persist-credentials: false/u);
+  assert.match(workflow, /prepare-stage2-fixed-source\.py[\s\S]*result\["revision"\]!=sys\.argv\[1\]/u);
+  assert.match(workflow, /EXACT_PR_HEAD: \$\{\{ github\.event\.pull_request\.head\.sha \}\}/u);
+  assert.match(workflow, /prepare-stage2-fixed-source\.py[\s\S]*run-stage2-phase-a-candidate\.py observe/u);
+  assert.match(workflow, /if: always\(\)[\s\S]*run-stage2-phase-a-candidate\.py cleanup/u);
+  assert.match(workflow, /run-stage2-phase-a-candidate\.py residue/u);
+  assert.match(workflow, /actions\/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0/u);
   assert.match(workflow, /actions\/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a/u);
-  assert.match(workflow, /path: \/var\/tmp\/cogs-stage2-phase-b-qualification-v1\/qualification\.json/u);
-  assert.doesNotMatch(workflow, /workflow_dispatch|reopened|synchronize|schedule:|\bpush:|workflow_call/u);
+  assert.match(workflow, /steps\.validate\.outcome == 'success' && steps\.export\.outcome == 'success'/u);
+  assert.match(workflow, /path: \/var\/tmp\/cogs-stage2-phase-a-candidate-v2\/candidate\.json/u);
+  assert.match(workflow, /run-stage2-phase-a-candidate\.py cleanup-export/u);
+  assert.match(workflow, /run-stage2-phase-a-candidate\.py post-export-residue/u);
+  assert.ok(
+    workflow.indexOf("Upload validated staged candidate JSON only") <
+      workflow.indexOf("Exact-identity cleanup of exported report") &&
+      workflow.indexOf("Exact-identity cleanup of exported report") <
+        workflow.indexOf("Independent read-only post-export-cleanup residue observation") &&
+      workflow.indexOf("Independent read-only post-export-cleanup residue observation") <
+        workflow.indexOf("Enforce observation"),
+  );
+  assert.match(workflow, /POST_EXPORT_RESIDUE_OUTCOME[\s\S]*test "\$POST_EXPORT_RESIDUE_OUTCOME" = success/u);
+  assert.doesNotMatch(workflow, /path: \/var\/lib\/cogs\/stage2-completion-v1\/source/u);
+  assert.doesNotMatch(workflow, /workflow_dispatch|schedule:|\bpush:|setup-node|npm|node_modules/u);
   assert.doesNotMatch(workflow, /apt(?:-get)?|dnf|yum|apk|brew|snap|dpkg|systemctl/u);
-  assert.doesNotMatch(workflow, /configure-aws-credentials|opentofu|terraform|tofu/u);
-});
-
-test("Phase B discovery runner and schema stay candidate-only", async () => {
-  const [runner, schemaRaw] = await Promise.all([readFile(runnerPath, "utf8"), readFile(schemaPhaseBPath, "utf8")]);
-  assert.ok(schemaRaw.split("\n").length - 1 <= 220);
-  const ajv = new Ajv2020({ allErrors: true, strict: true });
-  const validate = ajv.compile(JSON.parse(schemaRaw));
-  const report = {
-    version: "cogs.stage2-phase-b-qualification/v1",
-    stage: "phase-b-discovery",
-    authority: "candidate",
-    qualified: false,
-    promotion: false,
-    source_revision: "a".repeat(40),
-    source_manifest_sha256: "b".repeat(64),
-    duration_ms: 1,
-    checks: { runtime_assets: "pass", attestation: "pass", cleanup: "pass", residue: "pass" },
-    runtime_assets: [
-      {
-        component: "kata",
-        release: "3.32.0",
-        name: "kata-static-3.32.0-amd64.tar.zst",
-        size: 1547940938,
-        sha256: "1449ecea50bd91fa73a94648db195d18950fe869ba4b1f12d05f55f1fa7c1b01",
-        downloaded: true,
-        extracted: false,
-      },
-      {
-        component: "containerd",
-        release: "2.2.1",
-        name: "containerd-static-2.2.1-linux-amd64.tar.gz",
-        size: 33645699,
-        sha256: "af3e82bac6abed58d45956c653244aa2be583359a9753614278ef652012f2883",
-        downloaded: true,
-        extracted: false,
-      },
-    ],
-    candidate_attestation_report: {
-      version: "cogs.stage2-phase-b-attestation-candidate/v1",
-      authority: "candidate",
-      qualified: false,
-      gate_opened: false,
-      owner_opened: false,
-      source: { revision: "a".repeat(40), manifest_sha256: "b".repeat(64) },
-      host: {
-        tools: ["ctr", "ip", "tc", "nft", "ssh", "ssh-keygen"].map((name) => ({
-          name,
-          closure_sha256: "c".repeat(64),
-          version: { length: 1, sha256: "d".repeat(64), exit_status: 0 },
-        })),
-        extraction_helpers: ["tar", "zstd"].map((name) => ({
-          name,
-          closure_sha256: "c".repeat(64),
-          version: { length: 1, sha256: "d".repeat(64), exit_status: 0 },
-        })),
-      },
-      runtime: {
-        archives: ["kata", "containerd"].map((component) => ({
-          component,
-          archive: { size: 1, sha256: "e".repeat(64) },
-          preflight: { entry_count: 1, sha256: "f".repeat(64) },
-          layout: { entry_count: 1, sha256: "1".repeat(64) },
-        })),
-        runtime_files: Object.fromEntries(
-          ["kata_config", "kata_runtime", "kata_shim", "qemu", "virtiofsd", "containerd", "ctr"].map((name) => [
-            name,
-            { mode: 493, size: 1, sha256: "2".repeat(64) },
-          ]),
-        ),
-        private_versions: {
-          containerd: { length: 1, sha256: "3".repeat(64), exit_status: 0 },
-          ctr: { length: 1, sha256: "4".repeat(64), exit_status: 0 },
-        },
-        private_config: { size: 1, sha256: "5".repeat(64) },
-        shared_fs: "virtio-fs",
-        kvm: { api_version: 12, device_accessible: true },
-        qmp: { present: true, enabled: true, acceleration: "kvm", tcg: false },
-        fixture_digests: Object.fromEntries(
-          ["network", "runtime", "process", "share"].map((name) => [name, "6".repeat(64)]),
-        ),
-      },
-      metadata_only: true,
-    },
-    blockers: ["candidate-non-authoritative"],
-  };
-  assert.equal(validate(report), true, ajv.errorsText(validate.errors));
-  for (const hostile of [
-    { ...report, authority: "committed" },
-    { ...report, qualified: true },
-    { ...report, promotion: true },
-    { ...report, stage: "phase-b-authoritative" },
-    { ...report, blockers: [] },
-    { ...report, unexpected: true },
-    { ...report, candidate_attestation_report: { ...report.candidate_attestation_report, qualified: true } },
-    { ...report, candidate_attestation_report: { ...report.candidate_attestation_report, host: {} } },
-    { ...report, candidate_attestation_report: { ...report.candidate_attestation_report, runtime: {} } },
-    {
-      ...report,
-      candidate_attestation_report: {
-        ...report.candidate_attestation_report,
-        host: { ...report.candidate_attestation_report.host, raw_path: "/usr/bin/ctr" },
-      },
-    },
-    { ...report, checks: { ...report.checks, attestation: "fail" } },
-  ]) {
-    assert.equal(validate(hostile), false, ajv.errorsText(validate.errors));
-  }
-  const discovery = runner.slice(runner.indexOf("def _phase_b_observe"), runner.indexOf("def _phase_b_cleanup"));
-  assert.match(discovery, /candidate_attestation_report\(\)/u);
-  assert.doesNotMatch(discovery, /_rootfs_candidates|_candidate_build/u);
-  assert.match(runner, /candidate_attestation_cleanup\(\)/u);
-  assert.match(runner, /candidate_attestation_residue\(\)/u);
-  assert.match(runner, /len\(argv\) == 2 and argv\[0\] == PHASE_B_STAGE/u);
-  assert.doesNotMatch(runner.slice(runner.indexOf("def _use_phase_b_paths")), /os\.environ.*(?:stage|route)/iu);
+  assert.doesNotMatch(workflow, /configure-aws-credentials|opentofu|terraform|tofu|workflow_call/u);
+  assert.doesNotMatch(workflow, /cancel-in-progress: true/u);
 });
 
 test("historical Phase A v1 schema remains immutable and validates v1 reports only", async () => {
