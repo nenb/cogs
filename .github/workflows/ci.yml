@@ -330,9 +330,9 @@ jobs:
           IFS= read -r -d '' descriptor_observer <<'DESCRIPTOR' || test "$?" = 1
           import os, stat, sys
           expected = tuple(map(int, sys.argv[1:5]))
-          parent = os.getppid()
-          base = f"/proc/{parent}"
-          if parent != 1 or sys.argv[5] not in ("before","after"): raise RuntimeError("descriptor observer authority")
+          base = f"/proc/{int(dict(line.split(':',1) for line in open('/proc/self/status', encoding='ascii') if ':' in line)['PPid'])}"
+          parent_nspid = dict(line.split(':',1) for line in open(base+"/status", encoding="ascii") if ':' in line)["NSpid"].split()
+          if not parent_nspid or parent_nspid[-1] != "1" or sys.argv[5] not in ("before","after"): raise RuntimeError("descriptor observer authority")
           for name in ("uid_map","gid_map"):
               raw = open(base+"/"+name, encoding="ascii").read()
               if raw.count("\n") != 1 or raw.split() != ["0","0","1"]: raise RuntimeError("identity-map-" + ("lines" if raw.count("\n") != 1 else "fields" if len(raw.split()) != 3 else "inner" if raw.split()[0] != "0" else "outer" if raw.split()[1] != "0" else "count"))

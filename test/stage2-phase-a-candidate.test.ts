@@ -196,7 +196,7 @@ test("runtime-discovery workflow has the exact PR 230 one-shot guard and cleanup
   const observer = observerMatch[0];
   assert.match(
     observer,
-    /parent = os\.getppid\(\)[\s\S]*parent != 1[\s\S]*sys\.argv\[5\] not in \("before","after"\)/u,
+    /\['PPid'\][\s\S]*\["NSpid"\]\.split\(\)[\s\S]*parent_nspid\[-1\] != "1"[\s\S]*sys\.argv\[5\] not in \("before","after"\)/u,
   );
   assert.match(
     observer,
