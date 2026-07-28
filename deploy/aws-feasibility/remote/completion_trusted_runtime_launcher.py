@@ -1224,7 +1224,7 @@ def _wait_bounded(lease: _ProcessLease, deadline: float) -> int | None:
         if observed == lease.pid:
             lease.reaped = True
             return status
-        if observed != 0: raise RuntimeLauncherCleanupError(None, [RuntimeLauncherError("unexpected wait result")])
+        if observed != 0: raise RuntimeLauncherCleanupError(None, [RuntimeLauncherError("unexpected wait result", "unexpected-wait")])
         time.sleep(min(0.01, max(0.0, deadline - time.monotonic())))
     return None
 def _stop_process(lease: _ProcessLease, primary: BaseException | None, ops: Any | None = None) -> None:
@@ -1264,10 +1264,10 @@ def _stop_process(lease: _ProcessLease, primary: BaseException | None, ops: Any 
     if lease.pid and pidfd is not None and pidfd.state is _FdState.OWNED and not lease.reaped and not death_ready:
         try:
             identity_required = lease.start_time != 0
-            if identity_required and not _process_matches(lease): raise RuntimeLauncherError("owned process identity uncertain before TERM")
+            if identity_required and not _process_matches(lease): raise RuntimeLauncherError("owned process identity uncertain before TERM", "process-identity")
             signal.pidfd_send_signal(pidfd.fd, signal.SIGTERM)
             if _wait_bounded(lease, time.monotonic() + _TERM_SECONDS) is None:
-                if identity_required and not _process_matches(lease): raise RuntimeLauncherError("owned process identity uncertain before KILL")
+                if identity_required and not _process_matches(lease): raise RuntimeLauncherError("owned process identity uncertain before KILL", "process-identity")
                 signal.pidfd_send_signal(pidfd.fd, signal.SIGKILL)
                 if _wait_bounded(lease, time.monotonic() + _KILL_SECONDS) is None: raise RuntimeLauncherError("owned process reap deadline")
         except BaseException as error:
@@ -1278,7 +1278,7 @@ def _stop_process(lease: _ProcessLease, primary: BaseException | None, ops: Any 
                 try: handle.close(actual_ops)
                 except BaseException as error: failures.append(error)
         if pidfd is not None and pidfd.state is _FdState.CLOSE_UNCERTAIN:
-            failures.append(pidfd.close_error or RuntimeLauncherError("pidfd poison"))
+            failures.append(pidfd.close_error or RuntimeLauncherError("pidfd poison", "pidfd-poison"))
         elif pidfd is not None and pidfd.state is _FdState.OWNED:
             try: pidfd.close(actual_ops)
             except BaseException as error: failures.append(error)
@@ -2014,7 +2014,7 @@ def _recv_status(endpoint: socket.socket, deadline: float, event: str = "", sequ
         raise RuntimeLauncherUnavailable(unavailable["primitive"], unavailable["message"])
     if observed_event == "error":
         failure = _parse_sandbox_status(raw, "error", sequence)
-        if failure["code"] == "cleanup-uncertain": raise RuntimeLauncherCleanupError(None, [RuntimeLauncherError("inner cleanup uncertain")])
+        if failure["code"] == "cleanup-uncertain": raise RuntimeLauncherCleanupError(None, [RuntimeLauncherError("inner cleanup uncertain", "inner-cleanup")])
         raise RuntimeLauncherError(f"sandbox setup failed: {failure['kind']}", failure["code"])
     return _parse_sandbox_status(raw, event, sequence)
 def _tool_creator_settlement_packet(
@@ -2388,7 +2388,7 @@ def _coordinate_with_ops(admission: _SourceAdmission, closure_module: types.Modu
     except BaseException as error:
         raise RuntimeLauncherCleanupError(primary, [error]) from (primary or error)
     cleanup_restored = all(type(value) is bool and value for value in cleanup.values())
-    if not cleanup_restored: raise RuntimeLauncherCleanupError(primary, [RuntimeLauncherError("cleanup baseline mismatch")]) from primary
+    if not cleanup_restored: raise RuntimeLauncherCleanupError(primary, [RuntimeLauncherError("cleanup baseline mismatch", "cleanup-baseline")]) from primary
     if isinstance(primary, RuntimeLauncherUnavailable):
         primary.cleanup_restored = True
     if primary is not None: raise primary

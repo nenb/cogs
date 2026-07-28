@@ -1453,21 +1453,20 @@ def _maps_snapshot(ops: _Ops, pid: int) -> tuple[bytes, tuple[_MapRow, ...]]:
     raw = _read_proc(ops, f'/proc/{pid}/maps', _MAX_MAP_BYTES)
     return (raw, _parse_maps(raw))
 
-def _settled_maps_snapshot(ops: _Ops, pid: int) -> tuple[bytes, tuple[_MapRow, ...]]:
-    previous = _maps_snapshot(ops, pid)
-    for _attempt in range(100):
+def _wait_helper_input(ops: _Ops, pid: int) -> None:
+    for _attempt in range(1000):
+        fields = _read_proc(ops, f'/proc/{pid}/syscall', 256).split()
+        if len(fields) >= 2 and fields[0] == b'0' and fields[1] in (b'0', b'0x0'):
+            return
         ops.sleep(0.001)
-        current = _maps_snapshot(ops, pid)
-        if current == previous:
-            return current
-        previous = current
-    raise RuntimeClosureError('helper mappings did not settle')
+    raise RuntimeClosureError('helper did not reach fixed input read')
 
 def _mapped_closure(ops: _Ops, helper: HelperLease, closure: ResolvedToolClosure) -> MappedToolClosure:
     expected = {value.identity: value for value in closure.objects}
     if len(expected) > _MAX_OBJECTS:
         raise RuntimeClosureError('mapped closure object bound')
-    (before, rows) = _settled_maps_snapshot(ops, helper.pid)
+    _wait_helper_input(ops, helper.pid)
+    (before, rows) = _maps_snapshot(ops, helper.pid)
     seen: set[tuple[int, int]] = set()
     fingerprints: dict[tuple[str, int], tuple[int, int]] = {}
     for row in rows:
