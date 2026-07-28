@@ -1774,6 +1774,8 @@ class NativeSession:
             self.source_set_sha256 = source_digest
             return result
         except BaseException as error:
+            label = str(error) if isinstance(error, QualificationError) else f"{type(error).__name__}-{getattr(error, 'errno', 0)}"
+            os.write(2, ("native-operation-" + re.sub(r"[^A-Za-z0-9_.-]", "-", label)[:480] + "\n").encode())
             self._custodian.abort(error)
             raise
     def qualify_fixed_descriptor_primitives(self) -> dict[str, object]:
