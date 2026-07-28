@@ -11,18 +11,11 @@ _ADMISSION_VERSION = "cogs.runtime-source-admission/v1"
 _HANDOFF_VERSION = "cogs.runtime-handoff/v1"
 _RESULT_VERSION = "cogs.runtime-qualification/v1"
 _MARKER = "cogs-runtime-qualification-v1"
-_FIXED_SOURCE_SET = (
-    "deploy/aws-feasibility/remote/completion_elf.py", "deploy/aws-feasibility/remote/completion_trusted_runtime_closure.py",
-    "deploy/aws-feasibility/remote/completion_trusted_runtime_launcher.py", "schemas/trusted-runtime-closure-v1.json",
-)
+_FIXED_SOURCE_SET = ( "deploy/aws-feasibility/remote/completion_elf.py", "deploy/aws-feasibility/remote/completion_trusted_runtime_closure.py", "deploy/aws-feasibility/remote/completion_trusted_runtime_launcher.py", "schemas/trusted-runtime-closure-v1.json", )
 _MODULE_PATHS = _FIXED_SOURCE_SET[:3]
 _SCHEMA_PATH = _FIXED_SOURCE_SET[3]
 _TOOL_INDEX = {"zstd": 1, "gzip": 2}
-_FIXED_INPUT = {
-    "gzip": bytes.fromhex("1f8b08000000000002ff4bce4f2fd62d2acd2bc9cc4dd52d2c4dccc94ccb4c4e"
-                          "2cc9cccfd32d33e40200a9c9b5521e000000"),
-    "zstd": bytes.fromhex("28b52ffd201ef10000636f67732d72756e74696d652d7175616c696669636174696f6e2d76310a"),
-}
+_FIXED_INPUT = { "gzip": bytes.fromhex("1f8b08000000000002ff4bce4f2fd62d2acd2bc9cc4dd52d2c4dccc94ccb4c4e" "2cc9cccfd32d33e40200a9c9b5521e000000"), "zstd": bytes.fromhex("28b52ffd201ef10000636f67732d72756e74696d652d7175616c696669636174696f6e2d76310a"), }
 _FIXED_OUTPUT = b"cogs-runtime-qualification-v1\n"
 (_MAX_ADMISSION, _MAX_SOURCE, _MAX_REPORT, _MAX_PACKET) = (512, 2_000_000, 128 * 1024, 256 * 1024)
 (_MAX_OBJECT, _MAX_OBJECTS, _MAX_MAPS, _MAX_MAP_LINES) = (128 * 1024 * 1024, 256, 4 * 1024 * 1024, 4096)
@@ -47,27 +40,17 @@ _AT_EMPTY_PATH, _UINT_MAX = 0x1000, (1 << 32) - 1
 (_SYS_GETDENTS64, _SYS_CLONE3, _CLONE_PIDFD) = (217, 435, 0x00001000)
 (_NS_GET_USERNS, _NS_GET_PARENT) = (0xB701, 0xB702)
 # Complete fixed x86-64 acquisition/authority policy inventory.
-_DENIED_SYSCALLS = {
-    name: int(number)
-    for entry in """
+_DENIED_SYSCALLS = { name: int(number) for entry in """
     execve:59 socket:41 connect:42 accept:43 sendto:44 recvfrom:45 sendmsg:46 recvmsg:47 shutdown:48 bind:49 listen:50 getsockname:51 getpeername:52 socketpair:53 setsockopt:54 getsockopt:55 accept4:288 recvmmsg:299 sendmmsg:307
     io_uring_setup:425 io_uring_enter:426 io_uring_register:427 clone:56 fork:57 vfork:58 clone3:435 unshare:272 setns:308
     mount:165 umount2:166 pivot_root:155 chroot:161 open_tree:428 move_mount:429 fsopen:430 fsconfig:431 fsmount:432 fspick:433 mount_setattr:442
     keyctl:250 add_key:248 request_key:249 perf_event_open:298 bpf:321 userfaultfd:323 ptrace:101 init_module:175 delete_module:176 finit_module:313
     setuid:105 setgid:106 setreuid:113 setregid:114 setgroups:116 setresuid:117 setresgid:119 setfsuid:122 setfsgid:123 capset:126 seccomp:317
     memfd_create:319 open_by_handle_at:304 name_to_handle_at:303 pidfd_open:434 pidfd_getfd:438 process_vm_readv:310 process_vm_writev:311 kexec_load:246 kexec_file_load:320 landlock_create_ruleset:444 landlock_add_rule:445 landlock_restrict_self:446 dup:32 dup2:33 dup3:292 fcntl:72
-    """.split()
-    for name, number in (entry.split(":"),)
-}
+    """.split() for name, number in (entry.split(":"),) }
 def _seccomp_program() -> tuple[tuple[int, int, int, int], ...]:
     deny = 0x00050000 | errno.EPERM
-    rows = [
-        (0x20, 0, 0, 4), (0x15, 1, 0, 0xC000003E), (0x06, 0, 0, 0x80000000), (0x20, 0, 0, 0),
-        (0x15, 0, 10, 322), (0x20, 0, 0, 16), (0x15, 0, 6, 198), (0x20, 0, 0, 20), (0x15, 0, 4, 0),
-        (0x20, 0, 0, 48), (0x15, 0, 2, _AT_EMPTY_PATH), (0x20, 0, 0, 52), (0x15, 1, 0, 0), (0x06, 0, 0, deny),
-        (0x06, 0, 0, 0x7FFF0000), (0x15, 0, 4, 157), (0x20, 0, 0, 16), (0x15, 1, 0, _PR_GET_SECCOMP),
-        (0x06, 0, 0, deny), (0x06, 0, 0, 0x7FFF0000), (0x20, 0, 0, 0),
-    ]
+    rows = [ (0x20, 0, 0, 4), (0x15, 1, 0, 0xC000003E), (0x06, 0, 0, 0x80000000), (0x20, 0, 0, 0), (0x15, 0, 10, 322), (0x20, 0, 0, 16), (0x15, 0, 6, 198), (0x20, 0, 0, 20), (0x15, 0, 4, 0), (0x20, 0, 0, 48), (0x15, 0, 2, _AT_EMPTY_PATH), (0x20, 0, 0, 52), (0x15, 1, 0, 0), (0x06, 0, 0, deny), (0x06, 0, 0, 0x7FFF0000), (0x15, 0, 4, 157), (0x20, 0, 0, 16), (0x15, 1, 0, _PR_GET_SECCOMP), (0x06, 0, 0, deny), (0x06, 0, 0, 0x7FFF0000), (0x20, 0, 0, 0), ]
     for number in dict.fromkeys(_DENIED_SYSCALLS.values()):
         rows.extend(((0x15, 0, 1, number), (0x06, 0, 0, deny)))
     rows.append((0x06, 0, 0, 0x7FFF0000))
@@ -135,8 +118,7 @@ def _close_leases(ops: object, leases: tuple[_FdLease, ...] | list[_FdLease], pr
     for lease in reversed(tuple(leases)):
         if lease.state is _FdState.CLOSE_UNCERTAIN:
             if lease.close_error is None:
-                failures.append(RuntimeLauncherError(
-                    "descriptor uncertainty lost", "fd-lease-poison"))
+                failures.append(RuntimeLauncherError( "descriptor uncertainty lost", "fd-lease-poison"))
             else:
                 failures.append(lease.close_error)
             continue
@@ -178,12 +160,8 @@ class _SourceAdmission:
         return True
     def _validate_tracked_schema(self, canonical_report: bytes) -> None:
         _validate_tracked_report(self._schema_bytes, canonical_report)
-_GenerationRow = make_dataclass("_GenerationRow", [
-    ("tool_index", int), ("object_index", int), ("role", str), ("descriptor_index", int), ("size", int), ("sha256", str),
-    ("soname", Optional[str]), ("needed", tuple[str, ...]), ("seal_profile", str), ("source_generation", tuple[int, ...]),
-], frozen=True, namespace={"__module__": __name__})
-_IssuanceReceipt = make_dataclass("_IssuanceReceipt", [*((name, str) for name in "version report_sha256 closure_sha256 binding_sha256 generation_sha256".split()),
-    *((name, int) for name in "descriptor_count issuer_pid consumer_pid".split())], frozen=True, namespace={"__module__": __name__})
+_GenerationRow = make_dataclass("_GenerationRow", [ ("tool_index", int), ("object_index", int), ("role", str), ("descriptor_index", int), ("size", int), ("sha256", str), ("soname", Optional[str]), ("needed", tuple[str, ...]), ("seal_profile", str), ("source_generation", tuple[int, ...]), ], frozen=True, namespace={"__module__": __name__})
+_IssuanceReceipt = make_dataclass("_IssuanceReceipt", [*((name, str) for name in "version report_sha256 closure_sha256 binding_sha256 generation_sha256".split()), *((name, int) for name in "descriptor_count issuer_pid consumer_pid".split())], frozen=True, namespace={"__module__": __name__})
 _RuntimeHelperToken = make_dataclass("_RuntimeHelperToken", [("value", str)], frozen=True, namespace={"__module__": __name__})
 _OBSERVATION_NAMES = """
     mapped_generations_exact user_namespace_exact pid_namespace_exact mount_namespace_exact network_namespace_exact namespace_ownership_exact
@@ -193,11 +171,9 @@ _OBSERVATION_NAMES = """
     host_paths_absent checkout_absent limits_exact descriptors_restored children_reaped descendants_reaped mounts_restored paths_restored
     namespaces_released namespace_handles_released
 """.split()
-RuntimeQualificationResult = make_dataclass("RuntimeQualificationResult",
-    [(name, str) for name in "version marker source_revision source_set_sha256 closure_sha256 gzip_output_sha256 zstd_output_sha256".split()] + [(name, bool) for name in _OBSERVATION_NAMES], frozen=True, namespace={"__module__": __name__})
+RuntimeQualificationResult = make_dataclass("RuntimeQualificationResult", [(name, str) for name in "version marker source_revision source_set_sha256 closure_sha256 gzip_output_sha256 zstd_output_sha256".split()] + [(name, bool) for name in _OBSERVATION_NAMES], frozen=True, namespace={"__module__": __name__})
 def _build_observed_result(tool_observations: tuple[dict[str, object], dict[str, object]], cleanup_observations: dict[str, object]) -> dict[str, bool]:
-    cleanup_keys = {"children_reaped", "descendants_reaped", "descriptors_restored",
-                    "mounts_restored", "namespace_handles_released", "namespaces_released", "paths_restored"}
+    cleanup_keys = {"children_reaped", "descendants_reaped", "descriptors_restored", "mounts_restored", "namespace_handles_released", "namespaces_released", "paths_restored"}
     expected = set(_OBSERVATION_NAMES)
     tool_keys = expected - cleanup_keys
     _require(type(tool_observations) is tuple and len(tool_observations) == 2, "tool observation cardinality", "observation-cardinality")
@@ -229,8 +205,7 @@ def _strict_json(raw: bytes, newline: bool, bound: int, label: str, canonical: b
     def reject_number(_value: str) -> NoReturn:
         raise ValueError("non-integer number")
     try:
-        value = json.loads(body.decode("utf-8", "strict"), object_pairs_hook=pairs,
-                           parse_float=reject_number, parse_constant=reject_number)
+        value = json.loads(body.decode("utf-8", "strict"), object_pairs_hook=pairs, parse_float=reject_number, parse_constant=reject_number)
     except (UnicodeError, ValueError, json.JSONDecodeError) as error:
         raise RuntimeLauncherError(f"{label} strict JSON") from error
     _require(not canonical or _canonical(value) == body, f"{label} canonical bytes")
@@ -363,8 +338,7 @@ def _read_complete(fd: int, size: int, bound: int) -> bytes:
     _require(not extra, "object grew during read")
     return b"".join(chunks)
 def _stat_identity(value: os.stat_result) -> tuple[int, int, int, int, int, int, int, int]:
-    return (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns,
-            value.st_ctime_ns, value.st_mode, value.st_uid, value.st_gid)
+    return (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns, value.st_mode, value.st_uid, value.st_gid)
 def _parse_fd_dirents(raw: bytes) -> tuple[int, ...]:
     offset = 0
     values: list[int] = []
@@ -537,20 +511,15 @@ def _row_from_object(value: object) -> _GenerationRow:
     try:
         generation = value.source_generation
         if hasattr(generation, "device"):
-            generation = (generation.device, generation.inode, generation.size, generation.mtime_ns,
-                          generation.ctime_ns, generation.mode, generation.uid, generation.gid)
-        row = _GenerationRow(value.tool_index, value.object_index, value.role, value.descriptor_index,
-                             value.size, value.sha256, value.soname, tuple(value.needed),
-                             value.seal_profile, tuple(generation))
+            generation = (generation.device, generation.inode, generation.size, generation.mtime_ns, generation.ctime_ns, generation.mode, generation.uid, generation.gid)
+        row = _GenerationRow(value.tool_index, value.object_index, value.role, value.descriptor_index, value.size, value.sha256, value.soname, tuple(value.needed), value.seal_profile, tuple(generation))
     except (AttributeError, TypeError) as error:
         raise RuntimeLauncherError("invalid private generation row") from error
     return _checked_row(row)
 def _row_value(row: _GenerationRow) -> list[object]:
-    return [row.tool_index, row.object_index, row.role, row.descriptor_index, row.size, row.sha256,
-            row.soname, list(row.needed), row.seal_profile, list(row.source_generation)]
+    return [row.tool_index, row.object_index, row.role, row.descriptor_index, row.size, row.sha256, row.soname, list(row.needed), row.seal_profile, list(row.source_generation)]
 def _binding_value(row: _GenerationRow) -> dict[str, object]:
-    return {"descriptor_index": row.descriptor_index, "needed": list(row.needed), "object_index": row.object_index,
-            "role": row.role, "seal_profile": row.seal_profile, "sha256": row.sha256, "size": row.size, "soname": row.soname, "tool_index": row.tool_index}
+    return {"descriptor_index": row.descriptor_index, "needed": list(row.needed), "object_index": row.object_index, "role": row.role, "seal_profile": row.seal_profile, "sha256": row.sha256, "size": row.size, "soname": row.soname, "tool_index": row.tool_index}
 def _generation_value(row: _GenerationRow) -> list[int]:
     return [row.tool_index, row.object_index, row.descriptor_index, *row.source_generation]
 def _rows_from_packet(values: object) -> tuple[_GenerationRow, ...]:
@@ -602,17 +571,16 @@ def _verify_bundle(admission: _SourceAdmission, report_bytes: bytes, descriptors
         _require(row.size == item["size"] and row.sha256 == item["sha256"], "generation report binding")
         _require(row.soname == item["soname"] and row.needed == tuple(item["needed"]), "generation ELF metadata binding")
     _require(referenced == set(range(len(descriptors))), "unbound issued descriptor")
-    checked: dict[int, tuple[int, str]] = {}
+    checked: dict[int, tuple[int, str, tuple[int, ...]]] = {}
     for row in rows:
-        expected = (row.size, row.sha256)
+        expected = (row.size, row.sha256, row.source_generation)
         _require(row.descriptor_index not in checked or checked[row.descriptor_index] == expected, "conflicting descriptor alias")
         if row.descriptor_index not in checked:
             _inspect_fd(descriptors[row.descriptor_index], False, row.size, row.sha256)
             checked[row.descriptor_index] = expected
     return report, _digest([_binding_value(row) for row in rows]), _digest([_generation_value(row) for row in rows])
 class _WorkerIssuer:
-    def __init__(
-        self, endpoint: socket.socket, nonce: bytes, admission: _SourceAdmission, consumer_pid: int, package_name: str, helper_endpoint: socket.socket | None = None):
+    def __init__( self, endpoint: socket.socket, nonce: bytes, admission: _SourceAdmission, consumer_pid: int, package_name: str, helper_endpoint: socket.socket | None = None):
         self._endpoint = endpoint
         self._helper_endpoint = helper_endpoint
         self._nonce = nonce
@@ -630,10 +598,10 @@ class _WorkerIssuer:
         _require(remaining > 0 and select.select([], [endpoint], [], remaining)[1], "helper control deadline", "helper-deadline")
         raw = _canonical(value)
         ancillary = [] if not rights else [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array("i", rights))]
-        _require(endpoint.sendmsg([raw], ancillary) == len(raw), "helper control send", "helper-control-send")
+        _require(endpoint.sendmsg([raw], ancillary, socket.MSG_DONTWAIT) == len(raw), "helper control send", "helper-control-send")
         remaining = deadline - time.monotonic()
         _require(remaining > 0 and select.select([endpoint], [], [], remaining)[0], "helper acknowledgement deadline", "helper-deadline")
-        reply, ancillary, flags, _address = endpoint.recvmsg(1024, 256, socket.MSG_CMSG_CLOEXEC)
+        reply, ancillary, flags, _address = endpoint.recvmsg(1024, 256, socket.MSG_CMSG_CLOEXEC | socket.MSG_DONTWAIT)
         credentials, leases = _leased_credentials(ancillary, _SystemOps(), require_rights=False)
         _require(not flags and not leases and credentials == (self._consumer_pid, os.getuid(), os.getgid()), "helper acknowledgement authority", "helper-ack-authority")
         result = _strict_json(reply, False, 1024, "helper acknowledgement")
@@ -648,14 +616,9 @@ class _WorkerIssuer:
         values = (getattr(helper, "pid", None), getattr(helper, "start_time", None), getattr(helper, "session", None), getattr(helper, "process_group", None))
         _require(all(type(item) is int and item >= 0 for item in (*values, pidfd)), "helper registration identity", "helper-register-identity")
         _require(len(executable) == 2 and len(target) == 2, "helper executable identity", "helper-register-executable")
-        request = {"event": "register", "executable": list(executable), "gates": list(gates),
-                   "pid": values[0], "process_group": values[3], "sequence": self._helper_sequence,
-                   "session": values[2], "start_time": values[1], "target": list(target),
-                   "version": _RESULT_VERSION}
+        request = {"event": "register", "executable": list(executable), "gates": list(gates), "pid": values[0], "process_group": values[3], "sequence": self._helper_sequence, "session": values[2], "start_time": values[1], "target": list(target), "version": _RESULT_VERSION}
         reply = self._helper_exchange(request, (pidfd,), absolute_deadline)
-        _require(set(reply) == {"event", "sequence", "token", "version"} and reply["event"] == "registered"
-                 and reply["sequence"] == self._helper_sequence and _sha(reply["token"]),
-                 "helper registration acknowledgement", "helper-register-ack")
+        _require(set(reply) == {"event", "sequence", "token", "version"} and reply["event"] == "registered" and reply["sequence"] == self._helper_sequence and _sha(reply["token"]), "helper registration acknowledgement", "helper-register-ack")
         token = _RuntimeHelperToken(reply["token"])
         self._helper_tokens[token] = "registered"
         return token
@@ -665,9 +628,7 @@ class _WorkerIssuer:
         self._helper_sequence += 1
         request = {"event": event, "sequence": self._helper_sequence, "token": token.value, "version": _RESULT_VERSION}
         reply = self._helper_exchange(request, (), deadline)
-        _require(reply == {"event": event + "d", "sequence": self._helper_sequence,
-                           "token": token.value, "version": _RESULT_VERSION},
-                 "helper transition acknowledgement", "helper-transition-ack")
+        _require(reply == {"event": event + "d", "sequence": self._helper_sequence, "token": token.value, "version": _RESULT_VERSION}, "helper transition acknowledgement", "helper-transition-ack")
         if event == "retire": del self._helper_tokens[token]
         else: self._helper_tokens[token] = "released"
     def _release_runtime_helper(self, token: _RuntimeHelperToken, deadline: float) -> None:
@@ -694,54 +655,53 @@ class _WorkerIssuer:
         _require(type(canonical_report) is bytes and type(descriptors) is tuple and type(generation_rows) is tuple, "issuer argument type")
         rows = tuple(_row_from_object(row) for row in generation_rows)
         report, binding_sha, generation_sha = _verify_bundle(self._admission, canonical_report, descriptors, rows)
-        packet = {
-            "binding_sha256": binding_sha, "closure_sha256": report["closure_sha256"],
-            "descriptor_count": len(descriptors), "generation_rows": [_row_value(row) for row in rows],
-            "generation_sha256": generation_sha, "nonce": self._nonce.hex(),
-            "report_sha256": hashlib.sha256(canonical_report).hexdigest(), "revision": self._admission.revision,
-            "source_set_sha256": self._admission.source_set_sha256, "version": _HANDOFF_VERSION,
-        }
+        packet = { "binding_sha256": binding_sha, "closure_sha256": report["closure_sha256"], "descriptor_count": len(descriptors), "generation_rows": [_row_value(row) for row in rows], "generation_sha256": generation_sha, "nonce": self._nonce.hex(), "report_sha256": hashlib.sha256(canonical_report).hexdigest(), "revision": self._admission.revision, "source_set_sha256": self._admission.source_set_sha256, "version": _HANDOFF_VERSION, }
         raw = _canonical(packet)
         rights = array("i", descriptors)
-        sent = self._endpoint.sendmsg([raw], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, rights)])
+        deadline = time.monotonic() + _SETUP_SECONDS
+        remaining = deadline - time.monotonic()
+        _require(remaining > 0 and select.select([], [self._endpoint], [], remaining)[1], "issuance send deadline", "issuer-deadline")
+        sent = self._endpoint.sendmsg([raw], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, rights)], socket.MSG_DONTWAIT)
         _require(sent == len(raw), "handoff packet partial send")
-        ack_raw, ancillary, flags, _address = self._endpoint.recvmsg(_MAX_PACKET, 256)
+        remaining = deadline - time.monotonic()
+        _require(remaining > 0 and select.select([self._endpoint], [], [], remaining)[0], "issuance acknowledgement deadline", "issuer-deadline")
+        ack_raw, ancillary, flags, _address = self._endpoint.recvmsg(_MAX_PACKET, 256, socket.MSG_CMSG_CLOEXEC | socket.MSG_DONTWAIT)
         credentials, received = _leased_credentials(ancillary, _SystemOps(), require_rights=False)
         expected_credentials = (self._consumer_pid, os.getuid(), os.getgid())
         _require(not flags and not received and credentials == expected_credentials, "issuance acknowledgement authority", "issuer-ack-authority")
         ack = _strict_json(ack_raw, False, _MAX_PACKET, "issuance acknowledgement")
-        expected = {
-            "binding_sha256": binding_sha, "consumer_pid": self._consumer_pid,
-            "generation_sha256": generation_sha, "nonce": self._nonce.hex(),
-            "report_sha256": packet["report_sha256"], "version": _HANDOFF_VERSION,
-        }
+        expected = { "binding_sha256": binding_sha, "consumer_pid": self._consumer_pid, "generation_sha256": generation_sha, "nonce": self._nonce.hex(), "report_sha256": packet["report_sha256"], "version": _HANDOFF_VERSION, }
         _require(ack == expected, "issuance acknowledgement mismatch")
-        trailing = self._endpoint.recv(1)
-        _require(trailing == b"", "second consumer packet", "issuer-second-packet")
+        remaining = deadline - time.monotonic()
+        _require(remaining > 0 and select.select([self._endpoint], [], [], remaining)[0], "issuance EOF deadline", "issuer-deadline")
+        _require(self._endpoint.recv(1, socket.MSG_DONTWAIT) == b"", "second consumer packet", "issuer-second-packet")
         self._endpoint.shutdown(socket.SHUT_WR)
         return _IssuanceReceipt(_HANDOFF_VERSION, packet["report_sha256"], report["closure_sha256"], binding_sha, generation_sha, len(descriptors), os.getpid(), self._consumer_pid)
 @dataclass
 class _ProcessLease:
     pid: int
-    pidfd: _FdLease
+    pidfd: _FdLease | None
     start_time: int = 0
     session: int = 0
     process_group: int = 0
     executable: tuple[int, int] = (0, 0)
     release_gate: _FdLease | None = None
+    pending: tuple[_FdLease, ...] = ()
     released: bool = False
     reaped: bool = False
     descendants: tuple["_ProcessLease", ...] = ()
     namespace_handles: tuple[_FdLease, ...] = ()
+    waitable: bool = True
 @dataclass
 class _ProcessOwner:
     ops: Any
     processes: list[_ProcessLease] = field(default_factory=list)
     poisoned: BaseException | None = None
-    def register(self, pid: int, release_gate: _FdLease | None = None, pidfd_fd: int | None = None) -> _ProcessLease:
-        pidfd = _FdLease(pidfd_fd if pidfd_fd is not None else os.pidfd_open(pid, 0), f"pidfd:{pid}")
-        lease = _ProcessLease(pid, pidfd, release_gate=release_gate)
+    def register(self, pid: int, release_gate: _FdLease | None = None, pidfd_fd: int | None = None, waitable: bool = True) -> _ProcessLease:
+        lease = _ProcessLease(pid, None, release_gate=release_gate, waitable=waitable)
         self.processes.append(lease)
+        descriptor = pidfd_fd if pidfd_fd is not None else os.pidfd_open(pid, 0)
+        lease.pidfd = _FdLease(descriptor, f"pidfd:{pid}")
         lease.start_time = _start_time(pid)
         lease.session = os.getsid(pid)
         lease.process_group = os.getpgid(pid)
@@ -751,24 +711,36 @@ class _ProcessOwner:
         read_fd, write_fd = os.pipe2(os.O_CLOEXEC)
         read_lease = _FdLease(read_fd, "process-release-read")
         write_lease = _FdLease(write_fd, "process-release-write")
+        lease = _ProcessLease(0, None, release_gate=write_lease, pending=(read_lease,))
+        self.processes.append(lease)
         pid, pidfd = self.ops.clone_pidfd()
         if pid == 0:
+            self.processes.remove(lease)
             write_lease.close(self.ops)
             return 0, None, read_lease
+        lease.pid = pid
+        lease.pidfd = _FdLease(pidfd, f"pidfd:{pid}")
         read_lease.close(self.ops)
-        return pid, self.register(pid, write_lease, pidfd), None
+        lease.pending = ()
+        lease.start_time = _start_time(pid)
+        lease.session = os.getsid(pid)
+        lease.process_group = os.getpgid(pid)
+        lease.executable = _exe_identity(pid)
+        return pid, lease, None
     def release(self, lease: _ProcessLease) -> None:
         gate = lease.release_gate
         if gate is None or gate.state is not _FdState.OWNED or lease.released:
             raise RuntimeLauncherError("process release gate state", "process-release-gate")
         if self.ops.write(gate.fd, b"G") != 1:
             raise RuntimeLauncherError("process release short write", "process-release-write")
-        gate.close(self.ops)
         lease.released = True
+        gate.close(self.ops)
     def stop(self, lease: _ProcessLease, primary: BaseException | None = None) -> None:
         _stop_process(lease, primary, self.ops)
         if lease in self.processes: self.processes.remove(lease)
     def cleanup(self, primary: BaseException | None = None) -> None:
+        if self.poisoned is not None:
+            raise self.poisoned
         failures: list[BaseException] = []
         for lease in tuple(self.processes):
             try: self.stop(lease, primary)
@@ -797,16 +769,15 @@ def _proc_bytes(path: str, bound: int, ops: Any | None = None) -> bytes:
     return b"".join(chunks)
 def _parse_proc_stat(raw: bytes, pid: int) -> int:
     prefix = f"{pid} (".encode()
-    _require(raw.startswith(prefix) and raw.endswith(b"\n") and raw.count(b"\n") == 1,
-             "process stat framing", "stat-framing")
+    _require(raw.startswith(prefix) and raw.endswith(b"\n") and raw.count(b"\n") == 1, "process stat framing", "stat-framing")
     marker = raw.rfind(b") ")
-    _require(marker >= len(prefix) and b"\0" not in raw[:marker], "process stat comm", "stat-comm")
+    command = raw[len(prefix):marker]
+    _require(marker > len(prefix) and len(command) <= 15 and not any(byte < 0x20 or byte == 0x7f for byte in command), "process stat comm", "stat-comm")
     fields = raw[marker + 2:-1].split(b" ")
     _require(len(fields) == 50 and len(fields[0]) == 1 and fields[0] in b"RSDZTWtXxIKP", "process stat shape", "stat-shape")
     values: list[int] = []
     for field in fields[1:]:
-        _require(re.fullmatch(rb"-?(0|[1-9][0-9]*)", field) is not None,
-                 "process stat lexical field", "stat-lexical")
+        _require(re.fullmatch(rb"(?:0|-?[1-9][0-9]*)", field) is not None, "process stat lexical field", "stat-lexical")
         value = int(field)
         _require(-(1 << 63) <= value <= (1 << 64) - 1, "process stat integer bound", "stat-integer")
         values.append(value)
@@ -825,8 +796,8 @@ def _parse_proc_status(raw: bytes) -> dict[str, object]:
     _require(all(key in records for key in required), "process status required fields", "status-required")
     nspid = records[b"NSpid"].split(b"\t")
     groups = records[b"Groups"].split()
-    _require(bool(nspid) and all(item.isdigit() and 0 < int(item) <= 2147483647 for item in nspid), "NSpid field", "status-nspid")
-    _require(all(item.isdigit() and int(item) <= _UINT_MAX for item in groups), "Groups field", "status-groups")
+    _require(bool(nspid) and all(re.fullmatch(rb"[1-9][0-9]*", item) and int(item) <= 2147483647 for item in nspid), "NSpid field", "status-nspid")
+    _require(all(re.fullmatch(rb"0|[1-9][0-9]*", item) and int(item) <= _UINT_MAX for item in groups), "Groups field", "status-groups")
     result: dict[str, object] = {"nspid": tuple(int(item) for item in nspid), "groups": tuple(int(item) for item in groups)}
     for key, name in ((b"CapInh", "inheritable"), (b"CapPrm", "permitted"), (b"CapEff", "effective"), (b"CapBnd", "bounding"), (b"CapAmb", "ambient")):
         value = records[key]
@@ -834,7 +805,7 @@ def _parse_proc_status(raw: bytes) -> dict[str, object]:
         result[name] = int(value, 16)
     for key, name, maximum in ((b"NoNewPrivs", "no_new_privs", 1), (b"Seccomp", "seccomp", 2)):
         value = records[key]
-        _require(value.isdigit() and int(value) <= maximum, "security status field", "status-security")
+        _require(re.fullmatch(rb"0|[1-9][0-9]*", value) is not None and int(value) <= maximum, "security status field", "status-security")
         result[name] = int(value)
     return result
 def _start_time(pid: int, ops: Any | None = None) -> int:
@@ -853,16 +824,17 @@ def _exe_identity(pid: int, ops: Any | None = None) -> tuple[int, int]:
     return result
 def _process_matches(lease: _ProcessLease) -> bool:
     try:
-        return (
-            _start_time(lease.pid) == lease.start_time
-            and os.getsid(lease.pid) == lease.session
-            and os.getpgid(lease.pid) == lease.process_group
-            and _exe_identity(lease.pid) == lease.executable
-        )
+        return ( _start_time(lease.pid) == lease.start_time and os.getsid(lease.pid) == lease.session and os.getpgid(lease.pid) == lease.process_group and _exe_identity(lease.pid) == lease.executable )
     except (OSError, RuntimeLauncherError):
         return False
 def _wait_bounded(lease: _ProcessLease, deadline: float) -> int | None:
     while time.monotonic() < deadline:
+        if not lease.waitable:
+            if lease.pidfd is not None and select.select([lease.pidfd.fd], [], [], 0)[0]:
+                lease.reaped = True
+                return 0
+            time.sleep(min(0.01, max(0.0, deadline - time.monotonic())))
+            continue
         observed, status = os.waitpid(lease.pid, os.WNOHANG)
         if observed == lease.pid:
             lease.reaped = True
@@ -874,24 +846,36 @@ def _wait_bounded(lease: _ProcessLease, deadline: float) -> int | None:
 def _stop_process(lease: _ProcessLease, primary: BaseException | None, ops: Any | None = None) -> None:
     actual_ops = ops or _SystemOps()
     failures: list[BaseException] = []
-    if not lease.reaped and select.select([lease.pidfd.fd], [], [], 0)[0]:
-        try:
+    for descriptor in (*lease.pending, lease.release_gate):
+        if descriptor is None:
+            continue
+        if descriptor.state is _FdState.CLOSE_UNCERTAIN:
+            failures.append(descriptor.close_error or RuntimeLauncherError("process descriptor poison"))
+        elif descriptor.state is _FdState.OWNED:
+            try: descriptor.close(actual_ops)
+            except BaseException as error: failures.append(error)
+    pidfd = lease.pidfd
+    if lease.pid == 0:
+        lease.reaped = True
+    elif pidfd is None:
+        failures.append(RuntimeLauncherError("owned process lacks pidfd", "process-authority"))
+    elif not lease.reaped and select.select([pidfd.fd], [], [], 0)[0]:
+        if not lease.waitable:
+            lease.reaped = True
+        else:
             observed, _status = os.waitpid(lease.pid, os.WNOHANG)
             _require(observed == lease.pid, "owned process wait identity")
-        except ChildProcessError:
-            pass
-        else:
             lease.reaped = True
-    if not lease.reaped:
+    if lease.pid and pidfd is not None and not lease.reaped:
         try:
             identity_required = lease.start_time != 0
             if identity_required and not _process_matches(lease):
                 raise RuntimeLauncherError("owned process identity uncertain before TERM")
-            signal.pidfd_send_signal(lease.pidfd.fd, signal.SIGTERM)
+            signal.pidfd_send_signal(pidfd.fd, signal.SIGTERM)
             if _wait_bounded(lease, time.monotonic() + _TERM_SECONDS) is None:
                 if identity_required and not _process_matches(lease):
                     raise RuntimeLauncherError("owned process identity uncertain before KILL")
-                signal.pidfd_send_signal(lease.pidfd.fd, signal.SIGKILL)
+                signal.pidfd_send_signal(pidfd.fd, signal.SIGKILL)
                 if _wait_bounded(lease, time.monotonic() + _KILL_SECONDS) is None:
                     raise RuntimeLauncherError("owned process reap deadline")
         except BaseException as error:
@@ -901,49 +885,53 @@ def _stop_process(lease: _ProcessLease, primary: BaseException | None, ops: Any 
             if handle.state is _FdState.OWNED:
                 try: handle.close(actual_ops)
                 except BaseException as error: failures.append(error)
-        if lease.pidfd.state is _FdState.OWNED:
-            try: lease.pidfd.close(actual_ops)
+        if pidfd is not None and pidfd.state is _FdState.CLOSE_UNCERTAIN:
+            failures.append(pidfd.close_error or RuntimeLauncherError("pidfd poison"))
+        elif pidfd is not None and pidfd.state is _FdState.OWNED:
+            try: pidfd.close(actual_ops)
             except BaseException as error: failures.append(error)
     if failures:
         raise RuntimeLauncherCleanupError(primary, failures) from (primary or failures[0])
 def _received_leases(descriptors: tuple[int, ...]) -> tuple[_FdLease, ...]:
-    _require(type(descriptors) is tuple and all(type(fd) is int and fd >= 0 for fd in descriptors),
-             "received descriptor shape", "issuer-rights-value")
+    _require(type(descriptors) is tuple and all(type(fd) is int and fd >= 0 for fd in descriptors), "received descriptor shape", "issuer-rights-value")
     return tuple(_FdLease(fd, f"received:{index}") for index, fd in enumerate(descriptors))
 def _leased_credentials(ancillary: list[tuple[int, int, bytes]], ops: Any, require_rights: bool | None = True) -> tuple[tuple[int, int, int], tuple[_FdLease, ...]]:
     credentials: tuple[int, int, int] | None = None
     leases: list[_FdLease] = []
     primary: BaseException | None = None
+    item_size = array("i").itemsize
     try:
+        # Lease every kernel-installed right before any ordered semantic rejection.
+        for level, kind, data in ancillary:
+            if level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS:
+                values = array("i")
+                values.frombytes(data[:len(data) - len(data) % item_size])
+                leases.extend(_received_leases(tuple(values)))
+        rights_seen = False
         for level, kind, data in ancillary:
             _require(level == socket.SOL_SOCKET, "handoff ancillary level", "issuer-ancillary")
             if kind == socket.SCM_CREDENTIALS:
-                _require(credentials is None and len(data) == struct.calcsize("3i"),
-                         "handoff credentials cardinality", "issuer-credentials-cardinality")
+                _require(credentials is None and len(data) == struct.calcsize("3i"), "handoff credentials cardinality", "issuer-credentials-cardinality")
                 credentials = struct.unpack("3i", data)
             elif kind == socket.SCM_RIGHTS:
-                _require(bool(data) and len(data) % array("i").itemsize == 0,
-                         "handoff rights alignment", "issuer-rights-alignment")
-                values = array("i")
-                values.frombytes(data)
-                duplicate = bool(leases)
-                leases.extend(_received_leases(tuple(values)))
-                _require(not duplicate, "handoff rights cardinality", "issuer-rights-cardinality")
+                _require(bool(data) and len(data) % item_size == 0, "handoff rights alignment", "issuer-rights-alignment")
+                _require(not rights_seen, "handoff rights cardinality", "issuer-rights-cardinality")
+                rights_seen = True
             else: raise RuntimeLauncherError("handoff ancillary type", "issuer-ancillary")
         _require(credentials is not None, "handoff credentials missing", "issuer-credentials-missing")
         if require_rights is not None:
-            _require(bool(leases) if require_rights else not leases,
-                     "handoff rights missing or extra", "issuer-rights-missing" if require_rights else "issuer-rights-extra")
+            _require(bool(leases) if require_rights else not leases, "handoff rights missing or extra", "issuer-rights-missing" if require_rights else "issuer-rights-extra")
         return credentials, tuple(leases)
     except BaseException as error: primary = error
     _close_leases(ops, leases, primary)
     raise primary
-def _consume_issuance(endpoint: socket.socket, nonce: bytes, admission: _SourceAdmission,
-                      issuer_pid: int, ops: Any | None = None,
-                      ) -> tuple[dict[str, object], tuple[_FdLease, ...], tuple[_GenerationRow, ...], _IssuanceReceipt]:
+def _consume_issuance(endpoint: socket.socket, nonce: bytes, admission: _SourceAdmission, issuer_pid: int, ops: Any | None = None, deadline: float | None = None, ) -> tuple[dict[str, object], tuple[_FdLease, ...], tuple[_GenerationRow, ...], _IssuanceReceipt]:
     actual_ops = ops or _SystemOps()
+    deadline = deadline if deadline is not None else time.monotonic() + _SETUP_SECONDS
+    remaining = deadline - time.monotonic()
+    _require(remaining > 0 and select.select([endpoint], [], [], remaining)[0], "issuance packet deadline", "issuer-deadline")
     ancillary_bound = socket.CMSG_SPACE(_MAX_OBJECTS * array("i").itemsize) + socket.CMSG_SPACE(struct.calcsize("3i"))
-    raw, ancillary, flags, _address = endpoint.recvmsg(_MAX_PACKET, ancillary_bound, socket.MSG_CMSG_CLOEXEC)
+    raw, ancillary, flags, _address = endpoint.recvmsg(_MAX_PACKET, ancillary_bound, socket.MSG_CMSG_CLOEXEC | socket.MSG_DONTWAIT)
     credentials, leases = _leased_credentials(ancillary, actual_ops)
     descriptors = tuple(lease.fd for lease in leases)
     primary: BaseException | None = None
@@ -951,8 +939,7 @@ def _consume_issuance(endpoint: socket.socket, nonce: bytes, admission: _SourceA
         expected_credentials = (issuer_pid, os.getuid(), os.getgid())
         _require(not flags & (socket.MSG_TRUNC | socket.MSG_CTRUNC) and credentials == expected_credentials, "handoff packet authority/truncation", "issuer-packet-authority")
         packet = _strict_json(raw, False, _MAX_PACKET, "handoff packet")
-        keys = {"binding_sha256", "closure_sha256", "descriptor_count", "generation_rows", "generation_sha256",
-                "nonce", "report_sha256", "revision", "source_set_sha256", "version"}
+        keys = {"binding_sha256", "closure_sha256", "descriptor_count", "generation_rows", "generation_sha256", "nonce", "report_sha256", "revision", "source_set_sha256", "version"}
         _require(type(packet) is dict and set(packet) == keys, "handoff packet shape")
         _require(packet["version"] == _HANDOFF_VERSION and packet["nonce"] == nonce.hex(), "handoff nonce/version")
         _require(packet["revision"] == admission.revision and packet["source_set_sha256"] == admission.source_set_sha256, "handoff admission binding")
@@ -962,21 +949,21 @@ def _consume_issuance(endpoint: socket.socket, nonce: bytes, admission: _SourceA
         report, binding_sha, generation_sha = _verify_bundle(admission, report_bytes, descriptors, rows)
         _require(packet["closure_sha256"] == report["closure_sha256"], "handoff closure digest")
         _require(packet["binding_sha256"] == binding_sha and packet["generation_sha256"] == generation_sha, "handoff table digest")
-        ack = {"binding_sha256": binding_sha, "consumer_pid": os.getpid(), "generation_sha256": generation_sha,
-               "nonce": nonce.hex(), "report_sha256": packet["report_sha256"], "version": _HANDOFF_VERSION}
+        ack = {"binding_sha256": binding_sha, "consumer_pid": os.getpid(), "generation_sha256": generation_sha, "nonce": nonce.hex(), "report_sha256": packet["report_sha256"], "version": _HANDOFF_VERSION}
         ack_bytes = _canonical(ack)
-        _require(endpoint.send(ack_bytes) == len(ack_bytes), "issuance acknowledgement partial")
+        remaining = deadline - time.monotonic()
+        _require(remaining > 0 and select.select([], [endpoint], [], remaining)[1], "issuance acknowledgement deadline", "issuer-deadline")
+        _require(endpoint.send(ack_bytes, socket.MSG_DONTWAIT) == len(ack_bytes), "issuance acknowledgement partial")
         endpoint.shutdown(socket.SHUT_WR)
-        _require(endpoint.recv(1) == b"", "second issuer packet", "issuer-second-packet")
+        remaining = deadline - time.monotonic()
+        _require(remaining > 0 and select.select([endpoint], [], [], remaining)[0], "issuance EOF deadline", "issuer-deadline")
+        _require(endpoint.recv(1, socket.MSG_DONTWAIT) == b"", "second issuer packet", "issuer-second-packet")
         receipt = _IssuanceReceipt(_HANDOFF_VERSION, packet["report_sha256"], report["closure_sha256"], binding_sha, generation_sha, len(descriptors), issuer_pid, os.getpid())
         return report, leases, rows, receipt
     except BaseException as error: primary = error
     _close_leases(actual_ops, leases, primary)
     raise primary
-def _consume_worker_handoff(endpoint: socket.socket, helper_endpoint: socket.socket,
-                            nonce: bytes, admission: _SourceAdmission, issuer_pid: int,
-                            ops: Any, process_owner: _ProcessOwner,
-                            deadline: float) -> tuple[dict[str, object], tuple[_FdLease, ...], tuple[_GenerationRow, ...], _IssuanceReceipt]:
+def _consume_worker_handoff(endpoint: socket.socket, helper_endpoint: socket.socket, nonce: bytes, admission: _SourceAdmission, issuer_pid: int, ops: Any, process_owner: _ProcessOwner, deadline: float) -> tuple[dict[str, object], tuple[_FdLease, ...], tuple[_GenerationRow, ...], _IssuanceReceipt]:
     sequence = 0
     helpers: dict[str, _ProcessLease] = {}
     while True:
@@ -985,27 +972,24 @@ def _consume_worker_handoff(endpoint: socket.socket, helper_endpoint: socket.soc
         ready = select.select([endpoint, helper_endpoint], [], [], remaining)[0]
         _require(bool(ready), "worker handoff deadline", "worker-handoff-deadline")
         if helper_endpoint in ready:
-            raw, ancillary, flags, _address = helper_endpoint.recvmsg(4096, 512, socket.MSG_CMSG_CLOEXEC)
+            raw, ancillary, flags, _address = helper_endpoint.recvmsg(4096, 512, socket.MSG_CMSG_CLOEXEC | socket.MSG_DONTWAIT)
             credentials, received = _leased_credentials(ancillary, ops, require_rights=None)
             primary: BaseException | None = None
             try:
-                _require(not flags and credentials == (issuer_pid, os.getuid(), os.getgid()),
-                         "helper control authority", "helper-control-authority")
+                _require(not flags and credentials == (issuer_pid, os.getuid(), os.getgid()), "helper control authority", "helper-control-authority")
                 value = _strict_json(raw, False, 4096, "helper control")
                 _require(type(value) is dict and value.get("version") == _RESULT_VERSION, "helper control shape", "helper-control-shape")
                 sequence += 1
                 _require(value.get("sequence") == sequence, "helper control sequence", "helper-control-sequence")
                 event = value.get("event")
                 if event == "register":
-                    expected = {"event", "executable", "gates", "pid", "process_group", "sequence",
-                                "session", "start_time", "target", "version"}
+                    expected = {"event", "executable", "gates", "pid", "process_group", "sequence", "session", "start_time", "target", "version"}
                     _require(set(value) == expected and len(received) == 1, "helper registration shape", "helper-register-shape")
                     pidfd = received[0].transfer()
-                    lease = process_owner.register(value["pid"], pidfd_fd=pidfd)
+                    lease = process_owner.register(value["pid"], pidfd_fd=pidfd, waitable=False)
                     observed = (lease.start_time, lease.session, lease.process_group, list(lease.executable))
                     asserted = (value["start_time"], value["session"], value["process_group"], value["executable"])
-                    _require(observed == asserted and value["gates"] == ["input_gate", "registration_gate", "release_gate", "status_gate"],
-                             "helper registration identity", "helper-register-identity")
+                    _require(observed == asserted and value["gates"] == ["input_gate", "registration_gate", "release_gate", "status_gate"], "helper registration identity", "helper-register-identity")
                     token = hashlib.sha256(nonce + _canonical(value)).hexdigest()
                     _require(token not in helpers, "helper token collision", "helper-token")
                     helpers[token] = lease
@@ -1021,21 +1005,20 @@ def _consume_worker_handoff(endpoint: socket.socket, helper_endpoint: socket.soc
                         lease.released = True
                         reply_event = "released"
                     else:
-                        _require(lease.released and bool(select.select([lease.pidfd.fd], [], [], 0)[0]),
-                                 "helper retire before reap", "helper-retire-live")
+                        _require(lease.released and bool(select.select([lease.pidfd.fd], [], [], 0)[0]), "helper retire before reap", "helper-retire-live")
                         lease.reaped = True
                         process_owner.stop(lease)
                         del helpers[token]
                         reply_event = "retired"
                 reply = _canonical({"event": reply_event, "sequence": sequence, "token": token, "version": _RESULT_VERSION})
-                _require(helper_endpoint.send(reply) == len(reply), "helper acknowledgement send", "helper-ack-send")
+                _require(helper_endpoint.send(reply, socket.MSG_DONTWAIT) == len(reply), "helper acknowledgement send", "helper-ack-send")
             except BaseException as error: primary = error
             if primary is not None:
                 _close_leases(ops, received, primary)
                 raise primary
         if endpoint in ready:
             _require(not helpers, "helper authority still live at issuance", "helper-live-at-issuance")
-            return _consume_issuance(endpoint, nonce, admission, issuer_pid, ops)
+            return _consume_issuance(endpoint, nonce, admission, issuer_pid, ops, deadline)
 def _mkdir_exact(path: str, mode: int) -> None:
     os.mkdir(path, mode)
     info = os.lstat(path)
@@ -1047,30 +1030,41 @@ class _RootOwner:
     root: _FdLease | None = None
     identity: tuple[int, int] | None = None
     create_intended: bool = False
-    mount_intended: bool = False
     cleaned: bool = False
     def prepare(self) -> str:
-        self.parent = _FdLease(self.ops.open(_ROOT_PARENT, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC), "root-parent")
-        _require(not os.path.lexists(f"{_ROOT_PARENT}/{_ROOT_LEAF}"), "private root baseline", "root-baseline")
-        self.create_intended = True
-        os.mkdir(_ROOT_LEAF, 0o700, dir_fd=self.parent.fd)
-        fd = os.open(_ROOT_LEAF, os.O_PATH | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=self.parent.fd)
-        self.root = _FdLease(fd, "root-object")
-        info = os.fstat(fd)
-        _require(stat.S_ISDIR(info.st_mode) and stat.S_IMODE(info.st_mode) == 0o700, "private root identity", "root-identity")
-        self.identity = (info.st_dev, info.st_ino)
-        self.mount_intended = True
-        return f"{_ROOT_PARENT}/{_ROOT_LEAF}"
+        try:
+            descriptor = self.ops.open(_ROOT_PARENT, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+            self.parent = _FdLease(descriptor, "root-parent")
+            try: os.stat(_ROOT_LEAF, dir_fd=self.parent.fd, follow_symlinks=False)
+            except FileNotFoundError: pass
+            else: raise RuntimeLauncherError("private root baseline", "root-baseline")
+            self.create_intended = True
+            os.mkdir(_ROOT_LEAF, 0o700, dir_fd=self.parent.fd)
+            descriptor = os.open(_ROOT_LEAF, os.O_PATH | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=self.parent.fd)
+            self.root = _FdLease(descriptor, "root-object")
+            info = os.fstat(descriptor)
+            _require(stat.S_ISDIR(info.st_mode) and stat.S_IMODE(info.st_mode) == 0o700, "private root identity", "root-identity")
+            self.identity = (info.st_dev, info.st_ino)
+            return f"{_ROOT_PARENT}/{_ROOT_LEAF}"
+        except BaseException as primary:
+            self.cleanup(primary)
+            raise
     def cleanup(self, primary: BaseException | None = None) -> None:
+        if self.cleaned:
+            return
         failures: list[BaseException] = []
         if self.root is not None:
             try: self.root.close(self.ops)
             except BaseException as error: failures.append(error)
-        if self.create_intended and self.parent is not None and self.identity is not None:
+        if self.create_intended and self.parent is not None:
             try:
-                info = os.stat(_ROOT_LEAF, dir_fd=self.parent.fd, follow_symlinks=False)
-                _require((info.st_dev, info.st_ino) == self.identity and stat.S_ISDIR(info.st_mode), "private root replacement", "root-replaced")
-                os.rmdir(_ROOT_LEAF, dir_fd=self.parent.fd)
+                try: info = os.stat(_ROOT_LEAF, dir_fd=self.parent.fd, follow_symlinks=False)
+                except FileNotFoundError: info = None
+                if info is not None:
+                    exact = stat.S_ISDIR(info.st_mode) and stat.S_IMODE(info.st_mode) == 0o700
+                    exact = exact and (self.identity is None or (info.st_dev, info.st_ino) == self.identity)
+                    _require(exact, "private root replacement", "root-replaced")
+                    os.rmdir(_ROOT_LEAF, dir_fd=self.parent.fd)
             except BaseException as error: failures.append(error)
         if self.parent is not None:
             try: self.parent.close(self.ops)
@@ -1151,13 +1145,10 @@ def _enter_boundary(ops: Any, root: str) -> dict[str, object]:
     denials = ops.probe_seccomp_denials()
     expected_denials = set(_DENIED_SYSCALLS) | {"prctl:set", "execveat:shape"}
     _require(set(denials) == expected_denials and all(value == errno.EPERM for value in denials.values()), "seccomp denial inventory", "seccomp-denials")
-    return {"capability_sets": capabilities, "capabilities_zero": capabilities_zero,
-            "groups_empty": groups_empty, "noroot_locked": securebits == _SECBITS,
-            "no_new_privs": no_new_privs == 1, "seccomp_denials": denials,
-            "seccomp_mode": mode, "seccomp_program_sha256": program_digest}
-def _child_fd_install(ops: Any, input_fd: int, output_fd: int, role: str, exec_status_fd: int, root: str, status: socket.socket) -> None:
-    _require(fcntl.fcntl(198, fcntl.F_GETFD) & fcntl.FD_CLOEXEC,
-             "executable authority is not CLOEXEC", "exec-fd-cloexec")
+    return {"capability_sets": capabilities, "securebits": securebits, "no_new_privs": no_new_privs, "seccomp_installed": True, "seccomp_denials": denials, "seccomp_mode": mode, "seccomp_program_sha256": program_digest}
+def _child_fd_install(ops: Any, input_fd: int, output_fd: int, role: str, exec_status_fd: int, root: str) -> None:
+    _require(fcntl.fcntl(198, fcntl.F_GETFD) & fcntl.FD_CLOEXEC, "executable authority is not CLOEXEC", "exec-fd-cloexec")
+    _require(fcntl.fcntl(exec_status_fd, fcntl.F_GETFD) & fcntl.FD_CLOEXEC, "exec status pipe is not CLOEXEC", "exec-status-cloexec")
     input_copy = _FdLease(fcntl.fcntl(input_fd, fcntl.F_DUPFD_CLOEXEC, 256), "stdin-copy")
     output_copy = _FdLease(fcntl.fcntl(output_fd, fcntl.F_DUPFD_CLOEXEC, 256), "stdout-copy")
     os.dup2(input_copy.fd, 0, inheritable=True)
@@ -1165,24 +1156,31 @@ def _child_fd_install(ops: Any, input_fd: int, output_fd: int, role: str, exec_s
     os.dup2(output_copy.fd, 2, inheritable=True)
     input_copy.close(ops)
     output_copy.close(ops)
-    status_fd = status.fileno()
-    allowed = {0, 1, 2, 198, exec_status_fd, status_fd}
+    allowed = {0, 1, 2, 198, exec_status_fd}
     for fd in _descriptor_snapshot(ops):
         if fd not in allowed:
             _FdLease(fd, "preexec-complement").close(ops)
     observations = _enter_boundary(ops, root)
-    status.send(_status("boundary", 3, observations=observations))
-    _close_socket(status, ops, "boundary-status")
+    boundary = _status("boundary", 3, observations=observations)
+    _require(len(boundary) <= 16384 and ops.write(exec_status_fd, boundary) == len(boundary), "exec boundary pipe write", "exec-boundary-write")
     ops.execveat(198, role)
-def _namespace_owner(role: str, descriptors: tuple[int, ...], rows: tuple[_GenerationRow, ...],
-                     report: dict[str, object], input_fd: int, output_fd: int,
-                     status_fd: int, root: str | None = None) -> NoReturn:
+def _read_exec_boundary(ops: Any, descriptor: int, deadline: float) -> bytes:
+    raw = bytearray()
+    while True:
+        remaining = deadline - time.monotonic()
+        _require(remaining > 0 and select.select([descriptor], [], [], remaining)[0], "exec status timeout", "exec-status-timeout")
+        part = ops.read(descriptor, 16385 - len(raw))
+        if not part:
+            return bytes(raw)
+        raw += part
+        _require(len(raw) <= 16384, "exec status bound", "exec-status-bound")
+def _namespace_owner(role: str, descriptors: tuple[int, ...], rows: tuple[_GenerationRow, ...], report: dict[str, object], input_fd: int, output_fd: int, status_fd: int, root: str | None = None) -> NoReturn:
     root = root or f"{_ROOT_PARENT}/{_ROOT_LEAF}"
     status = socket.socket(fileno=status_fd)
     ops = _SystemOps()
     child_owner = _ProcessOwner(ops)
     child_lease: _ProcessLease | None = None
-    mounted = False
+    mount_intents: set[str] = set()
     sequence = 0
     inherited = list(_received_leases(descriptors))
     exec_lease: _FdLease | None = None
@@ -1196,12 +1194,13 @@ def _namespace_owner(role: str, descriptors: tuple[int, ...], rows: tuple[_Gener
         except FileNotFoundError: pass
         _write_map(ops, "/proc/self/uid_map", f"0 {original_uid} 1\n".encode())
         _write_map(ops, "/proc/self/gid_map", f"0 {original_gid} 1\n".encode())
+        mount_intents.add("private-root")
         ops.mount(None, b"/", None, _MS_REC | _MS_PRIVATE, None)
         sequence = 1
         status.send(_status("namespace", sequence))
         _recv_status(status, time.monotonic() + _SETUP_SECONDS, "prepare-root", 1)
+        mount_intents.add("materialized-root")
         _materialize_root(ops, role, descriptors, rows, report, root)
-        mounted = True
         descriptor_index = next(row.descriptor_index for row in rows if row.tool_index == _TOOL_INDEX[role] and row.object_index == 0)
         selected = descriptors[descriptor_index]
         if selected == 198: os.set_inheritable(selected, False)
@@ -1212,6 +1211,7 @@ def _namespace_owner(role: str, descriptors: tuple[int, ...], rows: tuple[_Gener
         exec_status_read, exec_status_write = os.pipe2(os.O_CLOEXEC)
         exec_read_lease = _FdLease(exec_status_read, "exec-status-read")
         exec_write_lease = _FdLease(exec_status_write, "exec-status-write")
+        _require(all(fcntl.fcntl(fd, fcntl.F_GETFD) & fcntl.FD_CLOEXEC for fd in (exec_status_read, exec_status_write)), "exec status pipe flags", "exec-status-cloexec")
         child, child_lease, child_gate = child_owner.spawn()
         if child == 0:
             exec_read_lease.close(ops)
@@ -1219,7 +1219,7 @@ def _namespace_owner(role: str, descriptors: tuple[int, ...], rows: tuple[_Gener
                 _require(child_gate is not None and ops.read(child_gate.fd, 1) == b"G", "child release gate", "child-release")
                 child_gate.close(ops)
                 ops.prctl(_PR_SET_PDEATHSIG, signal.SIGKILL)
-                _child_fd_install(ops, input_fd, output_fd, role, exec_write_lease.fd, root, status)
+                _child_fd_install(ops, input_fd, output_fd, role, exec_write_lease.fd, root)
             except BaseException as error:
                 code = getattr(error, "code", "child-setup")
                 try: ops.write(exec_write_lease.fd, (code[:126] + "\n").encode())
@@ -1232,15 +1232,15 @@ def _namespace_owner(role: str, descriptors: tuple[int, ...], rows: tuple[_Gener
         status.send(_status("child", sequence, pid=child))
         _recv_status(status, time.monotonic() + _SETUP_SECONDS, "release-child", 2)
         child_owner.release(child_lease)
-        ready = select.select([exec_read_lease.fd], [], [], _SETUP_SECONDS)[0]
-        _require(bool(ready), "exec status timeout", "exec-status-timeout")
-        exec_status = ops.read(exec_read_lease.fd, 128)
+        exec_status = _read_exec_boundary(ops, exec_read_lease.fd, time.monotonic() + _SETUP_SECONDS)
         exec_read_lease.close(ops)
-        _require(not exec_status, "exec setup failed", "exec-status-bytes")
+        boundary = _parse_sandbox_status(exec_status, "boundary", 3)
+        _require(status.send(exec_status) == len(exec_status), "boundary observation send", "boundary-send")
         sequence = 4
         status.send(_status("exec-ready", sequence))
         _recv_status(status, time.monotonic() + _SETUP_SECONDS, "finalize-root", 3)
         final_flags = _MS_REMOUNT | _MS_RDONLY | _MS_NOSUID | _MS_NODEV | _MS_NOEXEC
+        mount_intents.add("readonly-root")
         ops.mount(None, root.encode(), None, final_flags, None)
         sequence = 5
         status.send(_status("root-final", sequence))
@@ -1248,8 +1248,9 @@ def _namespace_owner(role: str, descriptors: tuple[int, ...], rows: tuple[_Gener
         _require(wait_status is not None, "namespace child deadline", "child-reap-deadline")
         child_owner.stop(child_lease)
         child_lease = None
-        ops.umount(root.encode())
-        mounted = False
+        if os.path.ismount(root): ops.umount(root.encode())
+        _require(not os.path.ismount(root), "materialized mount remains", "mount-cleanup")
+        mount_intents.remove("materialized-root")
         sequence = 6
         status.send(_status("exit", sequence, status=wait_status))
         os._exit(0)
@@ -1263,8 +1264,10 @@ def _namespace_owner(role: str, descriptors: tuple[int, ...], rows: tuple[_Gener
         if inherited:
             try: _close_leases(ops, inherited, primary)
             except BaseException as error: failures.append(error)
-        if mounted:
-            try: ops.umount(root.encode())
+        if "materialized-root" in mount_intents:
+            try:
+                if os.path.ismount(root): ops.umount(root.encode())
+                _require(not os.path.ismount(root), "materialized mount remains", "mount-cleanup")
             except BaseException as error: failures.append(error)
         try:
             next_sequence = sequence + 1
@@ -1277,8 +1280,7 @@ def _namespace_owner(role: str, descriptors: tuple[int, ...], rows: tuple[_Gener
         except BaseException: pass
         os._exit(125)
 def _parse_maps(raw: bytes) -> tuple[tuple[object, ...], ...]:
-    _require(raw.endswith(b"\n") and 0 < raw.count(b"\n") <= _MAX_MAP_LINES,
-             "maps framing/bound", "maps-framing")
+    _require(raw.endswith(b"\n") and 0 < raw.count(b"\n") <= _MAX_MAP_LINES, "maps framing/bound", "maps-framing")
     records: list[tuple[object, ...]] = []
     previous_end = 0
     pattern = re.compile(rb"([0-9a-f]+)-([0-9a-f]+) ([r-][w-][x-][ps]) ([0-9a-f]+) ([0-9a-f]+):([0-9a-f]+) ([0-9]+)(?: +(.*))?")
@@ -1306,7 +1308,7 @@ def _final_mapping_check(ops: _SystemOps, pid: int, rows: tuple[_GenerationRow, 
     expected = {(row.role, row.sha256) for row in expected_rows}
     observed: set[tuple[str, str]] = set()
     digest_roles = {row.sha256: row.role for row in expected_rows}
-    for start, end, permissions, _offset, _major, _minor, inode, path in _parse_maps(first):
+    for start, end, permissions, _offset, major, minor, inode, path in _parse_maps(first):
         if b"x" not in permissions: continue
         if inode == 0:
             _require(path in (b"[vdso]", b"[vsyscall]"), "unknown executable synthetic mapping")
@@ -1314,6 +1316,8 @@ def _final_mapping_check(ops: _SystemOps, pid: int, rows: tuple[_GenerationRow, 
         map_lease = _FdLease(ops.open(f"/proc/{pid}/map_files/{start:x}-{end:x}", os.O_RDONLY | os.O_CLOEXEC), "map-file")
         try:
             info = os.fstat(map_lease.fd)
+            identity = (os.major(info.st_dev), os.minor(info.st_dev), info.st_ino)
+            _require(identity == (major, minor, inode), "map_files identity mismatch", "maps-object-identity")
             data = _read_complete(map_lease.fd, info.st_size, _MAX_OBJECT)
         except BaseException as primary:
             try: map_lease.close(ops)
@@ -1340,8 +1344,7 @@ def _parse_mountinfo(raw: bytes) -> tuple[tuple[object, ...], ...]:
         groups = match.groups()
         optional = groups[7]
         _require(not optional or optional.startswith(b" "), "mountinfo optional fields", "mountinfo-shape")
-        rows.append((int(groups[0]), int(groups[1]), int(groups[2], 16), int(groups[3], 16),
-                     groups[4], groups[5], frozenset(groups[6].split(b",")), groups[8], groups[9], groups[10]))
+        rows.append((int(groups[0]), int(groups[1]), int(groups[2], 16), int(groups[3], 16), groups[4], groups[5], frozenset(groups[6].split(b",")), groups[8], groups[9], groups[10]))
     return tuple(rows)
 def _final_mount_check(pid: int, ops: Any | None = None) -> tuple[bool, bool, bool, bool]:
     rows = _parse_mountinfo(_proc_bytes(f"/proc/{pid}/mountinfo", _MAX_MAPS, ops))
@@ -1359,8 +1362,11 @@ def _final_mount_check(pid: int, ops: Any | None = None) -> tuple[bool, bool, bo
     return root_exact, no_proc, not exposed, checkout_absent
 def _open_namespace_authority(lease: _ProcessLease, ops: Any) -> dict[str, bool]:
     names = ("user", "mnt", "net", "pid_for_children")
-    handles = tuple(_FdLease(ops.open(f"/proc/{lease.pid}/ns/{name}", os.O_RDONLY | os.O_CLOEXEC), f"namespace:{name}") for name in names)
-    lease.namespace_handles = handles
+    handles: list[_FdLease] = []
+    for name in names:
+        descriptor = ops.open(f"/proc/{lease.pid}/ns/{name}", os.O_RDONLY | os.O_CLOEXEC)
+        handles.append(_FdLease(descriptor, f"namespace:{name}"))
+        lease.namespace_handles = tuple(handles)
     identities = tuple((os.fstat(item.fd).st_dev, os.fstat(item.fd).st_ino) for item in handles)
     baseline_names = ("user", "mnt", "net", "pid")
     baselines = tuple((os.stat(f"/proc/self/ns/{name}").st_dev, os.stat(f"/proc/self/ns/{name}").st_ino) for name in baseline_names)
@@ -1424,8 +1430,7 @@ def _parse_limits(raw: bytes) -> tuple[tuple[str, int | None, int | None, str], 
     _require(len(rows) == len({row[0] for row in rows}), "limits duplicate", "limits-cardinality")
     return tuple(rows)
 def _parse_children(raw: bytes) -> tuple[int, ...]:
-    _require(re.fullmatch(rb"(?:[1-9][0-9]* )*", raw) is not None,
-             "children lexical record", "children-record")
+    _require(re.fullmatch(rb"(?:[1-9][0-9]* )*", raw) is not None, "children lexical record", "children-record")
     values = tuple(int(item) for item in raw.split())
     _require(len(values) == len(set(values)) and all(value <= 2147483647 for value in values), "children cardinality", "children-cardinality")
     return values
@@ -1440,27 +1445,41 @@ def _descendant_census(pid: int, ops: Any) -> tuple[int, ...]:
         pending.extend(children)
         _require(len(observed) <= 4096, "descendant census bound", "descendant-bound")
     return tuple(sorted(observed))
-def _close_socket(endpoint: socket.socket, ops: Any, purpose: str) -> None:
-    if endpoint.fileno() >= 0:
+def _close_socket(endpoint: socket.socket | None, ops: Any, purpose: str) -> None:
+    if endpoint is not None and endpoint.fileno() >= 0:
         _FdLease(endpoint.detach(), purpose).close(ops)
 def _parse_sandbox_status(raw: bytes, event: str, sequence: int) -> dict[str, object]:
-    value = _strict_json(raw, False, 4096, "sandbox status")
-    extras = {
-        "namespace": set(), "child": {"pid"}, "boundary": {"observations"}, "exec-ready": set(), "root-final": set(), "exit": {"status"},
-        "error": {"code", "kind"}, "unavailable": {"message", "primitive"}, "prepare-root": set(), "release-child": set(), "finalize-root": set(),
-    }
+    value = _strict_json(raw, False, 16384, "sandbox status")
+    extras = { "namespace": set(), "child": {"pid"}, "boundary": {"observations"}, "exec-ready": set(), "root-final": set(), "exit": {"status"}, "error": {"code", "kind"}, "unavailable": {"message", "primitive"}, "prepare-root": set(), "release-child": set(), "finalize-root": set(), }
     _require(type(value) is dict and event in extras and set(value) == {"event", "sequence", "version"} | extras[event], "sandbox status closed shape", "status-shape")
-    _require(value["version"] == _RESULT_VERSION and value["event"] == event and value["sequence"] == sequence, "sandbox status identity/sequence", "status-sequence")
+    identity = value["version"] == _RESULT_VERSION and value["event"] == event
+    _require(identity and type(value["sequence"]) is int and value["sequence"] == sequence, "sandbox status identity/sequence", "status-sequence")
     if "pid" in value: _require(type(value["pid"]) is int and 0 < value["pid"] <= 2147483647, "sandbox status pid", "status-pid")
     if "status" in value: _require(type(value["status"]) is int and 0 <= value["status"] <= _UINT_MAX, "sandbox wait status", "status-wait")
+    if event == "error":
+        _require(all(type(value[name]) is str and re.fullmatch(r"[A-Za-z0-9._-]{1,127}", value[name]) for name in ("code", "kind")), "sandbox error fields", "status-error")
+    if event == "unavailable":
+        _require(type(value["primitive"]) is str and re.fullmatch(r"[A-Za-z0-9._:-]{1,127}", value["primitive"]) and type(value["message"]) is str and 1 <= len(value["message"].encode()) <= 1024, "sandbox unavailable fields", "status-unavailable")
+    if event == "boundary":
+        observations = value["observations"]
+        keys = {"capability_sets", "no_new_privs", "seccomp_denials", "seccomp_installed", "seccomp_mode", "seccomp_program_sha256", "securebits"}
+        _require(type(observations) is dict and set(observations) == keys, "boundary observation shape", "boundary-observations")
+        capabilities = observations["capability_sets"]
+        capability_keys = {"effective", "permitted", "inheritable", "bounding", "ambient", "groups"}
+        _require(type(capabilities) is dict and set(capabilities) == capability_keys, "capability observation shape", "capability-observation")
+        _require(all(type(capabilities[name]) is int and 0 <= capabilities[name] <= (1 << 64) - 1 for name in ("effective", "permitted", "inheritable")), "capability scalar observation", "capability-observation")
+        _require(all(type(capabilities[name]) is list and 0 < len(capabilities[name]) <= 256 and all(type(item) is int and item in (0, 1) for item in capabilities[name]) for name in ("bounding", "ambient")) and len(capabilities["bounding"]) == len(capabilities["ambient"]) and type(capabilities["groups"]) is list and all(type(item) is int and 0 <= item <= _UINT_MAX for item in capabilities["groups"]), "capability vector observation", "capability-observation")
+        denials = observations["seccomp_denials"]
+        _require(type(denials) is dict and all(type(name) is str and type(code) is int for name, code in denials.items()), "seccomp denial observation", "seccomp-observations")
+        _require(observations["seccomp_installed"] is True and type(observations["seccomp_mode"]) is int and type(observations["no_new_privs"]) is int and type(observations["securebits"]) is int and _sha(observations["seccomp_program_sha256"]), "boundary scalar observation", "boundary-observations")
     return value
 def _status(event: str, sequence: int, **fields: object) -> bytes:
     return _canonical({"event": event, "sequence": sequence, "version": _RESULT_VERSION, **fields})
 def _recv_status(endpoint: socket.socket, deadline: float, event: str = "", sequence: int = 0) -> dict[str, object]:
     remaining = deadline - time.monotonic()
     _require(remaining > 0 and bool(select.select([endpoint], [], [], remaining)[0]), "sandbox status deadline", "status-deadline")
-    raw = endpoint.recv(4096)
-    preliminary = _strict_json(raw, False, 4096, "sandbox status")
+    raw = endpoint.recv(16384)
+    preliminary = _strict_json(raw, False, 16384, "sandbox status")
     observed_event = preliminary.get("event") if type(preliminary) is dict else None
     if observed_event == event:
         return _parse_sandbox_status(raw, event, sequence)
@@ -1473,27 +1492,25 @@ def _recv_status(endpoint: socket.socket, deadline: float, event: str = "", sequ
             raise RuntimeLauncherCleanupError(None, [RuntimeLauncherError("inner cleanup uncertain")])
         raise RuntimeLauncherError(f"sandbox setup failed: {failure['kind']}", failure["code"])
     return _parse_sandbox_status(raw, event, sequence)
-def _run_tool_with_ops(
-    ops: Any,
-    role: str,
-    report: dict[str, object],
-    descriptors: tuple[int, ...],
-    rows: tuple[_GenerationRow, ...],
-) -> tuple[bytes, dict[str, object]]:
-    input_pair = tuple(_FdLease(fd, f"{role}-input") for fd in os.pipe2(os.O_CLOEXEC))
-    output_pair = tuple(_FdLease(fd, f"{role}-output") for fd in os.pipe2(os.O_CLOEXEC))
-    input_read, input_write = input_pair
-    output_read, output_write = output_pair
-    parent_status, child_status = ops.socketpair()
+def _run_tool_with_ops( ops: Any, role: str, report: dict[str, object], descriptors: tuple[int, ...], rows: tuple[_GenerationRow, ...], ) -> tuple[bytes, dict[str, object]]:
     process_owner = _ProcessOwner(ops)
     root_owner = _RootOwner(ops)
-    root = root_owner.prepare()
+    input_pair: tuple[_FdLease, ...] = ()
+    output_pair: tuple[_FdLease, ...] = ()
+    parent_status: socket.socket | None = None
+    child_status: socket.socket | None = None
     namespace_lease: _ProcessLease | None = None
     child_lease: _ProcessLease | None = None
     primary: BaseException | None = None
     result: tuple[bytes, dict[str, object]] | None = None
-    limits_baseline = _parse_limits(_proc_bytes("/proc/self/limits", 65536, ops))
     try:
+        input_pair = tuple(_FdLease(fd, f"{role}-input") for fd in os.pipe2(os.O_CLOEXEC))
+        output_pair = tuple(_FdLease(fd, f"{role}-output") for fd in os.pipe2(os.O_CLOEXEC))
+        input_read, input_write = input_pair
+        output_read, output_write = output_pair
+        parent_status, child_status = ops.socketpair()
+        root = root_owner.prepare()
+        limits_baseline = _parse_limits(_proc_bytes("/proc/self/limits", 65536, ops))
         pid, namespace_lease, gate = process_owner.spawn()
         if pid == 0:
             _close_socket(parent_status, ops, "namespace-parent-status")
@@ -1517,7 +1534,7 @@ def _run_tool_with_ops(
         command = _status("prepare-root", 1)
         _require(parent_status.send(command) == len(command), "root preparation send", "root-prepare-send")
         child = _recv_status(parent_status, time.monotonic() + _SETUP_SECONDS, "child", 2)
-        child_lease = process_owner.register(child["pid"])
+        child_lease = process_owner.register(child["pid"], waitable=False)
         namespace_lease.descendants = (child_lease,)
         command = _status("release-child", 2)
         _require(parent_status.send(command) == len(command), "child release send", "child-release-send")
@@ -1569,30 +1586,16 @@ def _run_tool_with_ops(
         namespace_lease = None
         _require(bytes(output) == _FIXED_OUTPUT, "fixed output mismatch", "output-mismatch")
         capability_sets = boundary.get("capability_sets")
-        _require(type(capability_sets) is dict and set(capability_sets) ==
-                 {"effective", "permitted", "inheritable", "bounding", "ambient", "groups"},
-                 "capability observation shape", "capability-observation")
+        _require(type(capability_sets) is dict and set(capability_sets) == {"effective", "permitted", "inheritable", "bounding", "ambient", "groups"}, "capability observation shape", "capability-observation")
         denials = boundary.get("seccomp_denials")
         expected_denials = set(_DENIED_SYSCALLS) | {"prctl:set", "execveat:shape"}
         denial_exact = type(denials) is dict and set(denials) == expected_denials
-        denial_exact = denial_exact and all(value == errno.EPERM for value in denials.values())
-        tool = {
-            "ambient_capabilities_zero": not any(capability_sets["ambient"]), "bounding_capabilities_zero": not any(capability_sets["bounding"]),
-            "capabilities_zero": boundary.get("capabilities_zero") is True and namespace_facts["capability_sets_zero"], "checkout_absent": checkout_absent,
-            "effective_capabilities_zero": capability_sets["effective"] == 0, "exec_descriptor_consumed": 198 not in final_fds,
-            "host_paths_absent": host_absent, "inheritable_capabilities_zero": capability_sets["inheritable"] == 0, "limits_exact": limits_exact,
-            "mapped_generations_exact": final_maps == post_maps, "mount_namespace_exact": namespace_facts["mount_namespace_exact"],
-            "namespace_handles_exact": namespace_authority["namespace_handles_exact"], "namespace_ownership_exact": namespace_authority["namespace_ownership_exact"],
-            "network_namespace_exact": namespace_facts["network_namespace_exact"],
-            "no_acquisition_route": denial_exact and final_fds == (0, 1, 2) and root_exact and no_proc and host_absent,
-            "no_new_privs": boundary.get("no_new_privs") is True and namespace_facts["nnp_exact"], "noroot_locked": boundary.get("noroot_locked") is True,
-            "permitted_capabilities_zero": capability_sets["permitted"] == 0, "pid_namespace_exact": namespace_facts["pid_namespace_exact"],
-            "pid_one": namespace_facts["pid_one"], "root_has_no_proc": no_proc, "root_readonly_noexec": root_exact, "seccomp_denials_exact": denial_exact,
-            "seccomp_installed": boundary.get("seccomp_program_sha256") == _seccomp_digest(),
-            "seccomp_mode_exact": boundary.get("seccomp_mode") == _SECCOMP_MODE_FILTER and namespace_facts["seccomp_mode_exact"],
-            "seccomp_program_exact": boundary.get("seccomp_program_sha256") == _seccomp_digest(),
-            "supplementary_groups_empty": capability_sets["groups"] == () and namespace_facts["groups_empty"], "user_namespace_exact": namespace_facts["user_namespace_exact"],
-        }
+        denial_exact = denial_exact and all(type(value) is int and value == errno.EPERM for value in denials.values())
+        installed = boundary.get("seccomp_installed") is True
+        mode_exact = boundary.get("seccomp_mode") == _SECCOMP_MODE_FILTER and namespace_facts["seccomp_mode_exact"]
+        program_exact = boundary.get("seccomp_program_sha256") == _seccomp_digest()
+        authority_absent = final_fds == (0, 1, 2) and final_maps == post_maps and root_exact and no_proc and host_absent
+        tool = { "ambient_capabilities_zero": not any(capability_sets["ambient"]), "bounding_capabilities_zero": not any(capability_sets["bounding"]), "capabilities_zero": not any(capability_sets[name] for name in ("effective", "permitted", "inheritable")) and not any(capability_sets["bounding"]) and not any(capability_sets["ambient"]) and namespace_facts["capability_sets_zero"], "checkout_absent": checkout_absent, "effective_capabilities_zero": capability_sets["effective"] == 0, "exec_descriptor_consumed": 198 not in final_fds, "host_paths_absent": host_absent, "inheritable_capabilities_zero": capability_sets["inheritable"] == 0, "limits_exact": limits_exact, "mapped_generations_exact": final_maps == post_maps, "mount_namespace_exact": namespace_facts["mount_namespace_exact"], "namespace_handles_exact": namespace_authority["namespace_handles_exact"], "namespace_ownership_exact": namespace_authority["namespace_ownership_exact"], "network_namespace_exact": namespace_facts["network_namespace_exact"], "no_acquisition_route": denial_exact and installed and mode_exact and program_exact and authority_absent, "no_new_privs": boundary.get("no_new_privs") == 1 and namespace_facts["nnp_exact"], "noroot_locked": boundary.get("securebits") == _SECBITS, "permitted_capabilities_zero": capability_sets["permitted"] == 0, "pid_namespace_exact": namespace_facts["pid_namespace_exact"], "pid_one": namespace_facts["pid_one"], "root_has_no_proc": no_proc, "root_readonly_noexec": root_exact, "seccomp_denials_exact": denial_exact, "seccomp_installed": installed, "seccomp_mode_exact": mode_exact, "seccomp_program_exact": program_exact, "supplementary_groups_empty": capability_sets["groups"] == [] and namespace_facts["groups_empty"], "user_namespace_exact": namespace_facts["user_namespace_exact"], }
         result = bytes(output), tool
     except BaseException as error:
         primary = error
@@ -1675,15 +1678,19 @@ def _coordinate_with_ops(admission: _SourceAdmission, closure_module: types.Modu
     mount_baseline = os.path.ismount(root)
     path_baseline = os.path.lexists(root)
     nonce = ops.nonce()
-    parent_endpoint, worker_endpoint = ops.socketpair()
-    helper_parent, helper_worker = ops.socketpair()
     process_owner = _ProcessOwner(ops)
+    parent_endpoint: socket.socket | None = None
+    worker_endpoint: socket.socket | None = None
+    helper_parent: socket.socket | None = None
+    helper_worker: socket.socket | None = None
     descriptor_leases: list[_FdLease] = []
     primary: BaseException | None = None
     outputs: tuple[bytes, bytes] | None = None
     observed_tools: tuple[dict[str, object], dict[str, object]] | None = None
     receipt: _IssuanceReceipt | None = None
     try:
+        parent_endpoint, worker_endpoint = ops.socketpair()
+        helper_parent, helper_worker = ops.socketpair()
         ops.prctl(_PR_SET_CHILD_SUBREAPER, 1)
         pid, worker, gate = process_owner.spawn()
         if pid == 0:
@@ -1695,10 +1702,7 @@ def _coordinate_with_ops(admission: _SourceAdmission, closure_module: types.Modu
         _close_socket(worker_endpoint, ops, "issuance-worker")
         _close_socket(helper_worker, ops, "helper-worker")
         process_owner.release(worker)
-        report, descriptor_tuple, rows, receipt = _consume_worker_handoff(
-            parent_endpoint, helper_parent, nonce, admission, pid, ops,
-            process_owner, time.monotonic() + _SETUP_SECONDS,
-        )
+        report, descriptor_tuple, rows, receipt = _consume_worker_handoff( parent_endpoint, helper_parent, nonce, admission, pid, ops, process_owner, time.monotonic() + _SETUP_SECONDS, )
         descriptor_leases = list(descriptor_tuple)
         descriptors = tuple(lease.fd for lease in descriptor_leases)
         gzip_output, gzip_observed = _run_tool_with_ops(ops, "gzip", report, descriptors, rows)
@@ -1721,22 +1725,19 @@ def _coordinate_with_ops(admission: _SourceAdmission, closure_module: types.Modu
         try: _close_socket(endpoint, ops, purpose)
         except BaseException as error: failures.append(error)
     if failures: raise RuntimeLauncherCleanupError(primary, failures) from (primary or failures[0])
-    cleanup = {
-        "children_reaped": _parse_children(_proc_bytes("/proc/self/task/self/children", 65536, ops)) == child_baseline,
-        "descendants_reaped": not process_owner.processes and _descendant_census(os.getpid(), ops) == child_baseline,
-        "descriptors_restored": _descriptor_snapshot(ops) == fd_baseline,
-        "mounts_restored": os.path.ismount(root) == mount_baseline,
-        "namespace_handles_released": not any(lease.namespace_handles for lease in process_owner.processes),
-        "namespaces_released": not process_owner.processes,
-        "paths_restored": os.path.lexists(root) == path_baseline,
-    }
+    try:
+        cleanup = { "children_reaped": _parse_children(_proc_bytes("/proc/self/task/self/children", 65536, ops)) == child_baseline, "descendants_reaped": not process_owner.processes and _descendant_census(os.getpid(), ops) == child_baseline, "descriptors_restored": _descriptor_snapshot(ops) == fd_baseline, "mounts_restored": os.path.ismount(root) == mount_baseline, "namespace_handles_released": not any(lease.namespace_handles for lease in process_owner.processes), "namespaces_released": not process_owner.processes, "paths_restored": os.path.lexists(root) == path_baseline, }
+    except BaseException as error:
+        raise RuntimeLauncherCleanupError(primary, [error]) from (primary or error)
+    cleanup_restored = all(type(value) is bool and value for value in cleanup.values())
+    if not cleanup_restored:
+        raise RuntimeLauncherCleanupError(primary, [RuntimeLauncherError("cleanup baseline mismatch")]) from primary
     if isinstance(primary, RuntimeLauncherUnavailable):
-        primary.cleanup_restored = all(cleanup.values())
+        primary.cleanup_restored = True
     if primary is not None: raise primary
     _require(observed_tools is not None and outputs is not None and receipt is not None, "coordinator result missing", "coordinator-result")
     observed = _build_observed_result(observed_tools, cleanup)
-    return RuntimeQualificationResult(
-        _RESULT_VERSION, _MARKER, admission.revision, admission.source_set_sha256,
+    return RuntimeQualificationResult( _RESULT_VERSION, _MARKER, admission.revision, admission.source_set_sha256,
         receipt.closure_sha256, hashlib.sha256(outputs[0]).hexdigest(),
         hashlib.sha256(outputs[1]).hexdigest(), *(observed[name] for name in fact_names),
     )
