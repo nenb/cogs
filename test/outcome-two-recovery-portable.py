@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import socket
 import stat
 import struct
 import sys
@@ -23,6 +24,10 @@ if sys.flags.optimize:
     raise RuntimeError("Outcome 2 recovery tests refuse optimized Python")
 sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[1]
+COMMON_SUPPORT = ROOT / "test/fixtures/outcome-two/recovery/common-portable.py"
+_common_support_spec = importlib.util.spec_from_file_location("outcome_two_recovery_common_support", COMMON_SUPPORT)
+_common_support = importlib.util.module_from_spec(_common_support_spec)
+_common_support_spec.loader.exec_module(_common_support)
 MODULE = ROOT / "deploy/aws-feasibility/remote/completion_trusted_runtime_launcher.py"
 FIXTURE = ROOT / "test/fixtures/outcome-two/recovery/cases.json"
 ROW_KEYS = {
@@ -34,7 +39,6 @@ REQUIRED_ACCEPTANCE = {
     "AT-FD-CLOSE-01", "AT-UNAV-01",
 }
 
-
 def load_module():
     spec = importlib.util.spec_from_file_location(
         "completion_trusted_runtime_launcher_recovery", MODULE,
@@ -44,13 +48,11 @@ def load_module():
     spec.loader.exec_module(module)
     return module
 
-
 def production_symbol(module, name):
     value = module
     for component in name.split("."):
         value = getattr(value, component, None)
     return value
-
 
 def fixture_rows(module):
     document = json.loads(FIXTURE.read_text())
@@ -82,7 +84,6 @@ def fixture_rows(module):
         raise AssertionError(f"recovery acceptance set drift: {acceptance}")
     return rows
 
-
 @contextmanager
 def patched(target, **replacements):
     missing = object()
@@ -97,7 +98,6 @@ def patched(target, **replacements):
                 delattr(target, name)
             else:
                 setattr(target, name, value)
-
 
 class RecoveryOps:
     """Faults concrete operations reached from production ownership branches."""
@@ -157,7 +157,6 @@ class RecoveryOps:
             raise OSError(errno.EIO, "modeled pidfd signal failure")
         raise AssertionError("unexpected pidfd signal mutation")
 
-
 def materialization_failure(module, ops):
     try:
         module._materialize_root(
@@ -172,7 +171,6 @@ def materialization_failure(module, ops):
         return error
     raise AssertionError("materialization primitive fault was accepted")
 
-
 def invoke_unavailable_recovery(module, row, created):
     ops = RecoveryOps(module, row)
     created.append(ops)
@@ -184,7 +182,6 @@ def invoke_unavailable_recovery(module, row, created):
         ops, module._ProcessOwner(ops), leases, primary,
     )
     raise primary
-
 
 def invoke_root_recovery(module, row, created):
     with tempfile.TemporaryDirectory() as parent:
@@ -201,7 +198,6 @@ def invoke_root_recovery(module, row, created):
             if leaf.exists():
                 leaf.rmdir()
             module._ROOT_PARENT = old_parent
-
 
 def invoke_registration_recovery(module, row, created):
     ops = RecoveryOps(module, row)
@@ -227,7 +223,6 @@ def invoke_registration_recovery(module, row, created):
     ), patched(module.os, waitpid=lambda pid, flags: (pid, 0)):
         module._recover_transaction_with_ops(ops, owner, [], primary)
     raise primary
-
 
 def invoke_process_recovery(module, row, created):
     ops = RecoveryOps(module, row)
@@ -260,7 +255,6 @@ def invoke_process_recovery(module, row, created):
         if owner.processes[0].pidfd.state is module._FdState.OWNED:
             os.close(read_fd)
 
-
 def invoke_close_recovery(module, row, created):
     ops = RecoveryOps(module, row)
     created.append(ops)
@@ -270,7 +264,6 @@ def invoke_close_recovery(module, row, created):
     module._recover_transaction_with_ops(
         ops, module._ProcessOwner(ops), [lease], None,
     )
-
 
 def execute_row(module, row):
     adapters = {
@@ -299,7 +292,6 @@ def execute_row(module, row):
         raise AssertionError(
             f"{row['id']}: production primitive event mismatch {created[0].events}",
         )
-
 
 COMMON_FIXTURE = ROOT / "test/fixtures/outcome-two/launcher/common-custodian-cases.jsonl"
 FINAL_COMMON = ROOT / "scripts/native-qualification/common.py"
@@ -330,10 +322,8 @@ REQUIRED_IO_MODES = {
     "waitpid": {"error", "wrong-child", "interrupted"},
 }
 
-
 class ModeledCrash(RuntimeError):
     pass
-
 
 class VNode:
     next_inode = 1000
@@ -346,7 +336,6 @@ class VNode:
         VNode.next_inode += 1
         self.mode = (stat.S_IFDIR | 0o700) if kind == "directory" else (stat.S_IFREG | 0o600)
 
-
 class CommonProcess:
     def __init__(self, pid):
         self.pid = pid
@@ -355,14 +344,13 @@ class CommonProcess:
         self.start = 9000 + pid
         self.exited = threading.Event()
         self.thread = None
-
+        self.error = None
 
 class SocketChannel:
     def __init__(self):
         self.queues = [[], []]
         self.closed = [False, False]
         self.condition = threading.Condition()
-
 
 class CommonSocket:
     """Blocking seqpacket endpoint used by the unmodified production loops."""
@@ -372,6 +360,7 @@ class CommonSocket:
         self.channel = channel
         self.side = side
         self.connector = connector
+        self.role = "socket"
         self.listening = False
         self.pending = []
     def fileno(self):
@@ -394,6 +383,14 @@ class CommonSocket:
             self.kernel.authenticate_private_terminal(raw)
         if self._cut(raw) == "short":
             return max(0, len(raw) - 1)
+        if raw.startswith(b"{") and not self.connector and self.kernel.phase == "cleanup":
+            for cut in ("clean-reply-send", "upload-ack-send", "private-capability-send"):
+                if self.kernel.hit(cut) == "short":
+                    return max(0, len(raw) - 1)
+        # The portable threads begin at the post-fork entry points. Consume the
+        # creator release gate here rather than exposing it as worker payload.
+        if raw == b"RELEASE":
+            return len(raw)
         if self.connector and self.kernel.hit("upload-ack-send") == "short":
             return max(0, len(raw) - 1)
         if self.connector and self.kernel.hit("private-capability-send") == "short":
@@ -421,10 +418,14 @@ class CommonSocket:
         channel = self.channel
         if channel is None:
             return b""
-        deadline = time.monotonic() + 2
+        deadline = time.monotonic() + 0.25
         with channel.condition:
             while not channel.queues[self.side]:
-                if channel.closed[1 - self.side] or time.monotonic() >= deadline:
+                if (
+                    channel.closed[1 - self.side]
+                    or not self.kernel.current_process_live()
+                    or time.monotonic() >= deadline
+                ):
                     return b""
                 channel.condition.wait(0.01)
             raw, _rights = channel.queues[self.side].pop(0)
@@ -437,6 +438,10 @@ class CommonSocket:
             return b""
         if raw.startswith(b"CLEAN:") and self.kernel.hit("private-capability-recv") == "lost":
             return b""
+        if raw.startswith(b"{") and self.connector:
+            for cut in ("cleanup-reply-recv", "upload-ack-recv", "private-capability-recv"):
+                if self.kernel.hit(cut) == "lost":
+                    return b""
         return raw
     def sendmsg(self, buffers, ancillary):
         raw = b"".join(buffers)
@@ -453,9 +458,14 @@ class CommonSocket:
         return len(raw)
     def recvmsg(self, bound, rights_bound):
         del rights_bound
-        deadline = time.monotonic() + 2
+        deadline = time.monotonic() + 0.25
         with self.channel.condition:
-            while not self.channel.queues[self.side] and time.monotonic() < deadline:
+            while (
+                not self.channel.queues[self.side]
+                and not self.channel.closed[1 - self.side]
+                and self.kernel.current_process_live()
+                and time.monotonic() < deadline
+            ):
                 self.channel.condition.wait(0.01)
             if not self.channel.queues[self.side]:
                 return b"", [], 0, None
@@ -467,6 +477,8 @@ class CommonSocket:
         )]
         return raw[:bound], ancillary, 0, None
     def bind(self, name):
+        self.connector = False
+        self.role = "custodian-listener"
         if self.kernel.hit("listener-bind") == "error":
             raise OSError(errno.EADDRINUSE, "modeled listener bind")
         self.kernel.listeners[name] = self
@@ -476,14 +488,19 @@ class CommonSocket:
             raise OSError(errno.EIO, "modeled listener listen")
         self.listening = True
     def accept(self):
-        deadline = time.monotonic() + 2
+        deadline = time.monotonic() + 0.25
         with self.kernel.socket_condition:
-            while not self.pending and time.monotonic() < deadline:
+            while (
+                not self.pending
+                and self.kernel.current_process_live()
+                and time.monotonic() < deadline
+            ):
                 self.kernel.socket_condition.wait(0.01)
             if not self.pending:
                 raise TimeoutError("modeled accept timeout")
             channel = self.pending.pop(0)
         endpoint = self.kernel.new_socket(channel=channel, side=1)
+        endpoint.role = "custodian-cleanup-endpoint"
         return endpoint, None
     def connect(self, name):
         if self.kernel.hit("connect") == "lost":
@@ -495,6 +512,7 @@ class CommonSocket:
             raise ConnectionRefusedError(errno.ECONNREFUSED, "custodian exited")
         channel = SocketChannel()
         self.channel, self.side, self.connector = channel, 0, True
+        self.role = "custodian-cleanup-endpoint"
         with self.kernel.socket_condition:
             listener.pending.append(channel)
             self.kernel.socket_condition.notify_all()
@@ -507,7 +525,6 @@ class CommonSocket:
             pid = self.kernel.parent_pid
         uid = self.kernel.euid + 1 if drift else self.kernel.euid
         return __import__("struct").pack("3i", pid, uid, self.kernel.egid)
-
 
 class CommonPoll:
     def __init__(self, kernel):
@@ -523,7 +540,6 @@ class CommonPoll:
         process.exited.wait(milliseconds / 1000)
         return [(self.fd, 1)] if not process.live else []
 
-
 class CommonKernel:
     def __init__(self, common, row):
         self.common = common
@@ -537,7 +553,7 @@ class CommonKernel:
         self.local.pid = self.parent_pid
         self.fd_tables = {self.parent_pid: {}}
         self.offset_tables = {self.parent_pid: {}}
-        self.root = VNode("directory")
+        self.root = VNode("directory", role="report-parent")
         self.capability = b"K" * 32
         self.euid = 1000
         self.egid = 1000
@@ -556,6 +572,7 @@ class CommonKernel:
         self.temporary_count = 0
         self.sync_counts = {}
         self.last_namespace_effect = None
+        self.pending_namespace_effects = []
         self.listeners = {}
         self.socket_condition = threading.Condition()
         self.threads = []
@@ -565,6 +582,9 @@ class CommonKernel:
     @property
     def fds(self):
         return self.fd_tables[self.pid]
+    def current_process_live(self):
+        process = self.processes.get(self.pid)
+        return process is None or process.live
     @property
     def offsets(self):
         return self.offset_tables[self.pid]
@@ -586,8 +606,11 @@ class CommonKernel:
         if fd not in self.fds:
             raise OSError(errno.EBADF, "modeled closed fd")
         kind, value = self.fds[fd]
-        role = value.role if kind in {"file", "directory"} else kind
-        if self.hit(f"close-before:{role}") == "error":
+        role = value.role if kind in {"file", "directory", "socket"} else kind
+        close_before = None
+        if role != "pidfd" or (self.phase == "cleanup" and self.pid == self.parent_pid):
+            close_before = self.hit(f"close-before:{role}")
+        if close_before == "error":
             raise OSError(errno.EIO, f"modeled {role} close before effect")
         kind, value = self.fds.pop(fd)
         self.offsets.pop(fd, None)
@@ -603,8 +626,18 @@ class CommonKernel:
                     value.channel.condition.notify_all()
         if self.phase == "upload" and role == "report" and self.hit("upload-report-close") == "after-error":
             raise OSError(errno.EIO, "modeled upload report close after effect")
+        retained_name = {
+            "authority": ".authority.json",
+            "receipt": ".owner.json",
+            "report": "report.json",
+        }.get(role)
+        if retained_name is not None and self.hit(f"close:retained:{retained_name}") == "after-error":
+            raise OSError(errno.EIO, f"modeled retained {retained_name} close after effect")
         if self.hit(f"close:{role}") == "after-error":
             raise OSError(errno.EIO, f"modeled {role} close after effect")
+        if kind == "socket" and role == "custodian-cleanup-endpoint" and self.custodian is not None and self.pid == self.custodian.pid:
+            if self.hit("private-capability-close") == "after-error":
+                raise OSError(errno.EIO, "private capability close after effect")
         if kind == "pidfd" and self.phase == "cleanup" and self.hit("pidfd-close") == "after-error":
             raise OSError(errno.EIO, "pidfd close after effect")
     def status(self, node):
@@ -617,7 +650,7 @@ class CommonKernel:
     def node_for_path(self, path, dir_fd=None):
         name = str(path)
         if dir_fd is None:
-            if name == "/tmp":
+            if name in {"/tmp", str(self.common.ROOT)}:
                 return self.root
             leaf = Path(name).name
             return self.root.names.get(leaf)
@@ -660,8 +693,12 @@ class CommonKernel:
             raise InterruptedError(errno.EINTR, f"modeled {role} fsync")
         if mutation == "error":
             raise OSError(errno.EIO, f"modeled {role} fsync")
-        if role == "report-parent" and self.last_namespace_effect is not None:
-            cleanup = self.hit(self.last_namespace_effect)
+        if role == "report-parent" and self.hit(f"directory-fsync-{count}") == "error":
+            raise OSError(errno.EIO, "modeled report parent fsync")
+        if self.phase == "cleanup" and role == "report-parent" and self.hit("recovery:parent-fsync") == "crash":
+            raise ModeledCrash("recovery crash after parent fsync")
+        for effect in tuple(self.pending_namespace_effects):
+            cleanup = self.hit(effect)
             if cleanup == "interrupted":
                 raise InterruptedError(errno.EINTR, "modeled cleanup fsync")
             if cleanup == "error":
@@ -722,12 +759,18 @@ class CommonKernel:
         return offset
     def unlink(self, name, *, dir_fd=None):
         directory = self.fds[dir_fd][1]
+        if isinstance(name, bytes):
+            name = name.decode()
         if self.hit(f"unlink:{name}") == "error":
             raise OSError(errno.EIO, f"modeled unlink {name}")
         if name not in directory.names:
             raise FileNotFoundError(name)
         del directory.names[name]
+        publication_names = {".authority.json", ".owner.json", ".report.stage", "report.json"}
+        if name in publication_names and not directory.names and self.hit("recovery:final-unlink") == "crash":
+            raise ModeledCrash("recovery crash after final unlink")
         self.last_namespace_effect = f"cleanup-directory-fsync:{name}"
+        self.pending_namespace_effects.append(self.last_namespace_effect)
         if self.hit(f"unlink-after:{name}") == "crash":
             raise ModeledCrash(f"modeled unlink {name} crash")
     def rmdir(self, name, *, dir_fd=None):
@@ -739,8 +782,11 @@ class CommonKernel:
             raise OSError(errno.ENOTEMPTY, "directory not empty")
         del parent.names[name]
         self.last_namespace_effect = "cleanup-parent-fsync"
+        self.pending_namespace_effects.append(self.last_namespace_effect)
         if self.hit("rmdir-after") == "crash":
             raise ModeledCrash("modeled rmdir crash")
+        if self.hit("recovery:rmdir") == "crash":
+            raise ModeledCrash("recovery crash after rmdir")
     def enumerate(self, descriptor, numeric):
         del numeric
         node = self.fds[descriptor][1]
@@ -766,25 +812,33 @@ class CommonKernel:
         }.get(decoded)
         if recovery and self.hit(recovery) == "crash":
             raise ModeledCrash(f"recovery crash after {decoded}")
-    def rename(self, directory_fd, source, target, flags):
-        directory = self.fds[directory_fd][1]
+    def rename(self, directory_fd, source, target, flags, target_fd=None):
+        source_directory = self.fds[directory_fd][1]
+        target_directory = source_directory if target_fd is None else self.fds[target_fd][1]
         if self.hit("directory-exchange") == "exchange":
             raise OSError(errno.ESTALE, "modeled directory exchange")
         rename_mutation = self.hit("report-rename") if target == b"report.json" else None
         if rename_mutation in {"error", "exchange"}:
             raise OSError(errno.EIO, "modeled report rename")
-        del flags
         source_name, target_name = source.decode(), target.decode()
-        if target_name in directory.names:
-            raise FileExistsError(target_name)
-        directory.names[target_name] = directory.names.pop(source_name)
+        if flags == 2:
+            source_node = source_directory.names[source_name]
+            target_node = target_directory.names[target_name]
+            source_directory.names[source_name] = target_node
+            target_directory.names[target_name] = source_node
+        else:
+            if target_name in target_directory.names:
+                raise FileExistsError(target_name)
+            target_directory.names[target_name] = source_directory.names.pop(source_name)
         if target_name == "report.json" and rename_mutation == "after-crash":
             raise ModeledCrash("after report rename")
         if target_name == "report.json" and self.hit("recovery:report") == "crash":
             raise ModeledCrash("recovery crash after report rename")
-        if target_name.endswith(".retired"):
+        if target_name.endswith(".retired") or target_name.startswith(".cogs-nq-"):
             if self.hit("replace:retired-directory") == "same-name":
-                directory.names[target_name] = VNode("directory", role="foreign-retired")
+                replacement = VNode("directory", role="foreign-retired")
+                replacement.names["foreign-sentinel"] = VNode("file", b"foreign", "foreign-sentinel")
+                target_directory.names[target_name] = replacement
             if self.hit("quarantine-rename") == "after-crash":
                 raise ModeledCrash("after retained quarantine rename")
     def new_socket(self, channel=None, side=0, connector=False):
@@ -804,13 +858,19 @@ class CommonKernel:
     def socket(self, family=None, kind=None, fileno=None):
         del family, kind
         if fileno is not None:
-            return self.fds[fileno][1]
+            endpoint = self.fds[fileno][1]
+            if self.service_process is not None and self.pid == self.service_process.pid:
+                creator = self.custodian
+                if creator is not None and fileno == creator.control_fd:
+                    endpoint.role = "custodian-worker-control"
+            return endpoint
         return self.new_socket(connector=True)
     def _run_process(self, process, target):
         self.local.pid = process.pid
         try:
             target()
         except BaseException as error:
+            process.error = error
             self.events.append(f"child-error:{process.pid}:{type(error).__name__}:{error}")
         finally:
             for fd in tuple(self.fds):
@@ -825,9 +885,9 @@ class CommonKernel:
     def _spawn(self, process, target):
         thread = threading.Thread(target=self._run_process, args=(process, target),
                                   name=f"portable-custodian-{process.pid}", daemon=True)
+        thread.start()
         process.thread = thread
         self.threads.append(thread)
-        thread.start()
     def fork(self):
         if self.hit("custodian-fork") == "error":
             raise OSError(errno.EAGAIN, "modeled custodian fork")
@@ -835,7 +895,19 @@ class CommonKernel:
         process = CommonProcess(self.next_pid)
         self.next_pid += 1
         self.processes[process.pid] = process
-        self.fd_tables[process.pid] = dict(self.fds)
+        child_fds = {}
+        for fd, (kind, value) in self.fds.items():
+            if kind == "socket":
+                child_endpoint = CommonSocket(
+                    self, fd, value.channel, value.side, value.connector,
+                )
+                child_endpoint.role = value.role
+                child_endpoint.listening = value.listening
+                child_endpoint.pending = value.pending
+                child_fds[fd] = (kind, child_endpoint)
+            else:
+                child_fds[fd] = (kind, value)
+        self.fd_tables[process.pid] = child_fds
         self.offset_tables[process.pid] = dict(self.offsets)
         left_fd, right_fd = self.last_socketpair
         if creator_pid == self.parent_pid:
@@ -849,6 +921,9 @@ class CommonKernel:
         else:
             creator = self.processes[creator_pid]
             self.service_process = process
+            if not creator.live:
+                process.live = False
+                process.exited.set()
             def worker():
                 self.close(left_fd)
                 gate = self.socket(fileno=right_fd)
@@ -875,6 +950,9 @@ class CommonKernel:
         process = self.pidfd_process(pidfd)
         process.live = False
         process.exited.set()
+        if process is self.custodian and self.service_process is not None:
+            self.service_process.live = False
+            self.service_process.exited.set()
         self.events.append("custodian:signal")
     def kill(self, pid, number):
         del number
@@ -882,6 +960,9 @@ class CommonKernel:
         if process is not None:
             process.live = False
             process.exited.set()
+            if process is self.custodian and self.service_process is not None:
+                self.service_process.live = False
+                self.service_process.exited.set()
             self.events.append("custodian:signal")
     def waitpid(self, pid, flags):
         del flags
@@ -898,7 +979,7 @@ class CommonKernel:
             return 0, 0
         process.reaped = True
         self.events.append("custodian:reaped")
-        return pid, 0
+        return pid, 0 if process.error is None else 1 << 8
     def lose_custodian(self):
         process = self.service_process or self.custodian
         if process is not None:
@@ -907,9 +988,10 @@ class CommonKernel:
     def mutation_watch(self, registry, directory):
         del directory
         raw = b"mutation" if self.upload_tainted else b""
+        self.watch_node = VNode("file", raw, "uploaded-generation-watch")
         return registry.open(
             "uploaded-generation-watch",
-            lambda: self.allocate("file", VNode("file", raw, "watch-event")),
+            lambda: self.allocate("file", self.watch_node),
         )
     def perform_upload(self):
         registry, parent, directory = self.common._open_report_directory(self.context.job, False)
@@ -967,7 +1049,9 @@ class CommonKernel:
         active = self.common.report_path(self.context.job).parent.name
         if role == "active-directory":
             self.hit(cut)
-            self.root.names[active] = VNode("directory", role="foreign-active")
+            replacement = VNode("directory", role="foreign-active")
+            replacement.names["foreign-sentinel"] = VNode("file", b"foreign", "foreign-sentinel")
+            self.root.names[active] = replacement
             return
         names = {"authority": ".authority.json", "report": "report.json", "receipt": ".owner.json"}
         directory = self.root.names[active]
@@ -987,6 +1071,18 @@ class CommonKernel:
                 self.fds.pop(fd, None)
                 self.offsets.pop(fd, None)
     def audit(self, disposition):
+        children = tuple(
+            process for process in (self.service_process, self.custodian)
+            if process is not None
+        )
+        if disposition == "restored":
+            for process in children:
+                if process.thread is not None:
+                    process.thread.join(1)
+                    if process.thread.is_alive():
+                        raise AssertionError(f"{self.row['id']}: custodian child loop remains live")
+                if process.live:
+                    raise AssertionError(f"{self.row['id']}: custodian child remains live")
         active = self.common.report_path(self.context.job).parent.name
         retired = self.common._retired_report_path(self.context.job).name
         active_present = active in self.root.names
@@ -998,20 +1094,17 @@ class CommonKernel:
                 raise AssertionError(f"{self.row['id']}: exact quarantine missing: {inventories} events={self.events}")
             if retired_present:
                 raise AssertionError(f"{self.row['id']}: retained quarantine is not a restored baseline")
-            if self.custodian is not None and self.custodian.thread is not None:
-                self.custodian.thread.join(1)
-                if self.custodian.thread.is_alive():
-                    raise AssertionError(f"{self.row['id']}: custodian child loop remains live")
-            if self.custodian is not None and (self.custodian.live or not self.custodian.reaped):
-                raise AssertionError(f"{self.row['id']}: custodian not retired and waitpid-reaped")
-            if "custodian:reaped" not in self.events:
-                raise AssertionError(f"{self.row['id']}: fictitious reap oracle")
+            if children:
+                reap_fault = self.spec["cut"] in {"retire-poll", "waitpid", "worker-waitpid", "supervisor-waitpid"}
+                if not any(process.reaped for process in children) and not reap_fault:
+                    raise AssertionError(f"{self.row['id']}: authority child was not waitpid-reaped")
+                if any(process.reaped for process in children) and "custodian:reaped" not in self.events:
+                    raise AssertionError(f"{self.row['id']}: fictitious reap oracle")
             self.events.append("cleanup:restored")
         else:
             if not present:
                 raise AssertionError(f"{self.row['id']}: unproved report was deleted")
             self.events.append("cleanup:preserved")
-
 
 class CommonOps:
     def __init__(self, common, kernel):
@@ -1029,13 +1122,16 @@ class CommonOps:
             value["descriptors"] = ("drift",)
         return value
     def run_fixed_operation(self, context, operation):
+        if self.kernel.spec["stage"] == "issuer":
+            return _common_support.run_issuer_fault(
+                self.common, self.kernel, context, patched, VNode, CommonProcess, ModeledCrash,
+            )
         if self.kernel.hit("operation") == "error":
             raise OSError(errno.EIO, "modeled production operation")
         if operation != "integration":
             raise AssertionError("common operation profile drift")
         self.kernel.events.append("session:operation")
         return dict(self.kernel.production_result)
-
 
 def load_final_common():
     spec = importlib.util.spec_from_file_location("outcome_two_final_common", FINAL_COMMON)
@@ -1060,8 +1156,10 @@ def load_final_common():
                 self.exceptions = tuple(exceptions)
                 super().__init__(message)
         module.BaseExceptionGroup = BaseExceptionGroup
+    builtins = __import__("builtins")
+    if not hasattr(builtins, "ExceptionGroup"):
+        builtins.ExceptionGroup = module.BaseExceptionGroup
     return module
-
 
 def common_context(common):
     head = "0" * 40
@@ -1075,7 +1173,6 @@ def common_context(common):
         common.SCHEMA.read_bytes(),
     )
 
-
 @contextmanager
 def common_patches(common, kernel):
     original_registry = common.FdRegistry
@@ -1086,8 +1183,9 @@ def common_patches(common, kernel):
         for path in (common.WORKFLOW, common.COMMON, common.COMMON.parent / common.DRIVERS["integration"])
     }
     registry_factory = lambda *_args, **_kwargs: original_registry(kernel.close)
-    def observed_publish(context, capability, raw):
-        transaction = original_publish(context, capability, raw)
+    def observed_publish(context, capability, raw, supervisor_fd=None):
+        kernel.transaction = True
+        transaction = original_publish(context, capability, raw, supervisor_fd)
         kernel.transaction = transaction
         return transaction
     def admitted_sha256(path):
@@ -1136,10 +1234,8 @@ def common_patches(common, kernel):
     ):
         yield original_registry
 
-
 def common_error_code(error):
     return type(error).__name__ if error is not None else "OK"
-
 
 def run_common_row(common, row, production_result):
     kernel = CommonKernel(common, row)
@@ -1149,11 +1245,13 @@ def run_common_row(common, row, production_result):
     error = None
     with common_patches(common, kernel) as registry_type:
         try:
-            if row["id"] == "retire-exact-waitable-reap":
+            if row["id"] in {"retire-exact-waitable-reap", "retire-supervisor-waitpid-failure"}:
                 process = CommonProcess(999)
                 kernel.custodian = process
+                kernel.processes[process.pid] = process
                 pidfd = registry_type(kernel.close).adopt(kernel.allocate("pidfd", process), "direct-pidfd")
-                kernel.hit("reap-probe")
+                if row["id"] == "retire-exact-waitable-reap":
+                    kernel.hit("reap-probe")
                 failures = []
                 common._retire_child(process.pid, pidfd, failures, terminate=True)
                 if failures:
@@ -1203,6 +1301,8 @@ def run_common_row(common, row, production_result):
                     if stage == "upload" and row["primitive_fault"]["cut"] == "upload-exchange":
                         kernel.hit("upload-exchange")
                         kernel.upload_tainted = True
+                        if hasattr(kernel, "watch_node"):
+                            kernel.watch_node.raw[:] = b"mutation"
                         kernel.events.extend(("upload:generation-exchanged", "upload:generation-restored"))
                     if stage == "upload" and row["primitive_fault"]["cut"] == "authority-resign":
                         kernel.hit("authority-resign")
@@ -1238,17 +1338,32 @@ def run_common_row(common, row, production_result):
                                 kernel.events.append("upload:bytes-rejected")
                             if row["primitive_fault"]["cut"] == "receipt-bytes":
                                 kernel.events.append("receipt:authentication-rejected")
-                            if row["primitive_fault"]["cut"] in {"upload-exchange", "authority-resign"}:
+                            cut = row["primitive_fault"]["cut"]
+                            if cut in {"upload-exchange", "authority-resign", "upload-ack-capability"}:
                                 kernel.events.append("private-authority:rejected")
+                            if cut in {"upload-ack-digest", "upload-ack-size", "upload-ack-generation"}:
+                                kernel.events.append("upload:ack-rejected")
+                            if cut.startswith("replace:"):
+                                kernel.events.append("replacement:preserved")
                         recovery_cut = row["primitive_fault"]["mode"] == "crash"
                         recovery_cut = recovery_cut and row["primitive_fault"]["stage"] == "recovery"
                         if recovery_cut and row["id"] in kernel.consumed:
-                            common.cleanup_report("integration")
-                            kernel.events.append("recovery:restarted")
-                            common.cleanup_report("integration")
-                            kernel.events.append("recovery:idempotent")
+                            for event in ("recovery:restarted", "recovery:idempotent"):
+                                try:
+                                    common.cleanup_report("integration")
+                                except ConnectionRefusedError:
+                                    pass
+                                kernel.events.append(event)
         except BaseException as caught:
             error = caught
+        finally:
+            cursor = 0
+            while cursor < len(kernel.threads):
+                kernel.threads[cursor].join(1)
+                cursor += 1
+            live_threads = [thread.name for thread in kernel.threads if thread.is_alive()]
+            if live_threads and error is None:
+                error = AssertionError(f"modeled child loops exceeded bound: {live_threads}")
     if row["primitive_fault"]["cut"] == "none":
         kernel.consumed.add(row["id"])
     observed = common_error_code(error)
@@ -1269,7 +1384,6 @@ def run_common_row(common, row, production_result):
         except ValueError as missing:
             raise AssertionError(f"{row['id']}: missing ordered event {event}: {kernel.events}") from missing
     return kernel
-
 
 def common_production_matrix():
     common = load_final_common()
@@ -1312,9 +1426,11 @@ def common_production_matrix():
     selected, consumed, oracle = [], [], []
     production_calls = set()
     watched = {"SystemCommonOps.run_fixed_operation", "SystemCommonOps._issue_cli", "_custodian_main", "_custodian_worker"}
+    # Resolving a path in every profile callback made the aggregate matrix time out.
+    final_common_filename = str(FINAL_COMMON)
     def profile(frame, event, argument):
         del argument
-        if event == "call" and Path(frame.f_code.co_filename).resolve() == FINAL_COMMON.resolve():
+        if event == "call" and frame.f_code.co_filename == final_common_filename:
             owner = frame.f_locals.get("self")
             name = frame.f_code.co_name
             qualified = f"{type(owner).__name__}.{name}" if owner is not None else name
@@ -1322,7 +1438,12 @@ def common_production_matrix():
                 production_calls.add(qualified)
         return profile
     prior_profile = sys.getprofile()
-    prior_thread_profile = threading.getprofile()
+    # threading.getprofile is unavailable on the supported Python 3.9 runtime.
+    thread_profile_getter = getattr(threading, "getprofile", None)
+    prior_thread_profile = (
+        thread_profile_getter() if thread_profile_getter is not None
+        else getattr(threading, "_profile_hook", None)
+    )
     sys.setprofile(profile)
     threading.setprofile(profile)
     try:
@@ -1349,7 +1470,6 @@ def common_production_matrix():
     if not (declared == selected == consumed == oracle and len(declared) == len(set(declared))):
         raise AssertionError("common custodian declared/selected/consumed/oracle mismatch")
 
-
 def parent():
     module = load_module()
     if not hasattr(module.os, "O_PATH"):
@@ -1368,7 +1488,6 @@ def parent():
         raise AssertionError("recovery fixture ledger mismatch")
     common_production_matrix()
     print("Outcome 2 recovery portable tests passed")
-
 
 if __name__ == "__main__":
     if len(sys.argv) != 1:
