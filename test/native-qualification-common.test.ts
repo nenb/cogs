@@ -240,7 +240,7 @@ test("six strict goldens and isolated structural/semantic mutants", () => {
 
 test("private operation receipts solely derive all six reports and exact baselines", () => {
   const values = Object.fromEntries(jobs.map(([job]) => [job, operationResult(job)]));
-  const script = `import ast,dataclasses,hashlib,json,struct,subprocess,sys\nsys.path.insert(0,'scripts/native-qualification');import common
+  const script = `import ast,dataclasses,hashlib,json,struct,subprocess,sys\nfrom unittest.mock import patch\nsys.path.insert(0,'scripts/native-qualification');import common
 values=json.load(sys.stdin);h=lambda p:hashlib.sha256(open(p,'rb').read()).hexdigest()
 launcher=open(common.LAUNCHER_PATH,'rb').read();tree=subprocess.check_output(['git','ls-tree','HEAD','--',common.LAUNCHER_PATH]).decode().split()
 assert common.SystemCommonOps._blob_matches(launcher,tree[2]) and not common.SystemCommonOps._blob_matches(launcher+b'x',tree[2])
@@ -265,7 +265,10 @@ for job,value in values.items():
   assert isinstance(receipt._metadata[0],common.Mapping) and type(receipt._metadata[0]['objects']) is tuple
   try:receipt._metadata[0]['objects'][0]['needed']+=('forged',);raise AssertionError('nested metadata mutable')
   except TypeError:pass
- s.publish(common.ReportCandidate())
+ forged=dataclasses.replace(receipt,_seal=object());s._NativeSession__receipt=forged
+ try:s._receipt_claims();raise AssertionError('fabricated private receipt accepted')
+ except common.QualificationError:pass
+ s._NativeSession__receipt=receipt;s.publish(common.ReportCandidate())
  report=json.loads(cust.raw);assert report['result']=='pass' and all(row['outcome']=='pass' for row in report['checks'])
  assert report['operation']['source_set_sha256']=='9'*64 and 'caller_metadata' not in json.dumps(report)
  hostile=json.loads(json.dumps(value))
@@ -276,6 +279,10 @@ for job,value in values.items():
  try:broken.run_fixed_operation(job);raise AssertionError(('false receipt accepted',job))
  except common.QualificationError:pass
 assert [field.name for field in dataclasses.fields(common.ReportCandidate)]==['failure_phase','diagnostics','primary_error']
+production_environment={name:'' for name in common.ENV_KEYS}
+with patch.object(common.os,'environ',production_environment):
+ try:common.NativeSession._begin_with_ops(None,None,None);raise AssertionError('production seam accepted')
+ except common.QualificationError:pass
 reg=common.FdRegistry(lambda n:(_ for _ in ()).throw(OSError('uncertain')));lease=reg.adopt(9,'test')
 try:lease.close()
 except OSError:pass
@@ -353,7 +360,7 @@ test("private capability and retained quarantine fail closed across publication 
 from unittest.mock import patch
 G=lambda inode:{'mode':0o100600,'uid':1,'gid':1,'device':1,'inode':inode,'links':1,'size':9,'mtime_ns':1,'ctime_ns':1,'rdevice':0}
 R,A,O,F=G(10),G(11),G(12),G(99);digest=hashlib.sha256(b'report-v1').hexdigest()
-authority={'report_sha256':digest,'report_size':9};receipt={'report_generation':R}
+authority={'report_sha256':digest,'report_size':9,'report_generation':R};receipt={'report_generation':R}
 class Lease:
  def __init__(self):self.number=4;self.state=common.FdState.OWNED
  def close(self):self.state=common.FdState.CLOSED
@@ -365,13 +372,14 @@ def run(initial,has_receipt,accept=True):
  def file_digest(directory,name,limit):
   generation=state[name];raw=b'foreign!' if generation==F else b'report-v1'
   return hashlib.sha256(raw).hexdigest(),len(raw),generation
- def quarantine(job,parent,directory):retained.append(dict(state))
+ def quarantine(job,parent,directory,capability):
+  assert capability==b'K'*32;retained.append(dict(state))
  patches=(patch.object(common,'_enumerate_directory',names),patch.object(common,'_identity_at',identity),
   patch.object(common,'_file_digest_at',file_digest),patch.object(common,'_retain_quarantine',quarantine))
  for item in patches:item.start()
  try:
   try:
-   common._cleanup_owned('C',Registry(),Lease(),Lease(),authority,A,receipt if has_receipt else None,O if has_receipt else None);ok=True
+   common._cleanup_owned('C',Registry(),Lease(),Lease(),authority,A,receipt if has_receipt else None,O if has_receipt else None,b'K'*32);ok=True
   except common.QualificationError:ok=False
  finally:
   for item in reversed(patches):item.stop()
@@ -387,6 +395,7 @@ extra={'.authority.json':A,'.owner.json':O,'report.json':R,'foreign':F};assert r
   const receiptSource = common.slice(common.indexOf("def _receipt("), common.indexOf("def _open_report_directory("));
   assert.doesNotMatch(receiptSource, /"capability"\s*:/u, "raw capability must not enter publication receipt");
   assert.match(receiptSource, /"schema_sha256": context\.schema_blob_sha256/u);
+  assert.match(receiptSource, /source_generations_sha256/u, "source generations remain in the private authenticated receipt");
   assert.doesNotMatch(receiptSource, /_sha256\(SCHEMA\)/u, "receipt must use the pre-effect schema identity");
   assert.match(receiptSource, /hmac\.new\(capability/u);
   const readReceiptSource = common.slice(common.indexOf("def _read_receipt("), common.indexOf("def _file_digest_at("));
@@ -398,8 +407,42 @@ extra={'.authority.json':A,'.owner.json':O,'report.json':R,'foreign':F};assert r
   assert.doesNotMatch(cleanupSource, /_cleanup_owned/u, "disk state cannot select fallback cleanup authority");
   assert.doesNotMatch(cleanupSource, /except \(OSError/u, "pidfd failure cannot become success");
   const quarantineSource = common.slice(common.indexOf("def _retain_quarantine("), common.indexOf("def _custodian_main("));
-  assert.doesNotMatch(quarantineSource, /os\.(?:unlink|rmdir)/u, "quarantine never check-deletes a pathname");
+  assert.match(quarantineSource, /quarantine-retained/u, "quarantine retains every named generation");
+  assert.match(quarantineSource, /_rename\(directory\.number, name\.encode\(\), slot, 2, placeholder\.number\)/u,
+    "owned files leave public names only through retained exchange");
+  assert.match(quarantineSource, /hmac\.new\(capability/u, "quarantine names remain private until exchange");
   assert.match(common, /inotify_add_watch/u, "upload interval has a retained generation watch");
+  const sourceReader = common.slice(common.indexOf("def _read_source("), common.indexOf("def _canonical("));
+  assert.match(sourceReader, /os\.pread/u); assert.doesNotMatch(sourceReader, /read_bytes|lstat/u);
+});
+
+test("real custodian supervisor hook transfers private proof only after exact child reap", { skip: process.platform !== "linux" }, () => {
+  const script = `import json,os,socket,struct,sys,types\nsys.path.insert(0,'scripts/native-qualification');import common
+cap=b'R'*32;client,server=socket.socketpair(socket.AF_UNIX,socket.SOCK_SEQPACKET|socket.SOCK_CLOEXEC);control_left,control_right=socket.socketpair()
+def worker(control_fd,context,capability,supervisor_fd):
+ os.close(control_fd);supervisor=socket.socket(fileno=supervisor_fd);left,right=os.pipe()
+ assert supervisor.sendmsg([b'LEASE'],[(socket.SOL_SOCKET,socket.SCM_RIGHTS,struct.pack('2i',left,right))])==5
+ os.close(left);os.close(right)
+ packet=common._canonical({'capability':capability.hex(),'custodian_pid':os.getpid(),'nonce':'a'*64,'upload':{'artifact_id':7}},True)
+ assert supervisor.sendmsg([packet],[(socket.SOL_SOCKET,socket.SCM_RIGHTS,struct.pack('i',server.fileno()))])==len(packet)
+ supervisor.close();server.close()
+common._custodian_worker=worker
+broker=os.fork()
+if broker==0:
+ client.close();control_left.close()
+ try:common._custodian_main(control_right.detach(),types.SimpleNamespace(),cap)
+ except BaseException:os._exit(1)
+ os._exit(0)
+server.close();control_right.close();raw=client.recv(4096);waited,status=os.waitpid(broker,0)
+assert waited==broker and os.WIFEXITED(status) and os.WEXITSTATUS(status)==0
+value=json.loads(raw);assert value['capability']==cap.hex() and value['waitpid_reaped']==value['custodian_pid']
+assert value['nonce']=='a'*64 and value['upload']=={'artifact_id':7}`;
+  const run = spawnSync("/usr/bin/python3", ["-I", "-B", "-c", script], { encoding: "utf8" });
+  assert.equal(run.status, 0, run.stderr);
+  const supervisorSource = common.slice(common.indexOf("def _custodian_main("), common.indexOf("def _mutation_watch("));
+  assert.match(supervisorSource, /_bounded_reap\(pid, pidfd\.number\)/u);
+  assert.match(supervisorSource, /SCM_RIGHTS/u);
+  assert.ok(supervisorSource.indexOf("_bounded_reap") < supervisorSource.indexOf("endpoint.send"));
 });
 
 test("parsed workflow gives only an explicit exact-SHA dispatch native authority", () => {

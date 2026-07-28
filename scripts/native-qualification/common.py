@@ -87,12 +87,24 @@ def _integer(value: str, name: str) -> int:
     return int(value)
 def _generation(value: os.stat_result) -> tuple[int, ...]:
     return (value.st_mode, value.st_uid, value.st_gid, value.st_dev, value.st_ino, value.st_nlink, value.st_size, value.st_mtime_ns, value.st_ctime_ns)
+def _read_source(path: Path, limit: int) -> tuple[bytes, tuple[int, ...]]:
+    descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+    try:
+        before = os.fstat(descriptor)
+        _require(stat.S_ISREG(before.st_mode) and before.st_size <= limit, "source object")
+        raw = bytearray()
+        while len(raw) < before.st_size:
+            block = os.pread(descriptor, min(65_536, before.st_size - len(raw)), len(raw))
+            _require(bool(block), "source short read")
+            raw.extend(block)
+        generation = _generation(before)
+        _require(generation == _generation(os.fstat(descriptor)), "source generation")
+        return bytes(raw), generation
+    finally:
+        os.close(descriptor)
 def _sha256(path: Path) -> str:
-    before = path.lstat()
-    _require(stat.S_ISREG(before.st_mode) and before.st_size <= 2_000_000, "source object")
-    digest = hashlib.sha256(path.read_bytes()).hexdigest()
-    _require(_generation(before) == _generation(path.lstat()), "source generation")
-    return digest
+    raw, _generation_receipt = _read_source(path, 2_000_000)
+    return hashlib.sha256(raw).hexdigest()
 def _canonical(value: object, newline: bool = False) -> bytes:
     return json.dumps(value, allow_nan=False, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode() + (b"\n" if newline else b"")
 @dataclass(frozen=True)
@@ -117,6 +129,7 @@ class WorkflowContext:
     common_blob_sha256: str
     schema_blob_sha256: str
     schema_bytes: bytes
+    source_generations: tuple[tuple[int, ...], ...] = ()
     @classmethod
     def from_environ(cls, expected_job: str, driver_file: str | Path) -> "WorkflowContext":
         environment = dict(os.environ)
@@ -135,15 +148,15 @@ class WorkflowContext:
         _require(attempt == 1, "first attempt")
         kernel, architecture = platform.release(), platform.machine()
         _require(re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+[-A-Za-z0-9.+]*", kernel) is not None and architecture == "x86_64", "runner platform")
-        schema_generation = SCHEMA.lstat()
-        schema_bytes = SCHEMA.read_bytes()
-        _require(len(schema_bytes) <= 100_000 and _generation(schema_generation) == _generation(SCHEMA.lstat()), "schema admission")
+        schema_bytes, schema_generation = _read_source(SCHEMA, 100_000)
+        source_receipts = tuple(_read_source(path, 2_000_000) for path in (WORKFLOW, expected_driver, COMMON))
+        source_digests = tuple(hashlib.sha256(raw).hexdigest() for raw, _generation_receipt in source_receipts)
         schema_digest = hashlib.sha256(schema_bytes).hexdigest()
         return cls(
             expected_job, repository, repository, *hashes, environment["NQ_JOB_ID"],
             _integer(environment["NQ_RUN_ID"], "run id"), attempt, _integer(environment["NQ_PR_NUMBER"], "pull request"),
-            environment["NQ_RUNNER_VERSION"], kernel, architecture, _sha256(WORKFLOW), _sha256(expected_driver), _sha256(COMMON),
-            schema_digest, schema_bytes,
+            environment["NQ_RUNNER_VERSION"], kernel, architecture, *source_digests, schema_digest, schema_bytes,
+            tuple(generation for _raw, generation in source_receipts) + (schema_generation,),
         )
 def _context_value(context: WorkflowContext) -> dict[str, object]:
     source = {"checkout_sha": context.head_sha, "driver_blob_sha256": context.driver_blob_sha256,
@@ -501,10 +514,9 @@ class SystemCommonOps:
                     else:
                         active.remove(descriptor)
             _require(not active, "launcher output EOF")
-            _bounded_reap(pid, pidfd.number, waitable=False)
-            waited, status = os.waitpid(pid, os.WNOHANG)
-            reaped = waited == pid
-            _require(reaped and os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0, "held launcher exit")
+            status = _bounded_reap(pid, pidfd.number)
+            reaped = True
+            _require(os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0, "held launcher exit")
             _require(not buffers[error_read.number], "held launcher diagnostics")
             return bytes(buffers[output_read.number])
         except BaseException as primary:
@@ -717,14 +729,13 @@ class CleanupEvidence:
 @dataclass(frozen=True)
 class OperationReceipt:
     _session_nonce: bytes
+    _seal: object
     job: str
     source_set_sha256: str
     result_sha256: str
     _result: Mapping[str, object]
     _checks: tuple[tuple[str, str], ...]
     _metadata: tuple[Mapping[str, object], ...]
-
-
 @dataclass(frozen=True)
 class ReportCandidate:
     failure_phase: str | None = None
@@ -787,9 +798,7 @@ def _decode(raw: bytes) -> object:
     return value
 def _validate_schema(value: object, admitted_schema: bytes | None = None) -> None:
     if admitted_schema is None:
-        before = SCHEMA.lstat()
-        raw = SCHEMA.read_bytes()
-        _require(len(raw) <= 100_000 and _generation(before) == _generation(SCHEMA.lstat()), "schema generation")
+        raw, _schema_generation = _read_source(SCHEMA, 100_000)
     else:
         raw = admitted_schema
         _require(len(raw) <= 100_000, "admitted schema bound")
@@ -871,12 +880,8 @@ def _closed_fields(result: object, names: tuple[str, ...], version: str, receipt
     _require(identity == expected, "operation result identity")
     _require(HEX40.fullmatch(str(identity[1])) is not None, "operation result revision")
     return value
-
-
 def _true_observations(result: Mapping[str, object], names: tuple[str, ...]) -> None:
     _require(all(type(result[name]) is bool and result[name] is True for name in names), "operation observation")
-
-
 def _derive_operation(receipt: OperationReceipt, head_sha: str) -> tuple[tuple[tuple[str, str], ...], tuple[Mapping[str, object], ...]]:
     result = NativeSession._thaw(receipt._result)
     _require(type(result) is dict, "operation result receipt")
@@ -954,8 +959,6 @@ def _derive_operation(receipt: OperationReceipt, head_sha: str) -> tuple[tuple[t
     frozen = tuple(NativeSession._freeze(dict(row)) for row in metadata)
     _require(all(isinstance(row, Mapping) for row in frozen), "frozen operation metadata")
     return checks, frozen  # type: ignore[return-value]
-
-
 def _validate_semantics(value: object, context: WorkflowContext | None = None) -> None:
     _require(type(value) is dict and value.get("job") in DRIVERS, "semantic report")
     report = value
@@ -1014,8 +1017,6 @@ def _validate(value: object, context: WorkflowContext | None = None) -> None:
 def report_path(job: str) -> Path:
     _require(job in DRIVERS, "report job")
     return Path(f"/tmp/cogs-native-qualification-{job}/report.json")
-
-
 def _retired_report_path(job: str) -> Path:
     _require(job in DRIVERS, "retired report job")
     return Path(f"/tmp/.cogs-native-qualification-{job}.retired")
@@ -1037,10 +1038,10 @@ def _read_all(descriptor: int, limit: int) -> bytes:
             return bytes(value)
         value.extend(block)
         _require(len(value) <= limit, "report read bound")
-def _rename(directory_fd: int, source: bytes, target: bytes, flags: int) -> None:
+def _rename(directory_fd: int, source: bytes, target: bytes, flags: int, target_fd: int | None = None) -> None:
     renameat2 = getattr(ctypes.CDLL(None, use_errno=True), "renameat2", None)
     _require(renameat2 is not None, "renameat2 unavailable")
-    if renameat2(directory_fd, source, directory_fd, target, flags) != 0:
+    if renameat2(directory_fd, source, directory_fd if target_fd is None else target_fd, target, flags) != 0:
         code = ctypes.get_errno()
         raise OSError(code, os.strerror(code))
 def _link_held(descriptor: int, directory_fd: int, name: bytes) -> None:
@@ -1052,8 +1053,6 @@ def _identity(value: os.stat_result) -> dict[str, int]:
     names = ("mode", "uid", "gid", "device", "inode", "links", "size", "mtime_ns", "ctime_ns", "rdevice")
     values = (*_generation(value), value.st_rdev)
     return dict(zip(names, values))
-
-
 def _directory_identity(value: os.stat_result) -> dict[str, int]:
     return {
         "mode": value.st_mode,
@@ -1075,16 +1074,14 @@ class _CustodianClient:
         self.control = control
         self.pidfd = pidfd
         self.pid = pid
-
     def abort(self, primary: BaseException) -> None:
         failures: list[BaseException] = [primary]
         try:
             self.control.close()
         except BaseException as error:
             failures.append(error)
-        _retire_child(self.pid, self.pidfd, failures, terminate=True, waitable=True)
+        _retire_child(self.pid, self.pidfd, failures, terminate=True)
         raise BaseExceptionGroup("custodian abort", failures)
-
     def publish(self, raw: bytes) -> None:
         endpoint = socket.socket(fileno=self.control.number)
         endpoint.settimeout(10)
@@ -1094,23 +1091,18 @@ class _CustodianClient:
         finally:
             endpoint.detach()
         self.control.close()
-
-
-def _bounded_reap(pid: int, pidfd_number: int, waitable: bool) -> None:
+def _bounded_reap(pid: int, pidfd_number: int) -> int:
     poller = select.poll()
     poller.register(pidfd_number, select.POLLIN)
     _require(bool(poller.poll(10_000)), "custodian bounded exit")
-    if waitable:
-        waited, _status = os.waitpid(pid, os.WNOHANG)
-        _require(waited == pid, "custodian exact reap")
-
-
+    waited, status = os.waitpid(pid, os.WNOHANG)
+    _require(waited == pid, "custodian exact waitpid reap")
+    return status
 def _retire_child(
     pid: int,
     pidfd: FdLease,
     failures: list[BaseException],
     terminate: bool,
-    waitable: bool,
 ) -> None:
     if terminate:
         try:
@@ -1120,15 +1112,13 @@ def _retire_child(
         except BaseException as error:
             failures.append(error)
     try:
-        _bounded_reap(pid, pidfd.number, waitable)
+        _bounded_reap(pid, pidfd.number)
     except BaseException as error:
         failures.append(error)
     try:
         pidfd.close()
     except BaseException as error:
         failures.append(error)
-
-
 def _adopt_socketpair(registry: FdRegistry, left_purpose: str, right_purpose: str) -> tuple[FdLease, FdLease]:
     left_socket, right_socket = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET | socket.SOCK_CLOEXEC)
     try:
@@ -1149,8 +1139,6 @@ def _adopt_socketpair(registry: FdRegistry, left_purpose: str, right_purpose: st
     finally:
         left_socket.close()
         right_socket.close()
-
-
 def _creator_retire(pid: int, pidfd: FdLease | None, failures: list[BaseException]) -> None:
     if pidfd is None:
         try:
@@ -1171,9 +1159,7 @@ def _creator_retire(pid: int, pidfd: FdLease | None, failures: list[BaseExceptio
             time.sleep(0.01)
         failures.append(QualificationError("custodian creator reap timeout"))
         return
-    _retire_child(pid, pidfd, failures, terminate=True, waitable=True)
-
-
+    _retire_child(pid, pidfd, failures, terminate=True)
 def _start_custodian(context: WorkflowContext, registry: FdRegistry) -> _CustodianClient:
     left, right = _adopt_socketpair(registry, "report-custodian-control", "report-custodian-child")
     pid = -1
@@ -1219,49 +1205,30 @@ def _process_start(pid: int) -> int:
     values = raw[close + 2:].split()
     _require(len(values) >= 20, "custodian process fields")
     return int(values[19])
-
-
-def _authority(context: WorkflowContext, capability: bytes, raw: bytes, directory: FdLease) -> dict[str, object]:
-    return {
-        "version": "cogs.native-report-cleanup-authority/v1",
-        "job": context.job,
-        "job_id": context.job_id,
-        "run_id": context.run_id,
-        "run_attempt": context.run_attempt,
-        "head_sha": context.head_sha,
-        "capability_sha256": hashlib.sha256(capability).hexdigest(),
-        "directory": _directory_identity(os.fstat(directory.number)),
-        "report_sha256": hashlib.sha256(raw).hexdigest(),
-        "report_size": len(raw),
-        "custodian_pid": os.getpid(),
+def _authority(context: WorkflowContext, capability: bytes, raw: bytes, directory: FdLease, report: FdLease) -> dict[str, object]:
+    body = {
+        "version": "cogs.native-report-cleanup-authority/v1", "job": context.job,
+        "job_id": context.job_id, "run_id": context.run_id,
+        "run_attempt": context.run_attempt, "head_sha": context.head_sha,
+        "capability_sha256": hashlib.sha256(capability).hexdigest(), "directory": _directory_identity(os.fstat(directory.number)),
+        "report_generation": _identity(os.fstat(report.number)), "report_sha256": hashlib.sha256(raw).hexdigest(),
+        "report_size": len(raw), "custodian_pid": os.getpid(),
         "custodian_start": _process_start(os.getpid()),
     }
-
-
-def _receipt(
-    context: WorkflowContext,
-    capability: bytes,
-    raw: bytes,
-    directory: FdLease,
-    report: FdLease,
-) -> dict[str, object]:
+    return {**body, "authentication_sha256": hmac.new(capability, _canonical(body), hashlib.sha256).hexdigest()}
+def _receipt(context: WorkflowContext, capability: bytes, raw: bytes, directory: FdLease,
+             report: FdLease) -> dict[str, object]:
     body = {
-        "version": "cogs.native-report-publication/v3",
-        "state": "stable-upload-window",
-        "job": context.job,
-        "job_id": context.job_id,
-        "run_id": context.run_id,
-        "run_attempt": context.run_attempt,
-        "head_sha": context.head_sha,
-        "capability_sha256": hashlib.sha256(capability).hexdigest(),
+        "version": "cogs.native-report-publication/v3", "state": "stable-upload-window",
+        "job": context.job, "job_id": context.job_id,
+        "run_id": context.run_id, "run_attempt": context.run_attempt,
+        "head_sha": context.head_sha, "capability_sha256": hashlib.sha256(capability).hexdigest(),
         "directory": _directory_identity(os.fstat(directory.number)),
-        "report_generation": _identity(os.fstat(report.number)),
-        "report_sha256": hashlib.sha256(raw).hexdigest(),
-        "report_size": len(raw),
-        "workflow_sha256": context.workflow_blob_sha256,
-        "schema_sha256": context.schema_blob_sha256,
-        "common_sha256": context.common_blob_sha256,
+        "report_generation": _identity(os.fstat(report.number)), "report_sha256": hashlib.sha256(raw).hexdigest(),
+        "report_size": len(raw), "workflow_sha256": context.workflow_blob_sha256,
+        "schema_sha256": context.schema_blob_sha256, "common_sha256": context.common_blob_sha256,
         "driver_sha256": context.driver_blob_sha256,
+        "source_generations_sha256": hashlib.sha256(_canonical(context.source_generations)).hexdigest(),
     }
     authentication = hmac.new(capability, _canonical(body), hashlib.sha256).hexdigest()
     return {**body, "authentication_sha256": authentication}
@@ -1282,23 +1249,30 @@ def _open_report_directory(job: str, create: bool) -> tuple[FdRegistry, FdLease,
     policy = policy and status.st_uid == os.geteuid() and status.st_gid == os.getegid()
     _require(policy, "report directory policy")
     return registry, parent, directory
-def _publish_transaction(context: WorkflowContext, capability: bytes, raw: bytes) -> tuple[FdRegistry, FdLease, FdLease]:
+def _publish_transaction(context: WorkflowContext, capability: bytes, raw: bytes,
+                         supervisor_fd: int | None = None) -> tuple[FdRegistry, FdLease, FdLease]:
     _validate(_decode(raw), context)
     target = report_path(context.job)
     _require(not os.path.lexists(target.parent) and not os.path.lexists(_retired_report_path(context.job)), "report baseline")
     registry, parent, directory = _open_report_directory(context.job, True)
+    if supervisor_fd is not None:
+        supervisor = socket.socket(fileno=supervisor_fd)
+        sent = supervisor.sendmsg([b"LEASE"], [(socket.SOL_SOCKET, socket.SCM_RIGHTS,
+                                                struct.pack("2i", parent.number, directory.number))])
+        _require(sent == 5, "custodian recovery authority transfer")
+        supervisor.detach()
     authority = _anonymous(registry, directory, "anonymous-cleanup-authority")
     report = _anonymous(registry, directory, "anonymous-report")
     receipt = _anonymous(registry, directory, "anonymous-receipt")
-    authority_raw = _canonical(_authority(context, capability, raw, directory), True)
-    _write_all(authority.number, authority_raw)
-    os.fsync(authority.number)
-    _link_held(authority.number, directory.number, b".authority.json")
-    os.fsync(directory.number)
     _write_all(report.number, raw)
     os.fsync(report.number)
     os.lseek(report.number, 0, os.SEEK_SET)
     _require(_read_all(report.number, REPORT_LIMIT) == raw, "report readback")
+    authority_raw = _canonical(_authority(context, capability, raw, directory, report), True)
+    _write_all(authority.number, authority_raw)
+    os.fsync(authority.number)
+    _link_held(authority.number, directory.number, b".authority.json")
+    os.fsync(directory.number)
     _link_held(report.number, directory.number, b".report.stage")
     os.fsync(directory.number)
     _rename(directory.number, b".report.stage", b"report.json", 1)
@@ -1327,18 +1301,22 @@ def _read_named(directory: FdLease, name: str, limit: int) -> tuple[bytes, dict[
         return raw, _identity(after)
     finally:
         lease.close()
-
-
-def _read_authority(directory: FdLease, job: str) -> tuple[dict[str, object], dict[str, int]]:
+def _read_authority(directory: FdLease, job: str, capability: bytes | None = None) -> tuple[dict[str, object], dict[str, int]]:
     names = set(_enumerate_directory(directory.number, False))
     authority_name = ".authority.json"
     raw, generation = _read_named(directory, authority_name, 16_384)
     value = _decode(raw)
     required = {
         "version", "job", "job_id", "run_id", "run_attempt", "head_sha", "capability_sha256",
-        "directory", "report_sha256", "report_size", "custodian_pid", "custodian_start",
+        "directory", "report_generation", "report_sha256", "report_size", "custodian_pid", "custodian_start",
+        "authentication_sha256",
     }
     _require(type(value) is dict and set(value) == required, "closed cleanup authority")
+    authentication = value.pop("authentication_sha256")
+    if capability is not None:
+        expected = hmac.new(capability, _canonical(value), hashlib.sha256).hexdigest()
+        _require(hmac.compare_digest(str(authentication), expected), "cleanup authority authentication")
+    value["authentication_sha256"] = authentication
     _require(value["version"] == "cogs.native-report-cleanup-authority/v1", "cleanup authority version")
     _require(value["job"] == job and value["job_id"] == JOB_IDS[job], "cleanup authority job")
     _require(value["directory"] == _directory_identity(os.fstat(directory.number)), "cleanup authority directory")
@@ -1350,8 +1328,6 @@ def _read_authority(directory: FdLease, job: str) -> tuple[dict[str, object], di
     _require(type(value["custodian_pid"]) is int and value["custodian_pid"] > 0, "authority custodian")
     _require(type(value["custodian_start"]) is int and value["custodian_start"] > 0, "authority custodian start")
     return value, generation
-
-
 def _read_receipt(directory: FdLease, job: str, authority: Mapping[str, object], capability: bytes) -> tuple[dict[str, object], dict[str, int]]:
     names = set(_enumerate_directory(directory.number, False))
     _require(".owner.json" in names, "publication receipt present")
@@ -1361,7 +1337,7 @@ def _read_receipt(directory: FdLease, job: str, authority: Mapping[str, object],
     required = {
         "version", "state", "job", "job_id", "run_id", "run_attempt", "head_sha", "capability_sha256",
         "directory", "report_generation", "report_sha256", "report_size", "workflow_sha256", "common_sha256",
-        "driver_sha256", "schema_sha256", "authentication_sha256",
+        "driver_sha256", "schema_sha256", "source_generations_sha256", "authentication_sha256",
     }
     _require(type(value) is dict and set(value) == required, "closed publication receipt")
     authentication = value.pop("authentication_sha256")
@@ -1372,30 +1348,72 @@ def _read_receipt(directory: FdLease, job: str, authority: Mapping[str, object],
     context = context and value["state"] == "stable-upload-window"
     context = context and value["job"] == job and value["job_id"] == JOB_IDS[job]
     _require(context, "receipt context")
-    for name in ("run_id", "run_attempt", "head_sha", "capability_sha256", "directory", "report_sha256", "report_size"):
+    for name in ("run_id", "run_attempt", "head_sha", "capability_sha256", "directory", "report_generation", "report_sha256", "report_size"):
         _require(value[name] == authority[name], f"receipt authority {name}")
-    code = (value["workflow_sha256"], value["common_sha256"], value["driver_sha256"])
-    expected = (_sha256(WORKFLOW), _sha256(COMMON), _sha256(COMMON.parent / DRIVERS[job]))
-    schema_identity = value["schema_sha256"]
-    _require(code == expected and HEX64.fullmatch(str(schema_identity)) is not None, "receipt code identities")
+    code = (value["workflow_sha256"], value["common_sha256"], value["driver_sha256"], value["schema_sha256"],
+            value["source_generations_sha256"])
+    _require(all(HEX64.fullmatch(str(identity)) is not None for identity in code), "retained receipt code identities")
     return value, generation
 def _file_digest_at(directory: FdLease, name: str, limit: int) -> tuple[str, int, dict[str, int]]:
     raw, generation = _read_named(directory, name, limit)
     return hashlib.sha256(raw).hexdigest(), len(raw), generation
-
-
-def _retain_quarantine(job: str, parent: FdLease, directory: FdLease) -> None:
+def _retain_quarantine(job: str, parent: FdLease, directory: FdLease, capability: bytes) -> None:
     expected = _directory_identity(os.fstat(directory.number))
     source = report_path(job).parent.name
-    target = _retired_report_path(job).name
-    _require(_identity_at(parent.number, target) is None, "retained quarantine occupied")
-    _rename(parent.number, source.encode(), target.encode(), 1)
+    target = ".cogs-nq-" + hmac.new(capability, f"quarantine:{job}".encode(), hashlib.sha256).hexdigest()
+    source_identity = _identity_at(parent.number, source)
+    target_identity_at = _identity_at(parent.number, target)
+    if source_identity is None and target_identity_at is None:
+        return
+    if target_identity_at is None and source_identity is not None and source_identity["inode"] != expected["inode"]:
+        os.rmdir(source, dir_fd=parent.number)
+        os.fsync(parent.number)
+        return
+    try:
+        os.mkdir(target, 0o700, dir_fd=parent.number)
+    except FileExistsError:
+        pass
+    target_identity = _directory_identity(os.stat(target, dir_fd=parent.number, follow_symlinks=False))
+    exchanged = target_identity == expected
+    placeholder_name = source if exchanged else target
+    placeholder = directory.registry.open("quarantine-exchange",
+        lambda: os.open(placeholder_name, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW, dir_fd=parent.number))
+    placeholder_identity = _directory_identity(os.fstat(placeholder.number))
+    if not exchanged:
+        _require(not _enumerate_directory(placeholder.number, False), "quarantine placeholder inventory")
+        _rename(parent.number, source.encode(), target.encode(), 2)
+    _require(_directory_identity(os.stat(target, dir_fd=parent.number, follow_symlinks=False)) == expected,
+             "quarantine retained generation")
+    _require(_directory_identity(os.stat(source, dir_fd=parent.number, follow_symlinks=False)) == placeholder_identity,
+             "quarantine exchange generation")
+    names = _enumerate_directory(directory.number, False)
+    for name in names:
+        retained = directory.registry.open(f"quarantine-retained:{name}",
+            lambda name=name: os.open(name, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW, dir_fd=directory.number))
+        retained_identity = _identity(os.fstat(retained.number))
+        replacement = _anonymous(directory.registry, placeholder, f"quarantine-placeholder:{name}")
+        slot = hmac.new(capability, f"slot:{name}".encode(), hashlib.sha256).hexdigest().encode()
+        _link_held(replacement.number, placeholder.number, slot)
+        replacement_identity = _identity(os.fstat(replacement.number))
+        _rename(directory.number, name.encode(), slot, 2, placeholder.number)
+        _require(_identity_at(placeholder.number, slot.decode()) == retained_identity, "retained quarantine file generation")
+        _require(_identity_at(directory.number, name) == replacement_identity, "quarantine placeholder generation")
+        os.unlink(slot, dir_fd=placeholder.number)
+        os.unlink(name, dir_fd=directory.number)
+        directory.registry.close_reverse(None, [replacement, retained])
+    allowed_slots = {hmac.new(capability, f"slot:{name}".encode(), hashlib.sha256).hexdigest()
+                     for name in (".authority.json", ".owner.json", ".report.stage", "report.json")}
+    for slot in _enumerate_directory(placeholder.number, False):
+        _require(slot in allowed_slots, "quarantine recovery slot")
+        retained = directory.registry.open("quarantine-recovery-slot",
+            lambda slot=slot: os.open(slot, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW, dir_fd=placeholder.number))
+        os.unlink(slot, dir_fd=placeholder.number)
+        retained.close()
+    os.fsync(directory.number)
+    os.rmdir(target, dir_fd=parent.number)
+    os.rmdir(source, dir_fd=parent.number)
     os.fsync(parent.number)
-    retired = os.stat(target, dir_fd=parent.number, follow_symlinks=False)
-    _require(_directory_identity(retired) == expected, "retained quarantine generation")
-    _require(not os.path.lexists(report_path(job).parent), "active report quarantine")
-
-
+    placeholder.close()
 def _cleanup_owned(
     job: str,
     registry: FdRegistry,
@@ -1405,6 +1423,7 @@ def _cleanup_owned(
     authority_generation: dict[str, int],
     receipt: Mapping[str, object] | None,
     receipt_generation: dict[str, int] | None,
+    capability: bytes,
 ) -> None:
     del registry
     names = set(_enumerate_directory(directory.number, False))
@@ -1415,41 +1434,118 @@ def _cleanup_owned(
     if report_name is not None:
         digest, size, generation = _file_digest_at(directory, report_name, REPORT_LIMIT)
         _require(digest == authority["report_sha256"] and size == authority["report_size"], "uploaded report bytes")
+        _require(generation == authority["report_generation"], "durable report generation")
         if receipt is not None:
             _require(generation == receipt["report_generation"], "uploaded report generation")
     if receipt_generation is not None:
         _require(_identity_at(directory.number, ".owner.json") == receipt_generation, "receipt generation")
-    _retain_quarantine(job, parent, directory)
+    _retain_quarantine(job, parent, directory, capability)
+def _recover_quarantine(job: str, parent: FdLease, directory: FdLease, capability: bytes) -> None:
+    names = set(_enumerate_directory(directory.number, False))
+    if ".authority.json" not in names:
+        _retain_quarantine(job, parent, directory, capability)
+        return
+    authority, authority_generation = _read_authority(directory, job, capability)
+    receipt = receipt_generation = None
+    if ".owner.json" in names:
+        receipt, receipt_generation = _read_receipt(directory, job, authority, capability)
+    _cleanup_owned(job, directory.registry, parent, directory, authority, authority_generation,
+                   receipt, receipt_generation, capability)
 def _custodian_main(control_fd: int, context: WorkflowContext, capability: bytes) -> None:
-    control = socket.socket(fileno=control_fd)
-    control.settimeout(10)
-    _require(control.recv(16) == b"RELEASE", "custodian release")
-    control.detach()
-    _custodian_worker(control_fd, context, capability)
-
-
+    supervisor, worker = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET | socket.SOCK_CLOEXEC)
+    owner_pid = os.getpid()
+    pid = os.fork()
+    if pid == 0:
+        supervisor.close()
+        try:
+            prctl = ctypes.CDLL(None, use_errno=True).prctl
+            _require(prctl(1, signal.SIGKILL, 0, 0, 0) == 0 and os.getppid() == owner_pid, "custodian supervisor ownership")
+            _require(worker.recv(1) == b"G", "custodian worker gate")
+            worker_call = worker.dup()
+            _custodian_worker(control_fd, context, capability, worker_call.detach())
+        except BaseException:
+            try:
+                if os.path.lexists(report_path(context.job).parent / ".owner.json"):
+                    worker.send(b"PRESERVE")
+            except BaseException:
+                pass
+            os._exit(1)
+        os._exit(0)
+    worker.close()
+    registry = FdRegistry()
+    pidfd = registry.open("capability-custodian-pidfd", lambda: os.pidfd_open(pid, 0))
+    _require(supervisor.send(b"G") == 1, "custodian worker release")
+    lease_packet, lease_rights, _flags, _address = supervisor.recvmsg(64, socket.CMSG_SPACE(struct.calcsize("2i")))
+    lease_numbers = [number for level, kind, data in lease_rights if level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS
+                     for number in struct.unpack(f"{len(data) // 4}i", data)]
+    if not lease_packet:
+        _bounded_reap(pid, pidfd.number)
+        if os.path.lexists(report_path(context.job).parent):
+            recovery_registry, recovery_parent, recovery_directory = _open_report_directory(context.job, False)
+            _recover_quarantine(context.job, recovery_parent, recovery_directory, capability)
+            recovery_registry.close_reverse()
+        registry.close_reverse()
+        os.close(control_fd)
+        return
+    retained = [registry.adopt(number, "custodian-recovery-authority") for number in lease_numbers]
+    _require(lease_packet == b"LEASE" and len(retained) == 2, "custodian recovery authority")
+    packet, rights, _flags, _address = supervisor.recvmsg(4096, socket.CMSG_SPACE(struct.calcsize("i")))
+    phase = packet
+    if phase == b"STABLE":
+        packet, rights, _flags, _address = supervisor.recvmsg(4096, socket.CMSG_SPACE(struct.calcsize("i")))
+        if packet == b"AUTHORIZED":
+            phase = packet
+            packet, rights, _flags, _address = supervisor.recvmsg(4096, socket.CMSG_SPACE(struct.calcsize("i")))
+    if packet == b"PRESERVE":
+        _bounded_reap(pid, pidfd.number)
+        if phase != b"STABLE":
+            _recover_quarantine(context.job, retained[0], retained[1], capability)
+        registry.close_reverse()
+        os.close(control_fd)
+        return
+    descriptors = [struct.unpack("i", data[:4])[0] for level, kind, data in rights
+                   if level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS]
+    terminal_leases = [registry.adopt(number, "custodian-terminal-endpoint") for number in descriptors]
+    status = _bounded_reap(pid, pidfd.number)
+    if not packet:
+        _recover_quarantine(context.job, retained[0], retained[1], capability)
+        registry.close_reverse()
+        os.close(control_fd)
+        return
+    _require(len(terminal_leases) == 1 and os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0,
+             "capability custodian terminal exit")
+    response = _decode(packet)
+    _require(type(response) is dict and response.get("custodian_pid") == pid, "capability custodian terminal receipt")
+    response["waitpid_reaped"] = pid
+    endpoint = socket.socket(fileno=terminal_leases[0].number)
+    reply = _canonical(response, True)
+    _require(endpoint.send(reply) == len(reply), "custodian terminal reply")
+    endpoint.detach()
+    terminal_leases[0].close()
+    supervisor.close()
+    registry.close_reverse()
 def _mutation_watch(registry: FdRegistry, directory: FdLease) -> FdLease:
     libc = ctypes.CDLL(None, use_errno=True)
     descriptor = libc.inotify_init1(os.O_CLOEXEC | os.O_NONBLOCK)
     if descriptor < 0:
         code = ctypes.get_errno()
         raise OSError(code, os.strerror(code))
-    watch = registry.adopt(descriptor, "uploaded-generation-watch")
+    try:
+        watch = registry.adopt(descriptor, "uploaded-generation-watch")
+    except BaseException:
+        os.close(descriptor)
+        raise
     mask = 0x00000fce
     added = libc.inotify_add_watch(watch.number, f"/proc/self/fd/{directory.number}".encode(), mask)
     _require(added >= 0, "uploaded generation watch")
     return watch
-
-
 def _watch_clean(watch: FdLease) -> None:
     try:
         changed = os.read(watch.number, 65_536)
     except BlockingIOError:
         changed = b""
     _require(not changed, "uploaded report generation exchanged")
-
-
-def _custodian_worker(control_fd: int, context: WorkflowContext, capability: bytes) -> None:
+def _custodian_worker(control_fd: int, context: WorkflowContext, capability: bytes, supervisor_fd: int) -> None:
     registry = FdRegistry()
     control_lease = registry.adopt(control_fd, "custodian-worker-control")
     listener_lease = registry.open(
@@ -1465,11 +1561,14 @@ def _custodian_worker(control_fd: int, context: WorkflowContext, capability: byt
     _require(control.send(b"READY") == 5, "custodian ready")
     control.settimeout(600)
     raw = control.recv(REPORT_LIMIT + 1)
-    transaction_registry, parent, directory = _publish_transaction(context, capability, raw)
+    transaction_registry, parent, directory = _publish_transaction(context, capability, raw, supervisor_fd)
     watch = _mutation_watch(transaction_registry, directory)
-    authority_probe, _authority_probe_generation = _read_authority(directory, context.job)
+    authority_probe, _authority_probe_generation = _read_authority(directory, context.job, capability)
     receipt_probe, _receipt_probe_generation = _read_receipt(directory, context.job, authority_probe, capability)
     _require(receipt_probe["report_generation"] == _identity_at(directory.number, "report.json"), "watched report generation")
+    supervisor = socket.socket(fileno=supervisor_fd)
+    _require(supervisor.send(b"STABLE") == 6, "custodian stable handoff")
+    supervisor.detach()
     _require(control.send(b"PUBLISHED") == 9, "custodian published")
     control.detach()
     control_lease.close()
@@ -1486,15 +1585,28 @@ def _custodian_worker(control_fd: int, context: WorkflowContext, capability: byt
     peer = struct.unpack("3i", endpoint.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
     request = _decode(endpoint.recv(4096))
     nonce = request.get("nonce") if type(request) is dict else None
+    upload = request.get("upload") if type(request) is dict else None
     expected = {"head_sha": context.head_sha, "job": context.job, "nonce": nonce,
-                "run_attempt": context.run_attempt, "run_id": context.run_id}
+                "run_attempt": context.run_attempt, "run_id": context.run_id, "upload": upload}
     valid_nonce = type(nonce) is str and HEX64.fullmatch(nonce) is not None
-    _require(peer[1:] == (os.geteuid(), os.getegid()) and valid_nonce and request == expected, "authenticated cleanup")
-    authority, authority_generation = _read_authority(directory, context.job)
+    upload_shape = type(upload) is dict and set(upload) == {"artifact_id", "artifact_sha256", "report_generation",
+                                                             "report_sha256", "report_size"}
+    _require(peer[1:] == (os.geteuid(), os.getegid()) and valid_nonce and request == expected and upload_shape,
+             "authenticated upload cleanup")
+    authority, authority_generation = _read_authority(directory, context.job, capability)
     retained = hashlib.sha256(capability).hexdigest()
     _require(hmac.compare_digest(str(authority["capability_sha256"]), retained), "retained cleanup capability")
     receipt, receipt_generation = _read_receipt(directory, context.job, authority, capability)
+    digest, size, generation = _file_digest_at(directory, "report.json", REPORT_LIMIT)
+    exact_upload = upload["report_sha256"] == digest and upload["report_size"] == size  # type: ignore[index]
+    exact_upload = exact_upload and upload["report_generation"] == generation  # type: ignore[index]
+    exact_upload = exact_upload and type(upload["artifact_id"]) is int and upload["artifact_id"] > 0  # type: ignore[index]
+    exact_upload = exact_upload and HEX64.fullmatch(str(upload["artifact_sha256"])) is not None  # type: ignore[index]
+    _require(exact_upload, "uploader acknowledgement binding")
     _watch_clean(watch)
+    supervisor = socket.socket(fileno=supervisor_fd)
+    _require(supervisor.send(b"AUTHORIZED") == 10, "custodian cleanup authorization")
+    supervisor.detach()
     _cleanup_owned(
         context.job,
         transaction_registry,
@@ -1504,39 +1616,38 @@ def _custodian_worker(control_fd: int, context: WorkflowContext, capability: byt
         authority_generation,
         receipt,
         receipt_generation,
+        capability,
     )
-    reply = b"CLEAN:" + nonce.encode()
-    _require(endpoint.send(reply) == len(reply), "custodian clean reply")
+    terminal = _canonical({"capability": capability.hex(), "custodian_pid": os.getpid(), "nonce": nonce,
+                           "upload": upload}, True)
+    supervisor = socket.socket(fileno=supervisor_fd)
+    sent = supervisor.sendmsg([terminal], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, struct.pack("i", endpoint_lease.number))])
+    _require(sent == len(terminal), "custodian terminal handoff")
+    supervisor.close()
     endpoint.detach()
     endpoint_lease.close()
     listener.detach()
     listener_lease.close()
-
-
 @dataclass(frozen=True)
 class _CleanupContext:
     job: str
     run_id: int
     run_attempt: int
     head_sha: str
-
-
 def cleanup_report(job: str) -> None:
-    target = report_path(job)
-    retired = _retired_report_path(job)
-    if not target.parent.exists():
-        _require(not retired.exists(), "retained quarantine requires live authority")
-        return
-    registry, parent, directory = _open_report_directory(job, False)
-    authority, _authority_generation = _read_authority(directory, job)
     environment = dict(os.environ)
-    expected_keys = {"LC_ALL", "NQ_CLEANUP_RUN_ID", "NQ_CLEANUP_RUN_ATTEMPT", "NQ_CLEANUP_HEAD_SHA"}
+    expected_keys = {"LC_ALL", "NQ_CLEANUP_RUN_ID", "NQ_CLEANUP_RUN_ATTEMPT", "NQ_CLEANUP_HEAD_SHA",
+                     "NQ_UPLOAD_ARTIFACT_ID", "NQ_UPLOAD_ARTIFACT_SHA256"}
     _require(set(environment) == expected_keys and environment["LC_ALL"] == "C", "cleanup environment")
     run_id = _integer(environment["NQ_CLEANUP_RUN_ID"], "cleanup run")
     run_attempt = _integer(environment["NQ_CLEANUP_RUN_ATTEMPT"], "cleanup attempt")
-    identity = (authority["run_id"], authority["run_attempt"], authority["head_sha"])
-    _require(identity == (run_id, run_attempt, environment["NQ_CLEANUP_HEAD_SHA"]), "cleanup authority identity")
-    context = _CleanupContext(job=job, run_id=run_id, run_attempt=run_attempt, head_sha=str(authority["head_sha"]))
+    head_sha = environment["NQ_CLEANUP_HEAD_SHA"]
+    _require(run_attempt == 1 and HEX40.fullmatch(head_sha) is not None, "cleanup source")
+    artifact_id = _integer(environment["NQ_UPLOAD_ARTIFACT_ID"], "upload artifact id")
+    artifact_sha256 = environment["NQ_UPLOAD_ARTIFACT_SHA256"]
+    _require(HEX64.fullmatch(artifact_sha256) is not None, "upload artifact digest")
+    context = _CleanupContext(job=job, run_id=run_id, run_attempt=run_attempt, head_sha=head_sha)
+    registry = FdRegistry()
     endpoint_lease = registry.open("cleanup-custodian-endpoint",
         lambda: socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET | socket.SOCK_CLOEXEC).detach())
     endpoint = socket.socket(fileno=endpoint_lease.number)
@@ -1544,37 +1655,42 @@ def cleanup_report(job: str) -> None:
     endpoint.connect(_socket_name(context))
     peer = struct.unpack("3i", endpoint.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
     peer_pid = peer[0]
-    peer_exact = peer == (authority["custodian_pid"], os.geteuid(), os.getegid())
-    peer_exact = peer_exact and _process_start(peer_pid) == authority["custodian_start"]
-    _require(peer_exact, "custodian peer identity")
-    pidfd: FdLease | None = None
+    pidfd = registry.open("cleanup-custodian-pidfd", lambda: os.pidfd_open(peer_pid, 0))
+    peer_start = _process_start(peer_pid)
+    peer_exact = peer[1:] == (os.geteuid(), os.getegid()) and peer_start > 0
+    peer_exact = peer_exact and struct.unpack("3i", endpoint.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12)) == peer
+    _require(peer_exact, "retained custodian peer generation")
+    transaction_registry, parent, directory = _open_report_directory(job, False)
+    authority, _authority_generation = _read_authority(directory, job)
+    identity = (authority["run_id"], authority["run_attempt"], authority["head_sha"],
+                authority["custodian_pid"], authority["custodian_start"])
+    _require(identity == (run_id, run_attempt, head_sha, peer_pid, peer_start), "cleanup authority identity")
+    digest, size, generation = _file_digest_at(directory, "report.json", REPORT_LIMIT)
+    upload = {"artifact_id": artifact_id, "artifact_sha256": artifact_sha256, "report_generation": generation,
+              "report_sha256": digest, "report_size": size}
     nonce = os.urandom(32).hex()
-    reply = b""
-    primary: BaseException | None = None
-    try:
-        pidfd = registry.open("cleanup-custodian-pidfd", lambda: os.pidfd_open(peer_pid, 0))
-        _require(pidfd.state is FdState.OWNED, "cleanup custodian pidfd Lease adoption")
-        request = _canonical({"head_sha": authority["head_sha"], "job": job, "nonce": nonce,
-                              "run_attempt": run_attempt, "run_id": run_id}, True)
-        _require(endpoint.send(request) == len(request), "cleanup request send")
-        reply = endpoint.recv(128)
-    except BaseException as error:
-        primary = error
-    finally:
-        endpoint.detach()
-        endpoint_lease.close()
-    valid_reply = primary is None and reply == b"CLEAN:" + nonce.encode()
-    retirement_failures = [] if primary is None else [primary]
-    if pidfd is not None:
-        _retire_child(peer_pid, pidfd, retirement_failures, terminate=not valid_reply, waitable=False)
-    if retirement_failures:
-        raise BaseExceptionGroup("custodian retirement", retirement_failures)
-    _require(valid_reply, "authenticated cleanup reply")
-    expected_directory = _directory_identity(os.fstat(directory.number))
-    retained = os.stat(retired.name, dir_fd=parent.number, follow_symlinks=False)
-    _require(_directory_identity(retained) == expected_directory, "terminal quarantine generation")
-    registry.close_reverse(None, [directory, parent])
-    _require(not os.path.lexists(target.parent) and os.path.lexists(retired), "retained report quarantine")
+    request = _canonical({"head_sha": head_sha, "job": job, "nonce": nonce, "run_attempt": run_attempt,
+                          "run_id": run_id, "upload": upload}, True)
+    _require(endpoint.send(request) == len(request), "cleanup request send")
+    response = _decode(endpoint.recv(4096))
+    endpoint.detach()
+    endpoint_lease.close()
+    _require(type(response) is dict and set(response) == {"capability", "custodian_pid", "nonce", "upload", "waitpid_reaped"},
+             "private cleanup terminal receipt")
+    capability = bytes.fromhex(str(response["capability"]))
+    exact = len(capability) == 32 and hmac.compare_digest(hashlib.sha256(capability).hexdigest(),
+                                                          str(authority["capability_sha256"]))
+    exact = exact and response == {"capability": capability.hex(), "custodian_pid": peer_pid, "nonce": nonce,
+                                   "upload": upload, "waitpid_reaped": peer_pid}
+    _require(exact, "retained private cleanup capability")
+    poller = select.poll()
+    poller.register(pidfd.number, select.POLLIN)
+    _require(bool(poller.poll(10_000)), "reaped custodian pidfd terminal")
+    pidfd.close()
+    transaction_registry.close_reverse(None, [directory, parent])
+    registry.close_reverse()
+    _require(not os.path.lexists(report_path(job).parent) and not os.path.lexists(_retired_report_path(job)),
+             "report baseline restored")
 class NativeSession:
     def __init__(self, context: WorkflowContext, ops: object, custodian: _CustodianClient, nonce: bytes):
         self.context = context
@@ -1583,6 +1699,7 @@ class NativeSession:
         self._custodian = custodian
         self.source_set_sha256 = ops.source_set_sha256
         self._nonce = nonce
+        self.__receipt_seal = object()
         self._operation_started = False
         self.__receipt: OperationReceipt | None = None
         self._before = dict(ops.observe(context))
@@ -1603,6 +1720,7 @@ class NativeSession:
             custodian.abort(error)
     @classmethod
     def _begin_with_ops(cls, context: WorkflowContext, ops: object, custodian: _CustodianClient) -> "NativeSession":
+        _require(set(os.environ) != ENV_KEYS and type(ops) is not SystemCommonOps, "test seam unavailable in production")
         return cls(context, ops, custodian, os.urandom(32))
     @staticmethod
     def _freeze(value: object) -> object:
@@ -1634,6 +1752,7 @@ class NativeSession:
             digest = hashlib.sha256(_canonical(result)).hexdigest()
             draft = OperationReceipt(
                 _session_nonce=self._nonce,
+                _seal=self.__receipt_seal,
                 job=operation,
                 source_set_sha256=source_digest,
                 result_sha256=digest,
@@ -1644,6 +1763,7 @@ class NativeSession:
             checks, metadata = _derive_operation(draft, self.context.head_sha)
             self.__receipt = OperationReceipt(
                 _session_nonce=self._nonce,
+                _seal=self.__receipt_seal,
                 job=operation,
                 source_set_sha256=source_digest,
                 result_sha256=digest,
@@ -1691,7 +1811,9 @@ class NativeSession:
         return self._evidence
     def _receipt_claims(self) -> tuple[dict[str, str], list[dict[str, object]], dict[str, str]]:
         receipt = self.__receipt
-        _require(receipt is not None and receipt.job == self.context.job, "operation receipt profile")
+        exact = receipt is not None and receipt._session_nonce == self._nonce
+        exact = exact and receipt._seal is self.__receipt_seal and receipt.job == self.context.job
+        _require(exact, "private operation receipt profile")
         result = self._thaw(receipt._result)
         _require(type(result) is dict, "operation receipt result")
         _require(hashlib.sha256(_canonical(result)).hexdigest() == receipt.result_sha256, "operation receipt integrity")
