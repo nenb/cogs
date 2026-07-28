@@ -574,6 +574,33 @@ def process_owner_matrix():
                 check(getattr(error, "code", None) == row["intended_code"] and
                       leader.identity_phase == row["sentinel"],
                       "planned setsid drift was accepted")
+        elif row["production_method"].endswith("confirm_exec"):
+            owner.plan_exec(leader, (8, 202))
+            old_start = launcher._start_time
+            old_exe = launcher._exe_identity
+            old_sid = launcher.os.getsid
+            old_group = launcher.os.getpgid
+            launcher._start_time = lambda pid: 10
+            launcher._exe_identity = lambda pid: (
+                (8, 303) if fault == "executable-drift" else (8, 202)
+            )
+            launcher.os.getsid = lambda pid: 7
+            launcher.os.getpgid = lambda pid: 7
+            try:
+                error = caught(lambda: owner.confirm_exec(leader))
+            finally:
+                launcher._start_time = old_start
+                launcher._exe_identity = old_exe
+                launcher.os.getsid = old_sid
+                launcher.os.getpgid = old_group
+            if fault == "none":
+                check(error is None and leader.executable == (8, 202) and
+                      leader.identity_phase == row["sentinel"],
+                      "planned exec was not advanced")
+            else:
+                check(getattr(error, "code", None) == row["intended_code"] and
+                      leader.identity_phase == row["sentinel"],
+                      "planned exec drift was accepted")
         elif row["production_method"].endswith("receive_descendant"):
             packet = launcher._canonical({
                 "executable": [8, 102], "nonce": (b"n" * 32).hex(),

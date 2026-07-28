@@ -765,6 +765,7 @@ _ProcessLease = make_dataclass("_ProcessLease", [
     ("expected_uid", int, field(default=0)),
     ("waitable", bool, field(default=True)), ("identity_phase", str, field(default="BLOCKED")),
     ("planned_session", int, field(default=0)), ("planned_group", int, field(default=0)),
+    ("planned_executable", tuple[int, int], field(default=(0, 0))),
 ], namespace={"__module__": __name__})
 class _ProcessOwner(make_dataclass(
     "_ProcessOwnerData",
@@ -860,6 +861,32 @@ class _ProcessOwner(make_dataclass(
         lease.session = observed[0]
         lease.process_group = observed[1]
         lease.identity_phase = "POST_SETSID"
+    def plan_exec(self, lease: _ProcessLease, executable: tuple[int, int]) -> None:
+        planned = lease in self.processes
+        planned = planned and not lease.released
+        planned = planned and lease.identity_phase == "BLOCKED"
+        target_exact = type(executable) is tuple and len(executable) == 2
+        target_exact = target_exact and all(type(value) is int and value > 0 for value in executable)
+        _require(planned and target_exact, "exec plan state", "process-transition-state")
+        lease.planned_executable = executable
+        lease.identity_phase = "PRE_EXEC"
+    def confirm_exec(self, lease: _ProcessLease) -> None:
+        observed = (
+            _start_time(lease.pid),
+            os.getsid(lease.pid),
+            os.getpgid(lease.pid),
+            _exe_identity(lease.pid),
+        )
+        expected = (
+            lease.start_time,
+            lease.session,
+            lease.process_group,
+            lease.planned_executable,
+        )
+        phase_exact = lease.identity_phase == "PRE_EXEC"
+        _require(phase_exact and observed == expected, "exec transition readback", "process-transition-readback")
+        lease.executable = observed[3]
+        lease.identity_phase = "POST_EXEC"
     def receive_descendant(
         self,
         endpoint: socket.socket,
@@ -1144,11 +1171,25 @@ def _settle_pidfdless_clone(lease: _ProcessLease, ops: Any, primary: BaseExcepti
         raise RuntimeLauncherCleanupError(primary, failures) from primary
 def _process_matches(lease: _ProcessLease) -> bool:
     try:
-        immutable = (_start_time(lease.pid), _exe_identity(lease.pid))
-        expected_immutable = (lease.start_time, lease.executable)
-        if immutable != expected_immutable:
-            return False
+        start_time = _start_time(lease.pid)
+        executable = _exe_identity(lease.pid)
         observed = (os.getsid(lease.pid), os.getpgid(lease.pid))
+        if start_time != lease.start_time:
+            return False
+        if lease.identity_phase == "PRE_EXEC":
+            if observed != (lease.session, lease.process_group):
+                return False
+            if executable == lease.executable:
+                return True
+            if executable != lease.planned_executable:
+                return False
+            # Cleanup may observe the preregistered exec before the happy-path
+            # confirmation. Commit only that exact executable transition.
+            lease.executable = executable
+            lease.identity_phase = "POST_EXEC"
+            return True
+        if executable != lease.executable:
+            return False
         if lease.identity_phase != "PRE_SETSID":
             return observed == (lease.session, lease.process_group)
         before = (lease.session, lease.process_group)
@@ -2115,6 +2156,16 @@ def _run_tool_with_ops( ops: Any, role: str, report: dict[str, object], descript
                 namespace_lease = None
             raise
         process_owner.stable_identity_census(namespace_lease)
+        executable_row = next(
+            row
+            for row in rows
+            if row.tool_index == _TOOL_INDEX[role] and row.object_index == 0
+        )
+        executable_info = os.fstat(descriptors[executable_row.descriptor_index])
+        process_owner.plan_exec(
+            child_lease,
+            (executable_info.st_dev, executable_info.st_ino),
+        )
         _lifecycle_control_send(transfer_parent, b"A")
         _close_socket(transfer_parent, ops, "tool-transfer-parent")
         transfer_parent = None
@@ -2135,6 +2186,7 @@ def _run_tool_with_ops( ops: Any, role: str, report: dict[str, object], descript
         boundary = boundary_packet["observations"]
         _require(type(boundary) is dict, "boundary observations malformed", "boundary-observations")
         _recv_status(parent_status, time.monotonic() + _SETUP_SECONDS, "exec-ready", 4)
+        process_owner.confirm_exec(child_lease)
         post_fds = _descriptor_snapshot(ops, child["pid"])
         _require(post_fds == (0, 1, 2), "post-exec descriptor table", "exec-fd-table")
         post_maps, post_mapping = _final_mapping_check(ops, child["pid"], rows, role, report)
