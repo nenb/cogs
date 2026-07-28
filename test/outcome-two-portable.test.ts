@@ -102,6 +102,7 @@ test("Outcome 2 dead routes and unsafe lifecycle compatibility stay deleted", ()
   const production = [
     "deploy/aws-feasibility/remote/completion_trusted_runtime_closure.py",
     "deploy/aws-feasibility/remote/completion_trusted_runtime_launcher.py",
+    ...suites.map((suite) => `test/${suite}`),
   ].map((path) => readFileSync(join(root, path), "utf8"));
   const banned = [
     /_drive_fixed_/u,
@@ -112,10 +113,20 @@ test("Outcome 2 dead routes and unsafe lifecycle compatibility stay deleted", ()
     /waitpid\s*\([^)]*,\s*0\s*\)/u,
     /except[^:]*:\s*(?:\n\s*){0,3}os\.close\s*\(/u,
     /^\s*[A-Za-z_]\w*\s*:[^#\n]+;\s*[A-Za-z_]\w*\s*:/mu,
+    /^(?![ \t]*(?:"""[^\n]*"""|'''[^\n]*''')[ \t]*$)[^#\n]*;/mu,
+    /^[ \t]*(?:if|elif|else|for|while|try|except|finally)\b[^\n]*:(?![^\n]*:)[ \t]+\S/mu,
+    /^[ \t]*(?:async[ \t]+)?def\b[^\n]*\)[ \t]*(?:->[^\n]+)?:(?![^\n]*:)[ \t]+\S/mu,
+    /\btrip\s*\(/u,
+    /RuntimeLauncherError\([\s\S]{0,200}(?:row|self\.row)\["intended_code"\]/u,
+    /record\([^)]*(?:row|self\.row)\["sentinel"\]/u,
   ];
   for (const source of production) {
     for (const pattern of banned) assert.doesNotMatch(source, pattern);
   }
+  assert.match(
+    production.at(-1) ?? "",
+    /def invoke\(self\):\n\s+method = self\.row\["production_method"\][\s\S]*?handlers\[method\]\(\)/u,
+  );
 });
 
 test("Outcome 2 gross lines and fixture lines remain within exact ADR 0089 highs", () => {
@@ -142,14 +153,17 @@ test("Outcome 2 gross lines and fixture lines remain within exact ADR 0089 highs
 
   const fixtures = git(["ls-files", "test/fixtures/outcome-two"]);
   assert.equal(fixtures.status, 0, fixtures.stderr);
-  const fixtureLines = fixtures.stdout
-    .trim()
-    .split("\n")
-    .filter(Boolean)
-    .reduce((total, path) => {
-      const bytes = readFileSync(join(root, path));
-      return total + bytes.reduce((lines, byte) => lines + Number(byte === 10), 0);
-    }, 0);
+  const fixturePaths = fixtures.stdout.trim().split("\n").filter(Boolean);
+  for (const path of fixturePaths.filter((path) => path.endsWith(".jsonl"))) {
+    const rows = readFileSync(join(root, path), "utf8").trimEnd().split("\n");
+    rows.forEach((row, index) =>
+      assert.doesNotThrow(() => JSON.parse(row), `${path}:${index + 1} is not one JSON value`),
+    );
+  }
+  const fixtureLines = fixturePaths.reduce((total, path) => {
+    const bytes = readFileSync(join(root, path));
+    return total + bytes.reduce((lines, byte) => lines + Number(byte === 10), 0);
+  }, 0);
   assert.ok(fixtureLines <= 900, `fixture aggregate: ${fixtureLines} lines exceeds 900`);
   assert.ok(subtotal + fixtureLines <= 8_930, `trusted/portable subtotal exceeds 8930`);
 });
