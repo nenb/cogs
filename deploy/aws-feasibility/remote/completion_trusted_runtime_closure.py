@@ -71,6 +71,7 @@ _SYS_GETDENTS64 = 217
 _UINT_MAX = (1 << 32) - 1
 _KERNEL_EXECUTABLE_MAPPINGS = frozenset(('[vdso]', '[vsyscall]'))
 _SONAME = re.compile('^[A-Za-z0-9][A-Za-z0-9._+~-]{0,254}$')
+_PACKAGE = re.compile(r'_cogs_o2_[0-9a-f]{16}')
 
 class RuntimeClosureError(RuntimeError):
     """A fixed closure requirement was not satisfied."""
@@ -186,8 +187,7 @@ class _LiveIssuerCapability:
         self.consumed = True
         if admission is not self.admission:
             raise RuntimeClosureError('runtime closure capability admission mismatch')
-        package_pattern = r'_cogs_o2_[0-9a-f]{16}'
-        if type(__package__) is not str or re.fullmatch(package_pattern, __package__) is None:
+        if type(__package__) is not str or _PACKAGE.fullmatch(__package__) is None:
             raise RuntimeClosureError('runtime closure constructor is outside admitted package')
         if self.package_name != __package__ or self.worker_pid != os.getpid():
             raise RuntimeClosureError('runtime closure capability topology changed')
@@ -243,7 +243,6 @@ class FdLease:
         self.state = _FdState.TRANSFERRED
 
 class _HelperState(Enum):
-    ALLOCATED = 'ALLOCATED'
     SPAWNED = 'SPAWNED'
     REGISTERED = 'REGISTERED'
     PREEXEC_IDENTIFIED = 'PREEXEC_IDENTIFIED'
@@ -267,7 +266,10 @@ class HelperLease:
     executable_identity: tuple[int, int] | None = None
     target_executable_identity: tuple[int, int] | None = None
     release_attempted: bool = False
+    outer_registration_attempted: bool = False
+    outer_token: object | None = None
     descendants: tuple[int, ...] = ()
+    cleanup_error: BaseException | None = None
 
     @property
     def reaped(self) -> bool:
@@ -280,7 +282,7 @@ class PreparationLease:
     child_baseline: tuple[int, ...]
     fds: list[FdLease] = field(default_factory=list)
     helpers: list[HelperLease] = field(default_factory=list)
-    uncertainty: list[BaseException] = field(default_factory=list)
+    outer: object | None = None
 
     def register_fd(self, fd: int, purpose: str) -> FdLease:
         if type(fd) is not int or fd < 0:
@@ -316,17 +318,12 @@ class PreparationLease:
                 lease.close(self.ops)
             except BaseException as error:
                 failures.append(error)
-                self.uncertainty.append(error)
         if len(failures) > 1 or (failures and primary is None):
             raise RuntimeClosureCleanupError(failures)
         if failures:
             raise failures[0]
 
-    def close_owned(self, primary: BaseException | None=None) -> None:
-        self.close_many(tuple(self.fds), primary)
-
 class _OwnerState(Enum):
-    NEW = 'NEW'
     PREPARING = 'PREPARING'
     READY = 'READY'
     ISSUING = 'ISSUING'
@@ -453,8 +450,7 @@ class _Ops:
 
     def clone3_pidfd(self) -> tuple[int, int]:
         pidfd = ctypes.c_int(-1)
-        values = (_CLONE_PIDFD, ctypes.addressof(pidfd), 0, 0, 0, signal.SIGCHLD, 0, 0, 0, 0, 0)
-        raw = struct.pack('=11Q', *values)
+        raw = struct.pack('=11Q', *_clone3_arguments(ctypes.addressof(pidfd)))
         arguments = ctypes.create_string_buffer(raw)
         pid = self._syscall(_SYS_CLONE3, ctypes.byref(arguments), len(raw))
         return (pid, int(pidfd.value))
@@ -465,6 +461,9 @@ class _Ops:
         if libc.prctl(_PR_SET_PDEATHSIG, signum, 0, 0, 0) != 0:
             error = ctypes.get_errno()
             raise OSError(error, os.strerror(error))
+
+def _clone3_arguments(pidfd_address: int) -> tuple[int, ...]:
+    return (_CLONE_PIDFD, pidfd_address, 0, 0, signal.SIGCHLD, 0, 0, 0, 0, 0, 0)
 
 def _generation(value: os.stat_result) -> SourceGeneration:
     return SourceGeneration(
@@ -975,11 +974,21 @@ def _child_fail(ops: _Ops, status_fd: int, code: bytes) -> NoReturn:
         pass
     ops.exit_child(127)
 
+def _outer_helper_call(preparation: PreparationLease, name: str, value: object, deadline: float) -> object:
+    callback = getattr(preparation.outer, name, None)
+    if not callable(callback) or preparation.ops.monotonic() >= deadline:
+        raise RuntimeClosureError('outer helper authority unavailable or late')
+    result = callback(value, deadline)
+    if preparation.ops.monotonic() > deadline:
+        raise RuntimeClosureError('outer helper authority deadline')
+    return result
+
 def _spawn_helper(
     ops: _Ops,
     preparation: PreparationLease,
     closure: ResolvedToolClosure,
 ) -> HelperLease:
+    deadline = ops.monotonic() + _HELPER_START_SECONDS
     input_read = input_write = None
     registration_read = registration_write = None
     release_read = release_write = None
@@ -1072,6 +1081,10 @@ def _spawn_helper(
         helper.session = ops.getsid(pid)
         helper.process_group = ops.getpgid(pid)
         helper.executable_identity = _proc_executable_identity(ops, pid)
+        helper.outer_registration_attempted = True
+        helper.outer_token = _outer_helper_call(preparation, '_register_runtime_helper', helper, deadline)
+        if helper.outer_token is None:
+            raise RuntimeClosureError('outer helper registration token missing')
         helper.state = _HelperState.REGISTERED
         if ops.write(registration_write.fd, b'G\n') != 2:
             raise RuntimeClosureError('helper registration release failed')
@@ -1085,7 +1098,6 @@ def _spawn_helper(
         ):
             if lease is not None:
                 lease.close(ops)
-        deadline = ops.monotonic() + _HELPER_START_SECONDS
         if not ops.poll_readable(status_read.fd, deadline - ops.monotonic()):
             raise RuntimeClosureError('helper pre-exec readiness timeout')
         if _read_exact_status(ops, status_read.fd) != b'R\n':
@@ -1105,6 +1117,7 @@ def _spawn_helper(
             raise RuntimeClosureError('helper does not own its session')
         helper.state = _HelperState.PREEXEC_IDENTIFIED
         helper.release_attempted = True
+        _outer_helper_call(preparation, '_release_runtime_helper', helper.outer_token, deadline)
         if ops.write(release_write.fd, b'G\n') != 2:
             raise RuntimeClosureError('helper release write failed')
         release_write.close(ops)
@@ -1114,7 +1127,7 @@ def _spawn_helper(
             raise RuntimeClosureError('fixed helper exec failed')
         status_read.close(ops)
         helper.executable_identity = closure.executable.identity
-        if not _matching_child(ops, helper):
+        if not _observe_helper(ops, helper):
             raise RuntimeClosureError('helper post-exec identity mismatch')
         helper.state = _HelperState.EXEC_IDENTIFIED
         return helper
@@ -1197,9 +1210,6 @@ def _observe_helper(ops: _Ops, helper: HelperLease) -> bool:
     except (FileNotFoundError, ProcessLookupError):
         return False
 
-def _matching_child(ops: _Ops, helper: HelperLease) -> bool:
-    return _observe_helper(ops, helper)
-
 def _wait_helper(ops: _Ops, helper: HelperLease, deadline: float) -> bool:
     while True:
         try:
@@ -1214,6 +1224,8 @@ def _wait_helper(ops: _Ops, helper: HelperLease, deadline: float) -> bool:
         ops.sleep(min(0.01, deadline - now))
 
 def _stop_helper(ops: _Ops, preparation: PreparationLease, helper: HelperLease) -> None:
+    if helper.cleanup_error is not None:
+        raise helper.cleanup_error
     failures: list[BaseException] = []
     identity_complete = all(value is not None for value in (
         helper.start_time,
@@ -1238,12 +1250,12 @@ def _stop_helper(ops: _Ops, preparation: PreparationLease, helper: HelperLease) 
         if not _wait_helper(ops, helper, graceful_deadline):
             if not identity_complete:
                 raise RuntimeClosureError('unregistered helper retained behind closed gate')
-            if not _matching_child(ops, helper):
+            if not _observe_helper(ops, helper):
                 raise RuntimeClosureError('helper identity or descendants changed before TERM')
             ops.pidfd_signal(helper.pidfd.fd, signal.SIGTERM)
             term_deadline = ops.monotonic() + _HELPER_TERM_SECONDS
             if not _wait_helper(ops, helper, term_deadline):
-                if not _matching_child(ops, helper):
+                if not _observe_helper(ops, helper):
                     raise RuntimeClosureError('helper identity changed before KILL')
                 ops.pidfd_signal(helper.pidfd.fd, signal.SIGKILL)
                 kill_deadline = ops.monotonic() + _HELPER_KILL_SECONDS
@@ -1251,16 +1263,26 @@ def _stop_helper(ops: _Ops, preparation: PreparationLease, helper: HelperLease) 
                     raise RuntimeClosureError('helper bounded reap timeout')
     except BaseException as error:
         failures.append(error)
-        helper.state = _HelperState.UNCERTAIN
-    if helper.reaped and helper.pidfd.state is _FdState.OWNED:
+    outer_retired = not helper.outer_registration_attempted
+    if helper.reaped and helper.outer_token is not None:
+        try:
+            _outer_helper_call(preparation, '_retire_runtime_helper', helper.outer_token, ops.monotonic() + _HELPER_KILL_SECONDS)
+            outer_retired = True
+        except BaseException as error:
+            failures.append(error)
+    elif helper.reaped and helper.outer_registration_attempted:
+        failures.append(RuntimeClosureError('outer helper registration uncertain'))
+    if helper.reaped and outer_retired and helper.pidfd.state is _FdState.OWNED:
         try:
             helper.pidfd.close(ops)
         except BaseException as error:
             failures.append(error)
-    if helper.reaped and helper in preparation.helpers:
+    if helper.reaped and outer_retired and helper in preparation.helpers:
         preparation.helpers.remove(helper)
     if failures:
-        raise RuntimeClosureCleanupError(failures)
+        helper.state = _HelperState.UNCERTAIN
+        helper.cleanup_error = RuntimeClosureCleanupError(failures)
+        raise helper.cleanup_error
 
 def _maps_snapshot(ops: _Ops, pid: int) -> tuple[bytes, tuple[_MapRow, ...]]:
     raw = _read_proc(ops, f'/proc/{pid}/maps', _MAX_MAP_BYTES)
@@ -1565,12 +1587,6 @@ def _producer_decode_report(data: bytes) -> dict[str, Any]:
 def _producer_reencode_report(value: dict[str, Any]) -> bytes:
     return _canonical(value) + b'\n'
 
-def _validate_report_bytes(data: bytes) -> bytes:
-    value = _producer_decode_report(data)
-    if _producer_reencode_report(value) != data:
-        raise RuntimeClosureError('producer report re-encoding changed')
-    return data
-
 def _apply_schema_validator(admission: object, candidate: bytes) -> None:
     validator = getattr(admission, '_validate_tracked_schema', None)
     if not callable(validator):
@@ -1718,12 +1734,6 @@ class PreparedRuntimeClosure:
         self._rows: tuple[_PrivateGenerationRow, ...] = ()
         self._poison: BaseException | None = None
 
-    @property
-    def canonical_report(self) -> bytes:
-        if self._state is not _OwnerState.READY or self._report is None:
-            raise RuntimeClosureError('canonical report is available only in READY')
-        return self._report
-
     def _prove_ready_baseline(self) -> None:
         expected = self._preparation.fd_baseline | frozenset((lease.fd for lease in self._bundle if lease.state is _FdState.OWNED))
         other_owned = set(self._preparation.owned_fds()) - set(expected)
@@ -1754,7 +1764,7 @@ class PreparedRuntimeClosure:
                 if descriptor_flags & _FD_CLOEXEC == 0:
                     raise RuntimeClosureError('issued descriptor is not close-on-exec')
             report_lease = self._bundle[0]
-            report = self.canonical_report if self._state is _OwnerState.READY else self._report
+            report = self._report
             if report is None or _read_complete(self._ops, report_lease.fd, len(report)) != report:
                 raise RuntimeClosureError('issued report bytes changed')
             self._prove_ready_baseline_for_issue()
@@ -1842,6 +1852,23 @@ def _child_baseline(ops: _Ops) -> tuple[int, ...]:
 def _claim_admission(admission: object, issuer: object) -> _LiveIssuerCapability:
     package_name = __package__
     worker_pid = os.getpid()
+    exact_topology = (
+        type(admission) is globals().get('_ADMISSION_TYPE')
+        and type(package_name) is str
+        and _PACKAGE.fullmatch(package_name) is not None
+        and getattr(admission, '_package', None) == package_name
+        and getattr(admission, '_worker_pid', None) == worker_pid
+        and getattr(admission, '_issuer', None) is issuer
+    )
+    if not exact_topology:
+        raise RuntimeClosureError('runtime source admission topology mismatch')
+    for name in ('revision', 'source_set_sha256', 'bootstrap_sha256'):
+        value = getattr(admission, name, None)
+        length = 40 if name == 'revision' else 64
+        if type(value) is not str or len(value) != length:
+            raise RuntimeClosureError('invalid runtime source admission identity')
+        if any(character not in '0123456789abcdef' for character in value):
+            raise RuntimeClosureError('invalid runtime source admission encoding')
     consume = getattr(issuer, '_consume_runtime_closure_capability', None)
     if not callable(consume):
         raise RuntimeClosureError('live runtime issuer capability is unavailable')
@@ -1874,13 +1901,6 @@ def _claim_admission(admission: object, issuer: object) -> _LiveIssuerCapability
         raise RuntimeClosureError('runtime issuer endpoint process topology mismatch')
     if peer_uid != os.getuid() or peer_gid != os.getgid():
         raise RuntimeClosureError('runtime issuer endpoint credential mismatch')
-    for name in ('revision', 'source_set_sha256', 'bootstrap_sha256'):
-        value = getattr(admission, name, None)
-        length = 40 if name == 'revision' else 64
-        if type(value) is not str or len(value) != length:
-            raise RuntimeClosureError('invalid runtime source admission identity')
-        if any(character not in '0123456789abcdef' for character in value):
-            raise RuntimeClosureError('invalid runtime source admission encoding')
     return _LiveIssuerCapability(
         admission,
         endpoint,
@@ -1975,7 +1995,7 @@ def _build_bundle(
 
 def _prepare_state_machine(ops: _Ops, admission: object, issuer: object) -> PreparedRuntimeClosure:
     capability = _claim_admission(admission, issuer)
-    preparation = PreparationLease(ops, frozenset(), ())
+    preparation = PreparationLease(ops, frozenset(), (), outer=issuer)
     owner = PreparedRuntimeClosure(capability, admission, ops, preparation)
     ops.architecture_gate()
     _reserve_stdio(ops)
