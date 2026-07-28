@@ -279,6 +279,11 @@ for job,value in values.items():
  try:broken.run_fixed_operation(job);raise AssertionError(('false receipt accepted',job))
  except common.QualificationError:pass
 assert [field.name for field in dataclasses.fields(common.ReportCandidate)]==['failure_phase','diagnostics','primary_error']
+class Group(Exception):
+ def __init__(self,items):self.exceptions=items
+nested=Group([Group([common.QualificationError('fixed stage')]),OSError(5,'secret')])
+assert common._error_label(nested)=='fixed-stage--OSError-5'
+assert len(common._error_label(Group([OSError(i,'x') for i in range(20)])))<=480
 production_environment={name:'' for name in common.ENV_KEYS}
 with patch.object(common.os,'environ',production_environment):
  try:common.NativeSession._begin_with_ops(None,None,None);raise AssertionError('production seam accepted')
@@ -410,6 +415,11 @@ raw=ops._issue_cli(source,b'ADMISSION\\n',b'CAPSULE')
 assert json.loads(raw)=={'admission':True,'descriptors':True,'environment':True,'isolated':True,'seals':True},raw
 expected=b'{"source_revision":"'+b'a'*40+b'","source_set_sha256":"'+b'b'*64+b'"}\\n'
 assert ops._decode_cli(expected)=={'source_revision':'a'*40,'source_set_sha256':'b'*64}
+bad=b'import os\\nos.write(2,b"runtime-launcher-failed\\\\n")\\nraise SystemExit(1)\\n'
+try:ops._issue_cli(bad,b'ADMISSION\\n',b'CAPSULE');raise AssertionError('failed launcher accepted')
+except BaseException as error:
+ label=common._error_label(error)
+ assert label=='held-launcher-exit-1-stdout-0-stderr-24-runtime-launcher-failed',label
 registry.close_reverse()
 tree=ast.parse(open(common.COMMON).read())
 issuer=next(n for n in ast.walk(tree) if isinstance(n,ast.FunctionDef) and n.name=='_issue_cli')
@@ -471,6 +481,9 @@ extra={'.authority.json':A,'.owner.json':O,'report.json':R,'foreign':F};assert r
   );
   const authoritySource = common.slice(common.indexOf("def _authority("), common.indexOf("def _receipt("));
   assert.doesNotMatch(authoritySource, /"capability"\s*:/u, "cleanup capability is never durable plaintext");
+  const workerSource = common.slice(common.indexOf("def _custodian_worker("), common.indexOf("@dataclass(frozen=True)\nclass _CleanupContext"));
+  assert.ok(workerSource.indexOf("if not raw:") < workerSource.indexOf("_publish_transaction"),
+    "an operation abort closes the control channel without parsing an empty report");
   const cleanupSource = common.slice(common.indexOf("def cleanup_report("), common.indexOf("class NativeSession:"));
   assert.doesNotMatch(cleanupSource, /_cleanup_owned/u, "disk state cannot select fallback cleanup authority");
   assert.doesNotMatch(cleanupSource, /except \(OSError/u, "pidfd failure cannot become success");
