@@ -601,25 +601,32 @@ def mapping_owner_admission_contract():
         raise AssertionError("launcher retains private mapping coordinator")
 
 
-mapping_owner_admission_contract()
-mapping_owner_success()
-manifest = list(manifest_cases())
-identifiers = [row["id"] for row, _case, _branch in manifest]
-declared = set(identifiers)
-if len(declared) != len(identifiers):
-    raise AssertionError("duplicate declared maps case")
-selected = set()
-consumed = set()
-oracle = set()
-for row, case, branch in manifest:
-    selected.add(row["id"])
-    ops = run(row, case, branch)
-    if f"enter:{row['sentinel']}" not in ops.events:
-        raise AssertionError(f"maps production sentinel missed: {row['id']}")
-    consumed.add(row["id"])
-    if f"oracle:{row['id']}" not in ops.events:
-        raise AssertionError(f"maps oracle missed: {row['id']}")
-    oracle.add(row["id"])
-if not declared == selected == consumed == oracle:
-    raise AssertionError("maps declared/selected/consumed/oracle mismatch")
-print("Outcome 2 mapped closure portable tests passed")
+def parent():
+    mapping_owner_admission_contract()
+    mapping_owner_success()
+    manifest = list(manifest_cases())
+    identifiers = [row["id"] for row, _case, _branch in manifest]
+    declared = set(identifiers)
+    if len(declared) != len(identifiers):
+        raise AssertionError("duplicate declared maps case")
+    selected = set()
+    consumed = set()
+    oracle = set()
+    for row, case, branch in manifest:
+        selected.add(row["id"])
+        ops = run(row, case, branch)
+        if f"enter:{row['sentinel']}" not in ops.events:
+            raise AssertionError(f"maps production sentinel missed: {row['id']}")
+        consumed.add(row["id"])
+        if f"oracle:{row['id']}" not in ops.events:
+            raise AssertionError(f"maps oracle missed: {row['id']}")
+        oracle.add(row["id"])
+    if not declared == selected == consumed == oracle:
+        raise AssertionError("maps declared/selected/consumed/oracle mismatch")
+    print("Outcome 2 mapped closure portable tests passed")
+
+
+if __name__ == "__main__":
+    if len(sys.argv) != 1:
+        raise SystemExit(2)
+    parent()

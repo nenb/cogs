@@ -50,6 +50,14 @@ def load_module():
     return module
 
 
+def load_path(name, path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 def production_symbol(module, name):
     value = module
     for component in name.split("."):
@@ -683,105 +691,6 @@ def production_operation_contracts(module):
             raise AssertionError("one-shot production invocation replayed")
 
 
-def capsule_contract(module):
-    sources = {path: (ROOT / path).read_bytes()
-               for path in module._FIXED_SOURCE_SET}
-    source_digest = module._source_set_digest(sources)
-    admission = module._SourceAdmission(
-        "0" * 40, hashlib.sha256(sources[module._MODULE_PATHS[2]]).hexdigest(),
-        source_digest, sources[module._SCHEMA_PATH], "", 0, None,
-        module._BOOTSTRAP_OPERATION_TOKEN, 0, 0, 0, "sandbox",
-    )
-    rows = [
-        {
-            "path": path,
-            "sha256": hashlib.sha256(sources[path]).hexdigest(),
-            "size": len(sources[path]),
-        }
-        for path in module._FIXED_SOURCE_SET
-    ]
-    authority = {
-        "bootstrap_sha256": admission.bootstrap_sha256,
-        "revision": admission.revision,
-        "root_bootstrap_sha256": hashlib.sha256(module._ROOT_BOOTSTRAP.encode()).hexdigest(),
-        "source_set_sha256": admission.source_set_sha256,
-        "sources": rows,
-        "version": "cogs.root-capsule-authority/v1",
-    }
-    bootstrap = module._ROOT_BOOTSTRAP
-    capsule = module._encode_root_capsule(sources, admission)
-    decoded, header = module._decode_root_capsule(capsule, authority)
-    if decoded != sources or header["parent_pid"] != os.getpid():
-        raise AssertionError("held root capsule round trip")
-    authority_check = bootstrap.index("rows == authority['sources']")
-    compilation = bootstrap.index("exec(compile(launcher")
-    if authority_check > compilation:
-        raise AssertionError("independent root authority is not fixed before compilation")
-    for path in module._FIXED_SOURCE_SET:
-        unauthorized = dict(sources)
-        unauthorized[path] += b"\n# self-consistent unauthorized generation\n"
-        hostile_admission = replace(
-            admission,
-            bootstrap_sha256=hashlib.sha256(
-                unauthorized[module._MODULE_PATHS[2]],
-            ).hexdigest(),
-            source_set_sha256=module._source_set_digest(unauthorized),
-        )
-        hostile = module._encode_root_capsule(unauthorized, hostile_admission)
-        reached_sandbox = []
-        def forbidden_sandbox(ops):
-            del ops
-            reached_sandbox.append(path)
-            raise AssertionError("unauthorized root capsule reached sandbox effects")
-        saved_environment = dict(os.environ)
-        saved_argv = sys.argv[:]
-        os.environ.clear()
-        sys.argv[:] = ["fixed-root-bootstrap"]
-        try:
-            with patched(
-                module,
-                _descriptor_snapshot=lambda ops=None, pid="self": (0, 1, 2),
-                _sandbox_only_transaction=forbidden_sandbox,
-            ), patched(module.os, geteuid=lambda: 0):
-                module._root_capsule_entry(hostile, authority)
-        except module.RuntimeLauncherError as error:
-            if error.code != "root-authority":
-                raise
-        else:
-            raise AssertionError(f"root accepted unauthorized {path} generation")
-        finally:
-            os.environ.update(saved_environment)
-            sys.argv[:] = saved_argv
-        if reached_sandbox:
-            raise AssertionError("fixed root pin was checked after sandbox effects")
-    header_raw, payload = capsule.split(b"\n", 1)
-    duplicate = header_raw[:-1] + b',"version":"cogs.runtime-source-admission/sandbox-v1"}'
-    for hostile in (duplicate + b"\n" + payload, capsule[:-1], capsule + b"x"):
-        try:
-            module._decode_root_capsule(hostile)
-        except module.RuntimeLauncherError:
-            pass
-        else:
-            raise AssertionError("hostile root capsule accepted")
-    bootstrap = module._ROOT_BOOTSTRAP
-    required = (
-        "object_pairs_hook=pairs",
-        "parent_pid",
-        "source_set_sha256",
-        "os.getppid() == parent",
-        "numbers.count(directory) == 1",
-        "offset == len(payload)",
-        "authority_raw = read_fixed(authority_path",
-        "bootstrap_raw = read_fixed(bootstrap_path",
-        "rows == authority['sources']",
-    )
-    if not all(token in bootstrap for token in required):
-        raise AssertionError("root bootstrap pre-exec admission weakened")
-    source = MODULE.read_text()
-    root_entry = source[source.index("def _root_capsule_entry"):source.index("def _qualify_admitted_fixed_process_lifecycle")]
-    if "_load_private_closure" in root_entry or "checkout" in module._ROOT_BOOTSTRAP:
-        raise AssertionError("sandbox root reached closure/checkout authority")
-
 def fixed_bootstrap_modes(module):
     values = [module._RESULT_VERSION, module._MARKER, "0" * 40, "1" * 64, "2" * 64, "3" * 64, "3" * 64]
     values.extend(True for _name in module._OBSERVATION_NAMES)
@@ -916,7 +825,8 @@ class SandboxKernel:
             count = self.counts.get(point, 0) + 1
             self.counts[point] = count
             self.events.append(f"attempt:{point}:{count}")
-            if point != self.selected_point or self.row["id"] in self.consumed:
+            occurrence = self.row["primitive_fault"].get("occurrence", 1)
+            if point != self.selected_point or count != occurrence or self.row["id"] in self.consumed:
                 return False
             self.consumed.add(self.row["id"])
             self.events.append(f"fault:{point}:{self.mutation}")
@@ -1022,20 +932,22 @@ class SandboxKernel:
         return len(data)
     def socket_recv(self, endpoint, size):
         point = f"{self.process.role}.socket-recv"
-        if self.fault(point):
-            if self.mutation == "leader-death":
-                leader = self.processes[300]
-                leader.status = signal.SIGKILL
-                leader.exited.set()
-                inner = self.processes.get(301)
-                if inner is not None:
-                    inner.parent = 200
-                    inner.status = signal.SIGKILL
-                    inner.exited.set()
-                return b"", []
+        fired = self.fault(point)
+        if fired and self.mutation == "leader-death":
+            leader = self.processes[300]
+            leader.status = signal.SIGKILL
+            leader.exited.set()
+            inner = self.processes.get(301)
+            if inner is not None:
+                inner.parent = 200
+                inner.status = signal.SIGKILL
+                inner.exited.set()
+            return b"", []
+        ancillary_mutations = {"missing-credentials", "wrong-credentials", "missing-rights", "extra-rights"}
+        if fired and self.mutation not in ancillary_mutations:
             return b"bad", []
         channel = endpoint.channel
-        deadline = real_time.monotonic() + 2
+        deadline = real_time.monotonic() + 0.25
         with channel["condition"]:
             while not channel["queues"][endpoint.side]:
                 if channel["closed"][1 - endpoint.side]:
@@ -1053,6 +965,24 @@ class SandboxKernel:
                 rights.append(self.allocate(value))
             ancillary.append((socket.SOL_SOCKET, socket.SCM_RIGHTS,
                               array("i", rights).tobytes()))
+        mutation = self.mutation if fired else ""
+        if mutation == "missing-credentials":
+            ancillary = [item for item in ancillary if item[1] != socket.SCM_CREDENTIALS]
+        elif mutation == "wrong-credentials":
+            ancillary[0] = (socket.SOL_SOCKET, socket.SCM_CREDENTIALS, struct.pack("3i", sender + 1, 0, 0))
+        elif mutation == "missing-rights":
+            ancillary = [item for item in ancillary if item[1] != socket.SCM_RIGHTS]
+            for descriptor in rights:
+                self.close(descriptor)
+        elif mutation == "extra-rights" and attached:
+            extra = self.allocate(attached[0])
+            values = array("i")
+            for item in ancillary:
+                if item[1] == socket.SCM_RIGHTS:
+                    values.frombytes(item[2])
+            values.append(extra)
+            ancillary = [item for item in ancillary if item[1] != socket.SCM_RIGHTS]
+            ancillary.append((socket.SOL_SOCKET, socket.SCM_RIGHTS, values.tobytes()))
         return data[:size], ancillary
     def socket_shutdown(self, endpoint):
         with endpoint.channel["condition"]:
@@ -1129,6 +1059,10 @@ class SandboxKernel:
             if process.role == "leader":
                 for child in self.processes.values():
                     if child.parent == process.pid and not child.reaped:
+                        # A successful production waitpid by the leader is the
+                        # only child-side transition that can establish reap.
+                        if child.exited.is_set() and self.counts.get("leader.waitpid", 0):
+                            child.reaped = True
                         child.parent = 200
             for fd in tuple(process.fds):
                 try:
@@ -1167,7 +1101,7 @@ class SandboxKernel:
             return raw[offset:offset + size]
         if value["kind"] == "pipe":
             resource = value["resource"]
-            deadline = real_time.monotonic() + 2
+            deadline = real_time.monotonic() + 0.25
             with resource["condition"]:
                 while not resource["buffer"] and resource["writes"]:
                     remaining = deadline - real_time.monotonic()
@@ -1327,7 +1261,7 @@ class SandboxKernel:
     def select(self, readers, writers, errors, timeout=0):
         del errors
         ready = []
-        deadline = real_time.monotonic() + min(timeout or 0, 2)
+        deadline = real_time.monotonic() + min(timeout or 0, 0.25)
         while True:
             for item in readers:
                 if isinstance(item, SandboxSocket):
@@ -1376,38 +1310,14 @@ class SandboxKernel:
         if path.endswith("/checkout") and self.fault("outer.host-path-readback"):
             return True
         return False
-    def baseline_exact(self, allow_subreaper_uncertainty=False):
+    def baseline_exact(self, allow_subreaper_uncertainty=False, allow_path_uncertainty=False):
         outer = self.processes[200]
         unsettled = [item.pid for item in self.processes.values()
                      if item.pid != 200 and (not item.exited.is_set() or not item.reaped)]
         subreaper_exact = self.subreaper == 0 or allow_subreaper_uncertainty
-        return (set(outer.fds) == {0, 1, 2} and not unsettled and not self.root_exists and
+        path_exact = not self.root_exists or allow_path_uncertainty
+        return (set(outer.fds) == {0, 1, 2} and not unsettled and path_exact and
                 not self.root_mounted and subreaper_exact)
-
-
-def full_sandbox_launch_contract(module):
-    """Compose the production E launcher with an observed root-process boundary."""
-    names = tuple(item.name for item in module.fields(module.SandboxQualificationResult))
-    expected = module.SandboxQualificationResult(
-        "cogs.sandbox-qualification/v1", "0" * 40, "1" * 64,
-        module._seccomp_digest(), *(True for _name in names[4:]),
-    )
-    sources = {path: (ROOT / path).read_bytes() for path in module._FIXED_SOURCE_SET}
-    admission = module._SourceAdmission(
-        "0" * 40, hashlib.sha256(sources[module._MODULE_PATHS[2]]).hexdigest(),
-        module._source_set_digest(sources), sources[module._SCHEMA_PATH], "", 0,
-        None, module._BOOTSTRAP_OPERATION_TOKEN, 0, 0, 0, "sandbox",
-    )
-    evidence = []
-    def observed_root(ops, capsule):
-        decoded, header = module._decode_root_capsule(capsule)
-        evidence.append((ops, decoded, header["profile"]))
-        return module._canonical(module._result_value(expected), True)
-    owner = object()
-    with patched(module, _run_root_capsule_with_ops=observed_root):
-        observed = module._launch_admitted_fixed_sandbox_qualification(admission, sources, owner)
-    if observed != expected or evidence != [(owner, sources, "sandbox")]:
-        raise AssertionError("full sandbox root launcher composition drift")
 
 
 def sandbox_error_code(error):
@@ -1459,8 +1369,12 @@ def sandbox_process_corpus(module):
             except BaseException as error:
                 observed = sandbox_error_code(error)
             finally:
-                for thread in kernel.threads:
-                    thread.join(2)
+                settle_deadline = real_time.monotonic() + 10
+                while any(thread.is_alive() for thread in kernel.threads) and real_time.monotonic() < settle_deadline:
+                    for thread in tuple(kernel.threads):
+                        thread.join(0.05)
+                if any(thread.is_alive() for thread in kernel.threads):
+                    raise AssertionError(f"sandbox thread did not settle: {row['id']}")
         if row["primitive_fault"]["point"] != "none":
             if kernel.consumed != {row["id"]}:
                 raise AssertionError(f"sandbox fault not causally consumed: {row['id']} {kernel.events}")
@@ -1481,10 +1395,17 @@ def sandbox_process_corpus(module):
             if not mandatory <= set(kernel.events):
                 raise AssertionError("sandbox success bypassed inner/leader production")
         uncertain_restore = row["primitive_fault"]["point"] == "outer.subreaper-restore"
-        if not kernel.baseline_exact(uncertain_restore):
-            raise AssertionError(f"sandbox cleanup baseline drift: {row['id']}")
+        uncertain_path = row["primitive_fault"]["point"] == "outer.rmdir"
+        if not kernel.baseline_exact(uncertain_restore, uncertain_path):
+            unsettled = [
+                (item.pid, item.role, item.exited.is_set(), item.reaped)
+                for item in kernel.processes.values() if item.pid != 200
+            ]
+            raise AssertionError(f"sandbox cleanup baseline drift: {row['id']} {unsettled} counts={kernel.counts} threads={[thread.is_alive() for thread in kernel.threads]}")
         if uncertain_restore and kernel.subreaper == 0:
             raise AssertionError("subreaper restore fault did not retain exact uncertainty")
+        if uncertain_path and not kernel.root_exists:
+            raise AssertionError("root removal fault did not retain exact path uncertainty")
         oracle.add(row["id"])
     if not declared == selected == consumed == oracle or len(rows) != len(declared):
         raise AssertionError("sandbox declared/selected/consumed/oracle mismatch")
@@ -1605,9 +1526,12 @@ class _BISocket:
 
 class _BIKernel:
     def __init__(self, module, report, report_bytes, descriptors, rows, root,
-                 secondary_clone=0):
+                 secondary_clone=0, admission_revision="0" * 40,
+                 admission_source_set="1" * 64):
         self.m, self.report, self.report_bytes = module, report, report_bytes
         self.descriptors, self.rows, self.root = descriptors, rows, root
+        self.admission_revision = admission_revision
+        self.admission_source_set = admission_source_set
         self.outer, self.worker, self.child = 200, None, None
         self.current_pid, self.next_pid, self.next_fd = self.outer, 300, 700
         self.secondary_clone = secondary_clone
@@ -1650,8 +1574,8 @@ class _BIKernel:
                   "descriptor_count": len(self.descriptors),
                   "generation_rows": [self.m._row_value(row) for row in self.rows],
                   "generation_sha256": generation, "nonce": nonce,
-                  "report_sha256": report_sha, "revision": "0" * 40,
-                  "source_set_sha256": "1" * 64, "version": self.m._HANDOFF_VERSION}
+                  "report_sha256": report_sha, "revision": self.admission_revision,
+                  "source_set_sha256": self.admission_source_set, "version": self.m._HANDOFF_VERSION}
         ack = {"binding_sha256": binding, "consumer_pid": self.outer,
                "generation_sha256": generation, "nonce": nonce,
                "report_sha256": report_sha, "version": self.m._HANDOFF_VERSION}
@@ -1882,6 +1806,11 @@ class _BIKernel:
             return 0, 0
         process["reaped"] = True
         return pid, process["status"] << 8
+    def pidfd_signal(self, fd, number):
+        del number
+        process = self.processes[self.virtual[fd]["pid"]]
+        process["status"] = 125
+        process["exited"] = True
     def getsid(self, pid): return self.processes[self.current_pid if pid == 0 else pid]["sid"]
     def getpgid(self, pid): return self.processes[self.current_pid if pid == 0 else pid]["pgid"]
     def prctl(self, option, value=0, arg3=0):
@@ -1947,14 +1876,23 @@ class _BIChildSocket:
 
 
 def _modeled_worker_execution(module, admission, kernel):
-    """Execute the real worker body as its own modeled child process."""
+    """Execute the real worker body and return evidence bound to the parent packet."""
     release_fd = kernel.alloc("pipe", resource={"data": bytearray(b"G"),
         "read_closed": False, "write_closed": True, "child_writer": False}, end="read")
     endpoint_fd, helper_fd = kernel.alloc("socket"), kernel.alloc("socket")
     sockets = {fd: _BIChildSocket(kernel, fd, "worker") for fd in (endpoint_fd, helper_fd)}
     events = []
-    receipt = module._IssuanceReceipt(module._HANDOFF_VERSION, "0" * 64, "1" * 64,
-        "2" * 64, "3" * 64, len(kernel.descriptors), kernel.worker, kernel.outer)
+    packet = _BIjson.loads(kernel.packet)
+    receipt = module._IssuanceReceipt(
+        module._HANDOFF_VERSION,
+        packet["report_sha256"],
+        packet["closure_sha256"],
+        packet["binding_sha256"],
+        packet["generation_sha256"],
+        len(kernel.descriptors),
+        kernel.worker,
+        kernel.outer,
+    )
     class Owner:
         def _issue_once(self, issuer):
             if type(issuer) is not module._WorkerIssuer:
@@ -1976,7 +1914,11 @@ def _modeled_worker_execution(module, admission, kernel):
                             admission, closure, kernel.outer)
     if events != ["worker:prepare", "worker:issue", "worker:close", "worker:exit:0"]:
         raise AssertionError(f"worker child state machine drift: {events}")
-    return "worker"
+    return {
+        "kind": "worker",
+        "packet_sha256": _BIhashlib.sha256(kernel.packet).hexdigest(),
+        "receipt": receipt,
+    }
 
 
 def _modeled_namespace_execution(module, report, descriptors, rows, role):
@@ -2051,7 +1993,13 @@ def _modeled_namespace_execution(module, report, descriptors, rows, role):
     try:
         if kernel.events != expected or child_exits != [0]:
             raise AssertionError(f"namespace child state machine drift: {role} {kernel.events}/{child_exits}")
-        return f"namespace:{role}"
+        return {
+            "kind": "namespace",
+            "role": role,
+            "events": tuple(kernel.events),
+            "boundary": kernel.boundary(),
+            "output": module._FIXED_OUTPUT,
+        }
     finally:
         for fd in copied:
             if fd in kernel.owned: kernel.close(fd)
@@ -2114,6 +2062,20 @@ def production_runtime_compression_contracts(module):
                         return module._DATA_SEALS if fd == duplicated[0] else module._EXEC_SEALS
                     if fd in duplicated and command == _BIfcntl.F_GETFL: return _BIos.O_RDONLY
                     return _BI_FCNTL(fd, command, *args)
+                # Child evidence is produced before the parent result and is then
+                # consumed by that exact parent transaction. No completed launcher
+                # result is supplied to any child model.
+                kernel.worker = 299
+                worker_evidence = _modeled_worker_execution(module, admission, kernel)
+                kernel.worker = None
+                namespace_evidence = (
+                    _modeled_namespace_execution(module, report, descriptors, rows, "gzip"),
+                    _modeled_namespace_execution(module, report, descriptors, rows, "zstd"),
+                )
+                if worker_evidence["packet_sha256"] != _BIhashlib.sha256(kernel.packet).hexdigest():
+                    raise AssertionError("worker evidence is not the consumed issuance packet")
+                if tuple(item["role"] for item in namespace_evidence) != ("gzip", "zstd"):
+                    raise AssertionError("namespace evidence order drift")
                 error = None
                 value = None
                 owner_calls = []
@@ -2142,11 +2104,6 @@ def production_runtime_compression_contracts(module):
                         value = launcher(admission, _BItypes.ModuleType("modeled.closure"), kernel)
                     except BaseException as caught:
                         error = caught
-                child_evidence = []
-                if error is None:
-                    child_evidence.append(_modeled_worker_execution(module, admission, kernel))
-                    child_evidence.append(_modeled_namespace_execution(module, report, descriptors, rows, "gzip"))
-                    child_evidence.append(_modeled_namespace_execution(module, report, descriptors, rows, "zstd"))
                 expected_accept = case["primitive_fault"]["expect"] == "accept"
                 if (error is None) != expected_accept:
                     raise AssertionError(f"tool process oracle mismatch: {case['id']} {error!r}")
@@ -2167,16 +2124,26 @@ def production_runtime_compression_contracts(module):
                         getattr(runtime, name) for name in module._OBSERVATION_NAMES
                     ):
                         raise AssertionError("production launcher result drift")
-                    if owner_calls or child_evidence != [
-                        "worker", "namespace:gzip", "namespace:zstd",
-                    ]:
+                    receipt = worker_evidence["receipt"]
+                    exact_worker = receipt.closure_sha256 == runtime.closure_sha256
+                    exact_namespaces = all(
+                        item["output"] == module._FIXED_OUTPUT
+                        and tuple(event.rsplit(":", 1)[-1] for event in item["events"])
+                        == ("namespace", "transfer", "child", "boundary", "exec-ready", "root-final", "exit")
+                        for item in namespace_evidence
+                    )
+                    if owner_calls or not exact_worker or not exact_namespaces:
                         raise AssertionError(
-                            "B/integration split child state machines bypassed: "
-                            f"parent={owner_calls}, child={child_evidence}"
+                            "B/integration causal child evidence bypassed: "
+                            f"parent={owner_calls}, worker={exact_worker}, namespaces={exact_namespaces}"
                         )
-                    kernel.events.append("tool:complete")
-                    if case["sentinel"] != "tool:complete":
-                        raise AssertionError("tool complete sentinel drift")
+                    allowed_sentinels = {
+                        "tool:complete", "tool:worker-result", "tool:namespace-results",
+                        "tool:integration-causal-result",
+                    }
+                    if case["sentinel"] not in allowed_sentinels:
+                        raise AssertionError("tool causal sentinel drift")
+                    kernel.events.append(case["sentinel"])
                     if expected_type is module.RuntimeQualificationResult:
                         runtime_result = module._result_value(runtime)
                 unsettled = [
@@ -2236,6 +2203,13 @@ def sticky_root_replacement(module):
 
 def parent():
     module = load_module()
+    module._SETUP_SECONDS = 0.25
+    module._RUN_SECONDS = 0.25
+    module._TERM_SECONDS = 0.05
+    module._KILL_SECONDS = 0.05
+    causal_scope = dict(globals())
+    causal_path = FIXTURE.parent / "causal-acceptance.py"
+    exec(compile(causal_path.read_bytes(), str(causal_path), "exec"), causal_scope)
     if not hasattr(module.os, "O_PATH"):
         module.os.O_PATH = 0x200000
     if not hasattr(module.os, "pipe2"):
@@ -2271,12 +2245,14 @@ def parent():
         raise AssertionError("common retained the dead ambient launcher bridge")
     if not all(token in launcher_source + common_source for token in cli_tokens):
         raise AssertionError("fixed CLI issuer integration is absent")
+    for job in ("A", "B", "E", "integration"):
+        causal_scope["common_fixed_cli_contract"](module, job)
     production_operation_contracts(module)
-    capsule_contract(module)
+    causal_scope["capsule_contract"](module)
     fixed_bootstrap_modes(module)
     outer_process_corpus(module)
     production_runtime_compression_contracts(module)
-    full_sandbox_launch_contract(module)
+    causal_scope["full_sandbox_launch_contract"](module)
     sandbox_process_corpus(module)
     sticky_root_replacement(module)
     rows = fixture_rows(module)
