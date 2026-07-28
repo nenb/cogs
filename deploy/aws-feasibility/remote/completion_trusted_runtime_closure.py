@@ -40,6 +40,10 @@ _MAX_MAP_LINES = 4096
 _MAX_COMPONENTS = 256
 _MAX_SYMLINKS = 40
 _MAX_FDS = 16384
+_GETDENTS_CALL_LIMIT = 32
+_GETDENTS_BYTE_LIMIT = 1048576
+_GETDENTS_CHUNK = 32768
+_DIRENT_ALIGNMENT = 8
 _IO_CHUNK = 1024 * 1024
 _HELPER_START_SECONDS = 5.0
 _HELPER_TERM_SECONDS = 1.0
@@ -124,6 +128,21 @@ class DescriptorQualificationResult:
     limit_restored: bool
     descriptors_restored: bool
     children_reaped: bool
+@dataclass
+class _LimitLease:
+    original: tuple[int, int]
+    restored: bool = False
+@dataclass
+class _DescriptorChildLease:
+    pid: int
+    pidfd: 'FdLease'
+    target_identity: tuple[int, int]
+    start_time: int | None = None
+    session: int | None = None
+    process_group: int | None = None
+    executable_identity: tuple[int, int] | None = None
+    released: bool = False
+    reaped: bool = False
 @dataclass(frozen=True)
 class SourceGeneration:
     device: int
@@ -394,6 +413,8 @@ class _Ops:
         return os.getpid()
     def getppid(self) -> int:
         return os.getppid()
+    def getuid(self) -> int:
+        return os.getuid()
     def setsid(self) -> None:
         os.setsid()
     def monotonic(self) -> float:
@@ -411,6 +432,13 @@ class _Ops:
     def wait_pidfd_nohang(self, pidfd: int) -> bool:
         result = os.waitid(os.P_PIDFD, pidfd, os.WEXITED | os.WNOHANG)
         return result is not None
+
+    def waitid_pidfd_nohang(self, pidfd: int) -> os.waitid_result | None:
+        options = os.WEXITED | os.WNOHANG | os.WNOWAIT
+        return os.waitid(os.P_PIDFD, pidfd, options)
+
+    def reap_pid_nohang(self, pid: int) -> tuple[int, int]:
+        return os.waitpid(pid, os.WNOHANG)
 
     def execve(self, fd: int, argv: Sequence[str], environment: dict[str, str]) -> NoReturn:
         os.execve(fd, list(argv), environment)
@@ -762,48 +790,88 @@ def _resolve_tool(ops: _Ops, tool: str, path: str) -> ResolvedToolClosure:
         _close_objects(ops, owned, primary)
         raise
 
-def _parse_dirents(raw: bytes) -> tuple[int, ...]:
+def _parse_dirent_chunk(raw: bytes) -> tuple[tuple[int, ...], int]:
+    if type(raw) is not bytes:
+        raise RuntimeClosureError('invalid descriptor dirent chunk')
+    if len(raw) > _GETDENTS_CHUNK:
+        raise RuntimeClosureError('descriptor baseline bound')
     offset = 0
+    records = 0
     names: list[int] = []
     while offset < len(raw):
         if len(raw) - offset < 19:
             raise RuntimeClosureError('truncated descriptor dirent')
+        if offset % _DIRENT_ALIGNMENT:
+            raise RuntimeClosureError('unaligned descriptor dirent')
         (_inode, _position, record_length, _kind) = struct.unpack_from('=QqHB', raw, offset)
-        if record_length < 20 or offset + record_length > len(raw):
+        end = offset + record_length
+        if record_length < 24 or record_length % _DIRENT_ALIGNMENT or end > len(raw):
             raise RuntimeClosureError('malformed descriptor dirent')
-        field = raw[offset + 19:offset + record_length]
+        field = raw[offset + 19:end]
         nul = field.find(b'\x00')
-        if nul < 0:
-            raise RuntimeClosureError('unterminated descriptor dirent name')
+        if nul < 0 or any(field[nul + 1:]):
+            raise RuntimeClosureError('unterminated or nonzero-tail descriptor dirent name')
         name = field[:nul]
         if name not in (b'.', b'..'):
-            if not name or not name.isdigit() or (len(name) > 1 and name.startswith(b'0')):
+            canonical = bool(name) and name.isdigit()
+            canonical = canonical and (len(name) == 1 or not name.startswith(b'0'))
+            if not canonical:
                 raise RuntimeClosureError('invalid descriptor name')
             value = int(name)
             if value > 2147483647 or value in names:
                 raise RuntimeClosureError('duplicate or out-of-range descriptor')
             names.append(value)
-        offset += record_length
-    return tuple(names)
+        offset = end
+        records += 1
+    return (tuple(names), records)
 
-def _snapshot_fds(ops: _Ops) -> frozenset[int]:
-    directory = FdLease(ops.open('/proc/self/fd', os.O_RDONLY | _O_DIRECTORY | _O_CLOEXEC | _O_NOFOLLOW), 'fd-enumerator')
+def _parse_dirents(raw: bytes) -> tuple[int, ...]:
+    return _parse_dirent_chunk(raw)[0]
+
+def _snapshot_fd_directory(
+    ops: _Ops,
+    path: str,
+    expected_enumerator: bool,
+) -> frozenset[int]:
+    flags = os.O_RDONLY | _O_DIRECTORY | _O_CLOEXEC | _O_NOFOLLOW
+    directory = FdLease(ops.open(path, flags), 'fd-enumerator')
     values: list[int] = []
+    seen: set[int] = set()
+    calls = 0
+    total = 0
+    entries = 0
     primary: BaseException | None = None
     try:
-        while True:
-            chunk = ops.getdents(directory.fd)
+        while calls < _GETDENTS_CALL_LIMIT:
+            calls += 1
+            chunk = ops.getdents(directory.fd, _GETDENTS_CHUNK)
+            total += len(chunk)
+            if total > _GETDENTS_BYTE_LIMIT:
+                raise RuntimeClosureError('descriptor enumeration byte bound')
             if not chunk:
                 break
-            values.extend(_parse_dirents(chunk))
-            if len(values) > _MAX_FDS:
+            parsed, record_count = _parse_dirent_chunk(chunk)
+            entries += record_count
+            if entries > _MAX_FDS:
                 raise RuntimeClosureError('descriptor baseline bound')
-        if values.count(directory.fd) != 1:
+            if seen.intersection(parsed):
+                raise RuntimeClosureError('duplicate descriptor across dirent chunks')
+            seen.update(parsed)
+            values.extend(parsed)
+        else:
+            raise RuntimeClosureError('descriptor enumeration call bound before EOF')
+        enumerator_count = values.count(directory.fd)
+        if expected_enumerator and enumerator_count != 1:
             raise RuntimeClosureError('descriptor enumerator was not observed exactly once')
     except BaseException as error:
         primary = error
     _finish_fds(ops, (directory,), primary)
-    return frozenset((value for value in values if value != directory.fd))
+    if expected_enumerator:
+        seen.remove(directory.fd)
+    return frozenset(seen)
+
+def _snapshot_fds(ops: _Ops) -> frozenset[int]:
+    return _snapshot_fd_directory(ops, '/proc/self/fd', True)
 
 def _read_stream_bounded(ops: _Ops, fd: int, maximum: int) -> bytes:
     chunks: list[bytes] = []
@@ -925,6 +993,10 @@ def _child_argv(tool: str) -> tuple[str, ...]:
     if tool == 'zstd':
         return ('zstd', '-dc', '--no-progress')
     raise RuntimeClosureError('unknown fixed helper')
+
+def _descriptor_child_argv() -> tuple[str, ...]:
+    program = "import os\nos.write(197,b'R')\nos.read(0,1)\n"
+    return ('python3', '-I', '-B', '-c', program)
 
 def _reserve_stdio(ops: _Ops) -> None:
     for target in range(3):
@@ -1727,12 +1799,14 @@ class PreparedRuntimeClosure:
         self._operation_helpers: dict[object, HelperLease] = {}
 
     @classmethod
-    def _for_fixed_mapping(
+    def _for_fixed_operation(
         cls,
         admission: object,
+        operation: str,
         ops: _Ops,
         preparation: PreparationLease,
     ) -> 'PreparedRuntimeClosure':
+        _fixed_operation_admitted(admission, operation)
         owner = object.__new__(cls)
         owner._ops = ops
         owner._preparation = preparation
@@ -1742,8 +1816,25 @@ class PreparedRuntimeClosure:
         owner._rows = ()
         owner._poison = None
         owner._operation_helpers = {}
+        owner._fixed_operation = operation
         preparation.outer = owner
         return owner
+
+    @classmethod
+    def _for_fixed_mapping(
+        cls,
+        admission: object,
+        ops: _Ops,
+        preparation: PreparationLease,
+    ) -> 'PreparedRuntimeClosure':
+        return cls._for_fixed_operation(admission, 'mapping', ops, preparation)
+
+    def _complete_fixed_operation(self) -> None:
+        if self._state is not _OwnerState.PREPARING:
+            raise RuntimeClosureError('fixed operation owner state changed')
+        if self._operation_helpers or self._preparation.helpers:
+            raise RuntimeClosureError('fixed operation helper remains registered')
+        self._state = _OwnerState.CLOSED
 
     def _register_runtime_helper(self, helper: object, deadline: float) -> object:
         if type(helper) is not HelperLease or deadline <= self._ops.monotonic():
@@ -1880,6 +1971,66 @@ class PreparedRuntimeClosure:
 
 def _child_baseline(ops: _Ops) -> tuple[int, ...]:
     return _parse_children(_read_proc(ops, '/proc/self/task/self/children', 65536))
+
+def _descriptor_child_matches(ops: _Ops, child: _DescriptorChildLease) -> bool:
+    registered = (
+        child.start_time is not None
+        and child.session is not None
+        and child.process_group is not None
+        and child.executable_identity is not None
+    )
+    if not registered:
+        return False
+    try:
+        start = _parse_proc_stat(_read_proc(ops, f'/proc/{child.pid}/stat', 4096), child.pid)
+        executable = _proc_executable_identity(ops, child.pid)
+        session = ops.getsid(child.pid)
+        process_group = ops.getpgid(child.pid)
+    except (FileNotFoundError, ProcessLookupError):
+        return False
+    allowed = {child.executable_identity}
+    if child.released:
+        allowed.add(child.target_identity)
+    return (
+        start == child.start_time
+        and executable in allowed
+        and session == child.session
+        and process_group == child.process_group
+    )
+
+def _wait_descriptor_child(
+    ops: _Ops,
+    child: _DescriptorChildLease,
+    deadline: float,
+    expected: tuple[int, int] | None,
+) -> tuple[int, int]:
+    observation = None
+    while observation is None:
+        observation = ops.waitid_pidfd_nohang(child.pidfd.fd)
+        if observation is not None:
+            break
+        now = ops.monotonic()
+        if now >= deadline:
+            raise RuntimeClosureError('descriptor child waitid deadline')
+        ops.sleep(min(0.001, deadline - now))
+    if observation.si_pid != child.pid or observation.si_uid != ops.getuid():
+        raise RuntimeClosureError('descriptor child siginfo identity mismatch')
+    pair = (observation.si_code, observation.si_status)
+    if expected is not None and pair != expected:
+        raise RuntimeClosureError('descriptor child siginfo outcome mismatch')
+    ops.checkpoint('descriptor.waitid.after-observe')
+    reaped_pid, wait_status = ops.reap_pid_nohang(child.pid)
+    if reaped_pid != child.pid:
+        raise RuntimeClosureError('descriptor child was not exactly reaped')
+    child.reaped = True
+    ops.checkpoint('descriptor.reap.after')
+    if pair[0] == os.CLD_EXITED:
+        matches = os.WIFEXITED(wait_status) and os.WEXITSTATUS(wait_status) == pair[1]
+    else:
+        matches = os.WIFSIGNALED(wait_status) and os.WTERMSIG(wait_status) == pair[1]
+    if not matches:
+        raise RuntimeClosureError('waitid and reap status disagree')
+    return pair
 
 def _claim_admission(admission: object, issuer: object) -> _LiveIssuerCapability:
     package_name = __package__
@@ -2041,13 +2192,18 @@ def _mapping_observations(closure: ResolvedToolClosure) -> tuple[RuntimeObjectOb
     ) for value in closure.objects)
 
 def _qualify_fixed_python_mapping_with_ops(admission: object, ops: _Ops) -> RuntimeMappingQualificationResult:
-    _fixed_operation_admitted(admission, 'mapping')
+    preparation = PreparationLease(ops, frozenset(), ())
+    owner = PreparedRuntimeClosure._for_fixed_mapping(
+        admission,
+        ops,
+        preparation,
+    )
     ops.architecture_gate()
     _reserve_stdio(ops)
     baseline = _snapshot_fds(ops)
     children = _child_baseline(ops)
-    preparation = PreparationLease(ops, baseline, children)
-    owner = PreparedRuntimeClosure._for_fixed_mapping(admission, ops, preparation)
+    preparation.fd_baseline = baseline
+    preparation.child_baseline = children
     resolved: ResolvedToolClosure | None = None
     helper: HelperLease | None = None
     primary: BaseException | None = None
@@ -2088,7 +2244,8 @@ def _qualify_fixed_python_mapping_with_ops(admission: object, ops: _Ops) -> Runt
     objects = _mapping_observations(resolved)
     mapped_rows = tuple(MappedObjectObservation(*row) for row in mapped.mapped)
     canonical_objects = [_object_report(value) for value in resolved.objects]
-    return RuntimeMappingQualificationResult(
+    expected_mapped = tuple((item.role, item.sha256) for item in resolved.objects)
+    result = RuntimeMappingQualificationResult(
         'cogs.runtime-mapping-qualification/v1',
         admission.revision,
         admission.source_set_sha256,
@@ -2096,125 +2253,282 @@ def _qualify_fixed_python_mapping_with_ops(admission: object, ops: _Ops) -> Runt
         mapped.mapping_sha256,
         objects,
         mapped_rows,
-        mapped.mapped == tuple((item.role, item.sha256) for item in resolved.objects),
+        mapped.mapped == expected_mapped,
         True,
         helper.reaped,
         descriptors_restored,
         children_reaped,
     )
+    owner._complete_fixed_operation()
+    return result
 
-def _qualify_fixed_descriptor_primitives_with_ops(admission: object, ops: _Ops) -> DescriptorQualificationResult:
-    _fixed_operation_admitted(admission, 'descriptor')
+def _qualify_fixed_descriptor_primitives_with_ops(
+    admission: object,
+    ops: _Ops,
+) -> DescriptorQualificationResult:
+    preparation = PreparationLease(ops, frozenset(), ())
+    owner = PreparedRuntimeClosure._for_fixed_operation(
+        admission,
+        'descriptor',
+        ops,
+        preparation,
+    )
     ops.architecture_gate()
     _reserve_stdio(ops)
     baseline = _snapshot_fds(ops)
     children = _child_baseline(ops)
+    preparation.fd_baseline = baseline
+    preparation.child_baseline = children
     original = ops.getrlimit()
+    limit = _LimitLease(original)
     leases: list[FdLease] = []
+    child: _DescriptorChildLease | None = None
+    resolved: ResolvedToolClosure | None = None
     measured = original[1] == resource.RLIM_INFINITY or original[1] >= 8193
-    normalized = low_exact = high_exact = close_exact = flags_exact = False
+    normalized = False
+    low_exact = False
+    high_exact = False
+    close_exact = False
+    flags_exact = False
     inheritance_exact = False
-    child_pid = 0
-    child_pidfd: FdLease | None = None
     primary: BaseException | None = None
     try:
         if not measured:
             raise RuntimeClosureUnavailable('fixed descriptor capacity unavailable')
+        ops.checkpoint('descriptor.limit.before-normalize')
         ops.setrlimit((8193, original[1]))
+        ops.checkpoint('descriptor.limit.after-normalize')
         normalized = ops.getrlimit() == (8193, original[1])
+        if not normalized:
+            raise RuntimeClosureError('descriptor limit normalization mismatch')
+        ops.checkpoint('descriptor.python.before-resolve')
+        resolved = _resolve_tool(ops, 'python3-parser', '/usr/bin/python3')
+        for value in resolved.objects:
+            lease = FdLease(value.held_fd, f'descriptor-python:{value.role}')
+            leases.append(lease)
+        ops.checkpoint('descriptor.python.after-register')
+        ops.checkpoint('descriptor.source-pipe.before')
         source_fd, spare_fd = ops.pipe()
         source = FdLease(source_fd, 'descriptor-source')
         spare = FdLease(spare_fd, 'descriptor-spare')
         leases.extend((source, spare))
-        low = FdLease(ops.fcntl(source.fd, fcntl.F_DUPFD_CLOEXEC, 198), 'descriptor-198')
+        ops.checkpoint('descriptor.source-pipe.after-register')
+        ops.checkpoint('descriptor.dup-198.before')
+        low_fd = ops.fcntl(source.fd, fcntl.F_DUPFD_CLOEXEC, 198)
+        low = FdLease(low_fd, 'descriptor-198')
         leases.append(low)
-        high = FdLease(ops.fcntl(source.fd, fcntl.F_DUPFD, 4096), 'descriptor-4096')
-        leases.append(high)
+        ops.checkpoint('descriptor.dup-198.after-register')
         low_exact = low.fd == 198
+        if not low_exact:
+            raise RuntimeClosureError('fixed descriptor 198 allocation mismatch')
+        ops.checkpoint('descriptor.dup-4096.before')
+        high_fd = ops.fcntl(source.fd, fcntl.F_DUPFD, 4096)
+        high = FdLease(high_fd, 'descriptor-4096')
+        leases.append(high)
+        ops.checkpoint('descriptor.dup-4096.after-register')
         high_exact = high.fd == 4096
-        flags_exact = bool(ops.fcntl(low.fd, _F_GETFD) & _FD_CLOEXEC)
-        flags_exact = flags_exact and not bool(ops.fcntl(high.fd, _F_GETFD) & _FD_CLOEXEC)
+        if not high_exact:
+            raise RuntimeClosureError('fixed descriptor 4096 allocation mismatch')
+        low_flags = ops.fcntl(low.fd, _F_GETFD)
+        high_flags = ops.fcntl(high.fd, _F_GETFD)
+        flags_exact = bool(low_flags & _FD_CLOEXEC)
+        flags_exact = flags_exact and not bool(high_flags & _FD_CLOEXEC)
+        if not flags_exact:
+            raise RuntimeClosureError('fixed descriptor inheritance flags mismatch')
+        ops.checkpoint('descriptor.status-pipe.before')
         status_read_fd, status_write_fd = ops.pipe()
-        release_read_fd, release_write_fd = ops.pipe()
         status_read = FdLease(status_read_fd, 'descriptor-status-read')
         status_write = FdLease(status_write_fd, 'descriptor-status-write')
+        leases.extend((status_read, status_write))
+        ops.checkpoint('descriptor.status-pipe.after-register')
+        ops.checkpoint('descriptor.release-pipe.before')
+        release_read_fd, release_write_fd = ops.pipe()
         release_read = FdLease(release_read_fd, 'descriptor-release-read')
         release_write = FdLease(release_write_fd, 'descriptor-release-write')
-        leases.extend((status_read, status_write, release_read, release_write))
+        leases.extend((release_read, release_write))
+        ops.checkpoint('descriptor.release-pipe.after-register')
+        ops.checkpoint('descriptor.clone.before')
         child_pid, pidfd_number = ops.clone3_pidfd()
         if child_pid == 0:
             try:
                 status_read.close(ops)
                 release_write.close(ops)
+                spare.close(ops)
                 if ops.read(release_read.fd, 1) != b'G':
                     ops.exit_child(125)
                 release_read.close(ops)
+                ops.dup2(source.fd, 0, inheritable=True)
                 ops.dup2(status_write.fd, 197, inheritable=True)
-                _close_complement(ops, (0, 1, 2, 197, 4096))
-                exact = _snapshot_fds(ops) == frozenset((0, 1, 2, 197, 4096))
-                ops.write(197, b'exact' if exact else b'bad')
-                ops.exit_child(0 if exact else 124)
+                allowed = (0, 1, 2, 197, 198, 4096, resolved.executable.held_fd)
+                _close_complement(ops, allowed)
+                argv = _descriptor_child_argv()
+                ops.execve(resolved.executable.held_fd, argv, {})
             except BaseException:
                 ops.exit_child(126)
-        if child_pid <= 0 or pidfd_number < 0:
-            raise RuntimeClosureError('descriptor child atomic registration')
+        if pidfd_number < 0:
+            raise RuntimeClosureError('descriptor child pidfd registration')
         child_pidfd = FdLease(pidfd_number, 'descriptor-child-pidfd')
         leases.append(child_pidfd)
+        if child_pid <= 0:
+            raise RuntimeClosureError('descriptor child atomic registration')
+        child = _DescriptorChildLease(
+            child_pid,
+            child_pidfd,
+            resolved.executable.identity,
+        )
+        stat_record = _read_proc(ops, f'/proc/{child_pid}/stat', 4096)
+        child.start_time = _parse_proc_stat(stat_record, child_pid)
+        child.session = ops.getsid(child_pid)
+        child.process_group = ops.getpgid(child_pid)
+        child.executable_identity = _proc_executable_identity(ops, child_pid)
+        ops.checkpoint('descriptor.clone.after-register')
+        if not _descriptor_child_matches(ops, child):
+            raise RuntimeClosureError('descriptor child registration identity mismatch')
         status_write.close(ops)
         release_read.close(ops)
+        ops.checkpoint('descriptor.release.before')
+        child.released = True
         if ops.write(release_write.fd, b'G') != 1:
-            raise RuntimeClosureError('descriptor child release')
+            raise RuntimeClosureError('descriptor child release write')
         release_write.close(ops)
-        status = _read_stream_bounded(ops, status_read.fd, 5)
-        status_read.close(ops)
+        ops.checkpoint('descriptor.release.after')
         deadline = ops.monotonic() + _HELPER_START_SECONDS
-        while not ops.wait_pidfd_nohang(child_pidfd.fd):
-            if ops.monotonic() >= deadline:
-                raise RuntimeClosureError('descriptor child reap deadline')
-            ops.sleep(0.001)
-        inheritance_exact = status == b'exact'
+        remaining = deadline - ops.monotonic()
+        if not ops.poll_readable(status_read.fd, remaining):
+            raise RuntimeClosureError('descriptor exec readiness deadline')
+        if ops.read(status_read.fd, 1) != b'R':
+            raise RuntimeClosureError('descriptor exec readiness record')
+        if _proc_executable_identity(ops, child.pid) != resolved.executable.identity:
+            raise RuntimeClosureError('descriptor child did not exec admitted Python')
+        expected_fds = frozenset((0, 1, 2, 197, 4096))
+        first = _snapshot_fd_directory(ops, f'/proc/{child.pid}/fd', False)
+        second = _snapshot_fd_directory(ops, f'/proc/{child.pid}/fd', False)
+        inheritance_exact = first == expected_fds and second == expected_fds
+        if not inheritance_exact:
+            raise RuntimeClosureError('descriptor exec inheritance mismatch')
+        if ops.write(spare.fd, b'G') != 1:
+            raise RuntimeClosureError('descriptor child completion write')
+        remaining = deadline - ops.monotonic()
+        if not ops.poll_readable(status_read.fd, remaining):
+            raise RuntimeClosureError('descriptor exec status EOF deadline')
+        if ops.read(status_read.fd, 1):
+            raise RuntimeClosureError('descriptor exec emitted trailing status')
+        status_read.close(ops)
+        expected_exit = (os.CLD_EXITED, 0)
+        ops.checkpoint('descriptor.wait.before')
+        _wait_descriptor_child(ops, child, deadline, expected_exit)
+        ops.checkpoint('descriptor.wait.after-reap')
         child_pidfd.close(ops)
+        ops.checkpoint('descriptor.close-range.before')
         ops.close_range(high.fd, high.fd)
         high.state = _FdState.CLOSED
+        ops.checkpoint('descriptor.close-range.after')
         try:
             ops.fcntl(high.fd, _F_GETFD)
         except OSError as error:
             close_exact = error.errno == 9
+        if not close_exact:
+            raise RuntimeClosureError('descriptor close_range readback mismatch')
     except BaseException as error:
         primary = error
     failures: list[BaseException] = []
-    if primary is not None and child_pid > 0 and child_pidfd is not None and child_pidfd.state is _FdState.OWNED:
+    try:
+        ops.checkpoint('descriptor.cleanup.before')
+    except BaseException as error:
+        failures.append(error)
+    if child is not None and not child.reaped:
+        reverse_leases = tuple(reversed(leases))
+        for gate in reverse_leases:
+            if gate.purpose not in ('descriptor-release-write', 'descriptor-spare'):
+                continue
+            if gate.state is _FdState.OWNED:
+                try:
+                    gate.close(ops)
+                except BaseException as error:
+                    failures.append(error)
+        close_uncertain = any(
+            lease.state is _FdState.CLOSE_UNCERTAIN for lease in leases
+        )
         try:
-            ops.pidfd_signal(child_pidfd.fd, signal.SIGKILL)
-            deadline = ops.monotonic() + _HELPER_KILL_SECONDS
-            while not ops.wait_pidfd_nohang(child_pidfd.fd):
-                if ops.monotonic() >= deadline:
-                    raise RuntimeClosureError('descriptor child cleanup deadline')
-                ops.sleep(0.001)
+            grace = _HELPER_TERM_SECONDS if close_uncertain else 0.01
+            short_deadline = ops.monotonic() + grace
+            _wait_descriptor_child(ops, child, short_deadline, None)
+        except RuntimeClosureError:
+            if close_uncertain or not _descriptor_child_matches(ops, child):
+                failures.append(RuntimeClosureError('descriptor child identity changed before KILL'))
+            else:
+                try:
+                    ops.checkpoint('descriptor.kill.before')
+                    ops.pidfd_signal(child.pidfd.fd, signal.SIGKILL)
+                    ops.checkpoint('descriptor.kill.after')
+                except BaseException as error:
+                    failures.append(error)
+            try:
+                kill_deadline = ops.monotonic() + _HELPER_KILL_SECONDS
+                _wait_descriptor_child(ops, child, kill_deadline, None)
+            except BaseException as error:
+                failures.append(error)
+        except BaseException as error:
+            failures.append(error)
+    for lease in reversed(leases):
+        if lease.state is not _FdState.OWNED:
+            continue
+        if child is not None and lease is child.pidfd and not child.reaped:
+            failures.append(RuntimeClosureError('descriptor child pidfd remains authoritative'))
+            continue
+        try:
+            lease.close(ops)
         except BaseException as error:
             failures.append(error)
     try:
-        _finish_fds(ops, leases, primary)
+        ops.checkpoint('descriptor.limit.before-restore')
     except BaseException as error:
         failures.append(error)
     try:
-        ops.setrlimit(original)
-        limit_restored = ops.getrlimit() == original
-        descriptors_restored = _snapshot_fds(ops) == baseline
-        children_reaped = _child_baseline(ops) == children
+        ops.setrlimit(limit.original)
+        limit.restored = ops.getrlimit() == limit.original
+        ops.checkpoint('descriptor.limit.after-restore')
+        if not limit.restored:
+            raise RuntimeClosureError('descriptor limit restoration mismatch')
     except BaseException as error:
         failures.append(error)
-        limit_restored = descriptors_restored = children_reaped = False
+    uncertain = any(lease.state is _FdState.CLOSE_UNCERTAIN for lease in leases)
+    descriptors_restored = False
+    children_reaped = False
+    if not uncertain:
+        try:
+            descriptors_restored = _snapshot_fds(ops) == baseline
+            children_reaped = _child_baseline(ops) == children
+            if not descriptors_restored or not children_reaped:
+                raise RuntimeClosureError('descriptor transaction baseline mismatch')
+        except BaseException as error:
+            failures.append(error)
+    try:
+        ops.checkpoint('descriptor.cleanup.after-baselines')
+    except BaseException as error:
+        failures.append(error)
     if failures:
-        raise RuntimeClosureCleanupError(failures) from (primary or failures[0])
+        ordered = ([primary] if primary is not None else []) + failures
+        raise RuntimeClosureCleanupError(ordered) from (primary or failures[0])
     if primary is not None:
         raise primary
-    return DescriptorQualificationResult(
-        'cogs.runtime-descriptor-qualification/v1', admission.revision,
-        admission.source_set_sha256, measured, normalized, low_exact, high_exact,
-        close_exact, flags_exact, inheritance_exact, limit_restored,
-        descriptors_restored, children_reaped,
+    result = DescriptorQualificationResult(
+        'cogs.runtime-descriptor-qualification/v1',
+        admission.revision,
+        admission.source_set_sha256,
+        measured,
+        normalized,
+        low_exact,
+        high_exact,
+        close_exact,
+        flags_exact,
+        inheritance_exact,
+        limit.restored,
+        descriptors_restored,
+        children_reaped,
     )
+    owner._complete_fixed_operation()
+    return result
 
 def _prepare_state_machine(ops: _Ops, admission: object, issuer: object) -> PreparedRuntimeClosure:
     capability = _claim_admission(admission, issuer)
