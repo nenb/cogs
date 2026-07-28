@@ -2,6 +2,7 @@
 """Actual report construction and three independent production validation paths."""
 
 import copy
+import errno
 import hashlib
 import importlib.util
 import json
@@ -30,7 +31,6 @@ def load(name, path):
     spec.loader.exec_module(module)
     return module
 
-
 def canonical(value):
     return json.dumps(
         value,
@@ -40,10 +40,8 @@ def canonical(value):
         allow_nan=False,
     ).encode()
 
-
 def digest(value):
     return hashlib.sha256(canonical(value)).hexdigest()
-
 
 def recompute(value):
     """Recompute every digest except the one isolated after this function."""
@@ -58,10 +56,8 @@ def recompute(value):
     value["closure_sha256"] = digest(digest_view)
     return value
 
-
 def report_bytes(value):
     return canonical(value) + b"\n"
-
 
 def mutate(golden, name):
     value = copy.deepcopy(golden)
@@ -122,7 +118,6 @@ def mutate(golden, name):
         tool["mapping_sha256"] = "0" * 64
     return value
 
-
 def encoding_mutation(raw, name):
     if name == "duplicate-key":
         return raw.replace(b"{", b'{"version":"duplicate",', 1)
@@ -146,36 +141,112 @@ def encoding_mutation(raw, name):
         return b"{" + b" " * 131_072 + b"}\n"
     raise AssertionError(f"unknown encoding mutation: {name}")
 
+def bpf_result(program, syscall, arguments=(), architecture=0xC000003E):
+    words = {0: syscall, 4: architecture}
+    for index, value in enumerate(arguments):
+        words[16 + index * 8] = value & 0xFFFFFFFF
+        words[20 + index * 8] = value >> 32
+    accumulator = 0
+    pc = 0
+    while pc < len(program):
+        code, yes, no, constant = program[pc]
+        if code == 0x20:
+            accumulator = words.get(constant, 0)
+        elif code == 0x15:
+            pc += yes if accumulator == constant else no
+        elif code == 0x06:
+            return constant
+        else:
+            raise AssertionError(f"unsupported production cBPF opcode: {code:#x}")
+        pc += 1
+    raise AssertionError("production cBPF program fell through")
+
+def production_seccomp_contract(launcher):
+    socket_routes = {
+        "socket", "connect", "accept", "sendto", "recvfrom", "sendmsg",
+        "recvmsg", "shutdown", "bind", "listen", "getsockname", "getpeername",
+        "socketpair", "setsockopt", "getsockopt", "accept4", "recvmmsg", "sendmmsg",
+    }
+    if not socket_routes <= set(launcher._DENIED_SYSCALLS):
+        raise AssertionError("production seccomp syscall table is incomplete")
+    program = launcher._seccomp_program()
+    if (program[0] != (0x20, 0, 0, 4) or program[3] != (0x20, 0, 0, 0)
+            or bpf_result(program, 0, architecture=0) != 0x80000000):
+        raise AssertionError("seccomp architecture gate does not precede syscall dispatch")
+    denied = 0x00050000 | errno.EPERM
+    if any(bpf_result(program, number) != denied for number in set(launcher._DENIED_SYSCALLS.values())):
+        raise AssertionError("modeled seccomp table route was not denied")
+    fixed = (198, 0, 0, 0, launcher._AT_EMPTY_PATH)
+    hostile = ((199, *fixed[1:]), ((1 << 32) | 198, *fixed[1:]), (*fixed[:4], 0),
+               (*fixed[:4], launcher._AT_EMPTY_PATH | 1),
+               (*fixed[:4], launcher._AT_EMPTY_PATH | (1 << 32)))
+    if bpf_result(program, 322, fixed) != 0x7FFF0000:
+        raise AssertionError("fixed production execveat shape was not admitted")
+    if any(bpf_result(program, 322, arguments) != denied for arguments in hostile):
+        raise AssertionError("production execveat argument filter admitted a hostile shape")
+    if (bpf_result(program, 157, (launcher._PR_SET_SECCOMP,)) != denied
+            or bpf_result(program, 157, (launcher._PR_GET_SECCOMP,)) != 0x7FFF0000):
+        raise AssertionError("production prctl seccomp argument filter changed")
+
+def production_observation_mutation(launcher):
+    if "_build_observed_result" not in launcher._coordinate_with_ops.__code__.co_names:
+        raise AssertionError("production coordinator bypasses observed-result construction")
+    names = set(tuple(launcher.RuntimeQualificationResult.__dataclass_fields__)[7:])
+    cleanup_names = {"children_reaped", "descendants_reaped", "descriptors_restored",
+                     "mounts_restored", "namespace_handles_released", "namespaces_released", "paths_restored"}
+    tool = {name: True for name in names - cleanup_names}
+    cleanup = {name: True for name in cleanup_names}
+    if launcher._build_observed_result((tool, dict(tool)), cleanup) != {name: True for name in names}:
+        raise AssertionError("complete production observation construction diverged")
+    for changed in names:
+        first, final = dict(tool), dict(cleanup)
+        target = final if changed in cleanup_names else first
+        target[changed] = False
+        expect_typed_rejection(lambda _raw: launcher._build_observed_result((first, tool), final), b"",
+                               launcher.RuntimeLauncherError, f"observation:{changed}")
+        target.pop(changed)
+        expect_typed_rejection(lambda _raw: launcher._build_observed_result((first, tool), final), b"",
+                               launcher.RuntimeLauncherError, f"omission:{changed}")
+
+def production_parser_contract(launcher):
+    stat_record = b"7 (worker) S " + b" ".join([b"1"] * 49) + b"\n"
+    maps_record = b"00400000-00401000 r-xp 00000000 08:01 123 /tool\n"
+    status_record = launcher._status("child", 0, pid=7)
+    for parser, accepted, hostile in (
+        (lambda raw: launcher._parse_proc_stat(raw, 7), stat_record, stat_record.replace(b"7 ", b"8 ", 1)),
+        (launcher._parse_maps, maps_record, maps_record.replace(b"r-xp", b"r-qp")),
+        (lambda raw: launcher._parse_sandbox_status(raw, "child", 0), status_record, status_record[:-1] + b',"x":0}'),
+    ):
+        parser(accepted)
+        expect_typed_rejection(parser, hostile, launcher.RuntimeLauncherError, "strict production parser")
 
 def manifest():
-    value = json.loads(MUTATIONS_PATH.read_text())
-    expected = {"version", "acceptance_ids", "case_fields", "semantic", "encoding"}
-    if set(value) != expected:
-        raise AssertionError("report manifest shape is not closed")
-    fields = tuple(value["case_fields"])
-    required = (
-        "id",
-        "production_method",
-        "primitive_fault",
-        "intended_code",
-        "cleanup_domains",
-        "sentinel",
-    )
-    if fields != required:
+    records = [json.loads(line) for line in MUTATIONS_PATH.read_text().splitlines()]
+    header, *rows = records
+    required = ("id", "production_method", "primitive_fault", "intended_code",
+                "cleanup_domains", "sentinel")
+    expected_header = {"type", "version", "acceptance_ids", "case_fields"}
+    if set(header) != expected_header or header["type"] != "header":
+        raise AssertionError("report manifest header is not closed")
+    if tuple(header["case_fields"]) != required or any(set(row) != set(required) for row in rows):
         raise AssertionError("report manifest case contract changed")
-    semantic_shape = set(required) | {"schema"}
-    if any(set(case) != semantic_shape for case in value["semantic"]):
-        raise AssertionError("semantic report case is not closed")
-    if any(set(case) != set(required) for case in value["encoding"]):
-        raise AssertionError("encoding report case is not closed")
-    cases = [*value["semantic"], *value["encoding"]]
-    identifiers = [case["id"] for case in cases]
+    value = {"semantic": [], "encoding": []}
+    for row in rows:
+        fault = row["primitive_fault"]
+        family = fault.get("family") if type(fault) is dict else None
+        expected = {"family", "name", "schema"} if family == "semantic" else {"family", "name"}
+        if family not in value or set(fault) != expected:
+            raise AssertionError("report primitive fault is not closed")
+        case = {**row, "primitive_fault": fault["name"]}
+        if family == "semantic":
+            case["schema"] = fault["schema"]
+        value[family].append(case)
+    identifiers = [row["id"] for row in rows]
     if len(identifiers) != len(set(identifiers)):
         raise AssertionError("duplicate report case identity")
-    if any(not case["production_method"] or not case["sentinel"] for case in cases):
+    if any(not row["production_method"] or not row["sentinel"] for row in rows):
         raise AssertionError("report case lacks a production branch sentinel")
     return value
-
 
 def corpus(fixture):
     golden = json.loads(GOLDEN_PATH.read_bytes())
@@ -184,7 +255,6 @@ def corpus(fixture):
         rows.append({"id": case["id"], "schema": case["schema"],
                      "value": mutate(golden, case["primitive_fault"])})
     return rows
-
 
 def production_objects(closure, golden):
     closures = []
@@ -228,7 +298,6 @@ def production_objects(closure, golden):
         ))
     return tuple(closures), tuple(mappings)
 
-
 def expect_typed_rejection(function, raw, error_type, label):
     try:
         function(raw)
@@ -237,7 +306,6 @@ def expect_typed_rejection(function, raw, error_type, label):
     except BaseException as error:
         raise AssertionError(f"{label} raised untyped {type(error).__name__}") from error
     raise AssertionError(f"{label} was accepted")
-
 
 def emit_schema_corpus():
     fixture = manifest()
@@ -249,18 +317,24 @@ def parent():
     fixture = manifest()
     closure = load("completion_trusted_runtime_closure", CLOSURE_PATH)
     launcher = load("completion_trusted_runtime_launcher", LAUNCHER_PATH)
+    production_seccomp_contract(launcher)
+    production_observation_mutation(launcher)
+    production_parser_contract(launcher)
     producer = closure._producer_decode_report
     consumer = launcher._decode_report
-    schema_method = launcher._SourceAdmission._validate_tracked_schema
-    identities = {schema_method.__code__, producer.__code__, consumer.__code__}
-    if len(identities) != 3:
-        raise AssertionError("schema/producer/consumer implementation identity collapsed")
     producer_reencode = closure._producer_reencode_report
-    if producer_reencode.__code__ is launcher._canonical.__code__:
-        raise AssertionError("producer and consumer re-encoders share an implementation")
+    consumer_reencode = launcher._consumer_reencode_report
+    schema_method = launcher._SourceAdmission._validate_tracked_schema
+    decoders = {schema_method.__code__, producer.__code__, consumer.__code__}
+    encoders = {producer_reencode.__code__, consumer_reencode.__code__}
+    if len(decoders) != 3 or len(encoders) != 2:
+        raise AssertionError("three production report codec implementations collapsed")
 
     schema_holder = SimpleNamespace(_schema_bytes=SCHEMA_PATH.read_bytes())
-    schema_gate = lambda raw: schema_method(schema_holder, raw)
+    schema_calls = []
+    def schema_gate(raw):
+        schema_calls.append(raw)
+        return schema_method(schema_holder, raw)
     admission = SimpleNamespace(_validate_tracked_schema=schema_gate)
     raw = GOLDEN_PATH.read_bytes()
     golden = json.loads(raw)
@@ -268,14 +342,14 @@ def parent():
     constructed, constructed_value = closure._construct_report(
         closure._Ops(), admission, closures, mappings
     )
-    if constructed != raw or constructed_value != golden:
-        raise AssertionError("actual production report construction diverged from golden")
+    if constructed != raw or constructed_value != golden or schema_calls != [raw]:
+        raise AssertionError("actual three-codec production construction diverged from golden")
     producer_value = producer(raw)
     consumer_value = consumer(raw)
     schema_gate(raw)
     if producer_reencode(producer_value) != raw:
         raise AssertionError("producer re-encoder diverged")
-    if launcher._canonical(consumer_value, True) != raw:
+    if consumer_reencode(consumer_value) != raw:
         raise AssertionError("consumer re-encoder diverged")
     if producer_value is consumer_value or producer_value != consumer_value:
         raise AssertionError("semantic codec values are not independent and equal")
