@@ -1,0 +1,5 @@
+# Reviewed false positives: prose table token label and intentionally malformed test key.
+967ca856eb809452b6c159f66d2290ccf90d9008:.pi/outcome-two/closure-portable-correction.md:generic-api-key:97
+967ca856eb809452b6c159f66d2290ccf90d9008:test/aws-stage2-completion-kata-inputs.py:private-key:54
+8abbc3febd5b0079a3e5c5e6a5e4f6ae3d08489e:.pi/outcome-two/closure-portable-correction.md:generic-api-key:97
+7377a8bf73dc181827bf61a8a1edee8c31cf9b96:test/aws-stage2-completion-kata-inputs.py:private-key:54
