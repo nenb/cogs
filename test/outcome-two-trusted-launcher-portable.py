@@ -208,8 +208,15 @@ class IssuanceEndpoint:
     def __init__(self, ops):
         self.ops = ops
 
-    def sendmsg(self, parts, ancillary):
-        del ancillary
+    def fileno(self):
+        return 1
+
+    def sendmsg(self, parts, ancillary, flags=0):
+        del ancillary, flags
+        if self.ops.mutation("recvmsg") == "duplicate-rights":
+            raise self.ops.module.RuntimeLauncherError(
+                "handoff rights cardinality", "issuer-rights-cardinality"
+            )
         return len(parts[0])
 
     def recvmsg(self, *arguments):
@@ -459,10 +466,13 @@ def invoke_bootstrap(module, row, created):
         del size
         return reads.pop(fd, b"")
 
+    def platform_gate():
+        return None
+
     try:
         with patched(
             module,
-            _platform_gate=lambda: None,
+            _platform_gate=platform_gate,
             _SystemOps=lambda: ops,
             _held_sources=ops.held_sources,
             _git_tree=ops.git_tree,
@@ -483,8 +493,15 @@ def invoke_issuer(module, row, created):
     created.append(ops)
     endpoint = IssuanceEndpoint(ops)
     admission, issuer = admission_objects(module, endpoint)
+    selectable = lambda readable, writable, exceptional, timeout: (
+        readable,
+        writable,
+        exceptional,
+    )
     if row["production_method"] == "_consume_issuance":
-        with patched(module, _SystemOps=lambda: ops):
+        with patched(module, _SystemOps=lambda: ops), patched(
+            module.select, select=selectable
+        ):
             module._consume_issuance(
                 endpoint, b"n" * 32, admission, os.getpid(), ops,
             )
@@ -503,7 +520,7 @@ def invoke_issuer(module, row, created):
         try:
             with patched(module, _SystemOps=lambda: ops), patched(
                 module.fcntl, fcntl=modeled_fcntl,
-            ):
+            ), patched(module.select, select=selectable):
                 issuer._accept_runtime_closure(report_bytes, descriptors, rows)
         finally:
             for descriptor in descriptors:

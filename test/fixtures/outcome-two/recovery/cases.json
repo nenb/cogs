@@ -4,7 +4,7 @@
     {
       "id": "AT-ADAPT-REC-01:unavailable-root-cut-recovered",
       "production_method": "_recover_transaction_with_ops",
-      "primitive_fault": {"method": "mount", "mutation": "enosys"},
+      "primitive_fault": { "method": "mount", "mutation": "enosys" },
       "intended_code": "primitive-unavailable",
       "cleanup_domains": ["mounts", "descriptors"],
       "sentinel": "ops.mount:enosys"
@@ -12,7 +12,7 @@
     {
       "id": "AT-ROOT-01:replacement-detected-during-recovery",
       "production_method": "_RootOwner.cleanup",
-      "primitive_fault": {"method": "close", "mutation": "replace-root-after-close"},
+      "primitive_fault": { "method": "close", "mutation": "replace-root-after-close" },
       "intended_code": "cleanup-uncertain",
       "cleanup_domains": ["root", "paths", "descriptors"],
       "sentinel": "ops.close:replace-root-after-close"
@@ -20,7 +20,7 @@
     {
       "id": "AT-LIFE-01:registration-readback-unavailable",
       "production_method": "_ProcessOwner.register",
-      "primitive_fault": {"method": "start_time", "mutation": "enosys"},
+      "primitive_fault": { "method": "start_time", "mutation": "enosys" },
       "intended_code": "primitive-unavailable",
       "cleanup_domains": ["processes", "descriptors"],
       "sentinel": "ops.start_time:enosys"
@@ -28,7 +28,7 @@
     {
       "id": "AT-LIFE-02:owned-process-signal-fails",
       "production_method": "_ProcessOwner.cleanup",
-      "primitive_fault": {"method": "pidfd_signal", "mutation": "eio"},
+      "primitive_fault": { "method": "pidfd_signal", "mutation": "eio" },
       "intended_code": "cleanup-uncertain",
       "cleanup_domains": ["processes", "descriptors"],
       "sentinel": "ops.pidfd_signal:eio"
@@ -36,7 +36,7 @@
     {
       "id": "AT-FD-CLOSE-01:close-after-effect-is-terminal",
       "production_method": "_recover_transaction_with_ops",
-      "primitive_fault": {"method": "close", "mutation": "after-effect-eio"},
+      "primitive_fault": { "method": "close", "mutation": "after-effect-eio" },
       "intended_code": "cleanup-uncertain",
       "cleanup_domains": ["descriptors"],
       "sentinel": "ops.close:after-effect-eio"
@@ -44,7 +44,7 @@
     {
       "id": "AT-UNAV-01:unavailable-preserved-after-clean-recovery",
       "production_method": "_recover_transaction_with_ops",
-      "primitive_fault": {"method": "mount", "mutation": "eopnotsupp"},
+      "primitive_fault": { "method": "mount", "mutation": "eopnotsupp" },
       "intended_code": "primitive-unavailable",
       "cleanup_domains": ["mounts", "descriptors"],
       "sentinel": "ops.mount:eopnotsupp"

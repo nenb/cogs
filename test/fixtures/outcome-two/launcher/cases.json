@@ -4,7 +4,7 @@
     {
       "id": "AT-ADAPT-BOOT-01:authenticated-launcher-byte-mismatch",
       "production_method": "_bootstrap_with_ops",
-      "primitive_fault": {"method": "held_sources", "mutation": "launcher-byte-mismatch"},
+      "primitive_fault": { "method": "held_sources", "mutation": "launcher-byte-mismatch" },
       "intended_code": "launcher-rejected",
       "cleanup_domains": ["source-fds", "descriptors"],
       "sentinel": "ops.held_sources:launcher-byte-mismatch"
@@ -12,7 +12,7 @@
     {
       "id": "AT-ADAPT-ISSUE-01:producer-duplicate-rights",
       "production_method": "_WorkerIssuer._accept_runtime_closure",
-      "primitive_fault": {"method": "recvmsg", "mutation": "duplicate-rights"},
+      "primitive_fault": { "method": "recvmsg", "mutation": "duplicate-rights" },
       "intended_code": "issuer-rights-cardinality",
       "cleanup_domains": ["issued-fds", "endpoint"],
       "sentinel": "ops.recvmsg:duplicate-rights"
@@ -20,7 +20,7 @@
     {
       "id": "AT-ADAPT-ISSUE-01:consumer-duplicate-rights",
       "production_method": "_consume_issuance",
-      "primitive_fault": {"method": "recvmsg", "mutation": "duplicate-rights"},
+      "primitive_fault": { "method": "recvmsg", "mutation": "duplicate-rights" },
       "intended_code": "issuer-rights-cardinality",
       "cleanup_domains": ["issued-fds", "endpoint"],
       "sentinel": "ops.recvmsg:duplicate-rights"
@@ -28,7 +28,7 @@
     {
       "id": "AT-ADAPT-T2-01:seccomp-denial-observation-missing",
       "production_method": "_enter_boundary",
-      "primitive_fault": {"method": "probe_seccomp_denials", "mutation": "omit-execve"},
+      "primitive_fault": { "method": "probe_seccomp_denials", "mutation": "omit-execve" },
       "intended_code": "seccomp-denials",
       "cleanup_domains": ["namespace", "root"],
       "sentinel": "ops.probe_seccomp_denials:omit-execve"
@@ -36,7 +36,7 @@
     {
       "id": "AT-ADAPT-T2-01:descriptor-enumerator-duplicate",
       "production_method": "_descriptor_snapshot",
-      "primitive_fault": {"method": "getdents", "mutation": "duplicate-record"},
+      "primitive_fault": { "method": "getdents", "mutation": "duplicate-record" },
       "intended_code": "fd-dirent-duplicate",
       "cleanup_domains": ["descriptors"],
       "sentinel": "ops.getdents:duplicate-record"
@@ -44,7 +44,7 @@
     {
       "id": "AT-ROOT-01:root-baseline-created-after-parent-open",
       "production_method": "_RootOwner.prepare",
-      "primitive_fault": {"method": "open", "mutation": "create-root-after-open"},
+      "primitive_fault": { "method": "open", "mutation": "create-root-after-open" },
       "intended_code": "root-baseline",
       "cleanup_domains": ["paths", "descriptors"],
       "sentinel": "ops.open:create-root-after-open"
@@ -52,7 +52,7 @@
     {
       "id": "AT-ROOT-01:materialization-mount-unavailable",
       "production_method": "_materialize_root",
-      "primitive_fault": {"method": "mount", "mutation": "enosys"},
+      "primitive_fault": { "method": "mount", "mutation": "enosys" },
       "intended_code": "primitive-unavailable",
       "cleanup_domains": ["mounts", "paths"],
       "sentinel": "ops.mount:enosys"
@@ -60,7 +60,7 @@
     {
       "id": "AT-FIXTURE-01:closed-ledger-production-branch",
       "production_method": "_descriptor_snapshot",
-      "primitive_fault": {"method": "getdents", "mutation": "missing-enumerator"},
+      "primitive_fault": { "method": "getdents", "mutation": "missing-enumerator" },
       "intended_code": "fd-enumerator-cardinality",
       "cleanup_domains": ["descriptors"],
       "sentinel": "ops.getdents:missing-enumerator"
