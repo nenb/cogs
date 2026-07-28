@@ -1378,18 +1378,18 @@ def _retain_quarantine(job: str, parent: FdLease, directory: FdLease, capability
     placeholder_name = source if exchanged else target
     placeholder = directory.registry.open("quarantine-exchange",
         lambda: os.open(placeholder_name, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW, dir_fd=parent.number))
+    _require(placeholder.state is FdState.OWNED, "quarantine exchange Lease adoption")
     placeholder_identity = _directory_identity(os.fstat(placeholder.number))
     if not exchanged:
         _require(not _enumerate_directory(placeholder.number, False), "quarantine placeholder inventory")
         _rename(parent.number, source.encode(), target.encode(), 2)
-    _require(_directory_identity(os.stat(target, dir_fd=parent.number, follow_symlinks=False)) == expected,
-             "quarantine retained generation")
-    _require(_directory_identity(os.stat(source, dir_fd=parent.number, follow_symlinks=False)) == placeholder_identity,
-             "quarantine exchange generation")
+    _require(_directory_identity(os.stat(target, dir_fd=parent.number, follow_symlinks=False)) == expected, "quarantine retained generation")
+    _require(_directory_identity(os.stat(source, dir_fd=parent.number, follow_symlinks=False)) == placeholder_identity, "quarantine exchange generation")
     names = _enumerate_directory(directory.number, False)
     for name in names:
         retained = directory.registry.open(f"quarantine-retained:{name}",
             lambda name=name: os.open(name, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW, dir_fd=directory.number))
+        _require(retained.state is FdState.OWNED, "quarantine retained Lease adoption")
         retained_identity = _identity(os.fstat(retained.number))
         replacement = _anonymous(directory.registry, placeholder, f"quarantine-placeholder:{name}")
         slot = hmac.new(capability, f"slot:{name}".encode(), hashlib.sha256).hexdigest().encode()
@@ -1407,6 +1407,7 @@ def _retain_quarantine(job: str, parent: FdLease, directory: FdLease, capability
         _require(slot in allowed_slots, "quarantine recovery slot")
         retained = directory.registry.open("quarantine-recovery-slot",
             lambda slot=slot: os.open(slot, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW, dir_fd=placeholder.number))
+        _require(retained.state is FdState.OWNED, "quarantine recovery Lease adoption")
         os.unlink(slot, dir_fd=placeholder.number)
         retained.close()
     os.fsync(directory.number)
@@ -1414,11 +1415,7 @@ def _retain_quarantine(job: str, parent: FdLease, directory: FdLease, capability
     os.rmdir(source, dir_fd=parent.number)
     os.fsync(parent.number)
     placeholder.close()
-def _cleanup_owned(
-    job: str,
-    registry: FdRegistry,
-    parent: FdLease,
-    directory: FdLease,
+def _cleanup_owned(job: str, registry: FdRegistry, parent: FdLease, directory: FdLease,
     authority: Mapping[str, object],
     authority_generation: dict[str, int],
     receipt: Mapping[str, object] | None,
@@ -1449,10 +1446,10 @@ def _recover_quarantine(job: str, parent: FdLease, directory: FdLease, capabilit
     receipt = receipt_generation = None
     if ".owner.json" in names:
         receipt, receipt_generation = _read_receipt(directory, job, authority, capability)
-    _cleanup_owned(job, directory.registry, parent, directory, authority, authority_generation,
-                   receipt, receipt_generation, capability)
+    _cleanup_owned(job, directory.registry, parent, directory, authority, authority_generation, receipt, receipt_generation, capability)
 def _custodian_main(control_fd: int, context: WorkflowContext, capability: bytes) -> None:
     supervisor, worker = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET | socket.SOCK_CLOEXEC)
+    _require(supervisor.fileno() >= 0 and worker.fileno() >= 0, "custodian socket object adoption")
     owner_pid = os.getpid()
     pid = os.fork()
     if pid == 0:
@@ -1462,6 +1459,7 @@ def _custodian_main(control_fd: int, context: WorkflowContext, capability: bytes
             _require(prctl(1, signal.SIGKILL, 0, 0, 0) == 0 and os.getppid() == owner_pid, "custodian supervisor ownership")
             _require(worker.recv(1) == b"G", "custodian worker gate")
             worker_call = worker.dup()
+            _require(worker_call.fileno() >= 0, "custodian worker call socket adoption")
             _custodian_worker(control_fd, context, capability, worker_call.detach())
         except BaseException:
             try:
@@ -1474,6 +1472,7 @@ def _custodian_main(control_fd: int, context: WorkflowContext, capability: bytes
     worker.close()
     registry = FdRegistry()
     pidfd = registry.open("capability-custodian-pidfd", lambda: os.pidfd_open(pid, 0))
+    _require(pidfd.state is FdState.OWNED, "capability custodian pidfd Lease adoption")
     _require(supervisor.send(b"G") == 1, "custodian worker release")
     lease_packet, lease_rights, _flags, _address = supervisor.recvmsg(64, socket.CMSG_SPACE(struct.calcsize("2i")))
     lease_numbers = [number for level, kind, data in lease_rights if level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS
@@ -1656,6 +1655,7 @@ def cleanup_report(job: str) -> None:
     peer = struct.unpack("3i", endpoint.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
     peer_pid = peer[0]
     pidfd = registry.open("cleanup-custodian-pidfd", lambda: os.pidfd_open(peer_pid, 0))
+    _require(pidfd.state is FdState.OWNED, "cleanup custodian pidfd Lease adoption")
     peer_start = _process_start(peer_pid)
     peer_exact = peer[1:] == (os.geteuid(), os.getegid()) and peer_start > 0
     peer_exact = peer_exact and struct.unpack("3i", endpoint.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12)) == peer

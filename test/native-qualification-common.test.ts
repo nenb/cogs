@@ -400,7 +400,10 @@ extra={'.authority.json':A,'.owner.json':O,'report.json':R,'foreign':F};assert r
   assert.match(receiptSource, /hmac\.new\(capability/u);
   const readReceiptSource = common.slice(common.indexOf("def _read_receipt("), common.indexOf("def _file_digest_at("));
   assert.doesNotMatch(readReceiptSource, /_sha256\(SCHEMA\)/u, "recovery must use the authenticated schema identity");
-  assert.match(readReceiptSource, /HEX64\.fullmatch\(str\(schema_identity\)\)/u);
+  assert.match(
+    readReceiptSource,
+    /_require\(all\(HEX64\.fullmatch\(str\(identity\)\) is not None for identity in code\), "retained receipt code identities"\)/u,
+  );
   const authoritySource = common.slice(common.indexOf("def _authority("), common.indexOf("def _receipt("));
   assert.doesNotMatch(authoritySource, /"capability"\s*:/u, "cleanup capability is never durable plaintext");
   const cleanupSource = common.slice(common.indexOf("def cleanup_report("), common.indexOf("class NativeSession:"));
