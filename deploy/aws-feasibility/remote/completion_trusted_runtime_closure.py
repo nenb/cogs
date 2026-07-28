@@ -1474,7 +1474,7 @@ def _mapped_closure(ops: _Ops, helper: HelperLease, closure: ResolvedToolClosure
             )
             mapped_fd = map_lease.fd
         except PermissionError as error:
-            if error.errno != errno.EACCES:
+            if error.errno not in (errno.EACCES, errno.EPERM):
                 raise
             # Hosted Linux may deny following proc map_files links even to the
             # direct parent.  The maps device/inode still binds the mapping to
