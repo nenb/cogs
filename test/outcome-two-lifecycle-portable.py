@@ -22,6 +22,7 @@ FIXTURES = ROOT / "test/fixtures/outcome-two"
 sys.path.insert(0, str(REMOTE))
 elf = importlib.import_module("completion_elf")
 closure = importlib.import_module("completion_trusted_runtime_closure")
+launcher = importlib.import_module("completion_trusted_runtime_launcher")
 MATRIX = json.loads((FIXTURES / "lifecycle/faults.json").read_text())
 RAW = (FIXTURES / "elf/valid-executable.elf").read_bytes()
 GENERATION = closure.SourceGeneration(8, 101, len(RAW), 1, 1, stat.S_IFREG | 0o755, 0, 0)
@@ -71,6 +72,9 @@ class KernelOps(closure._Ops):
         self.dir_reads = 0
         self.enumerator_round = 0
         self.close_ranges = []
+        self.preparation = None
+        self.preregistration_observed = False
+        self.release_observed = False
         if fault in {"closed-stdin", "closed-stdout", "closed-stderr"}:
             self.fds.pop({"closed-stdin": 0, "closed-stdout": 1, "closed-stderr": 2}[fault])
 
@@ -103,6 +107,12 @@ class KernelOps(closure._Ops):
                     return self.allocate("devnull", preferred=candidate)
             return self.allocate("devnull")
         if path.endswith("/stat"):
+            if not self.preparation or not self.preparation.helpers:
+                raise AssertionError("helper effect preceded surviving-owner registration")
+            helper = self.preparation.helpers[-1]
+            if helper.pid != 123 or helper.pidfd.state is not closure._FdState.OWNED:
+                raise AssertionError("helper preregistration omitted exact pidfd authority")
+            self.preregistration_observed = True
             if self.fault == "stat-open":
                 raise OSError(errno.EMFILE, "stat")
             start = self.processes[123].start
@@ -125,6 +135,9 @@ class KernelOps(closure._Ops):
         self.close_attempts.append(fd)
         if fd not in self.fds:
             raise AssertionError("production double-closed a descriptor number")
+        if self.fault == "spawn-after" and self.preparation.helpers:
+            self.fault = "spawn-after-fired"
+            raise OSError("fault after registered spawn")
         if self.fault in {"fd-dir-close", "fd-dir-read-close"} and self.fds[fd] == "fd-directory":
             del self.fds[fd]
             raise OSError("fd directory close")
@@ -136,6 +149,11 @@ class KernelOps(closure._Ops):
         del maximum
         if self.fault in {"fd-dir-read", "fd-dir-read-close"}:
             raise OSError("getdents")
+        if self.fault == "transient-library-fd":
+            transient = self.allocate("library-duplicate")
+            del self.fds[transient]
+            self.fd_data.pop(transient, None)
+            self.positions.pop(transient, None)
         if self.fault == "dirent-tail":
             self.fault = None
             self.dir_reads += 1
@@ -173,8 +191,6 @@ class KernelOps(closure._Ops):
         self.processes[123] = process
         pidfd = self.allocate("pidfd")
         self.pidfds[pidfd] = process
-        if self.fault == "spawn-after":
-            raise OSError("clone after effect")
         return 123, pidfd
 
     def poll_readable(self, fd, seconds):
@@ -198,6 +214,15 @@ class KernelOps(closure._Ops):
 
     def write(self, fd, data):
         del fd
+        if data == b"G\n":
+            if not self.preregistration_observed or not self.preparation.helpers:
+                raise AssertionError("helper release preceded complete registration")
+            helper = self.preparation.helpers[-1]
+            identity = (helper.start_time, helper.session, helper.process_group,
+                        helper.executable_identity)
+            if any(value is None for value in identity):
+                raise AssertionError("helper release preceded identity registration")
+            self.release_observed = True
         return len(data)
 
     def fstat(self, fd):
@@ -253,26 +278,48 @@ class KernelOps(closure._Ops):
         return False
 
 
+def case_fault(case):
+    fault = case["primitive_fault"]
+    return None if fault == "none" else fault
+
+
 def fd_case(case):
-    ops = KernelOps(case.get("fault"))
-    try:
-        first = closure._snapshot_fds(ops)
-        ops.dir_reads = 0
-        second = closure._snapshot_fds(ops)
-    except BaseException as error:
-        if case["expect"] != "reject": raise
-        if case.get("fault") == "fd-dir-read-close" and not isinstance(error, closure.RuntimeClosureCleanupError):
-            raise AssertionError("fd primary/close failures were not aggregated") from error
-    else:
-        if case["expect"] != "accept": raise AssertionError(f"fd case accepted: {case['id']}")
-        if first != second or first != frozenset({0, 1, 2, 88}):
-            raise AssertionError("enumeration descriptor contaminated the baseline")
+    implementations = (
+        ("closure", closure._snapshot_fds, frozenset({0, 1, 2, 88})),
+        ("launcher", launcher._descriptor_snapshot, (0, 1, 2, 88)),
+    )
+    for owner, snapshot, expected in implementations:
+        ops = KernelOps(case_fault(case))
+        try:
+            first = snapshot(ops)
+            ops.dir_reads = 0
+            second = snapshot(ops)
+        except (OSError, closure.RuntimeClosureError, launcher.RuntimeLauncherError) as error:
+            if case["expect"] != "reject":
+                raise
+            if case_fault(case) == "fd-dir-read-close":
+                cleanup_types = (
+                    closure.RuntimeClosureCleanupError,
+                    launcher.RuntimeLauncherCleanupError,
+                )
+                if not isinstance(error, cleanup_types):
+                    raise AssertionError("fd primary/close failures were not aggregated") from error
+        else:
+            if case["expect"] != "accept":
+                raise AssertionError(f"{owner} fd case accepted: {case['id']}")
+            if first != second or first != expected:
+                raise AssertionError(f"{owner} enumerator contaminated the baseline")
+            if case_fault(case) == "transient-library-fd" and any(
+                kind == "library-duplicate" for kind in ops.fds.values()
+            ):
+                raise AssertionError("transient library descriptor survived enumeration")
 
 
 def start(ops):
     closure._reserve_stdio(ops)
     baseline = frozenset(ops.fds)
     preparation = closure.PreparationLease(ops, baseline, ())
+    ops.preparation = preparation
     helper = closure._spawn_helper(ops, preparation, RESOLVED)
     if helper not in preparation.helpers or helper.state is not closure._HelperState.EXEC_IDENTIFIED:
         raise AssertionError("helper was not registered and identified")
@@ -280,17 +327,18 @@ def start(ops):
 
 
 def helper_case(case):
-    ops = KernelOps(case.get("fault"))
+    ops = KernelOps(case_fault(case))
     closure._reserve_stdio(ops)
     preparation = closure.PreparationLease(ops, frozenset(ops.fds), ())
+    ops.preparation = preparation
     try:
         helper = closure._spawn_helper(ops, preparation, RESOLVED)
-        if case.get("fault") == "ambient-fd":
+        if case_fault(case) == "ambient-fd":
             closure._close_complement(ops, (0, 1, 2, 900))
             if not any(first <= 88 <= last for first, last in ops.close_ranges):
                 raise AssertionError("ambient fd was not in the closed complement")
         closure._stop_helper(ops, preparation, helper)
-    except BaseException:
+    except (OSError, closure.RuntimeClosureError):
         if case["expect"] != "reject":
             raise
     else:
@@ -298,97 +346,193 @@ def helper_case(case):
             raise AssertionError(f"helper case accepted: {case['id']}")
         if ops.processes[123].live or not ops.processes[123].reaped:
             raise AssertionError("helper success did not reap the independent process")
+        if not ops.preregistration_observed or not ops.release_observed:
+            raise AssertionError("helper production registration/release gates were bypassed")
     if 123 in ops.processes and ops.processes[123].live:
         retained = any(helper.pid == 123 and helper.pidfd.state is closure._FdState.OWNED
                        for helper in preparation.helpers)
-        if not retained and case.get("fault") != "spawn-after":
+        if not retained:
             raise AssertionError(f"live helper lacks retained recovery authority: {case['id']}")
 
 
 def stop_case(case):
     ops = KernelOps()
     preparation, helper = start(ops)
-    fault = case.get("fault")
+    fault = case_fault(case)
     ops.fault = fault
     process = ops.processes[123]
-    if fault == "direct-descendant": process.children = (124,)
-    if fault == "grandchild": process.children = (124, 125)
-    if fault == "start-time-drift": process.start += 1
-    if fault == "executable-drift": process.executable = (8, 999)
+    if fault == "direct-descendant":
+        process.children = (124,)
+    if fault == "grandchild":
+        process.children = (124, 125)
+    if fault == "start-time-drift":
+        process.start += 1
+    if fault == "executable-drift":
+        process.executable = (8, 999)
     try:
         closure._stop_helper(ops, preparation, helper)
-    except BaseException:
-        if case["expect"] != "reject": raise
+    except (OSError, closure.RuntimeClosureError):
+        if case["expect"] != "reject":
+            raise
     else:
-        if case["expect"] != "accept": raise AssertionError(f"stop case accepted: {case['id']}")
+        if case["expect"] != "accept":
+            raise AssertionError(f"stop case accepted: {case['id']}")
     if process.signals and fault in {"start-time-drift", "session-drift", "process-group-drift", "executable-drift"}:
         raise AssertionError("production signaled after identity drift")
     if fault == "pidfd-close-while-live" and helper.pidfd.fd in ops.close_attempts:
         raise AssertionError("pidfd was discarded while the child could remain live")
 
 
+def lease_implementations():
+    return (
+        ("closure", closure.FdLease),
+        ("launcher", launcher._FdLease),
+    )
+
+
 def cleanup_case(case):
-    fault = case["fault"]
-    ops = KernelOps()
+    fault = case_fault(case)
     if fault == "three-close-errors":
-        leases = [closure.FdLease(ops.allocate("owned"), str(index)) for index in range(3)]
-        original = ops.close
-        def failing(fd):
-            original(fd)
-            raise OSError(f"close-{fd}")
-        ops.close = failing
-        try: closure._finish_fds(ops, leases, ValueError("primary"))
-        except closure.RuntimeClosureCleanupError as error:
-            if len(error.failures) != 4: raise AssertionError("cleanup aggregation lost failures")
-        else: raise AssertionError("cleanup errors accepted")
-    elif fault == "close-after-reuse":
-        fd = ops.allocate("owned")
-        lease = closure.FdLease(fd, "reuse")
-        original = ops.close
-        def reused(value):
-            original(value)
-            ops.fds[value] = "foreign"
-            raise OSError("after effect")
-        ops.close = reused
-        first = None
-        try: lease.close(ops)
-        except OSError as error: first = error
-        try: lease.close(ops)
-        except OSError as error:
-            if error is not first or ops.close_attempts.count(fd) != 1 or ops.fds[fd] != "foreign":
-                raise AssertionError("uncertain close was not poison-stable")
+        for owner, lease_type in lease_implementations():
+            ops = KernelOps()
+            leases = [lease_type(ops.allocate("owned"), str(index)) for index in range(3)]
+            original = ops.close
+
+            def failing(fd):
+                original(fd)
+                raise OSError(f"close-{fd}")
+
+            ops.close = failing
+            try:
+                if owner == "closure":
+                    closure._finish_fds(ops, leases, ValueError("primary"))
+                else:
+                    launcher._close_leases(ops, leases, ValueError("primary"))
+            except (closure.RuntimeClosureCleanupError, launcher.RuntimeLauncherCleanupError) as error:
+                failures = error.failures
+                expected = 4 if owner == "closure" else 3
+                if len(failures) != expected:
+                    raise AssertionError(f"{owner} cleanup aggregation lost failures")
+            else:
+                raise AssertionError(f"{owner} cleanup errors accepted")
+    elif fault in {"close-before-reuse", "close-after-reuse"}:
+        for owner, lease_type in lease_implementations():
+            ops = KernelOps()
+            fd = ops.allocate("owned")
+            lease = lease_type(fd, "reuse")
+            original = ops.close
+
+            def uncertain(value):
+                if fault == "close-before-reuse":
+                    ops.close_attempts.append(value)
+                    raise OSError("before effect")
+                original(value)
+                ops.fds[value] = "foreign"
+                raise OSError("after effect")
+
+            ops.close = uncertain
+            first = None
+            try:
+                lease.close(ops)
+            except OSError as error:
+                first = error
+            if first is None:
+                raise AssertionError(f"{owner} uncertain close was accepted")
+            ops.fds[fd] = "foreign"
+            try:
+                lease.close(ops)
+            except OSError as error:
+                if error is not first:
+                    raise AssertionError(f"{owner} poison error identity changed")
+            else:
+                raise AssertionError(f"{owner} poisoned lease became successful")
+            if ops.close_attempts.count(fd) != 1 or ops.fds[fd] != "foreign":
+                raise AssertionError(f"{owner} retried a reused descriptor number")
     elif fault == "double-close":
-        fd = ops.allocate("owned")
-        lease = closure.FdLease(fd, "double")
-        lease.close(ops)
-        lease.close(ops)
-        if ops.close_attempts.count(fd) != 1: raise AssertionError("proved close was repeated")
-    elif fault == "duplicate-registration":
+        for owner, lease_type in lease_implementations():
+            ops = KernelOps()
+            fd = ops.allocate("owned")
+            lease = lease_type(fd, "double")
+            lease.close(ops)
+            lease.close(ops)
+            if ops.close_attempts.count(fd) != 1:
+                raise AssertionError(f"{owner} proved close was repeated")
+    else:
+        ops = KernelOps()
+    if fault == "duplicate-registration":
         preparation = closure.PreparationLease(ops, frozenset(), ())
         fd = ops.allocate("owned")
         preparation.register_fd(fd, "one")
-        try: preparation.register_fd(fd, "two")
-        except closure.RuntimeClosureError: pass
-        else: raise AssertionError("duplicate registration accepted")
+        try:
+            preparation.register_fd(fd, "two")
+        except closure.RuntimeClosureError:
+            pass
+        else:
+            raise AssertionError("duplicate registration accepted")
     elif fault == "unexpected-child":
-        preparation = closure.PreparationLease(ops, frozenset(), ())
-        process = Process()
-        ops.processes[123] = process
-        if not process.live: raise AssertionError("independent process model collapsed into registry")
+        preparation, helper = start(ops)
+        ops.processes[123].children = (124,)
+        try:
+            closure._stop_helper(ops, preparation, helper)
+        except closure.RuntimeClosureError:
+            pass
+        else:
+            raise AssertionError("unexpected owned descendant branch was removed")
     elif fault == "cleanup-after":
-        lease = closure.FdLease(ops.allocate("owned"), "cleanup")
-        lease.close(ops)
-        if lease.state is not closure._FdState.CLOSED: raise AssertionError("close did not settle last")
-    else: raise AssertionError(f"unimplemented cleanup row: {fault}")
+        for owner, lease_type in lease_implementations():
+            owned = KernelOps()
+            fd = owned.allocate("owned")
+            lease = lease_type(fd, "cleanup")
+            original = owned.close
+
+            def after_effect(value):
+                original(value)
+                owned.fds[value] = "foreign"
+                raise OSError("cleanup after effect")
+
+            owned.close = after_effect
+            first = None
+            try:
+                lease.close(owned)
+            except OSError as error:
+                first = error
+            try:
+                lease.close(owned)
+            except OSError as error:
+                if first is None or error is not first:
+                    raise AssertionError(f"{owner} cleanup poison changed")
+            else:
+                raise AssertionError(f"{owner} cleanup poison became success")
+    elif fault not in {
+        "three-close-errors", "close-before-reuse", "close-after-reuse", "double-close"
+    }:
+        raise AssertionError(f"unimplemented cleanup row: {fault}")
 
 
+groups = (
+    ("fd_baseline_cases", fd_case),
+    ("helper_cases", helper_case),
+    ("stop_cases", stop_case),
+    ("cleanup_cases", cleanup_case),
+)
+metadata = {"version", "acceptance_ids", "case_fields"}
+if set(MATRIX) != metadata | {name for name, _runner in groups}:
+    raise AssertionError("lifecycle manifest shape is not closed")
+case_fields = set(MATRIX["case_fields"])
+cases = [case for name, _runner in groups for case in MATRIX[name]]
+if any(set(case) != case_fields for case in cases):
+    raise AssertionError("lifecycle manifest case is not closed")
+for case in cases:
+    if not case["production_method"] or not case["sentinel"]:
+        raise AssertionError("lifecycle case lacks a production branch sentinel")
+    if (case["intended_code"] == "OK") != (case["expect"] == "accept"):
+        raise AssertionError("lifecycle typed oracle contradicts expectation")
 executed = []
-for group, runner in (("fd_baseline_cases", fd_case), ("helper_cases", helper_case),
-                      ("stop_cases", stop_case), ("cleanup_cases", cleanup_case)):
+for group, runner in groups:
     for case in MATRIX[group]:
         runner(case)
         executed.append(case["id"])
-declared = [case["id"] for group in MATRIX if group.endswith("_cases") for case in MATRIX[group]]
+declared = [case["id"] for group, _runner in groups for case in MATRIX[group]]
 if executed != declared or len(executed) != len(set(executed)):
     raise AssertionError("lifecycle manifest rows were not executed exactly once")
 print("Outcome 2 lifecycle portable tests passed")
