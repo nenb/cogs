@@ -3993,8 +3993,13 @@ if __name__ == "__main__":
         raise SystemExit(78)
     except RuntimeLauncherError as error:
         code = error.code if type(error.code) is str and re.fullmatch(r"[A-Za-z0-9_.-]{1,40}", error.code) else "invalid-code"
-        if isinstance(error, RuntimeLauncherCleanupError) and error.failures:
-            nested = error.failures[0]
+        if isinstance(error, RuntimeLauncherCleanupError):
+            nested: BaseException = error
+            for _depth in range(8):
+                failures = getattr(nested, "failures", ())
+                if not failures:
+                    break
+                nested = failures[0]
             stage = getattr(nested, "code", type(nested).__name__)
             safe_stage = re.sub(r"[^A-Za-z0-9_.-]", "-", stage) if type(stage) is str else "invalid"
             code = f"cleanup-uncertain-{safe_stage}"[:40]
