@@ -2229,7 +2229,7 @@ def parent():
         raise AssertionError("private runtime root is not fixed beneath /tmp")
     launcher_source = MODULE.read_text()
     common_source = COMMON.read_text()
-    admission = common_source.index("held, digest = self._admit_sources(context, root)")
+    admission = common_source.index("stage, (held, digest) = \"held-source-admission\", self._admit_sources(context, root)")
     compilation = common_source.index("self._issue_cli(held[LAUNCHER_PATH].raw, admission, capsule)")
     if admission > compilation or "open(ROOT" in launcher_source:
         raise AssertionError("held source admission/compilation order drift")
