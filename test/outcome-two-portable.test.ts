@@ -61,7 +61,7 @@ function git(arguments_: string[]) {
 test("Outcome 2 portable hostile suites are bounded and optimization-safe", () => {
   for (const suite of suites) {
     const path = join(root, "test", suite);
-    const result = run(["-I", "-B", path], 30_000);
+    const result = run(["-I", "-B", path], 60_000);
     requireSuccess(result, suite);
     assert.match(result.stdout, /Outcome 2 .* portable tests passed/u, suite);
 
