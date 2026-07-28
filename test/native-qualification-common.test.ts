@@ -394,9 +394,12 @@ assert decoded['source_set_sha256']==value and not hasattr(launcher,'invoke_fixe
 test("sole held launcher CLI has exact isolated descriptor ABI and no ambient issuer", { skip: process.platform !== "linux" }, () => {
   const script = `import ast,json,sys\nsys.path.insert(0,'scripts/native-qualification');import common
 source=b'''import fcntl,json,os,sys
-environment_ok=not os.environ or dict(os.environ)=={'LC_CTYPE':'C.UTF-8'}
-os.environ.clear()
-value={'admission':os.read(3,4096)==b'ADMISSION\\n','descriptors':sorted(map(int,os.listdir('/proc/self/fd')))[:5]==[0,1,2,3,4],'environment':environment_ok and not os.environ,'isolated':bool(sys.flags.isolated and sys.flags.dont_write_bytecode),'seals':fcntl.fcntl(4,1034)==31}
+try:
+ environment_ok=not os.environ or dict(os.environ)=={'LC_CTYPE':'C.UTF-8'}
+ os.environ.clear()
+ value={'admission':os.read(3,4096)==b'ADMISSION\\n','descriptors':sorted(map(int,os.listdir('/proc/self/fd')))[:5]==[0,1,2,3,4],'environment':environment_ok and not os.environ,'isolated':bool(sys.flags.isolated and sys.flags.dont_write_bytecode),'seals':fcntl.fcntl(4,1034)==31}
+except BaseException as error:
+ value={'error':type(error).__name__,'errno':getattr(error,'errno',None)}
 os.write(1,json.dumps(value,sort_keys=True,separators=(',',':')).encode()+b'\\n')
 '''
 registry=common.FdRegistry();ops=common.SystemCommonOps(registry)
