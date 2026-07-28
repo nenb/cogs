@@ -15,12 +15,11 @@ CHECKS = tuple((
 MECHANISM_CHECKS = CHECKS[:-1]
 RESULT_VERSION = "cogs.runtime-lifecycle-qualification/v1"
 OBSERVATIONS = tuple((
-    "immutable_identity_preregistered setsid_second_gate pdeathsig_armed "
-    "parent_handshake_exact before_release_death after_release_death "
-    "starttime_revalidated session_owned process_group_owned "
-    "credentialed_pidfd_transfer stable_descendant_census adoption_exact "
-    "term_kill_bounded siginfo_exact all_reaped subreaper_restored "
-    "descriptors_restored"
+    "pdeathsig_armed parent_handshake_exact before_release_death "
+    "after_release_death starttime_revalidated session_owned "
+    "process_group_owned credentialed_pidfd_transfer stable_descendant_census "
+    "adoption_exact term_kill_bounded siginfo_exact all_reaped "
+    "subreaper_restored descriptors_restored"
 ).split())
 HEX64 = re.compile(r"[0-9a-f]{64}\Z")
 
@@ -34,7 +33,7 @@ def _require(condition: bool, message: str) -> None:
         raise QualificationError(message)
 
 
-def qualify(value: object, revision: str) -> dict[str, str]:
+def qualify(value: object, revision: str, source_digest: str) -> dict[str, str]:
     """Map one closed W1 process-owner result to mechanism checks; infer nothing."""
     fields = ("version", "source_revision", "source_set_sha256", *OBSERVATIONS)
     _require(type(value) is dict and set(value) == set(fields), "lifecycle result shape")
@@ -43,8 +42,9 @@ def qualify(value: object, revision: str) -> dict[str, str]:
     _require(type(revision) is str and result["source_revision"] == revision,
              "lifecycle result source")
     digest = result["source_set_sha256"]
-    _require(type(digest) is str and HEX64.fullmatch(digest) is not None,
-             "lifecycle source-set digest")
+    _require(type(source_digest) is str and HEX64.fullmatch(source_digest) is not None,
+             "lifecycle admitted source-set digest")
+    _require(digest == source_digest, "lifecycle source-set binding")
     _require(all(result[name] is True for name in OBSERVATIONS),
              "lifecycle mechanism observation")
     return {name: "pass" for name in MECHANISM_CHECKS}
@@ -68,7 +68,8 @@ def _workflow_bound() -> int:
     session = common.NativeSession.begin("D", __file__)
     failure: BaseException | None = None
     try:
-        checks = qualify(_invoke_production(session), session.context.head_sha)
+        result = _invoke_production(session)
+        checks = qualify(result, session.context.head_sha, session.source_set_sha256)
     except BaseException as error:
         failure = error
         checks = dict.fromkeys(MECHANISM_CHECKS, "fail")

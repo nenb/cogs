@@ -15,9 +15,9 @@ CHECKS = (
 MECHANISM_CHECKS = CHECKS[:-1]
 RESULT_VERSION = "cogs.runtime-descriptor-qualification/v1"
 OBSERVATIONS = (
-    "getdents_exact", "nofile_measured", "nofile_normalized", "fd_198_exact",
-    "fd_4096_exact", "close_range_exact", "cloexec_exact", "inheritance_exact",
-    "limit_restored", "descriptors_restored", "children_reaped",
+    "nofile_measured", "nofile_normalized", "fd_198_exact", "fd_4096_exact",
+    "close_range_exact", "cloexec_exact", "inheritance_exact", "limit_restored",
+    "descriptors_restored", "children_reaped",
 )
 HEX64 = re.compile(r"[0-9a-f]{64}\Z")
 
@@ -31,7 +31,7 @@ def _require(condition: bool, message: str) -> None:
         raise QualificationError(message)
 
 
-def qualify(value: object, revision: str) -> dict[str, str]:
+def qualify(value: object, revision: str, source_digest: str) -> dict[str, str]:
     """Map one closed W1 descriptor result to mechanism checks; infer nothing."""
     fields = ("version", "source_revision", "source_set_sha256", *OBSERVATIONS)
     _require(type(value) is dict and set(value) == set(fields), "descriptor result shape")
@@ -40,8 +40,9 @@ def qualify(value: object, revision: str) -> dict[str, str]:
     _require(type(revision) is str and result["source_revision"] == revision,
              "descriptor result source")
     digest = result["source_set_sha256"]
-    _require(type(digest) is str and HEX64.fullmatch(digest) is not None,
-             "descriptor source-set digest")
+    _require(type(source_digest) is str and HEX64.fullmatch(source_digest) is not None,
+             "descriptor admitted source-set digest")
+    _require(digest == source_digest, "descriptor source-set binding")
     _require(all(result[name] is True for name in OBSERVATIONS),
              "descriptor mechanism observation")
     return {name: "pass" for name in MECHANISM_CHECKS}
@@ -65,7 +66,8 @@ def _workflow_bound() -> int:
     session = common.NativeSession.begin("C", __file__)
     failure: BaseException | None = None
     try:
-        checks = qualify(_invoke_production(session), session.context.head_sha)
+        result = _invoke_production(session)
+        checks = qualify(result, session.context.head_sha, session.source_set_sha256)
     except BaseException as error:
         failure = error
         checks = dict.fromkeys(MECHANISM_CHECKS, "fail")

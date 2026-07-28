@@ -14,14 +14,8 @@ function adapter(body: string) {
 }
 
 const setup = `
-import dataclasses, runpy, types
+import runpy, types
 module = runpy.run_path(${JSON.stringify(path)}, run_name="native_e_portable")
-Result = dataclasses.make_dataclass(
- "SandboxQualificationResult",
- [(name, str) for name in module["SANDBOX_RESULT_STRINGS"]] +
- [(name, bool) for name in module["SANDBOX_RESULT_BOOLEANS"]],
- frozen=True,
-)
 revision = "1" * 40
 source_digest = "2" * 64
 observed = {name: True for name in module["SANDBOX_RESULT_BOOLEANS"]}
@@ -33,18 +27,18 @@ values = {
  **observed,
 }
 def result(row=values):
- return Result(*(row[name] for name in module["SANDBOX_RESULT_FIELDS"]))
+ return dict(row)
 `;
 
 test("Job E accepts only the exact closed sandbox result", () => {
   const run = adapter(`${setup}
-qualified = module["qualify"](result(), Result, revision, source_digest)
+qualified = module["qualify"](result(), revision, source_digest)
 assert tuple(qualified["checks"]) == module["PRODUCTION_CHECK_IDS"]
 assert all(qualified["checks"].values())
 assert qualified["policy_sha256"] == "3" * 64
 for name in module["SANDBOX_RESULT_BOOLEANS"]:
  mutant = dict(values); mutant[name] = False
- try: module["qualify"](result(mutant), Result, revision, source_digest)
+ try: module["qualify"](result(mutant), revision, source_digest)
  except RuntimeError: pass
  else: raise SystemExit("false sandbox observation accepted: " + name)
 for name, wrong in (
@@ -53,7 +47,7 @@ for name, wrong in (
  ("pid_one", 1),
 ):
  mutant = dict(values); mutant[name] = wrong
- try: module["qualify"](result(mutant), Result, revision, source_digest)
+ try: module["qualify"](result(mutant), revision, source_digest)
  except RuntimeError: pass
  else: raise SystemExit("wrong sandbox field accepted: " + name)
 `);
@@ -61,40 +55,17 @@ for name, wrong in (
   assert.equal(run.stdout, "");
 });
 
-test("Job E rejects substitute and cross-profile result types", () => {
+test("Job E rejects reordered, open, and cross-profile primitive results", () => {
   const run = adapter(`${setup}
-Substitute = dataclasses.make_dataclass(
- "SandboxQualificationResult",
- [(name, str) for name in module["SANDBOX_RESULT_STRINGS"]] +
- [(name, bool) for name in module["SANDBOX_RESULT_BOOLEANS"]],
- frozen=True,
-)
-substitute = Substitute(*(values[name] for name in module["SANDBOX_RESULT_FIELDS"]))
-for value, expected in ((substitute, Result), (result(), Substitute)):
- try: module["qualify"](value, expected, revision, source_digest)
- except RuntimeError: pass
- else: raise SystemExit("substitute sandbox type accepted")
-for names in (
- module["SANDBOX_RESULT_FIELDS"][:-1],
- module["SANDBOX_RESULT_FIELDS"] + ("extra",),
- tuple(reversed(module["SANDBOX_RESULT_FIELDS"])),
+for hostile in (
+ {name: values[name] for name in module["SANDBOX_RESULT_FIELDS"][:-1]},
+ {**values, "extra": True},
+ {name: values[name] for name in reversed(module["SANDBOX_RESULT_FIELDS"])},
+ {"version": "cogs.runtime-qualification/v1", "closure_sha256": "3" * 64},
 ):
- Wrong = dataclasses.make_dataclass(
-  "SandboxQualificationResult",
-  [(name, str if name in module["SANDBOX_RESULT_STRINGS"] else bool) for name in names],
-  frozen=True,
- )
- try: module["qualify"](result(), Wrong, revision, source_digest)
+ try: module["qualify"](hostile, revision, source_digest)
  except RuntimeError: pass
- else: raise SystemExit("wrong sandbox inventory accepted")
-RuntimeResult = dataclasses.make_dataclass(
- "RuntimeQualificationResult",
- [("version", str), ("closure_sha256", str), ("gzip_output_sha256", str)],
- frozen=True,
-)
-try: module["qualify"](RuntimeResult("x", "3" * 64, "4" * 64), RuntimeResult, revision, source_digest)
-except RuntimeError: pass
-else: raise SystemExit("ordinary runtime profile accepted by Job E")
+ else: raise SystemExit("open or cross-profile sandbox value accepted")
 assert not ({"closure_sha256", "gzip_output_sha256", "zstd_output_sha256"} & set(module["SANDBOX_RESULT_FIELDS"]))
 `);
   assert.equal(run.status, 0, run.stderr);
@@ -109,18 +80,19 @@ root_envelope = (
  "/usr/bin/python3", "-I", "-B", "-c", b"held-root-bootstrap",
 )
 class Session:
- source_set_sha256 = source_digest
+ source_set_sha256 = ""
  context = types.SimpleNamespace(head_sha=revision)
  def run_fixed_operation(self, operation):
   assert operation == "E"
+  self.source_set_sha256 = source_digest
   held = bytes(checkout["launcher"])
   events.append(("runner-admitted", checkout["owner"], held))
   checkout["launcher"] = b"replacement"
   assert all("checkout" not in str(item) for item in root_envelope)
   events.append(("root-consumed", held, 0))
   return result()
-value, expected, admitted_revision, admitted_digest = module["_invoke_sandbox"](Session())
-assert type(value) is expected is Result
+value, admitted_revision, admitted_digest = module["_invoke_sandbox"](Session())
+assert type(value) is dict and value == values
 assert (admitted_revision, admitted_digest) == (revision, source_digest)
 assert events == [
  ("runner-admitted", 1000, b"held-generation"),

@@ -173,8 +173,7 @@ RuntimeObjectObservation = make_dataclass("RuntimeObjectObservation", [("role", 
 MappedObjectObservation = make_dataclass("MappedObjectObservation", [("role", str), ("sha256", str)], frozen=True, namespace={"__module__": __name__})
 RuntimeMappingQualificationResult = make_dataclass("RuntimeMappingQualificationResult", [
     *((name, str) for name in "version source_revision source_set_sha256 closure_sha256 mapping_sha256".split()),
-    ("objects", tuple), ("mapped", tuple),
-    *((name, bool) for name in "mapped_generations_exact mapping_stable helper_reaped descriptors_restored children_reaped".split()),
+    ("objects", tuple), ("mapped", tuple), *((name, bool) for name in "mapped_generations_exact mapping_stable helper_reaped descriptors_restored children_reaped".split()),
 ], frozen=True, namespace={"__module__": __name__})
 RuntimeCompressionToolObservation = make_dataclass("RuntimeCompressionToolObservation", [
     ("id", str), ("objects", tuple), ("closure_sha256", str),
@@ -185,16 +184,16 @@ RuntimeCompressionToolObservation = make_dataclass("RuntimeCompressionToolObserv
 ], frozen=True, namespace={"__module__": __name__})
 RuntimeCompressionQualificationResult = make_dataclass("RuntimeCompressionQualificationResult", [
     ("version", str), ("source_revision", str), ("source_set_sha256", str),
-    ("closure_sha256", str), ("tools", tuple),
-    ("runtime", RuntimeQualificationResult),
+    ("closure_sha256", str), ("tools", tuple), ("runtime", RuntimeQualificationResult),
+], frozen=True, namespace={"__module__": __name__})
+DescriptorQualificationResult = make_dataclass("DescriptorQualificationResult", [
+    ("version", str), ("source_revision", str), ("source_set_sha256", str), *((name, bool) for name in "nofile_measured nofile_normalized fd_198_exact fd_4096_exact close_range_exact cloexec_exact inheritance_exact limit_restored descriptors_restored children_reaped".split()),
 ], frozen=True, namespace={"__module__": __name__})
 SandboxQualificationResult = make_dataclass("SandboxQualificationResult", [
-    *((name, str) for name in "version source_revision source_set_sha256 seccomp_program_sha256".split()),
-    *((name, bool) for name in "user_namespace_exact pid_namespace_exact mount_namespace_exact network_namespace_exact namespace_ownership_exact pid_one capabilities_zero noroot_locked no_new_privs seccomp_installed seccomp_mode_exact seccomp_program_exact seccomp_denials_exact no_acquisition_route root_readonly_noexec root_has_no_proc host_paths_absent checkout_absent descriptors_restored children_reaped descendants_reaped mounts_restored paths_restored namespaces_released namespace_handles_released".split()),
+    *((name, str) for name in "version source_revision source_set_sha256 seccomp_program_sha256".split()), *((name, bool) for name in "user_namespace_exact pid_namespace_exact mount_namespace_exact network_namespace_exact namespace_ownership_exact pid_one capabilities_zero noroot_locked no_new_privs seccomp_installed seccomp_mode_exact seccomp_program_exact seccomp_denials_exact no_acquisition_route root_readonly_noexec root_has_no_proc host_paths_absent checkout_absent descriptors_restored children_reaped descendants_reaped mounts_restored paths_restored namespaces_released namespace_handles_released".split()),
 ], frozen=True, namespace={"__module__": __name__})
 LifecycleQualificationResult = make_dataclass("LifecycleQualificationResult", [
-    ("version", str), ("source_revision", str), ("source_set_sha256", str),
-    *((name, bool) for name in "pdeathsig_armed parent_handshake_exact before_release_death after_release_death starttime_revalidated session_owned process_group_owned credentialed_pidfd_transfer stable_descendant_census adoption_exact term_kill_bounded siginfo_exact all_reaped subreaper_restored descriptors_restored".split()),
+    ("version", str), ("source_revision", str), ("source_set_sha256", str), *((name, bool) for name in "pdeathsig_armed parent_handshake_exact before_release_death after_release_death starttime_revalidated session_owned process_group_owned credentialed_pidfd_transfer stable_descendant_census adoption_exact term_kill_bounded siginfo_exact all_reaped subreaper_restored descriptors_restored".split()),
 ], frozen=True, namespace={"__module__": __name__})
 def _build_observed_result(tool_observations: tuple[dict[str, object], dict[str, object]], cleanup_observations: dict[str, object]) -> dict[str, bool]:
     cleanup_keys = {"children_reaped", "descendants_reaped", "descriptors_restored", "mounts_restored", "namespace_handles_released", "namespaces_released", "paths_restored"}
@@ -2042,10 +2041,8 @@ def _decode_runtime_result(value: object) -> RuntimeQualificationResult:
 def _decode_mapping_result(value: object) -> RuntimeMappingQualificationResult:
     names = tuple(item.name for item in fields(RuntimeMappingQualificationResult))
     _require(type(value) is dict and set(value) == set(names), "mapping result shape", "result-shape")
-    objects = value["objects"]
-    mapped = value["mapped"]
-    object_names = tuple(item.name for item in fields(RuntimeObjectObservation))
-    mapped_names = tuple(item.name for item in fields(MappedObjectObservation))
+    objects, mapped = value["objects"], value["mapped"]
+    object_names, mapped_names = tuple(item.name for item in fields(RuntimeObjectObservation)), tuple(item.name for item in fields(MappedObjectObservation))
     _require(type(objects) is list and type(mapped) is list, "mapping row arrays", "result-shape")
     object_rows = tuple(RuntimeObjectObservation(*(item[name] if name != "needed" else tuple(item[name]) for name in object_names)) for item in objects if type(item) is dict and set(item) == set(object_names))
     mapped_rows = tuple(MappedObjectObservation(*(item[name] for name in mapped_names)) for item in mapped if type(item) is dict and set(item) == set(mapped_names))
@@ -2056,12 +2053,14 @@ def _decode_mapping_result(value: object) -> RuntimeMappingQualificationResult:
     result = RuntimeMappingQualificationResult(*arguments)
     _require(all(getattr(result, name) is True for name in names[-5:]), "mapping observations", "result-observation")
     return result
-def _decode_sandbox_result(value: object) -> SandboxQualificationResult:
-    names = tuple(item.name for item in fields(SandboxQualificationResult))
-    _require(type(value) is dict and set(value) == set(names), "sandbox result shape", "result-shape")
-    result = SandboxQualificationResult(*(value[name] for name in names))
-    _require(result.version == "cogs.sandbox-qualification/v1" and all(getattr(result, name) is True for name in names[4:]), "sandbox observations", "result-observation")
+def _decode_observation_result(value: object, result_type: type, string_count: int, version: str) -> object:
+    names = tuple(item.name for item in fields(result_type))
+    _require(type(value) is dict and set(value) == set(names), "observation result shape", "result-shape")
+    result = result_type(*(value[name] for name in names))
+    _require(all(type(getattr(result, name)) is str for name in names[:string_count]), "observation result strings", "result-type")
+    _require(result.version == version and all(getattr(result, name) is True for name in names[string_count:]), "observation result values", "result-observation")
     return result
+def _decode_sandbox_result(value: object) -> SandboxQualificationResult: return _decode_observation_result(value, SandboxQualificationResult, 4, "cogs.sandbox-qualification/v1")
 def _decode_compression_result(value: object) -> RuntimeCompressionQualificationResult:
     names = tuple(item.name for item in fields(RuntimeCompressionQualificationResult))
     _require(type(value) is dict and set(value) == set(names) and type(value["tools"]) is list, "compression result shape", "result-shape")
@@ -2076,27 +2075,28 @@ def _decode_compression_result(value: object) -> RuntimeCompressionQualification
 def _invoke_prepared_client(operation: str, launcher: bytes, admission: bytes, source_root_fd: int) -> object:
     raw = _run_held_python_with_ops(_SystemOps(), launcher, source_root_fd, admission)
     value = _strict_json(raw, True, _MAX_REPORT, "fixed operation result")
-    if operation == "mapping":
-        return _decode_mapping_result(value)
-    if operation == "compression":
-        return _decode_compression_result(value)
-    if operation == "runtime":
-        return _decode_runtime_result(value)
-    if operation == "sandbox":
-        return _decode_sandbox_result(value)
-    return value
+    if operation == "mapping": return _decode_mapping_result(value)
+    if operation == "compression": return _decode_compression_result(value)
+    if operation == "runtime": return _decode_runtime_result(value)
+    if operation == "descriptor": return _decode_observation_result(value, DescriptorQualificationResult, 3, "cogs.runtime-descriptor-qualification/v1")
+    if operation == "lifecycle": return _decode_observation_result(value, LifecycleQualificationResult, 3, "cogs.runtime-lifecycle-qualification/v1")
+    return _decode_sandbox_result(value)
 def invoke_fixed_mapping_qualification(source_root_fd: int, revision: str, admitted_driver_fd: int) -> RuntimeMappingQualificationResult:
     launcher, admission, _digest_value = _prepare_held_client("mapping", source_root_fd, revision, admitted_driver_fd)
     return _invoke_prepared_client("mapping", launcher, admission, source_root_fd)
 def invoke_fixed_compression_qualification(source_root_fd: int, revision: str, admitted_driver_fd: int) -> RuntimeCompressionQualificationResult:
     launcher, admission, _digest_value = _prepare_held_client("compression", source_root_fd, revision, admitted_driver_fd)
     return _invoke_prepared_client("compression", launcher, admission, source_root_fd)
+def invoke_fixed_descriptor_qualification(source_root_fd: int, revision: str, admitted_driver_fd: int) -> DescriptorQualificationResult:
+    launcher, admission, _digest_value = _prepare_held_client("descriptor", source_root_fd, revision, admitted_driver_fd)
+    return _invoke_prepared_client("descriptor", launcher, admission, source_root_fd)
+def invoke_fixed_lifecycle_qualification(source_root_fd: int, revision: str, admitted_driver_fd: int) -> LifecycleQualificationResult:
+    launcher, admission, _digest_value = _prepare_held_client("lifecycle", source_root_fd, revision, admitted_driver_fd)
+    return _invoke_prepared_client("lifecycle", launcher, admission, source_root_fd)
 class _AdmittedProductionInvocation:
     def __init__(self, result_type: type, revision: str, digest: str, callback: object):
-        self.result_type = result_type
-        self.source_revision = revision
-        self.source_set_sha256 = digest
-        self._callback = callback
+        self.result_type, self.source_revision = result_type, revision
+        self.source_set_sha256, self._callback = digest, callback
         self._used = False
     def invoke(self) -> object:
         _require(not self._used, "production invocation replay", "operation-replay")

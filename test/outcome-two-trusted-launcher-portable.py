@@ -3,6 +3,7 @@
 
 from array import array
 from contextlib import contextmanager
+from dataclasses import fields, make_dataclass
 import ctypes
 import errno
 import fcntl
@@ -24,6 +25,7 @@ if sys.flags.optimize:
 sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[1]
 MODULE = ROOT / "deploy/aws-feasibility/remote/completion_trusted_runtime_launcher.py"
+COMMON = ROOT / "scripts/native-qualification/common.py"
 FIXTURE = ROOT / "test/fixtures/outcome-two/launcher/cases.json"
 ROW_KEYS = {
     "id", "production_method", "primitive_fault", "intended_code",
@@ -700,6 +702,146 @@ def fixed_bootstrap_modes(module):
         raise AssertionError("fixed bootstrap modes drift")
 
 
+def common_production_adapters():
+    spec = importlib.util.spec_from_file_location("native_qualification_common_portable", COMMON)
+    common = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = common
+    spec.loader.exec_module(common)
+    sys.modules.pop(spec.name)
+    marker_digest = hashlib.sha256(b"cogs-runtime-qualification-v1\n").hexdigest()
+
+    def result_for(module, mode, revision, source_digest):
+        ordinary = module.RuntimeQualificationResult(
+            module._RESULT_VERSION, module._MARKER, revision, source_digest,
+            "a" * 64, marker_digest, marker_digest,
+            *(True for _name in module._OBSERVATION_NAMES),
+        )
+        if mode == "runtime":
+            return ordinary
+        if mode == "descriptor":
+            names = tuple(item.name for item in module.fields(module.DescriptorQualificationResult))
+            return module.DescriptorQualificationResult(
+                "cogs.runtime-descriptor-qualification/v1", revision, source_digest,
+                *(True for _name in names[3:]),
+            )
+        if mode == "lifecycle":
+            names = tuple(item.name for item in module.fields(module.LifecycleQualificationResult))
+            return module.LifecycleQualificationResult(
+                "cogs.runtime-lifecycle-qualification/v1", revision, source_digest,
+                *(True for _name in names[3:]),
+            )
+        if mode == "sandbox":
+            names = tuple(item.name for item in module.fields(module.SandboxQualificationResult))
+            return module.SandboxQualificationResult(
+                "cogs.sandbox-qualification/v1", revision, source_digest,
+                "b" * 64, *(True for _name in names[4:]),
+            )
+        objects = (
+            module.RuntimeObjectObservation("executable", 7, "c" * 64, None, ()),
+            module.RuntimeObjectObservation("loader", 8, "d" * 64, "ld.so", ()),
+        )
+        mapped = tuple(module.MappedObjectObservation(row.role, row.sha256) for row in objects)
+        if mode == "mapping":
+            return module.RuntimeMappingQualificationResult(
+                "cogs.runtime-mapping-qualification/v1", revision, source_digest,
+                "e" * 64, "f" * 64, objects, mapped, True, True, True, True, True,
+            )
+        object_values = tuple({
+            "needed": row.needed, "role": row.role, "sha256": row.sha256,
+            "size_bytes": row.size_bytes, "soname": row.soname,
+        } for row in objects)
+        tools = tuple(module.RuntimeCompressionToolObservation(
+            name, object_values, "e" * 64, "f" * 64, objects[0].sha256,
+            objects[0].size_bytes, objects[0].sha256, objects[0].size_bytes,
+            63, "f" * 64, marker_digest,
+        ) for name in ("gzip", "zstd"))
+        return module.RuntimeCompressionQualificationResult(
+            "cogs.runtime-compression-qualification/v1", revision,
+            source_digest, ordinary.closure_sha256, tools, ordinary,
+        )
+
+    class PortableOps(common.SystemCommonOps):
+        def __init__(self):
+            super().__init__(common.FdRegistry())
+            self.routes, self.modules = [], []
+            self.baseline = {name: ("held", name) for name in common.CLEANUP_KEYS}
+            self.baseline["paths"] = (None, None)
+        def observe(self, context):
+            del context
+            return dict(self.baseline)
+        def _launcher(self, root):
+            module = super()._launcher(root)
+            self.modules.append(module)
+            def git_tree(root_fd, revision, paths=module._FIXED_SOURCE_SET):
+                del root_fd, revision
+                rows = {}
+                for path in paths:
+                    data = (ROOT / path).read_bytes()
+                    blob = b"blob " + str(len(data)).encode() + b"\0" + data
+                    rows[path] = ("100644", hashlib.sha1(blob).hexdigest())
+                return rows
+            def held_execution(ops, launcher, source_root_fd, admission):
+                del ops, launcher, source_root_fd
+                value = module._strict_json(admission, True, module._MAX_ADMISSION, "portable admission")
+                mode = module._ADMISSION_MODES[value["version"]]
+                self.routes.append(mode)
+                result = result_for(module, mode, value["revision"], value["source_set_sha256"])
+                return module._canonical(module._result_value(result), True)
+            module._git_tree = git_tree
+            module._run_held_python_with_ops = held_execution
+            return module
+
+    expected_modes = {
+        "A": "mapping", "B": "compression", "C": "descriptor",
+        "D": "lifecycle", "E": "sandbox", "integration": "runtime",
+    }
+    for job, mode in expected_modes.items():
+        ops = PortableOps()
+        context = SimpleNamespace(job=job, head_sha="0" * 40)
+        session = common.NativeSession._begin_with_ops(context, ops, SimpleNamespace())
+        if job == "C":
+            value = session.qualify_fixed_descriptor_primitives()
+        elif job == "D":
+            value = session.qualify_fixed_process_lifecycle()
+        else:
+            value = session.run_fixed_operation(job)
+        if ops.routes != [mode] or type(value) is not dict:
+            raise AssertionError(f"common fixed route drift: {job}/{ops.routes}")
+        if value["source_set_sha256"] != session.source_set_sha256:
+            raise AssertionError(f"common source-set timing drift: {job}")
+        def primitive(item):
+            if type(item) is dict:
+                return all(type(key) is str and primitive(child) for key, child in item.items())
+            if type(item) is list:
+                return all(primitive(child) for child in item)
+            return type(item) in (str, int, bool, type(None))
+        if not primitive(value) or not session.settle_native_phase().restored:
+            raise AssertionError(f"common result was not primitive/restored: {job}")
+        module = ops.modules[0]
+        expected = common.SystemCommonOps._result_type(module, job)
+        substitute = make_dataclass(expected.__name__, [(item.name, object) for item in fields(expected)], frozen=True)
+        try:
+            common.SystemCommonOps._closed_result(module, job, substitute(*(value[item.name] for item in fields(expected))))
+        except common.QualificationError:
+            pass
+        else:
+            raise AssertionError(f"common accepted caller-created result type: {job}")
+        if job == "A":
+            exact = result_for(module, mode, context.head_sha, session.source_set_sha256)
+            object_type = module.RuntimeObjectObservation
+            fake_type = make_dataclass(object_type.__name__, [(item.name, object) for item in fields(object_type)], frozen=True)
+            first = exact.objects[0]
+            fake = fake_type(*(getattr(first, item.name) for item in fields(object_type)))
+            arguments = [getattr(exact, item.name) for item in fields(expected)]
+            arguments[tuple(item.name for item in fields(expected)).index("objects")] = (fake, *exact.objects[1:])
+            try:
+                common.SystemCommonOps._closed_result(module, job, expected(*arguments))
+            except common.QualificationError:
+                pass
+            else:
+                raise AssertionError("common accepted nested substitute dataclass")
+
+
 def sticky_root_replacement(module):
     class Ops:
         @staticmethod
@@ -749,12 +891,13 @@ def parent():
     if authenticate > owner_policy or "st_uid == 0" in launcher_source:
         raise AssertionError("runner checkout ownership policy/order drift")
     banned = ("_MappingAuthority", "_coordinate_admitted_mapping_only")
-    required = ("_qualify_admitted_fixed_python_mapping", "_launch_admitted_fixed_compression_qualification", "_qualify_admitted_fixed_descriptor_primitives", "_qualify_admitted_fixed_process_lifecycle", "_launch_admitted_fixed_sandbox_qualification", 'None if mode in ("lifecycle", "sandbox") else _load_private_closure')
+    required = ("_qualify_admitted_fixed_python_mapping", "_launch_admitted_fixed_compression_qualification", "_qualify_admitted_fixed_descriptor_primitives", "_qualify_admitted_fixed_process_lifecycle", "_launch_admitted_fixed_sandbox_qualification", "invoke_fixed_descriptor_qualification", "invoke_fixed_lifecycle_qualification", 'None if mode in ("lifecycle", "sandbox") else _load_private_closure')
     if any(token in launcher_source for token in banned) or not all(token in launcher_source for token in required):
         raise AssertionError("fixed admitted production routing drift")
     production_operation_contracts(module)
     capsule_contract(module)
     fixed_bootstrap_modes(module)
+    common_production_adapters()
     sticky_root_replacement(module)
     rows = fixture_rows(module)
     selected = {row["id"] for row in rows}

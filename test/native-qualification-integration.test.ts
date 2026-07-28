@@ -14,14 +14,8 @@ function adapter(body: string) {
 }
 
 const setup = `
-import dataclasses, runpy, types
+import runpy, types
 module = runpy.run_path(${JSON.stringify(path)}, run_name="native_integration_portable")
-Result = dataclasses.make_dataclass(
- "RuntimeQualificationResult",
- [(name, str) for name in module["RESULT_STRINGS"]] +
- [(name, bool) for name in module["RESULT_BOOLEANS"]],
- frozen=True,
-)
 revision = "1" * 40
 source_digest = "2" * 64
 observed = {name: True for name in module["RESULT_BOOLEANS"]}
@@ -34,18 +28,18 @@ values = {
  **observed,
 }
 def result(row=values):
- return Result(*(row[name] for name in module["RESULT_FIELDS"]))
+ return dict(row)
 `;
 
 test("integration accepts only the exact complete ordinary result", () => {
   const run = adapter(`${setup}
-qualified = module["qualify"](result(), Result, revision, source_digest)
+qualified = module["qualify"](result(), revision, source_digest)
 assert tuple(qualified["checks"]) == module["PRODUCTION_CHECK_IDS"]
 assert all(qualified["checks"].values())
 assert qualified["metadata"]["closure_sha256"] == "3" * 64
 for name in module["RESULT_BOOLEANS"]:
  mutant = dict(values); mutant[name] = False
- try: module["qualify"](result(mutant), Result, revision, source_digest)
+ try: module["qualify"](result(mutant), revision, source_digest)
  except RuntimeError: pass
  else: raise SystemExit("false production observation accepted: " + name)
 for name, wrong in (
@@ -55,7 +49,7 @@ for name, wrong in (
  ("pid_one", 1),
 ):
  mutant = dict(values); mutant[name] = wrong
- try: module["qualify"](result(mutant), Result, revision, source_digest)
+ try: module["qualify"](result(mutant), revision, source_digest)
  except RuntimeError: pass
  else: raise SystemExit("wrong ordinary field accepted: " + name)
 `);
@@ -63,36 +57,17 @@ for name, wrong in (
   assert.equal(run.stdout, "");
 });
 
-test("integration rejects missing, reordered, substitute, and sandbox profiles", () => {
+test("integration rejects missing, reordered, open, and sandbox profiles", () => {
   const run = adapter(`${setup}
-def alternate(names):
- return dataclasses.make_dataclass(
-  "RuntimeQualificationResult",
-  [(name, str if name in module["RESULT_STRINGS"] else bool) for name in names],
-  frozen=True,
- )
-for names in (
- module["RESULT_FIELDS"][:-1],
- module["RESULT_FIELDS"] + ("extra",),
- tuple(reversed(module["RESULT_FIELDS"])),
+for hostile in (
+ {name: values[name] for name in module["RESULT_FIELDS"][:-1]},
+ {**values, "extra": True},
+ {name: values[name] for name in reversed(module["RESULT_FIELDS"])},
+ {"version": "cogs.sandbox-qualification/v1", "seccomp_program_sha256": "4" * 64},
 ):
- Wrong = alternate(names)
- try: module["qualify"](result(), Wrong, revision, source_digest)
+ try: module["qualify"](hostile, revision, source_digest)
  except RuntimeError: pass
- else: raise SystemExit("wrong result inventory accepted")
-Substitute = alternate(module["RESULT_FIELDS"])
-substitute = Substitute(*(values[name] for name in module["RESULT_FIELDS"]))
-try: module["qualify"](substitute, Result, revision, source_digest)
-except RuntimeError: pass
-else: raise SystemExit("substitute ordinary type accepted")
-Sandbox = dataclasses.make_dataclass(
- "SandboxQualificationResult",
- [("version", str), ("seccomp_program_sha256", str)],
- frozen=True,
-)
-try: module["qualify"](Sandbox("cogs.sandbox-qualification/v1", "4" * 64), Sandbox, revision, source_digest)
-except RuntimeError: pass
-else: raise SystemExit("sandbox profile accepted as ordinary result")
+ else: raise SystemExit("open or cross-profile ordinary value accepted")
 `);
   assert.equal(run.status, 0, run.stderr);
 });
@@ -101,14 +76,15 @@ test("integration invokes the admitted ordinary production owner exactly once", 
   const run = adapter(`${setup}
 events = []
 class Session:
- source_set_sha256 = source_digest
+ source_set_sha256 = ""
  context = types.SimpleNamespace(head_sha=revision)
  def run_fixed_operation(self, operation):
   events.append(operation)
   if operation != "integration": raise AssertionError("cross-profile operation")
+  self.source_set_sha256 = source_digest
   return result()
-value, expected, admitted_revision, admitted_digest = module["_invoke_complete_runtime"](Session())
-assert type(value) is expected is Result
+value, admitted_revision, admitted_digest = module["_invoke_complete_runtime"](Session())
+assert type(value) is dict and value == values
 assert (admitted_revision, admitted_digest) == (revision, source_digest)
 assert events == ["integration"]
 `);

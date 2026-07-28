@@ -2,7 +2,6 @@
 """Job E: narrow client of the admitted production sandbox owner."""
 from __future__ import annotations
 
-from dataclasses import fields, is_dataclass
 import os
 from pathlib import Path
 import sys
@@ -49,89 +48,44 @@ def _hex(value: object) -> bool:
     )
 
 
-def _exact_result_type(result_type: object) -> bool:
-    parameters = getattr(result_type, "__dataclass_params__", None)
-    return (
-        type(result_type) is type
-        and is_dataclass(result_type)
-        and parameters is not None
-        and parameters.frozen is True
-        and tuple(field.name for field in fields(result_type)) == SANDBOX_RESULT_FIELDS
-    )
-
-
-def qualify(
-    result: object,
-    result_type: type,
-    revision: str,
-    source_digest: str,
-) -> dict[str, object]:
-    """Independently close and map one production sandbox result."""
-    _require(_exact_result_type(result_type), "sandbox result type")
-    _require(type(result) is result_type, "substituted sandbox result")
-    _require(
-        all(type(getattr(result, name)) is str for name in SANDBOX_RESULT_STRINGS),
-        "sandbox string fields",
-    )
-    _require(
-        all(type(getattr(result, name)) is bool for name in SANDBOX_RESULT_BOOLEANS),
-        "sandbox boolean fields",
-    )
-    identity = (result.version, result.source_revision, result.source_set_sha256)
-    _require(
-        identity == (SANDBOX_RESULT_VERSION, revision, source_digest),
-        "sandbox result identity",
-    )
-    _require(_hex(result.source_set_sha256), "sandbox source digest")
-    _require(_hex(result.seccomp_program_sha256), "sandbox policy digest")
-    _require(
-        all(getattr(result, name) is True for name in SANDBOX_RESULT_BOOLEANS),
-        "sandbox observation failed",
-    )
+def qualify(result: object, revision: str, source_digest: str) -> dict[str, object]:
+    """Independently close and map one primitive-only sandbox result."""
+    _require(type(result) is dict and tuple(result) == SANDBOX_RESULT_FIELDS, "sandbox result shape")
+    _require(all(type(result[name]) is str for name in SANDBOX_RESULT_STRINGS), "sandbox string fields")
+    _require(all(type(result[name]) is bool for name in SANDBOX_RESULT_BOOLEANS), "sandbox boolean fields")
+    identity = (result["version"], result["source_revision"], result["source_set_sha256"])
+    _require(identity == (SANDBOX_RESULT_VERSION, revision, source_digest), "sandbox result identity")
+    _require(_hex(result["source_set_sha256"]), "sandbox source digest")
+    _require(_hex(result["seccomp_program_sha256"]), "sandbox policy digest")
+    _require(all(result[name] is True for name in SANDBOX_RESULT_BOOLEANS), "sandbox observation failed")
     checks = {
-        "mount_view_exact": (
-            result.root_readonly_noexec
-            and result.root_has_no_proc
-            and result.host_paths_absent
-        ),
-        "checkout_read_only": result.checkout_absent and result.no_acquisition_route,
-        "user_namespace_exact": (
-            result.user_namespace_exact and result.namespace_ownership_exact
-        ),
-        "pid_namespace_exact": result.pid_namespace_exact,
-        "mount_namespace_exact": result.mount_namespace_exact,
-        "network_namespace_exact": result.network_namespace_exact,
-        "pid_one": result.pid_one,
-        "capabilities_zero": result.capabilities_zero,
-        "noroot_locked": result.noroot_locked,
-        "nnp_set": result.no_new_privs,
-        "seccomp_socket_denied": (
-            result.seccomp_installed
-            and result.seccomp_mode_exact
-            and result.seccomp_program_exact
-            and result.seccomp_denials_exact
-        ),
-        "seccomp_io_uring_denied": (
-            result.seccomp_installed
-            and result.seccomp_mode_exact
-            and result.seccomp_program_exact
-            and result.seccomp_denials_exact
-        ),
-        "no_acquisition_route": result.no_acquisition_route,
-        "all_reaped": result.children_reaped and result.descendants_reaped,
-        "mounts_restored": result.mounts_restored,
+        "mount_view_exact": result["root_readonly_noexec"] and result["root_has_no_proc"] and result["host_paths_absent"],
+        "checkout_read_only": result["checkout_absent"] and result["no_acquisition_route"],
+        "user_namespace_exact": result["user_namespace_exact"] and result["namespace_ownership_exact"],
+        "pid_namespace_exact": result["pid_namespace_exact"],
+        "mount_namespace_exact": result["mount_namespace_exact"],
+        "network_namespace_exact": result["network_namespace_exact"],
+        "pid_one": result["pid_one"],
+        "capabilities_zero": result["capabilities_zero"],
+        "noroot_locked": result["noroot_locked"],
+        "nnp_set": result["no_new_privs"],
+        "seccomp_socket_denied": all(result[name] for name in ("seccomp_installed", "seccomp_mode_exact", "seccomp_program_exact", "seccomp_denials_exact")),
+        "seccomp_io_uring_denied": all(result[name] for name in ("seccomp_installed", "seccomp_mode_exact", "seccomp_program_exact", "seccomp_denials_exact")),
+        "no_acquisition_route": result["no_acquisition_route"],
+        "all_reaped": result["children_reaped"] and result["descendants_reaped"],
+        "mounts_restored": result["mounts_restored"],
     }
     _require(tuple(checks) == PRODUCTION_CHECK_IDS, "sandbox check inventory")
     _require(all(type(value) is bool and value for value in checks.values()), "Job E checks")
-    return {"checks": checks, "policy_sha256": result.seccomp_program_sha256}
+    return {"checks": checks, "policy_sha256": result["seccomp_program_sha256"]}
 
 
-def _invoke_sandbox(session: object) -> tuple[object, type, str, str]:
+def _invoke_sandbox(session: object) -> tuple[dict[str, object], str, str]:
     """W1/W2 adapter: one exact held-byte, job-bound production operation."""
-    source_digest = session.source_set_sha256
-    _require(_hex(source_digest), "admitted sandbox identity")
     result = session.run_fixed_operation("E")
-    return result, type(result), session.context.head_sha, source_digest
+    source_digest = session.source_set_sha256
+    _require(type(result) is dict and _hex(source_digest), "admitted sandbox identity")
+    return result, session.context.head_sha, source_digest
 
 
 def _load_common() -> object:
@@ -153,8 +107,8 @@ def _run(common: object) -> int:
     primary: BaseException | None = None
     qualified: dict[str, object] | None = None
     try:
-        result, result_type, revision, source_digest = _invoke_sandbox(session)
-        qualified = qualify(result, result_type, revision, source_digest)
+        result, revision, source_digest = _invoke_sandbox(session)
+        qualified = qualify(result, revision, source_digest)
     except BaseException as error:
         primary = error
 

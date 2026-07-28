@@ -6,7 +6,6 @@ import { test } from "node:test";
 const path = "scripts/native-qualification/job-c-descriptors.py";
 const source = readFileSync(path, "utf8");
 const observations = [
-  "getdents_exact",
   "nofile_measured",
   "nofile_normalized",
   "fd_198_exact",
@@ -19,7 +18,7 @@ const observations = [
   "children_reaped",
 ];
 const revision = "a".repeat(40);
-const golden = {
+const golden: Json = {
   version: "cogs.runtime-descriptor-qualification/v1",
   source_revision: revision,
   source_set_sha256: "b".repeat(64),
@@ -34,7 +33,7 @@ import importlib.util,json
 spec=importlib.util.spec_from_file_location("job_c",${JSON.stringify(path)})
 m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 for value in json.loads(${JSON.stringify(JSON.stringify(cases))}):
- try: print(json.dumps({"accepted":True,"checks":m.qualify(value,${JSON.stringify(revision)})}))
+ try: print(json.dumps({"accepted":True,"checks":m.qualify(value,${JSON.stringify(revision)},${JSON.stringify("b".repeat(64))})}))
  except BaseException: print(json.dumps({"accepted":False}))
 `;
   const result = spawnSync("/usr/bin/python3", ["-I", "-B", "-c", harness], {
@@ -60,8 +59,10 @@ test("Job C strictly decodes every production fd/getdents/close_range observatio
   cases.push({ ...golden, source_set_sha256: "not-a-digest" });
   cases.push({ ...golden, completed: true });
   const rows = decode(cases);
-  assert.equal(rows[0].accepted, true);
-  assert.deepEqual(Object.keys(rows[0].checks ?? {}), [
+  const first = rows[0];
+  assert.ok(first);
+  assert.equal(first.accepted, true);
+  assert.deepEqual(Object.keys(first.checks ?? {}), [
     "nofile_measured",
     "nofile_normalized",
     "fd_198_exact",
@@ -71,7 +72,7 @@ test("Job C strictly decodes every production fd/getdents/close_range observatio
     "inheritance_exact",
     "limit_restored",
   ]);
-  assert.ok(Object.values(rows[0].checks ?? {}).every((value) => value === "pass"));
+  assert.ok(Object.values(first.checks ?? {}).every((value) => value === "pass"));
   assert.ok(rows.slice(1).every((row) => !row.accepted));
 });
 
@@ -101,7 +102,6 @@ test("Job C removes local enumeration, close_range, process, and cleanup branche
     "session.qualify_fixed_descriptor_primitives()",
     "session.settle_native_phase()",
     "common.ReportCandidate(",
-    '"getdents_exact"',
     '"close_range_exact"',
     '"inheritance_exact"',
   ]) {

@@ -1,7 +1,7 @@
 #!/usr/bin/python3
 from __future__ import annotations
 import ctypes, fcntl, hashlib, json, os, platform, re, resource, socket, stat, struct, subprocess, sys, types
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from enum import Enum, auto
 from pathlib import Path
 from typing import Callable, Mapping
@@ -12,10 +12,8 @@ SCHEMA = ROOT / "schemas/native-qualification-report-v1alpha1.json"
 REPORT_LIMIT, OBJECT_LIMIT = 32_768, 134_217_728
 MARKER_SHA256 = "6381d4535b13c7f030ca94bce250c1ec817c4aea8fa45c91e25c88995216f6b8"
 CLEANUP_KEYS = ("descriptors", "children", "paths", "mounts", "namespaces", "limits", "checkout")
-DRIVERS = dict(zip(("A", "B", "C", "D", "E", "integration"), (
-    "job-a-runtime-mappings.py", "job-b-compression.py", "job-c-descriptors.py",
-    "job-d-process-lifecycle.py", "job-e-sandbox.py", "thin-integration.py",
-)))
+DRIVERS = dict(zip(("A", "B", "C", "D", "E", "integration"), ("job-a-runtime-mappings.py", "job-b-compression.py",
+    "job-c-descriptors.py", "job-d-process-lifecycle.py", "job-e-sandbox.py", "thin-integration.py")))
 JOB_IDS = {**{job: f"native-qualification-{job.lower()}" for job in "ABCDE"}, "integration": "native-closure-integration"}
 CHECK_IDS = {
     "A": tuple("elf_real python_closure_exact map_files_trusted mapped_closure_equal mapping_stable helper_reaped cleanup_restored".split()),
@@ -43,13 +41,11 @@ HEX40, HEX64 = re.compile(r"[0-9a-f]{40}\Z"), re.compile(r"[0-9a-f]{64}\Z")
 SAFE, REPOSITORY = re.compile(r"[A-Za-z0-9_.-]{1,96}\Z"), re.compile(r"[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}\Z")
 class QualificationError(RuntimeError): pass
 def _require(condition: bool, message: str) -> None:
-    if not condition:
-        raise QualificationError(message)
+    if not condition: raise QualificationError(message)
 def _integer(value: str, name: str) -> int:
     _require(re.fullmatch(r"[1-9][0-9]{0,19}", value) is not None, name); return int(value)
 def _generation(value: os.stat_result) -> tuple[int, ...]:
-    return (value.st_mode, value.st_uid, value.st_gid, value.st_dev, value.st_ino,
-            value.st_nlink, value.st_size, value.st_mtime_ns, value.st_ctime_ns)
+    return (value.st_mode, value.st_uid, value.st_gid, value.st_dev, value.st_ino, value.st_nlink, value.st_size, value.st_mtime_ns, value.st_ctime_ns)
 def _sha256(path: Path) -> str:
     before = path.lstat()
     _require(stat.S_ISREG(before.st_mode) and before.st_size <= 2_000_000, "source object")
@@ -62,13 +58,11 @@ def _canonical(value: object, newline: bool = False) -> bytes:
 class WorkflowContext:
     job: str; repository: str; head_repository: str; head_sha: str
     envelope_sha: str; workflow_sha: str; merge_sha: str; base_sha: str; job_id: str
-    run_id: int; run_attempt: int; pull_request_number: int
-    runner_version: str; kernel_release: str; architecture: str
+    run_id: int; run_attempt: int; pull_request_number: int; runner_version: str; kernel_release: str; architecture: str
     workflow_blob_sha256: str; driver_blob_sha256: str; common_blob_sha256: str
     @classmethod
     def from_environ(cls, expected_job: str, driver_file: str | Path) -> "WorkflowContext":
-        environment = dict(os.environ)
-        _require(expected_job in DRIVERS and set(environment) == ENV_KEYS, "fixed environment")
+        environment = dict(os.environ); _require(expected_job in DRIVERS and set(environment) == ENV_KEYS, "fixed environment")
         _require(environment["LC_ALL"] == "C" and environment["PYTHONDONTWRITEBYTECODE"] == "1", "runtime environment")
         _require(environment["PYTHONHASHSEED"] == "0" and environment["NQ_EVENT_NAME"] == "pull_request", "event environment")
         expected_driver = COMMON.parent / DRIVERS[expected_job]
@@ -79,8 +73,7 @@ class WorkflowContext:
         repository = environment["NQ_REPOSITORY"]
         _require(REPOSITORY.fullmatch(repository) is not None and environment["NQ_HEAD_REPOSITORY"] == repository, "same repository")
         _require(environment["NQ_JOB_ID"] == JOB_IDS[expected_job] and SAFE.fullmatch(environment["NQ_RUNNER_VERSION"]) is not None, "workflow job")
-        attempt = _integer(environment["NQ_RUN_ATTEMPT"], "run attempt")
-        _require(attempt == 1, "first attempt")
+        attempt = _integer(environment["NQ_RUN_ATTEMPT"], "run attempt"); _require(attempt == 1, "first attempt")
         kernel, architecture = platform.release(), platform.machine()
         _require(re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+[-A-Za-z0-9.+]*", kernel) is not None and architecture == "x86_64", "runner platform")
         return cls(
@@ -95,37 +88,31 @@ def _context_value(context: WorkflowContext) -> dict[str, object]:
                 "github_sha": context.envelope_sha, "head_repository": context.head_repository,
                 "pull_request_number": context.pull_request_number, "repository": context.repository,
                 "run_attempt": context.run_attempt, "run_id": context.run_id}
-    workflow = {"blob_sha256": context.workflow_blob_sha256, "job_id": context.job_id,
-                "path": ".github/workflows/ci.yml", "workflow_sha": context.workflow_sha}
-    runner = {"architecture": context.architecture, "image": "ubuntu-24.04",
-              "image_version": context.runner_version, "kernel_release": context.kernel_release}
+    workflow = {"blob_sha256": context.workflow_blob_sha256, "job_id": context.job_id, "path": ".github/workflows/ci.yml", "workflow_sha": context.workflow_sha}
+    runner = {"architecture": context.architecture, "image": "ubuntu-24.04", "image_version": context.runner_version, "kernel_release": context.kernel_release}
     return {"source": source, "envelope": envelope, "workflow": workflow, "runner": runner}
 def evaluate_eligibility(environment: Mapping[str, str]) -> None:
-    _require(set(environment) == ELIGIBILITY_KEYS and environment["LC_ALL"] == "C"
-             and environment["PYTHONCOERCECLOCALE"] == "0", "eligibility environment")
+    _require(set(environment) == ELIGIBILITY_KEYS and environment["LC_ALL"] == "C" and environment["PYTHONCOERCECLOCALE"] == "0", "eligibility environment")
     _require(environment["EVENT_NAME"] == "pull_request" and environment["RUN_ATTEMPT"] == "1", "eligible event")
     repository = environment["REPOSITORY"]
     _require(REPOSITORY.fullmatch(repository) is not None and environment["HEAD_REPOSITORY"] == repository, "eligible repository")
     _require(all(HEX40.fullmatch(environment[name]) for name in ("HEAD_SHA", "MERGE_SHA", "BASE_SHA")), "eligible source")
     _integer(environment["PR_NUMBER"], "eligible pull request")
 def require_final_results(environment: Mapping[str, str]) -> None:
-    _require(set(environment) == FINAL_KEYS and environment["LC_ALL"] == "C"
-             and environment["PYTHONCOERCECLOCALE"] == "0", "final-result environment")
+    _require(set(environment) == FINAL_KEYS and environment["LC_ALL"] == "C" and environment["PYTHONCOERCECLOCALE"] == "0", "final-result environment")
     _require(all(value == "success" for key, value in environment.items()
                  if key.endswith(("_RESULT", "_UPLOAD", "_CLEANUP"))), "native transaction did not succeed")
 class FdState(Enum):
     OWNED, TRANSFERRED, CLOSED, CLOSE_UNCERTAIN = auto(), auto(), auto(), auto()
 class FdRegistry:
     def __init__(self, closer: Callable[[int], None] = os.close):
-        self._closer = closer
+        self._closer, self._allocation_blocked = closer, False
         self._leases, self._numbers, self._retired = [], set(), set()
-        self._allocation_blocked = False
     def adopt(self, number: int, purpose: str) -> "FdLease":
         _require(type(number) is int and number >= 0 and not self._allocation_blocked, "fd allocation after uncertainty")
         _require(number not in self._numbers and number not in self._retired, "fd reuse")
         lease = FdLease(number, purpose, self)
-        self._numbers.add(number)
-        self._leases.append(lease)
+        self._numbers.add(number); self._leases.append(lease)
         return lease
     def open(self, purpose: str, opener: Callable[[], int]) -> "FdLease":
         _require(not self._allocation_blocked, "fd allocation after uncertainty")
@@ -172,8 +159,7 @@ def _getdents(descriptor: int) -> bytes:
         raise OSError(code, os.strerror(code))
     return buffer.raw[:count]
 def _parse_dirents(raw: bytes, numeric: bool) -> list[str]:
-    names: list[str] = []
-    offset = 0
+    names: list[str] = []; offset = 0
     while offset < len(raw):
         _require(len(raw) - offset >= 19, "dirent header")
         record_length = int.from_bytes(raw[offset + 16:offset + 18], sys.byteorder)
@@ -193,8 +179,7 @@ def _parse_dirents(raw: bytes, numeric: bool) -> list[str]:
     return names
 def _enumerate_directory(descriptor: int, numeric: bool) -> tuple[str, ...]:
     os.lseek(descriptor, 0, os.SEEK_SET)
-    names: list[str] = []
-    total = 0
+    names: list[str] = []; total = 0
     for calls in range(_GETDENTS_CALLS + 1):
         raw = _getdents(descriptor)
         if not raw:
@@ -202,42 +187,70 @@ def _enumerate_directory(descriptor: int, numeric: bool) -> tuple[str, ...]:
             _require(len(names) <= _GETDENTS_ENTRIES and len(names) == len(set(names)), "directory entries")
             return tuple(names)
         _require(calls < _GETDENTS_CALLS, "getdents EOF bound")
-        total += len(raw)
-        _require(total <= _GETDENTS_BYTES, "getdents byte bound")
+        total += len(raw); _require(total <= _GETDENTS_BYTES, "getdents byte bound")
         names.extend(_parse_dirents(raw, numeric))
         _require(len(names) <= _GETDENTS_ENTRIES, "getdents entry bound")
     raise QualificationError("getdents64 incomplete")
 class SystemCommonOps:
     def __init__(self, fds: FdRegistry):
-        self.fds = fds
-        self.source_set_sha256 = ""
+        self.fds, self.source_set_sha256 = fds, ""
     def _launcher(self, root: FdLease) -> types.ModuleType:
-        name = "deploy/aws-feasibility/remote/completion_trusted_runtime_launcher.py"
-        held = self.fds.open("held-production-launcher", lambda: os.open(name, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW, dir_fd=root.number))
+        path = "deploy/aws-feasibility/remote/completion_trusted_runtime_launcher.py"
+        held = self.fds.open("held-production-launcher", lambda: os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW, dir_fd=root.number))
         try:
             before = os.fstat(held.number)
             raw = os.pread(held.number, before.st_size, 0)
             _require(0 < len(raw) == before.st_size <= 2_000_000 and _generation(os.fstat(held.number)) == _generation(before), "held launcher generation")
-            module = types.ModuleType(f"_cogs_held_launcher_{hashlib.sha256(raw).hexdigest()[:16]}")
-            module.__file__, module.__package__ = f"cogs-held:{hashlib.sha256(raw).hexdigest()}", ""
+            digest = hashlib.sha256(raw).hexdigest()
+            module = types.ModuleType(f"_cogs_held_launcher_{digest}")
+            module.__file__, module.__package__ = f"cogs-held:{digest}", ""
             exec(compile(raw, module.__file__, "exec", dont_inherit=True, optimize=0), module.__dict__)
             return module
         finally: held.close()
-    def run_fixed_operation(self, context: WorkflowContext, operation: str) -> object:
+    @staticmethod
+    def _result_type(module: types.ModuleType, operation: str) -> type:
+        names = ("RuntimeMappingQualificationResult RuntimeCompressionQualificationResult DescriptorQualificationResult "
+                 "LifecycleQualificationResult SandboxQualificationResult RuntimeQualificationResult").split()
+        return getattr(module, dict(zip(DRIVERS, names))[operation])
+    @classmethod
+    def _closed_result(cls, module: types.ModuleType, operation: str, result: object) -> dict[str, object]:
+        expected = cls._result_type(module, operation)
+        nested = "RuntimeObjectObservation MappedObjectObservation RuntimeCompressionToolObservation RuntimeQualificationResult".split()
+        allowed = {expected, *(getattr(module, name) for name in nested)}
+        def primitive(value: object) -> object:
+            if type(value) in (str, int, bool, type(None)): return value
+            if type(value) is tuple: return [primitive(item) for item in value]
+            if type(value) is dict:
+                _require(all(type(key) is str for key in value), "production result map keys")
+                return {key: primitive(item) for key, item in value.items()}
+            _require(type(value) in allowed, "production result dataclass substitution")
+            return {item.name: primitive(getattr(value, item.name)) for item in fields(value)}
+        _require(type(result) is expected, "production result type substitution")
+        closed = primitive(result)
+        _require(type(closed) is dict, "production result primitive shape")
+        return closed
+    def run_fixed_operation(self, context: WorkflowContext, operation: str) -> dict[str, object]:
         root = self.fds.open("held-source-root", lambda: os.open(ROOT, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW))
-        client_name = f"scripts/native-qualification/{DRIVERS[context.job]}"
         try:
-            client = self.fds.open("held-operation-client", lambda: os.open(client_name, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW, dir_fd=root.number))
+            path = f"scripts/native-qualification/{DRIVERS[context.job]}"
+            client = self.fds.open("held-operation-client", lambda: os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW, dir_fd=root.number))
             module = self._launcher(root)
-            names = {"A": "invoke_fixed_mapping_qualification", "B": "invoke_fixed_compression_qualification",
-                     "C": "invoke_fixed_descriptor_qualification", "D": "invoke_fixed_lifecycle_qualification"}
-            if operation in names:
-                result = getattr(module, names[operation])(root.number, context.head_sha, client.number)
+            clients = dict(zip("ABCD", ("invoke_fixed_mapping_qualification", "invoke_fixed_compression_qualification",
+                                         "invoke_fixed_descriptor_qualification", "invoke_fixed_lifecycle_qualification")))
+            expected = self._result_type(module, operation)
+            if operation in clients:
+                result = getattr(module, clients[operation])(root.number, context.head_sha, client.number)
+                digest = result.source_set_sha256
             else:
                 factory = "_admit_job_e_sandbox_with_held_sources" if operation == "E" else "_admit_complete_runtime_with_held_sources"
-                result = getattr(module, factory)(root.number, context.head_sha, client.number).invoke()
-            self.source_set_sha256 = result.source_set_sha256
-            return result
+                invocation = getattr(module, factory)(root.number, context.head_sha, client.number)
+                exact = type(invocation) is module._AdmittedProductionInvocation and invocation.result_type is expected
+                _require(exact and invocation.source_revision == context.head_sha, "production invocation type")
+                digest, result = invocation.source_set_sha256, invocation.invoke()
+            exact = type(result) is expected and result.source_revision == context.head_sha and result.source_set_sha256 == digest
+            _require(exact and HEX64.fullmatch(digest) is not None, "production result admission")
+            self.source_set_sha256 = digest
+            return self._closed_result(module, operation, result)
         finally: self.fds.close_reverse(leases=[root] + ([client] if "client" in locals() else []))
     def _read(self, path: str | Path, limit: int) -> bytes:
         lease = self.fds.open("baseline-read", lambda: os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW))
@@ -334,12 +347,10 @@ class CleanupEvidence:
 @dataclass(frozen=True)
 class ReportCandidate:
     production_checks: Mapping[str, str]; metadata: list[Mapping[str, object]]
-    failure_phase: str | None = None; diagnostics: bytes | None = None
-    primary_error: BaseException | None = None
+    failure_phase: str | None = None; diagnostics: bytes | None = None; primary_error: BaseException | None = None
 def _schema_error(node: object, value: object, root: Mapping[str, object], place: str = "$") -> None:
     if node is True: return
-    _require(node is not False and type(node) is dict, f"schema {place}")
-    rule = node
+    _require(node is not False and type(node) is dict, f"schema {place}"); rule = node
     if "$ref" in rule:
         target: object = root
         for part in str(rule["$ref"]).removeprefix("#/").split("/"): target = target[part]  # type: ignore[index]
@@ -392,16 +403,13 @@ def _validate_schema(value: object) -> None:
     before = SCHEMA.lstat()
     raw = SCHEMA.read_bytes()
     _require(len(raw) <= 100_000 and _generation(before) == _generation(SCHEMA.lstat()), "schema generation")
-    schema_value = json.loads(raw)
-    _require(type(schema_value) is dict, "tracked schema")
+    schema_value = json.loads(raw); _require(type(schema_value) is dict, "tracked schema")
     _schema_error(schema_value, value, schema_value)
 def _normalize_objects(objects: list[Mapping[str, object]], label: str) -> list[dict[str, object]]:
     roles = [row["role"] for row in objects]; _require(2 <= len(objects) <= 127 and roles[:2] == ["executable", "loader"], f"{label} object order")
     _require(all(role == "library" for role in roles[2:]), f"{label} library roles")
-    identities = [(row["sha256"], row["size_bytes"]) for row in objects]
-    _require(len(identities) == len(set(identities)), f"{label} object identity")
-    providers = [row["soname"] for row in objects if row["soname"] is not None]
-    _require(len(providers) == len(set(providers)), f"{label} provider identity")
+    identities = [(row["sha256"], row["size_bytes"]) for row in objects]; _require(len(identities) == len(set(identities)), f"{label} object identity")
+    providers = [row["soname"] for row in objects if row["soname"] is not None]; _require(len(providers) == len(set(providers)), f"{label} provider identity")
     needed = [name for row in objects for name in row["needed"]]
     _require(all(1 <= row["size_bytes"] <= OBJECT_LIMIT for row in objects), f"{label} object bounds")
     _require(all(len(row["needed"]) == len(set(row["needed"])) for row in objects), f"{label} needed uniqueness")
@@ -411,20 +419,16 @@ def _normalize_objects(objects: list[Mapping[str, object]], label: str) -> list[
     return [{"needed": row["needed"], "role": row["role"], "sha256": row["sha256"],
              "size": row["size_bytes"], "soname": row["soname"]} for row in objects]
 def _validate_a(metadata: list[object]) -> None:
-    _require(3 <= len(metadata) <= 128 and type(metadata[-1]) is dict, "A metadata")
-    objects, summary = metadata[:-1], metadata[-1]
+    _require(3 <= len(metadata) <= 128 and type(metadata[-1]) is dict, "A metadata"); objects, summary = metadata[:-1], metadata[-1]
     _require([row["id"] for row in objects] == [f"python-object-{index}" for index in range(len(objects))], "A object ids")
-    normalized = _normalize_objects(objects, "A")
-    mapped = summary["mapped_sequence"]
-    expected_mapped = [{"role": row["role"], "sha256": row["sha256"]} for row in objects]
-    _require(mapped == expected_mapped, "A mapped sequence")
+    normalized = _normalize_objects(objects, "A"); mapped = summary["mapped_sequence"]
+    expected_mapped = [{"role": row["role"], "sha256": row["sha256"]} for row in objects]; _require(mapped == expected_mapped, "A mapped sequence")
     _require(summary["closure_sha256"] == hashlib.sha256(_canonical(normalized)).hexdigest(), "A closure summary")
     digest_rows = [[row["role"], row["sha256"]] for row in mapped]
     _require(summary["mapping_sha256"] == hashlib.sha256(_canonical(digest_rows)).hexdigest(), "A mapping summary")
 def _validate_semantics(value: object, context: WorkflowContext | None = None) -> None:
     _require(type(value) is dict and value.get("job") in DRIVERS, "semantic report")
-    report, job = value, str(value["job"])
-    _require(tuple(row["id"] for row in report["checks"]) == CHECK_IDS[job], "semantic checks")
+    report, job = value, str(value["job"]); _require(tuple(row["id"] for row in report["checks"]) == CHECK_IDS[job], "semantic checks")
     passing = all(row["outcome"] == "pass" for row in report["checks"]) and all(report["cleanup"].values())
     _require((report["result"] == "pass") == passing, "semantic result")
     _require((report["failure_phase"] is None) == passing and (report["diagnostics_sha256"] is None) == passing, "semantic failure")
@@ -489,8 +493,7 @@ def _socket_name(context: object) -> bytes:
     identity = f"{context.job}:{context.run_id}:{context.run_attempt}".encode()  # type: ignore[attr-defined]
     return b"\0cogs-nq-" + hashlib.sha256(identity).hexdigest()[:48].encode()
 class _CustodianClient:
-    def __init__(self, control: FdLease, pidfd: FdLease):
-        self.control, self.pidfd = control, pidfd
+    def __init__(self, control: FdLease, pidfd: FdLease): self.control, self.pidfd = control, pidfd
     def publish(self, raw: bytes) -> None:
         endpoint = socket.socket(fileno=self.control.number)
         try:
@@ -621,8 +624,6 @@ def _custodian_main(control_fd: int, context: WorkflowContext, nonce: bytes) -> 
             control.send(b"FAILED")
         except BaseException:
             pass
-        # Never delete after an identity mismatch. Certain owned pre-publication
-        # objects are reclaimed only while their retained descriptors still match.
         try:
             if directory is not None:
                 for name, lease in ((".report.stage", report), ("report.json", report), (".owner.json", receipt)):
@@ -666,14 +667,11 @@ def cleanup_report(job: str) -> None:
 class NativeSession:
     def __init__(self, context: WorkflowContext, ops: object, custodian: _CustodianClient, nonce: bytes):
         self.context, self.fds, self._ops, self._custodian = context, ops.fds, ops, custodian
-        self.source_set_sha256 = ops.source_set_sha256
-        self._nonce = nonce
-        self._operation_used = False
+        self.source_set_sha256, self._nonce, self._operation_used = ops.source_set_sha256, nonce, False
         self._before = dict(ops.observe(context))
         _require(tuple(self._before) == CLEANUP_KEYS, "baseline domains")
         _require(self._before["paths"] == (None, None), "named path baseline")
-        self._poisoned: set[str] = set()
-        self._evidence, self._published = None, False
+        self._poisoned: set[str] = set(); self._evidence, self._published = None, False
     @classmethod
     def begin(cls, expected_job: str, driver_file: str | Path) -> "NativeSession":
         context = WorkflowContext.from_environ(expected_job, driver_file)
@@ -683,21 +681,23 @@ class NativeSession:
     @classmethod
     def _begin_with_ops(cls, context: WorkflowContext, ops: object, custodian: _CustodianClient) -> "NativeSession":
         return cls(context, ops, custodian, os.urandom(32))
-    def run_fixed_operation(self, operation: str) -> object:
+    def run_fixed_operation(self, operation: str) -> dict[str, object]:
         expected = self.context.job
         _require(operation == expected and not self._operation_used and self._evidence is None, "fixed operation binding")
         self._operation_used = True
         result = self._ops.run_fixed_operation(self.context, operation)
         self.source_set_sha256 = self._ops.source_set_sha256
+        _require(type(result) is dict and HEX64.fullmatch(self.source_set_sha256) is not None, "closed production operation")
         return result
+    def qualify_fixed_descriptor_primitives(self) -> dict[str, object]: return self.run_fixed_operation("C")
+    def qualify_fixed_process_lifecycle(self) -> dict[str, object]: return self.run_fixed_operation("D")
     def mark_uncertain(self, domains: tuple[str, ...], error: BaseException) -> None:
         _require(self._evidence is None and domains and all(domain in CLEANUP_KEYS for domain in domains), "cleanup uncertainty")
         _require(isinstance(error, BaseException), "cleanup uncertainty error")
         self._poisoned.update(domains)
     def settle_native_phase(self) -> CleanupEvidence:
         _require(self._evidence is None and not self._published, "native settlement state")
-        after: Mapping[str, object] = {}
-        observation_error: BaseException | None = None
+        after: Mapping[str, object] = {}; observation_error: BaseException | None = None
         try:
             after = self._ops.observe(self.context)
         except BaseException as error:

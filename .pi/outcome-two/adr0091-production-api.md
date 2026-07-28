@@ -103,6 +103,26 @@ Each `objects` item is exactly `needed role sha256 size_bytes soname`, in execut
 
 `runtime` is the exact unchanged ordinary result above. B adds nothing to that result.
 
+## C and D clients
+
+Held-module production clients:
+
+```python
+invoke_fixed_descriptor_qualification(
+    source_root_fd: int,
+    revision: str,
+    admitted_driver_fd: int,
+) -> DescriptorQualificationResult
+
+invoke_fixed_lifecycle_qualification(
+    source_root_fd: int,
+    revision: str,
+    admitted_driver_fd: int,
+) -> LifecycleQualificationResult
+```
+
+Common exposes these only as the job-bound, zero-argument session conveniences `qualify_fixed_descriptor_primitives()` and `qualify_fixed_process_lifecycle()`. They share the same one-shot `run_fixed_operation` binding as the other profiles.
+
 ## C result
 
 `DescriptorQualificationResult` fields are exactly:
@@ -132,9 +152,11 @@ subreaper_restored descriptors_restored
 W2 exposes:
 
 ```python
-session.run_fixed_operation("E") -> SandboxQualificationResult
-session.run_fixed_operation("integration") -> RuntimeQualificationResult
+session.run_fixed_operation("E") -> dict[str, primitive]
+session.run_fixed_operation("integration") -> dict[str, primitive]
 ```
+
+The held launcher must first return the exact frozen `SandboxQualificationResult` or `RuntimeQualificationResult`. Common accepts only that exact profile class (and each exact nested result class), then recursively converts it to the ordered, closed primitive dictionary consumed by all six drivers. A caller-created dataclass, mapping, ambient import, reordered field inventory, or cross-profile result is not conversion authority.
 
 Its production-admission layer uses the W1 internal constructors:
 
