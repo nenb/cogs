@@ -3495,6 +3495,6 @@ if __name__ == "__main__":
     except RuntimeLauncherUnavailable:
         os.write(2, b"runtime-launcher-unavailable\n")
         raise SystemExit(78)
-    except BaseException:
+    except Exception:
         os.write(2, b"runtime-launcher-failed\n")
         raise SystemExit(1)
