@@ -402,7 +402,7 @@ extra={'.authority.json':A,'.owner.json':O,'report.json':R,'foreign':F};assert r
 
 test("parsed workflow graph causally gates exact-head real CLI dispatch and final outcomes", () => {
   const eligibilityJob = parsedJob("native-qualification-eligibility");
-  assert.match(eligibilityJob.if ?? "", /run_attempt == 1.*event_name == 'pull_request'.*head\.repo\.full_name == github\.repository/u);
+  assert.equal(eligibilityJob.if, "${{ always() }}", "eligibility must execute and decide every context");
   assert.equal(checkout(eligibilityJob).with?.ref, "${{ github.event.pull_request.head.sha }}");
   assert.ok(eligibilityJob.steps.some((step) => step.run?.includes("common.py --eligibility") && step.run.includes("/usr/bin/env -i")));
   const nativeIds = jobs.map(([, id]) => id);

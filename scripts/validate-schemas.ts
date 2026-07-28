@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -9,6 +10,7 @@ import { type SecurityResultSemanticsInput, validateSecurityResultSemantics } fr
 const require = createRequire(import.meta.url);
 const Ajv2020 = require("ajv/dist/2020.js") as new (options?: Options) => AjvCore;
 const addFormats = require("ajv-formats") as (ajv: AjvCore) => AjvCore;
+const parseYaml = (require("yaml") as { parse(source: string): unknown }).parse;
 const root = resolve(import.meta.dirname, "..");
 const schemaDir = resolve(root, "schemas");
 const ajv = new Ajv2020({ allErrors: true, strict: true, strictRequired: false });
@@ -406,4 +408,103 @@ for (const reportPath of process.argv.slice(2)) {
   }
 }
 
-console.log(`Validated ${schemaFiles.length} schemas, valid examples, negative cases, and report semantics.`);
+type WorkflowStep = { uses?: string; with?: Record<string, unknown>; env?: Record<string, string>; run?: string };
+type WorkflowJob = { if?: string; needs?: string | string[]; steps: WorkflowStep[] };
+const workflowPath = resolve(root, ".github/workflows/ci.yml");
+const workflow = parseYaml(readFileSync(workflowPath, "utf8")) as { jobs: Record<string, WorkflowJob> };
+const workflowJob = (id: string): WorkflowJob => {
+  const job = workflow.jobs[id];
+  assert.ok(job, `workflow job ${id}`);
+  return job;
+};
+const jobNeeds = (job: WorkflowJob): string[] => job.needs === undefined ? [] :
+  typeof job.needs === "string" ? [job.needs] : job.needs;
+const checkoutRef = (job: WorkflowJob): unknown =>
+  job.steps.find((step) => step.uses?.startsWith("actions/checkout@"))?.with?.ref;
+const cliStep = (job: WorkflowJob, selector: string): WorkflowStep => {
+  const step = job.steps.find((candidate) => candidate.run?.includes(selector));
+  assert.ok(step, `workflow CLI ${selector}`);
+  return step;
+};
+const parsedCli = (step: WorkflowStep, selector: string): [string, string] => {
+  const match = step.run?.match(new RegExp(`(scripts/native-qualification/[a-z0-9-]+\\.py) ${selector}`));
+  assert.ok(match?.[1], `parsed CLI ${selector}`);
+  return [match[1], selector];
+};
+const eligibilityId = "native-qualification-eligibility";
+const nativeJobs = [
+  ["native-qualification-a", "scripts/native-qualification/job-a-runtime-mappings.py"],
+  ["native-qualification-b", "scripts/native-qualification/job-b-compression.py"],
+  ["native-qualification-c", "scripts/native-qualification/job-c-descriptors.py"],
+  ["native-qualification-d", "scripts/native-qualification/job-d-process-lifecycle.py"],
+  ["native-qualification-e", "scripts/native-qualification/job-e-sandbox.py"],
+  ["native-closure-integration", "scripts/native-qualification/thin-integration.py"],
+] as const;
+const eligibilityJob = workflowJob(eligibilityId);
+assert.equal(eligibilityJob.if, "${{ always() }}", "eligibility cannot be skipped by context");
+assert.equal(checkoutRef(eligibilityJob), "${{ github.event.pull_request.head.sha }}");
+const eligibilityCli = parsedCli(cliStep(eligibilityJob, "--eligibility"), "--eligibility");
+const finalJob = workflowJob("native-qualification-required");
+assert.equal(finalJob.if, "${{ always() }}");
+assert.equal(checkoutRef(finalJob), "${{ github.event.pull_request.head.sha }}");
+const finalStep = cliStep(finalJob, "--require-final-results");
+const finalCli = parsedCli(finalStep, "--require-final-results");
+for (const [id, driver] of nativeJobs) {
+  const job = workflowJob(id);
+  assert.equal(checkoutRef(job), "${{ github.event.pull_request.head.sha }}", `${id} exact head`);
+  const invoke = cliStep(job, "--workflow-bound");
+  assert.equal(invoke.env?.NQ_DRIVER, driver);
+}
+const isolatedPython = process.platform === "darwin" ? "/opt/homebrew/bin/python3" : "/usr/bin/python3";
+const gateSentinel = "import os,runpy,sys\nos.environ.pop('__CF_USER_TEXT_ENCODING',None)\nos.write(1,b'GATE-CLI-SENTINEL')\nsys.argv=[sys.argv[1],sys.argv[2]]\nrunpy.run_path(sys.argv[0],run_name='__main__')";
+const effectSentinel = "import os,runpy,sys,types\npath=sys.argv[1]\nmodule=types.ModuleType('common')\nclass Session:\n @classmethod\n def begin(cls,*args):os.write(1,b'NATIVE-EFFECT-SENTINEL');raise RuntimeError('sentinel')\nmodule.NativeSession=Session\nsys.modules['common']=module\nsys.argv=[path,'--workflow-bound']\nrunpy.run_path(path,run_name='__main__')";
+const runGate = (cli: [string, string], env: Record<string, string>) => {
+  const run = spawnSync(isolatedPython, ["-I", "-B", "-c", gateSentinel, ...cli], { encoding: "utf8", env });
+  assert.equal(run.stdout, "GATE-CLI-SENTINEL", `${cli[1]} executed`);
+  assert.notEqual(run.status, null, run.error?.message);
+  return run.status;
+};
+const aliases = new Map<string, string>([
+  ["QUALITY", "quality"], ["ELIGIBILITY", eligibilityId],
+  ["A", nativeJobs[0][0]], ["B", nativeJobs[1][0]], ["C", nativeJobs[2][0]],
+  ["D", nativeJobs[3][0]], ["E", nativeJobs[4][0]], ["INTEGRATION", nativeJobs[5][0]],
+]);
+const goodEligibility = { LC_ALL: "C", PYTHONCOERCECLOCALE: "0", EVENT_NAME: "pull_request", RUN_ATTEMPT: "1",
+  REPOSITORY: "owner/repo", HEAD_REPOSITORY: "owner/repo", HEAD_SHA: "a".repeat(40), MERGE_SHA: "b".repeat(40),
+  BASE_SHA: "c".repeat(40), PR_NUMBER: "1" };
+const contexts = [
+  ["eligible", goodEligibility, true],
+  ["attempt two", { ...goodEligibility, RUN_ATTEMPT: "2" }, false],
+  ["fork", { ...goodEligibility, HEAD_REPOSITORY: "fork/repo" }, false],
+  ["push", { ...goodEligibility, EVENT_NAME: "push" }, false],
+  ["malformed", { ...goodEligibility, HEAD_SHA: "" }, false],
+] as const;
+for (const [name, environment, eligible] of contexts) {
+  const results: Record<string, string> = { quality: "success" };
+  results[eligibilityId] = runGate(eligibilityCli, environment) === 0 ? "success" : "failure";
+  assert.equal(results[eligibilityId] === "success", eligible, `${name} eligibility`);
+  let effects = 0;
+  for (const [id, driver] of nativeJobs) {
+    const selected = jobNeeds(workflowJob(id)).every((dependency) => results[dependency] === "success");
+    if (selected) {
+      const run = spawnSync(isolatedPython, ["-I", "-B", "-c", effectSentinel, driver], { encoding: "utf8" });
+      assert.equal(run.stdout, "NATIVE-EFFECT-SENTINEL", `${name}/${id} dispatch`);
+      effects += 1;
+      results[id] = "success";
+    } else results[id] = "skipped";
+  }
+  assert.equal(effects, eligible ? nativeJobs.length : 0, `${name} native dispatch count`);
+  const finalEnvironment: Record<string, string> = {
+    LC_ALL: "C",
+    PYTHONCOERCECLOCALE: "0",
+    ...Object.fromEntries(Object.keys(finalStep.env ?? {}).map((key) => {
+      const match = key.match(/^(QUALITY|ELIGIBILITY|A|B|C|D|E|INTEGRATION)_(RESULT|UPLOAD|CLEANUP)$/u);
+      assert.ok(match?.[1] && match[2]);
+      const result = results[aliases.get(match[1]) ?? ""] ?? "skipped";
+      return [key, match[2] === "RESULT" ? result : result === "success" ? "success" : ""];
+    })),
+  };
+  assert.equal(runGate(finalCli, finalEnvironment) === 0, eligible, `${name} final result`);
+}
+
+console.log(`Validated ${schemaFiles.length} schemas, valid examples, negative cases, report semantics, and native workflow gates.`);

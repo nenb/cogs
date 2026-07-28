@@ -166,7 +166,7 @@ jobs:
 
   native-qualification-eligibility:
     name: Outcome 2 native eligibility
-    if: github.run_attempt == 1 && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    if: ${{ always() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:
