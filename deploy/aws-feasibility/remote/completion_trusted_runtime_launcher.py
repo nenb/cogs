@@ -1421,9 +1421,6 @@ class _RootOwner(make_dataclass(
     def cleanup(self, primary: BaseException | None = None) -> None:
         if self.cleaned: return
         failures: list[BaseException] = []
-        if self.root is not None:
-            try: self.root.close(self.ops)
-            except BaseException as error: failures.append(error)
         if self.create_intended and self.parent is not None:
             try:
                 parent = os.fstat(self.parent.fd)
@@ -1442,6 +1439,12 @@ class _RootOwner(make_dataclass(
                     exact_generation = exact_generation and (info.st_dev, info.st_ino) == self.identity
                     _require(exact_shape and exact_generation, "private root replacement", "root-replaced")
                     os.rmdir(_ROOT_LEAF, dir_fd=self.parent.fd)
+            except BaseException as error: failures.append(error)
+        # Keep the O_PATH lease live through pathname validation and removal.
+        # Closing it first permits immediate inode reuse to counterfeit the
+        # recorded (device, inode) generation after a same-name replacement.
+        if self.root is not None:
+            try: self.root.close(self.ops)
             except BaseException as error: failures.append(error)
         if self.parent is not None:
             try: self.parent.close(self.ops)
