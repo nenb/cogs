@@ -16,6 +16,8 @@ import stat
 import struct
 import sys
 import tempfile
+import types
+from types import SimpleNamespace
 
 if sys.flags.optimize:
     raise RuntimeError("Outcome 2 launcher tests refuse optimized Python")
@@ -436,6 +438,13 @@ def valid_bundle(module, directory):
                 module._SEAL_PROFILE,
                 (1, 2, value["size"], 4, 5, 0o100555, 0, 0),
             ))
+    metadata = module._runtime_metadata(
+        report, tuple(rows), (tools[2]["mapping_sha256"], tools[1]["mapping_sha256"]), (b"gzip-output", b"zstd-output"),
+    )
+    if metadata[0]["objects"][0]["role"] != "executable" or any(value["seal_mask"] != module._EXEC_SEALS for runtime in metadata[1:] for value in runtime["sealed_objects"]):
+        raise AssertionError("admitted A/B metadata binding")
+    if any(name in repr(metadata) for name in ("descriptor_index", "source_generation", "logical_path", "held_fd")):
+        raise AssertionError("private authority escaped A/B metadata")
     return report_bytes, descriptors, tuple(rows)
 
 
@@ -458,7 +467,7 @@ def invoke_bootstrap(module, row, created):
         "st_mtime_ns": 3,
         "st_ctime_ns": 4,
         "st_mode": stat.S_IFDIR | 0o755,
-        "st_uid": 0,
+        "st_uid": os.geteuid(),
         "st_gid": 0,
     })()
 
@@ -598,6 +607,157 @@ def execute_row(module, row):
         )
 
 
+def mapping_only_coordinator(module):
+    events = []
+    source = SimpleNamespace(
+        role="executable", size=7, sha256=hashlib.sha256(b"python3").hexdigest(),
+    )
+
+    class State:
+        value = "OWNED"
+
+    class Preparation:
+        def __init__(self, ops, fd_baseline, child_baseline, outer):
+            self.ops = ops
+            self.fd_baseline = fd_baseline
+            self.child_baseline = child_baseline
+            self.outer = outer
+            self.helpers = []
+
+        def owned_fds(self):
+            return ()
+
+    class Ops:
+        def architecture_gate(self):
+            events.append("architecture")
+
+    class CleanupError(RuntimeError):
+        pass
+
+    digest = "1" * 64
+    name = f"_cogs_o2_{digest[:16]}.completion_trusted_runtime_closure"
+    closure = types.ModuleType(name)
+    closure.__package__ = name.rsplit(".", 1)[0]
+    closure._ADMISSION_TYPE = module._SourceAdmission
+    closure._Ops = Ops
+    closure.PreparationLease = Preparation
+    closure.RuntimeClosureCleanupError = CleanupError
+    closure._reserve_stdio = lambda ops: events.append("reserve-stdio")
+    closure._snapshot_fds = lambda ops: frozenset()
+    closure._child_baseline = lambda ops: ()
+    closure._canonical = module._canonical
+    closure._object_report = lambda value: {
+        "needed": [], "role": value.role, "sha256": value.sha256,
+        "size": value.size, "soname": None,
+    }
+    resolved = SimpleNamespace(objects=(source,))
+
+    def resolve(ops, tool, path):
+        del ops
+        events.append(("resolve", tool, path))
+        return resolved
+
+    def spawn(ops, preparation, value):
+        del ops, value
+        helper = SimpleNamespace(
+            pid=41, start_time=42, session=41, process_group=41,
+            reaped=False, pidfd=SimpleNamespace(state=State()),
+        )
+        helper.token = preparation.outer._register_runtime_helper(helper, 100.0)
+        preparation.outer._release_runtime_helper(helper.token, 100.0)
+        preparation.helpers.append(helper)
+        events.append("spawn")
+        return helper
+
+    def mapped(ops, helper, value):
+        del ops, helper
+        sequence = tuple((item.role, item.sha256) for item in value.objects)
+        events.append("map-files")
+        return SimpleNamespace(
+            tool="python3-parser", mapped=sequence,
+            mapping_sha256=hashlib.sha256(module._canonical(sequence)).hexdigest(),
+        )
+
+    def stop(ops, preparation, helper):
+        del ops
+        helper.reaped = True
+        preparation.outer._retire_runtime_helper(helper.token, 100.0)
+        helper.pidfd.state.value = "CLOSED"
+        preparation.helpers.remove(helper)
+        events.append("stop-reap")
+
+    closure._resolve_tool = resolve
+    closure._spawn_helper = spawn
+    closure._mapped_closure = mapped
+    closure._stop_helper = stop
+    closure._close_objects = lambda ops, objects: events.append("close-sources")
+    sys.modules[name] = closure
+    admission = module._SourceAdmission(
+        "0" * 40, "2" * 64, digest, b"", "", 0, None, None, 0, 0, 0,
+    )
+    try:
+        result = module._coordinate_admitted_mapping_only(admission, closure)
+        if result["tool"] != "python3-parser" or result["objects"][0]["sha256"] != source.sha256 or result["python_mapping"]["mapping_sha256"] != result["mapping_sha256"]:
+            raise AssertionError("mapping-only typed result")
+        if not all(result[name] is True for name in (
+            "mapped_generations_exact", "mapping_stable", "helper_reaped",
+            "descriptors_restored", "children_reaped",
+        )):
+            raise AssertionError("mapping-only exact observations")
+        expected = [
+            "architecture", "reserve-stdio",
+            ("resolve", "python3-parser", "/usr/bin/python3"),
+            "spawn", "map-files", "stop-reap", "close-sources",
+        ]
+        if events != expected:
+            raise AssertionError(f"mapping-only production route drift: {events}")
+        before = list(events)
+        try:
+            module._coordinate_admitted_mapping_only(admission, closure)
+        except module.RuntimeLauncherError as error:
+            if error.code != "mapping-admission":
+                raise
+        else:
+            raise AssertionError("mapping admission replay accepted")
+        if events != before:
+            raise AssertionError("mapping replay reached an effect")
+    finally:
+        sys.modules.pop(name, None)
+
+
+def sticky_root_replacement(module):
+    class Ops:
+        @staticmethod
+        def open(path, flags, mode=0o600):
+            return os.open(path, flags, mode)
+
+        @staticmethod
+        def close(fd):
+            os.close(fd)
+
+    with tempfile.TemporaryDirectory() as parent_directory:
+        old_parent = module._ROOT_PARENT
+        module._ROOT_PARENT = parent_directory
+        owner = module._RootOwner(Ops())
+        try:
+            owner.prepare()
+            leaf = Path(parent_directory) / module._ROOT_LEAF
+            os.rmdir(leaf)
+            os.mkdir(leaf, 0o700)
+            try:
+                owner.cleanup()
+            except module.RuntimeLauncherCleanupError as error:
+                if not any(getattr(item, "code", None) == "root-replaced" for item in error.failures):
+                    raise AssertionError("replacement cleanup classification") from error
+            else:
+                raise AssertionError("replacement root removed")
+            if not leaf.is_dir():
+                raise AssertionError("sticky-parent cleanup removed replacement")
+            leaf.rmdir()
+        finally:
+            module._ROOT_PARENT = old_parent
+
+
 def parent():
     module = load_module()
     if not hasattr(module.os, "O_PATH"):
@@ -606,6 +766,15 @@ def parent():
         module.socket.SCM_CREDENTIALS = 2
     if not hasattr(module.socket, "MSG_CMSG_CLOEXEC"):
         module.socket.MSG_CMSG_CLOEXEC = 0x40000000
+    if module._ROOT_PARENT != "/tmp":
+        raise AssertionError("private runtime root is not fixed beneath /tmp")
+    launcher_source = MODULE.read_text()
+    authenticate = launcher_source.index("sources = _authenticate_sources(4, admission)")
+    owner_policy = launcher_source.index("root.st_uid == os.geteuid()")
+    if authenticate > owner_policy or "st_uid == 0" in launcher_source or 'zip(("python_mapping", "gzip_runtime", "zstd_runtime"), metadata)' not in launcher_source:
+        raise AssertionError("runner checkout ownership policy/order drift")
+    mapping_only_coordinator(module)
+    sticky_root_replacement(module)
     rows = fixture_rows(module)
     selected = {row["id"] for row in rows}
     consumed = set()
