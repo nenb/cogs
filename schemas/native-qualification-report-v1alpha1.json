@@ -1,0 +1,144 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.dev/schemas/native-qualification-report-v1alpha1.json",
+  "title": "Outcome 2 native qualification metadata report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "job",
+    "source",
+    "envelope",
+    "workflow",
+    "runner",
+    "authority",
+    "result",
+    "checks",
+    "metadata",
+    "failure_phase",
+    "diagnostics_sha256",
+    "cleanup"
+  ],
+  "properties": {
+    "version": { "const": "cogs.native-qualification/v1alpha1" },
+    "job": { "enum": ["A", "B", "C", "D", "E", "integration"] },
+    "source": { "$ref": "#/$defs/source" },
+    "envelope": { "$ref": "#/$defs/envelope" },
+    "workflow": { "$ref": "#/$defs/workflow" },
+    "runner": { "$ref": "#/$defs/runner" },
+    "authority": { "const": "exact-run-native-qualification" },
+    "result": { "enum": ["pass", "fail"] },
+    "checks": {
+      "type": "array",
+      "minItems": 7,
+      "maxItems": 17,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/check" }
+    },
+    "metadata": {
+      "type": "array",
+      "maxItems": 128,
+      "items": { "$ref": "#/$defs/metadata" }
+    },
+    "failure_phase": {
+      "oneOf": [{ "type": "null" }, { "type": "string", "pattern": "^[A-Za-z0-9_.-]{1,96}$" }]
+    },
+    "diagnostics_sha256": {
+      "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/sha256" }]
+    },
+    "cleanup": { "$ref": "#/$defs/cleanup" }
+  },
+  "$defs": {
+    "sha1": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["head_sha", "checkout_sha", "driver_blob_sha256", "common_blob_sha256"],
+      "properties": {
+        "head_sha": { "$ref": "#/$defs/sha1" },
+        "checkout_sha": { "$ref": "#/$defs/sha1" },
+        "driver_blob_sha256": { "$ref": "#/$defs/sha256" },
+        "common_blob_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "envelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repository",
+        "github_sha",
+        "event_merge_sha",
+        "base_sha",
+        "run_id",
+        "run_attempt",
+        "pull_request_number"
+      ],
+      "properties": {
+        "repository": { "type": "string", "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$" },
+        "github_sha": { "$ref": "#/$defs/sha1" },
+        "event_merge_sha": { "$ref": "#/$defs/sha1" },
+        "base_sha": { "$ref": "#/$defs/sha1" },
+        "run_id": { "type": "integer", "minimum": 1 },
+        "run_attempt": { "type": "integer", "minimum": 1 },
+        "pull_request_number": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "workflow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "blob_sha256", "workflow_sha", "job_id"],
+      "properties": {
+        "path": { "const": ".github/workflows/ci.yml" },
+        "blob_sha256": { "$ref": "#/$defs/sha256" },
+        "workflow_sha": { "$ref": "#/$defs/sha1" },
+        "job_id": { "type": "string", "pattern": "^[A-Za-z0-9_.-]{1,96}$" }
+      }
+    },
+    "runner": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["image", "image_version", "kernel_release", "architecture"],
+      "properties": {
+        "image": { "const": "ubuntu-24.04" },
+        "image_version": { "type": "string", "pattern": "^[A-Za-z0-9_.-]{1,96}$" },
+        "kernel_release": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+[-A-Za-z0-9.+]*$" },
+        "architecture": { "const": "x86_64" }
+      }
+    },
+    "check": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "outcome"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[A-Za-z0-9_.-]{1,96}$" },
+        "outcome": { "enum": ["pass", "fail"] }
+      }
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "role", "sha256", "size_bytes"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[A-Za-z0-9_.-]{1,96}$" },
+        "role": { "type": "string", "pattern": "^[A-Za-z0-9_.-]{1,96}$" },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "size_bytes": { "type": "integer", "minimum": 0, "maximum": 536870912 }
+      }
+    },
+    "cleanup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["descriptors", "children", "paths", "mounts", "namespaces", "limits", "checkout"],
+      "properties": {
+        "descriptors": { "type": "boolean" },
+        "children": { "type": "boolean" },
+        "paths": { "type": "boolean" },
+        "mounts": { "type": "boolean" },
+        "namespaces": { "type": "boolean" },
+        "limits": { "type": "boolean" },
+        "checkout": { "type": "boolean" }
+      }
+    }
+  }
+}

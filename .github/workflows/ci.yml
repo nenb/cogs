@@ -163,6 +163,156 @@ jobs:
           COGS_C1_EXPECTED_WORKFLOW_BLOB_DIGEST: ${{ hashFiles('.github/workflows/ci.yml') }}
         run: /usr/bin/python3 -I test/aws-stage2-completion-rootfs-builder-native.py --workflow-bound
 
+  native-qualification-a:
+    name: Outcome 2 native A - runtime mappings
+    needs: quality
+    if: github.run_attempt == 1 && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    permissions: { contents: read }
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with: { ref: "${{ github.event.pull_request.head.sha }}", persist-credentials: false }
+      - env:
+          { NQ_DRIVER: scripts/native-qualification/job-a-runtime-mappings.py, NQ_HEAD_REPOSITORY: "${{ github.event.pull_request.head.repo.full_name }}", NQ_HEAD_SHA: "${{ github.event.pull_request.head.sha }}", NQ_MERGE_SHA: "${{ github.event.pull_request.merge_commit_sha }}", NQ_BASE_SHA: "${{ github.event.pull_request.base.sha }}", NQ_PR_NUMBER: "${{ github.event.pull_request.number }}" }
+        run: |
+          set -euo pipefail
+          test "$NQ_HEAD_REPOSITORY" = "$GITHUB_REPOSITORY"
+          [[ "$NQ_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(/usr/bin/git rev-parse --verify HEAD^{commit})" = "$NQ_HEAD_SHA"
+          test -z "$(/usr/bin/git status --porcelain=v1 --untracked-files=all)"
+          test -z "$(/usr/bin/git config --local --get-regexp 'credential\.helper|http\..*\.extraheader' || :)"
+          ! /usr/bin/git remote get-url origin | /usr/bin/grep -Eq '://[^/]*@'
+          /usr/bin/env -i LC_ALL=C PYTHONDONTWRITEBYTECODE=1 PYTHONHASHSEED=0 NQ_REPOSITORY="$GITHUB_REPOSITORY" NQ_HEAD_SHA="$NQ_HEAD_SHA" NQ_ENVELOPE_SHA="$GITHUB_SHA" NQ_WORKFLOW_SHA="$GITHUB_WORKFLOW_SHA" NQ_MERGE_SHA="$NQ_MERGE_SHA" NQ_BASE_SHA="$NQ_BASE_SHA" NQ_JOB_ID="$GITHUB_JOB" NQ_RUN_ID="$GITHUB_RUN_ID" NQ_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" NQ_PR_NUMBER="$NQ_PR_NUMBER" NQ_RUNNER_VERSION="$ImageVersion" /usr/bin/python3 -I -B "$NQ_DRIVER" --workflow-bound
+      - if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with: { name: "native-A-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}-${{ github.run_attempt }}", path: /tmp/cogs-native-qualification-A.json, if-no-files-found: error, retention-days: 7 }
+
+  native-qualification-b:
+    name: Outcome 2 native B - compression executables
+    needs: quality
+    if: github.run_attempt == 1 && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    permissions: { contents: read }
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with: { ref: "${{ github.event.pull_request.head.sha }}", persist-credentials: false }
+      - env:
+          { NQ_DRIVER: scripts/native-qualification/job-b-compression.py, NQ_HEAD_REPOSITORY: "${{ github.event.pull_request.head.repo.full_name }}", NQ_HEAD_SHA: "${{ github.event.pull_request.head.sha }}", NQ_MERGE_SHA: "${{ github.event.pull_request.merge_commit_sha }}", NQ_BASE_SHA: "${{ github.event.pull_request.base.sha }}", NQ_PR_NUMBER: "${{ github.event.pull_request.number }}" }
+        run: |
+          set -euo pipefail
+          test "$NQ_HEAD_REPOSITORY" = "$GITHUB_REPOSITORY"
+          [[ "$NQ_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(/usr/bin/git rev-parse --verify HEAD^{commit})" = "$NQ_HEAD_SHA"
+          test -z "$(/usr/bin/git status --porcelain=v1 --untracked-files=all)"
+          test -z "$(/usr/bin/git config --local --get-regexp 'credential\.helper|http\..*\.extraheader' || :)"
+          ! /usr/bin/git remote get-url origin | /usr/bin/grep -Eq '://[^/]*@'
+          /usr/bin/env -i LC_ALL=C PYTHONDONTWRITEBYTECODE=1 PYTHONHASHSEED=0 NQ_REPOSITORY="$GITHUB_REPOSITORY" NQ_HEAD_SHA="$NQ_HEAD_SHA" NQ_ENVELOPE_SHA="$GITHUB_SHA" NQ_WORKFLOW_SHA="$GITHUB_WORKFLOW_SHA" NQ_MERGE_SHA="$NQ_MERGE_SHA" NQ_BASE_SHA="$NQ_BASE_SHA" NQ_JOB_ID="$GITHUB_JOB" NQ_RUN_ID="$GITHUB_RUN_ID" NQ_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" NQ_PR_NUMBER="$NQ_PR_NUMBER" NQ_RUNNER_VERSION="$ImageVersion" /usr/bin/python3 -I -B "$NQ_DRIVER" --workflow-bound
+      - if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with: { name: "native-B-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}-${{ github.run_attempt }}", path: /tmp/cogs-native-qualification-B.json, if-no-files-found: error, retention-days: 7 }
+
+  native-qualification-c:
+    name: Outcome 2 native C - descriptor behavior
+    needs: quality
+    if: github.run_attempt == 1 && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    permissions: { contents: read }
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with: { ref: "${{ github.event.pull_request.head.sha }}", persist-credentials: false }
+      - env:
+          { NQ_DRIVER: scripts/native-qualification/job-c-descriptors.py, NQ_HEAD_REPOSITORY: "${{ github.event.pull_request.head.repo.full_name }}", NQ_HEAD_SHA: "${{ github.event.pull_request.head.sha }}", NQ_MERGE_SHA: "${{ github.event.pull_request.merge_commit_sha }}", NQ_BASE_SHA: "${{ github.event.pull_request.base.sha }}", NQ_PR_NUMBER: "${{ github.event.pull_request.number }}" }
+        run: |
+          set -euo pipefail
+          test "$NQ_HEAD_REPOSITORY" = "$GITHUB_REPOSITORY"
+          [[ "$NQ_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(/usr/bin/git rev-parse --verify HEAD^{commit})" = "$NQ_HEAD_SHA"
+          test -z "$(/usr/bin/git status --porcelain=v1 --untracked-files=all)"
+          test -z "$(/usr/bin/git config --local --get-regexp 'credential\.helper|http\..*\.extraheader' || :)"
+          ! /usr/bin/git remote get-url origin | /usr/bin/grep -Eq '://[^/]*@'
+          /usr/bin/env -i LC_ALL=C PYTHONDONTWRITEBYTECODE=1 PYTHONHASHSEED=0 NQ_REPOSITORY="$GITHUB_REPOSITORY" NQ_HEAD_SHA="$NQ_HEAD_SHA" NQ_ENVELOPE_SHA="$GITHUB_SHA" NQ_WORKFLOW_SHA="$GITHUB_WORKFLOW_SHA" NQ_MERGE_SHA="$NQ_MERGE_SHA" NQ_BASE_SHA="$NQ_BASE_SHA" NQ_JOB_ID="$GITHUB_JOB" NQ_RUN_ID="$GITHUB_RUN_ID" NQ_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" NQ_PR_NUMBER="$NQ_PR_NUMBER" NQ_RUNNER_VERSION="$ImageVersion" /usr/bin/python3 -I -B "$NQ_DRIVER" --workflow-bound
+      - if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with: { name: "native-C-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}-${{ github.run_attempt }}", path: /tmp/cogs-native-qualification-C.json, if-no-files-found: error, retention-days: 7 }
+
+  native-qualification-d:
+    name: Outcome 2 native D - process lifecycle
+    needs: quality
+    if: github.run_attempt == 1 && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    permissions: { contents: read }
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with: { ref: "${{ github.event.pull_request.head.sha }}", persist-credentials: false }
+      - env:
+          { NQ_DRIVER: scripts/native-qualification/job-d-process-lifecycle.py, NQ_HEAD_REPOSITORY: "${{ github.event.pull_request.head.repo.full_name }}", NQ_HEAD_SHA: "${{ github.event.pull_request.head.sha }}", NQ_MERGE_SHA: "${{ github.event.pull_request.merge_commit_sha }}", NQ_BASE_SHA: "${{ github.event.pull_request.base.sha }}", NQ_PR_NUMBER: "${{ github.event.pull_request.number }}" }
+        run: |
+          set -euo pipefail
+          test "$NQ_HEAD_REPOSITORY" = "$GITHUB_REPOSITORY"
+          [[ "$NQ_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(/usr/bin/git rev-parse --verify HEAD^{commit})" = "$NQ_HEAD_SHA"
+          test -z "$(/usr/bin/git status --porcelain=v1 --untracked-files=all)"
+          test -z "$(/usr/bin/git config --local --get-regexp 'credential\.helper|http\..*\.extraheader' || :)"
+          ! /usr/bin/git remote get-url origin | /usr/bin/grep -Eq '://[^/]*@'
+          /usr/bin/env -i LC_ALL=C PYTHONDONTWRITEBYTECODE=1 PYTHONHASHSEED=0 NQ_REPOSITORY="$GITHUB_REPOSITORY" NQ_HEAD_SHA="$NQ_HEAD_SHA" NQ_ENVELOPE_SHA="$GITHUB_SHA" NQ_WORKFLOW_SHA="$GITHUB_WORKFLOW_SHA" NQ_MERGE_SHA="$NQ_MERGE_SHA" NQ_BASE_SHA="$NQ_BASE_SHA" NQ_JOB_ID="$GITHUB_JOB" NQ_RUN_ID="$GITHUB_RUN_ID" NQ_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" NQ_PR_NUMBER="$NQ_PR_NUMBER" NQ_RUNNER_VERSION="$ImageVersion" /usr/bin/python3 -I -B "$NQ_DRIVER" --workflow-bound
+      - if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with: { name: "native-D-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}-${{ github.run_attempt }}", path: /tmp/cogs-native-qualification-D.json, if-no-files-found: error, retention-days: 7 }
+
+  native-qualification-e:
+    name: Outcome 2 native E - sandbox boundary
+    needs: quality
+    if: github.run_attempt == 1 && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    permissions: { contents: read }
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with: { ref: "${{ github.event.pull_request.head.sha }}", persist-credentials: false }
+      - env:
+          { NQ_DRIVER: scripts/native-qualification/job-e-sandbox.py, NQ_HEAD_REPOSITORY: "${{ github.event.pull_request.head.repo.full_name }}", NQ_HEAD_SHA: "${{ github.event.pull_request.head.sha }}", NQ_MERGE_SHA: "${{ github.event.pull_request.merge_commit_sha }}", NQ_BASE_SHA: "${{ github.event.pull_request.base.sha }}", NQ_PR_NUMBER: "${{ github.event.pull_request.number }}" }
+        run: |
+          set -euo pipefail
+          test "$NQ_HEAD_REPOSITORY" = "$GITHUB_REPOSITORY"
+          [[ "$NQ_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(/usr/bin/git rev-parse --verify HEAD^{commit})" = "$NQ_HEAD_SHA"
+          test -z "$(/usr/bin/git status --porcelain=v1 --untracked-files=all)"
+          test -z "$(/usr/bin/git config --local --get-regexp 'credential\.helper|http\..*\.extraheader' || :)"
+          ! /usr/bin/git remote get-url origin | /usr/bin/grep -Eq '://[^/]*@'
+          /usr/bin/env -i LC_ALL=C PYTHONDONTWRITEBYTECODE=1 PYTHONHASHSEED=0 NQ_REPOSITORY="$GITHUB_REPOSITORY" NQ_HEAD_SHA="$NQ_HEAD_SHA" NQ_ENVELOPE_SHA="$GITHUB_SHA" NQ_WORKFLOW_SHA="$GITHUB_WORKFLOW_SHA" NQ_MERGE_SHA="$NQ_MERGE_SHA" NQ_BASE_SHA="$NQ_BASE_SHA" NQ_JOB_ID="$GITHUB_JOB" NQ_RUN_ID="$GITHUB_RUN_ID" NQ_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" NQ_PR_NUMBER="$NQ_PR_NUMBER" NQ_RUNNER_VERSION="$ImageVersion" /usr/bin/python3 -I -B "$NQ_DRIVER" --workflow-bound
+      - if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with: { name: "native-E-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}-${{ github.run_attempt }}", path: /tmp/cogs-native-qualification-E.json, if-no-files-found: error, retention-days: 7 }
+
+  native-closure-integration:
+    name: Outcome 2 native closure integration
+    needs: [native-qualification-a, native-qualification-b, native-qualification-c, native-qualification-d, native-qualification-e]
+    if: github.run_attempt == 1 && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    permissions: { contents: read }
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with: { ref: "${{ github.event.pull_request.head.sha }}", persist-credentials: false }
+      - env:
+          { NQ_DRIVER: scripts/native-qualification/thin-integration.py, NQ_HEAD_REPOSITORY: "${{ github.event.pull_request.head.repo.full_name }}", NQ_HEAD_SHA: "${{ github.event.pull_request.head.sha }}", NQ_MERGE_SHA: "${{ github.event.pull_request.merge_commit_sha }}", NQ_BASE_SHA: "${{ github.event.pull_request.base.sha }}", NQ_PR_NUMBER: "${{ github.event.pull_request.number }}" }
+        run: |
+          set -euo pipefail
+          test "$NQ_HEAD_REPOSITORY" = "$GITHUB_REPOSITORY"
+          [[ "$NQ_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(/usr/bin/git rev-parse --verify HEAD^{commit})" = "$NQ_HEAD_SHA"
+          test -z "$(/usr/bin/git status --porcelain=v1 --untracked-files=all)"
+          test -z "$(/usr/bin/git config --local --get-regexp 'credential\.helper|http\..*\.extraheader' || :)"
+          ! /usr/bin/git remote get-url origin | /usr/bin/grep -Eq '://[^/]*@'
+          /usr/bin/env -i LC_ALL=C PYTHONDONTWRITEBYTECODE=1 PYTHONHASHSEED=0 NQ_REPOSITORY="$GITHUB_REPOSITORY" NQ_HEAD_SHA="$NQ_HEAD_SHA" NQ_ENVELOPE_SHA="$GITHUB_SHA" NQ_WORKFLOW_SHA="$GITHUB_WORKFLOW_SHA" NQ_MERGE_SHA="$NQ_MERGE_SHA" NQ_BASE_SHA="$NQ_BASE_SHA" NQ_JOB_ID="$GITHUB_JOB" NQ_RUN_ID="$GITHUB_RUN_ID" NQ_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" NQ_PR_NUMBER="$NQ_PR_NUMBER" NQ_RUNNER_VERSION="$ImageVersion" /usr/bin/python3 -I -B "$NQ_DRIVER" --workflow-bound
+      - if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with: { name: "native-integration-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}-${{ github.run_attempt }}", path: /tmp/cogs-native-qualification-integration.json, if-no-files-found: error, retention-days: 7 }
+
   secret-scan:
     name: Secret scan
     runs-on: ubuntu-24.04
