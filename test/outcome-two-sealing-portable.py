@@ -69,10 +69,16 @@ class SealOps(closure._Ops):
         self.source_stats = 0
         self.write_calls = 0
         self.replacement = None
+        self.consumed = set()
+
+    def record(self, event):
+        self.events.append(event)
+        if self.fault != "none" and event.startswith(expected_stage("source" if self.fault.startswith("source") else "report", self.fault)):
+            self.consumed.add(self.fault)
 
     def memfd_create(self, name, flags):
         source = name == "cogs-runtime-object"
-        self.events.append("source:memfd" if source else "report:memfd")
+        self.record("source:memfd" if source else "report:memfd")
         expected = closure._MFD_CLOEXEC | closure._MFD_ALLOW_SEALING
         if source:
             expected |= closure._MFD_EXEC
@@ -86,7 +92,7 @@ class SealOps(closure._Ops):
 
     def open(self, path, flags, mode=0o600, *, dir_fd=None):
         del mode, dir_fd
-        self.events.append("reopen")
+        self.record("reopen")
         if path != "/proc/self/fd/77":
             raise AssertionError("sealing reopened a source pathname")
         if self.fault in {"source-reopen", "report-reopen"}:
@@ -99,7 +105,7 @@ class SealOps(closure._Ops):
         return 78
 
     def fstat(self, fd):
-        self.events.append("fstat")
+        self.record("fstat")
         item = self.objects[fd]
         if fd == SOURCE_FD:
             self.source_stats += 1
@@ -120,7 +126,7 @@ class SealOps(closure._Ops):
         )
 
     def pread(self, fd, size, offset):
-        self.events.append("source:pread" if fd == SOURCE_FD else "sealed:pread")
+        self.record("source:pread" if fd == SOURCE_FD else "sealed:pread")
         if fd == SOURCE_FD:
             error_fault = "source-read-error"
             short_fault = "source-short-read"
@@ -145,7 +151,7 @@ class SealOps(closure._Ops):
 
     def pwrite(self, fd, data, offset):
         source = self.fault.startswith("source")
-        self.events.append("source:pwrite" if source else "report:pwrite")
+        self.record("source:pwrite" if source else "report:pwrite")
         prefix = "source" if source else "report"
         self.write_calls += 1
         if self.fault == f"{prefix}-write-error":
@@ -165,20 +171,20 @@ class SealOps(closure._Ops):
 
     def fchmod(self, fd, mode):
         prefix = "source" if self.fault.startswith("source") else "report"
-        self.events.append(f"{prefix}:chmod")
+        self.record(f"{prefix}:chmod")
         if self.fault == f"{prefix}-chmod":
             raise OSError("chmod")
         self.objects[fd].mode = mode
 
     def fsync(self, fd):
         prefix = "source" if self.fault.startswith("source") else "report"
-        self.events.append(f"{prefix}:fsync")
+        self.record(f"{prefix}:fsync")
         if self.fault == f"{prefix}-fsync":
             raise OSError("fsync")
 
     def fcntl(self, fd, command, argument=0):
         prefix = "source" if self.fault.startswith("source") else "report"
-        self.events.append(f"{prefix}:fcntl:{command}")
+        self.record(f"{prefix}:fcntl:{command}")
         if command == closure._F_ADD_SEALS:
             if self.fault == f"{prefix}-add-seals":
                 raise OSError("add seals")
@@ -204,7 +210,7 @@ class SealOps(closure._Ops):
         raise AssertionError("unexpected fcntl command")
 
     def close(self, fd):
-        self.events.append("close")
+        self.record("close")
         self.close_attempts.append(fd)
         if fd not in self.objects:
             raise AssertionError("production retried an uncertain descriptor")
@@ -311,6 +317,13 @@ for row, target, fault, branch in manifest:
     stage = expected_stage(target, fault)
     if not any(event.startswith(stage) for event in ops.events):
         raise AssertionError(f"sealing selected cut was not reached: {row['id']} ({stage})")
+    if fault != "none" and ops.consumed != {fault}:
+        raise AssertionError(f"sealing fault was not consumed by its production syscall: {row['id']}")
+    expected_objects = {SOURCE_FD}
+    if fault in {"source-close-before", "report-close-before"}: expected_objects.add(77)
+    if fault in {"source-close-after-reuse", "report-close-after-reuse"}: expected_objects.add(77)
+    if set(ops.objects) != expected_objects:
+        raise AssertionError(f"sealing descriptor settlement changed: {row['id']} {ops.objects}")
     consumed.add(row["id"])
     if f"oracle:{row['id']}" not in ops.events:
         raise AssertionError(f"sealing oracle missed: {row['id']}")

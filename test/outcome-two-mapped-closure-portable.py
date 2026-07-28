@@ -10,6 +10,7 @@ from pathlib import Path
 import stat
 import struct
 import sys
+import threading
 from types import SimpleNamespace
 
 if not __debug__:
@@ -282,8 +283,14 @@ class MappingOwnerOps(MapOps):
         "/lib/x86_64-linux-gnu/libalpha.so.1": "valid-libalpha.elf",
         "/lib/x86_64-linux-gnu/libbeta.so.1": "valid-libbeta.elf",
     }
-    def __init__(self):
+    def __init__(self, fault="none", shared=None, child_mode=False):
         super().__init__(BEFORE, AFTER, dict(HEADER["objects"]))
+        self.fault, self.child_mode = fault, child_mode
+        self.shared = shared or {name: threading.Event() for name in ("registration", "ready", "release", "exec", "failed")}
+        self.shared.setdefault("events", [])
+        self.shared.setdefault("clone_fds", None)
+        self.shared.setdefault("clone_paths", None)
+        self.shared.setdefault("thread", None)
         self.source = {
             path: (FIXTURES / "elf" / fixture).read_bytes()
             for path, fixture in self.fixed.items()
@@ -303,7 +310,7 @@ class MappingOwnerOps(MapOps):
         self.status_reads = 0
         self.child_live = False
         self.child_reaped = False
-        self.events = []
+        self.events = self.shared["events"]
         self.next_fd = 10
         self.fds = {0: ("stdio", b""), 1: ("stdio", b""), 2: ("stdio", b""), 50: ("ambient", b"")}
         self.positions = {}
@@ -383,9 +390,17 @@ class MappingOwnerOps(MapOps):
         return super().pread(fd, size, offset)
     def read(self, fd, size):
         kind, raw = self.fds[fd]
+        if self.child_mode and kind in {"registration-read", "release-read"}:
+            event = self.shared["registration" if kind.startswith("registration") else "release"]
+            if not event.wait(1): raise AssertionError(f"A child blocked at {kind}")
+            return b"G\n"
         if kind == "status-read":
             self.status_reads += 1
-            return b"R\n" if self.status_reads == 1 else b""
+            event = self.shared["ready" if self.status_reads == 1 else ("failed" if self.shared["failed"].is_set() else "exec")]
+            if not event.wait(1): raise AssertionError("A child status was not causally published")
+            if self.status_reads == 2 and self.shared["failed"].is_set() and self.fault == "none":
+                raise AssertionError(f"A child exec model rejected production effects: {self.shared.get('child_error')}")
+            return b"R\n" if self.status_reads == 1 else (b"E\n" if self.status_reads == 2 and self.shared["failed"].is_set() else b"")
         offset = self.positions.get(fd, 0)
         value = raw[offset:offset + size]
         self.positions[fd] = offset + len(value)
@@ -405,8 +420,29 @@ class MappingOwnerOps(MapOps):
         self.pipe_number += 1
         return self.allocate(purpose + "-read"), self.allocate(purpose + "-write")
     def clone3_pidfd(self):
+        if self.child_mode:
+            self.fds = dict(self.shared["clone_fds"])
+            self.paths = dict(self.shared["clone_paths"])
+            return 0, -1
         self.child_live = True
         self.events.append("A:child-atomically-registered")
+        self.shared["clone_fds"], self.shared["clone_paths"] = dict(self.fds), dict(self.paths)
+        def child():
+            child_ops = MappingOwnerOps(self.fault, self.shared, True)
+            try: closure._qualify_fixed_python_mapping_with_ops(MappingAdmission(), child_ops)
+            except (MappingChildExec, MappingChildReject): pass
+            except BaseException as error:
+                pending, flattened = [error], []
+                while pending:
+                    item = pending.pop()
+                    flattened.append(item)
+                    pending.extend(getattr(item, "failures", ()))
+                if not any(type(item) is MappingChildExec for item in flattened):
+                    self.shared["child_error"] = [(type(item).__name__, str(item)) for item in flattened]
+                    self.shared["failed"].set()
+        thread = threading.Thread(target=child, name="portable-A-child")
+        self.shared["thread"] = thread
+        thread.start()
         return 321, self.allocate("pidfd")
     def getpid(self):
         return 7
@@ -416,15 +452,22 @@ class MappingOwnerOps(MapOps):
         return pid
     def write(self, fd, data):
         kind = self.fds[fd][0]
+        if self.child_mode and kind == "status-write":
+            if self.shared["exec"].is_set(): raise OSError("status closed by exec")
+            self.shared["ready"].set()
         if kind == "registration-write":
             self.events.append("A:registration-release")
+            self.shared["registration"].set()
         if kind == "release-write":
             if "A:registration-release" not in self.events:
                 raise AssertionError("A helper release preceded registration")
             self.events.append("A:exec-release")
+            self.shared["release"].set()
         return len(data)
     def poll_readable(self, fd, seconds):
-        return seconds > 0 and self.fds[fd][0] == "status-read"
+        if seconds <= 0 or self.fds[fd][0] != "status-read": return False
+        event = self.shared["ready" if self.status_reads == 0 else ("failed" if self.shared["failed"].is_set() else "exec")]
+        return event.wait(1)
     def monotonic(self):
         return len(self.events) / 100
     def sleep(self, seconds):
@@ -432,10 +475,43 @@ class MappingOwnerOps(MapOps):
     def wait_pidfd_nohang(self, fd):
         if self.fds[fd][0] != "pidfd":
             raise AssertionError("A reap did not use pidfd authority")
+        thread = self.shared["thread"]
+        if thread is not None:
+            thread.join(1)
+            if thread.is_alive(): return False
         self.child_live = False
         self.child_reaped = True
         self.events.append("A:pidfd-reap")
         return True
+    def setsid(self): return 321
+    def set_parent_death_signal(self, signum): del signum
+    def getppid(self): return 7
+    def dup2(self, source, target, inheritable=True):
+        if not (self.child_mode and self.fault == f"drop-dup2:{target}"):
+            self.fds[target] = self.fds[source]
+    def close_range(self, first, last):
+        if self.child_mode and self.fault == "drop-close-complement": return
+        for fd in tuple(self.fds):
+            if first <= fd <= last: self.fds.pop(fd)
+    def execve(self, fd, argv, environment):
+        release = [number for number, value in self.fds.items() if value[0] == "release-read"]
+        status = [number for number, value in self.fds.items() if value[0] == "status-write"]
+        exact = self.fds.get(0, (None,))[0] == "input-read" and len(release) == len(status) == 1
+        exact = exact and set(self.fds) == {0, 1, 2, fd, release[0], status[0]}
+        exact = exact and argv == closure._child_argv("python3-parser") and environment == {}
+        if not exact or self.fault == "execve":
+            self.events.append(f"A:edge:{self.fault}")
+            self.shared["exec_failure"] = (dict(self.fds), fd, argv, environment)
+            self.shared["failed"].set()
+            raise OSError("A child exec edge")
+        self.events.append("A:production-child-exec")
+        self.shared["exec"].set()
+        raise MappingChildExec()
+    def exit_child(self, status):
+        if self.shared["exec"].is_set(): raise MappingChildExec()
+        self.shared["exit_failure"] = (status, dict(self.fds))
+        self.shared["failed"].set()
+        raise MappingChildReject()
     def close(self, fd):
         if fd not in self.fds:
             raise AssertionError("A owner double-closed a descriptor")
@@ -443,6 +519,10 @@ class MappingOwnerOps(MapOps):
         self.paths.pop(fd, None)
         self.positions.pop(fd, None)
         self.events.append(f"A:close:{kind}")
+
+
+class MappingChildExec(BaseException): pass
+class MappingChildReject(BaseException): pass
 
 
 class MappingAdmission:
@@ -457,41 +537,38 @@ class MappingAdmission:
 
 
 def mapping_owner_success():
-    document = [
-        json.loads(line)
-        for line in (FIXTURES / "maps/owner-cases.jsonl").read_text().splitlines()
-    ]
+    document = [json.loads(line) for line in (FIXTURES / "maps/owner-cases.jsonl").read_text().splitlines()]
     owner_header, *rows = document
-    if owner_header["version"] != "cogs.outcome-two-mapping-owner/v1":
-        raise AssertionError("A owner ledger version")
-    if len(rows) != 1 or set(rows[0]) != ROW_KEYS:
-        raise AssertionError("A owner ledger shape")
-    row = rows[0]
-    declared = {row["id"]}
-    selected = {row["id"]}
+    if owner_header["version"] != "cogs.outcome-two-mapping-owner/v1" or any(set(row) != ROW_KEYS for row in rows):
+        raise AssertionError("A owner ledger shape/version")
+    identifiers = [row["id"] for row in rows]
+    declared, selected, consumed, oracle = set(identifiers), set(), set(), set()
+    if len(declared) != len(identifiers): raise AssertionError("A owner duplicate case")
     production = closure._qualify_fixed_python_mapping_with_ops
-    if row["production_method"] != production.__name__:
-        raise AssertionError("A complete production method changed")
-    ops = MappingOwnerOps()
-    result = production(MappingAdmission(), ops)
-    facts = dataclasses.asdict(result)
-    metadata = {"version", "source_revision", "source_set_sha256", "closure_sha256",
-                "mapping_sha256", "objects", "mapped", "mapped_objects"}
-    if not all(value is True for name, value in facts.items() if name not in metadata):
-        raise AssertionError(f"A complete owner emitted a false fact: {facts}")
-    causal = ["A:child-atomically-registered", "A:registration-release",
-              "A:exec-release", "A:pidfd-reap"]
-    positions = [ops.events.index(event) for event in causal]
-    if positions != sorted(positions) or ops.child_live or not ops.child_reaped:
-        raise AssertionError("A helper registration/exec/reap causality changed")
-    if set(ops.fds) != {0, 1, 2, 50}:
-        raise AssertionError(f"A complete owner descriptor residue: {ops.fds}")
-    if row["sentinel"] not in ops.events or row["intended_code"] != "accept":
-        raise AssertionError("A complete owner sentinel/oracle changed")
-    consumed = {row["id"]}
-    oracle = {row["id"]}
-    if not declared == selected == consumed == oracle:
-        raise AssertionError("A owner declared/selected/consumed/oracle mismatch")
+    for row in rows:
+        if row["production_method"] != production.__name__: raise AssertionError("A production method changed")
+        selected.add(row["id"])
+        fault = row["primitive_fault"]["mutation"]
+        ops = MappingOwnerOps(fault)
+        try: result = production(MappingAdmission(), ops)
+        except (closure.RuntimeClosureError, closure.RuntimeClosureCleanupError) as error:
+            if row["intended_code"] != type(error).__name__: raise AssertionError(f"{row['id']}: {type(error).__name__}") from error
+        else:
+            if row["intended_code"] != "accept": raise AssertionError(f"A edge deletion accepted: {row['id']}")
+            facts = dataclasses.asdict(result)
+            metadata = {"version", "source_revision", "source_set_sha256", "closure_sha256", "mapping_sha256", "objects", "mapped", "mapped_objects"}
+            if not all(value is True for name, value in facts.items() if name not in metadata): raise AssertionError("A owner emitted false fact")
+        causal = ["A:child-atomically-registered", "A:registration-release", "A:exec-release", "A:pidfd-reap"]
+        positions = [ops.events.index(event) for event in causal if event in ops.events]
+        if len(positions) != len(causal) or positions != sorted(positions) or ops.child_live or not ops.child_reaped:
+            raise AssertionError(f"A child registration/reap settlement changed: {row['id']}")
+        if set(ops.fds) != {0, 1, 2, 50}: raise AssertionError(f"A descriptor residue: {row['id']}")
+        if row["sentinel"] not in ops.events: raise AssertionError(f"A causal sentinel missed: {row['id']}")
+        consumed.add(row["id"])
+        if fault == "complete" and "A:production-child-exec" not in ops.events: raise AssertionError("A production child branch missed")
+        if fault != "complete" and "exec_failure" not in ops.shared: raise AssertionError("A edge oracle was nominal")
+        oracle.add(row["id"])
+    if not declared == selected == consumed == oracle: raise AssertionError("A owner ledger mismatch")
 
 
 def mapping_owner_admission_contract():

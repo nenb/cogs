@@ -326,6 +326,22 @@ def dispatch(row, methods, hostile):
     return tuple(events)
 
 
+def prove_oracle_edge_deletions(row, methods, hostile):
+    proved = 0
+    for index, expected in enumerate(row["intended_code"]):
+        if expected == "OK":
+            continue
+        deleted = list(methods)
+        deleted[index] = (deleted[index][0], lambda _raw: None)
+        try:
+            dispatch(row, tuple(deleted), hostile)
+        except AssertionError:
+            proved += 1
+        else:
+            raise AssertionError(f"{row['id']}: deleting oracle {methods[index][0]} stayed green")
+    return proved
+
+
 def emit_schema_corpus():
     raw = GOLDEN_PATH.read_bytes()
     golden = json.loads(raw)
@@ -388,13 +404,14 @@ def parent():
     oracle = set()
     for row in rows:
         selected.add(row["id"])
-        events = dispatch(row, methods, hostile_bytes(golden, raw, row))
+        hostile = hostile_bytes(golden, raw, row)
+        events = dispatch(row, methods, hostile)
         if not events or tuple(row["sentinel"]) != events:
             raise AssertionError(f"{row['id']}: report cut was not causally consumed")
         consumed.add(row["id"])
-        expected_oracles = len(row["production_method"])
-        if len(events) != expected_oracles:
-            raise AssertionError(f"{row['id']}: report oracle cardinality changed")
+        expected_oracles = sum(expected != "OK" for expected in row["intended_code"])
+        if prove_oracle_edge_deletions(row, methods, hostile) != expected_oracles:
+            raise AssertionError(f"{row['id']}: report oracle edge cardinality changed")
         oracle.add(row["id"])
     if not declared == selected == consumed == oracle:
         raise AssertionError("report declared/selected/consumed/oracle mismatch")
