@@ -174,12 +174,29 @@
         "output_sha256": { "$ref": "#/$defs/sha256" }
       }
     },
+    "BParser": {
+      "type": "object", "additionalProperties": false,
+      "required": ["closure_sha256", "objects"],
+      "properties": {
+        "closure_sha256": { "$ref": "#/$defs/sha256" },
+        "objects": { "type": "array", "minItems": 2, "maxItems": 127, "items": { "$ref": "#/$defs/BObject" } }
+      }
+    },
+    "BSummary": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "id", "closure_sha256", "parser"],
+      "properties": {
+        "kind": { "const": "summary" }, "id": { "const": "trusted-closure" },
+        "closure_sha256": { "$ref": "#/$defs/sha256" }, "parser": { "$ref": "#/$defs/BParser" }
+      }
+    },
     "PolicyMetadata": {
       "type": "object", "additionalProperties": false,
       "required": ["id", "role", "sha256", "size_bytes"],
       "properties": {
         "id": { "const": "sandbox-policy" }, "role": { "const": "policy" },
-        "sha256": { "$ref": "#/$defs/sha256" }, "size_bytes": { "const": 0 }
+        "sha256": { "const": "aacfce0e5eeb2fb79a1708b32f5383f89b381898ad7e6bd911905d87483b6bb2" },
+        "size_bytes": { "const": 0 }
       }
     },
     "DigestMetadata": {
@@ -207,9 +224,10 @@
         "checks": { "$ref": "#/$defs/checkB" }
       },
       "allOf": [{ "if": { "type": "object", "properties": { "result": { "const": "pass" } } },
-        "then": { "type": "object", "properties": { "metadata": { "type": "array", "minItems": 2, "maxItems": 2, "prefixItems": [
+        "then": { "type": "object", "properties": { "metadata": { "type": "array", "minItems": 3, "maxItems": 3, "prefixItems": [
           { "$ref": "#/$defs/BTool", "type": "object", "properties": { "id": { "const": "gzip" } } },
-          { "$ref": "#/$defs/BTool", "type": "object", "properties": { "id": { "const": "zstd" } } }], "items": false } } },
+          { "$ref": "#/$defs/BTool", "type": "object", "properties": { "id": { "const": "zstd" } } },
+          { "$ref": "#/$defs/BSummary" }], "items": false } } },
         "else": { "type": "object", "properties": { "metadata": { "type": "array", "maxItems": 0 } } } }]
     },
     "jobC": { "type": "object", "properties": { "job": { "const": "C" }, "workflow": { "type": "object", "properties": { "job_id": { "const": "native-qualification-c" } } },
@@ -235,9 +253,9 @@
       "allOf": [{ "if": { "type": "object", "properties": { "result": { "const": "pass" } } },
         "then": { "type": "object", "properties": { "metadata": { "type": "array", "minItems": 4, "maxItems": 4, "prefixItems": [
           { "$ref": "#/$defs/DigestMetadata", "type": "object", "properties": { "id": { "const": "closure" } } },
-          { "$ref": "#/$defs/DigestMetadata", "type": "object", "properties": { "id": { "const": "gzip_output" } } },
+          { "$ref": "#/$defs/DigestMetadata", "type": "object", "properties": { "id": { "const": "gzip_output" }, "sha256": { "const": "6381d4535b13c7f030ca94bce250c1ec817c4aea8fa45c91e25c88995216f6b8" } } },
           { "$ref": "#/$defs/DigestMetadata", "type": "object", "properties": { "id": { "const": "source_set" } } },
-          { "$ref": "#/$defs/DigestMetadata", "type": "object", "properties": { "id": { "const": "zstd_output" } } }], "items": false } } },
+          { "$ref": "#/$defs/DigestMetadata", "type": "object", "properties": { "id": { "const": "zstd_output" }, "sha256": { "const": "6381d4535b13c7f030ca94bce250c1ec817c4aea8fa45c91e25c88995216f6b8" } } }], "items": false } } },
         "else": { "type": "object", "properties": { "metadata": { "type": "array", "maxItems": 0 } } } }]
     },
     "checkA": { "type": "array", "minItems": 7, "maxItems": 7, "prefixItems": [

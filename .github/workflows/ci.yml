@@ -170,7 +170,7 @@ jobs:
     timeout-minutes: 2
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with: { persist-credentials: false }
+        with: { ref: "${{ github.event.pull_request.head.sha }}", persist-credentials: false }
       - name: Require same-repository pull request attempt one
         env:
           EVENT_NAME: "${{ github.event_name }}"
@@ -222,7 +222,11 @@ jobs:
       - name: Restore fixed report-path baseline
         id: cleanup
         if: ${{ always() }}
-        run: /usr/bin/python3 -I -B scripts/native-qualification/common.py --cleanup A
+        env: { NQ_CLEANUP_HEAD_SHA: "${{ github.event.pull_request.head.sha }}",
+          NQ_CLEANUP_RUN_ID: "${{ github.run_id }}", NQ_CLEANUP_RUN_ATTEMPT: "${{ github.run_attempt }}" }
+        run: |
+          /usr/bin/env -i LC_ALL=C NQ_CLEANUP_HEAD_SHA="$NQ_CLEANUP_HEAD_SHA" NQ_CLEANUP_RUN_ID="$NQ_CLEANUP_RUN_ID" \
+            NQ_CLEANUP_RUN_ATTEMPT="$NQ_CLEANUP_RUN_ATTEMPT" /usr/bin/python3 -I -B scripts/native-qualification/common.py --cleanup A
 
   native-qualification-b:
     name: Outcome 2 native B - compression executables
@@ -260,7 +264,11 @@ jobs:
       - name: Restore fixed report-path baseline
         id: cleanup
         if: ${{ always() }}
-        run: /usr/bin/python3 -I -B scripts/native-qualification/common.py --cleanup B
+        env: { NQ_CLEANUP_HEAD_SHA: "${{ github.event.pull_request.head.sha }}",
+          NQ_CLEANUP_RUN_ID: "${{ github.run_id }}", NQ_CLEANUP_RUN_ATTEMPT: "${{ github.run_attempt }}" }
+        run: |
+          /usr/bin/env -i LC_ALL=C NQ_CLEANUP_HEAD_SHA="$NQ_CLEANUP_HEAD_SHA" NQ_CLEANUP_RUN_ID="$NQ_CLEANUP_RUN_ID" \
+            NQ_CLEANUP_RUN_ATTEMPT="$NQ_CLEANUP_RUN_ATTEMPT" /usr/bin/python3 -I -B scripts/native-qualification/common.py --cleanup B
 
   native-qualification-c:
     name: Outcome 2 native C - descriptor behavior
@@ -298,7 +306,11 @@ jobs:
       - name: Restore fixed report-path baseline
         id: cleanup
         if: ${{ always() }}
-        run: /usr/bin/python3 -I -B scripts/native-qualification/common.py --cleanup C
+        env: { NQ_CLEANUP_HEAD_SHA: "${{ github.event.pull_request.head.sha }}",
+          NQ_CLEANUP_RUN_ID: "${{ github.run_id }}", NQ_CLEANUP_RUN_ATTEMPT: "${{ github.run_attempt }}" }
+        run: |
+          /usr/bin/env -i LC_ALL=C NQ_CLEANUP_HEAD_SHA="$NQ_CLEANUP_HEAD_SHA" NQ_CLEANUP_RUN_ID="$NQ_CLEANUP_RUN_ID" \
+            NQ_CLEANUP_RUN_ATTEMPT="$NQ_CLEANUP_RUN_ATTEMPT" /usr/bin/python3 -I -B scripts/native-qualification/common.py --cleanup C
 
   native-qualification-d:
     name: Outcome 2 native D - process lifecycle
@@ -336,7 +348,11 @@ jobs:
       - name: Restore fixed report-path baseline
         id: cleanup
         if: ${{ always() }}
-        run: /usr/bin/python3 -I -B scripts/native-qualification/common.py --cleanup D
+        env: { NQ_CLEANUP_HEAD_SHA: "${{ github.event.pull_request.head.sha }}",
+          NQ_CLEANUP_RUN_ID: "${{ github.run_id }}", NQ_CLEANUP_RUN_ATTEMPT: "${{ github.run_attempt }}" }
+        run: |
+          /usr/bin/env -i LC_ALL=C NQ_CLEANUP_HEAD_SHA="$NQ_CLEANUP_HEAD_SHA" NQ_CLEANUP_RUN_ID="$NQ_CLEANUP_RUN_ID" \
+            NQ_CLEANUP_RUN_ATTEMPT="$NQ_CLEANUP_RUN_ATTEMPT" /usr/bin/python3 -I -B scripts/native-qualification/common.py --cleanup D
 
   native-qualification-e:
     name: Outcome 2 native E - sandbox boundary
@@ -374,7 +390,11 @@ jobs:
       - name: Restore fixed report-path baseline
         id: cleanup
         if: ${{ always() }}
-        run: /usr/bin/python3 -I -B scripts/native-qualification/common.py --cleanup E
+        env: { NQ_CLEANUP_HEAD_SHA: "${{ github.event.pull_request.head.sha }}",
+          NQ_CLEANUP_RUN_ID: "${{ github.run_id }}", NQ_CLEANUP_RUN_ATTEMPT: "${{ github.run_attempt }}" }
+        run: |
+          /usr/bin/env -i LC_ALL=C NQ_CLEANUP_HEAD_SHA="$NQ_CLEANUP_HEAD_SHA" NQ_CLEANUP_RUN_ID="$NQ_CLEANUP_RUN_ID" \
+            NQ_CLEANUP_RUN_ATTEMPT="$NQ_CLEANUP_RUN_ATTEMPT" /usr/bin/python3 -I -B scripts/native-qualification/common.py --cleanup E
 
   native-closure-integration:
     name: Outcome 2 native closure integration
@@ -412,7 +432,11 @@ jobs:
       - name: Restore fixed report-path baseline
         id: cleanup
         if: ${{ always() }}
-        run: /usr/bin/python3 -I -B scripts/native-qualification/common.py --cleanup integration
+        env: { NQ_CLEANUP_HEAD_SHA: "${{ github.event.pull_request.head.sha }}",
+          NQ_CLEANUP_RUN_ID: "${{ github.run_id }}", NQ_CLEANUP_RUN_ATTEMPT: "${{ github.run_attempt }}" }
+        run: |
+          /usr/bin/env -i LC_ALL=C NQ_CLEANUP_HEAD_SHA="$NQ_CLEANUP_HEAD_SHA" NQ_CLEANUP_RUN_ID="$NQ_CLEANUP_RUN_ID" \
+            NQ_CLEANUP_RUN_ATTEMPT="$NQ_CLEANUP_RUN_ATTEMPT" /usr/bin/python3 -I -B scripts/native-qualification/common.py --cleanup integration
 
   native-qualification-required:
     name: Outcome 2 native qualification required
@@ -423,7 +447,7 @@ jobs:
     timeout-minutes: 2
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with: { persist-credentials: false }
+        with: { ref: "${{ github.event.pull_request.head.sha }}", persist-credentials: false }
       - name: Require every native transaction and report lifecycle
         env:
           QUALITY_RESULT: "${{ needs.quality.result }}"

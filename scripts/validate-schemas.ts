@@ -188,18 +188,35 @@ function nativeMetadata(job: keyof typeof nativeChecks): unknown[] {
     { kind: "summary", closure_sha256: hash(normalized), mapping_sha256: hash(mapped.map(({ role, sha256 }) => [role, sha256])),
       mapped_sequence: mapped },
   ];
-  if (job === "B") return ["gzip", "zstd"].map((id, index) => {
-    const rows = structuredClone(objects); const executable = rows[0]; assert.ok(executable);
-    executable.sha256 = `${index + 3}`.repeat(64);
-    const view = rows.map(({ size_bytes, ...row }) => ({ ...row, size: size_bytes }));
-    const mapping = hash(view.map(({ role, sha256 }) => [role, sha256]));
-    return { id, objects: rows, closure_sha256: hash(view), mapping_sha256: mapping,
-      source_sha256: executable.sha256, source_size_bytes: 11, sealed_sha256: executable.sha256,
-      sealed_size_bytes: 11, seal_mask: 63, execution_mapping_sha256: mapping, output_sha256: markerHash };
-  });
-  if (job === "E") return [{ id: "sandbox-policy", role: "policy", sha256: "6".repeat(64), size_bytes: 0 }];
-  if (job === "integration") return ["closure", "gzip_output", "source_set", "zstd_output"]
-    .map((id) => ({ id, role: "digest", sha256: "7".repeat(64), size_bytes: 0 }));
+  if (job === "B") {
+    const tools = ["gzip", "zstd"].map((id, index) => {
+      const rows = structuredClone(objects); const executable = rows[0]; assert.ok(executable);
+      executable.sha256 = `${index + 3}`.repeat(64);
+      const view = rows.map(({ size_bytes, ...row }) => ({ ...row, size: size_bytes }));
+      const mapping = hash(view.map(({ role, sha256 }) => [role, sha256]));
+      return { id, objects: rows, closure_sha256: hash(view), mapping_sha256: mapping,
+        source_sha256: executable.sha256, source_size_bytes: 11, sealed_sha256: executable.sha256,
+        sealed_size_bytes: 11, seal_mask: 63, execution_mapping_sha256: mapping, output_sha256: markerHash };
+    });
+    const parserObjects = structuredClone(objects);
+    const parserView = parserObjects.map(({ size_bytes, ...row }) => ({ ...row, size: size_bytes }));
+    const closureView = (row: typeof tools[number]) => ({ closure_sha256: row.closure_sha256,
+      objects: row.objects.map(({ size_bytes, ...item }) => ({ ...item, size: size_bytes })),
+      seal_profile: "linux-memfd-exec-seals-v1", sealed_executable: true, tool: row.id });
+    const gzip = tools[0]; const zstd = tools[1]; assert.ok(gzip); assert.ok(zstd);
+    const digestView = [{ closure_sha256: hash(parserView), objects: parserView, seal_profile: null,
+      sealed_executable: false, tool: "python3-parser" }, closureView(zstd), closureView(gzip)];
+    return [...tools, { kind: "summary", id: "trusted-closure", closure_sha256: hash(digestView),
+      parser: { closure_sha256: hash(parserView), objects: parserObjects } }];
+  }
+  if (job === "E") return [{ id: "sandbox-policy", role: "policy",
+    sha256: "aacfce0e5eeb2fb79a1708b32f5383f89b381898ad7e6bd911905d87483b6bb2", size_bytes: 0 }];
+  if (job === "integration") return [
+    { id: "closure", role: "digest", sha256: "7".repeat(64), size_bytes: 0 },
+    { id: "gzip_output", role: "digest", sha256: markerHash, size_bytes: 0 },
+    { id: "source_set", role: "digest", sha256: "8".repeat(64), size_bytes: 0 },
+    { id: "zstd_output", role: "digest", sha256: markerHash, size_bytes: 0 },
+  ];
   return [];
 }
 function nativeReport(job: keyof typeof nativeChecks, pass: boolean): Record<string, unknown> {
@@ -235,6 +252,28 @@ for (const job of Object.keys(nativeChecks) as Array<keyof typeof nativeChecks>)
     assert.equal(nativeValidator(sample), true, `native ${job}/${pass}: ${ajv.errorsText(nativeValidator.errors)}`);
     const hostile = structuredClone(sample); (hostile.checks as unknown[]).reverse();
     assert.equal(nativeValidator(hostile), false, `native ${job} check order`);
+    if (pass) {
+      // biome-ignore lint/suspicious/noExplicitAny: isolated hostile JSON mutations intentionally cross types
+      const mutations: Array<[string, (value: Record<string, any>) => void]> = [
+        ["job", (value) => { value.job = job === "A" ? "B" : "A"; }],
+        ["job id", (value) => { value.workflow.job_id = "wrong-job"; }],
+        ["source", (value) => { value.source.head_sha = "bad"; }],
+        ["envelope", (value) => { value.envelope.event_name = "push"; }],
+        ["check missing", (value) => { value.checks.pop(); }],
+        ["check extra", (value) => { value.checks.push({ id: "extra", outcome: "pass" }); }],
+        ["check outcome", (value) => { value.checks[0].outcome = "fail"; }],
+        ["failure phase", (value) => { value.failure_phase = "contradiction"; }],
+        ["diagnostics", (value) => { value.diagnostics_sha256 = "9".repeat(64); }],
+        ["metadata extra", (value) => { value.metadata.push({}); }],
+      ];
+      for (const key of "descriptors children paths mounts namespaces limits checkout".split(" ")) {
+        mutations.push([`cleanup ${key}`, (value) => { value.cleanup[key] = false; }]);
+      }
+      for (const [name, mutate] of mutations) {
+        const mutation = structuredClone(sample); mutate(mutation);
+        assert.equal(nativeValidator(mutation), false, `native ${job} isolated ${name}`);
+      }
+    }
   }
 }
 const nativeMask = nativeReport("B", true);
@@ -244,6 +283,19 @@ const nativeOversize = nativeReport("A", true);
 const firstObject = (nativeOversize.metadata as Array<Record<string, unknown>>)[0]; assert.ok(firstObject);
 firstObject.size_bytes = 134_217_729;
 assert.equal(nativeValidator(nativeOversize), false, "native A object bound");
+const nativeSummary = nativeReport("B", true);
+(nativeSummary.metadata as unknown[]).pop();
+assert.equal(nativeValidator(nativeSummary), false, "native B aggregate/parser summary required");
+const nativePolicy = nativeReport("E", true);
+const policyRow = (nativePolicy.metadata as Array<Record<string, unknown>>)[0]; assert.ok(policyRow);
+policyRow.sha256 = "6".repeat(64);
+assert.equal(nativeValidator(nativePolicy), false, "native E fixed policy digest");
+for (const id of ["gzip_output", "zstd_output"]) {
+  const nativeOutput = nativeReport("integration", true);
+  const row = (nativeOutput.metadata as Array<Record<string, unknown>>).find((item) => item.id === id); assert.ok(row);
+  row.sha256 = "9".repeat(64);
+  assert.equal(nativeValidator(nativeOutput), false, `native integration exact ${id}`);
+}
 
 for (const [file, sample] of Object.entries(validSamples)) {
   const validate = validatorFor(file);
