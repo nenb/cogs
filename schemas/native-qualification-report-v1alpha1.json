@@ -115,17 +115,26 @@
       "properties": {
         "kind": { "const": "object" }, "id": { "$ref": "#/$defs/label" },
         "role": { "enum": ["executable", "loader", "library"] }, "sha256": { "$ref": "#/$defs/sha256" },
-        "size_bytes": { "type": "integer", "minimum": 1, "maximum": 536870912 },
+        "size_bytes": { "type": "integer", "minimum": 1, "maximum": 134217728 },
         "soname": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/label" }] },
-        "needed": { "type": "array", "maxItems": 128, "items": { "$ref": "#/$defs/label" } }
+        "needed": { "type": "array", "uniqueItems": true, "maxItems": 128, "items": { "$ref": "#/$defs/label" } }
+      }
+    },
+    "MappedObject": {
+      "type": "object", "additionalProperties": false,
+      "required": ["role", "sha256"],
+      "properties": {
+        "role": { "enum": ["executable", "loader", "library"] },
+        "sha256": { "$ref": "#/$defs/sha256" }
       }
     },
     "ASummary": {
       "type": "object", "additionalProperties": false,
-      "required": ["kind", "closure_sha256", "mapping_sha256"],
+      "required": ["kind", "closure_sha256", "mapping_sha256", "mapped_sequence"],
       "properties": {
         "kind": { "const": "summary" }, "closure_sha256": { "$ref": "#/$defs/sha256" },
-        "mapping_sha256": { "$ref": "#/$defs/sha256" }
+        "mapping_sha256": { "$ref": "#/$defs/sha256" },
+        "mapped_sequence": { "type": "array", "minItems": 2, "maxItems": 127, "items": { "$ref": "#/$defs/MappedObject" } }
       }
     },
     "AMetadata": {
@@ -139,18 +148,29 @@
         { "type": "array", "contains": { "$ref": "#/$defs/AObject", "type": "object", "properties": { "role": { "const": "loader" } } }, "minContains": 1, "maxContains": 1 }
       ]
     },
+    "BObject": {
+      "type": "object", "additionalProperties": false,
+      "required": ["role", "sha256", "size_bytes", "soname", "needed"],
+      "properties": {
+        "role": { "enum": ["executable", "loader", "library"] }, "sha256": { "$ref": "#/$defs/sha256" },
+        "size_bytes": { "type": "integer", "minimum": 1, "maximum": 134217728 },
+        "soname": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/label" }] },
+        "needed": { "type": "array", "uniqueItems": true, "maxItems": 128, "items": { "$ref": "#/$defs/label" } }
+      }
+    },
     "BTool": {
       "type": "object", "additionalProperties": false,
       "required": [
-        "id", "source_sha256", "source_size_bytes", "sealed_sha256", "sealed_size_bytes",
-        "seal_mask", "execution_mapping_sha256", "output_sha256"
+        "id", "objects", "closure_sha256", "mapping_sha256", "source_sha256", "source_size_bytes",
+        "sealed_sha256", "sealed_size_bytes", "seal_mask", "execution_mapping_sha256", "output_sha256"
       ],
       "properties": {
         "id": { "enum": ["gzip", "zstd"] },
-        "source_sha256": { "$ref": "#/$defs/sha256" }, "source_size_bytes": { "type": "integer", "minimum": 1, "maximum": 536870912 },
-        "sealed_sha256": { "$ref": "#/$defs/sha256" }, "sealed_size_bytes": { "type": "integer", "minimum": 1, "maximum": 536870912 },
-        "seal_mask": { "const": 15 },
-        "execution_mapping_sha256": { "$ref": "#/$defs/sha256" },
+        "objects": { "type": "array", "minItems": 2, "maxItems": 127, "items": { "$ref": "#/$defs/BObject" } },
+        "closure_sha256": { "$ref": "#/$defs/sha256" }, "mapping_sha256": { "$ref": "#/$defs/sha256" },
+        "source_sha256": { "$ref": "#/$defs/sha256" }, "source_size_bytes": { "type": "integer", "minimum": 1, "maximum": 134217728 },
+        "sealed_sha256": { "$ref": "#/$defs/sha256" }, "sealed_size_bytes": { "type": "integer", "minimum": 1, "maximum": 134217728 },
+        "seal_mask": { "const": 63 }, "execution_mapping_sha256": { "$ref": "#/$defs/sha256" },
         "output_sha256": { "$ref": "#/$defs/sha256" }
       }
     },

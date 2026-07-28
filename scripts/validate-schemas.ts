@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
@@ -155,6 +156,67 @@ const validSamples: Record<string, unknown> = {
   ),
 };
 
+function canonical(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+  if (value !== null && typeof value === "object") {
+    return `{${Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, item]) => `${JSON.stringify(key)}:${canonical(item)}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+const hash = (value: unknown) => createHash("sha256").update(canonical(value)).digest("hex");
+const nativeChecks = {
+  A: "elf_real python_closure_exact map_files_trusted mapped_closure_equal mapping_stable helper_reaped cleanup_restored",
+  B: "gzip_source_exact gzip_sealed_exec zstd_source_exact zstd_sealed_exec decompression_deterministic network_denied children_exact cleanup_restored",
+  C: "nofile_measured nofile_normalized fd_198_exact fd_4096_exact close_range_exact cloexec_exact inheritance_exact limit_restored cleanup_restored",
+  D: "pdeathsig_armed parent_handshake_exact before_release_death after_release_death starttime_revalidated session_owned process_group_owned term_kill_bounded all_reaped cleanup_restored",
+  E: "mount_view_exact checkout_read_only user_namespace_exact pid_namespace_exact mount_namespace_exact network_namespace_exact pid_one capabilities_zero noroot_locked nnp_set seccomp_socket_denied seccomp_io_uring_denied no_acquisition_route checkout_unchanged all_reaped mounts_restored cleanup_restored",
+  integration: "closure_prepared handoff_exact gzip_deterministic zstd_deterministic marker_exact no_linked_evidence cleanup_restored",
+} as const;
+const nativeJobId = { A: "native-qualification-a", B: "native-qualification-b", C: "native-qualification-c",
+  D: "native-qualification-d", E: "native-qualification-e", integration: "native-closure-integration" } as const;
+const markerHash = "6381d4535b13c7f030ca94bce250c1ec817c4aea8fa45c91e25c88995216f6b8";
+function nativeMetadata(job: keyof typeof nativeChecks): unknown[] {
+  const objects = [
+    { role: "executable", sha256: "1".repeat(64), size_bytes: 11, soname: null, needed: ["ld.so"] },
+    { role: "loader", sha256: "2".repeat(64), size_bytes: 12, soname: "ld.so", needed: [] },
+  ];
+  const normalized = objects.map(({ size_bytes, ...row }) => ({ ...row, size: size_bytes }));
+  const mapped = objects.map(({ role, sha256 }) => ({ role, sha256 }));
+  if (job === "A") return [
+    ...objects.map((row, index) => ({ kind: "object", id: `python-object-${index}`, ...row })),
+    { kind: "summary", closure_sha256: hash(normalized), mapping_sha256: hash(mapped.map(({ role, sha256 }) => [role, sha256])),
+      mapped_sequence: mapped },
+  ];
+  if (job === "B") return ["gzip", "zstd"].map((id, index) => {
+    const rows = structuredClone(objects); const executable = rows[0]; assert.ok(executable);
+    executable.sha256 = `${index + 3}`.repeat(64);
+    const view = rows.map(({ size_bytes, ...row }) => ({ ...row, size: size_bytes }));
+    const mapping = hash(view.map(({ role, sha256 }) => [role, sha256]));
+    return { id, objects: rows, closure_sha256: hash(view), mapping_sha256: mapping,
+      source_sha256: executable.sha256, source_size_bytes: 11, sealed_sha256: executable.sha256,
+      sealed_size_bytes: 11, seal_mask: 63, execution_mapping_sha256: mapping, output_sha256: markerHash };
+  });
+  if (job === "E") return [{ id: "sandbox-policy", role: "policy", sha256: "6".repeat(64), size_bytes: 0 }];
+  if (job === "integration") return ["closure", "gzip_output", "source_set", "zstd_output"]
+    .map((id) => ({ id, role: "digest", sha256: "7".repeat(64), size_bytes: 0 }));
+  return [];
+}
+function nativeReport(job: keyof typeof nativeChecks, pass: boolean): Record<string, unknown> {
+  const checks = nativeChecks[job].split(" ").map((id) => ({ id, outcome: "pass" }));
+  const cleanup = Object.fromEntries("descriptors children paths mounts namespaces limits checkout".split(" ").map((key) => [key, true]));
+  if (!pass) { const first = checks[0]; assert.ok(first); first.outcome = "fail"; cleanup.paths = false; }
+  return { version: "cogs.native-qualification/v1alpha1", job,
+    source: { head_sha: "a".repeat(40), checkout_sha: "a".repeat(40), driver_blob_sha256: "b".repeat(64), common_blob_sha256: "c".repeat(64) },
+    envelope: { repository: "owner/repo", head_repository: "owner/repo", event_name: "pull_request", github_sha: "d".repeat(40),
+      event_merge_sha: "d".repeat(40), base_sha: "e".repeat(40), run_id: 1, run_attempt: 1, pull_request_number: 1 },
+    workflow: { path: ".github/workflows/ci.yml", blob_sha256: "f".repeat(64), workflow_sha: "a".repeat(40), job_id: nativeJobId[job] },
+    runner: { image: "ubuntu-24.04", image_version: "20260720.1", kernel_release: "6.8.0-100-generic", architecture: "x86_64" },
+    authority: "exact-run-native-qualification", result: pass ? "pass" : "fail", checks,
+    metadata: pass ? nativeMetadata(job) : [], failure_phase: pass ? null : "schema-test",
+    diagnostics_sha256: pass ? null : "9".repeat(64), cleanup };
+}
+
 function validatorFor(file: string): ValidateFunction {
   const schema = JSON.parse(readFileSync(resolve(schemaDir, file), "utf8")) as { $id: string };
   const validator = ajv.getSchema(schema.$id);
@@ -165,6 +227,23 @@ function validatorFor(file: string): ValidateFunction {
 // Compile every registered schema, including historical and candidate evidence
 // versions that do not belong in the general-purpose valid sample table.
 for (const name of schemaFiles) validatorFor(name);
+
+const nativeValidator = validatorFor("native-qualification-report-v1alpha1.json");
+for (const job of Object.keys(nativeChecks) as Array<keyof typeof nativeChecks>) {
+  for (const pass of [true, false]) {
+    const sample = nativeReport(job, pass);
+    assert.equal(nativeValidator(sample), true, `native ${job}/${pass}: ${ajv.errorsText(nativeValidator.errors)}`);
+    const hostile = structuredClone(sample); (hostile.checks as unknown[]).reverse();
+    assert.equal(nativeValidator(hostile), false, `native ${job} check order`);
+  }
+}
+const nativeMask = nativeReport("B", true);
+const firstMask = (nativeMask.metadata as Array<Record<string, unknown>>)[0]; assert.ok(firstMask); firstMask.seal_mask = 15;
+assert.equal(nativeValidator(nativeMask), false, "native B historical mask");
+const nativeOversize = nativeReport("A", true);
+const firstObject = (nativeOversize.metadata as Array<Record<string, unknown>>)[0]; assert.ok(firstObject);
+firstObject.size_bytes = 134_217_729;
+assert.equal(nativeValidator(nativeOversize), false, "native A object bound");
 
 for (const [file, sample] of Object.entries(validSamples)) {
   const validate = validatorFor(file);

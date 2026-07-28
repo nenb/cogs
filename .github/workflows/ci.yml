@@ -169,6 +169,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with: { persist-credentials: false }
       - name: Require same-repository pull request attempt one
         env:
           EVENT_NAME: "${{ github.event_name }}"
@@ -180,14 +182,9 @@ jobs:
           BASE_SHA: "${{ github.event.pull_request.base.sha }}"
           PR_NUMBER: "${{ github.event.pull_request.number }}"
         run: |
-          set -euo pipefail
-          test "$EVENT_NAME" = pull_request
-          test "$RUN_ATTEMPT" = 1
-          test -n "$REPOSITORY" && test "$HEAD_REPOSITORY" = "$REPOSITORY"
-          [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
-          [[ "$MERGE_SHA" =~ ^[0-9a-f]{40}$ ]]
-          [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
-          [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]
+          /usr/bin/env -i LC_ALL=C PYTHONCOERCECLOCALE=0 EVENT_NAME="$EVENT_NAME" RUN_ATTEMPT="$RUN_ATTEMPT" REPOSITORY="$REPOSITORY" \
+            HEAD_REPOSITORY="$HEAD_REPOSITORY" HEAD_SHA="$HEAD_SHA" MERGE_SHA="$MERGE_SHA" BASE_SHA="$BASE_SHA" \
+            PR_NUMBER="$PR_NUMBER" /usr/bin/python3 -I -B scripts/native-qualification/common.py --eligibility
 
   native-qualification-a:
     name: Outcome 2 native A - runtime mappings
@@ -195,6 +192,7 @@ jobs:
     permissions: { contents: read }
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    outputs: { upload: "${{ steps.upload.outcome }}", cleanup: "${{ steps.cleanup.outcome }}" }
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with: { ref: "${{ github.event.pull_request.head.sha }}", persist-credentials: false }
@@ -216,11 +214,13 @@ jobs:
             NQ_JOB_ID="$GITHUB_JOB" NQ_RUN_ID="$GITHUB_RUN_ID" NQ_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" NQ_PR_NUMBER="$NQ_PR_NUMBER" NQ_RUNNER_VERSION="$ImageVersion" \
             /usr/bin/python3 -I -B "$NQ_DRIVER" --workflow-bound
       - name: Upload validated fixed report
+        id: upload
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with: { name: "native-A-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}-${{ github.run_attempt }}",
           path: /tmp/cogs-native-qualification-A/report.json,
           if-no-files-found: error, retention-days: 7 }
       - name: Restore fixed report-path baseline
+        id: cleanup
         if: ${{ always() }}
         run: /usr/bin/python3 -I -B scripts/native-qualification/common.py --cleanup A
 
@@ -230,6 +230,7 @@ jobs:
     permissions: { contents: read }
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    outputs: { upload: "${{ steps.upload.outcome }}", cleanup: "${{ steps.cleanup.outcome }}" }
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with: { ref: "${{ github.event.pull_request.head.sha }}", persist-credentials: false }
@@ -251,11 +252,13 @@ jobs:
             NQ_JOB_ID="$GITHUB_JOB" NQ_RUN_ID="$GITHUB_RUN_ID" NQ_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" NQ_PR_NUMBER="$NQ_PR_NUMBER" NQ_RUNNER_VERSION="$ImageVersion" \
             /usr/bin/python3 -I -B "$NQ_DRIVER" --workflow-bound
       - name: Upload validated fixed report
+        id: upload
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with: { name: "native-B-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}-${{ github.run_attempt }}",
           path: /tmp/cogs-native-qualification-B/report.json,
           if-no-files-found: error, retention-days: 7 }
       - name: Restore fixed report-path baseline
+        id: cleanup
         if: ${{ always() }}
         run: /usr/bin/python3 -I -B scripts/native-qualification/common.py --cleanup B
 
@@ -265,6 +268,7 @@ jobs:
     permissions: { contents: read }
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    outputs: { upload: "${{ steps.upload.outcome }}", cleanup: "${{ steps.cleanup.outcome }}" }
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with: { ref: "${{ github.event.pull_request.head.sha }}", persist-credentials: false }
@@ -286,11 +290,13 @@ jobs:
             NQ_JOB_ID="$GITHUB_JOB" NQ_RUN_ID="$GITHUB_RUN_ID" NQ_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" NQ_PR_NUMBER="$NQ_PR_NUMBER" NQ_RUNNER_VERSION="$ImageVersion" \
             /usr/bin/python3 -I -B "$NQ_DRIVER" --workflow-bound
       - name: Upload validated fixed report
+        id: upload
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with: { name: "native-C-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}-${{ github.run_attempt }}",
           path: /tmp/cogs-native-qualification-C/report.json,
           if-no-files-found: error, retention-days: 7 }
       - name: Restore fixed report-path baseline
+        id: cleanup
         if: ${{ always() }}
         run: /usr/bin/python3 -I -B scripts/native-qualification/common.py --cleanup C
 
@@ -300,6 +306,7 @@ jobs:
     permissions: { contents: read }
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    outputs: { upload: "${{ steps.upload.outcome }}", cleanup: "${{ steps.cleanup.outcome }}" }
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with: { ref: "${{ github.event.pull_request.head.sha }}", persist-credentials: false }
@@ -321,11 +328,13 @@ jobs:
             NQ_JOB_ID="$GITHUB_JOB" NQ_RUN_ID="$GITHUB_RUN_ID" NQ_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" NQ_PR_NUMBER="$NQ_PR_NUMBER" NQ_RUNNER_VERSION="$ImageVersion" \
             /usr/bin/python3 -I -B "$NQ_DRIVER" --workflow-bound
       - name: Upload validated fixed report
+        id: upload
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with: { name: "native-D-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}-${{ github.run_attempt }}",
           path: /tmp/cogs-native-qualification-D/report.json,
           if-no-files-found: error, retention-days: 7 }
       - name: Restore fixed report-path baseline
+        id: cleanup
         if: ${{ always() }}
         run: /usr/bin/python3 -I -B scripts/native-qualification/common.py --cleanup D
 
@@ -335,6 +344,7 @@ jobs:
     permissions: { contents: read }
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    outputs: { upload: "${{ steps.upload.outcome }}", cleanup: "${{ steps.cleanup.outcome }}" }
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with: { ref: "${{ github.event.pull_request.head.sha }}", persist-credentials: false }
@@ -356,11 +366,13 @@ jobs:
             NQ_JOB_ID="$GITHUB_JOB" NQ_RUN_ID="$GITHUB_RUN_ID" NQ_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" NQ_PR_NUMBER="$NQ_PR_NUMBER" NQ_RUNNER_VERSION="$ImageVersion" \
             /usr/bin/python3 -I -B "$NQ_DRIVER" --workflow-bound
       - name: Upload validated fixed report
+        id: upload
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with: { name: "native-E-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}-${{ github.run_attempt }}",
           path: /tmp/cogs-native-qualification-E/report.json,
           if-no-files-found: error, retention-days: 7 }
       - name: Restore fixed report-path baseline
+        id: cleanup
         if: ${{ always() }}
         run: /usr/bin/python3 -I -B scripts/native-qualification/common.py --cleanup E
 
@@ -370,6 +382,7 @@ jobs:
     permissions: { contents: read }
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    outputs: { upload: "${{ steps.upload.outcome }}", cleanup: "${{ steps.cleanup.outcome }}" }
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with: { ref: "${{ github.event.pull_request.head.sha }}", persist-credentials: false }
@@ -391,11 +404,13 @@ jobs:
             NQ_JOB_ID="$GITHUB_JOB" NQ_RUN_ID="$GITHUB_RUN_ID" NQ_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" NQ_PR_NUMBER="$NQ_PR_NUMBER" NQ_RUNNER_VERSION="$ImageVersion" \
             /usr/bin/python3 -I -B "$NQ_DRIVER" --workflow-bound
       - name: Upload validated fixed report
+        id: upload
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with: { name: "native-integration-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}-${{ github.run_attempt }}",
           path: /tmp/cogs-native-qualification-integration/report.json,
           if-no-files-found: error, retention-days: 7 }
       - name: Restore fixed report-path baseline
+        id: cleanup
         if: ${{ always() }}
         run: /usr/bin/python3 -I -B scripts/native-qualification/common.py --cleanup integration
 
@@ -407,10 +422,38 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with: { persist-credentials: false }
       - name: Require every native transaction and report lifecycle
         env:
-          RESULTS: "${{ join(needs.*.result, ' ') }}"
-        run: test "$RESULTS" = "success success success success success success success success"
+          QUALITY_RESULT: "${{ needs.quality.result }}"
+          ELIGIBILITY_RESULT: "${{ needs.native-qualification-eligibility.result }}"
+          A_RESULT: "${{ needs.native-qualification-a.result }}"
+          B_RESULT: "${{ needs.native-qualification-b.result }}"
+          C_RESULT: "${{ needs.native-qualification-c.result }}"
+          D_RESULT: "${{ needs.native-qualification-d.result }}"
+          E_RESULT: "${{ needs.native-qualification-e.result }}"
+          INTEGRATION_RESULT: "${{ needs.native-closure-integration.result }}"
+          A_UPLOAD: "${{ needs.native-qualification-a.outputs.upload }}"
+          A_CLEANUP: "${{ needs.native-qualification-a.outputs.cleanup }}"
+          B_UPLOAD: "${{ needs.native-qualification-b.outputs.upload }}"
+          B_CLEANUP: "${{ needs.native-qualification-b.outputs.cleanup }}"
+          C_UPLOAD: "${{ needs.native-qualification-c.outputs.upload }}"
+          C_CLEANUP: "${{ needs.native-qualification-c.outputs.cleanup }}"
+          D_UPLOAD: "${{ needs.native-qualification-d.outputs.upload }}"
+          D_CLEANUP: "${{ needs.native-qualification-d.outputs.cleanup }}"
+          E_UPLOAD: "${{ needs.native-qualification-e.outputs.upload }}"
+          E_CLEANUP: "${{ needs.native-qualification-e.outputs.cleanup }}"
+          INTEGRATION_UPLOAD: "${{ needs.native-closure-integration.outputs.upload }}"
+          INTEGRATION_CLEANUP: "${{ needs.native-closure-integration.outputs.cleanup }}"
+        run: |
+          /usr/bin/env -i LC_ALL=C PYTHONCOERCECLOCALE=0 QUALITY_RESULT="$QUALITY_RESULT" ELIGIBILITY_RESULT="$ELIGIBILITY_RESULT" \
+            A_RESULT="$A_RESULT" B_RESULT="$B_RESULT" C_RESULT="$C_RESULT" D_RESULT="$D_RESULT" E_RESULT="$E_RESULT" \
+            INTEGRATION_RESULT="$INTEGRATION_RESULT" A_UPLOAD="$A_UPLOAD" A_CLEANUP="$A_CLEANUP" \
+            B_UPLOAD="$B_UPLOAD" B_CLEANUP="$B_CLEANUP" C_UPLOAD="$C_UPLOAD" C_CLEANUP="$C_CLEANUP" \
+            D_UPLOAD="$D_UPLOAD" D_CLEANUP="$D_CLEANUP" E_UPLOAD="$E_UPLOAD" E_CLEANUP="$E_CLEANUP" \
+            INTEGRATION_UPLOAD="$INTEGRATION_UPLOAD" INTEGRATION_CLEANUP="$INTEGRATION_CLEANUP" \
+            /usr/bin/python3 -I -B scripts/native-qualification/common.py --require-final-results
 
   secret-scan:
     name: Secret scan

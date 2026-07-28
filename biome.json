@@ -33,6 +33,7 @@
     {
       "includes": [
         "schemas/native-qualification-report-v1alpha1.json",
+        "scripts/validate-schemas.ts",
         "test/native-qualification-b.test.ts",
         "test/native-qualification-common.test.ts",
         "test/native-qualification-e.test.ts",
