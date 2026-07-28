@@ -1,19 +1,22 @@
 #!/usr/bin/env python3
-"""Portable crash tests for the production launcher authority owner/recovery."""
+"""Portable primitive faults for production launcher recovery owners."""
 
 from contextlib import contextmanager
+import ctypes
+import errno
 import importlib.util
 import json
 import os
 from pathlib import Path
+import signal
 import sys
+import tempfile
 
 if sys.flags.optimize:
     raise RuntimeError("Outcome 2 recovery tests refuse optimized Python")
 sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[1]
 MODULE = ROOT / "deploy/aws-feasibility/remote/completion_trusted_runtime_launcher.py"
-MODEL_SUITE = ROOT / "test/outcome-two-trusted-launcher-portable.py"
 FIXTURE = ROOT / "test/fixtures/outcome-two/recovery/cases.json"
 ROW_KEYS = {
     "id", "production_method", "primitive_fault", "intended_code",
@@ -25,45 +28,49 @@ REQUIRED_ACCEPTANCE = {
 }
 
 
-def load(path, name):
-    spec = importlib.util.spec_from_file_location(name, path)
+def load_module():
+    spec = importlib.util.spec_from_file_location(
+        "completion_trusted_runtime_launcher_recovery", MODULE,
+    )
     module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
 
 
-def fixture_rows():
+def production_symbol(module, name):
+    value = module
+    for component in name.split("."):
+        value = getattr(value, component, None)
+    return value
+
+
+def fixture_rows(module):
     document = json.loads(FIXTURE.read_text())
-    if document["version"] != "cogs.outcome-two-recovery-cases/v4":
+    if set(document) != {"version", "rows"}:
+        raise AssertionError("recovery fixture document shape")
+    if document["version"] != "cogs.outcome-two-recovery-cases/v5":
         raise AssertionError("recovery fixture version")
-    rows = []
+    rows = document["rows"]
     acceptance = set()
-    family_keys = {
-        "acceptance_id", "production_method", "intended_code",
-        "cleanup_domains", "sentinel", "cases",
-    }
-    for family in document["families"]:
-        if set(family) != family_keys:
-            raise AssertionError("recovery fixture family shape")
-        acceptance.add(family["acceptance_id"])
-        for case in family["cases"]:
-            if type(case) is not list or not 2 <= len(case) <= 3:
-                raise AssertionError("recovery fixture case shape")
-            row = {
-                "id": f"{family['acceptance_id']}:{case[0]}",
-                "production_method": family["production_method"],
-                "primitive_fault": case[1],
-                "intended_code": case[2] if len(case) == 3 else family["intended_code"],
-                "cleanup_domains": family["cleanup_domains"],
-                "sentinel": f"{family['sentinel']}:{case[1]}",
-            }
-            if set(row) != ROW_KEYS or type(row["cleanup_domains"]) is not list:
-                raise AssertionError("expanded recovery fixture row shape")
-            rows.append(row)
-    identifiers = [row["id"] for row in rows]
-    if len(identifiers) != len(set(identifiers)):
-        raise AssertionError("recovery fixture IDs are not unique")
+    identifiers = set()
+    for row in rows:
+        if set(row) != ROW_KEYS:
+            raise AssertionError("recovery fixture row shape")
+        if row["id"] in identifiers:
+            raise AssertionError("recovery fixture ID duplicate")
+        identifiers.add(row["id"])
+        acceptance.add(row["id"].split(":", 1)[0])
+        fault = row["primitive_fault"]
+        if set(fault) != {"method", "mutation"}:
+            raise AssertionError("recovery primitive fault shape")
+        event = f"ops.{fault['method']}:{fault['mutation']}"
+        if row["sentinel"] != event:
+            raise AssertionError("recovery sentinel is not a primitive event")
+        if not callable(production_symbol(module, row["production_method"])):
+            raise AssertionError(f"missing production method {row['production_method']}")
+        if type(row["cleanup_domains"]) is not list:
+            raise AssertionError("recovery cleanup domains shape")
     if acceptance != REQUIRED_ACCEPTANCE:
         raise AssertionError(f"recovery acceptance set drift: {acceptance}")
     return rows
@@ -85,158 +92,224 @@ def patched(target, **replacements):
                 setattr(target, name, value)
 
 
-class AuthorityTransaction:
-    """Real production ProcessOwner state with modeled worker/helper/namespace authority."""
+class RecoveryOps:
+    """Faults concrete operations reached from production ownership branches."""
 
-    def __init__(self, launcher, model_module, row):
-        self.launcher = launcher
-        self.row = row
-        self.model = model_module.PrimitiveModel(launcher, row)
-        self.owner = launcher._ProcessOwner(self.model)
-        self.leases = []
-        self.process_ids = (4101, 4102, 4103)
+    def __init__(self, module, row, root_parent=None):
+        self.module = module
+        self.fault = row["primitive_fault"]
+        self.root_parent = root_parent
+        self.events = []
+        self.fired = False
 
-    def register(self):
-        def pidfd_open(pid, flags=0):
-            del flags
-            self.model.record(f"process.pidfd:{pid}")
-            return self.model.allocate("processes")
+    def mutation(self, method):
+        if self.fired or method != self.fault["method"]:
+            return None
+        self.fired = True
+        mutation = self.fault["mutation"]
+        self.events.append(f"ops.{method}:{mutation}")
+        return mutation
 
-        def start_time(pid):
-            self.model.record(f"process.start:{pid}")
-            return pid * 10
+    def unavailable(self, primitive, saved):
+        ctypes.set_errno(saved)
+        return self.module._SystemOps._checked(self, -1, primitive)
 
-        def executable(pid):
-            self.model.record(f"process.exe:{pid}")
-            return 9, pid
+    def open(self, path, flags, mode=0o600):
+        return os.open(path, flags, mode)
 
-        with patched(
-            self.launcher.os,
-            pidfd_open=pidfd_open,
-            getsid=lambda pid: pid,
-            getpgid=lambda pid: pid,
-        ), patched(
-            self.launcher,
-            _start_time=start_time,
-            _exe_identity=executable,
-        ):
-            for pid in self.process_ids:
-                gate = self.launcher._FdLease(
-                    self.model.allocate("descriptors"),
-                    f"release-gate:{pid}",
-                )
-                lease = self.owner.register(pid, gate)
-                self.owner.release(lease)
-        for domain in self.row["cleanup_domains"]:
-            if domain in {"worker", "helpers", "processes"}:
-                continue
-            fd = self.model.allocate(domain)
-            self.leases.append(
-                self.launcher._FdLease(fd, f"authority:{domain}"),
-            )
+    def close(self, fd):
+        mutation = self.mutation("close")
+        os.close(fd)
+        if mutation == "after-effect-eio":
+            raise OSError(errno.EIO, "modeled close after-effect failure")
+        if mutation == "replace-root-after-close":
+            leaf = Path(self.root_parent) / self.module._ROOT_LEAF
+            leaf.rmdir()
+            leaf.mkdir(mode=0o700)
 
-    def crash(self):
-        try:
-            if self.row["id"].startswith("AT-UNAV-01:"):
-                self.model.record(f"transaction.{self.row['primitive_fault']}")
-                self.model.record(self.row["sentinel"])
-                error = self.launcher.RuntimeLauncherUnavailable(
-                    self.row["primitive_fault"],
-                )
-                self.model.last_error = error
-                raise error
-            self.model.trip(f"transaction.{self.row['primitive_fault']}")
-        except self.launcher.RuntimeLauncherError as error:
-            return error
-        raise AssertionError("modeled authority crash did not occur")
+    def mount(self, source, target, kind, flags, data):
+        del source, target, kind, flags, data
+        mutation = self.mutation("mount")
+        if mutation == "enosys":
+            self.unavailable("mount", errno.ENOSYS)
+        if mutation == "eopnotsupp":
+            self.unavailable("mount", errno.EOPNOTSUPP)
+        raise AssertionError("unexpected recovery mount mutation")
 
-    def recover(self, primary):
-        uncertain = self.row["intended_code"] == "cleanup-uncertain"
-        original_close = self.model.close
-        original_match = self.model.process_matches
+    def start_time(self, pid):
+        del pid
+        mutation = self.mutation("start_time")
+        if mutation == "enosys":
+            self.unavailable("proc-stat", errno.ENOSYS)
+        raise AssertionError("unexpected start-time mutation")
 
-        def close(fd):
-            if uncertain and self.row["primitive_fault"] not in {
-                "reap-timeout", "lost-reap-ownership", "unavailable-reap-uncertain",
-            }:
-                self.model.trip("recovery.close")
-            original_close(fd)
-
-        def process_matches(lease):
-            if uncertain and self.row["primitive_fault"] in {
-                "reap-timeout", "lost-reap-ownership", "start-time-drift",
-                "executable-drift", "unexpected-owned-child", "eof-live",
-                "unavailable-reap-uncertain",
-            }:
-                self.model.trip("recovery.process-identity")
-            return original_match(lease)
-
-        self.model.close = close
-        try:
-            with patched(
-                self.launcher,
-                _process_matches=process_matches,
-                _wait_bounded=self.model.wait_bounded,
-            ), patched(
-                self.launcher.signal,
-                pidfd_send_signal=self.model.pidfd_signal,
-            ):
-                self.launcher._recover_transaction_with_ops(
-                    self.model,
-                    self.owner,
-                    self.leases,
-                    primary,
-                )
-        finally:
-            self.model.close = original_close
-
-    def assert_result(self, primary, recovery_error):
-        if recovery_error is None:
-            observed = primary
-            if self.model.open_fds or self.model.authority or self.owner.processes:
-                raise AssertionError(f"{self.row['id']}: authority survived clean recovery")
-        else:
-            observed = recovery_error
-            if not self.model.open_fds and not self.owner.processes:
-                raise AssertionError(f"{self.row['id']}: uncertainty was erased")
-        if observed.code != self.row["intended_code"]:
-            raise AssertionError(
-                f"{self.row['id']}: expected {self.row['intended_code']!r}, "
-                f"got {observed.code!r}",
-            ) from observed
-        if self.row["sentinel"] not in self.model.trace:
-            raise AssertionError(f"{self.row['id']}: branch-removal sentinel absent")
-        if any(item.startswith("retry.") for item in self.model.trace):
-            raise AssertionError(f"{self.row['id']}: preparation was retried")
+    def pidfd_signal(self, fd, number):
+        del fd, number
+        mutation = self.mutation("pidfd_signal")
+        if mutation == "eio":
+            raise OSError(errno.EIO, "modeled pidfd signal failure")
+        raise AssertionError("unexpected pidfd signal mutation")
 
 
-def execute_row(launcher, model_module, row):
-    transaction = AuthorityTransaction(launcher, model_module, row)
-    transaction.register()
-    primary = transaction.crash()
-    recovery_error = None
+def materialization_failure(module, ops):
     try:
-        transaction.recover(primary)
-    except launcher.RuntimeLauncherCleanupError as error:
-        recovery_error = error
-    transaction.assert_result(primary, recovery_error)
+        module._materialize_root(
+            ops,
+            "gzip",
+            (),
+            (),
+            {"tools": [None, None, {"objects": []}]},
+            "/modeled-root",
+        )
+    except module.RuntimeLauncherUnavailable as error:
+        return error
+    raise AssertionError("materialization primitive fault was accepted")
+
+
+def invoke_unavailable_recovery(module, row, created):
+    ops = RecoveryOps(module, row)
+    created.append(ops)
+    primary = materialization_failure(module, ops)
+    read_fd, write_fd = os.pipe()
+    os.close(write_fd)
+    leases = [module._FdLease(read_fd, "recovery-authority")]
+    module._recover_transaction_with_ops(
+        ops, module._ProcessOwner(ops), leases, primary,
+    )
+    raise primary
+
+
+def invoke_root_recovery(module, row, created):
+    with tempfile.TemporaryDirectory() as parent:
+        ops = RecoveryOps(module, row, parent)
+        created.append(ops)
+        old_parent = module._ROOT_PARENT
+        module._ROOT_PARENT = parent
+        owner = module._RootOwner(ops)
+        try:
+            owner.prepare()
+            owner.cleanup()
+        finally:
+            leaf = Path(parent) / module._ROOT_LEAF
+            if leaf.exists():
+                leaf.rmdir()
+            module._ROOT_PARENT = old_parent
+
+
+def invoke_registration_recovery(module, row, created):
+    ops = RecoveryOps(module, row)
+    created.append(ops)
+    read_fd, write_fd = os.pipe()
+    owner = module._ProcessOwner(ops)
+    primary = None
+    try:
+        with patched(module.os, pidfd_open=lambda pid, flags=0: read_fd), patched(
+            module, _start_time=ops.start_time,
+        ):
+            owner.register(4242)
+    except module.RuntimeLauncherUnavailable as error:
+        primary = error
+    if primary is None:
+        raise AssertionError("registration primitive fault was accepted")
+    os.close(write_fd)
+    with patched(
+        module.select,
+        select=lambda readers, writers, errors, timeout=0: (
+            list(readers), list(writers), list(errors)
+        ),
+    ), patched(module.os, waitpid=lambda pid, flags: (pid, 0)):
+        module._recover_transaction_with_ops(ops, owner, [], primary)
+    raise primary
+
+
+def invoke_process_recovery(module, row, created):
+    ops = RecoveryOps(module, row)
+    created.append(ops)
+    read_fd, write_fd = os.pipe()
+    owner = module._ProcessOwner(ops)
+    with patched(
+        module.os,
+        pidfd_open=lambda pid, flags=0: read_fd,
+        getsid=lambda pid: 1,
+        getpgid=lambda pid: 1,
+    ), patched(
+        module,
+        _start_time=lambda pid: 1,
+        _exe_identity=lambda pid: (1, 1),
+    ):
+        owner.register(4242)
+    try:
+        with patched(
+            module.select,
+            select=lambda readers, writers, errors, timeout=0: (
+                [], list(writers), list(errors)
+            ),
+        ), patched(module, _process_matches=lambda lease: True), patched(
+            module.signal, pidfd_send_signal=ops.pidfd_signal,
+        ):
+            owner.cleanup()
+    finally:
+        os.close(write_fd)
+        if owner.processes[0].pidfd.state is module._FdState.OWNED:
+            os.close(read_fd)
+
+
+def invoke_close_recovery(module, row, created):
+    ops = RecoveryOps(module, row)
+    created.append(ops)
+    read_fd, write_fd = os.pipe()
+    os.close(write_fd)
+    lease = module._FdLease(read_fd, "close-uncertainty")
+    module._recover_transaction_with_ops(
+        ops, module._ProcessOwner(ops), [lease], None,
+    )
+
+
+def execute_row(module, row):
+    adapters = {
+        "AT-ADAPT-REC-01": invoke_unavailable_recovery,
+        "AT-ROOT-01": invoke_root_recovery,
+        "AT-LIFE-01": invoke_registration_recovery,
+        "AT-LIFE-02": invoke_process_recovery,
+        "AT-FD-CLOSE-01": invoke_close_recovery,
+        "AT-UNAV-01": invoke_unavailable_recovery,
+    }
+    acceptance = row["id"].split(":", 1)[0]
+    created = []
+    try:
+        adapters[acceptance](module, row, created)
+    except module.RuntimeLauncherError as error:
+        observed = error
+    else:
+        raise AssertionError(f"{row['id']}: production accepted primitive fault")
+    if observed.code != row["intended_code"]:
+        raise AssertionError(
+            f"{row['id']}: expected {row['intended_code']!r}, got {observed.code!r}",
+        ) from observed
+    if len(created) != 1:
+        raise AssertionError(f"{row['id']}: primitive adapter cardinality")
+    if created[0].events != [row["sentinel"]]:
+        raise AssertionError(
+            f"{row['id']}: production primitive event mismatch {created[0].events}",
+        )
 
 
 def parent():
-    launcher = load(MODULE, "completion_trusted_runtime_launcher_recovery")
-    model_module = load(MODEL_SUITE, "outcome_two_launcher_primitive_model")
-    rows = fixture_rows()
+    module = load_module()
+    if not hasattr(module.os, "O_PATH"):
+        module.os.O_PATH = 0x200000
+    rows = fixture_rows(module)
     selected = {row["id"] for row in rows}
     consumed = set()
     oracle = set()
     sentinel = set()
     for row in rows:
-        execute_row(launcher, model_module, row)
+        execute_row(module, row)
         consumed.add(row["id"])
         oracle.add(row["id"])
         sentinel.add(row["id"])
-    if not selected == consumed == oracle == sentinel:
-        raise AssertionError("recovery selected/consumed/oracle/sentinel mismatch")
+    if selected != consumed or selected != oracle or selected != sentinel:
+        raise AssertionError("recovery fixture ledger mismatch")
     print("Outcome 2 recovery portable tests passed")
 
 
