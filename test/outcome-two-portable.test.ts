@@ -10,6 +10,7 @@ const require = createRequire(import.meta.url);
 const Ajv2020 = require("ajv/dist/2020.js") as new (options?: Options) => AjvCore;
 const root = process.cwd();
 const python = "/usr/bin/python3";
+const predecessor = "bec0a19b0b984f88ab9c2effc5059f3737915caa";
 const suites = [
   "outcome-two-runtime-closure-portable.py",
   "outcome-two-mapped-closure-portable.py",
@@ -19,10 +20,22 @@ const suites = [
   "outcome-two-runtime-report-portable.py",
   "outcome-two-trusted-launcher-portable.py",
 ] as const;
-const env = {
-  PYTHONDONTWRITEBYTECODE: "1",
-  PYTHONHASHSEED: "0",
-};
+const highs = new Map<string, number>([
+  ["deploy/aws-feasibility/remote/completion_elf.py", 320],
+  ["deploy/aws-feasibility/remote/completion_trusted_runtime_closure.py", 2_100],
+  ["deploy/aws-feasibility/remote/completion_trusted_runtime_launcher.py", 1_900],
+  ["schemas/trusted-runtime-closure-v1.json", 260],
+  ["scripts/validate-schemas.ts", 30],
+  ["test/outcome-two-runtime-closure-portable.py", 350],
+  ["test/outcome-two-mapped-closure-portable.py", 300],
+  ["test/outcome-two-sealing-portable.py", 300],
+  ["test/outcome-two-lifecycle-portable.py", 550],
+  ["test/outcome-two-recovery-portable.py", 550],
+  ["test/outcome-two-runtime-report-portable.py", 400],
+  ["test/outcome-two-trusted-launcher-portable.py", 800],
+  ["test/outcome-two-portable.test.ts", 170],
+]);
+const env = { PYTHONDONTWRITEBYTECODE: "1", PYTHONHASHSEED: "0" };
 
 function run(arguments_: string[], timeout: number) {
   return spawnSync(python, arguments_, {
@@ -30,18 +43,18 @@ function run(arguments_: string[], timeout: number) {
     env,
     encoding: "utf8",
     timeout,
-    maxBuffer: 2_097_152,
+    maxBuffer: 4_194_304,
     stdio: ["ignore", "pipe", "pipe"],
   });
 }
 
 function requireSuccess(result: ReturnType<typeof run>, label: string) {
-  assert.equal(
-    result.status,
-    0,
-    `${label} failed or exceeded its bound\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
-  );
-  assert.equal(result.error, undefined, `${label} spawn failed`);
+  assert.equal(result.error, undefined, `${label} spawn failed: ${result.error?.message}`);
+  assert.equal(result.status, 0, `${label} failed\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
+}
+
+function git(arguments_: string[]) {
+  return spawnSync("git", arguments_, { cwd: root, encoding: "utf8" });
 }
 
 test("Outcome 2 portable hostile suites are bounded and optimization-safe", () => {
@@ -52,11 +65,13 @@ test("Outcome 2 portable hostile suites are bounded and optimization-safe", () =
     assert.match(result.stdout, /Outcome 2 .* portable tests passed/u, suite);
 
     const optimized = run(["-O", "-I", "-B", path], 5_000);
+    assert.equal(optimized.error, undefined, `${suite} optimized run exceeded its bound`);
     assert.notEqual(optimized.status, 0, `${suite} accepted optimized Python`);
+    assert.match(optimized.stderr, /optimized (?:mode is forbidden|Python)/u, suite);
   }
 });
 
-test("Outcome 2 tracked schema independently validates the exact mutation corpus", () => {
+test("Outcome 2 AJV gate validates the production-schema mutation corpus", () => {
   const reportSuite = join(root, "test", "outcome-two-runtime-report-portable.py");
   const result = run(["-I", "-B", reportSuite, "--schema-corpus"], 5_000);
   requireSuccess(result, "report schema corpus producer");
@@ -67,17 +82,74 @@ test("Outcome 2 tracked schema independently validates the exact mutation corpus
   assert.ok(rows.length > 1);
   assert.equal(new Set(rows.map((row) => row.id)).size, rows.length, "duplicate schema case");
 
-  const schema = JSON.parse(readFileSync(join(root, "schemas", "trusted-runtime-closure-v1.json"), "utf8")) as object;
-  const validate = new Ajv2020({
-    allErrors: true,
-    strict: true,
-    strictRequired: false,
-  }).compile(schema);
+  const schemaPath = join(root, "schemas", "trusted-runtime-closure-v1.json");
+  const schema = JSON.parse(readFileSync(schemaPath, "utf8")) as { $id: string };
+  assert.equal(schema.$id, "https://cogs.dev/schemas/trusted-runtime-closure-v1.json");
+  const ajv = new Ajv2020({ allErrors: true, strict: true, strictRequired: false });
+  ajv.addSchema(schema);
+  const validate = ajv.getSchema(schema.$id);
+  assert.ok(validate, "production schema was not registered in AJV");
   for (const row of rows) {
     assert.equal(
       validate(row.value),
       row.schema,
-      `${row.id}: tracked schema expectation diverged: ${JSON.stringify(validate.errors)}`,
+      `${row.id}: production schema diverged: ${JSON.stringify(validate.errors)}`,
     );
   }
+});
+
+test("Outcome 2 dead routes and unsafe lifecycle compatibility stay deleted", () => {
+  const production = [
+    "deploy/aws-feasibility/remote/completion_trusted_runtime_closure.py",
+    "deploy/aws-feasibility/remote/completion_trusted_runtime_launcher.py",
+  ].map((path) => readFileSync(join(root, path), "utf8"));
+  const banned = [
+    /_drive_fixed_/u,
+    /_T2_SEQUENCE/u,
+    /_seal_source/u,
+    /\.operation\s*\(/u,
+    /lambda\s*:\s*None/u,
+    /waitpid\s*\([^)]*,\s*0\s*\)/u,
+    /except[^:]*:\s*(?:\n\s*){0,3}os\.close\s*\(/u,
+    /^\s*[A-Za-z_]\w*\s*:[^#\n]+;\s*[A-Za-z_]\w*\s*:/mu,
+  ];
+  for (const source of production) {
+    for (const pattern of banned) assert.doesNotMatch(source, pattern);
+  }
+});
+
+test("Outcome 2 gross lines and fixture lines remain within exact ADR 0089 highs", () => {
+  const paths = [...highs.keys()];
+  const diff = git(["diff", "--numstat", predecessor, "--", ...paths]);
+  assert.equal(diff.status, 0, diff.stderr);
+  const additions = new Map(
+    diff.stdout
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((row) => {
+        const [added, _deleted, path] = row.split("\t");
+        assert.notEqual(added, "-", `${path}: binary counted surface`);
+        return [path, Number(added)] as const;
+      }),
+  );
+  let subtotal = 0;
+  for (const [path, high] of highs) {
+    const added = additions.get(path) ?? 0;
+    assert.ok(added <= high, `${path}: ${added} gross lines exceeds ${high}`);
+    subtotal += added;
+  }
+
+  const fixtures = git(["ls-files", "test/fixtures/outcome-two"]);
+  assert.equal(fixtures.status, 0, fixtures.stderr);
+  const fixtureLines = fixtures.stdout
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .reduce((total, path) => {
+      const bytes = readFileSync(join(root, path));
+      return total + bytes.reduce((lines, byte) => lines + Number(byte === 10), 0);
+    }, 0);
+  assert.ok(fixtureLines <= 900, `fixture aggregate: ${fixtureLines} lines exceeds 900`);
+  assert.ok(subtotal + fixtureLines <= 8_930, `trusted/portable subtotal exceeds 8930`);
 });
