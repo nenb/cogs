@@ -284,6 +284,7 @@ class SystemCommonOps:
                         dir_fd=directory.number,
                     ),
                 )
+                _require(next_directory.state is FdState.OWNED, "held source directory Lease adoption")
                 directory.close()
                 directory = next_directory
             return self.fds.open(
@@ -421,6 +422,7 @@ class SystemCommonOps:
             "held-source-root",
             lambda: os.open(ROOT, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW),
         )
+        _require(root.state is FdState.OWNED, "held source root Lease adoption")
         held: dict[str, _HeldSource] = {}
         primary: BaseException | None = None
         try:
@@ -1062,6 +1064,7 @@ def _start_custodian(context: WorkflowContext, registry: FdRegistry) -> _Custodi
                 os._exit(1)
             os._exit(0)
         pidfd = registry.open("report-custodian-pidfd", lambda: os.pidfd_open(pid, 0))
+        _require(pidfd.state is FdState.OWNED, "report custodian pidfd Lease adoption")
         right.close()
         endpoint = socket.socket(fileno=left.number)
         endpoint.settimeout(10)
@@ -1142,12 +1145,14 @@ def _open_report_directory(job: str, create: bool) -> tuple[FdRegistry, FdLease,
     registry = FdRegistry()
     parent = registry.open("report-parent",
         lambda: os.open("/tmp", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW))
+    _require(parent.state is FdState.OWNED, "report parent Lease adoption")
     name = report_path(job).parent.name
     if create:
         os.mkdir(name, 0o700, dir_fd=parent.number)
         os.fsync(parent.number)
     directory = registry.open("report-directory",
         lambda: os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW, dir_fd=parent.number))
+    _require(directory.state is FdState.OWNED, "report directory Lease adoption")
     status = os.fstat(directory.number)
     policy = stat.S_ISDIR(status.st_mode) and stat.S_IMODE(status.st_mode) == 0o700
     policy = policy and status.st_uid == os.geteuid() and status.st_gid == os.getegid()
@@ -1360,6 +1365,7 @@ def _custodian_main(control_fd: int, context: WorkflowContext, capability: bytes
     worker_pidfd: FdLease | None = None
     try:
         worker_pidfd = registry.open("report-worker-pidfd", lambda: os.pidfd_open(worker_pid, 0))
+        _require(worker_pidfd.state is FdState.OWNED, "report worker pidfd Lease adoption")
         child_gate.close()
         gate = socket.socket(fileno=parent_gate.number)
         try:
@@ -1402,7 +1408,8 @@ def _custodian_worker(control_fd: int, context: WorkflowContext, capability: byt
     _require(control.send(b"PUBLISHED") == 9, "custodian published")
     control.detach()
     control_lease.close()
-    endpoint_socket, _address = listener.accept()
+    accepted = listener.accept()
+    endpoint_socket, _address = accepted  # Python socket retains the allocation until registry adoption.
     endpoint_number = endpoint_socket.detach()
     try:
         endpoint_lease = registry.adopt(endpoint_number, "custodian-cleanup-endpoint")
@@ -1515,6 +1522,7 @@ def cleanup_report(job: str) -> None:
         peer_exact = peer_exact and _process_start(peer_pid) == authority["custodian_start"]
         _require(peer_exact, "custodian peer identity")
         pidfd = registry.open("cleanup-custodian-pidfd", lambda: os.pidfd_open(peer_pid, 0))
+        _require(pidfd.state is FdState.OWNED, "cleanup custodian pidfd Lease adoption")
         request = _canonical({
             "capability": capability.hex(),
             "head_sha": authority["head_sha"],
@@ -1659,7 +1667,7 @@ class NativeSession:
         )
         if self.fds.uncertain:
             values = tuple((key, False if key == "descriptors" else value) for key, value in values)
-        self._evidence = CleanupEvidence(self._nonce, values)
+        self._evidence = CleanupEvidence(_session_nonce=self._nonce, _items=values)
         return self._evidence
     def _receipt_claims(self) -> tuple[dict[str, str], list[dict[str, object]], dict[str, str]]:
         receipt = self.__receipt
