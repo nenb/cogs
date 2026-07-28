@@ -294,7 +294,8 @@ assert common._parse_dirents(dent('.')+dent('7')+dent('19'),True)==['7','19']
 source=ast.parse(open(common.COMMON).read())
 descriptor=next(node for node in ast.walk(source) if isinstance(node,ast.FunctionDef) and node.name=='_descriptor_snapshot_once')
 text=ast.unparse(descriptor);assert '_generation(after)' in text and 'descriptor_flags' in text and 'status_flags' in text
-assert 'F_DUPFD_CLOEXEC' in text and 'libc.syscall(312' in text and '_descriptor_anchors' in text
+assert 'F_DUPFD_CLOEXEC' in text and 'anchor_generation' in text and '_descriptor_anchors' in text
+assert 'libc.syscall(312' not in text
 issuer=next(node for node in ast.walk(source) if isinstance(node,ast.FunctionDef) and node.name=='_issue_cli')
 issuer_text=ast.unparse(issuer);assert "os.execve('/usr/bin/python3', ('/usr/bin/python3', '-I', '-B', '-')" in issuer_text
 assert 'os.pidfd_open' in issuer_text and 'os.dup2(admission.number, 3' not in issuer_text

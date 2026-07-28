@@ -591,15 +591,15 @@ class SystemCommonOps:
                     self._descriptor_anchors[number] = anchor
             _require(tuple(self._descriptor_anchors) == numbers, "descriptor number generation")
             rows = []
-            libc = ctypes.CDLL(None, use_errno=True)
             for number in numbers:
                 before = os.fstat(number)
                 descriptor_flags = fcntl.fcntl(number, fcntl.F_GETFD)
                 status_flags = fcntl.fcntl(number, fcntl.F_GETFL)
                 after = os.fstat(number)
                 anchor = self._descriptor_anchors[number]
-                exact = libc.syscall(312, os.getpid(), os.getpid(), 0, number, anchor.number) == 0
-                _require(exact and _generation(before) == _generation(after), "open descriptor generation drift")
+                anchor_generation = _generation(os.fstat(anchor.number))
+                exact = _generation(before) == _generation(after) == anchor_generation
+                _require(exact and fcntl.fcntl(anchor.number, fcntl.F_GETFL) == status_flags, "open descriptor generation drift")
                 rows.append((number, anchor.number, _generation(after), after.st_rdev, descriptor_flags, status_flags))
             return tuple(rows)
         finally:
