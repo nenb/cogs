@@ -580,7 +580,12 @@ def _resolve_once(ops: _Ops, path: str, *, open_source: bool=True) -> tuple[int 
         root_stat = ops.fstat(root.fd)
         _require_component(root_stat, directory=True)
         root_generation = _generation(root_stat)
-        transcript.append(_PathObservation((root_stat.st_dev, root_stat.st_ino), '/', 'directory', root_generation))
+        transcript.append(_PathObservation(
+            parent=(root_stat.st_dev, root_stat.st_ino),
+            component='/',
+            kind='directory',
+            generation=root_generation,
+        ))
         symlinks = 0
         components = 0
         while queue:
@@ -610,7 +615,13 @@ def _resolve_once(ops: _Ops, path: str, *, open_source: bool=True) -> tuple[int 
                 after = ops.stat(component, dir_fd=directories[-1].fd, follow_symlinks=False)
                 if _generation(after) != before_generation or not target or '\x00' in target:
                     raise RuntimeClosureError('fixed symlink changed')
-                transcript.append(_PathObservation(parent_identity, component, 'symlink', before_generation, target))
+                transcript.append(_PathObservation(
+                    parent=parent_identity,
+                    component=component,
+                    kind='symlink',
+                    generation=before_generation,
+                    link=target,
+                ))
                 target_parts = target.split('/')
                 if target.startswith('/'):
                     while len(directories) > 1:
@@ -633,11 +644,21 @@ def _resolve_once(ops: _Ops, path: str, *, open_source: bool=True) -> tuple[int 
                 _require_component(after, directory=True)
                 if _generation(after) != before_generation:
                     raise RuntimeClosureError('fixed directory changed')
-                transcript.append(_PathObservation(parent_identity, component, 'directory', before_generation))
+                transcript.append(_PathObservation(
+                    parent=parent_identity,
+                    component=component,
+                    kind='directory',
+                    generation=before_generation,
+                ))
                 continue
             _require_source(before)
             final_generation = before_generation
-            transcript.append(_PathObservation(parent_identity, component, 'file', before_generation))
+            transcript.append(_PathObservation(
+                parent=parent_identity,
+                component=component,
+                kind='file',
+                generation=before_generation,
+            ))
             if open_source:
                 final = FdLease(ops.open(component, os.O_RDONLY | _O_CLOEXEC | _O_NOFOLLOW, dir_fd=directories[-1].fd), 'runtime-source')
                 after = ops.fstat(final.fd)
@@ -1117,7 +1138,11 @@ def _spawn_helper(
         created.append(devnull)
         preparation.adopt_fd(devnull)
         parent = ops.getpid()
+        pidfd: FdLease | None = None
         pid, pidfd_number = ops.clone3_pidfd()
+        if pid != 0 and type(pidfd_number) is int and pidfd_number >= 0:
+            pidfd = FdLease(pidfd_number, 'helper-pidfd')
+            created.append(pidfd)
         if pid == 0:
             try:
                 gates = (
@@ -1164,10 +1189,6 @@ def _spawn_helper(
             except BaseException:
                 status_fd = status_write.fd if status_write is not None else -1
                 _child_fail(ops, status_fd, b'E\n')
-        pidfd: FdLease | None = None
-        if type(pidfd_number) is int and pidfd_number >= 0:
-            pidfd = FdLease(pidfd_number, 'helper-pidfd')
-            created.append(pidfd)
         if type(pid) is not int or pid <= 0 or pidfd is None:
             raise RuntimeClosureError('invalid atomic helper spawn result')
         helper = HelperLease(
@@ -2311,11 +2332,11 @@ def _fixed_operation_admitted(admission: object, operation: str) -> None:
 
 def _mapping_observations(closure: ResolvedToolClosure) -> tuple[RuntimeObjectObservation, ...]:
     return tuple(RuntimeObjectObservation(
-        value.role,
-        value.size,
-        value.sha256,
-        _metadata(value)[1],
-        _metadata(value)[2],
+        role=value.role,
+        size_bytes=value.size,
+        sha256=value.sha256,
+        soname=_metadata(value)[1],
+        needed=_metadata(value)[2],
     ) for value in closure.objects)
 
 def _qualify_fixed_python_mapping_with_ops(admission: object, ops: _Ops) -> RuntimeMappingQualificationResult:
@@ -2369,22 +2390,25 @@ def _qualify_fixed_python_mapping_with_ops(admission: object, ops: _Ops) -> Runt
     if resolved is None or mapped is None:
         raise RuntimeClosureError('mapping qualification result missing')
     objects = _mapping_observations(resolved)
-    mapped_rows = tuple(MappedObjectObservation(*row) for row in mapped.mapped)
+    mapped_rows = tuple(
+        MappedObjectObservation(role=role, sha256=sha256)
+        for role, sha256 in mapped.mapped
+    )
     canonical_objects = [_object_report(value) for value in resolved.objects]
     expected_mapped = tuple((item.role, item.sha256) for item in resolved.objects)
     result = RuntimeMappingQualificationResult(
-        'cogs.runtime-mapping-qualification/v1',
-        admission.revision,
-        admission.source_set_sha256,
-        hashlib.sha256(_canonical(canonical_objects)).hexdigest(),
-        mapped.mapping_sha256,
-        objects,
-        mapped_rows,
-        mapped.mapped == expected_mapped,
-        True,
-        helper.reaped,
-        descriptors_restored,
-        children_reaped,
+        version='cogs.runtime-mapping-qualification/v1',
+        source_revision=admission.revision,
+        source_set_sha256=admission.source_set_sha256,
+        closure_sha256=hashlib.sha256(_canonical(canonical_objects)).hexdigest(),
+        mapping_sha256=mapped.mapping_sha256,
+        objects=objects,
+        mapped=mapped_rows,
+        mapped_generations_exact=mapped.mapped == expected_mapped,
+        mapping_stable=True,
+        helper_reaped=helper.reaped,
+        descriptors_restored=descriptors_restored,
+        children_reaped=children_reaped,
     )
     owner._complete_fixed_operation()
     return result
@@ -2475,7 +2499,11 @@ def _qualify_fixed_descriptor_primitives_with_ops(
         leases.extend((release_read, release_write))
         ops.checkpoint('descriptor.release-pipe.after-register')
         ops.checkpoint('descriptor.clone.before')
+        child_pidfd: FdLease | None = None
         child_pid, pidfd_number = ops.clone3_pidfd()
+        if child_pid != 0 and type(pidfd_number) is int and pidfd_number >= 0:
+            child_pidfd = FdLease(pidfd_number, 'descriptor-child-pidfd')
+            leases.append(child_pidfd)
         if child_pid == 0:
             try:
                 status_read.close(ops)
@@ -2492,10 +2520,8 @@ def _qualify_fixed_descriptor_primitives_with_ops(
                 ops.execve(resolved.executable.held_fd, argv, {})
             except BaseException:
                 ops.exit_child(126)
-        if type(pidfd_number) is not int or pidfd_number < 0:
+        if child_pidfd is None:
             raise RuntimeClosureError('descriptor child pidfd registration')
-        child_pidfd = FdLease(pidfd_number, 'descriptor-child-pidfd')
-        leases.append(child_pidfd)
         if type(child_pid) is not int or child_pid <= 0:
             raise RuntimeClosureError('descriptor child atomic registration')
         child = _DescriptorChildLease(
@@ -2657,19 +2683,19 @@ def _qualify_fixed_descriptor_primitives_with_ops(
     if primary is not None:
         raise primary
     result = DescriptorQualificationResult(
-        'cogs.runtime-descriptor-qualification/v1',
-        admission.revision,
-        admission.source_set_sha256,
-        measured,
-        normalized,
-        low_exact,
-        high_exact,
-        close_exact,
-        flags_exact,
-        inheritance_exact,
-        limit.restored,
-        descriptors_restored,
-        children_reaped,
+        version='cogs.runtime-descriptor-qualification/v1',
+        source_revision=admission.revision,
+        source_set_sha256=admission.source_set_sha256,
+        nofile_measured=measured,
+        nofile_normalized=normalized,
+        fd_198_exact=low_exact,
+        fd_4096_exact=high_exact,
+        close_range_exact=close_exact,
+        cloexec_exact=flags_exact,
+        inheritance_exact=inheritance_exact,
+        limit_restored=limit.restored,
+        descriptors_restored=descriptors_restored,
+        children_reaped=children_reaped,
     )
     owner._complete_fixed_operation()
     return result
