@@ -238,7 +238,7 @@ test("six strict goldens and isolated structural/semantic mutants", () => {
 
 test("private operation receipts solely derive all six reports and exact baselines", () => {
   const values = Object.fromEntries(jobs.map(([job]) => [job, operationResult(job)]));
-  const script = `import ast,hashlib,json,struct,subprocess,sys\nsys.path.insert(0,'scripts/native-qualification');import common
+  const script = `import ast,dataclasses,hashlib,json,struct,subprocess,sys\nsys.path.insert(0,'scripts/native-qualification');import common
 values=json.load(sys.stdin);h=lambda p:hashlib.sha256(open(p,'rb').read()).hexdigest()
 launcher=open(common.LAUNCHER_PATH,'rb').read();tree=subprocess.check_output(['git','ls-tree','HEAD','--',common.LAUNCHER_PATH]).decode().split()
 assert common.SystemCommonOps._blob_matches(launcher,tree[2]) and not common.SystemCommonOps._blob_matches(launcher+b'x',tree[2])
@@ -273,7 +273,7 @@ for job,value in values.items():
  broken=common.NativeSession._begin_with_ops(c,Ops(hostile),Cust())
  try:broken.run_fixed_operation(job);raise AssertionError(('false receipt accepted',job))
  except common.QualificationError:pass
-assert [field.name for field in common.fields(common.ReportCandidate)]==['failure_phase','diagnostics','primary_error']
+assert [field.name for field in dataclasses.fields(common.ReportCandidate)]==['failure_phase','diagnostics','primary_error']
 reg=common.FdRegistry(lambda n:(_ for _ in ()).throw(OSError('uncertain')));lease=reg.adopt(9,'test')
 try:lease.close()
 except OSError:pass
