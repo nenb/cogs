@@ -346,7 +346,7 @@ class CommonProcess:
         self.thread = None
         self.error = None
 
-MODEL_WAIT_SECONDS = 2.0
+MODEL_WAIT_SECONDS = 1.0
 
 class SocketChannel:
     def __init__(self):
