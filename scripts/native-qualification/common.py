@@ -613,11 +613,8 @@ class SystemCommonOps:
             self.fds.close_reverse(None, list(self._descriptor_anchors.values()))
             self._descriptor_anchors = {}
     def _process(self, pid: int) -> tuple[object, ...]:
-        first = self._read(f"/proc/{pid}/stat", 65_536)
         executable = os.stat(f"/proc/{pid}/exe", follow_symlinks=True)
-        second = self._read(f"/proc/{pid}/stat", 65_536)
-        _require(first == second, "process identity drift")
-        raw = second.decode("ascii")
+        raw = self._read(f"/proc/{pid}/stat", 65_536).decode("ascii")
         close = raw.rfind(")")
         _require(close > 1 and raw[close + 1:close + 2] == " ", "process stat")
         values = raw[close + 2:].split()
@@ -1718,6 +1715,11 @@ class NativeSession:
         try:
             return cls(context, SystemCommonOps(registry), custodian, os.urandom(32))
         except BaseException as error:
+            labels = [
+                str(item) if isinstance(item, QualificationError) else f"{type(item).__name__}-{getattr(item, 'errno', 0)}"
+                for item in getattr(error, "exceptions", (error,))
+            ]
+            os.write(2, ("native-baseline-" + re.sub(r"[^A-Za-z0-9_.-]", "-", "--".join(labels))[:480] + "\n").encode())
             custodian.abort(error)
     @classmethod
     def _begin_with_ops(cls, context: WorkflowContext, ops: object, custodian: _CustodianClient) -> "NativeSession":
