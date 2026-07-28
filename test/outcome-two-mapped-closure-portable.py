@@ -90,7 +90,7 @@ def replace_row(raw, replacement):
 class MapOps(closure._Ops):
     """Kernel model keeps fd objects separate from production ownership state."""
     def __init__(self, before, after, objects, fault=None, resolved=RESOLVED):
-        self.snapshots = [before, before, after]
+        self.snapshots = [before, after]
         self.objects = objects
         self.fault = fault
         self.fired = fault is None
@@ -115,8 +115,10 @@ class MapOps(closure._Ops):
 
     def open(self, path, flags, mode=0o600, *, dir_fd=None):
         del flags, mode, dir_fd
-        if path == "/proc/321/maps":
-            raw = self.snapshots[min(self.maps_opened, 2)]
+        if path == "/proc/321/syscall":
+            item = ("syscall", b"0 0x0 0x7fff 0x1 0 0 0 0 0\n")
+        elif path == "/proc/321/maps":
+            raw = self.snapshots[min(self.maps_opened, 1)]
             self.maps_opened += 1
             item = ("maps", raw)
         elif "/map_files/" in path:
@@ -369,7 +371,7 @@ class MappingOwnerOps(MapOps):
             return self.allocate("proc", b"321 (held-python) S " + fields + b"\n")
         if path.endswith("/exe"):
             return self.allocate("proc-exe")
-        if path == "/proc/321/maps" or "/map_files/" in path:
+        if path in ("/proc/321/syscall", "/proc/321/maps") or "/map_files/" in path:
             return super().open(path, 0)
         full = self.full_path(path, dir_fd)
         if full not in self.dirs and full not in self.source:
