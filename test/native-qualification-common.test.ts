@@ -1,230 +1,431 @@
+/* biome-ignore-all lint/suspicious/noExplicitAny: hostile mutations intentionally use dynamic JSON */
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { test } from "node:test";
+import type { Ajv as AjvCore, Options } from "ajv";
 
+const require = createRequire(import.meta.url);
+const Ajv2020 = require("ajv/dist/2020.js") as new (options?: Options) => AjvCore;
+const parseYaml = (require("yaml") as { parse(source: string): unknown }).parse;
+const workflowPath = ".github/workflows/ci.yml";
 const commonPath = "scripts/native-qualification/common.py";
-const clients = [
-  "job-a-runtime-mappings.py",
-  "job-b-compression.py",
-  "job-c-descriptors.py",
-  "job-d-process-lifecycle.py",
-  "job-e-sandbox.py",
-  "thin-integration.py",
-].map((name) => `scripts/native-qualification/${name}`);
+const schemaPath = "schemas/native-qualification-report-v1alpha1.json";
+const predecessor = "bec0a19b0b984f88ab9c2effc5059f3737915caa";
+const isolatedPython = process.platform === "darwin" ? "/opt/homebrew/bin/python3" : "/usr/bin/python3";
+const jobs = [
+  ["A", "native-qualification-a", "job-a-runtime-mappings.py"],
+  ["B", "native-qualification-b", "job-b-compression.py"],
+  ["C", "native-qualification-c", "job-c-descriptors.py"],
+  ["D", "native-qualification-d", "job-d-process-lifecycle.py"],
+  ["E", "native-qualification-e", "job-e-sandbox.py"],
+  ["integration", "native-closure-integration", "thin-integration.py"],
+] as const;
+const checkText = {
+  A: "elf_real python_closure_exact map_files_trusted mapped_closure_equal mapping_stable helper_reaped cleanup_restored",
+  B: "gzip_source_exact gzip_sealed_exec zstd_source_exact zstd_sealed_exec decompression_deterministic network_denied children_exact cleanup_restored",
+  C: "nofile_measured nofile_normalized fd_198_exact fd_4096_exact close_range_exact cloexec_exact inheritance_exact limit_restored cleanup_restored",
+  D: "pdeathsig_armed parent_handshake_exact before_release_death after_release_death starttime_revalidated session_owned process_group_owned term_kill_bounded all_reaped cleanup_restored",
+  E: "mount_view_exact checkout_read_only user_namespace_exact pid_namespace_exact mount_namespace_exact network_namespace_exact pid_one capabilities_zero noroot_locked nnp_set seccomp_socket_denied seccomp_io_uring_denied no_acquisition_route checkout_unchanged all_reaped mounts_restored cleanup_restored",
+  integration: "closure_prepared handoff_exact gzip_deterministic zstd_deterministic marker_exact no_linked_evidence cleanup_restored",
+} as const;
+const markerHash = "6381d4535b13c7f030ca94bce250c1ec817c4aea8fa45c91e25c88995216f6b8";
+const cleanupKeys = "descriptors children paths mounts namespaces limits checkout".split(" ");
+const workflow = readFileSync(workflowPath, "utf8");
+const common = readFileSync(commonPath, "utf8");
+const ajv = new Ajv2020({ allErrors: true, strict: true, strictRequired: false });
+const validate = ajv.compile(JSON.parse(readFileSync(schemaPath, "utf8")));
 
-test("common alone derives exact B/integration reports from immutable receipts", () => {
-  const harness = `
-import copy,hashlib,json,sys
-sys.path.insert(0,'scripts/native-qualification');import common
-
-def digest_file(path):
- with open(path,'rb') as source: return hashlib.sha256(source.read()).hexdigest()
-
-def context(job):
- return common.WorkflowContext(
-  job=job,
-  repository='owner/repo',
-  head_repository='owner/repo',
-  head_sha='a'*40,
-  envelope_sha='b'*40,
-  workflow_sha='a'*40,
-  merge_sha='b'*40,
-  base_sha='c'*40,
-  job_id=common.JOB_IDS[job],
-  run_id=1,
-  run_attempt=1,
-  pull_request_number=1,
-  runner_version='20260720.1',
-  kernel_release='6.8.0-100-generic',
-  architecture='x86_64',
-  workflow_blob_sha256=digest_file(common.WORKFLOW),
-  driver_blob_sha256=digest_file(common.COMMON.parent/common.DRIVERS[job]),
-  common_blob_sha256=digest_file(common.COMMON),
- )
-
-baseline={name:('baseline',name) for name in common.CLEANUP_KEYS}
-baseline['paths']=(None,None)
-class Ops:
- def __init__(self,result):
-  self.fds=common.FdRegistry()
-  self.source_set_sha256=result['source_set_sha256']
-  self.result=result
-  self.operation_calls=0
-  self.observation_calls=0
- def observe(self,workflow_context):
-  self.observation_calls+=1
-  return dict(baseline)
- def run_fixed_operation(self,workflow_context,operation):
-  self.operation_calls+=1
-  assert operation==workflow_context.job
-  return self.result
-class Custodian:
- def publish(self,raw): self.raw=raw
-
-def publish(job,result,mutate):
- ops=Ops(result)
- custodian=Custodian()
- session=common.NativeSession._begin_with_ops(context(job),ops,custodian)
- session.run_fixed_operation(job)
- mutate(result)
- evidence=session.settle_native_phase()
- assert evidence.restored is True
- try:
-  evidence.values['checkout']=False
-  raise AssertionError('mutable cleanup evidence')
- except TypeError:
-  pass
- try:
-  common.ReportCandidate(production_checks={},metadata=[])
-  raise AssertionError('caller report authority accepted')
- except TypeError:
-  pass
- session.publish(common.ReportCandidate())
- assert ops.operation_calls==1
- assert ops.observation_calls==2
- return json.loads(custodian.raw)
-
-def objects(executable):
- return [
-  {'role':'executable','sha256':executable,'size_bytes':11,'soname':None,'needed':['ld.so']},
-  {'role':'loader','sha256':'2'*64,'size_bytes':12,'soname':'ld.so','needed':[]},
- ]
-def normalized(rows):
- return [
-  {'needed':row['needed'],'role':row['role'],'sha256':row['sha256'],
-   'size':row['size_bytes'],'soname':row['soname']}
-  for row in rows
- ]
-def digest(value): return hashlib.sha256(common._canonical(value)).hexdigest()
-def tool(name,executable):
- rows=objects(executable)
- view=normalized(rows)
- mapping=digest([[row['role'],row['sha256']] for row in view])
- return {
-  'id':name,
-  'objects':rows,
-  'closure_sha256':digest(view),
-  'mapping_sha256':mapping,
-  'source_sha256':executable,
-  'source_size_bytes':11,
-  'sealed_sha256':executable,
-  'sealed_size_bytes':11,
-  'seal_mask':63,
-  'execution_mapping_sha256':mapping,
-  'output_sha256':common.MARKER_SHA256,
- }
-gzip=tool('gzip','3'*64)
-zstd=tool('zstd','4'*64)
-parser_objects=objects('5'*64)
-parser_view=normalized(parser_objects)
-parser={'closure_sha256':digest(parser_view),'objects':parser_objects}
-def closure_tool(row):
- return {
-  'closure_sha256':row['closure_sha256'],
-  'objects':normalized(row['objects']),
-  'seal_profile':'linux-memfd-exec-seals-v1',
-  'sealed_executable':True,
-  'tool':row['id'],
- }
-closure_view=[
- {'closure_sha256':parser['closure_sha256'],'objects':parser_view,
-  'seal_profile':None,'sealed_executable':False,'tool':'python3-parser'},
- closure_tool(zstd),
- closure_tool(gzip),
-]
-top_closure=digest(closure_view)
-b_facts='''
-mapped_generations_exact user_namespace_exact pid_namespace_exact mount_namespace_exact
-network_namespace_exact namespace_ownership_exact namespace_handles_exact pid_one
-supplementary_groups_empty effective_capabilities_zero permitted_capabilities_zero
-inheritable_capabilities_zero bounding_capabilities_zero ambient_capabilities_zero
-capabilities_zero noroot_locked no_new_privs seccomp_installed seccomp_mode_exact
-seccomp_program_exact seccomp_denials_exact exec_descriptor_consumed no_acquisition_route
-root_readonly_noexec root_has_no_proc host_paths_absent checkout_absent limits_exact
-descriptors_restored children_reaped descendants_reaped mounts_restored paths_restored
-namespaces_released namespace_handles_released
-'''.split()
-runtime={name:True for name in b_facts}
-runtime.update({
- 'version':'cogs.runtime-qualification/v1',
- 'marker':'cogs-runtime-qualification-v1',
- 'source_revision':'a'*40,
- 'source_set_sha256':'6'*64,
- 'closure_sha256':top_closure,
- 'gzip_output_sha256':common.MARKER_SHA256,
- 'zstd_output_sha256':common.MARKER_SHA256,
-})
-b_result={
- 'version':'cogs.runtime-compression-qualification/v1',
- 'source_revision':'a'*40,
- 'source_set_sha256':'6'*64,
- 'closure_sha256':top_closure,
- 'parser':parser,
- 'tools':[gzip,zstd],
- 'runtime':runtime,
+function canonical(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+  if (value !== null && typeof value === "object") {
+    return `{${Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, item]) => `${JSON.stringify(key)}:${canonical(item)}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
 }
-b_original=copy.deepcopy(b_result)
-def mutate_b(value):
- value['tools'][0]['source_sha256']='f'*64
- value['runtime']['pid_one']=False
-b_report=publish('B',b_result,mutate_b)
-expected_b=[
- b_original['tools'][0],
- b_original['tools'][1],
- {'kind':'summary','id':'trusted-closure','closure_sha256':top_closure,'parser':b_original['parser']},
-]
-assert b_report['metadata']==expected_b
-assert [row['id'] for row in b_report['checks']]==list(common.CHECK_IDS['B'])
-assert all(row['outcome']=='pass' for row in b_report['checks'])
+const digestValue = (value: unknown) => createHash("sha256").update(canonical(value)).digest("hex");
+const digestFile = (path: string) => createHash("sha256").update(readFileSync(path)).digest("hex");
 
-ordinary_bools='''
-mapped_generations_exact user_namespace_exact pid_namespace_exact mount_namespace_exact
-network_namespace_exact namespace_ownership_exact namespace_handles_exact pid_one
-supplementary_groups_empty effective_capabilities_zero permitted_capabilities_zero
-inheritable_capabilities_zero bounding_capabilities_zero ambient_capabilities_zero
-capabilities_zero noroot_locked no_new_privs seccomp_installed seccomp_mode_exact
-seccomp_program_exact seccomp_denials_exact exec_descriptor_consumed no_acquisition_route
-root_readonly_noexec root_has_no_proc host_paths_absent checkout_absent limits_exact
-descriptors_restored children_reaped descendants_reaped mounts_restored paths_restored
-namespaces_released namespace_handles_released
-'''.split()
-integration_result={name:True for name in ordinary_bools}
-integration_result.update({
- 'version':'cogs.runtime-qualification/v1',
- 'marker':'cogs-runtime-qualification-v1',
- 'source_revision':'a'*40,
- 'source_set_sha256':'7'*64,
- 'closure_sha256':'8'*64,
- 'gzip_output_sha256':common.MARKER_SHA256,
- 'zstd_output_sha256':common.MARKER_SHA256,
-})
-def mutate_integration(value):
- value['closure_sha256']='f'*64
- value['gzip_output_sha256']='e'*64
- value['pid_one']=False
-integration_report=publish('integration',integration_result,mutate_integration)
-assert integration_report['metadata']==[
- {'id':'closure','role':'digest','sha256':'8'*64,'size_bytes':0},
- {'id':'gzip_output','role':'digest','sha256':common.MARKER_SHA256,'size_bytes':0},
- {'id':'source_set','role':'digest','sha256':'7'*64,'size_bytes':0},
- {'id':'zstd_output','role':'digest','sha256':common.MARKER_SHA256,'size_bytes':0},
-]
-assert [row['id'] for row in integration_report['checks']]==list(common.CHECK_IDS['integration'])
-assert all(row['outcome']=='pass' for row in integration_report['checks'])
-`;
-  const run = spawnSync("/usr/bin/python3", ["-I", "-B", "-c", harness], {
-    encoding: "utf8",
-    env: { PYTHONDONTWRITEBYTECODE: "1" },
+function objects(seed = 1) {
+  return [
+    { role: "executable", sha256: `${seed}`.repeat(64), size_bytes: 11, soname: null, needed: ["ld.so"] },
+    { role: "loader", sha256: `${seed + 1}`.repeat(64), size_bytes: 12, soname: "ld.so", needed: [] },
+  ];
+}
+function normalized(rows: ReturnType<typeof objects>) {
+  return rows.map(({ size_bytes, ...row }) => ({ needed: row.needed, role: row.role, sha256: row.sha256,
+    size: size_bytes, soname: row.soname }));
+}
+function metadata(job: keyof typeof checkText): unknown[] {
+  const rows = objects();
+  const mapped = rows.map(({ role, sha256 }) => ({ role, sha256 }));
+  if (job === "A") return [
+    ...rows.map((row, index) => ({ kind: "object", id: `python-object-${index}`, ...row })),
+    { kind: "summary", closure_sha256: digestValue(normalized(rows)),
+      mapping_sha256: digestValue(mapped.map(({ role, sha256 }) => [role, sha256])), mapped_sequence: mapped },
+  ];
+  if (job === "B") {
+    const tools = [objects(3), objects(5)].map((toolRows, index) => {
+      const view = normalized(toolRows);
+      const mapping = digestValue(view.map(({ role, sha256 }) => [role, sha256]));
+      const executable = toolRows[0]; assert.ok(executable);
+      return { id: index === 0 ? "gzip" : "zstd", objects: toolRows, closure_sha256: digestValue(view),
+        mapping_sha256: mapping, source_sha256: executable.sha256, source_size_bytes: 11,
+        sealed_sha256: executable.sha256, sealed_size_bytes: 11, seal_mask: 63,
+        execution_mapping_sha256: mapping, output_sha256: markerHash };
+    });
+    const parserObjects = objects(1); const parserView = normalized(parserObjects);
+    const closureView = (row: typeof tools[number]) => ({ closure_sha256: row.closure_sha256,
+      objects: normalized(row.objects), seal_profile: "linux-memfd-exec-seals-v1",
+      sealed_executable: true, tool: row.id });
+    const gzip = tools[0]; const zstd = tools[1]; assert.ok(gzip); assert.ok(zstd);
+    const top = digestValue([{ closure_sha256: digestValue(parserView), objects: parserView,
+      seal_profile: null, sealed_executable: false, tool: "python3-parser" },
+      closureView(zstd), closureView(gzip)]);
+    return [...tools, { kind: "summary", id: "trusted-closure", closure_sha256: top,
+      parser: { closure_sha256: digestValue(parserView), objects: parserObjects } }];
+  }
+  if (job === "E") return [{ id: "sandbox-policy", role: "policy",
+    sha256: "aacfce0e5eeb2fb79a1708b32f5383f89b381898ad7e6bd911905d87483b6bb2", size_bytes: 0 }];
+  if (job === "integration") return [
+    { id: "closure", role: "digest", sha256: "8".repeat(64), size_bytes: 0 },
+    { id: "gzip_output", role: "digest", sha256: markerHash, size_bytes: 0 },
+    { id: "source_set", role: "digest", sha256: "9".repeat(64), size_bytes: 0 },
+    { id: "zstd_output", role: "digest", sha256: markerHash, size_bytes: 0 },
+  ];
+  return [];
+}
+const runtimeObservations = ("mapped_generations_exact user_namespace_exact pid_namespace_exact mount_namespace_exact " +
+  "network_namespace_exact namespace_ownership_exact namespace_handles_exact pid_one supplementary_groups_empty " +
+  "effective_capabilities_zero permitted_capabilities_zero inheritable_capabilities_zero bounding_capabilities_zero " +
+  "ambient_capabilities_zero capabilities_zero noroot_locked no_new_privs seccomp_installed seccomp_mode_exact " +
+  "seccomp_program_exact seccomp_denials_exact exec_descriptor_consumed no_acquisition_route root_readonly_noexec " +
+  "root_has_no_proc host_paths_absent checkout_absent limits_exact descriptors_restored children_reaped " +
+  "descendants_reaped mounts_restored paths_restored namespaces_released namespace_handles_released").split(" ");
+const descriptorObservations = "nofile_measured nofile_normalized fd_198_exact fd_4096_exact close_range_exact cloexec_exact inheritance_exact limit_restored descriptors_restored children_reaped".split(" ");
+const lifecycleObservations = "pdeathsig_armed parent_handshake_exact before_release_death after_release_death starttime_revalidated session_owned process_group_owned credentialed_pidfd_transfer stable_descendant_census adoption_exact term_kill_bounded siginfo_exact all_reaped subreaper_restored descriptors_restored".split(" ");
+const sandboxObservations = "user_namespace_exact pid_namespace_exact mount_namespace_exact network_namespace_exact namespace_ownership_exact pid_one capabilities_zero noroot_locked no_new_privs seccomp_installed seccomp_mode_exact seccomp_program_exact seccomp_denials_exact no_acquisition_route root_readonly_noexec root_has_no_proc host_paths_absent checkout_absent descriptors_restored children_reaped descendants_reaped mounts_restored paths_restored namespaces_released namespace_handles_released".split(" ");
+function operationResult(job: keyof typeof checkText): Record<string, unknown> {
+  const identity = { source_revision: "a".repeat(40), source_set_sha256: "9".repeat(64) };
+  if (job === "A") {
+    const rows = metadata("A") as any[]; const summary = rows.pop();
+    return { version: "cogs.runtime-mapping-qualification/v1", ...identity,
+      closure_sha256: summary.closure_sha256, mapping_sha256: summary.mapping_sha256,
+      objects: rows.map(({ kind, id, ...row }) => row), mapped: summary.mapped_sequence,
+      mapped_generations_exact: true, mapping_stable: true, helper_reaped: true,
+      descriptors_restored: true, children_reaped: true };
+  }
+  if (job === "B") {
+    const rows = metadata("B") as any[]; const summary = rows[2];
+    const runtime = { version: "cogs.runtime-qualification/v1", marker: "cogs-runtime-qualification-v1", ...identity,
+      closure_sha256: summary.closure_sha256, gzip_output_sha256: markerHash, zstd_output_sha256: markerHash,
+      ...Object.fromEntries(runtimeObservations.map((name) => [name, true])) };
+    return { version: "cogs.runtime-compression-qualification/v1", ...identity,
+      closure_sha256: summary.closure_sha256, parser: summary.parser, tools: rows.slice(0, 2), runtime };
+  }
+  if (job === "C") return { version: "cogs.runtime-descriptor-qualification/v1", ...identity,
+    ...Object.fromEntries(descriptorObservations.map((name) => [name, true])) };
+  if (job === "D") return { version: "cogs.runtime-lifecycle-qualification/v1", ...identity,
+    ...Object.fromEntries(lifecycleObservations.map((name) => [name, true])) };
+  if (job === "E") return { version: "cogs.sandbox-qualification/v1", ...identity,
+    seccomp_program_sha256: "aacfce0e5eeb2fb79a1708b32f5383f89b381898ad7e6bd911905d87483b6bb2",
+    ...Object.fromEntries(sandboxObservations.map((name) => [name, true])) };
+  return { version: "cogs.runtime-qualification/v1", marker: "cogs-runtime-qualification-v1", ...identity,
+    closure_sha256: "8".repeat(64), gzip_output_sha256: markerHash, zstd_output_sha256: markerHash,
+    ...Object.fromEntries(runtimeObservations.map((name) => [name, true])) };
+}
+function report(job: keyof typeof checkText, pass = true): any {
+  const found = jobs.find(([name]) => name === job);
+  assert.ok(found);
+  const checks = checkText[job].split(" ").map((id) => ({ id, outcome: "pass" }));
+  const cleanup = Object.fromEntries(cleanupKeys.map((key) => [key, true]));
+  if (!pass) { const first = checks[0]; assert.ok(first); first.outcome = "fail"; cleanup.paths = false; }
+  return { version: "cogs.native-qualification/v1alpha1", job,
+    source: { head_sha: "a".repeat(40), checkout_sha: "a".repeat(40),
+      driver_blob_sha256: digestFile(`scripts/native-qualification/${found[2]}`), common_blob_sha256: digestFile(commonPath) },
+    envelope: { repository: "owner/repo", head_repository: "owner/repo", event_name: "pull_request",
+      github_sha: "b".repeat(40), event_merge_sha: "b".repeat(40), base_sha: "c".repeat(40),
+      run_id: 1, run_attempt: 1, pull_request_number: 1 },
+    workflow: { path: workflowPath, blob_sha256: digestFile(workflowPath), workflow_sha: "a".repeat(40), job_id: found[1] },
+    runner: { image: "ubuntu-24.04", image_version: "20260720.1",
+      kernel_release: "6.8.0-100-generic", architecture: "x86_64" },
+    authority: "exact-run-native-qualification", result: pass ? "pass" : "fail", checks,
+    metadata: pass ? metadata(job) : [],
+    operation: { result_sha256: "7".repeat(64), source_set_sha256: job === "integration" ? "9".repeat(64) : "8".repeat(64) },
+    failure_phase: pass ? null : "portable-test",
+    diagnostics_sha256: pass ? null : "d".repeat(64), cleanup };
+}
+function pythonValidate(values: Array<{ value: unknown; accept: boolean }>) {
+  const script = `import json,sys\nsys.path.insert(0,'scripts/native-qualification')\nimport common\nfor row in json.load(sys.stdin):\n ok=True\n try: common._validate(row['value'])\n except BaseException: ok=False\n assert ok is row['accept'], (row['value'].get('job'),ok,row['accept'])`;
+  const run = spawnSync("python3", ["-I", "-B", "-c", script], { input: JSON.stringify(values), encoding: "utf8" });
+  assert.equal(run.status, 0, run.stderr);
+}
+type WorkflowStep = { id?: string; uses?: string; with?: Record<string, unknown>; if?: string; env?: Record<string, string>; run?: string };
+type WorkflowJob = {
+  needs?: string | string[];
+  if?: string;
+  outputs?: Record<string, string>;
+  steps: WorkflowStep[];
+};
+const parsedWorkflow = parseYaml(workflow) as { jobs: Record<string, WorkflowJob> };
+const workflowJobs = parsedWorkflow.jobs;
+const parsedJob = (id: string): WorkflowJob => {
+  const value = workflowJobs[id];
+  assert.ok(value, `parsed workflow job ${id}`);
+  return value;
+};
+const needs = (job: WorkflowJob): string[] => job.needs === undefined ? [] :
+  typeof job.needs === "string" ? [job.needs] : job.needs;
+const stepById = (job: WorkflowJob, id: string): WorkflowStep => {
+  const value = job.steps.find((step) => step.id === id);
+  assert.ok(value, `parsed workflow step ${id}`);
+  return value;
+};
+const checkout = (job: WorkflowJob): WorkflowStep => {
+  const value = job.steps.find((step) => step.uses?.startsWith("actions/checkout@"));
+  assert.ok(value, "parsed checkout step");
+  return value;
+};
+
+test("six strict goldens and isolated structural/semantic mutants", () => {
+  const semanticRows: Array<{ value: unknown; accept: boolean }> = [];
+  for (const [job] of jobs) {
+    for (const pass of [true, false]) {
+      const value = report(job, pass);
+      assert.equal(validate(value), true, `${job}/${pass}: ${ajv.errorsText(validate.errors)}`);
+      semanticRows.push({ value, accept: true });
+    }
+    for (const mutate of [
+      (value: any) => value.checks.reverse(),
+      (value: any) => { value.workflow.job_id = "wrong-job"; },
+      (value: any) => { value.cleanup.paths = false; },
+      (value: any) => { value.failure_phase = "contradiction"; },
+      (value: any) => { value.unexpected = true; },
+    ]) {
+      const hostile = structuredClone(report(job)); mutate(hostile);
+      assert.equal(validate(hostile), false, `${job} structural mutant`);
+    }
+  }
+  const aOrder = report("A"); [aOrder.metadata[0], aOrder.metadata[1]] = [aOrder.metadata[1], aOrder.metadata[0]];
+  const aProvider = report("A"); aProvider.metadata[0].needed = ["missing.so"];
+  const aSummary = report("A"); aSummary.metadata.at(-1).mapping_sha256 = "f".repeat(64);
+  const aRoleAlias = report("A"); aRoleAlias.metadata[1].sha256 = aRoleAlias.metadata[0].sha256;
+  aRoleAlias.metadata.at(-1).mapped_sequence[1].sha256 = aRoleAlias.metadata[0].sha256;
+  aRoleAlias.metadata.at(-1).closure_sha256 = digestValue(normalized(aRoleAlias.metadata.slice(0, -1)));
+  aRoleAlias.metadata.at(-1).mapping_sha256 = digestValue(aRoleAlias.metadata.at(-1).mapped_sequence
+    .map(({ role, sha256 }: any) => [role, sha256]));
+  const bWrong = report("B"); bWrong.metadata.slice(0, 2).forEach((row: any) => { row.output_sha256 = "e".repeat(64); });
+  const bMapping = report("B"); bMapping.metadata[1].execution_mapping_sha256 = bMapping.metadata[0].execution_mapping_sha256;
+  const bParser = report("B"); bParser.metadata[2].parser.closure_sha256 = "e".repeat(64);
+  const bTop = report("B"); bTop.metadata[2].closure_sha256 = "e".repeat(64);
+  const ePolicy = report("E"); ePolicy.metadata[0].sha256 = "e".repeat(64);
+  const iOutput = report("integration"); iOutput.metadata[1].sha256 = "e".repeat(64);
+  for (const value of [aOrder, aProvider, aSummary, aRoleAlias, bWrong, bMapping, bParser, bTop]) {
+    assert.equal(validate(value), true, "relation remains structural");
+    semanticRows.push({ value, accept: false });
+  }
+  assert.equal(validate(ePolicy), false, "E policy is structurally fixed");
+  assert.equal(validate(iOutput), false, "integration output is structurally fixed");
+  const mask = report("B"); mask.metadata[0].seal_mask = 15;
+  assert.equal(validate(mask), false, "historical four-bit mask");
+  const oversize = report("A"); oversize.metadata[0].size_bytes = 134_217_729;
+  assert.equal(validate(oversize), false, "A exact object bound");
+  pythonValidate(semanticRows);
+});
+
+test("private operation receipts solely derive all six reports and exact baselines", () => {
+  const values = Object.fromEntries(jobs.map(([job]) => [job, operationResult(job)]));
+  const script = `import ast,hashlib,json,struct,subprocess,sys\nsys.path.insert(0,'scripts/native-qualification');import common
+values=json.load(sys.stdin);h=lambda p:hashlib.sha256(open(p,'rb').read()).hexdigest()
+launcher=open(common.LAUNCHER_PATH,'rb').read();tree=subprocess.check_output(['git','ls-tree','HEAD','--',common.LAUNCHER_PATH]).decode().split()
+assert common.SystemCommonOps._blob_matches(launcher,tree[2]) and not common.SystemCommonOps._blob_matches(launcher+b'x',tree[2])
+base={k:('value',k) for k in common.CLEANUP_KEYS};base['paths']=(None,None,None)
+class Ops:
+ def __init__(self,value):self.fds=common.FdRegistry();self.source_set_sha256='9'*64;self.value=value;self.calls=0
+ def observe(self,c):self.calls+=1;return dict(base)
+ def run_fixed_operation(self,c,o):return self.value
+class Cust:
+ def publish(self,raw):self.raw=raw
+ def abort(self,error):raise error
+for job,value in values.items():
+ c=common.WorkflowContext(job,'owner/repo','owner/repo','a'*40,'b'*40,'a'*40,'b'*40,'c'*40,common.JOB_IDS[job],1,1,1,'image','6.8.0-100-generic','x86_64',h(common.WORKFLOW),h(common.COMMON.parent/common.DRIVERS[job]),h(common.COMMON))
+ cust=Cust();s=common.NativeSession._begin_with_ops(c,Ops(value),cust);returned=s.run_fixed_operation(job)
+ for name,item in returned.items():
+  if type(item) is bool:returned[name]=False;break
+ returned['caller_metadata']=['forged']
+ evidence=s.settle_native_phase();assert evidence.restored;s.publish(common.ReportCandidate())
+ report=json.loads(cust.raw);assert report['result']=='pass' and all(row['outcome']=='pass' for row in report['checks'])
+ assert report['operation']['source_set_sha256']=='9'*64 and 'caller_metadata' not in json.dumps(report)
+ hostile=json.loads(json.dumps(value))
+ target=hostile['runtime'] if job=='B' else hostile
+ candidates=[name for name,item in target.items() if type(item) is bool]
+ assert candidates;target[candidates[0]]=False
+ broken=common.NativeSession._begin_with_ops(c,Ops(hostile),Cust())
+ try:broken.run_fixed_operation(job);raise AssertionError(('false receipt accepted',job))
+ except common.QualificationError:pass
+assert [field.name for field in common.fields(common.ReportCandidate)]==['failure_phase','diagnostics','primary_error']
+reg=common.FdRegistry(lambda n:(_ for _ in ()).throw(OSError('uncertain')));lease=reg.adopt(9,'test')
+try:lease.close()
+except OSError:pass
+try:reg.adopt(9,'reuse');raise AssertionError('reuse')
+except common.QualificationError:pass
+def dent(name):
+ raw=name.encode()+b'\\0';size=((19+len(raw)+7)//8)*8;return struct.pack('QqHB',1,0,size,0)+raw+b'\\0'*(size-19-len(raw))
+assert common._parse_dirents(dent('.')+dent('7')+dent('19'),True)==['7','19']
+source=ast.parse(open(common.COMMON).read())
+descriptor=next(node for node in ast.walk(source) if isinstance(node,ast.FunctionDef) and node.name=='_descriptor_snapshot_once')
+text=ast.unparse(descriptor);assert '_generation(after)' in text and 'descriptor_flags' in text and 'status_flags' in text
+children=next(node for node in ast.walk(source) if isinstance(node,ast.FunctionDef) and node.name=='_children')
+assert '_stable' in ast.unparse(children)`;
+  const run = spawnSync("python3", ["-I", "-B", "-c", script], {
+    input: JSON.stringify(values), encoding: "utf8",
   });
   assert.equal(run.status, 0, run.stderr);
-
-  for (const path of clients) {
-    const source = readFileSync(path, "utf8");
-    assert.equal((source.match(/run_fixed_operation\(/gu) ?? []).length, 1, path);
-    assert.doesNotMatch(source, /production_checks|metadata|source_set_sha256|context\.head_sha/u);
-    assert.doesNotMatch(source, /;\s*\S/u);
-    assert.ok(source.split("\n").every((line) => line.length <= 120), path);
+  assert.doesNotMatch(common, /os\.listdir|os\.scandir|fdopendir|production_checks/u);
+  for (const token of ["getdents64", "CLOSE_UNCERTAIN", "report-custodian", "uploaded report bytes",
+    "cleanup capability", "report-worker-pidfd", "ADMITTED", "operation receipt required"]) {
+    assert.ok(common.includes(token), token);
   }
-  assert.ok(readFileSync(commonPath, "utf8").includes("OperationReceipt"));
+});
+
+test("durable digest/capability transaction recovers every publication and cleanup cut", () => {
+  const script = `import hashlib,sys\nsys.path.insert(0,'scripts/native-qualification');import common
+from unittest.mock import patch
+G=lambda inode:{'mode':0o100600,'uid':1,'gid':1,'device':1,'inode':inode,'links':1,'size':9,'mtime_ns':1,'ctime_ns':1,'rdevice':0}
+R,A,O,F=G(10),G(11),G(12),G(99);digest=hashlib.sha256(b'report-v1').hexdigest()
+authority={'report_sha256':digest,'report_size':9};receipt={'report_generation':R}
+class Lease:
+ def __init__(self):self.number=4;self.state=common.FdState.OWNED
+ def close(self):self.state=common.FdState.CLOSED
+class Registry:pass
+def run(initial,has_receipt,accept=True):
+ state=dict(initial);removed=[]
+ def names(fd,numeric):return tuple(state)
+ def identity(fd,name):return state.get(name)
+ def rename(fd,left,right,flags):
+  left=left.decode();right=right.decode()
+  if left not in state or right in state:raise common.QualificationError('rename precondition')
+  state[right]=state.pop(left)
+ def unlink(name,dir_fd=None):del state[name]
+ def file_digest(directory,name,limit):
+  generation=state[name];raw=b'foreign!' if generation==F else b'report-v1'
+  return hashlib.sha256(raw).hexdigest(),len(raw),generation
+ def remove(job,parent,directory):assert state=={};removed.append(True)
+ patches=(patch.object(common,'_enumerate_directory',names),patch.object(common,'_identity_at',identity),
+  patch.object(common,'_rename',rename),patch.object(common.os,'unlink',unlink),patch.object(common.os,'fsync',lambda fd:None),
+  patch.object(common,'_file_digest_at',file_digest),patch.object(common,'_remove_report_directory',remove))
+ for item in patches:item.start()
+ try:
+  try:
+   common._cleanup_owned('C',Registry(),Lease(),Lease(),authority,A,receipt if has_receipt else None,O if has_receipt else None);ok=True
+  except common.QualificationError:ok=False
+ finally:
+  for item in reversed(patches):item.stop()
+ assert ok is accept,(initial,state)
+ if accept:assert removed==[True] and state=={}
+ return state
+for state,owned in [({'.cleanup.capability':A},False),({'.cleanup.capability':A,'.report.stage':R},False),
+ ({'.cleanup.capability':A,'report.json':R},False),({'.cleanup.capability':A,'.owner.json':O,'report.json':R},True),
+ ({'.cleanup.capability':A,'.owner.json':O,'.retired-report':R},True),
+ ({'.cleanup.capability':A,'.retired-owner':O},True),({'.retired-capability':A},False)]:run(state,owned)
+foreign={'.cleanup.capability':A,'.owner.json':O,'report.json':F};assert run(foreign,True,False)==foreign
+extra={'.cleanup.capability':A,'.owner.json':O,'report.json':R,'foreign':F};assert run(extra,True,False)==extra`;
+  const run = spawnSync("python3", ["-I", "-B", "-c", script], { encoding: "utf8" });
+  assert.equal(run.status, 0, run.stderr);
+  const receiptSource = common.slice(common.indexOf("def _receipt("), common.indexOf("def _open_report_directory("));
+  assert.doesNotMatch(receiptSource, /"capability"\s*:/u, "raw capability must not enter publication receipt");
+  assert.match(receiptSource, /hmac\.new\(capability/u);
+});
+
+test("parsed workflow graph causally gates exact-head real CLI dispatch and final outcomes", () => {
+  const eligibilityJob = parsedJob("native-qualification-eligibility");
+  assert.match(eligibilityJob.if ?? "", /run_attempt == 1.*event_name == 'pull_request'.*head\.repo\.full_name == github\.repository/u);
+  assert.equal(checkout(eligibilityJob).with?.ref, "${{ github.event.pull_request.head.sha }}");
+  assert.ok(eligibilityJob.steps.some((step) => step.run?.includes("common.py --eligibility") && step.run.includes("/usr/bin/env -i")));
+  const nativeIds = jobs.map(([, id]) => id);
+  for (const [job, id, driver] of jobs) {
+    const parsed = parsedJob(id);
+    const expectedNeeds = job === "integration" ? ["native-qualification-eligibility", ...nativeIds.slice(0, 5)] :
+      ["quality", "native-qualification-eligibility"];
+    assert.deepEqual(needs(parsed), expectedNeeds, `${id} causal needs`);
+    assert.equal(checkout(parsed).with?.ref, "${{ github.event.pull_request.head.sha }}");
+    const invoke = parsed.steps.find((step) => step.env?.NQ_DRIVER !== undefined); assert.ok(invoke);
+    assert.equal(invoke.env?.NQ_DRIVER, `scripts/native-qualification/${driver}`);
+    assert.match(invoke.run ?? "", /["']\$NQ_DRIVER["'] --workflow-bound/u);
+    const upload = stepById(parsed, "upload"); const cleanup = stepById(parsed, "cleanup");
+    assert.equal(cleanup.if, "${{ always() }}");
+    assert.ok(parsed.steps.indexOf(upload) < parsed.steps.indexOf(cleanup), `${id} upload causality`);
+    assert.equal(parsed.outputs?.upload, "${{ steps.upload.outcome }}");
+    assert.equal(parsed.outputs?.cleanup, "${{ steps.cleanup.outcome }}");
+    assert.equal(upload.with?.path, `/tmp/cogs-native-qualification-${job}/report.json`);
+  }
+  const finalJob = parsedJob("native-qualification-required");
+  assert.equal(finalJob.if, "${{ always() }}");
+  const finalNeeds = ["quality", "native-qualification-eligibility", ...nativeIds];
+  assert.deepEqual(needs(finalJob), finalNeeds);
+  assert.equal(checkout(finalJob).with?.ref, "${{ github.event.pull_request.head.sha }}");
+  const finalStep = finalJob.steps.find((step) => step.run?.includes("common.py --require-final-results")); assert.ok(finalStep);
+  const finalKeys = Object.keys(finalStep.env ?? {});
+  assert.deepEqual(finalKeys.sort(), [...new Set(finalKeys)].sort(), "parsed final inventory unique");
+  for (const id of finalNeeds) assert.ok(Object.values(finalStep.env ?? {}).some((value) => value.includes(`needs.${id}.result`)), id);
+  for (const id of nativeIds) for (const output of ["upload", "cleanup"]) {
+    assert.ok(Object.values(finalStep.env ?? {}).includes(`\${{ needs.${id}.outputs.${output} }}`), `${id}/${output}`);
+  }
+  const statuses = ["failure", "cancelled", "skipped"];
+  const selected = (id: string, outcomes: Record<string, string>): boolean =>
+    needs(parsedJob(id)).every((dependency) => outcomes[dependency] === "success");
+  for (const dependency of finalNeeds) for (const outcome of statuses) {
+    const outcomes = Object.fromEntries(finalNeeds.map((id) => [id, "success"])); outcomes[dependency] = outcome;
+    for (const id of nativeIds) if (needs(parsedJob(id)).includes(dependency)) assert.equal(selected(id, outcomes), false);
+    assert.equal(finalJob.if, "${{ always() }}", `${dependency}/${outcome} final remains causal`);
+  }
+  const goodEligibility = { LC_ALL: "C", PYTHONCOERCECLOCALE: "0", EVENT_NAME: "pull_request", RUN_ATTEMPT: "1",
+    REPOSITORY: "owner/repo", HEAD_REPOSITORY: "owner/repo", HEAD_SHA: "a".repeat(40), MERGE_SHA: "b".repeat(40),
+    BASE_SHA: "c".repeat(40), PR_NUMBER: "1" };
+  const goodFinal = { LC_ALL: "C", PYTHONCOERCECLOCALE: "0",
+    ...Object.fromEntries(finalKeys.map((key) => [key, "success"])) };
+  const cases = [
+    { args: ["--eligibility"], env: goodEligibility, ok: true },
+    { args: ["--eligibility"], env: { ...goodEligibility, RUN_ATTEMPT: "2" }, ok: false },
+    { args: ["--eligibility"], env: { ...goodEligibility, HEAD_REPOSITORY: "fork/repo" }, ok: false },
+    { args: ["--eligibility"], env: { ...goodEligibility, EVENT_NAME: "push" }, ok: false },
+    { args: ["--require-final-results"], env: goodFinal, ok: true },
+  ];
+  for (const key of finalKeys) for (const outcome of [...statuses, "", "unknown"]) {
+    cases.push({ args: ["--require-final-results"], env: { ...goodFinal, [key]: outcome }, ok: false });
+  }
+  const cliWrapper = `import os,runpy,sys\nos.environ.pop('__CF_USER_TEXT_ENCODING',None)\nsys.argv=[sys.argv[1],*sys.argv[2:]]\nrunpy.run_path(sys.argv[0],run_name='__main__')`;
+  for (const row of cases) {
+    const run = spawnSync(isolatedPython, ["-I", "-B", "-c", cliWrapper, commonPath, ...row.args], {
+      encoding: "utf8", env: row.env,
+    });
+    assert.equal(run.status === 0, row.ok, `${row.args}/${JSON.stringify(row.env)}:${run.stderr}`);
+  }
+  const effectSentinel = `import os,runpy,sys,types\nos.environ.pop('__CF_USER_TEXT_ENCODING',None)\npath=sys.argv[1]\nmodule=types.ModuleType('common')\nclass Session:\n @classmethod\n def begin(cls,*args):os.write(1,b'NATIVE-EFFECT-SENTINEL');raise RuntimeError('sentinel')\nmodule.NativeSession=Session\nmodule.ReportCandidate=object\nmodule.REPORT_LIMIT=32768\nsys.modules['common']=module\nsys.argv=[path,'--workflow-bound']\nrunpy.run_path(path,run_name='__main__')`;
+  for (const [, id] of jobs) {
+    const driver = parsedJob(id).steps.find((step) => step.env?.NQ_DRIVER)?.env?.NQ_DRIVER; assert.ok(driver);
+    const run = spawnSync(isolatedPython, ["-I", "-B", "-c", effectSentinel, driver], { encoding: "utf8" });
+    assert.equal(run.stdout, "NATIVE-EFFECT-SENTINEL", `${id} real CLI dispatch`);
+  }
+});
+
+test("ADR0093 common surfaces stay within binding readable highs", () => {
+  const highs = new Map<string, number>([
+    [workflowPath, 400], [schemaPath, 700], [commonPath, 1900],
+    ["test/native-qualification-common.test.ts", 1500], ["scripts/validate-schemas.ts", 300],
+  ]);
+  const diff = spawnSync("git", ["diff", "--numstat", predecessor, "--", ...highs.keys()], { encoding: "utf8" });
+  assert.equal(diff.status, 0, diff.stderr);
+  const additions = new Map(diff.stdout.trim().split("\n").filter(Boolean).map((line) => {
+    const [count, , path] = line.split("\t"); return [path, Number(count)] as const;
+  }));
+  for (const [path, high] of highs) assert.ok((additions.get(path) ?? 0) <= high, `${path}: ${additions.get(path)}/${high}`);
+  assert.ok(readFileSync(commonPath, "utf8").split("\n").every((line) => line.length <= 160), "common readable width");
+  assert.doesNotMatch(readFileSync(commonPath, "utf8"), /;/u, "common semicolon-packed transition");
+  const staticCheck = `import ast,sys\nfor path in sys.argv[1:]:\n tree=ast.parse(open(path).read(),path)\n for node in ast.walk(tree):\n  if isinstance(node,(ast.Try,ast.With)):\n   assert node.end_lineno>node.lineno,(path,node.lineno,'packed transition')`;
+  const readable = spawnSync("python3", ["-I", "-B", "-c", staticCheck, commonPath], { encoding: "utf8" });
+  assert.equal(readable.status, 0, readable.stderr);
 });

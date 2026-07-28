@@ -41,6 +41,13 @@
       ],
       "formatter": {
         "enabled": false
+      },
+      "linter": {
+        "rules": {
+          "suspicious": {
+            "noTemplateCurlyInString": "off"
+          }
+        }
       }
     }
   ]

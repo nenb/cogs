@@ -230,7 +230,9 @@ function nativeReport(job: keyof typeof nativeChecks, pass: boolean): Record<str
     workflow: { path: ".github/workflows/ci.yml", blob_sha256: "f".repeat(64), workflow_sha: "a".repeat(40), job_id: nativeJobId[job] },
     runner: { image: "ubuntu-24.04", image_version: "20260720.1", kernel_release: "6.8.0-100-generic", architecture: "x86_64" },
     authority: "exact-run-native-qualification", result: pass ? "pass" : "fail", checks,
-    metadata: pass ? nativeMetadata(job) : [], failure_phase: pass ? null : "schema-test",
+    metadata: pass ? nativeMetadata(job) : [],
+    operation: { result_sha256: "6".repeat(64), source_set_sha256: job === "integration" ? "8".repeat(64) : "7".repeat(64) },
+    failure_phase: pass ? null : "schema-test",
     diagnostics_sha256: pass ? null : "9".repeat(64), cleanup };
 }
 
@@ -265,6 +267,8 @@ for (const job of Object.keys(nativeChecks) as Array<keyof typeof nativeChecks>)
         ["failure phase", (value) => { value.failure_phase = "contradiction"; }],
         ["diagnostics", (value) => { value.diagnostics_sha256 = "9".repeat(64); }],
         ["metadata extra", (value) => { value.metadata.push({}); }],
+        ["operation result", (value) => { value.operation.result_sha256 = "bad"; }],
+        ["operation source", (value) => { value.operation.source_set_sha256 = "bad"; }],
       ];
       for (const key of "descriptors children paths mounts namespaces limits checkout".split(" ")) {
         mutations.push([`cleanup ${key}`, (value) => { value.cleanup[key] = false; }]);
