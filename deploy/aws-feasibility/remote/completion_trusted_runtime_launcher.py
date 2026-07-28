@@ -2691,6 +2691,13 @@ import json
 import os
 import struct
 import sys
+def bootstrap_failure(kind, value, trace):
+    while trace.tb_next is not None:
+        trace = trace.tb_next
+    code = 'bootstrap-line-' + str(trace.tb_lineno)
+    digest = hashlib.sha256(kind.__name__.encode()).hexdigest()[:16]
+    os.write(2, ('root-launcher-' + code + '-' + digest + '\n').encode())
+sys.excepthook = bootstrap_failure
 bootstrap_path = '/usr/local/libexec/cogs-native-root-bootstrap-v1.py'
 authority_path = '/etc/cogs/native-root-authority-v1.json'
 # CPython may synthesize this sole locale entry after execve received an empty
@@ -3969,10 +3976,19 @@ if __name__ == "__main__":
         raise SystemExit(78)
     except RuntimeLauncherError as error:
         code = error.code if type(error.code) is str and re.fullmatch(r"[A-Za-z0-9_.-]{1,40}", error.code) else "invalid-code"
+        if isinstance(error, RuntimeLauncherCleanupError) and error.failures:
+            nested = error.failures[0]
+            stage = getattr(nested, "code", type(nested).__name__)
+            safe_stage = re.sub(r"[^A-Za-z0-9_.-]", "-", stage) if type(stage) is str else "invalid"
+            code = f"cleanup-uncertain-{safe_stage}"[:40]
         digest = hashlib.sha256(str(error).encode("utf-8", "backslashreplace")).hexdigest()[:16]
         os.write(2, f"runtime-launcher-{code}-{digest}\n".encode())
         raise SystemExit(1)
     except Exception as error:
         label = re.sub(r"[^A-Za-z0-9_.-]", "-", type(error).__name__)[:32]
-        os.write(2, f"runtime-launcher-exception-{label}-{getattr(error, 'errno', 0)}\n".encode())
+        if label == "RuntimeClosureError":
+            digest = hashlib.sha256(str(error).encode("utf-8", "backslashreplace")).hexdigest()[:16]
+            os.write(2, f"runtime-launcher-closure-{digest}\n".encode())
+        else:
+            os.write(2, f"runtime-launcher-exception-{label}-{getattr(error, 'errno', 0)}\n".encode())
         raise SystemExit(1)
