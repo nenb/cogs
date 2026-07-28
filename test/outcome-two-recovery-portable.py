@@ -662,7 +662,8 @@ class CommonKernel:
             return directory
         return directory.names.get(name)
     def open(self, path, flags, mode=0o600, *, dir_fd=None):
-        temporary = bool(flags & getattr(os, "O_TMPFILE", 0))
+        temporary_mask = getattr(os, "O_TMPFILE", 0)
+        temporary = bool(temporary_mask and flags & temporary_mask == temporary_mask)
         if temporary:
             roles = ("authority", "report", "receipt")
             role = roles[self.temporary_count] if self.temporary_count < len(roles) else "extra"
@@ -1373,7 +1374,7 @@ def run_common_row(common, row, production_result):
     intended = row["intended_code"]
     exact_code = observed == intended or intended == "REJECT" and error is not None
     if not exact_code:
-        raise AssertionError(f"{row['id']}: expected {intended}, got {observed}: {error!r}/{getattr(error, 'exceptions', ())!r}")
+        raise AssertionError(f"{row['id']}: expected {intended}, got {observed}: {error!r}/{getattr(error, 'exceptions', ())!r}; events={kernel.events}")
     expected_accept = row["primitive_fault"]["expect"] == "accept"
     if (error is None) != expected_accept:
         raise AssertionError(f"{row['id']}: exact oracle contradicted expectation")
