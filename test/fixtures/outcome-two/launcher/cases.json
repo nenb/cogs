@@ -9,14 +9,44 @@
       "cleanup_domains": ["endpoint"],
       "sentinel": "admission-live-capability",
       "cases": [
-        ["adm-ambient-public", "ambient-public", "_WorkerIssuer._consume_runtime_closure_capability", "admission-authority"],
-        ["adm-ambient-private", "ambient-private", "_WorkerIssuer._consume_runtime_closure_capability", "admission-authority"],
+        [
+          "adm-ambient-public",
+          "ambient-public",
+          "_WorkerIssuer._consume_runtime_closure_capability",
+          "admission-authority"
+        ],
+        [
+          "adm-ambient-private",
+          "ambient-private",
+          "_WorkerIssuer._consume_runtime_closure_capability",
+          "admission-authority"
+        ],
         ["adm-test-alias", "test-alias", "_WorkerIssuer._consume_runtime_closure_capability", "admission-authority"],
         ["adm-duck-claim", "duck-claim", "_WorkerIssuer._consume_runtime_closure_capability", "admission-authority"],
-        ["adm-copied-fields", "copied-fields", "_WorkerIssuer._consume_runtime_closure_capability", "admission-authority"],
-        ["adm-wrong-package", "wrong-package", "_WorkerIssuer._consume_runtime_closure_capability", "admission-package"],
-        ["adm-wrong-issuer", "wrong-issuer", "_WorkerIssuer._consume_runtime_closure_capability", "admission-authority"],
-        ["adm-wrong-worker-pid", "wrong-worker-pid", "_WorkerIssuer._consume_runtime_closure_capability", "admission-worker"],
+        [
+          "adm-copied-fields",
+          "copied-fields",
+          "_WorkerIssuer._consume_runtime_closure_capability",
+          "admission-authority"
+        ],
+        [
+          "adm-wrong-package",
+          "wrong-package",
+          "_WorkerIssuer._consume_runtime_closure_capability",
+          "admission-package"
+        ],
+        [
+          "adm-wrong-issuer",
+          "wrong-issuer",
+          "_WorkerIssuer._consume_runtime_closure_capability",
+          "admission-authority"
+        ],
+        [
+          "adm-wrong-worker-pid",
+          "wrong-worker-pid",
+          "_WorkerIssuer._consume_runtime_closure_capability",
+          "admission-worker"
+        ],
         ["adm-replay", "replay", "_WorkerIssuer._consume_runtime_closure_capability", "admission-replay"]
       ]
     },
