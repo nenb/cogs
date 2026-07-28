@@ -2700,14 +2700,27 @@ def bootstrap_failure(kind, value, trace):
 sys.excepthook = bootstrap_failure
 bootstrap_path = '/usr/local/libexec/cogs-native-root-bootstrap-v1.py'
 authority_path = '/etc/cogs/native-root-authority-v1.json'
-# CPython may synthesize this sole locale entry after execve received an empty
-# environment. It is interpreter state, not caller authority.
-assert not os.environ or dict(os.environ) == {'LC_CTYPE': 'C.UTF-8'}
+# CPython may synthesize this sole locale entry after execve. The other two
+# values are fixed by the already-registered launcher child before sudo exec.
+environment = dict(os.environ)
+if environment.get('LC_CTYPE') == 'C.UTF-8':
+    del environment['LC_CTYPE']
+assert set(environment) == {'COGS_LAUNCHER_PID', 'COGS_SUDO_PID'}
+def fixed_pid(name):
+    value = environment[name]
+    assert value.isdigit() and (len(value) == 1 or not value.startswith('0'))
+    result = int(value)
+    assert 1 < result < 1 << 31
+    return result
+launcher_pid = fixed_pid('COGS_LAUNCHER_PID')
+sudo_pid = fixed_pid('COGS_SUDO_PID')
 os.environ.clear()
 assert os.geteuid() == 0 and not os.environ and sys.argv == [bootstrap_path]
 parent = os.getppid()
 libc = ctypes.CDLL(None, use_errno=True)
-assert parent > 1 and libc.prctl(1, 9, 0, 0, 0) == 0 and os.getppid() == parent
+direct = os.getpid() == sudo_pid and parent == launcher_pid
+monitored = os.getpid() != sudo_pid and parent == sudo_pid
+assert (direct or monitored) and libc.prctl(1, 9, 0, 0, 0) == 0 and os.getppid() == parent
 directory = os.open('/proc/self/fd', os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW)
 buffer = ctypes.create_string_buffer(32768)
 numbers = []
@@ -2779,7 +2792,7 @@ assert authority['version'] == 'cogs.root-capsule-authority/v1'
 assert hashlib.sha256(bootstrap_raw).hexdigest() == authority['root_bootstrap_sha256']
 keys = {'bootstrap_sha256', 'parent_pid', 'profile', 'revision', 'source_set_sha256', 'sources', 'version'}
 assert type(header) is dict and set(header) == keys
-assert header['version'] == 'cogs.runtime-source-admission/sandbox-v1' and header['profile'] == 'sandbox' and header['parent_pid'] == parent
+assert header['version'] == 'cogs.runtime-source-admission/sandbox-v1' and header['profile'] == 'sandbox' and header['parent_pid'] == launcher_pid
 paths = ('deploy/aws-feasibility/remote/completion_elf.py', 'deploy/aws-feasibility/remote/completion_trusted_runtime_closure.py', 'deploy/aws-feasibility/remote/completion_trusted_runtime_launcher.py', 'schemas/trusted-runtime-closure-v1.json')
 rows = header['sources']
 assert type(rows) is list and len(rows) == 4 and tuple(row.get('path') for row in rows if type(row) is dict) == paths
@@ -2911,6 +2924,7 @@ def _run_root_capsule_with_ops(ops: Any, capsule: bytes) -> bytes:
         pid, process, gate = owner.spawn()
         if pid == 0:
             try:
+                launcher_pid = os.getppid()
                 for lease in (input_write, output_read, error_read, transition_read, ack_write):
                     lease.close(ops)
                 _require(gate is not None and ops.read(gate.fd, 1) == b"G", "sudo release", "sudo-release")
@@ -2923,7 +2937,10 @@ def _run_root_capsule_with_ops(ops: Any, capsule: bytes) -> bytes:
                 for fd in _descriptor_snapshot(ops):
                     if fd not in (0, 1, 2):
                         _FdLease(fd, "sudo-complement").close(ops)
-                os.execve(command[0], command, {})
+                _require(os.getppid() == launcher_pid, "sudo parent identity", "sudo-parent")
+                identity = (f"COGS_LAUNCHER_PID={launcher_pid}", f"COGS_SUDO_PID={os.getpid()}")
+                child_command = (*command[:5], *identity, *command[5:])
+                os.execve(child_command[0], child_command, {})
             except BaseException:
                 os._exit(125)
         _require(process is not None, "sudo process registration", "sudo-register")
