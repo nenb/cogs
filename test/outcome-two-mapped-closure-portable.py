@@ -89,7 +89,7 @@ def replace_row(raw, replacement):
 
 class MapOps(closure._Ops):
     """Kernel model keeps fd objects separate from production ownership state."""
-    def __init__(self, before, after, objects, fault=None):
+    def __init__(self, before, after, objects, fault=None, resolved=RESOLVED):
         self.snapshots = [before, after]
         self.objects = objects
         self.fault = fault
@@ -101,6 +101,10 @@ class MapOps(closure._Ops):
         self.map_stats = {}
         self.maps_opened = 0
         self.close_attempts = []
+        self.held = {
+            item.held_fd: (item, (FIXTURES / "elf" / Path(item.logical_path).name).read_bytes())
+            for item in resolved.objects
+        }
 
     def consume(self, fault):
         if self.fault == fault:
@@ -116,8 +120,14 @@ class MapOps(closure._Ops):
             self.maps_opened += 1
             item = ("maps", raw)
         elif "/map_files/" in path:
-            if self.consume("map-open-eacces"):
-                raise PermissionError(path)
+            denied = {
+                "map-open-eacces", "map-open-eacces-source-drift",
+                "map-open-eacces-source-bytes",
+            }
+            if self.fault in denied and not self.fired:
+                self.fired = True
+                self.events.append(f"fault:{self.fault}")
+                raise PermissionError(13, "Permission denied", path)
             address = path.rsplit("/", 1)[1]
             address = "-".join(f"{int(value, 16):08x}" for value in address.split("-"))
             row = self.objects.get(address)
@@ -147,6 +157,12 @@ class MapOps(closure._Ops):
         return value
 
     def pread(self, fd, size, offset):
+        if fd in self.held:
+            raw = self.held[fd][1]
+            value = raw[offset:offset + size]
+            if self.fault == "map-open-eacces-source-bytes" and value:
+                return bytes([value[0] ^ 1]) + value[1:]
+            return value
         raw = self.fds[fd][1]
         value = raw[offset:offset + size]
         if self.fault == "map-parse-and-close" and value:
@@ -155,12 +171,22 @@ class MapOps(closure._Ops):
         return value
 
     def fstat(self, fd):
-        raw = self.fds[fd][1]
-        device_major, inode = self.map_stats[fd]
-        device = os.makedev(device_major, 1)
         key = ("fstat", fd)
         count = self.positions.get(key, 0)
         self.positions[key] = count + 1
+        if fd in self.held:
+            item, raw = self.held[fd]
+            generation = item.generation
+            changed = self.fault == "map-open-eacces-source-drift" and count
+            return SimpleNamespace(
+                st_dev=generation.device, st_ino=generation.inode,
+                st_size=len(raw), st_mtime_ns=generation.mtime_ns + int(changed),
+                st_ctime_ns=generation.ctime_ns, st_mode=generation.mode,
+                st_uid=generation.uid, st_gid=generation.gid,
+            )
+        raw = self.fds[fd][1]
+        device_major, inode = self.map_stats[fd]
+        device = os.makedev(device_major, 1)
         changed = self.fault == "fstat-generation-change" and count
         if changed:
             self.consume("fstat-generation-change")
@@ -239,7 +265,7 @@ def case_inputs(case):
 
 def run(row, case, branch):
     before, after, objects, resolved, fault = case_inputs(case)
-    ops = MapOps(before, after, objects, fault)
+    ops = MapOps(before, after, objects, fault, resolved)
     data_faults = {
         "missing-lf", "overlapping-row", "maps-over-4096-lines",
         "two-roles-same-fingerprint", "129-unique-objects",

@@ -7,6 +7,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 import ctypes
+import errno
 import fcntl
 import hashlib
 import json
@@ -1463,18 +1464,39 @@ def _mapped_closure(ops: _Ops, helper: HelperLease, closure: ResolvedToolClosure
             if row.path not in _KERNEL_EXECUTABLE_MAPPINGS:
                 raise RuntimeClosureError('unknown synthetic executable mapping')
             continue
-        lease = FdLease(ops.open(f'/proc/{helper.pid}/map_files/{row.start:x}-{row.end:x}', os.O_RDONLY | _O_CLOEXEC), 'map-file')
+        map_path = f'/proc/{helper.pid}/map_files/{row.start:x}-{row.end:x}'
+        map_lease: FdLease | None = None
+        mapped_fd: int
+        try:
+            map_lease = FdLease(
+                ops.open(map_path, os.O_RDONLY | _O_CLOEXEC),
+                'map-file',
+            )
+            mapped_fd = map_lease.fd
+        except PermissionError as error:
+            if error.errno != errno.EACCES:
+                raise
+            # Hosted Linux may deny following proc map_files links even to the
+            # direct parent.  The maps device/inode still binds the mapping to
+            # the exact descriptor retained by descriptor-relative resolution.
+            mapped_identity = (os.makedev(row.major, row.minor), row.inode)
+            retained = expected.get(mapped_identity)
+            if retained is None:
+                raise RuntimeClosureError(
+                    'unknown executable mapping after map_files denial'
+                ) from error
+            mapped_fd = retained.held_fd
         primary: BaseException | None = None
         try:
-            before_stat = ops.fstat(lease.fd)
+            before_stat = ops.fstat(mapped_fd)
             _require_source(before_stat)
             generation = _generation(before_stat)
             if os.major(generation.device) != row.major or os.minor(generation.device) != row.minor:
-                raise RuntimeClosureError('maps device differs from map_files')
+                raise RuntimeClosureError('maps device differs from authenticated source')
             if generation.inode != row.inode:
-                raise RuntimeClosureError('maps inode differs from map_files')
-            raw = _read_complete(ops, lease.fd, generation.size)
-            after_stat = ops.fstat(lease.fd)
+                raise RuntimeClosureError('maps inode differs from authenticated source')
+            raw = _read_complete(ops, mapped_fd, generation.size)
+            after_stat = ops.fstat(mapped_fd)
             _require_source(after_stat)
             if _generation(after_stat) != generation:
                 raise RuntimeClosureError('mapped object generation changed')
@@ -1491,7 +1513,11 @@ def _mapped_closure(ops: _Ops, helper: HelperLease, closure: ResolvedToolClosure
             seen.add(identity)
         except BaseException as error:
             primary = error
-        _finish_fds(ops, (lease,), primary)
+        if map_lease is None:
+            if primary is not None:
+                raise primary
+        else:
+            _finish_fds(ops, (map_lease,), primary)
     (after, _after_rows) = _maps_snapshot(ops, helper.pid)
     if before != after:
         raise RuntimeClosureError('helper mappings drifted')
