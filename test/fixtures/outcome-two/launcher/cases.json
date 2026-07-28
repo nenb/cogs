@@ -4,7 +4,7 @@
   "families": [
     {
       "acceptance_id": "AT-ADM-01",
-      "production_method": "_SourceAdmission._consume",
+      "production_method": "_WorkerIssuer._consume_runtime_closure_capability",
       "intended_code": "source-admission",
       "cleanup_domains": ["endpoint"],
       "sentinel": "admission-live-capability",

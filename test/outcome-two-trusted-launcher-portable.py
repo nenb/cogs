@@ -310,22 +310,24 @@ def admission_predicates(module):
     if not hasattr(module.socket, "SO_PEERCRED"):
         module.socket.SO_PEERCRED = 17
     pid = os.getpid()
-    issuer = object()
     endpoint = AdmissionEndpoint(module, pid)
     admission = module._SourceAdmission(
         "r", "0" * 64, "1" * 64, b"{}", "held.package", pid,
+        endpoint, None, pid + 1, os.getuid(), os.getgid(),
+    )
+    issuer = module._WorkerIssuer(endpoint, b"n" * 32, admission, pid + 1, "held.package")
+    admission._issuer = issuer
+    copied = module._SourceAdmission(
+        "r", "0" * 64, "1" * 64, b"{}", "held.package", pid,
         endpoint, issuer, pid + 1, os.getuid(), os.getgid(),
     )
-    if admission._consume(object(), "held.package", pid):
-        raise AssertionError("wrong issuer admitted")
-    if admission._consume(issuer, "wrong.package", pid):
-        raise AssertionError("wrong package admitted")
-    if admission._consume(issuer, "held.package", pid + 1):
-        raise AssertionError("wrong worker admitted")
-    if not admission._consume(issuer, "held.package", pid):
-        raise AssertionError("live exact admission rejected")
-    if admission._consume(issuer, "held.package", pid):
-        raise AssertionError("source admission replayed")
+    exact_error(module, lambda: issuer._consume_runtime_closure_capability(copied, "held.package", pid), "admission-authority")
+    exact_error(module, lambda: issuer._consume_runtime_closure_capability(admission, "wrong.package", pid), "admission-package")
+    exact_error(module, lambda: issuer._consume_runtime_closure_capability(admission, "held.package", pid + 1), "admission-worker")
+    observed_endpoint, credentials = issuer._consume_runtime_closure_capability(admission, "held.package", pid)
+    if observed_endpoint is not endpoint or credentials != (pid + 1, os.getuid(), os.getgid()):
+        raise AssertionError("live exact admission capability changed")
+    exact_error(module, lambda: issuer._consume_runtime_closure_capability(admission, "held.package", pid), "admission-replay")
     if endpoint.closed:
         raise AssertionError("admission consumed the still-needed issuance endpoint")
 
