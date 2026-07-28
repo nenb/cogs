@@ -15,6 +15,7 @@ import platform
 import re
 import select
 import signal
+import socket
 import stat
 import struct
 import time
@@ -51,7 +52,9 @@ _MFD_ALLOW_SEALING = 2
 _MFD_EXEC = 16
 _F_ADD_SEALS = 1033
 _F_GET_SEALS = 1034
+_F_GETFD = 1
 _F_GETFL = 3
+_FD_CLOEXEC = 1
 _F_SEAL_SEAL = 1
 _F_SEAL_SHRINK = 2
 _F_SEAL_GROW = 4
@@ -168,6 +171,42 @@ class _IssuanceReceipt:
     issuer_pid: int
     consumer_pid: int
 
+@dataclass
+class _LiveIssuerCapability:
+    admission: object
+    endpoint: socket.socket
+    package_name: str
+    worker_pid: int
+    peer_credentials: tuple[int, int, int]
+    consumed: bool = False
+
+    def consume(self, admission: object) -> None:
+        if self.consumed:
+            raise RuntimeClosureError('runtime closure capability was replayed')
+        self.consumed = True
+        if admission is not self.admission:
+            raise RuntimeClosureError('runtime closure capability admission mismatch')
+        package_pattern = r'_cogs_o2_[0-9a-f]{16}'
+        if type(__package__) is not str or re.fullmatch(package_pattern, __package__) is None:
+            raise RuntimeClosureError('runtime closure constructor is outside admitted package')
+        if self.package_name != __package__ or self.worker_pid != os.getpid():
+            raise RuntimeClosureError('runtime closure capability topology changed')
+        if self.endpoint.fileno() < 0:
+            raise RuntimeClosureError('runtime closure capability endpoint closed')
+        observed = self.endpoint.getsockopt(
+            socket.SOL_SOCKET,
+            socket.SO_PEERCRED,
+            struct.calcsize('3i'),
+        )
+        peer = struct.unpack('3i', observed)
+        if peer != self.peer_credentials:
+            raise RuntimeClosureError('runtime closure capability peer changed')
+        peer_pid, peer_uid, peer_gid = peer
+        if peer_pid <= 0 or peer_pid == self.worker_pid:
+            raise RuntimeClosureError('runtime closure capability peer topology changed')
+        if peer_uid != os.getuid() or peer_gid != os.getgid():
+            raise RuntimeClosureError('runtime closure capability credentials changed')
+
 class _FdState(Enum):
     OWNED = 'OWNED'
     TRANSFERRED = 'TRANSFERRED'
@@ -206,6 +245,7 @@ class FdLease:
 class _HelperState(Enum):
     ALLOCATED = 'ALLOCATED'
     SPAWNED = 'SPAWNED'
+    REGISTERED = 'REGISTERED'
     PREEXEC_IDENTIFIED = 'PREEXEC_IDENTIFIED'
     EXEC_IDENTIFIED = 'EXEC_IDENTIFIED'
     STOPPING = 'STOPPING'
@@ -217,6 +257,7 @@ class HelperLease:
     pid: int
     pidfd: FdLease
     input_gate: FdLease
+    registration_gate: FdLease
     release_gate: FdLease
     status_gate: FdLease
     state: _HelperState = _HelperState.SPAWNED
@@ -258,6 +299,17 @@ class PreparationLease:
         if primary is not None:
             failures.append(primary)
         for lease in reversed(tuple(leases)):
+            if lease.state is _FdState.CLOSE_UNCERTAIN:
+                if lease.close_error is None:
+                    failures.append(RuntimeClosureError('uncertain descriptor lost its error'))
+                else:
+                    in_aggregate = (
+                        isinstance(primary, RuntimeClosureCleanupError)
+                        and lease.close_error in primary.failures
+                    )
+                    if lease.close_error is not primary and not in_aggregate:
+                        failures.append(lease.close_error)
+                continue
             if lease.state is not _FdState.OWNED:
                 continue
             try:
@@ -284,8 +336,6 @@ class _OwnerState(Enum):
 
 class _Ops:
     """Private primitive adapter.  Public production never accepts an instance."""
-    cut_names = ('state.preparing', 'resolve.<tool>.before', 'resolve.<tool>.after', 'mapping.<tool>.before-spawn', 'mapping.<tool>.before-capture', 'mapping.<tool>.after-capture', 'mapping.<tool>.after-cleanup', 'seal.<tool>.before', 'seal.<tool>.after', 'report.before-seal', 'report.after-seal', 'report.before-publish', 'state.ready', 'issue.before-revalidate', 'issue.before-transfer', 'cleanup.before', 'cleanup.after')
-
     def checkpoint(self, name: str) -> None:
         del name
 
@@ -416,12 +466,17 @@ class _Ops:
             error = ctypes.get_errno()
             raise OSError(error, os.strerror(error))
 
-    def socketpair_seqpacket(self) -> tuple[Any, Any]:
-        import socket
-        return socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET | socket.SOCK_CLOEXEC)
-
 def _generation(value: os.stat_result) -> SourceGeneration:
-    return SourceGeneration(value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns, value.st_mode, value.st_uid, value.st_gid)
+    return SourceGeneration(
+        value.st_dev,
+        value.st_ino,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+        value.st_mode,
+        value.st_uid,
+        value.st_gid,
+    )
 
 def _require_component(value: os.stat_result, *, directory: bool=False) -> None:
     if value.st_uid != 0 or value.st_mode & 18:
@@ -442,6 +497,17 @@ def _finish_fds(ops: _Ops, leases: Sequence[FdLease], primary: BaseException | N
     if primary is not None:
         failures.append(primary)
     for lease in reversed(tuple(leases)):
+        if lease.state is _FdState.CLOSE_UNCERTAIN:
+            if lease.close_error is None:
+                failures.append(RuntimeClosureError('uncertain descriptor lost its error'))
+            else:
+                in_aggregate = (
+                    isinstance(primary, RuntimeClosureCleanupError)
+                    and lease.close_error in primary.failures
+                )
+                if lease.close_error is not primary and not in_aggregate:
+                    failures.append(lease.close_error)
+            continue
         if lease.state is not _FdState.OWNED:
             continue
         try:
@@ -529,7 +595,12 @@ def _resolve_once(ops: _Ops, path: str, *, open_source: bool=True) -> tuple[int 
                 continue
             if queue:
                 _require_component(before, directory=True)
-                opened = FdLease(ops.open(component, os.O_RDONLY | _O_DIRECTORY | _O_CLOEXEC | _O_NOFOLLOW, dir_fd=directories[-1].fd), 'path-component')
+                component_fd = ops.open(
+                    component,
+                    os.O_RDONLY | _O_DIRECTORY | _O_CLOEXEC | _O_NOFOLLOW,
+                    dir_fd=directories[-1].fd,
+                )
+                opened = FdLease(component_fd, 'path-component')
                 directories.append(opened)
                 after = ops.fstat(opened.fd)
                 _require_component(after, directory=True)
@@ -687,7 +758,15 @@ def _resolve_tool(ops: _Ops, tool: str, path: str) -> ResolvedToolClosure:
         for value in objects.values():
             if any((name not in providers for name in _metadata(value)[2])):
                 raise RuntimeClosureError('unresolved closure dependency')
-        libraries = tuple(sorted((value for value in objects.values() if value.identity not in (executable.identity, loader.identity)), key=lambda value: ((_metadata(value)[1] or '').encode(), value.sha256)))
+        library_values = (
+            value
+            for value in objects.values()
+            if value.identity not in (executable.identity, loader.identity)
+        )
+        libraries = tuple(sorted(
+            library_values,
+            key=lambda value: ((_metadata(value)[1] or '').encode(), value.sha256),
+        ))
         return ResolvedToolClosure(tool, executable, loader, libraries)
     except BaseException as primary:
         _close_objects(ops, owned, primary)
@@ -832,7 +911,16 @@ def _parse_maps(raw: bytes) -> tuple[_MapRow, ...]:
             inode = int(inode_raw, 10)
         except (ValueError, TypeError) as error:
             raise RuntimeClosureError('malformed maps identity') from error
-        if start <= 0 or start >= end or start < previous_end or (len(permissions) != 4) or (permissions[0:1] not in (b'r', b'-')) or (permissions[1:2] not in (b'w', b'-')) or (permissions[2:3] not in (b'x', b'-')) or (permissions[3:4] not in (b'p', b's')) or file_offset % 4096 or (major < 0) or (minor < 0) or (inode < 0):
+        valid_permissions = (
+            len(permissions) == 4
+            and permissions[0:1] in (b'r', b'-')
+            and permissions[1:2] in (b'w', b'-')
+            and permissions[2:3] in (b'x', b'-')
+            and permissions[3:4] in (b'p', b's')
+        )
+        valid_extent = start > 0 and start < end and start >= previous_end
+        valid_identity = major >= 0 and minor >= 0 and inode >= 0
+        if not valid_extent or not valid_permissions or not valid_identity or file_offset % 4096:
             raise RuntimeClosureError('invalid maps extent or metadata')
         path = fields[5].decode('utf-8', 'strict') if len(fields) == 6 else ''
         rows.append(_MapRow(start, end, permissions, file_offset, major, minor, inode, path))
@@ -841,7 +929,7 @@ def _parse_maps(raw: bytes) -> tuple[_MapRow, ...]:
 
 def _child_argv(tool: str) -> tuple[str, ...]:
     if tool == 'python3-parser':
-        return ('python3', '-I', '-B', '-c', 'import os;os.read(0,1)')
+        return ('python3', '-I', '-B', '-c', "__import__('os').read(0,1)")
     if tool == 'gzip':
         return ('gzip', '-dc')
     if tool == 'zstd':
@@ -887,32 +975,57 @@ def _child_fail(ops: _Ops, status_fd: int, code: bytes) -> NoReturn:
         pass
     ops.exit_child(127)
 
-def _spawn_helper(ops: _Ops, preparation: PreparationLease, closure: ResolvedToolClosure) -> HelperLease:
-    input_read = input_write = release_read = release_write = None
+def _spawn_helper(
+    ops: _Ops,
+    preparation: PreparationLease,
+    closure: ResolvedToolClosure,
+) -> HelperLease:
+    input_read = input_write = None
+    registration_read = registration_write = None
+    release_read = release_write = None
     status_read = status_write = devnull = None
     created: list[FdLease] = []
     pid: int | None = None
     try:
-        for purpose in ('input', 'release', 'status'):
-            (read_fd, write_fd) = ops.pipe()
+        for purpose in ('input', 'registration', 'release', 'status'):
+            read_fd, write_fd = ops.pipe()
             read_lease = preparation.register_fd(read_fd, f'helper-{purpose}-read')
             write_lease = preparation.register_fd(write_fd, f'helper-{purpose}-write')
             created.extend((read_lease, write_lease))
             if purpose == 'input':
-                (input_read, input_write) = (read_lease, write_lease)
+                input_read, input_write = read_lease, write_lease
+            elif purpose == 'registration':
+                registration_read, registration_write = read_lease, write_lease
             elif purpose == 'release':
-                (release_read, release_write) = (read_lease, write_lease)
+                release_read, release_write = read_lease, write_lease
             else:
-                (status_read, status_write) = (read_lease, write_lease)
-        devnull = preparation.register_fd(ops.open('/dev/null', os.O_RDWR | _O_CLOEXEC | _O_NOFOLLOW), 'helper-devnull')
+                status_read, status_write = read_lease, write_lease
+        devnull_fd = ops.open(
+            '/dev/null',
+            os.O_RDWR | _O_CLOEXEC | _O_NOFOLLOW,
+        )
+        devnull = preparation.register_fd(devnull_fd, 'helper-devnull')
         created.append(devnull)
         parent = ops.getpid()
-        (pid, pidfd_number) = ops.clone3_pidfd()
+        pid, pidfd_number = ops.clone3_pidfd()
         if pid == 0:
             try:
-                if None in (input_read, input_write, release_read, release_write, status_read, status_write):
+                gates = (
+                    input_read,
+                    input_write,
+                    registration_read,
+                    registration_write,
+                    release_read,
+                    release_write,
+                    status_read,
+                    status_write,
+                )
+                if None in gates:
                     _child_fail(ops, -1, b'E\n')
+                if ops.read(registration_read.fd, 2) != b'G\n':
+                    _child_fail(ops, status_write.fd, b'G\n')
                 input_write.close(ops)
+                registration_write.close(ops)
                 release_write.close(ops)
                 status_read.close(ops)
                 ops.setsid()
@@ -922,7 +1035,14 @@ def _spawn_helper(ops: _Ops, preparation: PreparationLease, closure: ResolvedToo
                 ops.dup2(input_read.fd, 0, inheritable=True)
                 ops.dup2(devnull.fd, 1, inheritable=True)
                 ops.dup2(devnull.fd, 2, inheritable=True)
-                allowed = (0, 1, 2, release_read.fd, status_write.fd, closure.executable.held_fd)
+                allowed = (
+                    0,
+                    1,
+                    2,
+                    release_read.fd,
+                    status_write.fd,
+                    closure.executable.held_fd,
+                )
                 _close_complement(ops, allowed)
                 if ops.write(status_write.fd, b'R\n') != 2:
                     _child_fail(ops, status_write.fd, b'W\n')
@@ -930,11 +1050,39 @@ def _spawn_helper(ops: _Ops, preparation: PreparationLease, closure: ResolvedToo
                     _child_fail(ops, status_write.fd, b'G\n')
                 ops.execve(closure.executable.held_fd, _child_argv(closure.tool), {})
             except BaseException:
-                _child_fail(ops, status_write.fd if status_write is not None else -1, b'E\n')
+                status_fd = status_write.fd if status_write is not None else -1
+                _child_fail(ops, status_fd, b'E\n')
+        if type(pid) is not int or pid <= 0 or pidfd_number < 0:
+            raise RuntimeClosureError('invalid atomic helper spawn result')
         pidfd = preparation.register_fd(pidfd_number, 'helper-pidfd')
-        helper = HelperLease(pid, pidfd, input_write, release_write, status_read, target_executable_identity=closure.executable.identity)
+        helper = HelperLease(
+            pid,
+            pidfd,
+            input_write,
+            registration_write,
+            release_write,
+            status_read,
+            target_executable_identity=closure.executable.identity,
+        )
         preparation.helpers.append(helper)
-        for lease in (input_read, release_read, status_write, devnull):
+        helper.start_time = _parse_proc_stat(
+            _read_proc(ops, f'/proc/{pid}/stat', 4096),
+            pid,
+        )
+        helper.session = ops.getsid(pid)
+        helper.process_group = ops.getpgid(pid)
+        helper.executable_identity = _proc_executable_identity(ops, pid)
+        helper.state = _HelperState.REGISTERED
+        if ops.write(registration_write.fd, b'G\n') != 2:
+            raise RuntimeClosureError('helper registration release failed')
+        registration_write.close(ops)
+        for lease in (
+            input_read,
+            registration_read,
+            release_read,
+            status_write,
+            devnull,
+        ):
             if lease is not None:
                 lease.close(ops)
         deadline = ops.monotonic() + _HELPER_START_SECONDS
@@ -942,10 +1090,17 @@ def _spawn_helper(ops: _Ops, preparation: PreparationLease, closure: ResolvedToo
             raise RuntimeClosureError('helper pre-exec readiness timeout')
         if _read_exact_status(ops, status_read.fd) != b'R\n':
             raise RuntimeClosureError('helper pre-exec readiness failed')
-        helper.start_time = _parse_proc_stat(_read_proc(ops, f'/proc/{pid}/stat', 4096), pid)
+        observed_start = _parse_proc_stat(
+            _read_proc(ops, f'/proc/{pid}/stat', 4096),
+            pid,
+        )
+        if observed_start != helper.start_time:
+            raise RuntimeClosureError('helper identity changed after registration')
         helper.session = ops.getsid(pid)
         helper.process_group = ops.getpgid(pid)
-        helper.executable_identity = _proc_executable_identity(ops, pid)
+        observed_executable = _proc_executable_identity(ops, pid)
+        if observed_executable != helper.executable_identity:
+            raise RuntimeClosureError('helper executable changed before fixed exec')
         if helper.session != pid or helper.process_group != pid:
             raise RuntimeClosureError('helper does not own its session')
         helper.state = _HelperState.PREEXEC_IDENTIFIED
@@ -1060,29 +1215,39 @@ def _wait_helper(ops: _Ops, helper: HelperLease, deadline: float) -> bool:
 
 def _stop_helper(ops: _Ops, preparation: PreparationLease, helper: HelperLease) -> None:
     failures: list[BaseException] = []
-    identity_complete = all((value is not None for value in (helper.start_time, helper.session, helper.process_group, helper.executable_identity)))
+    identity_complete = all(value is not None for value in (
+        helper.start_time,
+        helper.session,
+        helper.process_group,
+        helper.executable_identity,
+    ))
     helper.state = _HelperState.STOPPING
-    for gate in (helper.release_gate, helper.status_gate, helper.input_gate):
+    for gate in (
+        helper.registration_gate,
+        helper.release_gate,
+        helper.status_gate,
+        helper.input_gate,
+    ):
         if gate.state is _FdState.OWNED:
             try:
                 gate.close(ops)
             except BaseException as error:
                 failures.append(error)
     try:
-        if not identity_complete:
-            if not _wait_helper(ops, helper, ops.monotonic()):
-                ops.pidfd_signal(helper.pidfd.fd, signal.SIGKILL)
-                if not _wait_helper(ops, helper, ops.monotonic() + _HELPER_KILL_SECONDS):
-                    raise RuntimeClosureError('unreleased helper bounded reap timeout')
-        else:
+        graceful_deadline = ops.monotonic() + _HELPER_TERM_SECONDS
+        if not _wait_helper(ops, helper, graceful_deadline):
+            if not identity_complete:
+                raise RuntimeClosureError('unregistered helper retained behind closed gate')
             if not _matching_child(ops, helper):
                 raise RuntimeClosureError('helper identity or descendants changed before TERM')
             ops.pidfd_signal(helper.pidfd.fd, signal.SIGTERM)
-            if not _wait_helper(ops, helper, ops.monotonic() + _HELPER_TERM_SECONDS):
+            term_deadline = ops.monotonic() + _HELPER_TERM_SECONDS
+            if not _wait_helper(ops, helper, term_deadline):
                 if not _matching_child(ops, helper):
                     raise RuntimeClosureError('helper identity changed before KILL')
                 ops.pidfd_signal(helper.pidfd.fd, signal.SIGKILL)
-                if not _wait_helper(ops, helper, ops.monotonic() + _HELPER_KILL_SECONDS):
+                kill_deadline = ops.monotonic() + _HELPER_KILL_SECONDS
+                if not _wait_helper(ops, helper, kill_deadline):
                     raise RuntimeClosureError('helper bounded reap timeout')
     except BaseException as error:
         failures.append(error)
@@ -1103,6 +1268,8 @@ def _maps_snapshot(ops: _Ops, pid: int) -> tuple[bytes, tuple[_MapRow, ...]]:
 
 def _mapped_closure(ops: _Ops, helper: HelperLease, closure: ResolvedToolClosure) -> MappedToolClosure:
     expected = {value.identity: value for value in closure.objects}
+    if len(expected) > _MAX_OBJECTS:
+        raise RuntimeClosureError('mapped closure object bound')
     (before, rows) = _maps_snapshot(ops, helper.pid)
     seen: set[tuple[int, int]] = set()
     fingerprints: dict[tuple[str, int], tuple[int, int]] = {}
@@ -1151,7 +1318,14 @@ def _mapped_closure(ops: _Ops, helper: HelperLease, closure: ResolvedToolClosure
     return MappedToolClosure(closure.tool, sequence, hashlib.sha256(_canonical(sequence)).hexdigest())
 
 def _seal_object(ops: _Ops, source: AuthenticatedObject) -> SealedObject:
-    lease = FdLease(ops.memfd_create('cogs-runtime-object', _MFD_CLOEXEC | _MFD_ALLOW_SEALING | _MFD_EXEC), 'sealed-object')
+    writable = FdLease(
+        ops.memfd_create(
+            'cogs-runtime-object',
+            _MFD_CLOEXEC | _MFD_ALLOW_SEALING | _MFD_EXEC,
+        ),
+        'sealed-object-writable',
+    )
+    readable: FdLease | None = None
     try:
         if _generation(ops.fstat(source.held_fd)) != source.generation:
             raise RuntimeClosureError('source changed before sealing')
@@ -1162,36 +1336,61 @@ def _seal_object(ops: _Ops, source: AuthenticatedObject) -> SealedObject:
                 raise RuntimeClosureError('short source read while sealing')
             written = 0
             while written < len(chunk):
-                count = ops.pwrite(lease.fd, chunk[written:], offset + written)
+                count = ops.pwrite(writable.fd, chunk[written:], offset + written)
                 if count <= 0:
                     raise RuntimeClosureError('short sealed object write')
                 written += count
             offset += len(chunk)
         if ops.pread(source.held_fd, 1, source.size):
             raise RuntimeClosureError('source grew while sealing')
-        ops.fchmod(lease.fd, 365)
-        ops.fsync(lease.fd)
-        copied = _read_complete(ops, lease.fd, source.size)
+        ops.fchmod(writable.fd, 365)
+        ops.fsync(writable.fd)
+        copied = _read_complete(ops, writable.fd, source.size)
         if hashlib.sha256(copied).hexdigest() != source.sha256:
             raise RuntimeClosureError('sealed object readback mismatch')
         if parse_elf64(copied) != source.elf:
             raise RuntimeClosureError('sealed object ELF mismatch')
         if _generation(ops.fstat(source.held_fd)) != source.generation:
             raise RuntimeClosureError('source changed during sealing')
-        ops.fcntl(lease.fd, _F_ADD_SEALS, _EXEC_SEALS)
-        seals = ops.fcntl(lease.fd, _F_GET_SEALS)
-        value = ops.fstat(lease.fd)
-        if seals != _EXEC_SEALS or not stat.S_ISREG(value.st_mode) or value.st_size != source.size or (value.st_mode & 511 != 365):
+        ops.fcntl(writable.fd, _F_ADD_SEALS, _EXEC_SEALS)
+        seals = ops.fcntl(writable.fd, _F_GET_SEALS)
+        writable_stat = ops.fstat(writable.fd)
+        exact_mode = writable_stat.st_mode & 511 == 365
+        exact_shape = stat.S_ISREG(writable_stat.st_mode) and writable_stat.st_size == source.size
+        if seals != _EXEC_SEALS or not exact_mode or not exact_shape:
             raise RuntimeClosureError('sealed object metadata or seals mismatch')
-        return SealedObject(lease.fd, source.generation, source.size, source.sha256, source.elf, seals)
+        readable = FdLease(
+            ops.open(
+                f'/proc/self/fd/{writable.fd}',
+                os.O_RDONLY | _O_CLOEXEC,
+            ),
+            'sealed-object-readable',
+        )
+        if _generation(ops.fstat(readable.fd)) != _generation(writable_stat):
+            raise RuntimeClosureError('read-only sealed object identity mismatch')
+        if ops.fcntl(readable.fd, _F_GET_SEALS) != _EXEC_SEALS:
+            raise RuntimeClosureError('read-only sealed object seals mismatch')
+        access_mode = ops.fcntl(readable.fd, _F_GETFL) & os.O_ACCMODE
+        if access_mode != os.O_RDONLY:
+            raise RuntimeClosureError('sealed object transfer descriptor is not read-only')
+        if ops.fcntl(readable.fd, _F_GETFD) & _FD_CLOEXEC == 0:
+            raise RuntimeClosureError('sealed object transfer descriptor is inheritable')
+        try:
+            writable.close(ops)
+        except BaseException as close_error:
+            _finish_fds(ops, (readable,), close_error)
+        return SealedObject(
+            readable.fd,
+            source.generation,
+            source.size,
+            source.sha256,
+            source.elf,
+            seals,
+        )
     except BaseException as primary:
-        _finish_fds(ops, (lease,), primary)
+        leases = tuple(value for value in (readable, writable) if value is not None)
+        _finish_fds(ops, leases, primary)
         raise
-
-def _seal_source(ops: _Ops, source: AuthenticatedObject, tool: str) -> SealedObject:
-    """Compatibility name for private portable tests; every object uses this path."""
-    del tool
-    return _seal_object(ops, source)
 
 def _seal_report(ops: _Ops, report: bytes) -> int:
     writable = FdLease(ops.memfd_create('cogs-runtime-report', _MFD_CLOEXEC | _MFD_ALLOW_SEALING), 'report-writable')
@@ -1218,6 +1417,8 @@ def _seal_report(ops: _Ops, report: bytes) -> int:
             raise RuntimeClosureError('read-only report seals mismatch')
         if ops.fcntl(readable.fd, _F_GETFL) & os.O_ACCMODE != os.O_RDONLY:
             raise RuntimeClosureError('report descriptor is not read-only')
+        if ops.fcntl(readable.fd, _F_GETFD) & _FD_CLOEXEC == 0:
+            raise RuntimeClosureError('report descriptor is not close-on-exec')
         try:
             writable.close(ops)
         except BaseException as close_error:
@@ -1240,7 +1441,14 @@ def _encode_report(closures: Sequence[ResolvedToolClosure], mappings: Sequence[M
     tools: list[dict[str, Any]] = []
     for closure in closures:
         objects = [_object_report(value) for value in closure.objects]
-        tools.append({'closure_sha256': hashlib.sha256(_canonical(objects)).hexdigest(), 'mapping_sha256': mapping_by_tool[closure.tool].mapping_sha256, 'objects': objects, 'seal_profile': None if closure.tool == 'python3-parser' else _SEAL_PROFILE, 'sealed_executable': closure.tool != 'python3-parser', 'tool': closure.tool})
+        tools.append({
+            'closure_sha256': hashlib.sha256(_canonical(objects)).hexdigest(),
+            'mapping_sha256': mapping_by_tool[closure.tool].mapping_sha256,
+            'objects': objects,
+            'seal_profile': None if closure.tool == 'python3-parser' else _SEAL_PROFILE,
+            'sealed_executable': closure.tool != 'python3-parser',
+            'tool': closure.tool,
+        })
     digest_view = [{key: value for (key, value) in tool.items() if key != 'mapping_sha256'} for tool in tools]
     return _canonical({'closure_sha256': hashlib.sha256(_canonical(digest_view)).hexdigest(), 'tools': tools, 'version': _VERSION}) + b'\n'
 
@@ -1265,6 +1473,7 @@ def _validate_report_value(value: Any) -> None:
     if type(tools) is not list or [item.get('tool') for item in tools if type(item) is dict] != expected_tools:
         raise RuntimeClosureError('invalid closure report tool order')
     tool_keys = {'closure_sha256', 'mapping_sha256', 'objects', 'seal_profile', 'sealed_executable', 'tool'}
+    global_roles: dict[str, str] = {}
     for (tool_index, tool) in enumerate(tools):
         if type(tool) is not dict or set(tool) != tool_keys:
             raise RuntimeClosureError('invalid tool report')
@@ -1296,6 +1505,11 @@ def _validate_report_value(value: Any) -> None:
             soname = object_['soname']
             if soname is not None:
                 _require_soname(soname)
+            if role == 'library' and soname is None:
+                raise RuntimeClosureError('reported library lacks SONAME')
+            prior_role = global_roles.setdefault(object_['sha256'], role)
+            if prior_role != role:
+                raise RuntimeClosureError('cross-tool reported role alias')
             needed = object_['needed']
             if type(needed) is not list or len(needed) > _MAX_OBJECTS:
                 raise RuntimeClosureError('invalid reported dependencies')
@@ -1327,11 +1541,20 @@ def _validate_report_value(value: Any) -> None:
     if hashlib.sha256(_canonical(digest_view)).hexdigest() != value['closure_sha256']:
         raise RuntimeClosureError('aggregate closure digest mismatch')
 
-def _decode_report(data: bytes) -> dict[str, Any]:
+def _producer_decode_report(data: bytes) -> dict[str, Any]:
     if type(data) is not bytes or not data.endswith(b'\n') or data.endswith(b'\n\n') or (len(data) > _MAX_REPORT):
         raise RuntimeClosureError('invalid canonical report framing')
     try:
-        value = json.loads(data[:-1].decode('utf-8', 'strict'), object_pairs_hook=_strict_object, parse_float=lambda _value: (_ for _ in ()).throw(RuntimeClosureError('float in report')), parse_constant=lambda _value: (_ for _ in ()).throw(RuntimeClosureError('constant in report')))
+        value = json.loads(
+            data[:-1].decode('utf-8', 'strict'),
+            object_pairs_hook=_strict_object,
+            parse_float=lambda _value: (_ for _ in ()).throw(
+                RuntimeClosureError('float in report')
+            ),
+            parse_constant=lambda _value: (_ for _ in ()).throw(
+                RuntimeClosureError('constant in report')
+            ),
+        )
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise RuntimeClosureError('invalid report JSON') from error
     _validate_report_value(value)
@@ -1339,8 +1562,13 @@ def _decode_report(data: bytes) -> dict[str, Any]:
         raise RuntimeClosureError('noncanonical closure report')
     return value
 
+def _producer_reencode_report(value: dict[str, Any]) -> bytes:
+    return _canonical(value) + b'\n'
+
 def _validate_report_bytes(data: bytes) -> bytes:
-    _decode_report(data)
+    value = _producer_decode_report(data)
+    if _producer_reencode_report(value) != data:
+        raise RuntimeClosureError('producer report re-encoding changed')
     return data
 
 def _apply_schema_validator(admission: object, candidate: bytes) -> None:
@@ -1350,37 +1578,138 @@ def _apply_schema_validator(admission: object, candidate: bytes) -> None:
     if validator(candidate) is not None:
         raise RuntimeClosureError('independent schema validator returned data')
 
-def _canonical_report_for_tests(tool_records: Sequence[dict[str, Any]]) -> bytes:
-    tools = json.loads(json.dumps(list(tool_records)))
-    for tool in tools:
-        tool['closure_sha256'] = hashlib.sha256(_canonical(tool['objects'])).hexdigest()
-    digest_view = [{key: value for (key, value) in tool.items() if key != 'mapping_sha256'} for tool in tools]
-    report = _canonical({'closure_sha256': hashlib.sha256(_canonical(digest_view)).hexdigest(), 'tools': tools, 'version': _VERSION}) + b'\n'
-    return _validate_report_bytes(report)
+def _construct_report(
+    ops: _Ops,
+    admission: object,
+    closures: Sequence[ResolvedToolClosure],
+    mappings: Sequence[MappedToolClosure],
+) -> tuple[bytes, dict[str, Any]]:
+    candidate = ops.report_candidate(_encode_report(closures, mappings))
+    value = _producer_decode_report(candidate)
+    if _producer_reencode_report(value) != candidate:
+        raise RuntimeClosureError('producer report codec disagreement')
+    _apply_schema_validator(admission, candidate)
+    return candidate, value
 
 def _binding_digest(rows: Sequence[_PrivateGenerationRow]) -> str:
-    value = [{'descriptor_index': row.descriptor_index, 'needed': list(row.needed), 'object_index': row.object_index, 'role': row.role, 'seal_profile': row.seal_profile, 'sha256': row.sha256, 'size': row.size, 'soname': row.soname, 'tool_index': row.tool_index} for row in rows]
+    value = [{
+        'descriptor_index': row.descriptor_index,
+        'needed': list(row.needed),
+        'object_index': row.object_index,
+        'role': row.role,
+        'seal_profile': row.seal_profile,
+        'sha256': row.sha256,
+        'size': row.size,
+        'soname': row.soname,
+        'tool_index': row.tool_index,
+    } for row in rows]
     return hashlib.sha256(_canonical(value)).hexdigest()
 
 def _generation_digest(rows: Sequence[_PrivateGenerationRow]) -> str:
     framed = []
     for row in rows:
         value = row.source_generation
-        framed.append([row.tool_index, row.object_index, row.descriptor_index, value.device, value.inode, value.size, value.mtime_ns, value.ctime_ns, value.mode, value.uid, value.gid])
+        framed.append([
+            row.tool_index,
+            row.object_index,
+            row.descriptor_index,
+            value.device,
+            value.inode,
+            value.size,
+            value.mtime_ns,
+            value.ctime_ns,
+            value.mode,
+            value.uid,
+            value.gid,
+        ])
     return hashlib.sha256(_canonical(framed)).hexdigest()
 
-def _validate_issuance_receipt(receipt: object, report: bytes, rows: Sequence[_PrivateGenerationRow], descriptor_count: int) -> None:
-    report_value = _decode_report(report)
-    checks = (getattr(receipt, 'version', None) == _HANDOFF_VERSION, getattr(receipt, 'report_sha256', None) == hashlib.sha256(report).hexdigest(), getattr(receipt, 'closure_sha256', None) == report_value['closure_sha256'], getattr(receipt, 'binding_sha256', None) == _binding_digest(rows), getattr(receipt, 'generation_sha256', None) == _generation_digest(rows), getattr(receipt, 'descriptor_count', None) == descriptor_count, type(getattr(receipt, 'issuer_pid', None)) is int, getattr(receipt, 'issuer_pid', 0) > 0, type(getattr(receipt, 'consumer_pid', None)) is int, getattr(receipt, 'consumer_pid', 0) > 0)
+def _validate_generation_rows(
+    report: dict[str, Any],
+    rows: Sequence[_PrivateGenerationRow],
+    object_descriptor_count: int,
+) -> None:
+    expected_positions = tuple(
+        (tool_index, object_index)
+        for tool_index in (1, 2)
+        for object_index in range(len(report['tools'][tool_index]['objects']))
+    )
+    positions = tuple((row.tool_index, row.object_index) for row in rows)
+    if positions != expected_positions or len(set(positions)) != len(positions):
+        raise RuntimeClosureError('generation rows do not exactly cover sealed objects')
+    aliases: dict[int, tuple[Any, ...]] = {}
+    referenced: set[int] = set()
+    for row in rows:
+        if not 1 <= row.descriptor_index <= object_descriptor_count:
+            raise RuntimeClosureError('generation descriptor index out of range')
+        item = report['tools'][row.tool_index]['objects'][row.object_index]
+        report_binding = (
+            item['role'],
+            item['size'],
+            item['sha256'],
+            item['soname'],
+            tuple(item['needed']),
+        )
+        row_binding = (
+            row.role,
+            row.size,
+            row.sha256,
+            row.soname,
+            row.needed,
+        )
+        if row_binding != report_binding:
+            raise RuntimeClosureError('generation row report binding mismatch')
+        alias_binding = (
+            row.source_generation,
+            row.size,
+            row.sha256,
+            row.soname,
+            row.needed,
+        )
+        prior = aliases.setdefault(row.descriptor_index, alias_binding)
+        if prior != alias_binding:
+            raise RuntimeClosureError('conflicting generation descriptor alias')
+        referenced.add(row.descriptor_index)
+    expected_descriptors = set(range(1, object_descriptor_count + 1))
+    if referenced != expected_descriptors:
+        raise RuntimeClosureError('generation rows leave an unbound descriptor')
+
+def _validate_issuance_receipt(
+    receipt: object,
+    report: bytes,
+    rows: Sequence[_PrivateGenerationRow],
+    descriptor_count: int,
+) -> None:
+    report_value = _producer_decode_report(report)
+    _validate_generation_rows(report_value, rows, descriptor_count - 1)
+    checks = (
+        getattr(receipt, 'version', None) == _HANDOFF_VERSION,
+        getattr(receipt, 'report_sha256', None) == hashlib.sha256(report).hexdigest(),
+        getattr(receipt, 'closure_sha256', None) == report_value['closure_sha256'],
+        getattr(receipt, 'binding_sha256', None) == _binding_digest(rows),
+        getattr(receipt, 'generation_sha256', None) == _generation_digest(rows),
+        getattr(receipt, 'descriptor_count', None) == descriptor_count,
+        type(getattr(receipt, 'issuer_pid', None)) is int,
+        getattr(receipt, 'issuer_pid', 0) > 0,
+        type(getattr(receipt, 'consumer_pid', None)) is int,
+        getattr(receipt, 'consumer_pid', 0) > 0,
+    )
     if not all(checks):
         raise RuntimeClosureError('private issuer receipt mismatch')
 
 class PreparedRuntimeClosure:
     """Private admitted owner; it exposes data only while READY."""
 
-    def __init__(self, token: object, ops: _Ops, preparation: PreparationLease):
-        if token is not _PRIVATE_CONSTRUCTOR:
-            raise RuntimeClosureError('runtime closure owner is private')
+    def __init__(
+        self,
+        capability: _LiveIssuerCapability,
+        admission: object,
+        ops: _Ops,
+        preparation: PreparationLease,
+    ):
+        if type(capability) is not _LiveIssuerCapability:
+            raise RuntimeClosureError('runtime closure owner requires live issuer capability')
+        capability.consume(admission)
         self._ops = ops
         self._preparation = preparation
         self._state = _OwnerState.PREPARING
@@ -1418,6 +1747,12 @@ class PreparedRuntimeClosure:
                 expected_seals = _DATA_SEALS if lease.purpose == 'sealed-report' else _EXEC_SEALS
                 if self._ops.fcntl(lease.fd, _F_GET_SEALS) != expected_seals:
                     raise RuntimeClosureError('issued descriptor seals changed')
+                access_mode = self._ops.fcntl(lease.fd, _F_GETFL) & os.O_ACCMODE
+                if access_mode != os.O_RDONLY:
+                    raise RuntimeClosureError('issued descriptor is not read-only')
+                descriptor_flags = self._ops.fcntl(lease.fd, _F_GETFD)
+                if descriptor_flags & _FD_CLOEXEC == 0:
+                    raise RuntimeClosureError('issued descriptor is not close-on-exec')
             report_lease = self._bundle[0]
             report = self.canonical_report if self._state is _OwnerState.READY else self._report
             if report is None or _read_complete(self._ops, report_lease.fd, len(report)) != report:
@@ -1501,22 +1836,58 @@ class PreparedRuntimeClosure:
             if exc is not None:
                 raise RuntimeClosureCleanupError((exc, cleanup)) from exc
             raise
-_PRIVATE_CONSTRUCTOR = object()
-
 def _child_baseline(ops: _Ops) -> tuple[int, ...]:
     return _parse_children(_read_proc(ops, '/proc/self/task/self/children', 65536))
 
-def _claim_admission(admission: object) -> None:
-    claim = getattr(admission, '_claim_runtime_closure_admission', None)
-    if not callable(claim) or claim() is not True:
-        raise RuntimeClosureError('missing or consumed runtime source admission')
+def _claim_admission(admission: object, issuer: object) -> _LiveIssuerCapability:
+    package_name = __package__
+    worker_pid = os.getpid()
+    consume = getattr(issuer, '_consume_runtime_closure_capability', None)
+    if not callable(consume):
+        raise RuntimeClosureError('live runtime issuer capability is unavailable')
+    result = consume(admission, package_name, worker_pid)
+    if type(result) is not tuple or len(result) != 2:
+        raise RuntimeClosureError('invalid runtime issuer capability result')
+    endpoint, expected_peer = result
+    if type(endpoint) is not socket.socket:
+        raise RuntimeClosureError('runtime issuer capability is not a kernel socket')
+    if type(expected_peer) is not tuple or len(expected_peer) != 3:
+        raise RuntimeClosureError('runtime issuer peer credential shape')
+    if endpoint.fileno() < 0:
+        raise RuntimeClosureError('runtime issuer capability endpoint is closed')
+    if endpoint.getsockopt(socket.SOL_SOCKET, socket.SO_TYPE) != socket.SOCK_SEQPACKET:
+        raise RuntimeClosureError('runtime issuer endpoint type mismatch')
+    if endpoint.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR) != 0:
+        raise RuntimeClosureError('runtime issuer endpoint is not live')
+    if fcntl.fcntl(endpoint.fileno(), _F_GETFD) & _FD_CLOEXEC == 0:
+        raise RuntimeClosureError('runtime issuer endpoint is inheritable')
+    raw_peer = endpoint.getsockopt(
+        socket.SOL_SOCKET,
+        socket.SO_PEERCRED,
+        struct.calcsize('3i'),
+    )
+    peer = struct.unpack('3i', raw_peer)
+    if peer != expected_peer:
+        raise RuntimeClosureError('runtime issuer endpoint peer mismatch')
+    peer_pid, peer_uid, peer_gid = peer
+    if peer_pid <= 0 or peer_pid == worker_pid:
+        raise RuntimeClosureError('runtime issuer endpoint process topology mismatch')
+    if peer_uid != os.getuid() or peer_gid != os.getgid():
+        raise RuntimeClosureError('runtime issuer endpoint credential mismatch')
     for name in ('revision', 'source_set_sha256', 'bootstrap_sha256'):
         value = getattr(admission, name, None)
         length = 40 if name == 'revision' else 64
         if type(value) is not str or len(value) != length:
             raise RuntimeClosureError('invalid runtime source admission identity')
-        if any((character not in '0123456789abcdef' for character in value)):
+        if any(character not in '0123456789abcdef' for character in value):
             raise RuntimeClosureError('invalid runtime source admission encoding')
+    return _LiveIssuerCapability(
+        admission,
+        endpoint,
+        package_name,
+        worker_pid,
+        peer,
+    )
 
 def _validate_closure_bounds(tool_objects: Sequence[Sequence[tuple[tuple[int, int], int]]]) -> None:
     """Pure object-count/per-tool/deduplicated aggregate bound gate."""
@@ -1560,7 +1931,11 @@ def _enforce_global_alias_policy(closures: Sequence[ResolvedToolClosure]) -> Non
             raise RuntimeClosureError('fixed executable identities must be distinct')
         executable_identities.add(closure.executable.identity)
 
-def _build_bundle(ops: _Ops, preparation: PreparationLease, closures: Sequence[ResolvedToolClosure]) -> tuple[list[FdLease], tuple[_PrivateGenerationRow, ...]]:
+def _build_bundle(
+    ops: _Ops,
+    preparation: PreparationLease,
+    closures: Sequence[ResolvedToolClosure],
+) -> tuple[list[FdLease], tuple[_PrivateGenerationRow, ...]]:
     bundle: list[FdLease] = []
     rows: list[_PrivateGenerationRow] = []
     sealed_by_identity: dict[tuple[int, int], tuple[int, SealedObject]] = {}
@@ -1571,7 +1946,12 @@ def _build_bundle(ops: _Ops, preparation: PreparationLease, closures: Sequence[R
             existing = sealed_by_identity.get(source.identity)
             if existing is None:
                 sealed = _seal_object(ops, source)
-                lease = preparation.register_fd(sealed.fd, 'sealed-object')
+                try:
+                    lease = preparation.register_fd(sealed.fd, 'sealed-object')
+                except BaseException as primary:
+                    orphan = FdLease(sealed.fd, 'unregistered-sealed-object')
+                    _finish_fds(ops, (orphan,), primary)
+                    raise RuntimeClosureError('unreachable')
                 bundle.append(lease)
                 descriptor_index = len(bundle)
                 sealed_by_identity[source.identity] = (descriptor_index, sealed)
@@ -1580,16 +1960,27 @@ def _build_bundle(ops: _Ops, preparation: PreparationLease, closures: Sequence[R
                 if sealed.source_generation != source.generation or sealed.sha256 != source.sha256:
                     raise RuntimeClosureError('shared sealed generation mismatch')
             (_interpreter, soname, needed) = _metadata(source)
-            rows.append(_PrivateGenerationRow(tool_index, object_index, source.role, descriptor_index, source.generation, source.size, source.sha256, soname, needed))
+            rows.append(_PrivateGenerationRow(
+                tool_index,
+                object_index,
+                source.role,
+                descriptor_index,
+                source.generation,
+                source.size,
+                source.sha256,
+                soname,
+                needed,
+            ))
     return (bundle, tuple(rows))
 
 def _prepare_state_machine(ops: _Ops, admission: object, issuer: object) -> PreparedRuntimeClosure:
-    del issuer
-    _claim_admission(admission)
+    capability = _claim_admission(admission, issuer)
+    preparation = PreparationLease(ops, frozenset(), ())
+    owner = PreparedRuntimeClosure(capability, admission, ops, preparation)
     ops.architecture_gate()
     _reserve_stdio(ops)
-    preparation = PreparationLease(ops, _snapshot_fds(ops), _child_baseline(ops))
-    owner = PreparedRuntimeClosure(_PRIVATE_CONSTRUCTOR, ops, preparation)
+    preparation.fd_baseline = _snapshot_fds(ops)
+    preparation.child_baseline = _child_baseline(ops)
     ops.checkpoint('state.preparing')
     closures: list[ResolvedToolClosure] = []
     sources: list[FdLease] = []
@@ -1627,20 +2018,24 @@ def _prepare_state_machine(ops: _Ops, admission: object, issuer: object) -> Prep
         (bundle, rows) = _build_bundle(ops, preparation, closures)
         for lease in bundle:
             ops.checkpoint('seal.object.after')
-        candidate = ops.report_candidate(_encode_report(closures, mappings))
-        first_value = _decode_report(candidate)
-        first_encoding = _canonical(first_value) + b'\n'
-        _apply_schema_validator(admission, candidate)
-        second_value = _decode_report(bytes(candidate))
-        second_encoding = _canonical(second_value) + b'\n'
-        if first_encoding != candidate or second_encoding != candidate or first_value is second_value:
-            raise RuntimeClosureError('independent report codec agreement failed')
+        candidate, report_value = _construct_report(
+            ops,
+            admission,
+            closures,
+            mappings,
+        )
+        _validate_generation_rows(report_value, rows, len(bundle))
         owner._report = candidate
         owner._bundle = bundle
         owner._rows = rows
         ops.checkpoint('report.before-seal')
         report_fd = _seal_report(ops, candidate)
-        report_lease = preparation.register_fd(report_fd, 'sealed-report')
+        try:
+            report_lease = preparation.register_fd(report_fd, 'sealed-report')
+        except BaseException as primary:
+            orphan = FdLease(report_fd, 'unregistered-sealed-report')
+            _finish_fds(ops, (orphan,), primary)
+            raise RuntimeClosureError('unreachable')
         owner._bundle.insert(0, report_lease)
         ops.checkpoint('report.after-seal')
         preparation.close_many(sources)
@@ -1676,19 +2071,6 @@ def _prepare_state_machine(ops: _Ops, admission: object, issuer: object) -> Prep
 def _prepare_admitted_fixed_runtime_closure(admission: object, issuer: object) -> PreparedRuntimeClosure:
     """Private fixed entry called only by the authenticated launcher worker."""
     return _prepare_state_machine(_Ops(), admission, issuer)
-
-def _prepare_with_adapter_for_tests(adapter: _Ops, admission: object, issuer: object) -> PreparedRuntimeClosure:
-    """Drive the exact production state machine with primitive scripted operations."""
-    if not isinstance(adapter, _Ops):
-        raise TypeError('private test constructor requires _Ops')
-    return _prepare_state_machine(adapter, admission, issuer)
-_prepare_fixed_runtime_closure_for_test = _prepare_with_adapter_for_tests
-
-def _drive_fixed_report_seal_with_adapter_for_tests(adapter: _Ops, report: bytes) -> int:
-    return _seal_report(adapter, report)
-
-def _drive_fixed_handoff_with_adapter_for_tests(owner: PreparedRuntimeClosure, issuer: object) -> _IssuanceReceipt:
-    return owner._issue_once(issuer)
 
 def prepare_fixed_runtime_closure() -> NoReturn:
     """Ambient preparation is forbidden and fails before any authority-bearing effect."""
