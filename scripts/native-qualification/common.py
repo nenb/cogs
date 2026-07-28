@@ -680,8 +680,8 @@ class SystemCommonOps:
     def observe(self, context: WorkflowContext) -> Mapping[str, object]:
         def namespaces() -> tuple[tuple[str, tuple[int, ...]], ...]:
             return tuple(
-                (name, _generation(os.stat(f"/proc/self/ns/{name}", follow_symlinks=True)))
-                for name in ("user", "pid", "mnt", "net")
+                (name, (info.st_mode, info.st_dev, info.st_ino, info.st_rdev))
+                for name in ("user", "pid", "mnt", "net") for info in (os.stat(f"/proc/self/ns/{name}", follow_symlinks=True),)
             )
         def paths() -> tuple[tuple[int, ...] | None, tuple[int, ...] | None, tuple[int, ...] | None]:
             return (
@@ -704,7 +704,7 @@ class SystemCommonOps:
             try:
                 observed[name] = self._stable(readers[name], name)
             except BaseException as error:
-                failures.append(error)
+                failures.append(QualificationError(f"{name} baseline {type(error).__name__}-{getattr(error, 'errno', 0)}"))
         if failures:
             raise __import__("builtins").ExceptionGroup("common baseline uncertainty", failures)
         return observed
