@@ -17,7 +17,6 @@ import struct
 import sys
 import tempfile
 import threading
-import time
 from types import SimpleNamespace
 
 if sys.flags.optimize:
@@ -321,10 +320,8 @@ REQUIRED_IO_MODES = {
     "report-read": {"error", "short", "interrupted"},
     "waitpid": {"error", "wrong-child", "interrupted"},
 }
-
 class ModeledCrash(RuntimeError):
     pass
-
 class VNode:
     next_inode = 1000
     def __init__(self, kind, raw=b"", role=""):
@@ -347,7 +344,6 @@ class CommonProcess:
         self.error = None
 
 MODEL_WAIT_SECONDS = 1.0
-
 class SocketChannel:
     def __init__(self):
         self.queues = [[], []]
@@ -389,10 +385,6 @@ class CommonSocket:
             for cut in ("clean-reply-send", "upload-ack-send", "private-capability-send"):
                 if self.kernel.hit(cut) == "short":
                     return max(0, len(raw) - 1)
-        # The portable threads begin at the post-fork entry points. Consume the
-        # creator release gate here rather than exposing it as worker payload.
-        if raw == b"RELEASE":
-            return len(raw)
         if self.connector and self.kernel.hit("upload-ack-send") == "short":
             return max(0, len(raw) - 1)
         if self.connector and self.kernel.hit("private-capability-send") == "short":
@@ -420,17 +412,14 @@ class CommonSocket:
         channel = self.channel
         if channel is None:
             return b""
-        wait_seconds = MODEL_WAIT_SECONDS if self.role == "custodian-cleanup-endpoint" else 5.0
-        deadline = time.monotonic() + wait_seconds
         with channel.condition:
-            while not channel.queues[self.side]:
-                if (
-                    channel.closed[1 - self.side]
-                    or not self.kernel.current_process_live()
-                    or time.monotonic() >= deadline
-                ):
-                    return b""
-                channel.condition.wait(0.01)
+            while (
+                not channel.queues[self.side] and not channel.closed[1 - self.side]
+                and self.kernel.current_process_live()
+            ):
+                channel.condition.wait()
+            if not channel.queues[self.side]:
+                return b""
             raw, _rights = channel.queues[self.side].pop(0)
             raw = raw[:bound]
         if raw == b"PUBLISHED" and self.kernel.hit("published-recv") == "lost":
@@ -461,19 +450,16 @@ class CommonSocket:
         return len(raw)
     def recvmsg(self, bound, rights_bound):
         del rights_bound
-        deadline = time.monotonic() + MODEL_WAIT_SECONDS
         with self.channel.condition:
             while (
-                not self.channel.queues[self.side]
-                and not self.channel.closed[1 - self.side]
+                not self.channel.queues[self.side] and not self.channel.closed[1 - self.side]
                 and self.kernel.current_process_live()
-                and time.monotonic() < deadline
             ):
-                self.channel.condition.wait(0.01)
+                self.channel.condition.wait()
             if not self.channel.queues[self.side]:
                 return b"", [], 0, None
             raw, rights = self.channel.queues[self.side].pop(0)
-        descriptors = [self.kernel.allocate(kind, value) for kind, value in rights]
+            descriptors = [self.kernel.allocate(kind, value) for kind, value in rights]
         ancillary = [] if not descriptors else [(
             socket.SOL_SOCKET, socket.SCM_RIGHTS,
             b"".join(struct.pack("i", descriptor) for descriptor in descriptors),
@@ -491,14 +477,9 @@ class CommonSocket:
             raise OSError(errno.EIO, "modeled listener listen")
         self.listening = True
     def accept(self):
-        deadline = time.monotonic() + MODEL_WAIT_SECONDS
         with self.kernel.socket_condition:
-            while (
-                not self.pending
-                and self.kernel.current_process_live()
-                and time.monotonic() < deadline
-            ):
-                self.kernel.socket_condition.wait(0.01)
+            while not self.pending and not self.kernel.cleanup_finished and self.kernel.current_process_live():
+                self.kernel.socket_condition.wait()
             if not self.pending:
                 raise TimeoutError("modeled accept timeout")
             channel = self.pending.pop(0)
@@ -578,6 +559,7 @@ class CommonKernel:
         self.pending_namespace_effects = []
         self.listeners = {}
         self.socket_condition = threading.Condition()
+        self.cleanup_finished = False
         self.threads = []
     @property
     def pid(self):
@@ -625,8 +607,13 @@ class CommonKernel:
             )
             if not retained:
                 with value.channel.condition:
-                    value.channel.closed[value.side] = True
-                    value.channel.condition.notify_all()
+                    retained = any(
+                        item_kind == "socket" and item.channel is value.channel and item.side == value.side
+                        for queue in value.channel.queues for _raw, rights in queue for item_kind, item in rights
+                    )
+                    if not retained:
+                        value.channel.closed[value.side] = True
+                        value.channel.condition.notify_all()
         if self.phase == "upload" and role == "report" and self.hit("upload-report-close") == "after-error":
             raise OSError(errno.EIO, "modeled upload report close after effect")
         retained_name = {
@@ -641,7 +628,8 @@ class CommonKernel:
         if kind == "socket" and role == "custodian-cleanup-endpoint" and self.custodian is not None and self.pid == self.custodian.pid:
             if self.hit("private-capability-close") == "after-error":
                 raise OSError(errno.EIO, "private capability close after effect")
-        if kind == "pidfd" and self.phase == "cleanup" and self.hit("pidfd-close") == "after-error":
+        if (kind == "pidfd" and self.phase == "cleanup" and self.pid != self.parent_pid
+                and self.hit("pidfd-close") == "after-error"):
             raise OSError(errno.EIO, "pidfd close after effect")
     def status(self, node):
         return SimpleNamespace(
@@ -723,6 +711,10 @@ class CommonKernel:
     def lexists(self, path):
         return self.node_for_path(path) is not None
     def write(self, fd, raw):
+        if fd == 2:
+            if type(raw) is not bytes or not raw.startswith(b"native-") or len(raw) > 512:
+                raise AssertionError("unbounded native diagnostic")
+            return len(raw)
         node = self.fds[fd][1]
         mutation = self.hit(f"{node.role}-write")
         if mutation == "interrupted":
@@ -887,8 +879,7 @@ class CommonKernel:
             with self.socket_condition:
                 self.socket_condition.notify_all()
     def _spawn(self, process, target):
-        thread = threading.Thread(target=self._run_process, args=(process, target),
-                                  name=f"portable-custodian-{process.pid}", daemon=True)
+        thread = threading.Thread(target=self._run_process, args=(process, target), name=f"portable-custodian-{process.pid}", daemon=True)
         thread.start()
         process.thread = thread
         self.threads.append(thread)
@@ -1074,6 +1065,18 @@ class CommonKernel:
             if kind not in ("pidfd",):
                 self.fds.pop(fd, None)
                 self.offsets.pop(fd, None)
+    def cleanup_exit(self):
+        self.cleanup_finished = True
+        with self.socket_condition:
+            self.socket_condition.notify_all()
+        for fd, (kind, value) in tuple(self.fds.items()):
+            if kind == "socket" and value.role == "custodian-cleanup-endpoint":
+                self.fds.pop(fd)
+                self.offsets.pop(fd, None)
+                if value.channel is not None:
+                    with value.channel.condition:
+                        value.channel.closed[value.side] = True
+                        value.channel.condition.notify_all()
     def audit(self, disposition):
         children = tuple(
             process for process in (self.service_process, self.custodian)
@@ -1331,6 +1334,7 @@ def run_common_row(common, row, production_result):
                         "NQ_UPLOAD_ARTIFACT_ID": "7", "NQ_UPLOAD_ARTIFACT_SHA256": "a" * 64,
                     }
                     kernel.phase = "cleanup"
+                    kernel.cleanup_finished = False
                     with patched(common.os, environ=environment):
                         try:
                             common.cleanup_report("integration")
@@ -1349,6 +1353,8 @@ def run_common_row(common, row, production_result):
                                 kernel.events.append("upload:ack-rejected")
                             if cut.startswith("replace:"):
                                 kernel.events.append("replacement:preserved")
+                        finally:
+                            kernel.cleanup_exit()
                         recovery_cut = row["primitive_fault"]["mode"] == "crash"
                         recovery_cut = recovery_cut and row["primitive_fault"]["stage"] == "recovery"
                         if recovery_cut and row["id"] in kernel.consumed:
@@ -1430,7 +1436,6 @@ def common_production_matrix():
     selected, consumed, oracle = [], [], []
     production_calls = set()
     watched = {"SystemCommonOps.run_fixed_operation", "SystemCommonOps._issue_cli", "_custodian_main", "_custodian_worker"}
-    # Resolving a path in every profile callback made the aggregate matrix time out.
     final_common_filename = str(FINAL_COMMON)
     def profile(frame, event, argument):
         del argument
@@ -1442,12 +1447,8 @@ def common_production_matrix():
                 production_calls.add(qualified)
         return profile
     prior_profile = sys.getprofile()
-    # threading.getprofile is unavailable on the supported Python 3.9 runtime.
     thread_profile_getter = getattr(threading, "getprofile", None)
-    prior_thread_profile = (
-        thread_profile_getter() if thread_profile_getter is not None
-        else getattr(threading, "_profile_hook", None)
-    )
+    prior_thread_profile = thread_profile_getter() if thread_profile_getter is not None else getattr(threading, "_profile_hook", None)
     sys.setprofile(profile)
     threading.setprofile(profile)
     try:

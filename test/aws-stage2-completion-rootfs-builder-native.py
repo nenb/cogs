@@ -25,15 +25,17 @@ ROOT_MOUNT_FIELDS = (
     "fs_type", "source_sha256", "super_options",
 )
 EXPECTED_FIELDS = (
-    "REPOSITORY", "WORKFLOW_FILE", "JOB", "EVENT", "ACTION", "RUN_ID", "RUN_ATTEMPT",
-    "ENVELOPE_SHA", "EVENT_MERGE_SHA", "WORKFLOW_REF", "WORKFLOW_SHA", "BASE_SHA",
-    "PR_NUMBER", "HEAD_REPOSITORY", "HEAD_SHA", "CHECKED_OUT_SHA", "WORKFLOW_BLOB_DIGEST",
+    "REPOSITORY", "WORKFLOW_FILE", "JOB", "EVENT", "RUN_ID", "RUN_ATTEMPT",
+    "ENVELOPE_SHA", "WORKFLOW_REF", "WORKFLOW_SHA", "REF", "REF_NAME", "REF_TYPE",
+    "REF_PROTECTED", "DEFAULT_BRANCH", "SENDER", "AUTHORIZED_ACTOR", "HEAD_REPOSITORY",
+    "HEAD_SHA", "CHECKED_OUT_SHA", "WORKFLOW_BLOB_DIGEST",
 )
 GITHUB_FIELDS = (
     "CI", "GITHUB_ACTIONS", "RUNNER_ENVIRONMENT", "RUNNER_OS", "RUNNER_ARCH", "ImageOS",
     "GITHUB_WORKFLOW", "GITHUB_WORKFLOW_REF", "GITHUB_WORKFLOW_SHA", "GITHUB_JOB",
     "GITHUB_REPOSITORY", "GITHUB_EVENT_NAME", "GITHUB_EVENT_PATH", "GITHUB_SHA",
-    "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT",
+    "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "GITHUB_ACTOR", "GITHUB_TRIGGERING_ACTOR",
+    "GITHUB_REF", "GITHUB_REF_NAME", "GITHUB_REF_TYPE", "GITHUB_REF_PROTECTED",
 )
 PRESERVED_FIELDS = GITHUB_FIELDS + tuple(f"COGS_C1_EXPECTED_{name}" for name in EXPECTED_FIELDS)
 SHA_PATTERN = re.compile(r"[0-9a-f]{40}")
@@ -110,50 +112,41 @@ def nested(value, *keys):
     return value
 
 
-def validate_revision_domains(envelope_sha, event_merge_sha, head_sha, base_sha, workflow_sha,
-                              checked_out_sha):
-    for name, value in (("envelope", envelope_sha), ("event merge", event_merge_sha)):
-        require(SHA_PATTERN.fullmatch(value) is not None, f"malformed {name} revision")
-        require(value not in {head_sha, base_sha},
-                f"{name} revision collapsed into source domain")
-    values = (head_sha, base_sha, workflow_sha, checked_out_sha)
-    require(all(SHA_PATTERN.fullmatch(value) is not None for value in values),
-            "malformed source or workflow revision domain")
-    require(head_sha != base_sha, "head and base source revisions collapsed")
-    require(checked_out_sha == head_sha, "checked-out source revision differs")
-    require(workflow_sha in {envelope_sha, head_sha} and workflow_sha != base_sha,
-            "workflow revision is outside the execution/source domains")
-
-
-def validate_synthetic_context(envelope_sha, event_merge_sha, github_sha, event_payload_merge_sha):
-    require(envelope_sha == github_sha, "envelope revision differs from GitHub SHA context")
-    require(event_merge_sha == event_payload_merge_sha,
-            "event merge revision differs from event payload context")
+def validate_dispatch_identity(values):
+    fixed = {
+        "repository": "nenb/cogs", "workflow_file": WORKFLOW_FILE, "job": "native-c1",
+        "event": "workflow_dispatch", "run_attempt": "1", "ref_type": "branch",
+        "ref_protected": "true",
+    }
+    require(all(values.get(name) == value for name, value in fixed.items()),
+            "fixed workflow identity mismatch")
+    for name in ("run_id", "run_attempt"):
+        require(DECIMAL_PATTERN.fullmatch(values.get(name, "")) is not None, f"malformed {name}")
+    for name in ("envelope_sha", "workflow_sha", "head_sha", "checked_out_sha"):
+        require(SHA_PATTERN.fullmatch(values.get(name, "")) is not None,
+                f"malformed {name} revision")
+    require(values["workflow_sha"] == values["envelope_sha"],
+            "workflow revision differs from protected dispatch revision")
+    require(values["checked_out_sha"] == values["head_sha"],
+            "checked-out source revision differs")
+    require(values["head_repository"] == values["repository"],
+            "reviewed source repository mismatch")
+    require(values["default_branch"] and values["ref_name"] == values["default_branch"],
+            "dispatch branch differs from default branch")
+    require(values["ref"] == f'refs/heads/{values["default_branch"]}',
+            "dispatch ref is not the protected default branch")
+    require(values["workflow_ref"] ==
+            f'{values["repository"]}/{values["workflow_file"]}@{values["ref"]}',
+            "workflow ref mismatch")
+    require(values["sender"] and values["sender"] == values["authorized_actor"],
+            "dispatch sender lacks external authority")
 
 
 def workflow_observations():
     expected = expected_values()
-    fixed = {
-        "repository": "nenb/cogs", "workflow_file": WORKFLOW_FILE, "job": "native-c1",
-        "event": "pull_request", "run_attempt": "1",
-    }
-    require(all(expected[name] == value for name, value in fixed.items()),
-            "fixed workflow identity mismatch")
-    require(expected["action"] in {"opened", "reopened", "synchronize"},
-            "unexpected pull request action")
-    for name in ("run_id", "run_attempt", "pr_number"):
-        require(DECIMAL_PATTERN.fullmatch(expected[name]) is not None, f"malformed {name}")
-    validate_revision_domains(
-        expected["envelope_sha"], expected["event_merge_sha"], expected["head_sha"],
-        expected["base_sha"], expected["workflow_sha"], expected["checked_out_sha"],
-    )
+    validate_dispatch_identity(expected)
     require(re.fullmatch(r"[0-9a-f]{64}", expected["workflow_blob_digest"]) is not None,
             "malformed workflow blob digest")
-    require(expected["head_repository"] == expected["repository"],
-            "pull request head repository mismatch")
-    workflow_ref_pattern = re.escape(f'{expected["repository"]}/{WORKFLOW_FILE}@refs/') + r".+"
-    require(re.fullmatch(workflow_ref_pattern, expected["workflow_ref"]) is not None,
-            "workflow ref mismatch")
 
     fixed_environment = {
         "GITHUB_ACTIONS": "true", "CI": "true", "RUNNER_ENVIRONMENT": "github-hosted",
@@ -164,6 +157,10 @@ def workflow_observations():
         "GITHUB_RUN_ATTEMPT": expected["run_attempt"],
         "GITHUB_WORKFLOW_REF": expected["workflow_ref"],
         "GITHUB_WORKFLOW_SHA": expected["workflow_sha"],
+        "GITHUB_ACTOR": expected["sender"], "GITHUB_TRIGGERING_ACTOR": expected["sender"],
+        "GITHUB_REF": expected["ref"], "GITHUB_REF_NAME": expected["ref_name"],
+        "GITHUB_REF_TYPE": expected["ref_type"],
+        "GITHUB_REF_PROTECTED": expected["ref_protected"],
     }
     require(all(os.environ.get(name) == value for name, value in fixed_environment.items()),
             "GitHub runner observation mismatch")
@@ -171,17 +168,12 @@ def workflow_observations():
     require(event_path.is_absolute() and event_path.is_file(), "event observation unavailable")
     event = read_json(event_path)
     event_pairs = {
-        "action": nested(event, "action"), "pr_number": nested(event, "number"),
         "repository": nested(event, "repository", "full_name"),
-        "event_merge_sha": nested(event, "pull_request", "merge_commit_sha"),
-        "base_sha": nested(event, "pull_request", "base", "sha"),
-        "head_repository": nested(event, "pull_request", "head", "repo", "full_name"),
-        "head_sha": nested(event, "pull_request", "head", "sha"),
+        "default_branch": nested(event, "repository", "default_branch"),
+        "sender": nested(event, "sender", "login"), "ref": nested(event, "ref"),
+        "workflow_file": nested(event, "workflow"),
+        "head_sha": nested(event, "inputs", "reviewed_sha"),
     }
-    validate_synthetic_context(
-        expected["envelope_sha"], expected["event_merge_sha"],
-        os.environ.get("GITHUB_SHA", ""), str(event_pairs["event_merge_sha"]),
-    )
     for name, value in event_pairs.items():
         require(str(value) == expected[name], f"event {name} mismatch")
 
@@ -211,13 +203,13 @@ def workflow_observations():
 
     envelope = {
         "repository": expected["repository"], "workflow_file": expected["workflow_file"],
-        "job": expected["job"], "event": expected["event"], "action": expected["action"],
+        "job": expected["job"], "event": expected["event"],
         "run_id": expected["run_id"], "run_attempt": expected["run_attempt"],
         "envelope_sha": expected["envelope_sha"],
-        "event_merge_sha": expected["event_merge_sha"],
         "workflow_ref": expected["workflow_ref"], "workflow_sha": expected["workflow_sha"],
-        "base_sha": expected["base_sha"],
-        "pull_request_number": expected["pr_number"],
+        "ref": expected["ref"], "ref_name": expected["ref_name"],
+        "ref_type": expected["ref_type"], "ref_protected": expected["ref_protected"],
+        "default_branch": expected["default_branch"], "sender": expected["sender"],
     }
     source = {
         "head_repository": expected["head_repository"], "source_sha": expected["head_sha"],
@@ -227,9 +219,6 @@ def workflow_observations():
         "workflow_blob_digest": expected["workflow_blob_digest"],
         "workflow_file_sha256": file_hash.hex(), "git_blobs": blobs,
     }
-    require(all(envelope[name] not in {source["source_sha"], envelope["base_sha"]}
-                for name in ("envelope_sha", "event_merge_sha")),
-            "execution and source domains are not distinct")
     return {"execution_envelope": envelope, "source": source,
             "runner_environment": fixed_environment}
 
@@ -492,38 +481,35 @@ def invoke_workflow():
 
 
 def portable_tests():
-    envelope_sha, event_merge_sha, source_sha, base_sha = "a" * 40, "d" * 40, "b" * 40, "c" * 40
-    accepted = ((envelope_sha, envelope_sha, source_sha, base_sha, source_sha, source_sha),
-                (envelope_sha, event_merge_sha, source_sha, base_sha, envelope_sha, source_sha))
-    for values in accepted:
-        validate_revision_domains(*values)
-        validate_synthetic_context(values[0], values[1], values[0], values[1])
+    envelope_sha, source_sha, hostile_sha = "a" * 40, "b" * 40, "c" * 40
+    dispatch_identity = {
+        "repository": "nenb/cogs", "workflow_file": WORKFLOW_FILE, "job": "native-c1",
+        "event": "workflow_dispatch", "run_id": "1", "run_attempt": "1",
+        "envelope_sha": envelope_sha,
+        "workflow_ref": "nenb/cogs/.github/workflows/ci.yml@refs/heads/main",
+        "workflow_sha": envelope_sha, "ref": "refs/heads/main", "ref_name": "main",
+        "ref_type": "branch", "ref_protected": "true", "default_branch": "main",
+        "sender": "reviewer", "authorized_actor": "reviewer",
+        "head_repository": "nenb/cogs", "head_sha": source_sha, "checked_out_sha": source_sha,
+    }
+    validate_dispatch_identity(dispatch_identity)
+    validate_dispatch_identity({**dispatch_identity, "head_sha": envelope_sha,
+                                "checked_out_sha": envelope_sha})
     rejected = (
-        ("", event_merge_sha, source_sha, base_sha, source_sha, source_sha),
-        (envelope_sha, "", source_sha, base_sha, source_sha, source_sha),
-        ("A" * 40, event_merge_sha, source_sha, base_sha, source_sha, source_sha),
-        (envelope_sha, "malformed", source_sha, base_sha, source_sha, source_sha),
-        (source_sha, event_merge_sha, source_sha, base_sha, source_sha, source_sha),
-        (envelope_sha, base_sha, source_sha, base_sha, source_sha, source_sha),
-        (envelope_sha, event_merge_sha, source_sha, source_sha, source_sha, source_sha),
-        (envelope_sha, event_merge_sha, source_sha, base_sha, base_sha, source_sha),
-        (envelope_sha, event_merge_sha, source_sha, base_sha, event_merge_sha, source_sha),
-        (envelope_sha, event_merge_sha, source_sha, base_sha, source_sha, base_sha),
-        (envelope_sha, event_merge_sha, source_sha, base_sha, source_sha, envelope_sha),
+        ("event", "pull_request"), ("run_attempt", "2"), ("repository", "fork/cogs"),
+        ("workflow_file", "other.yml"), ("job", "quality"), ("run_id", "0"),
+        ("envelope_sha", "A" * 40), ("workflow_sha", hostile_sha),
+        ("ref", "refs/heads/topic"), ("ref_name", "topic"), ("ref_type", "tag"),
+        ("ref_protected", "false"), ("default_branch", "trunk"), ("sender", ""),
+        ("authorized_actor", "other-reviewer"), ("head_repository", "fork/cogs"),
+        ("head_sha", "malformed"),
+        ("checked_out_sha", hostile_sha),
+        ("workflow_ref", "nenb/cogs/.github/workflows/ci.yml@refs/heads/topic"),
     )
-    for values in rejected:
+    for name, replacement in rejected:
         try:
-            validate_revision_domains(*values)
-            raise AssertionError("invalid revision domains accepted")
-        except RuntimeError:
-            pass
-    for github_sha, merge_sha in (("", event_merge_sha), (envelope_sha, ""),
-                                  (event_merge_sha, event_merge_sha),
-                                  (envelope_sha, envelope_sha), (source_sha, event_merge_sha),
-                                  (envelope_sha, base_sha)):
-        try:
-            validate_synthetic_context(envelope_sha, event_merge_sha, github_sha, merge_sha)
-            raise AssertionError("substituted synthetic context accepted")
+            validate_dispatch_identity({**dispatch_identity, name: replacement})
+            raise AssertionError(f"invalid dispatch {name} accepted")
         except RuntimeError:
             pass
     mount = {
@@ -549,10 +535,12 @@ def portable_tests():
     workflow = {
         "execution_envelope": {
             "repository": "nenb/cogs", "workflow_file": WORKFLOW_FILE, "job": "native-c1",
-            "event": "pull_request", "action": "opened", "run_id": "1", "run_attempt": "1",
-            "envelope_sha": envelope_sha, "event_merge_sha": event_merge_sha,
-            "workflow_ref": "nenb/cogs/.github/workflows/ci.yml@refs/pull/1/merge",
-            "workflow_sha": envelope_sha, "base_sha": base_sha, "pull_request_number": "1",
+            "event": "workflow_dispatch", "run_id": "1", "run_attempt": "1",
+            "envelope_sha": envelope_sha,
+            "workflow_ref": "nenb/cogs/.github/workflows/ci.yml@refs/heads/main",
+            "workflow_sha": envelope_sha, "ref": "refs/heads/main", "ref_name": "main",
+            "ref_type": "branch", "ref_protected": "true", "default_branch": "main",
+            "sender": "reviewer",
         },
         "source": {
             "head_repository": "nenb/cogs", "source_sha": source_sha,
@@ -566,9 +554,13 @@ def portable_tests():
             "CI": "true", "GITHUB_ACTIONS": "true", "RUNNER_ENVIRONMENT": "github-hosted",
             "RUNNER_OS": "Linux", "RUNNER_ARCH": "X64", "ImageOS": "ubuntu24",
             "GITHUB_WORKFLOW": "CI", "GITHUB_JOB": "native-c1",
-            "GITHUB_REPOSITORY": "nenb/cogs", "GITHUB_EVENT_NAME": "pull_request",
+            "GITHUB_REPOSITORY": "nenb/cogs", "GITHUB_EVENT_NAME": "workflow_dispatch",
             "GITHUB_SHA": envelope_sha, "GITHUB_RUN_ID": "1", "GITHUB_RUN_ATTEMPT": "1",
-            "GITHUB_WORKFLOW_REF": "ref", "GITHUB_WORKFLOW_SHA": envelope_sha,
+            "GITHUB_WORKFLOW_REF": "nenb/cogs/.github/workflows/ci.yml@refs/heads/main",
+            "GITHUB_WORKFLOW_SHA": envelope_sha, "GITHUB_ACTOR": "reviewer",
+            "GITHUB_TRIGGERING_ACTOR": "reviewer", "GITHUB_REF": "refs/heads/main",
+            "GITHUB_REF_NAME": "main", "GITHUB_REF_TYPE": "branch",
+            "GITHUB_REF_PROTECTED": "true",
         },
     }
     local = {
@@ -593,7 +585,7 @@ def portable_tests():
         ("classification", ("classification",), "authority"),
         ("context", ("context",), "local-manual"),
         ("workflow", ("execution_envelope", "job"), "quality"),
-        ("source", ("source", "source_sha"), base_sha),
+        ("source", ("source", "source_sha"), hostile_sha),
         ("runner", ("runner_environment", "GITHUB_JOB"), "quality"),
         ("sudo-command", ("sudo", "command"), "python3"),
         ("version-float", ("local_values", "version"), 2.0),
@@ -606,7 +598,7 @@ def portable_tests():
         ("parent", ("local_values", "parent_self", "root_identity"), [9, 2]),
         ("child", ("local_values", "privileged_child_self", "nspid_depth"), 2),
         ("pid1", ("local_values", "pid1"), delete),
-        ("native", ("native_test", "source_sha"), base_sha),
+        ("native", ("native_test", "source_sha"), hostile_sha),
     )
     raws = [
         ("duplicate", canonical(valid).replace(
@@ -626,7 +618,7 @@ def portable_tests():
             raise AssertionError(f"invalid {name} privileged record accepted")
         except RuntimeError:
             pass
-    print("native C1 envelope/source domain portable tests passed")
+    print("native C1 protected dispatch identity portable tests passed")
 
 
 def local_manual():

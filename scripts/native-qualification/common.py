@@ -44,14 +44,12 @@ CHECK_IDS = {
 COMMON_CHECKS = {job: ({"cleanup_restored", "checkout_unchanged"} if job == "E" else {"cleanup_restored"}) for job in DRIVERS}
 PRODUCTION_CHECK_IDS = {job: tuple(name for name in checks if name not in COMMON_CHECKS[job]) for job, checks in CHECK_IDS.items()}
 RUNTIME_OBSERVATIONS = tuple((
-    "mapped_generations_exact user_namespace_exact pid_namespace_exact mount_namespace_exact network_namespace_exact "
-    "namespace_ownership_exact namespace_handles_exact pid_one supplementary_groups_empty effective_capabilities_zero "
-    "permitted_capabilities_zero inheritable_capabilities_zero bounding_capabilities_zero ambient_capabilities_zero "
-    "capabilities_zero noroot_locked no_new_privs seccomp_installed seccomp_mode_exact seccomp_program_exact "
-    "seccomp_denials_exact exec_descriptor_consumed no_acquisition_route root_readonly_noexec root_has_no_proc "
-    "host_paths_absent checkout_absent limits_exact descriptors_restored children_reaped descendants_reaped "
-    "mounts_restored paths_restored namespaces_released namespace_handles_released"
-).split())
+    "mapped_generations_exact user_namespace_exact pid_namespace_exact mount_namespace_exact network_namespace_exact namespace_ownership_exact "
+    "namespace_handles_exact pid_one supplementary_groups_empty effective_capabilities_zero permitted_capabilities_zero inheritable_capabilities_zero "
+    "bounding_capabilities_zero ambient_capabilities_zero capabilities_zero noroot_locked no_new_privs seccomp_installed seccomp_mode_exact "
+    "seccomp_program_exact seccomp_denials_exact exec_descriptor_consumed no_acquisition_route root_readonly_noexec root_has_no_proc host_paths_absent "
+    "checkout_absent limits_exact descriptors_restored children_reaped descendants_reaped mounts_restored paths_restored namespaces_released "
+    "namespace_handles_released").split())
 DESCRIPTOR_OBSERVATIONS = tuple((
     "nofile_measured nofile_normalized fd_198_exact fd_4096_exact close_range_exact cloexec_exact inheritance_exact "
     "limit_restored descriptors_restored children_reaped"
@@ -62,12 +60,10 @@ LIFECYCLE_OBSERVATIONS = tuple((
     "term_kill_bounded siginfo_exact all_reaped subreaper_restored descriptors_restored"
 ).split())
 SANDBOX_OBSERVATIONS = tuple((
-    "user_namespace_exact pid_namespace_exact mount_namespace_exact network_namespace_exact namespace_ownership_exact "
-    "pid_one capabilities_zero noroot_locked no_new_privs seccomp_installed seccomp_mode_exact seccomp_program_exact "
-    "seccomp_denials_exact no_acquisition_route root_readonly_noexec root_has_no_proc host_paths_absent checkout_absent "
-    "descriptors_restored children_reaped descendants_reaped mounts_restored paths_restored namespaces_released "
-    "namespace_handles_released"
-).split())
+    "user_namespace_exact pid_namespace_exact mount_namespace_exact network_namespace_exact namespace_ownership_exact pid_one capabilities_zero "
+    "noroot_locked no_new_privs seccomp_installed seccomp_mode_exact seccomp_program_exact seccomp_denials_exact no_acquisition_route "
+    "root_readonly_noexec root_has_no_proc host_paths_absent checkout_absent descriptors_restored children_reaped descendants_reaped mounts_restored "
+    "paths_restored namespaces_released namespace_handles_released").split())
 ENV_KEYS = frozenset(("LC_ALL PYTHONDONTWRITEBYTECODE PYTHONHASHSEED NQ_EVENT_NAME NQ_REPOSITORY NQ_HEAD_REPOSITORY "
                       "NQ_HEAD_SHA NQ_ENVELOPE_SHA NQ_WORKFLOW_SHA NQ_REF NQ_DEFAULT_BRANCH NQ_REF_PROTECTED NQ_JOB_ID "
                       "NQ_RUN_ID NQ_RUN_ATTEMPT NQ_RUNNER_VERSION").split())
@@ -80,6 +76,16 @@ class QualificationError(RuntimeError): pass
 def _require(condition: bool, message: str) -> None:
     if not condition:
         raise QualificationError(message)
+def _error_label(error: BaseException, limit: int = 480) -> str:
+    pending, labels = [error], []
+    while pending and len(labels) < 8:
+        current = pending.pop(0)
+        nested = getattr(current, "exceptions", ())
+        if nested: pending[:0] = list(nested[:8 - len(labels)])
+        else:
+            detail = str(current) if isinstance(current, QualificationError) else f"{type(current).__name__}-{getattr(current, 'errno', 0)}"
+            labels.append(re.sub(r"[^A-Za-z0-9_.-]", "-", detail)[:96])
+    return "--".join(labels)[:limit] or "unknown"
 def _integer(value: str, name: str) -> int:
     _require(re.fullmatch(r"[1-9][0-9]{0,19}", value) is not None, name)
     return int(value)
@@ -101,8 +107,7 @@ def _read_source(path: Path, limit: int) -> tuple[bytes, tuple[int, ...]]:
     finally:
         os.close(descriptor)
 def _sha256(path: Path) -> str:
-    raw, _generation_receipt = _read_source(path, 2_000_000)
-    return hashlib.sha256(raw).hexdigest()
+    return hashlib.sha256(_read_source(path, 2_000_000)[0]).hexdigest()
 def _canonical(value: object, newline: bool = False) -> bytes:
     return json.dumps(value, allow_nan=False, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode() + (b"\n" if newline else b"")
 @dataclass(frozen=True)
@@ -141,25 +146,21 @@ class WorkflowContext:
         _require(environment["NQ_WORKFLOW_SHA"] == environment["NQ_ENVELOPE_SHA"], "workflow source")
         repository = environment["NQ_REPOSITORY"]
         _require(REPOSITORY.fullmatch(repository) is not None and environment["NQ_HEAD_REPOSITORY"] == repository, "same repository")
-        default_branch = environment["NQ_DEFAULT_BRANCH"]
-        protected = environment["NQ_REF_PROTECTED"] == "true"
+        default_branch, protected = environment["NQ_DEFAULT_BRANCH"], environment["NQ_REF_PROTECTED"] == "true"
         _require(SAFE.fullmatch(default_branch) is not None and protected, "protected default branch")
         _require(environment["NQ_REF"] == f"refs/heads/{default_branch}", "dispatch ref")
         _require(environment["NQ_JOB_ID"] == JOB_IDS[expected_job] and SAFE.fullmatch(environment["NQ_RUNNER_VERSION"]) is not None, "workflow job")
-        attempt = _integer(environment["NQ_RUN_ATTEMPT"], "run attempt")
-        _require(attempt == 1, "first attempt")
+        _require((attempt := _integer(environment["NQ_RUN_ATTEMPT"], "run attempt")) == 1, "first attempt")
         kernel, architecture = platform.release(), platform.machine()
         _require(re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+[-A-Za-z0-9.+]*", kernel) is not None and architecture == "x86_64", "runner platform")
         schema_bytes, schema_generation = _read_source(SCHEMA, 100_000)
         source_receipts = tuple(_read_source(path, 2_000_000) for path in (WORKFLOW, expected_driver, COMMON))
         source_digests = tuple(hashlib.sha256(raw).hexdigest() for raw, _generation_receipt in source_receipts)
-        schema_digest = hashlib.sha256(schema_bytes).hexdigest()
         return cls(
             expected_job, repository, repository, *hashes, environment["NQ_REF"], default_branch,
             environment["NQ_JOB_ID"], _integer(environment["NQ_RUN_ID"], "run id"), attempt, protected,
-            environment["NQ_RUNNER_VERSION"], kernel, architecture, *source_digests, schema_digest, schema_bytes,
-            tuple(generation for _raw, generation in source_receipts) + (schema_generation,),
-        )
+            environment["NQ_RUNNER_VERSION"], kernel, architecture, *source_digests, hashlib.sha256(schema_bytes).hexdigest(), schema_bytes,
+            tuple(generation for _raw, generation in source_receipts) + (schema_generation,))
 def _context_value(context: WorkflowContext) -> dict[str, object]:
     source = {"checkout_sha": context.head_sha, "driver_blob_sha256": context.driver_blob_sha256,
               "head_sha": context.head_sha, "common_blob_sha256": context.common_blob_sha256}
@@ -481,7 +482,8 @@ class SystemCommonOps:
                     os.dup2(source, target, inheritable=True)
                 os.closerange(5, min(resource.getrlimit(resource.RLIMIT_NOFILE)[0], 1_048_576))
                 os.execve("/usr/bin/python3", ("/usr/bin/python3", "-I", "-B", "-"), {})
-            except BaseException:
+            except BaseException as error:
+                os.write(2, f"common-launcher-bootstrap-{_error_label(error, 96)}\n".encode())
                 os._exit(127)
         pidfd: FdLease | None = None
         reaped = False
@@ -511,9 +513,14 @@ class SystemCommonOps:
             _require(not active, "launcher output EOF")
             status = _bounded_reap(pid, pidfd.number)
             reaped = True
-            _require(os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0, "held launcher exit")
-            _require(not buffers[error_read.number], "held launcher diagnostics")
-            return bytes(buffers[output_read.number])
+            output, diagnostics = bytes(buffers[output_read.number]), bytes(buffers[error_read.number])
+            if not os.WIFEXITED(status) or os.WEXITSTATUS(status) != 0:
+                token = diagnostics.removesuffix(b"\n") if re.fullmatch(rb"[A-Za-z0-9_.-]{1,96}\n", diagnostics) else (
+                    b"sha256-" + hashlib.sha256(diagnostics).hexdigest().encode())
+                state = f"exit-{os.WEXITSTATUS(status)}" if os.WIFEXITED(status) else f"signal-{os.WTERMSIG(status)}"
+                raise QualificationError(f"held-launcher-{state}-stdout-{len(output)}-stderr-{len(diagnostics)}-{token.decode()}")
+            _require(not diagnostics, "held launcher diagnostics")
+            return output
         except BaseException as primary:
             failures = [primary]
             if not reaped:
@@ -541,18 +548,19 @@ class SystemCommonOps:
             lambda: os.open(ROOT, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW))
         _require(root.state is FdState.OWNED, "held source root Lease adoption")
         held: dict[str, _HeldSource] = {}
-        primary: BaseException | None = None
+        primary, stage = None, "held-source-admission"
         try:
-            held, digest = self._admit_sources(context, root)
-            admission, capsule = self._capsule(context, held, digest)
-            result = self._decode_cli(self._issue_cli(held[LAUNCHER_PATH].raw, admission, capsule))
+            stage, (held, digest) = "held-source-admission", self._admit_sources(context, root)
+            stage, (admission, capsule) = "capsule-build", self._capsule(context, held, digest)
+            stage, result = "launcher-transaction", self._decode_cli(self._issue_cli(held[LAUNCHER_PATH].raw, admission, capsule))
+            stage = "result-admission"
             exact = result.get("source_revision") == context.head_sha and result.get("source_set_sha256") == digest
             _require(exact and HEX64.fullmatch(digest) is not None, "production result admission")
             self.source_set_sha256 = digest
             return result
         except BaseException as error:
-            primary = error
-            raise
+            primary = QualificationError(f"production-{stage}-{_error_label(error, 320)}")
+            raise primary from error
         finally:
             self.fds.close_reverse(primary, [*[source.lease for source in held.values()], root])
     def _read(self, path: str | Path, limit: int) -> bytes:
@@ -1159,9 +1167,7 @@ def _start_custodian(context: WorkflowContext, registry: FdRegistry) -> _Custodi
                 os.close(left.number)
                 _custodian_main(right.number, context, capability)
             except BaseException as error:
-                detail = str(error) if isinstance(error, QualificationError) else f"{type(error).__name__}-{getattr(error, 'errno', 0)}"
-                label = re.sub(r"[^A-Za-z0-9_.-]", "-", detail)[:96]
-                os.write(2, f"native-custodian-supervisor-{label}\n".encode())
+                os.write(2, f"native-custodian-supervisor-{_error_label(error, 96)}\n".encode())
                 os._exit(1)
             os._exit(0)
         pidfd = registry.open("report-custodian-pidfd", lambda: os.pidfd_open(pid, 0))
@@ -1452,9 +1458,7 @@ def _custodian_main(control_fd: int, context: WorkflowContext, capability: bytes
             _require(worker_call.fileno() >= 0, "custodian worker call socket adoption")
             _custodian_worker(control_fd, context, capability, worker_call.detach())
         except BaseException as error:
-            detail = str(error) if isinstance(error, QualificationError) else f"{type(error).__name__}-{getattr(error, 'errno', 0)}"
-            label = re.sub(r"[^A-Za-z0-9_.-]", "-", detail)[:96]
-            os.write(2, f"native-custodian-worker-{label}\n".encode())
+            os.write(2, f"native-custodian-worker-{_error_label(error, 96)}\n".encode())
             try:
                 if os.path.lexists(report_path(context.job).parent / ".owner.json"):
                     worker.send(b"PRESERVE")
@@ -1552,9 +1556,15 @@ def _custodian_worker(control_fd: int, context: WorkflowContext, capability: byt
     listener.settimeout(600)
     listener.bind(_socket_name(context))
     listener.listen(1)
+    _require(control.recv(7) == b"RELEASE", "custodian release")
     _require(control.send(b"READY") == 5, "custodian ready")
     control.settimeout(600)
     raw = control.recv(REPORT_LIMIT + 1)
+    if not raw:
+        control.detach()
+        listener.detach()
+        registry.close_reverse()
+        return
     transaction_registry, parent, directory = _publish_transaction(context, capability, raw, supervisor_fd)
     watch = _mutation_watch(transaction_registry, directory)
     authority_probe, _authority_probe_generation = _read_authority(directory, context.job, capability)
@@ -1712,11 +1722,7 @@ class NativeSession:
         try:
             return cls(context, SystemCommonOps(registry), custodian, os.urandom(32))
         except BaseException as error:
-            labels = [
-                str(item) if isinstance(item, QualificationError) else f"{type(item).__name__}-{getattr(item, 'errno', 0)}"
-                for item in getattr(error, "exceptions", (error,))
-            ]
-            os.write(2, ("native-baseline-" + re.sub(r"[^A-Za-z0-9_.-]", "-", "--".join(labels))[:480] + "\n").encode())
+            os.write(2, f"native-baseline-{_error_label(error)}\n".encode())
             custodian.abort(error)
     @classmethod
     def _begin_with_ops(cls, context: WorkflowContext, ops: object, custodian: _CustodianClient) -> "NativeSession":
@@ -1774,12 +1780,9 @@ class NativeSession:
             self.source_set_sha256 = source_digest
             return result
         except BaseException as error:
+            os.write(2, f"native-operation-{_error_label(error)}\n".encode())
             self._custodian.abort(error)
             raise
-    def qualify_fixed_descriptor_primitives(self) -> dict[str, object]:
-        return self.run_fixed_operation("C")
-    def qualify_fixed_process_lifecycle(self) -> dict[str, object]:
-        return self.run_fixed_operation("D")
     def mark_uncertain(self, domains: tuple[str, ...], error: BaseException) -> None:
         exact = self._evidence is None and domains and all(domain in CLEANUP_KEYS for domain in domains)
         _require(bool(exact), "cleanup uncertainty")
