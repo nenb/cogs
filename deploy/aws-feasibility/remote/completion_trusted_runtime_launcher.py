@@ -675,7 +675,7 @@ class _WorkerIssuer:
         remaining = deadline - time.monotonic()
         _require(remaining > 0 and select.select([endpoint], [], [], remaining)[0], "helper acknowledgement deadline", "helper-deadline")
         reply, ancillary, flags, _address = endpoint.recvmsg(1024, 256, socket.MSG_CMSG_CLOEXEC | socket.MSG_DONTWAIT)
-        credentials, leases = _leased_credentials(ancillary, _SystemOps(), require_rights=False)
+        credentials, leases = _leased_credentials(ancillary, _SystemOps(), require_rights=False, missing_code="helper-ack-credentials-missing")
         _require(not flags and not leases and credentials == (self._consumer_pid, os.getuid(), os.getgid()), "helper acknowledgement authority", "helper-ack-authority")
         result = _strict_json(reply, False, 1024, "helper acknowledgement")
         _require(type(result) is dict and result.get("version") == _RESULT_VERSION, "helper acknowledgement shape", "helper-ack-shape")
@@ -733,7 +733,7 @@ class _WorkerIssuer:
         remaining = deadline - time.monotonic()
         _require(remaining > 0 and select.select([self._endpoint], [], [], remaining)[0], "issuance acknowledgement deadline", "issuer-deadline")
         ack_raw, ancillary, flags, _address = self._endpoint.recvmsg(_MAX_PACKET, 256, socket.MSG_CMSG_CLOEXEC | socket.MSG_DONTWAIT)
-        credentials, received = _leased_credentials(ancillary, _SystemOps(), require_rights=False)
+        credentials, received = _leased_credentials(ancillary, _SystemOps(), require_rights=False, missing_code="issuance-ack-credentials-missing")
         expected_credentials = (self._consumer_pid, os.getuid(), os.getgid())
         _require(not flags and not received and credentials == expected_credentials, "issuance acknowledgement authority", "issuer-ack-authority")
         ack = _strict_json(ack_raw, False, _MAX_PACKET, "issuance acknowledgement")
@@ -1245,7 +1245,7 @@ def _stop_process(lease: _ProcessLease, primary: BaseException | None, ops: Any 
 def _received_leases(descriptors: tuple[int, ...]) -> tuple[_FdLease, ...]:
     _require(type(descriptors) is tuple and all(type(fd) is int and fd >= 0 for fd in descriptors), "received descriptor shape", "issuer-rights-value")
     return tuple(_FdLease(fd, f"received:{index}") for index, fd in enumerate(descriptors))
-def _leased_credentials(ancillary: list[tuple[int, int, bytes]], ops: Any, require_rights: bool | None = True) -> tuple[tuple[int, int, int], tuple[_FdLease, ...]]:
+def _leased_credentials(ancillary: list[tuple[int, int, bytes]], ops: Any, require_rights: bool | None = True, missing_code: str = "issuer-credentials-missing") -> tuple[tuple[int, int, int], tuple[_FdLease, ...]]:
     credentials: tuple[int, int, int] | None = None
     leases: list[_FdLease] = []
     primary: BaseException | None = None
@@ -1268,7 +1268,7 @@ def _leased_credentials(ancillary: list[tuple[int, int, bytes]], ops: Any, requi
                 _require(not rights_seen, "handoff rights cardinality", "issuer-rights-cardinality")
                 rights_seen = True
             else: raise RuntimeLauncherError("handoff ancillary type", "issuer-ancillary")
-        _require(credentials is not None, "handoff credentials missing", "issuer-credentials-missing")
+        _require(credentials is not None, "handoff credentials missing", missing_code)
         if require_rights is not None:
             _require(bool(leases) if require_rights else not leases, "handoff rights missing or extra", "issuer-rights-missing" if require_rights else "issuer-rights-extra")
         return credentials, tuple(leases)
@@ -1282,7 +1282,7 @@ def _consume_issuance(endpoint: socket.socket, nonce: bytes, admission: _SourceA
     _require(remaining > 0 and select.select([endpoint], [], [], remaining)[0], "issuance packet deadline", "issuer-deadline")
     ancillary_bound = socket.CMSG_SPACE(_MAX_OBJECTS * array("i").itemsize) + socket.CMSG_SPACE(struct.calcsize("3i"))
     raw, ancillary, flags, _address = endpoint.recvmsg(_MAX_PACKET, ancillary_bound, socket.MSG_CMSG_CLOEXEC | socket.MSG_DONTWAIT)
-    credentials, leases = _leased_credentials(ancillary, actual_ops)
+    credentials, leases = _leased_credentials(ancillary, actual_ops, missing_code="issuer-packet-credentials-missing")
     descriptors = tuple(lease.fd for lease in leases)
     primary: BaseException | None = None
     try:
@@ -1333,7 +1333,7 @@ def _consume_worker_handoff(endpoint: socket.socket, helper_endpoint: socket.soc
         _require(bool(ready), "worker handoff deadline", "worker-handoff-deadline")
         if helper_endpoint in ready:
             raw, ancillary, flags, _address = helper_endpoint.recvmsg(4096, 512, socket.MSG_CMSG_CLOEXEC | socket.MSG_DONTWAIT)
-            credentials, received = _leased_credentials(ancillary, ops, require_rights=None)
+            credentials, received = _leased_credentials(ancillary, ops, require_rights=None, missing_code="helper-control-credentials-missing")
             primary: BaseException | None = None
             try:
                 _require(not flags and credentials == (issuer_pid, os.getuid(), os.getgid()), "helper control authority", "helper-control-authority")
@@ -2872,7 +2872,9 @@ def _run_root_capsule_with_ops(ops: Any, capsule: bytes) -> bytes:
                     next(item for item in leases if item.fd == fd).close(ops)
                     del active[fd]
         status = _wait_bounded(process, deadline)
-        _require(input_complete and status == 0 and not errors, "sudo capsule exit", "sudo-exit")
+        error_digest = hashlib.sha256(errors).hexdigest()[:12]
+        exit_code = f"sudo-{'complete' if input_complete else 'early'}-{status}-{error_digest}"
+        _require(input_complete and status == 0 and not errors, "sudo capsule exit", exit_code)
         owner.stop(process)
     except BaseException as error:
         primary = error
