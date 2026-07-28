@@ -52,6 +52,8 @@ finally:
 assert ops.closed==set(range(100,110)),ops.closed
 ordered=[events.index(item) for item in (('epipe',101),('close',101),('read',102),('read',104),('wait',41),('cleanup','sudo-early'))]
 assert ordered==sorted(ordered),events
+assert launcher._root_capsule_failure_code(True,256,b'root-launcher-process-transfer-0123456789abcdef\\n')=='root-process-transfer'
+assert launcher._root_capsule_failure_code(True,256,b'opaque').startswith('sudo-complete-256-')
 `;
   const run = spawnSync("/usr/bin/python3", ["-I", "-B", "-c", harness], {
     encoding: "utf8",
@@ -64,6 +66,7 @@ test("Job E provisions one independently derived root pin and removes only its e
   const harness = `
 import json,os,runpy,stat,tempfile
 from pathlib import Path
+from types import SimpleNamespace
 module=runpy.run_path(${JSON.stringify(path)},run_name='job_e_root_test')
 with tempfile.TemporaryDirectory() as temporary:
  root=Path(temporary);bootstrap_parent=root/'usr/local/libexec';authority_parent=root/'etc/cogs'
@@ -75,6 +78,11 @@ with tempfile.TemporaryDirectory() as temporary:
  module['_root_material']=lambda value:(bootstrap,authority) if value==revision else (_ for _ in ()).throw(AssertionError(value))
  module['_provision_root_authority'].__globals__.update(module)
  module['_cleanup_root_authority'].__globals__.update(module)
+ identity=dict(st_dev=1,st_ino=2,st_size=3,st_mtime_ns=4,st_ctime_ns=5,st_mode=0o100400,st_uid=0,st_gid=0,st_nlink=1)
+ before=SimpleNamespace(**identity,st_atime_ns=6);after=SimpleNamespace(**identity,st_atime_ns=7)
+ assert module['_root_file_identity'](before)==module['_root_file_identity'](after)
+ after.st_ctime_ns=8
+ assert module['_root_file_identity'](before)!=module['_root_file_identity'](after)
  module['_provision_root_authority'](revision)
  assert module['ROOT_BOOTSTRAP_PATH'].read_bytes()==bootstrap
  assert module['ROOT_AUTHORITY_PATH'].read_bytes()==authority
@@ -106,6 +114,7 @@ try:
  else: raise AssertionError('ambient root authority accepted')
 finally: os.environ.clear();os.environ.update(saved)
 assert calls==[('provision','b'*40),('cleanup','b'*40)]
+assert module['_entry_diagnostic'](['--cleanup-root-authority'],module['QualificationError']('root authority file changed'))==b'native-e-cleanup-root-authority-file-changed\\n'
 `;
   const run = spawnSync("/usr/bin/python3", ["-I", "-B", "-c", harness], {
     encoding: "utf8",

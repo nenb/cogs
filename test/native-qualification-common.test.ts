@@ -426,6 +426,9 @@ try:ops._issue_cli(bad,b'ADMISSION\\n',b'CAPSULE');raise AssertionError('failed 
 except BaseException as error:
  label=common._error_label(error)
  assert label=='held-launcher-exit-1-stdout-0-stderr-24-runtime-launcher-failed',label
+root_bad=b'import os\\nos.write(2,b"runtime-launcher-root-process-transfer-0123456789abcdef\\\\n")\\nraise SystemExit(1)\\n'
+try:ops._issue_cli(root_bad,b'ADMISSION\\n',b'CAPSULE');raise AssertionError('failed root launcher accepted')
+except BaseException as error: assert common._error_label(error)=='runtime-launcher-root-process-transfer-0123456789abcdef'
 registry.close_reverse()
 tree=ast.parse(open(common.COMMON).read())
 issuer=next(n for n in ast.walk(tree) if isinstance(n,ast.FunctionDef) and n.name=='_issue_cli')

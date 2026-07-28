@@ -1436,8 +1436,6 @@ _BI_FCNTL = _BIfcntl.fcntl
 _BI_LEXISTS, _BI_ISMOUNT = _BIos.path.lexists, _BIos.path.ismount
 class _BIExit(BaseException):
     pass
-
-
 class _BISocket:
     def __init__(self, kernel, fd, kind, side=0):
         self.k, self.fd, self.kind, self.side, self.detached = kernel, fd, kind, side, False
@@ -1482,6 +1480,9 @@ class _BISocket:
                 self.k.make_child(self)
                 self.queue.append(self.k.status("child", 2, pid=self.k.child))
             elif event == "release-child":
+                executable = next(row for row in self.k.rows if row.tool_index == self.k.m._TOOL_INDEX[self.k.tool] and row.object_index == 0)
+                info = _BI_FSTAT(self.k.descriptors[executable.descriptor_index])
+                self.k.processes[self.k.child]["exe"] = (info.st_dev, info.st_ino)
                 self.queue.extend((self.k.boundary(), self.k.status("exec-ready", 4)))
             elif event == "finalize-root":
                 self.queue.append(self.k.status("root-final", 5))
@@ -1529,8 +1530,6 @@ class _BISocket:
     def readable(self):
         protocol = self.kind in ("issue", "transfer") and self.phase in (0, 1)
         return protocol or bool(self.queue)
-
-
 class _BIKernel:
     def __init__(self, module, report, report_bytes, descriptors, rows, root,
                  secondary_clone=0, admission_revision="0" * 40,
@@ -1839,8 +1838,6 @@ class _BIKernel:
         if path.startswith("/proc/") and "/root/" in path: return False
         return _BI_LEXISTS(path)
     def ismount(self, path): return self.root_mounted if path == self.root else _BI_ISMOUNT(path)
-
-
 class _BIChildSocket:
     """Child-side protocol endpoint used by the split process execution model."""
     def __init__(self, kernel, fd, kind, commands=()):

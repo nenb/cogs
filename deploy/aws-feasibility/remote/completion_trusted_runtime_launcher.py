@@ -765,6 +765,7 @@ _ProcessLease = make_dataclass("_ProcessLease", [
     ("expected_uid", int, field(default=0)),
     ("waitable", bool, field(default=True)), ("identity_phase", str, field(default="BLOCKED")),
     ("planned_session", int, field(default=0)), ("planned_group", int, field(default=0)),
+    ("planned_executable", tuple[int, int], field(default=(0, 0))),
 ], namespace={"__module__": __name__})
 class _ProcessOwner(make_dataclass(
     "_ProcessOwnerData",
@@ -860,6 +861,32 @@ class _ProcessOwner(make_dataclass(
         lease.session = observed[0]
         lease.process_group = observed[1]
         lease.identity_phase = "POST_SETSID"
+    def plan_exec(self, lease: _ProcessLease, executable: tuple[int, int]) -> None:
+        planned = lease in self.processes
+        planned = planned and not lease.released
+        planned = planned and lease.identity_phase == "BLOCKED"
+        target_exact = type(executable) is tuple and len(executable) == 2
+        target_exact = target_exact and all(type(value) is int and value > 0 for value in executable)
+        _require(planned and target_exact, "exec plan state", "process-transition-state")
+        lease.planned_executable = executable
+        lease.identity_phase = "PRE_EXEC"
+    def confirm_exec(self, lease: _ProcessLease) -> None:
+        observed = (
+            _start_time(lease.pid),
+            os.getsid(lease.pid),
+            os.getpgid(lease.pid),
+            _exe_identity(lease.pid),
+        )
+        expected = (
+            lease.start_time,
+            lease.session,
+            lease.process_group,
+            lease.planned_executable,
+        )
+        phase_exact = lease.identity_phase == "PRE_EXEC"
+        _require(phase_exact and observed == expected, "exec transition readback", "process-transition-readback")
+        lease.executable = observed[3]
+        lease.identity_phase = "POST_EXEC"
     def receive_descendant(
         self,
         endpoint: socket.socket,
@@ -1144,11 +1171,25 @@ def _settle_pidfdless_clone(lease: _ProcessLease, ops: Any, primary: BaseExcepti
         raise RuntimeLauncherCleanupError(primary, failures) from primary
 def _process_matches(lease: _ProcessLease) -> bool:
     try:
-        immutable = (_start_time(lease.pid), _exe_identity(lease.pid))
-        expected_immutable = (lease.start_time, lease.executable)
-        if immutable != expected_immutable:
-            return False
+        start_time = _start_time(lease.pid)
+        executable = _exe_identity(lease.pid)
         observed = (os.getsid(lease.pid), os.getpgid(lease.pid))
+        if start_time != lease.start_time:
+            return False
+        if lease.identity_phase == "PRE_EXEC":
+            if observed != (lease.session, lease.process_group):
+                return False
+            if executable == lease.executable:
+                return True
+            if executable != lease.planned_executable:
+                return False
+            # Cleanup may observe the preregistered exec before the happy-path
+            # confirmation. Commit only that exact executable transition.
+            lease.executable = executable
+            lease.identity_phase = "POST_EXEC"
+            return True
+        if executable != lease.executable:
+            return False
         if lease.identity_phase != "PRE_SETSID":
             return observed == (lease.session, lease.process_group)
         before = (lease.session, lease.process_group)
@@ -2115,6 +2156,16 @@ def _run_tool_with_ops( ops: Any, role: str, report: dict[str, object], descript
                 namespace_lease = None
             raise
         process_owner.stable_identity_census(namespace_lease)
+        executable_row = next(
+            row
+            for row in rows
+            if row.tool_index == _TOOL_INDEX[role] and row.object_index == 0
+        )
+        executable_info = os.fstat(descriptors[executable_row.descriptor_index])
+        process_owner.plan_exec(
+            child_lease,
+            (executable_info.st_dev, executable_info.st_ino),
+        )
         _lifecycle_control_send(transfer_parent, b"A")
         _close_socket(transfer_parent, ops, "tool-transfer-parent")
         transfer_parent = None
@@ -2135,6 +2186,7 @@ def _run_tool_with_ops( ops: Any, role: str, report: dict[str, object], descript
         boundary = boundary_packet["observations"]
         _require(type(boundary) is dict, "boundary observations malformed", "boundary-observations")
         _recv_status(parent_status, time.monotonic() + _SETUP_SECONDS, "exec-ready", 4)
+        process_owner.confirm_exec(child_lease)
         post_fds = _descriptor_snapshot(ops, child["pid"])
         _require(post_fds == (0, 1, 2), "post-exec descriptor table", "exec-fd-table")
         post_maps, post_mapping = _final_mapping_check(ops, child["pid"], rows, role, report)
@@ -2744,7 +2796,24 @@ launcher = sources[paths[2]]
 assert hashlib.sha256(launcher).hexdigest() == header['bootstrap_sha256']
 globals_ = {'__name__': 'cogs_root_capsule'}
 exec(compile(launcher, 'cogs-held:root-launcher', 'exec'), globals_)
-raise SystemExit(globals_['_root_capsule_entry'](raw, authority))'''
+try:
+    root_status = globals_['_root_capsule_entry'](raw, authority)
+except globals_['RuntimeLauncherUnavailable'] as error:
+    root_code = 'unavailable'
+    root_detail = str(error)
+except globals_['RuntimeLauncherError'] as error:
+    candidate = error.code
+    root_code = candidate if type(candidate) is str and len(candidate) <= 40 and all(character.isalnum() or character in '._-' for character in candidate) else 'invalid-code'
+    root_detail = str(error)
+except Exception as error:
+    label = ''.join(character if character.isalnum() or character in '._-' else '-' for character in type(error).__name__)[:20]
+    root_code = 'exception-' + label + '-' + str(getattr(error, 'errno', 0))
+    root_detail = type(error).__name__
+else:
+    raise SystemExit(root_status)
+digest = hashlib.sha256(root_detail.encode('utf-8', 'backslashreplace')).hexdigest()[:16]
+os.write(2, ('root-launcher-' + root_code + '-' + digest + '\n').encode('ascii'))
+raise SystemExit(1)'''
 def _encode_root_capsule(sources: dict[str, bytes], admission: _SourceAdmission) -> bytes:
     rows = [{"path": path, "sha256": hashlib.sha256(sources[path]).hexdigest(), "size": len(sources[path])} for path in _FIXED_SOURCE_SET]
     header = {"bootstrap_sha256": admission.bootstrap_sha256, "parent_pid": os.getpid(), "profile": "sandbox", "revision": admission.revision, "source_set_sha256": admission.source_set_sha256, "sources": rows, "version": _ROOT_CAPSULE_VERSION}
@@ -2795,6 +2864,15 @@ def _decode_root_capsule(
         }
         _require(authority_value == expected, "root capsule independent authority", "root-authority")
     return sources, header
+def _root_capsule_failure_code(input_complete: bool, status: int | None, errors: bytes) -> str:
+    diagnostic = re.fullmatch(rb"root-launcher-([A-Za-z0-9._-]{1,40})-[0-9a-f]{16}\n", errors)
+    if diagnostic is not None:
+        root_code = diagnostic.group(1).decode("ascii")
+        return f"root-{root_code}"[:40]
+    error_digest = hashlib.sha256(errors).hexdigest()[:12]
+    phase = "complete" if input_complete else "early"
+    return f"sudo-{phase}-{status}-{error_digest}"
+
 def _run_root_capsule_with_ops(ops: Any, capsule: bytes) -> bytes:
     command = (
         "/usr/bin/sudo",
@@ -2880,8 +2958,7 @@ def _run_root_capsule_with_ops(ops: Any, capsule: bytes) -> bytes:
                     next(item for item in leases if item.fd == fd).close(ops)
                     del active[fd]
         status = _wait_bounded(process, deadline)
-        error_digest = hashlib.sha256(errors).hexdigest()[:12]
-        exit_code = f"sudo-{'complete' if input_complete else 'early'}-{status}-{error_digest}"
+        exit_code = _root_capsule_failure_code(input_complete, status, bytes(errors))
         _require(input_complete and status == 0 and not errors, "sudo capsule exit", exit_code)
         owner.stop(process)
     except BaseException as error:
