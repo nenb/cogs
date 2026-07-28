@@ -233,17 +233,24 @@ def common_fixed_cli_contract(module, job):
         builtins.BaseExceptionGroup = PortableExceptionGroup
     original_git_tree = issuer._git_tree
     issuer._git_tree = types.MethodType(portable_git_tree, issuer)
-    # Pipe EOF proves child exit before _issue_cli performs its exact waitpid.
-    # The portable pidfd is only a stable adopted authority placeholder.
+    # Pipe EOF supplies readiness, but only the real waitpid below establishes
+    # child completion and consumes the waitable kernel child.
     waits = []
+    forked = []
     fork_fds = []
     def observed_fork():
         fork_fds.append(tuple((lease.purpose, lease.number) for lease in registry._leases if lease.state is common.FdState.OWNED))
-        return real_fork()
+        pid = real_fork()
+        if pid > 0:
+            forked.append(pid)
+        return pid
     def observed_waitpid(pid, flags):
-        value = real_waitpid(pid, flags)
-        waits.append(value)
-        return value
+        waited, status = real_waitpid(pid, flags)
+        waits.append((pid, flags, waited, status))
+        return waited, status
+    def actual_bounded_reap(pid, pidfd):
+        del pidfd
+        return exact_child_reap(observed_waitpid, pid, os.WNOHANG)
     try:
         try:
             with patched(
@@ -252,12 +259,11 @@ def common_fixed_cli_contract(module, job):
                 pidfd_open=pidfd_open,
                 execve=bootstrap_exec,
                 fork=observed_fork,
-                waitpid=observed_waitpid,
                 MFD_CLOEXEC=1,
                 MFD_ALLOW_SEALING=2,
             ), patched(
                 common.fcntl, fcntl=portable_fcntl, F_ADD_SEALS=1033, F_GET_SEALS=1034,
-            ), patched(common, _bounded_reap=lambda pid, pidfd, waitable=False: real_time.sleep(0.05)):
+            ), patched(common, _bounded_reap=actual_bounded_reap):
                 result = issuer.run_fixed_operation(context, job)
         except BaseException as error:
             debug = Path(f"/tmp/cogs-cli-{job}.debug")
@@ -269,6 +275,14 @@ def common_fixed_cli_contract(module, job):
             del builtins.ExceptionGroup
         if remove_base_group:
             del builtins.BaseExceptionGroup
+    if len(forked) != 1 or waits != [(forked[0], os.WNOHANG, forked[0], 0)]:
+        raise AssertionError(f"common fixed CLI child wait drift: forks={forked}; waits={waits}")
+    try:
+        real_waitpid(forked[0], os.WNOHANG)
+    except ChildProcessError:
+        pass
+    else:
+        raise AssertionError("common fixed CLI child remained waitable after exact reap")
     if result.get("source_revision") != head or result.get("source_set_sha256") != issuer.source_set_sha256:
         raise AssertionError("common fixed CLI did not retain its exact admitted generations")
     runtime = result.get("runtime", result)

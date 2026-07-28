@@ -65,6 +65,13 @@ def production_symbol(module, name):
     return value
 
 
+def exact_child_reap(waitpid, pid, flags):
+    waited, status = waitpid(pid, flags)
+    if type(waited) is not int or type(status) is not int or waited != pid:
+        raise AssertionError("modeled child was not exactly waitpid-reaped")
+    return status
+
+
 def fixture_rows(module):
     document = json.loads(FIXTURE.read_text())
     if set(document) != {"version", "rows"}:
