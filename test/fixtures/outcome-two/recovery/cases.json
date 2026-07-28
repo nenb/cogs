@@ -29,7 +29,7 @@
     },
     {
       "acceptance_id": "AT-ROOT-01",
-      "production_method": "_RootTransaction.recover",
+      "production_method": "_recover_transaction_with_ops",
       "intended_code": "root-cleanup-uncertain",
       "cleanup_domains": ["root", "mounts", "namespace"],
       "sentinel": "exact-owned-root-only",

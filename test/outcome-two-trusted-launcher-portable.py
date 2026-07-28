@@ -44,7 +44,14 @@ def load_module():
     return module
 
 
-def fixture_rows():
+def production_symbol(module, name):
+    value = module
+    for component in name.split("."):
+        value = getattr(value, component, None)
+    return value
+
+
+def fixture_rows(module):
     document = json.loads(FIXTURE.read_text())
     if document["version"] != "cogs.outcome-two-launcher-cases/v3":
         raise AssertionError("launcher fixture version")
@@ -58,6 +65,8 @@ def fixture_rows():
         if set(family) != family_keys:
             raise AssertionError("launcher fixture family shape")
         acceptance.add(family["acceptance_id"])
+        if not callable(production_symbol(module, family["production_method"])):
+            raise AssertionError(f"unreachable production method: {family['production_method']}")
         for case in family["cases"]:
             if type(case) is not list or len(case) != 2:
                 raise AssertionError("launcher fixture case shape")
@@ -444,7 +453,7 @@ def prove_fixture_oracles(rows):
 
 def parent():
     module = load_module()
-    rows = fixture_rows()
+    rows = fixture_rows(module)
     source_reachability()
     admission_predicates(module)
     ancillary_predicates(module)

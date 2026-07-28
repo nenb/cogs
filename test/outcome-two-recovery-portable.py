@@ -35,7 +35,14 @@ def load_module():
     return module
 
 
-def fixture_rows():
+def production_symbol(module, name):
+    value = module
+    for component in name.split("."):
+        value = getattr(value, component, None)
+    return value
+
+
+def fixture_rows(module):
     document = json.loads(FIXTURE.read_text())
     if document["version"] != "cogs.outcome-two-recovery-cases/v3":
         raise AssertionError("recovery fixture version")
@@ -49,6 +56,8 @@ def fixture_rows():
         if set(family) != expected:
             raise AssertionError("recovery fixture family shape")
         acceptance.add(family["acceptance_id"])
+        if not callable(production_symbol(module, family["production_method"])):
+            raise AssertionError(f"unreachable production method: {family['production_method']}")
         for case in family["cases"]:
             if type(case) is not list or len(case) != 2:
                 raise AssertionError("recovery fixture case shape")
@@ -278,7 +287,7 @@ def prove_ledger(rows, crash_ids):
 
 def parent():
     module = load_module()
-    rows = fixture_rows()
+    rows = fixture_rows(module)
     static_recovery_contract()
     crash_rows = [
         row for row in rows if row["id"].startswith("AT-ADAPT-REC-01:")

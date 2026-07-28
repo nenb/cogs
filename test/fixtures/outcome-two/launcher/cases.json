@@ -47,7 +47,7 @@
     },
     {
       "acceptance_id": "AT-ISSUE-01",
-      "production_method": "_WorkerIssuer._verify_bundle",
+      "production_method": "_verify_bundle",
       "intended_code": "issued-descriptor-access",
       "cleanup_domains": ["issued-fds", "endpoint"],
       "sentinel": "readonly-issued-reference",
@@ -123,7 +123,7 @@
     },
     {
       "acceptance_id": "AT-SECCOMP-01",
-      "production_method": "_assemble_seccomp_policy",
+      "production_method": "_seccomp_digest",
       "intended_code": "seccomp-policy",
       "cleanup_domains": ["processes", "descriptors"],
       "sentinel": "architecture-first-exhaustive-denials",
@@ -192,7 +192,7 @@
     },
     {
       "acceptance_id": "AT-ROOT-01",
-      "production_method": "_RootTransaction.prepare",
+      "production_method": "_materialize_root",
       "intended_code": "root-transaction",
       "cleanup_domains": ["mounts", "paths", "namespace"],
       "sentinel": "write-ahead-root-intent",
@@ -210,7 +210,7 @@
     },
     {
       "acceptance_id": "AT-LIFE-01",
-      "production_method": "_ProcessOwner.spawn_registered",
+      "production_method": "_ProcessOwner.register",
       "intended_code": "process-registration",
       "cleanup_domains": ["processes", "descriptors", "namespaces"],
       "sentinel": "pidfd-release-gate-preregistration",
@@ -224,7 +224,7 @@
     },
     {
       "acceptance_id": "AT-LIFE-02",
-      "production_method": "_ProcessOwner.stop_all",
+      "production_method": "_ProcessOwner.cleanup",
       "intended_code": "process-ownership",
       "cleanup_domains": ["processes", "descriptors"],
       "sentinel": "bounded-pidfd-descendant-reap",
@@ -266,7 +266,7 @@
     },
     {
       "acceptance_id": "AT-RECORD-01",
-      "production_method": "_parse_control_record",
+      "production_method": "_recv_status",
       "intended_code": "record-shape",
       "cleanup_domains": [],
       "sentinel": "bounded-exact-record-parser",
@@ -322,7 +322,7 @@
     },
     {
       "acceptance_id": "AT-FIXTURE-01",
-      "production_method": "fixture_ledger",
+      "production_method": "_bootstrap_with_ops",
       "intended_code": "fixture-ledger",
       "cleanup_domains": [],
       "sentinel": "declared-selected-consumed-oracle-equal",
