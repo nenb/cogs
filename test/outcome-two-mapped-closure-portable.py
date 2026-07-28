@@ -20,7 +20,11 @@ FIXTURES = ROOT / "test/fixtures/outcome-two"
 sys.path.insert(0, str(REMOTE))
 elf = importlib.import_module("completion_elf")
 closure = importlib.import_module("completion_trusted_runtime_closure")
-CASES = json.loads((FIXTURES / "maps/cases.jsonl").read_text())
+def load_ledger(path):
+    values = [json.loads(line) for line in path.read_text().splitlines()]
+    if not values or values[0].get("type") != "header": raise AssertionError("maps ledger header")
+    return values[0], values[1:]
+HEADER, CASES = load_ledger(FIXTURES / "maps/cases.jsonl")
 BEFORE = (FIXTURES / "maps/stable/maps-before.txt").read_bytes()
 AFTER = (FIXTURES / "maps/stable/maps-after.txt").read_bytes()
 ROW_KEYS = {"id", "production_method", "primitive_fault", "intended_code",
@@ -28,13 +32,14 @@ ROW_KEYS = {"id", "production_method", "primitive_fault", "intended_code",
 
 
 def manifest_cases():
-    for row in CASES["cases"]:
-        if set(row) != ROW_KEYS or not callable(getattr(closure, row["production_method"], None)):
+    for row in CASES:
+        branch = getattr(closure, row["sentinel"], None)
+        if set(row) != ROW_KEYS or row["production_method"] != row["sentinel"] or not callable(branch):
             raise AssertionError("maps manifest row/method")
         case = dict(row["primitive_fault"])
         case["id"] = row["id"]
         case["expect"] = "accept" if row["intended_code"] == "accept" else "reject"
-        yield row, case
+        yield row, case, branch
 
 
 def object_(role, fixture, device, inode):
@@ -164,7 +169,7 @@ class MapOps(closure._Ops):
 def case_inputs(case):
     before = BEFORE
     after = AFTER
-    objects = dict(CASES["objects"])
+    objects = dict(HEADER["objects"])
     resolved = RESOLVED
     fault = case.get("fault")
     if "after" in case:
@@ -215,19 +220,17 @@ def case_inputs(case):
     return before, after, objects, resolved, fault
 
 
-def run(row, case):
+def run(row, case, branch):
     before, after, objects, resolved, fault = case_inputs(case)
     ops = MapOps(before, after, objects, fault)
     try:
-        result = closure._mapped_closure(ops, CHILD, resolved)
+        result = branch(ops, CHILD, resolved)
     except (closure.RuntimeClosureError, closure.RuntimeClosureCleanupError, OSError) as error:
         if case["expect"] != "reject":
             raise
         if type(error).__name__ != row["intended_code"]:
             raise AssertionError(f"{row['id']}: {type(error).__name__}") from error
-        named = {"mapping-object-bound": "mapped closure object bound",
-                 "ambiguous-fingerprint": "ambiguous mapped fingerprint"}
-        if row["sentinel"] in named and str(error) != named[row["sentinel"]]:
+        if case.get("branch_message") and str(error) != case["branch_message"]:
             raise AssertionError(f"{row['id']}: named branch missed") from error
         if fault in {"maps-read-and-close", "map-parse-and-close"}:
             if not isinstance(error, closure.RuntimeClosureCleanupError):
@@ -245,12 +248,10 @@ def run(row, case):
 
 selected = list(manifest_cases())
 executed = []
-for row, case in selected:
-    run(row, case)
+for row, case, branch in selected:
+    run(row, case, branch)
     executed.append(row["id"])
-declared = [row["id"] for row, _case in selected]
-oracle = list(executed)
-sentinel = list(executed)
-if not declared == executed == oracle == sentinel or len(executed) != len(set(executed)):
+declared = [row["id"] for row, _case, _branch in selected]
+if declared != executed or len(executed) != len(set(executed)):
     raise AssertionError("maps selected/consumed/oracle/sentinel mismatch")
 print("Outcome 2 mapped closure portable tests passed")

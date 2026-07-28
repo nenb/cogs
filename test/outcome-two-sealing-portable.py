@@ -20,8 +20,12 @@ FIXTURES = ROOT / "test/fixtures/outcome-two"
 sys.path.insert(0, str(REMOTE))
 elf = importlib.import_module("completion_elf")
 closure = importlib.import_module("completion_trusted_runtime_closure")
-MATRIX = json.loads((FIXTURES / "sealing/faults.jsonl").read_text())
-RAW = (FIXTURES / "elf" / MATRIX["success"]["source"]).read_bytes()
+def load_ledger(path):
+    values = [json.loads(line) for line in path.read_text().splitlines()]
+    if not values or values[0].get("type") != "header": raise AssertionError("sealing ledger header")
+    return values[0], values[1:]
+HEADER, CASES = load_ledger(FIXTURES / "sealing/faults.jsonl")
+RAW = (FIXTURES / "elf" / HEADER["success"]["source"]).read_bytes()
 REPORT = (FIXTURES / "reports/runtime-closure-v1.canonical.jsonl").read_bytes()
 SOURCE_FD = 41
 GENERATION = closure.SourceGeneration(
@@ -31,7 +35,7 @@ SOURCE = closure.AuthenticatedObject(
     "executable", "/usr/bin/gzip", SOURCE_FD, GENERATION, (), len(RAW),
     hashlib.sha256(RAW).hexdigest(), elf.parse_elf64(RAW),
 )
-SEAL_BITS = {name: getattr(closure, "_" + name) for name in MATRIX["required_exec_seals"]}
+SEAL_BITS = {name: getattr(closure, "_" + name) for name in HEADER["required_exec_seals"]}
 ROW_KEYS = {"id", "production_method", "primitive_fault", "intended_code",
             "cleanup_domains", "sentinel"}
 if sum(SEAL_BITS.values()) != closure._EXEC_SEALS:
@@ -39,10 +43,11 @@ if sum(SEAL_BITS.values()) != closure._EXEC_SEALS:
 
 
 def manifest_cases():
-    for row in MATRIX["cases"]:
-        if set(row) != ROW_KEYS or not callable(getattr(closure, row["production_method"], None)):
+    for row in CASES:
+        branch = getattr(closure, row["sentinel"], None)
+        if set(row) != ROW_KEYS or row["production_method"] != row["sentinel"] or not callable(branch):
             raise AssertionError("sealing manifest row/method")
-        yield row, row["primitive_fault"]["target"], row["primitive_fault"]["name"]
+        yield row, row["primitive_fault"]["target"], row["primitive_fault"]["name"], branch
 
 
 class KernelObject:
@@ -210,10 +215,10 @@ class SealOps(closure._Ops):
         del item
 
 
-def run_source(row, fault):
+def run_source(row, fault, branch):
     ops = SealOps(fault)
     try:
-        sealed = closure._seal_object(ops, SOURCE)
+        sealed = branch(ops, SOURCE)
     except (closure.RuntimeClosureError, closure.RuntimeClosureCleanupError, OSError) as error:
         if type(error).__name__ != row["intended_code"]:
             raise AssertionError(f"{row['id']}: {type(error).__name__}") from error
@@ -231,10 +236,10 @@ def run_source(row, fault):
         raise AssertionError("uncertain source descriptor was retried")
 
 
-def run_report(row, fault):
+def run_report(row, fault, branch):
     ops = SealOps(fault)
     try:
-        fd = closure._seal_report(ops, REPORT)
+        fd = branch(ops, REPORT)
     except (closure.RuntimeClosureError, closure.RuntimeClosureCleanupError, OSError) as error:
         if type(error).__name__ != row["intended_code"]:
             raise AssertionError(f"{row['id']}: {type(error).__name__}") from error
@@ -254,12 +259,11 @@ def run_report(row, fault):
 
 selected = list(manifest_cases())
 executed = []
-for row, target, fault in selected:
-    run_source(row, fault) if target == "source" else run_report(row, fault)
+for row, target, fault, branch in selected:
+    if target == "source": run_source(row, fault, branch)
+    else: run_report(row, fault, branch)
     executed.append(row["id"])
-declared = [row["id"] for row, _target, _fault in selected]
-oracle = list(executed)
-sentinel = list(executed)
-if not declared == executed == oracle == sentinel or len(executed) != len(set(executed)):
+declared = [row["id"] for row, _target, _fault, _branch in selected]
+if declared != executed or len(executed) != len(set(executed)):
     raise AssertionError("sealing selected/consumed/oracle/sentinel mismatch")
 print("Outcome 2 sealing portable tests passed")
