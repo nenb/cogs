@@ -3863,6 +3863,12 @@ if __name__ == "__main__":
     except RuntimeLauncherUnavailable:
         os.write(2, b"runtime-launcher-unavailable\n")
         raise SystemExit(78)
-    except Exception:
-        os.write(2, b"runtime-launcher-failed\n")
+    except RuntimeLauncherError as error:
+        code = error.code if type(error.code) is str and re.fullmatch(r"[A-Za-z0-9_.-]{1,40}", error.code) else "invalid-code"
+        digest = hashlib.sha256(str(error).encode("utf-8", "backslashreplace")).hexdigest()[:16]
+        os.write(2, f"runtime-launcher-{code}-{digest}\n".encode())
+        raise SystemExit(1)
+    except Exception as error:
+        label = re.sub(r"[^A-Za-z0-9_.-]", "-", type(error).__name__)[:32]
+        os.write(2, f"runtime-launcher-exception-{label}-{getattr(error, 'errno', 0)}\n".encode())
         raise SystemExit(1)
