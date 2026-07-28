@@ -111,7 +111,8 @@ class Ops:
  def run_fixed_operation(self,context,operation):
   self.events.append((context.job,operation))
   raise RuntimeError('safe native boundary')
-class Cust: pass
+class Cust:
+ def abort(self,error): self.error=error
 ops=Ops()
 context=types.SimpleNamespace(job='B')
 session=common.NativeSession._begin_with_ops(context,ops,Cust())

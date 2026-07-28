@@ -2420,7 +2420,13 @@ def _qualify_fixed_descriptor_primitives_with_ops(
         ops.checkpoint('descriptor.wait.after-reap')
         child_pidfd.close(ops)
         ops.checkpoint('descriptor.close-range.before')
-        ops.close_range(high.fd, high.fd)
+        high.state = _FdState.CLOSE_UNCERTAIN
+        try:
+            ops.close_range(high.fd, high.fd)
+        except BaseException as error:
+            high.close_error = error
+            raise
+        high.close_error = None
         high.state = _FdState.CLOSED
         ops.checkpoint('descriptor.close-range.after')
         try:

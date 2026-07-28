@@ -159,7 +159,7 @@ def _workflow_bound(common: object | None = None) -> int:
         metadata = qualify(
             _production_operation(session), session.context.head_sha, session.source_set_sha256,
         )
-    except BaseException as error:
+    except Exception as error:
         primary = error
     evidence = session.settle_native_phase()
     passing = primary is None and evidence.restored

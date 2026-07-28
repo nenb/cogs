@@ -5,7 +5,7 @@
       "id": "AT-ADAPT-BOOT-01:authenticated-launcher-byte-mismatch",
       "production_method": "_bootstrap_with_ops",
       "primitive_fault": { "method": "held_sources", "mutation": "launcher-byte-mismatch" },
-      "intended_code": "launcher-rejected",
+      "intended_code": "fixed-source-blob",
       "cleanup_domains": ["source-fds", "descriptors"],
       "sentinel": "ops.held_sources:launcher-byte-mismatch"
     },

@@ -3,7 +3,7 @@
 
 from array import array
 from contextlib import contextmanager
-from dataclasses import fields, make_dataclass
+from dataclasses import fields, make_dataclass, replace
 import ctypes
 import errno
 import fcntl
@@ -429,27 +429,46 @@ def invoke_bootstrap(module, row, created):
     created.append(ops)
     saved_environment = dict(os.environ)
     os.environ.clear()
+    sources = ops.held_sources(4)
+    source_tree = {}
+    for path in module._FIXED_SOURCE_SET:
+        original = (ROOT / path).read_bytes()
+        blob = b"blob " + str(len(original)).encode() + b"\0" + original
+        source_tree[path] = ("100644", hashlib.sha1(blob).hexdigest())
+    driver_path = module._OPERATION_CLIENTS["runtime"]
+    driver = (ROOT / driver_path).read_bytes()
+    driver_blob = b"blob " + str(len(driver)).encode() + b"\0" + driver
+    driver_tree = {driver_path: ("100644", hashlib.sha1(driver_blob).hexdigest())}
+    capsule = module._held_source_capsule(
+        "runtime", "0" * 40, sources, source_tree, driver, driver_tree,
+    )
     admission = module._canonical({
-        "bootstrap_sha256": "0" * 64,
-        "client_sha256": "0" * 64,
+        "bootstrap_sha256": hashlib.sha256(sources[module._MODULE_PATHS[2]]).hexdigest(),
+        "client_sha256": hashlib.sha256(driver).hexdigest(),
         "revision": "0" * 40,
-        "source_set_sha256": "1" * 64,
+        "source_set_sha256": module._source_set_digest(sources),
         "version": module._ADMISSION_VERSION,
     }, True)
     reads = {3: admission}
-    identity = type("Identity", (), {
-        "st_dev": 1,
-        "st_ino": 2,
-        "st_size": 1,
-        "st_mtime_ns": 3,
-        "st_ctime_ns": 4,
-        "st_mode": stat.S_IFDIR | 0o755,
-        "st_uid": os.geteuid(),
-        "st_gid": 0,
-    })()
+    def identity(fd):
+        size = len(capsule) if fd == 4 else 1
+        return type("Identity", (), {
+            "st_dev": 1,
+            "st_ino": fd if fd == 4 else 2,
+            "st_size": size,
+            "st_mtime_ns": 3,
+            "st_ctime_ns": 4,
+            "st_mode": stat.S_IFREG | 0o555,
+            "st_uid": os.geteuid(),
+            "st_gid": 0,
+        })()
     def read(fd, size):
         del size
         return reads.pop(fd, b"")
+    def pread(fd, size, offset):
+        if fd != 4:
+            raise AssertionError("unexpected held descriptor")
+        return capsule[offset:offset + size]
     def platform_gate():
         return None
 
@@ -458,13 +477,15 @@ def invoke_bootstrap(module, row, created):
             module,
             _platform_gate=platform_gate,
             _SystemOps=lambda: ops,
-            _held_sources=ops.held_sources,
-            _git_tree=ops.git_tree,
         ), patched(
             module.os,
             open=ops.open,
-            fstat=lambda fd: identity,
+            fstat=identity,
             read=read,
+            pread=pread,
+        ), patched(
+            module.fcntl,
+            fcntl=lambda fd, command, argument=0: module._DATA_SEALS,
         ):
             module._bootstrap_with_ops(ops)
     finally:
@@ -611,9 +632,13 @@ def production_operation_contracts(module):
         objects[0].size_bytes, objects[0].sha256, objects[0].size_bytes,
         63, "8" * 64, digest,
     ) for name in ("gzip", "zstd"))
+    parser = module.RuntimeCompressionParserObservation(
+        ordinary.closure_sha256,
+        object_values,
+    )
     compression = module.RuntimeCompressionQualificationResult(
         "cogs.runtime-compression-qualification/v1", "0" * 40,
-        "1" * 64, ordinary.closure_sha256, tools, ordinary,
+        "1" * 64, ordinary.closure_sha256, parser, tools, ordinary,
     )
     encoded_compression = json.loads(module._canonical(module._result_value(compression)))
     if module._decode_compression_result(encoded_compression) != compression:
@@ -659,10 +684,34 @@ def capsule_contract(module):
         source_digest, sources[module._SCHEMA_PATH], "", 0, None,
         module._BOOTSTRAP_OPERATION_TOKEN, 0, 0, 0, "sandbox",
     )
+    authority = module._root_capsule_authority(sources, admission)
     capsule = module._encode_root_capsule(sources, admission)
-    decoded, header = module._decode_root_capsule(capsule)
+    decoded, header = module._decode_root_capsule(capsule, authority)
     if decoded != sources or header["parent_pid"] != os.getpid():
         raise AssertionError("held root capsule round trip")
+    bootstrap = module._render_root_bootstrap(authority)
+    authority_check = bootstrap.index("rows == authority['sources']")
+    compilation = bootstrap.index("exec(compile(launcher")
+    if authority_check > compilation or "__ROOT_AUTHORITY_HEX__" in bootstrap:
+        raise AssertionError("independent root authority is not fixed before compilation")
+    for path in module._FIXED_SOURCE_SET:
+        unauthorized = dict(sources)
+        unauthorized[path] += b"\n# self-consistent unauthorized generation\n"
+        hostile_admission = replace(
+            admission,
+            bootstrap_sha256=hashlib.sha256(
+                unauthorized[module._MODULE_PATHS[2]],
+            ).hexdigest(),
+            source_set_sha256=module._source_set_digest(unauthorized),
+        )
+        hostile = module._encode_root_capsule(unauthorized, hostile_admission)
+        try:
+            module._decode_root_capsule(hostile, authority)
+        except module.RuntimeLauncherError as error:
+            if error.code != "root-authority":
+                raise
+        else:
+            raise AssertionError(f"root accepted unauthorized {path} generation")
     header_raw, payload = capsule.split(b"\n", 1)
     duplicate = header_raw[:-1] + b',"version":"cogs.runtime-source-admission/sandbox-v1"}'
     for hostile in (duplicate + b"\n" + payload, capsule[:-1], capsule + b"x"):
@@ -755,9 +804,13 @@ def common_production_adapters():
             objects[0].size_bytes, objects[0].sha256, objects[0].size_bytes,
             63, "f" * 64, marker_digest,
         ) for name in ("gzip", "zstd"))
+        parser = module.RuntimeCompressionParserObservation(
+            ordinary.closure_sha256,
+            object_values,
+        )
         return module.RuntimeCompressionQualificationResult(
             "cogs.runtime-compression-qualification/v1", revision,
-            source_digest, ordinary.closure_sha256, tools, ordinary,
+            source_digest, ordinary.closure_sha256, parser, tools, ordinary,
         )
 
     class PortableOps(common.SystemCommonOps):
@@ -769,26 +822,33 @@ def common_production_adapters():
         def observe(self, context):
             del context
             return dict(self.baseline)
-        def _launcher(self, root):
-            module = super()._launcher(root)
+        def _git_tree(self, root, revision, paths):
+            del root
+            if revision != "0" * 40:
+                return {}
+            rows = {}
+            for path in paths:
+                data = (ROOT / path).read_bytes()
+                blob = b"blob " + str(len(data)).encode() + b"\0" + data
+                rows[path] = hashlib.sha1(blob).hexdigest()
+            return rows
+        def _launcher(self, source):
+            module = super()._launcher(source)
             self.modules.append(module)
-            def git_tree(root_fd, revision, paths=module._FIXED_SOURCE_SET):
-                del root_fd, revision
-                rows = {}
-                for path in paths:
-                    data = (ROOT / path).read_bytes()
-                    blob = b"blob " + str(len(data)).encode() + b"\0" + data
-                    rows[path] = ("100644", hashlib.sha1(blob).hexdigest())
-                return rows
-            def held_execution(ops, launcher, source_root_fd, admission):
-                del ops, launcher, source_root_fd
-                value = module._strict_json(admission, True, module._MAX_ADMISSION, "portable admission")
-                mode = module._ADMISSION_MODES[value["version"]]
-                self.routes.append(mode)
-                result = result_for(module, mode, value["revision"], value["source_set_sha256"])
-                return module._canonical(module._result_value(result), True)
-            module._git_tree = git_tree
-            module._run_held_python_with_ops = held_execution
+            def invoke(operation, revision, held_sources, client, source_digest):
+                expected_mode = {
+                    "A": "mapping", "B": "compression", "C": "descriptor",
+                    "D": "lifecycle", "E": "sandbox", "integration": "runtime",
+                }[operation]
+                if type(held_sources) is not __import__("types").MappingProxyType:
+                    raise AssertionError("common did not retain an immutable held source map")
+                if client != (ROOT / module._OPERATION_CLIENTS[expected_mode]).read_bytes():
+                    raise AssertionError("common did not retain the admitted client generation")
+                if module._source_set_digest(dict(held_sources)) != source_digest:
+                    raise AssertionError("common source framing diverged")
+                self.routes.append(expected_mode)
+                return result_for(module, expected_mode, revision, source_digest)
+            module.invoke_fixed_admitted_operation = invoke
             return module
 
     expected_modes = {
@@ -798,13 +858,9 @@ def common_production_adapters():
     for job, mode in expected_modes.items():
         ops = PortableOps()
         context = SimpleNamespace(job=job, head_sha="0" * 40)
-        session = common.NativeSession._begin_with_ops(context, ops, SimpleNamespace())
-        if job == "C":
-            value = session.qualify_fixed_descriptor_primitives()
-        elif job == "D":
-            value = session.qualify_fixed_process_lifecycle()
-        else:
-            value = session.run_fixed_operation(job)
+        custodian = SimpleNamespace(abort=lambda error: None)
+        session = common.NativeSession._begin_with_ops(context, ops, custodian)
+        value = session.run_fixed_operation(job)
         if ops.routes != [mode] or type(value) is not dict:
             raise AssertionError(f"common fixed route drift: {job}/{ops.routes}")
         if value["source_set_sha256"] != session.source_set_sha256:
@@ -819,27 +875,249 @@ def common_production_adapters():
             raise AssertionError(f"common result was not primitive/restored: {job}")
         module = ops.modules[0]
         expected = common.SystemCommonOps._result_type(module, job)
-        substitute = make_dataclass(expected.__name__, [(item.name, object) for item in fields(expected)], frozen=True)
+        substitute = make_dataclass(
+            expected.__name__,
+            [(item.name, object) for item in fields(expected)],
+            frozen=True,
+        )
         try:
-            common.SystemCommonOps._closed_result(module, job, substitute(*(value[item.name] for item in fields(expected))))
+            common.SystemCommonOps._closed_result(
+                module,
+                job,
+                substitute(*(value[item.name] for item in fields(expected))),
+            )
         except common.QualificationError:
             pass
         else:
             raise AssertionError(f"common accepted caller-created result type: {job}")
-        if job == "A":
-            exact = result_for(module, mode, context.head_sha, session.source_set_sha256)
-            object_type = module.RuntimeObjectObservation
-            fake_type = make_dataclass(object_type.__name__, [(item.name, object) for item in fields(object_type)], frozen=True)
-            first = exact.objects[0]
-            fake = fake_type(*(getattr(first, item.name) for item in fields(object_type)))
-            arguments = [getattr(exact, item.name) for item in fields(expected)]
-            arguments[tuple(item.name for item in fields(expected)).index("objects")] = (fake, *exact.objects[1:])
-            try:
-                common.SystemCommonOps._closed_result(module, job, expected(*arguments))
-            except common.QualificationError:
-                pass
-            else:
-                raise AssertionError("common accepted nested substitute dataclass")
+
+
+class OuterKernel:
+    def __init__(self, module, row):
+        self.module = module
+        self.point = row["primitive_fault"]["point"]
+        self.mutation = row["primitive_fault"]["mutation"]
+        self.events = []
+        self.fired = False
+        self.next_fd = 20
+        self.fds = {}
+        self.data = {}
+        self.released = False
+        self.signaled = False
+        self.reaped = False
+        self.foreign = None
+        self.pipe_count = 0
+    def consume_fault(self, point):
+        if self.fired or self.point != point:
+            return False
+        self.fired = True
+        self.events.append(f"outer:{point}")
+        return True
+    def allocate(self, purpose, data=b""):
+        while self.next_fd in self.fds:
+            self.next_fd += 1
+        fd = self.next_fd
+        self.next_fd += 1
+        self.fds[fd] = purpose
+        self.data[fd] = data
+        return fd
+    def memfd_create(self, name, flags):
+        del name, flags
+        if self.consume_fault("memfd_create"):
+            raise OSError("memfd")
+        return self.allocate("launcher")
+    def pipe2(self, flags):
+        del flags
+        if self.consume_fault("pipe2"):
+            raise OSError("pipe")
+        purposes = ("admission", "output", "error", "transition", "ack", "release")
+        purpose = purposes[self.pipe_count]
+        self.pipe_count += 1
+        return self.allocate(purpose + "-read"), self.allocate(purpose + "-write")
+    def clone_pidfd(self):
+        if self.consume_fault("clone_pidfd"):
+            raise OSError("clone")
+        return 700, self.allocate("pidfd")
+    def open(self, path, flags, mode=0o600):
+        del flags, mode
+        if path.endswith("/stat"):
+            fields_ = b" ".join([b"1"] * 18 + [b"10"] + [b"1"] * 30)
+            return self.allocate("proc-stat", b"700 (held-python) S " + fields_ + b"\n")
+        if path.endswith("/exe"):
+            return self.allocate("proc-exe")
+        raise AssertionError(path)
+    def read(self, fd, size):
+        del size
+        purpose = self.fds[fd]
+        if purpose == "transition-read":
+            if self.consume_fault("transition_read"):
+                return b""
+            return b"S"
+        if purpose in {"output-read", "error-read"}:
+            point = "output_read" if purpose.startswith("output") else "error_read"
+            self.fds[fd] = point + "-complete"
+            if self.consume_fault(point):
+                if self.mutation == "bytes":
+                    return b"error"
+                raise OSError(point)
+            return b"{}\n" if point == "output_read" else b""
+        raw = self.data.get(fd, b"")
+        self.data[fd] = b""
+        return raw
+    def write(self, fd, data):
+        purpose = self.fds[fd]
+        if purpose == "release-write" and data == b"G":
+            if self.consume_fault("release_write"):
+                return 0
+            self.released = True
+        elif purpose == "ack-write" and data == b"A" and self.consume_fault("transition_ack"):
+            return 0
+        elif purpose == "admission-write" and self.consume_fault("admission_write"):
+            return len(data) - 1
+        return len(data)
+    def close(self, fd):
+        if fd not in self.fds:
+            raise AssertionError("outer descriptor closed twice")
+        if self.consume_fault("close"):
+            if self.mutation == "before":
+                raise OSError("close before")
+            del self.fds[fd]
+            self.foreign = fd
+            self.fds[fd] = "foreign"
+            raise OSError("close after reuse")
+        del self.fds[fd]
+        self.data.pop(fd, None)
+    def fstat(self, fd):
+        if fd not in self.fds:
+            raise OSError(errno.EBADF, "closed")
+        identity = 101 if self.fds[fd] == "proc-exe" else fd
+        return SimpleNamespace(st_dev=8, st_ino=identity, st_mode=stat.S_IFREG | 0o555)
+    def fcntl(self, fd, command, argument=0):
+        if command == fcntl.F_DUPFD_CLOEXEC:
+            if self.consume_fault("source_dup"):
+                raise OSError("dup")
+            return self.allocate("source-duplicate")
+        if command == fcntl.F_ADD_SEALS:
+            if self.consume_fault("launcher_seal"):
+                raise OSError("seal")
+            return 0
+        raise AssertionError(command)
+    def launcher_write(self, fd, data):
+        del fd
+        if self.consume_fault("launcher_write"):
+            return 0
+        return len(data)
+    def getsid(self, pid):
+        del pid
+        if self.point == "transition_identity" and self.released:
+            self.consume_fault("transition_identity")
+            return 701
+        return 700 if self.released else 7
+    def getpgid(self, pid):
+        return self.getsid(pid)
+    def waitpid(self, pid, flags):
+        del flags
+        if self.consume_fault("reap"):
+            raise ChildProcessError()
+        self.reaped = True
+        return pid, 1 if self.consume_fault("waitpid") else 0
+    def select(self, readers, writers, errors, timeout=0):
+        del errors, timeout
+        if writers:
+            return [], list(writers), []
+        if readers and all(self.fds.get(fd) == "pidfd" for fd in readers):
+            return (list(readers) if self.signaled else []), [], []
+        if self.consume_fault("output_eof"):
+            return [], [], []
+        return list(readers), [], []
+    def monotonic(self):
+        step = 10.0 if self.point == "output_eof" else 0.1
+        value = getattr(self, "clock", 0.0) + step
+        self.clock = value
+        return value
+    def pidfd_signal(self, fd, number):
+        del fd, number
+        self.signaled = True
+
+
+def outer_process_case(module, row):
+    if not hasattr(module.os, "MFD_CLOEXEC"):
+        module.os.MFD_CLOEXEC = 1
+        module.os.MFD_ALLOW_SEALING = 2
+    if not hasattr(module.fcntl, "F_ADD_SEALS"):
+        module.fcntl.F_ADD_SEALS = 1033
+    ops = OuterKernel(module, row)
+    def start_time_guard(pid, actual_ops=None):
+        if ops.consume_fault("start_time"):
+            raise OSError("start time")
+        return actual_start_time(pid, actual_ops)
+    actual_start_time = module._start_time
+    with patched(
+        module,
+        _SystemOps=lambda: ops,
+        _start_time=start_time_guard,
+    ), patched(
+        module.os,
+        memfd_create=ops.memfd_create,
+        write=ops.launcher_write,
+        lseek=lambda fd, offset, origin: 0,
+        fchmod=lambda fd, mode: None,
+        pipe2=ops.pipe2,
+        fstat=ops.fstat,
+        getsid=ops.getsid,
+        getpgid=ops.getpgid,
+        waitpid=ops.waitpid,
+    ), patched(
+        module.fcntl,
+        fcntl=ops.fcntl,
+    ), patched(
+        module.select,
+        select=ops.select,
+    ), patched(
+        module.time,
+        monotonic=ops.monotonic,
+        sleep=lambda seconds: None,
+    ), patched(
+        module.signal,
+        pidfd_send_signal=ops.pidfd_signal,
+    ):
+        value = module._run_held_python_with_ops(
+            ops, b"held launcher", b"held sources", b"admission\n",
+        )
+    if row["intended_code"] == "accept":
+        if value != b"{}\n" or ops.fired or ops.fds:
+            raise AssertionError(f"complete outer owner mismatch: {ops.events}/{ops.fds}")
+        return
+    raise AssertionError(f"outer primitive fault accepted: {row['id']}")
+
+
+def outer_process_corpus(module):
+    path = FIXTURE.parent / "outer-process-cases.jsonl"
+    document = [json.loads(line) for line in path.read_text().splitlines()]
+    header, *rows = document
+    if header["version"] != "cogs.outcome-two-outer-process/v1":
+        raise AssertionError("outer process fixture version")
+    if set(header["case_fields"]) != ROW_KEYS or any(set(row) != ROW_KEYS for row in rows):
+        raise AssertionError("outer process fixture shape")
+    declared = {row["id"] for row in rows}
+    selected = set()
+    consumed = set()
+    oracle = set()
+    for row in rows:
+        selected.add(row["id"])
+        try:
+            outer_process_case(module, row)
+        except (module.RuntimeLauncherError, module.RuntimeLauncherCleanupError,
+                OSError, ChildProcessError):
+            if row["intended_code"] == "accept":
+                raise
+        else:
+            if row["intended_code"] != "accept":
+                raise AssertionError(f"outer primitive fault accepted: {row['id']}")
+        consumed.add(row["id"])
+        oracle.add(row["id"])
+    if declared != selected or declared != consumed or declared != oracle:
+        raise AssertionError("outer declared/selected/consumed/oracle mismatch")
 
 
 def sticky_root_replacement(module):
@@ -886,18 +1164,20 @@ def parent():
     if module._ROOT_PARENT != "/tmp":
         raise AssertionError("private runtime root is not fixed beneath /tmp")
     launcher_source = MODULE.read_text()
-    authenticate = launcher_source.index("sources = _authenticate_sources(4, admission)")
-    owner_policy = launcher_source.index("root.st_uid == os.geteuid()")
-    if authenticate > owner_policy or "st_uid == 0" in launcher_source:
-        raise AssertionError("runner checkout ownership policy/order drift")
+    common_source = COMMON.read_text()
+    admission = common_source.index("held, digest = self._admit_sources(context, root)")
+    compilation = common_source.index("module = self._launcher(held[LAUNCHER_PATH])")
+    if admission > compilation or "open(ROOT" in launcher_source:
+        raise AssertionError("held source admission/compilation order drift")
     banned = ("_MappingAuthority", "_coordinate_admitted_mapping_only")
-    required = ("_qualify_admitted_fixed_python_mapping", "_launch_admitted_fixed_compression_qualification", "_qualify_admitted_fixed_descriptor_primitives", "_qualify_admitted_fixed_process_lifecycle", "_launch_admitted_fixed_sandbox_qualification", "invoke_fixed_descriptor_qualification", "invoke_fixed_lifecycle_qualification", 'None if mode in ("lifecycle", "sandbox") else _load_private_closure')
+    required = ("_qualify_admitted_fixed_python_mapping", "_launch_admitted_fixed_compression_qualification", "_qualify_admitted_fixed_descriptor_primitives", "_qualify_admitted_fixed_process_lifecycle", "_launch_admitted_fixed_sandbox_qualification", "invoke_fixed_admitted_operation", "_prepare_client_from_admitted_bytes", 'None if mode in ("lifecycle", "sandbox") else _load_private_closure')
     if any(token in launcher_source for token in banned) or not all(token in launcher_source for token in required):
         raise AssertionError("fixed admitted production routing drift")
     production_operation_contracts(module)
     capsule_contract(module)
     fixed_bootstrap_modes(module)
     common_production_adapters()
+    outer_process_corpus(module)
     sticky_root_replacement(module)
     rows = fixture_rows(module)
     selected = {row["id"] for row in rows}

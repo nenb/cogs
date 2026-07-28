@@ -94,7 +94,9 @@ class Ops:
  def observe(self,context): return base
  def run_fixed_operation(self,context,operation):
   self.events.append((context.job,operation)); raise RuntimeError('safe native boundary')
-ops=Ops(); session=common.NativeSession._begin_with_ops(types.SimpleNamespace(job='D'),ops,object())
+class Cust:
+ def abort(self,error): self.error=error
+ops=Ops(); session=common.NativeSession._begin_with_ops(types.SimpleNamespace(job='D'),ops,Cust())
 try: m._invoke_production(session)
 except RuntimeError as error: assert str(error)=='safe native boundary'
 else: raise AssertionError('completed result substituted')

@@ -68,7 +68,7 @@ def _workflow_bound() -> int:
     try:
         result = _invoke_production(session)
         checks = qualify(result, session.context.head_sha, session.source_set_sha256)
-    except BaseException as error:
+    except Exception as error:
         failure = error
         checks = dict.fromkeys(MECHANISM_CHECKS, "fail")
     diagnostic = None if failure is None else type(failure).__name__.encode("ascii")

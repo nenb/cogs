@@ -330,17 +330,20 @@ def dirent(value):
     name = str(value).encode() + b"\0"
     length = (19 + len(name) + 7) & ~7
     return struct.pack("=QqHB", value + 1, 0, length, 0) + name + bytes(length - 19 - len(name))
-class DescriptorOps(closure._Ops):
+class DescriptorOps(FsOps):
+    """Filesystem plus process adapter for the complete descriptor owner."""
     def __init__(self):
-        self.fds = {0: "stdio", 1: "stdio", 2: "stdio", 50: "ambient"}
-        self.next_fd = 10
+        super().__init__({"id": "descriptor", "expect": "accept"})
+        self.fds.update({0: "stdio", 1: "stdio", 2: "stdio", 50: "ambient"})
         self.dir_read = set()
         self.limit = (1024, 16384)
         self.effects = []
         self.pipe_count = 0
         self.data = {}
-    def architecture_gate(self):
-        self.effects.append("architecture")
+        self.child = False
+        self.exec_attempted = False
+        self.exec_failed = False
+    def architecture_gate(self): self.effects.append("architecture")
     def _allocate(self, kind, preferred=None):
         fd = preferred
         if fd is None:
@@ -351,62 +354,94 @@ class DescriptorOps(closure._Ops):
         self.fds[fd] = kind
         return fd
     def open(self, path, flags, mode=0o600, *, dir_fd=None):
-        del flags, mode, dir_fd
-        if path == "/proc/self/fd":
-            return self._allocate("directory")
-        if path == "/proc/self/task/self/children":
-            return self._allocate("children")
-        raise AssertionError(path)
+        if path in ("/proc/self/fd", "/proc/123/fd"): return self._allocate(path)
+        if path == "/proc/self/task/self/children": return self._allocate("children")
+        if path == "/proc/123/stat":
+            fd = self._allocate("proc-stat")
+            fields = b" ".join([b"1"] * 19 + [b"10"] + [b"1"] * 8)
+            self.data[fd] = b"123 (held-python) S " + fields + b"\n"
+            return fd
+        if path == "/proc/123/exe": return self._allocate("proc-exe")
+        return super().open(path, flags, mode, dir_fd=dir_fd)
     def close(self, fd):
-        if fd not in self.fds:
-            raise AssertionError("descriptor operation double close")
+        if fd not in self.fds: raise AssertionError("descriptor operation double close")
+        self.closed.append(fd)
         del self.fds[fd]
+        self.data.pop(fd, None)
     def getdents(self, fd, maximum=32768):
         del maximum
-        if fd in self.dir_read:
-            return b""
+        if fd in self.dir_read: return b""
         self.dir_read.add(fd)
-        return b"".join(dirent(value) for value in sorted(self.fds))
+        if self.fds[fd] == "/proc/123/fd":
+            values = (0, 1, 2, 197, 4096)
+        elif self.child and self.exec_attempted:
+            values = (*self.baseline_fds, fd)
+        else:
+            values = tuple(sorted(self.fds))
+        return b"".join(dirent(value) for value in values)
     def read(self, fd, size):
         value = self.data.get(fd, b"")[:size]
         self.data[fd] = self.data.get(fd, b"")[len(value):]
         return value
     def write(self, fd, data):
-        del fd
-        if data == b"G":
-            target = next(number for number, kind in self.fds.items() if kind == "status-read")
-            self.data[target] = b"exact"
+        kind = self.fds.get(fd)
+        if kind == "release-write" and data == b"G":
+            target = next(number for number, value in self.fds.items()
+                          if value == "status-read")
+            self.data[target] = b"R"
+        if kind == "source-write" and data == b"G":
+            target = next(number for number, value in self.fds.items()
+                          if value == "status-read")
+            self.data[target] = b""
         return len(data)
     def fstat(self, fd):
-        if fd not in self.fds:
-            raise OSError(9, "closed")
-        return SimpleNamespace(st_dev=1, st_ino=fd, st_size=0, st_mtime_ns=1,
-                               st_ctime_ns=1, st_mode=stat.S_IFREG | 0o600,
-                               st_uid=0, st_gid=0)
-    def getrlimit(self):
-        return self.limit
-    def setrlimit(self, value):
-        self.limit = value
+        if fd not in self.fds: raise OSError(9, "closed")
+        kind = self.fds[fd]
+        if type(kind) is str and kind.startswith("/") and kind not in {"/proc/self/fd", "/proc/123/fd"}: return super().fstat(fd)
+        inode = 100 if kind == "proc-exe" else fd
+        return SimpleNamespace(st_dev=8, st_ino=inode, st_size=0, st_mtime_ns=1,
+                               st_ctime_ns=1, st_mode=stat.S_IFREG | 0o600, st_uid=0, st_gid=0)
+    def getrlimit(self): return self.limit
+    def setrlimit(self, value): self.limit = value
     def pipe(self):
+        purpose = ("source", "status", "release")[self.pipe_count]
         self.pipe_count += 1
-        purpose = "status" if self.pipe_count == 2 else "pipe"
         return self._allocate(purpose + "-read"), self._allocate(purpose + "-write")
     def clone3_pidfd(self):
+        self.baseline_fds = (0, 1, 2, 50)
+        if self.child: return 0, -1
         return 123, self._allocate("pidfd")
-    def wait_pidfd_nohang(self, fd):
-        return self.fds[fd] == "pidfd"
-    def monotonic(self):
-        return 0.0
-    def sleep(self, seconds):
-        del seconds
-    def pidfd_signal(self, fd, signum):
-        del fd, signum
+    def dup2(self, source, target, inheritable=True): self.fds[target] = self.fds[source]
+    def getsid(self, pid): return 77
+    def getpgid(self, pid): return 77
+    def getuid(self): return 0
+    def poll_readable(self, fd, seconds): return self.fds.get(fd) == "status-read"
+    def wait_pidfd_nohang(self, fd): return self.fds[fd] == "pidfd"
+    def waitid_pidfd_nohang(self, fd):
+        if self.fds[fd] != "pidfd": raise AssertionError("waitid without pidfd")
+        self.effects.append("C:waitid")
+        return SimpleNamespace(si_pid=123, si_uid=0, si_code=os.CLD_EXITED,
+                               si_status=0)
+    def reap_pid_nohang(self, pid):
+        self.effects.append("C:waitpid")
+        return pid, 0
+    def monotonic(self): return 0.0
+    def sleep(self, seconds): pass
+    def pidfd_signal(self, fd, signum): pass
+    def execve(self, fd, argv, environment):
+        del fd, argv, environment
+        self.exec_attempted = True
+        raise ChildExec()
+    def exit_child(self, status):
+        if self.exec_attempted and not self.exec_failed: raise ChildExec()
+        raise ChildReject(status)
     def fcntl(self, fd, command, argument=0):
         if fd not in self.fds:
             raise OSError(9, "closed")
         if command in (getattr(__import__("fcntl"), "F_DUPFD_CLOEXEC"),
                        getattr(__import__("fcntl"), "F_DUPFD")):
-            return self._allocate("low" if command == __import__("fcntl").F_DUPFD_CLOEXEC else "high", argument)
+            kind = "low" if command == __import__("fcntl").F_DUPFD_CLOEXEC else "high"
+            return self._allocate(kind, argument)
         if command == closure._F_GETFD:
             return closure._FD_CLOEXEC if self.fds[fd] == "low" else 0
         raise AssertionError(command)
@@ -415,6 +450,7 @@ class DescriptorOps(closure._Ops):
         for fd in tuple(self.fds):
             if first <= fd <= last:
                 del self.fds[fd]
+
 class DescriptorAdmission:
     revision = "0" * 40
     source_set_sha256 = "1" * 64
@@ -443,7 +479,222 @@ def descriptor_owner_matrix():
            "descriptor replay")
     if ops.effects != before:
         raise AssertionError("descriptor replay reached an effect")
+class ChildExec(BaseException): pass
+class ChildReject(BaseException): pass
+
+
+class DescriptorCutOps(DescriptorOps):
+    """Drives the complete C owner while faulting only its syscall adapter."""
+    def __init__(self, row):
+        super().__init__()
+        self.point = row["primitive_fault"]["point"]
+        self.mutation = row["primitive_fault"]["mutation"]
+        self.fired = False
+        self.events = []
+        self.child = self.mutation == "child" or self.point == "execve"
+        self.getdents_calls = 0
+        self.limit_reads = 0
+        self.limit_sets = 0
+        self.signaled = False
+        self.foreign = None
+        self.clock = 0.0
+    def consume_fault(self, point, mutation=None):
+        selected = self.point == point and (mutation is None or self.mutation == mutation)
+        if selected and not self.fired:
+            self.fired = True
+            self.events.append(f"C:{point}:{self.mutation}")
+            return True
+        return False
+    def monotonic(self):
+        self.clock += 0.1
+        return self.clock
+    def getdents(self, fd, maximum=32768):
+        self.getdents_calls += 1
+        mutation = self.mutation if self.point == "getdents" else None
+        if mutation == "unaligned" and not self.fired:
+            self.consume_fault("getdents")
+            name = b"0\0"
+            return struct.pack("=QqHB", 1, 0, 21, 0) + name
+        if mutation == "padding" and not self.fired:
+            self.consume_fault("getdents")
+            raw = bytearray(dirent(0))
+            raw[-1] = 1
+            return bytes(raw)
+        if mutation == "call-bound":
+            self.consume_fault("getdents")
+            if self.getdents_calls <= 34:
+                return struct.pack("=QqHB", 1, 0, 24, 0) + b".\0" + bytes(3)
+            return b""
+        if mutation == "byte-bound":
+            self.consume_fault("getdents")
+            if self.getdents_calls <= 33:
+                return struct.pack("=QqHB", 1, 0, maximum, 0) + b".\0" + bytes(maximum - 21)
+            return b""
+        if mutation == "entry-bound":
+            self.consume_fault("getdents")
+            if self.getdents_calls == 1:
+                return b"".join(dirent(value) for value in range(16_385))
+            return b""
+        return super().getdents(fd, maximum)
+    def getrlimit(self):
+        self.limit_reads += 1
+        if self.point == "getrlimit" and self.mutation == "normalized-drift" and self.limit_reads == 2:
+            self.consume_fault("getrlimit")
+            return 8192, self.limit[1]
+        if self.point == "getrlimit" and self.mutation == "restore-drift" and self.limit_reads >= 3:
+            self.consume_fault("getrlimit")
+            return self.limit[0] - 1, self.limit[1]
+        return self.limit
+    def setrlimit(self, value):
+        self.limit_sets += 1
+        if self.point == "setrlimit":
+            restoring = self.limit_sets > 1
+            selected = self.mutation == "restore-before" if restoring else self.mutation == "before"
+            if selected:
+                self.consume_fault("setrlimit")
+                raise OSError("setrlimit")
+        self.limit = value
+    def pipe(self):
+        purpose = ("source", "status", "release")[self.pipe_count]
+        if self.point == "pipe" and self.mutation == purpose:
+            self.consume_fault("pipe")
+            raise OSError(f"{purpose} pipe")
+        return super().pipe()
+    def fcntl(self, fd, command, argument=0):
+        low = command == __import__("fcntl").F_DUPFD_CLOEXEC
+        high = command == __import__("fcntl").F_DUPFD
+        if self.point == "fcntl" and ((low and self.mutation == "low") or (high and self.mutation == "high")):
+            self.consume_fault("fcntl")
+            raise OSError("duplicate")
+        return super().fcntl(fd, command, argument)
+    def clone3_pidfd(self):
+        if self.consume_fault("clone3_pidfd"): raise OSError("clone3")
+        if self.child: return 0, -1
+        return super().clone3_pidfd()
+    def write(self, fd, data):
+        if self.point == "write" and self.mutation == "release-short" and data == b"G":
+            self.consume_fault("write")
+            return 0
+        return super().write(fd, data)
+    def read(self, fd, size):
+        if self.child and self.fds.get(fd) == "release-read": return b"G"
+        if self.point == "read" and self.mutation == "status-eof" and self.fds.get(fd) == "status-read":
+            self.consume_fault("read")
+            return b""
+        return super().read(fd, size)
+    def execve(self, fd, argv, environment):
+        del fd, argv, environment
+        self.events.append("C:execve")
+        self.exec_attempted = True
+        if self.consume_fault("execve"):
+            self.exec_failed = True
+            raise OSError("execve")
+        raise ChildExec()
+    def exit_child(self, status):
+        if self.exec_attempted and not self.exec_failed: raise ChildExec()
+        raise ChildReject(status)
+    def waitid_pidfd_nohang(self, fd):
+        del fd
+        self.events.append("C:waitid")
+        if self.point == "waitid":
+            self.consume_fault("waitid")
+            if self.mutation == "none":
+                return None
+        code = 2 if self.mutation == "wrong-code" else getattr(os, "CLD_EXITED", 1)
+        status = 1 if self.mutation == "wrong-status" else 0
+        return SimpleNamespace(si_pid=123, si_uid=0, si_code=code, si_status=status)
+    def reap_pid_nohang(self, pid):
+        self.events.append("C:waitpid")
+        if self.consume_fault("waitpid"): return 0, 0
+        return pid, 0
+    def wait_pidfd_nohang(self, fd):
+        self.events.append("C:legacy-wait")
+        return super().wait_pidfd_nohang(fd)
+    def close_range(self, first, last):
+        if self.point == "close_range" and self.mutation == "before":
+            self.consume_fault("close_range")
+            raise OSError("close_range before")
+        super().close_range(first, last)
+        if self.point == "close_range" and self.mutation == "after-reuse":
+            self.consume_fault("close_range")
+            self.fds[first] = "foreign"
+            self.foreign = first
+            raise OSError("close_range after reuse")
+    def close(self, fd):
+        if self.point == "close" and not self.fired:
+            self.consume_fault("close")
+            if self.mutation == "before":
+                raise OSError("close before")
+            super().close(fd)
+            self.fds[fd] = "foreign"
+            self.foreign = fd
+            raise OSError("close after reuse")
+        super().close(fd)
+
+
+def descriptor_cut_corpus():
+    path = FIXTURES / "lifecycle/descriptor-cases.jsonl"
+    document = [json.loads(line) for line in path.read_text().splitlines()]
+    header, *rows = document
+    if header["version"] != "cogs.outcome-two-descriptor-owner/v1":
+        raise AssertionError("descriptor cut fixture version")
+    if set(header["case_fields"]) != ROW_KEYS or any(set(row) != ROW_KEYS for row in rows):
+        raise AssertionError("descriptor cut fixture shape")
+    declared = {row["id"] for row in rows}
+    selected = set()
+    consumed = set()
+    oracle = set()
+    for row in rows:
+        selected.add(row["id"])
+        ops = DescriptorCutOps(row)
+        admission = DescriptorAdmission()
+        rejection = None
+        try:
+            result = closure._qualify_fixed_descriptor_primitives_with_ops(admission, ops)
+        except ChildExec:
+            outcome = "child-exec"
+        except ChildReject:
+            outcome = "child-reject"
+        except closure.RuntimeClosureCleanupError as error:
+            first = error.failures[0] if error.failures else None
+            if type(first) is ChildExec:
+                outcome = "child-exec"
+            elif type(first) is ChildReject:
+                outcome = "child-reject"
+            else:
+                outcome = "reject"
+                rejection = error
+        except (closure.RuntimeClosureError, OSError, RuntimeError) as error:
+            outcome = "reject"
+            rejection = error
+        else:
+            outcome = "accept"
+            facts = dataclasses.asdict(result)
+            if not all(value is True for name, value in facts.items() if name not in {
+                "version", "source_revision", "source_set_sha256"
+            }):
+                raise AssertionError(f"C completed with a false fact: {row['id']}")
+        if outcome != row["intended_code"]:
+            rejected = locals().get("rejection")
+            failures = getattr(rejected, "failures", ())
+            detail = repr((rejected, [(type(item).__name__, str(item)) for item in failures]))
+            raise AssertionError(f"{row['id']}: expected {row['intended_code']}, got {outcome}: {detail}")
+        if row["primitive_fault"]["point"] != "none" and not ops.fired:
+            raise AssertionError(f"C fault was not consumed: {row['id']}")
+        if outcome == "accept" and not {"C:waitid", "C:waitpid"} <= set(ops.events):
+            raise AssertionError("C parent accepted without exact waitid/waitpid observations")
+        if outcome == "child-exec" and "C:execve" not in ops.events:
+            raise AssertionError("C child accepted without fixed held-Python exec")
+        if ops.foreign is not None and ops.fds.get(ops.foreign) != "foreign":
+            raise AssertionError("C cleanup deleted a reused descriptor")
+        consumed.add(row["id"])
+        oracle.add(row["id"])
+    if not declared == selected == consumed == oracle or len(rows) != len(declared):
+        raise AssertionError("C declared/selected/consumed/oracle mismatch")
+
+
 parser_matrix()
 closure_matrix()
 descriptor_owner_matrix()
+descriptor_cut_corpus()
 print("Outcome 2 runtime closure portable tests passed")

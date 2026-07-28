@@ -129,12 +129,12 @@ def _run(common: object) -> int:
     try:
         result, revision, source_digest = _invoke_sandbox(session)
         qualified = qualify(result, revision, source_digest)
-    except BaseException as error:
+    except Exception as error:
         primary = error
 
     try:
         evidence = session.settle_native_phase()
-    except BaseException as error:
+    except Exception as error:
         primary = _combine(primary, error)
         evidence = None
 

@@ -86,7 +86,9 @@ class Ops:
   self.events.append((context.job, operation))
   raise RuntimeError("safe native boundary")
 ops = Ops()
-session = common.NativeSession._begin_with_ops(types.SimpleNamespace(job="E"), ops, object())
+class Cust:
+    def abort(self, error): self.error = error
+session = common.NativeSession._begin_with_ops(types.SimpleNamespace(job="E"), ops, Cust())
 try: module["_invoke_sandbox"](session)
 except RuntimeError as error: assert str(error) == "safe native boundary"
 else: raise AssertionError("completed result substituted")

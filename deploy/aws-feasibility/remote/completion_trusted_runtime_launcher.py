@@ -2507,10 +2507,7 @@ _RootCapsuleAuthority = make_dataclass("_RootCapsuleAuthority", [
     ("source_set_sha256", str), ("sources", tuple),
 ], frozen=True, namespace={"__module__": __name__})
 
-def _root_capsule_authority(
-    sources: dict[str, bytes],
-    admission: _SourceAdmission,
-) -> _RootCapsuleAuthority:
+def _root_capsule_authority(sources: dict[str, bytes], admission: _SourceAdmission) -> _RootCapsuleAuthority:
     rows = tuple({
         "path": path,
         "sha256": hashlib.sha256(sources[path]).hexdigest(),
@@ -2575,11 +2572,7 @@ def _decode_root_capsule(
         }
         _require(authority_value == expected, "root capsule independent authority", "root-authority")
     return sources, header
-def _run_root_capsule_with_ops(
-    ops: Any,
-    capsule: bytes,
-    authority: _RootCapsuleAuthority,
-) -> bytes:
+def _run_root_capsule_with_ops(ops: Any, capsule: bytes, authority: _RootCapsuleAuthority) -> bytes:
     _require(type(authority) is _RootCapsuleAuthority, "root authority type", "root-authority")
     bootstrap = _render_root_bootstrap(authority)
     command = (
@@ -2830,8 +2823,15 @@ def _sandbox_leader(
         written = ops.write(final_write.fd, b"F")
         _require(written == 1, "sandbox inner final release", "sandbox-inner-final")
         final_write.close(ops)
-        observed, status = os.waitpid(pid, 0)
-        _require(observed == pid and status == 0, "sandbox inner exact reap", "sandbox-inner-reap")
+        reap_deadline = time.monotonic() + _SETUP_SECONDS
+        while True:
+            observed, status = os.waitpid(pid, os.WNOHANG)
+            if observed == pid:
+                break
+            remaining = reap_deadline - time.monotonic()
+            _require(observed == 0 and remaining > 0, "sandbox inner bounded reap", "sandbox-inner-reap")
+            time.sleep(min(0.001, remaining))
+        _require(status == 0, "sandbox inner exact reap", "sandbox-inner-reap")
         _lifecycle_control_send(control, b"E:sandbox")
         ops.umount(root.encode())
         mounted = False
