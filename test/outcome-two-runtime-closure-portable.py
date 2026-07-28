@@ -145,6 +145,8 @@ def parser_matrix():
     assert elf.parse_elf64(
         synthetic(loads=(compatible,), load_size=8192, memory_size=8192)
     ).needed
+    file_alias = (1, 4, 0x800, base + 0x2800, 0, 0x400, 0x400, 0x1000)
+    assert elf.parse_elf64(synthetic(loads=(file_alias,))).needed
     assert elf.parse_elf64(synthetic(memory_size=8192)).needed
     reject(lambda: elf.parse_elf64(synthetic(load_size=0x180, memory_size=4096)), "bss-interp")
     reject(lambda: elf.parse_elf64(synthetic(load_size=0x300, memory_size=4096)), "bss-strings")

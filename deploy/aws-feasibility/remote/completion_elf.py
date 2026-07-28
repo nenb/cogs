@@ -203,10 +203,6 @@ def _parse_elf64(data: bytes) -> ElfMetadata:
                 _require(left.delta == right.delta)
                 _require(virtual_end <= left.file_identity_end)
                 _require(virtual_end <= right.file_identity_end)
-            file_start = max(left.file_page_start, right.file_page_start)
-            file_end = min(left.file_page_end, right.file_page_end)
-            if file_start < file_end:
-                _require(left.delta == right.delta)
 
     def mapped(address: int, size: int) -> int:
         _, end = _span(address, size, _U64_MAX)
