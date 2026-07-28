@@ -1,12 +1,21 @@
-#!/usr/bin/env python3
-"""Native B: qualify the production sealed gzip/zstd launcher."""
+#!/usr/bin/python3
+"""Native B: qualify sealed gzip/zstd through the admitted production launcher."""
+from __future__ import annotations
+
+from dataclasses import dataclass
 import hashlib
 import json
 import os
 from pathlib import Path
+import resource
+import select
+import signal
+import stat
 import struct
-import subprocess
 import sys
+import time
+from typing import Mapping
+
 ROOT = Path(__file__).resolve().parents[2]
 LAUNCHER = ROOT / "deploy/aws-feasibility/remote/completion_trusted_runtime_launcher.py"
 SOURCES = (
@@ -15,166 +24,311 @@ SOURCES = (
     "deploy/aws-feasibility/remote/completion_trusted_runtime_launcher.py",
     "schemas/trusted-runtime-closure-v1.json",
 )
-FIXED_INPUTS = (
-    bytes.fromhex("1f8b08000000000002ff4bce4f2fd62d2acd2bc9cc4dd52d2c4dccc94ccb4c4e2cc9cccfd32d33e40200a9c9b5521e000000"),
-    bytes.fromhex("28b52ffd201ef10000636f67732d72756e74696d652d7175616c696669636174696f6e2d76310a"),
-)
-FIXED_OUTPUT = b"cogs-runtime-qualification-v1\n"
-FIXED_OUTPUT_SHA256 = hashlib.sha256(FIXED_OUTPUT).hexdigest()
 CHECKS = (
     "gzip_source_exact", "gzip_sealed_exec", "zstd_source_exact",
     "zstd_sealed_exec", "decompression_deterministic", "network_denied",
     "children_exact", "cleanup_restored",
 )
-PREINPUT_FACTS = (
-    "mapped_generations_exact", "exec_descriptor_consumed", "root_readonly_noexec",
-    "root_has_no_proc", "host_paths_absent",
-)
-NETWORK_FACTS = ("network_namespace_exact", "seccomp_denials_exact", "no_acquisition_route")
-CLEANUP_FACTS = (
-    "descriptors_restored", "children_reaped", "descendants_reaped",
-    "mounts_restored", "paths_restored", "namespaces_released",
-    "namespace_handles_released",
-)
+_MAX_OUTPUT = 32_768
 
-QualificationError = RuntimeError
-def _require(condition, message):
+
+class QualificationError(RuntimeError):
+    """The fixed Job B transaction did not prove its claim."""
+
+
+def _require(condition: bool, message: str) -> None:
     if not condition:
         raise QualificationError(message)
-def _fds():
+
+
+def _load_common() -> object:
+    sys.path.insert(0, os.fspath(Path(__file__).resolve().parent))
+    try:
+        return __import__("common")
+    finally:
+        del sys.path[0]
+
+
+def _git(*arguments: str) -> bytes:
+    import subprocess
+    completed = subprocess.run(
+        ("/usr/bin/git", "-C", os.fspath(ROOT), *arguments),
+        env={"LC_ALL": "C"}, capture_output=True, check=False, timeout=5,
+    )
+    _require(completed.returncode == 0 and completed.stderr == b"", "git observation")
+    return completed.stdout
+
+
+def _fds() -> tuple[tuple[int, int, int], ...]:
     directory = os.open("/proc/self/fd", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
     try:
-        return tuple(sorted(int(name) for name in os.listdir(directory) if int(name) != directory))
+        numbers = sorted(int(name) for name in os.listdir(directory))
+        _require(len(numbers) <= 256 and len(numbers) == len(set(numbers)), "descriptor bound")
+        rows = []
+        for number in numbers:
+            if number == directory:
+                continue
+            try:
+                value = os.fstat(number)
+            except OSError as error:
+                raise QualificationError("descriptor identity") from error
+            rows.append((number, value.st_dev, value.st_ino))
+        return tuple(rows)
     finally:
         os.close(directory)
-def _children():
-    return tuple(int(value) for value in Path("/proc/self/task/self/children").read_text(encoding="ascii").split())
 
-def _source_admission(revision):
+
+def _children() -> tuple[int, ...]:
+    raw = Path("/proc/self/task/self/children").read_bytes()
+    _require(len(raw) <= 65_536, "children bound")
+    values = tuple(int(value) for value in raw.split())
+    _require(len(values) <= 16 and len(values) == len(set(values)), "children shape")
+    return values
+
+
+def _mounts() -> str:
+    raw = Path("/proc/self/mountinfo").read_bytes()
+    _require(len(raw) <= 4_194_304, "mountinfo bound")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _namespaces() -> tuple[tuple[str, int, int], ...]:
+    return tuple(
+        (name, value.st_dev, value.st_ino)
+        for name in ("user", "pid", "mnt", "net")
+        for value in (os.stat(f"/proc/self/ns/{name}"),)
+    )
+
+
+@dataclass(frozen=True)
+class Snapshot:
+    descriptors: tuple[tuple[int, int, int], ...]
+    children: tuple[int, ...]
+    path_absent: bool
+    mounts: str
+    namespaces: tuple[tuple[str, int, int], ...]
+    limits: tuple[int, int]
+    checkout: tuple[bytes, bytes]
+
+    @classmethod
+    def capture(cls, private_root: Path) -> "Snapshot":
+        return cls(
+            _fds(), _children(), not private_root.exists(), _mounts(),
+            _namespaces(), resource.getrlimit(resource.RLIMIT_NOFILE),
+            (_git("rev-parse", "HEAD^{commit}"),
+             _git("status", "--porcelain=v1", "--untracked-files=all")),
+        )
+
+    def compare(self, private_root: Path) -> dict[str, bool]:
+        after = Snapshot.capture(private_root)
+        return {
+            "descriptors": self.descriptors == after.descriptors,
+            "children": self.children == after.children,
+            "paths": self.path_absent and after.path_absent,
+            "mounts": self.mounts == after.mounts,
+            "namespaces": self.namespaces == after.namespaces,
+            "limits": self.limits == after.limits,
+            "checkout": self.checkout == after.checkout and after.checkout[1] == b"",
+        }
+
+
+def _source_admission(revision: str) -> bytes:
     digest = hashlib.sha256()
-    for path in SOURCES:
-        data = (ROOT / path).read_bytes()
-        encoded = path.encode()
+    launcher_digest = ""
+    for relative in SOURCES:
+        data = (ROOT / relative).read_bytes()
+        encoded = relative.encode()
         digest.update(struct.pack("!I", len(encoded)) + encoded)
         digest.update(struct.pack("!Q", len(data)) + hashlib.sha256(data).digest())
+        if ROOT / relative == LAUNCHER:
+            launcher_digest = hashlib.sha256(data).hexdigest()
     value = {
-        "bootstrap_sha256": hashlib.sha256((ROOT / SOURCES[2]).read_bytes()).hexdigest(),
+        "bootstrap_sha256": launcher_digest,
         "revision": revision,
         "source_set_sha256": digest.hexdigest(),
         "version": "cogs.runtime-source-admission/v1",
     }
     return json.dumps(value, sort_keys=True, separators=(",", ":")).encode() + b"\n"
-def _close_all(values):
-    failures = []
-    for fd in values:
-        try:
-            os.close(fd)
-        except OSError as error:
-            failures.append(error)
-    _require(not failures, "descriptor close failed")
 
-def _fixed_bootstrap_descriptors(admission):
-    read_fd, write_fd = os.pipe2(os.O_CLOEXEC)
-    root_fd = -1
+
+def _child(admission_fd: int, root_fd: int, output_fd: int, error_fd: int,
+           release_fd: int, private_root: Path) -> None:
     try:
-        _require(os.write(write_fd, admission) == len(admission), "admission short write")
-        os.close(write_fd)
-        write_fd = -1
-        root_fd = os.open(ROOT, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
-        _require((read_fd, root_fd) == (3, 4), "nonempty descriptor baseline")
-        return (read_fd, root_fd)
+        _require(os.read(release_fd, 1) == b"R", "release gate")
+        os.close(release_fd)
+        libc = __import__("ctypes").CDLL(None, use_errno=True)
+        _require(libc.unshare(0x10000000 | 0x00020000) == 0, "namespace setup")
+        uid, gid = os.getuid(), os.getgid()
+        Path("/proc/self/setgroups").write_text("deny", encoding="ascii")
+        Path("/proc/self/uid_map").write_text(f"0 {uid} 1\n", encoding="ascii")
+        Path("/proc/self/gid_map").write_text(f"0 {gid} 1\n", encoding="ascii")
+        _require(libc.mount(None, b"/", None, 1 << 14 | 1 << 18, None) == 0, "private mounts")
+        source = os.fsencode(private_root)
+        _require(libc.mount(source, b"/run", None, 4096 | 16384, None) == 0, "preparation root")
+        for source_fd, target in ((admission_fd, 3), (root_fd, 4), (output_fd, 1), (error_fd, 2)):
+            os.dup2(source_fd, target, inheritable=True)
+        os.closerange(5, 65_536)
+        os.chdir(ROOT)
+        os.execve("/usr/bin/python3", ("/usr/bin/python3", "-I", "-B", os.fspath(LAUNCHER)), {})
     except BaseException:
-        for fd in (read_fd, write_fd, root_fd):
-            if fd >= 0:
-                try:
-                    os.close(fd)
-                except OSError:
-                    pass
+        os._exit(125)
+
+
+def _wait(pid: int, pidfd: int, output_fd: int, error_fd: int) -> tuple[bytes, bytes, int]:
+    buffers = {output_fd: bytearray(), error_fd: bytearray()}
+    active = set(buffers)
+    deadline = time.monotonic() + 30
+    status = None
+    try:
+        while active or status is None:
+            remaining = deadline - time.monotonic()
+            _require(remaining > 0, "launcher deadline")
+            ready, _, _ = select.select(tuple(active), (), (), min(remaining, 0.05))
+            for descriptor in ready:
+                block = os.read(descriptor, _MAX_OUTPUT + 1 - len(buffers[descriptor]))
+                if block:
+                    buffers[descriptor] += block
+                    _require(len(buffers[descriptor]) <= _MAX_OUTPUT, "launcher output bound")
+                else:
+                    os.close(descriptor)
+                    active.remove(descriptor)
+            waited, observed = os.waitpid(pid, os.WNOHANG)
+            if waited == pid:
+                status = observed
+        return bytes(buffers[output_fd]), bytes(buffers[error_fd]), status
+    except BaseException:
+        signal.pidfd_send_signal(pidfd, signal.SIGKILL)
+        end = time.monotonic() + 5
+        while time.monotonic() < end:
+            waited, _ = os.waitpid(pid, os.WNOHANG)
+            if waited == pid:
+                break
+            time.sleep(0.01)
+        else:
+            raise QualificationError("launcher reap uncertainty")
+        for descriptor in active:
+            os.close(descriptor)
         raise
 
-class NativeAdapter:
-    def launch(self, revision):
-        fd_baseline = _fds()
-        child_baseline = _children()
-        _require(fd_baseline == (0, 1, 2), "descriptor baseline is not exact")
-        _require(child_baseline == (), "child baseline is not empty")
-        descriptors = _fixed_bootstrap_descriptors(_source_admission(revision))
-        try:
-            with subprocess.Popen(
-                ("/usr/bin/python3", "-I", "-B", os.fspath(LAUNCHER)),
-                cwd=ROOT, env={}, stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                pass_fds=descriptors, close_fds=True,
-            ) as process:
-                owned, descriptors = descriptors, ()
-                _close_all(owned)
-                child_exact = _children() == (process.pid,)
-                try:
-                    stdout, stderr = process.communicate(timeout=30)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.communicate(timeout=5)
-                    raise
-        finally:
-            _close_all(descriptors)
-        _require(process.returncode == 0 and stderr == b"", "production launcher failed")
-        _require(len(stdout) <= 32768 and stdout.endswith(b"\n"), "launcher output framing")
-        result = json.loads(stdout)
-        canonical = json.dumps(result, sort_keys=True, separators=(",", ":")).encode() + b"\n"
-        _require(canonical == stdout, "launcher output is not canonical")
-        return {
-            "result": result, "child_exact": child_exact,
-            "fd_restored": _fds() == fd_baseline,
-            "children_restored": _children() == child_baseline,
-        }
-def qualify(adapter, revision):
-    _require(len(revision) == 40 and all(c in "0123456789abcdef" for c in revision), "revision")
-    observation = adapter.launch(revision)
-    _require(set(observation) == {"result", "child_exact", "fd_restored", "children_restored"} and type(observation["result"]) is dict, "adapter shape")
-    result = observation["result"]
-    _require(all(0 < len(value) <= 65536 for value in FIXED_INPUTS), "fixed input bound")
+
+def _launch(revision: str, private_root: Path) -> Mapping[str, object]:
+    admission = _source_admission(revision)
+    admission_read, admission_write = os.pipe2(os.O_CLOEXEC)
+    output_read, output_write = os.pipe2(os.O_CLOEXEC)
+    error_read, error_write = os.pipe2(os.O_CLOEXEC)
+    release_read, release_write = os.pipe2(os.O_CLOEXEC)
+    source_root = os.open(ROOT, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    pid = os.fork()
+    if pid == 0:
+        for descriptor in (admission_write, output_read, error_read, release_write):
+            os.close(descriptor)
+        _child(admission_read, source_root, output_write, error_write, release_read, private_root)
+    try:
+        pidfd = os.pidfd_open(pid, 0)
+    except BaseException:
+        os.close(release_write)
+        deadline = time.monotonic() + 5
+        while os.waitpid(pid, os.WNOHANG)[0] != pid:
+            _require(time.monotonic() < deadline, "gated child reap")
+            time.sleep(0.01)
+        for descriptor in (admission_read, admission_write, source_root,
+                           output_read, output_write, error_read, error_write, release_read):
+            os.close(descriptor)
+        raise
+    for descriptor in (admission_read, source_root, output_write, error_write, release_read):
+        os.close(descriptor)
+    try:
+        _require(os.write(admission_write, admission) == len(admission), "admission write")
+        os.close(admission_write)
+        admission_write = -1
+        _require(os.write(release_write, b"R") == 1, "release write")
+        os.close(release_write)
+        release_write = -1
+        output, error, status = _wait(pid, pidfd, output_read, error_read)
+    finally:
+        for descriptor in (admission_write, release_write, pidfd):
+            if descriptor >= 0:
+                os.close(descriptor)
+    _require(os.waitstatus_to_exitcode(status) == 0 and error == b"", "production launcher")
+    value = json.loads(output)
+    canonical = json.dumps(value, sort_keys=True, separators=(",", ":")).encode() + b"\n"
+    _require(type(value) is dict and canonical == output, "production result framing")
+    return value
+
+
+def _digest(value: object) -> bool:
+    return type(value) is str and len(value) == 64 and set(value) <= set("0123456789abcdef")
+
+def qualify(result: Mapping[str, object], revision: str) -> list[dict[str, object]]:
     identity = (result.get("version"), result.get("marker"), result.get("source_revision"))
     _require(identity == ("cogs.runtime-qualification/v1", "cogs-runtime-qualification-v1", revision), "result identity")
-    _require((result.get("gzip_output_sha256"), result.get("zstd_output_sha256")) == (FIXED_OUTPUT_SHA256, FIXED_OUTPUT_SHA256), "deterministic outputs")
-    _require(all(result.get(name) is True for name in PREINPUT_FACTS + NETWORK_FACTS + CLEANUP_FACTS), "production observation failed")
-    _require(all(observation[name] is True for name in ("child_exact", "fd_restored", "children_restored")), "driver cleanup failed")
-    closure = result.get("closure_sha256")
-    _require(type(closure) is str and len(closure) == 64 and set(closure) <= set("0123456789abcdef"), "closure digest")
-    metadata = [
-        {"id": name, "role": "fixed-input", "sha256": hashlib.sha256(value).hexdigest(), "size_bytes": len(value)}
-        for name, value in zip(("gzip-input", "zstd-input"), FIXED_INPUTS)
-    ]
-    metadata += [
-        {"id": "gzip-output", "role": "deterministic-output", "sha256": FIXED_OUTPUT_SHA256, "size_bytes": len(FIXED_OUTPUT)},
-        {"id": "zstd-output", "role": "deterministic-output", "sha256": FIXED_OUTPUT_SHA256, "size_bytes": len(FIXED_OUTPUT)},
-        {"id": "runtime-closure", "role": "closure", "sha256": closure, "size_bytes": 0},
-    ]
-    return metadata
-def _load_common():
-    sys.path.insert(0, os.fspath(Path(__file__).resolve().parent))
-    common = __import__("common")
-    del sys.path[0]
-    return common
-def _native():
+    facts = (
+        "mapped_generations_exact", "exec_descriptor_consumed", "root_readonly_noexec",
+        "root_has_no_proc", "host_paths_absent", "network_namespace_exact",
+        "seccomp_denials_exact", "no_acquisition_route", "descriptors_restored",
+        "children_reaped", "descendants_reaped", "mounts_restored", "paths_restored",
+        "namespaces_released", "namespace_handles_released",
+    )
+    _require(all(result.get(name) is True for name in facts), "production observation")
+    tools = result.get("compression_tools")
+    _require(type(tools) is list and len(tools) == 2, "compression metadata")
+    rows = []
+    keys = {"id", "source_sha256", "source_size_bytes", "sealed_sha256", "sealed_size_bytes", "seal_mask", "execution_mapping_sha256", "output_sha256"}
+    for expected, value in zip(("gzip", "zstd"), tools):
+        _require(type(value) is dict and set(value) == keys and value["id"] == expected, "tool metadata shape")
+        _require(value["seal_mask"] == 15, "tool seals")
+        for name in ("source_sha256", "sealed_sha256", "execution_mapping_sha256", "output_sha256"):
+            _require(_digest(value[name]), "tool digest")
+        for name in ("source_size_bytes", "sealed_size_bytes"):
+            _require(type(value[name]) is int and 0 < value[name] <= 536_870_912, "tool size")
+        _require(value["source_sha256"] == value["sealed_sha256"], "sealed source equality")
+        _require(value["source_size_bytes"] == value["sealed_size_bytes"], "sealed size equality")
+        _require(value["output_sha256"] == result.get(f"{expected}_output_sha256"), "output binding")
+        rows.append(dict(value))
+    _require(rows[0]["output_sha256"] == rows[1]["output_sha256"], "deterministic outputs")
+    return rows
+
+def _workflow_bound() -> int:
     common = _load_common()
     context = common.WorkflowContext.from_environ("B", __file__)
+    private_root = Path(f"/tmp/cogs-native-b-{os.getpid()}")
+    baseline = Snapshot.capture(private_root)
+    checks = dict.fromkeys(CHECKS, "fail")
+    metadata: list[dict[str, object]] = []
+    failure: BaseException | None = None
     try:
-        metadata = qualify(NativeAdapter(), context.head_sha)
+        private_root.mkdir(mode=0o700)
+        metadata = qualify(_launch(context.head_sha, private_root), context.head_sha)
+        private_root.rmdir()
     except BaseException as error:
-        diagnostic = f"{type(error).__name__}:{error}".encode()[:common.REPORT_LIMIT]
-        common.finalize_report(context, "fail", dict.fromkeys(CHECKS, "fail"), [],
-                               dict.fromkeys(common.CLEANUP_KEYS, False), "compression", diagnostic)
-        return 1
-    common.finalize_report(context, "pass", dict.fromkeys(CHECKS, "pass"), metadata,
-                           dict.fromkeys(common.CLEANUP_KEYS, True))
-    return 0
-def main():
-    if not __debug__ or sys.argv != [sys.argv[0], "--workflow-bound"]:
-        raise SystemExit(2)
+        failure = error
+        if private_root.exists():
+            try:
+                private_root.rmdir()
+            except BaseException as cleanup_error:
+                failure = ExceptionGroup("Job B primary and cleanup", [error, cleanup_error])
     try:
-        status = _native()
-    except BaseException:
-        status = 1
-    raise SystemExit(status)
+        cleanup = baseline.compare(private_root)
+    except BaseException as error:
+        cleanup = dict.fromkeys(common.CLEANUP_KEYS, False)
+        failure = error if failure is None else ExceptionGroup("Job B observation", [failure, error])
+    if failure is None and all(cleanup.values()):
+        common.finalize_report(context, "pass", dict.fromkeys(CHECKS, "pass"), metadata, cleanup)
+        return 0
+    diagnostic = f"{type(failure).__name__}:{failure}".encode()[:common.REPORT_LIMIT]
+    common.finalize_report(context, "fail", checks, [], cleanup, "compression", diagnostic)
+    return 1
+
+
+def _dispatch(arguments: list[str], workflow: object = _workflow_bound) -> int:
+    if not __debug__ or arguments != ["--workflow-bound"]:
+        raise QualificationError("Job B requires the fixed workflow entry")
+    return workflow()  # type: ignore[operator]
+
+
 if __name__ == "__main__":
-    main()
+    try:
+        raise SystemExit(_dispatch(sys.argv[1:]))
+    except BaseException:
+        os.write(2, b"native-b-failed\n")
+        raise SystemExit(1)
