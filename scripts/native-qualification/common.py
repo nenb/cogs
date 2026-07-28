@@ -518,7 +518,7 @@ class SystemCommonOps:
                     b"sha256-" + hashlib.sha256(diagnostics).hexdigest().encode())
                 state = f"exit-{os.WEXITSTATUS(status)}" if os.WIFEXITED(status) else f"signal-{os.WTERMSIG(status)}"
                 detail = f"held-launcher-{state}-stdout-{len(output)}-stderr-{len(diagnostics)}-{token.decode()}"
-                raise QualificationError(token.decode() if len(detail) > 96 and token.startswith(b"runtime-launcher-") else detail)
+                raise QualificationError(token.decode() if token.startswith(b"runtime-launcher-root-") or (len(detail) > 96 and token.startswith(b"runtime-launcher-")) else detail)
             _require(not diagnostics, "held launcher diagnostics")
             return output
         except BaseException as primary:
