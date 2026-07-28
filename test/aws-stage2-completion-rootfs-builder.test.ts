@@ -101,12 +101,19 @@ test("D-R2.2c exposes only fixed recover-owned and keeps bootstrap private", asy
   assert.match(native, /COGS_C1_EXPECTED_JOB: native-c1/u);
   assert.match(native, /COGS_C1_EXPECTED_ENVELOPE_SHA: \$\{\{ github\.sha \}\}/u);
   assert.match(native, /COGS_C1_EXPECTED_EVENT: workflow_dispatch/u);
-  assert.match(native, /COGS_C1_EXPECTED_EVENT_MERGE_SHA: \$\{\{ github\.sha \}\}/u);
+  assert.match(native, /COGS_C1_EXPECTED_WORKFLOW_SHA: \$\{\{ github\.workflow_sha \}\}/u);
+  assert.match(native, /COGS_C1_EXPECTED_REF: \$\{\{ github\.ref \}\}/u);
+  assert.match(native, /COGS_C1_EXPECTED_REF_NAME: \$\{\{ github\.ref_name \}\}/u);
+  assert.match(native, /COGS_C1_EXPECTED_REF_TYPE: \$\{\{ github\.ref_type \}\}/u);
+  assert.match(native, /COGS_C1_EXPECTED_REF_PROTECTED: \$\{\{ github\.ref_protected \}\}/u);
+  assert.match(native, /COGS_C1_EXPECTED_DEFAULT_BRANCH: \$\{\{ github\.event\.repository\.default_branch \}\}/u);
+  assert.match(native, /COGS_C1_EXPECTED_SENDER: \$\{\{ github\.event\.sender\.login \}\}/u);
+  assert.match(native, /COGS_C1_EXPECTED_AUTHORIZED_ACTOR: \$\{\{ vars\.NATIVE_QUALIFICATION_ACTOR \}\}/u);
   assert.match(
     native,
     /COGS_C1_EXPECTED_HEAD_SHA: \$\{\{ needs\.native-qualification-eligibility\.outputs\.reviewed_sha \}\}/u,
   );
-  assert.match(native, /COGS_C1_EXPECTED_WORKFLOW_SHA: \$\{\{ github\.workflow_sha \}\}/u);
+  assert.doesNotMatch(native, /COGS_C1_EXPECTED_(?:ACTION|EVENT_MERGE_SHA|BASE_SHA|PR_NUMBER)/u);
   assert.match(
     native,
     /COGS_C1_EXPECTED_WORKFLOW_BLOB_DIGEST: \$\{\{ hashFiles\('\.github\/workflows\/ci\.yml'\) \}\}/u,
@@ -117,14 +124,17 @@ test("D-R2.2c exposes only fixed recover-owned and keeps bootstrap private", asy
   assert.match(nativeInvoker, /os\.geteuid\(\) != 0/u);
   assert.match(nativeInvoker, /\/usr\/bin\/sudo/u);
   assert.match(nativeInvoker, /NAMESPACES = \("pid", "mnt", "user", "cgroup"\)/u);
-  assert.match(nativeInvoker, /validate_revision_domains/u);
-  assert.match(nativeInvoker, /validate_synthetic_context/u);
+  assert.match(nativeInvoker, /validate_dispatch_identity/u);
+  assert.match(nativeInvoker, /"event": "workflow_dispatch"/u);
+  assert.match(nativeInvoker, /"ref_protected": "true"/u);
+  assert.match(nativeInvoker, /values\["workflow_sha"\] == values\["envelope_sha"\]/u);
+  assert.match(nativeInvoker, /values\["checked_out_sha"\] == values\["head_sha"\]/u);
+  assert.match(nativeInvoker, /nested\(event, "inputs", "reviewed_sha"\)/u);
+  assert.match(nativeInvoker, /values\["sender"\] == values\["authorized_actor"\]/u);
+  assert.match(nativeInvoker, /\("event", "pull_request"\)/u);
   assert.match(nativeInvoker, /"classification": "observation-only"/u);
   assert.match(nativeInvoker, /"envelope_sha": expected\["envelope_sha"\]/u);
-  assert.match(nativeInvoker, /"event_merge_sha": expected\["event_merge_sha"\]/u);
-  assert.match(nativeInvoker, /envelope_sha == github_sha/u);
-  assert.match(nativeInvoker, /event_merge_sha == event_payload_merge_sha/u);
-  assert.doesNotMatch(nativeInvoker, /envelope_sha == event_merge_sha/u);
+  assert.doesNotMatch(nativeInvoker, /event_merge_sha|pull_request_number|base_sha/u);
   assert.match(nativeInvoker, /"workflow_blob_digest"/u);
   assert.match(nativeInvoker, /"GITHUB_JOB": "native-c1"/u);
   assert.doesNotMatch(nativeInvoker, /native-host|native-qualified|external_authority/u);
@@ -140,7 +150,7 @@ test("D-R2.2c exposes only fixed recover-owned and keeps bootstrap private", asy
     timeout: 30_000,
   });
   assert.equal(portable.status, 0, portable.stderr);
-  assert.match(portable.stdout, /envelope\/source domain portable tests passed/u);
+  assert.match(portable.stdout, /protected dispatch identity portable tests passed/u);
 
   const local = spawnSync("python3", ["-I", nativeInvokerPath], {
     cwd: root,
