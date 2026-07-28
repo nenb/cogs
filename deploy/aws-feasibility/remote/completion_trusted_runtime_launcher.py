@@ -431,7 +431,9 @@ class _SystemOps:
         pidfd = ctypes.c_int(-1)
         values = (ctypes.c_uint64 * 11)(_CLONE_PIDFD, ctypes.addressof(pidfd), 0, 0, signal.SIGCHLD, 0, 0, 0, 0, 0, 0)
         pid = self._checked(self.libc.syscall(_SYS_CLONE3, ctypes.byref(values), ctypes.sizeof(values)), "clone3")
-        if pid > 0 and pidfd.value < 0: raise RuntimeLauncherUnavailable("clone3-pidfd")
+        # Return the complete atomic result.  The creator must retain a positive
+        # PID even when the secondary pidfd result is unusable so it can close
+        # the child's gate and reap that exact direct child.
         return pid, pidfd.value
     def getdents(self, fd: int, maximum: int = 32768) -> bytes:
         buffer = ctypes.create_string_buffer(maximum)
@@ -773,10 +775,21 @@ class _ProcessOwner(make_dataclass(
         release_gate: _FdLease | None = None,
         pidfd_fd: int | None = None,
         waitable: bool = True,
+        bind_received_pidfd: bool = False,
     ) -> _ProcessLease:
         lease = _ProcessLease(pid, None, release_gate=release_gate, waitable=waitable)
         descriptor = pidfd_fd if pidfd_fd is not None else os.pidfd_open(pid, 0)
         lease.pidfd = _FdLease(descriptor, f"pidfd:{pid}")
+        try:
+            if bind_received_pidfd:
+                target = _stable_pidfd_target(descriptor, self.ops)
+                _require(target == pid, "received pidfd target", "process-transfer-pidfd")
+        except BaseException as primary:
+            try:
+                lease.pidfd.close(self.ops)
+            except BaseException as error:
+                raise RuntimeLauncherCleanupError(primary, [error]) from primary
+            raise
         lease.expected_uid = os.geteuid()
         self.processes.append(lease)
         lease.start_time = _start_time(pid)
@@ -793,6 +806,12 @@ class _ProcessOwner(make_dataclass(
         pid, pidfd = self.ops.clone_pidfd()
         if pid > 0:
             lease.pid = pid
+            if pidfd < 0:
+                primary = RuntimeLauncherUnavailable("clone3-pidfd")
+                _settle_pidfdless_clone(lease, self.ops, primary)
+                self.processes.remove(lease)
+                primary.cleanup_restored = True
+                raise primary
             lease.pidfd = _FdLease(pidfd, f"pidfd:{pid}")
         if pid == 0:
             self.processes.remove(lease)
@@ -845,8 +864,10 @@ class _ProcessOwner(make_dataclass(
         case: str | None = None,
         role: str | None = None,
     ) -> _ProcessLease:
-        # The no-deadline form exists only for portable legacy endpoint adapters.
-        portable = deadline is None and not isinstance(endpoint, socket.socket)
+        # Non-socket endpoints exist only in portable adapters.  Production
+        # transfers always bind the received kernel pidfd identity.
+        modeled_endpoint = not isinstance(endpoint, socket.socket)
+        portable = deadline is None and modeled_endpoint
         if not portable:
             _require(deadline is not None, "descendant transfer deadline missing", "process-transfer-deadline")
             remaining = deadline - time.monotonic()
@@ -883,7 +904,12 @@ class _ProcessOwner(make_dataclass(
                 _require(transfer not in self.transfers, "descendant transfer replay", "process-transfer-replay")
             _require(binding, "descendant transfer binding", "process-transfer-binding")
             pidfd = rights[0].transfer()
-            lease = self.register(value["pid"], pidfd_fd=pidfd, waitable=False)
+            lease = self.register(
+                value["pid"],
+                pidfd_fd=pidfd,
+                waitable=False,
+                bind_received_pidfd=not modeled_endpoint,
+            )
             observed = (
                 lease.start_time,
                 lease.session,
@@ -1018,6 +1044,70 @@ def _exe_identity(pid: int, ops: Any | None = None) -> tuple[int, int]:
         raise
     lease.close(actual_ops)
     return result
+
+def _pidfd_target(fd: int, ops: Any) -> int:
+    raw = _proc_bytes(f"/proc/self/fdinfo/{fd}", 4096, ops)
+    targets: list[int] = []
+    for line in raw.splitlines():
+        key, separator, value = line.partition(b":")
+        if key != b"Pid":
+            continue
+        _require(bool(separator) and value.startswith(b"\t"), "pidfd fdinfo shape", "process-transfer-pidfd")
+        lexical = value[1:]
+        _require(re.fullmatch(rb"[1-9][0-9]*", lexical) is not None, "pidfd target value", "process-transfer-pidfd")
+        targets.append(int(lexical))
+    _require(len(targets) == 1, "pidfd target cardinality", "process-transfer-pidfd")
+    return targets[0]
+
+def _stable_pidfd_target(fd: int, ops: Any) -> int:
+    observations = tuple(_pidfd_target(fd, ops) for _attempt in range(3))
+    _require(observations[0] == observations[1] == observations[2], "pidfd target drift", "process-transfer-pidfd")
+    return observations[0]
+
+def _settle_pidfdless_clone(lease: _ProcessLease, ops: Any, primary: BaseException) -> None:
+    failures: list[BaseException] = []
+    for descriptor in (*lease.pending, lease.release_gate):
+        if descriptor is None or descriptor.state is not _FdState.OWNED:
+            continue
+        try:
+            descriptor.close(ops)
+        except BaseException as error:
+            failures.append(error)
+    graceful_deadline = time.monotonic() + _TERM_SECONDS
+    while time.monotonic() < graceful_deadline:
+        try:
+            observed, _status = os.waitpid(lease.pid, os.WNOHANG)
+        except BaseException as error:
+            failures.append(error)
+            break
+        if observed == lease.pid:
+            lease.reaped = True
+            break
+        if observed != 0:
+            failures.append(RuntimeLauncherError("pidfdless child wait identity", "process-reap"))
+            break
+        time.sleep(min(0.001, max(0.0, graceful_deadline - time.monotonic())))
+    if not lease.reaped:
+        # The positive clone result is still an unreaped direct child, so its
+        # numeric PID cannot have been recycled.  This is the sole safe
+        # pidfdless signal path and exists only to settle malformed clone3
+        # secondary results.
+        try:
+            os.kill(lease.pid, signal.SIGKILL)
+            kill_deadline = time.monotonic() + _KILL_SECONDS
+            while time.monotonic() < kill_deadline:
+                observed, _status = os.waitpid(lease.pid, os.WNOHANG)
+                if observed == lease.pid:
+                    lease.reaped = True
+                    break
+                _require(observed == 0, "pidfdless child wait identity", "process-reap")
+                time.sleep(min(0.001, max(0.0, kill_deadline - time.monotonic())))
+        except BaseException as error:
+            failures.append(error)
+    if not lease.reaped:
+        failures.append(RuntimeLauncherError("pidfdless child reap deadline", "process-reap"))
+    if failures:
+        raise RuntimeLauncherCleanupError(primary, failures) from primary
 def _process_matches(lease: _ProcessLease) -> bool:
     try:
         immutable = (_start_time(lease.pid), _exe_identity(lease.pid))
@@ -1205,7 +1295,12 @@ def _consume_worker_handoff(endpoint: socket.socket, helper_endpoint: socket.soc
                     expected = {"event", "executable", "gates", "pid", "process_group", "sequence", "session", "start_time", "target", "version"}
                     _require(set(value) == expected and len(received) == 1, "helper registration shape", "helper-register-shape")
                     pidfd = received[0].transfer()
-                    lease = process_owner.register(value["pid"], pidfd_fd=pidfd, waitable=False)
+                    lease = process_owner.register(
+                        value["pid"],
+                        pidfd_fd=pidfd,
+                        waitable=False,
+                        bind_received_pidfd=isinstance(helper_endpoint, socket.socket),
+                    )
                     observed = (lease.start_time, lease.session, lease.process_group, list(lease.executable))
                     asserted = (value["start_time"], value["session"], value["process_group"], value["executable"])
                     _require(observed == asserted and value["gates"] == ["input_gate", "registration_gate", "release_gate", "status_gate"], "helper registration identity", "helper-register-identity")
@@ -1242,7 +1337,18 @@ def _mkdir_exact(path: str, mode: int) -> None:
     os.mkdir(path, mode)
     info = os.lstat(path)
     _require(stat.S_ISDIR(info.st_mode) and stat.S_IMODE(info.st_mode) == mode, "private root directory mismatch")
-class _RootOwner(make_dataclass("_RootOwnerData", [("ops", Any), *((name, Optional[_FdLease], field(default=None)) for name in "parent root".split()), *((name, Optional[tuple[int, int]], field(default=None)) for name in "parent_identity identity".split()), *((name, bool, field(default=False)) for name in "create_intended cleaned".split())])):
+class _RootOwner(make_dataclass(
+    "_RootOwnerData",
+    [
+        ("ops", Any),
+        ("parent", Optional[_FdLease], field(default=None)),
+        ("root", Optional[_FdLease], field(default=None)),
+        ("parent_identity", Optional[tuple[int, int]], field(default=None)),
+        ("identity", Optional[tuple[int, int]], field(default=None)),
+        ("create_intended", bool, field(default=False)),
+        ("cleaned", bool, field(default=False)),
+    ],
+)):
     def prepare(self) -> str:
         try:
             flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
@@ -1256,12 +1362,14 @@ class _RootOwner(make_dataclass("_RootOwnerData", [("ops", Any), *((name, Option
             else: raise RuntimeLauncherError("private root baseline", "root-baseline")
             self.create_intended = True
             os.mkdir(_ROOT_LEAF, 0o700, dir_fd=self.parent.fd)
+            created_info = os.stat(_ROOT_LEAF, dir_fd=self.parent.fd, follow_symlinks=False)
+            exact = stat.S_ISDIR(created_info.st_mode) and stat.S_IMODE(created_info.st_mode) == 0o700
+            _require(exact and created_info.st_uid == os.geteuid(), "private root identity", "root-identity")
+            self.identity = (created_info.st_dev, created_info.st_ino)
             descriptor = os.open(_ROOT_LEAF, os.O_PATH | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=self.parent.fd)
             self.root = _FdLease(descriptor, "root-object")
             info = os.fstat(descriptor)
-            exact = stat.S_ISDIR(info.st_mode) and stat.S_IMODE(info.st_mode) == 0o700
-            _require(exact and info.st_uid == os.geteuid(), "private root identity", "root-identity")
-            self.identity = (info.st_dev, info.st_ino)
+            _require((info.st_dev, info.st_ino) == self.identity, "private root open identity", "root-identity")
             return f"{_ROOT_PARENT}/{_ROOT_LEAF}"
         except BaseException as primary:
             self.cleanup(primary)
@@ -1280,9 +1388,16 @@ class _RootOwner(make_dataclass("_RootOwnerData", [("ops", Any), *((name, Option
                     info = os.stat(_ROOT_LEAF, dir_fd=self.parent.fd, follow_symlinks=False)
                 except FileNotFoundError: info = None
                 if info is not None:
-                    exact = self.identity is not None and (info.st_dev, info.st_ino) == self.identity
-                    exact = exact and stat.S_ISDIR(info.st_mode) and stat.S_IMODE(info.st_mode) == 0o700
-                    _require(exact and info.st_uid == os.geteuid(), "private root replacement", "root-replaced")
+                    exact_shape = stat.S_ISDIR(info.st_mode)
+                    exact_shape = exact_shape and stat.S_IMODE(info.st_mode) == 0o700
+                    exact_shape = exact_shape and info.st_uid == os.geteuid()
+                    # A successful mkdir under the retained sticky /tmp parent
+                    # is sufficient recovery authority if the immediately
+                    # following O_PATH open failed.  Once opened, require the
+                    # stronger recorded generation as well.
+                    exact_generation = self.identity is None
+                    exact_generation = exact_generation or (info.st_dev, info.st_ino) == self.identity
+                    _require(exact_shape and exact_generation, "private root replacement", "root-replaced")
                     os.rmdir(_ROOT_LEAF, dir_fd=self.parent.fd)
             except BaseException as error: failures.append(error)
         if self.parent is not None:
@@ -1727,6 +1842,41 @@ def _descendant_identity_edges(pid: int, ops: Any) -> tuple[tuple[object, ...], 
         reads += 1
         _require(before == after, "descendant edge drift", "process-census")
     return tuple(sorted(edges))
+def _adopt_unregistered_children(
+    owner: _ProcessOwner,
+    baseline: tuple[int, ...],
+    ops: Any,
+) -> None:
+    path = "/proc/self/task/self/children"
+    first = _parse_children(_proc_bytes(path, 65536, ops))
+    second = _parse_children(_proc_bytes(path, 65536, ops))
+    _require(first == second, "adopted child census drift", "process-adoption")
+    known = {lease.pid for lease in owner.processes}
+    candidates = tuple(pid for pid in first if pid not in baseline and pid not in known)
+    for pid in candidates:
+        descriptor = os.pidfd_open(pid, 0)
+        lease = _ProcessLease(pid, _FdLease(descriptor, f"adopted-pidfd:{pid}"))
+        try:
+            _require(_stable_pidfd_target(descriptor, ops) == pid, "adopted pidfd target", "process-adoption")
+            lease.expected_uid = os.geteuid()
+            owner.processes.append(lease)
+            lease.start_time = _start_time(pid, ops)
+            lease.session = os.getsid(pid)
+            lease.process_group = os.getpgid(pid)
+            try:
+                lease.executable = _exe_identity(pid, ops)
+            except (FileNotFoundError, ProcessLookupError):
+                _require(bool(select.select([descriptor], [], [], 0)[0]), "adopted executable identity", "process-adoption")
+                lease.executable = (0, 0)
+        except BaseException as primary:
+            if lease in owner.processes:
+                owner.processes.remove(lease)
+            try:
+                lease.pidfd.close(ops)
+            except BaseException as error:
+                raise RuntimeLauncherCleanupError(primary, [error]) from primary
+            raise
+
 def _stable_direct_child(lease: _ProcessLease, ops: Any) -> bool:
     try:
         path = "/proc/self/task/self/children"
@@ -2868,15 +3018,29 @@ def _sandbox_only_transaction(ops: Any) -> dict[str, bool]:
         _lifecycle_control_recv(control_parent, deadline, b"S:sandbox")
         process_owner.confirm_setsid(leader)
         _lifecycle_control_send(control_parent, b"C:sandbox")
-        inner = process_owner.receive_descendant(
-            transfer_parent,
-            leader,
-            nonce,
-            1,
-            deadline,
-            "sandbox",
-            "inner",
-        )
+        try:
+            inner = process_owner.receive_descendant(
+                transfer_parent,
+                leader,
+                nonce,
+                1,
+                deadline,
+                "sandbox",
+                "inner",
+            )
+        except BaseException as transfer_error:
+            _settle_rejected_transfer(
+                process_owner,
+                leader,
+                transfer_parent,
+                control_parent,
+                "sandbox",
+                child_baseline,
+                ops,
+                transfer_error,
+            )
+            leader = None
+            raise
         process_owner.stable_identity_census(leader)
         _lifecycle_control_send(transfer_parent, b"A")
         _deadline_ready(control_parent, deadline, "sandbox-inner-result")
@@ -3041,6 +3205,58 @@ def _lifecycle_control_recv(endpoint: socket.socket, deadline: float, expected: 
 def _lifecycle_control_send(endpoint: socket.socket, value: bytes) -> None:
     written = endpoint.send(value, socket.MSG_DONTWAIT)
     _require(written == len(value), "lifecycle control send", "lifecycle-control")
+
+def _creator_settlement_packet(endpoint: socket.socket, deadline: float, case: str) -> None:
+    _deadline_ready(endpoint, deadline, "creator-settlement-deadline")
+    observed = endpoint.recv(256, socket.MSG_DONTWAIT)
+    parts = observed.split(b":", 2)
+    valid = len(parts) == 3 and parts[0] == b"Z"
+    valid = valid and parts[1] == case.encode("ascii")
+    valid = valid and re.fullmatch(rb"[A-Za-z0-9._-]{1,127}", parts[2]) is not None
+    _require(valid, "creator settlement packet", "creator-settlement")
+    _require(parts[2] != b"cleanup-uncertain", "creator cleanup uncertain", "cleanup-uncertain")
+
+def _settle_rejected_transfer(
+    owner: _ProcessOwner,
+    leader: _ProcessLease,
+    transfer: socket.socket,
+    control: socket.socket,
+    case: str,
+    child_baseline: tuple[int, ...],
+    ops: Any,
+    primary: BaseException,
+) -> None:
+    failures: list[BaseException] = []
+    leader_dead = bool(select.select([leader.pidfd.fd], [], [], 0)[0])
+    settlement_deadline = time.monotonic() + _SETUP_SECONDS
+    if not leader_dead:
+        try:
+            _lifecycle_control_send(transfer, b"N")
+        except BaseException as error:
+            failures.append(error)
+        try:
+            _creator_settlement_packet(control, settlement_deadline, case)
+        except BaseException as error:
+            failures.append(error)
+    status = _wait_bounded(leader, settlement_deadline)
+    if status is None:
+        failures.append(RuntimeLauncherError("creator settlement reap deadline", "creator-settlement"))
+    else:
+        try:
+            owner.stop(leader, primary)
+        except BaseException as error:
+            failures.append(error)
+    try:
+        before_adoption = tuple(owner.processes)
+        _adopt_unregistered_children(owner, child_baseline, ops)
+        adopted = tuple(lease for lease in owner.processes if lease not in before_adoption)
+        for lease in adopted:
+            owner.stop(lease, primary)
+    except BaseException as error:
+        failures.append(error)
+    if failures:
+        raise RuntimeLauncherCleanupError(primary, failures) from primary
+
 def _lifecycle_descendant(
     ops: Any,
     leader_pid: int,
@@ -3243,6 +3459,9 @@ def _run_lifecycle_case(
     ops: Any,
     owner: _ProcessOwner,
 ) -> _LifecycleCaseObservation:
+    child_baseline = _parse_children(
+        _proc_bytes("/proc/self/task/self/children", 65536, ops),
+    )
     control_parent = control_leader = None
     transfer_parent = transfer_leader = None
     socket_recovery: list[tuple[socket.socket, str]] = []
@@ -3274,15 +3493,30 @@ def _run_lifecycle_case(
         owner.confirm_setsid(leader)
         second_gate_exact = leader.identity_phase == "POST_SETSID"
         _lifecycle_control_send(control_parent, b"C:" + case.encode())
-        descendant = owner.receive_descendant(
-            transfer_parent,
-            leader,
-            nonce,
-            1,
-            deadline,
-            case,
-            "descendant",
-        )
+        try:
+            descendant = owner.receive_descendant(
+                transfer_parent,
+                leader,
+                nonce,
+                1,
+                deadline,
+                case,
+                "descendant",
+            )
+        except BaseException as transfer_error:
+            if isinstance(transfer_parent, socket.socket):
+                _settle_rejected_transfer(
+                    owner,
+                    leader,
+                    transfer_parent,
+                    control_parent,
+                    case,
+                    child_baseline,
+                    ops,
+                    transfer_error,
+                )
+                leader = None
+            raise
         census = owner.stable_identity_census(leader)
         transfer_id = hashlib.sha256(nonce + _canonical([case, "descendant", 1])).hexdigest()
         transfer_exact = transfer_id in owner.transfers and descendant in leader.descendants
