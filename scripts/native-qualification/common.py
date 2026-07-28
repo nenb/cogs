@@ -1490,8 +1490,10 @@ def _custodian_main(control_fd: int, context: WorkflowContext, capability: bytes
             packet, rights, _flags, _address = supervisor.recvmsg(4096, socket.CMSG_SPACE(struct.calcsize("i")))
     if packet == b"PRESERVE":
         _bounded_reap(pid, pidfd.number)
-        if phase != b"STABLE":
-            _recover_quarantine(context.job, retained[0], retained[1], capability)
+        # STABLE means the authenticated publication is durable, not that an
+        # exceptional worker owns future cleanup. Recover it through the held
+        # parent/directory capabilities before retiring the custodian.
+        _recover_quarantine(context.job, retained[0], retained[1], capability)
         registry.close_reverse()
         os.close(control_fd)
         return
