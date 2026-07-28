@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Production lifecycle state machines over an independent deterministic kernel model."""
 from array import array
+import ctypes
 import errno
 import hashlib
 import importlib
 import json
+import os
 from pathlib import Path
 import signal
 import socket
@@ -662,8 +664,517 @@ def observe_case(case, runner):
         raise AssertionError(f"{case['id']}: production event sentinel changed")
     if (all(code == "OK" for code in codes)) != (case["expect"] == "accept"):
         raise AssertionError(f"{case['id']}: typed oracle contradicts expectation")
+class ScriptedSocket:
+    """One endpoint in the parent-side deterministic lifecycle protocol."""
+    def __init__(self, kernel, fd, role, child=False):
+        self.kernel = kernel
+        self.fd = fd
+        self.role = role
+        self.child = child
+        self.reads = 0
+    def fileno(self):
+        return self.fd
+    def detach(self):
+        fd, self.fd = self.fd, -1
+        return fd
+    def close(self):
+        if self.fd >= 0:
+            self.kernel.close(self.detach())
+    def send(self, value, flags=0):
+        del flags
+        self.kernel.events.append(f"{self.kernel.case}:{self.role}:send:{value!r}")
+        if self.role == "control" and value.startswith(b"X:"):
+            self.kernel.exit_leader()
+        return len(value)
+    def recv(self, bound, flags=0):
+        del bound, flags
+        if self.role == "transfer":
+            mode = self.kernel.hit("transfer-eof")
+            return b"extra" if mode == "extra" else b""
+        case = self.kernel.case
+        index = self.reads
+        self.reads += 1
+        if index == 0:
+            mode = self.kernel.hit("transition-packet")
+            return b"bad" if mode == "malformed" else b"S:" + case.encode()
+        if index == 1:
+            return b"T:" + case.encode()
+        mode = self.kernel.hit("release-packet")
+        return b"bad" if mode == "malformed" else b"R:" + case.encode()
+    def recvmsg(self, data_bound, control_bound, flags):
+        del data_bound, control_bound, flags
+        mode = self.kernel.hit("transfer-recv")
+        if mode == "error":
+            raise OSError(errno.EIO, "transfer recv")
+        mode = self.kernel.hit("transfer-packet")
+        descendant = self.kernel.create_descendant()
+        packet_case = "wrong" if mode == "case" else self.kernel.case
+        start = descendant.start + (1 if mode == "identity" else 0)
+        transfer_id = hashlib.sha256(
+            self.kernel.current_nonce + launcher._canonical([self.kernel.case, "descendant", 1])
+        ).hexdigest()
+        packet = launcher._canonical({
+            "case": packet_case,
+            "executable": list(descendant.executable),
+            "nonce": self.kernel.current_nonce.hex(),
+            "parent": self.kernel.leader.pid,
+            "pid": descendant.pid,
+            "process_group": descendant.group,
+            "role": "descendant",
+            "sequence": 1,
+            "session": descendant.session,
+            "start_time": start,
+            "transfer": transfer_id,
+            "version": "cogs.process-transfer/v1",
+        })
+        credential_pid = 999 if mode == "credentials" else self.kernel.leader.pid
+        credentials = (socket.SOL_SOCKET, socket.SCM_CREDENTIALS,
+                       struct.pack("3i", credential_pid, self.kernel.euid, self.kernel.egid))
+        rights = []
+        if mode != "no-right":
+            rights.append(self.kernel.allocate("pidfd", target=descendant))
+        if mode == "extra-right":
+            rights.append(self.kernel.allocate("pidfd", target=descendant))
+        ancillary = [credentials]
+        if rights:
+            ancillary.append((socket.SOL_SOCKET, socket.SCM_RIGHTS,
+                              array("i", rights).tobytes()))
+        if mode in {"credentials", "no-right", "extra-right", "case", "identity"}:
+            self.kernel.creator_abort_descendant()
+        return packet, ancillary, 0, None
+    def sendmsg(self, values, ancillary, flags=0):
+        del ancillary, flags
+        value = b"".join(values)
+        return len(value)
+    def shutdown(self, direction):
+        del direction
+
+class ScriptedProcess:
+    def __init__(self, pid, parent, start, session, group):
+        self.pid = pid
+        self.parent = parent
+        self.start = start
+        self.session = session
+        self.group = group
+        self.executable = (8, 1000 + pid)
+        self.live = True
+        self.reaped = False
+        self.exit_status = None
+        self.term_ignored = False
+
+class ScriptedLibc:
+    def __init__(self, kernel):
+        self.kernel = kernel
+    def prctl(self, option, pointer, *unused):
+        del unused
+        check(option == launcher._PR_GET_CHILD_SUBREAPER, "unexpected modeled libc prctl")
+        if self.kernel.subreaper_reads == 0:
+            self.kernel.subreaper_reads += 1
+            if self.kernel.hit("subreaper-read") == "error":
+                return -1
+        value = self.kernel.subreaper
+        ctypes.cast(pointer, ctypes.POINTER(ctypes.c_int)).contents.value = value
+        return 0
+
+class ProductionLifecycleKernel:
+    """Scripted child protocol with real production parent ownership and parsers."""
+    def __init__(self, row):
+        self.row = row
+        self.selected = row["id"]
+        self.spec = row["primitive_fault"]
+        self.case = "qualifier"
+        self.events = []
+        self.consumed = set()
+        self.clock = 0.0
+        self.euid = 1000
+        self.egid = 1000
+        self.main_pid = 7
+        self.next_fd = 10
+        self.next_pid = 100
+        self.fds = {0: ("stdio", None), 1: ("stdio", None),
+                    2: ("stdio", None), 88: ("ambient", None)}
+        self.positions = {}
+        self.socket_count = 0
+        self.case_socket_count = 0
+        self.snapshot_count = 0
+        self.current_nonce = b""
+        self.processes = {}
+        self.leader = None
+        self.descendant = None
+        self.subreaper = 0
+        self.original_subreaper = 0
+        self.subreaper_reads = 0
+        self.libc = ScriptedLibc(self)
+        self.baseline = frozenset(self.fds)
+    def hit(self, cut):
+        if self.spec["cut"] != cut:
+            return None
+        selected_case = self.spec["case"]
+        qualifier_cut = cut.startswith("subreaper-") or cut.startswith("final-")
+        if selected_case == "qualifier" and not qualifier_cut:
+            return None
+        if selected_case not in ("all", "qualifier", self.case):
+            return None
+        if self.selected in self.consumed:
+            return None
+        self.consumed.add(self.selected)
+        self.events.append(f"fault:{self.selected}")
+        return self.spec["mode"]
+    def allocate(self, kind, data=b"", target=None):
+        while self.next_fd in self.fds:
+            self.next_fd += 1
+        fd = self.next_fd
+        self.next_fd += 1
+        self.fds[fd] = (kind, target if target is not None else data)
+        self.positions[fd] = 0
+        return fd
+    def open(self, path, flags, mode=0o600):
+        del flags, mode
+        if path == "/proc/self/fd":
+            self.snapshot_count += 1
+            return self.allocate("fd-directory")
+        if path.endswith("/stat"):
+            pid = int(path.split("/")[2])
+            process = self.processes[pid]
+            values = [1] * 49
+            values[18] = process.start
+            raw = (f"{pid} (scripted) S " + " ".join(map(str, values)) + "\n").encode()
+            return self.allocate("proc", raw)
+        if path.endswith("/children"):
+            if path.startswith("/proc/self/"):
+                children = self.direct_children(self.main_pid)
+            else:
+                pid = int(path.split("/")[2])
+                children = self.direct_children(pid)
+                if pid == getattr(self.leader, "pid", -1) and self.hit("census") == "drift":
+                    children = ()
+            raw = b" ".join(str(pid).encode() for pid in children)
+            return self.allocate("proc", raw + (b" " if raw else b""))
+        if path.endswith("/exe"):
+            pid = int(path.split("/")[2])
+            return self.allocate("exe", target=self.processes[pid])
+        raise AssertionError(f"unexpected scripted open: {path}")
+    def close(self, fd):
+        check(fd in self.fds, f"scripted close of unknown fd {fd}")
+        del self.fds[fd]
+        self.positions.pop(fd, None)
+    def read(self, fd, size):
+        kind, value = self.fds[fd]
+        if kind == "pipe-read":
+            return b"G"
+        check(kind == "proc", f"unexpected scripted read kind: {kind}")
+        offset = self.positions[fd]
+        part = value[offset:offset + size]
+        self.positions[fd] += len(part)
+        return part
+    def write(self, fd, data):
+        kind, _value = self.fds[fd]
+        if kind == "pipe-write" and data == b"G":
+            mode = self.hit("leader-release")
+            if mode == "short":
+                return 0
+            if self.leader is not None:
+                self.leader.session = self.leader.pid
+                self.leader.group = self.leader.pid
+        return len(data)
+    def fstat(self, fd):
+        kind, value = self.fds[fd]
+        if kind == "exe":
+            return SimpleNamespace(st_dev=value.executable[0], st_ino=value.executable[1])
+        return SimpleNamespace(st_dev=1, st_ino=fd, st_size=0, st_mtime_ns=1,
+                               st_ctime_ns=1, st_mode=stat.S_IFREG | 0o600,
+                               st_uid=self.euid, st_gid=self.egid)
+    def getdents(self, fd, maximum=32768):
+        del maximum
+        if self.positions[fd]:
+            return b""
+        self.positions[fd] = 1
+        names = sorted(self.fds)
+        if self.snapshot_count == 2 and self.hit("final-descriptor-baseline") == "drift":
+            names.append(99)
+        return b"".join(dirent(value) for value in names)
+    def pipe2(self, flags):
+        del flags
+        return self.allocate("pipe-read"), self.allocate("pipe-write")
+    def socketpair(self):
+        role = "control" if self.case_socket_count % 2 == 0 else "transfer"
+        self.case_socket_count += 1
+        if self.hit(f"{role}-socketpair") == "error":
+            raise OSError(errno.EIO, f"{role} socketpair")
+        left_fd = self.allocate("socket")
+        right_fd = self.allocate("socket")
+        left = ScriptedSocket(self, left_fd, role)
+        right = ScriptedSocket(self, right_fd, role, child=True)
+        self.fds[left_fd] = ("socket", left)
+        self.fds[right_fd] = ("socket", right)
+        return left, right
+    def nonce(self):
+        self.current_nonce = hashlib.sha256(self.case.encode()).digest()
+        return self.current_nonce
+    def clone_pidfd(self):
+        mode = self.hit("leader-clone")
+        if mode == "error":
+            raise OSError(errno.EIO, "leader clone")
+        if mode == "secondary-pidfd":
+            raise OSError(errno.EIO, "secondary pidfd")
+        pid = self.next_pid
+        self.next_pid += 10
+        process = ScriptedProcess(pid, self.main_pid, 1000 + pid, self.main_pid, self.main_pid)
+        self.processes[pid] = process
+        self.leader = process
+        return pid, self.allocate("pidfd", target=process)
+    def prctl(self, option, value=0, arg3=0):
+        del arg3
+        if option == launcher._PR_SET_CHILD_SUBREAPER:
+            if value == 1 and self.hit("subreaper-set") == "error":
+                raise OSError(errno.EIO, "subreaper set")
+            if value == self.original_subreaper:
+                mode = self.hit("subreaper-restore")
+                self.subreaper = value
+                if mode == "after-error":
+                    raise OSError(errno.EIO, "subreaper restore")
+            else:
+                self.subreaper = value
+            return 0
+        raise AssertionError(f"unexpected scripted prctl: {option}")
+    def create_descendant(self):
+        if self.descendant is None:
+            pid = self.leader.pid + 1
+            process = ScriptedProcess(
+                pid, self.leader.pid, self.leader.start + 1,
+                self.leader.session, self.leader.group,
+            )
+            process.term_ignored = self.case == "term-kill"
+            self.processes[pid] = process
+            self.descendant = process
+        return self.descendant
+    def creator_abort_descendant(self):
+        if self.descendant is not None:
+            self.descendant.live = False
+            self.descendant.reaped = True
+            self.descendant.exit_status = signal.SIGKILL
+    def direct_children(self, parent):
+        return tuple(sorted(
+            process.pid for process in self.processes.values()
+            if process.parent == parent and not process.reaped
+        ))
+    def exit_process(self, process, status):
+        if process is None or not process.live:
+            return
+        process.live = False
+        process.exit_status = status
+        if process is self.leader and self.descendant is not None and not self.descendant.reaped:
+            self.descendant.parent = self.main_pid
+            if self.descendant.live:
+                self.exit_process(self.descendant, signal.SIGKILL)
+    def exit_leader(self):
+        self.exit_process(self.leader, 0)
+    def select(self, readers, writers, exceptional, timeout=None):
+        del exceptional, timeout
+        ready = []
+        for item in readers:
+            if isinstance(item, ScriptedSocket):
+                ready.append(item)
+            elif type(item) is int and item in self.fds:
+                kind, value = self.fds[item]
+                if kind == "pidfd" and not value.live:
+                    ready.append(item)
+        return ready, list(writers), []
+    def monotonic(self):
+        return self.clock
+    def sleep(self, seconds):
+        self.clock += max(seconds, 0.25)
+    def pidfd_signal(self, pidfd, signum):
+        kind, process = self.fds[pidfd]
+        check(kind == "pidfd", "signal did not use pidfd")
+        cut = "term-signal" if signum == signal.SIGTERM else "kill-signal"
+        mode = self.hit(cut)
+        if mode == "error":
+            raise OSError(errno.EIO, f"{cut} error")
+        if signum == signal.SIGTERM and mode == "exit":
+            self.exit_process(process, signal.SIGTERM)
+        elif signum == signal.SIGTERM and not process.term_ignored:
+            self.exit_process(process, signal.SIGTERM)
+        elif signum == signal.SIGKILL:
+            self.exit_process(process, signal.SIGKILL)
+    def waitpid(self, pid, options):
+        del options
+        process = self.processes[pid]
+        if process.live:
+            return 0, 0
+        process.reaped = True
+        status = process.exit_status or 0
+        return pid, status
+    def waitid(self, idtype, pidfd, options):
+        del idtype, options
+        kind, process = self.fds[pidfd]
+        check(kind == "pidfd" and not process.live, "waitid before exact death")
+        status = signal.SIGTERM if self.hit("waitid") == "status" else signal.SIGKILL
+        return SimpleNamespace(si_pid=process.pid, si_uid=self.euid,
+                               si_code=os.CLD_KILLED, si_status=status)
+    def audit(self):
+        live = [process.pid for process in self.processes.values() if process.live]
+        unreaped = [process.pid for process in self.processes.values() if not process.reaped]
+        check(not live and not unreaped, f"lifecycle cleanup retained processes: {live}/{unreaped}")
+        check(frozenset(self.fds) == self.baseline,
+              f"lifecycle cleanup retained descriptors: {sorted(self.fds)}")
+        check(self.subreaper == self.original_subreaper, "subreaper was not restored")
+        self.events.append("cleanup:restored")
+
+def lifecycle_admission():
+    return launcher._SourceAdmission(
+        "a" * 40, "b" * 64, "c" * 64, b"", "", 0, None,
+        launcher._BOOTSTRAP_OPERATION_TOKEN, 0, 0, 0, "lifecycle",
+    )
+
+def production_lifecycle_case(row):
+    # Keep the mocked Linux ABI available when this portable suite runs on macOS.
+    if not hasattr(launcher.os, "pipe2"):
+        launcher.os.pipe2 = lambda _flags: (_ for _ in ()).throw(AssertionError("unpatched pipe2"))
+    if not hasattr(launcher.os, "O_PATH"):
+        launcher.os.O_PATH = 0x200000
+    if not hasattr(launcher.os, "waitid"):
+        launcher.os.waitid = lambda *_args: (_ for _ in ()).throw(AssertionError("unpatched waitid"))
+    if not hasattr(launcher.os, "P_PIDFD"):
+        launcher.os.P_PIDFD = 3
+    if not hasattr(launcher.os, "CLD_KILLED"):
+        launcher.os.CLD_KILLED = 2
+    if not hasattr(launcher.os, "WEXITED"):
+        launcher.os.WEXITED = 4
+    if not hasattr(launcher.os, "WNOWAIT"):
+        launcher.os.WNOWAIT = 0x01000000
+    if not hasattr(launcher.signal, "pidfd_send_signal"):
+        launcher.signal.pidfd_send_signal = lambda *_args: (_ for _ in ()).throw(
+            AssertionError("unpatched pidfd_send_signal")
+        )
+    kernel = ProductionLifecycleKernel(row)
+    originals = {
+        "system_ops": launcher._SystemOps,
+        "run_case": launcher._run_lifecycle_case,
+        "pipe2": launcher.os.pipe2,
+        "fstat": launcher.os.fstat,
+        "getsid": launcher.os.getsid,
+        "getpgid": launcher.os.getpgid,
+        "geteuid": launcher.os.geteuid,
+        "getegid": launcher.os.getegid,
+        "waitpid": launcher.os.waitpid,
+        "waitid": launcher.os.waitid,
+        "pidfd_signal": launcher.signal.pidfd_send_signal,
+        "select": launcher.select.select,
+        "monotonic": launcher.time.monotonic,
+        "sleep": launcher.time.sleep,
+    }
+    original_run = launcher._run_lifecycle_case
+    def observed_run(case, ops, owner):
+        kernel.case = case
+        kernel.case_socket_count = 0
+        kernel.leader = None
+        kernel.descendant = None
+        kernel.events.append(f"case:{case}:start")
+        value = original_run(case, ops, owner)
+        kernel.events.append(f"case:{case}:complete")
+        return value
+    launcher._SystemOps = lambda: kernel
+    launcher._run_lifecycle_case = observed_run
+    launcher.os.pipe2 = kernel.pipe2
+    launcher.os.fstat = kernel.fstat
+    launcher.os.getsid = lambda pid: kernel.processes[pid].session
+    launcher.os.getpgid = lambda pid: kernel.processes[pid].group
+    launcher.os.geteuid = lambda: kernel.euid
+    launcher.os.getegid = lambda: kernel.egid
+    launcher.os.waitpid = kernel.waitpid
+    launcher.os.waitid = kernel.waitid
+    launcher.signal.pidfd_send_signal = kernel.pidfd_signal
+    launcher.select.select = kernel.select
+    launcher.time.monotonic = kernel.monotonic
+    launcher.time.sleep = kernel.sleep
+    error = None
+    result = None
+    try:
+        result = launcher._qualify_admitted_fixed_process_lifecycle(
+            lifecycle_admission(), kernel,
+        )
+        kernel.events.append("qualification:complete")
+        if row["primitive_fault"]["cut"] == "none":
+            kernel.consumed.add(row["id"])
+    except BaseException as caught_error:
+        error = caught_error
+    finally:
+        launcher._SystemOps = originals["system_ops"]
+        launcher._run_lifecycle_case = originals["run_case"]
+        launcher.os.pipe2 = originals["pipe2"]
+        launcher.os.fstat = originals["fstat"]
+        launcher.os.getsid = originals["getsid"]
+        launcher.os.getpgid = originals["getpgid"]
+        launcher.os.geteuid = originals["geteuid"]
+        launcher.os.getegid = originals["getegid"]
+        launcher.os.waitpid = originals["waitpid"]
+        launcher.os.waitid = originals["waitid"]
+        launcher.signal.pidfd_send_signal = originals["pidfd_signal"]
+        launcher.select.select = originals["select"]
+        launcher.time.monotonic = originals["monotonic"]
+        launcher.time.sleep = originals["sleep"]
+    expected = row["intended_code"]
+    observed = "OK" if error is None else error_signature(error)
+    check(observed == expected, f"{row['id']}: {observed!r} != {expected!r}")
+    check(kernel.consumed == {row["id"]}, f"{row['id']}: selected fault did not fire exactly")
+    kernel.audit()
+    cursor = -1
+    for sentinel in row["sentinel"]:
+        try:
+            cursor = kernel.events.index(sentinel, cursor + 1)
+        except ValueError as missing:
+            raise AssertionError(f"{row['id']}: missing ordered sentinel {sentinel}") from missing
+    expected_accept = row["primitive_fault"]["expect"] == "accept"
+    check((error is None) == expected_accept, f"{row['id']}: expectation contradicted exact oracle")
+    if error is None:
+        check(type(result) is launcher.LifecycleQualificationResult,
+              "full lifecycle did not return its exact production result")
+        values = tuple(getattr(result, field.name) for field in launcher.fields(result))[3:]
+        check(values and all(value is True for value in values),
+              "full lifecycle production observations were not all exact")
+    return kernel
+
+def production_lifecycle_matrix():
+    path = FIXTURES / "lifecycle/qualification-cases.jsonl"
+    document = [json.loads(line) for line in path.read_text().splitlines()]
+    fixture_header, *rows = document
+    expected_fields = {"id", "production_method", "primitive_fault", "intended_code",
+                       "cleanup_domains", "sentinel"}
+    header_keys = {"type", "version", "acceptance_ids", "case_fields"}
+    check(set(fixture_header) == header_keys and fixture_header["type"] == "header" and
+          fixture_header["version"] == "cogs.outcome-two-lifecycle-production/v1" and
+          fixture_header["acceptance_ids"] == ["AT91-PROC-01"] and
+          set(fixture_header["case_fields"]) == expected_fields,
+          "production lifecycle fixture header")
+    declared = [row["id"] for row in rows]
+    selected = []
+    consumed = []
+    oracle = []
+    for row in rows:
+        check(set(row) == expected_fields, f"closed production lifecycle row: {row['id']}")
+        check(row["primitive_fault"]["expect"] in {"accept", "reject"},
+              f"production lifecycle expectation: {row['id']}")
+        check(set(row["cleanup_domains"]) == {"descriptors", "children", "descendants", "subreaper"},
+              f"production lifecycle cleanup domains: {row['id']}")
+        for production_method in row["production_method"]:
+            owner = launcher
+            module_name, path = production_method.split(".", 1)
+            check(module_name == "launcher", f"production lifecycle owner: {row['id']}")
+            for part in path.split("."):
+                owner = getattr(owner, part)
+            check(callable(owner), f"production lifecycle method: {row['id']}")
+        selected.append(row["id"])
+        kernel = production_lifecycle_case(row)
+        consumed.extend(kernel.consumed)
+        oracle.append(row["id"])
+    check(declared == selected == consumed == oracle and
+          len(declared) == len(set(declared)),
+          "production lifecycle declared/selected/consumed/oracle mismatch")
+
 production_clone3_abi()
 process_owner_matrix()
+production_lifecycle_matrix()
 groups = (
     ("fd_baseline_cases", fd_case),
     ("helper_cases", helper_case),
