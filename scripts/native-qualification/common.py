@@ -14,8 +14,7 @@ SCHEMA = ROOT / "schemas/native-qualification-report-v1alpha1.json"
 REPORT_LIMIT, OBJECT_LIMIT = 32_768, 134_217_728
 MARKER_SHA256 = "6381d4535b13c7f030ca94bce250c1ec817c4aea8fa45c91e25c88995216f6b8"
 POLICY_SHA256 = "aacfce0e5eeb2fb79a1708b32f5383f89b381898ad7e6bd911905d87483b6bb2"
-SOURCE_PATHS = (
-    "deploy/aws-feasibility/remote/completion_elf.py", "deploy/aws-feasibility/remote/completion_trusted_runtime_closure.py",
+SOURCE_PATHS = ("deploy/aws-feasibility/remote/completion_elf.py", "deploy/aws-feasibility/remote/completion_trusted_runtime_closure.py",
     "deploy/aws-feasibility/remote/completion_trusted_runtime_launcher.py", "schemas/trusted-runtime-closure-v1.json")
 LAUNCHER_PATH = SOURCE_PATHS[2]
 CLEANUP_KEYS = ("descriptors", "children", "paths", "mounts", "namespaces", "limits", "checkout")
@@ -518,7 +517,8 @@ class SystemCommonOps:
                 token = diagnostics.removesuffix(b"\n") if re.fullmatch(rb"[A-Za-z0-9_.-]{1,96}\n", diagnostics) else (
                     b"sha256-" + hashlib.sha256(diagnostics).hexdigest().encode())
                 state = f"exit-{os.WEXITSTATUS(status)}" if os.WIFEXITED(status) else f"signal-{os.WTERMSIG(status)}"
-                raise QualificationError(f"held-launcher-{state}-stdout-{len(output)}-stderr-{len(diagnostics)}-{token.decode()}")
+                detail = f"held-launcher-{state}-stdout-{len(output)}-stderr-{len(diagnostics)}-{token.decode()}"
+                raise QualificationError(token.decode() if len(detail) > 96 and token.startswith(b"runtime-launcher-") else detail)
             _require(not diagnostics, "held launcher diagnostics")
             return output
         except BaseException as primary:

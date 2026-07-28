@@ -2796,7 +2796,24 @@ launcher = sources[paths[2]]
 assert hashlib.sha256(launcher).hexdigest() == header['bootstrap_sha256']
 globals_ = {'__name__': 'cogs_root_capsule'}
 exec(compile(launcher, 'cogs-held:root-launcher', 'exec'), globals_)
-raise SystemExit(globals_['_root_capsule_entry'](raw, authority))'''
+try:
+    root_status = globals_['_root_capsule_entry'](raw, authority)
+except globals_['RuntimeLauncherUnavailable'] as error:
+    root_code = 'unavailable'
+    root_detail = str(error)
+except globals_['RuntimeLauncherError'] as error:
+    candidate = error.code
+    root_code = candidate if type(candidate) is str and len(candidate) <= 40 and all(character.isalnum() or character in '._-' for character in candidate) else 'invalid-code'
+    root_detail = str(error)
+except Exception as error:
+    label = ''.join(character if character.isalnum() or character in '._-' else '-' for character in type(error).__name__)[:20]
+    root_code = 'exception-' + label + '-' + str(getattr(error, 'errno', 0))
+    root_detail = type(error).__name__
+else:
+    raise SystemExit(root_status)
+digest = hashlib.sha256(root_detail.encode('utf-8', 'backslashreplace')).hexdigest()[:16]
+os.write(2, ('root-launcher-' + root_code + '-' + digest + '\n').encode('ascii'))
+raise SystemExit(1)'''
 def _encode_root_capsule(sources: dict[str, bytes], admission: _SourceAdmission) -> bytes:
     rows = [{"path": path, "sha256": hashlib.sha256(sources[path]).hexdigest(), "size": len(sources[path])} for path in _FIXED_SOURCE_SET]
     header = {"bootstrap_sha256": admission.bootstrap_sha256, "parent_pid": os.getpid(), "profile": "sandbox", "revision": admission.revision, "source_set_sha256": admission.source_set_sha256, "sources": rows, "version": _ROOT_CAPSULE_VERSION}
@@ -2847,6 +2864,15 @@ def _decode_root_capsule(
         }
         _require(authority_value == expected, "root capsule independent authority", "root-authority")
     return sources, header
+def _root_capsule_failure_code(input_complete: bool, status: int | None, errors: bytes) -> str:
+    diagnostic = re.fullmatch(rb"root-launcher-([A-Za-z0-9._-]{1,40})-[0-9a-f]{16}\n", errors)
+    if diagnostic is not None:
+        root_code = diagnostic.group(1).decode("ascii")
+        return f"root-{root_code}"[:40]
+    error_digest = hashlib.sha256(errors).hexdigest()[:12]
+    phase = "complete" if input_complete else "early"
+    return f"sudo-{phase}-{status}-{error_digest}"
+
 def _run_root_capsule_with_ops(ops: Any, capsule: bytes) -> bytes:
     command = (
         "/usr/bin/sudo",
@@ -2932,8 +2958,7 @@ def _run_root_capsule_with_ops(ops: Any, capsule: bytes) -> bytes:
                     next(item for item in leases if item.fd == fd).close(ops)
                     del active[fd]
         status = _wait_bounded(process, deadline)
-        error_digest = hashlib.sha256(errors).hexdigest()[:12]
-        exit_code = f"sudo-{'complete' if input_complete else 'early'}-{status}-{error_digest}"
+        exit_code = _root_capsule_failure_code(input_complete, status, bytes(errors))
         _require(input_complete and status == 0 and not errors, "sudo capsule exit", exit_code)
         owner.stop(process)
     except BaseException as error:

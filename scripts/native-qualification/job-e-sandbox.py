@@ -154,6 +154,21 @@ def _write_root_file(path: Path, raw: bytes, mode: int) -> None:
             path.unlink(missing_ok=True)
 
 
+def _root_file_identity(value: os.stat_result) -> tuple[int, ...]:
+    """Bind immutable file identity without comparing read-mutated atime."""
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+        value.st_mode,
+        value.st_uid,
+        value.st_gid,
+        value.st_nlink,
+    )
+
+
 def _read_root_file(path: Path, expected: bytes | tuple[bytes, ...], mode: int) -> bytes:
     options = (expected,) if type(expected) is bytes else expected
     descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
@@ -171,7 +186,7 @@ def _read_root_file(path: Path, expected: bytes | tuple[bytes, ...], mode: int) 
         value = bytes(raw)
         _require(not os.read(descriptor, 1) and value in options, "root authority file bytes")
         after = os.fstat(descriptor)
-        _require(before == after, "root authority file changed")
+        _require(_root_file_identity(before) == _root_file_identity(after), "root authority file changed")
         current = path.lstat()
         _require((current.st_dev, current.st_ino) == (before.st_dev, before.st_ino), "root authority path identity")
         return value
@@ -321,10 +336,25 @@ def _dispatch(
     return workflow(common_loader())
 
 
+def _entry_diagnostic(arguments: list[str], error: Exception) -> bytes:
+    action = "other"
+    if arguments == ["--provision-root-authority"]:
+        action = "provision"
+    elif arguments == ["--cleanup-root-authority"]:
+        action = "cleanup"
+    if isinstance(error, QualificationError):
+        detail = str(error)
+    else:
+        detail = f"{type(error).__name__}-{getattr(error, 'errno', 0)}"
+    label = "".join(value if value.isascii() and value.isalnum() else "-" for value in detail)[:64]
+    return f"native-e-{action}-{label or 'unknown'}\n".encode("ascii")
+
+
 if __name__ == "__main__":
+    arguments = sys.argv[1:]
     try:
-        exit_code = _dispatch(sys.argv[1:])
-    except Exception:
-        os.write(2, b"native-e-failed\n")
+        exit_code = _dispatch(arguments)
+    except Exception as error:
+        os.write(2, _entry_diagnostic(arguments, error))
         exit_code = 1
     raise SystemExit(exit_code)
