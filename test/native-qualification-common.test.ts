@@ -145,10 +145,10 @@ function report(job: keyof typeof checkText, pass = true): any {
   return { version: "cogs.native-qualification/v1alpha1", job,
     source: { head_sha: "a".repeat(40), checkout_sha: "a".repeat(40),
       driver_blob_sha256: digestFile(`scripts/native-qualification/${found[2]}`), common_blob_sha256: digestFile(commonPath) },
-    envelope: { repository: "owner/repo", head_repository: "owner/repo", event_name: "pull_request",
-      github_sha: "b".repeat(40), event_merge_sha: "b".repeat(40), base_sha: "c".repeat(40),
-      run_id: 1, run_attempt: 1, pull_request_number: 1 },
-    workflow: { path: workflowPath, blob_sha256: digestFile(workflowPath), workflow_sha: "a".repeat(40), job_id: found[1] },
+    envelope: { repository: "owner/repo", head_repository: "owner/repo", event_name: "workflow_dispatch",
+      github_sha: "b".repeat(40), ref: "refs/heads/main", default_branch: "main", ref_protected: true,
+      run_id: 1, run_attempt: 1 },
+    workflow: { path: workflowPath, blob_sha256: digestFile(workflowPath), workflow_sha: "b".repeat(40), job_id: found[1] },
     runner: { image: "ubuntu-24.04", image_version: "20260720.1",
       kernel_release: "6.8.0-100-generic", architecture: "x86_64" },
     authority: "exact-run-native-qualification", result: pass ? "pass" : "fail", checks,
@@ -253,7 +253,7 @@ class Cust:
  def publish(self,raw):self.raw=raw
  def abort(self,error):raise error
 for job,value in values.items():
- c=common.WorkflowContext(job,'owner/repo','owner/repo','a'*40,'b'*40,'a'*40,'b'*40,'c'*40,common.JOB_IDS[job],1,1,1,'image','6.8.0-100-generic','x86_64',h(common.WORKFLOW),h(common.COMMON.parent/common.DRIVERS[job]),h(common.COMMON),h(common.SCHEMA),open(common.SCHEMA,'rb').read())
+ c=common.WorkflowContext(job,'owner/repo','owner/repo','a'*40,'b'*40,'b'*40,'refs/heads/main','main',common.JOB_IDS[job],1,1,True,'image','6.8.0-100-generic','x86_64',h(common.WORKFLOW),h(common.COMMON.parent/common.DRIVERS[job]),h(common.COMMON),h(common.SCHEMA),open(common.SCHEMA,'rb').read())
  assert c.schema_blob_sha256==h(common.SCHEMA)
  cust=Cust();s=common.NativeSession._begin_with_ops(c,Ops(value),cust);returned=s.run_fixed_operation(job)
  for name,item in returned.items():
@@ -310,6 +310,61 @@ assert '_stable' in ast.unparse(children)`;
     "retained cleanup capability", "fixed-admission", "sealed-capsule", "operation receipt required"]) {
     assert.ok(common.includes(token), token);
   }
+});
+
+test("real workflow context admits dispatch and rejects PR and failed-upload cleanup before effects", () => {
+  const script = `import os,sys\nfrom unittest.mock import patch\nsys.path.insert(0,'scripts/native-qualification');import common
+common.platform.release=lambda:'6.8.0-100-generic';common.platform.machine=lambda:'x86_64'
+if not hasattr(common.socket,'SOCK_CLOEXEC'):common.socket.SOCK_CLOEXEC=0
+base={'LC_ALL':'C','PYTHONDONTWRITEBYTECODE':'1','PYTHONHASHSEED':'0','NQ_EVENT_NAME':'workflow_dispatch',
+ 'NQ_REPOSITORY':'owner/repo','NQ_HEAD_REPOSITORY':'owner/repo','NQ_HEAD_SHA':'a'*40,'NQ_ENVELOPE_SHA':'b'*40,
+ 'NQ_WORKFLOW_SHA':'b'*40,'NQ_REF':'refs/heads/main','NQ_DEFAULT_BRANCH':'main','NQ_REF_PROTECTED':'true',
+ 'NQ_RUN_ID':'17','NQ_RUN_ATTEMPT':'1','NQ_RUNNER_VERSION':'20260728.1'}
+for job,driver in common.DRIVERS.items():
+ environment={**base,'NQ_JOB_ID':common.JOB_IDS[job]}
+ with patch.dict(os.environ,environment,clear=True):
+  context=common.WorkflowContext.from_environ(job,common.COMMON.parent/driver)
+  value=common._context_value(context);envelope=value['envelope']
+  assert envelope=={'default_branch':'main','event_name':'workflow_dispatch','github_sha':'b'*40,
+   'head_repository':'owner/repo','ref':'refs/heads/main','ref_protected':True,'repository':'owner/repo',
+   'run_attempt':1,'run_id':17}
+class NativeSentinel(Exception):pass
+hits=[]
+def native_sentinel(*_args):hits.append('native');raise NativeSentinel()
+common._start_custodian=native_sentinel
+pr={**base,'NQ_EVENT_NAME':'pull_request','NQ_JOB_ID':common.JOB_IDS['A']}
+with patch.dict(os.environ,pr,clear=True):
+ try:common.NativeSession.begin('A',common.COMMON.parent/common.DRIVERS['A']);raise AssertionError('PR admitted')
+ except common.QualificationError:pass
+assert hits==[]
+with patch.dict(os.environ,{**base,'NQ_JOB_ID':common.JOB_IDS['A']},clear=True):
+ try:common.NativeSession.begin('A',common.COMMON.parent/common.DRIVERS['A'])
+ except NativeSentinel:pass
+assert hits==['native']
+cleanup_base={'LC_ALL':'C','NQ_CLEANUP_RUN_ID':'17','NQ_CLEANUP_RUN_ATTEMPT':'1','NQ_CLEANUP_HEAD_SHA':'a'*40,
+ 'NQ_UPLOAD_ARTIFACT_ID':'','NQ_UPLOAD_ARTIFACT_SHA256':''}
+socket_hits=[]
+def socket_sentinel(*_args,**_kwargs):socket_hits.append('socket');raise NativeSentinel()
+common.socket.socket=socket_sentinel
+for job in common.DRIVERS:
+ with patch.dict(os.environ,cleanup_base,clear=True):
+  try:common.cleanup_report(job);raise AssertionError(('failed upload admitted',job))
+  except common.QualificationError:pass
+assert socket_hits==[]
+valid={**cleanup_base,'NQ_UPLOAD_ARTIFACT_ID':'7','NQ_UPLOAD_ARTIFACT_SHA256':'c'*64}
+with patch.dict(os.environ,valid,clear=True):
+ try:common.cleanup_report('A')
+ except NativeSentinel:pass
+assert socket_hits==['socket']
+final={key:'success' for key in common.FINAL_KEYS};final['LC_ALL']='C';final['PYTHONCOERCECLOCALE']='0'
+common.require_final_results(final)
+for key in common.FINAL_KEYS-{'LC_ALL','PYTHONCOERCECLOCALE'}:
+ for outcome in ('failure','skipped','cancelled'):
+  hostile={**final,key:outcome}
+  try:common.require_final_results(hostile);raise AssertionError((key,outcome))
+  except common.QualificationError:pass`;
+  const run = spawnSync("python3", ["-I", "-B", "-c", script], { encoding: "utf8" });
+  assert.equal(run.status, 0, run.stderr);
 });
 
 test("common issuer capsule is consumed by the sole real bootstrap decoder", () => {
@@ -471,6 +526,10 @@ test("parsed workflow gives only an explicit exact-SHA dispatch native authority
   assert.match(authorityStep.run ?? "", /reviewed_sha=%s/u);
 
   const reviewedRef = "${{ needs.native-qualification-eligibility.outputs.reviewed_sha }}";
+  const quality = parsedJob("quality");
+  assert.deepEqual(needs(quality), [authorityId]);
+  assert.equal(quality.if,
+    "${{ always() && (github.event_name != 'workflow_dispatch' || needs.native-qualification-eligibility.result == 'success') }}");
   const nativeIds = jobs.map(([, id]) => id);
   const effectIds = ["native-c1", ...nativeIds] as const;
   const nativeInventory = Object.keys(workflowJobs).filter((id) => id.startsWith("native-"));
@@ -489,6 +548,9 @@ test("parsed workflow gives only an explicit exact-SHA dispatch native authority
     const invoke = parsed.steps.find((step) => step.env?.NQ_DRIVER !== undefined); assert.ok(invoke);
     assert.equal(invoke.env?.NQ_DRIVER, `scripts/native-qualification/${driver}`);
     assert.equal(invoke.env?.NQ_HEAD_SHA, reviewedRef);
+    assert.equal(invoke.env?.NQ_REF, "${{ github.ref }}");
+    assert.equal(invoke.env?.NQ_DEFAULT_BRANCH, "${{ github.event.repository.default_branch }}");
+    assert.equal(invoke.env?.NQ_REF_PROTECTED, "${{ github.ref_protected }}");
     assert.match(invoke.run ?? "", /["']\$NQ_DRIVER["'] --workflow-bound/u);
     const upload = stepById(parsed, "upload"); const cleanup = stepById(parsed, "cleanup");
     assert.equal(cleanup.if, "${{ always() }}");
@@ -496,6 +558,12 @@ test("parsed workflow gives only an explicit exact-SHA dispatch native authority
     assert.equal(parsed.outputs?.upload, "${{ steps.upload.outcome }}");
     assert.equal(parsed.outputs?.cleanup, "${{ steps.cleanup.outcome }}");
     assert.equal(upload.with?.path, `/tmp/cogs-native-qualification-${job}/report.json`);
+    assert.deepEqual(Object.keys(cleanup.env ?? {}).sort(), ["NQ_CLEANUP_HEAD_SHA", "NQ_CLEANUP_RUN_ATTEMPT",
+      "NQ_CLEANUP_RUN_ID", "NQ_UPLOAD_ARTIFACT_ID", "NQ_UPLOAD_ARTIFACT_SHA256"]);
+    assert.equal(cleanup.env?.NQ_UPLOAD_ARTIFACT_ID, "${{ steps.upload.outputs.artifact-id }}");
+    assert.equal(cleanup.env?.NQ_UPLOAD_ARTIFACT_SHA256, "${{ steps.upload.outputs.artifact-digest }}");
+    assert.match(cleanup.run ?? "", /NQ_UPLOAD_ARTIFACT_ID="\$NQ_UPLOAD_ARTIFACT_ID"/u);
+    assert.match(cleanup.run ?? "", /NQ_UPLOAD_ARTIFACT_SHA256="\$NQ_UPLOAD_ARTIFACT_SHA256"/u);
   }
 
   const finalJob = parsedJob("native-qualification-required");

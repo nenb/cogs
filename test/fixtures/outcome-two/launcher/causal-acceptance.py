@@ -14,8 +14,8 @@ def common_fixed_cli_contract(module, job):
     schema = common.SCHEMA.read_bytes()
     digest = lambda path: hashlib.sha256(Path(path).read_bytes()).hexdigest()
     context = common.WorkflowContext(
-        job, "owner/repo", "owner/repo", head, head, head, head, "0" * 40,
-        common.JOB_IDS[job], 1, 1, 1, "portable", "6.8.0-portable", "x86_64",
+        job, "owner/repo", "owner/repo", head, head, head, "refs/heads/main", "main",
+        common.JOB_IDS[job], 1, 1, True, "portable", "6.8.0-portable", "x86_64",
         digest(common.WORKFLOW), digest(driver), digest(common.COMMON),
         hashlib.sha256(schema).hexdigest(), schema,
     )

@@ -6,7 +6,6 @@ from enum import Enum, auto
 from pathlib import Path
 from types import MappingProxyType
 from typing import Callable, Mapping
-
 VERSION = "cogs.native-qualification/v1alpha1"
 AUTHORITY = "exact-run-native-qualification"
 ROOT = Path(__file__).resolve().parents[2]
@@ -70,9 +69,8 @@ SANDBOX_OBSERVATIONS = tuple((
     "namespace_handles_released"
 ).split())
 ENV_KEYS = frozenset(("LC_ALL PYTHONDONTWRITEBYTECODE PYTHONHASHSEED NQ_EVENT_NAME NQ_REPOSITORY NQ_HEAD_REPOSITORY "
-                      "NQ_HEAD_SHA NQ_ENVELOPE_SHA NQ_WORKFLOW_SHA NQ_MERGE_SHA NQ_BASE_SHA NQ_JOB_ID NQ_RUN_ID "
-                      "NQ_RUN_ATTEMPT NQ_PR_NUMBER NQ_RUNNER_VERSION").split())
-ELIGIBILITY_KEYS = frozenset("LC_ALL PYTHONCOERCECLOCALE EVENT_NAME RUN_ATTEMPT REPOSITORY HEAD_REPOSITORY HEAD_SHA MERGE_SHA BASE_SHA PR_NUMBER".split())
+                      "NQ_HEAD_SHA NQ_ENVELOPE_SHA NQ_WORKFLOW_SHA NQ_REF NQ_DEFAULT_BRANCH NQ_REF_PROTECTED NQ_JOB_ID "
+                      "NQ_RUN_ID NQ_RUN_ATTEMPT NQ_RUNNER_VERSION").split())
 RESULT_JOBS = ("QUALITY", "ELIGIBILITY", "A", "B", "C", "D", "E", "INTEGRATION")
 FINAL_KEYS = frozenset(["LC_ALL", "PYTHONCOERCECLOCALE"] + [f"{name}_RESULT" for name in RESULT_JOBS]
                        + [f"{name}_{phase}" for name in RESULT_JOBS[2:] for phase in ("UPLOAD", "CLEANUP")])
@@ -115,12 +113,12 @@ class WorkflowContext:
     head_sha: str
     envelope_sha: str
     workflow_sha: str
-    merge_sha: str
-    base_sha: str
+    ref: str
+    default_branch: str
     job_id: str
     run_id: int
     run_attempt: int
-    pull_request_number: int
+    ref_protected: bool
     runner_version: str
     kernel_release: str
     architecture: str
@@ -135,14 +133,18 @@ class WorkflowContext:
         environment = dict(os.environ)
         _require(expected_job in DRIVERS and set(environment) == ENV_KEYS, "fixed environment")
         _require(environment["LC_ALL"] == "C" and environment["PYTHONDONTWRITEBYTECODE"] == "1", "runtime environment")
-        _require(environment["PYTHONHASHSEED"] == "0" and environment["NQ_EVENT_NAME"] == "pull_request", "event environment")
+        _require(environment["PYTHONHASHSEED"] == "0" and environment["NQ_EVENT_NAME"] == "workflow_dispatch", "event environment")
         expected_driver = COMMON.parent / DRIVERS[expected_job]
         _require(Path(driver_file).absolute() == expected_driver and expected_driver.is_file(), "fixed driver")
-        hashes = [environment[name] for name in ("NQ_HEAD_SHA", "NQ_ENVELOPE_SHA", "NQ_WORKFLOW_SHA", "NQ_MERGE_SHA", "NQ_BASE_SHA")]
+        hashes = [environment[name] for name in ("NQ_HEAD_SHA", "NQ_ENVELOPE_SHA", "NQ_WORKFLOW_SHA")]
         _require(all(HEX40.fullmatch(value) for value in hashes), "source identity")
-        _require(environment["NQ_WORKFLOW_SHA"] in {environment["NQ_HEAD_SHA"], environment["NQ_MERGE_SHA"]}, "workflow source")
+        _require(environment["NQ_WORKFLOW_SHA"] == environment["NQ_ENVELOPE_SHA"], "workflow source")
         repository = environment["NQ_REPOSITORY"]
         _require(REPOSITORY.fullmatch(repository) is not None and environment["NQ_HEAD_REPOSITORY"] == repository, "same repository")
+        default_branch = environment["NQ_DEFAULT_BRANCH"]
+        protected = environment["NQ_REF_PROTECTED"] == "true"
+        _require(SAFE.fullmatch(default_branch) is not None and protected, "protected default branch")
+        _require(environment["NQ_REF"] == f"refs/heads/{default_branch}", "dispatch ref")
         _require(environment["NQ_JOB_ID"] == JOB_IDS[expected_job] and SAFE.fullmatch(environment["NQ_RUNNER_VERSION"]) is not None, "workflow job")
         attempt = _integer(environment["NQ_RUN_ATTEMPT"], "run attempt")
         _require(attempt == 1, "first attempt")
@@ -153,28 +155,21 @@ class WorkflowContext:
         source_digests = tuple(hashlib.sha256(raw).hexdigest() for raw, _generation_receipt in source_receipts)
         schema_digest = hashlib.sha256(schema_bytes).hexdigest()
         return cls(
-            expected_job, repository, repository, *hashes, environment["NQ_JOB_ID"],
-            _integer(environment["NQ_RUN_ID"], "run id"), attempt, _integer(environment["NQ_PR_NUMBER"], "pull request"),
+            expected_job, repository, repository, *hashes, environment["NQ_REF"], default_branch,
+            environment["NQ_JOB_ID"], _integer(environment["NQ_RUN_ID"], "run id"), attempt, protected,
             environment["NQ_RUNNER_VERSION"], kernel, architecture, *source_digests, schema_digest, schema_bytes,
             tuple(generation for _raw, generation in source_receipts) + (schema_generation,),
         )
 def _context_value(context: WorkflowContext) -> dict[str, object]:
     source = {"checkout_sha": context.head_sha, "driver_blob_sha256": context.driver_blob_sha256,
               "head_sha": context.head_sha, "common_blob_sha256": context.common_blob_sha256}
-    envelope = {"base_sha": context.base_sha, "event_merge_sha": context.merge_sha, "event_name": "pull_request",
+    envelope = {"default_branch": context.default_branch, "event_name": "workflow_dispatch",
                 "github_sha": context.envelope_sha, "head_repository": context.head_repository,
-                "pull_request_number": context.pull_request_number, "repository": context.repository,
+                "ref": context.ref, "ref_protected": context.ref_protected, "repository": context.repository,
                 "run_attempt": context.run_attempt, "run_id": context.run_id}
     workflow = {"blob_sha256": context.workflow_blob_sha256, "job_id": context.job_id, "path": ".github/workflows/ci.yml", "workflow_sha": context.workflow_sha}
     runner = {"architecture": context.architecture, "image": "ubuntu-24.04", "image_version": context.runner_version, "kernel_release": context.kernel_release}
     return {"source": source, "envelope": envelope, "workflow": workflow, "runner": runner}
-def evaluate_eligibility(environment: Mapping[str, str]) -> None:
-    _require(set(environment) == ELIGIBILITY_KEYS and environment["LC_ALL"] == "C" and environment["PYTHONCOERCECLOCALE"] == "0", "eligibility environment")
-    _require(environment["EVENT_NAME"] == "pull_request" and environment["RUN_ATTEMPT"] == "1", "eligible event")
-    repository = environment["REPOSITORY"]
-    _require(REPOSITORY.fullmatch(repository) is not None and environment["HEAD_REPOSITORY"] == repository, "eligible repository")
-    _require(all(HEX40.fullmatch(environment[name]) for name in ("HEAD_SHA", "MERGE_SHA", "BASE_SHA")), "eligible source")
-    _integer(environment["PR_NUMBER"], "eligible pull request")
 def require_final_results(environment: Mapping[str, str]) -> None:
     _require(set(environment) == FINAL_KEYS and environment["LC_ALL"] == "C" and environment["PYTHONCOERCECLOCALE"] == "0", "final-result environment")
     _require(all(value == "success" for key, value in environment.items()
@@ -975,13 +970,11 @@ def _validate_semantics(value: object, context: WorkflowContext | None = None) -
     workflow = report["workflow"]
     _require(source["checkout_sha"] == source["head_sha"], "semantic checkout")
     _require(envelope["repository"] == envelope["head_repository"], "semantic repository")
-    _require(envelope["github_sha"] == envelope["event_merge_sha"], "semantic envelope")
-    _require(envelope["event_name"] == "pull_request" and envelope["run_attempt"] == 1, "semantic event")
+    default_ref = f"refs/heads/{envelope['default_branch']}"
+    _require(envelope["event_name"] == "workflow_dispatch" and envelope["run_attempt"] == 1, "semantic event")
+    _require(envelope["ref_protected"] is True and envelope["ref"] == default_ref, "semantic dispatch ref")
     workflow_matches = workflow["job_id"] == JOB_IDS[job]
-    workflow_matches = workflow_matches and workflow["workflow_sha"] in {
-        source["head_sha"],
-        envelope["event_merge_sha"],
-    }
+    workflow_matches = workflow_matches and workflow["workflow_sha"] == envelope["github_sha"]
     expected_workflow = _sha256(WORKFLOW) if context is None else context.workflow_blob_sha256
     expected_common = _sha256(COMMON) if context is None else context.common_blob_sha256
     driver_path = COMMON.parent / DRIVERS[job]
@@ -1825,7 +1818,6 @@ class NativeSession:
         _require(all(type(row) is dict for row in metadata), "operation receipt metadata")
         operation = {"result_sha256": receipt.result_sha256, "source_set_sha256": receipt.source_set_sha256}
         return checks, metadata, operation
-
     def publish(self, candidate: ReportCandidate) -> Path:
         exact = self._evidence is not None and self._evidence._session_nonce == self._nonce
         _require(exact and not self._published and type(candidate) is ReportCandidate, "report session state")
@@ -1882,9 +1874,7 @@ class NativeSession:
         self._published = True
         return report_path(self.context.job)
 def _main(arguments: list[str]) -> int:
-    if arguments == ["--eligibility"]:
-        evaluate_eligibility(os.environ)
-    elif arguments == ["--require-final-results"]:
+    if arguments == ["--require-final-results"]:
         require_final_results(os.environ)
     elif len(arguments) == 2 and arguments[0] == "--cleanup" and arguments[1] in DRIVERS:
         cleanup_report(arguments[1])

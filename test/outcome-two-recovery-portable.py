@@ -1164,8 +1164,8 @@ def load_final_common():
 def common_context(common):
     head = "0" * 40
     return common.WorkflowContext(
-        "integration", "owner/repository", "owner/repository", head, head, head, head, head,
-        common.JOB_IDS["integration"], 42, 1, 7, "20260728.1", "6.8.0-test", "x86_64",
+        "integration", "owner/repository", "owner/repository", head, head, head, "refs/heads/main", "main",
+        common.JOB_IDS["integration"], 42, 1, True, "20260728.1", "6.8.0-test", "x86_64",
         common._sha256(common.WORKFLOW),
         common._sha256(common.COMMON.parent / common.DRIVERS["integration"]),
         common._sha256(common.COMMON),

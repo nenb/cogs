@@ -40,6 +40,11 @@ test("D-R2.2c exposes only fixed recover-owned and keeps bootstrap private", asy
   assert.ok(qualityStart >= 0 && qualityEnd > qualityStart);
   const quality = workflow.slice(qualityStart, qualityEnd);
   assert.match(quality, /^ {2}quality:\n[\s\S]*?^ {4}runs-on: ubuntu-24\.04$/mu);
+  assert.match(quality, /^ {4}needs: \[native-qualification-eligibility\]$/mu);
+  assert.match(
+    quality,
+    /github\.event_name != 'workflow_dispatch'.*needs\.native-qualification-eligibility\.result == 'success'/u,
+  );
   assert.equal(quality.match(/^ {4}runs-on:/gmu)?.length, 1);
   assert.match(quality, /^ {8}uses: actions\/checkout@[0-9a-f]{40}(?: # .+)?$/mu);
   assert.match(quality, /^ {10}persist-credentials: false$/mu);

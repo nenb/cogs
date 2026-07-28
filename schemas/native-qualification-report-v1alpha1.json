@@ -56,16 +56,16 @@
     "envelope": {
       "type": "object", "additionalProperties": false,
       "required": [
-        "repository", "head_repository", "event_name", "github_sha", "event_merge_sha",
-        "base_sha", "run_id", "run_attempt", "pull_request_number"
+        "repository", "head_repository", "event_name", "github_sha", "ref", "default_branch",
+        "ref_protected", "run_id", "run_attempt"
       ],
       "properties": {
         "repository": { "type": "string", "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$" },
         "head_repository": { "type": "string", "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$" },
-        "event_name": { "const": "pull_request" }, "github_sha": { "$ref": "#/$defs/sha1" },
-        "event_merge_sha": { "$ref": "#/$defs/sha1" }, "base_sha": { "$ref": "#/$defs/sha1" },
-        "run_id": { "type": "integer", "minimum": 1 }, "run_attempt": { "const": 1 },
-        "pull_request_number": { "type": "integer", "minimum": 1 }
+        "event_name": { "const": "workflow_dispatch" }, "github_sha": { "$ref": "#/$defs/sha1" },
+        "ref": { "type": "string", "pattern": "^refs/heads/[A-Za-z0-9_.-]{1,96}$" },
+        "default_branch": { "$ref": "#/$defs/label" }, "ref_protected": { "const": true },
+        "run_id": { "type": "integer", "minimum": 1 }, "run_attempt": { "const": 1 }
       }
     },
     "workflow": {

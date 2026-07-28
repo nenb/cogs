@@ -226,9 +226,9 @@ function nativeReport(job: keyof typeof nativeChecks, pass: boolean): Record<str
   if (!pass) { const first = checks[0]; assert.ok(first); first.outcome = "fail"; cleanup.paths = false; }
   return { version: "cogs.native-qualification/v1alpha1", job,
     source: { head_sha: "a".repeat(40), checkout_sha: "a".repeat(40), driver_blob_sha256: "b".repeat(64), common_blob_sha256: "c".repeat(64) },
-    envelope: { repository: "owner/repo", head_repository: "owner/repo", event_name: "pull_request", github_sha: "d".repeat(40),
-      event_merge_sha: "d".repeat(40), base_sha: "e".repeat(40), run_id: 1, run_attempt: 1, pull_request_number: 1 },
-    workflow: { path: ".github/workflows/ci.yml", blob_sha256: "f".repeat(64), workflow_sha: "a".repeat(40), job_id: nativeJobId[job] },
+    envelope: { repository: "owner/repo", head_repository: "owner/repo", event_name: "workflow_dispatch", github_sha: "d".repeat(40),
+      ref: "refs/heads/main", default_branch: "main", ref_protected: true, run_id: 1, run_attempt: 1 },
+    workflow: { path: ".github/workflows/ci.yml", blob_sha256: "f".repeat(64), workflow_sha: "d".repeat(40), job_id: nativeJobId[job] },
     runner: { image: "ubuntu-24.04", image_version: "20260720.1", kernel_release: "6.8.0-100-generic", architecture: "x86_64" },
     authority: "exact-run-native-qualification", result: pass ? "pass" : "fail", checks,
     metadata: pass ? nativeMetadata(job) : [],
@@ -261,7 +261,7 @@ for (const job of Object.keys(nativeChecks) as Array<keyof typeof nativeChecks>)
         ["job", (value) => { value.job = job === "A" ? "B" : "A"; }],
         ["job id", (value) => { value.workflow.job_id = "wrong-job"; }],
         ["source", (value) => { value.source.head_sha = "bad"; }],
-        ["envelope", (value) => { value.envelope.event_name = "push"; }],
+        ["envelope", (value) => { value.envelope.event_name = "pull_request"; }],
         ["check missing", (value) => { value.checks.pop(); }],
         ["check extra", (value) => { value.checks.push({ id: "extra", outcome: "pass" }); }],
         ["check outcome", (value) => { value.checks[0].outcome = "fail"; }],
@@ -458,6 +458,8 @@ assert.ok(authorityStep);
 assert.equal(authorityStep.env?.REVIEWED_SHA, "${{ inputs.reviewed_sha }}");
 assert.match(authorityStep.run ?? "", /\[\[ "\$REVIEWED_SHA" =~ \^\[0-9a-f\]\{40\}\$ \]\]/u);
 const reviewedRef = "${{ needs.native-qualification-eligibility.outputs.reviewed_sha }}";
+assert.deepEqual(jobNeeds(workflowJob("quality")), [authorityId]);
+assert.match(workflowJob("quality").if ?? "", /needs\.native-qualification-eligibility\.result == 'success'/u);
 const nativeIds = nativeJobs.map(([id]) => id);
 const effectIds = ["native-c1", ...nativeIds];
 const nativeInventory = Object.keys(workflow.jobs).filter((id) => id.startsWith("native-"));
@@ -473,6 +475,9 @@ for (const [id, driver] of nativeJobs) {
   const invoke = cliStep(job, "--workflow-bound");
   assert.equal(invoke.env?.NQ_DRIVER, driver);
   assert.equal(invoke.env?.NQ_HEAD_SHA, reviewedRef);
+  const cleanup = cliStep(job, "common.py --cleanup");
+  assert.equal(cleanup.env?.NQ_UPLOAD_ARTIFACT_ID, "${{ steps.upload.outputs.artifact-id }}");
+  assert.equal(cleanup.env?.NQ_UPLOAD_ARTIFACT_SHA256, "${{ steps.upload.outputs.artifact-digest }}");
 }
 const finalJob = workflowJob("native-qualification-required");
 assert.equal(finalJob.if, "${{ always() && needs.native-qualification-eligibility.result == 'success' }}");
