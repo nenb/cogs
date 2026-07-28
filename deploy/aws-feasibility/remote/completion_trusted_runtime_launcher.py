@@ -879,6 +879,7 @@ class _ProcessOwner(make_dataclass(
         raw, ancillary, flags, _address = endpoint.recvmsg(4096, bound, flags_in)
         credentials, rights = _leased_credentials(ancillary, self.ops)
         primary: BaseException | None = None
+        lease: _ProcessLease | None = None
         try:
             truncated = flags & (socket.MSG_TRUNC | socket.MSG_CTRUNC)
             _require(not truncated and len(rights) == 1, "descendant transfer truncation", "process-transfer-shape")
@@ -934,7 +935,20 @@ class _ProcessOwner(make_dataclass(
             return lease
         except BaseException as error:
             primary = error
-        _close_leases(self.ops, rights, primary)
+        failures: list[BaseException] = []
+        if not modeled_endpoint and lease is not None and lease in self.processes and lease not in leader.descendants:
+            try:
+                _require(lease.pidfd is not None, "rejected transfer pidfd", "process-authority")
+                lease.pidfd.close(self.ops)
+                self.processes.remove(lease)
+            except BaseException as error:
+                failures.append(error)
+        try:
+            _close_leases(self.ops, rights, primary)
+        except BaseException as error:
+            failures.append(error)
+        if failures:
+            raise RuntimeLauncherCleanupError(primary, failures) from primary
         raise primary
     def stable_census(self, root: _ProcessLease) -> tuple[int, ...]:
         first = _descendant_census(root.pid, self.ops)
@@ -1060,8 +1074,22 @@ def _pidfd_target(fd: int, ops: Any) -> int:
     return targets[0]
 
 def _stable_pidfd_target(fd: int, ops: Any) -> int:
-    observations = tuple(_pidfd_target(fd, ops) for _attempt in range(3))
-    _require(observations[0] == observations[1] == observations[2], "pidfd target drift", "process-transfer-pidfd")
+    descriptor_identity = _stat_identity(os.fstat(fd))
+    observations: list[int] = []
+    for _attempt in range(3):
+        before = _stat_identity(os.fstat(fd))
+        observations.append(_pidfd_target(fd, ops))
+        after = _stat_identity(os.fstat(fd))
+        _require(
+            before == after == descriptor_identity,
+            "pidfd descriptor generation drift",
+            "process-transfer-pidfd",
+        )
+    _require(
+        observations[0] == observations[1] == observations[2],
+        "pidfd target drift",
+        "process-transfer-pidfd",
+    )
     return observations[0]
 
 def _settle_pidfdless_clone(lease: _ProcessLease, ops: Any, primary: BaseException) -> None:
@@ -1133,13 +1161,19 @@ def _process_matches(lease: _ProcessLease) -> bool:
         return False
 def _wait_bounded(lease: _ProcessLease, deadline: float) -> int | None:
     while time.monotonic() < deadline:
-        if not lease.waitable:
-            if lease.pidfd is not None and select.select([lease.pidfd.fd], [], [], 0)[0]:
-                lease.reaped = True
-                return 0
+        try:
+            observed, status = os.waitpid(lease.pid, os.WNOHANG)
+        except ChildProcessError:
+            if lease.waitable:
+                raise RuntimeLauncherCleanupError(
+                    None,
+                    [RuntimeLauncherError("owned direct child is not waitable", "process-reap")],
+                )
             time.sleep(min(0.01, max(0.0, deadline - time.monotonic())))
             continue
-        observed, status = os.waitpid(lease.pid, os.WNOHANG)
+        # A successful waitpid call, including a live zero result, is the
+        # kernel proof that a transferred descendant is now our direct child.
+        lease.waitable = True
         if observed == lease.pid:
             lease.reaped = True
             return status
@@ -1157,20 +1191,30 @@ def _stop_process(lease: _ProcessLease, primary: BaseException | None, ops: Any 
             try: descriptor.close(actual_ops)
             except BaseException as error: failures.append(error)
     pidfd = lease.pidfd
+    death_ready = False
     if lease.pid == 0:
         lease.reaped = True
     elif pidfd is None:
         failures.append(RuntimeLauncherError("owned process lacks pidfd", "process-authority"))
-    elif not lease.reaped and select.select([pidfd.fd], [], [], 0)[0]:
-        if not lease.waitable and _stable_direct_child(lease, actual_ops):
-            lease.waitable = True
-        if not lease.waitable:
-            lease.reaped = True
-        else:
+    elif pidfd.state is not _FdState.OWNED:
+        failures.append(
+            pidfd.close_error
+            or RuntimeLauncherError("owned process pidfd is not authoritative", "process-authority")
+        )
+    elif not lease.reaped:
+        death_ready = bool(select.select([pidfd.fd], [], [], 0)[0])
+    if not lease.reaped and death_ready:
+        try:
             observed, _status = os.waitpid(lease.pid, os.WNOHANG)
-            _require(observed == lease.pid, "owned process wait identity")
-            lease.reaped = True
-    if lease.pid and pidfd is not None and not lease.reaped:
+        except ChildProcessError as error:
+            failures.append(RuntimeLauncherError(str(error), "process-reap"))
+        else:
+            if observed != lease.pid:
+                failures.append(RuntimeLauncherError("owned process wait identity", "process-reap"))
+            else:
+                lease.waitable = True
+                lease.reaped = True
+    if lease.pid and pidfd is not None and pidfd.state is _FdState.OWNED and not lease.reaped and not death_ready:
         try:
             identity_required = lease.start_time != 0
             if identity_required and not _process_matches(lease): raise RuntimeLauncherError("owned process identity uncertain before TERM")
@@ -1391,12 +1435,11 @@ class _RootOwner(make_dataclass(
                     exact_shape = stat.S_ISDIR(info.st_mode)
                     exact_shape = exact_shape and stat.S_IMODE(info.st_mode) == 0o700
                     exact_shape = exact_shape and info.st_uid == os.geteuid()
-                    # A successful mkdir under the retained sticky /tmp parent
-                    # is sufficient recovery authority if the immediately
-                    # following O_PATH open failed.  Once opened, require the
-                    # stronger recorded generation as well.
-                    exact_generation = self.identity is None
-                    exact_generation = exact_generation or (info.st_dev, info.st_ino) == self.identity
+                    # Never infer deletion authority from shape alone.  The
+                    # post-mkdir generation is recorded before the fallible
+                    # O_PATH open and must still identify the exact object.
+                    exact_generation = self.identity is not None
+                    exact_generation = exact_generation and (info.st_dev, info.st_ino) == self.identity
                     _require(exact_shape and exact_generation, "private root replacement", "root-replaced")
                     os.rmdir(_ROOT_LEAF, dir_fd=self.parent.fd)
             except BaseException as error: failures.append(error)
@@ -1877,16 +1920,6 @@ def _adopt_unregistered_children(
                 raise RuntimeLauncherCleanupError(primary, [error]) from primary
             raise
 
-def _stable_direct_child(lease: _ProcessLease, ops: Any) -> bool:
-    try:
-        path = "/proc/self/task/self/children"
-        first = _parse_children(_proc_bytes(path, 65536, ops))
-        identity = (_start_time(lease.pid, ops), _exe_identity(lease.pid, ops))
-        second = _parse_children(_proc_bytes(path, 65536, ops))
-        expected = (lease.start_time, lease.executable)
-        return first == second and lease.pid in first and identity == expected
-    except (OSError, RuntimeLauncherError):
-        return False
 def _close_socket(endpoint: socket.socket | None, ops: Any, purpose: str) -> None:
     if endpoint is not None and endpoint.fileno() >= 0:
         _FdLease(endpoint.detach(), purpose).close(ops)
@@ -1932,7 +1965,55 @@ def _recv_status(endpoint: socket.socket, deadline: float, event: str = "", sequ
         if failure["code"] == "cleanup-uncertain": raise RuntimeLauncherCleanupError(None, [RuntimeLauncherError("inner cleanup uncertain")])
         raise RuntimeLauncherError(f"sandbox setup failed: {failure['kind']}", failure["code"])
     return _parse_sandbox_status(raw, event, sequence)
+def _tool_creator_settlement_packet(
+    endpoint: socket.socket,
+    deadline: float,
+) -> None:
+    _deadline_ready(endpoint, deadline, "creator-settlement-deadline")
+    raw = endpoint.recv(16384, socket.MSG_DONTWAIT)
+    value = _parse_sandbox_status(raw, "error", 2)
+    _require(
+        value["code"] != "cleanup-uncertain",
+        "tool creator cleanup uncertain",
+        "cleanup-uncertain",
+    )
+
+def _settle_rejected_tool_transfer(
+    owner: _ProcessOwner,
+    creator: _ProcessLease,
+    transfer: socket.socket,
+    status: socket.socket,
+    child_baseline: tuple[int, ...],
+    ops: Any,
+    primary: BaseException,
+) -> None:
+    failures: list[BaseException] = []
+    settlement_deadline = time.monotonic() + _SETUP_SECONDS
+    if not select.select([creator.pidfd.fd], [], [], 0)[0]:
+        try:
+            _lifecycle_control_send(transfer, b"N")
+        except BaseException as error:
+            failures.append(error)
+        try:
+            _tool_creator_settlement_packet(status, settlement_deadline)
+        except BaseException as error:
+            failures.append(error)
+    try:
+        owner.stop(creator, primary)
+    except BaseException as error:
+        failures.append(error)
+    try:
+        _adopt_unregistered_children(owner, child_baseline, ops)
+        for lease in tuple(owner.processes):
+            if lease is not creator:
+                owner.stop(lease, primary)
+    except BaseException as error:
+        failures.append(error)
+    if failures:
+        raise RuntimeLauncherCleanupError(primary, failures) from primary
+
 def _run_tool_with_ops( ops: Any, role: str, report: dict[str, object], descriptors: tuple[int, ...], rows: tuple[_GenerationRow, ...], ) -> tuple[bytes, dict[str, object]]:
+    child_baseline = _parse_children(_proc_bytes("/proc/self/task/self/children", 65536, ops))
     process_owner = _ProcessOwner(ops)
     root_owner = _RootOwner(ops)
     input_pair = output_pair = ()
@@ -1991,15 +2072,29 @@ def _run_tool_with_ops( ops: Any, role: str, report: dict[str, object], descript
         command = _status("prepare-root", 1)
         _require(parent_status.send(command) == len(command), "root preparation send", "root-prepare-send")
         transfer_case = f"tool:{role}"
-        child_lease = process_owner.receive_descendant(
-            transfer_parent,
-            namespace_lease,
-            transfer_nonce,
-            1,
-            time.monotonic() + _SETUP_SECONDS,
-            transfer_case,
-            "tool",
-        )
+        try:
+            child_lease = process_owner.receive_descendant(
+                transfer_parent,
+                namespace_lease,
+                transfer_nonce,
+                1,
+                time.monotonic() + _SETUP_SECONDS,
+                transfer_case,
+                "tool",
+            )
+        except BaseException as transfer_error:
+            if isinstance(transfer_parent, socket.socket):
+                _settle_rejected_tool_transfer(
+                    process_owner,
+                    namespace_lease,
+                    transfer_parent,
+                    parent_status,
+                    child_baseline,
+                    ops,
+                    transfer_error,
+                )
+                namespace_lease = None
+            raise
         process_owner.stable_identity_census(namespace_lease)
         _lifecycle_control_send(transfer_parent, b"A")
         _close_socket(transfer_parent, ops, "tool-transfer-parent")
@@ -2080,6 +2175,12 @@ def _run_tool_with_ops( ops: Any, role: str, report: dict[str, object], descript
     failures: list[BaseException] = []
     try: process_owner.cleanup(primary)
     except BaseException as error: failures.append(error)
+    try:
+        _adopt_unregistered_children(process_owner, child_baseline, ops)
+        for lease in tuple(process_owner.processes):
+            process_owner.stop(lease, primary)
+    except BaseException as error:
+        failures.append(error)
     for lease in (*input_pair, *output_pair):
         if lease.state is _FdState.OWNED:
             try: lease.close(ops)
@@ -3238,20 +3339,19 @@ def _settle_rejected_transfer(
             _creator_settlement_packet(control, settlement_deadline, case)
         except BaseException as error:
             failures.append(error)
-    status = _wait_bounded(leader, settlement_deadline)
-    if status is None:
-        failures.append(RuntimeLauncherError("creator settlement reap deadline", "creator-settlement"))
-    else:
-        try:
-            owner.stop(leader, primary)
-        except BaseException as error:
-            failures.append(error)
+    # Cooperative rejection gives the creator the first opportunity to close
+    # the registration gate and exactly reap its child.  Regardless of packet
+    # or deadline failure, the surviving owner then terminates and waitpid-
+    # reaps the creator before looking for children exposed by reparenting.
     try:
-        before_adoption = tuple(owner.processes)
+        owner.stop(leader, primary)
+    except BaseException as error:
+        failures.append(error)
+    try:
         _adopt_unregistered_children(owner, child_baseline, ops)
-        adopted = tuple(lease for lease in owner.processes if lease not in before_adoption)
-        for lease in adopted:
-            owner.stop(lease, primary)
+        for lease in tuple(owner.processes):
+            if lease is not leader:
+                owner.stop(lease, primary)
     except BaseException as error:
         failures.append(error)
     if failures:
