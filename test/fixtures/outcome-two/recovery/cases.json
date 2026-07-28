@@ -1,5 +1,5 @@
 {
-  "version": "cogs.outcome-two-recovery-cases/v3",
+  "version": "cogs.outcome-two-recovery-cases/v4",
   "families": [
     {
       "acceptance_id": "AT-ADAPT-REC-01",
@@ -30,7 +30,7 @@
     {
       "acceptance_id": "AT-ROOT-01",
       "production_method": "_recover_transaction_with_ops",
-      "intended_code": "root-cleanup-uncertain",
+      "intended_code": "cleanup-uncertain",
       "cleanup_domains": ["root", "mounts", "namespace"],
       "sentinel": "exact-owned-root-only",
       "cases": [
@@ -57,7 +57,7 @@
     {
       "acceptance_id": "AT-LIFE-02",
       "production_method": "_ProcessOwner.cleanup",
-      "intended_code": "process-cleanup-uncertain",
+      "intended_code": "cleanup-uncertain",
       "cleanup_domains": ["worker", "helpers", "descriptors"],
       "sentinel": "retained-pidfd-bounded-reap",
       "cases": [
@@ -90,8 +90,8 @@
       "sentinel": "unavailable-only-after-observed-cleanup",
       "cases": [
         ["rec-unavailable-clean", "namespace-owner-unavailable"],
-        ["rec-unavailable-close-uncertain", "unavailable-close-uncertain"],
-        ["rec-unavailable-reap-uncertain", "unavailable-reap-uncertain"]
+        ["rec-unavailable-close-uncertain", "unavailable-close-uncertain", "cleanup-uncertain"],
+        ["rec-unavailable-reap-uncertain", "unavailable-reap-uncertain", "cleanup-uncertain"]
       ]
     }
   ]
