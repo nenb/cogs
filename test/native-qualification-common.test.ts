@@ -257,7 +257,13 @@ for job,value in values.items():
  for name,item in returned.items():
   if type(item) is bool:returned[name]=False;break
  returned['caller_metadata']=['forged']
- evidence=s.settle_native_phase();assert evidence.restored;s.publish(common.ReportCandidate())
+ evidence=s.settle_native_phase();assert evidence.restored
+ receipt=s._NativeSession__receipt
+ if job=='B':
+  assert isinstance(receipt._metadata[0],common.Mapping) and type(receipt._metadata[0]['objects']) is tuple
+  try:receipt._metadata[0]['objects'][0]['needed']+=('forged',);raise AssertionError('nested metadata mutable')
+  except TypeError:pass
+ s.publish(common.ReportCandidate())
  report=json.loads(cust.raw);assert report['result']=='pass' and all(row['outcome']=='pass' for row in report['checks'])
  assert report['operation']['source_set_sha256']=='9'*64 and 'caller_metadata' not in json.dumps(report)
  hostile=json.loads(json.dumps(value))
@@ -279,6 +285,11 @@ assert common._parse_dirents(dent('.')+dent('7')+dent('19'),True)==['7','19']
 source=ast.parse(open(common.COMMON).read())
 descriptor=next(node for node in ast.walk(source) if isinstance(node,ast.FunctionDef) and node.name=='_descriptor_snapshot_once')
 text=ast.unparse(descriptor);assert '_generation(after)' in text and 'descriptor_flags' in text and 'status_flags' in text
+assert 'F_DUPFD_CLOEXEC' in text and 'libc.syscall(312' in text and '_descriptor_anchors' in text
+issuer=next(node for node in ast.walk(source) if isinstance(node,ast.FunctionDef) and node.name=='_issue_cli')
+issuer_text=ast.unparse(issuer);assert "os.execve('/usr/bin/python3', ('/usr/bin/python3', '-I', '-B', '-')" in issuer_text
+assert 'os.pidfd_open' in issuer_text and 'os.dup2(admission.number, 3' not in issuer_text
+assert 'invoke_fixed_admitted_operation' not in open(common.COMMON).read()
 children=next(node for node in ast.walk(source) if isinstance(node,ast.FunctionDef) and node.name=='_children')
 assert '_stable' in ast.unparse(children)`;
   const run = spawnSync("python3", ["-I", "-B", "-c", script], {
@@ -287,12 +298,55 @@ assert '_stable' in ast.unparse(children)`;
   assert.equal(run.status, 0, run.stderr);
   assert.doesNotMatch(common, /os\.listdir|os\.scandir|fdopendir|production_checks/u);
   for (const token of ["getdents64", "CLOSE_UNCERTAIN", "report-custodian", "uploaded report bytes",
-    "cleanup capability", "report-worker-pidfd", "ADMITTED", "operation receipt required"]) {
+    "retained cleanup capability", "fixed-admission", "sealed-capsule", "operation receipt required"]) {
     assert.ok(common.includes(token), token);
   }
 });
 
-test("durable digest/capability transaction recovers every publication and cleanup cut", () => {
+test("common issuer capsule is consumed by the sole real bootstrap decoder", () => {
+  const script = `import hashlib,importlib.util,json,subprocess,sys\nfrom types import SimpleNamespace
+sys.path.insert(0,'scripts/native-qualification');import common
+spec=importlib.util.spec_from_file_location('held_launcher_contract',common.LAUNCHER_PATH);launcher=importlib.util.module_from_spec(spec);spec.loader.exec_module(launcher)
+client='scripts/native-qualification/'+common.DRIVERS['integration'];paths=(*common.SOURCE_PATHS,client)
+raw=subprocess.check_output(('/usr/bin/git','ls-tree','-rz','HEAD','--',*paths))
+tree={};
+for row in raw.split(b'\\0'):
+ if row:
+  header,path=row.split(b'\\t',1);tree[path.decode()]=header.decode().split()[2]
+held={path:common._HeldSource(path,None,(common.ROOT/path).read_bytes(),(),tree[path]) for path in paths}
+digest=hashlib.sha256()
+for path in common.SOURCE_PATHS:
+ encoded=path.encode();data=held[path].raw
+ digest.update(len(encoded).to_bytes(4,'big')+encoded+len(data).to_bytes(8,'big')+hashlib.sha256(data).digest())
+value=digest.hexdigest();context=SimpleNamespace(job='integration',head_sha='0'*40)
+admission,capsule=common.SystemCommonOps._capsule(context,held,value)
+decoded=json.loads(admission);sources,driver=launcher._decode_held_source_capsule(capsule,decoded)
+assert sources=={path:held[path].raw for path in common.SOURCE_PATHS} and driver==held[client].raw
+assert decoded['source_set_sha256']==value and not hasattr(launcher,'invoke_fixed_admitted_operation')`;
+  const run = spawnSync("python3", ["-I", "-B", "-c", script], { encoding: "utf8" });
+  assert.equal(run.status, 0, run.stderr);
+});
+
+test("sole held launcher CLI has exact isolated descriptor ABI and no ambient issuer", { skip: process.platform !== "linux" }, () => {
+  const script = `import ast,json,sys\nsys.path.insert(0,'scripts/native-qualification');import common
+source=b'''import fcntl,json,os,sys
+assert not os.environ and sys.flags.isolated and sys.flags.dont_write_bytecode
+assert sorted(map(int,os.listdir('/proc/self/fd')))[:5] == [0,1,2,3,4]
+assert os.read(3,4096)==b'ADMISSION\\n' and fcntl.fcntl(4,1034)==31
+os.write(1,b'{"source_revision":"'+b'a'*40+b'","source_set_sha256":"'+b'b'*64+b'"}\\n')
+'''
+registry=common.FdRegistry();ops=common.SystemCommonOps(registry)
+raw=ops._issue_cli(source,b'ADMISSION\\n',b'CAPSULE')
+assert ops._decode_cli(raw)=={'source_revision':'a'*40,'source_set_sha256':'b'*64}
+registry.close_reverse()
+tree=ast.parse(open(common.COMMON).read())
+issuer=next(n for n in ast.walk(tree) if isinstance(n,ast.FunctionDef) and n.name=='_issue_cli')
+assert 'os.execve' in ast.unparse(issuer) and 'invoke_fixed_admitted_operation' not in open(common.COMMON).read()`;
+  const run = spawnSync("/usr/bin/python3", ["-I", "-B", "-c", script], { encoding: "utf8" });
+  assert.equal(run.status, 0, run.stderr);
+});
+
+test("private capability and retained quarantine fail closed across publication and cleanup cuts", () => {
   const script = `import hashlib,sys\nsys.path.insert(0,'scripts/native-qualification');import common
 from unittest.mock import patch
 G=lambda inode:{'mode':0o100600,'uid':1,'gid':1,'device':1,'inode':inode,'links':1,'size':9,'mtime_ns':1,'ctime_ns':1,'rdevice':0}
@@ -303,21 +357,15 @@ class Lease:
  def close(self):self.state=common.FdState.CLOSED
 class Registry:pass
 def run(initial,has_receipt,accept=True):
- state=dict(initial);removed=[]
+ state=dict(initial);retained=[]
  def names(fd,numeric):return tuple(state)
  def identity(fd,name):return state.get(name)
- def rename(fd,left,right,flags):
-  left=left.decode();right=right.decode()
-  if left not in state or right in state:raise common.QualificationError('rename precondition')
-  state[right]=state.pop(left)
- def unlink(name,dir_fd=None):del state[name]
  def file_digest(directory,name,limit):
   generation=state[name];raw=b'foreign!' if generation==F else b'report-v1'
   return hashlib.sha256(raw).hexdigest(),len(raw),generation
- def remove(job,parent,directory):assert state=={};removed.append(True)
+ def quarantine(job,parent,directory):retained.append(dict(state))
  patches=(patch.object(common,'_enumerate_directory',names),patch.object(common,'_identity_at',identity),
-  patch.object(common,'_rename',rename),patch.object(common.os,'unlink',unlink),patch.object(common.os,'fsync',lambda fd:None),
-  patch.object(common,'_file_digest_at',file_digest),patch.object(common,'_remove_report_directory',remove))
+  patch.object(common,'_file_digest_at',file_digest),patch.object(common,'_retain_quarantine',quarantine))
  for item in patches:item.start()
  try:
   try:
@@ -326,14 +374,12 @@ def run(initial,has_receipt,accept=True):
  finally:
   for item in reversed(patches):item.stop()
  assert ok is accept,(initial,state)
- if accept:assert removed==[True] and state=={}
+ if accept:assert retained==[initial] and state==initial
  return state
-for state,owned in [({'.cleanup.capability':A},False),({'.cleanup.capability':A,'.report.stage':R},False),
- ({'.cleanup.capability':A,'report.json':R},False),({'.cleanup.capability':A,'.owner.json':O,'report.json':R},True),
- ({'.cleanup.capability':A,'.owner.json':O,'.retired-report':R},True),
- ({'.cleanup.capability':A,'.retired-owner':O},True),({'.retired-capability':A},False)]:run(state,owned)
-foreign={'.cleanup.capability':A,'.owner.json':O,'report.json':F};assert run(foreign,True,False)==foreign
-extra={'.cleanup.capability':A,'.owner.json':O,'report.json':R,'foreign':F};assert run(extra,True,False)==extra`;
+for state,owned in [({'.authority.json':A},False),({'.authority.json':A,'.report.stage':R},False),
+ ({'.authority.json':A,'report.json':R},False),({'.authority.json':A,'.owner.json':O,'report.json':R},True)]:run(state,owned)
+foreign={'.authority.json':A,'.owner.json':O,'report.json':F};assert run(foreign,True,False)==foreign
+extra={'.authority.json':A,'.owner.json':O,'report.json':R,'foreign':F};assert run(extra,True,False)==extra`;
   const run = spawnSync("python3", ["-I", "-B", "-c", script], { encoding: "utf8" });
   assert.equal(run.status, 0, run.stderr);
   const receiptSource = common.slice(common.indexOf("def _receipt("), common.indexOf("def _open_report_directory("));
@@ -344,6 +390,14 @@ extra={'.cleanup.capability':A,'.owner.json':O,'report.json':R,'foreign':F};asse
   const readReceiptSource = common.slice(common.indexOf("def _read_receipt("), common.indexOf("def _file_digest_at("));
   assert.doesNotMatch(readReceiptSource, /_sha256\(SCHEMA\)/u, "recovery must use the authenticated schema identity");
   assert.match(readReceiptSource, /HEX64\.fullmatch\(str\(schema_identity\)\)/u);
+  const authoritySource = common.slice(common.indexOf("def _authority("), common.indexOf("def _receipt("));
+  assert.doesNotMatch(authoritySource, /"capability"\s*:/u, "cleanup capability is never durable plaintext");
+  const cleanupSource = common.slice(common.indexOf("def cleanup_report("), common.indexOf("class NativeSession:"));
+  assert.doesNotMatch(cleanupSource, /_cleanup_owned/u, "disk state cannot select fallback cleanup authority");
+  assert.doesNotMatch(cleanupSource, /except \(OSError/u, "pidfd failure cannot become success");
+  const quarantineSource = common.slice(common.indexOf("def _retain_quarantine("), common.indexOf("def _custodian_main("));
+  assert.doesNotMatch(quarantineSource, /os\.(?:unlink|rmdir)/u, "quarantine never check-deletes a pathname");
+  assert.match(common, /inotify_add_watch/u, "upload interval has a retained generation watch");
 });
 
 test("parsed workflow graph causally gates exact-head real CLI dispatch and final outcomes", () => {

@@ -308,8 +308,9 @@ class ModeledCrash(RuntimeError):
 
 class VNode:
     next_inode = 1000
-    def __init__(self, kind, raw=b""):
+    def __init__(self, kind, raw=b"", role=""):
         self.kind = kind
+        self.role = role
         self.raw = bytearray(raw)
         self.names = {}
         self.inode = VNode.next_inode
@@ -348,6 +349,8 @@ class CommonSocket:
             self.phase = "released"
             return len(raw)
         if raw.startswith(b"{") and self.connector:
+            if self.kernel.hit("cleanup-request-send") == "short":
+                return 0
             self.kernel.server_cleanup(raw)
             self.phase = "cleaned"
             return len(raw)
@@ -372,7 +375,9 @@ class CommonSocket:
                 return b""
             return b"PUBLISHED"
         if self.phase == "cleaned":
-            return b"CLEAN"
+            if self.kernel.hit("cleanup-reply-recv") == "lost":
+                return b""
+            return self.kernel.clean_reply
         return b""
     def connect(self, name):
         del name
@@ -384,9 +389,8 @@ class CommonSocket:
         self.connector = True
     def getsockopt(self, level, option, size):
         del level, option, size
-        return __import__("struct").pack(
-            "3i", self.kernel.custodian.pid, self.kernel.euid, self.kernel.egid,
-        )
+        uid = self.kernel.euid + 1 if self.kernel.hit("peer-credentials") == "drift" else self.kernel.euid
+        return __import__("struct").pack("3i", self.kernel.custodian.pid, uid, self.kernel.egid)
 
 
 class CommonPoll:
@@ -423,10 +427,14 @@ class CommonKernel:
         self.next_pid = 700
         self.custodian = None
         self.transaction = None
+        self.clean_reply = b""
+        self.upload_tainted = False
         self.context = None
         self.observe_count = 0
         self.baseline_fds = set()
         self.phase = "startup"
+        self.temporary_count = 0
+        self.sync_counts = {}
     def hit(self, cut):
         if self.spec["cut"] != cut or self.row["id"] in self.consumed:
             return None
@@ -469,7 +477,12 @@ class CommonKernel:
     def open(self, path, flags, mode=0o600, *, dir_fd=None):
         temporary = bool(flags & getattr(os, "O_TMPFILE", 0))
         if temporary:
-            return self.allocate("file", VNode("file"))
+            roles = ("authority", "report", "receipt")
+            role = roles[self.temporary_count] if self.temporary_count < len(roles) else "extra"
+            self.temporary_count += 1
+            if self.hit(f"{role}-allocate") == "error":
+                raise OSError(errno.EMFILE, f"modeled {role} allocation")
+            return self.allocate("file", VNode("file", role=role))
         node = self.node_for_path(path, dir_fd)
         if node is None:
             raise FileNotFoundError(str(path))
@@ -479,12 +492,17 @@ class CommonKernel:
         parent = self.root if dir_fd is None else self.fds[dir_fd][1]
         if name in parent.names:
             raise FileExistsError(name)
-        parent.names[str(name)] = VNode("directory")
+        parent.names[str(name)] = VNode("directory", role="report-directory")
         if self.hit("directory-create") == "after-crash":
             raise ModeledCrash("after report directory creation")
     def fsync(self, fd):
         if fd not in self.fds:
             raise OSError(errno.EBADF, "fsync")
+        role = self.fds[fd][1].role or self.fds[fd][0]
+        count = self.sync_counts.get(role, 0) + 1
+        self.sync_counts[role] = count
+        if self.hit(f"{role}-fsync-{count}") == "error":
+            raise OSError(errno.EIO, f"modeled {role} fsync")
     def fstat(self, fd):
         return self.status(self.fds[fd][1])
     def stat_path(self, path, *, dir_fd=None, follow_symlinks=False):
@@ -498,21 +516,31 @@ class CommonKernel:
         return self.node_for_path(path) is not None
     def write(self, fd, raw):
         node = self.fds[fd][1]
+        mutation = self.hit(f"{node.role}-write")
+        if mutation == "zero":
+            return 0
         offset = self.offsets[fd]
         end = offset + len(raw)
         if end > len(node.raw):
             node.raw.extend(b"\0" * (end - len(node.raw)))
         node.raw[offset:end] = raw
         self.offsets[fd] = end
+        if mutation == "after-crash":
+            raise ModeledCrash(f"modeled {node.role} write crash")
         return len(raw)
     def read(self, fd, size):
         node = self.fds[fd][1]
+        if self.hit(f"{node.role}-read") == "error":
+            raise OSError(errno.EIO, f"modeled {node.role} read")
         offset = self.offsets[fd]
         value = bytes(node.raw[offset:offset + size])
         self.offsets[fd] += len(value)
         return value
     def lseek(self, fd, offset, whence):
         del whence
+        node = self.fds[fd][1]
+        if self.hit(f"{node.role}-lseek") == "error":
+            raise OSError(errno.EIO, f"modeled {node.role} lseek")
         self.offsets[fd] = offset
         return offset
     def unlink(self, name, *, dir_fd=None):
@@ -538,7 +566,7 @@ class CommonKernel:
             raise FileExistsError(decoded)
         directory.names[decoded] = node
         cut = {
-            ".cleanup.capability": "authority-link",
+            ".authority.json": "authority-link",
             ".report.stage": "report-stage-link",
             ".owner.json": "receipt-link",
         }.get(decoded)
@@ -553,6 +581,8 @@ class CommonKernel:
         directory.names[target_name] = directory.names.pop(source_name)
         if target_name == "report.json" and self.hit("report-rename") == "after-crash":
             raise ModeledCrash("after report rename")
+        if target_name.endswith(".retired") and self.hit("quarantine-rename") == "after-crash":
+            raise ModeledCrash("after retained quarantine rename")
     def socketpair(self, family, kind):
         del family, kind
         if self.hit("socketpair") == "error":
@@ -586,9 +616,7 @@ class CommonKernel:
         if self.phase == "startup" and self.hit("startup-pidfd") == "error":
             raise OSError(errno.EIO, "startup pidfd")
         if self.phase == "cleanup" and self.hit("retire-pidfd") == "secondary":
-            process.live = False
-            process.reaped = True
-            raise OSError(errno.EIO, "secondary pidfd result")
+            raise OSError(errno.EIO, "secondary pidfd failure with live custodian")
         if process is None or process.pid != pid:
             raise ProcessLookupError(pid)
         return self.allocate("pidfd", process)
@@ -617,18 +645,22 @@ class CommonKernel:
             self.custodian.live = False
             self.custodian.reaped = True
     def server_cleanup(self, request):
-        del request
+        value = json.loads(request)
+        if self.upload_tainted:
+            event = self.allocate("file", VNode("file", b"mutation", "watch-event"))
+            self.common._watch_clean(SimpleNamespace(number=event))
         registry, parent, directory = self.transaction
-        authority, capability, capability_generation = self.common._read_authority(directory, self.context.job)
+        authority, authority_generation = self.common._read_authority(directory, self.context.job)
         receipt, receipt_generation = self.common._read_receipt(
-            directory, self.context.job, authority, capability,
+            directory, self.context.job, authority, self.capability,
         )
         self.events.append("receipt:authenticated")
         self.common._cleanup_owned(
             self.context.job, registry, parent, directory, authority,
-            capability_generation, receipt, receipt_generation,
+            authority_generation, receipt, receipt_generation,
         )
         self.events.append("upload:bytes-authenticated")
+        self.clean_reply = b"CLEAN:" + value["nonce"].encode()
         self.custodian.live = False
     def mutate_named(self, name, transform):
         directory = self.root.names[self.common.report_path(self.context.job).parent.name]
@@ -649,11 +681,13 @@ class CommonKernel:
     def audit(self, disposition):
         active = self.common.report_path(self.context.job).parent.name
         retired = self.common._retired_report_path(self.context.job).name
-        present = active in self.root.names or retired in self.root.names
+        active_present = active in self.root.names
+        retired_present = retired in self.root.names
+        present = active_present or retired_present
         if disposition == "restored":
-            if present:
+            if active_present:
                 inventories = {name: sorted(node.names) for name, node in self.root.names.items()}
-                raise AssertionError(f"{self.row['id']}: report path not restored: {inventories} events={self.events}")
+                raise AssertionError(f"{self.row['id']}: exact quarantine missing: {inventories} events={self.events}")
             if self.custodian is not None and (self.custodian.live or not self.custodian.reaped):
                 raise AssertionError(f"{self.row['id']}: custodian not retired/reaped")
             self.events.append("cleanup:restored")
@@ -824,9 +858,7 @@ def run_common_row(common, row, production_result):
                 if isinstance(error, ModeledCrash) or any(event == "crash:classified" for event in kernel.events):
                     kernel.crash_close()
                 stage = row["primitive_fault"]["stage"]
-                if stage == "publish" and row["primitive_fault"]["cut"] in {
-                    "directory-create", "authority-link", "report-stage-link", "report-rename", "receipt-link",
-                }:
+                if stage == "publish":
                     kernel.events.append("crash:classified")
                 if kernel.transaction is not None or kernel.lexists(common.report_path("integration").parent):
                     if stage == "upload" and row["primitive_fault"]["cut"] == "report-bytes":
@@ -839,6 +871,25 @@ def run_common_row(common, row, production_result):
                             value["schema_sha256"] = "0" * 64
                             return common._canonical(value, True)
                         kernel.mutate_named(".owner.json", corrupt)
+                    if stage == "upload" and row["primitive_fault"]["cut"] == "upload-exchange":
+                        kernel.hit("upload-exchange")
+                        kernel.upload_tainted = True
+                        kernel.events.extend(("upload:generation-exchanged", "upload:generation-restored"))
+                    if stage == "upload" and row["primitive_fault"]["cut"] == "authority-resign":
+                        kernel.hit("authority-resign")
+                        fake = b"F" * 32
+                        def resign_authority(raw):
+                            value = json.loads(raw)
+                            value["capability_sha256"] = hashlib.sha256(fake).hexdigest()
+                            return common._canonical(value, True)
+                        def resign_receipt(raw):
+                            value = json.loads(raw)
+                            value["capability_sha256"] = hashlib.sha256(fake).hexdigest()
+                            value.pop("authentication_sha256")
+                            value["authentication_sha256"] = hmac.new(fake, common._canonical(value), hashlib.sha256).hexdigest()
+                            return common._canonical(value, True)
+                        kernel.mutate_named(".authority.json", resign_authority)
+                        kernel.mutate_named(".owner.json", resign_receipt)
                     environment = {
                         "LC_ALL": "C", "NQ_CLEANUP_RUN_ID": "42", "NQ_CLEANUP_RUN_ATTEMPT": "1",
                         "NQ_CLEANUP_HEAD_SHA": "a" * 40 if kernel.hit("cleanup-head") == "wrong" else context.head_sha,
@@ -859,6 +910,8 @@ def run_common_row(common, row, production_result):
                                 kernel.events.append("upload:bytes-rejected")
                             if row["primitive_fault"]["cut"] == "receipt-bytes":
                                 kernel.events.append("receipt:authentication-rejected")
+                            if row["primitive_fault"]["cut"] in {"upload-exchange", "authority-resign"}:
+                                kernel.events.append("private-authority:rejected")
         except BaseException as caught:
             error = caught
     if row["primitive_fault"]["cut"] == "none":
@@ -898,7 +951,7 @@ def common_production_matrix():
     fields = {"id", "production_method", "primitive_fault", "intended_code", "cleanup_domains", "sentinel"}
     if set(header) != {"type", "version", "acceptance_ids", "case_fields"}:
         raise AssertionError("common custodian fixture header shape")
-    if header["version"] != "cogs.outcome-two-common-custodian/v1" or set(header["case_fields"]) != fields:
+    if header["version"] != "cogs.outcome-two-common-custodian/v2" or set(header["case_fields"]) != fields:
         raise AssertionError("common custodian fixture header")
     declared = [row["id"] for row in rows]
     selected, consumed, oracle = [], [], []
