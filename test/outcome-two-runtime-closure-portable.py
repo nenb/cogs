@@ -196,7 +196,7 @@ def parser_matrix():
 class FsOps(closure._Ops):
     """Independent inode/fd model; production walkers perform every decision."""
     def __init__(self, case):
-        manifest = json.loads((FIXTURES / "closure/cases.json").read_text())
+        manifest = json.loads((FIXTURES / "closure/cases.jsonl").read_text())
         self.files = {path: (FIXTURES / "elf" / name).read_bytes()
                       for path, name in manifest["fixed_paths"].items()}
         self.case = case
@@ -297,7 +297,7 @@ class FsOps(closure._Ops):
 
 
 def closure_matrix():
-    manifest = json.loads((FIXTURES / "closure/cases.json").read_text())
+    manifest = json.loads((FIXTURES / "closure/cases.jsonl").read_text())
     selected = list(manifest_cases(manifest))
     executed = []
     for row, case in selected:

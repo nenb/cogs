@@ -20,7 +20,7 @@ FIXTURES = ROOT / "test/fixtures/outcome-two"
 sys.path.insert(0, str(REMOTE))
 elf = importlib.import_module("completion_elf")
 closure = importlib.import_module("completion_trusted_runtime_closure")
-CASES = json.loads((FIXTURES / "maps/cases.json").read_text())
+CASES = json.loads((FIXTURES / "maps/cases.jsonl").read_text())
 BEFORE = (FIXTURES / "maps/stable/maps-before.txt").read_bytes()
 AFTER = (FIXTURES / "maps/stable/maps-after.txt").read_bytes()
 ROW_KEYS = {"id", "production_method", "primitive_fault", "intended_code",

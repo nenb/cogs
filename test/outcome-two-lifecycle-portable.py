@@ -23,7 +23,7 @@ sys.path.insert(0, str(REMOTE))
 elf = importlib.import_module("completion_elf")
 closure = importlib.import_module("completion_trusted_runtime_closure")
 launcher = importlib.import_module("completion_trusted_runtime_launcher")
-MATRIX = json.loads((FIXTURES / "lifecycle/faults.json").read_text())
+MATRIX = json.loads((FIXTURES / "lifecycle/faults.jsonl").read_text())
 RAW = (FIXTURES / "elf/valid-executable.elf").read_bytes()
 GENERATION = closure.SourceGeneration(8, 101, len(RAW), 1, 1, stat.S_IFREG | 0o755, 0, 0)
 OBJECT = closure.AuthenticatedObject(

@@ -19,7 +19,7 @@ CLOSURE_PATH = REMOTE / "completion_trusted_runtime_closure.py"
 LAUNCHER_PATH = REMOTE / "completion_trusted_runtime_launcher.py"
 SCHEMA_PATH = ROOT / "schemas/trusted-runtime-closure-v1.json"
 GOLDEN_PATH = ROOT / "test/fixtures/outcome-two/reports/runtime-closure-v1.canonical.jsonl"
-MUTATIONS_PATH = ROOT / "test/fixtures/outcome-two/reports/mutations.json"
+MUTATIONS_PATH = ROOT / "test/fixtures/outcome-two/reports/mutations.jsonl"
 sys.path.insert(0, str(REMOTE))
 
 

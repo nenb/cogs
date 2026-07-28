@@ -20,7 +20,7 @@ FIXTURES = ROOT / "test/fixtures/outcome-two"
 sys.path.insert(0, str(REMOTE))
 elf = importlib.import_module("completion_elf")
 closure = importlib.import_module("completion_trusted_runtime_closure")
-MATRIX = json.loads((FIXTURES / "sealing/faults.json").read_text())
+MATRIX = json.loads((FIXTURES / "sealing/faults.jsonl").read_text())
 RAW = (FIXTURES / "elf" / MATRIX["success"]["source"]).read_bytes()
 REPORT = (FIXTURES / "reports/runtime-closure-v1.canonical.jsonl").read_bytes()
 SOURCE_FD = 41
