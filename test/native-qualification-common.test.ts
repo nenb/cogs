@@ -14,7 +14,6 @@ const workflowPath = ".github/workflows/ci.yml";
 const commonPath = "scripts/native-qualification/common.py";
 const schemaPath = "schemas/native-qualification-report-v1alpha1.json";
 const predecessor = "bec0a19b0b984f88ab9c2effc5059f3737915caa";
-const isolatedPython = process.platform === "darwin" ? "/opt/homebrew/bin/python3" : "/usr/bin/python3";
 const jobs = [
   ["A", "native-qualification-a", "job-a-runtime-mappings.py"],
   ["B", "native-qualification-b", "job-b-compression.py"],
@@ -170,7 +169,10 @@ type WorkflowJob = {
   outputs?: Record<string, string>;
   steps: WorkflowStep[];
 };
-const parsedWorkflow = parseYaml(workflow) as { jobs: Record<string, WorkflowJob> };
+type WorkflowTrigger = {
+  workflow_dispatch: { inputs: { reviewed_sha: { required: boolean; type: string } } };
+};
+const parsedWorkflow = parseYaml(workflow) as { on: WorkflowTrigger; jobs: Record<string, WorkflowJob> };
 const workflowJobs = parsedWorkflow.jobs;
 const parsedJob = (id: string): WorkflowJob => {
   const value = workflowJobs[id];
@@ -400,20 +402,47 @@ extra={'.authority.json':A,'.owner.json':O,'report.json':R,'foreign':F};assert r
   assert.match(common, /inotify_add_watch/u, "upload interval has a retained generation watch");
 });
 
-test("parsed workflow graph causally gates exact-head real CLI dispatch and final outcomes", () => {
-  const eligibilityJob = parsedJob("native-qualification-eligibility");
-  assert.equal(eligibilityJob.if, "${{ always() }}", "eligibility must execute and decide every context");
-  assert.equal(checkout(eligibilityJob).with?.ref, "${{ github.event.pull_request.head.sha }}");
-  assert.ok(eligibilityJob.steps.some((step) => step.run?.includes("common.py --eligibility") && step.run.includes("/usr/bin/env -i")));
+test("parsed workflow gives only an explicit exact-SHA dispatch native authority", () => {
+  const input = parsedWorkflow.on.workflow_dispatch.inputs.reviewed_sha;
+  assert.deepEqual(input, { description: "Exact externally reviewed commit SHA to qualify", required: true, type: "string" });
+
+  const authorityId = "native-qualification-eligibility";
+  const authority = parsedJob(authorityId);
+  const expectedAuthority = "github.event_name == 'workflow_dispatch' && github.run_attempt == 1 && " +
+    "github.actor == github.triggering_actor && github.actor == vars.NATIVE_QUALIFICATION_ACTOR && " +
+    "github.event.sender.login == github.actor && github.ref_type == 'branch' && " +
+    "github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.ref_protected == true && " +
+    "github.workflow_ref == format('{0}/.github/workflows/ci.yml@{1}', github.repository, github.ref) && " +
+    "github.workflow_sha == github.sha";
+  assert.equal(authority.if, expectedAuthority);
+  assert.equal(authority.steps.some((step) => step.uses?.startsWith("actions/checkout@")), false,
+    "event-selected code cannot decide native authority");
+  assert.equal(authority.outputs?.["reviewed_sha"], "${{ steps.authority.outputs.reviewed_sha }}");
+  const authorityStep = stepById(authority, "authority");
+  assert.equal(authorityStep.env?.REVIEWED_SHA, "${{ inputs.reviewed_sha }}");
+  assert.equal(authorityStep.env?.AUTHORIZED_ACTOR, "${{ vars.NATIVE_QUALIFICATION_ACTOR }}");
+  assert.match(authorityStep.run ?? "", /\[\[ "\$REVIEWED_SHA" =~ \^\[0-9a-f\]\{40\}\$ \]\]/u);
+  assert.match(authorityStep.run ?? "", /reviewed_sha=%s/u);
+
+  const reviewedRef = "${{ needs.native-qualification-eligibility.outputs.reviewed_sha }}";
   const nativeIds = jobs.map(([, id]) => id);
+  const effectIds = ["native-c1", ...nativeIds] as const;
+  const nativeInventory = Object.keys(workflowJobs).filter((id) => id.startsWith("native-"));
+  assert.deepEqual(nativeInventory.sort(), [authorityId, ...effectIds, "native-qualification-required"].sort(),
+    "every native job is included in the authority proof");
+  for (const id of effectIds) {
+    const parsed = parsedJob(id);
+    assert.ok(needs(parsed).includes(authorityId), `${id} directly needs dispatch authority`);
+    assert.equal(checkout(parsed).with?.ref, reviewedRef, `${id} exact reviewed checkout`);
+    assert.doesNotMatch(JSON.stringify(parsed), /github\.event\.pull_request/u, `${id} has no PR source authority`);
+  }
   for (const [job, id, driver] of jobs) {
     const parsed = parsedJob(id);
-    const expectedNeeds = job === "integration" ? ["native-qualification-eligibility", ...nativeIds.slice(0, 5)] :
-      ["quality", "native-qualification-eligibility"];
+    const expectedNeeds = job === "integration" ? [authorityId, ...nativeIds.slice(0, 5)] : ["quality", authorityId];
     assert.deepEqual(needs(parsed), expectedNeeds, `${id} causal needs`);
-    assert.equal(checkout(parsed).with?.ref, "${{ github.event.pull_request.head.sha }}");
     const invoke = parsed.steps.find((step) => step.env?.NQ_DRIVER !== undefined); assert.ok(invoke);
     assert.equal(invoke.env?.NQ_DRIVER, `scripts/native-qualification/${driver}`);
+    assert.equal(invoke.env?.NQ_HEAD_SHA, reviewedRef);
     assert.match(invoke.run ?? "", /["']\$NQ_DRIVER["'] --workflow-bound/u);
     const upload = stepById(parsed, "upload"); const cleanup = stepById(parsed, "cleanup");
     assert.equal(cleanup.if, "${{ always() }}");
@@ -422,11 +451,12 @@ test("parsed workflow graph causally gates exact-head real CLI dispatch and fina
     assert.equal(parsed.outputs?.cleanup, "${{ steps.cleanup.outcome }}");
     assert.equal(upload.with?.path, `/tmp/cogs-native-qualification-${job}/report.json`);
   }
+
   const finalJob = parsedJob("native-qualification-required");
-  assert.equal(finalJob.if, "${{ always() }}");
-  const finalNeeds = ["quality", "native-qualification-eligibility", ...nativeIds];
+  assert.equal(finalJob.if, "${{ always() && needs.native-qualification-eligibility.result == 'success' }}");
+  const finalNeeds = ["quality", authorityId, ...nativeIds];
   assert.deepEqual(needs(finalJob), finalNeeds);
-  assert.equal(checkout(finalJob).with?.ref, "${{ github.event.pull_request.head.sha }}");
+  assert.equal(checkout(finalJob).with?.ref, reviewedRef);
   const finalStep = finalJob.steps.find((step) => step.run?.includes("common.py --require-final-results")); assert.ok(finalStep);
   const finalKeys = Object.keys(finalStep.env ?? {});
   assert.deepEqual(finalKeys.sort(), [...new Set(finalKeys)].sort(), "parsed final inventory unique");
@@ -434,41 +464,39 @@ test("parsed workflow graph causally gates exact-head real CLI dispatch and fina
   for (const id of nativeIds) for (const output of ["upload", "cleanup"]) {
     assert.ok(Object.values(finalStep.env ?? {}).includes(`\${{ needs.${id}.outputs.${output} }}`), `${id}/${output}`);
   }
-  const statuses = ["failure", "cancelled", "skipped"];
-  const selected = (id: string, outcomes: Record<string, string>): boolean =>
-    needs(parsedJob(id)).every((dependency) => outcomes[dependency] === "success");
-  for (const dependency of finalNeeds) for (const outcome of statuses) {
-    const outcomes = Object.fromEntries(finalNeeds.map((id) => [id, "success"])); outcomes[dependency] = outcome;
-    for (const id of nativeIds) if (needs(parsedJob(id)).includes(dependency)) assert.equal(selected(id, outcomes), false);
-    assert.equal(finalJob.if, "${{ always() }}", `${dependency}/${outcome} final remains causal`);
+
+  type DispatchContext = { event: string; attempt: number; actor: string; triggeringActor: string; sender: string;
+    configuredActor: string; ref: string; refType: string; defaultBranch: string; protected: boolean;
+    workflowRef: string; repository: string; workflowSha: string; sha: string; reviewedSha: string };
+  const selected = (context: DispatchContext): boolean => context.event === "workflow_dispatch" && context.attempt === 1 &&
+    context.actor === context.triggeringActor && context.actor === context.configuredActor && context.sender === context.actor &&
+    context.refType === "branch" && context.ref === `refs/heads/${context.defaultBranch}` && context.protected &&
+    context.workflowRef === `${context.repository}/.github/workflows/ci.yml@${context.ref}` &&
+    context.workflowSha === context.sha && /^[0-9a-f]{40}$/u.test(context.reviewedSha);
+  const exactHead = "a".repeat(40);
+  const dispatch: DispatchContext = { event: "workflow_dispatch", attempt: 1, actor: "reviewer", triggeringActor: "reviewer",
+    sender: "reviewer", configuredActor: "reviewer", ref: "refs/heads/main", refType: "branch", defaultBranch: "main",
+    protected: true, workflowRef: "owner/repo/.github/workflows/ci.yml@refs/heads/main", repository: "owner/repo",
+    workflowSha: "b".repeat(40), sha: "b".repeat(40), reviewedSha: exactHead };
+  assert.equal(selected({ ...dispatch, event: "pull_request" }), false, "PR can never select native authority");
+  const pullRequestOutcomes: Record<string, string> = { quality: "success", [authorityId]: "skipped" };
+  for (const id of effectIds) {
+    assert.equal(needs(parsedJob(id)).every((dependency) => pullRequestOutcomes[dependency] === "success"), false,
+      `${id} is unreachable on pull_request`);
+    pullRequestOutcomes[id] = "skipped";
   }
-  const goodEligibility = { LC_ALL: "C", PYTHONCOERCECLOCALE: "0", EVENT_NAME: "pull_request", RUN_ATTEMPT: "1",
-    REPOSITORY: "owner/repo", HEAD_REPOSITORY: "owner/repo", HEAD_SHA: "a".repeat(40), MERGE_SHA: "b".repeat(40),
-    BASE_SHA: "c".repeat(40), PR_NUMBER: "1" };
-  const goodFinal = { LC_ALL: "C", PYTHONCOERCECLOCALE: "0",
-    ...Object.fromEntries(finalKeys.map((key) => [key, "success"])) };
-  const cases = [
-    { args: ["--eligibility"], env: goodEligibility, ok: true },
-    { args: ["--eligibility"], env: { ...goodEligibility, RUN_ATTEMPT: "2" }, ok: false },
-    { args: ["--eligibility"], env: { ...goodEligibility, HEAD_REPOSITORY: "fork/repo" }, ok: false },
-    { args: ["--eligibility"], env: { ...goodEligibility, EVENT_NAME: "push" }, ok: false },
-    { args: ["--require-final-results"], env: goodFinal, ok: true },
-  ];
-  for (const key of finalKeys) for (const outcome of [...statuses, "", "unknown"]) {
-    cases.push({ args: ["--require-final-results"], env: { ...goodFinal, [key]: outcome }, ok: false });
-  }
-  const cliWrapper = `import os,runpy,sys\nos.environ.pop('__CF_USER_TEXT_ENCODING',None)\nsys.argv=[sys.argv[1],*sys.argv[2:]]\nrunpy.run_path(sys.argv[0],run_name='__main__')`;
-  for (const row of cases) {
-    const run = spawnSync(isolatedPython, ["-I", "-B", "-c", cliWrapper, commonPath, ...row.args], {
-      encoding: "utf8", env: row.env,
-    });
-    assert.equal(run.status === 0, row.ok, `${row.args}/${JSON.stringify(row.env)}:${run.stderr}`);
-  }
-  const effectSentinel = `import os,runpy,sys,types\nos.environ.pop('__CF_USER_TEXT_ENCODING',None)\npath=sys.argv[1]\nmodule=types.ModuleType('common')\nclass Session:\n @classmethod\n def begin(cls,*args):os.write(1,b'NATIVE-EFFECT-SENTINEL');raise RuntimeError('sentinel')\nmodule.NativeSession=Session\nmodule.ReportCandidate=object\nmodule.REPORT_LIMIT=32768\nsys.modules['common']=module\nsys.argv=[path,'--workflow-bound']\nrunpy.run_path(path,run_name='__main__')`;
-  for (const [, id] of jobs) {
-    const driver = parsedJob(id).steps.find((step) => step.env?.NQ_DRIVER)?.env?.NQ_DRIVER; assert.ok(driver);
-    const run = spawnSync(isolatedPython, ["-I", "-B", "-c", effectSentinel, driver], { encoding: "utf8" });
-    assert.equal(run.stdout, "NATIVE-EFFECT-SENTINEL", `${id} real CLI dispatch`);
+  assert.equal(pullRequestOutcomes[authorityId] === "success", false, "final native gate also remains unreachable");
+  for (const hostile of [
+    { ...dispatch, attempt: 2 }, { ...dispatch, actor: "other" }, { ...dispatch, configuredActor: "" },
+    { ...dispatch, ref: "refs/heads/topic" }, { ...dispatch, protected: false },
+    { ...dispatch, workflowSha: "c".repeat(40) }, { ...dispatch, reviewedSha: "A".repeat(40) },
+  ]) assert.equal(selected(hostile), false, "authority mutation fails closed");
+  assert.equal(selected(dispatch), true);
+  const outcomes: Record<string, string> = { quality: "success", [authorityId]: "success" };
+  for (const id of effectIds) {
+    assert.equal(needs(parsedJob(id)).every((dependency) => outcomes[dependency] === "success"), true, `${id} dispatch`);
+    assert.equal(checkout(parsedJob(id)).with?.ref, reviewedRef, `${id} dispatches exact external head`);
+    outcomes[id] = "success";
   }
 });
 

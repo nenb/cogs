@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -408,10 +407,27 @@ for (const reportPath of process.argv.slice(2)) {
   }
 }
 
-type WorkflowStep = { uses?: string; with?: Record<string, unknown>; env?: Record<string, string>; run?: string };
-type WorkflowJob = { if?: string; needs?: string | string[]; steps: WorkflowStep[] };
+type WorkflowStep = {
+  id?: string;
+  uses?: string;
+  with?: Record<string, unknown>;
+  env?: Record<string, string>;
+  run?: string;
+};
+type WorkflowJob = {
+  if?: string;
+  needs?: string | string[];
+  outputs?: Record<string, string>;
+  steps: WorkflowStep[];
+};
+type WorkflowTrigger = {
+  workflow_dispatch: { inputs: { reviewed_sha: { description: string; required: boolean; type: string } } };
+};
 const workflowPath = resolve(root, ".github/workflows/ci.yml");
-const workflow = parseYaml(readFileSync(workflowPath, "utf8")) as { jobs: Record<string, WorkflowJob> };
+const workflow = parseYaml(readFileSync(workflowPath, "utf8")) as {
+  on: WorkflowTrigger;
+  jobs: Record<string, WorkflowJob>;
+};
 const workflowJob = (id: string): WorkflowJob => {
   const job = workflow.jobs[id];
   assert.ok(job, `workflow job ${id}`);
@@ -426,12 +442,7 @@ const cliStep = (job: WorkflowJob, selector: string): WorkflowStep => {
   assert.ok(step, `workflow CLI ${selector}`);
   return step;
 };
-const parsedCli = (step: WorkflowStep, selector: string): [string, string] => {
-  const match = step.run?.match(new RegExp(`(scripts/native-qualification/[a-z0-9-]+\\.py) ${selector}`));
-  assert.ok(match?.[1], `parsed CLI ${selector}`);
-  return [match[1], selector];
-};
-const eligibilityId = "native-qualification-eligibility";
+const authorityId = "native-qualification-eligibility";
 const nativeJobs = [
   ["native-qualification-a", "scripts/native-qualification/job-a-runtime-mappings.py"],
   ["native-qualification-b", "scripts/native-qualification/job-b-compression.py"],
@@ -440,71 +451,112 @@ const nativeJobs = [
   ["native-qualification-e", "scripts/native-qualification/job-e-sandbox.py"],
   ["native-closure-integration", "scripts/native-qualification/thin-integration.py"],
 ] as const;
-const eligibilityJob = workflowJob(eligibilityId);
-assert.equal(eligibilityJob.if, "${{ always() }}", "eligibility cannot be skipped by context");
-assert.equal(checkoutRef(eligibilityJob), "${{ github.event.pull_request.head.sha }}");
-const eligibilityCli = parsedCli(cliStep(eligibilityJob, "--eligibility"), "--eligibility");
-const finalJob = workflowJob("native-qualification-required");
-assert.equal(finalJob.if, "${{ always() }}");
-assert.equal(checkoutRef(finalJob), "${{ github.event.pull_request.head.sha }}");
-const finalStep = cliStep(finalJob, "--require-final-results");
-const finalCli = parsedCli(finalStep, "--require-final-results");
+assert.deepEqual(workflow.on.workflow_dispatch.inputs.reviewed_sha, {
+  description: "Exact externally reviewed commit SHA to qualify",
+  required: true,
+  type: "string",
+});
+const authority = workflowJob(authorityId);
+const authorityCondition = "github.event_name == 'workflow_dispatch' && github.run_attempt == 1 && " +
+  "github.actor == github.triggering_actor && github.actor == vars.NATIVE_QUALIFICATION_ACTOR && " +
+  "github.event.sender.login == github.actor && github.ref_type == 'branch' && " +
+  "github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.ref_protected == true && " +
+  "github.workflow_ref == format('{0}/.github/workflows/ci.yml@{1}', github.repository, github.ref) && " +
+  "github.workflow_sha == github.sha";
+assert.equal(authority.if, authorityCondition);
+assert.equal(authority.steps.some((step) => step.uses?.startsWith("actions/checkout@")), false);
+assert.equal(authority.outputs?.["reviewed_sha"], "${{ steps.authority.outputs.reviewed_sha }}");
+const authorityStep = authority.steps.find((step) => step.id === "authority");
+assert.ok(authorityStep);
+assert.equal(authorityStep.env?.REVIEWED_SHA, "${{ inputs.reviewed_sha }}");
+assert.match(authorityStep.run ?? "", /\[\[ "\$REVIEWED_SHA" =~ \^\[0-9a-f\]\{40\}\$ \]\]/u);
+const reviewedRef = "${{ needs.native-qualification-eligibility.outputs.reviewed_sha }}";
+const nativeIds = nativeJobs.map(([id]) => id);
+const effectIds = ["native-c1", ...nativeIds];
+const nativeInventory = Object.keys(workflow.jobs).filter((id) => id.startsWith("native-"));
+assert.deepEqual(nativeInventory.sort(), [authorityId, ...effectIds, "native-qualification-required"].sort(),
+  "every native job is included in the authority proof");
+for (const id of effectIds) {
+  const job = workflowJob(id);
+  assert.ok(jobNeeds(job).includes(authorityId), `${id}: dispatch authority dependency`);
+  assert.equal(checkoutRef(job), reviewedRef, `${id}: exact reviewed checkout`);
+  assert.doesNotMatch(JSON.stringify(job), /github\.event\.pull_request/u, `${id}: no PR authority`);
+}
 for (const [id, driver] of nativeJobs) {
   const job = workflowJob(id);
-  assert.equal(checkoutRef(job), "${{ github.event.pull_request.head.sha }}", `${id} exact head`);
   const invoke = cliStep(job, "--workflow-bound");
   assert.equal(invoke.env?.NQ_DRIVER, driver);
+  assert.equal(invoke.env?.NQ_HEAD_SHA, reviewedRef);
 }
-const isolatedPython = process.platform === "darwin" ? "/opt/homebrew/bin/python3" : "/usr/bin/python3";
-const gateSentinel = "import os,runpy,sys\nos.environ.pop('__CF_USER_TEXT_ENCODING',None)\nos.write(1,b'GATE-CLI-SENTINEL')\nsys.argv=[sys.argv[1],sys.argv[2]]\nrunpy.run_path(sys.argv[0],run_name='__main__')";
-const effectSentinel = "import os,runpy,sys,types\npath=sys.argv[1]\nmodule=types.ModuleType('common')\nclass Session:\n @classmethod\n def begin(cls,*args):os.write(1,b'NATIVE-EFFECT-SENTINEL');raise RuntimeError('sentinel')\nmodule.NativeSession=Session\nsys.modules['common']=module\nsys.argv=[path,'--workflow-bound']\nrunpy.run_path(path,run_name='__main__')";
-const runGate = (cli: [string, string], env: Record<string, string>) => {
-  const run = spawnSync(isolatedPython, ["-I", "-B", "-c", gateSentinel, ...cli], { encoding: "utf8", env });
-  assert.equal(run.stdout, "GATE-CLI-SENTINEL", `${cli[1]} executed`);
-  assert.notEqual(run.status, null, run.error?.message);
-  return run.status;
+const finalJob = workflowJob("native-qualification-required");
+assert.equal(finalJob.if, "${{ always() && needs.native-qualification-eligibility.result == 'success' }}");
+assert.equal(checkoutRef(finalJob), reviewedRef);
+const finalStep = cliStep(finalJob, "--require-final-results");
+for (const id of ["quality", authorityId, ...nativeIds]) {
+  assert.ok(Object.values(finalStep.env ?? {}).some((value) => value.includes(`needs.${id}.result`)), id);
+}
+type AuthorityContext = {
+  event: string;
+  attempt: number;
+  actor: string;
+  triggeringActor: string;
+  sender: string;
+  configuredActor: string;
+  ref: string;
+  refType: string;
+  defaultBranch: string;
+  protected: boolean;
+  workflowRef: string;
+  repository: string;
+  workflowSha: string;
+  sha: string;
+  reviewedSha: string;
 };
-const aliases = new Map<string, string>([
-  ["QUALITY", "quality"], ["ELIGIBILITY", eligibilityId],
-  ["A", nativeJobs[0][0]], ["B", nativeJobs[1][0]], ["C", nativeJobs[2][0]],
-  ["D", nativeJobs[3][0]], ["E", nativeJobs[4][0]], ["INTEGRATION", nativeJobs[5][0]],
-]);
-const goodEligibility = { LC_ALL: "C", PYTHONCOERCECLOCALE: "0", EVENT_NAME: "pull_request", RUN_ATTEMPT: "1",
-  REPOSITORY: "owner/repo", HEAD_REPOSITORY: "owner/repo", HEAD_SHA: "a".repeat(40), MERGE_SHA: "b".repeat(40),
-  BASE_SHA: "c".repeat(40), PR_NUMBER: "1" };
-const contexts = [
-  ["eligible", goodEligibility, true],
-  ["attempt two", { ...goodEligibility, RUN_ATTEMPT: "2" }, false],
-  ["fork", { ...goodEligibility, HEAD_REPOSITORY: "fork/repo" }, false],
-  ["push", { ...goodEligibility, EVENT_NAME: "push" }, false],
-  ["malformed", { ...goodEligibility, HEAD_SHA: "" }, false],
-] as const;
-for (const [name, environment, eligible] of contexts) {
-  const results: Record<string, string> = { quality: "success" };
-  results[eligibilityId] = runGate(eligibilityCli, environment) === 0 ? "success" : "failure";
-  assert.equal(results[eligibilityId] === "success", eligible, `${name} eligibility`);
-  let effects = 0;
-  for (const [id, driver] of nativeJobs) {
-    const selected = jobNeeds(workflowJob(id)).every((dependency) => results[dependency] === "success");
-    if (selected) {
-      const run = spawnSync(isolatedPython, ["-I", "-B", "-c", effectSentinel, driver], { encoding: "utf8" });
-      assert.equal(run.stdout, "NATIVE-EFFECT-SENTINEL", `${name}/${id} dispatch`);
-      effects += 1;
-      results[id] = "success";
-    } else results[id] = "skipped";
-  }
-  assert.equal(effects, eligible ? nativeJobs.length : 0, `${name} native dispatch count`);
-  const finalEnvironment: Record<string, string> = {
-    LC_ALL: "C",
-    PYTHONCOERCECLOCALE: "0",
-    ...Object.fromEntries(Object.keys(finalStep.env ?? {}).map((key) => {
-      const match = key.match(/^(QUALITY|ELIGIBILITY|A|B|C|D|E|INTEGRATION)_(RESULT|UPLOAD|CLEANUP)$/u);
-      assert.ok(match?.[1] && match[2]);
-      const result = results[aliases.get(match[1]) ?? ""] ?? "skipped";
-      return [key, match[2] === "RESULT" ? result : result === "success" ? "success" : ""];
-    })),
-  };
-  assert.equal(runGate(finalCli, finalEnvironment) === 0, eligible, `${name} final result`);
+const selected = (context: AuthorityContext): boolean => context.event === "workflow_dispatch" && context.attempt === 1 &&
+  context.actor === context.triggeringActor && context.actor === context.configuredActor && context.sender === context.actor &&
+  context.refType === "branch" && context.ref === `refs/heads/${context.defaultBranch}` && context.protected &&
+  context.workflowRef === `${context.repository}/.github/workflows/ci.yml@${context.ref}` &&
+  context.workflowSha === context.sha && /^[0-9a-f]{40}$/u.test(context.reviewedSha);
+const dispatch: AuthorityContext = {
+  event: "workflow_dispatch",
+  attempt: 1,
+  actor: "reviewer",
+  triggeringActor: "reviewer",
+  sender: "reviewer",
+  configuredActor: "reviewer",
+  ref: "refs/heads/main",
+  refType: "branch",
+  defaultBranch: "main",
+  protected: true,
+  workflowRef: "owner/repo/.github/workflows/ci.yml@refs/heads/main",
+  repository: "owner/repo",
+  workflowSha: "b".repeat(40),
+  sha: "b".repeat(40),
+  reviewedSha: "a".repeat(40),
+};
+assert.equal(selected({ ...dispatch, event: "pull_request" }), false, "pull request never dispatches native");
+const pullRequestOutcomes: Record<string, string> = { quality: "success", [authorityId]: "skipped" };
+for (const id of effectIds) {
+  assert.equal(jobNeeds(workflowJob(id)).every((dependency) => pullRequestOutcomes[dependency] === "success"), false,
+    `${id}: unreachable on pull_request`);
+  pullRequestOutcomes[id] = "skipped";
+}
+assert.equal(pullRequestOutcomes[authorityId] === "success", false, "final native gate is unreachable on pull_request");
+for (const context of [
+  { ...dispatch, attempt: 2 },
+  { ...dispatch, actor: "caller" },
+  { ...dispatch, configuredActor: "" },
+  { ...dispatch, ref: "refs/heads/topic" },
+  { ...dispatch, protected: false },
+  { ...dispatch, workflowSha: "c".repeat(40) },
+  { ...dispatch, reviewedSha: "not-a-sha" },
+]) assert.equal(selected(context), false, "dispatch authority fails closed");
+assert.equal(selected(dispatch), true, "explicit protected-default-branch dispatch is selected");
+const outcomes: Record<string, string> = { quality: "success", [authorityId]: "success" };
+for (const id of effectIds) {
+  assert.equal(jobNeeds(workflowJob(id)).every((dependency) => outcomes[dependency] === "success"), true, `${id}: selected`);
+  assert.equal(checkoutRef(workflowJob(id)), reviewedRef, `${id}: exact external head`);
+  outcomes[id] = "success";
 }
 
 console.log(`Validated ${schemaFiles.length} schemas, valid examples, negative cases, report semantics, and native workflow gates.`);

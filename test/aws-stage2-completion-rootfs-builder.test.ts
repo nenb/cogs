@@ -45,12 +45,12 @@ test("D-R2.2c exposes only fixed recover-owned and keeps bootstrap private", asy
   assert.match(quality, /^ {10}persist-credentials: false$/mu);
   assert.match(
     quality,
-    /^ {10}ref: \$\{\{ github\.event_name == 'pull_request' && github\.event\.pull_request\.head\.repo\.full_name == github\.repository && github\.event\.pull_request\.head\.sha \|\| '' \}\}$/mu,
+    /^ {10}ref: \$\{\{ github\.event_name == 'pull_request' && github\.event\.pull_request\.head\.repo\.full_name == github\.repository && github\.event\.pull_request\.head\.sha \|\| github\.event_name == 'workflow_dispatch' && inputs\.reviewed_sha \|\| '' \}\}$/mu,
   );
   const sameRepositoryCondition =
     "github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository";
   assert.equal(quality.split(sameRepositoryCondition).length - 1, 2);
-  const verification = quality.indexOf("- name: Verify exact same-repository pull request head");
+  const verification = quality.indexOf("- name: Verify exact requested source");
   const setup = quality.indexOf("- name: Set up Node.js");
   const tests = quality.indexOf("run: npm test");
   const upload = quality.indexOf("- name: Upload validated guest probe");
@@ -62,14 +62,14 @@ test("D-R2.2c exposes only fixed recover-owned and keeps bootstrap private", asy
   assert.doesNotMatch(quality, /workflow-bound native C1|COGS_C1_EXPECTED_/u);
   assert.doesNotMatch(quality, /^ {4}(?:container|services|strategy):|uses: docker:\/\//mu);
 
-  const nativeEnd = workflow.indexOf("  secret-scan:\n");
+  const nativeEnd = workflow.indexOf("  native-qualification-eligibility:\n");
   assert.ok(nativeEnd > qualityEnd);
   const native = workflow.slice(qualityEnd, nativeEnd);
-  assert.match(native, /^ {2}native-c1:\n {4}name: Native C1\n {4}needs: quality$/mu);
   assert.match(
     native,
-    /^ {4}if: github\.run_attempt == 1 && github\.event_name == 'pull_request' && github\.event\.pull_request\.head\.repo\.full_name == github\.repository$/mu,
+    /^ {2}native-c1:\n {4}name: Native C1\n {4}needs: \[quality, native-qualification-eligibility\]$/mu,
   );
+  assert.doesNotMatch(native, /pull_request/u);
   assert.match(native, /^ {4}runs-on: ubuntu-24\.04$/mu);
   const timeout = /^ {4}timeout-minutes: ([0-9]+)$/mu.exec(native);
   assert.ok(timeout && Number(timeout[1]) <= 15);
@@ -79,11 +79,14 @@ test("D-R2.2c exposes only fixed recover-owned and keeps bootstrap private", asy
   );
   assert.equal(native.match(/^ {6}- /gmu)?.length, 3);
   assert.match(native, /^ {8}uses: actions\/checkout@[0-9a-f]{40}(?: # .+)?$/mu);
-  const nativeCheckout = native.indexOf("- name: Check out exact pull request head");
-  const nativeVerification = native.indexOf("- name: Verify exact same-repository pull request head");
+  const nativeCheckout = native.indexOf("- name: Check out exact reviewed commit");
+  const nativeVerification = native.indexOf("- name: Verify exact reviewed commit");
   const c1 = native.indexOf("- name: Invoke workflow-bound native C1 gate");
   assert.ok(nativeCheckout >= 0 && nativeVerification > nativeCheckout && c1 > nativeVerification);
-  assert.match(native, /^ {10}ref: \$\{\{ github\.event\.pull_request\.head\.sha \}\}$/mu);
+  assert.match(
+    native,
+    /^ {10}ref: \$\{\{ needs\.native-qualification-eligibility\.outputs\.reviewed_sha \}\}$/mu,
+  );
   assert.match(native, /^ {10}persist-credentials: false$/mu);
   assert.match(native, /test "\$EXPECTED_HEAD_REPOSITORY" = "\$EXPECTED_REPOSITORY"/u);
   assert.match(native, /\[\[ "\$EXPECTED_HEAD_SHA" =~ \^\[0-9a-f\]\{40\}\$ \]\]/u);
@@ -95,8 +98,12 @@ test("D-R2.2c exposes only fixed recover-owned and keeps bootstrap private", asy
   );
   assert.match(native, /COGS_C1_EXPECTED_JOB: native-c1/u);
   assert.match(native, /COGS_C1_EXPECTED_ENVELOPE_SHA: \$\{\{ github\.sha \}\}/u);
-  assert.match(native, /COGS_C1_EXPECTED_EVENT_MERGE_SHA: \$\{\{ github\.event\.pull_request\.merge_commit_sha \}\}/u);
-  assert.match(native, /COGS_C1_EXPECTED_HEAD_SHA: \$\{\{ github\.event\.pull_request\.head\.sha \}\}/u);
+  assert.match(native, /COGS_C1_EXPECTED_EVENT: workflow_dispatch/u);
+  assert.match(native, /COGS_C1_EXPECTED_EVENT_MERGE_SHA: \$\{\{ github\.sha \}\}/u);
+  assert.match(
+    native,
+    /COGS_C1_EXPECTED_HEAD_SHA: \$\{\{ needs\.native-qualification-eligibility\.outputs\.reviewed_sha \}\}/u,
+  );
   assert.match(native, /COGS_C1_EXPECTED_WORKFLOW_SHA: \$\{\{ github\.workflow_sha \}\}/u);
   assert.match(
     native,
