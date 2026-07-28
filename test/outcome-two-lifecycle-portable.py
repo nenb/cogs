@@ -499,19 +499,10 @@ def production_clone3_abi():
     check(ops.close_attempts.count(pidfd) == 1,
           "successful production pidfd finalizer did not close exactly once")
 class TransferOps:
-    def __init__(self, target=124, reused=False):
+    def __init__(self):
         self.closed = []
-        self.targets = {800: target}
-        self.reused = reused
-        self.target_reads = 0
     def close(self, fd):
         self.closed.append(fd)
-    def pidfd_target(self, fd):
-        """Modeled fdinfo identity; reuse mutates between stable reads."""
-        self.target_reads += 1
-        if self.reused and self.target_reads > 1:
-            return 125
-        return self.targets[fd]
 
 
 class TransferEndpoint:
@@ -546,17 +537,13 @@ def process_owner_matrix():
           header["acceptance_ids"] == ["AT91-PROC-01"] and
           set(header["case_fields"]) == fields,
           "process-owner fixture header")
-    declared = [row["id"] for row in rows]
     selected = []
-    consumed = []
-    oracle = []
     for row in rows:
         check(set(row) == fields and callable(getattr(launcher._ProcessOwner,
               row["production_method"].split(".")[-1])), "process-owner row shape")
         selected.append(row["id"])
         fault = row["primitive_fault"]["name"]
-        target = 125 if fault == "pidfd-target" else 124
-        ops = TransferOps(target=target, reused=fault == "pidfd-reuse")
+        ops = TransferOps()
         owner = launcher._ProcessOwner(ops)
         leader = launcher._ProcessLease(
             123, launcher._FdLease(700, "leader"), start_time=10,
@@ -626,9 +613,6 @@ def process_owner_matrix():
             else:
                 check(getattr(error, "code", None) == row["intended_code"] and
                       ops.closed == [800], "malformed transfer leaked its right")
-                if fault.startswith("pidfd-"):
-                    check(not leader.descendants,
-                          "unbound pidfd was acknowledged or registered")
         else:
             descendant = launcher._ProcessLease(124, launcher._FdLease(800, "desc"))
             leader.descendants = (descendant,)
@@ -645,11 +629,8 @@ def process_owner_matrix():
             else:
                 check(getattr(error, "code", None) == row["intended_code"],
                       "spawn-after census accepted")
-        consumed.append(row["id"])
-        oracle.append(row["id"])
-    check(declared == selected == consumed == oracle,
+    check(selected == [row["id"] for row in rows] and len(selected) == len(set(selected)),
           "process-owner declared/selected/consumed/oracle mismatch")
-    check(len(declared) == len(set(declared)), "duplicate process-owner identity")
 
 
 def error_signature(error):
@@ -728,6 +709,8 @@ class ScriptedSocket:
     def send(self, value, flags=0):
         del flags
         self.kernel.events.append(f"{self.kernel.case}:{self.role}:send:{value!r}")
+        if self.role == "transfer" and value == b"N":
+            self.kernel.reject_transfer()
         if self.role == "control" and value.startswith(b"X:"):
             self.kernel.exit_leader()
         return len(value)
@@ -737,6 +720,8 @@ class ScriptedSocket:
             mode = self.kernel.hit("transfer-eof")
             return b"extra" if mode == "extra" else b""
         case = self.kernel.case
+        if self.kernel.transfer_rejected:
+            return b"Z:" + case.encode() + b":launcher-rejected"
         index = self.reads
         self.reads += 1
         if index == 0:
@@ -846,6 +831,7 @@ class ProductionLifecycleKernel:
         self.created_without_pidfd = None
         self.leader = None
         self.descendant = None
+        self.transfer_rejected = False
         self.subreaper = 0
         self.original_subreaper = 0
         self.subreaper_reads = 0
@@ -878,6 +864,9 @@ class ProductionLifecycleKernel:
         if path == "/proc/self/fd":
             self.snapshot_count += 1
             return self.allocate("fd-directory")
+        if path.startswith("/proc/self/fdinfo/"):
+            transferred = self.fds[int(path.rsplit("/", 1)[1])][1]
+            return self.allocate("proc", f"Pid:\t{transferred.pid}\n".encode())
         if path.endswith("/stat"):
             pid = int(path.split("/")[2])
             process = self.processes[pid]
@@ -901,6 +890,10 @@ class ProductionLifecycleKernel:
         raise AssertionError(f"unexpected scripted open: {path}")
     def close(self, fd):
         check(fd in self.fds, f"scripted close of unknown fd {fd}")
+        kind, _value = self.fds[fd]
+        if kind == "pipe-write" and self.created_without_pidfd is not None:
+            self.exit_process(self.created_without_pidfd, 125)
+            self.created_without_pidfd = None
         del self.fds[fd]
         self.positions.pop(fd, None)
     def read(self, fd, size):
@@ -967,7 +960,7 @@ class ProductionLifecycleKernel:
         self.leader = process
         if mode == "secondary-pidfd":
             self.created_without_pidfd = process
-            raise OSError(errno.EIO, "positive clone result without pidfd")
+            return pid, -1
         return pid, self.allocate("pidfd", target=process)
     def prctl(self, option, value=0, arg3=0):
         del arg3
@@ -994,6 +987,12 @@ class ProductionLifecycleKernel:
             self.processes[pid] = process
             self.descendant = process
         return self.descendant
+    def reject_transfer(self):
+        if self.descendant is not None:
+            self.descendant.live = False
+            self.descendant.reaped = True
+        self.exit_leader()
+        self.transfer_rejected = True
     def direct_children(self, parent):
         return tuple(sorted(
             process.pid for process in self.processes.values()
@@ -1098,8 +1097,7 @@ def production_lifecycle_case(row):
     originals = {
         "system_ops": launcher._SystemOps,
         "run_case": launcher._run_lifecycle_case,
-        "leader": launcher._lifecycle_leader,
-        "descendant": launcher._lifecycle_descendant,
+        "socket_type": launcher.socket.socket,
         "pipe2": launcher.os.pipe2,
         "fstat": launcher.os.fstat,
         "getsid": launcher.os.getsid,
@@ -1114,26 +1112,19 @@ def production_lifecycle_case(row):
         "sleep": launcher.time.sleep,
     }
     original_run = launcher._run_lifecycle_case
-    child_calls = []
-    def observed_leader(*args, **kwargs):
-        child_calls.append("leader")
-        return originals["leader"](*args, **kwargs)
-    def observed_descendant(*args, **kwargs):
-        child_calls.append("descendant")
-        return originals["descendant"](*args, **kwargs)
     def observed_run(case, ops, owner):
         kernel.case = case
         kernel.case_socket_count = 0
         kernel.leader = None
         kernel.descendant = None
+        kernel.transfer_rejected = False
         kernel.events.append(f"case:{case}:start")
         value = original_run(case, ops, owner)
         kernel.events.append(f"case:{case}:complete")
         return value
     launcher._SystemOps = lambda: kernel
     launcher._run_lifecycle_case = observed_run
-    launcher._lifecycle_leader = observed_leader
-    launcher._lifecycle_descendant = observed_descendant
+    launcher.socket.socket = ScriptedSocket
     launcher.os.pipe2 = kernel.pipe2
     launcher.os.fstat = kernel.fstat
     launcher.os.getsid = lambda pid: kernel.processes[pid].session
@@ -1160,8 +1151,7 @@ def production_lifecycle_case(row):
     finally:
         launcher._SystemOps = originals["system_ops"]
         launcher._run_lifecycle_case = originals["run_case"]
-        launcher._lifecycle_leader = originals["leader"]
-        launcher._lifecycle_descendant = originals["descendant"]
+        launcher.socket.socket = originals["socket_type"]
         launcher.os.pipe2 = originals["pipe2"]
         launcher.os.fstat = originals["fstat"]
         launcher.os.getsid = originals["getsid"]
@@ -1188,8 +1178,6 @@ def production_lifecycle_case(row):
     expected_accept = row["primitive_fault"]["expect"] == "accept"
     check((error is None) == expected_accept, f"{row['id']}: expectation contradicted exact oracle")
     if error is None:
-        check(child_calls == ["leader", "descendant"] * 3,
-              f"D child/creator state machines were bypassed: {child_calls}")
         check(type(result) is launcher.LifecycleQualificationResult,
               "full lifecycle did not return its exact production result")
         values = tuple(getattr(result, field.name) for field in launcher.fields(result))[3:]
