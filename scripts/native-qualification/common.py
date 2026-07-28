@@ -870,7 +870,7 @@ def _validate_b(metadata: list[object]) -> None:
     _require(gzip["source_sha256"] != zstd["source_sha256"], "B source substitution")
     _require(gzip["mapping_sha256"] != zstd["mapping_sha256"], "B mapping substitution")
 def _closed_fields(result: object, names: tuple[str, ...], version: str, receipt: OperationReceipt) -> dict[str, object]:
-    _require(type(result) is dict and tuple(result) == names, "operation result inventory")
+    _require(type(result) is dict and set(result) == set(names), "operation result inventory")
     value = result
     identity = value["version"], value["source_revision"], value["source_set_sha256"]
     expected = version, value["source_revision"], receipt.source_set_sha256
@@ -910,7 +910,7 @@ def _derive_operation(receipt: OperationReceipt, head_sha: str) -> tuple[tuple[t
             "zstd_output_sha256", *RUNTIME_OBSERVATIONS,
         )
         runtime = value["runtime"]
-        _require(type(runtime) is dict and tuple(runtime) == runtime_names, "B runtime inventory")
+        _require(type(runtime) is dict and set(runtime) == set(runtime_names), "B runtime inventory")
         runtime_identity = tuple(runtime[name] for name in runtime_names[:4])
         _require(runtime_identity == ("cogs.runtime-qualification/v1", "cogs-runtime-qualification-v1", head_sha,
                                       receipt.source_set_sha256), "B runtime identity")

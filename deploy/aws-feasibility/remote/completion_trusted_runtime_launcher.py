@@ -645,6 +645,13 @@ def _runtime_metadata(report: dict[str, object], rows: tuple[_GenerationRow, ...
             output_sha256=hashlib.sha256(output).hexdigest(),
         ))
     return compressed[0], compressed[1]
+def _credential_ancillary(rights: tuple[int, ...] = ()) -> list[tuple[int, int, object]]:
+    ancillary: list[tuple[int, int, object]] = [
+        (socket.SOL_SOCKET, socket.SCM_CREDENTIALS, struct.pack("3i", os.getpid(), os.getuid(), os.getgid())),
+    ]
+    if rights:
+        ancillary.append((socket.SOL_SOCKET, socket.SCM_RIGHTS, array("i", rights)))
+    return ancillary
 class _WorkerIssuer:
     def __init__( self, endpoint: socket.socket, nonce: bytes, admission: _SourceAdmission, consumer_pid: int, package_name: str, helper_endpoint: socket.socket | None = None):
         self._endpoint = endpoint
@@ -663,7 +670,7 @@ class _WorkerIssuer:
         remaining = deadline - time.monotonic()
         _require(remaining > 0 and select.select([], [endpoint], [], remaining)[1], "helper control deadline", "helper-deadline")
         raw = _canonical(value)
-        ancillary = [] if not rights else [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array("i", rights))]
+        ancillary = _credential_ancillary(rights)
         _require(endpoint.sendmsg([raw], ancillary, socket.MSG_DONTWAIT) == len(raw), "helper control send", "helper-control-send")
         remaining = deadline - time.monotonic()
         _require(remaining > 0 and select.select([endpoint], [], [], remaining)[0], "helper acknowledgement deadline", "helper-deadline")
@@ -718,11 +725,10 @@ class _WorkerIssuer:
         report, binding_sha, generation_sha = _verify_bundle(self._admission, canonical_report, descriptors, rows)
         packet = { "binding_sha256": binding_sha, "closure_sha256": report["closure_sha256"], "descriptor_count": len(descriptors), "generation_rows": [_row_value(row) for row in rows], "generation_sha256": generation_sha, "nonce": self._nonce.hex(), "report_sha256": hashlib.sha256(canonical_report).hexdigest(), "revision": self._admission.revision, "source_set_sha256": self._admission.source_set_sha256, "version": _HANDOFF_VERSION, }
         raw = _canonical(packet)
-        rights = array("i", descriptors)
         deadline = time.monotonic() + _SETUP_SECONDS
         remaining = deadline - time.monotonic()
         _require(remaining > 0 and select.select([], [self._endpoint], [], remaining)[1], "issuance send deadline", "issuer-deadline")
-        sent = self._endpoint.sendmsg([raw], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, rights)], socket.MSG_DONTWAIT)
+        sent = self._endpoint.sendmsg([raw], _credential_ancillary(descriptors), socket.MSG_DONTWAIT)
         _require(sent == len(raw), "handoff packet partial send")
         remaining = deadline - time.monotonic()
         _require(remaining > 0 and select.select([self._endpoint], [], [], remaining)[0], "issuance acknowledgement deadline", "issuer-deadline")
@@ -1297,7 +1303,8 @@ def _consume_issuance(endpoint: socket.socket, nonce: bytes, admission: _SourceA
         ack_bytes = _canonical(ack)
         remaining = deadline - time.monotonic()
         _require(remaining > 0 and select.select([], [endpoint], [], remaining)[1], "issuance acknowledgement deadline", "issuer-deadline")
-        _require(endpoint.send(ack_bytes, socket.MSG_DONTWAIT) == len(ack_bytes), "issuance acknowledgement partial")
+        sent = endpoint.sendmsg([ack_bytes], _credential_ancillary(), socket.MSG_DONTWAIT)
+        _require(sent == len(ack_bytes), "issuance acknowledgement partial")
         endpoint.shutdown(socket.SHUT_WR)
         remaining = deadline - time.monotonic()
         _require(remaining > 0 and select.select([endpoint], [], [], remaining)[0], "issuance EOF deadline", "issuer-deadline")
@@ -1369,7 +1376,8 @@ def _consume_worker_handoff(endpoint: socket.socket, helper_endpoint: socket.soc
                         del helpers[token]
                         reply_event = "retired"
                 reply = _canonical({"event": reply_event, "sequence": sequence, "token": token, "version": _RESULT_VERSION})
-                _require(helper_endpoint.send(reply, socket.MSG_DONTWAIT) == len(reply), "helper acknowledgement send", "helper-ack-send")
+                sent = helper_endpoint.sendmsg([reply], _credential_ancillary(), socket.MSG_DONTWAIT)
+                _require(sent == len(reply), "helper acknowledgement send", "helper-ack-send")
             except BaseException as error: primary = error
             if primary is not None:
                 _close_leases(ops, received, primary)
