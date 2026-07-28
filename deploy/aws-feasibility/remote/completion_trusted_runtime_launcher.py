@@ -2077,8 +2077,16 @@ def _run_tool_with_ops( ops: Any, role: str, report: dict[str, object], descript
         _close_socket(transfer_child, ops, "tool-transfer-child")
         input_read.close(ops)
         output_write.close(ops)
+        # The namespace owner terminally calls setsid() before its first status
+        # packet.  Record that only permissible identity transition before
+        # release, then authenticate it before accepting further handoff.  If a
+        # later Linux proc/map_files operation fails, cleanup can still signal
+        # the exact owner rather than poisoning the primary failure because its
+        # recorded pre-release session no longer matches.
+        process_owner.plan_setsid(namespace_lease)
         process_owner.release(namespace_lease)
         _recv_status(parent_status, time.monotonic() + _SETUP_SECONDS, "namespace", 1)
+        process_owner.confirm_setsid(namespace_lease)
         namespace_authority = _open_namespace_authority(namespace_lease, ops)
         command = _status("prepare-root", 1)
         _require(parent_status.send(command) == len(command), "root preparation send", "root-prepare-send")

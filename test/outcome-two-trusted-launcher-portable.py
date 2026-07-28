@@ -1677,7 +1677,7 @@ class _BIKernel:
                             and not process["exited"]):
                         process["exited"] = True
                         process["status"] = 125
-                if resource is self.input_pipe:
+                if resource is self.input_pipe and self.child is not None and not self.processes[self.child]["exited"]:
                     self.finish_tool_input()
         elif value is None and fd > 2:
             _BI_CLOSE(fd)
@@ -1702,7 +1702,13 @@ class _BIKernel:
         return raw[offset:offset + size]
     def write(self, fd, data):
         value = self.virtual.get(fd)
-        if value and value["kind"] == "pipe": value["resource"]["data"].extend(data)
+        if value and value["kind"] == "pipe":
+            resource = value["resource"]
+            resource["data"].extend(data)
+            for pid, process in self.processes.items() if data == b"G" else ():
+                if process["gate"] is resource and process.get("tool"):
+                    process["sid"] = pid
+                    process["pgid"] = pid
         elif value: value.setdefault("data", bytearray()).extend(data)
         else: return _BI_WRITE(fd, data)
         return len(data)
@@ -2088,24 +2094,33 @@ def production_runtime_compression_contracts(module):
                 owner_calls = []
                 actual_worker = module._worker_main
                 actual_namespace = module._namespace_owner
+                actual_final_mapping = module._final_mapping_check
+                fault_point = case["primitive_fault"].get("point")
                 def observed_worker(*args, **kwargs):
                     owner_calls.append("worker")
                     return actual_worker(*args, **kwargs)
                 def observed_namespace(*args, **kwargs):
                     owner_calls.append("namespace")
                     return actual_namespace(*args, **kwargs)
+                def observed_final_mapping(*args, **kwargs):
+                    if fault_point == "final-mapping-permission":
+                        kernel.events.append(case["sentinel"])
+                        raise PermissionError(errno.EACCES, "modeled trusted map_files denial")
+                    return actual_final_mapping(*args, **kwargs)
                 with patched(
                     module,
                     _SystemOps=lambda: kernel,
                     _worker_main=observed_worker,
                     _namespace_owner=observed_namespace,
+                    _final_mapping_check=observed_final_mapping,
                 ), patched(module.os,
                     open=kernel.open, close=kernel.close, read=kernel.read, write=kernel.write,
                     pipe2=kernel.pipe2, fstat=kernel.fstat, stat=kernel.stat, pread=kernel.pread,
                     getpid=lambda: kernel.outer, getppid=lambda: 1, pidfd_open=kernel.pidfd_open,
                     getsid=kernel.getsid, getpgid=kernel.getpgid, waitpid=kernel.waitpid), patched(
                     module.fcntl, fcntl=modeled_fcntl, ioctl=kernel.ioctl), patched(
-                    module.select, select=kernel.select), patched(module.os.path,
+                    module.select, select=kernel.select), patched(
+                    module.signal, pidfd_send_signal=kernel.pidfd_signal), patched(module.os.path,
                     lexists=kernel.lexists, ismount=kernel.ismount):
                     try:
                         value = launcher(admission, _BItypes.ModuleType("modeled.closure"), kernel)
@@ -2125,6 +2140,8 @@ def production_runtime_compression_contracts(module):
                     expected_event = f"tool:secondary-pidfd:{selected_clone}"
                     if kernel.events != [expected_event] or case["sentinel"] != expected_event:
                         raise AssertionError(f"tool process causal cut mismatch: {case['id']}")
+                elif not expected_accept:
+                    assert kernel.events == [case["sentinel"]], f"tool primary/cleanup causal cut mismatch: {case['id']}"
                 else:
                     runtime = value if type(value) is module.RuntimeQualificationResult else value.runtime
                     if type(value) is not expected_type or not all(
