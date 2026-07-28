@@ -6,12 +6,10 @@ from enum import Enum, auto
 from pathlib import Path
 from types import MappingProxyType
 from typing import Callable, Mapping
-VERSION = "cogs.native-qualification/v1alpha1"
-AUTHORITY = "exact-run-native-qualification"
+VERSION, AUTHORITY = "cogs.native-qualification/v1alpha1", "exact-run-native-qualification"
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW, COMMON = ROOT / ".github/workflows/ci.yml", ROOT / "scripts/native-qualification/common.py"
-SCHEMA = ROOT / "schemas/native-qualification-report-v1alpha1.json"
-REPORT_LIMIT, OBJECT_LIMIT = 32_768, 134_217_728
+SCHEMA, REPORT_LIMIT, OBJECT_LIMIT = ROOT / "schemas/native-qualification-report-v1alpha1.json", 32_768, 134_217_728
 MARKER_SHA256 = "6381d4535b13c7f030ca94bce250c1ec817c4aea8fa45c91e25c88995216f6b8"
 POLICY_SHA256 = "aacfce0e5eeb2fb79a1708b32f5383f89b381898ad7e6bd911905d87483b6bb2"
 SOURCE_PATHS = ("deploy/aws-feasibility/remote/completion_elf.py", "deploy/aws-feasibility/remote/completion_trusted_runtime_closure.py",
@@ -518,7 +516,9 @@ class SystemCommonOps:
                     b"sha256-" + hashlib.sha256(diagnostics).hexdigest().encode())
                 state = f"exit-{os.WEXITSTATUS(status)}" if os.WIFEXITED(status) else f"signal-{os.WTERMSIG(status)}"
                 detail = f"held-launcher-{state}-stdout-{len(output)}-stderr-{len(diagnostics)}-{token.decode()}"
-                raise QualificationError(token.decode() if token.startswith(b"runtime-launcher-root-") or (len(detail) > 96 and token.startswith(b"runtime-launcher-")) else detail)
+                root_token = token.startswith(b"runtime-launcher-root-")
+                expose_token = root_token or (len(detail) > 96 and token.startswith(b"runtime-launcher-"))
+                raise QualificationError(token.decode() if expose_token else detail)
             _require(not diagnostics, "held launcher diagnostics")
             return output
         except BaseException as primary:
