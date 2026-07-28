@@ -479,6 +479,7 @@ class SystemCommonOps:
         reaped = False
         try:
             pidfd = self.fds.open("held-launcher-pidfd", lambda: os.pidfd_open(pid, 0))
+            _require(pidfd.state is FdState.OWNED, "held launcher pidfd Lease adoption")
             self.fds.close_reverse(None, [gate_read, output_write, error_write])
             _write_all(gate_write.number, b"A")
             gate_write.close()
@@ -531,6 +532,7 @@ class SystemCommonOps:
         _require(operation == context.job, "fixed CLI operation")
         root = self.fds.open("held-source-root",
             lambda: os.open(ROOT, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW))
+        _require(root.state is FdState.OWNED, "held source root Lease adoption")
         held: dict[str, _HeldSource] = {}
         primary: BaseException | None = None
         try:
@@ -578,6 +580,7 @@ class SystemCommonOps:
                 for number in numbers:
                     anchor = self.fds.open("descriptor-generation-anchor",
                         lambda number=number: fcntl.fcntl(number, fcntl.F_DUPFD_CLOEXEC, 10_000))
+                    _require(anchor.state is FdState.OWNED, "descriptor anchor Lease adoption")
                     self._descriptor_anchors[number] = anchor
             _require(tuple(self._descriptor_anchors) == numbers, "descriptor number generation")
             rows = []
