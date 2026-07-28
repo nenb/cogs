@@ -28,5 +28,19 @@
       "semicolons": "always",
       "trailingCommas": "all"
     }
-  }
+  },
+  "overrides": [
+    {
+      "includes": [
+        "schemas/native-qualification-report-v1alpha1.json",
+        "test/native-qualification-b.test.ts",
+        "test/native-qualification-common.test.ts",
+        "test/native-qualification-e.test.ts",
+        "test/native-qualification-integration.test.ts"
+      ],
+      "formatter": {
+        "enabled": false
+      }
+    }
+  ]
 }

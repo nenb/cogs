@@ -75,7 +75,7 @@ function report(job: keyof typeof ids, result: "pass" | "fail"): any {
   const digest = "a".repeat(64);
   const checks = ids[job].trim().split(/\s+/u).map((id) => ({ id, outcome: "pass" }));
   const cleanup = Object.fromEntries(cleanupKeys.map((key) => [key, true]));
-  if (!pass) { checks[0]!.outcome = "fail"; cleanup.descriptors = false; }
+  if (!pass) { const first = checks[0]; assert.ok(first); first.outcome = "fail"; cleanup.descriptors = false; }
   return {
     version: "cogs.native-qualification/v1alpha1", job,
     source: { head_sha: "1".repeat(40), checkout_sha: "1".repeat(40),
