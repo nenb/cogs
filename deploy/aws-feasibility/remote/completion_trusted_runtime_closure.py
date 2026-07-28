@@ -304,6 +304,7 @@ class HelperLease:
     executable_identity: tuple[int, int] | None = None
     target_executable_identity: tuple[int, int] | None = None
     release_attempted: bool = False
+    release_sent: bool = False
     outer_registration_attempted: bool = False
     outer_token: object | None = None
     descendants: tuple[int, ...] = ()
@@ -319,14 +320,22 @@ class PreparationLease:
     fds: list[FdLease] = field(default_factory=list)
     helpers: list[HelperLease] = field(default_factory=list)
     outer: object | None = None
-    def register_fd(self, fd: int, purpose: str) -> FdLease:
-        if type(fd) is not int or fd < 0:
+    def adopt_fd(self, lease: FdLease) -> FdLease:
+        if type(lease) is not FdLease or lease.state is not _FdState.OWNED:
+            raise RuntimeClosureError('invalid descriptor adoption')
+        if type(lease.fd) is not int or lease.fd < 0:
             raise RuntimeClosureError('invalid descriptor registration')
-        if any((item.fd == fd and item.state is _FdState.OWNED for item in self.fds)):
+        duplicate = any(
+            item.fd == lease.fd and item.state is _FdState.OWNED
+            for item in self.fds
+        )
+        if duplicate:
             raise RuntimeClosureError('duplicate owned descriptor registration')
-        lease = FdLease(fd, purpose)
         self.fds.append(lease)
         return lease
+
+    def register_fd(self, fd: int, purpose: str) -> FdLease:
+        return self.adopt_fd(FdLease(fd, purpose))
     def owned_fds(self) -> tuple[int, ...]:
         return tuple((item.fd for item in self.fds if item.state is _FdState.OWNED))
     def close_many(self, leases: Sequence[FdLease], primary: BaseException | None=None) -> None:
@@ -837,18 +846,22 @@ def _snapshot_fd_directory(
     directory = FdLease(ops.open(path, flags), 'fd-enumerator')
     values: list[int] = []
     seen: set[int] = set()
-    calls = 0
     total = 0
     entries = 0
+    reached_eof = False
     primary: BaseException | None = None
     try:
-        while calls < _GETDENTS_CALL_LIMIT:
-            calls += 1
+        # The contract permits 32 data-bearing calls and one distinct EOF probe.
+        # An early EOF is terminal and does not spend the remaining data calls.
+        for _call in range(_GETDENTS_CALL_LIMIT):
             chunk = ops.getdents(directory.fd, _GETDENTS_CHUNK)
+            if type(chunk) is not bytes:
+                raise RuntimeClosureError('invalid descriptor dirent chunk')
             total += len(chunk)
             if total > _GETDENTS_BYTE_LIMIT:
                 raise RuntimeClosureError('descriptor enumeration byte bound')
             if not chunk:
+                reached_eof = True
                 break
             parsed, record_count = _parse_dirent_chunk(chunk)
             entries += record_count
@@ -858,8 +871,14 @@ def _snapshot_fd_directory(
                 raise RuntimeClosureError('duplicate descriptor across dirent chunks')
             seen.update(parsed)
             values.extend(parsed)
-        else:
-            raise RuntimeClosureError('descriptor enumeration call bound before EOF')
+        if not reached_eof:
+            eof = ops.getdents(directory.fd, _GETDENTS_CHUNK)
+            if type(eof) is not bytes:
+                raise RuntimeClosureError('invalid descriptor dirent EOF')
+            if len(eof) > _GETDENTS_CHUNK:
+                raise RuntimeClosureError('descriptor EOF probe bound')
+            if eof:
+                raise RuntimeClosureError('descriptor enumeration call bound before EOF')
         enumerator_count = values.count(directory.fd)
         if expected_enumerator and enumerator_count != 1:
             raise RuntimeClosureError('descriptor enumerator was not observed exactly once')
@@ -995,7 +1014,23 @@ def _child_argv(tool: str) -> tuple[str, ...]:
     raise RuntimeClosureError('unknown fixed helper')
 
 def _descriptor_child_argv() -> tuple[str, ...]:
-    program = "import os\nos.write(197,b'R')\nos.read(0,1)\n"
+    # The admitted interpreter itself touches every inherited descriptor before
+    # reporting readiness.  In particular, a pre-exec label cannot stand for
+    # fd 198 closing on exec or fd 4096 surviving exec.
+    program = (
+        "import errno,os\n"
+        "for descriptor in (0,1,2,197,4096):\n"
+        " os.fstat(descriptor)\n"
+        "try:\n"
+        " os.fstat(198)\n"
+        "except OSError as error:\n"
+        " if error.errno != errno.EBADF:\n"
+        "  raise\n"
+        "else:\n"
+        " raise SystemExit(120)\n"
+        "os.write(197,b'R')\n"
+        "os.read(0,1)\n"
+    )
     return ('python3', '-I', '-B', '-c', program)
 
 def _reserve_stdio(ops: _Ops) -> None:
@@ -1061,9 +1096,11 @@ def _spawn_helper(
     try:
         for purpose in ('input', 'registration', 'release', 'status'):
             read_fd, write_fd = ops.pipe()
-            read_lease = preparation.register_fd(read_fd, f'helper-{purpose}-read')
-            write_lease = preparation.register_fd(write_fd, f'helper-{purpose}-write')
+            read_lease = FdLease(read_fd, f'helper-{purpose}-read')
+            write_lease = FdLease(write_fd, f'helper-{purpose}-write')
             created.extend((read_lease, write_lease))
+            preparation.adopt_fd(read_lease)
+            preparation.adopt_fd(write_lease)
             if purpose == 'input':
                 input_read, input_write = read_lease, write_lease
             elif purpose == 'registration':
@@ -1076,8 +1113,9 @@ def _spawn_helper(
             '/dev/null',
             os.O_RDWR | _O_CLOEXEC | _O_NOFOLLOW,
         )
-        devnull = preparation.register_fd(devnull_fd, 'helper-devnull')
+        devnull = FdLease(devnull_fd, 'helper-devnull')
         created.append(devnull)
+        preparation.adopt_fd(devnull)
         parent = ops.getpid()
         pid, pidfd_number = ops.clone3_pidfd()
         if pid == 0:
@@ -1094,12 +1132,14 @@ def _spawn_helper(
                 )
                 if None in gates:
                     _child_fail(ops, -1, b'E\n')
-                if ops.read(registration_read.fd, 2) != b'G\n':
-                    _child_fail(ops, status_write.fd, b'G\n')
+                # Drop the child's copies of every writer whose EOF is a
+                # creator-owned gate before blocking on that gate.
                 input_write.close(ops)
                 registration_write.close(ops)
                 release_write.close(ops)
                 status_read.close(ops)
+                if ops.read(registration_read.fd, 2) != b'G\n':
+                    _child_fail(ops, status_write.fd, b'G\n')
                 ops.setsid()
                 ops.set_parent_death_signal(signal.SIGKILL)
                 if ops.getppid() != parent:
@@ -1124,9 +1164,12 @@ def _spawn_helper(
             except BaseException:
                 status_fd = status_write.fd if status_write is not None else -1
                 _child_fail(ops, status_fd, b'E\n')
-        if type(pid) is not int or pid <= 0 or pidfd_number < 0:
+        pidfd: FdLease | None = None
+        if type(pidfd_number) is int and pidfd_number >= 0:
+            pidfd = FdLease(pidfd_number, 'helper-pidfd')
+            created.append(pidfd)
+        if type(pid) is not int or pid <= 0 or pidfd is None:
             raise RuntimeClosureError('invalid atomic helper spawn result')
-        pidfd = preparation.register_fd(pidfd_number, 'helper-pidfd')
         helper = HelperLease(
             pid,
             pidfd,
@@ -1137,6 +1180,7 @@ def _spawn_helper(
             target_executable_identity=closure.executable.identity,
         )
         preparation.helpers.append(helper)
+        preparation.adopt_fd(pidfd)
         helper.start_time = _parse_proc_stat(
             _read_proc(ops, f'/proc/{pid}/stat', 4096),
             pid,
@@ -1183,6 +1227,7 @@ def _spawn_helper(
         _outer_helper_call(preparation, '_release_runtime_helper', helper.outer_token, deadline)
         if ops.write(release_write.fd, b'G\n') != 2:
             raise RuntimeClosureError('helper release write failed')
+        helper.release_sent = True
         release_write.close(ops)
         if not ops.poll_readable(status_read.fd, deadline - ops.monotonic()):
             raise RuntimeClosureError('helper exec handshake timeout')
@@ -1209,6 +1254,26 @@ def _spawn_helper(
                         lease.close(ops)
                     except BaseException as cleanup:
                         failures.append(cleanup)
+            # A malformed atomic result has no usable pidfd, but the creator is
+            # still the sole waiter and the child has remained behind the EOF
+            # gate.  Bound that exceptional reap rather than abandoning a
+            # gated zombie.
+            if type(pid) is int and pid > 0:
+                reap_deadline = ops.monotonic() + _HELPER_KILL_SECONDS
+                reaped = False
+                try:
+                    while ops.monotonic() < reap_deadline:
+                        reaped_pid, _status = ops.reap_pid_nohang(pid)
+                        if reaped_pid == pid:
+                            reaped = True
+                            break
+                        ops.sleep(0.001)
+                    if not reaped:
+                        failures.append(RuntimeClosureError(
+                            'invalid helper spawn gated reap timeout'
+                        ))
+                except BaseException as cleanup:
+                    failures.append(cleanup)
         if len(failures) > 1:
             raise RuntimeClosureCleanupError(failures) from primary
         raise
@@ -1264,7 +1329,7 @@ def _observe_helper(ops: _Ops, helper: HelperLease) -> bool:
             return False
         observed_executable = _proc_executable_identity(ops, helper.pid)
         allowed_executables = {helper.executable_identity}
-        if helper.release_attempted and helper.target_executable_identity is not None:
+        if helper.release_sent and helper.target_executable_identity is not None:
             allowed_executables.add(helper.target_executable_identity)
         if observed_executable not in allowed_executables:
             return False
@@ -1290,13 +1355,11 @@ def _stop_helper(ops: _Ops, preparation: PreparationLease, helper: HelperLease) 
     if helper.cleanup_error is not None:
         raise helper.cleanup_error
     failures: list[BaseException] = []
-    identity_complete = all(value is not None for value in (
-        helper.start_time,
-        helper.session,
-        helper.process_group,
-        helper.executable_identity,
-    ))
     helper.state = _HelperState.STOPPING
+
+    # These are creator-held gates.  Closing all of them is attempted even when
+    # one close becomes uncertain, so a failed secondary pidfd transfer cannot
+    # release an unowned helper into its assigned operation.
     for gate in (
         helper.registration_gate,
         helper.release_gate,
@@ -1308,39 +1371,56 @@ def _stop_helper(ops: _Ops, preparation: PreparationLease, helper: HelperLease) 
                 gate.close(ops)
             except BaseException as error:
                 failures.append(error)
+
     try:
         graceful_deadline = ops.monotonic() + _HELPER_TERM_SECONDS
         if not _wait_helper(ops, helper, graceful_deadline):
-            if not identity_complete:
-                raise RuntimeClosureError('unregistered helper retained behind closed gate')
-            if not _observe_helper(ops, helper):
-                raise RuntimeClosureError('helper identity or descendants changed before TERM')
-            ops.pidfd_signal(helper.pidfd.fd, signal.SIGTERM)
-            term_deadline = ops.monotonic() + _HELPER_TERM_SECONDS
-            if not _wait_helper(ops, helper, term_deadline):
-                if not _observe_helper(ops, helper):
-                    raise RuntimeClosureError('helper identity changed before KILL')
+            if not helper.release_sent:
+                # clone3 supplied this pidfd atomically to the creator.  While
+                # the effect gate is closed it is sufficient authority even if
+                # proc capture or the outer duplicate/ack failed.
                 ops.pidfd_signal(helper.pidfd.fd, signal.SIGKILL)
                 kill_deadline = ops.monotonic() + _HELPER_KILL_SECONDS
                 if not _wait_helper(ops, helper, kill_deadline):
                     raise RuntimeClosureError('helper bounded reap timeout')
+            else:
+                if not _observe_helper(ops, helper):
+                    raise RuntimeClosureError(
+                        'helper identity or descendants changed before TERM'
+                    )
+                ops.pidfd_signal(helper.pidfd.fd, signal.SIGTERM)
+                term_deadline = ops.monotonic() + _HELPER_TERM_SECONDS
+                if not _wait_helper(ops, helper, term_deadline):
+                    if not _observe_helper(ops, helper):
+                        raise RuntimeClosureError(
+                            'helper identity changed before KILL'
+                        )
+                    ops.pidfd_signal(helper.pidfd.fd, signal.SIGKILL)
+                    kill_deadline = ops.monotonic() + _HELPER_KILL_SECONDS
+                    if not _wait_helper(ops, helper, kill_deadline):
+                        raise RuntimeClosureError('helper bounded reap timeout')
     except BaseException as error:
         failures.append(error)
-    outer_retired = not helper.outer_registration_attempted
+
     if helper.reaped and helper.outer_token is not None:
         try:
-            _outer_helper_call(preparation, '_retire_runtime_helper', helper.outer_token, ops.monotonic() + _HELPER_KILL_SECONDS)
-            outer_retired = True
+            retire_deadline = ops.monotonic() + _HELPER_KILL_SECONDS
+            _outer_helper_call(
+                preparation,
+                '_retire_runtime_helper',
+                helper.outer_token,
+                retire_deadline,
+            )
         except BaseException as error:
             failures.append(error)
     elif helper.reaped and helper.outer_registration_attempted:
         failures.append(RuntimeClosureError('outer helper registration uncertain'))
-    if helper.reaped and outer_retired and helper.pidfd.state is _FdState.OWNED:
+    if helper.reaped and helper.pidfd.state is _FdState.OWNED:
         try:
             helper.pidfd.close(ops)
         except BaseException as error:
             failures.append(error)
-    if helper.reaped and outer_retired and helper in preparation.helpers:
+    if helper.reaped and helper in preparation.helpers:
         preparation.helpers.remove(helper)
     if failures:
         helper.state = _HelperState.UNCERTAIN
@@ -2013,24 +2093,71 @@ def _wait_descriptor_child(
         if now >= deadline:
             raise RuntimeClosureError('descriptor child waitid deadline')
         ops.sleep(min(0.001, deadline - now))
-    if observation.si_pid != child.pid or observation.si_uid != ops.getuid():
-        raise RuntimeClosureError('descriptor child siginfo identity mismatch')
-    pair = (observation.si_code, observation.si_status)
+
+    failures: list[BaseException] = []
+    observed_pid = getattr(observation, 'si_pid', None)
+    observed_uid = getattr(observation, 'si_uid', None)
+    observed_code = getattr(observation, 'si_code', None)
+    observed_status = getattr(observation, 'si_status', None)
+    pair = (observed_code, observed_status)
+    expected_uid: int | None = None
+    try:
+        expected_uid = ops.getuid()
+    except BaseException as error:
+        failures.append(error)
+    if observed_pid != child.pid or observed_uid != expected_uid:
+        failures.append(RuntimeClosureError(
+            'descriptor child siginfo identity mismatch'
+        ))
+    exact_scalars = type(observed_code) is int and type(observed_status) is int
+    exited = exact_scalars and observed_code == os.CLD_EXITED
+    signaled = exact_scalars and observed_code in (os.CLD_KILLED, os.CLD_DUMPED)
+    if not exited and not signaled:
+        failures.append(RuntimeClosureError(
+            'descriptor child siginfo code mismatch'
+        ))
     if expected is not None and pair != expected:
-        raise RuntimeClosureError('descriptor child siginfo outcome mismatch')
-    ops.checkpoint('descriptor.waitid.after-observe')
-    reaped_pid, wait_status = ops.reap_pid_nohang(child.pid)
-    if reaped_pid != child.pid:
-        raise RuntimeClosureError('descriptor child was not exactly reaped')
-    child.reaped = True
-    ops.checkpoint('descriptor.reap.after')
-    if pair[0] == os.CLD_EXITED:
-        matches = os.WIFEXITED(wait_status) and os.WEXITSTATUS(wait_status) == pair[1]
-    else:
-        matches = os.WIFSIGNALED(wait_status) and os.WTERMSIG(wait_status) == pair[1]
-    if not matches:
-        raise RuntimeClosureError('waitid and reap status disagree')
-    return pair
+        failures.append(RuntimeClosureError(
+            'descriptor child siginfo outcome mismatch'
+        ))
+    try:
+        ops.checkpoint('descriptor.waitid.after-observe')
+    except BaseException as error:
+        failures.append(error)
+
+    wait_status: int | None = None
+    try:
+        reaped_pid, wait_status = ops.reap_pid_nohang(child.pid)
+        if reaped_pid != child.pid:
+            failures.append(RuntimeClosureError(
+                'descriptor child was not exactly reaped'
+            ))
+        else:
+            child.reaped = True
+    except BaseException as error:
+        failures.append(error)
+    if child.reaped:
+        try:
+            ops.checkpoint('descriptor.reap.after')
+        except BaseException as error:
+            failures.append(error)
+
+    matches = False
+    if child.reaped and type(wait_status) is int and exited:
+        matches = os.WIFEXITED(wait_status)
+        matches = matches and os.WEXITSTATUS(wait_status) == observed_status
+    elif child.reaped and type(wait_status) is int and signaled:
+        matches = os.WIFSIGNALED(wait_status)
+        matches = matches and os.WTERMSIG(wait_status) == observed_status
+    if child.reaped and not matches:
+        failures.append(RuntimeClosureError(
+            'waitid and reap status disagree'
+        ))
+    if len(failures) > 1:
+        raise RuntimeClosureCleanupError(failures)
+    if failures:
+        raise failures[0]
+    return (observed_code, observed_status)
 
 def _claim_admission(admission: object, issuer: object) -> _LiveIssuerCapability:
     package_name = __package__
@@ -2365,11 +2492,11 @@ def _qualify_fixed_descriptor_primitives_with_ops(
                 ops.execve(resolved.executable.held_fd, argv, {})
             except BaseException:
                 ops.exit_child(126)
-        if pidfd_number < 0:
+        if type(pidfd_number) is not int or pidfd_number < 0:
             raise RuntimeClosureError('descriptor child pidfd registration')
         child_pidfd = FdLease(pidfd_number, 'descriptor-child-pidfd')
         leases.append(child_pidfd)
-        if child_pid <= 0:
+        if type(child_pid) is not int or child_pid <= 0:
             raise RuntimeClosureError('descriptor child atomic registration')
         child = _DescriptorChildLease(
             child_pid,
@@ -2387,9 +2514,9 @@ def _qualify_fixed_descriptor_primitives_with_ops(
         status_write.close(ops)
         release_read.close(ops)
         ops.checkpoint('descriptor.release.before')
-        child.released = True
         if ops.write(release_write.fd, b'G') != 1:
             raise RuntimeClosureError('descriptor child release write')
+        child.released = True
         release_write.close(ops)
         ops.checkpoint('descriptor.release.after')
         deadline = ops.monotonic() + _HELPER_START_SECONDS
@@ -2398,8 +2525,11 @@ def _qualify_fixed_descriptor_primitives_with_ops(
             raise RuntimeClosureError('descriptor exec readiness deadline')
         if ops.read(status_read.fd, 1) != b'R':
             raise RuntimeClosureError('descriptor exec readiness record')
+        if not _descriptor_child_matches(ops, child):
+            raise RuntimeClosureError('descriptor child identity drift after exec')
         if _proc_executable_identity(ops, child.pid) != resolved.executable.identity:
             raise RuntimeClosureError('descriptor child did not exec admitted Python')
+        ops.checkpoint('descriptor.exec.after-causal-witness')
         expected_fds = frozenset((0, 1, 2, 197, 4096))
         first = _snapshot_fd_directory(ops, f'/proc/{child.pid}/fd', False)
         second = _snapshot_fd_directory(ops, f'/proc/{child.pid}/fd', False)
@@ -2459,23 +2589,31 @@ def _qualify_fixed_descriptor_primitives_with_ops(
             grace = _HELPER_TERM_SECONDS if close_uncertain else 0.01
             short_deadline = ops.monotonic() + grace
             _wait_descriptor_child(ops, child, short_deadline, None)
-        except RuntimeClosureError:
-            if close_uncertain or not _descriptor_child_matches(ops, child):
-                failures.append(RuntimeClosureError('descriptor child identity changed before KILL'))
-            else:
+        except BaseException as error:
+            failures.append(error)
+        if not child.reaped:
+            kill_authorized = not child.released
+            if child.released:
+                kill_authorized = _descriptor_child_matches(ops, child)
+                if not kill_authorized:
+                    failures.append(RuntimeClosureError(
+                        'descriptor child identity changed before KILL'
+                    ))
+            # This is the atomic creator pidfd returned by clone3.  While the
+            # child remains gated it is sufficient authority when later
+            # identity capture or secondary registration fails.
+            if kill_authorized:
                 try:
                     ops.checkpoint('descriptor.kill.before')
                     ops.pidfd_signal(child.pidfd.fd, signal.SIGKILL)
                     ops.checkpoint('descriptor.kill.after')
                 except BaseException as error:
                     failures.append(error)
-            try:
-                kill_deadline = ops.monotonic() + _HELPER_KILL_SECONDS
-                _wait_descriptor_child(ops, child, kill_deadline, None)
-            except BaseException as error:
-                failures.append(error)
-        except BaseException as error:
-            failures.append(error)
+                try:
+                    kill_deadline = ops.monotonic() + _HELPER_KILL_SECONDS
+                    _wait_descriptor_child(ops, child, kill_deadline, None)
+                except BaseException as error:
+                    failures.append(error)
     for lease in reversed(leases):
         if lease.state is not _FdState.OWNED:
             continue
