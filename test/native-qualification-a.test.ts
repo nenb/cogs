@@ -99,13 +99,19 @@ test("Job A composes the admitted production closure owner", () => {
   const closureSource = readFileSync(closure, "utf8");
   const launcherSource = readFileSync(launcher, "utf8");
   assert.match(closureSource, /def _qualify_admitted_fixed_python_mapping\(/u);
-  assert.match(closureSource, /def _qualify_fixed_python_mapping_with_ops\([\s\S]*PreparedRuntimeClosure\._for_fixed_mapping/u);
+  assert.match(
+    closureSource,
+    /def _qualify_fixed_python_mapping_with_ops\([\s\S]*PreparedRuntimeClosure\._for_fixed_mapping/u,
+  );
   assert.match(launcherSource, /cogs\.runtime-source-admission\/mapping-v1/u);
   assert.match(launcherSource, /_qualify_admitted_fixed_python_mapping/u);
   assert.doesNotMatch(launcherSource, /_coordinate_admitted_mapping_only|_MappingAuthority/u);
   assert.match(source, /NativeSession\.begin\("A", __file__\)/u);
   assert.match(source, /session\.run_fixed_operation\(OPERATION\)/u);
-  assert.doesNotMatch(source, /os\.(?:pipe|fork|pidfd_open|execve|waitpid)|unshare|mount\(|\/proc\/|Snapshot|finalize_report/u);
+  assert.doesNotMatch(
+    source,
+    /os\.(?:pipe|fork|pidfd_open|execve|waitpid)|unshare|mount\(|\/proc\/|Snapshot|finalize_report/u,
+  );
   assert.doesNotMatch(source, /cleanup\s*=|CLEANUP_KEYS|source_admission|bootstrap_sha256/u);
 });
 

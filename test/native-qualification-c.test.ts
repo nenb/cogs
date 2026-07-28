@@ -6,9 +6,17 @@ import { test } from "node:test";
 const path = "scripts/native-qualification/job-c-descriptors.py";
 const source = readFileSync(path, "utf8");
 const observations = [
-  "getdents_exact", "nofile_measured", "nofile_normalized", "fd_198_exact",
-  "fd_4096_exact", "close_range_exact", "cloexec_exact", "inheritance_exact",
-  "limit_restored", "descriptors_restored", "children_reaped",
+  "getdents_exact",
+  "nofile_measured",
+  "nofile_normalized",
+  "fd_198_exact",
+  "fd_4096_exact",
+  "close_range_exact",
+  "cloexec_exact",
+  "inheritance_exact",
+  "limit_restored",
+  "descriptors_restored",
+  "children_reaped",
 ];
 const revision = "a".repeat(40);
 const golden = {
@@ -34,7 +42,10 @@ for value in json.loads(${JSON.stringify(JSON.stringify(cases))}):
     env: { PYTHONDONTWRITEBYTECODE: "1", PYTHONHASHSEED: "0" },
   });
   assert.equal(result.status, 0, result.stderr);
-  return result.stdout.trim().split("\n").map((row) => JSON.parse(row));
+  return result.stdout
+    .trim()
+    .split("\n")
+    .map((row) => JSON.parse(row));
 }
 
 test("Job C strictly decodes every production fd/getdents/close_range observation", () => {
@@ -51,8 +62,14 @@ test("Job C strictly decodes every production fd/getdents/close_range observatio
   const rows = decode(cases);
   assert.equal(rows[0].accepted, true);
   assert.deepEqual(Object.keys(rows[0].checks ?? {}), [
-    "nofile_measured", "nofile_normalized", "fd_198_exact", "fd_4096_exact",
-    "close_range_exact", "cloexec_exact", "inheritance_exact", "limit_restored",
+    "nofile_measured",
+    "nofile_normalized",
+    "fd_198_exact",
+    "fd_4096_exact",
+    "close_range_exact",
+    "cloexec_exact",
+    "inheritance_exact",
+    "limit_restored",
   ]);
   assert.ok(Object.values(rows[0].checks ?? {}).every((value) => value === "pass"));
   assert.ok(rows.slice(1).every((row) => !row.accepted));
@@ -73,26 +90,24 @@ print(json.dumps({"events":adapter.events,"identity":result is not None}))
   const result = spawnSync("/usr/bin/python3", ["-I", "-B", "-c", harness], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(JSON.parse(result.stdout), {
-    events: ["qualify_fixed_descriptor_primitives"], identity: true,
+    events: ["qualify_fixed_descriptor_primitives"],
+    identity: true,
   });
 });
 
 test("Job C removes local enumeration, close_range, process, and cleanup branches", () => {
   for (const token of [
-    "NativeSession.begin(\"C\", __file__)",
+    'NativeSession.begin("C", __file__)',
     "session.qualify_fixed_descriptor_primitives()",
     "session.settle_native_phase()",
     "common.ReportCandidate(",
-    "\"getdents_exact\"",
-    "\"close_range_exact\"",
-    "\"inheritance_exact\"",
+    '"getdents_exact"',
+    '"close_range_exact"',
+    '"inheritance_exact"',
   ]) {
     assert.ok(source.includes(token), token);
   }
-  assert.doesNotMatch(
-    source,
-    /os\.listdir|os\.scandir|\/proc\/self\/fd|SYS_CLOSE_RANGE|libc\.syscall/u,
-  );
+  assert.doesNotMatch(source, /os\.listdir|os\.scandir|\/proc\/self\/fd|SYS_CLOSE_RANGE|libc\.syscall/u);
   assert.doesNotMatch(source, /os\.fork|pidfd_open|pidfd_send_signal|waitid\(|waitpid\(|SystemOps/u);
   assert.doesNotMatch(
     source,
