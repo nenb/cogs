@@ -109,6 +109,7 @@ class WorkflowContext:
     workflow_blob_sha256: str
     driver_blob_sha256: str
     common_blob_sha256: str
+    schema_blob_sha256: str
     @classmethod
     def from_environ(cls, expected_job: str, driver_file: str | Path) -> "WorkflowContext":
         environment = dict(os.environ)
@@ -131,6 +132,7 @@ class WorkflowContext:
             expected_job, repository, repository, *hashes, environment["NQ_JOB_ID"],
             _integer(environment["NQ_RUN_ID"], "run id"), attempt, _integer(environment["NQ_PR_NUMBER"], "pull request"),
             environment["NQ_RUNNER_VERSION"], kernel, architecture, _sha256(WORKFLOW), _sha256(expected_driver), _sha256(COMMON),
+            _sha256(SCHEMA),
         )
 def _context_value(context: WorkflowContext) -> dict[str, object]:
     source = {"checkout_sha": context.head_sha, "driver_blob_sha256": context.driver_blob_sha256,
@@ -1135,7 +1137,7 @@ def _receipt(
         "report_sha256": hashlib.sha256(raw).hexdigest(),
         "report_size": len(raw),
         "workflow_sha256": context.workflow_blob_sha256,
-        "schema_sha256": _sha256(SCHEMA),
+        "schema_sha256": context.schema_blob_sha256,
         "common_sha256": context.common_blob_sha256,
         "driver_sha256": context.driver_blob_sha256,
     }
@@ -1251,9 +1253,10 @@ def _read_receipt(directory: FdLease, job: str, authority: Mapping[str, object],
     _require(context, "receipt context")
     for name in ("run_id", "run_attempt", "head_sha", "capability_sha256", "directory", "report_sha256", "report_size"):
         _require(value[name] == authority[name], f"receipt authority {name}")
-    code = (value["workflow_sha256"], value["common_sha256"], value["driver_sha256"], value["schema_sha256"])
-    expected = (_sha256(WORKFLOW), _sha256(COMMON), _sha256(COMMON.parent / DRIVERS[job]), _sha256(SCHEMA))
-    _require(code == expected, "receipt code identities")
+    code = (value["workflow_sha256"], value["common_sha256"], value["driver_sha256"])
+    expected = (_sha256(WORKFLOW), _sha256(COMMON), _sha256(COMMON.parent / DRIVERS[job]))
+    schema_identity = value["schema_sha256"]
+    _require(code == expected and HEX64.fullmatch(str(schema_identity)) is not None, "receipt code identities")
     return value, generation
 def _file_digest_at(directory: FdLease, name: str, limit: int) -> tuple[str, int, dict[str, int]]:
     raw, generation = _read_named(directory, name, limit)

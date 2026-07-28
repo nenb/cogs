@@ -251,7 +251,8 @@ class Cust:
  def publish(self,raw):self.raw=raw
  def abort(self,error):raise error
 for job,value in values.items():
- c=common.WorkflowContext(job,'owner/repo','owner/repo','a'*40,'b'*40,'a'*40,'b'*40,'c'*40,common.JOB_IDS[job],1,1,1,'image','6.8.0-100-generic','x86_64',h(common.WORKFLOW),h(common.COMMON.parent/common.DRIVERS[job]),h(common.COMMON))
+ c=common.WorkflowContext(job,'owner/repo','owner/repo','a'*40,'b'*40,'a'*40,'b'*40,'c'*40,common.JOB_IDS[job],1,1,1,'image','6.8.0-100-generic','x86_64',h(common.WORKFLOW),h(common.COMMON.parent/common.DRIVERS[job]),h(common.COMMON),h(common.SCHEMA))
+ assert c.schema_blob_sha256==h(common.SCHEMA)
  cust=Cust();s=common.NativeSession._begin_with_ops(c,Ops(value),cust);returned=s.run_fixed_operation(job)
  for name,item in returned.items():
   if type(item) is bool:returned[name]=False;break
@@ -337,7 +338,12 @@ extra={'.cleanup.capability':A,'.owner.json':O,'report.json':R,'foreign':F};asse
   assert.equal(run.status, 0, run.stderr);
   const receiptSource = common.slice(common.indexOf("def _receipt("), common.indexOf("def _open_report_directory("));
   assert.doesNotMatch(receiptSource, /"capability"\s*:/u, "raw capability must not enter publication receipt");
+  assert.match(receiptSource, /"schema_sha256": context\.schema_blob_sha256/u);
+  assert.doesNotMatch(receiptSource, /_sha256\(SCHEMA\)/u, "receipt must use the pre-effect schema identity");
   assert.match(receiptSource, /hmac\.new\(capability/u);
+  const readReceiptSource = common.slice(common.indexOf("def _read_receipt("), common.indexOf("def _file_digest_at("));
+  assert.doesNotMatch(readReceiptSource, /_sha256\(SCHEMA\)/u, "recovery must use the authenticated schema identity");
+  assert.match(readReceiptSource, /HEX64\.fullmatch\(str\(schema_identity\)\)/u);
 });
 
 test("parsed workflow graph causally gates exact-head real CLI dispatch and final outcomes", () => {

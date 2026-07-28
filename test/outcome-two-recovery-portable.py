@@ -721,13 +721,19 @@ def common_context(common):
         common._sha256(common.WORKFLOW),
         common._sha256(common.COMMON.parent / common.DRIVERS["integration"]),
         common._sha256(common.COMMON),
+        common._sha256(common.SCHEMA),
     )
 
 
 @contextmanager
 def common_patches(common, kernel):
     original_registry = common.FdRegistry
+    original_sha256 = common._sha256
     registry_factory = lambda *_args, **_kwargs: original_registry(kernel.close)
+    def admitted_sha256(path):
+        if path == common.SCHEMA:
+            raise FileNotFoundError(str(path))
+        return original_sha256(path)
     with patched(
         common.os,
         open=kernel.open,
@@ -762,6 +768,7 @@ def common_patches(common, kernel):
         _link_held=kernel.link,
         _enumerate_directory=kernel.enumerate,
         _process_start=lambda pid: kernel.custodian.start,
+        _sha256=admitted_sha256,
     ):
         yield original_registry
 
@@ -822,7 +829,7 @@ def run_common_row(common, row, production_result):
                         kernel.hit("receipt-bytes")
                         def corrupt(raw):
                             value = json.loads(raw)
-                            value["authentication_sha256"] = "0" * 64
+                            value["schema_sha256"] = "0" * 64
                             return common._canonical(value, True)
                         kernel.mutate_named(".owner.json", corrupt)
                     environment = {
