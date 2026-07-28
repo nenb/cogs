@@ -26,7 +26,10 @@ test("Job C scripted mode proves ordered facts without selecting native mode", (
     env: { PYTHONDONTWRITEBYTECODE: "1", PYTHONHASHSEED: "0" },
   });
   assert.equal(result.status, 0, result.stderr);
-  const rows = result.stdout.trim().split("\n").map((row) => JSON.parse(row));
+  const rows = result.stdout
+    .trim()
+    .split("\n")
+    .map((row) => JSON.parse(row));
   assert.equal(rows[0].report.job, "C");
   assert.equal(rows[0].report.result, "pass");
   assert.deepEqual(rows[0].events, ["limit:8193", "fds:198,4096", "inheritance", "close_range:0", "restore"]);
@@ -37,7 +40,17 @@ test("Job C scripted mode proves ordered facts without selecting native mode", (
 });
 
 test("Job C keeps real Linux primitives and exact restoration in tracked Python", () => {
-  for (const token of ["RLIMIT_NOFILE", "8193", "F_DUPFD_CLOEXEC", "4096", "_SYS_CLOSE_RANGE", "_SYS_DUP3", "FD_CLOEXEC", "resource.setrlimit", "--native"]) {
+  for (const token of [
+    "RLIMIT_NOFILE",
+    "8193",
+    "F_DUPFD_CLOEXEC",
+    "4096",
+    "_SYS_CLOSE_RANGE",
+    "_SYS_DUP3",
+    "FD_CLOEXEC",
+    "resource.setrlimit",
+    "--native",
+  ]) {
     assert.ok(source.includes(token), token);
   }
   assert.match(source, /finally|restore/u);

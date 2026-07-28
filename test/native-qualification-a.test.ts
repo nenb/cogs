@@ -35,7 +35,10 @@ runpy.run_path(path,run_name='__main__')
 });
 
 test("Job A exposes only explicit fixed native and static selectors", () => {
-  for (const arguments_ of [["-I", "-B", script], ["-I", "-B", script, "--fixture"]]) {
+  for (const arguments_ of [
+    ["-I", "-B", script],
+    ["-I", "-B", script, "--fixture"],
+  ]) {
     const result = run(arguments_);
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /usage: job-a-runtime-mappings\.py/u);

@@ -36,10 +36,7 @@ else: raise SystemExit("false sandbox fact accepted")
 });
 
 test("Job E remains the sole fixed sudo/root sandbox entry", () => {
-  assert.match(
-    source,
-    /"\/usr\/bin\/sudo", "-n", "--close-from=3", "\/usr\/bin\/env", "-i"/u,
-  );
+  assert.match(source, /"\/usr\/bin\/sudo", "-n", "--close-from=3", "\/usr\/bin\/env", "-i"/u);
   assert.match(source, /module\._SystemOps, module\._enter_boundary/u);
   assert.match(source, /sys\.argv == \[sys\.argv\[0\], "--root-setup"\]/u);
   assert.match(source, /os\.geteuid\(\) != 0 or os\.environ/u);

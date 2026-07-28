@@ -123,7 +123,7 @@ test("Outcome 2 dead routes and unsafe lifecycle compatibility stay deleted", ()
   }
   assert.match(
     production.at(-1) ?? "",
-    /def invoke\(self\):\n\s+method = self\.row\["production_method"\][\s\S]*?handlers\[method\]\(\)/u,
+    /def execute_row\(module, row\):[\s\S]*?adapters\[row\["production_method"\]\]\(module, row, created\)/u,
   );
 });
 
