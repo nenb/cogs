@@ -394,6 +394,8 @@ assert decoded['source_set_sha256']==value and not hasattr(launcher,'invoke_fixe
 test("sole held launcher CLI has exact isolated descriptor ABI and no ambient issuer", { skip: process.platform !== "linux" }, () => {
   const script = `import ast,json,sys\nsys.path.insert(0,'scripts/native-qualification');import common
 source=b'''import fcntl,json,os,sys
+assert not os.environ or dict(os.environ)=={'LC_CTYPE':'C.UTF-8'}
+os.environ.clear()
 assert not os.environ and sys.flags.isolated and sys.flags.dont_write_bytecode
 assert sorted(map(int,os.listdir('/proc/self/fd')))[:5] == [0,1,2,3,4]
 assert os.read(3,4096)==b'ADMISSION\\n' and fcntl.fcntl(4,1034)==31
@@ -405,7 +407,9 @@ assert ops._decode_cli(raw)=={'source_revision':'a'*40,'source_set_sha256':'b'*6
 registry.close_reverse()
 tree=ast.parse(open(common.COMMON).read())
 issuer=next(n for n in ast.walk(tree) if isinstance(n,ast.FunctionDef) and n.name=='_issue_cli')
-assert 'os.execve' in ast.unparse(issuer) and 'invoke_fixed_admitted_operation' not in open(common.COMMON).read()`;
+execve=next(n for n in ast.walk(issuer) if isinstance(n,ast.Call) and ast.unparse(n.func)=='os.execve')
+assert isinstance(execve.args[2],ast.Dict) and not execve.args[2].keys
+assert 'invoke_fixed_admitted_operation' not in open(common.COMMON).read()`;
   const run = spawnSync("/usr/bin/python3", ["-I", "-B", "-c", script], { encoding: "utf8" });
   assert.equal(run.status, 0, run.stderr);
 });

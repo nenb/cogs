@@ -2625,6 +2625,10 @@ import struct
 import sys
 bootstrap_path = '/usr/local/libexec/cogs-native-root-bootstrap-v1.py'
 authority_path = '/etc/cogs/native-root-authority-v1.json'
+# CPython may synthesize this sole locale entry after execve received an empty
+# environment. It is interpreter state, not caller authority.
+assert not os.environ or dict(os.environ) == {'LC_CTYPE': 'C.UTF-8'}
+os.environ.clear()
 assert os.geteuid() == 0 and not os.environ and sys.argv == [bootstrap_path]
 parent = os.getppid()
 libc = ctypes.CDLL(None, use_errno=True)
@@ -3786,6 +3790,10 @@ def _qualify_admitted_fixed_process_lifecycle(admission: _SourceAdmission, ops: 
     )
 def _bootstrap_with_ops(ops: _SystemOps) -> int:
     _platform_gate()
+    # With an empty execve environment, CPython 3.11+ may still synthesize
+    # LC_CTYPE while coercing the C locale. Normalize only that exact internal
+    # state; the tracked caller structurally fixes execve's environment to {}.
+    if dict(os.environ) == {"LC_CTYPE": "C.UTF-8"}: os.environ.clear()
     if len(sys.argv) != 1 or os.environ or not sys.flags.isolated or not sys.flags.dont_write_bytecode: raise RuntimeLauncherError("fixed bootstrap process envelope")
     executable = _FdLease(os.open("/proc/self/exe", os.O_PATH | os.O_CLOEXEC), "python-executable")
     admitted = _FdLease(os.open("/usr/bin/python3", os.O_PATH | os.O_CLOEXEC), "admitted-python")
