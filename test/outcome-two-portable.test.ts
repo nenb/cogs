@@ -22,18 +22,18 @@ const suites = [
 ] as const;
 const highs = new Map<string, number>([
   ["deploy/aws-feasibility/remote/completion_elf.py", 320],
-  ["deploy/aws-feasibility/remote/completion_trusted_runtime_closure.py", 2_100],
-  ["deploy/aws-feasibility/remote/completion_trusted_runtime_launcher.py", 1_900],
+  ["deploy/aws-feasibility/remote/completion_trusted_runtime_closure.py", 2_350],
+  ["deploy/aws-feasibility/remote/completion_trusted_runtime_launcher.py", 2_600],
   ["schemas/trusted-runtime-closure-v1.json", 260],
-  ["scripts/validate-schemas.ts", 30],
-  ["test/outcome-two-runtime-closure-portable.py", 350],
-  ["test/outcome-two-mapped-closure-portable.py", 300],
+  ["scripts/validate-schemas.ts", 140],
+  ["test/outcome-two-runtime-closure-portable.py", 450],
+  ["test/outcome-two-mapped-closure-portable.py", 400],
   ["test/outcome-two-sealing-portable.py", 300],
-  ["test/outcome-two-lifecycle-portable.py", 550],
-  ["test/outcome-two-recovery-portable.py", 550],
+  ["test/outcome-two-lifecycle-portable.py", 720],
+  ["test/outcome-two-recovery-portable.py", 600],
   ["test/outcome-two-runtime-report-portable.py", 400],
-  ["test/outcome-two-trusted-launcher-portable.py", 800],
-  ["test/outcome-two-portable.test.ts", 170],
+  ["test/outcome-two-trusted-launcher-portable.py", 1_150],
+  ["test/outcome-two-portable.test.ts", 200],
 ]);
 const env = { PYTHONDONTWRITEBYTECODE: "1", PYTHONHASHSEED: "0" };
 
@@ -127,7 +127,7 @@ test("Outcome 2 dead routes and unsafe lifecycle compatibility stay deleted", ()
   );
 });
 
-test("Outcome 2 gross lines and fixture lines remain within exact ADR 0089 highs", () => {
+test("Outcome 2 gross lines and fixture lines remain within exact ADR 0091 highs", () => {
   const paths = [...highs.keys()];
   const diff = git(["diff", "--numstat", predecessor, "--", ...paths]);
   assert.equal(diff.status, 0, diff.stderr);
@@ -163,5 +163,5 @@ test("Outcome 2 gross lines and fixture lines remain within exact ADR 0089 highs
     return total + bytes.reduce((lines, byte) => lines + Number(byte === 10), 0);
   }, 0);
   assert.ok(fixtureLines <= 900, `fixture aggregate: ${fixtureLines} lines exceeds 900`);
-  assert.ok(subtotal + fixtureLines <= 8_930, `trusted/portable subtotal exceeds 8930`);
+  assert.ok(subtotal + fixtureLines <= 10_790, `trusted/portable subtotal exceeds 10790`);
 });

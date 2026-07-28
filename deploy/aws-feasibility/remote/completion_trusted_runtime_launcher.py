@@ -1,6 +1,6 @@
 from __future__ import annotations
 from array import array
-from dataclasses import dataclass, field, make_dataclass
+from dataclasses import asdict, dataclass, field, fields, is_dataclass, make_dataclass
 from enum import Enum
 import ctypes, errno, fcntl, hashlib, json
 import os, re, select, signal, socket
@@ -8,10 +8,26 @@ import stat, struct, sys, time, types
 from typing import Any, NoReturn, Optional
 _VERSION = "cogs.trusted-runtime-closure/v1"
 _ADMISSION_VERSION = "cogs.runtime-source-admission/v1"
-_ADMISSION_MODES = {_ADMISSION_VERSION: "runtime", "cogs.runtime-source-admission/mapping-v1": "mapping", "cogs.runtime-source-admission/compression-v1": "compression"}
+_ADMISSION_MODES = {
+    _ADMISSION_VERSION: "runtime",
+    "cogs.runtime-source-admission/mapping-v1": "mapping",
+    "cogs.runtime-source-admission/compression-v1": "compression",
+    "cogs.runtime-source-admission/descriptor-v1": "descriptor",
+    "cogs.runtime-source-admission/lifecycle-v1": "lifecycle",
+    "cogs.runtime-source-admission/sandbox-v1": "sandbox",
+}
+_OPERATION_CLIENTS = {
+    "mapping": "scripts/native-qualification/job-a-runtime-mappings.py",
+    "compression": "scripts/native-qualification/job-b-compression.py",
+    "descriptor": "scripts/native-qualification/job-c-descriptors.py",
+    "lifecycle": "scripts/native-qualification/job-d-process-lifecycle.py",
+    "sandbox": "scripts/native-qualification/job-e-sandbox.py",
+    "runtime": "scripts/native-qualification/thin-integration.py",
+}
 _HANDOFF_VERSION = "cogs.runtime-handoff/v1"
 _RESULT_VERSION = "cogs.runtime-qualification/v1"
 _MARKER = "cogs-runtime-qualification-v1"
+_BOOTSTRAP_OPERATION_TOKEN = object()
 _FIXED_SOURCE_SET = ( "deploy/aws-feasibility/remote/completion_elf.py", "deploy/aws-feasibility/remote/completion_trusted_runtime_closure.py", "deploy/aws-feasibility/remote/completion_trusted_runtime_launcher.py", "schemas/trusted-runtime-closure-v1.json", )
 _MODULE_PATHS = _FIXED_SOURCE_SET[:3]
 _SCHEMA_PATH = _FIXED_SOURCE_SET[3]
@@ -34,7 +50,7 @@ _EXEC_SEALS = _DATA_SEALS | _F_SEAL_EXEC
 _MS_REMOUNT, _MS_PRIVATE, _MS_REC = 32, 1 << 18, 16384
 (_PR_SET_PDEATHSIG, _PR_SET_DUMPABLE, _PR_GET_SECUREBITS, _PR_SET_SECUREBITS) = (1, 4, 27, 28)
 (_PR_CAPBSET_DROP, _PR_CAPBSET_READ, _PR_SET_NO_NEW_PRIVS, _PR_GET_NO_NEW_PRIVS) = (24, 23, 38, 39)
-(_PR_SET_CHILD_SUBREAPER, _PR_CAP_AMBIENT, _PR_CAP_AMBIENT_IS_SET) = (36, 47, 1)
+(_PR_SET_CHILD_SUBREAPER, _PR_GET_CHILD_SUBREAPER, _PR_CAP_AMBIENT, _PR_CAP_AMBIENT_IS_SET) = (36, 37, 47, 1)
 _PR_CAP_AMBIENT_CLEAR_ALL, _PR_SET_SECCOMP, _PR_GET_SECCOMP = 4, 22, 21
 _SECCOMP_MODE_FILTER, _SECBITS = 2, 0x0F
 _AT_EMPTY_PATH, _UINT_MAX = 0x1000, (1 << 32) - 1
@@ -118,13 +134,16 @@ def _close_leases(ops: object, leases: tuple[_FdLease, ...] | list[_FdLease], pr
         except BaseException as error:
             failures.append(error)
     if failures: raise RuntimeLauncherCleanupError(primary, failures) from (primary or failures[0])
-class _SourceAdmission(make_dataclass("_SourceAdmissionData", [(name, kind) for name, kind in zip("revision bootstrap_sha256 source_set_sha256 _schema_bytes _package _worker_pid _endpoint _issuer _consumer_pid _consumer_uid _consumer_gid".split(), (str, str, str, bytes, str, int, Optional[socket.socket], object, int, int, int))] + [("_claimed", bool, field(default=False))])):
-    def _consume_mapping(self, module: types.ModuleType) -> bool:
+class _SourceAdmission(make_dataclass("_SourceAdmissionData", [(name, kind) for name, kind in zip("revision bootstrap_sha256 source_set_sha256 _schema_bytes _package _worker_pid _endpoint _issuer _consumer_pid _consumer_uid _consumer_gid _operation".split(), (str, str, str, bytes, str, int, Optional[socket.socket], object, int, int, int, str))] + [("_claimed", bool, field(default=False))])):
+    def _consume_fixed_operation(self, operation: str, module: types.ModuleType) -> bool:
         package = f"_cogs_o2_{self.source_set_sha256[:16]}"
-        name = f"{package}.completion_trusted_runtime_closure"
-        exact = (not self._claimed and type(module) is types.ModuleType and module.__name__ == name
-                 and module.__package__ == package and sys.modules.get(name) is module and module.__dict__.get("_ADMISSION_TYPE") is _SourceAdmission)
-        if exact: self._claimed = True
+        closure_name = f"{package}.completion_trusted_runtime_closure"
+        exact_module = module.__name__ == closure_name and module.__package__ == package
+        exact_module = exact_module and sys.modules.get(closure_name) is module
+        exact_module = exact_module and module.__dict__.get("_ADMISSION_TYPE") is _SourceAdmission
+        exact = not self._claimed and operation == self._operation and type(module) is types.ModuleType and exact_module
+        if exact:
+            self._claimed = True
         return exact
     def _consume(self, issuer: object, package: object, worker_pid: object) -> bool:
         if self._claimed or issuer is not self._issuer: return False
@@ -150,6 +169,33 @@ _OBSERVATION_NAMES = """
     namespaces_released namespace_handles_released
 """.split()
 RuntimeQualificationResult = make_dataclass("RuntimeQualificationResult", [(name, str) for name in "version marker source_revision source_set_sha256 closure_sha256 gzip_output_sha256 zstd_output_sha256".split()] + [(name, bool) for name in _OBSERVATION_NAMES], frozen=True, namespace={"__module__": __name__})
+RuntimeObjectObservation = make_dataclass("RuntimeObjectObservation", [("role", str), ("size_bytes", int), ("sha256", str), ("soname", Optional[str]), ("needed", tuple)], frozen=True, namespace={"__module__": __name__})
+MappedObjectObservation = make_dataclass("MappedObjectObservation", [("role", str), ("sha256", str)], frozen=True, namespace={"__module__": __name__})
+RuntimeMappingQualificationResult = make_dataclass("RuntimeMappingQualificationResult", [
+    *((name, str) for name in "version source_revision source_set_sha256 closure_sha256 mapping_sha256".split()),
+    ("objects", tuple), ("mapped", tuple),
+    *((name, bool) for name in "mapped_generations_exact mapping_stable helper_reaped descriptors_restored children_reaped".split()),
+], frozen=True, namespace={"__module__": __name__})
+RuntimeCompressionToolObservation = make_dataclass("RuntimeCompressionToolObservation", [
+    ("id", str), ("objects", tuple), ("closure_sha256", str),
+    ("mapping_sha256", str), ("source_sha256", str),
+    ("source_size_bytes", int), ("sealed_sha256", str),
+    ("sealed_size_bytes", int), ("seal_mask", int),
+    ("execution_mapping_sha256", str), ("output_sha256", str),
+], frozen=True, namespace={"__module__": __name__})
+RuntimeCompressionQualificationResult = make_dataclass("RuntimeCompressionQualificationResult", [
+    ("version", str), ("source_revision", str), ("source_set_sha256", str),
+    ("closure_sha256", str), ("tools", tuple),
+    ("runtime", RuntimeQualificationResult),
+], frozen=True, namespace={"__module__": __name__})
+SandboxQualificationResult = make_dataclass("SandboxQualificationResult", [
+    *((name, str) for name in "version source_revision source_set_sha256 seccomp_program_sha256".split()),
+    *((name, bool) for name in "user_namespace_exact pid_namespace_exact mount_namespace_exact network_namespace_exact namespace_ownership_exact pid_one capabilities_zero noroot_locked no_new_privs seccomp_installed seccomp_mode_exact seccomp_program_exact seccomp_denials_exact no_acquisition_route root_readonly_noexec root_has_no_proc host_paths_absent checkout_absent descriptors_restored children_reaped descendants_reaped mounts_restored paths_restored namespaces_released namespace_handles_released".split()),
+], frozen=True, namespace={"__module__": __name__})
+LifecycleQualificationResult = make_dataclass("LifecycleQualificationResult", [
+    ("version", str), ("source_revision", str), ("source_set_sha256", str),
+    *((name, bool) for name in "pdeathsig_armed parent_handshake_exact before_release_death after_release_death starttime_revalidated session_owned process_group_owned credentialed_pidfd_transfer stable_descendant_census adoption_exact term_kill_bounded siginfo_exact all_reaped subreaper_restored descriptors_restored".split()),
+], frozen=True, namespace={"__module__": __name__})
 def _build_observed_result(tool_observations: tuple[dict[str, object], dict[str, object]], cleanup_observations: dict[str, object]) -> dict[str, bool]:
     cleanup_keys = {"children_reaped", "descendants_reaped", "descriptors_restored", "mounts_restored", "namespace_handles_released", "namespaces_released", "paths_restored"}
     expected = set(_OBSERVATION_NAMES)
@@ -547,16 +593,22 @@ def _verify_bundle(admission: _SourceAdmission, report_bytes: bytes, descriptors
             _inspect_fd(descriptors[row.descriptor_index], False, row.size, row.sha256)
             checked[row.descriptor_index] = expected
     return report, _digest([_binding_value(row) for row in rows]), _digest([_generation_value(row) for row in rows])
-def _runtime_metadata(report: dict[str, object], rows: tuple[_GenerationRow, ...], mapping_sha: tuple[str, str], outputs: tuple[bytes, bytes]) -> tuple[dict[str, object], dict[str, object]]:
-    compressed: list[dict[str, object]] = []
+def _runtime_metadata(report: dict[str, object], rows: tuple[_GenerationRow, ...], mapping_sha: tuple[str, str], outputs: tuple[bytes, bytes]) -> tuple[RuntimeCompressionToolObservation, RuntimeCompressionToolObservation]:
+    compressed: list[RuntimeCompressionToolObservation] = []
     for name, index, observed_mapping, output in zip(("gzip", "zstd"), (2, 1), mapping_sha, outputs):
-        source = tuple({key: item[key] for key in ("role", "sha256", "size")} for item in report["tools"][index]["objects"])
-        sealed = tuple({"role": row.role, "sha256": row.sha256, "size": row.size} for row in rows if row.tool_index == index)
-        source_rows = tuple((item["role"], item["sha256"], item["size"]) for item in source)
-        sealed_rows = tuple((item["role"], item["sha256"], item["size"]) for item in sealed)
-        _require(source_rows == sealed_rows and source[0]["role"] == "executable", "runtime metadata row binding", "runtime-metadata")
+        objects = report["tools"][index]["objects"]
+        source_rows = tuple((item["role"], item["sha256"], item["size"]) for item in objects)
+        sealed_rows = tuple((row.role, row.sha256, row.size) for row in rows if row.tool_index == index)
+        _require(source_rows == sealed_rows and objects[0]["role"] == "executable", "runtime metadata row binding", "runtime-metadata")
         _require(observed_mapping == report["tools"][index]["mapping_sha256"], "runtime metadata mapping observation", "runtime-metadata")
-        compressed.append({"id": name, "source_sha256": source[0]["sha256"], "source_size_bytes": source[0]["size"], "sealed_sha256": sealed[0]["sha256"], "sealed_size_bytes": sealed[0]["size"], "seal_mask": _EXEC_SEALS, "execution_mapping_sha256": observed_mapping, "output_sha256": hashlib.sha256(output).hexdigest()})
+        _require(output == _FIXED_OUTPUT, "runtime metadata fixed output", "runtime-output")
+        closed_objects = tuple({"needed": tuple(item["needed"]), "role": item["role"], "sha256": item["sha256"], "size_bytes": item["size"], "soname": item["soname"]} for item in objects)
+        compressed.append(RuntimeCompressionToolObservation(
+            name, closed_objects, report["tools"][index]["closure_sha256"],
+            report["tools"][index]["mapping_sha256"], objects[0]["sha256"],
+            objects[0]["size"], sealed_rows[0][1], sealed_rows[0][2],
+            _EXEC_SEALS, observed_mapping, hashlib.sha256(output).hexdigest(),
+        ))
     return compressed[0], compressed[1]
 class _WorkerIssuer:
     def __init__( self, endpoint: socket.socket, nonce: bytes, admission: _SourceAdmission, consumer_pid: int, package_name: str, helper_endpoint: socket.socket | None = None):
@@ -651,7 +703,7 @@ class _WorkerIssuer:
         _require(self._endpoint.recv(1, socket.MSG_DONTWAIT) == b"", "second consumer packet", "issuer-second-packet")
         self._endpoint.shutdown(socket.SHUT_WR)
         return _IssuanceReceipt(_HANDOFF_VERSION, packet["report_sha256"], report["closure_sha256"], binding_sha, generation_sha, len(descriptors), os.getpid(), self._consumer_pid)
-_ProcessLease = make_dataclass("_ProcessLease", [("pid", int), ("pidfd", Optional[_FdLease]), *((name, int, field(default=0)) for name in "start_time session process_group".split()), ("executable", tuple[int, int], field(default=(0, 0))), ("release_gate", Optional[_FdLease], field(default=None)), ("pending", tuple[_FdLease, ...], field(default=())), *((name, bool, field(default=False)) for name in "released reaped".split()), ("descendants", tuple, field(default=())), ("namespace_handles", tuple[_FdLease, ...], field(default=())), ("waitable", bool, field(default=True))], namespace={"__module__": __name__})
+_ProcessLease = make_dataclass("_ProcessLease", [("pid", int), ("pidfd", Optional[_FdLease]), *((name, int, field(default=0)) for name in "start_time session process_group".split()), ("executable", tuple[int, int], field(default=(0, 0))), ("release_gate", Optional[_FdLease], field(default=None)), ("pending", tuple[_FdLease, ...], field(default=())), *((name, bool, field(default=False)) for name in "released reaped".split()), ("descendants", tuple, field(default=())), ("namespace_handles", tuple[_FdLease, ...], field(default=())), ("waitable", bool, field(default=True)), ("identity_phase", str, field(default="BLOCKED")), ("planned_session", int, field(default=0)), ("planned_group", int, field(default=0))], namespace={"__module__": __name__})
 class _ProcessOwner(make_dataclass("_ProcessOwnerData", [("ops", Any), ("processes", list[_ProcessLease], field(default_factory=list)), ("poisoned", Optional[BaseException], field(default=None))])):
     def register(self, pid: int, release_gate: _FdLease | None = None, pidfd_fd: int | None = None, waitable: bool = True) -> _ProcessLease:
         lease = _ProcessLease(pid, None, release_gate=release_gate, waitable=waitable)
@@ -683,12 +735,55 @@ class _ProcessOwner(make_dataclass("_ProcessOwnerData", [("ops", Any), ("process
         lease.process_group = os.getpgid(pid)
         lease.executable = _exe_identity(pid)
         return pid, lease, None
+    def plan_setsid(self, lease: _ProcessLease) -> None:
+        _require(lease in self.processes and not lease.released and lease.identity_phase == "BLOCKED", "setsid plan state", "process-transition-state")
+        lease.planned_session = lease.pid
+        lease.planned_group = lease.pid
+        lease.identity_phase = "PRE_SETSID"
     def release(self, lease: _ProcessLease) -> None:
         gate = lease.release_gate
         if gate is None or gate.state is not _FdState.OWNED or lease.released: raise RuntimeLauncherError("process release gate state", "process-release-gate")
         if self.ops.write(gate.fd, b"G") != 1: raise RuntimeLauncherError("process release short write", "process-release-write")
         lease.released = True
         gate.close(self.ops)
+    def confirm_setsid(self, lease: _ProcessLease) -> None:
+        immutable = (_start_time(lease.pid), _exe_identity(lease.pid))
+        expected = (lease.start_time, lease.executable)
+        observed = (os.getsid(lease.pid), os.getpgid(lease.pid))
+        target = (lease.planned_session, lease.planned_group)
+        _require(lease.identity_phase == "PRE_SETSID" and immutable == expected, "setsid immutable identity", "process-transition-identity")
+        _require(target == (lease.pid, lease.pid) and observed == target, "setsid transition readback", "process-transition-readback")
+        lease.session, lease.process_group = observed
+        lease.identity_phase = "POST_SETSID"
+    def receive_descendant(self, endpoint: socket.socket, leader: _ProcessLease, nonce: bytes, sequence: int) -> _ProcessLease:
+        bound = socket.CMSG_SPACE(array("i").itemsize) + socket.CMSG_SPACE(struct.calcsize("3i"))
+        raw, ancillary, flags, _address = endpoint.recvmsg(4096, bound, socket.MSG_CMSG_CLOEXEC | socket.MSG_DONTWAIT)
+        credentials, rights = _leased_credentials(ancillary, self.ops)
+        primary: BaseException | None = None
+        try:
+            _require(not flags & (socket.MSG_TRUNC | socket.MSG_CTRUNC) and len(rights) == 1, "descendant transfer truncation", "process-transfer-shape")
+            _require(credentials == (leader.pid, os.geteuid(), os.getegid()), "descendant transfer credentials", "process-transfer-credentials")
+            value = _strict_json(raw, False, 4096, "descendant transfer")
+            keys = {"executable", "nonce", "parent", "pid", "process_group", "sequence", "session", "start_time", "version"}
+            _require(type(value) is dict and set(value) == keys and value["version"] == "cogs.process-transfer/v1", "descendant transfer packet", "process-transfer-packet")
+            _require(value["nonce"] == nonce.hex() and value["sequence"] == sequence and value["parent"] == leader.pid, "descendant transfer binding", "process-transfer-binding")
+            pidfd = rights[0].transfer()
+            lease = self.register(value["pid"], pidfd_fd=pidfd)
+            observed = (lease.start_time, lease.session, lease.process_group, list(lease.executable))
+            asserted = (value["start_time"], value["session"], value["process_group"], value["executable"])
+            _require(observed == asserted, "descendant transfer identity", "process-transfer-identity")
+            leader.descendants = (*leader.descendants, lease)
+            return lease
+        except BaseException as error:
+            primary = error
+        _close_leases(self.ops, rights, primary)
+        raise primary
+    def stable_census(self, root: _ProcessLease) -> tuple[int, ...]:
+        first = _descendant_census(root.pid, self.ops)
+        second = _descendant_census(root.pid, self.ops)
+        expected = tuple(sorted(item.pid for item in root.descendants if not item.reaped))
+        _require(first == second == expected, "stable registered descendant census", "process-census")
+        return first
     def stop(self, lease: _ProcessLease, primary: BaseException | None = None) -> None:
         _stop_process(lease, primary, self.ops)
         if lease in self.processes: self.processes.remove(lease)
@@ -1560,60 +1655,11 @@ def _run_tool_with_ops( ops: Any, role: str, report: dict[str, object], descript
     _require(result is not None, "tool result missing", "tool-result")
     result[1]["_execution_mapping_sha256"] = final_mapping
     return result
-class _MappingAuthority(make_dataclass("_MappingAuthorityData", [("helper", Optional[object], field(default=None)), ("token", object, field(default_factory=object)), ("released", bool, field(default=False)), ("retired", bool, field(default=False))])):
-    def _register_runtime_helper(self, helper: object, deadline: float) -> object:
-        identity = (getattr(helper, "pid", 0), getattr(helper, "start_time", None), getattr(helper, "session", None), getattr(helper, "process_group", None))
-        _require(self.helper is None and deadline > 0 and all(type(value) is int and value > 0 for value in identity), "mapping helper registration", "mapping-helper-register")
-        self.helper = helper
-        return self.token
-    def _release_runtime_helper(self, token: object, deadline: float) -> None:
-        _require(token is self.token and self.helper is not None and not self.released and deadline > 0, "mapping helper release", "mapping-helper-release")
-        self.released = True
-    def _retire_runtime_helper(self, token: object, deadline: float) -> None:
-        reaped = getattr(self.helper, "reaped", False)
-        _require(token is self.token and self.released and reaped is True and deadline > 0, "mapping helper retirement", "mapping-helper-retire")
-        self.retired = True
-def _coordinate_admitted_mapping_only(admission: _SourceAdmission, closure_module: types.ModuleType) -> dict[str, object]:
-    _require(type(admission) is _SourceAdmission and admission._consume_mapping(closure_module), "mapping source admission", "mapping-admission")
-    required = "_Ops _reserve_stdio _snapshot_fds _child_baseline PreparationLease _resolve_tool _spawn_helper _mapped_closure _stop_helper _close_objects _object_report _canonical RuntimeClosureCleanupError".split()
-    _require(all(callable(getattr(closure_module, name, None)) for name in required), "mapping production surface", "mapping-surface")
-    ops = closure_module._Ops()
-    ops.architecture_gate()
-    closure_module._reserve_stdio(ops)
-    fd_baseline = closure_module._snapshot_fds(ops)
-    child_baseline = closure_module._child_baseline(ops)
-    authority = _MappingAuthority()
-    preparation = closure_module.PreparationLease(ops, fd_baseline, child_baseline, outer=authority)
-    resolved = helper = mapped = None
-    primary: BaseException | None = None
-    cleanup_failures: list[BaseException] = []
-    try:
-        resolved = closure_module._resolve_tool(ops, "python3-parser", "/usr/bin/python3")
-        helper = closure_module._spawn_helper(ops, preparation, resolved)
-        mapped = closure_module._mapped_closure(ops, helper, resolved)
-    except BaseException as error: primary = error
-    if helper is not None and helper in preparation.helpers:
-        try: closure_module._stop_helper(ops, preparation, helper)
-        except BaseException as error: cleanup_failures.append(error)
-    if resolved is not None:
-        try: closure_module._close_objects(ops, resolved.objects)
-        except BaseException as error: cleanup_failures.append(error)
-    try:
-        pidfd_closed = helper is not None and getattr(getattr(helper, "pidfd", None), "state", None).value == "CLOSED"
-        exact = (mapped is not None and authority.retired and helper.reaped and pidfd_closed and not preparation.helpers
-                 and not preparation.owned_fds() and closure_module._snapshot_fds(ops) == fd_baseline and closure_module._child_baseline(ops) == child_baseline)
-        _require(exact, "mapping cleanup baseline", "mapping-cleanup")
-    except BaseException as error: cleanup_failures.append(error)
-    if cleanup_failures:
-        failures = ([primary] if primary is not None else []) + cleanup_failures
-        raise closure_module.RuntimeClosureCleanupError(failures) from (primary or cleanup_failures[0])
-    if primary is not None: raise primary
-    objects = tuple(closure_module._object_report(value) for value in resolved.objects)
-    sequence = tuple((value["role"], value["sha256"]) for value in objects)
-    _require(mapped.tool == "python3-parser" and mapped.mapped == sequence, "mapping result binding", "mapping-result")
-    mapping_objects = tuple({"role": value["role"], "sha256": value["sha256"], "size_bytes": value["size"], "soname": value["soname"], "needed": value["needed"]} for value in objects)
-    closure_sha = hashlib.sha256(closure_module._canonical(objects)).hexdigest()
-    return {"version": "cogs.runtime-mapping-qualification/v1", "source_revision": admission.revision, "source_set_sha256": admission.source_set_sha256, "closure_sha256": closure_sha, "mapping_sha256": mapped.mapping_sha256, "mapping_objects": mapping_objects, "mapped_generations_exact": True, "mapping_stable": True, "helper_reaped": True, "descriptors_restored": True, "children_reaped": True}
+def _consume_launcher_operation(admission: _SourceAdmission, operation: str) -> None:
+    exact = type(admission) is _SourceAdmission and admission._operation == operation
+    exact = exact and admission._issuer is _BOOTSTRAP_OPERATION_TOKEN and not admission._claimed
+    _require(exact, "launcher operation admission", "operation-admission")
+    admission._claimed = True
 def _worker_main(endpoint_fd: int, helper_fd: int, release_fd: int, nonce: bytes, admission: _SourceAdmission, closure_module: types.ModuleType, consumer_pid: int) -> NoReturn:
     ops = _SystemOps()
     release = _FdLease(release_fd, "worker-release-read")
@@ -1736,6 +1782,121 @@ def _coordinate_with_ops(admission: _SourceAdmission, closure_module: types.Modu
         hashlib.sha256(outputs[0]).hexdigest(), hashlib.sha256(outputs[1]).hexdigest(), *(observed[name] for name in fact_names))
     metadata = _runtime_metadata(report, rows, execution_mappings, outputs)
     return result, metadata
+def _launch_admitted_fixed_runtime_qualification(admission: _SourceAdmission, closure_module: types.ModuleType, ops: Any) -> RuntimeQualificationResult:
+    result, _metadata = _coordinate_with_ops(admission, closure_module, ops)
+    return result
+def _launch_admitted_fixed_compression_qualification(admission: _SourceAdmission, closure_module: types.ModuleType, ops: Any) -> RuntimeCompressionQualificationResult:
+    result, tools = _coordinate_with_ops(admission, closure_module, ops)
+    _require(tuple(item.id for item in tools) == ("gzip", "zstd"), "compression tool order", "compression-order")
+    expected_output = hashlib.sha256(_FIXED_OUTPUT).hexdigest()
+    _require(all(item.seal_mask == 63 and item.output_sha256 == expected_output for item in tools), "compression exact observation", "compression-observation")
+    return RuntimeCompressionQualificationResult(
+        "cogs.runtime-compression-qualification/v1", admission.revision,
+        admission.source_set_sha256, result.closure_sha256, tools, result,
+    )
+def _result_value(value: object) -> dict[str, object]:
+    _require(is_dataclass(value) and not isinstance(value, type), "fixed result dataclass", "result-type")
+    result = asdict(value)
+    _require(type(result) is dict and tuple(result) == tuple(item.name for item in fields(value)), "fixed result inventory", "result-inventory")
+    return result
+_HELD_EXEC_BOOTSTRAP = "import os\ndata=b''\nwhile True:\n part=os.read(5,65536)\n if not part:\n  break\n data+=part\nos.close(5)\nglobals_={'__name__':'cogs_held_launcher'}\nexec(compile(data,'cogs-held:launcher','exec'),globals_)\nraise SystemExit(globals_['_bootstrap_main']())"
+def _run_held_python_with_ops(ops: Any, launcher_bytes: bytes, source_root_fd: int, admission: bytes) -> bytes:
+    leases: list[_FdLease] = []
+    owner = _ProcessOwner(ops)
+    primary: BaseException | None = None
+    output = bytearray()
+    error_output = bytearray()
+    process: _ProcessLease | None = None
+    try:
+        launcher_fd = os.memfd_create("cogs-held-launcher", os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING)
+        launcher = _FdLease(launcher_fd, "held-launcher")
+        leases.append(launcher)
+        offset = 0
+        while offset < len(launcher_bytes):
+            written = os.write(launcher.fd, launcher_bytes[offset:])
+            _require(written > 0, "held launcher write", "held-launcher-write")
+            offset += written
+        os.lseek(launcher.fd, 0, os.SEEK_SET)
+        os.fchmod(launcher.fd, 0o444)
+        fcntl.fcntl(launcher.fd, fcntl.F_ADD_SEALS, _DATA_SEALS)
+        source = _FdLease(fcntl.fcntl(source_root_fd, fcntl.F_DUPFD_CLOEXEC, 64), "held-source-root")
+        leases.append(source)
+        pairs = []
+        for purpose in ("admission", "output", "error", "transition", "transition-ack"):
+            pair = tuple(_FdLease(fd, f"client-{purpose}") for fd in os.pipe2(os.O_CLOEXEC))
+            leases.extend(pair)
+            pairs.append(pair)
+        admission_read, admission_write = pairs[0]
+        output_read, output_write = pairs[1]
+        error_read, error_write = pairs[2]
+        transition_read, transition_write = pairs[3]
+        ack_read, ack_write = pairs[4]
+        pid, process, gate = owner.spawn()
+        if pid == 0:
+            try:
+                for lease in (admission_write, output_read, error_read, transition_read, ack_write):
+                    lease.close(ops)
+                _require(gate is not None and ops.read(gate.fd, 1) == b"G", "held client release", "client-release")
+                gate.close(ops)
+                os.setsid()
+                _require(ops.write(transition_write.fd, b"S") == 1, "held client transition", "client-transition")
+                _require(ops.read(ack_read.fd, 1) == b"A", "held client transition ack", "client-transition-ack")
+                duplicates = tuple(fcntl.fcntl(fd, fcntl.F_DUPFD_CLOEXEC, 128) for fd in (admission_read.fd, source.fd, launcher.fd, output_write.fd, error_write.fd))
+                for original, target in zip(duplicates, (3, 4, 5, 1, 2)):
+                    os.dup2(original, target, inheritable=True)
+                allowed = {0, 1, 2, 3, 4, 5}
+                for fd in _descriptor_snapshot(ops):
+                    if fd not in allowed:
+                        _FdLease(fd, "held-client-complement").close(ops)
+                os.execve("/usr/bin/python3", ("/usr/bin/python3", "-I", "-B", "-c", _HELD_EXEC_BOOTSTRAP), {})
+            except BaseException:
+                os._exit(125)
+        _require(process is not None, "held client process registration", "client-register")
+        for lease in (admission_read, output_write, error_write, transition_write, ack_read):
+            lease.close(ops)
+        owner.plan_setsid(process)
+        _require(ops.write(admission_write.fd, admission) == len(admission), "held admission write", "client-admission-write")
+        admission_write.close(ops)
+        owner.release(process)
+        _require(ops.read(transition_read.fd, 1) == b"S", "held transition read", "client-transition-read")
+        owner.confirm_setsid(process)
+        _require(ops.write(ack_write.fd, b"A") == 1, "held transition ack", "client-transition-ack")
+        transition_read.close(ops)
+        ack_write.close(ops)
+        deadline = time.monotonic() + 30.0
+        active = {output_read.fd: output, error_read.fd: error_output}
+        while active:
+            remaining = deadline - time.monotonic()
+            _require(remaining > 0, "held client output deadline", "client-output-deadline")
+            ready = select.select(tuple(active), (), (), remaining)[0]
+            for fd in ready:
+                part = ops.read(fd, _MAX_REPORT + 1 - len(active[fd]))
+                if part:
+                    active[fd] += part
+                    _require(len(active[fd]) <= _MAX_REPORT, "held client output bound", "client-output-bound")
+                else:
+                    next(item for item in leases if item.fd == fd).close(ops)
+                    del active[fd]
+        status = _wait_bounded(process, deadline)
+        _require(status == 0 and not error_output, "held client exit", "client-exit")
+        owner.stop(process)
+        process = None
+    except BaseException as error:
+        primary = error
+    failures: list[BaseException] = []
+    try:
+        owner.cleanup(primary)
+    except BaseException as error:
+        failures.append(error)
+    try:
+        _close_leases(ops, leases, primary)
+    except BaseException as error:
+        failures.append(error)
+    if failures:
+        raise RuntimeLauncherCleanupError(primary, failures) from (primary or failures[0])
+    if primary is not None:
+        raise primary
+    return bytes(output)
 def _open_beneath(root_fd: int, path: str) -> int:
     components = path.split("/")
     _require(bool(components) and not any(not item or item in (".", "..") for item in components), "fixed source path components")
@@ -1770,8 +1931,8 @@ def _held_sources(root_fd: int) -> dict[str, bytes]:
         except BaseException as error: raise RuntimeLauncherCleanupError(primary, [error]) from (primary or error)
         if primary is not None: raise primary
     return sources
-def _git_tree(root_fd: int, revision: str) -> dict[str, tuple[str, str]]:
-    arguments = ("/usr/bin/git", "-C", f"/proc/self/fd/{root_fd}", "-c", "core.hooksPath=/dev/null", "ls-tree", "-rz", "--full-tree", revision, "--", *_FIXED_SOURCE_SET)
+def _git_tree(root_fd: int, revision: str, paths: tuple[str, ...] = _FIXED_SOURCE_SET) -> dict[str, tuple[str, str]]:
+    arguments = ("/usr/bin/git", "-C", f"/proc/self/fd/{root_fd}", "-c", "core.hooksPath=/dev/null", "ls-tree", "-rz", "--full-tree", revision, "--", *paths)
     environment = { "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_NO_REPLACE_OBJECTS": "1", "GIT_OPTIONAL_LOCKS": "0", "LC_ALL": "C", }
     try:
         completed = __import__("subprocess").run(
@@ -1791,6 +1952,31 @@ def _git_tree(root_fd: int, revision: str) -> dict[str, tuple[str, str]]:
         _require(path not in result and mode == "100644" and kind == "blob", "fixed git tree identity")
         result[path] = mode, oid
     return result
+def _authenticate_client(root_fd: int, revision: str, mode: str, expected_sha256: str) -> None:
+    path = _OPERATION_CLIENTS[mode]
+    lease = _FdLease(_open_beneath(root_fd, path), "held-operation-client")
+    primary: BaseException | None = None
+    try:
+        before = os.fstat(lease.fd)
+        _require(stat.S_ISREG(before.st_mode) and 0 < before.st_size <= _MAX_SOURCE, "operation client file policy", "client-policy")
+        data = _read_complete(lease.fd, before.st_size, _MAX_SOURCE)
+        after = os.fstat(lease.fd)
+        _require(_stat_identity(before) == _stat_identity(after), "operation client generation", "client-generation")
+        _require(hashlib.sha256(data).hexdigest() == expected_sha256, "operation client digest", "client-digest")
+        tree = _git_tree(root_fd, revision, (path,))
+        _require(set(tree) == {path}, "operation client tree cardinality", "client-tree")
+        oid = tree[path][1]
+        algorithm = hashlib.sha1 if len(oid) == 40 else hashlib.sha256
+        blob = b"blob " + str(len(data)).encode() + b"\0" + data
+        _require(algorithm(blob).hexdigest() == oid, "operation client blob", "client-blob")
+    except BaseException as error:
+        primary = error
+    try:
+        lease.close(_SystemOps())
+    except BaseException as error:
+        raise RuntimeLauncherCleanupError(primary, [error]) from (primary or error)
+    if primary is not None:
+        raise primary
 def _source_set_digest(sources: dict[str, bytes]) -> str:
     digest = hashlib.sha256()
     for path in _FIXED_SOURCE_SET:
@@ -1799,9 +1985,8 @@ def _source_set_digest(sources: dict[str, bytes]) -> str:
         framed = struct.pack("!I", len(encoded)) + encoded + struct.pack("!Q", len(data))
         digest.update(framed + hashlib.sha256(data).digest())
     return digest.hexdigest()
-def _authenticate_sources(root_fd: int, admission: dict[str, object]) -> dict[str, bytes]:
-    sources = _held_sources(root_fd)
-    tree = _git_tree(root_fd, admission["revision"])
+def _validate_source_rows(root_fd: int, revision: str, sources: dict[str, bytes]) -> None:
+    tree = _git_tree(root_fd, revision)
     _require(set(tree) == set(_FIXED_SOURCE_SET), "fixed source tree cardinality")
     for path, data in sources.items():
         oid = tree[path][1]
@@ -1809,11 +1994,318 @@ def _authenticate_sources(root_fd: int, admission: dict[str, object]) -> dict[st
         algorithm = hashlib.sha1 if len(oid) == 40 else hashlib.sha256
         blob = b"blob " + str(len(data)).encode() + b"\0" + data
         _require(algorithm(blob).hexdigest() == oid, "fixed source blob mismatch")
+def _authenticate_sources(root_fd: int, admission: dict[str, object]) -> dict[str, bytes]:
+    sources = _held_sources(root_fd)
+    _validate_source_rows(root_fd, admission["revision"], sources)
     digest = _source_set_digest(sources)
     _require(digest == admission["source_set_sha256"], "fixed source-set digest mismatch")
     launcher = sources[_MODULE_PATHS[2]]
     _require(hashlib.sha256(launcher).hexdigest() == admission["bootstrap_sha256"], "externally asserted bootstrap digest mismatch")
     return sources
+def _read_held_client(fd: int) -> bytes:
+    before = os.fstat(fd)
+    _require(stat.S_ISREG(before.st_mode) and 0 < before.st_size <= _MAX_SOURCE, "held client policy", "client-policy")
+    chunks = []
+    offset = 0
+    while offset < before.st_size:
+        part = os.pread(fd, min(65536, before.st_size - offset), offset)
+        _require(bool(part), "held client short read", "client-short-read")
+        chunks.append(part)
+        offset += len(part)
+    _require(_stat_identity(os.fstat(fd)) == _stat_identity(before), "held client generation", "client-generation")
+    return b"".join(chunks)
+def _prepare_held_client(operation: str, source_root_fd: int, revision: str, admitted_driver_fd: int) -> tuple[bytes, bytes, str]:
+    _require(operation in _OPERATION_CLIENTS and type(revision) is str and re.fullmatch(r"[0-9a-f]{40}", revision) is not None, "held client identity", "client-identity")
+    sources = _held_sources(source_root_fd)
+    _validate_source_rows(source_root_fd, revision, sources)
+    source_digest = _source_set_digest(sources)
+    driver = _read_held_client(admitted_driver_fd)
+    client_sha = hashlib.sha256(driver).hexdigest()
+    _authenticate_client(source_root_fd, revision, operation, client_sha)
+    launcher = sources[_MODULE_PATHS[2]]
+    version = next(key for key, value in _ADMISSION_MODES.items() if value == operation)
+    admission = _canonical({
+        "bootstrap_sha256": hashlib.sha256(launcher).hexdigest(),
+        "client_sha256": client_sha,
+        "revision": revision,
+        "source_set_sha256": source_digest,
+        "version": version,
+    }, True)
+    return launcher, admission, source_digest
+def _decode_runtime_result(value: object) -> RuntimeQualificationResult:
+    names = tuple(item.name for item in fields(RuntimeQualificationResult))
+    _require(type(value) is dict and set(value) == set(names), "ordinary result shape", "result-shape")
+    result = RuntimeQualificationResult(*(value[name] for name in names))
+    _require(all(type(getattr(result, name)) is str for name in names[:7]), "ordinary result strings", "result-type")
+    _require(all(type(getattr(result, name)) is bool and getattr(result, name) for name in names[7:]), "ordinary result observations", "result-observation")
+    return result
+def _decode_mapping_result(value: object) -> RuntimeMappingQualificationResult:
+    names = tuple(item.name for item in fields(RuntimeMappingQualificationResult))
+    _require(type(value) is dict and set(value) == set(names), "mapping result shape", "result-shape")
+    objects = value["objects"]
+    mapped = value["mapped"]
+    object_names = tuple(item.name for item in fields(RuntimeObjectObservation))
+    mapped_names = tuple(item.name for item in fields(MappedObjectObservation))
+    _require(type(objects) is list and type(mapped) is list, "mapping row arrays", "result-shape")
+    object_rows = tuple(RuntimeObjectObservation(*(item[name] if name != "needed" else tuple(item[name]) for name in object_names)) for item in objects if type(item) is dict and set(item) == set(object_names))
+    mapped_rows = tuple(MappedObjectObservation(*(item[name] for name in mapped_names)) for item in mapped if type(item) is dict and set(item) == set(mapped_names))
+    _require(len(object_rows) == len(objects) == len(mapped_rows) == len(mapped), "mapping row shape", "result-shape")
+    arguments = [value[name] for name in names]
+    arguments[names.index("objects")] = object_rows
+    arguments[names.index("mapped")] = mapped_rows
+    result = RuntimeMappingQualificationResult(*arguments)
+    _require(all(getattr(result, name) is True for name in names[-5:]), "mapping observations", "result-observation")
+    return result
+def _decode_sandbox_result(value: object) -> SandboxQualificationResult:
+    names = tuple(item.name for item in fields(SandboxQualificationResult))
+    _require(type(value) is dict and set(value) == set(names), "sandbox result shape", "result-shape")
+    result = SandboxQualificationResult(*(value[name] for name in names))
+    _require(result.version == "cogs.sandbox-qualification/v1" and all(getattr(result, name) is True for name in names[4:]), "sandbox observations", "result-observation")
+    return result
+def _decode_compression_result(value: object) -> RuntimeCompressionQualificationResult:
+    names = tuple(item.name for item in fields(RuntimeCompressionQualificationResult))
+    _require(type(value) is dict and set(value) == set(names) and type(value["tools"]) is list, "compression result shape", "result-shape")
+    tool_names = tuple(item.name for item in fields(RuntimeCompressionToolObservation))
+    tools = tuple(RuntimeCompressionToolObservation(*(item[name] if name != "objects" else tuple({**row, "needed": tuple(row["needed"])} for row in item[name]) for name in tool_names)) for item in value["tools"] if type(item) is dict and set(item) == set(tool_names))
+    _require(len(tools) == 2 and tuple(item.id for item in tools) == ("gzip", "zstd"), "compression tool shape", "result-shape")
+    runtime = _decode_runtime_result(value["runtime"])
+    result = RuntimeCompressionQualificationResult(value["version"], value["source_revision"], value["source_set_sha256"], value["closure_sha256"], tools, runtime)
+    expected = hashlib.sha256(_FIXED_OUTPUT).hexdigest()
+    _require(all(item.seal_mask == 63 and item.output_sha256 == expected for item in tools), "compression observations", "result-observation")
+    return result
+def _invoke_prepared_client(operation: str, launcher: bytes, admission: bytes, source_root_fd: int) -> object:
+    raw = _run_held_python_with_ops(_SystemOps(), launcher, source_root_fd, admission)
+    value = _strict_json(raw, True, _MAX_REPORT, "fixed operation result")
+    if operation == "mapping":
+        return _decode_mapping_result(value)
+    if operation == "compression":
+        return _decode_compression_result(value)
+    if operation == "runtime":
+        return _decode_runtime_result(value)
+    if operation == "sandbox":
+        return _decode_sandbox_result(value)
+    return value
+def invoke_fixed_mapping_qualification(source_root_fd: int, revision: str, admitted_driver_fd: int) -> RuntimeMappingQualificationResult:
+    launcher, admission, _digest_value = _prepare_held_client("mapping", source_root_fd, revision, admitted_driver_fd)
+    return _invoke_prepared_client("mapping", launcher, admission, source_root_fd)
+def invoke_fixed_compression_qualification(source_root_fd: int, revision: str, admitted_driver_fd: int) -> RuntimeCompressionQualificationResult:
+    launcher, admission, _digest_value = _prepare_held_client("compression", source_root_fd, revision, admitted_driver_fd)
+    return _invoke_prepared_client("compression", launcher, admission, source_root_fd)
+class _AdmittedProductionInvocation:
+    def __init__(self, result_type: type, revision: str, digest: str, callback: object):
+        self.result_type = result_type
+        self.source_revision = revision
+        self.source_set_sha256 = digest
+        self._callback = callback
+        self._used = False
+    def invoke(self) -> object:
+        _require(not self._used, "production invocation replay", "operation-replay")
+        self._used = True
+        callback = self._callback
+        self._callback = None
+        _require(callable(callback), "production invocation missing", "operation-replay")
+        result = callback()
+        _require(type(result) is self.result_type, "production result substitution", "result-type")
+        return result
+def _admit_operation_with_held_sources(operation: str, result_type: type, source_root_fd: int, revision: str, admitted_driver_fd: int) -> _AdmittedProductionInvocation:
+    launcher, admission, digest = _prepare_held_client(operation, source_root_fd, revision, admitted_driver_fd)
+    callback = lambda: _invoke_prepared_client(operation, launcher, admission, source_root_fd)
+    return _AdmittedProductionInvocation(result_type, revision, digest, callback)
+def _admit_job_e_sandbox_with_held_sources(source_root_fd: int, revision: str, admitted_driver_fd: int) -> _AdmittedProductionInvocation:
+    return _admit_operation_with_held_sources("sandbox", SandboxQualificationResult, source_root_fd, revision, admitted_driver_fd)
+def _admit_complete_runtime_with_held_sources(source_root_fd: int, revision: str, admitted_driver_fd: int) -> _AdmittedProductionInvocation:
+    return _admit_operation_with_held_sources("runtime", RuntimeQualificationResult, source_root_fd, revision, admitted_driver_fd)
+_ROOT_CAPSULE_VERSION, _ROOT_CAPSULE_LIMIT, _ROOT_BOOTSTRAP_LIMIT = "cogs.runtime-source-admission/sandbox-v1", 8_000_000, 65_536
+_ROOT_BOOTSTRAP = r'''import ctypes
+import hashlib
+import json
+import os
+import struct
+import sys
+assert os.geteuid() == 0 and not os.environ and sys.argv == ['-c']
+parent = os.getppid()
+libc = ctypes.CDLL(None, use_errno=True)
+assert parent > 1 and libc.prctl(1, 9, 0, 0, 0) == 0 and os.getppid() == parent
+directory = os.open('/proc/self/fd', os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW)
+buffer = ctypes.create_string_buffer(32768)
+numbers = []
+calls = 0
+while True:
+    count = libc.syscall(217, directory, ctypes.byref(buffer), 32768)
+    assert count >= 0
+    calls += 1
+    assert calls <= 33
+    if count == 0:
+        break
+    offset = 0
+    while offset < count:
+        assert count - offset >= 19
+        length = struct.unpack_from('=QqHB', buffer.raw, offset)[2]
+        assert length >= 24 and length % 8 == 0 and offset + length <= count
+        field = buffer.raw[offset + 19:offset + length]
+        end = field.find(b'\0')
+        assert end >= 0
+        name = field[:end]
+        if name not in (b'.', b'..'):
+            assert name.isdigit() and (len(name) == 1 or not name.startswith(b'0'))
+            numbers.append(int(name))
+        offset += length
+assert len(numbers) == len(set(numbers)) and numbers.count(directory) == 1 and sorted(number for number in numbers if number != directory) == [0, 1, 2]
+os.close(directory)
+running = os.stat('/proc/self/exe')
+admitted = os.stat('/usr/bin/python3')
+assert (running.st_dev, running.st_ino) == (admitted.st_dev, admitted.st_ino)
+raw = b''
+while len(raw) <= 8000000:
+    part = os.read(0, min(65536, 8000001 - len(raw)))
+    if not part:
+        break
+    raw += part
+assert 0 < len(raw) <= 8000000 and b'\n' in raw
+header_raw, payload = raw.split(b'\n', 1)
+assert 0 < len(header_raw) <= 65536
+def pairs(items):
+    value = {}
+    for key, item in items:
+        assert key not in value
+        value[key] = item
+    return value
+header = json.loads(header_raw.decode('utf-8', 'strict'), object_pairs_hook=pairs)
+assert json.dumps(header, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode() == header_raw
+keys = {'bootstrap_sha256', 'parent_pid', 'profile', 'revision', 'source_set_sha256', 'sources', 'version'}
+assert type(header) is dict and set(header) == keys
+assert header['version'] == 'cogs.runtime-source-admission/sandbox-v1' and header['profile'] == 'sandbox' and header['parent_pid'] == parent
+paths = ('deploy/aws-feasibility/remote/completion_elf.py', 'deploy/aws-feasibility/remote/completion_trusted_runtime_closure.py', 'deploy/aws-feasibility/remote/completion_trusted_runtime_launcher.py', 'schemas/trusted-runtime-closure-v1.json')
+rows = header['sources']
+assert type(rows) is list and len(rows) == 4 and tuple(row.get('path') for row in rows if type(row) is dict) == paths
+offset = 0
+sources = {}
+digest = hashlib.sha256()
+for row in rows:
+    assert set(row) == {'path', 'sha256', 'size'} and type(row['size']) is int and 0 < row['size'] <= 2000000
+    data = payload[offset:offset + row['size']]
+    offset += row['size']
+    assert len(data) == row['size'] and hashlib.sha256(data).hexdigest() == row['sha256']
+    encoded = row['path'].encode()
+    digest.update(struct.pack('!I', len(encoded)) + encoded + struct.pack('!Q', len(data)) + hashlib.sha256(data).digest())
+    sources[row['path']] = data
+assert offset == len(payload) and digest.hexdigest() == header['source_set_sha256']
+launcher = sources[paths[2]]
+assert hashlib.sha256(launcher).hexdigest() == header['bootstrap_sha256']
+globals_ = {'__name__': 'cogs_root_capsule'}
+exec(compile(launcher, 'cogs-held:root-launcher', 'exec'), globals_)
+raise SystemExit(globals_['_root_capsule_entry'](raw))'''
+def _encode_root_capsule(sources: dict[str, bytes], admission: _SourceAdmission) -> bytes:
+    rows = [{"path": path, "sha256": hashlib.sha256(sources[path]).hexdigest(), "size": len(sources[path])} for path in _FIXED_SOURCE_SET]
+    header = {"bootstrap_sha256": admission.bootstrap_sha256, "parent_pid": os.getpid(), "profile": "sandbox", "revision": admission.revision, "source_set_sha256": admission.source_set_sha256, "sources": rows, "version": _ROOT_CAPSULE_VERSION}
+    result = _canonical(header, True) + b"".join(sources[path] for path in _FIXED_SOURCE_SET)
+    _require(len(_ROOT_BOOTSTRAP.encode()) <= _ROOT_BOOTSTRAP_LIMIT and len(result) <= _ROOT_CAPSULE_LIMIT, "root capsule bound", "root-capsule-bound")
+    return result
+def _decode_root_capsule(raw: bytes) -> tuple[dict[str, bytes], dict[str, object]]:
+    _require(type(raw) is bytes and 0 < len(raw) <= _ROOT_CAPSULE_LIMIT and b"\n" in raw, "root capsule framing", "root-capsule-framing")
+    header_raw, payload = raw.split(b"\n", 1)
+    header = _strict_json(header_raw, False, _ROOT_BOOTSTRAP_LIMIT, "root capsule header")
+    keys = {"bootstrap_sha256", "parent_pid", "profile", "revision", "source_set_sha256", "sources", "version"}
+    identity = header["version"] == _ROOT_CAPSULE_VERSION and header["profile"] == "sandbox"
+    identity = identity and type(header["parent_pid"]) is int and header["parent_pid"] > 1
+    _require(type(header) is dict and set(header) == keys and identity, "root capsule identity", "root-capsule-identity")
+    rows = header["sources"]
+    _require(type(rows) is list and [row.get("path") for row in rows if type(row) is dict] == list(_FIXED_SOURCE_SET), "root capsule source order", "root-capsule-sources")
+    sources: dict[str, bytes] = {}
+    offset = 0
+    for row in rows:
+        _require(set(row) == {"path", "sha256", "size"} and _sha(row["sha256"]) and type(row["size"]) is int and 0 < row["size"] <= _MAX_SOURCE, "root capsule source row", "root-capsule-source")
+        data = payload[offset:offset + row["size"]]
+        offset += row["size"]
+        _require(len(data) == row["size"] and hashlib.sha256(data).hexdigest() == row["sha256"], "root capsule source digest", "root-capsule-digest")
+        sources[row["path"]] = data
+    _require(offset == len(payload) and _source_set_digest(sources) == header["source_set_sha256"], "root capsule aggregate", "root-capsule-aggregate")
+    _require(hashlib.sha256(sources[_MODULE_PATHS[2]]).hexdigest() == header["bootstrap_sha256"], "root capsule launcher", "root-capsule-launcher")
+    return sources, header
+def _run_root_capsule_with_ops(ops: Any, capsule: bytes) -> bytes:
+    command = ("/usr/bin/sudo", "-n", "--close-from=3", "/usr/bin/env", "-i", "/usr/bin/python3", "-I", "-B", "-c", _ROOT_BOOTSTRAP)
+    owner = _ProcessOwner(ops)
+    leases: list[_FdLease] = []
+    primary: BaseException | None = None
+    output = bytearray()
+    errors = bytearray()
+    try:
+        pairs = []
+        for purpose in ("input", "output", "error", "transition", "ack"):
+            pair = tuple(_FdLease(fd, f"sudo-{purpose}") for fd in os.pipe2(os.O_CLOEXEC))
+            leases.extend(pair)
+            pairs.append(pair)
+        input_read, input_write = pairs[0]
+        output_read, output_write = pairs[1]
+        error_read, error_write = pairs[2]
+        transition_read, transition_write = pairs[3]
+        ack_read, ack_write = pairs[4]
+        pid, process, gate = owner.spawn()
+        if pid == 0:
+            try:
+                for lease in (input_write, output_read, error_read, transition_read, ack_write):
+                    lease.close(ops)
+                _require(gate is not None and ops.read(gate.fd, 1) == b"G", "sudo release", "sudo-release")
+                gate.close(ops)
+                os.setsid()
+                _require(ops.write(transition_write.fd, b"S") == 1 and ops.read(ack_read.fd, 1) == b"A", "sudo transition", "sudo-transition")
+                duplicates = tuple(fcntl.fcntl(fd, fcntl.F_DUPFD_CLOEXEC, 128) for fd in (input_read.fd, output_write.fd, error_write.fd))
+                for original, target in zip(duplicates, (0, 1, 2)):
+                    os.dup2(original, target, inheritable=True)
+                for fd in _descriptor_snapshot(ops):
+                    if fd not in (0, 1, 2):
+                        _FdLease(fd, "sudo-complement").close(ops)
+                os.execve(command[0], command, {})
+            except BaseException:
+                os._exit(125)
+        _require(process is not None, "sudo process registration", "sudo-register")
+        for lease in (input_read, output_write, error_write, transition_write, ack_read):
+            lease.close(ops)
+        owner.plan_setsid(process)
+        owner.release(process)
+        _require(ops.read(transition_read.fd, 1) == b"S", "sudo transition read", "sudo-transition")
+        owner.confirm_setsid(process)
+        _require(ops.write(ack_write.fd, b"A") == 1, "sudo transition ack", "sudo-transition")
+        transition_read.close(ops)
+        ack_write.close(ops)
+        offset = 0
+        while offset < len(capsule):
+            written = ops.write(input_write.fd, capsule[offset:])
+            _require(written > 0, "root capsule write", "root-capsule-write")
+            offset += written
+        input_write.close(ops)
+        deadline = time.monotonic() + 30.0
+        active = {output_read.fd: output, error_read.fd: errors}
+        while active:
+            ready = select.select(tuple(active), (), (), max(0.0, deadline - time.monotonic()))[0]
+            _require(bool(ready), "sudo output deadline", "sudo-deadline")
+            for fd in ready:
+                part = ops.read(fd, _MAX_REPORT + 1 - len(active[fd]))
+                if part:
+                    active[fd] += part
+                    _require(len(active[fd]) <= _MAX_REPORT, "sudo output bound", "sudo-output-bound")
+                else:
+                    next(item for item in leases if item.fd == fd).close(ops)
+                    del active[fd]
+        status = _wait_bounded(process, deadline)
+        _require(status == 0 and not errors, "sudo capsule exit", "sudo-exit")
+        owner.stop(process)
+    except BaseException as error:
+        primary = error
+    failures = []
+    try:
+        owner.cleanup(primary)
+    except BaseException as error:
+        failures.append(error)
+    try:
+        _close_leases(ops, leases, primary)
+    except BaseException as error:
+        failures.append(error)
+    if failures:
+        raise RuntimeLauncherCleanupError(primary, failures) from (primary or failures[0])
+    if primary is not None:
+        raise primary
+    return bytes(output)
 def _load_private_closure(sources: dict[str, bytes], digest: str) -> types.ModuleType:
     package_name = f"_cogs_o2_{digest[:16]}"
     package = types.ModuleType(package_name)
@@ -1833,6 +2325,206 @@ def _load_private_closure(sources: dict[str, bytes], digest: str) -> types.Modul
         code = compile(sources[path], module.__file__, "exec", dont_inherit=True, optimize=0)
         exec(code, module.__dict__)
     return modules[1]
+def _sandbox_only_transaction(ops: Any) -> dict[str, bool]:
+    fd_baseline, child_baseline = _descriptor_snapshot(ops), _parse_children(_proc_bytes("/proc/self/task/self/children", 65536, ops))
+    root_owner, process_owner = _RootOwner(ops), _ProcessOwner(ops)
+    parent_status = child_status = None
+    lease, primary, boundary = None, None, None
+    try:
+        root = root_owner.prepare()
+        parent_status, child_status = ops.socketpair()
+        pid, lease, gate = process_owner.spawn()
+        if pid == 0:
+            try:
+                _close_socket(parent_status, ops, "sandbox-probe-parent")
+                _require(gate is not None and ops.read(gate.fd, 1) == b"G", "sandbox probe release", "sandbox-release")
+                gate.close(ops)
+                os.setsid()
+                child_status.send(b"S")
+                _require(child_status.recv(1) == b"A", "sandbox transition ack", "sandbox-transition")
+                child_status.shutdown(socket.SHUT_RD)
+                original_uid, original_gid = os.getuid(), os.getgid()
+                baseline_namespaces = tuple((row.st_dev, row.st_ino) for name in ("user", "pid", "mnt", "net") for row in (os.stat(f"/proc/self/ns/{name}"),))
+                os.setgroups([])
+                ops.unshare_boundary()
+                try:
+                    _write_map(ops, "/proc/self/setgroups", b"deny\n")
+                except FileNotFoundError:
+                    pass
+                _write_map(ops, "/proc/self/uid_map", f"0 {original_uid} 1\n".encode())
+                _write_map(ops, "/proc/self/gid_map", f"0 {original_gid} 1\n".encode())
+                ops.mount(None, b"/", None, _MS_REC | _MS_PRIVATE, None)
+                ops.mount(b"tmpfs", root.encode(), b"tmpfs", _MS_NOSUID | _MS_NODEV, b"mode=0700,size=1048576,nr_inodes=16")
+                inner = os.fork()
+                if inner == 0:
+                    allowed = (0, 1, 2, child_status.fileno())
+                    for fd in _descriptor_snapshot(ops):
+                        if fd not in allowed:
+                            _FdLease(fd, "sandbox-probe-complement").close(ops)
+                    current_namespaces = tuple((row.st_dev, row.st_ino) for name in ("user", "pid", "mnt", "net") for row in (os.stat(f"/proc/self/ns/{name}"),))
+                    status = _parse_proc_status(_proc_bytes("/proc/self/status", 65536, ops))
+                    changed = tuple(current != prior for current, prior in zip(current_namespaces, baseline_namespaces))
+                    facts = {"user_namespace_exact": changed[0], "pid_namespace_exact": changed[1], "mount_namespace_exact": changed[2], "network_namespace_exact": changed[3], "pid_one": status["nspid"][-1] == 1}
+                    ops.mount(None, root.encode(), None, _MS_REMOUNT | _MS_RDONLY | _MS_NOSUID | _MS_NODEV | _MS_NOEXEC, None)
+                    mount_facts = _final_mount_check(os.getpid(), ops)
+                    observed = _enter_boundary(ops, root)
+                    packet = _canonical({"boundary": observed, "facts": facts, "mount": mount_facts, "pid_one": facts["pid_one"]})
+                    os.write(child_status.fileno(), packet)
+                    os._exit(0)
+                deadline = time.monotonic() + _SETUP_SECONDS
+                observed = 0
+                status = 0
+                while observed == 0:
+                    observed, status = os.waitpid(inner, os.WNOHANG)
+                    _require(time.monotonic() < deadline, "sandbox inner reap deadline", "sandbox-inner-reap")
+                    if observed == 0:
+                        time.sleep(0.001)
+                _require(observed == inner and status == 0, "sandbox inner reap", "sandbox-inner-reap")
+                ops.umount(root.encode())
+                os._exit(0)
+            except BaseException:
+                os._exit(125)
+        _require(lease is not None, "sandbox probe registration", "sandbox-register")
+        _close_socket(child_status, ops, "sandbox-probe-child")
+        process_owner.plan_setsid(lease)
+        process_owner.release(lease)
+        _require(parent_status.recv(1) == b"S", "sandbox transition read", "sandbox-transition")
+        process_owner.confirm_setsid(lease)
+        parent_status.send(b"A")
+        parent_status.shutdown(socket.SHUT_WR)
+        raw, namespace_authority = parent_status.recv(65536), _open_namespace_authority(lease, ops)
+        value = _strict_json(raw, False, 65536, "sandbox probe result")
+        _require(type(value) is dict and set(value) == {"boundary", "facts", "mount", "pid_one"}, "sandbox probe shape", "sandbox-shape")
+        boundary = value
+        status = _wait_bounded(lease, time.monotonic() + _SETUP_SECONDS)
+        _require(status == 0, "sandbox probe exit", "sandbox-exit")
+        process_owner.stop(lease)
+        lease = None
+    except BaseException as error:
+        primary = error
+    failures = []
+    try:
+        process_owner.cleanup(primary)
+    except BaseException as error:
+        failures.append(error)
+    try:
+        _close_socket(parent_status, ops, "sandbox-probe-parent")
+        _close_socket(child_status, ops, "sandbox-probe-child")
+    except BaseException as error:
+        failures.append(error)
+    try:
+        root_owner.cleanup(primary)
+    except BaseException as error:
+        failures.append(error)
+    if failures:
+        raise RuntimeLauncherCleanupError(primary, failures) from (primary or failures[0])
+    if primary is not None:
+        raise primary
+    _require(boundary is not None, "sandbox observations missing", "sandbox-result")
+    facts, observed = boundary["facts"], boundary["boundary"]
+    capability, denials = observed["capability_sets"], observed["seccomp_denials"]
+    return {
+        "user_namespace_exact": facts["user_namespace_exact"], "pid_namespace_exact": facts["pid_namespace_exact"], "mount_namespace_exact": facts["mount_namespace_exact"], "network_namespace_exact": facts["network_namespace_exact"], "namespace_ownership_exact": namespace_authority["namespace_ownership_exact"], "pid_one": boundary["pid_one"], "capabilities_zero": not any(capability[name] for name in ("effective", "permitted", "inheritable")) and not any(capability["bounding"]) and not any(capability["ambient"]), "noroot_locked": observed["securebits"] == _SECBITS, "no_new_privs": observed["no_new_privs"] == 1, "seccomp_installed": observed["seccomp_installed"] is True, "seccomp_mode_exact": observed["seccomp_mode"] == _SECCOMP_MODE_FILTER, "seccomp_program_exact": observed["seccomp_program_sha256"] == _seccomp_digest(), "seccomp_denials_exact": set(denials) == set(_DENIED_SYSCALLS) | {"prctl:set", "execveat:shape"}, "no_acquisition_route": all(value == errno.EPERM for value in denials.values()), "root_readonly_noexec": boundary["mount"][0], "root_has_no_proc": boundary["mount"][1], "host_paths_absent": boundary["mount"][2], "checkout_absent": boundary["mount"][3], "descriptors_restored": _descriptor_snapshot(ops) == fd_baseline, "children_reaped": _parse_children(_proc_bytes("/proc/self/task/self/children", 65536, ops)) == child_baseline, "descendants_reaped": not process_owner.processes, "mounts_restored": root_owner.cleaned, "paths_restored": root_owner.cleaned, "namespaces_released": not process_owner.processes, "namespace_handles_released": not process_owner.processes,
+    }
+def _launch_admitted_fixed_sandbox_qualification(admission: _SourceAdmission, sources: dict[str, bytes], ops: Any) -> SandboxQualificationResult:
+    _consume_launcher_operation(admission, "sandbox")
+    capsule = _encode_root_capsule(sources, admission)
+    raw = _run_root_capsule_with_ops(ops, capsule)
+    return _decode_sandbox_result(_strict_json(raw, True, _MAX_REPORT, "sandbox root result"))
+def _root_capsule_entry(raw: bytes) -> int:
+    _require(os.geteuid() == 0 and not os.environ and len(sys.argv) == 1, "root capsule envelope", "root-envelope")
+    _require(_descriptor_snapshot() == (0, 1, 2), "root capsule descriptors", "root-descriptors")
+    sources, header = _decode_root_capsule(raw)
+    observations = _sandbox_only_transaction(_SystemOps())
+    result = SandboxQualificationResult("cogs.sandbox-qualification/v1", header["revision"], header["source_set_sha256"], _seccomp_digest(), *(observations[name] for name in tuple(item.name for item in fields(SandboxQualificationResult))[4:]))
+    output = _canonical(_result_value(result), True)
+    _require(os.write(1, output) == len(output), "root result write", "root-result-write")
+    return 0
+def _qualify_admitted_fixed_process_lifecycle(admission: _SourceAdmission, ops: Any) -> LifecycleQualificationResult:
+    _consume_launcher_operation(admission, "lifecycle")
+    baseline, children = _descriptor_snapshot(ops), _parse_children(_proc_bytes("/proc/self/task/self/children", 65536, ops))
+    owner = _ProcessOwner(ops)
+    original_subreaper = ctypes.c_int()
+    _require(ops.libc.prctl(_PR_GET_CHILD_SUBREAPER, ctypes.byref(original_subreaper), 0, 0, 0) == 0, "subreaper baseline", "subreaper-read")
+    ops.prctl(_PR_SET_CHILD_SUBREAPER, 1)
+    parent_endpoint, leader_endpoint = ops.socketpair()
+    release_read, release_write = tuple(_FdLease(fd, "descendant-release") for fd in os.pipe2(os.O_CLOEXEC))
+    ack_read, ack_write = tuple(_FdLease(fd, "leader-transition") for fd in os.pipe2(os.O_CLOEXEC))
+    nonce = ops.nonce()
+    pid, leader, gate = owner.spawn()
+    if pid == 0:
+        try:
+            _close_socket(parent_endpoint, ops, "lifecycle-parent")
+            ack_read.close(ops)
+            _require(gate is not None and ops.read(gate.fd, 1) == b"G", "lifecycle release", "lifecycle-release")
+            gate.close(ops)
+            os.setsid()
+            ops.prctl(_PR_SET_PDEATHSIG, signal.SIGKILL)
+            _require(ops.write(ack_write.fd, b"S") == 1, "lifecycle transition", "lifecycle-transition")
+            descendant_pid, descendant_pidfd = ops.clone_pidfd()
+            if descendant_pid == 0:
+                _close_socket(leader_endpoint, ops, "descendant-control")
+                ack_write.close(ops)
+                release_write.close(ops)
+                _require(ops.read(release_read.fd, 1) == b"G", "descendant release", "descendant-release")
+                signal.signal(signal.SIGTERM, signal.SIG_IGN)
+                ops.prctl(_PR_SET_PDEATHSIG, signal.SIGKILL)
+                _require(os.getppid() == os.getsid(0), "descendant parent identity", "descendant-parent")
+                while True:
+                    signal.pause()
+            release_read.close(ops)
+            descendant = _ProcessLease(descendant_pid, _FdLease(descendant_pidfd, "creator-pidfd"))
+            descendant.start_time = _start_time(descendant_pid)
+            descendant.session = os.getsid(descendant_pid)
+            descendant.process_group = os.getpgid(descendant_pid)
+            descendant.executable = _exe_identity(descendant_pid)
+            packet = _canonical({"executable": list(descendant.executable), "nonce": nonce.hex(), "parent": os.getpid(), "pid": descendant.pid, "process_group": descendant.process_group, "sequence": 1, "session": descendant.session, "start_time": descendant.start_time, "version": "cogs.process-transfer/v1"})
+            rights = array("i", (descendant.pidfd.fd,))
+            _require(leader_endpoint.sendmsg((packet,), ((socket.SOL_SOCKET, socket.SCM_RIGHTS, rights),)) == len(packet), "descendant transfer send", "process-transfer-send")
+            _require(leader_endpoint.recv(1) == b"A", "descendant transfer ack", "process-transfer-ack")
+            descendant.pidfd.close(ops)
+            _require(ops.write(release_write.fd, b"G") == 1, "descendant release write", "descendant-release")
+            release_write.close(ops)
+            _require(leader_endpoint.recv(1) == b"X", "leader exit command", "lifecycle-command")
+            os._exit(0)
+        except BaseException:
+            os._exit(125)
+    _require(leader is not None, "lifecycle leader registration", "lifecycle-register")
+    _close_socket(leader_endpoint, ops, "lifecycle-leader")
+    release_read.close(ops)
+    ack_write.close(ops)
+    owner.plan_setsid(leader)
+    owner.release(leader)
+    _require(ops.read(ack_read.fd, 1) == b"S", "lifecycle transition read", "lifecycle-transition")
+    ack_read.close(ops)
+    deadline = time.monotonic() + _SETUP_SECONDS
+    owner.confirm_setsid(leader)
+    descendant = owner.receive_descendant(parent_endpoint, leader, nonce, 1)
+    census = owner.stable_census(leader)
+    _require(parent_endpoint.send(b"A") == 1, "descendant transfer acknowledgement", "process-transfer-ack")
+    signal.pidfd_send_signal(descendant.pidfd.fd, signal.SIGTERM)
+    time.sleep(_TERM_SECONDS)
+    survived_term = not bool(select.select((descendant.pidfd.fd,), (), (), 0)[0])
+    _require(parent_endpoint.send(b"X") == 1, "leader exit command", "lifecycle-command")
+    leader_status = _wait_bounded(leader, deadline)
+    _require(leader_status == 0, "lifecycle leader exit", "lifecycle-exit")
+    owner.stop(leader)
+    adoption = descendant.pid in _parse_children(_proc_bytes("/proc/self/task/self/children", 65536, ops))
+    _require(bool(select.select((descendant.pidfd.fd,), (), (), max(0.0, deadline - time.monotonic()))[0]), "descendant pdeath deadline", "pdeath-deadline")
+    info = os.waitid(os.P_PIDFD, descendant.pidfd.fd, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+    siginfo = info is not None and info.si_code == os.CLD_KILLED and info.si_status == signal.SIGKILL
+    observed, status = os.waitpid(descendant.pid, os.WNOHANG)
+    _require(observed == descendant.pid and os.WIFSIGNALED(status) and os.WTERMSIG(status) == signal.SIGKILL, "descendant exact reap", "process-reap")
+    descendant.reaped = True
+    owner.stop(descendant)
+    _close_socket(parent_endpoint, ops, "lifecycle-parent")
+    release_write.close(ops)
+    ops.prctl(_PR_SET_CHILD_SUBREAPER, original_subreaper.value)
+    observed_subreaper = ctypes.c_int()
+    _require(ops.libc.prctl(_PR_GET_CHILD_SUBREAPER, ctypes.byref(observed_subreaper), 0, 0, 0) == 0, "subreaper restoration read", "subreaper-read")
+    restored = _descriptor_snapshot(ops) == baseline and _parse_children(_proc_bytes("/proc/self/task/self/children", 65536, ops)) == children and not owner.processes
+    observations = (True, True, siginfo, siginfo, True, leader.identity_phase == "POST_SETSID", leader.process_group == leader.pid, True, census == (descendant.pid,), adoption, survived_term and siginfo, siginfo, restored, observed_subreaper.value == original_subreaper.value, restored)
+    return LifecycleQualificationResult("cogs.runtime-lifecycle-qualification/v1", admission.revision, admission.source_set_sha256, *observations)
 def _bootstrap_with_ops(ops: _SystemOps) -> int:
     _platform_gate()
     if len(sys.argv) != 1 or os.environ or not sys.flags.isolated or not sys.flags.dont_write_bytecode: raise RuntimeLauncherError("fixed bootstrap process envelope")
@@ -1853,14 +2545,15 @@ def _bootstrap_with_ops(ops: _SystemOps) -> int:
         if not part: break
         raw += part
     admission = _strict_json(bytes(raw), True, _MAX_ADMISSION, "source admission")
-    expected = {"bootstrap_sha256", "revision", "source_set_sha256", "version"}
+    expected = {"bootstrap_sha256", "client_sha256", "revision", "source_set_sha256", "version"}
     mode = _ADMISSION_MODES.get(admission.get("version")) if type(admission) is dict else None
     _require(type(admission) is dict and set(admission) == expected and mode is not None, "source admission shape")
-    _require(_sha(admission["bootstrap_sha256"]) and _sha(admission["source_set_sha256"]), "source admission digest")
+    _require(_sha(admission["bootstrap_sha256"]) and _sha(admission["client_sha256"]) and _sha(admission["source_set_sha256"]), "source admission digest")
     revision = admission["revision"]
     valid_revision = type(revision) is str and len(revision) == 40 and all(character in "0123456789abcdef" for character in revision)
     _require(valid_revision, "source admission revision")
     sources = _authenticate_sources(4, admission)
+    _authenticate_client(4, revision, mode, admission["client_sha256"])
     root = os.fstat(4)
     retained = (root.st_dev, root.st_ino) == (root_before.st_dev, root_before.st_ino)
     root_secure = stat.S_ISDIR(root.st_mode) and root.st_uid == os.geteuid() and not root.st_mode & 0o022
@@ -1868,16 +2561,26 @@ def _bootstrap_with_ops(ops: _SystemOps) -> int:
     _close_leases(ops, [_FdLease(3, "admission-input"), _FdLease(4, "checkout-root")])
     __import__("platform")
     sys.path[:] = []
-    closure_module = _load_private_closure(sources, admission["source_set_sha256"])
-    source_admission = _SourceAdmission(revision, admission["bootstrap_sha256"], admission["source_set_sha256"], sources[_SCHEMA_PATH], "", 0, None, None, 0, 0, 0)
+    closure_module = None if mode in ("lifecycle", "sandbox") else _load_private_closure(sources, admission["source_set_sha256"])
+    issuer = _BOOTSTRAP_OPERATION_TOKEN if mode in ("lifecycle", "sandbox") else None
+    source_admission = _SourceAdmission(revision, admission["bootstrap_sha256"], admission["source_set_sha256"], sources[_SCHEMA_PATH], "", 0, None, issuer, 0, 0, 0, mode)
     if mode == "mapping":
-        value = _coordinate_admitted_mapping_only(source_admission, closure_module)
+        entry = getattr(closure_module, "_qualify_admitted_fixed_python_mapping", None)
+        _require(callable(entry), "mapping owner entry", "operation-entry")
+        result = entry(source_admission)
+    elif mode == "descriptor":
+        entry = getattr(closure_module, "_qualify_admitted_fixed_descriptor_primitives", None)
+        _require(callable(entry), "descriptor owner entry", "operation-entry")
+        result = entry(source_admission)
+    elif mode == "compression":
+        result = _launch_admitted_fixed_compression_qualification(source_admission, closure_module, ops)
+    elif mode == "runtime":
+        result = _launch_admitted_fixed_runtime_qualification(source_admission, closure_module, ops)
+    elif mode == "lifecycle":
+        result = _qualify_admitted_fixed_process_lifecycle(source_admission, ops)
     else:
-        result, metadata = _coordinate_with_ops(source_admission, closure_module, ops)
-        value = result.__dict__
-        if mode == "compression":
-            value = {**value, "compression_tools": metadata}
-    output = _canonical(value, True)
+        result = _launch_admitted_fixed_sandbox_qualification(source_admission, sources, ops)
+    output = _canonical(_result_value(result), True)
     offset = 0
     while offset < len(output):
         written = os.write(1, output[offset:])

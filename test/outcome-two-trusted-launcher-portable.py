@@ -327,6 +327,7 @@ def admission_objects(module, endpoint):
         os.getpid(),
         os.getuid(),
         os.getgid(),
+        "runtime",
     )
     issuer = module._WorkerIssuer(
         endpoint, b"n" * 32, admission, os.getpid(), "held.package",
@@ -409,12 +410,12 @@ def valid_bundle(module, directory):
                 (1, 2, value["size"], 4, 5, 0o100555, 0, 0),
             ))
     metadata = module._runtime_metadata(
-        report, tuple(rows), (tools[2]["mapping_sha256"], tools[1]["mapping_sha256"]), (b"gzip-output", b"zstd-output"),
+        report, tuple(rows), (tools[2]["mapping_sha256"], tools[1]["mapping_sha256"]), (module._FIXED_OUTPUT, module._FIXED_OUTPUT),
     )
     compression_tools = metadata
-    if tuple(value["id"] for value in compression_tools) != ("gzip", "zstd"):
+    if tuple(value.id for value in compression_tools) != ("gzip", "zstd"):
         raise AssertionError("admitted compression order")
-    if any(value["seal_mask"] != module._EXEC_SEALS or value["source_sha256"] != value["sealed_sha256"] for value in compression_tools):
+    if any(value.seal_mask != module._EXEC_SEALS or value.source_sha256 != value.sealed_sha256 for value in compression_tools):
         raise AssertionError("admitted compression metadata binding")
     if any(name in repr(metadata) for name in ("descriptor_index", "source_generation", "logical_path", "held_fd")):
         raise AssertionError("private authority escaped A/B metadata")
@@ -428,6 +429,7 @@ def invoke_bootstrap(module, row, created):
     os.environ.clear()
     admission = module._canonical({
         "bootstrap_sha256": "0" * 64,
+        "client_sha256": "0" * 64,
         "revision": "0" * 40,
         "source_set_sha256": "1" * 64,
         "version": module._ADMISSION_VERSION,
@@ -578,127 +580,106 @@ def execute_row(module, row):
         )
 
 
-def mapping_only_coordinator(module):
-    events = []
-    source = SimpleNamespace(
-        role="executable", size=7, sha256=hashlib.sha256(b"python3").hexdigest(),
+def production_operation_contracts(module):
+    digest = hashlib.sha256(module._FIXED_OUTPUT).hexdigest()
+    ordinary_values = [module._RESULT_VERSION, module._MARKER, "0" * 40,
+                       "1" * 64, "2" * 64, digest, digest]
+    ordinary_values.extend(True for _name in module._OBSERVATION_NAMES)
+    ordinary = module.RuntimeQualificationResult(*ordinary_values)
+    objects = (
+        module.RuntimeObjectObservation("executable", 7, "3" * 64, None, ()),
+        module.RuntimeObjectObservation("loader", 8, "4" * 64, "ld.so", ()),
     )
-
-    class State:
-        value = "OWNED"
-
-    class Preparation:
-        def __init__(self, ops, fd_baseline, child_baseline, outer):
-            self.ops = ops
-            self.fd_baseline = fd_baseline
-            self.child_baseline = child_baseline
-            self.outer = outer
-            self.helpers = []
-
-        def owned_fds(self):
-            return ()
-
-    class Ops:
-        def architecture_gate(self):
-            events.append("architecture")
-
-    class CleanupError(RuntimeError):
-        pass
-
-    digest = "1" * 64
-    name = f"_cogs_o2_{digest[:16]}.completion_trusted_runtime_closure"
-    closure = types.ModuleType(name)
-    closure.__package__ = name.rsplit(".", 1)[0]
-    closure._ADMISSION_TYPE = module._SourceAdmission
-    closure._Ops = Ops
-    closure.PreparationLease = Preparation
-    closure.RuntimeClosureCleanupError = CleanupError
-    closure._reserve_stdio = lambda ops: events.append("reserve-stdio")
-    closure._snapshot_fds = lambda ops: frozenset()
-    closure._child_baseline = lambda ops: ()
-    closure._canonical = module._canonical
-    closure._object_report = lambda value: {
-        "needed": [], "role": value.role, "sha256": value.sha256,
-        "size": value.size, "soname": None,
-    }
-    resolved = SimpleNamespace(objects=(source,))
-    def resolve(ops, tool, path):
-        del ops
-        events.append(("resolve", tool, path))
-        return resolved
-    def spawn(ops, preparation, value):
-        del ops, value
-        helper = SimpleNamespace(
-            pid=41, start_time=42, session=41, process_group=41,
-            reaped=False, pidfd=SimpleNamespace(state=State()),
-        )
-        helper.token = preparation.outer._register_runtime_helper(helper, 100.0)
-        preparation.outer._release_runtime_helper(helper.token, 100.0)
-        preparation.helpers.append(helper)
-        events.append("spawn")
-        return helper
-    def mapped(ops, helper, value):
-        del ops, helper
-        sequence = tuple((item.role, item.sha256) for item in value.objects)
-        events.append("map-files")
-        return SimpleNamespace(
-            tool="python3-parser", mapped=sequence,
-            mapping_sha256=hashlib.sha256(module._canonical(sequence)).hexdigest(),
-        )
-    def stop(ops, preparation, helper):
-        del ops
-        helper.reaped = True
-        preparation.outer._retire_runtime_helper(helper.token, 100.0)
-        helper.pidfd.state.value = "CLOSED"
-        preparation.helpers.remove(helper)
-        events.append("stop-reap")
-
-    closure._resolve_tool = resolve
-    closure._spawn_helper = spawn
-    closure._mapped_closure = mapped
-    closure._stop_helper = stop
-    closure._close_objects = lambda ops, objects: events.append("close-sources")
-    sys.modules[name] = closure
-    admission = module._SourceAdmission(
-        "0" * 40, "2" * 64, digest, b"", "", 0, None, None, 0, 0, 0,
+    mapped = tuple(module.MappedObjectObservation(row.role, row.sha256)
+                   for row in objects)
+    mapping = module.RuntimeMappingQualificationResult(
+        "cogs.runtime-mapping-qualification/v1", "0" * 40, "1" * 64,
+        "5" * 64, "6" * 64, objects, mapped, True, True, True, True, True,
     )
+    encoded_mapping = json.loads(module._canonical(module._result_value(mapping)))
+    decoded_mapping = module._decode_mapping_result(encoded_mapping)
+    if decoded_mapping != mapping:
+        raise AssertionError("mapping typed round trip")
+    object_values = tuple({
+        "needed": row.needed, "role": row.role, "sha256": row.sha256,
+        "size_bytes": row.size_bytes, "soname": row.soname,
+    } for row in objects)
+    tools = tuple(module.RuntimeCompressionToolObservation(
+        name, object_values, "7" * 64, "8" * 64, objects[0].sha256,
+        objects[0].size_bytes, objects[0].sha256, objects[0].size_bytes,
+        63, "8" * 64, digest,
+    ) for name in ("gzip", "zstd"))
+    compression = module.RuntimeCompressionQualificationResult(
+        "cogs.runtime-compression-qualification/v1", "0" * 40,
+        "1" * 64, ordinary.closure_sha256, tools, ordinary,
+    )
+    encoded_compression = json.loads(module._canonical(module._result_value(compression)))
+    if module._decode_compression_result(encoded_compression) != compression:
+        raise AssertionError("compression typed round trip")
     try:
-        result = module._coordinate_admitted_mapping_only(admission, closure)
-        expected_fields = {
-            "version", "source_revision", "source_set_sha256", "closure_sha256",
-            "mapping_sha256", "mapping_objects", "mapped_generations_exact",
-            "mapping_stable", "helper_reaped", "descriptors_restored",
-            "children_reaped",
-        }
-        if set(result) != expected_fields or result["version"] != "cogs.runtime-mapping-qualification/v1":
-            raise AssertionError("mapping-only result shape")
-        if result["mapping_objects"][0]["sha256"] != source.sha256:
-            raise AssertionError("mapping-only typed result")
-        if not all(result[name] is True for name in (
-            "mapped_generations_exact", "mapping_stable", "helper_reaped",
-            "descriptors_restored", "children_reaped",
-        )):
-            raise AssertionError("mapping-only exact observations")
-        expected = [
-            "architecture", "reserve-stdio",
-            ("resolve", "python3-parser", "/usr/bin/python3"),
-            "spawn", "map-files", "stop-reap", "close-sources",
-        ]
-        if events != expected:
-            raise AssertionError(f"mapping-only production route drift: {events}")
-        before = list(events)
-        try:
-            module._coordinate_admitted_mapping_only(admission, closure)
-        except module.RuntimeLauncherError as error:
-            if error.code != "mapping-admission":
-                raise
-        else:
-            raise AssertionError("mapping admission replay accepted")
-        if events != before:
-            raise AssertionError("mapping replay reached an effect")
-    finally:
-        sys.modules.pop(name, None)
+        module._decode_runtime_result(encoded_mapping)
+    except module.RuntimeLauncherError:
+        pass
+    else:
+        raise AssertionError("cross-profile mapping accepted as ordinary")
+    sandbox_names = tuple(item.name for item in module.fields(module.SandboxQualificationResult))
+    sandbox = module.SandboxQualificationResult(
+        "cogs.sandbox-qualification/v1", "0" * 40, "1" * 64,
+        module._seccomp_digest(), *(True for _name in sandbox_names[4:]),
+    )
+    encoded_sandbox = json.loads(module._canonical(module._result_value(sandbox)))
+    if module._decode_sandbox_result(encoded_sandbox) != sandbox:
+        raise AssertionError("sandbox typed round trip")
+    called = []
+    def invoke_once():
+        called.append("invoke")
+        return sandbox
+    invocation = module._AdmittedProductionInvocation(
+        module.SandboxQualificationResult, "0" * 40, "1" * 64, invoke_once,
+    )
+    if invocation.invoke() is not sandbox or called != ["invoke"]:
+        raise AssertionError("one-shot invocation did not return exact type")
+    try:
+        invocation.invoke()
+    except module.RuntimeLauncherError as error:
+        if error.code != "operation-replay":
+            raise
+    else:
+        raise AssertionError("one-shot production invocation replayed")
 
+
+def capsule_contract(module):
+    sources = {path: (ROOT / path).read_bytes()
+               for path in module._FIXED_SOURCE_SET}
+    source_digest = module._source_set_digest(sources)
+    admission = module._SourceAdmission(
+        "0" * 40, hashlib.sha256(sources[module._MODULE_PATHS[2]]).hexdigest(),
+        source_digest, sources[module._SCHEMA_PATH], "", 0, None,
+        module._BOOTSTRAP_OPERATION_TOKEN, 0, 0, 0, "sandbox",
+    )
+    capsule = module._encode_root_capsule(sources, admission)
+    decoded, header = module._decode_root_capsule(capsule)
+    if decoded != sources or header["parent_pid"] != os.getpid():
+        raise AssertionError("held root capsule round trip")
+    header_raw, payload = capsule.split(b"\n", 1)
+    duplicate = header_raw[:-1] + b',"version":"cogs.runtime-source-admission/sandbox-v1"}'
+    for hostile in (duplicate + b"\n" + payload, capsule[:-1], capsule + b"x"):
+        try:
+            module._decode_root_capsule(hostile)
+        except module.RuntimeLauncherError:
+            pass
+        else:
+            raise AssertionError("hostile root capsule accepted")
+    bootstrap = module._ROOT_BOOTSTRAP
+    required = ("object_pairs_hook=pairs", "parent_pid", "source_set_sha256",
+                "os.getppid() == parent", "numbers.count(directory) == 1",
+                "offset == len(payload)")
+    if not all(token in bootstrap for token in required):
+        raise AssertionError("root bootstrap pre-exec admission weakened")
+    source = MODULE.read_text()
+    root_entry = source[source.index("def _root_capsule_entry"):source.index("def _qualify_admitted_fixed_process_lifecycle")]
+    if "_load_private_closure" in root_entry or "checkout" in module._ROOT_BOOTSTRAP:
+        raise AssertionError("sandbox root reached closure/checkout authority")
 
 def fixed_bootstrap_modes(module):
     values = [module._RESULT_VERSION, module._MARKER, "0" * 40, "1" * 64, "2" * 64, "3" * 64, "3" * 64]
@@ -712,6 +693,9 @@ def fixed_bootstrap_modes(module):
         "cogs.runtime-source-admission/v1": "runtime",
         "cogs.runtime-source-admission/mapping-v1": "mapping",
         "cogs.runtime-source-admission/compression-v1": "compression",
+        "cogs.runtime-source-admission/descriptor-v1": "descriptor",
+        "cogs.runtime-source-admission/lifecycle-v1": "lifecycle",
+        "cogs.runtime-source-admission/sandbox-v1": "sandbox",
     }:
         raise AssertionError("fixed bootstrap modes drift")
 
@@ -764,9 +748,12 @@ def parent():
     owner_policy = launcher_source.index("root.st_uid == os.geteuid()")
     if authenticate > owner_policy or "st_uid == 0" in launcher_source:
         raise AssertionError("runner checkout ownership policy/order drift")
-    if "object.__setattr__(result" in launcher_source or 'if mode == "mapping"' not in launcher_source or 'if mode == "compression"' not in launcher_source:
-        raise AssertionError("fixed admitted mode routing drift")
-    mapping_only_coordinator(module)
+    banned = ("_MappingAuthority", "_coordinate_admitted_mapping_only")
+    required = ("_qualify_admitted_fixed_python_mapping", "_launch_admitted_fixed_compression_qualification", "_qualify_admitted_fixed_descriptor_primitives", "_qualify_admitted_fixed_process_lifecycle", "_launch_admitted_fixed_sandbox_qualification", 'None if mode in ("lifecycle", "sandbox") else _load_private_closure')
+    if any(token in launcher_source for token in banned) or not all(token in launcher_source for token in required):
+        raise AssertionError("fixed admitted production routing drift")
+    production_operation_contracts(module)
+    capsule_contract(module)
     fixed_bootstrap_modes(module)
     sticky_root_replacement(module)
     rows = fixture_rows(module)

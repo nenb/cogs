@@ -1,17 +1,10 @@
 #!/usr/bin/env python3
 """Exhaustive portable ELF, component, alias, race, and closure-bound matrix."""
-
 import dataclasses
-import hashlib
-import importlib
-import json
-import os
+import hashlib, importlib, json, os
 from pathlib import Path
-import stat
-import struct
-import sys
+import stat, struct, sys
 from types import SimpleNamespace
-
 if not __debug__:
     raise SystemExit("optimized mode is forbidden")
 if sys.argv[1:]:
@@ -45,7 +38,6 @@ def reject(call, label, expected=None):
         if expected is not None and type(error).__name__ != expected: raise AssertionError(f"{label}: {type(error).__name__}") from error
         return
     raise AssertionError(f"hostile case accepted: {label}")
-
 def synthetic(names=("libalpha.so.1",), *, interp=True, soname=None,
               tags=(), loads=(), load_size=4096, memory_size=4096):
     raw = bytearray(max(4096, load_size))
@@ -84,8 +76,6 @@ def synthetic(names=("libalpha.so.1",), *, interp=True, soname=None,
     for index, phdr in enumerate(phdrs):
         struct.pack_into("<IIQQQQQQ", raw, 64 + index * 56, *phdr)
     return bytes(raw)
-
-
 def parser_matrix():
     fixture_expectations = {
         "valid-executable.elf": True,
@@ -195,8 +185,6 @@ def parser_matrix():
     unterminated[end] = ord("x")
     reject(lambda: elf.parse_elf64(bytes(unterminated)), "unterminated-soname")
     reject(lambda: elf.parse_elf64(bytearray(valid)), "non-bytes")
-
-
 class FsOps(closure._Ops):
     """Independent inode/fd model; production walkers perform every decision."""
     def __init__(self, case):
@@ -243,10 +231,8 @@ class FsOps(closure._Ops):
                 if str(parent) == "/":
                     break
                 parent = parent.parent
-
     def _path(self, path, dir_fd=None):
         return os.path.normpath(path if path.startswith("/") else self.fds[dir_fd].rstrip("/") + "/" + path)
-
     def _stat(self, path, *, opened=False):
         count = self.observations.get((path, opened), 0)
         self.observations[(path, opened)] = count + 1
@@ -267,7 +253,6 @@ class FsOps(closure._Ops):
         if self.fault == "chown-after" and target and opened and count > 0: uid = 1000
         return SimpleNamespace(st_dev=8, st_ino=inode, st_size=size, st_mtime_ns=mtime,
                                st_ctime_ns=1, st_mode=mode, st_uid=uid, st_gid=0)
-
     def open(self, path, flags, mode=0o600, *, dir_fd=None):
         del flags, mode
         full = self._path(path, dir_fd)
@@ -297,8 +282,6 @@ class FsOps(closure._Ops):
     def order(self, name, values):
         if name != "library-roots": raise AssertionError("caller-selected enumeration")
         return tuple(values)
-
-
 def closure_matrix():
     selected = list(manifest_cases())
     executed = []
@@ -343,8 +326,124 @@ def closure_matrix():
     declared = [row["id"] for row, _case, _branch in selected]
     if declared != executed or len(executed) != len(set(executed)):
         raise AssertionError("closure selected/consumed/oracle/sentinel mismatch")
-
-
+def dirent(value):
+    name = str(value).encode() + b"\0"
+    length = (19 + len(name) + 7) & ~7
+    return struct.pack("=QqHB", value + 1, 0, length, 0) + name + bytes(length - 19 - len(name))
+class DescriptorOps(closure._Ops):
+    def __init__(self):
+        self.fds = {0: "stdio", 1: "stdio", 2: "stdio", 50: "ambient"}
+        self.next_fd = 10
+        self.dir_read = set()
+        self.limit = (1024, 16384)
+        self.effects = []
+        self.pipe_count = 0
+        self.data = {}
+    def architecture_gate(self):
+        self.effects.append("architecture")
+    def _allocate(self, kind, preferred=None):
+        fd = preferred
+        if fd is None:
+            while self.next_fd in self.fds:
+                self.next_fd += 1
+            fd = self.next_fd
+            self.next_fd += 1
+        self.fds[fd] = kind
+        return fd
+    def open(self, path, flags, mode=0o600, *, dir_fd=None):
+        del flags, mode, dir_fd
+        if path == "/proc/self/fd":
+            return self._allocate("directory")
+        if path == "/proc/self/task/self/children":
+            return self._allocate("children")
+        raise AssertionError(path)
+    def close(self, fd):
+        if fd not in self.fds:
+            raise AssertionError("descriptor operation double close")
+        del self.fds[fd]
+    def getdents(self, fd, maximum=32768):
+        del maximum
+        if fd in self.dir_read:
+            return b""
+        self.dir_read.add(fd)
+        return b"".join(dirent(value) for value in sorted(self.fds))
+    def read(self, fd, size):
+        value = self.data.get(fd, b"")[:size]
+        self.data[fd] = self.data.get(fd, b"")[len(value):]
+        return value
+    def write(self, fd, data):
+        del fd
+        if data == b"G":
+            target = next(number for number, kind in self.fds.items() if kind == "status-read")
+            self.data[target] = b"exact"
+        return len(data)
+    def fstat(self, fd):
+        if fd not in self.fds:
+            raise OSError(9, "closed")
+        return SimpleNamespace(st_dev=1, st_ino=fd, st_size=0, st_mtime_ns=1,
+                               st_ctime_ns=1, st_mode=stat.S_IFREG | 0o600,
+                               st_uid=0, st_gid=0)
+    def getrlimit(self):
+        return self.limit
+    def setrlimit(self, value):
+        self.limit = value
+    def pipe(self):
+        self.pipe_count += 1
+        purpose = "status" if self.pipe_count == 2 else "pipe"
+        return self._allocate(purpose + "-read"), self._allocate(purpose + "-write")
+    def clone3_pidfd(self):
+        return 123, self._allocate("pidfd")
+    def wait_pidfd_nohang(self, fd):
+        return self.fds[fd] == "pidfd"
+    def monotonic(self):
+        return 0.0
+    def sleep(self, seconds):
+        del seconds
+    def pidfd_signal(self, fd, signum):
+        del fd, signum
+    def fcntl(self, fd, command, argument=0):
+        if fd not in self.fds:
+            raise OSError(9, "closed")
+        if command in (getattr(__import__("fcntl"), "F_DUPFD_CLOEXEC"),
+                       getattr(__import__("fcntl"), "F_DUPFD")):
+            return self._allocate("low" if command == __import__("fcntl").F_DUPFD_CLOEXEC else "high", argument)
+        if command == closure._F_GETFD:
+            return closure._FD_CLOEXEC if self.fds[fd] == "low" else 0
+        raise AssertionError(command)
+    def close_range(self, first, last):
+        self.effects.append(("close_range", first, last))
+        for fd in tuple(self.fds):
+            if first <= fd <= last:
+                del self.fds[fd]
+class DescriptorAdmission:
+    revision = "0" * 40
+    source_set_sha256 = "1" * 64
+    used = False
+    def _consume_fixed_operation(self, operation, module):
+        del module
+        if self.used or operation != "descriptor":
+            return False
+        self.used = True
+        return True
+def descriptor_owner_matrix():
+    admission = DescriptorAdmission()
+    ops = DescriptorOps()
+    result = closure._qualify_fixed_descriptor_primitives_with_ops(admission, ops)
+    facts = dataclasses.asdict(result)
+    if result.version != "cogs.runtime-descriptor-qualification/v1":
+        raise AssertionError("descriptor result version")
+    if not all(value is True for name, value in facts.items() if name not in {
+        "version", "source_revision", "source_set_sha256"
+    }):
+        raise AssertionError(f"descriptor owner observation failed: {facts}")
+    if ("close_range", 4096, 4096) not in ops.effects or ops.limit != (1024, 16384):
+        raise AssertionError("descriptor operation bypassed production primitive/restoration")
+    before = list(ops.effects)
+    reject(lambda: closure._qualify_fixed_descriptor_primitives_with_ops(admission, ops),
+           "descriptor replay")
+    if ops.effects != before:
+        raise AssertionError("descriptor replay reached an effect")
 parser_matrix()
 closure_matrix()
+descriptor_owner_matrix()
 print("Outcome 2 runtime closure portable tests passed")

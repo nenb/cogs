@@ -246,6 +246,37 @@ def run(row, case, branch):
         raise AssertionError(f"descriptor residue after {case['id']}: {ops.fds}")
 
 
+def mapping_owner_admission_contract():
+    events = []
+    class Replayed:
+        revision = "0" * 40
+        source_set_sha256 = "1" * 64
+        def _consume_fixed_operation(self, operation, module):
+            events.append((operation, module.__name__))
+            return False
+    class NoEffects(closure._Ops):
+        def architecture_gate(self):
+            raise AssertionError("mapping replay reached architecture")
+    try:
+        closure._qualify_fixed_python_mapping_with_ops(Replayed(), NoEffects())
+    except closure.RuntimeClosureError:
+        pass
+    else:
+        raise AssertionError("mapping replay admission accepted")
+    if events != [("mapping", closure.__name__)]:
+        raise AssertionError("mapping operation was not exactly bound")
+    source = (ROOT / "deploy/aws-feasibility/remote/completion_trusted_runtime_closure.py").read_text()
+    owner = source[source.index("def _qualify_fixed_python_mapping_with_ops"):source.index("def _qualify_fixed_descriptor_primitives_with_ops")]
+    required = ("PreparedRuntimeClosure._for_fixed_mapping", "_resolve_tool(",
+                "_spawn_helper(", "_mapped_closure(", "_stop_helper(")
+    if not all(token in owner for token in required):
+        raise AssertionError("mapping owner branch removal sentinel")
+    launcher_source = (ROOT / "deploy/aws-feasibility/remote/completion_trusted_runtime_launcher.py").read_text()
+    if "_MappingAuthority" in launcher_source or "_coordinate_admitted_mapping_only" in launcher_source:
+        raise AssertionError("launcher retains private mapping coordinator")
+
+
+mapping_owner_admission_contract()
 selected = list(manifest_cases())
 executed = []
 for row, case, branch in selected:

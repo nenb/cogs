@@ -13,6 +13,7 @@ import json
 import os
 import platform
 import re
+import resource
 import select
 import signal
 import socket
@@ -72,22 +73,57 @@ _UINT_MAX = (1 << 32) - 1
 _KERNEL_EXECUTABLE_MAPPINGS = frozenset(('[vdso]', '[vsyscall]'))
 _SONAME = re.compile('^[A-Za-z0-9][A-Za-z0-9._+~-]{0,254}$')
 _PACKAGE = re.compile(r'_cogs_o2_[0-9a-f]{16}')
-
 class RuntimeClosureError(RuntimeError):
     """A fixed closure requirement was not satisfied."""
-
 class RuntimeClosureUnavailable(RuntimeClosureError):
     """The exact fixed Linux primitive is unavailable."""
-
 class RuntimeClosureCleanupError(RuntimeClosureError):
     """Cleanup failed or ownership became uncertain."""
-
     def __init__(self, failures: Sequence[BaseException]):
         if not failures:
             raise ValueError('cleanup failure aggregate cannot be empty')
         self.failures = tuple(failures)
         super().__init__(f'runtime closure cleanup failed ({len(self.failures)} errors)')
-
+@dataclass(frozen=True)
+class RuntimeObjectObservation:
+    role: str
+    size_bytes: int
+    sha256: str
+    soname: str | None
+    needed: tuple[str, ...]
+@dataclass(frozen=True)
+class MappedObjectObservation:
+    role: str
+    sha256: str
+@dataclass(frozen=True)
+class RuntimeMappingQualificationResult:
+    version: str
+    source_revision: str
+    source_set_sha256: str
+    closure_sha256: str
+    mapping_sha256: str
+    objects: tuple[RuntimeObjectObservation, ...]
+    mapped: tuple[MappedObjectObservation, ...]
+    mapped_generations_exact: bool
+    mapping_stable: bool
+    helper_reaped: bool
+    descriptors_restored: bool
+    children_reaped: bool
+@dataclass(frozen=True)
+class DescriptorQualificationResult:
+    version: str
+    source_revision: str
+    source_set_sha256: str
+    nofile_measured: bool
+    nofile_normalized: bool
+    fd_198_exact: bool
+    fd_4096_exact: bool
+    close_range_exact: bool
+    cloexec_exact: bool
+    inheritance_exact: bool
+    limit_restored: bool
+    descriptors_restored: bool
+    children_reaped: bool
 @dataclass(frozen=True)
 class SourceGeneration:
     device: int
@@ -98,7 +134,6 @@ class SourceGeneration:
     mode: int
     uid: int
     gid: int
-
 @dataclass(frozen=True)
 class _PathObservation:
     parent: tuple[int, int]
@@ -106,7 +141,6 @@ class _PathObservation:
     kind: str
     generation: SourceGeneration
     link: str | None = None
-
 @dataclass(frozen=True)
 class AuthenticatedObject:
     role: str
@@ -117,28 +151,23 @@ class AuthenticatedObject:
     size: int
     sha256: str
     elf: ElfMetadata
-
     @property
     def identity(self) -> tuple[int, int]:
         return (self.generation.device, self.generation.inode)
-
 @dataclass(frozen=True)
 class ResolvedToolClosure:
     tool: str
     executable: AuthenticatedObject
     loader: AuthenticatedObject
     libraries: tuple[AuthenticatedObject, ...]
-
     @property
     def objects(self) -> tuple[AuthenticatedObject, ...]:
         return (self.executable, self.loader, *self.libraries)
-
 @dataclass(frozen=True)
 class MappedToolClosure:
     tool: str
     mapped: tuple[tuple[str, str], ...]
     mapping_sha256: str
-
 @dataclass(frozen=True)
 class SealedObject:
     fd: int
@@ -147,7 +176,6 @@ class SealedObject:
     sha256: str
     elf: ElfMetadata
     seals: int
-
 @dataclass(frozen=True)
 class _PrivateGenerationRow:
     tool_index: int
@@ -160,7 +188,6 @@ class _PrivateGenerationRow:
     soname: str | None
     needed: tuple[str, ...]
     seal_profile: str = _SEAL_PROFILE
-
 @dataclass(frozen=True)
 class _IssuanceReceipt:
     version: str
@@ -171,7 +198,6 @@ class _IssuanceReceipt:
     descriptor_count: int
     issuer_pid: int
     consumer_pid: int
-
 @dataclass
 class _LiveIssuerCapability:
     admission: object
@@ -180,7 +206,6 @@ class _LiveIssuerCapability:
     worker_pid: int
     peer_credentials: tuple[int, int, int]
     consumed: bool = False
-
     def consume(self, admission: object) -> None:
         if self.consumed:
             raise RuntimeClosureError('runtime closure capability was replayed')
@@ -206,20 +231,17 @@ class _LiveIssuerCapability:
             raise RuntimeClosureError('runtime closure capability peer topology changed')
         if peer_uid != os.getuid() or peer_gid != os.getgid():
             raise RuntimeClosureError('runtime closure capability credentials changed')
-
 class _FdState(Enum):
     OWNED = 'OWNED'
     TRANSFERRED = 'TRANSFERRED'
     CLOSED = 'CLOSED'
     CLOSE_UNCERTAIN = 'CLOSE_UNCERTAIN'
-
 @dataclass
 class FdLease:
     fd: int
     purpose: str
     state: _FdState = _FdState.OWNED
     close_error: BaseException | None = None
-
     def close(self, ops: '_Ops') -> None:
         if self.state is _FdState.CLOSED:
             return
@@ -236,12 +258,10 @@ class FdLease:
             self.close_error = error
             raise
         self.state = _FdState.CLOSED
-
     def transfer(self) -> None:
         if self.state is not _FdState.OWNED:
             raise RuntimeClosureError('descriptor is not transferable')
         self.state = _FdState.TRANSFERRED
-
 class _HelperState(Enum):
     SPAWNED = 'SPAWNED'
     REGISTERED = 'REGISTERED'
@@ -250,7 +270,6 @@ class _HelperState(Enum):
     STOPPING = 'STOPPING'
     REAPED = 'REAPED'
     UNCERTAIN = 'UNCERTAIN'
-
 @dataclass
 class HelperLease:
     pid: int
@@ -270,11 +289,9 @@ class HelperLease:
     outer_token: object | None = None
     descendants: tuple[int, ...] = ()
     cleanup_error: BaseException | None = None
-
     @property
     def reaped(self) -> bool:
         return self.state is _HelperState.REAPED
-
 @dataclass
 class PreparationLease:
     ops: '_Ops'
@@ -283,7 +300,6 @@ class PreparationLease:
     fds: list[FdLease] = field(default_factory=list)
     helpers: list[HelperLease] = field(default_factory=list)
     outer: object | None = None
-
     def register_fd(self, fd: int, purpose: str) -> FdLease:
         if type(fd) is not int or fd < 0:
             raise RuntimeClosureError('invalid descriptor registration')
@@ -292,10 +308,8 @@ class PreparationLease:
         lease = FdLease(fd, purpose)
         self.fds.append(lease)
         return lease
-
     def owned_fds(self) -> tuple[int, ...]:
         return tuple((item.fd for item in self.fds if item.state is _FdState.OWNED))
-
     def close_many(self, leases: Sequence[FdLease], primary: BaseException | None=None) -> None:
         failures: list[BaseException] = []
         if primary is not None:
@@ -322,7 +336,6 @@ class PreparationLease:
             raise RuntimeClosureCleanupError(failures)
         if failures:
             raise failures[0]
-
 class _OwnerState(Enum):
     PREPARING = 'PREPARING'
     READY = 'READY'
@@ -330,85 +343,63 @@ class _OwnerState(Enum):
     CONSUMED = 'CONSUMED'
     CLOSED = 'CLOSED'
     POISONED = 'POISONED'
-
 class _Ops:
     """Private primitive adapter.  Public production never accepts an instance."""
     def checkpoint(self, name: str) -> None:
         del name
-
     def order(self, name: str, values: Sequence[Any]) -> tuple[Any, ...]:
         del name
         return tuple(values)
-
     def report_candidate(self, data: bytes) -> bytes:
         return data
-
     def open(self, path: str, flags: int, mode: int=384, *, dir_fd: int | None=None) -> int:
         return os.open(path, flags, mode, dir_fd=dir_fd)
-
     def close(self, fd: int) -> None:
         os.close(fd)
-
     def fstat(self, fd: int) -> os.stat_result:
         return os.fstat(fd)
-
     def stat(self, path: str, *, dir_fd: int, follow_symlinks: bool) -> os.stat_result:
         return os.stat(path, dir_fd=dir_fd, follow_symlinks=follow_symlinks)
-
     def readlink(self, path: str, *, dir_fd: int) -> str:
         return os.readlink(path, dir_fd=dir_fd)
-
     def pread(self, fd: int, size: int, offset: int) -> bytes:
         return os.pread(fd, size, offset)
-
     def pwrite(self, fd: int, data: bytes, offset: int) -> int:
         return os.pwrite(fd, data, offset)
-
     def read(self, fd: int, size: int) -> bytes:
         return os.read(fd, size)
-
     def write(self, fd: int, data: bytes) -> int:
         return os.write(fd, data)
-
     def fchmod(self, fd: int, mode: int) -> None:
         os.fchmod(fd, mode)
-
     def fsync(self, fd: int) -> None:
         os.fsync(fd)
-
     def fcntl(self, fd: int, command: int, argument: int=0) -> int:
         return fcntl.fcntl(fd, command, argument)
-
+    def getrlimit(self) -> tuple[int, int]:
+        return resource.getrlimit(resource.RLIMIT_NOFILE)
+    def setrlimit(self, value: tuple[int, int]) -> None:
+        resource.setrlimit(resource.RLIMIT_NOFILE, value)
     def memfd_create(self, name: str, flags: int) -> int:
         return os.memfd_create(name, flags)
-
     def pipe(self) -> tuple[int, int]:
         return os.pipe2(_O_CLOEXEC)
-
     def dup2(self, source: int, target: int, inheritable: bool=True) -> None:
         os.dup2(source, target, inheritable=inheritable)
-
     def getsid(self, pid: int) -> int:
         return os.getsid(pid)
-
     def getpgid(self, pid: int) -> int:
         return os.getpgid(pid)
-
     def getpid(self) -> int:
         return os.getpid()
-
     def getppid(self) -> int:
         return os.getppid()
-
     def setsid(self) -> None:
         os.setsid()
-
     def monotonic(self) -> float:
         return time.monotonic()
-
     def sleep(self, seconds: float) -> None:
         time.sleep(seconds)
-
     def poll_readable(self, fd: int, seconds: float) -> bool:
         poller = select.poll()
         poller.register(fd, select.POLLIN | select.POLLHUP | select.POLLERR)
@@ -1714,11 +1705,11 @@ def _validate_issuance_receipt(
         raise RuntimeClosureError('private issuer receipt mismatch')
 
 class PreparedRuntimeClosure:
-    """Private admitted owner; it exposes data only while READY."""
+    """The sole admitted owner of full and mapping-only closure transactions."""
 
     def __init__(
         self,
-        capability: _LiveIssuerCapability,
+        capability: object,
         admission: object,
         ops: _Ops,
         preparation: PreparationLease,
@@ -1733,6 +1724,46 @@ class PreparedRuntimeClosure:
         self._bundle: list[FdLease] = []
         self._rows: tuple[_PrivateGenerationRow, ...] = ()
         self._poison: BaseException | None = None
+        self._operation_helpers: dict[object, HelperLease] = {}
+
+    @classmethod
+    def _for_fixed_mapping(
+        cls,
+        admission: object,
+        ops: _Ops,
+        preparation: PreparationLease,
+    ) -> 'PreparedRuntimeClosure':
+        owner = object.__new__(cls)
+        owner._ops = ops
+        owner._preparation = preparation
+        owner._state = _OwnerState.PREPARING
+        owner._report = None
+        owner._bundle = []
+        owner._rows = ()
+        owner._poison = None
+        owner._operation_helpers = {}
+        preparation.outer = owner
+        return owner
+
+    def _register_runtime_helper(self, helper: object, deadline: float) -> object:
+        if type(helper) is not HelperLease or deadline <= self._ops.monotonic():
+            raise RuntimeClosureError('mapping helper registration rejected')
+        token = object()
+        self._operation_helpers[token] = helper
+        return token
+
+    def _release_runtime_helper(self, token: object, deadline: float) -> None:
+        helper = self._operation_helpers.get(token)
+        if helper is None or helper.state is not _HelperState.PREEXEC_IDENTIFIED:
+            raise RuntimeClosureError('mapping helper release rejected')
+        if deadline <= self._ops.monotonic():
+            raise RuntimeClosureError('mapping helper release deadline')
+
+    def _retire_runtime_helper(self, token: object, deadline: float) -> None:
+        helper = self._operation_helpers.get(token)
+        if helper is None or not helper.reaped or deadline <= self._ops.monotonic():
+            raise RuntimeClosureError('mapping helper retirement rejected')
+        del self._operation_helpers[token]
 
     def _prove_ready_baseline(self) -> None:
         expected = self._preparation.fd_baseline | frozenset((lease.fd for lease in self._bundle if lease.state is _FdState.OWNED))
@@ -1846,6 +1877,7 @@ class PreparedRuntimeClosure:
             if exc is not None:
                 raise RuntimeClosureCleanupError((exc, cleanup)) from exc
             raise
+
 def _child_baseline(ops: _Ops) -> tuple[int, ...]:
     return _parse_children(_read_proc(ops, '/proc/self/task/self/children', 65536))
 
@@ -1993,6 +2025,197 @@ def _build_bundle(
             ))
     return (bundle, tuple(rows))
 
+def _fixed_operation_admitted(admission: object, operation: str) -> None:
+    module = __import__(__name__, fromlist=('__name__',))
+    consume = getattr(admission, '_consume_fixed_operation', None)
+    if not callable(consume) or consume(operation, module) is not True:
+        raise RuntimeClosureError('fixed closure operation admission rejected')
+
+def _mapping_observations(closure: ResolvedToolClosure) -> tuple[RuntimeObjectObservation, ...]:
+    return tuple(RuntimeObjectObservation(
+        value.role,
+        value.size,
+        value.sha256,
+        _metadata(value)[1],
+        _metadata(value)[2],
+    ) for value in closure.objects)
+
+def _qualify_fixed_python_mapping_with_ops(admission: object, ops: _Ops) -> RuntimeMappingQualificationResult:
+    _fixed_operation_admitted(admission, 'mapping')
+    ops.architecture_gate()
+    _reserve_stdio(ops)
+    baseline = _snapshot_fds(ops)
+    children = _child_baseline(ops)
+    preparation = PreparationLease(ops, baseline, children)
+    owner = PreparedRuntimeClosure._for_fixed_mapping(admission, ops, preparation)
+    resolved: ResolvedToolClosure | None = None
+    helper: HelperLease | None = None
+    primary: BaseException | None = None
+    mapped: MappedToolClosure | None = None
+    try:
+        resolved = _resolve_tool(ops, 'python3-parser', '/usr/bin/python3')
+        sources = [preparation.register_fd(item.held_fd, f'mapping-source:{item.role}') for item in resolved.objects]
+        helper = _spawn_helper(ops, preparation, resolved)
+        mapped = _mapped_closure(ops, helper, resolved)
+        _stop_helper(ops, preparation, helper)
+        preparation.close_many(sources)
+    except BaseException as error:
+        primary = error
+    failures: list[BaseException] = []
+    if helper is not None and helper in preparation.helpers:
+        try:
+            _stop_helper(ops, preparation, helper)
+        except BaseException as error:
+            failures.append(error)
+    for lease in reversed(preparation.fds):
+        if lease.state is _FdState.OWNED:
+            try:
+                lease.close(ops)
+            except BaseException as error:
+                failures.append(error)
+    try:
+        descriptors_restored = _snapshot_fds(ops) == baseline
+        children_reaped = _child_baseline(ops) == children and not owner._operation_helpers
+    except BaseException as error:
+        failures.append(error)
+        descriptors_restored = children_reaped = False
+    if failures:
+        raise RuntimeClosureCleanupError(([primary] if primary else []) + failures) from (primary or failures[0])
+    if primary is not None:
+        raise primary
+    if resolved is None or mapped is None:
+        raise RuntimeClosureError('mapping qualification result missing')
+    objects = _mapping_observations(resolved)
+    mapped_rows = tuple(MappedObjectObservation(*row) for row in mapped.mapped)
+    canonical_objects = [_object_report(value) for value in resolved.objects]
+    return RuntimeMappingQualificationResult(
+        'cogs.runtime-mapping-qualification/v1',
+        admission.revision,
+        admission.source_set_sha256,
+        hashlib.sha256(_canonical(canonical_objects)).hexdigest(),
+        mapped.mapping_sha256,
+        objects,
+        mapped_rows,
+        mapped.mapped == tuple((item.role, item.sha256) for item in resolved.objects),
+        True,
+        helper.reaped,
+        descriptors_restored,
+        children_reaped,
+    )
+
+def _qualify_fixed_descriptor_primitives_with_ops(admission: object, ops: _Ops) -> DescriptorQualificationResult:
+    _fixed_operation_admitted(admission, 'descriptor')
+    ops.architecture_gate()
+    _reserve_stdio(ops)
+    baseline = _snapshot_fds(ops)
+    children = _child_baseline(ops)
+    original = ops.getrlimit()
+    leases: list[FdLease] = []
+    measured = original[1] == resource.RLIM_INFINITY or original[1] >= 8193
+    normalized = low_exact = high_exact = close_exact = flags_exact = False
+    inheritance_exact = False
+    child_pid = 0
+    child_pidfd: FdLease | None = None
+    primary: BaseException | None = None
+    try:
+        if not measured:
+            raise RuntimeClosureUnavailable('fixed descriptor capacity unavailable')
+        ops.setrlimit((8193, original[1]))
+        normalized = ops.getrlimit() == (8193, original[1])
+        source_fd, spare_fd = ops.pipe()
+        source = FdLease(source_fd, 'descriptor-source')
+        spare = FdLease(spare_fd, 'descriptor-spare')
+        leases.extend((source, spare))
+        low = FdLease(ops.fcntl(source.fd, fcntl.F_DUPFD_CLOEXEC, 198), 'descriptor-198')
+        leases.append(low)
+        high = FdLease(ops.fcntl(source.fd, fcntl.F_DUPFD, 4096), 'descriptor-4096')
+        leases.append(high)
+        low_exact = low.fd == 198
+        high_exact = high.fd == 4096
+        flags_exact = bool(ops.fcntl(low.fd, _F_GETFD) & _FD_CLOEXEC)
+        flags_exact = flags_exact and not bool(ops.fcntl(high.fd, _F_GETFD) & _FD_CLOEXEC)
+        status_read_fd, status_write_fd = ops.pipe()
+        release_read_fd, release_write_fd = ops.pipe()
+        status_read = FdLease(status_read_fd, 'descriptor-status-read')
+        status_write = FdLease(status_write_fd, 'descriptor-status-write')
+        release_read = FdLease(release_read_fd, 'descriptor-release-read')
+        release_write = FdLease(release_write_fd, 'descriptor-release-write')
+        leases.extend((status_read, status_write, release_read, release_write))
+        child_pid, pidfd_number = ops.clone3_pidfd()
+        if child_pid == 0:
+            try:
+                status_read.close(ops)
+                release_write.close(ops)
+                if ops.read(release_read.fd, 1) != b'G':
+                    ops.exit_child(125)
+                release_read.close(ops)
+                ops.dup2(status_write.fd, 197, inheritable=True)
+                _close_complement(ops, (0, 1, 2, 197, 4096))
+                exact = _snapshot_fds(ops) == frozenset((0, 1, 2, 197, 4096))
+                ops.write(197, b'exact' if exact else b'bad')
+                ops.exit_child(0 if exact else 124)
+            except BaseException:
+                ops.exit_child(126)
+        if child_pid <= 0 or pidfd_number < 0:
+            raise RuntimeClosureError('descriptor child atomic registration')
+        child_pidfd = FdLease(pidfd_number, 'descriptor-child-pidfd')
+        leases.append(child_pidfd)
+        status_write.close(ops)
+        release_read.close(ops)
+        if ops.write(release_write.fd, b'G') != 1:
+            raise RuntimeClosureError('descriptor child release')
+        release_write.close(ops)
+        status = _read_stream_bounded(ops, status_read.fd, 5)
+        status_read.close(ops)
+        deadline = ops.monotonic() + _HELPER_START_SECONDS
+        while not ops.wait_pidfd_nohang(child_pidfd.fd):
+            if ops.monotonic() >= deadline:
+                raise RuntimeClosureError('descriptor child reap deadline')
+            ops.sleep(0.001)
+        inheritance_exact = status == b'exact'
+        child_pidfd.close(ops)
+        ops.close_range(high.fd, high.fd)
+        high.state = _FdState.CLOSED
+        try:
+            ops.fcntl(high.fd, _F_GETFD)
+        except OSError as error:
+            close_exact = error.errno == 9
+    except BaseException as error:
+        primary = error
+    failures: list[BaseException] = []
+    if primary is not None and child_pid > 0 and child_pidfd is not None and child_pidfd.state is _FdState.OWNED:
+        try:
+            ops.pidfd_signal(child_pidfd.fd, signal.SIGKILL)
+            deadline = ops.monotonic() + _HELPER_KILL_SECONDS
+            while not ops.wait_pidfd_nohang(child_pidfd.fd):
+                if ops.monotonic() >= deadline:
+                    raise RuntimeClosureError('descriptor child cleanup deadline')
+                ops.sleep(0.001)
+        except BaseException as error:
+            failures.append(error)
+    try:
+        _finish_fds(ops, leases, primary)
+    except BaseException as error:
+        failures.append(error)
+    try:
+        ops.setrlimit(original)
+        limit_restored = ops.getrlimit() == original
+        descriptors_restored = _snapshot_fds(ops) == baseline
+        children_reaped = _child_baseline(ops) == children
+    except BaseException as error:
+        failures.append(error)
+        limit_restored = descriptors_restored = children_reaped = False
+    if failures:
+        raise RuntimeClosureCleanupError(failures) from (primary or failures[0])
+    if primary is not None:
+        raise primary
+    return DescriptorQualificationResult(
+        'cogs.runtime-descriptor-qualification/v1', admission.revision,
+        admission.source_set_sha256, measured, normalized, low_exact, high_exact,
+        close_exact, flags_exact, inheritance_exact, limit_restored,
+        descriptors_restored, children_reaped,
+    )
+
 def _prepare_state_machine(ops: _Ops, admission: object, issuer: object) -> PreparedRuntimeClosure:
     capability = _claim_admission(admission, issuer)
     preparation = PreparationLease(ops, frozenset(), (), outer=issuer)
@@ -2091,6 +2314,12 @@ def _prepare_state_machine(ops: _Ops, admission: object, issuer: object) -> Prep
 def _prepare_admitted_fixed_runtime_closure(admission: object, issuer: object) -> PreparedRuntimeClosure:
     """Private fixed entry called only by the authenticated launcher worker."""
     return _prepare_state_machine(_Ops(), admission, issuer)
+
+def _qualify_admitted_fixed_python_mapping(admission: object) -> RuntimeMappingQualificationResult:
+    return _qualify_fixed_python_mapping_with_ops(admission, _Ops())
+
+def _qualify_admitted_fixed_descriptor_primitives(admission: object) -> DescriptorQualificationResult:
+    return _qualify_fixed_descriptor_primitives_with_ops(admission, _Ops())
 
 def prepare_fixed_runtime_closure() -> NoReturn:
     """Ambient preparation is forbidden and fails before any authority-bearing effect."""

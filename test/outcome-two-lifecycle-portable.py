@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Production lifecycle state machines over an independent deterministic kernel model."""
+from array import array
 import errno
 import hashlib
 import importlib
 import json
 from pathlib import Path
 import signal
+import socket
 import stat
 import struct
 import sys
@@ -474,6 +476,141 @@ def production_clone3_abi():
     launcher._stop_process(lease, None, ops)
     check(ops.close_attempts.count(pidfd) == 1,
           "successful production pidfd finalizer did not close exactly once")
+class TransferOps:
+    def __init__(self):
+        self.closed = []
+    def close(self, fd):
+        self.closed.append(fd)
+
+
+class TransferEndpoint:
+    def __init__(self, packet, credentials, rights):
+        self.packet = packet
+        self.credentials = credentials
+        self.rights = rights
+    def recvmsg(self, data_bound, control_bound, flags):
+        del data_bound, control_bound, flags
+        ancillary = [
+            (socket.SOL_SOCKET, socket.SCM_CREDENTIALS,
+             struct.pack("3i", *self.credentials)),
+            (socket.SOL_SOCKET, socket.SCM_RIGHTS,
+             array("i", self.rights).tobytes()),
+        ]
+        return self.packet, ancillary, 0, None
+
+
+def process_owner_matrix():
+    if not hasattr(launcher.socket, "SCM_CREDENTIALS"):
+        launcher.socket.SCM_CREDENTIALS = 2
+    if not hasattr(launcher.socket, "MSG_CMSG_CLOEXEC"):
+        launcher.socket.MSG_CMSG_CLOEXEC = 0x40000000
+    path = FIXTURES / "lifecycle/owner-cases.jsonl"
+    document = [json.loads(line) for line in path.read_text().splitlines()]
+    header, *rows = document
+    fields = {"id", "production_method", "primitive_fault", "intended_code",
+              "cleanup_domains", "sentinel"}
+    header_keys = {"type", "version", "acceptance_ids", "case_fields"}
+    check(set(header) == header_keys and header["type"] == "header" and
+          header["version"] == "cogs.outcome-two-process-owner/v1" and
+          header["acceptance_ids"] == ["AT91-PROC-01"] and
+          set(header["case_fields"]) == fields,
+          "process-owner fixture header")
+    selected = []
+    for row in rows:
+        check(set(row) == fields and callable(getattr(launcher._ProcessOwner,
+              row["production_method"].split(".")[-1])), "process-owner row shape")
+        selected.append(row["id"])
+        fault = row["primitive_fault"]["name"]
+        ops = TransferOps()
+        owner = launcher._ProcessOwner(ops)
+        leader = launcher._ProcessLease(
+            123, launcher._FdLease(700, "leader"), start_time=10,
+            session=7, process_group=7, executable=(8, 101),
+        )
+        owner.processes.append(leader)
+        if row["production_method"].endswith("confirm_setsid"):
+            owner.plan_setsid(leader)
+            old_start = launcher._start_time
+            old_exe = launcher._exe_identity
+            old_sid = launcher.os.getsid
+            old_group = launcher.os.getpgid
+            launcher._start_time = lambda pid: 10
+            launcher._exe_identity = lambda pid: (8, 101)
+            launcher.os.getsid = lambda pid: 122 if fault == "session-drift" else 123
+            launcher.os.getpgid = lambda pid: 123
+            try:
+                error = caught(lambda: owner.confirm_setsid(leader))
+            finally:
+                launcher._start_time = old_start
+                launcher._exe_identity = old_exe
+                launcher.os.getsid = old_sid
+                launcher.os.getpgid = old_group
+            if fault == "none":
+                check(error is None and leader.identity_phase == row["sentinel"],
+                      "planned setsid was not advanced")
+            else:
+                check(getattr(error, "code", None) == row["intended_code"] and
+                      leader.identity_phase == row["sentinel"],
+                      "planned setsid drift was accepted")
+        elif row["production_method"].endswith("receive_descendant"):
+            packet = launcher._canonical({
+                "executable": [8, 102], "nonce": (b"n" * 32).hex(),
+                "parent": 123, "pid": 124, "process_group": 123,
+                "sequence": 1, "session": 123, "start_time": 11,
+                "version": "cogs.process-transfer/v1",
+            })
+            credentials = (999 if fault == "credentials" else 123, 0, 0)
+            endpoint = TransferEndpoint(packet, credentials, (800,))
+            old_start = launcher._start_time
+            old_exe = launcher._exe_identity
+            old_sid = launcher.os.getsid
+            old_group = launcher.os.getpgid
+            old_euid = launcher.os.geteuid
+            old_egid = launcher.os.getegid
+            launcher._start_time = lambda pid: 11
+            launcher._exe_identity = lambda pid: (8, 102)
+            launcher.os.getsid = lambda pid: 123
+            launcher.os.getpgid = lambda pid: 123
+            launcher.os.geteuid = lambda: 0
+            launcher.os.getegid = lambda: 0
+            try:
+                error = caught(lambda: owner.receive_descendant(
+                    endpoint, leader, b"n" * 32, 1,
+                ))
+            finally:
+                launcher._start_time = old_start
+                launcher._exe_identity = old_exe
+                launcher.os.getsid = old_sid
+                launcher.os.getpgid = old_group
+                launcher.os.geteuid = old_euid
+                launcher.os.getegid = old_egid
+            if fault == "none":
+                check(error is None and len(leader.descendants) == 1 and
+                      leader.descendants[0].pidfd.fd == 800,
+                      f"credentialed pidfd was not registered before ack: {error!r}")
+            else:
+                check(getattr(error, "code", None) == row["intended_code"] and
+                      ops.closed == [800], "malformed transfer leaked its right")
+        else:
+            descendant = launcher._ProcessLease(124, launcher._FdLease(800, "desc"))
+            leader.descendants = (descendant,)
+            old_census = launcher._descendant_census
+            values = iter(((124,), (125,)) if fault == "spawn-after" else
+                          ((124,), (124,)))
+            launcher._descendant_census = lambda pid, actual_ops: next(values)
+            try:
+                error = caught(lambda: owner.stable_census(leader))
+            finally:
+                launcher._descendant_census = old_census
+            if fault == "none":
+                check(error is None, "stable census rejected")
+            else:
+                check(getattr(error, "code", None) == row["intended_code"],
+                      "spawn-after census accepted")
+    check(selected == [row["id"] for row in rows] and len(selected) == len(set(selected)),
+          "process-owner declared/selected/consumed/oracle mismatch")
+
+
 def error_signature(error):
     failures = getattr(error, "failures", None)
     if failures is not None:
@@ -526,6 +663,7 @@ def observe_case(case, runner):
     if (all(code == "OK" for code in codes)) != (case["expect"] == "accept"):
         raise AssertionError(f"{case['id']}: typed oracle contradicts expectation")
 production_clone3_abi()
+process_owner_matrix()
 groups = (
     ("fd_baseline_cases", fd_case),
     ("helper_cases", helper_case),
