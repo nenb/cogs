@@ -33,7 +33,7 @@ class Owner:
  def stop(self,process): raise AssertionError('failed process bypassed cleanup')
  def cleanup(self,primary):
   assert self.process.reaped and isinstance(primary,launcher.RuntimeLauncherError)
-  assert primary.code=='sudo-exit';self.primary=primary;events.append(('cleanup',primary.code))
+  assert primary.code.startswith('sudo-early-0-');self.primary=primary;events.append(('cleanup','sudo-early'))
 ops=Ops();next_fd=iter(range(100,110))
 def pipe2(flags): return next(next_fd),next(next_fd)
 def select_(read,write,error,timeout=None): return list(read),[],[]
@@ -43,14 +43,14 @@ saved=(launcher._ProcessOwner,launcher.select.select,launcher._wait_bounded)
 launcher._ProcessOwner=Owner;launcher.os.pipe2=pipe2;launcher.select.select=select_;launcher._wait_bounded=wait
 try:
  try: launcher._run_root_capsule_with_ops(ops,b'capsule')
- except launcher.RuntimeLauncherError as error: assert error.code=='sudo-exit'
+ except launcher.RuntimeLauncherError as error: assert error.code.startswith('sudo-early-0-')
  else: raise AssertionError('early root rejection accepted')
 finally:
  launcher._ProcessOwner,launcher.select.select,launcher._wait_bounded=saved
  if had_pipe2: launcher.os.pipe2=saved_pipe2
  else: delattr(launcher.os,'pipe2')
 assert ops.closed==set(range(100,110)),ops.closed
-ordered=[events.index(item) for item in (('epipe',101),('close',101),('read',102),('read',104),('wait',41),('cleanup','sudo-exit'))]
+ordered=[events.index(item) for item in (('epipe',101),('close',101),('read',102),('read',104),('wait',41),('cleanup','sudo-early'))]
 assert ordered==sorted(ordered),events
 `;
   const run = spawnSync("/usr/bin/python3", ["-I", "-B", "-c", harness], {
