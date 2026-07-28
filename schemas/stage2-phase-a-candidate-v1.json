@@ -1,0 +1,268 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.invalid/schemas/stage2-phase-a-candidate-v1.json",
+  "title": "ADR0047 Stage 2 Phase A Candidate",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "authority",
+    "qualified",
+    "source_revision",
+    "source_manifest_sha256",
+    "duration_ms",
+    "blockers",
+    "checks",
+    "rootfs",
+    "rootfs_builds",
+    "recovery_attempts",
+    "runtime_assets",
+    "host_tools",
+    "kvm",
+    "claims",
+    "diagnostic_codes"
+  ],
+  "allOf": [
+    {
+      "if": {
+        "type": "object",
+        "properties": {
+          "rootfs_builds": {
+            "type": "object",
+            "properties": {
+              "first": {
+                "type": "object",
+                "properties": { "outcome": { "enum": ["blocked", "failed"] } },
+                "required": ["outcome"]
+              }
+            },
+            "required": ["first"]
+          }
+        },
+        "required": ["rootfs_builds"]
+      },
+      "then": {
+        "type": "object",
+        "properties": {
+          "rootfs_builds": {
+            "type": "object",
+            "properties": {
+              "second": {
+                "type": "object",
+                "properties": {
+                  "outcome": { "const": "blocked" },
+                  "work_outcome": { "const": "blocked" },
+                  "total_elapsed_ms": { "const": 0 }
+                },
+                "required": ["outcome", "work_outcome", "total_elapsed_ms"]
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "properties": {
+    "version": { "const": "cogs.stage2-phase-a-candidate/v1" },
+    "authority": { "const": "candidate" },
+    "qualified": { "const": false },
+    "source_revision": {
+      "oneOf": [{ "type": "null" }, { "type": "string", "pattern": "^[0-9a-f]{40}$" }]
+    },
+    "source_manifest_sha256": {
+      "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/sha256" }]
+    },
+    "duration_ms": { "type": "integer", "minimum": 0, "maximum": 5400000 },
+    "blockers": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 16,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/code" }
+    },
+    "checks": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "platform",
+        "root",
+        "source",
+        "kvm",
+        "artifact_cache",
+        "rootfs_candidates",
+        "runtime_assets",
+        "host_tools",
+        "cleanup",
+        "residue"
+      ],
+      "properties": {
+        "platform": { "$ref": "#/$defs/outcome" },
+        "root": { "$ref": "#/$defs/outcome" },
+        "source": { "$ref": "#/$defs/outcome" },
+        "kvm": { "$ref": "#/$defs/outcome" },
+        "artifact_cache": { "$ref": "#/$defs/outcome" },
+        "rootfs_candidates": { "$ref": "#/$defs/outcome" },
+        "runtime_assets": { "$ref": "#/$defs/outcome" },
+        "host_tools": { "$ref": "#/$defs/outcome" },
+        "cleanup": { "$ref": "#/$defs/outcome" },
+        "residue": { "$ref": "#/$defs/outcome" }
+      }
+    },
+    "rootfs": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "candidate_count",
+            "cache_count",
+            "entry_count",
+            "manifest_size",
+            "manifest_sha256",
+            "ustar_size",
+            "ustar_sha256",
+            "equal",
+            "pins_match"
+          ],
+          "properties": {
+            "candidate_count": { "const": 2 },
+            "cache_count": { "const": 16 },
+            "entry_count": { "const": 4353 },
+            "manifest_size": { "const": 1049443 },
+            "manifest_sha256": { "const": "8783c292f232842a3d1d2d35e7ac2268d591fa6e947d3984868fe33ca006e691" },
+            "ustar_size": { "const": 136905728 },
+            "ustar_sha256": { "const": "47b0ab5752ae50da6bc9840345aa9ba6285bde3e5ae186c0c548acbaa83768d3" },
+            "equal": { "const": true },
+            "pins_match": { "const": true }
+          }
+        }
+      ]
+    },
+    "rootfs_builds": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["first", "second"],
+      "properties": {
+        "first": { "$ref": "#/$defs/buildOutcome" },
+        "second": { "$ref": "#/$defs/buildOutcome" }
+      }
+    },
+    "recovery_attempts": {
+      "type": "array",
+      "maxItems": 1,
+      "items": { "$ref": "#/$defs/recoveryOutcome" }
+    },
+    "runtime_assets": {
+      "type": "array",
+      "maxItems": 2,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["component", "release", "name", "size", "sha256", "downloaded", "extracted"],
+        "properties": {
+          "component": { "enum": ["kata", "containerd"] },
+          "release": { "enum": ["3.32.0", "2.2.1"] },
+          "name": {
+            "enum": ["kata-static-3.32.0-amd64.tar.zst", "containerd-static-2.2.1-linux-amd64.tar.gz"]
+          },
+          "size": { "enum": [1547940938, 33645699] },
+          "sha256": { "$ref": "#/$defs/sha256" },
+          "downloaded": { "const": true },
+          "extracted": { "const": false }
+        }
+      }
+    },
+    "host_tools": {
+      "type": "array",
+      "maxItems": 6,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "path", "present", "size", "sha256", "version"],
+        "properties": {
+          "name": { "enum": ["ctr", "ip", "tc", "nft", "ssh", "ssh-keygen"] },
+          "path": { "type": "string", "pattern": "^/(?:usr/(?:s?bin)|opt)/[A-Za-z0-9._/-]+$", "maxLength": 256 },
+          "present": { "type": "boolean" },
+          "size": { "oneOf": [{ "type": "null" }, { "type": "integer", "minimum": 1, "maximum": 134217728 }] },
+          "sha256": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/sha256" }] },
+          "version": { "oneOf": [{ "type": "null" }, { "type": "string", "minLength": 1, "maxLength": 256 }] }
+        }
+      }
+    },
+    "kvm": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["device_present", "device_accessible", "api_version"],
+      "properties": {
+        "device_present": { "type": "boolean" },
+        "device_accessible": { "type": "boolean" },
+        "api_version": { "oneOf": [{ "type": "null" }, { "const": 12 }] }
+      }
+    },
+    "claims": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["runtime", "network", "ssh", "coordinator_invoked"],
+      "properties": {
+        "runtime": { "const": false },
+        "network": { "const": false },
+        "ssh": { "const": false },
+        "coordinator_invoked": { "const": false }
+      }
+    },
+    "diagnostic_codes": {
+      "type": "array",
+      "maxItems": 16,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/code" }
+    }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "code": { "type": "string", "pattern": "^[a-z0-9-]{1,64}$" },
+    "outcome": { "enum": ["pass", "fail", "blocked", "unknown"] },
+    "buildOutcome": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["outcome", "work_outcome", "total_elapsed_ms"],
+          "properties": {
+            "outcome": { "const": "blocked" },
+            "work_outcome": { "const": "blocked" },
+            "total_elapsed_ms": { "const": 0 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["outcome", "work_outcome", "total_elapsed_ms"],
+          "properties": {
+            "outcome": { "enum": ["success", "failed"] },
+            "work_outcome": {
+              "enum": ["success", "cancelled", "deadline", "failed", "not-started"]
+            },
+            "total_elapsed_ms": { "type": "integer", "minimum": 0, "maximum": 5400000 }
+          },
+          "allOf": [
+            {
+              "if": { "properties": { "outcome": { "const": "success" } }, "required": ["outcome"] },
+              "then": { "properties": { "work_outcome": { "const": "success" } } }
+            }
+          ]
+        }
+      ]
+    },
+    "recoveryOutcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["attempt", "outcome", "elapsed_ms"],
+      "properties": {
+        "attempt": { "const": 1 },
+        "outcome": { "enum": ["success", "over-bound", "nondeadline"] },
+        "elapsed_ms": { "type": "integer", "minimum": 0, "maximum": 5400000 }
+      }
+    }
+  }
+}

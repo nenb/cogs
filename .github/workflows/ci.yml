@@ -4,24 +4,48 @@ on:
   pull_request:
   push:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      reviewed_sha:
+        description: Exact externally reviewed commit SHA to qualify
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.ref }}
+  group: ci-${{ github.event.pull_request.number || inputs.reviewed_sha || github.ref }}
   cancel-in-progress: true
 
 jobs:
   quality:
     name: Quality and Pi embedding
+    needs: [native-qualification-eligibility]
+    if: ${{ always() && (github.event_name != 'workflow_dispatch' || needs.native-qualification-eligibility.result == 'success') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Check out source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.sha || github.event_name == 'workflow_dispatch' && inputs.reviewed_sha || '' }}
           persist-credentials: false
+          # Outcome 2's binding line-budget tests compare against the accepted
+          # ADR baseline commit, so the quality checkout needs that history.
+          fetch-depth: 0
+
+      - name: Verify exact requested source
+        if: (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) || github.event_name == 'workflow_dispatch'
+        env:
+          EXPECTED_HEAD_REPOSITORY: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name || github.repository }}
+          EXPECTED_REPOSITORY: ${{ github.repository }}
+          EXPECTED_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || inputs.reviewed_sha }}
+        run: |
+          set -euo pipefail
+          test "$EXPECTED_HEAD_REPOSITORY" = "$EXPECTED_REPOSITORY"
+          [[ "$EXPECTED_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(/usr/bin/git rev-parse --verify HEAD)" = "$EXPECTED_HEAD_SHA"
 
       - name: Set up Node.js
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
@@ -68,7 +92,8 @@ jobs:
           ! readelf --program-headers "$RUNNER_TEMP/probe-a/cogs-net-probe-linux-amd64" | grep -F INTERP
           ! readelf --dynamic "$RUNNER_TEMP/probe-a/cogs-net-probe-linux-amd64" | grep -F NEEDED
           canary='must-never-be-reflected-7f4d4a9f'
-          output=$(printf '{"version":"cogs.guest-probe/v1alpha1","operation":"http","url":"https://127.0.0.1:1/private?value=%s","headers":{"Authorization":"Bearer %s"},"timeout_ms":100}' "$canary" "$canary" | "$RUNNER_TEMP/probe-a/cogs-net-probe-linux-amd64" 2>"$RUNNER_TEMP/probe-stderr")
+          request='{"version":"cogs.guest-probe/v1alpha1","operation":"http","url":"https://127.0.0.1:1/private?value=%s","headers":{"Authorization":"Bearer %s"},"timeout_ms":100}'
+          output=$(printf "$request" "$canary" "$canary" | "$RUNNER_TEMP/probe-a/cogs-net-probe-linux-amd64" 2>"$RUNNER_TEMP/probe-stderr")
           ! grep -F "$canary" <<<"$output"
           test ! -s "$RUNNER_TEMP/probe-stderr"
 
@@ -105,6 +130,397 @@ jobs:
           path: ${{ runner.temp }}/probe-a/
           if-no-files-found: error
           retention-days: 7
+
+  native-c1:
+    name: Native C1
+    needs: [quality, native-qualification-eligibility]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      COGS_C1_EXPECTED_REPOSITORY: ${{ github.repository }}
+      COGS_C1_EXPECTED_WORKFLOW_FILE: .github/workflows/ci.yml
+      COGS_C1_EXPECTED_JOB: native-c1
+      COGS_C1_EXPECTED_EVENT: workflow_dispatch
+      COGS_C1_EXPECTED_ACTION: dispatch
+      COGS_C1_EXPECTED_RUN_ID: ${{ github.run_id }}
+      COGS_C1_EXPECTED_RUN_ATTEMPT: ${{ github.run_attempt }}
+      COGS_C1_EXPECTED_ENVELOPE_SHA: ${{ github.sha }}
+      COGS_C1_EXPECTED_EVENT_MERGE_SHA: ${{ github.sha }}
+      COGS_C1_EXPECTED_WORKFLOW_REF: ${{ github.workflow_ref }}
+      COGS_C1_EXPECTED_WORKFLOW_SHA: ${{ github.workflow_sha }}
+      COGS_C1_EXPECTED_BASE_SHA: ${{ github.sha }}
+      COGS_C1_EXPECTED_PR_NUMBER: ${{ github.run_number }}
+      COGS_C1_EXPECTED_HEAD_REPOSITORY: ${{ github.repository }}
+      COGS_C1_EXPECTED_HEAD_SHA: ${{ needs.native-qualification-eligibility.outputs.reviewed_sha }}
+      COGS_C1_EXPECTED_CHECKED_OUT_SHA: ${{ needs.native-qualification-eligibility.outputs.reviewed_sha }}
+    steps:
+      - name: Check out exact reviewed commit
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.native-qualification-eligibility.outputs.reviewed_sha }}
+          persist-credentials: false
+      - name: Verify exact reviewed commit
+        env:
+          EXPECTED_HEAD_REPOSITORY: ${{ github.repository }}
+          EXPECTED_REPOSITORY: ${{ github.repository }}
+          EXPECTED_HEAD_SHA: ${{ needs.native-qualification-eligibility.outputs.reviewed_sha }}
+        run: |
+          set -euo pipefail
+          test "$EXPECTED_HEAD_REPOSITORY" = "$EXPECTED_REPOSITORY"
+          [[ "$EXPECTED_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(/usr/bin/git rev-parse --verify HEAD)" = "$EXPECTED_HEAD_SHA"
+      - name: Invoke workflow-bound native C1 gate
+        env:
+          COGS_C1_EXPECTED_WORKFLOW_BLOB_DIGEST: ${{ hashFiles('.github/workflows/ci.yml') }}
+        run: /usr/bin/python3 -I test/aws-stage2-completion-rootfs-builder-native.py --workflow-bound
+
+  native-qualification-eligibility:
+    name: Outcome 2 native dispatch authority
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.run_attempt == 1 &&
+      github.actor == github.triggering_actor &&
+      github.actor == vars.NATIVE_QUALIFICATION_ACTOR &&
+      github.event.sender.login == github.actor &&
+      github.ref_type == 'branch' &&
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch) &&
+      github.ref_protected == true &&
+      github.workflow_ref == format('{0}/.github/workflows/ci.yml@{1}', github.repository, github.ref) &&
+      github.workflow_sha == github.sha
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    outputs:
+      reviewed_sha: ${{ steps.authority.outputs.reviewed_sha }}
+    steps:
+      - name: Validate external native dispatch authority
+        id: authority
+        env:
+          REVIEWED_SHA: ${{ inputs.reviewed_sha }}
+          AUTHORIZED_ACTOR: ${{ vars.NATIVE_QUALIFICATION_ACTOR }}
+          ACTOR: ${{ github.actor }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          REF_NAME: ${{ github.ref_name }}
+          REF_PROTECTED: ${{ github.ref_protected }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+          ENVELOPE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$REVIEWED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test -n "$AUTHORIZED_ACTOR"
+          test "$ACTOR" = "$AUTHORIZED_ACTOR"
+          test "$TRIGGERING_ACTOR" = "$ACTOR"
+          test -n "$DEFAULT_BRANCH"
+          test "$REF_NAME" = "$DEFAULT_BRANCH"
+          test "$REF_PROTECTED" = "true"
+          [[ "$WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$WORKFLOW_SHA" = "$ENVELOPE_SHA"
+          printf 'reviewed_sha=%s\n' "$REVIEWED_SHA" >> "$GITHUB_OUTPUT"
+
+  native-qualification-a:
+    name: Outcome 2 native A - runtime mappings
+    needs: [quality, native-qualification-eligibility]
+    permissions: { contents: read }
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs: { upload: "${{ steps.upload.outcome }}", cleanup: "${{ steps.cleanup.outcome }}" }
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with: { ref: "${{ needs.native-qualification-eligibility.outputs.reviewed_sha }}", persist-credentials: false }
+      - env:
+          { NQ_DRIVER: scripts/native-qualification/job-a-runtime-mappings.py, NQ_HEAD_REPOSITORY: "${{ github.repository }}",
+            NQ_HEAD_SHA: "${{ needs.native-qualification-eligibility.outputs.reviewed_sha }}", NQ_REF: "${{ github.ref }}",
+            NQ_DEFAULT_BRANCH: "${{ github.event.repository.default_branch }}", NQ_REF_PROTECTED: "${{ github.ref_protected }}" }
+        run: |
+          set -euo pipefail
+          test "$NQ_HEAD_REPOSITORY" = "$GITHUB_REPOSITORY"
+          [[ "$NQ_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(/usr/bin/git rev-parse --verify HEAD^{commit})" = "$NQ_HEAD_SHA"
+          test -z "$(/usr/bin/git status --porcelain=v1 --untracked-files=all)"
+          test -z "$(/usr/bin/git config --local --get-regexp 'credential\.helper|http\..*\.extraheader' || :)"
+          ! /usr/bin/git remote get-url origin | /usr/bin/grep -Eq '://[^/]*@'
+          /usr/bin/env -i LC_ALL=C PYTHONDONTWRITEBYTECODE=1 PYTHONHASHSEED=0 NQ_EVENT_NAME="$GITHUB_EVENT_NAME" NQ_REPOSITORY="$GITHUB_REPOSITORY" \
+            NQ_HEAD_REPOSITORY="$NQ_HEAD_REPOSITORY" NQ_HEAD_SHA="$NQ_HEAD_SHA" NQ_ENVELOPE_SHA="$GITHUB_SHA" \
+            NQ_WORKFLOW_SHA="$GITHUB_WORKFLOW_SHA" NQ_REF="$NQ_REF" NQ_DEFAULT_BRANCH="$NQ_DEFAULT_BRANCH" NQ_REF_PROTECTED="$NQ_REF_PROTECTED" \
+            NQ_JOB_ID="$GITHUB_JOB" NQ_RUN_ID="$GITHUB_RUN_ID" NQ_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" NQ_RUNNER_VERSION="$ImageVersion" \
+            /usr/bin/python3 -I -B "$NQ_DRIVER" --workflow-bound
+      - name: Upload validated fixed report
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with: { name: "native-A-${{ needs.native-qualification-eligibility.outputs.reviewed_sha }}-${{ github.run_id }}-${{ github.run_attempt }}",
+          path: /tmp/cogs-native-qualification-A/report.json,
+          if-no-files-found: error, retention-days: 7 }
+      - name: Restore fixed report-path baseline
+        id: cleanup
+        if: ${{ always() }}
+        env: { NQ_CLEANUP_HEAD_SHA: "${{ needs.native-qualification-eligibility.outputs.reviewed_sha }}", NQ_CLEANUP_RUN_ID: "${{ github.run_id }}",
+          NQ_CLEANUP_RUN_ATTEMPT: "${{ github.run_attempt }}", NQ_UPLOAD_ARTIFACT_ID: "${{ steps.upload.outputs.artifact-id }}",
+          NQ_UPLOAD_ARTIFACT_SHA256: "${{ steps.upload.outputs.artifact-digest }}" }
+        run: |
+          /usr/bin/env -i LC_ALL=C NQ_CLEANUP_HEAD_SHA="$NQ_CLEANUP_HEAD_SHA" NQ_CLEANUP_RUN_ID="$NQ_CLEANUP_RUN_ID" \
+            NQ_CLEANUP_RUN_ATTEMPT="$NQ_CLEANUP_RUN_ATTEMPT" NQ_UPLOAD_ARTIFACT_ID="$NQ_UPLOAD_ARTIFACT_ID" \
+            NQ_UPLOAD_ARTIFACT_SHA256="$NQ_UPLOAD_ARTIFACT_SHA256" /usr/bin/python3 -I -B scripts/native-qualification/common.py --cleanup A
+
+  native-qualification-b:
+    name: Outcome 2 native B - compression executables
+    needs: [quality, native-qualification-eligibility]
+    permissions: { contents: read }
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs: { upload: "${{ steps.upload.outcome }}", cleanup: "${{ steps.cleanup.outcome }}" }
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with: { ref: "${{ needs.native-qualification-eligibility.outputs.reviewed_sha }}", persist-credentials: false }
+      - env:
+          { NQ_DRIVER: scripts/native-qualification/job-b-compression.py, NQ_HEAD_REPOSITORY: "${{ github.repository }}",
+            NQ_HEAD_SHA: "${{ needs.native-qualification-eligibility.outputs.reviewed_sha }}", NQ_REF: "${{ github.ref }}",
+            NQ_DEFAULT_BRANCH: "${{ github.event.repository.default_branch }}", NQ_REF_PROTECTED: "${{ github.ref_protected }}" }
+        run: |
+          set -euo pipefail
+          test "$NQ_HEAD_REPOSITORY" = "$GITHUB_REPOSITORY"
+          [[ "$NQ_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(/usr/bin/git rev-parse --verify HEAD^{commit})" = "$NQ_HEAD_SHA"
+          test -z "$(/usr/bin/git status --porcelain=v1 --untracked-files=all)"
+          test -z "$(/usr/bin/git config --local --get-regexp 'credential\.helper|http\..*\.extraheader' || :)"
+          ! /usr/bin/git remote get-url origin | /usr/bin/grep -Eq '://[^/]*@'
+          /usr/bin/env -i LC_ALL=C PYTHONDONTWRITEBYTECODE=1 PYTHONHASHSEED=0 NQ_EVENT_NAME="$GITHUB_EVENT_NAME" NQ_REPOSITORY="$GITHUB_REPOSITORY" \
+            NQ_HEAD_REPOSITORY="$NQ_HEAD_REPOSITORY" NQ_HEAD_SHA="$NQ_HEAD_SHA" NQ_ENVELOPE_SHA="$GITHUB_SHA" \
+            NQ_WORKFLOW_SHA="$GITHUB_WORKFLOW_SHA" NQ_REF="$NQ_REF" NQ_DEFAULT_BRANCH="$NQ_DEFAULT_BRANCH" NQ_REF_PROTECTED="$NQ_REF_PROTECTED" \
+            NQ_JOB_ID="$GITHUB_JOB" NQ_RUN_ID="$GITHUB_RUN_ID" NQ_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" NQ_RUNNER_VERSION="$ImageVersion" \
+            /usr/bin/python3 -I -B "$NQ_DRIVER" --workflow-bound
+      - name: Upload validated fixed report
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with: { name: "native-B-${{ needs.native-qualification-eligibility.outputs.reviewed_sha }}-${{ github.run_id }}-${{ github.run_attempt }}",
+          path: /tmp/cogs-native-qualification-B/report.json,
+          if-no-files-found: error, retention-days: 7 }
+      - name: Restore fixed report-path baseline
+        id: cleanup
+        if: ${{ always() }}
+        env: { NQ_CLEANUP_HEAD_SHA: "${{ needs.native-qualification-eligibility.outputs.reviewed_sha }}", NQ_CLEANUP_RUN_ID: "${{ github.run_id }}",
+          NQ_CLEANUP_RUN_ATTEMPT: "${{ github.run_attempt }}", NQ_UPLOAD_ARTIFACT_ID: "${{ steps.upload.outputs.artifact-id }}",
+          NQ_UPLOAD_ARTIFACT_SHA256: "${{ steps.upload.outputs.artifact-digest }}" }
+        run: |
+          /usr/bin/env -i LC_ALL=C NQ_CLEANUP_HEAD_SHA="$NQ_CLEANUP_HEAD_SHA" NQ_CLEANUP_RUN_ID="$NQ_CLEANUP_RUN_ID" \
+            NQ_CLEANUP_RUN_ATTEMPT="$NQ_CLEANUP_RUN_ATTEMPT" NQ_UPLOAD_ARTIFACT_ID="$NQ_UPLOAD_ARTIFACT_ID" \
+            NQ_UPLOAD_ARTIFACT_SHA256="$NQ_UPLOAD_ARTIFACT_SHA256" /usr/bin/python3 -I -B scripts/native-qualification/common.py --cleanup B
+
+  native-qualification-c:
+    name: Outcome 2 native C - descriptor behavior
+    needs: [quality, native-qualification-eligibility]
+    permissions: { contents: read }
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs: { upload: "${{ steps.upload.outcome }}", cleanup: "${{ steps.cleanup.outcome }}" }
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with: { ref: "${{ needs.native-qualification-eligibility.outputs.reviewed_sha }}", persist-credentials: false }
+      - env:
+          { NQ_DRIVER: scripts/native-qualification/job-c-descriptors.py, NQ_HEAD_REPOSITORY: "${{ github.repository }}",
+            NQ_HEAD_SHA: "${{ needs.native-qualification-eligibility.outputs.reviewed_sha }}", NQ_REF: "${{ github.ref }}",
+            NQ_DEFAULT_BRANCH: "${{ github.event.repository.default_branch }}", NQ_REF_PROTECTED: "${{ github.ref_protected }}" }
+        run: |
+          set -euo pipefail
+          test "$NQ_HEAD_REPOSITORY" = "$GITHUB_REPOSITORY"
+          [[ "$NQ_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(/usr/bin/git rev-parse --verify HEAD^{commit})" = "$NQ_HEAD_SHA"
+          test -z "$(/usr/bin/git status --porcelain=v1 --untracked-files=all)"
+          test -z "$(/usr/bin/git config --local --get-regexp 'credential\.helper|http\..*\.extraheader' || :)"
+          ! /usr/bin/git remote get-url origin | /usr/bin/grep -Eq '://[^/]*@'
+          /usr/bin/env -i LC_ALL=C PYTHONDONTWRITEBYTECODE=1 PYTHONHASHSEED=0 NQ_EVENT_NAME="$GITHUB_EVENT_NAME" NQ_REPOSITORY="$GITHUB_REPOSITORY" \
+            NQ_HEAD_REPOSITORY="$NQ_HEAD_REPOSITORY" NQ_HEAD_SHA="$NQ_HEAD_SHA" NQ_ENVELOPE_SHA="$GITHUB_SHA" \
+            NQ_WORKFLOW_SHA="$GITHUB_WORKFLOW_SHA" NQ_REF="$NQ_REF" NQ_DEFAULT_BRANCH="$NQ_DEFAULT_BRANCH" NQ_REF_PROTECTED="$NQ_REF_PROTECTED" \
+            NQ_JOB_ID="$GITHUB_JOB" NQ_RUN_ID="$GITHUB_RUN_ID" NQ_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" NQ_RUNNER_VERSION="$ImageVersion" \
+            /usr/bin/python3 -I -B "$NQ_DRIVER" --workflow-bound
+      - name: Upload validated fixed report
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with: { name: "native-C-${{ needs.native-qualification-eligibility.outputs.reviewed_sha }}-${{ github.run_id }}-${{ github.run_attempt }}",
+          path: /tmp/cogs-native-qualification-C/report.json,
+          if-no-files-found: error, retention-days: 7 }
+      - name: Restore fixed report-path baseline
+        id: cleanup
+        if: ${{ always() }}
+        env: { NQ_CLEANUP_HEAD_SHA: "${{ needs.native-qualification-eligibility.outputs.reviewed_sha }}", NQ_CLEANUP_RUN_ID: "${{ github.run_id }}",
+          NQ_CLEANUP_RUN_ATTEMPT: "${{ github.run_attempt }}", NQ_UPLOAD_ARTIFACT_ID: "${{ steps.upload.outputs.artifact-id }}",
+          NQ_UPLOAD_ARTIFACT_SHA256: "${{ steps.upload.outputs.artifact-digest }}" }
+        run: |
+          /usr/bin/env -i LC_ALL=C NQ_CLEANUP_HEAD_SHA="$NQ_CLEANUP_HEAD_SHA" NQ_CLEANUP_RUN_ID="$NQ_CLEANUP_RUN_ID" \
+            NQ_CLEANUP_RUN_ATTEMPT="$NQ_CLEANUP_RUN_ATTEMPT" NQ_UPLOAD_ARTIFACT_ID="$NQ_UPLOAD_ARTIFACT_ID" \
+            NQ_UPLOAD_ARTIFACT_SHA256="$NQ_UPLOAD_ARTIFACT_SHA256" /usr/bin/python3 -I -B scripts/native-qualification/common.py --cleanup C
+
+  native-qualification-d:
+    name: Outcome 2 native D - process lifecycle
+    needs: [quality, native-qualification-eligibility]
+    permissions: { contents: read }
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs: { upload: "${{ steps.upload.outcome }}", cleanup: "${{ steps.cleanup.outcome }}" }
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with: { ref: "${{ needs.native-qualification-eligibility.outputs.reviewed_sha }}", persist-credentials: false }
+      - env:
+          { NQ_DRIVER: scripts/native-qualification/job-d-process-lifecycle.py, NQ_HEAD_REPOSITORY: "${{ github.repository }}",
+            NQ_HEAD_SHA: "${{ needs.native-qualification-eligibility.outputs.reviewed_sha }}", NQ_REF: "${{ github.ref }}",
+            NQ_DEFAULT_BRANCH: "${{ github.event.repository.default_branch }}", NQ_REF_PROTECTED: "${{ github.ref_protected }}" }
+        run: |
+          set -euo pipefail
+          test "$NQ_HEAD_REPOSITORY" = "$GITHUB_REPOSITORY"
+          [[ "$NQ_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(/usr/bin/git rev-parse --verify HEAD^{commit})" = "$NQ_HEAD_SHA"
+          test -z "$(/usr/bin/git status --porcelain=v1 --untracked-files=all)"
+          test -z "$(/usr/bin/git config --local --get-regexp 'credential\.helper|http\..*\.extraheader' || :)"
+          ! /usr/bin/git remote get-url origin | /usr/bin/grep -Eq '://[^/]*@'
+          /usr/bin/env -i LC_ALL=C PYTHONDONTWRITEBYTECODE=1 PYTHONHASHSEED=0 NQ_EVENT_NAME="$GITHUB_EVENT_NAME" NQ_REPOSITORY="$GITHUB_REPOSITORY" \
+            NQ_HEAD_REPOSITORY="$NQ_HEAD_REPOSITORY" NQ_HEAD_SHA="$NQ_HEAD_SHA" NQ_ENVELOPE_SHA="$GITHUB_SHA" \
+            NQ_WORKFLOW_SHA="$GITHUB_WORKFLOW_SHA" NQ_REF="$NQ_REF" NQ_DEFAULT_BRANCH="$NQ_DEFAULT_BRANCH" NQ_REF_PROTECTED="$NQ_REF_PROTECTED" \
+            NQ_JOB_ID="$GITHUB_JOB" NQ_RUN_ID="$GITHUB_RUN_ID" NQ_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" NQ_RUNNER_VERSION="$ImageVersion" \
+            /usr/bin/python3 -I -B "$NQ_DRIVER" --workflow-bound
+      - name: Upload validated fixed report
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with: { name: "native-D-${{ needs.native-qualification-eligibility.outputs.reviewed_sha }}-${{ github.run_id }}-${{ github.run_attempt }}",
+          path: /tmp/cogs-native-qualification-D/report.json,
+          if-no-files-found: error, retention-days: 7 }
+      - name: Restore fixed report-path baseline
+        id: cleanup
+        if: ${{ always() }}
+        env: { NQ_CLEANUP_HEAD_SHA: "${{ needs.native-qualification-eligibility.outputs.reviewed_sha }}", NQ_CLEANUP_RUN_ID: "${{ github.run_id }}",
+          NQ_CLEANUP_RUN_ATTEMPT: "${{ github.run_attempt }}", NQ_UPLOAD_ARTIFACT_ID: "${{ steps.upload.outputs.artifact-id }}",
+          NQ_UPLOAD_ARTIFACT_SHA256: "${{ steps.upload.outputs.artifact-digest }}" }
+        run: |
+          /usr/bin/env -i LC_ALL=C NQ_CLEANUP_HEAD_SHA="$NQ_CLEANUP_HEAD_SHA" NQ_CLEANUP_RUN_ID="$NQ_CLEANUP_RUN_ID" \
+            NQ_CLEANUP_RUN_ATTEMPT="$NQ_CLEANUP_RUN_ATTEMPT" NQ_UPLOAD_ARTIFACT_ID="$NQ_UPLOAD_ARTIFACT_ID" \
+            NQ_UPLOAD_ARTIFACT_SHA256="$NQ_UPLOAD_ARTIFACT_SHA256" /usr/bin/python3 -I -B scripts/native-qualification/common.py --cleanup D
+
+  native-qualification-e:
+    name: Outcome 2 native E - sandbox boundary
+    needs: [quality, native-qualification-eligibility]
+    permissions: { contents: read }
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs: { upload: "${{ steps.upload.outcome }}", cleanup: "${{ steps.cleanup.outcome }}" }
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with: { ref: "${{ needs.native-qualification-eligibility.outputs.reviewed_sha }}", persist-credentials: false }
+      - env:
+          { NQ_DRIVER: scripts/native-qualification/job-e-sandbox.py, NQ_HEAD_REPOSITORY: "${{ github.repository }}",
+            NQ_HEAD_SHA: "${{ needs.native-qualification-eligibility.outputs.reviewed_sha }}", NQ_REF: "${{ github.ref }}",
+            NQ_DEFAULT_BRANCH: "${{ github.event.repository.default_branch }}", NQ_REF_PROTECTED: "${{ github.ref_protected }}" }
+        run: |
+          set -euo pipefail
+          test "$NQ_HEAD_REPOSITORY" = "$GITHUB_REPOSITORY"
+          [[ "$NQ_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(/usr/bin/git rev-parse --verify HEAD^{commit})" = "$NQ_HEAD_SHA"
+          test -z "$(/usr/bin/git status --porcelain=v1 --untracked-files=all)"
+          test -z "$(/usr/bin/git config --local --get-regexp 'credential\.helper|http\..*\.extraheader' || :)"
+          ! /usr/bin/git remote get-url origin | /usr/bin/grep -Eq '://[^/]*@'
+          /usr/bin/env -i LC_ALL=C PYTHONDONTWRITEBYTECODE=1 PYTHONHASHSEED=0 NQ_EVENT_NAME="$GITHUB_EVENT_NAME" NQ_REPOSITORY="$GITHUB_REPOSITORY" \
+            NQ_HEAD_REPOSITORY="$NQ_HEAD_REPOSITORY" NQ_HEAD_SHA="$NQ_HEAD_SHA" NQ_ENVELOPE_SHA="$GITHUB_SHA" \
+            NQ_WORKFLOW_SHA="$GITHUB_WORKFLOW_SHA" NQ_REF="$NQ_REF" NQ_DEFAULT_BRANCH="$NQ_DEFAULT_BRANCH" NQ_REF_PROTECTED="$NQ_REF_PROTECTED" \
+            NQ_JOB_ID="$GITHUB_JOB" NQ_RUN_ID="$GITHUB_RUN_ID" NQ_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" NQ_RUNNER_VERSION="$ImageVersion" \
+            /usr/bin/python3 -I -B "$NQ_DRIVER" --workflow-bound
+      - name: Upload validated fixed report
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with: { name: "native-E-${{ needs.native-qualification-eligibility.outputs.reviewed_sha }}-${{ github.run_id }}-${{ github.run_attempt }}",
+          path: /tmp/cogs-native-qualification-E/report.json,
+          if-no-files-found: error, retention-days: 7 }
+      - name: Restore fixed report-path baseline
+        id: cleanup
+        if: ${{ always() }}
+        env: { NQ_CLEANUP_HEAD_SHA: "${{ needs.native-qualification-eligibility.outputs.reviewed_sha }}", NQ_CLEANUP_RUN_ID: "${{ github.run_id }}",
+          NQ_CLEANUP_RUN_ATTEMPT: "${{ github.run_attempt }}", NQ_UPLOAD_ARTIFACT_ID: "${{ steps.upload.outputs.artifact-id }}",
+          NQ_UPLOAD_ARTIFACT_SHA256: "${{ steps.upload.outputs.artifact-digest }}" }
+        run: |
+          /usr/bin/env -i LC_ALL=C NQ_CLEANUP_HEAD_SHA="$NQ_CLEANUP_HEAD_SHA" NQ_CLEANUP_RUN_ID="$NQ_CLEANUP_RUN_ID" \
+            NQ_CLEANUP_RUN_ATTEMPT="$NQ_CLEANUP_RUN_ATTEMPT" NQ_UPLOAD_ARTIFACT_ID="$NQ_UPLOAD_ARTIFACT_ID" \
+            NQ_UPLOAD_ARTIFACT_SHA256="$NQ_UPLOAD_ARTIFACT_SHA256" /usr/bin/python3 -I -B scripts/native-qualification/common.py --cleanup E
+
+  native-closure-integration:
+    name: Outcome 2 native closure integration
+    needs: [native-qualification-eligibility, native-qualification-a, native-qualification-b, native-qualification-c, native-qualification-d, native-qualification-e]
+    permissions: { contents: read }
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs: { upload: "${{ steps.upload.outcome }}", cleanup: "${{ steps.cleanup.outcome }}" }
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with: { ref: "${{ needs.native-qualification-eligibility.outputs.reviewed_sha }}", persist-credentials: false }
+      - env:
+          { NQ_DRIVER: scripts/native-qualification/thin-integration.py, NQ_HEAD_REPOSITORY: "${{ github.repository }}",
+            NQ_HEAD_SHA: "${{ needs.native-qualification-eligibility.outputs.reviewed_sha }}", NQ_REF: "${{ github.ref }}",
+            NQ_DEFAULT_BRANCH: "${{ github.event.repository.default_branch }}", NQ_REF_PROTECTED: "${{ github.ref_protected }}" }
+        run: |
+          set -euo pipefail
+          test "$NQ_HEAD_REPOSITORY" = "$GITHUB_REPOSITORY"
+          [[ "$NQ_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(/usr/bin/git rev-parse --verify HEAD^{commit})" = "$NQ_HEAD_SHA"
+          test -z "$(/usr/bin/git status --porcelain=v1 --untracked-files=all)"
+          test -z "$(/usr/bin/git config --local --get-regexp 'credential\.helper|http\..*\.extraheader' || :)"
+          ! /usr/bin/git remote get-url origin | /usr/bin/grep -Eq '://[^/]*@'
+          /usr/bin/env -i LC_ALL=C PYTHONDONTWRITEBYTECODE=1 PYTHONHASHSEED=0 NQ_EVENT_NAME="$GITHUB_EVENT_NAME" NQ_REPOSITORY="$GITHUB_REPOSITORY" \
+            NQ_HEAD_REPOSITORY="$NQ_HEAD_REPOSITORY" NQ_HEAD_SHA="$NQ_HEAD_SHA" NQ_ENVELOPE_SHA="$GITHUB_SHA" \
+            NQ_WORKFLOW_SHA="$GITHUB_WORKFLOW_SHA" NQ_REF="$NQ_REF" NQ_DEFAULT_BRANCH="$NQ_DEFAULT_BRANCH" NQ_REF_PROTECTED="$NQ_REF_PROTECTED" \
+            NQ_JOB_ID="$GITHUB_JOB" NQ_RUN_ID="$GITHUB_RUN_ID" NQ_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" NQ_RUNNER_VERSION="$ImageVersion" \
+            /usr/bin/python3 -I -B "$NQ_DRIVER" --workflow-bound
+      - name: Upload validated fixed report
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with: { name: "native-integration-${{ needs.native-qualification-eligibility.outputs.reviewed_sha }}-${{ github.run_id }}-${{ github.run_attempt }}",
+          path: /tmp/cogs-native-qualification-integration/report.json,
+          if-no-files-found: error, retention-days: 7 }
+      - name: Restore fixed report-path baseline
+        id: cleanup
+        if: ${{ always() }}
+        env: { NQ_CLEANUP_HEAD_SHA: "${{ needs.native-qualification-eligibility.outputs.reviewed_sha }}", NQ_CLEANUP_RUN_ID: "${{ github.run_id }}",
+          NQ_CLEANUP_RUN_ATTEMPT: "${{ github.run_attempt }}", NQ_UPLOAD_ARTIFACT_ID: "${{ steps.upload.outputs.artifact-id }}",
+          NQ_UPLOAD_ARTIFACT_SHA256: "${{ steps.upload.outputs.artifact-digest }}" }
+        run: |
+          /usr/bin/env -i LC_ALL=C NQ_CLEANUP_HEAD_SHA="$NQ_CLEANUP_HEAD_SHA" NQ_CLEANUP_RUN_ID="$NQ_CLEANUP_RUN_ID" \
+            NQ_CLEANUP_RUN_ATTEMPT="$NQ_CLEANUP_RUN_ATTEMPT" NQ_UPLOAD_ARTIFACT_ID="$NQ_UPLOAD_ARTIFACT_ID" \
+            NQ_UPLOAD_ARTIFACT_SHA256="$NQ_UPLOAD_ARTIFACT_SHA256" /usr/bin/python3 -I -B scripts/native-qualification/common.py --cleanup integration
+
+  native-qualification-required:
+    name: Outcome 2 native qualification required
+    if: ${{ always() && needs.native-qualification-eligibility.result == 'success' }}
+    needs: [quality, native-qualification-eligibility, native-qualification-a, native-qualification-b,
+      native-qualification-c, native-qualification-d, native-qualification-e, native-closure-integration]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with: { ref: "${{ needs.native-qualification-eligibility.outputs.reviewed_sha }}", persist-credentials: false }
+      - name: Require every native transaction and report lifecycle
+        env:
+          QUALITY_RESULT: "${{ needs.quality.result }}"
+          ELIGIBILITY_RESULT: "${{ needs.native-qualification-eligibility.result }}"
+          A_RESULT: "${{ needs.native-qualification-a.result }}"
+          B_RESULT: "${{ needs.native-qualification-b.result }}"
+          C_RESULT: "${{ needs.native-qualification-c.result }}"
+          D_RESULT: "${{ needs.native-qualification-d.result }}"
+          E_RESULT: "${{ needs.native-qualification-e.result }}"
+          INTEGRATION_RESULT: "${{ needs.native-closure-integration.result }}"
+          A_UPLOAD: "${{ needs.native-qualification-a.outputs.upload }}"
+          A_CLEANUP: "${{ needs.native-qualification-a.outputs.cleanup }}"
+          B_UPLOAD: "${{ needs.native-qualification-b.outputs.upload }}"
+          B_CLEANUP: "${{ needs.native-qualification-b.outputs.cleanup }}"
+          C_UPLOAD: "${{ needs.native-qualification-c.outputs.upload }}"
+          C_CLEANUP: "${{ needs.native-qualification-c.outputs.cleanup }}"
+          D_UPLOAD: "${{ needs.native-qualification-d.outputs.upload }}"
+          D_CLEANUP: "${{ needs.native-qualification-d.outputs.cleanup }}"
+          E_UPLOAD: "${{ needs.native-qualification-e.outputs.upload }}"
+          E_CLEANUP: "${{ needs.native-qualification-e.outputs.cleanup }}"
+          INTEGRATION_UPLOAD: "${{ needs.native-closure-integration.outputs.upload }}"
+          INTEGRATION_CLEANUP: "${{ needs.native-closure-integration.outputs.cleanup }}"
+        run: |
+          /usr/bin/env -i LC_ALL=C PYTHONCOERCECLOCALE=0 QUALITY_RESULT="$QUALITY_RESULT" ELIGIBILITY_RESULT="$ELIGIBILITY_RESULT" \
+            A_RESULT="$A_RESULT" B_RESULT="$B_RESULT" C_RESULT="$C_RESULT" D_RESULT="$D_RESULT" E_RESULT="$E_RESULT" \
+            INTEGRATION_RESULT="$INTEGRATION_RESULT" A_UPLOAD="$A_UPLOAD" A_CLEANUP="$A_CLEANUP" \
+            B_UPLOAD="$B_UPLOAD" B_CLEANUP="$B_CLEANUP" C_UPLOAD="$C_UPLOAD" C_CLEANUP="$C_CLEANUP" \
+            D_UPLOAD="$D_UPLOAD" D_CLEANUP="$D_CLEANUP" E_UPLOAD="$E_UPLOAD" E_CLEANUP="$E_CLEANUP" \
+            INTEGRATION_UPLOAD="$INTEGRATION_UPLOAD" INTEGRATION_CLEANUP="$INTEGRATION_CLEANUP" \
+            /usr/bin/python3 -I -B scripts/native-qualification/common.py --require-final-results
 
   secret-scan:
     name: Secret scan

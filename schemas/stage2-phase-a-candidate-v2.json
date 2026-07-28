@@ -1,0 +1,1955 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.invalid/schemas/stage2-phase-a-candidate-v2.json",
+  "title": "ADR0048 Stage 2 Phase A Candidate",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "authority",
+    "qualified",
+    "source_revision",
+    "source_manifest_sha256",
+    "duration_ms",
+    "blockers",
+    "checks",
+    "rootfs",
+    "rootfs_phases",
+    "stage_evidence",
+    "first_build_setup",
+    "runtime_assets",
+    "host_tools",
+    "kvm",
+    "claims",
+    "diagnostic_codes"
+  ],
+  "allOf": [
+    {
+      "$ref": "#/$defs/phaseGraph"
+    },
+    {
+      "$ref": "#/$defs/stageGraph"
+    },
+    {
+      "$ref": "#/$defs/setupGraph"
+    },
+    {
+      "$ref": "#/$defs/settlementGraph"
+    }
+  ],
+  "properties": {
+    "version": {
+      "const": "cogs.stage2-phase-a-candidate/v2"
+    },
+    "authority": {
+      "const": "candidate"
+    },
+    "qualified": {
+      "const": false
+    },
+    "source_revision": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        }
+      ]
+    },
+    "source_manifest_sha256": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/sha256"
+        }
+      ]
+    },
+    "duration_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 5400000
+    },
+    "blockers": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 16,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/code"
+      }
+    },
+    "checks": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "platform",
+        "root",
+        "source",
+        "kvm",
+        "artifact_cache",
+        "rootfs_candidates",
+        "runtime_assets",
+        "host_tools",
+        "cleanup",
+        "residue"
+      ],
+      "properties": {
+        "platform": {
+          "$ref": "#/$defs/outcome"
+        },
+        "root": {
+          "$ref": "#/$defs/outcome"
+        },
+        "source": {
+          "$ref": "#/$defs/outcome"
+        },
+        "kvm": {
+          "$ref": "#/$defs/outcome"
+        },
+        "artifact_cache": {
+          "$ref": "#/$defs/outcome"
+        },
+        "rootfs_candidates": {
+          "$ref": "#/$defs/outcome"
+        },
+        "runtime_assets": {
+          "$ref": "#/$defs/outcome"
+        },
+        "host_tools": {
+          "$ref": "#/$defs/outcome"
+        },
+        "cleanup": {
+          "$ref": "#/$defs/outcome"
+        },
+        "residue": {
+          "$ref": "#/$defs/outcome"
+        }
+      }
+    },
+    "rootfs": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "candidate_count",
+            "cache_count",
+            "entry_count",
+            "manifest_size",
+            "manifest_sha256",
+            "ustar_size",
+            "ustar_sha256",
+            "equal",
+            "pins_match"
+          ],
+          "properties": {
+            "candidate_count": {
+              "const": 2
+            },
+            "cache_count": {
+              "const": 16
+            },
+            "entry_count": {
+              "const": 4353
+            },
+            "manifest_size": {
+              "const": 1049443
+            },
+            "manifest_sha256": {
+              "const": "8783c292f232842a3d1d2d35e7ac2268d591fa6e947d3984868fe33ca006e691"
+            },
+            "ustar_size": {
+              "const": 136905728
+            },
+            "ustar_sha256": {
+              "const": "47b0ab5752ae50da6bc9840345aa9ba6285bde3e5ae186c0c548acbaa83768d3"
+            },
+            "equal": {
+              "const": true
+            },
+            "pins_match": {
+              "const": true
+            }
+          }
+        }
+      ]
+    },
+    "rootfs_phases": {
+      "type": "array",
+      "minItems": 9,
+      "maxItems": 9,
+      "prefixItems": [
+        {
+          "type": "object",
+          "$ref": "#/$defs/phaseOutcome",
+          "properties": {
+            "phase": {
+              "const": "first-build-work"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "$ref": "#/$defs/phaseOutcome",
+          "properties": {
+            "phase": {
+              "const": "first-inline-cleanup"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "$ref": "#/$defs/phaseOutcome",
+          "properties": {
+            "phase": {
+              "const": "second-build-work"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "$ref": "#/$defs/phaseOutcome",
+          "properties": {
+            "phase": {
+              "const": "second-inline-cleanup"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "$ref": "#/$defs/phaseOutcome",
+          "properties": {
+            "phase": {
+              "const": "recovery-attempt-1"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "$ref": "#/$defs/phaseOutcome",
+          "properties": {
+            "phase": {
+              "const": "equality"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "$ref": "#/$defs/phaseOutcome",
+          "properties": {
+            "phase": {
+              "const": "pin"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "$ref": "#/$defs/phaseOutcome",
+          "properties": {
+            "phase": {
+              "const": "post-verification"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "$ref": "#/$defs/phaseOutcome",
+          "properties": {
+            "phase": {
+              "const": "settlement"
+            }
+          }
+        }
+      ],
+      "items": false
+    },
+    "stage_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["artifact_cache", "runtime_assets"],
+      "properties": {
+        "artifact_cache": {
+          "$ref": "#/$defs/stageRow"
+        },
+        "runtime_assets": {
+          "$ref": "#/$defs/stageRow"
+        }
+      }
+    },
+    "first_build_setup": {
+      "enum": [
+        "not-reached",
+        "fixed-input",
+        "rootfs-bootstrap",
+        "operation-establishment",
+        "materializer-dispatch",
+        "complete"
+      ]
+    },
+    "runtime_assets": {
+      "type": "array",
+      "maxItems": 2,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["component", "release", "name", "size", "sha256", "downloaded", "extracted"],
+        "properties": {
+          "component": {
+            "enum": ["kata", "containerd"]
+          },
+          "release": {
+            "enum": ["3.32.0", "2.2.1"]
+          },
+          "name": {
+            "enum": ["kata-static-3.32.0-amd64.tar.zst", "containerd-static-2.2.1-linux-amd64.tar.gz"]
+          },
+          "size": {
+            "enum": [1547940938, 33645699]
+          },
+          "sha256": {
+            "$ref": "#/$defs/sha256"
+          },
+          "downloaded": {
+            "const": true
+          },
+          "extracted": {
+            "const": false
+          }
+        }
+      }
+    },
+    "host_tools": {
+      "type": "array",
+      "maxItems": 6,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "path", "present", "size", "sha256", "version"],
+        "properties": {
+          "name": {
+            "enum": ["ctr", "ip", "tc", "nft", "ssh", "ssh-keygen"]
+          },
+          "path": {
+            "type": "string",
+            "pattern": "^/(?:usr/(?:s?bin)|opt)/[A-Za-z0-9._/-]+$",
+            "maxLength": 256
+          },
+          "present": {
+            "type": "boolean"
+          },
+          "size": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 134217728
+              }
+            ]
+          },
+          "sha256": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/sha256"
+              }
+            ]
+          },
+          "version": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              }
+            ]
+          }
+        }
+      }
+    },
+    "kvm": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["device_present", "device_accessible", "api_version"],
+      "properties": {
+        "device_present": {
+          "type": "boolean"
+        },
+        "device_accessible": {
+          "type": "boolean"
+        },
+        "api_version": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "const": 12
+            }
+          ]
+        }
+      }
+    },
+    "claims": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["runtime", "network", "ssh", "coordinator_invoked"],
+      "properties": {
+        "runtime": {
+          "const": false
+        },
+        "network": {
+          "const": false
+        },
+        "ssh": {
+          "const": false
+        },
+        "coordinator_invoked": {
+          "const": false
+        }
+      }
+    },
+    "diagnostic_codes": {
+      "type": "array",
+      "maxItems": 16,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/code"
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "code": {
+      "type": "string",
+      "pattern": "^[a-z0-9-]{1,64}$"
+    },
+    "outcome": {
+      "enum": ["pass", "fail", "blocked", "unknown"]
+    },
+    "counter": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1000000000
+    },
+    "stageRow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "elapsed_ms"],
+      "properties": {
+        "status": { "enum": ["success", "failure", "blocked", "not-reached"] },
+        "elapsed_ms": { "type": "integer", "minimum": 0, "maximum": 3300000 }
+      },
+      "if": { "type": "object", "properties": { "status": { "enum": ["blocked", "not-reached"] } } },
+      "then": { "type": "object", "properties": { "elapsed_ms": { "const": 0 } } }
+    },
+    "stageGraph": {
+      "allOf": [
+        {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "stage_evidence": {
+                  "type": "object",
+                  "properties": {
+                    "artifact_cache": { "type": "object", "properties": { "status": { "const": "success" } } },
+                    "runtime_assets": {
+                      "type": "object",
+                      "properties": { "status": { "enum": ["success", "failure", "blocked", "not-reached"] } }
+                    }
+                  }
+                },
+                "checks": { "type": "object", "properties": { "artifact_cache": { "const": "pass" } } }
+              }
+            },
+            {
+              "type": "object",
+              "properties": {
+                "stage_evidence": {
+                  "type": "object",
+                  "properties": {
+                    "artifact_cache": { "type": "object", "properties": { "status": { "const": "failure" } } },
+                    "runtime_assets": { "type": "object", "properties": { "status": { "const": "blocked" } } }
+                  }
+                },
+                "checks": { "type": "object", "properties": { "artifact_cache": { "const": "fail" } } }
+              }
+            },
+            {
+              "type": "object",
+              "properties": {
+                "stage_evidence": {
+                  "type": "object",
+                  "properties": {
+                    "artifact_cache": { "type": "object", "properties": { "status": { "const": "blocked" } } },
+                    "runtime_assets": { "type": "object", "properties": { "status": { "const": "blocked" } } }
+                  }
+                },
+                "checks": { "type": "object", "properties": { "artifact_cache": { "const": "blocked" } } }
+              }
+            },
+            {
+              "type": "object",
+              "properties": {
+                "stage_evidence": {
+                  "type": "object",
+                  "properties": {
+                    "artifact_cache": { "type": "object", "properties": { "status": { "const": "not-reached" } } },
+                    "runtime_assets": { "type": "object", "properties": { "status": { "const": "not-reached" } } }
+                  }
+                },
+                "checks": { "type": "object", "properties": { "artifact_cache": { "const": "unknown" } } }
+              }
+            }
+          ]
+        },
+        {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "stage_evidence": {
+                  "type": "object",
+                  "properties": {
+                    "runtime_assets": { "type": "object", "properties": { "status": { "const": "success" } } }
+                  }
+                },
+                "checks": { "type": "object", "properties": { "runtime_assets": { "const": "pass" } } },
+                "runtime_assets": { "type": "array", "minItems": 2 }
+              }
+            },
+            {
+              "type": "object",
+              "properties": {
+                "stage_evidence": {
+                  "type": "object",
+                  "properties": {
+                    "runtime_assets": { "type": "object", "properties": { "status": { "const": "failure" } } }
+                  }
+                },
+                "checks": { "type": "object", "properties": { "runtime_assets": { "const": "fail" } } }
+              }
+            },
+            {
+              "type": "object",
+              "properties": {
+                "stage_evidence": {
+                  "type": "object",
+                  "properties": {
+                    "runtime_assets": { "type": "object", "properties": { "status": { "const": "blocked" } } }
+                  }
+                },
+                "checks": { "type": "object", "properties": { "runtime_assets": { "const": "blocked" } } },
+                "runtime_assets": { "type": "array", "maxItems": 0 }
+              }
+            },
+            {
+              "type": "object",
+              "properties": {
+                "stage_evidence": {
+                  "type": "object",
+                  "properties": {
+                    "runtime_assets": { "type": "object", "properties": { "status": { "const": "not-reached" } } }
+                  }
+                },
+                "checks": { "type": "object", "properties": { "runtime_assets": { "const": "unknown" } } },
+                "runtime_assets": { "type": "array", "maxItems": 0 }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "setupGraph": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "stage_evidence": {
+              "type": "object",
+              "properties": {
+                "artifact_cache": {
+                  "type": "object",
+                  "properties": { "status": { "enum": ["blocked", "not-reached"] } }
+                }
+              }
+            },
+            "first_build_setup": { "const": "not-reached" },
+            "rootfs_phases": {
+              "type": "array",
+              "contains": {
+                "type": "object",
+                "properties": { "phase": { "const": "first-build-work" }, "status": { "const": "not-reached" } },
+                "required": ["phase", "status"]
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "properties": {
+            "stage_evidence": {
+              "type": "object",
+              "properties": {
+                "artifact_cache": { "type": "object", "properties": { "status": { "const": "failure" } } }
+              }
+            },
+            "first_build_setup": { "const": "fixed-input" },
+            "rootfs_phases": {
+              "type": "array",
+              "contains": {
+                "type": "object",
+                "properties": { "phase": { "const": "first-build-work" }, "status": { "const": "not-reached" } },
+                "required": ["phase", "status"]
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "properties": {
+            "stage_evidence": {
+              "type": "object",
+              "properties": {
+                "artifact_cache": { "type": "object", "properties": { "status": { "const": "success" } } }
+              }
+            },
+            "first_build_setup": { "const": "rootfs-bootstrap" },
+            "rootfs_phases": {
+              "type": "array",
+              "contains": {
+                "type": "object",
+                "properties": { "phase": { "const": "first-build-work" }, "status": { "const": "not-reached" } },
+                "required": ["phase", "status"]
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "properties": {
+            "stage_evidence": {
+              "type": "object",
+              "properties": {
+                "artifact_cache": { "type": "object", "properties": { "status": { "const": "success" } } }
+              }
+            },
+            "first_build_setup": { "enum": ["operation-establishment", "materializer-dispatch"] },
+            "rootfs_phases": {
+              "type": "array",
+              "contains": {
+                "type": "object",
+                "properties": { "phase": { "const": "first-build-work" }, "status": { "const": "not-reached" } },
+                "required": ["phase", "status"]
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "properties": {
+            "stage_evidence": {
+              "type": "object",
+              "properties": {
+                "artifact_cache": { "type": "object", "properties": { "status": { "const": "success" } } }
+              }
+            },
+            "first_build_setup": { "const": "complete" },
+            "rootfs_phases": {
+              "type": "array",
+              "contains": {
+                "type": "object",
+                "properties": {
+                  "phase": { "const": "first-build-work" },
+                  "status": { "enum": ["success", "failure"] }
+                },
+                "required": ["phase", "status"]
+              }
+            }
+          }
+        }
+      ]
+    },
+    "settlementGraph": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "rootfs_phases": { "type": "array", "contains": { "$ref": "#/$defs/settlementSuccess" } },
+            "stage_evidence": {
+              "type": "object",
+              "properties": {
+                "runtime_assets": {
+                  "type": "object",
+                  "properties": { "status": { "enum": ["success", "failure", "not-reached"] } }
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "properties": {
+            "rootfs_phases": { "type": "array", "not": { "contains": { "$ref": "#/$defs/settlementSuccess" } } },
+            "stage_evidence": {
+              "type": "object",
+              "properties": {
+                "runtime_assets": {
+                  "type": "object",
+                  "properties": { "status": { "const": "blocked" } }
+                }
+              }
+            }
+          },
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "rootfs_phases": {
+                  "type": "array",
+                  "contains": {
+                    "type": "object",
+                    "properties": { "status": { "enum": ["failure", "blocked"] } },
+                    "required": ["status"]
+                  }
+                }
+              }
+            },
+            {
+              "type": "object",
+              "properties": {
+                "stage_evidence": {
+                  "type": "object",
+                  "properties": {
+                    "artifact_cache": {
+                      "type": "object",
+                      "properties": { "status": { "enum": ["failure", "blocked"] } }
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "type": "object",
+              "properties": {
+                "first_build_setup": {
+                  "enum": ["rootfs-bootstrap", "operation-establishment", "materializer-dispatch"]
+                },
+                "rootfs_phases": {
+                  "type": "array",
+                  "contains": {
+                    "type": "object",
+                    "properties": {
+                      "phase": { "const": "first-build-work" },
+                      "status": { "const": "not-reached" }
+                    },
+                    "required": ["phase", "status"]
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "first_build_setup": {
+              "enum": ["not-reached", "complete"]
+            },
+            "rootfs_phases": {
+              "type": "array",
+              "not": {
+                "contains": {
+                  "type": "object",
+                  "properties": {
+                    "status": { "enum": ["failure", "blocked"] }
+                  },
+                  "required": ["status"]
+                }
+              }
+            },
+            "stage_evidence": {
+              "type": "object",
+              "properties": {
+                "runtime_assets": {
+                  "type": "object",
+                  "properties": { "status": { "const": "not-reached" } }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "settlementSuccess": {
+      "type": "object",
+      "properties": {
+        "phase": { "const": "settlement" },
+        "status": { "const": "success" }
+      },
+      "required": ["phase", "status"]
+    },
+    "structuralCounters": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "record_reference_copies",
+        "byte_names_returned",
+        "parent_snapshots",
+        "complete_legal_record_folds",
+        "complete_filesystem_walks",
+        "incrementally_advanced_ledger_records"
+      ],
+      "properties": {
+        "record_reference_copies": {
+          "$ref": "#/$defs/counter"
+        },
+        "byte_names_returned": {
+          "$ref": "#/$defs/counter"
+        },
+        "parent_snapshots": {
+          "$ref": "#/$defs/counter"
+        },
+        "complete_legal_record_folds": {
+          "$ref": "#/$defs/counter"
+        },
+        "complete_filesystem_walks": {
+          "$ref": "#/$defs/counter"
+        },
+        "incrementally_advanced_ledger_records": {
+          "$ref": "#/$defs/counter"
+        }
+      }
+    },
+    "phaseOutcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["phase", "status", "outcome", "elapsed_ms", "structural_counters"],
+      "properties": {
+        "phase": {
+          "enum": [
+            "first-build-work",
+            "first-inline-cleanup",
+            "second-build-work",
+            "second-inline-cleanup",
+            "recovery-attempt-1",
+            "equality",
+            "pin",
+            "post-verification",
+            "settlement"
+          ]
+        },
+        "status": {
+          "enum": ["success", "failure", "blocked", "not-reached"]
+        },
+        "outcome": {
+          "enum": [
+            "success",
+            "failed",
+            "cancelled",
+            "deadline",
+            "not-started",
+            "postwork",
+            "over-bound",
+            "prerequisite-failed",
+            "observer-ended"
+          ]
+        },
+        "elapsed_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 5400000
+        },
+        "structural_counters": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/structuralCounters"
+            }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "success"
+              }
+            },
+            "required": ["status"]
+          },
+          "then": {
+            "properties": {
+              "outcome": {
+                "const": "success"
+              },
+              "structural_counters": {
+                "$ref": "#/$defs/structuralCounters"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "failure"
+              }
+            },
+            "required": ["status"]
+          },
+          "then": {
+            "properties": {
+              "outcome": {
+                "enum": ["failed", "cancelled", "deadline", "not-started", "postwork", "over-bound"]
+              },
+              "structural_counters": {
+                "$ref": "#/$defs/structuralCounters"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "blocked"
+              }
+            },
+            "required": ["status"]
+          },
+          "then": {
+            "properties": {
+              "outcome": {
+                "const": "prerequisite-failed"
+              },
+              "elapsed_ms": {
+                "const": 0
+              },
+              "structural_counters": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "not-reached"
+              }
+            },
+            "required": ["status"]
+          },
+          "then": {
+            "properties": {
+              "outcome": {
+                "const": "observer-ended"
+              },
+              "elapsed_ms": {
+                "const": 0
+              },
+              "structural_counters": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "phaseGraph": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["rootfs", "rootfs_phases"],
+          "properties": {
+            "rootfs": {
+              "type": "null"
+            },
+            "rootfs_phases": {
+              "type": "array",
+              "minItems": 9,
+              "maxItems": 9,
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/phaseStatusNotReached"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusNotReached"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusNotReached"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusNotReached"
+                },
+                {
+                  "$ref": "#/$defs/recoveryStatus"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusNotReached"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusNotReached"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusNotReached"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusNotReached"
+                }
+              ],
+              "items": false
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["rootfs", "rootfs_phases"],
+          "properties": {
+            "rootfs": {
+              "type": "null"
+            },
+            "rootfs_phases": {
+              "type": "array",
+              "minItems": 9,
+              "maxItems": 9,
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/phaseStatusSuccess"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusSuccess"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusNotReached"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusNotReached"
+                },
+                {
+                  "$ref": "#/$defs/recoveryStatus"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusNotReached"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusNotReached"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusNotReached"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusNotReached"
+                }
+              ],
+              "items": false
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["rootfs", "rootfs_phases"],
+          "properties": {
+            "rootfs": {
+              "type": "null"
+            },
+            "rootfs_phases": {
+              "type": "array",
+              "minItems": 9,
+              "maxItems": 9,
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/phaseStatusSuccess"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusSuccess"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusSuccess"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusSuccess"
+                },
+                {
+                  "$ref": "#/$defs/recoveryStatus"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusNotReached"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusNotReached"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusNotReached"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusNotReached"
+                }
+              ],
+              "items": false
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["rootfs", "rootfs_phases"],
+          "properties": {
+            "rootfs": {
+              "type": "null"
+            },
+            "rootfs_phases": {
+              "type": "array",
+              "minItems": 9,
+              "maxItems": 9,
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/phaseStatusSuccess"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusSuccess"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusSuccess"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusSuccess"
+                },
+                {
+                  "$ref": "#/$defs/recoveryStatus"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusSuccess"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusNotReached"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusNotReached"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusNotReached"
+                }
+              ],
+              "items": false
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["rootfs", "rootfs_phases"],
+          "properties": {
+            "rootfs": {
+              "type": "null"
+            },
+            "rootfs_phases": {
+              "type": "array",
+              "minItems": 9,
+              "maxItems": 9,
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/phaseStatusSuccess"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusSuccess"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusSuccess"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusSuccess"
+                },
+                {
+                  "$ref": "#/$defs/recoveryStatus"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusSuccess"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusSuccess"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusNotReached"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusNotReached"
+                }
+              ],
+              "items": false
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["rootfs", "rootfs_phases"],
+          "properties": {
+            "rootfs": {
+              "type": "null"
+            },
+            "rootfs_phases": {
+              "type": "array",
+              "minItems": 9,
+              "maxItems": 9,
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/phaseStatusSuccess"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusSuccess"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusSuccess"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusSuccess"
+                },
+                {
+                  "$ref": "#/$defs/recoveryStatus"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusSuccess"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusSuccess"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusSuccess"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusNotReached"
+                }
+              ],
+              "items": false
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["rootfs", "rootfs_phases"],
+          "properties": {
+            "rootfs": {
+              "type": "null"
+            },
+            "rootfs_phases": {
+              "type": "array",
+              "minItems": 9,
+              "maxItems": 9,
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/phaseStatusFailure"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusBlocked"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusBlocked"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusBlocked"
+                },
+                {
+                  "$ref": "#/$defs/recoveryStatus"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusBlocked"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusBlocked"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusBlocked"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusBlocked"
+                }
+              ],
+              "items": false
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["rootfs", "rootfs_phases"],
+          "properties": {
+            "rootfs": {
+              "type": "null"
+            },
+            "rootfs_phases": {
+              "type": "array",
+              "minItems": 9,
+              "maxItems": 9,
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/phaseStatusFailure"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusSuccess"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusBlocked"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusBlocked"
+                },
+                {
+                  "$ref": "#/$defs/recoveryStatus"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusBlocked"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusBlocked"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusBlocked"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusBlocked"
+                }
+              ],
+              "items": false
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["rootfs", "rootfs_phases"],
+          "properties": {
+            "rootfs": {
+              "type": "null"
+            },
+            "rootfs_phases": {
+              "type": "array",
+              "minItems": 9,
+              "maxItems": 9,
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/phaseStatusFailure"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusFailure"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusBlocked"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusBlocked"
+                },
+                {
+                  "$ref": "#/$defs/recoveryStatus"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusBlocked"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusBlocked"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusBlocked"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusBlocked"
+                }
+              ],
+              "items": false
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["rootfs", "rootfs_phases"],
+          "properties": {
+            "rootfs": {
+              "type": "null"
+            },
+            "rootfs_phases": {
+              "type": "array",
+              "minItems": 9,
+              "maxItems": 9,
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/phaseStatusSuccess"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusBlocked"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusBlocked"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusBlocked"
+                },
+                {
+                  "$ref": "#/$defs/recoveryStatus"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusBlocked"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusBlocked"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusBlocked"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusBlocked"
+                }
+              ],
+              "items": false
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["rootfs", "rootfs_phases"],
+          "properties": {
+            "rootfs": {
+              "type": "null"
+            },
+            "rootfs_phases": {
+              "type": "array",
+              "minItems": 9,
+              "maxItems": 9,
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/phaseStatusSuccess"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusFailure"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusBlocked"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusBlocked"
+                },
+                {
+                  "$ref": "#/$defs/recoveryStatus"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusBlocked"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusBlocked"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusBlocked"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusBlocked"
+                }
+              ],
+              "items": false
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["rootfs", "rootfs_phases"],
+          "properties": {
+            "rootfs": {
+              "type": "null"
+            },
+            "rootfs_phases": {
+              "type": "array",
+              "minItems": 9,
+              "maxItems": 9,
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/phaseStatusSuccess"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusSuccess"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusFailure"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusBlocked"
+                },
+                {
+                  "$ref": "#/$defs/recoveryStatus"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusBlocked"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusBlocked"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusBlocked"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusBlocked"
+                }
+              ],
+              "items": false
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["rootfs", "rootfs_phases"],
+          "properties": {
+            "rootfs": {
+              "type": "null"
+            },
+            "rootfs_phases": {
+              "type": "array",
+              "minItems": 9,
+              "maxItems": 9,
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/phaseStatusSuccess"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusSuccess"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusFailure"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusSuccess"
+                },
+                {
+                  "$ref": "#/$defs/recoveryStatus"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusBlocked"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusBlocked"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusBlocked"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusBlocked"
+                }
+              ],
+              "items": false
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["rootfs", "rootfs_phases"],
+          "properties": {
+            "rootfs": {
+              "type": "null"
+            },
+            "rootfs_phases": {
+              "type": "array",
+              "minItems": 9,
+              "maxItems": 9,
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/phaseStatusSuccess"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusSuccess"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusFailure"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusFailure"
+                },
+                {
+                  "$ref": "#/$defs/recoveryStatus"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusBlocked"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusBlocked"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusBlocked"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusBlocked"
+                }
+              ],
+              "items": false
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["rootfs", "rootfs_phases"],
+          "properties": {
+            "rootfs": {
+              "type": "null"
+            },
+            "rootfs_phases": {
+              "type": "array",
+              "minItems": 9,
+              "maxItems": 9,
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/phaseStatusSuccess"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusSuccess"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusSuccess"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusBlocked"
+                },
+                {
+                  "$ref": "#/$defs/recoveryStatus"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusBlocked"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusBlocked"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusBlocked"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusBlocked"
+                }
+              ],
+              "items": false
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["rootfs", "rootfs_phases"],
+          "properties": {
+            "rootfs": {
+              "type": "null"
+            },
+            "rootfs_phases": {
+              "type": "array",
+              "minItems": 9,
+              "maxItems": 9,
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/phaseStatusSuccess"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusSuccess"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusSuccess"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusFailure"
+                },
+                {
+                  "$ref": "#/$defs/recoveryStatus"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusBlocked"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusBlocked"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusBlocked"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusBlocked"
+                }
+              ],
+              "items": false
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["rootfs", "rootfs_phases"],
+          "properties": {
+            "rootfs": {
+              "type": "null"
+            },
+            "rootfs_phases": {
+              "type": "array",
+              "minItems": 9,
+              "maxItems": 9,
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/phaseStatusSuccess"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusSuccess"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusSuccess"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusSuccess"
+                },
+                {
+                  "$ref": "#/$defs/recoveryStatus"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusFailure"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusBlocked"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusBlocked"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusBlocked"
+                }
+              ],
+              "items": false
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["rootfs", "rootfs_phases"],
+          "properties": {
+            "rootfs": {
+              "type": "null"
+            },
+            "rootfs_phases": {
+              "type": "array",
+              "minItems": 9,
+              "maxItems": 9,
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/phaseStatusSuccess"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusSuccess"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusSuccess"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusSuccess"
+                },
+                {
+                  "$ref": "#/$defs/recoveryStatus"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusSuccess"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusFailure"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusBlocked"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusBlocked"
+                }
+              ],
+              "items": false
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["rootfs", "rootfs_phases"],
+          "properties": {
+            "rootfs": {
+              "type": "null"
+            },
+            "rootfs_phases": {
+              "type": "array",
+              "minItems": 9,
+              "maxItems": 9,
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/phaseStatusSuccess"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusSuccess"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusSuccess"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusSuccess"
+                },
+                {
+                  "$ref": "#/$defs/recoveryStatus"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusSuccess"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusSuccess"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusFailure"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusBlocked"
+                }
+              ],
+              "items": false
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["rootfs", "rootfs_phases"],
+          "properties": {
+            "rootfs": {
+              "type": "null"
+            },
+            "rootfs_phases": {
+              "type": "array",
+              "minItems": 9,
+              "maxItems": 9,
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/phaseStatusSuccess"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusSuccess"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusSuccess"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusSuccess"
+                },
+                {
+                  "$ref": "#/$defs/recoveryStatus"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusSuccess"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusSuccess"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusSuccess"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusFailure"
+                }
+              ],
+              "items": false
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["rootfs", "rootfs_phases"],
+          "properties": {
+            "rootfs": {
+              "type": "object"
+            },
+            "rootfs_phases": {
+              "type": "array",
+              "minItems": 9,
+              "maxItems": 9,
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/phaseStatusSuccess"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusSuccess"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusSuccess"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusSuccess"
+                },
+                {
+                  "$ref": "#/$defs/recoveryStatus"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusSuccess"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusSuccess"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusSuccess"
+                },
+                {
+                  "$ref": "#/$defs/phaseStatusSuccess"
+                }
+              ],
+              "items": false
+            }
+          }
+        }
+      ]
+    },
+    "phaseStatusSuccess": {
+      "type": "object",
+      "required": ["status"],
+      "properties": {
+        "status": {
+          "const": "success"
+        }
+      }
+    },
+    "phaseStatusFailure": {
+      "type": "object",
+      "required": ["status"],
+      "properties": {
+        "status": {
+          "const": "failure"
+        }
+      }
+    },
+    "phaseStatusBlocked": {
+      "type": "object",
+      "required": ["status"],
+      "properties": {
+        "status": {
+          "const": "blocked"
+        }
+      }
+    },
+    "phaseStatusNotReached": {
+      "type": "object",
+      "required": ["status"],
+      "properties": {
+        "status": {
+          "const": "not-reached"
+        }
+      }
+    },
+    "recoveryStatus": {
+      "type": "object",
+      "required": ["status"],
+      "properties": {
+        "status": {
+          "enum": ["success", "failure", "not-reached"]
+        }
+      }
+    }
+  }
+}

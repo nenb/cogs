@@ -1,0 +1,1 @@
+{"type":"retired","version":"cogs.outcome-two-outer-process/v2","production_method":"_run_held_python_with_ops","replacement":"_bootstrap_main","reason":"fixed-cli-issuer"}

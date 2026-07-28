@@ -1,0 +1,340 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.dev/schemas/native-qualification-report-v1alpha1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version", "job", "source", "envelope", "workflow", "runner", "authority",
+    "result", "checks", "metadata", "operation", "failure_phase", "diagnostics_sha256", "cleanup"
+  ],
+  "properties": {
+    "version": { "const": "cogs.native-qualification/v1alpha1" },
+    "job": { "enum": ["A", "B", "C", "D", "E", "integration"] },
+    "source": { "$ref": "#/$defs/source" },
+    "envelope": { "$ref": "#/$defs/envelope" },
+    "workflow": { "$ref": "#/$defs/workflow" },
+    "runner": { "$ref": "#/$defs/runner" },
+    "authority": { "const": "exact-run-native-qualification" },
+    "result": { "enum": ["pass", "fail"] },
+    "checks": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/check" } },
+    "metadata": { "type": "array" },
+    "operation": { "$ref": "#/$defs/operation" },
+    "failure_phase": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/label" }] },
+    "diagnostics_sha256": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/sha256" }] },
+    "cleanup": { "$ref": "#/$defs/cleanup" }
+  },
+  "allOf": [
+    {
+      "oneOf": [
+        { "$ref": "#/$defs/jobA" },
+        { "$ref": "#/$defs/jobB" },
+        { "$ref": "#/$defs/jobC" },
+        { "$ref": "#/$defs/jobD" },
+        { "$ref": "#/$defs/jobE" },
+        { "$ref": "#/$defs/jobIntegration" }
+      ]
+    },
+    {
+      "oneOf": [
+        { "$ref": "#/$defs/pass" },
+        { "$ref": "#/$defs/fail" }
+      ]
+    }
+  ],
+  "$defs": {
+    "label": { "type": "string", "pattern": "^[A-Za-z0-9_.-]{1,96}$" },
+    "sha1": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "source": {
+      "type": "object", "additionalProperties": false,
+      "required": ["head_sha", "checkout_sha", "driver_blob_sha256", "common_blob_sha256"],
+      "properties": {
+        "head_sha": { "$ref": "#/$defs/sha1" }, "checkout_sha": { "$ref": "#/$defs/sha1" },
+        "driver_blob_sha256": { "$ref": "#/$defs/sha256" }, "common_blob_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "envelope": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "repository", "head_repository", "event_name", "github_sha", "ref", "default_branch",
+        "ref_protected", "run_id", "run_attempt"
+      ],
+      "properties": {
+        "repository": { "type": "string", "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$" },
+        "head_repository": { "type": "string", "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$" },
+        "event_name": { "const": "workflow_dispatch" }, "github_sha": { "$ref": "#/$defs/sha1" },
+        "ref": { "type": "string", "pattern": "^refs/heads/[A-Za-z0-9_.-]{1,96}$" },
+        "default_branch": { "$ref": "#/$defs/label" }, "ref_protected": { "const": true },
+        "run_id": { "type": "integer", "minimum": 1 }, "run_attempt": { "const": 1 }
+      }
+    },
+    "workflow": {
+      "type": "object", "additionalProperties": false,
+      "required": ["path", "blob_sha256", "workflow_sha", "job_id"],
+      "properties": {
+        "path": { "const": ".github/workflows/ci.yml" }, "blob_sha256": { "$ref": "#/$defs/sha256" },
+        "workflow_sha": { "$ref": "#/$defs/sha1" }, "job_id": { "$ref": "#/$defs/label" }
+      }
+    },
+    "runner": {
+      "type": "object", "additionalProperties": false,
+      "required": ["image", "image_version", "kernel_release", "architecture"],
+      "properties": {
+        "image": { "const": "ubuntu-24.04" }, "image_version": { "$ref": "#/$defs/label" },
+        "kernel_release": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+[-A-Za-z0-9.+]*$" },
+        "architecture": { "const": "x86_64" }
+      }
+    },
+    "operation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["result_sha256", "source_set_sha256"],
+      "properties": {
+        "result_sha256": { "$ref": "#/$defs/sha256" },
+        "source_set_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "cleanup": {
+      "type": "object", "additionalProperties": false,
+      "required": ["descriptors", "children", "paths", "mounts", "namespaces", "limits", "checkout"],
+      "properties": {
+        "descriptors": { "type": "boolean" }, "children": { "type": "boolean" },
+        "paths": { "type": "boolean" }, "mounts": { "type": "boolean" },
+        "namespaces": { "type": "boolean" }, "limits": { "type": "boolean" }, "checkout": { "type": "boolean" }
+      }
+    },
+    "cleanupPass": {
+      "type": "object", "additionalProperties": false,
+      "required": ["descriptors", "children", "paths", "mounts", "namespaces", "limits", "checkout"],
+      "properties": {
+        "descriptors": { "const": true }, "children": { "const": true }, "paths": { "const": true },
+        "mounts": { "const": true }, "namespaces": { "const": true }, "limits": { "const": true },
+        "checkout": { "const": true }
+      }
+    },
+    "check": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "outcome"],
+      "properties": {
+        "id": { "$ref": "#/$defs/label" }, "outcome": { "enum": ["pass", "fail"] }
+      }
+    },
+    "AObject": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "id", "role", "sha256", "size_bytes", "soname", "needed"],
+      "properties": {
+        "kind": { "const": "object" }, "id": { "$ref": "#/$defs/label" },
+        "role": { "enum": ["executable", "loader", "library"] }, "sha256": { "$ref": "#/$defs/sha256" },
+        "size_bytes": { "type": "integer", "minimum": 1, "maximum": 134217728 },
+        "soname": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/label" }] },
+        "needed": { "type": "array", "uniqueItems": true, "maxItems": 128, "items": { "$ref": "#/$defs/label" } }
+      }
+    },
+    "MappedObject": {
+      "type": "object", "additionalProperties": false,
+      "required": ["role", "sha256"],
+      "properties": {
+        "role": { "enum": ["executable", "loader", "library"] },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "ASummary": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "closure_sha256", "mapping_sha256", "mapped_sequence"],
+      "properties": {
+        "kind": { "const": "summary" }, "closure_sha256": { "$ref": "#/$defs/sha256" },
+        "mapping_sha256": { "$ref": "#/$defs/sha256" },
+        "mapped_sequence": { "type": "array", "minItems": 2, "maxItems": 127, "items": { "$ref": "#/$defs/MappedObject" } }
+      }
+    },
+    "AMetadata": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 128,
+      "items": { "oneOf": [{ "$ref": "#/$defs/AObject" }, { "$ref": "#/$defs/ASummary" }] },
+      "allOf": [
+        { "type": "array", "contains": { "$ref": "#/$defs/ASummary" }, "minContains": 1, "maxContains": 1 },
+        { "type": "array", "contains": { "$ref": "#/$defs/AObject", "type": "object", "properties": { "role": { "const": "executable" } } }, "minContains": 1, "maxContains": 1 },
+        { "type": "array", "contains": { "$ref": "#/$defs/AObject", "type": "object", "properties": { "role": { "const": "loader" } } }, "minContains": 1, "maxContains": 1 }
+      ]
+    },
+    "BObject": {
+      "type": "object", "additionalProperties": false,
+      "required": ["role", "sha256", "size_bytes", "soname", "needed"],
+      "properties": {
+        "role": { "enum": ["executable", "loader", "library"] }, "sha256": { "$ref": "#/$defs/sha256" },
+        "size_bytes": { "type": "integer", "minimum": 1, "maximum": 134217728 },
+        "soname": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/label" }] },
+        "needed": { "type": "array", "uniqueItems": true, "maxItems": 128, "items": { "$ref": "#/$defs/label" } }
+      }
+    },
+    "BTool": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "id", "objects", "closure_sha256", "mapping_sha256", "source_sha256", "source_size_bytes",
+        "sealed_sha256", "sealed_size_bytes", "seal_mask", "execution_mapping_sha256", "output_sha256"
+      ],
+      "properties": {
+        "id": { "enum": ["gzip", "zstd"] },
+        "objects": { "type": "array", "minItems": 2, "maxItems": 127, "items": { "$ref": "#/$defs/BObject" } },
+        "closure_sha256": { "$ref": "#/$defs/sha256" }, "mapping_sha256": { "$ref": "#/$defs/sha256" },
+        "source_sha256": { "$ref": "#/$defs/sha256" }, "source_size_bytes": { "type": "integer", "minimum": 1, "maximum": 134217728 },
+        "sealed_sha256": { "$ref": "#/$defs/sha256" }, "sealed_size_bytes": { "type": "integer", "minimum": 1, "maximum": 134217728 },
+        "seal_mask": { "const": 63 }, "execution_mapping_sha256": { "$ref": "#/$defs/sha256" },
+        "output_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "BParser": {
+      "type": "object", "additionalProperties": false,
+      "required": ["closure_sha256", "objects"],
+      "properties": {
+        "closure_sha256": { "$ref": "#/$defs/sha256" },
+        "objects": { "type": "array", "minItems": 2, "maxItems": 127, "items": { "$ref": "#/$defs/BObject" } }
+      }
+    },
+    "BSummary": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "id", "closure_sha256", "parser"],
+      "properties": {
+        "kind": { "const": "summary" }, "id": { "const": "trusted-closure" },
+        "closure_sha256": { "$ref": "#/$defs/sha256" }, "parser": { "$ref": "#/$defs/BParser" }
+      }
+    },
+    "PolicyMetadata": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "role", "sha256", "size_bytes"],
+      "properties": {
+        "id": { "const": "sandbox-policy" }, "role": { "const": "policy" },
+        "sha256": { "const": "aacfce0e5eeb2fb79a1708b32f5383f89b381898ad7e6bd911905d87483b6bb2" },
+        "size_bytes": { "const": 0 }
+      }
+    },
+    "DigestMetadata": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "role", "sha256", "size_bytes"],
+      "properties": {
+        "id": { "enum": ["closure", "gzip_output", "source_set", "zstd_output"] },
+        "role": { "const": "digest" }, "sha256": { "$ref": "#/$defs/sha256" }, "size_bytes": { "const": 0 }
+      }
+    },
+    "jobA": { "type": "object",
+      "properties": {
+        "job": { "const": "A" },
+        "workflow": { "type": "object", "properties": { "job_id": { "const": "native-qualification-a" } } },
+        "checks": { "$ref": "#/$defs/checkA" }
+      },
+      "allOf": [{ "if": { "type": "object", "properties": { "result": { "const": "pass" } } },
+        "then": { "type": "object", "properties": { "metadata": { "$ref": "#/$defs/AMetadata" } } },
+        "else": { "type": "object", "properties": { "metadata": { "type": "array", "maxItems": 0 } } } }]
+    },
+    "jobB": { "type": "object",
+      "properties": {
+        "job": { "const": "B" },
+        "workflow": { "type": "object", "properties": { "job_id": { "const": "native-qualification-b" } } },
+        "checks": { "$ref": "#/$defs/checkB" }
+      },
+      "allOf": [{ "if": { "type": "object", "properties": { "result": { "const": "pass" } } },
+        "then": { "type": "object", "properties": { "metadata": { "type": "array", "minItems": 3, "maxItems": 3, "prefixItems": [
+          { "$ref": "#/$defs/BTool", "type": "object", "properties": { "id": { "const": "gzip" } } },
+          { "$ref": "#/$defs/BTool", "type": "object", "properties": { "id": { "const": "zstd" } } },
+          { "$ref": "#/$defs/BSummary" }], "items": false } } },
+        "else": { "type": "object", "properties": { "metadata": { "type": "array", "maxItems": 0 } } } }]
+    },
+    "jobC": { "type": "object", "properties": { "job": { "const": "C" }, "workflow": { "type": "object", "properties": { "job_id": { "const": "native-qualification-c" } } },
+      "checks": { "$ref": "#/$defs/checkC" }, "metadata": { "type": "array", "maxItems": 0 } } },
+    "jobD": { "type": "object", "properties": { "job": { "const": "D" }, "workflow": { "type": "object", "properties": { "job_id": { "const": "native-qualification-d" } } },
+      "checks": { "$ref": "#/$defs/checkD" }, "metadata": { "type": "array", "maxItems": 0 } } },
+    "jobE": { "type": "object",
+      "properties": {
+        "job": { "const": "E" },
+        "workflow": { "type": "object", "properties": { "job_id": { "const": "native-qualification-e" } } },
+        "checks": { "$ref": "#/$defs/checkE" }
+      },
+      "allOf": [{ "if": { "type": "object", "properties": { "result": { "const": "pass" } } },
+        "then": { "type": "object", "properties": { "metadata": { "type": "array", "minItems": 1, "maxItems": 1, "prefixItems": [{ "$ref": "#/$defs/PolicyMetadata" }], "items": false } } },
+        "else": { "type": "object", "properties": { "metadata": { "type": "array", "maxItems": 0 } } } }]
+    },
+    "jobIntegration": { "type": "object",
+      "properties": {
+        "job": { "const": "integration" },
+        "workflow": { "type": "object", "properties": { "job_id": { "const": "native-closure-integration" } } },
+        "checks": { "$ref": "#/$defs/checkIntegration" }
+      },
+      "allOf": [{ "if": { "type": "object", "properties": { "result": { "const": "pass" } } },
+        "then": { "type": "object", "properties": { "metadata": { "type": "array", "minItems": 4, "maxItems": 4, "prefixItems": [
+          { "$ref": "#/$defs/DigestMetadata", "type": "object", "properties": { "id": { "const": "closure" } } },
+          { "$ref": "#/$defs/DigestMetadata", "type": "object", "properties": { "id": { "const": "gzip_output" }, "sha256": { "const": "6381d4535b13c7f030ca94bce250c1ec817c4aea8fa45c91e25c88995216f6b8" } } },
+          { "$ref": "#/$defs/DigestMetadata", "type": "object", "properties": { "id": { "const": "source_set" } } },
+          { "$ref": "#/$defs/DigestMetadata", "type": "object", "properties": { "id": { "const": "zstd_output" }, "sha256": { "const": "6381d4535b13c7f030ca94bce250c1ec817c4aea8fa45c91e25c88995216f6b8" } } }], "items": false } } },
+        "else": { "type": "object", "properties": { "metadata": { "type": "array", "maxItems": 0 } } } }]
+    },
+    "checkA": { "type": "array", "minItems": 7, "maxItems": 7, "prefixItems": [
+      { "type": "object", "properties": { "id": { "const": "elf_real" } } }, { "type": "object", "properties": { "id": { "const": "python_closure_exact" } } },
+      { "type": "object", "properties": { "id": { "const": "map_files_trusted" } } }, { "type": "object", "properties": { "id": { "const": "mapped_closure_equal" } } },
+      { "type": "object", "properties": { "id": { "const": "mapping_stable" } } }, { "type": "object", "properties": { "id": { "const": "helper_reaped" } } },
+      { "type": "object", "properties": { "id": { "const": "cleanup_restored" } } }
+    ], "items": false },
+    "checkB": { "type": "array", "minItems": 8, "maxItems": 8, "prefixItems": [
+      { "type": "object", "properties": { "id": { "const": "gzip_source_exact" } } }, { "type": "object", "properties": { "id": { "const": "gzip_sealed_exec" } } },
+      { "type": "object", "properties": { "id": { "const": "zstd_source_exact" } } }, { "type": "object", "properties": { "id": { "const": "zstd_sealed_exec" } } },
+      { "type": "object", "properties": { "id": { "const": "decompression_deterministic" } } }, { "type": "object", "properties": { "id": { "const": "network_denied" } } },
+      { "type": "object", "properties": { "id": { "const": "children_exact" } } }, { "type": "object", "properties": { "id": { "const": "cleanup_restored" } } }
+    ], "items": false },
+    "checkC": { "type": "array", "minItems": 9, "maxItems": 9, "prefixItems": [
+      { "type": "object", "properties": { "id": { "const": "nofile_measured" } } }, { "type": "object", "properties": { "id": { "const": "nofile_normalized" } } },
+      { "type": "object", "properties": { "id": { "const": "fd_198_exact" } } }, { "type": "object", "properties": { "id": { "const": "fd_4096_exact" } } },
+      { "type": "object", "properties": { "id": { "const": "close_range_exact" } } }, { "type": "object", "properties": { "id": { "const": "cloexec_exact" } } },
+      { "type": "object", "properties": { "id": { "const": "inheritance_exact" } } }, { "type": "object", "properties": { "id": { "const": "limit_restored" } } },
+      { "type": "object", "properties": { "id": { "const": "cleanup_restored" } } }
+    ], "items": false },
+    "checkD": { "type": "array", "minItems": 10, "maxItems": 10, "prefixItems": [
+      { "type": "object", "properties": { "id": { "const": "pdeathsig_armed" } } }, { "type": "object", "properties": { "id": { "const": "parent_handshake_exact" } } },
+      { "type": "object", "properties": { "id": { "const": "before_release_death" } } }, { "type": "object", "properties": { "id": { "const": "after_release_death" } } },
+      { "type": "object", "properties": { "id": { "const": "starttime_revalidated" } } }, { "type": "object", "properties": { "id": { "const": "session_owned" } } },
+      { "type": "object", "properties": { "id": { "const": "process_group_owned" } } }, { "type": "object", "properties": { "id": { "const": "term_kill_bounded" } } },
+      { "type": "object", "properties": { "id": { "const": "all_reaped" } } }, { "type": "object", "properties": { "id": { "const": "cleanup_restored" } } }
+    ], "items": false },
+    "checkE": { "type": "array", "minItems": 17, "maxItems": 17, "prefixItems": [
+      { "type": "object", "properties": { "id": { "const": "mount_view_exact" } } }, { "type": "object", "properties": { "id": { "const": "checkout_read_only" } } },
+      { "type": "object", "properties": { "id": { "const": "user_namespace_exact" } } }, { "type": "object", "properties": { "id": { "const": "pid_namespace_exact" } } },
+      { "type": "object", "properties": { "id": { "const": "mount_namespace_exact" } } }, { "type": "object", "properties": { "id": { "const": "network_namespace_exact" } } },
+      { "type": "object", "properties": { "id": { "const": "pid_one" } } }, { "type": "object", "properties": { "id": { "const": "capabilities_zero" } } },
+      { "type": "object", "properties": { "id": { "const": "noroot_locked" } } }, { "type": "object", "properties": { "id": { "const": "nnp_set" } } },
+      { "type": "object", "properties": { "id": { "const": "seccomp_socket_denied" } } }, { "type": "object", "properties": { "id": { "const": "seccomp_io_uring_denied" } } },
+      { "type": "object", "properties": { "id": { "const": "no_acquisition_route" } } }, { "type": "object", "properties": { "id": { "const": "checkout_unchanged" } } },
+      { "type": "object", "properties": { "id": { "const": "all_reaped" } } }, { "type": "object", "properties": { "id": { "const": "mounts_restored" } } },
+      { "type": "object", "properties": { "id": { "const": "cleanup_restored" } } }
+    ], "items": false },
+    "checkIntegration": { "type": "array", "minItems": 7, "maxItems": 7, "prefixItems": [
+      { "type": "object", "properties": { "id": { "const": "closure_prepared" } } }, { "type": "object", "properties": { "id": { "const": "handoff_exact" } } },
+      { "type": "object", "properties": { "id": { "const": "gzip_deterministic" } } }, { "type": "object", "properties": { "id": { "const": "zstd_deterministic" } } },
+      { "type": "object", "properties": { "id": { "const": "marker_exact" } } }, { "type": "object", "properties": { "id": { "const": "no_linked_evidence" } } },
+      { "type": "object", "properties": { "id": { "const": "cleanup_restored" } } }
+    ], "items": false },
+    "pass": { "type": "object",
+      "properties": {
+        "result": { "const": "pass" },
+        "checks": { "type": "array", "items": { "type": "object", "properties": { "outcome": { "const": "pass" } } } },
+        "cleanup": { "$ref": "#/$defs/cleanupPass" },
+        "failure_phase": { "type": "null" },
+        "diagnostics_sha256": { "type": "null" }
+      }
+    },
+    "fail": { "type": "object",
+      "properties": {
+        "result": { "const": "fail" },
+        "failure_phase": { "$ref": "#/$defs/label" },
+        "diagnostics_sha256": { "$ref": "#/$defs/sha256" }
+      },
+      "anyOf": [
+        { "type": "object", "properties": { "checks": { "type": "array", "contains": { "type": "object", "properties": { "outcome": { "const": "fail" } }, "required": ["outcome"] } } } },
+        { "type": "object", "properties": { "cleanup": { "type": "object", "properties": { "descriptors": { "const": false } } } } },
+        { "type": "object", "properties": { "cleanup": { "type": "object", "properties": { "children": { "const": false } } } } },
+        { "type": "object", "properties": { "cleanup": { "type": "object", "properties": { "paths": { "const": false } } } } },
+        { "type": "object", "properties": { "cleanup": { "type": "object", "properties": { "mounts": { "const": false } } } } },
+        { "type": "object", "properties": { "cleanup": { "type": "object", "properties": { "namespaces": { "const": false } } } } },
+        { "type": "object", "properties": { "cleanup": { "type": "object", "properties": { "limits": { "const": false } } } } },
+        { "type": "object", "properties": { "cleanup": { "type": "object", "properties": { "checkout": { "const": false } } } } }
+      ]
+    }
+  }
+}
