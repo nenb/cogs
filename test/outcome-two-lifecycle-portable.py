@@ -149,7 +149,21 @@ class KernelOps(closure._Ops):
     def close(self, fd):
         self.close_attempts.append(fd)
         check(fd in self.fds, "production double-closed a descriptor number")
-        if self.fault == "spawn-after" and self.preparation.helpers:
+        if self.fault == "spawn-after":
+            check(
+                self.preparation is not None and len(self.preparation.helpers) == 1,
+                "spawn-after fault preceded exact helper registration",
+            )
+            helper = self.preparation.helpers[0]
+            check(
+                self.fds[fd] == "proc-stat" and self.preregistration_observed
+                and helper.state is closure._HelperState.SPAWNED
+                and helper.pidfd.state is closure._FdState.OWNED
+                and helper.start_time is None and helper.outer_token is None
+                and not helper.outer_registration_attempted
+                and self.processes[helper.pid].live,
+                "spawn-after fault missed the post-clone, pre-identity cut",
+            )
             self.fault = "spawn-after-fired"
             raise OSError("fault after registered spawn")
         if self.fault in {"fd-dir-close", "fd-dir-read-close"} and self.fds[fd] == "fd-directory":
@@ -362,6 +376,12 @@ def helper_case(case):
         retained = any(helper.pid == 123 and helper.pidfd.state is closure._FdState.OWNED
                        for helper in preparation.helpers)
         check(retained, f"live helper lacks retained recovery authority: {case['id']}")
+    if case_fault(case) == "spawn-after":
+        process = ops.processes[123]
+        check(not process.live and process.reaped and not preparation.helpers,
+              "spawn-after did not use atomic pidfd authority to reap the gated helper")
+        check(not any(kind == "pidfd" for kind in ops.fds.values()),
+              "spawn-after recovery retained its pidfd")
 
 def stop_case(case):
     ops = KernelOps()
@@ -659,9 +679,15 @@ def observe_case(case, runner):
             setattr(owner, attribute, original)
     sentinels[:0] = fault_events
     if codes != case["intended_code"]:
-        raise AssertionError(f"{case['id']}: exact exception class/code changed")
+        raise AssertionError(
+            f"{case['id']}: exact exception class/code changed: "
+            f"{codes!r} != {case['intended_code']!r}"
+        )
     if sentinels != case["sentinel"]:
-        raise AssertionError(f"{case['id']}: production event sentinel changed")
+        raise AssertionError(
+            f"{case['id']}: production event sentinel changed: "
+            f"{sentinels!r} != {case['sentinel']!r}"
+        )
     if (all(code == "OK" for code in codes)) != (case["expect"] == "accept"):
         raise AssertionError(f"{case['id']}: typed oracle contradicts expectation")
 class ScriptedSocket:
