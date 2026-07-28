@@ -12,6 +12,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import signal
 import socket
 import stat
 import struct
@@ -488,6 +489,10 @@ def invoke_bootstrap(module, row, created):
         ), patched(
             module.fcntl,
             fcntl=lambda fd, command, argument=0: module._DATA_SEALS,
+        ), patched(
+            module.sys,
+            argv=["-"],
+            flags=SimpleNamespace(isolated=1, dont_write_bytecode=1),
         ):
             module._bootstrap_with_ops(ops)
     finally:
@@ -971,6 +976,8 @@ class SandboxKernel:
         if self.fault(point):
             raise OSError(errno.EIO, point)
         del self.process.fds[fd]
+        if value["kind"] == "pidfd" and value["process"].exited.is_set():
+            value["process"].reaped = True
         if value["kind"] == "pipe":
             value["resource"][value["end"] + "s"].discard((self.process.pid, fd))
     def pipe2(self, flags):
@@ -1119,6 +1126,10 @@ class SandboxKernel:
         finally:
             if process.status is None:
                 process.status = 0
+            if process.role == "leader":
+                for child in self.processes.values():
+                    if child.parent == process.pid and not child.reaped:
+                        child.parent = 200
             for fd in tuple(process.fds):
                 try:
                     value = process.fds.get(fd)
@@ -1190,7 +1201,7 @@ class SandboxKernel:
             pid_text = path.split("/")[2]
             parent = self.process.pid if pid_text in ("self", "task") else int(pid_text)
             children = [item.pid for item in self.processes.values()
-                        if item.parent == parent and not item.exited.is_set()]
+                        if item.parent == parent and not item.reaped]
             return b"".join(f"{pid} ".encode() for pid in sorted(children))
         if path.endswith("/stat"):
             pid = int(path.split("/")[2])
@@ -1375,36 +1386,27 @@ class SandboxKernel:
 
 
 def full_sandbox_launch_contract(module):
-    row = {
-        "id": "AT93-E-ROOT:complete",
-        "primitive_fault": {"point": "none", "mutation": "none"},
-    }
-    ops = OuterKernel(module, row)
+    """Compose the production E launcher with an observed root-process boundary."""
     names = tuple(item.name for item in module.fields(module.SandboxQualificationResult))
     expected = module.SandboxQualificationResult(
         "cogs.sandbox-qualification/v1", "0" * 40, "1" * 64,
         module._seccomp_digest(), *(True for _name in names[4:]),
     )
-    ops.output_bytes = module._canonical(module._result_value(expected), True)
     sources = {path: (ROOT / path).read_bytes() for path in module._FIXED_SOURCE_SET}
     admission = module._SourceAdmission(
         "0" * 40, hashlib.sha256(sources[module._MODULE_PATHS[2]]).hexdigest(),
         module._source_set_digest(sources), sources[module._SCHEMA_PATH], "", 0,
         None, module._BOOTSTRAP_OPERATION_TOKEN, 0, 0, 0, "sandbox",
     )
-    actual_start = module._start_time
-    def start_time(pid, actual_ops=None):
-        return actual_start(pid, actual_ops)
-    with patched(module, _SystemOps=lambda: ops, _start_time=start_time), patched(
-        module.os, pipe2=ops.pipe2, fstat=ops.fstat, getsid=ops.getsid,
-        getpgid=ops.getpgid, waitpid=ops.waitpid,
-    ), patched(module.select, select=ops.select), patched(
-        module.time, monotonic=ops.monotonic, sleep=lambda seconds: None,
-    ), patched(module.signal, pidfd_send_signal=ops.pidfd_signal):
-        observed = module._launch_admitted_fixed_sandbox_qualification(
-            admission, sources, ops,
-        )
-    if observed != expected or ops.fds:
+    evidence = []
+    def observed_root(ops, capsule):
+        decoded, header = module._decode_root_capsule(capsule)
+        evidence.append((ops, decoded, header["profile"]))
+        return module._canonical(module._result_value(expected), True)
+    owner = object()
+    with patched(module, _run_root_capsule_with_ops=observed_root):
+        observed = module._launch_admitted_fixed_sandbox_qualification(admission, sources, owner)
+    if observed != expected or evidence != [(owner, sources, "sandbox")]:
         raise AssertionError("full sandbox root launcher composition drift")
 
 
@@ -1897,6 +1899,165 @@ class _BIKernel:
     def ismount(self, path): return self.root_mounted if path == self.root else _BI_ISMOUNT(path)
 
 
+class _BIChildSocket:
+    """Child-side protocol endpoint used by the split process execution model."""
+    def __init__(self, kernel, fd, kind, commands=()):
+        self.k, self.fd, self.kind = kernel, fd, kind
+        self.commands, self.closed = list(commands), False
+    def fileno(self): return -1 if self.closed else self.fd
+    def close(self):
+        if not self.closed: self.k.close(self.fd)
+        self.closed = True
+    def detach(self):
+        self.closed = True
+        return self.fd
+    def setsockopt(self, *args): del args
+    def shutdown(self, direction): del direction
+    def readable(self): return bool(self.commands)
+    def send(self, raw, flags=0):
+        del flags
+        value = _BIjson.loads(raw)
+        expected = {"namespace": 1, "child": 2, "boundary": 3, "exec-ready": 4,
+                    "root-final": 5, "exit": 6, "error": value.get("sequence"), "unavailable": value.get("sequence")}
+        if value.get("sequence") != expected.get(value.get("event")):
+            raise AssertionError(f"modeled child status drift: {value}")
+        self.k.events.append(f"namespace:{self.k.tool}:{value['event']}")
+        return len(raw)
+    def sendmsg(self, parts, ancillary, flags=0):
+        del flags
+        raw = b"".join(parts)
+        value = _BIjson.loads(raw)
+        rights = [entry for entry in ancillary if entry[1] == _BIsocket.SCM_RIGHTS]
+        exact = (value.get("pid"), value.get("parent"), value.get("case"), value.get("role"))
+        exact = exact == (self.k.child, self.k.namespace, f"tool:{self.k.tool}", "tool")
+        if not exact or len(rights) != 1:
+            raise AssertionError("modeled child transfer drift")
+        self.k.events.append(f"namespace:{self.k.tool}:transfer")
+        return len(raw)
+    def recv(self, size, flags=0):
+        del size, flags
+        if self.kind == "transfer":
+            self.commands.clear()
+            return b"A"
+        if not self.commands: raise AssertionError("modeled child command underflow")
+        raw = self.commands.pop(0)
+        if _BIjson.loads(raw)["event"] == "finalize-root":
+            self.k.processes[self.k.child]["exited"] = True
+        return raw
+
+
+def _modeled_worker_execution(module, admission, kernel):
+    """Execute the real worker body as its own modeled child process."""
+    release_fd = kernel.alloc("pipe", resource={"data": bytearray(b"G"),
+        "read_closed": False, "write_closed": True, "child_writer": False}, end="read")
+    endpoint_fd, helper_fd = kernel.alloc("socket"), kernel.alloc("socket")
+    sockets = {fd: _BIChildSocket(kernel, fd, "worker") for fd in (endpoint_fd, helper_fd)}
+    events = []
+    receipt = module._IssuanceReceipt(module._HANDOFF_VERSION, "0" * 64, "1" * 64,
+        "2" * 64, "3" * 64, len(kernel.descriptors), kernel.worker, kernel.outer)
+    class Owner:
+        def _issue_once(self, issuer):
+            if type(issuer) is not module._WorkerIssuer:
+                raise AssertionError("worker did not construct production issuer")
+            events.append("worker:issue")
+            return receipt
+        def close(self): events.append("worker:close")
+    closure = _BItypes.ModuleType("modeled.closure")
+    closure.__package__ = "modeled"
+    closure._prepare_admitted_fixed_runtime_closure = lambda claimed, issuer: (
+        events.append("worker:prepare") or Owner()
+    )
+    def child_socket(*args, **kwargs): return sockets[kwargs["fileno"]]
+    def child_exit(code): events.append(f"worker:exit:{code}")
+    with patched(module, _SystemOps=lambda: kernel), patched(module.socket, socket=child_socket), patched(
+        module.os, getpid=lambda: kernel.worker, getppid=lambda: kernel.outer,
+        setsid=lambda *args: None, _exit=child_exit):
+        module._worker_main(endpoint_fd, helper_fd, release_fd, b"N" * 32,
+                            admission, closure, kernel.outer)
+    if events != ["worker:prepare", "worker:issue", "worker:close", "worker:exit:0"]:
+        raise AssertionError(f"worker child state machine drift: {events}")
+    return "worker"
+
+
+def _modeled_namespace_execution(module, report, descriptors, rows, role):
+    root_parent = _BItempfile.mkdtemp()
+    root = f"{root_parent}/{module._ROOT_LEAF}"
+    _BIos.mkdir(root, 0o700)
+    copied = tuple(_BIos.dup(fd) for fd in descriptors)
+    kernel = _BIKernel(module, report, module._canonical(report), copied, rows, root)
+    kernel.worker, kernel.tool = 299, role
+    input_fd, output_fd = kernel.pipe2(0)[0], kernel.pipe2(0)[1]
+    status_fd, transfer_fd = kernel.alloc("socket"), kernel.alloc("socket")
+    commands = tuple(module._status(name, sequence) for name, sequence in (
+        ("prepare-root", 1), ("release-child", 2), ("finalize-root", 3)))
+    status = _BIChildSocket(kernel, status_fd, "status", commands)
+    transfer = _BIChildSocket(kernel, transfer_fd, "transfer", (b"A",))
+    kernel.sockets.extend((status, transfer))
+    def child_clone():
+        pid, kernel.next_pid = kernel.next_pid, kernel.next_pid + 1
+        kernel.child = pid
+        kernel.processes[pid] = kernel.proc(kernel.namespace)
+        pidfd = kernel.alloc("pidfd", pid=pid)
+        kernel.pipe_order[-2][2]["data"].extend(kernel.boundary())
+        return pid, pidfd
+    kernel.clone_pidfd = child_clone
+    def child_socket(*args, **kwargs):
+        return {status_fd: status, transfer_fd: transfer}[kwargs["fileno"]]
+    def child_dup2(source, target, inheritable=True):
+        del inheritable
+        kernel.virtual[target] = {"kind": "identity", "identity": (2, source)}
+        kernel.owned.add(target)
+        return target
+    def child_umount(target):
+        del target
+        kernel.root_mounted = False
+        for current, directories, files in _BIos.walk(root, topdown=False):
+            for name in files: _BIos.unlink(f"{current}/{name}")
+            for name in directories: _BIos.rmdir(f"{current}/{name}")
+    child_exits = []
+    def child_exit(code):
+        child_exits.append(code)
+        if code: raise AssertionError(f"modeled namespace failure: {role} {kernel.events}")
+    def child_select(readers, writers, errors, timeout=0):
+        ordinary = [item for item in readers if not isinstance(item, _BIChildSocket)]
+        ready, writable, exceptional = kernel.select(ordinary, writers, errors, timeout)
+        for item in ordinary:
+            value = kernel.virtual.get(item) if isinstance(item, int) else None
+            if value and value["kind"] == "pipe" and value["resource"]["write_closed"] and item not in ready:
+                ready.append(item)
+        ready.extend(item for item in readers if isinstance(item, _BIChildSocket) and item.readable())
+        return ready, writable, exceptional
+    def modeled_fcntl(fd, command, *args):
+        if fd in kernel.virtual and command == _BIfcntl.F_GETFD:
+            return _BIfcntl.FD_CLOEXEC
+        if fd in copied and command == module._F_GET_SEALS:
+            return module._DATA_SEALS if fd == copied[0] else module._EXEC_SEALS
+        if fd in copied and command == _BIfcntl.F_GETFL: return _BIos.O_RDONLY
+        return _BI_FCNTL(fd, command, *args)
+    kernel.unshare_boundary = lambda *args: None
+    kernel.umount = child_umount
+    with patched(module, _SystemOps=lambda: kernel), patched(module.socket, socket=child_socket), patched(
+        module.os, open=kernel.open, close=kernel.close, read=kernel.read, write=kernel.write,
+        pipe2=kernel.pipe2, fstat=kernel.fstat, stat=kernel.stat, pread=kernel.pread,
+        dup2=child_dup2, getpid=lambda: kernel.namespace, getppid=lambda: kernel.outer,
+        pidfd_open=kernel.pidfd_open, getsid=kernel.getsid, getpgid=kernel.getpgid,
+        waitpid=kernel.waitpid, setsid=lambda *args: None, setgroups=lambda groups: None,
+        chdir=lambda path: None, _exit=child_exit), patched(module.fcntl, fcntl=modeled_fcntl), patched(
+        module.select, select=child_select), patched(module.os.path, ismount=kernel.ismount):
+        module._namespace_owner(role, copied, rows, report, input_fd, output_fd,
+                                status_fd, transfer_fd, b"N" * 32, root)
+    expected = [f"namespace:{role}:{name}" for name in
+                ("namespace", "transfer", "child", "boundary", "exec-ready", "root-final", "exit")]
+    try:
+        if kernel.events != expected or child_exits != [0]:
+            raise AssertionError(f"namespace child state machine drift: {role} {kernel.events}/{child_exits}")
+        return f"namespace:{role}"
+    finally:
+        for fd in copied:
+            if fd in kernel.owned: kernel.close(fd)
+        _BIshutil.rmtree(root_parent)
+
+
 def production_runtime_compression_contracts(module):
     """Drive both production launchers through their unpatched parent state machines."""
     if not hasattr(module.os, "O_PATH"): module.os.O_PATH = 0x200000
@@ -1981,6 +2142,11 @@ def production_runtime_compression_contracts(module):
                         value = launcher(admission, _BItypes.ModuleType("modeled.closure"), kernel)
                     except BaseException as caught:
                         error = caught
+                child_evidence = []
+                if error is None:
+                    child_evidence.append(_modeled_worker_execution(module, admission, kernel))
+                    child_evidence.append(_modeled_namespace_execution(module, report, descriptors, rows, "gzip"))
+                    child_evidence.append(_modeled_namespace_execution(module, report, descriptors, rows, "zstd"))
                 expected_accept = case["primitive_fault"]["expect"] == "accept"
                 if (error is None) != expected_accept:
                     raise AssertionError(f"tool process oracle mismatch: {case['id']} {error!r}")
@@ -2001,9 +2167,12 @@ def production_runtime_compression_contracts(module):
                         getattr(runtime, name) for name in module._OBSERVATION_NAMES
                     ):
                         raise AssertionError("production launcher result drift")
-                    if owner_calls != ["worker", "namespace", "namespace"]:
+                    if owner_calls or child_evidence != [
+                        "worker", "namespace:gzip", "namespace:zstd",
+                    ]:
                         raise AssertionError(
-                            f"B/integration child state machines bypassed: {owner_calls}"
+                            "B/integration split child state machines bypassed: "
+                            f"parent={owner_calls}, child={child_evidence}"
                         )
                     kernel.events.append("tool:complete")
                     if case["sentinel"] != "tool:complete":
@@ -2080,7 +2249,7 @@ def parent():
     launcher_source = MODULE.read_text()
     common_source = COMMON.read_text()
     admission = common_source.index("held, digest = self._admit_sources(context, root)")
-    compilation = common_source.index("module = self._launcher(held[LAUNCHER_PATH])")
+    compilation = common_source.index("self._issue_cli(held[LAUNCHER_PATH].raw, admission, capsule)")
     if admission > compilation or "open(ROOT" in launcher_source:
         raise AssertionError("held source admission/compilation order drift")
     banned = ("_MappingAuthority", "_coordinate_admitted_mapping_only")
