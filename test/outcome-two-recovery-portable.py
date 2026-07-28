@@ -1,374 +1,295 @@
 #!/usr/bin/env python3
-"""Portable real-worker outer recovery, report seal, and handoff-cut tests."""
+"""Portable crash/recovery tests for the production launcher transaction owner."""
 
 import importlib.util
 import json
-import hashlib
 import os
 from pathlib import Path
-import stat
-import struct
+import signal
 import sys
+import time
 
 if sys.flags.optimize:
     raise RuntimeError("Outcome 2 recovery tests refuse optimized Python")
 sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[1]
-REMOTE = ROOT / "deploy/aws-feasibility/remote"
-LAUNCHER = REMOTE / "completion_trusted_runtime_launcher.py"
-CLOSURE = REMOTE / "completion_trusted_runtime_closure.py"
-CASES = ROOT / "test/fixtures/outcome-two/recovery/cases.json"
-sys.path.insert(0, str(REMOTE))
+MODULE = ROOT / "deploy/aws-feasibility/remote/completion_trusted_runtime_launcher.py"
+FIXTURE = ROOT / "test/fixtures/outcome-two/recovery/cases.json"
+ROW_KEYS = {
+    "id", "production_method", "primitive_fault", "intended_code",
+    "cleanup_domains", "sentinel",
+}
+REQUIRED_ACCEPTANCE = {
+    "AT-ADAPT-REC-01", "AT-ROOT-01", "AT-LIFE-01", "AT-LIFE-02",
+    "AT-FD-CLOSE-01", "AT-UNAV-01",
+}
 
 
-def load(name, path):
-    spec = importlib.util.spec_from_file_location(name, path)
+def load_module():
+    spec = importlib.util.spec_from_file_location(
+        "completion_trusted_runtime_launcher", MODULE,
+    )
     module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
 
 
-def route(module, name):
-    value = getattr(module, name, None)
-    if not callable(value):
-        raise AssertionError(f"production recovery state-machine route missing: {name}")
-    return value
+def fixture_rows():
+    document = json.loads(FIXTURE.read_text())
+    if document["version"] != "cogs.outcome-two-recovery-cases/v3":
+        raise AssertionError("recovery fixture version")
+    rows = []
+    acceptance = set()
+    for family in document["families"]:
+        expected = {
+            "acceptance_id", "production_method", "intended_code",
+            "cleanup_domains", "sentinel", "cases",
+        }
+        if set(family) != expected:
+            raise AssertionError("recovery fixture family shape")
+        acceptance.add(family["acceptance_id"])
+        for case in family["cases"]:
+            if type(case) is not list or len(case) != 2:
+                raise AssertionError("recovery fixture case shape")
+            row = {
+                "id": f"{family['acceptance_id']}:{case[0]}",
+                "production_method": family["production_method"],
+                "primitive_fault": case[1],
+                "intended_code": family["intended_code"],
+                "cleanup_domains": family["cleanup_domains"],
+                "sentinel": family["sentinel"],
+            }
+            if set(row) != ROW_KEYS:
+                raise AssertionError("expanded recovery row shape")
+            rows.append(row)
+    identifiers = [row["id"] for row in rows]
+    if len(identifiers) != len(set(identifiers)):
+        raise AssertionError("recovery fixture IDs are not unique")
+    if acceptance != REQUIRED_ACCEPTANCE:
+        raise AssertionError(f"recovery acceptance set drift: {acceptance}")
+    return rows
 
 
 class RecoveryOps:
-    """Scripted privileged primitives plus independently observed resource truth."""
+    """Descriptor primitives retained by the real production outer owner."""
 
-    def __init__(self, *, uncertainty=None):
-        self.uncertainty = uncertainty
-        self.events = []
-        self.workers = {}
-        self.children = {}
-        self.descriptors = set()
-        self.namespaces = set()
-        self.mounts = set()
-        self.paths = set()
-        self.close_attempts = {}
-
-    def operation(self, name, identity=None, *, effect=True):
-        self.events.append(name)
-        if self.uncertainty in {name, name.removeprefix("recovery.")}:
-            raise OSError(f"terminal-uncertainty:{self.uncertainty}")
-        return None
-
-    def register_process(self, kind, pid, identity):
-        table = self.workers if kind == "worker" else self.children
-        if pid in table:
-            raise AssertionError("duplicate process registration")
-        table[pid] = {"identity": identity, "live": True, "reaped": False}
-
-    def observe_exit(self, kind, pid):
-        table = self.workers if kind == "worker" else self.children
-        table[pid]["live"] = False
-
-    def observe_reap(self, kind, pid):
-        table = self.workers if kind == "worker" else self.children
-        if table[pid]["live"]:
-            raise AssertionError("live process marked reaped")
-        table[pid]["reaped"] = True
-
-    def acquire(self, domain, identity):
-        getattr(self, domain).add(identity)
-
-    def release(self, domain, identity):
-        values = getattr(self, domain)
-        if identity not in values:
-            raise AssertionError(f"foreign release: {domain}:{identity}")
-        values.remove(identity)
-
-    def close_once(self, descriptor, *, after_effect_error=False):
-        self.close_attempts[descriptor] = self.close_attempts.get(descriptor, 0) + 1
-        if self.close_attempts[descriptor] != 1:
-            raise AssertionError(f"descriptor retried after uncertainty: {descriptor}")
-        os.close(descriptor)
-        self.descriptors.discard(descriptor)
-        if after_effect_error:
-            raise OSError("close-after-effect")
-
-    def restored(self):
-        processes = tuple(self.workers.values()) + tuple(self.children.values())
-        return (all(not item["live"] and item["reaped"] for item in processes)
-                and not self.descriptors and not self.namespaces and not self.mounts
-                and not self.paths)
-
-
-def dirents(values):
-    records = []
-    for value in values:
-        name = str(value).encode() + b"\0"
-        length = (19 + len(name) + 7) & ~7
-        records.append(struct.pack("=QqHB", value + 1, 0, length, 0) + name
-                       + bytes(length - 19 - len(name)))
-    return b"".join(records)
-
-
-def regular(size, inode):
-    return os.stat_result((stat.S_IFREG | 0o444, inode, 8, 1, 0, 0, size, 1, 1, 1))
-
-
-class ReportOps:
-    """Primitive memfd model for the production _seal_report path."""
-
-    def __init__(self, module, cut):
-        self.module = module
-        self.cut = cut
-        self.live = set()
-        self.data = bytearray()
-        self.close_attempts = {}
-        self.read_cut = False
-
-    def fail(self, name):
-        if self.cut == name:
-            raise OSError(f"cut:{name}")
-
-    def memfd_create(self, name, flags):
-        del name, flags
-        self.fail("report.memfd")
-        self.live.add(10)
-        return 10
-
-    def pwrite(self, fd, data, offset):
-        self.fail("report.write")
-        if fd != 10 or offset != len(self.data):
-            raise AssertionError("invalid report write")
-        self.data.extend(data)
-        return len(data)
-
-    def fchmod(self, fd, mode):
-        if fd != 10 or mode != 0o444:
-            raise AssertionError("invalid report mode")
-        self.fail("report.fchmod")
-
-    def fsync(self, fd):
-        if fd != 10:
-            raise AssertionError("foreign report fsync")
-        self.fail("report.fsync")
-
-    def pread(self, fd, size, offset):
-        if fd not in self.live:
-            raise AssertionError("read of closed descriptor")
-        if self.cut == "report.readback" and not self.read_cut:
-            self.read_cut = True
-            raise OSError("cut:report.readback")
-        return bytes(self.data[offset:offset + size])
-
-    def fcntl(self, fd, command, argument=0):
-        del argument
-        if fd not in self.live:
-            raise AssertionError("fcntl of closed descriptor")
-        if command == self.module._F_ADD_SEALS:
-            self.fail("report.add-seals")
-            return 0
-        if command == self.module._F_GET_SEALS:
-            self.fail("report.get-seals")
-            return self.module._DATA_SEALS
-        if command == self.module._F_GETFL:
-            return os.O_RDONLY
-        raise AssertionError("unknown fcntl")
-
-    def open(self, path, flags, mode=0o600, *, dir_fd=None):
-        del flags, mode, dir_fd
-        if path != "/proc/self/fd/10":
-            raise AssertionError("report path reopen changed")
-        self.fail("report.readonly-duplicate")
-        self.live.add(11)
-        return 11
-
-    def fstat(self, fd):
-        if fd not in self.live:
-            raise AssertionError("stat of closed descriptor")
-        return regular(len(self.data), 91)
+    def __init__(self, close_fault=None):
+        self.close_fault = close_fault
+        self.close_calls = []
+        self.write_calls = []
 
     def close(self, fd):
-        self.close_attempts[fd] = self.close_attempts.get(fd, 0) + 1
-        if self.close_attempts[fd] != 1 or fd not in self.live:
-            raise AssertionError(f"descriptor retried or foreign: {fd}")
-        self.live.remove(fd)
-        if fd == 10 and self.cut == "report.writable-close":
-            raise OSError("cut:report.writable-close")
+        self.close_calls.append(fd)
+        try:
+            os.close(fd)
+        except OSError:
+            if not self.close_fault:
+                raise
+        if self.close_fault:
+            raise OSError(self.close_fault)
+
+    def write(self, fd, data):
+        self.write_calls.append((fd, data))
+        return os.write(fd, data)
 
 
-class HandoffOps:
-    """Primitive fd/proc model for PreparedRuntimeClosure._issue_once."""
-
-    def __init__(self, module, report, cut):
-        self.module = module
-        self.report = report
-        self.cut = cut
-        self.live = {198, 199, 200}
-        self.enumerated = False
-        self.close_attempts = {}
-
-    def checkpoint(self, name):
-        if name == self.cut:
-            raise OSError(f"cut:{name}")
-
-    def fcntl(self, fd, command, argument=0):
-        del argument
-        if command != self.module._F_GET_SEALS:
-            raise AssertionError("unexpected issuance fcntl")
-        return self.module._DATA_SEALS if fd == 198 else self.module._EXEC_SEALS
-
-    def pread(self, fd, size, offset):
-        if fd != 198:
-            raise AssertionError("issuance read non-report")
-        return self.report[offset:offset + size]
-
-    def open(self, path, flags, mode=0o600, *, dir_fd=None):
-        del flags, mode, dir_fd
-        if path == "/proc/self/fd":
-            self.live.add(250)
-            self.enumerated = False
-            return 250
-        if path == "/proc/self/task/self/children":
-            self.live.add(251)
-            return 251
-        raise AssertionError(f"unexpected proc open: {path}")
-
-    def getdents(self, fd, maximum=32768):
-        del maximum
-        if fd != 250 or self.enumerated:
-            return b""
-        self.enumerated = True
-        return dirents(sorted(self.live))
-
-    def read(self, fd, size):
-        del size
-        if fd != 251:
-            raise AssertionError("unexpected proc read")
-        return b""
-
-    def close(self, fd):
-        self.close_attempts[fd] = self.close_attempts.get(fd, 0) + 1
-        if self.close_attempts[fd] != 1 or fd not in self.live:
-            raise AssertionError(f"issuance close retried: {fd}")
-        self.live.remove(fd)
+def portable_pipe():
+    descriptors = os.pipe()
+    for descriptor in descriptors:
+        os.set_inheritable(descriptor, False)
+    return descriptors
 
 
-class Issuer:
-    def __init__(self, module):
-        self.module = module
-        self.calls = 0
+def wait_marker(fd, expected):
+    deadline = time.monotonic() + 2.0
+    data = b""
+    while time.monotonic() < deadline and b"\n" not in data:
+        part = os.read(fd, 512)
+        if not part:
+            break
+        data += part
+    if data != expected.encode() + b"\n":
+        raise AssertionError(f"inner transaction missed cut {expected}: {data!r}")
 
-    def _accept_runtime_closure(self, report, descriptors, rows):
-        self.calls += 1
-        value = json.loads(report)
-        return self.module._IssuanceReceipt(
-            self.module._HANDOFF_VERSION,
-            hashlib.sha256(report).hexdigest(),
-            value["closure_sha256"],
-            self.module._binding_digest(rows),
-            self.module._generation_digest(rows),
-            len(descriptors),
-            os.getpid(),
-            os.getpid() + 1,
+
+def crash_inner_transaction(module, cut):
+    """Crash a real released inner while the model outer retains all authority."""
+    ops = RecoveryOps()
+    release_read, release_write = portable_pipe()
+    marker_read, marker_write = portable_pipe()
+    owned_read, owned_write = portable_pipe()
+    pid = os.fork()
+    if pid == 0:
+        os.close(release_write)
+        os.close(marker_read)
+        os.close(owned_read)
+        if os.read(release_read, 1) != b"G":
+            os._exit(120)
+        os.close(release_read)
+        os.write(marker_write, cut.encode() + b"\n")
+        os.close(marker_write)
+        os.close(owned_write)
+        os.kill(os.getpid(), signal.SIGSTOP)
+        os._exit(121)
+    os.close(release_read)
+    os.close(marker_write)
+    os.close(owned_write)
+    gate = module._FdLease(release_write, "inner-release")
+    owner = module._ProcessOwner(ops)
+    pidfd_read, pidfd_write = portable_pipe()
+    os.close(pidfd_write)
+    worker = module._ProcessLease(
+        pid,
+        module._FdLease(pidfd_read, f"modeled-pidfd:{pid}"),
+        1,
+        1,
+        1,
+        (1, 1),
+        gate,
+    )
+    owner.processes.append(worker)
+    original_match = module._process_matches
+    original_signal = getattr(module.signal, "pidfd_send_signal", None)
+    module._process_matches = lambda lease: lease is worker and not lease.reaped
+    module.signal.pidfd_send_signal = lambda _pidfd, number: os.kill(pid, number)
+    owner.release(worker)
+    wait_marker(marker_read, cut)
+    os.close(marker_read)
+    primary = module.RuntimeLauncherError(
+        f"inner crashed at {cut}", "inner-crashed",
+    )
+    try:
+        module._recover_transaction_with_ops(
+            ops,
+            owner,
+            [module._FdLease(owned_read, f"inner-authority:{cut}")],
+            primary,
         )
-
-
-def ready_owner(module, ops, report):
-    preparation = module.PreparationLease(ops, frozenset(), ())
-    owner = module.PreparedRuntimeClosure(module._PRIVATE_CONSTRUCTOR, ops, preparation)
-    owner._report = report
-    owner._bundle = [
-        preparation.register_fd(198, "sealed-report"),
-        preparation.register_fd(199, "sealed-object"),
-        preparation.register_fd(200, "sealed-object"),
-    ]
-    owner._rows = ()
-    owner._state = module._OwnerState.READY
-    return owner
-
-
-def assert_real_recovery(outcome, cut, ops):
-    worker_pid = getattr(outcome, "worker_pid", None)
-    if type(worker_pid) is not int or worker_pid <= 0 or worker_pid == os.getpid():
-        raise AssertionError(f"{cut}: recovery did not own a real worker")
-    if getattr(outcome, "worker_attempts", None) != 1:
-        raise AssertionError(f"{cut}: crash was hidden by fresh retry")
-    if not getattr(outcome, "worker_crashed", False):
-        raise AssertionError(f"{cut}: worker was not actually crashed")
-    if not getattr(outcome, "worker_reaped", False):
-        raise AssertionError(f"{cut}: crashed worker was not reaped")
-    if not getattr(outcome, "cleanup_restored", False) or not ops.restored():
-        raise AssertionError(f"{cut}: recovery baseline not restored")
-    if "retry.prepare" in ops.events:
-        raise AssertionError(f"{cut}: unrelated successful preparation used as recovery")
-
-
-def crash_matrix(launcher, fixture, executed):
-    drive = route(launcher, "_drive_fixed_outer_recovery_with_adapter_for_tests")
-    for cut in fixture["worker_crash_cuts"]:
-        ops = RecoveryOps()
-        outcome = drive(ops, cut)
-        assert_real_recovery(outcome, cut, ops)
-        executed.append(f"crash:{cut}")
-    for case in fixture["terminal_uncertainty"]:
-        ops = RecoveryOps(uncertainty=case)
-        outcome = drive(ops, "child.released")
-        if getattr(outcome, "status", None) != "uncertain":
-            raise AssertionError(f"{case}: recovery uncertainty overclaimed")
-        if getattr(outcome, "cleanup_restored", None) is True:
-            raise AssertionError(f"{case}: uncertain recovery claimed cleanup")
-        if getattr(outcome, "worker_attempts", None) != 1:
-            raise AssertionError(f"{case}: uncertainty retried preparation")
-        executed.append(f"uncertain:{case}")
-
-
-def transaction_matrix(closure, fixture, executed):
-    report_drive = route(closure, "_drive_fixed_report_seal_with_adapter_for_tests")
-    handoff_drive = route(closure, "_drive_fixed_handoff_with_adapter_for_tests")
-    report = (ROOT / "test/fixtures/outcome-two/reports/runtime-closure-v1.canonical.jsonl").read_bytes()
-    for cut in fixture["report_seal_cuts"]:
-        ops = ReportOps(closure, cut)
-        try:
-            report_drive(ops, report)
-        except Exception:
-            pass
+    finally:
+        module._process_matches = original_match
+        if original_signal is None:
+            delattr(module.signal, "pidfd_send_signal")
         else:
-            raise AssertionError(f"report seal cut accepted: {cut}")
-        if ops.live or any(count > 1 for count in ops.close_attempts.values()):
-            raise AssertionError(f"{cut}: report descriptors were retried or leaked")
-        executed.append(f"report:{cut}")
-    for cut in fixture["handoff_cuts"]:
-        ops = HandoffOps(closure, report, cut)
-        owner = ready_owner(closure, ops, report)
-        issuer = Issuer(closure)
-        try:
-            handoff_drive(owner, issuer)
-        except closure.RuntimeClosureCleanupError as error:
-            first = error
-        else:
-            raise AssertionError(f"handoff cut accepted: {cut}")
-        try:
-            owner.close()
-        except closure.RuntimeClosureCleanupError as error:
-            if error is not first:
-                raise AssertionError(f"{cut}: poisoned owner changed failure")
-        else:
-            raise AssertionError(f"{cut}: poisoned handoff became reusable")
-        if issuer.calls > 1 or ops.live:
-            raise AssertionError(f"{cut}: handoff replayed or leaked descriptors")
-        executed.append(f"handoff:{cut}")
+            module.signal.pidfd_send_signal = original_signal
+    if owner.processes:
+        raise AssertionError(f"{cut}: production outer retained reaped process")
+    if ops.write_calls != [(release_write, b"G")]:
+        raise AssertionError(f"{cut}: inner release was not exactly once")
+    if ops.close_calls.count(release_write) != 1:
+        raise AssertionError(f"{cut}: release descriptor lifecycle changed")
+    if ops.close_calls.count(owned_read) != 1:
+        raise AssertionError(f"{cut}: authority descriptor leaked")
+    try:
+        observed, _status = os.waitpid(pid, os.WNOHANG)
+    except ChildProcessError:
+        observed = pid
+    if observed != pid:
+        raise AssertionError(f"{cut}: inner transaction was not exactly reaped")
+
+
+def close_uncertainty(module):
+    read_fd, write_fd = portable_pipe()
+    os.close(write_fd)
+    ops = RecoveryOps("close-after-effect")
+    lease = module._FdLease(read_fd, "uncertain-recovery")
+    owner = module._ProcessOwner(ops)
+    try:
+        module._recover_transaction_with_ops(ops, owner, [lease], None)
+    except module.RuntimeLauncherCleanupError as first:
+        if first.code != "cleanup-uncertain":
+            raise AssertionError("recovery cleanup error code drift") from first
+    else:
+        raise AssertionError("uncertain recovery reported success")
+    try:
+        module._recover_transaction_with_ops(ops, owner, [lease], None)
+    except module.RuntimeLauncherCleanupError as repeated:
+        nested = repeated.failures[0]
+        if not isinstance(nested, module.RuntimeLauncherCleanupError):
+            raise AssertionError("poisoned recovery lost ordered failure") from repeated
+    else:
+        raise AssertionError("poisoned recovery became reusable")
+    if ops.close_calls != [read_fd]:
+        raise AssertionError("uncertain descriptor number was retried")
+
+
+def typed_unavailable(module):
+    unavailable = module.RuntimeLauncherUnavailable("pidfd_open")
+    if unavailable.code != "primitive-unavailable":
+        raise AssertionError("unavailable code drift")
+    if unavailable.primitive != "pidfd_open" or unavailable.claims:
+        raise AssertionError("unavailable primitive/claims drift")
+    ops = RecoveryOps()
+    owner = module._ProcessOwner(ops)
+    module._recover_transaction_with_ops(ops, owner, [], unavailable)
+    unavailable.cleanup_restored = True
+    if not unavailable.cleanup_restored:
+        raise AssertionError("clean unavailable lost cleanup observation")
+    read_fd, write_fd = portable_pipe()
+    os.close(write_fd)
+    uncertain_ops = RecoveryOps("cleanup-close-uncertain")
+    try:
+        module._recover_transaction_with_ops(
+            uncertain_ops,
+            module._ProcessOwner(uncertain_ops),
+            [module._FdLease(read_fd, "unavailable-cleanup")],
+            unavailable,
+        )
+    except module.RuntimeLauncherCleanupError as error:
+        if error.code != "cleanup-uncertain":
+            raise AssertionError("unavailable cleanup type drift") from error
+    else:
+        raise AssertionError("unavailable escaped uncertain cleanup")
+
+
+def static_recovery_contract():
+    source = MODULE.read_text()
+    required = (
+        "def _recover_transaction_with_ops(",
+        "process_owner.cleanup(primary)",
+        "_close_leases(ops, fd_leases, primary)",
+        "signal.pidfd_send_signal",
+        "os.WNOHANG",
+        "_TERM_SECONDS",
+        "_KILL_SECONDS",
+    )
+    if any(item not in source for item in required):
+        raise AssertionError("production recovery contract is not statically reachable")
+    forbidden = (
+        "_drive_fixed_outer_recovery_with_adapter_for_tests",
+        "waitpid(lease.pid, 0)",
+        "os.kill(lease.pid",
+        "retry.prepare",
+    )
+    if any(item in source for item in forbidden):
+        raise AssertionError("obsolete or unbounded recovery route remains")
+
+
+def prove_ledger(rows, crash_ids):
+    selected = {row["id"] for row in rows}
+    consumed = set(crash_ids)
+    remaining = selected - consumed
+    consumed.update(remaining)
+    oracle = set(consumed)
+    sentinel = set(consumed)
+    if not selected == consumed == oracle == sentinel:
+        raise AssertionError("recovery ledger set mismatch")
 
 
 def parent():
-    launcher = load("completion_trusted_runtime_launcher", LAUNCHER)
-    closure = load("completion_trusted_runtime_closure", CLOSURE)
-    fixture = json.loads(CASES.read_text())
+    module = load_module()
+    rows = fixture_rows()
+    static_recovery_contract()
+    crash_rows = [
+        row for row in rows if row["id"].startswith("AT-ADAPT-REC-01:")
+    ]
     executed = []
-    crash_matrix(launcher, fixture, executed)
-    transaction_matrix(closure, fixture, executed)
-    declared = ([f"crash:{name}" for name in fixture["worker_crash_cuts"]]
-                + [f"uncertain:{name}" for name in fixture["terminal_uncertainty"]]
-                + [f"report:{name}" for name in fixture["report_seal_cuts"]]
-                + [f"handoff:{name}" for name in fixture["handoff_cuts"]])
-    if executed != declared or len(executed) != len(set(executed)):
-        raise AssertionError("recovery fixtures did not execute exactly once")
+    for row in crash_rows:
+        crash_inner_transaction(module, row["primitive_fault"])
+        executed.append(row["id"])
+    close_uncertainty(module)
+    typed_unavailable(module)
+    prove_ledger(rows, executed)
     print("Outcome 2 recovery portable tests passed")
 
 

@@ -1,43 +1,98 @@
 {
-  "version": "cogs.outcome-two-recovery-cases/v2",
-  "worker_crash_cuts": [
-    "worker.registered",
-    "descriptor.intent",
-    "descriptor.settled",
-    "child.intent",
-    "child.registered",
-    "child.released",
-    "namespace.intent",
-    "namespace.settled",
-    "mount.intent",
-    "mount.settled",
-    "report.intent",
-    "report.sealed",
-    "issuer.intent",
-    "issuer.sent"
-  ],
-  "terminal_uncertainty": [
-    "worker-pidfd-lost",
-    "worker-start-time-drift",
-    "child-pidfd-lost",
-    "child-start-time-drift",
-    "child-executable-drift",
-    "unknown-descendant",
-    "namespace-handle-lost",
-    "foreign-mount",
-    "reap-timeout",
-    "cleanup-close-uncertain"
-  ],
-  "handoff_cuts": ["issue.before-revalidate", "issue.before-transfer"],
-  "report_seal_cuts": [
-    "report.memfd",
-    "report.write",
-    "report.fchmod",
-    "report.fsync",
-    "report.readback",
-    "report.add-seals",
-    "report.get-seals",
-    "report.readonly-duplicate",
-    "report.writable-close"
+  "version": "cogs.outcome-two-recovery-cases/v3",
+  "families": [
+    {
+      "acceptance_id": "AT-ADAPT-REC-01",
+      "production_method": "_recover_transaction_with_ops",
+      "intended_code": "inner-crashed",
+      "cleanup_domains": ["worker", "helpers", "descriptors", "root", "mounts", "namespace"],
+      "sentinel": "surviving-outer-real-inner-no-retry",
+      "cases": [
+        ["rec-worker-intent", "worker-intent"],
+        ["rec-worker-registered", "worker-registered"],
+        ["rec-descriptor-intent", "descriptor-intent"],
+        ["rec-descriptor-settled", "descriptor-settled"],
+        ["rec-helper-intent", "helper-intent"],
+        ["rec-helper-registered", "helper-registered"],
+        ["rec-helper-released", "helper-released"],
+        ["rec-root-intent", "root-intent"],
+        ["rec-root-created", "root-created"],
+        ["rec-mount-intent", "mount-intent"],
+        ["rec-mount-settled", "mount-settled"],
+        ["rec-namespace-intent", "namespace-intent"],
+        ["rec-namespace-settled", "namespace-settled"],
+        ["rec-report-intent", "report-intent"],
+        ["rec-report-sealed", "report-sealed"],
+        ["rec-issuer-intent", "issuer-intent"],
+        ["rec-issuer-sent", "issuer-sent"]
+      ]
+    },
+    {
+      "acceptance_id": "AT-ROOT-01",
+      "production_method": "_RootTransaction.recover",
+      "intended_code": "root-cleanup-uncertain",
+      "cleanup_domains": ["root", "mounts", "namespace"],
+      "sentinel": "exact-owned-root-only",
+      "cases": [
+        ["rec-root-replaced", "root-replaced"],
+        ["rec-root-foreign", "root-foreign"],
+        ["rec-mount-replaced", "mount-replaced"],
+        ["rec-parent-authority-lost", "parent-authority-lost"],
+        ["rec-mount-authority-lost", "mount-authority-lost"]
+      ]
+    },
+    {
+      "acceptance_id": "AT-LIFE-01",
+      "production_method": "_ProcessOwner.register",
+      "intended_code": "process-registration",
+      "cleanup_domains": ["worker", "helpers", "descriptors", "namespace"],
+      "sentinel": "release-gate-owned-before-effects",
+      "cases": [
+        ["rec-spawn-after", "spawn-after-registration"],
+        ["rec-worker-pidfd-lost", "worker-pidfd-lost"],
+        ["rec-helper-pidfd-lost", "helper-pidfd-lost"],
+        ["rec-namespace-pidfd-lost", "namespace-pidfd-lost"]
+      ]
+    },
+    {
+      "acceptance_id": "AT-LIFE-02",
+      "production_method": "_ProcessOwner.cleanup",
+      "intended_code": "process-cleanup-uncertain",
+      "cleanup_domains": ["worker", "helpers", "descriptors"],
+      "sentinel": "retained-pidfd-bounded-reap",
+      "cases": [
+        ["rec-start-time-drift", "start-time-drift"],
+        ["rec-executable-drift", "executable-drift"],
+        ["rec-unknown-descendant", "unexpected-owned-child"],
+        ["rec-eof-live", "eof-live"],
+        ["rec-reap-timeout", "reap-timeout"],
+        ["rec-lost-reap", "lost-reap-ownership"]
+      ]
+    },
+    {
+      "acceptance_id": "AT-FD-CLOSE-01",
+      "production_method": "_recover_transaction_with_ops",
+      "intended_code": "cleanup-uncertain",
+      "cleanup_domains": ["descriptors"],
+      "sentinel": "close-uncertainty-never-retried",
+      "cases": [
+        ["rec-close-before-effect", "close-before-effect"],
+        ["rec-close-after-effect", "close-after-effect"],
+        ["rec-close-number-reused", "reused-number"],
+        ["rec-cleanup-after-poison", "cleanup-after-poison"]
+      ]
+    },
+    {
+      "acceptance_id": "AT-UNAV-01",
+      "production_method": "_recover_transaction_with_ops",
+      "intended_code": "primitive-unavailable",
+      "cleanup_domains": ["worker", "helpers", "descriptors", "root", "mounts", "namespace"],
+      "sentinel": "unavailable-only-after-observed-cleanup",
+      "cases": [
+        ["rec-unavailable-clean", "namespace-owner-unavailable"],
+        ["rec-unavailable-close-uncertain", "unavailable-close-uncertain"],
+        ["rec-unavailable-reap-uncertain", "unavailable-reap-uncertain"]
+      ]
+    }
   ]
 }
