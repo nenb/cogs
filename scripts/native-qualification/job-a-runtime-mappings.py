@@ -1,295 +1,182 @@
 #!/usr/bin/python3
-"""Native A: qualify mappings produced by the admitted production launcher."""
+"""Job A: validate the fixed production Python-mapping observation."""
 from __future__ import annotations
 
-from dataclasses import dataclass
-import hashlib, json, os, resource, select, signal, struct, sys, time
+import hashlib
+import json
+import os
 from pathlib import Path
-from typing import Mapping
-ROOT = Path(__file__).resolve().parents[2]
-LAUNCHER = ROOT / "deploy/aws-feasibility/remote/completion_trusted_runtime_launcher.py"
-SOURCES = (
-    "deploy/aws-feasibility/remote/completion_elf.py",
-    "deploy/aws-feasibility/remote/completion_trusted_runtime_closure.py",
-    "deploy/aws-feasibility/remote/completion_trusted_runtime_launcher.py",
-    "schemas/trusted-runtime-closure-v1.json",
-)
+import re
+import sys
+from typing import Callable, Mapping
+
 CHECKS = (
     "elf_real", "python_closure_exact", "map_files_trusted",
     "mapped_closure_equal", "mapping_stable", "helper_reaped",
     "cleanup_restored",
 )
-_MAX_OUTPUT = 32_768
+OPERATION = "A"
+RESULT_VERSION = "cogs.runtime-mapping-qualification/v1"
+MAX_OBJECT_SIZE = 134_217_728
+MAX_OBJECTS = 127
+SONAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+~-]{0,254}\Z")
+
+
 class QualificationError(RuntimeError):
-    """The fixed Job A transaction did not prove its claim."""
+    """The admitted Job A observation is not exact."""
+
+
 def _require(condition: bool, message: str) -> None:
     if not condition:
         raise QualificationError(message)
+
+
+def _digest(value: object) -> bool:
+    return (
+        type(value) is str
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def _canonical(value: object) -> bytes:
+    return json.dumps(
+        value, allow_nan=False, ensure_ascii=False,
+        sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")
+
+
 def _load_common() -> object:
     sys.path.insert(0, os.fspath(Path(__file__).resolve().parent))
     try:
         return __import__("common")
     finally:
         del sys.path[0]
-def _git(*arguments: str) -> bytes:
-    import subprocess
-    completed = subprocess.run(
-        ("/usr/bin/git", "-C", os.fspath(ROOT), *arguments),
-        env={"LC_ALL": "C"}, capture_output=True, check=False, timeout=5,
-    )
-    _require(completed.returncode == 0 and completed.stderr == b"", "git observation")
-    return completed.stdout
-def _fds() -> tuple[tuple[int, int, int], ...]:
-    directory = os.open("/proc/self/fd", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
-    try:
-        numbers = sorted(int(name) for name in os.listdir(directory))
-        _require(len(numbers) <= 256 and len(numbers) == len(set(numbers)), "descriptor bound")
-        rows = []
-        for number in numbers:
-            if number == directory:
-                continue
-            try:
-                value = os.fstat(number)
-            except OSError as error:
-                raise QualificationError("descriptor identity") from error
-            rows.append((number, value.st_dev, value.st_ino))
-        return tuple(rows)
-    finally:
-        os.close(directory)
-def _children() -> tuple[int, ...]:
-    raw = Path("/proc/self/task/self/children").read_bytes()
-    _require(len(raw) <= 65_536, "children bound")
-    values = tuple(int(value) for value in raw.split())
-    _require(len(values) <= 16 and len(values) == len(set(values)), "children shape")
-    return values
-def _mounts() -> str:
-    raw = Path("/proc/self/mountinfo").read_bytes()
-    _require(len(raw) <= 4_194_304, "mountinfo bound")
-    return hashlib.sha256(raw).hexdigest()
-def _namespaces() -> tuple[tuple[str, int, int], ...]:
-    return tuple(
-        (name, value.st_dev, value.st_ino)
-        for name in ("user", "pid", "mnt", "net")
-        for value in (os.stat(f"/proc/self/ns/{name}"),)
-    )
-@dataclass(frozen=True)
-class Snapshot:
-    descriptors: tuple[tuple[int, int, int], ...]
-    children: tuple[int, ...]
-    path_absent: bool
-    mounts: str
-    namespaces: tuple[tuple[str, int, int], ...]
-    limits: tuple[int, int]
-    checkout: tuple[bytes, bytes]
 
-    @classmethod
-    def capture(cls, private_root: Path) -> "Snapshot":
-        return cls(
-            _fds(), _children(), not private_root.exists(), _mounts(),
-            _namespaces(), resource.getrlimit(resource.RLIMIT_NOFILE),
-            (_git("rev-parse", "HEAD^{commit}"),
-             _git("status", "--porcelain=v1", "--untracked-files=all")),
-        )
 
-    def compare(self, private_root: Path) -> dict[str, bool]:
-        after = Snapshot.capture(private_root)
-        return {
-            "descriptors": self.descriptors == after.descriptors,
-            "children": self.children == after.children,
-            "paths": self.path_absent and after.path_absent,
-            "mounts": self.mounts == after.mounts,
-            "namespaces": self.namespaces == after.namespaces,
-            "limits": self.limits == after.limits,
-            "checkout": self.checkout == after.checkout and after.checkout[1] == b"",
-        }
-def _source_admission(revision: str) -> bytes:
-    digest = hashlib.sha256()
-    launcher_digest = ""
-    for relative in SOURCES:
-        data = (ROOT / relative).read_bytes()
-        encoded = relative.encode()
-        digest.update(struct.pack("!I", len(encoded)) + encoded)
-        digest.update(struct.pack("!Q", len(data)) + hashlib.sha256(data).digest())
-        if ROOT / relative == LAUNCHER:
-            launcher_digest = hashlib.sha256(data).hexdigest()
-    value = {
-        "bootstrap_sha256": launcher_digest,
-        "revision": revision,
-        "source_set_sha256": digest.hexdigest(),
-        "version": "cogs.runtime-source-admission/mapping-v1",
+def _normalized_object(value: object, index: int) -> dict[str, object]:
+    keys = {"role", "sha256", "size_bytes", "soname", "needed"}
+    _require(type(value) is dict and set(value) == keys, "mapping object shape")
+    row = value
+    role = row["role"]
+    expected_role = "executable" if index == 0 else "loader" if index == 1 else "library"
+    _require(role == expected_role, "mapping role order")
+    _require(_digest(row["sha256"]), "mapping object digest")
+    size = row["size_bytes"]
+    _require(type(size) is int and 1 <= size <= MAX_OBJECT_SIZE, "mapping object size")
+    soname = row["soname"]
+    _require(soname is None or type(soname) is str and SONAME.fullmatch(soname) is not None, "mapping SONAME")
+    _require(role != "library" or type(soname) is str, "library provider")
+    needed = row["needed"]
+    _require(
+        type(needed) is list
+        and len(needed) <= MAX_OBJECTS
+        and all(type(name) is str and SONAME.fullmatch(name) is not None for name in needed),
+        "ordered needed",
+    )
+    _require(len(needed) == len(set(needed)), "duplicate needed")
+    return {
+        "needed": list(needed), "role": role, "sha256": row["sha256"],
+        "size": size, "soname": soname,
     }
-    return json.dumps(value, sort_keys=True, separators=(",", ":")).encode() + b"\n"
-def _child(admission_fd: int, root_fd: int, output_fd: int, error_fd: int,
-           release_fd: int, private_root: Path) -> None:
-    try:
-        _require(os.read(release_fd, 1) == b"R", "release gate")
-        os.close(release_fd)
-        libc = __import__("ctypes").CDLL(None, use_errno=True)
-        _require(libc.unshare(0x10000000 | 0x00020000) == 0, "namespace setup")
-        uid, gid = os.getuid(), os.getgid()
-        Path("/proc/self/setgroups").write_text("deny", encoding="ascii")
-        Path("/proc/self/uid_map").write_text(f"0 {uid} 1\n", encoding="ascii")
-        Path("/proc/self/gid_map").write_text(f"0 {gid} 1\n", encoding="ascii")
-        _require(libc.mount(None, b"/", None, 1 << 14 | 1 << 18, None) == 0, "private mounts")
-        source = os.fsencode(private_root)
-        _require(libc.mount(source, b"/run", None, 4096 | 16384, None) == 0, "preparation root")
-        for source_fd, target in ((admission_fd, 3), (root_fd, 4), (output_fd, 1), (error_fd, 2)):
-            os.dup2(source_fd, target, inheritable=True)
-        os.closerange(5, 65_536)
-        os.chdir(ROOT)
-        os.execve("/usr/bin/python3", ("/usr/bin/python3", "-I", "-B", os.fspath(LAUNCHER)), {})
-    except BaseException:
-        os._exit(125)
-
-def _wait(pid: int, pidfd: int, output_fd: int, error_fd: int) -> tuple[bytes, bytes, int]:
-    buffers = {output_fd: bytearray(), error_fd: bytearray()}
-    active = set(buffers)
-    deadline = time.monotonic() + 30
-    status = None
-    try:
-        while active or status is None:
-            remaining = deadline - time.monotonic()
-            _require(remaining > 0, "launcher deadline")
-            ready, _, _ = select.select(tuple(active), (), (), min(remaining, 0.05))
-            for descriptor in ready:
-                block = os.read(descriptor, _MAX_OUTPUT + 1 - len(buffers[descriptor]))
-                if block:
-                    buffers[descriptor] += block
-                    _require(len(buffers[descriptor]) <= _MAX_OUTPUT, "launcher output bound")
-                else:
-                    os.close(descriptor)
-                    active.remove(descriptor)
-            waited, observed = os.waitpid(pid, os.WNOHANG)
-            if waited == pid:
-                status = observed
-        return bytes(buffers[output_fd]), bytes(buffers[error_fd]), status
-    except BaseException:
-        signal.pidfd_send_signal(pidfd, signal.SIGKILL)
-        end = time.monotonic() + 5
-        while time.monotonic() < end:
-            waited, _ = os.waitpid(pid, os.WNOHANG)
-            if waited == pid:
-                break
-            time.sleep(0.01)
-        else:
-            raise QualificationError("launcher reap uncertainty")
-        for descriptor in active:
-            os.close(descriptor)
-        raise
-
-def _launch(revision: str, private_root: Path) -> Mapping[str, object]:
-    admission = _source_admission(revision)
-    admission_read, admission_write = os.pipe2(os.O_CLOEXEC)
-    output_read, output_write = os.pipe2(os.O_CLOEXEC)
-    error_read, error_write = os.pipe2(os.O_CLOEXEC)
-    release_read, release_write = os.pipe2(os.O_CLOEXEC)
-    source_root = os.open(ROOT, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
-    pid = os.fork()
-    if pid == 0:
-        for descriptor in (admission_write, output_read, error_read, release_write):
-            os.close(descriptor)
-        _child(admission_read, source_root, output_write, error_write, release_read, private_root)
-    try:
-        pidfd = os.pidfd_open(pid, 0)
-    except BaseException:
-        os.close(release_write)
-        deadline = time.monotonic() + 5
-        while os.waitpid(pid, os.WNOHANG)[0] != pid:
-            _require(time.monotonic() < deadline, "gated child reap")
-            time.sleep(0.01)
-        for descriptor in (admission_read, admission_write, source_root,
-                           output_read, output_write, error_read, error_write, release_read):
-            os.close(descriptor)
-        raise
-    for descriptor in (admission_read, source_root, output_write, error_write, release_read):
-        os.close(descriptor)
-    try:
-        _require(os.write(admission_write, admission) == len(admission), "admission write")
-        os.close(admission_write)
-        admission_write = -1
-        _require(os.write(release_write, b"R") == 1, "release write")
-        os.close(release_write)
-        release_write = -1
-        output, error, status = _wait(pid, pidfd, output_read, error_read)
-    finally:
-        for descriptor in (admission_write, release_write, pidfd):
-            if descriptor >= 0:
-                os.close(descriptor)
-    _require(os.waitstatus_to_exitcode(status) == 0 and error == b"", "production launcher")
-    value = json.loads(output)
-    canonical = json.dumps(value, sort_keys=True, separators=(",", ":")).encode() + b"\n"
-    _require(type(value) is dict and canonical == output, "production result framing")
-    return value
 
 
-def _digest(value: object) -> bool:
-    return type(value) is str and len(value) == 64 and set(value) <= set("0123456789abcdef")
-def qualify(result: Mapping[str, object], revision: str) -> list[dict[str, object]]:
-    fields = {"version", "source_revision", "source_set_sha256", "closure_sha256", "mapping_sha256", "mapping_objects",
-              "mapped_generations_exact", "mapping_stable", "helper_reaped", "descriptors_restored", "children_reaped"}
+def qualify(
+    result: Mapping[str, object], revision: str, source_set_sha256: str,
+) -> list[dict[str, object]]:
+    """Independently normalize and bind the closed production observation."""
+    fields = {
+        "version", "source_revision", "source_set_sha256", "closure_sha256",
+        "mapping_sha256", "objects", "mapped",
+        "mapped_generations_exact", "mapping_stable", "helper_reaped",
+        "descriptors_restored", "children_reaped",
+    }
     _require(type(result) is dict and set(result) == fields, "result shape")
-    identity = (result["version"], result["source_revision"])
-    _require(identity == ("cogs.runtime-mapping-qualification/v1", revision), "result source")
-    facts = ("mapped_generations_exact", "mapping_stable", "helper_reaped", "descriptors_restored", "children_reaped")
-    _require(all(result[name] is True for name in facts), "mapping observation")
-    _require(_digest(result["source_set_sha256"]), "source-set digest")
-    objects = result["mapping_objects"]
-    _require(type(objects) is list and 2 <= len(objects) <= 127, "mapping objects")
-    rows: list[dict[str, object]] = []
-    identities = set()
-    roles = []
-    for index, value in enumerate(objects):
-        _require(type(value) is dict and set(value) == {"role", "sha256", "size_bytes", "soname", "needed"}, "mapping object shape")
-        role, digest, size = value["role"], value["sha256"], value["size_bytes"]
-        _require(role in ("executable", "loader", "library") and _digest(digest), "mapping object identity")
-        _require(type(size) is int and 0 < size <= 536_870_912, "mapping object size")
-        _require(value["soname"] is None or type(value["soname"]) is str, "mapping soname")
-        needed = value["needed"]
-        _require(type(needed) is list and all(type(item) is str for item in needed), "mapping needed")
-        _require(digest not in identities, "mapping object duplicate")
-        identities.add(digest)
-        roles.append(role)
-        rows.append({"kind": "object", "id": f"python-object-{index}", **value})
-    _require(roles[:2] == ["executable", "loader"] and all(role == "library" for role in roles[2:]), "mapping role order")
-    mapping = result["mapping_sha256"]
-    closure = result["closure_sha256"]
-    _require(_digest(mapping) and _digest(closure), "mapping summary")
-    rows.append({"kind": "summary", "closure_sha256": closure, "mapping_sha256": mapping})
+    _require(
+        (result["version"], result["source_revision"], result["source_set_sha256"])
+        == (RESULT_VERSION, revision, source_set_sha256),
+        "result admission binding",
+    )
+    _require(_digest(source_set_sha256), "admitted source-set digest")
+    facts = (
+        "mapped_generations_exact", "mapping_stable", "helper_reaped",
+        "descriptors_restored", "children_reaped",
+    )
+    _require(all(result[name] is True for name in facts), "production observation")
+    objects = result["objects"]
+    _require(type(objects) is list and 2 <= len(objects) <= MAX_OBJECTS, "object count")
+    normalized = [_normalized_object(value, index) for index, value in enumerate(objects)]
+    identities = [(row["sha256"], row["size"]) for row in normalized]
+    _require(len(identities) == len(set(identities)), "duplicate object identity")
+    providers: dict[str, int] = {}
+    previous_library: tuple[bytes, str] | None = None
+    for index, row in enumerate(normalized):
+        soname = row["soname"]
+        if soname is not None:
+            providers[soname] = providers.get(soname, 0) + 1
+        if index >= 2:
+            order = (str(soname).encode("ascii"), str(row["sha256"]))
+            _require(previous_library is None or previous_library < order, "library order")
+            previous_library = order
+    needed = [name for row in normalized for name in row["needed"]]
+    _require(all(count == 1 for count in providers.values()), "duplicate provider")
+    _require(all(providers.get(str(name)) == 1 for name in needed), "needed provider")
+    required = set(needed)
+    _require(all(row["soname"] in required for row in normalized[2:]), "extra library")
+    mapped = [{"role": row["role"], "sha256": row["sha256"]} for row in normalized]
+    _require(result["mapped"] == mapped, "mapped sequence")
+    closure = hashlib.sha256(_canonical(normalized)).hexdigest()
+    digest_sequence = [[row["role"], row["sha256"]] for row in normalized]
+    mapping = hashlib.sha256(_canonical(digest_sequence)).hexdigest()
+    _require(result["closure_sha256"] == closure, "closure summary")
+    _require(result["mapping_sha256"] == mapping, "mapping summary")
+    rows = [{"kind": "object", "id": f"python-object-{index}", **dict(value)}
+            for index, value in enumerate(objects)]
+    rows.append({
+        "kind": "summary", "closure_sha256": closure,
+        "mapped_sequence": mapped, "mapping_sha256": mapping,
+    })
     return rows
-def _workflow_bound() -> int:
-    common = _load_common()
-    context = common.WorkflowContext.from_environ("A", __file__)
-    private_root = Path(f"/tmp/cogs-native-a-{os.getpid()}")
-    baseline = Snapshot.capture(private_root)
-    checks = dict.fromkeys(CHECKS, "fail")
+
+
+def _production_operation(session: object) -> Mapping[str, object]:
+    """W1 adapter point: common enters the held-byte, job-bound owner."""
+    return session.run_fixed_operation(OPERATION)  # type: ignore[no-any-return,attr-defined]
+
+
+def _workflow_bound(common: object | None = None) -> int:
+    common = _load_common() if common is None else common
+    session = common.NativeSession.begin("A", __file__)  # type: ignore[attr-defined]
     metadata: list[dict[str, object]] = []
-    failure: BaseException | None = None
+    primary: BaseException | None = None
     try:
-        private_root.mkdir(mode=0o700)
-        metadata = qualify(_launch(context.head_sha, private_root), context.head_sha)
-        private_root.rmdir()
+        metadata = qualify(
+            _production_operation(session), session.context.head_sha, session.source_set_sha256,
+        )
     except BaseException as error:
-        failure = error
-        if private_root.exists():
-            try:
-                private_root.rmdir()
-            except BaseException as cleanup_error:
-                failure = ExceptionGroup("Job A primary and cleanup", [error, cleanup_error])
-    try:
-        cleanup = baseline.compare(private_root)
-    except BaseException as error:
-        cleanup = dict.fromkeys(common.CLEANUP_KEYS, False)
-        failure = error if failure is None else ExceptionGroup("Job A observation", [failure, error])
-    if failure is None and all(cleanup.values()):
-        common.finalize_report(context, "pass", dict.fromkeys(CHECKS, "pass"), metadata, cleanup)
-        return 0
-    diagnostic = f"{type(failure).__name__}:{failure}".encode()[:common.REPORT_LIMIT]
-    common.finalize_report(context, "fail", checks, [], cleanup, "runtime_mappings", diagnostic)
-    return 1
-def _dispatch(arguments: list[str], workflow: object = _workflow_bound) -> int:
+        primary = error
+    evidence = session.settle_native_phase()
+    passing = primary is None and evidence.restored
+    checks = dict.fromkeys(CHECKS[:-1], "pass" if primary is None else "fail")
+    diagnostic = None if passing else (
+        f"{type(primary).__name__}:{primary}".encode()
+        if primary is not None else b"common baseline not restored"
+    )
+    if diagnostic is not None:
+        diagnostic = diagnostic[:common.REPORT_LIMIT]  # type: ignore[attr-defined]
+    candidate = common.ReportCandidate(  # type: ignore[attr-defined]
+        production_checks=checks, metadata=metadata if passing else [],
+        failure_phase=None if passing else "runtime_mappings",
+        diagnostics=diagnostic, primary_error=primary,
+    )
+    session.publish(candidate)
+    return 0 if passing else 1
+
+
+def _dispatch(arguments: list[str], workflow: Callable[[], int] = _workflow_bound) -> int:
     if not __debug__ or arguments != ["--workflow-bound"]:
         raise QualificationError("Job A requires the fixed workflow entry")
-    return workflow()  # type: ignore[operator]
+    return workflow()
 
 
 if __name__ == "__main__":
