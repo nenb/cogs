@@ -2071,7 +2071,7 @@ class PreparedRuntimeClosure:
             raise
 
 def _child_baseline(ops: _Ops) -> tuple[int, ...]:
-    return _parse_children(_read_proc(ops, '/proc/self/task/self/children', 65536))
+    return _parse_children(_read_proc(ops, '/proc/thread-self/children', 65536))
 
 def _descriptor_child_matches(ops: _Ops, child: _DescriptorChildLease) -> bool:
     registered = (

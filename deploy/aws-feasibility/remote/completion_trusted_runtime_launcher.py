@@ -3,7 +3,7 @@ from array import array
 from dataclasses import asdict, dataclass, field, fields, is_dataclass, make_dataclass
 from enum import Enum
 import ctypes, errno, fcntl, hashlib, json
-import os, re, select, signal, socket
+import os, re, resource, select, signal, socket
 import stat, struct, sys, time, types
 from typing import Any, NoReturn, Optional
 _VERSION = "cogs.trusted-runtime-closure/v1"
@@ -1893,7 +1893,7 @@ def _adopt_unregistered_children(
     baseline: tuple[int, ...],
     ops: Any,
 ) -> None:
-    path = "/proc/self/task/self/children"
+    path = "/proc/thread-self/children"
     first = _parse_children(_proc_bytes(path, 65536, ops))
     second = _parse_children(_proc_bytes(path, 65536, ops))
     _require(first == second, "adopted child census drift", "process-adoption")
@@ -2016,7 +2016,7 @@ def _settle_rejected_tool_transfer(
         raise RuntimeLauncherCleanupError(primary, failures) from primary
 
 def _run_tool_with_ops( ops: Any, role: str, report: dict[str, object], descriptors: tuple[int, ...], rows: tuple[_GenerationRow, ...], ) -> tuple[bytes, dict[str, object]]:
-    child_baseline = _parse_children(_proc_bytes("/proc/self/task/self/children", 65536, ops))
+    child_baseline = _parse_children(_proc_bytes("/proc/thread-self/children", 65536, ops))
     process_owner = _ProcessOwner(ops)
     root_owner = _RootOwner(ops)
     input_pair = output_pair = ()
@@ -2260,7 +2260,7 @@ def _recover_transaction_with_ops(ops: Any, process_owner: _ProcessOwner, fd_lea
     if failures: raise RuntimeLauncherCleanupError(primary, failures) from (primary or failures[0])
 def _coordinate_with_ops(admission: _SourceAdmission, closure_module: types.ModuleType, ops: Any) -> tuple[RuntimeQualificationResult, tuple[RuntimeCompressionToolObservation, RuntimeCompressionToolObservation], dict[str, object]]:
     fd_baseline = _descriptor_snapshot(ops)
-    child_baseline = _parse_children(_proc_bytes("/proc/self/task/self/children", 65536, ops))
+    child_baseline = _parse_children(_proc_bytes("/proc/thread-self/children", 65536, ops))
     root = f"{_ROOT_PARENT}/{_ROOT_LEAF}"
     mount_baseline = os.path.ismount(root)
     path_baseline = os.path.lexists(root)
@@ -2316,7 +2316,7 @@ def _coordinate_with_ops(admission: _SourceAdmission, closure_module: types.Modu
         except BaseException as error: failures.append(error)
     if failures: raise RuntimeLauncherCleanupError(primary, failures) from (primary or failures[0])
     try:
-        cleanup = { "children_reaped": _parse_children(_proc_bytes("/proc/self/task/self/children", 65536, ops)) == child_baseline, "descendants_reaped": not process_owner.processes and _descendant_census(os.getpid(), ops) == child_baseline, "descriptors_restored": _descriptor_snapshot(ops) == fd_baseline, "mounts_restored": os.path.ismount(root) == mount_baseline, "namespace_handles_released": not any(lease.namespace_handles for lease in process_owner.processes), "namespaces_released": not process_owner.processes, "paths_restored": os.path.lexists(root) == path_baseline, }
+        cleanup = { "children_reaped": _parse_children(_proc_bytes("/proc/thread-self/children", 65536, ops)) == child_baseline, "descendants_reaped": not process_owner.processes and _descendant_census(os.getpid(), ops) == child_baseline, "descriptors_restored": _descriptor_snapshot(ops) == fd_baseline, "mounts_restored": os.path.ismount(root) == mount_baseline, "namespace_handles_released": not any(lease.namespace_handles for lease in process_owner.processes), "namespaces_released": not process_owner.processes, "paths_restored": os.path.lexists(root) == path_baseline, }
     except BaseException as error:
         raise RuntimeLauncherCleanupError(primary, [error]) from (primary or error)
     cleanup_restored = all(type(value) is bool and value for value in cleanup.values())
@@ -3079,7 +3079,7 @@ def _sandbox_leader(
     os._exit(125)
 def _sandbox_only_transaction(ops: Any) -> dict[str, bool]:
     fd_baseline = _descriptor_snapshot(ops)
-    child_baseline = _parse_children(_proc_bytes("/proc/self/task/self/children", 65536, ops))
+    child_baseline = _parse_children(_proc_bytes("/proc/thread-self/children", 65536, ops))
     root_owner = _RootOwner(ops)
     process_owner = _ProcessOwner(ops)
     control_parent = control_child = None
@@ -3231,7 +3231,7 @@ def _sandbox_only_transaction(ops: Any) -> dict[str, bool]:
     )
     descriptors_restored = _descriptor_snapshot(ops) == fd_baseline
     children_reaped = _parse_children(
-        _proc_bytes("/proc/self/task/self/children", 65536, ops),
+        _proc_bytes("/proc/thread-self/children", 65536, ops),
     ) == child_baseline
     processes_retired = not process_owner.processes
     root_restored = root_owner.cleaned
@@ -3537,7 +3537,7 @@ def _lifecycle_leader(
     os._exit(125)
 
 def _stable_adoption(descendant: _ProcessLease, ops: Any) -> bool:
-    path = "/proc/self/task/self/children"
+    path = "/proc/thread-self/children"
     first = _parse_children(_proc_bytes(path, 65536, ops))
     start = _start_time(descendant.pid, ops)
     second = _parse_children(_proc_bytes(path, 65536, ops))
@@ -3567,7 +3567,7 @@ def _run_lifecycle_case(
     owner: _ProcessOwner,
 ) -> _LifecycleCaseObservation:
     child_baseline = _parse_children(
-        _proc_bytes("/proc/self/task/self/children", 65536, ops),
+        _proc_bytes("/proc/thread-self/children", 65536, ops),
     )
     control_parent = control_leader = None
     transfer_parent = transfer_leader = None
@@ -3697,7 +3697,7 @@ def _run_lifecycle_case(
 def _qualify_admitted_fixed_process_lifecycle(admission: _SourceAdmission, ops: Any) -> LifecycleQualificationResult:
     _consume_launcher_operation(admission, "lifecycle")
     baseline = _descriptor_snapshot(ops)
-    children = _parse_children(_proc_bytes("/proc/self/task/self/children", 65536, ops))
+    children = _parse_children(_proc_bytes("/proc/thread-self/children", 65536, ops))
     owner = _ProcessOwner(ops)
     original_subreaper = ctypes.c_int()
     observed_subreaper = ctypes.c_int(-1)
@@ -3742,7 +3742,7 @@ def _qualify_admitted_fixed_process_lifecycle(admission: _SourceAdmission, ops: 
     try:
         descriptors_exact = _descriptor_snapshot(ops) == baseline
         children_exact = _parse_children(
-            _proc_bytes("/proc/self/task/self/children", 65536, ops),
+            _proc_bytes("/proc/thread-self/children", 65536, ops),
         ) == children
         _require(descriptors_exact and children_exact, "lifecycle baseline restoration", "lifecycle-baseline")
     except BaseException as error:
