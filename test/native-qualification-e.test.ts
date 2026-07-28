@@ -97,9 +97,10 @@ module['_root_authority_action'].__globals__.update(module)
 module['os'].geteuid=lambda:0
 saved=dict(os.environ);os.environ.clear();os.environ['NQ_ROOT_AUTHORITY_SHA']='b'*40
 try:
- assert module['_root_authority_action'](['--provision-root-authority'])==0
- assert module['_root_authority_action'](['--cleanup-root-authority'])==0
- os.environ['EXTRA']='caller'
+ assert module['_root_authority_action'](['--provision-root-authority'])==0 and not os.environ
+ os.environ.update({'NQ_ROOT_AUTHORITY_SHA':'b'*40,'LC_CTYPE':'C.UTF-8'})
+ assert module['_root_authority_action'](['--cleanup-root-authority'])==0 and not os.environ
+ os.environ.update({'NQ_ROOT_AUTHORITY_SHA':'b'*40,'EXTRA':'caller'})
  try: module['_root_authority_action'](['--provision-root-authority'])
  except module['QualificationError']: pass
  else: raise AssertionError('ambient root authority accepted')

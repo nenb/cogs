@@ -243,8 +243,13 @@ def _root_authority_action(arguments: list[str]) -> int | None:
     }
     if len(arguments) != 1 or arguments[0] not in actions:
         return None
-    _require(__debug__ and os.geteuid() == 0 and set(os.environ) == ROOT_ENVIRONMENT, "fixed root authority entry")
-    actions[arguments[0]](os.environ["NQ_ROOT_AUTHORITY_SHA"])
+    environment = dict(os.environ)
+    if environment.get("LC_CTYPE") == "C.UTF-8":
+        del environment["LC_CTYPE"]
+    exact = __debug__ and os.geteuid() == 0 and set(environment) == ROOT_ENVIRONMENT
+    _require(exact, "fixed root authority entry")
+    os.environ.clear()
+    actions[arguments[0]](environment["NQ_ROOT_AUTHORITY_SHA"])
     return 0
 
 

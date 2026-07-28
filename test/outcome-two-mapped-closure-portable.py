@@ -121,13 +121,14 @@ class MapOps(closure._Ops):
             item = ("maps", raw)
         elif "/map_files/" in path:
             denied = {
-                "map-open-eacces", "map-open-eacces-source-drift",
+                "map-open-eperm", "map-open-eacces-source-drift",
                 "map-open-eacces-source-bytes",
             }
             if self.fault in denied and not self.fired:
                 self.fired = True
                 self.events.append(f"fault:{self.fault}")
-                raise PermissionError(13, "Permission denied", path)
+                number = 1 if self.fault == "map-open-eperm" else 13
+                raise PermissionError(number, "Permission denied", path)
             address = path.rsplit("/", 1)[1]
             address = "-".join(f"{int(value, 16):08x}" for value in address.split("-"))
             row = self.objects.get(address)
