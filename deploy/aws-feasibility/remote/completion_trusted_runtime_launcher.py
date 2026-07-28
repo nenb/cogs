@@ -8,6 +8,7 @@ import stat, struct, sys, time, types
 from typing import Any, NoReturn, Optional
 _VERSION = "cogs.trusted-runtime-closure/v1"
 _ADMISSION_VERSION = "cogs.runtime-source-admission/v1"
+_ADMISSION_MODES = {_ADMISSION_VERSION: "runtime", "cogs.runtime-source-admission/mapping-v1": "mapping", "cogs.runtime-source-admission/compression-v1": "compression"}
 _HANDOFF_VERSION = "cogs.runtime-handoff/v1"
 _RESULT_VERSION = "cogs.runtime-qualification/v1"
 _MARKER = "cogs-runtime-qualification-v1"
@@ -81,9 +82,7 @@ class _FdState(Enum):
     CLOSED = "CLOSED"
     TRANSFERRED = "TRANSFERRED"
     CLOSE_UNCERTAIN = "CLOSE_UNCERTAIN"
-@dataclass
-class _FdLease:
-    fd: int; purpose: str; state: _FdState = _FdState.OWNED; close_error: BaseException | None = None
+class _FdLease(make_dataclass("_FdLeaseData", [("fd", int), ("purpose", str), ("state", _FdState, field(default=_FdState.OWNED)), ("close_error", Optional[BaseException], field(default=None))])):
     def close(self, ops: object) -> None:
         if self.state is _FdState.CLOSED:
             return
@@ -119,13 +118,10 @@ def _close_leases(ops: object, leases: tuple[_FdLease, ...] | list[_FdLease], pr
         except BaseException as error:
             failures.append(error)
     if failures: raise RuntimeLauncherCleanupError(primary, failures) from (primary or failures[0])
-@dataclass
-class _SourceAdmission:
-    revision: str; bootstrap_sha256: str; source_set_sha256: str; _schema_bytes: bytes
-    _package: str; _worker_pid: int; _endpoint: socket.socket | None; _issuer: object
-    _consumer_pid: int; _consumer_uid: int; _consumer_gid: int; _claimed: bool = False
+class _SourceAdmission(make_dataclass("_SourceAdmissionData", [(name, kind) for name, kind in zip("revision bootstrap_sha256 source_set_sha256 _schema_bytes _package _worker_pid _endpoint _issuer _consumer_pid _consumer_uid _consumer_gid".split(), (str, str, str, bytes, str, int, Optional[socket.socket], object, int, int, int))] + [("_claimed", bool, field(default=False))])):
     def _consume_mapping(self, module: types.ModuleType) -> bool:
-        package = f"_cogs_o2_{self.source_set_sha256[:16]}"; name = f"{package}.completion_trusted_runtime_closure"
+        package = f"_cogs_o2_{self.source_set_sha256[:16]}"
+        name = f"{package}.completion_trusted_runtime_closure"
         exact = (not self._claimed and type(module) is types.ModuleType and module.__name__ == name
                  and module.__package__ == package and sys.modules.get(name) is module and module.__dict__.get("_ADMISSION_TYPE") is _SourceAdmission)
         if exact: self._claimed = True
@@ -255,7 +251,7 @@ def _validate_tracked_report(schema_bytes: bytes, report_bytes: bytes) -> None:
     report = _strict_json(report_bytes, True, _MAX_REPORT, "report")
     _apply_schema(schema, report, schema, "$", 0)
 def _consumer_reencode_report(value: object) -> bytes:
-    """Consumer-owned canonical re-encoder; it is not the producer codec."""
+    """Consumer-owned canonical re-encoder independent of the producer codec."""
     return _canonical(value, True)
 def _sha(value: object) -> bool:
     return type(value) is str and len(value) == 64 and all(character in "0123456789abcdef" for character in value)
@@ -551,17 +547,17 @@ def _verify_bundle(admission: _SourceAdmission, report_bytes: bytes, descriptors
             _inspect_fd(descriptors[row.descriptor_index], False, row.size, row.sha256)
             checked[row.descriptor_index] = expected
     return report, _digest([_binding_value(row) for row in rows]), _digest([_generation_value(row) for row in rows])
-def _runtime_metadata(report: dict[str, object], rows: tuple[_GenerationRow, ...], mapping_sha: tuple[str, str], outputs: tuple[bytes, bytes]) -> tuple[dict[str, object], dict[str, object], dict[str, object]]:
-    python = report["tools"][0]
-    python_mapping = {"closure_sha256": python["closure_sha256"], "mapping_sha256": python["mapping_sha256"], "objects": tuple({**item, "needed": tuple(item["needed"])} for item in python["objects"])}
+def _runtime_metadata(report: dict[str, object], rows: tuple[_GenerationRow, ...], mapping_sha: tuple[str, str], outputs: tuple[bytes, bytes]) -> tuple[dict[str, object], dict[str, object]]:
     compressed: list[dict[str, object]] = []
-    for index, observed_mapping, output in zip((2, 1), mapping_sha, outputs):
+    for name, index, observed_mapping, output in zip(("gzip", "zstd"), (2, 1), mapping_sha, outputs):
         source = tuple({key: item[key] for key in ("role", "sha256", "size")} for item in report["tools"][index]["objects"])
-        selected = tuple(row for row in rows if row.tool_index == index); sealed = tuple({"role": row.role, "sha256": row.sha256, "size": row.size, "seal_mask": _EXEC_SEALS} for row in selected)
-        _require(tuple((item["role"], item["sha256"], item["size"]) for item in source) == tuple((item["role"], item["sha256"], item["size"]) for item in sealed), "runtime metadata row binding", "runtime-metadata")
-        expected_mapping = report["tools"][index]["mapping_sha256"]; _require(observed_mapping == expected_mapping, "runtime metadata mapping observation", "runtime-metadata")
-        compressed.append({"execution_mapping_sha256": observed_mapping, "output_sha256": hashlib.sha256(output).hexdigest(), "seal_mask": _EXEC_SEALS, "sealed_objects": sealed, "source_objects": source})
-    return python_mapping, compressed[0], compressed[1]
+        sealed = tuple({"role": row.role, "sha256": row.sha256, "size": row.size} for row in rows if row.tool_index == index)
+        source_rows = tuple((item["role"], item["sha256"], item["size"]) for item in source)
+        sealed_rows = tuple((item["role"], item["sha256"], item["size"]) for item in sealed)
+        _require(source_rows == sealed_rows and source[0]["role"] == "executable", "runtime metadata row binding", "runtime-metadata")
+        _require(observed_mapping == report["tools"][index]["mapping_sha256"], "runtime metadata mapping observation", "runtime-metadata")
+        compressed.append({"id": name, "source_sha256": source[0]["sha256"], "source_size_bytes": source[0]["size"], "sealed_sha256": sealed[0]["sha256"], "sealed_size_bytes": sealed[0]["size"], "seal_mask": _EXEC_SEALS, "execution_mapping_sha256": observed_mapping, "output_sha256": hashlib.sha256(output).hexdigest()})
+    return compressed[0], compressed[1]
 class _WorkerIssuer:
     def __init__( self, endpoint: socket.socket, nonce: bytes, admission: _SourceAdmission, consumer_pid: int, package_name: str, helper_endpoint: socket.socket | None = None):
         self._endpoint = endpoint
@@ -655,15 +651,8 @@ class _WorkerIssuer:
         _require(self._endpoint.recv(1, socket.MSG_DONTWAIT) == b"", "second consumer packet", "issuer-second-packet")
         self._endpoint.shutdown(socket.SHUT_WR)
         return _IssuanceReceipt(_HANDOFF_VERSION, packet["report_sha256"], report["closure_sha256"], binding_sha, generation_sha, len(descriptors), os.getpid(), self._consumer_pid)
-@dataclass
-class _ProcessLease:
-    pid: int; pidfd: _FdLease | None; start_time: int = 0; session: int = 0; process_group: int = 0
-    executable: tuple[int, int] = (0, 0); release_gate: _FdLease | None = None; pending: tuple[_FdLease, ...] = ()
-    released: bool = False; reaped: bool = False; descendants: tuple["_ProcessLease", ...] = ()
-    namespace_handles: tuple[_FdLease, ...] = (); waitable: bool = True
-@dataclass
-class _ProcessOwner:
-    ops: Any; processes: list[_ProcessLease] = field(default_factory=list); poisoned: BaseException | None = None
+_ProcessLease = make_dataclass("_ProcessLease", [("pid", int), ("pidfd", Optional[_FdLease]), *((name, int, field(default=0)) for name in "start_time session process_group".split()), ("executable", tuple[int, int], field(default=(0, 0))), ("release_gate", Optional[_FdLease], field(default=None)), ("pending", tuple[_FdLease, ...], field(default=())), *((name, bool, field(default=False)) for name in "released reaped".split()), ("descendants", tuple, field(default=())), ("namespace_handles", tuple[_FdLease, ...], field(default=())), ("waitable", bool, field(default=True))], namespace={"__module__": __name__})
+class _ProcessOwner(make_dataclass("_ProcessOwnerData", [("ops", Any), ("processes", list[_ProcessLease], field(default_factory=list)), ("poisoned", Optional[BaseException], field(default=None))])):
     def register(self, pid: int, release_gate: _FdLease | None = None, pidfd_fd: int | None = None, waitable: bool = True) -> _ProcessLease:
         lease = _ProcessLease(pid, None, release_gate=release_gate, waitable=waitable)
         self.processes.append(lease)
@@ -981,10 +970,7 @@ def _mkdir_exact(path: str, mode: int) -> None:
     os.mkdir(path, mode)
     info = os.lstat(path)
     _require(stat.S_ISDIR(info.st_mode) and stat.S_IMODE(info.st_mode) == mode, "private root directory mismatch")
-@dataclass
-class _RootOwner:
-    ops: Any; parent: _FdLease | None = None; root: _FdLease | None = None
-    parent_identity: tuple[int, int] | None = None; identity: tuple[int, int] | None = None; create_intended: bool = False; cleaned: bool = False
+class _RootOwner(make_dataclass("_RootOwnerData", [("ops", Any), *((name, Optional[_FdLease], field(default=None)) for name in "parent root".split()), *((name, Optional[tuple[int, int]], field(default=None)) for name in "parent_identity identity".split()), *((name, bool, field(default=False)) for name in "create_intended cleaned".split())])):
     def prepare(self) -> str:
         try:
             flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
@@ -992,7 +978,8 @@ class _RootOwner:
             parent_info = os.fstat(self.parent.fd)
             _require(stat.S_ISDIR(parent_info.st_mode), "private root parent", "root-parent")
             self.parent_identity = (parent_info.st_dev, parent_info.st_ino)
-            try: os.stat(_ROOT_LEAF, dir_fd=self.parent.fd, follow_symlinks=False)
+            try:
+                os.stat(_ROOT_LEAF, dir_fd=self.parent.fd, follow_symlinks=False)
             except FileNotFoundError: pass
             else: raise RuntimeLauncherError("private root baseline", "root-baseline")
             self.create_intended = True
@@ -1017,7 +1004,8 @@ class _RootOwner:
             try:
                 parent = os.fstat(self.parent.fd)
                 _require((parent.st_dev, parent.st_ino) == self.parent_identity, "private root parent replacement", "root-parent-replaced")
-                try: info = os.stat(_ROOT_LEAF, dir_fd=self.parent.fd, follow_symlinks=False)
+                try:
+                    info = os.stat(_ROOT_LEAF, dir_fd=self.parent.fd, follow_symlinks=False)
                 except FileNotFoundError: info = None
                 if info is not None:
                     exact = self.identity is not None and (info.st_dev, info.st_ino) == self.identity
@@ -1075,7 +1063,8 @@ def _materialize_root(ops: Any, role: str, descriptors: tuple[int, ...], rows: t
 def _write_map(ops: Any, path: str, value: bytes) -> None:
     lease = _FdLease(ops.open(path, os.O_WRONLY | os.O_CLOEXEC | os.O_NOFOLLOW), f"map:{path}")
     primary: BaseException | None = None
-    try: _require(ops.write(lease.fd, value) == len(value), "namespace identity map short write", "map-short-write")
+    try:
+        _require(ops.write(lease.fd, value) == len(value), "namespace identity map short write", "map-short-write")
     except BaseException as error: primary = error
     try: lease.close(ops)
     except BaseException as error: raise RuntimeLauncherCleanupError(primary, [error]) from (primary or error)
@@ -1148,7 +1137,8 @@ def _namespace_owner(role: str, descriptors: tuple[int, ...], rows: tuple[_Gener
         original_uid, original_gid = os.getuid(), os.getgid()
         os.setgroups([])
         ops.unshare_boundary()
-        try: _write_map(ops, "/proc/self/setgroups", b"deny\n")
+        try:
+            _write_map(ops, "/proc/self/setgroups", b"deny\n")
         except FileNotFoundError: pass
         _write_map(ops, "/proc/self/uid_map", f"0 {original_uid} 1\n".encode())
         _write_map(ops, "/proc/self/gid_map", f"0 {original_gid} 1\n".encode())
@@ -1220,7 +1210,8 @@ def _namespace_owner(role: str, descriptors: tuple[int, ...], rows: tuple[_Gener
             try: exec_lease.close(ops)
             except BaseException as error: failures.append(error)
         if inherited:
-            try: _close_leases(ops, inherited, primary)
+            try:
+                _close_leases(ops, inherited, primary)
             except BaseException as error: failures.append(error)
         if "materialized-root" in mount_intents:
             try:
@@ -1448,10 +1439,11 @@ def _recv_status(endpoint: socket.socket, deadline: float, event: str = "", sequ
         raise RuntimeLauncherError(f"sandbox setup failed: {failure['kind']}", failure["code"])
     return _parse_sandbox_status(raw, event, sequence)
 def _run_tool_with_ops( ops: Any, role: str, report: dict[str, object], descriptors: tuple[int, ...], rows: tuple[_GenerationRow, ...], ) -> tuple[bytes, dict[str, object]]:
-    process_owner = _ProcessOwner(ops); root_owner = _RootOwner(ops)
-    input_pair: tuple[_FdLease, ...] = (); output_pair: tuple[_FdLease, ...] = ()
-    parent_status: socket.socket | None = None; child_status: socket.socket | None = None
-    namespace_lease: _ProcessLease | None = None; child_lease: _ProcessLease | None = None
+    process_owner = _ProcessOwner(ops)
+    root_owner = _RootOwner(ops)
+    input_pair = output_pair = ()
+    parent_status = child_status = None
+    namespace_lease = child_lease = None
     primary: BaseException | None = None
     result: tuple[bytes, dict[str, object]] | None = None
     try:
@@ -1495,7 +1487,7 @@ def _run_tool_with_ops( ops: Any, role: str, report: dict[str, object], descript
         _recv_status(parent_status, time.monotonic() + _SETUP_SECONDS, "exec-ready", 4)
         post_fds = _descriptor_snapshot(ops, child["pid"])
         _require(post_fds == (0, 1, 2), "post-exec descriptor table", "exec-fd-table")
-        post_maps = _final_mapping_check(ops, child["pid"], rows, role, report); post_maps, post_mapping = post_maps
+        post_maps, post_mapping = _final_mapping_check(ops, child["pid"], rows, role, report)
         _require(_descendant_census(namespace_lease.pid, ops) == (child["pid"],), "registered descendant census", "descendant-census")
         command = _status("finalize-root", 3)
         _require(parent_status.send(command) == len(command), "root finalization send", "root-finalize-send")
@@ -1504,7 +1496,7 @@ def _run_tool_with_ops( ops: Any, role: str, report: dict[str, object], descript
         namespace_facts = _namespace_facts(child["pid"], os.getuid(), os.getgid(), namespace_lease)
         final_fds = _descriptor_snapshot(ops, child["pid"])
         _require(final_fds == post_fds, "final descriptor drift", "final-fd-drift")
-        final_maps = _final_mapping_check(ops, child["pid"], rows, role, report); final_maps, final_mapping = final_maps
+        final_maps, final_mapping = _final_mapping_check(ops, child["pid"], rows, role, report)
         _require((final_maps, final_mapping) == (post_maps, post_mapping), "final mapping drift", "final-map-drift")
         limits_exact = _parse_limits(_proc_bytes(f"/proc/{child['pid']}/limits", 65536, ops)) == limits_baseline
         payload = _FIXED_INPUT[role]
@@ -1568,9 +1560,7 @@ def _run_tool_with_ops( ops: Any, role: str, report: dict[str, object], descript
     _require(result is not None, "tool result missing", "tool-result")
     result[1]["_execution_mapping_sha256"] = final_mapping
     return result
-@dataclass
-class _MappingAuthority:
-    helper: object | None = None; token: object = field(default_factory=object); released: bool = False; retired: bool = False
+class _MappingAuthority(make_dataclass("_MappingAuthorityData", [("helper", Optional[object], field(default=None)), ("token", object, field(default_factory=object)), ("released", bool, field(default=False)), ("retired", bool, field(default=False))])):
     def _register_runtime_helper(self, helper: object, deadline: float) -> object:
         identity = (getattr(helper, "pid", 0), getattr(helper, "start_time", None), getattr(helper, "session", None), getattr(helper, "process_group", None))
         _require(self.helper is None and deadline > 0 and all(type(value) is int and value > 0 for value in identity), "mapping helper registration", "mapping-helper-register")
@@ -1621,10 +1611,9 @@ def _coordinate_admitted_mapping_only(admission: _SourceAdmission, closure_modul
     objects = tuple(closure_module._object_report(value) for value in resolved.objects)
     sequence = tuple((value["role"], value["sha256"]) for value in objects)
     _require(mapped.tool == "python3-parser" and mapped.mapped == sequence, "mapping result binding", "mapping-result")
-    return {"version": _VERSION, "source_revision": admission.revision, "source_set_sha256": admission.source_set_sha256, "tool": "python3-parser", "objects": objects,
-            "closure_sha256": hashlib.sha256(closure_module._canonical(objects)).hexdigest(), "mapping_sha256": mapped.mapping_sha256,
-            "python_mapping": {"closure_sha256": hashlib.sha256(closure_module._canonical(objects)).hexdigest(), "mapping_sha256": mapped.mapping_sha256, "objects": objects},
-            "mapped_generations_exact": True, "mapping_stable": True, "helper_reaped": True, "descriptors_restored": True, "children_reaped": True}
+    mapping_objects = tuple({"role": value["role"], "sha256": value["sha256"], "size_bytes": value["size"], "soname": value["soname"], "needed": value["needed"]} for value in objects)
+    closure_sha = hashlib.sha256(closure_module._canonical(objects)).hexdigest()
+    return {"version": "cogs.runtime-mapping-qualification/v1", "source_revision": admission.revision, "source_set_sha256": admission.source_set_sha256, "closure_sha256": closure_sha, "mapping_sha256": mapped.mapping_sha256, "mapping_objects": mapping_objects, "mapped_generations_exact": True, "mapping_stable": True, "helper_reaped": True, "descriptors_restored": True, "children_reaped": True}
 def _worker_main(endpoint_fd: int, helper_fd: int, release_fd: int, nonce: bytes, admission: _SourceAdmission, closure_module: types.ModuleType, consumer_pid: int) -> NoReturn:
     ops = _SystemOps()
     release = _FdLease(release_fd, "worker-release-read")
@@ -1677,7 +1666,7 @@ def _recover_transaction_with_ops(ops: Any, process_owner: _ProcessOwner, fd_lea
     except BaseException as error:
         failures.append(error)
     if failures: raise RuntimeLauncherCleanupError(primary, failures) from (primary or failures[0])
-def _coordinate_with_ops(admission: _SourceAdmission, closure_module: types.ModuleType, ops: Any) -> RuntimeQualificationResult:
+def _coordinate_with_ops(admission: _SourceAdmission, closure_module: types.ModuleType, ops: Any) -> tuple[RuntimeQualificationResult, tuple[dict[str, object], dict[str, object]]]:
     fact_names = _OBSERVATION_NAMES
     fd_baseline = _descriptor_snapshot(ops)
     child_baseline = _parse_children(_proc_bytes("/proc/self/task/self/children", 65536, ops))
@@ -1686,12 +1675,14 @@ def _coordinate_with_ops(admission: _SourceAdmission, closure_module: types.Modu
     path_baseline = os.path.lexists(root)
     nonce = ops.nonce()
     process_owner = _ProcessOwner(ops)
-    parent_endpoint: socket.socket | None = None; worker_endpoint: socket.socket | None = None
-    helper_parent: socket.socket | None = None; helper_worker: socket.socket | None = None
-    descriptor_leases: list[_FdLease] = []; primary: BaseException | None = None
-    outputs: tuple[bytes, bytes] | None = None; observed_tools: tuple[dict[str, object], dict[str, object]] | None = None
-    receipt: _IssuanceReceipt | None = None; report: dict[str, object] | None = None
-    rows: tuple[_GenerationRow, ...] = (); execution_mappings: tuple[str, str] | None = None
+    parent_endpoint = worker_endpoint = None
+    helper_parent = helper_worker = None
+    descriptor_leases = []
+    primary = None
+    outputs = observed_tools = None
+    receipt = report = None
+    rows = ()
+    execution_mappings = None
     try:
         parent_endpoint, worker_endpoint = ops.socketpair()
         helper_parent, helper_worker = ops.socketpair()
@@ -1744,8 +1735,7 @@ def _coordinate_with_ops(admission: _SourceAdmission, closure_module: types.Modu
     result = RuntimeQualificationResult(_RESULT_VERSION, _MARKER, admission.revision, admission.source_set_sha256, receipt.closure_sha256,
         hashlib.sha256(outputs[0]).hexdigest(), hashlib.sha256(outputs[1]).hexdigest(), *(observed[name] for name in fact_names))
     metadata = _runtime_metadata(report, rows, execution_mappings, outputs)
-    for name, value in zip(("python_mapping", "gzip_runtime", "zstd_runtime"), metadata): object.__setattr__(result, name, value)
-    return result
+    return result, metadata
 def _open_beneath(root_fd: int, path: str) -> int:
     components = path.split("/")
     _require(bool(components) and not any(not item or item in (".", "..") for item in components), "fixed source path components")
@@ -1864,7 +1854,8 @@ def _bootstrap_with_ops(ops: _SystemOps) -> int:
         raw += part
     admission = _strict_json(bytes(raw), True, _MAX_ADMISSION, "source admission")
     expected = {"bootstrap_sha256", "revision", "source_set_sha256", "version"}
-    _require(type(admission) is dict and set(admission) == expected and admission["version"] == _ADMISSION_VERSION, "source admission shape")
+    mode = _ADMISSION_MODES.get(admission.get("version")) if type(admission) is dict else None
+    _require(type(admission) is dict and set(admission) == expected and mode is not None, "source admission shape")
     _require(_sha(admission["bootstrap_sha256"]) and _sha(admission["source_set_sha256"]), "source admission digest")
     revision = admission["revision"]
     valid_revision = type(revision) is str and len(revision) == 40 and all(character in "0123456789abcdef" for character in revision)
@@ -1879,8 +1870,14 @@ def _bootstrap_with_ops(ops: _SystemOps) -> int:
     sys.path[:] = []
     closure_module = _load_private_closure(sources, admission["source_set_sha256"])
     source_admission = _SourceAdmission(revision, admission["bootstrap_sha256"], admission["source_set_sha256"], sources[_SCHEMA_PATH], "", 0, None, None, 0, 0, 0)
-    result = _coordinate_with_ops(source_admission, closure_module, ops)
-    output = _canonical(result.__dict__, True)
+    if mode == "mapping":
+        value = _coordinate_admitted_mapping_only(source_admission, closure_module)
+    else:
+        result, metadata = _coordinate_with_ops(source_admission, closure_module, ops)
+        value = result.__dict__
+        if mode == "compression":
+            value = {**value, "compression_tools": metadata}
+    output = _canonical(value, True)
     offset = 0
     while offset < len(output):
         written = os.write(1, output[offset:])

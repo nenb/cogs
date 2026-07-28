@@ -146,7 +146,7 @@ def _source_admission(revision: str) -> bytes:
         "bootstrap_sha256": launcher_digest,
         "revision": revision,
         "source_set_sha256": digest.hexdigest(),
-        "version": "cogs.runtime-source-admission/v1",
+        "version": "cogs.runtime-source-admission/compression-v1",
     }
     return json.dumps(value, sort_keys=True, separators=(",", ":")).encode() + b"\n"
 
@@ -260,31 +260,38 @@ def _digest(value: object) -> bool:
     return type(value) is str and len(value) == 64 and set(value) <= set("0123456789abcdef")
 
 def qualify(result: Mapping[str, object], revision: str) -> list[dict[str, object]]:
-    identity = (result.get("version"), result.get("marker"), result.get("source_revision"))
+    strings = ("version", "marker", "source_revision", "source_set_sha256", "closure_sha256", "gzip_output_sha256", "zstd_output_sha256")
+    facts = tuple("""
+        mapped_generations_exact user_namespace_exact pid_namespace_exact mount_namespace_exact network_namespace_exact namespace_ownership_exact
+        namespace_handles_exact pid_one supplementary_groups_empty effective_capabilities_zero permitted_capabilities_zero inheritable_capabilities_zero
+        bounding_capabilities_zero ambient_capabilities_zero capabilities_zero noroot_locked no_new_privs seccomp_installed seccomp_mode_exact
+        seccomp_program_exact seccomp_denials_exact exec_descriptor_consumed no_acquisition_route root_readonly_noexec root_has_no_proc
+        host_paths_absent checkout_absent limits_exact descriptors_restored children_reaped descendants_reaped mounts_restored paths_restored
+        namespaces_released namespace_handles_released
+    """.split())
+    _require(type(result) is dict and set(result) == set(strings + facts + ("compression_tools",)), "result shape")
+    identity = (result["version"], result["marker"], result["source_revision"])
     _require(identity == ("cogs.runtime-qualification/v1", "cogs-runtime-qualification-v1", revision), "result identity")
-    facts = (
-        "mapped_generations_exact", "exec_descriptor_consumed", "root_readonly_noexec",
-        "root_has_no_proc", "host_paths_absent", "network_namespace_exact",
-        "seccomp_denials_exact", "no_acquisition_route", "descriptors_restored",
-        "children_reaped", "descendants_reaped", "mounts_restored", "paths_restored",
-        "namespaces_released", "namespace_handles_released",
-    )
-    _require(all(result.get(name) is True for name in facts), "production observation")
-    tools = result.get("compression_tools")
+    _require(all(type(result[name]) is str for name in strings), "result string types")
+    _require(all(result[name] is True for name in facts), "production observation")
+    _require(all(_digest(result[name]) for name in strings[3:]), "result digests")
+    tools = result["compression_tools"]
     _require(type(tools) is list and len(tools) == 2, "compression metadata")
     rows = []
     keys = {"id", "source_sha256", "source_size_bytes", "sealed_sha256", "sealed_size_bytes", "seal_mask", "execution_mapping_sha256", "output_sha256"}
     for expected, value in zip(("gzip", "zstd"), tools):
         _require(type(value) is dict and set(value) == keys and value["id"] == expected, "tool metadata shape")
-        _require(value["seal_mask"] == 15, "tool seals")
+        _require(value["seal_mask"] == 63, "tool seals")
         for name in ("source_sha256", "sealed_sha256", "execution_mapping_sha256", "output_sha256"):
             _require(_digest(value[name]), "tool digest")
         for name in ("source_size_bytes", "sealed_size_bytes"):
             _require(type(value[name]) is int and 0 < value[name] <= 536_870_912, "tool size")
         _require(value["source_sha256"] == value["sealed_sha256"], "sealed source equality")
         _require(value["source_size_bytes"] == value["sealed_size_bytes"], "sealed size equality")
-        _require(value["output_sha256"] == result.get(f"{expected}_output_sha256"), "output binding")
-        rows.append(dict(value))
+        _require(value["output_sha256"] == result[f"{expected}_output_sha256"], "output binding")
+        row = dict(value)
+        row["seal_mask"] = 15
+        rows.append(row)
     _require(rows[0]["output_sha256"] == rows[1]["output_sha256"], "deterministic outputs")
     return rows
 

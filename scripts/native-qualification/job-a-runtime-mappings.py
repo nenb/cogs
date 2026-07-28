@@ -6,7 +6,6 @@ from dataclasses import dataclass
 import hashlib, json, os, resource, select, signal, struct, sys, time
 from pathlib import Path
 from typing import Mapping
-
 ROOT = Path(__file__).resolve().parents[2]
 LAUNCHER = ROOT / "deploy/aws-feasibility/remote/completion_trusted_runtime_launcher.py"
 SOURCES = (
@@ -21,14 +20,11 @@ CHECKS = (
     "cleanup_restored",
 )
 _MAX_OUTPUT = 32_768
-
 class QualificationError(RuntimeError):
     """The fixed Job A transaction did not prove its claim."""
-
 def _require(condition: bool, message: str) -> None:
     if not condition:
         raise QualificationError(message)
-
 def _load_common() -> object:
     sys.path.insert(0, os.fspath(Path(__file__).resolve().parent))
     try:
@@ -76,7 +72,6 @@ def _namespaces() -> tuple[tuple[str, int, int], ...]:
         for name in ("user", "pid", "mnt", "net")
         for value in (os.stat(f"/proc/self/ns/{name}"),)
     )
-
 @dataclass(frozen=True)
 class Snapshot:
     descriptors: tuple[tuple[int, int, int], ...]
@@ -107,7 +102,6 @@ class Snapshot:
             "limits": self.limits == after.limits,
             "checkout": self.checkout == after.checkout and after.checkout[1] == b"",
         }
-
 def _source_admission(revision: str) -> bytes:
     digest = hashlib.sha256()
     launcher_digest = ""
@@ -122,10 +116,9 @@ def _source_admission(revision: str) -> bytes:
         "bootstrap_sha256": launcher_digest,
         "revision": revision,
         "source_set_sha256": digest.hexdigest(),
-        "version": "cogs.runtime-source-admission/v1",
+        "version": "cogs.runtime-source-admission/mapping-v1",
     }
     return json.dumps(value, sort_keys=True, separators=(",", ":")).encode() + b"\n"
-
 def _child(admission_fd: int, root_fd: int, output_fd: int, error_fd: int,
            release_fd: int, private_root: Path) -> None:
     try:
@@ -232,14 +225,19 @@ def _launch(revision: str, private_root: Path) -> Mapping[str, object]:
 def _digest(value: object) -> bool:
     return type(value) is str and len(value) == 64 and set(value) <= set("0123456789abcdef")
 def qualify(result: Mapping[str, object], revision: str) -> list[dict[str, object]]:
-    _require(type(result) is dict and result.get("version") == "cogs.runtime-qualification/v1", "result shape")
-    _require(result.get("source_revision") == revision, "result source")
-    _require(result.get("mapped_generations_exact") is True, "mapping observation")
-    _require(result.get("children_reaped") is True and result.get("descendants_reaped") is True, "helper cleanup")
-    objects = result.get("mapping_objects")
+    fields = {"version", "source_revision", "source_set_sha256", "closure_sha256", "mapping_sha256", "mapping_objects",
+              "mapped_generations_exact", "mapping_stable", "helper_reaped", "descriptors_restored", "children_reaped"}
+    _require(type(result) is dict and set(result) == fields, "result shape")
+    identity = (result["version"], result["source_revision"])
+    _require(identity == ("cogs.runtime-mapping-qualification/v1", revision), "result source")
+    facts = ("mapped_generations_exact", "mapping_stable", "helper_reaped", "descriptors_restored", "children_reaped")
+    _require(all(result[name] is True for name in facts), "mapping observation")
+    _require(_digest(result["source_set_sha256"]), "source-set digest")
+    objects = result["mapping_objects"]
     _require(type(objects) is list and 2 <= len(objects) <= 127, "mapping objects")
     rows: list[dict[str, object]] = []
     identities = set()
+    roles = []
     for index, value in enumerate(objects):
         _require(type(value) is dict and set(value) == {"role", "sha256", "size_bytes", "soname", "needed"}, "mapping object shape")
         role, digest, size = value["role"], value["sha256"], value["size_bytes"]
@@ -250,9 +248,11 @@ def qualify(result: Mapping[str, object], revision: str) -> list[dict[str, objec
         _require(type(needed) is list and all(type(item) is str for item in needed), "mapping needed")
         _require(digest not in identities, "mapping object duplicate")
         identities.add(digest)
+        roles.append(role)
         rows.append({"kind": "object", "id": f"python-object-{index}", **value})
-    mapping = result.get("mapping_sha256")
-    closure = result.get("closure_sha256")
+    _require(roles[:2] == ["executable", "loader"] and all(role == "library" for role in roles[2:]), "mapping role order")
+    mapping = result["mapping_sha256"]
+    closure = result["closure_sha256"]
     _require(_digest(mapping) and _digest(closure), "mapping summary")
     rows.append({"kind": "summary", "closure_sha256": closure, "mapping_sha256": mapping})
     return rows

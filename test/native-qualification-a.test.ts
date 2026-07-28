@@ -32,18 +32,17 @@ test("Job A portable oracle requires production mapping observations", () => {
   const result = portable(`
 revision = '1' * 40
 value = {
- 'version':'cogs.runtime-qualification/v1', 'marker':'cogs-runtime-qualification-v1',
+ 'version':'cogs.runtime-mapping-qualification/v1',
  'source_revision':revision, 'source_set_sha256':'2'*64, 'closure_sha256':'3'*64,
- 'gzip_output_sha256':'4'*64, 'zstd_output_sha256':'4'*64,
- 'mapped_generations_exact':True, 'children_reaped':True, 'descendants_reaped':True,
- 'mapping_sha256':'5'*64,
+ 'mapped_generations_exact':True, 'mapping_stable':True, 'helper_reaped':True,
+ 'descriptors_restored':True, 'children_reaped':True, 'mapping_sha256':'5'*64,
  'mapping_objects':[
   {'role':'executable','sha256':'6'*64,'size_bytes':10,'soname':None,'needed':['libc.so.6']},
   {'role':'loader','sha256':'7'*64,'size_bytes':11,'soname':'ld.so.2','needed':[]},
  ],
 }
 assert len(ns['qualify'](value, revision)) == 3
-for name in ('mapped_generations_exact','children_reaped','descendants_reaped'):
+for name in ('mapped_generations_exact','mapping_stable','helper_reaped','descriptors_restored','children_reaped'):
  bad=dict(value); bad[name]=False
  try: ns['qualify'](bad, revision)
  except ns['QualificationError']: pass
@@ -75,6 +74,7 @@ test("Job A invokes admitted production mapping facts and measures cleanup", () 
   assert.ok(source.trimEnd().split("\n").length <= 300);
   assert.match(source, /completion_trusted_runtime_launcher\.py/u);
   assert.match(source, /_source_admission\(revision\)/u);
+  assert.match(source, /cogs\.runtime-source-admission\/mapping-v1/u);
   assert.match(source, /os\.pidfd_open\(pid, 0\)[\s\S]*os\.write\(release_write, b"R"\)/u);
   assert.match(source, /mapped_generations_exact/u);
   assert.match(source, /Snapshot\.capture\(private_root\)/u);
@@ -83,7 +83,7 @@ test("Job A invokes admitted production mapping facts and measures cleanup", () 
   assert.match(source, /common\.finalize_report\(context, "pass"/u);
   assert.doesNotMatch(source, /_resolve_tool|_spawn_helper|_mapped_closure|_stop_helper/u);
   assert.doesNotMatch(source, /dict\.fromkeys\(common\.CLEANUP_KEYS, True\)/u);
-  assert.doesNotMatch(source, /--native-fixed|--self-test|--fixture|--path|--tool/u);
+  assert.doesNotMatch(source, /python_mapping|--native-fixed|--self-test|--fixture|--path|--tool/u);
 });
 
 test("Job A uses the tracked common API shape", () => {

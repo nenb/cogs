@@ -8,13 +8,16 @@ const root = process.cwd();
 const script = join(root, "scripts/native-qualification/job-b-compression.py");
 const common = join(root, "scripts/native-qualification/common.py");
 const source = readFileSync(script, "utf8");
-const facts = [
-  "mapped_generations_exact", "exec_descriptor_consumed", "root_readonly_noexec",
-  "root_has_no_proc", "host_paths_absent", "network_namespace_exact",
-  "seccomp_denials_exact", "no_acquisition_route", "descriptors_restored",
-  "children_reaped", "descendants_reaped", "mounts_restored", "paths_restored",
-  "namespaces_released", "namespace_handles_released",
-];
+const facts = `
+  mapped_generations_exact user_namespace_exact pid_namespace_exact mount_namespace_exact network_namespace_exact namespace_ownership_exact
+  namespace_handles_exact pid_one supplementary_groups_empty effective_capabilities_zero permitted_capabilities_zero inheritable_capabilities_zero
+  bounding_capabilities_zero ambient_capabilities_zero capabilities_zero noroot_locked no_new_privs seccomp_installed seccomp_mode_exact
+  seccomp_program_exact seccomp_denials_exact exec_descriptor_consumed no_acquisition_route root_readonly_noexec root_has_no_proc
+  host_paths_absent checkout_absent limits_exact descriptors_restored children_reaped descendants_reaped mounts_restored paths_restored
+  namespaces_released namespace_handles_released
+`
+  .trim()
+  .split(/\s+/u);
 
 function portable(program: string) {
   const harness = `
@@ -28,7 +31,10 @@ ns = runpy.run_path(path)
 ${program}
 `;
   return spawnSync("/usr/bin/python3", ["-I", "-B", "-c", harness, script, common], {
-    cwd: root, env: { PYTHONDONTWRITEBYTECODE: "1" }, encoding: "utf8", timeout: 5_000,
+    cwd: root,
+    env: { PYTHONDONTWRITEBYTECODE: "1" },
+    encoding: "utf8",
+    timeout: 5_000,
   });
 }
 
@@ -42,10 +48,11 @@ value.update(version='cogs.runtime-qualification/v1', marker='cogs-runtime-quali
  gzip_output_sha256='4'*64, zstd_output_sha256='4'*64,
  compression_tools=[
   {'id':name, 'source_sha256':digest, 'source_size_bytes':10,
-   'sealed_sha256':digest, 'sealed_size_bytes':10, 'seal_mask':15,
+   'sealed_sha256':digest, 'sealed_size_bytes':10, 'seal_mask':63,
    'execution_mapping_sha256':mapping, 'output_sha256':'4'*64}
   for name,digest,mapping in (('gzip','5'*64,'6'*64),('zstd','7'*64,'8'*64))])
-assert len(ns['qualify'](value, revision)) == 2
+rows=ns['qualify'](value, revision)
+assert len(rows) == 2 and all(row['seal_mask'] == 15 for row in rows)
 for name in names:
  bad=dict(value); bad[name]=False
  try: ns['qualify'](bad, revision)
@@ -78,6 +85,7 @@ test("Job B supplies compatible fixed T0 source/root authority to production", (
   assert.ok(source.trimEnd().split("\n").length <= 350);
   assert.match(source, /completion_trusted_runtime_launcher\.py/u);
   assert.match(source, /_source_admission\(revision\)/u);
+  assert.match(source, /cogs\.runtime-source-admission\/compression-v1/u);
   assert.match(source, /libc\.unshare\(0x10000000 \| 0x00020000\)/u);
   assert.match(source, /libc\.mount\(source, b"\/run"/u);
   assert.match(source, /os\.pidfd_open\(pid, 0\)[\s\S]*os\.write\(release_write, b"R"\)/u);

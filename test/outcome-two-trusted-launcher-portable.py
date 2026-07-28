@@ -114,13 +114,11 @@ def dirents(values):
 
 class PrimitiveTrace:
     """Records only a selected primitive invocation made by production."""
-
     def __init__(self, module, row):
         self.module = module
         self.fault = row["primitive_fault"]
         self.events = []
         self.fired = False
-
     def mutation(self, method):
         if self.fired or method != self.fault["method"]:
             return None
@@ -128,7 +126,6 @@ class PrimitiveTrace:
         mutation = self.fault["mutation"]
         self.events.append(f"ops.{method}:{mutation}")
         return mutation
-
     def unavailable(self, primitive, saved):
         ctypes.set_errno(saved)
         return self.module._SystemOps._checked(self, -1, primitive)
@@ -140,24 +137,20 @@ class BootstrapOps(PrimitiveTrace):
         self.next_fd = 500
         self.opened = set()
         self.read_count = 0
-
     def open(self, path, flags, mode=0o600):
         del path, flags, mode
         fd = self.next_fd
         self.next_fd += 1
         self.opened.add(fd)
         return fd
-
     def close(self, fd):
         self.opened.discard(fd)
-
     def getdents(self, fd, maximum=32768):
         del maximum
         self.read_count += 1
         if self.read_count > 1:
             return b""
         return dirents((0, 1, 2, 3, 4, fd))
-
     def held_sources(self, root_fd):
         del root_fd
         mutation = self.mutation("held_sources")
@@ -169,7 +162,6 @@ class BootstrapOps(PrimitiveTrace):
             launcher = self.module._MODULE_PATHS[2]
             sources[launcher] += b"\n"
         return sources
-
     def git_tree(self, root_fd, revision):
         del root_fd, revision
         result = {}
@@ -185,12 +177,10 @@ class IssuanceOps(PrimitiveTrace):
         super().__init__(module, row)
         self.received = set()
         self.closed = set()
-
     def close(self, fd):
         os.close(fd)
         self.received.discard(fd)
         self.closed.add(fd)
-
     def duplicate_rights(self):
         descriptors = []
         for _index in range(2):
@@ -209,10 +199,8 @@ class IssuanceOps(PrimitiveTrace):
 class IssuanceEndpoint:
     def __init__(self, ops):
         self.ops = ops
-
     def fileno(self):
         return 1
-
     def sendmsg(self, parts, ancillary, flags=0):
         del ancillary, flags
         if self.ops.mutation("recvmsg") == "duplicate-rights":
@@ -220,24 +208,19 @@ class IssuanceEndpoint:
                 "handoff rights cardinality", "issuer-rights-cardinality"
             )
         return len(parts[0])
-
     def recvmsg(self, *arguments):
         del arguments
         mutation = self.ops.mutation("recvmsg")
         if mutation != "duplicate-rights":
             raise AssertionError("unexpected issuance mutation")
         return b"", self.ops.duplicate_rights(), 0, None
-
     def send(self, data):
         return len(data)
-
     def recv(self, size):
         del size
         return b""
-
     def shutdown(self, direction):
         del direction
-
     def getsockopt(self, level, kind, size):
         del level, kind, size
         return struct.pack("3i", os.getpid(), os.getuid(), os.getgid())
@@ -247,7 +230,6 @@ class BoundaryOps(PrimitiveTrace):
     def chroot(self, root):
         if root != b"/modeled-root":
             raise AssertionError("boundary root drift")
-
     def prctl(self, option, value=0, arg3=0):
         del value, arg3
         if option == self.module._PR_GET_SECUREBITS:
@@ -255,13 +237,10 @@ class BoundaryOps(PrimitiveTrace):
         if option == self.module._PR_GET_NO_NEW_PRIVS:
             return 1
         return 0
-
     def drop_bounding(self):
         return None
-
     def capset_zero(self):
         return None
-
     def capability_observations(self):
         return {
             "effective": 0,
@@ -271,13 +250,10 @@ class BoundaryOps(PrimitiveTrace):
             "ambient": (),
             "groups": (),
         }
-
     def install_seccomp(self):
         return self.module._seccomp_digest()
-
     def seccomp_mode(self):
         return self.module._SECCOMP_MODE_FILTER
-
     def probe_seccomp_denials(self):
         mutation = self.mutation("probe_seccomp_denials")
         values = {
@@ -296,13 +272,11 @@ class DescriptorOps(PrimitiveTrace):
         super().__init__(module, row)
         self.fd = os.open(os.devnull, os.O_RDONLY)
         self.reads = 0
-
     def open(self, path, flags, mode=0o600):
         del flags, mode
         if path != "/proc/self/fd":
             raise AssertionError("descriptor path drift")
         return self.fd
-
     def getdents(self, fd, maximum=32768):
         del maximum
         if fd != self.fd:
@@ -316,7 +290,6 @@ class DescriptorOps(PrimitiveTrace):
         if mutation == "missing-enumerator":
             return dirents((0, 1, 2))
         raise AssertionError("unexpected getdents mutation")
-
     def close(self, fd):
         os.close(fd)
 
@@ -325,17 +298,14 @@ class RootOps(PrimitiveTrace):
     def __init__(self, module, row, parent):
         super().__init__(module, row)
         self.parent = parent
-
     def open(self, path, flags, mode=0o600):
         fd = os.open(path, flags, mode)
         mutation = self.mutation("open")
         if mutation == "create-root-after-open":
             os.mkdir(Path(self.parent) / self.module._ROOT_LEAF, 0o700)
         return fd
-
     def close(self, fd):
         os.close(fd)
-
     def mount(self, source, target, kind, flags, data):
         del source, target, kind, flags, data
         mutation = self.mutation("mount")
@@ -441,8 +411,11 @@ def valid_bundle(module, directory):
     metadata = module._runtime_metadata(
         report, tuple(rows), (tools[2]["mapping_sha256"], tools[1]["mapping_sha256"]), (b"gzip-output", b"zstd-output"),
     )
-    if metadata[0]["objects"][0]["role"] != "executable" or any(value["seal_mask"] != module._EXEC_SEALS for runtime in metadata[1:] for value in runtime["sealed_objects"]):
-        raise AssertionError("admitted A/B metadata binding")
+    compression_tools = metadata
+    if tuple(value["id"] for value in compression_tools) != ("gzip", "zstd"):
+        raise AssertionError("admitted compression order")
+    if any(value["seal_mask"] != module._EXEC_SEALS or value["source_sha256"] != value["sealed_sha256"] for value in compression_tools):
+        raise AssertionError("admitted compression metadata binding")
     if any(name in repr(metadata) for name in ("descriptor_index", "source_generation", "logical_path", "held_fd")):
         raise AssertionError("private authority escaped A/B metadata")
     return report_bytes, descriptors, tuple(rows)
@@ -470,11 +443,9 @@ def invoke_bootstrap(module, row, created):
         "st_uid": os.geteuid(),
         "st_gid": 0,
     })()
-
     def read(fd, size):
         del size
         return reads.pop(fd, b"")
-
     def platform_gate():
         return None
 
@@ -651,12 +622,10 @@ def mapping_only_coordinator(module):
         "size": value.size, "soname": None,
     }
     resolved = SimpleNamespace(objects=(source,))
-
     def resolve(ops, tool, path):
         del ops
         events.append(("resolve", tool, path))
         return resolved
-
     def spawn(ops, preparation, value):
         del ops, value
         helper = SimpleNamespace(
@@ -668,7 +637,6 @@ def mapping_only_coordinator(module):
         preparation.helpers.append(helper)
         events.append("spawn")
         return helper
-
     def mapped(ops, helper, value):
         del ops, helper
         sequence = tuple((item.role, item.sha256) for item in value.objects)
@@ -677,7 +645,6 @@ def mapping_only_coordinator(module):
             tool="python3-parser", mapped=sequence,
             mapping_sha256=hashlib.sha256(module._canonical(sequence)).hexdigest(),
         )
-
     def stop(ops, preparation, helper):
         del ops
         helper.reaped = True
@@ -697,7 +664,15 @@ def mapping_only_coordinator(module):
     )
     try:
         result = module._coordinate_admitted_mapping_only(admission, closure)
-        if result["tool"] != "python3-parser" or result["objects"][0]["sha256"] != source.sha256 or result["python_mapping"]["mapping_sha256"] != result["mapping_sha256"]:
+        expected_fields = {
+            "version", "source_revision", "source_set_sha256", "closure_sha256",
+            "mapping_sha256", "mapping_objects", "mapped_generations_exact",
+            "mapping_stable", "helper_reaped", "descriptors_restored",
+            "children_reaped",
+        }
+        if set(result) != expected_fields or result["version"] != "cogs.runtime-mapping-qualification/v1":
+            raise AssertionError("mapping-only result shape")
+        if result["mapping_objects"][0]["sha256"] != source.sha256:
             raise AssertionError("mapping-only typed result")
         if not all(result[name] is True for name in (
             "mapped_generations_exact", "mapping_stable", "helper_reaped",
@@ -723,6 +698,22 @@ def mapping_only_coordinator(module):
             raise AssertionError("mapping replay reached an effect")
     finally:
         sys.modules.pop(name, None)
+
+
+def fixed_bootstrap_modes(module):
+    values = [module._RESULT_VERSION, module._MARKER, "0" * 40, "1" * 64, "2" * 64, "3" * 64, "3" * 64]
+    values.extend(True for _name in module._OBSERVATION_NAMES)
+    ordinary = module.RuntimeQualificationResult(*values)
+    if set(ordinary.__dict__) != set(ordinary.__dataclass_fields__):
+        raise AssertionError("ordinary result gained dynamic fields")
+    if any(hasattr(ordinary, name) for name in ("python_mapping", "gzip_runtime", "zstd_runtime", "compression_tools")):
+        raise AssertionError("ordinary result exposes mode metadata")
+    if module._ADMISSION_MODES != {
+        "cogs.runtime-source-admission/v1": "runtime",
+        "cogs.runtime-source-admission/mapping-v1": "mapping",
+        "cogs.runtime-source-admission/compression-v1": "compression",
+    }:
+        raise AssertionError("fixed bootstrap modes drift")
 
 
 def sticky_root_replacement(module):
@@ -771,9 +762,12 @@ def parent():
     launcher_source = MODULE.read_text()
     authenticate = launcher_source.index("sources = _authenticate_sources(4, admission)")
     owner_policy = launcher_source.index("root.st_uid == os.geteuid()")
-    if authenticate > owner_policy or "st_uid == 0" in launcher_source or 'zip(("python_mapping", "gzip_runtime", "zstd_runtime"), metadata)' not in launcher_source:
+    if authenticate > owner_policy or "st_uid == 0" in launcher_source:
         raise AssertionError("runner checkout ownership policy/order drift")
+    if "object.__setattr__(result" in launcher_source or 'if mode == "mapping"' not in launcher_source or 'if mode == "compression"' not in launcher_source:
+        raise AssertionError("fixed admitted mode routing drift")
     mapping_only_coordinator(module)
+    fixed_bootstrap_modes(module)
     sticky_root_replacement(module)
     rows = fixture_rows(module)
     selected = {row["id"] for row in rows}
