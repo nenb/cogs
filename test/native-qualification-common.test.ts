@@ -463,7 +463,7 @@ test("parsed workflow gives only an explicit exact-SHA dispatch native authority
   assert.equal(authority.if, expectedAuthority);
   assert.equal(authority.steps.some((step) => step.uses?.startsWith("actions/checkout@")), false,
     "event-selected code cannot decide native authority");
-  assert.equal(authority.outputs?.["reviewed_sha"], "${{ steps.authority.outputs.reviewed_sha }}");
+  assert.equal(authority.outputs?.reviewed_sha, "${{ steps.authority.outputs.reviewed_sha }}");
   const authorityStep = stepById(authority, "authority");
   assert.equal(authorityStep.env?.REVIEWED_SHA, "${{ inputs.reviewed_sha }}");
   assert.equal(authorityStep.env?.AUTHORIZED_ACTOR, "${{ vars.NATIVE_QUALIFICATION_ACTOR }}");

@@ -83,10 +83,7 @@ test("D-R2.2c exposes only fixed recover-owned and keeps bootstrap private", asy
   const nativeVerification = native.indexOf("- name: Verify exact reviewed commit");
   const c1 = native.indexOf("- name: Invoke workflow-bound native C1 gate");
   assert.ok(nativeCheckout >= 0 && nativeVerification > nativeCheckout && c1 > nativeVerification);
-  assert.match(
-    native,
-    /^ {10}ref: \$\{\{ needs\.native-qualification-eligibility\.outputs\.reviewed_sha \}\}$/mu,
-  );
+  assert.match(native, /^ {10}ref: \$\{\{ needs\.native-qualification-eligibility\.outputs\.reviewed_sha \}\}$/mu);
   assert.match(native, /^ {10}persist-credentials: false$/mu);
   assert.match(native, /test "\$EXPECTED_HEAD_REPOSITORY" = "\$EXPECTED_REPOSITORY"/u);
   assert.match(native, /\[\[ "\$EXPECTED_HEAD_SHA" =~ \^\[0-9a-f\]\{40\}\$ \]\]/u);
