@@ -716,47 +716,35 @@ class ScriptedSocket:
         return len(value)
     def recv(self, bound, flags=0):
         del bound, flags
+        protocol = self.kernel.child_protocol()
         if self.role == "transfer":
             mode = self.kernel.hit("transfer-eof")
             return b"extra" if mode == "extra" else b""
-        case = self.kernel.case
+        packets = protocol.control_endpoint.sent
         if self.kernel.transfer_rejected:
-            return b"Z:" + case.encode() + b":launcher-rejected"
+            return next(value for value in packets if value.startswith(b"Z:"))
         index = self.reads
         self.reads += 1
-        if index == 0:
-            mode = self.kernel.hit("transition-packet")
-            return b"bad" if mode == "malformed" else b"S:" + case.encode()
-        if index == 1:
-            return b"T:" + case.encode()
-        mode = self.kernel.hit("release-packet")
-        return b"bad" if mode == "malformed" else b"R:" + case.encode()
+        value = packets[index]
+        if index == 0 and self.kernel.hit("transition-packet") == "malformed":
+            return b"bad"
+        if index > 1 and self.kernel.hit("release-packet") == "malformed":
+            return b"bad"
+        return value
     def recvmsg(self, data_bound, control_bound, flags):
         del data_bound, control_bound, flags
         mode = self.kernel.hit("transfer-recv")
         if mode == "error":
             raise OSError(errno.EIO, "transfer recv")
         mode = self.kernel.hit("transfer-packet")
-        descendant = self.kernel.create_descendant()
-        packet_case = "wrong" if mode == "case" else self.kernel.case
-        start = descendant.start + (1 if mode == "identity" else 0)
-        transfer_id = hashlib.sha256(
-            self.kernel.current_nonce + launcher._canonical([self.kernel.case, "descendant", 1])
-        ).hexdigest()
-        packet = launcher._canonical({
-            "case": packet_case,
-            "executable": list(descendant.executable),
-            "nonce": self.kernel.current_nonce.hex(),
-            "parent": self.kernel.leader.pid,
-            "pid": descendant.pid,
-            "process_group": descendant.group,
-            "role": "descendant",
-            "sequence": 1,
-            "session": descendant.session,
-            "start_time": start,
-            "transfer": transfer_id,
-            "version": "cogs.process-transfer/v1",
-        })
+        protocol = self.kernel.child_protocol()
+        descendant = self.kernel.descendant
+        value = json.loads(protocol.transfer_endpoint.packet)
+        if mode == "case":
+            value["case"] = "wrong"
+        if mode == "identity":
+            value["start_time"] += 1
+        packet = launcher._canonical(value)
         credential_pid = 999 if mode == "credentials" else self.kernel.leader.pid
         credentials = (socket.SOL_SOCKET, socket.SCM_CREDENTIALS,
                        struct.pack("3i", credential_pid, self.kernel.euid, self.kernel.egid))
@@ -826,6 +814,7 @@ class ProductionLifecycleKernel:
         self.socket_count = 0
         self.case_socket_count = 0
         self.snapshot_count = 0
+        self.pidfd_reads = 0
         self.current_nonce = b""
         self.processes = {}
         self.created_without_pidfd = None
@@ -836,6 +825,7 @@ class ProductionLifecycleKernel:
         self.original_subreaper = 0
         self.subreaper_reads = 0
         self.libc = ScriptedLibc(self)
+        self.protocol_ops = None
         self.baseline = frozenset(self.fds)
     def hit(self, cut):
         if self.spec["cut"] != cut:
@@ -851,6 +841,21 @@ class ProductionLifecycleKernel:
         self.consumed.add(self.selected)
         self.events.append(f"fault:{self.selected}")
         return self.spec["mode"]
+    def child_protocol(self):
+        if self.protocol_ops is None:
+            selected_case = self.spec["case"] in ("all", self.case)
+            descendant = None
+            if not selected_case or self.spec["cut"] != "transition-packet":
+                descendant = self.create_descendant()
+            descendant_pid = self.leader.pid + 1 if descendant is None else descendant.pid
+            rejecting = selected_case and self.spec["cut"] in {
+                "transfer-recv", "transfer-packet", "transfer-eof", "pidfd-binding",
+            }
+            ack = b"N" if rejecting else b"A"
+            self.protocol_ops = execute_leader_branch(
+                self.case, ack, self.leader.pid, descendant_pid,
+            )
+        return self.protocol_ops
     def allocate(self, kind, data=b"", target=None):
         while self.next_fd in self.fds:
             self.next_fd += 1
@@ -866,7 +871,11 @@ class ProductionLifecycleKernel:
             return self.allocate("fd-directory")
         if path.startswith("/proc/self/fdinfo/"):
             transferred = self.fds[int(path.rsplit("/", 1)[1])][1]
-            return self.allocate("proc", f"Pid:\t{transferred.pid}\n".encode())
+            self.pidfd_reads += 1
+            target = transferred.pid
+            if self.pidfd_reads == 2 and self.hit("pidfd-binding") == "drift":
+                target = self.leader.pid
+            return self.allocate("proc", f"Pid:\t{target}\n".encode())
         if path.endswith("/stat"):
             pid = int(path.split("/")[2])
             process = self.processes[pid]
@@ -989,9 +998,18 @@ class ProductionLifecycleKernel:
         return self.descendant
     def reject_transfer(self):
         if self.descendant is not None:
-            self.descendant.live = False
-            self.descendant.reaped = True
-        self.exit_leader()
+            self.exit_process(self.descendant, signal.SIGKILL)
+            observed, status = self.waitpid(self.descendant.pid, os.WNOHANG)
+            check(observed == self.descendant.pid and os.WIFSIGNALED(status) and
+                  os.WTERMSIG(status) == signal.SIGKILL,
+                  "creator rejection did not exactly waitpid its descendant")
+            self.events.append("creator:descendant-exact-waitpid")
+        self.exit_process(self.leader, 125 << 8)
+        observed, status = self.waitpid(self.leader.pid, os.WNOHANG)
+        check(observed == self.leader.pid and os.WIFEXITED(status) and
+              os.WEXITSTATUS(status) == 125,
+              "creator rejection did not exactly waitpid its leader")
+        self.events.append("creator:leader-exact-waitpid")
         self.transfer_rejected = True
     def direct_children(self, parent):
         return tuple(sorted(
@@ -1038,12 +1056,12 @@ class ProductionLifecycleKernel:
         elif signum == signal.SIGKILL:
             self.exit_process(process, signal.SIGKILL)
     def waitpid(self, pid, options):
-        del options
+        check(options == os.WNOHANG, "modeled lifecycle waitpid was not exact/nonblocking")
         process = self.processes[pid]
         if process.live:
             return 0, 0
         process.reaped = True
-        status = process.exit_status or 0
+        status = process.exit_status if process.exit_status is not None else 0
         return pid, status
     def waitid(self, idtype, pidfd, options):
         del idtype, options
@@ -1118,6 +1136,7 @@ def production_lifecycle_case(row):
         kernel.leader = None
         kernel.descendant = None
         kernel.transfer_rejected = False
+        kernel.protocol_ops = None
         kernel.events.append(f"case:{case}:start")
         value = original_run(case, ops, owner)
         kernel.events.append(f"case:{case}:complete")
@@ -1169,6 +1188,13 @@ def production_lifecycle_case(row):
     check(observed == expected, f"{row['id']}: {observed!r} != {expected!r}")
     check(kernel.consumed == {row["id"]}, f"{row['id']}: selected fault did not fire exactly")
     kernel.audit()
+    if kernel.transfer_rejected:
+        required = ["creator:leader-exact-waitpid"]
+        if kernel.descendant is not None:
+            required.insert(0, "creator:descendant-exact-waitpid")
+        positions = [kernel.events.index(event) for event in required]
+        check(positions == sorted(positions),
+              f"{row['id']}: rejected transfer lacked ordered creator settlement")
     cursor = -1
     for sentinel in row["sentinel"]:
         try:
@@ -1222,8 +1248,271 @@ def production_lifecycle_matrix():
           len(declared) == len(set(declared)),
           "production lifecycle declared/selected/consumed/oracle mismatch")
 
+class ChildBranchEndpoint:
+    def __init__(self, ops, role, replies):
+        self.ops = ops
+        self.role = role
+        self.replies = list(replies)
+        self.sent = []
+        self.packet = None
+        self.right = None
+        self.fd = ops.allocate(f"{role}-socket")
+    def fileno(self):
+        return self.fd
+    def send(self, value, flags=0):
+        del flags
+        self.sent.append(value)
+        if value.startswith(b"Z:"):
+            self.ops.events.append("leader:failure-packet")
+        return len(value)
+    def recv(self, bound, flags=0):
+        del bound, flags
+        return self.replies.pop(0)
+    def sendmsg(self, values, ancillary, flags=0):
+        del flags
+        self.packet = b"".join(values)
+        rights = ancillary[0][2]
+        self.right = tuple(rights)[0]
+        self.ops.events.append("leader:transfer-send")
+        return len(self.packet)
+    def shutdown(self, direction):
+        del direction
+        self.ops.events.append("leader:transfer-eof")
+
+class ChildBranchOps:
+    """Deterministic fork-child primitives; production child bodies own protocol effects."""
+    def __init__(self, case, leader_pid=123, descendant_pid=124):
+        self.case = case
+        self.leader_pid = leader_pid
+        self.descendant_pid = descendant_pid
+        self.status = bytearray()
+        self.status_inputs = []
+        self.fork_child = None
+        self.events = []
+        self.fds = {}
+        self.next_fd = 30
+        self.pipe_count = 0
+        self.process_live = True
+        self.process_reaped = False
+        self.process_status = None
+        self.exit_status = None
+    def allocate(self, kind):
+        fd = self.next_fd
+        self.next_fd += 1
+        self.fds[fd] = kind
+        return fd
+    def close(self, fd):
+        check(fd in self.fds, f"child branch closed unknown fd {fd}")
+        del self.fds[fd]
+    def read(self, fd, size):
+        kind = self.fds[fd]
+        if kind in {"leader-gate-read", "registration-read", "release-read"}:
+            return b"G"
+        if kind == "status-read":
+            if not self.status_inputs:
+                return b""
+            value = self.status_inputs.pop(0)
+            return value[:size]
+        raise AssertionError(f"unexpected child branch read: {kind}")
+    def write(self, fd, value):
+        kind = self.fds[fd]
+        if kind == "status-write":
+            self.status.extend(value)
+            if value.startswith(b"A:"):
+                self.events.append("descendant:armed")
+            if value.startswith(b"R:"):
+                self.events.append("descendant:released")
+        return len(value)
+    def prctl(self, option, value=0, arg3=0):
+        del value, arg3
+        check(option == launcher._PR_SET_PDEATHSIG, "child branch pdeath operation")
+        return 0
+    def pipe2(self, flags):
+        del flags
+        purposes = (("release-read", "release-write"),
+                    ("status-read", "status-write"),
+                    ("registration-read", "registration-write"))
+        pair = purposes[self.pipe_count]
+        self.pipe_count += 1
+        return self.allocate(pair[0]), self.allocate(pair[1])
+    def clone_pidfd(self):
+        self.events.append("leader:descendant-fork-parent")
+        check(self.fork_child is not None, "leader clone lacked modeled child fork branch")
+        status, events = self.fork_child()
+        self.events.extend(events)
+        armed = b"A:" + self.case.encode()
+        released = b"R:" + self.case.encode()
+        self.status_inputs.append(armed)
+        if status == armed + released:
+            self.status_inputs.append(released)
+        return self.descendant_pid, self.allocate("pidfd")
+    def monotonic(self):
+        return 1.0
+    def sleep(self, seconds):
+        del seconds
+    def pidfd_signal(self, fd, number):
+        check(self.fds[fd] == "pidfd", "child creator signal lacked pidfd")
+        self.process_live = False
+        self.process_status = number
+        self.events.append(f"leader:pidfd-signal:{number}")
+    def waitpid(self, pid, flags):
+        check(pid == self.descendant_pid and flags == os.WNOHANG,
+              "child creator waitpid identity/options")
+        if self.process_live:
+            return 0, 0
+        self.process_reaped = True
+        self.events.append(f"leader:waitpid:{pid}")
+        return pid, self.process_status
+    def select(self, readers, writers, exceptional, timeout=None):
+        del exceptional, timeout
+        ready = []
+        for item in readers:
+            if isinstance(item, ChildBranchEndpoint):
+                ready.append(item)
+            elif item in self.fds:
+                kind = self.fds[item]
+                if kind == "status-read" and self.status_inputs:
+                    ready.append(item)
+                if kind == "pidfd" and not self.process_live:
+                    ready.append(item)
+        return ready, list(writers), []
+    def child_exit(self, status):
+        if self.exit_status is None:
+            self.exit_status = status
+            self.events.append(f"leader:exit:{status}")
+    def child_pause(self):
+        self.process_live = False
+        self.process_status = signal.SIGKILL
+        self.events.append(f"descendant:signal:{signal.SIGKILL}")
+        raise RuntimeError("modeled asynchronous child death")
+
+def with_child_globals(ops, call):
+    replacements = {
+        (launcher.os, "pipe2"): ops.pipe2,
+        (launcher.os, "setsid"): lambda: ops.leader_pid,
+        (launcher.os, "getpid"): lambda: ops.leader_pid,
+        (launcher.os, "getppid"): lambda: ops.leader_pid,
+        (launcher.os, "geteuid"): lambda: 1000,
+        (launcher.os, "getsid"): lambda pid: ops.leader_pid,
+        (launcher.os, "getpgid"): lambda pid: ops.leader_pid,
+        (launcher.os, "waitpid"): ops.waitpid,
+        (launcher.os, "_exit"): ops.child_exit,
+        (launcher.signal, "pidfd_send_signal"): ops.pidfd_signal,
+        (launcher.select, "select"): ops.select,
+        (launcher.time, "monotonic"): ops.monotonic,
+        (launcher.time, "sleep"): ops.sleep,
+    }
+    missing = object()
+    originals = [(target, name, getattr(target, name, missing))
+                 for target, name in replacements]
+    start_time = launcher._start_time
+    executable = launcher._exe_identity
+    for (target, name), value in replacements.items():
+        setattr(target, name, value)
+    launcher._start_time = lambda pid, actual_ops=None: 1000 + pid
+    launcher._exe_identity = lambda pid, actual_ops=None: (8, 1000 + pid)
+    try:
+        return call()
+    finally:
+        launcher._start_time = start_time
+        launcher._exe_identity = executable
+        for target, name, value in reversed(originals):
+            if value is missing:
+                delattr(target, name)
+            else:
+                setattr(target, name, value)
+
+def execute_descendant_branch(case, leader_pid=123, descendant_pid=124):
+    ops = ChildBranchOps(case, leader_pid, descendant_pid)
+    registration = launcher._FdLease(ops.allocate("registration-read"), "registration")
+    release = launcher._FdLease(ops.allocate("release-read"), "release")
+    status = launcher._FdLease(ops.allocate("status-write"), "status")
+    original_signal = launcher.signal.signal
+    original_pause = launcher.signal.pause
+    launcher.signal.signal = lambda number, disposition: (
+        ops.events.append("descendant:term-ignored")
+        if number == signal.SIGTERM and disposition == signal.SIG_IGN else None
+    )
+    launcher.signal.pause = ops.child_pause
+    try:
+        with_child_globals(ops, lambda: launcher._lifecycle_descendant(
+            ops, leader_pid, case, registration, release, status,
+        ))
+    finally:
+        launcher.signal.signal = original_signal
+        launcher.signal.pause = original_pause
+    expected = b"A:" + case.encode()
+    if case != "before-release":
+        expected += b"R:" + case.encode()
+    check(bytes(ops.status) == expected, f"{case}: production descendant protocol")
+    check(ops.process_status == signal.SIGKILL, f"{case}: descendant terminal signal")
+    return bytes(ops.status), ops.events
+
+def execute_leader_branch(case, ack, leader_pid=123, descendant_pid=124):
+    ops = ChildBranchOps(case, leader_pid, descendant_pid)
+    ops.fork_child = lambda: execute_descendant_branch(case, leader_pid, descendant_pid)
+    control = ChildBranchEndpoint(ops, "control", [b"C:" + case.encode(), b"X:" + case.encode()])
+    transfer = ChildBranchEndpoint(ops, "transfer", [ack])
+    gate = launcher._FdLease(ops.allocate("leader-gate-read"), "leader-gate")
+    nonce = hashlib.sha256(case.encode()).digest()
+    with_child_globals(ops, lambda: launcher._lifecycle_leader(
+        ops, case, nonce, control, transfer, gate,
+    ))
+    packet = json.loads(transfer.packet)
+    expected_transfer = hashlib.sha256(
+        nonce + launcher._canonical([case, "descendant", 1])
+    ).hexdigest()
+    check(packet["pid"] == descendant_pid and packet["parent"] == leader_pid and
+          packet["case"] == case and packet["role"] == "descendant" and
+          packet["transfer"] == expected_transfer,
+          f"{case}: production leader transfer packet binding")
+    check(transfer.right is not None and ops.fds.get(transfer.right) in {"pidfd", None},
+          f"{case}: production leader omitted pidfd right")
+    if ack == b"A":
+        check(ops.exit_status == 0, f"{case}: leader success exit")
+    else:
+        check(ops.exit_status == 125 and ops.process_reaped,
+              f"{case}: rejected transfer lacked creator exact waitpid: "
+              f"{ops.exit_status}/{ops.process_reaped}/{ops.events}")
+    ops.control_endpoint = control
+    ops.transfer_endpoint = transfer
+    return ops
+
+def production_child_branch_matrix():
+    path = FIXTURES / "lifecycle/child-cases.jsonl"
+    header, *rows = [json.loads(line) for line in path.read_text().splitlines()]
+    fields = {"id", "production_method", "primitive_fault", "intended_code",
+              "cleanup_domains", "sentinel"}
+    check(header["version"] == "cogs.outcome-two-lifecycle-child-branches/v1" and
+          set(header["case_fields"]) == fields,
+          "lifecycle child branch fixture header")
+    declared = [row["id"] for row in rows]
+    selected = []
+    consumed = []
+    oracle = []
+    for row in rows:
+        check(set(row) == fields, f"child branch row shape: {row['id']}")
+        check(row["production_method"][:2] == [
+            "launcher._lifecycle_descendant", "launcher._lifecycle_leader",
+        ], f"child production methods: {row['id']}")
+        selected.append(row["id"])
+        case = row["primitive_fault"]["case"]
+        leader = execute_leader_branch(case, row["primitive_fault"]["ack"].encode())
+        events = leader.events
+        observed = f"exit-{leader.exit_status}"
+        check(observed == row["intended_code"], f"{row['id']}: child branch outcome")
+        cursor = -1
+        for event in row["sentinel"]:
+            cursor = events.index(event, cursor + 1)
+        consumed.append(row["id"])
+        oracle.append(row["id"])
+    check(declared == selected == consumed == oracle and
+          len(declared) == len(set(declared)),
+          "child branch declared/selected/consumed/oracle mismatch")
+
 production_clone3_abi()
 process_owner_matrix()
+production_child_branch_matrix()
 production_lifecycle_matrix()
 groups = (
     ("fd_baseline_cases", fd_case),
