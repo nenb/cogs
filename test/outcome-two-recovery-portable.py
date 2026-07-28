@@ -420,7 +420,8 @@ class CommonSocket:
         channel = self.channel
         if channel is None:
             return b""
-        deadline = time.monotonic() + MODEL_WAIT_SECONDS
+        wait_seconds = MODEL_WAIT_SECONDS if self.role == "custodian-cleanup-endpoint" else 5.0
+        deadline = time.monotonic() + wait_seconds
         with channel.condition:
             while not channel.queues[self.side]:
                 if (
