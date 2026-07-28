@@ -439,8 +439,20 @@ class _SystemOps:
         return bytes(buffer.raw[:count])
     def socketpair(self) -> tuple[socket.socket, socket.socket]:
         left, right = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET | socket.SOCK_CLOEXEC)
-        left.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
-        right.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
+        adopted_sockets = ((left, "socketpair-left"), (right, "socketpair-right"))
+        try:
+            left.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
+            right.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
+        except BaseException as primary:
+            failures: list[BaseException] = []
+            for endpoint, purpose in adopted_sockets:
+                try:
+                    _close_socket(endpoint, self, purpose)
+                except BaseException as error:
+                    failures.append(error)
+            if failures:
+                raise RuntimeLauncherCleanupError(primary, failures) from primary
+            raise
         return left, right
     def nonce(self) -> bytes:
         value = os.getrandom(32)
@@ -618,10 +630,17 @@ def _runtime_metadata(report: dict[str, object], rows: tuple[_GenerationRow, ...
         _require(output == _FIXED_OUTPUT, "runtime metadata fixed output", "runtime-output")
         closed_objects = _closed_compression_objects(objects)
         compressed.append(RuntimeCompressionToolObservation(
-            name, closed_objects, report["tools"][index]["closure_sha256"],
-            report["tools"][index]["mapping_sha256"], objects[0]["sha256"],
-            objects[0]["size"], sealed_rows[0][1], sealed_rows[0][2],
-            _EXEC_SEALS, observed_mapping, hashlib.sha256(output).hexdigest(),
+            id=name,
+            objects=closed_objects,
+            closure_sha256=report["tools"][index]["closure_sha256"],
+            mapping_sha256=report["tools"][index]["mapping_sha256"],
+            source_sha256=objects[0]["sha256"],
+            source_size_bytes=objects[0]["size"],
+            sealed_sha256=sealed_rows[0][1],
+            sealed_size_bytes=sealed_rows[0][2],
+            seal_mask=_EXEC_SEALS,
+            execution_mapping_sha256=observed_mapping,
+            output_sha256=hashlib.sha256(output).hexdigest(),
         ))
     return compressed[0], compressed[1]
 class _WorkerIssuer:
@@ -716,7 +735,16 @@ class _WorkerIssuer:
         _require(remaining > 0 and select.select([self._endpoint], [], [], remaining)[0], "issuance EOF deadline", "issuer-deadline")
         _require(self._endpoint.recv(1, socket.MSG_DONTWAIT) == b"", "second consumer packet", "issuer-second-packet")
         self._endpoint.shutdown(socket.SHUT_WR)
-        return _IssuanceReceipt(_HANDOFF_VERSION, packet["report_sha256"], report["closure_sha256"], binding_sha, generation_sha, len(descriptors), os.getpid(), self._consumer_pid)
+        return _IssuanceReceipt(
+            version=_HANDOFF_VERSION,
+            report_sha256=packet["report_sha256"],
+            closure_sha256=report["closure_sha256"],
+            binding_sha256=binding_sha,
+            generation_sha256=generation_sha,
+            descriptor_count=len(descriptors),
+            issuer_pid=os.getpid(),
+            consumer_pid=self._consumer_pid,
+        )
 _ProcessLease = make_dataclass("_ProcessLease", [
     ("pid", int), ("pidfd", Optional[_FdLease]),
     *((name, int, field(default=0)) for name in "start_time session process_group".split()),
@@ -763,12 +791,13 @@ class _ProcessOwner(make_dataclass(
         lease = _ProcessLease(0, None, release_gate=write_lease, pending=(read_lease,))
         self.processes.append(lease)
         pid, pidfd = self.ops.clone_pidfd()
+        if pid > 0:
+            lease.pid = pid
+            lease.pidfd = _FdLease(pidfd, f"pidfd:{pid}")
         if pid == 0:
             self.processes.remove(lease)
             write_lease.close(self.ops)
             return 0, None, read_lease
-        lease.pid = pid
-        lease.pidfd = _FdLease(pidfd, f"pidfd:{pid}")
         lease.expected_uid = os.geteuid()
         read_lease.close(self.ops)
         lease.pending = ()
@@ -1139,7 +1168,16 @@ def _consume_issuance(endpoint: socket.socket, nonce: bytes, admission: _SourceA
         remaining = deadline - time.monotonic()
         _require(remaining > 0 and select.select([endpoint], [], [], remaining)[0], "issuance EOF deadline", "issuer-deadline")
         _require(endpoint.recv(1, socket.MSG_DONTWAIT) == b"", "second issuer packet", "issuer-second-packet")
-        receipt = _IssuanceReceipt(_HANDOFF_VERSION, packet["report_sha256"], report["closure_sha256"], binding_sha, generation_sha, len(descriptors), issuer_pid, os.getpid())
+        receipt = _IssuanceReceipt(
+            version=_HANDOFF_VERSION,
+            report_sha256=packet["report_sha256"],
+            closure_sha256=report["closure_sha256"],
+            binding_sha256=binding_sha,
+            generation_sha256=generation_sha,
+            descriptor_count=len(descriptors),
+            issuer_pid=issuer_pid,
+            consumer_pid=os.getpid(),
+        )
         return report, leases, rows, receipt
     except BaseException as error: primary = error
     _close_leases(actual_ops, leases, primary)
@@ -1750,6 +1788,7 @@ def _run_tool_with_ops( ops: Any, role: str, report: dict[str, object], descript
     input_pair = output_pair = ()
     parent_status = child_status = None
     transfer_parent = transfer_child = None
+    socket_recovery: list[tuple[socket.socket, str]] = []
     namespace_lease = child_lease = None
     primary: BaseException | None = None
     result: tuple[bytes, dict[str, object]] | None = None
@@ -1759,7 +1798,9 @@ def _run_tool_with_ops( ops: Any, role: str, report: dict[str, object], descript
         input_read, input_write = input_pair
         output_read, output_write = output_pair
         parent_status, child_status = ops.socketpair()
+        socket_recovery.extend(((parent_status, "namespace-parent-status"), (child_status, "namespace-child-status")))
         transfer_parent, transfer_child = ops.socketpair()
+        socket_recovery.extend(((transfer_parent, "tool-transfer-parent"), (transfer_child, "tool-transfer-child")))
         transfer_nonce = ops.nonce()
         root = root_owner.prepare()
         limits_baseline = _parse_limits(_proc_bytes("/proc/self/limits", 65536, ops))
@@ -1893,14 +1934,11 @@ def _run_tool_with_ops( ops: Any, role: str, report: dict[str, object], descript
         if lease.state is _FdState.OWNED:
             try: lease.close(ops)
             except BaseException as error: failures.append(error)
-    try: _close_socket(parent_status, ops, "namespace-parent-status")
-    except BaseException as error: failures.append(error)
-    try: _close_socket(child_status, ops, "namespace-child-status")
-    except BaseException as error: failures.append(error)
-    try: _close_socket(transfer_parent, ops, "tool-transfer-parent")
-    except BaseException as error: failures.append(error)
-    try: _close_socket(transfer_child, ops, "tool-transfer-child")
-    except BaseException as error: failures.append(error)
+    for endpoint, purpose in socket_recovery:
+        try:
+            _close_socket(endpoint, ops, purpose)
+        except BaseException as error:
+            failures.append(error)
     try: root_owner.cleanup(primary)
     except BaseException as error: failures.append(error)
     if failures: raise RuntimeLauncherCleanupError(primary, failures) from (primary or failures[0])
@@ -1967,7 +2005,6 @@ def _recover_transaction_with_ops(ops: Any, process_owner: _ProcessOwner, fd_lea
         failures.append(error)
     if failures: raise RuntimeLauncherCleanupError(primary, failures) from (primary or failures[0])
 def _coordinate_with_ops(admission: _SourceAdmission, closure_module: types.ModuleType, ops: Any) -> tuple[RuntimeQualificationResult, tuple[RuntimeCompressionToolObservation, RuntimeCompressionToolObservation], dict[str, object]]:
-    fact_names = _OBSERVATION_NAMES
     fd_baseline = _descriptor_snapshot(ops)
     child_baseline = _parse_children(_proc_bytes("/proc/self/task/self/children", 65536, ops))
     root = f"{_ROOT_PARENT}/{_ROOT_LEAF}"
@@ -1977,6 +2014,7 @@ def _coordinate_with_ops(admission: _SourceAdmission, closure_module: types.Modu
     process_owner = _ProcessOwner(ops)
     parent_endpoint = worker_endpoint = None
     helper_parent = helper_worker = None
+    socket_recovery: list[tuple[socket.socket, str]] = []
     descriptor_leases = []
     primary = None
     outputs = observed_tools = None
@@ -1985,7 +2023,9 @@ def _coordinate_with_ops(admission: _SourceAdmission, closure_module: types.Modu
     execution_mappings = None
     try:
         parent_endpoint, worker_endpoint = ops.socketpair()
+        socket_recovery.extend(((parent_endpoint, "issuance-parent"), (worker_endpoint, "issuance-worker")))
         helper_parent, helper_worker = ops.socketpair()
+        socket_recovery.extend(((helper_parent, "helper-parent"), (helper_worker, "helper-worker")))
         ops.prctl(_PR_SET_CHILD_SUBREAPER, 1)
         pid, worker, gate = process_owner.spawn()
         if pid == 0:
@@ -2017,7 +2057,7 @@ def _coordinate_with_ops(admission: _SourceAdmission, closure_module: types.Modu
     failures: list[BaseException] = []
     try: _recover_transaction_with_ops(ops, process_owner, descriptor_leases, primary)
     except BaseException as error: failures.append(error)
-    for endpoint, purpose in ((parent_endpoint, "issuance-parent"), (worker_endpoint, "issuance-worker"), (helper_parent, "helper-parent"), (helper_worker, "helper-worker")):
+    for endpoint, purpose in socket_recovery:
         try: _close_socket(endpoint, ops, purpose)
         except BaseException as error: failures.append(error)
     if failures: raise RuntimeLauncherCleanupError(primary, failures) from (primary or failures[0])
@@ -2032,8 +2072,16 @@ def _coordinate_with_ops(admission: _SourceAdmission, closure_module: types.Modu
     if primary is not None: raise primary
     _require(observed_tools is not None and outputs is not None and receipt is not None and report is not None and execution_mappings is not None, "coordinator result missing", "coordinator-result")
     observed = _build_observed_result(observed_tools, cleanup)
-    result = RuntimeQualificationResult(_RESULT_VERSION, _MARKER, admission.revision, admission.source_set_sha256, receipt.closure_sha256,
-        hashlib.sha256(outputs[0]).hexdigest(), hashlib.sha256(outputs[1]).hexdigest(), *(observed[name] for name in fact_names))
+    result = RuntimeQualificationResult(
+        version=_RESULT_VERSION,
+        marker=_MARKER,
+        source_revision=admission.revision,
+        source_set_sha256=admission.source_set_sha256,
+        closure_sha256=receipt.closure_sha256,
+        gzip_output_sha256=hashlib.sha256(outputs[0]).hexdigest(),
+        zstd_output_sha256=hashlib.sha256(outputs[1]).hexdigest(),
+        **observed,
+    )
     metadata = _runtime_metadata(report, rows, execution_mappings, outputs)
     return result, metadata, report
 def _launch_admitted_fixed_runtime_qualification(admission: _SourceAdmission, closure_module: types.ModuleType, ops: Any) -> RuntimeQualificationResult:
@@ -2051,17 +2099,17 @@ def _launch_admitted_fixed_compression_qualification(admission: _SourceAdmission
     _require(exact_outputs, "compression exact observation", "compression-observation")
     parser_report = report["tools"][0]
     parser = RuntimeCompressionParserObservation(
-        parser_report["closure_sha256"],
-        _closed_compression_objects(parser_report["objects"]),
+        closure_sha256=parser_report["closure_sha256"],
+        objects=_closed_compression_objects(parser_report["objects"]),
     )
     return RuntimeCompressionQualificationResult(
-        "cogs.runtime-compression-qualification/v1",
-        admission.revision,
-        admission.source_set_sha256,
-        result.closure_sha256,
-        parser,
-        tools,
-        result,
+        version="cogs.runtime-compression-qualification/v1",
+        source_revision=admission.revision,
+        source_set_sha256=admission.source_set_sha256,
+        closure_sha256=result.closure_sha256,
+        parser=parser,
+        tools=tools,
+        runtime=result,
     )
 def _result_value(value: object) -> dict[str, object]:
     _require(is_dataclass(value) and not isinstance(value, type), "fixed result dataclass", "result-type")
@@ -2229,7 +2277,7 @@ def _prepare_client_from_admitted_bytes(
 def _decode_runtime_result(value: object) -> RuntimeQualificationResult:
     names = tuple(item.name for item in fields(RuntimeQualificationResult))
     _require(type(value) is dict and set(value) == set(names), "ordinary result shape", "result-shape")
-    result = RuntimeQualificationResult(*(value[name] for name in names))
+    result = RuntimeQualificationResult(**value)
     _require(all(type(getattr(result, name)) is str for name in names[:7]), "ordinary result strings", "result-type")
     _require(all(type(getattr(result, name)) is bool and getattr(result, name) for name in names[7:]), "ordinary result observations", "result-observation")
     return result
@@ -2239,19 +2287,28 @@ def _decode_mapping_result(value: object) -> RuntimeMappingQualificationResult:
     objects, mapped = value["objects"], value["mapped"]
     object_names, mapped_names = tuple(item.name for item in fields(RuntimeObjectObservation)), tuple(item.name for item in fields(MappedObjectObservation))
     _require(type(objects) is list and type(mapped) is list, "mapping row arrays", "result-shape")
-    object_rows = tuple(RuntimeObjectObservation(*(item[name] if name != "needed" else tuple(item[name]) for name in object_names)) for item in objects if type(item) is dict and set(item) == set(object_names))
-    mapped_rows = tuple(MappedObjectObservation(*(item[name] for name in mapped_names)) for item in mapped if type(item) is dict and set(item) == set(mapped_names))
+    object_rows = tuple(RuntimeObjectObservation(
+        role=item["role"],
+        size_bytes=item["size_bytes"],
+        sha256=item["sha256"],
+        soname=item["soname"],
+        needed=tuple(item["needed"]),
+    ) for item in objects if type(item) is dict and set(item) == set(object_names))
+    mapped_rows = tuple(MappedObjectObservation(
+        role=item["role"],
+        sha256=item["sha256"],
+    ) for item in mapped if type(item) is dict and set(item) == set(mapped_names))
     _require(len(object_rows) == len(objects) == len(mapped_rows) == len(mapped), "mapping row shape", "result-shape")
-    arguments = [value[name] for name in names]
-    arguments[names.index("objects")] = object_rows
-    arguments[names.index("mapped")] = mapped_rows
-    result = RuntimeMappingQualificationResult(*arguments)
+    arguments = dict(value)
+    arguments["objects"] = object_rows
+    arguments["mapped"] = mapped_rows
+    result = RuntimeMappingQualificationResult(**arguments)
     _require(all(getattr(result, name) is True for name in names[-5:]), "mapping observations", "result-observation")
     return result
 def _decode_observation_result(value: object, result_type: type, string_count: int, version: str) -> object:
     names = tuple(item.name for item in fields(result_type))
     _require(type(value) is dict and set(value) == set(names), "observation result shape", "result-shape")
-    result = result_type(*(value[name] for name in names))
+    result = result_type(**value)
     _require(all(type(getattr(result, name)) is str for name in names[:string_count]), "observation result strings", "result-type")
     _require(result.version == version and all(getattr(result, name) is True for name in names[string_count:]), "observation result values", "result-observation")
     return result
@@ -2275,28 +2332,28 @@ def _decode_compression_result(value: object) -> RuntimeCompressionQualification
     parser_keys = {"closure_sha256", "objects"}
     _require(type(parser_value) is dict and set(parser_value) == parser_keys, "parser result shape", "result-shape")
     parser = RuntimeCompressionParserObservation(
-        parser_value["closure_sha256"],
-        _decode_compression_objects(parser_value["objects"]),
+        closure_sha256=parser_value["closure_sha256"],
+        objects=_decode_compression_objects(parser_value["objects"]),
     )
     tool_names = tuple(item.name for item in fields(RuntimeCompressionToolObservation))
     tools: list[RuntimeCompressionToolObservation] = []
     for item in value["tools"]:
         _require(type(item) is dict and set(item) == set(tool_names), "compression tool row", "result-shape")
-        arguments = [item[name] for name in tool_names]
-        arguments[tool_names.index("objects")] = _decode_compression_objects(item["objects"])
-        tools.append(RuntimeCompressionToolObservation(*arguments))
+        arguments = dict(item)
+        arguments["objects"] = _decode_compression_objects(item["objects"])
+        tools.append(RuntimeCompressionToolObservation(**arguments))
     closed_tools = tuple(tools)
     tool_order = tuple(item.id for item in closed_tools)
     _require(len(closed_tools) == 2 and tool_order == ("gzip", "zstd"), "compression tool shape", "result-shape")
     runtime = _decode_runtime_result(value["runtime"])
     result = RuntimeCompressionQualificationResult(
-        value["version"],
-        value["source_revision"],
-        value["source_set_sha256"],
-        value["closure_sha256"],
-        parser,
-        closed_tools,
-        runtime,
+        version=value["version"],
+        source_revision=value["source_revision"],
+        source_set_sha256=value["source_set_sha256"],
+        closure_sha256=value["closure_sha256"],
+        parser=parser,
+        tools=closed_tools,
+        runtime=runtime,
     )
     expected = hashlib.sha256(_FIXED_OUTPUT).hexdigest()
     exact = all(item.seal_mask == 63 and item.output_sha256 == expected for item in closed_tools)
@@ -2769,6 +2826,7 @@ def _sandbox_only_transaction(ops: Any) -> dict[str, bool]:
     process_owner = _ProcessOwner(ops)
     control_parent = control_child = None
     transfer_parent = transfer_child = None
+    socket_recovery: list[tuple[socket.socket, str]] = []
     leader: _ProcessLease | None = None
     inner: _ProcessLease | None = None
     primary: BaseException | None = None
@@ -2789,7 +2847,9 @@ def _sandbox_only_transaction(ops: Any) -> dict[str, bool]:
         subreaper_changed = True
         root = root_owner.prepare()
         control_parent, control_child = ops.socketpair()
+        socket_recovery.extend(((control_parent, "sandbox-control-parent"), (control_child, "sandbox-control-child")))
         transfer_parent, transfer_child = ops.socketpair()
+        socket_recovery.extend(((transfer_parent, "sandbox-transfer-parent"), (transfer_child, "sandbox-transfer-child")))
         nonce = ops.nonce()
         pid, leader, gate = process_owner.spawn()
         if pid == 0:
@@ -2849,12 +2909,7 @@ def _sandbox_only_transaction(ops: Any) -> dict[str, bool]:
         process_owner.cleanup(primary)
     except BaseException as error:
         failures.append(error)
-    for endpoint, purpose in (
-        (control_parent, "sandbox-control-parent"),
-        (control_child, "sandbox-control-child"),
-        (transfer_parent, "sandbox-transfer-parent"),
-        (transfer_child, "sandbox-transfer-child"),
-    ):
+    for endpoint, purpose in socket_recovery:
         try:
             _close_socket(endpoint, ops, purpose)
         except BaseException as error:
@@ -2946,7 +3001,13 @@ def _root_capsule_entry(raw: bytes, authority: dict[str, object]) -> int:
     _require(_descriptor_snapshot() == (0, 1, 2), "root capsule descriptors", "root-descriptors")
     sources, header = _decode_root_capsule(raw, authority)
     observations = _sandbox_only_transaction(_SystemOps())
-    result = SandboxQualificationResult("cogs.sandbox-qualification/v1", header["revision"], header["source_set_sha256"], _seccomp_digest(), *(observations[name] for name in tuple(item.name for item in fields(SandboxQualificationResult))[4:]))
+    result = SandboxQualificationResult(
+        version="cogs.sandbox-qualification/v1",
+        source_revision=header["revision"],
+        source_set_sha256=header["source_set_sha256"],
+        seccomp_program_sha256=_seccomp_digest(),
+        **observations,
+    )
     output = _canonical(_result_value(result), True)
     _require(os.write(1, output) == len(output), "root result write", "root-result-write")
     return 0
@@ -3184,13 +3245,16 @@ def _run_lifecycle_case(
 ) -> _LifecycleCaseObservation:
     control_parent = control_leader = None
     transfer_parent = transfer_leader = None
+    socket_recovery: list[tuple[socket.socket, str]] = []
     leader: _ProcessLease | None = None
     descendant: _ProcessLease | None = None
     primary: BaseException | None = None
     result: _LifecycleCaseObservation | None = None
     try:
         control_parent, control_leader = ops.socketpair()
+        socket_recovery.extend(((control_parent, "lifecycle-control-parent"), (control_leader, "lifecycle-control-leader")))
         transfer_parent, transfer_leader = ops.socketpair()
+        socket_recovery.extend(((transfer_parent, "lifecycle-transfer-parent"), (transfer_leader, "lifecycle-transfer-leader")))
         nonce = ops.nonce()
         pid, leader, gate = owner.spawn()
         if pid == 0:
@@ -3277,12 +3341,7 @@ def _run_lifecycle_case(
         owner.cleanup(primary)
     except BaseException as error:
         failures.append(error)
-    for endpoint, purpose in (
-        (control_parent, "lifecycle-control-parent"),
-        (control_leader, "lifecycle-control-leader"),
-        (transfer_parent, "lifecycle-transfer-parent"),
-        (transfer_leader, "lifecycle-transfer-leader"),
-    ):
+    for endpoint, purpose in socket_recovery:
         try:
             _close_socket(endpoint, ops, purpose)
         except BaseException as error:
@@ -3369,24 +3428,24 @@ def _qualify_admitted_fixed_process_lifecycle(admission: _SourceAdmission, ops: 
     siginfo_exact = all(item.siginfo_exact for item in cases)
     all_reaped = all(item.all_reaped for item in cases) and children_exact
     return LifecycleQualificationResult(
-        "cogs.runtime-lifecycle-qualification/v1",
-        admission.revision,
-        admission.source_set_sha256,
-        pdeathsig_armed,
-        parent_handshake_exact,
-        before_release_death,
-        after_release_death,
-        starttime_revalidated,
-        session_owned,
-        process_group_owned,
-        credentialed_transfer,
-        stable_census,
-        adoption_exact,
-        term_kill_bounded,
-        siginfo_exact,
-        all_reaped,
-        restored,
-        descriptors_exact,
+        version="cogs.runtime-lifecycle-qualification/v1",
+        source_revision=admission.revision,
+        source_set_sha256=admission.source_set_sha256,
+        pdeathsig_armed=pdeathsig_armed,
+        parent_handshake_exact=parent_handshake_exact,
+        before_release_death=before_release_death,
+        after_release_death=after_release_death,
+        starttime_revalidated=starttime_revalidated,
+        session_owned=session_owned,
+        process_group_owned=process_group_owned,
+        credentialed_pidfd_transfer=credentialed_transfer,
+        stable_descendant_census=stable_census,
+        adoption_exact=adoption_exact,
+        term_kill_bounded=term_kill_bounded,
+        siginfo_exact=siginfo_exact,
+        all_reaped=all_reaped,
+        subreaper_restored=restored,
+        descriptors_restored=descriptors_exact,
     )
 def _bootstrap_with_ops(ops: _SystemOps) -> int:
     _platform_gate()
