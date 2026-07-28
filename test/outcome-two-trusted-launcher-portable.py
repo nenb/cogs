@@ -687,23 +687,23 @@ def capsule_contract(module):
         source_digest, sources[module._SCHEMA_PATH], "", 0, None,
         module._BOOTSTRAP_OPERATION_TOKEN, 0, 0, 0, "sandbox",
     )
-    if hasattr(module, "_root_capsule_authority"):
-        authority = module._root_capsule_authority(sources, admission)
-        bootstrap = module._render_root_bootstrap(authority)
-        if "__ROOT_AUTHORITY_HEX__" in bootstrap:
-            raise AssertionError("root authority placeholder remained")
-    else:
-        rows = [{"path": path, "sha256": hashlib.sha256(sources[path]).hexdigest(),
-                 "size": len(sources[path])} for path in module._FIXED_SOURCE_SET]
-        authority = {
-            "bootstrap_sha256": admission.bootstrap_sha256,
-            "revision": admission.revision,
-            "root_bootstrap_sha256": hashlib.sha256(module._ROOT_BOOTSTRAP.encode()).hexdigest(),
-            "source_set_sha256": admission.source_set_sha256,
-            "sources": rows,
-            "version": "cogs.root-capsule-authority/v1",
+    rows = [
+        {
+            "path": path,
+            "sha256": hashlib.sha256(sources[path]).hexdigest(),
+            "size": len(sources[path]),
         }
-        bootstrap = module._ROOT_BOOTSTRAP
+        for path in module._FIXED_SOURCE_SET
+    ]
+    authority = {
+        "bootstrap_sha256": admission.bootstrap_sha256,
+        "revision": admission.revision,
+        "root_bootstrap_sha256": hashlib.sha256(module._ROOT_BOOTSTRAP.encode()).hexdigest(),
+        "source_set_sha256": admission.source_set_sha256,
+        "sources": rows,
+        "version": "cogs.root-capsule-authority/v1",
+    }
+    bootstrap = module._ROOT_BOOTSTRAP
     capsule = module._encode_root_capsule(sources, admission)
     decoded, header = module._decode_root_capsule(capsule, authority)
     if decoded != sources or header["parent_pid"] != os.getpid():
@@ -759,9 +759,17 @@ def capsule_contract(module):
         else:
             raise AssertionError("hostile root capsule accepted")
     bootstrap = module._ROOT_BOOTSTRAP
-    required = ("object_pairs_hook=pairs", "parent_pid", "source_set_sha256",
-                "os.getppid() == parent", "numbers.count(directory) == 1",
-                "offset == len(payload)")
+    required = (
+        "object_pairs_hook=pairs",
+        "parent_pid",
+        "source_set_sha256",
+        "os.getppid() == parent",
+        "numbers.count(directory) == 1",
+        "offset == len(payload)",
+        "authority_raw = read_fixed(authority_path",
+        "bootstrap_raw = read_fixed(bootstrap_path",
+        "rows == authority['sources']",
+    )
     if not all(token in bootstrap for token in required):
         raise AssertionError("root bootstrap pre-exec admission weakened")
     source = MODULE.read_text()
@@ -788,233 +796,23 @@ def fixed_bootstrap_modes(module):
         raise AssertionError("fixed bootstrap modes drift")
 
 
-class OuterKernel:
-    def __init__(self, module, row):
-        self.module = module
-        self.point = row["primitive_fault"]["point"]
-        self.mutation = row["primitive_fault"]["mutation"]
-        self.events = []
-        self.fired = False
-        self.next_fd = 20
-        self.fds = {}
-        self.data = {}
-        self.released = False
-        self.signaled = False
-        self.reaped = False
-        self.foreign = None
-        self.pipe_count = 0
-        self.output_bytes = b"{}\n"
-    def consume_fault(self, point):
-        if self.fired or self.point != point:
-            return False
-        self.fired = True
-        self.events.append(f"outer:{point}")
-        return True
-    def allocate(self, purpose, data=b""):
-        while self.next_fd in self.fds:
-            self.next_fd += 1
-        fd = self.next_fd
-        self.next_fd += 1
-        self.fds[fd] = purpose
-        self.data[fd] = data
-        return fd
-    def memfd_create(self, name, flags):
-        del name, flags
-        if self.consume_fault("memfd_create"):
-            raise OSError("memfd")
-        return self.allocate("launcher")
-    def pipe2(self, flags):
-        del flags
-        if self.consume_fault("pipe2"):
-            raise OSError("pipe")
-        purposes = ("admission", "output", "error", "transition", "ack", "release")
-        purpose = purposes[self.pipe_count]
-        self.pipe_count += 1
-        return self.allocate(purpose + "-read"), self.allocate(purpose + "-write")
-    def clone_pidfd(self):
-        if self.consume_fault("clone_pidfd"):
-            raise OSError("clone")
-        return 700, self.allocate("pidfd")
-    def open(self, path, flags, mode=0o600):
-        del flags, mode
-        if path.endswith("/stat"):
-            fields_ = b" ".join([b"1"] * 18 + [b"10"] + [b"1"] * 30)
-            return self.allocate("proc-stat", b"700 (held-python) S " + fields_ + b"\n")
-        if path.endswith("/exe"):
-            return self.allocate("proc-exe")
-        raise AssertionError(path)
-    def read(self, fd, size):
-        del size
-        purpose = self.fds[fd]
-        if purpose == "transition-read":
-            if self.consume_fault("transition_read"):
-                return b""
-            return b"S"
-        if purpose in {"output-read", "error-read"}:
-            point = "output_read" if purpose.startswith("output") else "error_read"
-            self.fds[fd] = point + "-complete"
-            if self.consume_fault(point):
-                if self.mutation == "bytes":
-                    return b"error"
-                raise OSError(point)
-            return self.output_bytes if point == "output_read" else b""
-        raw = self.data.get(fd, b"")
-        self.data[fd] = b""
-        return raw
-    def write(self, fd, data):
-        purpose = self.fds[fd]
-        if purpose == "release-write" and data == b"G":
-            if self.consume_fault("release_write"):
-                return 0
-            self.released = True
-        elif purpose == "ack-write" and data == b"A" and self.consume_fault("transition_ack"):
-            return 0
-        elif purpose == "admission-write" and self.consume_fault("admission_write"):
-            return len(data) - 1
-        return len(data)
-    def close(self, fd):
-        if fd not in self.fds:
-            raise AssertionError("outer descriptor closed twice")
-        if self.consume_fault("close"):
-            if self.mutation == "before":
-                raise OSError("close before")
-            del self.fds[fd]
-            self.foreign = fd
-            self.fds[fd] = "foreign"
-            raise OSError("close after reuse")
-        del self.fds[fd]
-        self.data.pop(fd, None)
-    def fstat(self, fd):
-        if fd not in self.fds:
-            raise OSError(errno.EBADF, "closed")
-        identity = 101 if self.fds[fd] == "proc-exe" else fd
-        return SimpleNamespace(st_dev=8, st_ino=identity, st_mode=stat.S_IFREG | 0o555)
-    def fcntl(self, fd, command, argument=0):
-        if command == fcntl.F_DUPFD_CLOEXEC:
-            if self.consume_fault("source_dup"):
-                raise OSError("dup")
-            return self.allocate("source-duplicate")
-        if command == fcntl.F_ADD_SEALS:
-            if self.consume_fault("launcher_seal"):
-                raise OSError("seal")
-            return 0
-        raise AssertionError(command)
-    def launcher_write(self, fd, data):
-        del fd
-        if self.consume_fault("launcher_write"):
-            return 0
-        return len(data)
-    def getsid(self, pid):
-        del pid
-        if self.point == "transition_identity" and self.released:
-            self.consume_fault("transition_identity")
-            return 701
-        return 700 if self.released else 7
-    def getpgid(self, pid):
-        return self.getsid(pid)
-    def waitpid(self, pid, flags):
-        del flags
-        if self.consume_fault("reap"):
-            raise ChildProcessError()
-        self.reaped = True
-        return pid, 1 if self.consume_fault("waitpid") else 0
-    def select(self, readers, writers, errors, timeout=0):
-        del errors, timeout
-        if writers:
-            return [], list(writers), []
-        if readers and all(self.fds.get(fd) == "pidfd" for fd in readers):
-            return (list(readers) if self.signaled else []), [], []
-        if self.consume_fault("output_eof"):
-            return [], [], []
-        return list(readers), [], []
-    def monotonic(self):
-        step = 10.0 if self.point == "output_eof" else 0.1
-        value = getattr(self, "clock", 0.0) + step
-        self.clock = value
-        return value
-    def pidfd_signal(self, fd, number):
-        del fd, number
-        self.signaled = True
-
-
-def outer_process_case(module, row):
-    if not hasattr(module.os, "MFD_CLOEXEC"):
-        module.os.MFD_CLOEXEC = 1
-        module.os.MFD_ALLOW_SEALING = 2
-    if not hasattr(module.fcntl, "F_ADD_SEALS"):
-        module.fcntl.F_ADD_SEALS = 1033
-    ops = OuterKernel(module, row)
-    def start_time_guard(pid, actual_ops=None):
-        if ops.consume_fault("start_time"):
-            raise OSError("start time")
-        return actual_start_time(pid, actual_ops)
-    actual_start_time = module._start_time
-    with patched(
-        module,
-        _SystemOps=lambda: ops,
-        _start_time=start_time_guard,
-    ), patched(
-        module.os,
-        memfd_create=ops.memfd_create,
-        write=ops.launcher_write,
-        lseek=lambda fd, offset, origin: 0,
-        fchmod=lambda fd, mode: None,
-        pipe2=ops.pipe2,
-        fstat=ops.fstat,
-        getsid=ops.getsid,
-        getpgid=ops.getpgid,
-        waitpid=ops.waitpid,
-    ), patched(
-        module.fcntl,
-        fcntl=ops.fcntl,
-    ), patched(
-        module.select,
-        select=ops.select,
-    ), patched(
-        module.time,
-        monotonic=ops.monotonic,
-        sleep=lambda seconds: None,
-    ), patched(
-        module.signal,
-        pidfd_send_signal=ops.pidfd_signal,
-    ):
-        value = module._run_held_python_with_ops(
-            ops, b"held launcher", b"held sources", b"admission\n",
-        )
-    if row["intended_code"] == "accept":
-        if value != b"{}\n" or ops.fired or ops.fds:
-            raise AssertionError(f"complete outer owner mismatch: {ops.events}/{ops.fds}")
-        return
-    raise AssertionError(f"outer primitive fault accepted: {row['id']}")
-
-
 def outer_process_corpus(module):
+    """The deleted ambient issuer corpus is retired, never conditionally skipped."""
     path = FIXTURE.parent / "outer-process-cases.jsonl"
     document = [json.loads(line) for line in path.read_text().splitlines()]
-    header, *rows = document
-    if header["version"] != "cogs.outcome-two-outer-process/v1":
-        raise AssertionError("outer process fixture version")
-    if set(header["case_fields"]) != ROW_KEYS or any(set(row) != ROW_KEYS for row in rows):
-        raise AssertionError("outer process fixture shape")
-    declared = {row["id"] for row in rows}
-    selected = set()
-    consumed = set()
-    oracle = set()
-    for row in rows:
-        selected.add(row["id"])
-        try:
-            outer_process_case(module, row)
-        except (module.RuntimeLauncherError, module.RuntimeLauncherCleanupError,
-                OSError, ChildProcessError):
-            if row["intended_code"] == "accept":
-                raise
-        else:
-            if row["intended_code"] != "accept":
-                raise AssertionError(f"outer primitive fault accepted: {row['id']}")
-        consumed.add(row["id"])
-        oracle.add(row["id"])
-    if declared != selected or declared != consumed or declared != oracle:
-        raise AssertionError("outer declared/selected/consumed/oracle mismatch")
+    expected = {
+        "type": "retired",
+        "version": "cogs.outcome-two-outer-process/v2",
+        "production_method": "_run_held_python_with_ops",
+        "replacement": "_bootstrap_main",
+        "reason": "fixed-cli-issuer",
+    }
+    if document != [expected]:
+        raise AssertionError("deleted outer issuer corpus was not exactly retired")
+    if hasattr(module, expected["production_method"]):
+        raise AssertionError("retired ambient issuer unexpectedly returned")
+    if not callable(getattr(module, expected["replacement"], None)):
+        raise AssertionError("fixed CLI issuer replacement is absent")
 
 
 class SandboxSocket:
@@ -1093,7 +891,8 @@ class SandboxKernel:
         process = SimpleNamespace(
             pid=pid, parent=parent, role=role, fds=fds, next_fd=10,
             start=pid + 1000, sid=200, pgid=200, executable=(8, 808),
-            status=None, exited=threading.Event(), namespaces=dict(self.baseline_ns),
+            status=None, exited=threading.Event(), reaped=False,
+            namespaces=dict(self.baseline_ns),
         )
         self.processes[pid] = process
         if inherited:
@@ -1217,6 +1016,16 @@ class SandboxKernel:
     def socket_recv(self, endpoint, size):
         point = f"{self.process.role}.socket-recv"
         if self.fault(point):
+            if self.mutation == "leader-death":
+                leader = self.processes[300]
+                leader.status = signal.SIGKILL
+                leader.exited.set()
+                inner = self.processes.get(301)
+                if inner is not None:
+                    inner.parent = 200
+                    inner.status = signal.SIGKILL
+                    inner.exited.set()
+                return b"", []
             return b"bad", []
         channel = endpoint.channel
         deadline = real_time.monotonic() + 2
@@ -1535,6 +1344,7 @@ class SandboxKernel:
             return pid, 1
         if not process.exited.is_set():
             return 0, 0
+        process.reaped = True
         return pid, process.status << 8
     def getsid(self, pid):
         process = self.process if pid == 0 else self.processes[pid]
@@ -1557,9 +1367,10 @@ class SandboxKernel:
         return False
     def baseline_exact(self, allow_subreaper_uncertainty=False):
         outer = self.processes[200]
-        live = [item.pid for item in self.processes.values() if item.pid != 200 and not item.exited.is_set()]
+        unsettled = [item.pid for item in self.processes.values()
+                     if item.pid != 200 and (not item.exited.is_set() or not item.reaped)]
         subreaper_exact = self.subreaper == 0 or allow_subreaper_uncertainty
-        return (set(outer.fds) == {0, 1, 2} and not live and not self.root_exists and
+        return (set(outer.fds) == {0, 1, 2} and not unsettled and not self.root_exists and
                 not self.root_mounted and subreaper_exact)
 
 
@@ -1791,11 +1602,14 @@ class _BISocket:
 
 
 class _BIKernel:
-    def __init__(self, module, report, report_bytes, descriptors, rows, root):
+    def __init__(self, module, report, report_bytes, descriptors, rows, root,
+                 secondary_clone=0):
         self.m, self.report, self.report_bytes = module, report, report_bytes
         self.descriptors, self.rows, self.root = descriptors, rows, root
         self.outer, self.worker, self.child = 200, None, None
         self.current_pid, self.next_pid, self.next_fd = self.outer, 300, 700
+        self.secondary_clone = secondary_clone
+        self.clone_count = 0
         self.owned, self.virtual, self.processes, self.sockets = {0, 1, 2}, {}, {}, []
         self.processes[self.outer] = self.proc(1)
         self.tool, self.namespace, self.input_pipe, self.output_pipe = None, None, None, None
@@ -1806,8 +1620,17 @@ class _BIKernel:
         self.packet, self.expected_ack = self.issuance()
         self.libc = type("Libc", (), {"prctl": lambda *args: 0})()
     def proc(self, parent):
-        return {"parent": parent, "start": self.next_pid + 1000, "sid": self.outer,
-                "pgid": self.outer, "exe": (8, 808), "exited": False, "status": 0}
+        return {
+            "parent": parent,
+            "start": self.next_pid + 1000,
+            "sid": self.outer,
+            "pgid": self.outer,
+            "exe": (8, 808),
+            "exited": False,
+            "reaped": False,
+            "status": 0,
+            "gate": None,
+        }
     def alloc(self, kind, **values):
         while self.next_fd in self.owned:
             self.next_fd += 1
@@ -1876,6 +1699,11 @@ class _BIKernel:
         pid = self.next_pid
         self.next_pid += 1
         self.processes[pid] = self.proc(self.outer)
+        self.clone_count += 1
+        self.processes[pid]["gate"] = self.pipe_order[-1][2]
+        if self.clone_count == self.secondary_clone:
+            self.events.append(f"tool:secondary-pidfd:{self.clone_count}")
+            return pid, -1
         pidfd = self.alloc("pidfd", pid=pid)
         if self.worker is None:
             self.worker = pid
@@ -1908,9 +1736,16 @@ class _BIKernel:
         self.owned.remove(fd)
         value = self.virtual.pop(fd, None)
         if value and value["kind"] == "pipe":
-            value["resource"][value["end"] + "_closed"] = True
-            if value["end"] == "write" and value["resource"] is self.input_pipe:
-                self.finish_tool_input()
+            resource = value["resource"]
+            resource[value["end"] + "_closed"] = True
+            if value["end"] == "write":
+                for process in self.processes.values():
+                    if (process["gate"] is resource and not resource["data"]
+                            and not process["exited"]):
+                        process["exited"] = True
+                        process["status"] = 125
+                if resource is self.input_pipe:
+                    self.finish_tool_input()
         elif value is None and fd > 2:
             _BI_CLOSE(fd)
     def finish_tool_input(self):
@@ -1941,6 +1776,7 @@ class _BIKernel:
     def finish_processes(self):
         if self.child is None or self.processes[self.child]["exited"]: return
         self.processes[self.child]["exited"] = True
+        self.processes[self.child]["reaped"] = True
         self.processes[self.namespace]["exited"] = True
         self.root_mounted = False
         for child in _BIPath(self.root).iterdir():
@@ -2040,7 +1876,10 @@ class _BIKernel:
     def waitpid(self, pid, flags):
         del flags
         process = self.processes[pid]
-        return (pid, process["status"] << 8) if process["exited"] else (0, 0)
+        if not process["exited"]:
+            return 0, 0
+        process["reaped"] = True
+        return pid, process["status"] << 8
     def getsid(self, pid): return self.processes[self.current_pid if pid == 0 else pid]["sid"]
     def getpgid(self, pid): return self.processes[self.current_pid if pid == 0 else pid]["pgid"]
     def prctl(self, option, value=0, arg3=0):
@@ -2067,16 +1906,44 @@ def production_runtime_compression_contracts(module):
         report_bytes, descriptors, rows = valid_bundle(module, bundle_dir)
         report = module._decode_report(report_bytes)
         old_root = module._ROOT_PARENT
+        fixture_path = FIXTURE.parent / "tool-process-cases.jsonl"
+        fixture_document = [json.loads(line) for line in fixture_path.read_text().splitlines()]
+        fixture_header, *fixture_cases = fixture_document
+        fixture_fields = {
+            "cleanup_domains", "id", "intended_code", "primitive_fault",
+            "production_method", "sentinel",
+        }
+        expected_header = {
+            "type": "header",
+            "version": "cogs.outcome-two-tool-process/v1",
+            "acceptance_ids": ["AT93-B-01", "AT93-INTEGRATION-01"],
+            "case_fields": sorted(fixture_fields),
+        }
+        if fixture_header != expected_header:
+            raise AssertionError("tool process fixture header")
+        declared = [case["id"] for case in fixture_cases]
+        selected = []
+        consumed = []
+        oracle = []
         runtime_result = None
         try:
             module._ROOT_PARENT = root_parent
-            for launcher, expected_type in (
-                (module._launch_admitted_fixed_runtime_qualification, module.RuntimeQualificationResult),
-                (module._launch_admitted_fixed_compression_qualification, module.RuntimeCompressionQualificationResult),
-            ):
+            for case in fixture_cases:
+                if set(case) != fixture_fields:
+                    raise AssertionError(f"tool process row shape: {case['id']}")
+                selected.append(case["id"])
+                launcher = getattr(module, case["production_method"])
+                expected_type = (
+                    module.RuntimeQualificationResult
+                    if "runtime_qualification" in case["production_method"]
+                    else module.RuntimeCompressionQualificationResult
+                )
                 duplicated = tuple(_BIos.dup(fd) for fd in descriptors)
-                kernel = _BIKernel(module, report, report_bytes, duplicated, rows,
-                                   f"{root_parent}/{module._ROOT_LEAF}")
+                selected_clone = case["primitive_fault"]["clone"]
+                kernel = _BIKernel(
+                    module, report, report_bytes, duplicated, rows,
+                    f"{root_parent}/{module._ROOT_LEAF}", selected_clone,
+                )
                 admission = module._SourceAdmission("0" * 40, "0" * 64, "1" * 64,
                     (ROOT / "schemas/trusted-runtime-closure-v1.json").read_bytes(), "", 0,
                     None, object(), kernel.outer, _BIos.getuid(), _BIos.getgid(), "runtime")
@@ -2086,7 +1953,23 @@ def production_runtime_compression_contracts(module):
                         return module._DATA_SEALS if fd == duplicated[0] else module._EXEC_SEALS
                     if fd in duplicated and command == _BIfcntl.F_GETFL: return _BIos.O_RDONLY
                     return _BI_FCNTL(fd, command, *args)
-                with patched(module, _SystemOps=lambda: kernel), patched(module.os,
+                error = None
+                value = None
+                owner_calls = []
+                actual_worker = module._worker_main
+                actual_namespace = module._namespace_owner
+                def observed_worker(*args, **kwargs):
+                    owner_calls.append("worker")
+                    return actual_worker(*args, **kwargs)
+                def observed_namespace(*args, **kwargs):
+                    owner_calls.append("namespace")
+                    return actual_namespace(*args, **kwargs)
+                with patched(
+                    module,
+                    _SystemOps=lambda: kernel,
+                    _worker_main=observed_worker,
+                    _namespace_owner=observed_namespace,
+                ), patched(module.os,
                     open=kernel.open, close=kernel.close, read=kernel.read, write=kernel.write,
                     pipe2=kernel.pipe2, fstat=kernel.fstat, stat=kernel.stat, pread=kernel.pread,
                     getpid=lambda: kernel.outer, getppid=lambda: 1, pidfd_open=kernel.pidfd_open,
@@ -2094,22 +1977,51 @@ def production_runtime_compression_contracts(module):
                     module.fcntl, fcntl=modeled_fcntl, ioctl=kernel.ioctl), patched(
                     module.select, select=kernel.select), patched(module.os.path,
                     lexists=kernel.lexists, ismount=kernel.ismount):
-                    value = launcher(admission, _BItypes.ModuleType("modeled.closure"), kernel)
-                if type(value) is not expected_type:
-                    raise AssertionError("production launcher result type drift")
-                runtime = value if expected_type is module.RuntimeQualificationResult else value.runtime
-                if expected_type is module.RuntimeQualificationResult:
-                    runtime_result = module._result_value(runtime)
-                if not all(getattr(runtime, name) for name in module._OBSERVATION_NAMES):
-                    raise AssertionError("production launcher observation mismatch")
-                digest = _BIhashlib.sha256(module._FIXED_OUTPUT).hexdigest()
-                if (runtime.gzip_output_sha256, runtime.zstd_output_sha256) != (digest, digest):
-                    raise AssertionError("production launcher output digest drift")
-                if expected_type is module.RuntimeCompressionQualificationResult:
-                    if tuple(item.id for item in value.tools) != ("gzip", "zstd"):
-                        raise AssertionError("production compression order drift")
-                if kernel.owned != {0, 1, 2} or any(not p["exited"] for pid, p in kernel.processes.items() if pid != kernel.outer):
-                    raise AssertionError("modeled production cleanup baseline drift")
+                    try:
+                        value = launcher(admission, _BItypes.ModuleType("modeled.closure"), kernel)
+                    except BaseException as caught:
+                        error = caught
+                expected_accept = case["primitive_fault"]["expect"] == "accept"
+                if (error is None) != expected_accept:
+                    raise AssertionError(f"tool process oracle mismatch: {case['id']} {error!r}")
+                actual_code = "accept" if error is None else getattr(
+                    error, "code", type(error).__name__
+                )
+                if actual_code != case["intended_code"]:
+                    raise AssertionError(
+                        f"tool process code mismatch: {case['id']} {actual_code!r}"
+                    )
+                if selected_clone:
+                    expected_event = f"tool:secondary-pidfd:{selected_clone}"
+                    if kernel.events != [expected_event] or case["sentinel"] != expected_event:
+                        raise AssertionError(f"tool process causal cut mismatch: {case['id']}")
+                else:
+                    runtime = value if type(value) is module.RuntimeQualificationResult else value.runtime
+                    if type(value) is not expected_type or not all(
+                        getattr(runtime, name) for name in module._OBSERVATION_NAMES
+                    ):
+                        raise AssertionError("production launcher result drift")
+                    if owner_calls != ["worker", "namespace", "namespace"]:
+                        raise AssertionError(
+                            f"B/integration child state machines bypassed: {owner_calls}"
+                        )
+                    kernel.events.append("tool:complete")
+                    if case["sentinel"] != "tool:complete":
+                        raise AssertionError("tool complete sentinel drift")
+                    if expected_type is module.RuntimeQualificationResult:
+                        runtime_result = module._result_value(runtime)
+                unsettled = [
+                    pid for pid, process in kernel.processes.items()
+                    if pid != kernel.outer and (not process["exited"] or not process["reaped"])
+                ]
+                if kernel.owned != {0, 1, 2} or unsettled:
+                    raise AssertionError(f"tool process cleanup drift: {case['id']} {unsettled}")
+                consumed.append(case["id"])
+                oracle.append(case["id"])
+            if not declared == selected == consumed == oracle:
+                raise AssertionError("tool process declared/selected/consumed/oracle mismatch")
+            if len(declared) != len(set(declared)):
+                raise AssertionError("duplicate tool process fixture identity")
         finally:
             module._ROOT_PARENT = old_root
             for fd in descriptors:
@@ -2180,20 +2092,20 @@ def parent():
         "_launch_admitted_fixed_sandbox_qualification",
         'None if mode in ("lifecycle", "sandbox") else _load_private_closure',
     )
-    legacy = ("invoke_fixed_admitted_operation", "_prepare_client_from_admitted_bytes")
     if any(token in launcher_source for token in banned):
         raise AssertionError("fixed admitted production routing drift")
     if not all(token in launcher_source for token in required):
         raise AssertionError("fixed admitted production routing drift")
-    if hasattr(module, "invoke_fixed_admitted_operation") and not all(
-        token in launcher_source for token in legacy
-    ):
-        raise AssertionError("legacy admitted production routing drift")
+    dead_api = "invoke_fixed_admitted_operation"
+    cli_tokens = ("/usr/bin/python3", '"-I"', '"-B"', "_bootstrap_main")
+    if hasattr(module, dead_api) or dead_api in common_source:
+        raise AssertionError("common retained the dead ambient launcher bridge")
+    if not all(token in launcher_source + common_source for token in cli_tokens):
+        raise AssertionError("fixed CLI issuer integration is absent")
     production_operation_contracts(module)
     capsule_contract(module)
     fixed_bootstrap_modes(module)
-    if hasattr(module, "_run_held_python_with_ops"):
-        outer_process_corpus(module)
+    outer_process_corpus(module)
     production_runtime_compression_contracts(module)
     full_sandbox_launch_contract(module)
     sandbox_process_corpus(module)
