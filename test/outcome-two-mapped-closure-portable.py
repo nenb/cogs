@@ -564,6 +564,13 @@ class MappingAdmission:
 
 
 def mapping_owner_success():
+    parser_argv = closure._child_argv("python3-parser")
+    if parser_argv != (
+        "python3", "-I", "-B", "-S", "-c", "__import__('os').read(0,1)",
+    ):
+        raise AssertionError("A helper does not suppress system-site mapping expansion")
+    if "-S" in closure._child_argv("gzip") or "-S" in closure._child_argv("zstd"):
+        raise AssertionError("Python no-site flag leaked into fixed compression argv")
     document = [json.loads(line) for line in (FIXTURES / "maps/owner-cases.jsonl").read_text().splitlines()]
     owner_header, *rows = document
     if owner_header["version"] != "cogs.outcome-two-mapping-owner/v1" or any(set(row) != ROW_KEYS for row in rows):

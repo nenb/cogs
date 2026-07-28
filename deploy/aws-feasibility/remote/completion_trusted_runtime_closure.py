@@ -1025,7 +1025,10 @@ def _parse_maps(raw: bytes) -> tuple[_MapRow, ...]:
 
 def _child_argv(tool: str) -> tuple[str, ...]:
     if tool == 'python3-parser':
-        return ('python3', '-I', '-B', '-c', "__import__('os').read(0,1)")
+        # Isolated mode still imports the system site module.  Suppress it so a
+        # host sitecustomize or executable .pth hook cannot expand the helper's
+        # mappings beyond the authenticated ELF dependency closure.
+        return ('python3', '-I', '-B', '-S', '-c', "__import__('os').read(0,1)")
     if tool == 'gzip':
         return ('gzip', '-dc')
     if tool == 'zstd':
