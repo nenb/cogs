@@ -394,16 +394,16 @@ assert decoded['source_set_sha256']==value and not hasattr(launcher,'invoke_fixe
 test("sole held launcher CLI has exact isolated descriptor ABI and no ambient issuer", { skip: process.platform !== "linux" }, () => {
   const script = `import ast,json,sys\nsys.path.insert(0,'scripts/native-qualification');import common
 source=b'''import fcntl,json,os,sys
-assert not os.environ or dict(os.environ)=={'LC_CTYPE':'C.UTF-8'}
+environment_ok=not os.environ or dict(os.environ)=={'LC_CTYPE':'C.UTF-8'}
 os.environ.clear()
-assert not os.environ and sys.flags.isolated and sys.flags.dont_write_bytecode
-assert sorted(map(int,os.listdir('/proc/self/fd')))[:5] == [0,1,2,3,4]
-assert os.read(3,4096)==b'ADMISSION\\n' and fcntl.fcntl(4,1034)==31
-os.write(1,b'{"source_revision":"'+b'a'*40+b'","source_set_sha256":"'+b'b'*64+b'"}\\n')
+value={'admission':os.read(3,4096)==b'ADMISSION\\n','descriptors':sorted(map(int,os.listdir('/proc/self/fd')))[:5]==[0,1,2,3,4],'environment':environment_ok and not os.environ,'isolated':bool(sys.flags.isolated and sys.flags.dont_write_bytecode),'seals':fcntl.fcntl(4,1034)==31}
+os.write(1,json.dumps(value,sort_keys=True,separators=(',',':')).encode()+b'\\n')
 '''
 registry=common.FdRegistry();ops=common.SystemCommonOps(registry)
 raw=ops._issue_cli(source,b'ADMISSION\\n',b'CAPSULE')
-assert ops._decode_cli(raw)=={'source_revision':'a'*40,'source_set_sha256':'b'*64}
+assert json.loads(raw)=={'admission':True,'descriptors':True,'environment':True,'isolated':True,'seals':True},raw
+expected=b'{"source_revision":"'+b'a'*40+b'","source_set_sha256":"'+b'b'*64+b'"}\\n'
+assert ops._decode_cli(expected)=={'source_revision':'a'*40,'source_set_sha256':'b'*64}
 registry.close_reverse()
 tree=ast.parse(open(common.COMMON).read())
 issuer=next(n for n in ast.walk(tree) if isinstance(n,ast.FunctionDef) and n.name=='_issue_cli')

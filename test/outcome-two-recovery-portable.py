@@ -346,6 +346,8 @@ class CommonProcess:
         self.thread = None
         self.error = None
 
+MODEL_WAIT_SECONDS = 2.0
+
 class SocketChannel:
     def __init__(self):
         self.queues = [[], []]
@@ -418,7 +420,7 @@ class CommonSocket:
         channel = self.channel
         if channel is None:
             return b""
-        deadline = time.monotonic() + 0.25
+        deadline = time.monotonic() + MODEL_WAIT_SECONDS
         with channel.condition:
             while not channel.queues[self.side]:
                 if (
@@ -458,7 +460,7 @@ class CommonSocket:
         return len(raw)
     def recvmsg(self, bound, rights_bound):
         del rights_bound
-        deadline = time.monotonic() + 0.25
+        deadline = time.monotonic() + MODEL_WAIT_SECONDS
         with self.channel.condition:
             while (
                 not self.channel.queues[self.side]
@@ -488,7 +490,7 @@ class CommonSocket:
             raise OSError(errno.EIO, "modeled listener listen")
         self.listening = True
     def accept(self):
-        deadline = time.monotonic() + 0.25
+        deadline = time.monotonic() + MODEL_WAIT_SECONDS
         with self.kernel.socket_condition:
             while (
                 not self.pending
