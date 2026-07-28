@@ -612,6 +612,19 @@ test("parsed workflow gives only an explicit exact-SHA dispatch native authority
     assert.equal(invoke.env?.NQ_DEFAULT_BRANCH, "${{ github.event.repository.default_branch }}");
     assert.equal(invoke.env?.NQ_REF_PROTECTED, "${{ github.ref_protected }}");
     assert.match(invoke.run ?? "", /["']\$NQ_DRIVER["'] --workflow-bound/u);
+    if (job === "E") {
+      const run = invoke.run ?? "";
+      const provision = run.indexOf('"$NQ_DRIVER" --provision-root-authority');
+      const operation = run.indexOf('"$NQ_DRIVER" --workflow-bound');
+      assert.ok(provision >= 0 && provision < operation, "root pin precedes E operation");
+      assert.match(run, /env -i NQ_ROOT_AUTHORITY_SHA="\$NQ_HEAD_SHA"/u);
+      assert.equal((run.match(/--provision-root-authority/gu) ?? []).length, 1);
+      const rootCleanup = parsed.steps.find((step) => step.run?.includes("--cleanup-root-authority"));
+      assert.ok(rootCleanup);
+      assert.equal(rootCleanup.if, "${{ always() }}");
+      assert.ok(rootCleanup.run?.includes(`NQ_ROOT_AUTHORITY_SHA="${reviewedRef}"`));
+      assert.ok(parsed.steps.indexOf(invoke) < parsed.steps.indexOf(rootCleanup), "root cleanup follows E operation");
+    }
     const upload = stepById(parsed, "upload"); const cleanup = stepById(parsed, "cleanup");
     assert.equal(cleanup.if, "${{ always() }}");
     assert.ok(parsed.steps.indexOf(upload) < parsed.steps.indexOf(cleanup), `${id} upload causality`);
