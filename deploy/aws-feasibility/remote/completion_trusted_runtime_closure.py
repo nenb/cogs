@@ -788,9 +788,6 @@ def _resolve_tool(ops: _Ops, tool: str, path: str) -> ResolvedToolClosure:
                     _close_objects(ops, (provider,))
                     provider = existing
                 else:
-                    if _metadata(provider)[0] is not None:
-                        _close_objects(ops, (provider,))
-                        raise RuntimeClosureError('library declares an interpreter')
                     owned.append(provider)
                     objects[provider.identity] = provider
                 if _metadata(provider)[1] != name:
