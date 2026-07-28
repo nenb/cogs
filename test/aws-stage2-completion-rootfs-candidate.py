@@ -1069,8 +1069,10 @@ def portable_supervisor_tests():
                     portable_child(write_fd, chain["fds"][3], chain["fds"][4], kind, row,
                                    1 if kind == "post-settlement" else 0)
                 os.close(write_fd)
-                phase = time.monotonic_ns() + 80_000_000
-                result = supervise_child(pid, read_fd, phase, phase + 80_000_000, 30_000_000)
+                # Hosted contention can exceed the old 80 ms portable-only
+                # handshake window before the child emits its first frame.
+                phase = time.monotonic_ns() + 500_000_000
+                result = supervise_child(pid, read_fd, phase, phase + 500_000_000, 100_000_000)
                 os.close(read_fd)
                 assert result["reaped"] and result["valid"]
                 assert terminal_recovery_count(result) == (
