@@ -394,6 +394,12 @@ value=digest.hexdigest();context=SimpleNamespace(job='integration',head_sha='0'*
 admission,capsule=common.SystemCommonOps._capsule(context,held,value)
 decoded=json.loads(admission);sources,driver=launcher._decode_held_source_capsule(capsule,decoded)
 assert sources=={path:held[path].raw for path in common.SOURCE_PATHS} and driver==held[client].raw
+ambient=type(sys)('completion_elf');ambient.ElfMetadata=ambient.parse_elf64=object();sys.modules['completion_elf']=ambient
+saved=sys.path[:];sys.path[:]=[]
+try:closure=launcher._load_private_closure(sources,value)
+finally:sys.path[:]=saved
+package='_cogs_o2_'+value[:16];parser=sys.modules[package+'.completion_elf']
+assert closure.__name__==package+'.completion_trusted_runtime_closure' and closure.parse_elf64 is parser.parse_elf64
 assert decoded['source_set_sha256']==value and not hasattr(launcher,'invoke_fixed_admitted_operation')`;
   const run = spawnSync("python3", ["-I", "-B", "-c", script], { encoding: "utf8" });
   assert.equal(run.status, 0, run.stderr);
