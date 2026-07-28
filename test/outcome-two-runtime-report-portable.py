@@ -323,6 +323,7 @@ def dispatch(row, methods, hostile):
         raise AssertionError(f"{row['id']}: exact exception class/code changed")
     if row["sentinel"] != events:
         raise AssertionError(f"{row['id']}: production predicate sentinel changed")
+    return tuple(events)
 
 
 def emit_schema_corpus():
@@ -378,12 +379,25 @@ def parent():
         raise AssertionError("production report re-encoder diverged")
     if producer_value is consumer_value or producer_value != consumer_value:
         raise AssertionError("production report codec values are not independent and equal")
-    executed = []
+    identifiers = [row["id"] for row in rows]
+    declared = set(identifiers)
+    if len(declared) != len(identifiers):
+        raise AssertionError("duplicate declared report case")
+    selected = set()
+    consumed = set()
+    oracle = set()
     for row in rows:
-        dispatch(row, methods, hostile_bytes(golden, raw, row))
-        executed.append(row["id"])
-    if executed != [row["id"] for row in rows]:
-        raise AssertionError("report manifest rows were not consumed exactly once")
+        selected.add(row["id"])
+        events = dispatch(row, methods, hostile_bytes(golden, raw, row))
+        if not events or tuple(row["sentinel"]) != events:
+            raise AssertionError(f"{row['id']}: report cut was not causally consumed")
+        consumed.add(row["id"])
+        expected_oracles = len(row["production_method"])
+        if len(events) != expected_oracles:
+            raise AssertionError(f"{row['id']}: report oracle cardinality changed")
+        oracle.add(row["id"])
+    if not declared == selected == consumed == oracle:
+        raise AssertionError("report declared/selected/consumed/oracle mismatch")
     prohibited = (b"/usr/", b"HOME", b"0x7", b"command_output", b'"pid"')
     if any(item in raw for item in prohibited):
         raise AssertionError("golden report disclosed prohibited metadata")

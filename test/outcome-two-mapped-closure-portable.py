@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Manifest-exact strict maps parsing, binding, bounds, and close aggregation."""
 
+import dataclasses
 import hashlib
 import importlib
 import json
 import os
 from pathlib import Path
 import stat
+import struct
 import sys
 from types import SimpleNamespace
 
@@ -90,12 +92,21 @@ class MapOps(closure._Ops):
         self.snapshots = [before, after]
         self.objects = objects
         self.fault = fault
+        self.fired = fault is None
+        self.events = []
         self.next_fd = 10
         self.fds = {}
         self.positions = {}
         self.map_stats = {}
         self.maps_opened = 0
         self.close_attempts = []
+
+    def consume(self, fault):
+        if self.fault == fault:
+            self.fired = True
+            self.events.append(f"fault:{fault}")
+            return True
+        return False
 
     def open(self, path, flags, mode=0o600, *, dir_fd=None):
         del flags, mode, dir_fd
@@ -104,7 +115,7 @@ class MapOps(closure._Ops):
             self.maps_opened += 1
             item = ("maps", raw)
         elif "/map_files/" in path:
-            if self.fault == "map-open-eacces":
+            if self.consume("map-open-eacces"):
                 raise PermissionError(path)
             address = path.rsplit("/", 1)[1]
             address = "-".join(f"{int(value, 16):08x}" for value in address.split("-"))
@@ -124,10 +135,11 @@ class MapOps(closure._Ops):
 
     def read(self, fd, size):
         if self.fault == "maps-read-and-close" and self.fds[fd][0] == "maps":
+            self.consume("maps-read-and-close")
             raise OSError("primary maps read")
         raw = self.fds[fd][1]
         offset = self.positions[fd]
-        if self.fault == "maps-over-4m":
+        if self.consume("maps-over-4m"):
             raw = b"x" * (closure._MAX_MAP_BYTES + 1)
         value = raw[offset:offset + size]
         self.positions[fd] += len(value)
@@ -137,6 +149,7 @@ class MapOps(closure._Ops):
         raw = self.fds[fd][1]
         value = raw[offset:offset + size]
         if self.fault == "map-parse-and-close" and value:
+            self.consume("map-parse-and-close")
             return bytes([value[0] ^ 1]) + value[1:]
         return value
 
@@ -147,7 +160,10 @@ class MapOps(closure._Ops):
         key = ("fstat", fd)
         count = self.positions.get(key, 0)
         self.positions[key] = count + 1
-        mtime = 2 if self.fault == "fstat-generation-change" and count else 1
+        changed = self.fault == "fstat-generation-change" and count
+        if changed:
+            self.consume("fstat-generation-change")
+        mtime = 2 if changed else 1
         return SimpleNamespace(
             st_dev=device, st_ino=inode, st_size=len(raw), st_mtime_ns=mtime,
             st_ctime_ns=1, st_mode=stat.S_IFREG | 0o755, st_uid=0, st_gid=0,
@@ -223,6 +239,14 @@ def case_inputs(case):
 def run(row, case, branch):
     before, after, objects, resolved, fault = case_inputs(case)
     ops = MapOps(before, after, objects, fault)
+    data_faults = {
+        "missing-lf", "overlapping-row", "maps-over-4096-lines",
+        "two-roles-same-fingerprint", "129-unique-objects",
+    }
+    if fault in data_faults:
+        ops.fired = True
+        ops.events.append(f"input:{fault}")
+    ops.events.append(f"enter:{branch.__name__}")
     try:
         result = branch(ops, CHILD, resolved)
     except (closure.RuntimeClosureError, closure.RuntimeClosureCleanupError, OSError) as error:
@@ -242,8 +266,232 @@ def run(row, case, branch):
             raise AssertionError(f"hostile map case accepted: {case['id']}")
         if result.mapped != tuple((item.role, item.sha256) for item in resolved.objects):
             raise AssertionError("mapping sequence was not exact")
+    if fault is not None and not ops.fired:
+        raise AssertionError(f"selected map fault was not consumed: {row['id']}")
     if ops.fds:
         raise AssertionError(f"descriptor residue after {case['id']}: {ops.fds}")
+    ops.events.append(f"oracle:{row['id']}")
+    return ops
+
+
+class MappingOwnerOps(MapOps):
+    """A's complete owner over fixed source, helper, proc, map, and reap syscalls."""
+    fixed = {
+        "/usr/bin/python3": "valid-executable.elf",
+        "/lib64/ld-linux-x86-64.so.2": "valid-loader.elf",
+        "/lib/x86_64-linux-gnu/libalpha.so.1": "valid-libalpha.elf",
+        "/lib/x86_64-linux-gnu/libbeta.so.1": "valid-libbeta.elf",
+    }
+    def __init__(self):
+        super().__init__(BEFORE, AFTER, dict(HEADER["objects"]))
+        self.source = {
+            path: (FIXTURES / "elf" / fixture).read_bytes()
+            for path, fixture in self.fixed.items()
+        }
+        self.source_inodes = {path: 101 + index for index, path in enumerate(self.source)}
+        self.paths = {}
+        self.dirs = {"/"}
+        for path in self.source:
+            parent = Path(path).parent
+            while str(parent) != ".":
+                self.dirs.add(str(parent))
+                if str(parent) == "/":
+                    break
+                parent = parent.parent
+        self.dir_reads = set()
+        self.pipe_number = 0
+        self.status_reads = 0
+        self.child_live = False
+        self.child_reaped = False
+        self.events = []
+        self.next_fd = 10
+        self.fds = {0: ("stdio", b""), 1: ("stdio", b""), 2: ("stdio", b""), 50: ("ambient", b"")}
+        self.positions = {}
+    def architecture_gate(self):
+        self.events.append("A:architecture")
+    def allocate(self, kind, raw=b""):
+        while self.next_fd in self.fds:
+            self.next_fd += 1
+        fd = self.next_fd
+        self.next_fd += 1
+        self.fds[fd] = (kind, raw)
+        self.positions[fd] = 0
+        return fd
+    def full_path(self, path, dir_fd):
+        if path.startswith("/"):
+            return os.path.normpath(path)
+        parent = self.paths[dir_fd]
+        return os.path.normpath(parent.rstrip("/") + "/" + path)
+    def open(self, path, flags, mode=0o600, *, dir_fd=None):
+        del flags, mode
+        if path == "/proc/self/fd":
+            return self.allocate("fd-directory")
+        if path == "/proc/self/task/self/children" or path.endswith("/children"):
+            return self.allocate("proc", b"")
+        if path == "/dev/null":
+            return self.allocate("devnull")
+        if path.endswith("/stat"):
+            fields = b" ".join([b"1"] * 19 + [b"10"] + [b"1"] * 8)
+            return self.allocate("proc", b"321 (held-python) S " + fields + b"\n")
+        if path.endswith("/exe"):
+            return self.allocate("proc-exe")
+        if path == "/proc/321/maps" or "/map_files/" in path:
+            return super().open(path, 0)
+        full = self.full_path(path, dir_fd)
+        if full not in self.dirs and full not in self.source:
+            raise FileNotFoundError(full)
+        fd = self.allocate("source" if full in self.source else "directory")
+        self.paths[fd] = full
+        return fd
+    def stat_value(self, path):
+        if path not in self.dirs and path not in self.source:
+            raise FileNotFoundError(path)
+        directory = path in self.dirs
+        raw = self.source.get(path, b"")
+        inode = self.source_inodes.get(path, abs(hash(path)) & 0xffff)
+        mode = stat.S_IFDIR | 0o755 if directory else stat.S_IFREG | 0o755
+        return SimpleNamespace(
+            st_dev=os.makedev(8, 1), st_ino=inode, st_size=len(raw), st_mtime_ns=1,
+            st_ctime_ns=1, st_mode=mode, st_uid=0, st_gid=0,
+        )
+    def stat(self, path, *, dir_fd, follow_symlinks):
+        if follow_symlinks:
+            raise AssertionError("A source walker followed a component")
+        return self.stat_value(self.full_path(path, dir_fd))
+    def fstat(self, fd):
+        kind = self.fds[fd][0]
+        if kind in {"source", "directory"}:
+            return self.stat_value(self.paths[fd])
+        if kind == "proc-exe":
+            return SimpleNamespace(st_dev=os.makedev(8, 1), st_ino=101)
+        if kind == "object":
+            raw = self.fds[fd][1]
+            major, inode = self.map_stats[fd]
+            return SimpleNamespace(
+                st_dev=os.makedev(major, 1), st_ino=inode, st_size=len(raw),
+                st_mtime_ns=1, st_ctime_ns=1, st_mode=stat.S_IFREG | 0o755,
+                st_uid=0, st_gid=0,
+            )
+        return SimpleNamespace(
+            st_dev=1, st_ino=fd, st_size=0, st_mtime_ns=1, st_ctime_ns=1,
+            st_mode=stat.S_IFREG | 0o600, st_uid=0, st_gid=0,
+        )
+    def pread(self, fd, size, offset):
+        if self.fds[fd][0] == "source":
+            raw = self.source[self.paths[fd]]
+            return raw[offset:offset + size]
+        return super().pread(fd, size, offset)
+    def read(self, fd, size):
+        kind, raw = self.fds[fd]
+        if kind == "status-read":
+            self.status_reads += 1
+            return b"R\n" if self.status_reads == 1 else b""
+        offset = self.positions.get(fd, 0)
+        value = raw[offset:offset + size]
+        self.positions[fd] = offset + len(value)
+        return value
+    def getdents(self, fd, maximum=32768):
+        del maximum
+        if fd in self.dir_reads:
+            return b""
+        self.dir_reads.add(fd)
+        return b"".join(
+            struct.pack("=QqHB", value + 1, 0, 24, 0)
+            + str(value).encode() + b"\0" + bytes(4 - len(str(value)))
+            for value in sorted(self.fds)
+        )
+    def pipe(self):
+        purpose = ("input", "registration", "release", "status")[self.pipe_number]
+        self.pipe_number += 1
+        return self.allocate(purpose + "-read"), self.allocate(purpose + "-write")
+    def clone3_pidfd(self):
+        self.child_live = True
+        self.events.append("A:child-atomically-registered")
+        return 321, self.allocate("pidfd")
+    def getpid(self):
+        return 7
+    def getsid(self, pid):
+        return pid
+    def getpgid(self, pid):
+        return pid
+    def write(self, fd, data):
+        kind = self.fds[fd][0]
+        if kind == "registration-write":
+            self.events.append("A:registration-release")
+        if kind == "release-write":
+            if "A:registration-release" not in self.events:
+                raise AssertionError("A helper release preceded registration")
+            self.events.append("A:exec-release")
+        return len(data)
+    def poll_readable(self, fd, seconds):
+        return seconds > 0 and self.fds[fd][0] == "status-read"
+    def monotonic(self):
+        return len(self.events) / 100
+    def sleep(self, seconds):
+        del seconds
+    def wait_pidfd_nohang(self, fd):
+        if self.fds[fd][0] != "pidfd":
+            raise AssertionError("A reap did not use pidfd authority")
+        self.child_live = False
+        self.child_reaped = True
+        self.events.append("A:pidfd-reap")
+        return True
+    def close(self, fd):
+        if fd not in self.fds:
+            raise AssertionError("A owner double-closed a descriptor")
+        kind = self.fds.pop(fd)[0]
+        self.paths.pop(fd, None)
+        self.positions.pop(fd, None)
+        self.events.append(f"A:close:{kind}")
+
+
+class MappingAdmission:
+    revision = "0" * 40
+    source_set_sha256 = "1" * 64
+    used = False
+    def _consume_fixed_operation(self, operation, module):
+        if self.used or operation != "mapping" or module is not closure:
+            return False
+        self.used = True
+        return True
+
+
+def mapping_owner_success():
+    document = [
+        json.loads(line)
+        for line in (FIXTURES / "maps/owner-cases.jsonl").read_text().splitlines()
+    ]
+    owner_header, *rows = document
+    if owner_header["version"] != "cogs.outcome-two-mapping-owner/v1":
+        raise AssertionError("A owner ledger version")
+    if len(rows) != 1 or set(rows[0]) != ROW_KEYS:
+        raise AssertionError("A owner ledger shape")
+    row = rows[0]
+    declared = {row["id"]}
+    selected = {row["id"]}
+    production = closure._qualify_fixed_python_mapping_with_ops
+    if row["production_method"] != production.__name__:
+        raise AssertionError("A complete production method changed")
+    ops = MappingOwnerOps()
+    result = production(MappingAdmission(), ops)
+    facts = dataclasses.asdict(result)
+    metadata = {"version", "source_revision", "source_set_sha256", "closure_sha256",
+                "mapping_sha256", "objects", "mapped", "mapped_objects"}
+    if not all(value is True for name, value in facts.items() if name not in metadata):
+        raise AssertionError(f"A complete owner emitted a false fact: {facts}")
+    causal = ["A:child-atomically-registered", "A:registration-release",
+              "A:exec-release", "A:pidfd-reap"]
+    positions = [ops.events.index(event) for event in causal]
+    if positions != sorted(positions) or ops.child_live or not ops.child_reaped:
+        raise AssertionError("A helper registration/exec/reap causality changed")
+    if set(ops.fds) != {0, 1, 2, 50}:
+        raise AssertionError(f"A complete owner descriptor residue: {ops.fds}")
+    if row["sentinel"] not in ops.events or row["intended_code"] != "accept":
+        raise AssertionError("A complete owner sentinel/oracle changed")
+    consumed = {row["id"]}
+    oracle = {row["id"]}
+    if not declared == selected == consumed == oracle:
+        raise AssertionError("A owner declared/selected/consumed/oracle mismatch")
 
 
 def mapping_owner_admission_contract():
@@ -277,12 +525,24 @@ def mapping_owner_admission_contract():
 
 
 mapping_owner_admission_contract()
-selected = list(manifest_cases())
-executed = []
-for row, case, branch in selected:
-    run(row, case, branch)
-    executed.append(row["id"])
-declared = [row["id"] for row, _case, _branch in selected]
-if declared != executed or len(executed) != len(set(executed)):
-    raise AssertionError("maps selected/consumed/oracle/sentinel mismatch")
+mapping_owner_success()
+manifest = list(manifest_cases())
+identifiers = [row["id"] for row, _case, _branch in manifest]
+declared = set(identifiers)
+if len(declared) != len(identifiers):
+    raise AssertionError("duplicate declared maps case")
+selected = set()
+consumed = set()
+oracle = set()
+for row, case, branch in manifest:
+    selected.add(row["id"])
+    ops = run(row, case, branch)
+    if f"enter:{row['sentinel']}" not in ops.events:
+        raise AssertionError(f"maps production sentinel missed: {row['id']}")
+    consumed.add(row["id"])
+    if f"oracle:{row['id']}" not in ops.events:
+        raise AssertionError(f"maps oracle missed: {row['id']}")
+    oracle.add(row["id"])
+if not declared == selected == consumed == oracle:
+    raise AssertionError("maps declared/selected/consumed/oracle mismatch")
 print("Outcome 2 mapped closure portable tests passed")

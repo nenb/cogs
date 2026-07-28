@@ -283,12 +283,20 @@ class FsOps(closure._Ops):
         if name != "library-roots": raise AssertionError("caller-selected enumeration")
         return tuple(values)
 def closure_matrix():
-    selected = list(manifest_cases())
-    executed = []
-    for row, case, branch in selected:
+    manifest = list(manifest_cases())
+    identifiers = [row["id"] for row, _case, _branch in manifest]
+    declared = set(identifiers)
+    if len(declared) != len(identifiers):
+        raise AssertionError("duplicate declared closure case")
+    selected = set()
+    consumed = set()
+    oracle = set()
+    deferred = []
+    for row, case, branch in manifest:
+        selected.add(row["id"])
         if case.get("fault") in {"object-bound", "tool-byte-bound", "aggregate-byte-bound", "cross-role-alias"}:
+            deferred.append((row, case, branch))
             continue
-        executed.append(row["id"])
         ops = FsOps(case)
         try:
             value = branch(ops, "python3-parser", "/usr/bin/python3")
@@ -299,10 +307,11 @@ def closure_matrix():
             if case["expect"] != "accept": raise AssertionError(f"accepted {case['id']}")
             assert [item.role for item in value.objects[:2]] == ["executable", "loader"]
             closure._close_objects(ops, value.objects)
-        if ops.fds: raise AssertionError(f"descriptor residue: {case['id']}")
-    bound_cases = [(row, case, branch) for row, case, branch in selected if row["id"] not in executed]
-    for row, case, branch in bound_cases:
-        executed.append(row["id"])
+        if ops.fds:
+            raise AssertionError(f"descriptor residue: {case['id']}")
+        consumed.add(row["id"])
+        oracle.add(row["id"])
+    for row, case, branch in deferred:
         fault = case["fault"]
         if fault == "object-bound":
             rows = [[((8, index), 1) for index in range(129)]]
@@ -323,9 +332,10 @@ def closure_matrix():
             closure._close_objects(ops, first.objects)
         else:
             raise AssertionError(f"unimplemented closure bound case: {fault}")
-    declared = [row["id"] for row, _case, _branch in selected]
-    if declared != executed or len(executed) != len(set(executed)):
-        raise AssertionError("closure selected/consumed/oracle/sentinel mismatch")
+        consumed.add(row["id"])
+        oracle.add(row["id"])
+    if not declared == selected == consumed == oracle:
+        raise AssertionError("closure declared/selected/consumed/oracle mismatch")
 def dirent(value):
     name = str(value).encode() + b"\0"
     length = (19 + len(name) + 7) & ~7
@@ -484,57 +494,75 @@ class ChildReject(BaseException): pass
 
 
 class DescriptorCutOps(DescriptorOps):
-    """Drives the complete C owner while faulting only its syscall adapter."""
-    def __init__(self, row):
+    """Drives C through production; modeled child exec causes parent readiness."""
+    def __init__(self, row, *, nested_child=False):
         super().__init__()
+        self.row = row
         self.point = row["primitive_fault"]["point"]
         self.mutation = row["primitive_fault"]["mutation"]
+        self.sentinel = row["sentinel"]
         self.fired = False
         self.events = []
-        self.child = self.mutation == "child" or self.point == "execve"
-        self.getdents_calls = 0
+        self.child = nested_child or self.mutation == "child" or self.point == "execve"
+        self.nested_child = nested_child
+        self.child_exec_proved = False
+        self.child_reaped = False
+        self.dir_calls = {}
+        self.bound_fd = None
         self.limit_reads = 0
         self.limit_sets = 0
-        self.signaled = False
         self.foreign = None
         self.clock = 0.0
     def consume_fault(self, point, mutation=None):
         selected = self.point == point and (mutation is None or self.mutation == mutation)
         if selected and not self.fired:
             self.fired = True
-            self.events.append(f"C:{point}:{self.mutation}")
+            self.events.append(self.sentinel)
             return True
         return False
+    def checkpoint(self, name):
+        self.events.append(f"checkpoint:{name}")
+        if self.point == "checkpoint" and self.mutation == name:
+            self.consume_fault("checkpoint", name)
+            raise RuntimeError(f"fault at {name}")
     def monotonic(self):
         self.clock += 0.1
         return self.clock
+    def _dot(self, maximum):
+        return struct.pack("=QqHB", 1, 0, maximum, 0) + b".\0" + bytes(maximum - 21)
     def getdents(self, fd, maximum=32768):
-        self.getdents_calls += 1
+        call = self.dir_calls.get(fd, 0) + 1
+        self.dir_calls[fd] = call
         mutation = self.mutation if self.point == "getdents" else None
         if mutation == "unaligned" and not self.fired:
             self.consume_fault("getdents")
-            name = b"0\0"
-            return struct.pack("=QqHB", 1, 0, 21, 0) + name
+            return struct.pack("=QqHB", 1, 0, 21, 0) + b"0\0"
         if mutation == "padding" and not self.fired:
             self.consume_fault("getdents")
             raw = bytearray(dirent(0))
             raw[-1] = 1
             return bytes(raw)
-        if mutation == "call-bound":
-            self.consume_fault("getdents")
-            if self.getdents_calls <= 34:
-                return struct.pack("=QqHB", 1, 0, 24, 0) + b".\0" + bytes(3)
-            return b""
+        if mutation in {"call-bound", "first-over-bound", "exact-boundary"}:
+            if self.bound_fd is None:
+                self.bound_fd = fd
+            if fd == self.bound_fd:
+                self.consume_fault("getdents")
+                nonempty = 32 if mutation == "exact-boundary" else 33
+                if call == 1:
+                    return b"".join(dirent(value) for value in sorted(self.fds))
+                if call <= nonempty:
+                    return self._dot(24)
+                return b""
         if mutation == "byte-bound":
             self.consume_fault("getdents")
-            if self.getdents_calls <= 33:
-                return struct.pack("=QqHB", 1, 0, maximum, 0) + b".\0" + bytes(maximum - 21)
-            return b""
+            return self._dot(maximum) if call <= 33 else b""
         if mutation == "entry-bound":
             self.consume_fault("getdents")
-            if self.getdents_calls == 1:
+            if call == 1:
                 return b"".join(dirent(value) for value in range(16_385))
             return b""
+        if self.fds.get(fd) == "/proc/123/fd" and not self.child_exec_proved:
+            raise AssertionError("parent observed post-exec fds without causal child exec")
         return super().getdents(fd, maximum)
     def getrlimit(self):
         self.limit_reads += 1
@@ -568,44 +596,92 @@ class DescriptorCutOps(DescriptorOps):
             raise OSError("duplicate")
         return super().fcntl(fd, command, argument)
     def clone3_pidfd(self):
-        if self.consume_fault("clone3_pidfd"): raise OSError("clone3")
-        if self.child: return 0, -1
+        if self.consume_fault("clone3_pidfd"):
+            raise OSError("clone3")
+        if self.child:
+            return 0, -1
         return super().clone3_pidfd()
+    def _execute_released_child(self):
+        child_row = {
+            "primitive_fault": {"point": "none", "mutation": "child"},
+            "sentinel": "C:nested-child-exec",
+        }
+        child_ops = DescriptorCutOps(child_row, nested_child=True)
+        try:
+            closure._qualify_fixed_descriptor_primitives_with_ops(
+                DescriptorAdmission(), child_ops
+            )
+        except ChildExec:
+            pass
+        except closure.RuntimeClosureCleanupError as error:
+            if not error.failures or type(error.failures[0]) is not ChildExec:
+                raise
+        else:
+            raise AssertionError("released C child did not reach production execve")
+        if "C:execve-exact" not in child_ops.events:
+            raise AssertionError("C child exec transcript was not exact")
+        self.child_exec_proved = True
+        self.events.append("C:execve-causally-proved")
     def write(self, fd, data):
-        if self.point == "write" and self.mutation == "release-short" and data == b"G":
+        release = self.fds.get(fd) == "release-write" and data == b"G"
+        if self.point == "write" and self.mutation == "release-short" and release:
             self.consume_fault("write")
             return 0
+        if release and not self.child and not self.child_exec_proved:
+            self._execute_released_child()
         return super().write(fd, data)
     def read(self, fd, size):
-        if self.child and self.fds.get(fd) == "release-read": return b"G"
+        if self.child and self.fds.get(fd) == "release-read":
+            return b"G"
         if self.point == "read" and self.mutation == "status-eof" and self.fds.get(fd) == "status-read":
             self.consume_fault("read")
             return b""
         return super().read(fd, size)
     def execve(self, fd, argv, environment):
-        del fd, argv, environment
-        self.events.append("C:execve")
         self.exec_attempted = True
+        exact_fd = self.fds.get(fd) == "/usr/bin/python3"
+        exact_argv = argv == closure._descriptor_child_argv()
+        exact_environment = environment == {}
+        if not exact_fd or not exact_argv or not exact_environment:
+            raise AssertionError("production C execve authority changed")
+        observer_faults = {"wrong-fd", "wrong-argv", "environment"}
+        if self.point == "execve" and self.mutation in observer_faults:
+            self.consume_fault("execve")
+            self.exec_failed = True
+            raise OSError(f"injected exec observer: {self.mutation}")
+        self.events.append("C:execve-exact")
         if self.consume_fault("execve"):
             self.exec_failed = True
             raise OSError("execve")
         raise ChildExec()
     def exit_child(self, status):
-        if self.exec_attempted and not self.exec_failed: raise ChildExec()
+        if self.exec_attempted and not self.exec_failed:
+            raise ChildExec()
         raise ChildReject(status)
     def waitid_pidfd_nohang(self, fd):
-        del fd
+        if self.fds.get(fd) != "pidfd":
+            raise AssertionError("C waitid did not use retained pidfd")
         self.events.append("C:waitid")
         if self.point == "waitid":
             self.consume_fault("waitid")
             if self.mutation == "none":
                 return None
-        code = 2 if self.mutation == "wrong-code" else getattr(os, "CLD_EXITED", 1)
-        status = 1 if self.mutation == "wrong-status" else 0
-        return SimpleNamespace(si_pid=123, si_uid=0, si_code=code, si_status=status)
+        mutation = self.mutation if self.point == "waitid" else ""
+        code = 2 if mutation == "wrong-code" else getattr(os, "CLD_EXITED", 1)
+        status = 1 if mutation == "wrong-status" else 0
+        pid = 999 if mutation == "wrong-pid" else 123
+        uid = 999 if mutation == "wrong-uid" else 0
+        return SimpleNamespace(si_pid=pid, si_uid=uid, si_code=code, si_status=status)
     def reap_pid_nohang(self, pid):
         self.events.append("C:waitpid")
-        if self.consume_fault("waitpid"): return 0, 0
+        if self.point == "waitpid":
+            self.consume_fault("waitpid")
+            if self.mutation == "wrong-pid":
+                return 0, 0
+            if self.mutation == "wrong-status":
+                self.child_reaped = True
+                return pid, 1 << 8
+        self.child_reaped = True
         return pid, 0
     def wait_pidfd_nohang(self, fd):
         self.events.append("C:legacy-wait")
@@ -640,17 +716,22 @@ def descriptor_cut_corpus():
         raise AssertionError("descriptor cut fixture version")
     if set(header["case_fields"]) != ROW_KEYS or any(set(row) != ROW_KEYS for row in rows):
         raise AssertionError("descriptor cut fixture shape")
-    declared = {row["id"] for row in rows}
+    identifiers = [row["id"] for row in rows]
+    declared = set(identifiers)
+    if len(declared) != len(identifiers):
+        raise AssertionError("duplicate declared C case")
     selected = set()
     consumed = set()
     oracle = set()
+    production = closure._qualify_fixed_descriptor_primitives_with_ops
     for row in rows:
+        if row["production_method"] != production.__name__:
+            raise AssertionError(f"C production route changed: {row['id']}")
         selected.add(row["id"])
         ops = DescriptorCutOps(row)
-        admission = DescriptorAdmission()
         rejection = None
         try:
-            result = closure._qualify_fixed_descriptor_primitives_with_ops(admission, ops)
+            result = production(DescriptorAdmission(), ops)
         except ChildExec:
             outcome = "child-exec"
         except ChildReject:
@@ -670,26 +751,47 @@ def descriptor_cut_corpus():
         else:
             outcome = "accept"
             facts = dataclasses.asdict(result)
-            if not all(value is True for name, value in facts.items() if name not in {
-                "version", "source_revision", "source_set_sha256"
-            }):
+            metadata = {"version", "source_revision", "source_set_sha256"}
+            if not all(value is True for name, value in facts.items() if name not in metadata):
                 raise AssertionError(f"C completed with a false fact: {row['id']}")
         if outcome != row["intended_code"]:
-            rejected = locals().get("rejection")
-            failures = getattr(rejected, "failures", ())
-            detail = repr((rejected, [(type(item).__name__, str(item)) for item in failures]))
-            raise AssertionError(f"{row['id']}: expected {row['intended_code']}, got {outcome}: {detail}")
-        if row["primitive_fault"]["point"] != "none" and not ops.fired:
-            raise AssertionError(f"C fault was not consumed: {row['id']}")
-        if outcome == "accept" and not {"C:waitid", "C:waitpid"} <= set(ops.events):
-            raise AssertionError("C parent accepted without exact waitid/waitpid observations")
-        if outcome == "child-exec" and "C:execve" not in ops.events:
-            raise AssertionError("C child accepted without fixed held-Python exec")
+            failures = getattr(rejection, "failures", ())
+            detail = repr((rejection, [(type(item).__name__, str(item)) for item in failures]))
+            raise AssertionError(
+                f"{row['id']}: expected {row['intended_code']}, got {outcome}: {detail}"
+            )
+        faulted = row["primitive_fault"]["point"] != "none"
+        if faulted and (not ops.fired or row["sentinel"] not in ops.events):
+            raise AssertionError(f"C selected fault was not causally consumed: {row['id']}")
+        if not faulted:
+            if outcome == "accept":
+                ops.events.append("C:complete-parent")
+            elif outcome == "child-exec":
+                ops.events.append("C:exec-fixed-python")
+        if row["sentinel"] not in ops.events:
+            raise AssertionError(f"C declared sentinel was not observed: {row['id']}")
+        consumed.add(row["id"])
+        if outcome == "accept":
+            required = {"C:execve-causally-proved", "C:waitid", "C:waitpid"}
+            if not required <= set(ops.events) or not ops.child_reaped:
+                raise AssertionError("C accepted without causal exec/waitid/reap")
+        if outcome == "child-exec" and "C:execve-exact" not in ops.events:
+            raise AssertionError("C child accepted without exact held-Python exec")
+        if "limits" in row["cleanup_domains"] and ops.limit != (1024, 16384):
+            restore_fault = row["primitive_fault"] in (
+                {"point": "setrlimit", "mutation": "restore-before"},
+                {"point": "getrlimit", "mutation": "restore-drift"},
+            )
+            if not restore_fault:
+                raise AssertionError(f"C limit baseline was not restored: {row['id']}")
+        if "descriptors" in row["cleanup_domains"]:
+            duplicates = len(ops.closed) != len(set(ops.closed))
+            if duplicates:
+                raise AssertionError(f"C retried a descriptor close: {row['id']}")
         if ops.foreign is not None and ops.fds.get(ops.foreign) != "foreign":
             raise AssertionError("C cleanup deleted a reused descriptor")
-        consumed.add(row["id"])
         oracle.add(row["id"])
-    if not declared == selected == consumed == oracle or len(rows) != len(declared):
+    if not declared == selected == consumed == oracle:
         raise AssertionError("C declared/selected/consumed/oracle mismatch")
 
 

@@ -62,6 +62,7 @@ class SealOps(closure._Ops):
     """Independent descriptor/object table exposes close-after-effect reuse."""
     def __init__(self, fault):
         self.fault = fault
+        self.events = []
         self.objects = {SOURCE_FD: KernelObject(RAW, 0o755, 101)}
         self.access = {SOURCE_FD: os.O_RDONLY}
         self.close_attempts = []
@@ -71,6 +72,7 @@ class SealOps(closure._Ops):
 
     def memfd_create(self, name, flags):
         source = name == "cogs-runtime-object"
+        self.events.append("source:memfd" if source else "report:memfd")
         expected = closure._MFD_CLOEXEC | closure._MFD_ALLOW_SEALING
         if source:
             expected |= closure._MFD_EXEC
@@ -84,6 +86,7 @@ class SealOps(closure._Ops):
 
     def open(self, path, flags, mode=0o600, *, dir_fd=None):
         del mode, dir_fd
+        self.events.append("reopen")
         if path != "/proc/self/fd/77":
             raise AssertionError("sealing reopened a source pathname")
         if self.fault in {"source-reopen", "report-reopen"}:
@@ -96,6 +99,7 @@ class SealOps(closure._Ops):
         return 78
 
     def fstat(self, fd):
+        self.events.append("fstat")
         item = self.objects[fd]
         if fd == SOURCE_FD:
             self.source_stats += 1
@@ -116,6 +120,7 @@ class SealOps(closure._Ops):
         )
 
     def pread(self, fd, size, offset):
+        self.events.append("source:pread" if fd == SOURCE_FD else "sealed:pread")
         if fd == SOURCE_FD:
             error_fault = "source-read-error"
             short_fault = "source-short-read"
@@ -140,6 +145,7 @@ class SealOps(closure._Ops):
 
     def pwrite(self, fd, data, offset):
         source = self.fault.startswith("source")
+        self.events.append("source:pwrite" if source else "report:pwrite")
         prefix = "source" if source else "report"
         self.write_calls += 1
         if self.fault == f"{prefix}-write-error":
@@ -159,17 +165,20 @@ class SealOps(closure._Ops):
 
     def fchmod(self, fd, mode):
         prefix = "source" if self.fault.startswith("source") else "report"
+        self.events.append(f"{prefix}:chmod")
         if self.fault == f"{prefix}-chmod":
             raise OSError("chmod")
         self.objects[fd].mode = mode
 
     def fsync(self, fd):
         prefix = "source" if self.fault.startswith("source") else "report"
+        self.events.append(f"{prefix}:fsync")
         if self.fault == f"{prefix}-fsync":
             raise OSError("fsync")
 
     def fcntl(self, fd, command, argument=0):
         prefix = "source" if self.fault.startswith("source") else "report"
+        self.events.append(f"{prefix}:fcntl:{command}")
         if command == closure._F_ADD_SEALS:
             if self.fault == f"{prefix}-add-seals":
                 raise OSError("add seals")
@@ -195,6 +204,7 @@ class SealOps(closure._Ops):
         raise AssertionError("unexpected fcntl command")
 
     def close(self, fd):
+        self.events.append("close")
         self.close_attempts.append(fd)
         if fd not in self.objects:
             raise AssertionError("production retried an uncertain descriptor")
@@ -217,6 +227,7 @@ class SealOps(closure._Ops):
 
 def run_source(row, fault, branch):
     ops = SealOps(fault)
+    ops.events.append(f"enter:{branch.__name__}")
     try:
         sealed = branch(ops, SOURCE)
     except (closure.RuntimeClosureError, closure.RuntimeClosureCleanupError, OSError) as error:
@@ -234,10 +245,13 @@ def run_source(row, fault, branch):
         raise AssertionError("close retry consumed a reused descriptor")
     if ops.close_attempts.count(77) > 1:
         raise AssertionError("uncertain source descriptor was retried")
+    ops.events.append(f"oracle:{row['id']}")
+    return ops
 
 
 def run_report(row, fault, branch):
     ops = SealOps(fault)
+    ops.events.append(f"enter:{branch.__name__}")
     try:
         fd = branch(ops, REPORT)
     except (closure.RuntimeClosureError, closure.RuntimeClosureCleanupError, OSError) as error:
@@ -255,15 +269,52 @@ def run_report(row, fault, branch):
         raise AssertionError("report close retry consumed a reused descriptor")
     if ops.close_attempts.count(77) > 1:
         raise AssertionError("uncertain report descriptor was retried")
+    ops.events.append(f"oracle:{row['id']}")
+    return ops
 
 
-selected = list(manifest_cases())
-executed = []
-for row, target, fault, branch in selected:
-    if target == "source": run_source(row, fault, branch)
-    else: run_report(row, fault, branch)
-    executed.append(row["id"])
-declared = [row["id"] for row, _target, _fault, _branch in selected]
-if declared != executed or len(executed) != len(set(executed)):
-    raise AssertionError("sealing selected/consumed/oracle/sentinel mismatch")
+def expected_stage(target, fault):
+    if fault == "none":
+        return "close"
+    if "memfd" in fault:
+        return f"{target}:memfd"
+    if "write" in fault and "read" not in fault:
+        return f"{target}:pwrite"
+    if "chmod" in fault:
+        return f"{target}:chmod"
+    if "fsync" in fault:
+        return f"{target}:fsync"
+    if "reopen" in fault:
+        return "reopen"
+    if "close" in fault:
+        return "close"
+    if any(token in fault for token in ("seal", "access", "cloexec")):
+        return f"{target}:fcntl"
+    if "readback" in fault or fault == "report-read-close":
+        return "sealed:pread"
+    return "source:pread" if target == "source" and "generation" not in fault else "fstat"
+
+
+manifest = list(manifest_cases())
+identifiers = [row["id"] for row, _target, _fault, _branch in manifest]
+declared = set(identifiers)
+if len(declared) != len(identifiers):
+    raise AssertionError("duplicate declared sealing case")
+selected = set()
+consumed = set()
+oracle = set()
+for row, target, fault, branch in manifest:
+    selected.add(row["id"])
+    ops = run_source(row, fault, branch) if target == "source" else run_report(row, fault, branch)
+    if f"enter:{row['sentinel']}" not in ops.events:
+        raise AssertionError(f"sealing production sentinel missed: {row['id']}")
+    stage = expected_stage(target, fault)
+    if not any(event.startswith(stage) for event in ops.events):
+        raise AssertionError(f"sealing selected cut was not reached: {row['id']} ({stage})")
+    consumed.add(row["id"])
+    if f"oracle:{row['id']}" not in ops.events:
+        raise AssertionError(f"sealing oracle missed: {row['id']}")
+    oracle.add(row["id"])
+if not declared == selected == consumed == oracle:
+    raise AssertionError("sealing declared/selected/consumed/oracle mismatch")
 print("Outcome 2 sealing portable tests passed")
