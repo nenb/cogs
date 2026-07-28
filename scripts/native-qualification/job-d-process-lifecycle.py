@@ -1,31 +1,19 @@
 #!/usr/bin/python3
-"""Native Job D: validate the admitted production process-owner result."""
+"""Job D client for the common-owned process-lifecycle qualification."""
 from __future__ import annotations
 
-import re
-import sys
+import os
 from pathlib import Path
-from typing import Mapping
+import sys
+from typing import Callable
 
-CHECKS = tuple((
-    "pdeathsig_armed parent_handshake_exact before_release_death "
-    "after_release_death starttime_revalidated session_owned "
-    "process_group_owned term_kill_bounded all_reaped cleanup_restored"
-).split())
-MECHANISM_CHECKS = CHECKS[:-1]
-RESULT_VERSION = "cogs.runtime-lifecycle-qualification/v1"
-OBSERVATIONS = tuple((
-    "pdeathsig_armed parent_handshake_exact before_release_death "
-    "after_release_death starttime_revalidated session_owned "
-    "process_group_owned credentialed_pidfd_transfer stable_descendant_census "
-    "adoption_exact term_kill_bounded siginfo_exact all_reaped "
-    "subreaper_restored descriptors_restored"
-).split())
-HEX64 = re.compile(r"[0-9a-f]{64}\Z")
+OPERATION = "D"
+FAILURE_PHASE = "process-lifecycle"
+DIAGNOSTIC_LIMIT = 2_048
 
 
 class QualificationError(RuntimeError):
-    """The production lifecycle observation did not match the fixed contract."""
+    """The fixed Job D workflow entry was not selected."""
 
 
 def _require(condition: bool, message: str) -> None:
@@ -33,63 +21,74 @@ def _require(condition: bool, message: str) -> None:
         raise QualificationError(message)
 
 
-def qualify(value: object, revision: str, source_digest: str) -> dict[str, str]:
-    """Map one closed W1 process-owner result to mechanism checks; infer nothing."""
-    fields = ("version", "source_revision", "source_set_sha256", *OBSERVATIONS)
-    _require(type(value) is dict and set(value) == set(fields), "lifecycle result shape")
-    result: Mapping[str, object] = value
-    _require(result["version"] == RESULT_VERSION, "lifecycle result version")
-    _require(type(revision) is str and result["source_revision"] == revision,
-             "lifecycle result source")
-    digest = result["source_set_sha256"]
-    _require(type(source_digest) is str and HEX64.fullmatch(source_digest) is not None,
-             "lifecycle admitted source-set digest")
-    _require(digest == source_digest, "lifecycle source-set binding")
-    _require(all(result[name] is True for name in OBSERVATIONS),
-             "lifecycle mechanism observation")
-    return {name: "pass" for name in MECHANISM_CHECKS}
-
-
 def _load_common() -> object:
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    module_directory = os.fspath(Path(__file__).resolve().parent)
+    sys.path.insert(0, module_directory)
     try:
         return __import__("common")
     finally:
         del sys.path[0]
 
 
-def _invoke_production(session: object) -> object:
-    """W1/W2 seam: the admitted session exposes one zero-argument D operation."""
-    return session.qualify_fixed_process_lifecycle()  # type: ignore[attr-defined]
+def _operation(session: object) -> None:
+    """Enter the one common-owned operation boundary; its return stays private."""
+    session.run_fixed_operation(OPERATION)  # type: ignore[attr-defined]
 
 
-def _workflow_bound() -> int:
-    common = _load_common()
-    session = common.NativeSession.begin("D", __file__)
-    failure: BaseException | None = None
+def _combine(primary: BaseException | None, cleanup: BaseException) -> BaseException:
+    if primary is None:
+        return cleanup
+    return BaseExceptionGroup("Job D operation and settlement", [primary, cleanup])
+
+
+def _diagnostic(error: BaseException | None, restored: bool) -> bytes | None:
+    if error is None and restored:
+        return None
+    if error is None:
+        return b"common cleanup was not restored"
+    message = f"{type(error).__name__}:{error}".encode("utf-8", "backslashreplace")
+    return message[:DIAGNOSTIC_LIMIT]
+
+
+def _run(common: object) -> int:
+    session = common.NativeSession.begin(OPERATION, __file__)  # type: ignore[attr-defined]
+    primary: BaseException | None = None
+
     try:
-        result = _invoke_production(session)
-        checks = qualify(result, session.context.head_sha, session.source_set_sha256)
+        _operation(session)
     except Exception as error:
-        failure = error
-        checks = dict.fromkeys(MECHANISM_CHECKS, "fail")
-    diagnostic = None if failure is None else type(failure).__name__.encode("ascii")
-    candidate = common.ReportCandidate(
-        checks, [], None if failure is None else "process-lifecycle", diagnostic, failure,
+        primary = error
+
+    evidence = None
+    try:
+        evidence = session.settle_native_phase()  # type: ignore[attr-defined]
+    except Exception as error:
+        primary = _combine(primary, error)
+
+    restored = evidence is not None and evidence.restored is True
+    failed = primary is not None or not restored
+    candidate = common.ReportCandidate(  # type: ignore[attr-defined]
+        failure_phase=FAILURE_PHASE if failed else None,
+        diagnostics=_diagnostic(primary, restored),
+        primary_error=primary,
     )
-    evidence = session.settle_native_phase()
-    session.publish(candidate)
-    return 0 if failure is None and evidence.restored else 1
+    session.publish(candidate)  # type: ignore[attr-defined]
+    return 1 if failed else 0
 
 
-def _dispatch(arguments: list[str], workflow: object = _workflow_bound) -> int:
-    _require(__debug__ and arguments == ["--workflow-bound"], "fixed workflow entry")
-    return workflow()  # type: ignore[operator]
+def _dispatch(
+    arguments: list[str],
+    workflow: Callable[[object], int] = _run,
+    common_loader: Callable[[], object] = _load_common,
+) -> int:
+    _require(__debug__ and arguments == ["--workflow-bound"], "fixed Job D workflow entry")
+    return workflow(common_loader())
 
 
 if __name__ == "__main__":
     try:
         exit_code = _dispatch(sys.argv[1:])
     except Exception:
+        os.write(2, b"native-d-failed\n")
         exit_code = 1
     raise SystemExit(exit_code)

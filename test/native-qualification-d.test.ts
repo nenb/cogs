@@ -5,153 +5,76 @@ import { test } from "node:test";
 
 const path = "scripts/native-qualification/job-d-process-lifecycle.py";
 const source = readFileSync(path, "utf8");
-const observations = [
-  "pdeathsig_armed",
-  "parent_handshake_exact",
-  "before_release_death",
-  "after_release_death",
-  "starttime_revalidated",
-  "session_owned",
-  "process_group_owned",
-  "credentialed_pidfd_transfer",
-  "stable_descendant_census",
-  "adoption_exact",
-  "term_kill_bounded",
-  "siginfo_exact",
-  "all_reaped",
-  "subreaper_restored",
-  "descriptors_restored",
-];
-const revision = "a".repeat(40);
-const golden: Json = {
-  version: "cogs.runtime-lifecycle-qualification/v1",
-  source_revision: revision,
-  source_set_sha256: "b".repeat(64),
-  ...Object.fromEntries(observations.map((name) => [name, true])),
-};
 
-type Json = Record<string, unknown>;
-
-function decode(cases: Json[]): { accepted: boolean; checks?: Record<string, string> }[] {
+test("Job D cannot fabricate lifecycle checks or reread common cleanup", () => {
   const harness = `
-import importlib.util,json
-spec=importlib.util.spec_from_file_location("job_d",${JSON.stringify(path)})
-m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
-for value in json.loads(${JSON.stringify(JSON.stringify(cases))}):
- try: print(json.dumps({"accepted":True,"checks":m.qualify(value,${JSON.stringify(revision)},${JSON.stringify("b".repeat(64))})}))
- except BaseException: print(json.dumps({"accepted":False}))
-`;
-  const result = spawnSync("/usr/bin/python3", ["-I", "-B", "-c", harness], {
-    encoding: "utf8",
-    env: { PYTHONDONTWRITEBYTECODE: "1", PYTHONHASHSEED: "0" },
-  });
-  assert.equal(result.status, 0, result.stderr);
-  return result.stdout
-    .trim()
-    .split("\n")
-    .map((row) => JSON.parse(row));
-}
+import runpy,sys,types
+module=runpy.run_path(${JSON.stringify(path)},run_name='job_d_test')
+events=[]
+class Bomb:
+ def __getattribute__(self,name): raise AssertionError('operation result read: '+name)
+class Evidence:
+ def __init__(self): self.reads=0
+ @property
+ def restored(self):
+  self.reads+=1
+  if self.reads!=1: raise AssertionError('cleanup evidence reread')
+  return True
+class Candidate:
+ def __init__(self,**values):
+  assert set(values)=={'failure_phase','diagnostics','primary_error'}
+  self.__dict__.update(values)
+class Session:
+ def __init__(self): self.evidence=Evidence()
+ def run_fixed_operation(self,operation): events.append(('operation',operation));return Bomb()
+ def settle_native_phase(self): events.append(('settle',));return self.evidence
+ def publish(self,candidate): events.append(('publish',candidate.failure_phase,candidate.diagnostics,candidate.primary_error))
+session=Session()
+class NativeSession:
+ @staticmethod
+ def begin(job,driver): assert (job,driver)==('D',${JSON.stringify(path)});return session
+common=types.SimpleNamespace(NativeSession=NativeSession,ReportCandidate=Candidate)
+assert module['_run'](common)==0
+assert events==[('operation','D'),('settle',),('publish',None,None,None)]
+assert session.evidence.reads==1
 
-test("Job D strictly decodes every typed production process-owner observation", () => {
-  const cases: Json[] = [golden];
-  for (const name of observations) {
-    cases.push({ ...golden, [name]: false });
-    const missing = { ...golden };
-    delete missing[name];
-    cases.push(missing);
-  }
-  cases.push({ ...golden, source_revision: "c".repeat(40) });
-  cases.push({ ...golden, source_set_sha256: "not-a-digest" });
-  cases.push({ ...golden, completed: true });
-  const rows = decode(cases);
-  const first = rows[0];
-  assert.ok(first);
-  assert.equal(first.accepted, true);
-  assert.deepEqual(Object.keys(first.checks ?? {}), [
-    "pdeathsig_armed",
-    "parent_handshake_exact",
-    "before_release_death",
-    "after_release_death",
-    "starttime_revalidated",
-    "session_owned",
-    "process_group_owned",
-    "term_kill_bounded",
-    "all_reaped",
-  ]);
-  assert.ok(Object.values(first.checks ?? {}).every((value) => value === "pass"));
-  assert.ok(rows.slice(1).every((row) => !row.accepted));
-});
-
-test("Job D reaches the real common zero-argument operation boundary", () => {
-  const harness = `
-import importlib.util,sys,types
-sys.path.insert(0,'scripts/native-qualification'); import common
-spec=importlib.util.spec_from_file_location('job_d',${JSON.stringify(path)})
-m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
-base={key:('baseline',key) for key in common.CLEANUP_KEYS}; base['paths']=(None,None)
+sys.path.insert(0,'scripts/native-qualification');import common as real_common
+baseline={key:('baseline',key) for key in real_common.CLEANUP_KEYS};baseline['paths']=(None,None)
 class Ops:
- def __init__(self): self.fds=common.FdRegistry(); self.source_set_sha256='b'*64; self.events=[]
- def observe(self,context): return base
+ def __init__(self): self.fds=real_common.FdRegistry();self.source_set_sha256='2'*64;self.events=[]
+ def observe(self,context): return baseline
  def run_fixed_operation(self,context,operation):
-  self.events.append((context.job,operation)); raise RuntimeError('safe native boundary')
+  self.events.append((context.job,operation));raise RuntimeError('safe native boundary')
 class Cust:
  def abort(self,error): self.error=error
-ops=Ops(); session=common.NativeSession._begin_with_ops(types.SimpleNamespace(job='D'),ops,Cust())
-try: m._invoke_production(session)
+ops=Ops();real_session=real_common.NativeSession._begin_with_ops(types.SimpleNamespace(job='D'),ops,Cust())
+try: module['_operation'](real_session)
 except RuntimeError as error: assert str(error)=='safe native boundary'
-else: raise AssertionError('completed result substituted')
-assert ops.events == [('D','D')]
-`;
-  const result = spawnSync("/usr/bin/python3", ["-I", "-B", "-c", harness], { encoding: "utf8" });
-  assert.equal(result.status, 0, result.stderr);
-});
+else: raise AssertionError('completed operation substituted')
+assert ops.events==[('D','D')]
 
-test("Job D real __main__ preserves a successful exit", () => {
-  const harness = `
-import json,runpy,sys,types
-value=json.loads(${JSON.stringify(JSON.stringify(golden))})
-class Evidence: restored=True
-class Session:
- context=types.SimpleNamespace(head_sha=${JSON.stringify(revision)})
- source_set_sha256=${JSON.stringify("b".repeat(64))}
- def qualify_fixed_process_lifecycle(self): return value
- def settle_native_phase(self): return Evidence()
- def publish(self,candidate): assert candidate.primary_error is None
-class NativeSession:
- @classmethod
- def begin(cls,job,path): assert job=='D'; return Session()
-class Candidate:
- def __init__(self,*values): self.primary_error=values[-1]
-common=types.ModuleType('common'); common.NativeSession=NativeSession; common.ReportCandidate=Candidate
-sys.modules['common']=common; sys.argv=[${JSON.stringify(path)},'--workflow-bound']
+selected=[]
+assert module['_dispatch'](['--workflow-bound'],lambda common:selected.append(common) or 6,lambda:'common')==6
+for arguments in ([],['--native'],['--fixture']):
+ try: module['_dispatch'](arguments,lambda common:selected.append('effect'),lambda:'wrong')
+ except module['QualificationError']: pass
+ else: raise AssertionError(arguments)
+assert selected==['common']
+
+session=Session();events.clear()
+sys.modules['common']=types.SimpleNamespace(NativeSession=NativeSession,ReportCandidate=Candidate)
+sys.argv=[${JSON.stringify(path)},'--workflow-bound']
 try: runpy.run_path(${JSON.stringify(path)},run_name='__main__')
 except SystemExit as error: assert error.code==0
-else: raise AssertionError('main did not exit')
+else: raise AssertionError('CLI did not exit')
 `;
-  const result = spawnSync("/usr/bin/python3", ["-I", "-B", "-c", harness], { encoding: "utf8" });
-  assert.equal(result.status, 0, result.stderr);
-});
-
-test("Job D removes its parallel supervisor, fd baseline, and cleanup branches", () => {
-  for (const token of [
-    'NativeSession.begin("D", __file__)',
-    "session.qualify_fixed_process_lifecycle()",
-    "session.settle_native_phase()",
-    "common.ReportCandidate(",
-    "credentialed_pidfd_transfer",
-    "stable_descendant_census",
-    "term_kill_bounded",
-    "siginfo_exact",
-    "subreaper_restored",
-  ]) {
-    assert.ok(source.includes(token), token);
-  }
-  assert.doesNotMatch(source, /os\.listdir|os\.scandir|\/proc\/self\/fd|SystemOps|_ProcessOwner/u);
-  assert.doesNotMatch(source, /os\.fork|pidfd_open|pidfd_send_signal|setsid\(|waitid\(|waitpid\(|killpg/u);
-  assert.doesNotMatch(source, /ctypes|prctl\(|socketpair\(|sendmsg\(|recvmsg\(|SCM_RIGHTS\s*=|signal\./u);
-  assert.doesNotMatch(
-    source,
-    /WorkflowContext|finalize_report|CLEANUP_KEYS|cleanup\s*=|dict\.fromkeys\(CHECKS,\s*["']pass/u,
-  );
-  assert.ok(source.split("\n").length - 1 <= 400);
+  const run = spawnSync("/usr/bin/python3", ["-I", "-B", "-c", harness], {
+    encoding: "utf8",
+    env: { PYTHONDONTWRITEBYTECODE: "1" },
+  });
+  assert.equal(run.status, 0, run.stderr);
+  assert.equal((source.match(/run_fixed_operation\(/gu) ?? []).length, 1);
+  assert.doesNotMatch(source, /production_checks|metadata|siginfo|pdeathsig|source_set_sha256/u);
+  assert.doesNotMatch(source, /fork\(|pidfd|waitid|waitpid|killpg|\/proc\//u);
+  assert.ok(source.split("\n").every((line) => line.length <= 120));
 });

@@ -1,176 +1,88 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { test } from "node:test";
 
-const root = process.cwd();
-const script = join(root, "scripts/native-qualification/job-a-runtime-mappings.py");
-const closure = join(root, "deploy/aws-feasibility/remote/completion_trusted_runtime_closure.py");
-const launcher = join(root, "deploy/aws-feasibility/remote/completion_trusted_runtime_launcher.py");
-const source = readFileSync(script, "utf8");
+const path = "scripts/native-qualification/job-a-runtime-mappings.py";
+const source = readFileSync(path, "utf8");
 
-function portable(program: string) {
-  const harness = `
-import runpy, sys
-path = sys.argv[1]
-def audit(event, args):
- if event in {'os.fork','os.posix_spawn','subprocess.Popen'}: raise RuntimeError(event)
- if event == 'open' and str(args[0]).startswith('/proc/'): raise RuntimeError(args[0])
-sys.addaudithook(audit)
-ns = runpy.run_path(path)
-${program}
-`;
-  return spawnSync("/usr/bin/python3", ["-I", "-B", "-c", harness, script], {
-    cwd: root,
-    env: { PYTHONDONTWRITEBYTECODE: "1" },
+function python(body: string) {
+  return spawnSync("/usr/bin/python3", ["-I", "-B", "-c", body], {
     encoding: "utf8",
-    timeout: 5_000,
+    env: { PYTHONDONTWRITEBYTECODE: "1" },
   });
 }
 
-test("Job A recomputes exact closure and mapped-sequence summaries", () => {
-  const result = portable(`
-import hashlib, json
-revision='1'*40
-source_digest='2'*64
-objects=[
- {'role':'executable','sha256':'3'*64,'size_bytes':10,'soname':None,'needed':['libc.so.6']},
- {'role':'loader','sha256':'4'*64,'size_bytes':11,'soname':'ld.so.2','needed':[]},
- {'role':'library','sha256':'5'*64,'size_bytes':12,'soname':'libc.so.6','needed':[]},
-]
-normalized=[{'needed':row['needed'],'role':row['role'],'sha256':row['sha256'],'size':row['size_bytes'],'soname':row['soname']} for row in objects]
-mapped=[{'role':row['role'],'sha256':row['sha256']} for row in normalized]
-digest_sequence=[[row['role'],row['sha256']] for row in normalized]
-canonical=lambda value: json.dumps(value,allow_nan=False,ensure_ascii=False,sort_keys=True,separators=(',',':')).encode()
-value={
- 'version':ns['RESULT_VERSION'],'source_revision':revision,'source_set_sha256':source_digest,
- 'closure_sha256':hashlib.sha256(canonical(normalized)).hexdigest(),
- 'mapping_sha256':hashlib.sha256(canonical(digest_sequence)).hexdigest(),
- 'objects':objects,'mapped':mapped,
- 'mapped_generations_exact':True,'mapping_stable':True,'helper_reaped':True,
- 'descriptors_restored':True,'children_reaped':True,
-}
-rows=ns['qualify'](value,revision,source_digest)
-assert [row['role'] for row in rows[:-1]] == ['executable','loader','library']
-assert rows[-1]['mapped_sequence'] == mapped
-for mutation in ('role','digest-role','oversize','needed-duplicate','provider','extra-library','mapped','closure','mapping'):
- bad={**value,'objects':[dict(row) for row in objects],'mapped':[dict(row) for row in mapped]}
- if mutation=='role': bad['objects'][0]['role']='loader'
- if mutation=='digest-role':
-  bad['objects'][1]['sha256']=bad['objects'][0]['sha256']
-  bad['objects'][1]['size_bytes']=bad['objects'][0]['size_bytes']+1
- if mutation=='oversize': bad['objects'][2]['size_bytes']=134217729
- if mutation=='needed-duplicate': bad['objects'][0]['needed']=['libc.so.6','libc.so.6']
- if mutation=='provider': bad['objects'][2]['soname']='other.so'
- if mutation=='extra-library': bad['objects'].append({'role':'library','sha256':'6'*64,'size_bytes':1,'soname':'unused.so','needed':[]})
- if mutation=='mapped': bad['mapped'][0]['sha256']='6'*64
- if mutation=='closure': bad['closure_sha256']='6'*64
- if mutation=='mapping': bad['mapping_sha256']='6'*64
- try: ns['qualify'](bad,revision,source_digest)
- except ns['QualificationError']: pass
- else: raise AssertionError(mutation)
-`);
-  assert.equal(result.status, 0, result.stderr);
-  assert.equal(result.stdout, "");
-});
+test("Job A is a readable failure-only client of one real common receipt boundary", () => {
+  const harness = `
+import runpy,sys,types
+module=runpy.run_path(${JSON.stringify(path)},run_name='job_a_test')
+events=[]
+class Bomb:
+ def __getattribute__(self,name): raise AssertionError('operation result read: '+name)
+class Evidence:
+ def __init__(self,value): self.value=value;self.reads=0
+ @property
+ def restored(self):
+  self.reads+=1
+  if self.reads!=1: raise AssertionError('cleanup evidence reread')
+  return self.value
+class Candidate:
+ def __init__(self,**values):
+  assert set(values)=={'failure_phase','diagnostics','primary_error'}
+  self.__dict__.update(values)
+class Session:
+ def __init__(self,restored=True): self.evidence=Evidence(restored)
+ def run_fixed_operation(self,operation):
+  events.append(('operation',operation));return Bomb()
+ def settle_native_phase(self):
+  events.append(('settle',));return self.evidence
+ def publish(self,candidate):
+  events.append(('publish',candidate.failure_phase,candidate.diagnostics,candidate.primary_error))
+session=Session()
+class NativeSession:
+ @staticmethod
+ def begin(job,driver):
+  assert (job,driver)==('A',${JSON.stringify(path)});return session
+common=types.SimpleNamespace(NativeSession=NativeSession,ReportCandidate=Candidate)
+assert module['_run'](common)==0
+assert events==[('operation','A'),('settle',),('publish',None,None,None)]
+assert session.evidence.reads==1
 
-test("Job A safe adapter reaches the real common operation boundary", () => {
-  const result = portable(`
-import types
-sys.path.insert(0,'scripts/native-qualification')
-import common
-base={key:('baseline',key) for key in common.CLEANUP_KEYS}
-base['paths']=(None,None)
+sys.path.insert(0,'scripts/native-qualification');import common as real_common
+baseline={key:('baseline',key) for key in real_common.CLEANUP_KEYS};baseline['paths']=(None,None)
 class Ops:
- def __init__(self):
-  self.fds=common.FdRegistry(); self.source_set_sha256='2'*64; self.events=[]
- def observe(self,context): return base
+ def __init__(self): self.fds=real_common.FdRegistry();self.source_set_sha256='2'*64;self.events=[]
+ def observe(self,context): return baseline
  def run_fixed_operation(self,context,operation):
-  self.events.append((context.job,operation))
-  raise RuntimeError('safe native boundary')
+  self.events.append((context.job,operation));raise RuntimeError('safe native boundary')
 class Cust:
  def abort(self,error): self.error=error
-ops=Ops()
-context=types.SimpleNamespace(job='A')
-session=common.NativeSession._begin_with_ops(context,ops,Cust())
-try: ns['_production_operation'](session)
+ops=Ops();real_session=real_common.NativeSession._begin_with_ops(types.SimpleNamespace(job='A'),ops,Cust())
+try: module['_operation'](real_session)
 except RuntimeError as error: assert str(error)=='safe native boundary'
-else: raise AssertionError('completed result substituted')
-assert ops.events == [('A','A')]
-`);
-  assert.equal(result.status, 0, result.stderr);
-});
+else: raise AssertionError('completed operation substituted')
+assert ops.events==[('A','A')]
 
-test("Job A real __main__ preserves a successful exit", () => {
-  const result = portable(`
-import hashlib, json, runpy, types
-revision='1'*40
-source_digest='2'*64
-objects=[
- {'role':'executable','sha256':'3'*64,'size_bytes':10,'soname':None,'needed':['ld.so']},
- {'role':'loader','sha256':'4'*64,'size_bytes':11,'soname':'ld.so','needed':[]},
-]
-canonical=lambda value: json.dumps(value,allow_nan=False,ensure_ascii=False,sort_keys=True,separators=(',',':')).encode()
-normalized=[{'needed':row['needed'],'role':row['role'],'sha256':row['sha256'],'size':row['size_bytes'],'soname':row['soname']} for row in objects]
-mapped=[{'role':row['role'],'sha256':row['sha256']} for row in normalized]
-value={'version':ns['RESULT_VERSION'],'source_revision':revision,'source_set_sha256':source_digest,
- 'closure_sha256':hashlib.sha256(canonical(normalized)).hexdigest(),
- 'mapping_sha256':hashlib.sha256(canonical([[row['role'],row['sha256']] for row in normalized])).hexdigest(),
- 'objects':objects,'mapped':mapped,'mapped_generations_exact':True,'mapping_stable':True,
- 'helper_reaped':True,'descriptors_restored':True,'children_reaped':True}
-class Evidence: restored=True
-class Session:
- context=types.SimpleNamespace(head_sha=revision)
- source_set_sha256=source_digest
- def run_fixed_operation(self,operation): assert operation=='A'; return value
- def settle_native_phase(self): return Evidence()
- def publish(self,candidate): assert candidate.primary_error is None
-class NativeSession:
- @classmethod
- def begin(cls,job,path): assert job=='A'; return Session()
-class Candidate:
- def __init__(self,**values): self.__dict__.update(values)
-common=types.ModuleType('common')
-common.NativeSession=NativeSession; common.ReportCandidate=Candidate; common.REPORT_LIMIT=32768
-sys.modules['common']=common
-sys.argv=[path,'--workflow-bound']
-try: runpy.run_path(path,run_name='__main__')
+dispatched=[]
+assert module['_dispatch'](['--workflow-bound'],lambda common:dispatched.append(common) or 7,lambda:'common')==7
+for arguments in ([],['--native'],['--fixture']):
+ try: module['_dispatch'](arguments,lambda common:dispatched.append('effect'),lambda:'wrong')
+ except module['QualificationError']: pass
+ else: raise AssertionError(arguments)
+assert dispatched==['common']
+
+session=Session();events.clear()
+sys.modules['common']=types.SimpleNamespace(NativeSession=NativeSession,ReportCandidate=Candidate)
+sys.argv=[${JSON.stringify(path)},'--workflow-bound']
+try: runpy.run_path(${JSON.stringify(path)},run_name='__main__')
 except SystemExit as error: assert error.code==0
-else: raise AssertionError('main did not exit')
-`);
-  assert.equal(result.status, 0, result.stderr);
-});
-
-test("Job A composes the admitted production closure owner", () => {
-  const closureSource = readFileSync(closure, "utf8");
-  const launcherSource = readFileSync(launcher, "utf8");
-  assert.match(closureSource, /def _qualify_admitted_fixed_python_mapping\(/u);
-  assert.match(
-    closureSource,
-    /def _qualify_fixed_python_mapping_with_ops\([\s\S]*PreparedRuntimeClosure\._for_fixed_mapping/u,
-  );
-  assert.match(launcherSource, /cogs\.runtime-source-admission\/mapping-v1/u);
-  assert.match(launcherSource, /_qualify_admitted_fixed_python_mapping/u);
-  assert.doesNotMatch(launcherSource, /_coordinate_admitted_mapping_only|_MappingAuthority/u);
-  assert.match(source, /NativeSession\.begin\("A", __file__\)/u);
-  assert.match(source, /session\.run_fixed_operation\(OPERATION\)/u);
-  assert.doesNotMatch(
-    source,
-    /os\.(?:pipe|fork|pidfd_open|execve|waitpid)|unshare|mount\(|\/proc\/|Snapshot|finalize_report/u,
-  );
-  assert.doesNotMatch(source, /cleanup\s*=|CLEANUP_KEYS|source_admission|bootstrap_sha256/u);
-});
-
-test("Job A selector has a no-effects dispatch seam", () => {
-  const result = portable(`
-events=[]
-assert ns['_dispatch'](['--workflow-bound'],lambda: events.append('run') or 7)==7
-for args in ([],['--native'],['--fixture'],['--self-test']):
- try: ns['_dispatch'](args,lambda: events.append('effect'))
- except ns['QualificationError']: pass
- else: raise AssertionError(args)
-assert events == ['run']
-`);
-  assert.equal(result.status, 0, result.stderr);
+else: raise AssertionError('CLI did not exit')
+`;
+  const run = python(harness);
+  assert.equal(run.status, 0, run.stderr);
+  assert.equal((source.match(/run_fixed_operation\(/gu) ?? []).length, 1);
+  assert.doesNotMatch(source, /production_checks|metadata|source_set_sha256|context\.head_sha/u);
+  assert.doesNotMatch(source, /fork\(|pidfd|waitid|unshare|mount\(|\/proc\//u);
+  assert.ok(source.split("\n").every((line) => line.length <= 120));
 });
