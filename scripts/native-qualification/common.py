@@ -613,7 +613,6 @@ class SystemCommonOps:
             self.fds.close_reverse(None, list(self._descriptor_anchors.values()))
             self._descriptor_anchors = {}
     def _process(self, pid: int) -> tuple[object, ...]:
-        executable = os.stat(f"/proc/{pid}/exe", follow_symlinks=True)
         raw = self._read(f"/proc/{pid}/stat", 65_536).decode("ascii")
         close = raw.rfind(")")
         _require(close > 1 and raw[close + 1:close + 2] == " ", "process stat")
@@ -625,8 +624,6 @@ class SystemCommonOps:
             int(values[2]),
             int(values[3]),
             int(values[19]),
-            _generation(executable),
-            executable.st_rdev,
         )
     def _children_once(self) -> tuple[object, ...]:
         pending = [os.getpid()]
