@@ -473,13 +473,29 @@ jobs:
         with: { name: "native-integration-${{ needs.native-qualification-eligibility.outputs.reviewed_sha }}-${{ github.run_id }}-${{ github.run_attempt }}",
           path: /tmp/cogs-native-qualification-integration/report.json,
           if-no-files-found: error, retention-days: 7 }
-      - name: Restore fixed report-path baseline
+      - name: Download the exact uploaded integration artifact
+        id: download
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with: { artifact-ids: "${{ steps.upload.outputs.artifact-id }}", merge-multiple: true,
+          path: "${{ runner.temp }}/native-integration-upload-${{ github.run_id }}-${{ github.run_attempt }}", digest-mismatch: error }
+      - name: Require byte-identical uploaded report
+        id: compare
+        env: { DOWNLOADED_ROOT: "${{ runner.temp }}/native-integration-upload-${{ github.run_id }}-${{ github.run_attempt }}",
+          PUBLISHED_REPORT: /tmp/cogs-native-qualification-integration/report.json }
+        run: |
+          set -euo pipefail
+          test "$(/usr/bin/find "$DOWNLOADED_ROOT" -mindepth 1 -maxdepth 1 -printf '%f\n')" = report.json
+          test ! -L "$DOWNLOADED_ROOT/report.json"
+          /usr/bin/cmp --silent -- "$PUBLISHED_REPORT" "$DOWNLOADED_ROOT/report.json"
+      - name: Restore downloaded and fixed report-path baselines
         id: cleanup
         if: ${{ always() }}
         env: { NQ_CLEANUP_HEAD_SHA: "${{ needs.native-qualification-eligibility.outputs.reviewed_sha }}", NQ_CLEANUP_RUN_ID: "${{ github.run_id }}",
           NQ_CLEANUP_RUN_ATTEMPT: "${{ github.run_attempt }}", NQ_UPLOAD_ARTIFACT_ID: "${{ steps.upload.outputs.artifact-id }}",
           NQ_UPLOAD_ARTIFACT_SHA256: "${{ steps.upload.outputs.artifact-digest }}" }
         run: |
+          /usr/bin/rm -rf -- "${{ runner.temp }}/native-integration-upload-${{ github.run_id }}-${{ github.run_attempt }}"
+          test ! -e "${{ runner.temp }}/native-integration-upload-${{ github.run_id }}-${{ github.run_attempt }}"
           /usr/bin/env -i LC_ALL=C NQ_CLEANUP_HEAD_SHA="$NQ_CLEANUP_HEAD_SHA" NQ_CLEANUP_RUN_ID="$NQ_CLEANUP_RUN_ID" \
             NQ_CLEANUP_RUN_ATTEMPT="$NQ_CLEANUP_RUN_ATTEMPT" NQ_UPLOAD_ARTIFACT_ID="$NQ_UPLOAD_ARTIFACT_ID" \
             NQ_UPLOAD_ARTIFACT_SHA256="$NQ_UPLOAD_ARTIFACT_SHA256" /usr/bin/python3 -I -B scripts/native-qualification/common.py --cleanup integration

@@ -5,6 +5,7 @@ import { test } from "node:test";
 
 const path = "scripts/native-qualification/thin-integration.py";
 const source = readFileSync(path, "utf8");
+const workflow = readFileSync(".github/workflows/ci.yml", "utf8");
 
 test("integration leaves exact digest summaries to one immutable common receipt", () => {
   const harness = `
@@ -85,4 +86,24 @@ else: raise AssertionError('CLI did not exit')
   assert.doesNotMatch(source, /production_checks|metadata|closure_sha256|output_sha256|source_set_sha256/u);
   assert.doesNotMatch(source, /sudo|subprocess|ctypes|fork\(|pidfd|unshare|mount\(|\/proc\//u);
   assert.ok(source.split("\n").every((line) => line.length <= 120));
+});
+
+test("integration authenticates uploaded report bytes before both cleanup domains", () => {
+  const start = workflow.indexOf("\n  native-closure-integration:");
+  const end = workflow.indexOf("\n  native-qualification-required:", start);
+  assert.ok(start >= 0 && end > start);
+  const job = workflow.slice(start, end);
+  const upload = job.indexOf("id: upload");
+  const download = job.indexOf("id: download");
+  const comparison = job.indexOf("id: compare");
+  const cleanup = job.indexOf("id: cleanup", comparison);
+  assert.ok(upload < download && download < comparison && comparison < cleanup);
+  assert.match(job, /actions\/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c/u);
+  assert.match(job, /artifact-ids: "\$\{\{ steps\.upload\.outputs\.artifact-id \}\}"/u);
+  assert.match(job, /digest-mismatch: error/u);
+  assert.match(job, /cmp --silent -- "\$PUBLISHED_REPORT" "\$DOWNLOADED_ROOT\/report\.json"/u);
+  const downloadedCleanup = job.indexOf("/usr/bin/rm -rf --", cleanup);
+  const reportCleanup = job.indexOf("common.py --cleanup integration", cleanup);
+  assert.ok(downloadedCleanup >= cleanup && downloadedCleanup < reportCleanup);
+  assert.doesNotMatch(job, /actions\/download-artifact@[\s\S]*native-[A-E]-/u);
 });
