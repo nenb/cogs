@@ -60,6 +60,64 @@ assert ordered==sorted(ordered),events
   assert.equal(run.status, 0, run.stderr);
 });
 
+test("Job E provisions one independently derived root pin and removes only its exact files", () => {
+  const harness = `
+import json,os,runpy,stat,tempfile
+from pathlib import Path
+module=runpy.run_path(${JSON.stringify(path)},run_name='job_e_root_test')
+with tempfile.TemporaryDirectory() as temporary:
+ root=Path(temporary);bootstrap_parent=root/'usr/local/libexec';authority_parent=root/'etc/cogs'
+ (root/'usr/local').mkdir(parents=True);(root/'etc').mkdir()
+ module['ROOT_BOOTSTRAP_PATH']=bootstrap_parent/'cogs-native-root-bootstrap-v1.py'
+ module['ROOT_AUTHORITY_PATH']=authority_parent/'native-root-authority-v1.json'
+ module['ROOT_STATE_PATH']=authority_parent/'.native-root-authority-install-v1.json'
+ bootstrap=b'fixed reviewed bootstrap';authority=b'{"fixed":"reviewed"}';revision='a'*40
+ module['_root_material']=lambda value:(bootstrap,authority) if value==revision else (_ for _ in ()).throw(AssertionError(value))
+ module['_provision_root_authority'].__globals__.update(module)
+ module['_cleanup_root_authority'].__globals__.update(module)
+ module['_provision_root_authority'](revision)
+ assert module['ROOT_BOOTSTRAP_PATH'].read_bytes()==bootstrap
+ assert module['ROOT_AUTHORITY_PATH'].read_bytes()==authority
+ state=json.loads(module['ROOT_STATE_PATH'].read_bytes())
+ assert state=={'bootstrap_parent_created':True,'revision':revision}
+ assert stat.S_IMODE(module['ROOT_BOOTSTRAP_PATH'].stat().st_mode)==0o444
+ os.chmod(module['ROOT_AUTHORITY_PATH'],0o644);module['ROOT_AUTHORITY_PATH'].write_bytes(b'foreign')
+ try: module['_cleanup_root_authority'](revision)
+ except module['QualificationError']: pass
+ else: raise AssertionError('foreign root authority deleted')
+ assert module['ROOT_BOOTSTRAP_PATH'].exists() and module['ROOT_STATE_PATH'].exists()
+ module['ROOT_AUTHORITY_PATH'].write_bytes(authority);os.chmod(module['ROOT_AUTHORITY_PATH'],0o444)
+ module['_cleanup_root_authority'](revision)
+ assert not bootstrap_parent.exists() and not authority_parent.exists()
+
+calls=[]
+module['_provision_root_authority']=lambda revision:calls.append(('provision',revision))
+module['_cleanup_root_authority']=lambda revision:calls.append(('cleanup',revision))
+module['_root_authority_action'].__globals__.update(module)
+module['os'].geteuid=lambda:0
+saved=dict(os.environ);os.environ.clear();os.environ['NQ_ROOT_AUTHORITY_SHA']='b'*40
+try:
+ assert module['_root_authority_action'](['--provision-root-authority'])==0
+ assert module['_root_authority_action'](['--cleanup-root-authority'])==0
+ os.environ['EXTRA']='caller'
+ try: module['_root_authority_action'](['--provision-root-authority'])
+ except module['QualificationError']: pass
+ else: raise AssertionError('ambient root authority accepted')
+finally: os.environ.clear();os.environ.update(saved)
+assert calls==[('provision','b'*40),('cleanup','b'*40)]
+`;
+  const run = spawnSync("/usr/bin/python3", ["-I", "-B", "-c", harness], {
+    encoding: "utf8",
+    env: { PYTHONDONTWRITEBYTECODE: "1" },
+  });
+  assert.equal(run.status, 0, run.stderr);
+  assert.match(source, /rev-parse.*revision.*commit/su);
+  assert.match(source, /Path\(__file__\)\.read_bytes\(\) == _reviewed_blob/su);
+  assert.match(source, /root_bootstrap_sha256/su);
+  const cleanupSource = source.slice(source.indexOf("def _cleanup_root_authority("), source.indexOf("def _root_authority_action("));
+  assert.doesNotMatch(cleanupSource, /missing_ok/u);
+});
+
 test("Job E is an unprivileged failure-only client of one common sandbox receipt", () => {
   const harness = `
 import runpy,sys,types
@@ -135,7 +193,8 @@ else: raise AssertionError('CLI did not exit')
   });
   assert.equal(run.status, 0, run.stderr);
   assert.equal((source.match(/run_fixed_operation\(/gu) ?? []).length, 1);
-  assert.doesNotMatch(source, /production_checks|metadata|seccomp_program|POLICY_SHA|source_set_sha256/u);
-  assert.doesNotMatch(source, /sudo|subprocess|ctypes|fork\(|pidfd|unshare|mount\(|\/proc\//u);
+  const operationSource = source.slice(source.indexOf("def _operation("), source.indexOf("def _combine("));
+  assert.doesNotMatch(operationSource, /production_checks|metadata|seccomp_program|POLICY_SHA|source_set_sha256/u);
+  assert.doesNotMatch(operationSource, /sudo|subprocess|ctypes|fork\(|pidfd|unshare|mount\(|\/proc\//u);
   assert.ok(source.split("\n").every((line) => line.length <= 120));
 });

@@ -503,6 +503,37 @@ extra={'.authority.json':A,'.owner.json':O,'report.json':R,'foreign':F};assert r
   assert.match(sourceReader, /os\.pread/u); assert.doesNotMatch(sourceReader, /read_bytes|lstat/u);
 });
 
+test("authenticated upload cleanup uses retained post-exchange generations", {
+  skip: process.platform !== "linux" || process.arch !== "x64",
+}, () => {
+  const script = `import os,sys,types
+from unittest.mock import patch
+sys.path.insert(0,'scripts/native-qualification');import common
+job='C';head='a'*40;raw=b'{"authenticated":"report"}\\n'
+context=types.SimpleNamespace(job=job,job_id=common.JOB_IDS[job],run_id=73,run_attempt=1,head_sha=head,
+ workflow_blob_sha256='b'*64,schema_blob_sha256='c'*64,common_blob_sha256='d'*64,
+ driver_blob_sha256='e'*64,source_generations=())
+common._validate=lambda *_args:None
+assert not os.path.lexists(common.report_path(job).parent)
+registry=common.FdRegistry();client=common._start_custodian(context,registry);client.publish(raw)
+with open(common.report_path(job),'rb') as uploaded:assert uploaded.read()==raw
+environment={'LC_ALL':'C','NQ_CLEANUP_RUN_ID':'73','NQ_CLEANUP_RUN_ATTEMPT':'1','NQ_CLEANUP_HEAD_SHA':head,
+ 'NQ_UPLOAD_ARTIFACT_ID':'7','NQ_UPLOAD_ARTIFACT_SHA256':'f'*64}
+with patch.dict(os.environ,environment,clear=True):common.cleanup_report(job)
+assert not os.path.lexists(common.report_path(job).parent)
+assert not os.path.lexists(common._retired_report_path(job))
+waited,status=os.waitpid(client.pid,0)
+assert waited==client.pid and os.WIFEXITED(status) and os.WEXITSTATUS(status)==0
+registry.close_reverse()`;
+  const run = spawnSync("/usr/bin/python3", ["-I", "-B", "-c", script], { encoding: "utf8" });
+  assert.equal(run.status, 0, run.stderr);
+  const quarantineSource = common.slice(common.indexOf("def _retain_quarantine("), common.indexOf("def _cleanup_owned("));
+  const exchange = quarantineSource.indexOf("_rename(directory.number, name.encode(), slot, 2, placeholder.number)");
+  assert.ok(exchange > 0);
+  assert.match(quarantineSource.slice(exchange), /_identity\(os\.fstat\(retained\.number\)\)/u);
+  assert.match(quarantineSource.slice(exchange), /_identity\(os\.fstat\(replacement\.number\)\)/u);
+});
+
 test("real custodian supervisor hook transfers private proof only after exact child reap", { skip: process.platform !== "linux" }, () => {
   const script = `import json,os,socket,struct,sys,types\nsys.path.insert(0,'scripts/native-qualification');import common
 cap=b'R'*32;client,server=socket.socketpair(socket.AF_UNIX,socket.SOCK_SEQPACKET|socket.SOCK_CLOEXEC);control_left,control_right=socket.socketpair()
@@ -581,6 +612,19 @@ test("parsed workflow gives only an explicit exact-SHA dispatch native authority
     assert.equal(invoke.env?.NQ_DEFAULT_BRANCH, "${{ github.event.repository.default_branch }}");
     assert.equal(invoke.env?.NQ_REF_PROTECTED, "${{ github.ref_protected }}");
     assert.match(invoke.run ?? "", /["']\$NQ_DRIVER["'] --workflow-bound/u);
+    if (job === "E") {
+      const run = invoke.run ?? "";
+      const provision = run.indexOf('"$NQ_DRIVER" --provision-root-authority');
+      const operation = run.indexOf('"$NQ_DRIVER" --workflow-bound');
+      assert.ok(provision >= 0 && provision < operation, "root pin precedes E operation");
+      assert.match(run, /env -i NQ_ROOT_AUTHORITY_SHA="\$NQ_HEAD_SHA"/u);
+      assert.equal((run.match(/--provision-root-authority/gu) ?? []).length, 1);
+      const rootCleanup = parsed.steps.find((step) => step.run?.includes("--cleanup-root-authority"));
+      assert.ok(rootCleanup);
+      assert.equal(rootCleanup.if, "${{ always() }}");
+      assert.ok(rootCleanup.run?.includes(`NQ_ROOT_AUTHORITY_SHA="${reviewedRef}"`));
+      assert.ok(parsed.steps.indexOf(invoke) < parsed.steps.indexOf(rootCleanup), "root cleanup follows E operation");
+    }
     const upload = stepById(parsed, "upload"); const cleanup = stepById(parsed, "cleanup");
     assert.equal(cleanup.if, "${{ always() }}");
     assert.ok(parsed.steps.indexOf(upload) < parsed.steps.indexOf(cleanup), `${id} upload causality`);

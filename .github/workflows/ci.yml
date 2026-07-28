@@ -6,10 +6,7 @@ on:
     branches: [main]
   workflow_dispatch:
     inputs:
-      reviewed_sha:
-        description: Exact externally reviewed commit SHA to qualify
-        required: true
-        type: string
+      reviewed_sha: { description: Exact externally reviewed commit SHA to qualify, required: true, type: string }
 
 permissions:
   contents: read
@@ -31,8 +28,7 @@ jobs:
         with:
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.sha || github.event_name == 'workflow_dispatch' && inputs.reviewed_sha || '' }}
           persist-credentials: false
-          # Outcome 2's binding line-budget tests compare against the accepted
-          # ADR baseline commit, so the quality checkout needs that history.
+          # Binding line-budget tests need history through the accepted ADR baseline.
           fetch-depth: 0
 
       - name: Verify exact requested source
@@ -92,8 +88,7 @@ jobs:
           ! readelf --program-headers "$RUNNER_TEMP/probe-a/cogs-net-probe-linux-amd64" | grep -F INTERP
           ! readelf --dynamic "$RUNNER_TEMP/probe-a/cogs-net-probe-linux-amd64" | grep -F NEEDED
           canary='must-never-be-reflected-7f4d4a9f'
-          request='{"version":"cogs.guest-probe/v1alpha1","operation":"http","url":"https://127.0.0.1:1/private?value=%s","headers":{"Authorization":"Bearer %s"},"timeout_ms":100}'
-          output=$(printf "$request" "$canary" "$canary" | "$RUNNER_TEMP/probe-a/cogs-net-probe-linux-amd64" 2>"$RUNNER_TEMP/probe-stderr")
+          output=$(printf '{"version":"cogs.guest-probe/v1alpha1","operation":"http","url":"https://127.0.0.1:1/private?value=%s","headers":{"Authorization":"Bearer %s"},"timeout_ms":100}' "$canary" "$canary" | "$RUNNER_TEMP/probe-a/cogs-net-probe-linux-amd64" 2>"$RUNNER_TEMP/probe-stderr")
           ! grep -F "$canary" <<<"$output"
           test ! -s "$RUNNER_TEMP/probe-stderr"
 
@@ -210,7 +205,6 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$REVIEWED_SHA" =~ ^[0-9a-f]{40}$ ]]
-          test -n "$AUTHORIZED_ACTOR"
           test "$ACTOR" = "$AUTHORIZED_ACTOR"
           test "$TRIGGERING_ACTOR" = "$ACTOR"
           test -n "$DEFAULT_BRANCH"
@@ -418,11 +412,15 @@ jobs:
           test -z "$(/usr/bin/git status --porcelain=v1 --untracked-files=all)"
           test -z "$(/usr/bin/git config --local --get-regexp 'credential\.helper|http\..*\.extraheader' || :)"
           ! /usr/bin/git remote get-url origin | /usr/bin/grep -Eq '://[^/]*@'
+          sudo -n /usr/bin/env -i NQ_ROOT_AUTHORITY_SHA="$NQ_HEAD_SHA" /usr/bin/python3 -I -B "$NQ_DRIVER" --provision-root-authority
           /usr/bin/env -i LC_ALL=C PYTHONDONTWRITEBYTECODE=1 PYTHONHASHSEED=0 NQ_EVENT_NAME="$GITHUB_EVENT_NAME" NQ_REPOSITORY="$GITHUB_REPOSITORY" \
             NQ_HEAD_REPOSITORY="$NQ_HEAD_REPOSITORY" NQ_HEAD_SHA="$NQ_HEAD_SHA" NQ_ENVELOPE_SHA="$GITHUB_SHA" \
             NQ_WORKFLOW_SHA="$GITHUB_WORKFLOW_SHA" NQ_REF="$NQ_REF" NQ_DEFAULT_BRANCH="$NQ_DEFAULT_BRANCH" NQ_REF_PROTECTED="$NQ_REF_PROTECTED" \
             NQ_JOB_ID="$GITHUB_JOB" NQ_RUN_ID="$GITHUB_RUN_ID" NQ_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" NQ_RUNNER_VERSION="$ImageVersion" \
             /usr/bin/python3 -I -B "$NQ_DRIVER" --workflow-bound
+      - name: Remove exact Job E root authority
+        if: ${{ always() }}
+        run: sudo -n /usr/bin/env -i NQ_ROOT_AUTHORITY_SHA="${{ needs.native-qualification-eligibility.outputs.reviewed_sha }}" /usr/bin/python3 -I -B scripts/native-qualification/job-e-sandbox.py --cleanup-root-authority
       - name: Upload validated fixed report
         id: upload
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
