@@ -301,7 +301,9 @@ issuer_text=ast.unparse(issuer);assert "os.execve('/usr/bin/python3', ('/usr/bin
 assert 'os.pidfd_open' in issuer_text and 'os.dup2(admission.number, 3' not in issuer_text
 assert 'invoke_fixed_admitted_operation' not in open(common.COMMON).read()
 children=next(node for node in ast.walk(source) if isinstance(node,ast.FunctionDef) and node.name=='_children')
-assert '_stable' in ast.unparse(children)`;
+assert '_stable' in ast.unparse(children)
+worker=ast.unparse(next(node for node in ast.walk(source) if isinstance(node,ast.FunctionDef) and node.name=='_custodian_worker'))
+assert worker.index("control.recv(7) == b'RELEASE'") < worker.index("control.send(b'READY')") < worker.index('control.recv(REPORT_LIMIT + 1)')`;
   const run = spawnSync("python3", ["-I", "-B", "-c", script], {
     input: JSON.stringify(values), encoding: "utf8",
   });

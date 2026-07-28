@@ -1552,6 +1552,7 @@ def _custodian_worker(control_fd: int, context: WorkflowContext, capability: byt
     listener.settimeout(600)
     listener.bind(_socket_name(context))
     listener.listen(1)
+    _require(control.recv(7) == b"RELEASE", "custodian release")
     _require(control.send(b"READY") == 5, "custodian ready")
     control.settimeout(600)
     raw = control.recv(REPORT_LIMIT + 1)
