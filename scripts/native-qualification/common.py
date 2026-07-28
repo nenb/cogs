@@ -110,6 +110,7 @@ class WorkflowContext:
     driver_blob_sha256: str
     common_blob_sha256: str
     schema_blob_sha256: str
+    schema_bytes: bytes
     @classmethod
     def from_environ(cls, expected_job: str, driver_file: str | Path) -> "WorkflowContext":
         environment = dict(os.environ)
@@ -128,11 +129,15 @@ class WorkflowContext:
         _require(attempt == 1, "first attempt")
         kernel, architecture = platform.release(), platform.machine()
         _require(re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+[-A-Za-z0-9.+]*", kernel) is not None and architecture == "x86_64", "runner platform")
+        schema_generation = SCHEMA.lstat()
+        schema_bytes = SCHEMA.read_bytes()
+        _require(len(schema_bytes) <= 100_000 and _generation(schema_generation) == _generation(SCHEMA.lstat()), "schema admission")
+        schema_digest = hashlib.sha256(schema_bytes).hexdigest()
         return cls(
             expected_job, repository, repository, *hashes, environment["NQ_JOB_ID"],
             _integer(environment["NQ_RUN_ID"], "run id"), attempt, _integer(environment["NQ_PR_NUMBER"], "pull request"),
             environment["NQ_RUNNER_VERSION"], kernel, architecture, _sha256(WORKFLOW), _sha256(expected_driver), _sha256(COMMON),
-            _sha256(SCHEMA),
+            schema_digest, schema_bytes,
         )
 def _context_value(context: WorkflowContext) -> dict[str, object]:
     source = {"checkout_sha": context.head_sha, "driver_blob_sha256": context.driver_blob_sha256,
@@ -671,10 +676,14 @@ def _decode(raw: bytes) -> object:
     value = json.loads(raw.decode("ascii"), object_pairs_hook=pairs)
     _require(raw == _canonical(value, True) and len(raw) <= REPORT_LIMIT, "canonical report")
     return value
-def _validate_schema(value: object) -> None:
-    before = SCHEMA.lstat()
-    raw = SCHEMA.read_bytes()
-    _require(len(raw) <= 100_000 and _generation(before) == _generation(SCHEMA.lstat()), "schema generation")
+def _validate_schema(value: object, admitted_schema: bytes | None = None) -> None:
+    if admitted_schema is None:
+        before = SCHEMA.lstat()
+        raw = SCHEMA.read_bytes()
+        _require(len(raw) <= 100_000 and _generation(before) == _generation(SCHEMA.lstat()), "schema generation")
+    else:
+        raw = admitted_schema
+        _require(len(raw) <= 100_000, "admitted schema bound")
     schema_value = json.loads(raw)
     _require(type(schema_value) is dict, "tracked schema")
     _schema_error(schema_value, value, schema_value)
@@ -859,10 +868,13 @@ def _validate_semantics(value: object, context: WorkflowContext | None = None) -
         source["head_sha"],
         envelope["event_merge_sha"],
     }
-    _require(workflow_matches and workflow["blob_sha256"] == _sha256(WORKFLOW), "semantic workflow")
-    _require(source["common_blob_sha256"] == _sha256(COMMON), "semantic common")
+    expected_workflow = _sha256(WORKFLOW) if context is None else context.workflow_blob_sha256
+    expected_common = _sha256(COMMON) if context is None else context.common_blob_sha256
     driver_path = COMMON.parent / DRIVERS[job]
-    _require(source["driver_blob_sha256"] == _sha256(driver_path), "semantic driver")
+    expected_driver = _sha256(driver_path) if context is None else context.driver_blob_sha256
+    _require(workflow_matches and workflow["blob_sha256"] == expected_workflow, "semantic workflow")
+    _require(source["common_blob_sha256"] == expected_common, "semantic common")
+    _require(source["driver_blob_sha256"] == expected_driver, "semantic driver")
     operation = report["operation"]
     _require(HEX64.fullmatch(operation["result_sha256"]) is not None, "semantic operation digest")
     _require(HEX64.fullmatch(operation["source_set_sha256"]) is not None, "semantic operation source")
@@ -886,7 +898,7 @@ def _validate_semantics(value: object, context: WorkflowContext | None = None) -
         observed = {name: report[name] for name in ("source", "envelope", "workflow", "runner")}
         _require(job == context.job and observed == _context_value(context), "semantic context")
 def _validate(value: object, context: WorkflowContext | None = None) -> None:
-    _validate_schema(value)
+    _validate_schema(value, None if context is None else context.schema_bytes)
     _validate_semantics(value, context)
 def report_path(job: str) -> Path:
     _require(job in DRIVERS, "report job")

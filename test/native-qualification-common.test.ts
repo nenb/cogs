@@ -251,7 +251,7 @@ class Cust:
  def publish(self,raw):self.raw=raw
  def abort(self,error):raise error
 for job,value in values.items():
- c=common.WorkflowContext(job,'owner/repo','owner/repo','a'*40,'b'*40,'a'*40,'b'*40,'c'*40,common.JOB_IDS[job],1,1,1,'image','6.8.0-100-generic','x86_64',h(common.WORKFLOW),h(common.COMMON.parent/common.DRIVERS[job]),h(common.COMMON),h(common.SCHEMA))
+ c=common.WorkflowContext(job,'owner/repo','owner/repo','a'*40,'b'*40,'a'*40,'b'*40,'c'*40,common.JOB_IDS[job],1,1,1,'image','6.8.0-100-generic','x86_64',h(common.WORKFLOW),h(common.COMMON.parent/common.DRIVERS[job]),h(common.COMMON),h(common.SCHEMA),open(common.SCHEMA,'rb').read())
  assert c.schema_blob_sha256==h(common.SCHEMA)
  cust=Cust();s=common.NativeSession._begin_with_ops(c,Ops(value),cust);returned=s.run_fixed_operation(job)
  for name,item in returned.items():

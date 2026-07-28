@@ -722,6 +722,7 @@ def common_context(common):
         common._sha256(common.COMMON.parent / common.DRIVERS["integration"]),
         common._sha256(common.COMMON),
         common._sha256(common.SCHEMA),
+        common.SCHEMA.read_bytes(),
     )
 
 
@@ -729,10 +730,16 @@ def common_context(common):
 def common_patches(common, kernel):
     original_registry = common.FdRegistry
     original_sha256 = common._sha256
+    admitted_sources = {
+        path: original_sha256(path)
+        for path in (common.WORKFLOW, common.COMMON, common.COMMON.parent / common.DRIVERS["integration"])
+    }
     registry_factory = lambda *_args, **_kwargs: original_registry(kernel.close)
     def admitted_sha256(path):
         if path == common.SCHEMA:
             raise FileNotFoundError(str(path))
+        if path in admitted_sources:
+            return admitted_sources[path]
         return original_sha256(path)
     with patched(
         common.os,
