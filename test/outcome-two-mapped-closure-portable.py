@@ -90,7 +90,7 @@ def replace_row(raw, replacement):
 class MapOps(closure._Ops):
     """Kernel model keeps fd objects separate from production ownership state."""
     def __init__(self, before, after, objects, fault=None, resolved=RESOLVED):
-        self.snapshots = [before, after]
+        self.snapshots = [before, before, after]
         self.objects = objects
         self.fault = fault
         self.fired = fault is None
@@ -116,7 +116,7 @@ class MapOps(closure._Ops):
     def open(self, path, flags, mode=0o600, *, dir_fd=None):
         del flags, mode, dir_fd
         if path == "/proc/321/maps":
-            raw = self.snapshots[min(self.maps_opened, 1)]
+            raw = self.snapshots[min(self.maps_opened, 2)]
             self.maps_opened += 1
             item = ("maps", raw)
         elif "/map_files/" in path:

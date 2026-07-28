@@ -1453,11 +1453,21 @@ def _maps_snapshot(ops: _Ops, pid: int) -> tuple[bytes, tuple[_MapRow, ...]]:
     raw = _read_proc(ops, f'/proc/{pid}/maps', _MAX_MAP_BYTES)
     return (raw, _parse_maps(raw))
 
+def _settled_maps_snapshot(ops: _Ops, pid: int) -> tuple[bytes, tuple[_MapRow, ...]]:
+    previous = _maps_snapshot(ops, pid)
+    for _attempt in range(100):
+        ops.sleep(0.001)
+        current = _maps_snapshot(ops, pid)
+        if current == previous:
+            return current
+        previous = current
+    raise RuntimeClosureError('helper mappings did not settle')
+
 def _mapped_closure(ops: _Ops, helper: HelperLease, closure: ResolvedToolClosure) -> MappedToolClosure:
     expected = {value.identity: value for value in closure.objects}
     if len(expected) > _MAX_OBJECTS:
         raise RuntimeClosureError('mapped closure object bound')
-    (before, rows) = _maps_snapshot(ops, helper.pid)
+    (before, rows) = _settled_maps_snapshot(ops, helper.pid)
     seen: set[tuple[int, int]] = set()
     fingerprints: dict[tuple[str, int], tuple[int, int]] = {}
     for row in rows:
