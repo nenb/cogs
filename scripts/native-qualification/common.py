@@ -1164,7 +1164,10 @@ def _start_custodian(context: WorkflowContext, registry: FdRegistry) -> _Custodi
             try:
                 os.close(left.number)
                 _custodian_main(right.number, context, capability)
-            except BaseException:
+            except BaseException as error:
+                detail = str(error) if isinstance(error, QualificationError) else f"{type(error).__name__}-{getattr(error, 'errno', 0)}"
+                label = re.sub(r"[^A-Za-z0-9_.-]", "-", detail)[:96]
+                os.write(2, f"native-custodian-supervisor-{label}\n".encode())
                 os._exit(1)
             os._exit(0)
         pidfd = registry.open("report-custodian-pidfd", lambda: os.pidfd_open(pid, 0))
@@ -1454,7 +1457,10 @@ def _custodian_main(control_fd: int, context: WorkflowContext, capability: bytes
             worker_call = worker.dup()
             _require(worker_call.fileno() >= 0, "custodian worker call socket adoption")
             _custodian_worker(control_fd, context, capability, worker_call.detach())
-        except BaseException:
+        except BaseException as error:
+            detail = str(error) if isinstance(error, QualificationError) else f"{type(error).__name__}-{getattr(error, 'errno', 0)}"
+            label = re.sub(r"[^A-Za-z0-9_.-]", "-", detail)[:96]
+            os.write(2, f"native-custodian-worker-{label}\n".encode())
             try:
                 if os.path.lexists(report_path(context.job).parent / ".owner.json"):
                     worker.send(b"PRESERVE")
