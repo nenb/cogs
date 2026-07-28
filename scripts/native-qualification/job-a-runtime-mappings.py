@@ -108,6 +108,12 @@ def qualify(
     normalized = [_normalized_object(value, index) for index, value in enumerate(objects)]
     identities = [(row["sha256"], row["size"]) for row in normalized]
     _require(len(identities) == len(set(identities)), "duplicate object identity")
+    digest_roles: dict[object, object] = {}
+    for row in normalized:
+        digest = row["sha256"]
+        role = row["role"]
+        previous_role = digest_roles.setdefault(digest, role)
+        _require(previous_role == role, "digest reused under another role")
     providers: dict[str, int] = {}
     previous_library: tuple[bytes, str] | None = None
     for index, row in enumerate(normalized):
@@ -181,7 +187,8 @@ def _dispatch(arguments: list[str], workflow: Callable[[], int] = _workflow_boun
 
 if __name__ == "__main__":
     try:
-        raise SystemExit(_dispatch(sys.argv[1:]))
-    except BaseException:
+        exit_code = _dispatch(sys.argv[1:])
+    except Exception:
         os.write(2, b"native-a-failed\n")
-        raise SystemExit(1)
+        exit_code = 1
+    raise SystemExit(exit_code)

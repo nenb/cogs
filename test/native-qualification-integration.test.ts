@@ -72,49 +72,52 @@ for hostile in (
   assert.equal(run.status, 0, run.stderr);
 });
 
-test("integration invokes the admitted ordinary production owner exactly once", () => {
+test("integration reaches the real common ordinary operation boundary", () => {
   const run = adapter(`${setup}
-events = []
-class Session:
- source_set_sha256 = ""
- context = types.SimpleNamespace(head_sha=revision)
- def run_fixed_operation(self, operation):
-  events.append(operation)
-  if operation != "integration": raise AssertionError("cross-profile operation")
-  self.source_set_sha256 = source_digest
-  return result()
-value, admitted_revision, admitted_digest = module["_invoke_complete_runtime"](Session())
-assert type(value) is dict and value == values
-assert (admitted_revision, admitted_digest) == (revision, source_digest)
-assert events == ["integration"]
+import sys
+sys.path.insert(0, "scripts/native-qualification")
+import common
+base = {key: ("baseline", key) for key in common.CLEANUP_KEYS}
+base["paths"] = (None, None)
+class Ops:
+ def __init__(self):
+  self.fds = common.FdRegistry(); self.source_set_sha256 = source_digest; self.events = []
+ def observe(self, context): return base
+ def run_fixed_operation(self, context, operation):
+  self.events.append((context.job, operation))
+  raise RuntimeError("safe native boundary")
+ops = Ops()
+session = common.NativeSession._begin_with_ops(types.SimpleNamespace(job="integration"), ops, object())
+try: module["_invoke_complete_runtime"](session)
+except RuntimeError as error: assert str(error) == "safe native boundary"
+else: raise AssertionError("completed result substituted")
+assert ops.events == [("integration", "integration")]
 `);
   assert.equal(run.status, 0, run.stderr);
 });
 
-test("integration delegates common cleanup and report authority", () => {
+test("integration real __main__ preserves a successful exit", () => {
   const run = adapter(`${setup}
-events = []
+import sys
 class Candidate:
  def __init__(self, **keywords): self.__dict__.update(keywords)
 class Evidence: restored = True
 class Session:
  context = types.SimpleNamespace(head_sha=revision)
  source_set_sha256 = source_digest
- def run_fixed_operation(self, operation): events.append(("operation", operation)); return result()
- def settle_native_phase(self): events.append("settle"); return Evidence()
- def publish(self, candidate): events.append(("publish", candidate))
-session = Session()
+ def run_fixed_operation(self, operation): assert operation == "integration"; return result()
+ def settle_native_phase(self): return Evidence()
+ def publish(self, candidate): assert candidate.primary_error is None
 class NativeSession:
  @staticmethod
- def begin(job, driver): events.append(("begin", job)); return session
-common = types.SimpleNamespace(NativeSession=NativeSession, ReportCandidate=Candidate)
-assert module["_run"](common) == 0
-candidate = events[-1][1]
-assert tuple(candidate.production_checks) == module["PRODUCTION_CHECK_IDS"]
-assert set(candidate.production_checks.values()) == {"pass"}
-assert not hasattr(candidate, "cleanup") and not hasattr(candidate, "result")
-assert events[:2] == [("begin", "integration"), ("operation", "integration")]
-assert events[-2] == "settle"
+ def begin(job, driver): assert job == "integration"; return Session()
+common = types.ModuleType("common")
+common.NativeSession = NativeSession; common.ReportCandidate = Candidate
+sys.modules["common"] = common
+sys.argv = [${JSON.stringify(path)}, "--workflow-bound"]
+try: runpy.run_path(${JSON.stringify(path)}, run_name="__main__")
+except SystemExit as error: assert error.code == 0
+else: raise AssertionError("main did not exit")
 `);
   assert.equal(run.status, 0, run.stderr);
 });

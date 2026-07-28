@@ -82,24 +82,52 @@ test("Job D strictly decodes every typed production process-owner observation", 
   assert.ok(rows.slice(1).every((row) => !row.accepted));
 });
 
-test("Job D calls only its zero-argument production-facing process adapter", () => {
+test("Job D reaches the real common zero-argument operation boundary", () => {
   const harness = `
-import importlib.util,json
-spec=importlib.util.spec_from_file_location("job_d",${JSON.stringify(path)})
+import importlib.util,sys,types
+sys.path.insert(0,'scripts/native-qualification'); import common
+spec=importlib.util.spec_from_file_location('job_d',${JSON.stringify(path)})
 m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
-class ProductionFacingAdapter:
- def __init__(self): self.events=[]
- def qualify_fixed_process_lifecycle(self):
-  self.events.append("qualify_fixed_process_lifecycle"); return object()
-adapter=ProductionFacingAdapter(); result=m._invoke_production(adapter)
-print(json.dumps({"events":adapter.events,"identity":result is not None}))
+base={key:('baseline',key) for key in common.CLEANUP_KEYS}; base['paths']=(None,None)
+class Ops:
+ def __init__(self): self.fds=common.FdRegistry(); self.source_set_sha256='b'*64; self.events=[]
+ def observe(self,context): return base
+ def run_fixed_operation(self,context,operation):
+  self.events.append((context.job,operation)); raise RuntimeError('safe native boundary')
+ops=Ops(); session=common.NativeSession._begin_with_ops(types.SimpleNamespace(job='D'),ops,object())
+try: m._invoke_production(session)
+except RuntimeError as error: assert str(error)=='safe native boundary'
+else: raise AssertionError('completed result substituted')
+assert ops.events == [('D','D')]
 `;
   const result = spawnSync("/usr/bin/python3", ["-I", "-B", "-c", harness], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
-  assert.deepEqual(JSON.parse(result.stdout), {
-    events: ["qualify_fixed_process_lifecycle"],
-    identity: true,
-  });
+});
+
+test("Job D real __main__ preserves a successful exit", () => {
+  const harness = `
+import json,runpy,sys,types
+value=json.loads(${JSON.stringify(JSON.stringify(golden))})
+class Evidence: restored=True
+class Session:
+ context=types.SimpleNamespace(head_sha=${JSON.stringify(revision)})
+ source_set_sha256=${JSON.stringify("b".repeat(64))}
+ def qualify_fixed_process_lifecycle(self): return value
+ def settle_native_phase(self): return Evidence()
+ def publish(self,candidate): assert candidate.primary_error is None
+class NativeSession:
+ @classmethod
+ def begin(cls,job,path): assert job=='D'; return Session()
+class Candidate:
+ def __init__(self,*values): self.primary_error=values[-1]
+common=types.ModuleType('common'); common.NativeSession=NativeSession; common.ReportCandidate=Candidate
+sys.modules['common']=common; sys.argv=[${JSON.stringify(path)},'--workflow-bound']
+try: runpy.run_path(${JSON.stringify(path)},run_name='__main__')
+except SystemExit as error: assert error.code==0
+else: raise AssertionError('main did not exit')
+`;
+  const result = spawnSync("/usr/bin/python3", ["-I", "-B", "-c", harness], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
 });
 
 test("Job D removes its parallel supervisor, fd baseline, and cleanup branches", () => {

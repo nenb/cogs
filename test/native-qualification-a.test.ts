@@ -54,9 +54,12 @@ value={
 rows=ns['qualify'](value,revision,source_digest)
 assert [row['role'] for row in rows[:-1]] == ['executable','loader','library']
 assert rows[-1]['mapped_sequence'] == mapped
-for mutation in ('role','oversize','needed-duplicate','provider','extra-library','mapped','closure','mapping'):
+for mutation in ('role','digest-role','oversize','needed-duplicate','provider','extra-library','mapped','closure','mapping'):
  bad={**value,'objects':[dict(row) for row in objects],'mapped':[dict(row) for row in mapped]}
  if mutation=='role': bad['objects'][0]['role']='loader'
+ if mutation=='digest-role':
+  bad['objects'][1]['sha256']=bad['objects'][0]['sha256']
+  bad['objects'][1]['size_bytes']=bad['objects'][0]['size_bytes']+1
  if mutation=='oversize': bad['objects'][2]['size_bytes']=134217729
  if mutation=='needed-duplicate': bad['objects'][0]['needed']=['libc.so.6','libc.so.6']
  if mutation=='provider': bad['objects'][2]['soname']='other.so'
@@ -72,25 +75,68 @@ for mutation in ('role','oversize','needed-duplicate','provider','extra-library'
   assert.equal(result.stdout, "");
 });
 
-test("Job A safe adapter reaches only the fixed common operation", () => {
+test("Job A safe adapter reaches the real common operation boundary", () => {
   const result = portable(`
-events=[]
-class Evidence: restored=False
+import types
+sys.path.insert(0,'scripts/native-qualification')
+import common
+base={key:('baseline',key) for key in common.CLEANUP_KEYS}
+base['paths']=(None,None)
+class Ops:
+ def __init__(self):
+  self.fds=common.FdRegistry(); self.source_set_sha256='2'*64; self.events=[]
+ def observe(self,context): return base
+ def run_fixed_operation(self,context,operation):
+  self.events.append((context.job,operation))
+  raise RuntimeError('safe native boundary')
+class Cust: pass
+ops=Ops()
+context=types.SimpleNamespace(job='A')
+session=common.NativeSession._begin_with_ops(context,ops,Cust())
+try: ns['_production_operation'](session)
+except RuntimeError as error: assert str(error)=='safe native boundary'
+else: raise AssertionError('completed result substituted')
+assert ops.events == [('A','A')]
+`);
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test("Job A real __main__ preserves a successful exit", () => {
+  const result = portable(`
+import hashlib, json, runpy, types
+revision='1'*40
+source_digest='2'*64
+objects=[
+ {'role':'executable','sha256':'3'*64,'size_bytes':10,'soname':None,'needed':['ld.so']},
+ {'role':'loader','sha256':'4'*64,'size_bytes':11,'soname':'ld.so','needed':[]},
+]
+canonical=lambda value: json.dumps(value,allow_nan=False,ensure_ascii=False,sort_keys=True,separators=(',',':')).encode()
+normalized=[{'needed':row['needed'],'role':row['role'],'sha256':row['sha256'],'size':row['size_bytes'],'soname':row['soname']} for row in objects]
+mapped=[{'role':row['role'],'sha256':row['sha256']} for row in normalized]
+value={'version':ns['RESULT_VERSION'],'source_revision':revision,'source_set_sha256':source_digest,
+ 'closure_sha256':hashlib.sha256(canonical(normalized)).hexdigest(),
+ 'mapping_sha256':hashlib.sha256(canonical([[row['role'],row['sha256']] for row in normalized])).hexdigest(),
+ 'objects':objects,'mapped':mapped,'mapped_generations_exact':True,'mapping_stable':True,
+ 'helper_reaped':True,'descriptors_restored':True,'children_reaped':True}
+class Evidence: restored=True
 class Session:
- context=type('Context',(),{'head_sha':'1'*40})()
- source_set_sha256='2'*64
- def run_fixed_operation(self,operation): events.append(('operation',operation)); raise RuntimeError('stopped-before-owner')
- def settle_native_phase(self): events.append(('settle',)); return Evidence()
- def publish(self,candidate): events.append(('publish',candidate.primary_error.args[0]))
-session=Session()
+ context=types.SimpleNamespace(head_sha=revision)
+ source_set_sha256=source_digest
+ def run_fixed_operation(self,operation): assert operation=='A'; return value
+ def settle_native_phase(self): return Evidence()
+ def publish(self,candidate): assert candidate.primary_error is None
 class NativeSession:
  @classmethod
- def begin(cls,job,path): events.append(('begin',job)); return session
+ def begin(cls,job,path): assert job=='A'; return Session()
 class Candidate:
  def __init__(self,**values): self.__dict__.update(values)
-common=type('Common',(),{'NativeSession':NativeSession,'ReportCandidate':Candidate,'REPORT_LIMIT':32768})
-assert ns['_workflow_bound'](common)==1
-assert events == [('begin','A'),('operation','A'),('settle',),('publish','stopped-before-owner')]
+common=types.ModuleType('common')
+common.NativeSession=NativeSession; common.ReportCandidate=Candidate; common.REPORT_LIMIT=32768
+sys.modules['common']=common
+sys.argv=[path,'--workflow-bound']
+try: runpy.run_path(path,run_name='__main__')
+except SystemExit as error: assert error.code==0
+else: raise AssertionError('main did not exit')
 `);
   assert.equal(result.status, 0, result.stderr);
 });

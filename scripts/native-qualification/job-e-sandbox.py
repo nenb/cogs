@@ -33,6 +33,7 @@ paths_restored namespaces_released namespace_handles_released
 """.split())
 SANDBOX_RESULT_FIELDS = SANDBOX_RESULT_STRINGS + SANDBOX_RESULT_BOOLEANS
 SANDBOX_RESULT_VERSION = "cogs.sandbox-qualification/v1"
+POLICY_SHA256 = "aacfce0e5eeb2fb79a1708b32f5383f89b381898ad7e6bd911905d87483b6bb2"
 
 
 def _require(condition: bool, message: str) -> None:
@@ -56,10 +57,29 @@ def qualify(result: object, revision: str, source_digest: str) -> dict[str, obje
     identity = (result["version"], result["source_revision"], result["source_set_sha256"])
     _require(identity == (SANDBOX_RESULT_VERSION, revision, source_digest), "sandbox result identity")
     _require(_hex(result["source_set_sha256"]), "sandbox source digest")
-    _require(_hex(result["seccomp_program_sha256"]), "sandbox policy digest")
-    _require(all(result[name] is True for name in SANDBOX_RESULT_BOOLEANS), "sandbox observation failed")
+    _require(
+        result["seccomp_program_sha256"] == POLICY_SHA256,
+        "sandbox policy digest",
+    )
+    _require(
+        all(result[name] is True for name in SANDBOX_RESULT_BOOLEANS),
+        "sandbox observation failed",
+    )
+    mount_view_exact = all(
+        result[name]
+        for name in ("root_readonly_noexec", "root_has_no_proc", "host_paths_absent")
+    )
+    seccomp_exact = all(
+        result[name]
+        for name in (
+            "seccomp_installed",
+            "seccomp_mode_exact",
+            "seccomp_program_exact",
+            "seccomp_denials_exact",
+        )
+    )
     checks = {
-        "mount_view_exact": result["root_readonly_noexec"] and result["root_has_no_proc"] and result["host_paths_absent"],
+        "mount_view_exact": mount_view_exact,
         "checkout_read_only": result["checkout_absent"] and result["no_acquisition_route"],
         "user_namespace_exact": result["user_namespace_exact"] and result["namespace_ownership_exact"],
         "pid_namespace_exact": result["pid_namespace_exact"],
@@ -69,8 +89,8 @@ def qualify(result: object, revision: str, source_digest: str) -> dict[str, obje
         "capabilities_zero": result["capabilities_zero"],
         "noroot_locked": result["noroot_locked"],
         "nnp_set": result["no_new_privs"],
-        "seccomp_socket_denied": all(result[name] for name in ("seccomp_installed", "seccomp_mode_exact", "seccomp_program_exact", "seccomp_denials_exact")),
-        "seccomp_io_uring_denied": all(result[name] for name in ("seccomp_installed", "seccomp_mode_exact", "seccomp_program_exact", "seccomp_denials_exact")),
+        "seccomp_socket_denied": seccomp_exact,
+        "seccomp_io_uring_denied": seccomp_exact,
         "no_acquisition_route": result["no_acquisition_route"],
         "all_reaped": result["children_reaped"] and result["descendants_reaped"],
         "mounts_restored": result["mounts_restored"],
@@ -161,7 +181,8 @@ def _main() -> int:
 
 if __name__ == "__main__":
     try:
-        raise SystemExit(_main())
-    except BaseException:
+        exit_code = _main()
+    except Exception:
         os.write(2, b"native-job-e-failed\n")
-        raise SystemExit(1)
+        exit_code = 1
+    raise SystemExit(exit_code)

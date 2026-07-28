@@ -87,6 +87,7 @@ def _dispatch(arguments: list[str], workflow: object = _workflow_bound) -> int:
 
 if __name__ == "__main__":
     try:
-        raise SystemExit(_dispatch(sys.argv[1:]))
-    except BaseException:
-        raise SystemExit(1)
+        exit_code = _dispatch(sys.argv[1:])
+    except Exception:
+        exit_code = 1
+    raise SystemExit(exit_code)

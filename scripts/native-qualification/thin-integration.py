@@ -54,13 +54,36 @@ def qualify(result: object, revision: str, source_digest: str) -> dict[str, obje
     _require(all(type(result[name]) is bool for name in RESULT_BOOLEANS), "production boolean fields")
     identity = tuple(result[name] for name in ("version", "marker", "source_revision", "source_set_sha256"))
     _require(identity == (RESULT_VERSION, MARKER, revision, source_digest), "production result identity")
-    digests = tuple(result[name] for name in ("source_set_sha256", "closure_sha256", "gzip_output_sha256", "zstd_output_sha256"))
+    digest_names = (
+        "source_set_sha256",
+        "closure_sha256",
+        "gzip_output_sha256",
+        "zstd_output_sha256",
+    )
+    digests = tuple(result[name] for name in digest_names)
     _require(all(_hex(value) for value in digests), "production result digests")
-    _require(all(result[name] is True for name in RESULT_BOOLEANS), "production observation failed")
-    _require(result["gzip_output_sha256"] == OUTPUT_SHA256 and result["zstd_output_sha256"] == OUTPUT_SHA256, "fixed production output")
+    _require(
+        all(result[name] is True for name in RESULT_BOOLEANS),
+        "production observation failed",
+    )
+    outputs_exact = (
+        result["gzip_output_sha256"] == OUTPUT_SHA256
+        and result["zstd_output_sha256"] == OUTPUT_SHA256
+    )
+    _require(outputs_exact, "fixed production output")
+    closure_prepared = (
+        result["source_revision"] == revision
+        and result["source_set_sha256"] == source_digest
+        and _hex(result["closure_sha256"])
+    )
+    handoff_exact = (
+        result["mapped_generations_exact"]
+        and result["exec_descriptor_consumed"]
+        and result["no_acquisition_route"]
+    )
     checks = {
-        "closure_prepared": result["source_revision"] == revision and result["source_set_sha256"] == source_digest and _hex(result["closure_sha256"]),
-        "handoff_exact": result["mapped_generations_exact"] and result["exec_descriptor_consumed"] and result["no_acquisition_route"],
+        "closure_prepared": closure_prepared,
+        "handoff_exact": handoff_exact,
         "gzip_deterministic": result["gzip_output_sha256"] == OUTPUT_SHA256,
         "zstd_deterministic": result["zstd_output_sha256"] == OUTPUT_SHA256,
         "marker_exact": result["version"] == RESULT_VERSION and result["marker"] == MARKER,
@@ -158,7 +181,8 @@ def _main() -> int:
 
 if __name__ == "__main__":
     try:
-        raise SystemExit(_main())
-    except BaseException:
+        exit_code = _main()
+    except Exception:
         os.write(2, b"native-integration-failed\n")
-        raise SystemExit(1)
+        exit_code = 1
+    raise SystemExit(exit_code)

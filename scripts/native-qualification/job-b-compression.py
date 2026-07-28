@@ -22,12 +22,17 @@ MARKER_SHA256 = "6381d4535b13c7f030ca94bce250c1ec817c4aea8fa45c91e25c88995216f6b
 MAX_OBJECT_SIZE = 134_217_728
 SONAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+~-]{0,254}\Z")
 FACTS = tuple("""
-    mapped_generations_exact user_namespace_exact pid_namespace_exact mount_namespace_exact network_namespace_exact namespace_ownership_exact
-    namespace_handles_exact pid_one supplementary_groups_empty effective_capabilities_zero permitted_capabilities_zero inheritable_capabilities_zero
-    bounding_capabilities_zero ambient_capabilities_zero capabilities_zero noroot_locked no_new_privs seccomp_installed seccomp_mode_exact
-    seccomp_program_exact seccomp_denials_exact exec_descriptor_consumed no_acquisition_route root_readonly_noexec root_has_no_proc
-    host_paths_absent checkout_absent limits_exact descriptors_restored children_reaped descendants_reaped mounts_restored paths_restored
-    namespaces_released namespace_handles_released
+    mapped_generations_exact user_namespace_exact pid_namespace_exact
+    mount_namespace_exact network_namespace_exact namespace_ownership_exact
+    namespace_handles_exact pid_one supplementary_groups_empty
+    effective_capabilities_zero permitted_capabilities_zero
+    inheritable_capabilities_zero bounding_capabilities_zero
+    ambient_capabilities_zero capabilities_zero noroot_locked no_new_privs
+    seccomp_installed seccomp_mode_exact seccomp_program_exact
+    seccomp_denials_exact exec_descriptor_consumed no_acquisition_route
+    root_readonly_noexec root_has_no_proc host_paths_absent checkout_absent
+    limits_exact descriptors_restored children_reaped descendants_reaped
+    mounts_restored paths_restored namespaces_released namespace_handles_released
 """.split())
 
 
@@ -110,7 +115,15 @@ def qualify(
     result: Mapping[str, object], revision: str, source_set_sha256: str,
 ) -> list[dict[str, object]]:
     """Require complete source/sealed/execution rows without transformation."""
-    fields = {"version", "source_revision", "source_set_sha256", "closure_sha256", "tools", "runtime"}
+    fields = {
+        "version",
+        "source_revision",
+        "source_set_sha256",
+        "closure_sha256",
+        "parser",
+        "tools",
+        "runtime",
+    }
     _require(type(result) is dict and set(result) == fields, "result shape")
     _require(
         (result["version"], result["source_revision"], result["source_set_sha256"])
@@ -148,6 +161,7 @@ def qualify(
         "output_sha256",
     }
     rows: list[dict[str, object]] = []
+    tool_views: dict[str, dict[str, object]] = {}
     for expected, value in zip(("gzip", "zstd"), tools):
         _require(type(value) is dict and set(value) == keys and value["id"] == expected, "tool row shape")
         normalized = _tool_objects(value["objects"])
@@ -173,10 +187,51 @@ def qualify(
             "sealed source size",
         )
         _require(value["output_sha256"] == MARKER_SHA256, "tool marker digest")
-        _require(value["output_sha256"] == runtime[f"{expected}_output_sha256"], "output binding")
-        rows.append(value)
-    _require(rows[0]["source_sha256"] != rows[1]["source_sha256"], "cross-tool source substitution")
-    _require(rows[0]["mapping_sha256"] != rows[1]["mapping_sha256"], "cross-tool mapping substitution")
+        _require(
+            value["output_sha256"] == runtime[f"{expected}_output_sha256"],
+            "output binding",
+        )
+        rows.append(dict(value))
+        tool_views[expected] = {
+            "closure_sha256": closure,
+            "objects": normalized,
+            "seal_profile": "linux-memfd-exec-seals-v1",
+            "sealed_executable": True,
+            "tool": expected,
+        }
+    _require(
+        rows[0]["source_sha256"] != rows[1]["source_sha256"],
+        "cross-tool source substitution",
+    )
+    _require(
+        rows[0]["mapping_sha256"] != rows[1]["mapping_sha256"],
+        "cross-tool mapping substitution",
+    )
+    parser = result["parser"]
+    parser_fields = {"closure_sha256", "objects"}
+    _require(type(parser) is dict and set(parser) == parser_fields, "parser summary shape")
+    parser_objects = _tool_objects(parser["objects"])
+    parser_closure = hashlib.sha256(_canonical(parser_objects)).hexdigest()
+    _require(parser["closure_sha256"] == parser_closure, "parser closure summary")
+    parser_view = {
+        "closure_sha256": parser_closure,
+        "objects": parser_objects,
+        "seal_profile": None,
+        "sealed_executable": False,
+        "tool": "python3-parser",
+    }
+    aggregate_view = [parser_view, tool_views["zstd"], tool_views["gzip"]]
+    aggregate_closure = hashlib.sha256(_canonical(aggregate_view)).hexdigest()
+    _require(result["closure_sha256"] == aggregate_closure, "aggregate closure summary")
+    rows.append({
+        "kind": "summary",
+        "id": "trusted-closure",
+        "closure_sha256": aggregate_closure,
+        "parser": {
+            "closure_sha256": parser_closure,
+            "objects": [dict(value) for value in parser["objects"]],
+        },
+    })
     return rows
 
 
@@ -222,7 +277,8 @@ def _dispatch(arguments: list[str], workflow: Callable[[], int] = _workflow_boun
 
 if __name__ == "__main__":
     try:
-        raise SystemExit(_dispatch(sys.argv[1:]))
-    except BaseException:
+        exit_code = _dispatch(sys.argv[1:])
+    except Exception:
         os.write(2, b"native-b-failed\n")
-        raise SystemExit(1)
+        exit_code = 1
+    raise SystemExit(exit_code)

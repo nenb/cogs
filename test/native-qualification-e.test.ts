@@ -23,7 +23,7 @@ values = {
  "version": module["SANDBOX_RESULT_VERSION"],
  "source_revision": revision,
  "source_set_sha256": source_digest,
- "seccomp_program_sha256": "3" * 64,
+ "seccomp_program_sha256": module["POLICY_SHA256"],
  **observed,
 }
 def result(row=values):
@@ -35,7 +35,7 @@ test("Job E accepts only the exact closed sandbox result", () => {
 qualified = module["qualify"](result(), revision, source_digest)
 assert tuple(qualified["checks"]) == module["PRODUCTION_CHECK_IDS"]
 assert all(qualified["checks"].values())
-assert qualified["policy_sha256"] == "3" * 64
+assert qualified["policy_sha256"] == module["POLICY_SHA256"]
 for name in module["SANDBOX_RESULT_BOOLEANS"]:
  mutant = dict(values); mutant[name] = False
  try: module["qualify"](result(mutant), revision, source_digest)
@@ -43,7 +43,7 @@ for name in module["SANDBOX_RESULT_BOOLEANS"]:
  else: raise SystemExit("false sandbox observation accepted: " + name)
 for name, wrong in (
  ("version", True), ("source_revision", "4" * 40),
- ("source_set_sha256", "g" * 64), ("seccomp_program_sha256", "4" * 63),
+ ("source_set_sha256", "g" * 64), ("seccomp_program_sha256", "4" * 64),
  ("pid_one", 1),
 ):
  mutant = dict(values); mutant[name] = wrong
@@ -71,60 +71,52 @@ assert not ({"closure_sha256", "gzip_output_sha256", "zstd_output_sha256"} & set
   assert.equal(run.status, 0, run.stderr);
 });
 
-test("Job E composes runner admission with one fixed held-byte root capsule", () => {
+test("Job E reaches the real common sandbox operation boundary", () => {
   const run = adapter(`${setup}
-events = []
-checkout = {"owner": 1000, "launcher": b"held-generation"}
-root_envelope = (
- "/usr/bin/sudo", "-n", "--close-from=3", "/usr/bin/env", "-i",
- "/usr/bin/python3", "-I", "-B", "-c", b"held-root-bootstrap",
-)
-class Session:
- source_set_sha256 = ""
- context = types.SimpleNamespace(head_sha=revision)
- def run_fixed_operation(self, operation):
-  assert operation == "E"
-  self.source_set_sha256 = source_digest
-  held = bytes(checkout["launcher"])
-  events.append(("runner-admitted", checkout["owner"], held))
-  checkout["launcher"] = b"replacement"
-  assert all("checkout" not in str(item) for item in root_envelope)
-  events.append(("root-consumed", held, 0))
-  return result()
-value, admitted_revision, admitted_digest = module["_invoke_sandbox"](Session())
-assert type(value) is dict and value == values
-assert (admitted_revision, admitted_digest) == (revision, source_digest)
-assert events == [
- ("runner-admitted", 1000, b"held-generation"),
- ("root-consumed", b"held-generation", 0),
-]
+import sys
+sys.path.insert(0, "scripts/native-qualification")
+import common
+base = {key: ("baseline", key) for key in common.CLEANUP_KEYS}
+base["paths"] = (None, None)
+class Ops:
+ def __init__(self):
+  self.fds = common.FdRegistry(); self.source_set_sha256 = source_digest; self.events = []
+ def observe(self, context): return base
+ def run_fixed_operation(self, context, operation):
+  self.events.append((context.job, operation))
+  raise RuntimeError("safe native boundary")
+ops = Ops()
+session = common.NativeSession._begin_with_ops(types.SimpleNamespace(job="E"), ops, object())
+try: module["_invoke_sandbox"](session)
+except RuntimeError as error: assert str(error) == "safe native boundary"
+else: raise AssertionError("completed result substituted")
+assert ops.events == [("E", "E")]
 `);
   assert.equal(run.status, 0, run.stderr);
 });
 
-test("Job E delegates baseline, report, and cleanup authority to common", () => {
+test("Job E real __main__ preserves a successful exit", () => {
   const run = adapter(`${setup}
+import sys
 class Candidate:
  def __init__(self, **keywords): self.__dict__.update(keywords)
 class Evidence: restored = True
 class Session:
  context = types.SimpleNamespace(head_sha=revision)
  source_set_sha256 = source_digest
- def run_fixed_operation(self, operation): events.append(("operation", operation)); return result()
- def settle_native_phase(self): events.append("settle"); return Evidence()
- def publish(self, candidate): events.append(("publish", candidate))
+ def run_fixed_operation(self, operation): assert operation == "E"; return result()
+ def settle_native_phase(self): return Evidence()
+ def publish(self, candidate): assert candidate.primary_error is None
 class NativeSession:
  @staticmethod
- def begin(job, driver): events.append(("begin", job)); return session
-events = []
-session = Session()
-common = types.SimpleNamespace(NativeSession=NativeSession, ReportCandidate=Candidate)
-assert module["_run"](common) == 0
-candidate = events[-1][1]
-assert tuple(candidate.production_checks) == module["PRODUCTION_CHECK_IDS"]
-assert set(candidate.production_checks.values()) == {"pass"}
-assert not hasattr(candidate, "cleanup") and not hasattr(candidate, "result")
-assert events[0] == ("begin", "E") and events[-2] == "settle"
+ def begin(job, driver): assert job == "E"; return Session()
+common = types.ModuleType("common")
+common.NativeSession = NativeSession; common.ReportCandidate = Candidate
+sys.modules["common"] = common
+sys.argv = [${JSON.stringify(path)}, "--workflow-bound"]
+try: runpy.run_path(${JSON.stringify(path)}, run_name="__main__")
+except SystemExit as error: assert error.code == 0
+else: raise AssertionError("main did not exit")
 `);
   assert.equal(run.status, 0, run.stderr);
 });
