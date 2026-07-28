@@ -333,7 +333,7 @@ class MappingOwnerOps(MapOps):
         del flags, mode
         if path == "/proc/self/fd":
             return self.allocate("fd-directory")
-        if path == "/proc/self/task/self/children" or path.endswith("/children"):
+        if path == "/proc/thread-self/children" or path.endswith("/children"):
             return self.allocate("proc", b"")
         if path == "/dev/null":
             return self.allocate("devnull")

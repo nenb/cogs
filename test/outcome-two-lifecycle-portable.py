@@ -135,7 +135,7 @@ class KernelOps(closure._Ops):
         if path.endswith("/children"):
             if self.fault == "children-open":
                 raise OSError(errno.EMFILE, "children")
-            pid = int(path.split("/")[2])
+            pid = -1 if path == "/proc/thread-self/children" else int(path.split("/")[2])
             process = self.processes.get(pid)
             children = process.children if process is not None else ()
             if self.fault == "unstable-descendants" and pid == 123:
@@ -884,7 +884,7 @@ class ProductionLifecycleKernel:
             raw = (f"{pid} (scripted) S " + " ".join(map(str, values)) + "\n").encode()
             return self.allocate("proc", raw)
         if path.endswith("/children"):
-            if path.startswith("/proc/self/"):
+            if path.startswith("/proc/self/") or path == "/proc/thread-self/children":
                 children = self.direct_children(self.main_pid)
             else:
                 pid = int(path.split("/")[2])

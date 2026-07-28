@@ -370,7 +370,7 @@ class DescriptorOps(FsOps):
         return fd
     def open(self, path, flags, mode=0o600, *, dir_fd=None):
         if path in ("/proc/self/fd", "/proc/123/fd"): return self._allocate(path)
-        if path == "/proc/self/task/self/children": return self._allocate("children")
+        if path == "/proc/thread-self/children": return self._allocate("children")
         if path == "/proc/123/stat":
             fd = self._allocate("proc-stat")
             fields = b" ".join([b"1"] * 19 + [b"10"] + [b"1"] * 8)

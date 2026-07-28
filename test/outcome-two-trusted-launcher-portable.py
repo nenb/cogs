@@ -1140,7 +1140,7 @@ class SandboxKernel:
     def proc_record(self, path):
         if path.endswith("/children"):
             pid_text = path.split("/")[2]
-            parent = self.process.pid if pid_text in ("self", "task") else int(pid_text)
+            parent = self.process.pid if pid_text in ("self", "task", "thread-self") else int(pid_text)
             children = [item.pid for item in self.processes.values()
                         if item.parent == parent and not item.reaped]
             return b"".join(f"{pid} ".encode() for pid in sorted(children))
@@ -1757,7 +1757,7 @@ class _BIKernel:
     def proc_bytes(self, path):
         if path.endswith("/fd"): return b""
         if path.endswith("/children"):
-            parent = self.outer if "/self/" in path else int(path.split("/")[2])
+            parent = self.outer if "/self/" in path or path == "/proc/thread-self/children" else int(path.split("/")[2])
             children = [pid for pid, p in self.processes.items() if p["parent"] == parent and not p["exited"]]
             return b"".join(f"{pid} ".encode() for pid in sorted(children))
         if path.endswith("/stat"):
