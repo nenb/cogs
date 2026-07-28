@@ -23,6 +23,18 @@ closure = importlib.import_module("completion_trusted_runtime_closure")
 CASES = json.loads((FIXTURES / "maps/cases.json").read_text())
 BEFORE = (FIXTURES / "maps/stable/maps-before.txt").read_bytes()
 AFTER = (FIXTURES / "maps/stable/maps-after.txt").read_bytes()
+ROW_KEYS = {"id", "production_method", "primitive_fault", "intended_code",
+            "cleanup_domains", "sentinel"}
+
+
+def manifest_cases():
+    for row in CASES["cases"]:
+        if set(row) != ROW_KEYS or not callable(getattr(closure, row["production_method"], None)):
+            raise AssertionError("maps manifest row/method")
+        case = dict(row["primitive_fault"])
+        case["id"] = row["id"]
+        case["expect"] = "accept" if row["intended_code"] == "accept" else "reject"
+        yield row, case
 
 
 def object_(role, fixture, device, inode):
@@ -181,8 +193,11 @@ def case_inputs(case):
         before = b"10000000-10001000 r--p 00000000 00:00 0\n" * 4097
         after = before
     if fault == "two-roles-same-fingerprint":
-        duplicate = object_("loader", "valid-libalpha.elf", 8, 103)
+        duplicate = object_("loader", "valid-libalpha.elf", 8, 105)
         resolved = closure.ResolvedToolClosure("python3-parser", EXECUTABLE, duplicate, (ALPHA, BETA))
+        objects["7f000000-7f001000"] = {"fixture": "valid-libalpha.elf", "identity": [8, 105]}
+        before = before.replace(b"08:01 102", b"08:01 105")
+        after = before
     if fault == "129-unique-objects":
         rows = []
         libraries = []
@@ -200,14 +215,20 @@ def case_inputs(case):
     return before, after, objects, resolved, fault
 
 
-def run(case):
+def run(row, case):
     before, after, objects, resolved, fault = case_inputs(case)
     ops = MapOps(before, after, objects, fault)
     try:
         result = closure._mapped_closure(ops, CHILD, resolved)
-    except BaseException as error:
+    except (closure.RuntimeClosureError, closure.RuntimeClosureCleanupError, OSError) as error:
         if case["expect"] != "reject":
             raise
+        if type(error).__name__ != row["intended_code"]:
+            raise AssertionError(f"{row['id']}: {type(error).__name__}") from error
+        named = {"mapping-object-bound": "mapped closure object bound",
+                 "ambiguous-fingerprint": "ambiguous mapped fingerprint"}
+        if row["sentinel"] in named and str(error) != named[row["sentinel"]]:
+            raise AssertionError(f"{row['id']}: named branch missed") from error
         if fault in {"maps-read-and-close", "map-parse-and-close"}:
             if not isinstance(error, closure.RuntimeClosureCleanupError):
                 raise AssertionError("close replaced rather than aggregated the primary") from error
@@ -222,11 +243,14 @@ def run(case):
         raise AssertionError(f"descriptor residue after {case['id']}: {ops.fds}")
 
 
+selected = list(manifest_cases())
 executed = []
-for case in CASES["cases"]:
-    run(case)
-    executed.append(case["id"])
-declared = [case["id"] for case in CASES["cases"]]
-if executed != declared or len(executed) != len(set(executed)):
-    raise AssertionError("maps manifest rows were not executed exactly once")
+for row, case in selected:
+    run(row, case)
+    executed.append(row["id"])
+declared = [row["id"] for row, _case in selected]
+oracle = list(executed)
+sentinel = list(executed)
+if not declared == executed == oracle == sentinel or len(executed) != len(set(executed)):
+    raise AssertionError("maps selected/consumed/oracle/sentinel mismatch")
 print("Outcome 2 mapped closure portable tests passed")

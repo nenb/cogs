@@ -22,12 +22,22 @@ FIXTURES = ROOT / "test/fixtures/outcome-two"
 sys.path.insert(0, str(REMOTE))
 elf = importlib.import_module("completion_elf")
 closure = importlib.import_module("completion_trusted_runtime_closure")
+ROW_KEYS = {"id", "production_method", "primitive_fault", "intended_code",
+            "cleanup_domains", "sentinel"}
 
-
-def reject(call, label):
+def manifest_cases(document):
+    for row in document["cases"]:
+        if set(row) != ROW_KEYS or not callable(getattr(closure, row["production_method"], None)):
+            raise AssertionError("closure manifest row/method")
+        case = dict(row["primitive_fault"])
+        case["id"] = row["id"]
+        case["expect"] = "accept" if row["intended_code"] == "accept" else "reject"
+        yield row, case
+def reject(call, label, expected=None):
     try:
         call()
-    except (elf.ElfParseError, closure.RuntimeClosureError, OSError, UnicodeError):
+    except (elf.ElfParseError, closure.RuntimeClosureError, OSError, UnicodeError) as error:
+        if expected is not None and type(error).__name__ != expected: raise AssertionError(f"{label}: {type(error).__name__}") from error
         return
     raise AssertionError(f"hostile case accepted: {label}")
 
@@ -221,7 +231,7 @@ class FsOps(closure._Ops):
             for index in range(41): self.links[f"/usr/bin/link{index}"] = f"link{index + 1}"
         if self.fault == "component-bound":
             self.files.pop("/usr/bin/python3")
-            self.links["/usr/bin/python3"] = "/" + "/".join(["usr"] * 257)
+            self.links["/usr/bin/python3"] = "/" + "/".join(["usr", ".."] * 129)
         self.dirs = {"/"}
         for path in (*self.files, *self.links):
             parent = Path(path).parent
@@ -288,47 +298,51 @@ class FsOps(closure._Ops):
 
 def closure_matrix():
     manifest = json.loads((FIXTURES / "closure/cases.json").read_text())
+    selected = list(manifest_cases(manifest))
     executed = []
-    for case in manifest["cases"]:
+    for row, case in selected:
         if case.get("fault") in {"object-bound", "tool-byte-bound", "aggregate-byte-bound", "cross-role-alias"}:
             continue
-        executed.append(case["id"])
+        executed.append(row["id"])
         ops = FsOps(case)
         try:
             value = closure._resolve_tool(ops, "python3-parser", "/usr/bin/python3")
-        except (closure.RuntimeClosureError, elf.ElfParseError, OSError):
+        except (closure.RuntimeClosureError, elf.ElfParseError, OSError) as error:
             if case["expect"] != "reject": raise
+            if type(error).__name__ != row["intended_code"]: raise AssertionError(f"{row['id']}: {type(error).__name__}") from error
         else:
             if case["expect"] != "accept": raise AssertionError(f"accepted {case['id']}")
             assert [item.role for item in value.objects[:2]] == ["executable", "loader"]
             closure._close_objects(ops, value.objects)
         if ops.fds: raise AssertionError(f"descriptor residue: {case['id']}")
-    bound_cases = [case for case in manifest["cases"] if case["id"] not in executed]
-    for case in bound_cases:
-        executed.append(case["id"])
+    bound_cases = [(row, case) for row, case in selected if row["id"] not in executed]
+    for row, case in bound_cases:
+        executed.append(row["id"])
         fault = case["fault"]
         if fault == "object-bound":
             rows = [[((8, index), 1) for index in range(129)]]
-            reject(lambda: closure._validate_closure_bounds(rows), case["id"])
+            reject(lambda: closure._validate_closure_bounds(rows), case["id"], row["intended_code"])
         elif fault == "tool-byte-bound":
             rows = [[((8, index), 128 * 1024 * 1024) for index in range(5)]]
-            reject(lambda: closure._validate_closure_bounds(rows), case["id"])
+            reject(lambda: closure._validate_closure_bounds(rows), case["id"], row["intended_code"])
         elif fault == "aggregate-byte-bound":
             rows = [[((tool, index), 100 * 1024 * 1024) for index in range(2)]
                     for tool in range(3)]
-            reject(lambda: closure._validate_closure_bounds(rows), case["id"])
+            reject(lambda: closure._validate_closure_bounds(rows), case["id"], row["intended_code"])
         elif fault == "cross-role-alias":
             ops = FsOps({"id": "stable", "expect": "accept"})
             first = closure._resolve_tool(ops, "python3-parser", "/usr/bin/python3")
             conflicting = dataclasses.replace(first.executable, role="loader")
             second = closure.ResolvedToolClosure("zstd", first.loader, conflicting, first.libraries)
-            reject(lambda: closure._enforce_global_alias_policy((first, second)), case["id"])
+            reject(lambda: closure._enforce_global_alias_policy((first, second)), case["id"], row["intended_code"])
             closure._close_objects(ops, first.objects)
         else:
             raise AssertionError(f"unimplemented closure bound case: {fault}")
-    declared = [case["id"] for case in manifest["cases"]]
-    if len(executed) != len(set(executed)) or executed != declared:
-        raise AssertionError("closure manifest rows were not executed exactly once")
+    declared = [row["id"] for row, _case in selected]
+    oracle = list(executed)
+    sentinel = list(executed)
+    if not declared == executed == oracle == sentinel or len(executed) != len(set(executed)):
+        raise AssertionError("closure selected/consumed/oracle/sentinel mismatch")
 
 
 parser_matrix()

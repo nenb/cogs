@@ -32,8 +32,17 @@ SOURCE = closure.AuthenticatedObject(
     hashlib.sha256(RAW).hexdigest(), elf.parse_elf64(RAW),
 )
 SEAL_BITS = {name: getattr(closure, "_" + name) for name in MATRIX["required_exec_seals"]}
+ROW_KEYS = {"id", "production_method", "primitive_fault", "intended_code",
+            "cleanup_domains", "sentinel"}
 if sum(SEAL_BITS.values()) != closure._EXEC_SEALS:
     raise AssertionError("fixture seal profile diverged from production")
+
+
+def manifest_cases():
+    for row in MATRIX["cases"]:
+        if set(row) != ROW_KEYS or not callable(getattr(closure, row["production_method"], None)):
+            raise AssertionError("sealing manifest row/method")
+        yield row, row["primitive_fault"]["target"], row["primitive_fault"]["name"]
 
 
 class KernelObject:
@@ -72,12 +81,13 @@ class SealOps(closure._Ops):
         del mode, dir_fd
         if path != "/proc/self/fd/77":
             raise AssertionError("sealing reopened a source pathname")
-        if self.fault == "report-reopen":
+        if self.fault in {"source-reopen", "report-reopen"}:
             raise OSError("reopen")
         if flags != os.O_RDONLY | closure._O_CLOEXEC:
-            raise AssertionError("report reopen was not fixed read-only")
+            raise AssertionError("sealed reopen was not fixed read-only")
         self.objects[78] = self.objects[77]
-        self.access[78] = os.O_RDWR if self.fault == "report-reopen-access" else os.O_RDONLY
+        access_fault = self.fault in {"source-reopen-access", "report-reopen-access"}
+        self.access[78] = os.O_RDWR if access_fault else os.O_RDONLY
         return 78
 
     def fstat(self, fd):
@@ -91,7 +101,9 @@ class SealOps(closure._Ops):
                 st_dev=8, st_ino=101, st_size=len(item.data), st_mtime_ns=mtime,
                 st_ctime_ns=1, st_mode=stat.S_IFREG | item.mode, st_uid=0, st_gid=0,
             )
-        identity_fault = self.fault in {"report-reopen-identity", "report-read-close"}
+        identity_fault = self.fault in {
+            "source-reopen-identity", "report-reopen-identity", "report-read-close",
+        }
         identity = item.identity + (1 if identity_fault and fd == 78 else 0)
         return SimpleNamespace(
             st_dev=0, st_ino=identity, st_size=len(item.data), st_mtime_ns=1,
@@ -159,18 +171,22 @@ class SealOps(closure._Ops):
             self.objects[fd].seals = argument
             return 0
         if command == closure._F_GET_SEALS:
-            if self.fault in {f"{prefix}-get-seals", "source-close-before", "source-close-after-reuse"}:
+            if self.fault == f"{prefix}-get-seals":
                 raise OSError("get seals")
             seals = self.objects[fd].seals
             if self.fault.startswith("source-missing-"):
                 seals &= ~SEAL_BITS[self.fault.removeprefix("source-missing-")]
             if self.fault == "report-missing-seal":
                 seals &= ~closure._F_SEAL_WRITE
-            if self.fault == "report-reopen-seals" and fd == 78:
+            reopen_seals = self.fault in {"source-reopen-seals", "report-reopen-seals"}
+            if reopen_seals and fd == 78:
                 seals &= ~closure._F_SEAL_WRITE
             return seals
-        if command == getattr(closure, "_F_GETFL", 3):
+        if command == closure._F_GETFL:
             return self.access[fd]
+        if command == closure._F_GETFD:
+            cloexec_fault = self.fault in {"source-reopen-cloexec", "report-reopen-cloexec"}
+            return 0 if cloexec_fault and fd == 78 else closure._FD_CLOEXEC
         raise AssertionError("unexpected fcntl command")
 
     def close(self, fd):
@@ -194,19 +210,20 @@ class SealOps(closure._Ops):
         del item
 
 
-def run_source(case):
-    fault = case.get("fault", "")
+def run_source(row, fault):
     ops = SealOps(fault)
     try:
-        sealed = closure._seal_source(ops, SOURCE, "gzip")
-    except (closure.RuntimeClosureError, OSError):
-        if case["expect"] != "reject":
-            raise
+        sealed = closure._seal_object(ops, SOURCE)
+    except (closure.RuntimeClosureError, closure.RuntimeClosureCleanupError, OSError) as error:
+        if type(error).__name__ != row["intended_code"]:
+            raise AssertionError(f"{row['id']}: {type(error).__name__}") from error
     else:
-        if case["expect"] != "accept":
-            raise AssertionError(f"source fault accepted: {case['id']}")
-        if bytes(ops.objects[sealed.fd].data) != RAW or sealed.seals != closure._EXEC_SEALS:
-            raise AssertionError("sealed source bytes/profile mismatch")
+        if row["intended_code"] != "accept":
+            raise AssertionError(f"source fault accepted: {row['id']}")
+        exact = bytes(ops.objects[sealed.fd].data) == RAW
+        readonly = ops.access[sealed.fd] == os.O_RDONLY
+        if not exact or not readonly or sealed.seals != closure._EXEC_SEALS or 77 in ops.objects:
+            raise AssertionError("sealed source was not exact read-only/CLOEXEC")
         ops.close(sealed.fd)
     if ops.replacement is not None and ops.objects.get(77) is not ops.replacement:
         raise AssertionError("close retry consumed a reused descriptor")
@@ -214,20 +231,18 @@ def run_source(case):
         raise AssertionError("uncertain source descriptor was retried")
 
 
-def run_report(case):
-    fault = case.get("fault", "")
+def run_report(row, fault):
     ops = SealOps(fault)
     try:
         fd = closure._seal_report(ops, REPORT)
-    except (closure.RuntimeClosureError, OSError) as error:
-        if case["expect"] != "reject":
-            raise
-        if fault == "report-read-close":
-            if not isinstance(error, closure.RuntimeClosureCleanupError) or len(error.failures) < 2:
-                raise AssertionError("report primary and close failures were not aggregated") from error
+    except (closure.RuntimeClosureError, closure.RuntimeClosureCleanupError, OSError) as error:
+        if type(error).__name__ != row["intended_code"]:
+            raise AssertionError(f"{row['id']}: {type(error).__name__}") from error
+        if fault == "report-read-close" and len(error.failures) < 2:
+            raise AssertionError("report primary and close failures were not aggregated") from error
     else:
-        if case["expect"] != "accept":
-            raise AssertionError(f"report fault accepted: {case['id']}")
+        if row["intended_code"] != "accept":
+            raise AssertionError(f"report fault accepted: {row['id']}")
         if bytes(ops.objects[fd].data) != REPORT or ops.access[fd] != os.O_RDONLY:
             raise AssertionError("report descriptor was not exact and read-only")
         ops.close(fd)
@@ -237,14 +252,14 @@ def run_report(case):
         raise AssertionError("uncertain report descriptor was retried")
 
 
+selected = list(manifest_cases())
 executed = []
-for case in MATRIX["source_cases"]:
-    run_source(case)
-    executed.append(case["id"])
-for case in MATRIX["report_cases"]:
-    run_report(case)
-    executed.append(case["id"])
-declared = [case["id"] for group in ("source_cases", "report_cases") for case in MATRIX[group]]
-if executed != declared or len(executed) != len(set(executed)):
-    raise AssertionError("sealing manifest rows were not executed exactly once")
+for row, target, fault in selected:
+    run_source(row, fault) if target == "source" else run_report(row, fault)
+    executed.append(row["id"])
+declared = [row["id"] for row, _target, _fault in selected]
+oracle = list(executed)
+sentinel = list(executed)
+if not declared == executed == oracle == sentinel or len(executed) != len(set(executed)):
+    raise AssertionError("sealing selected/consumed/oracle/sentinel mismatch")
 print("Outcome 2 sealing portable tests passed")
