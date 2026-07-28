@@ -1080,7 +1080,7 @@ class CommonKernel:
         if disposition == "restored":
             for process in children:
                 if process.thread is not None:
-                    process.thread.join(1)
+                    process.thread.join(MODEL_WAIT_SECONDS + 1)
                     if process.thread.is_alive():
                         raise AssertionError(f"{self.row['id']}: custodian child loop remains live")
                 if process.live:
@@ -1361,7 +1361,7 @@ def run_common_row(common, row, production_result):
         finally:
             cursor = 0
             while cursor < len(kernel.threads):
-                kernel.threads[cursor].join(1)
+                kernel.threads[cursor].join(MODEL_WAIT_SECONDS + 1)
                 cursor += 1
             live_threads = [thread.name for thread in kernel.threads if thread.is_alive()]
             if live_threads and error is None:
