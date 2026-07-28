@@ -6,6 +6,60 @@ import { test } from "node:test";
 const path = "scripts/native-qualification/job-e-sandbox.py";
 const source = readFileSync(path, "utf8");
 
+test("sandbox root capsule settles an early reader close before rejecting", () => {
+  const harness = `
+import errno,importlib.util,sys,types
+path='deploy/aws-feasibility/remote/completion_trusted_runtime_launcher.py'
+spec=importlib.util.spec_from_file_location('sandbox_launcher_pipe_test',path)
+launcher=importlib.util.module_from_spec(spec);spec.loader.exec_module(launcher)
+events=[]
+class Ops:
+ def __init__(self): self.closed=set()
+ def close(self,fd): self.closed.add(fd);events.append(('close',fd))
+ def read(self,fd,size):
+  events.append(('read',fd))
+  return b'S' if fd==106 else b''
+ def write(self,fd,data):
+  if fd==101:
+   events.append(('epipe',fd));raise BrokenPipeError(errno.EPIPE,'root bootstrap rejected')
+  events.append(('write',fd));return len(data)
+class Owner:
+ instance=None
+ def __init__(self,ops): Owner.instance=self;self.process=None;self.primary=None
+ def spawn(self): self.process=types.SimpleNamespace(reaped=False);return 41,self.process,None
+ def plan_setsid(self,process): events.append(('plan',41))
+ def release(self,process): events.append(('release',41))
+ def confirm_setsid(self,process): events.append(('confirm',41))
+ def stop(self,process): raise AssertionError('failed process bypassed cleanup')
+ def cleanup(self,primary):
+  assert self.process.reaped and isinstance(primary,launcher.RuntimeLauncherError)
+  assert primary.code=='sudo-exit';self.primary=primary;events.append(('cleanup',primary.code))
+ops=Ops();next_fd=iter(range(100,110))
+def pipe2(flags): return next(next_fd),next(next_fd)
+def select_(read,write,error,timeout=None): return list(read),[],[]
+def wait(process,deadline): process.reaped=True;events.append(('wait',41));return 0
+had_pipe2=hasattr(launcher.os,'pipe2');saved_pipe2=getattr(launcher.os,'pipe2',None)
+saved=(launcher._ProcessOwner,launcher.select.select,launcher._wait_bounded)
+launcher._ProcessOwner=Owner;launcher.os.pipe2=pipe2;launcher.select.select=select_;launcher._wait_bounded=wait
+try:
+ try: launcher._run_root_capsule_with_ops(ops,b'capsule')
+ except launcher.RuntimeLauncherError as error: assert error.code=='sudo-exit'
+ else: raise AssertionError('early root rejection accepted')
+finally:
+ launcher._ProcessOwner,launcher.select.select,launcher._wait_bounded=saved
+ if had_pipe2: launcher.os.pipe2=saved_pipe2
+ else: delattr(launcher.os,'pipe2')
+assert ops.closed==set(range(100,110)),ops.closed
+ordered=[events.index(item) for item in (('epipe',101),('close',101),('read',102),('read',104),('wait',41),('cleanup','sudo-exit'))]
+assert ordered==sorted(ordered),events
+`;
+  const run = spawnSync("/usr/bin/python3", ["-I", "-B", "-c", harness], {
+    encoding: "utf8",
+    env: { PYTHONDONTWRITEBYTECODE: "1" },
+  });
+  assert.equal(run.status, 0, run.stderr);
+});
+
 test("Job E is an unprivileged failure-only client of one common sandbox receipt", () => {
   const harness = `
 import runpy,sys,types

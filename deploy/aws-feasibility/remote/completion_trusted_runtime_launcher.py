@@ -2836,10 +2836,19 @@ def _run_root_capsule_with_ops(ops: Any, capsule: bytes) -> bytes:
         transition_read.close(ops)
         ack_write.close(ops)
         offset = 0
-        while offset < len(capsule):
-            written = ops.write(input_write.fd, capsule[offset:])
-            _require(written > 0, "root capsule write", "root-capsule-write")
-            offset += written
+        input_complete = True
+        try:
+            while offset < len(capsule):
+                written = ops.write(input_write.fd, capsule[offset:])
+                _require(written > 0, "root capsule write", "root-capsule-write")
+                offset += written
+        except OSError as error:
+            if error.errno != errno.EPIPE:
+                raise
+            # The fixed bootstrap can reject before consuming its complete
+            # input.  Close our writer, drain its diagnostic pipes, and reap
+            # it below so EPIPE cannot bypass the owned-child settlement.
+            input_complete = False
         input_write.close(ops)
         deadline = time.monotonic() + 30.0
         active = {output_read.fd: output, error_read.fd: errors}
@@ -2855,7 +2864,7 @@ def _run_root_capsule_with_ops(ops: Any, capsule: bytes) -> bytes:
                     next(item for item in leases if item.fd == fd).close(ops)
                     del active[fd]
         status = _wait_bounded(process, deadline)
-        _require(status == 0 and not errors, "sudo capsule exit", "sudo-exit")
+        _require(input_complete and status == 0 and not errors, "sudo capsule exit", "sudo-exit")
         owner.stop(process)
     except BaseException as error:
         primary = error
