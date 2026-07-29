@@ -1589,6 +1589,9 @@ def _write_map(ops: Any, path: str, value: bytes, denied_code: str) -> None:
     primary: BaseException | None = None
     try:
         _require(ops.write(lease.fd, value) == len(value), "namespace identity map short write", "map-short-write")
+    except PermissionError as error:
+        primary = RuntimeLauncherError("namespace identity map denied", denied_code)
+        primary.__cause__ = error
     except BaseException as error: primary = error
     try: lease.close(ops)
     except BaseException as error: raise RuntimeLauncherCleanupError(primary, [error]) from (primary or error)
