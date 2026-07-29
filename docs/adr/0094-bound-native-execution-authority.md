@@ -1,4 +1,4 @@
-# ADR 0094: Bound native diagnostic and final-evidence authority
+# ADR 0094: Bound native diagnostics and defer final-evidence authority
 
 - **Status:** Accepted
 - **Decision date:** 2026-07-29
@@ -6,14 +6,16 @@
 - **Accepted by:** Nick Byrne's explicit instruction to prepare this bounded non-AWS execution decision.
 - **Architecture predecessors:** ADR 0093 and, where non-conflicting, ADRs 0087–0092.
 - **Current exact implementation head observed:** `cc7179449dd5d0fa222fbb141b234bf48ac6da75`.
-- **Last historical run in scope:** GitHub Actions run `30431675509`, attempt 1.
+- **Last historical run in scope:** GitHub Actions run `30461497437`, attempt 1.
 - **Accounting predecessor:** `bec0a19b0b984f88ab9c2effc5059f3737915caa`.
 
 ## Context
 
 ADR 0093 authorized source and portable/static correction only. It explicitly prohibited native execution, sudo, workflow dispatch/rerun, and integration execution. Native dispatches nevertheless followed the merge of the ADR 0093 implementation. None reached the required all-green result. Integration never ran because Job B never passed.
 
-The latest attempt, run `30431675509` at exact main head `cc7179449dd5d0fa222fbb141b234bf48ac6da75`, passed Quality, C1, A, C, D, and E. Job B failed in the admitted launcher with the bounded diagnostic `runtime-launcher-exception-File`; report upload did not occur, report cleanup failed because no publication existed, integration was skipped, and the required result failed.
+The latest native attempt, run `30431675509` at exact main head `cc7179449dd5d0fa222fbb141b234bf48ac6da75`, passed Quality, C1, A, C, D, and E. Job B failed in the admitted launcher with the bounded diagnostic `runtime-launcher-exception-File`; report upload did not occur, report cleanup failed because no publication existed, integration was skipped, and the required result failed.
+
+Historical Quality jobs were not static-only. They invoked `deploy/aws-feasibility/validate.sh`, which installed OpenTofu, ran non-deploying `tofu init -backend=false` and `tofu validate`, and could download provider plugins into the configured cache. Those operations contacted no AWS API and performed no deployment as designed, but they were real OpenTofu/provider execution. This ADR therefore does not claim that no OpenTofu or provider activity occurred. Those Quality results and downloads grant no AWS, provider, deployment, or final-evidence authority.
 
 Runs `30429782506`, `30430763715`, and `30431675509` also measured a narrower environmental fact. GitHub's protected default-branch runner accepted this exact Job B privilege transition and reached the tracked launcher:
 
@@ -32,7 +34,7 @@ Runs `30429782506`, `30430763715`, and `30431675509` also measured a narrower en
 
 That observation says only that the measured wrapper was admitted and entered tracked code. It does not prove Job B, sandboxing, cleanup, integration, or evidence authority. The earlier `--keep-caps` spelling failed on run `30428012940` and is rejected.
 
-A bounded architecture is now required to stop the unreviewed correction/dispatch loop, admit only the minimum remaining diagnostic opportunity, and separate diagnostic green from final evidence authority.
+A bounded architecture is now required to stop the unreviewed correction/dispatch loop and admit only the minimum remaining diagnostic opportunity. Final-evidence execution is deferred to a later accepted exact-head ADR.
 
 ## Decision
 
@@ -83,53 +85,83 @@ The following 54 `workflow_dispatch` runs occurred after the prohibition. This A
 | `30428012940@cd1c5d11` | `30428804694@5c2295b8` | `30429119599@5c2295b8` | `30429782506@84b3acbc` |
 | `30430763715@0d0522ee` | `30431675509@cc717944` |  |  |
 
-This ledger is closed through run `30431675509`. A historical report artifact may be retained as a diagnostic record, but its internal `authority` spelling is ineffective and superseded by this disposition. No cross-run quorum exists: A from one run, B from another, or any other combination is forbidden.
+This prohibited-dispatch ledger is closed through run `30431675509`. A historical report artifact may be retained as a diagnostic record, but its internal `authority` spelling is ineffective and superseded by this disposition. No cross-run quorum exists: A from one run, B from another, or any other combination is forbidden.
 
-### 2. Accept the measured Job B capability envelope
+#### 1.3 Later PR 319 CI and Quality/OpenTofu truth
 
-The exact measured sudo/prlimit/setpriv envelope in Context is **accepted**, narrowly, for Job B. The accepted spelling omits unsupported `--keep-caps`. It must use absolute executables, noninteractive sudo, default close-from-3 behavior, fixed `RLIMIT_NOFILE` `65536:65536`, authenticated runner UID/GID, empty supplementary groups, only inheritable and ambient `CAP_SYS_ADMIN`, an empty reconstructed environment, fixed admitted Python, and the fixed Job B selector.
+PR 319 run `30461497437`, attempt 1, at exact head `6241fd1e6739560055ce952a25f033c64ad11ccc` occurred after the prohibited-dispatch boundary. It was a `pull_request` run and was cancelled. Native dispatch eligibility was skipped, and no Native C1, A–E, or integration job executed. Its partial ordinary CI results are non-authoritative history only.
 
-This is T1 qualification authority, not T2 workload authority. Before input release, production must observe all five T2 capability sets as zero, locked `noroot`, `no_new_privs`, and the exact seccomp policy. The wrapper may not grant root UID, another capability, a host namespace descriptor, a caller-selected path/argument/environment, or a fallback. Failure to create the intended namespace/mount transaction is a failed observation, never an environment skip.
+The historical Quality path, including runs listed above where Quality reached the AWS-feasibility step, may have installed OpenTofu and downloaded provider plugins before running non-deploying initialization and validation. Neither a successful `init`/`validate` nor a cached/downloaded provider is AWS reachability, deployment, qualification, or evidence. This explicit disposition replaces any statement that no OpenTofu/provider activity occurred. Future CI must satisfy section 3's static-only replacement before any diagnostic is eligible.
 
-The wrapper is rejected for A, C, and D. Job E retains only its separately fixed root-authority provisioning route.
+### 2. Accept and exactly constrain the measured capability envelope
 
-Thin integration composes the same production closure, namespace, mount, and launcher transaction as Job B. The architecture therefore **requires integration to use the byte-for-byte same measured sudo/prlimit/setpriv capability envelope**, changing only the fixed admitted driver/job identity and corresponding allowlisted environment values. Running integration unprivileged, as the current workflow does, is rejected. A broader integration privilege envelope is also rejected.
+The exact measured sudo/prlimit/setpriv envelope in Context is **accepted**, narrowly, for Job B and thin integration diagnostics. The accepted spelling omits unsupported `--keep-caps`. It must use absolute executables, noninteractive sudo, default close-from-3 behavior, fixed `RLIMIT_NOFILE` `65536:65536`, authenticated runner identity, an empty reconstructed environment, fixed admitted Python, and the fixed job selector.
 
-### 3. Source and static corrections before any execution
+Immediately after setpriv enters tracked code and before the first source, process, namespace, mount, root, memfd, report, or other authority-bearing effect, the fixed bootstrap must read and strictly parse its own `/proc/self/status` and require this exact pre-effect state:
 
-Only measured source/static correction is authorized before the first new diagnostic run. No native selector or real privileged primitive may be used while making or reviewing these corrections.
+```text
+real/effective/saved/fs UID = authenticated runner UID != 0
+real/effective/saved/fs GID = authenticated runner GID != 0
+Groups                         = empty
+CapInh                         = 0000000000200000
+CapPrm                         = 0000000000200000
+CapEff                         = 0000000000200000
+CapAmb                         = 0000000000200000
+CapBnd                         = EXPECTED_T1_CAP_BND
+```
 
-Permitted correction is limited to existing ADR 0093 surfaces and must:
+`0000000000200000` is exactly capability bit 21, `CAP_SYS_ADMIN`, and no other bit. `EXPECTED_T1_CAP_BND` is one exact 16-character lowercase hexadecimal mask fixed as a source constant in the externally reviewed exact head; it is not an input, environment value, runtime fallback, or prefix/subset test. The observed `CapBnd` must equal that constant byte-for-byte, must contain `CAP_SYS_ADMIN`, and must contain no bit absent from the reviewed baseline. Any extra or missing bit, malformed status row, nonempty group, root identity, identity drift, or inability to observe the complete vector fails before effects and consumes the diagnostic if dispatched.
+
+This is T1 diagnostic authority, not T2 workload or evidence authority. Before any untrusted input release, production must independently observe `CapInh`, `CapPrm`, `CapEff`, `CapBnd`, and `CapAmb` all exactly `0000000000000000`, supplementary groups empty, locked `noroot`, `no_new_privs`, and the exact seccomp policy. The wrapper may not grant root UID, another effective/permitted/inheritable/ambient capability, a host namespace descriptor, a caller-selected path/argument/environment, or a fallback.
+
+The wrapper is rejected for A, C, and D. Job E retains only its separately fixed root-authority provisioning route. Thin integration composes Job B's production closure, namespace, mount, and launcher transaction, so its diagnostic must use the byte-for-byte same envelope, changing only fixed admitted job identity values. Running integration unprivileged or with a broader envelope is rejected.
+
+### 3. Source/static correction gate before any diagnostic
+
+This ADR authorizes source/static correction and at most the two diagnostics in section 6. It grants no final-evidence run. No native selector, sudo, capability-bearing process, real namespace/mount/seccomp/`map_files` operation, OpenTofu, provider, AWS operation, deployment, or cloud operation may be used while making or reviewing corrections.
+
+Ordinary `pull_request` and `push` Images security CI remains explicitly permitted under its existing workflow: it may build the local test images, pull pinned public images, scan them, generate SBOMs, and upload those security artifacts. That path is non-native and non-authoritative; it grants no deployment, production, campaign, cloud, diagnostic, or final-evidence authority. It is disjoint from workflow-dispatch diagnostics, for which the complete Images/Docker path remains mandatorily skipped.
+
+Permitted correction is limited to existing surfaces and must:
 
 1. correct the latest bounded Job B `runtime-launcher-exception-File` source defect without adding a fallback or weakening source admission;
-2. wire integration through the exact accepted Job B capability envelope;
-3. require `reviewed_sha == github.sha == github.workflow_sha` at the protected main envelope and add one closed dispatch input, `execution_kind`, whose only values are `diagnostic` and `final`;
-4. bind `execution_kind` through context, immutable operation receipt, report schema, artifact name, cleanup authority, and final gate; diagnostic reports use authority `none`, while only a complete `final` run may use `exact-run-native-qualification`;
-5. add an exact observed capability-envelope check and post-transaction capability/process/namespace/mount/path cleanup checks for B and integration;
-6. run two independent trusted closure preparations in integration as section 4 requires and bind the comparison into the closed production result and native report schema;
-7. make report cleanup idempotently classify “no publication occurred” without claiming successful publication, while preserving failure of the native transaction;
-8. bind Job E root-authority removal to an explicit required workflow result;
-9. replace unauthenticated or broad cleanup, including integration's downloaded-tree `rm -rf`, with exact retained parent/object authority and bounded reverse cleanup; and
-10. update only the existing portable/static tests, schema goldens, workflow parser, and line gates needed to make these changes causal.
+2. wire integration through section 2's exact Job B capability envelope and enforce the exact pre-effect and sandbox capability vectors;
+3. remove every OpenTofu/Terraform executable, installer, `init`, `validate`, provider-plugin download/load, AWS CLI/SDK/API, credential, and live-provider route from the Quality job for **every** CI event;
+4. replace Quality's invocation of `deploy/aws-feasibility/validate.sh` with the tracked `npm run feasibility-source:check` static-only source checker for ordinary PR/push CI; that checker invokes no OpenTofu/Terraform/provider/AWS binary, install script, network acquisition, provider schema, backend, state, plan, refresh, or credentials; `validate.sh` may remain a manually gated non-CI helper but is unreachable from every workflow and grants no authority;
+5. make every `workflow_dispatch` event in the corrected workflow skip the entire Images job, every Docker build/pull/scan/SBOM path, Native C1, and every OpenTofu/provider/AWS step; Native C1's skipped state is intentional and supplies no diagnostic or final evidence; a later ADR must explicitly amend this rule before a different dispatch shape;
+6. define the complete workflow-dispatch input set as exactly `reviewed_sha`, `diagnostic_ordinal`, and `predecessor_run_id`; require ordinal exactly `1` or `2` and predecessor a canonical positive decimal run ID;
+7. require exact source equality `reviewed_sha == github.sha == github.workflow_sha == checkout HEAD` on protected `refs/heads/main`, with the workflow ref bound to that same main SHA and no merge-ref substitution;
+8. add section 5's pre-effect, metadata-only `actions:read` ledger gate and globally serialized non-cancelling diagnostic concurrency;
+9. make every diagnostic in-memory report, uploaded artifact, artifact name, operation receipt, and cleanup authority state `authority="none"`; the string `exact-run-native-qualification` is unreachable from every diagnostic selector;
+10. add exact capability, process, descriptor, namespace, mount, path, limit, checkout, report, and Job E root-authority cleanup observations for B, E, and integration;
+11. run two independent trusted closure preparations in integration as section 4 requires and bind only their diagnostic comparison into the closed authority-none report;
+12. make report cleanup classify “no publication occurred” without claiming publication success, while preserving native failure;
+13. remove every integration download of, trust in, or cross-check against A–E artifacts; remove `actions/download-artifact`, downloaded-report comparison, and broad `rm -rf` cleanup from the diagnostic workflow; and
+14. update only existing portable/static tests, schema goldens, workflow parsing, and line gates needed to causally prove these rules.
 
-No new implementation file, action, dependency, service, job, selector other than the closed `execution_kind` input, retry path, generated security program, report disclosure beyond fixed `execution_kind` and section 4 preparation metadata, or native scenario is permitted. Diagnostic-derived source changes after a failed authorized attempt are limited to one measured root cause from that attempt and require a new exact main SHA and new external review.
+Diagnostic integration composes production owners but consumes no A–E artifact and inherits no A–E result as evidence. Cross-report artifact verification is deferred to an external verifier whose exact bytes and rules must be named by a later final-run ADR.
+
+No new dependency, service, native job, retry path, generated security program, report authority, or native scenario is permitted. The OpenTofu static replacement remains a source/static correction even though it applies to ordinary PR CI. Diagnostic-derived correction after diagnostic 1 is limited to one measured root cause, requires a new exact main SHA and external review, and cannot restore forbidden execution.
 
 The only revised individual gross-addition highs are:
 
 | Existing surface | ADR 0093 high | ADR 0094 high |
 | --- | ---: | ---: |
-| `.github/workflows/ci.yml` Outcome Two addition | 400 | **480** |
+| `.github/workflows/ci.yml` Outcome Two addition | 400 | **560** |
+| `package.json` feasibility static-check registration | unlisted | **5** |
+| `scripts/check-feasibility-source.ts` | unlisted | **140** |
+| `test/ci-infrastructure-boundary.test.ts` | unlisted | **120** |
 | `scripts/native-qualification/common.py` | 1,900 | **2,150** |
 | `schemas/native-qualification-report-v1alpha1.json` | 700 | **860** |
 | `scripts/validate-schemas.ts` Outcome Two addition | 300 | **340** |
 | `test/outcome-two-recovery-portable.py` | 1,500 | **1,650** |
 | `test/outcome-two-trusted-launcher-portable.py` | 2,300 | **2,550** |
 
-Every other ADR 0093 individual high remains unchanged. The binding trusted/portable subtotal remains 19,000, native subtotal remains 10,000, and listed aggregate remains 29,000 gross physical additions from `bec0a19b0b984f88ab9c2effc5059f3737915caa`. Deletion, movement, generated data, packed control flow, or unused allowance supplies no credit. Stop for another ADR before crossing any individual or binding aggregate high or changing the accepted envelope.
+Every other ADR 0093 individual high remains unchanged. The three infrastructure-static surfaces are included in trusted/portable accounting and authorize no execution or change to deployment helpers. The binding trusted/portable subtotal remains 19,000, native subtotal remains 10,000, and listed aggregate remains 29,000 gross physical additions from `bec0a19b0b984f88ab9c2effc5059f3737915caa`. Deletion, movement, generated data, packed control flow, or unused allowance supplies no credit. Stop for another ADR before crossing any individual or binding aggregate high or changing the accepted envelope.
 
 ### 4. Two trusted closure preparations
 
-Every integration transaction, diagnostic or final, performs exactly two fresh trusted closure preparations, sequentially on the same fresh runner and exact source:
+Every diagnostic integration transaction performs exactly two fresh trusted closure preparations, sequentially on the same fresh runner and exact source:
 
 1. preparation 1 authenticates the complete fixed Python/gzip/zstd/loader/library closure, obtains a canonical closure report, settles no executable handoff, closes every descriptor/helper/private path, and proves its complete preparation baseline restored;
 2. only after that restoration, preparation 2 independently repeats resolution, authentication, mapping validation, sealing, canonical encoding, and preparation cleanup;
@@ -138,97 +170,104 @@ Every integration transaction, diagnostic or final, performs exactly two fresh t
 
 The two preparations may share fixed source policy but no mutable owner, helper, descriptor, memfd, report object, cache, namespace, mount, private root, or cleanup claim. A mismatch, unavailable primitive, first-preparation residue, close uncertainty, or inability to compare is terminal. It may not trigger a third preparation.
 
-The integration result and closed native report record only fixed categorical success, preparation count `2`, and the canonical report SHA-256/size already permitted by the metadata disclosure boundary. They do not disclose report bytes, paths, generations, PIDs, descriptors, mappings, addresses, or host identities.
+The integration result and closed diagnostic report record only fixed categorical success, preparation count `2`, and the canonical report SHA-256/size already permitted by the metadata disclosure boundary. The report and its artifact always carry `authority="none"`. They do not disclose report bytes, paths, generations, PIDs, descriptors, mappings, addresses, or host identities.
 
-### 5. Exactly two possible diagnostic runs
+### 5. Mechanically serialized ledger gate and fixed deadlines
 
-The smallest defensible diagnostic allowance is **at most two runs**. One run is not defensible because no historical integration job executed; the first corrected run is the first exposure of both corrected Job B and integration under their common measured envelope. Two runs permit at most one measured source correction after that first exposure. A larger allowance would recreate the prohibited correction/dispatch campaign.
+Workflow-dispatch diagnostics use one repository-global concurrency group, literal `outcome-two-native-diagnostic-v1`, with `cancel-in-progress: false`. The complete diagnostic workflow, not merely eligibility, holds that group until terminal completion. Ordinary PR/push CI uses a disjoint group. This prevents cancellation of a running diagnostic and prevents running overlap, but GitHub may replace or cancel an older **pending** run when a newer run enters the same concurrency group. Therefore every created run immediately consumes its claimed ordinal even if it remains pending, is replaced, or is cancelled. The metadata ledger must classify every such run; a newer run that observes a cancelled/pending predecessor, duplicate ordinal, or replacement attempt rejects before checkout or any repository/native effect. No queued replacement can recover an ordinal or gain authority.
 
-Each diagnostic run must satisfy all of these conditions:
+Before checkout, Quality, sudo, or any repository executable, the eligibility job has exactly `actions: read` with every other repository permission set to none and performs one fixed metadata ledger read. This ADR explicitly authorizes an ephemeral GitHub Actions token only for bounded pagination of CI workflow-run metadata and bounded job-conclusion reads for named predecessor diagnostics. The token is never printed, persisted, forwarded, or supplied to checked-out/native code. No log, artifact, source, issue, comment, release, environment, secret, AWS, provider, or other API read/write is authorized.
 
-- event is `workflow_dispatch` with `execution_kind=diagnostic` on the protected default branch `main`;
-- the workflow envelope SHA, `github.sha`, and checked-out source are one externally reviewed exact main commit;
-- `reviewed_sha` is that same exact 40-character main SHA, not another commit or merge ref;
-- run attempt is exactly 1;
-- the authorized actor, triggering actor, sender, and externally recorded reviewer approval agree;
-- the exact workflow and every changed source/schema/test blob were reviewed before dispatch;
-- there is no rerun, retry, replacement attempt, duplicate dispatch, concurrent run, or same-SHA second diagnostic;
-- failure, cancellation, timeout, skip, cleanup uncertainty, root-authority-removal uncertainty, or missing report consumes that diagnostic allowance; and
-- after the first all-green diagnostic, the unused second allowance expires.
+The fixed gate must:
 
-If diagnostic 1 fails, only the one measured source/static correction in section 3 may lead to diagnostic 2. If diagnostic 2 fails, or if a different defect or architecture change is required, execution stops for a new ADR. Environment/transient classification does not replenish an attempt.
+1. require current event `workflow_dispatch`, attempt 1, protected main, authorized actor/sender, exact canonical inputs, and the SHA equality in section 3;
+2. enumerate every prior CI `workflow_dispatch` run after boundary run `30431675509`, excluding only the current run, until that boundary is found exactly once; reject truncation, pagination uncertainty, API error, unknown event shape, or a run it cannot classify;
+3. identify ADR 0094 diagnostics through one canonical workflow run-name binding ordinal, predecessor run ID, and exact reviewed SHA; no caller text outside the three closed inputs enters that name;
+4. reject any malformed post-boundary dispatch, duplicate ordinal, duplicate run ID, same-SHA diagnostic, later attempt, rerun, cancelled/in-progress predecessor, missing required job, uncertain cleanup, or already-created ordinal 2;
+5. for ordinal 1, require `predecessor_run_id == 30431675509` and no prior ADR 0094 diagnostic;
+6. for ordinal 2, require exactly one completed ordinal-1 diagnostic, `predecessor_run_id` equal to its exact run ID, a different exact main SHA, a failed required diagnostic result with every cleanup/root-removal conclusion terminally known, and no prior ordinal-2 run; and
+7. reject ordinal 2 if ordinal 1 was all green, cancelled, skipped, timed out, incomplete, cleanup-uncertain, or otherwise not one completed correctable failure.
 
-Both diagnostics have authority `none`. Their artifacts and job successes remain non-authoritative observations even if the complete workflow is green. They cannot close Outcome 2 or supply final evidence.
+A rejected or malformed dispatch performs no checkout, Quality, native, image, OpenTofu, provider, AWS, or repository-code effect. A created ordinal consumes its slot; no API error or transient replenishes it.
 
-### 6. Review gate is user-frozen P0/P1 only
+Deadlines are exact and may only shorten on failure:
 
-This section narrowly supersedes ADR 0093's requirement that ten reviews have no unresolved P0–P3 finding.
+- every A–E and integration diagnostic job: GitHub job timeout exactly 10 minutes;
+- tracked outer operation watchdog: 360 seconds from immediately before first effect through native-operation settlement;
+- on watchdog expiry: close release/input gates immediately, TERM exact owned identities, wait 5 seconds, KILL only revalidated survivors, then reap for at most 5 seconds;
+- native/root/report/path cleanup: one 90-second monotonic aggregate deadline after operation termination, with each workflow cleanup step capped at 2 minutes; and
+- eligibility and required-result jobs: 2 minutes each.
 
-After the first all-green diagnostic, freeze one exact main head with no source change. Fresh exact-head reviews retain ADR 0093's ten review dimensions. Reviewers classify findings as P0–P3, but only Nick Byrne may freeze the final P0/P1 blocker set and authorize the final evidence run.
+Timeout, deadline expiry, inability to start the watchdog before effects, identity uncertainty, or cleanup overrun is failure and cannot be retried or converted to absence.
 
-- Every user-frozen P0 and P1 blocker must be resolved and freshly reviewed before final execution.
-- P2 and P3 findings are recorded as bounded follow-ups and do not by severity alone block final evidence.
-- A finding that can enable false success, admit substituted authority, suppress a required failure, delete or signal a foreign object, leave root/capability/process/descriptor/path/mount/namespace residue, or make cleanup absence uncertain **must be P0 or P1**. It cannot be downgraded, waived, or deferred as P2/P3.
-- A P2/P3 follow-up may not change workflow gating, result derivation, trust admission, the capability envelope, report authority, cleanup ownership, or final evidence interpretation. Such a change requires reclassification and a new exact review head.
-- Automated severity, reviewer disagreement, or an agent-authored “resolved” label cannot alter the user-frozen set.
+### 6. At most two authority-none diagnostic runs
 
-The all-green diagnostic is only eligibility for these fresh reviews. Reviews performed before it do not grant final evidence authority.
+The smallest defensible allowance is **at most two diagnostics**. The first corrected diagnostic is the first exposure of both corrected Job B and integration under their common measured envelope. The second permits at most one measured correction after one complete, cleanup-certain failure. A larger allowance would recreate the prohibited campaign.
 
-### 7. One final evidence run
+Each diagnostic must satisfy sections 2–5, use its mechanically admitted ordinal, and bind one externally reviewed exact main SHA and exact workflow/source/schema/test blobs. There is no rerun, retry, replacement attempt, duplicate dispatch, concurrent run, or same-SHA second diagnostic. Failure consumes the ordinal. After the first all-green diagnostic, ordinal 2 expires.
 
-After section 6 is satisfied, exactly one final evidence run may be authorized for the same byte-for-byte exact head that produced the all-green diagnostic. No commit, merge, formatting change, review record committed into the tree, workflow edit, or dependency change may intervene.
+Diagnostic 1 may lead to diagnostic 2 only for one measured source defect within section 3. If diagnostic 2 fails, or a different architecture/surface is required, execution stops for a new ADR. Environment/transient classification does not replenish an ordinal.
 
-The final run has `execution_kind=final` and the same protected-main, exact-head, attempt-1, actor, no-rerun, no-retry, and no-concurrency rules as a diagnostic. Diagnostic artifacts or an omitted/wrong execution kind cannot satisfy its gate. It must be all green in one run:
+Every diagnostic report and artifact has authority exactly `none`, including all-green A–E and integration reports. Job success cannot be separated, combined across runs, or promoted. No diagnostic can close Outcome 2 or authorize final evidence.
 
-- eligibility and Quality;
-- A, B, C, D, and E;
-- Job E authenticated root-authority removal;
-- integration with two byte-identical trusted closure preparations;
-- all six exact report uploads and authenticated local report cleanup;
-- integration uploaded-byte comparison and exact download cleanup; and
-- the required final result.
+### 7. Ten reviews and final execution are deferred
 
-Only this one complete final run may have `exact-run-native-qualification` evidence authority, and only for its exact head, workflow/source blobs, run ID, attempt 1, fixed checks, reports, and reviewed applicability. Individual job success is not separable authority. A failed/cancelled/skipped final run grants no authority and has no rerun or replacement under this ADR; stop for a new ADR.
+ADR 0094 authorizes no final-evidence workflow input, environment, job, report authority, artifact authority, verifier, or run. It does not require or approve a protected final environment because final execution is entirely deferred.
+
+An all-green diagnostic makes one exact head eligible for fresh review only. Ten fresh exact-head review reports must retain ADR 0093's dimensions: authentication/source admission, common/report/schema, workflow/ledger, A/B, C, D, E, integration, portable/static causality, and holistic authority/cleanup. Reviewers classify P0–P3, but only Nick Byrne may freeze the final P0/P1 blocker decision. False-success, substituted-authority, suppressed-failure, foreign cleanup/signaling, residue, or cleanup-uncertainty findings must be P0/P1 and cannot be deferred as P2/P3.
+
+A later separately accepted final-run ADR is mandatory. It must name, in its accepted text:
+
+- the exact 40-character main SHA proposed for final execution;
+- the exact workflow Git blob/object identity and SHA-256;
+- every exact parser, closure, launcher, common, A–E, integration, schema, and external-verifier source blob/object identity and SHA-256 used by the final transaction;
+- the one all-green diagnostic run ID and attempt 1 for that same unchanged SHA;
+- all ten exact review report paths, report digests, reviewed SHA, and dispositions;
+- Nick Byrne's exact user-frozen P0/P1 decision and every resolved blocker;
+- the external cross-report verifier, artifact inputs, authority transition, final cleanup, exact run count, attempt rule, and stop conditions; and
+- the continuing AWS/provider/OpenTofu/SSM/deployment/campaign boundary.
+
+Until that ADR is accepted, every report/artifact remains authority `none`; no exact-run authority string, final dispatch, artifact promotion, external verification claim, issue closure, or production inference is permitted.
 
 ### 8. Authenticated cleanup, zero residue, and root-authority removal
 
-A pass report, diagnostic green, or final green is impossible until all applicable cleanup is observed after the last effect.
+A diagnostic pass report or all-green diagnostic is impossible until all applicable cleanup is observed after the last effect.
 
 For B and integration, the surviving unprivileged owner must prove the capability-bearing process and all owned descendants are reaped, every pidfd/descriptor/gate is closed, every private root/path is removed by retained parent authority, every mount and namespace handle is gone, limits are restored, checkout bytes/config are unchanged, all owner registries are empty, and no process retaining `CAP_SYS_ADMIN` remains. Runner disposal is not evidence.
 
-For E, root provisioning is a write-ahead transaction. Cleanup must authenticate the exact reviewed source, bootstrap, authority and state generations; remove only those exact owned files; fsync affected directories; remove only exact empty directories created by the transaction; and reobserve absence. Root cleanup runs under `always()` and has a named output required by the final result. Provision failure does not permit pathname-only deletion. Mismatch or foreign state is preserved and fails.
+For E, root provisioning is a write-ahead transaction. Cleanup must authenticate the exact reviewed source, bootstrap, authority and state generations; remove only those exact owned files; fsync affected directories; remove only exact empty directories created by the transaction; and reobserve absence. Root cleanup runs under `always()` and has a named output required by the diagnostic result. Provision failure does not permit pathname-only deletion. Mismatch or foreign state is preserved and fails.
 
-For every report, the retained custodian authenticates exact report bytes, generation, run, attempt, head, job, and upload acknowledgement before quarantine/unlink. For integration download cleanup, retained directory and file identities replace `rm -rf`; exactly one `report.json` generation is removed and parent absence is reread. Cleanup failure never turns a failed publication into success and never deletes a foreign replacement.
+For every report, the retained custodian authenticates exact report bytes, generation, run, attempt, head, job, authority-none classification, and upload acknowledgement before quarantine/unlink. Diagnostic integration performs no artifact download, so no downloaded report path or broad downloaded-tree cleanup may exist. Cleanup failure never turns a failed publication into success and never deletes a foreign replacement.
 
-“Zero residue” covers local descriptors, processes/descendants, capabilities, files/private roots, mounts, namespace handles, limits, checkout mutation, root-authority files/directories, report staging/publication paths, and downloaded report paths. Intentionally retained GitHub report artifacts are external evidence objects, not runner residue; diagnostic artifacts remain authority `none`, and final artifacts inherit authority only through the one final all-green run.
+“Zero residue” covers local descriptors, processes/descendants, capabilities, files/private roots, mounts, namespace handles, limits, checkout mutation, root-authority files/directories, and report staging/publication paths. Intentionally retained GitHub diagnostic artifacts are external authority-none observations, not runner residue. They cannot inherit authority under this ADR.
 
-### 9. Absolute non-AWS boundary
+### 9. Absolute future non-AWS boundary
 
-This ADR authorizes no AWS action of any kind. It absolutely forbids:
+Historical Quality OpenTofu/provider activity is truthfully recorded in Context and section 1.3; it grants no authority and is not ratified. For every correction and diagnostic authorized by this ADR, AWS/provider/OpenTofu/SSM/deployment/campaign activity is absolutely forbidden:
 
-- AWS API, CLI, console, credential, account, role, STS, EC2, S3, IAM, KMS, or other AWS use;
-- SSM or any remote-command/session route;
-- provider initialization, validation against a live provider, planning, applying, importing, refreshing, destroying, or state access;
-- OpenTofu/Terraform execution;
-- deployment, release, production, campaign, Phase B, Stage 2 campaign, workload campaign, KVM, Kata, containerd, Docker, or cloud qualification; and
-- inferring any such authority from source review, static tests, a diagnostic green, or final native evidence.
+- no AWS API, CLI, console, credential, account, role, STS, EC2, S3, IAM, KMS, SDK, or other AWS use;
+- no SSM or remote-command/session route;
+- no OpenTofu/Terraform install or execution, provider initialization/download/load/validation, backend, plan, apply, import, refresh, destroy, or state access;
+- no deployment, release, production, campaign, Phase B, Stage 2 campaign, workload campaign, KVM, Kata, containerd, Docker, image job, or cloud qualification in a workflow-dispatch diagnostic; and
+- no inference of authority from source review, static checks, metadata reads, diagnostic green, or authority-none artifacts.
 
-No AWS/provider/OpenTofu/SSM/deployment/campaign credential or secret may enter a diagnostic or final job. Existing offline source/schema tests do not grant an exception to execute or contact any provider. If the selected workflow path would invoke one of the prohibited operations, the run is ineligible and must not be dispatched.
+No prohibited credential or secret may enter a diagnostic. The one GitHub Actions metadata read in section 5 is the sole network/API exception and grants no source, artifact, provider, or cloud authority. If the selected dispatch path can invoke Images/Docker, Native C1, OpenTofu, a provider, AWS, or another prohibited operation, eligibility must fail before checkout and no diagnostic is authorized.
 
 ## Integration order and stop conditions
 
 1. Merge this documentation decision without dispatching anything.
-2. Implement only section 3 source/static corrections.
-3. Run ordinary non-native portable/static, schema, workflow-parser, line-accounting, `git diff --check`, and repository-integrity gates.
-4. Obtain external review of the exact main SHA and changed blobs.
-5. Optionally consume diagnostic 1; stop on green, otherwise make only one measured correction.
-6. If needed, externally review the new exact main SHA and optionally consume diagnostic 2; stop regardless of outcome.
-7. After one diagnostic is all green, freeze that exact head and complete section 6 reviews.
-8. Only after Nick Byrne freezes and clears P0/P1 blockers may one final evidence run occur.
-9. Do not merge, dispatch, rerun, or execute anything under this documentation commit itself.
+2. Implement only section 3 source/static corrections, including static-only Quality for every event and diagnostic skips for Images/Docker and Native C1.
+3. Run only permitted non-native portable/static, schema, workflow-parser, ledger-model, line-accounting, `git diff --check`, and repository-integrity gates.
+4. Prove statically that no CI Quality event can invoke OpenTofu/provider/AWS and no workflow dispatch can invoke Images/Docker or Native C1.
+5. Obtain external review of the exact main SHA, workflow, capability baseline, and changed source/schema/test blobs.
+6. Optionally consume mechanically admitted diagnostic ordinal 1; stop on green, otherwise make only one measured correction.
+7. If section 5 permits it, externally review a different exact main SHA and optionally consume ordinal 2; stop regardless of outcome.
+8. After one all-green diagnostic, freeze that exact head, obtain the ten reports and user decision in section 7, and prepare a later final-run ADR.
+9. Do not execute final evidence, external cross-report authority verification, issue closure, deployment, or cloud activity under ADR 0094.
+10. Do not merge, dispatch, rerun, push, or execute anything under this documentation amendment itself.
 
 ## Consequences
 
-Historical partial successes remain useful observations but lose every path to authority. The exact measured Job B capability wrapper is accepted without broadening T2, and integration is made symmetric rather than relying on an unmeasured weaker envelope. Two independent closure preparations challenge canonical determinism and preparation cleanup before handoff.
+Historical partial successes and OpenTofu/provider downloads remain truthful observations but lose every path to authority. The measured Job B capability wrapper is accepted only with exact pre-effect vectors and complete sandbox drop. Integration is symmetric, artifact-independent, and diagnostic-only. Two independent closure preparations challenge determinism and cleanup without creating evidence authority.
 
-At most two non-authoritative diagnostic runs and one separately reviewed final run replace the prior open-ended campaign. Final authority remains atomic: one exact head, one attempt, one all-green run, authenticated cleanup, zero local residue, and no AWS/provider/OpenTofu/SSM/deployment/campaign activity.
+At most two globally serialized, mechanically budgeted, attempt-1 diagnostics replace the prior open-ended campaign. Every report and artifact remains authority `none`. Final evidence, external cross-report verification, and any authority transition require a later accepted exact-head ADR naming the green diagnostic, exact blobs, ten reviews, and Nick Byrne's frozen P0/P1 decision.
