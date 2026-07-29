@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """Portable primitive faults for production trusted-launcher state machines."""
-
 from array import array
 from contextlib import contextmanager
 from dataclasses import fields, make_dataclass, replace
@@ -22,7 +21,6 @@ import threading
 import time as real_time
 import types
 from types import SimpleNamespace
-
 if sys.flags.optimize:
     raise RuntimeError("Outcome 2 launcher tests refuse optimized Python")
 sys.dont_write_bytecode = True
@@ -38,8 +36,6 @@ REQUIRED_ACCEPTANCE = {
     "AT-ADAPT-BOOT-01", "AT-ADAPT-ISSUE-01", "AT-ADAPT-T2-01",
     "AT-ROOT-01", "AT-FIXTURE-01",
 }
-
-
 def load_module():
     spec = importlib.util.spec_from_file_location(
         "completion_trusted_runtime_launcher", MODULE,
@@ -48,30 +44,22 @@ def load_module():
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
-
-
 def load_path(name, path):
     spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
     spec.loader.exec_module(module)
     return module
-
-
 def production_symbol(module, name):
     value = module
     for component in name.split("."):
         value = getattr(value, component, None)
     return value
-
-
 def exact_child_reap(waitpid, pid, flags):
     waited, status = waitpid(pid, flags)
     if type(waited) is not int or type(status) is not int or waited != pid:
         raise AssertionError("modeled child was not exactly waitpid-reaped")
     return status
-
-
 def fixture_rows(module):
     document = json.loads(FIXTURE.read_text())
     if set(document) != {"version", "rows"}:
@@ -101,8 +89,6 @@ def fixture_rows(module):
     if acceptance != REQUIRED_ACCEPTANCE:
         raise AssertionError(f"launcher acceptance set drift: {acceptance}")
     return rows
-
-
 @contextmanager
 def patched(target, **replacements):
     missing = object()
@@ -117,8 +103,6 @@ def patched(target, **replacements):
                 delattr(target, name)
             else:
                 setattr(target, name, value)
-
-
 def dirents(values):
     records = []
     for value in values:
@@ -130,8 +114,6 @@ def dirents(values):
             + bytes(length - 19 - len(name))
         )
     return b"".join(records)
-
-
 class PrimitiveTrace:
     """Records only a selected primitive invocation made by production."""
     def __init__(self, module, row):
@@ -149,8 +131,6 @@ class PrimitiveTrace:
     def unavailable(self, primitive, saved):
         ctypes.set_errno(saved)
         return self.module._SystemOps._checked(self, -1, primitive)
-
-
 class BootstrapOps(PrimitiveTrace):
     def __init__(self, module, row):
         super().__init__(module, row)
@@ -190,8 +170,6 @@ class BootstrapOps(PrimitiveTrace):
             blob = b"blob " + str(len(data)).encode() + b"\0" + data
             result[path] = ("100644", hashlib.sha1(blob).hexdigest())
         return result
-
-
 class IssuanceOps(PrimitiveTrace):
     def __init__(self, module, row):
         super().__init__(module, row)
@@ -214,7 +192,6 @@ class IssuanceOps(PrimitiveTrace):
             (socket.SOL_SOCKET, socket.SCM_RIGHTS, array("i", descriptors[:1]).tobytes()),
             (socket.SOL_SOCKET, socket.SCM_RIGHTS, array("i", descriptors[1:]).tobytes()),
         ]
-
 
 class IssuanceEndpoint:
     def __init__(self, ops):
@@ -545,6 +522,7 @@ def invoke_issuer(module, row, created):
             return actual_fcntl(fd, command, *arguments)
 
         try:
+            issuer._capability_index = len(issuer._preparation_admissions)
             with patched(module, _SystemOps=lambda: ops), patched(
                 module.fcntl, fcntl=modeled_fcntl,
             ), patched(module.select, select=selectable):
@@ -1890,35 +1868,32 @@ class _BIChildSocket:
 
 
 def _modeled_worker_execution(module, admission, kernel):
-    """Execute the real worker body and return evidence bound to the parent packet."""
+    """Execute the real worker body and bind fresh preparation order to one issue."""
     release_fd = kernel.alloc("pipe", resource={"data": bytearray(b"G"),
         "read_closed": False, "write_closed": True, "child_writer": False}, end="read")
     endpoint_fd, helper_fd = kernel.alloc("socket"), kernel.alloc("socket")
     sockets = {fd: _BIChildSocket(kernel, fd, "worker") for fd in (endpoint_fd, helper_fd)}
-    events = []
+    events, claimed = [], []
     packet = _BIjson.loads(kernel.packet)
-    receipt = module._IssuanceReceipt(
-        module._HANDOFF_VERSION,
-        packet["report_sha256"],
-        packet["closure_sha256"],
-        packet["binding_sha256"],
-        packet["generation_sha256"],
-        len(kernel.descriptors),
-        kernel.worker,
-        kernel.outer,
-    )
+    receipt = module._IssuanceReceipt(module._HANDOFF_VERSION, packet["report_sha256"],
+        packet["closure_sha256"], packet["binding_sha256"], packet["generation_sha256"],
+        len(kernel.descriptors), kernel.worker, kernel.outer)
     class Owner:
+        def _canonical_report_bytes(self):
+            events.append("worker:report")
+            return kernel.report_bytes
         def _issue_once(self, issuer):
-            if type(issuer) is not module._WorkerIssuer:
-                raise AssertionError("worker did not construct production issuer")
             events.append("worker:issue")
             return receipt
         def close(self): events.append("worker:close")
     closure = _BItypes.ModuleType("modeled.closure")
     closure.__package__ = "modeled"
-    closure._prepare_admitted_fixed_runtime_closure = lambda claimed, issuer: (
-        events.append("worker:prepare") or Owner()
-    )
+    def prepare(current, issuer):
+        if issuer._preparation_admissions[len(claimed)] is not current: raise AssertionError("worker admission order")
+        claimed.append(current)
+        events.append("worker:prepare")
+        return Owner()
+    closure._prepare_admitted_fixed_runtime_closure = prepare
     def child_socket(*args, **kwargs): return sockets[kwargs["fileno"]]
     def child_exit(code): events.append(f"worker:exit:{code}")
     with patched(module, _SystemOps=lambda: kernel), patched(module.socket, socket=child_socket), patched(
@@ -1926,13 +1901,13 @@ def _modeled_worker_execution(module, admission, kernel):
         setsid=lambda *args: None, _exit=child_exit):
         module._worker_main(endpoint_fd, helper_fd, release_fd, b"N" * 32,
                             admission, closure, kernel.outer)
-    if events != ["worker:prepare", "worker:issue", "worker:close", "worker:exit:0"]:
+    repeated = admission._operation == "runtime"
+    expected = (["worker:prepare", "worker:report", "worker:close", "worker:prepare", "worker:report"]
+                if repeated else ["worker:prepare"])
+    expected += ["worker:issue", "worker:close", "worker:exit:0"]
+    if events != expected or len(claimed) != (2 if repeated else 1) or (repeated and claimed[0] is claimed[1]):
         raise AssertionError(f"worker child state machine drift: {events}")
-    return {
-        "kind": "worker",
-        "packet_sha256": _BIhashlib.sha256(kernel.packet).hexdigest(),
-        "receipt": receipt,
-    }
+    return {"kind": "worker", "packet_sha256": _BIhashlib.sha256(kernel.packet).hexdigest(), "receipt": receipt}
 
 def _modeled_namespace_execution(module, report, descriptors, rows, role):
     root_parent = _BItempfile.mkdtemp()
@@ -2066,9 +2041,10 @@ def production_runtime_compression_contracts(module):
                     module, report, report_bytes, duplicated, rows,
                     f"{root_parent}/{module._ROOT_LEAF}", selected_clone,
                 )
+                operation = "runtime" if expected_type is module.RuntimeQualificationResult else "compression"
                 admission = module._SourceAdmission("0" * 40, "0" * 64, "1" * 64,
                     (ROOT / "schemas/trusted-runtime-closure-v1.json").read_bytes(), "", 0,
-                    None, object(), kernel.outer, _BIos.getuid(), _BIos.getgid(), "runtime")
+                    None, object(), kernel.outer, _BIos.getuid(), _BIos.getgid(), operation)
                 actual_fcntl = module.fcntl.fcntl
                 def modeled_fcntl(fd, command, *args):
                     if fd in duplicated and command == module._F_GET_SEALS:

@@ -675,14 +675,21 @@ def _fixed_error_stage(error: BaseException) -> str:
         return "rejected-" + hashlib.sha256(str(current).encode("utf-8", "backslashreplace")).hexdigest()[:16]
     return (re.sub(r"[^A-Za-z0-9_.-]", "-", stage) if type(stage) is str else "invalid")[:40]
 class _WorkerIssuer:
-    def __init__( self, endpoint: socket.socket, nonce: bytes, admission: _SourceAdmission, consumer_pid: int, package_name: str, helper_endpoint: socket.socket | None = None):
+    def __init__( self, endpoint: socket.socket, nonce: bytes, admission: _SourceAdmission, consumer_pid: int, package_name: str, helper_endpoint: socket.socket | None = None, preparation_admissions: tuple[_SourceAdmission, ...] | None = None):
+        admissions = (admission,) if preparation_admissions is None else preparation_admissions
+        repeated = len(admissions) == 2 and admission._operation == "runtime"
+        identities = tuple((item.revision, item.bootstrap_sha256, item.source_set_sha256, item._schema_bytes, item._operation) for item in admissions)
+        _require(type(admissions) is tuple and (len(admissions) == 1 or repeated), "preparation admission count", "admission-count")
+        _require(admissions[-1] is admission and len({id(item) for item in admissions}) == len(admissions), "preparation admission identity", "admission-authority")
+        _require(all(type(item) is _SourceAdmission for item in admissions) and len(set(identities)) == 1, "preparation admission binding", "admission-authority")
         self._endpoint = endpoint
         self._helper_endpoint = helper_endpoint
         self._nonce = nonce
         self._admission = admission
+        self._preparation_admissions = admissions
         self._consumer_pid = consumer_pid
         self._package_name = package_name
-        self._capability_used = False
+        self._capability_index = 0
         self._used = False
         self._helper_sequence = 0
         self._helper_tokens: dict[_RuntimeHelperToken, str] = {}
@@ -731,16 +738,18 @@ class _WorkerIssuer:
     def _retire_runtime_helper(self, token: _RuntimeHelperToken, deadline: float) -> None:
         self._helper_transition(token, "retire", deadline)
     def _consume_runtime_closure_capability(self, admission: object, package_name: str, worker_pid: int) -> tuple[socket.socket, tuple[int, int, int]]:
-        if self._capability_used: raise RuntimeLauncherError("admission capability replay", "admission-replay")
-        if admission is not self._admission or type(admission) is not _SourceAdmission: raise RuntimeLauncherError("admission authority mismatch", "admission-authority")
+        if self._capability_index >= len(self._preparation_admissions): raise RuntimeLauncherError("admission capability replay", "admission-replay")
+        expected_admission = self._preparation_admissions[self._capability_index]
+        if admission is not expected_admission or type(admission) is not _SourceAdmission: raise RuntimeLauncherError("admission authority mismatch", "admission-authority")
         if package_name != self._package_name: raise RuntimeLauncherError("synthetic package mismatch", "admission-package")
         if worker_pid != os.getpid() or worker_pid != admission._worker_pid: raise RuntimeLauncherError("admission worker mismatch", "admission-worker")
         if not admission._consume(self, package_name, worker_pid): raise RuntimeLauncherError("admission capability rejected", "admission-capability")
-        self._capability_used = True
+        self._capability_index += 1
         expected = (self._consumer_pid, os.getuid(), os.getgid())
         return self._endpoint, expected
     def _accept_runtime_closure(self, canonical_report: bytes, descriptors: tuple[int, ...], generation_rows: tuple[object, ...]) -> _IssuanceReceipt:
-        _require(not self._used, "issuer is one-shot")
+        _require(not self._used and self._capability_index == len(self._preparation_admissions), "issuer is one-shot")
+        _require(not self._helper_tokens, "issuer helper remains registered", "helper-token")
         self._used = True
         _require(type(canonical_report) is bytes and type(descriptors) is tuple and type(generation_rows) is tuple, "issuer argument type")
         rows = tuple(_row_from_object(row) for row in generation_rows)
@@ -2358,6 +2367,11 @@ def _consume_launcher_operation(admission: _SourceAdmission, operation: str) -> 
     exact = exact and admission._issuer is _BOOTSTRAP_OPERATION_TOKEN and not admission._claimed
     _require(exact, "launcher operation admission", "operation-admission")
     admission._claimed = True
+def _require_identical_closure_reports(first: bytes, second: bytes) -> None:
+    _require(type(first) is bytes and type(second) is bytes, "closure report comparison type", "closure-report-type")
+    _decode_report(first)
+    _decode_report(second)
+    _require(first == second, "fresh closure reports differ", "closure-report-drift")
 def _worker_main(endpoint_fd: int, helper_fd: int, release_fd: int, nonce: bytes, admission: _SourceAdmission, closure_module: types.ModuleType, consumer_pid: int) -> NoReturn:
     ops = _SystemOps()
     release = _FdLease(release_fd, "worker-release-read")
@@ -2376,19 +2390,44 @@ def _worker_main(endpoint_fd: int, helper_fd: int, release_fd: int, nonce: bytes
         admission._consumer_pid = consumer_pid
         admission._consumer_uid = os.getuid()
         admission._consumer_gid = os.getgid()
-        issuer = _WorkerIssuer(endpoint, nonce, admission, consumer_pid, package_name, helper_endpoint)
-        admission._issuer = issuer
+        preparations = (admission,)
+        if admission._operation == "runtime":
+            first = _SourceAdmission(
+                admission.revision, admission.bootstrap_sha256, admission.source_set_sha256,
+                admission._schema_bytes, package_name, os.getpid(), endpoint, None,
+                consumer_pid, os.getuid(), os.getgid(), admission._operation,
+            )
+            preparations = (first, admission)
+        issuer = _WorkerIssuer(endpoint, nonce, admission, consumer_pid, package_name, helper_endpoint, preparations)
+        for current in preparations: current._issuer = issuer
         constructor = getattr(closure_module, "_prepare_admitted_fixed_runtime_closure", None)
         _require(callable(constructor), "admitted closure constructor missing")
-        owner = constructor(admission, issuer)
-        issue = getattr(owner, "_issue_once", None)
-        _require(callable(issue), "admitted closure issuer missing")
-        receipt = issue(issuer)
-        _require(type(receipt) is _IssuanceReceipt, "closure issuance receipt mismatch")
-        close = getattr(owner, "close", None)
-        _require(callable(close), "closure owner close missing")
-        close()
-        owner = None
+        first_report: bytes | None = None
+        for index, current in enumerate(preparations):
+            owner = constructor(current, issuer)
+            if len(preparations) == 2:
+                report_bytes = getattr(owner, "_canonical_report_bytes", None)
+                _require(callable(report_bytes), "canonical closure report unavailable", "closure-report-unavailable")
+                candidate = report_bytes()
+                if index == 0:
+                    _decode_report(candidate)
+                    close = getattr(owner, "close", None)
+                    _require(callable(close), "closure owner close missing")
+                    close()
+                    owner = None
+                    first_report = candidate
+                    continue
+                _require(first_report is not None, "first closure report missing", "closure-report-missing")
+                _require_identical_closure_reports(first_report, candidate)
+                first_report = None
+            issue = getattr(owner, "_issue_once", None)
+            _require(callable(issue), "admitted closure issuer missing")
+            receipt = issue(issuer)
+            _require(type(receipt) is _IssuanceReceipt, "closure issuance receipt mismatch")
+            close = getattr(owner, "close", None)
+            _require(callable(close), "closure owner close missing")
+            close()
+            owner = None
         _close_socket(helper_endpoint, ops, "worker-helper-control")
         _close_socket(endpoint, ops, "worker-issuance")
         os._exit(0)
