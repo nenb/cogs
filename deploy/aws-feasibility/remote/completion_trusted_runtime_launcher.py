@@ -655,6 +655,15 @@ def _credential_ancillary(rights: tuple[int, ...] = ()) -> list[tuple[int, int, 
 def _receive_flags_exact(flags: int) -> bool:
     cloexec = getattr(socket, "MSG_CMSG_CLOEXEC", 0x40000000)
     return type(flags) is int and flags & ~cloexec == 0
+def _fixed_error_stage(error: BaseException) -> str:
+    current = error
+    for _depth in range(8):
+        failures = getattr(current, "failures", ())
+        if not failures:
+            break
+        current = failures[0]
+    stage = getattr(current, "code", f"{type(current).__name__}-{getattr(current, 'errno', 0)}")
+    return (re.sub(r"[^A-Za-z0-9_.-]", "-", stage) if type(stage) is str else "invalid")[:40]
 class _WorkerIssuer:
     def __init__( self, endpoint: socket.socket, nonce: bytes, admission: _SourceAdmission, consumer_pid: int, package_name: str, helper_endpoint: socket.socket | None = None):
         self._endpoint = endpoint
@@ -2335,14 +2344,12 @@ def _worker_main(endpoint_fd: int, helper_fd: int, release_fd: int, nonce: bytes
         _close_socket(endpoint, ops, "worker-issuance")
         os._exit(0)
     except BaseException as error:
-        stage = getattr(error, "code", type(error).__name__)
-        safe_stage = re.sub(r"[^A-Za-z0-9_.-]", "-", stage) if type(stage) is str else "invalid"
+        safe_stage = _fixed_error_stage(error)
         if owner is not None:
             try:
                 owner.close()
             except BaseException as cleanup:
-                cleanup_stage = getattr(cleanup, "code", type(cleanup).__name__)
-                safe_stage = "cleanup-" + (re.sub(r"[^A-Za-z0-9_.-]", "-", cleanup_stage) if type(cleanup_stage) is str else "invalid")
+                safe_stage = "cleanup-" + _fixed_error_stage(cleanup)
         failure = _canonical({"code": safe_stage[:40], "event": "worker-error", "version": _RESULT_VERSION})
         try:
             endpoint.sendmsg([failure], _credential_ancillary(), socket.MSG_DONTWAIT)
