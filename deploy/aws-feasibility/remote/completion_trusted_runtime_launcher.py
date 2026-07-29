@@ -418,14 +418,14 @@ class _SystemOps:
     def __init__(self) -> None:
         self.libc = ctypes.CDLL(None, use_errno=True)
     def _open_enoent_code(self, path: object) -> str:
-        if type(path) is not str: return "open-enoent-other"
+        if type(path) is not str: return "oe-o"
         root = f"{_ROOT_PARENT}/{_ROOT_LEAF}"
-        if path in (_ROOT_PARENT, root): return "open-enoent-root"
-        if path.startswith(root + "/"): return "open-enoent-runtime-source"
-        if len(components := path.split("/")) < 4 or components[:2] != ["", "proc"]: return "open-enoent-other"
-        if (components[3] == "task" and len(components) == 6 and components[5] == "children") or (components[2] == "thread-self" and components[3:] == ["children"]): return "open-enoent-proc-task-children"
-        return {"exe": "open-enoent-proc-exe", "map_files": "open-enoent-proc-map-files", "fd": "open-enoent-proc-fd", "fdinfo": "open-enoent-proc-fdinfo",
-                "status": "open-enoent-proc-status", "maps": "open-enoent-proc-maps", "stat": "open-enoent-proc-stat", "limits": "open-enoent-proc-limits", "ns": "open-enoent-proc-ns"}.get(components[3], "open-enoent-other")
+        if path in (_ROOT_PARENT, root): return "oe-r"
+        if path.startswith(root + "/"): return "oe-s"
+        if len(components := path.split("/")) < 4 or components[:2] != ["", "proc"]: return "oe-o"
+        if (components[3] == "task" and len(components) == 6 and components[5] == "children") or (components[2] == "thread-self" and components[3:] == ["children"]): return "oe-pc"
+        return {"exe": "oe-pe", "map_files": "oe-pm", "fd": "oe-pf", "fdinfo": "oe-pi", "status": "oe-ps",
+                "maps": "oe-pa", "stat": "oe-pt", "limits": "oe-pl", "ns": "oe-pn"}.get(components[3], "oe-o")
     def _checked(self, result: int, name: str) -> int:
         if result == -1:
             saved = ctypes.get_errno()
