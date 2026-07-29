@@ -1773,6 +1773,8 @@ def _namespace_owner(
         status.send(_status("exit", sequence, status=wait_status))
         os._exit(0)
     except BaseException as primary:
+        if isinstance(primary, PermissionError):
+            primary = RuntimeLauncherError("sandbox permission denied", f"permission-stage-{sequence}")
         failures: list[BaseException] = []
         try: child_owner.cleanup(primary)
         except BaseException as error: failures.append(error)
