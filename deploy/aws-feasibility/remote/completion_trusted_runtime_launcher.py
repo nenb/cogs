@@ -1377,7 +1377,10 @@ def _consume_worker_handoff(endpoint: socket.socket, helper_endpoint: socket.soc
             credentials, received = _leased_credentials(ancillary, ops, require_rights=None, missing_code="helper-control-credentials-missing")
             primary: BaseException | None = None
             try:
-                _require(not flags and credentials == (issuer_pid, os.getuid(), os.getgid()), "helper control authority", "helper-control-authority")
+                expected_credentials = (issuer_pid, os.getuid(), os.getgid())
+                mismatches = tuple(name for name, actual, expected in zip(("pid", "uid", "gid"), credentials, expected_credentials) if actual != expected)
+                authority_code = "helper-control-authority-" + ("flags" if flags else "-".join(mismatches) or "invalid")
+                _require(not flags and not mismatches, "helper control authority", authority_code)
                 value = _strict_json(raw, False, 4096, "helper control")
                 _require(type(value) is dict and value.get("version") == _RESULT_VERSION, "helper control shape", "helper-control-shape")
                 sequence += 1
