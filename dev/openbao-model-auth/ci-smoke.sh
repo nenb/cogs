@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 umask 077
 
-OPENBAO_IMAGE="quay.io/openbao/openbao:2.6.0@sha256:900bb64d0671cd1d82b693c56206f7263b582445f3a3bb6ba6e5213f524a6653"
+OPENBAO_IMAGE="quay.io/openbao/openbao:2.6.1@sha256:5b2486ab0fb90bbc788cc345b0a08616dfb375873ee8be5df3a2fd4d378a67e0"
 REPORT_DIR="${1:-docs/security-evidence/generated/openbao-model-auth}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
@@ -111,7 +111,7 @@ if [ "${BINDING}" != "127.0.0.1" ]; then
   exit 1
 fi
 OPENBAO_RUNTIME_VERSION="$({ "${TIMEOUT}" 10s docker exec "${CONTAINER}" bao version; } 2>/dev/null)"
-if ! [[ "${OPENBAO_RUNTIME_VERSION}" =~ ^OpenBao[[:space:]]+v2\.6\.0([[:space:],]|$) ]]; then
+if ! [[ "${OPENBAO_RUNTIME_VERSION}" =~ ^OpenBao[[:space:]]+v2\.6\.1([[:space:],]|$) ]]; then
   echo "OpenBao smoke runtime version mismatch" >&2
   exit 1
 fi

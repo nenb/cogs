@@ -28,8 +28,8 @@ const envoyExecutable = requiredEnv("COGS_ENVOY_EXECUTABLE", /^\//);
 const envoyImage = requiredEnv("COGS_ENVOY_IMAGE", /^envoyproxy\/envoy:v1\.38\.3@sha256:[a-f0-9]{64}$/);
 const envoyDigest = requiredEnv("COGS_ENVOY_IMAGE_DIGEST", /^sha256:[a-f0-9]{64}$/);
 assert.equal(envoyImage.endsWith(envoyDigest), true);
-const openBaoImage = requiredEnv("COGS_OPENBAO_IMAGE", /^quay\.io\/openbao\/openbao:2\.6\.0@sha256:[a-f0-9]{64}$/);
-const openBaoVersionText = requiredEnv("COGS_OPENBAO_RUNTIME_VERSION", /^OpenBao\s+v2\.6\.0[\s\S]*$/);
+const openBaoImage = requiredEnv("COGS_OPENBAO_IMAGE", /^quay\.io\/openbao\/openbao:2\.6\.1@sha256:[a-f0-9]{64}$/);
+const openBaoVersionText = requiredEnv("COGS_OPENBAO_RUNTIME_VERSION", /^OpenBao\s+v2\.6\.1[\s\S]*$/);
 const trustPath = requiredEnv(
   "COGS_TRUST_CERT_PATH",
   /^\/usr\/local\/share\/ca-certificates\/cogs-stage3-real-runtime\.crt$/,
@@ -42,7 +42,7 @@ const authoritativeKvm = profile === "linux-kvm";
 const openBaoDigest = openBaoImage.slice(openBaoImage.indexOf("@") + 1);
 const openBaoActualPort = Number(new URL(openBaoOrigin).port);
 assert.equal(Number.isInteger(openBaoActualPort) && openBaoActualPort >= 1 && openBaoActualPort <= 65535, true);
-const openBaoVersion = "2.6.0";
+const openBaoVersion = "2.6.1";
 const envoyVersion = "1.38.3";
 const sessionId = "stage3-real-runtime";
 const userId = "ci-user";
@@ -263,7 +263,7 @@ export function assertValidRealRuntimeSidecar(value: unknown): asserts value is 
   assert.equal(sidecar.components.envoy.version, "1.38.3");
   assert.match(sidecar.components.envoy.image_digest, /^sha256:[a-f0-9]{64}$/);
   assert.match(sidecar.components.envoy.binary_sha256, /^sha256:[a-f0-9]{64}$/);
-  assert.equal(sidecar.components.openbao.version, "2.6.0");
+  assert.equal(sidecar.components.openbao.version, "2.6.1");
   assert.match(sidecar.components.openbao.image_digest, /^sha256:[a-f0-9]{64}$/);
   assert.equal(sidecar.components.runtime_manager.mode, "real");
   exactKeys(sidecar.dependency_modes, [

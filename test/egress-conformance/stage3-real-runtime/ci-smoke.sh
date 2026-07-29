@@ -4,7 +4,7 @@ umask 077
 
 ENVOY_IMAGE="envoyproxy/envoy:v1.38.3@sha256:5f7c43e1147412fdb3af578c651c67478a3df818eae89d2261e707e06c209cdb"
 ENVOY_DIGEST="sha256:5f7c43e1147412fdb3af578c651c67478a3df818eae89d2261e707e06c209cdb"
-OPENBAO_IMAGE="quay.io/openbao/openbao:2.6.0@sha256:900bb64d0671cd1d82b693c56206f7263b582445f3a3bb6ba6e5213f524a6653"
+OPENBAO_IMAGE="quay.io/openbao/openbao:2.6.1@sha256:5b2486ab0fb90bbc788cc345b0a08616dfb375873ee8be5df3a2fd4d378a67e0"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../../.." && pwd)"
 REPORT_DIR="${1:-${REPO_ROOT}/docs/security-evidence/generated/stage3-real-runtime}"
@@ -184,7 +184,7 @@ OPENBAO_PORT="$(bounded 10s docker inspect --format '{{(index (index .NetworkSet
 [[ "${OPENBAO_PORT}" =~ ^[0-9]+$ ]]
 [ "$(bounded 10s docker inspect --format '{{(index (index .NetworkSettings.Ports "8200/tcp") 0).HostIp}}' "${OPENBAO_CONTAINER}")" = "127.0.0.1" ]
 OPENBAO_RUNTIME_VERSION="$(bounded 10s docker exec "${OPENBAO_CONTAINER}" bao version)"
-[[ "${OPENBAO_RUNTIME_VERSION}" =~ ^OpenBao[[:space:]]+v2\.6\.0([[:space:],]|$) ]]
+[[ "${OPENBAO_RUNTIME_VERSION}" =~ ^OpenBao[[:space:]]+v2\.6\.1([[:space:],]|$) ]]
 ready=0
 for _ in $(seq 1 60); do
   if COGS_OPENBAO_ADDR="http://127.0.0.1:${OPENBAO_PORT}" bounded 3s node -e 'fetch(`${process.env.COGS_OPENBAO_ADDR}/v1/sys/health`, { redirect: "error" }).then(()=>process.exit(0),()=>process.exit(1))' >/dev/null 2>&1; then

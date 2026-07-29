@@ -9,8 +9,8 @@ async function validator() {
   process.env.COGS_ENVOY_EXECUTABLE = "/tmp/envoy";
   process.env.COGS_ENVOY_IMAGE = `envoyproxy/envoy:v1.38.3@sha256:${"b".repeat(64)}`;
   process.env.COGS_ENVOY_IMAGE_DIGEST = `sha256:${"b".repeat(64)}`;
-  process.env.COGS_OPENBAO_IMAGE = `quay.io/openbao/openbao:2.6.0@sha256:${"d".repeat(64)}`;
-  process.env.COGS_OPENBAO_RUNTIME_VERSION = "OpenBao v2.6.0";
+  process.env.COGS_OPENBAO_IMAGE = `quay.io/openbao/openbao:2.6.1@sha256:${"d".repeat(64)}`;
+  process.env.COGS_OPENBAO_RUNTIME_VERSION = "OpenBao v2.6.1";
   process.env.COGS_TRUST_CERT_PATH = "/usr/local/share/ca-certificates/cogs-stage3-real-runtime.crt";
   const module = await import("./egress-conformance/stage3-real-runtime/harness.ts");
   const assertValidRealRuntimeSidecar: (value: unknown) => void = module.assertValidRealRuntimeSidecar;
@@ -25,7 +25,7 @@ function validSidecar() {
     release_eligible: false,
     components: {
       envoy: { version: "1.38.3", image_digest: `sha256:${"b".repeat(64)}`, binary_sha256: `sha256:${"c".repeat(64)}` },
-      openbao: { version: "2.6.0", image_digest: `sha256:${"d".repeat(64)}` },
+      openbao: { version: "2.6.1", image_digest: `sha256:${"d".repeat(64)}` },
       runtime_manager: { mode: "real" },
     },
     timings: {

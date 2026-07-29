@@ -68,8 +68,8 @@ assert.ok(
 assert.match(MITMPROXY_IMAGE, /^mitmproxy\/mitmproxy:\d+\.\d+\.\d+@sha256:[a-f0-9]{64}$/);
 assert.equal(
   OPENBAO_IMAGE,
-  "quay.io/openbao/openbao:2.6.0@sha256:900bb64d0671cd1d82b693c56206f7263b582445f3a3bb6ba6e5213f524a6653",
-  "OpenBao model-auth smoke must use the accepted v2.6.0 digest",
+  "quay.io/openbao/openbao:2.6.1@sha256:5b2486ab0fb90bbc788cc345b0a08616dfb375873ee8be5df3a2fd4d378a67e0",
+  "OpenBao model-auth smoke must use the accepted v2.6.1 digest",
 );
 assert.ok(ciWorkflow.includes(`OPENBAO_IMAGE: ${OPENBAO_IMAGE}`), "CI must scan and inventory the exact OpenBao pin");
 const openBaoScan = ciWorkflow.match(
@@ -109,7 +109,13 @@ assert.ok(
   "security-labelled smoke must run OpenBao model-auth fixture",
 );
 assert.ok(openBaoIgnore.includes("review deadline 2026-08-15"), "OpenBao CVE ignores must carry their review deadline");
-assert.equal(openBaoIgnore.includes("CVE-2026-39822"), false, "OpenBao ignore must not suppress Go stdlib CVE");
+for (const fixedRuntimeFinding of ["CVE-2026-39822", "CVE-2026-56852"]) {
+  assert.equal(
+    openBaoIgnore.includes(fixedRuntimeFinding),
+    false,
+    `OpenBao ignore must not suppress fixed runtime finding ${fixedRuntimeFinding}`,
+  );
+}
 assert.deepEqual(
   openBaoIgnore
     .split(/\r?\n/)
@@ -124,8 +130,13 @@ assert.deepEqual(
   "OpenBao Trivy ignore must contain exactly the reviewed grpc-go advisory",
 );
 assert.ok(openBaoIgnore.includes("real grpc-go v1.81.1 finding"), "grpc-go disposition must identify a real finding");
+assert.ok(openBaoIgnore.includes("fixed in v1.82.1"), "grpc-go disposition must identify the fixed boundary");
 assert.ok(
-  openBaoIgnore.includes("sha256:900bb64d0671cd1d82b693c56206f7263b582445f3a3bb6ba6e5213f524a6653"),
+  openBaoIgnore.includes("v0.0.0-20260722141719-ba7ad8861d05") && openBaoIgnore.includes("runtime is v2.6.1"),
+  "pseudo-module dispositions must bind the v2.6.1 release SBOM version",
+);
+assert.ok(
+  openBaoIgnore.includes("sha256:5b2486ab0fb90bbc788cc345b0a08616dfb375873ee8be5df3a2fd4d378a67e0"),
   "grpc-go disposition must bind the exact OpenBao digest",
 );
 assert.ok(
