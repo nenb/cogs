@@ -1326,6 +1326,11 @@ def _consume_issuance(endpoint: socket.socket, nonce: bytes, admission: _SourceA
     _require(remaining > 0 and select.select([endpoint], [], [], remaining)[0], "issuance packet deadline", "issuer-deadline")
     ancillary_bound = socket.CMSG_SPACE(_MAX_OBJECTS * array("i").itemsize) + socket.CMSG_SPACE(struct.calcsize("3i"))
     raw, ancillary, flags, _address = endpoint.recvmsg(_MAX_PACKET, ancillary_bound, socket.MSG_CMSG_CLOEXEC | socket.MSG_DONTWAIT)
+    if not ancillary:
+        truncated = flags & (socket.MSG_TRUNC | socket.MSG_CTRUNC)
+        flag_state = "truncated" if truncated else "exact-flags" if _receive_flags_exact(flags) else "unknown-flags"
+        packet_state = "nonempty" if raw else "empty"
+        raise RuntimeLauncherError("issuance ancillary absent", f"issuer-no-ancillary-{packet_state}-{flag_state}"[:40])
     credentials, leases = _leased_credentials(ancillary, actual_ops, missing_code="issuer-packet-credentials-missing")
     descriptors = tuple(lease.fd for lease in leases)
     primary: BaseException | None = None
