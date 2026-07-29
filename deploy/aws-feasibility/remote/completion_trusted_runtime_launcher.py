@@ -1668,36 +1668,45 @@ def _namespace_owner(
     child_lease: _ProcessLease | None = None
     mount_intents: set[str] = set()
     sequence = 0
+    permission_stage = "initial"
     inherited = list(_received_leases(descriptors))
     exec_lease: _FdLease | None = None
     try:
         ops.prctl(_PR_SET_PDEATHSIG, signal.SIGKILL)
         os.setsid()
         sequence = -2
+        permission_stage = "unshare"
         ops.unshare_boundary()
         # The retained parent owns unprivileged map writes. After it maps UID
         # zero, clear inherited groups before it permanently denies setgroups
         # and maps GID zero.
         sequence = -1
+        permission_stage = "uid-handshake"
         status.send(_status("userns", sequence))
         _recv_status(status, time.monotonic() + _SETUP_SECONDS, "uid-mapped", sequence)
+        permission_stage = "group-clear"
         try:
             if os.getgroups():
                 os.setgroups([])
         except PermissionError as error:
             raise RuntimeLauncherError("supplementary group clear denied", "setgroups-clear") from error
         sequence = 0
+        permission_stage = "identity-handshake"
         status.send(_status("groups-cleared", sequence))
         _recv_status(status, time.monotonic() + _SETUP_SECONDS, "identity-mapped", sequence)
+        permission_stage = "private-mount"
         mount_intents.add("private-root")
         ops.mount(None, b"/", None, _MS_REC | _MS_PRIVATE, None)
         sequence = 1
+        permission_stage = "namespace-handshake"
         status.send(_status("namespace", sequence))
         _recv_status(status, time.monotonic() + _SETUP_SECONDS, "prepare-root", 1)
+        permission_stage = "materialize"
         mount_intents.add("materialized-root")
         _materialize_root(ops, role, descriptors, rows, report, root)
         descriptor_index = next(row.descriptor_index for row in rows if row.tool_index == _TOOL_INDEX[role] and row.object_index == 0)
         selected = descriptors[descriptor_index]
+        permission_stage = "exec-authority"
         if selected == 198: os.set_inheritable(selected, False)
         else: os.dup2(selected, 198, inheritable=False)
         exec_lease = _FdLease(198, "sole-executable-authority")
@@ -1774,7 +1783,7 @@ def _namespace_owner(
         os._exit(0)
     except BaseException as primary:
         if isinstance(primary, PermissionError):
-            primary = RuntimeLauncherError("sandbox permission denied", f"permission-stage-{sequence}")
+            primary = RuntimeLauncherError("sandbox permission denied", f"permission-{permission_stage}")
         failures: list[BaseException] = []
         try: child_owner.cleanup(primary)
         except BaseException as error: failures.append(error)
