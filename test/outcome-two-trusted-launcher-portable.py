@@ -2002,7 +2002,7 @@ def _modeled_namespace_execution(module, report, descriptors, rows, role):
         module._namespace_owner(role, copied, rows, report, input_fd, output_fd,
                                 status_fd, transfer_fd, b"N" * 32, root)
     expected = [f"namespace:{role}:{name}" for name in
-                ("namespace", "transfer", "child", "boundary", "exec-ready", "root-final", "exit")]
+                ("userns", "groups-cleared", "namespace", "transfer", "child", "boundary", "exec-ready", "root-final", "exit")]
     try:
         if kernel.events != expected or child_exits != [0]:
             raise AssertionError(f"namespace child state machine drift: {role} {kernel.events}/{child_exits}")
