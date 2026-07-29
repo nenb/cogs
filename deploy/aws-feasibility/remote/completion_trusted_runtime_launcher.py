@@ -1669,13 +1669,16 @@ def _namespace_owner(
         os.setsid()
         original_uid, original_gid = os.getuid(), os.getgid()
         ops.unshare_boundary()
-        # Unshare grants CAP_SETGID in the new user namespace. Clear inherited
-        # supplementary groups before permanently denying further setgroups.
-        os.setgroups([])
+        # Map the caller UID first so namespaced capabilities are effective,
+        # then clear inherited groups before permanently denying setgroups.
+        _write_map(ops, "/proc/self/uid_map", f"0 {original_uid} 1\n".encode())
+        try:
+            os.setgroups([])
+        except PermissionError as error:
+            raise RuntimeLauncherError("supplementary group clear denied", "setgroups-clear") from error
         try:
             _write_map(ops, "/proc/self/setgroups", b"deny\n")
         except FileNotFoundError: pass
-        _write_map(ops, "/proc/self/uid_map", f"0 {original_uid} 1\n".encode())
         _write_map(ops, "/proc/self/gid_map", f"0 {original_gid} 1\n".encode())
         mount_intents.add("private-root")
         ops.mount(None, b"/", None, _MS_REC | _MS_PRIVATE, None)
