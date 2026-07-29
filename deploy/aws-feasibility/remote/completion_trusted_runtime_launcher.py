@@ -1374,12 +1374,16 @@ def _consume_worker_handoff(endpoint: socket.socket, helper_endpoint: socket.soc
         _require(bool(ready), "worker handoff deadline", "worker-handoff-deadline")
         if helper_endpoint in ready:
             raw, ancillary, flags, _address = helper_endpoint.recvmsg(4096, 512, socket.MSG_CMSG_CLOEXEC | socket.MSG_DONTWAIT)
+            cloexec_flag = getattr(socket, "MSG_CMSG_CLOEXEC", 0x40000000)
+            if not raw and not ancillary:
+                terminal = endpoint in ready and not helpers and flags & ~cloexec_flag == 0
+                _require(terminal, "helper control early EOF", "helper-control-eof")
+                return _consume_issuance(endpoint, nonce, admission, issuer_pid, ops, deadline)
             credentials, received = _leased_credentials(ancillary, ops, require_rights=None, missing_code="helper-control-credentials-missing")
             primary: BaseException | None = None
             try:
                 expected_credentials = (issuer_pid, os.getuid(), os.getgid())
                 mismatches = tuple(name for name, actual, expected in zip(("pid", "uid", "gid"), credentials, expected_credentials) if actual != expected)
-                cloexec_flag = getattr(socket, "MSG_CMSG_CLOEXEC", 0x40000000)
                 known_flags = ((socket.MSG_TRUNC, "trunc"), (socket.MSG_CTRUNC, "ctrunc"), (socket.MSG_EOR, "eor"), (cloexec_flag, "cloexec"))
                 flag_names = tuple(name for bit, name in known_flags if flags & bit)
                 unknown_flags = flags & ~sum(bit for bit, _name in known_flags)
