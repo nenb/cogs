@@ -40,6 +40,7 @@ _MAX_MAP_BYTES = 4 * 1024 * 1024
 _MAX_MAP_LINES = 4096
 _MAX_COMPONENTS = 256
 _MAX_SYMLINKS = 40
+_MAX_GROUPS = 65536
 _MAX_FDS = 16384
 _GETDENTS_CALL_LIMIT = 32
 _GETDENTS_BYTE_LIMIT = 1048576
@@ -340,31 +341,7 @@ class PreparationLease:
     def owned_fds(self) -> tuple[int, ...]:
         return tuple((item.fd for item in self.fds if item.state is _FdState.OWNED))
     def close_many(self, leases: Sequence[FdLease], primary: BaseException | None=None) -> None:
-        failures: list[BaseException] = []
-        if primary is not None:
-            failures.append(primary)
-        for lease in reversed(tuple(leases)):
-            if lease.state is _FdState.CLOSE_UNCERTAIN:
-                if lease.close_error is None:
-                    failures.append(RuntimeClosureError('uncertain descriptor lost its error'))
-                else:
-                    in_aggregate = (
-                        isinstance(primary, RuntimeClosureCleanupError)
-                        and lease.close_error in primary.failures
-                    )
-                    if lease.close_error is not primary and not in_aggregate:
-                        failures.append(lease.close_error)
-                continue
-            if lease.state is not _FdState.OWNED:
-                continue
-            try:
-                lease.close(self.ops)
-            except BaseException as error:
-                failures.append(error)
-        if len(failures) > 1 or (failures and primary is None):
-            raise RuntimeClosureCleanupError(failures)
-        if failures:
-            raise failures[0]
+        _finish_fds(self.ops, leases, primary)
 class _OwnerState(Enum):
     PREPARING = 'PREPARING'
     READY = 'READY'
@@ -425,6 +402,10 @@ class _Ops:
         return os.getppid()
     def getuid(self) -> int:
         return os.getuid()
+    def getegid(self) -> int:
+        return os.getegid()
+    def getgroups(self) -> tuple[int, ...]:
+        return tuple(os.getgroups())
     def setsid(self) -> None:
         os.setsid()
     def monotonic(self) -> float:
@@ -435,31 +416,23 @@ class _Ops:
         poller = select.poll()
         poller.register(fd, select.POLLIN | select.POLLHUP | select.POLLERR)
         return bool(poller.poll(max(0, int(seconds * 1000))))
-
     def pidfd_signal(self, pidfd: int, signum: int) -> None:
         signal.pidfd_send_signal(pidfd, signum)
-
     def wait_pidfd_nohang(self, pidfd: int) -> bool:
         result = os.waitid(os.P_PIDFD, pidfd, os.WEXITED | os.WNOHANG)
         return result is not None
-
     def waitid_pidfd_nohang(self, pidfd: int) -> os.waitid_result | None:
         options = os.WEXITED | os.WNOHANG | os.WNOWAIT
         return os.waitid(os.P_PIDFD, pidfd, options)
-
     def reap_pid_nohang(self, pid: int) -> tuple[int, int]:
         return os.waitpid(pid, os.WNOHANG)
-
     def execve(self, fd: int, argv: Sequence[str], environment: dict[str, str]) -> NoReturn:
         os.execve(fd, list(argv), environment)
-
     def exit_child(self, status: int) -> NoReturn:
         os._exit(status)
-
     def architecture_gate(self) -> None:
         if platform.system() != 'Linux' or platform.machine() != 'x86_64':
             raise RuntimeClosureUnavailable('fixed closure requires Linux x86-64')
-
     def _syscall(self, number: int, *arguments: Any) -> int:
         self.architecture_gate()
         libc = ctypes.CDLL(None, use_errno=True)
@@ -468,32 +441,26 @@ class _Ops:
             error = ctypes.get_errno()
             raise OSError(error, os.strerror(error))
         return int(result)
-
     def getdents(self, fd: int, maximum: int=32768) -> bytes:
         buffer = ctypes.create_string_buffer(maximum)
         count = self._syscall(_SYS_GETDENTS64, fd, ctypes.byref(buffer), maximum)
         return bytes(buffer.raw[:count])
-
     def close_range(self, first: int, last: int) -> None:
         self._syscall(_SYS_CLOSE_RANGE, first, last, 0)
-
     def clone3_pidfd(self) -> tuple[int, int]:
         pidfd = ctypes.c_int(-1)
         raw = struct.pack('=11Q', *_clone3_arguments(ctypes.addressof(pidfd)))
         arguments = ctypes.create_string_buffer(raw)
         pid = self._syscall(_SYS_CLONE3, ctypes.byref(arguments), len(raw))
         return (pid, int(pidfd.value))
-
     def set_parent_death_signal(self, signum: int) -> None:
         self.architecture_gate()
         libc = ctypes.CDLL(None, use_errno=True)
         if libc.prctl(_PR_SET_PDEATHSIG, signum, 0, 0, 0) != 0:
             error = ctypes.get_errno()
             raise OSError(error, os.strerror(error))
-
 def _clone3_arguments(pidfd_address: int) -> tuple[int, ...]:
     return (_CLONE_PIDFD, pidfd_address, 0, 0, signal.SIGCHLD, 0, 0, 0, 0, 0, 0)
-
 def _generation(value: os.stat_result) -> SourceGeneration:
     return SourceGeneration(
         value.st_dev,
@@ -505,13 +472,22 @@ def _generation(value: os.stat_result) -> SourceGeneration:
         value.st_uid,
         value.st_gid,
     )
-
-def _require_component(value: os.stat_result, *, directory: bool=False) -> None:
-    if value.st_uid != 0 or value.st_mode & 18:
+def _observe_caller_groups(ops: _Ops) -> frozenset[int]:
+    effective = ops.getegid()
+    supplementary = ops.getgroups()
+    valid = type(effective) is int and 0 <= effective < _UINT_MAX
+    valid = valid and type(supplementary) is tuple and len(supplementary) <= _MAX_GROUPS
+    valid = valid and all(type(value) is int and 0 <= value < _UINT_MAX for value in supplementary)
+    if not valid:
+        raise RuntimeClosureError('invalid fixed path credential observation')
+    return frozenset((effective, *supplementary))
+def _require_component(value: os.stat_result, caller_groups: frozenset[int], *, directory: bool=False) -> None:
+    group_writable = bool(value.st_mode & 0o020)
+    insecure_group = group_writable and (value.st_gid != 0 or 0 in caller_groups)
+    if value.st_uid != 0 or value.st_mode & 0o002 or insecure_group:
         raise RuntimeClosureError('insecure fixed path component')
     if directory and (not stat.S_ISDIR(value.st_mode)):
         raise RuntimeClosureError('fixed path component is not a directory')
-
 def _require_source(value: os.stat_result) -> None:
     if not stat.S_ISREG(value.st_mode):
         raise RuntimeClosureError('runtime object is not regular')
@@ -519,7 +495,6 @@ def _require_source(value: os.stat_result) -> None:
         raise RuntimeClosureError('runtime object has insecure ownership or mode')
     if not 1 <= value.st_size <= _MAX_OBJECT_SIZE:
         raise RuntimeClosureError('runtime object size bound')
-
 def _finish_fds(ops: _Ops, leases: Sequence[FdLease], primary: BaseException | None=None) -> None:
     failures: list[BaseException] = []
     if primary is not None:
@@ -559,7 +534,6 @@ def _read_complete(ops: _Ops, fd: int, expected_size: int) -> bytes:
     if ops.pread(fd, 1, expected_size):
         raise RuntimeClosureError('runtime object grew during read')
     return b''.join(chunks)
-
 def _split_path(path: str) -> list[str]:
     if type(path) is not str or not path.startswith('/') or '\x00' in path:
         raise RuntimeClosureError('invalid fixed absolute path')
@@ -569,6 +543,7 @@ def _split_path(path: str) -> list[str]:
     return parts
 
 def _resolve_once(ops: _Ops, path: str, *, open_source: bool=True) -> tuple[int | None, SourceGeneration, tuple[_PathObservation, ...]]:
+    caller_groups = _observe_caller_groups(ops)
     queue = _split_path(path)
     directories: list[FdLease] = []
     transcript: list[_PathObservation] = []
@@ -579,7 +554,7 @@ def _resolve_once(ops: _Ops, path: str, *, open_source: bool=True) -> tuple[int 
         root = FdLease(ops.open('/', os.O_RDONLY | _O_DIRECTORY | _O_CLOEXEC | _O_NOFOLLOW), 'resolution-root')
         directories.append(root)
         root_stat = ops.fstat(root.fd)
-        _require_component(root_stat, directory=True)
+        _require_component(root_stat, caller_groups, directory=True)
         root_generation = _generation(root_stat)
         transcript.append(_PathObservation(
             parent=(root_stat.st_dev, root_stat.st_ino),
@@ -633,7 +608,7 @@ def _resolve_once(ops: _Ops, path: str, *, open_source: bool=True) -> tuple[int 
                 queue = target_parts + queue
                 continue
             if queue:
-                _require_component(before, directory=True)
+                _require_component(before, caller_groups, directory=True)
                 component_fd = ops.open(
                     component,
                     os.O_RDONLY | _O_DIRECTORY | _O_CLOEXEC | _O_NOFOLLOW,
@@ -642,7 +617,7 @@ def _resolve_once(ops: _Ops, path: str, *, open_source: bool=True) -> tuple[int 
                 opened = FdLease(component_fd, 'path-component')
                 directories.append(opened)
                 after = ops.fstat(opened.fd)
-                _require_component(after, directory=True)
+                _require_component(after, caller_groups, directory=True)
                 if _generation(after) != before_generation:
                     raise RuntimeClosureError('fixed directory changed')
                 transcript.append(_PathObservation(
