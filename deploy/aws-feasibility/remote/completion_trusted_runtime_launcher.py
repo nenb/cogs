@@ -668,6 +668,8 @@ def _fixed_error_stage(error: BaseException) -> str:
         current = failures[0]
     if type(current).__name__ == "RuntimeClosureError":
         return "closure-" + hashlib.sha256(str(current).encode("utf-8", "backslashreplace")).hexdigest()[:16]
+    if isinstance(current, RuntimeLauncherUnavailable):
+        return ("unavailable-" + re.sub(r"[^A-Za-z0-9_.-]", "-", current.primitive))[:40]
     stage = getattr(current, "code", f"{type(current).__name__}-{getattr(current, 'errno', 0)}")
     if stage == "launcher-rejected":
         return "rejected-" + hashlib.sha256(str(current).encode("utf-8", "backslashreplace")).hexdigest()[:16]
