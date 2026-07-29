@@ -1476,7 +1476,11 @@ class _BISocket:
         elif self.kind == "status":
             value = _BIjson.loads(data)
             event = value["event"]
-            if event == "prepare-root":
+            if event == "uid-mapped":
+                self.queue.append(self.k.status("groups-cleared", 0))
+            elif event == "identity-mapped":
+                self.queue.append(self.k.status("namespace", 1))
+            elif event == "prepare-root":
                 self.k.make_child(self)
                 self.queue.append(self.k.status("child", 2, pid=self.k.child))
             elif event == "release-child":
@@ -1645,7 +1649,7 @@ class _BIKernel:
             self.input_pipe, self.output_pipe = self.pipe_order[-3][2], self.pipe_order[-2][2]
             self.output_pipe["child_writer"] = True
             status = next(s for s in reversed(self.sockets) if s.kind == "status" and s.side == 0)
-            status.queue.append(self.status("namespace", 1))
+            status.queue.append(self.status("userns", 0))
         return pid, pidfd
     def pidfd_open(self, pid, flags=0):
         del flags
@@ -1856,7 +1860,7 @@ class _BIChildSocket:
     def send(self, raw, flags=0):
         del flags
         value = _BIjson.loads(raw)
-        expected = {"namespace": 1, "child": 2, "boundary": 3, "exec-ready": 4,
+        expected = {"userns": 0, "groups-cleared": 0, "namespace": 1, "child": 2, "boundary": 3, "exec-ready": 4,
                     "root-final": 5, "exit": 6, "error": value.get("sequence"), "unavailable": value.get("sequence")}
         if value.get("sequence") != expected.get(value.get("event")):
             raise AssertionError(f"modeled child status drift: {value}")
@@ -1930,7 +1934,6 @@ def _modeled_worker_execution(module, admission, kernel):
         "receipt": receipt,
     }
 
-
 def _modeled_namespace_execution(module, report, descriptors, rows, role):
     root_parent = _BItempfile.mkdtemp()
     root = f"{root_parent}/{module._ROOT_LEAF}"
@@ -1941,7 +1944,7 @@ def _modeled_namespace_execution(module, report, descriptors, rows, role):
     input_fd, output_fd = kernel.pipe2(0)[0], kernel.pipe2(0)[1]
     status_fd, transfer_fd = kernel.alloc("socket"), kernel.alloc("socket")
     commands = tuple(module._status(name, sequence) for name, sequence in (
-        ("prepare-root", 1), ("release-child", 2), ("finalize-root", 3)))
+        ("uid-mapped", 0), ("identity-mapped", 0), ("prepare-root", 1), ("release-child", 2), ("finalize-root", 3)))
     status = _BIChildSocket(kernel, status_fd, "status", commands)
     transfer = _BIChildSocket(kernel, transfer_fd, "transfer", (b"A",))
     kernel.sockets.extend((status, transfer))
@@ -1999,7 +2002,7 @@ def _modeled_namespace_execution(module, report, descriptors, rows, role):
         module._namespace_owner(role, copied, rows, report, input_fd, output_fd,
                                 status_fd, transfer_fd, b"N" * 32, root)
     expected = [f"namespace:{role}:{name}" for name in
-                ("namespace", "transfer", "child", "boundary", "exec-ready", "root-final", "exit")]
+                ("userns", "groups-cleared", "namespace", "transfer", "child", "boundary", "exec-ready", "root-final", "exit")]
     try:
         if kernel.events != expected or child_exits != [0]:
             raise AssertionError(f"namespace child state machine drift: {role} {kernel.events}/{child_exits}")
@@ -2150,7 +2153,7 @@ def production_runtime_compression_contracts(module):
                     exact_namespaces = all(
                         item["output"] == module._FIXED_OUTPUT
                         and tuple(event.rsplit(":", 1)[-1] for event in item["events"])
-                        == ("namespace", "transfer", "child", "boundary", "exec-ready", "root-final", "exit")
+                        == ("userns", "groups-cleared", "namespace", "transfer", "child", "boundary", "exec-ready", "root-final", "exit")
                         for item in namespace_evidence
                     )
                     if owner_calls or not exact_worker or not exact_namespaces:
