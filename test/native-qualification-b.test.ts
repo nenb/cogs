@@ -92,23 +92,24 @@ spec=importlib.util.spec_from_file_location('job_b_open_classifier',path)
 module=importlib.util.module_from_spec(spec);sys.modules[spec.name]=module;spec.loader.exec_module(module)
 ops=module._SystemOps();root=f'{module._ROOT_PARENT}/{module._ROOT_LEAF}'
 cases=(
- ('/proc/4815162342/exe','open-enoent-proc-exe'),
- ('/proc/4815162342/map_files/secret-range','open-enoent-proc-map-files'),
- ('/proc/4815162342/fd','open-enoent-proc-fd'),
- ('/proc/self/fdinfo/77','open-enoent-proc-fdinfo'),
- ('/proc/4815162342/status','open-enoent-proc-status'),
- ('/proc/4815162342/maps','open-enoent-proc-maps'),
- ('/proc/4815162342/stat','open-enoent-proc-stat'),
- ('/proc/4815162342/limits','open-enoent-proc-limits'),
- ('/proc/4815162342/ns/user','open-enoent-proc-ns'),
- ('/proc/4815162342/task/9918273/children','open-enoent-proc-task-children'),
- ('/proc/thread-self/children','open-enoent-proc-task-children'),
- (module._ROOT_PARENT,'open-enoent-root'),
- (root,'open-enoent-root'),
- (root+'/bin/zstd-never-disclose','open-enoent-runtime-source'),
- (root+'-impostor/never-disclose','open-enoent-other'),
- ('/proc/4815162342/mountinfo','open-enoent-other'),
+ ('/proc/4815162342/exe','oe-pe'),
+ ('/proc/4815162342/map_files/secret-range','oe-pm'),
+ ('/proc/4815162342/fd','oe-pf'),
+ ('/proc/self/fdinfo/77','oe-pi'),
+ ('/proc/4815162342/status','oe-ps'),
+ ('/proc/4815162342/maps','oe-pa'),
+ ('/proc/4815162342/stat','oe-pt'),
+ ('/proc/4815162342/limits','oe-pl'),
+ ('/proc/4815162342/ns/user','oe-pn'),
+ ('/proc/4815162342/task/9918273/children','oe-pc'),
+ ('/proc/thread-self/children','oe-pc'),
+ (module._ROOT_PARENT,'oe-r'),
+ (root,'oe-r'),
+ (root+'/bin/zstd-never-disclose','oe-s'),
+ (root+'-impostor/never-disclose','oe-o'),
+ ('/proc/4815162342/mountinfo','oe-o'),
 )
+assert len({code for _,code in cases})==13
 original=module.os.open
 def missing(path,flags,mode=0o600):
  raise FileNotFoundError(errno.ENOENT,'dynamic-open-detail-never-disclose',path)
