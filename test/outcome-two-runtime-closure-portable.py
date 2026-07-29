@@ -199,6 +199,7 @@ class FsOps(closure._Ops):
         self.fds = {}
         self.closed = []
         self.observations = {}
+        self.credential_events = []
         self.inodes = {}
         for index, path in enumerate(self.files): self.inodes[path] = 100 + index
         for path in case.get("remove", ()): self.files.pop(path)
@@ -245,6 +246,12 @@ class FsOps(closure._Ops):
         elif path in self.files:
             mode, size, inode, uid = stat.S_IFREG | 0o755, len(self.files[path]), self.inodes[path], 0
         else: raise FileNotFoundError(path)
+        gid, component = 0, path == "/usr"
+        group_mode = {"root-root-0775", "root-runner-0775", "gid0-effective-0775", "gid0-supplementary-0775"}
+        if component and self.fault in group_mode: mode |= 0o020
+        if component and self.fault == "root-runner-0775": gid = 1000
+        if component and self.fault == "other-writable-directory": mode |= 0o002
+        if component and self.fault == "nonroot-directory-owner": uid = 1000
         target = path == "/usr/bin/python3"
         if self.fault == "ancestor-open-race" and path == "/usr" and opened: inode += 1
         if self.fault == "final-open-race" and target and opened: inode += 1
@@ -254,9 +261,15 @@ class FsOps(closure._Ops):
         if self.fault == "chmod-after" and target and opened and count > 0: mode |= 0o020
         if self.fault == "chown-after" and target and opened and count > 0: uid = 1000
         return SimpleNamespace(st_dev=8, st_ino=inode, st_size=size, st_mtime_ns=mtime,
-                               st_ctime_ns=1, st_mode=mode, st_uid=uid, st_gid=0)
+                               st_ctime_ns=1, st_mode=mode, st_uid=uid, st_gid=gid)
+    def getegid(self): return self.credential_events.append("getegid") or (0 if self.fault == "gid0-effective-0775" else 1000)
+    def getgroups(self):
+        self.credential_events.append("getgroups")
+        if self.fault == "supplementary-group-bound": return tuple(range(closure._MAX_GROUPS + 1))
+        return (0,) if self.fault == "gid0-supplementary-0775" else ()
     def open(self, path, flags, mode=0o600, *, dir_fd=None):
         del flags, mode
+        self.credential_events.append("open")
         full = self._path(path, dir_fd)
         self._stat(full)
         fd = self.next_fd
@@ -311,6 +324,10 @@ def closure_matrix():
             closure._close_objects(ops, value.objects)
         if ops.fds:
             raise AssertionError(f"descriptor residue: {case['id']}")
+        bounded = case.get("fault") == "supplementary-group-bound"
+        prefix = ["getegid", "getgroups"] + ([] if bounded else ["open"])
+        if ops.credential_events[:len(prefix)] != prefix or (bounded and "open" in ops.credential_events):
+            raise AssertionError(f"credential observation ordering/bound: {case['id']}")
         consumed.add(row["id"])
         oracle.add(row["id"])
     for row, case, branch in deferred:
