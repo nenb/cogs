@@ -662,6 +662,8 @@ def _fixed_error_stage(error: BaseException) -> str:
         if not failures:
             break
         current = failures[0]
+    if type(current).__name__ == "RuntimeClosureError":
+        return "closure-" + hashlib.sha256(str(current).encode("utf-8", "backslashreplace")).hexdigest()[:16]
     stage = getattr(current, "code", f"{type(current).__name__}-{getattr(current, 'errno', 0)}")
     return (re.sub(r"[^A-Za-z0-9_.-]", "-", stage) if type(stage) is str else "invalid")[:40]
 class _WorkerIssuer:
