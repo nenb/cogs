@@ -1379,7 +1379,11 @@ def _consume_worker_handoff(endpoint: socket.socket, helper_endpoint: socket.soc
             try:
                 expected_credentials = (issuer_pid, os.getuid(), os.getgid())
                 mismatches = tuple(name for name, actual, expected in zip(("pid", "uid", "gid"), credentials, expected_credentials) if actual != expected)
-                authority_code = "helper-control-authority-" + ("flags" if flags else "-".join(mismatches) or "invalid")
+                known_flags = ((socket.MSG_TRUNC, "trunc"), (socket.MSG_CTRUNC, "ctrunc"), (socket.MSG_EOR, "eor"))
+                flag_names = tuple(name for bit, name in known_flags if flags & bit)
+                unknown_flags = flags & ~sum(bit for bit, _name in known_flags)
+                flag_code = "-".join((*flag_names, *(("other",) if unknown_flags else ())))
+                authority_code = "helper-control-authority-" + (flag_code or "-".join(mismatches) or "invalid")
                 _require(not flags and not mismatches, "helper control authority", authority_code)
                 value = _strict_json(raw, False, 4096, "helper control")
                 _require(type(value) is dict and value.get("version") == _RESULT_VERSION, "helper control shape", "helper-control-shape")
