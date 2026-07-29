@@ -450,8 +450,7 @@ jobs:
         with: { ref: "${{ needs.native-qualification-eligibility.outputs.reviewed_sha }}", persist-credentials: false }
       - env:
           { NQ_DRIVER: scripts/native-qualification/thin-integration.py, NQ_HEAD_REPOSITORY: "${{ github.repository }}",
-            NQ_HEAD_SHA: "${{ needs.native-qualification-eligibility.outputs.reviewed_sha }}", NQ_REF: "${{ github.ref }}",
-            NQ_DEFAULT_BRANCH: "${{ github.event.repository.default_branch }}", NQ_REF_PROTECTED: "${{ github.ref_protected }}" }
+            NQ_HEAD_SHA: "${{ needs.native-qualification-eligibility.outputs.reviewed_sha }}", NQ_REF: "${{ github.ref }}", NQ_DEFAULT_BRANCH: "${{ github.event.repository.default_branch }}", NQ_REF_PROTECTED: "${{ github.ref_protected }}" }
         run: |
           set -euo pipefail
           test "$NQ_HEAD_REPOSITORY" = "$GITHUB_REPOSITORY"
@@ -460,7 +459,8 @@ jobs:
           test -z "$(/usr/bin/git status --porcelain=v1 --untracked-files=all)"
           test -z "$(/usr/bin/git config --local --get-regexp 'credential\.helper|http\..*\.extraheader' || :)"
           ! /usr/bin/git remote get-url origin | /usr/bin/grep -Eq '://[^/]*@'
-          /usr/bin/env -i LC_ALL=C PYTHONDONTWRITEBYTECODE=1 PYTHONHASHSEED=0 NQ_EVENT_NAME="$GITHUB_EVENT_NAME" NQ_REPOSITORY="$GITHUB_REPOSITORY" \
+          runner_uid=$(/usr/bin/id -u); runner_gid=$(/usr/bin/id -g)
+          sudo -n --close-from=3 /usr/bin/prlimit --nofile=65536:65536 -- /usr/bin/setpriv --reuid="$runner_uid" --regid="$runner_gid" --clear-groups --inh-caps=+sys_admin --ambient-caps=+sys_admin /usr/bin/env -i LC_ALL=C PYTHONDONTWRITEBYTECODE=1 PYTHONHASHSEED=0 NQ_EVENT_NAME="$GITHUB_EVENT_NAME" NQ_REPOSITORY="$GITHUB_REPOSITORY" \
             NQ_HEAD_REPOSITORY="$NQ_HEAD_REPOSITORY" NQ_HEAD_SHA="$NQ_HEAD_SHA" NQ_ENVELOPE_SHA="$GITHUB_SHA" \
             NQ_WORKFLOW_SHA="$GITHUB_WORKFLOW_SHA" NQ_REF="$NQ_REF" NQ_DEFAULT_BRANCH="$NQ_DEFAULT_BRANCH" NQ_REF_PROTECTED="$NQ_REF_PROTECTED" \
             NQ_JOB_ID="$GITHUB_JOB" NQ_RUN_ID="$GITHUB_RUN_ID" NQ_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" NQ_RUNNER_VERSION="$ImageVersion" \

@@ -7,6 +7,20 @@ const path = "scripts/native-qualification/thin-integration.py";
 const source = readFileSync(path, "utf8");
 const workflow = readFileSync(".github/workflows/ci.yml", "utf8");
 
+function workflowJob(id: string, nextId: string) {
+  const start = workflow.indexOf(`\n  ${id}:`);
+  const end = workflow.indexOf(`\n  ${nextId}:`, start);
+  assert.ok(start >= 0 && end > start);
+  return workflow.slice(start, end);
+}
+
+function operationRun(job: string) {
+  const start = job.indexOf("        run: |\n");
+  const end = job.indexOf("      - name: Upload validated fixed report", start);
+  assert.ok(start >= 0 && end > start);
+  return job.slice(start, end);
+}
+
 test("integration leaves exact digest summaries to one immutable common receipt", () => {
   const harness = `
 import runpy,sys,types
@@ -88,11 +102,33 @@ else: raise AssertionError('CLI did not exit')
   assert.ok(source.split("\n").every((line) => line.length <= 120));
 });
 
+test("integration uses Job B's exact fixed capability envelope with its own driver", () => {
+  const jobB = workflowJob("native-qualification-b", "native-qualification-c");
+  const integration = workflowJob("native-closure-integration", "native-qualification-required");
+  const run = operationRun(integration);
+  assert.equal(run, operationRun(jobB));
+  assert.match(integration, /NQ_DRIVER: scripts\/native-qualification\/thin-integration\.py/u);
+  assert.match(run, /runner_uid=\$\(\/usr\/bin\/id -u\); runner_gid=\$\(\/usr\/bin\/id -g\)/u);
+  const fixed = [
+    "sudo -n --close-from=3", "/usr/bin/prlimit --nofile=65536:65536 --", "/usr/bin/setpriv",
+    '--reuid="$runner_uid"', '--regid="$runner_gid"', "--clear-groups", "--inh-caps=+sys_admin",
+    "--ambient-caps=+sys_admin", "/usr/bin/env -i", '/usr/bin/python3 -I -B "$NQ_DRIVER" --workflow-bound',
+  ];
+  const positions = fixed.map((value) => run.indexOf(value));
+  assert.ok(positions.every((position) => position >= 0));
+  assert.deepEqual(positions, positions.toSorted((a, b) => a - b));
+  const compact = run.replace(/\\\n\s+/gu, " ");
+  const assignments = compact.match(/\/usr\/bin\/env -i (.+) \/usr\/bin\/python3/u)?.[1];
+  assert.ok(assignments);
+  assert.deepEqual(Array.from(assignments.matchAll(/(?:^| )([A-Z][A-Z0-9_]*)=/gu), (match) => match[1]), [
+    "LC_ALL", "PYTHONDONTWRITEBYTECODE", "PYTHONHASHSEED", "NQ_EVENT_NAME", "NQ_REPOSITORY",
+    "NQ_HEAD_REPOSITORY", "NQ_HEAD_SHA", "NQ_ENVELOPE_SHA", "NQ_WORKFLOW_SHA", "NQ_REF",
+    "NQ_DEFAULT_BRANCH", "NQ_REF_PROTECTED", "NQ_JOB_ID", "NQ_RUN_ID", "NQ_RUN_ATTEMPT", "NQ_RUNNER_VERSION",
+  ]);
+});
+
 test("integration authenticates uploaded report bytes before both cleanup domains", () => {
-  const start = workflow.indexOf("\n  native-closure-integration:");
-  const end = workflow.indexOf("\n  native-qualification-required:", start);
-  assert.ok(start >= 0 && end > start);
-  const job = workflow.slice(start, end);
+  const job = workflowJob("native-closure-integration", "native-qualification-required");
   const upload = job.indexOf("id: upload");
   const download = job.indexOf("id: download");
   const comparison = job.indexOf("id: compare");
