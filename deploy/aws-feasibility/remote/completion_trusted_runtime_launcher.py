@@ -4013,7 +4013,16 @@ def _bootstrap_with_ops(ops: _SystemOps) -> int:
     # state; the tracked caller structurally fixes execve's environment to {}.
     if dict(os.environ) == {"LC_CTYPE": "C.UTF-8"}: os.environ.clear()
     if len(sys.argv) != 1 or os.environ or not sys.flags.isolated or not sys.flags.dont_write_bytecode: raise RuntimeLauncherError("fixed bootstrap process envelope")
-    executable = _FdLease(os.open("/proc/self/exe", os.O_PATH | os.O_CLOEXEC), "python-executable")
+    try:
+        executable = _FdLease(os.open("/proc/self/exe", os.O_PATH | os.O_CLOEXEC), "python-executable")
+    except FileNotFoundError:
+        # A capability-bearing exec is non-dumpable, and this procfs denies its
+        # executable link. Reopen during one bounded self-only interval.
+        ops.prctl(_PR_SET_DUMPABLE, 1)
+        try:
+            executable = _FdLease(os.open("/proc/self/exe", os.O_PATH | os.O_CLOEXEC), "python-executable")
+        finally:
+            ops.prctl(_PR_SET_DUMPABLE, 0)
     admitted = _FdLease(os.open("/usr/bin/python3", os.O_PATH | os.O_CLOEXEC), "admitted-python")
     try:
         executable_identity = _stat_identity(os.fstat(executable.fd))[:2]
