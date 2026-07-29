@@ -1770,7 +1770,7 @@ class _BIKernel:
             start = self.processes[pid]["start"]
             return f"{pid} (modeled) S ".encode() + b" ".join([b"1"] * 18 + [str(start).encode()] + [b"1"] * 30) + b"\n"
         if path.endswith("/limits"):
-            return b"Limit                     Soft Limit           Hard Limit           Units\n"
+            return b"Limit                     Soft Limit           Hard Limit           Units     \n"
         if path.endswith("/status"):
             return (f"NSpid:\t{self.child}\t1\n".encode() + b"Groups:\t\nCapInh:\t0000000000000000\n"
                     b"CapPrm:\t0000000000000000\nCapEff:\t0000000000000000\nCapBnd:\t0000000000000000\n"

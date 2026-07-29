@@ -1915,7 +1915,7 @@ def _namespace_facts(pid: int, parent_uid: int | None = None, parent_gid: int | 
     return result
 def _parse_limits(raw: bytes) -> tuple[tuple[str, int | None, int | None, str], ...]:
     lines = raw.splitlines(keepends=True)
-    header = b"Limit                     Soft Limit           Hard Limit           Units\n"
+    header = b"Limit                     Soft Limit           Hard Limit           Units     \n"
     _require(bool(lines) and lines[0] == header and b"".join(lines) == raw, "limits framing", "limits-framing")
     rows: list[tuple[str, int | None, int | None, str]] = []
     for line in lines[1:]:
