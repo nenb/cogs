@@ -4002,7 +4002,15 @@ if __name__ == "__main__":
                 nested = failures[0]
             stage = getattr(nested, "code", type(nested).__name__)
             safe_stage = re.sub(r"[^A-Za-z0-9_.-]", "-", stage) if type(stage) is str else "invalid"
-            code = f"cleanup-uncertain-{safe_stage}"[:40]
+            primary: BaseException = error
+            for _depth in range(8):
+                next_primary = getattr(primary, "primary", None)
+                if not isinstance(next_primary, BaseException):
+                    break
+                primary = next_primary
+            primary_stage = getattr(primary, "code", type(primary).__name__)
+            safe_primary = re.sub(r"[^A-Za-z0-9_.-]", "-", primary_stage) if type(primary_stage) is str else "invalid"
+            code = f"cleanup-{safe_primary}-{safe_stage}"[:40]
         digest = hashlib.sha256(str(error).encode("utf-8", "backslashreplace")).hexdigest()[:16]
         os.write(2, f"runtime-launcher-{code}-{digest}\n".encode())
         raise SystemExit(1)
