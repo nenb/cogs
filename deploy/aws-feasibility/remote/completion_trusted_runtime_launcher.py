@@ -1673,18 +1673,21 @@ def _namespace_owner(
     try:
         ops.prctl(_PR_SET_PDEATHSIG, signal.SIGKILL)
         os.setsid()
+        sequence = -2
         ops.unshare_boundary()
         # The retained parent owns unprivileged map writes. After it maps UID
         # zero, clear inherited groups before it permanently denies setgroups
         # and maps GID zero.
-        status.send(_status("userns", 0))
-        _recv_status(status, time.monotonic() + _SETUP_SECONDS, "uid-mapped", 0)
+        sequence = -1
+        status.send(_status("userns", sequence))
+        _recv_status(status, time.monotonic() + _SETUP_SECONDS, "uid-mapped", sequence)
         try:
             os.setgroups([])
         except PermissionError as error:
             raise RuntimeLauncherError("supplementary group clear denied", "setgroups-clear") from error
-        status.send(_status("groups-cleared", 0))
-        _recv_status(status, time.monotonic() + _SETUP_SECONDS, "identity-mapped", 0)
+        sequence = 0
+        status.send(_status("groups-cleared", sequence))
+        _recv_status(status, time.monotonic() + _SETUP_SECONDS, "identity-mapped", sequence)
         mount_intents.add("private-root")
         ops.mount(None, b"/", None, _MS_REC | _MS_PRIVATE, None)
         sequence = 1
@@ -2175,11 +2178,11 @@ def _run_tool_with_ops( ops: Any, role: str, report: dict[str, object], descript
         # recorded pre-release session no longer matches.
         process_owner.plan_setsid(namespace_lease)
         process_owner.release(namespace_lease)
-        _recv_status(parent_status, time.monotonic() + _SETUP_SECONDS, "userns", 0)
+        _recv_status(parent_status, time.monotonic() + _SETUP_SECONDS, "userns", -1)
         process_owner.confirm_setsid(namespace_lease)
         map_root = f"/proc/{namespace_lease.pid}"
         _write_map(ops, map_root + "/uid_map", f"0 {os.getuid()} 1\n".encode(), "uid-map")
-        command = _status("uid-mapped", 0)
+        command = _status("uid-mapped", -1)
         _require(parent_status.send(command) == len(command), "UID map acknowledgement", "uid-map-ack")
         _recv_status(parent_status, time.monotonic() + _SETUP_SECONDS, "groups-cleared", 0)
         try:

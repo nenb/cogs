@@ -1649,7 +1649,7 @@ class _BIKernel:
             self.input_pipe, self.output_pipe = self.pipe_order[-3][2], self.pipe_order[-2][2]
             self.output_pipe["child_writer"] = True
             status = next(s for s in reversed(self.sockets) if s.kind == "status" and s.side == 0)
-            status.queue.append(self.status("userns", 0))
+            status.queue.append(self.status("userns", -1))
         return pid, pidfd
     def pidfd_open(self, pid, flags=0):
         del flags
@@ -1860,7 +1860,7 @@ class _BIChildSocket:
     def send(self, raw, flags=0):
         del flags
         value = _BIjson.loads(raw)
-        expected = {"userns": 0, "groups-cleared": 0, "namespace": 1, "child": 2, "boundary": 3, "exec-ready": 4,
+        expected = {"userns": -1, "groups-cleared": 0, "namespace": 1, "child": 2, "boundary": 3, "exec-ready": 4,
                     "root-final": 5, "exit": 6, "error": value.get("sequence"), "unavailable": value.get("sequence")}
         if value.get("sequence") != expected.get(value.get("event")):
             raise AssertionError(f"modeled child status drift: {value}")
@@ -1944,7 +1944,7 @@ def _modeled_namespace_execution(module, report, descriptors, rows, role):
     input_fd, output_fd = kernel.pipe2(0)[0], kernel.pipe2(0)[1]
     status_fd, transfer_fd = kernel.alloc("socket"), kernel.alloc("socket")
     commands = tuple(module._status(name, sequence) for name, sequence in (
-        ("uid-mapped", 0), ("identity-mapped", 0), ("prepare-root", 1), ("release-child", 2), ("finalize-root", 3)))
+        ("uid-mapped", -1), ("identity-mapped", 0), ("prepare-root", 1), ("release-child", 2), ("finalize-root", 3)))
     status = _BIChildSocket(kernel, status_fd, "status", commands)
     transfer = _BIChildSocket(kernel, transfer_fd, "transfer", (b"A",))
     kernel.sockets.extend((status, transfer))
