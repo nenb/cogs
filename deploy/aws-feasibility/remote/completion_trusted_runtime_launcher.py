@@ -1682,7 +1682,8 @@ def _namespace_owner(
         status.send(_status("userns", sequence))
         _recv_status(status, time.monotonic() + _SETUP_SECONDS, "uid-mapped", sequence)
         try:
-            os.setgroups([])
+            if os.getgroups():
+                os.setgroups([])
         except PermissionError as error:
             raise RuntimeLauncherError("supplementary group clear denied", "setgroups-clear") from error
         sequence = 0
