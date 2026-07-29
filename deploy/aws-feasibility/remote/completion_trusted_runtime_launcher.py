@@ -1583,10 +1583,9 @@ def _materialize_root(ops: Any, role: str, descriptors: tuple[int, ...], rows: t
     return root
 def _write_map(ops: Any, path: str, value: bytes, denied_code: str) -> None:
     try:
-        descriptor = ops.open(path, os.O_WRONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+        lease = _FdLease(ops.open(path, os.O_WRONLY | os.O_CLOEXEC | os.O_NOFOLLOW), f"map:{path}")
     except PermissionError as error:
         raise RuntimeLauncherError("namespace identity map denied", denied_code) from error
-    lease = _FdLease(descriptor, f"map:{path}")
     primary: BaseException | None = None
     try:
         _require(ops.write(lease.fd, value) == len(value), "namespace identity map short write", "map-short-write")
