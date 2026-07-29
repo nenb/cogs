@@ -1581,8 +1581,12 @@ def _materialize_root(ops: Any, role: str, descriptors: tuple[int, ...], rows: t
             target = f"{root}{_LIBRARY_ROOT}/{item['soname']}"
         _copy_bound_object(ops, descriptors[row.descriptor_index], target, row)
     return root
-def _write_map(ops: Any, path: str, value: bytes) -> None:
-    lease = _FdLease(ops.open(path, os.O_WRONLY | os.O_CLOEXEC | os.O_NOFOLLOW), f"map:{path}")
+def _write_map(ops: Any, path: str, value: bytes, denied_code: str) -> None:
+    try:
+        descriptor = ops.open(path, os.O_WRONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+    except PermissionError as error:
+        raise RuntimeLauncherError("namespace identity map denied", denied_code) from error
+    lease = _FdLease(descriptor, f"map:{path}")
     primary: BaseException | None = None
     try:
         _require(ops.write(lease.fd, value) == len(value), "namespace identity map short write", "map-short-write")
@@ -1671,15 +1675,15 @@ def _namespace_owner(
         ops.unshare_boundary()
         # Map the caller UID first so namespaced capabilities are effective,
         # then clear inherited groups before permanently denying setgroups.
-        _write_map(ops, "/proc/self/uid_map", f"0 {original_uid} 1\n".encode())
+        _write_map(ops, "/proc/self/uid_map", f"0 {original_uid} 1\n".encode(), "uid-map")
         try:
             os.setgroups([])
         except PermissionError as error:
             raise RuntimeLauncherError("supplementary group clear denied", "setgroups-clear") from error
         try:
-            _write_map(ops, "/proc/self/setgroups", b"deny\n")
+            _write_map(ops, "/proc/self/setgroups", b"deny\n", "setgroups-map")
         except FileNotFoundError: pass
-        _write_map(ops, "/proc/self/gid_map", f"0 {original_gid} 1\n".encode())
+        _write_map(ops, "/proc/self/gid_map", f"0 {original_gid} 1\n".encode(), "gid-map")
         mount_intents.add("private-root")
         ops.mount(None, b"/", None, _MS_REC | _MS_PRIVATE, None)
         sequence = 1
@@ -3150,11 +3154,11 @@ def _sandbox_leader(
         os.setgroups([])
         ops.unshare_boundary()
         try:
-            _write_map(ops, "/proc/self/setgroups", b"deny\n")
+            _write_map(ops, "/proc/self/setgroups", b"deny\n", "setgroups-map")
         except FileNotFoundError:
             pass
-        _write_map(ops, "/proc/self/uid_map", f"0 {original_uid} 1\n".encode())
-        _write_map(ops, "/proc/self/gid_map", f"0 {original_gid} 1\n".encode())
+        _write_map(ops, "/proc/self/uid_map", f"0 {original_uid} 1\n".encode(), "uid-map")
+        _write_map(ops, "/proc/self/gid_map", f"0 {original_gid} 1\n".encode(), "gid-map")
         ops.mount(None, b"/", None, _MS_REC | _MS_PRIVATE, None)
         mount_data = b"mode=0700,size=1048576,nr_inodes=16"
         ops.mount(b"tmpfs", root.encode(), b"tmpfs", _MS_NOSUID | _MS_NODEV, mount_data)
