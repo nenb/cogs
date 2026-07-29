@@ -1668,8 +1668,10 @@ def _namespace_owner(
         ops.prctl(_PR_SET_PDEATHSIG, signal.SIGKILL)
         os.setsid()
         original_uid, original_gid = os.getuid(), os.getgid()
-        os.setgroups([])
         ops.unshare_boundary()
+        # Unshare grants CAP_SETGID in the new user namespace. Clear inherited
+        # supplementary groups before permanently denying further setgroups.
+        os.setgroups([])
         try:
             _write_map(ops, "/proc/self/setgroups", b"deny\n")
         except FileNotFoundError: pass
