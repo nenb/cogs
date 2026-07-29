@@ -1989,7 +1989,7 @@ def _modeled_namespace_execution(module, report, descriptors, rows, role):
             return module._DATA_SEALS if fd == copied[0] else module._EXEC_SEALS
         if fd in copied and command == _BIfcntl.F_GETFL: return _BIos.O_RDONLY
         return _BI_FCNTL(fd, command, *args)
-    kernel.unshare_boundary = lambda *args: None
+    kernel.unshare_user = kernel.unshare_sandbox = kernel.unshare_boundary = lambda *args: None
     kernel.umount = child_umount
     with patched(module, _SystemOps=lambda: kernel), patched(module.socket, socket=child_socket), patched(
         module.os, open=kernel.open, close=kernel.close, read=kernel.read, write=kernel.write,
