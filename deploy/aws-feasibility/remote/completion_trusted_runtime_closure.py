@@ -2006,6 +2006,37 @@ class PreparedRuntimeClosure:
         if _child_baseline(self._ops) != self._preparation.child_baseline:
             raise RuntimeClosureError('helper baseline not restored')
 
+    def _revalidate_ready_report(self) -> bytes:
+        for lease in self._bundle:
+            expected_seals = _DATA_SEALS if lease.purpose == 'sealed-report' else _EXEC_SEALS
+            if self._ops.fcntl(lease.fd, _F_GET_SEALS) != expected_seals:
+                raise RuntimeClosureError('issued descriptor seals changed')
+            access_mode = self._ops.fcntl(lease.fd, _F_GETFL) & os.O_ACCMODE
+            if access_mode != os.O_RDONLY:
+                raise RuntimeClosureError('issued descriptor is not read-only')
+            descriptor_flags = self._ops.fcntl(lease.fd, _F_GETFD)
+            if descriptor_flags & _FD_CLOEXEC == 0:
+                raise RuntimeClosureError('issued descriptor is not close-on-exec')
+        report = self._report
+        if report is None or _read_complete(self._ops, self._bundle[0].fd, len(report)) != report:
+            raise RuntimeClosureError('issued report bytes changed')
+        _producer_decode_report(report)
+        self._prove_ready_baseline_for_issue()
+        return report
+
+    def _canonical_report_bytes(self) -> bytes:
+        """Return bounded metadata only to the admitted trusted launcher worker."""
+        if self._state is not _OwnerState.READY:
+            raise RuntimeClosureError('runtime closure is not ready for comparison')
+        try:
+            self._ops.checkpoint('comparison.before-revalidate')
+            report = self._revalidate_ready_report()
+            self._ops.checkpoint('comparison.after-revalidate')
+            return report
+        except BaseException as error:
+            self._poison_owner(error)
+            raise self._poison if self._poison is not None else error
+
     def _issue_once(self, issuer: object) -> _IssuanceReceipt:
         if self._state is not _OwnerState.READY:
             raise RuntimeClosureError('runtime closure is not ready for issuance')
@@ -2015,21 +2046,7 @@ class PreparedRuntimeClosure:
         self._state = _OwnerState.ISSUING
         try:
             self._ops.checkpoint('issue.before-revalidate')
-            for lease in self._bundle:
-                expected_seals = _DATA_SEALS if lease.purpose == 'sealed-report' else _EXEC_SEALS
-                if self._ops.fcntl(lease.fd, _F_GET_SEALS) != expected_seals:
-                    raise RuntimeClosureError('issued descriptor seals changed')
-                access_mode = self._ops.fcntl(lease.fd, _F_GETFL) & os.O_ACCMODE
-                if access_mode != os.O_RDONLY:
-                    raise RuntimeClosureError('issued descriptor is not read-only')
-                descriptor_flags = self._ops.fcntl(lease.fd, _F_GETFD)
-                if descriptor_flags & _FD_CLOEXEC == 0:
-                    raise RuntimeClosureError('issued descriptor is not close-on-exec')
-            report_lease = self._bundle[0]
-            report = self._report
-            if report is None or _read_complete(self._ops, report_lease.fd, len(report)) != report:
-                raise RuntimeClosureError('issued report bytes changed')
-            self._prove_ready_baseline_for_issue()
+            report = self._revalidate_ready_report()
             self._ops.checkpoint('issue.before-transfer')
             descriptors = tuple((lease.fd for lease in self._bundle))
             receipt = accept(report, descriptors, self._rows)

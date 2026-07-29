@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """Exercise report construction and each independent production report codec."""
-
 import copy
 import errno
 import hashlib
@@ -10,7 +9,6 @@ from pathlib import Path
 import stat
 import sys
 from types import SimpleNamespace
-
 if sys.flags.optimize:
     raise RuntimeError("Outcome 2 report tests refuse optimized Python")
 sys.dont_write_bytecode = True
@@ -22,16 +20,12 @@ SCHEMA_PATH = ROOT / "schemas/trusted-runtime-closure-v1.json"
 GOLDEN_PATH = ROOT / "test/fixtures/outcome-two/reports/runtime-closure-v1.canonical.jsonl"
 MUTATIONS_PATH = ROOT / "test/fixtures/outcome-two/reports/mutations.jsonl"
 sys.path.insert(0, str(REMOTE))
-
-
 def load(name, path):
     spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
     spec.loader.exec_module(module)
     return module
-
-
 def canonical(value):
     return json.dumps(
         value,
@@ -40,11 +34,8 @@ def canonical(value):
         ensure_ascii=False,
         allow_nan=False,
     ).encode()
-
-
 def digest(value):
     return hashlib.sha256(canonical(value)).hexdigest()
-
 def recompute(value):
     for tool in value["tools"]:
         tool["closure_sha256"] = digest(tool["objects"])
@@ -56,8 +47,6 @@ def recompute(value):
     ]
     value["closure_sha256"] = digest(digest_view)
     return value
-
-
 def mutate(golden, name):
     value = copy.deepcopy(golden)
     tool = value["tools"][0]
@@ -116,8 +105,6 @@ def mutate(golden, name):
     elif name == "mapping-digest":
         tool["mapping_sha256"] = "0" * 64
     return value
-
-
 def encoding_mutation(raw, name):
     mutations = {
         "duplicate-key": lambda: raw.replace(b"{", b'{"version":"duplicate",', 1),
@@ -134,7 +121,6 @@ def encoding_mutation(raw, name):
     if name not in mutations:
         raise AssertionError(f"unknown encoding mutation: {name}")
     return mutations[name]()
-
 def bpf_result(program, syscall, arguments=(), architecture=0xC000003E):
     words = {0: syscall, 4: architecture}
     for index, value in enumerate(arguments):
@@ -154,8 +140,6 @@ def bpf_result(program, syscall, arguments=(), architecture=0xC000003E):
             raise AssertionError(f"unsupported production cBPF opcode: {code:#x}")
         pc += 1
     raise AssertionError("production cBPF program fell through")
-
-
 def production_seccomp_contract(launcher):
     socket_routes = {
         "socket", "connect", "accept", "sendto", "recvfrom", "sendmsg", "recvmsg",
@@ -187,8 +171,6 @@ def production_seccomp_contract(launcher):
     get_mode = bpf_result(program, 157, (launcher._PR_GET_SECCOMP,))
     if set_mode != denied or get_mode != 0x7FFF0000:
         raise AssertionError("production prctl seccomp argument filter changed")
-
-
 def exact_rejection(function, raw, expected_type, expected_code):
     try:
         function(raw)
@@ -200,8 +182,6 @@ def exact_rejection(function, raw, expected_type, expected_code):
             ) from error
         return
     raise AssertionError("production predicate accepted its hostile input")
-
-
 def production_observation_mutation(launcher):
     if "_build_observed_result" not in launcher._coordinate_with_ops.__code__.co_names:
         raise AssertionError("production coordinator bypasses observed-result construction")
@@ -227,8 +207,6 @@ def production_observation_mutation(launcher):
         target.pop(changed)
         code = "cleanup-observation-shape" if changed in cleanup_names else "observation-shape"
         exact_rejection(call, b"", launcher.RuntimeLauncherError, code)
-
-
 def production_parser_contract(launcher):
     stat_record = b"7 (worker) S " + b" ".join([b"1"] * 49) + b"\n"
     maps_record = b"00400000-00401000 r-xp 00000000 08:01 123 /tool\n"
@@ -247,8 +225,6 @@ def production_parser_contract(launcher):
     for parser, accepted, hostile, code in cases:
         parser(accepted)
         exact_rejection(parser, hostile, launcher.RuntimeLauncherError, code)
-
-
 def manifest():
     records = [json.loads(line) for line in MUTATIONS_PATH.read_text().splitlines()]
     header, *rows = records
@@ -263,8 +239,6 @@ def manifest():
     if len(identifiers) != len(set(identifiers)):
         raise AssertionError("duplicate report case identity")
     return rows
-
-
 def hostile_bytes(golden, raw, row):
     fault = row["primitive_fault"]
     if set(fault) == {"family", "name", "schema"} and fault["family"] == "semantic":
@@ -272,8 +246,6 @@ def hostile_bytes(golden, raw, row):
     if set(fault) == {"family", "name"} and fault["family"] == "encoding":
         return encoding_mutation(raw, fault["name"])
     raise AssertionError("report primitive fault is not closed")
-
-
 def production_objects(closure, golden):
     closures = []
     mappings = []
@@ -302,8 +274,6 @@ def production_objects(closure, golden):
             tool_record["tool"], mapped, tool_record["mapping_sha256"]
         ))
     return tuple(closures), tuple(mappings)
-
-
 def dispatch(row, methods, hostile):
     codes = []
     events = []
@@ -324,8 +294,6 @@ def dispatch(row, methods, hostile):
     if row["sentinel"] != events:
         raise AssertionError(f"{row['id']}: production predicate sentinel changed")
     return tuple(events)
-
-
 def prove_oracle_edge_deletions(row, methods, hostile):
     proved = 0
     for index, expected in enumerate(row["intended_code"]):
@@ -340,8 +308,6 @@ def prove_oracle_edge_deletions(row, methods, hostile):
         else:
             raise AssertionError(f"{row['id']}: deleting oracle {methods[index][0]} stayed green")
     return proved
-
-
 def emit_schema_corpus():
     raw = GOLDEN_PATH.read_bytes()
     golden = json.loads(raw)
@@ -351,8 +317,6 @@ def emit_schema_corpus():
         if fault["family"] == "semantic":
             value = mutate(golden, fault["name"])
             print(json.dumps({"id": row["id"], "schema": fault["schema"], "value": value}, separators=(",", ":")))
-
-
 def parent():
     rows = manifest()
     closure = load("completion_trusted_runtime_closure", CLOSURE_PATH)
@@ -388,6 +352,19 @@ def parent():
     )
     if constructed != raw or constructed_value != golden or calls != [raw]:
         raise AssertionError("production report construction diverged from golden")
+    owner = object.__new__(closure.PreparedRuntimeClosure)
+    checkpoints = []
+    owner._state, owner._ops = closure._OwnerState.READY, SimpleNamespace(checkpoint=checkpoints.append)
+    owner._revalidate_ready_report = lambda: constructed
+    owner._poison_owner = lambda error: (_ for _ in ()).throw(error)
+    if owner._canonical_report_bytes() is not constructed or checkpoints != [
+        "comparison.before-revalidate", "comparison.after-revalidate"
+    ] or len(constructed) > closure._MAX_REPORT:
+        raise AssertionError("trusted comparison report escaped its canonical bound")
+    owner._state = closure._OwnerState.CLOSED
+    try: owner._canonical_report_bytes()
+    except closure.RuntimeClosureError: pass
+    else: raise AssertionError("closed preparation disclosed report bytes")
     producer_value = producer(raw)
     consumer_value = consumer(raw)
     schema_method(schema_holder, raw)
@@ -395,6 +372,14 @@ def parent():
         raise AssertionError("production report re-encoder diverged")
     if producer_value is consumer_value or producer_value != consumer_value:
         raise AssertionError("production report codec values are not independent and equal")
+    launcher._require_identical_closure_reports(raw, bytes(raw))
+    drift = copy.deepcopy(golden)
+    drift["tools"][0]["objects"][0]["sha256"] = hashlib.sha256(b"fresh-report-drift").hexdigest()
+    drift_raw = canonical(recompute(drift)) + b"\n"
+    try: launcher._require_identical_closure_reports(raw, drift_raw)
+    except launcher.RuntimeLauncherError as error:
+        if error.code != "closure-report-drift": raise
+    else: raise AssertionError("distinct canonical preparation reports compared equal")
     identifiers = [row["id"] for row in rows]
     declared = set(identifiers)
     if len(declared) != len(identifiers):
@@ -419,8 +404,6 @@ def parent():
     if any(item in raw for item in prohibited):
         raise AssertionError("golden report disclosed prohibited metadata")
     print("Outcome 2 runtime report portable tests passed")
-
-
 if __name__ == "__main__":
     if sys.argv == [sys.argv[0], "--schema-corpus"]:
         emit_schema_corpus()
