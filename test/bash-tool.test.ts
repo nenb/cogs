@@ -17,7 +17,7 @@ import {
   type SshTransportConnectOptions,
 } from "../src/ssh/connection.ts";
 
-const keyPair = ssh2.utils.generateKeyPairSync("ed25519", { comment: "cogs-bash-test" });
+const keyPair = ssh2.utils.generateKeyPairSync("rsa", { bits: 2048, comment: "cogs-bash-test" });
 const validPin = "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
 class FakeExecPort implements CogsExecPort {
