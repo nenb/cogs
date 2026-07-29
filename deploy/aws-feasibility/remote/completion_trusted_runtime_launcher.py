@@ -652,6 +652,9 @@ def _credential_ancillary(rights: tuple[int, ...] = ()) -> list[tuple[int, int, 
     if rights:
         ancillary.append((socket.SOL_SOCKET, socket.SCM_RIGHTS, array("i", rights)))
     return ancillary
+def _receive_flags_exact(flags: int) -> bool:
+    cloexec = getattr(socket, "MSG_CMSG_CLOEXEC", 0x40000000)
+    return type(flags) is int and flags & ~cloexec == 0
 class _WorkerIssuer:
     def __init__( self, endpoint: socket.socket, nonce: bytes, admission: _SourceAdmission, consumer_pid: int, package_name: str, helper_endpoint: socket.socket | None = None):
         self._endpoint = endpoint
@@ -676,7 +679,7 @@ class _WorkerIssuer:
         _require(remaining > 0 and select.select([endpoint], [], [], remaining)[0], "helper acknowledgement deadline", "helper-deadline")
         reply, ancillary, flags, _address = endpoint.recvmsg(1024, 256, socket.MSG_CMSG_CLOEXEC | socket.MSG_DONTWAIT)
         credentials, leases = _leased_credentials(ancillary, _SystemOps(), require_rights=False, missing_code="helper-ack-credentials-missing")
-        _require(not flags and not leases and credentials == (self._consumer_pid, os.getuid(), os.getgid()), "helper acknowledgement authority", "helper-ack-authority")
+        _require(_receive_flags_exact(flags) and not leases and credentials == (self._consumer_pid, os.getuid(), os.getgid()), "helper acknowledgement authority", "helper-ack-authority")
         result = _strict_json(reply, False, 1024, "helper acknowledgement")
         _require(type(result) is dict and result.get("version") == _RESULT_VERSION, "helper acknowledgement shape", "helper-ack-shape")
         return result
@@ -735,7 +738,7 @@ class _WorkerIssuer:
         ack_raw, ancillary, flags, _address = self._endpoint.recvmsg(_MAX_PACKET, 256, socket.MSG_CMSG_CLOEXEC | socket.MSG_DONTWAIT)
         credentials, received = _leased_credentials(ancillary, _SystemOps(), require_rights=False, missing_code="issuance-ack-credentials-missing")
         expected_credentials = (self._consumer_pid, os.getuid(), os.getgid())
-        _require(not flags and not received and credentials == expected_credentials, "issuance acknowledgement authority", "issuer-ack-authority")
+        _require(_receive_flags_exact(flags) and not received and credentials == expected_credentials, "issuance acknowledgement authority", "issuer-ack-authority")
         ack = _strict_json(ack_raw, False, _MAX_PACKET, "issuance acknowledgement")
         expected = { "binding_sha256": binding_sha, "consumer_pid": self._consumer_pid, "generation_sha256": generation_sha, "nonce": self._nonce.hex(), "report_sha256": packet["report_sha256"], "version": _HANDOFF_VERSION, }
         _require(ack == expected, "issuance acknowledgement mismatch")
@@ -915,7 +918,7 @@ class _ProcessOwner(make_dataclass(
         lease: _ProcessLease | None = None
         try:
             truncated = flags & (socket.MSG_TRUNC | socket.MSG_CTRUNC)
-            _require(not truncated and len(rights) == 1, "descendant transfer truncation", "process-transfer-shape")
+            _require(_receive_flags_exact(flags) and not truncated and len(rights) == 1, "descendant transfer truncation", "process-transfer-shape")
             expected_credentials = (leader.pid, os.geteuid(), os.getegid())
             _require(credentials == expected_credentials, "descendant transfer credentials", "process-transfer-credentials")
             value = _strict_json(raw, False, 4096, "descendant transfer")
@@ -1328,7 +1331,7 @@ def _consume_issuance(endpoint: socket.socket, nonce: bytes, admission: _SourceA
     primary: BaseException | None = None
     try:
         expected_credentials = (issuer_pid, os.getuid(), os.getgid())
-        _require(not flags & (socket.MSG_TRUNC | socket.MSG_CTRUNC) and credentials == expected_credentials, "handoff packet authority/truncation", "issuer-packet-authority")
+        _require(_receive_flags_exact(flags) and credentials == expected_credentials, "handoff packet authority/truncation", "issuer-packet-authority")
         packet = _strict_json(raw, False, _MAX_PACKET, "handoff packet")
         keys = {"binding_sha256", "closure_sha256", "descriptor_count", "generation_rows", "generation_sha256", "nonce", "report_sha256", "revision", "source_set_sha256", "version"}
         _require(type(packet) is dict and set(packet) == keys, "handoff packet shape")
@@ -1376,7 +1379,7 @@ def _consume_worker_handoff(endpoint: socket.socket, helper_endpoint: socket.soc
             raw, ancillary, flags, _address = helper_endpoint.recvmsg(4096, 512, socket.MSG_CMSG_CLOEXEC | socket.MSG_DONTWAIT)
             cloexec_flag = getattr(socket, "MSG_CMSG_CLOEXEC", 0x40000000)
             if not raw and not ancillary:
-                terminal = endpoint in ready and not helpers and flags & ~cloexec_flag == 0
+                terminal = endpoint in ready and not helpers and _receive_flags_exact(flags)
                 _require(terminal, "helper control early EOF", "helper-control-eof")
                 return _consume_issuance(endpoint, nonce, admission, issuer_pid, ops, deadline)
             credentials, received = _leased_credentials(ancillary, ops, require_rights=None, missing_code="helper-control-credentials-missing")
@@ -1389,7 +1392,7 @@ def _consume_worker_handoff(endpoint: socket.socket, helper_endpoint: socket.soc
                 unknown_flags = flags & ~sum(bit for bit, _name in known_flags)
                 flag_code = "-".join((*flag_names, *(("other",) if unknown_flags else ())))
                 authority_code = "helper-control-authority-" + (flag_code or "-".join(mismatches) or "invalid")
-                _require(flags & ~cloexec_flag == 0 and not mismatches, "helper control authority", authority_code)
+                _require(_receive_flags_exact(flags) and not mismatches, "helper control authority", authority_code)
                 value = _strict_json(raw, False, 4096, "helper control")
                 _require(type(value) is dict and value.get("version") == _RESULT_VERSION, "helper control shape", "helper-control-shape")
                 sequence += 1
