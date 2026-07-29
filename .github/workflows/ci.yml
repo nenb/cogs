@@ -110,8 +110,7 @@ jobs:
       - name: Audit dependencies
         run: npm run audit
 
-      - name: Validate the non-deploying AWS feasibility fixture
-        run: ./deploy/aws-feasibility/validate.sh
+      - { name: Check bounded fixture syntax and source without infrastructure execution, run: "npm run feasibility-source:check" }
 
       - name: Lint and render the non-deploying Helm scaffold
         run: |

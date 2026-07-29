@@ -21,6 +21,7 @@
     "presets:check": "tsx scripts/validate-presets.ts",
     "egress-bindings:check": "tsx scripts/check-envoy-ext-authz-descriptor.ts --static",
     "egress-bindings:regenerate-check": "tsx scripts/check-envoy-ext-authz-descriptor.ts --regenerate",
+    "feasibility-source:check": "tsx scripts/check-feasibility-source.ts",
     "images:check": "tsx scripts/check-image-pins.ts",
     "lock:check": "tsx scripts/check-lock-integrity.ts",
     "licenses": "tsx scripts/check-licenses.ts",
