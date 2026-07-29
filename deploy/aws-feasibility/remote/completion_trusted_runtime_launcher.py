@@ -460,6 +460,10 @@ class _SystemOps:
         value = os.getrandom(32)
         if len(value) != 32: raise RuntimeLauncherUnavailable("getrandom")
         return value
+    def unshare_user(self) -> None:
+        self._checked(self.libc.unshare(_CLONE_NEWUSER), "unshare-user")
+    def unshare_sandbox(self) -> None:
+        self._checked(self.libc.unshare(_CLONE_NEWNS | _CLONE_NEWPID | _CLONE_NEWNET), "unshare-sandbox")
     def unshare_boundary(self) -> None:
         self._checked(self.libc.unshare(_CLONE_NEWUSER | _CLONE_NEWNS | _CLONE_NEWPID | _CLONE_NEWNET), "unshare")
     def mount(self, source: bytes | None, target: bytes, kind: bytes | None, flags: int, data: bytes | None) -> None:
@@ -1675,8 +1679,8 @@ def _namespace_owner(
         ops.prctl(_PR_SET_PDEATHSIG, signal.SIGKILL)
         os.setsid()
         sequence = -2
-        permission_stage = "unshare"
-        ops.unshare_boundary()
+        permission_stage = "unshare-user"
+        ops.unshare_user()
         # The retained parent owns unprivileged map writes. After it maps UID
         # zero, clear inherited groups before it permanently denies setgroups
         # and maps GID zero.
@@ -1694,6 +1698,8 @@ def _namespace_owner(
         permission_stage = "identity-handshake"
         status.send(_status("groups-cleared", sequence))
         _recv_status(status, time.monotonic() + _SETUP_SECONDS, "identity-mapped", sequence)
+        permission_stage = "unshare-sandbox"
+        ops.unshare_sandbox()
         permission_stage = "private-mount"
         mount_intents.add("private-root")
         ops.mount(None, b"/", None, _MS_REC | _MS_PRIVATE, None)
