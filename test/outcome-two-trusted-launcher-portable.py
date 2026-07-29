@@ -2153,7 +2153,7 @@ def production_runtime_compression_contracts(module):
                     exact_namespaces = all(
                         item["output"] == module._FIXED_OUTPUT
                         and tuple(event.rsplit(":", 1)[-1] for event in item["events"])
-                        == ("namespace", "transfer", "child", "boundary", "exec-ready", "root-final", "exit")
+                        == ("userns", "groups-cleared", "namespace", "transfer", "child", "boundary", "exec-ready", "root-final", "exit")
                         for item in namespace_evidence
                     )
                     if owner_calls or not exact_worker or not exact_namespaces:
