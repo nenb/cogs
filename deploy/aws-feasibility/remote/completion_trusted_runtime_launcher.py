@@ -1331,7 +1331,7 @@ def _consume_issuance(endpoint: socket.socket, nonce: bytes, admission: _SourceA
         flag_state = "truncated" if truncated else "exact-flags" if _receive_flags_exact(flags) else "unknown-flags"
         packet_state = "nonempty" if raw else "empty"
         raise RuntimeLauncherError("issuance ancillary absent", f"issuer-no-ancillary-{packet_state}-{flag_state}"[:40])
-    credentials, leases = _leased_credentials(ancillary, actual_ops, missing_code="issuer-packet-credentials-missing")
+    credentials, leases = _leased_credentials(ancillary, actual_ops, require_rights=None, missing_code="issuer-packet-credentials-missing")
     descriptors = tuple(lease.fd for lease in leases)
     primary: BaseException | None = None
     try:
@@ -1343,6 +1343,7 @@ def _consume_issuance(endpoint: socket.socket, nonce: bytes, admission: _SourceA
             fixed_error = fixed_error and type(packet["code"]) is str and re.fullmatch(r"[A-Za-z0-9_.-]{1,40}", packet["code"])
             _require(fixed_error and not leases, "worker error packet", "worker-error-packet")
             raise RuntimeLauncherError("closure worker failed", f"worker-{packet['code']}"[:40])
+        _require(bool(leases), "handoff rights missing or extra", "issuer-rights-missing")
         keys = {"binding_sha256", "closure_sha256", "descriptor_count", "generation_rows", "generation_sha256", "nonce", "report_sha256", "revision", "source_set_sha256", "version"}
         _require(type(packet) is dict and set(packet) == keys, "handoff packet shape")
         _require(packet["version"] == _HANDOFF_VERSION and packet["nonce"] == nonce.hex(), "handoff nonce/version")
