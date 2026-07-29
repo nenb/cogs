@@ -83,3 +83,54 @@ else: raise AssertionError('CLI did not exit')
   assert.doesNotMatch(source, /fork\(|pidfd|waitid|unshare|mount\(|\/proc\//u);
   assert.ok(source.split("\n").every((line) => line.length <= 120));
 });
+
+test("launcher ENOENT metadata identifies only the fixed open object class", () => {
+  const harness = `
+import errno,importlib.util,sys
+path='deploy/aws-feasibility/remote/completion_trusted_runtime_launcher.py'
+spec=importlib.util.spec_from_file_location('job_b_open_classifier',path)
+module=importlib.util.module_from_spec(spec);sys.modules[spec.name]=module;spec.loader.exec_module(module)
+ops=module._SystemOps();root=f'{module._ROOT_PARENT}/{module._ROOT_LEAF}'
+cases=(
+ ('/proc/4815162342/exe','open-enoent-proc-exe'),
+ ('/proc/4815162342/map_files/secret-range','open-enoent-proc-map-files'),
+ ('/proc/4815162342/fd','open-enoent-proc-fd'),
+ ('/proc/self/fdinfo/77','open-enoent-proc-fdinfo'),
+ ('/proc/4815162342/status','open-enoent-proc-status'),
+ ('/proc/4815162342/maps','open-enoent-proc-maps'),
+ ('/proc/4815162342/stat','open-enoent-proc-stat'),
+ ('/proc/4815162342/limits','open-enoent-proc-limits'),
+ ('/proc/4815162342/ns/user','open-enoent-proc-ns'),
+ ('/proc/4815162342/task/9918273/children','open-enoent-proc-task-children'),
+ ('/proc/thread-self/children','open-enoent-proc-task-children'),
+ (module._ROOT_PARENT,'open-enoent-root'),
+ (root,'open-enoent-root'),
+ (root+'/bin/zstd-never-disclose','open-enoent-runtime-source'),
+ (root+'-impostor/never-disclose','open-enoent-other'),
+ ('/proc/4815162342/mountinfo','open-enoent-other'),
+)
+original=module.os.open
+def missing(path,flags,mode=0o600):
+ raise FileNotFoundError(errno.ENOENT,'dynamic-open-detail-never-disclose',path)
+module.os.open=missing
+try:
+ for requested,expected in cases:
+  try: ops.open(requested,0)
+  except module.RuntimeLauncherError as error:
+   assert type(error) is module.RuntimeLauncherError and error.code==expected
+   metadata='|'.join((str(error),repr(error),repr(error.args),repr(error.__dict__)))
+   assert requested not in metadata and '4815162342' not in metadata
+   assert '9918273' not in metadata and 'never-disclose' not in metadata
+   assert error.__cause__ is None and error.__context__ is None
+  else: raise AssertionError(('accepted missing open',requested))
+ denied=PermissionError(errno.EACCES,'preserved-other-errno','/dynamic/denied')
+ def inaccessible(path,flags,mode=0o600): raise denied
+ module.os.open=inaccessible
+ try: ops.open('/dynamic/denied',0)
+ except PermissionError as error: assert error is denied
+ else: raise AssertionError('non-ENOENT changed')
+finally: module.os.open=original
+`;
+  const run = python(harness);
+  assert.equal(run.status, 0, run.stderr);
+});
