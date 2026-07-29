@@ -1338,6 +1338,11 @@ def _consume_issuance(endpoint: socket.socket, nonce: bytes, admission: _SourceA
         expected_credentials = (issuer_pid, os.getuid(), os.getgid())
         _require(_receive_flags_exact(flags) and credentials == expected_credentials, "handoff packet authority/truncation", "issuer-packet-authority")
         packet = _strict_json(raw, False, _MAX_PACKET, "handoff packet")
+        if type(packet) is dict and set(packet) == {"code", "event", "version"}:
+            fixed_error = packet["event"] == "worker-error" and packet["version"] == _RESULT_VERSION
+            fixed_error = fixed_error and type(packet["code"]) is str and re.fullmatch(r"[A-Za-z0-9_.-]{1,40}", packet["code"])
+            _require(fixed_error and not leases, "worker error packet", "worker-error-packet")
+            raise RuntimeLauncherError("closure worker failed", f"worker-{packet['code']}"[:40])
         keys = {"binding_sha256", "closure_sha256", "descriptor_count", "generation_rows", "generation_sha256", "nonce", "report_sha256", "revision", "source_set_sha256", "version"}
         _require(type(packet) is dict and set(packet) == keys, "handoff packet shape")
         _require(packet["version"] == _HANDOFF_VERSION and packet["nonce"] == nonce.hex(), "handoff nonce/version")
@@ -2328,12 +2333,20 @@ def _worker_main(endpoint_fd: int, helper_fd: int, release_fd: int, nonce: bytes
         _close_socket(helper_endpoint, ops, "worker-helper-control")
         _close_socket(endpoint, ops, "worker-issuance")
         os._exit(0)
-    except BaseException:
+    except BaseException as error:
+        stage = getattr(error, "code", type(error).__name__)
+        safe_stage = re.sub(r"[^A-Za-z0-9_.-]", "-", stage) if type(stage) is str else "invalid"
         if owner is not None:
             try:
                 owner.close()
-            except BaseException:
-                pass
+            except BaseException as cleanup:
+                cleanup_stage = getattr(cleanup, "code", type(cleanup).__name__)
+                safe_stage = "cleanup-" + (re.sub(r"[^A-Za-z0-9_.-]", "-", cleanup_stage) if type(cleanup_stage) is str else "invalid")
+        failure = _canonical({"code": safe_stage[:40], "event": "worker-error", "version": _RESULT_VERSION})
+        try:
+            endpoint.sendmsg([failure], _credential_ancillary(), socket.MSG_DONTWAIT)
+        except BaseException:
+            pass
         os._exit(124)
 def _recover_transaction_with_ops(ops: Any, process_owner: _ProcessOwner, fd_leases: list[_FdLease], primary: BaseException | None) -> None:
     failures: list[BaseException] = []
