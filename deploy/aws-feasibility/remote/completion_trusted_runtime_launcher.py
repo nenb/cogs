@@ -4118,5 +4118,9 @@ if __name__ == "__main__":
             digest = hashlib.sha256(str(error).encode("utf-8", "backslashreplace")).hexdigest()[:16]
             os.write(2, f"runtime-launcher-closure-{digest}\n".encode())
         else:
-            os.write(2, f"runtime-launcher-exception-{label}-{getattr(error, 'errno', 0)}\n".encode())
+            trace = error.__traceback__
+            while trace is not None and trace.tb_next is not None:
+                trace = trace.tb_next
+            site = re.sub(r"[^A-Za-z0-9_.-]", "-", trace.tb_frame.f_code.co_name)[:32] if trace is not None else "none"
+            os.write(2, f"runtime-launcher-exception-{label}-{getattr(error, 'errno', 0)}-{site}\n".encode())
         raise SystemExit(1)
