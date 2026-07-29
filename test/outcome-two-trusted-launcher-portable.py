@@ -1476,7 +1476,11 @@ class _BISocket:
         elif self.kind == "status":
             value = _BIjson.loads(data)
             event = value["event"]
-            if event == "prepare-root":
+            if event == "uid-mapped":
+                self.queue.append(self.k.status("groups-cleared", 0))
+            elif event == "identity-mapped":
+                self.queue.append(self.k.status("namespace", 1))
+            elif event == "prepare-root":
                 self.k.make_child(self)
                 self.queue.append(self.k.status("child", 2, pid=self.k.child))
             elif event == "release-child":
@@ -1645,7 +1649,7 @@ class _BIKernel:
             self.input_pipe, self.output_pipe = self.pipe_order[-3][2], self.pipe_order[-2][2]
             self.output_pipe["child_writer"] = True
             status = next(s for s in reversed(self.sockets) if s.kind == "status" and s.side == 0)
-            status.queue.append(self.status("namespace", 1))
+            status.queue.append(self.status("userns", 0))
         return pid, pidfd
     def pidfd_open(self, pid, flags=0):
         del flags

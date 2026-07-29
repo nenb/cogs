@@ -1673,19 +1673,18 @@ def _namespace_owner(
     try:
         ops.prctl(_PR_SET_PDEATHSIG, signal.SIGKILL)
         os.setsid()
-        original_uid, original_gid = os.getuid(), os.getgid()
         ops.unshare_boundary()
-        # Map the caller UID first so namespaced capabilities are effective,
-        # then clear inherited groups before permanently denying setgroups.
-        _write_map(ops, "/proc/self/uid_map", f"0 {original_uid} 1\n".encode(), "uid-map")
+        # The retained parent owns unprivileged map writes. After it maps UID
+        # zero, clear inherited groups before it permanently denies setgroups
+        # and maps GID zero.
+        status.send(_status("userns", 0))
+        _recv_status(status, time.monotonic() + _SETUP_SECONDS, "uid-mapped", 0)
         try:
             os.setgroups([])
         except PermissionError as error:
             raise RuntimeLauncherError("supplementary group clear denied", "setgroups-clear") from error
-        try:
-            _write_map(ops, "/proc/self/setgroups", b"deny\n", "setgroups-map")
-        except FileNotFoundError: pass
-        _write_map(ops, "/proc/self/gid_map", f"0 {original_gid} 1\n".encode(), "gid-map")
+        status.send(_status("groups-cleared", 0))
+        _recv_status(status, time.monotonic() + _SETUP_SECONDS, "identity-mapped", 0)
         mount_intents.add("private-root")
         ops.mount(None, b"/", None, _MS_REC | _MS_PRIVATE, None)
         sequence = 1
@@ -2027,7 +2026,7 @@ def _close_socket(endpoint: socket.socket | None, ops: Any, purpose: str) -> Non
         _FdLease(endpoint.detach(), purpose).close(ops)
 def _parse_sandbox_status(raw: bytes, event: str, sequence: int) -> dict[str, object]:
     value = _strict_json(raw, False, 16384, "sandbox status")
-    extras = { "namespace": set(), "child": {"pid"}, "boundary": {"observations"}, "exec-ready": set(), "root-final": set(), "exit": {"status"}, "error": {"code", "kind"}, "unavailable": {"message", "primitive"}, "prepare-root": set(), "release-child": set(), "finalize-root": set(), }
+    extras = { "userns": set(), "uid-mapped": set(), "groups-cleared": set(), "identity-mapped": set(), "namespace": set(), "child": {"pid"}, "boundary": {"observations"}, "exec-ready": set(), "root-final": set(), "exit": {"status"}, "error": {"code", "kind"}, "unavailable": {"message", "primitive"}, "prepare-root": set(), "release-child": set(), "finalize-root": set(), }
     _require(type(value) is dict and event in extras and set(value) == {"event", "sequence", "version"} | extras[event], "sandbox status closed shape", "status-shape")
     identity = value["version"] == _RESULT_VERSION and value["event"] == event
     _require(identity and type(value["sequence"]) is int and value["sequence"] == sequence, "sandbox status identity/sequence", "status-sequence")
@@ -2176,8 +2175,20 @@ def _run_tool_with_ops( ops: Any, role: str, report: dict[str, object], descript
         # recorded pre-release session no longer matches.
         process_owner.plan_setsid(namespace_lease)
         process_owner.release(namespace_lease)
-        _recv_status(parent_status, time.monotonic() + _SETUP_SECONDS, "namespace", 1)
+        _recv_status(parent_status, time.monotonic() + _SETUP_SECONDS, "userns", 0)
         process_owner.confirm_setsid(namespace_lease)
+        map_root = f"/proc/{namespace_lease.pid}"
+        _write_map(ops, map_root + "/uid_map", f"0 {os.getuid()} 1\n".encode(), "uid-map")
+        command = _status("uid-mapped", 0)
+        _require(parent_status.send(command) == len(command), "UID map acknowledgement", "uid-map-ack")
+        _recv_status(parent_status, time.monotonic() + _SETUP_SECONDS, "groups-cleared", 0)
+        try:
+            _write_map(ops, map_root + "/setgroups", b"deny\n", "setgroups-map")
+        except FileNotFoundError: pass
+        _write_map(ops, map_root + "/gid_map", f"0 {os.getgid()} 1\n".encode(), "gid-map")
+        command = _status("identity-mapped", 0)
+        _require(parent_status.send(command) == len(command), "identity map acknowledgement", "identity-map-ack")
+        _recv_status(parent_status, time.monotonic() + _SETUP_SECONDS, "namespace", 1)
         namespace_authority = _open_namespace_authority(namespace_lease, ops)
         command = _status("prepare-root", 1)
         _require(parent_status.send(command) == len(command), "root preparation send", "root-prepare-send")
