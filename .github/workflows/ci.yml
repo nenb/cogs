@@ -281,7 +281,7 @@ jobs:
           test -z "$(/usr/bin/git config --local --get-regexp 'credential\.helper|http\..*\.extraheader' || :)"
           ! /usr/bin/git remote get-url origin | /usr/bin/grep -Eq '://[^/]*@'
           runner_uid=$(/usr/bin/id -u); runner_gid=$(/usr/bin/id -g)
-          sudo -n /usr/bin/setpriv --reuid="$runner_uid" --regid="$runner_gid" --clear-groups /usr/bin/env -i LC_ALL=C PYTHONDONTWRITEBYTECODE=1 PYTHONHASHSEED=0 NQ_EVENT_NAME="$GITHUB_EVENT_NAME" NQ_REPOSITORY="$GITHUB_REPOSITORY" \
+          sudo -n --close-from=3 /usr/bin/setpriv --reuid="$runner_uid" --regid="$runner_gid" --clear-groups /usr/bin/env -i LC_ALL=C PYTHONDONTWRITEBYTECODE=1 PYTHONHASHSEED=0 NQ_EVENT_NAME="$GITHUB_EVENT_NAME" NQ_REPOSITORY="$GITHUB_REPOSITORY" \
             NQ_HEAD_REPOSITORY="$NQ_HEAD_REPOSITORY" NQ_HEAD_SHA="$NQ_HEAD_SHA" NQ_ENVELOPE_SHA="$GITHUB_SHA" \
             NQ_WORKFLOW_SHA="$GITHUB_WORKFLOW_SHA" NQ_REF="$NQ_REF" NQ_DEFAULT_BRANCH="$NQ_DEFAULT_BRANCH" NQ_REF_PROTECTED="$NQ_REF_PROTECTED" \
             NQ_JOB_ID="$GITHUB_JOB" NQ_RUN_ID="$GITHUB_RUN_ID" NQ_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" NQ_RUNNER_VERSION="$ImageVersion" \
