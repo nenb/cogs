@@ -623,6 +623,27 @@ test("parsed workflow gives only an explicit exact-SHA dispatch native authority
     assert.equal(invoke.env?.NQ_DEFAULT_BRANCH, "${{ github.event.repository.default_branch }}");
     assert.equal(invoke.env?.NQ_REF_PROTECTED, "${{ github.ref_protected }}");
     assert.match(invoke.run ?? "", /["']\$NQ_DRIVER["'] --workflow-bound/u);
+    if (job === "A" || job === "B" || job === "C") {
+      const run = (invoke.run ?? "").replace(/\\\n\s+/gu, " ");
+      assert.match(run, /runner_uid=\$\(\/usr\/bin\/id -u\); runner_gid=\$\(\/usr\/bin\/id -g\)/u);
+      const boundary = [
+        "sudo -n --close-from=3", "/usr/bin/prlimit --nofile=65536:65536 --", "/usr/bin/setpriv",
+        '--reuid="$runner_uid"', '--regid="$runner_gid"', "--clear-groups", "/usr/bin/env -i",
+      ];
+      const positions = boundary.map((value) => run.indexOf(value));
+      assert.ok(positions.every((position) => position >= 0), `${job} fixed unprivileged boundary`);
+      assert.deepEqual(positions, positions.toSorted((left, right) => left - right), `${job} boundary order`);
+      const capabilityFlags = run.match(/--(?:[a-z-]*caps|bounding-set)(?:=[^ ]+)?/gu) ?? [];
+      assert.deepEqual(capabilityFlags, job === "B" ?
+        ["--inh-caps=+sys_admin", "--ambient-caps=+sys_admin"] : [], `${job} capability flags`);
+      const assignments = run.match(/\/usr\/bin\/env -i (.+) \/usr\/bin\/python3/u)?.[1];
+      assert.ok(assignments);
+      assert.deepEqual(Array.from(assignments.matchAll(/(?:^| )([A-Z][A-Z0-9_]*)=/gu), (match) => match[1]), [
+        "LC_ALL", "PYTHONDONTWRITEBYTECODE", "PYTHONHASHSEED", "NQ_EVENT_NAME", "NQ_REPOSITORY",
+        "NQ_HEAD_REPOSITORY", "NQ_HEAD_SHA", "NQ_ENVELOPE_SHA", "NQ_WORKFLOW_SHA", "NQ_REF",
+        "NQ_DEFAULT_BRANCH", "NQ_REF_PROTECTED", "NQ_JOB_ID", "NQ_RUN_ID", "NQ_RUN_ATTEMPT", "NQ_RUNNER_VERSION",
+      ], `${job} fixed environment inventory`);
+    }
     if (job === "E") {
       const run = invoke.run ?? "";
       const provision = run.indexOf('"$NQ_DRIVER" --provision-root-authority');
