@@ -2,8 +2,10 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import type { Ajv as AjvCore, Options } from "ajv";
 
@@ -587,8 +589,12 @@ test("parsed workflow gives only an explicit exact-SHA dispatch native authority
   const authorityStep = stepById(authority, "authority");
   assert.equal(authorityStep.env?.REVIEWED_SHA, "${{ inputs.reviewed_sha }}");
   assert.equal(authorityStep.env?.AUTHORIZED_ACTOR, "${{ vars.NATIVE_QUALIFICATION_ACTOR }}");
-  assert.match(authorityStep.run ?? "", /\[\[ "\$REVIEWED_SHA" =~ \^\[0-9a-f\]\{40\}\$ \]\]/u);
-  assert.match(authorityStep.run ?? "", /reviewed_sha=%s/u);
+  const authorityRun = authorityStep.run ?? "";
+  assert.match(authorityRun, /\[\[ "\$REVIEWED_SHA" =~ \^\[0-9a-f\]\{40\}\$ \]\]/u);
+  const reviewedEnvelopeBind = 'test "$REVIEWED_SHA" = "$ENVELOPE_SHA"';
+  assert.ok(authorityRun.includes(reviewedEnvelopeBind), "reviewed source equals the executing envelope");
+  assert.ok(authorityRun.indexOf(reviewedEnvelopeBind) < authorityRun.indexOf("printf 'reviewed_sha="),
+    "binding precedes output");
 
   const reviewedRef = "${{ needs.native-qualification-eligibility.outputs.reviewed_sha }}";
   const quality = parsedJob("quality");
@@ -664,12 +670,40 @@ test("parsed workflow gives only an explicit exact-SHA dispatch native authority
     context.actor === context.triggeringActor && context.actor === context.configuredActor && context.sender === context.actor &&
     context.refType === "branch" && context.ref === `refs/heads/${context.defaultBranch}` && context.protected &&
     context.workflowRef === `${context.repository}/.github/workflows/ci.yml@${context.ref}` &&
-    context.workflowSha === context.sha && /^[0-9a-f]{40}$/u.test(context.reviewedSha);
+    context.workflowSha === context.sha && context.reviewedSha === context.sha &&
+    context.reviewedSha === context.workflowSha && /^[0-9a-f]{40}$/u.test(context.reviewedSha);
   const exactHead = "a".repeat(40);
+  const historicalHead = "b".repeat(40);
+  const arbitraryHead = "0123456789".repeat(4);
   const dispatch: DispatchContext = { event: "workflow_dispatch", attempt: 1, actor: "reviewer", triggeringActor: "reviewer",
     sender: "reviewer", configuredActor: "reviewer", ref: "refs/heads/main", refType: "branch", defaultBranch: "main",
     protected: true, workflowRef: "owner/repo/.github/workflows/ci.yml@refs/heads/main", repository: "owner/repo",
-    workflowSha: "b".repeat(40), sha: "b".repeat(40), reviewedSha: exactHead };
+    workflowSha: exactHead, sha: exactHead, reviewedSha: exactHead };
+  const authorityDirectory = mkdtempSync(join(tmpdir(), "cogs-native-authority-"));
+  const authorityOutput = join(authorityDirectory, "github-output");
+  const executeAuthority = (reviewedSha: string) => {
+    writeFileSync(authorityOutput, "", { mode: 0o600 });
+    const result = spawnSync("/bin/bash", ["-c", authorityRun], {
+      encoding: "utf8",
+      env: { REVIEWED_SHA: reviewedSha, AUTHORIZED_ACTOR: "reviewer", ACTOR: "reviewer", TRIGGERING_ACTOR: "reviewer",
+        DEFAULT_BRANCH: "main", REF_NAME: "main", REF_PROTECTED: "true", WORKFLOW_SHA: exactHead,
+        ENVELOPE_SHA: exactHead, GITHUB_OUTPUT: authorityOutput },
+    });
+    assert.ok(statSync(authorityOutput).size <= 128, "native authority output stays bounded");
+    return { result, output: readFileSync(authorityOutput, "utf8") };
+  };
+  try {
+    const accepted = executeAuthority(exactHead);
+    assert.equal(accepted.result.status, 0, accepted.result.stderr);
+    assert.equal(accepted.output, `reviewed_sha=${exactHead}\n`);
+    for (const [label, reviewedSha] of [["historical", historicalHead], ["arbitrary", arbitraryHead]] as const) {
+      const rejected = executeAuthority(reviewedSha);
+      assert.notEqual(rejected.result.status, 0, `${label} reviewed SHA reached native output`);
+      assert.equal(rejected.output, "", `${label} reviewed SHA emitted native authority`);
+    }
+  } finally {
+    rmSync(authorityDirectory, { recursive: true, force: true });
+  }
   assert.equal(selected({ ...dispatch, event: "pull_request" }), false, "PR can never select native authority");
   const pullRequestOutcomes: Record<string, string> = { quality: "success", [authorityId]: "skipped" };
   for (const id of effectIds) {
@@ -681,7 +715,8 @@ test("parsed workflow gives only an explicit exact-SHA dispatch native authority
   for (const hostile of [
     { ...dispatch, attempt: 2 }, { ...dispatch, actor: "other" }, { ...dispatch, configuredActor: "" },
     { ...dispatch, ref: "refs/heads/topic" }, { ...dispatch, protected: false },
-    { ...dispatch, workflowSha: "c".repeat(40) }, { ...dispatch, reviewedSha: "A".repeat(40) },
+    { ...dispatch, workflowSha: "c".repeat(40) }, { ...dispatch, reviewedSha: historicalHead },
+    { ...dispatch, reviewedSha: arbitraryHead }, { ...dispatch, reviewedSha: "A".repeat(40) },
   ]) assert.equal(selected(hostile), false, "authority mutation fails closed");
   assert.equal(selected(dispatch), true);
   const outcomes: Record<string, string> = { quality: "success", [authorityId]: "success" };

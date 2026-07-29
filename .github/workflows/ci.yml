@@ -210,7 +210,7 @@ jobs:
           test "$REF_NAME" = "$DEFAULT_BRANCH"
           test "$REF_PROTECTED" = "true"
           [[ "$WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]]
-          test "$WORKFLOW_SHA" = "$ENVELOPE_SHA"
+          test "$REVIEWED_SHA" = "$ENVELOPE_SHA"
           printf 'reviewed_sha=%s\n' "$REVIEWED_SHA" >> "$GITHUB_OUTPUT"
 
   native-qualification-a:
