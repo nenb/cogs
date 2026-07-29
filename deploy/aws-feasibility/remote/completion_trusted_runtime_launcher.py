@@ -665,6 +665,8 @@ def _fixed_error_stage(error: BaseException) -> str:
     if type(current).__name__ == "RuntimeClosureError":
         return "closure-" + hashlib.sha256(str(current).encode("utf-8", "backslashreplace")).hexdigest()[:16]
     stage = getattr(current, "code", f"{type(current).__name__}-{getattr(current, 'errno', 0)}")
+    if stage == "launcher-rejected":
+        return "rejected-" + hashlib.sha256(str(current).encode("utf-8", "backslashreplace")).hexdigest()[:16]
     return (re.sub(r"[^A-Za-z0-9_.-]", "-", stage) if type(stage) is str else "invalid")[:40]
 class _WorkerIssuer:
     def __init__( self, endpoint: socket.socket, nonce: bytes, admission: _SourceAdmission, consumer_pid: int, package_name: str, helper_endpoint: socket.socket | None = None):
@@ -4051,8 +4053,7 @@ if __name__ == "__main__":
                 if not isinstance(next_primary, BaseException):
                     break
                 primary = next_primary
-            primary_stage = getattr(primary, "code", type(primary).__name__)
-            safe_primary = re.sub(r"[^A-Za-z0-9_.-]", "-", primary_stage) if type(primary_stage) is str else "invalid"
+            safe_primary = _fixed_error_stage(primary)
             code = f"cleanup-{safe_primary}-{safe_stage}"[:40]
         digest = hashlib.sha256(str(error).encode("utf-8", "backslashreplace")).hexdigest()[:16]
         os.write(2, f"runtime-launcher-{code}-{digest}\n".encode())
