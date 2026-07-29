@@ -23,7 +23,7 @@ assert.ok(imageMatch);
 const [, openBaoVersion, openBaoDigest] = imageMatch;
 assert.ok(openBaoVersion);
 assert.ok(openBaoDigest);
-assert.match(runtimeVersion, /^OpenBao\s+v2\.6\.0(?:[\s,]|$)/);
+assert.match(runtimeVersion, /^OpenBao\s+v2\.6\.1(?:[\s,]|$)/);
 
 const request = {
   userId: "alice",

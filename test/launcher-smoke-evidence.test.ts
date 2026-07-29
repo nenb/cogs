@@ -285,7 +285,7 @@ test("launcher image prerequisite uses exact pinned OpenBao and Envoy images", a
   assert.deepEqual(LAUNCHER_IMAGE_ENV, { HOME: "/tmp" });
   assert.deepEqual(LAUNCHER_REQUIRED_IMAGES, [OPENBAO_IMAGE, ENVOY_IMAGE]);
   assert.throws(() => verifyImageInspect(OPENBAO_IMAGE, JSON.stringify([{ RepoDigests: [] }])));
-  verifyImageInspect(OPENBAO_IMAGE, JSON.stringify([{ RepoDigests: [OPENBAO_IMAGE.replace(":2.6.0@", "@")] }]));
+  verifyImageInspect(OPENBAO_IMAGE, JSON.stringify([{ RepoDigests: [OPENBAO_IMAGE.replace(":2.6.1@", "@")] }]));
   const kvm = await readFile(join(process.cwd(), ".github/workflows/kvm-qualification.yml"), "utf8");
   assert.match(kvm, /id: launcher_images[\s\S]*npx --no-install tsx scripts\/prepare-launcher-images\.ts/);
   assert.match(kvm, /id: launcher_s309[\s\S]*--scenario s3-09[\s\S]*launcher-s3-09-linux-kvm\.json/);

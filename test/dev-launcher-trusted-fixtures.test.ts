@@ -72,7 +72,7 @@ function openBaoSeams(events: string[] = [], badInspect = false, badClose = fals
     const args = raw.slice(1);
     assert.equal(args.includes("--pull"), false);
     if (args[0] === "image")
-      return { status: 0, stdout: `${JSON.stringify([OPENBAO_IMAGE.replace(":2.6.0@", "@")])}\n` };
+      return { status: 0, stdout: `${JSON.stringify([OPENBAO_IMAGE.replace(":2.6.1@", "@")])}\n` };
     if (args[0] === "run") {
       assert.deepEqual(args.slice(0, 2), ["run", "--detach"]);
       assert.ok(args.includes("--cap-drop") && args.includes("ALL"));
@@ -91,7 +91,7 @@ function openBaoSeams(events: string[] = [], badInspect = false, badClose = fals
         stdout: `${JSON.stringify({ Id: badInspect || (badClose && inspectCount > 1) ? "c".repeat(64) : id, Name: `/${container}`, Config: { Image: OPENBAO_IMAGE, Labels: { "cogs.dev.launcher.state": container.replace("cogs-openbao-", "") } }, State: { Running: true }, NetworkSettings: { Ports: { "8200/tcp": [{ HostIp: "127.0.0.1", HostPort: "9" }] } } })}\n`,
       };
     }
-    if (args[0] === "exec") return { status: 0, stdout: "OpenBao v2.6.0\n" };
+    if (args[0] === "exec") return { status: 0, stdout: "OpenBao v2.6.1\n" };
     if (args[0] === "rm") return { status: 0, stdout: "" };
     if (args[0] === "ps") return { status: 0, stdout: events.includes("inventory-busy") ? `${id}\n` : "" };
     return { status: 1, stdout: "" };

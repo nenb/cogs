@@ -48,8 +48,8 @@ const EVENT_ADD = EventTarget.prototype.addEventListener;
 const EVENT_REMOVE = EventTarget.prototype.removeEventListener;
 const MAX_COOPERATIVE_DEADLINE_MS = 30_000;
 
-const version = /^OpenBao\s+v2\.6\.0(?:[\s,]|$)/u;
-const imageRe = /^quay\.io\/openbao\/openbao:2\.6\.0@sha256:([a-f0-9]{64})$/u;
+const version = /^OpenBao\s+v2\.6\.1(?:[\s,]|$)/u;
+const imageRe = /^quay\.io\/openbao\/openbao:2\.6\.1@sha256:([a-f0-9]{64})$/u;
 const idRe = /^[a-f0-9]{64}$/u;
 const secretRe = /^[A-Za-z0-9._~+/=-]{8,4096}$/u;
 const pemCert = /^-----BEGIN CERTIFICATE-----\n[\s\S]+\n-----END CERTIFICATE-----\n?$/u;
