@@ -2258,6 +2258,7 @@ def parent():
         "_qualify_admitted_fixed_process_lifecycle",
         "_launch_admitted_fixed_sandbox_qualification",
         'None if mode in ("lifecycle", "sandbox") else _load_private_closure',
+        "runtime-launcher-exception-{site}-{label}-{getattr(error, 'errno', 0)}",
     )
     if any(token in launcher_source for token in banned):
         raise AssertionError("fixed admitted production routing drift")
@@ -2292,7 +2293,6 @@ def parent():
     if selected != consumed or selected != oracle or selected != sentinel:
         raise AssertionError("launcher fixture ledger mismatch")
     print("Outcome 2 trusted launcher portable tests passed")
-
 
 if __name__ == "__main__":
     if len(sys.argv) != 1:
