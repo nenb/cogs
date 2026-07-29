@@ -283,6 +283,8 @@ class Group(Exception):
  def __init__(self,items):self.exceptions=items
 nested=Group([Group([common.QualificationError('fixed stage')]),OSError(5,'secret')])
 assert common._error_label(nested)=='fixed-stage--OSError-5'
+launcher_failure=common.QualificationError('production-capsule-build-held-launcher-exit-1-stdout-0-stderr-52-runtime-launcher-exception-open-FileNotFoundError-2')
+assert common._error_label(launcher_failure).endswith('exception-open')
 assert len(common._error_label(Group([OSError(i,'x') for i in range(20)])))<=480
 production_environment={name:'' for name in common.ENV_KEYS}
 with patch.object(common.os,'environ',production_environment):
