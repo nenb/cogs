@@ -3,6 +3,7 @@
 from array import array
 from contextlib import contextmanager
 from dataclasses import fields, make_dataclass, replace
+import ast
 import ctypes
 import errno
 import fcntl
@@ -2133,14 +2134,14 @@ def namespace_owner_cleanup_contract(module):
 def cleanup_error_status_contract(module):
     primary_leaf = module.RuntimeLauncherError("secret primary /never/report", "owner-primary")
     primary = module.RuntimeLauncherCleanupError(primary_leaf, [module.RuntimeLauncherError("ignored", "ignored")])
-    failure_leaf = module.RuntimeLauncherError("secret cleanup content", "owner-cleanup")
+    failure_leaf = OSError(errno.EBUSY, "secret cleanup content")
     failure = module.RuntimeLauncherCleanupError(None, [
         module.RuntimeLauncherCleanupError(None, [failure_leaf]),
     ])
     packet = module._namespace_failure_packet(7, primary, [failure])
     expected = {
-        "event": "cleanup-error", "failure_code": "owner-cleanup",
-        "failure_kind": "RuntimeLauncherError", "primary_code": "owner-primary",
+        "event": "cleanup-error", "failure_code": f"os-{errno.EBUSY}",
+        "failure_kind": "OSError", "primary_code": "owner-primary",
         "primary_kind": "RuntimeLauncherError", "sequence": 7,
         "version": module._RESULT_VERSION,
     }
@@ -2153,7 +2154,7 @@ def cleanup_error_status_contract(module):
     except module.RuntimeLauncherCleanupError as error:
         exact = getattr(error.primary, "code", None) == "owner-primary"
         exact = exact and len(error.failures) == 1
-        exact = exact and getattr(error.failures[0], "code", None) == "owner-cleanup"
+        exact = exact and getattr(error.failures[0], "code", None) == f"os-{errno.EBUSY}"
         if not exact: raise AssertionError("nested cleanup reconstruction drift") from error
     else:
         raise AssertionError("nested cleanup packet accepted as success")
@@ -2190,6 +2191,128 @@ def cleanup_error_status_contract(module):
         if error.primitive != "fixed-primitive": raise
     else:
         raise AssertionError("unavailable status lost without cleanup")
+    if module._safe_error_metadata(OSError(errno.EMFILE, "secret")) != (f"os-{errno.EMFILE}", "OSError"):
+        raise AssertionError("generic OSError errno metadata drift")
+
+
+def owner_permission_stage_contracts(module):
+    tree = ast.parse(MODULE.read_text(), str(MODULE))
+    functions = {
+        node.name: node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef)
+    }
+    owner = functions["_namespace_owner"]
+    assignments = sorted(
+        (
+            node.lineno,
+            node.value.value,
+        )
+        for node in ast.walk(owner)
+        if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == "permission_stage" for target in node.targets)
+        and isinstance(node.value, ast.Constant)
+        and isinstance(node.value.value, str)
+    )
+    owner_stages = [stage for _line, stage in assignments]
+    expected_owner = [
+        "initial", "unshare-user", "uid-handshake", "group-clear",
+        "identity-handshake", "unshare-sandbox", "private-mount",
+        "namespace-handshake", "materialize", "exec-fd", "inherited-close",
+        "pipe", "child-spawn", "pid-ns-open", "transfer", "release",
+        "remount", "wait", "unmount", "unmount",
+    ]
+    if owner_stages != expected_owner:
+        raise AssertionError(f"owner permission stage AST drift: {owner_stages}")
+    def setter_stages(name):
+        function = functions[name]
+        return [
+            node.args[0].value
+            for node in sorted(ast.walk(function), key=lambda item: getattr(item, "lineno", 0))
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "set_stage"
+            and len(node.args) == 1
+            and isinstance(node.args[0], ast.Constant)
+            and isinstance(node.args[0].value, str)
+        ]
+    if setter_stages("_post_child_inspection") != ["post-fd", "post-maps"]:
+        raise AssertionError("post-inspection permission stage AST drift")
+    expected_final = ["final-fd", "final-maps", "final-mount", "final-limits"]
+    if setter_stages("_final_child_inspection") != expected_final:
+        raise AssertionError("final-inspection permission stage AST drift")
+    if setter_stages("_owner_namespace_facts") != ["final-ns", "final-status"]:
+        raise AssertionError("namespace fact permission stage AST drift")
+    required = {
+        "exec-fd", "inherited-close", "pipe", "child-spawn", "pid-ns-open",
+        "transfer", "release", "post-fd", "post-maps", "remount",
+        "final-fd", "final-maps", "final-mount", "final-ns", "final-status",
+        "final-limits", "wait", "unmount",
+    }
+    observed = set(owner_stages) | set(expected_final)
+    observed.update(setter_stages("_post_child_inspection"))
+    observed.update(setter_stages("_owner_namespace_facts"))
+    if not required <= observed or "exec-authority" in observed:
+        raise AssertionError(f"owner permission stage inventory drift: {sorted(observed)}")
+
+    stages = []
+    def set_stage(stage): stages.append(stage)
+    denied = PermissionError(errno.EACCES, "hostile descriptor denial")
+    with patched(module, _descriptor_snapshot=lambda *_arguments: (_ for _ in ()).throw(denied)):
+        try:
+            module._post_child_inspection(None, 7, (), "gzip", {}, (1, 2), set_stage)
+        except PermissionError as error:
+            if error is not denied or stages != ["post-fd"]: raise AssertionError("post-fd stage drift") from error
+        else:
+            raise AssertionError("post-fd denial accepted")
+    stages.clear()
+    with patched(module, _descriptor_snapshot=lambda *_arguments: (0, 1, 2),
+                 _mapping_inspection=lambda *_arguments: (_ for _ in ()).throw(denied)):
+        try:
+            module._post_child_inspection(None, 7, (), "gzip", {}, (1, 2), set_stage)
+        except PermissionError as error:
+            if error is not denied or stages != ["post-fd", "post-maps"]: raise AssertionError("post-maps stage drift") from error
+        else:
+            raise AssertionError("post-maps denial accepted")
+    stages.clear()
+    handles = tuple(module._FdLease(700 + index, f"ns-{index}") for index in range(4))
+    def fake_fstat(descriptor): return SimpleNamespace(st_dev=1, st_ino=descriptor)
+    identities = {"user": 700, "pid": 703, "mnt": 701, "net": 702}
+    def fake_stat(path): return SimpleNamespace(st_dev=1, st_ino=identities[path.rsplit("/", 1)[-1]])
+    with patched(module.os, fstat=fake_fstat, stat=fake_stat), patched(
+        module, _proc_bytes=lambda *_arguments: (_ for _ in ()).throw(denied)):
+        try:
+            module._owner_namespace_facts(None, 7, handles, set_stage)
+        except PermissionError as error:
+            expected = ["final-ns", "final-status"]
+            if error is not denied or stages != expected: raise AssertionError("final status stage drift") from error
+        else:
+            raise AssertionError("final status denial accepted")
+    stages.clear()
+    mapping = {"fixed": True}
+    post = {"fds": [0, 1, 2], "mapping": mapping}
+    namespace_facts = {
+        "user_namespace_exact": True, "pid_namespace_exact": True,
+        "mount_namespace_exact": True, "network_namespace_exact": True,
+        "pid_one": True, "groups_empty": True, "capability_sets_zero": True,
+        "nnp_exact": True, "seccomp_mode_exact": True,
+    }
+    def staged_namespaces(_ops, _pid, _handles, setter):
+        setter("final-ns")
+        setter("final-status")
+        return namespace_facts
+    with patched(module, _descriptor_snapshot=lambda *_arguments: (0, 1, 2),
+                 _mapping_inspection=lambda *_arguments: (b"", mapping),
+                 _final_mount_check=lambda *_arguments: (True, True, True, True),
+                 _owner_namespace_facts=staged_namespaces,
+                 _proc_bytes=lambda *_arguments: (_ for _ in ()).throw(denied)):
+        try:
+            module._final_child_inspection(None, 7, (), "gzip", {}, (1, 2), post, handles, "0" * 64, set_stage)
+        except PermissionError as error:
+            expected = ["final-fd", "final-maps", "final-mount", "final-ns", "final-status", "final-limits"]
+            if error is not denied or stages != expected: raise AssertionError("final limits stage drift") from error
+        else:
+            raise AssertionError("final limits denial accepted")
 
 
 def namespace_transfer_diagnostic_contracts(module):
@@ -2715,6 +2838,7 @@ def parent():
     forged_preexec_identity_contract(module)
     namespace_owner_cleanup_contract(module)
     cleanup_error_status_contract(module)
+    owner_permission_stage_contracts(module)
     namespace_transfer_diagnostic_contracts(module)
     production_operation_contracts(module)
     causal_scope["capsule_contract"](module)
