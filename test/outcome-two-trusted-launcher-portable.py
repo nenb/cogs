@@ -1884,6 +1884,50 @@ class _BIChildSocket:
         return raw
 
 
+def namespace_transfer_diagnostic_contracts(module):
+    expected = (
+        ("user", "namespace-open-user"),
+        ("mnt", "namespace-open-mnt"),
+        ("net", "namespace-open-net"),
+        ("pid_for_children", "namespace-open-pid-child"),
+    )
+    baselines = tuple((1, index + 1) for index in range(4))
+    for target, (name, code) in enumerate(expected):
+        class Ops:
+            def __init__(self):
+                self.calls = []
+                self.owned = set()
+            def open(self, path, flags):
+                self.calls.append((path, flags))
+                if len(self.calls) - 1 == target:
+                    raise OSError(f"hostile namespace path {path} pid 987654")
+                descriptor = 700 + len(self.calls)
+                self.owned.add(descriptor)
+                return descriptor
+            def close(self, descriptor):
+                self.owned.remove(descriptor)
+        ops = Ops()
+        try:
+            module._open_self_namespace_authority(ops, baselines)
+        except module.RuntimeLauncherError as error:
+            if error.code != code or str(error) != "self namespace open failed":
+                raise AssertionError(f"namespace open diagnostic drift: {name} {error!r}") from error
+            packet = module._namespace_failure_packet(1, error, [])
+            if b"/proc/" in packet or b"987654" in packet:
+                raise AssertionError(f"namespace open diagnostic exposed ambient identity: {name}")
+            try:
+                module._sandbox_status_result(packet, "namespace", 1)
+            except module.RuntimeLauncherError as observed:
+                if observed.code != code:
+                    raise AssertionError(f"namespace error packet lost fixed tag: {name}") from observed
+            else:
+                raise AssertionError(f"namespace error packet accepted as success: {name}")
+        else:
+            raise AssertionError(f"namespace open fault accepted: {name}")
+        if ops.owned or [path.rsplit("/", 1)[-1] for path, _flags in ops.calls] != [item[0] for item in expected[:target + 1]]:
+            raise AssertionError(f"namespace open fault cleanup/order drift: {name}")
+
+
 def _drifted_worker_report(module, report):
     drift = _BIjson.loads(_BIjson.dumps(report))
     tool = drift["tools"][0]
@@ -2333,6 +2377,7 @@ def parent():
         raise AssertionError("fixed CLI issuer integration is absent")
     for job in ("A", "B", "E", "integration"):
         causal_scope["common_fixed_cli_contract"](module, job)
+    namespace_transfer_diagnostic_contracts(module)
     production_operation_contracts(module)
     causal_scope["capsule_contract"](module)
     fixed_bootstrap_modes(module)
