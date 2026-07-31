@@ -2336,14 +2336,14 @@ def owner_permission_stage_contracts(module):
 def map_access_diagnostic_contract(module):
     success = (True, True, False, False, True, True, True, True, True)
     labels = "epbazonld"
-    expected_success = "map-access-e1p1b0a0z1o1n1l1d1-ok"
+    expected_success = "map-access-e1p1b0a0z1o1n1l1d1-ok-un0"
     for index in range(len(success)):
         hostile = list(success)
         hostile[index] = not hostile[index]
         bits = "".join(f"{label}{int(value)}" for label, value in zip(labels, hostile))
-        expected = f"map-access-{bits}-ok"
+        expected = f"map-access-{bits}-ok-un0"
         try:
-            module._validate_map_access_observation(tuple(hostile), "ok")
+            module._validate_map_access_observation(tuple(hostile), "ok", ("unavailable", 0))
         except module.RuntimeLauncherError as error:
             if error.code != expected or len(error.code) > 40:
                 raise AssertionError(f"map access bit diagnostic drift: {index} {error.code}") from error
@@ -2360,14 +2360,61 @@ def map_access_diagnostic_contract(module):
             raise AssertionError(f"map access errno class drift: {number}")
         if number is not None:
             try:
-                module._validate_map_access_observation(success, lexical)
+                module._validate_map_access_observation(success, lexical, ("unavailable", 0))
             except module.RuntimeLauncherError as observed:
-                expected = expected_success[:-2] + lexical
+                expected = expected_success.replace("-ok-un0", f"-{lexical}-un0")
                 if observed.code != expected or "secret" in observed.code:
                     raise AssertionError(f"map access errno diagnostic drift: {number}") from observed
             else:
                 raise AssertionError(f"hostile map access errno accepted: {number}")
-    module._validate_map_access_observation(success, "ok")
+    module._validate_map_access_observation(success, "ok", ("unavailable", 0))
+    exit_cases = (
+        (module.os.CLD_EXITED, 0, ("exited-zero", 0), "ez0"),
+        (module.os.CLD_EXITED, 7, ("exited-nonzero", 7), "en7"),
+        (module.os.CLD_KILLED, 9, ("signaled", 9), "sg9"),
+        (module.os.CLD_DUMPED, 11, ("signaled", 11), "sg11"),
+        (module.os.CLD_STOPPED, 19, ("stopped-continued", 19), "sc19"),
+        (module.os.CLD_TRAPPED, 5, ("stopped-continued", 5), "sc5"),
+        (module.os.CLD_CONTINUED, 18, ("stopped-continued", 18), "sc18"),
+    )
+    ready = (True, True, True, False, True, True, True, True, True)
+    for code, status, expected_exit, token in exit_cases:
+        calls = []
+        def waitid(kind, descriptor, options, code=code, status=status):
+            calls.append((kind, descriptor, options))
+            return SimpleNamespace(si_pid=321, si_code=code, si_status=status)
+        with patched(module.os, P_PIDFD=3, waitid=waitid):
+            observed_exit, wait_error = module._child_exit_observation(77)
+        exact_options = module.os.WEXITED | module.os.WNOHANG | module.os.WNOWAIT
+        if observed_exit != expected_exit or wait_error is not None or calls != [(3, 77, exact_options)]:
+            raise AssertionError(f"non-reaping child exit observation drift: {expected_exit}")
+        try:
+            module._validate_map_access_observation(ready, "ok", observed_exit)
+        except module.RuntimeLauncherError as error:
+            expected = f"map-access-e1p1b1a0z1o1n1l1d1-ok-{token}"
+            if error.code != expected or len(error.code) > 40:
+                raise AssertionError(f"child exit diagnostic drift: {expected_exit} {error.code}") from error
+        else:
+            raise AssertionError(f"ready child exit accepted: {expected_exit}")
+    unavailable = (None, SimpleNamespace(si_pid=0, si_code=module.os.CLD_EXITED, si_status=0),
+                   SimpleNamespace(si_pid=321, si_code=module.os.CLD_EXITED, si_status=256))
+    for info in unavailable:
+        with patched(module.os, P_PIDFD=3, waitid=lambda *_arguments, info=info: info):
+            observed_exit, wait_error = module._child_exit_observation(77)
+        if observed_exit != ("unavailable", 0) or wait_error is not None:
+            raise AssertionError("unavailable child exit classification drift")
+    denied = PermissionError(errno.EACCES, "hostile stderr/path/content")
+    with patched(module.os, P_PIDFD=3, waitid=lambda *_arguments: (_ for _ in ()).throw(denied)):
+        observed_exit, wait_error = module._child_exit_observation(77)
+    if observed_exit != ("unavailable", 0) or wait_error is not denied:
+        raise AssertionError("child exit waitid denial drift")
+    for malformed in (("exited-nonzero", 0), ("signaled", 256), ("secret", 1)):
+        try:
+            module._validate_map_access_observation(ready, "ok", malformed)
+        except module.RuntimeLauncherError as error:
+            if error.code != "map-access-exit": raise
+        else:
+            raise AssertionError(f"malformed child exit metadata accepted: {malformed}")
 
 
 def materialized_mapping_identity_contract(module):

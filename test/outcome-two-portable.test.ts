@@ -33,7 +33,7 @@ const highs = new Map<string, number>([
   ["test/outcome-two-lifecycle-portable.py", 1_800],
   ["test/outcome-two-recovery-portable.py", 1_500],
   ["test/outcome-two-runtime-report-portable.py", 550],
-  ["test/outcome-two-trusted-launcher-portable.py", 3_100],
+  ["test/outcome-two-trusted-launcher-portable.py", 3_200],
   ["test/outcome-two-portable.test.ts", 400],
 ]);
 const env = { PYTHONDONTWRITEBYTECODE: "1", PYTHONHASHSEED: "0" };

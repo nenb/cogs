@@ -2005,13 +2005,32 @@ def _map_access_errno_class(error: OSError | None) -> str:
         errno.EINTR: "in",
     }.get(error.errno, "ot")
 
-def _validate_map_access_observation(observed: tuple[bool, bool, bool, bool, bool, bool, bool, bool, bool], error_class: str) -> None:
+def _child_exit_observation(pidfd: int) -> tuple[tuple[str, int], OSError | None]:
+    options = os.WEXITED | os.WNOHANG | os.WNOWAIT
+    try: info = os.waitid(os.P_PIDFD, pidfd, options)
+    except OSError as error: return ("unavailable", 0), error
+    if info is None or getattr(info, "si_pid", 0) == 0: return ("unavailable", 0), None
+    code, status = getattr(info, "si_code", None), getattr(info, "si_status", None)
+    if type(status) is not int or not 0 <= status <= 255: return ("unavailable", 0), None
+    if code == os.CLD_EXITED: return (("exited-zero", 0) if status == 0 else ("exited-nonzero", status)), None
+    if code in (os.CLD_KILLED, os.CLD_DUMPED) and status > 0: return ("signaled", status), None
+    stopped = (os.CLD_STOPPED, os.CLD_TRAPPED, os.CLD_CONTINUED)
+    if code in stopped and status > 0: return ("stopped-continued", status), None
+    return ("unavailable", 0), None
+
+def _validate_map_access_observation(observed: tuple[bool, bool, bool, bool, bool, bool, bool, bool, bool], error_class: str, child_exit: tuple[str, int]) -> None:
     _require(len(observed) == 9 and all(type(value) is bool for value in observed), "map access observation shape", "map-access-shape")
     _require(error_class in {"ok", "ac", "pm", "nf", "sr", "io", "ag", "in", "ot"}, "map access errno class", "map-access-errno")
+    exit_kind, exit_status = child_exit
+    exit_tokens = {"exited-zero": "ez", "exited-nonzero": "en", "signaled": "sg", "stopped-continued": "sc", "unavailable": "un"}
+    exit_exact = type(exit_status) is int and 0 <= exit_status <= 255 and exit_kind in exit_tokens
+    exit_exact = exit_exact and ((exit_kind in {"exited-zero", "unavailable"} and exit_status == 0) or (exit_kind not in {"exited-zero", "unavailable"} and exit_status > 0))
+    _require(exit_exact, "map access child exit shape", "map-access-exit")
     effective, permitted, ready_before, ready_after, non_zombie, opened, nonempty, newline, bounded = observed
-    code = f"map-access-e{int(effective)}p{int(permitted)}b{int(ready_before)}a{int(ready_after)}z{int(non_zombie)}o{int(opened)}n{int(nonempty)}l{int(newline)}d{int(bounded)}-{error_class}"
+    code = f"map-access-e{int(effective)}p{int(permitted)}b{int(ready_before)}a{int(ready_after)}z{int(non_zombie)}o{int(opened)}n{int(nonempty)}l{int(newline)}d{int(bounded)}-{error_class}-{exit_tokens[exit_kind]}{exit_status}"
     exact = effective and permitted and not ready_before and not ready_after
     exact = exact and non_zombie and opened and nonempty and newline and bounded and error_class == "ok"
+    exact = exact and child_exit == ("unavailable", 0)
     if not exact: raise RuntimeLauncherError("owner map access preflight", code)
 
 def _map_access_preflight(ops: _SystemOps, pid: int, pidfd: int) -> bytes:
@@ -2034,6 +2053,12 @@ def _map_access_preflight(ops: _SystemOps, pid: int, pidfd: int) -> bytes:
     except OSError as error:
         note(error)
         ready_before = True
+    child_exit = ("unavailable", 0)
+    exit_observed = False
+    if ready_before:
+        child_exit, wait_error = _child_exit_observation(pidfd)
+        exit_observed = True
+        if wait_error is not None: note(wait_error)
     non_zombie = False
     try:
         child_stat = _proc_bytes(f"/proc/{pid}/stat", 8192, ops)
@@ -2070,10 +2095,13 @@ def _map_access_preflight(ops: _SystemOps, pid: int, pidfd: int) -> bytes:
     except OSError as error:
         note(error)
         ready_after = True
+    if ready_after and not exit_observed:
+        child_exit, wait_error = _child_exit_observation(pidfd)
+        if wait_error is not None: note(wait_error)
     bounded = opened and complete and len(raw) <= _MAX_MAPS
     observed = (effective, permitted, ready_before, ready_after, non_zombie, opened,
                 bool(raw), bool(raw) and raw.endswith(b"\n"), bounded)
-    _validate_map_access_observation(observed, _map_access_errno_class(first_error))
+    _validate_map_access_observation(observed, _map_access_errno_class(first_error), child_exit)
     return raw
 
 def _mapping_inspection(ops: _SystemOps, pid: int, authority: dict[tuple[str, str], tuple[int, int, int]], role: str, report: dict[str, object], planned_executable: tuple[int, int], first_snapshot: bytes | None = None) -> tuple[bytes, dict[str, object]]:
