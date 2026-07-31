@@ -1459,9 +1459,12 @@ class _BISocket:
                 executable = next(row for row in self.k.rows if row.tool_index == self.k.m._TOOL_INDEX[self.k.tool] and row.object_index == 0)
                 info = _BI_FSTAT(self.k.descriptors[executable.descriptor_index])
                 self.k.processes[self.k.child]["exe"] = (info.st_dev, info.st_ino)
-                self.queue.extend((self.k.boundary(), self.k.status("exec-ready", 4)))
+                self.queue.append(self.k.boundary())
+                packet = self.k.inspection_packet("post-inspection", 4)
+                if packet is not None: self.queue.append(packet)
             elif event == "finalize-root":
-                self.queue.append(self.k.status("root-final", 5))
+                packet = self.k.inspection_packet("final-inspection", 5)
+                if packet is not None: self.queue.append(packet)
             else:
                 raise AssertionError(f"unexpected modeled status command: {event}")
         return len(data)
@@ -1560,6 +1563,7 @@ class _BIKernel:
         self.clone_count = 0
         self.proc_stat_reads, self.mapping_identities = {}, {}
         self.parent_proc_exe_attempts = 0
+        self.parent_child_sensitive_attempts = []
         self.owned, self.virtual, self.processes, self.sockets = {0, 1, 2}, {}, {}, []
         self.processes[self.outer] = self.proc(1)
         self.tool, self.namespace, self.input_pipe, self.output_pipe = None, None, None, None
@@ -1620,6 +1624,68 @@ class _BIKernel:
                "seccomp_mode": self.m._SECCOMP_MODE_FILTER,
                "seccomp_program_sha256": self.m._seccomp_digest()}
         return self.status("boundary", 3, observations=obs)
+    def inspection(self, final=False):
+        selected = [row for row in self.rows if row.tool_index == self.m._TOOL_INDEX[self.tool]]
+        identities = []
+        for row in selected:
+            info = _BI_FSTAT(self.descriptors[row.descriptor_index])
+            identities.append([row.role, row.sha256, info.st_dev, info.st_ino])
+        executable = next(row for row in selected if row.object_index == 0)
+        executable_info = _BI_FSTAT(self.descriptors[executable.descriptor_index])
+        mapping = {
+            "executable": [executable_info.st_dev, executable_info.st_ino],
+            "identity_sha256": self.m._digest(identities),
+            "mapping_count": len(selected),
+            "mapping_sha256": self.report["tools"][self.m._TOOL_INDEX[self.tool]]["mapping_sha256"],
+            "maps_sha256": _BIhashlib.sha256(self.maps()).hexdigest(),
+        }
+        post = {"fds": [0, 1, 2], "mapping": mapping}
+        if not final: return post
+        limits = self.m._limits_digest(self.m._parse_limits(b"Limit                     Soft Limit           Hard Limit           Units     \n"))
+        namespaces = {name: True for name in ("capability_sets_zero", "groups_empty", "mount_namespace_exact", "network_namespace_exact", "nnp_exact", "pid_namespace_exact", "pid_one", "seccomp_mode_exact", "user_namespace_exact")}
+        root = {name: True for name in ("checkout_absent", "host_paths_absent", "root_has_no_proc", "root_readonly_noexec")}
+        return {"fds": [0, 1, 2], "limits_sha256": limits, "mapping": mapping, "namespaces": namespaces, "root": root}
+    def inspection_packet(self, event, sequence):
+        point = self.fault_point
+        if point == "final-mapping-permission" and event == "post-inspection":
+            self.fire(point, "tool:post-handoff-primary-preserved")
+            raise PermissionError(errno.EACCES, "modeled namespace-owner map_files denial")
+        if point == "mapping-mismatch" and event == "post-inspection":
+            self.fire(point, "tool:mapping-mismatch")
+            raise self.m.RuntimeLauncherError("final executable mapping identity/cardinality", "mapping-executable-identity")
+        if point == "owner-death-post" and event == "post-inspection" or point == "owner-death-final" and event == "final-inspection":
+            self.fire(point, f"tool:{point}")
+            self.processes[self.namespace]["exited"] = True
+            return None
+        value = self.inspection(event == "final-inspection")
+        if point == "inspection-malformed" and event == "post-inspection":
+            self.fire(point, "tool:inspection-malformed")
+            del value["fds"]
+        elif point == "inspection-forged" and event == "post-inspection":
+            self.fire(point, "tool:inspection-forged")
+            value["mapping"]["mapping_sha256"] = "0" * 64
+        elif point == "inspection-noncanonical" and event == "post-inspection":
+            self.fire(point, "tool:inspection-noncanonical")
+            return self.status(event, sequence, inspection=value) + b" "
+        elif point == "inspection-replay" and event == "final-inspection":
+            self.fire(point, "tool:inspection-replay")
+            return self.status("post-inspection", 4, inspection=self.inspection(False))
+        elif point == "inspection-fd-drift" and event == "final-inspection":
+            self.fire(point, "tool:inspection-fd-drift")
+            value["fds"] = [0, 1, 3]
+        elif point == "inspection-mapping-drift" and event == "final-inspection":
+            self.fire(point, "tool:inspection-mapping-drift")
+            value["mapping"]["identity_sha256"] = "f" * 64
+        elif point == "inspection-root-drift" and event == "final-inspection":
+            self.fire(point, "tool:inspection-root-drift")
+            value["root"]["root_readonly_noexec"] = False
+        elif point == "inspection-namespace-drift" and event == "final-inspection":
+            self.fire(point, "tool:inspection-namespace-drift")
+            value["namespaces"]["pid_one"] = False
+        elif point == "inspection-limits-drift" and event == "final-inspection":
+            self.fire(point, "tool:inspection-limits-drift")
+            value["limits_sha256"] = "e" * 64
+        return self.status(event, sequence, inspection=value)
     def make_child(self, endpoint):
         self.child = self.next_pid
         self.next_pid += 1
@@ -1674,9 +1740,14 @@ class _BIKernel:
         del flags
         return self.alloc("pidfd", pid=pid)
     def open(self, path, flags, mode=0o600, **kwargs):
-        if self.child is not None and self.current_pid == self.outer and path == f"/proc/{self.child}/exe":
+        child_root = f"/proc/{self.child}/" if self.child is not None else ""
+        if child_root and self.current_pid == self.outer and path == child_root + "exe":
             self.parent_proc_exe_attempts += 1
             raise PermissionError(errno.EACCES, "parent proc-exe denied")
+        sensitive = ("fd", "maps", "map_files/", "mountinfo", "status", "limits", "ns/")
+        if child_root and self.current_pid == self.outer and path.startswith(child_root) and any(path[len(child_root):].startswith(name) for name in sensitive):
+            self.parent_child_sensitive_attempts.append(path)
+            raise PermissionError(errno.EACCES, "parent child-proc inspection denied")
         if "/map_files/" in path:
             index = int(path.rsplit("/", 1)[1].split("-", 1)[0], 16) // 0x1000 - 1
             row = [r for r in self.rows if r.tool_index == self.m._TOOL_INDEX[self.tool]][index]
@@ -1900,8 +1971,8 @@ class _BIChildSocket:
     def send(self, raw, flags=0):
         del flags
         value = _BIjson.loads(raw)
-        expected = {"userns": -1, "groups-cleared": 0, "namespace": 1, "child": 2, "boundary": 3, "exec-ready": 4,
-                    "root-final": 5, "exit": 6, "error": value.get("sequence"), "unavailable": value.get("sequence")}
+        expected = {"userns": -1, "groups-cleared": 0, "namespace": 1, "child": 2, "boundary": 3, "post-inspection": 4,
+                    "final-inspection": 5, "exit": 6, "error": value.get("sequence"), "unavailable": value.get("sequence")}
         if value.get("sequence") != expected.get(value.get("event")):
             raise AssertionError(f"modeled child status drift: {value}")
         self.k.events.append(f"namespace:{self.k.tool}:{value['event']}")
@@ -2262,7 +2333,7 @@ def _modeled_namespace_execution(module, report, descriptors, rows, role):
         module._namespace_owner(role, copied, rows, report, input_fd, output_fd,
                                 status_fd, transfer_fd, b"N" * 32, root)
     expected = [f"namespace:{role}:{name}" for name in
-                ("userns", "groups-cleared", "namespace", "transfer", "child", "boundary", "exec-ready", "root-final", "exit")]
+                ("userns", "groups-cleared", "namespace", "transfer", "child", "boundary", "post-inspection", "final-inspection", "exit")]
     try:
         if kernel.events != expected or child_exits != [0]:
             raise AssertionError(f"namespace child state machine drift: {role} {kernel.events}/{child_exits}")
@@ -2418,7 +2489,7 @@ def production_runtime_compression_contracts(module):
                     exact_namespaces = all(
                         item["output"] == module._FIXED_OUTPUT
                         and tuple(event.rsplit(":", 1)[-1] for event in item["events"])
-                        == ("userns", "groups-cleared", "namespace", "transfer", "child", "boundary", "exec-ready", "root-final", "exit")
+                        == ("userns", "groups-cleared", "namespace", "transfer", "child", "boundary", "post-inspection", "final-inspection", "exit")
                         for item in namespace_evidence
                     )
                     if owner_calls or not exact_worker or not exact_namespaces:
@@ -2437,6 +2508,8 @@ def production_runtime_compression_contracts(module):
                         runtime_result = module._result_value(runtime)
                 if kernel.parent_proc_exe_attempts:
                     raise AssertionError(f"parent reopened transferred child executable: {case['id']}")
+                if kernel.parent_child_sensitive_attempts:
+                    raise AssertionError(f"parent opened sensitive transferred child proc: {case['id']} {kernel.parent_child_sensitive_attempts}")
                 unsettled = [
                     pid for pid, process in kernel.processes.items()
                     if pid != kernel.outer and (not process["exited"] or not process["reaped"])

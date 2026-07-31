@@ -36,7 +36,7 @@ _FIXED_INPUT = { "gzip": bytes.fromhex("1f8b08000000000002ff4bce4f2fd62d2acd2bc9
 _FIXED_OUTPUT = b"cogs-runtime-qualification-v1\n"
 (_MAX_ADMISSION, _MAX_SOURCE, _MAX_REPORT, _MAX_PACKET) = (512, 2_000_000, 128 * 1024, 256 * 1024)
 (_MAX_OBJECT, _MAX_OBJECTS, _MAX_MAPS, _MAX_MAP_LINES) = (128 * 1024 * 1024, 256, 4 * 1024 * 1024, 4096)
-_MAX_OUTPUT, _IO_CHUNK, _MAX_ID_MAP_BYTES = 1024 * 1024, 1024 * 1024, 128
+_MAX_OUTPUT, _IO_CHUNK, _MAX_ID_MAP_BYTES, _INSPECTION_PACKET = 1024 * 1024, 1024 * 1024, 128, 16384
 _SETUP_SECONDS, _RUN_SECONDS, _TERM_SECONDS, _KILL_SECONDS = 10.0, 10.0, 1.0, 1.0
 _ROOT_PARENT, _ROOT_LEAF = "/tmp", "cogs-o2-runtime-v1"
 _INTERPRETER, _LIBRARY_ROOT = "/lib64/ld-linux-x86-64.so.2", "/lib/x86_64-linux-gnu"
@@ -1766,6 +1766,7 @@ def _namespace_owner(
     exec_lease: _FdLease | None = None
     try:
         namespace_baselines = _namespace_baselines()
+        owner_limits_sha256 = _limits_digest(_parse_limits(_proc_bytes("/proc/self/limits", 65536, ops)))
         ops.prctl(_PR_SET_PDEATHSIG, signal.SIGKILL)
         os.setsid()
         sequence = -2
@@ -1799,8 +1800,6 @@ def _namespace_owner(
         packet = _status("namespace", sequence)
         ancillary = _credential_ancillary(tuple(handle.fd for handle in namespace_handles))
         _require(status.sendmsg([packet], ancillary, socket.MSG_DONTWAIT) == len(packet), "namespace authority transfer", "namespace-transfer-send")
-        closing, namespace_handles = namespace_handles, ()
-        _close_leases(ops, closing)
         _recv_status(status, time.monotonic() + _SETUP_SECONDS, "prepare-root", 1)
         sequence = 2
         permission_stage = "materialize"
@@ -1808,6 +1807,8 @@ def _namespace_owner(
         _materialize_root(ops, role, descriptors, rows, report, root)
         descriptor_index = next(row.descriptor_index for row in rows if row.tool_index == _TOOL_INDEX[role] and row.object_index == 0)
         selected = descriptors[descriptor_index]
+        selected_info = os.fstat(selected)
+        planned_executable = (selected_info.st_dev, selected_info.st_ino)
         permission_stage = "exec-authority"
         if selected == 198: os.set_inheritable(selected, False)
         else: os.dup2(selected, 198, inheritable=False)
@@ -1850,8 +1851,6 @@ def _namespace_owner(
         ancillary = ((socket.SOL_SOCKET, socket.SCM_RIGHTS, rights),)
         written = transfer.sendmsg((packet,), ancillary, socket.MSG_DONTWAIT)
         _require(written == len(packet), "tool child transfer", "process-transfer-send")
-        pid_namespace.close(ops)
-        child_lease.namespace_handles = ()
         transfer.shutdown(socket.SHUT_WR)
         _lifecycle_control_recv(
             transfer,
@@ -1861,6 +1860,8 @@ def _namespace_owner(
         child_owner.release(child_lease)
         child_lease.pidfd.close(ops)
         child_lease.pidfd = None
+        child_lease.namespace_handles = ()
+        namespace_handles = (*namespace_handles, pid_namespace)
         child_owner.processes.remove(child_lease)
         transfer.close()
         sequence = 2
@@ -1871,13 +1872,17 @@ def _namespace_owner(
         boundary = _parse_sandbox_status(exec_status, "boundary", 3)
         _require(status.send(exec_status) == len(exec_status), "boundary observation send", "boundary-send")
         sequence = 4
-        status.send(_status("exec-ready", sequence))
+        post_inspection = _post_child_inspection(ops, child, rows, role, report, planned_executable)
+        post_packet = _status("post-inspection", sequence, inspection=post_inspection)
+        _require(len(post_packet) <= _INSPECTION_PACKET and status.send(post_packet) == len(post_packet), "post inspection send", "owner-inspection-send")
         _recv_status(status, time.monotonic() + _SETUP_SECONDS, "finalize-root", 3)
         final_flags = _MS_REMOUNT | _MS_RDONLY | _MS_NOSUID | _MS_NODEV | _MS_NOEXEC
         mount_intents.add("readonly-root")
         ops.mount(None, root.encode(), None, final_flags, None)
         sequence = 5
-        status.send(_status("root-final", sequence))
+        final_inspection = _final_child_inspection(ops, child, rows, role, report, planned_executable, post_inspection, namespace_handles, owner_limits_sha256)
+        final_packet = _status("final-inspection", sequence, inspection=final_inspection)
+        _require(len(final_packet) <= _INSPECTION_PACKET and status.send(final_packet) == len(final_packet), "final inspection send", "owner-inspection-send")
         wait_status = _wait_bounded(child_lease, time.monotonic() + _RUN_SECONDS)
         _require(wait_status is not None, "namespace child deadline", "child-reap-deadline")
         _require(child_lease.reaped, "namespace child exact reap", "child-reap")
@@ -1885,6 +1890,8 @@ def _namespace_owner(
         if os.path.ismount(root): ops.umount(root.encode())
         _require(not os.path.ismount(root), "materialized mount remains", "mount-cleanup")
         mount_intents.remove("materialized-root")
+        closing, namespace_handles = namespace_handles, ()
+        _close_leases(ops, closing)
         sequence = 6
         status.send(_status("exit", sequence, status=wait_status))
         os._exit(0)
@@ -1934,11 +1941,11 @@ def _maps_snapshot(pid: int, ops: Any | None = None) -> bytes:
     raw = _proc_bytes(f"/proc/{pid}/maps", _MAX_MAPS, ops)
     _parse_maps(raw)
     return raw
-def _final_mapping_check(ops: _SystemOps, pid: int, rows: tuple[_GenerationRow, ...], role: str, report: dict[str, object], planned_executable: tuple[int, int]) -> tuple[bytes, str]:
-    first = _maps_snapshot(pid)
+def _mapping_inspection(ops: _SystemOps, pid: int, rows: tuple[_GenerationRow, ...], role: str, report: dict[str, object], planned_executable: tuple[int, int]) -> tuple[bytes, dict[str, object]]:
+    first = _maps_snapshot(pid, ops)
     expected_rows = [row for row in rows if row.tool_index == _TOOL_INDEX[role]]
-    expected = {(row.role, row.sha256) for row in expected_rows}
-    observed: set[tuple[str, str]] = set()
+    expected = sorted((row.role, row.sha256) for row in expected_rows)
+    observed: list[tuple[str, str, int, int]] = []
     executable_identities: list[tuple[int, int]] = []
     digest_roles = {row.sha256: row.role for row in expected_rows}
     for start, end, permissions, _offset, major, minor, inode, path in _parse_maps(first):
@@ -1960,15 +1967,28 @@ def _final_mapping_check(ops: _SystemOps, pid: int, rows: tuple[_GenerationRow, 
         digest = hashlib.sha256(data).hexdigest()
         _require(digest in digest_roles, "final mapping closure expansion")
         mapped_role = digest_roles[digest]
-        observed.add((mapped_role, digest))
+        observed.append((mapped_role, digest, info.st_dev, info.st_ino))
         if mapped_role == "executable": executable_identities.append((info.st_dev, info.st_ino))
-    second = _maps_snapshot(pid)
-    _require(first == second and observed == expected, "final mapped generation equality")
+    second = _maps_snapshot(pid, ops)
+    observed_generations = sorted((item[0], item[1]) for item in observed)
+    _require(first == second and observed_generations == expected, "final mapped generation identity/cardinality")
     _require(executable_identities == [planned_executable],
              "final executable mapping identity/cardinality", "mapping-executable-identity")
     mapping_digest = _digest([[row.role, row.sha256] for row in expected_rows])
     if mapping_digest != report["tools"][_TOOL_INDEX[role]]["mapping_sha256"]: raise RuntimeLauncherError("final mapping digest", "mapping-report-digest")
-    return first, mapping_digest
+    identities = [[name, digest, device, inode] for name, digest, device, inode in observed]
+    inspection = {
+        "executable": list(planned_executable),
+        "identity_sha256": _digest(identities),
+        "mapping_count": len(observed),
+        "mapping_sha256": mapping_digest,
+        "maps_sha256": hashlib.sha256(first).hexdigest(),
+    }
+    return first, inspection
+
+def _final_mapping_check(ops: _SystemOps, pid: int, rows: tuple[_GenerationRow, ...], role: str, report: dict[str, object], planned_executable: tuple[int, int]) -> tuple[bytes, str]:
+    raw, inspection = _mapping_inspection(ops, pid, rows, role, report, planned_executable)
+    return raw, inspection["mapping_sha256"]
 def _parse_mountinfo(raw: bytes) -> tuple[tuple[object, ...], ...]:
     _require(raw.endswith(b"\n") and raw.count(b"\n") <= _MAX_MAP_LINES, "mountinfo framing", "mountinfo-framing")
     rows: list[tuple[object, ...]] = []
@@ -2125,6 +2145,44 @@ def _parse_limits(raw: bytes) -> tuple[tuple[str, int | None, int | None, str], 
         rows.append((name, soft, hard, unit))
     _require(len(rows) == len({row[0] for row in rows}), "limits duplicate", "limits-cardinality")
     return tuple(rows)
+
+def _limits_digest(rows: tuple[tuple[str, int | None, int | None, str], ...]) -> str:
+    return _digest([list(row) for row in rows])
+
+def _owner_namespace_facts(ops: _SystemOps, pid: int, handles: tuple[_FdLease, ...]) -> dict[str, bool]:
+    _require(len(handles) == 4, "owner namespace handle count", "owner-inspection-namespace")
+    identities = tuple((os.fstat(handle.fd).st_dev, os.fstat(handle.fd).st_ino) for handle in handles)
+    result: dict[str, bool] = {}
+    for name, fact, index in (("user", "user_namespace_exact", 0), ("pid", "pid_namespace_exact", 3), ("mnt", "mount_namespace_exact", 1), ("net", "network_namespace_exact", 2)):
+        observed = os.stat(f"/proc/{pid}/ns/{name}")
+        result[fact] = (observed.st_dev, observed.st_ino) == identities[index]
+    status = _parse_proc_status(_proc_bytes(f"/proc/{pid}/status", 65536, ops))
+    result["pid_one"] = bool(status["nspid"]) and status["nspid"][-1] == 1
+    result["groups_empty"] = status["groups"] == ()
+    result["capability_sets_zero"] = all(status[name] == 0 for name in ("effective", "permitted", "inheritable", "bounding", "ambient"))
+    result["nnp_exact"] = status["no_new_privs"] == 1
+    result["seccomp_mode_exact"] = status["seccomp"] == _SECCOMP_MODE_FILTER
+    _require(all(result.values()), "owner namespace facts", "owner-inspection-namespace")
+    return result
+
+def _post_child_inspection(ops: _SystemOps, pid: int, rows: tuple[_GenerationRow, ...], role: str, report: dict[str, object], planned_executable: tuple[int, int]) -> dict[str, object]:
+    descriptors = _descriptor_snapshot(ops, pid)
+    _require(descriptors == (0, 1, 2), "post-exec descriptor table", "exec-fd-table")
+    _raw, mapping = _mapping_inspection(ops, pid, rows, role, report, planned_executable)
+    return {"fds": list(descriptors), "mapping": mapping}
+
+def _final_child_inspection(ops: _SystemOps, pid: int, rows: tuple[_GenerationRow, ...], role: str, report: dict[str, object], planned_executable: tuple[int, int], post: dict[str, object], handles: tuple[_FdLease, ...], limits_sha256: str) -> dict[str, object]:
+    descriptors = _descriptor_snapshot(ops, pid)
+    _raw, mapping = _mapping_inspection(ops, pid, rows, role, report, planned_executable)
+    _require({"fds": list(descriptors), "mapping": mapping} == post, "final fd/mapping stability", "final-inspection-drift")
+    root_exact, no_proc, host_absent, checkout_absent = _final_mount_check(pid, ops)
+    namespaces = _owner_namespace_facts(ops, pid, handles)
+    child_limits = _limits_digest(_parse_limits(_proc_bytes(f"/proc/{pid}/limits", 65536, ops)))
+    _require(child_limits == limits_sha256, "final limits drift", "owner-inspection-limits")
+    root = {"checkout_absent": checkout_absent, "host_paths_absent": host_absent, "root_has_no_proc": no_proc, "root_readonly_noexec": root_exact}
+    _require(all(root.values()), "final root inspection", "owner-inspection-root")
+    return {"fds": list(descriptors), "limits_sha256": child_limits, "mapping": mapping, "namespaces": namespaces, "root": root}
+
 def _parse_children(raw: bytes) -> tuple[int, ...]:
     _require(re.fullmatch(rb"(?:[1-9][0-9]* )*", raw) is not None, "children lexical record", "children-record")
     values = tuple(int(item) for item in raw.split())
@@ -2217,7 +2275,7 @@ def _close_socket(endpoint: socket.socket | None, ops: Any, purpose: str) -> Non
         _FdLease(endpoint.detach(), purpose).close(ops)
 def _parse_sandbox_status(raw: bytes, event: str, sequence: int) -> dict[str, object]:
     value = _strict_json(raw, False, 16384, "sandbox status")
-    extras = { "userns": set(), "uid-mapped": set(), "groups-cleared": set(), "identity-mapped": set(), "namespace": set(), "child": {"pid"}, "boundary": {"observations"}, "exec-ready": set(), "root-final": set(), "exit": {"status"}, "error": {"code", "kind"}, "unavailable": {"message", "primitive"}, "prepare-root": set(), "release-child": set(), "finalize-root": set(), }
+    extras = { "userns": set(), "uid-mapped": set(), "groups-cleared": set(), "identity-mapped": set(), "namespace": set(), "child": {"pid"}, "boundary": {"observations"}, "post-inspection": {"inspection"}, "final-inspection": {"inspection"}, "exit": {"status"}, "error": {"code", "kind"}, "unavailable": {"message", "primitive"}, "prepare-root": set(), "release-child": set(), "finalize-root": set(), }
     _require(type(value) is dict and event in extras and set(value) == {"event", "sequence", "version"} | extras[event], "sandbox status closed shape", "status-shape")
     identity = value["version"] == _RESULT_VERSION and value["event"] == event
     _require(identity and type(value["sequence"]) is int and value["sequence"] == sequence, "sandbox status identity/sequence", "status-sequence")
@@ -2258,6 +2316,57 @@ def _recv_status(endpoint: socket.socket, deadline: float, event: str = "", sequ
     remaining = deadline - time.monotonic()
     _require(remaining > 0 and bool(select.select([endpoint], [], [], remaining)[0]), "sandbox status deadline", "status-deadline")
     return _sandbox_status_result(endpoint.recv(16384), event, sequence)
+
+def _revalidate_inspected_child(lease: _ProcessLease, ops: Any) -> None:
+    authority = lease.pidfd is not None and lease.pidfd.state is _FdState.OWNED
+    authority = authority and _stable_pidfd_target(lease.pidfd.fd, ops) == lease.pid
+    observed = (_start_time(lease.pid, ops), os.getsid(lease.pid), os.getpgid(lease.pid))
+    expected = (lease.start_time, lease.session, lease.process_group)
+    _require(authority and observed == expected, "inspected child process identity", "owner-inspection-process")
+
+def _validate_mapping_inspection(value: object, expected_count: int, expected_sha256: str, executable: tuple[int, int]) -> dict[str, object]:
+    keys = {"executable", "identity_sha256", "mapping_count", "mapping_sha256", "maps_sha256"}
+    valid = type(value) is dict and set(value) == keys
+    valid = valid and value["executable"] == list(executable)
+    valid = valid and type(value["mapping_count"]) is int and value["mapping_count"] == expected_count
+    valid = valid and value["mapping_sha256"] == expected_sha256
+    valid = valid and _sha(value["identity_sha256"]) and _sha(value["maps_sha256"])
+    _require(valid, "owner mapping inspection", "owner-inspection-mapping")
+    return value
+
+def _validate_post_inspection(value: object, expected_count: int, expected_sha256: str, executable: tuple[int, int]) -> dict[str, object]:
+    valid = type(value) is dict and set(value) == {"fds", "mapping"}
+    valid = valid and value["fds"] == [0, 1, 2]
+    _require(valid, "owner post inspection", "owner-inspection-post")
+    _validate_mapping_inspection(value["mapping"], expected_count, expected_sha256, executable)
+    return value
+
+def _validate_final_inspection(value: object, post: dict[str, object], expected_count: int, expected_sha256: str, executable: tuple[int, int], limits_sha256: str) -> dict[str, object]:
+    keys = {"fds", "limits_sha256", "mapping", "namespaces", "root"}
+    valid = type(value) is dict and set(value) == keys and value["fds"] == [0, 1, 2]
+    valid = valid and value["limits_sha256"] == limits_sha256
+    _require(valid, "owner final inspection", "owner-inspection-final")
+    mapping = _validate_mapping_inspection(value["mapping"], expected_count, expected_sha256, executable)
+    _require(value["fds"] == post["fds"] and mapping == post["mapping"], "owner final inspection stability", "final-inspection-drift")
+    root_keys = {"checkout_absent", "host_paths_absent", "root_has_no_proc", "root_readonly_noexec"}
+    namespace_keys = {"capability_sets_zero", "groups_empty", "mount_namespace_exact", "network_namespace_exact", "nnp_exact", "pid_namespace_exact", "pid_one", "seccomp_mode_exact", "user_namespace_exact"}
+    root, namespaces = value["root"], value["namespaces"]
+    root_exact = type(root) is dict and set(root) == root_keys and all(item is True for item in root.values())
+    namespace_exact = type(namespaces) is dict and set(namespaces) == namespace_keys and all(item is True for item in namespaces.values())
+    _require(root_exact and namespace_exact, "owner final facts", "owner-inspection-facts")
+    return value
+
+def _recv_owner_inspection(endpoint: socket.socket, deadline: float, event: str, sequence: int) -> dict[str, object]:
+    remaining = deadline - time.monotonic()
+    _require(remaining > 0 and bool(select.select([endpoint], [], [], remaining)[0]), "owner inspection deadline", "owner-inspection-deadline")
+    raw = endpoint.recv(_INSPECTION_PACKET + 1)
+    _require(len(raw) <= _INSPECTION_PACKET, "owner inspection bound", "owner-inspection-bound")
+    value = _sandbox_status_result(raw, event, sequence)
+    _require(raw == _canonical(value), "owner inspection canonical form", "owner-inspection-canonical")
+    inspection = value["inspection"]
+    _require(type(inspection) is dict, "owner inspection value", "owner-inspection-shape")
+    return inspection
+
 def _receive_namespace_authority(endpoint: socket.socket, lease: _ProcessLease, baselines: tuple[tuple[int, int], ...], ops: Any, deadline: float) -> dict[str, bool]:
     remaining = deadline - time.monotonic()
     _require(remaining > 0 and bool(select.select([endpoint], [], [], remaining)[0]), "namespace transfer deadline", "namespace-transfer-deadline")
@@ -2354,6 +2463,7 @@ def _run_tool_with_ops( ops: Any, role: str, report: dict[str, object], descript
         transfer_nonce = ops.nonce()
         root = root_owner.prepare()
         limits_baseline = _parse_limits(_proc_bytes("/proc/self/limits", 65536, ops))
+        limits_sha256 = _limits_digest(limits_baseline)
         namespace_baselines = _namespace_baselines()
         pid, namespace_lease, gate = process_owner.spawn()
         if pid == 0:
@@ -2466,26 +2576,30 @@ def _run_tool_with_ops( ops: Any, role: str, report: dict[str, object], descript
         boundary_packet = _recv_status(parent_status, time.monotonic() + _SETUP_SECONDS, "boundary", 3)
         boundary = boundary_packet["observations"]
         _require(type(boundary) is dict, "boundary observations malformed", "boundary-observations")
-        _recv_status(parent_status, time.monotonic() + _SETUP_SECONDS, "exec-ready", 4)
-        post_fds = _descriptor_snapshot(ops, child["pid"])
-        _require(post_fds == (0, 1, 2), "post-exec descriptor table", "exec-fd-table")
-        post_maps, post_mapping = _final_mapping_check(
-            ops, child["pid"], rows, role, report, child_lease.planned_executable,
-        )
+        post_packet = _recv_owner_inspection(parent_status, time.monotonic() + _SETUP_SECONDS, "post-inspection", 4)
+        _revalidate_inspected_child(child_lease, ops)
+        expected_mapping_count = sum(1 for row in rows if row.tool_index == _TOOL_INDEX[role])
+        expected_mapping_sha256 = report["tools"][_TOOL_INDEX[role]]["mapping_sha256"]
+        post_inspection = _validate_post_inspection(post_packet, expected_mapping_count, expected_mapping_sha256, child_lease.planned_executable)
         process_owner.confirm_mapped_exec(child_lease, child_lease.planned_executable)
         _require(_descendant_census(namespace_lease.pid, ops) == (child["pid"],), "registered descendant census", "descendant-census")
         command = _status("finalize-root", 3)
         _require(parent_status.send(command) == len(command), "root finalization send", "root-finalize-send")
-        _recv_status(parent_status, time.monotonic() + _SETUP_SECONDS, "root-final", 5)
-        root_exact, no_proc, host_absent, checkout_absent = _final_mount_check(child["pid"], ops)
-        namespace_facts = _namespace_facts(child["pid"], os.getuid(), os.getgid(), namespace_lease)
-        final_fds = _descriptor_snapshot(ops, child["pid"])
-        _require(final_fds == post_fds, "final descriptor drift", "final-fd-drift")
-        final_maps, final_mapping = _final_mapping_check(
-            ops, child["pid"], rows, role, report, child_lease.planned_executable,
-        )
-        _require((final_maps, final_mapping) == (post_maps, post_mapping), "final mapping drift", "final-map-drift")
-        limits_exact = _parse_limits(_proc_bytes(f"/proc/{child['pid']}/limits", 65536, ops)) == limits_baseline
+        final_packet = _recv_owner_inspection(parent_status, time.monotonic() + _SETUP_SECONDS, "final-inspection", 5)
+        _revalidate_inspected_child(child_lease, ops)
+        final_inspection = _validate_final_inspection(final_packet, post_inspection, expected_mapping_count, expected_mapping_sha256, child_lease.planned_executable, limits_sha256)
+        post_fds = tuple(post_inspection["fds"])
+        final_fds = tuple(final_inspection["fds"])
+        post_mapping = post_inspection["mapping"]["mapping_sha256"]
+        final_mapping = final_inspection["mapping"]["mapping_sha256"]
+        mapping_stable = final_inspection["mapping"] == post_inspection["mapping"]
+        root_facts = final_inspection["root"]
+        root_exact = root_facts["root_readonly_noexec"]
+        no_proc = root_facts["root_has_no_proc"]
+        host_absent = root_facts["host_paths_absent"]
+        checkout_absent = root_facts["checkout_absent"]
+        namespace_facts = final_inspection["namespaces"]
+        limits_exact = final_inspection["limits_sha256"] == limits_sha256
         payload = _FIXED_INPUT[role]
         offset = 0
         while offset < len(payload):
@@ -2523,8 +2637,8 @@ def _run_tool_with_ops( ops: Any, role: str, report: dict[str, object], descript
         installed = boundary.get("seccomp_installed") is True
         mode_exact = boundary.get("seccomp_mode") == _SECCOMP_MODE_FILTER and namespace_facts["seccomp_mode_exact"]
         program_exact = boundary.get("seccomp_program_sha256") == _seccomp_digest()
-        authority_absent = final_fds == (0, 1, 2) and final_maps == post_maps and root_exact and no_proc and host_absent
-        tool = { "ambient_capabilities_zero": not any(capability_sets["ambient"]), "bounding_capabilities_zero": not any(capability_sets["bounding"]), "capabilities_zero": not any(capability_sets[name] for name in ("effective", "permitted", "inheritable")) and not any(capability_sets["bounding"]) and not any(capability_sets["ambient"]) and namespace_facts["capability_sets_zero"], "checkout_absent": checkout_absent, "effective_capabilities_zero": capability_sets["effective"] == 0, "exec_descriptor_consumed": 198 not in final_fds, "host_paths_absent": host_absent, "inheritable_capabilities_zero": capability_sets["inheritable"] == 0, "limits_exact": limits_exact, "mapped_generations_exact": final_maps == post_maps, "mount_namespace_exact": namespace_facts["mount_namespace_exact"], "namespace_handles_exact": namespace_authority["namespace_handles_exact"], "namespace_ownership_exact": namespace_authority["namespace_ownership_exact"], "network_namespace_exact": namespace_facts["network_namespace_exact"], "no_acquisition_route": denial_exact and installed and mode_exact and program_exact and authority_absent, "no_new_privs": boundary.get("no_new_privs") == 1 and namespace_facts["nnp_exact"], "noroot_locked": boundary.get("securebits") == _SECBITS, "permitted_capabilities_zero": capability_sets["permitted"] == 0, "pid_namespace_exact": namespace_facts["pid_namespace_exact"], "pid_one": namespace_facts["pid_one"], "root_has_no_proc": no_proc, "root_readonly_noexec": root_exact, "seccomp_denials_exact": denial_exact, "seccomp_installed": installed, "seccomp_mode_exact": mode_exact, "seccomp_program_exact": program_exact, "supplementary_groups_empty": capability_sets["groups"] == [] and namespace_facts["groups_empty"], "user_namespace_exact": namespace_facts["user_namespace_exact"], }
+        authority_absent = final_fds == (0, 1, 2) and mapping_stable and root_exact and no_proc and host_absent
+        tool = { "ambient_capabilities_zero": not any(capability_sets["ambient"]), "bounding_capabilities_zero": not any(capability_sets["bounding"]), "capabilities_zero": not any(capability_sets[name] for name in ("effective", "permitted", "inheritable")) and not any(capability_sets["bounding"]) and not any(capability_sets["ambient"]) and namespace_facts["capability_sets_zero"], "checkout_absent": checkout_absent, "effective_capabilities_zero": capability_sets["effective"] == 0, "exec_descriptor_consumed": 198 not in final_fds, "host_paths_absent": host_absent, "inheritable_capabilities_zero": capability_sets["inheritable"] == 0, "limits_exact": limits_exact, "mapped_generations_exact": mapping_stable, "mount_namespace_exact": namespace_facts["mount_namespace_exact"], "namespace_handles_exact": namespace_authority["namespace_handles_exact"], "namespace_ownership_exact": namespace_authority["namespace_ownership_exact"], "network_namespace_exact": namespace_facts["network_namespace_exact"], "no_acquisition_route": denial_exact and installed and mode_exact and program_exact and authority_absent, "no_new_privs": boundary.get("no_new_privs") == 1 and namespace_facts["nnp_exact"], "noroot_locked": boundary.get("securebits") == _SECBITS, "permitted_capabilities_zero": capability_sets["permitted"] == 0, "pid_namespace_exact": namespace_facts["pid_namespace_exact"], "pid_one": namespace_facts["pid_one"], "root_has_no_proc": no_proc, "root_readonly_noexec": root_exact, "seccomp_denials_exact": denial_exact, "seccomp_installed": installed, "seccomp_mode_exact": mode_exact, "seccomp_program_exact": program_exact, "supplementary_groups_empty": capability_sets["groups"] == [] and namespace_facts["groups_empty"], "user_namespace_exact": namespace_facts["user_namespace_exact"], }
         result = bytes(output), tool
     except BaseException as error:
         primary = error
