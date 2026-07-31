@@ -1,0 +1,52 @@
+name: O2 B child sandbox experiment
+
+# Diagnostic-only branch workflow for issue 42 / Outcome Two Job B.
+# Runs a standalone reconstruction of the launcher child sandbox; it neither
+# imports nor executes the production launcher, and touches no secrets.
+
+on:
+  workflow_dispatch:
+    inputs:
+      legs:
+        description: Space-separated leg names (empty runs the full matrix)
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  matrix:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out experiment branch
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Record runner facts
+        run: |
+          uname -a
+          /usr/bin/gzip --version | head -1
+          /usr/bin/zstd --version | head -1
+          /usr/bin/python3 --version
+          /lib64/ld-linux-x86-64.so.2 --version | head -1
+          cat /etc/os-release | head -2
+
+      - name: Run child sandbox matrix
+        env:
+          NQ_LEGS: ${{ inputs.legs }}
+        run: |
+          set -uo pipefail
+          runner_uid=$(/usr/bin/id -u); runner_gid=$(/usr/bin/id -g)
+          sudo -n --close-from=3 /usr/bin/prlimit --nofile=65536:65536 -- \
+            /usr/bin/setpriv --reuid="$runner_uid" --regid="$runner_gid" --clear-groups \
+              --inh-caps=+sys_admin,+sys_ptrace --ambient-caps=+sys_admin,+sys_ptrace \
+              /usr/bin/env -i LC_ALL=C PYTHONDONTWRITEBYTECODE=1 PYTHONHASHSEED=0 \
+              /usr/bin/python3 -I -B scripts/experiments/child-sandbox-matrix.py $NQ_LEGS
+          echo "matrix exit: $?"
+
+      - name: Kernel ring buffer tail
+        if: ${{ always() }}
+        run: sudo dmesg | tail -60 || true
