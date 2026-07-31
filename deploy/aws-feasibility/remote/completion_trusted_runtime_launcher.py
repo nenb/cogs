@@ -2027,7 +2027,7 @@ def _validate_map_access_observation(observed: tuple[bool, bool, bool, bool, boo
     exit_exact = exit_exact and ((exit_kind in {"exited-zero", "unavailable"} and exit_status == 0) or (exit_kind not in {"exited-zero", "unavailable"} and exit_status > 0))
     _require(exit_exact, "map access child exit shape", "map-access-exit")
     effective, permitted, ready_before, ready_after, non_zombie, opened, nonempty, newline, bounded = observed
-    code = f"map-access-e{int(effective)}p{int(permitted)}b{int(ready_before)}a{int(ready_after)}z{int(non_zombie)}o{int(opened)}n{int(nonempty)}l{int(newline)}d{int(bounded)}-{error_class}-{exit_tokens[exit_kind]}{exit_status}"
+    code = f"map-access-{exit_tokens[exit_kind]}{exit_status}-e{int(effective)}p{int(permitted)}b{int(ready_before)}a{int(ready_after)}z{int(non_zombie)}o{int(opened)}n{int(nonempty)}l{int(newline)}d{int(bounded)}-{error_class}"
     exact = effective and permitted and not ready_before and not ready_after
     exact = exact and non_zombie and opened and nonempty and newline and bounded and error_class == "ok"
     exact = exact and child_exit == ("unavailable", 0)

@@ -2336,12 +2336,12 @@ def owner_permission_stage_contracts(module):
 def map_access_diagnostic_contract(module):
     success = (True, True, False, False, True, True, True, True, True)
     labels = "epbazonld"
-    expected_success = "map-access-e1p1b0a0z1o1n1l1d1-ok-un0"
+    expected_success = "map-access-un0-e1p1b0a0z1o1n1l1d1-ok"
     for index in range(len(success)):
         hostile = list(success)
         hostile[index] = not hostile[index]
         bits = "".join(f"{label}{int(value)}" for label, value in zip(labels, hostile))
-        expected = f"map-access-{bits}-ok-un0"
+        expected = f"map-access-un0-{bits}-ok"
         try:
             module._validate_map_access_observation(tuple(hostile), "ok", ("unavailable", 0))
         except module.RuntimeLauncherError as error:
@@ -2362,7 +2362,7 @@ def map_access_diagnostic_contract(module):
             try:
                 module._validate_map_access_observation(success, lexical, ("unavailable", 0))
             except module.RuntimeLauncherError as observed:
-                expected = expected_success.replace("-ok-un0", f"-{lexical}-un0")
+                expected = expected_success.removesuffix("-ok") + f"-{lexical}"
                 if observed.code != expected or "secret" in observed.code:
                     raise AssertionError(f"map access errno diagnostic drift: {number}") from observed
             else:
@@ -2391,7 +2391,7 @@ def map_access_diagnostic_contract(module):
         try:
             module._validate_map_access_observation(ready, "ok", observed_exit)
         except module.RuntimeLauncherError as error:
-            expected = f"map-access-e1p1b1a0z1o1n1l1d1-ok-{token}"
+            expected = f"map-access-{token}-e1p1b1a0z1o1n1l1d1-ok"
             if error.code != expected or len(error.code) > 40:
                 raise AssertionError(f"child exit diagnostic drift: {expected_exit} {error.code}") from error
         else:
