@@ -5,6 +5,8 @@ name: O2 B child sandbox experiment
 # imports nor executes the production launcher, and touches no secrets.
 
 on:
+  push:
+    branches: [exp/o2-b-child-matrix]
   workflow_dispatch:
     inputs:
       legs:
@@ -44,7 +46,7 @@ jobs:
             /usr/bin/setpriv --reuid="$runner_uid" --regid="$runner_gid" --clear-groups \
               --inh-caps=+sys_admin,+sys_ptrace --ambient-caps=+sys_admin,+sys_ptrace \
               /usr/bin/env -i LC_ALL=C PYTHONDONTWRITEBYTECODE=1 PYTHONHASHSEED=0 \
-              /usr/bin/python3 -I -B scripts/experiments/child-sandbox-matrix.py $NQ_LEGS
+              /usr/bin/python3 -I -B scripts/experiments/child-sandbox-matrix.py ${NQ_LEGS:-}
           echo "matrix exit: $?"
 
       - name: Kernel ring buffer tail
