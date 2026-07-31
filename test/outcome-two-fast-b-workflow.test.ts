@@ -154,8 +154,8 @@ test("fast B workflow reuses the bounded capability and settlement transaction",
     '--reuid="$runner_uid"',
     '--regid="$runner_gid"',
     "--clear-groups",
-    "--inh-caps=+sys_admin",
-    "--ambient-caps=+sys_admin",
+    "--inh-caps=+sys_admin,+sys_ptrace",
+    "--ambient-caps=+sys_admin,+sys_ptrace",
     "/usr/bin/env -i",
     "NQ_WORKFLOW_PATH=.github/workflows/outcome-two-native-b.yml",
     '"$NQ_DRIVER" --workflow-bound',
@@ -166,6 +166,20 @@ test("fast B workflow reuses the bounded capability and settlement transaction",
     positions,
     positions.toSorted((left, right) => left - right),
   );
+  const exactCapabilities = (candidate: string) => {
+    const flags = candidate.match(/--(?:[a-z-]*caps|bounding-set)(?:=[^ ]+)?/gu) ?? [];
+    return (
+      JSON.stringify(flags) ===
+      JSON.stringify(["--inh-caps=+sys_admin,+sys_ptrace", "--ambient-caps=+sys_admin,+sys_ptrace"])
+    );
+  };
+  assert.equal(exactCapabilities(run), true);
+  for (const hostile of [
+    run.replaceAll(",+sys_ptrace", ""),
+    run.replaceAll("+sys_admin,+sys_ptrace", "+sys_admin,+sys_ptrace,+sys_chroot"),
+    run.replace("--ambient-caps=+sys_admin,+sys_ptrace ", ""),
+  ])
+    assert.equal(exactCapabilities(hostile), false);
   const cleanup = steps(job, (step) => step.run?.includes("common.py --cleanup B") === true);
   assert.equal(cleanup.if, gha("always()"));
   assert.equal(cleanup.env?.NQ_UPLOAD_ARTIFACT_ID, gha("steps.upload.outputs.artifact-id"));
