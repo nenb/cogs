@@ -72,7 +72,7 @@
       "type": "object", "additionalProperties": false,
       "required": ["path", "blob_sha256", "workflow_sha", "job_id"],
       "properties": {
-        "path": { "const": ".github/workflows/ci.yml" }, "blob_sha256": { "$ref": "#/$defs/sha256" },
+        "path": { "enum": [".github/workflows/ci.yml", ".github/workflows/outcome-two-native-b.yml"] }, "blob_sha256": { "$ref": "#/$defs/sha256" },
         "workflow_sha": { "$ref": "#/$defs/sha1" }, "job_id": { "$ref": "#/$defs/label" }
       }
     },
@@ -219,7 +219,7 @@
     "jobA": { "type": "object",
       "properties": {
         "job": { "const": "A" },
-        "workflow": { "type": "object", "properties": { "job_id": { "const": "native-qualification-a" } } },
+        "workflow": { "type": "object", "properties": { "path": { "const": ".github/workflows/ci.yml" }, "job_id": { "const": "native-qualification-a" } } },
         "checks": { "$ref": "#/$defs/checkA" }
       },
       "allOf": [{ "if": { "type": "object", "properties": { "result": { "const": "pass" } } },
@@ -229,7 +229,7 @@
     "jobB": { "type": "object",
       "properties": {
         "job": { "const": "B" },
-        "workflow": { "type": "object", "properties": { "job_id": { "const": "native-qualification-b" } } },
+        "workflow": { "type": "object", "properties": { "path": { "enum": [".github/workflows/ci.yml", ".github/workflows/outcome-two-native-b.yml"] }, "job_id": { "const": "native-qualification-b" } } },
         "checks": { "$ref": "#/$defs/checkB" }
       },
       "allOf": [{ "if": { "type": "object", "properties": { "result": { "const": "pass" } } },
@@ -239,14 +239,14 @@
           { "$ref": "#/$defs/BSummary" }], "items": false } } },
         "else": { "type": "object", "properties": { "metadata": { "type": "array", "maxItems": 0 } } } }]
     },
-    "jobC": { "type": "object", "properties": { "job": { "const": "C" }, "workflow": { "type": "object", "properties": { "job_id": { "const": "native-qualification-c" } } },
+    "jobC": { "type": "object", "properties": { "job": { "const": "C" }, "workflow": { "type": "object", "properties": { "path": { "const": ".github/workflows/ci.yml" }, "job_id": { "const": "native-qualification-c" } } },
       "checks": { "$ref": "#/$defs/checkC" }, "metadata": { "type": "array", "maxItems": 0 } } },
-    "jobD": { "type": "object", "properties": { "job": { "const": "D" }, "workflow": { "type": "object", "properties": { "job_id": { "const": "native-qualification-d" } } },
+    "jobD": { "type": "object", "properties": { "job": { "const": "D" }, "workflow": { "type": "object", "properties": { "path": { "const": ".github/workflows/ci.yml" }, "job_id": { "const": "native-qualification-d" } } },
       "checks": { "$ref": "#/$defs/checkD" }, "metadata": { "type": "array", "maxItems": 0 } } },
     "jobE": { "type": "object",
       "properties": {
         "job": { "const": "E" },
-        "workflow": { "type": "object", "properties": { "job_id": { "const": "native-qualification-e" } } },
+        "workflow": { "type": "object", "properties": { "path": { "const": ".github/workflows/ci.yml" }, "job_id": { "const": "native-qualification-e" } } },
         "checks": { "$ref": "#/$defs/checkE" }
       },
       "allOf": [{ "if": { "type": "object", "properties": { "result": { "const": "pass" } } },
@@ -256,7 +256,7 @@
     "jobIntegration": { "type": "object",
       "properties": {
         "job": { "const": "integration" },
-        "workflow": { "type": "object", "properties": { "job_id": { "const": "native-closure-integration" } } },
+        "workflow": { "type": "object", "properties": { "path": { "const": ".github/workflows/ci.yml" }, "job_id": { "const": "native-closure-integration" } } },
         "checks": { "$ref": "#/$defs/checkIntegration" }
       },
       "allOf": [{ "if": { "type": "object", "properties": { "result": { "const": "pass" } } },

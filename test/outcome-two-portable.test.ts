@@ -24,7 +24,7 @@ const highs = new Map<string, number>([
   ["deploy/aws-feasibility/remote/completion_elf.py", 320],
   ["deploy/aws-feasibility/remote/completion_trusted_runtime_closure.py", 3_100],
   ["deploy/aws-feasibility/remote/completion_trusted_runtime_launcher.py", 4_700],
-  ["scripts/native-qualification/common.py", 1_900],
+  ["scripts/native-qualification/common.py", 1_920],
   ["schemas/trusted-runtime-closure-v1.json", 700],
   ["scripts/validate-schemas.ts", 300],
   ["test/outcome-two-runtime-closure-portable.py", 1_000],

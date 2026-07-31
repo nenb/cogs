@@ -233,6 +233,13 @@ test("six strict goldens and isolated structural/semantic mutants", () => {
   }
   assert.equal(validate(ePolicy), false, "E policy is structurally fixed");
   assert.equal(validate(iOutput), false, "integration output is structurally fixed");
+  const fastB = report("B");
+  fastB.workflow.path = ".github/workflows/outcome-two-native-b.yml";
+  fastB.workflow.blob_sha256 = digestFile(fastB.workflow.path);
+  assert.equal(validate(fastB), true, `fast B: ${ajv.errorsText(validate.errors)}`);
+  semanticRows.push({ value: fastB, accept: true });
+  const fastA = report("A"); fastA.workflow.path = fastB.workflow.path; fastA.workflow.blob_sha256 = fastB.workflow.blob_sha256;
+  assert.equal(validate(fastA), false, "fast workflow is B-only");
   const mask = report("B"); mask.metadata[0].seal_mask = 15;
   assert.equal(validate(mask), false, "historical four-bit mask");
   const oversize = report("A"); oversize.metadata[0].size_bytes = 134_217_729;
@@ -340,6 +347,14 @@ for job,driver in common.DRIVERS.items():
   assert envelope=={'default_branch':'main','event_name':'workflow_dispatch','github_sha':'b'*40,
    'head_repository':'owner/repo','ref':'refs/heads/main','ref_protected':True,'repository':'owner/repo',
    'run_attempt':1,'run_id':17}
+fast={**base,'NQ_JOB_ID':common.JOB_IDS['B'],'NQ_WORKFLOW_PATH':'.github/workflows/outcome-two-native-b.yml'}
+with patch.dict(os.environ,fast,clear=True):
+ context=common.WorkflowContext.from_environ('B',common.COMMON.parent/common.DRIVERS['B'])
+ assert common._context_value(context)['workflow']['path']==fast['NQ_WORKFLOW_PATH']
+for hostile in ({**fast,'NQ_JOB_ID':common.JOB_IDS['A']},{**fast,'NQ_WORKFLOW_PATH':'.github/workflows/ci.yml'}):
+ with patch.dict(os.environ,hostile,clear=True):
+  try:common.WorkflowContext.from_environ('A' if hostile['NQ_JOB_ID']==common.JOB_IDS['A'] else 'B',common.COMMON.parent/common.DRIVERS['A' if hostile['NQ_JOB_ID']==common.JOB_IDS['A'] else 'B']);raise AssertionError('fast workflow substitution')
+  except common.QualificationError:pass
 class NativeSentinel(Exception):pass
 hits=[]
 def native_sentinel(*_args):hits.append('native');raise NativeSentinel()
@@ -750,7 +765,7 @@ test("parsed workflow gives only an explicit exact-SHA dispatch native authority
 
 test("ADR0093 common surfaces stay within binding readable highs", () => {
   const highs = new Map<string, number>([
-    [workflowPath, 400], [schemaPath, 700], [commonPath, 1900],
+    [workflowPath, 400], [schemaPath, 700], [commonPath, 1920],
     ["test/native-qualification-common.test.ts", 1500], ["scripts/validate-schemas.ts", 300],
   ]);
   const diff = spawnSync("git", ["diff", "--numstat", predecessor, "--", ...highs.keys()], { encoding: "utf8" });

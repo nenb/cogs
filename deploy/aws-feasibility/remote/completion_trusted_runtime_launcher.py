@@ -923,7 +923,13 @@ class _ProcessOwner(make_dataclass(
         lease.released = True
         gate.close(self.ops)
     def confirm_setsid(self, lease: _ProcessLease) -> None:
-        immutable = (_start_time(lease.pid), _exe_identity(lease.pid))
+        start_time = _start_time(lease.pid)
+        if lease.held_executable:
+            retained = lease.pidfd is not None and lease.pidfd.state is _FdState.OWNED
+            retained = retained and _stable_pidfd_target(lease.pidfd.fd, self.ops) == lease.pid
+            immutable = (start_time, lease.executable) if retained else (0, (0, 0))
+        else:
+            immutable = (start_time, _exe_identity(lease.pid))
         expected = (lease.start_time, lease.executable)
         observed = (os.getsid(lease.pid), os.getpgid(lease.pid))
         target = (lease.planned_session, lease.planned_group)
@@ -2502,6 +2508,8 @@ def _run_tool_with_ops( ops: Any, role: str, report: dict[str, object], descript
         # later Linux proc/map_files operation fails, cleanup can still signal
         # the exact owner rather than poisoning the primary failure because its
         # recorded pre-release session no longer matches.
+        _require(namespace_lease.executable == python_executable, "namespace owner executable identity", "namespace-owner-executable")
+        namespace_lease.held_executable = True
         process_owner.plan_setsid(namespace_lease)
         process_owner.release(namespace_lease)
         _recv_status(parent_status, time.monotonic() + _SETUP_SECONDS, "userns", -1)
