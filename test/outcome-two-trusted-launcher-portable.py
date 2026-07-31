@@ -2130,6 +2130,68 @@ def namespace_owner_cleanup_contract(module):
         raise AssertionError(f"namespace-owner exact reap/close drift: {events}")
 
 
+def cleanup_error_status_contract(module):
+    primary_leaf = module.RuntimeLauncherError("secret primary /never/report", "owner-primary")
+    primary = module.RuntimeLauncherCleanupError(primary_leaf, [module.RuntimeLauncherError("ignored", "ignored")])
+    failure_leaf = module.RuntimeLauncherError("secret cleanup content", "owner-cleanup")
+    failure = module.RuntimeLauncherCleanupError(None, [
+        module.RuntimeLauncherCleanupError(None, [failure_leaf]),
+    ])
+    packet = module._namespace_failure_packet(7, primary, [failure])
+    expected = {
+        "event": "cleanup-error", "failure_code": "owner-cleanup",
+        "failure_kind": "RuntimeLauncherError", "primary_code": "owner-primary",
+        "primary_kind": "RuntimeLauncherError", "sequence": 7,
+        "version": module._RESULT_VERSION,
+    }
+    if packet != module._canonical(expected):
+        raise AssertionError("nested cleanup packet canonical metadata drift")
+    if any(token in packet for token in (b"secret", b"never", b"report", b"content", b"/never")):
+        raise AssertionError("nested cleanup packet exposed content")
+    try:
+        module._sandbox_status_result(packet, "post-inspection", 7)
+    except module.RuntimeLauncherCleanupError as error:
+        exact = getattr(error.primary, "code", None) == "owner-primary"
+        exact = exact and len(error.failures) == 1
+        exact = exact and getattr(error.failures[0], "code", None) == "owner-cleanup"
+        if not exact: raise AssertionError("nested cleanup reconstruction drift") from error
+    else:
+        raise AssertionError("nested cleanup packet accepted as success")
+    hostile = []
+    for mutate in (
+        lambda value: value.pop("failure_kind"),
+        lambda value: value.update(extra="forbidden"),
+        lambda value: value.update(primary_code="path/not-safe"),
+        lambda value: value.update(failure_kind="x" * 41),
+        lambda value: value.update(primary_kind=1),
+    ):
+        value = dict(expected)
+        mutate(value)
+        hostile.append(module._canonical(value))
+    hostile.extend((json.dumps(expected).encode(), packet + b"\0"))
+    for raw in hostile:
+        try:
+            module._sandbox_status_result(raw, "post-inspection", 7)
+        except module.RuntimeLauncherError:
+            pass
+        else:
+            raise AssertionError(f"hostile cleanup status accepted: {raw!r}")
+    try:
+        module._sandbox_status_result(packet, "post-inspection", 8)
+    except module.RuntimeLauncherError as error:
+        if error.code != "status-sequence": raise
+    else:
+        raise AssertionError("cleanup status replay accepted")
+    unavailable = module.RuntimeLauncherUnavailable("fixed-primitive")
+    unavailable_packet = module._namespace_failure_packet(9, unavailable, [])
+    try:
+        module._sandbox_status_result(unavailable_packet, "post-inspection", 9)
+    except module.RuntimeLauncherUnavailable as error:
+        if error.primitive != "fixed-primitive": raise
+    else:
+        raise AssertionError("unavailable status lost without cleanup")
+
+
 def namespace_transfer_diagnostic_contracts(module):
     expected = (
         ("user", "namespace-open-user"),
@@ -2652,6 +2714,7 @@ def parent():
     identity_map_contracts(module)
     forged_preexec_identity_contract(module)
     namespace_owner_cleanup_contract(module)
+    cleanup_error_status_contract(module)
     namespace_transfer_diagnostic_contracts(module)
     production_operation_contracts(module)
     causal_scope["capsule_contract"](module)

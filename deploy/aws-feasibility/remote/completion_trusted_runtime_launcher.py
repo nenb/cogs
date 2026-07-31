@@ -2062,8 +2062,30 @@ def _validate_child_pid_namespace_authority(handle: _FdLease, held: tuple[_FdLea
     try: parent_exact = (os.fstat(parent.fd).st_dev, os.fstat(parent.fd).st_ino) == baselines[3]
     finally: parent.close(ops)
     _require(owner_exact and parent_exact, "child PID namespace ownership relation", "namespace-child-pid-ownership")
+def _bounded_nested_error(error: BaseException, attribute: str) -> BaseException:
+    current = error
+    for _depth in range(8):
+        nested = getattr(current, attribute, None)
+        candidate = nested[0] if attribute == "failures" and isinstance(nested, (list, tuple)) and nested else nested
+        if not isinstance(candidate, BaseException): break
+        current = candidate
+    return current
+
+def _safe_error_metadata(error: BaseException) -> tuple[str, str]:
+    code = getattr(error, "code", type(error).__name__)
+    kind = type(error).__name__
+    lexical = re.compile(r"[A-Za-z0-9._-]{1,40}\Z")
+    return (
+        code if type(code) is str and lexical.fullmatch(code) else "invalid-code",
+        kind if lexical.fullmatch(kind) else "invalid-kind",
+    )
+
 def _namespace_failure_packet(sequence: int, primary: BaseException, failures: list[BaseException]) -> bytes:
-    if failures: return _status("error", sequence, code="cleanup-uncertain", kind="RuntimeLauncherCleanupError")
+    if failures:
+        primary_code, primary_kind = _safe_error_metadata(_bounded_nested_error(primary, "primary"))
+        failure_code, failure_kind = _safe_error_metadata(_bounded_nested_error(failures[0], "failures"))
+        return _status("cleanup-error", sequence, primary_code=primary_code, primary_kind=primary_kind,
+                       failure_code=failure_code, failure_kind=failure_kind)
     if isinstance(primary, RuntimeLauncherUnavailable): return _status("unavailable", sequence, primitive=primary.primitive, message=str(primary))
     return _status("error", sequence, code=getattr(primary, "code", "launcher-rejected"), kind=type(primary).__name__)
 def _open_self_namespace_handle(ops: Any, name: str, tag: str) -> _FdLease:
@@ -2281,7 +2303,8 @@ def _close_socket(endpoint: socket.socket | None, ops: Any, purpose: str) -> Non
         _FdLease(endpoint.detach(), purpose).close(ops)
 def _parse_sandbox_status(raw: bytes, event: str, sequence: int) -> dict[str, object]:
     value = _strict_json(raw, False, 16384, "sandbox status")
-    extras = { "userns": set(), "uid-mapped": set(), "groups-cleared": set(), "identity-mapped": set(), "namespace": set(), "child": {"pid"}, "boundary": {"observations"}, "post-inspection": {"inspection"}, "final-inspection": {"inspection"}, "exit": {"status"}, "error": {"code", "kind"}, "unavailable": {"message", "primitive"}, "prepare-root": set(), "release-child": set(), "finalize-root": set(), }
+    cleanup_fields = {"primary_code", "primary_kind", "failure_code", "failure_kind"}
+    extras = { "userns": set(), "uid-mapped": set(), "groups-cleared": set(), "identity-mapped": set(), "namespace": set(), "child": {"pid"}, "boundary": {"observations"}, "post-inspection": {"inspection"}, "final-inspection": {"inspection"}, "exit": {"status"}, "error": {"code", "kind"}, "cleanup-error": cleanup_fields, "unavailable": {"message", "primitive"}, "prepare-root": set(), "release-child": set(), "finalize-root": set(), }
     _require(type(value) is dict and event in extras and set(value) == {"event", "sequence", "version"} | extras[event], "sandbox status closed shape", "status-shape")
     identity = value["version"] == _RESULT_VERSION and value["event"] == event
     _require(identity and type(value["sequence"]) is int and value["sequence"] == sequence, "sandbox status identity/sequence", "status-sequence")
@@ -2289,6 +2312,9 @@ def _parse_sandbox_status(raw: bytes, event: str, sequence: int) -> dict[str, ob
     if "status" in value: _require(type(value["status"]) is int and 0 <= value["status"] <= _UINT_MAX, "sandbox wait status", "status-wait")
     if event == "error":
         _require(all(type(value[name]) is str and re.fullmatch(r"[A-Za-z0-9._-]{1,127}", value[name]) for name in ("code", "kind")), "sandbox error fields", "status-error")
+    if event == "cleanup-error":
+        exact = all(type(value[name]) is str and re.fullmatch(r"[A-Za-z0-9._-]{1,40}", value[name]) for name in cleanup_fields)
+        _require(exact, "sandbox cleanup error fields", "status-cleanup-error")
     if event == "unavailable":
         _require(type(value["primitive"]) is str and re.fullmatch(r"[A-Za-z0-9._:-]{1,127}", value["primitive"]) and type(value["message"]) is str and 1 <= len(value["message"].encode()) <= 1024, "sandbox unavailable fields", "status-unavailable")
     if event == "boundary":
@@ -2315,8 +2341,12 @@ def _sandbox_status_result(raw: bytes, event: str, sequence: int) -> dict[str, o
         raise RuntimeLauncherUnavailable(unavailable["primitive"], unavailable["message"])
     if observed == "error":
         failure = _parse_sandbox_status(raw, "error", sequence)
-        if failure["code"] == "cleanup-uncertain": raise RuntimeLauncherCleanupError(None, [RuntimeLauncherError("inner cleanup uncertain", "inner-cleanup")])
         raise RuntimeLauncherError(f"sandbox setup failed: {failure['kind']}", failure["code"])
+    if observed == "cleanup-error":
+        failure = _parse_sandbox_status(raw, "cleanup-error", sequence)
+        primary = RuntimeLauncherError(f"inner primary: {failure['primary_kind']}", failure["primary_code"])
+        cleanup = RuntimeLauncherError(f"inner cleanup: {failure['failure_kind']}", failure["failure_code"])
+        raise RuntimeLauncherCleanupError(primary, [cleanup])
     return _parse_sandbox_status(raw, event, sequence)
 def _recv_status(endpoint: socket.socket, deadline: float, event: str = "", sequence: int = 0) -> dict[str, object]:
     remaining = deadline - time.monotonic()
@@ -2405,12 +2435,8 @@ def _tool_creator_settlement_packet(
 ) -> None:
     _deadline_ready(endpoint, deadline, "creator-settlement-deadline")
     raw = endpoint.recv(16384, socket.MSG_DONTWAIT)
-    value = _parse_sandbox_status(raw, "error", 2)
-    _require(
-        value["code"] != "cleanup-uncertain",
-        "tool creator cleanup uncertain",
-        "cleanup-uncertain",
-    )
+    value = _sandbox_status_result(raw, "error", 2)
+    _require(value["event"] == "error", "tool creator settlement event", "status-sequence")
 
 def _settle_rejected_tool_transfer(
     owner: _ProcessOwner,
