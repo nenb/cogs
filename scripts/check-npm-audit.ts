@@ -6,10 +6,10 @@ const expiry = "2026-08-08T01:39:59Z";
 const expected = {
   "brace-expansion": {
     severity: "high",
-    source: 1124334,
+    source: 1130591,
     url: "https://github.com/advisories/GHSA-mh99-v99m-4gvg",
-    range: "<=5.0.7",
-    findingRange: "<=5.0.7",
+    range: ">=4.0.0 <5.0.8",
+    findingRange: "4.0.0 - 5.0.7",
     node: "node_modules/@earendil-works/pi-coding-agent/node_modules/brace-expansion",
   },
   protobufjs: {
