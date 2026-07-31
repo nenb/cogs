@@ -57,6 +57,7 @@ _AT_EMPTY_PATH, _UINT_MAX = 0x1000, (1 << 32) - 1
 (_SYS_GETDENTS64, _SYS_CLONE3, _CLONE_PIDFD) = (217, 435, 0x00001000)
 (_NS_GET_USERNS, _NS_GET_PARENT, _NS_GET_NSTYPE) = (0xB701, 0xB702, 0xB703)
 _NAMESPACE_NAMES, _NAMESPACE_BASELINE_NAMES = ("user", "mnt", "net", "pid_for_children"), ("user", "mnt", "net", "pid")
+_SELF_NAMESPACE_NAMES = _NAMESPACE_NAMES[:3]
 _DENIED_SYSCALLS = { name: int(number) for entry in """
     execve:59 socket:41 connect:42 accept:43 sendto:44 recvfrom:45 sendmsg:46 recvmsg:47 shutdown:48 bind:49 listen:50 getsockname:51 getpeername:52 socketpair:53 setsockopt:54 getsockopt:55 accept4:288 recvmmsg:299 sendmmsg:307
     io_uring_setup:425 io_uring_enter:426 io_uring_register:427 clone:56 fork:57 vfork:58 clone3:435 unshare:272 setns:308
@@ -943,6 +944,7 @@ class _ProcessOwner(make_dataclass(
         deadline: float | None = None,
         case: str | None = None,
         role: str | None = None,
+        namespace_baselines: tuple[tuple[int, int], ...] | None = None,
     ) -> _ProcessLease:
         # Non-socket endpoints exist only in portable adapters.  Production
         # transfers always bind the received kernel pidfd identity.
@@ -953,7 +955,8 @@ class _ProcessOwner(make_dataclass(
             remaining = deadline - time.monotonic()
             ready = remaining > 0 and bool(select.select([endpoint], [], [], remaining)[0])
             _require(ready, "descendant transfer deadline", "process-transfer-deadline")
-        bound = socket.CMSG_SPACE(array("i").itemsize)
+        right_count = 2 if namespace_baselines is not None else 1
+        bound = socket.CMSG_SPACE(right_count * array("i").itemsize)
         bound += socket.CMSG_SPACE(struct.calcsize("3i"))
         flags_in = socket.MSG_CMSG_CLOEXEC | socket.MSG_DONTWAIT
         raw, ancillary, flags, _address = endpoint.recvmsg(4096, bound, flags_in)
@@ -962,7 +965,14 @@ class _ProcessOwner(make_dataclass(
         lease: _ProcessLease | None = None
         try:
             truncated = flags & (socket.MSG_TRUNC | socket.MSG_CTRUNC)
-            _require(_receive_flags_exact(flags) and not truncated and len(rights) == 1, "descendant transfer truncation", "process-transfer-shape")
+            kinds = tuple((level, kind) for level, kind, _data in ancillary)
+            exact_ancillary = ((socket.SOL_SOCKET, socket.SCM_CREDENTIALS), (socket.SOL_SOCKET, socket.SCM_RIGHTS))
+            exact_shape = _receive_flags_exact(flags) and not truncated and len(rights) == right_count
+            if namespace_baselines is not None: exact_shape = exact_shape and kinds == exact_ancillary
+            _require(exact_shape, "descendant transfer truncation/order/count", "process-transfer-shape")
+            if namespace_baselines is not None:
+                cloexec = all(fcntl.fcntl(right.fd, fcntl.F_GETFD) & fcntl.FD_CLOEXEC for right in rights)
+                _require(cloexec, "descendant transfer descriptor flags", "process-transfer-cloexec")
             expected_credentials = (leader.pid, os.geteuid(), os.getegid())
             _require(credentials == expected_credentials, "descendant transfer credentials", "process-transfer-credentials")
             value = _strict_json(raw, False, 4096, "descendant transfer")
@@ -1004,6 +1014,8 @@ class _ProcessOwner(make_dataclass(
                 value["executable"],
             )
             _require(observed == asserted, "descendant transfer identity", "process-transfer-identity")
+            if namespace_baselines is not None:
+                _validate_child_pid_namespace_authority(rights[1], leader.namespace_handles, namespace_baselines, self.ops)
             if not portable:
                 remaining = deadline - time.monotonic()
                 ready = remaining > 0 and bool(select.select([endpoint], [], [], remaining)[0])
@@ -1011,12 +1023,14 @@ class _ProcessOwner(make_dataclass(
                 trailing = endpoint.recv(1, socket.MSG_DONTWAIT)
                 _require(trailing == b"", "descendant transfer replay", "process-transfer-replay")
                 self.transfers.add(value["transfer"])
+            if namespace_baselines is not None:
+                leader.namespace_handles = (*leader.namespace_handles, rights[1])
             leader.descendants = (*leader.descendants, lease)
             return lease
         except BaseException as error:
             primary = error
         failures: list[BaseException] = []
-        if not modeled_endpoint and lease is not None and lease in self.processes and lease not in leader.descendants:
+        if (not modeled_endpoint or namespace_baselines is not None) and lease is not None and lease in self.processes and lease not in leader.descendants:
             try:
                 _require(lease.pidfd is not None, "rejected transfer pidfd", "process-authority")
                 lease.pidfd.close(self.ops)
@@ -1321,7 +1335,9 @@ def _stop_process(lease: _ProcessLease, primary: BaseException | None, ops: Any 
             failures.append(error)
     if lease.reaped:
         for handle in reversed(lease.namespace_handles):
-            if handle.state is _FdState.OWNED:
+            if handle.state is _FdState.CLOSE_UNCERTAIN:
+                failures.append(handle.close_error or RuntimeLauncherError("namespace descriptor poison", "fd-lease-poison"))
+            elif handle.state is _FdState.OWNED:
                 try: handle.close(actual_ops)
                 except BaseException as error: failures.append(error)
         if pidfd is not None and pidfd.state is _FdState.CLOSE_UNCERTAIN:
@@ -1741,6 +1757,7 @@ def _namespace_owner(
         closing, namespace_handles = namespace_handles, ()
         _close_leases(ops, closing)
         _recv_status(status, time.monotonic() + _SETUP_SECONDS, "prepare-root", 1)
+        sequence = 2
         permission_stage = "materialize"
         mount_intents.add("materialized-root")
         _materialize_root(ops, role, descriptors, rows, report, root)
@@ -1781,10 +1798,15 @@ def _namespace_owner(
             transfer_case,
             "tool",
         )
-        rights = array("i", (child_lease.pidfd.fd,))
+        _require(child_lease.pidfd is not None, "tool child pidfd authority", "process-authority")
+        pid_namespace = _open_child_pid_namespace_handle(ops, child_lease)
+        child_lease.namespace_handles = (pid_namespace,)
+        rights = array("i", (child_lease.pidfd.fd, pid_namespace.fd))
         ancillary = ((socket.SOL_SOCKET, socket.SCM_RIGHTS, rights),)
         written = transfer.sendmsg((packet,), ancillary, socket.MSG_DONTWAIT)
         _require(written == len(packet), "tool child transfer", "process-transfer-send")
+        pid_namespace.close(ops)
+        child_lease.namespace_handles = ()
         transfer.shutdown(socket.SHUT_WR)
         _lifecycle_control_recv(
             transfer,
@@ -1927,10 +1949,11 @@ def _final_mount_check(pid: int, ops: Any | None = None) -> tuple[bool, bool, bo
 def _namespace_baselines() -> tuple[tuple[int, int], ...]:
     return tuple((info.st_dev, info.st_ino) for name in _NAMESPACE_BASELINE_NAMES for info in (os.stat(f"/proc/self/ns/{name}"),))
 def _validate_namespace_authority(handles: tuple[_FdLease, ...], baselines: tuple[tuple[int, int], ...], ops: Any) -> dict[str, bool]:
-    _require(len(handles) == len(_NAMESPACE_NAMES) == len(baselines), "namespace handle count", "namespace-transfer-count")
+    count = len(handles)
+    _require(count in (3, 4) and count == len(baselines), "namespace handle count", "namespace-transfer-count")
     identities = tuple((info.st_dev, info.st_ino) for handle in handles for info in (os.fstat(handle.fd),))
     cloexec = all(fcntl.fcntl(handle.fd, fcntl.F_GETFD) & fcntl.FD_CLOEXEC for handle in handles)
-    expected_types = (_CLONE_NEWUSER, _CLONE_NEWNS, _CLONE_NEWNET, _CLONE_NEWPID)
+    expected_types = (_CLONE_NEWUSER, _CLONE_NEWNS, _CLONE_NEWNET, _CLONE_NEWPID)[:count]
     observed_types = tuple(fcntl.ioctl(handle.fd, _NS_GET_NSTYPE) for handle in handles)
     exact = cloexec and len(set(identities)) == len(identities) and observed_types == expected_types
     exact = exact and all(observed != baseline for observed, baseline in zip(identities, baselines))
@@ -1940,11 +1963,29 @@ def _validate_namespace_authority(handles: tuple[_FdLease, ...], baselines: tupl
         owner = _FdLease(fcntl.ioctl(handle.fd, _NS_GET_USERNS), "namespace-user-owner")
         try: owners.append((os.fstat(owner.fd).st_dev, os.fstat(owner.fd).st_ino) == identities[0])
         finally: owner.close(ops)
-    parent = _FdLease(fcntl.ioctl(handles[3].fd, _NS_GET_PARENT), "pid-namespace-parent")
-    try: parent_exact = (os.fstat(parent.fd).st_dev, os.fstat(parent.fd).st_ino) == baselines[3]
-    finally: parent.close(ops)
+    parent_exact = True
+    if count == 4:
+        parent = _FdLease(fcntl.ioctl(handles[3].fd, _NS_GET_PARENT), "pid-namespace-parent")
+        try: parent_exact = (os.fstat(parent.fd).st_dev, os.fstat(parent.fd).st_ino) == baselines[3]
+        finally: parent.close(ops)
     _require(all(owners) and parent_exact, "namespace ownership relation", "namespace-ownership")
     return {"namespace_handles_exact": exact, "namespace_ownership_exact": all(owners) and parent_exact}
+def _validate_child_pid_namespace_authority(handle: _FdLease, held: tuple[_FdLease, ...], baselines: tuple[tuple[int, int], ...], ops: Any) -> None:
+    _require(len(held) == 3 and len(baselines) == 4, "held namespace handle count", "namespace-transfer-count")
+    identity = (os.fstat(handle.fd).st_dev, os.fstat(handle.fd).st_ino)
+    held_identities = tuple((os.fstat(item.fd).st_dev, os.fstat(item.fd).st_ino) for item in held)
+    cloexec = bool(fcntl.fcntl(handle.fd, fcntl.F_GETFD) & fcntl.FD_CLOEXEC)
+    namespace_type = fcntl.ioctl(handle.fd, _NS_GET_NSTYPE)
+    exact = cloexec and namespace_type == _CLONE_NEWPID
+    exact = exact and identity not in set(held_identities) | set(baselines)
+    _require(exact, "child PID namespace identity", "namespace-child-pid-identity")
+    owner = _FdLease(fcntl.ioctl(handle.fd, _NS_GET_USERNS), "child-pid-namespace-user-owner")
+    try: owner_exact = (os.fstat(owner.fd).st_dev, os.fstat(owner.fd).st_ino) == held_identities[0]
+    finally: owner.close(ops)
+    parent = _FdLease(fcntl.ioctl(handle.fd, _NS_GET_PARENT), "child-pid-namespace-parent")
+    try: parent_exact = (os.fstat(parent.fd).st_dev, os.fstat(parent.fd).st_ino) == baselines[3]
+    finally: parent.close(ops)
+    _require(owner_exact and parent_exact, "child PID namespace ownership relation", "namespace-child-pid-ownership")
 def _namespace_failure_packet(sequence: int, primary: BaseException, failures: list[BaseException]) -> bytes:
     if failures: return _status("error", sequence, code="cleanup-uncertain", kind="RuntimeLauncherCleanupError")
     if isinstance(primary, RuntimeLauncherUnavailable): return _status("unavailable", sequence, primitive=primary.primitive, message=str(primary))
@@ -1954,14 +1995,16 @@ def _open_self_namespace_handle(ops: Any, name: str, tag: str) -> _FdLease:
     except BaseException as error: raise RuntimeLauncherError("self namespace open failed", f"namespace-open-{tag}") from error
 def _open_self_namespace_authority(ops: Any, baselines: tuple[tuple[int, int], ...]) -> tuple[tuple[_FdLease, ...], dict[str, bool]]:
     handles: list[_FdLease] = []
-    tags = ("user", "mnt", "net", "pid-child")
     try:
-        for name, tag in zip(_NAMESPACE_NAMES, tags): handles.append(_open_self_namespace_handle(ops, name, tag))
+        for name in _SELF_NAMESPACE_NAMES: handles.append(_open_self_namespace_handle(ops, name, name))
         leased = tuple(handles)
-        return leased, _validate_namespace_authority(leased, baselines, ops)
+        return leased, _validate_namespace_authority(leased, baselines[:3], ops)
     except BaseException as primary:
         _close_leases(ops, handles, primary)
         raise
+def _open_child_pid_namespace_handle(ops: Any, child: _ProcessLease) -> _FdLease:
+    try: return _FdLease(ops.open(f"/proc/{child.pid}/ns/pid", os.O_RDONLY | os.O_CLOEXEC), "namespace:pid-child")
+    except BaseException as error: raise RuntimeLauncherError("child PID namespace open failed", "namespace-open-pid-child") from error
 def _inspect_sandbox_namespace_authority(lease: _ProcessLease, ops: Any) -> dict[str, bool]:
     handles: list[_FdLease] = []
     try:
@@ -2142,7 +2185,7 @@ def _recv_status(endpoint: socket.socket, deadline: float, event: str = "", sequ
 def _receive_namespace_authority(endpoint: socket.socket, lease: _ProcessLease, baselines: tuple[tuple[int, int], ...], ops: Any, deadline: float) -> dict[str, bool]:
     remaining = deadline - time.monotonic()
     _require(remaining > 0 and bool(select.select([endpoint], [], [], remaining)[0]), "namespace transfer deadline", "namespace-transfer-deadline")
-    bound = socket.CMSG_SPACE(4 * array("i").itemsize) + socket.CMSG_SPACE(struct.calcsize("3i"))
+    bound = socket.CMSG_SPACE(3 * array("i").itemsize) + socket.CMSG_SPACE(struct.calcsize("3i"))
     raw, ancillary, flags, _address = endpoint.recvmsg(16384, bound, socket.MSG_CMSG_CLOEXEC | socket.MSG_DONTWAIT)
     credentials, handles = _leased_credentials(ancillary, ops, require_rights=None, missing_code="namespace-transfer-credentials")
     primary: BaseException | None = None
@@ -2156,10 +2199,10 @@ def _receive_namespace_authority(endpoint: socket.socket, lease: _ProcessLease, 
             _require(kinds == ((socket.SOL_SOCKET, socket.SCM_CREDENTIALS),) and not handles, "namespace error ancillary", "namespace-transfer-shape")
             return _sandbox_status_result(raw, "namespace", 1)  # type: ignore[return-value]
         exact_ancillary = ((socket.SOL_SOCKET, socket.SCM_CREDENTIALS), (socket.SOL_SOCKET, socket.SCM_RIGHTS))
-        _require(kinds == exact_ancillary and len(handles) == 4, "namespace transfer shape/order", "namespace-transfer-shape")
+        _require(kinds == exact_ancillary and len(handles) == 3, "namespace transfer shape/order", "namespace-transfer-shape")
         _parse_sandbox_status(raw, "namespace", 1)
         lease.namespace_handles = handles
-        facts = _validate_namespace_authority(handles, baselines, ops)
+        facts = _validate_namespace_authority(handles, baselines[:3], ops)
         return facts
     except BaseException as error: primary = error
     lease.namespace_handles = ()
@@ -2301,6 +2344,7 @@ def _run_tool_with_ops( ops: Any, role: str, report: dict[str, object], descript
                 time.monotonic() + _SETUP_SECONDS,
                 transfer_case,
                 "tool",
+                namespace_baselines,
             )
         except BaseException as transfer_error:
             if isinstance(transfer_parent, socket.socket):
