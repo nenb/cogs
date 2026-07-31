@@ -5,7 +5,7 @@ from enum import Enum
 import ctypes, errno, fcntl, hashlib, json
 import os, re, resource, select, signal, socket
 import stat, struct, sys, time, types
-from typing import Any, NoReturn, Optional
+from typing import Any, Callable, NoReturn, Optional
 _VERSION = "cogs.trusted-runtime-closure/v1"
 _ADMISSION_VERSION = "cogs.runtime-source-admission/v1"
 _ADMISSION_MODES = {
@@ -1767,6 +1767,9 @@ def _namespace_owner(
     mount_intents: set[str] = set()
     sequence = 0
     permission_stage = "initial"
+    def set_permission_stage(stage: str) -> None:
+        nonlocal permission_stage
+        permission_stage = stage
     inherited = list(_received_leases(descriptors))
     namespace_handles: tuple[_FdLease, ...] = ()
     exec_lease: _FdLease | None = None
@@ -1813,18 +1816,21 @@ def _namespace_owner(
         _materialize_root(ops, role, descriptors, rows, report, root)
         descriptor_index = next(row.descriptor_index for row in rows if row.tool_index == _TOOL_INDEX[role] and row.object_index == 0)
         selected = descriptors[descriptor_index]
+        permission_stage = "exec-fd"
         selected_info = os.fstat(selected)
         planned_executable = (selected_info.st_dev, selected_info.st_ino)
-        permission_stage = "exec-authority"
         if selected == 198: os.set_inheritable(selected, False)
         else: os.dup2(selected, 198, inheritable=False)
         exec_lease = _FdLease(198, "sole-executable-authority")
+        permission_stage = "inherited-close"
         _close_leases(ops, inherited)
         inherited.clear()
+        permission_stage = "pipe"
         exec_status_read, exec_status_write = os.pipe2(os.O_CLOEXEC)
         exec_read_lease = _FdLease(exec_status_read, "exec-status-read")
         exec_write_lease = _FdLease(exec_status_write, "exec-status-write")
         _require(all(fcntl.fcntl(fd, fcntl.F_GETFD) & fcntl.FD_CLOEXEC for fd in (exec_status_read, exec_status_write)), "exec status pipe flags", "exec-status-cloexec")
+        permission_stage = "child-spawn"
         child, child_lease, child_gate = child_owner.spawn()
         if child == 0:
             transfer.close()
@@ -1851,10 +1857,12 @@ def _namespace_owner(
             "tool",
         )
         _require(child_lease.pidfd is not None, "tool child pidfd authority", "process-authority")
+        permission_stage = "pid-ns-open"
         pid_namespace = _open_child_pid_namespace_handle(ops, child_lease)
         child_lease.namespace_handles = (pid_namespace,)
         rights = array("i", (child_lease.pidfd.fd, pid_namespace.fd))
         ancillary = ((socket.SOL_SOCKET, socket.SCM_RIGHTS, rights),)
+        permission_stage = "transfer"
         written = transfer.sendmsg((packet,), ancillary, socket.MSG_DONTWAIT)
         _require(written == len(packet), "tool child transfer", "process-transfer-send")
         transfer.shutdown(socket.SHUT_WR)
@@ -1863,6 +1871,7 @@ def _namespace_owner(
             time.monotonic() + _SETUP_SECONDS,
             b"A",
         )
+        permission_stage = "release"
         child_owner.release(child_lease)
         child_lease.pidfd.close(ops)
         child_lease.pidfd = None
@@ -1878,21 +1887,24 @@ def _namespace_owner(
         boundary = _parse_sandbox_status(exec_status, "boundary", 3)
         _require(status.send(exec_status) == len(exec_status), "boundary observation send", "boundary-send")
         sequence = 4
-        post_inspection = _post_child_inspection(ops, child, rows, role, report, planned_executable)
+        post_inspection = _post_child_inspection(ops, child, rows, role, report, planned_executable, set_permission_stage)
         post_packet = _status("post-inspection", sequence, inspection=post_inspection)
         _require(len(post_packet) <= _INSPECTION_PACKET and status.send(post_packet) == len(post_packet), "post inspection send", "owner-inspection-send")
         _recv_status(status, time.monotonic() + _SETUP_SECONDS, "finalize-root", 3)
         final_flags = _MS_REMOUNT | _MS_RDONLY | _MS_NOSUID | _MS_NODEV | _MS_NOEXEC
         mount_intents.add("readonly-root")
+        permission_stage = "remount"
         ops.mount(None, root.encode(), None, final_flags, None)
         sequence = 5
-        final_inspection = _final_child_inspection(ops, child, rows, role, report, planned_executable, post_inspection, namespace_handles, owner_limits_sha256)
+        final_inspection = _final_child_inspection(ops, child, rows, role, report, planned_executable, post_inspection, namespace_handles, owner_limits_sha256, set_permission_stage)
         final_packet = _status("final-inspection", sequence, inspection=final_inspection)
         _require(len(final_packet) <= _INSPECTION_PACKET and status.send(final_packet) == len(final_packet), "final inspection send", "owner-inspection-send")
+        permission_stage = "wait"
         wait_status = _wait_bounded(child_lease, time.monotonic() + _RUN_SECONDS)
         _require(wait_status is not None, "namespace child deadline", "child-reap-deadline")
         _require(child_lease.reaped, "namespace child exact reap", "child-reap")
         child_lease = None
+        permission_stage = "unmount"
         if os.path.ismount(root): ops.umount(root.encode())
         _require(not os.path.ismount(root), "materialized mount remains", "mount-cleanup")
         mount_intents.remove("materialized-root")
@@ -1918,6 +1930,7 @@ def _namespace_owner(
             except BaseException as error: failures.append(error)
         if "materialized-root" in mount_intents:
             try:
+                permission_stage = "unmount"
                 if os.path.ismount(root): ops.umount(root.encode())
                 _require(not os.path.ismount(root), "materialized mount remains", "mount-cleanup")
             except BaseException as error: failures.append(error)
@@ -2072,7 +2085,11 @@ def _bounded_nested_error(error: BaseException, attribute: str) -> BaseException
     return current
 
 def _safe_error_metadata(error: BaseException) -> tuple[str, str]:
-    code = getattr(error, "code", type(error).__name__)
+    error_number = getattr(error, "errno", None)
+    if isinstance(error, OSError) and type(error_number) is int and 0 < error_number <= 4095:
+        code = f"os-{error_number}"
+    else:
+        code = getattr(error, "code", type(error).__name__)
     kind = type(error).__name__
     lexical = re.compile(r"[A-Za-z0-9._-]{1,40}\Z")
     return (
@@ -2177,13 +2194,15 @@ def _parse_limits(raw: bytes) -> tuple[tuple[str, int | None, int | None, str], 
 def _limits_digest(rows: tuple[tuple[str, int | None, int | None, str], ...]) -> str:
     return _digest([list(row) for row in rows])
 
-def _owner_namespace_facts(ops: _SystemOps, pid: int, handles: tuple[_FdLease, ...]) -> dict[str, bool]:
+def _owner_namespace_facts(ops: _SystemOps, pid: int, handles: tuple[_FdLease, ...], set_stage: Callable[[str], None]) -> dict[str, bool]:
+    set_stage("final-ns")
     _require(len(handles) == 4, "owner namespace handle count", "owner-inspection-namespace")
     identities = tuple((os.fstat(handle.fd).st_dev, os.fstat(handle.fd).st_ino) for handle in handles)
     result: dict[str, bool] = {}
     for name, fact, index in (("user", "user_namespace_exact", 0), ("pid", "pid_namespace_exact", 3), ("mnt", "mount_namespace_exact", 1), ("net", "network_namespace_exact", 2)):
         observed = os.stat(f"/proc/{pid}/ns/{name}")
         result[fact] = (observed.st_dev, observed.st_ino) == identities[index]
+    set_stage("final-status")
     status = _parse_proc_status(_proc_bytes(f"/proc/{pid}/status", 65536, ops))
     result["pid_one"] = bool(status["nspid"]) and status["nspid"][-1] == 1
     result["groups_empty"] = status["groups"] == ()
@@ -2193,18 +2212,24 @@ def _owner_namespace_facts(ops: _SystemOps, pid: int, handles: tuple[_FdLease, .
     _require(all(result.values()), "owner namespace facts", "owner-inspection-namespace")
     return result
 
-def _post_child_inspection(ops: _SystemOps, pid: int, rows: tuple[_GenerationRow, ...], role: str, report: dict[str, object], planned_executable: tuple[int, int]) -> dict[str, object]:
+def _post_child_inspection(ops: _SystemOps, pid: int, rows: tuple[_GenerationRow, ...], role: str, report: dict[str, object], planned_executable: tuple[int, int], set_stage: Callable[[str], None]) -> dict[str, object]:
+    set_stage("post-fd")
     descriptors = _descriptor_snapshot(ops, pid)
     _require(descriptors == (0, 1, 2), "post-exec descriptor table", "exec-fd-table")
+    set_stage("post-maps")
     _raw, mapping = _mapping_inspection(ops, pid, rows, role, report, planned_executable)
     return {"fds": list(descriptors), "mapping": mapping}
 
-def _final_child_inspection(ops: _SystemOps, pid: int, rows: tuple[_GenerationRow, ...], role: str, report: dict[str, object], planned_executable: tuple[int, int], post: dict[str, object], handles: tuple[_FdLease, ...], limits_sha256: str) -> dict[str, object]:
+def _final_child_inspection(ops: _SystemOps, pid: int, rows: tuple[_GenerationRow, ...], role: str, report: dict[str, object], planned_executable: tuple[int, int], post: dict[str, object], handles: tuple[_FdLease, ...], limits_sha256: str, set_stage: Callable[[str], None]) -> dict[str, object]:
+    set_stage("final-fd")
     descriptors = _descriptor_snapshot(ops, pid)
+    set_stage("final-maps")
     _raw, mapping = _mapping_inspection(ops, pid, rows, role, report, planned_executable)
     _require({"fds": list(descriptors), "mapping": mapping} == post, "final fd/mapping stability", "final-inspection-drift")
+    set_stage("final-mount")
     root_exact, no_proc, host_absent, checkout_absent = _final_mount_check(pid, ops)
-    namespaces = _owner_namespace_facts(ops, pid, handles)
+    namespaces = _owner_namespace_facts(ops, pid, handles, set_stage)
+    set_stage("final-limits")
     child_limits = _limits_digest(_parse_limits(_proc_bytes(f"/proc/{pid}/limits", 65536, ops)))
     _require(child_limits == limits_sha256, "final limits drift", "owner-inspection-limits")
     root = {"checkout_absent": checkout_absent, "host_paths_absent": host_absent, "root_has_no_proc": no_proc, "root_readonly_noexec": root_exact}
