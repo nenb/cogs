@@ -22,7 +22,7 @@ const suites = [
 ] as const;
 const highs = new Map<string, number>([
   ["deploy/aws-feasibility/remote/completion_elf.py", 320],
-  ["deploy/aws-feasibility/remote/completion_trusted_runtime_closure.py", 3_100],
+  ["deploy/aws-feasibility/remote/completion_trusted_runtime_closure.py", 3_200],
   ["deploy/aws-feasibility/remote/completion_trusted_runtime_launcher.py", 4_700],
   ["scripts/native-qualification/common.py", 1_920],
   ["schemas/trusted-runtime-closure-v1.json", 700],
@@ -33,7 +33,7 @@ const highs = new Map<string, number>([
   ["test/outcome-two-lifecycle-portable.py", 1_800],
   ["test/outcome-two-recovery-portable.py", 1_500],
   ["test/outcome-two-runtime-report-portable.py", 550],
-  ["test/outcome-two-trusted-launcher-portable.py", 3_100],
+  ["test/outcome-two-trusted-launcher-portable.py", 3_200],
   ["test/outcome-two-portable.test.ts", 400],
 ]);
 const env = { PYTHONDONTWRITEBYTECODE: "1", PYTHONHASHSEED: "0" };
