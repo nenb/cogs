@@ -1784,8 +1784,8 @@ class _BIKernel:
             return (f"NSpid:\t{self.child}\t1\n".encode() + b"Groups:\t\nCapInh:\t0000000000000000\n"
                     b"CapPrm:\t0000000000000000\nCapEff:\t0000000000000000\nCapBnd:\t0000000000000000\n"
                     b"CapAmb:\t0000000000000000\nNoNewPrivs:\t1\nSeccomp:\t2\n")
-        if path.endswith("/uid_map"): return f"0 {_BIos.getuid()} 1\n".encode()
-        if path.endswith("/gid_map"): return f"0 {_BIos.getgid()} 1\n".encode()
+        if path.endswith("/uid_map"): return f"{0:10d} {_BIos.getuid():10d} {1:10d}\n".encode()
+        if path.endswith("/gid_map"): return f"{0:10d} {_BIos.getgid():10d} {1:10d}\n".encode()
         if path.endswith("/mountinfo"): return b"1 0 0:1 / / ro,nosuid,nodev,noexec - tmpfs tmpfs ro\n"
         if path.endswith("/maps"): return self.maps()
         if "/map_files/" in path:
@@ -1907,6 +1907,39 @@ class _BIChildSocket:
         if _BIjson.loads(raw)["event"] == "finalize-root":
             self.k.processes[self.k.child]["exited"] = True
         return raw
+
+
+def identity_map_contracts(module):
+    parent_id = _BIos.getuid()
+    accepted = (
+        f"{0:10d} {parent_id:10d} {1:10d}\n".encode(),
+        f"0\t{parent_id}\t1\n".encode(),
+        f"0 {parent_id} 1\n".encode(),
+    )
+    for raw in accepted:
+        if not module._identity_map_exact(raw, parent_id):
+            raise AssertionError(f"valid singular identity map rejected: {raw!r}")
+    malformed = (
+        b"", b"0 0 1", b"0 0 1\n\n", b"0 0 1\n0 0 1\n",
+        b"+0 0 1\n", b"-0 0 1\n", b"00 0 1\n", b"0 00 1\n", b"0 0 01\n",
+        b"0 0 1 \n", b"0\v0 1\n", b"0 0\x001\n",
+        b"4294967296 0 1\n", b"0 4294967296 1\n", b"0 0 4294967296\n",
+        b" " * (module._MAX_ID_MAP_BYTES + 1) + b"0 0 1\n",
+    )
+    wrong_parent = 1 if parent_id != 1 else 2
+    wrong = (
+        f"1 {parent_id} 1\n".encode(),
+        f"0 {wrong_parent} 1\n".encode(),
+        f"0 {parent_id} 2\n".encode(),
+    )
+    for raw in malformed + wrong:
+        try:
+            module._identity_map_exact(raw, parent_id)
+        except module.RuntimeLauncherError as error:
+            if error.code != "identity-map":
+                raise AssertionError(f"identity map diagnostic drift: {raw!r}") from error
+        else:
+            raise AssertionError(f"hostile identity map accepted: {raw!r}")
 
 
 def namespace_transfer_diagnostic_contracts(module):
@@ -2422,6 +2455,7 @@ def parent():
         raise AssertionError("fixed CLI issuer integration is absent")
     for job in ("A", "B", "E", "integration"):
         causal_scope["common_fixed_cli_contract"](module, job)
+    identity_map_contracts(module)
     namespace_transfer_diagnostic_contracts(module)
     production_operation_contracts(module)
     causal_scope["capsule_contract"](module)
