@@ -969,7 +969,7 @@ class _ProcessOwner(make_dataclass(
     def confirm_mapped_exec(self, lease: _ProcessLease, executable: tuple[int, int]) -> None:
         observed = (_start_time(lease.pid), os.getsid(lease.pid), os.getpgid(lease.pid))
         expected = (lease.start_time, lease.session, lease.process_group)
-        phase_exact = lease.identity_phase == "PRE_EXEC" and lease.held_executable
+        phase_exact = lease.identity_phase == "PRE_EXEC"
         target_exact = executable == lease.planned_executable
         _require(phase_exact and target_exact and observed == expected,
                  "mapped exec transition readback", "process-transition-readback")
@@ -1817,8 +1817,9 @@ def _namespace_owner(
         descriptor_index = next(row.descriptor_index for row in rows if row.tool_index == _TOOL_INDEX[role] and row.object_index == 0)
         selected = descriptors[descriptor_index]
         permission_stage = "exec-fd"
-        selected_info = os.fstat(selected)
-        planned_executable = (selected_info.st_dev, selected_info.st_ino)
+        mapping_identities = _capture_mapping_identities(descriptors, rows, role, report)
+        executable_key = next(key for key in mapping_identities if key[0] == "executable")
+        planned_executable = mapping_identities[executable_key][:2]
         if selected == 198: os.set_inheritable(selected, False)
         else: os.dup2(selected, 198, inheritable=False)
         exec_lease = _FdLease(198, "sole-executable-authority")
@@ -1871,13 +1872,11 @@ def _namespace_owner(
             time.monotonic() + _SETUP_SECONDS,
             b"A",
         )
+        child_owner.plan_exec(child_lease, planned_executable)
         permission_stage = "release"
         child_owner.release(child_lease)
-        child_lease.pidfd.close(ops)
-        child_lease.pidfd = None
         child_lease.namespace_handles = ()
         namespace_handles = (*namespace_handles, pid_namespace)
-        child_owner.processes.remove(child_lease)
         transfer.close()
         sequence = 2
         status.send(_status("child", sequence, pid=child))
@@ -1887,7 +1886,8 @@ def _namespace_owner(
         boundary = _parse_sandbox_status(exec_status, "boundary", 3)
         _require(status.send(exec_status) == len(exec_status), "boundary observation send", "boundary-send")
         sequence = 4
-        post_inspection = _post_child_inspection(ops, child, rows, role, report, planned_executable, set_permission_stage)
+        post_inspection = _post_child_inspection(ops, child, mapping_identities, role, report, planned_executable, set_permission_stage)
+        child_owner.confirm_mapped_exec(child_lease, planned_executable)
         post_packet = _status("post-inspection", sequence, inspection=post_inspection)
         _require(len(post_packet) <= _INSPECTION_PACKET and status.send(post_packet) == len(post_packet), "post inspection send", "owner-inspection-send")
         _recv_status(status, time.monotonic() + _SETUP_SECONDS, "finalize-root", 3)
@@ -1896,13 +1896,14 @@ def _namespace_owner(
         permission_stage = "remount"
         ops.mount(None, root.encode(), None, final_flags, None)
         sequence = 5
-        final_inspection = _final_child_inspection(ops, child, rows, role, report, planned_executable, post_inspection, namespace_handles, owner_limits_sha256, set_permission_stage)
+        final_inspection = _final_child_inspection(ops, child, mapping_identities, role, report, planned_executable, post_inspection, namespace_handles, owner_limits_sha256, set_permission_stage)
         final_packet = _status("final-inspection", sequence, inspection=final_inspection)
         _require(len(final_packet) <= _INSPECTION_PACKET and status.send(final_packet) == len(final_packet), "final inspection send", "owner-inspection-send")
         permission_stage = "wait"
         wait_status = _wait_bounded(child_lease, time.monotonic() + _RUN_SECONDS)
         _require(wait_status is not None, "namespace child deadline", "child-reap-deadline")
         _require(child_lease.reaped, "namespace child exact reap", "child-reap")
+        child_owner.stop(child_lease)
         child_lease = None
         permission_stage = "unmount"
         if os.path.ismount(root): ops.umount(root.encode())
@@ -1960,42 +1961,53 @@ def _maps_snapshot(pid: int, ops: Any | None = None) -> bytes:
     raw = _proc_bytes(f"/proc/{pid}/maps", _MAX_MAPS, ops)
     _parse_maps(raw)
     return raw
-def _mapping_inspection(ops: _SystemOps, pid: int, rows: tuple[_GenerationRow, ...], role: str, report: dict[str, object], planned_executable: tuple[int, int]) -> tuple[bytes, dict[str, object]]:
+def _capture_mapping_identities(descriptors: tuple[int, ...], rows: tuple[_GenerationRow, ...], role: str, report: dict[str, object]) -> dict[tuple[str, str], tuple[int, int, int, int, int]]:
+    selected = tuple(row for row in rows if row.tool_index == _TOOL_INDEX[role])
+    expected = tuple((item["role"], item["sha256"]) for item in report["tools"][_TOOL_INDEX[role]]["objects"])
+    _require(tuple((row.role, row.sha256) for row in selected) == expected, "held mapping row cardinality", "mapping-held-cardinality")
+    captured: dict[tuple[str, str], tuple[int, int, int, int, int]] = {}
+    kernel_identities: set[tuple[int, int, int]] = set()
+    for row in selected:
+        descriptor = descriptors[row.descriptor_index]
+        info = os.fstat(descriptor)
+        seals = fcntl.fcntl(descriptor, _F_GET_SEALS)
+        key = (row.role, row.sha256)
+        kernel = (os.major(info.st_dev), os.minor(info.st_dev), info.st_ino)
+        exact = stat.S_ISREG(info.st_mode) and info.st_size == row.size and seals == _EXEC_SEALS
+        exact = exact and key not in captured and kernel not in kernel_identities
+        _require(exact, "held sealed mapping identity", "mapping-held-identity")
+        captured[key] = (info.st_dev, info.st_ino, info.st_size, kernel[0], kernel[1])
+        kernel_identities.add(kernel)
+    _require(len(captured) == len(expected), "held mapping identity cardinality", "mapping-held-cardinality")
+    mapping_digest = _digest([[name, digest] for name, digest in captured])
+    _require(mapping_digest == report["tools"][_TOOL_INDEX[role]]["mapping_sha256"], "held mapping report digest", "mapping-report-digest")
+    return captured
+
+def _mapping_inspection(ops: _SystemOps, pid: int, captured: dict[tuple[str, str], tuple[int, int, int, int, int]], role: str, report: dict[str, object], planned_executable: tuple[int, int]) -> tuple[bytes, dict[str, object]]:
+    expected = tuple((item["role"], item["sha256"]) for item in report["tools"][_TOOL_INDEX[role]]["objects"])
+    _require(tuple(captured) == expected, "mapping inspection held rows", "mapping-held-cardinality")
+    reverse = {(value[3], value[4], value[1]): key for key, value in captured.items()}
+    _require(len(reverse) == len(captured), "mapping inspection identity alias", "mapping-held-identity")
     first = _maps_snapshot(pid, ops)
-    expected_rows = [row for row in rows if row.tool_index == _TOOL_INDEX[role]]
-    expected = sorted((row.role, row.sha256) for row in expected_rows)
-    observed: list[tuple[str, str, int, int]] = []
-    executable_identities: list[tuple[int, int]] = []
-    digest_roles = {row.sha256: row.role for row in expected_rows}
-    for start, end, permissions, _offset, major, minor, inode, path in _parse_maps(first):
+    observed: list[tuple[str, str]] = []
+    for _start, _end, permissions, _offset, major, minor, inode, path in _parse_maps(first):
         if b"x" not in permissions: continue
         if inode == 0:
-            _require(path in (b"[vdso]", b"[vsyscall]"), "unknown executable synthetic mapping")
+            _require(path in (b"[vdso]", b"[vsyscall]"), "unknown executable synthetic mapping", "mapping-unknown")
             continue
-        map_lease = _FdLease(ops.open(f"/proc/{pid}/map_files/{start:x}-{end:x}", os.O_RDONLY | os.O_CLOEXEC), "map-file")
-        try:
-            info = os.fstat(map_lease.fd)
-            identity = (os.major(info.st_dev), os.minor(info.st_dev), info.st_ino)
-            _require(identity == (major, minor, inode), "map_files identity mismatch", "maps-object-identity")
-            data = _read_complete(map_lease.fd, info.st_size, _MAX_OBJECT)
-        except BaseException as primary:
-            try: map_lease.close(ops)
-            except BaseException as error: raise RuntimeLauncherCleanupError(primary, [error]) from primary
-            raise
-        map_lease.close(ops)
-        digest = hashlib.sha256(data).hexdigest()
-        _require(digest in digest_roles, "final mapping closure expansion")
-        mapped_role = digest_roles[digest]
-        observed.append((mapped_role, digest, info.st_dev, info.st_ino))
-        if mapped_role == "executable": executable_identities.append((info.st_dev, info.st_ino))
+        key = reverse.get((major, minor, inode))
+        _require(key is not None, "unknown executable mapping identity", "mapping-unknown")
+        _require(key not in observed, "duplicate executable mapping identity", "mapping-duplicate")
+        observed.append(key)
     second = _maps_snapshot(pid, ops)
-    observed_generations = sorted((item[0], item[1]) for item in observed)
-    _require(first == second and observed_generations == expected, "final mapped generation identity/cardinality")
-    _require(executable_identities == [planned_executable],
-             "final executable mapping identity/cardinality", "mapping-executable-identity")
-    mapping_digest = _digest([[row.role, row.sha256] for row in expected_rows])
-    if mapping_digest != report["tools"][_TOOL_INDEX[role]]["mapping_sha256"]: raise RuntimeLauncherError("final mapping digest", "mapping-report-digest")
-    identities = [[name, digest, device, inode] for name, digest, device, inode in observed]
+    _require(first == second, "executable mapping snapshot drift", "mapping-drift")
+    _require(tuple(observed) == expected, "executable mapping identity cardinality", "mapping-cardinality")
+    executable = tuple(key for key in observed if key[0] == "executable")
+    exact_executable = len(executable) == 1 and captured[executable[0]][:2] == planned_executable
+    _require(exact_executable, "planned executable mapping identity", "mapping-executable-identity")
+    mapping_digest = _digest([[name, digest] for name, digest in observed])
+    _require(mapping_digest == report["tools"][_TOOL_INDEX[role]]["mapping_sha256"], "final mapping digest", "mapping-report-digest")
+    identities = [[name, digest, *captured[(name, digest)][:3]] for name, digest in observed]
     inspection = {
         "executable": list(planned_executable),
         "identity_sha256": _digest(identities),
@@ -2005,8 +2017,8 @@ def _mapping_inspection(ops: _SystemOps, pid: int, rows: tuple[_GenerationRow, .
     }
     return first, inspection
 
-def _final_mapping_check(ops: _SystemOps, pid: int, rows: tuple[_GenerationRow, ...], role: str, report: dict[str, object], planned_executable: tuple[int, int]) -> tuple[bytes, str]:
-    raw, inspection = _mapping_inspection(ops, pid, rows, role, report, planned_executable)
+def _final_mapping_check(ops: _SystemOps, pid: int, captured: dict[tuple[str, str], tuple[int, int, int, int, int]], role: str, report: dict[str, object], planned_executable: tuple[int, int]) -> tuple[bytes, str]:
+    raw, inspection = _mapping_inspection(ops, pid, captured, role, report, planned_executable)
     return raw, inspection["mapping_sha256"]
 def _parse_mountinfo(raw: bytes) -> tuple[tuple[object, ...], ...]:
     _require(raw.endswith(b"\n") and raw.count(b"\n") <= _MAX_MAP_LINES, "mountinfo framing", "mountinfo-framing")
@@ -2212,19 +2224,19 @@ def _owner_namespace_facts(ops: _SystemOps, pid: int, handles: tuple[_FdLease, .
     _require(all(result.values()), "owner namespace facts", "owner-inspection-namespace")
     return result
 
-def _post_child_inspection(ops: _SystemOps, pid: int, rows: tuple[_GenerationRow, ...], role: str, report: dict[str, object], planned_executable: tuple[int, int], set_stage: Callable[[str], None]) -> dict[str, object]:
+def _post_child_inspection(ops: _SystemOps, pid: int, captured: dict[tuple[str, str], tuple[int, int, int, int, int]], role: str, report: dict[str, object], planned_executable: tuple[int, int], set_stage: Callable[[str], None]) -> dict[str, object]:
     set_stage("post-fd")
     descriptors = _descriptor_snapshot(ops, pid)
     _require(descriptors == (0, 1, 2), "post-exec descriptor table", "exec-fd-table")
     set_stage("post-maps")
-    _raw, mapping = _mapping_inspection(ops, pid, rows, role, report, planned_executable)
+    _raw, mapping = _mapping_inspection(ops, pid, captured, role, report, planned_executable)
     return {"fds": list(descriptors), "mapping": mapping}
 
-def _final_child_inspection(ops: _SystemOps, pid: int, rows: tuple[_GenerationRow, ...], role: str, report: dict[str, object], planned_executable: tuple[int, int], post: dict[str, object], handles: tuple[_FdLease, ...], limits_sha256: str, set_stage: Callable[[str], None]) -> dict[str, object]:
+def _final_child_inspection(ops: _SystemOps, pid: int, captured: dict[tuple[str, str], tuple[int, int, int, int, int]], role: str, report: dict[str, object], planned_executable: tuple[int, int], post: dict[str, object], handles: tuple[_FdLease, ...], limits_sha256: str, set_stage: Callable[[str], None]) -> dict[str, object]:
     set_stage("final-fd")
     descriptors = _descriptor_snapshot(ops, pid)
     set_stage("final-maps")
-    _raw, mapping = _mapping_inspection(ops, pid, rows, role, report, planned_executable)
+    _raw, mapping = _mapping_inspection(ops, pid, captured, role, report, planned_executable)
     _require({"fds": list(descriptors), "mapping": mapping} == post, "final fd/mapping stability", "final-inspection-drift")
     set_stage("final-mount")
     root_exact, no_proc, host_absent, checkout_absent = _final_mount_check(pid, ops)

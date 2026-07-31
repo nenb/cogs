@@ -1555,6 +1555,7 @@ class _BIKernel:
                  admission_revision="0" * 40, admission_source_set="1" * 64):
         self.m, self.report, self.report_bytes = module, report, report_bytes
         self.descriptors, self.rows, self.root = descriptors, rows, root
+        self.sealed_identities = {fd: (_BI_FSTAT(fd).st_dev, _BI_FSTAT(fd).st_ino, _BI_FSTAT(fd).st_size) for fd in descriptors}
         self.admission_revision = admission_revision
         self.admission_source_set = admission_source_set
         self.outer, self.worker, self.child = 200, None, None
@@ -1565,6 +1566,8 @@ class _BIKernel:
         self.proc_stat_reads, self.mapping_identities = {}, {}
         self.parent_proc_exe_attempts = 0
         self.parent_child_sensitive_attempts = []
+        self.map_files_attempts = 0
+        self.close_counts, self.child_pidfd = {}, None
         self.owned, self.virtual, self.processes, self.sockets = {0, 1, 2}, {}, {}, []
         self.processes[self.outer] = self.proc(1)
         self.tool, self.namespace, self.input_pipe, self.output_pipe = None, None, None, None
@@ -1629,12 +1632,12 @@ class _BIKernel:
         selected = [row for row in self.rows if row.tool_index == self.m._TOOL_INDEX[self.tool]]
         identities = []
         for row in selected:
-            info = _BI_FSTAT(self.descriptors[row.descriptor_index])
-            identities.append([row.role, row.sha256, info.st_dev, info.st_ino])
+            device, inode, _size = self.sealed_identities[self.descriptors[row.descriptor_index]]
+            identities.append([row.role, row.sha256, device, inode])
         executable = next(row for row in selected if row.object_index == 0)
-        executable_info = _BI_FSTAT(self.descriptors[executable.descriptor_index])
+        executable_info = self.sealed_identities[self.descriptors[executable.descriptor_index]]
         mapping = {
-            "executable": [executable_info.st_dev, executable_info.st_ino],
+            "executable": list(executable_info[:2]),
             "identity_sha256": self.m._digest(identities),
             "mapping_count": len(selected),
             "mapping_sha256": self.report["tools"][self.m._TOOL_INDEX[self.tool]]["mapping_sha256"],
@@ -1750,18 +1753,15 @@ class _BIKernel:
             self.parent_child_sensitive_attempts.append(path)
             raise PermissionError(errno.EACCES, "parent child-proc inspection denied")
         if "/map_files/" in path:
-            index = int(path.rsplit("/", 1)[1].split("-", 1)[0], 16) // 0x1000 - 1
-            row = [r for r in self.rows if r.tool_index == self.m._TOOL_INDEX[self.tool]][index]
-            source = self.descriptors[row.descriptor_index]
-            identity = self.mapped_identity(row)
-            data = _BI_PREAD(source, row.size, 0)
-            return self.alloc("proc", path=path, data=bytearray(data), identity=identity)
+            self.map_files_attempts += 1
+            raise AssertionError("mapping inspection reopened map_files")
         if path.startswith("/proc/"):
             return self.alloc("proc", path=path)
         fd = _BI_OPEN(path, flags, mode, **kwargs)
         self.owned.add(fd)
         return fd
     def close(self, fd):
+        self.close_counts[fd] = self.close_counts.get(fd, 0) + 1
         if fd not in self.owned: return
         self.owned.remove(fd)
         value = self.virtual.pop(fd, None)
@@ -1888,16 +1888,12 @@ class _BIKernel:
         if path.endswith("/mountinfo"): return b"1 0 0:1 / / ro,nosuid,nodev,noexec - tmpfs tmpfs ro\n"
         if path.endswith("/maps"): return self.maps()
         if "/map_files/" in path:
-            index = int(path.rsplit("/", 1)[1].split("-", 1)[0], 16) // 0x1000 - 1
-            row = [r for r in self.rows if r.tool_index == self.m._TOOL_INDEX[self.tool]][index]
-            data = _BI_PREAD(self.descriptors[row.descriptor_index], row.size, 0)
-            self.virtual[next(fd for fd, v in self.virtual.items() if v.get("path") == path)]["data"] = bytearray(data)
-            return data
+            raise AssertionError("mapping inspection read map_files")
         raise AssertionError(f"unmodeled proc path: {path}")
     def mapped_identity(self, row):
         source = self.descriptors[row.descriptor_index]
-        info = _BI_FSTAT(source)
-        identity = (info.st_dev, info.st_ino)
+        device, inode, _size = self.sealed_identities[source]
+        identity = (device, inode)
         if row.object_index == 0 and self.fire("mapping-mismatch", "tool:mapping-mismatch"):
             identity = (identity[0], identity[1] + 1)
             self.mapping_identities[row.descriptor_index] = identity
@@ -2505,6 +2501,7 @@ def _modeled_namespace_execution(module, report, descriptors, rows, role):
         kernel.child = pid
         kernel.processes[pid] = kernel.proc(kernel.namespace)
         pidfd = kernel.alloc("pidfd", pid=pid)
+        kernel.child_pidfd = pidfd
         kernel.pipe_order[-2][2]["data"].extend(kernel.boundary())
         return pid, pidfd
     kernel.clone_pidfd = child_clone
@@ -2557,7 +2554,8 @@ def _modeled_namespace_execution(module, report, descriptors, rows, role):
     expected = [f"namespace:{role}:{name}" for name in
                 ("userns", "groups-cleared", "namespace", "transfer", "child", "boundary", "post-inspection", "final-inspection", "exit")]
     try:
-        if kernel.events != expected or child_exits != [0]:
+        exact_pidfd = kernel.child_pidfd is not None and kernel.close_counts.get(kernel.child_pidfd) == 1
+        if kernel.events != expected or child_exits != [0] or kernel.map_files_attempts or not exact_pidfd:
             raise AssertionError(f"namespace child state machine drift: {role} {kernel.events}/{child_exits}")
         return {
             "kind": "namespace",
@@ -2732,6 +2730,8 @@ def production_runtime_compression_contracts(module):
                     raise AssertionError(f"parent reopened transferred child executable: {case['id']}")
                 if kernel.parent_child_sensitive_attempts:
                     raise AssertionError(f"parent opened sensitive transferred child proc: {case['id']} {kernel.parent_child_sensitive_attempts}")
+                if kernel.map_files_attempts:
+                    raise AssertionError(f"map_files reopened: {case['id']}")
                 unsettled = [
                     pid for pid, process in kernel.processes.items()
                     if pid != kernel.outer and (not process["exited"] or not process["reaped"])
