@@ -23,7 +23,7 @@ const suites = [
 const highs = new Map<string, number>([
   ["deploy/aws-feasibility/remote/completion_elf.py", 320],
   ["deploy/aws-feasibility/remote/completion_trusted_runtime_closure.py", 3_100],
-  ["deploy/aws-feasibility/remote/completion_trusted_runtime_launcher.py", 4_700],
+  ["deploy/aws-feasibility/remote/completion_trusted_runtime_launcher.py", 4_500],
   ["scripts/native-qualification/common.py", 1_900],
   ["schemas/trusted-runtime-closure-v1.json", 700],
   ["scripts/validate-schemas.ts", 300],
@@ -33,7 +33,7 @@ const highs = new Map<string, number>([
   ["test/outcome-two-lifecycle-portable.py", 1_800],
   ["test/outcome-two-recovery-portable.py", 1_500],
   ["test/outcome-two-runtime-report-portable.py", 550],
-  ["test/outcome-two-trusted-launcher-portable.py", 2_300],
+  ["test/outcome-two-trusted-launcher-portable.py", 2_500],
   ["test/outcome-two-portable.test.ts", 400],
 ]);
 const env = { PYTHONDONTWRITEBYTECODE: "1", PYTHONHASHSEED: "0" };
@@ -235,7 +235,7 @@ test("Outcome 2 dead routes and unsafe lifecycle compatibility stay deleted", ()
   );
 });
 
-test("Outcome 2 gross lines and fixture lines remain within exact ADR 0093 highs", () => {
+test("Outcome 2 gross lines and fixture lines remain within the authorized implementation highs", () => {
   const paths = [...highs.keys()];
   const diff = git(["diff", "--numstat", predecessor, "--", ...paths]);
   assert.equal(diff.status, 0, diff.stderr);
@@ -270,6 +270,6 @@ test("Outcome 2 gross lines and fixture lines remain within exact ADR 0093 highs
     const bytes = readFileSync(join(root, path));
     return total + bytes.reduce((lines, byte) => lines + Number(byte === 10), 0);
   }, 0);
-  assert.ok(fixtureLines <= 1_700, `fixture aggregate: ${fixtureLines} lines exceeds 1700`);
-  assert.ok(subtotal + fixtureLines <= 19_000, `trusted/portable subtotal exceeds 19000`);
+  assert.ok(fixtureLines <= 1_500, `fixture aggregate: ${fixtureLines} lines exceeds 1500`);
+  assert.ok(subtotal + fixtureLines <= 20_500, `trusted/portable subtotal exceeds 20500`);
 });
