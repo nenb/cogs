@@ -13,6 +13,8 @@ This temporary disposition is limited to two transitive findings inside the pinn
 
 The upstream Pi package publishes an npm shrinkwrap. Root-project overrides do not replace those installed nested bytes, and no current Pi release contains fixes for both findings. Cogs therefore does not claim that the installed versions are fixed.
 
+On 2026-07-31 npm revised the existing brace-expansion advisory metadata from source `1124334` / range `<=5.0.7` to source `1130591` / range `>=4.0.0 <5.0.8`, without changing the advisory URL, severity, installed dependency path, affected installed version, or disposition scope. The exact audit gate was updated to the revised metadata; this narrows rather than broadens the affected range.
+
 The affected brace expansion is used by Pi model-pattern matching. Cogs does not expose that pattern API: launch validation supplies one exact provider and model identifier, `src/pi/session.ts` calls exact `ModelRegistry.find`, and the runtime receives a closed resource loader instead of Pi discovery. Guest or campaign input cannot invoke Pi model glob selection.
 
 The protobuf finding concerns parsing `.proto` option input. Cogs supplies no `.proto` parser input to the nested Google client and does not expose such parsing to guest or campaign input. Cogs' Envoy descriptor path is separately generated, pinned, and validated outside this nested package.
