@@ -36,7 +36,7 @@ _FIXED_INPUT = { "gzip": bytes.fromhex("1f8b08000000000002ff4bce4f2fd62d2acd2bc9
 _FIXED_OUTPUT = b"cogs-runtime-qualification-v1\n"
 (_MAX_ADMISSION, _MAX_SOURCE, _MAX_REPORT, _MAX_PACKET) = (512, 2_000_000, 128 * 1024, 256 * 1024)
 (_MAX_OBJECT, _MAX_OBJECTS, _MAX_MAPS, _MAX_MAP_LINES) = (128 * 1024 * 1024, 256, 4 * 1024 * 1024, 4096)
-_MAX_OUTPUT, _IO_CHUNK = 1024 * 1024, 1024 * 1024
+_MAX_OUTPUT, _IO_CHUNK, _MAX_ID_MAP_BYTES = 1024 * 1024, 1024 * 1024, 128
 _SETUP_SECONDS, _RUN_SECONDS, _TERM_SECONDS, _KILL_SECONDS = 10.0, 10.0, 1.0, 1.0
 _ROOT_PARENT, _ROOT_LEAF = "/tmp", "cogs-o2-runtime-v1"
 _INTERPRETER, _LIBRARY_ROOT = "/lib64/ld-linux-x86-64.so.2", "/lib/x86_64-linux-gnu"
@@ -2016,6 +2016,24 @@ def _inspect_sandbox_namespace_authority(lease: _ProcessLease, ops: Any) -> dict
         lease.namespace_handles = ()
         _close_leases(ops, handles, primary)
         raise
+def _parse_id_map(raw: bytes) -> tuple[int, int, int]:
+    _require(type(raw) is bytes and 1 <= len(raw) <= _MAX_ID_MAP_BYTES,
+             "identity map byte bound", "identity-map")
+    match = re.fullmatch(
+        rb"[ \t]*(0|[1-9][0-9]*)[ \t]+(0|[1-9][0-9]*)[ \t]+(0|[1-9][0-9]*)\n",
+        raw,
+    )
+    _require(match is not None, "identity map lexical row", "identity-map")
+    values = tuple(int(field) for field in match.groups())
+    _require(all(value <= _UINT_MAX for value in values), "identity map integer bound", "identity-map")
+    return values
+
+def _identity_map_exact(raw: bytes, parent_id: int) -> bool:
+    valid_parent = type(parent_id) is int and 0 <= parent_id <= _UINT_MAX
+    exact = valid_parent and _parse_id_map(raw) == (0, parent_id, 1)
+    _require(exact, "exact singular identity map", "identity-map")
+    return exact
+
 def _namespace_facts(pid: int, parent_uid: int | None = None, parent_gid: int | None = None, authority: _ProcessLease | None = None) -> dict[str, bool]:
     result: dict[str, bool] = {}
     for name, fact in (("user", "user_namespace_exact"), ("pid", "pid_namespace_exact"), ("mnt", "mount_namespace_exact"), ("net", "network_namespace_exact")):
@@ -2031,9 +2049,8 @@ def _namespace_facts(pid: int, parent_uid: int | None = None, parent_gid: int | 
     result["pid_one"] = bool(status["nspid"]) and status["nspid"][-1] == 1
     uid = os.getuid() if parent_uid is None else parent_uid
     gid = os.getgid() if parent_gid is None else parent_gid
-    uid_exact = _proc_bytes(f"/proc/{pid}/uid_map", 4096) == f"0 {uid} 1\n".encode()
-    gid_exact = _proc_bytes(f"/proc/{pid}/gid_map", 4096) == f"0 {gid} 1\n".encode()
-    _require(uid_exact and gid_exact, "exact singular identity maps", "identity-map")
+    uid_exact = _identity_map_exact(_proc_bytes(f"/proc/{pid}/uid_map", 4096), uid)
+    gid_exact = _identity_map_exact(_proc_bytes(f"/proc/{pid}/gid_map", 4096), gid)
     result["user_namespace_exact"] = result["user_namespace_exact"] and uid_exact and gid_exact
     result["groups_empty"] = status["groups"] == ()
     result["capability_sets_zero"] = all(status[name] == 0 for name in ("effective", "permitted", "inheritable", "bounding", "ambient"))
