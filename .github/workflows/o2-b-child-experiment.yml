@@ -49,6 +49,27 @@ jobs:
               /usr/bin/python3 -I -B scripts/experiments/child-sandbox-matrix.py ${NQ_LEGS:-}
           echo "matrix exit: $?"
 
+      - name: Stage a Debian 13 gzip for cross-distro comparison
+        continue-on-error: true
+        run: |
+          set -eu
+          mkdir -p /tmp/alt-rootfs
+          container=$(docker create debian:13-slim)
+          docker export "$container" | tar -x -C /tmp/alt-rootfs ./bin/gzip ./usr/bin/gzip 2>/dev/null || true
+          docker rm "$container" >/dev/null
+          ls -la /tmp/alt-rootfs/bin/gzip || echo "no debian gzip staged"
+
+      - name: Run exit code census
+        run: |
+          set -uo pipefail
+          runner_uid=$(/usr/bin/id -u); runner_gid=$(/usr/bin/id -g)
+          sudo -n --close-from=3 /usr/bin/prlimit --nofile=65536:65536 -- \
+            /usr/bin/setpriv --reuid="$runner_uid" --regid="$runner_gid" --clear-groups \
+              --inh-caps=+sys_admin,+sys_ptrace --ambient-caps=+sys_admin,+sys_ptrace \
+              /usr/bin/env -i LC_ALL=C PYTHONDONTWRITEBYTECODE=1 PYTHONHASHSEED=0 PATH=/usr/bin:/bin \
+              /usr/bin/python3 -I -B scripts/experiments/exit-code-census.py
+          echo "census exit: $?"
+
       - name: Kernel ring buffer tail
         if: ${{ always() }}
         run: sudo dmesg | tail -60 || true
