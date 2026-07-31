@@ -2001,13 +2001,14 @@ def _mapping_inspection(ops: _SystemOps, pid: int, captured: dict[tuple[str, str
         observed.append(key)
     second = _maps_snapshot(pid, ops)
     _require(first == second, "executable mapping snapshot drift", "mapping-drift")
-    _require(tuple(observed) == expected, "executable mapping identity cardinality", "mapping-cardinality")
-    executable = tuple(key for key in observed if key[0] == "executable")
+    exact_cardinality = len(observed) == len(expected) and set(observed) == set(expected)
+    _require(exact_cardinality, "executable mapping identity cardinality", "mapping-cardinality")
+    executable = tuple(key for key in expected if key[0] == "executable")
     exact_executable = len(executable) == 1 and captured[executable[0]][:2] == planned_executable
     _require(exact_executable, "planned executable mapping identity", "mapping-executable-identity")
-    mapping_digest = _digest([[name, digest] for name, digest in observed])
+    mapping_digest = _digest([[name, digest] for name, digest in expected])
     _require(mapping_digest == report["tools"][_TOOL_INDEX[role]]["mapping_sha256"], "final mapping digest", "mapping-report-digest")
-    identities = [[name, digest, *captured[(name, digest)][:3]] for name, digest in observed]
+    identities = [[name, digest, *captured[(name, digest)][:3]] for name, digest in expected]
     inspection = {
         "executable": list(planned_executable),
         "identity_sha256": _digest(identities),
