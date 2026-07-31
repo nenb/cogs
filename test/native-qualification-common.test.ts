@@ -638,7 +638,7 @@ test("parsed workflow gives only an explicit exact-SHA dispatch native authority
     assert.equal(invoke.env?.NQ_DEFAULT_BRANCH, "${{ github.event.repository.default_branch }}");
     assert.equal(invoke.env?.NQ_REF_PROTECTED, "${{ github.ref_protected }}");
     assert.match(invoke.run ?? "", /["']\$NQ_DRIVER["'] --workflow-bound/u);
-    if (job === "A" || job === "B" || job === "C") {
+    if (job === "A" || job === "B" || job === "C" || job === "integration") {
       const run = (invoke.run ?? "").replace(/\\\n\s+/gu, " ");
       assert.match(run, /runner_uid=\$\(\/usr\/bin\/id -u\); runner_gid=\$\(\/usr\/bin\/id -g\)/u);
       const boundary = [
@@ -649,8 +649,20 @@ test("parsed workflow gives only an explicit exact-SHA dispatch native authority
       assert.ok(positions.every((position) => position >= 0), `${job} fixed unprivileged boundary`);
       assert.deepEqual(positions, positions.toSorted((left, right) => left - right), `${job} boundary order`);
       const capabilityFlags = run.match(/--(?:[a-z-]*caps|bounding-set)(?:=[^ ]+)?/gu) ?? [];
-      assert.deepEqual(capabilityFlags, job === "B" ?
-        ["--inh-caps=+sys_admin", "--ambient-caps=+sys_admin"] : [], `${job} capability flags`);
+      const capabilityJob = job === "B" || job === "integration";
+      const exactCapabilityFlags = [
+        "--inh-caps=+sys_admin,+sys_ptrace",
+        "--ambient-caps=+sys_admin,+sys_ptrace",
+      ];
+      assert.deepEqual(capabilityFlags, capabilityJob ? exactCapabilityFlags : [], `${job} capability flags`);
+      if (capabilityJob) {
+        const exact = (candidate: string) => JSON.stringify(
+          candidate.match(/--(?:[a-z-]*caps|bounding-set)(?:=[^ ]+)?/gu) ?? [],
+        ) === JSON.stringify(exactCapabilityFlags);
+        assert.equal(exact(run.replaceAll(",+sys_ptrace", "")), false, `${job} missing capability rejected`);
+        assert.equal(exact(run.replaceAll("+sys_admin,+sys_ptrace", "+sys_admin,+sys_ptrace,+sys_chroot")), false,
+          `${job} extra capability rejected`);
+      }
       const assignments = run.match(/\/usr\/bin\/env -i (.+) \/usr\/bin\/python3/u)?.[1];
       assert.ok(assignments);
       assert.deepEqual(Array.from(assignments.matchAll(/(?:^| )([A-Z][A-Z0-9_]*)=/gu), (match) => match[1]), [

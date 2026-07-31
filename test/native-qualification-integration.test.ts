@@ -111,12 +111,20 @@ test("integration uses Job B's exact fixed capability envelope with its own driv
   assert.match(run, /runner_uid=\$\(\/usr\/bin\/id -u\); runner_gid=\$\(\/usr\/bin\/id -g\)/u);
   const fixed = [
     "sudo -n --close-from=3", "/usr/bin/prlimit --nofile=65536:65536 --", "/usr/bin/setpriv",
-    '--reuid="$runner_uid"', '--regid="$runner_gid"', "--clear-groups", "--inh-caps=+sys_admin",
-    "--ambient-caps=+sys_admin", "/usr/bin/env -i", '/usr/bin/python3 -I -B "$NQ_DRIVER" --workflow-bound',
+    '--reuid="$runner_uid"', '--regid="$runner_gid"', "--clear-groups", "--inh-caps=+sys_admin,+sys_ptrace",
+    "--ambient-caps=+sys_admin,+sys_ptrace", "/usr/bin/env -i", '/usr/bin/python3 -I -B "$NQ_DRIVER" --workflow-bound',
   ];
   const positions = fixed.map((value) => run.indexOf(value));
   assert.ok(positions.every((position) => position >= 0));
   assert.deepEqual(positions, positions.toSorted((a, b) => a - b));
+  const exactCapabilities = (candidate: string) => JSON.stringify(
+    candidate.match(/--(?:[a-z-]*caps|bounding-set)(?:=[^ ]+)?/gu) ?? [],
+  ) === JSON.stringify(["--inh-caps=+sys_admin,+sys_ptrace", "--ambient-caps=+sys_admin,+sys_ptrace"]);
+  assert.equal(exactCapabilities(run), true);
+  assert.equal(exactCapabilities(run.replaceAll(",+sys_ptrace", "")), false);
+  assert.equal(exactCapabilities(
+    run.replaceAll("+sys_admin,+sys_ptrace", "+sys_admin,+sys_ptrace,+sys_chroot"),
+  ), false);
   const compact = run.replace(/\\\n\s+/gu, " ");
   const assignments = compact.match(/\/usr\/bin\/env -i (.+) \/usr\/bin\/python3/u)?.[1];
   assert.ok(assignments);

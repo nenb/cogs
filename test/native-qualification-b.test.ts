@@ -5,6 +5,7 @@ import { test } from "node:test";
 
 const path = "scripts/native-qualification/job-b-compression.py";
 const source = readFileSync(path, "utf8");
+const launcherSource = readFileSync("deploy/aws-feasibility/remote/completion_trusted_runtime_launcher.py", "utf8");
 
 function python(body: string) {
   return spawnSync("/usr/bin/python3", ["-I", "-B", "-c", body], {
@@ -82,6 +83,24 @@ else: raise AssertionError('CLI did not exit')
   assert.doesNotMatch(source, /production_checks|metadata|parser|seal_mask|closure_sha256|output_sha256/u);
   assert.doesNotMatch(source, /fork\(|pidfd|waitid|unshare|mount\(|\/proc\//u);
   assert.ok(source.split("\n").every((line) => line.length <= 120));
+});
+
+test("Job B wrapper capabilities terminate at the zero-capability child boundary", () => {
+  const start = launcherSource.indexOf("def _enter_boundary(");
+  const end = launcherSource.indexOf("\ndef _child_fd_install(", start);
+  assert.ok(start >= 0 && end > start);
+  const boundary = launcherSource.slice(start, end);
+  const ordered = [
+    "ops.drop_bounding()",
+    "ops.capset_zero()",
+    'capabilities_zero = not any(capabilities[name] for name in scalar_names)',
+    'capabilities_zero = capabilities_zero and not any(capabilities["bounding"]) and not any(capabilities["ambient"])',
+    '_require(capabilities_zero and groups_empty',
+  ];
+  const positions = ordered.map((token) => boundary.indexOf(token));
+  assert.ok(positions.every((position) => position >= 0));
+  assert.deepEqual(positions, positions.toSorted((left, right) => left - right));
+  assert.doesNotMatch(launcherSource, /sys_admin|sys_ptrace/iu);
 });
 
 test("launcher ENOENT metadata identifies only the fixed open object class", () => {

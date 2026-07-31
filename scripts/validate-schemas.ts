@@ -475,6 +475,11 @@ for (const [id, driver] of nativeJobs) {
   const invoke = cliStep(job, "--workflow-bound");
   assert.equal(invoke.env?.NQ_DRIVER, driver);
   assert.equal(invoke.env?.NQ_HEAD_SHA, reviewedRef);
+  const run = (invoke.run ?? "").replace(/\\\n\s+/gu, " ");
+  const capabilityFlags = run.match(/--(?:[a-z-]*caps|bounding-set)(?:=[^ ]+)?/gu) ?? [];
+  const capabilityJob = id === "native-qualification-b" || id === "native-closure-integration";
+  const exactCapabilityFlags = ["--inh-caps=+sys_admin,+sys_ptrace", "--ambient-caps=+sys_admin,+sys_ptrace"];
+  assert.deepEqual(capabilityFlags, capabilityJob ? exactCapabilityFlags : [], `${id}: exact capability envelope`);
   const cleanup = cliStep(job, "common.py --cleanup");
   assert.equal(cleanup.env?.NQ_UPLOAD_ARTIFACT_ID, "${{ steps.upload.outputs.artifact-id }}");
   assert.equal(cleanup.env?.NQ_UPLOAD_ARTIFACT_SHA256, "${{ steps.upload.outputs.artifact-digest }}");
