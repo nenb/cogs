@@ -211,7 +211,7 @@ function nativeMetadata(job: keyof typeof nativeChecks): unknown[] {
       parser: { closure_sha256: hash(parserView), objects: parserObjects } }];
   }
   if (job === "E") return [{ id: "sandbox-policy", role: "policy",
-    sha256: "aacfce0e5eeb2fb79a1708b32f5383f89b381898ad7e6bd911905d87483b6bb2", size_bytes: 0 }];
+    sha256: "c2c9d01e475c8d0307fdf72863e98ed9671fabacbacece01d6e38a155b4679ce", size_bytes: 0 }];
   if (job === "integration") return [
     { id: "closure", role: "digest", sha256: "7".repeat(64), size_bytes: 0 },
     { id: "gzip_output", role: "digest", sha256: markerHash, size_bytes: 0 },

@@ -67,11 +67,16 @@ _DENIED_SYSCALLS = { name: int(number) for entry in """
     memfd_create:319 open_by_handle_at:304 name_to_handle_at:303 pidfd_open:434 pidfd_getfd:438 process_vm_readv:310 process_vm_writev:311 kexec_load:246 kexec_file_load:320 landlock_create_ruleset:444 landlock_add_rule:445 landlock_restrict_self:446 dup:32 dup2:33 dup3:292 fcntl:72
     """.split() for name, number in (entry.split(":"),) }
 def _seccomp_program() -> tuple[tuple[int, int, int, int], ...]:
-    deny = 0x00050000 | errno.EPERM
-    rows = [ (0x20, 0, 0, 4), (0x15, 1, 0, 0xC000003E), (0x06, 0, 0, 0x80000000), (0x20, 0, 0, 0), (0x15, 0, 10, 322), (0x20, 0, 0, 16), (0x15, 0, 6, 198), (0x20, 0, 0, 20), (0x15, 0, 4, 0), (0x20, 0, 0, 48), (0x15, 0, 2, _AT_EMPTY_PATH), (0x20, 0, 0, 52), (0x15, 1, 0, 0), (0x06, 0, 0, deny), (0x06, 0, 0, 0x7FFF0000), (0x15, 0, 4, 157), (0x20, 0, 0, 16), (0x15, 1, 0, _PR_GET_SECCOMP), (0x06, 0, 0, deny), (0x06, 0, 0, 0x7FFF0000), (0x20, 0, 0, 0), ]
+    deny, allow = 0x00050000 | errno.EPERM, 0x7FFF0000
+    rows = [ (0x20, 0, 0, 4), (0x15, 1, 0, 0xC000003E), (0x06, 0, 0, 0x80000000), (0x20, 0, 0, 0), (0x15, 0, 10, 322), (0x20, 0, 0, 16), (0x15, 0, 6, 198), (0x20, 0, 0, 20), (0x15, 0, 4, 0), (0x20, 0, 0, 48), (0x15, 0, 2, _AT_EMPTY_PATH), (0x20, 0, 0, 52), (0x15, 1, 0, 0), (0x06, 0, 0, deny), (0x06, 0, 0, allow), (0x15, 0, 4, 157), (0x20, 0, 0, 16), (0x15, 1, 0, _PR_GET_SECCOMP), (0x06, 0, 0, deny), (0x06, 0, 0, allow), (0x20, 0, 0, 0), ]
+    rows.extend(((0x15, 0, 7, _DENIED_SYSCALLS["fcntl"]),
+                 (0x20, 0, 0, 28), (0x15, 0, 3, 0), (0x20, 0, 0, 24),
+                 (0x15, 2, 0, fcntl.F_GETFD), (0x15, 1, 0, fcntl.F_GETFL),
+                 (0x06, 0, 0, deny), (0x06, 0, 0, allow)))
     for number in dict.fromkeys(_DENIED_SYSCALLS.values()):
-        rows.extend(((0x15, 0, 1, number), (0x06, 0, 0, deny)))
-    rows.append((0x06, 0, 0, 0x7FFF0000))
+        if number != _DENIED_SYSCALLS["fcntl"]:
+            rows.extend(((0x15, 0, 1, number), (0x06, 0, 0, deny)))
+    rows.append((0x06, 0, 0, allow))
     return tuple(rows)
 def _seccomp_digest() -> str:
     encoded = b"".join(struct.pack("HBBI", *row) for row in _seccomp_program())

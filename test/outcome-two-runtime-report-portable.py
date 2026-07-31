@@ -2,6 +2,7 @@
 """Exercise report construction and each independent production report codec."""
 import copy
 import errno
+import fcntl
 import hashlib
 import importlib.util
 import json
@@ -125,7 +126,7 @@ def bpf_result(program, syscall, arguments=(), architecture=0xC000003E):
     words = {0: syscall, 4: architecture}
     for index, value in enumerate(arguments):
         words[16 + index * 8] = value & 0xFFFFFFFF
-        words[20 + index * 8] = value >> 32
+        words[20 + index * 8] = (value >> 32) & 0xFFFFFFFF
     accumulator = 0
     pc = 0
     while pc < len(program):
@@ -155,6 +156,26 @@ def production_seccomp_contract(launcher):
     denied = 0x00050000 | errno.EPERM
     if any(bpf_result(program, number) != denied for number in launcher._DENIED_SYSCALLS.values()):
         raise AssertionError("modeled seccomp table route was not denied")
+    fcntl_number = launcher._DENIED_SYSCALLS["fcntl"]
+    allowed_commands = (fcntl.F_GETFD, fcntl.F_GETFL)
+    denied_commands = (fcntl.F_DUPFD, fcntl.F_DUPFD_CLOEXEC, fcntl.F_SETFD,
+                       fcntl.F_SETFL, -1, 0xFFFFFFFF)
+    if any(bpf_result(program, fcntl_number, (198, command)) != 0x7FFF0000
+           for command in allowed_commands):
+        raise AssertionError("production fcntl read-only query was denied")
+    if any(bpf_result(program, fcntl_number, (198, command)) != denied
+           for command in denied_commands):
+        raise AssertionError("production fcntl mutation/duplication route was admitted")
+    other_commands = set(range(256)) - set(allowed_commands)
+    if any(bpf_result(program, fcntl_number, (198, command)) != denied
+           for command in other_commands):
+        raise AssertionError("production fcntl unknown command route was admitted")
+    hostile_widths = tuple((high << 32) | command
+                           for high in (1, 0xFFFFFFFF)
+                           for command in allowed_commands)
+    if any(bpf_result(program, fcntl_number, (198, command)) != denied
+           for command in hostile_widths):
+        raise AssertionError("production fcntl filter ignored the 64-bit command high word")
     fixed = (198, 0, 0, 0, launcher._AT_EMPTY_PATH)
     hostile = (
         (199, *fixed[1:]),
