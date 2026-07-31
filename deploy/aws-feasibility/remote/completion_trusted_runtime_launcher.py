@@ -1920,7 +1920,8 @@ def _namespace_owner(
         boundary = _parse_sandbox_status(exec_status, "boundary", 3)
         _require(status.send(exec_status) == len(exec_status), "boundary observation send", "boundary-send")
         sequence = 4
-        post_inspection = _post_child_inspection(ops, child, mapping_identities, role, report, planned_executable, set_permission_stage)
+        _require(child_lease.pidfd is not None, "post-inspection child pidfd", "process-authority")
+        post_inspection = _post_child_inspection(ops, child, child_lease.pidfd.fd, mapping_identities, role, report, planned_executable, set_permission_stage)
         child_owner.confirm_mapped_exec(child_lease, planned_executable)
         post_packet = _status("post-inspection", sequence, inspection=post_inspection)
         _require(len(post_packet) <= _INSPECTION_PACKET and status.send(post_packet) == len(post_packet), "post inspection send", "owner-inspection-send")
@@ -1995,12 +1996,92 @@ def _maps_snapshot(pid: int, ops: Any | None = None) -> bytes:
     raw = _proc_bytes(f"/proc/{pid}/maps", _MAX_MAPS, ops)
     _parse_maps(raw)
     return raw
-def _mapping_inspection(ops: _SystemOps, pid: int, authority: dict[tuple[str, str], tuple[int, int, int]], role: str, report: dict[str, object], planned_executable: tuple[int, int]) -> tuple[bytes, dict[str, object]]:
+
+def _map_access_errno_class(error: OSError | None) -> str:
+    if error is None: return "ok"
+    return {
+        errno.EACCES: "ac", errno.EPERM: "pm", errno.ENOENT: "nf",
+        errno.ESRCH: "sr", errno.EIO: "io", errno.EAGAIN: "ag",
+        errno.EINTR: "in",
+    }.get(error.errno, "ot")
+
+def _validate_map_access_observation(observed: tuple[bool, bool, bool, bool, bool, bool, bool, bool, bool], error_class: str) -> None:
+    _require(len(observed) == 9 and all(type(value) is bool for value in observed), "map access observation shape", "map-access-shape")
+    _require(error_class in {"ok", "ac", "pm", "nf", "sr", "io", "ag", "in", "ot"}, "map access errno class", "map-access-errno")
+    effective, permitted, ready_before, ready_after, non_zombie, opened, nonempty, newline, bounded = observed
+    code = f"map-access-e{int(effective)}p{int(permitted)}b{int(ready_before)}a{int(ready_after)}z{int(non_zombie)}o{int(opened)}n{int(nonempty)}l{int(newline)}d{int(bounded)}-{error_class}"
+    exact = effective and permitted and not ready_before and not ready_after
+    exact = exact and non_zombie and opened and nonempty and newline and bounded and error_class == "ok"
+    if not exact: raise RuntimeLauncherError("owner map access preflight", code)
+
+def _map_access_preflight(ops: _SystemOps, pid: int, pidfd: int) -> bytes:
+    first_error: OSError | None = None
+    def note(error: OSError) -> None:
+        nonlocal first_error
+        if first_error is None: first_error = error
+    effective = permitted = False
+    try:
+        owner_status = _proc_bytes("/proc/self/status", 65536, ops)
+        mask = 1 << 19
+        for label, target in ((b"CapEff", "effective"), (b"CapPrm", "permitted")):
+            match = re.search(rb"(?:^|\n)" + label + rb":\t([0-9a-f]{16})\n", owner_status)
+            value = bool(match and int(match.group(1), 16) & mask)
+            if target == "effective": effective = value
+            else: permitted = value
+    except OSError as error:
+        note(error)
+    try: ready_before = bool(select.select([pidfd], [], [], 0)[0])
+    except OSError as error:
+        note(error)
+        ready_before = True
+    non_zombie = False
+    try:
+        child_stat = _proc_bytes(f"/proc/{pid}/stat", 8192, ops)
+        marker = child_stat.rfind(b") ")
+        state = child_stat[marker + 2:marker + 3] if marker >= 0 else b""
+        non_zombie = state in tuple(bytes((value,)) for value in b"RSDTWtIKP")
+    except OSError as error:
+        note(error)
+    opened = False
+    complete = False
+    chunks: list[bytes] = []
+    total = 0
+    lease: _FdLease | None = None
+    primary: BaseException | None = None
+    try:
+        lease = _FdLease(ops.open(f"/proc/{pid}/maps", os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW), "map-access")
+        opened = True
+        while True:
+            part = ops.read(lease.fd, min(65536, _MAX_MAPS + 1 - total))
+            if not part:
+                complete = True
+                break
+            total += len(part)
+            chunks.append(part)
+            if total > _MAX_MAPS: break
+    except OSError as error:
+        note(error)
+        primary = error
+    if lease is not None:
+        try: lease.close(ops)
+        except BaseException as error: raise RuntimeLauncherCleanupError(primary, [error]) from (primary or error)
+    raw = b"".join(chunks)
+    try: ready_after = bool(select.select([pidfd], [], [], 0)[0])
+    except OSError as error:
+        note(error)
+        ready_after = True
+    bounded = opened and complete and len(raw) <= _MAX_MAPS
+    observed = (effective, permitted, ready_before, ready_after, non_zombie, opened,
+                bool(raw), bool(raw) and raw.endswith(b"\n"), bounded)
+    _validate_map_access_observation(observed, _map_access_errno_class(first_error))
+    return raw
+
+def _mapping_inspection(ops: _SystemOps, pid: int, authority: dict[tuple[str, str], tuple[int, int, int]], role: str, report: dict[str, object], planned_executable: tuple[int, int], first_snapshot: bytes | None = None) -> tuple[bytes, dict[str, object]]:
     expected = tuple((item["role"], item["sha256"]) for item in report["tools"][_TOOL_INDEX[role]]["objects"])
     _require(tuple(authority) == expected, "mapping inspection hybrid rows", "mapping-hybrid-cardinality")
     reverse = {(os.major(value[0]), os.minor(value[0]), value[1]): key for key, value in authority.items()}
     _require(len(reverse) == len(authority), "mapping inspection identity alias", "mapping-hybrid-identity")
-    first = _maps_snapshot(pid, ops)
+    first = _maps_snapshot(pid, ops) if first_snapshot is None else first_snapshot
     observed: list[tuple[str, str]] = []
     for _start, _end, permissions, _offset, major, minor, inode, path in _parse_maps(first):
         if b"x" not in permissions: continue
@@ -2237,12 +2318,13 @@ def _owner_namespace_facts(ops: _SystemOps, pid: int, handles: tuple[_FdLease, .
     _require(all(result.values()), "owner namespace facts", "owner-inspection-namespace")
     return result
 
-def _post_child_inspection(ops: _SystemOps, pid: int, authority: dict[tuple[str, str], tuple[int, int, int]], role: str, report: dict[str, object], planned_executable: tuple[int, int], set_stage: Callable[[str], None]) -> dict[str, object]:
+def _post_child_inspection(ops: _SystemOps, pid: int, pidfd: int, authority: dict[tuple[str, str], tuple[int, int, int]], role: str, report: dict[str, object], planned_executable: tuple[int, int], set_stage: Callable[[str], None]) -> dict[str, object]:
     set_stage("post-fd")
     descriptors = _descriptor_snapshot(ops, pid)
     _require(descriptors == (0, 1, 2), "post-exec descriptor table", "exec-fd-table")
     set_stage("post-maps")
-    _raw, mapping = _mapping_inspection(ops, pid, authority, role, report, planned_executable)
+    first = _map_access_preflight(ops, pid, pidfd)
+    _raw, mapping = _mapping_inspection(ops, pid, authority, role, report, planned_executable, first)
     return {"fds": list(descriptors), "mapping": mapping}
 
 def _final_child_inspection(ops: _SystemOps, pid: int, authority: dict[tuple[str, str], tuple[int, int, int]], role: str, report: dict[str, object], planned_executable: tuple[int, int], post: dict[str, object], handles: tuple[_FdLease, ...], limits_sha256: str, set_stage: Callable[[str], None]) -> dict[str, object]:

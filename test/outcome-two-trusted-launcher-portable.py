@@ -1874,6 +1874,10 @@ class _BIKernel:
             return f"{pid} (modeled) S ".encode() + b" ".join([b"1"] * 18 + [str(start).encode()] + [b"1"] * 30) + b"\n"
         if path.endswith("/limits"):
             return b"Limit                     Soft Limit           Hard Limit           Units     \n"
+        if path == "/proc/self/status":
+            return (f"NSpid:\t{self.namespace}\n".encode() + b"Groups:\t\nCapInh:\t0000000000000000\n"
+                    b"CapPrm:\t0000000000080000\nCapEff:\t0000000000080000\nCapBnd:\t0000000000080000\n"
+                    b"CapAmb:\t0000000000000000\nNoNewPrivs:\t0\nSeccomp:\t0\n")
         if path.endswith("/status"):
             return (f"NSpid:\t{self.child}\t1\n".encode() + b"Groups:\t\nCapInh:\t0000000000000000\n"
                     b"CapPrm:\t0000000000000000\nCapEff:\t0000000000000000\nCapBnd:\t0000000000000000\n"
@@ -2273,16 +2277,17 @@ def owner_permission_stage_contracts(module):
     denied = PermissionError(errno.EACCES, "hostile descriptor denial")
     with patched(module, _descriptor_snapshot=lambda *_arguments: (_ for _ in ()).throw(denied)):
         try:
-            module._post_child_inspection(None, 7, (), "gzip", {}, (1, 2), set_stage)
+            module._post_child_inspection(None, 7, 90, (), "gzip", {}, (1, 2), set_stage)
         except PermissionError as error:
             if error is not denied or stages != ["post-fd"]: raise AssertionError("post-fd stage drift") from error
         else:
             raise AssertionError("post-fd denial accepted")
     stages.clear()
     with patched(module, _descriptor_snapshot=lambda *_arguments: (0, 1, 2),
+                 _map_access_preflight=lambda *_arguments: b"maps\n",
                  _mapping_inspection=lambda *_arguments: (_ for _ in ()).throw(denied)):
         try:
-            module._post_child_inspection(None, 7, (), "gzip", {}, (1, 2), set_stage)
+            module._post_child_inspection(None, 7, 90, (), "gzip", {}, (1, 2), set_stage)
         except PermissionError as error:
             if error is not denied or stages != ["post-fd", "post-maps"]: raise AssertionError("post-maps stage drift") from error
         else:
@@ -2326,6 +2331,43 @@ def owner_permission_stage_contracts(module):
             if error is not denied or stages != expected: raise AssertionError("final limits stage drift") from error
         else:
             raise AssertionError("final limits denial accepted")
+
+
+def map_access_diagnostic_contract(module):
+    success = (True, True, False, False, True, True, True, True, True)
+    labels = "epbazonld"
+    expected_success = "map-access-e1p1b0a0z1o1n1l1d1-ok"
+    for index in range(len(success)):
+        hostile = list(success)
+        hostile[index] = not hostile[index]
+        bits = "".join(f"{label}{int(value)}" for label, value in zip(labels, hostile))
+        expected = f"map-access-{bits}-ok"
+        try:
+            module._validate_map_access_observation(tuple(hostile), "ok")
+        except module.RuntimeLauncherError as error:
+            if error.code != expected or len(error.code) > 40:
+                raise AssertionError(f"map access bit diagnostic drift: {index} {error.code}") from error
+        else:
+            raise AssertionError(f"hostile map access bit accepted: {index}")
+    errno_classes = {
+        None: "ok", errno.EACCES: "ac", errno.EPERM: "pm", errno.ENOENT: "nf",
+        errno.ESRCH: "sr", errno.EIO: "io", errno.EAGAIN: "ag",
+        errno.EINTR: "in", errno.EBADF: "ot",
+    }
+    for number, lexical in errno_classes.items():
+        error = None if number is None else OSError(number, "hostile secret path/content")
+        if module._map_access_errno_class(error) != lexical:
+            raise AssertionError(f"map access errno class drift: {number}")
+        if number is not None:
+            try:
+                module._validate_map_access_observation(success, lexical)
+            except module.RuntimeLauncherError as observed:
+                expected = expected_success[:-2] + lexical
+                if observed.code != expected or "secret" in observed.code:
+                    raise AssertionError(f"map access errno diagnostic drift: {number}") from observed
+            else:
+                raise AssertionError(f"hostile map access errno accepted: {number}")
+    module._validate_map_access_observation(success, "ok")
 
 
 def materialized_mapping_identity_contract(module):
@@ -2999,6 +3041,7 @@ def parent():
     namespace_owner_cleanup_contract(module)
     cleanup_error_status_contract(module)
     owner_permission_stage_contracts(module)
+    map_access_diagnostic_contract(module)
     materialized_mapping_identity_contract(module)
     namespace_transfer_diagnostic_contracts(module)
     production_operation_contracts(module)
