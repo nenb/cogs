@@ -1823,7 +1823,7 @@ def _validate_generation_rows(
     rows: Sequence[_PrivateGenerationRow],
     object_descriptor_count: int,
 ) -> None:
-    expected_positions = tuple(
+    expected_positions = ((0, 0),) + tuple(
         (tool_index, object_index)
         for tool_index in (1, 2)
         for object_index in range(len(report['tools'][tool_index]['objects']))
@@ -2322,9 +2322,8 @@ def _build_bundle(
     rows: list[_PrivateGenerationRow] = []
     sealed_by_identity: dict[tuple[int, int], tuple[int, SealedObject]] = {}
     for (tool_index, closure) in enumerate(closures):
-        if closure.tool == 'python3-parser':
-            continue
-        for (object_index, source) in enumerate(closure.objects):
+        selected = closure.objects[:1] if closure.tool == 'python3-parser' else closure.objects
+        for (object_index, source) in enumerate(selected):
             existing = sealed_by_identity.get(source.identity)
             if existing is None:
                 sealed = _seal_object(ops, source)
