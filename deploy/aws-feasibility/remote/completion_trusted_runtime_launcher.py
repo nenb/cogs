@@ -2637,6 +2637,66 @@ def _settle_rejected_tool_transfer(
     if failures:
         raise RuntimeLauncherCleanupError(primary, failures) from primary
 
+def _map_access_early_exit_primary(error: BaseException) -> tuple[str | None, BaseException]:
+    current = error
+    for _depth in range(8):
+        nested = getattr(current, "primary", None)
+        if not isinstance(nested, BaseException): break
+        current = nested
+    code = getattr(current, "code", None)
+    match = re.fullmatch(r"map-access-(ez0|(?:en|sg)([0-9]{1,3}))-[A-Za-z0-9._-]+", code) if type(code) is str else None
+    if match is None: return None, current
+    token, numeric = match.group(1), match.group(2)
+    if token == "ez0": return token, current
+    status = int(numeric)
+    return (token if 0 < status <= 255 else None), current
+
+def _map_access_early_exit_token(error: BaseException) -> str | None:
+    return _map_access_early_exit_primary(error)[0]
+
+def _bounded_child_output_error(primary: BaseException, endpoint: socket.socket, output: _FdLease, deadline: float, ops: Any) -> RuntimeLauncherError:
+    exit_token = _map_access_early_exit_token(primary)
+    _require(exit_token is not None, "child output diagnostic primary", "child-out-primary")
+    digest = hashlib.sha256()
+    length = 0
+    status_closed = output_closed = False
+    while not status_closed or not output_closed:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0: raise RuntimeLauncherError("child output diagnostic deadline", f"child-out-{exit_token}-timeout") from primary
+        readers = [*([] if status_closed else [endpoint]), *([] if output_closed else [output.fd])]
+        try: ready = select.select(readers, [], [], remaining)[0]
+        except OSError as error: raise RuntimeLauncherError("child output diagnostic wait", f"child-out-{exit_token}-wait") from error
+        if not ready: raise RuntimeLauncherError("child output diagnostic deadline", f"child-out-{exit_token}-timeout") from primary
+        if endpoint in ready:
+            try: closed = endpoint.recv(1)
+            except OSError as error: raise RuntimeLauncherError("child output status read", f"child-out-{exit_token}-status") from error
+            _require(closed == b"", "child output status writer closure", f"child-out-{exit_token}-status")
+            status_closed = True
+        if output.fd in ready:
+            try: part = ops.read(output.fd, min(65536, _MAX_OUTPUT + 1 - length))
+            except OSError as error: raise RuntimeLauncherError("child output pipe read", f"child-out-{exit_token}-read") from error
+            if not part:
+                output_closed = True
+            else:
+                length += len(part)
+                _require(length <= _MAX_OUTPUT, "child output diagnostic bound", f"child-out-{exit_token}-bound")
+                digest.update(part)
+    code = f"child-out-{exit_token}-h{digest.hexdigest()[:12]}-l{length}"
+    replacement: RuntimeLauncherError = RuntimeLauncherError("bounded early child output metadata", code)
+    _token, original_primary = _map_access_early_exit_primary(primary)
+    replacement.__cause__ = original_primary
+    wrappers: list[tuple[BaseException, ...]] = []
+    current = primary
+    for _depth in range(8):
+        nested = getattr(current, "primary", None)
+        failures = getattr(current, "failures", None)
+        if not isinstance(nested, BaseException) or not isinstance(failures, tuple): break
+        wrappers.append(failures)
+        current = nested
+    for failures in reversed(wrappers):
+        replacement = RuntimeLauncherCleanupError(replacement, list(failures))
+    return replacement
+
 def _run_tool_with_ops( ops: Any, role: str, report: dict[str, object], descriptors: tuple[int, ...], rows: tuple[_GenerationRow, ...], python_executable: tuple[int, int], ) -> tuple[bytes, dict[str, object]]:
     child_baseline = _parse_children(_proc_bytes("/proc/thread-self/children", 65536, ops))
     process_owner = _ProcessOwner(ops)
@@ -2775,7 +2835,13 @@ def _run_tool_with_ops( ops: Any, role: str, report: dict[str, object], descript
         boundary_packet = _recv_status(parent_status, time.monotonic() + _SETUP_SECONDS, "boundary", 3)
         boundary = boundary_packet["observations"]
         _require(type(boundary) is dict, "boundary observations malformed", "boundary-observations")
-        post_packet = _recv_owner_inspection(parent_status, time.monotonic() + _SETUP_SECONDS, "post-inspection", 4)
+        post_deadline = time.monotonic() + _SETUP_SECONDS
+        try:
+            post_packet = _recv_owner_inspection(parent_status, post_deadline, "post-inspection", 4)
+        except BaseException as error:
+            if _map_access_early_exit_token(error) is not None:
+                raise _bounded_child_output_error(error, parent_status, output_read, post_deadline, ops) from error
+            raise
         _revalidate_inspected_child(child_lease, ops)
         expected_mapping_count = sum(1 for row in rows if row.tool_index == _TOOL_INDEX[role])
         expected_mapping_sha256 = report["tools"][_TOOL_INDEX[role]]["mapping_sha256"]

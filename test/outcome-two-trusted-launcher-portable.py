@@ -2417,6 +2417,110 @@ def map_access_diagnostic_contract(module):
             raise AssertionError(f"malformed child exit metadata accepted: {malformed}")
 
 
+def child_output_diagnostic_contract(module):
+    primary = module.RuntimeLauncherError(
+        "hostile original path/content",
+        "map-access-en104-e1p1b1a1z0o1n0l0d1-ok",
+    )
+    if module._map_access_early_exit_token(primary) != "en104":
+        raise AssertionError("early child exit token drift")
+    for code in ("mapping-unknown", "map-access-un0-e1p1b0a0z1o1n1l1d1-ok",
+                 "map-access-en256-e1p1b1a1z0o1n0l0d1-ok"):
+        if module._map_access_early_exit_token(module.RuntimeLauncherError("secret", code)) is not None:
+            raise AssertionError(f"non-early child exit selected output: {code}")
+
+    class Endpoint:
+        def __init__(self, closed=b""):
+            self.closed = closed
+            self.calls = 0
+        def recv(self, size):
+            if size != 1: raise AssertionError("unbounded status closure read")
+            self.calls += 1
+            return self.closed
+    class Ops:
+        def __init__(self, payload, fragments):
+            self.payload = bytearray(payload)
+            self.fragments = list(fragments)
+            self.reads = []
+            self.returned = 0
+            self.closed = []
+        def read(self, descriptor, size):
+            self.reads.append((descriptor, size))
+            if not self.payload: return b""
+            amount = min(size, self.fragments.pop(0) if self.fragments else size, len(self.payload))
+            result = bytes(self.payload[:amount])
+            del self.payload[:amount]
+            self.returned += len(result)
+            return result
+        def close(self, descriptor): self.closed.append(descriptor)
+    def diagnose(payload, fragments, initial=primary):
+        endpoint = Endpoint()
+        ops = Ops(payload, fragments)
+        output = module._FdLease(91, "hostile-child-output")
+        with patched(module.select, select=lambda readers, *_arguments: (list(readers), [], [])), patched(
+                module.time, monotonic=lambda: 1.0):
+            error = module._bounded_child_output_error(initial, endpoint, output, 2.0, ops)
+        return error, endpoint, ops, output
+
+    payload = b"partial-one\x00partial-two"
+    first, endpoint, ops, output = diagnose(payload, (1, 2, 3, 4, 5))
+    expected = f"child-out-en104-h{hashlib.sha256(payload).hexdigest()[:12]}-l{len(payload)}"
+    maximum_code = f"child-out-en104-h{'0' * 12}-l{module._MAX_OUTPUT}"
+    if first.code != expected or str(first) != "bounded early child output metadata" or len(maximum_code) > 40:
+        raise AssertionError(f"child output metadata drift: {first.code}")
+    if endpoint.calls != 1 or len(ops.reads) < 2 or ops.reads[-1][1] <= 0:
+        raise AssertionError("partial output/writer closure drain drift")
+    if any(token in first.code or token in str(first) for token in ("partial", "hostile", "content", "path")):
+        raise AssertionError("child output diagnostic exposed bytes/content")
+    second, _endpoint, _ops, _output = diagnose(payload, (len(payload),))
+    if second.code != first.code:
+        raise AssertionError("child output digest depends on read fragmentation")
+
+    timeout_ops = Ops(b"unread-secret", (1,))
+    timeout_endpoint = Endpoint()
+    with patched(module.time, monotonic=lambda: 2.0), patched(
+            module.select, select=lambda *_arguments: (_ for _ in ()).throw(AssertionError("timeout selected"))):
+        try:
+            module._bounded_child_output_error(primary, timeout_endpoint, module._FdLease(92, "timeout"), 2.0, timeout_ops)
+        except module.RuntimeLauncherError as error:
+            if error.code != "child-out-en104-timeout" or timeout_ops.reads or timeout_endpoint.calls:
+                raise AssertionError("child output timeout drift") from error
+        else:
+            raise AssertionError("child output timeout accepted")
+
+    oversized = b"x" * (module._MAX_OUTPUT + 1)
+    oversized_ops = Ops(oversized, (module._MAX_OUTPUT, 1))
+    with patched(module.time, monotonic=lambda: 1.0), patched(
+            module.select, select=lambda readers, *_arguments: (list(readers), [], [])):
+        try:
+            module._bounded_child_output_error(primary, Endpoint(), module._FdLease(93, "oversized"), 2.0, oversized_ops)
+        except module.RuntimeLauncherError as error:
+            if error.code != "child-out-en104-bound" or oversized_ops.returned > module._MAX_OUTPUT + 1:
+                raise AssertionError("child output bound drift") from error
+        else:
+            raise AssertionError("oversized child output accepted")
+
+    with patched(module.time, monotonic=lambda: 1.0), patched(
+            module.select, select=lambda readers, *_arguments: (list(readers), [], [])):
+        try:
+            module._bounded_child_output_error(primary, Endpoint(b"x"), module._FdLease(94, "status"), 2.0, Ops(b"", ()))
+        except module.RuntimeLauncherError as error:
+            if error.code != "child-out-en104-status": raise
+        else:
+            raise AssertionError("non-closed namespace status writer accepted")
+
+    cleanup = OSError(errno.EIO, "hostile cleanup content")
+    original_cleanup = module.RuntimeLauncherCleanupError(primary, [cleanup])
+    wrapped, _endpoint, _cleanup_ops, _cleanup_output = diagnose(b"", (), original_cleanup)
+    exact_cleanup = isinstance(wrapped, module.RuntimeLauncherCleanupError)
+    exact_cleanup = exact_cleanup and wrapped.failures == (cleanup,)
+    exact_cleanup = exact_cleanup and getattr(wrapped.primary, "code", "") == "child-out-en104-he3b0c44298fc-l0"
+    exact_cleanup = exact_cleanup and wrapped.primary.__cause__ is primary
+    output.close(ops)
+    if not exact_cleanup or ops.closed != [91]:
+        raise AssertionError("child output primary/failure cleanup drift")
+
+
 def materialized_mapping_identity_contract(module):
     class Ops:
         @staticmethod
@@ -3089,6 +3193,7 @@ def parent():
     cleanup_error_status_contract(module)
     owner_permission_stage_contracts(module)
     map_access_diagnostic_contract(module)
+    child_output_diagnostic_contract(module)
     materialized_mapping_identity_contract(module)
     namespace_transfer_diagnostic_contracts(module)
     production_operation_contracts(module)
