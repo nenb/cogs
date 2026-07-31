@@ -55,7 +55,8 @@ _PR_CAP_AMBIENT_CLEAR_ALL, _PR_SET_SECCOMP, _PR_GET_SECCOMP = 4, 22, 21
 _SECCOMP_MODE_FILTER, _SECBITS = 2, 0x0F
 _AT_EMPTY_PATH, _UINT_MAX = 0x1000, (1 << 32) - 1
 (_SYS_GETDENTS64, _SYS_CLONE3, _CLONE_PIDFD) = (217, 435, 0x00001000)
-(_NS_GET_USERNS, _NS_GET_PARENT) = (0xB701, 0xB702)
+(_NS_GET_USERNS, _NS_GET_PARENT, _NS_GET_NSTYPE) = (0xB701, 0xB702, 0xB703)
+_NAMESPACE_NAMES, _NAMESPACE_BASELINE_NAMES = ("user", "mnt", "net", "pid_for_children"), ("user", "mnt", "net", "pid")
 _DENIED_SYSCALLS = { name: int(number) for entry in """
     execve:59 socket:41 connect:42 accept:43 sendto:44 recvfrom:45 sendmsg:46 recvmsg:47 shutdown:48 bind:49 listen:50 getsockname:51 getpeername:52 socketpair:53 setsockopt:54 getsockopt:55 accept4:288 recvmmsg:299 sendmmsg:307
     io_uring_setup:425 io_uring_enter:426 io_uring_register:427 clone:56 fork:57 vfork:58 clone3:435 unshare:272 setns:308
@@ -808,7 +809,7 @@ _ProcessLease = make_dataclass("_ProcessLease", [
     *((name, bool, field(default=False)) for name in "released reaped".split()),
     ("descendants", tuple, field(default=())),
     ("namespace_handles", tuple[_FdLease, ...], field(default=())),
-    ("expected_uid", int, field(default=0)),
+    *((name, int, field(default=0)) for name in "expected_uid expected_gid".split()),
     ("waitable", bool, field(default=True)), ("identity_phase", str, field(default="BLOCKED")),
     ("planned_session", int, field(default=0)), ("planned_group", int, field(default=0)),
     ("planned_executable", tuple[int, int], field(default=(0, 0))),
@@ -843,7 +844,7 @@ class _ProcessOwner(make_dataclass(
             except BaseException as error:
                 raise RuntimeLauncherCleanupError(primary, [error]) from primary
             raise
-        lease.expected_uid = os.geteuid()
+        lease.expected_uid, lease.expected_gid = os.geteuid(), os.getegid()
         self.processes.append(lease)
         lease.start_time = _start_time(pid)
         lease.session = os.getsid(pid)
@@ -870,7 +871,7 @@ class _ProcessOwner(make_dataclass(
             self.processes.remove(lease)
             write_lease.close(self.ops)
             return 0, None, read_lease
-        lease.expected_uid = os.geteuid()
+        lease.expected_uid, lease.expected_gid = os.geteuid(), os.getegid()
         read_lease.close(self.ops)
         lease.pending = ()
         lease.start_time = _start_time(pid)
@@ -1700,8 +1701,10 @@ def _namespace_owner(
     sequence = 0
     permission_stage = "initial"
     inherited = list(_received_leases(descriptors))
+    namespace_handles: tuple[_FdLease, ...] = ()
     exec_lease: _FdLease | None = None
     try:
+        namespace_baselines = _namespace_baselines()
         ops.prctl(_PR_SET_PDEATHSIG, signal.SIGKILL)
         os.setsid()
         sequence = -2
@@ -1731,7 +1734,12 @@ def _namespace_owner(
         ops.mount(None, b"/", None, _MS_REC | _MS_PRIVATE, None)
         sequence = 1
         permission_stage = "namespace-handshake"
-        status.send(_status("namespace", sequence))
+        namespace_handles, _facts = _open_self_namespace_authority(ops, namespace_baselines)
+        packet = _status("namespace", sequence)
+        ancillary = _credential_ancillary(tuple(handle.fd for handle in namespace_handles))
+        _require(status.sendmsg([packet], ancillary, socket.MSG_DONTWAIT) == len(packet), "namespace authority transfer", "namespace-transfer-send")
+        closing, namespace_handles = namespace_handles, ()
+        _close_leases(ops, closing)
         _recv_status(status, time.monotonic() + _SETUP_SECONDS, "prepare-root", 1)
         permission_stage = "materialize"
         mount_intents.add("materialized-root")
@@ -1823,8 +1831,10 @@ def _namespace_owner(
             try: exec_lease.close(ops)
             except BaseException as error: failures.append(error)
         if inherited:
-            try:
-                _close_leases(ops, inherited, primary)
+            try: _close_leases(ops, inherited, primary)
+            except BaseException as error: failures.append(error)
+        if namespace_handles:
+            try: _close_leases(ops, namespace_handles, primary)
             except BaseException as error: failures.append(error)
         if "materialized-root" in mount_intents:
             try:
@@ -1921,33 +1931,47 @@ def _final_mount_check(pid: int, ops: Any | None = None) -> tuple[bool, bool, bo
     _require(not exposed, "host path exposed in sandbox root", "root-path-exposure")
     checkout_absent = not any("checkout" in path or "workspace" in path for path in exposed)
     return root_exact, no_proc, not exposed, checkout_absent
-def _open_namespace_authority(lease: _ProcessLease, ops: Any) -> dict[str, bool]:
-    names = ("user", "mnt", "net", "pid_for_children")
-    handles: list[_FdLease] = []
-    for name in names:
-        descriptor = ops.open(f"/proc/{lease.pid}/ns/{name}", os.O_RDONLY | os.O_CLOEXEC)
-        handles.append(_FdLease(descriptor, f"namespace:{name}"))
-        lease.namespace_handles = tuple(handles)
-    identities = tuple((os.fstat(item.fd).st_dev, os.fstat(item.fd).st_ino) for item in handles)
-    baseline_names = ("user", "mnt", "net", "pid")
-    baselines = tuple((os.stat(f"/proc/self/ns/{name}").st_dev, os.stat(f"/proc/self/ns/{name}").st_ino) for name in baseline_names)
-    _require(all(observed != baseline for observed, baseline in zip(identities, baselines)), "namespace object did not change", "namespace-object")
-    owner_results: list[bool] = []
+def _namespace_baselines() -> tuple[tuple[int, int], ...]:
+    return tuple((info.st_dev, info.st_ino) for name in _NAMESPACE_BASELINE_NAMES for info in (os.stat(f"/proc/self/ns/{name}"),))
+def _validate_namespace_authority(handles: tuple[_FdLease, ...], baselines: tuple[tuple[int, int], ...], ops: Any) -> dict[str, bool]:
+    _require(len(handles) == len(_NAMESPACE_NAMES) == len(baselines), "namespace handle count", "namespace-transfer-count")
+    identities = tuple((info.st_dev, info.st_ino) for handle in handles for info in (os.fstat(handle.fd),))
+    cloexec = all(fcntl.fcntl(handle.fd, fcntl.F_GETFD) & fcntl.FD_CLOEXEC for handle in handles)
+    expected_types = (_CLONE_NEWUSER, _CLONE_NEWNS, _CLONE_NEWNET, _CLONE_NEWPID)
+    observed_types = tuple(fcntl.ioctl(handle.fd, _NS_GET_NSTYPE) for handle in handles)
+    exact = cloexec and len(set(identities)) == len(identities) and observed_types == expected_types
+    exact = exact and all(observed != baseline for observed, baseline in zip(identities, baselines))
+    _require(exact, "namespace handle identity/order", "namespace-transfer-identity")
+    owners: list[bool] = []
     for handle in handles[1:]:
-        owner_lease = _FdLease(fcntl.ioctl(handle.fd, _NS_GET_USERNS), "namespace-user-owner")
-        try:
-            info = os.fstat(owner_lease.fd)
-            owner_results.append((info.st_dev, info.st_ino) == identities[0])
-        finally:
-            owner_lease.close(ops)
-    parent_lease = _FdLease(fcntl.ioctl(handles[3].fd, _NS_GET_PARENT), "pid-namespace-parent")
+        owner = _FdLease(fcntl.ioctl(handle.fd, _NS_GET_USERNS), "namespace-user-owner")
+        try: owners.append((os.fstat(owner.fd).st_dev, os.fstat(owner.fd).st_ino) == identities[0])
+        finally: owner.close(ops)
+    parent = _FdLease(fcntl.ioctl(handles[3].fd, _NS_GET_PARENT), "pid-namespace-parent")
+    try: parent_exact = (os.fstat(parent.fd).st_dev, os.fstat(parent.fd).st_ino) == baselines[3]
+    finally: parent.close(ops)
+    _require(all(owners) and parent_exact, "namespace ownership relation", "namespace-ownership")
+    return {"namespace_handles_exact": exact, "namespace_ownership_exact": all(owners) and parent_exact}
+def _open_self_namespace_authority(ops: Any, baselines: tuple[tuple[int, int], ...]) -> tuple[tuple[_FdLease, ...], dict[str, bool]]:
+    handles: list[_FdLease] = []
     try:
-        info = os.fstat(parent_lease.fd)
-        parent_exact = (info.st_dev, info.st_ino) == baselines[3]
-    finally:
-        parent_lease.close(ops)
-    _require(all(owner_results) and parent_exact, "namespace ownership relation", "namespace-ownership")
-    return {"namespace_handles_exact": len(set(identities)) == len(identities), "namespace_ownership_exact": all(owner_results) and parent_exact}
+        for name in _NAMESPACE_NAMES: handles.append(_FdLease(ops.open(f"/proc/self/ns/{name}", os.O_RDONLY | os.O_CLOEXEC), f"namespace:{name}"))
+        leased = tuple(handles)
+        return leased, _validate_namespace_authority(leased, baselines, ops)
+    except BaseException as primary:
+        _close_leases(ops, handles, primary)
+        raise
+def _inspect_sandbox_namespace_authority(lease: _ProcessLease, ops: Any) -> dict[str, bool]:
+    handles: list[_FdLease] = []
+    try:
+        for name in _NAMESPACE_NAMES:
+            handles.append(_FdLease(ops.open(f"/proc/{lease.pid}/ns/{name}", os.O_RDONLY | os.O_CLOEXEC), f"sandbox-namespace:{name}"))
+            lease.namespace_handles = tuple(handles)
+        return _validate_namespace_authority(tuple(handles), _namespace_baselines(), ops)
+    except BaseException as primary:
+        lease.namespace_handles = ()
+        _close_leases(ops, handles, primary)
+        raise
 def _namespace_facts(pid: int, parent_uid: int | None = None, parent_gid: int | None = None, authority: _ProcessLease | None = None) -> dict[str, bool]:
     result: dict[str, bool] = {}
     for name, fact in (("user", "user_namespace_exact"), ("pid", "pid_namespace_exact"), ("mnt", "mount_namespace_exact"), ("net", "network_namespace_exact")):
@@ -2098,21 +2122,48 @@ def _parse_sandbox_status(raw: bytes, event: str, sequence: int) -> dict[str, ob
     return value
 def _status(event: str, sequence: int, **fields: object) -> bytes:
     return _canonical({"event": event, "sequence": sequence, "version": _RESULT_VERSION, **fields})
-def _recv_status(endpoint: socket.socket, deadline: float, event: str = "", sequence: int = 0) -> dict[str, object]:
-    remaining = deadline - time.monotonic()
-    _require(remaining > 0 and bool(select.select([endpoint], [], [], remaining)[0]), "sandbox status deadline", "status-deadline")
-    raw = endpoint.recv(16384)
+def _sandbox_status_result(raw: bytes, event: str, sequence: int) -> dict[str, object]:
     preliminary = _strict_json(raw, False, 16384, "sandbox status")
-    observed_event = preliminary.get("event") if type(preliminary) is dict else None
-    if observed_event == event: return _parse_sandbox_status(raw, event, sequence)
-    if observed_event == "unavailable":
+    observed = preliminary.get("event") if type(preliminary) is dict else None
+    if observed == event: return _parse_sandbox_status(raw, event, sequence)
+    if observed == "unavailable":
         unavailable = _parse_sandbox_status(raw, "unavailable", sequence)
         raise RuntimeLauncherUnavailable(unavailable["primitive"], unavailable["message"])
-    if observed_event == "error":
+    if observed == "error":
         failure = _parse_sandbox_status(raw, "error", sequence)
         if failure["code"] == "cleanup-uncertain": raise RuntimeLauncherCleanupError(None, [RuntimeLauncherError("inner cleanup uncertain", "inner-cleanup")])
         raise RuntimeLauncherError(f"sandbox setup failed: {failure['kind']}", failure["code"])
     return _parse_sandbox_status(raw, event, sequence)
+def _recv_status(endpoint: socket.socket, deadline: float, event: str = "", sequence: int = 0) -> dict[str, object]:
+    remaining = deadline - time.monotonic()
+    _require(remaining > 0 and bool(select.select([endpoint], [], [], remaining)[0]), "sandbox status deadline", "status-deadline")
+    return _sandbox_status_result(endpoint.recv(16384), event, sequence)
+def _receive_namespace_authority(endpoint: socket.socket, lease: _ProcessLease, baselines: tuple[tuple[int, int], ...], ops: Any, deadline: float) -> dict[str, bool]:
+    remaining = deadline - time.monotonic()
+    _require(remaining > 0 and bool(select.select([endpoint], [], [], remaining)[0]), "namespace transfer deadline", "namespace-transfer-deadline")
+    bound = socket.CMSG_SPACE(4 * array("i").itemsize) + socket.CMSG_SPACE(struct.calcsize("3i"))
+    raw, ancillary, flags, _address = endpoint.recvmsg(16384, bound, socket.MSG_CMSG_CLOEXEC | socket.MSG_DONTWAIT)
+    credentials, handles = _leased_credentials(ancillary, ops, require_rights=None, missing_code="namespace-transfer-credentials")
+    primary: BaseException | None = None
+    try:
+        truncated = flags & (socket.MSG_TRUNC | socket.MSG_CTRUNC)
+        kinds = tuple((level, kind) for level, kind, _data in ancillary)
+        expected = (lease.pid, lease.expected_uid, lease.expected_gid)
+        _require(_receive_flags_exact(flags) and not truncated and credentials == expected, "namespace transfer authority", "namespace-transfer-authority")
+        event = _strict_json(raw, False, 16384, "namespace transfer").get("event")
+        if event != "namespace":
+            _require(kinds == ((socket.SOL_SOCKET, socket.SCM_CREDENTIALS),) and not handles, "namespace error ancillary", "namespace-transfer-shape")
+            return _sandbox_status_result(raw, "namespace", 1)  # type: ignore[return-value]
+        exact_ancillary = ((socket.SOL_SOCKET, socket.SCM_CREDENTIALS), (socket.SOL_SOCKET, socket.SCM_RIGHTS))
+        _require(kinds == exact_ancillary and len(handles) == 4, "namespace transfer shape/order", "namespace-transfer-shape")
+        _parse_sandbox_status(raw, "namespace", 1)
+        lease.namespace_handles = handles
+        facts = _validate_namespace_authority(handles, baselines, ops)
+        return facts
+    except BaseException as error: primary = error
+    lease.namespace_handles = ()
+    _close_leases(ops, handles, primary)
+    raise primary
 def _tool_creator_settlement_packet(
     endpoint: socket.socket,
     deadline: float,
@@ -2183,6 +2234,7 @@ def _run_tool_with_ops( ops: Any, role: str, report: dict[str, object], descript
         transfer_nonce = ops.nonce()
         root = root_owner.prepare()
         limits_baseline = _parse_limits(_proc_bytes("/proc/self/limits", 65536, ops))
+        namespace_baselines = _namespace_baselines()
         pid, namespace_lease, gate = process_owner.spawn()
         if pid == 0:
             _close_socket(parent_status, ops, "namespace-parent-status")
@@ -2235,8 +2287,7 @@ def _run_tool_with_ops( ops: Any, role: str, report: dict[str, object], descript
         _write_map(ops, map_root + "/gid_map", f"0 {os.getgid()} 1\n".encode(), "gid-map")
         command = _status("identity-mapped", 0)
         _require(parent_status.send(command) == len(command), "identity map acknowledgement", "identity-map-ack")
-        _recv_status(parent_status, time.monotonic() + _SETUP_SECONDS, "namespace", 1)
-        namespace_authority = _open_namespace_authority(namespace_lease, ops)
+        namespace_authority = _receive_namespace_authority(parent_status, namespace_lease, namespace_baselines, ops, time.monotonic() + _SETUP_SECONDS)
         command = _status("prepare-root", 1)
         _require(parent_status.send(command) == len(command), "root preparation send", "root-prepare-send")
         transfer_case = f"tool:{role}"
@@ -3433,7 +3484,7 @@ def _sandbox_only_transaction(ops: Any) -> dict[str, bool]:
         _require(valid, "sandbox entered packet", "sandbox-inner-result")
         boundary = packet["result"]
         _require(type(boundary) is dict and set(boundary) == {"boundary", "facts"}, "sandbox probe shape", "sandbox-shape")
-        namespace_authority = _open_namespace_authority(inner, ops)
+        namespace_authority = _inspect_sandbox_namespace_authority(inner, ops)
         mount_facts = _final_mount_check(inner.pid, ops)
         boundary["mount"] = mount_facts
         _lifecycle_control_send(control_parent, b"F:sandbox")

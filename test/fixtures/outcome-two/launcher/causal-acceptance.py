@@ -38,7 +38,12 @@ def common_fixed_cli_contract(module, job):
             return 0
         if command == fcntl.F_GET_SEALS:
             return 0x1f if fd in sealed or fd in (3, 4) else 0
-        return real_fcntl(fd, command, *arguments)
+        try:
+            return real_fcntl(fd, command, *arguments)
+        except OSError as error:
+            if command != fcntl.F_GETFD or error.errno != errno.EBADF:
+                raise
+            return fcntl.FD_CLOEXEC
 
     def bootstrap_exec(path, argv, environment):
         marker_fd = real_open(f"/tmp/cogs-cli-{job}.debug", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -111,6 +116,7 @@ def common_fixed_cli_contract(module, job):
                 held._ROOT_PARENT = root_parent
                 actual_child_fcntl = held.fcntl.fcntl
                 def modeled_fcntl(fd, command, *arguments):
+                    if fd in kernel.virtual and command == _BIfcntl.F_GETFD: return _BIfcntl.FD_CLOEXEC
                     if fd in duplicated and command == held._F_GET_SEALS:
                         return held._DATA_SEALS if fd == duplicated[0] else held._EXEC_SEALS
                     if fd in duplicated and command == _BIfcntl.F_GETFL:
@@ -432,6 +438,11 @@ def execute_root_entry_model(module, capsule, authority):
         waitpid=kernel.waitpid, _exit=kernel.exit,
     )
     descriptor_snapshot = module._descriptor_snapshot
+    actual_fcntl = module.fcntl.fcntl
+    def modeled_fcntl(fd, command, *arguments):
+        if fd in kernel.process.fds and command == fcntl.F_GETFD:
+            return fcntl.FD_CLOEXEC
+        return actual_fcntl(fd, command, *arguments)
     snapshot_calls = 0
     def root_descriptor_snapshot(ops=None, pid="self"):
         nonlocal snapshot_calls
@@ -442,7 +453,7 @@ def execute_root_entry_model(module, capsule, authority):
     try:
         with patched(module, _SystemOps=lambda: kernel, _descriptor_snapshot=root_descriptor_snapshot), patched(
             module.os, **replacements,
-        ), patched(module.fcntl, ioctl=kernel.ioctl), patched(
+        ), patched(module.fcntl, fcntl=modeled_fcntl, ioctl=kernel.ioctl), patched(
             module.select, select=kernel.select,
         ), patched(module.signal, pidfd_send_signal=kernel.pidfd_signal), patched(
             module.os.path, lexists=kernel.lexists,

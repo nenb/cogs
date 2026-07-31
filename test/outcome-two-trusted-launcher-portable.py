@@ -1224,8 +1224,9 @@ class SandboxKernel:
         return values
     def ioctl(self, fd, request):
         value = self.process.fds[fd]
-        if self.fault(f"outer.ioctl:{request}"):
-            raise OSError("ioctl")
+        if self.fault(f"outer.ioctl:{request}"): raise OSError("ioctl")
+        if request == self.module._NS_GET_NSTYPE:
+            return {"user": self.module._CLONE_NEWUSER, "mnt": self.module._CLONE_NEWNS, "net": self.module._CLONE_NEWNET, "pid_for_children": self.module._CLONE_NEWPID}[value["name"]]
         identity = self.processes[300].namespaces["user"] if request == self.module._NS_GET_USERNS else self.baseline_ns["pid"]
         return self.allocate({"kind": "namespace", "name": "authority", "identity": identity})
     def select(self, readers, writers, errors, timeout=0):
@@ -1327,10 +1328,14 @@ def sandbox_process_corpus(module):
             setgroups=lambda groups: None, chdir=lambda path: None,
             waitpid=kernel.waitpid, _exit=kernel.exit,
         )
+        def modeled_fcntl(fd, command, *arguments):
+            if fd in kernel.process.fds and command == fcntl.F_GETFD:
+                return fcntl.FD_CLOEXEC
+            return _BI_FCNTL(fd, command, *arguments)
         observed = None
         value = None
         with patched(module.os, **replacements), patched(
-            module.fcntl, ioctl=kernel.ioctl,
+            module.fcntl, fcntl=modeled_fcntl, ioctl=kernel.ioctl,
         ), patched(module.select, select=kernel.select), patched(
             module.signal, pidfd_send_signal=kernel.pidfd_signal,
         ), patched(module.os.path, lexists=kernel.lexists):
@@ -1441,8 +1446,7 @@ class _BISocket:
             event = value["event"]
             if event == "uid-mapped":
                 self.queue.append(self.k.status("groups-cleared", 0))
-            elif event == "identity-mapped":
-                self.queue.append(self.k.status("namespace", 1))
+            elif event == "identity-mapped": self.queue.append(self.k.status("namespace", 1))
             elif event == "prepare-root":
                 self.k.make_child(self)
                 self.queue.append(self.k.status("child", 2, pid=self.k.child))
@@ -1465,6 +1469,22 @@ class _BISocket:
             rights = (_BIsocket.SOL_SOCKET, _BIsocket.SCM_RIGHTS,
                       _BIArray("i", self.k.descriptors).tobytes())
             return self.k.packet, [credentials, rights], 0, None
+        if self.kind == "status" and self.queue and _BIjson.loads(self.queue[0])["event"] == "namespace":
+            raw = self.queue.pop(0)
+            names = ("user", "mnt", "net", "pid_for_children")
+            handles = [self.k.alloc("namespace", name=name, identity=self.k.tool_ns[name.replace("pid_for_children", "pid")]) for name in names]
+            fault = self.k.namespace_fault
+            if fault == "count-missing": handles.pop()
+            elif fault == "count-extra": handles.append(self.k.alloc("namespace", name="user", identity=self.k.tool_ns["user"]))
+            elif fault == "identity-duplicate": self.k.virtual[handles[1]]["identity"] = self.k.tool_ns["user"]
+            elif fault == "type-order": self.k.virtual[handles[1]]["name"] = "net"
+            elif fault == "owner": self.k.virtual[handles[1]]["owner"] = self.k.baseline_ns["user"]
+            elif fault == "pid-parent": self.k.virtual[handles[3]]["parent_ns"] = self.k.tool_ns["pid"]
+            credentials = (_BIsocket.SOL_SOCKET, _BIsocket.SCM_CREDENTIALS, _BIstruct.pack("3i", self.k.namespace + (1 if fault == "credentials" else 0), _BIos.getuid(), _BIos.getgid()))
+            rights = (_BIsocket.SOL_SOCKET, _BIsocket.SCM_RIGHTS, _BIArray("i", handles).tobytes())
+            ancillary = [rights, credentials] if fault == "ancillary-order" else [credentials, rights]
+            flags = _BIsocket.MSG_TRUNC if fault == "truncated" else 0x20000000 if fault == "unknown-flags" else 0
+            return raw, ancillary, flags, None
         if self.kind == "transfer" and self.phase == 0:
             child = self.k.processes[self.k.child]
             lease = _BItypes.SimpleNamespace(
@@ -1499,7 +1519,7 @@ class _BISocket:
         return protocol or bool(self.queue)
 class _BIKernel:
     def __init__(self, module, report, report_bytes, descriptors, rows, root,
-                 secondary_clone=0, admission_revision="0" * 40,
+                 secondary_clone=0, namespace_fault="", admission_revision="0" * 40,
                  admission_source_set="1" * 64):
         self.m, self.report, self.report_bytes = module, report, report_bytes
         self.descriptors, self.rows, self.root = descriptors, rows, root
@@ -1507,7 +1527,7 @@ class _BIKernel:
         self.admission_source_set = admission_source_set
         self.outer, self.worker, self.child = 200, None, None
         self.current_pid, self.next_pid, self.next_fd = self.outer, 300, 700
-        self.secondary_clone = secondary_clone
+        self.secondary_clone, self.namespace_fault = secondary_clone, namespace_fault
         self.clone_count = 0
         self.owned, self.virtual, self.processes, self.sockets = {0, 1, 2}, {}, {}, []
         self.processes[self.outer] = self.proc(1)
@@ -1719,12 +1739,15 @@ class _BIKernel:
     def namespace_identity(self, path):
         name = path.rsplit("/", 1)[1].replace("pid_for_children", "pid")
         parts = path.split("/")
-        pid = self.outer if parts[2] == "self" else int(parts[2])
+        pid = self.current_pid if parts[2] == "self" else int(parts[2])
         return self.baseline_ns[name] if pid == self.outer else self.tool_ns[name]
     def ioctl(self, fd, request):
         value = self.virtual[fd]
-        name = value["path"].rsplit("/", 1)[1]
-        ident = self.baseline_ns["pid"] if request == self.m._NS_GET_PARENT else self.tool_ns["user"]
+        name = value.get("name", value.get("path", "").rsplit("/", 1)[-1])
+        if request == self.m._NS_GET_NSTYPE:
+            return {"user": self.m._CLONE_NEWUSER, "mnt": self.m._CLONE_NEWNS, "net": self.m._CLONE_NEWNET, "pid_for_children": self.m._CLONE_NEWPID}[name]
+        default = self.baseline_ns["pid"] if request == self.m._NS_GET_PARENT else self.tool_ns["user"]
+        ident = value.get("parent_ns" if request == self.m._NS_GET_PARENT else "owner", default)
         return self.alloc("authority", identity=ident, name=name)
     def proc_bytes(self, path):
         if path.endswith("/fd"): return b""
@@ -1830,14 +1853,23 @@ class _BIChildSocket:
         self.k.events.append(f"namespace:{self.k.tool}:{value['event']}")
         return len(raw)
     def sendmsg(self, parts, ancillary, flags=0):
-        del flags
         raw = b"".join(parts)
         value = _BIjson.loads(raw)
         rights = [entry for entry in ancillary if entry[1] == _BIsocket.SCM_RIGHTS]
-        exact = (value.get("pid"), value.get("parent"), value.get("case"), value.get("role"))
-        exact = exact == (self.k.child, self.k.namespace, f"tool:{self.k.tool}", "tool")
-        if not exact or len(rights) != 1:
-            raise AssertionError("modeled child transfer drift")
+        if value.get("event") == "namespace":
+            exact = flags == _BIsocket.MSG_DONTWAIT and tuple((entry[0], entry[1]) for entry in ancillary) == ((_BIsocket.SOL_SOCKET, _BIsocket.SCM_CREDENTIALS), (_BIsocket.SOL_SOCKET, _BIsocket.SCM_RIGHTS))
+            descriptors = _BIArray("i")
+            if isinstance(rights[0][2], _BIArray):
+                descriptors.extend(rights[0][2])
+            else:
+                descriptors.frombytes(rights[0][2])
+            names = [self.k.virtual[fd].get("name", self.k.virtual[fd].get("path", "").rsplit("/", 1)[-1]) for fd in descriptors]
+            exact = exact and len(descriptors) == 4 and names == ["user", "mnt", "net", "pid_for_children"]
+            if not exact: raise AssertionError("modeled namespace authority transfer drift")
+            self.k.events.append(f"namespace:{self.k.tool}:namespace")
+            return len(raw)
+        exact = (value.get("pid"), value.get("parent"), value.get("case"), value.get("role")) == (self.k.child, self.k.namespace, f"tool:{self.k.tool}", "tool")
+        if not exact or len(rights) != 1: raise AssertionError("modeled child transfer drift")
         self.k.events.append(f"namespace:{self.k.tool}:transfer")
         return len(raw)
     def recv(self, size, flags=0):
@@ -1965,7 +1997,7 @@ def _modeled_namespace_execution(module, report, descriptors, rows, role):
     _BIos.mkdir(root, 0o700)
     copied = tuple(_BIos.dup(fd) for fd in descriptors)
     kernel = _BIKernel(module, report, module._canonical(report), copied, rows, root)
-    kernel.worker, kernel.tool = 299, role
+    kernel.worker, kernel.namespace, kernel.current_pid, kernel.tool = 299, 301, 301, role
     input_fd, output_fd = kernel.pipe2(0)[0], kernel.pipe2(0)[1]
     status_fd, transfer_fd = kernel.alloc("socket"), kernel.alloc("socket")
     commands = tuple(module._status(name, sequence) for name, sequence in (
@@ -2016,14 +2048,15 @@ def _modeled_namespace_execution(module, report, descriptors, rows, role):
         return _BI_FCNTL(fd, command, *args)
     kernel.unshare_user = kernel.unshare_sandbox = kernel.unshare_boundary = lambda *args: None
     kernel.umount = child_umount
-    with patched(module, _SystemOps=lambda: kernel), patched(module.socket, socket=child_socket), patched(
+    namespace_baselines = tuple(kernel.baseline_ns[name] for name in ("user", "mnt", "net", "pid"))
+    with patched(module, _SystemOps=lambda: kernel, _namespace_baselines=lambda: namespace_baselines), patched(module.socket, socket=child_socket), patched(
         module.os, open=kernel.open, close=kernel.close, read=kernel.read, write=kernel.write,
         pipe2=kernel.pipe2, fstat=kernel.fstat, stat=kernel.stat, pread=kernel.pread,
         dup2=child_dup2, getpid=lambda: kernel.namespace, getppid=lambda: kernel.outer,
         pidfd_open=kernel.pidfd_open, getsid=kernel.getsid, getpgid=kernel.getpgid,
         waitpid=kernel.waitpid, setsid=lambda *args: None, setgroups=lambda groups: None,
         chdir=lambda path: None, _exit=child_exit), patched(module.fcntl, fcntl=modeled_fcntl), patched(
-        module.select, select=child_select), patched(module.os.path, ismount=kernel.ismount):
+        module.select, select=child_select), patched(module.fcntl, ioctl=kernel.ioctl), patched(module.os.path, ismount=kernel.ismount):
         module._namespace_owner(role, copied, rows, report, input_fd, output_fd,
                                 status_fd, transfer_fd, b"N" * 32, root)
     expected = [f"namespace:{role}:{name}" for name in
@@ -2089,7 +2122,7 @@ def production_runtime_compression_contracts(module):
                 selected_clone = case["primitive_fault"]["clone"]
                 kernel = _BIKernel(
                     module, report, report_bytes, duplicated, rows,
-                    f"{root_parent}/{module._ROOT_LEAF}", selected_clone,
+                    f"{root_parent}/{module._ROOT_LEAF}", selected_clone, case["primitive_fault"].get("namespace", ""),
                 )
                 operation = "runtime" if expected_type is module.RuntimeQualificationResult else "compression"
                 admission = module._SourceAdmission("0" * 40, "0" * 64, "1" * 64,
@@ -2097,6 +2130,8 @@ def production_runtime_compression_contracts(module):
                     None, object(), kernel.outer, _BIos.getuid(), _BIos.getgid(), operation)
                 actual_fcntl = module.fcntl.fcntl
                 def modeled_fcntl(fd, command, *args):
+                    if fd in kernel.virtual and command == _BIfcntl.F_GETFD:
+                        return _BIfcntl.FD_CLOEXEC
                     if fd in duplicated and command == module._F_GET_SEALS:
                         return module._DATA_SEALS if fd == duplicated[0] else module._EXEC_SEALS
                     if fd in duplicated and command == _BIfcntl.F_GETFL: return _BIos.O_RDONLY
