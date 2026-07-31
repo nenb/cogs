@@ -1,8 +1,8 @@
 # Non-authoritative Stage 1 functional driver. Never use this image for a VM-isolation claim.
-FROM debian:13-slim@sha256:28de0877c2189802884ccd20f15ee41c203573bd87bb6b883f5f46362d24c5c2
+FROM debian:13-slim@sha256:020c0d20b9880058cbe785a9db107156c3c75c2ac944a6aa7ab59f2add76a7bd
 
 ARG DEBIAN_SNAPSHOT=20260713T000000Z
-ARG DEBIAN_SECURITY_SNAPSHOT=20260723T000000Z
+ARG DEBIAN_SECURITY_SNAPSHOT=20260731T000000Z
 RUN printf '%s\n' \
       'Types: deb' \
       "URIs: http://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}/" \
@@ -27,6 +27,7 @@ RUN printf '%s\n' \
       git \
       iproute2 \
       iptables \
+      libexpat1=2.8.2-1~deb13u1 \
       netcat-openbsd \
       nftables \
       nodejs \

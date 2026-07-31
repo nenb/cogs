@@ -56,6 +56,7 @@ const openBaoSmoke = readFileSync(resolve(root, "dev/openbao-model-auth/ci-smoke
 const openBaoConfig = readFileSync(resolve(root, "dev/openbao-model-auth/config.hcl"), "utf8");
 const openBaoIgnore = readFileSync(resolve(root, ".trivyignore-openbao"), "utf8");
 const insecureContainerWorkflow = readFileSync(resolve(root, ".github/workflows/insecure-container.yml"), "utf8");
+const insecureContainerDockerfile = readFileSync(resolve(root, "dev/insecure-sandbox/Dockerfile"), "utf8");
 const mitmproxySuite = readFileSync(
   resolve(root, "test/egress-conformance/proxy-adapters/mitmproxy/suite-smoke.ts"),
   "utf8",
@@ -108,6 +109,20 @@ assert.ok(
   insecureContainerWorkflow.includes("dev/openbao-model-auth/ci-smoke.sh"),
   "security-labelled smoke must run OpenBao model-auth fixture",
 );
+assert.ok(
+  insecureContainerDockerfile.includes(
+    "FROM debian:13-slim@sha256:020c0d20b9880058cbe785a9db107156c3c75c2ac944a6aa7ab59f2add76a7bd",
+  ),
+  "insecure-container must use the reviewed Debian 13.6 index digest",
+);
+assert.ok(
+  insecureContainerDockerfile.includes("ARG DEBIAN_SECURITY_SNAPSHOT=20260731T000000Z"),
+  "insecure-container must use the immutable security snapshot containing fixed Expat",
+);
+assert.ok(
+  insecureContainerDockerfile.includes("libexpat1=2.8.2-1~deb13u1"),
+  "insecure-container must install the exact fixed Expat package",
+);
 assert.ok(openBaoIgnore.includes("review deadline 2026-08-15"), "OpenBao CVE ignores must carry their review deadline");
 for (const fixedRuntimeFinding of ["CVE-2026-39822", "CVE-2026-56852"]) {
   assert.equal(
@@ -140,11 +155,18 @@ assert.ok(
   "grpc-go disposition must bind the exact OpenBao digest",
 );
 assert.ok(
-  openBaoIgnore.includes("file storage; no HA, xDS, cluster forwarding, or external plugins; host-loopback-only REST"),
+  openBaoIgnore.includes(
+    "file storage; no HA, xDS, cluster forwarding, external plugins, or gRPC listener; host-loopback-only REST",
+  ),
   "grpc-go disposition must state the complete fixed fixture boundary",
 );
+assert.ok(
+  openBaoIgnore.includes("latest stable release/image") &&
+    openBaoIgnore.includes("upstream main has v1.82.1 but no fixed release image exists"),
+  "grpc-go disposition must explain why the exact exception remains necessary",
+);
 assert.ok(openBaoIgnore.includes("Any boundary or image drift invalidates"), "grpc-go disposition must fail on drift");
-const grpcIgnoreDeadline = "2026-07-29T23:59:59Z";
+const grpcIgnoreDeadline = "2026-08-15T23:59:59Z";
 assert.ok(
   openBaoIgnore.includes(`Hard expiry: ${grpcIgnoreDeadline}`),
   "grpc-go disposition must state its hard expiry",
