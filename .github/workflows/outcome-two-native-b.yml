@@ -1,0 +1,134 @@
+name: Outcome 2 Native B Fast Qualification
+
+on:
+  workflow_dispatch:
+    inputs:
+      reviewed_sha:
+        description: Exact externally reviewed commit SHA to qualify
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: outcome-two-native-b-${{ inputs.reviewed_sha }}
+  cancel-in-progress: true
+
+jobs:
+  native-qualification-eligibility:
+    name: Outcome 2 native B dispatch authority
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.run_attempt == 1 &&
+      github.actor == github.triggering_actor &&
+      github.actor == vars.NATIVE_QUALIFICATION_ACTOR &&
+      github.event.sender.login == github.actor &&
+      github.ref_type == 'branch' &&
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch) &&
+      github.ref_protected == true &&
+      github.workflow_ref == format('{0}/.github/workflows/outcome-two-native-b.yml@{1}', github.repository, github.ref) &&
+      github.workflow_sha == github.sha
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    outputs:
+      reviewed_sha: ${{ steps.authority.outputs.reviewed_sha }}
+    steps:
+      - name: Validate external native B dispatch authority
+        id: authority
+        env:
+          REVIEWED_SHA: ${{ inputs.reviewed_sha }}
+          AUTHORIZED_ACTOR: ${{ vars.NATIVE_QUALIFICATION_ACTOR }}
+          ACTOR: ${{ github.actor }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          REF_NAME: ${{ github.ref_name }}
+          REF_PROTECTED: ${{ github.ref_protected }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+          ENVELOPE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$REVIEWED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$ACTOR" = "$AUTHORIZED_ACTOR"
+          test "$TRIGGERING_ACTOR" = "$ACTOR"
+          test -n "$DEFAULT_BRANCH"
+          test "$REF_NAME" = "$DEFAULT_BRANCH"
+          test "$REF_PROTECTED" = "true"
+          [[ "$WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$REVIEWED_SHA" = "$ENVELOPE_SHA"
+          printf 'reviewed_sha=%s\n' "$REVIEWED_SHA" >> "$GITHUB_OUTPUT"
+
+  native-qualification-b:
+    name: Outcome 2 native B - fast exact-head qualification
+    needs: [native-qualification-eligibility]
+    permissions: { contents: read }
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out exact reviewed main head with full history
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.native-qualification-eligibility.outputs.reviewed_sha }}
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Run bounded workflow-bound Job B qualification
+        id: qualify
+        env:
+          NQ_DRIVER: scripts/native-qualification/job-b-compression.py
+          NQ_HEAD_REPOSITORY: ${{ github.repository }}
+          NQ_HEAD_SHA: ${{ needs.native-qualification-eligibility.outputs.reviewed_sha }}
+          NQ_REF: ${{ github.ref }}
+          NQ_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          NQ_REF_PROTECTED: ${{ github.ref_protected }}
+        run: |
+          set -euo pipefail
+          test "$NQ_HEAD_REPOSITORY" = "$GITHUB_REPOSITORY"
+          [[ "$NQ_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(/usr/bin/git rev-parse --verify HEAD^{commit})" = "$NQ_HEAD_SHA"
+          test "$(/usr/bin/git rev-parse --verify refs/remotes/origin/$NQ_DEFAULT_BRANCH^{commit})" = "$NQ_HEAD_SHA"
+          test -z "$(/usr/bin/git status --porcelain=v1 --untracked-files=all)"
+          test -z "$(/usr/bin/git config --local --get-regexp 'credential\.helper|http\..*\.extraheader' || :)"
+          ! /usr/bin/git remote get-url origin | /usr/bin/grep -Eq '://[^/]*@'
+          runner_uid=$(/usr/bin/id -u); runner_gid=$(/usr/bin/id -g)
+          sudo -n --close-from=3 /usr/bin/prlimit --nofile=65536:65536 -- /usr/bin/setpriv --reuid="$runner_uid" --regid="$runner_gid" --clear-groups --inh-caps=+sys_admin --ambient-caps=+sys_admin /usr/bin/env -i LC_ALL=C PYTHONDONTWRITEBYTECODE=1 PYTHONHASHSEED=0 NQ_EVENT_NAME="$GITHUB_EVENT_NAME" NQ_REPOSITORY="$GITHUB_REPOSITORY" \
+            NQ_HEAD_REPOSITORY="$NQ_HEAD_REPOSITORY" NQ_HEAD_SHA="$NQ_HEAD_SHA" NQ_ENVELOPE_SHA="$GITHUB_SHA" \
+            NQ_WORKFLOW_SHA="$GITHUB_WORKFLOW_SHA" NQ_WORKFLOW_PATH=.github/workflows/outcome-two-native-b.yml NQ_REF="$NQ_REF" NQ_DEFAULT_BRANCH="$NQ_DEFAULT_BRANCH" NQ_REF_PROTECTED="$NQ_REF_PROTECTED" \
+            NQ_JOB_ID="$GITHUB_JOB" NQ_RUN_ID="$GITHUB_RUN_ID" NQ_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" NQ_RUNNER_VERSION="$ImageVersion" \
+            /usr/bin/python3 -I -B "$NQ_DRIVER" --workflow-bound
+
+      - name: Upload validated fixed Job B report
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-B-fast-${{ needs.native-qualification-eligibility.outputs.reviewed_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: /tmp/cogs-native-qualification-B/report.json
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Restore fixed Job B report-path baseline
+        id: cleanup
+        if: ${{ always() }}
+        env:
+          NQ_CLEANUP_HEAD_SHA: ${{ needs.native-qualification-eligibility.outputs.reviewed_sha }}
+          NQ_CLEANUP_RUN_ID: ${{ github.run_id }}
+          NQ_CLEANUP_RUN_ATTEMPT: ${{ github.run_attempt }}
+          NQ_UPLOAD_ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+          NQ_UPLOAD_ARTIFACT_SHA256: ${{ steps.upload.outputs.artifact-digest }}
+        run: |
+          /usr/bin/env -i LC_ALL=C NQ_CLEANUP_HEAD_SHA="$NQ_CLEANUP_HEAD_SHA" NQ_CLEANUP_RUN_ID="$NQ_CLEANUP_RUN_ID" \
+            NQ_CLEANUP_RUN_ATTEMPT="$NQ_CLEANUP_RUN_ATTEMPT" NQ_UPLOAD_ARTIFACT_ID="$NQ_UPLOAD_ARTIFACT_ID" \
+            NQ_UPLOAD_ARTIFACT_SHA256="$NQ_UPLOAD_ARTIFACT_SHA256" /usr/bin/python3 -I -B scripts/native-qualification/common.py --cleanup B
+
+      - name: Require exact Job B settlement
+        if: ${{ always() }}
+        env:
+          QUALIFY_OUTCOME: ${{ steps.qualify.outcome }}
+          UPLOAD_OUTCOME: ${{ steps.upload.outcome }}
+          CLEANUP_OUTCOME: ${{ steps.cleanup.outcome }}
+        run: |
+          set -euo pipefail
+          test "$CLEANUP_OUTCOME" = "success"
+          if test "$QUALIFY_OUTCOME" = "success"; then test "$UPLOAD_OUTCOME" = "success"; fi
+          test ! -e /tmp/cogs-native-qualification-B
+          test ! -e /tmp/.cogs-native-qualification-B.retired

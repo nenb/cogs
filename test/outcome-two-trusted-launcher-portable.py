@@ -1880,7 +1880,7 @@ class _BIKernel:
         if "/proc/self/fdinfo/" in path:
             descriptor = int(path.rsplit("/", 1)[1])
             target = self.virtual[descriptor]["pid"]
-            if self.fire("pid-drift", "tool:pid-drift"): target += 1
+            if target == self.child and self.fire("pid-drift", "tool:pid-drift"): target += 1
             return f"Pid:\t{target}\n".encode()
         if path.endswith("/uid_map"): return f"{0:10d} {_BIos.getuid():10d} {1:10d}\n".encode()
         if path.endswith("/gid_map"): return f"{0:10d} {_BIos.getgid():10d} {1:10d}\n".encode()
@@ -2091,6 +2091,43 @@ def forged_preexec_identity_contract(module):
     exact_cleanup = ops.closed == [802, 801] and owner.processes == [leader]
     if endpoint.acknowledged or leader.descendants or not exact_cleanup:
         raise AssertionError("forged pre-exec rejection/cleanup drift")
+
+
+def namespace_owner_cleanup_contract(module):
+    events = []
+    state = {"killed": False}
+    class Ops:
+        def close(self, descriptor): events.append(("close", descriptor))
+    ops = Ops()
+    pidfd = module._FdLease(90, "namespace-owner-pidfd")
+    lease = module._ProcessLease(321, pidfd, start_time=77, session=44, process_group=44,
+                                 executable=(8, 808), released=True, held_executable=True)
+    owner = module._ProcessOwner(ops, [lease])
+    primary = PermissionError(errno.EACCES, "original namespace-owner failure")
+    def denied_executable(*_arguments):
+        raise AssertionError("cleanup reopened namespace-owner proc exe")
+    def send_signal(descriptor, number):
+        if descriptor != 90: raise AssertionError("wrong cleanup pidfd")
+        events.append(("signal", number))
+        if number == signal.SIGKILL: state["killed"] = True
+    def waitpid(pid, flags):
+        if (pid, flags) != (321, os.WNOHANG): raise AssertionError("wrong cleanup wait")
+        events.append(("wait", state["killed"]))
+        return (321, signal.SIGKILL) if state["killed"] else (0, 0)
+    with patched(module, _start_time=lambda pid: 77, _stable_pidfd_target=lambda fd, ops: 321,
+                 _exe_identity=denied_executable), patched(module.os, getsid=lambda pid: 44,
+                 getpgid=lambda pid: 44, waitpid=waitpid), patched(module.select,
+                 select=lambda *_arguments: ([], [], [])), patched(module.signal, pidfd_send_signal=send_signal):
+        try:
+            owner.cleanup(primary)
+            raise primary
+        except PermissionError as observed:
+            if observed is not primary: raise AssertionError("namespace-owner primary replaced") from observed
+    signals = [item for item in events if item[0] == "signal"]
+    if signals != [("signal", signal.SIGTERM), ("signal", signal.SIGKILL)]:
+        raise AssertionError(f"namespace-owner TERM/KILL drift: {events}")
+    if owner.processes or not lease.reaped or events[-1] != ("close", 90):
+        raise AssertionError(f"namespace-owner exact reap/close drift: {events}")
 
 
 def namespace_transfer_diagnostic_contracts(module):
@@ -2614,6 +2651,7 @@ def parent():
         causal_scope["common_fixed_cli_contract"](module, job)
     identity_map_contracts(module)
     forged_preexec_identity_contract(module)
+    namespace_owner_cleanup_contract(module)
     namespace_transfer_diagnostic_contracts(module)
     production_operation_contracts(module)
     causal_scope["capsule_contract"](module)

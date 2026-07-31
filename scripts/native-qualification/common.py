@@ -8,7 +8,8 @@ from types import MappingProxyType
 from typing import Callable, Mapping
 VERSION, AUTHORITY = "cogs.native-qualification/v1alpha1", "exact-run-native-qualification"
 ROOT = Path(__file__).resolve().parents[2]
-WORKFLOW, COMMON = ROOT / ".github/workflows/ci.yml", ROOT / "scripts/native-qualification/common.py"
+WORKFLOW, FAST_B_WORKFLOW = ROOT / ".github/workflows/ci.yml", ROOT / ".github/workflows/outcome-two-native-b.yml"
+COMMON = ROOT / "scripts/native-qualification/common.py"
 SCHEMA, REPORT_LIMIT, OBJECT_LIMIT = ROOT / "schemas/native-qualification-report-v1alpha1.json", 32_768, 134_217_728
 MARKER_SHA256 = "6381d4535b13c7f030ca94bce250c1ec817c4aea8fa45c91e25c88995216f6b8"
 POLICY_SHA256 = "aacfce0e5eeb2fb79a1708b32f5383f89b381898ad7e6bd911905d87483b6bb2"
@@ -130,10 +131,16 @@ class WorkflowContext:
     schema_blob_sha256: str
     schema_bytes: bytes
     source_generations: tuple[tuple[int, ...], ...] = ()
+    workflow_path: str = ".github/workflows/ci.yml"
     @classmethod
     def from_environ(cls, expected_job: str, driver_file: str | Path) -> "WorkflowContext":
         environment = dict(os.environ)
-        _require(expected_job in DRIVERS and set(environment) == ENV_KEYS, "fixed environment")
+        fast_keys = ENV_KEYS | {"NQ_WORKFLOW_PATH"}
+        fast = expected_job == "B" and set(environment) == fast_keys
+        _require(expected_job in DRIVERS and (set(environment) == ENV_KEYS or fast), "fixed environment")
+        workflow_path = FAST_B_WORKFLOW if fast else WORKFLOW
+        if fast:
+            _require(environment["NQ_WORKFLOW_PATH"] == ".github/workflows/outcome-two-native-b.yml", "fixed workflow path")
         _require(environment["LC_ALL"] == "C" and environment["PYTHONDONTWRITEBYTECODE"] == "1", "runtime environment")
         _require(environment["PYTHONHASHSEED"] == "0" and environment["NQ_EVENT_NAME"] == "workflow_dispatch", "event environment")
         expected_driver = COMMON.parent / DRIVERS[expected_job]
@@ -151,13 +158,13 @@ class WorkflowContext:
         kernel, architecture = platform.release(), platform.machine()
         _require(re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+[-A-Za-z0-9.+]*", kernel) is not None and architecture == "x86_64", "runner platform")
         schema_bytes, schema_generation = _read_source(SCHEMA, 100_000)
-        source_receipts = tuple(_read_source(path, 2_000_000) for path in (WORKFLOW, expected_driver, COMMON))
+        source_receipts = tuple(_read_source(path, 2_000_000) for path in (workflow_path, expected_driver, COMMON))
         source_digests = tuple(hashlib.sha256(raw).hexdigest() for raw, _generation_receipt in source_receipts)
         return cls(
             expected_job, repository, repository, *hashes, environment["NQ_REF"], default_branch,
             environment["NQ_JOB_ID"], _integer(environment["NQ_RUN_ID"], "run id"), attempt, protected,
             environment["NQ_RUNNER_VERSION"], kernel, architecture, *source_digests, hashlib.sha256(schema_bytes).hexdigest(), schema_bytes,
-            tuple(generation for _raw, generation in source_receipts) + (schema_generation,))
+            tuple(generation for _raw, generation in source_receipts) + (schema_generation,), workflow_path.relative_to(ROOT).as_posix())
 def _context_value(context: WorkflowContext) -> dict[str, object]:
     source = {"checkout_sha": context.head_sha, "driver_blob_sha256": context.driver_blob_sha256,
               "head_sha": context.head_sha, "common_blob_sha256": context.common_blob_sha256}
@@ -165,7 +172,7 @@ def _context_value(context: WorkflowContext) -> dict[str, object]:
                 "github_sha": context.envelope_sha, "head_repository": context.head_repository,
                 "ref": context.ref, "ref_protected": context.ref_protected, "repository": context.repository,
                 "run_attempt": context.run_attempt, "run_id": context.run_id}
-    workflow = {"blob_sha256": context.workflow_blob_sha256, "job_id": context.job_id, "path": ".github/workflows/ci.yml", "workflow_sha": context.workflow_sha}
+    workflow = {"blob_sha256": context.workflow_blob_sha256, "job_id": context.job_id, "path": context.workflow_path, "workflow_sha": context.workflow_sha}
     runner = {"architecture": context.architecture, "image": "ubuntu-24.04", "image_version": context.runner_version, "kernel_release": context.kernel_release}
     return {"source": source, "envelope": envelope, "workflow": workflow, "runner": runner}
 def require_final_results(environment: Mapping[str, str]) -> None:
@@ -977,7 +984,11 @@ def _validate_semantics(value: object, context: WorkflowContext | None = None) -
     _require(envelope["ref_protected"] is True and envelope["ref"] == default_ref, "semantic dispatch ref")
     workflow_matches = workflow["job_id"] == JOB_IDS[job]
     workflow_matches = workflow_matches and workflow["workflow_sha"] == envelope["github_sha"]
-    expected_workflow = _sha256(WORKFLOW) if context is None else context.workflow_blob_sha256
+    workflow_path = workflow["path"]
+    valid_fast = job == "B" and workflow_path == ".github/workflows/outcome-two-native-b.yml"
+    _require(workflow_path == ".github/workflows/ci.yml" or valid_fast, "semantic workflow path")
+    expected_path = FAST_B_WORKFLOW if valid_fast else WORKFLOW
+    expected_workflow = _sha256(expected_path) if context is None else context.workflow_blob_sha256
     expected_common = _sha256(COMMON) if context is None else context.common_blob_sha256
     driver_path = COMMON.parent / DRIVERS[job]
     expected_driver = _sha256(driver_path) if context is None else context.driver_blob_sha256
