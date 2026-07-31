@@ -1632,10 +1632,10 @@ class _BIKernel:
         selected = [row for row in self.rows if row.tool_index == self.m._TOOL_INDEX[self.tool]]
         identities = []
         for row in selected:
-            device, inode, _size = self.sealed_identities[self.descriptors[row.descriptor_index]]
-            identities.append([row.role, row.sha256, device, inode])
+            device, inode, size = self.hybrid_identity(row)
+            identities.append([row.role, row.sha256, device, inode, size])
         executable = next(row for row in selected if row.object_index == 0)
-        executable_info = self.sealed_identities[self.descriptors[executable.descriptor_index]]
+        executable_info = self.hybrid_identity(executable)
         mapping = {
             "executable": list(executable_info[:2]),
             "identity_sha256": self.m._digest(identities),
@@ -1890,9 +1890,26 @@ class _BIKernel:
         if "/map_files/" in path:
             raise AssertionError("mapping inspection read map_files")
         raise AssertionError(f"unmodeled proc path: {path}")
-    def mapped_identity(self, row):
+    def materialized_identity(self, row):
+        item = self.report["tools"][self.m._TOOL_INDEX[self.tool]]["objects"][row.object_index]
+        if row.object_index == 0:
+            path = f"{self.root}/bin/{self.tool}"
+        elif row.object_index == 1:
+            path = self.root + self.m._INTERPRETER
+        else:
+            path = f"{self.root}{self.m._LIBRARY_ROOT}/{item['soname']}"
+        if _BIos.path.exists(path):
+            info = _BI_STAT(path)
+            return info.st_dev, info.st_ino, info.st_size
         source = self.descriptors[row.descriptor_index]
-        device, inode, _size = self.sealed_identities[source]
+        device, inode, size = self.sealed_identities[source]
+        return device, inode + 10000 + row.object_index, size
+    def hybrid_identity(self, row):
+        if row.role == "executable":
+            return self.sealed_identities[self.descriptors[row.descriptor_index]]
+        return self.materialized_identity(row)
+    def mapped_identity(self, row):
+        device, inode, _size = self.hybrid_identity(row)
         identity = (device, inode)
         if row.object_index == 0 and self.fire("mapping-mismatch", "tool:mapping-mismatch"):
             identity = (identity[0], identity[1] + 1)
@@ -2309,6 +2326,149 @@ def owner_permission_stage_contracts(module):
             if error is not denied or stages != expected: raise AssertionError("final limits stage drift") from error
         else:
             raise AssertionError("final limits denial accepted")
+
+
+def materialized_mapping_identity_contract(module):
+    class Ops:
+        @staticmethod
+        def mount(*_arguments): pass
+        @staticmethod
+        def open(path, flags, mode=0o600): return os.open(path, flags, mode)
+        @staticmethod
+        def write(fd, data): return os.write(fd, data)
+        @staticmethod
+        def close(fd): os.close(fd)
+    with tempfile.TemporaryDirectory() as bundle, tempfile.TemporaryDirectory() as parent:
+        report_bytes, descriptors, rows = valid_bundle(module, bundle)
+        report = module._decode_report(report_bytes)
+        selected = tuple(row for row in rows if row.tool_index == module._TOOL_INDEX["gzip"])
+        expected = tuple((row.role, row.sha256) for row in selected)
+        root = f"{parent}/{module._ROOT_LEAF}"
+        os.mkdir(root, 0o700)
+        try:
+            actual_fcntl = module.fcntl.fcntl
+            def modeled_fcntl(fd, command, *arguments):
+                if fd in descriptors and command == module._F_GET_SEALS: return module._EXEC_SEALS
+                if fd in descriptors and command == fcntl.F_GETFL: return os.O_RDONLY
+                return actual_fcntl(fd, command, *arguments)
+            with patched(module.fcntl, fcntl=modeled_fcntl):
+                materialized_root, materialized = module._materialize_root(Ops(), "gzip", descriptors, rows, report, root)
+                authority = module._hybrid_mapping_authority(descriptors, rows, "gzip", report, materialized)
+            if materialized_root != root or tuple(authority) != expected:
+                raise AssertionError("hybrid mapping authority order/cardinality drift")
+            source_identities = {
+                (os.fstat(descriptors[row.descriptor_index]).st_dev,
+                 os.fstat(descriptors[row.descriptor_index]).st_ino)
+                for row in selected
+            }
+            if len(materialized) != len(selected) or any(value[:2] in source_identities for value in materialized.values()):
+                raise AssertionError("sealed source identity substituted for copy identity")
+            for row, item in zip(selected, report["tools"][module._TOOL_INDEX["gzip"]]["objects"]):
+                if row.object_index == 0:
+                    path = f"{root}/bin/gzip"
+                elif row.object_index == 1:
+                    path = root + module._INTERPRETER
+                else:
+                    path = f"{root}{module._LIBRARY_ROOT}/{item['soname']}"
+                info = os.stat(path)
+                if materialized[(row.role, row.sha256)] != (info.st_dev, info.st_ino, info.st_size):
+                    raise AssertionError("copy readback identity binding drift")
+            executable_source = os.fstat(descriptors[selected[0].descriptor_index])
+            sealed_executable = (executable_source.st_dev, executable_source.st_ino, executable_source.st_size)
+            if authority[expected[0]] != sealed_executable or authority[expected[0]] == materialized[expected[0]]:
+                raise AssertionError("sealed executable VMA identity was not distinguished from copied /bin inode")
+            if any(authority[key] != materialized[key] for key in expected[1:]):
+                raise AssertionError("loader/library materialized identity substitution")
+
+            def maps(values, suffix=b"hybrid"):
+                lines = []
+                for index, key in enumerate(expected, 1):
+                    device, inode, _size = values[key]
+                    start = index * 0x1000
+                    lines.append(
+                        f"{start:08x}-{start + 0x1000:08x} r-xp 00000000 "
+                        f"{os.major(device):x}:{os.minor(device):x} {inode} /".encode()
+                        + suffix + b"\n"
+                    )
+                return b"".join(lines)
+            valid_maps = maps(authority)
+            with patched(module, _maps_snapshot=lambda *_arguments: valid_maps):
+                _raw, inspection = module._mapping_inspection(
+                    None, 7, authority, "gzip", report,
+                    sealed_executable[:2],
+                )
+            if inspection["mapping_count"] != len(expected) or inspection["executable"] != list(sealed_executable[:2]):
+                raise AssertionError("hybrid mapping acceptance drift")
+            post = {"fds": [0, 1, 2], "mapping": inspection}
+            module._validate_post_inspection(post, len(expected), inspection["mapping_sha256"], sealed_executable[:2])
+            forged_post = json.loads(json.dumps(post))
+            forged_post["mapping"]["executable"] = list(materialized[expected[0]][:2])
+            try:
+                module._validate_post_inspection(forged_post, len(expected), inspection["mapping_sha256"], sealed_executable[:2])
+            except module.RuntimeLauncherError as error:
+                if error.code != "owner-inspection-mapping": raise
+            else:
+                raise AssertionError("outer accepted copied /bin inode as planned executable")
+
+            def reject(values, snapshots, code):
+                observed = iter(snapshots)
+                with patched(module, _maps_snapshot=lambda *_arguments: next(observed)):
+                    try:
+                        module._mapping_inspection(None, 7, values, "gzip", report, values[expected[0]][:2])
+                    except module.RuntimeLauncherError as error:
+                        if error.code != code: raise AssertionError(f"mapping rejection drift: {error.code}") from error
+                    else:
+                        raise AssertionError(f"mapping hostile case accepted: {code}")
+            copied_executable = dict(authority)
+            copied_executable[expected[0]] = materialized[expected[0]]
+            reject(authority, (maps(copied_executable, b"copied-executable"),), "mapping-unknown")
+            sealed_loader = dict(authority)
+            loader_source = os.fstat(descriptors[selected[1].descriptor_index])
+            sealed_loader[expected[1]] = (loader_source.st_dev, loader_source.st_ino, loader_source.st_size)
+            reject(authority, (maps(sealed_loader, b"sealed-loader"),), "mapping-unknown")
+            aliased = dict(authority)
+            aliased[expected[1]] = aliased[expected[0]]
+            reject(aliased, (), "mapping-hybrid-identity")
+            hybrid_alias = dict(materialized)
+            hybrid_alias[expected[1]] = sealed_executable
+            with patched(module.fcntl, fcntl=modeled_fcntl):
+                try:
+                    module._hybrid_mapping_authority(descriptors, rows, "gzip", report, hybrid_alias)
+                except module.RuntimeLauncherError as error:
+                    if error.code != "mapping-hybrid-identity": raise
+                else:
+                    raise AssertionError("hybrid kernel identity alias accepted")
+            reject(authority, (valid_maps, maps(authority, b"drift")), "mapping-drift")
+            unknown = dict(authority)
+            unknown[expected[0]] = (os.makedev(127, 127), (1 << 31) - 1, unknown[expected[0]][2])
+            reject(authority, (maps(unknown, b"unknown"),), "mapping-unknown")
+        finally:
+            for descriptor in descriptors:
+                os.close(descriptor)
+
+    with tempfile.TemporaryDirectory() as parent:
+        root = f"{parent}/{module._ROOT_LEAF}"
+        os.mkdir(root, 0o700)
+        same = (os.makedev(1, 1), 99, selected[0].size)
+        dummy_descriptors = tuple(0 for _index in range(max(row.descriptor_index for row in selected) + 1))
+        with patched(module, _copy_bound_object=lambda *_arguments: same):
+            try:
+                module._materialize_root(Ops(), "gzip", dummy_descriptors, rows, report, root)
+            except module.RuntimeLauncherError as error:
+                if error.code != "mapping-materialized-identity": raise
+            else:
+                raise AssertionError("materialized copy identity alias accepted")
+    with tempfile.TemporaryDirectory() as parent:
+        root = f"{parent}/{module._ROOT_LEAF}"
+        os.mkdir(root, 0o700)
+        truncated = json.loads(json.dumps(report))
+        truncated["tools"][module._TOOL_INDEX["gzip"]]["objects"].pop()
+        try:
+            module._materialize_root(Ops(), "gzip", (), rows, truncated, root)
+        except module.RuntimeLauncherError as error:
+            if error.code != "mapping-materialized-cardinality": raise
+        else:
+            raise AssertionError("materialized mapping cardinality drift accepted")
 
 
 def namespace_transfer_diagnostic_contracts(module):
@@ -2839,6 +2999,7 @@ def parent():
     namespace_owner_cleanup_contract(module)
     cleanup_error_status_contract(module)
     owner_permission_stage_contracts(module)
+    materialized_mapping_identity_contract(module)
     namespace_transfer_diagnostic_contracts(module)
     production_operation_contracts(module)
     causal_scope["capsule_contract"](module)
