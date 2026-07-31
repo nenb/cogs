@@ -1852,46 +1852,111 @@ class _BIChildSocket:
         return raw
 
 
+def _drifted_worker_report(module, report):
+    drift = _BIjson.loads(_BIjson.dumps(report))
+    tool = drift["tools"][0]
+    tool["objects"][0]["sha256"] = _BIhashlib.sha256(b"fresh-worker-report-drift").hexdigest()
+    tool["closure_sha256"] = module._digest(tool["objects"])
+    tool["mapping_sha256"] = module._digest([
+        [item["role"], item["sha256"]] for item in tool["objects"]
+    ])
+    aggregate = [
+        {key: value for key, value in item.items() if key != "mapping_sha256"}
+        for item in drift["tools"]
+    ]
+    drift["closure_sha256"] = module._digest(aggregate)
+    raw = module._canonical(drift, True)
+    module._decode_report(raw)
+    return raw
+
+
 def _modeled_worker_execution(module, admission, kernel):
-    """Execute the real worker body and bind fresh preparation order to one issue."""
-    release_fd = kernel.alloc("pipe", resource={"data": bytearray(b"G"),
-        "read_closed": False, "write_closed": True, "child_writer": False}, end="read")
-    endpoint_fd, helper_fd = kernel.alloc("socket"), kernel.alloc("socket")
-    sockets = {fd: _BIChildSocket(kernel, fd, "worker") for fd in (endpoint_fd, helper_fd)}
-    events, claimed = [], []
+    """Execute the real worker body and bind two fresh owners to comparison and issue."""
     packet = _BIjson.loads(kernel.packet)
     receipt = module._IssuanceReceipt(module._HANDOFF_VERSION, packet["report_sha256"],
         packet["closure_sha256"], packet["binding_sha256"], packet["generation_sha256"],
         len(kernel.descriptors), kernel.worker, kernel.outer)
-    class Owner:
-        def _canonical_report_bytes(self):
-            events.append("worker:report")
-            return kernel.report_bytes
-        def _issue_once(self, issuer):
-            events.append("worker:issue")
-            return receipt
-        def close(self): events.append("worker:close")
-    closure = _BItypes.ModuleType("modeled.closure")
-    closure.__package__ = "modeled"
-    def prepare(current, issuer):
-        if issuer._preparation_admissions[len(claimed)] is not current: raise AssertionError("worker admission order")
-        claimed.append(current)
-        events.append("worker:prepare")
-        return Owner()
-    closure._prepare_admitted_fixed_runtime_closure = prepare
-    def child_socket(*args, **kwargs): return sockets[kwargs["fileno"]]
-    def child_exit(code): events.append(f"worker:exit:{code}")
-    with patched(module, _SystemOps=lambda: kernel), patched(module.socket, socket=child_socket), patched(
-        module.os, getpid=lambda: kernel.worker, getppid=lambda: kernel.outer,
-        setsid=lambda *args: None, _exit=child_exit):
-        module._worker_main(endpoint_fd, helper_fd, release_fd, b"N" * 32,
-                            admission, closure, kernel.outer)
     repeated = admission._operation == "runtime"
-    expected = (["worker:prepare", "worker:report", "worker:close", "worker:prepare", "worker:report"]
-                if repeated else ["worker:prepare"])
-    expected += ["worker:issue", "worker:close", "worker:exit:0"]
-    if events != expected or len(claimed) != (2 if repeated else 1) or (repeated and claimed[0] is claimed[1]):
+
+    def execute(reports):
+        release_fd = kernel.alloc("pipe", resource={"data": bytearray(b"G"),
+            "read_closed": False, "write_closed": True, "child_writer": False}, end="read")
+        endpoint_fd, helper_fd = kernel.alloc("socket"), kernel.alloc("socket")
+        sockets = {fd: _BIChildSocket(kernel, fd, "worker") for fd in (endpoint_fd, helper_fd)}
+        events, claimed, handoffs, comparison_errors = [], [], [], []
+
+        class Owner:
+            def __init__(self, index, report):
+                self.index, self.report = index, report
+            def _canonical_report_bytes(self):
+                events.append(f"worker:owner-{self.index}:report")
+                return self.report
+            def _issue_once(self, issuer):
+                if issuer._preparation_admissions[self.index - 1] is not claimed[self.index - 1]:
+                    raise AssertionError("worker issue owner identity")
+                handoffs.append(self.index)
+                events.append(f"worker:owner-{self.index}:issue")
+                return receipt
+            def close(self): events.append(f"worker:owner-{self.index}:close")
+
+        closure = _BItypes.ModuleType("modeled.closure")
+        closure.__package__ = "modeled"
+        def prepare(current, issuer):
+            index = len(claimed)
+            if index >= len(reports) or issuer._preparation_admissions[index] is not current:
+                raise AssertionError("worker admission order")
+            claimed.append(current)
+            events.append(f"worker:owner-{index + 1}:prepare")
+            return Owner(index + 1, reports[index])
+        closure._prepare_admitted_fixed_runtime_closure = prepare
+        def child_socket(*args, **kwargs): return sockets[kwargs["fileno"]]
+        def child_exit(code): events.append(f"worker:exit:{code}")
+        compare = module._require_identical_closure_reports
+        def observed_compare(first, second):
+            events.append("worker:compare")
+            try:
+                compare(first, second)
+            except module.RuntimeLauncherError as error:
+                comparison_errors.append(error.code)
+                raise
+        try:
+            with patched(module, _SystemOps=lambda: kernel,
+                         _require_identical_closure_reports=observed_compare), patched(
+                module.socket, socket=child_socket), patched(
+                module.os, getpid=lambda: kernel.worker, getppid=lambda: kernel.outer,
+                setsid=lambda *args: None, _exit=child_exit):
+                module._worker_main(endpoint_fd, helper_fd, release_fd, b"N" * 32,
+                                    admission, closure, kernel.outer)
+        finally:
+            for endpoint in sockets.values(): endpoint.close()
+        return events, claimed, handoffs, comparison_errors
+
+    success_reports = (kernel.report_bytes, kernel.report_bytes) if repeated else (kernel.report_bytes,)
+    events, claimed, handoffs, comparison_errors = execute(success_reports)
+    expected = ([
+        "worker:owner-1:prepare", "worker:owner-1:report", "worker:owner-1:close",
+        "worker:owner-2:prepare", "worker:owner-2:report", "worker:compare",
+        "worker:owner-2:issue", "worker:owner-2:close", "worker:exit:0",
+    ] if repeated else [
+        "worker:owner-1:prepare", "worker:owner-1:issue",
+        "worker:owner-1:close", "worker:exit:0",
+    ])
+    expected_claims = 2 if repeated else 1
+    if (events != expected or handoffs != [expected_claims] or comparison_errors
+            or len(claimed) != expected_claims or (repeated and claimed[0] is claimed[1])):
         raise AssertionError(f"worker child state machine drift: {events}")
+
+    if repeated:
+        drift = _drifted_worker_report(module, kernel.report)
+        events, claimed, handoffs, comparison_errors = execute((kernel.report_bytes, drift))
+        expected = [
+            "worker:owner-1:prepare", "worker:owner-1:report", "worker:owner-1:close",
+            "worker:owner-2:prepare", "worker:owner-2:report", "worker:compare",
+            "worker:owner-2:close", "worker:exit:124",
+        ]
+        if (events != expected or handoffs or comparison_errors != ["closure-report-drift"]
+                or len(claimed) != 2 or claimed[0] is claimed[1]):
+            raise AssertionError(f"worker report drift causality escaped: {events}")
     return {"kind": "worker", "packet_sha256": _BIhashlib.sha256(kernel.packet).hexdigest(), "receipt": receipt}
 
 def _modeled_namespace_execution(module, report, descriptors, rows, role):
