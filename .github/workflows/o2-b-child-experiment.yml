@@ -53,11 +53,12 @@ jobs:
         continue-on-error: true
         run: |
           set -eu
-          mkdir -p /tmp/alt-rootfs
+          mkdir -p /tmp/alt-rootfs/bin
           container=$(docker create debian:13-slim)
-          docker export "$container" | tar -x -C /tmp/alt-rootfs ./bin/gzip ./usr/bin/gzip 2>/dev/null || true
+          docker cp "$container":/usr/bin/gzip /tmp/alt-rootfs/bin/gzip
           docker rm "$container" >/dev/null
-          ls -la /tmp/alt-rootfs/bin/gzip || echo "no debian gzip staged"
+          chmod 0755 /tmp/alt-rootfs/bin/gzip
+          ls -la /tmp/alt-rootfs/bin/gzip
 
       - name: Run exit code census
         run: |

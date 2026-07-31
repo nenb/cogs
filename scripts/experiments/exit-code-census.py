@@ -257,6 +257,11 @@ CASES = (
     # Cross-distro: a Debian 13 gzip against its own closure, and against the runner's.
     {"name": "debian-gzip/own-closure", "executable": ALT_GZIP, "argv": ("gzip", "-d", "-c")},
     {"name": "debian-gzip/runner-closure", "executable": ALT_GZIP, "argv": ("gzip", "-d", "-c"), "closure_of": GZIP},
+    # Exec non-executable closure members: what does each object do as the program?
+    {"name": "loader-as-program", "executable": "/lib64/ld-linux-x86-64.so.2", "argv": ("gzip", "-d", "-c"), "closure_of": GZIP},
+    {"name": "libc-as-program", "executable": "/lib/x86_64-linux-gnu/libc.so.6", "argv": ("gzip", "-d", "-c"), "closure_of": GZIP},
+    {"name": "libz-as-program", "executable": "/lib/x86_64-linux-gnu/libz.so.1", "argv": ("gzip", "-d", "-c"), "closure_of": ZSTD},
+    {"name": "libzstd-as-program", "executable": "/lib/x86_64-linux-gnu/libzstd.so.1", "argv": ("zstd", "-q", "-d", "-c"), "closure_of": ZSTD},
 )
 
 
