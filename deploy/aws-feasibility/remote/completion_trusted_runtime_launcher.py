@@ -1841,14 +1841,7 @@ def _namespace_owner(
                 if os.path.ismount(root): ops.umount(root.encode())
                 _require(not os.path.ismount(root), "materialized mount remains", "mount-cleanup")
             except BaseException as error: failures.append(error)
-        try:
-            next_sequence = sequence + 1
-            if failures:
-                status.send(_status("error", next_sequence, code="cleanup-uncertain", kind="RuntimeLauncherCleanupError"))
-            elif isinstance(primary, RuntimeLauncherUnavailable):
-                status.send(_status("unavailable", next_sequence, primitive=primary.primitive, message=str(primary)))
-            else:
-                status.send(_status("error", next_sequence, code=getattr(primary, "code", "launcher-rejected"), kind=type(primary).__name__))
+        try: status.send(_namespace_failure_packet(sequence, primary, failures))
         except BaseException: pass
         os._exit(125)
 def _parse_maps(raw: bytes) -> tuple[tuple[object, ...], ...]:
@@ -1952,10 +1945,18 @@ def _validate_namespace_authority(handles: tuple[_FdLease, ...], baselines: tupl
     finally: parent.close(ops)
     _require(all(owners) and parent_exact, "namespace ownership relation", "namespace-ownership")
     return {"namespace_handles_exact": exact, "namespace_ownership_exact": all(owners) and parent_exact}
+def _namespace_failure_packet(sequence: int, primary: BaseException, failures: list[BaseException]) -> bytes:
+    if failures: return _status("error", sequence, code="cleanup-uncertain", kind="RuntimeLauncherCleanupError")
+    if isinstance(primary, RuntimeLauncherUnavailable): return _status("unavailable", sequence, primitive=primary.primitive, message=str(primary))
+    return _status("error", sequence, code=getattr(primary, "code", "launcher-rejected"), kind=type(primary).__name__)
+def _open_self_namespace_handle(ops: Any, name: str, tag: str) -> _FdLease:
+    try: return _FdLease(ops.open(f"/proc/self/ns/{name}", os.O_RDONLY | os.O_CLOEXEC), f"namespace:{name}")
+    except BaseException as error: raise RuntimeLauncherError("self namespace open failed", f"namespace-open-{tag}") from error
 def _open_self_namespace_authority(ops: Any, baselines: tuple[tuple[int, int], ...]) -> tuple[tuple[_FdLease, ...], dict[str, bool]]:
     handles: list[_FdLease] = []
+    tags = ("user", "mnt", "net", "pid-child")
     try:
-        for name in _NAMESPACE_NAMES: handles.append(_FdLease(ops.open(f"/proc/self/ns/{name}", os.O_RDONLY | os.O_CLOEXEC), f"namespace:{name}"))
+        for name, tag in zip(_NAMESPACE_NAMES, tags): handles.append(_open_self_namespace_handle(ops, name, tag))
         leased = tuple(handles)
         return leased, _validate_namespace_authority(leased, baselines, ops)
     except BaseException as primary:
