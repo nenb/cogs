@@ -552,7 +552,7 @@ class _SystemOps:
         self._checked(self.libc.syscall(322, fd, b"", argv, environment, _AT_EMPTY_PATH), "execveat")
         raise AssertionError("execveat returned")
 def _checked_row(row: _GenerationRow) -> _GenerationRow:
-    _require(type(row.tool_index) is int and row.tool_index in (1, 2), "generation tool index")
+    _require(type(row.tool_index) is int and row.tool_index in (0, 1, 2), "generation tool index")
     _require(type(row.object_index) is int and row.object_index >= 0, "generation object index")
     _require(row.role in ("executable", "loader", "library"), "generation role")
     _require(type(row.descriptor_index) is int and row.descriptor_index >= 1, "generation descriptor index")
@@ -611,7 +611,7 @@ def _verify_bundle(admission: _SourceAdmission, report_bytes: bytes, descriptors
     admission._validate_tracked_schema(report_data)
     report = _decode_report(report_data)
     row_order = tuple((row.tool_index, row.object_index) for row in rows)
-    expected_order = tuple((tool_index, object_index) for tool_index in (1, 2) for object_index in range(len(report["tools"][tool_index]["objects"])))
+    expected_order = ((0, 0),) + tuple((tool_index, object_index) for tool_index in (1, 2) for object_index in range(len(report["tools"][tool_index]["objects"])))
     _require(row_order == expected_order, "generation rows are not exact", "issuer-generation-rows")
     referenced = {0}
     for row in rows:
@@ -634,6 +634,19 @@ def _verify_bundle(admission: _SourceAdmission, report_bytes: bytes, descriptors
             _inspect_fd(descriptors[row.descriptor_index], False, row.size, row.sha256)
             checked[row.descriptor_index] = expected
     return report, _digest([_binding_value(row) for row in rows]), _digest([_generation_value(row) for row in rows])
+def _held_python_executable_identity(descriptors: tuple[int, ...], rows: tuple[_GenerationRow, ...]) -> tuple[int, int]:
+    selected = tuple(row for row in rows if row.tool_index == 0 and row.object_index == 0)
+    exact = len(selected) == 1 and selected[0].role == "executable"
+    _require(exact, "held Python executable row", "python-identity-row")
+    row = selected[0]
+    info = os.fstat(descriptors[row.descriptor_index])
+    source = row.source_generation
+    identity = source[:2]
+    valid = stat.S_ISREG(info.st_mode) and len(source) == 8
+    valid = valid and all(type(value) is int and value > 0 for value in identity)
+    _require(valid, "held Python executable identity", "python-identity-row")
+    return identity
+
 def _closed_compression_objects(objects: list[dict[str, object]]) -> tuple[dict[str, object], ...]:
     return tuple({
         "needed": tuple(item["needed"]),
@@ -814,6 +827,7 @@ _ProcessLease = make_dataclass("_ProcessLease", [
     ("waitable", bool, field(default=True)), ("identity_phase", str, field(default="BLOCKED")),
     ("planned_session", int, field(default=0)), ("planned_group", int, field(default=0)),
     ("planned_executable", tuple[int, int], field(default=(0, 0))),
+    ("held_executable", bool, field(default=False)),
 ], namespace={"__module__": __name__})
 class _ProcessOwner(make_dataclass(
     "_ProcessOwnerData",
@@ -831,7 +845,14 @@ class _ProcessOwner(make_dataclass(
         pidfd_fd: int | None = None,
         waitable: bool = True,
         bind_received_pidfd: bool = False,
+        expected_executable: tuple[int, int] | None = None,
     ) -> _ProcessLease:
+        expected_exact = expected_executable is None or (
+            type(expected_executable) is tuple
+            and len(expected_executable) == 2
+            and all(type(value) is int and value > 0 for value in expected_executable)
+        )
+        _require(expected_exact, "registered executable identity", "process-register-executable")
         lease = _ProcessLease(pid, None, release_gate=release_gate, waitable=waitable)
         descriptor = pidfd_fd if pidfd_fd is not None else os.pidfd_open(pid, 0)
         lease.pidfd = _FdLease(descriptor, f"pidfd:{pid}")
@@ -850,7 +871,11 @@ class _ProcessOwner(make_dataclass(
         lease.start_time = _start_time(pid)
         lease.session = os.getsid(pid)
         lease.process_group = os.getpgid(pid)
-        lease.executable = _exe_identity(pid)
+        if expected_executable is None:
+            lease.executable = _exe_identity(pid)
+        else:
+            lease.executable = expected_executable
+            lease.held_executable = True
         return lease
     def spawn(self) -> tuple[int, _ProcessLease | None, _FdLease | None]:
         read_fd, write_fd = os.pipe2(os.O_CLOEXEC)
@@ -931,9 +956,18 @@ class _ProcessOwner(make_dataclass(
             lease.process_group,
             lease.planned_executable,
         )
-        phase_exact = lease.identity_phase == "PRE_EXEC"
+        phase_exact = lease.identity_phase == "PRE_EXEC" and not lease.held_executable
         _require(phase_exact and observed == expected, "exec transition readback", "process-transition-readback")
         lease.executable = observed[3]
+        lease.identity_phase = "POST_EXEC"
+    def confirm_mapped_exec(self, lease: _ProcessLease, executable: tuple[int, int]) -> None:
+        observed = (_start_time(lease.pid), os.getsid(lease.pid), os.getpgid(lease.pid))
+        expected = (lease.start_time, lease.session, lease.process_group)
+        phase_exact = lease.identity_phase == "PRE_EXEC" and lease.held_executable
+        target_exact = executable == lease.planned_executable
+        _require(phase_exact and target_exact and observed == expected,
+                 "mapped exec transition readback", "process-transition-readback")
+        lease.executable = executable
         lease.identity_phase = "POST_EXEC"
     def receive_descendant(
         self,
@@ -945,6 +979,7 @@ class _ProcessOwner(make_dataclass(
         case: str | None = None,
         role: str | None = None,
         namespace_baselines: tuple[tuple[int, int], ...] | None = None,
+        expected_executable: tuple[int, int] | None = None,
     ) -> _ProcessLease:
         # Non-socket endpoints exist only in portable adapters.  Production
         # transfers always bind the received kernel pidfd identity.
@@ -994,12 +1029,17 @@ class _ProcessOwner(make_dataclass(
                 binding = binding and value["transfer"] == transfer
                 _require(transfer not in self.transfers, "descendant transfer replay", "process-transfer-replay")
             _require(binding, "descendant transfer binding", "process-transfer-binding")
+            if expected_executable is not None:
+                held_shape = namespace_baselines is not None
+                held_shape = held_shape and value["executable"] == list(expected_executable)
+                _require(held_shape, "descendant held executable identity", "process-transfer-executable")
             pidfd = rights[0].transfer()
             lease = self.register(
                 value["pid"],
                 pidfd_fd=pidfd,
                 waitable=False,
                 bind_received_pidfd=not modeled_endpoint,
+                expected_executable=expected_executable,
             )
             observed = (
                 lease.start_time,
@@ -1051,8 +1091,9 @@ class _ProcessOwner(make_dataclass(
         _require(first == second == expected, "stable registered descendant census", "process-census")
         return first
     def stable_identity_census(self, root: _ProcessLease) -> tuple[tuple[object, ...], ...]:
-        first = _descendant_identity_edges(root.pid, self.ops)
-        second = _descendant_identity_edges(root.pid, self.ops)
+        held = {item.pid: item for item in root.descendants if item.held_executable and not item.reaped}
+        first = _descendant_identity_edges(root.pid, self.ops, held)
+        second = _descendant_identity_edges(root.pid, self.ops, held)
         expected = tuple(
             sorted(
                 (root.pid, item.pid, item.start_time, *item.executable)
@@ -1233,10 +1274,14 @@ def _settle_pidfdless_clone(lease: _ProcessLease, ops: Any, primary: BaseExcepti
 def _process_matches(lease: _ProcessLease) -> bool:
     try:
         start_time = _start_time(lease.pid)
-        executable = _exe_identity(lease.pid)
         observed = (os.getsid(lease.pid), os.getpgid(lease.pid))
         if start_time != lease.start_time:
             return False
+        if lease.held_executable:
+            retained = lease.pidfd is not None and lease.pidfd.state is _FdState.OWNED
+            retained = retained and _stable_pidfd_target(lease.pidfd.fd, _SystemOps()) == lease.pid
+            return retained and observed == (lease.session, lease.process_group)
+        executable = _exe_identity(lease.pid)
         if lease.identity_phase == "PRE_EXEC":
             if observed != (lease.session, lease.process_group):
                 return False
@@ -1889,11 +1934,12 @@ def _maps_snapshot(pid: int, ops: Any | None = None) -> bytes:
     raw = _proc_bytes(f"/proc/{pid}/maps", _MAX_MAPS, ops)
     _parse_maps(raw)
     return raw
-def _final_mapping_check(ops: _SystemOps, pid: int, rows: tuple[_GenerationRow, ...], role: str, report: dict[str, object]) -> tuple[bytes, str]:
+def _final_mapping_check(ops: _SystemOps, pid: int, rows: tuple[_GenerationRow, ...], role: str, report: dict[str, object], planned_executable: tuple[int, int]) -> tuple[bytes, str]:
     first = _maps_snapshot(pid)
     expected_rows = [row for row in rows if row.tool_index == _TOOL_INDEX[role]]
     expected = {(row.role, row.sha256) for row in expected_rows}
     observed: set[tuple[str, str]] = set()
+    executable_identities: list[tuple[int, int]] = []
     digest_roles = {row.sha256: row.role for row in expected_rows}
     for start, end, permissions, _offset, major, minor, inode, path in _parse_maps(first):
         if b"x" not in permissions: continue
@@ -1913,9 +1959,13 @@ def _final_mapping_check(ops: _SystemOps, pid: int, rows: tuple[_GenerationRow, 
         map_lease.close(ops)
         digest = hashlib.sha256(data).hexdigest()
         _require(digest in digest_roles, "final mapping closure expansion")
-        observed.add((digest_roles[digest], digest))
+        mapped_role = digest_roles[digest]
+        observed.add((mapped_role, digest))
+        if mapped_role == "executable": executable_identities.append((info.st_dev, info.st_ino))
     second = _maps_snapshot(pid)
     _require(first == second and observed == expected, "final mapped generation equality")
+    _require(executable_identities == [planned_executable],
+             "final executable mapping identity/cardinality", "mapping-executable-identity")
     mapping_digest = _digest([[row.role, row.sha256] for row in expected_rows])
     if mapping_digest != report["tools"][_TOOL_INDEX[role]]["mapping_sha256"]: raise RuntimeLauncherError("final mapping digest", "mapping-report-digest")
     return first, mapping_digest
@@ -2093,8 +2143,9 @@ def _descendant_census(pid: int, ops: Any) -> tuple[int, ...]:
         pending.extend(children)
         _require(len(observed) <= 4096, "descendant census bound", "descendant-bound")
     return tuple(sorted(observed))
-def _descendant_identity_edges(pid: int, ops: Any) -> tuple[tuple[object, ...], ...]:
+def _descendant_identity_edges(pid: int, ops: Any, held: dict[int, _ProcessLease] | None = None) -> tuple[tuple[object, ...], ...]:
     pending = [pid]
+    retained = {} if held is None else held
     visited = {pid}
     edges: list[tuple[object, ...]] = []
     reads = 0
@@ -2107,7 +2158,15 @@ def _descendant_identity_edges(pid: int, ops: Any) -> tuple[tuple[object, ...], 
         for child in before:
             _require(child not in visited, "descendant census cycle/duplicate", "descendant-census")
             start_before = _start_time(child, ops)
-            executable = _exe_identity(child, ops)
+            lease = retained.get(child)
+            if lease is None:
+                executable = _exe_identity(child, ops)
+            else:
+                authority = lease.pidfd is not None and lease.pidfd.state is _FdState.OWNED
+                authority = authority and _stable_pidfd_target(lease.pidfd.fd, ops) == child
+                authority = authority and start_before == lease.start_time
+                _require(authority, "retained descendant identity drift", "process-census")
+                executable = lease.executable
             start_after = _start_time(child, ops)
             _require(start_before == start_after, "descendant identity drift", "process-census")
             edges.append((parent, child, start_before, *executable))
@@ -2272,7 +2331,7 @@ def _settle_rejected_tool_transfer(
     if failures:
         raise RuntimeLauncherCleanupError(primary, failures) from primary
 
-def _run_tool_with_ops( ops: Any, role: str, report: dict[str, object], descriptors: tuple[int, ...], rows: tuple[_GenerationRow, ...], ) -> tuple[bytes, dict[str, object]]:
+def _run_tool_with_ops( ops: Any, role: str, report: dict[str, object], descriptors: tuple[int, ...], rows: tuple[_GenerationRow, ...], python_executable: tuple[int, int], ) -> tuple[bytes, dict[str, object]]:
     child_baseline = _parse_children(_proc_bytes("/proc/thread-self/children", 65536, ops))
     process_owner = _ProcessOwner(ops)
     root_owner = _RootOwner(ops)
@@ -2362,6 +2421,7 @@ def _run_tool_with_ops( ops: Any, role: str, report: dict[str, object], descript
                 transfer_case,
                 "tool",
                 namespace_baselines,
+                python_executable,
             )
         except BaseException as transfer_error:
             if isinstance(transfer_parent, socket.socket):
@@ -2407,10 +2467,12 @@ def _run_tool_with_ops( ops: Any, role: str, report: dict[str, object], descript
         boundary = boundary_packet["observations"]
         _require(type(boundary) is dict, "boundary observations malformed", "boundary-observations")
         _recv_status(parent_status, time.monotonic() + _SETUP_SECONDS, "exec-ready", 4)
-        process_owner.confirm_exec(child_lease)
         post_fds = _descriptor_snapshot(ops, child["pid"])
         _require(post_fds == (0, 1, 2), "post-exec descriptor table", "exec-fd-table")
-        post_maps, post_mapping = _final_mapping_check(ops, child["pid"], rows, role, report)
+        post_maps, post_mapping = _final_mapping_check(
+            ops, child["pid"], rows, role, report, child_lease.planned_executable,
+        )
+        process_owner.confirm_mapped_exec(child_lease, child_lease.planned_executable)
         _require(_descendant_census(namespace_lease.pid, ops) == (child["pid"],), "registered descendant census", "descendant-census")
         command = _status("finalize-root", 3)
         _require(parent_status.send(command) == len(command), "root finalization send", "root-finalize-send")
@@ -2419,7 +2481,9 @@ def _run_tool_with_ops( ops: Any, role: str, report: dict[str, object], descript
         namespace_facts = _namespace_facts(child["pid"], os.getuid(), os.getgid(), namespace_lease)
         final_fds = _descriptor_snapshot(ops, child["pid"])
         _require(final_fds == post_fds, "final descriptor drift", "final-fd-drift")
-        final_maps, final_mapping = _final_mapping_check(ops, child["pid"], rows, role, report)
+        final_maps, final_mapping = _final_mapping_check(
+            ops, child["pid"], rows, role, report, child_lease.planned_executable,
+        )
         _require((final_maps, final_mapping) == (post_maps, post_mapping), "final mapping drift", "final-map-drift")
         limits_exact = _parse_limits(_proc_bytes(f"/proc/{child['pid']}/limits", 65536, ops)) == limits_baseline
         payload = _FIXED_INPUT[role]
@@ -2619,8 +2683,9 @@ def _coordinate_with_ops(admission: _SourceAdmission, closure_module: types.Modu
         report, descriptor_tuple, rows, receipt = _consume_worker_handoff( parent_endpoint, helper_parent, nonce, admission, pid, ops, process_owner, time.monotonic() + _SETUP_SECONDS, )
         descriptor_leases = list(descriptor_tuple)
         descriptors = tuple(lease.fd for lease in descriptor_leases)
-        gzip_output, gzip_observed = _run_tool_with_ops(ops, "gzip", report, descriptors, rows)
-        zstd_output, zstd_observed = _run_tool_with_ops(ops, "zstd", report, descriptors, rows)
+        python_executable = _held_python_executable_identity(descriptors, rows)
+        gzip_output, gzip_observed = _run_tool_with_ops(ops, "gzip", report, descriptors, rows, python_executable)
+        zstd_output, zstd_observed = _run_tool_with_ops(ops, "zstd", report, descriptors, rows, python_executable)
         outputs = (gzip_output, zstd_output)
         execution_mappings = (gzip_observed.pop("_execution_mapping_sha256"), zstd_observed.pop("_execution_mapping_sha256"))
         observed_tools = (gzip_observed, zstd_observed)

@@ -378,13 +378,18 @@ def valid_bundle(module, directory):
     }
     report_bytes = module._canonical(report, True)
     paths = []
-    for index, data in enumerate((report_bytes, *object_bytes)):
+    for index, data in enumerate((report_bytes, b"parser-exec", *object_bytes)):
         path = Path(directory) / str(index)
         path.write_bytes(data)
         path.chmod(0o444 if index == 0 else 0o555)
         paths.append(path)
     descriptors = tuple(os.open(path, os.O_RDONLY) for path in paths)
-    rows = []
+    parser_item = parser[0]
+    rows = [module._GenerationRow(
+        0, 0, "executable", 1, parser_item["size"], parser_item["sha256"],
+        None, (), module._SEAL_PROFILE,
+        (8, 808, parser_item["size"], 4, 5, 0o100755, 0, 0),
+    )]
     for offset, (tool_index, objects) in enumerate(
         ((1, tool_objects[0]), (2, tool_objects[1])),
     ):
@@ -393,7 +398,7 @@ def valid_bundle(module, directory):
                 tool_index,
                 object_index,
                 value["role"],
-                1 + offset * 2 + object_index,
+                2 + offset * 2 + object_index,
                 value["size"],
                 value["sha256"],
                 value["soname"],
@@ -1500,6 +1505,10 @@ class _BISocket:
                 lease, self.k.namespace, b"N" * 32,
                 f"tool:{self.k.tool}", "tool",
             )
+            if self.k.fire("start-drift", "tool:start-drift"):
+                self.k.processes[self.k.child]["start"] += 1
+                self.k.processes[self.k.child]["exited"] = True
+                self.k.processes[self.k.child]["reaped"] = True
             pidfd = self.k.alloc("pidfd", pid=self.k.child)
             pid_namespace = self.k.alloc("namespace", name="pid", identity=self.k.tool_ns["pid"])
             handles = [pidfd, pid_namespace]
@@ -1538,8 +1547,8 @@ class _BISocket:
         return protocol or bool(self.queue)
 class _BIKernel:
     def __init__(self, module, report, report_bytes, descriptors, rows, root,
-                 secondary_clone=0, namespace_fault="", admission_revision="0" * 40,
-                 admission_source_set="1" * 64):
+                 secondary_clone=0, namespace_fault="", fault_point="",
+                 admission_revision="0" * 40, admission_source_set="1" * 64):
         self.m, self.report, self.report_bytes = module, report, report_bytes
         self.descriptors, self.rows, self.root = descriptors, rows, root
         self.admission_revision = admission_revision
@@ -1547,7 +1556,10 @@ class _BIKernel:
         self.outer, self.worker, self.child = 200, None, None
         self.current_pid, self.next_pid, self.next_fd = self.outer, 300, 700
         self.secondary_clone, self.namespace_fault = secondary_clone, namespace_fault
+        self.fault_point, self.fault_fired = fault_point, False
         self.clone_count = 0
+        self.proc_stat_reads, self.mapping_identities = {}, {}
+        self.parent_proc_exe_attempts = 0
         self.owned, self.virtual, self.processes, self.sockets = {0, 1, 2}, {}, {}, []
         self.processes[self.outer] = self.proc(1)
         self.tool, self.namespace, self.input_pipe, self.output_pipe = None, None, None, None
@@ -1569,6 +1581,11 @@ class _BIKernel:
             "status": 0,
             "gate": None,
         }
+    def fire(self, point, event):
+        if self.fault_point != point or self.fault_fired: return False
+        self.fault_fired = True
+        self.events.append(event)
+        return True
     def alloc(self, kind, **values):
         while self.next_fd in self.owned:
             self.next_fd += 1
@@ -1657,13 +1674,16 @@ class _BIKernel:
         del flags
         return self.alloc("pidfd", pid=pid)
     def open(self, path, flags, mode=0o600, **kwargs):
+        if self.child is not None and self.current_pid == self.outer and path == f"/proc/{self.child}/exe":
+            self.parent_proc_exe_attempts += 1
+            raise PermissionError(errno.EACCES, "parent proc-exe denied")
         if "/map_files/" in path:
             index = int(path.rsplit("/", 1)[1].split("-", 1)[0], 16) // 0x1000 - 1
             row = [r for r in self.rows if r.tool_index == self.m._TOOL_INDEX[self.tool]][index]
             source = self.descriptors[row.descriptor_index]
-            info = _BI_FSTAT(source)
+            identity = self.mapped_identity(row)
             data = _BI_PREAD(source, row.size, 0)
-            return self.alloc("proc", path=path, data=bytearray(data), identity=(info.st_dev, info.st_ino))
+            return self.alloc("proc", path=path, data=bytearray(data), identity=identity)
         if path.startswith("/proc/"):
             return self.alloc("proc", path=path)
         fd = _BI_OPEN(path, flags, mode, **kwargs)
@@ -1776,6 +1796,8 @@ class _BIKernel:
             return b"".join(f"{pid} ".encode() for pid in sorted(children))
         if path.endswith("/stat"):
             pid = int(path.split("/")[2])
+            reads = self.proc_stat_reads.get(pid, 0) + 1
+            self.proc_stat_reads[pid] = reads
             start = self.processes[pid]["start"]
             return f"{pid} (modeled) S ".encode() + b" ".join([b"1"] * 18 + [str(start).encode()] + [b"1"] * 30) + b"\n"
         if path.endswith("/limits"):
@@ -1784,6 +1806,11 @@ class _BIKernel:
             return (f"NSpid:\t{self.child}\t1\n".encode() + b"Groups:\t\nCapInh:\t0000000000000000\n"
                     b"CapPrm:\t0000000000000000\nCapEff:\t0000000000000000\nCapBnd:\t0000000000000000\n"
                     b"CapAmb:\t0000000000000000\nNoNewPrivs:\t1\nSeccomp:\t2\n")
+        if "/proc/self/fdinfo/" in path:
+            descriptor = int(path.rsplit("/", 1)[1])
+            target = self.virtual[descriptor]["pid"]
+            if self.fire("pid-drift", "tool:pid-drift"): target += 1
+            return f"Pid:\t{target}\n".encode()
         if path.endswith("/uid_map"): return f"{0:10d} {_BIos.getuid():10d} {1:10d}\n".encode()
         if path.endswith("/gid_map"): return f"{0:10d} {_BIos.getgid():10d} {1:10d}\n".encode()
         if path.endswith("/mountinfo"): return b"1 0 0:1 / / ro,nosuid,nodev,noexec - tmpfs tmpfs ro\n"
@@ -1795,13 +1822,21 @@ class _BIKernel:
             self.virtual[next(fd for fd, v in self.virtual.items() if v.get("path") == path)]["data"] = bytearray(data)
             return data
         raise AssertionError(f"unmodeled proc path: {path}")
+    def mapped_identity(self, row):
+        source = self.descriptors[row.descriptor_index]
+        info = _BI_FSTAT(source)
+        identity = (info.st_dev, info.st_ino)
+        if row.object_index == 0 and self.fire("mapping-mismatch", "tool:mapping-mismatch"):
+            identity = (identity[0], identity[1] + 1)
+            self.mapping_identities[row.descriptor_index] = identity
+        return self.mapping_identities.get(row.descriptor_index, identity)
     def maps(self):
         selected = [r for r in self.rows if r.tool_index == self.m._TOOL_INDEX[self.tool]]
         lines = []
         for i, row in enumerate(selected, 1):
-            info = _BI_FSTAT(self.descriptors[row.descriptor_index])
+            device, inode = self.mapped_identity(row)
             start = i * 0x1000
-            lines.append(f"{start:08x}-{start+0x1000:08x} r-xp 00000000 {_BIos.major(info.st_dev):02x}:{_BIos.minor(info.st_dev):02x} {info.st_ino} /tool\n".encode())
+            lines.append(f"{start:08x}-{start+0x1000:08x} r-xp 00000000 {_BIos.major(device):02x}:{_BIos.minor(device):02x} {inode} /tool\n".encode())
         return b"".join(lines)
     def pread(self, fd, size, offset):
         value = self.virtual.get(fd)
@@ -1940,6 +1975,51 @@ def identity_map_contracts(module):
                 raise AssertionError(f"identity map diagnostic drift: {raw!r}") from error
         else:
             raise AssertionError(f"hostile identity map accepted: {raw!r}")
+
+
+def forged_preexec_identity_contract(module):
+    expected = (8, 808)
+    packet = module._canonical({
+        "executable": [8, 809], "nonce": (b"n" * 32).hex(),
+        "parent": 123, "pid": 124, "process_group": 123,
+        "sequence": 1, "session": 123, "start_time": 11,
+        "version": "cogs.process-transfer/v1",
+    })
+    credentials = (_BIsocket.SOL_SOCKET, _BIsocket.SCM_CREDENTIALS,
+                   _BIstruct.pack("3i", 123, _BIos.geteuid(), _BIos.getegid()))
+    rights = (_BIsocket.SOL_SOCKET, _BIsocket.SCM_RIGHTS,
+              _BIArray("i", (801, 802)).tobytes())
+    class Endpoint:
+        acknowledged = False
+        def recvmsg(self, *arguments):
+            del arguments
+            return packet, [credentials, rights], 0, None
+        def recv(self, *arguments):
+            del arguments
+            self.acknowledged = True
+            return b""
+    class Ops:
+        def __init__(self): self.closed = []
+        def close(self, descriptor): self.closed.append(descriptor)
+    ops = Ops()
+    owner = module._ProcessOwner(ops)
+    leader = module._ProcessLease(123, module._FdLease(800, "leader"))
+    owner.processes.append(leader)
+    endpoint = Endpoint()
+    with patched(module.fcntl, fcntl=lambda fd, command: _BIfcntl.FD_CLOEXEC):
+        try:
+            owner.receive_descendant(
+                endpoint, leader, b"n" * 32, 1,
+                namespace_baselines=((1, 1),) * 4,
+                expected_executable=expected,
+            )
+        except module.RuntimeLauncherError as error:
+            if error.code != "process-transfer-executable": raise
+        else:
+            raise AssertionError("forged pre-exec executable accepted")
+    exact_cleanup = ops.closed == [802, 801] and owner.processes == [leader]
+    if endpoint.acknowledged or leader.descendants or not exact_cleanup:
+        raise AssertionError("forged pre-exec rejection/cleanup drift")
 
 
 def namespace_transfer_diagnostic_contracts(module):
@@ -2244,7 +2324,9 @@ def production_runtime_compression_contracts(module):
                 selected_clone = case["primitive_fault"]["clone"]
                 kernel = _BIKernel(
                     module, report, report_bytes, duplicated, rows,
-                    f"{root_parent}/{module._ROOT_LEAF}", selected_clone, case["primitive_fault"].get("namespace", ""),
+                    f"{root_parent}/{module._ROOT_LEAF}", selected_clone,
+                    case["primitive_fault"].get("namespace", ""),
+                    case["primitive_fault"].get("point", ""),
                 )
                 operation = "runtime" if expected_type is module.RuntimeQualificationResult else "compression"
                 admission = module._SourceAdmission("0" * 40, "0" * 64, "1" * 64,
@@ -2346,13 +2428,15 @@ def production_runtime_compression_contracts(module):
                         )
                     allowed_sentinels = {
                         "tool:complete", "tool:worker-result", "tool:namespace-results",
-                        "tool:integration-causal-result",
+                        "tool:integration-causal-result", "tool:no-parent-proc-exe",
                     }
                     if case["sentinel"] not in allowed_sentinels:
                         raise AssertionError("tool causal sentinel drift")
                     kernel.events.append(case["sentinel"])
                     if expected_type is module.RuntimeQualificationResult:
                         runtime_result = module._result_value(runtime)
+                if kernel.parent_proc_exe_attempts:
+                    raise AssertionError(f"parent reopened transferred child executable: {case['id']}")
                 unsettled = [
                     pid for pid, process in kernel.processes.items()
                     if pid != kernel.outer and (not process["exited"] or not process["reaped"])
@@ -2456,6 +2540,7 @@ def parent():
     for job in ("A", "B", "E", "integration"):
         causal_scope["common_fixed_cli_contract"](module, job)
     identity_map_contracts(module)
+    forged_preexec_identity_contract(module)
     namespace_transfer_diagnostic_contracts(module)
     production_operation_contracts(module)
     causal_scope["capsule_contract"](module)
