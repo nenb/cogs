@@ -1,0 +1,106 @@
+{
+  "version": "cogs.stage4-storage-launch-contract/v1",
+  "authority": "local-static-storage-launch-contract",
+  "storage": {
+    "storage_classes_distinct": true,
+    "workspace": {
+      "role": "untrusted-project-workspace",
+      "size_bytes": 21474836480,
+      "access_mode": "ReadWriteOncePod",
+      "volume_mode": "Filesystem",
+      "volume_binding_mode": "WaitForFirstConsumer",
+      "reclaim_policy": "Retain",
+      "medium": "csi-block",
+      "mount_owner": "kata-sandbox-only",
+      "retention": "retain-until-explicit-workspace-deletion",
+      "reclaim_on_session_end": false
+    },
+    "trusted_session_state": {
+      "role": "trusted-pi-session-state",
+      "size_bytes": 5368709120,
+      "access_mode": "ReadWriteOncePod",
+      "volume_mode": "Filesystem",
+      "volume_binding_mode": "WaitForFirstConsumer",
+      "reclaim_policy": "Retain",
+      "mount_owner": "trusted-worker-only",
+      "retention": "retain-30-days-after-session-close",
+      "retention_seconds": 2592000,
+      "sandbox_visible": false
+    }
+  },
+  "workspace_lease": {
+    "workspace_id": "workspace-static-1",
+    "writer_limit": 1,
+    "writer_count": 1,
+    "state": "held",
+    "holder_launch_document_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "fencing": "required-monotonic-token",
+    "expiry_allows_takeover": false,
+    "uncertain_takeover": "deny-and-preserve"
+  },
+  "launch_document": {
+    "document_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "source_revision_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "immutable": true,
+    "state": "admitted-once",
+    "admission_count": 1,
+    "ssh_host_key": {
+      "pin": "a-priori-out-of-band",
+      "verification": "match",
+      "on_mismatch": "deny-no-tofu-no-update"
+    },
+    "ephemeral_ssh_identity": "out-of-band-memory-or-tmpfs-only",
+    "ephemeral_proxy_identity": "out-of-band-memory-or-tmpfs-only",
+    "durable_identity_material": false,
+    "sandbox_secret_store_handles": false
+  },
+  "runtime_class": {
+    "required_name": "kata-qemu-cogs",
+    "resolution": "present-static-assertion",
+    "resolved_name": "kata-qemu-cogs",
+    "fallback": "deny-no-runc-or-tcg"
+  },
+  "resources": {
+    "trusted_worker_proxy": [
+      {
+        "resource_id": "trusted-static-1",
+        "session_id": "session-static-1",
+        "launch_document_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "containers": ["worker", "proxy"],
+        "workspace_mounted": false,
+        "session_state_mounted": true,
+        "ephemeral_identity_persistence": "none"
+      }
+    ],
+    "kata_sandbox": [
+      {
+        "resource_id": "sandbox-static-1",
+        "session_id": "session-static-1",
+        "launch_document_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "runtime_class_name": "kata-qemu-cogs",
+        "containers": ["sandbox"],
+        "workspace_mounted": true,
+        "session_state_mounted": false,
+        "trusted_sidecars": false,
+        "secret_store_handles": false
+      }
+    ]
+  },
+  "lifecycle": {
+    "state": "active",
+    "trusted_worker_proxy": "present",
+    "kata_sandbox": "present",
+    "workspace_attachment": "attached",
+    "session_state_attachment": "attached",
+    "lease": "held",
+    "uncertainty_artifact_sha256": null
+  },
+  "bounded_io": {
+    "max_contract_bytes": 131072,
+    "max_snapshot_nodes": 512,
+    "max_depth": 16,
+    "max_string_bytes": 2048,
+    "max_resources_per_role": 1,
+    "violation_action": "deny-and-preserve"
+  }
+}

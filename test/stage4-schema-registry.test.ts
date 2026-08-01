@@ -135,6 +135,29 @@ function policyPayloadSample(): JsonObject {
   ) as JsonObject;
 }
 
+function storageLaunchContractSample(): JsonObject {
+  return JSON.parse(
+    readFileSync(resolve(import.meta.dirname, "fixtures/stage4-storage-launch/valid-active-v1.json"), "utf8"),
+  ) as JsonObject;
+}
+
+function storageLaunchVerdictSample(): JsonObject {
+  return {
+    version: "cogs.stage4-storage-launch-verdict/v1",
+    authority: "local-static-storage-launch-classifier",
+    qualified: false,
+    campaign_authorized: false,
+    cloud_execution_observed: false,
+    kubernetes_execution_observed: false,
+    provider_truth_observed: false,
+    stage4_exit_satisfied: false,
+    release_eligible: false,
+    graph_sha256: sha("d"),
+    status: "admissible-static-graph",
+    reason_code: "STAGE4_STORAGE_LAUNCH_GRAPH_VALID",
+  };
+}
+
 function teardownVerdictSample(): JsonObject {
   return {
     version: TEARDOWN_CONTRACT.verdictVersion,
@@ -184,6 +207,8 @@ const STAGE4_SCHEMA_REGISTRY = [
   { file: "stage4-policy-payload-v1.json", sample: policyPayloadSample },
   { file: "stage4-policy-probe-suite-v1.json", sample: policyProbeSample },
   { file: "stage4-static-preparation-evidence-v1.json", sample: staticSample },
+  { file: "stage4-storage-launch-contract-v1.json", sample: storageLaunchContractSample },
+  { file: "stage4-storage-launch-verdict-v1.json", sample: storageLaunchVerdictSample },
   { file: "stage4-teardown-plan-v1.json", sample: teardownPlanSample },
   { file: "stage4-teardown-verdict-v1.json", sample: teardownVerdictSample },
 ] as const satisfies readonly RegistryEntry[];
@@ -218,6 +243,8 @@ test("the bounded Stage 4 registry compiles its strict positive samples", () => 
       "stage4-policy-payload-v1.json",
       "stage4-policy-probe-suite-v1.json",
       "stage4-static-preparation-evidence-v1.json",
+      "stage4-storage-launch-contract-v1.json",
+      "stage4-storage-launch-verdict-v1.json",
       "stage4-teardown-plan-v1.json",
       "stage4-teardown-verdict-v1.json",
     ],
@@ -252,6 +279,14 @@ test("every Stage 4 schema rejects unknown root fields and representative nested
     validatorFor(validators, "stage4-nic-sandbox-node-group-contract-v1.json"),
     nicMutation,
     "NIC contract accepted an unknown runtime field",
+  );
+
+  const storageMutation = storageLaunchContractSample();
+  ((storageMutation.storage as JsonObject).workspace as JsonObject).unreviewed = true;
+  assertRejected(
+    validatorFor(validators, "stage4-storage-launch-contract-v1.json"),
+    storageMutation,
+    "storage/launch contract accepted an unknown workspace field",
   );
 
   const planMutation = teardownPlanSample();

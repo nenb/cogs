@@ -101,11 +101,18 @@ dev.cogs/production-ready: "false"
 {{- if eq $v.storage.workspaceStorageClass $v.storage.sessionStateStorageClass -}}
 {{- fail "workspaceStorageClass and sessionStateStorageClass must differ" -}}
 {{- end -}}
-{{- if or (ne $v.storage.workspaceSize "20Gi") (ne $v.storage.workspaceAccessMode "ReadWriteOncePod") -}}
-{{- fail "stage4Preparation.storage workspace contract must be 20Gi ReadWriteOncePod" -}}
+{{- if or (ne $v.storage.workspaceSize "20Gi") (ne $v.storage.workspaceAccessMode "ReadWriteOncePod") (ne $v.storage.workspaceVolumeMode "Filesystem") (ne $v.storage.workspaceVolumeBindingMode "WaitForFirstConsumer") (ne $v.storage.workspaceReclaimPolicy "Retain") (ne $v.storage.workspaceRetention "retain-until-explicit-workspace-deletion") -}}
+{{- fail "stage4Preparation.storage workspace contract must be 20Gi ReadWriteOncePod Filesystem WaitForFirstConsumer Retain with explicit-deletion retention" -}}
 {{- end -}}
-{{- if or (ne $v.storage.sessionStateSize "5Gi") (ne $v.storage.sessionStateAccessMode "ReadWriteOncePod") -}}
-{{- fail "stage4Preparation.storage session-state contract must be 5Gi ReadWriteOncePod" -}}
+{{- if or (ne $v.storage.sessionStateSize "5Gi") (ne $v.storage.sessionStateAccessMode "ReadWriteOncePod") (ne $v.storage.sessionStateVolumeMode "Filesystem") (ne $v.storage.sessionStateVolumeBindingMode "WaitForFirstConsumer") (ne $v.storage.sessionStateReclaimPolicy "Retain") (ne $v.storage.sessionStateRetention "retain-30-days-after-session-close") -}}
+{{- fail "stage4Preparation.storage session-state contract must be 5Gi ReadWriteOncePod Filesystem WaitForFirstConsumer Retain with 30-day retention" -}}
+{{- end -}}
+{{- if not (or (kindIs "float64" $v.storage.sessionStateRetentionSeconds) (kindIs "int" $v.storage.sessionStateRetentionSeconds) (kindIs "int64" $v.storage.sessionStateRetentionSeconds)) -}}
+{{- fail "stage4Preparation.storage.sessionStateRetentionSeconds must be exactly 2592000" -}}
+{{- end -}}
+{{- $retentionSeconds := float64 $v.storage.sessionStateRetentionSeconds -}}
+{{- if or (ne $retentionSeconds (floor $retentionSeconds)) (ne $retentionSeconds 2592000.0) -}}
+{{- fail "stage4Preparation.storage.sessionStateRetentionSeconds must be exactly 2592000" -}}
 {{- end -}}
 
 {{- $httpsEndpoint := "^https://([A-Za-z0-9]([-A-Za-z0-9.]*[A-Za-z0-9])?|\\[[0-9A-Fa-f:]+\\])(:[1-9][0-9]{0,4})?(/[^[:space:]?#]*)?$" -}}

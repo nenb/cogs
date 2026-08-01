@@ -49,9 +49,18 @@ interface ValuesFile {
       workspaceStorageClass: string;
       workspaceSize: string;
       workspaceAccessMode: string;
+      workspaceVolumeMode: string;
+      workspaceVolumeBindingMode: string;
+      workspaceReclaimPolicy: string;
+      workspaceRetention: string;
       sessionStateStorageClass: string;
       sessionStateSize: string;
       sessionStateAccessMode: string;
+      sessionStateVolumeMode: string;
+      sessionStateVolumeBindingMode: string;
+      sessionStateReclaimPolicy: string;
+      sessionStateRetention: string;
+      sessionStateRetentionSeconds: number;
     };
     openBao: {
       endpoint: string;
@@ -580,8 +589,20 @@ test("trusted and sandbox PodTemplate source shapes preserve placement, security
   const contract = byName(objects, "stage4-cogs-contract");
   assert.equal(contract.data?.workspaceSize, "20Gi");
   assert.equal(contract.data?.workspaceAccessMode, "ReadWriteOncePod");
+  assert.equal(contract.data?.workspaceVolumeMode, "Filesystem");
+  assert.equal(contract.data?.workspaceVolumeBindingMode, "WaitForFirstConsumer");
+  assert.equal(contract.data?.workspaceReclaimPolicy, "Retain");
+  assert.equal(contract.data?.workspaceRetention, "retain-until-explicit-workspace-deletion");
   assert.equal(contract.data?.sessionStateSize, "5Gi");
   assert.equal(contract.data?.sessionStateAccessMode, "ReadWriteOncePod");
+  assert.equal(contract.data?.sessionStateVolumeMode, "Filesystem");
+  assert.equal(contract.data?.sessionStateVolumeBindingMode, "WaitForFirstConsumer");
+  assert.equal(contract.data?.sessionStateReclaimPolicy, "Retain");
+  assert.equal(contract.data?.sessionStateRetention, "retain-30-days-after-session-close");
+  assert.equal(contract.data?.sessionStateRetentionSeconds, "2592000");
+  assert.equal(contract.data?.storageLaunchContractVersion, "cogs.stage4-storage-launch-contract/v1");
+  assert.match(contract.data?.workspaceExclusiveWriterLease ?? "", /ONE_FENCED_WRITER.*NEVER_AUTHORIZES_TAKEOVER/u);
+  assert.match(contract.data?.storageCleanupContract ?? "", /AMBIGUITY_PRESERVES/u);
   assert.equal(contract.data?.idleSeconds, "1800");
   assert.equal(contract.data?.hardSeconds, "28800");
   assert.equal(contract.data?.terminationGraceSeconds, "30");
@@ -1022,6 +1043,51 @@ test("template validation rejects hostile security inputs with schema validation
       name: "session access mode",
       key: "session-state",
       mutate: (v) => (v.stage4Preparation.storage.sessionStateAccessMode = "ReadWriteMany"),
+    },
+    {
+      name: "workspace volume mode",
+      key: "workspace",
+      mutate: (v) => (v.stage4Preparation.storage.workspaceVolumeMode = "Block"),
+    },
+    {
+      name: "workspace binding mode",
+      key: "workspace",
+      mutate: (v) => (v.stage4Preparation.storage.workspaceVolumeBindingMode = "Immediate"),
+    },
+    {
+      name: "workspace reclaim policy",
+      key: "workspace",
+      mutate: (v) => (v.stage4Preparation.storage.workspaceReclaimPolicy = "Delete"),
+    },
+    {
+      name: "workspace retention",
+      key: "workspace",
+      mutate: (v) => (v.stage4Preparation.storage.workspaceRetention = "delete-on-session-end"),
+    },
+    {
+      name: "session volume mode",
+      key: "session-state",
+      mutate: (v) => (v.stage4Preparation.storage.sessionStateVolumeMode = "Block"),
+    },
+    {
+      name: "session binding mode",
+      key: "session-state",
+      mutate: (v) => (v.stage4Preparation.storage.sessionStateVolumeBindingMode = "Immediate"),
+    },
+    {
+      name: "session reclaim policy",
+      key: "session-state",
+      mutate: (v) => (v.stage4Preparation.storage.sessionStateReclaimPolicy = "Delete"),
+    },
+    {
+      name: "session retention",
+      key: "session-state",
+      mutate: (v) => (v.stage4Preparation.storage.sessionStateRetention = "unspecified"),
+    },
+    {
+      name: "session retention seconds",
+      key: "sessionStateRetentionSeconds",
+      mutate: (v) => (v.stage4Preparation.storage.sessionStateRetentionSeconds = 0),
     },
     {
       name: "idle lifetime",

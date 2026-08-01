@@ -30,9 +30,18 @@ stage4Preparation:
     workspaceStorageClass: synthetic-workspace-csi
     workspaceSize: 20Gi
     workspaceAccessMode: ReadWriteOncePod
+    workspaceVolumeMode: Filesystem
+    workspaceVolumeBindingMode: WaitForFirstConsumer
+    workspaceReclaimPolicy: Retain
+    workspaceRetention: retain-until-explicit-workspace-deletion
     sessionStateStorageClass: synthetic-session-state-csi
     sessionStateSize: 5Gi
     sessionStateAccessMode: ReadWriteOncePod
+    sessionStateVolumeMode: Filesystem
+    sessionStateVolumeBindingMode: WaitForFirstConsumer
+    sessionStateReclaimPolicy: Retain
+    sessionStateRetention: retain-30-days-after-session-close
+    sessionStateRetentionSeconds: 2592000
 
   openBao:
     endpoint: https://openbao.static-test.invalid:8200

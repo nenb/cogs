@@ -1033,6 +1033,8 @@ Prepare the EKS/NIC topology locally and statically, then validate it only in se
 
 **Static policy status:** Issue #356 adds strict local-only trusted-worker/current-user OpenBao handle, exact inert sandbox no-identity, immutable session/instance/pod/ID/generation/expiry-bound proxy capability, replacement/revocation, no-fallback network, closed metadata-only OTLP, and closed bounded fail-closed audit-WAL contracts plus an exact semantically validated hostile static probe inventory. These contracts remain `pending-exact-eks-cni-runtime`; they are neither rendered enforcement nor Stage 4 evidence. Exact EKS qualification must rerun selector-confusion, dual-stack, UDP/QUIC, DNS/resolver, metadata/API/admin, cross-session, revocation, WAL, and OTLP failure cases with real dependencies.
 
+**Static storage/launch status:** Issue #355 adds strict local-only storage roles and one-session object-graph classification. It fixes a 20 GiB CSI-block `Filesystem` / `ReadWriteOncePod` / `WaitForFirstConsumer` / `Retain` sandbox workspace retained until explicit deletion, a distinct 5 GiB `Filesystem` / `ReadWriteOncePod` / `WaitForFirstConsumer` / `Retain` trusted Pi state volume retained for 30 days, a fenced single-writer lease, exactly one worker/proxy resource and one Kata sandbox bound to one immutable single-admission launch digest, a priori host-key match, out-of-band ephemeral identities, and uncertainty-preserving cleanup. The classifier launches and observes nothing; RuntimeClass presence is only a caller assertion, every provider/runtime claim remains false, and the independent NIC v0.11.0 missing-capability blocker remains unchanged.
+
 ## 31. AWS environment controls
 
 - dedicated development account;
@@ -1080,11 +1082,15 @@ Keep trusted Cogs/proxy resources on ordinary nodes selected by `cogs.dev/node-d
 
 ### 32.3 Storage
 
+The offline issue #355 contract is documented in [`docs/operations/stage-4-storage-launch-contract.md`](docs/operations/stage-4-storage-launch-contract.md). Its strict schemas and pure classifier establish expected metadata only; they neither create storage nor observe CSI, attachment, lease, retention, deletion, or cleanup behavior.
+
 - use EBS/CSI block volume for active project workspace;
+- require exactly 20 GiB, `Filesystem`, `ReadWriteOncePod`, `WaitForFirstConsumer`, and `Retain`, sandbox-only, retained until explicit workspace deletion;
 - test attach, mount, detach, reattach, and forced-worker-loss behavior;
-- ensure one writer per project lease;
-- use separate trusted storage for Pi session state;
-- test storage deletion and retention behavior;
+- ensure one fenced writer per project lease; expiry or uncertainty never authorizes takeover;
+- use a distinct exactly 5 GiB, `Filesystem`, `ReadWriteOncePod`, `WaitForFirstConsumer`, `Retain` trusted Pi session-state volume inaccessible to the sandbox;
+- retain trusted session state for the 30-day default and test deletion/retention behavior;
+- preserve state, attachments, and lease on cleanup ambiguity;
 - avoid EFS as the default Git/build workspace unless benchmarks justify it.
 
 ### 32.4 Network
@@ -1145,6 +1151,8 @@ Add preflight checks for:
 A missing production prerequisite fails installation/readiness. It must not switch to `runc`.
 
 ## 34. Temporary resource launcher
+
+Issue #355 supplies only a pure local object-graph contract and no actual launcher, process, manifest producer, Kubernetes client, or provider surface. It rejects missing/wrong RuntimeClass assertions, host-key mismatch, stale/replayed launch documents, duplicate/missing resources, concurrent writers, durable ephemeral identities, and cleanup ambiguity. Actual launch implementation remains future integration-test tooling after the cloud gate.
 
 Until the daemon exists, provide an integration-test launcher that creates:
 

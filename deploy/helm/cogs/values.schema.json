@@ -54,17 +54,35 @@
             "workspaceStorageClass",
             "workspaceSize",
             "workspaceAccessMode",
+            "workspaceVolumeMode",
+            "workspaceVolumeBindingMode",
+            "workspaceReclaimPolicy",
+            "workspaceRetention",
             "sessionStateStorageClass",
             "sessionStateSize",
-            "sessionStateAccessMode"
+            "sessionStateAccessMode",
+            "sessionStateVolumeMode",
+            "sessionStateVolumeBindingMode",
+            "sessionStateReclaimPolicy",
+            "sessionStateRetention",
+            "sessionStateRetentionSeconds"
           ],
           "properties": {
             "workspaceStorageClass": { "type": "string", "maxLength": 253 },
             "workspaceSize": { "const": "20Gi" },
             "workspaceAccessMode": { "const": "ReadWriteOncePod" },
+            "workspaceVolumeMode": { "const": "Filesystem" },
+            "workspaceVolumeBindingMode": { "const": "WaitForFirstConsumer" },
+            "workspaceReclaimPolicy": { "const": "Retain" },
+            "workspaceRetention": { "const": "retain-until-explicit-workspace-deletion" },
             "sessionStateStorageClass": { "type": "string", "maxLength": 253 },
             "sessionStateSize": { "const": "5Gi" },
-            "sessionStateAccessMode": { "const": "ReadWriteOncePod" }
+            "sessionStateAccessMode": { "const": "ReadWriteOncePod" },
+            "sessionStateVolumeMode": { "const": "Filesystem" },
+            "sessionStateVolumeBindingMode": { "const": "WaitForFirstConsumer" },
+            "sessionStateReclaimPolicy": { "const": "Retain" },
+            "sessionStateRetention": { "const": "retain-30-days-after-session-close" },
+            "sessionStateRetentionSeconds": { "const": 2592000 }
           }
         },
         "openBao": {
