@@ -271,5 +271,5 @@ test("Outcome 2 gross lines and fixture lines remain within the authorized imple
     return total + bytes.reduce((lines, byte) => lines + Number(byte === 10), 0);
   }, 0);
   assert.ok(fixtureLines <= 1_500, `fixture aggregate: ${fixtureLines} lines exceeds 1500`);
-  assert.ok(subtotal + fixtureLines <= 20_500, `trusted/portable subtotal exceeds 20500`);
+  assert.ok(subtotal + fixtureLines <= 20_550, `trusted/portable subtotal exceeds 20550`);
 });

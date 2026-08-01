@@ -986,6 +986,11 @@ def descriptor_cut_corpus():
         raise AssertionError("C declared/selected/consumed/oracle mismatch")
 
 
+def compression_argv_contract():
+    expected_zstd = ("zstd", "-dc", "--no-progress", "--no-asyncio")
+    if closure._child_argv("zstd") != expected_zstd: raise AssertionError("zstd discovery argv drift")
+    if closure._child_argv("gzip") != ("gzip", "-dc"): raise AssertionError("gzip discovery argv drift")
+compression_argv_contract()
 parser_matrix()
 closure_matrix()
 descriptor_owner_matrix()

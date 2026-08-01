@@ -51,6 +51,20 @@ def load_path(name, path):
     sys.modules[name] = module
     spec.loader.exec_module(module)
     return module
+def compression_argv_contract(module):
+    captured = []
+    def syscall(_number, _fd, _path, argv, _environment, _flags):
+        captured.append(tuple(value.decode() for value in argv if value is not None))
+        raise OSError("captured execveat")
+    ops = module._SystemOps()
+    ops.libc = SimpleNamespace(syscall=syscall)
+    for role in ("zstd", "gzip"):
+        try: ops.execveat(7, role)
+        except OSError: pass
+        else: raise AssertionError("captured execveat returned")
+    expected = [("zstd", "-q", "-d", "-c", "--no-asyncio"), ("gzip", "-d", "-c")]
+    if captured != expected: raise AssertionError(f"fixed compression argv drift: {captured}")
+    if not {"clone", "clone3"} <= set(module._DENIED_SYSCALLS): raise AssertionError("clone denial drift")
 def production_symbol(module, name):
     value = module
     for component in name.split("."):
@@ -2417,6 +2431,48 @@ def map_access_diagnostic_contract(module):
             raise AssertionError(f"malformed child exit metadata accepted: {malformed}")
 
 
+def child_output_diagnostic_contract(module):
+    payload = b"hostile output path/content"
+    primary = module.RuntimeLauncherError("hostile original path/content", "map-access-en104-e1p1b1a1z0o1n0l0d1-ok")
+    def diagnose(error, chunks, now=1.0):
+        queues, reads = {descriptor: list(values) for descriptor, values in chunks.items()}, []
+        def read(descriptor, size):
+            reads.append(size)
+            return (queues.get(descriptor) or [b""]).pop(0)
+        selector = lambda readers, _w, _x, timeout: (list(readers) if timeout > 0 else [], [], [])
+        endpoint = SimpleNamespace(fileno=lambda: 7)
+        with patched(module.select, select=selector), patched(module.time, monotonic=lambda: now):
+            return module._child_output_diagnostic(SimpleNamespace(read=read), endpoint, module._FdLease(9, "child-output"), error, 2.0), reads
+    expected = f"child-out-en104-h{hashlib.sha256(payload).hexdigest()[:12]}-l{len(payload)}"
+    result, reads = diagnose(primary, {9: [payload[:8], payload[8:]]})
+    if result is None or result.code != expected or len(result.code) > 62:
+        raise AssertionError(f"child output diagnostic drift: {result and result.code}")
+    if any(token in result.code or token in str(result) for token in ("hostile", "path", "content")):
+        raise AssertionError("child output diagnostic exposed content")
+    if not reads or any(size <= 0 or size > 65536 for size in reads):
+        raise AssertionError("child output diagnostic read bound drift")
+    for code in ("mapping-unknown", "map-access-un0-e1p1b0a0z1o1n1l1d1-ok", "map-access-sc19-e1p1b1a1z0o1n0l0d1-ok", "map-access-en256-e1p1b1a1z0o1n0l0d1-ok"):
+        if diagnose(module.RuntimeLauncherError("secret", code), {9: [payload]})[0] is not None:
+            raise AssertionError(f"non-early child exit selected output: {code}")
+    for token in ("ez0", "sg9"):
+        selected, _reads = diagnose(module.RuntimeLauncherError("secret", f"map-access-{token}-e1p1b1a1z0o1n0l0d1-ok"), {})
+        if selected is None or not selected.code.startswith(f"child-out-{token}-h"):
+            raise AssertionError(f"early child exit class rejected: {token}")
+    oversized = [b"x" * 65536] * (module._MAX_OUTPUT // 65536) + [b"x"]
+    guards = (({9: oversized}, 1.0, "child-out-bound"), ({9: [payload]}, 5.0, "child-out-deadline"), ({7: [b"x"]}, 1.0, "child-out-status"))
+    for chunks, now, guard in guards:
+        guarded, _reads = diagnose(primary, chunks, now)
+        if guarded is None or guarded.code != guard:
+            raise AssertionError(f"child output guard drift: {guarded and guarded.code}")
+    inner, outer = module.RuntimeLauncherError("inner", "mount-cleanup"), OSError(errno.EIO, "outer secret")
+    nested = module.RuntimeLauncherCleanupError(module.RuntimeLauncherCleanupError(primary, [inner]), [outer])
+    preserved, _reads = diagnose(nested, {9: [payload]})
+    exact = isinstance(preserved, module.RuntimeLauncherCleanupError) and preserved.failures == (outer,)
+    exact = exact and isinstance(preserved.primary, module.RuntimeLauncherCleanupError) and preserved.primary.failures == (inner,)
+    exact = exact and getattr(preserved.primary.primary, "code", "") == expected
+    if not exact: raise AssertionError("child output diagnostic lost cleanup failures")
+
+
 def materialized_mapping_identity_contract(module):
     class Ops:
         @staticmethod
@@ -3059,8 +3115,13 @@ def parent():
     common_source = COMMON.read_text()
     admission = common_source.index("stage, (held, digest) = \"held-source-admission\", self._admit_sources(context, root)")
     compilation = common_source.index("self._issue_cli(held[LAUNCHER_PATH].raw, admission, capsule)")
-    if admission > compilation or "open(ROOT" in launcher_source:
+    capsule_stage = common_source.index('stage = "capsule-build"')
+    launcher_stage = common_source.index('stage = "launcher-transaction"')
+    capsule_call = common_source.index("self._capsule(context, held, digest)")
+    if not admission < capsule_stage < capsule_call < launcher_stage < compilation or "open(ROOT" in launcher_source:
         raise AssertionError("held source admission/compilation order drift")
+    if "{1,62}" not in launcher_source or "[:62]" not in launcher_source or len("runtime-launcher-" + "x" * 62 + "-" + "0" * 16) != 96:
+        raise AssertionError("launcher diagnostic label bound drift")
     banned = ("_MappingAuthority", "_coordinate_admitted_mapping_only")
     required = (
         "_qualify_admitted_fixed_python_mapping",
@@ -3083,12 +3144,14 @@ def parent():
         raise AssertionError("fixed CLI issuer integration is absent")
     for job in ("A", "B", "E", "integration"):
         causal_scope["common_fixed_cli_contract"](module, job)
+    compression_argv_contract(module)
     identity_map_contracts(module)
     forged_preexec_identity_contract(module)
     namespace_owner_cleanup_contract(module)
     cleanup_error_status_contract(module)
     owner_permission_stage_contracts(module)
     map_access_diagnostic_contract(module)
+    child_output_diagnostic_contract(module)
     materialized_mapping_identity_contract(module)
     namespace_transfer_diagnostic_contracts(module)
     production_operation_contracts(module)

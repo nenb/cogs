@@ -12,7 +12,7 @@ WORKFLOW, FAST_B_WORKFLOW = ROOT / ".github/workflows/ci.yml", ROOT / ".github/w
 COMMON = ROOT / "scripts/native-qualification/common.py"
 SCHEMA, REPORT_LIMIT, OBJECT_LIMIT = ROOT / "schemas/native-qualification-report-v1alpha1.json", 32_768, 134_217_728
 MARKER_SHA256 = "6381d4535b13c7f030ca94bce250c1ec817c4aea8fa45c91e25c88995216f6b8"
-POLICY_SHA256 = "c2c9d01e475c8d0307fdf72863e98ed9671fabacbacece01d6e38a155b4679ce"
+POLICY_SHA256 = "aacfce0e5eeb2fb79a1708b32f5383f89b381898ad7e6bd911905d87483b6bb2"
 SOURCE_PATHS = ("deploy/aws-feasibility/remote/completion_elf.py", "deploy/aws-feasibility/remote/completion_trusted_runtime_closure.py",
     "deploy/aws-feasibility/remote/completion_trusted_runtime_launcher.py", "schemas/trusted-runtime-closure-v1.json")
 LAUNCHER_PATH = SOURCE_PATHS[2]
@@ -558,8 +558,11 @@ class SystemCommonOps:
         primary, stage = None, "held-source-admission"
         try:
             stage, (held, digest) = "held-source-admission", self._admit_sources(context, root)
-            stage, (admission, capsule) = "capsule-build", self._capsule(context, held, digest)
-            stage, result = "launcher-transaction", self._decode_cli(self._issue_cli(held[LAUNCHER_PATH].raw, admission, capsule))
+            # Tuple targets evaluate their calls before assigning the stage.
+            stage = "capsule-build"
+            admission, capsule = self._capsule(context, held, digest)
+            stage = "launcher-transaction"
+            result = self._decode_cli(self._issue_cli(held[LAUNCHER_PATH].raw, admission, capsule))
             stage = "result-admission"
             exact = result.get("source_revision") == context.head_sha and result.get("source_set_sha256") == digest
             _require(exact and HEX64.fullmatch(digest) is not None, "production result admission")

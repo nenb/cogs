@@ -1007,7 +1007,7 @@ def _child_argv(tool: str) -> tuple[str, ...]:
     if tool == 'gzip':
         return ('gzip', '-dc')
     if tool == 'zstd':
-        return ('zstd', '-dc', '--no-progress')
+        return ('zstd', '-dc', '--no-progress', '--no-asyncio')
     raise RuntimeClosureError('unknown fixed helper')
 
 def _descriptor_child_argv() -> tuple[str, ...]:
