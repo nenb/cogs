@@ -155,7 +155,8 @@ def run_case(case):
                     if case.get("seccomp"): install_seccomp()
                     execveat(198, tuple(case["argv"]), tuple(case.get("env", ("LC_ALL=C",))))
                 except BaseException as error:
-                    os._exit(126)
+                    try: os.write(1, f"child-error:{type(error).__name__}:{error}".encode()[:200])
+                    finally: os._exit(126)
             os.close(input_read)
             os.close(output_write)
             if case.get("eof_stdin"):
@@ -236,12 +237,14 @@ def run_case(case):
     return result
 
 
+# Load the matrix harness before any chroot so the filter is resident in memory.
+_SPEC = importlib.util.spec_from_file_location("matrix", os.path.join(os.path.dirname(os.path.abspath(__file__)), "child-sandbox-matrix.py"))
+_MATRIX = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(_MATRIX)
+
 def install_seccomp():
-    """Install the exact production filter, loaded from the matrix harness."""
-    spec = importlib.util.spec_from_file_location("matrix", os.path.join(os.path.dirname(os.path.abspath(__file__)), "child-sandbox-matrix.py"))
-    matrix = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(matrix)
-    return matrix.install_seccomp()
+    """Install the exact production filter from the matrix harness."""
+    return _MATRIX.install_seccomp()
 
 GZIP, ZSTD, PYTHON = "/usr/bin/gzip", "/usr/bin/zstd", "/usr/bin/python3"
 ALT_GZIP = "/tmp/alt-rootfs/bin/gzip"
