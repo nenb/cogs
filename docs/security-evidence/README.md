@@ -32,6 +32,10 @@ A static Stage 4 preparation report or local teardown verdict cannot be converte
 
 Only a separately authorized future exact-run EKS campaign, under a new authority and schema, may observe the cloud/runtime checks needed for Stage 4 exit. This repository slice provides no campaign approval, cloud workflow, Helm producer, or cloud evidence and may be validated without AWS or Kubernetes credentials.
 
+`schemas/stage5-api-key-release-matrix-draft-v1.json` defines another disjoint domain: a provisional local/static requirements inventory for issue #363. Its committed instance fixes `qualified`, `matrix_finalized`, and `release_eligible` to `false`, fixes `go_no_go` to `not-available`, and records S4-11 as required but not observed by the draft. Every local test, independent review, approval, campaign execution, and evidence state is fixed as unperformed/unexecuted/not present/not observed by the draft. Schema validity proves only the inventory shape. It supplies no Stage 4 result, review identity, campaign approval, execution evidence, final decision, or release authority.
+
+The Stage 5 draft is API-key-only. Subscription OAuth is fixed to disabled and unadvertised, worker refresh tokens are forbidden, and #13 remains deferred outside the release gate. Future S4-11 acceptance still cannot promote this draft: finalization requires later Stage 5 local, independently reviewed, and separately approved campaign evidence bound to one exact release candidate under a new authority/schema.
+
 ## Human-readable rendering
 
 A renderer must preserve, at minimum:

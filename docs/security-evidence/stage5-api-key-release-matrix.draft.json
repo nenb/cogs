@@ -1,0 +1,261 @@
+{
+  "version": "cogs.stage5-api-key-release-matrix-draft/v1",
+  "authority": "provisional-local-static-requirements-only",
+  "issue": 363,
+  "scope": "api-key-only",
+  "draft": true,
+  "provisional": true,
+  "qualified": false,
+  "matrix_finalized": false,
+  "release_eligible": false,
+  "go_no_go": "not-available",
+  "stage4_dependency": {
+    "gate": "S4-11",
+    "state": "required-not-observed-by-this-draft",
+    "stage4_exit_satisfied": false,
+    "evidence_accepted": false
+  },
+  "subscription_oauth": {
+    "status": "disabled-unadvertised",
+    "advertised": false,
+    "release_gate": false,
+    "deferred_issue": 13,
+    "worker_refresh_tokens": "forbidden"
+  },
+  "requirements": {
+    "local_tests": [
+      {
+        "id": "S5-L01.exact-release-candidate-binding",
+        "gate": "mandatory-api-key-release",
+        "execution": "unexecuted-by-this-draft",
+        "evidence": "not-observed-by-this-draft",
+        "review": "not-reviewed-by-this-draft",
+        "release_eligible": false
+      },
+      {
+        "id": "S5-L02.unit-schema-api-pi-jsonl",
+        "gate": "mandatory-api-key-release",
+        "execution": "unexecuted-by-this-draft",
+        "evidence": "not-observed-by-this-draft",
+        "review": "not-reviewed-by-this-draft",
+        "release_eligible": false
+      },
+      {
+        "id": "S5-L03.api-key-runtime-auth-and-redaction",
+        "gate": "mandatory-api-key-release",
+        "execution": "unexecuted-by-this-draft",
+        "evidence": "not-observed-by-this-draft",
+        "review": "not-reviewed-by-this-draft",
+        "release_eligible": false
+      },
+      {
+        "id": "S5-L04.oauth-disabled-unadvertised-refresh-token-denial",
+        "gate": "mandatory-api-key-release",
+        "execution": "unexecuted-by-this-draft",
+        "evidence": "not-observed-by-this-draft",
+        "review": "not-reviewed-by-this-draft",
+        "release_eligible": false
+      },
+      {
+        "id": "S5-L05.trusted-worker-discovery-and-secret-confinement",
+        "gate": "mandatory-api-key-release",
+        "execution": "unexecuted-by-this-draft",
+        "evidence": "not-observed-by-this-draft",
+        "review": "not-reviewed-by-this-draft",
+        "release_eligible": false
+      },
+      {
+        "id": "S5-L06.local-security-failure-and-privacy-regression",
+        "gate": "mandatory-api-key-release",
+        "execution": "unexecuted-by-this-draft",
+        "evidence": "not-observed-by-this-draft",
+        "review": "not-reviewed-by-this-draft",
+        "release_eligible": false
+      },
+      {
+        "id": "S5-L07.supply-chain-sbom-vulnerability-license",
+        "gate": "mandatory-api-key-release",
+        "execution": "unexecuted-by-this-draft",
+        "evidence": "not-observed-by-this-draft",
+        "review": "not-reviewed-by-this-draft",
+        "release_eligible": false
+      },
+      {
+        "id": "S5-L08.runbook-support-matrix-and-contract-drift",
+        "gate": "mandatory-api-key-release",
+        "execution": "unexecuted-by-this-draft",
+        "evidence": "not-observed-by-this-draft",
+        "review": "not-reviewed-by-this-draft",
+        "release_eligible": false
+      }
+    ],
+    "independent_review": [
+      {
+        "id": "S5-R01.exact-source-artifact-and-evidence-binding",
+        "gate": "mandatory-api-key-release",
+        "authority_required": "independent-reviewer-bound-to-exact-release-candidate",
+        "review": "unperformed-by-this-draft",
+        "evidence": "not-observed-by-this-draft",
+        "release_eligible": false
+      },
+      {
+        "id": "S5-R02.pi-loader-ssh-sftp-and-path-boundaries",
+        "gate": "mandatory-api-key-release",
+        "authority_required": "independent-reviewer-bound-to-exact-release-candidate",
+        "review": "unperformed-by-this-draft",
+        "evidence": "not-observed-by-this-draft",
+        "release_eligible": false
+      },
+      {
+        "id": "S5-R03.proxy-openbao-policy-audit-and-revocation",
+        "gate": "mandatory-api-key-release",
+        "authority_required": "independent-reviewer-bound-to-exact-release-candidate",
+        "review": "unperformed-by-this-draft",
+        "evidence": "not-observed-by-this-draft",
+        "release_eligible": false
+      },
+      {
+        "id": "S5-R04.kata-kubernetes-identity-network-and-storage",
+        "gate": "mandatory-api-key-release",
+        "authority_required": "independent-reviewer-bound-to-exact-release-candidate",
+        "review": "unperformed-by-this-draft",
+        "evidence": "not-observed-by-this-draft",
+        "release_eligible": false
+      },
+      {
+        "id": "S5-R05.privacy-deletion-oauth-and-support-claims",
+        "gate": "mandatory-api-key-release",
+        "authority_required": "independent-reviewer-bound-to-exact-release-candidate",
+        "review": "unperformed-by-this-draft",
+        "evidence": "not-observed-by-this-draft",
+        "release_eligible": false
+      },
+      {
+        "id": "S5-R06.findings-resolution-no-critical-or-high",
+        "gate": "mandatory-api-key-release",
+        "authority_required": "independent-reviewer-bound-to-exact-release-candidate",
+        "review": "unperformed-by-this-draft",
+        "evidence": "not-observed-by-this-draft",
+        "release_eligible": false
+      },
+      {
+        "id": "S5-R07.residual-risk-and-go-no-go-review",
+        "gate": "mandatory-api-key-release",
+        "authority_required": "independent-reviewer-bound-to-exact-release-candidate",
+        "review": "unperformed-by-this-draft",
+        "evidence": "not-observed-by-this-draft",
+        "release_eligible": false
+      }
+    ],
+    "approved_campaigns": [
+      {
+        "id": "S5-C01.eks-release-candidate-full-conformance",
+        "gate": "mandatory-api-key-release",
+        "approval_mode": "separate-exact-revision-manual-approval",
+        "approval": "not-present-in-this-draft",
+        "execution": "unexecuted-by-this-draft",
+        "evidence": "not-observed-by-this-draft",
+        "release_eligible": false
+      },
+      {
+        "id": "S5-C02.api-key-real-model-sample",
+        "gate": "mandatory-api-key-release",
+        "approval_mode": "separate-exact-revision-manual-approval",
+        "approval": "not-present-in-this-draft",
+        "execution": "unexecuted-by-this-draft",
+        "evidence": "not-observed-by-this-draft",
+        "release_eligible": false
+      },
+      {
+        "id": "S5-C03.performance-cold-start-and-resource-classes",
+        "gate": "mandatory-api-key-release",
+        "approval_mode": "separate-exact-revision-manual-approval",
+        "approval": "not-present-in-this-draft",
+        "execution": "unexecuted-by-this-draft",
+        "evidence": "not-observed-by-this-draft",
+        "release_eligible": false
+      },
+      {
+        "id": "S5-C04.scale-10",
+        "gate": "mandatory-api-key-release",
+        "approval_mode": "separate-exact-revision-manual-approval",
+        "approval": "not-present-in-this-draft",
+        "execution": "unexecuted-by-this-draft",
+        "evidence": "not-observed-by-this-draft",
+        "release_eligible": false
+      },
+      {
+        "id": "S5-C05.scale-25",
+        "gate": "mandatory-api-key-release",
+        "approval_mode": "separate-exact-revision-manual-approval",
+        "approval": "not-present-in-this-draft",
+        "execution": "unexecuted-by-this-draft",
+        "evidence": "not-observed-by-this-draft",
+        "release_eligible": false
+      },
+      {
+        "id": "S5-C06.scale-50",
+        "gate": "mandatory-api-key-release",
+        "approval_mode": "separate-exact-revision-manual-approval",
+        "approval": "not-present-in-this-draft",
+        "execution": "unexecuted-by-this-draft",
+        "evidence": "not-observed-by-this-draft",
+        "release_eligible": false
+      },
+      {
+        "id": "S5-C07.scale-100-if-advertised",
+        "gate": "conditional-advertised-concurrency",
+        "approval_mode": "separate-exact-revision-manual-approval",
+        "approval": "not-present-in-this-draft",
+        "execution": "unexecuted-by-this-draft",
+        "evidence": "not-observed-by-this-draft",
+        "release_eligible": false
+      },
+      {
+        "id": "S5-C08.scale-250-if-advertised",
+        "gate": "conditional-advertised-concurrency",
+        "approval_mode": "separate-exact-revision-manual-approval",
+        "approval": "not-present-in-this-draft",
+        "execution": "unexecuted-by-this-draft",
+        "evidence": "not-observed-by-this-draft",
+        "release_eligible": false
+      },
+      {
+        "id": "S5-C09.multi-user-isolation-and-writer-leases",
+        "gate": "mandatory-api-key-release",
+        "approval_mode": "separate-exact-revision-manual-approval",
+        "approval": "not-present-in-this-draft",
+        "execution": "unexecuted-by-this-draft",
+        "evidence": "not-observed-by-this-draft",
+        "release_eligible": false
+      },
+      {
+        "id": "S5-C10.destructive-reliability-and-recovery",
+        "gate": "mandatory-api-key-release",
+        "approval_mode": "separate-exact-revision-manual-approval",
+        "approval": "not-present-in-this-draft",
+        "execution": "unexecuted-by-this-draft",
+        "evidence": "not-observed-by-this-draft",
+        "release_eligible": false
+      },
+      {
+        "id": "S5-C11.privacy-deletion-retention-backup-and-export",
+        "gate": "mandatory-api-key-release",
+        "approval_mode": "separate-exact-revision-manual-approval",
+        "approval": "not-present-in-this-draft",
+        "execution": "unexecuted-by-this-draft",
+        "evidence": "not-observed-by-this-draft",
+        "release_eligible": false
+      },
+      {
+        "id": "S5-C12.install-upgrade-incident-teardown-and-cost",
+        "gate": "mandatory-api-key-release",
+        "approval_mode": "separate-exact-revision-manual-approval",
+        "approval": "not-present-in-this-draft",
+        "execution": "unexecuted-by-this-draft",
+        "evidence": "not-observed-by-this-draft",
+        "release_eligible": false
+      }
+    ]
+  }
+}

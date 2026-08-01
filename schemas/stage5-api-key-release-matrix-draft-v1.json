@@ -1,0 +1,278 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.dev/schemas/stage5-api-key-release-matrix-draft-v1.json",
+  "title": "Cogs provisional API-key-only Stage 5 release acceptance matrix draft",
+  "description": "A local/static requirements inventory only. It is not Stage 4 or Stage 5 evidence and cannot establish release eligibility.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "authority",
+    "issue",
+    "scope",
+    "draft",
+    "provisional",
+    "qualified",
+    "matrix_finalized",
+    "release_eligible",
+    "go_no_go",
+    "stage4_dependency",
+    "subscription_oauth",
+    "requirements"
+  ],
+  "properties": {
+    "version": { "const": "cogs.stage5-api-key-release-matrix-draft/v1" },
+    "authority": { "const": "provisional-local-static-requirements-only" },
+    "issue": { "const": 363 },
+    "scope": { "const": "api-key-only" },
+    "draft": { "const": true },
+    "provisional": { "const": true },
+    "qualified": { "const": false },
+    "matrix_finalized": { "const": false },
+    "release_eligible": { "const": false },
+    "go_no_go": { "const": "not-available" },
+    "stage4_dependency": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["gate", "state", "stage4_exit_satisfied", "evidence_accepted"],
+      "properties": {
+        "gate": { "const": "S4-11" },
+        "state": { "const": "required-not-observed-by-this-draft" },
+        "stage4_exit_satisfied": { "const": false },
+        "evidence_accepted": { "const": false }
+      }
+    },
+    "subscription_oauth": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "advertised", "release_gate", "deferred_issue", "worker_refresh_tokens"],
+      "properties": {
+        "status": { "const": "disabled-unadvertised" },
+        "advertised": { "const": false },
+        "release_gate": { "const": false },
+        "deferred_issue": { "const": 13 },
+        "worker_refresh_tokens": { "const": "forbidden" }
+      }
+    },
+    "requirements": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["local_tests", "independent_review", "approved_campaigns"],
+      "properties": {
+        "local_tests": {
+          "type": "array",
+          "minItems": 8,
+          "maxItems": 8,
+          "prefixItems": [
+            {
+              "$ref": "#/$defs/localRequirement",
+              "type": "object",
+              "properties": { "id": { "const": "S5-L01.exact-release-candidate-binding" } }
+            },
+            {
+              "$ref": "#/$defs/localRequirement",
+              "type": "object",
+              "properties": { "id": { "const": "S5-L02.unit-schema-api-pi-jsonl" } }
+            },
+            {
+              "$ref": "#/$defs/localRequirement",
+              "type": "object",
+              "properties": { "id": { "const": "S5-L03.api-key-runtime-auth-and-redaction" } }
+            },
+            {
+              "$ref": "#/$defs/localRequirement",
+              "type": "object",
+              "properties": { "id": { "const": "S5-L04.oauth-disabled-unadvertised-refresh-token-denial" } }
+            },
+            {
+              "$ref": "#/$defs/localRequirement",
+              "type": "object",
+              "properties": { "id": { "const": "S5-L05.trusted-worker-discovery-and-secret-confinement" } }
+            },
+            {
+              "$ref": "#/$defs/localRequirement",
+              "type": "object",
+              "properties": { "id": { "const": "S5-L06.local-security-failure-and-privacy-regression" } }
+            },
+            {
+              "$ref": "#/$defs/localRequirement",
+              "type": "object",
+              "properties": { "id": { "const": "S5-L07.supply-chain-sbom-vulnerability-license" } }
+            },
+            {
+              "$ref": "#/$defs/localRequirement",
+              "type": "object",
+              "properties": { "id": { "const": "S5-L08.runbook-support-matrix-and-contract-drift" } }
+            }
+          ],
+          "items": false
+        },
+        "independent_review": {
+          "type": "array",
+          "minItems": 7,
+          "maxItems": 7,
+          "prefixItems": [
+            {
+              "$ref": "#/$defs/reviewRequirement",
+              "type": "object",
+              "properties": { "id": { "const": "S5-R01.exact-source-artifact-and-evidence-binding" } }
+            },
+            {
+              "$ref": "#/$defs/reviewRequirement",
+              "type": "object",
+              "properties": { "id": { "const": "S5-R02.pi-loader-ssh-sftp-and-path-boundaries" } }
+            },
+            {
+              "$ref": "#/$defs/reviewRequirement",
+              "type": "object",
+              "properties": { "id": { "const": "S5-R03.proxy-openbao-policy-audit-and-revocation" } }
+            },
+            {
+              "$ref": "#/$defs/reviewRequirement",
+              "type": "object",
+              "properties": { "id": { "const": "S5-R04.kata-kubernetes-identity-network-and-storage" } }
+            },
+            {
+              "$ref": "#/$defs/reviewRequirement",
+              "type": "object",
+              "properties": { "id": { "const": "S5-R05.privacy-deletion-oauth-and-support-claims" } }
+            },
+            {
+              "$ref": "#/$defs/reviewRequirement",
+              "type": "object",
+              "properties": { "id": { "const": "S5-R06.findings-resolution-no-critical-or-high" } }
+            },
+            {
+              "$ref": "#/$defs/reviewRequirement",
+              "type": "object",
+              "properties": { "id": { "const": "S5-R07.residual-risk-and-go-no-go-review" } }
+            }
+          ],
+          "items": false
+        },
+        "approved_campaigns": {
+          "type": "array",
+          "minItems": 12,
+          "maxItems": 12,
+          "prefixItems": [
+            {
+              "$ref": "#/$defs/mandatoryCampaign",
+              "type": "object",
+              "properties": { "id": { "const": "S5-C01.eks-release-candidate-full-conformance" } }
+            },
+            {
+              "$ref": "#/$defs/mandatoryCampaign",
+              "type": "object",
+              "properties": { "id": { "const": "S5-C02.api-key-real-model-sample" } }
+            },
+            {
+              "$ref": "#/$defs/mandatoryCampaign",
+              "type": "object",
+              "properties": { "id": { "const": "S5-C03.performance-cold-start-and-resource-classes" } }
+            },
+            {
+              "$ref": "#/$defs/mandatoryCampaign",
+              "type": "object",
+              "properties": { "id": { "const": "S5-C04.scale-10" } }
+            },
+            {
+              "$ref": "#/$defs/mandatoryCampaign",
+              "type": "object",
+              "properties": { "id": { "const": "S5-C05.scale-25" } }
+            },
+            {
+              "$ref": "#/$defs/mandatoryCampaign",
+              "type": "object",
+              "properties": { "id": { "const": "S5-C06.scale-50" } }
+            },
+            {
+              "$ref": "#/$defs/conditionalCampaign",
+              "type": "object",
+              "properties": { "id": { "const": "S5-C07.scale-100-if-advertised" } }
+            },
+            {
+              "$ref": "#/$defs/conditionalCampaign",
+              "type": "object",
+              "properties": { "id": { "const": "S5-C08.scale-250-if-advertised" } }
+            },
+            {
+              "$ref": "#/$defs/mandatoryCampaign",
+              "type": "object",
+              "properties": { "id": { "const": "S5-C09.multi-user-isolation-and-writer-leases" } }
+            },
+            {
+              "$ref": "#/$defs/mandatoryCampaign",
+              "type": "object",
+              "properties": { "id": { "const": "S5-C10.destructive-reliability-and-recovery" } }
+            },
+            {
+              "$ref": "#/$defs/mandatoryCampaign",
+              "type": "object",
+              "properties": { "id": { "const": "S5-C11.privacy-deletion-retention-backup-and-export" } }
+            },
+            {
+              "$ref": "#/$defs/mandatoryCampaign",
+              "type": "object",
+              "properties": { "id": { "const": "S5-C12.install-upgrade-incident-teardown-and-cost" } }
+            }
+          ],
+          "items": false
+        }
+      }
+    }
+  },
+  "$defs": {
+    "localRequirement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "gate", "execution", "evidence", "review", "release_eligible"],
+      "properties": {
+        "id": { "type": "string" },
+        "gate": { "const": "mandatory-api-key-release" },
+        "execution": { "const": "unexecuted-by-this-draft" },
+        "evidence": { "const": "not-observed-by-this-draft" },
+        "review": { "const": "not-reviewed-by-this-draft" },
+        "release_eligible": { "const": false }
+      }
+    },
+    "reviewRequirement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "gate", "authority_required", "review", "evidence", "release_eligible"],
+      "properties": {
+        "id": { "type": "string" },
+        "gate": { "const": "mandatory-api-key-release" },
+        "authority_required": { "const": "independent-reviewer-bound-to-exact-release-candidate" },
+        "review": { "const": "unperformed-by-this-draft" },
+        "evidence": { "const": "not-observed-by-this-draft" },
+        "release_eligible": { "const": false }
+      }
+    },
+    "campaignRequirement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "gate", "approval_mode", "approval", "execution", "evidence", "release_eligible"],
+      "properties": {
+        "id": { "type": "string" },
+        "gate": { "enum": ["mandatory-api-key-release", "conditional-advertised-concurrency"] },
+        "approval_mode": { "const": "separate-exact-revision-manual-approval" },
+        "approval": { "const": "not-present-in-this-draft" },
+        "execution": { "const": "unexecuted-by-this-draft" },
+        "evidence": { "const": "not-observed-by-this-draft" },
+        "release_eligible": { "const": false }
+      }
+    },
+    "mandatoryCampaign": {
+      "allOf": [
+        { "$ref": "#/$defs/campaignRequirement" },
+        { "type": "object", "properties": { "gate": { "const": "mandatory-api-key-release" } } }
+      ]
+    },
+    "conditionalCampaign": {
+      "allOf": [
+        { "$ref": "#/$defs/campaignRequirement" },
+        { "type": "object", "properties": { "gate": { "const": "conditional-advertised-concurrency" } } }
+      ]
+    }
+  }
+}
