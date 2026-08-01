@@ -1,6 +1,6 @@
 {{/*
-Default-disabled Stage 4 static render-only source-shape helpers. Rendered YAML
-is unsafe to apply and is not proof of any Kubernetes, runtime, or security property.
+Default-disabled Stage 4 notes-only static source-shape helpers. The NOTES payload
+is unsafe to apply, unqualified, and proves no Kubernetes, runtime, or security property.
 */}}
 {{- define "cogs.name" -}}
 {{- .Chart.Name | trunc 63 | trimSuffix "-" -}}
@@ -26,13 +26,14 @@ app.kubernetes.io/part-of: "cogs"
 dev.cogs/stage: "4-preparation"
 dev.cogs/session: {{ .Values.stage4Preparation.sessionIdentity | quote }}
 dev.cogs/security-claim: "none"
+dev.cogs/qualification: "none"
 dev.cogs/production-ready: "false"
 {{- end -}}
 
 {{- define "cogs.stage4.validate" -}}
 {{- $v := .Values.stage4Preparation -}}
 {{- if ne $v.enabled true -}}
-{{- fail "stage4Preparation.enabled must be exactly true inside the static render-only guard" -}}
+{{- fail "stage4Preparation.enabled must be exactly true for notes-only static source shapes" -}}
 {{- end -}}
 {{- if ne $v.nonProductionAcknowledgement true -}}
 {{- fail "stage4Preparation.nonProductionAcknowledgement must be exactly true" -}}
@@ -65,10 +66,8 @@ dev.cogs/production-ready: "false"
 {{- if ne (index $v.placement.sandbox.nodeSelector "cogs.dev/node-domain") "sandbox-kata" -}}
 {{- fail "stage4Preparation.placement.sandbox.nodeSelector must include cogs.dev/node-domain=sandbox-kata" -}}
 {{- end -}}
-{{- range $toleration := $v.placement.trusted.tolerations -}}
-{{- if eq (index $toleration "key") "cogs.dev/sandbox" -}}
-{{- fail "stage4Preparation.placement.trusted.tolerations must not tolerate cogs.dev/sandbox" -}}
-{{- end -}}
+{{- if not (deepEqual $v.placement.trusted.tolerations (list)) -}}
+{{- fail "stage4Preparation.placement.trusted.tolerations must be exactly empty" -}}
 {{- end -}}
 {{- $sandboxToleration := list (dict "key" "cogs.dev/sandbox" "operator" "Equal" "value" "kata" "effect" "NoSchedule") -}}
 {{- if not (deepEqual $v.placement.sandbox.tolerations $sandboxToleration) -}}
@@ -161,32 +160,28 @@ dev.cogs/production-ready: "false"
 {{- if ne $v.resourceProfile "stage4-fixed-bounded-v1" -}}
 {{- fail "stage4Preparation.resourceProfile must be stage4-fixed-bounded-v1" -}}
 {{- end -}}
-{{- if or (ne (int $v.lifecycle.idleSeconds) 1800) (not (or (kindIs "float64" $v.lifecycle.idleSeconds) (kindIs "int" $v.lifecycle.idleSeconds) (kindIs "int64" $v.lifecycle.idleSeconds))) -}}
-{{- fail "stage4Preparation.lifecycle.idleSeconds must be exactly 1800" -}}
+{{- range $lifecycle := list (dict "name" "idleSeconds" "expected" 1800) (dict "name" "hardSeconds" "expected" 28800) (dict "name" "terminationGraceSeconds" "expected" 30) -}}
+{{- $value := index $v.lifecycle $lifecycle.name -}}
+{{- if not (or (kindIs "float64" $value) (kindIs "int" $value) (kindIs "int64" $value)) -}}
+{{- fail (printf "stage4Preparation.lifecycle.%s must be exactly the required integer" $lifecycle.name) -}}
 {{- end -}}
-{{- if or (ne (int $v.lifecycle.hardSeconds) 28800) (not (or (kindIs "float64" $v.lifecycle.hardSeconds) (kindIs "int" $v.lifecycle.hardSeconds) (kindIs "int64" $v.lifecycle.hardSeconds))) -}}
-{{- fail "stage4Preparation.lifecycle.hardSeconds must be exactly 28800" -}}
+{{- $number := float64 $value -}}
+{{- if or (ne $number (floor $number)) (ne $number (float64 $lifecycle.expected)) -}}
+{{- fail (printf "stage4Preparation.lifecycle.%s must be exactly %d as an integer" $lifecycle.name $lifecycle.expected) -}}
 {{- end -}}
-{{- if or (ne (int $v.lifecycle.terminationGraceSeconds) 30) (not (or (kindIs "float64" $v.lifecycle.terminationGraceSeconds) (kindIs "int" $v.lifecycle.terminationGraceSeconds) (kindIs "int64" $v.lifecycle.terminationGraceSeconds))) -}}
-{{- fail "stage4Preparation.lifecycle.terminationGraceSeconds must be exactly 30" -}}
 {{- end -}}
 {{- if not (or (kindIs "float64" $v.auditWalMaxBytes) (kindIs "int" $v.auditWalMaxBytes) (kindIs "int64" $v.auditWalMaxBytes)) -}}
 {{- fail "stage4Preparation.auditWalMaxBytes must be an integer from 1048576 through 1073741824" -}}
 {{- end -}}
-{{- if or (lt (int64 $v.auditWalMaxBytes) 1048576) (gt (int64 $v.auditWalMaxBytes) 1073741824) (ne (float64 (int64 $v.auditWalMaxBytes)) (float64 $v.auditWalMaxBytes)) -}}
+{{- $walBytes := float64 $v.auditWalMaxBytes -}}
+{{- if or (ne $walBytes (floor $walBytes)) (lt $walBytes 1048576.0) (gt $walBytes 1073741824.0) -}}
 {{- fail "stage4Preparation.auditWalMaxBytes must be an integer from 1048576 through 1073741824" -}}
 {{- end -}}
 
-{{- if or (not (kindIs "string" $v.publicEgressCa)) (lt (len $v.publicEgressCa) 256) (gt (len $v.publicEgressCa) 16384) -}}
-{{- fail "stage4Preparation.publicEgressCa must be a bounded PEM certificate" -}}
+{{- if hasKey $v "publicEgressCa" -}}
+{{- fail "stage4Preparation.publicEgressCa is removed; use publicEgressCaConfigMap without inline CA data" -}}
 {{- end -}}
-{{- $certificatePattern := "^-----BEGIN CERTIFICATE-----\\n([A-Za-z0-9+/]{1,64}={0,2}\\n)+-----END CERTIFICATE-----\\n?$" -}}
-{{- if or (contains "PRIVATE KEY" $v.publicEgressCa) (not (regexMatch $certificatePattern $v.publicEgressCa)) -}}
-{{- fail "stage4Preparation.publicEgressCa must contain exactly one PEM certificate and no private key or trailing text" -}}
-{{- end -}}
-{{- $certificateBase64 := $v.publicEgressCa | replace "-----BEGIN CERTIFICATE-----" "" | replace "-----END CERTIFICATE-----" "" | replace "\n" "" -}}
-{{- $certificateDer := b64dec $certificateBase64 -}}
-{{- if or (contains "illegal base64" $certificateDer) (not (hasPrefix "\x30" $certificateDer)) -}}
-{{- fail "stage4Preparation.publicEgressCa contains malformed certificate data" -}}
+{{- if or (not (kindIs "string" $v.publicEgressCaConfigMap)) (not (regexMatch $dnsSubdomain $v.publicEgressCaConfigMap)) (gt (len $v.publicEgressCaConfigMap) 253) -}}
+{{- fail "stage4Preparation.publicEgressCaConfigMap must be a bounded DNS-safe ConfigMap reference" -}}
 {{- end -}}
 {{- end -}}

@@ -1,4 +1,5 @@
-{{- if and .Values.stage4Preparation.enabled (.Capabilities.APIVersions.Has "cogs.dev/static-preparation-render-only/v1") }}
+{{/* Included only by templates/NOTES.txt; Helm never submits these source shapes. */}}
+{{- define "cogs.stage4.notes.networkpolicies" -}}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -8,7 +9,7 @@ metadata:
     {{- include "cogs.stage4Labels" . | nindent 4 }}
     dev.cogs/role: "network-policy"
   annotations:
-    dev.cogs/notice: "static-render-only-source-shape-unsafe-to-apply-not-proof-of-cni-enforcement"
+    dev.cogs/notice: "notes-only-static-source-shape-unsafe-to-apply-unqualified-not-proof-of-cni-enforcement"
 spec:
   podSelector:
     matchLabels:
@@ -29,7 +30,7 @@ metadata:
     {{- include "cogs.stage4Labels" . | nindent 4 }}
     dev.cogs/role: "network-policy"
   annotations:
-    dev.cogs/notice: "static-render-only-source-shape-unsafe-to-apply-not-proof-of-cni-enforcement"
+    dev.cogs/notice: "notes-only-static-source-shape-unsafe-to-apply-unqualified-not-proof-of-cni-enforcement"
 spec:
   podSelector:
     matchLabels:
@@ -87,7 +88,7 @@ metadata:
     {{- include "cogs.stage4Labels" . | nindent 4 }}
     dev.cogs/role: "network-policy"
   annotations:
-    dev.cogs/notice: "static-render-only-source-shape-unsafe-to-apply-not-proof-of-cni-enforcement"
+    dev.cogs/notice: "notes-only-static-source-shape-unsafe-to-apply-unqualified-not-proof-of-cni-enforcement"
 spec:
   podSelector:
     matchLabels:

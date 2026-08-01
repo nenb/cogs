@@ -1,4 +1,5 @@
-{{- if and .Values.stage4Preparation.enabled (.Capabilities.APIVersions.Has "cogs.dev/static-preparation-render-only/v1") }}
+{{/* Included only by templates/NOTES.txt; Helm never submits these source shapes. */}}
+{{- define "cogs.stage4.notes.podtemplates" -}}
 apiVersion: v1
 kind: PodTemplate
 metadata:
@@ -9,7 +10,7 @@ metadata:
     dev.cogs/role: "trusted"
     dev.cogs/proxy: "true"
   annotations:
-    dev.cogs/notice: "default-disabled-static-render-only-source-shape-unsafe-to-apply-unproven"
+    dev.cogs/notice: "notes-only-static-source-shape-unsafe-to-apply-unqualified"
 template:
   metadata:
     labels:
@@ -119,7 +120,7 @@ template:
           optional: false
       - name: public-egress-ca
         configMap:
-          name: {{ include "cogs.componentName" (dict "root" . "component" "egress-ca") }}
+          name: {{ .Values.stage4Preparation.publicEgressCaConfigMap | quote }}
           optional: false
       - name: session-material
         emptyDir:
@@ -151,7 +152,7 @@ metadata:
     {{- include "cogs.stage4Labels" . | nindent 4 }}
     dev.cogs/role: "sandbox"
   annotations:
-    dev.cogs/notice: "default-disabled-static-render-only-source-shape-unsafe-to-apply-unproven"
+    dev.cogs/notice: "notes-only-static-source-shape-unsafe-to-apply-unqualified"
 template:
   metadata:
     labels:
@@ -219,7 +220,7 @@ template:
     volumes:
       - name: public-egress-ca
         configMap:
-          name: {{ include "cogs.componentName" (dict "root" . "component" "egress-ca") }}
+          name: {{ .Values.stage4Preparation.publicEgressCaConfigMap | quote }}
           optional: false
       - name: sandbox-tmp
         emptyDir:

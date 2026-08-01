@@ -1,4 +1,5 @@
-{{- if and .Values.stage4Preparation.enabled (.Capabilities.APIVersions.Has "cogs.dev/static-preparation-render-only/v1") }}
+{{/* Included only by templates/NOTES.txt; Helm never submits this source shape. */}}
+{{- define "cogs.stage4.notes.configmap" -}}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -8,11 +9,11 @@ metadata:
     {{- include "cogs.stage4Labels" . | nindent 4 }}
     dev.cogs/role: "preparation"
   annotations:
-    dev.cogs/notice: "default-disabled-static-render-only-source-shape-unsafe-to-apply-unproven"
+    dev.cogs/notice: "notes-only-static-source-shape-unsafe-to-apply-unqualified"
 immutable: true
 data:
-  status: "DEFAULT_DISABLED_STATIC_RENDER_ONLY_SOURCE_SHAPE"
-  applySafety: "UNSAFE_TO_APPLY_UNPROVEN"
+  status: "NOTES_ONLY_STATIC_SOURCE_SHAPE"
+  applySafety: "UNSAFE_TO_APPLY_UNQUALIFIED"
   productionReady: "false"
   runtimeClassName: {{ .Values.stage4Preparation.runtimeClassName | quote }}
   workerImage: {{ .Values.stage4Preparation.images.worker | quote }}
@@ -43,6 +44,7 @@ data:
   hardSeconds: {{ .Values.stage4Preparation.lifecycle.hardSeconds | quote }}
   terminationGraceSeconds: {{ .Values.stage4Preparation.lifecycle.terminationGraceSeconds | quote }}
   auditWalMaxBytes: {{ printf "%.0f" (float64 .Values.stage4Preparation.auditWalMaxBytes) | quote }}
+  publicEgressCaConfigMapReference: {{ .Values.stage4Preparation.publicEgressCaConfigMap | quote }}
   unresolvedChecks: |-
     RuntimeClass existence and non-runc behavior
     KVM, Kata, QEMU, and distinct guest identity
@@ -54,19 +56,4 @@ data:
     per-session SSH and proxy capability issuance and source binding
     proxy upstream egress, immutable route materialization, and revocation
     EKS launch-template, nested-virtualization, recovery, performance, and cleanup evidence
----
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: {{ include "cogs.componentName" (dict "root" . "component" "egress-ca") }}
-  namespace: {{ .Release.Namespace }}
-  labels:
-    {{- include "cogs.stage4Labels" . | nindent 4 }}
-    dev.cogs/role: "preparation"
-  annotations:
-    dev.cogs/notice: "public-ca-only-static-render-source-shape-unsafe-to-apply-unproven"
-immutable: true
-data:
-  egress-ca.crt: |-
-{{- .Values.stage4Preparation.publicEgressCa | nindent 4 }}
 {{- end -}}

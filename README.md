@@ -23,7 +23,7 @@ Requires Node.js 22.22.2.
 npm ci --ignore-scripts
 npm run check
 helm lint deploy/helm/cogs
-helm template cogs deploy/helm/cogs  # intentionally emits no resources
+helm template cogs deploy/helm/cogs  # submits zero manifests; enabled shapes exist only in unsafe, unqualified NOTES
 ```
 
 The local macOS host and development containers cannot provide authoritative guest-root security evidence. See [`docs/operations/ci-schedule.md`](docs/operations/ci-schedule.md).

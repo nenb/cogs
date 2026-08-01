@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -13,11 +13,13 @@ const yaml = require("yaml") as {
 };
 const root = resolve(import.meta.dirname, "..");
 const chart = resolve(root, "deploy/helm/cogs");
-const fixture = resolve(root, "test/fixtures/helm/stage4-preparation-valid.yaml");
+const fixture = resolve(root, "test/fixtures/helm/stage4-notes-source-shapes-valid.yaml");
 const release = "stage4";
 const namespace = "static-preparation";
 const envoyPin = "envoyproxy/envoy:v1.38.3@sha256:5f7c43e1147412fdb3af578c651c67478a3df818eae89d2261e707e06c209cdb";
-const renderCapability = "cogs.dev/static-preparation-render-only/v1";
+const retiredDiscoveryCapability = "cogs.dev/static-preparation-render-only/v1";
+const notesBegin = "# COGS NOTES-ONLY STATIC SOURCE SHAPES BEGIN:";
+const notesEnd = "# COGS NOTES-ONLY STATIC SOURCE SHAPES END:";
 
 interface Placement {
   nodeSelector: Record<string, string>;
@@ -64,7 +66,7 @@ interface ValuesFile {
     resourceProfile: string;
     lifecycle: { idleSeconds: number; hardSeconds: number; terminationGraceSeconds: number };
     auditWalMaxBytes: number;
-    publicEgressCa: string;
+    publicEgressCaConfigMap: string;
   };
 }
 
@@ -138,34 +140,77 @@ function assertHelmSuccess(result: HelmResult): void {
 function assertEmptyManifestStream(result: HelmResult): void {
   assertHelmSuccess(result);
   // Helm 4 adds one CLI framing newline even for a chart with no templates; Helm 3 emits exact zero bytes.
-  assert.equal(result.stdout.replace(/^\n$/u, ""), "", "disabled render must contain no manifest bytes");
+  assert.equal(result.stdout.replace(/^\n$/u, ""), "", "render must contain no Kubernetes manifest bytes");
 }
 
 function validValues(): ValuesFile {
   return structuredClone(yaml.parse(readFileSync(fixture, "utf8")) as ValuesFile);
 }
 
-function rendered(valuesPath = fixture): { stdout: string; objects: KubeObject[] } {
-  const result = helm([
-    "template",
-    release,
-    chart,
-    "--namespace",
-    namespace,
-    "--api-versions",
-    renderCapability,
-    "-f",
-    valuesPath,
-  ]);
+function renderNotesResult(valuesPath = fixture, additionalArguments: string[] = []): HelmResult {
+  const help = helm(["template", "--help"]);
+  assertHelmSuccess(help);
+  if (/^\s*--notes\b/mu.test(help.stdout)) {
+    return helm([
+      "template",
+      release,
+      chart,
+      "--notes",
+      "--namespace",
+      namespace,
+      "-f",
+      valuesPath,
+      ...additionalArguments,
+    ]);
+  }
+
+  // Helm 4 removed the historical --notes flag. For review tests only, copy the
+  // chart and place the same named NOTES payload in one temporary ConfigMap field.
+  // This preserves document order for parsing and never touches a cluster.
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), "cogs-stage4-notes-review-"));
+  try {
+    const reviewChart = join(temporaryDirectory, "cogs");
+    cpSync(chart, reviewChart, { recursive: true });
+    writeFileSync(
+      join(reviewChart, "templates/notes-review.yaml"),
+      `apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: cogs-notes-review-wrapper\ndata:\n  payload: |-\n{{ include "cogs.stage4.notes.payload" . | nindent 4 }}\n`,
+    );
+    return helm(["template", release, reviewChart, "--namespace", namespace, "-f", valuesPath, ...additionalArguments]);
+  } finally {
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+}
+
+function renderedNotes(
+  valuesPath = fixture,
+  additionalArguments: string[] = [],
+): { stdout: string; payload: string; objects: KubeObject[] } {
+  const result = renderNotesResult(valuesPath, additionalArguments);
   assertHelmSuccess(result);
-  const objects = yaml
+  const renderedDocuments = yaml
     .parseAllDocuments(result.stdout)
+    .filter((document) => document.contents !== null)
+    .map((document) => document.toJSON() as KubeObject);
+  const reviewWrapper = renderedDocuments.find((object) => object.metadata?.name === "cogs-notes-review-wrapper");
+  let payload = reviewWrapper?.data?.payload;
+  if (payload === undefined) {
+    const begin = result.stdout.indexOf(notesBegin);
+    const end = result.stdout.indexOf(notesEnd);
+    assert.ok(begin >= 0, "begin warning bounds the NOTES payload");
+    assert.ok(end > begin, "end warning bounds the NOTES payload");
+    const endOfLine = result.stdout.indexOf("\n", end);
+    payload = result.stdout.slice(begin, endOfLine < 0 ? undefined : endOfLine + 1);
+  }
+  assert.equal(typeof payload, "string");
+  payload = payload.trim();
+  const objects = yaml
+    .parseAllDocuments(payload)
     .filter((document) => document.contents !== null)
     .map((document) => {
       assert.deepEqual(document.errors, []);
       return document.toJSON() as KubeObject;
     });
-  return { stdout: result.stdout, objects };
+  return { stdout: result.stdout, payload, objects };
 }
 
 function byName(objects: KubeObject[], name: string): KubeObject {
@@ -205,40 +250,48 @@ function escapePattern(value: string): RegExp {
   return new RegExp(value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"), "iu");
 }
 
-test("lint, install-like rendering, and default rendering remain empty without the synthetic capability", () => {
+test("lint and normal install-like templates produce zero manifests for default, enabled, and capability values", () => {
   assertHelmSuccess(helm(["lint", chart]));
   assertHelmSuccess(helm(["lint", chart, "-f", fixture]));
-  assertEmptyManifestStream(helm(["template", "cogs", chart]));
-  assertEmptyManifestStream(helm(["template", "cogs", chart, "-f", fixture]));
-  assertEmptyManifestStream(helm(["template", "cogs", chart, "--api-versions", renderCapability]));
+  const renderArguments = [
+    [],
+    ["-f", fixture],
+    ["-f", fixture, "--is-upgrade"],
+    ["-f", fixture, "--api-versions", retiredDiscoveryCapability],
+    ["-f", fixture, "--api-versions", `${retiredDiscoveryCapability}/DiscoveryCollision`],
+    ["-f", fixture, "--skip-schema-validation", "--api-versions", retiredDiscoveryCapability],
+    ["-f", fixture, "--api-versions", "cogs.dev/v1", "--kube-version", "1.35.0"],
+  ];
+  for (const arguments_ of renderArguments) {
+    assertEmptyManifestStream(helm(["template", "cogs", chart, ...arguments_]));
+  }
 
   const values = validValues();
   values.stage4Preparation.enabled = false;
   const temporary = writeTemporaryValues(values);
   try {
     assertEmptyManifestStream(
-      helm(["template", "cogs", chart, "--api-versions", renderCapability, "-f", temporary.path]),
+      helm(["template", "cogs", chart, "--api-versions", retiredDiscoveryCapability, "-f", temporary.path]),
     );
   } finally {
     rmSync(temporary.directory, { recursive: true, force: true });
   }
 });
 
-test("synthetic capability renders ten default-disabled static source shapes that warn against apply", () => {
-  const { stdout, objects } = rendered();
-  assert.equal(objects.length, 10);
+test("enabled NOTES emit nine warning-bounded, unsafe, unqualified static source shapes", () => {
+  const { payload, objects } = renderedNotes();
+  assert.equal(objects.length, 9);
   assert.deepEqual(
     Object.fromEntries(
       [...new Set(objects.map((object) => object.kind))]
         .sort()
         .map((kind) => [kind, objects.filter((object) => object.kind === kind).length]),
     ),
-    { ConfigMap: 2, NetworkPolicy: 3, PodTemplate: 2, Service: 1, ServiceAccount: 2 },
+    { ConfigMap: 1, NetworkPolicy: 3, PodTemplate: 2, Service: 1, ServiceAccount: 2 },
   );
   assert.deepEqual(objects.map((object) => object.metadata.name).sort(), [
     "stage4-cogs-contract",
     "stage4-cogs-default-deny",
-    "stage4-cogs-egress-ca",
     "stage4-cogs-proxy",
     "stage4-cogs-sandbox",
     "stage4-cogs-sandbox-allow",
@@ -277,34 +330,32 @@ test("synthetic capability renders ten default-disabled static source shapes tha
     assert.equal(object.metadata.labels["dev.cogs/stage"], "4-preparation");
     assert.equal(object.metadata.labels["dev.cogs/session"], "static-test-session");
     assert.equal(object.metadata.labels["dev.cogs/security-claim"], "none");
+    assert.equal(object.metadata.labels["dev.cogs/qualification"], "none");
     assert.equal(object.metadata.labels["dev.cogs/production-ready"], "false");
     assert.equal(object.metadata.annotations?.["helm.sh/hook"], undefined);
   }
-  assert.doesNotMatch(stdout, /\binert\b/iu);
-  assert.match(stdout, /unsafe-to-apply/iu);
-  assert.match(stdout, /unproven/iu);
+  assert.ok(payload.startsWith(notesBegin));
+  assert.ok(payload.endsWith("WARNING — UNSAFE TO APPLY; UNQUALIFIED"));
+  assert.match(payload, /unsafe to apply/iu);
+  assert.match(payload, /unqualified/iu);
   for (const account of objects.filter((object) => object.kind === "ServiceAccount")) {
     assert.equal(account.automountServiceAccountToken, false);
   }
 });
 
-test("immutable configuration and Service expose references and no secret material", () => {
-  const { stdout, objects } = rendered();
+test("immutable configuration and Service expose references and no secret or CA bytes", () => {
+  const { payload, objects } = renderedNotes();
   const contract = byName(objects, "stage4-cogs-contract");
-  const ca = byName(objects, "stage4-cogs-egress-ca");
   assert.equal(contract.immutable, true);
-  assert.equal(ca.immutable, true);
-  assert.equal(contract.data?.status, "DEFAULT_DISABLED_STATIC_RENDER_ONLY_SOURCE_SHAPE");
-  assert.equal(contract.data?.applySafety, "UNSAFE_TO_APPLY_UNPROVEN");
+  assert.equal(contract.data?.status, "NOTES_ONLY_STATIC_SOURCE_SHAPE");
+  assert.equal(contract.data?.applySafety, "UNSAFE_TO_APPLY_UNQUALIFIED");
   assert.equal(contract.data?.productionReady, "false");
   assert.equal(contract.data?.proxyImage, envoyPin);
   assert.equal(contract.data?.ephemeralProxyCapability, "ABSENT_FUTURE_TRUSTED_LAUNCHER_ONLY");
+  assert.equal(contract.data?.publicEgressCaConfigMapReference, "synthetic-public-egress-ca");
   for (const check of ["RuntimeClass", "KVM", "CNI", "CSI", "OpenBao", "image availability", "per-session", "EKS"]) {
     assert.match(contract.data?.unresolvedChecks ?? "", escapePattern(check));
   }
-  assert.match(ca.data?.["egress-ca.crt"] ?? "", /^-----BEGIN CERTIFICATE-----/u);
-  assert.doesNotMatch(ca.data?.["egress-ca.crt"] ?? "", /PRIVATE KEY/u);
-
   const service = byName(objects, "stage4-cogs-proxy");
   const serviceSpec = service.spec as {
     type: string;
@@ -320,15 +371,18 @@ test("immutable configuration and Service expose references and no secret materi
   });
   assert.deepEqual(serviceSpec.ports, [{ name: "proxy", protocol: "TCP", port: 15001, targetPort: "proxy" }]);
 
-  assert.doesNotMatch(stdout, /^kind: Secret$/mu);
-  assert.doesNotMatch(stdout, /secretKeyRef|envFrom|PRIVATE KEY|production-ready:\s*["']?true/iu);
-  assert.doesNotMatch(stdout, /(?:password|clientSecret|apiKey|accessToken):/iu);
-  assert.match(stdout, /@sha256:[a-f0-9]{64}/u);
+  assert.doesNotMatch(payload, /^kind: Secret$/mu);
+  assert.doesNotMatch(
+    payload,
+    /secretKeyRef|envFrom|BEGIN (?:CERTIFICATE|[^\n]*PRIVATE KEY)|production-ready:\s*["']?true/iu,
+  );
+  assert.doesNotMatch(payload, /(?:password|clientSecret|apiKey|accessToken):/iu);
+  assert.match(payload, /@sha256:[a-f0-9]{64}/u);
 });
 
-test("trusted and sandbox PodTemplates preserve placement, security, storage, and token separation", () => {
+test("trusted and sandbox PodTemplate source shapes preserve placement, security, storage, and token separation", () => {
   const values = validValues().stage4Preparation;
-  const { objects } = rendered();
+  const { objects } = renderedNotes();
   const trustedObject = byName(objects, "stage4-cogs-trusted-template");
   const sandboxObject = byName(objects, "stage4-cogs-sandbox-template");
   const trustedTemplate = trustedObject.template;
@@ -429,6 +483,10 @@ test("trusted and sandbox PodTemplates preserve placement, security, storage, an
     claimName: "replace-per-session-state-pvc",
     readOnly: false,
   });
+  assert.deepEqual(trusted.volumes.find((volume) => volume.name === "public-egress-ca")?.configMap, {
+    name: values.publicEgressCaConfigMap,
+    optional: false,
+  });
   assert.equal(JSON.stringify(trusted.volumes).includes("secret"), false);
 
   assert.equal(sandbox.serviceAccountName, "stage4-cogs-sandbox");
@@ -484,6 +542,10 @@ test("trusted and sandbox PodTemplates preserve placement, security, storage, an
     claimName: "replace-per-session-workspace-pvc",
     readOnly: false,
   });
+  assert.deepEqual(sandbox.volumes.find((volume) => volume.name === "public-egress-ca")?.configMap, {
+    name: values.publicEgressCaConfigMap,
+    optional: false,
+  });
   assert.match(sandboxTemplate.metadata.annotations?.["dev.cogs/notice"] ?? "", /guest-uid-0-is-untrusted-vm-root/u);
 
   const contract = byName(objects, "stage4-cogs-contract");
@@ -501,8 +563,8 @@ test("trusted and sandbox PodTemplates preserve placement, security, storage, an
   );
 });
 
-test("NetworkPolicies render the intended static TCP policy shape without claiming enforcement", () => {
-  const { objects } = rendered();
+test("NetworkPolicy NOTES shapes preserve intended static TCP policy without claiming enforcement", () => {
+  const { objects } = renderedNotes();
   const policies = objects.filter((object) => object.kind === "NetworkPolicy");
   assert.equal(policies.length, 3);
   const serialized = JSON.stringify(policies);
@@ -569,35 +631,37 @@ test("NetworkPolicies render the intended static TCP policy shape without claimi
   assert.deepEqual((sandboxEgress.ports as Array<Record<string, unknown>>)[0], { protocol: "TCP", port: 15001 });
 });
 
-test("chart source keeps every object guarded and exposes no escape hatch", () => {
+test("chart mechanically confines every Kubernetes YAML source shape to NOTES and underscore helpers", () => {
   const templates = resolve(chart, "templates");
-  const manifests = readdirSync(templates)
-    .filter((name) => !name.startsWith("_") && name.endsWith(".yaml"))
-    .sort();
-  assert.deepEqual(manifests, [
-    "00-validate.yaml",
-    "configmaps.yaml",
-    "networkpolicies.yaml",
-    "podtemplates.yaml",
-    "service.yaml",
-    "serviceaccounts.yaml",
-  ]);
-  const templateSource = manifests.map((name) => readFileSync(resolve(templates, name), "utf8")).join("\n");
-  for (const name of manifests) {
-    assert.match(
-      readFileSync(resolve(templates, name), "utf8"),
-      /^\{\{- if and \.Values\.stage4Preparation\.enabled \(\.Capabilities\.APIVersions\.Has "cogs\.dev\/static-preparation-render-only\/v1"\)/u,
-      `${name}: enabled and synthetic-capability render guard`,
-    );
+  const templateNames = readdirSync(templates).sort();
+  assert.deepEqual(
+    templateNames.filter((name) => !name.startsWith("_")),
+    ["NOTES.txt"],
+  );
+  assert.deepEqual(
+    templateNames.filter((name) => name.endsWith(".yaml") || name.endsWith(".yml")),
+    [],
+  );
+  const notesSource = readFileSync(resolve(templates, "NOTES.txt"), "utf8");
+  const payloadSource = readFileSync(resolve(templates, "_notes.tpl"), "utf8");
+  const helperNames = ["configmap", "serviceaccounts", "service", "networkpolicies", "podtemplates"];
+  const helperSource = templateNames
+    .filter((name) => name.startsWith("_"))
+    .map((name) => readFileSync(resolve(templates, name), "utf8"))
+    .join("\n");
+  assert.equal(notesSource.trim(), '{{- include "cogs.stage4.notes.payload" . -}}');
+  for (const name of helperNames) {
+    assert.equal(payloadSource.includes(`include "cogs.stage4.notes.${name}"`), true);
+    assert.equal(helperSource.includes(`define "cogs.stage4.notes.${name}"`), true);
   }
-  assert.doesNotMatch(templateSource, /\blookup\b|helm\.sh\/hook|\binert\b/iu);
-  assert.equal(existsSync(resolve(templates, "NOTES.txt")), false);
+  assert.doesNotMatch(`${notesSource}\n${helperSource}`, /\.Capabilities|\blookup\b|helm\.sh\/hook/iu);
   assert.equal(existsSync(resolve(chart, "crds")), false);
   assert.equal(existsSync(resolve(chart, "charts")), false);
   const chartSource = readFileSync(resolve(chart, "Chart.yaml"), "utf8");
   assert.doesNotMatch(chartSource, /^dependencies:/mu);
   const valuesSource = readFileSync(resolve(chart, "values.yaml"), "utf8");
-  assert.doesNotMatch(valuesSource, /extraEnv|imagePullSecrets|extraObjects|podSpec|annotations:|\binert\b/iu);
+  assert.doesNotMatch(valuesSource, /extraEnv|imagePullSecrets|extraObjects|podSpec|annotations:|publicEgressCa:/iu);
+  assert.doesNotMatch(`${notesSource}\n${helperSource}\n${valuesSource}`, /BEGIN CERTIFICATE|BEGIN [^\n]*PRIVATE KEY/u);
 });
 
 test("enabled values fail closed for missing, unsafe, or extensible inputs", () => {
@@ -761,11 +825,15 @@ test("enabled values fail closed for missing, unsafe, or extensible inputs", () 
       key: "sourceBindingRequired",
       mutate: (v) => (v.stage4Preparation.proxyIdentity.sourceBindingRequired = false),
     },
-    { name: "public CA", key: "publicEgressCa", mutate: (v) => (v.stage4Preparation.publicEgressCa = "") },
     {
-      name: "private key marker",
-      key: "publicEgressCa",
-      mutate: (v) => (v.stage4Preparation.publicEgressCa = "-----BEGIN PRIVATE KEY-----\n-----END PRIVATE KEY-----\n"),
+      name: "public CA ConfigMap reference",
+      key: "publicEgressCaConfigMap",
+      mutate: (v) => (v.stage4Preparation.publicEgressCaConfigMap = ""),
+    },
+    {
+      name: "malformed public CA ConfigMap reference",
+      key: "publicEgressCaConfigMap",
+      mutate: (v) => (v.stage4Preparation.publicEgressCaConfigMap = "NOT_DNS_SAFE"),
     },
     {
       name: "OpenBao token escape",
@@ -828,17 +896,7 @@ test("enabled values fail closed for missing, unsafe, or extensible inputs", () 
     negative.mutate(values);
     const temporary = writeTemporaryValues(values);
     try {
-      const result = helm([
-        "template",
-        release,
-        chart,
-        "--namespace",
-        namespace,
-        "--api-versions",
-        renderCapability,
-        "-f",
-        temporary.path,
-      ]);
+      const result = helm(["template", release, chart, "--namespace", namespace, "-f", temporary.path]);
       assert.equal(result.error, undefined, `${negative.name}: ${result.error?.message}`);
       assert.notEqual(result.status, 0, `${negative.name}: unexpectedly rendered`);
       assert.doesNotMatch(result.stdout, /^apiVersion:/mu, `${negative.name}: no usable manifest stream`);
@@ -864,21 +922,15 @@ test("template validation rejects hostile security inputs with schema validation
         }),
     },
     {
-      name: "malformed certificate body",
+      name: "removed inline public CA field",
       key: "publicEgressCa",
       mutate: (v) =>
-        (v.stage4Preparation.publicEgressCa = `-----BEGIN CERTIFICATE-----\n${Array.from({ length: 5 }, () => "A".repeat(64)).join("\n")}\n-----END CERTIFICATE-----\n`),
+        ((v.stage4Preparation as unknown as Record<string, unknown>).publicEgressCa = "forbidden-inline-ca-data"),
     },
     {
-      name: "certificate trailing text",
-      key: "publicEgressCa",
-      mutate: (v) => (v.stage4Preparation.publicEgressCa += "trailing-text\n"),
-    },
-    {
-      name: "private key",
-      key: "publicEgressCa",
-      mutate: (v) =>
-        (v.stage4Preparation.publicEgressCa += "-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----\n"),
+      name: "malformed public CA ConfigMap reference",
+      key: "publicEgressCaConfigMap",
+      mutate: (v) => (v.stage4Preparation.publicEgressCaConfigMap = "wildcard/*"),
     },
     {
       name: "port above range",
@@ -922,6 +974,12 @@ test("template validation rejects hostile security inputs with schema validation
         ]),
     },
     {
+      name: "trusted wildcard toleration",
+      key: "trusted.tolerations",
+      mutate: (v) =>
+        (v.stage4Preparation.placement.trusted.tolerations = [{ operator: "Exists", effect: "NoSchedule" }]),
+    },
+    {
       name: "resource profile",
       key: "resourceProfile",
       mutate: (v) => (v.stage4Preparation.resourceProfile = "custom"),
@@ -942,14 +1000,34 @@ test("template validation rejects hostile security inputs with schema validation
       mutate: (v) => (v.stage4Preparation.lifecycle.idleSeconds = 0),
     },
     {
+      name: "fractional idle lifetime",
+      key: "idleSeconds",
+      mutate: (v) => (v.stage4Preparation.lifecycle.idleSeconds = 1800.5),
+    },
+    {
+      name: "string idle lifetime",
+      key: "idleSeconds",
+      mutate: (v) => ((v.stage4Preparation.lifecycle as unknown as Record<string, unknown>).idleSeconds = "1800"),
+    },
+    {
       name: "hard lifetime",
       key: "hardSeconds",
       mutate: (v) => (v.stage4Preparation.lifecycle.hardSeconds = 28801),
     },
     {
+      name: "fractional hard lifetime",
+      key: "hardSeconds",
+      mutate: (v) => (v.stage4Preparation.lifecycle.hardSeconds = 28800.5),
+    },
+    {
       name: "termination grace",
       key: "terminationGraceSeconds",
       mutate: (v) => (v.stage4Preparation.lifecycle.terminationGraceSeconds = 0),
+    },
+    {
+      name: "fractional termination grace",
+      key: "terminationGraceSeconds",
+      mutate: (v) => (v.stage4Preparation.lifecycle.terminationGraceSeconds = 30.5),
     },
     {
       name: "WAL below bound",
@@ -960,6 +1038,11 @@ test("template validation rejects hostile security inputs with schema validation
       name: "WAL above bound",
       key: "auditWalMaxBytes",
       mutate: (v) => (v.stage4Preparation.auditWalMaxBytes = 1073741825),
+    },
+    {
+      name: "fractional WAL",
+      key: "auditWalMaxBytes",
+      mutate: (v) => (v.stage4Preparation.auditWalMaxBytes = 268435456.5),
     },
     {
       name: "capability source binding",
@@ -973,18 +1056,7 @@ test("template validation rejects hostile security inputs with schema validation
     hostile.mutate(values);
     const temporary = writeTemporaryValues(values);
     try {
-      const result = helm([
-        "template",
-        release,
-        chart,
-        "--namespace",
-        namespace,
-        "--api-versions",
-        renderCapability,
-        "--skip-schema-validation",
-        "-f",
-        temporary.path,
-      ]);
+      const result = renderNotesResult(temporary.path, ["--skip-schema-validation"]);
       assert.equal(result.error, undefined, `${hostile.name}: ${result.error?.message}`);
       assert.notEqual(result.status, 0, `${hostile.name}: unexpectedly rendered`);
       assert.doesNotMatch(result.stdout, /^apiVersion:/mu, `${hostile.name}: no usable manifest stream`);

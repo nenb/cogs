@@ -1,5 +1,5 @@
-# Default-disabled static render-only source shapes. Even intentionally rendered YAML is
-# unsafe to apply and remains unproven; this chart makes no security or production claim.
+# Default-disabled notes-only static source shapes. The NOTES payload is unsafe to apply,
+# unqualified, and makes no security, runtime, Kubernetes, or production claim.
 stage4Preparation:
   enabled: false
   nonProductionAcknowledgement: false
@@ -57,4 +57,4 @@ stage4Preparation:
     terminationGraceSeconds: 30
   auditWalMaxBytes: 268435456
 
-  publicEgressCa: ""
+  publicEgressCaConfigMap: ""

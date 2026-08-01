@@ -1,4 +1,5 @@
-{{- if and .Values.stage4Preparation.enabled (.Capabilities.APIVersions.Has "cogs.dev/static-preparation-render-only/v1") }}
+{{/* Included only by templates/NOTES.txt; Helm never submits this source shape. */}}
+{{- define "cogs.stage4.notes.service" -}}
 apiVersion: v1
 kind: Service
 metadata:
@@ -9,7 +10,7 @@ metadata:
     dev.cogs/role: "trusted"
     dev.cogs/proxy: "true"
   annotations:
-    dev.cogs/notice: "default-disabled-static-render-only-selector-unsafe-to-apply-unproven"
+    dev.cogs/notice: "notes-only-static-selector-source-shape-unsafe-to-apply-unqualified"
 spec:
   type: ClusterIP
   selector:

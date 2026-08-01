@@ -2,7 +2,7 @@ apiVersion: v2
 name: cogs
 version: 0.0.1
 appVersion: "0.0.0"
-description: default-disabled Stage 4 static render-only source shapes; rendered YAML is unsafe to apply and unproven.
+description: default-disabled Stage 4 notes-only static source shapes; unsafe to apply and unqualified.
 type: application
 annotations:
   dev.cogs/stage: "4-preparation"

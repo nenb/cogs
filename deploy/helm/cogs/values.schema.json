@@ -21,7 +21,7 @@
         "resourceProfile",
         "lifecycle",
         "auditWalMaxBytes",
-        "publicEgressCa"
+        "publicEgressCaConfigMap"
       ],
       "properties": {
         "enabled": { "type": "boolean" },
@@ -111,7 +111,7 @@
           }
         },
         "auditWalMaxBytes": { "type": "integer", "minimum": 1048576, "maximum": 1073741824 },
-        "publicEgressCa": { "type": "string", "maxLength": 16384 }
+        "publicEgressCaConfigMap": { "type": "string", "maxLength": 253 }
       },
       "allOf": [
         {
@@ -145,11 +145,7 @@
                         "required": ["cogs.dev/node-domain"],
                         "properties": { "cogs.dev/node-domain": { "const": "trusted" } }
                       },
-                      "tolerations": {
-                        "items": {
-                          "not": { "properties": { "key": { "const": "cogs.dev/sandbox" } }, "required": ["key"] }
-                        }
-                      }
+                      "tolerations": { "const": [] }
                     }
                   },
                   "sandbox": {
@@ -196,10 +192,7 @@
                   "sourceBindingRequired": { "const": true }
                 }
               },
-              "publicEgressCa": {
-                "minLength": 55,
-                "pattern": "^(?:-----BEGIN CERTIFICATE-----\\n(?:[A-Za-z0-9+/]{1,64}={0,2}\\n)+-----END CERTIFICATE-----\\n?)+$"
-              }
+              "publicEgressCaConfigMap": { "$ref": "#/definitions/dnsSubdomain" }
             }
           }
         }

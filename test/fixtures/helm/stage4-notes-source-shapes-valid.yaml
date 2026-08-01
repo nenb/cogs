@@ -1,4 +1,4 @@
-# Synthetic static render-only test data. Rendered YAML is unsafe to apply and does not describe a proven deployment.
+# Notes-only static source-shape test data. The NOTES payload is unsafe to apply and unqualified.
 stage4Preparation:
   enabled: true
   nonProductionAcknowledgement: true
@@ -66,23 +66,4 @@ stage4Preparation:
     terminationGraceSeconds: 30
   auditWalMaxBytes: 268435456
 
-  publicEgressCa: |
-    -----BEGIN CERTIFICATE-----
-    MIIDKzCCAhOgAwIBAgIUOqpFtQQk5AffVU8YA6GpAXtu2wEwDQYJKoZIhvcNAQEL
-    BQAwJTEjMCEGA1UEAwwac3RhZ2U0LXN0YXRpYy10ZXN0LmludmFsaWQwHhcNMjYw
-    ODAxMTk0MjE2WhcNMzYwNzI5MTk0MjE2WjAlMSMwIQYDVQQDDBpzdGFnZTQtc3Rh
-    dGljLXRlc3QuaW52YWxpZDCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEB
-    AK4pbhywafeu3rEeid2TtcPBUVulskjtNsGIjfZQqwBxepSn7ldUt6dqgOmGFZCf
-    i5TYq3G88AIBEcWEIntCfbW9ccxDIYP4pePbpPFS4wfGVNwkgi4u8/Cc1VqACORs
-    /wq/ggtZyM60STNNBVnfXHqLWTgFALBbhSmpRd6kC7Ir3XjlFHCOcmRHfZU0sBqp
-    u92Mzu9KfAgpkzYNmrrdgD1zMQ57a95IImDbqEhWE4MTvV2iLX+cUtD2+nPubChu
-    H+KUGxmVdCsHTovMzw6Ex3QBQwj4Iu0WUKzu13OYm7TInRyhO3V9gxQoNC8+GaKG
-    Z321E+csFkNOeUIPXQXPGL8CAwEAAaNTMFEwHQYDVR0OBBYEFM/CJJQw0C5OXKHG
-    JVH3eBGtwep8MB8GA1UdIwQYMBaAFM/CJJQw0C5OXKHGJVH3eBGtwep8MA8GA1Ud
-    EwEB/wQFMAMBAf8wDQYJKoZIhvcNAQELBQADggEBAC9GyjFxc6UoSATEmYlc9PEt
-    2bE/pF6i0G9NnI/qWLQwx1+QbHaEYBOHOBVdiBDfrFJ6N6x4w7QOOz39XJFLH291
-    JFc9ZP4Jmn0AKuTHWGK0Hio0HfpcchHPKhdlpY+jxBnrOHYp3zRphYt0AKCoQfPu
-    OCL7UHtTEY2qq+dlW/BfakPsukg/HsbAKb3EIeAJs8TjrCXMhn3o9UbagKjVw6CM
-    JZVT//1pYgMvsc8rcy2v8H97jm6GAJdusJn8JxBmLV0F+XNFexr/x8PaGZ8J8jYd
-    A1omke+vYv2aLOFoXDydeEVZAQMgGtwJl0EjHd11qW4mI9K8ls07pRDbK0BDIb4=
-    -----END CERTIFICATE-----
+  publicEgressCaConfigMap: synthetic-public-egress-ca
