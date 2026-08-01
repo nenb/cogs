@@ -1,0 +1,11 @@
+{
+  "version": "cogs.stage4-audit-wal-record/v1",
+  "sequence": 0,
+  "intent_id": "intent-static-1",
+  "timestamp_ms": 2000,
+  "session_ref_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "integration_id": "github",
+  "route_id": "route-static-1",
+  "method": "GET",
+  "credential_required": true
+}

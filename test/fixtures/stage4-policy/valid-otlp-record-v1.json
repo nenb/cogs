@@ -1,0 +1,15 @@
+{
+  "version": "cogs.stage4-otlp-record/v1",
+  "kind": "metric",
+  "name": "wal",
+  "attributes": {
+    "event": "append",
+    "outcome": "ok",
+    "operation": "append",
+    "credential_required": true,
+    "duration_ms": 4,
+    "count": 1,
+    "queue_depth": 1,
+    "export_lag_ms": 0
+  }
+}

@@ -2,10 +2,14 @@
   "version": "cogs.stage4-policy-probe-suite/v1",
   "authority": "static-only-stage4-policy",
   "qualification": "pending-exact-eks-cni-runtime",
+  "contract_sha256": "8d2d7e7bc931418390a23dc34a9b41e581d5ac054396100b6e34a12ae1d15d7e",
   "probes": [
     {
       "id": "allow.assigned-proxy.ipv4",
+      "observed_at_ms": 1001,
       "source_session_id": "session-static-1",
+      "source_instance_id": "cogs-static-1",
+      "source_pod_id": "sandbox-pod-static-1",
       "source_selector": {
         "app.kubernetes.io/instance": "cogs-static-1",
         "dev.cogs/session": "session-static-1",
@@ -21,7 +25,11 @@
       },
       "capability": {
         "state": "active",
-        "session_id": "session-static-1"
+        "session_id": "session-static-1",
+        "capability_id": "cap-session-static-1-g2",
+        "generation": 2,
+        "expires_at_ms": 28801000,
+        "replacement_capability_id": null
       },
       "expected": {
         "allow": true,
@@ -30,7 +38,10 @@
     },
     {
       "id": "allow.assigned-proxy.ipv6",
+      "observed_at_ms": 1001,
       "source_session_id": "session-static-1",
+      "source_instance_id": "cogs-static-1",
+      "source_pod_id": "sandbox-pod-static-1",
       "source_selector": {
         "app.kubernetes.io/instance": "cogs-static-1",
         "dev.cogs/session": "session-static-1",
@@ -46,7 +57,11 @@
       },
       "capability": {
         "state": "active",
-        "session_id": "session-static-1"
+        "session_id": "session-static-1",
+        "capability_id": "cap-session-static-1-g2",
+        "generation": 2,
+        "expires_at_ms": 28801000,
+        "replacement_capability_id": null
       },
       "expected": {
         "allow": true,
@@ -55,7 +70,10 @@
     },
     {
       "id": "deny.selector.empty",
+      "observed_at_ms": 1001,
       "source_session_id": "session-static-1",
+      "source_instance_id": "cogs-static-1",
+      "source_pod_id": "sandbox-pod-static-1",
       "source_selector": {},
       "transport": "tcp",
       "address_family": "IPv4",
@@ -67,7 +85,11 @@
       },
       "capability": {
         "state": "active",
-        "session_id": "session-static-1"
+        "session_id": "session-static-1",
+        "capability_id": "cap-session-static-1-g2",
+        "generation": 2,
+        "expires_at_ms": 28801000,
+        "replacement_capability_id": null
       },
       "expected": {
         "allow": false,
@@ -76,7 +98,10 @@
     },
     {
       "id": "deny.selector.trusted-role",
+      "observed_at_ms": 1001,
       "source_session_id": "session-static-1",
+      "source_instance_id": "cogs-static-1",
+      "source_pod_id": "sandbox-pod-static-1",
       "source_selector": {
         "app.kubernetes.io/instance": "cogs-static-1",
         "dev.cogs/session": "session-static-1",
@@ -92,7 +117,11 @@
       },
       "capability": {
         "state": "active",
-        "session_id": "session-static-1"
+        "session_id": "session-static-1",
+        "capability_id": "cap-session-static-1-g2",
+        "generation": 2,
+        "expires_at_ms": 28801000,
+        "replacement_capability_id": null
       },
       "expected": {
         "allow": false,
@@ -101,7 +130,10 @@
     },
     {
       "id": "deny.selector.proxy-role-confusion",
+      "observed_at_ms": 1001,
       "source_session_id": "session-static-1",
+      "source_instance_id": "cogs-static-1",
+      "source_pod_id": "sandbox-pod-static-1",
       "source_selector": {
         "app.kubernetes.io/instance": "cogs-static-1",
         "dev.cogs/session": "session-static-1",
@@ -118,7 +150,11 @@
       },
       "capability": {
         "state": "active",
-        "session_id": "session-static-1"
+        "session_id": "session-static-1",
+        "capability_id": "cap-session-static-1-g2",
+        "generation": 2,
+        "expires_at_ms": 28801000,
+        "replacement_capability_id": null
       },
       "expected": {
         "allow": false,
@@ -127,7 +163,10 @@
     },
     {
       "id": "deny.assigned-proxy.service-confusion",
+      "observed_at_ms": 1001,
       "source_session_id": "session-static-1",
+      "source_instance_id": "cogs-static-1",
+      "source_pod_id": "sandbox-pod-static-1",
       "source_selector": {
         "app.kubernetes.io/instance": "cogs-static-1",
         "dev.cogs/session": "session-static-1",
@@ -138,12 +177,16 @@
       "destination": {
         "class": "assigned-proxy",
         "session_id": "session-static-1",
-        "service_name": "cogs-proxy-session-static-2",
+        "service_name": "cogs-proxy-other",
         "port": 15001
       },
       "capability": {
         "state": "active",
-        "session_id": "session-static-1"
+        "session_id": "session-static-1",
+        "capability_id": "cap-session-static-1-g2",
+        "generation": 2,
+        "expires_at_ms": 28801000,
+        "replacement_capability_id": null
       },
       "expected": {
         "allow": false,
@@ -152,7 +195,10 @@
     },
     {
       "id": "deny.source.cross-session",
-      "source_session_id": "session-static-2",
+      "observed_at_ms": 1001,
+      "source_session_id": "session-other",
+      "source_instance_id": "cogs-static-1",
+      "source_pod_id": "sandbox-pod-static-1",
       "source_selector": {
         "app.kubernetes.io/instance": "cogs-static-1",
         "dev.cogs/session": "session-static-1",
@@ -168,7 +214,11 @@
       },
       "capability": {
         "state": "active",
-        "session_id": "session-static-1"
+        "session_id": "session-static-1",
+        "capability_id": "cap-session-static-1-g2",
+        "generation": 2,
+        "expires_at_ms": 28801000,
+        "replacement_capability_id": null
       },
       "expected": {
         "allow": false,
@@ -176,8 +226,75 @@
       }
     },
     {
-      "id": "deny.capability.missing",
+      "id": "deny.source.instance-confusion",
+      "observed_at_ms": 1001,
       "source_session_id": "session-static-1",
+      "source_instance_id": "cogs-other",
+      "source_pod_id": "sandbox-pod-static-1",
+      "source_selector": {
+        "app.kubernetes.io/instance": "cogs-static-1",
+        "dev.cogs/session": "session-static-1",
+        "dev.cogs/role": "sandbox"
+      },
+      "transport": "tcp",
+      "address_family": "IPv4",
+      "destination": {
+        "class": "assigned-proxy",
+        "session_id": "session-static-1",
+        "service_name": "cogs-proxy-session-static-1",
+        "port": 15001
+      },
+      "capability": {
+        "state": "active",
+        "session_id": "session-static-1",
+        "capability_id": "cap-session-static-1-g2",
+        "generation": 2,
+        "expires_at_ms": 28801000,
+        "replacement_capability_id": null
+      },
+      "expected": {
+        "allow": false,
+        "reason": "source-instance-mismatch"
+      }
+    },
+    {
+      "id": "deny.source.pod-confusion",
+      "observed_at_ms": 1001,
+      "source_session_id": "session-static-1",
+      "source_instance_id": "cogs-static-1",
+      "source_pod_id": "sandbox-pod-other",
+      "source_selector": {
+        "app.kubernetes.io/instance": "cogs-static-1",
+        "dev.cogs/session": "session-static-1",
+        "dev.cogs/role": "sandbox"
+      },
+      "transport": "tcp",
+      "address_family": "IPv4",
+      "destination": {
+        "class": "assigned-proxy",
+        "session_id": "session-static-1",
+        "service_name": "cogs-proxy-session-static-1",
+        "port": 15001
+      },
+      "capability": {
+        "state": "active",
+        "session_id": "session-static-1",
+        "capability_id": "cap-session-static-1-g2",
+        "generation": 2,
+        "expires_at_ms": 28801000,
+        "replacement_capability_id": null
+      },
+      "expected": {
+        "allow": false,
+        "reason": "source-pod-mismatch"
+      }
+    },
+    {
+      "id": "deny.capability.missing",
+      "observed_at_ms": 1001,
+      "source_session_id": "session-static-1",
+      "source_instance_id": "cogs-static-1",
+      "source_pod_id": "sandbox-pod-static-1",
       "source_selector": {
         "app.kubernetes.io/instance": "cogs-static-1",
         "dev.cogs/session": "session-static-1",
@@ -193,7 +310,11 @@
       },
       "capability": {
         "state": "missing",
-        "session_id": null
+        "session_id": null,
+        "capability_id": null,
+        "generation": null,
+        "expires_at_ms": null,
+        "replacement_capability_id": null
       },
       "expected": {
         "allow": false,
@@ -202,7 +323,10 @@
     },
     {
       "id": "deny.capability.revoked",
+      "observed_at_ms": 1001,
       "source_session_id": "session-static-1",
+      "source_instance_id": "cogs-static-1",
+      "source_pod_id": "sandbox-pod-static-1",
       "source_selector": {
         "app.kubernetes.io/instance": "cogs-static-1",
         "dev.cogs/session": "session-static-1",
@@ -218,7 +342,11 @@
       },
       "capability": {
         "state": "revoked",
-        "session_id": "session-static-1"
+        "session_id": "session-static-1",
+        "capability_id": "cap-session-static-1-g2",
+        "generation": 2,
+        "expires_at_ms": 28801000,
+        "replacement_capability_id": null
       },
       "expected": {
         "allow": false,
@@ -226,8 +354,75 @@
       }
     },
     {
-      "id": "deny.capability.cross-session",
+      "id": "deny.capability.replaced",
+      "observed_at_ms": 1001,
       "source_session_id": "session-static-1",
+      "source_instance_id": "cogs-static-1",
+      "source_pod_id": "sandbox-pod-static-1",
+      "source_selector": {
+        "app.kubernetes.io/instance": "cogs-static-1",
+        "dev.cogs/session": "session-static-1",
+        "dev.cogs/role": "sandbox"
+      },
+      "transport": "tcp",
+      "address_family": "IPv4",
+      "destination": {
+        "class": "assigned-proxy",
+        "session_id": "session-static-1",
+        "service_name": "cogs-proxy-session-static-1",
+        "port": 15001
+      },
+      "capability": {
+        "state": "replaced",
+        "session_id": "session-static-1",
+        "capability_id": "cap-session-static-1-g1",
+        "generation": 1,
+        "expires_at_ms": 28801000,
+        "replacement_capability_id": "cap-session-static-1-g2"
+      },
+      "expected": {
+        "allow": false,
+        "reason": "capability-replaced"
+      }
+    },
+    {
+      "id": "deny.capability.expired",
+      "observed_at_ms": 28801000,
+      "source_session_id": "session-static-1",
+      "source_instance_id": "cogs-static-1",
+      "source_pod_id": "sandbox-pod-static-1",
+      "source_selector": {
+        "app.kubernetes.io/instance": "cogs-static-1",
+        "dev.cogs/session": "session-static-1",
+        "dev.cogs/role": "sandbox"
+      },
+      "transport": "tcp",
+      "address_family": "IPv4",
+      "destination": {
+        "class": "assigned-proxy",
+        "session_id": "session-static-1",
+        "service_name": "cogs-proxy-session-static-1",
+        "port": 15001
+      },
+      "capability": {
+        "state": "expired",
+        "session_id": "session-static-1",
+        "capability_id": "cap-session-static-1-g2",
+        "generation": 2,
+        "expires_at_ms": 28801000,
+        "replacement_capability_id": null
+      },
+      "expected": {
+        "allow": false,
+        "reason": "capability-expired"
+      }
+    },
+    {
+      "id": "deny.capability.id-confusion",
+      "observed_at_ms": 1001,
+      "source_session_id": "session-static-1",
+      "source_instance_id": "cogs-static-1",
+      "source_pod_id": "sandbox-pod-static-1",
       "source_selector": {
         "app.kubernetes.io/instance": "cogs-static-1",
         "dev.cogs/session": "session-static-1",
@@ -243,7 +438,75 @@
       },
       "capability": {
         "state": "active",
-        "session_id": "session-static-2"
+        "session_id": "session-static-1",
+        "capability_id": "capability-forged",
+        "generation": 2,
+        "expires_at_ms": 28801000,
+        "replacement_capability_id": null
+      },
+      "expected": {
+        "allow": false,
+        "reason": "capability-id-mismatch"
+      }
+    },
+    {
+      "id": "deny.capability.generation-confusion",
+      "observed_at_ms": 1001,
+      "source_session_id": "session-static-1",
+      "source_instance_id": "cogs-static-1",
+      "source_pod_id": "sandbox-pod-static-1",
+      "source_selector": {
+        "app.kubernetes.io/instance": "cogs-static-1",
+        "dev.cogs/session": "session-static-1",
+        "dev.cogs/role": "sandbox"
+      },
+      "transport": "tcp",
+      "address_family": "IPv4",
+      "destination": {
+        "class": "assigned-proxy",
+        "session_id": "session-static-1",
+        "service_name": "cogs-proxy-session-static-1",
+        "port": 15001
+      },
+      "capability": {
+        "state": "active",
+        "session_id": "session-static-1",
+        "capability_id": "cap-session-static-1-g2",
+        "generation": 3,
+        "expires_at_ms": 28801000,
+        "replacement_capability_id": null
+      },
+      "expected": {
+        "allow": false,
+        "reason": "capability-generation-mismatch"
+      }
+    },
+    {
+      "id": "deny.capability.cross-session",
+      "observed_at_ms": 1001,
+      "source_session_id": "session-static-1",
+      "source_instance_id": "cogs-static-1",
+      "source_pod_id": "sandbox-pod-static-1",
+      "source_selector": {
+        "app.kubernetes.io/instance": "cogs-static-1",
+        "dev.cogs/session": "session-static-1",
+        "dev.cogs/role": "sandbox"
+      },
+      "transport": "tcp",
+      "address_family": "IPv4",
+      "destination": {
+        "class": "assigned-proxy",
+        "session_id": "session-static-1",
+        "service_name": "cogs-proxy-session-static-1",
+        "port": 15001
+      },
+      "capability": {
+        "state": "active",
+        "session_id": "session-other",
+        "capability_id": "cap-session-static-1-g2",
+        "generation": 2,
+        "expires_at_ms": 28801000,
+        "replacement_capability_id": null
       },
       "expected": {
         "allow": false,
@@ -252,7 +515,10 @@
     },
     {
       "id": "deny.destination.cross-session-proxy",
+      "observed_at_ms": 1001,
       "source_session_id": "session-static-1",
+      "source_instance_id": "cogs-static-1",
+      "source_pod_id": "sandbox-pod-static-1",
       "source_selector": {
         "app.kubernetes.io/instance": "cogs-static-1",
         "dev.cogs/session": "session-static-1",
@@ -262,13 +528,17 @@
       "address_family": "IPv4",
       "destination": {
         "class": "other-session-proxy",
-        "session_id": "session-static-2",
-        "service_name": "cogs-proxy-session-static-2",
+        "session_id": "session-other",
+        "service_name": "cogs-proxy-other",
         "port": 15001
       },
       "capability": {
         "state": "active",
-        "session_id": "session-static-1"
+        "session_id": "session-static-1",
+        "capability_id": "cap-session-static-1-g2",
+        "generation": 2,
+        "expires_at_ms": 28801000,
+        "replacement_capability_id": null
       },
       "expected": {
         "allow": false,
@@ -277,7 +547,10 @@
     },
     {
       "id": "deny.destination.cross-session-workload",
+      "observed_at_ms": 1001,
       "source_session_id": "session-static-1",
+      "source_instance_id": "cogs-static-1",
+      "source_pod_id": "sandbox-pod-static-1",
       "source_selector": {
         "app.kubernetes.io/instance": "cogs-static-1",
         "dev.cogs/session": "session-static-1",
@@ -287,13 +560,17 @@
       "address_family": "IPv4",
       "destination": {
         "class": "other-session-workload",
-        "session_id": "session-static-2",
+        "session_id": "session-other",
         "service_name": null,
         "port": 22
       },
       "capability": {
         "state": "active",
-        "session_id": "session-static-1"
+        "session_id": "session-static-1",
+        "capability_id": "cap-session-static-1-g2",
+        "generation": 2,
+        "expires_at_ms": 28801000,
+        "replacement_capability_id": null
       },
       "expected": {
         "allow": false,
@@ -302,7 +579,10 @@
     },
     {
       "id": "deny.udp.ipv4",
+      "observed_at_ms": 1001,
       "source_session_id": "session-static-1",
+      "source_instance_id": "cogs-static-1",
+      "source_pod_id": "sandbox-pod-static-1",
       "source_selector": {
         "app.kubernetes.io/instance": "cogs-static-1",
         "dev.cogs/session": "session-static-1",
@@ -318,7 +598,11 @@
       },
       "capability": {
         "state": "active",
-        "session_id": "session-static-1"
+        "session_id": "session-static-1",
+        "capability_id": "cap-session-static-1-g2",
+        "generation": 2,
+        "expires_at_ms": 28801000,
+        "replacement_capability_id": null
       },
       "expected": {
         "allow": false,
@@ -327,7 +611,10 @@
     },
     {
       "id": "deny.udp.ipv6",
+      "observed_at_ms": 1001,
       "source_session_id": "session-static-1",
+      "source_instance_id": "cogs-static-1",
+      "source_pod_id": "sandbox-pod-static-1",
       "source_selector": {
         "app.kubernetes.io/instance": "cogs-static-1",
         "dev.cogs/session": "session-static-1",
@@ -343,7 +630,11 @@
       },
       "capability": {
         "state": "active",
-        "session_id": "session-static-1"
+        "session_id": "session-static-1",
+        "capability_id": "cap-session-static-1-g2",
+        "generation": 2,
+        "expires_at_ms": 28801000,
+        "replacement_capability_id": null
       },
       "expected": {
         "allow": false,
@@ -352,7 +643,10 @@
     },
     {
       "id": "deny.quic.udp443",
+      "observed_at_ms": 1001,
       "source_session_id": "session-static-1",
+      "source_instance_id": "cogs-static-1",
+      "source_pod_id": "sandbox-pod-static-1",
       "source_selector": {
         "app.kubernetes.io/instance": "cogs-static-1",
         "dev.cogs/session": "session-static-1",
@@ -368,7 +662,11 @@
       },
       "capability": {
         "state": "active",
-        "session_id": "session-static-1"
+        "session_id": "session-static-1",
+        "capability_id": "cap-session-static-1-g2",
+        "generation": 2,
+        "expires_at_ms": 28801000,
+        "replacement_capability_id": null
       },
       "expected": {
         "allow": false,
@@ -377,7 +675,10 @@
     },
     {
       "id": "deny.dns.arbitrary",
+      "observed_at_ms": 1001,
       "source_session_id": "session-static-1",
+      "source_instance_id": "cogs-static-1",
+      "source_pod_id": "sandbox-pod-static-1",
       "source_selector": {
         "app.kubernetes.io/instance": "cogs-static-1",
         "dev.cogs/session": "session-static-1",
@@ -393,7 +694,11 @@
       },
       "capability": {
         "state": "active",
-        "session_id": "session-static-1"
+        "session_id": "session-static-1",
+        "capability_id": "cap-session-static-1-g2",
+        "generation": 2,
+        "expires_at_ms": 28801000,
+        "replacement_capability_id": null
       },
       "expected": {
         "allow": false,
@@ -402,7 +707,10 @@
     },
     {
       "id": "deny.dns.over-https",
+      "observed_at_ms": 1001,
       "source_session_id": "session-static-1",
+      "source_instance_id": "cogs-static-1",
+      "source_pod_id": "sandbox-pod-static-1",
       "source_selector": {
         "app.kubernetes.io/instance": "cogs-static-1",
         "dev.cogs/session": "session-static-1",
@@ -418,7 +726,11 @@
       },
       "capability": {
         "state": "active",
-        "session_id": "session-static-1"
+        "session_id": "session-static-1",
+        "capability_id": "cap-session-static-1-g2",
+        "generation": 2,
+        "expires_at_ms": 28801000,
+        "replacement_capability_id": null
       },
       "expected": {
         "allow": false,
@@ -426,8 +738,75 @@
       }
     },
     {
-      "id": "deny.direct-ip.ipv4",
+      "id": "deny.direct-host.ipv4",
+      "observed_at_ms": 1001,
       "source_session_id": "session-static-1",
+      "source_instance_id": "cogs-static-1",
+      "source_pod_id": "sandbox-pod-static-1",
+      "source_selector": {
+        "app.kubernetes.io/instance": "cogs-static-1",
+        "dev.cogs/session": "session-static-1",
+        "dev.cogs/role": "sandbox"
+      },
+      "transport": "tcp",
+      "address_family": "IPv4",
+      "destination": {
+        "class": "direct-host",
+        "session_id": null,
+        "service_name": null,
+        "port": 443
+      },
+      "capability": {
+        "state": "active",
+        "session_id": "session-static-1",
+        "capability_id": "cap-session-static-1-g2",
+        "generation": 2,
+        "expires_at_ms": 28801000,
+        "replacement_capability_id": null
+      },
+      "expected": {
+        "allow": false,
+        "reason": "direct-egress-denied"
+      }
+    },
+    {
+      "id": "deny.direct-host.ipv6",
+      "observed_at_ms": 1001,
+      "source_session_id": "session-static-1",
+      "source_instance_id": "cogs-static-1",
+      "source_pod_id": "sandbox-pod-static-1",
+      "source_selector": {
+        "app.kubernetes.io/instance": "cogs-static-1",
+        "dev.cogs/session": "session-static-1",
+        "dev.cogs/role": "sandbox"
+      },
+      "transport": "tcp",
+      "address_family": "IPv6",
+      "destination": {
+        "class": "direct-host",
+        "session_id": null,
+        "service_name": null,
+        "port": 443
+      },
+      "capability": {
+        "state": "active",
+        "session_id": "session-static-1",
+        "capability_id": "cap-session-static-1-g2",
+        "generation": 2,
+        "expires_at_ms": 28801000,
+        "replacement_capability_id": null
+      },
+      "expected": {
+        "allow": false,
+        "reason": "direct-egress-denied"
+      }
+    },
+    {
+      "id": "deny.direct-ip.ipv4",
+      "observed_at_ms": 1001,
+      "source_session_id": "session-static-1",
+      "source_instance_id": "cogs-static-1",
+      "source_pod_id": "sandbox-pod-static-1",
       "source_selector": {
         "app.kubernetes.io/instance": "cogs-static-1",
         "dev.cogs/session": "session-static-1",
@@ -443,7 +822,11 @@
       },
       "capability": {
         "state": "active",
-        "session_id": "session-static-1"
+        "session_id": "session-static-1",
+        "capability_id": "cap-session-static-1-g2",
+        "generation": 2,
+        "expires_at_ms": 28801000,
+        "replacement_capability_id": null
       },
       "expected": {
         "allow": false,
@@ -452,7 +835,10 @@
     },
     {
       "id": "deny.direct-ip.ipv6",
+      "observed_at_ms": 1001,
       "source_session_id": "session-static-1",
+      "source_instance_id": "cogs-static-1",
+      "source_pod_id": "sandbox-pod-static-1",
       "source_selector": {
         "app.kubernetes.io/instance": "cogs-static-1",
         "dev.cogs/session": "session-static-1",
@@ -468,7 +854,11 @@
       },
       "capability": {
         "state": "active",
-        "session_id": "session-static-1"
+        "session_id": "session-static-1",
+        "capability_id": "cap-session-static-1-g2",
+        "generation": 2,
+        "expires_at_ms": 28801000,
+        "replacement_capability_id": null
       },
       "expected": {
         "allow": false,
@@ -477,7 +867,10 @@
     },
     {
       "id": "deny.alternate-proxy-port",
+      "observed_at_ms": 1001,
       "source_session_id": "session-static-1",
+      "source_instance_id": "cogs-static-1",
+      "source_pod_id": "sandbox-pod-static-1",
       "source_selector": {
         "app.kubernetes.io/instance": "cogs-static-1",
         "dev.cogs/session": "session-static-1",
@@ -493,7 +886,11 @@
       },
       "capability": {
         "state": "active",
-        "session_id": "session-static-1"
+        "session_id": "session-static-1",
+        "capability_id": "cap-session-static-1-g2",
+        "generation": 2,
+        "expires_at_ms": 28801000,
+        "replacement_capability_id": null
       },
       "expected": {
         "allow": false,
@@ -502,7 +899,10 @@
     },
     {
       "id": "deny.metadata.ipv4",
+      "observed_at_ms": 1001,
       "source_session_id": "session-static-1",
+      "source_instance_id": "cogs-static-1",
+      "source_pod_id": "sandbox-pod-static-1",
       "source_selector": {
         "app.kubernetes.io/instance": "cogs-static-1",
         "dev.cogs/session": "session-static-1",
@@ -518,7 +918,11 @@
       },
       "capability": {
         "state": "active",
-        "session_id": "session-static-1"
+        "session_id": "session-static-1",
+        "capability_id": "cap-session-static-1-g2",
+        "generation": 2,
+        "expires_at_ms": 28801000,
+        "replacement_capability_id": null
       },
       "expected": {
         "allow": false,
@@ -527,7 +931,10 @@
     },
     {
       "id": "deny.metadata.ipv6",
+      "observed_at_ms": 1001,
       "source_session_id": "session-static-1",
+      "source_instance_id": "cogs-static-1",
+      "source_pod_id": "sandbox-pod-static-1",
       "source_selector": {
         "app.kubernetes.io/instance": "cogs-static-1",
         "dev.cogs/session": "session-static-1",
@@ -543,7 +950,11 @@
       },
       "capability": {
         "state": "active",
-        "session_id": "session-static-1"
+        "session_id": "session-static-1",
+        "capability_id": "cap-session-static-1-g2",
+        "generation": 2,
+        "expires_at_ms": 28801000,
+        "replacement_capability_id": null
       },
       "expected": {
         "allow": false,
@@ -552,7 +963,10 @@
     },
     {
       "id": "deny.kubernetes-api",
+      "observed_at_ms": 1001,
       "source_session_id": "session-static-1",
+      "source_instance_id": "cogs-static-1",
+      "source_pod_id": "sandbox-pod-static-1",
       "source_selector": {
         "app.kubernetes.io/instance": "cogs-static-1",
         "dev.cogs/session": "session-static-1",
@@ -568,7 +982,11 @@
       },
       "capability": {
         "state": "active",
-        "session_id": "session-static-1"
+        "session_id": "session-static-1",
+        "capability_id": "cap-session-static-1-g2",
+        "generation": 2,
+        "expires_at_ms": 28801000,
+        "replacement_capability_id": null
       },
       "expected": {
         "allow": false,
@@ -577,7 +995,10 @@
     },
     {
       "id": "deny.worker-api",
+      "observed_at_ms": 1001,
       "source_session_id": "session-static-1",
+      "source_instance_id": "cogs-static-1",
+      "source_pod_id": "sandbox-pod-static-1",
       "source_selector": {
         "app.kubernetes.io/instance": "cogs-static-1",
         "dev.cogs/session": "session-static-1",
@@ -593,7 +1014,11 @@
       },
       "capability": {
         "state": "active",
-        "session_id": "session-static-1"
+        "session_id": "session-static-1",
+        "capability_id": "cap-session-static-1-g2",
+        "generation": 2,
+        "expires_at_ms": 28801000,
+        "replacement_capability_id": null
       },
       "expected": {
         "allow": false,
@@ -602,7 +1027,10 @@
     },
     {
       "id": "deny.proxy-admin",
+      "observed_at_ms": 1001,
       "source_session_id": "session-static-1",
+      "source_instance_id": "cogs-static-1",
+      "source_pod_id": "sandbox-pod-static-1",
       "source_selector": {
         "app.kubernetes.io/instance": "cogs-static-1",
         "dev.cogs/session": "session-static-1",
@@ -618,7 +1046,11 @@
       },
       "capability": {
         "state": "active",
-        "session_id": "session-static-1"
+        "session_id": "session-static-1",
+        "capability_id": "cap-session-static-1-g2",
+        "generation": 2,
+        "expires_at_ms": 28801000,
+        "replacement_capability_id": null
       },
       "expected": {
         "allow": false,
@@ -627,7 +1059,10 @@
     },
     {
       "id": "deny.openbao",
+      "observed_at_ms": 1001,
       "source_session_id": "session-static-1",
+      "source_instance_id": "cogs-static-1",
+      "source_pod_id": "sandbox-pod-static-1",
       "source_selector": {
         "app.kubernetes.io/instance": "cogs-static-1",
         "dev.cogs/session": "session-static-1",
@@ -643,7 +1078,11 @@
       },
       "capability": {
         "state": "active",
-        "session_id": "session-static-1"
+        "session_id": "session-static-1",
+        "capability_id": "cap-session-static-1-g2",
+        "generation": 2,
+        "expires_at_ms": 28801000,
+        "replacement_capability_id": null
       },
       "expected": {
         "allow": false,
@@ -652,7 +1091,10 @@
     },
     {
       "id": "deny.broad-policy-peer",
+      "observed_at_ms": 1001,
       "source_session_id": "session-static-1",
+      "source_instance_id": "cogs-static-1",
+      "source_pod_id": "sandbox-pod-static-1",
       "source_selector": {
         "app.kubernetes.io/instance": "cogs-static-1",
         "dev.cogs/session": "session-static-1",
@@ -668,7 +1110,11 @@
       },
       "capability": {
         "state": "active",
-        "session_id": "session-static-1"
+        "session_id": "session-static-1",
+        "capability_id": "cap-session-static-1-g2",
+        "generation": 2,
+        "expires_at_ms": 28801000,
+        "replacement_capability_id": null
       },
       "expected": {
         "allow": false,

@@ -290,10 +290,10 @@ test("enabled NOTES emit nine warning-bounded, unsafe, unqualified static source
     { ConfigMap: 1, NetworkPolicy: 3, PodTemplate: 2, Service: 1, ServiceAccount: 2 },
   );
   assert.deepEqual(objects.map((object) => object.metadata.name).sort(), [
+    "cogs-sandbox-inert",
     "stage4-cogs-contract",
     "stage4-cogs-default-deny",
     "stage4-cogs-proxy",
-    "stage4-cogs-sandbox",
     "stage4-cogs-sandbox-allow",
     "stage4-cogs-sandbox-template",
     "stage4-cogs-trusted",
@@ -356,8 +356,14 @@ test("immutable configuration and Service expose references and no secret or CA 
   assert.equal(contract.data?.policyContractAuthority, "static-only-stage4-policy");
   assert.equal(contract.data?.policyContractQualification, "pending-exact-eks-cni-runtime");
   assert.match(contract.data?.trustedWorkerIdentityContract ?? "", /SCOPED_PROJECTED_OPENBAO_TOKEN/u);
+  assert.equal(contract.data?.sandboxServiceAccountContract, "cogs-sandbox-inert");
+  assert.equal(contract.data?.trustedSandboxServiceAccountsDistinct, "true");
   assert.match(contract.data?.sandboxIdentityContract ?? "", /INERT_SERVICE_ACCOUNT_NO_TOKEN_RBAC_OPENBAO_OR_CLOUD/u);
-  assert.match(contract.data?.proxyCapabilityContract ?? "", /SESSION_AND_SOURCE_BOUND.*NO_FALLBACK/u);
+  assert.match(contract.data?.openBaoHandleScopeContract ?? "", /CURRENT_USER_ONLY_ORGANIZATIONS_FORBIDDEN/u);
+  assert.match(
+    contract.data?.proxyCapabilityContract ?? "",
+    /SESSION_INSTANCE_POD_ID_GENERATION_EXPIRY_BOUND.*NO_FALLBACK/u,
+  );
   assert.match(contract.data?.otlpPayloadContract ?? "", /METADATA_ONLY.*NON_AUTHORIZING/u);
   assert.match(contract.data?.auditWalFailureContract ?? "", /FAILURE_DENIES.*RECYCLE/u);
   assert.equal(contract.data?.publicEgressCaConfigMapReference, "synthetic-public-egress-ca");
@@ -507,7 +513,8 @@ test("trusted and sandbox PodTemplate source shapes preserve placement, security
   });
   assert.equal(JSON.stringify(trusted.volumes).includes("secret"), false);
 
-  assert.equal(sandbox.serviceAccountName, "stage4-cogs-sandbox");
+  assert.equal(sandbox.serviceAccountName, "cogs-sandbox-inert");
+  assert.notEqual(sandbox.serviceAccountName, trusted.serviceAccountName);
   assert.equal(sandbox.automountServiceAccountToken, false);
   assert.equal(sandbox.enableServiceLinks, false);
   assert.equal(sandbox.activeDeadlineSeconds, 28800);

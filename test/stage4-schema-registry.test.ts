@@ -129,6 +129,12 @@ function policyProbeSample(): JsonObject {
   ) as JsonObject;
 }
 
+function policyPayloadSample(): JsonObject {
+  return JSON.parse(
+    readFileSync(resolve(import.meta.dirname, "fixtures/stage4-policy/valid-audit-wal-record-v1.json"), "utf8"),
+  ) as JsonObject;
+}
+
 function teardownVerdictSample(): JsonObject {
   return {
     version: TEARDOWN_CONTRACT.verdictVersion,
@@ -175,6 +181,7 @@ const STAGE4_SCHEMA_REGISTRY = [
   { file: "stage4-nic-sandbox-node-group-contract-v1.json", sample: nicContractSample },
   { file: "stage4-nic-sandbox-node-group-verdict-v1.json", sample: nicVerdictSample },
   { file: "stage4-policy-contract-v1.json", sample: policyContractSample },
+  { file: "stage4-policy-payload-v1.json", sample: policyPayloadSample },
   { file: "stage4-policy-probe-suite-v1.json", sample: policyProbeSample },
   { file: "stage4-static-preparation-evidence-v1.json", sample: staticSample },
   { file: "stage4-teardown-plan-v1.json", sample: teardownPlanSample },
@@ -208,6 +215,7 @@ test("the bounded Stage 4 registry compiles its strict positive samples", () => 
       "stage4-nic-sandbox-node-group-contract-v1.json",
       "stage4-nic-sandbox-node-group-verdict-v1.json",
       "stage4-policy-contract-v1.json",
+      "stage4-policy-payload-v1.json",
       "stage4-policy-probe-suite-v1.json",
       "stage4-static-preparation-evidence-v1.json",
       "stage4-teardown-plan-v1.json",

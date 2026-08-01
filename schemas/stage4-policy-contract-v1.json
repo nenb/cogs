@@ -75,23 +75,19 @@
             "pod_selector",
             "automount_service_account_token",
             "projected_service_account_tokens",
-            "kubernetes_workload_identity",
             "kubernetes_api_credential",
             "openbao_identity",
-            "openbao_handles",
-            "cloud_identity"
+            "openbao_handles"
           ],
           "properties": {
-            "service_account": { "$ref": "#/$defs/dnsSubdomain" },
+            "service_account": { "const": "cogs-sandbox-inert" },
             "service_account_binding": { "const": "inert-no-rbac-no-token" },
             "pod_selector": { "$ref": "#/$defs/selector" },
             "automount_service_account_token": { "const": false },
             "projected_service_account_tokens": { "const": false },
-            "kubernetes_workload_identity": { "const": false },
             "kubernetes_api_credential": { "const": false },
             "openbao_identity": { "const": false },
-            "openbao_handles": { "const": false },
-            "cloud_identity": { "const": false }
+            "openbao_handles": { "const": false }
           }
         }
       }
@@ -140,9 +136,9 @@
               "purpose": { "enum": ["model-api-key", "integration-credential"] },
               "handle": {
                 "type": "string",
-                "minLength": 5,
+                "minLength": 7,
                 "maxLength": 512,
-                "pattern": "^(?:users|organizations)(?:/[A-Za-z0-9][A-Za-z0-9._:-]{0,127}){2,7}$"
+                "pattern": "^users(?:/[A-Za-z0-9][A-Za-z0-9._:-]{0,127}){3,7}$"
               }
             }
           }
@@ -180,6 +176,12 @@
             "materialization",
             "audience",
             "session_id",
+            "instance_id",
+            "worker_pod_id",
+            "capability_id",
+            "generation",
+            "issued_at_ms",
+            "expires_at_ms",
             "lifetime_seconds",
             "entropy_bits",
             "value_exposed_to_sandbox",
@@ -192,6 +194,12 @@
             "materialization": { "const": "immutable-session-tmpfs" },
             "audience": { "$ref": "#/$defs/audience" },
             "session_id": { "$ref": "#/$defs/opaqueId" },
+            "instance_id": { "$ref": "#/$defs/labelValue" },
+            "worker_pod_id": { "$ref": "#/$defs/opaqueId" },
+            "capability_id": { "$ref": "#/$defs/opaqueId" },
+            "generation": { "type": "integer", "minimum": 1, "maximum": 1000000 },
+            "issued_at_ms": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+            "expires_at_ms": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
             "lifetime_seconds": { "type": "integer", "minimum": 60, "maximum": 28800 },
             "entropy_bits": { "type": "integer", "minimum": 256, "maximum": 512 },
             "value_exposed_to_sandbox": { "const": true },
@@ -199,10 +207,12 @@
             "source_binding": {
               "type": "object",
               "additionalProperties": false,
-              "required": ["mode", "session_id", "sandbox_selector"],
+              "required": ["mode", "session_id", "instance_id", "sandbox_pod_id", "sandbox_selector"],
               "properties": {
-                "mode": { "const": "exact-session-and-sandbox-selector" },
+                "mode": { "const": "exact-session-instance-pod-and-sandbox-selector" },
                 "session_id": { "$ref": "#/$defs/opaqueId" },
+                "instance_id": { "$ref": "#/$defs/labelValue" },
+                "sandbox_pod_id": { "$ref": "#/$defs/opaqueId" },
                 "sandbox_selector": { "$ref": "#/$defs/selector" }
               }
             },
@@ -230,6 +240,7 @@
             "signals",
             "transition_order",
             "old_capability_after_replacement",
+            "replacement_identity",
             "source_unavailable",
             "direct_egress_fallback"
           ],
@@ -261,6 +272,22 @@
               "items": false
             },
             "old_capability_after_replacement": { "const": "invalid" },
+            "replacement_identity": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "previous_capability_id",
+                "replacement_capability_id",
+                "replacement_generation",
+                "replacement_worker_pod_id"
+              ],
+              "properties": {
+                "previous_capability_id": { "$ref": "#/$defs/opaqueId" },
+                "replacement_capability_id": { "$ref": "#/$defs/opaqueId" },
+                "replacement_generation": { "type": "integer", "minimum": 2, "maximum": 1000000 },
+                "replacement_worker_pod_id": { "$ref": "#/$defs/opaqueId" }
+              }
+            },
             "source_unavailable": { "const": "deny-new-drain-replace" },
             "direct_egress_fallback": { "const": false }
           }
@@ -364,6 +391,7 @@
         "payload",
         "allowed_classes",
         "forbidden_classes",
+        "record_contract",
         "queue_capacity",
         "batch_size",
         "timeout_ms",
@@ -377,10 +405,9 @@
         "payload": { "const": "metadata-only" },
         "allowed_classes": {
           "type": "array",
-          "minItems": 5,
-          "maxItems": 5,
+          "minItems": 4,
+          "maxItems": 4,
           "prefixItems": [
-            { "const": "opaque-identifiers" },
             { "const": "bounded-enums" },
             { "const": "counts-and-buckets" },
             { "const": "durations-and-status-classes" },
@@ -388,19 +415,46 @@
           ],
           "items": false
         },
-        "forbidden_classes": {
-          "type": "array",
-          "minItems": 6,
-          "maxItems": 6,
-          "prefixItems": [
-            { "const": "prompts-or-model-output" },
-            { "const": "source-or-tool-output" },
-            { "const": "complete-commands-or-arbitrary-paths" },
-            { "const": "http-query-or-body" },
-            { "const": "credentials-placeholders-or-handles" },
-            { "const": "raw-kubernetes-or-cloud-identifiers" }
+        "forbidden_classes": { "$ref": "#/$defs/forbiddenSensitiveClasses" },
+        "record_contract": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "version",
+            "allowed_fields",
+            "max_attributes",
+            "max_name_cardinality",
+            "max_enum_cardinality",
+            "max_string_bytes",
+            "max_integer"
           ],
-          "items": false
+          "properties": {
+            "version": { "const": "cogs.stage4-otlp-record/v1" },
+            "allowed_fields": {
+              "type": "array",
+              "minItems": 11,
+              "maxItems": 11,
+              "prefixItems": [
+                { "const": "event" },
+                { "const": "outcome" },
+                { "const": "operation" },
+                { "const": "method" },
+                { "const": "credential_required" },
+                { "const": "status_class" },
+                { "const": "duration_ms" },
+                { "const": "count" },
+                { "const": "bytes_bucket" },
+                { "const": "queue_depth" },
+                { "const": "export_lag_ms" }
+              ],
+              "items": false
+            },
+            "max_attributes": { "const": 11 },
+            "max_name_cardinality": { "const": 32 },
+            "max_enum_cardinality": { "const": 16 },
+            "max_string_bytes": { "const": 64 },
+            "max_integer": { "const": 9007199254740991 }
+          }
         },
         "queue_capacity": { "type": "integer", "minimum": 1, "maximum": 1024 },
         "batch_size": { "type": "integer", "minimum": 1, "maximum": 128 },
@@ -421,6 +475,7 @@
         "max_bytes",
         "max_records",
         "max_record_bytes",
+        "record_contract",
         "append_before_credential_use",
         "sync_before_credential_use",
         "failure_states",
@@ -436,6 +491,34 @@
         "max_bytes": { "type": "integer", "minimum": 1024, "maximum": 1048576 },
         "max_records": { "type": "integer", "minimum": 1, "maximum": 10000 },
         "max_record_bytes": { "type": "integer", "minimum": 256, "maximum": 4096 },
+        "record_contract": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["version", "allowed_fields", "forbidden_classes", "max_string_bytes", "max_integer"],
+          "properties": {
+            "version": { "const": "cogs.stage4-audit-wal-record/v1" },
+            "allowed_fields": {
+              "type": "array",
+              "minItems": 9,
+              "maxItems": 9,
+              "prefixItems": [
+                { "const": "version" },
+                { "const": "sequence" },
+                { "const": "intent_id" },
+                { "const": "timestamp_ms" },
+                { "const": "session_ref_sha256" },
+                { "const": "integration_id" },
+                { "const": "route_id" },
+                { "const": "method" },
+                { "const": "credential_required" }
+              ],
+              "items": false
+            },
+            "forbidden_classes": { "$ref": "#/$defs/forbiddenSensitiveClasses" },
+            "max_string_bytes": { "const": 128 },
+            "max_integer": { "const": 9007199254740991 }
+          }
+        },
         "append_before_credential_use": { "const": true },
         "sync_before_credential_use": { "const": true },
         "failure_states": {
@@ -461,6 +544,29 @@
     }
   },
   "$defs": {
+    "forbiddenSensitiveClasses": {
+      "type": "array",
+      "minItems": 15,
+      "maxItems": 15,
+      "prefixItems": [
+        { "const": "http-query" },
+        { "const": "http-body" },
+        { "const": "credential" },
+        { "const": "placeholder" },
+        { "const": "secret-handle" },
+        { "const": "source-content" },
+        { "const": "prompt" },
+        { "const": "model-or-tool-output" },
+        { "const": "complete-command" },
+        { "const": "arbitrary-path" },
+        { "const": "raw-user-identity" },
+        { "const": "raw-session-identity" },
+        { "const": "cloud-identity" },
+        { "const": "kubernetes-identity" },
+        { "const": "openbao-identity" }
+      ],
+      "items": false
+    },
     "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
     "opaqueId": {
       "type": "string",

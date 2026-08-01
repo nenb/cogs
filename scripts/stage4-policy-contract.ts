@@ -6,14 +6,57 @@ const require = createRequire(import.meta.url);
 const Ajv2020 = require("ajv/dist/2020.js") as new (options?: Options) => AjvCore;
 const contractSchema = require("../schemas/stage4-policy-contract-v1.json") as object;
 const probeSchema = require("../schemas/stage4-policy-probe-suite-v1.json") as object;
+const payloadSchema = require("../schemas/stage4-policy-payload-v1.json") as object;
 const ajv = new Ajv2020({ allErrors: true, strict: true, strictRequired: false });
 const validateContractSchema = ajv.compile(contractSchema) as ValidateFunction<Stage4PolicyContract>;
 const validateProbeSuiteSchema = ajv.compile(probeSchema) as ValidateFunction<Stage4PolicyProbeSuite>;
+const validateProbeSchema = ajv.compile({
+  $ref: "https://cogs.dev/schemas/stage4-policy-probe-suite-v1.json#/$defs/probe",
+}) as ValidateFunction<Stage4PolicyProbe>;
+const validatePayloadSchema = ajv.compile(payloadSchema) as ValidateFunction<Stage4PolicyPayload>;
 
 const CONTRACT_DOMAIN = "cogs.stage4/static-policy-contract-semantic-binding/v1";
 const OPAQUE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
 const MAX_SNAPSHOT_NODES = 4096;
 const MAX_SNAPSHOT_DEPTH = 16;
+
+export const REQUIRED_STAGE4_POLICY_PROBE_IDS = Object.freeze([
+  "allow.assigned-proxy.ipv4",
+  "allow.assigned-proxy.ipv6",
+  "deny.selector.empty",
+  "deny.selector.trusted-role",
+  "deny.selector.proxy-role-confusion",
+  "deny.assigned-proxy.service-confusion",
+  "deny.source.cross-session",
+  "deny.source.instance-confusion",
+  "deny.source.pod-confusion",
+  "deny.capability.missing",
+  "deny.capability.revoked",
+  "deny.capability.replaced",
+  "deny.capability.expired",
+  "deny.capability.id-confusion",
+  "deny.capability.generation-confusion",
+  "deny.capability.cross-session",
+  "deny.destination.cross-session-proxy",
+  "deny.destination.cross-session-workload",
+  "deny.udp.ipv4",
+  "deny.udp.ipv6",
+  "deny.quic.udp443",
+  "deny.dns.arbitrary",
+  "deny.dns.over-https",
+  "deny.direct-host.ipv4",
+  "deny.direct-host.ipv6",
+  "deny.direct-ip.ipv4",
+  "deny.direct-ip.ipv6",
+  "deny.alternate-proxy-port",
+  "deny.metadata.ipv4",
+  "deny.metadata.ipv6",
+  "deny.kubernetes-api",
+  "deny.worker-api",
+  "deny.proxy-admin",
+  "deny.openbao",
+  "deny.broad-policy-peer",
+] as const);
 
 export const STAGE4_POLICY_TRANSITIONS = deepFreeze({
   identity: [
@@ -61,9 +104,15 @@ export type Stage4PolicyReasonCode = (typeof STAGE4_POLICY_REASON_CODES)[number]
 export type Stage4PolicyProbeReason =
   | "assigned-proxy-only"
   | "source-session-mismatch"
+  | "source-instance-mismatch"
+  | "source-pod-mismatch"
   | "selector-confusion"
   | "capability-missing"
   | "capability-revoked"
+  | "capability-replaced"
+  | "capability-expired"
+  | "capability-id-mismatch"
+  | "capability-generation-mismatch"
   | "capability-session-mismatch"
   | "udp-quic-denied"
   | "dns-resolver-denied"
@@ -106,7 +155,27 @@ export type Stage4PolicyContract = Readonly<{
     capability: Readonly<{
       audience: string;
       session_id: string;
-      source_binding: Readonly<{ session_id: string; sandbox_selector: Selector }>;
+      instance_id: string;
+      worker_pod_id: string;
+      capability_id: string;
+      generation: number;
+      issued_at_ms: number;
+      expires_at_ms: number;
+      lifetime_seconds: number;
+      source_binding: Readonly<{
+        session_id: string;
+        instance_id: string;
+        sandbox_pod_id: string;
+        sandbox_selector: Selector;
+      }>;
+    }>;
+    revocation: Readonly<{
+      replacement_identity: Readonly<{
+        previous_capability_id: string;
+        replacement_capability_id: string;
+        replacement_generation: number;
+        replacement_worker_pod_id: string;
+      }>;
     }>;
   }>;
   network: Readonly<{ address_families: readonly ["IPv4", "IPv6"] }>;
@@ -144,7 +213,10 @@ type ProbeDestinationClass =
 
 export type Stage4PolicyProbe = Readonly<{
   id: string;
+  observed_at_ms: number;
   source_session_id: string;
+  source_instance_id: string;
+  source_pod_id: string;
   source_selector: Selector;
   transport: "tcp" | "udp" | "quic" | "dns" | "doh";
   address_family: "IPv4" | "IPv6";
@@ -154,15 +226,38 @@ export type Stage4PolicyProbe = Readonly<{
     service_name: string | null;
     port: number;
   }>;
-  capability: Readonly<{ state: "active" | "revoked" | "missing"; session_id: string | null }>;
-  expected: Readonly<{ allow: boolean; reason: string }>;
+  capability: Readonly<{
+    state: "active" | "revoked" | "missing" | "replaced" | "expired";
+    session_id: string | null;
+    capability_id: string | null;
+    generation: number | null;
+    expires_at_ms: number | null;
+    replacement_capability_id: string | null;
+  }>;
+  expected: Readonly<{ allow: boolean; reason: Stage4PolicyProbeReason }>;
 }>;
 
 export type Stage4PolicyProbeSuite = Readonly<{
   version: "cogs.stage4-policy-probe-suite/v1";
   authority: "static-only-stage4-policy";
   qualification: "pending-exact-eks-cni-runtime";
+  contract_sha256: string;
   probes: readonly Stage4PolicyProbe[];
+}>;
+
+export type Stage4PolicyPayload = Readonly<Record<string, unknown>>;
+
+export type Stage4PolicyPayloadDecision = Readonly<{
+  version: "cogs.stage4-policy-payload-decision/v1";
+  authority: "static-only-stage4-policy";
+  qualification: "pending-exact-eks-cni-runtime";
+  valid: boolean;
+  record_kind: "audit-wal" | "otlp" | null;
+  reason: "payload-valid" | "payload-invalid" | "payload-too-large" | "contract-invalid";
+  cloud_execution_observed: false;
+  cni_runtime_qualified: false;
+  stage4_exit_satisfied: false;
+  release_eligible: false;
 }>;
 
 export type Stage4PolicyProbeDecision = Readonly<{
@@ -200,7 +295,9 @@ export function validateStage4PolicyContract(input: unknown): Stage4PolicyContra
     trusted.namespace !== snapshot.openbao.bound_namespace ||
     trusted.service_account !== snapshot.openbao.bound_service_account ||
     snapshot.openbao.bound_audiences.length !== 1 ||
-    snapshot.openbao.bound_audiences[0] !== trusted.openbao_projected_token.audience
+    snapshot.openbao.bound_audiences[0] !== trusted.openbao_projected_token.audience ||
+    sandbox.service_account !== "cogs-sandbox-inert" ||
+    sandbox.service_account === trusted.service_account
   ) {
     reasons.push("STAGE4_POLICY_IDENTITY_BINDING_INVALID");
   }
@@ -220,9 +317,19 @@ export function validateStage4PolicyContract(input: unknown): Stage4PolicyContra
 
   if (
     proxy.capability.session_id !== session.session_id ||
+    proxy.capability.instance_id !== session.instance_id ||
     proxy.capability.source_binding.session_id !== session.session_id ||
+    proxy.capability.source_binding.instance_id !== session.instance_id ||
     !selectorEqual(proxy.capability.source_binding.sandbox_selector, expectedSandbox) ||
-    proxy.capability.audience === trusted.openbao_projected_token.audience
+    proxy.capability.audience === trusted.openbao_projected_token.audience ||
+    proxy.capability.expires_at_ms <= proxy.capability.issued_at_ms ||
+    proxy.capability.expires_at_ms - proxy.capability.issued_at_ms > proxy.capability.lifetime_seconds * 1000 ||
+    proxy.revocation.replacement_identity.replacement_capability_id !== proxy.capability.capability_id ||
+    proxy.revocation.replacement_identity.replacement_generation !== proxy.capability.generation ||
+    proxy.revocation.replacement_identity.replacement_worker_pod_id !== proxy.capability.worker_pod_id ||
+    proxy.capability.worker_pod_id === proxy.capability.source_binding.sandbox_pod_id ||
+    proxy.revocation.replacement_identity.previous_capability_id === proxy.capability.capability_id ||
+    proxy.capability.generation < 2
   ) {
     reasons.push("STAGE4_POLICY_CAPABILITY_BINDING_INVALID");
   }
@@ -244,19 +351,48 @@ export function evaluateStage4PolicyProbe(contractInput: unknown, probeInput: un
   if (!contractVerdictValue.valid) return probeDecision(null, false, "contract-invalid");
   const contract = snapshotJson(contractInput);
   const probe = snapshotJson(probeInput);
-  if (contract === null || probe === null || !validateContractSchema(contract) || !validateProbe(probe)) {
+  if (contract === null || probe === null || !validateContractSchema(contract) || !validateProbeSchema(probe)) {
     return probeDecision(null, false, "probe-invalid");
   }
 
   const id = probe.id;
   const sessionId = contract.session.session_id;
+  const capability = contract.proxy.capability;
+  const replacement = contract.proxy.revocation.replacement_identity;
+  if (!validProbeCapabilityCombination(probe)) return probeDecision(id, false, "probe-invalid");
   if (probe.source_session_id !== sessionId) return probeDecision(id, false, "source-session-mismatch");
+  if (probe.source_instance_id !== contract.session.instance_id) {
+    return probeDecision(id, false, "source-instance-mismatch");
+  }
+  if (probe.source_pod_id !== capability.source_binding.sandbox_pod_id) {
+    return probeDecision(id, false, "source-pod-mismatch");
+  }
   if (!selectorEqual(probe.source_selector, contract.identity.sandbox.pod_selector)) {
     return probeDecision(id, false, "selector-confusion");
   }
   if (probe.capability.state === "missing") return probeDecision(id, false, "capability-missing");
   if (probe.capability.state === "revoked") return probeDecision(id, false, "capability-revoked");
+  if (probe.capability.state === "replaced") {
+    if (
+      probe.capability.capability_id !== replacement.previous_capability_id ||
+      probe.capability.replacement_capability_id !== replacement.replacement_capability_id ||
+      probe.capability.generation !== replacement.replacement_generation - 1
+    ) {
+      return probeDecision(id, false, "probe-invalid");
+    }
+    return probeDecision(id, false, "capability-replaced");
+  }
+  if (probe.capability.state === "expired" || probe.observed_at_ms >= (probe.capability.expires_at_ms ?? 0)) {
+    return probeDecision(id, false, "capability-expired");
+  }
   if (probe.capability.session_id !== sessionId) return probeDecision(id, false, "capability-session-mismatch");
+  if (probe.capability.capability_id !== capability.capability_id) {
+    return probeDecision(id, false, "capability-id-mismatch");
+  }
+  if (probe.capability.generation !== capability.generation) {
+    return probeDecision(id, false, "capability-generation-mismatch");
+  }
+  if (probe.capability.expires_at_ms !== capability.expires_at_ms) return probeDecision(id, false, "probe-invalid");
   if (
     probe.destination.class === "other-session-proxy" ||
     probe.destination.class === "other-session-workload" ||
@@ -285,25 +421,378 @@ export function evaluateStage4PolicyProbe(contractInput: unknown, probeInput: un
   return probeDecision(id, false, "protected-surface-denied");
 }
 
-export function validateStage4PolicyProbeSuite(input: unknown): input is Stage4PolicyProbeSuite {
-  const snapshot = snapshotJson(input);
-  return snapshot !== null && validateProbeSuiteSchema(snapshot);
-}
-
-function validateProbe(input: unknown): input is Stage4PolicyProbe {
-  const suite = {
+export function buildStage4PolicyProbeSuite(contractInput: unknown): Stage4PolicyProbeSuite | null {
+  const contract = snapshotJson(contractInput);
+  if (contract === null || !validateContractSchema(contract) || !validateStage4PolicyContract(contract).valid)
+    return null;
+  return deepFreeze({
     version: "cogs.stage4-policy-probe-suite/v1",
     authority: "static-only-stage4-policy",
     qualification: "pending-exact-eks-cni-runtime",
-    probes: [input],
+    contract_sha256: semanticDigest(contract),
+    probes: requiredProbeSpecs(contract),
+  });
+}
+
+export function validateStage4PolicyProbeSuite(
+  contractInput: unknown,
+  input: unknown,
+): input is Stage4PolicyProbeSuite {
+  const expected = buildStage4PolicyProbeSuite(contractInput);
+  const snapshot = snapshotJson(input);
+  if (expected === null || snapshot === null || !validateProbeSuiteSchema(snapshot)) return false;
+  if (snapshot.contract_sha256 !== expected.contract_sha256) return false;
+  return snapshot.probes.every((probe, index) => canonicalJson(probe) === canonicalJson(expected.probes[index]));
+}
+
+type DeepMutable<T> = { -readonly [Key in keyof T]: T[Key] extends object ? DeepMutable<T[Key]> : T[Key] };
+
+function requiredProbeSpecs(contract: Stage4PolicyContract): readonly Stage4PolicyProbe[] {
+  const capability = contract.proxy.capability;
+  const replacement = contract.proxy.revocation.replacement_identity;
+  const base: DeepMutable<Stage4PolicyProbe> = {
+    id: "allow.assigned-proxy.ipv4",
+    observed_at_ms: capability.issued_at_ms + 1,
+    source_session_id: contract.session.session_id,
+    source_instance_id: contract.session.instance_id,
+    source_pod_id: capability.source_binding.sandbox_pod_id,
+    source_selector: { ...contract.identity.sandbox.pod_selector },
+    transport: "tcp",
+    address_family: "IPv4",
+    destination: {
+      class: "assigned-proxy",
+      session_id: contract.session.session_id,
+      service_name: contract.proxy.service_name,
+      port: contract.proxy.listener_port,
+    },
+    capability: {
+      state: "active",
+      session_id: contract.session.session_id,
+      capability_id: capability.capability_id,
+      generation: capability.generation,
+      expires_at_ms: capability.expires_at_ms,
+      replacement_capability_id: null,
+    },
+    expected: { allow: true, reason: "assigned-proxy-only" },
   };
-  // The suite schema intentionally requires the committed broad inventory. Use
-  // the compiled item validator through a bounded synthetic inventory.
-  const repeated = Array.from({ length: 20 }, (_, index) => ({
-    ...(input as Record<string, unknown>),
-    id: `probe-${index}`,
-  }));
-  return validateProbeSuiteSchema({ ...suite, probes: repeated });
+  const probes: Stage4PolicyProbe[] = [];
+  const add = (
+    id: (typeof REQUIRED_STAGE4_POLICY_PROBE_IDS)[number],
+    update: (probe: DeepMutable<Stage4PolicyProbe>) => void,
+    allow: boolean,
+    reason: Stage4PolicyProbeReason,
+  ): void => {
+    const probe = structuredClone(base);
+    probe.id = id;
+    update(probe);
+    probe.expected = { allow, reason };
+    probes.push(deepFreeze(probe));
+  };
+  const none = (): void => undefined;
+  const destination =
+    (kind: ProbeDestinationClass, port: number, sessionId: string | null = null, serviceName: string | null = null) =>
+    (probe: DeepMutable<Stage4PolicyProbe>): void => {
+      probe.destination = { class: kind, session_id: sessionId, service_name: serviceName, port };
+    };
+
+  add("allow.assigned-proxy.ipv4", none, true, "assigned-proxy-only");
+  add("allow.assigned-proxy.ipv6", (probe) => (probe.address_family = "IPv6"), true, "assigned-proxy-only");
+  add("deny.selector.empty", (probe) => (probe.source_selector = {}), false, "selector-confusion");
+  add(
+    "deny.selector.trusted-role",
+    (probe) => (probe.source_selector["dev.cogs/role"] = "trusted"),
+    false,
+    "selector-confusion",
+  );
+  add(
+    "deny.selector.proxy-role-confusion",
+    (probe) => (probe.source_selector["dev.cogs/proxy"] = "true"),
+    false,
+    "selector-confusion",
+  );
+  add(
+    "deny.assigned-proxy.service-confusion",
+    (probe) => (probe.destination.service_name = "cogs-proxy-other"),
+    false,
+    "proxy-service-mismatch",
+  );
+  add(
+    "deny.source.cross-session",
+    (probe) => (probe.source_session_id = "session-other"),
+    false,
+    "source-session-mismatch",
+  );
+  add(
+    "deny.source.instance-confusion",
+    (probe) => (probe.source_instance_id = "cogs-other"),
+    false,
+    "source-instance-mismatch",
+  );
+  add(
+    "deny.source.pod-confusion",
+    (probe) => (probe.source_pod_id = "sandbox-pod-other"),
+    false,
+    "source-pod-mismatch",
+  );
+  add(
+    "deny.capability.missing",
+    (probe) => (probe.capability = missingCapability("missing")),
+    false,
+    "capability-missing",
+  );
+  add("deny.capability.revoked", (probe) => (probe.capability.state = "revoked"), false, "capability-revoked");
+  add(
+    "deny.capability.replaced",
+    (probe) => {
+      probe.capability = {
+        state: "replaced",
+        session_id: contract.session.session_id,
+        capability_id: replacement.previous_capability_id,
+        generation: replacement.replacement_generation - 1,
+        expires_at_ms: capability.expires_at_ms,
+        replacement_capability_id: replacement.replacement_capability_id,
+      };
+    },
+    false,
+    "capability-replaced",
+  );
+  add(
+    "deny.capability.expired",
+    (probe) => {
+      probe.observed_at_ms = capability.expires_at_ms;
+      probe.capability.state = "expired";
+    },
+    false,
+    "capability-expired",
+  );
+  add(
+    "deny.capability.id-confusion",
+    (probe) => (probe.capability.capability_id = "capability-forged"),
+    false,
+    "capability-id-mismatch",
+  );
+  add(
+    "deny.capability.generation-confusion",
+    (probe) => (probe.capability.generation = capability.generation + 1),
+    false,
+    "capability-generation-mismatch",
+  );
+  add(
+    "deny.capability.cross-session",
+    (probe) => (probe.capability.session_id = "session-other"),
+    false,
+    "capability-session-mismatch",
+  );
+  add(
+    "deny.destination.cross-session-proxy",
+    destination("other-session-proxy", contract.proxy.listener_port, "session-other", "cogs-proxy-other"),
+    false,
+    "cross-session-denied",
+  );
+  add(
+    "deny.destination.cross-session-workload",
+    destination("other-session-workload", 22, "session-other"),
+    false,
+    "cross-session-denied",
+  );
+  add(
+    "deny.udp.ipv4",
+    (probe) => {
+      probe.transport = "udp";
+      destination("direct-host", 9999)(probe);
+    },
+    false,
+    "udp-quic-denied",
+  );
+  add(
+    "deny.udp.ipv6",
+    (probe) => {
+      probe.transport = "udp";
+      probe.address_family = "IPv6";
+      destination("direct-host", 9999)(probe);
+    },
+    false,
+    "udp-quic-denied",
+  );
+  add(
+    "deny.quic.udp443",
+    (probe) => {
+      probe.transport = "quic";
+      destination("direct-host", 443)(probe);
+    },
+    false,
+    "udp-quic-denied",
+  );
+  add(
+    "deny.dns.arbitrary",
+    (probe) => {
+      probe.transport = "dns";
+      destination("resolver", 53)(probe);
+    },
+    false,
+    "dns-resolver-denied",
+  );
+  add(
+    "deny.dns.over-https",
+    (probe) => {
+      probe.transport = "doh";
+      destination("direct-host", 443)(probe);
+    },
+    false,
+    "dns-resolver-denied",
+  );
+  add("deny.direct-host.ipv4", destination("direct-host", 443), false, "direct-egress-denied");
+  add(
+    "deny.direct-host.ipv6",
+    (probe) => {
+      probe.address_family = "IPv6";
+      destination("direct-host", 443)(probe);
+    },
+    false,
+    "direct-egress-denied",
+  );
+  add("deny.direct-ip.ipv4", destination("direct-ip", 443), false, "direct-egress-denied");
+  add(
+    "deny.direct-ip.ipv6",
+    (probe) => {
+      probe.address_family = "IPv6";
+      destination("direct-ip", 443)(probe);
+    },
+    false,
+    "direct-egress-denied",
+  );
+  add(
+    "deny.alternate-proxy-port",
+    (probe) => (probe.destination.port = contract.proxy.listener_port + 1),
+    false,
+    "alternate-port-denied",
+  );
+  add("deny.metadata.ipv4", destination("cloud-metadata", 80), false, "protected-surface-denied");
+  add(
+    "deny.metadata.ipv6",
+    (probe) => {
+      probe.address_family = "IPv6";
+      destination("cloud-metadata", 80)(probe);
+    },
+    false,
+    "protected-surface-denied",
+  );
+  add("deny.kubernetes-api", destination("kubernetes-api", 443), false, "protected-surface-denied");
+  add(
+    "deny.worker-api",
+    destination("worker-api", 8080, contract.session.session_id),
+    false,
+    "protected-surface-denied",
+  );
+  add(
+    "deny.proxy-admin",
+    destination("proxy-admin", 9901, contract.session.session_id),
+    false,
+    "protected-surface-denied",
+  );
+  add("deny.openbao", destination("openbao", 8200), false, "protected-surface-denied");
+  add("deny.broad-policy-peer", destination("broad-policy-peer", 443), false, "broad-policy-denied");
+  return Object.freeze(probes);
+}
+
+function missingCapability(state: "missing"): DeepMutable<Stage4PolicyProbe["capability"]> {
+  return {
+    state,
+    session_id: null,
+    capability_id: null,
+    generation: null,
+    expires_at_ms: null,
+    replacement_capability_id: null,
+  };
+}
+
+function validProbeCapabilityCombination(probe: Stage4PolicyProbe): boolean {
+  const value = probe.capability;
+  if (value.state === "missing") {
+    return (
+      value.session_id === null &&
+      value.capability_id === null &&
+      value.generation === null &&
+      value.expires_at_ms === null &&
+      value.replacement_capability_id === null
+    );
+  }
+  if (value.state === "replaced") {
+    return (
+      value.session_id !== null &&
+      value.capability_id !== null &&
+      value.generation !== null &&
+      value.expires_at_ms !== null &&
+      value.replacement_capability_id !== null
+    );
+  }
+  return (
+    value.session_id !== null &&
+    value.capability_id !== null &&
+    value.generation !== null &&
+    value.expires_at_ms !== null &&
+    value.replacement_capability_id === null
+  );
+}
+
+export function validateStage4PolicyPayload(
+  contractInput: unknown,
+  payloadInput: unknown,
+): Stage4PolicyPayloadDecision {
+  if (!validateStage4PolicyContract(contractInput).valid) return payloadDecision(false, null, "contract-invalid");
+  const contract = snapshotJson(contractInput);
+  const payload = snapshotJson(payloadInput);
+  if (contract === null || payload === null || !validateContractSchema(contract) || !validatePayloadSchema(payload)) {
+    return payloadDecision(false, null, "payload-invalid");
+  }
+  if (containsRawIdentity(contract, payload)) return payloadDecision(false, null, "payload-invalid");
+  if (payload.version === "cogs.stage4-audit-wal-record/v1") {
+    const bytes = new TextEncoder().encode(`${canonicalJson(payload)}\n`).byteLength;
+    if (bytes > contract.audit_wal.max_record_bytes) return payloadDecision(false, "audit-wal", "payload-too-large");
+    return payloadDecision(true, "audit-wal", "payload-valid");
+  }
+  if (payload.version === "cogs.stage4-otlp-record/v1") return payloadDecision(true, "otlp", "payload-valid");
+  return payloadDecision(false, null, "payload-invalid");
+}
+
+function containsRawIdentity(contract: Stage4PolicyContract, payload: Stage4PolicyPayload): boolean {
+  const forbidden = new Set<string>([
+    contract.session.user_id,
+    contract.session.session_id,
+    contract.session.instance_id,
+    contract.identity.trusted_worker.service_account,
+    contract.identity.sandbox.service_account,
+    contract.proxy.capability.worker_pod_id,
+    contract.proxy.capability.source_binding.sandbox_pod_id,
+    contract.proxy.capability.capability_id,
+    contract.proxy.revocation.replacement_identity.previous_capability_id,
+  ]);
+  const pending: unknown[] = [payload];
+  while (pending.length > 0) {
+    const value = pending.pop();
+    if (typeof value === "string" && forbidden.has(value)) return true;
+    if (value !== null && typeof value === "object") pending.push(...Object.values(value));
+  }
+  return false;
+}
+
+function payloadDecision(
+  valid: boolean,
+  recordKind: "audit-wal" | "otlp" | null,
+  reason: Stage4PolicyPayloadDecision["reason"],
+): Stage4PolicyPayloadDecision {
+  return Object.freeze({
+    version: "cogs.stage4-policy-payload-decision/v1",
+    authority: "static-only-stage4-policy",
+    qualification: "pending-exact-eks-cni-runtime",
+    valid,
+    record_kind: recordKind,
+    reason,
+    cloud_execution_observed: false,
+    cni_runtime_qualified: false,
+    stage4_exit_satisfied: false,
+    release_eligible: false,
+  });
 }
 
 function contractVerdict(
@@ -359,8 +848,7 @@ function validExactHandles(handles: readonly ExactHandle[], userId: string): boo
     seen.add(row.handle);
     const parts = row.handle.split("/");
     if (parts.some((part) => !OPAQUE.test(part) || part === "." || part === "..")) return false;
-    if (parts[0] === "users" && parts[1] !== userId) return false;
-    if (parts[0] !== "users" && parts[0] !== "organizations") return false;
+    if (parts[0] !== "users" || parts[1] !== userId) return false;
     const expectedClass = row.purpose === "model-api-key" ? "models" : "integrations";
     if (parts[2] !== expectedClass) return false;
   }

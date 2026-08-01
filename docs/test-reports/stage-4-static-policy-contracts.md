@@ -15,13 +15,15 @@ This report records local contract and fixture coverage only. It is not EKS, CNI
 `schemas/stage4-policy-contract-v1.json` and the pure validator in `scripts/stage4-policy-contract.ts` define:
 
 1. one trusted-worker service account with an audience-bound, short-lived projected token used only for OpenBao login;
-2. exact OpenBao namespace, service-account, audience, KV-handle, metadata-handle, and PKI-role bounds, with no list/write/delete or broad path grant;
-3. an inert sandbox service-account binding with no RBAC, projected token, Kubernetes workload/API credential, OpenBao identity/handle, or cloud identity;
-4. a trusted-worker-generated proxy capability bound to one session and the exact sandbox selector, immutable route-policy digest, old-capability invalidation, and `deny-new → drain-connections → request-replacement` revocation;
+2. exact current-user-only OpenBao namespace, service-account, audience, KV-handle, metadata-handle, and PKI-role bounds, with `organizations/*`, list/write/delete, and broad path grants forbidden;
+3. exact sandbox account `cogs-sandbox-inert`, proven distinct from the trusted worker, with no RBAC, projected token, workload/cloud identity field, Kubernetes API credential, or OpenBao identity/handle;
+4. a trusted-worker-generated proxy capability bound to one session, instance, worker pod, sandbox pod, exact sandbox selector, immutable route-policy digest, capability ID/generation/issued-at/expiry, and explicit previous→replacement identity; revocation is `deny-new → drain-connections → request-replacement` and the old capability is invalid;
 5. no direct-egress fallback;
 6. dual-stack default-deny intent, UDP/QUIC denial, disabled guest DNS, exact selector requirements, and explicit protected-surface inventory;
-7. metadata-only bounded OTLP where outage drops metadata with counters and does not authorize credential use; and
-8. a 1 MiB / 10,000-record / 4 KiB-record trusted audit WAL whose append and sync precede credential use and whose unavailable, unwritable, full, append, sync, or correlation failure denies credentialed egress and requires recycle.
+7. metadata-only bounded OTLP with a closed 11-field attribute vocabulary, fixed name/enum cardinality, and field-specific value limits; outage drops metadata with counters and does not authorize credential use; and
+8. a 1 MiB / 10,000-record / 4 KiB-record trusted audit WAL with one closed nine-field record. It uses a digest-bound session reference rather than raw user/session identity. Append and sync precede credential use; unavailable, unwritable, full, append, sync, or correlation failure denies credentialed egress and requires recycle.
+
+Both payload contracts explicitly forbid query, body, credential, placeholder, secret handle, source, prompt, model/tool output, command, arbitrary path, raw user/session identity, cloud identity, Kubernetes identity, and OpenBao identity fields. `validateStage4PolicyPayload()` safely snapshots and validates records without I/O or sensitive diagnostics.
 
 The Helm NOTES-only source shapes expose these contract labels and use the same 1 MiB WAL maximum. Helm still submits zero Kubernetes manifests.
 
@@ -54,14 +56,14 @@ ordinary OTLP:
 `test/fixtures/stage4-policy/hostile-probes-v1.json` contains static expected-policy probes for:
 
 - empty, wrong-role, and proxy/sandbox selector confusion;
-- IPv4 and IPv6 assigned-proxy policy plus direct-IP denial on both families;
-- UDP, QUIC/HTTP/3, arbitrary DNS, and DNS-over-HTTPS denial;
+- IPv4 and IPv6 assigned-proxy policy plus direct-host and direct-IP denial on both families;
+- UDP, QUIC/HTTP/3, arbitrary DNS/resolver, and DNS-over-HTTPS denial;
 - cloud metadata, Kubernetes API, worker API, proxy admin, and OpenBao denial;
-- missing, revoked, and other-session proxy capabilities;
-- other-session proxy/workload denial; and
+- missing, revoked, replaced, expired, wrong-ID, wrong-generation, and other-session proxy capabilities;
+- instance, source-pod, service, other-session proxy, and other-session workload confusion; and
 - broad-policy and alternate-port denial.
 
-The pure evaluator permits only TCP to the assigned proxy listener with the exact sandbox selector and active same-session capability. Its `allow` is a static expected-policy result, not an observation that CNI or runtime enforcement occurred.
+The probe schema fixes every required ID in exact order. `validateStage4PolicyProbeSuite()` additionally requires the exact contract digest, complete unique inventory, exact semantic field combinations, and expected decisions recomputed by the pure evaluator; omissions, duplicates, reordering, substitution, vacuous suites, and dishonest expected results fail. The evaluator permits only TCP to the assigned proxy listener with the exact instance/pod/sandbox selector and active current same-session capability. Its `allow` is a static expected-policy result, not an observation that CNI or runtime enforcement occurred.
 
 ## Remaining mandatory qualification
 

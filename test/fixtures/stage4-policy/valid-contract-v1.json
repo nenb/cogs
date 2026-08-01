@@ -35,11 +35,9 @@
       },
       "automount_service_account_token": false,
       "projected_service_account_tokens": false,
-      "kubernetes_workload_identity": false,
       "kubernetes_api_credential": false,
       "openbao_identity": false,
-      "openbao_handles": false,
-      "cloud_identity": false
+      "openbao_handles": false
     }
   },
   "openbao": {
@@ -85,15 +83,23 @@
       "value_exposed_to_sandbox": true,
       "handle_exposed_to_sandbox": false,
       "source_binding": {
-        "mode": "exact-session-and-sandbox-selector",
+        "mode": "exact-session-instance-pod-and-sandbox-selector",
         "session_id": "session-static-1",
         "sandbox_selector": {
           "app.kubernetes.io/instance": "cogs-static-1",
           "dev.cogs/session": "session-static-1",
           "dev.cogs/role": "sandbox"
-        }
+        },
+        "instance_id": "cogs-static-1",
+        "sandbox_pod_id": "sandbox-pod-static-1"
       },
-      "direct_egress_fallback": false
+      "direct_egress_fallback": false,
+      "instance_id": "cogs-static-1",
+      "worker_pod_id": "worker-pod-static-2",
+      "capability_id": "cap-session-static-1-g2",
+      "generation": 2,
+      "issued_at_ms": 1000,
+      "expires_at_ms": 28801000
     },
     "route_policy": {
       "source": "launch-preset-revision-digests",
@@ -115,7 +121,13 @@
       "transition_order": ["deny-new", "drain-connections", "request-replacement"],
       "old_capability_after_replacement": "invalid",
       "source_unavailable": "deny-new-drain-replace",
-      "direct_egress_fallback": false
+      "direct_egress_fallback": false,
+      "replacement_identity": {
+        "previous_capability_id": "cap-session-static-1-g1",
+        "replacement_capability_id": "cap-session-static-1-g2",
+        "replacement_generation": 2,
+        "replacement_worker_pod_id": "worker-pod-static-2"
+      }
     }
   },
   "network": {
@@ -158,19 +170,27 @@
   "telemetry": {
     "payload": "metadata-only",
     "allowed_classes": [
-      "opaque-identifiers",
       "bounded-enums",
       "counts-and-buckets",
       "durations-and-status-classes",
       "queue-depth-and-export-lag"
     ],
     "forbidden_classes": [
-      "prompts-or-model-output",
-      "source-or-tool-output",
-      "complete-commands-or-arbitrary-paths",
-      "http-query-or-body",
-      "credentials-placeholders-or-handles",
-      "raw-kubernetes-or-cloud-identifiers"
+      "http-query",
+      "http-body",
+      "credential",
+      "placeholder",
+      "secret-handle",
+      "source-content",
+      "prompt",
+      "model-or-tool-output",
+      "complete-command",
+      "arbitrary-path",
+      "raw-user-identity",
+      "raw-session-identity",
+      "cloud-identity",
+      "kubernetes-identity",
+      "openbao-identity"
     ],
     "queue_capacity": 128,
     "batch_size": 32,
@@ -179,7 +199,28 @@
     "max_response_bytes": 8192,
     "on_unavailable": "bounded-buffer-then-drop-with-counters",
     "ordinary_work_continues": true,
-    "credential_authorization_dependency": false
+    "credential_authorization_dependency": false,
+    "record_contract": {
+      "version": "cogs.stage4-otlp-record/v1",
+      "allowed_fields": [
+        "event",
+        "outcome",
+        "operation",
+        "method",
+        "credential_required",
+        "status_class",
+        "duration_ms",
+        "count",
+        "bytes_bucket",
+        "queue_depth",
+        "export_lag_ms"
+      ],
+      "max_attributes": 11,
+      "max_name_cardinality": 32,
+      "max_enum_cardinality": 16,
+      "max_string_bytes": 64,
+      "max_integer": 9007199254740991
+    }
   },
   "audit_wal": {
     "scope": "credential-use-intent",
@@ -194,6 +235,39 @@
     "in_session_recovery": false,
     "otlp_delivery": "asynchronous-bounded-non-authorizing",
     "otlp_failure_allows_ordinary_work": true,
-    "otlp_failure_allows_credential_use_after_durable_intent": true
+    "otlp_failure_allows_credential_use_after_durable_intent": true,
+    "record_contract": {
+      "version": "cogs.stage4-audit-wal-record/v1",
+      "allowed_fields": [
+        "version",
+        "sequence",
+        "intent_id",
+        "timestamp_ms",
+        "session_ref_sha256",
+        "integration_id",
+        "route_id",
+        "method",
+        "credential_required"
+      ],
+      "forbidden_classes": [
+        "http-query",
+        "http-body",
+        "credential",
+        "placeholder",
+        "secret-handle",
+        "source-content",
+        "prompt",
+        "model-or-tool-output",
+        "complete-command",
+        "arbitrary-path",
+        "raw-user-identity",
+        "raw-session-identity",
+        "cloud-identity",
+        "kubernetes-identity",
+        "openbao-identity"
+      ],
+      "max_string_bytes": 128,
+      "max_integer": 9007199254740991
+    }
   }
 }

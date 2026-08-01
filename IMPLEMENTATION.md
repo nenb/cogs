@@ -1031,7 +1031,7 @@ Prepare the EKS/NIC topology locally and statically, then validate it only in se
 
 **Stage 4 cloud gate:** chart, schema, policy, launcher, evidence, and campaign-plan work may run offline before #42 closes. AWS discovery, provider initialization, OpenTofu plan/apply, SSM, EKS creation, Kubernetes access, and external model-provider calls are prohibited until #42 is closed and the owner records a new exact campaign approval.
 
-**Static policy status:** Issue #356 adds strict local-only trusted-worker/OpenBao handle, sandbox no-identity, immutable session/source-bound proxy capability, revocation, no-fallback network, metadata-only OTLP, and bounded fail-closed audit-WAL contracts plus hostile static probes. These contracts remain `pending-exact-eks-cni-runtime`; they are neither rendered enforcement nor Stage 4 evidence. Exact EKS qualification must rerun selector-confusion, dual-stack, UDP/QUIC, DNS/resolver, metadata/API/admin, cross-session, revocation, WAL, and OTLP failure cases with real dependencies.
+**Static policy status:** Issue #356 adds strict local-only trusted-worker/current-user OpenBao handle, exact inert sandbox no-identity, immutable session/instance/pod/ID/generation/expiry-bound proxy capability, replacement/revocation, no-fallback network, closed metadata-only OTLP, and closed bounded fail-closed audit-WAL contracts plus an exact semantically validated hostile static probe inventory. These contracts remain `pending-exact-eks-cni-runtime`; they are neither rendered enforcement nor Stage 4 evidence. Exact EKS qualification must rerun selector-confusion, dual-stack, UDP/QUIC, DNS/resolver, metadata/API/admin, cross-session, revocation, WAL, and OTLP failure cases with real dependencies.
 
 ## 31. AWS environment controls
 

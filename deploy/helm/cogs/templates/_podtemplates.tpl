@@ -162,7 +162,7 @@ template:
       dev.cogs/notice: "guest-uid-0-is-untrusted-vm-root-future-trusted-launcher-material-absent"
       dev.cogs/production-ready: "false"
   spec:
-    serviceAccountName: {{ include "cogs.componentName" (dict "root" . "component" "sandbox") }}
+    serviceAccountName: cogs-sandbox-inert
     automountServiceAccountToken: false
     enableServiceLinks: false
     activeDeadlineSeconds: 28800
