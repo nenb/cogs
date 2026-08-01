@@ -18,6 +18,16 @@ A test whose `dependency_modes` contains `stubbed` must itself report `stubbed`,
 
 Diagnostics must be redacted. Reports and logs must never include credentials, placeholders, prompts, source, query strings, request bodies, raw tool output, or session exports.
 
+## Authority domains are disjoint
+
+`schemas/stage4-static-preparation-evidence-v1.json` is a separate, static-only contract. Its authority is fixed to `static-only-stage4-preparation`; `qualified`, `campaign_authorized`, `cloud_execution_observed`, `stage4_exit_satisfied`, and `release_eligible` are all fixed to `false`. A `conforming` static outcome means only that independently evaluated local manifest-shape checks were satisfied for the exact digest-bound source, chart, values, and two byte-identical renders.
+
+The pure validator in `scripts/stage4-static-evidence.ts` accepts canonical JSON bytes plus bounded caller-supplied artifact bytes and independently derived ordered static outcomes. It performs no rendering, process execution, environment lookup, network access, or cloud/provider operation. It is not a Helm producer and does not create authoritative evidence. A caller must derive static outcomes independently; digest possession alone does not establish that a check was satisfied.
+
+A static Stage 4 preparation report cannot be converted or promoted into an `eks-kata` security report, cannot make any test or report release eligible, and cannot satisfy Stage 0, 1, 3, 4, or 5 applicability or exit rules. In particular, all 13 future EKS checks are fixed as `required-for-future-exact-run-eks`, `unexecuted`, and `not-observed`. `not-applicable`, `skipped`, `stubbed`, `pass`, and `satisfied` are forbidden labels for those required but unexecuted checks.
+
+Only a separately authorized future exact-run EKS campaign, under a new authority and schema, may observe the cloud/runtime checks needed for Stage 4 exit. This repository slice provides no campaign approval, cloud workflow, Helm producer, or cloud evidence and may be validated without AWS or Kubernetes credentials.
+
 ## Human-readable rendering
 
 A renderer must preserve, at minimum:
