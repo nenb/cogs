@@ -1,4 +1,4 @@
-{{- if .Values.stage4Preparation.enabled }}
+{{- if and .Values.stage4Preparation.enabled (.Capabilities.APIVersions.Has "cogs.dev/static-preparation-render-only/v1") }}
 apiVersion: v1
 kind: PodTemplate
 metadata:
@@ -9,7 +9,7 @@ metadata:
     dev.cogs/role: "trusted"
     dev.cogs/proxy: "true"
   annotations:
-    dev.cogs/notice: "inert-pod-template-not-a-runnable-session-or-security-claim"
+    dev.cogs/notice: "default-disabled-static-render-only-source-shape-unsafe-to-apply-unproven"
 template:
   metadata:
     labels:
@@ -23,6 +23,8 @@ template:
     serviceAccountName: {{ include "cogs.componentName" (dict "root" . "component" "trusted") }}
     automountServiceAccountToken: false
     enableServiceLinks: false
+    activeDeadlineSeconds: 28800
+    terminationGracePeriodSeconds: 30
     nodeSelector:
       {{- toYaml .Values.stage4Preparation.placement.trusted.nodeSelector | nindent 6 }}
     tolerations:
@@ -45,7 +47,14 @@ template:
           capabilities:
             drop: ["ALL"]
         resources:
-          {{- toYaml .Values.stage4Preparation.resources.worker | nindent 10 }}
+          requests:
+            cpu: 500m
+            memory: 512Mi
+            ephemeral-storage: 1Gi
+          limits:
+            cpu: "2"
+            memory: 2Gi
+            ephemeral-storage: 4Gi
         volumeMounts:
           - name: openbao-token
             mountPath: /run/cogs/openbao-token
@@ -76,7 +85,14 @@ template:
           capabilities:
             drop: ["ALL"]
         resources:
-          {{- toYaml .Values.stage4Preparation.resources.proxy | nindent 10 }}
+          requests:
+            cpu: 100m
+            memory: 128Mi
+            ephemeral-storage: 256Mi
+          limits:
+            cpu: "1"
+            memory: 512Mi
+            ephemeral-storage: 1Gi
         volumeMounts:
           - name: preparation-contract
             mountPath: /etc/cogs/preparation
@@ -135,20 +151,21 @@ metadata:
     {{- include "cogs.stage4Labels" . | nindent 4 }}
     dev.cogs/role: "sandbox"
   annotations:
-    dev.cogs/notice: "inert-pod-template-not-a-runnable-session-or-security-claim"
+    dev.cogs/notice: "default-disabled-static-render-only-source-shape-unsafe-to-apply-unproven"
 template:
   metadata:
     labels:
       {{- include "cogs.stage4Labels" . | nindent 6 }}
       dev.cogs/role: "sandbox"
     annotations:
-      dev.cogs/notice: "guest-uid-0-is-untrusted-vm-root-future-launcher-must-inject-ephemeral-ssh-and-proxy-identities"
+      dev.cogs/notice: "guest-uid-0-is-untrusted-vm-root-future-trusted-launcher-material-absent"
       dev.cogs/production-ready: "false"
-      dev.cogs/proxy-capability: "absent-handle-only"
   spec:
     serviceAccountName: {{ include "cogs.componentName" (dict "root" . "component" "sandbox") }}
     automountServiceAccountToken: false
     enableServiceLinks: false
+    activeDeadlineSeconds: 28800
+    terminationGracePeriodSeconds: 30
     runtimeClassName: {{ .Values.stage4Preparation.runtimeClassName | quote }}
     nodeSelector:
       {{- toYaml .Values.stage4Preparation.placement.sandbox.nodeSelector | nindent 6 }}
@@ -168,8 +185,6 @@ template:
             value: {{ printf "http://%s:15001" (include "cogs.componentName" (dict "root" . "component" "proxy")) | quote }}
           - name: HTTPS_PROXY
             value: {{ printf "http://%s:15001" (include "cogs.componentName" (dict "root" . "component" "proxy")) | quote }}
-          - name: COGS_PROXY_CAPABILITY_HANDLE
-            value: {{ printf "%s/%s/proxy-capability" .Values.stage4Preparation.proxyIdentity.capabilityHandlePrefix .Values.stage4Preparation.sessionIdentity | quote }}
           - name: SSL_CERT_FILE
             value: /etc/cogs/egress-ca/egress-ca.crt
         ports:
@@ -185,7 +200,14 @@ template:
           capabilities:
             drop: ["ALL"]
         resources:
-          {{- toYaml .Values.stage4Preparation.resources.sandbox | nindent 10 }}
+          requests:
+            cpu: "2"
+            memory: 4Gi
+            ephemeral-storage: 8Gi
+          limits:
+            cpu: "2"
+            memory: 4Gi
+            ephemeral-storage: 16Gi
         volumeMounts:
           - name: public-egress-ca
             mountPath: /etc/cogs/egress-ca

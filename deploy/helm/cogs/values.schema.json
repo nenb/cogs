@@ -18,8 +18,10 @@
         "openBao",
         "otlp",
         "proxyIdentity",
-        "publicEgressCa",
-        "resources"
+        "resourceProfile",
+        "lifecycle",
+        "auditWalMaxBytes",
+        "publicEgressCa"
       ],
       "properties": {
         "enabled": { "type": "boolean" },
@@ -48,10 +50,21 @@
         "storage": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["workspaceStorageClass", "sessionStateStorageClass"],
+          "required": [
+            "workspaceStorageClass",
+            "workspaceSize",
+            "workspaceAccessMode",
+            "sessionStateStorageClass",
+            "sessionStateSize",
+            "sessionStateAccessMode"
+          ],
           "properties": {
             "workspaceStorageClass": { "type": "string", "maxLength": 253 },
-            "sessionStateStorageClass": { "type": "string", "maxLength": 253 }
+            "workspaceSize": { "const": "20Gi" },
+            "workspaceAccessMode": { "const": "ReadWriteOncePod" },
+            "sessionStateStorageClass": { "type": "string", "maxLength": 253 },
+            "sessionStateSize": { "const": "5Gi" },
+            "sessionStateAccessMode": { "const": "ReadWriteOncePod" }
           }
         },
         "openBao": {
@@ -80,31 +93,29 @@
         "proxyIdentity": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["capabilityAudience", "capabilityHandlePrefix", "sourceBindingRequired"],
+          "required": ["capabilityAudience", "sourceBindingRequired"],
           "properties": {
             "capabilityAudience": { "type": "string", "maxLength": 256 },
-            "capabilityHandlePrefix": { "type": "string" },
             "sourceBindingRequired": { "type": "boolean" }
           }
         },
-        "publicEgressCa": { "type": "string", "maxLength": 16384 },
-        "resources": {
+        "resourceProfile": { "const": "stage4-fixed-bounded-v1" },
+        "lifecycle": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["worker", "proxy", "sandbox"],
+          "required": ["idleSeconds", "hardSeconds", "terminationGraceSeconds"],
           "properties": {
-            "worker": { "$ref": "#/definitions/resources" },
-            "proxy": { "$ref": "#/definitions/resources" },
-            "sandbox": { "$ref": "#/definitions/resources" }
+            "idleSeconds": { "const": 1800 },
+            "hardSeconds": { "const": 28800 },
+            "terminationGraceSeconds": { "const": 30 }
           }
-        }
+        },
+        "auditWalMaxBytes": { "type": "integer", "minimum": 1048576, "maximum": 1073741824 },
+        "publicEgressCa": { "type": "string", "maxLength": 16384 }
       },
       "allOf": [
         {
-          "if": {
-            "properties": { "enabled": { "const": true } },
-            "required": ["enabled"]
-          },
+          "if": { "properties": { "enabled": { "const": true } }, "required": ["enabled"] },
           "then": {
             "properties": {
               "nonProductionAcknowledgement": { "const": true },
@@ -129,12 +140,29 @@
               "placement": {
                 "properties": {
                   "trusted": {
-                    "properties": { "nodeSelector": { "minProperties": 1 } }
+                    "properties": {
+                      "nodeSelector": {
+                        "required": ["cogs.dev/node-domain"],
+                        "properties": { "cogs.dev/node-domain": { "const": "trusted" } }
+                      },
+                      "tolerations": {
+                        "items": {
+                          "not": { "properties": { "key": { "const": "cogs.dev/sandbox" } }, "required": ["key"] }
+                        }
+                      }
+                    }
                   },
                   "sandbox": {
                     "properties": {
-                      "nodeSelector": { "minProperties": 1 },
-                      "tolerations": { "minItems": 1 }
+                      "nodeSelector": {
+                        "required": ["cogs.dev/node-domain"],
+                        "properties": { "cogs.dev/node-domain": { "const": "sandbox-kata" } }
+                      },
+                      "tolerations": {
+                        "const": [
+                          { "key": "cogs.dev/sandbox", "operator": "Equal", "value": "kata", "effect": "NoSchedule" }
+                        ]
+                      }
                     }
                   }
                 }
@@ -165,7 +193,6 @@
               "proxyIdentity": {
                 "properties": {
                   "capabilityAudience": { "$ref": "#/definitions/boundedAudience" },
-                  "capabilityHandlePrefix": { "const": "sessions" },
                   "sourceBindingRequired": { "const": true }
                 }
               },
@@ -225,11 +252,7 @@
       "required": ["nodeSelector", "tolerations"],
       "properties": {
         "nodeSelector": { "$ref": "#/definitions/labelMap" },
-        "tolerations": {
-          "type": "array",
-          "maxItems": 16,
-          "items": { "$ref": "#/definitions/toleration" }
-        }
+        "tolerations": { "type": "array", "maxItems": 16, "items": { "$ref": "#/definitions/toleration" } }
       }
     },
     "networkPeer": {
@@ -253,30 +276,6 @@
           }
         }
       ]
-    },
-    "resourcePair": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["cpu", "memory"],
-      "properties": {
-        "cpu": { "$ref": "#/definitions/positiveQuantity" },
-        "memory": { "$ref": "#/definitions/positiveQuantity" }
-      }
-    },
-    "resources": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["requests", "limits"],
-      "properties": {
-        "requests": { "$ref": "#/definitions/resourcePair" },
-        "limits": { "$ref": "#/definitions/resourcePair" }
-      }
-    },
-    "positiveQuantity": {
-      "type": "string",
-      "minLength": 1,
-      "maxLength": 16,
-      "pattern": "^[1-9][0-9]{0,5}(?:m|(?:\\.[0-9]{1,3})?(?:Ki|Mi|Gi|Ti|Pi|Ei|n|u|k|M|G|T|P|E)?)?$"
     },
     "digestImage": {
       "type": "string",

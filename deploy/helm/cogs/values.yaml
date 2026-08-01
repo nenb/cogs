@@ -1,4 +1,5 @@
-# This chart is an inert static preparation pack. It makes no security or production-readiness claim.
+# Default-disabled static render-only source shapes. Even intentionally rendered YAML is
+# unsafe to apply and remains unproven; this chart makes no security or production claim.
 stage4Preparation:
   enabled: false
   nonProductionAcknowledgement: false
@@ -20,7 +21,11 @@ stage4Preparation:
 
   storage:
     workspaceStorageClass: ""
+    workspaceSize: 20Gi
+    workspaceAccessMode: ReadWriteOncePod
     sessionStateStorageClass: ""
+    sessionStateSize: 5Gi
+    sessionStateAccessMode: ReadWriteOncePod
 
   openBao:
     endpoint: ""
@@ -43,18 +48,13 @@ stage4Preparation:
 
   proxyIdentity:
     capabilityAudience: ""
-    capabilityHandlePrefix: ""
     sourceBindingRequired: false
 
-  publicEgressCa: ""
+  resourceProfile: stage4-fixed-bounded-v1
+  lifecycle:
+    idleSeconds: 1800
+    hardSeconds: 28800
+    terminationGraceSeconds: 30
+  auditWalMaxBytes: 268435456
 
-  resources:
-    worker:
-      requests: { cpu: 500m, memory: 512Mi }
-      limits: { cpu: "2", memory: 2Gi }
-    proxy:
-      requests: { cpu: 100m, memory: 128Mi }
-      limits: { cpu: "1", memory: 512Mi }
-    sandbox:
-      requests: { cpu: "2", memory: 4Gi }
-      limits: { cpu: "2", memory: 4Gi }
+  publicEgressCa: ""

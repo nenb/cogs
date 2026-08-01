@@ -1,4 +1,4 @@
-# Synthetic static test data only. This does not describe a runnable or secure deployment.
+# Synthetic static render-only test data. Rendered YAML is unsafe to apply and does not describe a proven deployment.
 stage4Preparation:
   enabled: true
   nonProductionAcknowledgement: true
@@ -26,7 +26,11 @@ stage4Preparation:
 
   storage:
     workspaceStorageClass: synthetic-workspace-csi
+    workspaceSize: 20Gi
+    workspaceAccessMode: ReadWriteOncePod
     sessionStateStorageClass: synthetic-session-state-csi
+    sessionStateSize: 5Gi
+    sessionStateAccessMode: ReadWriteOncePod
 
   openBao:
     endpoint: https://openbao.static-test.invalid:8200
@@ -53,19 +57,14 @@ stage4Preparation:
 
   proxyIdentity:
     capabilityAudience: cogs-egress-proxy.static-test
-    capabilityHandlePrefix: sessions
     sourceBindingRequired: true
 
-  resources:
-    worker:
-      requests: { cpu: 500m, memory: 512Mi }
-      limits: { cpu: "2", memory: 2Gi }
-    proxy:
-      requests: { cpu: 100m, memory: 128Mi }
-      limits: { cpu: "1", memory: 512Mi }
-    sandbox:
-      requests: { cpu: "2", memory: 4Gi }
-      limits: { cpu: "2", memory: 4Gi }
+  resourceProfile: stage4-fixed-bounded-v1
+  lifecycle:
+    idleSeconds: 1800
+    hardSeconds: 28800
+    terminationGraceSeconds: 30
+  auditWalMaxBytes: 268435456
 
   publicEgressCa: |
     -----BEGIN CERTIFICATE-----

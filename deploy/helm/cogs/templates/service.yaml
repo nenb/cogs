@@ -1,4 +1,4 @@
-{{- if .Values.stage4Preparation.enabled }}
+{{- if and .Values.stage4Preparation.enabled (.Capabilities.APIVersions.Has "cogs.dev/static-preparation-render-only/v1") }}
 apiVersion: v1
 kind: Service
 metadata:
@@ -9,7 +9,7 @@ metadata:
     dev.cogs/role: "trusted"
     dev.cogs/proxy: "true"
   annotations:
-    dev.cogs/notice: "inert-preparation-selector-no-ready-workload"
+    dev.cogs/notice: "default-disabled-static-render-only-selector-unsafe-to-apply-unproven"
 spec:
   type: ClusterIP
   selector:

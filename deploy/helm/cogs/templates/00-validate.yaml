@@ -1,3 +1,3 @@
-{{- if .Values.stage4Preparation.enabled -}}
+{{- if and .Values.stage4Preparation.enabled (.Capabilities.APIVersions.Has "cogs.dev/static-preparation-render-only/v1") -}}
 {{- include "cogs.stage4.validate" . -}}
 {{- end -}}

@@ -1,4 +1,4 @@
-{{- if .Values.stage4Preparation.enabled }}
+{{- if and .Values.stage4Preparation.enabled (.Capabilities.APIVersions.Has "cogs.dev/static-preparation-render-only/v1") }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -8,10 +8,11 @@ metadata:
     {{- include "cogs.stage4Labels" . | nindent 4 }}
     dev.cogs/role: "preparation"
   annotations:
-    dev.cogs/notice: "inert-static-preparation-only-no-security-or-production-claim"
+    dev.cogs/notice: "default-disabled-static-render-only-source-shape-unsafe-to-apply-unproven"
 immutable: true
 data:
-  status: "INERT_STATIC_PREPARATION_ONLY"
+  status: "DEFAULT_DISABLED_STATIC_RENDER_ONLY_SOURCE_SHAPE"
+  applySafety: "UNSAFE_TO_APPLY_UNPROVEN"
   productionReady: "false"
   runtimeClassName: {{ .Values.stage4Preparation.runtimeClassName | quote }}
   workerImage: {{ .Values.stage4Preparation.images.worker | quote }}
@@ -20,7 +21,11 @@ data:
   trustedNodeSelector: {{ .Values.stage4Preparation.placement.trusted.nodeSelector | toJson | quote }}
   sandboxNodeSelector: {{ .Values.stage4Preparation.placement.sandbox.nodeSelector | toJson | quote }}
   workspaceStorageClass: {{ .Values.stage4Preparation.storage.workspaceStorageClass | quote }}
+  workspaceSize: {{ .Values.stage4Preparation.storage.workspaceSize | quote }}
+  workspaceAccessMode: {{ .Values.stage4Preparation.storage.workspaceAccessMode | quote }}
   sessionStateStorageClass: {{ .Values.stage4Preparation.storage.sessionStateStorageClass | quote }}
+  sessionStateSize: {{ .Values.stage4Preparation.storage.sessionStateSize | quote }}
+  sessionStateAccessMode: {{ .Values.stage4Preparation.storage.sessionStateAccessMode | quote }}
   openBaoEndpointReference: {{ .Values.stage4Preparation.openBao.endpoint | quote }}
   openBaoKubernetesAuthMountReference: {{ .Values.stage4Preparation.openBao.kubernetesAuthMount | quote }}
   openBaoKubernetesAuthRoleReference: {{ .Values.stage4Preparation.openBao.kubernetesAuthRole | quote }}
@@ -31,9 +36,13 @@ data:
   otlpProtocol: {{ .Values.stage4Preparation.otlp.protocol | quote }}
   otlpPeerSelector: {{ dict "namespaceLabels" .Values.stage4Preparation.otlp.peer.namespaceLabels "podLabels" .Values.stage4Preparation.otlp.peer.podLabels "port" .Values.stage4Preparation.otlp.peer.port | toJson | quote }}
   proxyCapabilityAudience: {{ .Values.stage4Preparation.proxyIdentity.capabilityAudience | quote }}
-  proxyCapabilityHandlePrefix: {{ .Values.stage4Preparation.proxyIdentity.capabilityHandlePrefix | quote }}
   proxyCapabilitySourceBindingRequired: {{ .Values.stage4Preparation.proxyIdentity.sourceBindingRequired | quote }}
-  ephemeralProxyCapability: "ABSENT_FUTURE_LAUNCHER_MUST_INJECT"
+  ephemeralProxyCapability: "ABSENT_FUTURE_TRUSTED_LAUNCHER_ONLY"
+  resourceProfile: {{ .Values.stage4Preparation.resourceProfile | quote }}
+  idleSeconds: {{ .Values.stage4Preparation.lifecycle.idleSeconds | quote }}
+  hardSeconds: {{ .Values.stage4Preparation.lifecycle.hardSeconds | quote }}
+  terminationGraceSeconds: {{ .Values.stage4Preparation.lifecycle.terminationGraceSeconds | quote }}
+  auditWalMaxBytes: {{ printf "%.0f" (float64 .Values.stage4Preparation.auditWalMaxBytes) | quote }}
   unresolvedChecks: |-
     RuntimeClass existence and non-runc behavior
     KVM, Kata, QEMU, and distinct guest identity
@@ -55,7 +64,7 @@ metadata:
     {{- include "cogs.stage4Labels" . | nindent 4 }}
     dev.cogs/role: "preparation"
   annotations:
-    dev.cogs/notice: "public-ca-only-no-private-key"
+    dev.cogs/notice: "public-ca-only-static-render-source-shape-unsafe-to-apply-unproven"
 immutable: true
 data:
   egress-ca.crt: |-

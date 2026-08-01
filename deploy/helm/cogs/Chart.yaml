@@ -2,7 +2,7 @@ apiVersion: v2
 name: cogs
 version: 0.0.1
 appVersion: "0.0.0"
-description: inert Stage 4 static preparation pack; no workloads.
+description: default-disabled Stage 4 static render-only source shapes; rendered YAML is unsafe to apply and unproven.
 type: application
 annotations:
   dev.cogs/stage: "4-preparation"

@@ -17,6 +17,7 @@ const fixture = resolve(root, "test/fixtures/helm/stage4-preparation-valid.yaml"
 const release = "stage4";
 const namespace = "static-preparation";
 const envoyPin = "envoyproxy/envoy:v1.38.3@sha256:5f7c43e1147412fdb3af578c651c67478a3df818eae89d2261e707e06c209cdb";
+const renderCapability = "cogs.dev/static-preparation-render-only/v1";
 
 interface Placement {
   nodeSelector: Record<string, string>;
@@ -30,8 +31,8 @@ interface Peer {
 }
 
 interface ResourceValues {
-  requests: { cpu: string; memory: string };
-  limits: { cpu: string; memory: string };
+  requests: { cpu: string; memory: string; "ephemeral-storage": string };
+  limits: { cpu: string; memory: string; "ephemeral-storage": string };
 }
 
 interface ValuesFile {
@@ -42,7 +43,14 @@ interface ValuesFile {
     runtimeClassName: string;
     images: { worker: string; proxy: string; sandbox: string };
     placement: { trusted: Placement; sandbox: Placement };
-    storage: { workspaceStorageClass: string; sessionStateStorageClass: string };
+    storage: {
+      workspaceStorageClass: string;
+      workspaceSize: string;
+      workspaceAccessMode: string;
+      sessionStateStorageClass: string;
+      sessionStateSize: string;
+      sessionStateAccessMode: string;
+    };
     openBao: {
       endpoint: string;
       kubernetesAuthMount: string;
@@ -52,13 +60,11 @@ interface ValuesFile {
       peer: Peer;
     };
     otlp: { endpoint: string; protocol: string; peer: Peer };
-    proxyIdentity: {
-      capabilityAudience: string;
-      capabilityHandlePrefix: string;
-      sourceBindingRequired: boolean;
-    };
+    proxyIdentity: { capabilityAudience: string; sourceBindingRequired: boolean };
+    resourceProfile: string;
+    lifecycle: { idleSeconds: number; hardSeconds: number; terminationGraceSeconds: number };
+    auditWalMaxBytes: number;
     publicEgressCa: string;
-    resources: { worker: ResourceValues; proxy: ResourceValues; sandbox: ResourceValues };
   };
 }
 
@@ -76,6 +82,8 @@ interface PodSpec {
   serviceAccountName: string;
   automountServiceAccountToken: boolean;
   enableServiceLinks: boolean;
+  activeDeadlineSeconds: number;
+  terminationGracePeriodSeconds: number;
   runtimeClassName?: string;
   nodeSelector: Record<string, string>;
   tolerations: Array<Record<string, unknown>>;
@@ -138,7 +146,17 @@ function validValues(): ValuesFile {
 }
 
 function rendered(valuesPath = fixture): { stdout: string; objects: KubeObject[] } {
-  const result = helm(["template", release, chart, "--namespace", namespace, "-f", valuesPath]);
+  const result = helm([
+    "template",
+    release,
+    chart,
+    "--namespace",
+    namespace,
+    "--api-versions",
+    renderCapability,
+    "-f",
+    valuesPath,
+  ]);
   assertHelmSuccess(result);
   const objects = yaml
     .parseAllDocuments(result.stdout)
@@ -187,23 +205,27 @@ function escapePattern(value: string): RegExp {
   return new RegExp(value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"), "iu");
 }
 
-test("Helm lint succeeds and disabled rendering has no manifest stream", () => {
+test("lint, install-like rendering, and default rendering remain empty without the synthetic capability", () => {
   assertHelmSuccess(helm(["lint", chart]));
+  assertHelmSuccess(helm(["lint", chart, "-f", fixture]));
   assertEmptyManifestStream(helm(["template", "cogs", chart]));
+  assertEmptyManifestStream(helm(["template", "cogs", chart, "-f", fixture]));
+  assertEmptyManifestStream(helm(["template", "cogs", chart, "--api-versions", renderCapability]));
 
   const values = validValues();
   values.stage4Preparation.enabled = false;
   const temporary = writeTemporaryValues(values);
   try {
-    assertEmptyManifestStream(helm(["template", "cogs", chart, "-f", temporary.path]));
+    assertEmptyManifestStream(
+      helm(["template", "cogs", chart, "--api-versions", renderCapability, "-f", temporary.path]),
+    );
   } finally {
     rmSync(temporary.directory, { recursive: true, force: true });
   }
 });
 
-test("explicitly acknowledged fixture lints and renders exactly ten inert namespaced objects", () => {
-  assertHelmSuccess(helm(["lint", chart, "-f", fixture]));
-  const { objects } = rendered();
+test("synthetic capability renders ten default-disabled static source shapes that warn against apply", () => {
+  const { stdout, objects } = rendered();
   assert.equal(objects.length, 10);
   assert.deepEqual(
     Object.fromEntries(
@@ -258,6 +280,9 @@ test("explicitly acknowledged fixture lints and renders exactly ten inert namesp
     assert.equal(object.metadata.labels["dev.cogs/production-ready"], "false");
     assert.equal(object.metadata.annotations?.["helm.sh/hook"], undefined);
   }
+  assert.doesNotMatch(stdout, /\binert\b/iu);
+  assert.match(stdout, /unsafe-to-apply/iu);
+  assert.match(stdout, /unproven/iu);
   for (const account of objects.filter((object) => object.kind === "ServiceAccount")) {
     assert.equal(account.automountServiceAccountToken, false);
   }
@@ -269,10 +294,11 @@ test("immutable configuration and Service expose references and no secret materi
   const ca = byName(objects, "stage4-cogs-egress-ca");
   assert.equal(contract.immutable, true);
   assert.equal(ca.immutable, true);
-  assert.equal(contract.data?.status, "INERT_STATIC_PREPARATION_ONLY");
+  assert.equal(contract.data?.status, "DEFAULT_DISABLED_STATIC_RENDER_ONLY_SOURCE_SHAPE");
+  assert.equal(contract.data?.applySafety, "UNSAFE_TO_APPLY_UNPROVEN");
   assert.equal(contract.data?.productionReady, "false");
   assert.equal(contract.data?.proxyImage, envoyPin);
-  assert.equal(contract.data?.ephemeralProxyCapability, "ABSENT_FUTURE_LAUNCHER_MUST_INJECT");
+  assert.equal(contract.data?.ephemeralProxyCapability, "ABSENT_FUTURE_TRUSTED_LAUNCHER_ONLY");
   for (const check of ["RuntimeClass", "KVM", "CNI", "CSI", "OpenBao", "image availability", "per-session", "EKS"]) {
     assert.match(contract.data?.unresolvedChecks ?? "", escapePattern(check));
   }
@@ -315,8 +341,15 @@ test("trusted and sandbox PodTemplates preserve placement, security, storage, an
   assert.equal(trusted.serviceAccountName, "stage4-cogs-trusted");
   assert.equal(trusted.automountServiceAccountToken, false);
   assert.equal(trusted.enableServiceLinks, false);
+  assert.equal(trusted.activeDeadlineSeconds, 28800);
+  assert.equal(trusted.terminationGracePeriodSeconds, 30);
   assert.equal(trusted.runtimeClassName, undefined);
   assert.deepEqual(trusted.nodeSelector, values.placement.trusted.nodeSelector);
+  assert.equal(trusted.nodeSelector["cogs.dev/node-domain"], "trusted");
+  assert.equal(
+    trusted.tolerations.some((toleration) => toleration.key === "cogs.dev/sandbox"),
+    false,
+  );
   assert.deepEqual(trusted.securityContext, {
     runAsNonRoot: true,
     runAsUser: 10001,
@@ -337,8 +370,14 @@ test("trusted and sandbox PodTemplates preserve placement, security, storage, an
   const proxy = container(trusted, "envoy");
   assert.equal(worker.image, values.images.worker);
   assert.equal(proxy.image, envoyPin);
-  assert.deepEqual(worker.resources, values.resources.worker);
-  assert.deepEqual(proxy.resources, values.resources.proxy);
+  assert.deepEqual(worker.resources, {
+    requests: { cpu: "500m", memory: "512Mi", "ephemeral-storage": "1Gi" },
+    limits: { cpu: "2", memory: "2Gi", "ephemeral-storage": "4Gi" },
+  });
+  assert.deepEqual(proxy.resources, {
+    requests: { cpu: "100m", memory: "128Mi", "ephemeral-storage": "256Mi" },
+    limits: { cpu: "1", memory: "512Mi", "ephemeral-storage": "1Gi" },
+  });
   assertStrictContainerSecurity(worker, true);
   assertStrictContainerSecurity(proxy, true);
   assert.deepEqual(proxy.ports, [{ name: "proxy", containerPort: 15001, protocol: "TCP" }]);
@@ -395,9 +434,14 @@ test("trusted and sandbox PodTemplates preserve placement, security, storage, an
   assert.equal(sandbox.serviceAccountName, "stage4-cogs-sandbox");
   assert.equal(sandbox.automountServiceAccountToken, false);
   assert.equal(sandbox.enableServiceLinks, false);
+  assert.equal(sandbox.activeDeadlineSeconds, 28800);
+  assert.equal(sandbox.terminationGracePeriodSeconds, 30);
   assert.equal(sandbox.runtimeClassName, values.runtimeClassName);
   assert.deepEqual(sandbox.nodeSelector, values.placement.sandbox.nodeSelector);
-  assert.deepEqual(sandbox.tolerations, values.placement.sandbox.tolerations);
+  assert.equal(sandbox.nodeSelector["cogs.dev/node-domain"], "sandbox-kata");
+  assert.deepEqual(sandbox.tolerations, [
+    { key: "cogs.dev/sandbox", operator: "Equal", value: "kata", effect: "NoSchedule" },
+  ]);
   assert.deepEqual(sandbox.securityContext, {
     runAsUser: 0,
     runAsGroup: 0,
@@ -406,7 +450,10 @@ test("trusted and sandbox PodTemplates preserve placement, security, storage, an
   assert.equal(sandbox.containers.length, 1);
   const guest = container(sandbox, "sandbox");
   assert.equal(guest.image, values.images.sandbox);
-  assert.deepEqual(guest.resources, values.resources.sandbox);
+  assert.deepEqual(guest.resources, {
+    requests: { cpu: "2", memory: "4Gi", "ephemeral-storage": "8Gi" },
+    limits: { cpu: "2", memory: "4Gi", "ephemeral-storage": "16Gi" },
+  });
   assertStrictContainerSecurity(guest, false);
   assert.deepEqual(guest.ports, [{ name: "ssh", containerPort: 22, protocol: "TCP" }]);
   assert.equal(
@@ -415,10 +462,18 @@ test("trusted and sandbox PodTemplates preserve placement, security, storage, an
   );
   assert.deepEqual(
     guest.env?.map((entry) => entry.name),
-    ["HTTP_PROXY", "HTTPS_PROXY", "COGS_PROXY_CAPABILITY_HANDLE", "SSL_CERT_FILE"],
+    ["HTTP_PROXY", "HTTPS_PROXY", "SSL_CERT_FILE"],
   );
   assert.equal(projectedTokenVolumes(sandbox).length, 0);
-  assert.equal(JSON.stringify(sandbox).match(/openbao|otlp/giu), null);
+  assert.doesNotMatch(
+    JSON.stringify({
+      annotations: sandboxTemplate.metadata.annotations,
+      env: guest.env,
+      volumeMounts: guest.volumeMounts,
+      volumes: sandbox.volumes,
+    }),
+    /capability|handle|openbao|token|secret-store|sessions\//iu,
+  );
   assert.equal(JSON.stringify(sandbox.volumes).includes("secret"), false);
   assert.equal(
     guest.volumeMounts.some((mount) => mount.name === "public-egress-ca" && mount.readOnly === true),
@@ -430,9 +485,23 @@ test("trusted and sandbox PodTemplates preserve placement, security, storage, an
     readOnly: false,
   });
   assert.match(sandboxTemplate.metadata.annotations?.["dev.cogs/notice"] ?? "", /guest-uid-0-is-untrusted-vm-root/u);
+
+  const contract = byName(objects, "stage4-cogs-contract");
+  assert.equal(contract.data?.workspaceSize, "20Gi");
+  assert.equal(contract.data?.workspaceAccessMode, "ReadWriteOncePod");
+  assert.equal(contract.data?.sessionStateSize, "5Gi");
+  assert.equal(contract.data?.sessionStateAccessMode, "ReadWriteOncePod");
+  assert.equal(contract.data?.idleSeconds, "1800");
+  assert.equal(contract.data?.hardSeconds, "28800");
+  assert.equal(contract.data?.terminationGraceSeconds, "30");
+  assert.equal(contract.data?.auditWalMaxBytes, "268435456");
+  assert.equal(
+    objects.some((object) => object.kind === "PersistentVolumeClaim"),
+    false,
+  );
 });
 
-test("NetworkPolicies encode only the exact TCP session paths", () => {
+test("NetworkPolicies render the intended static TCP policy shape without claiming enforcement", () => {
   const { objects } = rendered();
   const policies = objects.filter((object) => object.kind === "NetworkPolicy");
   assert.equal(policies.length, 3);
@@ -517,18 +586,18 @@ test("chart source keeps every object guarded and exposes no escape hatch", () =
   for (const name of manifests) {
     assert.match(
       readFileSync(resolve(templates, name), "utf8"),
-      /^\{\{- if \.Values\.stage4Preparation\.enabled/u,
-      `${name}: complete preparation guard`,
+      /^\{\{- if and \.Values\.stage4Preparation\.enabled \(\.Capabilities\.APIVersions\.Has "cogs\.dev\/static-preparation-render-only\/v1"\)/u,
+      `${name}: enabled and synthetic-capability render guard`,
     );
   }
-  assert.doesNotMatch(templateSource, /\blookup\b|helm\.sh\/hook/u);
+  assert.doesNotMatch(templateSource, /\blookup\b|helm\.sh\/hook|\binert\b/iu);
   assert.equal(existsSync(resolve(templates, "NOTES.txt")), false);
   assert.equal(existsSync(resolve(chart, "crds")), false);
   assert.equal(existsSync(resolve(chart, "charts")), false);
   const chartSource = readFileSync(resolve(chart, "Chart.yaml"), "utf8");
   assert.doesNotMatch(chartSource, /^dependencies:/mu);
   const valuesSource = readFileSync(resolve(chart, "values.yaml"), "utf8");
-  assert.doesNotMatch(valuesSource, /extraEnv|imagePullSecrets|extraObjects|podSpec|annotations:/u);
+  assert.doesNotMatch(valuesSource, /extraEnv|imagePullSecrets|extraObjects|podSpec|annotations:|\binert\b/iu);
 });
 
 test("enabled values fail closed for missing, unsafe, or extensible inputs", () => {
@@ -682,9 +751,10 @@ test("enabled values fail closed for missing, unsafe, or extensible inputs", () 
       mutate: (v) => (v.stage4Preparation.proxyIdentity.capabilityAudience = ""),
     },
     {
-      name: "handle prefix",
+      name: "forbidden handle prefix",
       key: "capabilityHandlePrefix",
-      mutate: (v) => (v.stage4Preparation.proxyIdentity.capabilityHandlePrefix = "capabilities"),
+      mutate: (v) =>
+        ((v.stage4Preparation.proxyIdentity as unknown as Record<string, unknown>).capabilityHandlePrefix = "sessions"),
     },
     {
       name: "source binding",
@@ -728,16 +798,28 @@ test("enabled values fail closed for missing, unsafe, or extensible inputs", () 
       key: "podTemplate",
       mutate: (v) => ((v.stage4Preparation as unknown as Record<string, unknown>).podTemplate = {}),
     },
-    { name: "zero CPU", key: "cpu", mutate: (v) => (v.stage4Preparation.resources.worker.requests.cpu = "0") },
     {
-      name: "negative memory",
-      key: "memory",
-      mutate: (v) => (v.stage4Preparation.resources.sandbox.limits.memory = "-1Gi"),
+      name: "legacy zero resources",
+      key: "resources",
+      mutate: (v) =>
+        ((v.stage4Preparation as unknown as Record<string, unknown>).resources = {
+          worker: { requests: { cpu: "0", memory: "0", "ephemeral-storage": "0" } },
+        }),
     },
     {
-      name: "invalid quantity",
-      key: "memory",
-      mutate: (v) => (v.stage4Preparation.resources.proxy.requests.memory = "unbounded"),
+      name: "workspace size",
+      key: "workspaceSize",
+      mutate: (v) => (v.stage4Preparation.storage.workspaceSize = "0"),
+    },
+    {
+      name: "hard lifetime",
+      key: "hardSeconds",
+      mutate: (v) => (v.stage4Preparation.lifecycle.hardSeconds = 0),
+    },
+    {
+      name: "WAL bound",
+      key: "auditWalMaxBytes",
+      mutate: (v) => (v.stage4Preparation.auditWalMaxBytes = 0),
     },
   ];
 
@@ -746,11 +828,167 @@ test("enabled values fail closed for missing, unsafe, or extensible inputs", () 
     negative.mutate(values);
     const temporary = writeTemporaryValues(values);
     try {
-      const result = helm(["template", release, chart, "--namespace", namespace, "-f", temporary.path]);
+      const result = helm([
+        "template",
+        release,
+        chart,
+        "--namespace",
+        namespace,
+        "--api-versions",
+        renderCapability,
+        "-f",
+        temporary.path,
+      ]);
       assert.equal(result.error, undefined, `${negative.name}: ${result.error?.message}`);
       assert.notEqual(result.status, 0, `${negative.name}: unexpectedly rendered`);
       assert.doesNotMatch(result.stdout, /^apiVersion:/mu, `${negative.name}: no usable manifest stream`);
       assert.match(result.stderr, escapePattern(negative.key), `${negative.name}: bounded error category`);
+    } finally {
+      rmSync(temporary.directory, { recursive: true, force: true });
+    }
+  }
+});
+
+test("template validation rejects hostile security inputs with schema validation skipped", () => {
+  type HostileCase = { name: string; key: string; mutate(values: ValuesFile): void };
+  const cases: HostileCase[] = [
+    {
+      name: "legacy zero resource quantities",
+      key: "resources",
+      mutate: (v) =>
+        ((v.stage4Preparation as unknown as Record<string, unknown>).resources = {
+          worker: {
+            requests: { cpu: "0", memory: "0", "ephemeral-storage": "0" },
+            limits: { cpu: "0", memory: "0", "ephemeral-storage": "0" },
+          },
+        }),
+    },
+    {
+      name: "malformed certificate body",
+      key: "publicEgressCa",
+      mutate: (v) =>
+        (v.stage4Preparation.publicEgressCa = `-----BEGIN CERTIFICATE-----\n${Array.from({ length: 5 }, () => "A".repeat(64)).join("\n")}\n-----END CERTIFICATE-----\n`),
+    },
+    {
+      name: "certificate trailing text",
+      key: "publicEgressCa",
+      mutate: (v) => (v.stage4Preparation.publicEgressCa += "trailing-text\n"),
+    },
+    {
+      name: "private key",
+      key: "publicEgressCa",
+      mutate: (v) =>
+        (v.stage4Preparation.publicEgressCa += "-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----\n"),
+    },
+    {
+      name: "port above range",
+      key: "port",
+      mutate: (v) => (v.stage4Preparation.openBao.peer.port = 65536),
+    },
+    {
+      name: "non-integer port",
+      key: "port",
+      mutate: (v) => ((v.stage4Preparation.otlp.peer as unknown as Record<string, unknown>).port = "4317"),
+    },
+    {
+      name: "endpoint port above range",
+      key: "endpoint",
+      mutate: (v) => (v.stage4Preparation.openBao.endpoint = "https://openbao.static-test.invalid:99999"),
+    },
+    {
+      name: "malformed selector label",
+      key: "label value",
+      mutate: (v) => (v.stage4Preparation.otlp.peer.podLabels = { "app.kubernetes.io/name": "bad value" }),
+    },
+    {
+      name: "trusted selector overlap",
+      key: "trusted.nodeSelector",
+      mutate: (v) => (v.stage4Preparation.placement.trusted.nodeSelector["cogs.dev/node-domain"] = "sandbox-kata"),
+    },
+    {
+      name: "sandbox unrelated toleration",
+      key: "sandbox.tolerations",
+      mutate: (v) =>
+        (v.stage4Preparation.placement.sandbox.tolerations = [
+          { key: "unrelated", operator: "Equal", value: "kata", effect: "NoSchedule" },
+        ]),
+    },
+    {
+      name: "trusted sandbox taint toleration",
+      key: "trusted.tolerations",
+      mutate: (v) =>
+        (v.stage4Preparation.placement.trusted.tolerations = [
+          { key: "cogs.dev/sandbox", operator: "Equal", value: "kata", effect: "NoSchedule" },
+        ]),
+    },
+    {
+      name: "resource profile",
+      key: "resourceProfile",
+      mutate: (v) => (v.stage4Preparation.resourceProfile = "custom"),
+    },
+    {
+      name: "workspace size",
+      key: "workspace",
+      mutate: (v) => (v.stage4Preparation.storage.workspaceSize = "0"),
+    },
+    {
+      name: "session access mode",
+      key: "session-state",
+      mutate: (v) => (v.stage4Preparation.storage.sessionStateAccessMode = "ReadWriteMany"),
+    },
+    {
+      name: "idle lifetime",
+      key: "idleSeconds",
+      mutate: (v) => (v.stage4Preparation.lifecycle.idleSeconds = 0),
+    },
+    {
+      name: "hard lifetime",
+      key: "hardSeconds",
+      mutate: (v) => (v.stage4Preparation.lifecycle.hardSeconds = 28801),
+    },
+    {
+      name: "termination grace",
+      key: "terminationGraceSeconds",
+      mutate: (v) => (v.stage4Preparation.lifecycle.terminationGraceSeconds = 0),
+    },
+    {
+      name: "WAL below bound",
+      key: "auditWalMaxBytes",
+      mutate: (v) => (v.stage4Preparation.auditWalMaxBytes = 0),
+    },
+    {
+      name: "WAL above bound",
+      key: "auditWalMaxBytes",
+      mutate: (v) => (v.stage4Preparation.auditWalMaxBytes = 1073741825),
+    },
+    {
+      name: "capability source binding",
+      key: "sourceBindingRequired",
+      mutate: (v) => (v.stage4Preparation.proxyIdentity.sourceBindingRequired = false),
+    },
+  ];
+
+  for (const hostile of cases) {
+    const values = validValues();
+    hostile.mutate(values);
+    const temporary = writeTemporaryValues(values);
+    try {
+      const result = helm([
+        "template",
+        release,
+        chart,
+        "--namespace",
+        namespace,
+        "--api-versions",
+        renderCapability,
+        "--skip-schema-validation",
+        "-f",
+        temporary.path,
+      ]);
+      assert.equal(result.error, undefined, `${hostile.name}: ${result.error?.message}`);
+      assert.notEqual(result.status, 0, `${hostile.name}: unexpectedly rendered`);
+      assert.doesNotMatch(result.stdout, /^apiVersion:/mu, `${hostile.name}: no usable manifest stream`);
+      assert.match(result.stderr, escapePattern(hostile.key), `${hostile.name}: bounded template error`);
     } finally {
       rmSync(temporary.directory, { recursive: true, force: true });
     }
