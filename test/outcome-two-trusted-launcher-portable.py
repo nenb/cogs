@@ -51,6 +51,20 @@ def load_path(name, path):
     sys.modules[name] = module
     spec.loader.exec_module(module)
     return module
+def compression_argv_contract(module):
+    captured = []
+    def syscall(_number, _fd, _path, argv, _environment, _flags):
+        captured.append(tuple(value.decode() for value in argv if value is not None))
+        raise OSError("captured execveat")
+    ops = module._SystemOps()
+    ops.libc = SimpleNamespace(syscall=syscall)
+    for role in ("zstd", "gzip"):
+        try: ops.execveat(7, role)
+        except OSError: pass
+        else: raise AssertionError("captured execveat returned")
+    expected = [("zstd", "-q", "-d", "-c", "--no-asyncio"), ("gzip", "-d", "-c")]
+    if captured != expected: raise AssertionError(f"fixed compression argv drift: {captured}")
+    if not {"clone", "clone3"} <= set(module._DENIED_SYSCALLS): raise AssertionError("clone denial drift")
 def production_symbol(module, name):
     value = module
     for component in name.split("."):
@@ -3130,6 +3144,7 @@ def parent():
         raise AssertionError("fixed CLI issuer integration is absent")
     for job in ("A", "B", "E", "integration"):
         causal_scope["common_fixed_cli_contract"](module, job)
+    compression_argv_contract(module)
     identity_map_contracts(module)
     forged_preexec_identity_contract(module)
     namespace_owner_cleanup_contract(module)

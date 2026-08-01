@@ -546,7 +546,7 @@ class _SystemOps:
             observed[name] = saved
         return observed
     def execveat(self, fd: int, role: str) -> NoReturn:
-        argv_values = (role, "-q", "-d", "-c") if role == "zstd" else (role, "-d", "-c")
+        argv_values = (role, "-q", "-d", "-c", "--no-asyncio") if role == "zstd" else (role, "-d", "-c")
         argv = (ctypes.c_char_p * (len(argv_values) + 1))(*(item.encode() for item in argv_values), None)
         environment = (ctypes.c_char_p * 2)(b"LC_ALL=C", None)
         self._checked(self.libc.syscall(322, fd, b"", argv, environment, _AT_EMPTY_PATH), "execveat")
