@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ctypes
 import errno
+import importlib.util
 import fcntl
 import hashlib
 import json
@@ -151,6 +152,7 @@ def run_case(case):
                     os.chdir("/")
                     checked(libc.prctl(_PR_SET_DUMPABLE, 0, 0, 0, 0), "dumpable")
                     checked(libc.prctl(_PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0), "nnp")
+                    if case.get("seccomp"): install_seccomp()
                     execveat(198, tuple(case["argv"]), tuple(case.get("env", ("LC_ALL=C",))))
                 except BaseException as error:
                     os._exit(126)
@@ -234,6 +236,13 @@ def run_case(case):
     return result
 
 
+def install_seccomp():
+    """Install the exact production filter, loaded from the matrix harness."""
+    spec = importlib.util.spec_from_file_location("matrix", os.path.join(os.path.dirname(os.path.abspath(__file__)), "child-sandbox-matrix.py"))
+    matrix = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(matrix)
+    return matrix.install_seccomp()
+
 GZIP, ZSTD, PYTHON = "/usr/bin/gzip", "/usr/bin/zstd", "/usr/bin/python3"
 ALT_GZIP = "/tmp/alt-rootfs/bin/gzip"
 
@@ -249,6 +258,9 @@ CASES = (
     {"name": "gzip/no-loader", "executable": GZIP, "argv": ("gzip", "-d", "-c"), "omit": ("ld-linux",)},
     {"name": "gzip/truncated", "executable": GZIP, "argv": ("gzip", "-d", "-c"), "truncate": 4096},
     {"name": "zstd/zstd-argv", "executable": ZSTD, "argv": ("zstd", "-q", "-d", "-c")},
+    {"name": "zstd/seccomp", "executable": ZSTD, "argv": ("zstd", "-q", "-d", "-c"), "seccomp": True},
+    {"name": "zstd/seccomp/discovery-argv", "executable": ZSTD, "argv": ("zstd", "-dc", "--no-progress"), "seccomp": True},
+    {"name": "gzip/seccomp", "executable": GZIP, "argv": ("gzip", "-d", "-c"), "seccomp": True},
     {"name": "zstd/gzip-argv", "executable": ZSTD, "argv": ("gzip", "-d", "-c")},
     {"name": "zstd/closure-argv", "executable": ZSTD, "argv": ("zstd", "-dc", "--no-progress")},
     {"name": "zstd/no-libz", "executable": ZSTD, "argv": ("zstd", "-q", "-d", "-c"), "omit": ("libz.so",)},
