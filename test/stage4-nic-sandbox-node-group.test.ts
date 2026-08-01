@@ -21,7 +21,7 @@ const root = resolve(import.meta.dirname, "..");
 const contractPath = resolve(root, "deploy/nic/stage4-sandbox-node-group-contract.json");
 const contractSchema = require("../schemas/stage4-nic-sandbox-node-group-contract-v1.json") as object;
 const verdictSchema = require("../schemas/stage4-nic-sandbox-node-group-verdict-v1.json") as object;
-const ajv = new Ajv2020({ allErrors: true, strict: true, strictRequired: false });
+const ajv = new Ajv2020({ allErrors: true, strict: true, strictRequired: false, ownProperties: true });
 const validateContract = ajv.compile(contractSchema) as ValidateFunction;
 const validateVerdict = ajv.compile(verdictSchema) as ValidateFunction;
 
@@ -89,6 +89,9 @@ test("the checked-in contract pins exact NIC source and is blocked by its missin
   assertNonAuthority(first);
 
   assert.deepEqual(value.nic_source, STAGE4_PINNED_NIC_SOURCE);
+  const tofuSource = STAGE4_PINNED_NIC_SOURCE.files[2];
+  assert.equal(tofuSource?.git_blob_sha, "934a1f92413ba7c758f57d779c3ad1049256b30d");
+  assert.equal(tofuSource?.content_sha256, "39e87c14203fa602568bcff4e64126271073484e531c21a83028eb104a9a506b");
   assert.deepEqual(value.nic_capability_assessment, STAGE4_NIC_CAPABILITY_ASSESSMENT);
   assert.equal(Object.isFrozen(STAGE4_PINNED_NIC_SOURCE.files), true);
   assert.equal(Object.isFrozen(STAGE4_PINNED_NIC_SOURCE.eks_module.files), true);
@@ -317,6 +320,18 @@ test("unknown fields, reordered semantics, and hostile introspection fail determ
     evaluateStage4NicSandboxNodeGroupContract(original),
   );
 
+  let getterCalls = 0;
+  const inheritedValues = imagePinned();
+  delete inheritedValues.version;
+  const inherited = Object.assign(
+    Object.create({
+      get version() {
+        getterCalls += 1;
+        return "cogs.stage4-nic-sandbox-node-group-contract/v1";
+      },
+    }) as Record<string, unknown>,
+    inheritedValues,
+  );
   const traps: unknown[] = [
     new Proxy(
       {},
@@ -329,15 +344,18 @@ test("unknown fields, reordered semantics, and hostile introspection fail determ
     Object.defineProperty({}, "version", {
       enumerable: true,
       get: () => {
-        throw new Error("getter");
+        getterCalls += 1;
+        return "cogs.stage4-nic-sandbox-node-group-contract/v1";
       },
     }),
+    inherited,
     { ...imagePinned(), scheduling: new Date() },
   ];
   for (const hostile of traps) {
     assert.doesNotThrow(() => evaluateStage4NicSandboxNodeGroupContract(hostile));
     assertDrift(hostile, "STAGE4_NIC_INVALID_SHAPE");
   }
+  assert.equal(getterCalls, 0, "classifier must not invoke own or inherited getters");
 });
 
 test("the classifier exposes only fixed local-static outputs and no execution/provider surface", () => {

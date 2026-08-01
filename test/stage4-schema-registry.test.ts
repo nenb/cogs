@@ -214,7 +214,7 @@ const STAGE4_SCHEMA_REGISTRY = [
 ] as const satisfies readonly RegistryEntry[];
 
 function compileRegistry(): Map<string, ValidateFunction> {
-  const ajv = new Ajv2020({ allErrors: true, strict: true, strictRequired: false });
+  const ajv = new Ajv2020({ allErrors: true, strict: true, strictRequired: false, ownProperties: true });
   return new Map(
     STAGE4_SCHEMA_REGISTRY.map(({ file }) => {
       const schema = JSON.parse(readFileSync(resolve(schemaDirectory, file), "utf8")) as object;
@@ -298,6 +298,24 @@ test("every Stage 4 schema rejects unknown root fields and representative nested
     planMutation,
     "teardown plan accepted an unknown phase field",
   );
+});
+
+test("Stage 4 schema validation uses own-property JSON semantics for inherited fields", () => {
+  const validators = compileRegistry();
+  const validateNic = validatorFor(validators, "stage4-nic-sandbox-node-group-contract-v1.json");
+  const sample = nicContractSample();
+  delete sample.version;
+  const inherited = Object.assign(
+    Object.create({ version: "cogs.stage4-nic-sandbox-node-group-contract/v1" }) as JsonObject,
+    sample,
+  );
+  assert.equal(validateNic(inherited), false, "an inherited version must not satisfy a required own property");
+
+  const inheritedUnknown = Object.assign(
+    Object.create({ future_security_field: true }) as JsonObject,
+    nicContractSample(),
+  );
+  assert.equal(validateNic(inheritedUnknown), true, "inherited fields are outside JSON own-property semantics");
 });
 
 test("Stage 4 schemas reject cross-domain version and authority substitution", () => {

@@ -17,7 +17,7 @@ A lead performed read-only public GitHub source authentication outside this impl
 | NIC | `nebari-dev/nebari-infrastructure-core` tag `v0.11.0`, commit `28221c652c56bb8d48a92538c01503a82f2f9321`, tree `4dfb0333e5d91003e69881ca1dcf66e1ea9ff6c2` |
 | NIC `config.go` | blob `b607ccd28fea4fa9dbb1b5f2cab8035c88eb8ab8`, content SHA-256 `9926e0de378b488778e4975324a76c7d3ab3aaa5b4c661e81211a1efe382e920` |
 | NIC template `main.tf` | blob `719efb5d85b8247968f6965acd3911b3a0a93337`, content SHA-256 `eca59352b11fbcb48085a9276e5b01682256ce17f55fa7f4a23c0bcccfa443f4` |
-| NIC `tofu.go` | content SHA-256 `39e87c14203fa602568bcff4e64126271073484e531c21a83028eb104a9a506b`; no blob ID was supplied, so the contract records `null` rather than inventing one |
+| NIC `tofu.go` | blob `934a1f92413ba7c758f57d779c3ad1049256b30d`, content SHA-256 `39e87c14203fa602568bcff4e64126271073484e531c21a83028eb104a9a506b` |
 | EKS module | registry source `nebari-dev/eks-cluster/aws` `0.7.0`, commit `5d4cb31f07fda5c010b5be580258d32f6db75828`, tree `240dd73f709f67706d60b35d3256661848736ad2` |
 | Module files | `variables.tf` `20a17ac8d6a76ebaf5708ac229a062697d277e283561e070f1aac378603e1d67`; `locals.tf` `e21403a5cef4faf515c6179b221e690553f6ad22d012befb57e529b3ccceec5e`; `main.tf` `e7f3107a21e597da972220993f25f38527af74999b6e44f370317938f7d732a0` |
 
@@ -59,7 +59,9 @@ The pinned v0.11.0 source cannot satisfy this requirement. A reviewed NIC extens
 
 Trusted Cogs/proxy resources require only `cogs.dev/node-domain=trusted` and have no sandbox taint toleration. Sandbox resources require all three node-group labels (`node-domain`, `nested-virtualization`, and `sandbox-runtime`) and the one exact Kata toleration. The node group has the corresponding labels and taint.
 
-This matches the Helm NOTES-only source shape. The separation is declarative only: it does not prove node labels, scheduler behavior, RuntimeClass existence, admission behavior, or CNI enforcement. Adding the sandbox toleration to trusted resources, changing either selector, removing the taint, or merging the domains is rejected as scheduling drift.
+This matches the Helm NOTES-only source shape. Enabled values require the exact `kata-qemu-cogs` RuntimeClass name in both JSON Schema and template validation; `crun`, `kata-qemu-tcg`, and every other substitution fail even when Helm schema validation is skipped. Template validation also recursively enforces exact structural keys for every fixed `stage4Preparation` object, so unknown, misspelled, or future fields such as `ready` cannot bypass review through `--skip-schema-validation`. Selector label maps remain intentionally key-driven but are bounded and syntax-checked; trusted and sandbox placement maps themselves are exact.
+
+The separation is declarative only: it does not prove node labels, scheduler behavior, RuntimeClass existence, admission behavior, or CNI enforcement. Adding the sandbox toleration to trusted resources, changing either selector, removing the taint, or merging the domains is rejected as scheduling drift.
 
 ## Security transitions
 

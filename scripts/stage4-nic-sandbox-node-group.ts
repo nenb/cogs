@@ -74,7 +74,7 @@ export const STAGE4_PINNED_NIC_SOURCE = deepFreeze({
     },
     {
       path: "pkg/providers/cluster/aws/tofu.go",
-      git_blob_sha: null,
+      git_blob_sha: "934a1f92413ba7c758f57d779c3ad1049256b30d",
       content_sha256: "39e87c14203fa602568bcff4e64126271073484e531c21a83028eb104a9a506b",
     },
   ],

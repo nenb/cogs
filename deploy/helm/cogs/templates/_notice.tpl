@@ -30,8 +30,39 @@ dev.cogs/qualification: "none"
 dev.cogs/production-ready: "false"
 {{- end -}}
 
+{{- define "cogs.stage4.requireExactKeys" -}}
+{{- $value := .value -}}
+{{- $path := .path -}}
+{{- $allowed := .allowed -}}
+{{- if not (kindIs "map" $value) -}}
+{{- fail (printf "%s must be an object with exact allowed keys" $path) -}}
+{{- end -}}
+{{- range $key := keys $value -}}
+{{- if not (has $key $allowed) -}}
+{{- fail (printf "%s.%s is not an allowed field" $path $key) -}}
+{{- end -}}
+{{- end -}}
+{{- range $key := $allowed -}}
+{{- if not (hasKey $value $key) -}}
+{{- fail (printf "%s.%s is required" $path $key) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
 {{- define "cogs.stage4.validate" -}}
 {{- $v := .Values.stage4Preparation -}}
+{{- include "cogs.stage4.requireExactKeys" (dict "path" "stage4Preparation" "value" $v "allowed" (list "enabled" "nonProductionAcknowledgement" "sessionIdentity" "runtimeClassName" "images" "placement" "storage" "openBao" "otlp" "proxyIdentity" "resourceProfile" "lifecycle" "auditWalMaxBytes" "publicEgressCaConfigMap")) -}}
+{{- include "cogs.stage4.requireExactKeys" (dict "path" "stage4Preparation.images" "value" $v.images "allowed" (list "worker" "proxy" "sandbox")) -}}
+{{- include "cogs.stage4.requireExactKeys" (dict "path" "stage4Preparation.placement" "value" $v.placement "allowed" (list "trusted" "sandbox")) -}}
+{{- include "cogs.stage4.requireExactKeys" (dict "path" "stage4Preparation.placement.trusted" "value" $v.placement.trusted "allowed" (list "nodeSelector" "tolerations")) -}}
+{{- include "cogs.stage4.requireExactKeys" (dict "path" "stage4Preparation.placement.sandbox" "value" $v.placement.sandbox "allowed" (list "nodeSelector" "tolerations")) -}}
+{{- include "cogs.stage4.requireExactKeys" (dict "path" "stage4Preparation.storage" "value" $v.storage "allowed" (list "workspaceStorageClass" "workspaceSize" "workspaceAccessMode" "sessionStateStorageClass" "sessionStateSize" "sessionStateAccessMode")) -}}
+{{- include "cogs.stage4.requireExactKeys" (dict "path" "stage4Preparation.openBao" "value" $v.openBao "allowed" (list "endpoint" "kubernetesAuthMount" "kubernetesAuthRole" "pkiPath" "tokenAudience" "peer")) -}}
+{{- include "cogs.stage4.requireExactKeys" (dict "path" "stage4Preparation.openBao.peer" "value" $v.openBao.peer "allowed" (list "namespaceLabels" "podLabels" "port")) -}}
+{{- include "cogs.stage4.requireExactKeys" (dict "path" "stage4Preparation.otlp" "value" $v.otlp "allowed" (list "endpoint" "protocol" "peer")) -}}
+{{- include "cogs.stage4.requireExactKeys" (dict "path" "stage4Preparation.otlp.peer" "value" $v.otlp.peer "allowed" (list "namespaceLabels" "podLabels" "port")) -}}
+{{- include "cogs.stage4.requireExactKeys" (dict "path" "stage4Preparation.proxyIdentity" "value" $v.proxyIdentity "allowed" (list "capabilityAudience" "sourceBindingRequired")) -}}
+{{- include "cogs.stage4.requireExactKeys" (dict "path" "stage4Preparation.lifecycle" "value" $v.lifecycle "allowed" (list "idleSeconds" "hardSeconds" "terminationGraceSeconds")) -}}
 {{- if ne $v.enabled true -}}
 {{- fail "stage4Preparation.enabled must be exactly true for notes-only static source shapes" -}}
 {{- end -}}
@@ -43,11 +74,8 @@ dev.cogs/production-ready: "false"
 {{- if or (not (kindIs "string" $v.sessionIdentity)) (not (regexMatch $dnsLabel $v.sessionIdentity)) -}}
 {{- fail "stage4Preparation.sessionIdentity must be a nonempty DNS label" -}}
 {{- end -}}
-{{- if or (not (kindIs "string" $v.runtimeClassName)) (not (regexMatch $dnsSubdomain $v.runtimeClassName)) -}}
-{{- fail "stage4Preparation.runtimeClassName must be a DNS subdomain" -}}
-{{- end -}}
-{{- if has $v.runtimeClassName (list "runc" "runsc" "default" "docker" "containerd" "oci") -}}
-{{- fail "stage4Preparation.runtimeClassName must name a reviewed non-default VM RuntimeClass" -}}
+{{- if ne $v.runtimeClassName "kata-qemu-cogs" -}}
+{{- fail "stage4Preparation.runtimeClassName must be exactly kata-qemu-cogs" -}}
 {{- end -}}
 {{- $digestPattern := "^[a-z0-9]+([._-][a-z0-9]+)*(:[1-9][0-9]{0,4})?(/[a-z0-9]+([._-][a-z0-9]+)*)+(:[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?@sha256:[a-f0-9]{64}$" -}}
 {{- if or (not (kindIs "string" $v.images.worker)) (not (regexMatch $digestPattern $v.images.worker)) -}}

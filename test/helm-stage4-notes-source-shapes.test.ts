@@ -729,6 +729,21 @@ test("enabled values fail closed for missing, unsafe, or extensible inputs", () 
       mutate: (v) => (v.stage4Preparation.runtimeClassName = "runc"),
     },
     {
+      name: "crun RuntimeClass",
+      key: "runtimeClassName",
+      mutate: (v) => (v.stage4Preparation.runtimeClassName = "crun"),
+    },
+    {
+      name: "TCG Kata RuntimeClass",
+      key: "runtimeClassName",
+      mutate: (v) => (v.stage4Preparation.runtimeClassName = "kata-qemu-tcg"),
+    },
+    {
+      name: "arbitrary Kata RuntimeClass",
+      key: "runtimeClassName",
+      mutate: (v) => (v.stage4Preparation.runtimeClassName = "kata-arbitrary"),
+    },
+    {
       name: "trusted selector",
       key: "nodeSelector",
       mutate: (v) => (v.stage4Preparation.placement.trusted.nodeSelector = {}),
@@ -960,6 +975,92 @@ test("enabled values fail closed for missing, unsafe, or extensible inputs", () 
 test("template validation rejects hostile security inputs with schema validation skipped", () => {
   type HostileCase = { name: string; key: string; mutate(values: ValuesFile): void };
   const cases: HostileCase[] = [
+    {
+      name: "crun RuntimeClass substitution",
+      key: "runtimeClassName",
+      mutate: (v) => (v.stage4Preparation.runtimeClassName = "crun"),
+    },
+    {
+      name: "TCG Kata RuntimeClass substitution",
+      key: "runtimeClassName",
+      mutate: (v) => (v.stage4Preparation.runtimeClassName = "kata-qemu-tcg"),
+    },
+    {
+      name: "arbitrary Kata RuntimeClass substitution",
+      key: "runtimeClassName",
+      mutate: (v) => (v.stage4Preparation.runtimeClassName = "kata-arbitrary"),
+    },
+    {
+      name: "future root readiness field",
+      key: "ready",
+      mutate: (v) => ((v.stage4Preparation as unknown as Record<string, unknown>).ready = true),
+    },
+    {
+      name: "misspelled root runtime field",
+      key: "runtimeClasName",
+      mutate: (v) => ((v.stage4Preparation as unknown as Record<string, unknown>).runtimeClasName = "kata-qemu-cogs"),
+    },
+    {
+      name: "future image field",
+      key: "ready",
+      mutate: (v) => ((v.stage4Preparation.images as unknown as Record<string, unknown>).ready = true),
+    },
+    {
+      name: "future placement field",
+      key: "ready",
+      mutate: (v) => ((v.stage4Preparation.placement as unknown as Record<string, unknown>).ready = true),
+    },
+    {
+      name: "future trusted placement field",
+      key: "ready",
+      mutate: (v) => ((v.stage4Preparation.placement.trusted as unknown as Record<string, unknown>).ready = true),
+    },
+    {
+      name: "future sandbox placement field",
+      key: "ready",
+      mutate: (v) => ((v.stage4Preparation.placement.sandbox as unknown as Record<string, unknown>).ready = true),
+    },
+    {
+      name: "future storage field",
+      key: "ready",
+      mutate: (v) => ((v.stage4Preparation.storage as unknown as Record<string, unknown>).ready = true),
+    },
+    {
+      name: "future OpenBao field",
+      key: "ready",
+      mutate: (v) => ((v.stage4Preparation.openBao as unknown as Record<string, unknown>).ready = true),
+    },
+    {
+      name: "future OpenBao peer field",
+      key: "ready",
+      mutate: (v) => ((v.stage4Preparation.openBao.peer as unknown as Record<string, unknown>).ready = true),
+    },
+    {
+      name: "future OTLP field",
+      key: "ready",
+      mutate: (v) => ((v.stage4Preparation.otlp as unknown as Record<string, unknown>).ready = true),
+    },
+    {
+      name: "future OTLP peer field",
+      key: "ready",
+      mutate: (v) => ((v.stage4Preparation.otlp.peer as unknown as Record<string, unknown>).ready = true),
+    },
+    {
+      name: "future proxy identity field",
+      key: "ready",
+      mutate: (v) => ((v.stage4Preparation.proxyIdentity as unknown as Record<string, unknown>).ready = true),
+    },
+    {
+      name: "misspelled proxy identity field",
+      key: "sourceBindingRequire",
+      mutate: (v) =>
+        ((v.stage4Preparation.proxyIdentity as unknown as Record<string, unknown>).sourceBindingRequire = true),
+    },
+    {
+      name: "future lifecycle field",
+      key: "ready",
+      mutate: (v) => ((v.stage4Preparation.lifecycle as unknown as Record<string, unknown>).ready = true),
+    },
     {
       name: "legacy zero resource quantities",
       key: "resources",
