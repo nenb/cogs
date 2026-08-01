@@ -53,8 +53,8 @@ const FUTURE_EKS_CHECK_IDS = [
 const TEARDOWN_CONTRACT = {
   planVersion: "cogs.stage4-teardown-plan/v1",
   verdictVersion: "cogs.stage4-teardown-verdict/v1",
-  completeStatus: "zero-verified",
-  completeReason: "STAGE4_ZERO_VERIFIED",
+  completeStatus: "evidence-order-complete",
+  completeReason: "STAGE4_EVIDENCE_ORDER_COMPLETE",
   rows: [
     ["freeze-reconcilers", "control-observer"],
     ["close-admission", "admission-observer"],
@@ -63,7 +63,7 @@ const TEARDOWN_CONTRACT = {
     ["remove-session-workloads", "workload-mutator"],
     ["verify-kubernetes-zero", "kubernetes-zero-observer"],
     ["remove-cluster-infrastructure", "infrastructure-mutator"],
-    ["verify-independent-cloud-zero", "independent-cloud-zero-observer"],
+    ["record-external-cloud-inventory-claim", "claimed-external-inventory-observer"],
   ],
 } as const;
 
@@ -76,7 +76,7 @@ function staticSample(): JsonObject {
     cloud_execution_observed: false,
     stage4_exit_satisfied: false,
     release_eligible: false,
-    static_outcome: "conforming",
+    asserted_static_outcome: "conforming",
     artifacts: {
       source_sha256: sha("1"),
       chart_sha256: sha("2"),
@@ -117,8 +117,15 @@ function teardownPlanSample(): JsonObject {
 function teardownVerdictSample(): JsonObject {
   return {
     version: TEARDOWN_CONTRACT.verdictVersion,
+    authority: "local-teardown-order-classifier",
+    cloud_execution_observed: false,
+    cloud_inventory_observed: false,
+    stage4_exit_satisfied: false,
+    release_eligible: false,
     source_sha256: sha("0"),
     profile_sha256: sha("1"),
+    plan_sha256: sha("a"),
+    evidence_root_sha256: sha("b"),
     status: TEARDOWN_CONTRACT.completeStatus,
     next_phase: null,
     accepted_phase_count: TEARDOWN_CONTRACT.rows.length,
