@@ -10,114 +10,158 @@
 
 ## Purpose and non-authority
 
-Define the API-key-only Stage 5 release gate before a release candidate or Stage 5 campaign exists. This issue is specification work, not acceptance evidence. Its local tests establish only that the draft has the intended strict shape and fail-closed constants.
+This draft defines the API-key-only Stage 5 gate without supplying evidence or authority. S4-11 is a hard predecessor and remains `required-not-observed-by-this-draft`; `stage4_exit_satisfied=false` and `evidence_accepted=false`. Stage 4 static preparation and teardown-order outputs remain disjoint local authorities and cannot satisfy S4-11.
 
-This draft does **not**:
+Every authority-bearing field is false. The release-candidate source revision, artifact root, immutable binding, principal identities, identity bindings, criterion evidence bindings, provider evidence bindings, and evidence references are null or empty and explicitly blocking. Schema validity proves only bounded inventory consistency. It authenticates no person or artifact, grants no approval, observes no cloud or provider execution, and establishes no release, production, GA, or compliance result.
 
-- complete, accept, or infer S4-11 or any Stage 4 exit criterion;
-- convert Stage 4 static preparation or teardown-order output into EKS evidence;
-- authorize a campaign, provider/model request, deployment, cluster, or inventory operation;
-- establish that any listed release requirement passed;
-- authenticate a reviewer, campaign operator, evidence producer, artifact, or observation;
-- finalize the matrix, make a go/no-go recommendation, or make Cogs release eligible.
+Finalization requires a new authority/schema after accepted S4-11 and later evidence bound to one frozen release candidate. This draft cannot be edited into a release verdict.
 
-S4-11 is a hard predecessor. This draft records it as `required-not-observed-by-this-draft`, with `stage4_exit_satisfied=false` and `evidence_accepted=false`. The merged Stage 4 static report and local teardown classifier remain disjoint, non-release authorities: their static assertions and digest bindings cannot satisfy S4-11. Only the future S4-11 authority may establish its result.
+## Criterion-level traceability
 
-After S4-11 is accepted, Stage 5 still requires evidence bound to one frozen release candidate. S4-11 closure or acceptance alone cannot finalize this matrix or establish release eligibility.
+The matrix contains **35 immutable criterion mappings**: all 22 numbered criteria in `DESIGN.md` section 24 and all 13 checkboxes in `IMPLEMENTATION.md` section 45. Each row has a source locator and full source-text SHA-256 in the JSON, accountable role, exact profile, evidence lane and future digest-reference contract, dependencies, current blocker, and applicability. All rows remain `unexecuted-by-this-draft`, have null principal/evidence bindings, and are not release eligible.
 
-## Fixed release boundary
+The expected inventory in `test/stage5-api-key-release-matrix.test.ts` is independent of the JSON and schema. It derives source-text digests from the two authoritative documents while separately fixing IDs and mappings; missing, duplicate, reordered, remapped, or stale-source criteria fail.
 
-The release scope is **API keys only**:
+| Criterion | Immutable source | Accountable role | Exact profile | Evidence lane / contract | Dependencies | Current blocker | Applicability |
+|---|---|---|---|---|---|---|---|
+| `DESIGN-24.01` | `DESIGN.md#24.1` | `release-engineer` | `local-static` | `local-test` / `future-local-test-reference-v1` | `S4-11`<br>`release-candidate-binding` | `release-candidate-binding-not-present` | `mandatory-api-key-release` |
+| `DESIGN-24.02` | `DESIGN.md#24.2` | `release-engineer` | `local-static` | `local-test` / `future-local-test-reference-v1` | `S4-11`<br>`release-candidate-binding` | `release-candidate-binding-not-present` | `mandatory-api-key-release` |
+| `DESIGN-24.03` | `DESIGN.md#24.3` | `release-engineer` | `linux-kvm` | `local-test` / `future-local-test-reference-v1` | `S4-11`<br>`release-candidate-binding` | `release-candidate-binding-not-present` | `mandatory-api-key-release` |
+| `DESIGN-24.04` | `DESIGN.md#24.4` | `campaign-operator` | `eks-kata-release-candidate` | `separately-approved-campaign` / `future-eks-conformance-reference-v1` | `S4-11`<br>`release-candidate-binding`<br>`campaign-approval`<br>`real-dependencies` | `s4-11-not-accepted` | `mandatory-api-key-release` |
+| `DESIGN-24.05` | `DESIGN.md#24.5` | `campaign-operator` | `eks-kata-release-candidate` | `separately-approved-campaign` / `future-eks-conformance-reference-v1` | `S4-11`<br>`release-candidate-binding`<br>`campaign-approval`<br>`real-dependencies` | `s4-11-not-accepted` | `mandatory-api-key-release` |
+| `DESIGN-24.06` | `DESIGN.md#24.6` | `campaign-operator` | `eks-kata-release-candidate` | `separately-approved-campaign` / `future-eks-conformance-reference-v1` | `S4-11`<br>`release-candidate-binding`<br>`campaign-approval`<br>`real-dependencies` | `s4-11-not-accepted` | `mandatory-api-key-release` |
+| `DESIGN-24.07` | `DESIGN.md#24.7` | `campaign-operator` | `eks-kata-release-candidate` | `separately-approved-campaign` / `future-eks-conformance-reference-v1` | `S4-11`<br>`release-candidate-binding`<br>`campaign-approval`<br>`real-dependencies` | `s4-11-not-accepted` | `mandatory-api-key-release` |
+| `DESIGN-24.08` | `DESIGN.md#24.8` | `campaign-operator` | `eks-kata-release-candidate` | `separately-approved-campaign` / `future-eks-conformance-reference-v1` | `S4-11`<br>`release-candidate-binding`<br>`campaign-approval`<br>`real-dependencies` | `s4-11-not-accepted` | `mandatory-api-key-release` |
+| `DESIGN-24.09` | `DESIGN.md#24.9` | `campaign-operator` | `eks-kata-release-candidate` | `separately-approved-campaign` / `future-eks-conformance-reference-v1` | `S4-11`<br>`release-candidate-binding`<br>`campaign-approval`<br>`real-dependencies` | `s4-11-not-accepted` | `mandatory-api-key-release` |
+| `DESIGN-24.10` | `DESIGN.md#24.10` | `campaign-operator` | `eks-kata-release-candidate` | `separately-approved-campaign` / `future-eks-conformance-reference-v1` | `S4-11`<br>`release-candidate-binding`<br>`campaign-approval`<br>`real-dependencies` | `s4-11-not-accepted` | `mandatory-api-key-release` |
+| `DESIGN-24.11` | `DESIGN.md#24.11` | `campaign-operator` | `eks-kata-release-candidate` | `separately-approved-campaign` / `future-eks-conformance-reference-v1` | `S4-11`<br>`release-candidate-binding`<br>`campaign-approval`<br>`real-dependencies` | `s4-11-not-accepted` | `mandatory-api-key-release` |
+| `DESIGN-24.12` | `DESIGN.md#24.12` | `campaign-operator` | `eks-kata-release-candidate` | `separately-approved-campaign` / `future-eks-conformance-reference-v1` | `S4-11`<br>`release-candidate-binding`<br>`campaign-approval`<br>`real-dependencies` | `s4-11-not-accepted` | `mandatory-api-key-release` |
+| `DESIGN-24.13` | `DESIGN.md#24.13` | `release-engineer` | `local-static` | `local-test` / `future-local-test-reference-v1` | `S4-11`<br>`release-candidate-binding` | `release-candidate-binding-not-present` | `mandatory-api-key-release` |
+| `DESIGN-24.14` | `DESIGN.md#24.14` | `release-engineer` | `local-static` | `local-test` / `future-local-test-reference-v1` | `S4-11`<br>`release-candidate-binding`<br>`oauth-disabled-branch` | `release-candidate-binding-not-present` | `mandatory-api-key-disabled-oauth-branch` |
+| `DESIGN-24.15` | `DESIGN.md#24.15` | `release-engineer` | `linux-kvm` | `local-test` / `future-local-test-reference-v1` | `S4-11`<br>`release-candidate-binding` | `release-candidate-binding-not-present` | `mandatory-api-key-release` |
+| `DESIGN-24.16` | `DESIGN.md#24.16` | `release-engineer` | `linux-kvm` | `local-test` / `future-local-test-reference-v1` | `S4-11`<br>`release-candidate-binding` | `release-candidate-binding-not-present` | `mandatory-api-key-release` |
+| `DESIGN-24.17` | `DESIGN.md#24.17` | `release-engineer` | `linux-kvm` | `local-test` / `future-local-test-reference-v1` | `S4-11`<br>`release-candidate-binding` | `release-candidate-binding-not-present` | `mandatory-api-key-release` |
+| `DESIGN-24.18` | `DESIGN.md#24.18` | `release-engineer` | `local-static` | `local-test` / `future-local-test-reference-v1` | `S4-11`<br>`release-candidate-binding` | `release-candidate-binding-not-present` | `mandatory-api-key-release` |
+| `DESIGN-24.19` | `DESIGN.md#24.19` | `release-engineer` | `linux-kvm` | `local-test` / `future-local-test-reference-v1` | `S4-11`<br>`release-candidate-binding` | `release-candidate-binding-not-present` | `mandatory-api-key-release` |
+| `DESIGN-24.20` | `DESIGN.md#24.20` | `campaign-operator` | `eks-kata-release-candidate` | `separately-approved-campaign` / `future-eks-conformance-reference-v1` | `S4-11`<br>`release-candidate-binding`<br>`campaign-approval`<br>`real-dependencies` | `s4-11-not-accepted` | `mandatory-api-key-release` |
+| `DESIGN-24.21` | `DESIGN.md#24.21` | `campaign-operator` | `eks-kata-release-load` | `separately-approved-campaign` / `future-load-reference-v1` | `S4-11`<br>`release-candidate-binding`<br>`campaign-approval`<br>`real-dependencies` | `s4-11-not-accepted` | `mandatory-api-key-release` |
+| `DESIGN-24.22` | `DESIGN.md#24.22` | `campaign-operator` | `eks-kata-release-load` | `separately-approved-campaign` / `future-load-reference-v1` | `S4-11`<br>`release-candidate-binding`<br>`campaign-approval`<br>`stage5-load-50` | `s4-11-not-accepted` | `mandatory-api-key-release` |
+| `STAGE5-45.01` | `IMPLEMENTATION.md#45.1` | `independent-security-reviewer` | `independent-review-exact-release-candidate` | `independent-review` / `future-acceptance-index-reference-v1` | `S4-11`<br>`release-candidate-binding`<br>`stage5-design-criteria`<br>`real-dependencies` | `independent-identities-not-present` | `mandatory-api-key-release` |
+| `STAGE5-45.02` | `IMPLEMENTATION.md#45.2` | `independent-security-reviewer` | `independent-review-exact-release-candidate` | `independent-review` / `future-independent-review-reference-v1` | `release-candidate-binding`<br>`independent-principal-bindings` | `independent-identities-not-present` | `mandatory-api-key-release` |
+| `STAGE5-45.03` | `IMPLEMENTATION.md#45.3` | `independent-security-reviewer` | `independent-review-exact-release-candidate` | `independent-review` / `future-independent-review-reference-v1` | `S4-11`<br>`release-candidate-binding`<br>`proxy-runtime-evidence` | `independent-identities-not-present` | `mandatory-api-key-release` |
+| `STAGE5-45.04` | `IMPLEMENTATION.md#45.4` | `release-engineer` | `local-static` | `local-test` / `future-local-test-reference-v1` | `S4-11`<br>`release-candidate-binding`<br>`provider-support-claims` | `release-candidate-binding-not-present` | `mandatory-api-key-disabled-oauth-branch` |
+| `STAGE5-45.05` | `IMPLEMENTATION.md#45.5` | `campaign-operator` | `eks-kata-release-load` | `separately-approved-campaign` / `future-load-reference-v1` | `S4-11`<br>`release-candidate-binding`<br>`campaign-approval`<br>`stage5-load-50` | `s4-11-not-accepted` | `mandatory-api-key-release` |
+| `STAGE5-45.06` | `IMPLEMENTATION.md#45.6` | `staff-release-decider` | `staff-release-decision` | `staff-decision` / `future-release-decision-reference-v1` | `stage5-load-50`<br>`advertised-concurrency-claim` | `staff-decision-not-present` | `mandatory-api-key-release` |
+| `STAGE5-45.07` | `IMPLEMENTATION.md#45.7` | `campaign-operator` | `eks-kata-release-candidate` | `separately-approved-campaign` / `future-eks-conformance-reference-v1` | `S4-11`<br>`release-candidate-binding`<br>`campaign-approval`<br>`real-dependencies` | `s4-11-not-accepted` | `mandatory-api-key-release` |
+| `STAGE5-45.08` | `IMPLEMENTATION.md#45.8` | `independent-security-reviewer` | `independent-review-exact-release-candidate` | `independent-review` / `future-independent-review-reference-v1` | `release-candidate-binding`<br>`stage5-privacy-evidence`<br>`independent-principal-bindings` | `independent-identities-not-present` | `mandatory-api-key-release` |
+| `STAGE5-45.09` | `IMPLEMENTATION.md#45.9` | `campaign-operator` | `eks-kata-release-candidate` | `separately-approved-campaign` / `future-privacy-deletion-reference-v1` | `S4-11`<br>`release-candidate-binding`<br>`campaign-approval`<br>`real-dependencies` | `s4-11-not-accepted` | `mandatory-api-key-release` |
+| `STAGE5-45.10` | `IMPLEMENTATION.md#45.10` | `release-engineer` | `local-static` | `local-test` / `future-operations-reference-v1` | `S4-11`<br>`release-candidate-binding`<br>`operations-runbook-inventory` | `release-candidate-binding-not-present` | `mandatory-api-key-release` |
+| `STAGE5-45.11` | `IMPLEMENTATION.md#45.11` | `zero-inventory-observer` | `independent-zero-inventory` | `independent-review` / `future-zero-inventory-reference-v1` | `S4-11`<br>`release-candidate-binding`<br>`campaign-approval`<br>`campaign-teardown-complete` | `independent-identities-not-present` | `mandatory-api-key-release` |
+| `STAGE5-45.12` | `IMPLEMENTATION.md#45.12` | `independent-security-reviewer` | `independent-review-exact-release-candidate` | `independent-review` / `future-independent-review-reference-v1` | `release-candidate-binding`<br>`residual-risk-register`<br>`independent-principal-bindings` | `independent-identities-not-present` | `mandatory-api-key-release` |
+| `STAGE5-45.13` | `IMPLEMENTATION.md#45.13` | `staff-release-decider` | `staff-release-decision` | `staff-decision` / `future-release-decision-reference-v1` | `stage5-design-criteria`<br>`stage5-independent-review`<br>`stage5-campaign-evidence`<br>`stage5-zero-inventory` | `staff-decision-not-present` | `mandatory-api-key-release` |
 
-- organization/user API keys are resolved through the scoped trusted path and supplied as runtime auth;
-- API-key values remain memory-only and absent from durable state, reports, and telemetry;
-- subscription OAuth is disabled and absent from the advertised support matrix;
-- Cogs workers cannot receive, persist, or refresh subscription refresh tokens;
-- subscription OAuth remains deferred to #13 and is not a release blocker.
+## Evidence lanes remain separate
 
-Enabling or advertising subscription OAuth invalidates this matrix. It requires the separate post-MVP broker, provider-terms decision, concurrency/revocation tests, review, and a new support declaration.
+- `local-test` evidence is repeatable release-candidate evidence only. It is neither independent review nor campaign approval.
+- `independent-review` requires a stable authenticated reviewer principal bound to exact source/artifacts and distinct from the roles listed below.
+- `separately-approved-campaign` requires fresh exact-revision approval, operator, approver, account/region, spend/resource/time bounds, destroy path, and evidence plan. Approval is not execution evidence.
+- `staff-decision` occurs only after all mandatory evidence and cannot be produced by this draft.
 
-## Evidence separation rules
+No mandatory criterion may be satisfied by a stub, `not-applicable`, unapproved skip, extrapolation, stale revision, self-asserted identity, or unauthenticated digest. Failure and uncertainty stay explicit.
 
-The three sections below are separate gates.
+## API-key provider claim matrix
 
-1. **Local tests** are repeatable release-candidate checks. A test run is not an independent review and cannot authorize a campaign.
-2. **Independent review** examines exact source, artifacts, and evidence. A local assertion, digest, self-review, or schema-valid document does not prove review independence or acceptance.
-3. **Separately approved campaigns** require fresh manual approval bound to the exact release-candidate revision, scope, spend, resource ceiling, expiry, operator, destroy path, and evidence plan. An approval is not execution evidence; execution evidence is not review acceptance; cleanup claims are not independent zero-inventory evidence.
+The explicit conservative provider set follows the implemented generic Pi runtime API-key path and the design's continuously tested target set. These are **provisional candidates**, not current release advertisements. Each provider needs its own future real-provider sample and immutable evidence binding before it may appear in an advertised support decision; one representative sample cannot cover the set.
 
-No mandatory row may be satisfied by `stubbed`, `not-applicable`, an unapproved skip, extrapolation, or evidence from a different source revision. Failures and unknown outcomes remain failures or uncertainty until rerun under newly recorded authority. Evidence must retain redacted diagnostics and known limitations rather than converting uncertainty to pass.
+| Provider | Implemented path state | Decision now | Advertised now | Future gate |
+|---|---|---|---:|---|
+| `anthropic` | `generic-runtime-key-path-present-provider-not-release-validated` | `provisional-candidate` | `false` | `provider-real-evidence-not-present`; one future real-provider evidence binding is required before any advertisement |
+| `openai` | `generic-runtime-key-path-present-provider-not-release-validated` | `provisional-candidate` | `false` | `provider-real-evidence-not-present`; one future real-provider evidence binding is required before any advertisement |
+| `openrouter` | `generic-runtime-key-path-present-provider-not-release-validated` | `provisional-candidate` | `false` | `provider-real-evidence-not-present`; one future real-provider evidence binding is required before any advertisement |
 
-## A. Local release-candidate tests
+Subscription OAuth is separately fixed to `disabled-unadvertised`, workers are forbidden from receiving refresh tokens, and #13 remains deferred outside this API-key release gate.
 
-All rows are mandatory and currently `unexecuted-by-this-draft` / `not-observed-by-this-draft`.
+## Platform and unsupported claim matrix
 
-| ID | Requirement | Minimum evidence required after S4-11 |
-|---|---|---|
-| `S5-L01.exact-release-candidate-binding` | Freeze one clean source revision; pin worker, sandbox, proxy, Kata/QEMU/kernel/OpenBao versions, image digests, and lockfiles. Prevent drift across evidence. | Exact source SHA, immutable image/artifact digests, version inventory, clean-tree assertion, and deterministic build/render records. |
-| `S5-L02.unit-schema-api-pi-jsonl` | Run formatting, typecheck, unit, strict schema, API, policy, Pi embedding, hostile discovery, native JSONL, history, export, and Helm static checks. | Complete local test manifest and machine report bound to L01, with failures/skips retained. |
-| `S5-L03.api-key-runtime-auth-and-redaction` | Prove API-key-only runtime auth for supported API-key providers, scoped retrieval, memory-only handling, and redacted errors/telemetry. | Positive fake/local auth flow plus negative missing/revoked/wrong-scope and durable/log/telemetry leakage checks. No external model call is part of this local row. |
-| `S5-L04.oauth-disabled-unadvertised-refresh-token-denial` | Prove every release configuration and support document keeps subscription OAuth disabled/unadvertised and rejects worker refresh-token material. | Config/schema/launch/API negative tests, support-matrix scan, and durable-state/log scan; #13 remains deferred. |
-| `S5-L05.trusted-worker-discovery-and-secret-confinement` | Re-run closed Pi loader canaries and trusted/untrusted boundary tests. | Evidence that no built-in host tool, extension, package, project code, guest path, session JSONL, model credential, integration credential, OpenBao identity, or CA private key crosses into the sandbox/trusted loader incorrectly. |
-| `S5-L06.local-security-failure-and-privacy-regression` | Re-run applicable local Linux/KVM egress, audit/WAL, revocation, SSH/SFTP, resource-limit, failure, and telemetry privacy regressions. | Authoritative-local reports with real local dependencies where applicable; local authority remains non-EKS and cannot satisfy C01. |
-| `S5-L07.supply-chain-sbom-vulnerability-license` | Build release artifacts reproducibly; generate SBOMs; run dependency, license, vulnerability, image-pin, lock-integrity, and secret scans. | Bound SBOM/scan reports, exception records with owner/expiry, image signatures or digest verification, and proof project dependencies cannot modify trusted packages. |
-| `S5-L08.runbook-support-matrix-and-contract-drift` | Verify required operations documents, supported/unsupported matrix, API-key-only claims, residual risks, and automated-test links are complete and mutually consistent. | Documentation inventory and contract-drift test report; absent runbooks or overstated claims fail this row. |
+`aws-eks-kata` is pending S4/S5 evidence and unadvertised. `linux-kvm` remains authoritative-local only. `insecure-container` and `macos-vm-dev` remain development-only. None is a current release claim.
 
-Passing the draft-schema tests added by #363 satisfies none of L01–L08; those tests validate only this provisional inventory.
+The following capabilities and claims are explicitly unsupported and unadvertised in this draft:
 
-## B. Independently reviewed evidence
+| Capability or claim | Status | Advertised | Reason |
+|---|---|---:|---|
+| `subscription-oauth` | `unsupported-unadvertised` | `false` | `deferred-issue-13` |
+| `production-daemon` | `unsupported-unadvertised` | `false` | `outside-mvp-scope` |
+| `user-ingress` | `unsupported-unadvertised` | `false` | `outside-mvp-scope` |
+| `session-sanitizer` | `unsupported-unadvertised` | `false` | `outside-mvp-scope` |
+| `apps` | `unsupported-unadvertised` | `false` | `outside-mvp-scope` |
+| `indexing-vector-search` | `unsupported-unadvertised` | `false` | `outside-mvp-scope` |
+| `gcp-production` | `unsupported-unadvertised` | `false` | `other-cloud-not-validated` |
+| `azure-production` | `unsupported-unadvertised` | `false` | `other-cloud-not-validated` |
+| `hetzner-production` | `unsupported-unadvertised` | `false` | `other-cloud-not-validated` |
+| `other-cloud-production` | `unsupported-unadvertised` | `false` | `other-cloud-not-validated` |
+| `general-availability` | `unsupported-unadvertised` | `false` | `release-not-established` |
+| `compliance-certification` | `unsupported-unadvertised` | `false` | `compliance-not-claimed` |
+| `grpc-credential-injection` | `unsupported-unadvertised` | `false` | `outside-mvp-scope` |
+| `non-http-egress` | `unsupported-unadvertised` | `false` | `outside-mvp-scope` |
 
-All rows require a reviewer authority bound to the exact L01 release candidate. They are currently `unperformed-by-this-draft` / `not-observed-by-this-draft`.
+This excludes a production daemon, user ingress, session sanitizer, apps, indexing/vector search, GCP/Azure/Hetzner or other-cloud production support, general availability, compliance certification, subscription OAuth, gRPC credential injection, and non-HTTP egress. Contradictory affirmative wording is a contract-test failure.
 
-| ID | Review requirement | Required reviewed output |
-|---|---|---|
-| `S5-R01.exact-source-artifact-and-evidence-binding` | Verify source/artifact/evidence identity and reject stale, mixed-revision, unauthenticated, or promoted Stage 4 static artifacts. | Review record naming exact source and artifact digests, evidence inventory, reviewer identity/provenance mechanism, findings, and disposition. |
-| `S5-R02.pi-loader-ssh-sftp-and-path-boundaries` | Review Pi resource loading/extension disabling, host-key verification, SSH channel handling, cancellation, path/symlink handling, and SFTP atomicity. | Findings report and verified resolutions bound to exact changed bytes. |
-| `S5-R03.proxy-openbao-policy-audit-and-revocation` | Review CONNECT/TLS/HTTP normalization, header stripping, redirects, route presets, proxy capability scope, OpenBao policy/PKI, audit fail-closed behavior, and connection draining. | Findings report, parser/credential threat analysis, and verified resolutions. |
-| `S5-R04.kata-kubernetes-identity-network-and-storage` | Review guest image/Kata configuration, no-fallback behavior, service-account mounts, workload identity, NetworkPolicies/CNI expectations, node separation, PVC isolation, and lifecycle limits. | Findings report cross-referenced to authoritative S4-11 and Stage 5 campaign evidence, without promoting static shapes. |
-| `S5-R05.privacy-deletion-oauth-and-support-claims` | Review telemetry/log/report fields, deletion/retention/export behavior, API-key-only support text, disabled OAuth, #13 deferral, and residual-risk wording. | Privacy/support review with exact inspected sinks and explicit unknowns. |
-| `S5-R06.findings-resolution-no-critical-or-high` | Triage all independent security and supply-chain findings. | No unresolved critical/high finding; lower findings have explicit owner, decision, expiry/review date, and public-risk impact. A risk acceptance cannot relabel an unexecuted security test as pass. |
-| `S5-R07.residual-risk-and-go-no-go-review` | Review the final evidence inventory, supported AWS matrix, tested concurrency, cost, teardown, known risks, and proposed staff recommendation. | Signed/otherwise authenticated review decision. The future staff go/no-go remains separate; this draft supplies neither. |
+## Future authenticated principals and separation
 
-## C. Separately approved Stage 5 campaigns
+The schema reserves nine stable roles. In this draft all principal identifiers and identity bindings are null, every `principal_id` and `identity_binding_sha256` field is null, and every state is `not-present-blocking`. Role labels are not identities, and the current ownership register does not satisfy independence.
 
-Each row requires its own `separate-exact-revision-manual-approval`. This draft contains no approval and observes no execution. Campaigns may start only after accepted S4-11 evidence and a frozen L01 candidate. They must use synthetic repositories/credentials, bounded spend/resources/time, stop on failure or cleanup uncertainty, and destroy resources afterward.
+- `independent-security-reviewer` must differ from `matrix-author`; current state: `blocked-identities-not-present`.
+- `independent-security-reviewer` must differ from `evidence-producer`; current state: `blocked-identities-not-present`.
+- `independent-security-reviewer` must differ from `campaign-operator`; current state: `blocked-identities-not-present`.
+- `independent-security-reviewer` must differ from `campaign-approver`; current state: `blocked-identities-not-present`.
+- `independent-security-reviewer` must differ from `zero-inventory-observer`; current state: `blocked-identities-not-present`.
+- `campaign-operator` must differ from `campaign-approver`; current state: `blocked-identities-not-present`.
+- `zero-inventory-observer` must differ from `campaign-operator`; current state: `blocked-identities-not-present`.
+- `zero-inventory-observer` must differ from `campaign-approver`; current state: `blocked-identities-not-present`.
 
-| ID | Campaign requirement | Acceptance evidence required |
-|---|---|---|
-| `S5-C01.eks-release-candidate-full-conformance` | Run every mandatory `DESIGN.md` acceptance test on the frozen EKS/Kata release candidate with real applicable CNI, identity, OpenBao, authz/WAL, proxy, OTLP, storage, and runtime dependencies. | Authoritative production-profile reports with no mandatory stub/skip/not-applicable; exact component/image digests; full known-limitations record. |
-| `S5-C02.api-key-real-model-sample` | Run only a small, separately budgeted representative real-model sample using authorized runtime API keys. No subscription OAuth. | Redacted provider/model compatibility, auth-failure, latency, usage, and leakage evidence. Infrastructure saturation uses mocked models instead. |
-| `S5-C03.performance-cold-start-and-resource-classes` | Measure scheduled-to-SSH-ready and first-tool p50/p95/p99, Git/build/proxy/storage overhead, all three resource classes, limits, idle shutdown, and recycle. | Raw bounded measurements and methodology; under-30-second agreed percentile or reviewed exception/plan. |
-| `S5-C04.scale-10` | Run 10 active real sandboxes and verify stability, telemetry, cleanup, and cost. | Per-step resource/startup/error/backlog/cost report and zero-residue result. |
-| `S5-C05.scale-25` | Run only after C04 acceptance and a fresh approval. | Same evidence set as C04, preserving all degraded or unknown outcomes. |
-| `S5-C06.scale-50` | Run only after C05 acceptance and a fresh approval. Fifty passing real sandboxes are the minimum release gate. | Same evidence set as C04 plus the maximum support claim capped at the highest accepted real load. |
-| `S5-C07.scale-100-if-advertised` | Conditional: required only to advertise support above 50 and through 100; run after C06 under separate approval. | Accepted 100-real-sandbox evidence. Extrapolation is not evidence. |
-| `S5-C08.scale-250-if-advertised` | Conditional: required only to advertise support above 100 and through 250; run after C07 under separate approval. | Accepted 250-real-sandbox evidence. Extrapolation is not evidence. |
-| `S5-C09.multi-user-isolation-and-writer-leases` | Validate four-session defaults, distinct-project concurrency, same-project exclusive writer lease, resource classes, and cross-user storage/skill/proxy/history/telemetry denial. | Positive and negative multi-session records at real EKS/Kata boundaries. |
-| `S5-C10.destructive-reliability-and-recovery` | Inject worker/sandbox/proxy/node/storage/OpenBao/OTLP/WAL/disk/SSE/JSONL/Git/skill failures and revocation during long-lived traffic. | Outcomes matched to `DESIGN.md`; unknown prompt outcomes are not replayed or converted to success. |
-| `S5-C11.privacy-deletion-retention-backup-and-export` | Inspect all central sinks and test deletion, object versions, legal hold separation, 30-day default retention, backup, authenticated raw export, and attachment exclusion. | Sink inventory and redacted inspection results; complete deletion/export records and explicit backend assumptions. |
-| `S5-C12.install-upgrade-incident-teardown-and-cost` | Exercise install, upgrade, incident, drain/recycle, destroy, orphan detection, and cost accounting. | Runbook execution records, cost report, campaign-owned cleanup record, and separately produced read-only zero-resource inventory. The local Stage 4 teardown classifier cannot supply this inventory. |
+A future principal identifier must be authenticated and immutably bound. No separation is currently claimed. In particular, independent review and independently observed zero inventory remain blocked rather than inferred from role names.
+
+## Bounded digest-only evidence references
+
+This draft contains zero evidence references and cannot accept one. Its schema defines the future reference shape separately so later evidence work starts fail-closed without changing the old `security-report-v1alpha1` contract or treating that older report as release evidence.
+
+The Stage 5 reference is digest-only and permits no inline report, log, prompt, source, secret, arbitrary diagnostic, URL, or path. It requires criterion ID, artifact SHA-256, declared bytes, bounded media type, future evidence-contract category, exact profile, source revision, release-candidate binding digest, authenticated producer role/principal/binding, result, and categorical diagnostic code.
+
+Bounds are:
+
+- matrix JSON: at most 262,144 bytes;
+- future references: at most 64;
+- declared aggregate: at most 16,777,216 bytes;
+- each referenced artifact: at most 262,144 bytes;
+- each reference: exactly 13 required properties and no unknown property;
+- bounded principal string: at most 128 characters;
+- diagnostics: categorical only.
+
+The `64 × 262,144` per-item envelope equals the aggregate maximum. Artifact bytes remain external; a digest does not establish truth, provenance, identity, or acceptance.
 
 ## Finalization rule for a future authority
 
-This draft is intentionally incapable of becoming final or release eligible. A future, separately reviewed contract/evidence authority may issue a decision only when all of the following are established for one exact release candidate:
+A future API-key-only decision remains blocked until:
 
-1. S4-11 is accepted by its proper future authority and all Stage 4 dependencies are closed without promoting static/local classifier output.
-2. L01–L08 have passing accepted evidence.
-3. R01–R07 have independently authenticated review evidence and no unresolved critical/high finding.
-4. Mandatory C01–C06 and C09–C12 have separately approved, passing, real-dependency evidence and complete teardown/cost evidence.
-5. C07/C08 are accepted only when needed for the advertised concurrency; the advertised maximum does not exceed the highest accepted real load.
-6. Subscription OAuth remains disabled/unadvertised, refresh tokens remain forbidden in workers, and #13 remains deferred.
-7. The staff engineer issues a documented API-key-only go/no-go recommendation with residual risks and evidence links.
+1. S4-11 is accepted under its own future authority.
+2. A clean source revision and immutable artifact root are bound.
+3. All 35 mandatory/applicable criterion mappings have accepted evidence using their exact profile and future contract.
+4. Anthropic, OpenAI, and OpenRouter each have separately bound real-provider evidence before any corresponding advertisement.
+5. Stable authenticated principals exist and every separation constraint is proven.
+6. Mandatory local, independent-review, approved-campaign, privacy/deletion, load, operations, cost, and independent zero-inventory evidence is accepted.
+7. Subscription OAuth remains disabled/unadvertised and #13 remains deferred.
+8. A distinct staff release decision publishes bounded support claims and residual risks.
 
-Any missing, failed, stale, conflicting, skipped, stubbed, uncertain, or unauthenticated mandatory evidence keeps finalization and release eligibility false. A future decision must use a new authority/schema; editing this draft's fixed `false` fields is invalid.
+Any missing, duplicate, stale, conflicting, failed, skipped, stubbed, uncertain, unbounded, or unauthenticated mandatory item keeps finalization and release eligibility false.
 
 ## Draft issue acceptance checklist
 
-- [ ] Confirm the requirement IDs and wording after S4-11 is accepted.
-- [ ] Bind the matrix to the frozen Stage 5 release candidate and evidence formats.
-- [ ] Obtain independent review of the finalized matrix.
-- [ ] Record separate campaign approvals; do not infer them from this issue or S4-11.
-- [ ] Execute and review mandatory local and campaign evidence.
-- [ ] Publish the API-key-only final report and explicit residual risks.
+- [ ] Accept S4-11 under its future authority.
+- [ ] Freeze and bind the exact release candidate.
+- [ ] Bind authenticated principals and satisfy every separation constraint.
+- [ ] Execute and independently review all 35 criterion mappings.
+- [ ] Record separate campaign approvals and bounded digest-only evidence.
+- [ ] Obtain per-provider real evidence before advertising an API-key provider.
+- [ ] Publish the future API-key-only staff decision and residual risks.
 
 All checklist items remain open in this provisional draft.
