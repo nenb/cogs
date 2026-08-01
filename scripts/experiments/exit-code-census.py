@@ -29,6 +29,7 @@ _DATA_SEALS = 0x0001 | 0x0002 | 0x0004 | 0x0008 | 0x0010
 (_CLONE_NEWNS, _CLONE_NEWUSER, _CLONE_NEWPID, _CLONE_NEWNET) = (0x00020000, 0x10000000, 0x20000000, 0x40000000)
 (_MS_NOSUID, _MS_NODEV, _MS_PRIVATE, _MS_REC) = (2, 4, 1 << 18, 16384)
 _ROOT = "/tmp/cogs-o2-census-root"
+_ZSTD_INPUT = bytes.fromhex("28b52ffd201ef10000636f67732d72756e74696d652d7175616c696669636174696f6e2d76310a")
 _GZIP_INPUT = bytes.fromhex("1f8b08000000000002ff4bce4f2fd62d2acd2bc9cc4dd52d2c4dccc94ccb4c4e"
                             "2cc9cccfd32d33e40200a9c9b5521e000000")
 
@@ -162,7 +163,7 @@ def run_case(case):
             if case.get("eof_stdin"):
                 os.close(input_write)
             elif case.get("feed"):
-                os.write(input_write, _GZIP_INPUT)
+                os.write(input_write, _ZSTD_INPUT if case["feed"] == "zstd" else _GZIP_INPUT)
                 os.close(input_write)
             settled = (0, 0)
             deadline = time.monotonic() + 4
@@ -264,6 +265,9 @@ CASES = (
     {"name": "zstd/seccomp", "executable": ZSTD, "argv": ("zstd", "-q", "-d", "-c"), "seccomp": True},
     {"name": "zstd/seccomp/discovery-argv", "executable": ZSTD, "argv": ("zstd", "-dc", "--no-progress"), "seccomp": True},
     {"name": "gzip/seccomp", "executable": GZIP, "argv": ("gzip", "-d", "-c"), "seccomp": True},
+    {"name": "zstd/seccomp/single-thread", "executable": ZSTD, "argv": ("zstd", "-q", "-d", "-c", "--single-thread"), "seccomp": True},
+    {"name": "zstd/seccomp/no-asyncio", "executable": ZSTD, "argv": ("zstd", "-q", "-d", "-c", "--no-asyncio"), "seccomp": True},
+    {"name": "zstd/seccomp/single-thread/fed", "executable": ZSTD, "argv": ("zstd", "-q", "-d", "-c", "--single-thread"), "seccomp": True, "feed": "zstd"},
     {"name": "zstd/gzip-argv", "executable": ZSTD, "argv": ("gzip", "-d", "-c")},
     {"name": "zstd/closure-argv", "executable": ZSTD, "argv": ("zstd", "-dc", "--no-progress")},
     {"name": "zstd/no-libz", "executable": ZSTD, "argv": ("zstd", "-q", "-d", "-c"), "omit": ("libz.so",)},
