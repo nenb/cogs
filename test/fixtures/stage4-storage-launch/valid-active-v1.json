@@ -29,18 +29,29 @@
     }
   },
   "workspace_lease": {
-    "workspace_id": "workspace-static-1",
+    "workspace_id": "cogs.workspace/v1:sha256:2222222222222222222222222222222222222222222222222222222222222222",
     "writer_limit": 1,
     "writer_count": 1,
     "state": "held",
-    "holder_launch_document_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "holder_launch_document_sha256": "bb352830e2ad0cb06caf23f495a7fc5bb3cd769d288bb6afe53c401715983c69",
     "fencing": "required-monotonic-token",
     "expiry_allows_takeover": false,
     "uncertain_takeover": "deny-and-preserve"
   },
   "launch_document": {
-    "document_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-    "source_revision_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "document_sha256": "bb352830e2ad0cb06caf23f495a7fc5bb3cd769d288bb6afe53c401715983c69",
+    "metadata": {
+      "version": "cogs.stage4-session-launch-document/v1",
+      "session_id": "cogs.session/v1:sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "workspace_id": "cogs.workspace/v1:sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "trusted_worker_proxy_resource_id": "cogs.resource.trusted-worker-proxy/v1:sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "kata_sandbox_resource_id": "cogs.resource.kata-sandbox/v1:sha256:4444444444444444444444444444444444444444444444444444444444444444",
+      "workspace_storage_role": "untrusted-project-workspace",
+      "session_state_storage_role": "trusted-pi-session-state",
+      "runtime_class_name": "kata-qemu-cogs",
+      "source_revision_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "launch_nonce_sha256": "5555555555555555555555555555555555555555555555555555555555555555"
+    },
     "immutable": true,
     "state": "admitted-once",
     "admission_count": 1,
@@ -63,9 +74,10 @@
   "resources": {
     "trusted_worker_proxy": [
       {
-        "resource_id": "trusted-static-1",
-        "session_id": "session-static-1",
-        "launch_document_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "resource_id": "cogs.resource.trusted-worker-proxy/v1:sha256:3333333333333333333333333333333333333333333333333333333333333333",
+        "session_id": "cogs.session/v1:sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "workspace_id": "cogs.workspace/v1:sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "launch_document_sha256": "bb352830e2ad0cb06caf23f495a7fc5bb3cd769d288bb6afe53c401715983c69",
         "containers": ["worker", "proxy"],
         "workspace_mounted": false,
         "session_state_mounted": true,
@@ -74,9 +86,10 @@
     ],
     "kata_sandbox": [
       {
-        "resource_id": "sandbox-static-1",
-        "session_id": "session-static-1",
-        "launch_document_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "resource_id": "cogs.resource.kata-sandbox/v1:sha256:4444444444444444444444444444444444444444444444444444444444444444",
+        "session_id": "cogs.session/v1:sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "workspace_id": "cogs.workspace/v1:sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "launch_document_sha256": "bb352830e2ad0cb06caf23f495a7fc5bb3cd769d288bb6afe53c401715983c69",
         "runtime_class_name": "kata-qemu-cogs",
         "containers": ["sandbox"],
         "workspace_mounted": true,
@@ -93,13 +106,18 @@
     "workspace_attachment": "attached",
     "session_state_attachment": "attached",
     "lease": "held",
-    "uncertainty_artifact_sha256": null
+    "uncertainty_artifact_sha256": null,
+    "uncertainty_sticky": true,
+    "uncertainty_resolution": "separate-authority-only"
   },
   "bounded_io": {
     "max_contract_bytes": 131072,
     "max_snapshot_nodes": 512,
     "max_depth": 16,
     "max_string_bytes": 2048,
+    "max_property_key_bytes": 256,
+    "max_properties_per_object": 64,
+    "max_aggregate_canonical_bytes": 131072,
     "max_resources_per_role": 1,
     "violation_action": "deny-and-preserve"
   }

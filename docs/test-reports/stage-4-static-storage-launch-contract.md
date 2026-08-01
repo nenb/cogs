@@ -17,13 +17,13 @@ The strict schemas and pure deterministic classifier establish the expected loca
 1. a 20 GiB CSI block-backed `Filesystem` / `ReadWriteOncePod` / `WaitForFirstConsumer` / `Retain` sandbox-only workspace retained until explicit workspace deletion;
 2. a distinct 5 GiB `Filesystem` / `ReadWriteOncePod` / `WaitForFirstConsumer` / `Retain` trusted-worker-only Pi session-state role retained for 30 days after close;
 3. a fenced one-writer workspace lease where expiry never authorizes takeover;
-4. exactly one trusted worker/proxy resource and one separate `kata-qemu-cogs` sandbox bound to one immutable, single-admission launch-document digest;
+4. exactly one trusted worker/proxy resource and one separate `kata-qemu-cogs` sandbox bound to immutable metadata containing domain-specific session/workspace/resource digest references, exact storage/runtime bindings, source revision, and launch nonce;
 5. a priori SSH host-key matching with no TOFU/update and denial on missing/mismatch;
 6. no durable SSH/proxy identity material and no sandbox secret-store handle;
-7. active, cleanup-requested, complete-semantic, and sticky uncertainty lifecycle shapes; and
-8. canonical byte and hostile object-graph bounds.
+7. active, cleanup-requested, complete-semantic, and sticky uncertainty lifecycle shapes whose preserve verdict carries state/resources/attachments/lease; and
+8. exact canonical bytes plus pre-hash node/depth/key/count/aggregate limits and recursive pre-reflection Proxy rejection.
 
-Positive tests cover deterministic digest binding and the three non-uncertain lifecycle results. Negative tests cover wrong size/access/volume/medium/owner/retention, shared mounts, concurrent writers, wrong lease holder, lease expiry takeover, missing/wrong RuntimeClass, runc substitution, host-key mismatch/missing, stale/replayed documents, wrong session/document bindings, duplicate/missing resources, trusted sidecars, durable identity destinations, cleanup contradictions, malformed/noncanonical/oversized input, getters, proxies, symbols, sparse arrays, and non-plain prototypes.
+Positive tests cover a domain-separated classifier-derived launch-document digest, every resource/document binding, exact canonical bytes, zero-trap transparent Proxy rejection, explicit preservation output, and the three non-uncertain lifecycle results. Negative tests mutate metadata/session/workspace/resources while retaining the digest; substitute arbitrary token-shaped identifiers; combine sticky cleanup uncertainty with host-key, RuntimeClass, storage, replay, digest, cardinality, binding, identity, and writer errors; and cover wrong storage roles, lease errors, BOM, whitespace/newline variants, oversized unknown keys/count/depth/aggregate input before hashing, getters, function/object/array Proxies, symbols, sparse arrays, and non-plain prototypes.
 
 ## Helm boundary
 

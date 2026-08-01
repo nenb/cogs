@@ -100,7 +100,7 @@
         "uncertain_takeover"
       ],
       "properties": {
-        "workspace_id": { "$ref": "#/$defs/opaqueId" },
+        "workspace_id": { "$ref": "#/$defs/workspaceId" },
         "writer_limit": { "const": 1 },
         "writer_count": { "type": "integer", "minimum": 0, "maximum": 8 },
         "state": { "enum": ["held", "release-requested", "released", "uncertain"] },
@@ -117,7 +117,7 @@
       "additionalProperties": false,
       "required": [
         "document_sha256",
-        "source_revision_sha256",
+        "metadata",
         "immutable",
         "state",
         "admission_count",
@@ -129,7 +129,34 @@
       ],
       "properties": {
         "document_sha256": { "$ref": "#/$defs/sha256" },
-        "source_revision_sha256": { "$ref": "#/$defs/sha256" },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "version",
+            "session_id",
+            "workspace_id",
+            "trusted_worker_proxy_resource_id",
+            "kata_sandbox_resource_id",
+            "workspace_storage_role",
+            "session_state_storage_role",
+            "runtime_class_name",
+            "source_revision_sha256",
+            "launch_nonce_sha256"
+          ],
+          "properties": {
+            "version": { "const": "cogs.stage4-session-launch-document/v1" },
+            "session_id": { "$ref": "#/$defs/sessionId" },
+            "workspace_id": { "$ref": "#/$defs/workspaceId" },
+            "trusted_worker_proxy_resource_id": { "$ref": "#/$defs/trustedResourceId" },
+            "kata_sandbox_resource_id": { "$ref": "#/$defs/sandboxResourceId" },
+            "workspace_storage_role": { "const": "untrusted-project-workspace" },
+            "session_state_storage_role": { "const": "trusted-pi-session-state" },
+            "runtime_class_name": { "const": "kata-qemu-cogs" },
+            "source_revision_sha256": { "$ref": "#/$defs/sha256" },
+            "launch_nonce_sha256": { "$ref": "#/$defs/sha256" }
+          }
+        },
         "immutable": { "const": true },
         "state": { "enum": ["admitted-once", "stale", "replayed"] },
         "admission_count": { "type": "integer", "minimum": 0, "maximum": 8 },
@@ -189,7 +216,9 @@
         "workspace_attachment",
         "session_state_attachment",
         "lease",
-        "uncertainty_artifact_sha256"
+        "uncertainty_artifact_sha256",
+        "uncertainty_sticky",
+        "uncertainty_resolution"
       ],
       "properties": {
         "state": { "enum": ["active", "cleanup-requested", "complete", "uncertain"] },
@@ -200,7 +229,9 @@
         "lease": { "enum": ["held", "release-requested", "released", "uncertain"] },
         "uncertainty_artifact_sha256": {
           "oneOf": [{ "$ref": "#/$defs/sha256" }, { "type": "null" }]
-        }
+        },
+        "uncertainty_sticky": { "const": true },
+        "uncertainty_resolution": { "const": "separate-authority-only" }
       }
     },
     "bounded_io": {
@@ -211,6 +242,9 @@
         "max_snapshot_nodes",
         "max_depth",
         "max_string_bytes",
+        "max_property_key_bytes",
+        "max_properties_per_object",
+        "max_aggregate_canonical_bytes",
         "max_resources_per_role",
         "violation_action"
       ],
@@ -219,6 +253,9 @@
         "max_snapshot_nodes": { "const": 512 },
         "max_depth": { "const": 16 },
         "max_string_bytes": { "const": 2048 },
+        "max_property_key_bytes": { "const": 256 },
+        "max_properties_per_object": { "const": 64 },
+        "max_aggregate_canonical_bytes": { "const": 131072 },
         "max_resources_per_role": { "const": 1 },
         "violation_action": { "const": "deny-and-preserve" }
       }
@@ -226,11 +263,21 @@
   },
   "$defs": {
     "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
-    "opaqueId": {
+    "sessionId": {
       "type": "string",
-      "minLength": 1,
-      "maxLength": 128,
-      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+      "pattern": "^cogs\\.session/v1:sha256:[0-9a-f]{64}$"
+    },
+    "workspaceId": {
+      "type": "string",
+      "pattern": "^cogs\\.workspace/v1:sha256:[0-9a-f]{64}$"
+    },
+    "trustedResourceId": {
+      "type": "string",
+      "pattern": "^cogs\\.resource\\.trusted-worker-proxy/v1:sha256:[0-9a-f]{64}$"
+    },
+    "sandboxResourceId": {
+      "type": "string",
+      "pattern": "^cogs\\.resource\\.kata-sandbox/v1:sha256:[0-9a-f]{64}$"
     },
     "trustedResource": {
       "type": "object",
@@ -238,6 +285,7 @@
       "required": [
         "resource_id",
         "session_id",
+        "workspace_id",
         "launch_document_sha256",
         "containers",
         "workspace_mounted",
@@ -245,8 +293,9 @@
         "ephemeral_identity_persistence"
       ],
       "properties": {
-        "resource_id": { "$ref": "#/$defs/opaqueId" },
-        "session_id": { "$ref": "#/$defs/opaqueId" },
+        "resource_id": { "$ref": "#/$defs/trustedResourceId" },
+        "session_id": { "$ref": "#/$defs/sessionId" },
+        "workspace_id": { "$ref": "#/$defs/workspaceId" },
         "launch_document_sha256": { "$ref": "#/$defs/sha256" },
         "containers": {
           "type": "array",
@@ -268,6 +317,7 @@
       "required": [
         "resource_id",
         "session_id",
+        "workspace_id",
         "launch_document_sha256",
         "runtime_class_name",
         "containers",
@@ -277,8 +327,9 @@
         "secret_store_handles"
       ],
       "properties": {
-        "resource_id": { "$ref": "#/$defs/opaqueId" },
-        "session_id": { "$ref": "#/$defs/opaqueId" },
+        "resource_id": { "$ref": "#/$defs/sandboxResourceId" },
+        "session_id": { "$ref": "#/$defs/sessionId" },
+        "workspace_id": { "$ref": "#/$defs/workspaceId" },
         "launch_document_sha256": { "$ref": "#/$defs/sha256" },
         "runtime_class_name": { "type": "string", "minLength": 1, "maxLength": 253 },
         "containers": {

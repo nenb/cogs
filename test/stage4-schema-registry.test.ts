@@ -155,6 +155,7 @@ function storageLaunchVerdictSample(): JsonObject {
     graph_sha256: sha("d"),
     status: "admissible-static-graph",
     reason_code: "STAGE4_STORAGE_LAUNCH_GRAPH_VALID",
+    preservation: null,
   };
 }
 

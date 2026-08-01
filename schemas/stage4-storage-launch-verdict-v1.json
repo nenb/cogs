@@ -16,7 +16,8 @@
     "release_eligible",
     "graph_sha256",
     "status",
-    "reason_code"
+    "reason_code",
+    "preservation"
   ],
   "properties": {
     "version": { "const": "cogs.stage4-storage-launch-verdict/v1" },
@@ -55,11 +56,28 @@
         "STAGE4_SSH_HOST_KEY_MISMATCH",
         "STAGE4_LAUNCH_DOCUMENT_STALE",
         "STAGE4_LAUNCH_DOCUMENT_REPLAY",
+        "STAGE4_LAUNCH_DOCUMENT_DIGEST_MISMATCH",
         "STAGE4_LAUNCH_BINDING_INVALID",
         "STAGE4_RESOURCE_CARDINALITY_INVALID",
         "STAGE4_EPHEMERAL_IDENTITY_PERSISTENCE_FORBIDDEN",
         "STAGE4_CLEANUP_AMBIGUOUS",
         "STAGE4_BOUNDED_IO_VIOLATION"
+      ]
+    },
+    "preservation": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["state", "resources", "attachments", "workspace_lease"],
+          "properties": {
+            "state": { "const": "preserve" },
+            "resources": { "const": "preserve" },
+            "attachments": { "const": "preserve" },
+            "workspace_lease": { "const": "preserve" }
+          }
+        },
+        { "type": "null" }
       ]
     }
   },
@@ -70,26 +88,30 @@
           "properties": {
             "status": { "const": "admissible-static-graph" },
             "reason_code": { "const": "STAGE4_STORAGE_LAUNCH_GRAPH_VALID" },
-            "graph_sha256": { "$ref": "#/$defs/sha256" }
+            "graph_sha256": { "$ref": "#/$defs/sha256" },
+            "preservation": { "type": "null" }
           }
         },
         {
           "properties": {
             "status": { "const": "cleanup-in-progress" },
             "reason_code": { "const": "STAGE4_STORAGE_LAUNCH_CLEANUP_IN_PROGRESS" },
-            "graph_sha256": { "$ref": "#/$defs/sha256" }
+            "graph_sha256": { "$ref": "#/$defs/sha256" },
+            "preservation": { "type": "null" }
           }
         },
         {
           "properties": {
             "status": { "const": "cleanup-order-complete" },
             "reason_code": { "const": "STAGE4_STORAGE_LAUNCH_CLEANUP_ORDER_COMPLETE" },
-            "graph_sha256": { "$ref": "#/$defs/sha256" }
+            "graph_sha256": { "$ref": "#/$defs/sha256" },
+            "preservation": { "type": "null" }
           }
         },
         {
           "properties": {
             "status": { "const": "preserve-uncertain" },
+            "preservation": { "type": "object" },
             "reason_code": {
               "enum": [
                 "STAGE4_WORKSPACE_CONCURRENT_WRITER",
@@ -103,6 +125,7 @@
         {
           "properties": {
             "status": { "const": "reject" },
+            "preservation": { "type": "null" },
             "reason_code": {
               "enum": [
                 "STAGE4_STORAGE_LAUNCH_INVALID_SHAPE",
@@ -113,6 +136,7 @@
                 "STAGE4_SSH_HOST_KEY_MISMATCH",
                 "STAGE4_LAUNCH_DOCUMENT_STALE",
                 "STAGE4_LAUNCH_DOCUMENT_REPLAY",
+                "STAGE4_LAUNCH_DOCUMENT_DIGEST_MISMATCH",
                 "STAGE4_LAUNCH_BINDING_INVALID",
                 "STAGE4_RESOURCE_CARDINALITY_INVALID",
                 "STAGE4_EPHEMERAL_IDENTITY_PERSISTENCE_FORBIDDEN"

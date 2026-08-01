@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
-import { TextDecoder } from "node:util";
+import { TextDecoder, types as utilTypes } from "node:util";
 import type { Ajv as AjvCore, Options, ValidateFunction } from "ajv";
 
 const require = createRequire(import.meta.url);
@@ -15,6 +15,9 @@ export const STAGE4_STORAGE_LAUNCH_LIMITS = Object.freeze({
   maxSnapshotNodes: 512,
   maxDepth: 16,
   maxStringBytes: 2048,
+  maxPropertyKeyBytes: 256,
+  maxPropertiesPerObject: 64,
+  maxAggregateCanonicalBytes: 131072,
   maxResourcesPerRole: 1,
 });
 
@@ -59,6 +62,7 @@ export const STAGE4_STORAGE_LAUNCH_REASON_CODES = Object.freeze([
   "STAGE4_SSH_HOST_KEY_MISMATCH",
   "STAGE4_LAUNCH_DOCUMENT_STALE",
   "STAGE4_LAUNCH_DOCUMENT_REPLAY",
+  "STAGE4_LAUNCH_DOCUMENT_DIGEST_MISMATCH",
   "STAGE4_LAUNCH_BINDING_INVALID",
   "STAGE4_RESOURCE_CARDINALITY_INVALID",
   "STAGE4_EPHEMERAL_IDENTITY_PERSISTENCE_FORBIDDEN",
@@ -87,6 +91,12 @@ export type Stage4StorageLaunchVerdict = Readonly<{
   graph_sha256: string | null;
   status: Stage4StorageLaunchStatus;
   reason_code: Stage4StorageLaunchReasonCode;
+  preservation: Readonly<{
+    state: "preserve";
+    resources: "preserve";
+    attachments: "preserve";
+    workspace_lease: "preserve";
+  }> | null;
 }>;
 
 type JsonPrimitive = string | number | boolean | null;
@@ -96,7 +106,7 @@ type Stage4StorageLaunchGraph = JsonRecord & {
   version: string;
   storage: JsonRecord & { workspace: JsonRecord; trusted_session_state: JsonRecord };
   workspace_lease: JsonRecord;
-  launch_document: JsonRecord & { ssh_host_key: JsonRecord };
+  launch_document: JsonRecord & { metadata: JsonRecord; ssh_host_key: JsonRecord };
   runtime_class: JsonRecord;
   resources: JsonRecord & { trusted_worker_proxy: JsonRecord[]; kata_sandbox: JsonRecord[] };
   lifecycle: JsonRecord;
@@ -104,8 +114,15 @@ type Stage4StorageLaunchGraph = JsonRecord & {
 };
 
 type Snapshot = Readonly<{ value: JsonRecord | null; bounded: boolean }>;
+const PRESERVATION = deepFreeze({
+  state: "preserve",
+  resources: "preserve",
+  attachments: "preserve",
+  workspace_lease: "preserve",
+} as const);
 const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false });
 const GRAPH_DOMAIN = "cogs.stage4/storage-launch-semantic-graph/v1";
+const LAUNCH_DOCUMENT_DOMAIN = "cogs.stage4/immutable-session-launch-document/v1";
 
 function verdict(
   status: Stage4StorageLaunchStatus,
@@ -125,50 +142,93 @@ function verdict(
     graph_sha256: digest,
     status,
     reason_code: reasonCode,
+    preservation: status === "preserve-uncertain" ? PRESERVATION : null,
   });
 }
 
 function snapshotJson(input: unknown): Snapshot {
   let nodes = 0;
+  let aggregateBytes = 1; // Canonical trailing LF.
   let bounded = false;
+  const consume = (bytes: number): void => {
+    aggregateBytes += bytes;
+    if (aggregateBytes > STAGE4_STORAGE_LAUNCH_LIMITS.maxAggregateCanonicalBytes) {
+      bounded = true;
+      throw new TypeError("aggregate canonical byte bound");
+    }
+  };
   const visit = (candidate: unknown, depth: number): JsonValue => {
     nodes += 1;
     if (nodes > STAGE4_STORAGE_LAUNCH_LIMITS.maxSnapshotNodes || depth > STAGE4_STORAGE_LAUNCH_LIMITS.maxDepth) {
       bounded = true;
       throw new TypeError("object graph bound");
     }
-    if (candidate === null || typeof candidate === "boolean") return candidate;
+    const candidateType = typeof candidate;
+    if (
+      ((candidateType === "object" && candidate !== null) || candidateType === "function") &&
+      utilTypes.isProxy(candidate)
+    ) {
+      throw new TypeError("proxy object");
+    }
+    if (candidate === null) {
+      consume(4);
+      return candidate;
+    }
+    if (typeof candidate === "boolean") {
+      consume(candidate ? 4 : 5);
+      return candidate;
+    }
     if (typeof candidate === "string") {
       if (Buffer.byteLength(candidate, "utf8") > STAGE4_STORAGE_LAUNCH_LIMITS.maxStringBytes) {
         bounded = true;
         throw new TypeError("string bound");
       }
+      consume(Buffer.byteLength(JSON.stringify(candidate), "utf8"));
       return candidate;
     }
     if (typeof candidate === "number") {
       if (!Number.isSafeInteger(candidate)) throw new TypeError("number shape");
+      consume(Buffer.byteLength(JSON.stringify(candidate), "utf8"));
       return candidate;
     }
-    if (typeof candidate !== "object") throw new TypeError("non-JSON value");
+    if (typeof candidate !== "object" || candidate === null) throw new TypeError("non-JSON value");
 
     const prototype = Object.getPrototypeOf(candidate);
-    const descriptors = Object.getOwnPropertyDescriptors(candidate);
-    const keys = Reflect.ownKeys(candidate);
-    if (keys.some((key) => typeof key !== "string")) throw new TypeError("symbol key");
-
     if (Array.isArray(candidate)) {
       if (prototype !== Array.prototype) throw new TypeError("array prototype");
+      const keys = Reflect.ownKeys(candidate);
+      if (keys.some((key) => typeof key !== "string")) throw new TypeError("symbol key");
+      if (
+        (keys as string[]).some(
+          (key) => Buffer.byteLength(key, "utf8") > STAGE4_STORAGE_LAUNCH_LIMITS.maxPropertyKeyBytes,
+        )
+      ) {
+        bounded = true;
+        throw new TypeError("array property key bound");
+      }
+      if (keys.length > STAGE4_STORAGE_LAUNCH_LIMITS.maxPropertiesPerObject + 1) {
+        bounded = true;
+        throw new TypeError("array property bound");
+      }
+      const descriptors = Object.getOwnPropertyDescriptors(candidate) as Record<string, PropertyDescriptor | undefined>;
       const lengthDescriptor = descriptors.length;
       if (lengthDescriptor === undefined || !("value" in lengthDescriptor)) throw new TypeError("array length");
-      const length = lengthDescriptor.value;
-      if (!Number.isSafeInteger(length) || length < 0 || length > STAGE4_STORAGE_LAUNCH_LIMITS.maxSnapshotNodes) {
+      const rawLength = lengthDescriptor.value;
+      if (
+        typeof rawLength !== "number" ||
+        !Number.isSafeInteger(rawLength) ||
+        rawLength < 0 ||
+        rawLength > STAGE4_STORAGE_LAUNCH_LIMITS.maxSnapshotNodes
+      ) {
         bounded = true;
         throw new TypeError("array bound");
       }
+      const length = rawLength;
       const expected = [...Array.from({ length }, (_, index) => String(index)), "length"];
       if (keys.length !== expected.length || expected.some((key) => !keys.includes(key))) {
         throw new TypeError("sparse or extended array");
       }
+      consume(2 + Math.max(0, length - 1));
       return Array.from({ length }, (_, index) => {
         const descriptor = descriptors[String(index)];
         if (descriptor === undefined || !("value" in descriptor) || descriptor.enumerable !== true) {
@@ -179,10 +239,22 @@ function snapshotJson(input: unknown): Snapshot {
     }
 
     if (prototype !== Object.prototype && prototype !== null) throw new TypeError("object prototype");
-    if (keys.length > 64) {
+    const keys = Reflect.ownKeys(candidate);
+    if (keys.some((key) => typeof key !== "string")) throw new TypeError("symbol key");
+    if (keys.length > STAGE4_STORAGE_LAUNCH_LIMITS.maxPropertiesPerObject) {
       bounded = true;
       throw new TypeError("object property bound");
     }
+    for (const key of keys as string[]) {
+      if (Buffer.byteLength(key, "utf8") > STAGE4_STORAGE_LAUNCH_LIMITS.maxPropertyKeyBytes) {
+        bounded = true;
+        throw new TypeError("property key bound");
+      }
+    }
+    consume(2 + Math.max(0, keys.length - 1));
+    for (const key of keys as string[]) consume(Buffer.byteLength(JSON.stringify(key), "utf8") + 1);
+
+    const descriptors = Object.getOwnPropertyDescriptors(candidate);
     const output: JsonRecord = Object.create(null) as JsonRecord;
     for (const key of keys as string[]) {
       const descriptor = descriptors[key];
@@ -206,6 +278,20 @@ function isRecord(value: JsonValue): value is JsonRecord {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+function claimedCleanupUncertainty(root: JsonRecord): boolean {
+  const lifecycle = root.lifecycle;
+  if (lifecycle === undefined || !isRecord(lifecycle)) return false;
+  return (
+    lifecycle.state === "uncertain" ||
+    lifecycle.trusted_worker_proxy === "uncertain" ||
+    lifecycle.kata_sandbox === "uncertain" ||
+    lifecycle.workspace_attachment === "uncertain" ||
+    lifecycle.session_state_attachment === "uncertain" ||
+    lifecycle.lease === "uncertain" ||
+    typeof lifecycle.uncertainty_artifact_sha256 === "string"
+  );
+}
+
 function compareCodePoints(left: string, right: string): number {
   const a = Array.from(left, (value) => value.codePointAt(0) ?? 0);
   const b = Array.from(right, (value) => value.codePointAt(0) ?? 0);
@@ -227,12 +313,20 @@ function canonicalJson(value: JsonValue): string {
   return JSON.stringify(value);
 }
 
-function graphDigest(value: JsonRecord): string {
+function semanticDigest(domain: string, value: JsonValue): string {
   return createHash("sha256")
-    .update(GRAPH_DOMAIN, "utf8")
+    .update(domain, "utf8")
     .update(Uint8Array.of(0))
     .update(canonicalJson(value), "utf8")
     .digest("hex");
+}
+
+function graphDigest(value: JsonRecord): string {
+  return semanticDigest(GRAPH_DOMAIN, value);
+}
+
+function launchDocumentDigest(metadata: JsonRecord): string {
+  return semanticDigest(LAUNCH_DOCUMENT_DOMAIN, metadata);
 }
 
 function same(left: JsonValue | undefined, right: JsonValue): boolean {
@@ -242,20 +336,26 @@ function same(left: JsonValue | undefined, right: JsonValue): boolean {
 function resourceBindingValid(graph: Stage4StorageLaunchGraph): boolean {
   const trusted = graph.resources.trusted_worker_proxy[0];
   const sandbox = graph.resources.kata_sandbox[0];
+  const metadata = graph.launch_document.metadata;
   const digest = graph.launch_document.document_sha256;
   return (
     trusted !== undefined &&
     sandbox !== undefined &&
     trusted.launch_document_sha256 === digest &&
     sandbox.launch_document_sha256 === digest &&
-    trusted.session_id === sandbox.session_id &&
-    trusted.resource_id !== sandbox.resource_id
+    trusted.session_id === metadata.session_id &&
+    sandbox.session_id === metadata.session_id &&
+    trusted.workspace_id === metadata.workspace_id &&
+    sandbox.workspace_id === metadata.workspace_id &&
+    graph.workspace_lease.workspace_id === metadata.workspace_id &&
+    trusted.resource_id === metadata.trusted_worker_proxy_resource_id &&
+    sandbox.resource_id === metadata.kata_sandbox_resource_id &&
+    graph.runtime_class.required_name === metadata.runtime_class_name
   );
 }
 
-function lifecycleShape(graph: Stage4StorageLaunchGraph): Stage4StorageLaunchVerdict | null {
+function lifecycleShape(graph: Stage4StorageLaunchGraph, digest: string): Stage4StorageLaunchVerdict | null {
   const state = graph.lifecycle.state;
-  const digest = graphDigest(graph);
   const uncertaintyFields = [
     graph.lifecycle.trusted_worker_proxy,
     graph.lifecycle.kata_sandbox,
@@ -264,9 +364,7 @@ function lifecycleShape(graph: Stage4StorageLaunchGraph): Stage4StorageLaunchVer
     graph.lifecycle.lease,
   ];
   if (state === "uncertain" || uncertaintyFields.includes("uncertain")) {
-    return typeof graph.lifecycle.uncertainty_artifact_sha256 === "string"
-      ? verdict("preserve-uncertain", "STAGE4_CLEANUP_AMBIGUOUS", digest)
-      : verdict("preserve-uncertain", "STAGE4_CLEANUP_AMBIGUOUS", digest);
+    return verdict("preserve-uncertain", "STAGE4_CLEANUP_AMBIGUOUS", digest);
   }
   if (graph.lifecycle.uncertainty_artifact_sha256 !== null) {
     return verdict("preserve-uncertain", "STAGE4_CLEANUP_AMBIGUOUS", digest);
@@ -298,11 +396,25 @@ export function evaluateStage4StorageLaunchGraph(input: unknown): Stage4StorageL
       : verdict("reject", "STAGE4_STORAGE_LAUNCH_INVALID_SHAPE", null);
   }
   const digest = graphDigest(snapshot.value);
+  // A safely snapshotted explicit cleanup-uncertainty marker is sticky even if
+  // another admission field later fails strict schema validation.
+  if (claimedCleanupUncertainty(snapshot.value)) {
+    return verdict("preserve-uncertain", "STAGE4_CLEANUP_AMBIGUOUS", digest);
+  }
   if (snapshot.value.version !== "cogs.stage4-storage-launch-contract/v1") {
     return verdict("reject", "STAGE4_STORAGE_LAUNCH_INVALID_VERSION", digest);
   }
   if (!validateSchema(snapshot.value)) return verdict("reject", "STAGE4_STORAGE_LAUNCH_INVALID_SHAPE", digest);
   const graph = snapshot.value;
+
+  // Cleanup uncertainty is sticky and dominates every otherwise validly shaped
+  // admission error. No failed admission check may authorize mutation or cleanup.
+  const lifecycleFailure = lifecycleShape(graph, digest);
+  if (lifecycleFailure !== null) return lifecycleFailure;
+
+  if (launchDocumentDigest(graph.launch_document.metadata) !== graph.launch_document.document_sha256) {
+    return verdict("reject", "STAGE4_LAUNCH_DOCUMENT_DIGEST_MISMATCH", digest);
+  }
 
   if (
     !same(graph.storage.workspace, STAGE4_STORAGE_ROLES.workspace as unknown as JsonValue) ||
@@ -374,9 +486,6 @@ export function evaluateStage4StorageLaunchGraph(input: unknown): Stage4StorageL
     return verdict("reject", "STAGE4_LAUNCH_BINDING_INVALID", digest);
   }
 
-  const lifecycleFailure = lifecycleShape(graph);
-  if (lifecycleFailure !== null) return lifecycleFailure;
-
   const lifecycleState = graph.lifecycle.state;
   const expectedLease =
     lifecycleState === "active"
@@ -406,6 +515,9 @@ export function validateStage4StorageLaunchBytes(input: Uint8Array): Stage4Stora
   if (input.byteLength === 0 || input.byteLength > STAGE4_STORAGE_LAUNCH_LIMITS.maxContractBytes) {
     return verdict("preserve-uncertain", "STAGE4_BOUNDED_IO_VIOLATION", null);
   }
+  if (input.byteLength >= 3 && input[0] === 0xef && input[1] === 0xbb && input[2] === 0xbf) {
+    return verdict("reject", "STAGE4_STORAGE_LAUNCH_INVALID_SHAPE", null);
+  }
   try {
     const text = decoder.decode(input);
     const parsed = JSON.parse(text) as unknown;
@@ -426,7 +538,11 @@ export function validateStage4StorageLaunchBytes(input: Uint8Array): Stage4Stora
 
 export function canonicalStage4StorageLaunchBytes(input: unknown): Uint8Array {
   const snapshot = snapshotJson(input);
-  if (snapshot.value === null) throw new TypeError("input is not a bounded plain JSON object");
+  if (snapshot.value === null) {
+    throw new TypeError(
+      snapshot.bounded ? "input exceeds an object or byte bound" : "input is not a plain JSON object",
+    );
+  }
   const encoded = new TextEncoder().encode(`${canonicalJson(snapshot.value)}\n`);
   if (encoded.byteLength > STAGE4_STORAGE_LAUNCH_LIMITS.maxContractBytes) {
     throw new TypeError("canonical contract exceeds the byte bound");

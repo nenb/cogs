@@ -29,7 +29,7 @@ type Json = Record<string, unknown>;
 type Graph = Json & {
   storage: Json & { workspace: Json; trusted_session_state: Json };
   workspace_lease: Json;
-  launch_document: Json & { ssh_host_key: Json };
+  launch_document: Json & { metadata: Json; ssh_host_key: Json };
   runtime_class: Json;
   resources: Json & { trusted_worker_proxy: Json[]; kata_sandbox: Json[] };
   lifecycle: Json;
@@ -61,6 +61,16 @@ function expectResult(
   assert.equal(validateVerdict(result), true, JSON.stringify(validateVerdict.errors));
   assert.equal(result.status, status);
   assert.equal(result.reason_code, reason);
+  if (status === "preserve-uncertain") {
+    assert.deepEqual(result.preservation, {
+      state: "preserve",
+      resources: "preserve",
+      attachments: "preserve",
+      workspace_lease: "preserve",
+    });
+  } else {
+    assert.equal(result.preservation, null);
+  }
 }
 
 function expect(value: unknown, status: Stage4StorageLaunchVerdict["status"], reason: string): void {
@@ -77,6 +87,14 @@ function sandbox(value: Graph): Json {
   const resource = value.resources.kata_sandbox[0];
   assert.ok(resource);
   return resource;
+}
+
+function markUncertain(value: Graph): Graph {
+  value.lifecycle.state = "uncertain";
+  value.lifecycle.kata_sandbox = "uncertain";
+  value.lifecycle.uncertainty_artifact_sha256 = "f".repeat(64);
+  value.workspace_lease.state = "uncertain";
+  return value;
 }
 
 function cleanup(value: Graph, state: "cleanup-requested" | "complete"): Graph {
@@ -141,6 +159,13 @@ test("exactly one trusted worker/proxy and one Kata sandbox bind to one immutabl
   assert.equal(value.launch_document.immutable, true);
   assert.equal(value.launch_document.state, "admitted-once");
   assert.equal(value.launch_document.admission_count, 1);
+  assert.equal(trusted(value).session_id, value.launch_document.metadata.session_id);
+  assert.equal(sandbox(value).session_id, value.launch_document.metadata.session_id);
+  assert.equal(trusted(value).workspace_id, value.launch_document.metadata.workspace_id);
+  assert.equal(sandbox(value).workspace_id, value.launch_document.metadata.workspace_id);
+  assert.equal(value.workspace_lease.workspace_id, value.launch_document.metadata.workspace_id);
+  assert.equal(trusted(value).resource_id, value.launch_document.metadata.trusted_worker_proxy_resource_id);
+  assert.equal(sandbox(value).resource_id, value.launch_document.metadata.kata_sandbox_resource_id);
 
   for (const collection of ["trusted_worker_proxy", "kata_sandbox"] as const) {
     const missing = graph();
@@ -157,8 +182,55 @@ test("exactly one trusted worker/proxy and one Kata sandbox bind to one immutabl
   expect(mismatched, "reject", "STAGE4_LAUNCH_BINDING_INVALID");
 
   const otherSession = graph();
-  sandbox(otherSession).session_id = "session-static-2";
+  sandbox(otherSession).session_id = `cogs.session/v1:sha256:${"9".repeat(64)}`;
   expect(otherSession, "reject", "STAGE4_LAUNCH_BINDING_INVALID");
+});
+
+test("domain-separated immutable launch metadata is derived and binds every session, workspace, and resource reference", () => {
+  const metadataMutations: Array<(value: Graph) => void> = [
+    (value) => (value.launch_document.metadata.session_id = `cogs.session/v1:sha256:${"9".repeat(64)}`),
+    (value) => (value.launch_document.metadata.workspace_id = `cogs.workspace/v1:sha256:${"9".repeat(64)}`),
+    (value) =>
+      (value.launch_document.metadata.trusted_worker_proxy_resource_id = `cogs.resource.trusted-worker-proxy/v1:sha256:${"9".repeat(64)}`),
+    (value) =>
+      (value.launch_document.metadata.kata_sandbox_resource_id = `cogs.resource.kata-sandbox/v1:sha256:${"9".repeat(64)}`),
+    (value) => (value.launch_document.metadata.source_revision_sha256 = "9".repeat(64)),
+    (value) => (value.launch_document.metadata.launch_nonce_sha256 = "9".repeat(64)),
+  ];
+  for (const mutate of metadataMutations) {
+    const value = graph();
+    const retainedDigest = value.launch_document.document_sha256;
+    mutate(value);
+    assert.equal(value.launch_document.document_sha256, retainedDigest);
+    expect(value, "reject", "STAGE4_LAUNCH_DOCUMENT_DIGEST_MISMATCH");
+  }
+
+  const forgedDigest = graph();
+  forgedDigest.launch_document.document_sha256 = "9".repeat(64);
+  expect(forgedDigest, "reject", "STAGE4_LAUNCH_DOCUMENT_DIGEST_MISMATCH");
+
+  const boundMutations: Array<(value: Graph) => void> = [
+    (value) => (trusted(value).session_id = `cogs.session/v1:sha256:${"8".repeat(64)}`),
+    (value) => (sandbox(value).workspace_id = `cogs.workspace/v1:sha256:${"8".repeat(64)}`),
+    (value) => (trusted(value).resource_id = `cogs.resource.trusted-worker-proxy/v1:sha256:${"8".repeat(64)}`),
+    (value) => (sandbox(value).resource_id = `cogs.resource.kata-sandbox/v1:sha256:${"8".repeat(64)}`),
+    (value) => (value.workspace_lease.workspace_id = `cogs.workspace/v1:sha256:${"8".repeat(64)}`),
+  ];
+  for (const mutate of boundMutations) {
+    const value = graph();
+    mutate(value);
+    expect(value, "reject", "STAGE4_LAUNCH_BINDING_INVALID");
+  }
+
+  for (const mutate of [
+    (value: Graph) => (value.launch_document.metadata.session_id = "session-token-shaped"),
+    (value: Graph) => (value.workspace_lease.workspace_id = "workspace-secret-shaped"),
+    (value: Graph) => (trusted(value).resource_id = "resource-credential-shaped"),
+  ]) {
+    const value = graph();
+    mutate(value);
+    expect(value, "reject", "STAGE4_STORAGE_LAUNCH_INVALID_SHAPE");
+  }
 });
 
 test("wrong workspace or trusted session-state mode, size, owner, or retention fails closed", () => {
@@ -200,7 +272,10 @@ test("wrong workspace or trusted session-state mode, size, owner, or retention f
 test("exclusive-writer fencing denies concurrency and never treats expiry as takeover authority", () => {
   const concurrent = graph();
   concurrent.workspace_lease.writer_count = 2;
-  expect(concurrent, "preserve-uncertain", "STAGE4_WORKSPACE_CONCURRENT_WRITER");
+  const concurrentVerdict = verdict(concurrent);
+  expectResult(concurrentVerdict, "preserve-uncertain", "STAGE4_WORKSPACE_CONCURRENT_WRITER");
+  assert.equal(Object.isFrozen(concurrentVerdict.preservation), true);
+  assert.equal(validateVerdict({ ...concurrentVerdict, preservation: null }), false);
 
   const wrongHolder = graph();
   wrongHolder.workspace_lease.holder_launch_document_sha256 = "c".repeat(64);
@@ -275,12 +350,31 @@ test("cleanup lifecycle is deterministic and every ambiguity preserves state and
   mismatch.lifecycle.workspace_attachment = "attached";
   expect(mismatch, "preserve-uncertain", "STAGE4_CLEANUP_AMBIGUOUS");
 
-  const uncertainty = graph();
-  uncertainty.lifecycle.state = "uncertain";
-  uncertainty.lifecycle.kata_sandbox = "uncertain";
-  uncertainty.lifecycle.uncertainty_artifact_sha256 = "f".repeat(64);
-  uncertainty.workspace_lease.state = "uncertain";
-  expect(uncertainty, "preserve-uncertain", "STAGE4_CLEANUP_AMBIGUOUS");
+  expect(markUncertain(graph()), "preserve-uncertain", "STAGE4_CLEANUP_AMBIGUOUS");
+
+  const stickyAdmissionErrors: Array<(value: Graph) => void> = [
+    (value) => (value.launch_document.ssh_host_key.verification = "mismatch"),
+    (value) => {
+      value.runtime_class.resolution = "missing";
+      value.runtime_class.resolved_name = null;
+    },
+    (value) => value.resources.kata_sandbox.push(structuredClone(sandbox(value))),
+    (value) => (trusted(value).ephemeral_identity_persistence = "report"),
+    (value) => (value.storage.workspace.access_mode = "ReadWriteMany"),
+    (value) => (value.launch_document.state = "stale"),
+    (value) => (value.launch_document.metadata.session_id = `cogs.session/v1:sha256:${"9".repeat(64)}`),
+    (value) => (sandbox(value).launch_document_sha256 = "9".repeat(64)),
+    (value) => (value.workspace_lease.writer_count = 2),
+    (value) => (trusted(value).resource_id = "token-shaped-invalid-resource-id"),
+    (value) => (value.workspace_lease.workspace_id = "credential-shaped-invalid-workspace-id"),
+    (value) => (value.unreviewedAdmissionField = true),
+    (value) => (value.version = "cogs.stage4-storage-launch-contract/v2"),
+  ];
+  for (const mutate of stickyAdmissionErrors) {
+    const value = markUncertain(graph());
+    mutate(value);
+    expect(value, "preserve-uncertain", "STAGE4_CLEANUP_AMBIGUOUS");
+  }
 
   const prematureRelease = graph();
   prematureRelease.workspace_lease.state = "released";
@@ -300,11 +394,16 @@ test("canonical byte input is bounded and rejects malformed or noncanonical I/O"
     "STAGE4_BOUNDED_IO_VIOLATION",
   );
   expectResult(validateStage4StorageLaunchBytes(new Uint8Array()), "preserve-uncertain", "STAGE4_BOUNDED_IO_VIOLATION");
-  expectResult(
-    validateStage4StorageLaunchBytes(new TextEncoder().encode(`${JSON.stringify(value)}\n`)),
-    "reject",
-    "STAGE4_STORAGE_LAUNCH_INVALID_SHAPE",
-  );
+  const noncanonical = [
+    new TextEncoder().encode(`${JSON.stringify(value)}\n`),
+    canonical.slice(0, -1),
+    new TextEncoder().encode(`${new TextDecoder().decode(canonical).replace(/\n$/u, "\r\n")}`),
+    new TextEncoder().encode(`${new TextDecoder().decode(canonical)}\n`),
+    new Uint8Array([0xef, 0xbb, 0xbf, ...canonical]),
+  ];
+  for (const bytes of noncanonical) {
+    expectResult(validateStage4StorageLaunchBytes(bytes), "reject", "STAGE4_STORAGE_LAUNCH_INVALID_SHAPE");
+  }
   expectResult(
     validateStage4StorageLaunchBytes(new TextEncoder().encode("{not-json}\n")),
     "reject",
@@ -315,6 +414,35 @@ test("canonical byte input is bounded and rejects malformed or noncanonical I/O"
   longString.workspace_lease.workspace_id = "x".repeat(STAGE4_STORAGE_LAUNCH_LIMITS.maxStringBytes + 1);
   expect(longString, "preserve-uncertain", "STAGE4_BOUNDED_IO_VIOLATION");
 
+  const oversizedKey = graph();
+  oversizedKey["k".repeat(STAGE4_STORAGE_LAUNCH_LIMITS.maxPropertyKeyBytes + 1)] = true;
+  const oversizedKeyVerdict = evaluateStage4StorageLaunchGraph(oversizedKey);
+  expectResult(oversizedKeyVerdict, "preserve-uncertain", "STAGE4_BOUNDED_IO_VIOLATION");
+  assert.equal(oversizedKeyVerdict.graph_sha256, null, "oversized keys are rejected before hashing");
+
+  const tooManyKeys = graph();
+  tooManyKeys.oversized = Object.fromEntries(
+    Array.from({ length: STAGE4_STORAGE_LAUNCH_LIMITS.maxPropertiesPerObject + 1 }, (_, index) => [
+      `field-${index}`,
+      true,
+    ]),
+  );
+  const tooManyKeysVerdict = evaluateStage4StorageLaunchGraph(tooManyKeys);
+  expectResult(tooManyKeysVerdict, "preserve-uncertain", "STAGE4_BOUNDED_IO_VIOLATION");
+  assert.equal(tooManyKeysVerdict.graph_sha256, null);
+
+  const tooDeep = graph();
+  let cursor: Json = {};
+  tooDeep.tooDeep = cursor;
+  for (let depth = 0; depth <= STAGE4_STORAGE_LAUNCH_LIMITS.maxDepth; depth += 1) {
+    const next: Json = {};
+    cursor.next = next;
+    cursor = next;
+  }
+  const depthVerdict = evaluateStage4StorageLaunchGraph(tooDeep);
+  expectResult(depthVerdict, "preserve-uncertain", "STAGE4_BOUNDED_IO_VIOLATION");
+  assert.equal(depthVerdict.graph_sha256, null);
+
   const oversizedCanonical = graph();
   oversizedCanonical.oversized = Object.fromEntries(
     Array.from({ length: 64 }, (_, index) => [
@@ -322,7 +450,10 @@ test("canonical byte input is bounded and rejects malformed or noncanonical I/O"
       "x".repeat(STAGE4_STORAGE_LAUNCH_LIMITS.maxStringBytes),
     ]),
   );
-  assert.throws(() => canonicalStage4StorageLaunchBytes(oversizedCanonical), /byte bound/u);
+  const aggregateVerdict = evaluateStage4StorageLaunchGraph(oversizedCanonical);
+  expectResult(aggregateVerdict, "preserve-uncertain", "STAGE4_BOUNDED_IO_VIOLATION");
+  assert.equal(aggregateVerdict.graph_sha256, null, "aggregate overflow is rejected before hashing");
+  assert.throws(() => canonicalStage4StorageLaunchBytes(oversizedCanonical), /bound/u);
 });
 
 test("getter, proxy, sparse-array, symbol, and prototype inputs fail closed without trap escape", () => {
@@ -338,13 +469,43 @@ test("getter, proxy, sparse-array, symbol, and prototype inputs fail closed with
   expect(getter, "reject", "STAGE4_STORAGE_LAUNCH_INVALID_SHAPE");
   assert.equal(getterInvoked, false);
 
-  const hostileProxy = new Proxy(graph(), {
-    ownKeys() {
-      throw new Error("must not escape");
+  let proxyTraps = 0;
+  const traps = {
+    getPrototypeOf() {
+      proxyTraps += 1;
+      return Object.prototype;
     },
-  });
+    ownKeys() {
+      proxyTraps += 1;
+      return [];
+    },
+    getOwnPropertyDescriptor() {
+      proxyTraps += 1;
+      return undefined;
+    },
+    get() {
+      proxyTraps += 1;
+      return undefined;
+    },
+  };
+  const hostileProxy = new Proxy(graph(), traps);
   assert.doesNotThrow(() => evaluateStage4StorageLaunchGraph(hostileProxy));
   expect(hostileProxy, "reject", "STAGE4_STORAGE_LAUNCH_INVALID_SHAPE");
+  assert.equal(proxyTraps, 0, "root transparent proxy traps must never execute");
+
+  const functionProxy = new Proxy(() => undefined, traps);
+  expect(functionProxy, "reject", "STAGE4_STORAGE_LAUNCH_INVALID_SHAPE");
+  assert.equal(proxyTraps, 0, "callable proxy traps must never execute");
+
+  const nestedProxy = graph();
+  nestedProxy.runtime_class = new Proxy(nestedProxy.runtime_class, traps);
+  expect(nestedProxy, "reject", "STAGE4_STORAGE_LAUNCH_INVALID_SHAPE");
+  assert.equal(proxyTraps, 0, "nested transparent proxy traps must never execute");
+
+  const arrayProxy = graph();
+  arrayProxy.resources.kata_sandbox = new Proxy(arrayProxy.resources.kata_sandbox, traps);
+  expect(arrayProxy, "reject", "STAGE4_STORAGE_LAUNCH_INVALID_SHAPE");
+  assert.equal(proxyTraps, 0, "array proxy traps must never execute");
 
   const prototype = graph();
   Object.setPrototypeOf(prototype, new Date());
@@ -387,12 +548,13 @@ test("module has no launcher, process, filesystem, network, Kubernetes, or provi
     "evaluateStage4StorageLaunchGraph",
     "validateStage4StorageLaunchBytes",
   ]);
-  assert.equal(STAGE4_STORAGE_LAUNCH_REASON_CODES.length, 18);
+  assert.equal(STAGE4_STORAGE_LAUNCH_REASON_CODES.length, 19);
   const source = readFileSync(resolve(root, "scripts/stage4-storage-launch-contract.ts"), "utf8");
   assert.doesNotMatch(
     source,
     /from\s+["']node:(?:child_process|fs|http|https|http2|net|tls|dns|dgram|os|worker_threads)["']|@aws|@kubernetes|aws-sdk|kubernetes-client/iu,
   );
   assert.doesNotMatch(source, /\bprocess(?:\.|\[)|\bfetch\s*\(|\b(?:helm|kubectl|opentofu|terraform)\b/iu);
+  assert.match(source, /utilTypes\.isProxy\(candidate\)/u);
   assert.doesNotMatch(source, /\b(?:spawn|exec|fork|writeFile|appendFile|createServer)\b/u);
 });
