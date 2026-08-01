@@ -1,0 +1,89 @@
+# Synthetic static test data only. This does not describe a runnable or secure deployment.
+stage4Preparation:
+  enabled: true
+  nonProductionAcknowledgement: true
+  sessionIdentity: static-test-session
+  runtimeClassName: kata-qemu-cogs
+
+  images:
+    worker: registry.example.invalid/cogs/worker@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    proxy: envoyproxy/envoy:v1.38.3@sha256:5f7c43e1147412fdb3af578c651c67478a3df818eae89d2261e707e06c209cdb
+    sandbox: registry.example.invalid/cogs/sandbox@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+
+  placement:
+    trusted:
+      nodeSelector:
+        cogs.dev/node-domain: trusted
+      tolerations: []
+    sandbox:
+      nodeSelector:
+        cogs.dev/node-domain: sandbox-kata
+      tolerations:
+        - key: cogs.dev/sandbox
+          operator: Equal
+          value: kata
+          effect: NoSchedule
+
+  storage:
+    workspaceStorageClass: synthetic-workspace-csi
+    sessionStateStorageClass: synthetic-session-state-csi
+
+  openBao:
+    endpoint: https://openbao.static-test.invalid:8200
+    kubernetesAuthMount: auth/cogs-static-test
+    kubernetesAuthRole: cogs-static-test-role
+    pkiPath: pki/cogs-static-test
+    tokenAudience: openbao.cogs.static-test
+    peer:
+      namespaceLabels:
+        kubernetes.io/metadata.name: synthetic-openbao
+      podLabels:
+        app.kubernetes.io/name: synthetic-openbao
+      port: 8200
+
+  otlp:
+    endpoint: https://otlp.static-test.invalid:4317
+    protocol: grpc
+    peer:
+      namespaceLabels:
+        kubernetes.io/metadata.name: synthetic-observability
+      podLabels:
+        app.kubernetes.io/name: synthetic-otel-collector
+      port: 4317
+
+  proxyIdentity:
+    capabilityAudience: cogs-egress-proxy.static-test
+    capabilityHandlePrefix: sessions
+    sourceBindingRequired: true
+
+  resources:
+    worker:
+      requests: { cpu: 500m, memory: 512Mi }
+      limits: { cpu: "2", memory: 2Gi }
+    proxy:
+      requests: { cpu: 100m, memory: 128Mi }
+      limits: { cpu: "1", memory: 512Mi }
+    sandbox:
+      requests: { cpu: "2", memory: 4Gi }
+      limits: { cpu: "2", memory: 4Gi }
+
+  publicEgressCa: |
+    -----BEGIN CERTIFICATE-----
+    MIIDKzCCAhOgAwIBAgIUOqpFtQQk5AffVU8YA6GpAXtu2wEwDQYJKoZIhvcNAQEL
+    BQAwJTEjMCEGA1UEAwwac3RhZ2U0LXN0YXRpYy10ZXN0LmludmFsaWQwHhcNMjYw
+    ODAxMTk0MjE2WhcNMzYwNzI5MTk0MjE2WjAlMSMwIQYDVQQDDBpzdGFnZTQtc3Rh
+    dGljLXRlc3QuaW52YWxpZDCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEB
+    AK4pbhywafeu3rEeid2TtcPBUVulskjtNsGIjfZQqwBxepSn7ldUt6dqgOmGFZCf
+    i5TYq3G88AIBEcWEIntCfbW9ccxDIYP4pePbpPFS4wfGVNwkgi4u8/Cc1VqACORs
+    /wq/ggtZyM60STNNBVnfXHqLWTgFALBbhSmpRd6kC7Ir3XjlFHCOcmRHfZU0sBqp
+    u92Mzu9KfAgpkzYNmrrdgD1zMQ57a95IImDbqEhWE4MTvV2iLX+cUtD2+nPubChu
+    H+KUGxmVdCsHTovMzw6Ex3QBQwj4Iu0WUKzu13OYm7TInRyhO3V9gxQoNC8+GaKG
+    Z321E+csFkNOeUIPXQXPGL8CAwEAAaNTMFEwHQYDVR0OBBYEFM/CJJQw0C5OXKHG
+    JVH3eBGtwep8MB8GA1UdIwQYMBaAFM/CJJQw0C5OXKHGJVH3eBGtwep8MA8GA1Ud
+    EwEB/wQFMAMBAf8wDQYJKoZIhvcNAQELBQADggEBAC9GyjFxc6UoSATEmYlc9PEt
+    2bE/pF6i0G9NnI/qWLQwx1+QbHaEYBOHOBVdiBDfrFJ6N6x4w7QOOz39XJFLH291
+    JFc9ZP4Jmn0AKuTHWGK0Hio0HfpcchHPKhdlpY+jxBnrOHYp3zRphYt0AKCoQfPu
+    OCL7UHtTEY2qq+dlW/BfakPsukg/HsbAKb3EIeAJs8TjrCXMhn3o9UbagKjVw6CM
+    JZVT//1pYgMvsc8rcy2v8H97jm6GAJdusJn8JxBmLV0F+XNFexr/x8PaGZ8J8jYd
+    A1omke+vYv2aLOFoXDydeEVZAQMgGtwJl0EjHd11qW4mI9K8ls07pRDbK0BDIb4=
+    -----END CERTIFICATE-----

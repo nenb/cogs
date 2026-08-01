@@ -1,0 +1,3 @@
+{{- if .Values.stage4Preparation.enabled -}}
+{{- include "cogs.stage4.validate" . -}}
+{{- end -}}

@@ -1,0 +1,119 @@
+{{- if .Values.stage4Preparation.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "cogs.componentName" (dict "root" . "component" "default-deny") }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "cogs.stage4Labels" . | nindent 4 }}
+    dev.cogs/role: "network-policy"
+  annotations:
+    dev.cogs/notice: "static-example-not-proof-of-cni-enforcement"
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name | quote }}
+      dev.cogs/session: {{ .Values.stage4Preparation.sessionIdentity | quote }}
+    matchExpressions:
+      - key: dev.cogs/role
+        operator: In
+        values: ["trusted", "sandbox"]
+  policyTypes: ["Ingress", "Egress"]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "cogs.componentName" (dict "root" . "component" "trusted-allow") }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "cogs.stage4Labels" . | nindent 4 }}
+    dev.cogs/role: "network-policy"
+  annotations:
+    dev.cogs/notice: "static-example-not-proof-of-cni-enforcement"
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name | quote }}
+      dev.cogs/session: {{ .Values.stage4Preparation.sessionIdentity | quote }}
+      dev.cogs/role: "trusted"
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: {{ .Release.Name | quote }}
+              dev.cogs/session: {{ .Values.stage4Preparation.sessionIdentity | quote }}
+              dev.cogs/role: "sandbox"
+      ports:
+        - protocol: TCP
+          port: 15001
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: {{ .Release.Name | quote }}
+              dev.cogs/session: {{ .Values.stage4Preparation.sessionIdentity | quote }}
+              dev.cogs/role: "sandbox"
+      ports:
+        - protocol: TCP
+          port: 22
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              {{- toYaml .Values.stage4Preparation.openBao.peer.namespaceLabels | nindent 14 }}
+          podSelector:
+            matchLabels:
+              {{- toYaml .Values.stage4Preparation.openBao.peer.podLabels | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.stage4Preparation.openBao.peer.port }}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              {{- toYaml .Values.stage4Preparation.otlp.peer.namespaceLabels | nindent 14 }}
+          podSelector:
+            matchLabels:
+              {{- toYaml .Values.stage4Preparation.otlp.peer.podLabels | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.stage4Preparation.otlp.peer.port }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "cogs.componentName" (dict "root" . "component" "sandbox-allow") }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "cogs.stage4Labels" . | nindent 4 }}
+    dev.cogs/role: "network-policy"
+  annotations:
+    dev.cogs/notice: "static-example-not-proof-of-cni-enforcement"
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name | quote }}
+      dev.cogs/session: {{ .Values.stage4Preparation.sessionIdentity | quote }}
+      dev.cogs/role: "sandbox"
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: {{ .Release.Name | quote }}
+              dev.cogs/session: {{ .Values.stage4Preparation.sessionIdentity | quote }}
+              dev.cogs/role: "trusted"
+      ports:
+        - protocol: TCP
+          port: 22
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: {{ .Release.Name | quote }}
+              dev.cogs/session: {{ .Values.stage4Preparation.sessionIdentity | quote }}
+              dev.cogs/role: "trusted"
+              dev.cogs/proxy: "true"
+      ports:
+        - protocol: TCP
+          port: 15001
+{{- end -}}

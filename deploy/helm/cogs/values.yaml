@@ -1,2 +1,60 @@
-# Stage 0 intentionally renders no Kubernetes resources.
-# Production topology begins only in its assigned implementation stage.
+# This chart is an inert static preparation pack. It makes no security or production-readiness claim.
+stage4Preparation:
+  enabled: false
+  nonProductionAcknowledgement: false
+  sessionIdentity: ""
+  runtimeClassName: ""
+
+  images:
+    worker: ""
+    proxy: ""
+    sandbox: ""
+
+  placement:
+    trusted:
+      nodeSelector: {}
+      tolerations: []
+    sandbox:
+      nodeSelector: {}
+      tolerations: []
+
+  storage:
+    workspaceStorageClass: ""
+    sessionStateStorageClass: ""
+
+  openBao:
+    endpoint: ""
+    kubernetesAuthMount: ""
+    kubernetesAuthRole: ""
+    pkiPath: ""
+    tokenAudience: ""
+    peer:
+      namespaceLabels: {}
+      podLabels: {}
+      port: 0
+
+  otlp:
+    endpoint: ""
+    protocol: ""
+    peer:
+      namespaceLabels: {}
+      podLabels: {}
+      port: 0
+
+  proxyIdentity:
+    capabilityAudience: ""
+    capabilityHandlePrefix: ""
+    sourceBindingRequired: false
+
+  publicEgressCa: ""
+
+  resources:
+    worker:
+      requests: { cpu: 500m, memory: 512Mi }
+      limits: { cpu: "2", memory: 2Gi }
+    proxy:
+      requests: { cpu: 100m, memory: 128Mi }
+      limits: { cpu: "1", memory: 512Mi }
+    sandbox:
+      requests: { cpu: "2", memory: 4Gi }
+      limits: { cpu: "2", memory: 4Gi }
