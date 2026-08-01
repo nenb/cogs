@@ -51,8 +51,8 @@
     },
     "static_checks": {
       "type": "array",
-      "minItems": 14,
-      "maxItems": 14,
+      "minItems": 17,
+      "maxItems": 17,
       "prefixItems": [
         {
           "$ref": "#/$defs/staticCheck",
@@ -97,12 +97,26 @@
         {
           "$ref": "#/$defs/staticCheck",
           "type": "object",
+          "properties": {
+            "id": { "const": "static.identity.scoped-trusted-worker-openbao-handles-sandbox-no-identity" }
+          }
+        },
+        {
+          "$ref": "#/$defs/staticCheck",
+          "type": "object",
           "properties": { "id": { "const": "static.network.declarative-default-deny-shape" } }
         },
         {
           "$ref": "#/$defs/staticCheck",
           "type": "object",
           "properties": { "id": { "const": "static.network.no-public-ingress-or-provider-resource" } }
+        },
+        {
+          "$ref": "#/$defs/staticCheck",
+          "type": "object",
+          "properties": {
+            "id": { "const": "static.proxy.immutable-session-source-binding-revocation-no-fallback" }
+          }
         },
         {
           "$ref": "#/$defs/staticCheck",
@@ -118,6 +132,13 @@
           "$ref": "#/$defs/staticCheck",
           "type": "object",
           "properties": { "id": { "const": "static.limits.resource-and-lifecycle-bounds-present" } }
+        },
+        {
+          "$ref": "#/$defs/staticCheck",
+          "type": "object",
+          "properties": {
+            "id": { "const": "static.telemetry.metadata-only-otlp-and-bounded-audit-wal-failure" }
+          }
         },
         {
           "$ref": "#/$defs/staticCheck",

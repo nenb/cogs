@@ -173,11 +173,11 @@ dev.cogs/production-ready: "false"
 {{- end -}}
 {{- end -}}
 {{- if not (or (kindIs "float64" $v.auditWalMaxBytes) (kindIs "int" $v.auditWalMaxBytes) (kindIs "int64" $v.auditWalMaxBytes)) -}}
-{{- fail "stage4Preparation.auditWalMaxBytes must be an integer from 1048576 through 1073741824" -}}
+{{- fail "stage4Preparation.auditWalMaxBytes must be exactly 1048576" -}}
 {{- end -}}
 {{- $walBytes := float64 $v.auditWalMaxBytes -}}
-{{- if or (ne $walBytes (floor $walBytes)) (lt $walBytes 1048576.0) (gt $walBytes 1073741824.0) -}}
-{{- fail "stage4Preparation.auditWalMaxBytes must be an integer from 1048576 through 1073741824" -}}
+{{- if or (ne $walBytes (floor $walBytes)) (ne $walBytes 1048576.0) -}}
+{{- fail "stage4Preparation.auditWalMaxBytes must be exactly 1048576" -}}
 {{- end -}}
 
 {{- if hasKey $v "publicEgressCa" -}}

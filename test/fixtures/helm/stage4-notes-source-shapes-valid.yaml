@@ -66,6 +66,6 @@ stage4Preparation:
     idleSeconds: 1800
     hardSeconds: 28800
     terminationGraceSeconds: 30
-  auditWalMaxBytes: 268435456
+  auditWalMaxBytes: 1048576
 
   publicEgressCaConfigMap: synthetic-public-egress-ca

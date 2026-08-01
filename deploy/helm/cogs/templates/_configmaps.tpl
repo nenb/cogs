@@ -39,6 +39,14 @@ data:
   proxyCapabilityAudience: {{ .Values.stage4Preparation.proxyIdentity.capabilityAudience | quote }}
   proxyCapabilitySourceBindingRequired: {{ .Values.stage4Preparation.proxyIdentity.sourceBindingRequired | quote }}
   ephemeralProxyCapability: "ABSENT_FUTURE_TRUSTED_LAUNCHER_ONLY"
+  policyContractVersion: "cogs.stage4-policy-contract/v1"
+  policyContractAuthority: "static-only-stage4-policy"
+  policyContractQualification: "pending-exact-eks-cni-runtime"
+  trustedWorkerIdentityContract: "SCOPED_PROJECTED_OPENBAO_TOKEN_EXACT_ROLE_AND_HANDLES_ONLY"
+  sandboxIdentityContract: "INERT_SERVICE_ACCOUNT_NO_TOKEN_RBAC_OPENBAO_OR_CLOUD_IDENTITY"
+  proxyCapabilityContract: "IMMUTABLE_SESSION_AND_SOURCE_BOUND_DENY_DRAIN_REPLACE_NO_FALLBACK"
+  otlpPayloadContract: "METADATA_ONLY_BOUNDED_DROP_NON_AUTHORIZING"
+  auditWalFailureContract: "APPEND_AND_SYNC_BEFORE_CREDENTIAL_USE_FAILURE_DENIES_AND_REQUIRES_RECYCLE"
   resourceProfile: {{ .Values.stage4Preparation.resourceProfile | quote }}
   idleSeconds: {{ .Values.stage4Preparation.lifecycle.idleSeconds | quote }}
   hardSeconds: {{ .Values.stage4Preparation.lifecycle.hardSeconds | quote }}

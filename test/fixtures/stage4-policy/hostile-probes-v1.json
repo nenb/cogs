@@ -1,0 +1,679 @@
+{
+  "version": "cogs.stage4-policy-probe-suite/v1",
+  "authority": "static-only-stage4-policy",
+  "qualification": "pending-exact-eks-cni-runtime",
+  "probes": [
+    {
+      "id": "allow.assigned-proxy.ipv4",
+      "source_session_id": "session-static-1",
+      "source_selector": {
+        "app.kubernetes.io/instance": "cogs-static-1",
+        "dev.cogs/session": "session-static-1",
+        "dev.cogs/role": "sandbox"
+      },
+      "transport": "tcp",
+      "address_family": "IPv4",
+      "destination": {
+        "class": "assigned-proxy",
+        "session_id": "session-static-1",
+        "service_name": "cogs-proxy-session-static-1",
+        "port": 15001
+      },
+      "capability": {
+        "state": "active",
+        "session_id": "session-static-1"
+      },
+      "expected": {
+        "allow": true,
+        "reason": "assigned-proxy-only"
+      }
+    },
+    {
+      "id": "allow.assigned-proxy.ipv6",
+      "source_session_id": "session-static-1",
+      "source_selector": {
+        "app.kubernetes.io/instance": "cogs-static-1",
+        "dev.cogs/session": "session-static-1",
+        "dev.cogs/role": "sandbox"
+      },
+      "transport": "tcp",
+      "address_family": "IPv6",
+      "destination": {
+        "class": "assigned-proxy",
+        "session_id": "session-static-1",
+        "service_name": "cogs-proxy-session-static-1",
+        "port": 15001
+      },
+      "capability": {
+        "state": "active",
+        "session_id": "session-static-1"
+      },
+      "expected": {
+        "allow": true,
+        "reason": "assigned-proxy-only"
+      }
+    },
+    {
+      "id": "deny.selector.empty",
+      "source_session_id": "session-static-1",
+      "source_selector": {},
+      "transport": "tcp",
+      "address_family": "IPv4",
+      "destination": {
+        "class": "assigned-proxy",
+        "session_id": "session-static-1",
+        "service_name": "cogs-proxy-session-static-1",
+        "port": 15001
+      },
+      "capability": {
+        "state": "active",
+        "session_id": "session-static-1"
+      },
+      "expected": {
+        "allow": false,
+        "reason": "selector-confusion"
+      }
+    },
+    {
+      "id": "deny.selector.trusted-role",
+      "source_session_id": "session-static-1",
+      "source_selector": {
+        "app.kubernetes.io/instance": "cogs-static-1",
+        "dev.cogs/session": "session-static-1",
+        "dev.cogs/role": "trusted"
+      },
+      "transport": "tcp",
+      "address_family": "IPv4",
+      "destination": {
+        "class": "assigned-proxy",
+        "session_id": "session-static-1",
+        "service_name": "cogs-proxy-session-static-1",
+        "port": 15001
+      },
+      "capability": {
+        "state": "active",
+        "session_id": "session-static-1"
+      },
+      "expected": {
+        "allow": false,
+        "reason": "selector-confusion"
+      }
+    },
+    {
+      "id": "deny.selector.proxy-role-confusion",
+      "source_session_id": "session-static-1",
+      "source_selector": {
+        "app.kubernetes.io/instance": "cogs-static-1",
+        "dev.cogs/session": "session-static-1",
+        "dev.cogs/role": "sandbox",
+        "dev.cogs/proxy": "true"
+      },
+      "transport": "tcp",
+      "address_family": "IPv4",
+      "destination": {
+        "class": "assigned-proxy",
+        "session_id": "session-static-1",
+        "service_name": "cogs-proxy-session-static-1",
+        "port": 15001
+      },
+      "capability": {
+        "state": "active",
+        "session_id": "session-static-1"
+      },
+      "expected": {
+        "allow": false,
+        "reason": "selector-confusion"
+      }
+    },
+    {
+      "id": "deny.assigned-proxy.service-confusion",
+      "source_session_id": "session-static-1",
+      "source_selector": {
+        "app.kubernetes.io/instance": "cogs-static-1",
+        "dev.cogs/session": "session-static-1",
+        "dev.cogs/role": "sandbox"
+      },
+      "transport": "tcp",
+      "address_family": "IPv4",
+      "destination": {
+        "class": "assigned-proxy",
+        "session_id": "session-static-1",
+        "service_name": "cogs-proxy-session-static-2",
+        "port": 15001
+      },
+      "capability": {
+        "state": "active",
+        "session_id": "session-static-1"
+      },
+      "expected": {
+        "allow": false,
+        "reason": "proxy-service-mismatch"
+      }
+    },
+    {
+      "id": "deny.source.cross-session",
+      "source_session_id": "session-static-2",
+      "source_selector": {
+        "app.kubernetes.io/instance": "cogs-static-1",
+        "dev.cogs/session": "session-static-1",
+        "dev.cogs/role": "sandbox"
+      },
+      "transport": "tcp",
+      "address_family": "IPv4",
+      "destination": {
+        "class": "assigned-proxy",
+        "session_id": "session-static-1",
+        "service_name": "cogs-proxy-session-static-1",
+        "port": 15001
+      },
+      "capability": {
+        "state": "active",
+        "session_id": "session-static-1"
+      },
+      "expected": {
+        "allow": false,
+        "reason": "source-session-mismatch"
+      }
+    },
+    {
+      "id": "deny.capability.missing",
+      "source_session_id": "session-static-1",
+      "source_selector": {
+        "app.kubernetes.io/instance": "cogs-static-1",
+        "dev.cogs/session": "session-static-1",
+        "dev.cogs/role": "sandbox"
+      },
+      "transport": "tcp",
+      "address_family": "IPv4",
+      "destination": {
+        "class": "assigned-proxy",
+        "session_id": "session-static-1",
+        "service_name": "cogs-proxy-session-static-1",
+        "port": 15001
+      },
+      "capability": {
+        "state": "missing",
+        "session_id": null
+      },
+      "expected": {
+        "allow": false,
+        "reason": "capability-missing"
+      }
+    },
+    {
+      "id": "deny.capability.revoked",
+      "source_session_id": "session-static-1",
+      "source_selector": {
+        "app.kubernetes.io/instance": "cogs-static-1",
+        "dev.cogs/session": "session-static-1",
+        "dev.cogs/role": "sandbox"
+      },
+      "transport": "tcp",
+      "address_family": "IPv4",
+      "destination": {
+        "class": "assigned-proxy",
+        "session_id": "session-static-1",
+        "service_name": "cogs-proxy-session-static-1",
+        "port": 15001
+      },
+      "capability": {
+        "state": "revoked",
+        "session_id": "session-static-1"
+      },
+      "expected": {
+        "allow": false,
+        "reason": "capability-revoked"
+      }
+    },
+    {
+      "id": "deny.capability.cross-session",
+      "source_session_id": "session-static-1",
+      "source_selector": {
+        "app.kubernetes.io/instance": "cogs-static-1",
+        "dev.cogs/session": "session-static-1",
+        "dev.cogs/role": "sandbox"
+      },
+      "transport": "tcp",
+      "address_family": "IPv4",
+      "destination": {
+        "class": "assigned-proxy",
+        "session_id": "session-static-1",
+        "service_name": "cogs-proxy-session-static-1",
+        "port": 15001
+      },
+      "capability": {
+        "state": "active",
+        "session_id": "session-static-2"
+      },
+      "expected": {
+        "allow": false,
+        "reason": "capability-session-mismatch"
+      }
+    },
+    {
+      "id": "deny.destination.cross-session-proxy",
+      "source_session_id": "session-static-1",
+      "source_selector": {
+        "app.kubernetes.io/instance": "cogs-static-1",
+        "dev.cogs/session": "session-static-1",
+        "dev.cogs/role": "sandbox"
+      },
+      "transport": "tcp",
+      "address_family": "IPv4",
+      "destination": {
+        "class": "other-session-proxy",
+        "session_id": "session-static-2",
+        "service_name": "cogs-proxy-session-static-2",
+        "port": 15001
+      },
+      "capability": {
+        "state": "active",
+        "session_id": "session-static-1"
+      },
+      "expected": {
+        "allow": false,
+        "reason": "cross-session-denied"
+      }
+    },
+    {
+      "id": "deny.destination.cross-session-workload",
+      "source_session_id": "session-static-1",
+      "source_selector": {
+        "app.kubernetes.io/instance": "cogs-static-1",
+        "dev.cogs/session": "session-static-1",
+        "dev.cogs/role": "sandbox"
+      },
+      "transport": "tcp",
+      "address_family": "IPv4",
+      "destination": {
+        "class": "other-session-workload",
+        "session_id": "session-static-2",
+        "service_name": null,
+        "port": 22
+      },
+      "capability": {
+        "state": "active",
+        "session_id": "session-static-1"
+      },
+      "expected": {
+        "allow": false,
+        "reason": "cross-session-denied"
+      }
+    },
+    {
+      "id": "deny.udp.ipv4",
+      "source_session_id": "session-static-1",
+      "source_selector": {
+        "app.kubernetes.io/instance": "cogs-static-1",
+        "dev.cogs/session": "session-static-1",
+        "dev.cogs/role": "sandbox"
+      },
+      "transport": "udp",
+      "address_family": "IPv4",
+      "destination": {
+        "class": "direct-host",
+        "session_id": null,
+        "service_name": null,
+        "port": 9999
+      },
+      "capability": {
+        "state": "active",
+        "session_id": "session-static-1"
+      },
+      "expected": {
+        "allow": false,
+        "reason": "udp-quic-denied"
+      }
+    },
+    {
+      "id": "deny.udp.ipv6",
+      "source_session_id": "session-static-1",
+      "source_selector": {
+        "app.kubernetes.io/instance": "cogs-static-1",
+        "dev.cogs/session": "session-static-1",
+        "dev.cogs/role": "sandbox"
+      },
+      "transport": "udp",
+      "address_family": "IPv6",
+      "destination": {
+        "class": "direct-host",
+        "session_id": null,
+        "service_name": null,
+        "port": 9999
+      },
+      "capability": {
+        "state": "active",
+        "session_id": "session-static-1"
+      },
+      "expected": {
+        "allow": false,
+        "reason": "udp-quic-denied"
+      }
+    },
+    {
+      "id": "deny.quic.udp443",
+      "source_session_id": "session-static-1",
+      "source_selector": {
+        "app.kubernetes.io/instance": "cogs-static-1",
+        "dev.cogs/session": "session-static-1",
+        "dev.cogs/role": "sandbox"
+      },
+      "transport": "quic",
+      "address_family": "IPv4",
+      "destination": {
+        "class": "direct-host",
+        "session_id": null,
+        "service_name": null,
+        "port": 443
+      },
+      "capability": {
+        "state": "active",
+        "session_id": "session-static-1"
+      },
+      "expected": {
+        "allow": false,
+        "reason": "udp-quic-denied"
+      }
+    },
+    {
+      "id": "deny.dns.arbitrary",
+      "source_session_id": "session-static-1",
+      "source_selector": {
+        "app.kubernetes.io/instance": "cogs-static-1",
+        "dev.cogs/session": "session-static-1",
+        "dev.cogs/role": "sandbox"
+      },
+      "transport": "dns",
+      "address_family": "IPv4",
+      "destination": {
+        "class": "resolver",
+        "session_id": null,
+        "service_name": null,
+        "port": 53
+      },
+      "capability": {
+        "state": "active",
+        "session_id": "session-static-1"
+      },
+      "expected": {
+        "allow": false,
+        "reason": "dns-resolver-denied"
+      }
+    },
+    {
+      "id": "deny.dns.over-https",
+      "source_session_id": "session-static-1",
+      "source_selector": {
+        "app.kubernetes.io/instance": "cogs-static-1",
+        "dev.cogs/session": "session-static-1",
+        "dev.cogs/role": "sandbox"
+      },
+      "transport": "doh",
+      "address_family": "IPv4",
+      "destination": {
+        "class": "direct-host",
+        "session_id": null,
+        "service_name": null,
+        "port": 443
+      },
+      "capability": {
+        "state": "active",
+        "session_id": "session-static-1"
+      },
+      "expected": {
+        "allow": false,
+        "reason": "dns-resolver-denied"
+      }
+    },
+    {
+      "id": "deny.direct-ip.ipv4",
+      "source_session_id": "session-static-1",
+      "source_selector": {
+        "app.kubernetes.io/instance": "cogs-static-1",
+        "dev.cogs/session": "session-static-1",
+        "dev.cogs/role": "sandbox"
+      },
+      "transport": "tcp",
+      "address_family": "IPv4",
+      "destination": {
+        "class": "direct-ip",
+        "session_id": null,
+        "service_name": null,
+        "port": 443
+      },
+      "capability": {
+        "state": "active",
+        "session_id": "session-static-1"
+      },
+      "expected": {
+        "allow": false,
+        "reason": "direct-egress-denied"
+      }
+    },
+    {
+      "id": "deny.direct-ip.ipv6",
+      "source_session_id": "session-static-1",
+      "source_selector": {
+        "app.kubernetes.io/instance": "cogs-static-1",
+        "dev.cogs/session": "session-static-1",
+        "dev.cogs/role": "sandbox"
+      },
+      "transport": "tcp",
+      "address_family": "IPv6",
+      "destination": {
+        "class": "direct-ip",
+        "session_id": null,
+        "service_name": null,
+        "port": 443
+      },
+      "capability": {
+        "state": "active",
+        "session_id": "session-static-1"
+      },
+      "expected": {
+        "allow": false,
+        "reason": "direct-egress-denied"
+      }
+    },
+    {
+      "id": "deny.alternate-proxy-port",
+      "source_session_id": "session-static-1",
+      "source_selector": {
+        "app.kubernetes.io/instance": "cogs-static-1",
+        "dev.cogs/session": "session-static-1",
+        "dev.cogs/role": "sandbox"
+      },
+      "transport": "tcp",
+      "address_family": "IPv4",
+      "destination": {
+        "class": "assigned-proxy",
+        "session_id": "session-static-1",
+        "service_name": "cogs-proxy-session-static-1",
+        "port": 15002
+      },
+      "capability": {
+        "state": "active",
+        "session_id": "session-static-1"
+      },
+      "expected": {
+        "allow": false,
+        "reason": "alternate-port-denied"
+      }
+    },
+    {
+      "id": "deny.metadata.ipv4",
+      "source_session_id": "session-static-1",
+      "source_selector": {
+        "app.kubernetes.io/instance": "cogs-static-1",
+        "dev.cogs/session": "session-static-1",
+        "dev.cogs/role": "sandbox"
+      },
+      "transport": "tcp",
+      "address_family": "IPv4",
+      "destination": {
+        "class": "cloud-metadata",
+        "session_id": null,
+        "service_name": null,
+        "port": 80
+      },
+      "capability": {
+        "state": "active",
+        "session_id": "session-static-1"
+      },
+      "expected": {
+        "allow": false,
+        "reason": "protected-surface-denied"
+      }
+    },
+    {
+      "id": "deny.metadata.ipv6",
+      "source_session_id": "session-static-1",
+      "source_selector": {
+        "app.kubernetes.io/instance": "cogs-static-1",
+        "dev.cogs/session": "session-static-1",
+        "dev.cogs/role": "sandbox"
+      },
+      "transport": "tcp",
+      "address_family": "IPv6",
+      "destination": {
+        "class": "cloud-metadata",
+        "session_id": null,
+        "service_name": null,
+        "port": 80
+      },
+      "capability": {
+        "state": "active",
+        "session_id": "session-static-1"
+      },
+      "expected": {
+        "allow": false,
+        "reason": "protected-surface-denied"
+      }
+    },
+    {
+      "id": "deny.kubernetes-api",
+      "source_session_id": "session-static-1",
+      "source_selector": {
+        "app.kubernetes.io/instance": "cogs-static-1",
+        "dev.cogs/session": "session-static-1",
+        "dev.cogs/role": "sandbox"
+      },
+      "transport": "tcp",
+      "address_family": "IPv4",
+      "destination": {
+        "class": "kubernetes-api",
+        "session_id": null,
+        "service_name": null,
+        "port": 443
+      },
+      "capability": {
+        "state": "active",
+        "session_id": "session-static-1"
+      },
+      "expected": {
+        "allow": false,
+        "reason": "protected-surface-denied"
+      }
+    },
+    {
+      "id": "deny.worker-api",
+      "source_session_id": "session-static-1",
+      "source_selector": {
+        "app.kubernetes.io/instance": "cogs-static-1",
+        "dev.cogs/session": "session-static-1",
+        "dev.cogs/role": "sandbox"
+      },
+      "transport": "tcp",
+      "address_family": "IPv4",
+      "destination": {
+        "class": "worker-api",
+        "session_id": "session-static-1",
+        "service_name": null,
+        "port": 8080
+      },
+      "capability": {
+        "state": "active",
+        "session_id": "session-static-1"
+      },
+      "expected": {
+        "allow": false,
+        "reason": "protected-surface-denied"
+      }
+    },
+    {
+      "id": "deny.proxy-admin",
+      "source_session_id": "session-static-1",
+      "source_selector": {
+        "app.kubernetes.io/instance": "cogs-static-1",
+        "dev.cogs/session": "session-static-1",
+        "dev.cogs/role": "sandbox"
+      },
+      "transport": "tcp",
+      "address_family": "IPv4",
+      "destination": {
+        "class": "proxy-admin",
+        "session_id": "session-static-1",
+        "service_name": null,
+        "port": 9901
+      },
+      "capability": {
+        "state": "active",
+        "session_id": "session-static-1"
+      },
+      "expected": {
+        "allow": false,
+        "reason": "protected-surface-denied"
+      }
+    },
+    {
+      "id": "deny.openbao",
+      "source_session_id": "session-static-1",
+      "source_selector": {
+        "app.kubernetes.io/instance": "cogs-static-1",
+        "dev.cogs/session": "session-static-1",
+        "dev.cogs/role": "sandbox"
+      },
+      "transport": "tcp",
+      "address_family": "IPv4",
+      "destination": {
+        "class": "openbao",
+        "session_id": null,
+        "service_name": null,
+        "port": 8200
+      },
+      "capability": {
+        "state": "active",
+        "session_id": "session-static-1"
+      },
+      "expected": {
+        "allow": false,
+        "reason": "protected-surface-denied"
+      }
+    },
+    {
+      "id": "deny.broad-policy-peer",
+      "source_session_id": "session-static-1",
+      "source_selector": {
+        "app.kubernetes.io/instance": "cogs-static-1",
+        "dev.cogs/session": "session-static-1",
+        "dev.cogs/role": "sandbox"
+      },
+      "transport": "tcp",
+      "address_family": "IPv4",
+      "destination": {
+        "class": "broad-policy-peer",
+        "session_id": null,
+        "service_name": null,
+        "port": 443
+      },
+      "capability": {
+        "state": "active",
+        "session_id": "session-static-1"
+      },
+      "expected": {
+        "allow": false,
+        "reason": "broad-policy-denied"
+      }
+    }
+  ]
+}

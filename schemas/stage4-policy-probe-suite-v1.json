@@ -1,0 +1,144 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.dev/schemas/stage4-policy-probe-suite-v1.json",
+  "title": "Cogs Stage 4 static hostile policy probe suite",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "authority", "qualification", "probes"],
+  "properties": {
+    "version": { "const": "cogs.stage4-policy-probe-suite/v1" },
+    "authority": { "const": "static-only-stage4-policy" },
+    "qualification": { "const": "pending-exact-eks-cni-runtime" },
+    "probes": {
+      "type": "array",
+      "minItems": 20,
+      "maxItems": 64,
+      "items": { "$ref": "#/$defs/probe" }
+    }
+  },
+  "$defs": {
+    "dnsSubdomain": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 253,
+      "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?)*$"
+    },
+    "opaqueId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "labelValue": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 63,
+      "pattern": "^[A-Za-z0-9](?:[-_.A-Za-z0-9]{0,61}[A-Za-z0-9])?$"
+    },
+    "selector": {
+      "type": "object",
+      "maxProperties": 8,
+      "propertyNames": {
+        "maxLength": 317,
+        "pattern": "^(?:[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?)*\\/)?[A-Za-z0-9](?:[-_.A-Za-z0-9]{0,61}[A-Za-z0-9])?$"
+      },
+      "patternProperties": { ".*": { "$ref": "#/$defs/labelValue" } },
+      "additionalProperties": false
+    },
+    "probe": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "source_session_id",
+        "source_selector",
+        "transport",
+        "address_family",
+        "destination",
+        "capability",
+        "expected"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/opaqueId" },
+        "source_session_id": { "$ref": "#/$defs/opaqueId" },
+        "source_selector": { "$ref": "#/$defs/selector" },
+        "transport": { "enum": ["tcp", "udp", "quic", "dns", "doh"] },
+        "address_family": { "enum": ["IPv4", "IPv6"] },
+        "destination": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["class", "session_id", "service_name", "port"],
+          "properties": {
+            "class": {
+              "enum": [
+                "assigned-proxy",
+                "direct-host",
+                "direct-ip",
+                "resolver",
+                "cloud-metadata",
+                "kubernetes-api",
+                "worker-api",
+                "proxy-admin",
+                "openbao",
+                "other-session-proxy",
+                "other-session-workload",
+                "broad-policy-peer"
+              ]
+            },
+            "session_id": {
+              "oneOf": [{ "$ref": "#/$defs/opaqueId" }, { "type": "null" }]
+            },
+            "service_name": {
+              "oneOf": [{ "$ref": "#/$defs/dnsSubdomain" }, { "type": "null" }]
+            },
+            "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
+          }
+        },
+        "capability": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["state", "session_id"],
+          "properties": {
+            "state": { "enum": ["active", "revoked", "missing"] },
+            "session_id": {
+              "oneOf": [{ "$ref": "#/$defs/opaqueId" }, { "type": "null" }]
+            }
+          }
+        },
+        "expected": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["allow", "reason"],
+          "properties": {
+            "allow": { "type": "boolean" },
+            "reason": {
+              "enum": [
+                "assigned-proxy-only",
+                "source-session-mismatch",
+                "selector-confusion",
+                "capability-missing",
+                "capability-revoked",
+                "capability-session-mismatch",
+                "udp-quic-denied",
+                "dns-resolver-denied",
+                "direct-egress-denied",
+                "protected-surface-denied",
+                "cross-session-denied",
+                "broad-policy-denied",
+                "alternate-port-denied",
+                "proxy-service-mismatch"
+              ]
+            }
+          },
+          "allOf": [
+            {
+              "if": { "properties": { "allow": { "const": true } }, "required": ["allow"] },
+              "then": { "properties": { "reason": { "const": "assigned-proxy-only" } } },
+              "else": { "properties": { "reason": { "not": { "const": "assigned-proxy-only" } } } }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

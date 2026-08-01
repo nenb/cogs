@@ -25,11 +25,14 @@ const STATIC_CHECK_IDS = [
   "static.sandbox.explicit-kata-runtimeclass-no-fallback",
   "static.sandbox.no-trusted-sidecar-shape",
   "static.identity.sandbox-token-automount-disabled",
+  "static.identity.scoped-trusted-worker-openbao-handles-sandbox-no-identity",
   "static.network.declarative-default-deny-shape",
   "static.network.no-public-ingress-or-provider-resource",
+  "static.proxy.immutable-session-source-binding-revocation-no-fallback",
   "static.scheduling.trusted-sandbox-separation-shape",
   "static.storage.workspace-session-role-separation-shape",
   "static.limits.resource-and-lifecycle-bounds-present",
+  "static.telemetry.metadata-only-otlp-and-bounded-audit-wal-failure",
   "static.material.no-inline-sensitive-content",
 ] as const;
 
@@ -114,6 +117,18 @@ function teardownPlanSample(): JsonObject {
   };
 }
 
+function policyContractSample(): JsonObject {
+  return JSON.parse(
+    readFileSync(resolve(import.meta.dirname, "fixtures/stage4-policy/valid-contract-v1.json"), "utf8"),
+  ) as JsonObject;
+}
+
+function policyProbeSample(): JsonObject {
+  return JSON.parse(
+    readFileSync(resolve(import.meta.dirname, "fixtures/stage4-policy/hostile-probes-v1.json"), "utf8"),
+  ) as JsonObject;
+}
+
 function teardownVerdictSample(): JsonObject {
   return {
     version: TEARDOWN_CONTRACT.verdictVersion,
@@ -159,6 +174,8 @@ function nicVerdictSample(): JsonObject {
 const STAGE4_SCHEMA_REGISTRY = [
   { file: "stage4-nic-sandbox-node-group-contract-v1.json", sample: nicContractSample },
   { file: "stage4-nic-sandbox-node-group-verdict-v1.json", sample: nicVerdictSample },
+  { file: "stage4-policy-contract-v1.json", sample: policyContractSample },
+  { file: "stage4-policy-probe-suite-v1.json", sample: policyProbeSample },
   { file: "stage4-static-preparation-evidence-v1.json", sample: staticSample },
   { file: "stage4-teardown-plan-v1.json", sample: teardownPlanSample },
   { file: "stage4-teardown-verdict-v1.json", sample: teardownVerdictSample },
@@ -184,12 +201,14 @@ function assertRejected(validator: ValidateFunction, sample: unknown, message: s
   assert.equal(validator(sample), false, message);
 }
 
-test("the bounded Stage 4 registry compiles its five strict positive samples", () => {
+test("the bounded Stage 4 registry compiles its strict positive samples", () => {
   assert.deepEqual(
     STAGE4_SCHEMA_REGISTRY.map(({ file }) => file),
     [
       "stage4-nic-sandbox-node-group-contract-v1.json",
       "stage4-nic-sandbox-node-group-verdict-v1.json",
+      "stage4-policy-contract-v1.json",
+      "stage4-policy-probe-suite-v1.json",
       "stage4-static-preparation-evidence-v1.json",
       "stage4-teardown-plan-v1.json",
       "stage4-teardown-verdict-v1.json",

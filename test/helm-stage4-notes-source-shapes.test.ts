@@ -352,6 +352,14 @@ test("immutable configuration and Service expose references and no secret or CA 
   assert.equal(contract.data?.productionReady, "false");
   assert.equal(contract.data?.proxyImage, envoyPin);
   assert.equal(contract.data?.ephemeralProxyCapability, "ABSENT_FUTURE_TRUSTED_LAUNCHER_ONLY");
+  assert.equal(contract.data?.policyContractVersion, "cogs.stage4-policy-contract/v1");
+  assert.equal(contract.data?.policyContractAuthority, "static-only-stage4-policy");
+  assert.equal(contract.data?.policyContractQualification, "pending-exact-eks-cni-runtime");
+  assert.match(contract.data?.trustedWorkerIdentityContract ?? "", /SCOPED_PROJECTED_OPENBAO_TOKEN/u);
+  assert.match(contract.data?.sandboxIdentityContract ?? "", /INERT_SERVICE_ACCOUNT_NO_TOKEN_RBAC_OPENBAO_OR_CLOUD/u);
+  assert.match(contract.data?.proxyCapabilityContract ?? "", /SESSION_AND_SOURCE_BOUND.*NO_FALLBACK/u);
+  assert.match(contract.data?.otlpPayloadContract ?? "", /METADATA_ONLY.*NON_AUTHORIZING/u);
+  assert.match(contract.data?.auditWalFailureContract ?? "", /FAILURE_DENIES.*RECYCLE/u);
   assert.equal(contract.data?.publicEgressCaConfigMapReference, "synthetic-public-egress-ca");
   for (const check of [
     "RuntimeClass",
@@ -570,7 +578,7 @@ test("trusted and sandbox PodTemplate source shapes preserve placement, security
   assert.equal(contract.data?.idleSeconds, "1800");
   assert.equal(contract.data?.hardSeconds, "28800");
   assert.equal(contract.data?.terminationGraceSeconds, "30");
-  assert.equal(contract.data?.auditWalMaxBytes, "268435456");
+  assert.equal(contract.data?.auditWalMaxBytes, "1048576");
   assert.equal(
     objects.some((object) => object.kind === "PersistentVolumeClaim"),
     false,

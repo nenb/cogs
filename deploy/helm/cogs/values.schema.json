@@ -110,7 +110,7 @@
             "terminationGraceSeconds": { "const": 30 }
           }
         },
-        "auditWalMaxBytes": { "type": "integer", "minimum": 1048576, "maximum": 1073741824 },
+        "auditWalMaxBytes": { "const": 1048576 },
         "publicEgressCaConfigMap": { "type": "string", "maxLength": 253 }
       },
       "allOf": [

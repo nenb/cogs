@@ -29,6 +29,8 @@ test("README preserves the cloud-entry gate and disclaims current deployment aut
   );
   assert.match(text, /no AWS resources are currently claimed/);
   assert.match(text, /Standalone EC2 evidence is not EKS, CNI, release, or production evidence/);
+  assert.match(text, /Issue #356's workload-identity, proxy, network, telemetry, and audit-WAL policy contracts/);
+  assert.match(text, /static expected-policy shapes only and remain pending exact EKS CNI\/runtime qualification/);
   assert.doesNotMatch(text, /Stage 0 feasibility work/);
   assert.doesNotMatch(text, /AWS feasibility work is completed|AWS completion/i);
   assert.match(text, /pinned to NIC `v0\.11\.0`/);

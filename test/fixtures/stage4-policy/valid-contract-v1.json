@@ -1,0 +1,199 @@
+{
+  "version": "cogs.stage4-policy-contract/v1",
+  "authority": "static-only-stage4-policy",
+  "qualification": "pending-exact-eks-cni-runtime",
+  "session": {
+    "user_id": "user-static-1",
+    "session_id": "session-static-1",
+    "instance_id": "cogs-static-1"
+  },
+  "identity": {
+    "trusted_worker": {
+      "namespace": "cogs-static",
+      "service_account": "cogs-trusted-session-static-1",
+      "pod_selector": {
+        "app.kubernetes.io/instance": "cogs-static-1",
+        "dev.cogs/session": "session-static-1",
+        "dev.cogs/role": "trusted"
+      },
+      "automount_service_account_token": false,
+      "kubernetes_workload_identity": "openbao-login-only",
+      "openbao_projected_token": {
+        "audience": "openbao.cogs.static",
+        "expiration_seconds": 600,
+        "path": "/run/cogs/openbao-token/token"
+      },
+      "cloud_identity": false
+    },
+    "sandbox": {
+      "service_account": "cogs-sandbox-inert",
+      "service_account_binding": "inert-no-rbac-no-token",
+      "pod_selector": {
+        "app.kubernetes.io/instance": "cogs-static-1",
+        "dev.cogs/session": "session-static-1",
+        "dev.cogs/role": "sandbox"
+      },
+      "automount_service_account_token": false,
+      "projected_service_account_tokens": false,
+      "kubernetes_workload_identity": false,
+      "kubernetes_api_credential": false,
+      "openbao_identity": false,
+      "openbao_handles": false,
+      "cloud_identity": false
+    }
+  },
+  "openbao": {
+    "auth_mount": "auth/cogs",
+    "role": "cogs-session-static-1",
+    "bound_namespace": "cogs-static",
+    "bound_service_account": "cogs-trusted-session-static-1",
+    "bound_audiences": ["openbao.cogs.static"],
+    "kv_mount": "cogs-kv",
+    "pki_role": "cogs-egress-session-static-1",
+    "exact_handles": [
+      {
+        "purpose": "model-api-key",
+        "handle": "users/user-static-1/models/anthropic"
+      },
+      {
+        "purpose": "integration-credential",
+        "handle": "users/user-static-1/integrations/github"
+      }
+    ],
+    "allowed_operations": ["kv-data-read-exact", "kv-metadata-read-exact", "pki-issue-exact"],
+    "list_capability": false,
+    "write_capability": false,
+    "delete_capability": false,
+    "broad_path_grants": false
+  },
+  "proxy": {
+    "service_name": "cogs-proxy-session-static-1",
+    "listener_port": 15001,
+    "selector": {
+      "app.kubernetes.io/instance": "cogs-static-1",
+      "dev.cogs/session": "session-static-1",
+      "dev.cogs/role": "trusted",
+      "dev.cogs/proxy": "true"
+    },
+    "capability": {
+      "source": "trusted-worker-runtime",
+      "materialization": "immutable-session-tmpfs",
+      "audience": "cogs-egress-proxy.static",
+      "session_id": "session-static-1",
+      "lifetime_seconds": 28800,
+      "entropy_bits": 256,
+      "value_exposed_to_sandbox": true,
+      "handle_exposed_to_sandbox": false,
+      "source_binding": {
+        "mode": "exact-session-and-sandbox-selector",
+        "session_id": "session-static-1",
+        "sandbox_selector": {
+          "app.kubernetes.io/instance": "cogs-static-1",
+          "dev.cogs/session": "session-static-1",
+          "dev.cogs/role": "sandbox"
+        }
+      },
+      "direct_egress_fallback": false
+    },
+    "route_policy": {
+      "source": "launch-preset-revision-digests",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "immutable": true,
+      "unknown_route": "deny",
+      "direct_egress_fallback": false
+    },
+    "revocation": {
+      "poll_interval_ms": 60000,
+      "operation_timeout_ms": 5000,
+      "signals": [
+        "daemon-revocation-event",
+        "openbao-version-change",
+        "openbao-delete-or-destroy",
+        "pki-change-or-expiry",
+        "source-unavailable"
+      ],
+      "transition_order": ["deny-new", "drain-connections", "request-replacement"],
+      "old_capability_after_replacement": "invalid",
+      "source_unavailable": "deny-new-drain-replace",
+      "direct_egress_fallback": false
+    }
+  },
+  "network": {
+    "enforcement": "pending-exact-eks-cni-runtime-qualification",
+    "enforcement_observed": false,
+    "default_deny": true,
+    "address_families": ["IPv4", "IPv6"],
+    "sandbox_allowed_egress": ["assigned-proxy-tcp"],
+    "resolver": {
+      "mode": "disabled",
+      "exact_names": [],
+      "query_types": []
+    },
+    "udp_denied": true,
+    "quic_http3_denied": true,
+    "direct_ip_denied": true,
+    "alternate_tcp_ports_denied": true,
+    "direct_egress_fallback": false,
+    "selector_requirements": {
+      "exact_match_labels": true,
+      "session_label_required": true,
+      "role_label_required": true,
+      "empty_or_namespace_only_peers_forbidden": true,
+      "cross_session_peers_forbidden": true
+    },
+    "blocked_surfaces": [
+      "arbitrary-dns",
+      "dns-over-https",
+      "cloud-metadata",
+      "kubernetes-api",
+      "worker-api",
+      "proxy-admin",
+      "openbao",
+      "other-session-proxy",
+      "other-session-workload",
+      "undeclared-host-or-ip",
+      "udp-or-quic"
+    ]
+  },
+  "telemetry": {
+    "payload": "metadata-only",
+    "allowed_classes": [
+      "opaque-identifiers",
+      "bounded-enums",
+      "counts-and-buckets",
+      "durations-and-status-classes",
+      "queue-depth-and-export-lag"
+    ],
+    "forbidden_classes": [
+      "prompts-or-model-output",
+      "source-or-tool-output",
+      "complete-commands-or-arbitrary-paths",
+      "http-query-or-body",
+      "credentials-placeholders-or-handles",
+      "raw-kubernetes-or-cloud-identifiers"
+    ],
+    "queue_capacity": 128,
+    "batch_size": 32,
+    "timeout_ms": 1000,
+    "max_request_bytes": 262144,
+    "max_response_bytes": 8192,
+    "on_unavailable": "bounded-buffer-then-drop-with-counters",
+    "ordinary_work_continues": true,
+    "credential_authorization_dependency": false
+  },
+  "audit_wal": {
+    "scope": "credential-use-intent",
+    "storage": "trusted-local-append-only",
+    "max_bytes": 1048576,
+    "max_records": 10000,
+    "max_record_bytes": 4096,
+    "append_before_credential_use": true,
+    "sync_before_credential_use": true,
+    "failure_states": ["unavailable", "unwritable", "full", "append-failed", "sync-failed", "correlation-invalid"],
+    "on_failure": "deny-credentialed-egress-and-recycle",
+    "in_session_recovery": false,
+    "otlp_delivery": "asynchronous-bounded-non-authorizing",
+    "otlp_failure_allows_ordinary_work": true,
+    "otlp_failure_allows_credential_use_after_durable_intent": true
+  }
+}
