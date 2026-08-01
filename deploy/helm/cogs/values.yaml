@@ -1,2 +1,60 @@
-# Stage 0 intentionally renders no Kubernetes resources.
-# Production topology begins only in its assigned implementation stage.
+# Default-disabled notes-only static source shapes. The NOTES payload is unsafe to apply,
+# unqualified, and makes no security, runtime, Kubernetes, or production claim.
+stage4Preparation:
+  enabled: false
+  nonProductionAcknowledgement: false
+  sessionIdentity: ""
+  runtimeClassName: ""
+
+  images:
+    worker: ""
+    proxy: ""
+    sandbox: ""
+
+  placement:
+    trusted:
+      nodeSelector: {}
+      tolerations: []
+    sandbox:
+      nodeSelector: {}
+      tolerations: []
+
+  storage:
+    workspaceStorageClass: ""
+    workspaceSize: 20Gi
+    workspaceAccessMode: ReadWriteOncePod
+    sessionStateStorageClass: ""
+    sessionStateSize: 5Gi
+    sessionStateAccessMode: ReadWriteOncePod
+
+  openBao:
+    endpoint: ""
+    kubernetesAuthMount: ""
+    kubernetesAuthRole: ""
+    pkiPath: ""
+    tokenAudience: ""
+    peer:
+      namespaceLabels: {}
+      podLabels: {}
+      port: 0
+
+  otlp:
+    endpoint: ""
+    protocol: ""
+    peer:
+      namespaceLabels: {}
+      podLabels: {}
+      port: 0
+
+  proxyIdentity:
+    capabilityAudience: ""
+    sourceBindingRequired: false
+
+  resourceProfile: stage4-fixed-bounded-v1
+  lifecycle:
+    idleSeconds: 1800
+    hardSeconds: 28800
+    terminationGraceSeconds: 30
+  auditWalMaxBytes: 268435456
+
+  publicEgressCaConfigMap: ""

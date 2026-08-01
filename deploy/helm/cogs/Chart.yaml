@@ -1,9 +1,10 @@
 apiVersion: v2
 name: cogs
-version: 0.0.0
+version: 0.0.1
 appVersion: "0.0.0"
-description: Non-deploying Stage 0 scaffold for future Cogs packaging
+description: default-disabled Stage 4 notes-only static source shapes; unsafe to apply and unqualified.
 type: application
 annotations:
-  dev.cogs/stage: "0"
+  dev.cogs/stage: "4-preparation"
   dev.cogs/security-claim: "none"
+  dev.cogs/production-ready: "false"

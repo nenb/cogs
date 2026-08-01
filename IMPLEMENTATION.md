@@ -1,11 +1,13 @@
 # Cogs Implementation Plan
 
-**Status:** Proposed execution plan  
+**Status:** Stages 0, 1, and 3 complete; Stage 2 completion issue #42 deferred at the cloud-entry boundary; Stages 4 and 5 planned but not cloud-authorized
 **Date:** 2026-07-09  
 **Audience:** Staff engineer and implementation team  
 **Target:** Complete local development, AWS feasibility, EKS/NIC integration, and pre-release validation through Stage 5.
 
 `DESIGN.md` is the architectural and security authority. This document defines execution order, artifacts, gates, and evidence. If implementation requires changing a security invariant or trust boundary, stop and record an ADR before proceeding.
+
+**Execution baseline:** Stage 3 exited through #71. ADR 0012 selected the Stage 4 candidate, but Stage 2 is not fully closed until #42's separately authorized measurement-and-cleanup campaign passes. Local/static Stage 4 and release-preparation work may proceed without cloud access. No Stage 4 cloud campaign may begin before #42 closes and a fresh campaign approval is recorded. Subscription OAuth issue #13 is post-MVP and does not gate an API-key-only Stage 4 or Stage 5.
 
 Previous Nebula designs and earlier Nebari Pi packs may be studied as prior art but are not requirements or implementation baselines.
 
@@ -186,7 +188,7 @@ Test code is not part of the Cogs line-count budget. Consistent with `DESIGN.md`
 |---|---|---|---|
 | 0 | Local | Repository, schemas, CI, Pi embedding proof, evidence conventions | Reproducible build plus passing Pi hello-world |
 | 1 | Local container + authoritative Linux/KVM runner | Executable egress contract and proxy decision | Applicable conformance passes on chosen proxy |
-| 2 | Short-lived single AWS instance | AWS nested-KVM/Kata feasibility | Runtime ADR with measured pass/fail |
+| 2 | Short-lived single AWS instance | Select the AWS nested-KVM/Kata candidate and close bounded completion measurements | Accepted runtime ADR plus #42 repeated launch/SSH/workload reports, per-cycle destroy, and final zero-resource evidence |
 | 3 | Local + Linux/KVM runner | Complete secure Cogs vertical slice | End-to-end prompt in Linux/KVM sandbox passes |
 | 4 | Ephemeral AWS EKS/NIC | Production topology integration | EKS security and cold-start gates pass |
 | 5 | Ephemeral AWS EKS plus local CI | Pre-release security, resilience, scale, operations | Signed release-readiness report |
@@ -208,7 +210,7 @@ These are planning sizes, not delivery-date commitments:
 | EKS/NIC integration | Extra large | Time-boxed EKS campaigns, destroyed afterward |
 | Release security/load validation | Extra large | Pre-approved campaign windows and spend caps |
 
-Stage 0 must identify the KVM runner and the engineer/approver for each AWS campaign. Calendar estimates should be added only after the Pi and proxy spikes remove the largest unknowns.
+The KVM runner and current owner/approver are recorded in `docs/operations/ownership.md`. Every future AWS campaign still requires a named engineer, approver, exact revision, spend cap, expiry, resource ceiling, destroy path, and zero-resource evidence; prior approval is never standing campaign authority.
 
 ---
 
@@ -345,6 +347,8 @@ A `stubbed` result is useful for mechanism selection but can never satisfy produ
 Reports live under `docs/security-evidence/` for release candidates; routine CI artifacts need not be committed.
 
 ## 8. Stage 0 exit criteria
+
+> **Execution status:** Stage 0 is closed. Accepted evidence includes the [Pi embedding spike](docs/test-reports/stage-0-pi-embedding.md), with reviewed ADR acceptance indexed in [`docs/adr/README.md`](docs/adr/README.md). The checklist below remains the historical acceptance contract.
 
 - [ ] Clean checkout builds worker and sandbox images.
 - [ ] CI enforces lint, typecheck, unit tests, schema validation, and Helm rendering.
@@ -597,6 +601,8 @@ Each preset specifies exact host groups, methods, path matching, redirect behavi
 
 ## 13. Stage 1 exit criteria
 
+> **Execution status:** Stage 1 is closed through the [proxy comparison evidence](docs/test-reports/stage-1-proxy-comparison.md) and accepted [ADR 0011](docs/adr/0011-select-envoy-for-http-egress.md). The checklist below remains the historical acceptance contract and retains its applicability boundaries.
+
 - [ ] Selected proxy passes all applicable conformance tests in the insecure driver.
 - [ ] Selected proxy passes all applicable protocol tests in `macos-vm-dev` when that convenience profile is provided.
 - [ ] Selected proxy passes all applicable security tests in the authoritative `linux-kvm` profile with guest root.
@@ -710,6 +716,8 @@ Proceed if functional but document performance, region, or cost limitations and 
 Evaluate bare metal in a separate explicitly approved cost window. If metal is unacceptable, revisit the reference runtime through an ADR; do not silently use containers.
 
 ## 18. Stage 2 exit criteria
+
+> **Execution status:** Stage 2 is partial. [ADR 0012](docs/adr/0012-use-aws-virtual-nested-kvm-for-stage-4-candidate.md) accepted the initial candidate, but #42 remains open for repeated launch/SSH-ready and representative in-Kata workload measurements, per-cycle destruction, reports, and final zero-resource evidence. The checklist below remains the historical acceptance contract.
 
 - [ ] One supported virtual EC2 type and target region have a measured result.
 - [ ] The rendered launch template explicitly enables `CpuOptions.NestedVirtualization`.
@@ -849,7 +857,7 @@ Cogs must not receive or persist rotating refresh tokens. The local fake broker 
 - broker outage;
 - revoked user authorization.
 
-Production broker implementation belongs to the future daemon/platform. The initial Cogs release is API-key-only by default. Subscription integration remains disabled unless the external team delivers the broker in time for Stage 5, four-session refresh concurrency tests pass, and provider terms have been approved. Track this as a named cross-team dependency from Stage 0 rather than a late release surprise.
+Production broker implementation belongs to the future daemon/platform. Stages 4 and 5 are API-key-only. Subscription integration remains disabled and absent from the advertised support matrix; it is tracked by post-MVP issue #13 and is not a Stage 5 release dependency. Cogs must not receive or persist refresh tokens.
 
 ## 23. Workstream D — secure egress integration
 
@@ -1001,6 +1009,8 @@ The mandatory local demonstration is:
 
 ## 29. Stage 3 exit criteria
 
+> **Execution status:** Stage 3 is closed through issue #71 and the accepted [S3-09 Linux/KVM report](docs/test-reports/stage-3-s3-09-linux-kvm-exit.md). Its authority is local Linux/KVM only and is neither release-eligible nor cloud evidence. The checklist below remains the historical acceptance contract.
+
 - [ ] Authoritative Linux/KVM end-to-end scenario passes repeatedly.
 - [ ] All Cogs API contracts have deterministic tests.
 - [ ] Native Pi JSONL compatibility test passes.
@@ -1017,7 +1027,9 @@ The mandatory local demonstration is:
 
 ## 30. Objective
 
-Validate the complete production topology on EKS using the Stage 2 runtime candidate and Stage 3 Cogs implementation. This environment is created for test campaigns and destroyed afterward.
+Prepare the EKS/NIC topology locally and statically, then validate it only in separately approved ephemeral campaigns using the Stage 2 candidate and completed Stage 3 implementation. Issue #42 is the hard cloud-entry dependency. Closing #42 permits a Stage 4 approval request, not an apply. Every campaign is revision-bound, time-boxed, spend-capped, and destroyed with independent zero-resource evidence.
+
+**Stage 4 cloud gate:** chart, schema, policy, launcher, evidence, and campaign-plan work may run offline before #42 closes. AWS discovery, provider initialization, OpenTofu plan/apply, SSM, EKS creation, Kubernetes access, and external model-provider calls are prohibited until #42 is closed and the owner records a new exact campaign approval.
 
 ## 31. AWS environment controls
 
@@ -1268,18 +1280,14 @@ Request review focused on:
 - document patch cadence for Node, Pi, SSH library, proxy, Kata, QEMU, kernel, and OpenBao;
 - prove project dependencies cannot alter trusted worker packages.
 
-### 39.4 OAuth readiness
+### 39.4 API-key-only release boundary
 
-Before declaring subscription support:
+- verify subscription OAuth is disabled in configuration and absent from the support matrix;
+- verify workers cannot receive, persist, or refresh subscription refresh tokens;
+- link post-MVP issue #13 without treating it as a release blocker;
+- run real-model samples only with separately authorized runtime API keys and redacted evidence.
 
-- obtain product/legal confirmation for each provider's intended use;
-- test against the real external broker, not per-worker refresh files;
-- run four concurrent sessions for one user/provider through expiry/refresh;
-- prove one owner rotates the refresh token;
-- test revocation and account switch;
-- remove subscription support from the advertised matrix if either terms or concurrency safety is unresolved.
-
-API-key support is not blocked by subscription readiness.
+Subscription support is outside the Stage 5 release candidate.
 
 ## 40. Scale and performance validation
 
@@ -1401,7 +1409,7 @@ The staff engineer owns a final report containing:
 - tested concurrency and cost;
 - failure-injection outcomes;
 - privacy/deletion results;
-- OAuth support decision;
+- API-key-only support decision and disabled subscription OAuth status;
 - known risks with owners;
 - go/no-go recommendation.
 
@@ -1410,7 +1418,7 @@ The staff engineer owns a final report containing:
 - [ ] All mandatory `DESIGN.md` acceptance tests pass on release artifacts with real dependencies; no `stubbed` result satisfies release acceptance.
 - [ ] Independent security review has no unresolved critical/high finding.
 - [ ] Proxy and AWS runtime are selected through recorded evidence.
-- [ ] OAuth subscription support is either safe/permitted or explicitly disabled.
+- [ ] Subscription OAuth is disabled and unadvertised; the release is API-key-only, and post-MVP issue #13 remains outside the release gate.
 - [ ] At least 50 real concurrent sandboxes are validated; higher steps run according to cost-approved release goals.
 - [ ] The advertised concurrency maximum does not exceed the highest successfully validated real load. Claiming support for 250 requires completing the 250-sandbox step; extrapolation alone is planning evidence, not a support claim.
 - [ ] Failure-injection outcomes match documented behavior.
@@ -1550,12 +1558,10 @@ Implementation must pause for an ADR at these points:
 
 ### External dependency I — Subscription OAuth broker *(daemon/platform team)*
 
-- assign owner and target milestone during Stage 0;
-- confirm provider terms for server-hosted use;
-- implement single-owner rotating refresh-token service outside Cogs;
-- expose the short-lived access-material contract;
-- complete four-session concurrency/revocation tests before Stage 5 support declaration;
-- if unavailable, keep the release API-key-only and mark subscription OAuth disabled.
+- tracked by #13 in `Post-MVP — Subscription OAuth`, owned initially by Nick Byrne and later by the daemon/platform team;
+- not a dependency of Stage 4 or the API-key-only Stage 5 release candidate;
+- keep subscription OAuth disabled and unadvertised throughout Stages 4 and 5;
+- after MVP, confirm provider terms, implement the external encrypted refresh owner and short-lived access-material contract, and pass concurrency/revocation/account-switch tests before any separate support declaration.
 
 ---
 
@@ -1579,17 +1585,15 @@ A PR is not complete unless:
 
 Execute these in order:
 
-1. Initialize Git, TypeScript, CI, complete schemas, and ADR directory.
-2. Run the Stage 0 Pi embedding hello-world with hostile extension/package canaries and JSONL round-trip.
-3. Select a maintained Linux/KVM runner and configure the PR/nightly conformance schedules.
-4. Decide skill artifact transport and open the external OAuth-broker dependency with an owner or explicit API-key-only release decision.
-5. Scaffold `test/egress-conformance/` with applicability-aware reports.
-6. Build the insecure `sshd` driver and upstream TLS fixture.
-7. Implement allowed/denied/header-overwrite and request-smuggling tests.
-8. Add Envoy and alternate-proxy adapters, using stubbed audit/revocation dependencies where documented.
-9. Provision the authoritative Linux/KVM profile and rerun the suite as guest root; use macOS VM tooling only for convenience.
-10. Select the proxy through an ADR.
-11. Perform the one-instance AWS Stage 2 campaign with explicit launch-template CPU options, then destroy it.
-12. Return to local development for the Stage 3 Cogs vertical slice and replace stubbed security results with real integrations.
+1. Update README and implementation status without weakening the historical acceptance contracts.
+2. Create Stage 4 and Stage 5 milestone/label/issue structure using the local-versus-cloud split.
+3. Complete Stage 4 offline contracts, Helm/NIC source, policy, storage, launcher, evidence schema, and campaign runbook work; default CI remains cloud-free.
+4. Keep #42 open and deferred until its exact AWS completion campaign is explicitly authorized, executed once per approved batch, reported, destroyed, and independently inventoried at zero.
+5. After #42 closes, revalidate the Stage 4 campaign package on one exact clean revision and request a separate Stage 4 approval.
+6. Run only the approved ephemeral Stage 4 campaigns, stopping after every failure or cleanup uncertainty; do not debug by leaving infrastructure running.
+7. Complete the Stage 4 gate and destroy all resources before freezing a Stage 5 release candidate.
+8. Finish local Stage 5 review, destructive-test, privacy, deletion, and runbook preparation while keeping subscription OAuth disabled under #13.
+9. Run Stage 5 security/resilience and 10/25/50-session campaigns only under separate approvals; advertise no concurrency above the highest passing real load.
+10. Publish the API-key-only release-readiness report and explicit residual risks. Do not claim a production daemon, user-facing service, compliance certification, or GA.
 
-Do not begin with EKS, a production daemon, app deployment, sanitization, or a generalized plugin framework.
+Do not begin cloud work from dependency closure alone, and do not add a production daemon, app deployment, sanitizer, or generalized plugin framework to this roadmap.

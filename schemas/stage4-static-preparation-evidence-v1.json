@@ -1,0 +1,232 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.dev/schemas/stage4-static-preparation-evidence-v1.json",
+  "title": "Cogs bounded Stage 4 static-only preparation evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "authority",
+    "qualified",
+    "campaign_authorized",
+    "cloud_execution_observed",
+    "stage4_exit_satisfied",
+    "release_eligible",
+    "asserted_static_outcome",
+    "artifacts",
+    "static_checks",
+    "future_eks_checks"
+  ],
+  "properties": {
+    "version": { "const": "cogs.stage4-static-preparation-evidence/v1" },
+    "authority": { "const": "static-only-stage4-preparation" },
+    "qualified": { "const": false },
+    "campaign_authorized": { "const": false },
+    "cloud_execution_observed": { "const": false },
+    "stage4_exit_satisfied": { "const": false },
+    "release_eligible": { "const": false },
+    "asserted_static_outcome": {
+      "description": "Aggregate of trusted caller assertions; schema validity does not establish the asserted checks as true.",
+      "enum": ["conforming", "nonconforming"]
+    },
+    "artifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_sha256",
+        "chart_sha256",
+        "values_sha256",
+        "render_sha256",
+        "repeated_render_sha256",
+        "deterministic"
+      ],
+      "properties": {
+        "source_sha256": { "$ref": "#/$defs/sha256" },
+        "chart_sha256": { "$ref": "#/$defs/sha256" },
+        "values_sha256": { "$ref": "#/$defs/sha256" },
+        "render_sha256": { "$ref": "#/$defs/sha256" },
+        "repeated_render_sha256": { "$ref": "#/$defs/sha256" },
+        "deterministic": { "const": true }
+      }
+    },
+    "static_checks": {
+      "type": "array",
+      "minItems": 14,
+      "maxItems": 14,
+      "prefixItems": [
+        {
+          "$ref": "#/$defs/staticCheck",
+          "type": "object",
+          "properties": { "id": { "const": "static.source.exact-clean-revision" } }
+        },
+        {
+          "$ref": "#/$defs/staticCheck",
+          "type": "object",
+          "properties": { "id": { "const": "static.source.complete-bounded-inventory" } }
+        },
+        {
+          "$ref": "#/$defs/staticCheck",
+          "type": "object",
+          "properties": { "id": { "const": "static.config.strict-synthetic-values" } }
+        },
+        {
+          "$ref": "#/$defs/staticCheck",
+          "type": "object",
+          "properties": { "id": { "const": "static.render.pinned-local-renderer" } }
+        },
+        {
+          "$ref": "#/$defs/staticCheck",
+          "type": "object",
+          "properties": { "id": { "const": "static.render.deterministic-bounded-parse" } }
+        },
+        {
+          "$ref": "#/$defs/staticCheck",
+          "type": "object",
+          "properties": { "id": { "const": "static.sandbox.explicit-kata-runtimeclass-no-fallback" } }
+        },
+        {
+          "$ref": "#/$defs/staticCheck",
+          "type": "object",
+          "properties": { "id": { "const": "static.sandbox.no-trusted-sidecar-shape" } }
+        },
+        {
+          "$ref": "#/$defs/staticCheck",
+          "type": "object",
+          "properties": { "id": { "const": "static.identity.sandbox-token-automount-disabled" } }
+        },
+        {
+          "$ref": "#/$defs/staticCheck",
+          "type": "object",
+          "properties": { "id": { "const": "static.network.declarative-default-deny-shape" } }
+        },
+        {
+          "$ref": "#/$defs/staticCheck",
+          "type": "object",
+          "properties": { "id": { "const": "static.network.no-public-ingress-or-provider-resource" } }
+        },
+        {
+          "$ref": "#/$defs/staticCheck",
+          "type": "object",
+          "properties": { "id": { "const": "static.scheduling.trusted-sandbox-separation-shape" } }
+        },
+        {
+          "$ref": "#/$defs/staticCheck",
+          "type": "object",
+          "properties": { "id": { "const": "static.storage.workspace-session-role-separation-shape" } }
+        },
+        {
+          "$ref": "#/$defs/staticCheck",
+          "type": "object",
+          "properties": { "id": { "const": "static.limits.resource-and-lifecycle-bounds-present" } }
+        },
+        {
+          "$ref": "#/$defs/staticCheck",
+          "type": "object",
+          "properties": { "id": { "const": "static.material.no-inline-sensitive-content" } }
+        }
+      ],
+      "items": false
+    },
+    "future_eks_checks": {
+      "type": "array",
+      "minItems": 13,
+      "maxItems": 13,
+      "prefixItems": [
+        {
+          "$ref": "#/$defs/futureEksCheck",
+          "type": "object",
+          "properties": { "id": { "const": "eks.launch-template.nested-virtualization-applied" } }
+        },
+        {
+          "$ref": "#/$defs/futureEksCheck",
+          "type": "object",
+          "properties": { "id": { "const": "eks.node.kvm-modules-device-and-active-acceleration" } }
+        },
+        {
+          "$ref": "#/$defs/futureEksCheck",
+          "type": "object",
+          "properties": { "id": { "const": "eks.runtime.actual-kata-root-distinct-kernel-no-trusted-sidecar" } }
+        },
+        {
+          "$ref": "#/$defs/futureEksCheck",
+          "type": "object",
+          "properties": { "id": { "const": "eks.network.guest-root-cni-bypass-resistance" } }
+        },
+        {
+          "$ref": "#/$defs/futureEksCheck",
+          "type": "object",
+          "properties": { "id": { "const": "eks.identity.no-kubernetes-cloud-openbao-or-ca-credentials" } }
+        },
+        {
+          "$ref": "#/$defs/futureEksCheck",
+          "type": "object",
+          "properties": { "id": { "const": "eks.isolation.api-admin-cross-session-and-storage-denial" } }
+        },
+        {
+          "$ref": "#/$defs/futureEksCheck",
+          "type": "object",
+          "properties": { "id": { "const": "eks.conformance.real-authz-wal-openbao-proxy-otlp-dependencies" } }
+        },
+        {
+          "$ref": "#/$defs/futureEksCheck",
+          "type": "object",
+          "properties": { "id": { "const": "eks.storage.ebs-attach-reattach-and-exclusive-writer" } }
+        },
+        {
+          "$ref": "#/$defs/futureEksCheck",
+          "type": "object",
+          "properties": { "id": { "const": "eks.functional.real-pi-end-to-end" } }
+        },
+        {
+          "$ref": "#/$defs/futureEksCheck",
+          "type": "object",
+          "properties": { "id": { "const": "eks.performance.scheduled-to-ssh-ready-and-first-tool-percentiles" } }
+        },
+        {
+          "$ref": "#/$defs/futureEksCheck",
+          "type": "object",
+          "properties": { "id": { "const": "eks.recovery.stage4-failure-campaign" } }
+        },
+        {
+          "$ref": "#/$defs/futureEksCheck",
+          "type": "object",
+          "properties": { "id": { "const": "eks.lifecycle.repeatable-install-destroy-and-no-runtime-fallback" } }
+        },
+        {
+          "$ref": "#/$defs/futureEksCheck",
+          "type": "object",
+          "properties": { "id": { "const": "eks.teardown.independent-zero-resource-inventory-and-cost" } }
+        }
+      ],
+      "items": false
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "staticCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "applicability", "execution", "outcome"],
+      "properties": {
+        "id": { "type": "string" },
+        "applicability": { "const": "static-shape-only" },
+        "execution": { "const": "executed-local-static" },
+        "outcome": { "enum": ["satisfied", "violated"] }
+      }
+    },
+    "futureEksCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "applicability", "execution", "outcome"],
+      "properties": {
+        "id": { "type": "string" },
+        "applicability": { "const": "required-for-future-exact-run-eks" },
+        "execution": { "const": "unexecuted" },
+        "outcome": { "const": "not-observed" }
+      }
+    }
+  }
+}

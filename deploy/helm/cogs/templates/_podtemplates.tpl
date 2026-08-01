@@ -1,0 +1,233 @@
+{{/* Included only by templates/NOTES.txt; Helm never submits these source shapes. */}}
+{{- define "cogs.stage4.notes.podtemplates" -}}
+apiVersion: v1
+kind: PodTemplate
+metadata:
+  name: {{ include "cogs.componentName" (dict "root" . "component" "trusted-template") }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "cogs.stage4Labels" . | nindent 4 }}
+    dev.cogs/role: "trusted"
+    dev.cogs/proxy: "true"
+  annotations:
+    dev.cogs/notice: "notes-only-static-source-shape-unsafe-to-apply-unqualified"
+template:
+  metadata:
+    labels:
+      {{- include "cogs.stage4Labels" . | nindent 6 }}
+      dev.cogs/role: "trusted"
+      dev.cogs/proxy: "true"
+    annotations:
+      dev.cogs/notice: "future-launcher-must-materialize-fresh-identities-and-configuration"
+      dev.cogs/production-ready: "false"
+  spec:
+    serviceAccountName: {{ include "cogs.componentName" (dict "root" . "component" "trusted") }}
+    automountServiceAccountToken: false
+    enableServiceLinks: false
+    activeDeadlineSeconds: 28800
+    terminationGracePeriodSeconds: 30
+    nodeSelector:
+      {{- toYaml .Values.stage4Preparation.placement.trusted.nodeSelector | nindent 6 }}
+    tolerations:
+      {{- toYaml .Values.stage4Preparation.placement.trusted.tolerations | nindent 6 }}
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 10001
+      runAsGroup: 10001
+      fsGroup: 10001
+      seccompProfile:
+        type: RuntimeDefault
+    containers:
+      - name: worker
+        image: {{ .Values.stage4Preparation.images.worker | quote }}
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          privileged: false
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+        resources:
+          requests:
+            cpu: 500m
+            memory: 512Mi
+            ephemeral-storage: 1Gi
+          limits:
+            cpu: "2"
+            memory: 2Gi
+            ephemeral-storage: 4Gi
+        volumeMounts:
+          - name: openbao-token
+            mountPath: /run/cogs/openbao-token
+            readOnly: true
+          - name: preparation-contract
+            mountPath: /etc/cogs/preparation
+            readOnly: true
+          - name: public-egress-ca
+            mountPath: /etc/cogs/egress-ca
+            readOnly: true
+          - name: session-material
+            mountPath: /run/cogs/session-material
+          - name: worker-tmp
+            mountPath: /tmp
+          - name: session-state
+            mountPath: /var/lib/cogs/session
+      - name: envoy
+        image: {{ .Values.stage4Preparation.images.proxy | quote }}
+        imagePullPolicy: IfNotPresent
+        ports:
+          - name: proxy
+            containerPort: 15001
+            protocol: TCP
+        securityContext:
+          privileged: false
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+            ephemeral-storage: 256Mi
+          limits:
+            cpu: "1"
+            memory: 512Mi
+            ephemeral-storage: 1Gi
+        volumeMounts:
+          - name: preparation-contract
+            mountPath: /etc/cogs/preparation
+            readOnly: true
+          - name: public-egress-ca
+            mountPath: /etc/cogs/egress-ca
+            readOnly: true
+          - name: proxy-material
+            mountPath: /run/cogs/proxy-material
+          - name: proxy-tmp
+            mountPath: /tmp
+    volumes:
+      - name: openbao-token
+        projected:
+          defaultMode: 256
+          sources:
+            - serviceAccountToken:
+                audience: {{ .Values.stage4Preparation.openBao.tokenAudience | quote }}
+                expirationSeconds: 600
+                path: token
+      - name: preparation-contract
+        configMap:
+          name: {{ include "cogs.componentName" (dict "root" . "component" "contract") }}
+          optional: false
+      - name: public-egress-ca
+        configMap:
+          name: {{ .Values.stage4Preparation.publicEgressCaConfigMap | quote }}
+          optional: false
+      - name: session-material
+        emptyDir:
+          medium: Memory
+          sizeLimit: 32Mi
+      - name: proxy-material
+        emptyDir:
+          medium: Memory
+          sizeLimit: 32Mi
+      - name: worker-tmp
+        emptyDir:
+          medium: Memory
+          sizeLimit: 64Mi
+      - name: proxy-tmp
+        emptyDir:
+          medium: Memory
+          sizeLimit: 32Mi
+      - name: session-state
+        persistentVolumeClaim:
+          claimName: replace-per-session-state-pvc
+          readOnly: false
+---
+apiVersion: v1
+kind: PodTemplate
+metadata:
+  name: {{ include "cogs.componentName" (dict "root" . "component" "sandbox-template") }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "cogs.stage4Labels" . | nindent 4 }}
+    dev.cogs/role: "sandbox"
+  annotations:
+    dev.cogs/notice: "notes-only-static-source-shape-unsafe-to-apply-unqualified"
+template:
+  metadata:
+    labels:
+      {{- include "cogs.stage4Labels" . | nindent 6 }}
+      dev.cogs/role: "sandbox"
+    annotations:
+      dev.cogs/notice: "guest-uid-0-is-untrusted-vm-root-future-trusted-launcher-material-absent"
+      dev.cogs/production-ready: "false"
+  spec:
+    serviceAccountName: {{ include "cogs.componentName" (dict "root" . "component" "sandbox") }}
+    automountServiceAccountToken: false
+    enableServiceLinks: false
+    activeDeadlineSeconds: 28800
+    terminationGracePeriodSeconds: 30
+    runtimeClassName: {{ .Values.stage4Preparation.runtimeClassName | quote }}
+    nodeSelector:
+      {{- toYaml .Values.stage4Preparation.placement.sandbox.nodeSelector | nindent 6 }}
+    tolerations:
+      {{- toYaml .Values.stage4Preparation.placement.sandbox.tolerations | nindent 6 }}
+    securityContext:
+      runAsUser: 0
+      runAsGroup: 0
+      seccompProfile:
+        type: RuntimeDefault
+    containers:
+      - name: sandbox
+        image: {{ .Values.stage4Preparation.images.sandbox | quote }}
+        imagePullPolicy: IfNotPresent
+        env:
+          - name: HTTP_PROXY
+            value: {{ printf "http://%s:15001" (include "cogs.componentName" (dict "root" . "component" "proxy")) | quote }}
+          - name: HTTPS_PROXY
+            value: {{ printf "http://%s:15001" (include "cogs.componentName" (dict "root" . "component" "proxy")) | quote }}
+          - name: SSL_CERT_FILE
+            value: /etc/cogs/egress-ca/egress-ca.crt
+        ports:
+          - name: ssh
+            containerPort: 22
+            protocol: TCP
+        securityContext:
+          runAsUser: 0
+          runAsGroup: 0
+          privileged: false
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: false
+          capabilities:
+            drop: ["ALL"]
+        resources:
+          requests:
+            cpu: "2"
+            memory: 4Gi
+            ephemeral-storage: 8Gi
+          limits:
+            cpu: "2"
+            memory: 4Gi
+            ephemeral-storage: 16Gi
+        volumeMounts:
+          - name: public-egress-ca
+            mountPath: /etc/cogs/egress-ca
+            readOnly: true
+          - name: sandbox-tmp
+            mountPath: /tmp
+          - name: workspace
+            mountPath: /workspace
+    volumes:
+      - name: public-egress-ca
+        configMap:
+          name: {{ .Values.stage4Preparation.publicEgressCaConfigMap | quote }}
+          optional: false
+      - name: sandbox-tmp
+        emptyDir:
+          medium: Memory
+          sizeLimit: 256Mi
+      - name: workspace
+        persistentVolumeClaim:
+          claimName: replace-per-session-workspace-pvc
+          readOnly: false
+{{- end -}}

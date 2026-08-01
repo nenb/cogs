@@ -1,0 +1,310 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["stage4Preparation"],
+  "properties": {
+    "stage4Preparation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enabled",
+        "nonProductionAcknowledgement",
+        "sessionIdentity",
+        "runtimeClassName",
+        "images",
+        "placement",
+        "storage",
+        "openBao",
+        "otlp",
+        "proxyIdentity",
+        "resourceProfile",
+        "lifecycle",
+        "auditWalMaxBytes",
+        "publicEgressCaConfigMap"
+      ],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "nonProductionAcknowledgement": { "type": "boolean" },
+        "sessionIdentity": { "type": "string", "maxLength": 63 },
+        "runtimeClassName": { "type": "string", "maxLength": 253 },
+        "images": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["worker", "proxy", "sandbox"],
+          "properties": {
+            "worker": { "type": "string", "maxLength": 512 },
+            "proxy": { "type": "string", "maxLength": 512 },
+            "sandbox": { "type": "string", "maxLength": 512 }
+          }
+        },
+        "placement": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["trusted", "sandbox"],
+          "properties": {
+            "trusted": { "$ref": "#/definitions/placement" },
+            "sandbox": { "$ref": "#/definitions/placement" }
+          }
+        },
+        "storage": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "workspaceStorageClass",
+            "workspaceSize",
+            "workspaceAccessMode",
+            "sessionStateStorageClass",
+            "sessionStateSize",
+            "sessionStateAccessMode"
+          ],
+          "properties": {
+            "workspaceStorageClass": { "type": "string", "maxLength": 253 },
+            "workspaceSize": { "const": "20Gi" },
+            "workspaceAccessMode": { "const": "ReadWriteOncePod" },
+            "sessionStateStorageClass": { "type": "string", "maxLength": 253 },
+            "sessionStateSize": { "const": "5Gi" },
+            "sessionStateAccessMode": { "const": "ReadWriteOncePod" }
+          }
+        },
+        "openBao": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["endpoint", "kubernetesAuthMount", "kubernetesAuthRole", "pkiPath", "tokenAudience", "peer"],
+          "properties": {
+            "endpoint": { "type": "string", "maxLength": 2048 },
+            "kubernetesAuthMount": { "type": "string", "maxLength": 256 },
+            "kubernetesAuthRole": { "type": "string", "maxLength": 256 },
+            "pkiPath": { "type": "string", "maxLength": 256 },
+            "tokenAudience": { "type": "string", "maxLength": 256 },
+            "peer": { "$ref": "#/definitions/networkPeer" }
+          }
+        },
+        "otlp": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["endpoint", "protocol", "peer"],
+          "properties": {
+            "endpoint": { "type": "string", "maxLength": 2048 },
+            "protocol": { "type": "string" },
+            "peer": { "$ref": "#/definitions/networkPeer" }
+          }
+        },
+        "proxyIdentity": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["capabilityAudience", "sourceBindingRequired"],
+          "properties": {
+            "capabilityAudience": { "type": "string", "maxLength": 256 },
+            "sourceBindingRequired": { "type": "boolean" }
+          }
+        },
+        "resourceProfile": { "const": "stage4-fixed-bounded-v1" },
+        "lifecycle": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["idleSeconds", "hardSeconds", "terminationGraceSeconds"],
+          "properties": {
+            "idleSeconds": { "const": 1800 },
+            "hardSeconds": { "const": 28800 },
+            "terminationGraceSeconds": { "const": 30 }
+          }
+        },
+        "auditWalMaxBytes": { "type": "integer", "minimum": 1048576, "maximum": 1073741824 },
+        "publicEgressCaConfigMap": { "type": "string", "maxLength": 253 }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "enabled": { "const": true } }, "required": ["enabled"] },
+          "then": {
+            "properties": {
+              "nonProductionAcknowledgement": { "const": true },
+              "sessionIdentity": {
+                "minLength": 1,
+                "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$"
+              },
+              "runtimeClassName": {
+                "minLength": 1,
+                "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?)*$",
+                "not": { "enum": ["runc", "runsc", "default", "docker", "containerd", "oci"] }
+              },
+              "images": {
+                "properties": {
+                  "worker": { "$ref": "#/definitions/digestImage" },
+                  "proxy": {
+                    "const": "envoyproxy/envoy:v1.38.3@sha256:5f7c43e1147412fdb3af578c651c67478a3df818eae89d2261e707e06c209cdb"
+                  },
+                  "sandbox": { "$ref": "#/definitions/digestImage" }
+                }
+              },
+              "placement": {
+                "properties": {
+                  "trusted": {
+                    "properties": {
+                      "nodeSelector": {
+                        "required": ["cogs.dev/node-domain"],
+                        "properties": { "cogs.dev/node-domain": { "const": "trusted" } }
+                      },
+                      "tolerations": { "const": [] }
+                    }
+                  },
+                  "sandbox": {
+                    "properties": {
+                      "nodeSelector": {
+                        "required": ["cogs.dev/node-domain"],
+                        "properties": { "cogs.dev/node-domain": { "const": "sandbox-kata" } }
+                      },
+                      "tolerations": {
+                        "const": [
+                          { "key": "cogs.dev/sandbox", "operator": "Equal", "value": "kata", "effect": "NoSchedule" }
+                        ]
+                      }
+                    }
+                  }
+                }
+              },
+              "storage": {
+                "properties": {
+                  "workspaceStorageClass": { "$ref": "#/definitions/dnsSubdomain" },
+                  "sessionStateStorageClass": { "$ref": "#/definitions/dnsSubdomain" }
+                }
+              },
+              "openBao": {
+                "properties": {
+                  "endpoint": { "$ref": "#/definitions/httpsEndpoint" },
+                  "kubernetesAuthMount": { "$ref": "#/definitions/boundedPath" },
+                  "kubernetesAuthRole": { "$ref": "#/definitions/boundedIdentifier" },
+                  "pkiPath": { "$ref": "#/definitions/boundedPath" },
+                  "tokenAudience": { "$ref": "#/definitions/boundedAudience" },
+                  "peer": { "$ref": "#/definitions/nonEmptyNetworkPeer" }
+                }
+              },
+              "otlp": {
+                "properties": {
+                  "endpoint": { "$ref": "#/definitions/httpsEndpoint" },
+                  "protocol": { "enum": ["grpc", "http/protobuf"] },
+                  "peer": { "$ref": "#/definitions/nonEmptyNetworkPeer" }
+                }
+              },
+              "proxyIdentity": {
+                "properties": {
+                  "capabilityAudience": { "$ref": "#/definitions/boundedAudience" },
+                  "sourceBindingRequired": { "const": true }
+                }
+              },
+              "publicEgressCaConfigMap": { "$ref": "#/definitions/dnsSubdomain" }
+            }
+          }
+        }
+      ]
+    }
+  },
+  "definitions": {
+    "labelMap": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 16,
+      "propertyNames": {
+        "maxLength": 317,
+        "pattern": "^(?:[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?)*\\/)?[A-Za-z0-9](?:[-_.A-Za-z0-9]{0,61}[A-Za-z0-9])?$"
+      },
+      "patternProperties": {
+        "^(?:[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?)*\\/)?[A-Za-z0-9](?:[-_.A-Za-z0-9]{0,61}[A-Za-z0-9])?$": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 63,
+          "pattern": "^[A-Za-z0-9](?:[-_.A-Za-z0-9]{0,61}[A-Za-z0-9])?$"
+        }
+      }
+    },
+    "toleration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "operator", "effect"],
+      "properties": {
+        "key": { "type": "string", "minLength": 1, "maxLength": 253 },
+        "operator": { "enum": ["Equal", "Exists"] },
+        "value": { "type": "string", "maxLength": 63 },
+        "effect": { "enum": ["NoSchedule", "NoExecute"] },
+        "tolerationSeconds": { "type": "integer", "minimum": 0, "maximum": 86400 }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "operator": { "const": "Equal" } }, "required": ["operator"] },
+          "then": { "required": ["value"], "properties": { "value": { "minLength": 1 } } }
+        },
+        {
+          "if": { "properties": { "operator": { "const": "Exists" } }, "required": ["operator"] },
+          "then": { "properties": { "value": { "const": "" } } }
+        }
+      ]
+    },
+    "placement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["nodeSelector", "tolerations"],
+      "properties": {
+        "nodeSelector": { "$ref": "#/definitions/labelMap" },
+        "tolerations": { "type": "array", "maxItems": 16, "items": { "$ref": "#/definitions/toleration" } }
+      }
+    },
+    "networkPeer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["namespaceLabels", "podLabels", "port"],
+      "properties": {
+        "namespaceLabels": { "$ref": "#/definitions/labelMap" },
+        "podLabels": { "$ref": "#/definitions/labelMap" },
+        "port": { "type": "integer", "minimum": 0, "maximum": 65535 }
+      }
+    },
+    "nonEmptyNetworkPeer": {
+      "allOf": [
+        { "$ref": "#/definitions/networkPeer" },
+        {
+          "properties": {
+            "namespaceLabels": { "minProperties": 1 },
+            "podLabels": { "minProperties": 1 },
+            "port": { "minimum": 1 }
+          }
+        }
+      ]
+    },
+    "digestImage": {
+      "type": "string",
+      "minLength": 75,
+      "maxLength": 512,
+      "pattern": "^[a-z0-9]+(?:[._-][a-z0-9]+)*(?::[1-9][0-9]{0,4})?(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)+(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?@sha256:[a-f0-9]{64}$"
+    },
+    "dnsSubdomain": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 253,
+      "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?)*$"
+    },
+    "httpsEndpoint": {
+      "type": "string",
+      "minLength": 9,
+      "maxLength": 2048,
+      "pattern": "^https://(?:[A-Za-z0-9](?:[-A-Za-z0-9.]*[A-Za-z0-9])?|\\[[0-9A-Fa-f:]+\\])(?::[1-9][0-9]{0,4})?(?:/[^[:space:]?#]*)?$"
+    },
+    "boundedPath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*$"
+    },
+    "boundedIdentifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "boundedAudience": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$"
+    }
+  }
+}
