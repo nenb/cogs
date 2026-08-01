@@ -61,7 +61,7 @@ data:
   openBaoHandleScopeContract: "EXACT_USERS_CURRENT_USER_ONLY_ORGANIZATIONS_FORBIDDEN"
   proxyCapabilityContract: "IMMUTABLE_SESSION_INSTANCE_POD_ID_GENERATION_EXPIRY_BOUND_DENY_DRAIN_REPLACE_NO_FALLBACK"
   otlpPayloadContract: "METADATA_ONLY_BOUNDED_DROP_NON_AUTHORIZING"
-  auditWalFailureContract: "APPEND_AND_SYNC_BEFORE_CREDENTIAL_USE_FAILURE_DENIES_AND_REQUIRES_RECYCLE"
+  auditWalFailureContract: "DIGEST_REFERENCES_ONLY_APPEND_AND_SYNC_BEFORE_CREDENTIAL_USE_FAILURE_DENIES_AND_REQUIRES_RECYCLE"
   resourceProfile: {{ .Values.stage4Preparation.resourceProfile | quote }}
   idleSeconds: {{ .Values.stage4Preparation.lifecycle.idleSeconds | quote }}
   hardSeconds: {{ .Values.stage4Preparation.lifecycle.hardSeconds | quote }}

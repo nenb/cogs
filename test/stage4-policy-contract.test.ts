@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 import test from "node:test";
 import type { Ajv as AjvCore, Options } from "ajv";
 import {
+  buildStage4AuditWalRecord,
   buildStage4PolicyProbeSuite,
   evaluateStage4PolicyProbe,
   REQUIRED_STAGE4_POLICY_PROBE_IDS,
@@ -38,6 +39,36 @@ function contract(): Json {
 
 function probes(): ProbeSuite {
   return JSON.parse(readFileSync(probesPath, "utf8")) as ProbeSuite;
+}
+
+function collisionBoundContract(): Json {
+  const value = contract();
+  const session = nested(value, "session");
+  session.session_id = "session-other";
+  session.instance_id = "cogs-other";
+  for (const selector of [
+    nested(value, "identity", "trusted_worker", "pod_selector"),
+    nested(value, "identity", "sandbox", "pod_selector"),
+    nested(value, "proxy", "selector"),
+    nested(value, "proxy", "capability", "source_binding", "sandbox_selector"),
+  ]) {
+    selector["dev.cogs/session"] = session.session_id;
+    selector["app.kubernetes.io/instance"] = session.instance_id;
+  }
+  const capability = nested(value, "proxy", "capability");
+  capability.session_id = session.session_id;
+  capability.instance_id = session.instance_id;
+  capability.capability_id = "capability-forged";
+  capability.generation = 1_000_000;
+  const binding = nested(value, "proxy", "capability", "source_binding");
+  binding.session_id = session.session_id;
+  binding.instance_id = session.instance_id;
+  binding.sandbox_pod_id = "sandbox-pod-other";
+  nested(value, "proxy").service_name = "cogs-proxy-other";
+  const replacement = nested(value, "proxy", "revocation", "replacement_identity");
+  replacement.replacement_capability_id = capability.capability_id;
+  replacement.replacement_generation = capability.generation;
+  return value;
 }
 
 function auditRecord(): Json {
@@ -213,6 +244,7 @@ test("selector and immutable capability session/source confusion are rejected", 
 
   for (const mutate of [
     (value: Json) => (nested(value, "proxy", "capability").expires_at_ms = 1000),
+    (value: Json) => (nested(value, "proxy", "capability").expires_at_ms = 1500),
     (value: Json) => (nested(value, "proxy", "capability").generation = 1),
     (value: Json) =>
       (nested(value, "proxy", "capability").worker_pod_id = nested(value, "proxy", "capability", "source_binding")
@@ -271,6 +303,24 @@ test("metadata-only OTLP remains non-authorizing while bounded WAL failures deny
 });
 
 test("closed audit-WAL and OTLP payload validators reject every sensitive class and bound", () => {
+  assert.deepEqual(
+    buildStage4AuditWalRecord(contract(), {
+      sequence: 0,
+      timestamp_ms: 2000,
+      method: "GET",
+      credential_required: true,
+    }),
+    auditRecord(),
+  );
+  assert.equal(
+    new Set([
+      auditRecord().session_ref_sha256,
+      auditRecord().intent_ref_sha256,
+      auditRecord().policy_ref_sha256,
+      auditRecord().capability_ref_sha256,
+    ]).size,
+    4,
+  );
   for (const [record, kind] of [
     [auditRecord(), "audit-wal"],
     [otlpRecord(), "otlp"],
@@ -297,6 +347,9 @@ test("closed audit-WAL and OTLP payload validators reject every sensitive class 
     "cloud_identity",
     "kubernetes_identity",
     "openbao_identity",
+    "openbao_role",
+    "openbao_audience",
+    "openbao_pki_role",
   ];
   for (const field of sensitiveFields) {
     const wal = auditRecord();
@@ -312,7 +365,7 @@ test("closed audit-WAL and OTLP payload validators reject every sensitive class 
   delete rawSession.session_ref_sha256;
   rawSession.session_id = "session-static-1";
   assert.equal(validateStage4PolicyPayload(contract(), rawSession).reason, "payload-invalid");
-  for (const rawIdentity of [
+  for (const freeString of [
     "user-static-1",
     "session-static-1",
     "cogs-static-1",
@@ -320,17 +373,54 @@ test("closed audit-WAL and OTLP payload validators reject every sensitive class 
     "cogs-sandbox-inert",
     "worker-pod-static-2",
     "sandbox-pod-static-1",
+    "cogs-session-static-1",
+    "openbao.cogs.static",
+    "cogs-egress-session-static-1",
+    "sk-secret-shaped-value",
   ]) {
     const disguised = auditRecord();
-    disguised.intent_id = rawIdentity;
-    assert.equal(validateStage4PolicyPayload(contract(), disguised).reason, "payload-invalid", rawIdentity);
+    disguised.intent_id = freeString;
+    assert.equal(validateStage4PolicyPayload(contract(), disguised).reason, "payload-invalid", freeString);
   }
+  for (const sensitiveString of [
+    "cogs-session-static-1",
+    "openbao.cogs.static",
+    "cogs-egress-session-static-1",
+    "users/user-static-1/pki/issue/cogs-client",
+    "sk-secret-shaped-value",
+  ]) {
+    const embedded = auditRecord();
+    embedded.session_ref_sha256 = sensitiveString;
+    assert.equal(validateStage4PolicyPayload(contract(), embedded).reason, "payload-invalid", sensitiveString);
+  }
+  for (const reference of ["session_ref_sha256", "intent_ref_sha256", "policy_ref_sha256", "capability_ref_sha256"]) {
+    const forged = auditRecord();
+    const replacement = forged[reference] === "a".repeat(64) ? "b".repeat(64) : "a".repeat(64);
+    forged[reference] = replacement;
+    assert.equal(validateStage4PolicyPayload(contract(), forged).reason, "payload-invalid", reference);
+  }
+  const reboundContract = collisionBoundContract();
+  assert.equal(validateStage4PolicyPayload(reboundContract, auditRecord()).reason, "payload-invalid");
+  const reboundRecord = buildStage4AuditWalRecord(reboundContract, {
+    sequence: 0,
+    timestamp_ms: 2000,
+    method: "GET",
+    credential_required: true,
+  });
+  assert.ok(reboundRecord);
+  assert.notEqual(reboundRecord.session_ref_sha256, auditRecord().session_ref_sha256);
+  assert.equal(validateStage4PolicyPayload(reboundContract, reboundRecord).reason, "payload-valid");
 
-  const largeWal = auditRecord();
-  largeWal.intent_id = "i".repeat(128);
   const tinyContract = contract();
   nested(tinyContract, "audit_wal").max_record_bytes = 256;
-  assert.equal(validateStage4PolicyPayload(tinyContract, largeWal).reason, "payload-too-large");
+  const rebuiltLargeWal = buildStage4AuditWalRecord(tinyContract, {
+    sequence: 0,
+    timestamp_ms: 2000,
+    method: "GET",
+    credential_required: true,
+  });
+  assert.ok(rebuiltLargeWal);
+  assert.equal(validateStage4PolicyPayload(tinyContract, rebuiltLargeWal).reason, "payload-too-large");
 
   const oversizedDepth = otlpRecord();
   nested(oversizedDepth, "attributes").queue_depth = 1025;
@@ -358,6 +448,22 @@ test("probe suite is the exact unique ordered semantic inventory and every expec
   assert.equal(new Set(suite.probes.map((probe) => probe.id)).size, REQUIRED_STAGE4_POLICY_PROBE_IDS.length);
   assert.deepEqual(buildStage4PolicyProbeSuite(contract()), suite);
   assert.equal(validateStage4PolicyProbeSuite(contract(), suite), true);
+  for (const [id, transport, destinationClass] of [
+    ["deny.quic.udp443.ipv6", "quic", "direct-host"],
+    ["deny.dns.arbitrary.ipv6", "dns", "resolver"],
+    ["deny.dns.over-https.ipv6", "doh", "direct-host"],
+    ["deny.kubernetes-api.ipv6", "tcp", "kubernetes-api"],
+    ["deny.worker-api.ipv6", "tcp", "worker-api"],
+    ["deny.proxy-admin.ipv6", "tcp", "proxy-admin"],
+    ["deny.openbao.ipv6", "tcp", "openbao"],
+  ]) {
+    const probe = suite.probes.find((candidate) => candidate.id === id);
+    assert.ok(probe);
+    assert.equal(probe.address_family, "IPv6");
+    assert.equal(probe.transport, transport);
+    assert.equal(nested(probe, "destination").class, destinationClass);
+    assert.equal(probe.expected.allow, false);
+  }
   for (const probe of suite.probes) {
     const decision = evaluateStage4PolicyProbe(contract(), probe);
     assert.equal(decision.probe_id, probe.id);
@@ -411,6 +517,115 @@ test("probe suite is the exact unique ordered semantic inventory and every expec
   assert.equal(getterInvoked, false);
 });
 
+test("required probes derive bounded non-colliding alternates at string and listener boundaries", () => {
+  const collisionContract = collisionBoundContract();
+  assert.equal(validateStage4PolicyContract(collisionContract).valid, true);
+  const collisionSuite = buildStage4PolicyProbeSuite(collisionContract);
+  assert.ok(collisionSuite);
+  assert.equal(validateStage4PolicyProbeSuite(collisionContract, collisionSuite), true);
+  const byId = (id: string) => {
+    const probe = collisionSuite.probes.find((candidate) => candidate.id === id);
+    assert.ok(probe);
+    return probe;
+  };
+  assert.notEqual(byId("deny.source.cross-session").source_session_id, "session-other");
+  assert.notEqual(byId("deny.source.instance-confusion").source_instance_id, "cogs-other");
+  assert.notEqual(byId("deny.source.pod-confusion").source_pod_id, "sandbox-pod-other");
+  assert.notEqual(byId("deny.assigned-proxy.service-confusion").destination.service_name, "cogs-proxy-other");
+  assert.notEqual(byId("deny.capability.id-confusion").capability.capability_id, "capability-forged");
+  assert.notEqual(byId("deny.capability.generation-confusion").capability.generation, 1_000_000);
+
+  const boundedContract = collisionBoundContract();
+  const boundedSession = "s".repeat(63);
+  const boundedInstance = "i".repeat(63);
+  const boundedPod = "p".repeat(128);
+  const boundedCapability = "c".repeat(128);
+  const boundedService = `${"a".repeat(63)}.${"b".repeat(63)}.${"c".repeat(63)}.${"d".repeat(61)}`;
+  nested(boundedContract, "session").session_id = boundedSession;
+  nested(boundedContract, "session").instance_id = boundedInstance;
+  for (const selector of [
+    nested(boundedContract, "identity", "trusted_worker", "pod_selector"),
+    nested(boundedContract, "identity", "sandbox", "pod_selector"),
+    nested(boundedContract, "proxy", "selector"),
+    nested(boundedContract, "proxy", "capability", "source_binding", "sandbox_selector"),
+  ]) {
+    selector["dev.cogs/session"] = boundedSession;
+    selector["app.kubernetes.io/instance"] = boundedInstance;
+  }
+  const boundedCapabilityContract = nested(boundedContract, "proxy", "capability");
+  boundedCapabilityContract.session_id = boundedSession;
+  boundedCapabilityContract.instance_id = boundedInstance;
+  boundedCapabilityContract.capability_id = boundedCapability;
+  const boundedBinding = nested(boundedContract, "proxy", "capability", "source_binding");
+  boundedBinding.session_id = boundedSession;
+  boundedBinding.instance_id = boundedInstance;
+  boundedBinding.sandbox_pod_id = boundedPod;
+  nested(boundedContract, "proxy").service_name = boundedService;
+  nested(boundedContract, "proxy", "revocation", "replacement_identity").replacement_capability_id = boundedCapability;
+  const boundedSuite = buildStage4PolicyProbeSuite(boundedContract);
+  assert.ok(boundedSuite);
+  assert.equal(validateStage4PolicyProbeSuite(boundedContract, boundedSuite), true);
+  for (const [id, current, alternate] of [
+    [
+      "deny.source.cross-session",
+      boundedSession,
+      boundedSuite.probes.find((probe) => probe.id === "deny.source.cross-session")?.source_session_id,
+    ],
+    [
+      "deny.source.instance-confusion",
+      boundedInstance,
+      boundedSuite.probes.find((probe) => probe.id === "deny.source.instance-confusion")?.source_instance_id,
+    ],
+    [
+      "deny.source.pod-confusion",
+      boundedPod,
+      boundedSuite.probes.find((probe) => probe.id === "deny.source.pod-confusion")?.source_pod_id,
+    ],
+    [
+      "deny.assigned-proxy.service-confusion",
+      boundedService,
+      boundedSuite.probes.find((probe) => probe.id === "deny.assigned-proxy.service-confusion")?.destination
+        .service_name,
+    ],
+    [
+      "deny.capability.id-confusion",
+      boundedCapability,
+      boundedSuite.probes.find((probe) => probe.id === "deny.capability.id-confusion")?.capability.capability_id,
+    ],
+  ] as const) {
+    assert.ok(typeof alternate === "string", id);
+    assert.notEqual(alternate, current, id);
+    assert.ok(alternate.length <= current.length, id);
+  }
+
+  for (const [listenerPort, expectedAlternate] of [
+    [65_535, 65_534],
+    [65_534, 65_535],
+  ] as const) {
+    const boundaryContract = contract();
+    nested(boundaryContract, "proxy").listener_port = listenerPort;
+    const suite = buildStage4PolicyProbeSuite(boundaryContract);
+    assert.ok(suite);
+    assert.equal(validateStage4PolicyProbeSuite(boundaryContract, suite), true);
+    assert.equal(
+      suite.probes.find((probe) => probe.id === "deny.alternate-proxy-port")?.destination.port,
+      expectedAlternate,
+    );
+  }
+
+  const issuanceBoundary = contract();
+  const capability = nested(issuanceBoundary, "proxy", "capability");
+  capability.issued_at_ms = 1;
+  capability.expires_at_ms = 28_800_001;
+  const issuanceSuite = buildStage4PolicyProbeSuite(issuanceBoundary);
+  assert.ok(issuanceSuite);
+  assert.equal(validateStage4PolicyProbeSuite(issuanceBoundary, issuanceSuite), true);
+  assert.equal(issuanceSuite.probes.find((probe) => probe.id === "deny.capability.before-issued")?.observed_at_ms, 0);
+  const zeroIssuance = structuredClone(issuanceBoundary);
+  nested(zeroIssuance, "proxy", "capability").issued_at_ms = 0;
+  assert.deepEqual(validateStage4PolicyContract(zeroIssuance).reason_codes, ["STAGE4_POLICY_SCHEMA_INVALID"]);
+});
+
 test("probe decisions cover no-fallback networking and real capability replacement/expiry identity", () => {
   const suite = probes();
   const allowed = suite.probes.filter((probe) => evaluateStage4PolicyProbe(contract(), probe).allow);
@@ -422,6 +637,7 @@ test("probe decisions cover no-fallback networking and real capability replaceme
     ["deny.capability.missing", "capability-missing"],
     ["deny.capability.revoked", "capability-revoked"],
     ["deny.capability.replaced", "capability-replaced"],
+    ["deny.capability.before-issued", "capability-not-yet-valid"],
     ["deny.capability.expired", "capability-expired"],
     ["deny.direct-host.ipv4", "direct-egress-denied"],
     ["deny.direct-host.ipv6", "direct-egress-denied"],
@@ -436,6 +652,13 @@ test("probe decisions cover no-fallback networking and real capability replaceme
   const replaced = structuredClone(replacementProbe);
   nested(replaced, "capability").replacement_capability_id = "forged-replacement";
   assert.equal(evaluateStage4PolicyProbe(contract(), replaced).reason, "probe-invalid");
+
+  const inconsistentProbe = structuredClone(suite.probes[0]);
+  assert.ok(inconsistentProbe);
+  const expires = nested(inconsistentProbe, "capability").expires_at_ms;
+  assert.equal(typeof expires, "number");
+  nested(inconsistentProbe, "capability").expires_at_ms = (expires as number) - 1;
+  assert.equal(evaluateStage4PolicyProbe(contract(), inconsistentProbe).reason, "probe-invalid");
 
   const invalidContract = contract();
   nested(invalidContract, "network").default_deny = false;

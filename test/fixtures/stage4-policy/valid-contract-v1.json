@@ -241,11 +241,11 @@
       "allowed_fields": [
         "version",
         "sequence",
-        "intent_id",
         "timestamp_ms",
         "session_ref_sha256",
-        "integration_id",
-        "route_id",
+        "intent_ref_sha256",
+        "policy_ref_sha256",
+        "capability_ref_sha256",
         "method",
         "credential_required"
       ],

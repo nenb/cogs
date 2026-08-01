@@ -21,7 +21,7 @@ This report records local contract and fixture coverage only. It is not EKS, CNI
 5. no direct-egress fallback;
 6. dual-stack default-deny intent, UDP/QUIC denial, disabled guest DNS, exact selector requirements, and explicit protected-surface inventory;
 7. metadata-only bounded OTLP with a closed 11-field attribute vocabulary, fixed name/enum cardinality, and field-specific value limits; outage drops metadata with counters and does not authorize credential use; and
-8. a 1 MiB / 10,000-record / 4 KiB-record trusted audit WAL with one closed nine-field record. It uses a digest-bound session reference rather than raw user/session identity. Append and sync precede credential use; unavailable, unwritable, full, append, sync, or correlation failure denies credentialed egress and requires recycle.
+8. a 1 MiB / 10,000-record / 4 KiB-record trusted audit WAL with one closed nine-field record containing only fixed enums, bounded integers/booleans, and domain-separated SHA-256 session, intent, policy, and capability references. The session reference is recomputed exactly from the contract session binding, and every other reference is likewise recomputed rather than accepted as an opaque identifier. Append and sync precede credential use; unavailable, unwritable, full, append, sync, or correlation failure denies credentialed egress and requires recycle.
 
 Both payload contracts explicitly forbid query, body, credential, placeholder, secret handle, source, prompt, model/tool output, command, arbitrary path, raw user/session identity, cloud identity, Kubernetes identity, and OpenBao identity fields. `validateStage4PolicyPayload()` safely snapshots and validates records without I/O or sensitive diagnostics.
 
@@ -57,13 +57,13 @@ ordinary OTLP:
 
 - empty, wrong-role, and proxy/sandbox selector confusion;
 - IPv4 and IPv6 assigned-proxy policy plus direct-host and direct-IP denial on both families;
-- UDP, QUIC/HTTP/3, arbitrary DNS/resolver, and DNS-over-HTTPS denial;
-- cloud metadata, Kubernetes API, worker API, proxy admin, and OpenBao denial;
-- missing, revoked, replaced, expired, wrong-ID, wrong-generation, and other-session proxy capabilities;
+- UDP, QUIC/HTTP/3, arbitrary DNS/resolver, and DNS-over-HTTPS denial, including explicit IPv6 QUIC, DNS, and DoH cases;
+- cloud metadata plus explicit IPv4 and IPv6 Kubernetes API, worker API, proxy admin, and OpenBao denial;
+- missing, revoked, replaced, not-yet-issued, expired, wrong-ID, wrong-generation, and other-session proxy capabilities;
 - instance, source-pod, service, other-session proxy, and other-session workload confusion; and
 - broad-policy and alternate-port denial.
 
-The probe schema fixes every required ID in exact order. `validateStage4PolicyProbeSuite()` additionally requires the exact contract digest, complete unique inventory, exact semantic field combinations, and expected decisions recomputed by the pure evaluator; omissions, duplicates, reordering, substitution, vacuous suites, and dishonest expected results fail. The evaluator permits only TCP to the assigned proxy listener with the exact instance/pod/sandbox selector and active current same-session capability. Its `allow` is a static expected-policy result, not an observation that CNI or runtime enforcement occurred.
+The probe schema fixes every required ID in exact order. `validateStage4PolicyProbeSuite()` additionally requires the exact contract digest, complete unique inventory, exact semantic field combinations, and recomputes every supplied expected decision through the pure evaluator; omissions, duplicates, reordering, substitution, vacuous suites, and dishonest expected results fail. Alternate strings are bounded input-derived non-colliding values, and the alternate listener is 65534 at a 65535 boundary and 65535 otherwise. The evaluator permits only TCP to the assigned proxy listener with the exact instance/pod/sandbox selector and active current same-session capability. Its `allow` is a static expected-policy result, not an observation that CNI or runtime enforcement occurred.
 
 ## Remaining mandatory qualification
 

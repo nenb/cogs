@@ -20,8 +20,8 @@
     },
     "probes": {
       "type": "array",
-      "minItems": 35,
-      "maxItems": 35,
+      "minItems": 43,
+      "maxItems": 43,
       "prefixItems": [
         {
           "$ref": "#/$defs/probe",
@@ -135,6 +135,15 @@
           "$ref": "#/$defs/probe",
           "properties": {
             "id": {
+              "const": "deny.capability.before-issued"
+            }
+          },
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/probe",
+          "properties": {
+            "id": {
               "const": "deny.capability.expired"
             }
           },
@@ -207,7 +216,7 @@
           "$ref": "#/$defs/probe",
           "properties": {
             "id": {
-              "const": "deny.quic.udp443"
+              "const": "deny.quic.udp443.ipv4"
             }
           },
           "type": "object"
@@ -216,7 +225,7 @@
           "$ref": "#/$defs/probe",
           "properties": {
             "id": {
-              "const": "deny.dns.arbitrary"
+              "const": "deny.dns.arbitrary.ipv4"
             }
           },
           "type": "object"
@@ -225,7 +234,34 @@
           "$ref": "#/$defs/probe",
           "properties": {
             "id": {
-              "const": "deny.dns.over-https"
+              "const": "deny.dns.over-https.ipv4"
+            }
+          },
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/probe",
+          "properties": {
+            "id": {
+              "const": "deny.quic.udp443.ipv6"
+            }
+          },
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/probe",
+          "properties": {
+            "id": {
+              "const": "deny.dns.arbitrary.ipv6"
+            }
+          },
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/probe",
+          "properties": {
+            "id": {
+              "const": "deny.dns.over-https.ipv6"
             }
           },
           "type": "object"
@@ -297,7 +333,7 @@
           "$ref": "#/$defs/probe",
           "properties": {
             "id": {
-              "const": "deny.kubernetes-api"
+              "const": "deny.kubernetes-api.ipv4"
             }
           },
           "type": "object"
@@ -306,7 +342,7 @@
           "$ref": "#/$defs/probe",
           "properties": {
             "id": {
-              "const": "deny.worker-api"
+              "const": "deny.worker-api.ipv4"
             }
           },
           "type": "object"
@@ -315,7 +351,7 @@
           "$ref": "#/$defs/probe",
           "properties": {
             "id": {
-              "const": "deny.proxy-admin"
+              "const": "deny.proxy-admin.ipv4"
             }
           },
           "type": "object"
@@ -324,7 +360,43 @@
           "$ref": "#/$defs/probe",
           "properties": {
             "id": {
-              "const": "deny.openbao"
+              "const": "deny.openbao.ipv4"
+            }
+          },
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/probe",
+          "properties": {
+            "id": {
+              "const": "deny.kubernetes-api.ipv6"
+            }
+          },
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/probe",
+          "properties": {
+            "id": {
+              "const": "deny.worker-api.ipv6"
+            }
+          },
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/probe",
+          "properties": {
+            "id": {
+              "const": "deny.proxy-admin.ipv6"
+            }
+          },
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/probe",
+          "properties": {
+            "id": {
+              "const": "deny.openbao.ipv6"
             }
           },
           "type": "object"
@@ -559,6 +631,7 @@
                 "capability-missing",
                 "capability-revoked",
                 "capability-replaced",
+                "capability-not-yet-valid",
                 "capability-expired",
                 "capability-id-mismatch",
                 "capability-generation-mismatch",
