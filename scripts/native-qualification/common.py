@@ -558,8 +558,11 @@ class SystemCommonOps:
         primary, stage = None, "held-source-admission"
         try:
             stage, (held, digest) = "held-source-admission", self._admit_sources(context, root)
-            stage, (admission, capsule) = "capsule-build", self._capsule(context, held, digest)
-            stage, result = "launcher-transaction", self._decode_cli(self._issue_cli(held[LAUNCHER_PATH].raw, admission, capsule))
+            # Tuple targets evaluate their calls before assigning the stage.
+            stage = "capsule-build"
+            admission, capsule = self._capsule(context, held, digest)
+            stage = "launcher-transaction"
+            result = self._decode_cli(self._issue_cli(held[LAUNCHER_PATH].raw, admission, capsule))
             stage = "result-admission"
             exact = result.get("source_revision") == context.head_sha and result.get("source_set_sha256") == digest
             _require(exact and HEX64.fullmatch(digest) is not None, "production result admission")

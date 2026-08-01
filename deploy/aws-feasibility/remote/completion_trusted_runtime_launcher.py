@@ -2632,6 +2632,30 @@ def _settle_rejected_tool_transfer(
     if failures:
         raise RuntimeLauncherCleanupError(primary, failures) from primary
 
+def _child_output_diagnostic(ops: Any, endpoint: socket.socket, output: _FdLease, error: BaseException, deadline: float) -> RuntimeLauncherError | None:
+    primary, cleanup_failures = error, []
+    while isinstance(primary, RuntimeLauncherCleanupError) and len(cleanup_failures) < 8:
+        cleanup_failures.append(primary.failures)
+        primary = primary.primary
+    match = re.fullmatch(r"map-access-(ez0|(?:en|sg)(?:[1-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5]))-[A-Za-z0-9._-]+", primary.code) if isinstance(primary, RuntimeLauncherError) else None
+    if match is None: return None
+    digest, length, pending = hashlib.sha256(), 0, {endpoint.fileno(), output.fd}
+    try:
+        while pending:
+            ready = select.select(sorted(pending), [], [], max(0.0, deadline - time.monotonic()))[0]
+            _require(bool(ready), "child output diagnostic deadline", "child-out-deadline")
+            for descriptor in ready:
+                part = ops.read(descriptor, min(65536, _MAX_OUTPUT + 1 - length))
+                if not part: pending.discard(descriptor)
+                else:
+                    _require(descriptor == output.fd, "trailing owner status bytes", "child-out-status")
+                    _require((length := length + len(part)) <= _MAX_OUTPUT, "child output diagnostic bound", "child-out-bound")
+                    digest.update(part)
+    except BaseException as error: diagnostic = error if isinstance(error, RuntimeLauncherError) else RuntimeLauncherError("child output diagnostic failed", "child-out-io")
+    else: diagnostic = RuntimeLauncherError("bounded early child output metadata", f"child-out-{match.group(1)}-h{digest.hexdigest()[:12]}-l{length}")
+    for failures in reversed(cleanup_failures): diagnostic = RuntimeLauncherCleanupError(diagnostic, list(failures))
+    return diagnostic
+
 def _run_tool_with_ops( ops: Any, role: str, report: dict[str, object], descriptors: tuple[int, ...], rows: tuple[_GenerationRow, ...], python_executable: tuple[int, int], ) -> tuple[bytes, dict[str, object]]:
     child_baseline = _parse_children(_proc_bytes("/proc/thread-self/children", 65536, ops))
     process_owner = _ProcessOwner(ops)
@@ -2770,7 +2794,12 @@ def _run_tool_with_ops( ops: Any, role: str, report: dict[str, object], descript
         boundary_packet = _recv_status(parent_status, time.monotonic() + _SETUP_SECONDS, "boundary", 3)
         boundary = boundary_packet["observations"]
         _require(type(boundary) is dict, "boundary observations malformed", "boundary-observations")
-        post_packet = _recv_owner_inspection(parent_status, time.monotonic() + _SETUP_SECONDS, "post-inspection", 4)
+        post_deadline = time.monotonic() + _SETUP_SECONDS
+        try: post_packet = _recv_owner_inspection(parent_status, post_deadline, "post-inspection", 4)
+        except BaseException as error:
+            diagnostic = _child_output_diagnostic(ops, parent_status, output_read, error, post_deadline)
+            if diagnostic is not None: raise diagnostic from error
+            raise
         _revalidate_inspected_child(child_lease, ops)
         expected_mapping_count = sum(1 for row in rows if row.tool_index == _TOOL_INDEX[role])
         expected_mapping_sha256 = report["tools"][_TOOL_INDEX[role]]["mapping_sha256"]
@@ -4631,7 +4660,7 @@ if __name__ == "__main__":
         os.write(2, b"runtime-launcher-unavailable\n")
         raise SystemExit(78)
     except RuntimeLauncherError as error:
-        code = error.code if type(error.code) is str and re.fullmatch(r"[A-Za-z0-9_.-]{1,40}", error.code) else "invalid-code"
+        code = error.code if type(error.code) is str and re.fullmatch(r"[A-Za-z0-9_.-]{1,62}", error.code) else "invalid-code"
         if isinstance(error, RuntimeLauncherCleanupError):
             nested: BaseException = error
             for _depth in range(8):
@@ -4648,7 +4677,7 @@ if __name__ == "__main__":
                     break
                 primary = next_primary
             safe_primary = _fixed_error_stage(primary)
-            code = f"cleanup-{safe_primary}-{safe_stage}"[:40]
+            code = f"cleanup-{safe_primary}-{safe_stage}"[:62]
         digest = hashlib.sha256(str(error).encode("utf-8", "backslashreplace")).hexdigest()[:16]
         os.write(2, f"runtime-launcher-{code}-{digest}\n".encode())
         raise SystemExit(1)
