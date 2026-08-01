@@ -12,13 +12,13 @@
 
 This draft defines the API-key-only Stage 5 gate without supplying evidence or authority. S4-11 is a hard predecessor and remains `required-not-observed-by-this-draft`; `stage4_exit_satisfied=false` and `evidence_accepted=false`. Stage 4 static preparation and teardown-order outputs remain disjoint local authorities and cannot satisfy S4-11.
 
-Every authority-bearing field is false. The release-candidate source revision, artifact root, immutable binding, principal identities, identity bindings, criterion evidence bindings, provider evidence bindings, and evidence references are null or empty and explicitly blocking. Schema validity proves only bounded inventory consistency. It authenticates no person or artifact, grants no approval, observes no cloud or provider execution, and establishes no release, production, GA, or compliance result.
+Every authority-bearing field is false. The release-candidate source revision, artifact root, immutable binding, principal identities, identity bindings, criterion evidence bindings, and provider evidence bindings are null and explicitly blocking; no evidence-reference instance or schema surface exists in this draft. Schema validity proves only bounded inventory consistency. It authenticates no person or artifact, grants no approval, observes no cloud or provider execution, and establishes no release, production, GA, or compliance result.
 
 Finalization requires a new authority/schema after accepted S4-11 and later evidence bound to one frozen release candidate. This draft cannot be edited into a release verdict.
 
 ## Criterion-level traceability
 
-The matrix contains **35 immutable criterion mappings**: all 22 numbered criteria in `DESIGN.md` section 24 and all 13 checkboxes in `IMPLEMENTATION.md` section 45. Each row has a source locator and full source-text SHA-256 in the JSON, accountable role, exact profile, evidence lane and future digest-reference contract, dependencies, current blocker, and applicability. All rows remain `unexecuted-by-this-draft`, have null principal/evidence bindings, and are not release eligible.
+The matrix contains **35 immutable criterion mappings**: all 22 numbered criteria in `DESIGN.md` section 24 and all 13 checkboxes in `IMPLEMENTATION.md` section 45. Each row has a source locator and full source-text SHA-256 in the JSON, accountable role, exact profile, evidence lane and future evidence-contract category, dependencies, current blocker, and applicability. All rows remain `unexecuted-by-this-draft`, have null principal/evidence bindings, and are not release eligible.
 
 The expected inventory in `test/stage5-api-key-release-matrix.test.ts` is independent of the JSON and schema. It derives source-text digests from the two authoritative documents while separately fixing IDs and mappings; missing, duplicate, reordered, remapped, or stale-source criteria fail.
 
@@ -69,42 +69,62 @@ The expected inventory in `test/stage5-api-key-release-matrix.test.ts` is indepe
 
 No mandatory criterion may be satisfied by a stub, `not-applicable`, unapproved skip, extrapolation, stale revision, self-asserted identity, or unauthenticated digest. Failure and uncertainty stay explicit.
 
-## API-key provider claim matrix
+<!-- BEGIN MACHINE-GENERATED SUPPORT CLAIMS -->
+## Machine-generated support and unsupported claims
 
-The explicit conservative provider set follows the implemented generic Pi runtime API-key path and the design's continuously tested target set. These are **provisional candidates**, not current release advertisements. Each provider needs its own future real-provider sample and immutable evidence binding before it may appear in an advertised support decision; one representative sample cannot cover the set.
+> Generated deterministically from `support_claims` and `subscription_oauth` in the machine JSON. The machine JSON is authoritative for support claims. The exact-render test covers this marked block; it does not claim to detect arbitrary natural-language paraphrases elsewhere.
 
-| Provider | Implemented path state | Decision now | Advertised now | Future gate |
-|---|---|---|---:|---|
-| `anthropic` | `generic-runtime-key-path-present-provider-not-release-validated` | `provisional-candidate` | `false` | `provider-real-evidence-not-present`; one future real-provider evidence binding is required before any advertisement |
-| `openai` | `generic-runtime-key-path-present-provider-not-release-validated` | `provisional-candidate` | `false` | `provider-real-evidence-not-present`; one future real-provider evidence binding is required before any advertisement |
-| `openrouter` | `generic-runtime-key-path-present-provider-not-release-validated` | `provisional-candidate` | `false` | `provider-real-evidence-not-present`; one future real-provider evidence binding is required before any advertisement |
+### Release posture
 
-Subscription OAuth is separately fixed to `disabled-unadvertised`, workers are forbidden from receiving refresh tokens, and #13 remains deferred outside this API-key release gate.
+| Claim | Value |
+|---|---:|
+| `production_ready` | `false` |
+| `general_availability` | `false` |
+| `compliance_certified` | `false` |
+| `advertised_release` | `false` |
 
-## Platform and unsupported claim matrix
+### Provisional API-key provider candidates
 
-`aws-eks-kata` is pending S4/S5 evidence and unadvertised. `linux-kvm` remains authoritative-local only. `insecure-container` and `macos-vm-dev` remain development-only. None is a current release claim.
+| Provider | Auth class | Implementation state | Decision | Advertised | Real-provider evidence required | Evidence binding | Blocker |
+|---|---|---|---|---:|---:|---|---|
+| `anthropic` | `api-key` | `generic-runtime-key-path-present-provider-not-release-validated` | `provisional-candidate` | `false` | `true` | `null` | `provider-real-evidence-not-present` |
+| `openai` | `api-key` | `generic-runtime-key-path-present-provider-not-release-validated` | `provisional-candidate` | `false` | `true` | `null` | `provider-real-evidence-not-present` |
+| `openrouter` | `api-key` | `generic-runtime-key-path-present-provider-not-release-validated` | `provisional-candidate` | `false` | `true` | `null` | `provider-real-evidence-not-present` |
 
-The following capabilities and claims are explicitly unsupported and unadvertised in this draft:
+### Platform profiles
 
-| Capability or claim | Status | Advertised | Reason |
-|---|---|---:|---|
-| `subscription-oauth` | `unsupported-unadvertised` | `false` | `deferred-issue-13` |
-| `production-daemon` | `unsupported-unadvertised` | `false` | `outside-mvp-scope` |
-| `user-ingress` | `unsupported-unadvertised` | `false` | `outside-mvp-scope` |
-| `session-sanitizer` | `unsupported-unadvertised` | `false` | `outside-mvp-scope` |
-| `apps` | `unsupported-unadvertised` | `false` | `outside-mvp-scope` |
-| `indexing-vector-search` | `unsupported-unadvertised` | `false` | `outside-mvp-scope` |
-| `gcp-production` | `unsupported-unadvertised` | `false` | `other-cloud-not-validated` |
-| `azure-production` | `unsupported-unadvertised` | `false` | `other-cloud-not-validated` |
-| `hetzner-production` | `unsupported-unadvertised` | `false` | `other-cloud-not-validated` |
-| `other-cloud-production` | `unsupported-unadvertised` | `false` | `other-cloud-not-validated` |
-| `general-availability` | `unsupported-unadvertised` | `false` | `release-not-established` |
-| `compliance-certification` | `unsupported-unadvertised` | `false` | `compliance-not-claimed` |
-| `grpc-credential-injection` | `unsupported-unadvertised` | `false` | `outside-mvp-scope` |
-| `non-http-egress` | `unsupported-unadvertised` | `false` | `outside-mvp-scope` |
+| Profile | Status | Advertised |
+|---|---|---:|
+| `aws-eks-kata` | `pending-s4-s5-evidence-unadvertised` | `false` |
+| `linux-kvm` | `authoritative-local-only-unadvertised` | `false` |
+| `insecure-container` | `development-only-unadvertised` | `false` |
+| `macos-vm-dev` | `development-only-unadvertised` | `false` |
 
-This excludes a production daemon, user ingress, session sanitizer, apps, indexing/vector search, GCP/Azure/Hetzner or other-cloud production support, general availability, compliance certification, subscription OAuth, gRPC credential injection, and non-HTTP egress. Contradictory affirmative wording is a contract-test failure.
+### Unsupported capabilities and claims
+
+| Capability | Status | Advertised | Evidence binding | Reason |
+|---|---|---:|---|---|
+| `subscription-oauth` | `unsupported-unadvertised` | `false` | `null` | `deferred-issue-13` |
+| `production-daemon` | `unsupported-unadvertised` | `false` | `null` | `outside-mvp-scope` |
+| `user-ingress` | `unsupported-unadvertised` | `false` | `null` | `outside-mvp-scope` |
+| `session-sanitizer` | `unsupported-unadvertised` | `false` | `null` | `outside-mvp-scope` |
+| `apps` | `unsupported-unadvertised` | `false` | `null` | `outside-mvp-scope` |
+| `indexing-vector-search` | `unsupported-unadvertised` | `false` | `null` | `outside-mvp-scope` |
+| `gcp-production` | `unsupported-unadvertised` | `false` | `null` | `other-cloud-not-validated` |
+| `azure-production` | `unsupported-unadvertised` | `false` | `null` | `other-cloud-not-validated` |
+| `hetzner-production` | `unsupported-unadvertised` | `false` | `null` | `other-cloud-not-validated` |
+| `other-cloud-production` | `unsupported-unadvertised` | `false` | `null` | `other-cloud-not-validated` |
+| `general-availability` | `unsupported-unadvertised` | `false` | `null` | `release-not-established` |
+| `compliance-certification` | `unsupported-unadvertised` | `false` | `null` | `compliance-not-claimed` |
+| `grpc-credential-injection` | `unsupported-unadvertised` | `false` | `null` | `outside-mvp-scope` |
+| `non-http-egress` | `unsupported-unadvertised` | `false` | `null` | `outside-mvp-scope` |
+
+### Subscription OAuth blocker
+
+| Status | Advertised | Release gate | Deferred issue | Worker refresh tokens |
+|---|---:|---:|---:|---|
+| `disabled-unadvertised` | `false` | `false` | `13` | `forbidden` |
+<!-- END MACHINE-GENERATED SUPPORT CLAIMS -->
 
 ## Future authenticated principals and separation
 
@@ -121,23 +141,20 @@ The schema reserves nine stable roles. In this draft all principal identifiers a
 
 A future principal identifier must be authenticated and immutably bound. No separation is currently claimed. In particular, independent review and independently observed zero inventory remain blocked rather than inferred from role names.
 
-## Bounded digest-only evidence references
+## No evidence-reference surface in this draft
 
-This draft contains zero evidence references and cannot accept one. Its schema defines the future reference shape separately so later evidence work starts fail-closed without changing the old `security-report-v1alpha1` contract or treating that older report as release evidence.
+This provisional schema accepts no evidence-reference object, array, report, log, diagnostic, producer identity, approval, or run record. It does not extend or promote `security-report-v1alpha1` into Stage 5 release evidence.
 
-The Stage 5 reference is digest-only and permits no inline report, log, prompt, source, secret, arbitrary diagnostic, URL, or path. It requires criterion ID, artifact SHA-256, declared bytes, bounded media type, future evidence-contract category, exact profile, source revision, release-candidate binding digest, authenticated producer role/principal/binding, result, and categorical diagnostic code.
+A separate future authority must define a new schema **and reusable semantic validator** before any evidence can be attached. Every consumer must invoke that validator. At minimum it must:
 
-Bounds are:
+- bind each criterion ID to the exact immutable source hash, profile, lane, evidence-contract category, accountable role, producer role, release-candidate binding, and authenticated principal/identity bindings;
+- bind campaign criteria to a distinct authenticated approver, exact approved revision/scope, and exact campaign run;
+- enforce reviewer/operator/approver/zero-inventory separation constraints;
+- require exact criterion prefix/order and unique criterion IDs;
+- reject duplicate evidence, conflicting results, stale source/artifact bindings, missing mandatory criteria, cross-profile substitution, and authority-domain promotion;
+- define aggregate byte/item/property/string bounds and categorical diagnostics without inline reports, logs, prompts, source, or secrets.
 
-- matrix JSON: at most 262,144 bytes;
-- future references: at most 64;
-- declared aggregate: at most 16,777,216 bytes;
-- each referenced artifact: at most 262,144 bytes;
-- each reference: exactly 13 required properties and no unknown property;
-- bounded principal string: at most 128 characters;
-- diagnostics: categorical only.
-
-The `64 × 262,144` per-item envelope equals the aggregate maximum. Artifact bytes remain external; a digest does not establish truth, provenance, identity, or acceptance.
+Until that separate schema and semantic validator exist and are reviewed, all evidence remains absent and every criterion remains blocked.
 
 ## Finalization rule for a future authority
 
@@ -160,7 +177,7 @@ Any missing, duplicate, stale, conflicting, failed, skipped, stubbed, uncertain,
 - [ ] Freeze and bind the exact release candidate.
 - [ ] Bind authenticated principals and satisfy every separation constraint.
 - [ ] Execute and independently review all 35 criterion mappings.
-- [ ] Record separate campaign approvals and bounded digest-only evidence.
+- [ ] Define the separate future evidence schema/semantic validator, then record separately approved campaign evidence.
 - [ ] Obtain per-provider real evidence before advertising an API-key provider.
 - [ ] Publish the future API-key-only staff decision and residual risks.
 

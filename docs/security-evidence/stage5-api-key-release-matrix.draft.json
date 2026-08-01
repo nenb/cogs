@@ -971,17 +971,5 @@
       "evidence_binding_sha256": null,
       "release_eligible": false
     }
-  ],
-  "evidence_reference_contract": {
-    "digest_only": true,
-    "inline_content_allowed": false,
-    "diagnostics": "categorical-only",
-    "matrix_max_bytes": 262144,
-    "max_references": 64,
-    "max_total_declared_bytes": 16777216,
-    "max_bytes_per_reference": 262144,
-    "max_properties_per_reference": 13,
-    "max_string_length": 128,
-    "references": []
-  }
+  ]
 }

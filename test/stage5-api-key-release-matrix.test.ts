@@ -17,17 +17,6 @@ const matrixBytes = readFileSync(matrixPath);
 const matrix = JSON.parse(matrixBytes.toString("utf8")) as Matrix;
 const ajv = new Ajv2020({ allErrors: true, strict: true, strictRequired: false });
 const validate = ajv.compile(schema) as ValidateFunction;
-const evidenceReferenceSchema = {
-  ...schema.$defs.evidenceReference,
-  $defs: schema.$defs,
-};
-const validateEvidenceReference = new Ajv2020({ allErrors: true, strict: true, strictRequired: false }).compile(
-  evidenceReferenceSchema,
-);
-const validateEvidenceReferenceSet = new Ajv2020({ allErrors: true, strict: true, strictRequired: false }).compile({
-  ...schema.$defs.evidenceReferenceSet,
-  $defs: schema.$defs,
-});
 
 type Data = Record<string, unknown>;
 type Schema = Data & { $defs: Record<string, Data> };
@@ -45,7 +34,6 @@ type Matrix = Data & {
     unsupported_capabilities: Data[];
   };
   criterion_mappings: Criterion[];
-  evidence_reference_contract: Data & { references: Data[] };
 };
 
 type ExpectedCriterion = Readonly<{
@@ -411,19 +399,77 @@ function inventoryErrors(value: Matrix): string[] {
   return errors;
 }
 
-function documentationContradictions(text: string): string[] {
-  const claims: Array<[string, RegExp]> = [
-    ["oauth", /subscription OAuth is (?:supported|enabled|advertised)/iu],
-    ["ga", /Cogs is (?:GA|generally available)/iu],
-    ["compliance", /Cogs is compliance[- ]certified/iu],
-    ["other-cloud", /(?:GCP|Azure|Hetzner|other clouds?) (?:is|are) supported/iu],
-    ["daemon", /production daemon is supported/iu],
-    ["ingress", /user ingress is supported/iu],
-    ["sanitizer", /session sanitizer is supported/iu],
-    ["apps", /apps are supported/iu],
-    ["indexing", /indexing (?:and|or) vector search is supported/iu],
+function markdownScalar(value: unknown): string {
+  if (value === null) return "`null`";
+  if (typeof value === "boolean" || typeof value === "number") return `\`${String(value)}\``;
+  assert.equal(typeof value, "string");
+  return `\`${value}\``;
+}
+
+function renderSupportClaims(value: Matrix): string {
+  const lines = [
+    "<!-- BEGIN MACHINE-GENERATED SUPPORT CLAIMS -->",
+    "## Machine-generated support and unsupported claims",
+    "",
+    "> Generated deterministically from `support_claims` and `subscription_oauth` in the machine JSON. The machine JSON is authoritative for support claims. The exact-render test covers this marked block; it does not claim to detect arbitrary natural-language paraphrases elsewhere.",
+    "",
+    "### Release posture",
+    "",
+    "| Claim | Value |",
+    "|---|---:|",
   ];
-  return claims.filter(([, pattern]) => pattern.test(text)).map(([code]) => code);
+  for (const [key, item] of Object.entries(value.support_claims.posture)) {
+    lines.push(`| \`${key}\` | ${markdownScalar(item)} |`);
+  }
+  lines.push(
+    "",
+    "### Provisional API-key provider candidates",
+    "",
+    "| Provider | Auth class | Implementation state | Decision | Advertised | Real-provider evidence required | Evidence binding | Blocker |",
+    "|---|---|---|---|---:|---:|---|---|",
+  );
+  for (const row of value.support_claims.api_key_providers) {
+    lines.push(
+      `| ${["provider", "auth_class", "implementation_state", "support_decision", "advertised", "real_provider_evidence_required", "evidence_binding_sha256", "blocker"].map((key) => markdownScalar(row[key])).join(" | ")} |`,
+    );
+  }
+  lines.push("", "### Platform profiles", "", "| Profile | Status | Advertised |", "|---|---|---:|");
+  for (const row of value.support_claims.platform_profiles) {
+    lines.push(`| ${["profile", "status", "advertised"].map((key) => markdownScalar(row[key])).join(" | ")} |`);
+  }
+  lines.push(
+    "",
+    "### Unsupported capabilities and claims",
+    "",
+    "| Capability | Status | Advertised | Evidence binding | Reason |",
+    "|---|---|---:|---|---|",
+  );
+  for (const row of value.support_claims.unsupported_capabilities) {
+    lines.push(
+      `| ${["capability", "status", "advertised", "evidence_binding_sha256", "reason_code"].map((key) => markdownScalar(row[key])).join(" | ")} |`,
+    );
+  }
+  lines.push(
+    "",
+    "### Subscription OAuth blocker",
+    "",
+    "| Status | Advertised | Release gate | Deferred issue | Worker refresh tokens |",
+    "|---|---:|---:|---:|---|",
+    `| ${["status", "advertised", "release_gate", "deferred_issue", "worker_refresh_tokens"].map((key) => markdownScalar(value.subscription_oauth[key])).join(" | ")} |`,
+    "<!-- END MACHINE-GENERATED SUPPORT CLAIMS -->",
+  );
+  return lines.join("\n");
+}
+
+function generatedSupportSection(document: string): string {
+  const start = "<!-- BEGIN MACHINE-GENERATED SUPPORT CLAIMS -->";
+  const end = "<!-- END MACHINE-GENERATED SUPPORT CLAIMS -->";
+  const startIndex = document.indexOf(start);
+  const endIndex = document.indexOf(end);
+  assert.ok(startIndex >= 0 && endIndex > startIndex);
+  assert.equal(document.indexOf(start, startIndex + 1), -1);
+  assert.equal(document.indexOf(end, endIndex + 1), -1);
+  return document.slice(startIndex, endIndex + end.length);
 }
 
 test("the committed matrix remains a bounded provisional draft with every authority false", () => {
@@ -441,7 +487,6 @@ test("the committed matrix remains a bounded provisional draft with every author
   }
   assert.equal(matrix.draft, true);
   assert.equal(matrix.go_no_go, "not-available");
-  assert.equal(matrixBytes.byteLength <= 262144, true);
   assert.deepEqual(matrix.release_candidate_binding, {
     source_revision: null,
     artifact_root_sha256: null,
@@ -490,9 +535,8 @@ test("criterion omission, duplicate substitution, and mapping drift fail closed"
   ];
   for (const value of hostile) {
     assert.notDeepEqual(inventoryErrors(value), []);
+    assert.equal(accepted(value), false);
   }
-  assert.equal(accepted(hostile[0]), false, "schema count");
-  assert.equal(accepted(hostile[1]), false, "schema exact duplicate");
 });
 
 test("the API-key and unsupported support-claim inventory is explicit and unadvertised", () => {
@@ -526,7 +570,7 @@ test("the API-key and unsupported support-claim inventory is explicit and unadve
   });
 });
 
-test("contradictory provider, OAuth, GA, compliance, daemon, and other-cloud claims are rejected", () => {
+test("machine provider, OAuth, GA, compliance, daemon, and other-cloud contradictions are rejected", () => {
   const hostile = [
     mutation((value) => {
       value.support_claims.posture.general_availability = true;
@@ -568,22 +612,15 @@ test("contradictory provider, OAuth, GA, compliance, daemon, and other-cloud cla
       false,
     );
   }
+});
 
+test("the marked support section is an exact deterministic rendering of authoritative machine claims", () => {
   const document = readFileSync(resolve(root, "docs/operations/stage-5-api-key-release-acceptance-matrix.md"), "utf8");
-  assert.deepEqual(documentationContradictions(document), []);
-  for (const contradiction of [
-    "Subscription OAuth is supported.",
-    "Cogs is GA.",
-    "Cogs is compliance-certified.",
-    "GCP is supported.",
-    "Production daemon is supported.",
-    "User ingress is supported.",
-    "Session sanitizer is supported.",
-    "Apps are supported.",
-    "Indexing and vector search is supported.",
-  ]) {
-    assert.notDeepEqual(documentationContradictions(`${document}\n${contradiction}`), [], contradiction);
-  }
+  assert.equal(generatedSupportSection(document), renderSupportClaims(matrix));
+  assert.match(document, /machine JSON is authoritative for support claims/u);
+  assert.match(document, /does not claim to detect arbitrary natural-language paraphrases elsewhere/u);
+  const altered = document.replace("`anthropic`", "`anthropic-altered`");
+  assert.notEqual(generatedSupportSection(altered), renderSupportClaims(matrix));
 });
 
 test("future principal fields and every required separation remain absent and explicitly blocking", () => {
@@ -630,65 +667,27 @@ test("future principal fields and every required separation remain absent and ex
   );
 });
 
-test("the future evidence reference is digest-only, bounded, categorical, and absent from this draft", () => {
-  assert.deepEqual(matrix.evidence_reference_contract, {
-    digest_only: true,
-    inline_content_allowed: false,
-    diagnostics: "categorical-only",
-    matrix_max_bytes: 262144,
-    max_references: 64,
-    max_total_declared_bytes: 16777216,
-    max_bytes_per_reference: 262144,
-    max_properties_per_reference: 13,
-    max_string_length: 128,
-    references: [],
-  });
-  const reference: Data = {
-    criterion_id: "DESIGN-24.01",
-    artifact_sha256: "a".repeat(64),
-    declared_bytes: 1024,
-    media_type: "application/json",
-    evidence_contract: "future-local-test-reference-v1",
-    profile: "local-static",
-    source_revision: "b".repeat(40),
-    release_candidate_binding_sha256: "c".repeat(64),
-    producer_role: "evidence-producer",
-    producer_principal_id: "urn:cogs:principal:reviewed-1",
-    producer_identity_binding_sha256: "d".repeat(64),
-    result: "pass",
-    diagnostic_code: "none",
-  };
-  assert.equal(validateEvidenceReference(reference), true, JSON.stringify(validateEvidenceReference.errors));
-  assert.equal(validateEvidenceReferenceSet(Array.from({ length: 64 }, () => reference)), true);
-  assert.equal(validateEvidenceReferenceSet(Array.from({ length: 65 }, () => reference)), false);
-  assert.equal(64 * 262144, 16777216, "per-reference and item bounds enforce the declared aggregate ceiling");
-
-  const hostile: Data[] = [];
-  for (const field of ["report", "log", "prompt", "secret", "diagnostics_redacted", "inline_content"]) {
-    hostile.push({ ...reference, [field]: "sensitive-inline-content" });
+test("the provisional draft has no promotable evidence-reference instance or schema surface", () => {
+  assert.equal("evidence_reference_contract" in matrix, false);
+  assert.equal("evidence_reference_contract" in (schema.properties as Data), false);
+  assert.equal("evidenceReference" in schema.$defs, false);
+  assert.equal("evidenceReferenceSet" in schema.$defs, false);
+  for (const field of ["evidence_reference_contract", "evidence_references", "report", "log", "diagnostics"]) {
+    assert.equal(
+      accepted(
+        mutation((value) => {
+          value[field] = [];
+        }),
+      ),
+      false,
+      field,
+    );
   }
-  hostile.push({ ...reference, declared_bytes: 262145 });
-  hostile.push({ ...reference, producer_principal_id: `p${"x".repeat(128)}` });
-  hostile.push({ ...reference, diagnostic_code: "raw diagnostic text" });
-  for (const value of hostile) assert.equal(validateEvidenceReference(value), false);
-
-  assert.equal(
-    accepted(
-      mutation((value) => {
-        value.evidence_reference_contract.references.push(reference);
-      }),
-    ),
-    false,
-    "this draft cannot contain future evidence",
-  );
-  assert.equal(
-    accepted(
-      mutation((value) => {
-        value.evidence_reference_contract.max_total_declared_bytes = Number.MAX_SAFE_INTEGER;
-      }),
-    ),
-    false,
-  );
+  const document = readFileSync(resolve(root, "docs/operations/stage-5-api-key-release-acceptance-matrix.md"), "utf8");
+  assert.match(document, /No evidence-reference surface in this draft/u);
+  assert.match(document, /separate future authority must define a new schema \*\*and reusable semantic validator\*\*/u);
+  assert.match(document, /require exact criterion prefix\/order and unique criterion IDs/u);
+  assert.match(document, /reject duplicate evidence, conflicting results/u);
 });
 
 test("authority promotion, evidence fabrication, unknown fields, and Stage 4 substitution fail closed", () => {
@@ -733,7 +732,7 @@ test("the human draft lists every source criterion and the corrected support, id
     assert.match(document, new RegExp(`\\b${provider}\\b`, "iu"));
   assert.match(document, /35 immutable criterion mappings/u);
   assert.match(document, /principal identifiers and identity bindings are null/u);
-  assert.match(document, /digest-only/u);
+  assert.match(document, /no evidence-reference instance or schema surface exists in this draft/u);
   assert.match(document, /S4-11 is a hard predecessor/u);
   assert.match(document, /#13 remains deferred/u);
   assert.match(document, /All checklist items remain open/u);
