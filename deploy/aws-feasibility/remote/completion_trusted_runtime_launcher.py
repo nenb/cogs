@@ -2637,6 +2637,24 @@ def _settle_rejected_tool_transfer(
     if failures:
         raise RuntimeLauncherCleanupError(primary, failures) from primary
 
+def _child_output_diagnostic(ops: Any, endpoint: socket.socket, output: _FdLease, error: BaseException, deadline: float) -> RuntimeLauncherError | None:
+    # The owner retains the output pipe's write end, so it only reaches EOF once the owner exits.
+    primary, depth = error, 0
+    while isinstance(getattr(primary, "primary", None), BaseException) and depth < 8: primary, depth = primary.primary, depth + 1
+    match = re.fullmatch(r"map-access-(ez0|(?:en|sg)[0-9]{1,3})-[A-Za-z0-9._-]+", str(getattr(primary, "code", "")))
+    if match is None: return None
+    digest, length, pending = hashlib.sha256(), 0, {endpoint.fileno(), output.fd}
+    while pending:
+        ready = select.select(sorted(pending), [], [], max(0.0, deadline - time.monotonic()))[0]
+        _require(bool(ready), "child output diagnostic deadline", "child-out-deadline")
+        for descriptor in ready:
+            part = ops.read(descriptor, min(65536, _MAX_OUTPUT + 1 - length))
+            if not part: pending.discard(descriptor)
+            elif descriptor == output.fd:
+                length += len(part)
+                _require(length <= _MAX_OUTPUT, "child output diagnostic bound", "child-out-bound")
+                digest.update(part)
+    return RuntimeLauncherError("bounded early child output metadata", f"child-out-{match.group(1)}-h{digest.hexdigest()[:12]}-l{length}")
 def _run_tool_with_ops( ops: Any, role: str, report: dict[str, object], descriptors: tuple[int, ...], rows: tuple[_GenerationRow, ...], python_executable: tuple[int, int], ) -> tuple[bytes, dict[str, object]]:
     child_baseline = _parse_children(_proc_bytes("/proc/thread-self/children", 65536, ops))
     process_owner = _ProcessOwner(ops)
@@ -2775,7 +2793,13 @@ def _run_tool_with_ops( ops: Any, role: str, report: dict[str, object], descript
         boundary_packet = _recv_status(parent_status, time.monotonic() + _SETUP_SECONDS, "boundary", 3)
         boundary = boundary_packet["observations"]
         _require(type(boundary) is dict, "boundary observations malformed", "boundary-observations")
-        post_packet = _recv_owner_inspection(parent_status, time.monotonic() + _SETUP_SECONDS, "post-inspection", 4)
+        try:
+            post_packet = _recv_owner_inspection(parent_status, time.monotonic() + _SETUP_SECONDS, "post-inspection", 4)
+        except BaseException as error:
+            diagnostic = _child_output_diagnostic(ops, parent_status, output_read, error, time.monotonic() + _SETUP_SECONDS)
+            if diagnostic is None: raise
+            if isinstance(error, RuntimeLauncherCleanupError): raise RuntimeLauncherCleanupError(diagnostic, list(error.failures)) from error
+            raise diagnostic from error
         _revalidate_inspected_child(child_lease, ops)
         expected_mapping_count = sum(1 for row in rows if row.tool_index == _TOOL_INDEX[role])
         expected_mapping_sha256 = report["tools"][_TOOL_INDEX[role]]["mapping_sha256"]
@@ -4636,7 +4660,7 @@ if __name__ == "__main__":
         os.write(2, b"runtime-launcher-unavailable\n")
         raise SystemExit(78)
     except RuntimeLauncherError as error:
-        code = error.code if type(error.code) is str and re.fullmatch(r"[A-Za-z0-9_.-]{1,40}", error.code) else "invalid-code"
+        code = error.code if type(error.code) is str and re.fullmatch(r"[A-Za-z0-9_.-]{1,62}", error.code) else "invalid-code"
         if isinstance(error, RuntimeLauncherCleanupError):
             nested: BaseException = error
             for _depth in range(8):
@@ -4653,7 +4677,7 @@ if __name__ == "__main__":
                     break
                 primary = next_primary
             safe_primary = _fixed_error_stage(primary)
-            code = f"cleanup-{safe_primary}-{safe_stage}"[:40]
+            code = f"cleanup-{safe_primary}-{safe_stage}"[:62]
         digest = hashlib.sha256(str(error).encode("utf-8", "backslashreplace")).hexdigest()[:16]
         os.write(2, f"runtime-launcher-{code}-{digest}\n".encode())
         raise SystemExit(1)

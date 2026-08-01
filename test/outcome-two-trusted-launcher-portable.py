@@ -2417,6 +2417,41 @@ def map_access_diagnostic_contract(module):
             raise AssertionError(f"malformed child exit metadata accepted: {malformed}")
 
 
+def child_output_diagnostic_contract(module):
+    hostile = b"gzip: stdin: unexpected end of file\n"
+    primary = module.RuntimeLauncherError("hostile secret path/content", "map-access-en104-e1p1b1a1z0o1n0l0d1-ok")
+    def diagnose(error, chunks, now=1.0):
+        queues, reads = {descriptor: list(values) for descriptor, values in chunks.items()}, []
+        def read(descriptor, size):
+            reads.append(size)
+            return (queues.get(descriptor) or [b""]).pop(0)
+        selector = lambda readers, _w, _x, timeout: (list(readers) if timeout > 0 else [], [], [])
+        with patched(module.select, select=selector), patched(module.time, monotonic=lambda: now):
+            return module._child_output_diagnostic(SimpleNamespace(read=read), SimpleNamespace(fileno=lambda: 7), module._FdLease(9, "hostile-child-output"), error, 2.0), reads
+    expected = f"child-out-en104-h{hashlib.sha256(hostile).hexdigest()[:12]}-l{len(hostile)}"
+    result, reads = diagnose(primary, {9: [hostile[:11], hostile[11:]]})
+    if result is None or result.code != expected or len(result.code) > 62:
+        raise AssertionError(f"child output diagnostic drift: {result and result.code}")
+    if any(token in result.code for token in ("stdin", "gzip", "file")) or not all(size <= 65536 for size in reads):
+        raise AssertionError(f"child output diagnostic exposure or unbounded read: {result.code}")
+    nested = module.RuntimeLauncherCleanupError(primary, [module.RuntimeLauncherError("nested", "mount-cleanup")])
+    if diagnose(nested, {9: [hostile]})[0].code != expected:
+        raise AssertionError("child output diagnostic lost nested primary")
+    for code in ("mapping-unknown", "map-access-un0-e1p1b0a0z1o1n1l1d1-ok", "map-access-sc19-e1p1b1a1z0o1n0l0d1-ok"):
+        if diagnose(module.RuntimeLauncherError("secret", code), {9: [hostile]})[0] is not None:
+            raise AssertionError(f"non-early child exit selected output: {code}")
+    for token in ("ez0", "sg9"):
+        selected = diagnose(module.RuntimeLauncherError("secret", f"map-access-{token}-e1p1b1a1z0o1n0l0d1-ok"), {9: []})[0]
+        if selected is None or not selected.code.startswith(f"child-out-{token}-h"):
+            raise AssertionError(f"early child exit class rejected: {token}")
+    for chunks, now, guard in (({9: [b"x" * (module._MAX_OUTPUT + 1)]}, 1.0, "child-out-bound"), ({9: [hostile]}, 5.0, "child-out-deadline")):
+        try:
+            diagnose(primary, chunks, now=now)
+        except module.RuntimeLauncherError as error:
+            if error.code != guard:
+                raise AssertionError(f"child output guard drift: {error.code}") from error
+        else:
+            raise AssertionError(f"child output guard bypassed: {guard}")
 def materialized_mapping_identity_contract(module):
     class Ops:
         @staticmethod
@@ -3089,6 +3124,7 @@ def parent():
     cleanup_error_status_contract(module)
     owner_permission_stage_contracts(module)
     map_access_diagnostic_contract(module)
+    child_output_diagnostic_contract(module)
     materialized_mapping_identity_contract(module)
     namespace_transfer_diagnostic_contracts(module)
     production_operation_contracts(module)
