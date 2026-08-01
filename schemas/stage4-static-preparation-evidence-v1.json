@@ -12,7 +12,7 @@
     "cloud_execution_observed",
     "stage4_exit_satisfied",
     "release_eligible",
-    "static_outcome",
+    "asserted_static_outcome",
     "artifacts",
     "static_checks",
     "future_eks_checks"
@@ -25,7 +25,10 @@
     "cloud_execution_observed": { "const": false },
     "stage4_exit_satisfied": { "const": false },
     "release_eligible": { "const": false },
-    "static_outcome": { "enum": ["conforming", "nonconforming"] },
+    "asserted_static_outcome": {
+      "description": "Aggregate of trusted caller assertions; schema validity does not establish the asserted checks as true.",
+      "enum": ["conforming", "nonconforming"]
+    },
     "artifacts": {
       "type": "object",
       "additionalProperties": false,

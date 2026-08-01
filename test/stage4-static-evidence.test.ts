@@ -36,7 +36,7 @@ type Evidence = {
   cloud_execution_observed: boolean;
   stage4_exit_satisfied: boolean;
   release_eligible: boolean;
-  static_outcome: string;
+  asserted_static_outcome: string;
   artifacts: {
     source_sha256: string;
     chart_sha256: string;
@@ -56,7 +56,7 @@ function bindings(outcomes: readonly StaticCheckOutcome[] = STATIC_CHECK_IDS.map
     values,
     render,
     repeatedRender: render,
-    expectedStaticOutcomes: outcomes,
+    trustedExpectedStaticOutcomes: outcomes,
   } satisfies Stage4StaticValidationBindings;
 }
 
@@ -69,7 +69,7 @@ function evidence(outcomes: readonly StaticCheckOutcome[] = STATIC_CHECK_IDS.map
     cloud_execution_observed: false,
     stage4_exit_satisfied: false,
     release_eligible: false,
-    static_outcome: outcomes.every((outcome) => outcome === "satisfied") ? "conforming" : "nonconforming",
+    asserted_static_outcome: outcomes.every((outcome) => outcome === "satisfied") ? "conforming" : "nonconforming",
     artifacts: {
       source_sha256: stage4StaticSha256(source),
       chart_sha256: stage4StaticSha256(chart),
@@ -101,13 +101,13 @@ function expectInvalid(report: Evidence, expected = bindings()): void {
   assert.equal(validate(report, expected).valid, false);
 }
 
-test("accepts canonical conforming and accurately nonconforming static evidence", () => {
+test("accepts canonical trusted caller assertions and accurately aggregates them", () => {
   const conforming = evidence();
   assert.deepEqual(validate(conforming), { valid: true, errors: [] });
 
   const outcomes = STATIC_CHECK_IDS.map<StaticCheckOutcome>((_, index) => (index === 8 ? "violated" : "satisfied"));
   const nonconforming = evidence(outcomes);
-  assert.equal(nonconforming.static_outcome, "nonconforming");
+  assert.equal(nonconforming.asserted_static_outcome, "nonconforming");
   assert.deepEqual(validate(nonconforming, bindings(outcomes)), { valid: true, errors: [] });
 });
 
@@ -144,15 +144,33 @@ test("fixes every non-authority claim to false and keeps authority domains disjo
   const Ajv2020 = require("ajv/dist/2020.js") as new (options?: Options) => AjvCore;
   const addFormats = require("ajv-formats") as (ajv: AjvCore) => AjvCore;
   const securitySchema = require("../schemas/security-report-v1alpha1.json") as object;
+  const teardownPlanSchema = require("../schemas/stage4-teardown-plan-v1.json") as object;
+  const teardownVerdictSchema = require("../schemas/stage4-teardown-verdict-v1.json") as object;
   const securityAjv = new Ajv2020({ allErrors: true, strict: true, strictRequired: false });
   addFormats(securityAjv);
   const validateSecurity = securityAjv.compile(securitySchema);
-  const securityReport = JSON.parse(
+  const validateTeardownPlan = securityAjv.compile(teardownPlanSchema);
+  const validateTeardownVerdict = securityAjv.compile(teardownVerdictSchema);
+  const validSecurityReport = JSON.parse(
     readFileSync(resolve(import.meta.dirname, "../docs/security-evidence/example-report.json"), "utf8"),
   ) as Record<string, unknown>;
-  securityReport.authority = "static-only-stage4-preparation";
-  assert.equal(validateSecurity(securityReport), false, "security-report authority must reject the static domain");
+  assert.equal(validateSecurity(validSecurityReport), true, "security-report cross-domain fixture must be valid");
+  const wrongAuthoritySecurityReport = structuredClone(validSecurityReport);
+  wrongAuthoritySecurityReport.authority = "static-only-stage4-preparation";
+  assert.equal(
+    validateSecurity(wrongAuthoritySecurityReport),
+    false,
+    "security-report authority must reject the static domain",
+  );
   assert.equal(validateSecurity(evidence()), false, "a static report is never a security report");
+  assert.equal(validateTeardownPlan(evidence()), false, "a valid static report is never a teardown plan");
+  assert.equal(validateTeardownVerdict(evidence()), false, "a valid static report is never a teardown verdict");
+  assert.equal(validateTeardownPlan(validSecurityReport), false, "a valid security report is never a teardown plan");
+  assert.equal(
+    validateTeardownVerdict(validSecurityReport),
+    false,
+    "a valid security report is never a teardown verdict",
+  );
 });
 
 test("requires every static and future EKS row exactly once in fixed order", () => {
@@ -188,14 +206,14 @@ test("rejects forged static outcomes and contradictory aggregate outcomes", () =
   const forgedRow = forged.static_checks[4];
   assert.ok(forgedRow);
   forgedRow.outcome = "satisfied";
-  forged.static_outcome = "conforming";
+  forged.asserted_static_outcome = "conforming";
   const result = validate(forged, bindings(outcomes));
   assert.equal(result.valid, false);
   assert.ok(result.errors.includes("static-check-outcome-mismatch"));
 
   const contradictory = evidence(outcomes);
-  contradictory.static_outcome = "conforming";
-  assert.ok(validate(contradictory, bindings(outcomes)).errors.includes("static-outcome-mismatch"));
+  contradictory.asserted_static_outcome = "conforming";
+  assert.ok(validate(contradictory, bindings(outcomes)).errors.includes("asserted-static-outcome-mismatch"));
 
   const invalidBindings = bindings(["satisfied"]);
   assert.ok(validate(evidence(), invalidBindings).errors.includes("static-outcome-bindings-invalid"));

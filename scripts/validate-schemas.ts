@@ -24,67 +24,6 @@ for (const name of schemaFiles) {
 
 const digest = `sha256:${"a".repeat(64)}`;
 const opaque = "opaque-123";
-const stage4StaticIds = [
-  "static.source.exact-clean-revision",
-  "static.source.complete-bounded-inventory",
-  "static.config.strict-synthetic-values",
-  "static.render.pinned-local-renderer",
-  "static.render.deterministic-bounded-parse",
-  "static.sandbox.explicit-kata-runtimeclass-no-fallback",
-  "static.sandbox.no-trusted-sidecar-shape",
-  "static.identity.sandbox-token-automount-disabled",
-  "static.network.declarative-default-deny-shape",
-  "static.network.no-public-ingress-or-provider-resource",
-  "static.scheduling.trusted-sandbox-separation-shape",
-  "static.storage.workspace-session-role-separation-shape",
-  "static.limits.resource-and-lifecycle-bounds-present",
-  "static.material.no-inline-sensitive-content",
-] as const;
-const stage4FutureEksIds = [
-  "eks.launch-template.nested-virtualization-applied",
-  "eks.node.kvm-modules-device-and-active-acceleration",
-  "eks.runtime.actual-kata-root-distinct-kernel-no-trusted-sidecar",
-  "eks.network.guest-root-cni-bypass-resistance",
-  "eks.identity.no-kubernetes-cloud-openbao-or-ca-credentials",
-  "eks.isolation.api-admin-cross-session-and-storage-denial",
-  "eks.conformance.real-authz-wal-openbao-proxy-otlp-dependencies",
-  "eks.storage.ebs-attach-reattach-and-exclusive-writer",
-  "eks.functional.real-pi-end-to-end",
-  "eks.performance.scheduled-to-ssh-ready-and-first-tool-percentiles",
-  "eks.recovery.stage4-failure-campaign",
-  "eks.lifecycle.repeatable-install-destroy-and-no-runtime-fallback",
-  "eks.teardown.independent-zero-resource-inventory-and-cost",
-] as const;
-const stage4StaticSample = {
-  version: "cogs.stage4-static-preparation-evidence/v1",
-  authority: "static-only-stage4-preparation",
-  qualified: false,
-  campaign_authorized: false,
-  cloud_execution_observed: false,
-  stage4_exit_satisfied: false,
-  release_eligible: false,
-  static_outcome: "conforming",
-  artifacts: {
-    source_sha256: "1".repeat(64),
-    chart_sha256: "2".repeat(64),
-    values_sha256: "3".repeat(64),
-    render_sha256: "4".repeat(64),
-    repeated_render_sha256: "4".repeat(64),
-    deterministic: true,
-  },
-  static_checks: stage4StaticIds.map((id) => ({
-    id,
-    applicability: "static-shape-only",
-    execution: "executed-local-static",
-    outcome: "satisfied",
-  })),
-  future_eks_checks: stage4FutureEksIds.map((id) => ({
-    id,
-    applicability: "required-for-future-exact-run-eks",
-    execution: "unexecuted",
-    outcome: "not-observed",
-  })),
-};
 const integration = {
   version: "cogs.integration/v1alpha1",
   id: "github-clone",
@@ -216,7 +155,6 @@ const validSamples: Record<string, unknown> = {
   "security-report-v1alpha1.json": JSON.parse(
     readFileSync(resolve(root, "docs/security-evidence/example-report.json"), "utf8"),
   ),
-  "stage4-static-preparation-evidence-v1.json": stage4StaticSample,
 };
 
 function canonical(value: unknown): string {
@@ -409,30 +347,6 @@ const reportValidator = validatorFor("security-report-v1alpha1.json");
 const invalidAuthority = structuredClone(validSamples["security-report-v1alpha1.json"]) as Record<string, unknown>;
 invalidAuthority.authority = "authoritative-local";
 assert.equal(reportValidator(invalidAuthority), false, "insecure profiles cannot claim authoritative evidence");
-const staticAuthorityInSecurityReport = structuredClone(validSamples["security-report-v1alpha1.json"]) as Record<
-  string,
-  unknown
->;
-staticAuthorityInSecurityReport.authority = "static-only-stage4-preparation";
-assert.equal(reportValidator(staticAuthorityInSecurityReport), false, "security reports reject static-only authority");
-
-const stage4StaticValidator = validatorFor("stage4-static-preparation-evidence-v1.json");
-for (const authority of [
-  "functional-only",
-  "authoritative-local",
-  "authoritative-production-profile",
-  "aws-feasibility",
-  "exact-run-native-qualification",
-]) {
-  const mutation = structuredClone(stage4StaticSample);
-  mutation.authority = authority;
-  assert.equal(stage4StaticValidator(mutation), false, `static evidence rejects ${authority}`);
-}
-const staticUnknownNested = structuredClone(stage4StaticSample) as typeof stage4StaticSample & {
-  artifacts: typeof stage4StaticSample.artifacts & { metadata?: object };
-};
-staticUnknownNested.artifacts.metadata = {};
-assert.equal(stage4StaticValidator(staticUnknownNested), false, "static evidence rejects nested unknown fields");
 
 assert.deepEqual(
   validateSecurityResultSemantics({ result: "pass", release_eligible: true, dependency_modes: { audit: "stubbed" } }),

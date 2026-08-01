@@ -61,8 +61,8 @@ export interface Stage4StaticValidationBindings {
   readonly render: Uint8Array;
   /** Exact bytes from an independent repeat of the same local static render. */
   readonly repeatedRender: Uint8Array;
-  /** Independently derived outcomes in STATIC_CHECK_IDS order. */
-  readonly expectedStaticOutcomes: readonly StaticCheckOutcome[];
+  /** Trusted caller assertions in STATIC_CHECK_IDS order; this validator does not derive or authenticate them. */
+  readonly trustedExpectedStaticOutcomes: readonly StaticCheckOutcome[];
 }
 
 export type Stage4StaticValidationError =
@@ -83,7 +83,7 @@ export type Stage4StaticValidationError =
   | "repeated-render-digest-mismatch"
   | "static-outcome-bindings-invalid"
   | "static-check-outcome-mismatch"
-  | "static-outcome-mismatch";
+  | "asserted-static-outcome-mismatch";
 
 export interface Stage4StaticValidationResult {
   readonly valid: boolean;
@@ -91,7 +91,7 @@ export interface Stage4StaticValidationResult {
 }
 
 type Stage4StaticEvidence = {
-  static_outcome: "conforming" | "nonconforming";
+  asserted_static_outcome: "conforming" | "nonconforming";
   artifacts: {
     source_sha256: string;
     chart_sha256: string;
@@ -152,8 +152,9 @@ function artifactInBounds(value: Uint8Array, maximum: number): boolean {
 }
 
 /**
- * Validates only the bounded static evidence contract against caller-supplied exact bytes and independently derived rows.
- * It performs no I/O, process execution, environment lookup, provider access, or authority promotion.
+ * Validates only the bounded static evidence contract against caller-supplied exact bytes and trusted caller assertions.
+ * It does not derive or authenticate static outcomes and performs no I/O, process execution, environment lookup,
+ * provider access, or authority promotion.
  */
 export function validateStage4StaticEvidence(
   evidenceBytes: Uint8Array,
@@ -179,8 +180,8 @@ export function validateStage4StaticEvidence(
   }
 
   const bindingsValid =
-    bindings.expectedStaticOutcomes.length === STATIC_CHECK_IDS.length &&
-    bindings.expectedStaticOutcomes.every((outcome) => outcome === "satisfied" || outcome === "violated");
+    bindings.trustedExpectedStaticOutcomes.length === STATIC_CHECK_IDS.length &&
+    bindings.trustedExpectedStaticOutcomes.every((outcome) => outcome === "satisfied" || outcome === "violated");
   if (!bindingsValid) add("static-outcome-bindings-invalid");
   if (evidenceBytes.byteLength > STAGE4_STATIC_BYTE_LIMITS.evidence) add("evidence-too-large");
   if (
@@ -226,14 +227,14 @@ export function validateStage4StaticEvidence(
 
   if (bindingsValid) {
     const outcomesMatch = parsed.static_checks.every(
-      (row, index) => row.outcome === bindings.expectedStaticOutcomes[index],
+      (row, index) => row.outcome === bindings.trustedExpectedStaticOutcomes[index],
     );
     if (!outcomesMatch) add("static-check-outcome-mismatch");
   }
   const derivedOutcome = parsed.static_checks.every((row) => row.outcome === "satisfied")
     ? "conforming"
     : "nonconforming";
-  if (parsed.static_outcome !== derivedOutcome) add("static-outcome-mismatch");
+  if (parsed.asserted_static_outcome !== derivedOutcome) add("asserted-static-outcome-mismatch");
 
   return { valid: errors.length === 0, errors };
 }
