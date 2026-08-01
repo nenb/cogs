@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.dev/schemas/stage4-teardown-verdict-v1.json",
+  "title": "Cogs Stage 4 teardown evidence-order verdict v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "accepted_phase_count",
+    "next_phase",
+    "profile_sha256",
+    "reason_code",
+    "source_sha256",
+    "status",
+    "version"
+  ],
+  "properties": {
+    "accepted_phase_count": { "type": "integer", "minimum": 0, "maximum": 8 },
+    "next_phase": {
+      "oneOf": [{ "$ref": "#/$defs/phase" }, { "type": "null" }]
+    },
+    "profile_sha256": {
+      "oneOf": [{ "$ref": "#/$defs/sha256" }, { "type": "null" }]
+    },
+    "reason_code": { "$ref": "#/$defs/reasonCode" },
+    "source_sha256": {
+      "oneOf": [{ "$ref": "#/$defs/sha256" }, { "type": "null" }]
+    },
+    "status": { "enum": ["awaiting-evidence", "preserve-uncertain", "zero-verified"] },
+    "version": { "const": "cogs.stage4-teardown-verdict/v1" }
+  },
+  "oneOf": [
+    {
+      "required": ["accepted_phase_count", "next_phase", "profile_sha256", "reason_code", "source_sha256", "status"],
+      "properties": {
+        "accepted_phase_count": { "type": "integer", "minimum": 0, "maximum": 7 },
+        "next_phase": { "$ref": "#/$defs/phase" },
+        "profile_sha256": { "$ref": "#/$defs/sha256" },
+        "reason_code": { "const": "STAGE4_AWAITING_EVIDENCE" },
+        "source_sha256": { "$ref": "#/$defs/sha256" },
+        "status": { "const": "awaiting-evidence" }
+      }
+    },
+    {
+      "required": ["accepted_phase_count", "next_phase", "reason_code", "status"],
+      "properties": {
+        "accepted_phase_count": { "type": "integer", "minimum": 0, "maximum": 8 },
+        "next_phase": { "type": "null" },
+        "reason_code": {
+          "enum": [
+            "STAGE4_UNCERTAIN_EVIDENCE",
+            "STAGE4_INVALID_VERSION",
+            "STAGE4_INVALID_SHAPE",
+            "STAGE4_INVALID_PHASE_ORDER",
+            "STAGE4_INVALID_PRODUCER_CLASS",
+            "STAGE4_INVALID_EVIDENCE",
+            "STAGE4_EVIDENCE_REPLAY",
+            "STAGE4_EVIDENCE_OUT_OF_ORDER",
+            "STAGE4_FINAL_OBSERVER_NOT_INDEPENDENT"
+          ]
+        },
+        "status": { "const": "preserve-uncertain" }
+      }
+    },
+    {
+      "required": ["accepted_phase_count", "next_phase", "profile_sha256", "reason_code", "source_sha256", "status"],
+      "properties": {
+        "accepted_phase_count": { "const": 8 },
+        "next_phase": { "type": "null" },
+        "profile_sha256": { "$ref": "#/$defs/sha256" },
+        "reason_code": { "const": "STAGE4_ZERO_VERIFIED" },
+        "source_sha256": { "$ref": "#/$defs/sha256" },
+        "status": { "const": "zero-verified" }
+      }
+    }
+  ],
+  "$defs": {
+    "phase": {
+      "enum": [
+        "freeze-reconcilers",
+        "close-admission",
+        "revoke-credentials",
+        "revoke-readiness",
+        "remove-session-workloads",
+        "verify-kubernetes-zero",
+        "remove-cluster-infrastructure",
+        "verify-independent-cloud-zero"
+      ]
+    },
+    "reasonCode": {
+      "enum": [
+        "STAGE4_AWAITING_EVIDENCE",
+        "STAGE4_UNCERTAIN_EVIDENCE",
+        "STAGE4_ZERO_VERIFIED",
+        "STAGE4_INVALID_VERSION",
+        "STAGE4_INVALID_SHAPE",
+        "STAGE4_INVALID_PHASE_ORDER",
+        "STAGE4_INVALID_PRODUCER_CLASS",
+        "STAGE4_INVALID_EVIDENCE",
+        "STAGE4_EVIDENCE_REPLAY",
+        "STAGE4_EVIDENCE_OUT_OF_ORDER",
+        "STAGE4_FINAL_OBSERVER_NOT_INDEPENDENT"
+      ]
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  }
+}

@@ -1,0 +1,134 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.dev/schemas/stage4-teardown-plan-v1.json",
+  "title": "Cogs Stage 4 teardown evidence-order plan v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["phases", "profile_sha256", "source_sha256", "version"],
+  "properties": {
+    "phases": {
+      "type": "array",
+      "minItems": 8,
+      "maxItems": 8,
+      "prefixItems": [
+        {
+          "$ref": "#/$defs/phaseRow",
+          "type": "object",
+          "properties": {
+            "phase": { "const": "freeze-reconcilers" },
+            "producer_class": { "const": "control-observer" }
+          }
+        },
+        {
+          "$ref": "#/$defs/phaseRow",
+          "type": "object",
+          "properties": {
+            "phase": { "const": "close-admission" },
+            "producer_class": { "const": "admission-observer" }
+          }
+        },
+        {
+          "$ref": "#/$defs/phaseRow",
+          "type": "object",
+          "properties": {
+            "phase": { "const": "revoke-credentials" },
+            "producer_class": { "const": "credential-observer" }
+          }
+        },
+        {
+          "$ref": "#/$defs/phaseRow",
+          "type": "object",
+          "properties": {
+            "phase": { "const": "revoke-readiness" },
+            "producer_class": { "const": "readiness-observer" }
+          }
+        },
+        {
+          "$ref": "#/$defs/phaseRow",
+          "type": "object",
+          "properties": {
+            "phase": { "const": "remove-session-workloads" },
+            "producer_class": { "const": "workload-mutator" }
+          }
+        },
+        {
+          "$ref": "#/$defs/phaseRow",
+          "type": "object",
+          "properties": {
+            "phase": { "const": "verify-kubernetes-zero" },
+            "producer_class": { "const": "kubernetes-zero-observer" }
+          }
+        },
+        {
+          "$ref": "#/$defs/phaseRow",
+          "type": "object",
+          "properties": {
+            "phase": { "const": "remove-cluster-infrastructure" },
+            "producer_class": { "const": "infrastructure-mutator" }
+          }
+        },
+        {
+          "$ref": "#/$defs/phaseRow",
+          "type": "object",
+          "properties": {
+            "phase": { "const": "verify-independent-cloud-zero" },
+            "producer_class": { "const": "independent-cloud-zero-observer" }
+          }
+        }
+      ],
+      "items": false
+    },
+    "profile_sha256": { "$ref": "#/$defs/sha256" },
+    "source_sha256": { "$ref": "#/$defs/sha256" },
+    "version": { "const": "cogs.stage4-teardown-plan/v1" }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "phaseRow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["phase", "producer_class", "state"],
+      "properties": {
+        "evidence_sha256": { "$ref": "#/$defs/sha256" },
+        "phase": {
+          "enum": [
+            "freeze-reconcilers",
+            "close-admission",
+            "revoke-credentials",
+            "revoke-readiness",
+            "remove-session-workloads",
+            "verify-kubernetes-zero",
+            "remove-cluster-infrastructure",
+            "verify-independent-cloud-zero"
+          ]
+        },
+        "producer_class": {
+          "enum": [
+            "control-observer",
+            "admission-observer",
+            "credential-observer",
+            "readiness-observer",
+            "workload-mutator",
+            "kubernetes-zero-observer",
+            "infrastructure-mutator",
+            "independent-cloud-zero-observer"
+          ]
+        },
+        "state": { "enum": ["pending", "observed", "uncertain"] }
+      },
+      "oneOf": [
+        {
+          "required": ["evidence_sha256"],
+          "properties": { "state": { "const": "observed" } }
+        },
+        {
+          "not": { "required": ["evidence_sha256"] },
+          "properties": { "state": { "enum": ["pending", "uncertain"] } }
+        }
+      ]
+    }
+  }
+}
