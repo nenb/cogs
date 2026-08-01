@@ -133,7 +133,32 @@ function teardownVerdictSample(): JsonObject {
   };
 }
 
+function nicContractSample(): JsonObject {
+  return JSON.parse(
+    readFileSync(resolve(import.meta.dirname, "../deploy/nic/stage4-sandbox-node-group-contract.json"), "utf8"),
+  ) as JsonObject;
+}
+
+function nicVerdictSample(): JsonObject {
+  return {
+    version: "cogs.stage4-nic-sandbox-node-group-verdict/v1",
+    authority: "local-static-nic-contract-classifier",
+    campaign_authorized: false,
+    cloud_execution_observed: false,
+    stage4_exit_satisfied: false,
+    release_eligible: false,
+    contract_sha256: sha("c"),
+    nic_source_pin_resolved: true,
+    node_image_pin_resolved: false,
+    launch_template_capability_resolved: false,
+    status: "blocked-missing-capability",
+    reason_code: "STAGE4_NIC_LAUNCH_TEMPLATE_CAPABILITY_MISSING",
+  };
+}
+
 const STAGE4_SCHEMA_REGISTRY = [
+  { file: "stage4-nic-sandbox-node-group-contract-v1.json", sample: nicContractSample },
+  { file: "stage4-nic-sandbox-node-group-verdict-v1.json", sample: nicVerdictSample },
   { file: "stage4-static-preparation-evidence-v1.json", sample: staticSample },
   { file: "stage4-teardown-plan-v1.json", sample: teardownPlanSample },
   { file: "stage4-teardown-verdict-v1.json", sample: teardownVerdictSample },
@@ -159,10 +184,16 @@ function assertRejected(validator: ValidateFunction, sample: unknown, message: s
   assert.equal(validator(sample), false, message);
 }
 
-test("the bounded Stage 4 registry compiles its three strict positive samples", () => {
+test("the bounded Stage 4 registry compiles its five strict positive samples", () => {
   assert.deepEqual(
     STAGE4_SCHEMA_REGISTRY.map(({ file }) => file),
-    ["stage4-static-preparation-evidence-v1.json", "stage4-teardown-plan-v1.json", "stage4-teardown-verdict-v1.json"],
+    [
+      "stage4-nic-sandbox-node-group-contract-v1.json",
+      "stage4-nic-sandbox-node-group-verdict-v1.json",
+      "stage4-static-preparation-evidence-v1.json",
+      "stage4-teardown-plan-v1.json",
+      "stage4-teardown-verdict-v1.json",
+    ],
   );
 
   const validators = compileRegistry();
@@ -186,6 +217,14 @@ test("every Stage 4 schema rejects unknown root fields and representative nested
     validatorFor(validators, "stage4-static-preparation-evidence-v1.json"),
     staticMutation,
     "static evidence accepted an unknown artifact field",
+  );
+
+  const nicMutation = nicContractSample();
+  ((nicMutation.sandbox_node_group as JsonObject).runtime as JsonObject).unreviewed = true;
+  assertRejected(
+    validatorFor(validators, "stage4-nic-sandbox-node-group-contract-v1.json"),
+    nicMutation,
+    "NIC contract accepted an unknown runtime field",
   );
 
   const planMutation = teardownPlanSample();

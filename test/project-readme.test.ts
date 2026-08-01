@@ -31,6 +31,9 @@ test("README preserves the cloud-entry gate and disclaims current deployment aut
   assert.match(text, /Standalone EC2 evidence is not EKS, CNI, release, or production evidence/);
   assert.doesNotMatch(text, /Stage 0 feasibility work/);
   assert.doesNotMatch(text, /AWS feasibility work is completed|AWS completion/i);
+  assert.match(text, /pinned to NIC `v0\.11\.0`/);
+  assert.match(text, /lacks the required custom launch-template ID\/version and nested-virtualization CPU option/);
+  assert.match(text, /EKS node-image pin also remains unresolved/);
 });
 
 test("the linked implementation plan keeps Stages 4 and 5 API-key-only", () => {

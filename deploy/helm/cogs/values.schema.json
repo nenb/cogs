@@ -151,8 +151,16 @@
                   "sandbox": {
                     "properties": {
                       "nodeSelector": {
-                        "required": ["cogs.dev/node-domain"],
-                        "properties": { "cogs.dev/node-domain": { "const": "sandbox-kata" } }
+                        "required": [
+                          "cogs.dev/node-domain",
+                          "cogs.dev/nested-virtualization",
+                          "cogs.dev/sandbox-runtime"
+                        ],
+                        "properties": {
+                          "cogs.dev/node-domain": { "const": "sandbox-kata" },
+                          "cogs.dev/nested-virtualization": { "const": "enabled" },
+                          "cogs.dev/sandbox-runtime": { "const": "kata-qemu-kvm" }
+                        }
                       },
                       "tolerations": {
                         "const": [

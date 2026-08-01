@@ -1050,19 +1050,21 @@ The EKS control plane incurs cost even with zero nodes; destroy the cluster betw
 
 ### 32.1 Dedicated sandbox node group
 
-Add or configure through NIC:
+The local semantic source contract is [`deploy/nic/stage4-sandbox-node-group-contract.json`](deploy/nic/stage4-sandbox-node-group-contract.json), documented in [`docs/operations/stage-4-nic-node-group-contract.md`](docs/operations/stage-4-nic-node-group-contract.md). It pins `nebari-dev/nebari-infrastructure-core` `v0.11.0` at commit `28221c652c56bb8d48a92538c01503a82f2f9321`, tree `4dfb0333e5d91003e69881ca1dcf66e1ea9ff6c2`, its relevant file digests, and its `nebari-dev/eks-cluster/aws` `0.7.0` module closure. Authenticated source review found that this exact NIC release maps instance/min/max, AMI type, Spot, disk, labels, and taints to managed node groups but does **not** expose a custom launch-template ID/version or `CpuOptions.NestedVirtualization`; the underlying module auto-creates only its fixed launch-template shape. The pure classifier therefore returns `blocked-missing-capability` even if a node image is later pinned. It also rejects Spot, bare metal, scaling expansion, implicit/latest/default launch-template versions, label/taint drift, trusted/sandbox overlap, runc, and TCG. The EKS node-image pin remains independently unresolved.
 
-- validated nested-virtualization instance type and target region;
-- a custom EC2 launch template with `CpuOptions.NestedVirtualization=enabled`;
-- verification that NIC's node-group abstraction can express and preserve the launch-template ID/version, extending NIC if necessary;
-- an EKS node AMI with required KVM modules loaded/available;
-- labels and taints dedicated to Kata sandboxes;
-- KVM exposure required by the chosen Kata deployment;
-- minimum/desired/maximum capacity suitable for the campaign;
-- no trusted platform workload scheduling on sandbox nodes;
-- pinned node image/runtime versions.
+NIC must be extended and repinned before it can express this required contract:
 
-Keep trusted Cogs/proxy resources on ordinary trusted nodes.
+- `c8i-flex.large` in `us-east-1`, CPU-only `x86_64`, On-Demand, non-metal, bounded at minimum `0` and maximum `1` without inventing an unsupported desired-size input;
+- required node labels `cogs.dev/node-domain=sandbox-kata`, `cogs.dev/nested-virtualization=enabled`, and `cogs.dev/sandbox-runtime=kata-qemu-kvm`;
+- the exact infrastructure taint `cogs.dev/sandbox=kata:NO_SCHEDULE` and matching Kubernetes `NoSchedule` toleration;
+- a custom EC2 launch template with `CpuOptions.NestedVirtualization=enabled`, one core, and two threads per core;
+- explicit custom launch-template ID and positive-integer version inputs, with `$Latest`, `$Default`, implicit versions, and reconciliation drift forbidden;
+- verification that NIC's pinned node-group abstraction can express and preserve the launch-template ID/version, extending NIC if necessary;
+- an immutable EKS node AMI/release/kernel pin with required KVM modules loaded/available;
+- Kata `3.32.0` archive SHA-256 `1449ecea50bd91fa73a94648db195d18950fe869ba4b1f12d05f55f1fa7c1b01`, containerd `2.2.1`, QEMU `8.2.2`, `io.containerd.kata.v2`, and KVM-only acceleration;
+- no trusted platform workload scheduling on sandbox nodes and no runc/TCG fallback.
+
+Keep trusted Cogs/proxy resources on ordinary nodes selected by `cogs.dev/node-domain=trusted`, with no sandbox toleration. The v1 classifier has no ready state; a capable future NIC revision requires a new immutable closure and contract review. Any future local acceptance still grants no campaign or cloud authority, and actual source mapping, launch-template preservation, AMI/KVM state, runtime identity, and scheduler behavior require separately authorized future evidence.
 
 ### 32.2 Kata installation
 

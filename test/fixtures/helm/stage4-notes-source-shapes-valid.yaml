@@ -18,6 +18,8 @@ stage4Preparation:
     sandbox:
       nodeSelector:
         cogs.dev/node-domain: sandbox-kata
+        cogs.dev/nested-virtualization: enabled
+        cogs.dev/sandbox-runtime: kata-qemu-kvm
       tolerations:
         - key: cogs.dev/sandbox
           operator: Equal

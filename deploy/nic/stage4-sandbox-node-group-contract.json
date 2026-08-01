@@ -1,0 +1,142 @@
+{
+  "version": "cogs.stage4-nic-sandbox-node-group-contract/v1",
+  "authority": "local-static-source-contract",
+  "nic_source": {
+    "identity": "nebari-infrastructure-core",
+    "repository": "https://github.com/nebari-dev/nebari-infrastructure-core.git",
+    "release_tag": "v0.11.0",
+    "commit_sha": "28221c652c56bb8d48a92538c01503a82f2f9321",
+    "tree_git_sha": "4dfb0333e5d91003e69881ca1dcf66e1ea9ff6c2",
+    "files": [
+      {
+        "path": "pkg/providers/cluster/aws/config.go",
+        "git_blob_sha": "b607ccd28fea4fa9dbb1b5f2cab8035c88eb8ab8",
+        "content_sha256": "9926e0de378b488778e4975324a76c7d3ab3aaa5b4c661e81211a1efe382e920"
+      },
+      {
+        "path": "pkg/providers/cluster/aws/templates/main.tf",
+        "git_blob_sha": "719efb5d85b8247968f6965acd3911b3a0a93337",
+        "content_sha256": "eca59352b11fbcb48085a9276e5b01682256ce17f55fa7f4a23c0bcccfa443f4"
+      },
+      {
+        "path": "pkg/providers/cluster/aws/tofu.go",
+        "git_blob_sha": null,
+        "content_sha256": "39e87c14203fa602568bcff4e64126271073484e531c21a83028eb104a9a506b"
+      }
+    ],
+    "eks_module": {
+      "registry_source": "nebari-dev/eks-cluster/aws",
+      "version": "0.7.0",
+      "commit_sha": "5d4cb31f07fda5c010b5be580258d32f6db75828",
+      "tree_git_sha": "240dd73f709f67706d60b35d3256661848736ad2",
+      "files": [
+        {
+          "path": "variables.tf",
+          "content_sha256": "20a17ac8d6a76ebaf5708ac229a062697d277e283561e070f1aac378603e1d67"
+        },
+        {
+          "path": "locals.tf",
+          "content_sha256": "e21403a5cef4faf515c6179b221e690553f6ad22d012befb57e529b3ccceec5e"
+        },
+        {
+          "path": "main.tf",
+          "content_sha256": "e7f3107a21e597da972220993f25f38527af74999b6e44f370317938f7d732a0"
+        }
+      ]
+    }
+  },
+  "nic_capability_assessment": {
+    "source_revision_verified": true,
+    "managed_node_group_mapping_verified": true,
+    "supported_inputs": ["instance_type", "min_size", "max_size", "ami_type", "spot", "disk", "labels", "taints"],
+    "custom_launch_template_id": false,
+    "custom_launch_template_version": false,
+    "cpu_options_nested_virtualization": false,
+    "underlying_launch_template_mode": "module-auto-created-fixed-shape",
+    "outcome": "blocking-capability-gap",
+    "reason_code": "NIC_CUSTOM_LAUNCH_TEMPLATE_AND_CPU_OPTIONS_UNSUPPORTED"
+  },
+  "node_image": {
+    "pin_state": "unresolved",
+    "ami_id": null,
+    "release": null,
+    "kernel_release": null,
+    "reason_code": "EKS_NODE_IMAGE_PIN_NOT_RECORDED"
+  },
+  "sandbox_node_group": {
+    "provider": "aws",
+    "region": "us-east-1",
+    "name": "cogs-stage4-sandbox-kata",
+    "capacity_type": "ON_DEMAND",
+    "instance_type": "c8i-flex.large",
+    "architecture": "x86_64",
+    "bare_metal": false,
+    "scaling": {
+      "min": 0,
+      "max": 1
+    },
+    "required_labels": {
+      "cogs.dev/node-domain": "sandbox-kata",
+      "cogs.dev/nested-virtualization": "enabled",
+      "cogs.dev/sandbox-runtime": "kata-qemu-kvm"
+    },
+    "required_taints": [
+      {
+        "key": "cogs.dev/sandbox",
+        "value": "kata",
+        "effect": "NO_SCHEDULE"
+      }
+    ],
+    "launch_template": {
+      "source": "custom-external",
+      "id_input": "sandbox_launch_template_id",
+      "version_input": "sandbox_launch_template_version",
+      "version_selection": "explicit-positive-integer",
+      "allow_default_version": false,
+      "allow_latest_version": false,
+      "preserve_id_and_version": true,
+      "reject_reconcile_drift": true,
+      "cpu_options": {
+        "nested_virtualization": "enabled",
+        "core_count": 1,
+        "threads_per_core": 2
+      }
+    },
+    "runtime": {
+      "runtime_class_name": "kata-qemu-cogs",
+      "handler": "kata-qemu",
+      "cri_runtime_type": "io.containerd.kata.v2",
+      "kata_version": "3.32.0",
+      "kata_archive_sha256": "1449ecea50bd91fa73a94648db195d18950fe869ba4b1f12d05f55f1fa7c1b01",
+      "containerd_version": "2.2.1",
+      "qemu_version": "8.2.2",
+      "accelerator": "kvm",
+      "allow_tcg_fallback": false,
+      "allow_runc_fallback": false
+    }
+  },
+  "scheduling": {
+    "trusted": {
+      "required_node_selector": {
+        "cogs.dev/node-domain": "trusted"
+      },
+      "tolerations": []
+    },
+    "sandbox": {
+      "required_node_selector": {
+        "cogs.dev/node-domain": "sandbox-kata",
+        "cogs.dev/nested-virtualization": "enabled",
+        "cogs.dev/sandbox-runtime": "kata-qemu-kvm"
+      },
+      "tolerations": [
+        {
+          "key": "cogs.dev/sandbox",
+          "operator": "Equal",
+          "value": "kata",
+          "effect": "NoSchedule"
+        }
+      ]
+    },
+    "domains_disjoint": true
+  }
+}

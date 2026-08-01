@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.dev/schemas/stage4-nic-sandbox-node-group-verdict-v1.json",
+  "title": "Cogs Stage 4 NIC sandbox node-group local static verdict v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "authority",
+    "campaign_authorized",
+    "cloud_execution_observed",
+    "stage4_exit_satisfied",
+    "release_eligible",
+    "contract_sha256",
+    "nic_source_pin_resolved",
+    "node_image_pin_resolved",
+    "launch_template_capability_resolved",
+    "status",
+    "reason_code"
+  ],
+  "properties": {
+    "version": { "const": "cogs.stage4-nic-sandbox-node-group-verdict/v1" },
+    "authority": { "const": "local-static-nic-contract-classifier" },
+    "campaign_authorized": { "const": false },
+    "cloud_execution_observed": { "const": false },
+    "stage4_exit_satisfied": { "const": false },
+    "release_eligible": { "const": false },
+    "contract_sha256": {
+      "oneOf": [{ "$ref": "#/$defs/sha256" }, { "type": "null" }]
+    },
+    "nic_source_pin_resolved": { "type": "boolean" },
+    "node_image_pin_resolved": { "type": "boolean" },
+    "launch_template_capability_resolved": { "const": false },
+    "status": { "enum": ["blocked-missing-capability", "reject-drift"] },
+    "reason_code": {
+      "enum": [
+        "STAGE4_NIC_LAUNCH_TEMPLATE_CAPABILITY_MISSING",
+        "STAGE4_NIC_INVALID_SHAPE",
+        "STAGE4_NIC_INVALID_VERSION",
+        "STAGE4_NIC_SOURCE_DRIFT",
+        "STAGE4_NODE_IMAGE_DRIFT",
+        "STAGE4_NODE_GROUP_DRIFT",
+        "STAGE4_SCHEDULING_DRIFT"
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "oneOf": [
+        {
+          "properties": {
+            "contract_sha256": { "$ref": "#/$defs/sha256" },
+            "nic_source_pin_resolved": { "const": true },
+            "status": { "const": "blocked-missing-capability" },
+            "reason_code": { "const": "STAGE4_NIC_LAUNCH_TEMPLATE_CAPABILITY_MISSING" }
+          }
+        },
+        {
+          "properties": {
+            "status": { "const": "reject-drift" },
+            "reason_code": {
+              "enum": [
+                "STAGE4_NIC_INVALID_SHAPE",
+                "STAGE4_NIC_INVALID_VERSION",
+                "STAGE4_NIC_SOURCE_DRIFT",
+                "STAGE4_NODE_IMAGE_DRIFT",
+                "STAGE4_NODE_GROUP_DRIFT",
+                "STAGE4_SCHEDULING_DRIFT"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+  }
+}

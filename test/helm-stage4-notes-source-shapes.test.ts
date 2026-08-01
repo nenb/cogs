@@ -353,7 +353,17 @@ test("immutable configuration and Service expose references and no secret or CA 
   assert.equal(contract.data?.proxyImage, envoyPin);
   assert.equal(contract.data?.ephemeralProxyCapability, "ABSENT_FUTURE_TRUSTED_LAUNCHER_ONLY");
   assert.equal(contract.data?.publicEgressCaConfigMapReference, "synthetic-public-egress-ca");
-  for (const check of ["RuntimeClass", "KVM", "CNI", "CSI", "OpenBao", "image availability", "per-session", "EKS"]) {
+  for (const check of [
+    "RuntimeClass",
+    "KVM",
+    "CNI",
+    "CSI",
+    "OpenBao",
+    "image availability",
+    "per-session",
+    "pinned NIC v0.11.0 lacks",
+    "EKS",
+  ]) {
     assert.match(contract.data?.unresolvedChecks ?? "", escapePattern(check));
   }
   const service = byName(objects, "stage4-cogs-proxy");
@@ -496,7 +506,11 @@ test("trusted and sandbox PodTemplate source shapes preserve placement, security
   assert.equal(sandbox.terminationGracePeriodSeconds, 30);
   assert.equal(sandbox.runtimeClassName, values.runtimeClassName);
   assert.deepEqual(sandbox.nodeSelector, values.placement.sandbox.nodeSelector);
-  assert.equal(sandbox.nodeSelector["cogs.dev/node-domain"], "sandbox-kata");
+  assert.deepEqual(sandbox.nodeSelector, {
+    "cogs.dev/node-domain": "sandbox-kata",
+    "cogs.dev/nested-virtualization": "enabled",
+    "cogs.dev/sandbox-runtime": "kata-qemu-kvm",
+  });
   assert.deepEqual(sandbox.tolerations, [
     { key: "cogs.dev/sandbox", operator: "Equal", value: "kata", effect: "NoSchedule" },
   ]);

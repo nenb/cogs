@@ -55,5 +55,6 @@ data:
     image availability, signatures, and runtime identity
     per-session SSH and proxy capability issuance and source binding
     proxy upstream egress, immutable route materialization, and revocation
+    pinned NIC v0.11.0 lacks custom launch-template ID/version and CpuOptions.NestedVirtualization inputs
     EKS launch-template, nested-virtualization, recovery, performance, and cleanup evidence
 {{- end -}}

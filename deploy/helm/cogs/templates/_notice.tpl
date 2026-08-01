@@ -60,11 +60,13 @@ dev.cogs/production-ready: "false"
 {{- fail "stage4Preparation.images.sandbox must be digest pinned" -}}
 {{- end -}}
 
-{{- if ne (index $v.placement.trusted.nodeSelector "cogs.dev/node-domain") "trusted" -}}
-{{- fail "stage4Preparation.placement.trusted.nodeSelector must include cogs.dev/node-domain=trusted" -}}
+{{- $trustedSelector := dict "cogs.dev/node-domain" "trusted" -}}
+{{- if not (deepEqual $v.placement.trusted.nodeSelector $trustedSelector) -}}
+{{- fail "stage4Preparation.placement.trusted.nodeSelector must be exactly cogs.dev/node-domain=trusted" -}}
 {{- end -}}
-{{- if ne (index $v.placement.sandbox.nodeSelector "cogs.dev/node-domain") "sandbox-kata" -}}
-{{- fail "stage4Preparation.placement.sandbox.nodeSelector must include cogs.dev/node-domain=sandbox-kata" -}}
+{{- $sandboxSelector := dict "cogs.dev/node-domain" "sandbox-kata" "cogs.dev/nested-virtualization" "enabled" "cogs.dev/sandbox-runtime" "kata-qemu-kvm" -}}
+{{- if not (deepEqual $v.placement.sandbox.nodeSelector $sandboxSelector) -}}
+{{- fail "stage4Preparation.placement.sandbox.nodeSelector must equal the three-label Kata/KVM contract" -}}
 {{- end -}}
 {{- if not (deepEqual $v.placement.trusted.tolerations (list)) -}}
 {{- fail "stage4Preparation.placement.trusted.tolerations must be exactly empty" -}}
