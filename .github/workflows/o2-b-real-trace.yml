@@ -1,0 +1,104 @@
+name: O2 B real run trace
+
+# Diagnostic-only. Checks out the exact merged main SHA so every executed
+# source file is byte-identical to main, and runs the real Job B driver under
+# kernel tracing to identify which process exits with status 104.
+
+on:
+  push:
+    branches: [exp/o2-b-child-matrix]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  MAIN_SHA: f7170704be25ea27cf6b223e8e7e9c3191ad11b1
+
+jobs:
+  trace:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out exact merged main SHA
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: f7170704be25ea27cf6b223e8e7e9c3191ad11b1
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Confirm the tree is byte-identical to main
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$MAIN_SHA"
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+          echo "tree matches $MAIN_SHA"
+
+      - name: Install tracers
+        run: |
+          sudo apt-get -qq update >/dev/null 2>&1
+          sudo apt-get -qq install -y bpftrace strace >/dev/null 2>&1
+          bpftrace --version | head -1; strace --version | head -1
+
+      - name: Stage the driver invocation
+        run: |
+          cat > /tmp/runb.sh <<'EOS'
+          #!/bin/bash
+          set -uo pipefail
+          sudo rm -rf /tmp/cogs-native-qualification-B /tmp/.cogs-native-qualification-B.retired /tmp/cogs-o2-runtime-v1 2>/dev/null || true
+          uid=$(/usr/bin/id -u); gid=$(/usr/bin/id -g)
+          sudo -n --close-from=3 /usr/bin/prlimit --nofile=65536:65536 -- \
+            /usr/bin/setpriv --reuid="$uid" --regid="$gid" --clear-groups \
+              --inh-caps=+sys_admin,+sys_ptrace --ambient-caps=+sys_admin,+sys_ptrace \
+              "$@" /usr/bin/env -i LC_ALL=C PYTHONDONTWRITEBYTECODE=1 PYTHONHASHSEED=0 \
+              NQ_EVENT_NAME=workflow_dispatch NQ_REPOSITORY="$GITHUB_REPOSITORY" NQ_HEAD_REPOSITORY="$GITHUB_REPOSITORY" \
+              NQ_HEAD_SHA="$MAIN_SHA" NQ_ENVELOPE_SHA="$MAIN_SHA" NQ_WORKFLOW_SHA="$MAIN_SHA" \
+              NQ_WORKFLOW_PATH=.github/workflows/outcome-two-native-b.yml NQ_REF=refs/heads/main \
+              NQ_DEFAULT_BRANCH=main NQ_REF_PROTECTED=true NQ_JOB_ID=native-qualification-b \
+              NQ_RUN_ID="$GITHUB_RUN_ID" NQ_RUN_ATTEMPT=1 NQ_RUNNER_VERSION="${ImageVersion:-20260101.1}" \
+              /usr/bin/python3 -I -B scripts/native-qualification/job-b-compression.py --workflow-bound
+          echo "driver exit: $?"
+          EOS
+          chmod +x /tmp/runb.sh
+          cat > /tmp/trace.bt <<'EOS'
+          tracepoint:sched:sched_process_exec { printf("EXEC pid=%d comm=%s file=%s\n", pid, comm, str(args.filename)); }
+          tracepoint:syscalls:sys_enter_exit_group { printf("EXITGROUP pid=%d comm=%s status=%d\n", pid, comm, args.error_code); }
+          EOS
+
+      - name: Leg 1 - control run, no tracer
+        run: /tmp/runb.sh 2>&1 | tail -5
+
+      - name: Leg 2 - kernel tracepoints (non-perturbing)
+        run: |
+          set -uo pipefail
+          sudo bpftrace /tmp/trace.bt > /tmp/bt.log 2>/tmp/bt.err &
+          BT=$!
+          sleep 8
+          /tmp/runb.sh 2>&1 | tail -3
+          sleep 2
+          sudo kill "$BT" 2>/dev/null || true
+          wait "$BT" 2>/dev/null || true
+          echo "=== bpftrace stderr ==="; tail -5 /tmp/bt.err || true
+          echo "=== nonzero exit_group ==="
+          grep '^EXITGROUP' /tmp/bt.log | grep -v 'status=0$' | head -40 || echo "none captured"
+          echo "=== exec events ==="
+          grep '^EXEC' /tmp/bt.log | tail -40 || true
+
+      - name: Leg 3 - strace full syscall detail
+        run: |
+          set -uo pipefail
+          sudo rm -rf /tmp/st; mkdir -p /tmp/st
+          /tmp/runb.sh /usr/bin/strace -ff -qq -o /tmp/st/t -s 300 \
+            -e trace=execve,execveat,exit_group,read,write,openat,clone,clone3 2>&1 | tail -3
+          echo "=== trace files ==="; ls /tmp/st | head -30
+          echo "=== processes that exited nonzero ==="
+          grep -l 'exit_group([^0])' /tmp/st/t.* 2>/dev/null | head -10 || echo "none"
+          for f in $(grep -l 'exit_group(104)' /tmp/st/t.* 2>/dev/null | head -3); do
+            echo "=== $f (exit_group(104)) ==="; tail -60 "$f"
+          done
+          echo "=== any execveat calls ==="
+          grep -h 'execveat' /tmp/st/t.* 2>/dev/null | head -10 || true
+
+      - name: Kernel ring buffer tail
+        if: ${{ always() }}
+        run: sudo dmesg | tail -40 || true
