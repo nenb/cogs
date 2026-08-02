@@ -222,8 +222,7 @@ function repositorySnapshot(root: string): { baseHead: string; paths: string[] }
   if (top !== root) throw new Error("STAGE4_SOURCE_INVENTORY_GIT_ROOT_INVALID");
   const head = text(pinnedGit(root, ["rev-parse", "--verify", "HEAD"])).trim();
   if (!/^[0-9a-f]{40}$/u.test(head)) throw new Error("STAGE4_SOURCE_INVENTORY_GIT_REVISION_INVALID");
-  const baseHead =
-    head === EXPECTED_REGENERATION_BASE_HEAD ? head : text(pinnedGit(root, ["rev-parse", "--verify", "HEAD^"])).trim();
+  const baseHead = text(pinnedGit(root, ["merge-base", EXPECTED_REGENERATION_BASE_HEAD, head])).trim();
   if (baseHead !== EXPECTED_REGENERATION_BASE_HEAD) throw new Error("STAGE4_SOURCE_INVENTORY_GIT_REVISION_INVALID");
   const index = pinnedGit(root, ["ls-files", "--cached", "--stage", "-z"]);
   const paths: string[] = [];

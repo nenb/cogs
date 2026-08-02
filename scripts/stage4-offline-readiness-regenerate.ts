@@ -98,11 +98,14 @@ function executableBytes(path: string): Uint8Array {
 }
 
 function verifyExecutable(spec: CommandSpec): void {
-  if (stage4OfflineReadinessSha256(executableBytes(spec.executable)) !== spec.executableSha256) {
+  if (stage4OfflineReadinessSha256(executableBytes(spec.executable), 128 * 1024 * 1024) !== spec.executableSha256) {
     throw new Error("STAGE4_REGENERATE_COMMAND_IDENTITY_INVALID");
   }
   for (const component of spec.toolComponents ?? []) {
-    if (stage4OfflineReadinessSha256(executableBytes(resolve(root, component.path))) !== component.sha256) {
+    if (
+      stage4OfflineReadinessSha256(executableBytes(resolve(root, component.path)), 128 * 1024 * 1024) !==
+      component.sha256
+    ) {
       throw new Error("STAGE4_REGENERATE_COMMAND_IDENTITY_INVALID");
     }
   }

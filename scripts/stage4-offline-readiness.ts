@@ -217,10 +217,10 @@ export const STAGE4_READINESS_EXPECTED_ARTIFACTS = Object.freeze({
   repeatedRender: "614361336f5cbf87e4fd7b1a8a806fa5d08bbceb3c91b2b33a1710b4cfd73331",
   runtimePins: "14fdacff04e1db62ec733e7696d104826c73aa87764406a5625d2a13265219f0",
   values: "e63a0fadebe16637cc97b21adeeb4ecf33efa8e76a1469e6008c7f7ed4fbb58f",
-  localValidationNormalized: "9c7e926ef336ee60dc37fce1afea8b258d66edc3ac81607f2c517ea020aa7088",
+  localValidationNormalized: "8a552bfd5ca517d954be53774c1c8601fbbb85275774916ce1635884f14154f8",
   renderReceipt: "2d6ab6995b6fc691ba4e6df84b8dd078ae724236efae483295fa57dffd825a44",
-  schemaInventory: "71ffec7c4a6e100665f77396e72b86e9460b2f2456049329a3799fde664a4ead",
-  sourceInventoryNormalized: "682dff9df1b0ee7cb9bc1a710a0e70a5e89c31ac510b6c1a74c75f58b6fa5d10",
+  schemaInventory: "ba499db77b817d937d159c6501471676ce7d7970a2340b1edf50a64b92d7d096",
+  sourceInventoryNormalized: "8c7f6677a2be8720b9629399e7139d0e2636870129784bfe240616dfbcb64cf4",
 });
 /* stage4-readiness-anchor-end */
 
@@ -253,8 +253,8 @@ export function canonicalStage4OfflineReadinessBytes(value: JsonValue): Uint8Arr
   return new TextEncoder().encode(`${canonicalJson(value)}\n`);
 }
 
-export function stage4OfflineReadinessSha256(bytes: Uint8Array): string {
-  const captured = capturePrivateBytes(bytes, 4 * 1024 * 1024, true);
+export function stage4OfflineReadinessSha256(bytes: Uint8Array, maximum = 4 * 1024 * 1024): string {
+  const captured = capturePrivateBytes(bytes, maximum, true);
   if (captured.bytes === null) throw new TypeError("invalid or oversized bytes");
   return createHash("sha256").update(captured.bytes).digest("hex");
 }
