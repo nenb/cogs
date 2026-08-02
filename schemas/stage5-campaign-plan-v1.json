@@ -1,0 +1,144 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.dev/schemas/stage5-campaign-plan-v1.json",
+  "title": "Blocked offline Stage 5 security, resilience, privacy, and deletion campaign plan",
+  "description": "A non-executable ordered plan and aggregation state shape. It grants no campaign authority.",
+  "type": "object",
+  "additionalProperties": false,
+  "maxProperties": 10,
+  "required": [
+    "version",
+    "authority",
+    "issue",
+    "dependencies",
+    "model_auth",
+    "execution_route",
+    "phases",
+    "aggregation",
+    "blockers",
+    "claims"
+  ],
+  "properties": {
+    "version": { "const": "cogs.stage5-campaign-plan/v1" },
+    "authority": { "const": "offline-campaign-plan-and-state-machine-only" },
+    "issue": { "const": 369 },
+    "dependencies": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 2,
+      "required": ["fresh_exact_campaign_approval", "s5_05"],
+      "properties": {
+        "fresh_exact_campaign_approval": { "const": "absent-blocking" },
+        "s5_05": { "const": "unmet-blocking" }
+      }
+    },
+    "model_auth": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 3,
+      "required": ["api_key_only_required", "oauth", "real_model_execution"],
+      "properties": {
+        "api_key_only_required": { "const": true },
+        "oauth": { "const": "disabled" },
+        "real_model_execution": { "const": "not-authorized" }
+      }
+    },
+    "execution_route": { "$ref": "#/$defs/noExecutionRoute" },
+    "phases": {
+      "type": "array",
+      "minItems": 5,
+      "maxItems": 5,
+      "prefixItems": [
+        {
+          "$ref": "#/$defs/phase",
+          "type": "object",
+          "properties": { "phase": { "const": "exact-rc-conformance-real-dependencies" } }
+        },
+        { "$ref": "#/$defs/phase", "type": "object", "properties": { "phase": { "const": "recovery-destructive" } } },
+        {
+          "$ref": "#/$defs/phase",
+          "type": "object",
+          "properties": { "phase": { "const": "privacy-deletion-synthetic-sessions" } }
+        },
+        { "$ref": "#/$defs/phase", "type": "object", "properties": { "phase": { "const": "cleanup-destroy" } } },
+        {
+          "$ref": "#/$defs/phase",
+          "type": "object",
+          "properties": { "phase": { "const": "independent-zero-inventory" } }
+        }
+      ],
+      "items": false
+    },
+    "aggregation": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 4,
+      "required": ["accepted", "current_state", "evidence_root_sha256", "uncertainty_blocks_acceptance"],
+      "properties": {
+        "accepted": { "const": false },
+        "current_state": { "const": "blocked-dependencies" },
+        "evidence_root_sha256": { "type": "null" },
+        "uncertainty_blocks_acceptance": { "const": true }
+      }
+    },
+    "blockers": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "prefixItems": [
+        { "const": "S5_05_NOT_ACCEPTED" },
+        { "const": "FRESH_EXACT_CAMPAIGN_APPROVAL_ABSENT" },
+        { "const": "RC_BINDING_ABSENT" }
+      ],
+      "items": false
+    },
+    "claims": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 6,
+      "required": [
+        "campaign_authorized",
+        "campaign_complete",
+        "cloud_execution_observed",
+        "production_ready",
+        "release_eligible",
+        "zero_resources_claimed"
+      ],
+      "properties": {
+        "campaign_authorized": { "const": false },
+        "campaign_complete": { "const": false },
+        "cloud_execution_observed": { "const": false },
+        "production_ready": { "const": false },
+        "release_eligible": { "const": false },
+        "zero_resources_claimed": { "const": false }
+      }
+    }
+  },
+  "$defs": {
+    "noExecutionRoute": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 5,
+      "required": ["cluster", "deployment", "external_model", "provider", "scheduler"],
+      "properties": {
+        "cluster": { "const": false },
+        "deployment": { "const": false },
+        "external_model": { "const": false },
+        "provider": { "const": false },
+        "scheduler": { "const": false }
+      }
+    },
+    "phase": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 4,
+      "required": ["evidence_binding_sha256", "execution", "phase", "result"],
+      "properties": {
+        "evidence_binding_sha256": { "type": "null" },
+        "execution": { "const": "unexecuted" },
+        "phase": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-z0-9-]+$" },
+        "result": { "type": "null" }
+      }
+    }
+  }
+}

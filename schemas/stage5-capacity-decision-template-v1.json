@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.dev/schemas/stage5-capacity-decision-template-v1.json",
+  "title": "Unavailable Stage 5 optional-capacity decision template",
+  "description": "The decision remains unavailable while authentic real 50-session results are absent; extrapolation is forbidden.",
+  "type": "object",
+  "additionalProperties": false,
+  "maxProperties": 7,
+  "required": ["version", "authority", "issue", "dependencies", "decision", "optional_steps", "claims"],
+  "properties": {
+    "version": { "const": "cogs.stage5-capacity-decision-template/v1" },
+    "authority": { "const": "provisional-local-static-capacity-decision-template-only" },
+    "issue": { "const": 372 },
+    "dependencies": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 2,
+      "required": ["real_50_result_binding_sha256", "real_50_result_state"],
+      "properties": {
+        "real_50_result_binding_sha256": { "type": "null" },
+        "real_50_result_state": { "const": "absent-blocking" }
+      }
+    },
+    "decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 4,
+      "required": ["advertised_maximum", "decision", "extrapolation_may_raise_capacity", "selected_option"],
+      "properties": {
+        "advertised_maximum": { "type": "null" },
+        "decision": { "const": "not-available" },
+        "extrapolation_may_raise_capacity": { "const": false },
+        "selected_option": { "type": "null" }
+      }
+    },
+    "optional_steps": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 4,
+      "required": [
+        "propose_100",
+        "propose_250",
+        "requires_100_pass_before_250_proposal",
+        "separate_budget_and_approval_required"
+      ],
+      "properties": {
+        "propose_100": { "const": false },
+        "propose_250": { "const": false },
+        "requires_100_pass_before_250_proposal": { "const": true },
+        "separate_budget_and_approval_required": { "const": true }
+      }
+    },
+    "claims": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 5,
+      "required": [
+        "campaign_authorized",
+        "capacity_decision_available",
+        "cloud_execution_observed",
+        "production_ready",
+        "release_eligible"
+      ],
+      "properties": {
+        "campaign_authorized": { "const": false },
+        "capacity_decision_available": { "const": false },
+        "cloud_execution_observed": { "const": false },
+        "production_ready": { "const": false },
+        "release_eligible": { "const": false }
+      }
+    }
+  }
+}
