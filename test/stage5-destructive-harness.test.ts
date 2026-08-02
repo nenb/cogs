@@ -339,6 +339,15 @@ test("the aggregation is strict source-bound metadata only", () => {
   assert.notEqual(changed.source_binding.source_set_sha256, report.source_binding.source_set_sha256);
   assert.notEqual(changed.source_binding.sources[0]?.sha256, report.source_binding.sources[0]?.sha256);
 
+  const mismatchedFixtureSource = sources();
+  const fixtureSource = mismatchedFixtureSource.at(-1);
+  assert.ok(fixtureSource);
+  fixtureSource.bytes = new Uint8Array([...fixtureSource.bytes, 0x0a]);
+  assert.deepEqual(runStage5DestructiveHarness(bytes(fixturePath), mismatchedFixtureSource), {
+    ok: false,
+    reason_code: "STAGE5_DESTRUCTIVE_SOURCE_BINDING_INVALID",
+  });
+
   for (const sourceMutation of [
     (items: MutableSource[]) => items.pop(),
     (items: MutableSource[]) => items.reverse(),
@@ -419,10 +428,17 @@ test("report ingestion re-aggregates exact sources and rejects replay, duplicate
     reason_code: "STAGE5_DESTRUCTIVE_REPORT_BINDING_INVALID",
   });
 
-  assert.equal(
-    validateStage5DestructiveReportBytes(reportBytes.slice(0, -1), bytes(fixturePath), sources()).reason_code,
-    "STAGE5_DESTRUCTIVE_REPORT_INVALID",
-  );
+  for (const noncanonical of [
+    reportBytes.slice(0, -1),
+    new Uint8Array([0xef, 0xbb, 0xbf, ...reportBytes]),
+    new Uint8Array([...reportBytes, 0x0a]),
+    new TextEncoder().encode(JSON.stringify(JSON.parse(new TextDecoder().decode(reportBytes)), null, 2)),
+  ]) {
+    assert.equal(
+      validateStage5DestructiveReportBytes(noncanonical, bytes(fixturePath), sources()).reason_code,
+      "STAGE5_DESTRUCTIVE_REPORT_INVALID",
+    );
+  }
   let traps = 0;
   const proxied = new Proxy(reportBytes, {
     get() {
@@ -525,7 +541,11 @@ test("getter, Proxy, hostile prototype, symbol, sparse, cycle, depth, key, strin
 
   const symbol = suite() as MutableSuite & { [key: symbol]: boolean };
   symbol[Symbol("hostile")] = true;
-  assert.throws(() => canonicalStage5DestructiveBytes(symbol), /plain JSON object/u);
+  assert.deepEqual(
+    canonicalStage5DestructiveBytes(symbol),
+    canonicalStage5DestructiveBytes(buildStage5DestructiveFixtureSuite()),
+    "non-JSON symbol metadata is ignored without unbounded reflection",
+  );
 
   const sparse = suite();
   sparse.cases.length += 1;
@@ -603,3 +623,98 @@ test("hostile source containers, getters, byte proxies, and oversized source set
   Object.defineProperty(extended, "hostile", { value: true, enumerable: true });
   assert.equal(runStage5DestructiveHarness(bytes(fixturePath), extended).ok, false);
 });
+
+test("intrinsic byte capture rejects typed-array impostors, shared/resizable/detached views, and never reads shadowed getters", () => {
+  const canonical = bytes(fixturePath);
+  let shadowedByteGetterReads = 0;
+  for (const key of ["byteLength", "buffer"] as const) {
+    Object.defineProperty(canonical, key, {
+      configurable: true,
+      get() {
+        shadowedByteGetterReads += 1;
+        throw new Error("must not execute");
+      },
+    });
+  }
+  assert.equal(validateStage5DestructiveFixtureBytes(canonical).valid, true);
+  assert.equal(shadowedByteGetterReads, 0);
+  assert.equal(validateStage5DestructiveFixtureBytes(readFileSync(fixturePath)).valid, false, "Buffer subclass");
+
+  let impostorReads = 0;
+  const typedArrayImpostor = Object.create(Uint8Array.prototype) as Uint8Array;
+  Object.defineProperty(typedArrayImpostor, "byteLength", {
+    get() {
+      impostorReads += 1;
+      throw new Error("must not execute");
+    },
+  });
+  assert.equal(validateStage5DestructiveFixtureBytes(typedArrayImpostor).valid, false);
+  assert.equal(impostorReads, 0);
+
+  let arrayImpostorReads = 0;
+  const arrayImpostor = Object.create(Array.prototype) as MutableSource[];
+  Object.defineProperty(arrayImpostor, "length", {
+    get() {
+      arrayImpostorReads += 1;
+      throw new Error("must not execute");
+    },
+  });
+  assert.equal(runStage5DestructiveHarness(bytes(fixturePath), arrayImpostor).ok, false);
+  assert.equal(arrayImpostorReads, 0);
+
+  const shadowedReport = bytes(reportPath);
+  Object.defineProperty(shadowedReport, "byteLength", {
+    get() {
+      shadowedByteGetterReads += 1;
+      throw new Error("must not execute");
+    },
+  });
+  assert.equal(validateStage5DestructiveReportBytes(shadowedReport, bytes(fixturePath), sources()).valid, true);
+  assert.equal(shadowedByteGetterReads, 0);
+
+  if (typeof SharedArrayBuffer !== "undefined") {
+    const shared = new Uint8Array(new SharedArrayBuffer(intrinsicTestLength(canonical)));
+    assert.equal(validateStage5DestructiveFixtureBytes(shared).valid, false);
+    assert.equal(validateStage5DestructiveReportBytes(shared, bytes(fixturePath), sources()).valid, false);
+    const sharedSources = sources();
+    const first = sharedSources[0];
+    assert.ok(first);
+    first.bytes = shared;
+    assert.equal(runStage5DestructiveHarness(bytes(fixturePath), sharedSources).ok, false);
+  }
+
+  const resizableBuffer = new ArrayBuffer(intrinsicTestLength(canonical), {
+    maxByteLength: intrinsicTestLength(canonical) + 1,
+  });
+  if (resizableBuffer.resizable) {
+    const resizable = new Uint8Array(resizableBuffer);
+    resizable.set(canonical);
+    assert.equal(validateStage5DestructiveFixtureBytes(resizable).valid, false);
+  }
+
+  const detachedBuffer = new ArrayBuffer(intrinsicTestLength(canonical));
+  const detached = new Uint8Array(detachedBuffer);
+  detached.set(canonical);
+  structuredClone(detachedBuffer, { transfer: [detachedBuffer] });
+  assert.equal(validateStage5DestructiveFixtureBytes(detached).valid, false);
+
+  const sourceWithShadow = sources();
+  const firstSource = sourceWithShadow[0];
+  assert.ok(firstSource);
+  let sourceByteLengthReads = 0;
+  Object.defineProperty(firstSource.bytes, "byteLength", {
+    get() {
+      sourceByteLengthReads += 1;
+      throw new Error("must not execute");
+    },
+  });
+  assert.equal(runStage5DestructiveHarness(bytes(fixturePath), sourceWithShadow).ok, true);
+  assert.equal(sourceByteLengthReads, 0);
+
+  const implementation = readFileSync(resolve(root, "scripts/stage5-destructive-harness.ts"), "utf8");
+  assert.doesNotMatch(implementation, /Reflect\.ownKeys|Object\.getOwnPropertyDescriptors/u);
+});
+
+function intrinsicTestLength(value: Uint8Array): number {
+  return Uint8Array.prototype.slice.call(value).length;
+}

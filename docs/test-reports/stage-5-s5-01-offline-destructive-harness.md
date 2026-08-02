@@ -13,7 +13,9 @@
 - Added a pure state machine that requires parent-only acquisition and exact reverse-order cleanup, reports unknown prompt outcomes, and rejects unknown prompt replay.
 - Added a strict aggregation harness binding every case to an exact ordered governing-source set.
 - Added metadata-only fixture/report schemas and a committed machine report.
-- Added hostile getter, recursive Proxy, prototype, symbol, sparse array, cycle, depth, property, string, aggregate, oversize byte, source replay, sequence replay, duplicate case, profile substitution, and cleanup mutation coverage.
+- Added hostile getter, recursive Proxy, prototype, sparse array, cycle, depth, property, string, aggregate, oversize byte, source replay, sequence replay, duplicate case, profile substitution, and cleanup mutation coverage.
+- Hardened byte ingestion with intrinsic internal-slot checks, one-time private snapshots, and rejection of typed-array/Array impostors, Buffer subclasses, shared/resizable/detached views, shadowed byte getters, noncanonical report bytes, and fixture/source cross-binding drift.
+- Replaced whole-object reflection with bounded enumerable-key scanning and per-key data descriptors; non-JSON symbol/non-enumerable metadata is inert and ignored.
 - Structurally fixed cloud, provider, cluster, deployment, external-model, scheduler, controller, and retry routes to false.
 
 ## Evidence location

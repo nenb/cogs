@@ -332,6 +332,14 @@ export type Stage5DestructiveRunResult =
   | Readonly<{ ok: false; reason_code: Stage5DestructiveReasonCode }>;
 
 const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false });
+const typedArrayPrototype = Object.getPrototypeOf(Uint8Array.prototype) as object;
+const typedArrayByteLength = requiredGetter(typedArrayPrototype, "byteLength");
+const typedArrayBuffer = requiredGetter(typedArrayPrototype, "buffer");
+const arrayBufferByteLength = requiredGetter(ArrayBuffer.prototype, "byteLength");
+const arrayBufferResizable = optionalGetter(ArrayBuffer.prototype, "resizable");
+const sharedArrayBufferByteLength =
+  typeof SharedArrayBuffer === "undefined" ? undefined : requiredGetter(SharedArrayBuffer.prototype, "byteLength");
+const typedArraySet = Uint8Array.prototype.set;
 const SUITE_DOMAIN = "cogs.stage5/destructive-fixture-suite-semantic/v1";
 const CASE_DOMAIN = "cogs.stage5/destructive-fixture-case-semantic/v1";
 const SOURCE_DOMAIN = "cogs.stage5/destructive-source-set/v1";
@@ -351,38 +359,68 @@ export function buildStage5DestructiveFixtureSuite(): FixtureSuite {
   });
 }
 
+type InspectedFixture = Readonly<{
+  bytes: Uint8Array | null;
+  root: JsonRecord | null;
+  verdict: Stage5DestructiveSuiteVerdict;
+}>;
+
 /** Validates exact canonical fixture bytes and all state-machine transitions. */
 export function validateStage5DestructiveFixtureBytes(input: Uint8Array): Stage5DestructiveSuiteVerdict {
-  if (utilTypes.isProxy(input) || Object.getPrototypeOf(input) !== Uint8Array.prototype) {
-    return suiteVerdict(false, "STAGE5_DESTRUCTIVE_INVALID_BYTES", null);
+  return inspectFixtureBytes(input).verdict;
+}
+
+function inspectFixtureBytes(input: Uint8Array): InspectedFixture {
+  const captured = capturePrivateBytes(input, STAGE5_DESTRUCTIVE_LIMITS.maxFixtureBytes);
+  if (captured.bytes === null) {
+    return {
+      bytes: null,
+      root: null,
+      verdict: suiteVerdict(
+        false,
+        captured.bounded ? "STAGE5_DESTRUCTIVE_BOUNDED_IO_VIOLATION" : "STAGE5_DESTRUCTIVE_INVALID_BYTES",
+        null,
+      ),
+    };
   }
-  if (input.byteLength === 0 || input.byteLength > STAGE5_DESTRUCTIVE_LIMITS.maxFixtureBytes) {
-    return suiteVerdict(false, "STAGE5_DESTRUCTIVE_BOUNDED_IO_VIOLATION", null);
-  }
-  if (input.byteLength >= 3 && input[0] === 0xef && input[1] === 0xbb && input[2] === 0xbf) {
-    return suiteVerdict(false, "STAGE5_DESTRUCTIVE_INVALID_BYTES", null);
+  const bytes = captured.bytes;
+  if (hasUtf8Bom(bytes)) {
+    return { bytes, root: null, verdict: suiteVerdict(false, "STAGE5_DESTRUCTIVE_INVALID_BYTES", null) };
   }
   try {
-    const text = decoder.decode(input);
-    const parsed = JSON.parse(text) as unknown;
+    const parsed = JSON.parse(decoder.decode(bytes)) as unknown;
     const snapshot = snapshotJson(parsed);
     if (snapshot.value === null) {
-      return suiteVerdict(
-        false,
-        snapshot.bounded ? "STAGE5_DESTRUCTIVE_BOUNDED_IO_VIOLATION" : "STAGE5_DESTRUCTIVE_INVALID_SHAPE",
-        null,
-      );
+      return {
+        bytes,
+        root: null,
+        verdict: suiteVerdict(
+          false,
+          snapshot.bounded ? "STAGE5_DESTRUCTIVE_BOUNDED_IO_VIOLATION" : "STAGE5_DESTRUCTIVE_INVALID_SHAPE",
+          null,
+        ),
+      };
     }
     const digest = semanticDigest(SUITE_DOMAIN, snapshot.value);
-    if (`${canonicalJson(snapshot.value)}\n` !== text) {
-      return suiteVerdict(false, "STAGE5_DESTRUCTIVE_NONCANONICAL_BYTES", digest);
+    const canonical = encodeCanonical(snapshot.value);
+    if (!bytesEqual(bytes, canonical)) {
+      return {
+        bytes,
+        root: snapshot.value,
+        verdict: suiteVerdict(false, "STAGE5_DESTRUCTIVE_NONCANONICAL_BYTES", digest),
+      };
     }
     const reason = validateSuite(snapshot.value);
-    return reason === null
-      ? suiteVerdict(true, "STAGE5_DESTRUCTIVE_SUITE_VALID", digest)
-      : suiteVerdict(false, reason, digest);
+    return {
+      bytes,
+      root: snapshot.value,
+      verdict:
+        reason === null
+          ? suiteVerdict(true, "STAGE5_DESTRUCTIVE_SUITE_VALID", digest)
+          : suiteVerdict(false, reason, digest),
+    };
   } catch {
-    return suiteVerdict(false, "STAGE5_DESTRUCTIVE_INVALID_BYTES", null);
+    return { bytes, root: null, verdict: suiteVerdict(false, "STAGE5_DESTRUCTIVE_INVALID_BYTES", null) };
   }
 }
 
@@ -392,8 +430,10 @@ export function canonicalStage5DestructiveBytes(input: unknown): Uint8Array {
   if (snapshot.value === null) {
     throw new TypeError(snapshot.bounded ? "input exceeds a bound" : "input is not a plain JSON object");
   }
-  const bytes = new TextEncoder().encode(`${canonicalJson(snapshot.value)}\n`);
-  if (bytes.byteLength > STAGE5_DESTRUCTIVE_LIMITS.maxFixtureBytes) throw new TypeError("fixture exceeds byte bound");
+  const bytes = encodeCanonical(snapshot.value);
+  if (intrinsicByteLength(bytes) > STAGE5_DESTRUCTIVE_LIMITS.maxFixtureBytes) {
+    throw new TypeError("fixture exceeds byte bound");
+  }
   return bytes;
 }
 
@@ -405,19 +445,17 @@ export function runStage5DestructiveHarness(
   fixtureBytes: Uint8Array,
   sources: readonly Stage5DestructiveSource[],
 ): Stage5DestructiveRunResult {
-  const verdict = validateStage5DestructiveFixtureBytes(fixtureBytes);
-  if (!verdict.valid || verdict.suite_sha256 === null)
+  const inspected = inspectFixtureBytes(fixtureBytes);
+  const verdict = inspected.verdict;
+  if (!verdict.valid || verdict.suite_sha256 === null || inspected.bytes === null || inspected.root === null) {
     return Object.freeze({ ok: false, reason_code: verdict.reason_code });
-  const sourceBinding = bindSources(sources);
-  if (sourceBinding === null) {
+  }
+  const boundSources = bindSources(sources);
+  if (boundSources === null || !bytesEqual(inspected.bytes, boundSources.fixtureBytes)) {
     return Object.freeze({ ok: false, reason_code: "STAGE5_DESTRUCTIVE_SOURCE_BINDING_INVALID" });
   }
-  const parsed = JSON.parse(decoder.decode(fixtureBytes)) as unknown;
-  const snapshot = snapshotJson(parsed);
-  if (snapshot.value === null || validateSuite(snapshot.value) !== null) {
-    return Object.freeze({ ok: false, reason_code: "STAGE5_DESTRUCTIVE_INVALID_SHAPE" });
-  }
-  const suite = snapshot.value as unknown as FixtureSuite;
+  const sourceBinding = boundSources.binding;
+  const suite = inspected.root as unknown as FixtureSuite;
   const cases = suite.cases.map((fixture) => caseResult(fixture, sourceBinding.source_set_sha256));
   const report: Stage5DestructiveReport = {
     version: "cogs.stage5-destructive-report/v1",
@@ -435,7 +473,7 @@ export function runStage5DestructiveHarness(
     routes: STAGE5_DESTRUCTIVE_ROUTES,
     source_binding: sourceBinding,
     fixture_binding: {
-      exact_bytes_sha256: sha256(fixtureBytes),
+      exact_bytes_sha256: sha256(inspected.bytes),
       semantic_sha256: verdict.suite_sha256,
       case_count: 22,
     },
@@ -484,25 +522,20 @@ export function validateStage5DestructiveReportBytes(
   fixtureBytes: Uint8Array,
   sources: readonly Stage5DestructiveSource[],
 ): Stage5DestructiveReportVerdict {
-  if (
-    utilTypes.isProxy(reportBytes) ||
-    Object.getPrototypeOf(reportBytes) !== Uint8Array.prototype ||
-    reportBytes.byteLength === 0 ||
-    reportBytes.byteLength > STAGE5_DESTRUCTIVE_LIMITS.maxFixtureBytes
-  ) {
+  const captured = capturePrivateBytes(reportBytes, STAGE5_DESTRUCTIVE_LIMITS.maxFixtureBytes);
+  if (captured.bytes === null || hasUtf8Bom(captured.bytes)) {
     return reportVerdict(false, "STAGE5_DESTRUCTIVE_REPORT_INVALID");
   }
   const generated = runStage5DestructiveHarness(fixtureBytes, sources);
   if (!generated.ok) return reportVerdict(false, generated.reason_code);
   try {
-    const text = decoder.decode(reportBytes);
-    const parsed = JSON.parse(text) as unknown;
+    const parsed = JSON.parse(decoder.decode(captured.bytes)) as unknown;
     const snapshot = snapshotJson(parsed);
-    if (snapshot.value === null || `${canonicalJson(snapshot.value)}\n` !== text) {
+    if (snapshot.value === null || !bytesEqual(captured.bytes, encodeCanonical(snapshot.value))) {
       return reportVerdict(false, "STAGE5_DESTRUCTIVE_REPORT_INVALID");
     }
-    const expected = new TextDecoder().decode(canonicalStage5DestructiveBytes(generated.report));
-    return text === expected
+    const expected = canonicalStage5DestructiveBytes(generated.report);
+    return bytesEqual(captured.bytes, expected)
       ? reportVerdict(true, "STAGE5_DESTRUCTIVE_SUITE_VALID")
       : reportVerdict(false, "STAGE5_DESTRUCTIVE_REPORT_BINDING_INVALID");
   } catch {
@@ -619,61 +652,85 @@ function caseResult(fixture: FixtureCase, sourceSetSha256: string): Stage5Destru
   });
 }
 
-function bindSources(sources: readonly Stage5DestructiveSource[]): Stage5DestructiveReport["source_binding"] | null {
-  if (utilTypes.isProxy(sources) || Object.getPrototypeOf(sources) !== Array.prototype) return null;
-  const descriptors = Object.getOwnPropertyDescriptors(sources);
-  if (sources.length !== STAGE5_DESTRUCTIVE_SOURCE_PATHS.length) return null;
-  const expectedArrayKeys = [
-    ...Array.from({ length: STAGE5_DESTRUCTIVE_SOURCE_PATHS.length }, (_, index) => String(index)),
-    "length",
-  ];
-  const arrayKeys = Reflect.ownKeys(sources);
-  if (arrayKeys.length !== expectedArrayKeys.length || expectedArrayKeys.some((key) => !arrayKeys.includes(key))) {
+type BoundSources = Readonly<{
+  binding: Stage5DestructiveReport["source_binding"];
+  fixtureBytes: Uint8Array;
+}>;
+
+function bindSources(sources: readonly Stage5DestructiveSource[]): BoundSources | null {
+  if (utilTypes.isProxy(sources) || !Array.isArray(sources) || Object.getPrototypeOf(sources) !== Array.prototype) {
     return null;
   }
+  const lengthDescriptor = Object.getOwnPropertyDescriptor(sources, "length");
+  const length = lengthDescriptor && "value" in lengthDescriptor ? lengthDescriptor.value : undefined;
+  if (length !== STAGE5_DESTRUCTIVE_SOURCE_PATHS.length) return null;
+  const arrayKeys = boundedEnumerableDataKeys(sources, STAGE5_DESTRUCTIVE_SOURCE_PATHS.length);
+  if (
+    arrayKeys === null ||
+    arrayKeys.length !== STAGE5_DESTRUCTIVE_SOURCE_PATHS.length ||
+    arrayKeys.some((key, index) => key !== String(index))
+  ) {
+    return null;
+  }
+
   const records: Array<{ path: string; bytes: number; sha256: string }> = [];
   let aggregate = 0;
+  let fixtureSourceBytes: Uint8Array | undefined;
   for (let index = 0; index < STAGE5_DESTRUCTIVE_SOURCE_PATHS.length; index += 1) {
-    const descriptor = descriptors[String(index)];
-    if (descriptor === undefined || !("value" in descriptor)) return null;
+    const descriptor = Object.getOwnPropertyDescriptor(sources, String(index));
+    if (descriptor === undefined || !("value" in descriptor) || descriptor.enumerable !== true) return null;
     const source = descriptor.value as unknown;
     if (utilTypes.isProxy(source) || source === null || typeof source !== "object") return null;
     const sourcePrototype = Object.getPrototypeOf(source);
     if (sourcePrototype !== Object.prototype && sourcePrototype !== null) return null;
-    const sourceDescriptors = Object.getOwnPropertyDescriptors(source);
-    if (!exactDescriptorKeys(sourceDescriptors, ["path", "bytes"])) return null;
-    const path = sourceDescriptors.path?.value as unknown;
-    const bytes = sourceDescriptors.bytes?.value as unknown;
+    const sourceKeys = boundedEnumerableDataKeys(source, 2);
+    if (
+      sourceKeys === null ||
+      sourceKeys.length !== 2 ||
+      !sourceKeys.includes("path") ||
+      !sourceKeys.includes("bytes")
+    ) {
+      return null;
+    }
+    const pathDescriptor = Object.getOwnPropertyDescriptor(source, "path");
+    const bytesDescriptor = Object.getOwnPropertyDescriptor(source, "bytes");
+    if (
+      pathDescriptor === undefined ||
+      !("value" in pathDescriptor) ||
+      pathDescriptor.enumerable !== true ||
+      bytesDescriptor === undefined ||
+      !("value" in bytesDescriptor) ||
+      bytesDescriptor.enumerable !== true
+    ) {
+      return null;
+    }
     const expectedPath = STAGE5_DESTRUCTIVE_SOURCE_PATHS[index];
-    if (
-      path !== expectedPath ||
-      expectedPath === undefined ||
-      !(bytes instanceof Uint8Array) ||
-      utilTypes.isProxy(bytes)
-    ) {
-      return null;
-    }
-    if (
-      Object.getPrototypeOf(bytes) !== Uint8Array.prototype ||
-      bytes.byteLength === 0 ||
-      bytes.byteLength > STAGE5_DESTRUCTIVE_LIMITS.maxSourceBytes
-    ) {
-      return null;
-    }
-    aggregate += bytes.byteLength;
+    if (pathDescriptor.value !== expectedPath || expectedPath === undefined) return null;
+    const captured = capturePrivateBytes(bytesDescriptor.value, STAGE5_DESTRUCTIVE_LIMITS.maxSourceBytes);
+    if (captured.bytes === null) return null;
+    const sourceBytes = captured.bytes;
+    const size = intrinsicByteLength(sourceBytes);
+    aggregate += size;
     if (aggregate > STAGE5_DESTRUCTIVE_LIMITS.maxAggregateSourceBytes) return null;
-    records.push({ path: expectedPath, bytes: bytes.byteLength, sha256: sha256(bytes) });
+    records.push({ path: expectedPath, bytes: size, sha256: sha256(sourceBytes) });
+    if (expectedPath === "test/fixtures/stage5-destructive/suite-v1.canonical-json") {
+      fixtureSourceBytes = sourceBytes;
+    }
   }
+  if (fixtureSourceBytes === undefined) return null;
   const sourceSetSha256 = createHash("sha256")
     .update(SOURCE_DOMAIN, "utf8")
     .update(Uint8Array.of(0))
     .update(canonicalJson(records as unknown as JsonValue), "utf8")
     .digest("hex");
-  return deepFreeze({
-    algorithm: "sha256-domain-separated-canonical-source-metadata-and-exact-file-bytes",
-    source_set_sha256: sourceSetSha256,
-    sources: records,
-  });
+  return {
+    binding: deepFreeze({
+      algorithm: "sha256-domain-separated-canonical-source-metadata-and-exact-file-bytes",
+      source_set_sha256: sourceSetSha256,
+      sources: records,
+    }),
+    fixtureBytes: fixtureSourceBytes,
+  };
 }
 
 function snapshotJson(input: unknown): { value: JsonRecord | null; bounded: boolean } {
@@ -722,39 +779,28 @@ function snapshotJson(input: unknown): { value: JsonRecord | null; bounded: bool
     }
     if (typeof candidate !== "object") throw new TypeError("non-json");
     const prototype = Object.getPrototypeOf(candidate);
-    const keys = Reflect.ownKeys(candidate);
-    if (keys.some((key) => typeof key !== "string")) throw new TypeError("symbol");
-    if (keys.length > STAGE5_DESTRUCTIVE_LIMITS.maxPropertiesPerObject + (Array.isArray(candidate) ? 1 : 0)) {
-      bounded = true;
-      throw new TypeError("property bound");
-    }
-    for (const key of keys as string[]) {
-      if (Buffer.byteLength(key, "utf8") > STAGE5_DESTRUCTIVE_LIMITS.maxPropertyKeyBytes) {
-        bounded = true;
-        throw new TypeError("key bound");
-      }
-    }
-    const descriptors = Object.getOwnPropertyDescriptors(candidate);
     if (Array.isArray(candidate)) {
       if (prototype !== Array.prototype) throw new TypeError("array prototype");
-      const lengthDescriptor = descriptors.length;
-      if (lengthDescriptor === undefined || !("value" in lengthDescriptor)) throw new TypeError("length");
-      const length = lengthDescriptor.value as unknown;
-      if (
-        !Number.isSafeInteger(length) ||
-        (length as number) < 0 ||
-        (length as number) > STAGE5_DESTRUCTIVE_LIMITS.maxSnapshotNodes
-      ) {
+      const lengthDescriptor = Object.getOwnPropertyDescriptor(candidate, "length");
+      const length = lengthDescriptor && "value" in lengthDescriptor ? lengthDescriptor.value : undefined;
+      if (!Number.isSafeInteger(length) || (length as number) < 0) throw new TypeError("array length");
+      if ((length as number) > STAGE5_DESTRUCTIVE_LIMITS.maxSnapshotNodes) {
         bounded = true;
         throw new TypeError("array bound");
       }
-      const expectedKeys = [...Array.from({ length: length as number }, (_, index) => String(index)), "length"];
-      if (keys.length !== expectedKeys.length || expectedKeys.some((key) => !keys.includes(key))) {
-        throw new TypeError("sparse array");
+      const scanned = scanEnumerableDataKeys(candidate, STAGE5_DESTRUCTIVE_LIMITS.maxPropertiesPerObject);
+      if (scanned === null) throw new TypeError("array accessor");
+      if (scanned.overflow) {
+        bounded = true;
+        throw new TypeError("property bound");
+      }
+      const keys = scanned.keys;
+      if (keys.length !== length || keys.some((key, index) => key !== String(index))) {
+        throw new TypeError("sparse or extended array");
       }
       consume(2 + Math.max(0, (length as number) - 1));
       return Array.from({ length: length as number }, (_, index) => {
-        const descriptor = descriptors[String(index)];
+        const descriptor = Object.getOwnPropertyDescriptor(candidate, String(index));
         if (descriptor === undefined || !("value" in descriptor) || descriptor.enumerable !== true) {
           throw new TypeError("array accessor");
         }
@@ -762,10 +808,21 @@ function snapshotJson(input: unknown): { value: JsonRecord | null; bounded: bool
       });
     }
     if (prototype !== Object.prototype && prototype !== null) throw new TypeError("object prototype");
+    const scanned = scanEnumerableDataKeys(candidate, STAGE5_DESTRUCTIVE_LIMITS.maxPropertiesPerObject);
+    if (scanned === null) throw new TypeError("object accessor");
+    if (scanned.overflow) {
+      bounded = true;
+      throw new TypeError("property bound");
+    }
+    const keys = scanned.keys;
     consume(2 + Math.max(0, keys.length - 1));
     const output: JsonRecord = Object.create(null) as JsonRecord;
-    for (const key of keys as string[]) {
-      const descriptor = descriptors[key];
+    for (const key of keys) {
+      if (Buffer.byteLength(key, "utf8") > STAGE5_DESTRUCTIVE_LIMITS.maxPropertyKeyBytes) {
+        bounded = true;
+        throw new TypeError("key bound");
+      }
+      const descriptor = Object.getOwnPropertyDescriptor(candidate, key);
       if (descriptor === undefined || !("value" in descriptor) || descriptor.enumerable !== true) {
         throw new TypeError("object accessor");
       }
@@ -787,15 +844,24 @@ function exactKeys(value: JsonRecord, expected: readonly string[]): boolean {
   return keys.length === expected.length && expected.every((key) => keys.includes(key));
 }
 
-function exactDescriptorKeys(value: PropertyDescriptorMap, expected: readonly string[]): boolean {
-  const keys = Reflect.ownKeys(value);
-  return (
-    keys.length === expected.length &&
-    expected.every((key) => {
-      const descriptor = value[key];
-      return descriptor !== undefined && "value" in descriptor && descriptor.enumerable === true;
-    })
-  );
+function boundedEnumerableDataKeys(value: object, limit: number): string[] | null {
+  const scanned = scanEnumerableDataKeys(value, limit);
+  return scanned === null || scanned.overflow ? null : scanned.keys;
+}
+
+function scanEnumerableDataKeys(value: object, limit: number): Readonly<{ keys: string[]; overflow: boolean }> | null {
+  const keys: string[] = [];
+  try {
+    for (const key in value) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (descriptor === undefined || !("value" in descriptor) || descriptor.enumerable !== true) return null;
+      keys.push(key);
+      if (keys.length > limit) return { keys, overflow: true };
+    }
+    return { keys, overflow: false };
+  } catch {
+    return null;
+  }
 }
 
 function isRecord(value: JsonValue): value is JsonRecord {
@@ -825,6 +891,83 @@ function canonicalJson(value: JsonValue): string {
       .join(",")}}`;
   }
   return JSON.stringify(value);
+}
+
+type IntrinsicGetter = (this: unknown) => unknown;
+type ByteCapture = Readonly<{ bytes: Uint8Array | null; bounded: boolean }>;
+
+function requiredGetter(prototype: object, key: string): IntrinsicGetter {
+  const getter = Object.getOwnPropertyDescriptor(prototype, key)?.get;
+  if (getter === undefined) throw new TypeError(`missing intrinsic getter: ${key}`);
+  return getter;
+}
+
+function optionalGetter(prototype: object, key: string): IntrinsicGetter | undefined {
+  return Object.getOwnPropertyDescriptor(prototype, key)?.get;
+}
+
+function capturePrivateBytes(input: unknown, maximum: number): ByteCapture {
+  if (
+    input === null ||
+    typeof input !== "object" ||
+    utilTypes.isProxy(input) ||
+    Object.getPrototypeOf(input) !== Uint8Array.prototype
+  ) {
+    return { bytes: null, bounded: false };
+  }
+  try {
+    const length = typedArrayByteLength.call(input);
+    const buffer = typedArrayBuffer.call(input);
+    if (!Number.isSafeInteger(length) || (length as number) < 1) return { bytes: null, bounded: true };
+    if ((length as number) > maximum) return { bytes: null, bounded: true };
+    if (buffer === null || typeof buffer !== "object") return { bytes: null, bounded: false };
+
+    if (sharedArrayBufferByteLength !== undefined) {
+      try {
+        sharedArrayBufferByteLength.call(buffer);
+        return { bytes: null, bounded: false };
+      } catch {
+        // A private ArrayBuffer is expected to reject the SharedArrayBuffer intrinsic.
+      }
+    }
+    const backingLength = arrayBufferByteLength.call(buffer);
+    if (!Number.isSafeInteger(backingLength) || (backingLength as number) < (length as number)) {
+      return { bytes: null, bounded: false };
+    }
+    if (arrayBufferResizable !== undefined && arrayBufferResizable.call(buffer) === true) {
+      return { bytes: null, bounded: false };
+    }
+
+    const copy = new Uint8Array(length as number);
+    typedArraySet.call(copy, input as Uint8Array);
+    if (intrinsicByteLength(copy) !== length) return { bytes: null, bounded: false };
+    return { bytes: copy, bounded: false };
+  } catch {
+    return { bytes: null, bounded: false };
+  }
+}
+
+function intrinsicByteLength(bytes: Uint8Array): number {
+  const length = typedArrayByteLength.call(bytes);
+  if (!Number.isSafeInteger(length) || (length as number) < 0) throw new TypeError("invalid byte length");
+  return length as number;
+}
+
+function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
+  const leftLength = intrinsicByteLength(left);
+  if (leftLength !== intrinsicByteLength(right)) return false;
+  for (let index = 0; index < leftLength; index += 1) {
+    if (left[index] !== right[index]) return false;
+  }
+  return true;
+}
+
+function hasUtf8Bom(bytes: Uint8Array): boolean {
+  return intrinsicByteLength(bytes) >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf;
+}
+
+function encodeCanonical(value: JsonValue): Uint8Array {
+  return new TextEncoder().encode(`${canonicalJson(value)}\n`);
 }
 
 function semanticDigest(domain: string, value: JsonValue): string {

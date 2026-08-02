@@ -49,9 +49,11 @@ OTLP, Git, disk, SSE, and hostile-output cases intentionally model the bounded-d
 
 Fixture input must be strict UTF-8 canonical JSON with code-point-sorted keys and one trailing LF. SHA-256 bindings are domain separated for the suite, each case, and the source set. Input is bounded before hashing by byte, node, depth, key, string, property, and aggregate canonical-byte limits.
 
-The snapshot layer accepts only plain/null-prototype JSON objects and dense ordinary arrays with enumerable data properties. It rejects accessors without invoking them, recursive proxies before traps, symbols, hostile prototypes, sparse/extended arrays, cycles, unsafe numbers, oversized keys/strings/graphs, noncanonical bytes, BOMs, and proxied byte arrays.
+The snapshot layer accepts only plain/null-prototype JSON objects and dense ordinary arrays with enumerable data properties. It bounds enumerable key scanning before per-key descriptor inspection, rejects accessors without invoking them, and never performs whole-object reflection. Non-enumerable and symbol metadata is ignored as outside JSON semantics. Recursive proxies are rejected before traps; hostile prototypes, array-prototype impostors, sparse/extended arrays, cycles, unsafe numbers, oversized keys/strings/graphs, noncanonical bytes, and BOMs fail closed.
 
-The source binder requires the exact ordered 17-path inventory. It hashes exact bytes into bounded metadata records and then domain-separates the canonical source-set root. Missing, duplicate, reordered, renamed, empty, proxied, accessor-backed, per-file oversized, or aggregate-oversized sources reject aggregation.
+Every fixture, source, and report byte view must be an exact ordinary `Uint8Array` over a private, fixed-length, attached `ArrayBuffer`. Intrinsic getters validate internal slots without consulting shadowable properties. Proxy, typed-array impostor, `SharedArrayBuffer`, resizable buffer, detached view, empty, and oversized inputs are rejected. The harness copies each accepted view once and uses only that private snapshot for parsing, hashing, comparison, and aggregation.
+
+The source binder requires the exact ordered 17-path inventory. It hashes snapshotted exact bytes into bounded metadata records and then domain-separates the canonical source-set root. The source inventory's fixture entry must also be byte-identical to the separately supplied fixture snapshot. Missing, duplicate, reordered, renamed, empty, proxied, accessor-backed, shared/resizable/detached, per-file oversized, aggregate-oversized, or cross-binding-mismatched sources reject aggregation.
 
 ## Metadata-only report
 
