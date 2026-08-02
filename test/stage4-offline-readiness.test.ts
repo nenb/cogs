@@ -1,0 +1,537 @@
+/* biome-ignore-all lint/suspicious/noExplicitAny: hostile package mutations intentionally cross strict JSON types */
+import assert from "node:assert/strict";
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { createRequire } from "node:module";
+import { join, relative, resolve } from "node:path";
+import test from "node:test";
+import type { Ajv as AjvCore, Options } from "ajv";
+import {
+  canonicalStage4OfflineReadinessBytes,
+  classifyStage4OfflineReadiness,
+  STAGE4_READINESS_ARTIFACT_KEYS,
+  STAGE4_READINESS_BLOCKERS,
+  STAGE4_READINESS_BYTE_LIMITS,
+  stage4OfflineReadinessBindingRoot,
+  stage4OfflineReadinessSha256,
+} from "../scripts/stage4-offline-readiness.ts";
+
+const root = resolve(import.meta.dirname, "..");
+const packagePath = resolve(root, "docs/security-evidence/stage4-offline-readiness-package.json");
+const bytes = (path: string): Uint8Array => new Uint8Array(readFileSync(resolve(root, path)));
+const packageBytes = (): Uint8Array => new Uint8Array(readFileSync(packagePath));
+const packageObject = (): Record<string, any> => JSON.parse(readFileSync(packagePath, "utf8")) as Record<string, any>;
+
+function artifacts(): Record<string, Uint8Array> {
+  return {
+    sourceInventory: bytes("docs/security-evidence/stage4-offline-readiness-artifacts/source-inventory.json"),
+    chartInventory: bytes("docs/security-evidence/stage4-offline-readiness-artifacts/chart-inventory.json"),
+    values: bytes("test/fixtures/helm/stage4-notes-source-shapes-valid.yaml"),
+    render: bytes("docs/security-evidence/stage4-offline-readiness-artifacts/notes-render.yaml"),
+    repeatedRender: bytes("docs/security-evidence/stage4-offline-readiness-artifacts/notes-render-repeat.yaml"),
+    imageLock: bytes("docs/security-evidence/stage4-offline-readiness-artifacts/image-lock.json"),
+    nicContract: bytes("deploy/nic/stage4-sandbox-node-group-contract.json"),
+    runtimePins: bytes("docs/security-evidence/stage4-offline-readiness-artifacts/runtime-pins.json"),
+    schemaInventory: bytes("docs/security-evidence/stage4-offline-readiness-artifacts/schema-inventory.json"),
+    localValidation: bytes("docs/security-evidence/stage4-offline-readiness-artifacts/local-validation.json"),
+  };
+}
+
+function classify(value = packageBytes(), bindings: unknown = artifacts()) {
+  return classifyStage4OfflineReadiness(value, bindings);
+}
+
+function canonicalMutation(mutate: (value: Record<string, any>) => void, updateRoot = false): Uint8Array {
+  const value = packageObject();
+  mutate(value);
+  if (updateRoot) value.artifact_bindings.binding_root_sha256 = stage4OfflineReadinessBindingRoot(value as never);
+  return canonicalStage4OfflineReadinessBytes(value);
+}
+
+test("committed canonical package is locally complete but campaign-blocked and non-authoritative", () => {
+  const verdict = classify();
+  assert.equal(verdict.status, "local-preparation-complete-blocked");
+  assert.equal(verdict.local_preparation_complete, true);
+  assert.equal(verdict.campaign_request_ready, false);
+  assert.equal(verdict.campaign_approved, false);
+  assert.equal(verdict.cloud_authorized, false);
+  assert.equal(verdict.cloud_execution_observed, false);
+  assert.equal(verdict.provider_truth_observed, false);
+  assert.equal(verdict.current_resources_observed, false);
+  assert.equal(verdict.zero_resources_claimed, false);
+  assert.equal(verdict.stage4_exit_satisfied, false);
+  assert.equal(verdict.release_eligible, false);
+  assert.deepEqual(verdict.blockers, STAGE4_READINESS_BLOCKERS);
+  assert.equal(verdict.package_sha256, stage4OfflineReadinessSha256(packageBytes()));
+  assert.equal(verdict.binding_root_sha256, packageObject().artifact_bindings.binding_root_sha256);
+  assert.ok(Object.isFrozen(verdict));
+  assert.ok(Object.isFrozen(verdict.blockers));
+});
+
+test("verdict and package compile under strict independent schemas", () => {
+  const require = createRequire(import.meta.url);
+  const Ajv2020 = require("ajv/dist/2020.js") as new (options?: Options) => AjvCore;
+  const ajv = new Ajv2020({ allErrors: true, strict: true, strictRequired: false, ownProperties: true });
+  const packageSchema = JSON.parse(
+    readFileSync(resolve(root, "schemas/stage4-offline-readiness-package-v1.json"), "utf8"),
+  );
+  const verdictSchema = JSON.parse(
+    readFileSync(resolve(root, "schemas/stage4-offline-readiness-verdict-v1.json"), "utf8"),
+  );
+  const validatePackage = ajv.compile(packageSchema);
+  const validateVerdict = ajv.compile(verdictSchema);
+  assert.equal(validatePackage(packageObject()), true, JSON.stringify(validatePackage.errors));
+  assert.equal(validateVerdict(classify()), true, JSON.stringify(validateVerdict.errors));
+
+  const unknown = packageObject();
+  unknown.diagnostic = "arbitrary text is forbidden";
+  assert.equal(validatePackage(unknown), false);
+  const nested = packageObject();
+  nested.campaign_proposal.spend.current_price = "unknown prose";
+  assert.equal(validatePackage(nested), false);
+});
+
+test("committed inventories are canonical, complete for their scopes, and bind exact current files", () => {
+  const hashFile = (path: string): string => stage4OfflineReadinessSha256(bytes(path));
+  const readManifest = (path: string): Record<string, any> => {
+    const input = bytes(path);
+    const value = JSON.parse(new TextDecoder().decode(input)) as Record<string, any>;
+    assert.deepEqual(input, canonicalStage4OfflineReadinessBytes(value), `${path} must be canonical`);
+    return value;
+  };
+  const assertEntries = (entries: Array<{ path: string; sha256: string }>): void => {
+    for (const entry of entries) assert.equal(entry.sha256, hashFile(entry.path), entry.path);
+  };
+
+  const source = readManifest("docs/security-evidence/stage4-offline-readiness-artifacts/source-inventory.json");
+  const expectedSourcePaths = [
+    "IMPLEMENTATION.md",
+    "README.md",
+    "biome.json",
+    "docs/operations/ownership.md",
+    "docs/operations/stage-4-offline-readiness.md",
+    "docs/security-evidence/README.md",
+    "docs/test-reports/stage-4-offline-readiness.md",
+    "schemas/stage4-offline-readiness-package-v1.json",
+    "schemas/stage4-offline-readiness-verdict-v1.json",
+    "scripts/stage4-offline-readiness.ts",
+    "test/stage4-offline-readiness.test.ts",
+    "test/stage4-schema-registry.test.ts",
+  ].sort();
+  assert.deepEqual(
+    source.entries.map((entry: { path: string }) => entry.path),
+    expectedSourcePaths,
+  );
+  assertEntries(source.entries);
+
+  const walk = (directory: string): string[] =>
+    readdirSync(directory).flatMap((name) => {
+      const path = join(directory, name);
+      return statSync(path).isDirectory() ? walk(path) : [path];
+    });
+  const chart = readManifest("docs/security-evidence/stage4-offline-readiness-artifacts/chart-inventory.json");
+  const chartRoot = resolve(root, "deploy/helm/cogs");
+  assert.deepEqual(
+    chart.entries.map((entry: { path: string }) => entry.path),
+    walk(chartRoot)
+      .map((path) => relative(chartRoot, path))
+      .sort(),
+  );
+  assertEntries(
+    chart.entries.map((entry: { path: string; sha256: string }) => ({
+      ...entry,
+      path: `deploy/helm/cogs/${entry.path}`,
+    })),
+  );
+
+  const schemas = readManifest("docs/security-evidence/stage4-offline-readiness-artifacts/schema-inventory.json");
+  assert.deepEqual(
+    schemas.entries.map((entry: { path: string }) => entry.path),
+    readdirSync(resolve(root, "schemas"))
+      .filter((name) => /^stage[45].*\.json$/u.test(name))
+      .sort()
+      .map((name) => `schemas/${name}`),
+  );
+  assertEntries(schemas.entries);
+
+  const validation = readManifest("docs/security-evidence/stage4-offline-readiness-artifacts/local-validation.json");
+  assert.deepEqual(validation.checks, [
+    { id: "format", result: "pass-local-static" },
+    { id: "typecheck", result: "pass-local-static" },
+    { id: "unit-contracts", result: "pass-local-static" },
+    { id: "schema-registry", result: "pass-local-static" },
+    { id: "helm-lint", result: "pass-local-static" },
+    { id: "helm-zero-manifest", result: "pass-local-static" },
+    { id: "notes-render-repeat", result: "pass-local-static" },
+    { id: "dependency-and-audit-policy", result: "pass-local-static" },
+  ]);
+  assert.deepEqual(validation.execution, { cloud: false, external_model: false, kubernetes: false, provider: false });
+  assert.deepEqual(
+    validation.source_bindings.map((entry: { path: string }) => entry.path),
+    [
+      "biome.json",
+      "schemas/stage4-offline-readiness-package-v1.json",
+      "schemas/stage4-offline-readiness-verdict-v1.json",
+      "scripts/stage4-offline-readiness.ts",
+      "test/stage4-offline-readiness.test.ts",
+      "test/stage4-schema-registry.test.ts",
+    ],
+  );
+  assertEntries(validation.source_bindings);
+
+  const committedPackage = packageObject();
+  const imageLock = readManifest("docs/security-evidence/stage4-offline-readiness-artifacts/image-lock.json");
+  assert.deepEqual(
+    imageLock.images.map((image: { reference: string }) => image.reference),
+    [committedPackage.pins.images.worker, committedPackage.pins.images.proxy, committedPackage.pins.images.sandbox].map(
+      (image: { reference: string }) => image.reference,
+    ),
+  );
+  assert.equal(imageLock.release_image_set_present, false);
+  const runtime = readManifest("docs/security-evidence/stage4-offline-readiness-artifacts/runtime-pins.json");
+  assert.deepEqual(runtime.eks_node_image, {
+    ami_id: null,
+    kernel_release: null,
+    reason_code: "EKS_NODE_IMAGE_PIN_NOT_RECORDED",
+    release: null,
+    state: "unresolved-blocking",
+  });
+  assert.equal(runtime.runtime.kata.archive_sha256, committedPackage.pins.runtime.kata_archive_sha256);
+  assert.equal(runtime.runtime.containerd.version, committedPackage.pins.runtime.containerd_version);
+  assert.equal(runtime.runtime.qemu.version, committedPackage.pins.runtime.qemu_version);
+  assert.equal(runtime.runtime.containerd.artifact_sha256, null);
+  assert.equal(runtime.runtime.qemu.artifact_sha256, null);
+});
+
+test("binds every exact artifact and byte-identical repeated render", () => {
+  const expected = packageObject().artifact_bindings as Record<string, string>;
+  const artifactSet = artifacts();
+  const digestFields: Record<string, string> = {
+    sourceInventory: "source_inventory_sha256",
+    chartInventory: "chart_inventory_sha256",
+    values: "values_sha256",
+    render: "render_sha256",
+    repeatedRender: "repeated_render_sha256",
+    imageLock: "image_lock_sha256",
+    nicContract: "nic_contract_sha256",
+    runtimePins: "runtime_pins_sha256",
+    schemaInventory: "schema_inventory_sha256",
+    localValidation: "local_validation_sha256",
+  };
+  assert.deepEqual(Object.keys(artifactSet), [...STAGE4_READINESS_ARTIFACT_KEYS]);
+  for (const key of STAGE4_READINESS_ARTIFACT_KEYS) {
+    const artifact = artifactSet[key];
+    assert.ok(artifact);
+    assert.equal(expected[digestFields[key] ?? ""], stage4OfflineReadinessSha256(artifact), key);
+    const changed = artifacts();
+    changed[key] = new TextEncoder().encode(`changed-${key}\n`);
+    assert.equal(classify(packageBytes(), changed).reason_code, "STAGE4_READINESS_ARTIFACT_BINDING_MISMATCH", key);
+  }
+
+  const changed = artifacts();
+  changed.repeatedRender = new TextEncoder().encode("different-render\n");
+  const changedPackage = packageObject();
+  changedPackage.artifact_bindings.repeated_render_sha256 = stage4OfflineReadinessSha256(changed.repeatedRender);
+  changedPackage.artifact_bindings.binding_root_sha256 = stage4OfflineReadinessBindingRoot(changedPackage as never);
+  assert.equal(
+    classify(canonicalStage4OfflineReadinessBytes(changedPackage), changed).reason_code,
+    "STAGE4_READINESS_RENDER_NONDETERMINISTIC",
+  );
+});
+
+test("canonical bytes reject replay aliases, duplicate keys, BOM, whitespace, and newline drift", () => {
+  const canonical = packageBytes();
+  const text = new TextDecoder().decode(canonical);
+  for (const mutation of [
+    new TextEncoder().encode(JSON.stringify(packageObject())),
+    new TextEncoder().encode(`${JSON.stringify(packageObject(), null, 2)}\n`),
+    new TextEncoder().encode(`\uFEFF${text}`),
+    new TextEncoder().encode(text.replace(/\n$/u, "\r\n")),
+    canonical.slice(0, -1),
+    new TextEncoder().encode(`${text}\n`),
+    new TextEncoder().encode(text.replace(/^\{/u, '{"authority":"local-static-stage4-readiness-package",')),
+  ]) {
+    assert.equal(classify(mutation).reason_code, "STAGE4_READINESS_INVALID_CANONICAL_PACKAGE");
+  }
+});
+
+test("authority promotion and one-attempt replay or retry authority fail closed", () => {
+  const mutations: Array<[string, (value: Record<string, any>) => void]> = [
+    [
+      "campaign request",
+      (value) => {
+        value.claims.campaign_request_ready = true;
+      },
+    ],
+    [
+      "campaign approval",
+      (value) => {
+        value.claims.campaign_approved = true;
+      },
+    ],
+    [
+      "cloud authority",
+      (value) => {
+        value.claims.cloud_authorized = true;
+      },
+    ],
+    [
+      "provider truth",
+      (value) => {
+        value.claims.provider_truth_observed = true;
+      },
+    ],
+    [
+      "zero resources",
+      (value) => {
+        value.claims.zero_resources_claimed = true;
+      },
+    ],
+    [
+      "Stage 4 exit",
+      (value) => {
+        value.claims.stage4_exit_satisfied = true;
+      },
+    ],
+    [
+      "release",
+      (value) => {
+        value.claims.release_eligible = true;
+      },
+    ],
+    [
+      "approval present",
+      (value) => {
+        value.attempt_authority.approval_present = true;
+      },
+    ],
+    [
+      "attempt present",
+      (value) => {
+        value.attempt_authority.attempt_id_present = true;
+      },
+    ],
+    [
+      "two attempts",
+      (value) => {
+        value.attempt_authority.maximum_attempts_per_approval = 2;
+      },
+    ],
+    [
+      "prior retry",
+      (value) => {
+        value.attempt_authority.prior_approval_authorizes_retry = true;
+      },
+    ],
+    [
+      "provider route",
+      (value) => {
+        value.attempt_authority.executable_provider_route_present = true;
+      },
+    ],
+  ];
+  for (const [name, mutate] of mutations) {
+    assert.equal(
+      classify(canonicalMutation(mutate, true)).reason_code,
+      "STAGE4_READINESS_SCHEMA_OR_SEMANTIC_DRIFT",
+      name,
+    );
+  }
+
+  const replayed = classify();
+  assert.equal(replayed.local_preparation_complete, true, "an exact replay may revalidate only the local package");
+  assert.equal(replayed.campaign_request_ready, false);
+  assert.equal(replayed.cloud_authorized, false);
+});
+
+test("current NIC and node-image blockers and uncertainty cannot be promoted or erased", () => {
+  const mutations: Array<[string, (value: Record<string, any>) => void]> = [
+    [
+      "NIC capable",
+      (value) => {
+        value.pins.nic.capability_state = "ready";
+      },
+    ],
+    [
+      "NIC version",
+      (value) => {
+        value.pins.nic.release = "v0.12.0";
+      },
+    ],
+    [
+      "AMI invented",
+      (value) => {
+        value.pins.runtime.eks_node_ami_id = "ami-12345678";
+      },
+    ],
+    [
+      "kernel invented",
+      (value) => {
+        value.pins.runtime.eks_node_kernel_release = "6.8.0";
+      },
+    ],
+    [
+      "image resolved",
+      (value) => {
+        value.pins.runtime.node_image_state = "resolved";
+      },
+    ],
+    [
+      "account invented",
+      (value) => {
+        value.campaign_proposal.account_binding.account_sha256 = "a".repeat(64);
+      },
+    ],
+    [
+      "identity invented",
+      (value) => {
+        value.identities.roles[0].principal_binding_sha256 = "b".repeat(64);
+      },
+    ],
+    [
+      "remove blocker",
+      (value) => {
+        value.blockers.splice(1, 1);
+      },
+    ],
+  ];
+  for (const [name, mutate] of mutations) {
+    assert.equal(classify(canonicalMutation(mutate, true)).local_preparation_complete, false, name);
+  }
+});
+
+test("binding root makes source, pin, validation, and campaign-shape replay sticky", () => {
+  for (const mutate of [
+    (value: Record<string, any>) => {
+      value.artifact_bindings.source_inventory_sha256 = "f".repeat(64);
+    },
+    (value: Record<string, any>) => {
+      value.artifact_bindings.local_validation_sha256 = "e".repeat(64);
+    },
+    (value: Record<string, any>) => {
+      value.campaign_proposal.time.absolute_ttl_seconds = 7200;
+    },
+    (value: Record<string, any>) => {
+      value.revalidation.price_state = "validated";
+    },
+  ]) {
+    const verdict = classify(canonicalMutation(mutate));
+    assert.equal(verdict.local_preparation_complete, false);
+    assert.ok(
+      [
+        "STAGE4_READINESS_SCHEMA_OR_SEMANTIC_DRIFT",
+        "STAGE4_READINESS_ARTIFACT_BINDING_MISMATCH",
+        "STAGE4_READINESS_BINDING_ROOT_MISMATCH",
+      ].includes(verdict.reason_code),
+    );
+  }
+});
+
+test("bounded hostile prototypes, proxies, getters, symbols, and artifact-key drift preserve uncertainty", () => {
+  let traps = 0;
+  const hostile = new Proxy(new Uint8Array([1]), {
+    getPrototypeOf() {
+      traps += 1;
+      throw new Error("must not run");
+    },
+    get() {
+      traps += 1;
+      throw new Error("must not run");
+    },
+  });
+  assert.equal(
+    classifyStage4OfflineReadiness(hostile, artifacts()).reason_code,
+    "STAGE4_READINESS_BOUNDED_IO_VIOLATION",
+  );
+  assert.equal(traps, 0);
+
+  const hostileBindings = new Proxy(artifacts(), {
+    ownKeys() {
+      traps += 1;
+      throw new Error("must not run");
+    },
+    getOwnPropertyDescriptor() {
+      traps += 1;
+      throw new Error("must not run");
+    },
+  });
+  assert.equal(classify(packageBytes(), hostileBindings).status, "preserve-uncertain");
+  assert.equal(traps, 0);
+
+  const getterBindings: Record<string, unknown> = {};
+  let getterRuns = 0;
+  for (const key of STAGE4_READINESS_ARTIFACT_KEYS) {
+    Object.defineProperty(getterBindings, key, {
+      enumerable: true,
+      get() {
+        getterRuns += 1;
+        return artifacts()[key];
+      },
+    });
+  }
+  assert.equal(classify(packageBytes(), getterBindings).status, "preserve-uncertain");
+  assert.equal(getterRuns, 0);
+
+  const inherited = Object.assign(Object.create({ inherited: true }), artifacts());
+  assert.equal(classify(packageBytes(), inherited).status, "preserve-uncertain");
+  const symbol = artifacts() as Record<PropertyKey, unknown>;
+  symbol[Symbol("hostile")] = true;
+  assert.equal(classify(packageBytes(), symbol).status, "preserve-uncertain");
+  const missing = artifacts();
+  delete missing.localValidation;
+  assert.equal(classify(packageBytes(), missing).status, "preserve-uncertain");
+
+  const recursive = artifacts();
+  const runtimePins = recursive.runtimePins;
+  assert.ok(runtimePins);
+  recursive.runtimePins = new Proxy(runtimePins, {
+    get() {
+      traps += 1;
+      throw new Error("must not run");
+    },
+  });
+  assert.equal(classify(packageBytes(), recursive).status, "preserve-uncertain");
+  assert.equal(traps, 0);
+});
+
+test("byte and aggregate bounds fail before hashing or authority classification", () => {
+  const oversizedPackage = new Uint8Array(STAGE4_READINESS_BYTE_LIMITS.package + 1);
+  assert.equal(classify(oversizedPackage).reason_code, "STAGE4_READINESS_BOUNDED_IO_VIOLATION");
+  const oversized = artifacts();
+  oversized.localValidation = new Uint8Array(STAGE4_READINESS_BYTE_LIMITS.localValidation + 1);
+  assert.equal(classify(packageBytes(), oversized).reason_code, "STAGE4_READINESS_BOUNDED_IO_VIOLATION");
+  const empty = artifacts();
+  empty.imageLock = new Uint8Array();
+  assert.equal(classify(packageBytes(), empty).reason_code, "STAGE4_READINESS_BOUNDED_IO_VIOLATION");
+});
+
+test("classifier source has no executable provider, filesystem, environment, or arbitrary diagnostic route", () => {
+  const source = readFileSync(resolve(root, "scripts/stage4-offline-readiness.ts"), "utf8");
+  assert.doesNotMatch(
+    source,
+    /from\s+["']node:(?:child_process|fs|http|https|net|dns|tls|os|worker_threads)["']|\bprocess\.(?:env|argv)|@aws-sdk|\b(?:kubectl|opentofu|terraform)\b|helm\s+(?:install|upgrade)|external[- ]model/iu,
+  );
+  assert.doesNotMatch(source, /diagnostic|command|target|resource[_-]id|account[_-]id/iu);
+  const verdict = classify();
+  assert.deepEqual(
+    Object.keys(verdict).sort(),
+    [
+      "authority",
+      "binding_root_sha256",
+      "blockers",
+      "campaign_approved",
+      "campaign_request_ready",
+      "cloud_authorized",
+      "cloud_execution_observed",
+      "current_resources_observed",
+      "local_preparation_complete",
+      "package_sha256",
+      "provider_truth_observed",
+      "reason_code",
+      "release_eligible",
+      "stage4_exit_satisfied",
+      "status",
+      "version",
+      "zero_resources_claimed",
+    ].sort(),
+  );
+});

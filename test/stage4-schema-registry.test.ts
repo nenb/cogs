@@ -117,6 +117,47 @@ function teardownPlanSample(): JsonObject {
   };
 }
 
+function offlineReadinessPackageSample(): JsonObject {
+  return JSON.parse(
+    readFileSync(
+      resolve(import.meta.dirname, "../docs/security-evidence/stage4-offline-readiness-package.json"),
+      "utf8",
+    ),
+  ) as JsonObject;
+}
+
+function offlineReadinessVerdictSample(): JsonObject {
+  return {
+    version: "cogs.stage4-offline-readiness-verdict/v1",
+    authority: "local-static-stage4-readiness-classifier",
+    local_preparation_complete: true,
+    campaign_request_ready: false,
+    campaign_approved: false,
+    cloud_authorized: false,
+    cloud_execution_observed: false,
+    provider_truth_observed: false,
+    current_resources_observed: false,
+    zero_resources_claimed: false,
+    stage4_exit_satisfied: false,
+    release_eligible: false,
+    package_sha256: sha("a"),
+    binding_root_sha256: sha("b"),
+    status: "local-preparation-complete-blocked",
+    reason_code: "STAGE4_LOCAL_PREPARATION_COMPLETE_CAMPAIGN_BLOCKED",
+    blockers: [
+      "ISSUE_42_OPEN",
+      "NIC_V0_11_0_MODULE_0_7_0_LAUNCH_TEMPLATE_CAPABILITY_MISSING",
+      "EKS_AMI_IMAGE_RELEASE_KERNEL_UNRESOLVED",
+      "PROPOSED_ACCOUNT_BINDING_ABSENT",
+      "CURRENT_PRICE_NOT_REVALIDATED",
+      "CURRENT_QUOTA_NOT_REVALIDATED",
+      "SEPARATED_CAMPAIGN_IDENTITIES_ABSENT",
+      "CAMPAIGN_ENVELOPE_AND_APPROVAL_ABSENT",
+      "NO_EXECUTABLE_PROVIDER_ROUTE",
+    ],
+  };
+}
+
 function policyContractSample(): JsonObject {
   return JSON.parse(
     readFileSync(resolve(import.meta.dirname, "fixtures/stage4-policy/valid-contract-v1.json"), "utf8"),
@@ -204,6 +245,8 @@ function nicVerdictSample(): JsonObject {
 const STAGE4_SCHEMA_REGISTRY = [
   { file: "stage4-nic-sandbox-node-group-contract-v1.json", sample: nicContractSample },
   { file: "stage4-nic-sandbox-node-group-verdict-v1.json", sample: nicVerdictSample },
+  { file: "stage4-offline-readiness-package-v1.json", sample: offlineReadinessPackageSample },
+  { file: "stage4-offline-readiness-verdict-v1.json", sample: offlineReadinessVerdictSample },
   { file: "stage4-policy-contract-v1.json", sample: policyContractSample },
   { file: "stage4-policy-payload-v1.json", sample: policyPayloadSample },
   { file: "stage4-policy-probe-suite-v1.json", sample: policyProbeSample },
@@ -240,6 +283,8 @@ test("the bounded Stage 4 registry compiles its strict positive samples", () => 
     [
       "stage4-nic-sandbox-node-group-contract-v1.json",
       "stage4-nic-sandbox-node-group-verdict-v1.json",
+      "stage4-offline-readiness-package-v1.json",
+      "stage4-offline-readiness-verdict-v1.json",
       "stage4-policy-contract-v1.json",
       "stage4-policy-payload-v1.json",
       "stage4-policy-probe-suite-v1.json",
@@ -280,6 +325,14 @@ test("every Stage 4 schema rejects unknown root fields and representative nested
     validatorFor(validators, "stage4-nic-sandbox-node-group-contract-v1.json"),
     nicMutation,
     "NIC contract accepted an unknown runtime field",
+  );
+
+  const readinessMutation = offlineReadinessPackageSample();
+  ((readinessMutation.campaign_proposal as JsonObject).account_binding as JsonObject).unreviewed = true;
+  assertRejected(
+    validatorFor(validators, "stage4-offline-readiness-package-v1.json"),
+    readinessMutation,
+    "offline readiness package accepted an unknown account-binding field",
   );
 
   const storageMutation = storageLaunchContractSample();

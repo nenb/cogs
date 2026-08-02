@@ -33,6 +33,8 @@
     {
       "includes": [
         "schemas/native-qualification-report-v1alpha1.json",
+        "docs/security-evidence/stage4-offline-readiness-package.json",
+        "docs/security-evidence/stage4-offline-readiness-artifacts/*.json",
         "scripts/validate-schemas.ts",
         "test/native-qualification-b.test.ts",
         "test/native-qualification-common.test.ts",

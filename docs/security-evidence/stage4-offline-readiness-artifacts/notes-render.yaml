@@ -1,0 +1,574 @@
+# COGS NOTES-ONLY STATIC SOURCE SHAPES BEGIN: WARNING — UNSAFE TO APPLY; UNQUALIFIED
+# These are review-only Kubernetes YAML source shapes. Helm does not submit NOTES.txt as manifests.
+# They prove no cluster, runtime, storage, network-policy, identity, or security property.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: stage4-cogs-contract
+  namespace: static-preparation
+  labels:
+    app.kubernetes.io/name: "cogs"
+    app.kubernetes.io/instance: "stage4"
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/part-of: "cogs"
+    dev.cogs/stage: "4-preparation"
+    dev.cogs/session: "static-test-session"
+    dev.cogs/security-claim: "none"
+    dev.cogs/qualification: "none"
+    dev.cogs/production-ready: "false"
+    dev.cogs/role: "preparation"
+  annotations:
+    dev.cogs/notice: "notes-only-static-source-shape-unsafe-to-apply-unqualified"
+immutable: true
+data:
+  status: "NOTES_ONLY_STATIC_SOURCE_SHAPE"
+  applySafety: "UNSAFE_TO_APPLY_UNQUALIFIED"
+  productionReady: "false"
+  runtimeClassName: "kata-qemu-cogs"
+  workerImage: "registry.example.invalid/cogs/worker@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  proxyImage: "envoyproxy/envoy:v1.38.3@sha256:5f7c43e1147412fdb3af578c651c67478a3df818eae89d2261e707e06c209cdb"
+  sandboxImage: "registry.example.invalid/cogs/sandbox@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+  trustedNodeSelector: "{\"cogs.dev/node-domain\":\"trusted\"}"
+  sandboxNodeSelector: "{\"cogs.dev/nested-virtualization\":\"enabled\",\"cogs.dev/node-domain\":\"sandbox-kata\",\"cogs.dev/sandbox-runtime\":\"kata-qemu-kvm\"}"
+  workspaceStorageClass: "synthetic-workspace-csi"
+  workspaceSize: "20Gi"
+  workspaceAccessMode: "ReadWriteOncePod"
+  workspaceVolumeMode: "Filesystem"
+  workspaceVolumeBindingMode: "WaitForFirstConsumer"
+  workspaceReclaimPolicy: "Retain"
+  workspaceRetention: "retain-until-explicit-workspace-deletion"
+  sessionStateStorageClass: "synthetic-session-state-csi"
+  sessionStateSize: "5Gi"
+  sessionStateAccessMode: "ReadWriteOncePod"
+  sessionStateVolumeMode: "Filesystem"
+  sessionStateVolumeBindingMode: "WaitForFirstConsumer"
+  sessionStateReclaimPolicy: "Retain"
+  sessionStateRetention: "retain-30-days-after-session-close"
+  sessionStateRetentionSeconds: "2592000"
+  storageLaunchContractVersion: "cogs.stage4-storage-launch-contract/v1"
+  workspaceExclusiveWriterLease: "ONE_FENCED_WRITER_EXPIRY_NEVER_AUTHORIZES_TAKEOVER"
+  storageCleanupContract: "AMBIGUITY_PRESERVES_ATTACHMENTS_STATE_AND_LEASE"
+  openBaoEndpointReference: "https://openbao.static-test.invalid:8200"
+  openBaoKubernetesAuthMountReference: "auth/cogs-static-test"
+  openBaoKubernetesAuthRoleReference: "cogs-static-test-role"
+  openBaoPkiPathReference: "pki/cogs-static-test"
+  openBaoTokenAudience: "openbao.cogs.static-test"
+  openBaoPeerSelector: "{\"namespaceLabels\":{\"kubernetes.io/metadata.name\":\"synthetic-openbao\"},\"podLabels\":{\"app.kubernetes.io/name\":\"synthetic-openbao\"},\"port\":8200}"
+  otlpEndpointReference: "https://otlp.static-test.invalid:4317"
+  otlpProtocol: "grpc"
+  otlpPeerSelector: "{\"namespaceLabels\":{\"kubernetes.io/metadata.name\":\"synthetic-observability\"},\"podLabels\":{\"app.kubernetes.io/name\":\"synthetic-otel-collector\"},\"port\":4317}"
+  proxyCapabilityAudience: "cogs-egress-proxy.static-test"
+  proxyCapabilitySourceBindingRequired: "true"
+  ephemeralProxyCapability: "ABSENT_FUTURE_TRUSTED_LAUNCHER_ONLY"
+  policyContractVersion: "cogs.stage4-policy-contract/v1"
+  policyContractAuthority: "static-only-stage4-policy"
+  policyContractQualification: "pending-exact-eks-cni-runtime"
+  trustedWorkerIdentityContract: "SCOPED_PROJECTED_OPENBAO_TOKEN_EXACT_ROLE_AND_USER_HANDLES_ONLY"
+  sandboxServiceAccountContract: "cogs-sandbox-inert"
+  trustedSandboxServiceAccountsDistinct: "true"
+  sandboxIdentityContract: "INERT_SERVICE_ACCOUNT_NO_TOKEN_RBAC_OPENBAO_OR_CLOUD_IDENTITY_FIELDS"
+  openBaoHandleScopeContract: "EXACT_USERS_CURRENT_USER_ONLY_ORGANIZATIONS_FORBIDDEN"
+  proxyCapabilityContract: "IMMUTABLE_SESSION_INSTANCE_POD_ID_GENERATION_EXPIRY_BOUND_DENY_DRAIN_REPLACE_NO_FALLBACK"
+  otlpPayloadContract: "METADATA_ONLY_BOUNDED_DROP_NON_AUTHORIZING"
+  auditWalFailureContract: "DIGEST_REFERENCES_ONLY_APPEND_AND_SYNC_BEFORE_CREDENTIAL_USE_FAILURE_DENIES_AND_REQUIRES_RECYCLE"
+  resourceProfile: "stage4-fixed-bounded-v1"
+  idleSeconds: "1800"
+  hardSeconds: "28800"
+  terminationGraceSeconds: "30"
+  auditWalMaxBytes: "1048576"
+  publicEgressCaConfigMapReference: "synthetic-public-egress-ca"
+  unresolvedChecks: |-
+    RuntimeClass existence and non-runc behavior
+    KVM, Kata, QEMU, and distinct guest identity
+    trusted and sandbox node availability and placement
+    CNI default-deny, IPv4, IPv6, UDP, and exact-session enforcement
+    CSI access modes, attach, detach, reattach, and writer lease
+    OpenBao and OTLP reachability, roles, policy, and TLS chains
+    image availability, signatures, and runtime identity
+    per-session SSH and proxy capability issuance and source binding
+    proxy upstream egress, immutable route materialization, and revocation
+    pinned NIC v0.11.0 lacks custom launch-template ID/version and CpuOptions.NestedVirtualization inputs
+    EKS launch-template, nested-virtualization, recovery, performance, and cleanup evidence
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: stage4-cogs-trusted
+  namespace: static-preparation
+  labels:
+    app.kubernetes.io/name: "cogs"
+    app.kubernetes.io/instance: "stage4"
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/part-of: "cogs"
+    dev.cogs/stage: "4-preparation"
+    dev.cogs/session: "static-test-session"
+    dev.cogs/security-claim: "none"
+    dev.cogs/qualification: "none"
+    dev.cogs/production-ready: "false"
+    dev.cogs/role: "trusted"
+  annotations:
+    dev.cogs/notice: "notes-only-static-source-shape-unsafe-to-apply-unqualified"
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cogs-sandbox-inert
+  namespace: static-preparation
+  labels:
+    app.kubernetes.io/name: "cogs"
+    app.kubernetes.io/instance: "stage4"
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/part-of: "cogs"
+    dev.cogs/stage: "4-preparation"
+    dev.cogs/session: "static-test-session"
+    dev.cogs/security-claim: "none"
+    dev.cogs/qualification: "none"
+    dev.cogs/production-ready: "false"
+    dev.cogs/role: "sandbox"
+  annotations:
+    dev.cogs/notice: "notes-only-static-source-shape-unsafe-to-apply-unqualified"
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: stage4-cogs-proxy
+  namespace: static-preparation
+  labels:
+    app.kubernetes.io/name: "cogs"
+    app.kubernetes.io/instance: "stage4"
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/part-of: "cogs"
+    dev.cogs/stage: "4-preparation"
+    dev.cogs/session: "static-test-session"
+    dev.cogs/security-claim: "none"
+    dev.cogs/qualification: "none"
+    dev.cogs/production-ready: "false"
+    dev.cogs/role: "trusted"
+    dev.cogs/proxy: "true"
+  annotations:
+    dev.cogs/notice: "notes-only-static-selector-source-shape-unsafe-to-apply-unqualified"
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/instance: "stage4"
+    dev.cogs/session: "static-test-session"
+    dev.cogs/role: "trusted"
+    dev.cogs/proxy: "true"
+  ports:
+    - name: proxy
+      protocol: TCP
+      port: 15001
+      targetPort: proxy
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: stage4-cogs-default-deny
+  namespace: static-preparation
+  labels:
+    app.kubernetes.io/name: "cogs"
+    app.kubernetes.io/instance: "stage4"
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/part-of: "cogs"
+    dev.cogs/stage: "4-preparation"
+    dev.cogs/session: "static-test-session"
+    dev.cogs/security-claim: "none"
+    dev.cogs/qualification: "none"
+    dev.cogs/production-ready: "false"
+    dev.cogs/role: "network-policy"
+  annotations:
+    dev.cogs/notice: "notes-only-static-source-shape-unsafe-to-apply-unqualified-not-proof-of-cni-enforcement"
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: "stage4"
+      dev.cogs/session: "static-test-session"
+    matchExpressions:
+      - key: dev.cogs/role
+        operator: In
+        values: ["trusted", "sandbox"]
+  policyTypes: ["Ingress", "Egress"]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: stage4-cogs-trusted-allow
+  namespace: static-preparation
+  labels:
+    app.kubernetes.io/name: "cogs"
+    app.kubernetes.io/instance: "stage4"
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/part-of: "cogs"
+    dev.cogs/stage: "4-preparation"
+    dev.cogs/session: "static-test-session"
+    dev.cogs/security-claim: "none"
+    dev.cogs/qualification: "none"
+    dev.cogs/production-ready: "false"
+    dev.cogs/role: "network-policy"
+  annotations:
+    dev.cogs/notice: "notes-only-static-source-shape-unsafe-to-apply-unqualified-not-proof-of-cni-enforcement"
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: "stage4"
+      dev.cogs/session: "static-test-session"
+      dev.cogs/role: "trusted"
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: "stage4"
+              dev.cogs/session: "static-test-session"
+              dev.cogs/role: "sandbox"
+      ports:
+        - protocol: TCP
+          port: 15001
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: "stage4"
+              dev.cogs/session: "static-test-session"
+              dev.cogs/role: "sandbox"
+      ports:
+        - protocol: TCP
+          port: 22
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: synthetic-openbao
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: synthetic-openbao
+      ports:
+        - protocol: TCP
+          port: 8200
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: synthetic-observability
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: synthetic-otel-collector
+      ports:
+        - protocol: TCP
+          port: 4317
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: stage4-cogs-sandbox-allow
+  namespace: static-preparation
+  labels:
+    app.kubernetes.io/name: "cogs"
+    app.kubernetes.io/instance: "stage4"
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/part-of: "cogs"
+    dev.cogs/stage: "4-preparation"
+    dev.cogs/session: "static-test-session"
+    dev.cogs/security-claim: "none"
+    dev.cogs/qualification: "none"
+    dev.cogs/production-ready: "false"
+    dev.cogs/role: "network-policy"
+  annotations:
+    dev.cogs/notice: "notes-only-static-source-shape-unsafe-to-apply-unqualified-not-proof-of-cni-enforcement"
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: "stage4"
+      dev.cogs/session: "static-test-session"
+      dev.cogs/role: "sandbox"
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: "stage4"
+              dev.cogs/session: "static-test-session"
+              dev.cogs/role: "trusted"
+      ports:
+        - protocol: TCP
+          port: 22
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: "stage4"
+              dev.cogs/session: "static-test-session"
+              dev.cogs/role: "trusted"
+              dev.cogs/proxy: "true"
+      ports:
+        - protocol: TCP
+          port: 15001
+---
+apiVersion: v1
+kind: PodTemplate
+metadata:
+  name: stage4-cogs-trusted-template
+  namespace: static-preparation
+  labels:
+    app.kubernetes.io/name: "cogs"
+    app.kubernetes.io/instance: "stage4"
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/part-of: "cogs"
+    dev.cogs/stage: "4-preparation"
+    dev.cogs/session: "static-test-session"
+    dev.cogs/security-claim: "none"
+    dev.cogs/qualification: "none"
+    dev.cogs/production-ready: "false"
+    dev.cogs/role: "trusted"
+    dev.cogs/proxy: "true"
+  annotations:
+    dev.cogs/notice: "notes-only-static-source-shape-unsafe-to-apply-unqualified"
+template:
+  metadata:
+    labels:
+      app.kubernetes.io/name: "cogs"
+      app.kubernetes.io/instance: "stage4"
+      app.kubernetes.io/managed-by: "Helm"
+      app.kubernetes.io/part-of: "cogs"
+      dev.cogs/stage: "4-preparation"
+      dev.cogs/session: "static-test-session"
+      dev.cogs/security-claim: "none"
+      dev.cogs/qualification: "none"
+      dev.cogs/production-ready: "false"
+      dev.cogs/role: "trusted"
+      dev.cogs/proxy: "true"
+    annotations:
+      dev.cogs/notice: "future-launcher-must-materialize-fresh-identities-and-configuration"
+      dev.cogs/production-ready: "false"
+  spec:
+    serviceAccountName: stage4-cogs-trusted
+    automountServiceAccountToken: false
+    enableServiceLinks: false
+    activeDeadlineSeconds: 28800
+    terminationGracePeriodSeconds: 30
+    nodeSelector:
+      cogs.dev/node-domain: trusted
+    tolerations:
+      []
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 10001
+      runAsGroup: 10001
+      fsGroup: 10001
+      seccompProfile:
+        type: RuntimeDefault
+    containers:
+      - name: worker
+        image: "registry.example.invalid/cogs/worker@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          privileged: false
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+        resources:
+          requests:
+            cpu: 500m
+            memory: 512Mi
+            ephemeral-storage: 1Gi
+          limits:
+            cpu: "2"
+            memory: 2Gi
+            ephemeral-storage: 4Gi
+        volumeMounts:
+          - name: openbao-token
+            mountPath: /run/cogs/openbao-token
+            readOnly: true
+          - name: preparation-contract
+            mountPath: /etc/cogs/preparation
+            readOnly: true
+          - name: public-egress-ca
+            mountPath: /etc/cogs/egress-ca
+            readOnly: true
+          - name: session-material
+            mountPath: /run/cogs/session-material
+          - name: worker-tmp
+            mountPath: /tmp
+          - name: session-state
+            mountPath: /var/lib/cogs/session
+      - name: envoy
+        image: "envoyproxy/envoy:v1.38.3@sha256:5f7c43e1147412fdb3af578c651c67478a3df818eae89d2261e707e06c209cdb"
+        imagePullPolicy: IfNotPresent
+        ports:
+          - name: proxy
+            containerPort: 15001
+            protocol: TCP
+        securityContext:
+          privileged: false
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+            ephemeral-storage: 256Mi
+          limits:
+            cpu: "1"
+            memory: 512Mi
+            ephemeral-storage: 1Gi
+        volumeMounts:
+          - name: preparation-contract
+            mountPath: /etc/cogs/preparation
+            readOnly: true
+          - name: public-egress-ca
+            mountPath: /etc/cogs/egress-ca
+            readOnly: true
+          - name: proxy-material
+            mountPath: /run/cogs/proxy-material
+          - name: proxy-tmp
+            mountPath: /tmp
+    volumes:
+      - name: openbao-token
+        projected:
+          defaultMode: 256
+          sources:
+            - serviceAccountToken:
+                audience: "openbao.cogs.static-test"
+                expirationSeconds: 600
+                path: token
+      - name: preparation-contract
+        configMap:
+          name: stage4-cogs-contract
+          optional: false
+      - name: public-egress-ca
+        configMap:
+          name: "synthetic-public-egress-ca"
+          optional: false
+      - name: session-material
+        emptyDir:
+          medium: Memory
+          sizeLimit: 32Mi
+      - name: proxy-material
+        emptyDir:
+          medium: Memory
+          sizeLimit: 32Mi
+      - name: worker-tmp
+        emptyDir:
+          medium: Memory
+          sizeLimit: 64Mi
+      - name: proxy-tmp
+        emptyDir:
+          medium: Memory
+          sizeLimit: 32Mi
+      - name: session-state
+        persistentVolumeClaim:
+          claimName: replace-per-session-state-pvc
+          readOnly: false
+---
+apiVersion: v1
+kind: PodTemplate
+metadata:
+  name: stage4-cogs-sandbox-template
+  namespace: static-preparation
+  labels:
+    app.kubernetes.io/name: "cogs"
+    app.kubernetes.io/instance: "stage4"
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/part-of: "cogs"
+    dev.cogs/stage: "4-preparation"
+    dev.cogs/session: "static-test-session"
+    dev.cogs/security-claim: "none"
+    dev.cogs/qualification: "none"
+    dev.cogs/production-ready: "false"
+    dev.cogs/role: "sandbox"
+  annotations:
+    dev.cogs/notice: "notes-only-static-source-shape-unsafe-to-apply-unqualified"
+template:
+  metadata:
+    labels:
+      app.kubernetes.io/name: "cogs"
+      app.kubernetes.io/instance: "stage4"
+      app.kubernetes.io/managed-by: "Helm"
+      app.kubernetes.io/part-of: "cogs"
+      dev.cogs/stage: "4-preparation"
+      dev.cogs/session: "static-test-session"
+      dev.cogs/security-claim: "none"
+      dev.cogs/qualification: "none"
+      dev.cogs/production-ready: "false"
+      dev.cogs/role: "sandbox"
+    annotations:
+      dev.cogs/notice: "guest-uid-0-is-untrusted-vm-root-future-trusted-launcher-material-absent"
+      dev.cogs/production-ready: "false"
+  spec:
+    serviceAccountName: cogs-sandbox-inert
+    automountServiceAccountToken: false
+    enableServiceLinks: false
+    activeDeadlineSeconds: 28800
+    terminationGracePeriodSeconds: 30
+    runtimeClassName: "kata-qemu-cogs"
+    nodeSelector:
+      cogs.dev/nested-virtualization: enabled
+      cogs.dev/node-domain: sandbox-kata
+      cogs.dev/sandbox-runtime: kata-qemu-kvm
+    tolerations:
+      - effect: NoSchedule
+        key: cogs.dev/sandbox
+        operator: Equal
+        value: kata
+    securityContext:
+      runAsUser: 0
+      runAsGroup: 0
+      seccompProfile:
+        type: RuntimeDefault
+    containers:
+      - name: sandbox
+        image: "registry.example.invalid/cogs/sandbox@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        imagePullPolicy: IfNotPresent
+        env:
+          - name: HTTP_PROXY
+            value: "http://stage4-cogs-proxy:15001"
+          - name: HTTPS_PROXY
+            value: "http://stage4-cogs-proxy:15001"
+          - name: SSL_CERT_FILE
+            value: /etc/cogs/egress-ca/egress-ca.crt
+        ports:
+          - name: ssh
+            containerPort: 22
+            protocol: TCP
+        securityContext:
+          runAsUser: 0
+          runAsGroup: 0
+          privileged: false
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: false
+          capabilities:
+            drop: ["ALL"]
+        resources:
+          requests:
+            cpu: "2"
+            memory: 4Gi
+            ephemeral-storage: 8Gi
+          limits:
+            cpu: "2"
+            memory: 4Gi
+            ephemeral-storage: 16Gi
+        volumeMounts:
+          - name: public-egress-ca
+            mountPath: /etc/cogs/egress-ca
+            readOnly: true
+          - name: sandbox-tmp
+            mountPath: /tmp
+          - name: workspace
+            mountPath: /workspace
+    volumes:
+      - name: public-egress-ca
+        configMap:
+          name: "synthetic-public-egress-ca"
+          optional: false
+      - name: sandbox-tmp
+        emptyDir:
+          medium: Memory
+          sizeLimit: 256Mi
+      - name: workspace
+        persistentVolumeClaim:
+          claimName: replace-per-session-workspace-pvc
+          readOnly: false
+# COGS NOTES-ONLY STATIC SOURCE SHAPES END: WARNING — UNSAFE TO APPLY; UNQUALIFIED

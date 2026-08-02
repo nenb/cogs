@@ -16,7 +16,7 @@
 | Stage 4 teardown and zero-inventory verifier | Nick Byrne (`@nenb`) |
 | Subscription OAuth broker and terms, post-MVP interim | Nick Byrne (`@nenb`), to be reassigned to the daemon/platform team when it exists |
 
-One person may hold multiple roles initially, as recorded above. This register identifies responsibility only: it is not standing cloud authority. Every cloud campaign requires a fresh, named, issue-specific approval that records the exact revision, operator, approver, account binding, region, resource ceiling, spend cap, expiry, destroy path, and independent read-only zero-inventory procedure. Approval for one attempt or stage never authorizes a retry or later campaign.
+One person may hold multiple roles initially, as recorded above. This register identifies responsibility only: it is not standing cloud authority. The issue #357 offline package therefore records every future principal binding as absent and blocking. Before any campaign request, stable authenticated bindings must separate the campaign operator from the campaign approver, budget approver, security/evidence reviewer, and zero-inventory observer; the zero-inventory observer must also be distinct from the approver and security/evidence reviewer. Role labels or this register do not prove that separation. Every cloud campaign requires a fresh, named, issue-specific approval that records the exact revision, operator, approver, account binding, region, resource ceiling, spend cap, expiry, destroy path, and independent read-only zero-inventory procedure. Approval for one attempt or stage never authorizes a retry or later campaign.
 
 ## AWS rule
 
