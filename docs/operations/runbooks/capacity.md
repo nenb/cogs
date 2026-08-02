@@ -7,7 +7,7 @@ All figures are planning inputs unless explicitly labelled authoritative-local. 
 | Assumption | Specific planning authority |
 |---|---|
 | Demand, workload, model latency, node/bin-packing/cache/storage/OpenBao/telemetry capacity vary by environment. | [Authority: DESIGN resource lifecycle and scale](../../../DESIGN.md#18-resource-lifecycle-and-scale) |
-| Price/quota/capacity/EKS overhead are unknown; USD 20 cap and USD 5/10/20 alerts are proposal-only, not hard kill. | [Authority: offline readiness proposal envelope](../stage-4-offline-readiness.md#proposal-only-envelope) |
+| Price/quota/capacity/EKS overhead are unknown; USD 20 cap and USD 5/10/20 alerts are proposal-only, not hard kill. | [Authority: offline readiness proposal envelope](../stage-4-offline-readiness.md#closed-proposal-only-resource-graph) |
 | A future autoscaler/admission service may enforce limits; no production daemon exists here. | [Authority: DESIGN non-goals](../../../DESIGN.md#3-non-goals) |
 
 ## Static contract facts

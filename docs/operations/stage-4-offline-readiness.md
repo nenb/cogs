@@ -5,6 +5,8 @@ Issue #357 is **local/static only**. Its canonical instance is [`stage4-offline-
 1. [`stage4-offline-render-preparation.ts`](../../scripts/stage4-offline-render-preparation.ts) is a bounded **trusted local preparation executable**. It runs only as the exact pinned Node binary with native TypeScript stripping and no loader/tsx arguments; authenticates its source from `import.meta.filename`; authenticates the complete chart inventory, exact synthetic values bytes, and exact Helm executable digest/version; materializes chart, values, and a private mode-0500 Helm executor from already authenticated bytes; invokes that immutable private copy only for local `helm version --short` and `helm template`; reauthenticates the copy after each invocation; renders twice; compares both fresh outputs with committed bytes; and emits a canonical digest-only receipt. Pinned Helm v4 no longer exposes the historical `template --notes` flag, so the generator adds one fixed, digest-bound local review wrapper to the authenticated temporary chart and templates that wrapper. It never reopens the original Helm pathname for execution, installs, upgrades, contacts a cluster, enables DNS, or accepts caller-selected paths or commands.
 2. [`stage4-offline-readiness.ts`](../../scripts/stage4-offline-readiness.ts) is the **pure classifier**. It invokes nothing. It checks canonical package bytes, exact artifact digests, the trusted-preparation receipt digest, byte-identical renders, the closed proposal, and a domain-separated semantic root.
 
+## Pure classifier boundary
+
 A valid classifier verdict means only:
 
 - `local_preparation_complete=true` with `local_preparation_scope=bounded-package-assembly-and-local-validation-only`; and

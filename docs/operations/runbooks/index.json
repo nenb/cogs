@@ -25,7 +25,7 @@
       "id": "runbook-policy",
       "path": "docs/operations/runbooks/README.md",
       "title": "Stage 5 draft operations runbooks",
-      "content_sha256": "1ff095369b6c8b062dbd5e2bc81db2c903e03067d7f463ecc857d82c6dbe8c73",
+      "content_sha256": "ce88a8e276eb21d723f7011cb894058000ae1eb5fbd3a0c15c9823eaad692233",
       "status": "policy-local-static-only"
     }
   ],
@@ -60,7 +60,7 @@
       "id": "installation",
       "path": "docs/operations/runbooks/installation.md",
       "title": "Draft installation guide",
-      "content_sha256": "95ab921eb2a6702449fbd004fecc717b6b07b5f2d6c2ed41c1a82d3318e8f4a6",
+      "content_sha256": "cee7626379360a5d26db508199ae2a875adfbdef0e20a529af3592afb4c71dd0",
       "status": "draft-local-static-only",
       "evidence_contract": "future-operations-reference-v1"
     },
@@ -68,7 +68,7 @@
       "id": "prerequisites",
       "path": "docs/operations/runbooks/prerequisites.md",
       "title": "Draft prerequisites guide",
-      "content_sha256": "25294347bb079c533dc943aa8839076450081c4e4858c38f887c202ad65eb0f1",
+      "content_sha256": "82ba99cbed557303a66e7a80e3ab296e8202c90cb92cd0b6bc85add5b19e5a12",
       "status": "draft-local-static-only",
       "evidence_contract": "future-operations-reference-v1"
     },
@@ -92,7 +92,7 @@
       "id": "upgrade",
       "path": "docs/operations/runbooks/upgrade.md",
       "title": "Draft runtime and proxy upgrade runbook",
-      "content_sha256": "d83cfec8098e4bf802103091b125bd000714b5edbc886f79f1bb154a530a83fd",
+      "content_sha256": "ad0e1cd08c41b5f4fa62ada0bd7dc461c5810affff71fd680ef2936c5d58c588",
       "status": "draft-local-static-only",
       "evidence_contract": "future-operations-reference-v1"
     },
@@ -132,7 +132,7 @@
       "id": "capacity",
       "path": "docs/operations/runbooks/capacity.md",
       "title": "Draft capacity and cost planning guide",
-      "content_sha256": "4361bad89454f7a7a2220ff56184d9f4a680745e19184b7a81f7dec033105cf5",
+      "content_sha256": "1b0d76eb0d6ec438b71b166b7f2fbdc8a07e858643367fe04df47ec74978f918",
       "status": "draft-local-static-only",
       "evidence_contract": "future-operations-reference-v1"
     },
@@ -156,7 +156,7 @@
       "id": "teardown",
       "path": "docs/operations/runbooks/teardown.md",
       "title": "Draft teardown and orphan-resource verification guide",
-      "content_sha256": "3f2c197cb6c2e0f2caac9136e49e1b9c9881651039c7726343eaecb8861bb9c3",
+      "content_sha256": "f1804ada88c8d40e26c6305a9d5185596124c2dfadce1f36f3a1f8ae671b8a8c",
       "status": "draft-local-static-only",
       "evidence_contract": "future-operations-reference-v1"
     }

@@ -8,14 +8,14 @@ This is a requirements checklist, not a discovery script or installation authori
 |---|---|
 | A future environment may provide dedicated trusted/KVM nodes, external network enforcement, CSI block storage, OpenBao, and OTLP. | [Authority: DESIGN §19 pack responsibilities](../../../DESIGN.md#191-pack-responsibilities) |
 | Required campaign and review roles may later be bound to distinct authenticated principals. | [Authority: ownership separation requirements](../ownership.md#initial-ownership-and-approval-register) |
-| Current price, quota, capacity, account suitability, and service availability are unknown and blocking. | [Authority: offline readiness proposal-only envelope](../stage-4-offline-readiness.md#proposal-only-envelope) |
+| Current price, quota, capacity, account suitability, and service availability are unknown and blocking. | [Authority: offline readiness proposal-only envelope](../stage-4-offline-readiness.md#closed-proposal-only-resource-graph) |
 
 ## Static contract facts
 
 | Static prerequisite | Specific authority |
 |---|---|
-| Issue #42 blocks cloud entry; closure alone grants no campaign authority. | [Authority: offline readiness current blockers](../stage-4-offline-readiness.md#current-blockers-preserved-exactly) |
-| Campaigns are one-attempt, exact-revision, bounded, destroyed, and independently inventoried. | [Authority: offline readiness one-attempt authority](../stage-4-offline-readiness.md#required-identities-and-one-attempt-authority) |
+| Issue #42 blocks cloud entry; closure alone grants no campaign authority. | [Authority: offline readiness current blockers](../stage-4-offline-readiness.md#honest-image-nic-and-runtime-blockers) |
+| Campaigns are one-attempt, exact-revision, bounded, destroyed, and independently inventoried. | [Authority: offline readiness one-attempt authority](../stage-4-offline-readiness.md#stopdestroy-and-identities) |
 | Account, principals, envelope, attempt, approval, and executable provider route are absent. | [Authority: offline readiness pure classifier boundary](../stage-4-offline-readiness.md#pure-classifier-boundary) |
 | Runtime pins are Kata `3.32.0` at the fixed archive digest, containerd `2.2.1`, QEMU `8.2.2`, `io.containerd.kata.v2`, and KVM only. | [Authority: NIC exact node-group contract](../stage-4-nic-node-group-contract.md#exact-node-group-contract) |
 | RuntimeClass is exactly `kata-qemu-cogs`; `runc` and TCG are forbidden; trusted/sandbox placement is disjoint. | [Authority: NIC disjoint scheduling](../stage-4-nic-node-group-contract.md#disjoint-scheduling) |

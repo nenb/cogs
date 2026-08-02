@@ -14,8 +14,8 @@ This is a review and evidence plan. It does not change a runtime, node, cluster,
 
 | Static fact | Specific authority |
 |---|---|
-| Baseline pins include Node.js `22.22.2`, Pi `0.80.6`, Envoy `1.38.3` digest, Kata `3.32.0` digest, containerd `2.2.1`, QEMU `8.2.2`, and OpenBao `2.6.1` fixture digest. | [Authority: offline readiness exact bounded closure](../stage-4-offline-readiness.md#exact-bounded-closure) and [model-auth fixture](../stage-3-model-auth.md) |
-| Envoy is a static pin; containerd/QEMU version strings lack bound binary identity in the offline package. | [Authority: offline readiness exact bounded closure](../stage-4-offline-readiness.md#exact-bounded-closure) |
+| Baseline pins include Node.js `22.22.2`, Pi `0.80.6`, Envoy `1.38.3` digest, Kata `3.32.0` digest, containerd `2.2.1`, QEMU `8.2.2`, and OpenBao `2.6.1` fixture digest. | [Authority: offline readiness exact bounded closure](../stage-4-offline-readiness.md#exact-bound-inputs-and-source-closure) and [model-auth fixture](../stage-3-model-auth.md) |
+| Envoy is a static pin; containerd/QEMU version strings lack bound binary identity in the offline package. | [Authority: offline readiness exact bounded closure](../stage-4-offline-readiness.md#exact-bound-inputs-and-source-closure) |
 | Integration/mount change requires replacement; secret version change denies, drains, and requests replacement. | [Authority: DESIGN MVP proxy construction](../../../DESIGN.md#112-mvp-proxy-construction) |
 | Upgrade cannot introduce TCG, `runc`, local-tool, open-egress, audit, identity, secret-source, or container fallback. | [Authority: IMPLEMENTATION required ADR points](../../../IMPLEMENTATION.md#47-required-adr-decision-points) |
 

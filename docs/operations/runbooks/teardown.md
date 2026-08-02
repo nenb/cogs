@@ -6,16 +6,16 @@ This is a non-executable evidence and escalation plan. It contains no provider c
 
 | Assumption | Specific planning authority |
 |---|---|
-| A future attempt may bind account/region/attempt/source/artifact/state/manifest/TTL and authenticated operator/observer. | [Authority: offline readiness required identities](../stage-4-offline-readiness.md#required-identities-and-one-attempt-authority) |
+| A future attempt may bind account/region/attempt/source/artifact/state/manifest/TTL and authenticated operator/observer. | [Authority: offline readiness required identities](../stage-4-offline-readiness.md#stopdestroy-and-identities) |
 | A future independent observer may have read-only inventory separated from operator/approver. | [Authority: ownership separation register](../ownership.md#initial-ownership-and-approval-register) |
-| Current offline package has none of those bindings/capabilities. | [Authority: offline readiness current blockers](../stage-4-offline-readiness.md#current-blockers-preserved-exactly) |
+| Current offline package has none of those bindings/capabilities. | [Authority: offline readiness current blockers](../stage-4-offline-readiness.md#honest-image-nic-and-runtime-blockers) |
 
 ## Static contract facts
 
 | Static fact | Specific authority |
 |---|---|
-| Every future outcome requires state-bound destruction then independent read-only inventory. | [Authority: offline readiness non-executable stop/destroy paths](../stage-4-offline-readiness.md#non-executable-stop-and-destroy-paths) |
-| Inventory uncertainty blocks success/retry; approval is one attempt and grants no correction/retry. | [Authority: offline readiness one-attempt authority](../stage-4-offline-readiness.md#required-identities-and-one-attempt-authority) |
+| Every future outcome requires state-bound destruction then independent read-only inventory. | [Authority: offline readiness non-executable stop/destroy paths](../stage-4-offline-readiness.md#stopdestroy-and-identities) |
+| Inventory uncertainty blocks success/retry; approval is one attempt and grants no correction/retry. | [Authority: offline readiness one-attempt authority](../stage-4-offline-readiness.md#stopdestroy-and-identities) |
 | Storage uncertainty preserves state/resources/attachments/lease; expiry grants no takeover. | [Authority: storage/launch exclusive writer lease](../stage-4-storage-launch-contract.md#exclusive-writer-lease) |
 | Local teardown classifier orders claims only; terminal order observes no deletion/inventory/exit/zero. | [Authority: Stage 4 teardown semantic verdicts](../stage-4-teardown.md#semantic-bindings-and-verdicts) |
 | No local/static result promotes into cleanup evidence. | [Authority: Stage 4 teardown boundary](../stage-4-teardown.md#boundary) |
@@ -31,7 +31,7 @@ This is a non-executable evidence and escalation plan. It contains no provider c
 
 | Required future observation | Planned criterion, evidence contract, and location |
 |---|---|
-| Bind exact approved state to separate inventory scopes for cluster/node groups, instances/templates, volumes/snapshots, network interfaces, load-balancing resources, public addresses, IAM, security groups, logs, TTL controls, and campaign-tagged resources. | [Planned STAGE5-45.11 / `future-zero-inventory-reference-v1`](../stage-5-api-key-release-acceptance-matrix.md#criterion-level-traceability) and [planned inventory scopes](../stage-4-offline-readiness.md#non-executable-stop-and-destroy-paths) |
+| Bind exact approved state to separate inventory scopes for cluster/node groups, instances/templates, volumes/snapshots, network interfaces, load-balancing resources, public addresses, IAM, security groups, logs, TTL controls, and campaign-tagged resources. | [Planned STAGE5-45.11 / `future-zero-inventory-reference-v1`](../stage-5-api-key-release-acceptance-matrix.md#criterion-level-traceability) and [planned inventory scopes](../stage-4-offline-readiness.md#stopdestroy-and-identities) |
 | A zero result binds every approved scope, retained exception, account/region, independent producer, time, pagination/completeness, and immutable evidence. | [Planned STAGE5-45.11 / `future-zero-inventory-reference-v1`](../stage-5-api-key-release-acceptance-matrix.md#criterion-level-traceability) |
 | One query or local classifier cannot establish zero. | [Authority: Stage 4 teardown semantic verdicts](../stage-4-teardown.md#semantic-bindings-and-verdicts) |
 

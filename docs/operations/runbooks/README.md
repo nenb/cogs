@@ -17,13 +17,13 @@ When classes disagree, use the least-authoritative result and preserve uncertain
 
 ## Common operating rules
 
-- Stage 2 issue #42 remains the cloud-entry blocker; closure permits only a fresh Stage 4 request. [Authority: offline readiness blockers](../stage-4-offline-readiness.md#current-blockers-preserved-exactly)
+- Stage 2 issue #42 remains the cloud-entry blocker; closure permits only a fresh Stage 4 request. [Authority: offline readiness blockers](../stage-4-offline-readiness.md#honest-image-nic-and-runtime-blockers)
 - NIC `v0.11.0` cannot carry required launch-template/nested-CPU fields; EKS image is unresolved. [Authority: NIC current blockers](../stage-4-nic-node-group-contract.md#authenticated-public-source-pin-and-current-blockers)
 - Subscription OAuth is disabled and unadvertised. Issue #13 is future post-MVP work only; worker refresh tokens are forbidden. [Authority: matrix OAuth blocker](../stage-5-api-key-release-acceptance-matrix.md#subscription-oauth-blocker)
 - Missing identity/policy/audit/ownership/storage/runtime/network/evidence fails closed without local-tool, `runc`, TCG, open-egress, or credential fallback. [Authority: DESIGN mandatory invariants](../../../DESIGN.md#44-mandatory-invariants)
 - Ownership cannot be inferred from name/prefix/tag/visibility/one inventory; broad deletion is forbidden. [Authority: storage uncertainty contract](../stage-4-storage-launch-contract.md#exclusive-writer-lease)
 - Tickets/telemetry/evidence exclude credentials, prompts, source, complete commands, arbitrary paths, query/body, tool output, and raw exports. [Authority: DESIGN privacy defaults](../../../DESIGN.md#162-privacy-defaults)
-- Failure/interruption/timeout/drift/uncertainty stops the attempt without in-place widening, discovery cleanup, or retry. [Authority: offline stop/destroy paths](../stage-4-offline-readiness.md#non-executable-stop-and-destroy-paths)
+- Failure/interruption/timeout/drift/uncertainty stops the attempt without in-place widening, discovery cleanup, or retry. [Authority: offline stop/destroy paths](../stage-4-offline-readiness.md#stopdestroy-and-identities)
 
 ## Inventory
 
