@@ -1,0 +1,235 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.dev/schemas/stage4-campaign-approval-draft-v1.json",
+  "title": "Cogs Stage 4 exact one-attempt campaign approval envelope blocked draft v1",
+  "description": "A local/static draft-only shape. This version cannot represent approval or execution authority.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "authority",
+    "issue",
+    "execution_authorized",
+    "dependencies",
+    "attempt",
+    "approval",
+    "identities",
+    "source_binding",
+    "account_binding",
+    "resource_envelope",
+    "budget",
+    "expiry",
+    "destroy",
+    "independent_inventory"
+  ],
+  "properties": {
+    "version": { "const": "cogs.stage4-campaign-approval-draft/v1" },
+    "authority": { "const": "local-static-unapproved-envelope-draft" },
+    "issue": { "const": "S4-07/#358" },
+    "execution_authorized": { "const": false },
+    "dependencies": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["issue_42", "s4_06_acceptance_sha256"],
+      "properties": {
+        "issue_42": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "repeated_measurements_sha256",
+            "destruction_reports_sha256",
+            "final_zero_inventory_sha256"
+          ],
+          "properties": {
+            "state": { "const": "evidence-absent" },
+            "repeated_measurements_sha256": { "type": "null" },
+            "destruction_reports_sha256": { "type": "null" },
+            "final_zero_inventory_sha256": { "type": "null" }
+          }
+        },
+        "s4_06_acceptance_sha256": { "type": "null" }
+      }
+    },
+    "attempt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "campaign_issue", "attempt_id_sha256", "attempt_number", "maximum_attempts", "retry"],
+      "properties": {
+        "state": { "const": "unnamed" },
+        "campaign_issue": { "type": "null" },
+        "attempt_id_sha256": { "type": "null" },
+        "attempt_number": { "const": 1 },
+        "maximum_attempts": { "const": 1 },
+        "retry": { "const": "prohibited" }
+      }
+    },
+    "approval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "approval_evidence_sha256", "approved_at", "approver_identity_sha256"],
+      "properties": {
+        "state": { "const": "unapproved" },
+        "approval_evidence_sha256": { "type": "null" },
+        "approved_at": { "type": "null" },
+        "approver_identity_sha256": { "type": "null" }
+      }
+    },
+    "identities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "campaign_operator",
+        "campaign_approver",
+        "budget_approver",
+        "security_evidence_reviewer",
+        "zero_inventory_observer"
+      ],
+      "properties": {
+        "campaign_operator": { "$ref": "#/$defs/absentIdentity" },
+        "campaign_approver": { "$ref": "#/$defs/absentIdentity" },
+        "budget_approver": { "$ref": "#/$defs/absentIdentity" },
+        "security_evidence_reviewer": { "$ref": "#/$defs/absentIdentity" },
+        "zero_inventory_observer": { "$ref": "#/$defs/absentIdentity" }
+      }
+    },
+    "source_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state",
+        "revision_sha256",
+        "source_inventory_sha256",
+        "plan_artifact_sha256",
+        "render_artifact_sha256",
+        "runtime_artifact_set_sha256"
+      ],
+      "properties": {
+        "state": { "const": "absent" },
+        "revision_sha256": { "type": "null" },
+        "source_inventory_sha256": { "type": "null" },
+        "plan_artifact_sha256": { "type": "null" },
+        "render_artifact_sha256": { "type": "null" },
+        "runtime_artifact_set_sha256": { "type": "null" }
+      }
+    },
+    "account_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "account_reference_sha256", "region", "instance_type"],
+      "properties": {
+        "state": { "const": "absent" },
+        "account_reference_sha256": { "type": "null" },
+        "region": { "type": "null" },
+        "instance_type": { "type": "null" }
+      }
+    },
+    "resource_envelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state",
+        "resource_graph_sha256",
+        "eks_cluster_cap",
+        "trusted_node_cap",
+        "sandbox_node_cap",
+        "total_node_cap",
+        "storage_cap_sha256"
+      ],
+      "properties": {
+        "state": { "const": "unapproved" },
+        "resource_graph_sha256": { "type": "null" },
+        "eks_cluster_cap": { "type": "null" },
+        "trusted_node_cap": { "type": "null" },
+        "sandbox_node_cap": { "type": "null" },
+        "total_node_cap": { "type": "null" },
+        "storage_cap_sha256": { "type": "null" }
+      }
+    },
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state",
+        "currency",
+        "spend_cap",
+        "alert_thresholds_sha256",
+        "current_price_evidence_sha256",
+        "current_quota_evidence_sha256"
+      ],
+      "properties": {
+        "state": { "const": "unapproved" },
+        "currency": { "type": "null" },
+        "spend_cap": { "type": "null" },
+        "alert_thresholds_sha256": { "type": "null" },
+        "current_price_evidence_sha256": { "type": "null" },
+        "current_quota_evidence_sha256": { "type": "null" }
+      }
+    },
+    "expiry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "approved_at", "expires_at", "campaign_duration_seconds", "absolute_ttl_seconds"],
+      "properties": {
+        "state": { "const": "unapproved" },
+        "approved_at": { "type": "null" },
+        "expires_at": { "type": "null" },
+        "campaign_duration_seconds": { "type": "null" },
+        "absolute_ttl_seconds": { "type": "null" }
+      }
+    },
+    "destroy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state",
+        "path_artifact_sha256",
+        "target_state_binding_sha256",
+        "stop_on_pass",
+        "stop_on_failure",
+        "stop_on_timeout",
+        "stop_on_uncertainty"
+      ],
+      "properties": {
+        "state": { "const": "unapproved" },
+        "path_artifact_sha256": { "type": "null" },
+        "target_state_binding_sha256": { "type": "null" },
+        "stop_on_pass": { "const": true },
+        "stop_on_failure": { "const": true },
+        "stop_on_timeout": { "const": true },
+        "stop_on_uncertainty": { "const": true }
+      }
+    },
+    "independent_inventory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state",
+        "procedure_artifact_sha256",
+        "scope_set_sha256",
+        "observer_identity_sha256",
+        "must_follow_destroy",
+        "zero_claimed"
+      ],
+      "properties": {
+        "state": { "const": "unapproved" },
+        "procedure_artifact_sha256": { "type": "null" },
+        "scope_set_sha256": { "type": "null" },
+        "observer_identity_sha256": { "type": "null" },
+        "must_follow_destroy": { "const": true },
+        "zero_claimed": { "const": false }
+      }
+    }
+  },
+  "$defs": {
+    "absentIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "subject_reference_sha256"],
+      "properties": {
+        "state": { "const": "absent" },
+        "subject_reference_sha256": { "type": "null" }
+      }
+    }
+  }
+}

@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.dev/schemas/stage4-exit-review-matrix-template-v1.json",
+  "title": "Cogs Stage 4 exit review matrix blocked template v1",
+  "description": "An unreviewed local template that cannot represent Stage 4 exit acceptance.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "authority", "issue", "stage4_exit_satisfied", "review_binding", "criteria"],
+  "properties": {
+    "version": { "const": "cogs.stage4-exit-review-matrix-template/v1" },
+    "authority": { "const": "local-static-stage4-exit-review-template" },
+    "issue": { "const": "S4-11/#362" },
+    "stage4_exit_satisfied": { "const": false },
+    "review_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state",
+        "review_revision_sha256",
+        "campaign_evidence_set_sha256",
+        "accepted_s4_08_sha256",
+        "accepted_s4_09_sha256",
+        "accepted_s4_10_sha256",
+        "final_zero_inventory_set_sha256"
+      ],
+      "properties": {
+        "state": { "const": "absent" },
+        "review_revision_sha256": { "type": "null" },
+        "campaign_evidence_set_sha256": { "type": "null" },
+        "accepted_s4_08_sha256": { "type": "null" },
+        "accepted_s4_09_sha256": { "type": "null" },
+        "accepted_s4_10_sha256": { "type": "null" },
+        "final_zero_inventory_set_sha256": { "type": "null" }
+      }
+    },
+    "criteria": {
+      "type": "array",
+      "minItems": 14,
+      "maxItems": 14,
+      "items": { "$ref": "#/$defs/criterion" }
+    }
+  },
+  "$defs": {
+    "criterion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "state",
+        "dependency_mode",
+        "machine_evidence_sha256",
+        "human_evidence_sha256",
+        "exception_sha256"
+      ],
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 96, "pattern": "^[a-z0-9.-]+$" },
+        "state": { "const": "unreviewed-reject" },
+        "dependency_mode": { "const": "unreviewed" },
+        "machine_evidence_sha256": { "type": "null" },
+        "human_evidence_sha256": { "type": "null" },
+        "exception_sha256": { "type": "null" }
+      }
+    }
+  }
+}

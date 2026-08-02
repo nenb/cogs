@@ -1,0 +1,682 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.dev/schemas/stage4-policy-probe-suite-v1.json",
+  "title": "Cogs Stage 4 exact static hostile policy probe suite",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "authority", "qualification", "contract_sha256", "probes"],
+  "properties": {
+    "version": {
+      "const": "cogs.stage4-policy-probe-suite/v1"
+    },
+    "authority": {
+      "const": "static-only-stage4-policy"
+    },
+    "qualification": {
+      "const": "pending-exact-eks-cni-runtime"
+    },
+    "contract_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "probes": {
+      "type": "array",
+      "minItems": 43,
+      "maxItems": 43,
+      "prefixItems": [
+        {
+          "$ref": "#/$defs/probe",
+          "properties": {
+            "id": {
+              "const": "allow.assigned-proxy.ipv4"
+            }
+          },
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/probe",
+          "properties": {
+            "id": {
+              "const": "allow.assigned-proxy.ipv6"
+            }
+          },
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/probe",
+          "properties": {
+            "id": {
+              "const": "deny.selector.empty"
+            }
+          },
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/probe",
+          "properties": {
+            "id": {
+              "const": "deny.selector.trusted-role"
+            }
+          },
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/probe",
+          "properties": {
+            "id": {
+              "const": "deny.selector.proxy-role-confusion"
+            }
+          },
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/probe",
+          "properties": {
+            "id": {
+              "const": "deny.assigned-proxy.service-confusion"
+            }
+          },
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/probe",
+          "properties": {
+            "id": {
+              "const": "deny.source.cross-session"
+            }
+          },
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/probe",
+          "properties": {
+            "id": {
+              "const": "deny.source.instance-confusion"
+            }
+          },
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/probe",
+          "properties": {
+            "id": {
+              "const": "deny.source.pod-confusion"
+            }
+          },
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/probe",
+          "properties": {
+            "id": {
+              "const": "deny.capability.missing"
+            }
+          },
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/probe",
+          "properties": {
+            "id": {
+              "const": "deny.capability.revoked"
+            }
+          },
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/probe",
+          "properties": {
+            "id": {
+              "const": "deny.capability.replaced"
+            }
+          },
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/probe",
+          "properties": {
+            "id": {
+              "const": "deny.capability.before-issued"
+            }
+          },
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/probe",
+          "properties": {
+            "id": {
+              "const": "deny.capability.expired"
+            }
+          },
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/probe",
+          "properties": {
+            "id": {
+              "const": "deny.capability.id-confusion"
+            }
+          },
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/probe",
+          "properties": {
+            "id": {
+              "const": "deny.capability.generation-confusion"
+            }
+          },
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/probe",
+          "properties": {
+            "id": {
+              "const": "deny.capability.cross-session"
+            }
+          },
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/probe",
+          "properties": {
+            "id": {
+              "const": "deny.destination.cross-session-proxy"
+            }
+          },
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/probe",
+          "properties": {
+            "id": {
+              "const": "deny.destination.cross-session-workload"
+            }
+          },
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/probe",
+          "properties": {
+            "id": {
+              "const": "deny.udp.ipv4"
+            }
+          },
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/probe",
+          "properties": {
+            "id": {
+              "const": "deny.udp.ipv6"
+            }
+          },
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/probe",
+          "properties": {
+            "id": {
+              "const": "deny.quic.udp443.ipv4"
+            }
+          },
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/probe",
+          "properties": {
+            "id": {
+              "const": "deny.dns.arbitrary.ipv4"
+            }
+          },
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/probe",
+          "properties": {
+            "id": {
+              "const": "deny.dns.over-https.ipv4"
+            }
+          },
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/probe",
+          "properties": {
+            "id": {
+              "const": "deny.quic.udp443.ipv6"
+            }
+          },
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/probe",
+          "properties": {
+            "id": {
+              "const": "deny.dns.arbitrary.ipv6"
+            }
+          },
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/probe",
+          "properties": {
+            "id": {
+              "const": "deny.dns.over-https.ipv6"
+            }
+          },
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/probe",
+          "properties": {
+            "id": {
+              "const": "deny.direct-host.ipv4"
+            }
+          },
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/probe",
+          "properties": {
+            "id": {
+              "const": "deny.direct-host.ipv6"
+            }
+          },
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/probe",
+          "properties": {
+            "id": {
+              "const": "deny.direct-ip.ipv4"
+            }
+          },
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/probe",
+          "properties": {
+            "id": {
+              "const": "deny.direct-ip.ipv6"
+            }
+          },
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/probe",
+          "properties": {
+            "id": {
+              "const": "deny.alternate-proxy-port"
+            }
+          },
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/probe",
+          "properties": {
+            "id": {
+              "const": "deny.metadata.ipv4"
+            }
+          },
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/probe",
+          "properties": {
+            "id": {
+              "const": "deny.metadata.ipv6"
+            }
+          },
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/probe",
+          "properties": {
+            "id": {
+              "const": "deny.kubernetes-api.ipv4"
+            }
+          },
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/probe",
+          "properties": {
+            "id": {
+              "const": "deny.worker-api.ipv4"
+            }
+          },
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/probe",
+          "properties": {
+            "id": {
+              "const": "deny.proxy-admin.ipv4"
+            }
+          },
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/probe",
+          "properties": {
+            "id": {
+              "const": "deny.openbao.ipv4"
+            }
+          },
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/probe",
+          "properties": {
+            "id": {
+              "const": "deny.kubernetes-api.ipv6"
+            }
+          },
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/probe",
+          "properties": {
+            "id": {
+              "const": "deny.worker-api.ipv6"
+            }
+          },
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/probe",
+          "properties": {
+            "id": {
+              "const": "deny.proxy-admin.ipv6"
+            }
+          },
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/probe",
+          "properties": {
+            "id": {
+              "const": "deny.openbao.ipv6"
+            }
+          },
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/probe",
+          "properties": {
+            "id": {
+              "const": "deny.broad-policy-peer"
+            }
+          },
+          "type": "object"
+        }
+      ],
+      "items": false
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "dnsSubdomain": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 253,
+      "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?)*$"
+    },
+    "opaqueId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "labelValue": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 63,
+      "pattern": "^[A-Za-z0-9](?:[-_.A-Za-z0-9]{0,61}[A-Za-z0-9])?$"
+    },
+    "selector": {
+      "type": "object",
+      "maxProperties": 8,
+      "propertyNames": {
+        "maxLength": 317,
+        "pattern": "^(?:[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?)*\\/)?[A-Za-z0-9](?:[-_.A-Za-z0-9]{0,61}[A-Za-z0-9])?$"
+      },
+      "patternProperties": {
+        ".*": {
+          "$ref": "#/$defs/labelValue"
+        }
+      },
+      "additionalProperties": false
+    },
+    "probe": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "observed_at_ms",
+        "source_session_id",
+        "source_instance_id",
+        "source_pod_id",
+        "source_selector",
+        "transport",
+        "address_family",
+        "destination",
+        "capability",
+        "expected"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/opaqueId"
+        },
+        "observed_at_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "source_session_id": {
+          "$ref": "#/$defs/opaqueId"
+        },
+        "source_instance_id": {
+          "$ref": "#/$defs/labelValue"
+        },
+        "source_pod_id": {
+          "$ref": "#/$defs/opaqueId"
+        },
+        "source_selector": {
+          "$ref": "#/$defs/selector"
+        },
+        "transport": {
+          "enum": ["tcp", "udp", "quic", "dns", "doh"]
+        },
+        "address_family": {
+          "enum": ["IPv4", "IPv6"]
+        },
+        "destination": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["class", "session_id", "service_name", "port"],
+          "properties": {
+            "class": {
+              "enum": [
+                "assigned-proxy",
+                "direct-host",
+                "direct-ip",
+                "resolver",
+                "cloud-metadata",
+                "kubernetes-api",
+                "worker-api",
+                "proxy-admin",
+                "openbao",
+                "other-session-proxy",
+                "other-session-workload",
+                "broad-policy-peer"
+              ]
+            },
+            "session_id": {
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/opaqueId"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "service_name": {
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/dnsSubdomain"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "port": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65535
+            }
+          }
+        },
+        "capability": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "session_id",
+            "capability_id",
+            "generation",
+            "expires_at_ms",
+            "replacement_capability_id"
+          ],
+          "properties": {
+            "state": {
+              "enum": ["active", "revoked", "missing", "replaced", "expired"]
+            },
+            "session_id": {
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/opaqueId"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "capability_id": {
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/opaqueId"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "generation": {
+              "oneOf": [
+                {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 1000000
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "expires_at_ms": {
+              "oneOf": [
+                {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "replacement_capability_id": {
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/opaqueId"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        },
+        "expected": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["allow", "reason"],
+          "properties": {
+            "allow": {
+              "type": "boolean"
+            },
+            "reason": {
+              "enum": [
+                "assigned-proxy-only",
+                "source-session-mismatch",
+                "source-instance-mismatch",
+                "source-pod-mismatch",
+                "selector-confusion",
+                "capability-missing",
+                "capability-revoked",
+                "capability-replaced",
+                "capability-not-yet-valid",
+                "capability-expired",
+                "capability-id-mismatch",
+                "capability-generation-mismatch",
+                "capability-session-mismatch",
+                "udp-quic-denied",
+                "dns-resolver-denied",
+                "direct-egress-denied",
+                "protected-surface-denied",
+                "cross-session-denied",
+                "broad-policy-denied",
+                "alternate-port-denied",
+                "proxy-service-mismatch"
+              ]
+            }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "allow": {
+                    "const": true
+                  }
+                },
+                "required": ["allow"]
+              },
+              "then": {
+                "properties": {
+                  "reason": {
+                    "const": "assigned-proxy-only"
+                  }
+                }
+              },
+              "else": {
+                "properties": {
+                  "reason": {
+                    "not": {
+                      "const": "assigned-proxy-only"
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

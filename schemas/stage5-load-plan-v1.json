@@ -1,0 +1,171 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.dev/schemas/stage5-load-plan-v1.json",
+  "title": "Deterministic mocked-model 10/25/50 Stage 5 load plan",
+  "description": "Offline planning and aggregation shape only; no scheduler/provider route and no capacity claim.",
+  "type": "object",
+  "additionalProperties": false,
+  "maxProperties": 8,
+  "required": ["version", "authority", "issues", "execution_route", "steps", "aggregation", "blockers", "claims"],
+  "properties": {
+    "version": { "const": "cogs.stage5-load-plan/v1" },
+    "authority": { "const": "offline-deterministic-mocked-load-plan-only" },
+    "issues": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "prefixItems": [{ "const": 370 }, { "const": 371 }],
+      "items": false
+    },
+    "execution_route": { "$ref": "#/$defs/noExecutionRoute" },
+    "steps": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "prefixItems": [
+        {
+          "$ref": "#/$defs/step",
+          "type": "object",
+          "properties": {
+            "target_active_sessions": { "const": 10 },
+            "prior_passing_target_required": { "type": "null" }
+          }
+        },
+        {
+          "$ref": "#/$defs/step",
+          "type": "object",
+          "properties": {
+            "target_active_sessions": { "const": 25 },
+            "prior_passing_target_required": { "const": 10 }
+          }
+        },
+        {
+          "$ref": "#/$defs/step",
+          "type": "object",
+          "properties": {
+            "target_active_sessions": { "const": 50 },
+            "prior_passing_target_required": { "const": 25 }
+          }
+        }
+      ],
+      "items": false
+    },
+    "aggregation": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 3,
+      "required": ["claimed_capacity", "highest_planning_step_passed", "state"],
+      "properties": {
+        "claimed_capacity": { "type": "null" },
+        "highest_planning_step_passed": { "type": "null" },
+        "state": { "const": "unexecuted" }
+      }
+    },
+    "blockers": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "prefixItems": [
+        { "const": "S5_06_NOT_ACCEPTED" },
+        { "const": "STEP_APPROVALS_ABSENT" },
+        { "const": "REAL_SANDBOX_RESULTS_ABSENT" }
+      ],
+      "items": false
+    },
+    "claims": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 5,
+      "required": [
+        "campaign_authorized",
+        "capacity_validated",
+        "cloud_execution_observed",
+        "production_ready",
+        "release_eligible"
+      ],
+      "properties": {
+        "campaign_authorized": { "const": false },
+        "capacity_validated": { "const": false },
+        "cloud_execution_observed": { "const": false },
+        "production_ready": { "const": false },
+        "release_eligible": { "const": false }
+      }
+    }
+  },
+  "$defs": {
+    "noExecutionRoute": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 5,
+      "required": ["cluster", "deployment", "external_model", "provider", "scheduler"],
+      "properties": {
+        "cluster": { "const": false },
+        "deployment": { "const": false },
+        "external_model": { "const": false },
+        "provider": { "const": false },
+        "scheduler": { "const": false }
+      }
+    },
+    "step": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 9,
+      "required": [
+        "evidence_binding_sha256",
+        "execution",
+        "gates",
+        "metrics",
+        "model_mode",
+        "per_user_session_limit",
+        "prior_passing_target_required",
+        "result",
+        "target_active_sessions"
+      ],
+      "properties": {
+        "evidence_binding_sha256": { "type": "null" },
+        "execution": { "const": "unexecuted" },
+        "gates": {
+          "type": "object",
+          "additionalProperties": false,
+          "maxProperties": 4,
+          "required": [
+            "cross_user_isolation_required",
+            "exclusive_same_project_writer_required",
+            "four_session_user_probe_required",
+            "stop_before_next_on_failure_or_uncertainty"
+          ],
+          "properties": {
+            "cross_user_isolation_required": { "const": true },
+            "exclusive_same_project_writer_required": { "const": true },
+            "four_session_user_probe_required": { "const": true },
+            "stop_before_next_on_failure_or_uncertainty": { "const": true }
+          }
+        },
+        "metrics": {
+          "type": "array",
+          "minItems": 11,
+          "maxItems": 11,
+          "prefixItems": [
+            { "const": "startup" },
+            { "const": "scheduling" },
+            { "const": "resources" },
+            { "const": "proxy" },
+            { "const": "openbao" },
+            { "const": "ssh" },
+            { "const": "storage" },
+            { "const": "wal" },
+            { "const": "otlp" },
+            { "const": "cost" },
+            { "const": "cleanup" }
+          ],
+          "items": false
+        },
+        "model_mode": { "const": "deterministic-mocked-only" },
+        "per_user_session_limit": { "const": 4 },
+        "prior_passing_target_required": { "type": ["integer", "null"] },
+        "result": { "type": "null" },
+        "target_active_sessions": { "enum": [10, 25, 50] }
+      }
+    }
+  }
+}

@@ -1,0 +1,214 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.dev/schemas/stage4-campaign-evidence-v1.json",
+  "title": "Cogs Stage 4 local/static campaign claimed-evidence state model v1",
+  "description": "Digest-only caller claims for offline transition testing; never execution, provider, Kubernetes, cleanup, or inventory truth.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "authority",
+    "campaign_issue",
+    "campaign_id_sha256",
+    "attempt_id_sha256",
+    "execution_authorized",
+    "attempt_number",
+    "retry_count",
+    "plan_sha256",
+    "artifact_set_root_sha256",
+    "events"
+  ],
+  "properties": {
+    "version": { "const": "cogs.stage4-campaign-evidence/v1" },
+    "authority": { "const": "local-static-campaign-evidence-model" },
+    "campaign_issue": { "$ref": "#/$defs/campaignIssue" },
+    "campaign_id_sha256": { "$ref": "#/$defs/sha256" },
+    "attempt_id_sha256": { "$ref": "#/$defs/sha256" },
+    "execution_authorized": { "const": false },
+    "attempt_number": { "const": 1 },
+    "retry_count": { "const": 0 },
+    "plan_sha256": { "$ref": "#/$defs/sha256" },
+    "artifact_set_root_sha256": { "$ref": "#/$defs/sha256" },
+    "events": {
+      "type": "array",
+      "maxItems": 23,
+      "items": { "$ref": "#/$defs/event" }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "type": "object",
+        "properties": { "campaign_issue": { "const": "S4-08/#359" } },
+        "required": ["campaign_issue"]
+      },
+      "then": {
+        "type": "object",
+        "properties": {
+          "events": {
+            "type": "array",
+            "maxItems": 9,
+            "items": {
+              "type": "object",
+              "$ref": "#/$defs/event",
+              "properties": { "phase": { "$ref": "#/$defs/s408Phase" } }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "type": "object",
+        "properties": { "campaign_issue": { "const": "S4-09/#360" } },
+        "required": ["campaign_issue"]
+      },
+      "then": {
+        "type": "object",
+        "properties": {
+          "events": {
+            "type": "array",
+            "maxItems": 9,
+            "items": {
+              "type": "object",
+              "$ref": "#/$defs/event",
+              "properties": { "phase": { "$ref": "#/$defs/s409Phase" } }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "type": "object",
+        "properties": { "campaign_issue": { "const": "S4-10/#361" } },
+        "required": ["campaign_issue"]
+      },
+      "then": {
+        "type": "object",
+        "properties": {
+          "events": {
+            "type": "array",
+            "maxItems": 23,
+            "items": {
+              "type": "object",
+              "$ref": "#/$defs/event",
+              "properties": { "phase": { "$ref": "#/$defs/s410Phase" } }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "campaignIssue": { "enum": ["S4-08/#359", "S4-09/#360", "S4-10/#361"] },
+    "terminalPhase": { "enum": ["stop", "destroy", "independent-inventory"] },
+    "s408QualificationPhase": {
+      "enum": [
+        "topology.source-render-object-binding",
+        "topology.launch-template-nested-kvm",
+        "kata.active-kvm-distinct-guest-no-fallback",
+        "storage.ebs-workspace-session-lifecycle",
+        "storage.exclusive-writer-forced-loss",
+        "cleanup.runtime-and-object-behavior"
+      ]
+    },
+    "s409QualificationPhase": {
+      "enum": [
+        "guest-root.real-dependencies-admitted",
+        "guest-root.ipv4-ipv6-udp-quic-dns-denial",
+        "guest-root.api-metadata-admin-cross-session-storage-denial",
+        "guest-root.no-kubernetes-cloud-openbao-integration-model-or-ca-key-material",
+        "functional.stage3-kata-ebs-openbao-otlp",
+        "functional.api-key-samples-separately-authorized"
+      ]
+    },
+    "s410QualificationPhase": {
+      "enum": [
+        "performance.startup-p50-p95-p99",
+        "performance.first-tool",
+        "performance.storage-attach",
+        "performance.cold-pulls-and-scale",
+        "performance.idle-overhead",
+        "performance.git-and-build",
+        "performance.proxy-overhead",
+        "performance.recycle-duration",
+        "performance.startup-under-30s-or-reviewed-exception",
+        "recovery.worker-failure",
+        "recovery.sandbox-failure",
+        "recovery.proxy-failure",
+        "recovery.node-failure",
+        "recovery.openbao-failure",
+        "recovery.otlp-failure",
+        "recovery.storage-failure",
+        "recovery.audit-wal-failure",
+        "recovery.policy-failure",
+        "recovery.recycle-no-prompt-replay",
+        "cost.capacity-observed-no-support-extrapolation"
+      ]
+    },
+    "qualificationPhase": {
+      "oneOf": [
+        { "$ref": "#/$defs/s408QualificationPhase" },
+        { "$ref": "#/$defs/s409QualificationPhase" },
+        { "$ref": "#/$defs/s410QualificationPhase" }
+      ]
+    },
+    "phase": {
+      "oneOf": [{ "$ref": "#/$defs/qualificationPhase" }, { "$ref": "#/$defs/terminalPhase" }]
+    },
+    "s408Phase": {
+      "oneOf": [{ "$ref": "#/$defs/s408QualificationPhase" }, { "$ref": "#/$defs/terminalPhase" }]
+    },
+    "s409Phase": {
+      "oneOf": [{ "$ref": "#/$defs/s409QualificationPhase" }, { "$ref": "#/$defs/terminalPhase" }]
+    },
+    "s410Phase": {
+      "oneOf": [{ "$ref": "#/$defs/s410QualificationPhase" }, { "$ref": "#/$defs/terminalPhase" }]
+    },
+    "event": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["phase", "outcome", "producer_class"],
+      "properties": {
+        "phase": { "$ref": "#/$defs/phase" },
+        "outcome": { "enum": ["claimed-satisfied", "claimed-failed", "uncertain"] },
+        "producer_class": { "enum": ["caller-claimed-future-evidence", "independent-inventory-observer"] },
+        "evidence_sha256": { "$ref": "#/$defs/sha256" },
+        "uncertainty_artifact_sha256": { "$ref": "#/$defs/sha256" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "type": "object",
+            "properties": { "phase": { "const": "independent-inventory" } },
+            "required": ["phase"]
+          },
+          "then": {
+            "type": "object",
+            "properties": { "producer_class": { "const": "independent-inventory-observer" } }
+          },
+          "else": {
+            "type": "object",
+            "properties": { "producer_class": { "const": "caller-claimed-future-evidence" } }
+          }
+        }
+      ],
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": { "outcome": { "enum": ["claimed-satisfied", "claimed-failed"] } },
+          "required": ["evidence_sha256"],
+          "not": { "required": ["uncertainty_artifact_sha256"] }
+        },
+        {
+          "type": "object",
+          "properties": { "outcome": { "const": "uncertain" } },
+          "required": ["uncertainty_artifact_sha256"],
+          "not": { "required": ["evidence_sha256"] }
+        }
+      ]
+    }
+  }
+}

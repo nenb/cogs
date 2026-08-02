@@ -1,0 +1,165 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.dev/schemas/stage5-release-readiness-template-v1.json",
+  "title": "Unavailable Stage 5 release-readiness report template",
+  "description": "False-authority report skeleton with all campaign, privacy/deletion, zero-inventory, and decision evidence absent.",
+  "type": "object",
+  "additionalProperties": false,
+  "maxProperties": 12,
+  "required": [
+    "version",
+    "authority",
+    "issue",
+    "release_scope",
+    "recommendation",
+    "highest_passing_real_concurrency",
+    "api_key_release",
+    "oauth",
+    "evidence",
+    "residual_risks",
+    "blockers",
+    "claims"
+  ],
+  "properties": {
+    "version": { "const": "cogs.stage5-release-readiness-template/v1" },
+    "authority": { "const": "provisional-local-static-release-readiness-template-only" },
+    "issue": { "const": 373 },
+    "release_scope": { "const": "cogs-agent-layer-only-if-a-future-decision-exists" },
+    "recommendation": { "const": "not-available" },
+    "highest_passing_real_concurrency": { "type": "null" },
+    "api_key_release": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 3,
+      "required": ["advertised", "providers", "status"],
+      "properties": {
+        "advertised": { "const": false },
+        "providers": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "prefixItems": [
+            { "$ref": "#/$defs/provider", "type": "object", "properties": { "provider": { "const": "anthropic" } } },
+            { "$ref": "#/$defs/provider", "type": "object", "properties": { "provider": { "const": "openai" } } },
+            { "$ref": "#/$defs/provider", "type": "object", "properties": { "provider": { "const": "openrouter" } } }
+          ],
+          "items": false
+        },
+        "status": { "const": "provisional-unadvertised" }
+      }
+    },
+    "oauth": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 3,
+      "required": ["advertised", "refresh_token_path", "status"],
+      "properties": {
+        "advertised": { "const": false },
+        "refresh_token_path": { "const": "forbidden" },
+        "status": { "const": "disabled-unadvertised" }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 9,
+      "required": [
+        "source-artifacts",
+        "acceptance-matrix",
+        "independent-review",
+        "security-campaign",
+        "performance-load",
+        "privacy-deletion",
+        "zero-inventory",
+        "cost-capacity",
+        "operations-runbooks"
+      ],
+      "properties": {
+        "source-artifacts": { "$ref": "#/$defs/absentBinding" },
+        "acceptance-matrix": { "$ref": "#/$defs/absentBinding" },
+        "independent-review": { "$ref": "#/$defs/absentBinding" },
+        "security-campaign": { "$ref": "#/$defs/absentBinding" },
+        "performance-load": { "$ref": "#/$defs/absentBinding" },
+        "privacy-deletion": { "$ref": "#/$defs/absentBinding" },
+        "zero-inventory": { "$ref": "#/$defs/absentBinding" },
+        "cost-capacity": { "$ref": "#/$defs/absentBinding" },
+        "operations-runbooks": { "$ref": "#/$defs/absentBinding" }
+      }
+    },
+    "residual_risks": {
+      "type": "array",
+      "minItems": 0,
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "maxProperties": 4,
+        "required": ["id", "risk_code", "owner_principal_id", "disposition"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1, "maxLength": 32, "pattern": "^[A-Z0-9-]+$" },
+          "risk_code": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[A-Z0-9_]+$" },
+          "owner_principal_id": { "type": ["string", "null"], "minLength": 1, "maxLength": 128 },
+          "disposition": { "enum": ["open", "mitigated", "accepted-by-future-staff-decision"] }
+        }
+      }
+    },
+    "blockers": {
+      "type": "array",
+      "minItems": 7,
+      "maxItems": 7,
+      "prefixItems": [
+        { "const": "RC_FREEZE_ABSENT" },
+        { "const": "INDEPENDENT_REVIEW_ABSENT" },
+        { "const": "CAMPAIGN_EVIDENCE_ABSENT" },
+        { "const": "REAL_50_LOAD_RESULT_ABSENT" },
+        { "const": "PRIVACY_DELETION_EVIDENCE_ABSENT" },
+        { "const": "ZERO_INVENTORY_EVIDENCE_ABSENT" },
+        { "const": "STAFF_DECISION_ABSENT" }
+      ],
+      "items": false
+    },
+    "claims": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 5,
+      "required": [
+        "campaign_authorized",
+        "cloud_execution_observed",
+        "go_no_go_available",
+        "production_ready",
+        "release_eligible"
+      ],
+      "properties": {
+        "campaign_authorized": { "const": false },
+        "cloud_execution_observed": { "const": false },
+        "go_no_go_available": { "const": false },
+        "production_ready": { "const": false },
+        "release_eligible": { "const": false }
+      }
+    }
+  },
+  "$defs": {
+    "absentBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 2,
+      "required": ["binding_sha256", "state"],
+      "properties": {
+        "binding_sha256": { "type": "null" },
+        "state": { "const": "absent-blocking" }
+      }
+    },
+    "provider": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 3,
+      "required": ["evidence_binding_sha256", "provider", "status"],
+      "properties": {
+        "evidence_binding_sha256": { "type": "null" },
+        "provider": { "enum": ["anthropic", "openai", "openrouter"] },
+        "status": { "const": "provisional-unadvertised" }
+      }
+    }
+  }
+}

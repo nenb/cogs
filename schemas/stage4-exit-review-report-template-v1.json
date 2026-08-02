@@ -1,0 +1,204 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.dev/schemas/stage4-exit-review-report-template-v1.json",
+  "title": "Cogs Stage 4 exit review blocked report template v1",
+  "description": "A fail-closed report template. A different future reviewed authority is required to decide exit.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "authority",
+    "issue",
+    "matrix_sha256",
+    "rejection_checks",
+    "support_scope",
+    "residual_risks",
+    "local_checks",
+    "temporary_launcher_is_not_daemon",
+    "not_ga_compliance_or_production_approval",
+    "decision"
+  ],
+  "properties": {
+    "version": {
+      "const": "cogs.stage4-exit-review-report-template/v1"
+    },
+    "authority": {
+      "const": "local-static-stage4-exit-review-template"
+    },
+    "issue": {
+      "const": "S4-11/#362"
+    },
+    "matrix_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "rejection_checks": {
+      "type": "array",
+      "minItems": 7,
+      "maxItems": 7,
+      "prefixItems": [
+        {
+          "$ref": "#/$defs/rejection",
+          "properties": {
+            "id": {
+              "const": "mandatory-stub-or-non-real-dependency"
+            }
+          },
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/rejection",
+          "properties": {
+            "id": {
+              "const": "skip-or-missing-evidence"
+            }
+          },
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/rejection",
+          "properties": {
+            "id": {
+              "const": "runtime-or-policy-fallback"
+            }
+          },
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/rejection",
+          "properties": {
+            "id": {
+              "const": "sensitive-data-leak"
+            }
+          },
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/rejection",
+          "properties": {
+            "id": {
+              "const": "mixed-source-artifact-or-image-revision"
+            }
+          },
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/rejection",
+          "properties": {
+            "id": {
+              "const": "unreviewed-exception"
+            }
+          },
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/rejection",
+          "properties": {
+            "id": {
+              "const": "cleanup-or-inventory-uncertainty"
+            }
+          },
+          "type": "object"
+        }
+      ],
+      "items": false
+    },
+    "support_scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "region", "instance_type", "runtime_artifact_set_sha256"],
+      "properties": {
+        "state": {
+          "const": "unreviewed"
+        },
+        "region": {
+          "type": "null"
+        },
+        "instance_type": {
+          "type": "null"
+        },
+        "runtime_artifact_set_sha256": {
+          "type": "null"
+        }
+      }
+    },
+    "residual_risks": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "risk_register_sha256"],
+      "properties": {
+        "state": {
+          "const": "unreviewed"
+        },
+        "risk_register_sha256": {
+          "type": "null"
+        }
+      }
+    },
+    "local_checks": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "check_receipt_sha256", "artifact_scan_sha256"],
+      "properties": {
+        "state": {
+          "const": "unexecuted"
+        },
+        "check_receipt_sha256": {
+          "type": "null"
+        },
+        "artifact_scan_sha256": {
+          "type": "null"
+        }
+      }
+    },
+    "temporary_launcher_is_not_daemon": {
+      "const": true
+    },
+    "not_ga_compliance_or_production_approval": {
+      "const": true
+    },
+    "decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "stage4_exit_satisfied", "release_eligible", "decision_evidence_sha256"],
+      "properties": {
+        "state": {
+          "const": "blocked-unreviewed-template"
+        },
+        "stage4_exit_satisfied": {
+          "const": false
+        },
+        "release_eligible": {
+          "const": false
+        },
+        "decision_evidence_sha256": {
+          "type": "null"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "rejection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "state", "evidence_sha256"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 96,
+          "pattern": "^[a-z0-9.-]+$"
+        },
+        "state": {
+          "const": "unreviewed-reject"
+        },
+        "evidence_sha256": {
+          "type": "null"
+        }
+      }
+    }
+  }
+}

@@ -16,11 +16,14 @@ export const STATIC_CHECK_IDS = Object.freeze([
   "static.sandbox.explicit-kata-runtimeclass-no-fallback",
   "static.sandbox.no-trusted-sidecar-shape",
   "static.identity.sandbox-token-automount-disabled",
+  "static.identity.scoped-trusted-worker-openbao-handles-sandbox-no-identity",
   "static.network.declarative-default-deny-shape",
   "static.network.no-public-ingress-or-provider-resource",
+  "static.proxy.immutable-session-source-binding-revocation-no-fallback",
   "static.scheduling.trusted-sandbox-separation-shape",
   "static.storage.workspace-session-role-separation-shape",
   "static.limits.resource-and-lifecycle-bounds-present",
+  "static.telemetry.metadata-only-otlp-and-bounded-audit-wal-failure",
   "static.material.no-inline-sensitive-content",
 ] as const);
 

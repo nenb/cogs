@@ -1,0 +1,129 @@
+{
+  "version": "cogs.stage4-exit-review-matrix-template/v1",
+  "authority": "local-static-stage4-exit-review-template",
+  "issue": "S4-11/#362",
+  "stage4_exit_satisfied": false,
+  "review_binding": {
+    "state": "absent",
+    "review_revision_sha256": null,
+    "campaign_evidence_set_sha256": null,
+    "accepted_s4_08_sha256": null,
+    "accepted_s4_09_sha256": null,
+    "accepted_s4_10_sha256": null,
+    "final_zero_inventory_set_sha256": null
+  },
+  "criteria": [
+    {
+      "id": "binding.one-exact-source-artifact-image-revision",
+      "state": "unreviewed-reject",
+      "dependency_mode": "unreviewed",
+      "machine_evidence_sha256": null,
+      "human_evidence_sha256": null,
+      "exception_sha256": null
+    },
+    {
+      "id": "dependencies.real-no-mandatory-stubs",
+      "state": "unreviewed-reject",
+      "dependency_mode": "unreviewed",
+      "machine_evidence_sha256": null,
+      "human_evidence_sha256": null,
+      "exception_sha256": null
+    },
+    {
+      "id": "evidence.no-skips-or-missing-criteria",
+      "state": "unreviewed-reject",
+      "dependency_mode": "unreviewed",
+      "machine_evidence_sha256": null,
+      "human_evidence_sha256": null,
+      "exception_sha256": null
+    },
+    {
+      "id": "network.guest-root-cannot-bypass",
+      "state": "unreviewed-reject",
+      "dependency_mode": "unreviewed",
+      "machine_evidence_sha256": null,
+      "human_evidence_sha256": null,
+      "exception_sha256": null
+    },
+    {
+      "id": "identity.no-kubernetes-cloud-openbao-credentials",
+      "state": "unreviewed-reject",
+      "dependency_mode": "unreviewed",
+      "machine_evidence_sha256": null,
+      "human_evidence_sha256": null,
+      "exception_sha256": null
+    },
+    {
+      "id": "conformance.complete-unchanged-real-dependencies",
+      "state": "unreviewed-reject",
+      "dependency_mode": "unreviewed",
+      "machine_evidence_sha256": null,
+      "human_evidence_sha256": null,
+      "exception_sha256": null
+    },
+    {
+      "id": "storage.ebs-lifecycle-no-concurrent-writer",
+      "state": "unreviewed-reject",
+      "dependency_mode": "unreviewed",
+      "machine_evidence_sha256": null,
+      "human_evidence_sha256": null,
+      "exception_sha256": null
+    },
+    {
+      "id": "functional.real-pi-end-to-end",
+      "state": "unreviewed-reject",
+      "dependency_mode": "unreviewed",
+      "machine_evidence_sha256": null,
+      "human_evidence_sha256": null,
+      "exception_sha256": null
+    },
+    {
+      "id": "performance.p95-or-agreed-percentile-under-30s-or-reviewed-exception",
+      "state": "unreviewed-reject",
+      "dependency_mode": "unreviewed",
+      "machine_evidence_sha256": null,
+      "human_evidence_sha256": null,
+      "exception_sha256": null
+    },
+    {
+      "id": "recovery.all-design-failure-modes-no-prompt-replay",
+      "state": "unreviewed-reject",
+      "dependency_mode": "unreviewed",
+      "machine_evidence_sha256": null,
+      "human_evidence_sha256": null,
+      "exception_sha256": null
+    },
+    {
+      "id": "lifecycle.repeatable-install-destroy",
+      "state": "unreviewed-reject",
+      "dependency_mode": "unreviewed",
+      "machine_evidence_sha256": null,
+      "human_evidence_sha256": null,
+      "exception_sha256": null
+    },
+    {
+      "id": "runtime.no-container-tcg-runc-or-policy-fallback",
+      "state": "unreviewed-reject",
+      "dependency_mode": "unreviewed",
+      "machine_evidence_sha256": null,
+      "human_evidence_sha256": null,
+      "exception_sha256": null
+    },
+    {
+      "id": "privacy.no-sensitive-data-leak",
+      "state": "unreviewed-reject",
+      "dependency_mode": "unreviewed",
+      "machine_evidence_sha256": null,
+      "human_evidence_sha256": null,
+      "exception_sha256": null
+    },
+    {
+      "id": "cleanup.destroyed-and-independent-zero-inventory",
+      "state": "unreviewed-reject",
+      "dependency_mode": "unreviewed",
+      "machine_evidence_sha256": null,
+      "human_evidence_sha256": null,
+      "exception_sha256": null
+    }
+  ]
+}

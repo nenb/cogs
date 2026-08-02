@@ -1,0 +1,239 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.dev/schemas/stage4-offline-readiness-verdict-v1.json",
+  "title": "Cogs local/static Stage 4 offline readiness classifier verdict v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "authority",
+    "local_preparation_complete",
+    "campaign_request_ready",
+    "campaign_approved",
+    "cloud_authorized",
+    "cloud_execution_observed",
+    "provider_truth_observed",
+    "current_resources_observed",
+    "zero_resources_claimed",
+    "stage4_exit_satisfied",
+    "release_eligible",
+    "package_sha256",
+    "binding_root_sha256",
+    "status",
+    "reason_code",
+    "blockers",
+    "local_preparation_scope",
+    "trusted_render_preparation_complete",
+    "exact_image_runtime_closure_satisfied"
+  ],
+  "properties": {
+    "version": {
+      "const": "cogs.stage4-offline-readiness-verdict/v1"
+    },
+    "authority": {
+      "const": "local-static-stage4-readiness-classifier"
+    },
+    "local_preparation_complete": {
+      "type": "boolean"
+    },
+    "campaign_request_ready": {
+      "const": false
+    },
+    "campaign_approved": {
+      "const": false
+    },
+    "cloud_authorized": {
+      "const": false
+    },
+    "cloud_execution_observed": {
+      "const": false
+    },
+    "provider_truth_observed": {
+      "const": false
+    },
+    "current_resources_observed": {
+      "const": false
+    },
+    "zero_resources_claimed": {
+      "const": false
+    },
+    "stage4_exit_satisfied": {
+      "const": false
+    },
+    "release_eligible": {
+      "const": false
+    },
+    "package_sha256": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/sha256"
+        }
+      ]
+    },
+    "binding_root_sha256": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/sha256"
+        }
+      ]
+    },
+    "status": {
+      "enum": ["local-preparation-complete-blocked", "preserve-uncertain"]
+    },
+    "reason_code": {
+      "enum": [
+        "STAGE4_LOCAL_PREPARATION_COMPLETE_CAMPAIGN_BLOCKED",
+        "STAGE4_READINESS_BOUNDED_IO_VIOLATION",
+        "STAGE4_READINESS_INVALID_CANONICAL_PACKAGE",
+        "STAGE4_READINESS_SCHEMA_OR_SEMANTIC_DRIFT",
+        "STAGE4_READINESS_ARTIFACT_BINDING_MISMATCH",
+        "STAGE4_READINESS_RENDER_NONDETERMINISTIC",
+        "STAGE4_READINESS_BINDING_ROOT_MISMATCH"
+      ]
+    },
+    "blockers": {
+      "type": "array",
+      "maxItems": 12,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "ISSUE_42_OPEN",
+          "NIC_V0_11_0_MODULE_0_7_0_LAUNCH_TEMPLATE_CAPABILITY_MISSING",
+          "EKS_AMI_IMAGE_RELEASE_KERNEL_UNRESOLVED",
+          "PROPOSED_ACCOUNT_BINDING_ABSENT",
+          "CURRENT_PRICE_NOT_REVALIDATED",
+          "CURRENT_QUOTA_NOT_REVALIDATED",
+          "SEPARATED_CAMPAIGN_IDENTITIES_ABSENT",
+          "CAMPAIGN_ENVELOPE_AND_APPROVAL_ABSENT",
+          "NO_EXECUTABLE_PROVIDER_ROUTE",
+          "RELEASE_IMAGE_SET_ABSENT",
+          "CONTAINERD_ARTIFACT_IDENTITY_UNRESOLVED",
+          "QEMU_ARTIFACT_IDENTITY_UNRESOLVED"
+        ]
+      }
+    },
+    "local_preparation_scope": {
+      "const": "bounded-package-assembly-and-local-validation-only"
+    },
+    "trusted_render_preparation_complete": {
+      "type": "boolean"
+    },
+    "exact_image_runtime_closure_satisfied": {
+      "const": false
+    }
+  },
+  "allOf": [
+    {
+      "oneOf": [
+        {
+          "properties": {
+            "status": {
+              "const": "local-preparation-complete-blocked"
+            },
+            "reason_code": {
+              "const": "STAGE4_LOCAL_PREPARATION_COMPLETE_CAMPAIGN_BLOCKED"
+            },
+            "local_preparation_complete": {
+              "const": true
+            },
+            "trusted_render_preparation_complete": {
+              "const": true
+            },
+            "package_sha256": {
+              "$ref": "#/$defs/sha256"
+            },
+            "binding_root_sha256": {
+              "$ref": "#/$defs/sha256"
+            },
+            "blockers": {
+              "type": "array",
+              "minItems": 12,
+              "maxItems": 12,
+              "uniqueItems": true,
+              "prefixItems": [
+                {
+                  "const": "ISSUE_42_OPEN"
+                },
+                {
+                  "const": "NIC_V0_11_0_MODULE_0_7_0_LAUNCH_TEMPLATE_CAPABILITY_MISSING"
+                },
+                {
+                  "const": "EKS_AMI_IMAGE_RELEASE_KERNEL_UNRESOLVED"
+                },
+                {
+                  "const": "PROPOSED_ACCOUNT_BINDING_ABSENT"
+                },
+                {
+                  "const": "CURRENT_PRICE_NOT_REVALIDATED"
+                },
+                {
+                  "const": "CURRENT_QUOTA_NOT_REVALIDATED"
+                },
+                {
+                  "const": "SEPARATED_CAMPAIGN_IDENTITIES_ABSENT"
+                },
+                {
+                  "const": "CAMPAIGN_ENVELOPE_AND_APPROVAL_ABSENT"
+                },
+                {
+                  "const": "NO_EXECUTABLE_PROVIDER_ROUTE"
+                },
+                {
+                  "const": "RELEASE_IMAGE_SET_ABSENT"
+                },
+                {
+                  "const": "CONTAINERD_ARTIFACT_IDENTITY_UNRESOLVED"
+                },
+                {
+                  "const": "QEMU_ARTIFACT_IDENTITY_UNRESOLVED"
+                }
+              ],
+              "items": false
+            }
+          },
+          "required": ["status", "reason_code"]
+        },
+        {
+          "properties": {
+            "status": {
+              "const": "preserve-uncertain"
+            },
+            "reason_code": {
+              "enum": [
+                "STAGE4_READINESS_BOUNDED_IO_VIOLATION",
+                "STAGE4_READINESS_INVALID_CANONICAL_PACKAGE",
+                "STAGE4_READINESS_SCHEMA_OR_SEMANTIC_DRIFT",
+                "STAGE4_READINESS_ARTIFACT_BINDING_MISMATCH",
+                "STAGE4_READINESS_RENDER_NONDETERMINISTIC",
+                "STAGE4_READINESS_BINDING_ROOT_MISMATCH"
+              ]
+            },
+            "local_preparation_complete": {
+              "const": false
+            },
+            "trusted_render_preparation_complete": {
+              "const": false
+            },
+            "blockers": {
+              "type": "array",
+              "maxItems": 0
+            }
+          },
+          "required": ["status", "reason_code"]
+        }
+      ]
+    }
+  ],
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  }
+}

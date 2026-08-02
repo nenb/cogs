@@ -1,0 +1,153 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.dev/schemas/stage4-storage-launch-verdict-v1.json",
+  "title": "Cogs Stage 4 local static storage and launch verdict v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "authority",
+    "qualified",
+    "campaign_authorized",
+    "cloud_execution_observed",
+    "kubernetes_execution_observed",
+    "provider_truth_observed",
+    "stage4_exit_satisfied",
+    "release_eligible",
+    "graph_sha256",
+    "status",
+    "reason_code",
+    "preservation"
+  ],
+  "properties": {
+    "version": { "const": "cogs.stage4-storage-launch-verdict/v1" },
+    "authority": { "const": "local-static-storage-launch-classifier" },
+    "qualified": { "const": false },
+    "campaign_authorized": { "const": false },
+    "cloud_execution_observed": { "const": false },
+    "kubernetes_execution_observed": { "const": false },
+    "provider_truth_observed": { "const": false },
+    "stage4_exit_satisfied": { "const": false },
+    "release_eligible": { "const": false },
+    "graph_sha256": {
+      "oneOf": [{ "$ref": "#/$defs/sha256" }, { "type": "null" }]
+    },
+    "status": {
+      "enum": [
+        "admissible-static-graph",
+        "cleanup-in-progress",
+        "cleanup-order-complete",
+        "preserve-uncertain",
+        "reject"
+      ]
+    },
+    "reason_code": {
+      "enum": [
+        "STAGE4_STORAGE_LAUNCH_GRAPH_VALID",
+        "STAGE4_STORAGE_LAUNCH_CLEANUP_IN_PROGRESS",
+        "STAGE4_STORAGE_LAUNCH_CLEANUP_ORDER_COMPLETE",
+        "STAGE4_STORAGE_LAUNCH_INVALID_SHAPE",
+        "STAGE4_STORAGE_LAUNCH_INVALID_VERSION",
+        "STAGE4_STORAGE_ROLE_DRIFT",
+        "STAGE4_STORAGE_MODE_INVALID",
+        "STAGE4_WORKSPACE_CONCURRENT_WRITER",
+        "STAGE4_WORKSPACE_LEASE_INVALID",
+        "STAGE4_RUNTIMECLASS_MISSING_OR_WRONG",
+        "STAGE4_SSH_HOST_KEY_MISMATCH",
+        "STAGE4_LAUNCH_DOCUMENT_STALE",
+        "STAGE4_LAUNCH_DOCUMENT_REPLAY",
+        "STAGE4_LAUNCH_DOCUMENT_DIGEST_MISMATCH",
+        "STAGE4_LAUNCH_BINDING_INVALID",
+        "STAGE4_RESOURCE_CARDINALITY_INVALID",
+        "STAGE4_EPHEMERAL_IDENTITY_PERSISTENCE_FORBIDDEN",
+        "STAGE4_CLEANUP_AMBIGUOUS",
+        "STAGE4_BOUNDED_IO_VIOLATION"
+      ]
+    },
+    "preservation": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["state", "resources", "attachments", "workspace_lease"],
+          "properties": {
+            "state": { "const": "preserve" },
+            "resources": { "const": "preserve" },
+            "attachments": { "const": "preserve" },
+            "workspace_lease": { "const": "preserve" }
+          }
+        },
+        { "type": "null" }
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "oneOf": [
+        {
+          "properties": {
+            "status": { "const": "admissible-static-graph" },
+            "reason_code": { "const": "STAGE4_STORAGE_LAUNCH_GRAPH_VALID" },
+            "graph_sha256": { "$ref": "#/$defs/sha256" },
+            "preservation": { "type": "null" }
+          }
+        },
+        {
+          "properties": {
+            "status": { "const": "cleanup-in-progress" },
+            "reason_code": { "const": "STAGE4_STORAGE_LAUNCH_CLEANUP_IN_PROGRESS" },
+            "graph_sha256": { "$ref": "#/$defs/sha256" },
+            "preservation": { "type": "null" }
+          }
+        },
+        {
+          "properties": {
+            "status": { "const": "cleanup-order-complete" },
+            "reason_code": { "const": "STAGE4_STORAGE_LAUNCH_CLEANUP_ORDER_COMPLETE" },
+            "graph_sha256": { "$ref": "#/$defs/sha256" },
+            "preservation": { "type": "null" }
+          }
+        },
+        {
+          "properties": {
+            "status": { "const": "preserve-uncertain" },
+            "preservation": { "type": "object" },
+            "reason_code": {
+              "enum": [
+                "STAGE4_WORKSPACE_CONCURRENT_WRITER",
+                "STAGE4_WORKSPACE_LEASE_INVALID",
+                "STAGE4_CLEANUP_AMBIGUOUS",
+                "STAGE4_BOUNDED_IO_VIOLATION"
+              ]
+            }
+          }
+        },
+        {
+          "properties": {
+            "status": { "const": "reject" },
+            "preservation": { "type": "null" },
+            "reason_code": {
+              "enum": [
+                "STAGE4_STORAGE_LAUNCH_INVALID_SHAPE",
+                "STAGE4_STORAGE_LAUNCH_INVALID_VERSION",
+                "STAGE4_STORAGE_ROLE_DRIFT",
+                "STAGE4_STORAGE_MODE_INVALID",
+                "STAGE4_RUNTIMECLASS_MISSING_OR_WRONG",
+                "STAGE4_SSH_HOST_KEY_MISMATCH",
+                "STAGE4_LAUNCH_DOCUMENT_STALE",
+                "STAGE4_LAUNCH_DOCUMENT_REPLAY",
+                "STAGE4_LAUNCH_DOCUMENT_DIGEST_MISMATCH",
+                "STAGE4_LAUNCH_BINDING_INVALID",
+                "STAGE4_RESOURCE_CARDINALITY_INVALID",
+                "STAGE4_EPHEMERAL_IDENTITY_PERSISTENCE_FORBIDDEN"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+  }
+}

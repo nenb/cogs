@@ -1,0 +1,239 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.dev/schemas/stage5-destructive-report-v1.json",
+  "title": "Cogs local/static synthetic destructive harness report",
+  "description": "Strict metadata-only source-bound aggregation; never runtime, campaign, Stage 5 gate, or release evidence.",
+  "type": "object",
+  "additionalProperties": false,
+  "maxProperties": 19,
+  "required": [
+    "version",
+    "authority",
+    "issue",
+    "scope",
+    "qualified",
+    "campaign_authorized",
+    "cloud_execution_observed",
+    "provider_execution_observed",
+    "cluster_execution_observed",
+    "external_model_execution_observed",
+    "release_evidence",
+    "release_eligible",
+    "routes",
+    "source_binding",
+    "fixture_binding",
+    "applicability",
+    "summary",
+    "cases",
+    "limitations"
+  ],
+  "properties": {
+    "version": { "const": "cogs.stage5-destructive-report/v1" },
+    "authority": { "const": "local-static-synthetic-destructive-harness" },
+    "issue": { "const": 364 },
+    "scope": { "const": "offline-static-only" },
+    "qualified": { "const": false },
+    "campaign_authorized": { "const": false },
+    "cloud_execution_observed": { "const": false },
+    "provider_execution_observed": { "const": false },
+    "cluster_execution_observed": { "const": false },
+    "external_model_execution_observed": { "const": false },
+    "release_evidence": { "const": false },
+    "release_eligible": { "const": false },
+    "routes": { "$ref": "stage5-destructive-fixture-suite-v1.json#/$defs/routes" },
+    "source_binding": { "$ref": "#/$defs/sourceBinding" },
+    "fixture_binding": { "$ref": "#/$defs/fixtureBinding" },
+    "applicability": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "prefixItems": [
+        {
+          "type": "object",
+          "$ref": "#/$defs/applicability",
+          "properties": { "profile": { "const": "insecure-container" }, "class": { "const": "functional-insecure" } }
+        },
+        {
+          "type": "object",
+          "$ref": "#/$defs/applicability",
+          "properties": { "profile": { "const": "linux-kvm" }, "class": { "const": "authoritative-local-linux-kvm" } }
+        }
+      ],
+      "items": false
+    },
+    "summary": { "$ref": "#/$defs/summary" },
+    "cases": { "type": "array", "minItems": 22, "maxItems": 22, "items": { "$ref": "#/$defs/caseResult" } },
+    "limitations": {
+      "const": [
+        "synthetic-fixtures-only",
+        "no-runtime-isolation-observed",
+        "no-linux-kvm-environment-observed",
+        "not-stage5-gate-or-release-evidence"
+      ]
+    }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "sourceBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 3,
+      "required": ["algorithm", "source_set_sha256", "sources"],
+      "properties": {
+        "algorithm": { "const": "sha256-domain-separated-canonical-source-metadata-and-exact-file-bytes" },
+        "source_set_sha256": { "$ref": "#/$defs/digest" },
+        "sources": { "type": "array", "minItems": 17, "maxItems": 17, "items": { "$ref": "#/$defs/source" } }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 3,
+      "required": ["path", "bytes", "sha256"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9_./-]+$" },
+        "bytes": { "type": "integer", "minimum": 1, "maximum": 262144 },
+        "sha256": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "fixtureBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 3,
+      "required": ["exact_bytes_sha256", "semantic_sha256", "case_count"],
+      "properties": {
+        "exact_bytes_sha256": { "$ref": "#/$defs/digest" },
+        "semantic_sha256": { "$ref": "#/$defs/digest" },
+        "case_count": { "const": 22 }
+      }
+    },
+    "applicability": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 5,
+      "required": ["profile", "class", "case_count", "environment_observed", "authority_claimed"],
+      "properties": {
+        "profile": { "enum": ["insecure-container", "linux-kvm"] },
+        "class": { "enum": ["functional-insecure", "authoritative-local-linux-kvm"] },
+        "case_count": { "const": 11 },
+        "environment_observed": { "const": false },
+        "authority_claimed": { "const": false }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 7,
+      "required": [
+        "result",
+        "passed",
+        "failed",
+        "unknown_prompt_outcomes",
+        "unknown_prompt_replays",
+        "cleanup_failures",
+        "authoritative_runtime_cases"
+      ],
+      "properties": {
+        "result": { "const": "pass" },
+        "passed": { "const": 22 },
+        "failed": { "const": 0 },
+        "unknown_prompt_outcomes": { "const": 4 },
+        "unknown_prompt_replays": { "const": 0 },
+        "cleanup_failures": { "const": 0 },
+        "authoritative_runtime_cases": { "const": 0 }
+      }
+    },
+    "caseResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 15,
+      "required": [
+        "id",
+        "fault",
+        "profile",
+        "applicability",
+        "result",
+        "reason_code",
+        "fixture_sha256",
+        "source_set_sha256",
+        "evidence_eligible",
+        "admission",
+        "credentialed_egress",
+        "ordinary_work",
+        "prompt_outcome",
+        "unknown_prompt_replay_count",
+        "cleanup"
+      ],
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 96, "pattern": "^[a-z0-9.-]+$" },
+        "fault": {
+          "enum": [
+            "process",
+            "proxy",
+            "openbao",
+            "otlp",
+            "wal",
+            "disk",
+            "sse",
+            "jsonl",
+            "git",
+            "skill",
+            "hostile-output"
+          ]
+        },
+        "profile": { "enum": ["insecure-container", "linux-kvm"] },
+        "applicability": { "enum": ["functional-insecure", "authoritative-local-linux-kvm"] },
+        "result": { "const": "pass" },
+        "reason_code": {
+          "enum": [
+            "PROCESS_UNKNOWN_REPORTED_NO_REPLAY",
+            "PROXY_EGRESS_DENIED_AND_DRAINED",
+            "OPENBAO_LOSS_OR_STALE_METADATA_DENIED",
+            "OTLP_BOUNDED_DROP_ORDINARY_WORK_CONTINUED",
+            "WAL_FULL_CREDENTIAL_USE_DENIED",
+            "DISK_WRITE_FAILED_WITHOUT_PARTIAL_PUBLICATION",
+            "SSE_GAP_REQUIRES_HISTORY_NOT_PROMPT_REPLAY",
+            "JSONL_TAIL_REJECTED_UNKNOWN_NOT_REPLAYED",
+            "GIT_CORRUPTION_WARNED_TURN_PRESERVED",
+            "OVERSIZE_SKILL_REJECTED_BEFORE_PROMPT",
+            "HOSTILE_OUTPUT_BOUNDED_INERT_AND_OMITTED"
+          ]
+        },
+        "fixture_sha256": { "$ref": "#/$defs/digest" },
+        "source_set_sha256": { "$ref": "#/$defs/digest" },
+        "evidence_eligible": { "const": false },
+        "admission": { "enum": ["revoked", "bounded-continue"] },
+        "credentialed_egress": { "enum": ["denied", "not-exercised"] },
+        "ordinary_work": { "enum": ["stopped", "continued"] },
+        "prompt_outcome": { "enum": ["none", "settled", "unknown-reported"] },
+        "unknown_prompt_replay_count": { "const": 0 },
+        "cleanup": { "$ref": "#/$defs/cleanup" }
+      }
+    },
+    "cleanup": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 9,
+      "required": [
+        "owner",
+        "acquired",
+        "attempted",
+        "completed",
+        "duplicate_attempts",
+        "foreign_mutations",
+        "orphaned_owned_resources",
+        "exact_reverse_order"
+      ],
+      "properties": {
+        "owner": { "const": "fixture-parent" },
+        "acquired": { "type": "integer", "minimum": 1, "maximum": 2 },
+        "attempted": { "type": "integer", "minimum": 1, "maximum": 2 },
+        "completed": { "type": "integer", "minimum": 1, "maximum": 2 },
+        "duplicate_attempts": { "const": 0 },
+        "foreign_mutations": { "const": 0 },
+        "orphaned_owned_resources": { "const": 0 },
+        "exact_reverse_order": { "const": true }
+      }
+    }
+  }
+}

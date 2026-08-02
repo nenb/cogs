@@ -30,8 +30,40 @@ dev.cogs/qualification: "none"
 dev.cogs/production-ready: "false"
 {{- end -}}
 
+{{- define "cogs.stage4.requireExactKeys" -}}
+{{- $value := .value -}}
+{{- $path := .path -}}
+{{- $allowed := .allowed -}}
+{{- if not (kindIs "map" $value) -}}
+{{- fail (printf "%s must be an object with exact allowed keys" $path) -}}
+{{- end -}}
+{{- range $key := keys $value -}}
+{{- if not (has $key $allowed) -}}
+{{- fail (printf "%s.%s is not an allowed field" $path $key) -}}
+{{- end -}}
+{{- end -}}
+{{- range $key := $allowed -}}
+{{- if not (hasKey $value $key) -}}
+{{- fail (printf "%s.%s is required" $path $key) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
 {{- define "cogs.stage4.validate" -}}
 {{- $v := .Values.stage4Preparation -}}
+{{- include "cogs.stage4.requireExactKeys" (dict "path" "values" "value" .Values "allowed" (list "stage4Preparation")) -}}
+{{- include "cogs.stage4.requireExactKeys" (dict "path" "stage4Preparation" "value" $v "allowed" (list "enabled" "nonProductionAcknowledgement" "sessionIdentity" "runtimeClassName" "images" "placement" "storage" "openBao" "otlp" "proxyIdentity" "resourceProfile" "lifecycle" "auditWalMaxBytes" "publicEgressCaConfigMap")) -}}
+{{- include "cogs.stage4.requireExactKeys" (dict "path" "stage4Preparation.images" "value" $v.images "allowed" (list "worker" "proxy" "sandbox")) -}}
+{{- include "cogs.stage4.requireExactKeys" (dict "path" "stage4Preparation.placement" "value" $v.placement "allowed" (list "trusted" "sandbox")) -}}
+{{- include "cogs.stage4.requireExactKeys" (dict "path" "stage4Preparation.placement.trusted" "value" $v.placement.trusted "allowed" (list "nodeSelector" "tolerations")) -}}
+{{- include "cogs.stage4.requireExactKeys" (dict "path" "stage4Preparation.placement.sandbox" "value" $v.placement.sandbox "allowed" (list "nodeSelector" "tolerations")) -}}
+{{- include "cogs.stage4.requireExactKeys" (dict "path" "stage4Preparation.storage" "value" $v.storage "allowed" (list "workspaceStorageClass" "workspaceSize" "workspaceAccessMode" "workspaceVolumeMode" "workspaceVolumeBindingMode" "workspaceReclaimPolicy" "workspaceRetention" "sessionStateStorageClass" "sessionStateSize" "sessionStateAccessMode" "sessionStateVolumeMode" "sessionStateVolumeBindingMode" "sessionStateReclaimPolicy" "sessionStateRetention" "sessionStateRetentionSeconds")) -}}
+{{- include "cogs.stage4.requireExactKeys" (dict "path" "stage4Preparation.openBao" "value" $v.openBao "allowed" (list "endpoint" "kubernetesAuthMount" "kubernetesAuthRole" "pkiPath" "tokenAudience" "peer")) -}}
+{{- include "cogs.stage4.requireExactKeys" (dict "path" "stage4Preparation.openBao.peer" "value" $v.openBao.peer "allowed" (list "namespaceLabels" "podLabels" "port")) -}}
+{{- include "cogs.stage4.requireExactKeys" (dict "path" "stage4Preparation.otlp" "value" $v.otlp "allowed" (list "endpoint" "protocol" "peer")) -}}
+{{- include "cogs.stage4.requireExactKeys" (dict "path" "stage4Preparation.otlp.peer" "value" $v.otlp.peer "allowed" (list "namespaceLabels" "podLabels" "port")) -}}
+{{- include "cogs.stage4.requireExactKeys" (dict "path" "stage4Preparation.proxyIdentity" "value" $v.proxyIdentity "allowed" (list "capabilityAudience" "sourceBindingRequired")) -}}
+{{- include "cogs.stage4.requireExactKeys" (dict "path" "stage4Preparation.lifecycle" "value" $v.lifecycle "allowed" (list "idleSeconds" "hardSeconds" "terminationGraceSeconds")) -}}
 {{- if ne $v.enabled true -}}
 {{- fail "stage4Preparation.enabled must be exactly true for notes-only static source shapes" -}}
 {{- end -}}
@@ -43,11 +75,8 @@ dev.cogs/production-ready: "false"
 {{- if or (not (kindIs "string" $v.sessionIdentity)) (not (regexMatch $dnsLabel $v.sessionIdentity)) -}}
 {{- fail "stage4Preparation.sessionIdentity must be a nonempty DNS label" -}}
 {{- end -}}
-{{- if or (not (kindIs "string" $v.runtimeClassName)) (not (regexMatch $dnsSubdomain $v.runtimeClassName)) -}}
-{{- fail "stage4Preparation.runtimeClassName must be a DNS subdomain" -}}
-{{- end -}}
-{{- if has $v.runtimeClassName (list "runc" "runsc" "default" "docker" "containerd" "oci") -}}
-{{- fail "stage4Preparation.runtimeClassName must name a reviewed non-default VM RuntimeClass" -}}
+{{- if ne $v.runtimeClassName "kata-qemu-cogs" -}}
+{{- fail "stage4Preparation.runtimeClassName must be exactly kata-qemu-cogs" -}}
 {{- end -}}
 {{- $digestPattern := "^[a-z0-9]+([._-][a-z0-9]+)*(:[1-9][0-9]{0,4})?(/[a-z0-9]+([._-][a-z0-9]+)*)+(:[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?@sha256:[a-f0-9]{64}$" -}}
 {{- if or (not (kindIs "string" $v.images.worker)) (not (regexMatch $digestPattern $v.images.worker)) -}}
@@ -60,11 +89,13 @@ dev.cogs/production-ready: "false"
 {{- fail "stage4Preparation.images.sandbox must be digest pinned" -}}
 {{- end -}}
 
-{{- if ne (index $v.placement.trusted.nodeSelector "cogs.dev/node-domain") "trusted" -}}
-{{- fail "stage4Preparation.placement.trusted.nodeSelector must include cogs.dev/node-domain=trusted" -}}
+{{- $trustedSelector := dict "cogs.dev/node-domain" "trusted" -}}
+{{- if not (deepEqual $v.placement.trusted.nodeSelector $trustedSelector) -}}
+{{- fail "stage4Preparation.placement.trusted.nodeSelector must be exactly cogs.dev/node-domain=trusted" -}}
 {{- end -}}
-{{- if ne (index $v.placement.sandbox.nodeSelector "cogs.dev/node-domain") "sandbox-kata" -}}
-{{- fail "stage4Preparation.placement.sandbox.nodeSelector must include cogs.dev/node-domain=sandbox-kata" -}}
+{{- $sandboxSelector := dict "cogs.dev/node-domain" "sandbox-kata" "cogs.dev/nested-virtualization" "enabled" "cogs.dev/sandbox-runtime" "kata-qemu-kvm" -}}
+{{- if not (deepEqual $v.placement.sandbox.nodeSelector $sandboxSelector) -}}
+{{- fail "stage4Preparation.placement.sandbox.nodeSelector must equal the three-label Kata/KVM contract" -}}
 {{- end -}}
 {{- if not (deepEqual $v.placement.trusted.tolerations (list)) -}}
 {{- fail "stage4Preparation.placement.trusted.tolerations must be exactly empty" -}}
@@ -99,11 +130,18 @@ dev.cogs/production-ready: "false"
 {{- if eq $v.storage.workspaceStorageClass $v.storage.sessionStateStorageClass -}}
 {{- fail "workspaceStorageClass and sessionStateStorageClass must differ" -}}
 {{- end -}}
-{{- if or (ne $v.storage.workspaceSize "20Gi") (ne $v.storage.workspaceAccessMode "ReadWriteOncePod") -}}
-{{- fail "stage4Preparation.storage workspace contract must be 20Gi ReadWriteOncePod" -}}
+{{- if or (ne $v.storage.workspaceSize "20Gi") (ne $v.storage.workspaceAccessMode "ReadWriteOncePod") (ne $v.storage.workspaceVolumeMode "Filesystem") (ne $v.storage.workspaceVolumeBindingMode "WaitForFirstConsumer") (ne $v.storage.workspaceReclaimPolicy "Retain") (ne $v.storage.workspaceRetention "retain-until-explicit-workspace-deletion") -}}
+{{- fail "stage4Preparation.storage workspace contract must be 20Gi ReadWriteOncePod Filesystem WaitForFirstConsumer Retain with explicit-deletion retention" -}}
 {{- end -}}
-{{- if or (ne $v.storage.sessionStateSize "5Gi") (ne $v.storage.sessionStateAccessMode "ReadWriteOncePod") -}}
-{{- fail "stage4Preparation.storage session-state contract must be 5Gi ReadWriteOncePod" -}}
+{{- if or (ne $v.storage.sessionStateSize "5Gi") (ne $v.storage.sessionStateAccessMode "ReadWriteOncePod") (ne $v.storage.sessionStateVolumeMode "Filesystem") (ne $v.storage.sessionStateVolumeBindingMode "WaitForFirstConsumer") (ne $v.storage.sessionStateReclaimPolicy "Retain") (ne $v.storage.sessionStateRetention "retain-30-days-after-session-close") -}}
+{{- fail "stage4Preparation.storage session-state contract must be 5Gi ReadWriteOncePod Filesystem WaitForFirstConsumer Retain with 30-day retention" -}}
+{{- end -}}
+{{- if not (or (kindIs "float64" $v.storage.sessionStateRetentionSeconds) (kindIs "int" $v.storage.sessionStateRetentionSeconds) (kindIs "int64" $v.storage.sessionStateRetentionSeconds)) -}}
+{{- fail "stage4Preparation.storage.sessionStateRetentionSeconds must be exactly 2592000" -}}
+{{- end -}}
+{{- $retentionSeconds := float64 $v.storage.sessionStateRetentionSeconds -}}
+{{- if or (ne $retentionSeconds (floor $retentionSeconds)) (ne $retentionSeconds 2592000.0) -}}
+{{- fail "stage4Preparation.storage.sessionStateRetentionSeconds must be exactly 2592000" -}}
 {{- end -}}
 
 {{- $httpsEndpoint := "^https://([A-Za-z0-9]([-A-Za-z0-9.]*[A-Za-z0-9])?|\\[[0-9A-Fa-f:]+\\])(:[1-9][0-9]{0,4})?(/[^[:space:]?#]*)?$" -}}
@@ -171,11 +209,11 @@ dev.cogs/production-ready: "false"
 {{- end -}}
 {{- end -}}
 {{- if not (or (kindIs "float64" $v.auditWalMaxBytes) (kindIs "int" $v.auditWalMaxBytes) (kindIs "int64" $v.auditWalMaxBytes)) -}}
-{{- fail "stage4Preparation.auditWalMaxBytes must be an integer from 1048576 through 1073741824" -}}
+{{- fail "stage4Preparation.auditWalMaxBytes must be exactly 1048576" -}}
 {{- end -}}
 {{- $walBytes := float64 $v.auditWalMaxBytes -}}
-{{- if or (ne $walBytes (floor $walBytes)) (lt $walBytes 1048576.0) (gt $walBytes 1073741824.0) -}}
-{{- fail "stage4Preparation.auditWalMaxBytes must be an integer from 1048576 through 1073741824" -}}
+{{- if or (ne $walBytes (floor $walBytes)) (ne $walBytes 1048576.0) -}}
+{{- fail "stage4Preparation.auditWalMaxBytes must be exactly 1048576" -}}
 {{- end -}}
 
 {{- if hasKey $v "publicEgressCa" -}}

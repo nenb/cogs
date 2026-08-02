@@ -25,11 +25,14 @@ const STATIC_CHECK_IDS = [
   "static.sandbox.explicit-kata-runtimeclass-no-fallback",
   "static.sandbox.no-trusted-sidecar-shape",
   "static.identity.sandbox-token-automount-disabled",
+  "static.identity.scoped-trusted-worker-openbao-handles-sandbox-no-identity",
   "static.network.declarative-default-deny-shape",
   "static.network.no-public-ingress-or-provider-resource",
+  "static.proxy.immutable-session-source-binding-revocation-no-fallback",
   "static.scheduling.trusted-sandbox-separation-shape",
   "static.storage.workspace-session-role-separation-shape",
   "static.limits.resource-and-lifecycle-bounds-present",
+  "static.telemetry.metadata-only-otlp-and-bounded-audit-wal-failure",
   "static.material.no-inline-sensitive-content",
 ] as const;
 
@@ -114,6 +117,177 @@ function teardownPlanSample(): JsonObject {
   };
 }
 
+function campaignFixture(name: string): JsonObject {
+  return JSON.parse(
+    readFileSync(resolve(import.meta.dirname, `fixtures/stage4-campaign/${name}`), "utf8"),
+  ) as JsonObject;
+}
+
+function campaignApprovalDraftSample(): JsonObject {
+  return campaignFixture("approval-draft-blocked-v1.json");
+}
+
+function campaignApprovalVerdictSample(): JsonObject {
+  return {
+    version: "cogs.stage4-campaign-approval-verdict/v1",
+    authority: "local-static-unapproved-envelope-classifier",
+    draft_valid: true,
+    approval_present: false,
+    execution_authorized: false,
+    retry_authorized: false,
+    provider_truth_observed: false,
+    stage4_exit_satisfied: false,
+    envelope_sha256: sha("a"),
+    status: "valid-unapproved-blocked-draft",
+    reason_code: "STAGE4_APPROVAL_DRAFT_VALID_BLOCKED",
+  };
+}
+
+function campaignPlanSample(): JsonObject {
+  return campaignFixture("s4-08-plan-blocked-v1.json");
+}
+
+function campaignEvidenceSample(): JsonObject {
+  return campaignFixture("s4-08-evidence-empty-v1.json");
+}
+
+function campaignModelVerdictSample(): JsonObject {
+  return {
+    version: "cogs.stage4-campaign-model-verdict/v1",
+    authority: "local-static-campaign-state-classifier",
+    campaign_issue: "S4-08/#359",
+    campaign_id_sha256: sha("c"),
+    attempt_id_sha256: sha("d"),
+    plan_valid: true,
+    evidence_valid: true,
+    execution_authorized: false,
+    campaign_execution_observed: false,
+    provider_truth_observed: false,
+    kubernetes_truth_observed: false,
+    cleanup_observed: false,
+    zero_inventory_claimed: false,
+    retry_authorized: false,
+    stage4_exit_satisfied: false,
+    plan_sha256: sha("a"),
+    evidence_sha256: sha("b"),
+    status: "awaiting-claimed-evidence",
+    next_phase: "topology.source-render-object-binding",
+    reason_code: "STAGE4_CAMPAIGN_AWAITING_CLAIMED_EVIDENCE",
+  };
+}
+
+function exitReviewMatrixSample(): JsonObject {
+  return campaignFixture("s4-11-exit-matrix-template-v1.json");
+}
+
+function exitReviewReportSample(): JsonObject {
+  return campaignFixture("s4-11-exit-report-template-v1.json");
+}
+
+function exitReviewVerdictSample(): JsonObject {
+  return {
+    version: "cogs.stage4-exit-review-verdict/v1",
+    authority: "local-static-stage4-exit-template-classifier",
+    template_valid: true,
+    review_complete: false,
+    stage4_exit_satisfied: false,
+    release_eligible: false,
+    matrix_sha256: sha("a"),
+    report_sha256: sha("b"),
+    status: "valid-blocked-template",
+    reason_code: "STAGE4_EXIT_TEMPLATE_VALID_BLOCKED",
+  };
+}
+
+function offlineReadinessPackageSample(): JsonObject {
+  return JSON.parse(
+    readFileSync(
+      resolve(import.meta.dirname, "../docs/security-evidence/stage4-offline-readiness-package.json"),
+      "utf8",
+    ),
+  ) as JsonObject;
+}
+
+function offlineReadinessVerdictSample(): JsonObject {
+  return {
+    version: "cogs.stage4-offline-readiness-verdict/v1",
+    authority: "local-static-stage4-readiness-classifier",
+    local_preparation_complete: true,
+    local_preparation_scope: "bounded-package-assembly-and-local-validation-only",
+    trusted_render_preparation_complete: true,
+    exact_image_runtime_closure_satisfied: false,
+    campaign_request_ready: false,
+    campaign_approved: false,
+    cloud_authorized: false,
+    cloud_execution_observed: false,
+    provider_truth_observed: false,
+    current_resources_observed: false,
+    zero_resources_claimed: false,
+    stage4_exit_satisfied: false,
+    release_eligible: false,
+    package_sha256: sha("a"),
+    binding_root_sha256: sha("b"),
+    status: "local-preparation-complete-blocked",
+    reason_code: "STAGE4_LOCAL_PREPARATION_COMPLETE_CAMPAIGN_BLOCKED",
+    blockers: [
+      "ISSUE_42_OPEN",
+      "NIC_V0_11_0_MODULE_0_7_0_LAUNCH_TEMPLATE_CAPABILITY_MISSING",
+      "EKS_AMI_IMAGE_RELEASE_KERNEL_UNRESOLVED",
+      "PROPOSED_ACCOUNT_BINDING_ABSENT",
+      "CURRENT_PRICE_NOT_REVALIDATED",
+      "CURRENT_QUOTA_NOT_REVALIDATED",
+      "SEPARATED_CAMPAIGN_IDENTITIES_ABSENT",
+      "CAMPAIGN_ENVELOPE_AND_APPROVAL_ABSENT",
+      "NO_EXECUTABLE_PROVIDER_ROUTE",
+      "RELEASE_IMAGE_SET_ABSENT",
+      "CONTAINERD_ARTIFACT_IDENTITY_UNRESOLVED",
+      "QEMU_ARTIFACT_IDENTITY_UNRESOLVED",
+    ],
+  };
+}
+
+function policyContractSample(): JsonObject {
+  return JSON.parse(
+    readFileSync(resolve(import.meta.dirname, "fixtures/stage4-policy/valid-contract-v1.json"), "utf8"),
+  ) as JsonObject;
+}
+
+function policyProbeSample(): JsonObject {
+  return JSON.parse(
+    readFileSync(resolve(import.meta.dirname, "fixtures/stage4-policy/hostile-probes-v1.json"), "utf8"),
+  ) as JsonObject;
+}
+
+function policyPayloadSample(): JsonObject {
+  return JSON.parse(
+    readFileSync(resolve(import.meta.dirname, "fixtures/stage4-policy/valid-audit-wal-record-v1.json"), "utf8"),
+  ) as JsonObject;
+}
+
+function storageLaunchContractSample(): JsonObject {
+  return JSON.parse(
+    readFileSync(resolve(import.meta.dirname, "fixtures/stage4-storage-launch/valid-active-v1.json"), "utf8"),
+  ) as JsonObject;
+}
+
+function storageLaunchVerdictSample(): JsonObject {
+  return {
+    version: "cogs.stage4-storage-launch-verdict/v1",
+    authority: "local-static-storage-launch-classifier",
+    qualified: false,
+    campaign_authorized: false,
+    cloud_execution_observed: false,
+    kubernetes_execution_observed: false,
+    provider_truth_observed: false,
+    stage4_exit_satisfied: false,
+    release_eligible: false,
+    graph_sha256: sha("d"),
+    status: "admissible-static-graph",
+    reason_code: "STAGE4_STORAGE_LAUNCH_GRAPH_VALID",
+    preservation: null,
+  };
+}
+
 function teardownVerdictSample(): JsonObject {
   return {
     version: TEARDOWN_CONTRACT.verdictVersion,
@@ -133,14 +307,54 @@ function teardownVerdictSample(): JsonObject {
   };
 }
 
+function nicContractSample(): JsonObject {
+  return JSON.parse(
+    readFileSync(resolve(import.meta.dirname, "../deploy/nic/stage4-sandbox-node-group-contract.json"), "utf8"),
+  ) as JsonObject;
+}
+
+function nicVerdictSample(): JsonObject {
+  return {
+    version: "cogs.stage4-nic-sandbox-node-group-verdict/v1",
+    authority: "local-static-nic-contract-classifier",
+    campaign_authorized: false,
+    cloud_execution_observed: false,
+    stage4_exit_satisfied: false,
+    release_eligible: false,
+    contract_sha256: sha("c"),
+    nic_source_pin_resolved: true,
+    node_image_pin_resolved: false,
+    launch_template_capability_resolved: false,
+    status: "blocked-missing-capability",
+    reason_code: "STAGE4_NIC_LAUNCH_TEMPLATE_CAPABILITY_MISSING",
+  };
+}
+
 const STAGE4_SCHEMA_REGISTRY = [
+  { file: "stage4-campaign-approval-draft-v1.json", sample: campaignApprovalDraftSample },
+  { file: "stage4-campaign-approval-verdict-v1.json", sample: campaignApprovalVerdictSample },
+  { file: "stage4-campaign-evidence-v1.json", sample: campaignEvidenceSample },
+  { file: "stage4-campaign-model-verdict-v1.json", sample: campaignModelVerdictSample },
+  { file: "stage4-campaign-plan-v1.json", sample: campaignPlanSample },
+  { file: "stage4-exit-review-matrix-template-v1.json", sample: exitReviewMatrixSample },
+  { file: "stage4-exit-review-report-template-v1.json", sample: exitReviewReportSample },
+  { file: "stage4-exit-review-verdict-v1.json", sample: exitReviewVerdictSample },
+  { file: "stage4-nic-sandbox-node-group-contract-v1.json", sample: nicContractSample },
+  { file: "stage4-nic-sandbox-node-group-verdict-v1.json", sample: nicVerdictSample },
+  { file: "stage4-offline-readiness-package-v1.json", sample: offlineReadinessPackageSample },
+  { file: "stage4-offline-readiness-verdict-v1.json", sample: offlineReadinessVerdictSample },
+  { file: "stage4-policy-contract-v1.json", sample: policyContractSample },
+  { file: "stage4-policy-payload-v1.json", sample: policyPayloadSample },
+  { file: "stage4-policy-probe-suite-v1.json", sample: policyProbeSample },
   { file: "stage4-static-preparation-evidence-v1.json", sample: staticSample },
+  { file: "stage4-storage-launch-contract-v1.json", sample: storageLaunchContractSample },
+  { file: "stage4-storage-launch-verdict-v1.json", sample: storageLaunchVerdictSample },
   { file: "stage4-teardown-plan-v1.json", sample: teardownPlanSample },
   { file: "stage4-teardown-verdict-v1.json", sample: teardownVerdictSample },
 ] as const satisfies readonly RegistryEntry[];
 
 function compileRegistry(): Map<string, ValidateFunction> {
-  const ajv = new Ajv2020({ allErrors: true, strict: true, strictRequired: false });
+  const ajv = new Ajv2020({ allErrors: true, strict: true, strictRequired: false, ownProperties: true });
   return new Map(
     STAGE4_SCHEMA_REGISTRY.map(({ file }) => {
       const schema = JSON.parse(readFileSync(resolve(schemaDirectory, file), "utf8")) as object;
@@ -159,10 +373,31 @@ function assertRejected(validator: ValidateFunction, sample: unknown, message: s
   assert.equal(validator(sample), false, message);
 }
 
-test("the bounded Stage 4 registry compiles its three strict positive samples", () => {
+test("the bounded Stage 4 registry compiles its strict positive samples", () => {
   assert.deepEqual(
     STAGE4_SCHEMA_REGISTRY.map(({ file }) => file),
-    ["stage4-static-preparation-evidence-v1.json", "stage4-teardown-plan-v1.json", "stage4-teardown-verdict-v1.json"],
+    [
+      "stage4-campaign-approval-draft-v1.json",
+      "stage4-campaign-approval-verdict-v1.json",
+      "stage4-campaign-evidence-v1.json",
+      "stage4-campaign-model-verdict-v1.json",
+      "stage4-campaign-plan-v1.json",
+      "stage4-exit-review-matrix-template-v1.json",
+      "stage4-exit-review-report-template-v1.json",
+      "stage4-exit-review-verdict-v1.json",
+      "stage4-nic-sandbox-node-group-contract-v1.json",
+      "stage4-nic-sandbox-node-group-verdict-v1.json",
+      "stage4-offline-readiness-package-v1.json",
+      "stage4-offline-readiness-verdict-v1.json",
+      "stage4-policy-contract-v1.json",
+      "stage4-policy-payload-v1.json",
+      "stage4-policy-probe-suite-v1.json",
+      "stage4-static-preparation-evidence-v1.json",
+      "stage4-storage-launch-contract-v1.json",
+      "stage4-storage-launch-verdict-v1.json",
+      "stage4-teardown-plan-v1.json",
+      "stage4-teardown-verdict-v1.json",
+    ],
   );
 
   const validators = compileRegistry();
@@ -180,12 +415,60 @@ test("every Stage 4 schema rejects unknown root fields and representative nested
     assertRejected(validatorFor(validators, file), mutation, `${file} accepted an unknown root field`);
   }
 
+  const approvalMutation = campaignApprovalDraftSample();
+  (approvalMutation.approval as JsonObject).unreviewed = true;
+  assertRejected(
+    validatorFor(validators, "stage4-campaign-approval-draft-v1.json"),
+    approvalMutation,
+    "campaign approval draft accepted an unknown approval field",
+  );
+
+  const campaignMutation = campaignPlanSample();
+  (campaignMutation.bindings as JsonObject).unreviewed = true;
+  assertRejected(
+    validatorFor(validators, "stage4-campaign-plan-v1.json"),
+    campaignMutation,
+    "campaign plan accepted an unknown binding field",
+  );
+
+  const exitMutation = exitReviewReportSample();
+  (exitMutation.decision as JsonObject).unreviewed = true;
+  assertRejected(
+    validatorFor(validators, "stage4-exit-review-report-template-v1.json"),
+    exitMutation,
+    "exit report template accepted an unknown decision field",
+  );
+
   const staticMutation = staticSample();
   (staticMutation.artifacts as JsonObject).unreviewed = true;
   assertRejected(
     validatorFor(validators, "stage4-static-preparation-evidence-v1.json"),
     staticMutation,
     "static evidence accepted an unknown artifact field",
+  );
+
+  const nicMutation = nicContractSample();
+  ((nicMutation.sandbox_node_group as JsonObject).runtime as JsonObject).unreviewed = true;
+  assertRejected(
+    validatorFor(validators, "stage4-nic-sandbox-node-group-contract-v1.json"),
+    nicMutation,
+    "NIC contract accepted an unknown runtime field",
+  );
+
+  const readinessMutation = offlineReadinessPackageSample();
+  ((readinessMutation.campaign_proposal as JsonObject).account_binding as JsonObject).unreviewed = true;
+  assertRejected(
+    validatorFor(validators, "stage4-offline-readiness-package-v1.json"),
+    readinessMutation,
+    "offline readiness package accepted an unknown account-binding field",
+  );
+
+  const storageMutation = storageLaunchContractSample();
+  ((storageMutation.storage as JsonObject).workspace as JsonObject).unreviewed = true;
+  assertRejected(
+    validatorFor(validators, "stage4-storage-launch-contract-v1.json"),
+    storageMutation,
+    "storage/launch contract accepted an unknown workspace field",
   );
 
   const planMutation = teardownPlanSample();
@@ -197,6 +480,24 @@ test("every Stage 4 schema rejects unknown root fields and representative nested
     planMutation,
     "teardown plan accepted an unknown phase field",
   );
+});
+
+test("Stage 4 schema validation uses own-property JSON semantics for inherited fields", () => {
+  const validators = compileRegistry();
+  const validateNic = validatorFor(validators, "stage4-nic-sandbox-node-group-contract-v1.json");
+  const sample = nicContractSample();
+  delete sample.version;
+  const inherited = Object.assign(
+    Object.create({ version: "cogs.stage4-nic-sandbox-node-group-contract/v1" }) as JsonObject,
+    sample,
+  );
+  assert.equal(validateNic(inherited), false, "an inherited version must not satisfy a required own property");
+
+  const inheritedUnknown = Object.assign(
+    Object.create({ future_security_field: true }) as JsonObject,
+    nicContractSample(),
+  );
+  assert.equal(validateNic(inheritedUnknown), true, "inherited fields are outside JSON own-property semantics");
 });
 
 test("Stage 4 schemas reject cross-domain version and authority substitution", () => {

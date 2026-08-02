@@ -54,17 +54,35 @@
             "workspaceStorageClass",
             "workspaceSize",
             "workspaceAccessMode",
+            "workspaceVolumeMode",
+            "workspaceVolumeBindingMode",
+            "workspaceReclaimPolicy",
+            "workspaceRetention",
             "sessionStateStorageClass",
             "sessionStateSize",
-            "sessionStateAccessMode"
+            "sessionStateAccessMode",
+            "sessionStateVolumeMode",
+            "sessionStateVolumeBindingMode",
+            "sessionStateReclaimPolicy",
+            "sessionStateRetention",
+            "sessionStateRetentionSeconds"
           ],
           "properties": {
             "workspaceStorageClass": { "type": "string", "maxLength": 253 },
             "workspaceSize": { "const": "20Gi" },
             "workspaceAccessMode": { "const": "ReadWriteOncePod" },
+            "workspaceVolumeMode": { "const": "Filesystem" },
+            "workspaceVolumeBindingMode": { "const": "WaitForFirstConsumer" },
+            "workspaceReclaimPolicy": { "const": "Retain" },
+            "workspaceRetention": { "const": "retain-until-explicit-workspace-deletion" },
             "sessionStateStorageClass": { "type": "string", "maxLength": 253 },
             "sessionStateSize": { "const": "5Gi" },
-            "sessionStateAccessMode": { "const": "ReadWriteOncePod" }
+            "sessionStateAccessMode": { "const": "ReadWriteOncePod" },
+            "sessionStateVolumeMode": { "const": "Filesystem" },
+            "sessionStateVolumeBindingMode": { "const": "WaitForFirstConsumer" },
+            "sessionStateReclaimPolicy": { "const": "Retain" },
+            "sessionStateRetention": { "const": "retain-30-days-after-session-close" },
+            "sessionStateRetentionSeconds": { "const": 2592000 }
           }
         },
         "openBao": {
@@ -110,7 +128,7 @@
             "terminationGraceSeconds": { "const": 30 }
           }
         },
-        "auditWalMaxBytes": { "type": "integer", "minimum": 1048576, "maximum": 1073741824 },
+        "auditWalMaxBytes": { "const": 1048576 },
         "publicEgressCaConfigMap": { "type": "string", "maxLength": 253 }
       },
       "allOf": [
@@ -123,11 +141,7 @@
                 "minLength": 1,
                 "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$"
               },
-              "runtimeClassName": {
-                "minLength": 1,
-                "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?)*$",
-                "not": { "enum": ["runc", "runsc", "default", "docker", "containerd", "oci"] }
-              },
+              "runtimeClassName": { "const": "kata-qemu-cogs" },
               "images": {
                 "properties": {
                   "worker": { "$ref": "#/definitions/digestImage" },
@@ -151,8 +165,16 @@
                   "sandbox": {
                     "properties": {
                       "nodeSelector": {
-                        "required": ["cogs.dev/node-domain"],
-                        "properties": { "cogs.dev/node-domain": { "const": "sandbox-kata" } }
+                        "required": [
+                          "cogs.dev/node-domain",
+                          "cogs.dev/nested-virtualization",
+                          "cogs.dev/sandbox-runtime"
+                        ],
+                        "properties": {
+                          "cogs.dev/node-domain": { "const": "sandbox-kata" },
+                          "cogs.dev/nested-virtualization": { "const": "enabled" },
+                          "cogs.dev/sandbox-runtime": { "const": "kata-qemu-kvm" }
+                        }
                       },
                       "tolerations": {
                         "const": [

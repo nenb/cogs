@@ -1,0 +1,598 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.dev/schemas/stage4-campaign-plan-v1.json",
+  "title": "Cogs Stage 4 local/static campaign plan model v1",
+  "description": "A non-executable, unapproved, one-attempt ordering model with digest-only bindings.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "authority",
+    "campaign_issue",
+    "campaign_id_sha256",
+    "execution_authorized",
+    "attempt",
+    "bindings",
+    "qualification_steps",
+    "terminal_order",
+    "evidence_policy",
+    "prohibited_surfaces"
+  ],
+  "properties": {
+    "version": {
+      "const": "cogs.stage4-campaign-plan/v1"
+    },
+    "authority": {
+      "const": "local-static-campaign-plan-model"
+    },
+    "campaign_issue": {
+      "enum": ["S4-08/#359", "S4-09/#360", "S4-10/#361"]
+    },
+    "campaign_id_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "execution_authorized": {
+      "const": false
+    },
+    "attempt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["attempt_id_sha256", "number", "maximum_attempts", "retry", "approval_state"],
+      "properties": {
+        "attempt_id_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "number": {
+          "const": 1
+        },
+        "maximum_attempts": {
+          "const": 1
+        },
+        "retry": {
+          "const": "prohibited"
+        },
+        "approval_state": {
+          "const": "absent"
+        }
+      }
+    },
+    "bindings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_revision_sha256",
+        "source_inventory_sha256",
+        "offline_readiness_package_sha256",
+        "approval_draft_sha256",
+        "campaign_profile_sha256",
+        "artifact_manifest_sha256",
+        "artifact_set_root_sha256"
+      ],
+      "properties": {
+        "source_revision_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "source_inventory_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "offline_readiness_package_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "approval_draft_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "campaign_profile_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "artifact_manifest_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "artifact_set_root_sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "qualification_steps": {
+      "type": "array",
+      "minItems": 6,
+      "maxItems": 20,
+      "items": {
+        "$ref": "#/$defs/step"
+      }
+    },
+    "terminal_order": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "prefixItems": [
+        {
+          "const": "stop"
+        },
+        {
+          "const": "destroy"
+        },
+        {
+          "const": "independent-inventory"
+        }
+      ],
+      "items": false
+    },
+    "evidence_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "metadata_only",
+        "digest_only",
+        "uncertainty_is_sticky",
+        "failure_skips_to_stop",
+        "inventory_must_be_independent",
+        "max_events"
+      ],
+      "properties": {
+        "metadata_only": {
+          "const": true
+        },
+        "digest_only": {
+          "const": true
+        },
+        "uncertainty_is_sticky": {
+          "const": true
+        },
+        "failure_skips_to_stop": {
+          "const": true
+        },
+        "inventory_must_be_independent": {
+          "const": true
+        },
+        "max_events": {
+          "type": "integer",
+          "minimum": 9,
+          "maximum": 23
+        }
+      }
+    },
+    "prohibited_surfaces": {
+      "type": "array",
+      "minItems": 8,
+      "maxItems": 8,
+      "prefixItems": [
+        {
+          "const": "executor"
+        },
+        {
+          "const": "provider"
+        },
+        {
+          "const": "opentofu"
+        },
+        {
+          "const": "kubernetes-api"
+        },
+        {
+          "const": "kubectl"
+        },
+        {
+          "const": "helm-install-apply"
+        },
+        {
+          "const": "external-model"
+        },
+        {
+          "const": "network-discovery"
+        }
+      ],
+      "items": false
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "campaign_issue": {
+            "const": "S4-08/#359"
+          }
+        },
+        "required": ["campaign_issue"],
+        "type": "object"
+      },
+      "then": {
+        "properties": {
+          "evidence_policy": {
+            "properties": {
+              "max_events": {
+                "const": 9
+              }
+            },
+            "type": "object"
+          },
+          "qualification_steps": {
+            "minItems": 6,
+            "maxItems": 6,
+            "prefixItems": [
+              {
+                "$ref": "#/$defs/step",
+                "properties": {
+                  "id": {
+                    "const": "topology.source-render-object-binding"
+                  }
+                },
+                "type": "object"
+              },
+              {
+                "$ref": "#/$defs/step",
+                "properties": {
+                  "id": {
+                    "const": "topology.launch-template-nested-kvm"
+                  }
+                },
+                "type": "object"
+              },
+              {
+                "$ref": "#/$defs/step",
+                "properties": {
+                  "id": {
+                    "const": "kata.active-kvm-distinct-guest-no-fallback"
+                  }
+                },
+                "type": "object"
+              },
+              {
+                "$ref": "#/$defs/step",
+                "properties": {
+                  "id": {
+                    "const": "storage.ebs-workspace-session-lifecycle"
+                  }
+                },
+                "type": "object"
+              },
+              {
+                "$ref": "#/$defs/step",
+                "properties": {
+                  "id": {
+                    "const": "storage.exclusive-writer-forced-loss"
+                  }
+                },
+                "type": "object"
+              },
+              {
+                "$ref": "#/$defs/step",
+                "properties": {
+                  "id": {
+                    "const": "cleanup.runtime-and-object-behavior"
+                  }
+                },
+                "type": "object"
+              }
+            ],
+            "items": false,
+            "type": "array"
+          }
+        },
+        "type": "object"
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "campaign_issue": {
+            "const": "S4-09/#360"
+          }
+        },
+        "required": ["campaign_issue"],
+        "type": "object"
+      },
+      "then": {
+        "properties": {
+          "evidence_policy": {
+            "properties": {
+              "max_events": {
+                "const": 9
+              }
+            },
+            "type": "object"
+          },
+          "qualification_steps": {
+            "minItems": 6,
+            "maxItems": 6,
+            "prefixItems": [
+              {
+                "$ref": "#/$defs/step",
+                "properties": {
+                  "id": {
+                    "const": "guest-root.real-dependencies-admitted"
+                  }
+                },
+                "type": "object"
+              },
+              {
+                "$ref": "#/$defs/step",
+                "properties": {
+                  "id": {
+                    "const": "guest-root.ipv4-ipv6-udp-quic-dns-denial"
+                  }
+                },
+                "type": "object"
+              },
+              {
+                "$ref": "#/$defs/step",
+                "properties": {
+                  "id": {
+                    "const": "guest-root.api-metadata-admin-cross-session-storage-denial"
+                  }
+                },
+                "type": "object"
+              },
+              {
+                "$ref": "#/$defs/step",
+                "properties": {
+                  "id": {
+                    "const": "guest-root.no-kubernetes-cloud-openbao-integration-model-or-ca-key-material"
+                  }
+                },
+                "type": "object"
+              },
+              {
+                "$ref": "#/$defs/step",
+                "properties": {
+                  "id": {
+                    "const": "functional.stage3-kata-ebs-openbao-otlp"
+                  }
+                },
+                "type": "object"
+              },
+              {
+                "$ref": "#/$defs/step",
+                "properties": {
+                  "id": {
+                    "const": "functional.api-key-samples-separately-authorized"
+                  }
+                },
+                "type": "object"
+              }
+            ],
+            "items": false,
+            "type": "array"
+          }
+        },
+        "type": "object"
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "campaign_issue": {
+            "const": "S4-10/#361"
+          }
+        },
+        "required": ["campaign_issue"],
+        "type": "object"
+      },
+      "then": {
+        "properties": {
+          "evidence_policy": {
+            "properties": {
+              "max_events": {
+                "const": 23
+              }
+            },
+            "type": "object"
+          },
+          "qualification_steps": {
+            "minItems": 20,
+            "maxItems": 20,
+            "prefixItems": [
+              {
+                "$ref": "#/$defs/step",
+                "properties": {
+                  "id": {
+                    "const": "performance.startup-p50-p95-p99"
+                  }
+                },
+                "type": "object"
+              },
+              {
+                "$ref": "#/$defs/step",
+                "properties": {
+                  "id": {
+                    "const": "performance.first-tool"
+                  }
+                },
+                "type": "object"
+              },
+              {
+                "$ref": "#/$defs/step",
+                "properties": {
+                  "id": {
+                    "const": "performance.storage-attach"
+                  }
+                },
+                "type": "object"
+              },
+              {
+                "$ref": "#/$defs/step",
+                "properties": {
+                  "id": {
+                    "const": "performance.cold-pulls-and-scale"
+                  }
+                },
+                "type": "object"
+              },
+              {
+                "$ref": "#/$defs/step",
+                "properties": {
+                  "id": {
+                    "const": "performance.idle-overhead"
+                  }
+                },
+                "type": "object"
+              },
+              {
+                "$ref": "#/$defs/step",
+                "properties": {
+                  "id": {
+                    "const": "performance.git-and-build"
+                  }
+                },
+                "type": "object"
+              },
+              {
+                "$ref": "#/$defs/step",
+                "properties": {
+                  "id": {
+                    "const": "performance.proxy-overhead"
+                  }
+                },
+                "type": "object"
+              },
+              {
+                "$ref": "#/$defs/step",
+                "properties": {
+                  "id": {
+                    "const": "performance.recycle-duration"
+                  }
+                },
+                "type": "object"
+              },
+              {
+                "$ref": "#/$defs/step",
+                "properties": {
+                  "id": {
+                    "const": "performance.startup-under-30s-or-reviewed-exception"
+                  }
+                },
+                "type": "object"
+              },
+              {
+                "$ref": "#/$defs/step",
+                "properties": {
+                  "id": {
+                    "const": "recovery.worker-failure"
+                  }
+                },
+                "type": "object"
+              },
+              {
+                "$ref": "#/$defs/step",
+                "properties": {
+                  "id": {
+                    "const": "recovery.sandbox-failure"
+                  }
+                },
+                "type": "object"
+              },
+              {
+                "$ref": "#/$defs/step",
+                "properties": {
+                  "id": {
+                    "const": "recovery.proxy-failure"
+                  }
+                },
+                "type": "object"
+              },
+              {
+                "$ref": "#/$defs/step",
+                "properties": {
+                  "id": {
+                    "const": "recovery.node-failure"
+                  }
+                },
+                "type": "object"
+              },
+              {
+                "$ref": "#/$defs/step",
+                "properties": {
+                  "id": {
+                    "const": "recovery.openbao-failure"
+                  }
+                },
+                "type": "object"
+              },
+              {
+                "$ref": "#/$defs/step",
+                "properties": {
+                  "id": {
+                    "const": "recovery.otlp-failure"
+                  }
+                },
+                "type": "object"
+              },
+              {
+                "$ref": "#/$defs/step",
+                "properties": {
+                  "id": {
+                    "const": "recovery.storage-failure"
+                  }
+                },
+                "type": "object"
+              },
+              {
+                "$ref": "#/$defs/step",
+                "properties": {
+                  "id": {
+                    "const": "recovery.audit-wal-failure"
+                  }
+                },
+                "type": "object"
+              },
+              {
+                "$ref": "#/$defs/step",
+                "properties": {
+                  "id": {
+                    "const": "recovery.policy-failure"
+                  }
+                },
+                "type": "object"
+              },
+              {
+                "$ref": "#/$defs/step",
+                "properties": {
+                  "id": {
+                    "const": "recovery.recycle-no-prompt-replay"
+                  }
+                },
+                "type": "object"
+              },
+              {
+                "$ref": "#/$defs/step",
+                "properties": {
+                  "id": {
+                    "const": "cost.capacity-observed-no-support-extrapolation"
+                  }
+                },
+                "type": "object"
+              }
+            ],
+            "items": false,
+            "type": "array"
+          }
+        },
+        "type": "object"
+      }
+    }
+  ],
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "step": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "state", "evidence_class"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 96,
+          "pattern": "^[a-z0-9.-]+$"
+        },
+        "state": {
+          "const": "unexecuted"
+        },
+        "evidence_class": {
+          "const": "future-digest-only-claim"
+        }
+      }
+    }
+  }
+}

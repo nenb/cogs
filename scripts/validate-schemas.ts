@@ -12,7 +12,7 @@ const addFormats = require("ajv-formats") as (ajv: AjvCore) => AjvCore;
 const parseYaml = (require("yaml") as { parse(source: string): unknown }).parse;
 const root = resolve(import.meta.dirname, "..");
 const schemaDir = resolve(root, "schemas");
-const ajv = new Ajv2020({ allErrors: true, strict: true, strictRequired: false });
+const ajv = new Ajv2020({ allErrors: true, strict: true, strictRequired: false, ownProperties: true });
 addFormats(ajv);
 
 const schemaFiles = readdirSync(schemaDir)

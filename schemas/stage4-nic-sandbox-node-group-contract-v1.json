@@ -1,0 +1,398 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.dev/schemas/stage4-nic-sandbox-node-group-contract-v1.json",
+  "title": "Cogs Stage 4 NIC sandbox node-group static source contract v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "authority",
+    "nic_source",
+    "nic_capability_assessment",
+    "node_image",
+    "sandbox_node_group",
+    "scheduling"
+  ],
+  "properties": {
+    "version": { "const": "cogs.stage4-nic-sandbox-node-group-contract/v1" },
+    "authority": { "const": "local-static-source-contract" },
+    "nic_source": { "$ref": "#/$defs/nicSource" },
+    "nic_capability_assessment": { "$ref": "#/$defs/nicCapabilityAssessment" },
+    "node_image": { "$ref": "#/$defs/nodeImage" },
+    "sandbox_node_group": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provider",
+        "region",
+        "name",
+        "capacity_type",
+        "instance_type",
+        "architecture",
+        "bare_metal",
+        "scaling",
+        "required_labels",
+        "required_taints",
+        "launch_template",
+        "runtime"
+      ],
+      "properties": {
+        "provider": { "const": "aws" },
+        "region": { "const": "us-east-1" },
+        "name": { "const": "cogs-stage4-sandbox-kata" },
+        "capacity_type": { "const": "ON_DEMAND" },
+        "instance_type": { "const": "c8i-flex.large" },
+        "architecture": { "const": "x86_64" },
+        "bare_metal": { "const": false },
+        "scaling": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["min", "max"],
+          "properties": {
+            "min": { "const": 0 },
+            "max": { "const": 1 }
+          }
+        },
+        "required_labels": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["cogs.dev/node-domain", "cogs.dev/nested-virtualization", "cogs.dev/sandbox-runtime"],
+          "properties": {
+            "cogs.dev/node-domain": { "const": "sandbox-kata" },
+            "cogs.dev/nested-virtualization": { "const": "enabled" },
+            "cogs.dev/sandbox-runtime": { "const": "kata-qemu-kvm" }
+          }
+        },
+        "required_taints": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "prefixItems": [{ "$ref": "#/$defs/sandboxTaint" }],
+          "items": false
+        },
+        "launch_template": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "source",
+            "id_input",
+            "version_input",
+            "version_selection",
+            "allow_default_version",
+            "allow_latest_version",
+            "preserve_id_and_version",
+            "reject_reconcile_drift",
+            "cpu_options"
+          ],
+          "properties": {
+            "source": { "const": "custom-external" },
+            "id_input": { "const": "sandbox_launch_template_id" },
+            "version_input": { "const": "sandbox_launch_template_version" },
+            "version_selection": { "const": "explicit-positive-integer" },
+            "allow_default_version": { "const": false },
+            "allow_latest_version": { "const": false },
+            "preserve_id_and_version": { "const": true },
+            "reject_reconcile_drift": { "const": true },
+            "cpu_options": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["nested_virtualization", "core_count", "threads_per_core"],
+              "properties": {
+                "nested_virtualization": { "const": "enabled" },
+                "core_count": { "const": 1 },
+                "threads_per_core": { "const": 2 }
+              }
+            }
+          }
+        },
+        "runtime": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "runtime_class_name",
+            "handler",
+            "cri_runtime_type",
+            "kata_version",
+            "kata_archive_sha256",
+            "containerd_version",
+            "qemu_version",
+            "accelerator",
+            "allow_tcg_fallback",
+            "allow_runc_fallback"
+          ],
+          "properties": {
+            "runtime_class_name": { "const": "kata-qemu-cogs" },
+            "handler": { "const": "kata-qemu" },
+            "cri_runtime_type": { "const": "io.containerd.kata.v2" },
+            "kata_version": { "const": "3.32.0" },
+            "kata_archive_sha256": {
+              "const": "1449ecea50bd91fa73a94648db195d18950fe869ba4b1f12d05f55f1fa7c1b01"
+            },
+            "containerd_version": { "const": "2.2.1" },
+            "qemu_version": { "const": "8.2.2" },
+            "accelerator": { "const": "kvm" },
+            "allow_tcg_fallback": { "const": false },
+            "allow_runc_fallback": { "const": false }
+          }
+        }
+      }
+    },
+    "scheduling": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["trusted", "sandbox", "domains_disjoint"],
+      "properties": {
+        "trusted": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["required_node_selector", "tolerations"],
+          "properties": {
+            "required_node_selector": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["cogs.dev/node-domain"],
+              "properties": { "cogs.dev/node-domain": { "const": "trusted" } }
+            },
+            "tolerations": { "type": "array", "maxItems": 0 }
+          }
+        },
+        "sandbox": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["required_node_selector", "tolerations"],
+          "properties": {
+            "required_node_selector": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["cogs.dev/node-domain", "cogs.dev/nested-virtualization", "cogs.dev/sandbox-runtime"],
+              "properties": {
+                "cogs.dev/node-domain": { "const": "sandbox-kata" },
+                "cogs.dev/nested-virtualization": { "const": "enabled" },
+                "cogs.dev/sandbox-runtime": { "const": "kata-qemu-kvm" }
+              }
+            },
+            "tolerations": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 1,
+              "prefixItems": [{ "$ref": "#/$defs/sandboxToleration" }],
+              "items": false
+            }
+          }
+        },
+        "domains_disjoint": { "const": true }
+      }
+    }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "nicSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["identity", "repository", "release_tag", "commit_sha", "tree_git_sha", "files", "eks_module"],
+      "properties": {
+        "identity": { "const": "nebari-infrastructure-core" },
+        "repository": { "const": "https://github.com/nebari-dev/nebari-infrastructure-core.git" },
+        "release_tag": { "const": "v0.11.0" },
+        "commit_sha": { "const": "28221c652c56bb8d48a92538c01503a82f2f9321" },
+        "tree_git_sha": { "const": "4dfb0333e5d91003e69881ca1dcf66e1ea9ff6c2" },
+        "files": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "prefixItems": [
+            {
+              "$ref": "#/$defs/nicFile",
+              "type": "object",
+              "properties": {
+                "path": { "const": "pkg/providers/cluster/aws/config.go" },
+                "git_blob_sha": { "const": "b607ccd28fea4fa9dbb1b5f2cab8035c88eb8ab8" },
+                "content_sha256": { "const": "9926e0de378b488778e4975324a76c7d3ab3aaa5b4c661e81211a1efe382e920" }
+              }
+            },
+            {
+              "$ref": "#/$defs/nicFile",
+              "type": "object",
+              "properties": {
+                "path": { "const": "pkg/providers/cluster/aws/templates/main.tf" },
+                "git_blob_sha": { "const": "719efb5d85b8247968f6965acd3911b3a0a93337" },
+                "content_sha256": { "const": "eca59352b11fbcb48085a9276e5b01682256ce17f55fa7f4a23c0bcccfa443f4" }
+              }
+            },
+            {
+              "$ref": "#/$defs/nicFile",
+              "type": "object",
+              "properties": {
+                "path": { "const": "pkg/providers/cluster/aws/tofu.go" },
+                "git_blob_sha": { "const": "934a1f92413ba7c758f57d779c3ad1049256b30d" },
+                "content_sha256": { "const": "39e87c14203fa602568bcff4e64126271073484e531c21a83028eb104a9a506b" }
+              }
+            }
+          ],
+          "items": false
+        },
+        "eks_module": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["registry_source", "version", "commit_sha", "tree_git_sha", "files"],
+          "properties": {
+            "registry_source": { "const": "nebari-dev/eks-cluster/aws" },
+            "version": { "const": "0.7.0" },
+            "commit_sha": { "const": "5d4cb31f07fda5c010b5be580258d32f6db75828" },
+            "tree_git_sha": { "const": "240dd73f709f67706d60b35d3256661848736ad2" },
+            "files": {
+              "type": "array",
+              "minItems": 3,
+              "maxItems": 3,
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/moduleFile",
+                  "type": "object",
+                  "properties": {
+                    "path": { "const": "variables.tf" },
+                    "content_sha256": { "const": "20a17ac8d6a76ebaf5708ac229a062697d277e283561e070f1aac378603e1d67" }
+                  }
+                },
+                {
+                  "$ref": "#/$defs/moduleFile",
+                  "type": "object",
+                  "properties": {
+                    "path": { "const": "locals.tf" },
+                    "content_sha256": { "const": "e21403a5cef4faf515c6179b221e690553f6ad22d012befb57e529b3ccceec5e" }
+                  }
+                },
+                {
+                  "$ref": "#/$defs/moduleFile",
+                  "type": "object",
+                  "properties": {
+                    "path": { "const": "main.tf" },
+                    "content_sha256": { "const": "e7f3107a21e597da972220993f25f38527af74999b6e44f370317938f7d732a0" }
+                  }
+                }
+              ],
+              "items": false
+            }
+          }
+        }
+      }
+    },
+    "nicCapabilityAssessment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_revision_verified",
+        "managed_node_group_mapping_verified",
+        "supported_inputs",
+        "custom_launch_template_id",
+        "custom_launch_template_version",
+        "cpu_options_nested_virtualization",
+        "underlying_launch_template_mode",
+        "outcome",
+        "reason_code"
+      ],
+      "properties": {
+        "source_revision_verified": { "const": true },
+        "managed_node_group_mapping_verified": { "const": true },
+        "supported_inputs": {
+          "type": "array",
+          "minItems": 8,
+          "maxItems": 8,
+          "prefixItems": [
+            { "const": "instance_type" },
+            { "const": "min_size" },
+            { "const": "max_size" },
+            { "const": "ami_type" },
+            { "const": "spot" },
+            { "const": "disk" },
+            { "const": "labels" },
+            { "const": "taints" }
+          ],
+          "items": false
+        },
+        "custom_launch_template_id": { "const": false },
+        "custom_launch_template_version": { "const": false },
+        "cpu_options_nested_virtualization": { "const": false },
+        "underlying_launch_template_mode": { "const": "module-auto-created-fixed-shape" },
+        "outcome": { "const": "blocking-capability-gap" },
+        "reason_code": { "const": "NIC_CUSTOM_LAUNCH_TEMPLATE_AND_CPU_OPTIONS_UNSUPPORTED" }
+      }
+    },
+    "nicFile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "git_blob_sha", "content_sha256"],
+      "properties": {
+        "path": { "type": "string" },
+        "git_blob_sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "content_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "moduleFile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "content_sha256"],
+      "properties": {
+        "path": { "type": "string" },
+        "content_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "nodeImage": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["pin_state", "ami_id", "release", "kernel_release", "reason_code"],
+          "properties": {
+            "pin_state": { "const": "unresolved" },
+            "ami_id": { "type": "null" },
+            "release": { "type": "null" },
+            "kernel_release": { "type": "null" },
+            "reason_code": { "const": "EKS_NODE_IMAGE_PIN_NOT_RECORDED" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["pin_state", "ami_id", "release", "kernel_release"],
+          "properties": {
+            "pin_state": { "const": "pinned" },
+            "ami_id": { "type": "string", "pattern": "^ami-[0-9a-f]{8,17}$" },
+            "release": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._+-]*$"
+            },
+            "kernel_release": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._+-]*$"
+            }
+          }
+        }
+      ]
+    },
+    "sandboxTaint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "value", "effect"],
+      "properties": {
+        "key": { "const": "cogs.dev/sandbox" },
+        "value": { "const": "kata" },
+        "effect": { "const": "NO_SCHEDULE" }
+      }
+    },
+    "sandboxToleration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "operator", "value", "effect"],
+      "properties": {
+        "key": { "const": "cogs.dev/sandbox" },
+        "operator": { "const": "Equal" },
+        "value": { "const": "kata" },
+        "effect": { "const": "NoSchedule" }
+      }
+    }
+  }
+}

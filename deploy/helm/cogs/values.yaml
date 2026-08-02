@@ -23,9 +23,18 @@ stage4Preparation:
     workspaceStorageClass: ""
     workspaceSize: 20Gi
     workspaceAccessMode: ReadWriteOncePod
+    workspaceVolumeMode: Filesystem
+    workspaceVolumeBindingMode: WaitForFirstConsumer
+    workspaceReclaimPolicy: Retain
+    workspaceRetention: retain-until-explicit-workspace-deletion
     sessionStateStorageClass: ""
     sessionStateSize: 5Gi
     sessionStateAccessMode: ReadWriteOncePod
+    sessionStateVolumeMode: Filesystem
+    sessionStateVolumeBindingMode: WaitForFirstConsumer
+    sessionStateReclaimPolicy: Retain
+    sessionStateRetention: retain-30-days-after-session-close
+    sessionStateRetentionSeconds: 2592000
 
   openBao:
     endpoint: ""
@@ -55,6 +64,6 @@ stage4Preparation:
     idleSeconds: 1800
     hardSeconds: 28800
     terminationGraceSeconds: 30
-  auditWalMaxBytes: 268435456
+  auditWalMaxBytes: 1048576
 
   publicEgressCaConfigMap: ""

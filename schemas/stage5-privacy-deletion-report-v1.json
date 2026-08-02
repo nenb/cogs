@@ -1,0 +1,403 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.dev/schemas/stage5-privacy-deletion-report-v1.json",
+  "title": "Cogs Stage 5 local/static synthetic privacy and deletion report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "authority",
+    "issue",
+    "scope",
+    "qualified",
+    "campaign_authorized",
+    "cloud_execution_observed",
+    "kubernetes_execution_observed",
+    "provider_execution_observed",
+    "external_model_invoked",
+    "release_eligible",
+    "suite_sha256",
+    "status",
+    "privacy",
+    "deletion"
+  ],
+  "properties": {
+    "version": { "const": "cogs.stage5-privacy-deletion-report/v1" },
+    "authority": { "const": "local-static-synthetic-privacy-classifier" },
+    "issue": { "const": 365 },
+    "scope": { "const": "local-static-synthetic-only" },
+    "qualified": { "const": false },
+    "campaign_authorized": { "const": false },
+    "cloud_execution_observed": { "const": false },
+    "kubernetes_execution_observed": { "const": false },
+    "provider_execution_observed": { "const": false },
+    "external_model_invoked": { "const": false },
+    "release_eligible": { "const": false },
+    "suite_sha256": { "anyOf": [{ "$ref": "#/$defs/digest" }, { "type": "null" }] },
+    "status": {
+      "enum": [
+        "local-contract-pass",
+        "blocked-prohibited-content",
+        "blocked-legal-hold",
+        "failed-stop",
+        "preserve-uncertain",
+        "invalid-contract"
+      ]
+    },
+    "privacy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "result",
+        "reason_code",
+        "surfaces_scanned",
+        "affected_surfaces",
+        "categories",
+        "finding_count",
+        "finding_root_sha256",
+        "attachments_excluded",
+        "raw_export_boundary",
+        "sensitive_marking"
+      ],
+      "properties": {
+        "result": { "enum": ["clear", "prohibited-content", "uncertain", "invalid-contract"] },
+        "reason_code": {
+          "enum": [
+            "STAGE5_PRIVACY_CLEAR",
+            "STAGE5_PRIVACY_PROHIBITED_CONTENT",
+            "STAGE5_PRIVACY_RAW_EXPORT_BOUNDARY_INVALID",
+            "STAGE5_PRIVACY_ATTACHMENT_BOUNDARY_INVALID",
+            "STAGE5_PRIVACY_SENSITIVE_MARKING_MISSING",
+            "STAGE5_PRIVACY_INVALID_SHAPE",
+            "STAGE5_PRIVACY_BOUNDED_INPUT"
+          ]
+        },
+        "surfaces_scanned": { "type": "integer", "minimum": 0, "maximum": 6 },
+        "affected_surfaces": {
+          "type": "array",
+          "maxItems": 7,
+          "uniqueItems": true,
+          "items": { "enum": ["contract", "otlp", "log", "report", "event", "crash", "export"] }
+        },
+        "categories": {
+          "type": "array",
+          "maxItems": 8,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "prompt-or-model-content",
+              "source-command-or-tool-content",
+              "credential-or-placeholder",
+              "private-identifier",
+              "arbitrary-path",
+              "network-query-or-body",
+              "raw-export-content",
+              "attachment-content"
+            ]
+          }
+        },
+        "finding_count": { "type": "integer", "minimum": 0, "maximum": 8192 },
+        "finding_root_sha256": { "anyOf": [{ "$ref": "#/$defs/digest" }, { "type": "null" }] },
+        "attachments_excluded": { "type": "boolean" },
+        "raw_export_boundary": {
+          "enum": ["explicit-sensitive-authenticated-non-model-no-payload", "invalid", "not-evaluated"]
+        },
+        "sensitive_marking": { "enum": ["present", "missing", "not-evaluated"] }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "result": { "const": "clear" } }, "required": ["result"] },
+          "then": {
+            "properties": {
+              "reason_code": { "const": "STAGE5_PRIVACY_CLEAR" },
+              "surfaces_scanned": { "const": 6 },
+              "affected_surfaces": { "type": "array", "maxItems": 0 },
+              "categories": { "type": "array", "maxItems": 0 },
+              "finding_count": { "const": 0 },
+              "finding_root_sha256": { "type": "null" },
+              "attachments_excluded": { "const": true },
+              "raw_export_boundary": { "const": "explicit-sensitive-authenticated-non-model-no-payload" },
+              "sensitive_marking": { "const": "present" }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "result": { "const": "prohibited-content" } }, "required": ["result"] },
+          "then": {
+            "properties": {
+              "reason_code": { "const": "STAGE5_PRIVACY_PROHIBITED_CONTENT" },
+              "categories": { "type": "array", "minItems": 1 },
+              "affected_surfaces": { "type": "array", "minItems": 1 },
+              "finding_count": { "type": "integer", "minimum": 1 },
+              "finding_root_sha256": { "$ref": "#/$defs/digest" },
+              "raw_export_boundary": { "const": "not-evaluated" },
+              "sensitive_marking": { "const": "not-evaluated" }
+            }
+          }
+        }
+      ]
+    },
+    "deletion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "result",
+        "reason_code",
+        "initial_state",
+        "terminal_state",
+        "accepted_transition_count",
+        "retention_seconds",
+        "version_deletion",
+        "legal_hold",
+        "failure_contract",
+        "uncertainty_contract",
+        "actual_eks_deletion",
+        "actual_object_store_deletion"
+      ],
+      "properties": {
+        "result": {
+          "enum": [
+            "synthetic-sequence-complete",
+            "held-separate",
+            "failed-stop",
+            "uncertain-stop",
+            "invalid-contract",
+            "not-evaluated"
+          ]
+        },
+        "reason_code": {
+          "enum": [
+            "STAGE5_DELETION_SEQUENCE_COMPLETE",
+            "STAGE5_DELETION_LEGAL_HOLD_SEPARATE",
+            "STAGE5_DELETION_OPERATION_FAILED",
+            "STAGE5_DELETION_OBSERVATION_UNCERTAIN",
+            "STAGE5_DELETION_INVALID_SEQUENCE",
+            "STAGE5_DELETION_INVALID_CONTRACT",
+            "STAGE5_DELETION_NOT_EVALUATED"
+          ]
+        },
+        "initial_state": { "enum": ["retained", null] },
+        "terminal_state": { "enum": ["deleted-verified", "held-separate", "failed-stop", "uncertain-stop", null] },
+        "accepted_transition_count": { "type": "integer", "minimum": 0, "maximum": 8 },
+        "retention_seconds": { "enum": [2592000, null] },
+        "version_deletion": { "enum": ["all-versions-and-delete-markers", "not-evaluated"] },
+        "legal_hold": { "enum": ["none-separate", "active-separate", "not-evaluated"] },
+        "failure_contract": { "const": "stop-no-success-no-retry" },
+        "uncertainty_contract": { "const": "sticky-preserve-unconfirmed-no-unknown-to-absent" },
+        "actual_eks_deletion": { "const": "unexecuted" },
+        "actual_object_store_deletion": { "const": "unexecuted" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "result": { "const": "synthetic-sequence-complete" } }, "required": ["result"] },
+          "then": {
+            "properties": {
+              "reason_code": { "const": "STAGE5_DELETION_SEQUENCE_COMPLETE" },
+              "initial_state": { "const": "retained" },
+              "terminal_state": { "const": "deleted-verified" },
+              "accepted_transition_count": { "const": 8 },
+              "retention_seconds": { "const": 2592000 },
+              "version_deletion": { "const": "all-versions-and-delete-markers" },
+              "legal_hold": { "const": "none-separate" }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "result": { "const": "held-separate" } }, "required": ["result"] },
+          "then": {
+            "properties": {
+              "reason_code": { "const": "STAGE5_DELETION_LEGAL_HOLD_SEPARATE" },
+              "initial_state": { "const": "retained" },
+              "terminal_state": { "const": "held-separate" },
+              "accepted_transition_count": { "const": 0 },
+              "retention_seconds": { "const": 2592000 },
+              "version_deletion": { "const": "all-versions-and-delete-markers" },
+              "legal_hold": { "const": "active-separate" }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "result": { "const": "failed-stop" } }, "required": ["result"] },
+          "then": {
+            "properties": {
+              "reason_code": { "const": "STAGE5_DELETION_OPERATION_FAILED" },
+              "initial_state": { "const": "retained" },
+              "terminal_state": { "const": "failed-stop" },
+              "retention_seconds": { "const": 2592000 },
+              "version_deletion": { "const": "all-versions-and-delete-markers" },
+              "legal_hold": { "const": "none-separate" }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "result": { "const": "uncertain-stop" } }, "required": ["result"] },
+          "then": {
+            "properties": {
+              "reason_code": {
+                "enum": ["STAGE5_DELETION_OBSERVATION_UNCERTAIN", "STAGE5_DELETION_INVALID_SEQUENCE"]
+              },
+              "initial_state": { "const": "retained" },
+              "terminal_state": { "const": "uncertain-stop" },
+              "retention_seconds": { "const": 2592000 },
+              "version_deletion": { "const": "all-versions-and-delete-markers" },
+              "legal_hold": { "enum": ["none-separate", "active-separate"] }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "result": { "const": "invalid-contract" } }, "required": ["result"] },
+          "then": {
+            "properties": {
+              "reason_code": { "const": "STAGE5_DELETION_INVALID_CONTRACT" },
+              "initial_state": { "type": "null" },
+              "terminal_state": { "type": "null" },
+              "accepted_transition_count": { "const": 0 },
+              "retention_seconds": { "type": "null" },
+              "version_deletion": { "const": "not-evaluated" },
+              "legal_hold": { "const": "not-evaluated" }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "result": { "const": "not-evaluated" } }, "required": ["result"] },
+          "then": {
+            "properties": {
+              "reason_code": { "const": "STAGE5_DELETION_NOT_EVALUATED" },
+              "initial_state": { "type": "null" },
+              "terminal_state": { "type": "null" },
+              "accepted_transition_count": { "const": 0 },
+              "retention_seconds": { "type": "null" },
+              "version_deletion": { "const": "not-evaluated" },
+              "legal_hold": { "const": "not-evaluated" }
+            }
+          }
+        }
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "status": { "const": "local-contract-pass" } }, "required": ["status"] },
+      "then": {
+        "properties": {
+          "privacy": {
+            "type": "object",
+            "properties": { "result": { "const": "clear" } },
+            "required": ["result"]
+          },
+          "deletion": {
+            "type": "object",
+            "properties": { "result": { "const": "synthetic-sequence-complete" } },
+            "required": ["result"]
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "status": { "const": "blocked-prohibited-content" } }, "required": ["status"] },
+      "then": {
+        "properties": {
+          "privacy": {
+            "type": "object",
+            "properties": { "result": { "const": "prohibited-content" } },
+            "required": ["result"]
+          },
+          "deletion": {
+            "type": "object",
+            "properties": { "result": { "const": "not-evaluated" } },
+            "required": ["result"]
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "status": { "const": "blocked-legal-hold" } }, "required": ["status"] },
+      "then": {
+        "properties": {
+          "privacy": {
+            "type": "object",
+            "properties": { "result": { "const": "clear" } },
+            "required": ["result"]
+          },
+          "deletion": {
+            "type": "object",
+            "properties": { "result": { "const": "held-separate" } },
+            "required": ["result"]
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "status": { "const": "failed-stop" } }, "required": ["status"] },
+      "then": {
+        "properties": {
+          "privacy": {
+            "type": "object",
+            "properties": { "result": { "const": "clear" } },
+            "required": ["result"]
+          },
+          "deletion": {
+            "type": "object",
+            "properties": { "result": { "const": "failed-stop" } },
+            "required": ["result"]
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "status": { "const": "invalid-contract" } }, "required": ["status"] },
+      "then": {
+        "properties": {
+          "privacy": {
+            "type": "object",
+            "properties": { "result": { "const": "invalid-contract" } },
+            "required": ["result"]
+          },
+          "deletion": {
+            "type": "object",
+            "properties": { "result": { "enum": ["invalid-contract", "not-evaluated"] } },
+            "required": ["result"]
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "status": { "const": "preserve-uncertain" } }, "required": ["status"] },
+      "then": {
+        "anyOf": [
+          {
+            "properties": {
+              "privacy": {
+                "type": "object",
+                "properties": { "result": { "const": "uncertain" } },
+                "required": ["result"]
+              },
+              "deletion": {
+                "type": "object",
+                "properties": { "result": { "const": "not-evaluated" } },
+                "required": ["result"]
+              }
+            }
+          },
+          {
+            "properties": {
+              "privacy": {
+                "type": "object",
+                "properties": { "result": { "const": "clear" } },
+                "required": ["result"]
+              },
+              "deletion": {
+                "type": "object",
+                "properties": { "result": { "const": "uncertain-stop" } },
+                "required": ["result"]
+              }
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+  }
+}

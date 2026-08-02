@@ -1,0 +1,2539 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.dev/schemas/stage4-offline-readiness-package-v1.json",
+  "title": "Cogs bounded local/static Stage 4 offline readiness package v1",
+  "description": "A canonical digest-bound local package only; never campaign approval, provider truth, Stage 4 exit, or release evidence.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "authority",
+    "claims",
+    "artifact_bindings",
+    "source",
+    "pins",
+    "local_validation",
+    "campaign_proposal",
+    "attempt_authority",
+    "stop_destroy",
+    "identities",
+    "revalidation",
+    "blockers"
+  ],
+  "properties": {
+    "version": {
+      "const": "cogs.stage4-offline-readiness-package/v1"
+    },
+    "authority": {
+      "const": "local-static-stage4-readiness-package"
+    },
+    "claims": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "local_preparation_complete",
+        "campaign_request_ready",
+        "campaign_approved",
+        "cloud_authorized",
+        "cloud_execution_observed",
+        "provider_truth_observed",
+        "current_resources_observed",
+        "zero_resources_claimed",
+        "stage4_exit_satisfied",
+        "release_eligible",
+        "local_preparation_scope",
+        "trusted_render_preparation_complete",
+        "exact_image_runtime_closure_satisfied"
+      ],
+      "properties": {
+        "local_preparation_complete": {
+          "const": true
+        },
+        "campaign_request_ready": {
+          "const": false
+        },
+        "campaign_approved": {
+          "const": false
+        },
+        "cloud_authorized": {
+          "const": false
+        },
+        "cloud_execution_observed": {
+          "const": false
+        },
+        "provider_truth_observed": {
+          "const": false
+        },
+        "current_resources_observed": {
+          "const": false
+        },
+        "zero_resources_claimed": {
+          "const": false
+        },
+        "stage4_exit_satisfied": {
+          "const": false
+        },
+        "release_eligible": {
+          "const": false
+        },
+        "local_preparation_scope": {
+          "const": "bounded-package-assembly-and-local-validation-only"
+        },
+        "trusted_render_preparation_complete": {
+          "const": true
+        },
+        "exact_image_runtime_closure_satisfied": {
+          "const": false
+        }
+      }
+    },
+    "artifact_bindings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_inventory_sha256",
+        "chart_inventory_sha256",
+        "values_sha256",
+        "render_sha256",
+        "repeated_render_sha256",
+        "image_lock_sha256",
+        "nic_contract_sha256",
+        "runtime_pins_sha256",
+        "schema_inventory_sha256",
+        "local_validation_sha256",
+        "renders_byte_identical",
+        "binding_root_sha256",
+        "render_preparation_receipt_sha256"
+      ],
+      "properties": {
+        "source_inventory_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "chart_inventory_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "values_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "render_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "repeated_render_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "image_lock_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "nic_contract_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "runtime_pins_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "schema_inventory_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "local_validation_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "renders_byte_identical": {
+          "const": true
+        },
+        "binding_root_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "render_preparation_receipt_sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "integrated_predecessor_git_commit",
+        "inventory_scope",
+        "inventory_algorithm",
+        "source_closure_complete",
+        "excluded_self_referential_outputs",
+        "release_candidate_binding_present"
+      ],
+      "properties": {
+        "integrated_predecessor_git_commit": {
+          "const": "c80b5eb8c6308b605c677e8c2b4154267fc147cf"
+        },
+        "inventory_scope": {
+          "const": "complete-stage4-source-closure"
+        },
+        "inventory_algorithm": {
+          "const": "sha256-over-exact-file-bytes"
+        },
+        "release_candidate_binding_present": {
+          "const": false
+        },
+        "source_closure_complete": {
+          "const": true
+        },
+        "excluded_self_referential_outputs": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "uniqueItems": true,
+          "prefixItems": [
+            {
+              "const": "docs/security-evidence/stage4-offline-readiness-package.json"
+            },
+            {
+              "const": "docs/security-evidence/stage4-offline-readiness-artifacts/source-inventory.json"
+            },
+            {
+              "const": "docs/security-evidence/stage4-offline-readiness-artifacts/local-validation.json"
+            }
+          ],
+          "items": false
+        }
+      }
+    },
+    "pins": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["chart", "values", "images", "nic", "runtime"],
+      "properties": {
+        "chart": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "version", "delivery"],
+          "properties": {
+            "name": {
+              "const": "cogs"
+            },
+            "version": {
+              "const": "0.0.1"
+            },
+            "delivery": {
+              "const": "notes-only-zero-submitted-manifests"
+            }
+          }
+        },
+        "values": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["profile", "data_class"],
+          "properties": {
+            "profile": {
+              "const": "stage4-notes-source-shapes-valid"
+            },
+            "data_class": {
+              "const": "synthetic-only"
+            }
+          }
+        },
+        "images": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["worker", "proxy", "sandbox", "release_image_set_present", "exact_image_closure_satisfied"],
+          "properties": {
+            "worker": {
+              "$ref": "#/$defs/syntheticImage"
+            },
+            "proxy": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["reference", "state"],
+              "properties": {
+                "reference": {
+                  "const": "envoyproxy/envoy:v1.38.3@sha256:5f7c43e1147412fdb3af578c651c67478a3df818eae89d2261e707e06c209cdb"
+                },
+                "state": {
+                  "const": "exact-static-input-not-runtime-observed"
+                }
+              }
+            },
+            "sandbox": {
+              "$ref": "#/$defs/syntheticImage"
+            },
+            "release_image_set_present": {
+              "const": false
+            },
+            "exact_image_closure_satisfied": {
+              "const": false
+            }
+          }
+        },
+        "nic": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "release",
+            "commit_sha",
+            "module_version",
+            "module_commit_sha",
+            "capability_state",
+            "reason_code"
+          ],
+          "properties": {
+            "release": {
+              "const": "v0.11.0"
+            },
+            "commit_sha": {
+              "const": "28221c652c56bb8d48a92538c01503a82f2f9321"
+            },
+            "module_version": {
+              "const": "0.7.0"
+            },
+            "module_commit_sha": {
+              "const": "5d4cb31f07fda5c010b5be580258d32f6db75828"
+            },
+            "capability_state": {
+              "const": "blocked-missing-custom-launch-template-and-nested-cpu-options"
+            },
+            "reason_code": {
+              "const": "STAGE4_NIC_LAUNCH_TEMPLATE_CAPABILITY_MISSING"
+            }
+          }
+        },
+        "runtime": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kata_version",
+            "kata_archive_sha256",
+            "containerd_version",
+            "qemu_version",
+            "accelerator",
+            "runc_fallback",
+            "tcg_fallback",
+            "eks_node_ami_id",
+            "eks_node_image_release",
+            "eks_node_kernel_release",
+            "node_image_state",
+            "containerd_artifact_sha256",
+            "containerd_artifact_state",
+            "qemu_artifact_sha256",
+            "qemu_artifact_state",
+            "exact_runtime_artifact_closure_satisfied"
+          ],
+          "properties": {
+            "kata_version": {
+              "const": "3.32.0"
+            },
+            "kata_archive_sha256": {
+              "const": "1449ecea50bd91fa73a94648db195d18950fe869ba4b1f12d05f55f1fa7c1b01"
+            },
+            "containerd_version": {
+              "const": "2.2.1"
+            },
+            "qemu_version": {
+              "const": "8.2.2"
+            },
+            "accelerator": {
+              "const": "kvm-only"
+            },
+            "runc_fallback": {
+              "const": false
+            },
+            "tcg_fallback": {
+              "const": false
+            },
+            "eks_node_ami_id": {
+              "type": "null"
+            },
+            "eks_node_image_release": {
+              "type": "null"
+            },
+            "eks_node_kernel_release": {
+              "type": "null"
+            },
+            "node_image_state": {
+              "const": "unresolved-blocking"
+            },
+            "containerd_artifact_sha256": {
+              "type": "null"
+            },
+            "containerd_artifact_state": {
+              "const": "unresolved-blocking"
+            },
+            "qemu_artifact_sha256": {
+              "type": "null"
+            },
+            "qemu_artifact_state": {
+              "const": "unresolved-blocking"
+            },
+            "exact_runtime_artifact_closure_satisfied": {
+              "const": false
+            }
+          }
+        }
+      }
+    },
+    "local_validation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "profile",
+        "status",
+        "provider_execution",
+        "kubernetes_execution",
+        "external_model_execution",
+        "trusted_render_preparation_receipt_bound",
+        "exact_image_runtime_closure_satisfied"
+      ],
+      "properties": {
+        "profile": {
+          "const": "local-static-only"
+        },
+        "status": {
+          "const": "passed-recorded-bounded-local-commands"
+        },
+        "provider_execution": {
+          "const": false
+        },
+        "kubernetes_execution": {
+          "const": false
+        },
+        "external_model_execution": {
+          "const": false
+        },
+        "trusted_render_preparation_receipt_bound": {
+          "const": true
+        },
+        "exact_image_runtime_closure_satisfied": {
+          "const": false
+        }
+      }
+    },
+    "campaign_proposal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state",
+        "account_binding",
+        "region",
+        "sandbox_instance_type_ceiling",
+        "spend",
+        "time",
+        "access",
+        "data",
+        "prohibited_resources",
+        "resource_graph"
+      ],
+      "properties": {
+        "state": {
+          "const": "proposal-only-not-approved-not-price-or-quota-validated"
+        },
+        "account_binding": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["state", "account_sha256"],
+          "properties": {
+            "state": {
+              "const": "absent-blocking"
+            },
+            "account_sha256": {
+              "type": "null"
+            }
+          }
+        },
+        "region": {
+          "const": "us-east-1"
+        },
+        "sandbox_instance_type_ceiling": {
+          "const": "c8i-flex.large"
+        },
+        "spend": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["state", "currency", "cap", "alert_thresholds", "hard_kill_claimed"],
+          "properties": {
+            "state": {
+              "const": "proposal-only-current-price-not-discovered"
+            },
+            "currency": {
+              "const": "USD"
+            },
+            "cap": {
+              "const": 20
+            },
+            "alert_thresholds": {
+              "type": "array",
+              "minItems": 3,
+              "maxItems": 3,
+              "prefixItems": [
+                {
+                  "const": 5
+                },
+                {
+                  "const": 10
+                },
+                {
+                  "const": 20
+                }
+              ],
+              "items": false
+            },
+            "hard_kill_claimed": {
+              "const": false
+            }
+          }
+        },
+        "time": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["eks_duration_seconds", "absolute_ttl_seconds", "idle_debugging_cluster_allowed"],
+          "properties": {
+            "eks_duration_seconds": {
+              "const": 5400
+            },
+            "absolute_ttl_seconds": {
+              "const": 14400
+            },
+            "idle_debugging_cluster_allowed": {
+              "const": false
+            }
+          }
+        },
+        "access": {
+          "const": "proposed-ssm-only-no-public-ssh-unexecuted"
+        },
+        "data": {
+          "const": "synthetic-repositories-identities-credentials-and-sessions-only"
+        },
+        "prohibited_resources": {
+          "type": "array",
+          "minItems": 12,
+          "maxItems": 12,
+          "prefixItems": [
+            {
+              "const": "gpu"
+            },
+            {
+              "const": "bare-metal"
+            },
+            {
+              "const": "spot"
+            },
+            {
+              "const": "nat-gateway"
+            },
+            {
+              "const": "load-balancer"
+            },
+            {
+              "const": "elastic-ip"
+            },
+            {
+              "const": "efs-workspace"
+            },
+            {
+              "const": "public-ingress"
+            },
+            {
+              "const": "production-data"
+            },
+            {
+              "const": "second-sandbox-node"
+            },
+            {
+              "const": "larger-instance"
+            },
+            {
+              "const": "other-region"
+            }
+          ],
+          "items": false
+        },
+        "resource_graph": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["state", "closed_world", "undeclared_resource_classes_allowed", "count_semantics", "classes"],
+          "properties": {
+            "state": {
+              "const": "proposal-only-not-provider-validated"
+            },
+            "closed_world": {
+              "const": true
+            },
+            "undeclared_resource_classes_allowed": {
+              "const": false
+            },
+            "count_semantics": {
+              "const": "hard-maximum-proposal"
+            },
+            "classes": {
+              "type": "array",
+              "minItems": 38,
+              "maxItems": 38,
+              "uniqueItems": true,
+              "prefixItems": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["resource_class", "maximum_count", "resource_type", "size_gib_each"],
+                  "properties": {
+                    "resource_class": {
+                      "const": "eks-cluster"
+                    },
+                    "maximum_count": {
+                      "const": 1
+                    },
+                    "resource_type": {
+                      "const": "regional-control-plane"
+                    },
+                    "size_gib_each": {
+                      "type": "null"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["resource_class", "maximum_count", "resource_type", "size_gib_each"],
+                  "properties": {
+                    "resource_class": {
+                      "const": "eks-managed-addon"
+                    },
+                    "maximum_count": {
+                      "const": 0
+                    },
+                    "resource_type": {
+                      "const": "none"
+                    },
+                    "size_gib_each": {
+                      "type": "null"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["resource_class", "maximum_count", "resource_type", "size_gib_each"],
+                  "properties": {
+                    "resource_class": {
+                      "const": "vpc"
+                    },
+                    "maximum_count": {
+                      "const": 1
+                    },
+                    "resource_type": {
+                      "const": "dedicated-ipv4-only"
+                    },
+                    "size_gib_each": {
+                      "type": "null"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["resource_class", "maximum_count", "resource_type", "size_gib_each"],
+                  "properties": {
+                    "resource_class": {
+                      "const": "subnet"
+                    },
+                    "maximum_count": {
+                      "const": 2
+                    },
+                    "resource_type": {
+                      "const": "public-no-inbound"
+                    },
+                    "size_gib_each": {
+                      "type": "null"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["resource_class", "maximum_count", "resource_type", "size_gib_each"],
+                  "properties": {
+                    "resource_class": {
+                      "const": "route-table"
+                    },
+                    "maximum_count": {
+                      "const": 2
+                    },
+                    "resource_type": {
+                      "const": "campaign-dedicated"
+                    },
+                    "size_gib_each": {
+                      "type": "null"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["resource_class", "maximum_count", "resource_type", "size_gib_each"],
+                  "properties": {
+                    "resource_class": {
+                      "const": "route"
+                    },
+                    "maximum_count": {
+                      "const": 4
+                    },
+                    "resource_type": {
+                      "const": "two-local-two-internet-gateway"
+                    },
+                    "size_gib_each": {
+                      "type": "null"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["resource_class", "maximum_count", "resource_type", "size_gib_each"],
+                  "properties": {
+                    "resource_class": {
+                      "const": "internet-gateway"
+                    },
+                    "maximum_count": {
+                      "const": 1
+                    },
+                    "resource_type": {
+                      "const": "campaign-dedicated"
+                    },
+                    "size_gib_each": {
+                      "type": "null"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["resource_class", "maximum_count", "resource_type", "size_gib_each"],
+                  "properties": {
+                    "resource_class": {
+                      "const": "network-acl"
+                    },
+                    "maximum_count": {
+                      "const": 1
+                    },
+                    "resource_type": {
+                      "const": "vpc-default-closed-review"
+                    },
+                    "size_gib_each": {
+                      "type": "null"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["resource_class", "maximum_count", "resource_type", "size_gib_each"],
+                  "properties": {
+                    "resource_class": {
+                      "const": "dhcp-options-association"
+                    },
+                    "maximum_count": {
+                      "const": 1
+                    },
+                    "resource_type": {
+                      "const": "vpc-default-closed-review"
+                    },
+                    "size_gib_each": {
+                      "type": "null"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["resource_class", "maximum_count", "resource_type", "size_gib_each"],
+                  "properties": {
+                    "resource_class": {
+                      "const": "nat-gateway"
+                    },
+                    "maximum_count": {
+                      "const": 0
+                    },
+                    "resource_type": {
+                      "const": "prohibited"
+                    },
+                    "size_gib_each": {
+                      "type": "null"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["resource_class", "maximum_count", "resource_type", "size_gib_each"],
+                  "properties": {
+                    "resource_class": {
+                      "const": "vpc-endpoint"
+                    },
+                    "maximum_count": {
+                      "const": 0
+                    },
+                    "resource_type": {
+                      "const": "prohibited"
+                    },
+                    "size_gib_each": {
+                      "type": "null"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["resource_class", "maximum_count", "resource_type", "size_gib_each"],
+                  "properties": {
+                    "resource_class": {
+                      "const": "elastic-ip"
+                    },
+                    "maximum_count": {
+                      "const": 0
+                    },
+                    "resource_type": {
+                      "const": "prohibited"
+                    },
+                    "size_gib_each": {
+                      "type": "null"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["resource_class", "maximum_count", "resource_type", "size_gib_each"],
+                  "properties": {
+                    "resource_class": {
+                      "const": "load-balancer"
+                    },
+                    "maximum_count": {
+                      "const": 0
+                    },
+                    "resource_type": {
+                      "const": "prohibited"
+                    },
+                    "size_gib_each": {
+                      "type": "null"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["resource_class", "maximum_count", "resource_type", "size_gib_each"],
+                  "properties": {
+                    "resource_class": {
+                      "const": "target-group"
+                    },
+                    "maximum_count": {
+                      "const": 0
+                    },
+                    "resource_type": {
+                      "const": "prohibited"
+                    },
+                    "size_gib_each": {
+                      "type": "null"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["resource_class", "maximum_count", "resource_type", "size_gib_each"],
+                  "properties": {
+                    "resource_class": {
+                      "const": "security-group"
+                    },
+                    "maximum_count": {
+                      "const": 5
+                    },
+                    "resource_type": {
+                      "const": "default-cluster-shared-trusted-sandbox"
+                    },
+                    "size_gib_each": {
+                      "type": "null"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["resource_class", "maximum_count", "resource_type", "size_gib_each"],
+                  "properties": {
+                    "resource_class": {
+                      "const": "iam-role"
+                    },
+                    "maximum_count": {
+                      "const": 4
+                    },
+                    "resource_type": {
+                      "const": "cluster-trusted-node-sandbox-node-ttl-function"
+                    },
+                    "size_gib_each": {
+                      "type": "null"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["resource_class", "maximum_count", "resource_type", "size_gib_each"],
+                  "properties": {
+                    "resource_class": {
+                      "const": "iam-customer-managed-policy"
+                    },
+                    "maximum_count": {
+                      "const": 4
+                    },
+                    "resource_type": {
+                      "const": "one-per-campaign-role"
+                    },
+                    "size_gib_each": {
+                      "type": "null"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["resource_class", "maximum_count", "resource_type", "size_gib_each"],
+                  "properties": {
+                    "resource_class": {
+                      "const": "iam-policy-attachment"
+                    },
+                    "maximum_count": {
+                      "const": 8
+                    },
+                    "resource_type": {
+                      "const": "bounded-role-attachments"
+                    },
+                    "size_gib_each": {
+                      "type": "null"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["resource_class", "maximum_count", "resource_type", "size_gib_each"],
+                  "properties": {
+                    "resource_class": {
+                      "const": "instance-profile"
+                    },
+                    "maximum_count": {
+                      "const": 2
+                    },
+                    "resource_type": {
+                      "const": "trusted-node-and-sandbox-node"
+                    },
+                    "size_gib_each": {
+                      "type": "null"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["resource_class", "maximum_count", "resource_type", "size_gib_each"],
+                  "properties": {
+                    "resource_class": {
+                      "const": "launch-template"
+                    },
+                    "maximum_count": {
+                      "const": 2
+                    },
+                    "resource_type": {
+                      "const": "trusted-and-sandbox-explicit-version"
+                    },
+                    "size_gib_each": {
+                      "type": "null"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["resource_class", "maximum_count", "resource_type", "size_gib_each"],
+                  "properties": {
+                    "resource_class": {
+                      "const": "managed-node-group"
+                    },
+                    "maximum_count": {
+                      "const": 2
+                    },
+                    "resource_type": {
+                      "const": "trusted-and-sandbox"
+                    },
+                    "size_gib_each": {
+                      "type": "null"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["resource_class", "maximum_count", "resource_type", "size_gib_each"],
+                  "properties": {
+                    "resource_class": {
+                      "const": "autoscaling-group"
+                    },
+                    "maximum_count": {
+                      "const": 2
+                    },
+                    "resource_type": {
+                      "const": "managed-node-group-owned"
+                    },
+                    "size_gib_each": {
+                      "type": "null"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["resource_class", "maximum_count", "resource_type", "size_gib_each"],
+                  "properties": {
+                    "resource_class": {
+                      "const": "trusted-node"
+                    },
+                    "maximum_count": {
+                      "const": 1
+                    },
+                    "resource_type": {
+                      "const": "c8i-flex.large-on-demand"
+                    },
+                    "size_gib_each": {
+                      "const": 30
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["resource_class", "maximum_count", "resource_type", "size_gib_each"],
+                  "properties": {
+                    "resource_class": {
+                      "const": "sandbox-node"
+                    },
+                    "maximum_count": {
+                      "const": 1
+                    },
+                    "resource_type": {
+                      "const": "c8i-flex.large-on-demand-nested-kvm"
+                    },
+                    "size_gib_each": {
+                      "const": 30
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["resource_class", "maximum_count", "resource_type", "size_gib_each"],
+                  "properties": {
+                    "resource_class": {
+                      "const": "network-interface"
+                    },
+                    "maximum_count": {
+                      "const": 10
+                    },
+                    "resource_type": {
+                      "const": "hard-maximum-provider-managed-and-node"
+                    },
+                    "size_gib_each": {
+                      "type": "null"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["resource_class", "maximum_count", "resource_type", "size_gib_each"],
+                  "properties": {
+                    "resource_class": {
+                      "const": "ebs-trusted-root-volume"
+                    },
+                    "maximum_count": {
+                      "const": 1
+                    },
+                    "resource_type": {
+                      "const": "encrypted-gp3-delete-on-termination"
+                    },
+                    "size_gib_each": {
+                      "const": 30
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["resource_class", "maximum_count", "resource_type", "size_gib_each"],
+                  "properties": {
+                    "resource_class": {
+                      "const": "ebs-sandbox-root-volume"
+                    },
+                    "maximum_count": {
+                      "const": 1
+                    },
+                    "resource_type": {
+                      "const": "encrypted-gp3-delete-on-termination"
+                    },
+                    "size_gib_each": {
+                      "const": 30
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["resource_class", "maximum_count", "resource_type", "size_gib_each"],
+                  "properties": {
+                    "resource_class": {
+                      "const": "ebs-workspace-volume"
+                    },
+                    "maximum_count": {
+                      "const": 1
+                    },
+                    "resource_type": {
+                      "const": "encrypted-gp3-retain"
+                    },
+                    "size_gib_each": {
+                      "const": 20
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["resource_class", "maximum_count", "resource_type", "size_gib_each"],
+                  "properties": {
+                    "resource_class": {
+                      "const": "ebs-session-state-volume"
+                    },
+                    "maximum_count": {
+                      "const": 1
+                    },
+                    "resource_type": {
+                      "const": "encrypted-gp3-retain"
+                    },
+                    "size_gib_each": {
+                      "const": 5
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["resource_class", "maximum_count", "resource_type", "size_gib_each"],
+                  "properties": {
+                    "resource_class": {
+                      "const": "ebs-snapshot"
+                    },
+                    "maximum_count": {
+                      "const": 0
+                    },
+                    "resource_type": {
+                      "const": "prohibited"
+                    },
+                    "size_gib_each": {
+                      "type": "null"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["resource_class", "maximum_count", "resource_type", "size_gib_each"],
+                  "properties": {
+                    "resource_class": {
+                      "const": "kms-key"
+                    },
+                    "maximum_count": {
+                      "const": 1
+                    },
+                    "resource_type": {
+                      "const": "symmetric-campaign-storage"
+                    },
+                    "size_gib_each": {
+                      "type": "null"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["resource_class", "maximum_count", "resource_type", "size_gib_each"],
+                  "properties": {
+                    "resource_class": {
+                      "const": "kms-alias"
+                    },
+                    "maximum_count": {
+                      "const": 1
+                    },
+                    "resource_type": {
+                      "const": "campaign-key-alias"
+                    },
+                    "size_gib_each": {
+                      "type": "null"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["resource_class", "maximum_count", "resource_type", "size_gib_each"],
+                  "properties": {
+                    "resource_class": {
+                      "const": "log-group"
+                    },
+                    "maximum_count": {
+                      "const": 2
+                    },
+                    "resource_type": {
+                      "const": "eks-control-and-ttl-function-30-day"
+                    },
+                    "size_gib_each": {
+                      "type": "null"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["resource_class", "maximum_count", "resource_type", "size_gib_each"],
+                  "properties": {
+                    "resource_class": {
+                      "const": "budget"
+                    },
+                    "maximum_count": {
+                      "const": 1
+                    },
+                    "resource_type": {
+                      "const": "usd-20-proposal"
+                    },
+                    "size_gib_each": {
+                      "type": "null"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["resource_class", "maximum_count", "resource_type", "size_gib_each"],
+                  "properties": {
+                    "resource_class": {
+                      "const": "budget-notification"
+                    },
+                    "maximum_count": {
+                      "const": 3
+                    },
+                    "resource_type": {
+                      "const": "usd-5-10-20-proposal"
+                    },
+                    "size_gib_each": {
+                      "type": "null"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["resource_class", "maximum_count", "resource_type", "size_gib_each"],
+                  "properties": {
+                    "resource_class": {
+                      "const": "ttl-schedule"
+                    },
+                    "maximum_count": {
+                      "const": 1
+                    },
+                    "resource_type": {
+                      "const": "absolute-14400-seconds"
+                    },
+                    "size_gib_each": {
+                      "type": "null"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["resource_class", "maximum_count", "resource_type", "size_gib_each"],
+                  "properties": {
+                    "resource_class": {
+                      "const": "ttl-function"
+                    },
+                    "maximum_count": {
+                      "const": 1
+                    },
+                    "resource_type": {
+                      "const": "terminator-128-mib"
+                    },
+                    "size_gib_each": {
+                      "type": "null"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["resource_class", "maximum_count", "resource_type", "size_gib_each"],
+                  "properties": {
+                    "resource_class": {
+                      "const": "ttl-function-permission"
+                    },
+                    "maximum_count": {
+                      "const": 1
+                    },
+                    "resource_type": {
+                      "const": "scheduler-invoke-only"
+                    },
+                    "size_gib_each": {
+                      "type": "null"
+                    }
+                  }
+                }
+              ],
+              "items": false
+            }
+          }
+        }
+      }
+    },
+    "attempt_authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "campaign_envelope_present",
+        "approval_present",
+        "attempt_id_present",
+        "maximum_attempts_per_approval",
+        "prior_approval_authorizes_retry",
+        "retry_requires_fresh_revalidation_and_approval",
+        "executable_provider_route_present"
+      ],
+      "properties": {
+        "campaign_envelope_present": {
+          "const": false
+        },
+        "approval_present": {
+          "const": false
+        },
+        "attempt_id_present": {
+          "const": false
+        },
+        "maximum_attempts_per_approval": {
+          "const": 1
+        },
+        "prior_approval_authorizes_retry": {
+          "const": false
+        },
+        "retry_requires_fresh_revalidation_and_approval": {
+          "const": true
+        },
+        "executable_provider_route_present": {
+          "const": false
+        }
+      }
+    },
+    "stop_destroy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "commands_or_targets_present",
+        "cases",
+        "destroy_required_after_every_outcome",
+        "uncertainty_blocks_success_and_retry",
+        "independent_inventory"
+      ],
+      "properties": {
+        "kind": {
+          "const": "non-executable-proposed-control-flow"
+        },
+        "commands_or_targets_present": {
+          "const": false
+        },
+        "cases": {
+          "type": "array",
+          "minItems": 6,
+          "maxItems": 6,
+          "prefixItems": [
+            {
+              "type": "object",
+              "$ref": "#/$defs/stopCase",
+              "properties": {
+                "case": {
+                  "const": "apply-failure"
+                },
+                "result": {
+                  "const": "stop-preserve-evidence-require-destroy-and-independent-inventory"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "$ref": "#/$defs/stopCase",
+              "properties": {
+                "case": {
+                  "const": "bootstrap-failure"
+                },
+                "result": {
+                  "const": "stop-preserve-evidence-require-destroy-and-independent-inventory"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "$ref": "#/$defs/stopCase",
+              "properties": {
+                "case": {
+                  "const": "test-failure"
+                },
+                "result": {
+                  "const": "stop-preserve-evidence-require-destroy-and-independent-inventory"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "$ref": "#/$defs/stopCase",
+              "properties": {
+                "case": {
+                  "const": "timeout"
+                },
+                "result": {
+                  "const": "stop-preserve-evidence-require-destroy-and-independent-inventory"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "$ref": "#/$defs/stopCase",
+              "properties": {
+                "case": {
+                  "const": "interruption"
+                },
+                "result": {
+                  "const": "stop-preserve-evidence-require-destroy-and-independent-inventory"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "$ref": "#/$defs/stopCase",
+              "properties": {
+                "case": {
+                  "const": "inventory-uncertainty"
+                },
+                "result": {
+                  "const": "preserve-uncertain-block-success-and-retry"
+                }
+              }
+            }
+          ],
+          "items": false
+        },
+        "destroy_required_after_every_outcome": {
+          "const": true
+        },
+        "uncertainty_blocks_success_and_retry": {
+          "const": true
+        },
+        "independent_inventory": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["state", "zero_claimed", "scopes", "tag_only_inventory_allowed"],
+          "properties": {
+            "state": {
+              "const": "required-future-unexecuted"
+            },
+            "zero_claimed": {
+              "const": false
+            },
+            "scopes": {
+              "type": "array",
+              "minItems": 38,
+              "maxItems": 38,
+              "uniqueItems": true,
+              "prefixItems": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["resource_class", "service", "scope", "tag_only"],
+                  "properties": {
+                    "resource_class": {
+                      "const": "eks-cluster"
+                    },
+                    "service": {
+                      "const": "eks"
+                    },
+                    "scope": {
+                      "const": "clusters-account-region-service-wide"
+                    },
+                    "tag_only": {
+                      "const": false
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["resource_class", "service", "scope", "tag_only"],
+                  "properties": {
+                    "resource_class": {
+                      "const": "eks-managed-addon"
+                    },
+                    "service": {
+                      "const": "eks"
+                    },
+                    "scope": {
+                      "const": "addons-for-every-cluster-account-region-service-wide"
+                    },
+                    "tag_only": {
+                      "const": false
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["resource_class", "service", "scope", "tag_only"],
+                  "properties": {
+                    "resource_class": {
+                      "const": "vpc"
+                    },
+                    "service": {
+                      "const": "ec2"
+                    },
+                    "scope": {
+                      "const": "vpcs-account-region-service-wide"
+                    },
+                    "tag_only": {
+                      "const": false
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["resource_class", "service", "scope", "tag_only"],
+                  "properties": {
+                    "resource_class": {
+                      "const": "subnet"
+                    },
+                    "service": {
+                      "const": "ec2"
+                    },
+                    "scope": {
+                      "const": "subnets-account-region-service-wide"
+                    },
+                    "tag_only": {
+                      "const": false
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["resource_class", "service", "scope", "tag_only"],
+                  "properties": {
+                    "resource_class": {
+                      "const": "route-table"
+                    },
+                    "service": {
+                      "const": "ec2"
+                    },
+                    "scope": {
+                      "const": "route-tables-account-region-service-wide"
+                    },
+                    "tag_only": {
+                      "const": false
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["resource_class", "service", "scope", "tag_only"],
+                  "properties": {
+                    "resource_class": {
+                      "const": "route"
+                    },
+                    "service": {
+                      "const": "ec2"
+                    },
+                    "scope": {
+                      "const": "routes-for-every-route-table-account-region-service-wide"
+                    },
+                    "tag_only": {
+                      "const": false
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["resource_class", "service", "scope", "tag_only"],
+                  "properties": {
+                    "resource_class": {
+                      "const": "internet-gateway"
+                    },
+                    "service": {
+                      "const": "ec2"
+                    },
+                    "scope": {
+                      "const": "internet-gateways-account-region-service-wide-all-attachment-states"
+                    },
+                    "tag_only": {
+                      "const": false
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["resource_class", "service", "scope", "tag_only"],
+                  "properties": {
+                    "resource_class": {
+                      "const": "network-acl"
+                    },
+                    "service": {
+                      "const": "ec2"
+                    },
+                    "scope": {
+                      "const": "network-acls-account-region-service-wide"
+                    },
+                    "tag_only": {
+                      "const": false
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["resource_class", "service", "scope", "tag_only"],
+                  "properties": {
+                    "resource_class": {
+                      "const": "dhcp-options-association"
+                    },
+                    "service": {
+                      "const": "ec2"
+                    },
+                    "scope": {
+                      "const": "dhcp-options-account-region-service-wide"
+                    },
+                    "tag_only": {
+                      "const": false
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["resource_class", "service", "scope", "tag_only"],
+                  "properties": {
+                    "resource_class": {
+                      "const": "nat-gateway"
+                    },
+                    "service": {
+                      "const": "ec2"
+                    },
+                    "scope": {
+                      "const": "nat-gateways-account-region-service-wide-all-lifecycle-states"
+                    },
+                    "tag_only": {
+                      "const": false
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["resource_class", "service", "scope", "tag_only"],
+                  "properties": {
+                    "resource_class": {
+                      "const": "vpc-endpoint"
+                    },
+                    "service": {
+                      "const": "ec2"
+                    },
+                    "scope": {
+                      "const": "vpc-endpoints-account-region-service-wide"
+                    },
+                    "tag_only": {
+                      "const": false
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["resource_class", "service", "scope", "tag_only"],
+                  "properties": {
+                    "resource_class": {
+                      "const": "elastic-ip"
+                    },
+                    "service": {
+                      "const": "ec2"
+                    },
+                    "scope": {
+                      "const": "addresses-account-region-service-wide"
+                    },
+                    "tag_only": {
+                      "const": false
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["resource_class", "service", "scope", "tag_only"],
+                  "properties": {
+                    "resource_class": {
+                      "const": "load-balancer"
+                    },
+                    "service": {
+                      "const": "elasticloadbalancing"
+                    },
+                    "scope": {
+                      "const": "load-balancers-account-region-service-wide"
+                    },
+                    "tag_only": {
+                      "const": false
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["resource_class", "service", "scope", "tag_only"],
+                  "properties": {
+                    "resource_class": {
+                      "const": "target-group"
+                    },
+                    "service": {
+                      "const": "elasticloadbalancing"
+                    },
+                    "scope": {
+                      "const": "target-groups-account-region-service-wide"
+                    },
+                    "tag_only": {
+                      "const": false
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["resource_class", "service", "scope", "tag_only"],
+                  "properties": {
+                    "resource_class": {
+                      "const": "security-group"
+                    },
+                    "service": {
+                      "const": "ec2"
+                    },
+                    "scope": {
+                      "const": "security-groups-account-region-service-wide"
+                    },
+                    "tag_only": {
+                      "const": false
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["resource_class", "service", "scope", "tag_only"],
+                  "properties": {
+                    "resource_class": {
+                      "const": "iam-role"
+                    },
+                    "service": {
+                      "const": "iam"
+                    },
+                    "scope": {
+                      "const": "roles-account-service-wide"
+                    },
+                    "tag_only": {
+                      "const": false
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["resource_class", "service", "scope", "tag_only"],
+                  "properties": {
+                    "resource_class": {
+                      "const": "iam-customer-managed-policy"
+                    },
+                    "service": {
+                      "const": "iam"
+                    },
+                    "scope": {
+                      "const": "customer-managed-policies-account-service-wide"
+                    },
+                    "tag_only": {
+                      "const": false
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["resource_class", "service", "scope", "tag_only"],
+                  "properties": {
+                    "resource_class": {
+                      "const": "iam-policy-attachment"
+                    },
+                    "service": {
+                      "const": "iam"
+                    },
+                    "scope": {
+                      "const": "role-and-policy-attachments-account-service-wide"
+                    },
+                    "tag_only": {
+                      "const": false
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["resource_class", "service", "scope", "tag_only"],
+                  "properties": {
+                    "resource_class": {
+                      "const": "instance-profile"
+                    },
+                    "service": {
+                      "const": "iam"
+                    },
+                    "scope": {
+                      "const": "instance-profiles-account-service-wide"
+                    },
+                    "tag_only": {
+                      "const": false
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["resource_class", "service", "scope", "tag_only"],
+                  "properties": {
+                    "resource_class": {
+                      "const": "launch-template"
+                    },
+                    "service": {
+                      "const": "ec2"
+                    },
+                    "scope": {
+                      "const": "launch-templates-and-all-versions-account-region-service-wide"
+                    },
+                    "tag_only": {
+                      "const": false
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["resource_class", "service", "scope", "tag_only"],
+                  "properties": {
+                    "resource_class": {
+                      "const": "managed-node-group"
+                    },
+                    "service": {
+                      "const": "eks"
+                    },
+                    "scope": {
+                      "const": "nodegroups-for-every-cluster-account-region-service-wide"
+                    },
+                    "tag_only": {
+                      "const": false
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["resource_class", "service", "scope", "tag_only"],
+                  "properties": {
+                    "resource_class": {
+                      "const": "autoscaling-group"
+                    },
+                    "service": {
+                      "const": "autoscaling"
+                    },
+                    "scope": {
+                      "const": "groups-account-region-service-wide"
+                    },
+                    "tag_only": {
+                      "const": false
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["resource_class", "service", "scope", "tag_only"],
+                  "properties": {
+                    "resource_class": {
+                      "const": "trusted-node"
+                    },
+                    "service": {
+                      "const": "ec2"
+                    },
+                    "scope": {
+                      "const": "instances-account-region-service-wide-all-states"
+                    },
+                    "tag_only": {
+                      "const": false
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["resource_class", "service", "scope", "tag_only"],
+                  "properties": {
+                    "resource_class": {
+                      "const": "sandbox-node"
+                    },
+                    "service": {
+                      "const": "ec2"
+                    },
+                    "scope": {
+                      "const": "instances-account-region-service-wide-all-states"
+                    },
+                    "tag_only": {
+                      "const": false
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["resource_class", "service", "scope", "tag_only"],
+                  "properties": {
+                    "resource_class": {
+                      "const": "network-interface"
+                    },
+                    "service": {
+                      "const": "ec2"
+                    },
+                    "scope": {
+                      "const": "network-interfaces-account-region-service-wide-all-attachment-states"
+                    },
+                    "tag_only": {
+                      "const": false
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["resource_class", "service", "scope", "tag_only"],
+                  "properties": {
+                    "resource_class": {
+                      "const": "ebs-trusted-root-volume"
+                    },
+                    "service": {
+                      "const": "ec2"
+                    },
+                    "scope": {
+                      "const": "volumes-account-region-service-wide-all-attachment-states"
+                    },
+                    "tag_only": {
+                      "const": false
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["resource_class", "service", "scope", "tag_only"],
+                  "properties": {
+                    "resource_class": {
+                      "const": "ebs-sandbox-root-volume"
+                    },
+                    "service": {
+                      "const": "ec2"
+                    },
+                    "scope": {
+                      "const": "volumes-account-region-service-wide-all-attachment-states"
+                    },
+                    "tag_only": {
+                      "const": false
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["resource_class", "service", "scope", "tag_only"],
+                  "properties": {
+                    "resource_class": {
+                      "const": "ebs-workspace-volume"
+                    },
+                    "service": {
+                      "const": "ec2"
+                    },
+                    "scope": {
+                      "const": "volumes-account-region-service-wide-all-attachment-states"
+                    },
+                    "tag_only": {
+                      "const": false
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["resource_class", "service", "scope", "tag_only"],
+                  "properties": {
+                    "resource_class": {
+                      "const": "ebs-session-state-volume"
+                    },
+                    "service": {
+                      "const": "ec2"
+                    },
+                    "scope": {
+                      "const": "volumes-account-region-service-wide-all-attachment-states"
+                    },
+                    "tag_only": {
+                      "const": false
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["resource_class", "service", "scope", "tag_only"],
+                  "properties": {
+                    "resource_class": {
+                      "const": "ebs-snapshot"
+                    },
+                    "service": {
+                      "const": "ec2"
+                    },
+                    "scope": {
+                      "const": "snapshots-owned-by-account-region-service-wide"
+                    },
+                    "tag_only": {
+                      "const": false
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["resource_class", "service", "scope", "tag_only"],
+                  "properties": {
+                    "resource_class": {
+                      "const": "kms-key"
+                    },
+                    "service": {
+                      "const": "kms"
+                    },
+                    "scope": {
+                      "const": "keys-account-region-service-wide-all-key-states"
+                    },
+                    "tag_only": {
+                      "const": false
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["resource_class", "service", "scope", "tag_only"],
+                  "properties": {
+                    "resource_class": {
+                      "const": "kms-alias"
+                    },
+                    "service": {
+                      "const": "kms"
+                    },
+                    "scope": {
+                      "const": "aliases-account-region-service-wide"
+                    },
+                    "tag_only": {
+                      "const": false
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["resource_class", "service", "scope", "tag_only"],
+                  "properties": {
+                    "resource_class": {
+                      "const": "log-group"
+                    },
+                    "service": {
+                      "const": "logs"
+                    },
+                    "scope": {
+                      "const": "log-groups-account-region-service-wide"
+                    },
+                    "tag_only": {
+                      "const": false
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["resource_class", "service", "scope", "tag_only"],
+                  "properties": {
+                    "resource_class": {
+                      "const": "budget"
+                    },
+                    "service": {
+                      "const": "budgets"
+                    },
+                    "scope": {
+                      "const": "budgets-account-service-wide"
+                    },
+                    "tag_only": {
+                      "const": false
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["resource_class", "service", "scope", "tag_only"],
+                  "properties": {
+                    "resource_class": {
+                      "const": "budget-notification"
+                    },
+                    "service": {
+                      "const": "budgets"
+                    },
+                    "scope": {
+                      "const": "notifications-for-every-budget-account-service-wide"
+                    },
+                    "tag_only": {
+                      "const": false
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["resource_class", "service", "scope", "tag_only"],
+                  "properties": {
+                    "resource_class": {
+                      "const": "ttl-schedule"
+                    },
+                    "service": {
+                      "const": "scheduler"
+                    },
+                    "scope": {
+                      "const": "schedules-account-region-service-wide"
+                    },
+                    "tag_only": {
+                      "const": false
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["resource_class", "service", "scope", "tag_only"],
+                  "properties": {
+                    "resource_class": {
+                      "const": "ttl-function"
+                    },
+                    "service": {
+                      "const": "lambda"
+                    },
+                    "scope": {
+                      "const": "functions-account-region-service-wide"
+                    },
+                    "tag_only": {
+                      "const": false
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["resource_class", "service", "scope", "tag_only"],
+                  "properties": {
+                    "resource_class": {
+                      "const": "ttl-function-permission"
+                    },
+                    "service": {
+                      "const": "lambda"
+                    },
+                    "scope": {
+                      "const": "resource-policies-for-every-function-account-region-service-wide"
+                    },
+                    "tag_only": {
+                      "const": false
+                    }
+                  }
+                }
+              ],
+              "items": false
+            },
+            "tag_only_inventory_allowed": {
+              "const": false
+            }
+          }
+        }
+      }
+    },
+    "identities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "separation_satisfied", "roles", "required_separations"],
+      "properties": {
+        "state": {
+          "const": "absent-blocking"
+        },
+        "separation_satisfied": {
+          "const": false
+        },
+        "roles": {
+          "type": "array",
+          "minItems": 5,
+          "maxItems": 5,
+          "prefixItems": [
+            {
+              "type": "object",
+              "$ref": "#/$defs/absentRole",
+              "properties": {
+                "role": {
+                  "const": "campaign-operator"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "$ref": "#/$defs/absentRole",
+              "properties": {
+                "role": {
+                  "const": "campaign-approver"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "$ref": "#/$defs/absentRole",
+              "properties": {
+                "role": {
+                  "const": "budget-approver"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "$ref": "#/$defs/absentRole",
+              "properties": {
+                "role": {
+                  "const": "security-evidence-reviewer"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "$ref": "#/$defs/absentRole",
+              "properties": {
+                "role": {
+                  "const": "zero-inventory-observer"
+                }
+              }
+            }
+          ],
+          "items": false
+        },
+        "required_separations": {
+          "type": "array",
+          "minItems": 6,
+          "maxItems": 6,
+          "prefixItems": [
+            {
+              "type": "object",
+              "$ref": "#/$defs/separation",
+              "properties": {
+                "left": {
+                  "const": "campaign-operator"
+                },
+                "right": {
+                  "const": "campaign-approver"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "$ref": "#/$defs/separation",
+              "properties": {
+                "left": {
+                  "const": "campaign-operator"
+                },
+                "right": {
+                  "const": "budget-approver"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "$ref": "#/$defs/separation",
+              "properties": {
+                "left": {
+                  "const": "campaign-operator"
+                },
+                "right": {
+                  "const": "security-evidence-reviewer"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "$ref": "#/$defs/separation",
+              "properties": {
+                "left": {
+                  "const": "campaign-operator"
+                },
+                "right": {
+                  "const": "zero-inventory-observer"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "$ref": "#/$defs/separation",
+              "properties": {
+                "left": {
+                  "const": "campaign-approver"
+                },
+                "right": {
+                  "const": "zero-inventory-observer"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "$ref": "#/$defs/separation",
+              "properties": {
+                "left": {
+                  "const": "security-evidence-reviewer"
+                },
+                "right": {
+                  "const": "zero-inventory-observer"
+                }
+              }
+            }
+          ],
+          "items": false
+        }
+      }
+    },
+    "revalidation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["required_before_campaign_request", "issue_42_state", "price_state", "quota_state", "triggers"],
+      "properties": {
+        "required_before_campaign_request": {
+          "const": true
+        },
+        "issue_42_state": {
+          "const": "open-blocking"
+        },
+        "price_state": {
+          "const": "not-discovered-by-this-package"
+        },
+        "quota_state": {
+          "const": "not-discovered-by-this-package"
+        },
+        "triggers": {
+          "type": "array",
+          "minItems": 20,
+          "maxItems": 20,
+          "uniqueItems": true,
+          "prefixItems": [
+            {
+              "const": "issue-42-closure"
+            },
+            {
+              "const": "source-change"
+            },
+            {
+              "const": "pin-change"
+            },
+            {
+              "const": "price-change"
+            },
+            {
+              "const": "quota-change"
+            },
+            {
+              "const": "campaign-shape-change"
+            },
+            {
+              "const": "helm-chart-change"
+            },
+            {
+              "const": "helm-values-change"
+            },
+            {
+              "const": "renderer-change"
+            },
+            {
+              "const": "helm-tool-identity-or-version-change"
+            },
+            {
+              "const": "validation-procedure-change"
+            },
+            {
+              "const": "security-advisory-or-disposition-expiry"
+            },
+            {
+              "const": "account-binding-change"
+            },
+            {
+              "const": "principal-binding-change"
+            },
+            {
+              "const": "separation-state-change"
+            },
+            {
+              "const": "campaign-approval-change"
+            },
+            {
+              "const": "campaign-envelope-change"
+            },
+            {
+              "const": "campaign-attempt-change"
+            },
+            {
+              "const": "stop-destroy-procedure-change"
+            },
+            {
+              "const": "independent-inventory-scope-or-procedure-change"
+            }
+          ],
+          "items": false
+        }
+      }
+    },
+    "blockers": {
+      "type": "array",
+      "minItems": 12,
+      "maxItems": 12,
+      "uniqueItems": true,
+      "prefixItems": [
+        {
+          "const": "ISSUE_42_OPEN"
+        },
+        {
+          "const": "NIC_V0_11_0_MODULE_0_7_0_LAUNCH_TEMPLATE_CAPABILITY_MISSING"
+        },
+        {
+          "const": "EKS_AMI_IMAGE_RELEASE_KERNEL_UNRESOLVED"
+        },
+        {
+          "const": "PROPOSED_ACCOUNT_BINDING_ABSENT"
+        },
+        {
+          "const": "CURRENT_PRICE_NOT_REVALIDATED"
+        },
+        {
+          "const": "CURRENT_QUOTA_NOT_REVALIDATED"
+        },
+        {
+          "const": "SEPARATED_CAMPAIGN_IDENTITIES_ABSENT"
+        },
+        {
+          "const": "CAMPAIGN_ENVELOPE_AND_APPROVAL_ABSENT"
+        },
+        {
+          "const": "NO_EXECUTABLE_PROVIDER_ROUTE"
+        },
+        {
+          "const": "RELEASE_IMAGE_SET_ABSENT"
+        },
+        {
+          "const": "CONTAINERD_ARTIFACT_IDENTITY_UNRESOLVED"
+        },
+        {
+          "const": "QEMU_ARTIFACT_IDENTITY_UNRESOLVED"
+        }
+      ],
+      "items": false
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "syntheticImage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reference", "state"],
+      "properties": {
+        "reference": {
+          "type": "string",
+          "pattern": "^registry\\.example\\.invalid/cogs/(?:worker|sandbox)@sha256:[0-9a-f]{64}$",
+          "maxLength": 160
+        },
+        "state": {
+          "const": "synthetic-placeholder-not-release-image"
+        }
+      }
+    },
+    "stopCase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["case", "result"],
+      "properties": {
+        "case": {
+          "type": "string",
+          "maxLength": 32
+        },
+        "result": {
+          "enum": [
+            "stop-preserve-evidence-require-destroy-and-independent-inventory",
+            "preserve-uncertain-block-success-and-retry"
+          ]
+        }
+      }
+    },
+    "absentRole": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "principal_binding_sha256", "state"],
+      "properties": {
+        "role": {
+          "type": "string",
+          "maxLength": 32
+        },
+        "principal_binding_sha256": {
+          "type": "null"
+        },
+        "state": {
+          "const": "not-present-blocking"
+        }
+      }
+    },
+    "separation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["left", "right", "state"],
+      "properties": {
+        "left": {
+          "type": "string",
+          "maxLength": 32
+        },
+        "right": {
+          "type": "string",
+          "maxLength": 32
+        },
+        "state": {
+          "const": "required-not-proven"
+        }
+      }
+    }
+  }
+}

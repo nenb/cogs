@@ -1031,6 +1031,14 @@ Prepare the EKS/NIC topology locally and statically, then validate it only in se
 
 **Stage 4 cloud gate:** chart, schema, policy, launcher, evidence, and campaign-plan work may run offline before #42 closes. AWS discovery, provider initialization, OpenTofu plan/apply, SSM, EKS creation, Kubernetes access, and external model-provider calls are prohibited until #42 is closed and the owner records a new exact campaign approval.
 
+**Static policy status:** Issue #356 adds strict local-only trusted-worker/current-user OpenBao handle, exact inert sandbox no-identity, immutable session/instance/pod/ID/generation/exact-lifetime proxy capability, replacement/revocation, no-fallback network, closed metadata-only OTLP, and a closed bounded fail-closed audit WAL containing only categorical/scalar fields and exact domain-separated digest references, plus an exact evaluator-recomputed hostile static probe inventory with dual-stack protected-surface coverage. These contracts remain `pending-exact-eks-cni-runtime`; they are neither rendered enforcement nor Stage 4 evidence. Exact EKS qualification must rerun selector-confusion, dual-stack, UDP/QUIC, DNS/resolver, metadata/API/admin, cross-session, revocation, WAL, and OTLP failure cases with real dependencies.
+
+**Static storage/launch status:** Issue #355 adds strict local-only storage roles and one-session object-graph classification. It fixes a 20 GiB CSI-block `Filesystem` / `ReadWriteOncePod` / `WaitForFirstConsumer` / `Retain` sandbox workspace retained until explicit deletion, a distinct 5 GiB `Filesystem` / `ReadWriteOncePod` / `WaitForFirstConsumer` / `Retain` trusted Pi state volume retained for 30 days, a fenced single-writer lease, exactly one worker/proxy resource and one Kata sandbox bound to classifier-derived domain-separated immutable metadata/digest and exact session/workspace/resource references, a priori host-key match, out-of-band ephemeral identities, and sticky uncertainty-preserving cleanup that carries state/resources/attachments/lease. The classifier launches and observes nothing; RuntimeClass presence is only a caller assertion, every provider/runtime claim remains false, and the independent NIC v0.11.0 missing-capability blocker remains unchanged.
+
+**Offline readiness status:** Issue #357 assembles a canonical bounded package over the complete Stage 4 source closure plus exact chart, synthetic values, freshly reproduced local render, trusted render receipt, placeholder-image record, NIC contract, unresolved runtime record, Stage 4/5 schema inventory, and local-validation digests. A bounded trusted preparation executable authenticates the chart/values and pinned Helm executable identity/version, runs local `helm template` twice, and compares fresh output to committed bytes; the classifier remains pure. Its `local_preparation_complete=true` is narrowly `bounded-package-assembly-and-local-validation-only`, not image/runtime closure or campaign readiness. Release worker/sandbox image artifacts are absent, containerd and QEMU artifact identities are null/unresolved, and the EKS AMI/image/kernel remains unresolved; NIC `v0.11.0` / module `0.7.0` remains blocked. Campaign request readiness, approval, cloud authority/execution, provider truth, current/zero resources, Stage 4 exit, and release eligibility are false. The absent account/identity bindings and exact closed `us-east-1` resource-ceiling graph, spend/TTL, synthetic-data, stop/destroy, and one-service-specific-inventory-row-per-resource-class controls are proposals only; tag-only inventory is forbidden. There is no executable provider route. Any approval is one-attempt-only and never authorizes retry. Fresh revalidation covers #42 closure plus source, pin, price/quota, graph, Helm/chart/values/renderer/toolchain, validation/advisory expiry, account/principal/separation, approval/envelope/attempt, destroy, and inventory changes.
+
+**Campaign/exit offline model status:** Issues #358–#362 now have [strict local blocked drafts and pure ordering models](docs/operations/stage-4-campaign-offline-models.md). #358 can represent only absent #42/S4-06 evidence, unnamed one-attempt scope, absent identities/source/account, unapproved resources/budget/expiry/destroy/inventory, and `execution_authorized=false`. #359–#361 bind exact local source/artifact digest references and issue-specific topology/Kata/storage/cleanup, guest-root security/functionality, and performance/recovery steps, followed in every modeled path by `stop -> destroy -> independent-inventory`; there is no retry, executor, provider, or observation authority. #362 is an unreviewed matrix/report template that rejects mandatory stubs, skips, fallback, leaks, mixed revisions, unreviewed exceptions, and cleanup uncertainty and always fixes exit/release to false. All five issue executions remain open/blocked, and these templates cannot close #358–#361 or #362.
+
 ## 31. AWS environment controls
 
 - dedicated development account;
@@ -1050,19 +1058,21 @@ The EKS control plane incurs cost even with zero nodes; destroy the cluster betw
 
 ### 32.1 Dedicated sandbox node group
 
-Add or configure through NIC:
+The local semantic source contract is [`deploy/nic/stage4-sandbox-node-group-contract.json`](deploy/nic/stage4-sandbox-node-group-contract.json), documented in [`docs/operations/stage-4-nic-node-group-contract.md`](docs/operations/stage-4-nic-node-group-contract.md). It pins `nebari-dev/nebari-infrastructure-core` `v0.11.0` at commit `28221c652c56bb8d48a92538c01503a82f2f9321`, tree `4dfb0333e5d91003e69881ca1dcf66e1ea9ff6c2`, its relevant file digests, and its `nebari-dev/eks-cluster/aws` `0.7.0` module closure. Authenticated source review found that this exact NIC release maps instance/min/max, AMI type, Spot, disk, labels, and taints to managed node groups but does **not** expose a custom launch-template ID/version or `CpuOptions.NestedVirtualization`; the underlying module auto-creates only its fixed launch-template shape. The pure classifier therefore returns `blocked-missing-capability` even if a node image is later pinned. It also rejects Spot, bare metal, scaling expansion, implicit/latest/default launch-template versions, label/taint drift, trusted/sandbox overlap, runc, and TCG. The EKS node-image pin remains independently unresolved.
 
-- validated nested-virtualization instance type and target region;
-- a custom EC2 launch template with `CpuOptions.NestedVirtualization=enabled`;
-- verification that NIC's node-group abstraction can express and preserve the launch-template ID/version, extending NIC if necessary;
-- an EKS node AMI with required KVM modules loaded/available;
-- labels and taints dedicated to Kata sandboxes;
-- KVM exposure required by the chosen Kata deployment;
-- minimum/desired/maximum capacity suitable for the campaign;
-- no trusted platform workload scheduling on sandbox nodes;
-- pinned node image/runtime versions.
+NIC must be extended and repinned before it can express this required contract:
 
-Keep trusted Cogs/proxy resources on ordinary trusted nodes.
+- `c8i-flex.large` in `us-east-1`, CPU-only `x86_64`, On-Demand, non-metal, bounded at minimum `0` and maximum `1` without inventing an unsupported desired-size input;
+- required node labels `cogs.dev/node-domain=sandbox-kata`, `cogs.dev/nested-virtualization=enabled`, and `cogs.dev/sandbox-runtime=kata-qemu-kvm`;
+- the exact infrastructure taint `cogs.dev/sandbox=kata:NO_SCHEDULE` and matching Kubernetes `NoSchedule` toleration;
+- a custom EC2 launch template with `CpuOptions.NestedVirtualization=enabled`, one core, and two threads per core;
+- explicit custom launch-template ID and positive-integer version inputs, with `$Latest`, `$Default`, implicit versions, and reconciliation drift forbidden;
+- verification that NIC's pinned node-group abstraction can express and preserve the launch-template ID/version, extending NIC if necessary;
+- an immutable EKS node AMI/release/kernel pin with required KVM modules loaded/available;
+- Kata `3.32.0` archive SHA-256 `1449ecea50bd91fa73a94648db195d18950fe869ba4b1f12d05f55f1fa7c1b01`, containerd `2.2.1`, QEMU `8.2.2`, `io.containerd.kata.v2`, and KVM-only acceleration;
+- no trusted platform workload scheduling on sandbox nodes and no runc/TCG fallback.
+
+Keep trusted Cogs/proxy resources on ordinary nodes selected by `cogs.dev/node-domain=trusted`, with no sandbox toleration. The v1 classifier has no ready state; a capable future NIC revision requires a new immutable closure and contract review. Any future local acceptance still grants no campaign or cloud authority, and actual source mapping, launch-template preservation, AMI/KVM state, runtime identity, and scheduler behavior require separately authorized future evidence.
 
 ### 32.2 Kata installation
 
@@ -1076,11 +1086,15 @@ Keep trusted Cogs/proxy resources on ordinary trusted nodes.
 
 ### 32.3 Storage
 
+The offline issue #355 contract is documented in [`docs/operations/stage-4-storage-launch-contract.md`](docs/operations/stage-4-storage-launch-contract.md). Its strict schemas and pure classifier establish expected metadata only; they neither create storage nor observe CSI, attachment, lease, retention, deletion, or cleanup behavior.
+
 - use EBS/CSI block volume for active project workspace;
+- require exactly 20 GiB, `Filesystem`, `ReadWriteOncePod`, `WaitForFirstConsumer`, and `Retain`, sandbox-only, retained until explicit workspace deletion;
 - test attach, mount, detach, reattach, and forced-worker-loss behavior;
-- ensure one writer per project lease;
-- use separate trusted storage for Pi session state;
-- test storage deletion and retention behavior;
+- ensure one fenced writer per project lease; expiry or uncertainty never authorizes takeover;
+- use a distinct exactly 5 GiB, `Filesystem`, `ReadWriteOncePod`, `WaitForFirstConsumer`, `Retain` trusted Pi session-state volume inaccessible to the sandbox;
+- retain trusted session state for the 30-day default and test deletion/retention behavior;
+- preserve state, attachments, and lease on cleanup ambiguity;
 - avoid EFS as the default Git/build workspace unless benchmarks justify it.
 
 ### 32.4 Network
@@ -1141,6 +1155,8 @@ Add preflight checks for:
 A missing production prerequisite fails installation/readiness. It must not switch to `runc`.
 
 ## 34. Temporary resource launcher
+
+Issue #355 supplies only a pure local object-graph contract and no actual launcher, process, manifest producer, Kubernetes client, or provider surface. It rejects missing/wrong RuntimeClass assertions, host-key mismatch, stale/replayed launch documents, duplicate/missing resources, concurrent writers, durable ephemeral identities, and cleanup ambiguity. Actual launch implementation remains future integration-test tooling after the cloud gate.
 
 Until the daemon exists, provide an integration-test launcher that creates:
 
@@ -1364,6 +1380,8 @@ Inject and document:
 Expected outcomes must match the failure table in `DESIGN.md`. Unknown prompt outcomes are reported; they are never silently replayed.
 
 ## 42. Privacy and deletion validation
+
+**Local/static status:** Issue #365 adds a strict bounded synthetic scanner for metadata-only OTLP, log, report, event, crash-summary, and export-descriptor fixtures; runtime-only canaries cover prohibited prompt/model, source/command/tool, credential/placeholder, private-ID, path, query/body, raw-export, and attachment categories without committing those payloads. The export descriptor requires explicit authenticated user action, no model-callable route, sensitive marking, and attachment/raw-payload exclusion. A pure canonical reducer fixes 30-day session/object-copy retention, explicit workspace deletion, all-version/delete-marker handling, separate administrator legal hold, and sticky failure/uncertainty stops. Its report is categorical/digest-only and fixes actual EKS/object-store deletion to unexecuted and all campaign/cloud/provider/release claims to false. It is not Stage 5 evidence and does not satisfy exit criteria 45.8 or 45.9. See [`docs/operations/stage-5-privacy-retention-export-deletion.md`](docs/operations/stage-5-privacy-retention-export-deletion.md).
 
 - inspect OTLP, worker logs, proxy logs, Kubernetes events, crash dumps, and reports for prompt/source/secret leakage;
 - test user deletion across session storage and object copies;

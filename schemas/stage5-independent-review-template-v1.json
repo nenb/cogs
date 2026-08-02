@@ -1,0 +1,216 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.dev/schemas/stage5-independent-review-template-v1.json",
+  "title": "Provisional independent security and supply-chain review template",
+  "description": "A metadata-only checklist and findings shape; absent identities and unexecuted checks prohibit acceptance.",
+  "type": "object",
+  "additionalProperties": false,
+  "maxProperties": 10,
+  "required": [
+    "version",
+    "authority",
+    "issue",
+    "rc_binding_sha256",
+    "identities",
+    "checklist",
+    "findings",
+    "gate",
+    "blockers",
+    "claims"
+  ],
+  "properties": {
+    "version": { "const": "cogs.stage5-independent-review-template/v1" },
+    "authority": { "const": "provisional-local-static-review-template-only" },
+    "issue": { "const": 368 },
+    "rc_binding_sha256": { "type": "null" },
+    "identities": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 4,
+      "required": [
+        "evidence_producer_principal_id",
+        "reviewer_identity_binding_sha256",
+        "reviewer_principal_id",
+        "state"
+      ],
+      "properties": {
+        "evidence_producer_principal_id": { "type": "null" },
+        "reviewer_identity_binding_sha256": { "type": "null" },
+        "reviewer_principal_id": { "type": "null" },
+        "state": { "const": "absent-blocking" }
+      }
+    },
+    "checklist": {
+      "type": "array",
+      "minItems": 13,
+      "maxItems": 13,
+      "prefixItems": [
+        { "$ref": "#/$defs/check", "type": "object", "properties": { "area": { "const": "pi-discovery" } } },
+        { "$ref": "#/$defs/check", "type": "object", "properties": { "area": { "const": "ssh-sftp" } } },
+        { "$ref": "#/$defs/check", "type": "object", "properties": { "area": { "const": "path-handling" } } },
+        { "$ref": "#/$defs/check", "type": "object", "properties": { "area": { "const": "proxy" } } },
+        { "$ref": "#/$defs/check", "type": "object", "properties": { "area": { "const": "proxy-capability" } } },
+        { "$ref": "#/$defs/check", "type": "object", "properties": { "area": { "const": "openbao" } } },
+        { "$ref": "#/$defs/check", "type": "object", "properties": { "area": { "const": "audit-wal" } } },
+        { "$ref": "#/$defs/check", "type": "object", "properties": { "area": { "const": "policy" } } },
+        { "$ref": "#/$defs/check", "type": "object", "properties": { "area": { "const": "guest-kata" } } },
+        { "$ref": "#/$defs/check", "type": "object", "properties": { "area": { "const": "privacy" } } },
+        { "$ref": "#/$defs/check", "type": "object", "properties": { "area": { "const": "integrity" } } },
+        {
+          "$ref": "#/$defs/check",
+          "type": "object",
+          "properties": { "area": { "const": "production-artifact-pinning" } }
+        },
+        {
+          "$ref": "#/$defs/check",
+          "type": "object",
+          "properties": { "area": { "const": "project-dependency-isolation" } }
+        }
+      ],
+      "items": false
+    },
+    "findings": {
+      "type": "array",
+      "minItems": 0,
+      "maxItems": 128,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/finding" }
+    },
+    "gate": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 3,
+      "required": ["decision", "risk_acceptance_for_critical_or_high", "unresolved_critical_or_high_count"],
+      "properties": {
+        "decision": { "const": "not-available" },
+        "risk_acceptance_for_critical_or_high": { "const": "forbidden" },
+        "unresolved_critical_or_high_count": { "type": "null" }
+      }
+    },
+    "blockers": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "prefixItems": [
+        { "const": "RC_FREEZE_ABSENT" },
+        { "const": "INDEPENDENT_IDENTITIES_ABSENT" },
+        { "const": "CHECKLIST_UNEXECUTED" }
+      ],
+      "items": false
+    },
+    "claims": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 5,
+      "required": [
+        "campaign_authorized",
+        "cloud_execution_observed",
+        "independent_review_accepted",
+        "production_ready",
+        "release_eligible"
+      ],
+      "properties": {
+        "campaign_authorized": { "const": false },
+        "cloud_execution_observed": { "const": false },
+        "independent_review_accepted": { "const": false },
+        "production_ready": { "const": false },
+        "release_eligible": { "const": false }
+      }
+    }
+  },
+  "$defs": {
+    "check": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 3,
+      "required": ["area", "evidence_binding_sha256", "result"],
+      "properties": {
+        "area": { "type": "string", "minLength": 1, "maxLength": 48, "pattern": "^[a-z0-9-]+$" },
+        "evidence_binding_sha256": { "type": "null" },
+        "result": { "const": "unexecuted" }
+      }
+    },
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 8,
+      "required": [
+        "id",
+        "severity",
+        "owner_principal_id",
+        "disposition",
+        "retest",
+        "evidence_binding_sha256",
+        "title_code",
+        "state"
+      ],
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 32, "pattern": "^[A-Z0-9-]+$" },
+        "severity": { "enum": ["critical", "high", "medium", "low"] },
+        "owner_principal_id": { "type": ["string", "null"], "minLength": 1, "maxLength": 128 },
+        "disposition": { "enum": ["open", "fixed", "false-positive", "accepted-risk"] },
+        "retest": { "enum": ["unexecuted", "pass", "fail", "not-required"] },
+        "evidence_binding_sha256": { "type": ["string", "null"], "pattern": "^[0-9a-f]{64}$" },
+        "title_code": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[A-Z0-9_]+$" },
+        "state": { "enum": ["unresolved", "resolved-evidence-bound", "resolved-metadata-only"] }
+      },
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["disposition", "state", "retest", "evidence_binding_sha256"],
+          "properties": {
+            "disposition": { "const": "open" },
+            "state": { "const": "unresolved" },
+            "retest": { "const": "unexecuted" },
+            "evidence_binding_sha256": { "type": "null" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["disposition", "state", "owner_principal_id", "retest", "evidence_binding_sha256"],
+          "properties": {
+            "disposition": { "enum": ["fixed", "false-positive"] },
+            "state": { "const": "unresolved" },
+            "owner_principal_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "retest": { "const": "unexecuted" },
+            "evidence_binding_sha256": { "type": "null" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["disposition", "state", "owner_principal_id", "retest", "evidence_binding_sha256"],
+          "properties": {
+            "disposition": { "enum": ["fixed", "false-positive"] },
+            "state": { "const": "unresolved" },
+            "owner_principal_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "retest": { "const": "fail" },
+            "evidence_binding_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["disposition", "state", "owner_principal_id", "retest", "evidence_binding_sha256"],
+          "properties": {
+            "disposition": { "enum": ["fixed", "false-positive"] },
+            "state": { "const": "resolved-evidence-bound" },
+            "owner_principal_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "retest": { "const": "pass" },
+            "evidence_binding_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["severity", "disposition", "state", "owner_principal_id", "retest", "evidence_binding_sha256"],
+          "properties": {
+            "severity": { "enum": ["medium", "low"] },
+            "disposition": { "const": "accepted-risk" },
+            "state": { "const": "resolved-metadata-only" },
+            "owner_principal_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "retest": { "const": "not-required" },
+            "evidence_binding_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+          }
+        }
+      ]
+    }
+  }
+}

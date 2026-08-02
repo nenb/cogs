@@ -24,9 +24,21 @@ data:
   workspaceStorageClass: {{ .Values.stage4Preparation.storage.workspaceStorageClass | quote }}
   workspaceSize: {{ .Values.stage4Preparation.storage.workspaceSize | quote }}
   workspaceAccessMode: {{ .Values.stage4Preparation.storage.workspaceAccessMode | quote }}
+  workspaceVolumeMode: {{ .Values.stage4Preparation.storage.workspaceVolumeMode | quote }}
+  workspaceVolumeBindingMode: {{ .Values.stage4Preparation.storage.workspaceVolumeBindingMode | quote }}
+  workspaceReclaimPolicy: {{ .Values.stage4Preparation.storage.workspaceReclaimPolicy | quote }}
+  workspaceRetention: {{ .Values.stage4Preparation.storage.workspaceRetention | quote }}
   sessionStateStorageClass: {{ .Values.stage4Preparation.storage.sessionStateStorageClass | quote }}
   sessionStateSize: {{ .Values.stage4Preparation.storage.sessionStateSize | quote }}
   sessionStateAccessMode: {{ .Values.stage4Preparation.storage.sessionStateAccessMode | quote }}
+  sessionStateVolumeMode: {{ .Values.stage4Preparation.storage.sessionStateVolumeMode | quote }}
+  sessionStateVolumeBindingMode: {{ .Values.stage4Preparation.storage.sessionStateVolumeBindingMode | quote }}
+  sessionStateReclaimPolicy: {{ .Values.stage4Preparation.storage.sessionStateReclaimPolicy | quote }}
+  sessionStateRetention: {{ .Values.stage4Preparation.storage.sessionStateRetention | quote }}
+  sessionStateRetentionSeconds: {{ printf "%.0f" (float64 .Values.stage4Preparation.storage.sessionStateRetentionSeconds) | quote }}
+  storageLaunchContractVersion: "cogs.stage4-storage-launch-contract/v1"
+  workspaceExclusiveWriterLease: "ONE_FENCED_WRITER_EXPIRY_NEVER_AUTHORIZES_TAKEOVER"
+  storageCleanupContract: "AMBIGUITY_PRESERVES_ATTACHMENTS_STATE_AND_LEASE"
   openBaoEndpointReference: {{ .Values.stage4Preparation.openBao.endpoint | quote }}
   openBaoKubernetesAuthMountReference: {{ .Values.stage4Preparation.openBao.kubernetesAuthMount | quote }}
   openBaoKubernetesAuthRoleReference: {{ .Values.stage4Preparation.openBao.kubernetesAuthRole | quote }}
@@ -39,6 +51,17 @@ data:
   proxyCapabilityAudience: {{ .Values.stage4Preparation.proxyIdentity.capabilityAudience | quote }}
   proxyCapabilitySourceBindingRequired: {{ .Values.stage4Preparation.proxyIdentity.sourceBindingRequired | quote }}
   ephemeralProxyCapability: "ABSENT_FUTURE_TRUSTED_LAUNCHER_ONLY"
+  policyContractVersion: "cogs.stage4-policy-contract/v1"
+  policyContractAuthority: "static-only-stage4-policy"
+  policyContractQualification: "pending-exact-eks-cni-runtime"
+  trustedWorkerIdentityContract: "SCOPED_PROJECTED_OPENBAO_TOKEN_EXACT_ROLE_AND_USER_HANDLES_ONLY"
+  sandboxServiceAccountContract: "cogs-sandbox-inert"
+  trustedSandboxServiceAccountsDistinct: "true"
+  sandboxIdentityContract: "INERT_SERVICE_ACCOUNT_NO_TOKEN_RBAC_OPENBAO_OR_CLOUD_IDENTITY_FIELDS"
+  openBaoHandleScopeContract: "EXACT_USERS_CURRENT_USER_ONLY_ORGANIZATIONS_FORBIDDEN"
+  proxyCapabilityContract: "IMMUTABLE_SESSION_INSTANCE_POD_ID_GENERATION_EXPIRY_BOUND_DENY_DRAIN_REPLACE_NO_FALLBACK"
+  otlpPayloadContract: "METADATA_ONLY_BOUNDED_DROP_NON_AUTHORIZING"
+  auditWalFailureContract: "DIGEST_REFERENCES_ONLY_APPEND_AND_SYNC_BEFORE_CREDENTIAL_USE_FAILURE_DENIES_AND_REQUIRES_RECYCLE"
   resourceProfile: {{ .Values.stage4Preparation.resourceProfile | quote }}
   idleSeconds: {{ .Values.stage4Preparation.lifecycle.idleSeconds | quote }}
   hardSeconds: {{ .Values.stage4Preparation.lifecycle.hardSeconds | quote }}
@@ -55,5 +78,6 @@ data:
     image availability, signatures, and runtime identity
     per-session SSH and proxy capability issuance and source binding
     proxy upstream egress, immutable route materialization, and revocation
+    pinned NIC v0.11.0 lacks custom launch-template ID/version and CpuOptions.NestedVirtualization inputs
     EKS launch-template, nested-virtualization, recovery, performance, and cleanup evidence
 {{- end -}}

@@ -49,9 +49,18 @@ interface ValuesFile {
       workspaceStorageClass: string;
       workspaceSize: string;
       workspaceAccessMode: string;
+      workspaceVolumeMode: string;
+      workspaceVolumeBindingMode: string;
+      workspaceReclaimPolicy: string;
+      workspaceRetention: string;
       sessionStateStorageClass: string;
       sessionStateSize: string;
       sessionStateAccessMode: string;
+      sessionStateVolumeMode: string;
+      sessionStateVolumeBindingMode: string;
+      sessionStateReclaimPolicy: string;
+      sessionStateRetention: string;
+      sessionStateRetentionSeconds: number;
     };
     openBao: {
       endpoint: string;
@@ -290,10 +299,10 @@ test("enabled NOTES emit nine warning-bounded, unsafe, unqualified static source
     { ConfigMap: 1, NetworkPolicy: 3, PodTemplate: 2, Service: 1, ServiceAccount: 2 },
   );
   assert.deepEqual(objects.map((object) => object.metadata.name).sort(), [
+    "cogs-sandbox-inert",
     "stage4-cogs-contract",
     "stage4-cogs-default-deny",
     "stage4-cogs-proxy",
-    "stage4-cogs-sandbox",
     "stage4-cogs-sandbox-allow",
     "stage4-cogs-sandbox-template",
     "stage4-cogs-trusted",
@@ -352,8 +361,32 @@ test("immutable configuration and Service expose references and no secret or CA 
   assert.equal(contract.data?.productionReady, "false");
   assert.equal(contract.data?.proxyImage, envoyPin);
   assert.equal(contract.data?.ephemeralProxyCapability, "ABSENT_FUTURE_TRUSTED_LAUNCHER_ONLY");
+  assert.equal(contract.data?.policyContractVersion, "cogs.stage4-policy-contract/v1");
+  assert.equal(contract.data?.policyContractAuthority, "static-only-stage4-policy");
+  assert.equal(contract.data?.policyContractQualification, "pending-exact-eks-cni-runtime");
+  assert.match(contract.data?.trustedWorkerIdentityContract ?? "", /SCOPED_PROJECTED_OPENBAO_TOKEN/u);
+  assert.equal(contract.data?.sandboxServiceAccountContract, "cogs-sandbox-inert");
+  assert.equal(contract.data?.trustedSandboxServiceAccountsDistinct, "true");
+  assert.match(contract.data?.sandboxIdentityContract ?? "", /INERT_SERVICE_ACCOUNT_NO_TOKEN_RBAC_OPENBAO_OR_CLOUD/u);
+  assert.match(contract.data?.openBaoHandleScopeContract ?? "", /CURRENT_USER_ONLY_ORGANIZATIONS_FORBIDDEN/u);
+  assert.match(
+    contract.data?.proxyCapabilityContract ?? "",
+    /SESSION_INSTANCE_POD_ID_GENERATION_EXPIRY_BOUND.*NO_FALLBACK/u,
+  );
+  assert.match(contract.data?.otlpPayloadContract ?? "", /METADATA_ONLY.*NON_AUTHORIZING/u);
+  assert.match(contract.data?.auditWalFailureContract ?? "", /FAILURE_DENIES.*RECYCLE/u);
   assert.equal(contract.data?.publicEgressCaConfigMapReference, "synthetic-public-egress-ca");
-  for (const check of ["RuntimeClass", "KVM", "CNI", "CSI", "OpenBao", "image availability", "per-session", "EKS"]) {
+  for (const check of [
+    "RuntimeClass",
+    "KVM",
+    "CNI",
+    "CSI",
+    "OpenBao",
+    "image availability",
+    "per-session",
+    "pinned NIC v0.11.0 lacks",
+    "EKS",
+  ]) {
     assert.match(contract.data?.unresolvedChecks ?? "", escapePattern(check));
   }
   const service = byName(objects, "stage4-cogs-proxy");
@@ -489,14 +522,19 @@ test("trusted and sandbox PodTemplate source shapes preserve placement, security
   });
   assert.equal(JSON.stringify(trusted.volumes).includes("secret"), false);
 
-  assert.equal(sandbox.serviceAccountName, "stage4-cogs-sandbox");
+  assert.equal(sandbox.serviceAccountName, "cogs-sandbox-inert");
+  assert.notEqual(sandbox.serviceAccountName, trusted.serviceAccountName);
   assert.equal(sandbox.automountServiceAccountToken, false);
   assert.equal(sandbox.enableServiceLinks, false);
   assert.equal(sandbox.activeDeadlineSeconds, 28800);
   assert.equal(sandbox.terminationGracePeriodSeconds, 30);
   assert.equal(sandbox.runtimeClassName, values.runtimeClassName);
   assert.deepEqual(sandbox.nodeSelector, values.placement.sandbox.nodeSelector);
-  assert.equal(sandbox.nodeSelector["cogs.dev/node-domain"], "sandbox-kata");
+  assert.deepEqual(sandbox.nodeSelector, {
+    "cogs.dev/node-domain": "sandbox-kata",
+    "cogs.dev/nested-virtualization": "enabled",
+    "cogs.dev/sandbox-runtime": "kata-qemu-kvm",
+  });
   assert.deepEqual(sandbox.tolerations, [
     { key: "cogs.dev/sandbox", operator: "Equal", value: "kata", effect: "NoSchedule" },
   ]);
@@ -551,12 +589,24 @@ test("trusted and sandbox PodTemplate source shapes preserve placement, security
   const contract = byName(objects, "stage4-cogs-contract");
   assert.equal(contract.data?.workspaceSize, "20Gi");
   assert.equal(contract.data?.workspaceAccessMode, "ReadWriteOncePod");
+  assert.equal(contract.data?.workspaceVolumeMode, "Filesystem");
+  assert.equal(contract.data?.workspaceVolumeBindingMode, "WaitForFirstConsumer");
+  assert.equal(contract.data?.workspaceReclaimPolicy, "Retain");
+  assert.equal(contract.data?.workspaceRetention, "retain-until-explicit-workspace-deletion");
   assert.equal(contract.data?.sessionStateSize, "5Gi");
   assert.equal(contract.data?.sessionStateAccessMode, "ReadWriteOncePod");
+  assert.equal(contract.data?.sessionStateVolumeMode, "Filesystem");
+  assert.equal(contract.data?.sessionStateVolumeBindingMode, "WaitForFirstConsumer");
+  assert.equal(contract.data?.sessionStateReclaimPolicy, "Retain");
+  assert.equal(contract.data?.sessionStateRetention, "retain-30-days-after-session-close");
+  assert.equal(contract.data?.sessionStateRetentionSeconds, "2592000");
+  assert.equal(contract.data?.storageLaunchContractVersion, "cogs.stage4-storage-launch-contract/v1");
+  assert.match(contract.data?.workspaceExclusiveWriterLease ?? "", /ONE_FENCED_WRITER.*NEVER_AUTHORIZES_TAKEOVER/u);
+  assert.match(contract.data?.storageCleanupContract ?? "", /AMBIGUITY_PRESERVES/u);
   assert.equal(contract.data?.idleSeconds, "1800");
   assert.equal(contract.data?.hardSeconds, "28800");
   assert.equal(contract.data?.terminationGraceSeconds, "30");
-  assert.equal(contract.data?.auditWalMaxBytes, "268435456");
+  assert.equal(contract.data?.auditWalMaxBytes, "1048576");
   assert.equal(
     objects.some((object) => object.kind === "PersistentVolumeClaim"),
     false,
@@ -677,6 +727,21 @@ test("enabled values fail closed for missing, unsafe, or extensible inputs", () 
       name: "runc RuntimeClass",
       key: "runtimeClassName",
       mutate: (v) => (v.stage4Preparation.runtimeClassName = "runc"),
+    },
+    {
+      name: "crun RuntimeClass",
+      key: "runtimeClassName",
+      mutate: (v) => (v.stage4Preparation.runtimeClassName = "crun"),
+    },
+    {
+      name: "TCG Kata RuntimeClass",
+      key: "runtimeClassName",
+      mutate: (v) => (v.stage4Preparation.runtimeClassName = "kata-qemu-tcg"),
+    },
+    {
+      name: "arbitrary Kata RuntimeClass",
+      key: "runtimeClassName",
+      mutate: (v) => (v.stage4Preparation.runtimeClassName = "kata-arbitrary"),
     },
     {
       name: "trusted selector",
@@ -911,6 +976,97 @@ test("template validation rejects hostile security inputs with schema validation
   type HostileCase = { name: string; key: string; mutate(values: ValuesFile): void };
   const cases: HostileCase[] = [
     {
+      name: "future chart-values readiness field",
+      key: "ready",
+      mutate: (v) => ((v as unknown as Record<string, unknown>).ready = true),
+    },
+    {
+      name: "crun RuntimeClass substitution",
+      key: "runtimeClassName",
+      mutate: (v) => (v.stage4Preparation.runtimeClassName = "crun"),
+    },
+    {
+      name: "TCG Kata RuntimeClass substitution",
+      key: "runtimeClassName",
+      mutate: (v) => (v.stage4Preparation.runtimeClassName = "kata-qemu-tcg"),
+    },
+    {
+      name: "arbitrary Kata RuntimeClass substitution",
+      key: "runtimeClassName",
+      mutate: (v) => (v.stage4Preparation.runtimeClassName = "kata-arbitrary"),
+    },
+    {
+      name: "future root readiness field",
+      key: "ready",
+      mutate: (v) => ((v.stage4Preparation as unknown as Record<string, unknown>).ready = true),
+    },
+    {
+      name: "misspelled root runtime field",
+      key: "runtimeClasName",
+      mutate: (v) => ((v.stage4Preparation as unknown as Record<string, unknown>).runtimeClasName = "kata-qemu-cogs"),
+    },
+    {
+      name: "future image field",
+      key: "ready",
+      mutate: (v) => ((v.stage4Preparation.images as unknown as Record<string, unknown>).ready = true),
+    },
+    {
+      name: "future placement field",
+      key: "ready",
+      mutate: (v) => ((v.stage4Preparation.placement as unknown as Record<string, unknown>).ready = true),
+    },
+    {
+      name: "future trusted placement field",
+      key: "ready",
+      mutate: (v) => ((v.stage4Preparation.placement.trusted as unknown as Record<string, unknown>).ready = true),
+    },
+    {
+      name: "future sandbox placement field",
+      key: "ready",
+      mutate: (v) => ((v.stage4Preparation.placement.sandbox as unknown as Record<string, unknown>).ready = true),
+    },
+    {
+      name: "future storage field",
+      key: "ready",
+      mutate: (v) => ((v.stage4Preparation.storage as unknown as Record<string, unknown>).ready = true),
+    },
+    {
+      name: "future OpenBao field",
+      key: "ready",
+      mutate: (v) => ((v.stage4Preparation.openBao as unknown as Record<string, unknown>).ready = true),
+    },
+    {
+      name: "future OpenBao peer field",
+      key: "ready",
+      mutate: (v) => ((v.stage4Preparation.openBao.peer as unknown as Record<string, unknown>).ready = true),
+    },
+    {
+      name: "future OTLP field",
+      key: "ready",
+      mutate: (v) => ((v.stage4Preparation.otlp as unknown as Record<string, unknown>).ready = true),
+    },
+    {
+      name: "future OTLP peer field",
+      key: "ready",
+      mutate: (v) => ((v.stage4Preparation.otlp.peer as unknown as Record<string, unknown>).ready = true),
+    },
+    {
+      name: "future proxy identity field",
+      key: "ready",
+      mutate: (v) => ((v.stage4Preparation.proxyIdentity as unknown as Record<string, unknown>).ready = true),
+    },
+    {
+      name: "misspelled proxy identity field",
+      key: "sourceBindingRequire",
+      mutate: (v) =>
+        ((v.stage4Preparation.proxyIdentity as unknown as Record<string, unknown>).sourceBindingRequire = true),
+    },
+    {
+      name: "future lifecycle field",
+      key: "ready",
+      mutate: (v) => ((v.stage4Preparation.lifecycle as unknown as Record<string, unknown>).ready = true),
+    },
+    {
       name: "legacy zero resource quantities",
       key: "resources",
       mutate: (v) =>
@@ -993,6 +1149,51 @@ test("template validation rejects hostile security inputs with schema validation
       name: "session access mode",
       key: "session-state",
       mutate: (v) => (v.stage4Preparation.storage.sessionStateAccessMode = "ReadWriteMany"),
+    },
+    {
+      name: "workspace volume mode",
+      key: "workspace",
+      mutate: (v) => (v.stage4Preparation.storage.workspaceVolumeMode = "Block"),
+    },
+    {
+      name: "workspace binding mode",
+      key: "workspace",
+      mutate: (v) => (v.stage4Preparation.storage.workspaceVolumeBindingMode = "Immediate"),
+    },
+    {
+      name: "workspace reclaim policy",
+      key: "workspace",
+      mutate: (v) => (v.stage4Preparation.storage.workspaceReclaimPolicy = "Delete"),
+    },
+    {
+      name: "workspace retention",
+      key: "workspace",
+      mutate: (v) => (v.stage4Preparation.storage.workspaceRetention = "delete-on-session-end"),
+    },
+    {
+      name: "session volume mode",
+      key: "session-state",
+      mutate: (v) => (v.stage4Preparation.storage.sessionStateVolumeMode = "Block"),
+    },
+    {
+      name: "session binding mode",
+      key: "session-state",
+      mutate: (v) => (v.stage4Preparation.storage.sessionStateVolumeBindingMode = "Immediate"),
+    },
+    {
+      name: "session reclaim policy",
+      key: "session-state",
+      mutate: (v) => (v.stage4Preparation.storage.sessionStateReclaimPolicy = "Delete"),
+    },
+    {
+      name: "session retention",
+      key: "session-state",
+      mutate: (v) => (v.stage4Preparation.storage.sessionStateRetention = "unspecified"),
+    },
+    {
+      name: "session retention seconds",
+      key: "sessionStateRetentionSeconds",
+      mutate: (v) => (v.stage4Preparation.storage.sessionStateRetentionSeconds = 0),
     },
     {
       name: "idle lifetime",

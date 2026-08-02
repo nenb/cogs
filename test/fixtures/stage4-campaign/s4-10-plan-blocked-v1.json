@@ -1,0 +1,144 @@
+{
+  "version": "cogs.stage4-campaign-plan/v1",
+  "authority": "local-static-campaign-plan-model",
+  "campaign_issue": "S4-10/#361",
+  "execution_authorized": false,
+  "attempt": {
+    "number": 1,
+    "maximum_attempts": 1,
+    "retry": "prohibited",
+    "approval_state": "absent",
+    "attempt_id_sha256": "12a82f1ea5e519238dd6dfe5638366b5707bb0b24795acdde0d70b27316dc19d"
+  },
+  "bindings": {
+    "source_revision_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "source_inventory_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+    "offline_readiness_package_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+    "approval_draft_sha256": "634dab2a688a3b7b569f60f5fe749c6e5199c7494297d5575937e50389a32e7c",
+    "campaign_profile_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+    "artifact_manifest_sha256": "4444444444444444444444444444444444444444444444444444444444444444",
+    "artifact_set_root_sha256": "697650137320b87f8595b470ea0563f198cf73933e7348ac751ece6eec5130fd"
+  },
+  "qualification_steps": [
+    {
+      "id": "performance.startup-p50-p95-p99",
+      "state": "unexecuted",
+      "evidence_class": "future-digest-only-claim"
+    },
+    {
+      "id": "performance.first-tool",
+      "state": "unexecuted",
+      "evidence_class": "future-digest-only-claim"
+    },
+    {
+      "id": "performance.storage-attach",
+      "state": "unexecuted",
+      "evidence_class": "future-digest-only-claim"
+    },
+    {
+      "id": "performance.cold-pulls-and-scale",
+      "state": "unexecuted",
+      "evidence_class": "future-digest-only-claim"
+    },
+    {
+      "id": "performance.idle-overhead",
+      "state": "unexecuted",
+      "evidence_class": "future-digest-only-claim"
+    },
+    {
+      "id": "performance.git-and-build",
+      "state": "unexecuted",
+      "evidence_class": "future-digest-only-claim"
+    },
+    {
+      "id": "performance.proxy-overhead",
+      "state": "unexecuted",
+      "evidence_class": "future-digest-only-claim"
+    },
+    {
+      "id": "performance.recycle-duration",
+      "state": "unexecuted",
+      "evidence_class": "future-digest-only-claim"
+    },
+    {
+      "id": "performance.startup-under-30s-or-reviewed-exception",
+      "state": "unexecuted",
+      "evidence_class": "future-digest-only-claim"
+    },
+    {
+      "id": "recovery.worker-failure",
+      "state": "unexecuted",
+      "evidence_class": "future-digest-only-claim"
+    },
+    {
+      "id": "recovery.sandbox-failure",
+      "state": "unexecuted",
+      "evidence_class": "future-digest-only-claim"
+    },
+    {
+      "id": "recovery.proxy-failure",
+      "state": "unexecuted",
+      "evidence_class": "future-digest-only-claim"
+    },
+    {
+      "id": "recovery.node-failure",
+      "state": "unexecuted",
+      "evidence_class": "future-digest-only-claim"
+    },
+    {
+      "id": "recovery.openbao-failure",
+      "state": "unexecuted",
+      "evidence_class": "future-digest-only-claim"
+    },
+    {
+      "id": "recovery.otlp-failure",
+      "state": "unexecuted",
+      "evidence_class": "future-digest-only-claim"
+    },
+    {
+      "id": "recovery.storage-failure",
+      "state": "unexecuted",
+      "evidence_class": "future-digest-only-claim"
+    },
+    {
+      "id": "recovery.audit-wal-failure",
+      "state": "unexecuted",
+      "evidence_class": "future-digest-only-claim"
+    },
+    {
+      "id": "recovery.policy-failure",
+      "state": "unexecuted",
+      "evidence_class": "future-digest-only-claim"
+    },
+    {
+      "id": "recovery.recycle-no-prompt-replay",
+      "state": "unexecuted",
+      "evidence_class": "future-digest-only-claim"
+    },
+    {
+      "id": "cost.capacity-observed-no-support-extrapolation",
+      "state": "unexecuted",
+      "evidence_class": "future-digest-only-claim"
+    }
+  ],
+  "terminal_order": ["stop", "destroy", "independent-inventory"],
+  "evidence_policy": {
+    "metadata_only": true,
+    "digest_only": true,
+    "uncertainty_is_sticky": true,
+    "failure_skips_to_stop": true,
+    "inventory_must_be_independent": true,
+    "max_events": 23
+  },
+  "prohibited_surfaces": [
+    "executor",
+    "provider",
+    "opentofu",
+    "kubernetes-api",
+    "kubectl",
+    "helm-install-apply",
+    "external-model",
+    "network-discovery"
+  ],
+  "campaign_id_sha256": "860f79600047dd259df9988dc2e843564fc8a63459d72ea871dc2bc0f4c31fe3"
+}

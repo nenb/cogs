@@ -1,0 +1,2488 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.dev/schemas/stage5-api-key-release-matrix-draft-v1.json",
+  "title": "Cogs provisional API-key-only Stage 5 release acceptance matrix draft",
+  "description": "A bounded local/static requirements inventory only; never Stage 4 or Stage 5 evidence or release authority.",
+  "type": "object",
+  "additionalProperties": false,
+  "maxProperties": 23,
+  "required": [
+    "version",
+    "authority",
+    "issue",
+    "scope",
+    "draft",
+    "provisional",
+    "qualified",
+    "campaign_authorized",
+    "cloud_execution_observed",
+    "independent_review_observed",
+    "release_evidence_observed",
+    "matrix_finalized",
+    "release_eligible",
+    "go_no_go",
+    "stage4_dependency",
+    "subscription_oauth",
+    "release_candidate_binding",
+    "principals",
+    "separation_constraints",
+    "support_claims",
+    "criterion_mappings"
+  ],
+  "properties": {
+    "version": {
+      "const": "cogs.stage5-api-key-release-matrix-draft/v1"
+    },
+    "authority": {
+      "const": "provisional-local-static-requirements-only"
+    },
+    "issue": {
+      "const": 363
+    },
+    "scope": {
+      "const": "api-key-only"
+    },
+    "draft": {
+      "const": true
+    },
+    "provisional": {
+      "const": true
+    },
+    "qualified": {
+      "const": false
+    },
+    "campaign_authorized": {
+      "const": false
+    },
+    "cloud_execution_observed": {
+      "const": false
+    },
+    "independent_review_observed": {
+      "const": false
+    },
+    "release_evidence_observed": {
+      "const": false
+    },
+    "matrix_finalized": {
+      "const": false
+    },
+    "release_eligible": {
+      "const": false
+    },
+    "go_no_go": {
+      "const": "not-available"
+    },
+    "stage4_dependency": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 4,
+      "required": ["gate", "state", "stage4_exit_satisfied", "evidence_accepted"],
+      "properties": {
+        "gate": {
+          "const": "S4-11"
+        },
+        "state": {
+          "const": "required-not-observed-by-this-draft"
+        },
+        "stage4_exit_satisfied": {
+          "const": false
+        },
+        "evidence_accepted": {
+          "const": false
+        }
+      }
+    },
+    "subscription_oauth": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 5,
+      "required": ["status", "advertised", "release_gate", "deferred_issue", "worker_refresh_tokens"],
+      "properties": {
+        "status": {
+          "const": "disabled-unadvertised"
+        },
+        "advertised": {
+          "const": false
+        },
+        "release_gate": {
+          "const": false
+        },
+        "deferred_issue": {
+          "const": 13
+        },
+        "worker_refresh_tokens": {
+          "const": "forbidden"
+        }
+      }
+    },
+    "release_candidate_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 4,
+      "required": ["source_revision", "artifact_root_sha256", "binding_sha256", "state"],
+      "properties": {
+        "source_revision": {
+          "type": "null"
+        },
+        "artifact_root_sha256": {
+          "type": "null"
+        },
+        "binding_sha256": {
+          "type": "null"
+        },
+        "state": {
+          "const": "not-present-blocking"
+        }
+      }
+    },
+    "principals": {
+      "type": "array",
+      "minItems": 9,
+      "maxItems": 9,
+      "prefixItems": [
+        {
+          "$ref": "#/$defs/unboundPrincipal",
+          "type": "object",
+          "properties": {
+            "role": {
+              "const": "matrix-author"
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/unboundPrincipal",
+          "type": "object",
+          "properties": {
+            "role": {
+              "const": "release-engineer"
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/unboundPrincipal",
+          "type": "object",
+          "properties": {
+            "role": {
+              "const": "evidence-producer"
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/unboundPrincipal",
+          "type": "object",
+          "properties": {
+            "role": {
+              "const": "independent-security-reviewer"
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/unboundPrincipal",
+          "type": "object",
+          "properties": {
+            "role": {
+              "const": "campaign-operator"
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/unboundPrincipal",
+          "type": "object",
+          "properties": {
+            "role": {
+              "const": "campaign-approver"
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/unboundPrincipal",
+          "type": "object",
+          "properties": {
+            "role": {
+              "const": "budget-approver"
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/unboundPrincipal",
+          "type": "object",
+          "properties": {
+            "role": {
+              "const": "zero-inventory-observer"
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/unboundPrincipal",
+          "type": "object",
+          "properties": {
+            "role": {
+              "const": "staff-release-decider"
+            }
+          }
+        }
+      ],
+      "items": false
+    },
+    "separation_constraints": {
+      "type": "array",
+      "minItems": 8,
+      "maxItems": 8,
+      "prefixItems": [
+        {
+          "$ref": "#/$defs/separation",
+          "type": "object",
+          "properties": {
+            "left_role": {
+              "const": "independent-security-reviewer"
+            },
+            "right_role": {
+              "const": "matrix-author"
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/separation",
+          "type": "object",
+          "properties": {
+            "left_role": {
+              "const": "independent-security-reviewer"
+            },
+            "right_role": {
+              "const": "evidence-producer"
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/separation",
+          "type": "object",
+          "properties": {
+            "left_role": {
+              "const": "independent-security-reviewer"
+            },
+            "right_role": {
+              "const": "campaign-operator"
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/separation",
+          "type": "object",
+          "properties": {
+            "left_role": {
+              "const": "independent-security-reviewer"
+            },
+            "right_role": {
+              "const": "campaign-approver"
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/separation",
+          "type": "object",
+          "properties": {
+            "left_role": {
+              "const": "independent-security-reviewer"
+            },
+            "right_role": {
+              "const": "zero-inventory-observer"
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/separation",
+          "type": "object",
+          "properties": {
+            "left_role": {
+              "const": "campaign-operator"
+            },
+            "right_role": {
+              "const": "campaign-approver"
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/separation",
+          "type": "object",
+          "properties": {
+            "left_role": {
+              "const": "zero-inventory-observer"
+            },
+            "right_role": {
+              "const": "campaign-operator"
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/separation",
+          "type": "object",
+          "properties": {
+            "left_role": {
+              "const": "zero-inventory-observer"
+            },
+            "right_role": {
+              "const": "campaign-approver"
+            }
+          }
+        }
+      ],
+      "items": false
+    },
+    "support_claims": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 4,
+      "required": ["posture", "api_key_providers", "platform_profiles", "unsupported_capabilities"],
+      "properties": {
+        "posture": {
+          "type": "object",
+          "additionalProperties": false,
+          "maxProperties": 4,
+          "required": ["production_ready", "general_availability", "compliance_certified", "advertised_release"],
+          "properties": {
+            "production_ready": {
+              "const": false
+            },
+            "general_availability": {
+              "const": false
+            },
+            "compliance_certified": {
+              "const": false
+            },
+            "advertised_release": {
+              "const": false
+            }
+          }
+        },
+        "api_key_providers": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "prefixItems": [
+            {
+              "$ref": "#/$defs/providerClaim",
+              "type": "object",
+              "properties": {
+                "provider": {
+                  "const": "anthropic"
+                }
+              }
+            },
+            {
+              "$ref": "#/$defs/providerClaim",
+              "type": "object",
+              "properties": {
+                "provider": {
+                  "const": "openai"
+                }
+              }
+            },
+            {
+              "$ref": "#/$defs/providerClaim",
+              "type": "object",
+              "properties": {
+                "provider": {
+                  "const": "openrouter"
+                }
+              }
+            }
+          ],
+          "items": false
+        },
+        "platform_profiles": {
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "prefixItems": [
+            {
+              "$ref": "#/$defs/platformClaim",
+              "type": "object",
+              "properties": {
+                "profile": {
+                  "const": "aws-eks-kata"
+                },
+                "status": {
+                  "const": "pending-s4-s5-evidence-unadvertised"
+                }
+              }
+            },
+            {
+              "$ref": "#/$defs/platformClaim",
+              "type": "object",
+              "properties": {
+                "profile": {
+                  "const": "linux-kvm"
+                },
+                "status": {
+                  "const": "authoritative-local-only-unadvertised"
+                }
+              }
+            },
+            {
+              "$ref": "#/$defs/platformClaim",
+              "type": "object",
+              "properties": {
+                "profile": {
+                  "const": "insecure-container"
+                },
+                "status": {
+                  "const": "development-only-unadvertised"
+                }
+              }
+            },
+            {
+              "$ref": "#/$defs/platformClaim",
+              "type": "object",
+              "properties": {
+                "profile": {
+                  "const": "macos-vm-dev"
+                },
+                "status": {
+                  "const": "development-only-unadvertised"
+                }
+              }
+            }
+          ],
+          "items": false
+        },
+        "unsupported_capabilities": {
+          "type": "array",
+          "minItems": 14,
+          "maxItems": 14,
+          "prefixItems": [
+            {
+              "$ref": "#/$defs/unsupportedClaim",
+              "type": "object",
+              "properties": {
+                "capability": {
+                  "const": "subscription-oauth"
+                },
+                "reason_code": {
+                  "const": "deferred-issue-13"
+                }
+              }
+            },
+            {
+              "$ref": "#/$defs/unsupportedClaim",
+              "type": "object",
+              "properties": {
+                "capability": {
+                  "const": "production-daemon"
+                }
+              }
+            },
+            {
+              "$ref": "#/$defs/unsupportedClaim",
+              "type": "object",
+              "properties": {
+                "capability": {
+                  "const": "user-ingress"
+                }
+              }
+            },
+            {
+              "$ref": "#/$defs/unsupportedClaim",
+              "type": "object",
+              "properties": {
+                "capability": {
+                  "const": "session-sanitizer"
+                }
+              }
+            },
+            {
+              "$ref": "#/$defs/unsupportedClaim",
+              "type": "object",
+              "properties": {
+                "capability": {
+                  "const": "apps"
+                }
+              }
+            },
+            {
+              "$ref": "#/$defs/unsupportedClaim",
+              "type": "object",
+              "properties": {
+                "capability": {
+                  "const": "indexing-vector-search"
+                }
+              }
+            },
+            {
+              "$ref": "#/$defs/unsupportedClaim",
+              "type": "object",
+              "properties": {
+                "capability": {
+                  "const": "gcp-production"
+                },
+                "reason_code": {
+                  "const": "other-cloud-not-validated"
+                }
+              }
+            },
+            {
+              "$ref": "#/$defs/unsupportedClaim",
+              "type": "object",
+              "properties": {
+                "capability": {
+                  "const": "azure-production"
+                },
+                "reason_code": {
+                  "const": "other-cloud-not-validated"
+                }
+              }
+            },
+            {
+              "$ref": "#/$defs/unsupportedClaim",
+              "type": "object",
+              "properties": {
+                "capability": {
+                  "const": "hetzner-production"
+                },
+                "reason_code": {
+                  "const": "other-cloud-not-validated"
+                }
+              }
+            },
+            {
+              "$ref": "#/$defs/unsupportedClaim",
+              "type": "object",
+              "properties": {
+                "capability": {
+                  "const": "other-cloud-production"
+                },
+                "reason_code": {
+                  "const": "other-cloud-not-validated"
+                }
+              }
+            },
+            {
+              "$ref": "#/$defs/unsupportedClaim",
+              "type": "object",
+              "properties": {
+                "capability": {
+                  "const": "general-availability"
+                },
+                "reason_code": {
+                  "const": "release-not-established"
+                }
+              }
+            },
+            {
+              "$ref": "#/$defs/unsupportedClaim",
+              "type": "object",
+              "properties": {
+                "capability": {
+                  "const": "compliance-certification"
+                },
+                "reason_code": {
+                  "const": "compliance-not-claimed"
+                }
+              }
+            },
+            {
+              "$ref": "#/$defs/unsupportedClaim",
+              "type": "object",
+              "properties": {
+                "capability": {
+                  "const": "grpc-credential-injection"
+                }
+              }
+            },
+            {
+              "$ref": "#/$defs/unsupportedClaim",
+              "type": "object",
+              "properties": {
+                "capability": {
+                  "const": "non-http-egress"
+                }
+              }
+            }
+          ],
+          "items": false
+        }
+      }
+    },
+    "criterion_mappings": {
+      "type": "array",
+      "minItems": 35,
+      "maxItems": 35,
+      "prefixItems": [
+        {
+          "$ref": "#/$defs/criterionMapping",
+          "type": "object",
+          "properties": {
+            "id": {
+              "const": "DESIGN-24.01"
+            },
+            "source_document": {
+              "const": "DESIGN.md"
+            },
+            "source_section": {
+              "const": "24"
+            },
+            "source_ordinal": {
+              "const": 1
+            },
+            "source_locator": {
+              "const": "DESIGN.md#24.1"
+            },
+            "source_text_sha256": {
+              "const": "5e37e6e766300b80d8593254199bfa706fadc00366dfd4062cf60c67e6dd8d76"
+            },
+            "accountable_owner_role": {
+              "const": "release-engineer"
+            },
+            "environment_profile": {
+              "const": "local-static"
+            },
+            "evidence_lane": {
+              "const": "local-test"
+            },
+            "evidence_contract": {
+              "const": "future-local-test-reference-v1"
+            },
+            "dependencies": {
+              "const": ["S4-11", "release-candidate-binding"]
+            },
+            "blocker": {
+              "const": "release-candidate-binding-not-present"
+            },
+            "applicability": {
+              "const": "mandatory-api-key-release"
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/criterionMapping",
+          "type": "object",
+          "properties": {
+            "id": {
+              "const": "DESIGN-24.02"
+            },
+            "source_document": {
+              "const": "DESIGN.md"
+            },
+            "source_section": {
+              "const": "24"
+            },
+            "source_ordinal": {
+              "const": 2
+            },
+            "source_locator": {
+              "const": "DESIGN.md#24.2"
+            },
+            "source_text_sha256": {
+              "const": "ef56ad92cca734907faa373d98508b5cbc3f7711337e2c9ddf2a0e8019a56d15"
+            },
+            "accountable_owner_role": {
+              "const": "release-engineer"
+            },
+            "environment_profile": {
+              "const": "local-static"
+            },
+            "evidence_lane": {
+              "const": "local-test"
+            },
+            "evidence_contract": {
+              "const": "future-local-test-reference-v1"
+            },
+            "dependencies": {
+              "const": ["S4-11", "release-candidate-binding"]
+            },
+            "blocker": {
+              "const": "release-candidate-binding-not-present"
+            },
+            "applicability": {
+              "const": "mandatory-api-key-release"
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/criterionMapping",
+          "type": "object",
+          "properties": {
+            "id": {
+              "const": "DESIGN-24.03"
+            },
+            "source_document": {
+              "const": "DESIGN.md"
+            },
+            "source_section": {
+              "const": "24"
+            },
+            "source_ordinal": {
+              "const": 3
+            },
+            "source_locator": {
+              "const": "DESIGN.md#24.3"
+            },
+            "source_text_sha256": {
+              "const": "5a3dddb3c406fa3fa7fbb286eceae22dba2b05088e46917bc8b125e4791387e9"
+            },
+            "accountable_owner_role": {
+              "const": "release-engineer"
+            },
+            "environment_profile": {
+              "const": "linux-kvm"
+            },
+            "evidence_lane": {
+              "const": "local-test"
+            },
+            "evidence_contract": {
+              "const": "future-local-test-reference-v1"
+            },
+            "dependencies": {
+              "const": ["S4-11", "release-candidate-binding"]
+            },
+            "blocker": {
+              "const": "release-candidate-binding-not-present"
+            },
+            "applicability": {
+              "const": "mandatory-api-key-release"
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/criterionMapping",
+          "type": "object",
+          "properties": {
+            "id": {
+              "const": "DESIGN-24.04"
+            },
+            "source_document": {
+              "const": "DESIGN.md"
+            },
+            "source_section": {
+              "const": "24"
+            },
+            "source_ordinal": {
+              "const": 4
+            },
+            "source_locator": {
+              "const": "DESIGN.md#24.4"
+            },
+            "source_text_sha256": {
+              "const": "118bf157e3361910b4021c28c4cf891d63ef7a8ba192fe8356f95d8d1af406d4"
+            },
+            "accountable_owner_role": {
+              "const": "campaign-operator"
+            },
+            "environment_profile": {
+              "const": "eks-kata-release-candidate"
+            },
+            "evidence_lane": {
+              "const": "separately-approved-campaign"
+            },
+            "evidence_contract": {
+              "const": "future-eks-conformance-reference-v1"
+            },
+            "dependencies": {
+              "const": ["S4-11", "release-candidate-binding", "campaign-approval", "real-dependencies"]
+            },
+            "blocker": {
+              "const": "s4-11-not-accepted"
+            },
+            "applicability": {
+              "const": "mandatory-api-key-release"
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/criterionMapping",
+          "type": "object",
+          "properties": {
+            "id": {
+              "const": "DESIGN-24.05"
+            },
+            "source_document": {
+              "const": "DESIGN.md"
+            },
+            "source_section": {
+              "const": "24"
+            },
+            "source_ordinal": {
+              "const": 5
+            },
+            "source_locator": {
+              "const": "DESIGN.md#24.5"
+            },
+            "source_text_sha256": {
+              "const": "745c9bfd7d706350025407655ec109ff0507d214d59366778114fc5668689e3f"
+            },
+            "accountable_owner_role": {
+              "const": "campaign-operator"
+            },
+            "environment_profile": {
+              "const": "eks-kata-release-candidate"
+            },
+            "evidence_lane": {
+              "const": "separately-approved-campaign"
+            },
+            "evidence_contract": {
+              "const": "future-eks-conformance-reference-v1"
+            },
+            "dependencies": {
+              "const": ["S4-11", "release-candidate-binding", "campaign-approval", "real-dependencies"]
+            },
+            "blocker": {
+              "const": "s4-11-not-accepted"
+            },
+            "applicability": {
+              "const": "mandatory-api-key-release"
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/criterionMapping",
+          "type": "object",
+          "properties": {
+            "id": {
+              "const": "DESIGN-24.06"
+            },
+            "source_document": {
+              "const": "DESIGN.md"
+            },
+            "source_section": {
+              "const": "24"
+            },
+            "source_ordinal": {
+              "const": 6
+            },
+            "source_locator": {
+              "const": "DESIGN.md#24.6"
+            },
+            "source_text_sha256": {
+              "const": "0f615a60d6f607f474a5c11b2c0218026f72665a756b2b4ee161bde8f7c4f8f4"
+            },
+            "accountable_owner_role": {
+              "const": "campaign-operator"
+            },
+            "environment_profile": {
+              "const": "eks-kata-release-candidate"
+            },
+            "evidence_lane": {
+              "const": "separately-approved-campaign"
+            },
+            "evidence_contract": {
+              "const": "future-eks-conformance-reference-v1"
+            },
+            "dependencies": {
+              "const": ["S4-11", "release-candidate-binding", "campaign-approval", "real-dependencies"]
+            },
+            "blocker": {
+              "const": "s4-11-not-accepted"
+            },
+            "applicability": {
+              "const": "mandatory-api-key-release"
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/criterionMapping",
+          "type": "object",
+          "properties": {
+            "id": {
+              "const": "DESIGN-24.07"
+            },
+            "source_document": {
+              "const": "DESIGN.md"
+            },
+            "source_section": {
+              "const": "24"
+            },
+            "source_ordinal": {
+              "const": 7
+            },
+            "source_locator": {
+              "const": "DESIGN.md#24.7"
+            },
+            "source_text_sha256": {
+              "const": "0a151572b5a5c230ae100b0c81c05a266560e6105a92d88cab81c101474d92be"
+            },
+            "accountable_owner_role": {
+              "const": "campaign-operator"
+            },
+            "environment_profile": {
+              "const": "eks-kata-release-candidate"
+            },
+            "evidence_lane": {
+              "const": "separately-approved-campaign"
+            },
+            "evidence_contract": {
+              "const": "future-eks-conformance-reference-v1"
+            },
+            "dependencies": {
+              "const": ["S4-11", "release-candidate-binding", "campaign-approval", "real-dependencies"]
+            },
+            "blocker": {
+              "const": "s4-11-not-accepted"
+            },
+            "applicability": {
+              "const": "mandatory-api-key-release"
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/criterionMapping",
+          "type": "object",
+          "properties": {
+            "id": {
+              "const": "DESIGN-24.08"
+            },
+            "source_document": {
+              "const": "DESIGN.md"
+            },
+            "source_section": {
+              "const": "24"
+            },
+            "source_ordinal": {
+              "const": 8
+            },
+            "source_locator": {
+              "const": "DESIGN.md#24.8"
+            },
+            "source_text_sha256": {
+              "const": "6896c63d9e05efd57e2514a2353eff1f725d5ef2f34c5a210b885c48f3bf0736"
+            },
+            "accountable_owner_role": {
+              "const": "campaign-operator"
+            },
+            "environment_profile": {
+              "const": "eks-kata-release-candidate"
+            },
+            "evidence_lane": {
+              "const": "separately-approved-campaign"
+            },
+            "evidence_contract": {
+              "const": "future-eks-conformance-reference-v1"
+            },
+            "dependencies": {
+              "const": ["S4-11", "release-candidate-binding", "campaign-approval", "real-dependencies"]
+            },
+            "blocker": {
+              "const": "s4-11-not-accepted"
+            },
+            "applicability": {
+              "const": "mandatory-api-key-release"
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/criterionMapping",
+          "type": "object",
+          "properties": {
+            "id": {
+              "const": "DESIGN-24.09"
+            },
+            "source_document": {
+              "const": "DESIGN.md"
+            },
+            "source_section": {
+              "const": "24"
+            },
+            "source_ordinal": {
+              "const": 9
+            },
+            "source_locator": {
+              "const": "DESIGN.md#24.9"
+            },
+            "source_text_sha256": {
+              "const": "b82b172a315be5b121c8f027b27fe046efc101c03b2d78b49bc6df9da1882cea"
+            },
+            "accountable_owner_role": {
+              "const": "campaign-operator"
+            },
+            "environment_profile": {
+              "const": "eks-kata-release-candidate"
+            },
+            "evidence_lane": {
+              "const": "separately-approved-campaign"
+            },
+            "evidence_contract": {
+              "const": "future-eks-conformance-reference-v1"
+            },
+            "dependencies": {
+              "const": ["S4-11", "release-candidate-binding", "campaign-approval", "real-dependencies"]
+            },
+            "blocker": {
+              "const": "s4-11-not-accepted"
+            },
+            "applicability": {
+              "const": "mandatory-api-key-release"
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/criterionMapping",
+          "type": "object",
+          "properties": {
+            "id": {
+              "const": "DESIGN-24.10"
+            },
+            "source_document": {
+              "const": "DESIGN.md"
+            },
+            "source_section": {
+              "const": "24"
+            },
+            "source_ordinal": {
+              "const": 10
+            },
+            "source_locator": {
+              "const": "DESIGN.md#24.10"
+            },
+            "source_text_sha256": {
+              "const": "dc7ec3603bc36b231f31a68573274ead359965aaf778cf49140b56ea96a50ecb"
+            },
+            "accountable_owner_role": {
+              "const": "campaign-operator"
+            },
+            "environment_profile": {
+              "const": "eks-kata-release-candidate"
+            },
+            "evidence_lane": {
+              "const": "separately-approved-campaign"
+            },
+            "evidence_contract": {
+              "const": "future-eks-conformance-reference-v1"
+            },
+            "dependencies": {
+              "const": ["S4-11", "release-candidate-binding", "campaign-approval", "real-dependencies"]
+            },
+            "blocker": {
+              "const": "s4-11-not-accepted"
+            },
+            "applicability": {
+              "const": "mandatory-api-key-release"
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/criterionMapping",
+          "type": "object",
+          "properties": {
+            "id": {
+              "const": "DESIGN-24.11"
+            },
+            "source_document": {
+              "const": "DESIGN.md"
+            },
+            "source_section": {
+              "const": "24"
+            },
+            "source_ordinal": {
+              "const": 11
+            },
+            "source_locator": {
+              "const": "DESIGN.md#24.11"
+            },
+            "source_text_sha256": {
+              "const": "9915715b4f1657557f00e7044d97cdd4c3466bf96fbca4915c4697066820d383"
+            },
+            "accountable_owner_role": {
+              "const": "campaign-operator"
+            },
+            "environment_profile": {
+              "const": "eks-kata-release-candidate"
+            },
+            "evidence_lane": {
+              "const": "separately-approved-campaign"
+            },
+            "evidence_contract": {
+              "const": "future-eks-conformance-reference-v1"
+            },
+            "dependencies": {
+              "const": ["S4-11", "release-candidate-binding", "campaign-approval", "real-dependencies"]
+            },
+            "blocker": {
+              "const": "s4-11-not-accepted"
+            },
+            "applicability": {
+              "const": "mandatory-api-key-release"
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/criterionMapping",
+          "type": "object",
+          "properties": {
+            "id": {
+              "const": "DESIGN-24.12"
+            },
+            "source_document": {
+              "const": "DESIGN.md"
+            },
+            "source_section": {
+              "const": "24"
+            },
+            "source_ordinal": {
+              "const": 12
+            },
+            "source_locator": {
+              "const": "DESIGN.md#24.12"
+            },
+            "source_text_sha256": {
+              "const": "7f58fa4ae0543f5096350e04d60acce174a1a2227bff5c30064312fc32b2691a"
+            },
+            "accountable_owner_role": {
+              "const": "campaign-operator"
+            },
+            "environment_profile": {
+              "const": "eks-kata-release-candidate"
+            },
+            "evidence_lane": {
+              "const": "separately-approved-campaign"
+            },
+            "evidence_contract": {
+              "const": "future-eks-conformance-reference-v1"
+            },
+            "dependencies": {
+              "const": ["S4-11", "release-candidate-binding", "campaign-approval", "real-dependencies"]
+            },
+            "blocker": {
+              "const": "s4-11-not-accepted"
+            },
+            "applicability": {
+              "const": "mandatory-api-key-release"
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/criterionMapping",
+          "type": "object",
+          "properties": {
+            "id": {
+              "const": "DESIGN-24.13"
+            },
+            "source_document": {
+              "const": "DESIGN.md"
+            },
+            "source_section": {
+              "const": "24"
+            },
+            "source_ordinal": {
+              "const": 13
+            },
+            "source_locator": {
+              "const": "DESIGN.md#24.13"
+            },
+            "source_text_sha256": {
+              "const": "cf865bb44097bbd9d822a0de1ac132a6f36bd6ff4861e1fce65d5a9bbb31c67d"
+            },
+            "accountable_owner_role": {
+              "const": "release-engineer"
+            },
+            "environment_profile": {
+              "const": "local-static"
+            },
+            "evidence_lane": {
+              "const": "local-test"
+            },
+            "evidence_contract": {
+              "const": "future-local-test-reference-v1"
+            },
+            "dependencies": {
+              "const": ["S4-11", "release-candidate-binding"]
+            },
+            "blocker": {
+              "const": "release-candidate-binding-not-present"
+            },
+            "applicability": {
+              "const": "mandatory-api-key-release"
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/criterionMapping",
+          "type": "object",
+          "properties": {
+            "id": {
+              "const": "DESIGN-24.14"
+            },
+            "source_document": {
+              "const": "DESIGN.md"
+            },
+            "source_section": {
+              "const": "24"
+            },
+            "source_ordinal": {
+              "const": 14
+            },
+            "source_locator": {
+              "const": "DESIGN.md#24.14"
+            },
+            "source_text_sha256": {
+              "const": "4c0bf5b2bbf34abbae162f5ac792ed22567e4fc222777640fbaf6e5ff3e11e22"
+            },
+            "accountable_owner_role": {
+              "const": "release-engineer"
+            },
+            "environment_profile": {
+              "const": "local-static"
+            },
+            "evidence_lane": {
+              "const": "local-test"
+            },
+            "evidence_contract": {
+              "const": "future-local-test-reference-v1"
+            },
+            "dependencies": {
+              "const": ["S4-11", "release-candidate-binding", "oauth-disabled-branch"]
+            },
+            "blocker": {
+              "const": "release-candidate-binding-not-present"
+            },
+            "applicability": {
+              "const": "mandatory-api-key-disabled-oauth-branch"
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/criterionMapping",
+          "type": "object",
+          "properties": {
+            "id": {
+              "const": "DESIGN-24.15"
+            },
+            "source_document": {
+              "const": "DESIGN.md"
+            },
+            "source_section": {
+              "const": "24"
+            },
+            "source_ordinal": {
+              "const": 15
+            },
+            "source_locator": {
+              "const": "DESIGN.md#24.15"
+            },
+            "source_text_sha256": {
+              "const": "7b62d112e20e74920beab07acda4cf134631eb735819262579b2481ed8937a8b"
+            },
+            "accountable_owner_role": {
+              "const": "release-engineer"
+            },
+            "environment_profile": {
+              "const": "linux-kvm"
+            },
+            "evidence_lane": {
+              "const": "local-test"
+            },
+            "evidence_contract": {
+              "const": "future-local-test-reference-v1"
+            },
+            "dependencies": {
+              "const": ["S4-11", "release-candidate-binding"]
+            },
+            "blocker": {
+              "const": "release-candidate-binding-not-present"
+            },
+            "applicability": {
+              "const": "mandatory-api-key-release"
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/criterionMapping",
+          "type": "object",
+          "properties": {
+            "id": {
+              "const": "DESIGN-24.16"
+            },
+            "source_document": {
+              "const": "DESIGN.md"
+            },
+            "source_section": {
+              "const": "24"
+            },
+            "source_ordinal": {
+              "const": 16
+            },
+            "source_locator": {
+              "const": "DESIGN.md#24.16"
+            },
+            "source_text_sha256": {
+              "const": "0dcc632dfffbc1f515f521bff61fa081502547fd947a247b4bfbd6ed15e354d4"
+            },
+            "accountable_owner_role": {
+              "const": "release-engineer"
+            },
+            "environment_profile": {
+              "const": "linux-kvm"
+            },
+            "evidence_lane": {
+              "const": "local-test"
+            },
+            "evidence_contract": {
+              "const": "future-local-test-reference-v1"
+            },
+            "dependencies": {
+              "const": ["S4-11", "release-candidate-binding"]
+            },
+            "blocker": {
+              "const": "release-candidate-binding-not-present"
+            },
+            "applicability": {
+              "const": "mandatory-api-key-release"
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/criterionMapping",
+          "type": "object",
+          "properties": {
+            "id": {
+              "const": "DESIGN-24.17"
+            },
+            "source_document": {
+              "const": "DESIGN.md"
+            },
+            "source_section": {
+              "const": "24"
+            },
+            "source_ordinal": {
+              "const": 17
+            },
+            "source_locator": {
+              "const": "DESIGN.md#24.17"
+            },
+            "source_text_sha256": {
+              "const": "a458e6f3b3c7024fb209c6082420366d9d0f61e03adb5571176fa6151ebf1492"
+            },
+            "accountable_owner_role": {
+              "const": "release-engineer"
+            },
+            "environment_profile": {
+              "const": "linux-kvm"
+            },
+            "evidence_lane": {
+              "const": "local-test"
+            },
+            "evidence_contract": {
+              "const": "future-local-test-reference-v1"
+            },
+            "dependencies": {
+              "const": ["S4-11", "release-candidate-binding"]
+            },
+            "blocker": {
+              "const": "release-candidate-binding-not-present"
+            },
+            "applicability": {
+              "const": "mandatory-api-key-release"
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/criterionMapping",
+          "type": "object",
+          "properties": {
+            "id": {
+              "const": "DESIGN-24.18"
+            },
+            "source_document": {
+              "const": "DESIGN.md"
+            },
+            "source_section": {
+              "const": "24"
+            },
+            "source_ordinal": {
+              "const": 18
+            },
+            "source_locator": {
+              "const": "DESIGN.md#24.18"
+            },
+            "source_text_sha256": {
+              "const": "ea67b8bff3a9fd9dd2407e49ec8f8fdc38ee2048171208dcd086b8fb499500e1"
+            },
+            "accountable_owner_role": {
+              "const": "release-engineer"
+            },
+            "environment_profile": {
+              "const": "local-static"
+            },
+            "evidence_lane": {
+              "const": "local-test"
+            },
+            "evidence_contract": {
+              "const": "future-local-test-reference-v1"
+            },
+            "dependencies": {
+              "const": ["S4-11", "release-candidate-binding"]
+            },
+            "blocker": {
+              "const": "release-candidate-binding-not-present"
+            },
+            "applicability": {
+              "const": "mandatory-api-key-release"
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/criterionMapping",
+          "type": "object",
+          "properties": {
+            "id": {
+              "const": "DESIGN-24.19"
+            },
+            "source_document": {
+              "const": "DESIGN.md"
+            },
+            "source_section": {
+              "const": "24"
+            },
+            "source_ordinal": {
+              "const": 19
+            },
+            "source_locator": {
+              "const": "DESIGN.md#24.19"
+            },
+            "source_text_sha256": {
+              "const": "96103ec947e100edf6933737837c9fe4da0b494de9aef29257f9f194411f55a4"
+            },
+            "accountable_owner_role": {
+              "const": "release-engineer"
+            },
+            "environment_profile": {
+              "const": "linux-kvm"
+            },
+            "evidence_lane": {
+              "const": "local-test"
+            },
+            "evidence_contract": {
+              "const": "future-local-test-reference-v1"
+            },
+            "dependencies": {
+              "const": ["S4-11", "release-candidate-binding"]
+            },
+            "blocker": {
+              "const": "release-candidate-binding-not-present"
+            },
+            "applicability": {
+              "const": "mandatory-api-key-release"
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/criterionMapping",
+          "type": "object",
+          "properties": {
+            "id": {
+              "const": "DESIGN-24.20"
+            },
+            "source_document": {
+              "const": "DESIGN.md"
+            },
+            "source_section": {
+              "const": "24"
+            },
+            "source_ordinal": {
+              "const": 20
+            },
+            "source_locator": {
+              "const": "DESIGN.md#24.20"
+            },
+            "source_text_sha256": {
+              "const": "9c8f8ed4b1e2f726c4121628eab43a087f438f4d7b0e5a1e4af4fdd153d2bd2c"
+            },
+            "accountable_owner_role": {
+              "const": "campaign-operator"
+            },
+            "environment_profile": {
+              "const": "eks-kata-release-candidate"
+            },
+            "evidence_lane": {
+              "const": "separately-approved-campaign"
+            },
+            "evidence_contract": {
+              "const": "future-eks-conformance-reference-v1"
+            },
+            "dependencies": {
+              "const": ["S4-11", "release-candidate-binding", "campaign-approval", "real-dependencies"]
+            },
+            "blocker": {
+              "const": "s4-11-not-accepted"
+            },
+            "applicability": {
+              "const": "mandatory-api-key-release"
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/criterionMapping",
+          "type": "object",
+          "properties": {
+            "id": {
+              "const": "DESIGN-24.21"
+            },
+            "source_document": {
+              "const": "DESIGN.md"
+            },
+            "source_section": {
+              "const": "24"
+            },
+            "source_ordinal": {
+              "const": 21
+            },
+            "source_locator": {
+              "const": "DESIGN.md#24.21"
+            },
+            "source_text_sha256": {
+              "const": "5c749cfd476104529ed5ea605a26ed8f0a67221b9069ecc4314f0b9419a22f62"
+            },
+            "accountable_owner_role": {
+              "const": "campaign-operator"
+            },
+            "environment_profile": {
+              "const": "eks-kata-release-load"
+            },
+            "evidence_lane": {
+              "const": "separately-approved-campaign"
+            },
+            "evidence_contract": {
+              "const": "future-load-reference-v1"
+            },
+            "dependencies": {
+              "const": ["S4-11", "release-candidate-binding", "campaign-approval", "real-dependencies"]
+            },
+            "blocker": {
+              "const": "s4-11-not-accepted"
+            },
+            "applicability": {
+              "const": "mandatory-api-key-release"
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/criterionMapping",
+          "type": "object",
+          "properties": {
+            "id": {
+              "const": "DESIGN-24.22"
+            },
+            "source_document": {
+              "const": "DESIGN.md"
+            },
+            "source_section": {
+              "const": "24"
+            },
+            "source_ordinal": {
+              "const": 22
+            },
+            "source_locator": {
+              "const": "DESIGN.md#24.22"
+            },
+            "source_text_sha256": {
+              "const": "17f197c49a1ea9d4f03e3f4c0c60a0c65bcf6ccbbe9a20a33b84a4fe8893b79f"
+            },
+            "accountable_owner_role": {
+              "const": "campaign-operator"
+            },
+            "environment_profile": {
+              "const": "eks-kata-release-load"
+            },
+            "evidence_lane": {
+              "const": "separately-approved-campaign"
+            },
+            "evidence_contract": {
+              "const": "future-load-reference-v1"
+            },
+            "dependencies": {
+              "const": ["S4-11", "release-candidate-binding", "campaign-approval", "stage5-load-50"]
+            },
+            "blocker": {
+              "const": "s4-11-not-accepted"
+            },
+            "applicability": {
+              "const": "mandatory-api-key-release"
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/criterionMapping",
+          "type": "object",
+          "properties": {
+            "id": {
+              "const": "STAGE5-45.01"
+            },
+            "source_document": {
+              "const": "IMPLEMENTATION.md"
+            },
+            "source_section": {
+              "const": "45"
+            },
+            "source_ordinal": {
+              "const": 1
+            },
+            "source_locator": {
+              "const": "IMPLEMENTATION.md#45.1"
+            },
+            "source_text_sha256": {
+              "const": "84a959a566db33ebedcf3c33136b1a0c7b6919a93b282c42afdd0325c23c9b97"
+            },
+            "accountable_owner_role": {
+              "const": "independent-security-reviewer"
+            },
+            "environment_profile": {
+              "const": "independent-review-exact-release-candidate"
+            },
+            "evidence_lane": {
+              "const": "independent-review"
+            },
+            "evidence_contract": {
+              "const": "future-acceptance-index-reference-v1"
+            },
+            "dependencies": {
+              "const": ["S4-11", "release-candidate-binding", "stage5-design-criteria", "real-dependencies"]
+            },
+            "blocker": {
+              "const": "independent-identities-not-present"
+            },
+            "applicability": {
+              "const": "mandatory-api-key-release"
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/criterionMapping",
+          "type": "object",
+          "properties": {
+            "id": {
+              "const": "STAGE5-45.02"
+            },
+            "source_document": {
+              "const": "IMPLEMENTATION.md"
+            },
+            "source_section": {
+              "const": "45"
+            },
+            "source_ordinal": {
+              "const": 2
+            },
+            "source_locator": {
+              "const": "IMPLEMENTATION.md#45.2"
+            },
+            "source_text_sha256": {
+              "const": "e0454d8936490ca6107365e7da7b28e9768149bd353cb4b8415a02e1b0c04bf3"
+            },
+            "accountable_owner_role": {
+              "const": "independent-security-reviewer"
+            },
+            "environment_profile": {
+              "const": "independent-review-exact-release-candidate"
+            },
+            "evidence_lane": {
+              "const": "independent-review"
+            },
+            "evidence_contract": {
+              "const": "future-independent-review-reference-v1"
+            },
+            "dependencies": {
+              "const": ["release-candidate-binding", "independent-principal-bindings"]
+            },
+            "blocker": {
+              "const": "independent-identities-not-present"
+            },
+            "applicability": {
+              "const": "mandatory-api-key-release"
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/criterionMapping",
+          "type": "object",
+          "properties": {
+            "id": {
+              "const": "STAGE5-45.03"
+            },
+            "source_document": {
+              "const": "IMPLEMENTATION.md"
+            },
+            "source_section": {
+              "const": "45"
+            },
+            "source_ordinal": {
+              "const": 3
+            },
+            "source_locator": {
+              "const": "IMPLEMENTATION.md#45.3"
+            },
+            "source_text_sha256": {
+              "const": "5dcc2b23388f082eef44a3c4ab59d2440f54101359a36993cc51b74ea8ce6549"
+            },
+            "accountable_owner_role": {
+              "const": "independent-security-reviewer"
+            },
+            "environment_profile": {
+              "const": "independent-review-exact-release-candidate"
+            },
+            "evidence_lane": {
+              "const": "independent-review"
+            },
+            "evidence_contract": {
+              "const": "future-independent-review-reference-v1"
+            },
+            "dependencies": {
+              "const": ["S4-11", "release-candidate-binding", "proxy-runtime-evidence"]
+            },
+            "blocker": {
+              "const": "independent-identities-not-present"
+            },
+            "applicability": {
+              "const": "mandatory-api-key-release"
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/criterionMapping",
+          "type": "object",
+          "properties": {
+            "id": {
+              "const": "STAGE5-45.04"
+            },
+            "source_document": {
+              "const": "IMPLEMENTATION.md"
+            },
+            "source_section": {
+              "const": "45"
+            },
+            "source_ordinal": {
+              "const": 4
+            },
+            "source_locator": {
+              "const": "IMPLEMENTATION.md#45.4"
+            },
+            "source_text_sha256": {
+              "const": "54e583a989c70f7b97d9ea57bc2810d9806eddcb6e41dc114ab731c36abb332c"
+            },
+            "accountable_owner_role": {
+              "const": "release-engineer"
+            },
+            "environment_profile": {
+              "const": "local-static"
+            },
+            "evidence_lane": {
+              "const": "local-test"
+            },
+            "evidence_contract": {
+              "const": "future-local-test-reference-v1"
+            },
+            "dependencies": {
+              "const": ["S4-11", "release-candidate-binding", "provider-support-claims"]
+            },
+            "blocker": {
+              "const": "release-candidate-binding-not-present"
+            },
+            "applicability": {
+              "const": "mandatory-api-key-disabled-oauth-branch"
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/criterionMapping",
+          "type": "object",
+          "properties": {
+            "id": {
+              "const": "STAGE5-45.05"
+            },
+            "source_document": {
+              "const": "IMPLEMENTATION.md"
+            },
+            "source_section": {
+              "const": "45"
+            },
+            "source_ordinal": {
+              "const": 5
+            },
+            "source_locator": {
+              "const": "IMPLEMENTATION.md#45.5"
+            },
+            "source_text_sha256": {
+              "const": "0b05c20c6a566581a2349a058a7259885d3d4554ac90b4c837166f82c2f7d933"
+            },
+            "accountable_owner_role": {
+              "const": "campaign-operator"
+            },
+            "environment_profile": {
+              "const": "eks-kata-release-load"
+            },
+            "evidence_lane": {
+              "const": "separately-approved-campaign"
+            },
+            "evidence_contract": {
+              "const": "future-load-reference-v1"
+            },
+            "dependencies": {
+              "const": ["S4-11", "release-candidate-binding", "campaign-approval", "stage5-load-50"]
+            },
+            "blocker": {
+              "const": "s4-11-not-accepted"
+            },
+            "applicability": {
+              "const": "mandatory-api-key-release"
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/criterionMapping",
+          "type": "object",
+          "properties": {
+            "id": {
+              "const": "STAGE5-45.06"
+            },
+            "source_document": {
+              "const": "IMPLEMENTATION.md"
+            },
+            "source_section": {
+              "const": "45"
+            },
+            "source_ordinal": {
+              "const": 6
+            },
+            "source_locator": {
+              "const": "IMPLEMENTATION.md#45.6"
+            },
+            "source_text_sha256": {
+              "const": "e972f39de9883e17647d722c6796b6c468d4dc6b42e89403be588bbf792122ba"
+            },
+            "accountable_owner_role": {
+              "const": "staff-release-decider"
+            },
+            "environment_profile": {
+              "const": "staff-release-decision"
+            },
+            "evidence_lane": {
+              "const": "staff-decision"
+            },
+            "evidence_contract": {
+              "const": "future-release-decision-reference-v1"
+            },
+            "dependencies": {
+              "const": ["stage5-load-50", "advertised-concurrency-claim"]
+            },
+            "blocker": {
+              "const": "staff-decision-not-present"
+            },
+            "applicability": {
+              "const": "mandatory-api-key-release"
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/criterionMapping",
+          "type": "object",
+          "properties": {
+            "id": {
+              "const": "STAGE5-45.07"
+            },
+            "source_document": {
+              "const": "IMPLEMENTATION.md"
+            },
+            "source_section": {
+              "const": "45"
+            },
+            "source_ordinal": {
+              "const": 7
+            },
+            "source_locator": {
+              "const": "IMPLEMENTATION.md#45.7"
+            },
+            "source_text_sha256": {
+              "const": "0bd4b45a32fcc19217fc17dcfd8ca3b3a5510edeed4cdfef825a2589415a0332"
+            },
+            "accountable_owner_role": {
+              "const": "campaign-operator"
+            },
+            "environment_profile": {
+              "const": "eks-kata-release-candidate"
+            },
+            "evidence_lane": {
+              "const": "separately-approved-campaign"
+            },
+            "evidence_contract": {
+              "const": "future-eks-conformance-reference-v1"
+            },
+            "dependencies": {
+              "const": ["S4-11", "release-candidate-binding", "campaign-approval", "real-dependencies"]
+            },
+            "blocker": {
+              "const": "s4-11-not-accepted"
+            },
+            "applicability": {
+              "const": "mandatory-api-key-release"
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/criterionMapping",
+          "type": "object",
+          "properties": {
+            "id": {
+              "const": "STAGE5-45.08"
+            },
+            "source_document": {
+              "const": "IMPLEMENTATION.md"
+            },
+            "source_section": {
+              "const": "45"
+            },
+            "source_ordinal": {
+              "const": 8
+            },
+            "source_locator": {
+              "const": "IMPLEMENTATION.md#45.8"
+            },
+            "source_text_sha256": {
+              "const": "9b9b49a2ea46609b24819579a8b85108cd3813edaa1617a6f8d4be8ef4e2471e"
+            },
+            "accountable_owner_role": {
+              "const": "independent-security-reviewer"
+            },
+            "environment_profile": {
+              "const": "independent-review-exact-release-candidate"
+            },
+            "evidence_lane": {
+              "const": "independent-review"
+            },
+            "evidence_contract": {
+              "const": "future-independent-review-reference-v1"
+            },
+            "dependencies": {
+              "const": ["release-candidate-binding", "stage5-privacy-evidence", "independent-principal-bindings"]
+            },
+            "blocker": {
+              "const": "independent-identities-not-present"
+            },
+            "applicability": {
+              "const": "mandatory-api-key-release"
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/criterionMapping",
+          "type": "object",
+          "properties": {
+            "id": {
+              "const": "STAGE5-45.09"
+            },
+            "source_document": {
+              "const": "IMPLEMENTATION.md"
+            },
+            "source_section": {
+              "const": "45"
+            },
+            "source_ordinal": {
+              "const": 9
+            },
+            "source_locator": {
+              "const": "IMPLEMENTATION.md#45.9"
+            },
+            "source_text_sha256": {
+              "const": "01db3e7e33a296bbd41737162f39d9f0dd4600b3da8d43f78a3b54c0e8f38017"
+            },
+            "accountable_owner_role": {
+              "const": "campaign-operator"
+            },
+            "environment_profile": {
+              "const": "eks-kata-release-candidate"
+            },
+            "evidence_lane": {
+              "const": "separately-approved-campaign"
+            },
+            "evidence_contract": {
+              "const": "future-privacy-deletion-reference-v1"
+            },
+            "dependencies": {
+              "const": ["S4-11", "release-candidate-binding", "campaign-approval", "real-dependencies"]
+            },
+            "blocker": {
+              "const": "s4-11-not-accepted"
+            },
+            "applicability": {
+              "const": "mandatory-api-key-release"
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/criterionMapping",
+          "type": "object",
+          "properties": {
+            "id": {
+              "const": "STAGE5-45.10"
+            },
+            "source_document": {
+              "const": "IMPLEMENTATION.md"
+            },
+            "source_section": {
+              "const": "45"
+            },
+            "source_ordinal": {
+              "const": 10
+            },
+            "source_locator": {
+              "const": "IMPLEMENTATION.md#45.10"
+            },
+            "source_text_sha256": {
+              "const": "328a40f0d9e52d0eec535ce621f14450a13e1b79205001ef1ba5e9fab71f1de2"
+            },
+            "accountable_owner_role": {
+              "const": "release-engineer"
+            },
+            "environment_profile": {
+              "const": "local-static"
+            },
+            "evidence_lane": {
+              "const": "local-test"
+            },
+            "evidence_contract": {
+              "const": "future-operations-reference-v1"
+            },
+            "dependencies": {
+              "const": ["S4-11", "release-candidate-binding", "operations-runbook-inventory"]
+            },
+            "blocker": {
+              "const": "release-candidate-binding-not-present"
+            },
+            "applicability": {
+              "const": "mandatory-api-key-release"
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/criterionMapping",
+          "type": "object",
+          "properties": {
+            "id": {
+              "const": "STAGE5-45.11"
+            },
+            "source_document": {
+              "const": "IMPLEMENTATION.md"
+            },
+            "source_section": {
+              "const": "45"
+            },
+            "source_ordinal": {
+              "const": 11
+            },
+            "source_locator": {
+              "const": "IMPLEMENTATION.md#45.11"
+            },
+            "source_text_sha256": {
+              "const": "d551ec04cb838edd5112eebaa318653141203cd72d43541e3b714f20a5f984d5"
+            },
+            "accountable_owner_role": {
+              "const": "zero-inventory-observer"
+            },
+            "environment_profile": {
+              "const": "independent-zero-inventory"
+            },
+            "evidence_lane": {
+              "const": "independent-review"
+            },
+            "evidence_contract": {
+              "const": "future-zero-inventory-reference-v1"
+            },
+            "dependencies": {
+              "const": ["S4-11", "release-candidate-binding", "campaign-approval", "campaign-teardown-complete"]
+            },
+            "blocker": {
+              "const": "independent-identities-not-present"
+            },
+            "applicability": {
+              "const": "mandatory-api-key-release"
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/criterionMapping",
+          "type": "object",
+          "properties": {
+            "id": {
+              "const": "STAGE5-45.12"
+            },
+            "source_document": {
+              "const": "IMPLEMENTATION.md"
+            },
+            "source_section": {
+              "const": "45"
+            },
+            "source_ordinal": {
+              "const": 12
+            },
+            "source_locator": {
+              "const": "IMPLEMENTATION.md#45.12"
+            },
+            "source_text_sha256": {
+              "const": "742f3d09c240fb50d448485de41634f04d20956b9e7624059e29e78538823a43"
+            },
+            "accountable_owner_role": {
+              "const": "independent-security-reviewer"
+            },
+            "environment_profile": {
+              "const": "independent-review-exact-release-candidate"
+            },
+            "evidence_lane": {
+              "const": "independent-review"
+            },
+            "evidence_contract": {
+              "const": "future-independent-review-reference-v1"
+            },
+            "dependencies": {
+              "const": ["release-candidate-binding", "residual-risk-register", "independent-principal-bindings"]
+            },
+            "blocker": {
+              "const": "independent-identities-not-present"
+            },
+            "applicability": {
+              "const": "mandatory-api-key-release"
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/criterionMapping",
+          "type": "object",
+          "properties": {
+            "id": {
+              "const": "STAGE5-45.13"
+            },
+            "source_document": {
+              "const": "IMPLEMENTATION.md"
+            },
+            "source_section": {
+              "const": "45"
+            },
+            "source_ordinal": {
+              "const": 13
+            },
+            "source_locator": {
+              "const": "IMPLEMENTATION.md#45.13"
+            },
+            "source_text_sha256": {
+              "const": "07a9f6d0ddcd3faa9d098ee3ec73fc10bc78c22476a0741c5de642c1d34cd8f5"
+            },
+            "accountable_owner_role": {
+              "const": "staff-release-decider"
+            },
+            "environment_profile": {
+              "const": "staff-release-decision"
+            },
+            "evidence_lane": {
+              "const": "staff-decision"
+            },
+            "evidence_contract": {
+              "const": "future-release-decision-reference-v1"
+            },
+            "dependencies": {
+              "const": [
+                "stage5-design-criteria",
+                "stage5-independent-review",
+                "stage5-campaign-evidence",
+                "stage5-zero-inventory"
+              ]
+            },
+            "blocker": {
+              "const": "staff-decision-not-present"
+            },
+            "applicability": {
+              "const": "mandatory-api-key-release"
+            }
+          }
+        }
+      ],
+      "items": false
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "principalRole": {
+      "enum": [
+        "matrix-author",
+        "release-engineer",
+        "evidence-producer",
+        "independent-security-reviewer",
+        "campaign-operator",
+        "campaign-approver",
+        "budget-approver",
+        "zero-inventory-observer",
+        "staff-release-decider"
+      ]
+    },
+    "unboundPrincipal": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 4,
+      "required": ["role", "principal_id", "identity_binding_sha256", "state"],
+      "properties": {
+        "role": {
+          "$ref": "#/$defs/principalRole"
+        },
+        "principal_id": {
+          "type": "null"
+        },
+        "identity_binding_sha256": {
+          "type": "null"
+        },
+        "state": {
+          "const": "not-present-blocking"
+        }
+      }
+    },
+    "separation": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 4,
+      "required": ["left_role", "right_role", "relation", "state"],
+      "properties": {
+        "left_role": {
+          "$ref": "#/$defs/principalRole"
+        },
+        "right_role": {
+          "$ref": "#/$defs/principalRole"
+        },
+        "relation": {
+          "const": "must-be-distinct-authenticated-principals"
+        },
+        "state": {
+          "const": "blocked-identities-not-present"
+        }
+      }
+    },
+    "providerClaim": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 8,
+      "required": [
+        "provider",
+        "auth_class",
+        "implementation_state",
+        "support_decision",
+        "advertised",
+        "real_provider_evidence_required",
+        "evidence_binding_sha256",
+        "blocker"
+      ],
+      "properties": {
+        "provider": {
+          "enum": ["anthropic", "openai", "openrouter"]
+        },
+        "auth_class": {
+          "const": "api-key"
+        },
+        "implementation_state": {
+          "const": "generic-runtime-key-path-present-provider-not-release-validated"
+        },
+        "support_decision": {
+          "const": "provisional-candidate"
+        },
+        "advertised": {
+          "const": false
+        },
+        "real_provider_evidence_required": {
+          "const": true
+        },
+        "evidence_binding_sha256": {
+          "type": "null"
+        },
+        "blocker": {
+          "const": "provider-real-evidence-not-present"
+        }
+      }
+    },
+    "platformClaim": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 3,
+      "required": ["profile", "status", "advertised"],
+      "properties": {
+        "profile": {
+          "enum": ["aws-eks-kata", "linux-kvm", "insecure-container", "macos-vm-dev"]
+        },
+        "status": {
+          "enum": [
+            "pending-s4-s5-evidence-unadvertised",
+            "authoritative-local-only-unadvertised",
+            "development-only-unadvertised"
+          ]
+        },
+        "advertised": {
+          "const": false
+        }
+      }
+    },
+    "unsupportedClaim": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 5,
+      "required": ["capability", "status", "advertised", "evidence_binding_sha256", "reason_code"],
+      "properties": {
+        "capability": {
+          "enum": [
+            "subscription-oauth",
+            "production-daemon",
+            "user-ingress",
+            "session-sanitizer",
+            "apps",
+            "indexing-vector-search",
+            "gcp-production",
+            "azure-production",
+            "hetzner-production",
+            "other-cloud-production",
+            "general-availability",
+            "compliance-certification",
+            "grpc-credential-injection",
+            "non-http-egress"
+          ]
+        },
+        "status": {
+          "const": "unsupported-unadvertised"
+        },
+        "advertised": {
+          "const": false
+        },
+        "evidence_binding_sha256": {
+          "type": "null"
+        },
+        "reason_code": {
+          "enum": [
+            "deferred-issue-13",
+            "outside-mvp-scope",
+            "other-cloud-not-validated",
+            "release-not-established",
+            "compliance-not-claimed"
+          ]
+        }
+      }
+    },
+    "environmentProfile": {
+      "enum": [
+        "local-static",
+        "linux-kvm",
+        "eks-kata-release-candidate",
+        "eks-kata-release-load",
+        "independent-review-exact-release-candidate",
+        "independent-zero-inventory",
+        "staff-release-decision"
+      ]
+    },
+    "evidenceContract": {
+      "enum": [
+        "future-local-test-reference-v1",
+        "future-eks-conformance-reference-v1",
+        "future-provider-real-model-reference-v1",
+        "future-load-reference-v1",
+        "future-independent-review-reference-v1",
+        "future-privacy-deletion-reference-v1",
+        "future-operations-reference-v1",
+        "future-zero-inventory-reference-v1",
+        "future-release-decision-reference-v1",
+        "future-acceptance-index-reference-v1"
+      ]
+    },
+    "criterionMapping": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 17,
+      "required": [
+        "id",
+        "source_document",
+        "source_section",
+        "source_ordinal",
+        "source_locator",
+        "source_text_sha256",
+        "accountable_owner_role",
+        "accountable_principal_id",
+        "environment_profile",
+        "evidence_lane",
+        "evidence_contract",
+        "dependencies",
+        "blocker",
+        "applicability",
+        "execution",
+        "evidence_binding_sha256",
+        "release_eligible"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 32,
+          "pattern": "^(DESIGN-24|STAGE5-45)\\.[0-9]{2}$"
+        },
+        "source_document": {
+          "enum": ["DESIGN.md", "IMPLEMENTATION.md"]
+        },
+        "source_section": {
+          "enum": ["24", "45"]
+        },
+        "source_ordinal": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 22
+        },
+        "source_locator": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^(DESIGN.md#24\\.[0-9]+|IMPLEMENTATION.md#45\\.[0-9]+)$"
+        },
+        "source_text_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "accountable_owner_role": {
+          "$ref": "#/$defs/principalRole"
+        },
+        "accountable_principal_id": {
+          "type": "null"
+        },
+        "environment_profile": {
+          "$ref": "#/$defs/environmentProfile"
+        },
+        "evidence_lane": {
+          "enum": ["local-test", "independent-review", "separately-approved-campaign", "staff-decision"]
+        },
+        "evidence_contract": {
+          "$ref": "#/$defs/evidenceContract"
+        },
+        "dependencies": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+          }
+        },
+        "blocker": {
+          "enum": [
+            "release-candidate-binding-not-present",
+            "s4-11-not-accepted",
+            "independent-identities-not-present",
+            "campaign-approval-not-present",
+            "provider-real-evidence-not-present",
+            "stage5-evidence-not-present",
+            "staff-decision-not-present"
+          ]
+        },
+        "applicability": {
+          "enum": [
+            "mandatory-api-key-release",
+            "mandatory-api-key-disabled-oauth-branch",
+            "conditional-advertised-concurrency"
+          ]
+        },
+        "execution": {
+          "const": "unexecuted-by-this-draft"
+        },
+        "evidence_binding_sha256": {
+          "type": "null"
+        },
+        "release_eligible": {
+          "const": false
+        }
+      }
+    }
+  }
+}

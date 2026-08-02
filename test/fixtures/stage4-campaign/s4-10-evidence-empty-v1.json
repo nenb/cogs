@@ -1,0 +1,13 @@
+{
+  "version": "cogs.stage4-campaign-evidence/v1",
+  "authority": "local-static-campaign-evidence-model",
+  "campaign_issue": "S4-10/#361",
+  "execution_authorized": false,
+  "attempt_number": 1,
+  "retry_count": 0,
+  "plan_sha256": "1dc846f581802c4b67056e15a15d68264325281518d5ec2262c2d179dcb1c40e",
+  "artifact_set_root_sha256": "697650137320b87f8595b470ea0563f198cf73933e7348ac751ece6eec5130fd",
+  "events": [],
+  "campaign_id_sha256": "860f79600047dd259df9988dc2e843564fc8a63459d72ea871dc2bc0f4c31fe3",
+  "attempt_id_sha256": "12a82f1ea5e519238dd6dfe5638366b5707bb0b24795acdde0d70b27316dc19d"
+}

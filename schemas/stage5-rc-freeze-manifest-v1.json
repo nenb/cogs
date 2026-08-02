@@ -1,0 +1,146 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.dev/schemas/stage5-rc-freeze-manifest-v1.json",
+  "title": "Provisional Stage 5 release-candidate freeze manifest",
+  "description": "Local/static false-authority manifest. Null bindings are blocking and cannot freeze a release candidate.",
+  "type": "object",
+  "additionalProperties": false,
+  "maxProperties": 10,
+  "required": [
+    "version",
+    "authority",
+    "issue",
+    "dependencies",
+    "artifacts",
+    "freeze_binding_sha256",
+    "drift",
+    "oauth",
+    "blockers",
+    "claims"
+  ],
+  "properties": {
+    "version": { "const": "cogs.stage5-rc-freeze-manifest/v1" },
+    "authority": { "const": "provisional-local-static-freeze-contract-only" },
+    "issue": { "const": 367 },
+    "dependencies": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 2,
+      "required": ["s4_11", "s5_00_through_s5_03"],
+      "properties": {
+        "s4_11": { "const": "unmet-blocking" },
+        "s5_00_through_s5_03": { "const": "unmet-blocking" }
+      }
+    },
+    "artifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 12,
+      "required": [
+        "source",
+        "locks",
+        "chart",
+        "skills",
+        "schemas",
+        "runtime",
+        "images",
+        "sbom",
+        "signatures",
+        "vulnerabilities",
+        "licenses",
+        "supported_aws_matrix"
+      ],
+      "properties": {
+        "source": { "$ref": "#/$defs/absentBinding" },
+        "locks": { "$ref": "#/$defs/absentBinding" },
+        "chart": { "$ref": "#/$defs/absentBinding" },
+        "skills": { "$ref": "#/$defs/absentBinding" },
+        "schemas": { "$ref": "#/$defs/absentBinding" },
+        "runtime": { "$ref": "#/$defs/absentBinding" },
+        "images": { "$ref": "#/$defs/absentBinding" },
+        "sbom": { "$ref": "#/$defs/absentBinding" },
+        "signatures": { "$ref": "#/$defs/absentBinding" },
+        "vulnerabilities": { "$ref": "#/$defs/absentBinding" },
+        "licenses": { "$ref": "#/$defs/absentBinding" },
+        "supported_aws_matrix": { "$ref": "#/$defs/absentBinding" }
+      }
+    },
+    "freeze_binding_sha256": { "type": "null" },
+    "drift": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 6,
+      "required": [
+        "baseline_binding_sha256",
+        "current_state",
+        "invalidate_on_any_component_change",
+        "invalidates_campaign_results",
+        "invalidates_review_results",
+        "requires_refreeze"
+      ],
+      "properties": {
+        "baseline_binding_sha256": { "type": "null" },
+        "current_state": { "const": "not-evaluable-no-authentic-baseline" },
+        "invalidate_on_any_component_change": { "const": true },
+        "invalidates_campaign_results": { "const": true },
+        "invalidates_review_results": { "const": true },
+        "requires_refreeze": { "const": true }
+      }
+    },
+    "oauth": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 3,
+      "required": ["advertised", "refresh_token_path", "status"],
+      "properties": {
+        "advertised": { "const": false },
+        "refresh_token_path": { "const": "forbidden" },
+        "status": { "const": "disabled-unadvertised" }
+      }
+    },
+    "blockers": {
+      "type": "array",
+      "minItems": 5,
+      "maxItems": 5,
+      "prefixItems": [
+        { "const": "S4_11_NOT_ACCEPTED" },
+        { "const": "S5_00_THROUGH_S5_03_NOT_ACCEPTED" },
+        { "const": "RELEASE_CANDIDATE_BINDING_ABSENT" },
+        { "const": "AUTHENTIC_ARTIFACT_EVIDENCE_ABSENT" },
+        { "const": "SEPARATE_CAMPAIGN_APPROVAL_ABSENT" }
+      ],
+      "items": false
+    },
+    "claims": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 5,
+      "required": [
+        "campaign_authorized",
+        "cloud_execution_observed",
+        "production_ready",
+        "rc_frozen",
+        "release_eligible"
+      ],
+      "properties": {
+        "campaign_authorized": { "const": false },
+        "cloud_execution_observed": { "const": false },
+        "production_ready": { "const": false },
+        "rc_frozen": { "const": false },
+        "release_eligible": { "const": false }
+      }
+    }
+  },
+  "$defs": {
+    "absentBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 2,
+      "required": ["binding_sha256", "state"],
+      "properties": {
+        "binding_sha256": { "type": "null" },
+        "state": { "const": "absent-blocking" }
+      }
+    }
+  }
+}

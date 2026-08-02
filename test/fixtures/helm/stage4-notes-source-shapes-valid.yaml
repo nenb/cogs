@@ -18,6 +18,8 @@ stage4Preparation:
     sandbox:
       nodeSelector:
         cogs.dev/node-domain: sandbox-kata
+        cogs.dev/nested-virtualization: enabled
+        cogs.dev/sandbox-runtime: kata-qemu-kvm
       tolerations:
         - key: cogs.dev/sandbox
           operator: Equal
@@ -28,9 +30,18 @@ stage4Preparation:
     workspaceStorageClass: synthetic-workspace-csi
     workspaceSize: 20Gi
     workspaceAccessMode: ReadWriteOncePod
+    workspaceVolumeMode: Filesystem
+    workspaceVolumeBindingMode: WaitForFirstConsumer
+    workspaceReclaimPolicy: Retain
+    workspaceRetention: retain-until-explicit-workspace-deletion
     sessionStateStorageClass: synthetic-session-state-csi
     sessionStateSize: 5Gi
     sessionStateAccessMode: ReadWriteOncePod
+    sessionStateVolumeMode: Filesystem
+    sessionStateVolumeBindingMode: WaitForFirstConsumer
+    sessionStateReclaimPolicy: Retain
+    sessionStateRetention: retain-30-days-after-session-close
+    sessionStateRetentionSeconds: 2592000
 
   openBao:
     endpoint: https://openbao.static-test.invalid:8200
@@ -64,6 +75,6 @@ stage4Preparation:
     idleSeconds: 1800
     hardSeconds: 28800
     terminationGraceSeconds: 30
-  auditWalMaxBytes: 268435456
+  auditWalMaxBytes: 1048576
 
   publicEgressCaConfigMap: synthetic-public-egress-ca

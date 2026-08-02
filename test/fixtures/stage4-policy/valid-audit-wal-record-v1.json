@@ -1,0 +1,11 @@
+{
+  "version": "cogs.stage4-audit-wal-record/v1",
+  "sequence": 0,
+  "timestamp_ms": 2000,
+  "session_ref_sha256": "afa703a58c6f6a414c85c984ad97ef96603ac30db69a8fd5ab2c8ce08a3d87d7",
+  "intent_ref_sha256": "2e91bb1047e1d914fc130dddd2450d6c2d0f8ebc20e40c55e68ebd1c664e3dcd",
+  "policy_ref_sha256": "19d8242a536f14ef86117121ee5d2734b6a2a8a981054be06b522d427ea3034c",
+  "capability_ref_sha256": "c864c7c23f07d8f938c3030b993c80764478ddf0b917401ea030d6d30455048a",
+  "method": "GET",
+  "credential_required": true
+}

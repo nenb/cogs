@@ -15,7 +15,7 @@ automountServiceAccountToken: false
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: {{ include "cogs.componentName" (dict "root" . "component" "sandbox") }}
+  name: cogs-sandbox-inert
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "cogs.stage4Labels" . | nindent 4 }}

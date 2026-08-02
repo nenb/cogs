@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.dev/schemas/stage4-policy-payload-v1.json",
+  "title": "Cogs Stage 4 closed audit-WAL and metadata-only OTLP records",
+  "oneOf": [{ "$ref": "#/$defs/auditWalRecord" }, { "$ref": "#/$defs/otlpRecord" }],
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "safeInteger": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "auditWalRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "sequence",
+        "timestamp_ms",
+        "session_ref_sha256",
+        "intent_ref_sha256",
+        "policy_ref_sha256",
+        "capability_ref_sha256",
+        "method",
+        "credential_required"
+      ],
+      "properties": {
+        "version": { "const": "cogs.stage4-audit-wal-record/v1" },
+        "sequence": { "$ref": "#/$defs/safeInteger" },
+        "timestamp_ms": { "$ref": "#/$defs/safeInteger" },
+        "session_ref_sha256": { "$ref": "#/$defs/sha256" },
+        "intent_ref_sha256": { "$ref": "#/$defs/sha256" },
+        "policy_ref_sha256": { "$ref": "#/$defs/sha256" },
+        "capability_ref_sha256": { "$ref": "#/$defs/sha256" },
+        "method": { "enum": ["GET", "POST"] },
+        "credential_required": { "type": "boolean" }
+      }
+    },
+    "otlpRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "kind", "name", "attributes"],
+      "properties": {
+        "version": { "const": "cogs.stage4-otlp-record/v1" },
+        "kind": { "enum": ["span", "metric", "log"] },
+        "name": {
+          "enum": ["lifecycle", "dependency", "tool", "egress", "wal", "otlp", "checkpoint", "export"]
+        },
+        "attributes": {
+          "type": "object",
+          "additionalProperties": false,
+          "minProperties": 2,
+          "maxProperties": 11,
+          "required": ["event", "outcome"],
+          "properties": {
+            "event": {
+              "enum": ["start", "ready", "stop", "authorize", "complete", "append", "sync", "drop", "failure"]
+            },
+            "outcome": { "enum": ["ok", "error", "denied", "dropped", "cancelled", "timeout"] },
+            "operation": {
+              "enum": ["start", "stop", "authorize", "dispatch", "append", "sync", "export", "checkpoint"]
+            },
+            "method": { "enum": ["GET", "POST"] },
+            "credential_required": { "type": "boolean" },
+            "status_class": { "enum": ["1xx", "2xx", "3xx", "4xx", "5xx"] },
+            "duration_ms": { "type": "integer", "minimum": 0, "maximum": 86400000 },
+            "count": { "$ref": "#/$defs/safeInteger" },
+            "bytes_bucket": { "enum": ["0", "1", "2_4", "5_16", "17_64", "65_256", "257_1024", "gt_1024"] },
+            "queue_depth": { "type": "integer", "minimum": 0, "maximum": 1024 },
+            "export_lag_ms": { "type": "integer", "minimum": 0, "maximum": 86400000 }
+          }
+        }
+      }
+    }
+  }
+}
