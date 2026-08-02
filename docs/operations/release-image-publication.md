@@ -29,9 +29,11 @@ The publication job repeats the API HEAD comparison after checking out the exact
 
 The workflow-level permission set is empty. The authority job receives only `contents: read`. The effect job receives only `contents: read`, `packages: write`, and `id-token: write`; package and OIDC permissions are not granted to any other job.
 
-## Immutable publication
+## Candidate-first publication
 
-Each destination receives only `sha-<full-40-character-commit>`. The workflow never writes `latest`, `main`, `stable`, a shortened SHA, or another mutable alias. Before either build it requires both full-SHA tags to be absent. An existing tag aborts the transaction rather than overwriting it. Per-SHA concurrency prevents two authorized runs in this workflow from racing that check.
+Each run first publishes unique `candidate-<full-40-character-commit>-<run-id>-<run-attempt>` tags. A failed candidate remains explicitly identifiable and a new first-attempt workflow run receives a different candidate identity, so recovery never overwrites or ambiguously resumes prior bytes. Candidate digests are scanned, supplied with SBOM attestations, signed, and verified before any release tag is created.
+
+Only after those recorded gates pass does the workflow create `sha-<full-40-character-commit>`, then read the tag back and require its exact index bytes to hash to the candidate digest. The workflow never writes `latest`, `main`, `stable`, a shortened SHA, or another mutable release alias. Existing candidate or release tags abort rather than being overwritten. Per-SHA concurrency prevents two authorized runs in this workflow from racing within the workflow; consumers must still use the receipt's digest reference rather than treating an OCI tag as registry-enforced immutability.
 
 All Actions are selected by full commit SHA. BuildKit, Syft, Trivy, the Trivy database, and Cosign are selected by OCI digest. Updating any pin is a reviewed source change. The build uses a tracked-only `git archive` context and publishes one direct `linux/amd64` image plus BuildKit `mode=max` provenance. Registry readback must prove:
 
@@ -59,13 +61,15 @@ Digest-pinned Trivy scans the same exact registry digest with the digest-pinned 
 
 “Non-gating” does not mean accepted risk, legal approval, production readiness, or release approval. It means only that this publication gate does not block those classes. The strict classifier requires severity counts and fixed/unfixed counts each to partition the complete finding total, and requires disposition counts to match the corresponding severity counts.
 
-A failed gate can leave an unsigned, unreceipted full-SHA registry object because the scan operates on the exact pushed digest. Such an object is not successful publication evidence, cannot produce the canonical receipt, cannot be retried by overwriting its tag, and must not be promoted.
+A failed gate can leave an unsigned, unreceipted candidate object, but it cannot create the final full-SHA release tag. The failed candidate tag identifies the exact source SHA, run, and attempt. Recovery is a new manually authorized run with a new candidate identity; no candidate or release tag is overwritten.
 
-## Canonical redacted receipt
+## Canonical redacted workflow assertion record
 
-A successful run uploads exactly one file: `release-image-receipt.canonical.json`. The schema is [`schemas/release-image-receipt-v1.json`](../../schemas/release-image-receipt-v1.json), and the classifier is [`scripts/release-image-receipt.ts`](../../scripts/release-image-receipt.ts).
+A successful run uploads exactly one file: `release-image-receipt.canonical.json`. The schema is [`schemas/release-image-receipt-v1.json`](../../schemas/release-image-receipt-v1.json), and the static parser is [`scripts/release-image-receipt.ts`](../../scripts/release-image-receipt.ts).
 
-The receipt binds protected-main source identity, workflow authority, exact tag and digest namespaces, linux/amd64 child manifests, tool pins, provenance and SBOM attachment, complete vulnerability count semantics, and verified keyless authority. SHA-256 fields bind the exact decoded provenance readback, generated SPDX JSON, and raw vulnerability report used by the run. It deliberately omits actor identity, tokens, runner details, raw SBOM contents, raw provenance, and raw vulnerability records. Public run metadata can still make a run correlatable; “redacted” means the canonical receipt does not duplicate those fields or contain credentials.
+The record binds internally consistent workflow-recorded assertions about protected-main source identity, candidate and release tags, digest namespaces, linux/amd64 child manifests, tool pins, provenance and SBOM attachment, vulnerability counts, final-tag readback, and keyless verification. SHA-256 fields record the exact decoded provenance, generated SPDX JSON, and raw vulnerability report used by the workflow. It deliberately omits actor identity, tokens, runner details, raw SBOM contents, raw provenance, and raw vulnerability records. Public run metadata can still make a run correlatable; “redacted” means the canonical record does not duplicate those fields or contain credentials.
+
+The static parser performs no registry access, Cosign verification, transparency-log verification, scanner replay, or cryptographic verification. A canonical record can be forged offline. `record_valid=true` therefore means only schema-valid, canonical, internally consistent workflow assertions. The parser always fixes `cryptographic_verification_performed`, `publication_truth_established`, `signature_truth_established`, and `vulnerability_truth_established` to false. Independent consumers must verify the exact digest and Cosign evidence themselves or trust the authenticated GitHub workflow artifact channel; the record alone establishes none of those truths.
 
 Local inspection is nonpublishing:
 
@@ -73,7 +77,7 @@ Local inspection is nonpublishing:
 npx tsx scripts/release-image-receipt-cli.ts classify /path/release-image-receipt.canonical.json
 ```
 
-Classification success means `VALID_SIGNED_PUBLICATION_RECEIPT`. It still fixes all of these to false:
+Classification success means `VALID_WORKFLOW_ASSERTION_RECORD`. It still fixes all verified-truth fields and all of these readiness fields to false:
 
 - `runtime_qualification_observed`;
 - `readiness_promoted`;
@@ -84,4 +88,4 @@ Classification success means `VALID_SIGNED_PUBLICATION_RECEIPT`. It still fixes 
 
 Do not change the Stage 4 image lock, offline-readiness evidence, Stage 5 freeze, deployment inputs, or readiness claims before a successful run supplies both exact digest outputs and its valid canonical receipt. Even after such a run, promotion requires a separate reviewed change that consumes those digests and closes the remaining runtime and readiness evidence. The publication workflow itself writes no repository file and performs no readiness promotion.
 
-The cleanup step logs out of GHCR and removes Docker credentials, the tracked build context, scanner database/cache, raw scans, SBOM files, verification output, Cosign state, receipt staging directory, and locally installed npm dependencies after the receipt upload attempt.
+The cleanup step logs out of GHCR and removes Docker credentials, the tracked build context, scanner database/cache, raw scans, SBOM files, verification output, Cosign state, receipt staging directory, and locally installed npm dependencies after the record upload attempt. It aggregates every logout, image-removal, filesystem-removal, and absence-check failure and fails the job if any sensitive path remains.

@@ -7,13 +7,19 @@ import { type ModelApiKeySource, type OpenBaoIdentityPort, OpenBaoModelApiKeySto
 import { OpenBaoKubernetesWorkloadIdentity } from "../auth/openbao-workload-identity.ts";
 import { createNodeCogsEnvoyProcessPort } from "../egress/envoy-process.ts";
 import { OpenBaoEgressPkiSource } from "../egress/openbao-pki.ts";
+import { requireProxyCapability } from "../egress/proxy-capability.ts";
 import {
   type CogsEgressRuntimeManager,
   type CogsEgressRuntimeManagerOptions,
   startCogsEgressRuntimeManager,
 } from "../egress/runtime-manager.ts";
 import { type LaunchConfig, validateLaunchConfig } from "../launch/config.ts";
-import { type LaunchDependency, LaunchLifecycle, type LaunchLifecycleOptions } from "../launch/lifecycle.ts";
+import {
+  createCogsEgressRuntimeLaunchDependency,
+  type LaunchDependency,
+  LaunchLifecycle,
+  type LaunchLifecycleOptions,
+} from "../launch/lifecycle.ts";
 import {
   type AuthenticatedCogsPiSessionOptions,
   type CogsPiSessionPorts,
@@ -185,7 +191,6 @@ export async function startProductionWorker(
     const modelStore = seams.createModelStore(runtime, identity);
     let storage: Storage | undefined;
     let ssh: SshConnectionManager | undefined;
-    let egress: CogsEgressRuntimeManager | undefined;
 
     const dependency = (
       name: LaunchDependency["name"],
@@ -216,6 +221,46 @@ export async function startProductionWorker(
           }
         },
       });
+
+    const egressDependency = createCogsEgressRuntimeLaunchDependency(async (signal) => {
+      if (ssh === undefined) throw new Error("ssh unavailable");
+      return seams.createEgress({
+        launch,
+        walPath: runtime.paths.audit_wal,
+        listenerPort: runtime.egress.listener_port,
+        maxSessionExpiresAtMs: seams.now() + runtime.lifecycle.maximum_session_seconds * 1000,
+        completionCapacity: runtime.egress.completion_capacity,
+        revocation: {
+          mode: "openbao",
+          openbao: {
+            origin: runtime.openbao.origin,
+            mount: runtime.openbao.egress_kv_mount,
+            identity,
+          },
+        },
+        telemetry: { mode: "otlp", endpoint: runtime.otlp.logs_endpoint },
+        workerTelemetry: telemetry as CogsTelemetry,
+        proxyCapability,
+        pkiSource: new OpenBaoEgressPkiSource({
+          origin: runtime.openbao.origin,
+          mount: runtime.openbao.pki_mount,
+          role: runtime.openbao.pki_role,
+          identity,
+        }),
+        envoyProcess: createNodeCogsEnvoyProcessPort({
+          executablePath: runtime.paths.envoy_executable,
+          startupTimeoutMs: 5000,
+          closeTimeoutMs: runtime.lifecycle.shutdown_timeout_seconds * 1000,
+        }),
+        randomSecret: seams.randomSecret,
+        onReplacementRequired: async () => lifecycle?.dependencyLost("egressRuntime"),
+        nowMs: seams.now,
+        timers: Object.freeze({ setTimeout, clearTimeout }),
+        signal,
+        policyAuthorizer: POLICY,
+        revocationPollIntervalMs: runtime.egress.revocation_poll_seconds * 1000,
+      });
+    });
 
     lifecycle = seams.createLifecycle({
       launchDocument: launch,
@@ -270,47 +315,9 @@ export async function startProductionWorker(
         ),
         dependency(
           "egressRuntime",
-          async (signal) => {
-            if (ssh === undefined) throw new Error("ssh unavailable");
-            egress = await seams.createEgress({
-              launch,
-              walPath: runtime.paths.audit_wal,
-              listenerPort: runtime.egress.listener_port,
-              maxSessionExpiresAtMs: seams.now() + runtime.lifecycle.maximum_session_seconds * 1000,
-              completionCapacity: runtime.egress.completion_capacity,
-              revocation: {
-                mode: "openbao",
-                openbao: {
-                  origin: runtime.openbao.origin,
-                  mount: runtime.openbao.egress_kv_mount,
-                  identity,
-                },
-              },
-              telemetry: { mode: "otlp", endpoint: runtime.otlp.logs_endpoint },
-              workerTelemetry: telemetry as CogsTelemetry,
-              proxyCapability,
-              pkiSource: new OpenBaoEgressPkiSource({
-                origin: runtime.openbao.origin,
-                mount: runtime.openbao.pki_mount,
-                role: runtime.openbao.pki_role,
-                identity,
-              }),
-              envoyProcess: createNodeCogsEnvoyProcessPort({
-                executablePath: runtime.paths.envoy_executable,
-                startupTimeoutMs: 5000,
-                closeTimeoutMs: runtime.lifecycle.shutdown_timeout_seconds * 1000,
-              }),
-              randomSecret: seams.randomSecret,
-              onReplacementRequired: async () => lifecycle?.dependencyLost("egressRuntime"),
-              nowMs: seams.now,
-              timers: Object.freeze({ setTimeout, clearTimeout }),
-              signal,
-              policyAuthorizer: POLICY,
-              revocationPollIntervalMs: runtime.egress.revocation_poll_seconds * 1000,
-            });
-          },
-          async () => egress?.close(),
-          () => egress?.ready === true,
+          (signal) => egressDependency.start(signal),
+          (signal) => egressDependency.shutdown(signal),
+          () => egressDependency.ready?.() === true,
         ),
       ]),
       onEvent: (event) => {
@@ -495,7 +502,7 @@ async function strictOwnedDirectory(path: string): Promise<void> {
 }
 
 function validateProxyCapability(value: string): void {
-  if (typeof value !== "string" || !/^[\x21-\x7e]{16,256}$/.test(value)) throw new Error("bad capability");
+  requireProxyCapability(value);
 }
 
 function effectiveId(kind: "uid" | "gid"): number {

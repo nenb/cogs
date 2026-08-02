@@ -133,9 +133,12 @@ test("entrypoint is valid Bash and exposes bounded pure capability and literal-e
   assert.equal(valid.status, 0, valid.stderr);
 
   for (const hostile of [
-    "validate_capability short",
+    `validate_capability ${"A".repeat(31)}`,
     `validate_capability ${"A".repeat(129)}`,
     "validate_capability 'A capability containing spaces'",
+    `validate_capability ${"A".repeat(31)}+`,
+    `validate_capability ${"A".repeat(31)}=`,
+    `validate_capability ${"A".repeat(31)}:`,
     "validate_proxy_endpoint http://proxy.internal:15001",
     "validate_proxy_endpoint http://192.0.2.1",
     "validate_proxy_endpoint http://user@192.0.2.1:15001",

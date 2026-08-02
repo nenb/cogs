@@ -2,16 +2,21 @@ const basicPrefix = "Basic ";
 const capabilityUsername = "cogs";
 const decodedPrefix = Buffer.from(`${capabilityUsername}:`, "ascii");
 const base64 = /^[A-Za-z0-9+/]+={0,2}$/;
-const capability = /^[\x21-\x7e]{16,256}$/;
-const maximumDecodedBytes = decodedPrefix.length + 1024;
+export const PROXY_CAPABILITY_PATTERN = /^[A-Za-z0-9_-]{32,128}$/u;
+const maximumDecodedBytes = decodedPrefix.length + 128;
+
+export function requireProxyCapability(value: string): string {
+  if (typeof value !== "string" || !PROXY_CAPABILITY_PATTERN.test(value)) throw new Error("invalid proxy capability");
+  return value;
+}
 
 /**
  * Encode exactly `Basic base64(ASCII("cogs:" + capability))`: one value, one
  * separating space, fixed username `cogs`, and the raw capability as password.
  */
 export function encodeProxyAuthorizationBasic(value: string): string {
-  if (typeof value !== "string" || !capability.test(value)) throw new Error("invalid proxy capability");
-  return `${basicPrefix}${Buffer.from(`${capabilityUsername}:${value}`, "ascii").toString("base64")}`;
+  const capability = requireProxyCapability(value);
+  return `${basicPrefix}${Buffer.from(`${capabilityUsername}:${capability}`, "ascii").toString("base64")}`;
 }
 
 /**

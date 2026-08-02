@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://cogs.dev/schemas/release-image-receipt-v1.json",
-  "title": "Protected-main release image publication receipt v1",
-  "description": "Canonical redacted evidence for exact linux/amd64 worker and sandbox publication. This receipt does not establish runtime qualification, production readiness, or release eligibility.",
+  "title": "Protected-main release image workflow assertion record v1",
+  "description": "Canonical redacted record of assertions made by the protected-main publication workflow. Static parsing does not verify publication, signatures, provenance, SBOMs, or vulnerability results and establishes no readiness or release eligibility.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -21,7 +21,7 @@
   ],
   "properties": {
     "version": { "const": "cogs.release-image-receipt/v1" },
-    "authority": { "const": "protected-main-github-actions-keyless-publication" },
+    "authority": { "const": "protected-main-github-actions-publication-assertion-record" },
     "repository": { "const": "nenb/cogs" },
     "source": {
       "type": "object",
@@ -75,12 +75,25 @@
     "tag_policy": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["format", "preexisting_tags_rejected", "latest_written", "mutable_alias_written"],
+      "required": [
+        "release_format",
+        "candidate_format",
+        "preexisting_release_tags_rejected",
+        "candidate_run_unique",
+        "release_tags_created_after_recorded_gates",
+        "release_tag_readback_recorded",
+        "latest_written",
+        "mutable_release_alias_written"
+      ],
       "properties": {
-        "format": { "const": "sha-<full-40-character-commit>" },
-        "preexisting_tags_rejected": { "const": true },
+        "release_format": { "const": "sha-<full-40-character-commit>" },
+        "candidate_format": { "const": "candidate-<full-40-character-commit>-<run-id>-<run-attempt>" },
+        "preexisting_release_tags_rejected": { "const": true },
+        "candidate_run_unique": { "const": true },
+        "release_tags_created_after_recorded_gates": { "const": true },
+        "release_tag_readback_recorded": { "const": true },
         "latest_written": { "const": false },
-        "mutable_alias_written": { "const": false }
+        "mutable_release_alias_written": { "const": false }
       }
     },
     "tools": {
@@ -133,12 +146,13 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "exact_protected_default_branch_source",
-        "publication_complete",
-        "buildkit_provenance_attached",
-        "sbom_attached",
-        "vulnerability_gate_passed",
-        "keyless_signatures_verified",
+        "workflow_recorded_exact_protected_default_branch_source",
+        "workflow_recorded_publication_complete",
+        "workflow_recorded_buildkit_provenance_attached",
+        "workflow_recorded_sbom_attached",
+        "workflow_recorded_vulnerability_gate_passed",
+        "workflow_recorded_keyless_signatures_verified",
+        "static_parser_cryptographic_verification_performed",
         "cloud_execution_observed",
         "kubernetes_execution_observed",
         "provider_execution_observed",
@@ -149,12 +163,13 @@
         "release_eligible"
       ],
       "properties": {
-        "exact_protected_default_branch_source": { "const": true },
-        "publication_complete": { "const": true },
-        "buildkit_provenance_attached": { "const": true },
-        "sbom_attached": { "const": true },
-        "vulnerability_gate_passed": { "const": true },
-        "keyless_signatures_verified": { "const": true },
+        "workflow_recorded_exact_protected_default_branch_source": { "const": true },
+        "workflow_recorded_publication_complete": { "const": true },
+        "workflow_recorded_buildkit_provenance_attached": { "const": true },
+        "workflow_recorded_sbom_attached": { "const": true },
+        "workflow_recorded_vulnerability_gate_passed": { "const": true },
+        "workflow_recorded_keyless_signatures_verified": { "const": true },
+        "static_parser_cryptographic_verification_performed": { "const": false },
         "cloud_execution_observed": { "const": false },
         "kubernetes_execution_observed": { "const": false },
         "provider_execution_observed": { "const": false },
@@ -228,7 +243,8 @@
       "required": [
         "role",
         "registry_repository",
-        "immutable_tag",
+        "candidate_tag",
+        "release_tag",
         "registry_digest",
         "exact_reference",
         "linux_amd64_manifest_digest",
@@ -241,7 +257,11 @@
       "properties": {
         "role": { "enum": ["worker", "sandbox"] },
         "registry_repository": { "enum": ["ghcr.io/nenb/cogs/worker", "ghcr.io/nenb/cogs/sandbox"] },
-        "immutable_tag": { "type": "string", "pattern": "^sha-[0-9a-f]{40}$" },
+        "candidate_tag": {
+          "type": "string",
+          "pattern": "^candidate-[0-9a-f]{40}-[1-9][0-9]{0,19}-1$"
+        },
+        "release_tag": { "type": "string", "pattern": "^sha-[0-9a-f]{40}$" },
         "registry_digest": { "$ref": "#/$defs/digest" },
         "exact_reference": {
           "type": "string",
@@ -252,13 +272,20 @@
         "buildkit_provenance": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["attached", "mode", "predicate_type", "build_type", "platform_verified", "readback_sha256"],
+          "required": [
+            "workflow_recorded_attached",
+            "mode",
+            "predicate_type",
+            "build_type",
+            "workflow_recorded_platform_verified",
+            "readback_sha256"
+          ],
           "properties": {
-            "attached": { "const": true },
+            "workflow_recorded_attached": { "const": true },
             "mode": { "const": "max" },
             "predicate_type": { "const": "https://slsa.dev/provenance/v0.2" },
             "build_type": { "const": "https://mobyproject.org/buildkit@v1" },
-            "platform_verified": { "const": true },
+            "workflow_recorded_platform_verified": { "const": true },
             "readback_sha256": { "$ref": "#/$defs/hexSha256" }
           }
         },
@@ -269,10 +296,10 @@
             "format",
             "predicate_type",
             "spdx_json_sha256",
-            "generated_for_exact_digest",
-            "attached",
-            "keyless_signed",
-            "signature_verified",
+            "workflow_recorded_generated_for_exact_digest",
+            "workflow_recorded_attached",
+            "workflow_recorded_keyless_signed",
+            "workflow_recorded_signature_verified",
             "certificate_identity",
             "certificate_oidc_issuer"
           ],
@@ -280,10 +307,10 @@
             "format": { "const": "spdx-json" },
             "predicate_type": { "const": "https://spdx.dev/Document" },
             "spdx_json_sha256": { "$ref": "#/$defs/hexSha256" },
-            "generated_for_exact_digest": { "const": true },
-            "attached": { "const": true },
-            "keyless_signed": { "const": true },
-            "signature_verified": { "const": true },
+            "workflow_recorded_generated_for_exact_digest": { "const": true },
+            "workflow_recorded_attached": { "const": true },
+            "workflow_recorded_keyless_signed": { "const": true },
+            "workflow_recorded_signature_verified": { "const": true },
             "certificate_identity": {
               "const": "https://github.com/nenb/cogs/.github/workflows/release-images.yml@refs/heads/main"
             },
@@ -382,11 +409,17 @@
         "signature": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["keyless", "digest_signed", "verified", "certificate_identity", "certificate_oidc_issuer"],
+          "required": [
+            "workflow_recorded_keyless",
+            "workflow_recorded_digest_signed",
+            "workflow_recorded_verified",
+            "certificate_identity",
+            "certificate_oidc_issuer"
+          ],
           "properties": {
-            "keyless": { "const": true },
-            "digest_signed": { "const": true },
-            "verified": { "const": true },
+            "workflow_recorded_keyless": { "const": true },
+            "workflow_recorded_digest_signed": { "const": true },
+            "workflow_recorded_verified": { "const": true },
             "certificate_identity": {
               "const": "https://github.com/nenb/cogs/.github/workflows/release-images.yml@refs/heads/main"
             },

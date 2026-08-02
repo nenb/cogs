@@ -219,11 +219,11 @@ export const STAGE4_READINESS_EXPECTED_ARTIFACTS = Object.freeze({
   repeatedRender: "60f73b0e5caa843c4db9431c63cdc13eada9088d6da16c974ef127c480235710",
   runtimePins: "1e683ef6513f9f86f7eaead0fd64d949f037afd06043882eb1b6514aa5c4a145",
   values: "e63a0fadebe16637cc97b21adeeb4ecf33efa8e76a1469e6008c7f7ed4fbb58f",
-  authenticatedRuntimeArtifacts: "64534165274dc2a149fd6d1c91115b91682235ce0246904377ae8291e037b6e6",
-  localValidationNormalized: "61cd989a78d141d4922e851fb8866e2ac1daf82fe4de2a57f57645b2963ef587",
+  authenticatedRuntimeArtifacts: "4c273d2d930e4ecfe7fd66298630456b102515521ed473207400048e269f7c42",
+  localValidationNormalized: "f7819f59e69304a7df5f1288e62674dff5ca5ac9a396ecedc95a7a7284b95d8d",
   renderReceipt: "b9634997067adef5816aac496c26acbdc1b2c6fc20fa0112f38efd6879e1f85b",
-  schemaInventory: "b2ca0d2f5147c5464cac26e875f5803e79807893ed0ed22eb31a23655541cbe4",
-  sourceInventoryNormalized: "6e9efe7a8f92e98c58e3387fca8724abbaf4353c6334ef6b96087b7629d8ab38",
+  schemaInventory: "e4c5a280d5b5d901bab2223e606e79c8496c2dfa245321143456f7bc47216a12",
+  sourceInventoryNormalized: "276ef2501971874cc34c036395e39b942bd7c64b0ae7026495ae3cdb0b045681",
 });
 /* stage4-readiness-anchor-end */
 

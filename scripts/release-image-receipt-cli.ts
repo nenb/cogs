@@ -27,13 +27,13 @@ try {
     const parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(boundedFile(inputPath))) as unknown;
     writeFileSync(outputPath, finalizeReleaseImageReceipt(parsed), { flag: "wx", mode: 0o600 });
     const result = classifyReleaseImageReceipt(Uint8Array.from(boundedFile(outputPath)));
-    if (!result.valid) throw new Error("finalized receipt did not classify as valid");
+    if (!result.record_valid) throw new Error("finalized assertion record did not classify as valid");
     process.stdout.write(Buffer.from(canonicalReleaseImageReceiptBytes(result as unknown as ReleaseReceiptJson)));
   } else if (command === "classify") {
     if (outputPath !== undefined) usage();
     const result = classifyReleaseImageReceipt(Uint8Array.from(boundedFile(inputPath)));
     process.stdout.write(Buffer.from(canonicalReleaseImageReceiptBytes(result as unknown as ReleaseReceiptJson)));
-    if (!result.valid) process.exitCode = 1;
+    if (!result.record_valid) process.exitCode = 1;
   } else {
     usage();
   }

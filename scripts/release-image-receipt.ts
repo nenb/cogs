@@ -86,9 +86,10 @@ function assertReceiptSemantics(value: unknown): asserts value is JsonObject {
       !DIGEST.test(childDigest) ||
       digest === childDigest ||
       image.exact_reference !== `${repository}@${digest}` ||
-      image.immutable_tag !== `sha-${source.reviewed_sha}`
+      image.release_tag !== `sha-${source.reviewed_sha}` ||
+      image.candidate_tag !== `candidate-${source.reviewed_sha}-${workflow.run_id}-${workflow.run_attempt}`
     ) {
-      throw new Error(`${role}: digest namespace, exact reference, platform manifest, or immutable tag mismatch`);
+      throw new Error(`${role}: digest namespace, exact reference, platform manifest, or tag identity mismatch`);
     }
     if (digests.has(digest)) throw new Error("worker and sandbox registry digests must differ");
     digests.add(digest);
@@ -139,17 +140,21 @@ function assertReceiptSemantics(value: unknown): asserts value is JsonObject {
 }
 
 export type ReleaseReceiptClassification = Readonly<{
-  authority: "release-image-receipt-classifier";
-  valid: boolean;
-  receipt_sha256: string | null;
-  publication_complete: boolean;
-  vulnerability_gate_passed: boolean;
-  signatures_verified: boolean;
+  authority: "static-release-image-assertion-record-parser";
+  record_valid: boolean;
+  record_sha256: string | null;
+  workflow_recorded_publication_complete: boolean;
+  workflow_recorded_vulnerability_gate_passed: boolean;
+  workflow_recorded_signatures_verified: boolean;
+  cryptographic_verification_performed: false;
+  publication_truth_established: false;
+  vulnerability_truth_established: false;
+  signature_truth_established: false;
   readiness_promoted: false;
   production_ready: false;
   release_eligible: false;
   reason_code:
-    | "VALID_SIGNED_PUBLICATION_RECEIPT"
+    | "VALID_WORKFLOW_ASSERTION_RECORD"
     | "BOUNDED_INPUT_VIOLATION"
     | "NON_CANONICAL_JSON"
     | "SCHEMA_OR_SEMANTIC_DRIFT";
@@ -159,14 +164,18 @@ function classification(
   reasonCode: ReleaseReceiptClassification["reason_code"],
   digest: string | null,
 ): ReleaseReceiptClassification {
-  const valid = reasonCode === "VALID_SIGNED_PUBLICATION_RECEIPT";
+  const recordValid = reasonCode === "VALID_WORKFLOW_ASSERTION_RECORD";
   return Object.freeze({
-    authority: "release-image-receipt-classifier",
-    valid,
-    receipt_sha256: digest,
-    publication_complete: valid,
-    vulnerability_gate_passed: valid,
-    signatures_verified: valid,
+    authority: "static-release-image-assertion-record-parser",
+    record_valid: recordValid,
+    record_sha256: digest,
+    workflow_recorded_publication_complete: recordValid,
+    workflow_recorded_vulnerability_gate_passed: recordValid,
+    workflow_recorded_signatures_verified: recordValid,
+    cryptographic_verification_performed: false,
+    publication_truth_established: false,
+    vulnerability_truth_established: false,
+    signature_truth_established: false,
     readiness_promoted: false,
     production_ready: false,
     release_eligible: false,
@@ -198,7 +207,7 @@ export function classifyReleaseImageReceipt(input: unknown): ReleaseReceiptClass
   } catch {
     return classification("SCHEMA_OR_SEMANTIC_DRIFT", digest);
   }
-  return classification("VALID_SIGNED_PUBLICATION_RECEIPT", digest);
+  return classification("VALID_WORKFLOW_ASSERTION_RECORD", digest);
 }
 
 export const RELEASE_IMAGE_RECEIPT_LIMITS = Object.freeze({ max_receipt_bytes: MAX_RECEIPT_BYTES });

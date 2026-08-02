@@ -16,7 +16,7 @@ import type { SshConnectionManager, SshConnectionManagerOptions } from "../src/s
 import { type CogsWorkerTelemetrySink, createCogsWorkerTelemetrySink } from "../src/telemetry/worker-telemetry.ts";
 
 const secretBearer = "bearer-production-value-000000000000";
-const secretProxy = "proxy-production-capability";
+const secretProxy = "proxy-production-capability-00000";
 
 function runtime(): RuntimeConfig {
   return {
@@ -395,6 +395,45 @@ test("dependency loss revokes the runtime, and close uncertainty remains a gener
   const second = await startProductionWorker({ seams: uncertain.seams });
   await assert.rejects(second.close(), ProductionWorkerError);
   await assert.rejects(second.closed, ProductionWorkerError);
+});
+
+test("late egress startup remains owned and is closed after startup abort", async () => {
+  const h = harness();
+  const controller = new AbortController();
+  let enter!: () => void;
+  const entered = new Promise<void>((resolve) => {
+    enter = resolve;
+  });
+  let release!: () => void;
+  const delayed = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let closes = 0;
+  const manager: CogsEgressRuntimeManager = Object.freeze({
+    ready: true,
+    listenerPort: 18080,
+    replacementRequired: false,
+    drainCompletions: () => Object.freeze([]),
+    close: async () => {
+      closes += 1;
+    },
+  });
+  const seams: ProductionWorkerSeams = Object.freeze({
+    ...h.seams,
+    createEgress: async () => {
+      enter();
+      await delayed;
+      return manager;
+    },
+  });
+  const start = startProductionWorker({ signal: controller.signal, seams });
+  await entered;
+  controller.abort();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(closes, 0);
+  release();
+  await assert.rejects(start, ProductionWorkerError);
+  assert.equal(closes, 1);
 });
 
 test("caller abort is bounded/idempotent and a running Pi turn is disposed without claiming a settled export", async () => {

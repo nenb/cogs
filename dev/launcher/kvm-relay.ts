@@ -487,7 +487,7 @@ function requireSecretHolder(holder: unknown): asserts holder is SecretHolder {
 }
 
 function validateProxySecret(secret: string): string {
-  if (typeof secret !== "string" || !/^[A-Za-z0-9_-]{22,256}$/u.test(secret)) fail();
+  if (typeof secret !== "string" || !/^[A-Za-z0-9_-]{32,128}$/u.test(secret)) fail();
   return secret;
 }
 

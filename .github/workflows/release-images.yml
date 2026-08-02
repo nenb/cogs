@@ -108,6 +108,8 @@ jobs:
           API_URL: ${{ github.api_url }}
           REPOSITORY: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
+          EVENT_SHA: ${{ github.sha }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
         run: |
           set -euo pipefail
           export DOCKER_CONFIG="$RUNNER_TEMP/cogs-release-docker-config"
@@ -124,12 +126,14 @@ jobs:
             printf 'RECEIPT=%s\n' "$RECEIPT"
             printf 'COSIGN_HOME=%s\n' "$COSIGN_HOME"
           } >> "$GITHUB_ENV"
-          test "$(git rev-parse --verify HEAD^{commit})" = "$REVIEWED_SHA"
-          test "$REVIEWED_SHA" = "${{ github.sha }}"
-          test "$REVIEWED_SHA" = "${{ github.workflow_sha }}"
+          test "$(git rev-parse --verify 'HEAD^{commit}')" = "$REVIEWED_SHA"
+          test "$REVIEWED_SHA" = "$EVENT_SHA"
+          test "$REVIEWED_SHA" = "$WORKFLOW_SHA"
           test -z "$(git status --porcelain=v1 --untracked-files=all)"
           test -z "$(git config --local --get-regexp 'credential\.helper|http\..*\.extraheader' || :)"
-          ! git remote get-url origin | grep -Eq '://[^/]*@'
+          if git remote get-url origin | grep -Eq '://[^/]*@'; then
+            exit 1
+          fi
           mkdir -m 0700 "$DOCKER_CONFIG" "$CONTEXT" "$WORK" "$CACHE" "$RECEIPT" "$COSIGN_HOME"
           response="$WORK/default-head.json"
           curl --fail --silent --show-error --proto '=https' --tlsv1.2 \
@@ -184,15 +188,18 @@ jobs:
             docker image inspect "$image" --format '{{json .RepoDigests}}' | \
               jq -e --arg suffix "@$digest" 'any(.[]; endswith($suffix))' >/dev/null
           done
-          tag="sha-$REVIEWED_SHA"
+          release_tag="sha-$REVIEWED_SHA"
+          candidate_tag="candidate-$REVIEWED_SHA-${{ github.run_id }}-${{ github.run_attempt }}"
           for repository in "$WORKER_REPOSITORY" "$SANDBOX_REPOSITORY"; do
-            error="$WORK/tag-check-$(basename "$repository").stderr"
-            if docker buildx imagetools inspect "$repository:$tag" >/dev/null 2>"$error"; then
-              printf 'Refusing to overwrite pre-existing tag %s:%s\n' "$repository" "$tag" >&2
-              exit 1
-            fi
-            grep -Eqi 'not found|manifest unknown' "$error"
-            rm -f "$error"
+            for tag in "$release_tag" "$candidate_tag"; do
+              error="$WORK/tag-check-$(basename "$repository")-$tag.stderr"
+              if docker buildx imagetools inspect "$repository:$tag" >/dev/null 2>"$error"; then
+                printf 'Refusing to overwrite pre-existing tag %s:%s\n' "$repository" "$tag" >&2
+                exit 1
+              fi
+              grep -Eqi 'not found|manifest unknown' "$error"
+              rm -f "$error"
+            done
           done
 
       - name: Build and publish exact worker with attached BuildKit provenance
@@ -205,7 +212,7 @@ jobs:
           pull: true
           no-cache: true
           push: true
-          tags: ghcr.io/nenb/cogs/worker:sha-${{ needs.authority.outputs.reviewed_sha }}
+          tags: ghcr.io/nenb/cogs/worker:candidate-${{ needs.authority.outputs.reviewed_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           provenance: mode=max
           sbom: false
 
@@ -219,7 +226,7 @@ jobs:
           pull: true
           no-cache: true
           push: true
-          tags: ghcr.io/nenb/cogs/sandbox:sha-${{ needs.authority.outputs.reviewed_sha }}
+          tags: ghcr.io/nenb/cogs/sandbox:candidate-${{ needs.authority.outputs.reviewed_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           provenance: mode=max
           sbom: false
 
@@ -236,7 +243,10 @@ jobs:
             digest=${!digest_name}
             [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
             subject="$repository@$digest"
+            candidate="$repository:candidate-$REVIEWED_SHA-${{ github.run_id }}-${{ github.run_attempt }}"
             docker buildx imagetools inspect --raw "$subject" > "$WORK/$role.index.json"
+            docker buildx imagetools inspect --raw "$candidate" > "$WORK/$role.candidate-index.json"
+            cmp "$WORK/$role.index.json" "$WORK/$role.candidate-index.json"
             test "sha256:$(sha256sum "$WORK/$role.index.json" | awk '{print $1}')" = "$digest"
             child=$(jq -er \
               '[.manifests[] | select(.platform.os == "linux" and .platform.architecture == "amd64" and (.platform.variant // null) == null)] | if length == 1 then .[0].digest else error("one linux/amd64 image required") end' \
@@ -345,7 +355,28 @@ jobs:
             test -s "$WORK/$role.sbom-verification.jsonl"
           done
 
-      - name: Generate and classify one canonical redacted receipt
+      - name: Create final full-SHA tags only after gates and verify exact digest readback
+        run: |
+          set -euo pipefail
+          release_tag="sha-$REVIEWED_SHA"
+          for role in worker sandbox; do
+            repository_name="${role^^}_REPOSITORY"
+            repository=${!repository_name}
+            digest=$(cat "$WORK/$role.registry-digest")
+            error="$WORK/final-tag-check-$role.stderr"
+            if docker buildx imagetools inspect "$repository:$release_tag" >/dev/null 2>"$error"; then
+              printf 'Refusing to overwrite raced release tag %s:%s\n' "$repository" "$release_tag" >&2
+              exit 1
+            fi
+            grep -Eqi 'not found|manifest unknown' "$error"
+            rm -f "$error"
+            docker buildx imagetools create --tag "$repository:$release_tag" "$repository@$digest"
+            docker buildx imagetools inspect --raw "$repository:$release_tag" > "$WORK/$role.release-index.json"
+            cmp "$WORK/$role.index.json" "$WORK/$role.release-index.json"
+            test "sha256:$(sha256sum "$WORK/$role.release-index.json" | awk '{print $1}')" = "$digest"
+          done
+
+      - name: Generate and classify one canonical redacted workflow assertion record
         run: |
           set -euo pipefail
           worker_digest=$(cat "$WORK/worker.registry-digest")
@@ -389,13 +420,14 @@ jobs:
               {
                 role:$role,
                 registry_repository:$repository,
-                immutable_tag:("sha-" + $sha),
+                candidate_tag:("candidate-" + $sha + "-${{ github.run_id }}-${{ github.run_attempt }}"),
+                release_tag:("sha-" + $sha),
                 registry_digest:$digest,
                 exact_reference:($repository + "@" + $digest),
                 linux_amd64_manifest_digest:$child,
                 dockerfile:{path:$dockerfile,sha256:$dockerfile_sha},
-                buildkit_provenance:{attached:true,mode:"max",predicate_type:"https://slsa.dev/provenance/v0.2",build_type:"https://mobyproject.org/buildkit@v1",platform_verified:true,readback_sha256:$provenance_sha},
-                sbom:{format:"spdx-json",predicate_type:"https://spdx.dev/Document",spdx_json_sha256:$sbom_sha,generated_for_exact_digest:true,attached:true,keyless_signed:true,signature_verified:true,certificate_identity:$identity,certificate_oidc_issuer:$issuer},
+                buildkit_provenance:{workflow_recorded_attached:true,mode:"max",predicate_type:"https://slsa.dev/provenance/v0.2",build_type:"https://mobyproject.org/buildkit@v1",workflow_recorded_platform_verified:true,readback_sha256:$provenance_sha},
+                sbom:{format:"spdx-json",predicate_type:"https://spdx.dev/Document",spdx_json_sha256:$sbom_sha,workflow_recorded_generated_for_exact_digest:true,workflow_recorded_attached:true,workflow_recorded_keyless_signed:true,workflow_recorded_signature_verified:true,certificate_identity:$identity,certificate_oidc_issuer:$issuer},
                 vulnerabilities:{
                   scanned_reference:($repository + "@" + $digest),
                   report_sha256:$vulnerabilities_sha,
@@ -410,22 +442,22 @@ jobs:
                     high_critical:{count:($counts.high + $counts.critical),semantics:"release-receipt-blocking-including-unfixed"}
                   }
                 },
-                signature:{keyless:true,digest_signed:true,verified:true,certificate_identity:$identity,certificate_oidc_issuer:$issuer}
+                signature:{workflow_recorded_keyless:true,workflow_recorded_digest_signed:true,workflow_recorded_verified:true,certificate_identity:$identity,certificate_oidc_issuer:$issuer}
               };
             {
               version:"cogs.release-image-receipt/v1",
-              authority:"protected-main-github-actions-keyless-publication",
+              authority:"protected-main-github-actions-publication-assertion-record",
               repository:"nenb/cogs",
               source:{reviewed_sha:$sha,default_branch:"main",protected:true,observed_head_sha:$sha,tree_sha:$source[0].tree_sha,inventory_sha256:$source[0].inventory_sha256},
               workflow:{path:".github/workflows/release-images.yml",ref:"refs/heads/main",sha:$sha,event:"workflow_dispatch",run_id:$run_id,run_attempt:1,certificate_identity:$identity,certificate_oidc_issuer:$issuer},
               target:{os:"linux",architecture:"amd64",variant:null},
-              tag_policy:{format:"sha-<full-40-character-commit>",preexisting_tags_rejected:true,latest_written:false,mutable_alias_written:false},
+              tag_policy:{release_format:"sha-<full-40-character-commit>",candidate_format:"candidate-<full-40-character-commit>-<run-id>-<run-attempt>",preexisting_release_tags_rejected:true,candidate_run_unique:true,release_tags_created_after_recorded_gates:true,release_tag_readback_recorded:true,latest_written:false,mutable_release_alias_written:false},
               tools:{buildkit_image:$buildkit,syft_image:$syft,trivy_image:$trivy,trivy_database:$trivy_database,cosign_image:$cosign},
               images:[
                 image("worker";"ghcr.io/nenb/cogs/worker";$worker_digest;$worker_child;"images/worker/Dockerfile";$worker_dockerfile_sha;$worker_provenance_sha;$worker_sbom_sha;$worker_vulnerabilities_sha;$worker_counts[0]),
                 image("sandbox";"ghcr.io/nenb/cogs/sandbox";$sandbox_digest;$sandbox_child;"images/sandbox/Dockerfile";$sandbox_dockerfile_sha;$sandbox_provenance_sha;$sandbox_sbom_sha;$sandbox_vulnerabilities_sha;$sandbox_counts[0])
               ],
-              claims:{exact_protected_default_branch_source:true,publication_complete:true,buildkit_provenance_attached:true,sbom_attached:true,vulnerability_gate_passed:true,keyless_signatures_verified:true,cloud_execution_observed:false,kubernetes_execution_observed:false,provider_execution_observed:false,external_model_execution_observed:false,runtime_qualification_observed:false,readiness_promoted:false,production_ready:false,release_eligible:false},
+              claims:{workflow_recorded_exact_protected_default_branch_source:true,workflow_recorded_publication_complete:true,workflow_recorded_buildkit_provenance_attached:true,workflow_recorded_sbom_attached:true,workflow_recorded_vulnerability_gate_passed:true,workflow_recorded_keyless_signatures_verified:true,static_parser_cryptographic_verification_performed:false,cloud_execution_observed:false,kubernetes_execution_observed:false,provider_execution_observed:false,external_model_execution_observed:false,runtime_qualification_observed:false,readiness_promoted:false,production_ready:false,release_eligible:false},
               blockers:["RUNTIME_CONFORMANCE_NOT_EXECUTED","READINESS_PROMOTION_REQUIRES_SEPARATE_REVIEW","RELEASE_ELIGIBILITY_UNCHANGED_FALSE"],
               redaction:{actor_omitted:true,tokens_omitted:true,runner_details_omitted:true,raw_scanner_findings_omitted:true}
             }' > "$WORK/receipt.draft.json"
@@ -433,9 +465,15 @@ jobs:
             "$WORK/receipt.draft.json" "$RECEIPT/release-image-receipt.canonical.json" \
             > "$WORK/receipt-classification.json"
           jq -e '
-            .reason_code == "VALID_SIGNED_PUBLICATION_RECEIPT" and
-            .valid == true and .publication_complete == true and
-            .vulnerability_gate_passed == true and .signatures_verified == true and
+            .reason_code == "VALID_WORKFLOW_ASSERTION_RECORD" and
+            .record_valid == true and
+            .workflow_recorded_publication_complete == true and
+            .workflow_recorded_vulnerability_gate_passed == true and
+            .workflow_recorded_signatures_verified == true and
+            .cryptographic_verification_performed == false and
+            .publication_truth_established == false and
+            .vulnerability_truth_established == false and
+            .signature_truth_established == false and
             .readiness_promoted == false and .production_ready == false and .release_eligible == false' \
             "$WORK/receipt-classification.json" >/dev/null
           test "$(find "$RECEIPT" -type f | wc -l | tr -d ' ')" = 1
@@ -451,7 +489,7 @@ jobs:
           printf 'worker_digest=%s\n' "$worker_digest" >> "$GITHUB_OUTPUT"
           printf 'sandbox_digest=%s\n' "$sandbox_digest" >> "$GITHUB_OUTPUT"
 
-      - name: Upload the single canonical redacted release-image receipt
+      - name: Upload the single canonical redacted workflow assertion record
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-image-receipt-${{ needs.authority.outputs.reviewed_sha }}-${{ github.run_id }}
@@ -465,12 +503,20 @@ jobs:
         if: ${{ always() }}
         run: |
           set +e
-          docker logout ghcr.io >/dev/null 2>&1
-          docker image rm "$SYFT_IMAGE" "$TRIVY_IMAGE" "$COSIGN_IMAGE" >/dev/null 2>&1
-          rm -rf -- "$DOCKER_CONFIG" "$CONTEXT" "$WORK" "$CACHE" "$RECEIPT" "$COSIGN_HOME" "$GITHUB_WORKSPACE/node_modules"
-          test ! -e "$DOCKER_CONFIG"
-          test ! -e "$CONTEXT"
-          test ! -e "$WORK"
-          test ! -e "$CACHE"
-          test ! -e "$RECEIPT"
-          test ! -e "$COSIGN_HOME"
+          status=0
+          DOCKER_CONFIG=${DOCKER_CONFIG:-"$RUNNER_TEMP/cogs-release-docker-config"}
+          CONTEXT=${CONTEXT:-"$RUNNER_TEMP/cogs-release-context"}
+          WORK=${WORK:-"$RUNNER_TEMP/cogs-release-work"}
+          CACHE=${CACHE:-"$RUNNER_TEMP/cogs-release-trivy-cache"}
+          RECEIPT=${RECEIPT:-"$RUNNER_TEMP/cogs-release-receipt"}
+          COSIGN_HOME=${COSIGN_HOME:-"$RUNNER_TEMP/cogs-release-cosign-home"}
+          docker logout ghcr.io >/dev/null 2>&1 || status=1
+          docker image rm "$SYFT_IMAGE" "$TRIVY_IMAGE" "$COSIGN_IMAGE" >/dev/null 2>&1 || status=1
+          rm -rf -- "$DOCKER_CONFIG" "$CONTEXT" "$WORK" "$CACHE" "$RECEIPT" "$COSIGN_HOME" "$GITHUB_WORKSPACE/node_modules" || status=1
+          for path in "$DOCKER_CONFIG" "$CONTEXT" "$WORK" "$CACHE" "$RECEIPT" "$COSIGN_HOME" "$GITHUB_WORKSPACE/node_modules"; do
+            if [[ -e "$path" || -L "$path" ]]; then
+              printf 'Cleanup retained sensitive path: %s\n' "$path" >&2
+              status=1
+            fi
+          done
+          exit "$status"

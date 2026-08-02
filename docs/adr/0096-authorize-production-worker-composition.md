@@ -35,6 +35,7 @@ Authorize one production worker, not a daemon or launcher:
 7. Session and agent roots are fixed persistent worker-owned directories. Shutdown first closes API admission, then asks an idle Pi session to flush/checkpoint and create its existing raw sensitive export before disposal. A running turn is aborted by disposal rather than falsely reported settled. Production does not enable Pi-owned deletion.
 8. The API may bind only the runtime contract's `127.0.0.1` or `0.0.0.0`, remains bearer-authenticated except for liveness, and exposes only the already implemented raw export path; no sanitizer, restore, or alternate export mode is added.
 9. `src/main.ts` accepts no arguments or environment-selected credentials. SIGINT and SIGTERM share one idempotent close, have a 31-second hard process deadline, and leave a nonzero status on startup, spontaneous runtime, or uncertain cleanup failure.
+10. Review correction: production composition delegates egress startup to the retained `createCogsEgressRuntimeLaunchDependency` owner. Shutdown records the request before awaiting startup and closes a manager even when it resolves after abort; generic composition never treats an unresolved egress acquisition as unowned. Proxy capabilities use one base64url-without-padding grammar of 32 through 128 characters in worker, manager, authorization server, launcher relay, and sandbox.
 
 No dependency is added.
 

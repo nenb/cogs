@@ -20,7 +20,7 @@ import { encodeProxyAuthorizationBasic } from "../src/egress/proxy-capability.ts
 import type { CogsEgressRoutePlan } from "../src/egress/route-policy.ts";
 
 const token = "internal-token-1";
-const capability = "capability-token-0123456789";
+const capability = "capability-token-0123456789abcdef";
 const proxyAuthorization = encodeProxyAuthorizationBasic(capability);
 const session = "session-1";
 const routeId = "route-https";
@@ -207,10 +207,21 @@ function intentId(response: unknown): string | undefined {
   ).dynamic_metadata?.fields?.find((f) => f.key === "x-cogs-intent-id")?.value.string_value;
 }
 
-test("proxy capability wire encoding is fixed Basic username and canonical Base64", () => {
-  assert.equal(proxyAuthorization, "Basic Y29nczpjYXBhYmlsaXR5LXRva2VuLTAxMjM0NTY3ODk=");
-  assert.throws(() => encodeProxyAuthorizationBasic(""));
-  assert.throws(() => encodeProxyAuthorizationBasic("contains space capability"));
+test("proxy capability wire encoding enforces one base64url 32..128 grammar and canonical Basic", () => {
+  assert.equal(proxyAuthorization, "Basic Y29nczpjYXBhYmlsaXR5LXRva2VuLTAxMjM0NTY3ODlhYmNkZWY=");
+  for (const valid of ["A".repeat(32), "a-_9".repeat(32)])
+    assert.doesNotThrow(() => encodeProxyAuthorizationBasic(valid));
+  for (const invalid of [
+    "",
+    "A".repeat(31),
+    "A".repeat(129),
+    "contains space capability value",
+    `${"A".repeat(31)}+`,
+    `${"A".repeat(31)}/`,
+    `${"A".repeat(31)}=`,
+    `${"A".repeat(31)}:`,
+  ])
+    assert.throws(() => encodeProxyAuthorizationBasic(invalid), invalid);
 });
 
 test("loopback server authorizes capability without WAL or intent metadata", async () => {
@@ -219,7 +230,7 @@ test("loopback server authorizes capability without WAL or intent metadata", asy
       const ok = await call(server.target, capabilityRequest());
       assert.equal(intentId(ok), undefined);
       assert.equal(wal.records.length, 0);
-      const wrongPassword = encodeProxyAuthorizationBasic("wrong-capability-0123456789");
+      const wrongPassword = encodeProxyAuthorizationBasic("wrong-capability-0123456789abcdef");
       const wrongUsername = `Basic ${Buffer.from(`other:${capability}`, "ascii").toString("base64")}`;
       for (const malformed of [
         capability,

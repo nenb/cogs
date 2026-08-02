@@ -13,7 +13,7 @@ import {
 import type { EgressAuditWal } from "./audit-wal.ts";
 import { buildExtAuthzResponse, type CogsExtAuthzCheck, parseExtAuthzCheck } from "./ext-authz-adapter.ts";
 import { loadExtAuthzDescriptor } from "./ext-authz-descriptor.ts";
-import { decodeProxyAuthorizationBasic } from "./proxy-capability.ts";
+import { decodeProxyAuthorizationBasic, requireProxyCapability } from "./proxy-capability.ts";
 import type { CogsEgressRoute, CogsEgressRoutePlan } from "./route-policy.ts";
 
 const maxActiveChecks = 32;
@@ -71,7 +71,7 @@ export async function startCogsExtAuthzServer(options: CogsExtAuthzServerOptions
     const userId = validOpaque(captured.userId);
     const sessionId = validOpaque(captured.sessionId);
     const internalToken = validSecret(captured.internalAuthzToken);
-    const proxyCapability = validSecret(captured.proxyCapability);
+    const proxyCapability = requireProxyCapability(captured.proxyCapability);
     try {
       if (
         captured.policyAuthorizer !== undefined &&

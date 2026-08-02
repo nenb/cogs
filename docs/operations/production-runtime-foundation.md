@@ -7,7 +7,7 @@ ADR 0095 adds only the strict inputs needed by a future production worker compos
 `schemas/runtime-v1alpha1.json` defines one canonical `cogs.runtime/v1alpha1` document. `src/runtime/config.ts` safely snapshots direct objects and parses canonical UTF-8 JSON bytes with a final LF. The contract is deliberately closed:
 
 - release profile is exactly `api-key-only`;
-- launch, API bearer, projected JWT, proxy capability, Envoy, tmpfs, WAL, session, and skill paths are fixed;
+- launch, API bearer, projected JWT, proxy capability, Envoy, tmpfs, WAL, session, and skill paths are fixed; the shared proxy-capability grammar is base64url without padding, 32 through 128 characters;
 - API and egress ports are bounded and distinct;
 - OpenBao is canonical HTTPS with bounded Kubernetes-auth, KV, and PKI names;
 - projected JWT and OpenBao client-token TTL bounds are exactly 600 seconds;
@@ -49,7 +49,7 @@ No OpenBao token appears in the runtime or launch document. There is no HTTP dev
 
 ## Deliberately absent
 
-ADR 0096 and the later image-source changes now provide `src/main.ts`, fail-closed production composition, bounded API bind/shutdown persistence wiring, the canonical Basic proxy capability, worker-owned Envoy process composition, production worker image source, and the Kata guest image/entrypoint source. Those are locally tested source contracts only; they are not runtime, image-build, publication, deployment, or isolation observations.
+ADR 0096 and the later image-source changes now provide `src/main.ts`, fail-closed production composition, bounded API bind/shutdown persistence wiring, the canonical Basic proxy capability, worker-owned Envoy process composition, production worker image source, and the Kata guest image/entrypoint source. Egress startup uses retained lifecycle ownership: an abort waits for or subsequently closes any manager that resolves late, so a late Envoy cannot escape rollback ownership. Those are locally tested source contracts only; they are not runtime, image-build, publication, deployment, or isolation observations.
 
 The following remain deliberately absent:
 

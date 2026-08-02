@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import test from "node:test";
 import type { Ajv as AjvCore, Options } from "ajv";
 import {
@@ -31,7 +33,8 @@ function receiptFixture(): Record<string, unknown> {
     return {
       role,
       registry_repository: repository,
-      immutable_tag: `sha-${sha}`,
+      candidate_tag: `candidate-${sha}-123-1`,
+      release_tag: `sha-${sha}`,
       registry_digest: registryDigest,
       exact_reference: `${repository}@${registryDigest}`,
       linux_amd64_manifest_digest: childDigest,
@@ -40,21 +43,21 @@ function receiptFixture(): Record<string, unknown> {
         sha256: role === "worker" ? "5".repeat(64) : "6".repeat(64),
       },
       buildkit_provenance: {
-        attached: true,
+        workflow_recorded_attached: true,
         mode: "max",
         predicate_type: "https://slsa.dev/provenance/v0.2",
         build_type: "https://mobyproject.org/buildkit@v1",
-        platform_verified: true,
+        workflow_recorded_platform_verified: true,
         readback_sha256: role === "worker" ? "c".repeat(64) : "d".repeat(64),
       },
       sbom: {
         format: "spdx-json",
         predicate_type: "https://spdx.dev/Document",
         spdx_json_sha256: role === "worker" ? "e".repeat(64) : "f".repeat(64),
-        generated_for_exact_digest: true,
-        attached: true,
-        keyless_signed: true,
-        signature_verified: true,
+        workflow_recorded_generated_for_exact_digest: true,
+        workflow_recorded_attached: true,
+        workflow_recorded_keyless_signed: true,
+        workflow_recorded_signature_verified: true,
         certificate_identity: identity,
         certificate_oidc_issuer: issuer,
       },
@@ -82,9 +85,9 @@ function receiptFixture(): Record<string, unknown> {
         },
       },
       signature: {
-        keyless: true,
-        digest_signed: true,
-        verified: true,
+        workflow_recorded_keyless: true,
+        workflow_recorded_digest_signed: true,
+        workflow_recorded_verified: true,
         certificate_identity: identity,
         certificate_oidc_issuer: issuer,
       },
@@ -92,7 +95,7 @@ function receiptFixture(): Record<string, unknown> {
   };
   return {
     version: "cogs.release-image-receipt/v1",
-    authority: "protected-main-github-actions-keyless-publication",
+    authority: "protected-main-github-actions-publication-assertion-record",
     repository: "nenb/cogs",
     source: {
       reviewed_sha: sha,
@@ -114,10 +117,14 @@ function receiptFixture(): Record<string, unknown> {
     },
     target: { os: "linux", architecture: "amd64", variant: null },
     tag_policy: {
-      format: "sha-<full-40-character-commit>",
-      preexisting_tags_rejected: true,
+      release_format: "sha-<full-40-character-commit>",
+      candidate_format: "candidate-<full-40-character-commit>-<run-id>-<run-attempt>",
+      preexisting_release_tags_rejected: true,
+      candidate_run_unique: true,
+      release_tags_created_after_recorded_gates: true,
+      release_tag_readback_recorded: true,
       latest_written: false,
-      mutable_alias_written: false,
+      mutable_release_alias_written: false,
     },
     tools: {
       buildkit_image: pinned("docker.io/moby/buildkit", "7"),
@@ -149,12 +156,13 @@ function receiptFixture(): Record<string, unknown> {
       }),
     ],
     claims: {
-      exact_protected_default_branch_source: true,
-      publication_complete: true,
-      buildkit_provenance_attached: true,
-      sbom_attached: true,
-      vulnerability_gate_passed: true,
-      keyless_signatures_verified: true,
+      workflow_recorded_exact_protected_default_branch_source: true,
+      workflow_recorded_publication_complete: true,
+      workflow_recorded_buildkit_provenance_attached: true,
+      workflow_recorded_sbom_attached: true,
+      workflow_recorded_vulnerability_gate_passed: true,
+      workflow_recorded_keyless_signatures_verified: true,
+      static_parser_cryptographic_verification_performed: false,
       cloud_execution_observed: false,
       kubernetes_execution_observed: false,
       provider_execution_observed: false,
@@ -180,7 +188,7 @@ function receiptFixture(): Record<string, unknown> {
 
 const canonical = (value: unknown) => canonicalReleaseImageReceiptBytes(value as ReleaseReceiptJson);
 
-test("release receipt schema and classifier accept only the canonical signed publication evidence", () => {
+test("release record parser accepts canonical workflow assertions without elevating them to verified truth", () => {
   const value = receiptFixture();
   const schema = JSON.parse(readFileSync(resolve(root, "schemas/release-image-receipt-v1.json"), "utf8"));
   const ajv = new Ajv2020({ allErrors: true, strict: true, strictRequired: false, ownProperties: true });
@@ -189,18 +197,22 @@ test("release receipt schema and classifier accept only the canonical signed pub
   const bytes = canonical(value);
   assert.deepEqual(Buffer.from(finalizeReleaseImageReceipt(value)), Buffer.from(bytes));
   const result = classifyReleaseImageReceipt(Uint8Array.from(bytes));
-  assert.equal(result.valid, true);
-  assert.equal(result.reason_code, "VALID_SIGNED_PUBLICATION_RECEIPT");
-  assert.equal(result.publication_complete, true);
-  assert.equal(result.vulnerability_gate_passed, true);
-  assert.equal(result.signatures_verified, true);
+  assert.equal(result.record_valid, true);
+  assert.equal(result.reason_code, "VALID_WORKFLOW_ASSERTION_RECORD");
+  assert.equal(result.workflow_recorded_publication_complete, true);
+  assert.equal(result.workflow_recorded_vulnerability_gate_passed, true);
+  assert.equal(result.workflow_recorded_signatures_verified, true);
+  assert.equal(result.cryptographic_verification_performed, false);
+  assert.equal(result.publication_truth_established, false);
+  assert.equal(result.vulnerability_truth_established, false);
+  assert.equal(result.signature_truth_established, false);
   assert.equal(result.readiness_promoted, false);
   assert.equal(result.production_ready, false);
   assert.equal(result.release_eligible, false);
-  assert.match(result.receipt_sha256 ?? "", /^[0-9a-f]{64}$/u);
+  assert.match(result.record_sha256 ?? "", /^[0-9a-f]{64}$/u);
 });
 
-test("release receipt classifier rejects noncanonical, promoted, mismatched, and incomplete evidence", () => {
+test("release record parser rejects noncanonical, promoted, mismatched, and incomplete assertions", () => {
   const valid = receiptFixture();
   assert.equal(
     classifyReleaseImageReceipt(Uint8Array.from(Buffer.from(`${JSON.stringify(valid, null, 2)}\n`))).reason_code,
@@ -210,6 +222,13 @@ test("release receipt classifier rejects noncanonical, promoted, mismatched, and
     classifyReleaseImageReceipt(new Proxy(Uint8Array.from(canonical(valid)), {})).reason_code,
     "BOUNDED_INPUT_VIOLATION",
   );
+
+  const forged = structuredClone(valid);
+  const forgedResult = classifyReleaseImageReceipt(canonical(forged));
+  assert.equal(forgedResult.record_valid, true);
+  assert.equal(forgedResult.workflow_recorded_signatures_verified, true);
+  assert.equal(forgedResult.signature_truth_established, false);
+  assert.equal(forgedResult.cryptographic_verification_performed, false);
 
   const promoted = structuredClone(valid) as { claims: { readiness_promoted: boolean } };
   promoted.claims.readiness_promoted = true;
@@ -282,7 +301,7 @@ test("release workflow has one manual protected-main authority and least-privile
   );
 });
 
-test("release workflow pins every action and tool and publishes only full-SHA tags", () => {
+test("release workflow pins every action and tool and promotes only full-SHA release tags after unique candidates", () => {
   const uses = Object.values(workflow.jobs).flatMap((job) => job.steps.map((step) => step.uses).filter(Boolean));
   assert.ok(uses.length >= 6);
   for (const action of uses) assert.match(action ?? "", /^[^@\s]+@[0-9a-f]{40}$/u, action);
@@ -290,10 +309,61 @@ test("release workflow pins every action and tool and publishes only full-SHA ta
     assert.match(workflowSource, new RegExp(`${variable}: [^\\s]+@sha256:[0-9a-f]{64}`, "u"), variable);
   }
   assert.doesNotMatch(workflowSource, /:latest(?:@|\s|$)/u);
-  assert.match(workflowSource, /tags: ghcr\.io\/nenb\/cogs\/worker:sha-\$\{\{/u);
-  assert.match(workflowSource, /tags: ghcr\.io\/nenb\/cogs\/sandbox:sha-\$\{\{/u);
+  assert.match(workflowSource, /tags: ghcr\.io\/nenb\/cogs\/worker:candidate-\$\{\{/u);
+  assert.match(workflowSource, /tags: ghcr\.io\/nenb\/cogs\/sandbox:candidate-\$\{\{/u);
+  assert.match(workflowSource, /candidate-\$REVIEWED_SHA-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/u);
+  assert.match(workflowSource, /imagetools create --tag "\$repository:\$release_tag" "\$repository@\$digest"/u);
   assert.match(workflowSource, /Refusing to overwrite pre-existing tag/u);
+  assert.match(workflowSource, /Refusing to overwrite raced release tag/u);
   assert.doesNotMatch(workflowSource, /tags:[^\n]*(?:latest|main|stable)/u);
+});
+
+test("release cleanup aggregates an early retained credential path instead of accepting later successes", () => {
+  const publish = workflowJob("publish");
+  const cleanup = runStep(publish, "Cleanup retained sensitive path");
+  const temporary = mkdtempSync(join(tmpdir(), "cogs-release-cleanup-hostile-"));
+  const bin = join(temporary, "bin");
+  mkdirSync(bin);
+  const fakeDocker = join(bin, "docker");
+  const fakeRm = join(bin, "rm");
+  writeFileSync(fakeDocker, "#!/bin/sh\nexit 0\n");
+  writeFileSync(
+    fakeRm,
+    '#!/bin/sh\nfirst=1\nfor value in "$@"; do\n  case "$value" in -*) continue;; esac\n  if [ $first -eq 1 ]; then first=0; continue; fi\n  /bin/rm -rf -- "$value"\ndone\nexit 1\n',
+  );
+  chmodSync(fakeDocker, 0o700);
+  chmodSync(fakeRm, 0o700);
+  const paths = {
+    DOCKER_CONFIG: join(temporary, "docker-config"),
+    CONTEXT: join(temporary, "context"),
+    WORK: join(temporary, "work"),
+    CACHE: join(temporary, "cache"),
+    RECEIPT: join(temporary, "receipt"),
+    COSIGN_HOME: join(temporary, "cosign"),
+  };
+  for (const path of Object.values(paths)) mkdirSync(path);
+  const workspace = join(temporary, "workspace");
+  mkdirSync(join(workspace, "node_modules"), { recursive: true });
+  try {
+    const result = spawnSync("/bin/bash", ["-c", cleanup], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        ...paths,
+        GITHUB_WORKSPACE: workspace,
+        RUNNER_TEMP: temporary,
+        PATH: `${bin}:/usr/bin:/bin`,
+        SYFT_IMAGE: "syft",
+        TRIVY_IMAGE: "trivy",
+        COSIGN_IMAGE: "cosign",
+      },
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Cleanup retained sensitive path:/u);
+    assert.equal(readFileSync(fakeDocker, "utf8").includes("exit 0"), true);
+  } finally {
+    rmSync(temporary, { recursive: true, force: true });
+  }
 });
 
 test("readiness remains blocked until successful digests are separately reviewed", () => {
@@ -336,10 +406,13 @@ test("release workflow binds provenance, complete vulnerability semantics, signa
   assert.equal(upload.with?.path, "$" + "{{ runner.temp }}/cogs-release-receipt/release-image-receipt.canonical.json");
   assert.doesNotMatch(workflowSource, /docs\/security-evidence\/stage4-offline-readiness-artifacts\/image-lock\.json/u);
   assert.doesNotMatch(workflowSource, /(?:tofu|terraform|kubectl|helm|aws |external model)/iu);
+  assert.match(workflowSource, /static_parser_cryptographic_verification_performed:false/u);
   assert.match(workflowSource, /readiness_promoted:false,production_ready:false,release_eligible:false/u);
   assert.match(workflowSource, /docker logout ghcr\.io/u);
   assert.match(
     workflowSource,
     /rm -rf -- "\$DOCKER_CONFIG" "\$CONTEXT" "\$WORK" "\$CACHE" "\$RECEIPT" "\$COSIGN_HOME"/u,
   );
+  assert.match(workflowSource, /status=0[\s\S]*docker logout ghcr\.io[^\n]*\|\| status=1/u);
+  assert.match(workflowSource, /for path in "\$DOCKER_CONFIG"[\s\S]*exit "\$status"/u);
 });
