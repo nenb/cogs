@@ -57,6 +57,7 @@ const openBaoConfig = readFileSync(resolve(root, "dev/openbao-model-auth/config.
 const openBaoIgnore = readFileSync(resolve(root, ".trivyignore-openbao"), "utf8");
 const insecureContainerWorkflow = readFileSync(resolve(root, ".github/workflows/insecure-container.yml"), "utf8");
 const insecureContainerDockerfile = readFileSync(resolve(root, "dev/insecure-sandbox/Dockerfile"), "utf8");
+const sandboxDockerfile = readFileSync(resolve(root, "images/sandbox/Dockerfile"), "utf8");
 const mitmproxySuite = readFileSync(
   resolve(root, "test/egress-conformance/proxy-adapters/mitmproxy/suite-smoke.ts"),
   "utf8",
@@ -122,6 +123,26 @@ assert.ok(
 assert.ok(
   insecureContainerDockerfile.includes("libexpat1=2.8.2-1~deb13u1"),
   "insecure-container must install the exact fixed Expat package",
+);
+for (const label of [
+  'dev.cogs.profile="kata-sandbox-guest"',
+  'dev.cogs.package-policy="debian-trixie-snapshots-20260713-20260731-v1"',
+  'dev.cogs.isolation-authority="external-runtime-required"',
+  'dev.cogs.credentials="proxy-capability-only-no-upstream-secrets"',
+  'dev.cogs.skills-inputs="external-read-only"',
+]) {
+  assert.ok(sandboxDockerfile.includes(label), `sandbox image must retain label ${label}`);
+}
+assert.ok(
+  sandboxDockerfile.includes(
+    "FROM debian:13-slim@sha256:020c0d20b9880058cbe785a9db107156c3c75c2ac944a6aa7ab59f2add76a7bd",
+  ),
+  "sandbox image must use the reviewed Debian 13.6 index digest",
+);
+assert.ok(
+  sandboxDockerfile.includes("snapshot.debian.org/archive/debian/20260713T000000Z/") &&
+    sandboxDockerfile.includes("snapshot.debian.org/archive/debian-security/20260731T000000Z/"),
+  "sandbox image must use the reviewed immutable Debian snapshots",
 );
 assert.ok(openBaoIgnore.includes("review deadline 2026-08-15"), "OpenBao CVE ignores must carry their review deadline");
 for (const fixedRuntimeFinding of ["CVE-2026-39822", "CVE-2026-56852"]) {
@@ -228,5 +249,5 @@ for (const [name, version, filename, size] of gitToolPins) {
 assert.match(kvmGitTools, /readonly COGS_GIT_PACKAGE_COUNT=4/, "Git tools package set must remain fixed");
 
 console.log(
-  `Verified external base-image digest pinning for ${dockerfiles.length} image definitions, selected Envoy/OpenBao scanning, and inactive mitmproxy exception removal.`,
+  `Verified external base-image digest pinning for ${dockerfiles.length} image definitions, production sandbox labels/snapshots, selected Envoy/OpenBao scanning, and inactive mitmproxy exception removal.`,
 );
