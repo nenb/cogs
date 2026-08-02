@@ -27,6 +27,8 @@
     "licenses": "tsx scripts/check-licenses.ts",
     "audit": "tsx scripts/check-npm-audit.ts",
     "evidence:issue68": "tsx scripts/benchmark-issue68-checkpoints.ts",
+    "readiness:render:check": "tsx scripts/stage4-offline-render-preparation.ts",
+    "readiness:source:check": "tsx scripts/stage4-offline-source-inventory.ts",
     "launcher": "tsx dev/launcher/main.ts"
   },
   "dependencies": {

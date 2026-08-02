@@ -131,6 +131,9 @@ function offlineReadinessVerdictSample(): JsonObject {
     version: "cogs.stage4-offline-readiness-verdict/v1",
     authority: "local-static-stage4-readiness-classifier",
     local_preparation_complete: true,
+    local_preparation_scope: "bounded-package-assembly-and-local-validation-only",
+    trusted_render_preparation_complete: true,
+    exact_image_runtime_closure_satisfied: false,
     campaign_request_ready: false,
     campaign_approved: false,
     cloud_authorized: false,
@@ -154,6 +157,9 @@ function offlineReadinessVerdictSample(): JsonObject {
       "SEPARATED_CAMPAIGN_IDENTITIES_ABSENT",
       "CAMPAIGN_ENVELOPE_AND_APPROVAL_ABSENT",
       "NO_EXECUTABLE_PROVIDER_ROUTE",
+      "RELEASE_IMAGE_SET_ABSENT",
+      "CONTAINERD_ARTIFACT_IDENTITY_UNRESOLVED",
+      "QEMU_ARTIFACT_IDENTITY_UNRESOLVED",
     ],
   };
 }

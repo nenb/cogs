@@ -8,12 +8,18 @@ import type { Ajv as AjvCore, Options } from "ajv";
 import {
   canonicalStage4OfflineReadinessBytes,
   classifyStage4OfflineReadiness,
+  STAGE4_INDEPENDENT_INVENTORY_SCOPES,
+  STAGE4_PROPOSED_RESOURCE_GRAPH,
   STAGE4_READINESS_ARTIFACT_KEYS,
   STAGE4_READINESS_BLOCKERS,
   STAGE4_READINESS_BYTE_LIMITS,
   stage4OfflineReadinessBindingRoot,
   stage4OfflineReadinessSha256,
 } from "../scripts/stage4-offline-readiness.ts";
+import {
+  generateStage4SourceInventory,
+  STAGE4_SOURCE_INVENTORY_EXCLUSIONS,
+} from "../scripts/stage4-offline-source-inventory.ts";
 
 const root = resolve(import.meta.dirname, "..");
 const packagePath = resolve(root, "docs/security-evidence/stage4-offline-readiness-package.json");
@@ -28,6 +34,7 @@ function artifacts(): Record<string, Uint8Array> {
     values: bytes("test/fixtures/helm/stage4-notes-source-shapes-valid.yaml"),
     render: bytes("docs/security-evidence/stage4-offline-readiness-artifacts/notes-render.yaml"),
     repeatedRender: bytes("docs/security-evidence/stage4-offline-readiness-artifacts/notes-render-repeat.yaml"),
+    renderReceipt: bytes("docs/security-evidence/stage4-offline-readiness-artifacts/render-preparation-receipt.json"),
     imageLock: bytes("docs/security-evidence/stage4-offline-readiness-artifacts/image-lock.json"),
     nicContract: bytes("deploy/nic/stage4-sandbox-node-group-contract.json"),
     runtimePins: bytes("docs/security-evidence/stage4-offline-readiness-artifacts/runtime-pins.json"),
@@ -51,6 +58,9 @@ test("committed canonical package is locally complete but campaign-blocked and n
   const verdict = classify();
   assert.equal(verdict.status, "local-preparation-complete-blocked");
   assert.equal(verdict.local_preparation_complete, true);
+  assert.equal(verdict.local_preparation_scope, "bounded-package-assembly-and-local-validation-only");
+  assert.equal(verdict.trusted_render_preparation_complete, true);
+  assert.equal(verdict.exact_image_runtime_closure_satisfied, false);
   assert.equal(verdict.campaign_request_ready, false);
   assert.equal(verdict.campaign_approved, false);
   assert.equal(verdict.cloud_authorized, false);
@@ -88,6 +98,19 @@ test("verdict and package compile under strict independent schemas", () => {
   const nested = packageObject();
   nested.campaign_proposal.spend.current_price = "unknown prose";
   assert.equal(validatePackage(nested), false);
+
+  const complete = structuredClone(classify()) as any;
+  complete.blockers.reverse();
+  assert.equal(validateVerdict(complete), false, "complete verdict blocker order is exact");
+  const duplicate = structuredClone(classify()) as any;
+  duplicate.blockers[1] = duplicate.blockers[0];
+  assert.equal(validateVerdict(duplicate), false, "complete verdict blockers are unique");
+  const reasonMismatch = structuredClone(classify()) as any;
+  reasonMismatch.reason_code = "STAGE4_READINESS_SCHEMA_OR_SEMANTIC_DRIFT";
+  assert.equal(validateVerdict(reasonMismatch), false, "complete status/reason coupling is exact");
+  const preserveMismatch = structuredClone(classify(new Uint8Array())) as any;
+  preserveMismatch.reason_code = "STAGE4_LOCAL_PREPARATION_COMPLETE_CAMPAIGN_BLOCKED";
+  assert.equal(validateVerdict(preserveMismatch), false, "preserve status cannot use complete reason");
 });
 
 test("committed inventories are canonical, complete for their scopes, and bind exact current files", () => {
@@ -102,24 +125,19 @@ test("committed inventories are canonical, complete for their scopes, and bind e
     for (const entry of entries) assert.equal(entry.sha256, hashFile(entry.path), entry.path);
   };
 
-  const source = readManifest("docs/security-evidence/stage4-offline-readiness-artifacts/source-inventory.json");
-  const expectedSourcePaths = [
-    "IMPLEMENTATION.md",
-    "README.md",
-    "biome.json",
-    "docs/operations/ownership.md",
-    "docs/operations/stage-4-offline-readiness.md",
-    "docs/security-evidence/README.md",
-    "docs/test-reports/stage-4-offline-readiness.md",
-    "schemas/stage4-offline-readiness-package-v1.json",
-    "schemas/stage4-offline-readiness-verdict-v1.json",
-    "scripts/stage4-offline-readiness.ts",
-    "test/stage4-offline-readiness.test.ts",
-    "test/stage4-schema-registry.test.ts",
-  ].sort();
+  const sourcePath = "docs/security-evidence/stage4-offline-readiness-artifacts/source-inventory.json";
+  const source = readManifest(sourcePath);
+  assert.deepEqual(bytes(sourcePath), generateStage4SourceInventory(root));
   assert.deepEqual(
-    source.entries.map((entry: { path: string }) => entry.path),
-    expectedSourcePaths,
+    source.excluded_self_referential_outputs.map((row: { path: string }) => row.path),
+    STAGE4_SOURCE_INVENTORY_EXCLUSIONS,
+  );
+  assert.equal(source.scope, "complete-stage4-source-closure");
+  assert.ok(
+    source.entries.some((entry: { path: string }) => entry.path === "scripts/stage4-storage-launch-contract.ts"),
+  );
+  assert.ok(
+    source.entries.some((entry: { path: string }) => entry.path === "test/stage4-storage-launch-contract.test.ts"),
   );
   assertEntries(source.entries);
 
@@ -162,6 +180,8 @@ test("committed inventories are canonical, complete for their scopes, and bind e
     { id: "helm-lint", result: "pass-local-static" },
     { id: "helm-zero-manifest", result: "pass-local-static" },
     { id: "notes-render-repeat", result: "pass-local-static" },
+    { id: "trusted-render-preparation", result: "pass-local-static" },
+    { id: "complete-stage4-source-inventory", result: "pass-local-static" },
     { id: "dependency-and-audit-policy", result: "pass-local-static" },
   ]);
   assert.deepEqual(validation.execution, { cloud: false, external_model: false, kubernetes: false, provider: false });
@@ -169,14 +189,24 @@ test("committed inventories are canonical, complete for their scopes, and bind e
     validation.source_bindings.map((entry: { path: string }) => entry.path),
     [
       "biome.json",
+      "package.json",
       "schemas/stage4-offline-readiness-package-v1.json",
       "schemas/stage4-offline-readiness-verdict-v1.json",
       "scripts/stage4-offline-readiness.ts",
+      "scripts/stage4-offline-render-preparation.ts",
+      "scripts/stage4-offline-source-inventory.ts",
       "test/stage4-offline-readiness.test.ts",
+      "test/stage4-offline-render-preparation.test.ts",
       "test/stage4-schema-registry.test.ts",
     ],
   );
   assertEntries(validation.source_bindings);
+  assert.equal(
+    validation.trusted_preparation_receipt_sha256,
+    stage4OfflineReadinessSha256(
+      bytes("docs/security-evidence/stage4-offline-readiness-artifacts/render-preparation-receipt.json"),
+    ),
+  );
 
   const committedPackage = packageObject();
   const imageLock = readManifest("docs/security-evidence/stage4-offline-readiness-artifacts/image-lock.json");
@@ -187,6 +217,9 @@ test("committed inventories are canonical, complete for their scopes, and bind e
     ),
   );
   assert.equal(imageLock.release_image_set_present, false);
+  assert.equal(imageLock.exact_image_closure_satisfied, false);
+  assert.equal(imageLock.images[0].artifact_identity_state, "absent-blocking");
+  assert.equal(imageLock.images[2].artifact_identity_state, "absent-blocking");
   const runtime = readManifest("docs/security-evidence/stage4-offline-readiness-artifacts/runtime-pins.json");
   assert.deepEqual(runtime.eks_node_image, {
     ami_id: null,
@@ -199,7 +232,10 @@ test("committed inventories are canonical, complete for their scopes, and bind e
   assert.equal(runtime.runtime.containerd.version, committedPackage.pins.runtime.containerd_version);
   assert.equal(runtime.runtime.qemu.version, committedPackage.pins.runtime.qemu_version);
   assert.equal(runtime.runtime.containerd.artifact_sha256, null);
+  assert.equal(runtime.runtime.containerd.state, "artifact-identity-unresolved-blocking");
   assert.equal(runtime.runtime.qemu.artifact_sha256, null);
+  assert.equal(runtime.runtime.qemu.state, "artifact-identity-unresolved-blocking");
+  assert.equal(runtime.exact_runtime_artifact_closure_satisfied, false);
 });
 
 test("binds every exact artifact and byte-identical repeated render", () => {
@@ -211,6 +247,7 @@ test("binds every exact artifact and byte-identical repeated render", () => {
     values: "values_sha256",
     render: "render_sha256",
     repeatedRender: "repeated_render_sha256",
+    renderReceipt: "render_preparation_receipt_sha256",
     imageLock: "image_lock_sha256",
     nicContract: "nic_contract_sha256",
     runtimePins: "runtime_pins_sha256",
@@ -236,6 +273,98 @@ test("binds every exact artifact and byte-identical repeated render", () => {
     classify(canonicalStage4OfflineReadinessBytes(changedPackage), changed).reason_code,
     "STAGE4_READINESS_RENDER_NONDETERMINISTIC",
   );
+});
+
+test("resource ceilings and service-specific inventory scopes form one exact closed world", () => {
+  const value = packageObject();
+  assert.equal(value.campaign_proposal.resource_graph.closed_world, true);
+  assert.equal(value.campaign_proposal.resource_graph.undeclared_resource_classes_allowed, false);
+  assert.deepEqual(
+    value.campaign_proposal.resource_graph.classes,
+    STAGE4_PROPOSED_RESOURCE_GRAPH.map(([resourceClass, maximumCount, resourceType, sizeGib]) => ({
+      maximum_count: maximumCount,
+      resource_class: resourceClass,
+      resource_type: resourceType,
+      size_gib_each: sizeGib,
+    })),
+  );
+  assert.equal(value.stop_destroy.independent_inventory.tag_only_inventory_allowed, false);
+  assert.deepEqual(
+    value.stop_destroy.independent_inventory.scopes,
+    STAGE4_INDEPENDENT_INVENTORY_SCOPES.map(([resourceClass, service, scope]) => ({
+      resource_class: resourceClass,
+      scope,
+      service,
+      tag_only: false,
+    })),
+  );
+  assert.deepEqual(
+    value.campaign_proposal.resource_graph.classes.map((row: { resource_class: string }) => row.resource_class),
+    value.stop_destroy.independent_inventory.scopes.map((row: { resource_class: string }) => row.resource_class),
+  );
+  for (const resourceClass of [
+    "nat-gateway",
+    "vpc-endpoint",
+    "elastic-ip",
+    "load-balancer",
+    "target-group",
+    "ebs-snapshot",
+    "eks-managed-addon",
+  ]) {
+    assert.equal(
+      value.campaign_proposal.resource_graph.classes.find(
+        (row: { resource_class: string }) => row.resource_class === resourceClass,
+      ).maximum_count,
+      0,
+      resourceClass,
+    );
+  }
+
+  for (const mutate of [
+    (candidate: Record<string, any>) => candidate.campaign_proposal.resource_graph.classes.reverse(),
+    (candidate: Record<string, any>) => candidate.campaign_proposal.resource_graph.classes.pop(),
+    (candidate: Record<string, any>) => {
+      candidate.campaign_proposal.resource_graph.classes[0].maximum_count = 2;
+    },
+    (candidate: Record<string, any>) => candidate.stop_destroy.independent_inventory.scopes.reverse(),
+    (candidate: Record<string, any>) => {
+      candidate.stop_destroy.independent_inventory.scopes[0].tag_only = true;
+    },
+  ]) {
+    assert.equal(classify(canonicalMutation(mutate, true)).local_preparation_complete, false);
+  }
+});
+
+test("expanded revalidation inventory is exact and any omission or reordering fails closed", () => {
+  const expected = [
+    "issue-42-closure",
+    "source-change",
+    "pin-change",
+    "price-change",
+    "quota-change",
+    "campaign-shape-change",
+    "helm-chart-change",
+    "helm-values-change",
+    "renderer-change",
+    "helm-tool-identity-or-version-change",
+    "validation-procedure-change",
+    "security-advisory-or-disposition-expiry",
+    "account-binding-change",
+    "principal-binding-change",
+    "separation-state-change",
+    "campaign-approval-change",
+    "campaign-envelope-change",
+    "campaign-attempt-change",
+    "stop-destroy-procedure-change",
+    "independent-inventory-scope-or-procedure-change",
+  ];
+  assert.deepEqual(packageObject().revalidation.triggers, expected);
+  for (const mutate of [
+    (candidate: Record<string, any>) => candidate.revalidation.triggers.pop(),
+    (candidate: Record<string, any>) => candidate.revalidation.triggers.reverse(),
+    (candidate: Record<string, any>) => candidate.revalidation.triggers.push("source-change"),
+  ])
+    assert.equal(classify(canonicalMutation(mutate, true)).local_preparation_complete, false);
 });
 
 test("canonical bytes reject replay aliases, duplicate keys, BOM, whitespace, and newline drift", () => {
@@ -376,6 +505,30 @@ test("current NIC and node-image blockers and uncertainty cannot be promoted or 
       },
     ],
     [
+      "release image set invented",
+      (value) => {
+        value.pins.images.release_image_set_present = true;
+      },
+    ],
+    [
+      "image closure invented",
+      (value) => {
+        value.pins.images.exact_image_closure_satisfied = true;
+      },
+    ],
+    [
+      "containerd artifact invented",
+      (value) => {
+        value.pins.runtime.containerd_artifact_sha256 = "d".repeat(64);
+      },
+    ],
+    [
+      "runtime closure invented",
+      (value) => {
+        value.pins.runtime.exact_runtime_artifact_closure_satisfied = true;
+      },
+    ],
+    [
       "account invented",
       (value) => {
         value.campaign_proposal.account_binding.account_sha256 = "a".repeat(64);
@@ -510,7 +663,7 @@ test("classifier source has no executable provider, filesystem, environment, or 
     source,
     /from\s+["']node:(?:child_process|fs|http|https|net|dns|tls|os|worker_threads)["']|\bprocess\.(?:env|argv)|@aws-sdk|\b(?:kubectl|opentofu|terraform)\b|helm\s+(?:install|upgrade)|external[- ]model/iu,
   );
-  assert.doesNotMatch(source, /diagnostic|command|target|resource[_-]id|account[_-]id/iu);
+  assert.doesNotMatch(source, /diagnostic|command|resource[_-]id|account[_-]id/iu);
   const verdict = classify();
   assert.deepEqual(
     Object.keys(verdict).sort(),
@@ -523,13 +676,16 @@ test("classifier source has no executable provider, filesystem, environment, or 
       "cloud_authorized",
       "cloud_execution_observed",
       "current_resources_observed",
+      "exact_image_runtime_closure_satisfied",
       "local_preparation_complete",
+      "local_preparation_scope",
       "package_sha256",
       "provider_truth_observed",
       "reason_code",
       "release_eligible",
       "stage4_exit_satisfied",
       "status",
+      "trusted_render_preparation_complete",
       "version",
       "zero_resources_claimed",
     ].sort(),

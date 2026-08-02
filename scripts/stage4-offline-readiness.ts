@@ -17,6 +17,9 @@ export const STAGE4_READINESS_BLOCKERS = Object.freeze([
   "SEPARATED_CAMPAIGN_IDENTITIES_ABSENT",
   "CAMPAIGN_ENVELOPE_AND_APPROVAL_ABSENT",
   "NO_EXECUTABLE_PROVIDER_ROUTE",
+  "RELEASE_IMAGE_SET_ABSENT",
+  "CONTAINERD_ARTIFACT_IDENTITY_UNRESOLVED",
+  "QEMU_ARTIFACT_IDENTITY_UNRESOLVED",
 ] as const);
 
 export const STAGE4_READINESS_ARTIFACT_KEYS = Object.freeze([
@@ -25,6 +28,7 @@ export const STAGE4_READINESS_ARTIFACT_KEYS = Object.freeze([
   "values",
   "render",
   "repeatedRender",
+  "renderReceipt",
   "imageLock",
   "nicContract",
   "runtimePins",
@@ -39,6 +43,7 @@ export const STAGE4_READINESS_BYTE_LIMITS = Object.freeze({
   values: 64 * 1024,
   render: 256 * 1024,
   repeatedRender: 256 * 1024,
+  renderReceipt: 16 * 1024,
   imageLock: 16 * 1024,
   nicContract: 128 * 1024,
   runtimePins: 16 * 1024,
@@ -61,6 +66,9 @@ export type Stage4OfflineReadinessVerdict = Readonly<{
   version: "cogs.stage4-offline-readiness-verdict/v1";
   authority: "local-static-stage4-readiness-classifier";
   local_preparation_complete: boolean;
+  local_preparation_scope: "bounded-package-assembly-and-local-validation-only";
+  trusted_render_preparation_complete: boolean;
+  exact_image_runtime_closure_satisfied: false;
   campaign_request_ready: false;
   campaign_approved: false;
   cloud_authorized: false;
@@ -87,6 +95,8 @@ type ReadinessPackage = JsonRecord & {
     repeated_render_sha256: string;
   };
   pins: JsonRecord & { images: JsonRecord };
+  campaign_proposal: JsonRecord;
+  stop_destroy: JsonRecord;
 };
 
 type ArtifactCopies = Record<Stage4ReadinessArtifactKey, Uint8Array>;
@@ -101,12 +111,95 @@ const DIGEST_FIELDS: Readonly<Record<Stage4ReadinessArtifactKey, string>> = Obje
   values: "values_sha256",
   render: "render_sha256",
   repeatedRender: "repeated_render_sha256",
+  renderReceipt: "render_preparation_receipt_sha256",
   imageLock: "image_lock_sha256",
   nicContract: "nic_contract_sha256",
   runtimePins: "runtime_pins_sha256",
   schemaInventory: "schema_inventory_sha256",
   localValidation: "local_validation_sha256",
 });
+
+export const STAGE4_PROPOSED_RESOURCE_GRAPH = Object.freeze([
+  ["eks-cluster", 1, "regional-control-plane", null],
+  ["eks-managed-addon", 0, "none", null],
+  ["vpc", 1, "dedicated-ipv4-only", null],
+  ["subnet", 2, "public-no-inbound", null],
+  ["route-table", 2, "campaign-dedicated", null],
+  ["route", 4, "two-local-two-internet-gateway", null],
+  ["internet-gateway", 1, "campaign-dedicated", null],
+  ["network-acl", 1, "vpc-default-closed-review", null],
+  ["dhcp-options-association", 1, "vpc-default-closed-review", null],
+  ["nat-gateway", 0, "prohibited", null],
+  ["vpc-endpoint", 0, "prohibited", null],
+  ["elastic-ip", 0, "prohibited", null],
+  ["load-balancer", 0, "prohibited", null],
+  ["target-group", 0, "prohibited", null],
+  ["security-group", 5, "default-cluster-shared-trusted-sandbox", null],
+  ["iam-role", 4, "cluster-trusted-node-sandbox-node-ttl-function", null],
+  ["iam-customer-managed-policy", 4, "one-per-campaign-role", null],
+  ["iam-policy-attachment", 8, "bounded-role-attachments", null],
+  ["instance-profile", 2, "trusted-node-and-sandbox-node", null],
+  ["launch-template", 2, "trusted-and-sandbox-explicit-version", null],
+  ["managed-node-group", 2, "trusted-and-sandbox", null],
+  ["autoscaling-group", 2, "managed-node-group-owned", null],
+  ["trusted-node", 1, "c8i-flex.large-on-demand", 30],
+  ["sandbox-node", 1, "c8i-flex.large-on-demand-nested-kvm", 30],
+  ["network-interface", 10, "hard-maximum-provider-managed-and-node", null],
+  ["ebs-trusted-root-volume", 1, "encrypted-gp3-delete-on-termination", 30],
+  ["ebs-sandbox-root-volume", 1, "encrypted-gp3-delete-on-termination", 30],
+  ["ebs-workspace-volume", 1, "encrypted-gp3-retain", 20],
+  ["ebs-session-state-volume", 1, "encrypted-gp3-retain", 5],
+  ["ebs-snapshot", 0, "prohibited", null],
+  ["kms-key", 1, "symmetric-campaign-storage", null],
+  ["kms-alias", 1, "campaign-key-alias", null],
+  ["log-group", 2, "eks-control-and-ttl-function-30-day", null],
+  ["budget", 1, "usd-20-proposal", null],
+  ["budget-notification", 3, "usd-5-10-20-proposal", null],
+  ["ttl-schedule", 1, "absolute-14400-seconds", null],
+  ["ttl-function", 1, "terminator-128-mib", null],
+  ["ttl-function-permission", 1, "scheduler-invoke-only", null],
+] as const);
+
+export const STAGE4_INDEPENDENT_INVENTORY_SCOPES = Object.freeze([
+  ["eks-cluster", "eks", "clusters-by-account-and-region"],
+  ["eks-managed-addon", "eks", "addons-by-cluster"],
+  ["vpc", "ec2", "vpcs-by-account-and-region"],
+  ["subnet", "ec2", "subnets-by-vpc"],
+  ["route-table", "ec2", "route-tables-by-vpc"],
+  ["route", "ec2", "routes-by-each-route-table"],
+  ["internet-gateway", "ec2", "internet-gateways-by-vpc-attachment"],
+  ["network-acl", "ec2", "network-acls-by-vpc"],
+  ["dhcp-options-association", "ec2", "dhcp-options-by-vpc-association"],
+  ["nat-gateway", "ec2", "nat-gateways-by-vpc-all-lifecycle-states"],
+  ["vpc-endpoint", "ec2", "vpc-endpoints-by-vpc"],
+  ["elastic-ip", "ec2", "addresses-by-account-and-region"],
+  ["load-balancer", "elasticloadbalancing", "load-balancers-by-account-and-region"],
+  ["target-group", "elasticloadbalancing", "target-groups-by-account-and-region"],
+  ["security-group", "ec2", "security-groups-by-vpc"],
+  ["iam-role", "iam", "roles-by-exact-campaign-name-inventory"],
+  ["iam-customer-managed-policy", "iam", "policies-by-account-and-exact-campaign-name-inventory"],
+  ["iam-policy-attachment", "iam", "role-and-policy-attachments-by-enumerated-role"],
+  ["instance-profile", "iam", "instance-profiles-by-enumerated-role"],
+  ["launch-template", "ec2", "launch-templates-and-all-versions-by-account-and-region"],
+  ["managed-node-group", "eks", "nodegroups-by-cluster"],
+  ["autoscaling-group", "autoscaling", "groups-by-account-and-region"],
+  ["trusted-node", "ec2", "instances-by-approved-trusted-launch-template"],
+  ["sandbox-node", "ec2", "instances-by-approved-sandbox-launch-template"],
+  ["network-interface", "ec2", "network-interfaces-by-vpc-and-attachment"],
+  ["ebs-trusted-root-volume", "ec2", "volumes-by-trusted-node-attachment"],
+  ["ebs-sandbox-root-volume", "ec2", "volumes-by-sandbox-node-attachment"],
+  ["ebs-workspace-volume", "ec2", "workspace-volumes-by-exact-campaign-binding"],
+  ["ebs-session-state-volume", "ec2", "session-volumes-by-exact-campaign-binding"],
+  ["ebs-snapshot", "ec2", "snapshots-owned-by-account"],
+  ["kms-key", "kms", "keys-and-key-state-by-account-and-region"],
+  ["kms-alias", "kms", "aliases-by-account-and-region"],
+  ["log-group", "logs", "log-groups-by-exact-campaign-name-inventory"],
+  ["budget", "budgets", "budgets-by-account"],
+  ["budget-notification", "budgets", "notifications-by-enumerated-budget"],
+  ["ttl-schedule", "scheduler", "schedules-by-exact-campaign-group-inventory"],
+  ["ttl-function", "lambda", "functions-by-account-and-region"],
+  ["ttl-function-permission", "lambda", "resource-policies-by-enumerated-function"],
+] as const);
 
 const EXPECTED_IMAGE_REFERENCES = Object.freeze({
   worker: `registry.example.invalid/cogs/worker@sha256:${"a".repeat(64)}`,
@@ -221,6 +314,9 @@ function makeVerdict(
     version: "cogs.stage4-offline-readiness-verdict/v1",
     authority: "local-static-stage4-readiness-classifier",
     local_preparation_complete: complete,
+    local_preparation_scope: "bounded-package-assembly-and-local-validation-only",
+    trusted_render_preparation_complete: complete,
+    exact_image_runtime_closure_satisfied: false,
     campaign_request_ready: false,
     campaign_approved: false,
     cloud_authorized: false,
@@ -260,6 +356,33 @@ function bindingRootInput(value: ReadinessPackage): JsonValue {
 /** Computes the domain-separated semantic root; callers must first validate the package schema. */
 export function stage4OfflineReadinessBindingRoot(value: ReadinessPackage): string {
   return domainHash("cogs.stage4/offline-readiness-binding-root/v1", bindingRootInput(value));
+}
+
+function exactResourceAndInventoryClosure(value: ReadinessPackage): boolean {
+  const resourceGraph = record(value.campaign_proposal.resource_graph);
+  const inventory = record(value.stop_destroy.independent_inventory);
+  const expectedGraph = STAGE4_PROPOSED_RESOURCE_GRAPH.map(([resourceClass, maximumCount, resourceType, sizeGib]) => ({
+    maximum_count: maximumCount,
+    resource_class: resourceClass,
+    resource_type: resourceType,
+    size_gib_each: sizeGib,
+  })) as unknown as JsonValue;
+  const expectedScopes = STAGE4_INDEPENDENT_INVENTORY_SCOPES.map(([resourceClass, service, scope]) => ({
+    resource_class: resourceClass,
+    scope,
+    service,
+    tag_only: false,
+  })) as unknown as JsonValue;
+  return (
+    resourceGraph?.closed_world === true &&
+    resourceGraph.undeclared_resource_classes_allowed === false &&
+    resourceGraph.count_semantics === "hard-maximum-proposal" &&
+    resourceGraph.classes !== undefined &&
+    canonicalJson(resourceGraph.classes) === canonicalJson(expectedGraph) &&
+    inventory?.tag_only_inventory_allowed === false &&
+    inventory.scopes !== undefined &&
+    canonicalJson(inventory.scopes) === canonicalJson(expectedScopes)
+  );
 }
 
 function exactImagePins(value: ReadinessPackage): boolean {
@@ -308,7 +431,7 @@ export function classifyStage4OfflineReadiness(
 
   const packageSha256 = stage4OfflineReadinessSha256(packageBytes);
   const bindingRoot = parsed.artifact_bindings.binding_root_sha256;
-  if (!exactImagePins(parsed)) {
+  if (!exactImagePins(parsed) || !exactResourceAndInventoryClosure(parsed)) {
     return makeVerdict("STAGE4_READINESS_SCHEMA_OR_SEMANTIC_DRIFT", packageSha256, bindingRoot);
   }
 
