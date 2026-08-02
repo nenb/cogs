@@ -5,16 +5,19 @@ import { capturePrivateBytes } from "./private-bytes.ts";
 
 const require = createRequire(import.meta.url);
 const Ajv2020 = require("ajv/dist/2020.js") as new (options?: Options) => AjvCore;
-const receiptSchema = require("../schemas/release-image-receipt-v1.json") as object;
+const assertionSchema = require("../schemas/release-image-set-assertion-v1.json") as object;
 const ajv = new Ajv2020({ allErrors: true, strict: true, strictRequired: false, ownProperties: true });
-const validateReceipt = ajv.compile(receiptSchema) as ValidateFunction;
+const validateAssertion = ajv.compile(assertionSchema) as ValidateFunction;
 
-const MAX_RECEIPT_BYTES = 1024 * 1024;
+const MAX_ASSERTION_BYTES = 1024 * 1024;
 const DIGEST = /^sha256:[0-9a-f]{64}$/u;
 
 type JsonPrimitive = string | number | boolean | null;
-export type ReleaseReceiptJson = JsonPrimitive | ReleaseReceiptJson[] | { [key: string]: ReleaseReceiptJson };
-type JsonObject = { [key: string]: ReleaseReceiptJson };
+export type ReleaseImageSetAssertionJson =
+  | JsonPrimitive
+  | ReleaseImageSetAssertionJson[]
+  | { [key: string]: ReleaseImageSetAssertionJson };
+type JsonObject = { [key: string]: ReleaseImageSetAssertionJson };
 
 function compareCodePoints(left: string, right: string): number {
   const leftPoints = Array.from(left, (value) => value.codePointAt(0) ?? 0);
@@ -27,7 +30,7 @@ function compareCodePoints(left: string, right: string): number {
   return leftPoints.length - rightPoints.length;
 }
 
-function canonicalJson(value: ReleaseReceiptJson): string {
+function canonicalJson(value: ReleaseImageSetAssertionJson): string {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
   if (value !== null && typeof value === "object") {
     return `{${Object.entries(value)
@@ -36,11 +39,11 @@ function canonicalJson(value: ReleaseReceiptJson): string {
       .join(",")}}`;
   }
   const encoded = JSON.stringify(value);
-  if (encoded === undefined) throw new TypeError("non-JSON receipt value");
+  if (encoded === undefined) throw new TypeError("non-JSON assertion value");
   return encoded;
 }
 
-export function canonicalReleaseImageReceiptBytes(value: ReleaseReceiptJson): Uint8Array {
+export function canonicalReleaseImageSetAssertionBytes(value: ReleaseImageSetAssertionJson): Uint8Array {
   return new TextEncoder().encode(`${canonicalJson(value)}\n`);
 }
 
@@ -55,11 +58,11 @@ function asCount(value: unknown, label: string): number {
   return value as number;
 }
 
-function assertReceiptSemantics(value: unknown): asserts value is JsonObject {
-  if (!validateReceipt(value)) throw new Error(`receipt schema drift: ${ajv.errorsText(validateReceipt.errors)}`);
-  const receipt = asObject(value, "receipt");
-  const source = asObject(receipt.source, "source");
-  const workflow = asObject(receipt.workflow, "workflow");
+function assertImageSetAssertionSemantics(value: unknown): asserts value is JsonObject {
+  if (!validateAssertion(value)) throw new Error(`assertion schema drift: ${ajv.errorsText(validateAssertion.errors)}`);
+  const assertion = asObject(value, "assertion");
+  const source = asObject(assertion.source, "source");
+  const workflow = asObject(assertion.workflow, "workflow");
   if (
     source.reviewed_sha !== source.observed_head_sha ||
     source.reviewed_sha !== workflow.sha ||
@@ -68,7 +71,7 @@ function assertReceiptSemantics(value: unknown): asserts value is JsonObject {
     throw new Error("source, protected-main HEAD, and workflow SHA must be identical on attempt one");
   }
 
-  const images = receipt.images;
+  const images = assertion.images;
   if (!Array.isArray(images) || images.length !== 2) throw new Error("exact worker and sandbox image pair required");
   const roles = ["worker", "sandbox"] as const;
   const digests = new Set<string>();
@@ -86,10 +89,9 @@ function assertReceiptSemantics(value: unknown): asserts value is JsonObject {
       !DIGEST.test(childDigest) ||
       digest === childDigest ||
       image.exact_reference !== `${repository}@${digest}` ||
-      image.release_tag !== `sha-${source.reviewed_sha}` ||
-      image.candidate_tag !== `candidate-${source.reviewed_sha}-${workflow.run_id}-${workflow.run_attempt}`
+      image.transport_tag !== `candidate-${source.reviewed_sha}-${workflow.run_id}-${workflow.run_attempt}`
     ) {
-      throw new Error(`${role}: digest namespace, exact reference, platform manifest, or tag identity mismatch`);
+      throw new Error(`${role}: digest namespace, exact reference, platform manifest, or transport identity mismatch`);
     }
     if (digests.has(digest)) throw new Error("worker and sandbox registry digests must differ");
     digests.add(digest);
@@ -139,11 +141,11 @@ function assertReceiptSemantics(value: unknown): asserts value is JsonObject {
   }
 }
 
-export type ReleaseReceiptClassification = Readonly<{
+export type ReleaseImageSetAssertionClassification = Readonly<{
   authority: "static-release-image-assertion-record-parser";
   record_valid: boolean;
   record_sha256: string | null;
-  workflow_recorded_publication_complete: boolean;
+  workflow_recorded_image_set_complete: boolean;
   workflow_recorded_vulnerability_gate_passed: boolean;
   workflow_recorded_signatures_verified: boolean;
   cryptographic_verification_performed: false;
@@ -161,15 +163,15 @@ export type ReleaseReceiptClassification = Readonly<{
 }>;
 
 function classification(
-  reasonCode: ReleaseReceiptClassification["reason_code"],
+  reasonCode: ReleaseImageSetAssertionClassification["reason_code"],
   digest: string | null,
-): ReleaseReceiptClassification {
+): ReleaseImageSetAssertionClassification {
   const recordValid = reasonCode === "VALID_WORKFLOW_ASSERTION_RECORD";
   return Object.freeze({
     authority: "static-release-image-assertion-record-parser",
     record_valid: recordValid,
     record_sha256: digest,
-    workflow_recorded_publication_complete: recordValid,
+    workflow_recorded_image_set_complete: recordValid,
     workflow_recorded_vulnerability_gate_passed: recordValid,
     workflow_recorded_signatures_verified: recordValid,
     cryptographic_verification_performed: false,
@@ -183,19 +185,19 @@ function classification(
   });
 }
 
-export function finalizeReleaseImageReceipt(value: unknown): Uint8Array {
-  assertReceiptSemantics(value);
-  return canonicalReleaseImageReceiptBytes(value);
+export function finalizeReleaseImageSetAssertion(value: unknown): Uint8Array {
+  assertImageSetAssertionSemantics(value);
+  return canonicalReleaseImageSetAssertionBytes(value);
 }
 
-export function classifyReleaseImageReceipt(input: unknown): ReleaseReceiptClassification {
-  const captured = capturePrivateBytes(input, MAX_RECEIPT_BYTES);
+export function classifyReleaseImageSetAssertion(input: unknown): ReleaseImageSetAssertionClassification {
+  const captured = capturePrivateBytes(input, MAX_ASSERTION_BYTES);
   if (captured.bytes === null) return classification("BOUNDED_INPUT_VIOLATION", null);
   const digest = createHash("sha256").update(captured.bytes).digest("hex");
   let parsed: unknown;
   try {
     parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(captured.bytes));
-    const canonical = canonicalReleaseImageReceiptBytes(parsed as ReleaseReceiptJson);
+    const canonical = canonicalReleaseImageSetAssertionBytes(parsed as ReleaseImageSetAssertionJson);
     if (!Buffer.from(captured.bytes).equals(Buffer.from(canonical))) {
       return classification("NON_CANONICAL_JSON", digest);
     }
@@ -203,11 +205,11 @@ export function classifyReleaseImageReceipt(input: unknown): ReleaseReceiptClass
     return classification("NON_CANONICAL_JSON", digest);
   }
   try {
-    assertReceiptSemantics(parsed);
+    assertImageSetAssertionSemantics(parsed);
   } catch {
     return classification("SCHEMA_OR_SEMANTIC_DRIFT", digest);
   }
   return classification("VALID_WORKFLOW_ASSERTION_RECORD", digest);
 }
 
-export const RELEASE_IMAGE_RECEIPT_LIMITS = Object.freeze({ max_receipt_bytes: MAX_RECEIPT_BYTES });
+export const RELEASE_IMAGE_SET_ASSERTION_LIMITS = Object.freeze({ max_assertion_bytes: MAX_ASSERTION_BYTES });

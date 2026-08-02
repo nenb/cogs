@@ -17,81 +17,11 @@ export const STAGE4_PINNED_GIT = Object.freeze({
   sha256: "7588ceab299393618d6f8861502ac0588d1594025f301d9a61a898215b5571d3",
 } as const);
 
-const ROOT_FILES = Object.freeze([
-  ".dockerignore",
-  "COGS.md",
-  "DESIGN.md",
-  "IMPLEMENTATION.md",
-  "LICENSE",
-  "README.md",
-  "SECRET-INJECTION.md",
-  "biome.json",
-  "package-lock.json",
-  "package.json",
-  "tsconfig.build.json",
-  "tsconfig.json",
-]);
-const EXACT_FILES = Object.freeze([
-  ".github/workflows/local-image-artifacts.yml",
-  ".github/workflows/release-images.yml",
-  "docs/adr/0012-use-aws-virtual-nested-kvm-for-stage-4-candidate.md",
-  "docs/adr/0094-preserve-notes-only-helm-and-add-local-static-manifest-route.md",
-  "docs/adr/0095-authorize-production-runtime-foundation.md",
-  "docs/adr/0096-authorize-production-worker-composition.md",
-  "docs/operations/aws-feasibility-campaign.md",
-  "docs/operations/ci-schedule.md",
-  "docs/operations/local-image-artifacts.md",
-  "docs/operations/ownership.md",
-  "docs/operations/production-runtime-foundation.md",
-  "docs/operations/release-image-publication.md",
-  "docs/security-evidence/README.md",
-  "schemas/integration-v1alpha1.json",
-  "schemas/launch-v1alpha1.json",
-  "schemas/local-image-artifact-package-v1.json",
-  "schemas/release-image-receipt-v1.json",
-  "schemas/runtime-v1alpha1.json",
-  "scripts/assemble-local-image-artifact-package.ts",
-  "scripts/check-image-pins.ts",
-  "scripts/check-lock-integrity.ts",
-  "scripts/check-npm-audit.ts",
-  "scripts/local-image-artifacts-cli.ts",
-  "scripts/local-image-artifacts.ts",
-  "scripts/private-bytes.ts",
-  "scripts/release-image-receipt-cli.ts",
-  "scripts/release-image-receipt.ts",
-  "scripts/validate-schemas.ts",
-  "test/api-server.test.ts",
-  "test/local-image-artifacts.test.ts",
-  "test/openbao-workload-identity.test.ts",
-  "test/production-compose.test.ts",
-  "test/production-sandbox-image.test.ts",
-  "test/production-worker-image.test.ts",
-  "test/release-image-receipt.test.ts",
-  "test/runtime-config.test.ts",
-  "test/runtime-trusted-files.test.ts",
-  "test/stage5-operations-runbooks.test.ts",
-]);
-const DIRECTORY_PREFIXES = Object.freeze([
-  "deploy/helm/cogs/",
-  "deploy/nic/",
-  "docs/operations/runbooks/",
-  "images/",
-  "src/",
-]);
-const PREFIX_PATTERNS = Object.freeze([
-  /^docs\/operations\/stage-4-.*\.md$/u,
-  /^docs\/test-reports\/stage-4-.*\.md$/u,
-  /^schemas\/stage[45]-.*\.json$/u,
-  /^scripts\/stage4-.*\.ts$/u,
-  /^test\/stage4-.*\.test\.ts$/u,
-  /^test\/helm-stage4-.*\.test\.ts$/u,
-  /^test\/fixtures\/helm\/stage4-.*\.yaml$/u,
-  /^test\/fixtures\/stage4-[^/]+\//u,
-  /^docs\/security-evidence\/stage4-offline-readiness-artifacts\//u,
-]);
 const MAXIMUM_FILE_BYTES = 4 * 1024 * 1024;
-const MAXIMUM_GIT_OUTPUT_BYTES = 1024 * 1024;
-const EXPECTED_REGENERATION_BASE_HEAD = "dc11c1f6f2e29a66c602b82d805c764a00517bf0";
+const MAXIMUM_GIT_OUTPUT_BYTES = 4 * 1024 * 1024;
+const MAXIMUM_TRACKED_FILES = 1024;
+const MAXIMUM_AGGREGATE_BYTES = 16 * 1024 * 1024;
+const WORKTREE_MERKLE_DOMAIN = "cogs.stage4/tracked-worktree-byte-merkle/v1\0";
 
 type Identity = Readonly<{
   dev: bigint;
@@ -102,15 +32,6 @@ type Identity = Readonly<{
   ctimeNs: bigint;
   nlink: bigint;
 }>;
-
-function selectedSourcePath(path: string): boolean {
-  return (
-    ROOT_FILES.includes(path as (typeof ROOT_FILES)[number]) ||
-    EXACT_FILES.includes(path as (typeof EXACT_FILES)[number]) ||
-    DIRECTORY_PREFIXES.some((prefix) => path.startsWith(prefix)) ||
-    PREFIX_PATTERNS.some((pattern) => pattern.test(path))
-  );
-}
 
 function identity(metadata: BigIntStats): Identity {
   return {
@@ -253,79 +174,69 @@ function text(bytes: Uint8Array): string {
   return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
 }
 
-function repositorySnapshot(root: string): { baseHead: string; paths: string[] } {
+function trackedPaths(root: string): string[] {
   const version = text(pinnedGit(root, ["--version"])).trim();
   if (version !== STAGE4_PINNED_GIT.version) throw new Error("STAGE4_SOURCE_INVENTORY_GIT_IDENTITY_INVALID");
   const top = realpathSync(text(pinnedGit(root, ["rev-parse", "--show-toplevel"])).trim());
   if (top !== root) throw new Error("STAGE4_SOURCE_INVENTORY_GIT_ROOT_INVALID");
-  const head = text(pinnedGit(root, ["rev-parse", "--verify", "HEAD"])).trim();
-  if (!/^[0-9a-f]{40}$/u.test(head)) throw new Error("STAGE4_SOURCE_INVENTORY_GIT_REVISION_INVALID");
-  const baseHead = text(pinnedGit(root, ["merge-base", EXPECTED_REGENERATION_BASE_HEAD, head])).trim();
-  if (baseHead !== EXPECTED_REGENERATION_BASE_HEAD) throw new Error("STAGE4_SOURCE_INVENTORY_GIT_REVISION_INVALID");
-  const index = pinnedGit(root, ["ls-files", "--cached", "--stage", "-z"]);
   const paths: string[] = [];
-  for (const record of text(index).split("\0")) {
+  for (const record of text(pinnedGit(root, ["ls-files", "--cached", "--stage", "-z"])).split("\0")) {
     if (record === "") continue;
     const match = /^(100644|100755) ([0-9a-f]{40,64}) 0\t(.+)$/u.exec(record);
-    if (match === null) {
-      const candidate = record.slice(record.indexOf("\t") + 1);
-      if (selectedSourcePath(candidate)) throw new Error("STAGE4_SOURCE_INVENTORY_GIT_ENTRY_INVALID");
-      continue;
-    }
-    const path = match[3];
-    if (path !== undefined && selectedSourcePath(path)) paths.push(path);
+    if (match === null || match[3] === undefined) throw new Error("STAGE4_SOURCE_INVENTORY_GIT_ENTRY_INVALID");
+    paths.push(match[3]);
   }
   const untracked = text(pinnedGit(root, ["ls-files", "--others", "--exclude-standard", "-z"]))
     .split("\0")
-    .filter((path) => path !== "" && selectedSourcePath(path));
+    .filter((path) => path !== "");
   if (untracked.length !== 0) throw new Error("STAGE4_SOURCE_INVENTORY_UNTRACKED_SOURCE_FORBIDDEN");
-  return { baseHead, paths };
+  if (paths.length === 0 || paths.length > MAXIMUM_TRACKED_FILES)
+    throw new Error("STAGE4_SOURCE_INVENTORY_FILE_COUNT_INVALID");
+  return paths.sort();
+}
+
+export function stage4TrackedWorktreeMerkle(entries: readonly { path: string; sha256: string }[]): string {
+  return createHash("sha256")
+    .update(WORKTREE_MERKLE_DOMAIN, "utf8")
+    .update(canonicalStage4OfflineReadinessBytes(entries.map((entry) => ({ ...entry }))))
+    .digest("hex");
 }
 
 export function stage4SourceClosurePaths(root: string): string[] {
   const physicalRoot = realpathSync(root);
-  const paths = repositorySnapshot(physicalRoot)
-    .paths.filter((path) => !STAGE4_SOURCE_INVENTORY_EXCLUSIONS.includes(path as never))
-    .sort();
-  for (const required of [...ROOT_FILES, ...EXACT_FILES]) {
-    if (!paths.includes(required)) throw new Error("STAGE4_SOURCE_INVENTORY_REQUIRED_SOURCE_MISSING");
-  }
-  return paths;
+  return trackedPaths(physicalRoot).filter((path) => !STAGE4_SOURCE_INVENTORY_EXCLUSIONS.includes(path as never));
 }
 
 export function generateStage4SourceInventory(root: string): Uint8Array {
   const physicalRoot = realpathSync(root);
-  const repository = repositorySnapshot(physicalRoot);
-  const paths = repository.paths.filter((path) => !STAGE4_SOURCE_INVENTORY_EXCLUSIONS.includes(path as never)).sort();
-  if (paths.length === 0 || paths.length > 256) throw new Error("STAGE4_SOURCE_INVENTORY_FILE_COUNT_INVALID");
-  for (const required of [...ROOT_FILES, ...EXACT_FILES]) {
-    if (!paths.includes(required)) throw new Error("STAGE4_SOURCE_INVENTORY_REQUIRED_SOURCE_MISSING");
-  }
+  const allTrackedPaths = trackedPaths(physicalRoot);
+  const paths = allTrackedPaths.filter((path) => !STAGE4_SOURCE_INVENTORY_EXCLUSIONS.includes(path as never));
   let aggregate = 0;
   const entries = paths.map((path) => {
     const bytes = readStage4SourceFile(physicalRoot, path);
     aggregate += bytes.byteLength;
-    if (aggregate > 16 * 1024 * 1024) throw new Error("STAGE4_SOURCE_INVENTORY_AGGREGATE_BOUND_INVALID");
+    if (aggregate > MAXIMUM_AGGREGATE_BYTES) throw new Error("STAGE4_SOURCE_INVENTORY_AGGREGATE_BOUND_INVALID");
     return { path, sha256: stage4OfflineReadinessSha256(bytes) };
   });
   return canonicalStage4OfflineReadinessBytes({
-    algorithm: "sha256-over-exact-file-bytes",
+    algorithm: "sha256-domain-separated-canonical-path-and-exact-byte-digest-list",
     entries,
-    excluded_self_referential_outputs: STAGE4_SOURCE_INVENTORY_EXCLUSIONS.map((path) => ({
+    excluded_generated_evidence_outputs: STAGE4_SOURCE_INVENTORY_EXCLUSIONS.map((path) => ({
       path,
-      reason: "excluded-self-referential-generated-output",
+      reason: "excluded-generated-evidence-recursion",
     })),
-    repository_binding: {
+    scope: "complete-tracked-worktree-source-build-qualification-closure",
+    version: "cogs.stage4-offline-source-inventory/v4",
+    worktree_binding: {
+      file_count: entries.length,
       git_executable_sha256: STAGE4_PINNED_GIT.sha256,
-      git_index_path_set_sha256: createHash("sha256")
-        .update(canonicalStage4OfflineReadinessBytes(repository.paths.slice().sort()))
-        .digest("hex"),
       git_version: STAGE4_PINNED_GIT.version,
-      regeneration_base_head: repository.baseHead,
-      semantics: "exact-tracked-worktree-bytes-at-regeneration-dirty-tracked-files-allowed",
+      tracked_path_set_sha256: createHash("sha256")
+        .update(canonicalStage4OfflineReadinessBytes(allTrackedPaths))
+        .digest("hex"),
+      worktree_merkle_sha256: stage4TrackedWorktreeMerkle(entries),
+      semantics: "complete-tracked-worktree-bytes-excluding-recorded-generated-evidence;no-commit-or-clean-index-claim",
     },
-    scope: "complete-stage4-source-closure",
-    version: "cogs.stage4-offline-source-inventory/v3",
   });
 }
 

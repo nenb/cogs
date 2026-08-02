@@ -49,7 +49,7 @@ No OpenBao token appears in the runtime or launch document. There is no HTTP dev
 
 ## Deliberately absent
 
-ADR 0096 and the later image-source changes now provide `src/main.ts`, fail-closed production composition, bounded API bind/shutdown persistence wiring, the canonical Basic proxy capability, worker-owned Envoy process composition, production worker image source, and the Kata guest image/entrypoint source. Egress startup uses retained lifecycle ownership: an abort waits for or subsequently closes any manager that resolves late, so a late Envoy cannot escape rollback ownership. Those are locally tested source contracts only; they are not runtime, image-build, publication, deployment, or isolation observations.
+ADR 0096 and the later image-source changes now provide `src/main.ts`, fail-closed production composition, bounded API bind/shutdown persistence wiring, the canonical Basic proxy capability, worker-owned Envoy process composition, production worker image source, and the Kata guest image/entrypoint source. Egress startup uses retained lifecycle ownership: an abort waits for or subsequently closes any manager that resolves late, so a late Envoy cannot escape rollback ownership. The process entrypoint arms the 31-second hard-exit deadline for signals, startup failure, spontaneous runtime loss, and shutdown failure; it clears that timer only after cleanup completes without uncertainty. Those are locally tested source contracts only; they are not runtime, image-build, publication, deployment, or isolation observations.
 
 The following remain deliberately absent:
 

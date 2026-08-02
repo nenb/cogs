@@ -57,11 +57,12 @@ RUN printf '%s\n' \
       /etc/machine-id /var/lib/dbus/machine-id /var/lib/systemd/random-seed \
     && install -d -o root -g root -m 0700 /root /workspace /run/cogs-runtime \
     && install -d -o root -g root -m 0500 /run/cogs-input \
-    && install -d -o root -g root -m 0755 /run/sshd /shared /user \
+    && install -d -o root -g root -m 0755 /run/sshd /shared /user /usr/local/libexec \
     && install -d -o root -g root -m 0555 /shared/skills /user/skills
 
 COPY --chown=root:root --chmod=0644 images/sandbox/sshd_config /etc/ssh/sshd_config
 COPY --chown=root:root --chmod=0755 images/sandbox/entrypoint.sh /usr/local/sbin/cogs-sandbox-entrypoint
+COPY --chown=root:root --chmod=0555 images/sandbox/capture-inputs.py /usr/local/libexec/cogs-capture-inputs
 
 LABEL org.opencontainers.image.source="https://github.com/nenb/cogs" \
       org.opencontainers.image.licenses="Apache-2.0" \

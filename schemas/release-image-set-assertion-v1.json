@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://cogs.dev/schemas/release-image-receipt-v1.json",
-  "title": "Protected-main release image workflow assertion record v1",
-  "description": "Canonical redacted record of assertions made by the protected-main publication workflow. Static parsing does not verify publication, signatures, provenance, SBOMs, or vulnerability results and establishes no readiness or release eligibility.",
+  "$id": "https://cogs.dev/schemas/release-image-set-assertion-v1.json",
+  "title": "Protected-main successful image-set workflow assertion record v1",
+  "description": "Canonical redacted successful-workflow artifact that records the exact worker and sandbox digest references transported under run-unique candidate tags. No final or release tag is written. Static parsing does not verify publication, signatures, provenance, SBOMs, or vulnerability results and establishes no readiness or release eligibility.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -12,7 +12,7 @@
     "source",
     "workflow",
     "target",
-    "tag_policy",
+    "transport_policy",
     "tools",
     "images",
     "claims",
@@ -20,7 +20,7 @@
     "redaction"
   ],
   "properties": {
-    "version": { "const": "cogs.release-image-receipt/v1" },
+    "version": { "const": "cogs.release-image-set-assertion/v1" },
     "authority": { "const": "protected-main-github-actions-publication-assertion-record" },
     "repository": { "const": "nenb/cogs" },
     "source": {
@@ -72,35 +72,50 @@
         "variant": { "type": "null" }
       }
     },
-    "tag_policy": {
+    "transport_policy": {
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "release_format",
-        "candidate_format",
-        "preexisting_release_tags_rejected",
-        "candidate_run_unique",
-        "release_tags_created_after_recorded_gates",
-        "release_tag_readback_recorded",
-        "latest_written",
-        "mutable_release_alias_written"
+        "tag_format",
+        "run_unique",
+        "retained_after_workflow",
+        "transport_only",
+        "final_tags_written",
+        "mutable_release_alias_written",
+        "image_set_record",
+        "consumer_requirement"
       ],
       "properties": {
-        "release_format": { "const": "sha-<full-40-character-commit>" },
-        "candidate_format": { "const": "candidate-<full-40-character-commit>-<run-id>-<run-attempt>" },
-        "preexisting_release_tags_rejected": { "const": true },
-        "candidate_run_unique": { "const": true },
-        "release_tags_created_after_recorded_gates": { "const": true },
-        "release_tag_readback_recorded": { "const": true },
-        "latest_written": { "const": false },
-        "mutable_release_alias_written": { "const": false }
+        "tag_format": { "const": "candidate-<full-40-character-commit>-<run-id>-<run-attempt>" },
+        "run_unique": { "const": true },
+        "retained_after_workflow": { "const": true },
+        "transport_only": { "const": true },
+        "final_tags_written": { "const": false },
+        "mutable_release_alias_written": { "const": false },
+        "image_set_record": {
+          "const": "canonical-successful-workflow-artifact-with-exact-digest-references"
+        },
+        "consumer_requirement": {
+          "const": "separately-reviewed-assertion-record-and-both-exact-digests"
+        }
       }
     },
     "tools": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["buildkit_image", "syft_image", "trivy_image", "trivy_database", "cosign_image"],
+      "required": ["buildx_client", "buildkit_image", "syft_image", "trivy_image", "trivy_database", "cosign_image"],
       "properties": {
+        "buildx_client": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["version", "linux_amd64_sha256"],
+          "properties": {
+            "version": { "const": "v0.29.1" },
+            "linux_amd64_sha256": {
+              "const": "7d2d7d6d4680aa349614965aaa33ccec43f1a9a21e908a5ce4cb6adfa5ad5141"
+            }
+          }
+        },
         "buildkit_image": { "$ref": "#/$defs/pinnedImage" },
         "syft_image": { "$ref": "#/$defs/pinnedImage" },
         "trivy_image": { "$ref": "#/$defs/pinnedImage" },
@@ -147,7 +162,7 @@
       "additionalProperties": false,
       "required": [
         "workflow_recorded_exact_protected_default_branch_source",
-        "workflow_recorded_publication_complete",
+        "workflow_recorded_image_set_complete",
         "workflow_recorded_buildkit_provenance_attached",
         "workflow_recorded_sbom_attached",
         "workflow_recorded_vulnerability_gate_passed",
@@ -164,7 +179,7 @@
       ],
       "properties": {
         "workflow_recorded_exact_protected_default_branch_source": { "const": true },
-        "workflow_recorded_publication_complete": { "const": true },
+        "workflow_recorded_image_set_complete": { "const": true },
         "workflow_recorded_buildkit_provenance_attached": { "const": true },
         "workflow_recorded_sbom_attached": { "const": true },
         "workflow_recorded_vulnerability_gate_passed": { "const": true },
@@ -243,8 +258,7 @@
       "required": [
         "role",
         "registry_repository",
-        "candidate_tag",
-        "release_tag",
+        "transport_tag",
         "registry_digest",
         "exact_reference",
         "linux_amd64_manifest_digest",
@@ -257,11 +271,10 @@
       "properties": {
         "role": { "enum": ["worker", "sandbox"] },
         "registry_repository": { "enum": ["ghcr.io/nenb/cogs/worker", "ghcr.io/nenb/cogs/sandbox"] },
-        "candidate_tag": {
+        "transport_tag": {
           "type": "string",
           "pattern": "^candidate-[0-9a-f]{40}-[1-9][0-9]{0,19}-1$"
         },
-        "release_tag": { "type": "string", "pattern": "^sha-[0-9a-f]{40}$" },
         "registry_digest": { "$ref": "#/$defs/digest" },
         "exact_reference": {
           "type": "string",
@@ -326,6 +339,7 @@
             "severities",
             "ignore_unfixed",
             "suppressions",
+            "workflow_recorded_report_contract",
             "counts",
             "gate",
             "disposition"
@@ -351,6 +365,28 @@
             },
             "ignore_unfixed": { "const": false },
             "suppressions": { "const": false },
+            "workflow_recorded_report_contract": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "schema_version",
+                "artifact_name_exact_subject",
+                "repo_digest_exact_subject",
+                "artifact_type",
+                "os_metadata_present",
+                "results_nonempty",
+                "os_package_target_present"
+              ],
+              "properties": {
+                "schema_version": { "const": 2 },
+                "artifact_name_exact_subject": { "const": true },
+                "repo_digest_exact_subject": { "const": true },
+                "artifact_type": { "const": "container_image" },
+                "os_metadata_present": { "const": true },
+                "results_nonempty": { "const": true },
+                "os_package_target_present": { "const": true }
+              }
+            },
             "counts": { "$ref": "#/$defs/counts" },
             "gate": {
               "type": "object",
@@ -399,7 +435,7 @@
                   "required": ["count", "semantics"],
                   "properties": {
                     "count": { "const": 0 },
-                    "semantics": { "const": "release-receipt-blocking-including-unfixed" }
+                    "semantics": { "const": "image-set-assertion-blocking-including-unfixed" }
                   }
                 }
               }

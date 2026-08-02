@@ -31,14 +31,23 @@ export async function runProductionMain(port: ProductionMainPort = PROCESS_PORT)
   let closePromise: Promise<void> | undefined;
   let hardTimer: unknown;
   let failed = false;
-  const terminate = () => {
-    if (hardTimer === undefined) hardTimer = port.setTimer(() => port.hardStop(), HARD_SHUTDOWN_MS);
-    controller.abort();
-    closePromise ??= runtime?.close("signal") ?? Promise.resolve();
-    closePromise.catch(() => {
+  let cleanupUncertain = false;
+  const armHardDeadline = () => {
+    hardTimer ??= port.setTimer(() => port.hardStop(), HARD_SHUTDOWN_MS);
+  };
+  const markFailure = () => {
+    cleanupUncertain = true;
+    armHardDeadline();
+    if (!failed) {
       failed = true;
       port.failClosed();
-    });
+    }
+  };
+  const terminate = () => {
+    armHardDeadline();
+    controller.abort();
+    closePromise ??= runtime?.close("signal") ?? Promise.resolve();
+    closePromise.catch(markFailure);
   };
   port.on("SIGINT", terminate);
   port.on("SIGTERM", terminate);
@@ -47,24 +56,21 @@ export async function runProductionMain(port: ProductionMainPort = PROCESS_PORT)
     if (controller.signal.aborted) terminate();
     await Promise.race([
       runtime.closed.catch(() => {
-        failed = true;
+        markFailure();
       }),
       closePromise ?? new Promise<void>(() => undefined),
     ]);
   } catch {
-    failed = true;
+    markFailure();
   } finally {
     controller.abort();
     if (runtime !== undefined) {
       closePromise ??= runtime.close(failed ? "startup-failed" : "requested");
-      await closePromise.catch(() => {
-        failed = true;
-      });
+      await closePromise.catch(markFailure);
     }
-    if (hardTimer !== undefined) port.clearTimer(hardTimer);
+    if (hardTimer !== undefined && !cleanupUncertain) port.clearTimer(hardTimer);
     port.off("SIGINT", terminate);
     port.off("SIGTERM", terminate);
-    if (failed) port.failClosed();
   }
 }
 

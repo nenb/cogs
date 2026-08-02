@@ -14,7 +14,11 @@ import {
   stage4OfflineReadinessSha256,
 } from "./stage4-offline-readiness.ts";
 import { STAGE4_PINNED_NODE } from "./stage4-offline-render-preparation.ts";
-import { generateStage4SourceInventory, readStage4SourceFile } from "./stage4-offline-source-inventory.ts";
+import {
+  generateStage4SourceInventory,
+  readStage4SourceFile,
+  stage4TrackedWorktreeMerkle,
+} from "./stage4-offline-source-inventory.ts";
 
 const root = resolve(import.meta.dirname, "..");
 const artifactRoot = resolve(root, "docs/security-evidence/stage4-offline-readiness-artifacts");
@@ -72,7 +76,7 @@ const PRODUCTION_CONTRACT_TESTS = Object.freeze([
   "test/production-compose.test.ts",
   "test/production-sandbox-image.test.ts",
   "test/production-worker-image.test.ts",
-  "test/release-image-receipt.test.ts",
+  "test/release-image-set-assertion.test.ts",
   "test/runtime-config.test.ts",
   "test/runtime-trusted-files.test.ts",
   "test/stage4-nic-sandbox-node-group-v2.test.ts",
@@ -82,7 +86,7 @@ const PRODUCTION_SCHEMA_NAMES = Object.freeze([
   "integration-v1alpha1.json",
   "launch-v1alpha1.json",
   "local-image-artifact-package-v1.json",
-  "release-image-receipt-v1.json",
+  "release-image-set-assertion-v1.json",
   "runtime-v1alpha1.json",
 ]);
 const FORMAT_PATHS = Object.freeze([
@@ -151,6 +155,7 @@ function stableOutput(bytes: Uint8Array, normalization: CommandSpec["normalizati
     const entry = value.entries?.find((row: JsonObject) => row.path === "scripts/stage4-offline-readiness.ts");
     if (entry === undefined) throw new Error("STAGE4_REGENERATE_SOURCE_OUTPUT_INVALID");
     entry.sha256 = "0".repeat(64);
+    value.worktree_binding.worktree_merkle_sha256 = stage4TrackedWorktreeMerkle(value.entries);
     return canonicalStage4OfflineReadinessBytes(value);
   }
   const text = new TextDecoder("utf-8", { fatal: true })
@@ -492,7 +497,18 @@ function regeneratePackage(): void {
   const value = JSON.parse(readFileSync(packagePath, "utf8")) as JsonObject;
   const nic = JSON.parse(readFileSync(resolve(root, "deploy/nic/stage4-sandbox-node-group-contract.json"), "utf8"));
   const runtimePins = JSON.parse(readFileSync(resolve(artifactRoot, "runtime-pins.json"), "utf8"));
+  const sourceInventory = JSON.parse(readFileSync(sourceInventoryPath, "utf8"));
   value.blockers = [...STAGE4_READINESS_BLOCKERS];
+  value.source = {
+    commit_binding_present: false,
+    excluded_generated_evidence_outputs: sourceInventory.excluded_generated_evidence_outputs.map(
+      (row: JsonObject) => row.path,
+    ),
+    inventory_algorithm: sourceInventory.algorithm,
+    inventory_scope: sourceInventory.scope,
+    source_closure_complete: true,
+    worktree_merkle_sha256: sourceInventory.worktree_binding.worktree_merkle_sha256,
+  };
   value.pins.nic = {
     capability_state: "source-capability-present-operator-attestation-only",
     commit_sha: nic.nic_source.commit_sha,
@@ -562,6 +578,7 @@ regenerateSchemaInventory();
 rewriteRuntimeSchemaInventoryAnchor();
 regenerateRuntimeArtifactEvidence();
 // Normalize source-derived package semantics before schema-registry checks, then bind final generated artifacts below.
+writeFileSync(sourceInventoryPath, generateStage4SourceInventory(root));
 regeneratePackage();
 regenerateSourceAndLocalValidation();
 rewriteClassifierAnchors();

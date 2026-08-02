@@ -5,27 +5,28 @@ export LC_ALL=C
 
 readonly INPUT_ROOT=/run/cogs-input
 readonly RUNTIME_ROOT=/run/cogs-runtime
-readonly HOST_KEY="$INPUT_ROOT/ssh_host_ed25519_key"
-readonly HOST_PUBLIC="$INPUT_ROOT/ssh_host_ed25519_key.pub"
-readonly CLIENT_PUBLIC="$INPUT_ROOT/client_ed25519_key.pub"
-readonly PUBLIC_CA="$INPUT_ROOT/egress-ca.crt"
-readonly PROXY_CAPABILITY="$INPUT_ROOT/proxy-capability"
-readonly TRUST_FILE="$RUNTIME_ROOT/egress-ca.crt"
+readonly HOST_KEY="$RUNTIME_ROOT/ssh_host_ed25519_key"
+readonly HOST_PUBLIC="$RUNTIME_ROOT/ssh_host_ed25519_key.pub"
+readonly CLIENT_PUBLIC="$RUNTIME_ROOT/client_ed25519_key.pub"
+readonly PUBLIC_CA="$RUNTIME_ROOT/egress-ca.crt"
+readonly PROXY_CAPABILITY="$RUNTIME_ROOT/proxy-capability"
+readonly INPUT_CAPTURE=/usr/local/libexec/cogs-capture-inputs
+readonly TRUST_FILE="$RUNTIME_ROOT/trust-egress-ca.crt"
 
 fail() {
   printf '%s\n' 'cogs-sandbox: required runtime input unavailable' >&2
   exit 1
 }
 
-# Prints a stable identity only for a direct, root-owned, single-link regular file.
-# Callers compare the result before and after every bounded read/copy.
+# Runtime reads use only private copies created by capture-inputs.py through retained
+# openat/O_NOFOLLOW descriptors and stable mtime/ctime-inclusive fstat identities.
 regular_file_identity() {
   local path=$1 expected_mode=$2 minimum=$3 maximum=$4 identity size
-  [[ ( "$path" == "$INPUT_ROOT/"* || "$path" == /etc/ssh/sshd_config ) && ! -L "$path" && -f "$path" ]] || return 1
+  [[ ( "$path" == "$RUNTIME_ROOT/"* || "$path" == /etc/ssh/sshd_config ) && ! -L "$path" && -f "$path" ]] || return 1
   [[ "$(realpath -e -- "$path" 2>/dev/null)" == "$path" ]] || return 1
-  identity=$(stat -c '%d:%i:%s:%u:%g:%a:%h:%F' -- "$path" 2>/dev/null) || return 1
+  identity=$(stat -c '%d:%i:%s:%u:%g:%a:%h:%Y:%Z:%F' -- "$path" 2>/dev/null) || return 1
   size=$(stat -c '%s' -- "$path" 2>/dev/null) || return 1
-  [[ "$identity" == *":0:0:${expected_mode}:1:regular file" ]] || return 1
+  [[ "$identity" == *":0:0:${expected_mode}:1:"*":regular file" ]] || return 1
   [[ "$size" =~ ^[0-9]+$ && "$size" -ge "$minimum" && "$size" -le "$maximum" ]] || return 1
   printf '%s' "$identity"
 }
@@ -111,11 +112,20 @@ prepare_runtime_directories() {
   exact_directory /run/sshd 755 || fail
 }
 
-capture_regular_file() {
-  local source=$1 destination=$2 source_mode=$3 destination_mode=$4 minimum=$5 maximum=$6 before after
-  before=$(regular_file_identity "$source" "$source_mode" "$minimum" "$maximum") || fail
-  install -o root -g root -m "$destination_mode" -- "$source" "$destination" 2>/dev/null || fail
-  after=$(regular_file_identity "$source" "$source_mode" "$minimum" "$maximum") || fail
+capture_runtime_inputs() {
+  /usr/bin/python3 -I "$INPUT_CAPTURE" "$INPUT_ROOT" "$RUNTIME_ROOT" >/dev/null 2>&1 || fail
+  regular_file_identity "$HOST_KEY" 600 64 16384 >/dev/null || fail
+  regular_file_identity "$HOST_PUBLIC" 600 80 1024 >/dev/null || fail
+  regular_file_identity "$CLIENT_PUBLIC" 600 80 1024 >/dev/null || fail
+  regular_file_identity "$PUBLIC_CA" 600 256 65536 >/dev/null || fail
+  regular_file_identity "$PROXY_CAPABILITY" 600 32 128 >/dev/null || fail
+}
+
+copy_image_config() {
+  local destination=$1 before after
+  before=$(regular_file_identity /etc/ssh/sshd_config 644 256 16384) || fail
+  install -o root -g root -m 0600 -- /etc/ssh/sshd_config "$destination" 2>/dev/null || fail
+  after=$(regular_file_identity /etc/ssh/sshd_config 644 256 16384) || fail
   [[ "$before" == "$after" ]] || fail
 }
 
@@ -124,8 +134,8 @@ install_ssh_identity() {
   local public="$RUNTIME_ROOT/ssh_host_ed25519_key.pub"
   local derived provided client_type client_blob client_fields client_lines
 
-  capture_regular_file "$HOST_KEY" 400 "$private" 600 64 16384
-  capture_regular_file "$HOST_PUBLIC" 444 "$public" 644 80 1024
+  regular_file_identity "$HOST_KEY" 600 64 16384 >/dev/null || fail
+  regular_file_identity "$HOST_PUBLIC" 600 80 1024 >/dev/null || fail
 
   client_lines=$(awk 'END { print NR }' "$public" 2>/dev/null) || fail
   client_fields=$(awk 'NR == 1 { print NF }' "$public" 2>/dev/null) || fail
@@ -136,12 +146,12 @@ install_ssh_identity() {
   ssh-keygen -l -E sha256 -f "$private" 2>/dev/null | grep -Fq '(ED25519)' || fail
 
   local before after
-  before=$(regular_file_identity "$CLIENT_PUBLIC" 444 80 1024) || fail
+  before=$(regular_file_identity "$CLIENT_PUBLIC" 600 80 1024) || fail
   client_lines=$(awk 'END { print NR }' "$CLIENT_PUBLIC" 2>/dev/null) || fail
   client_fields=$(awk 'NR == 1 { print NF }' "$CLIENT_PUBLIC" 2>/dev/null) || fail
   client_type=$(awk 'NR == 1 { print $1 }' "$CLIENT_PUBLIC" 2>/dev/null) || fail
   client_blob=$(awk 'NR == 1 { print $2 }' "$CLIENT_PUBLIC" 2>/dev/null) || fail
-  after=$(regular_file_identity "$CLIENT_PUBLIC" 444 80 1024) || fail
+  after=$(regular_file_identity "$CLIENT_PUBLIC" 600 80 1024) || fail
   [[ "$before" == "$after" && "$client_lines" == 1 && ( "$client_fields" == 2 || "$client_fields" == 3 ) ]] || fail
   [[ "$client_type" == ssh-ed25519 && "$client_blob" =~ ^[A-Za-z0-9+/]+={0,3}$ ]] || fail
   printf 'restrict %s %s\n' "$client_type" "$client_blob" > "$RUNTIME_ROOT/authorized_keys"
@@ -151,7 +161,7 @@ install_ssh_identity() {
 
 install_public_ca() {
   local before after
-  before=$(regular_file_identity "$PUBLIC_CA" 444 256 65536) || fail
+  before=$(regular_file_identity "$PUBLIC_CA" 600 256 65536) || fail
   grep -Eq -- '-----BEGIN ([A-Z0-9 ]+ )?PRIVATE KEY-----' "$PUBLIC_CA" 2>/dev/null && fail
   awk '
     NR == 1 && $0 != "-----BEGIN CERTIFICATE-----" { exit 1 }
@@ -165,16 +175,16 @@ install_public_ca() {
   openssl verify -CAfile "$PUBLIC_CA" "$PUBLIC_CA" >/dev/null 2>&1 || fail
   openssl x509 -in "$PUBLIC_CA" -out "$TRUST_FILE" 2>/dev/null || fail
   chmod 0644 "$TRUST_FILE"
-  after=$(regular_file_identity "$PUBLIC_CA" 444 256 65536) || fail
+  after=$(regular_file_identity "$PUBLIC_CA" 600 256 65536) || fail
   [[ "$before" == "$after" ]] || fail
 }
 
 read_proxy_capability() {
   local before after size value
-  before=$(regular_file_identity "$PROXY_CAPABILITY" 400 32 128) || fail
+  before=$(regular_file_identity "$PROXY_CAPABILITY" 600 32 128) || fail
   size=$(stat -c '%s' -- "$PROXY_CAPABILITY" 2>/dev/null) || fail
   IFS= read -r value < "$PROXY_CAPABILITY" || [[ -n "$value" ]] || fail
-  after=$(regular_file_identity "$PROXY_CAPABILITY" 400 32 128) || fail
+  after=$(regular_file_identity "$PROXY_CAPABILITY" 600 32 128) || fail
   [[ "$before" == "$after" && ${#value} -eq "$size" ]] || fail
   validate_capability "$value" || fail
   printf '%s' "$value"
@@ -182,7 +192,7 @@ read_proxy_capability() {
 
 write_sshd_environment() {
   local proxy_url=$1 trust=$TRUST_FILE config="$RUNTIME_ROOT/sshd_config"
-  capture_regular_file /etc/ssh/sshd_config 644 "$config" 600 256 16384
+  copy_image_config "$config"
   {
     printf 'SetEnv COGS_PROFILE=kata-sandbox-guest\n'
     printf 'SetEnv HTTP_PROXY=%s HTTPS_PROXY=%s ALL_PROXY=%s\n' "$proxy_url" "$proxy_url" "$proxy_url"
@@ -200,6 +210,7 @@ main() {
   local capability endpoint proxy_url
   reject_ambient_credentials || fail
   prepare_runtime_directories
+  capture_runtime_inputs
   install_ssh_identity
   install_public_ca
   capability=$(read_proxy_capability)

@@ -219,11 +219,11 @@ export const STAGE4_READINESS_EXPECTED_ARTIFACTS = Object.freeze({
   repeatedRender: "60f73b0e5caa843c4db9431c63cdc13eada9088d6da16c974ef127c480235710",
   runtimePins: "1e683ef6513f9f86f7eaead0fd64d949f037afd06043882eb1b6514aa5c4a145",
   values: "e63a0fadebe16637cc97b21adeeb4ecf33efa8e76a1469e6008c7f7ed4fbb58f",
-  authenticatedRuntimeArtifacts: "4c273d2d930e4ecfe7fd66298630456b102515521ed473207400048e269f7c42",
-  localValidationNormalized: "f7819f59e69304a7df5f1288e62674dff5ca5ac9a396ecedc95a7a7284b95d8d",
+  authenticatedRuntimeArtifacts: "c256f8270a9a322028cb5e365723c5503c7398cfad14deda1775a2baca2a5b77",
+  localValidationNormalized: "6f904eb289434d68d30f97cc5caea26e42004a5e1ad58346d94822e44a20d309",
   renderReceipt: "b9634997067adef5816aac496c26acbdc1b2c6fc20fa0112f38efd6879e1f85b",
-  schemaInventory: "e4c5a280d5b5d901bab2223e606e79c8496c2dfa245321143456f7bc47216a12",
-  sourceInventoryNormalized: "276ef2501971874cc34c036395e39b942bd7c64b0ae7026495ae3cdb0b045681",
+  schemaInventory: "d9130b2bc85a0cb6ae957a1ceb045598fb848e759f59ceb80dd723c729ec4df4",
+  sourceInventoryNormalized: "88698acd8cf9daaf587413fd5289e8589b5c18abfd307ba8e94252b10c96e868",
 });
 /* stage4-readiness-anchor-end */
 
@@ -332,6 +332,14 @@ function parseCanonicalArtifact(bytes: Uint8Array): JsonRecord | null {
   }
 }
 
+function trackedWorktreeMerkle(value: JsonValue | undefined): string | null {
+  if (!Array.isArray(value)) return null;
+  return createHash("sha256")
+    .update("cogs.stage4/tracked-worktree-byte-merkle/v1\0", "utf8")
+    .update(canonicalStage4OfflineReadinessBytes(value))
+    .digest("hex");
+}
+
 function digestEntries(value: JsonValue | undefined): Map<string, string> | null {
   if (!Array.isArray(value)) return null;
   const output = new Map<string, string>();
@@ -363,7 +371,16 @@ function normalizedInventoryDigest(bytes: Uint8Array, arrayKey: string, selfPath
     return { ...row, sha256: "0".repeat(64) } as JsonValue;
   });
   if (replacements !== 1) return null;
-  return stage4OfflineReadinessSha256(canonicalStage4OfflineReadinessBytes({ ...value, [arrayKey]: normalized }));
+  const normalizedValue = { ...value, [arrayKey]: normalized };
+  if (arrayKey === "entries" && selfPath === "scripts/stage4-offline-readiness.ts") {
+    const binding = record(normalizedValue.worktree_binding);
+    if (binding === null) return null;
+    normalizedValue.worktree_binding = {
+      ...binding,
+      worktree_merkle_sha256: trackedWorktreeMerkle(normalized),
+    };
+  }
+  return stage4OfflineReadinessSha256(canonicalStage4OfflineReadinessBytes(normalizedValue));
 }
 
 export function stage4NormalizedSourceInventorySha256(input: Uint8Array): string | null {
@@ -435,6 +452,21 @@ function exactArtifactSemantics(value: ReadinessPackage, artifacts: ArtifactCopi
   const schemaEntries = digestEntries(schemas?.entries);
   const localBindings = digestEntries(local?.source_bindings);
   if (sourceEntries === null || schemaEntries === null || localBindings === null) return false;
+  const worktree = record(source?.worktree_binding);
+  const packageSource = record(value.source);
+  const worktreeMerkle = trackedWorktreeMerkle(source?.entries);
+  if (
+    source?.version !== "cogs.stage4-offline-source-inventory/v4" ||
+    source.algorithm !== "sha256-domain-separated-canonical-path-and-exact-byte-digest-list" ||
+    source.scope !== "complete-tracked-worktree-source-build-qualification-closure" ||
+    worktree === null ||
+    packageSource === null ||
+    worktree.file_count !== sourceEntries.size ||
+    worktree.worktree_merkle_sha256 !== worktreeMerkle ||
+    packageSource.worktree_merkle_sha256 !== worktreeMerkle ||
+    packageSource.commit_binding_present !== false
+  )
+    return false;
 
   const sourceArtifactPaths: ReadonlyArray<readonly [string, Stage4ReadinessArtifactKey]> = [
     ["docs/security-evidence/stage4-offline-readiness-artifacts/chart-inventory.json", "chartInventory"],

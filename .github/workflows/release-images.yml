@@ -1,4 +1,4 @@
-name: Publish protected-main release images
+name: Publish protected-main image-set candidates
 
 on:
   workflow_dispatch:
@@ -72,7 +72,7 @@ jobs:
           printf 'reviewed_sha=%s\n' "$REVIEWED_SHA" >> "$GITHUB_OUTPUT"
 
   publish:
-    name: Publish, attest, scan, sign, verify, and receipt
+    name: Publish, attest, scan, sign, verify, and image-set assertion
     needs: [authority]
     if: ${{ needs.authority.result == 'success' }}
     permissions:
@@ -88,6 +88,8 @@ jobs:
       REVIEWED_SHA: ${{ needs.authority.outputs.reviewed_sha }}
       WORKER_REPOSITORY: ghcr.io/nenb/cogs/worker
       SANDBOX_REPOSITORY: ghcr.io/nenb/cogs/sandbox
+      BUILDX_VERSION: v0.29.1
+      BUILDX_LINUX_AMD64_SHA256: 7d2d7d6d4680aa349614965aaa33ccec43f1a9a21e908a5ce4cb6adfa5ad5141
       BUILDKIT_IMAGE: docker.io/moby/buildkit@sha256:6eceb8971ce4fceb3daca562832642706238b7eea72941fcf9896c93c3c4a53e
       SYFT_IMAGE: docker.io/anchore/syft@sha256:bd5357d2cd087f03af748dac24df48bfbc1723080d78f75f69aca1f2d429060e
       TRIVY_IMAGE: docker.io/aquasec/trivy@sha256:a22415a38938a56c379387a8163fcb0ce38b10ace73e593475d3658d578b2436
@@ -116,15 +118,17 @@ jobs:
           export CONTEXT="$RUNNER_TEMP/cogs-release-context"
           export WORK="$RUNNER_TEMP/cogs-release-work"
           export CACHE="$RUNNER_TEMP/cogs-release-trivy-cache"
-          export RECEIPT="$RUNNER_TEMP/cogs-release-receipt"
+          export ASSERTION="$RUNNER_TEMP/cogs-release-image-set-assertion"
           export COSIGN_HOME="$RUNNER_TEMP/cogs-release-cosign-home"
+          export BUILDX_BUILDER="cogs-release-${{ github.run_id }}-${{ github.run_attempt }}"
           {
             printf 'DOCKER_CONFIG=%s\n' "$DOCKER_CONFIG"
             printf 'CONTEXT=%s\n' "$CONTEXT"
             printf 'WORK=%s\n' "$WORK"
             printf 'CACHE=%s\n' "$CACHE"
-            printf 'RECEIPT=%s\n' "$RECEIPT"
+            printf 'ASSERTION=%s\n' "$ASSERTION"
             printf 'COSIGN_HOME=%s\n' "$COSIGN_HOME"
+            printf 'BUILDX_BUILDER=%s\n' "$BUILDX_BUILDER"
           } >> "$GITHUB_ENV"
           test "$(git rev-parse --verify 'HEAD^{commit}')" = "$REVIEWED_SHA"
           test "$REVIEWED_SHA" = "$EVENT_SHA"
@@ -134,7 +138,7 @@ jobs:
           if git remote get-url origin | grep -Eq '://[^/]*@'; then
             exit 1
           fi
-          mkdir -m 0700 "$DOCKER_CONFIG" "$CONTEXT" "$WORK" "$CACHE" "$RECEIPT" "$COSIGN_HOME"
+          mkdir -m 0700 "$DOCKER_CONFIG" "$CONTEXT" "$WORK" "$CACHE" "$ASSERTION" "$COSIGN_HOME"
           response="$WORK/default-head.json"
           curl --fail --silent --show-error --proto '=https' --tlsv1.2 \
             --header 'Accept: application/vnd.github+json' \
@@ -151,23 +155,35 @@ jobs:
           jq -cn --arg reviewed "$REVIEWED_SHA" --arg tree "$tree_sha" --arg inventory "$inventory_sha" \
             '{reviewed_sha:$reviewed,tree_sha:$tree,inventory_sha256:$inventory}' > "$WORK/source.json"
 
-      - name: Set up exact Node.js for the receipt classifier
+      - name: Set up exact Node.js for the assertion parser
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version-file: .nvmrc
           cache: npm
 
-      - name: Install locked receipt-classifier dependencies without lifecycle scripts
+      - name: Install locked assertion-parser dependencies without lifecycle scripts
         run: npm ci --ignore-scripts
 
-      - name: Set up the digest-pinned BuildKit builder
-        uses: docker/setup-buildx-action@f7ce87c1d6bead3e36075b2ce75da1f6cc28aaca # v3.9.0
-        with:
-          driver: docker-container
-          driver-opts: image=${{ env.BUILDKIT_IMAGE }}
-          install: true
-          use: true
-          cleanup: true
+      - name: Install the exact Buildx client and create the digest-pinned BuildKit builder
+        run: |
+          set -euo pipefail
+          plugin_directory="$DOCKER_CONFIG/cli-plugins"
+          plugin="$plugin_directory/docker-buildx"
+          mkdir -m 0700 "$plugin_directory"
+          curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+            --output "$plugin" \
+            "https://github.com/docker/buildx/releases/download/$BUILDX_VERSION/buildx-$BUILDX_VERSION.linux-amd64"
+          printf '%s  %s\n' "$BUILDX_LINUX_AMD64_SHA256" "$plugin" | sha256sum --check --strict
+          chmod 0555 "$plugin"
+          test "$(sha256sum "$plugin" | awk '{print $1}')" = "$BUILDX_LINUX_AMD64_SHA256"
+          docker buildx version | grep -Eq "^github.com/docker/buildx $BUILDX_VERSION([ +]|$)"
+          docker buildx create \
+            --name "$BUILDX_BUILDER" \
+            --driver docker-container \
+            --driver-opt "image=$BUILDKIT_IMAGE" \
+            --use
+          docker buildx inspect "$BUILDX_BUILDER" --bootstrap > "$WORK/buildx-builder-inspect.txt"
+          grep -Eq '^Platforms:.*linux/amd64([, ]|$)' "$WORK/buildx-builder-inspect.txt"
 
       - name: Authenticate only to GHCR
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
@@ -177,29 +193,29 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
           logout: false
 
-      - name: Verify builder, tool images, and absent immutable destination tags
+      - name: Verify builder, tool images, and absent run-unique transport tags
         run: |
           set -euo pipefail
           test "$(docker info --format '{{.OSType}}/{{.Architecture}}')" = linux/x86_64
-          docker buildx inspect --bootstrap | grep -Eq '^Platforms:.*linux/amd64([, ]|$)'
+          test "$(sha256sum "$DOCKER_CONFIG/cli-plugins/docker-buildx" | awk '{print $1}')" = "$BUILDX_LINUX_AMD64_SHA256"
+          docker buildx version | grep -Eq "^github.com/docker/buildx $BUILDX_VERSION([ +]|$)"
+          docker buildx inspect "$BUILDX_BUILDER" --bootstrap | grep -Eq '^Platforms:.*linux/amd64([, ]|$)'
           for image in "$SYFT_IMAGE" "$TRIVY_IMAGE" "$COSIGN_IMAGE"; do
             docker pull --platform linux/amd64 "$image"
             digest=${image##*@}
             docker image inspect "$image" --format '{{json .RepoDigests}}' | \
               jq -e --arg suffix "@$digest" 'any(.[]; endswith($suffix))' >/dev/null
           done
-          release_tag="sha-$REVIEWED_SHA"
-          candidate_tag="candidate-$REVIEWED_SHA-${{ github.run_id }}-${{ github.run_attempt }}"
+          transport_tag="candidate-$REVIEWED_SHA-${{ github.run_id }}-${{ github.run_attempt }}"
           for repository in "$WORKER_REPOSITORY" "$SANDBOX_REPOSITORY"; do
-            for tag in "$release_tag" "$candidate_tag"; do
-              error="$WORK/tag-check-$(basename "$repository")-$tag.stderr"
-              if docker buildx imagetools inspect "$repository:$tag" >/dev/null 2>"$error"; then
-                printf 'Refusing to overwrite pre-existing tag %s:%s\n' "$repository" "$tag" >&2
-                exit 1
-              fi
-              grep -Eqi 'not found|manifest unknown' "$error"
-              rm -f "$error"
-            done
+            error="$WORK/tag-check-$(basename "$repository")-$transport_tag.stderr"
+            if docker buildx imagetools inspect "$repository:$transport_tag" >/dev/null 2>"$error"; then
+              printf 'Refusing to overwrite pre-existing run-unique transport tag %s:%s\n' \
+                "$repository" "$transport_tag" >&2
+              exit 1
+            fi
+            grep -Eqi 'not found|manifest unknown' "$error"
+            rm -f "$error"
           done
 
       - name: Build and publish exact worker with attached BuildKit provenance
@@ -303,8 +319,21 @@ jobs:
                 --format json \
                 --output "/evidence/$role.vulnerabilities.json" \
                 "$subject"
+            jq -e --arg subject "$subject" '
+              .SchemaVersion == 2 and
+              .ArtifactName == $subject and
+              .ArtifactType == "container_image" and
+              (.Metadata | type == "object") and
+              (.Metadata.RepoDigests | type == "array") and
+              (.Metadata.RepoDigests | index($subject) != null) and
+              (.Metadata.OS | type == "object") and
+              (.Metadata.OS.Family | type == "string" and length > 0) and
+              (.Metadata.OS.Name | type == "string" and length > 0) and
+              (.Results | type == "array" and length > 0) and
+              any(.Results[]; .Class == "os-pkgs" and (.Target | type == "string" and length > 0))' \
+              "$WORK/$role.vulnerabilities.json" >/dev/null
             jq -cS '
-              [.Results[]?.Vulnerabilities[]?] as $all |
+              [.Results[].Vulnerabilities[]?] as $all |
               {
                 total: ($all | length),
                 unknown: ([$all[] | select((.Severity // "UNKNOWN") == "UNKNOWN")] | length),
@@ -355,27 +384,6 @@ jobs:
             test -s "$WORK/$role.sbom-verification.jsonl"
           done
 
-      - name: Create final full-SHA tags only after gates and verify exact digest readback
-        run: |
-          set -euo pipefail
-          release_tag="sha-$REVIEWED_SHA"
-          for role in worker sandbox; do
-            repository_name="${role^^}_REPOSITORY"
-            repository=${!repository_name}
-            digest=$(cat "$WORK/$role.registry-digest")
-            error="$WORK/final-tag-check-$role.stderr"
-            if docker buildx imagetools inspect "$repository:$release_tag" >/dev/null 2>"$error"; then
-              printf 'Refusing to overwrite raced release tag %s:%s\n' "$repository" "$release_tag" >&2
-              exit 1
-            fi
-            grep -Eqi 'not found|manifest unknown' "$error"
-            rm -f "$error"
-            docker buildx imagetools create --tag "$repository:$release_tag" "$repository@$digest"
-            docker buildx imagetools inspect --raw "$repository:$release_tag" > "$WORK/$role.release-index.json"
-            cmp "$WORK/$role.index.json" "$WORK/$role.release-index.json"
-            test "sha256:$(sha256sum "$WORK/$role.release-index.json" | awk '{print $1}')" = "$digest"
-          done
-
       - name: Generate and classify one canonical redacted workflow assertion record
         run: |
           set -euo pipefail
@@ -407,6 +415,8 @@ jobs:
             --arg sandbox_sbom_sha "$sandbox_sbom_sha" \
             --arg worker_vulnerabilities_sha "$worker_vulnerabilities_sha" \
             --arg sandbox_vulnerabilities_sha "$sandbox_vulnerabilities_sha" \
+            --arg buildx_version "$BUILDX_VERSION" \
+            --arg buildx_sha256 "$BUILDX_LINUX_AMD64_SHA256" \
             --arg buildkit "$BUILDKIT_IMAGE" \
             --arg syft "$SYFT_IMAGE" \
             --arg trivy "$TRIVY_IMAGE" \
@@ -420,8 +430,7 @@ jobs:
               {
                 role:$role,
                 registry_repository:$repository,
-                candidate_tag:("candidate-" + $sha + "-${{ github.run_id }}-${{ github.run_attempt }}"),
-                release_tag:("sha-" + $sha),
+                transport_tag:("candidate-" + $sha + "-${{ github.run_id }}-${{ github.run_attempt }}"),
                 registry_digest:$digest,
                 exact_reference:($repository + "@" + $digest),
                 linux_amd64_manifest_digest:$child,
@@ -434,40 +443,41 @@ jobs:
                   severities:["UNKNOWN","LOW","MEDIUM","HIGH","CRITICAL"],
                   ignore_unfixed:false,
                   suppressions:false,
+                  workflow_recorded_report_contract:{schema_version:2,artifact_name_exact_subject:true,repo_digest_exact_subject:true,artifact_type:"container_image",os_metadata_present:true,results_nonempty:true,os_package_target_present:true},
                   counts:$counts,
                   gate:{policy:"block-high-critical",severities:["HIGH","CRITICAL"],includes_unfixed:true,finding_count:($counts.high + $counts.critical),outcome:"pass"},
                   disposition:{
                     unknown:{count:$counts.unknown,semantics:"recorded-non-gating-review-required-not-approved"},
                     low_medium:{count:($counts.low + $counts.medium),semantics:"recorded-non-gating-not-release-approval"},
-                    high_critical:{count:($counts.high + $counts.critical),semantics:"release-receipt-blocking-including-unfixed"}
+                    high_critical:{count:($counts.high + $counts.critical),semantics:"image-set-assertion-blocking-including-unfixed"}
                   }
                 },
                 signature:{workflow_recorded_keyless:true,workflow_recorded_digest_signed:true,workflow_recorded_verified:true,certificate_identity:$identity,certificate_oidc_issuer:$issuer}
               };
             {
-              version:"cogs.release-image-receipt/v1",
+              version:"cogs.release-image-set-assertion/v1",
               authority:"protected-main-github-actions-publication-assertion-record",
               repository:"nenb/cogs",
               source:{reviewed_sha:$sha,default_branch:"main",protected:true,observed_head_sha:$sha,tree_sha:$source[0].tree_sha,inventory_sha256:$source[0].inventory_sha256},
               workflow:{path:".github/workflows/release-images.yml",ref:"refs/heads/main",sha:$sha,event:"workflow_dispatch",run_id:$run_id,run_attempt:1,certificate_identity:$identity,certificate_oidc_issuer:$issuer},
               target:{os:"linux",architecture:"amd64",variant:null},
-              tag_policy:{release_format:"sha-<full-40-character-commit>",candidate_format:"candidate-<full-40-character-commit>-<run-id>-<run-attempt>",preexisting_release_tags_rejected:true,candidate_run_unique:true,release_tags_created_after_recorded_gates:true,release_tag_readback_recorded:true,latest_written:false,mutable_release_alias_written:false},
-              tools:{buildkit_image:$buildkit,syft_image:$syft,trivy_image:$trivy,trivy_database:$trivy_database,cosign_image:$cosign},
+              transport_policy:{tag_format:"candidate-<full-40-character-commit>-<run-id>-<run-attempt>",run_unique:true,retained_after_workflow:true,transport_only:true,final_tags_written:false,mutable_release_alias_written:false,image_set_record:"canonical-successful-workflow-artifact-with-exact-digest-references",consumer_requirement:"separately-reviewed-assertion-record-and-both-exact-digests"},
+              tools:{buildx_client:{version:$buildx_version,linux_amd64_sha256:$buildx_sha256},buildkit_image:$buildkit,syft_image:$syft,trivy_image:$trivy,trivy_database:$trivy_database,cosign_image:$cosign},
               images:[
                 image("worker";"ghcr.io/nenb/cogs/worker";$worker_digest;$worker_child;"images/worker/Dockerfile";$worker_dockerfile_sha;$worker_provenance_sha;$worker_sbom_sha;$worker_vulnerabilities_sha;$worker_counts[0]),
                 image("sandbox";"ghcr.io/nenb/cogs/sandbox";$sandbox_digest;$sandbox_child;"images/sandbox/Dockerfile";$sandbox_dockerfile_sha;$sandbox_provenance_sha;$sandbox_sbom_sha;$sandbox_vulnerabilities_sha;$sandbox_counts[0])
               ],
-              claims:{workflow_recorded_exact_protected_default_branch_source:true,workflow_recorded_publication_complete:true,workflow_recorded_buildkit_provenance_attached:true,workflow_recorded_sbom_attached:true,workflow_recorded_vulnerability_gate_passed:true,workflow_recorded_keyless_signatures_verified:true,static_parser_cryptographic_verification_performed:false,cloud_execution_observed:false,kubernetes_execution_observed:false,provider_execution_observed:false,external_model_execution_observed:false,runtime_qualification_observed:false,readiness_promoted:false,production_ready:false,release_eligible:false},
+              claims:{workflow_recorded_exact_protected_default_branch_source:true,workflow_recorded_image_set_complete:true,workflow_recorded_buildkit_provenance_attached:true,workflow_recorded_sbom_attached:true,workflow_recorded_vulnerability_gate_passed:true,workflow_recorded_keyless_signatures_verified:true,static_parser_cryptographic_verification_performed:false,cloud_execution_observed:false,kubernetes_execution_observed:false,provider_execution_observed:false,external_model_execution_observed:false,runtime_qualification_observed:false,readiness_promoted:false,production_ready:false,release_eligible:false},
               blockers:["RUNTIME_CONFORMANCE_NOT_EXECUTED","READINESS_PROMOTION_REQUIRES_SEPARATE_REVIEW","RELEASE_ELIGIBILITY_UNCHANGED_FALSE"],
               redaction:{actor_omitted:true,tokens_omitted:true,runner_details_omitted:true,raw_scanner_findings_omitted:true}
-            }' > "$WORK/receipt.draft.json"
-          npx tsx scripts/release-image-receipt-cli.ts finalize \
-            "$WORK/receipt.draft.json" "$RECEIPT/release-image-receipt.canonical.json" \
-            > "$WORK/receipt-classification.json"
+            }' > "$WORK/assertion.draft.json"
+          npx tsx scripts/release-image-set-assertion-cli.ts finalize \
+            "$WORK/assertion.draft.json" "$ASSERTION/release-image-set-assertion.canonical.json" \
+            > "$WORK/assertion-classification.json"
           jq -e '
             .reason_code == "VALID_WORKFLOW_ASSERTION_RECORD" and
             .record_valid == true and
-            .workflow_recorded_publication_complete == true and
+            .workflow_recorded_image_set_complete == true and
             .workflow_recorded_vulnerability_gate_passed == true and
             .workflow_recorded_signatures_verified == true and
             .cryptographic_verification_performed == false and
@@ -475,8 +485,8 @@ jobs:
             .vulnerability_truth_established == false and
             .signature_truth_established == false and
             .readiness_promoted == false and .production_ready == false and .release_eligible == false' \
-            "$WORK/receipt-classification.json" >/dev/null
-          test "$(find "$RECEIPT" -type f | wc -l | tr -d ' ')" = 1
+            "$WORK/assertion-classification.json" >/dev/null
+          test "$(find "$ASSERTION" -type f | wc -l | tr -d ' ')" = 1
 
       - name: Expose exact registry digest outputs
         id: digests
@@ -489,11 +499,11 @@ jobs:
           printf 'worker_digest=%s\n' "$worker_digest" >> "$GITHUB_OUTPUT"
           printf 'sandbox_digest=%s\n' "$sandbox_digest" >> "$GITHUB_OUTPUT"
 
-      - name: Upload the single canonical redacted workflow assertion record
+      - name: Upload the sole canonical successful image-set assertion record
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: release-image-receipt-${{ needs.authority.outputs.reviewed_sha }}-${{ github.run_id }}
-          path: ${{ runner.temp }}/cogs-release-receipt/release-image-receipt.canonical.json
+          name: release-image-set-assertion-${{ needs.authority.outputs.reviewed_sha }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/cogs-release-image-set-assertion/release-image-set-assertion.canonical.json
           if-no-files-found: error
           retention-days: 30
           compression-level: 0
@@ -508,12 +518,16 @@ jobs:
           CONTEXT=${CONTEXT:-"$RUNNER_TEMP/cogs-release-context"}
           WORK=${WORK:-"$RUNNER_TEMP/cogs-release-work"}
           CACHE=${CACHE:-"$RUNNER_TEMP/cogs-release-trivy-cache"}
-          RECEIPT=${RECEIPT:-"$RUNNER_TEMP/cogs-release-receipt"}
+          ASSERTION=${ASSERTION:-"$RUNNER_TEMP/cogs-release-image-set-assertion"}
           COSIGN_HOME=${COSIGN_HOME:-"$RUNNER_TEMP/cogs-release-cosign-home"}
+          BUILDX_BUILDER=${BUILDX_BUILDER:-"cogs-release-${{ github.run_id }}-${{ github.run_attempt }}"}
           docker logout ghcr.io >/dev/null 2>&1 || status=1
+          if docker buildx inspect "$BUILDX_BUILDER" >/dev/null 2>&1; then
+            docker buildx rm "$BUILDX_BUILDER" >/dev/null 2>&1 || status=1
+          fi
           docker image rm "$SYFT_IMAGE" "$TRIVY_IMAGE" "$COSIGN_IMAGE" >/dev/null 2>&1 || status=1
-          rm -rf -- "$DOCKER_CONFIG" "$CONTEXT" "$WORK" "$CACHE" "$RECEIPT" "$COSIGN_HOME" "$GITHUB_WORKSPACE/node_modules" || status=1
-          for path in "$DOCKER_CONFIG" "$CONTEXT" "$WORK" "$CACHE" "$RECEIPT" "$COSIGN_HOME" "$GITHUB_WORKSPACE/node_modules"; do
+          rm -rf -- "$DOCKER_CONFIG" "$CONTEXT" "$WORK" "$CACHE" "$ASSERTION" "$COSIGN_HOME" "$GITHUB_WORKSPACE/node_modules" || status=1
+          for path in "$DOCKER_CONFIG" "$CONTEXT" "$WORK" "$CACHE" "$ASSERTION" "$COSIGN_HOME" "$GITHUB_WORKSPACE/node_modules"; do
             if [[ -e "$path" || -L "$path" ]]; then
               printf 'Cleanup retained sensitive path: %s\n' "$path" >&2
               status=1

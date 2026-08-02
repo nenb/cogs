@@ -212,7 +212,18 @@ function offlineReadinessPackageSample(): JsonObject {
 function offlineReadinessPackageV1Sample(): JsonObject {
   const value = offlineReadinessPackageSample() as Record<string, any>;
   value.version = "cogs.stage4-offline-readiness-package/v1";
-  value.source.integrated_predecessor_git_commit = "dc11c1f6f2e29a66c602b82d805c764a00517bf0";
+  value.source = {
+    integrated_predecessor_git_commit: "dc11c1f6f2e29a66c602b82d805c764a00517bf0",
+    inventory_scope: "complete-stage4-source-closure",
+    inventory_algorithm: "sha256-over-exact-file-bytes",
+    source_closure_complete: true,
+    excluded_self_referential_outputs: [
+      "docs/security-evidence/stage4-offline-readiness-package.json",
+      "docs/security-evidence/stage4-offline-readiness-artifacts/source-inventory.json",
+      "docs/security-evidence/stage4-offline-readiness-artifacts/local-validation.json",
+    ],
+    release_candidate_binding_present: false,
+  };
   delete value.artifact_bindings.authenticated_runtime_artifacts_sha256;
   value.pins.runtime.qemu_version = "8.2.2";
   value.pins.runtime.eks_node_image_release = null;

@@ -33,6 +33,7 @@ import {
   readStage4SourceFile,
   STAGE4_PINNED_GIT,
   STAGE4_SOURCE_INVENTORY_EXCLUSIONS,
+  stage4TrackedWorktreeMerkle,
 } from "../scripts/stage4-offline-source-inventory.ts";
 
 const root = resolve(import.meta.dirname, "..");
@@ -152,18 +153,22 @@ test("committed inventories are canonical, complete for their scopes, and bind e
       STAGE4_PINNED_GIT.sha256;
   if (pinnedGitAvailable) assert.deepEqual(bytes(sourcePath), generateStage4SourceInventory(root));
   assert.deepEqual(
-    source.excluded_self_referential_outputs.map((row: { path: string }) => row.path),
+    source.excluded_generated_evidence_outputs.map((row: { path: string }) => row.path),
     STAGE4_SOURCE_INVENTORY_EXCLUSIONS,
   );
-  assert.equal(source.scope, "complete-stage4-source-closure");
-  assert.deepEqual(source.repository_binding, {
+  assert.equal(source.scope, "complete-tracked-worktree-source-build-qualification-closure");
+  assert.equal(source.version, "cogs.stage4-offline-source-inventory/v4");
+  assert.deepEqual(source.worktree_binding, {
+    file_count: source.entries.length,
     git_executable_sha256: "7588ceab299393618d6f8861502ac0588d1594025f301d9a61a898215b5571d3",
-    git_index_path_set_sha256: source.repository_binding.git_index_path_set_sha256,
     git_version: "git version 2.50.1 (Apple Git-155)",
-    regeneration_base_head: "dc11c1f6f2e29a66c602b82d805c764a00517bf0",
-    semantics: "exact-tracked-worktree-bytes-at-regeneration-dirty-tracked-files-allowed",
+    tracked_path_set_sha256: source.worktree_binding.tracked_path_set_sha256,
+    worktree_merkle_sha256: stage4TrackedWorktreeMerkle(source.entries),
+    semantics: "complete-tracked-worktree-bytes-excluding-recorded-generated-evidence;no-commit-or-clean-index-claim",
   });
-  assert.match(source.repository_binding.git_index_path_set_sha256, /^[0-9a-f]{64}$/u);
+  assert.match(source.worktree_binding.tracked_path_set_sha256, /^[0-9a-f]{64}$/u);
+  assert.match(source.worktree_binding.worktree_merkle_sha256, /^[0-9a-f]{64}$/u);
+  assert.equal(Object.hasOwn(source.worktree_binding, "regeneration_base_head"), false);
   assert.ok(
     source.entries.some((entry: { path: string }) => entry.path === "scripts/stage4-storage-launch-contract.ts"),
   );
@@ -190,23 +195,26 @@ test("committed inventories are canonical, complete for their scopes, and bind e
     );
   }
   for (const required of [
+    ".github/workflows/ci.yml",
     ".github/workflows/local-image-artifacts.yml",
     ".github/workflows/release-images.yml",
     "docs/operations/local-image-artifacts.md",
     "docs/operations/production-runtime-foundation.md",
     "docs/operations/release-image-publication.md",
     "schemas/local-image-artifact-package-v1.json",
-    "schemas/release-image-receipt-v1.json",
+    "schemas/release-image-set-assertion-v1.json",
     "schemas/runtime-v1alpha1.json",
+    "third_party/envoy-ext-authz-v1.38.3/ext_authz.descriptor.pb",
+    "third_party/envoy-ext-authz-v1.38.3/manifest.json",
     "scripts/local-image-artifacts.ts",
-    "scripts/release-image-receipt.ts",
+    "scripts/release-image-set-assertion.ts",
     "test/production-compose.test.ts",
     "test/production-sandbox-image.test.ts",
     "test/production-worker-image.test.ts",
   ]) {
     assert.ok(sourcePaths.includes(required), required);
   }
-  assert.ok(source.entries.length <= 256);
+  assert.ok(source.entries.length <= 1024);
   assertEntries(source.entries);
 
   const walk = (directory: string): string[] =>
@@ -240,7 +248,7 @@ test("committed inventories are canonical, complete for their scopes, and bind e
             "integration-v1alpha1.json",
             "launch-v1alpha1.json",
             "local-image-artifact-package-v1.json",
-            "release-image-receipt-v1.json",
+            "release-image-set-assertion-v1.json",
             "runtime-v1alpha1.json",
           ].includes(name),
       )
@@ -319,7 +327,7 @@ test("committed inventories are canonical, complete for their scopes, and bind e
       "schemas/integration-v1alpha1.json",
       "schemas/launch-v1alpha1.json",
       "schemas/local-image-artifact-package-v1.json",
-      "schemas/release-image-receipt-v1.json",
+      "schemas/release-image-set-assertion-v1.json",
       "schemas/runtime-v1alpha1.json",
       "scripts/private-bytes.ts",
       "scripts/check-lock-integrity.ts",

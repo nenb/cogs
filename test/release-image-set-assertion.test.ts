@@ -7,11 +7,11 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import type { Ajv as AjvCore, Options } from "ajv";
 import {
-  canonicalReleaseImageReceiptBytes,
-  classifyReleaseImageReceipt,
-  finalizeReleaseImageReceipt,
-  type ReleaseReceiptJson,
-} from "../scripts/release-image-receipt.ts";
+  canonicalReleaseImageSetAssertionBytes,
+  classifyReleaseImageSetAssertion,
+  finalizeReleaseImageSetAssertion,
+  type ReleaseImageSetAssertionJson,
+} from "../scripts/release-image-set-assertion.ts";
 
 const require = createRequire(import.meta.url);
 const parseYaml = (require("yaml") as { parse(source: string): unknown }).parse;
@@ -33,8 +33,7 @@ function receiptFixture(): Record<string, unknown> {
     return {
       role,
       registry_repository: repository,
-      candidate_tag: `candidate-${sha}-123-1`,
-      release_tag: `sha-${sha}`,
+      transport_tag: `candidate-${sha}-123-1`,
       registry_digest: registryDigest,
       exact_reference: `${repository}@${registryDigest}`,
       linux_amd64_manifest_digest: childDigest,
@@ -67,6 +66,15 @@ function receiptFixture(): Record<string, unknown> {
         severities: ["UNKNOWN", "LOW", "MEDIUM", "HIGH", "CRITICAL"],
         ignore_unfixed: false,
         suppressions: false,
+        workflow_recorded_report_contract: {
+          schema_version: 2,
+          artifact_name_exact_subject: true,
+          repo_digest_exact_subject: true,
+          artifact_type: "container_image",
+          os_metadata_present: true,
+          results_nonempty: true,
+          os_package_target_present: true,
+        },
         counts,
         gate: {
           policy: "block-high-critical",
@@ -81,7 +89,7 @@ function receiptFixture(): Record<string, unknown> {
             count: (counts.low ?? 0) + (counts.medium ?? 0),
             semantics: "recorded-non-gating-not-release-approval",
           },
-          high_critical: { count: 0, semantics: "release-receipt-blocking-including-unfixed" },
+          high_critical: { count: 0, semantics: "image-set-assertion-blocking-including-unfixed" },
         },
       },
       signature: {
@@ -94,7 +102,7 @@ function receiptFixture(): Record<string, unknown> {
     };
   };
   return {
-    version: "cogs.release-image-receipt/v1",
+    version: "cogs.release-image-set-assertion/v1",
     authority: "protected-main-github-actions-publication-assertion-record",
     repository: "nenb/cogs",
     source: {
@@ -116,17 +124,21 @@ function receiptFixture(): Record<string, unknown> {
       certificate_oidc_issuer: issuer,
     },
     target: { os: "linux", architecture: "amd64", variant: null },
-    tag_policy: {
-      release_format: "sha-<full-40-character-commit>",
-      candidate_format: "candidate-<full-40-character-commit>-<run-id>-<run-attempt>",
-      preexisting_release_tags_rejected: true,
-      candidate_run_unique: true,
-      release_tags_created_after_recorded_gates: true,
-      release_tag_readback_recorded: true,
-      latest_written: false,
+    transport_policy: {
+      tag_format: "candidate-<full-40-character-commit>-<run-id>-<run-attempt>",
+      run_unique: true,
+      retained_after_workflow: true,
+      transport_only: true,
+      final_tags_written: false,
       mutable_release_alias_written: false,
+      image_set_record: "canonical-successful-workflow-artifact-with-exact-digest-references",
+      consumer_requirement: "separately-reviewed-assertion-record-and-both-exact-digests",
     },
     tools: {
+      buildx_client: {
+        version: "v0.29.1",
+        linux_amd64_sha256: "7d2d7d6d4680aa349614965aaa33ccec43f1a9a21e908a5ce4cb6adfa5ad5141",
+      },
       buildkit_image: pinned("docker.io/moby/buildkit", "7"),
       syft_image: pinned("docker.io/anchore/syft", "8"),
       trivy_image: pinned("docker.io/aquasec/trivy", "9"),
@@ -157,7 +169,7 @@ function receiptFixture(): Record<string, unknown> {
     ],
     claims: {
       workflow_recorded_exact_protected_default_branch_source: true,
-      workflow_recorded_publication_complete: true,
+      workflow_recorded_image_set_complete: true,
       workflow_recorded_buildkit_provenance_attached: true,
       workflow_recorded_sbom_attached: true,
       workflow_recorded_vulnerability_gate_passed: true,
@@ -186,20 +198,20 @@ function receiptFixture(): Record<string, unknown> {
   };
 }
 
-const canonical = (value: unknown) => canonicalReleaseImageReceiptBytes(value as ReleaseReceiptJson);
+const canonical = (value: unknown) => canonicalReleaseImageSetAssertionBytes(value as ReleaseImageSetAssertionJson);
 
 test("release record parser accepts canonical workflow assertions without elevating them to verified truth", () => {
   const value = receiptFixture();
-  const schema = JSON.parse(readFileSync(resolve(root, "schemas/release-image-receipt-v1.json"), "utf8"));
+  const schema = JSON.parse(readFileSync(resolve(root, "schemas/release-image-set-assertion-v1.json"), "utf8"));
   const ajv = new Ajv2020({ allErrors: true, strict: true, strictRequired: false, ownProperties: true });
   const validate = ajv.compile(schema);
   assert.equal(validate(value), true, ajv.errorsText(validate.errors));
   const bytes = canonical(value);
-  assert.deepEqual(Buffer.from(finalizeReleaseImageReceipt(value)), Buffer.from(bytes));
-  const result = classifyReleaseImageReceipt(Uint8Array.from(bytes));
+  assert.deepEqual(Buffer.from(finalizeReleaseImageSetAssertion(value)), Buffer.from(bytes));
+  const result = classifyReleaseImageSetAssertion(Uint8Array.from(bytes));
   assert.equal(result.record_valid, true);
   assert.equal(result.reason_code, "VALID_WORKFLOW_ASSERTION_RECORD");
-  assert.equal(result.workflow_recorded_publication_complete, true);
+  assert.equal(result.workflow_recorded_image_set_complete, true);
   assert.equal(result.workflow_recorded_vulnerability_gate_passed, true);
   assert.equal(result.workflow_recorded_signatures_verified, true);
   assert.equal(result.cryptographic_verification_performed, false);
@@ -215,16 +227,16 @@ test("release record parser accepts canonical workflow assertions without elevat
 test("release record parser rejects noncanonical, promoted, mismatched, and incomplete assertions", () => {
   const valid = receiptFixture();
   assert.equal(
-    classifyReleaseImageReceipt(Uint8Array.from(Buffer.from(`${JSON.stringify(valid, null, 2)}\n`))).reason_code,
+    classifyReleaseImageSetAssertion(Uint8Array.from(Buffer.from(`${JSON.stringify(valid, null, 2)}\n`))).reason_code,
     "NON_CANONICAL_JSON",
   );
   assert.equal(
-    classifyReleaseImageReceipt(new Proxy(Uint8Array.from(canonical(valid)), {})).reason_code,
+    classifyReleaseImageSetAssertion(new Proxy(Uint8Array.from(canonical(valid)), {})).reason_code,
     "BOUNDED_INPUT_VIOLATION",
   );
 
   const forged = structuredClone(valid);
-  const forgedResult = classifyReleaseImageReceipt(canonical(forged));
+  const forgedResult = classifyReleaseImageSetAssertion(canonical(forged));
   assert.equal(forgedResult.record_valid, true);
   assert.equal(forgedResult.workflow_recorded_signatures_verified, true);
   assert.equal(forgedResult.signature_truth_established, false);
@@ -232,17 +244,17 @@ test("release record parser rejects noncanonical, promoted, mismatched, and inco
 
   const promoted = structuredClone(valid) as { claims: { readiness_promoted: boolean } };
   promoted.claims.readiness_promoted = true;
-  assert.equal(classifyReleaseImageReceipt(canonical(promoted)).reason_code, "SCHEMA_OR_SEMANTIC_DRIFT");
+  assert.equal(classifyReleaseImageSetAssertion(canonical(promoted)).reason_code, "SCHEMA_OR_SEMANTIC_DRIFT");
 
   const wrongHead = structuredClone(valid) as { source: { observed_head_sha: string } };
   wrongHead.source.observed_head_sha = "d".repeat(40);
-  assert.equal(classifyReleaseImageReceipt(canonical(wrongHead)).reason_code, "SCHEMA_OR_SEMANTIC_DRIFT");
+  assert.equal(classifyReleaseImageSetAssertion(canonical(wrongHead)).reason_code, "SCHEMA_OR_SEMANTIC_DRIFT");
 
   const wrongReference = structuredClone(valid) as { images: Array<{ exact_reference: string }> };
   const firstReference = wrongReference.images[0];
   assert.ok(firstReference);
   firstReference.exact_reference = `ghcr.io/nenb/cogs/worker@${digest("e")}`;
-  assert.equal(classifyReleaseImageReceipt(canonical(wrongReference)).reason_code, "SCHEMA_OR_SEMANTIC_DRIFT");
+  assert.equal(classifyReleaseImageSetAssertion(canonical(wrongReference)).reason_code, "SCHEMA_OR_SEMANTIC_DRIFT");
 
   const incomplete = structuredClone(valid) as {
     images: Array<{ vulnerabilities: { counts: { total: number } } }>;
@@ -250,7 +262,7 @@ test("release record parser rejects noncanonical, promoted, mismatched, and inco
   const firstCounts = incomplete.images[0];
   assert.ok(firstCounts);
   firstCounts.vulnerabilities.counts.total += 1;
-  assert.equal(classifyReleaseImageReceipt(canonical(incomplete)).reason_code, "SCHEMA_OR_SEMANTIC_DRIFT");
+  assert.equal(classifyReleaseImageSetAssertion(canonical(incomplete)).reason_code, "SCHEMA_OR_SEMANTIC_DRIFT");
 });
 
 type WorkflowStep = { uses?: string; run?: string; with?: Record<string, unknown> };
@@ -301,9 +313,9 @@ test("release workflow has one manual protected-main authority and least-privile
   );
 });
 
-test("release workflow pins every action and tool and promotes only full-SHA release tags after unique candidates", () => {
+test("release workflow pins every action and tool and writes only run-unique transport tags", () => {
   const uses = Object.values(workflow.jobs).flatMap((job) => job.steps.map((step) => step.uses).filter(Boolean));
-  assert.ok(uses.length >= 6);
+  assert.ok(uses.length >= 5);
   for (const action of uses) assert.match(action ?? "", /^[^@\s]+@[0-9a-f]{40}$/u, action);
   for (const variable of ["BUILDKIT_IMAGE", "SYFT_IMAGE", "TRIVY_IMAGE", "TRIVY_DATABASE", "COSIGN_IMAGE"]) {
     assert.match(workflowSource, new RegExp(`${variable}: [^\\s]+@sha256:[0-9a-f]{64}`, "u"), variable);
@@ -312,9 +324,17 @@ test("release workflow pins every action and tool and promotes only full-SHA rel
   assert.match(workflowSource, /tags: ghcr\.io\/nenb\/cogs\/worker:candidate-\$\{\{/u);
   assert.match(workflowSource, /tags: ghcr\.io\/nenb\/cogs\/sandbox:candidate-\$\{\{/u);
   assert.match(workflowSource, /candidate-\$REVIEWED_SHA-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/u);
-  assert.match(workflowSource, /imagetools create --tag "\$repository:\$release_tag" "\$repository@\$digest"/u);
-  assert.match(workflowSource, /Refusing to overwrite pre-existing tag/u);
-  assert.match(workflowSource, /Refusing to overwrite raced release tag/u);
+  assert.match(workflowSource, /BUILDX_VERSION: v0\.29\.1/u);
+  assert.match(
+    workflowSource,
+    /BUILDX_LINUX_AMD64_SHA256: 7d2d7d6d4680aa349614965aaa33ccec43f1a9a21e908a5ce4cb6adfa5ad5141/u,
+  );
+  assert.match(workflowSource, /sha256sum --check --strict/u);
+  assert.match(workflowSource, /docker buildx create[\s\S]*--driver-opt "image=\$BUILDKIT_IMAGE"/u);
+  assert.doesNotMatch(workflowSource, /docker\/setup-buildx-action@/u);
+  assert.doesNotMatch(workflowSource, /imagetools create --tag/u);
+  assert.doesNotMatch(workflowSource, /sha-\$REVIEWED_SHA/u);
+  assert.match(workflowSource, /Refusing to overwrite pre-existing run-unique transport tag/u);
   assert.doesNotMatch(workflowSource, /tags:[^\n]*(?:latest|main|stable)/u);
 });
 
@@ -338,7 +358,7 @@ test("release cleanup aggregates an early retained credential path instead of ac
     CONTEXT: join(temporary, "context"),
     WORK: join(temporary, "work"),
     CACHE: join(temporary, "cache"),
-    RECEIPT: join(temporary, "receipt"),
+    ASSERTION: join(temporary, "assertion"),
     COSIGN_HOME: join(temporary, "cosign"),
   };
   for (const path of Object.values(paths)) mkdirSync(path);
@@ -356,6 +376,7 @@ test("release cleanup aggregates an early retained credential path instead of ac
         SYFT_IMAGE: "syft",
         TRIVY_IMAGE: "trivy",
         COSIGN_IMAGE: "cosign",
+        BUILDX_BUILDER: "test-builder",
       },
     });
     assert.notEqual(result.status, 0);
@@ -384,7 +405,7 @@ test("readiness remains blocked until successful digests are separately reviewed
   }
 });
 
-test("release workflow binds provenance, complete vulnerability semantics, signatures, and one receipt", () => {
+test("release workflow binds provenance, strict vulnerability semantics, signatures, and one image-set assertion", () => {
   const publish = workflowJob("publish");
   assert.equal(publish.outputs?.worker_digest, "$" + "{{ steps.digests.outputs.worker_digest }}");
   assert.equal(publish.outputs?.sandbox_digest, "$" + "{{ steps.digests.outputs.sandbox_digest }}");
@@ -393,7 +414,14 @@ test("release workflow binds provenance, complete vulnerability semantics, signa
   assert.match(workflowSource, /--severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL/u);
   assert.match(workflowSource, /--ignore-unfixed=false/u);
   assert.match(workflowSource, /\.high == 0 and \.critical == 0/u);
-  assert.match(workflowSource, /release-receipt-blocking-including-unfixed/u);
+  assert.match(workflowSource, /image-set-assertion-blocking-including-unfixed/u);
+  assert.match(workflowSource, /\.SchemaVersion == 2/u);
+  assert.match(workflowSource, /\.ArtifactName == \$subject/u);
+  assert.match(workflowSource, /\.Metadata\.RepoDigests \| index\(\$subject\) != null/u);
+  assert.match(workflowSource, /\.ArtifactType == "container_image"/u);
+  assert.match(workflowSource, /\.Metadata\.OS\.Family/u);
+  assert.match(workflowSource, /\.Results \| type == "array" and length > 0/u);
+  assert.match(workflowSource, /\.Class == "os-pkgs"/u);
   assert.match(workflowSource, /cosign attest --yes --type spdxjson/u);
   assert.match(workflowSource, /cosign sign --yes "\$subject"/u);
   assert.match(
@@ -403,7 +431,10 @@ test("release workflow binds provenance, complete vulnerability semantics, signa
   assert.match(workflowSource, /cosign verify-attestation --type spdxjson/u);
   const upload = publish.steps.find((step) => step.uses?.startsWith("actions/upload-artifact@"));
   assert.ok(upload);
-  assert.equal(upload.with?.path, "$" + "{{ runner.temp }}/cogs-release-receipt/release-image-receipt.canonical.json");
+  assert.equal(
+    upload.with?.path,
+    "$" + "{{ runner.temp }}/cogs-release-image-set-assertion/release-image-set-assertion.canonical.json",
+  );
   assert.doesNotMatch(workflowSource, /docs\/security-evidence\/stage4-offline-readiness-artifacts\/image-lock\.json/u);
   assert.doesNotMatch(workflowSource, /(?:tofu|terraform|kubectl|helm|aws |external model)/iu);
   assert.match(workflowSource, /static_parser_cryptographic_verification_performed:false/u);
@@ -411,8 +442,9 @@ test("release workflow binds provenance, complete vulnerability semantics, signa
   assert.match(workflowSource, /docker logout ghcr\.io/u);
   assert.match(
     workflowSource,
-    /rm -rf -- "\$DOCKER_CONFIG" "\$CONTEXT" "\$WORK" "\$CACHE" "\$RECEIPT" "\$COSIGN_HOME"/u,
+    /rm -rf -- "\$DOCKER_CONFIG" "\$CONTEXT" "\$WORK" "\$CACHE" "\$ASSERTION" "\$COSIGN_HOME"/u,
   );
   assert.match(workflowSource, /status=0[\s\S]*docker logout ghcr\.io[^\n]*\|\| status=1/u);
+  assert.match(workflowSource, /docker buildx rm "\$BUILDX_BUILDER"/u);
   assert.match(workflowSource, /for path in "\$DOCKER_CONFIG"[\s\S]*exit "\$status"/u);
 });

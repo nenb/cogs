@@ -535,8 +535,11 @@ test("main coalesces SIGINT/SIGTERM into one bounded close and removes both hand
   assert.equal(handlers.size, 0);
 });
 
-test("main reports spontaneous runtime loss without exposing its cause", async () => {
+test("main arms and preserves the hard deadline after spontaneous runtime loss", async () => {
   let failClosed = 0;
+  let timers = 0;
+  let cleared = 0;
+  let deadline = 0;
   const port: ProductionMainPort = Object.freeze({
     start: async () =>
       Object.freeze({
@@ -547,8 +550,14 @@ test("main reports spontaneous runtime loss without exposing its cause", async (
       }),
     on: () => undefined,
     off: () => undefined,
-    setTimer: () => Object.freeze({}),
-    clearTimer: () => undefined,
+    setTimer: (_callback, milliseconds) => {
+      timers += 1;
+      deadline = milliseconds;
+      return Object.freeze({});
+    },
+    clearTimer: () => {
+      cleared += 1;
+    },
     failClosed: () => {
       failClosed += 1;
     },
@@ -558,6 +567,40 @@ test("main reports spontaneous runtime loss without exposing its cause", async (
   });
   await runProductionMain(port);
   assert.equal(failClosed, 1);
+  assert.equal(timers, 1);
+  assert.equal(deadline, 31_000);
+  assert.equal(cleared, 0);
+});
+
+test("main arms and preserves the hard deadline when startup ownership is uncertain", async () => {
+  let failed = 0;
+  let timers = 0;
+  let cleared = 0;
+  const port: ProductionMainPort = Object.freeze({
+    start: async () => {
+      throw new Error(secretBearer);
+    },
+    on: () => undefined,
+    off: () => undefined,
+    setTimer: (_callback, milliseconds) => {
+      assert.equal(milliseconds, 31_000);
+      timers += 1;
+      return Object.freeze({});
+    },
+    clearTimer: () => {
+      cleared += 1;
+    },
+    failClosed: () => {
+      failed += 1;
+    },
+    hardStop: () => {
+      throw new Error("hard deadline");
+    },
+  });
+  await runProductionMain(port);
+  assert.equal(failed, 1);
+  assert.equal(timers, 1);
+  assert.equal(cleared, 0);
 });
 
 test("production import boundary and foundation docs preserve the implemented-source/non-authority split", async () => {

@@ -7,9 +7,11 @@ import test from "node:test";
 const root = resolve(import.meta.dirname, "..");
 const dockerfilePath = resolve(root, "images/sandbox/Dockerfile");
 const entrypointPath = resolve(root, "images/sandbox/entrypoint.sh");
+const captureInputsPath = resolve(root, "images/sandbox/capture-inputs.py");
 const sshdConfigPath = resolve(root, "images/sandbox/sshd_config");
 const dockerfile = readFileSync(dockerfilePath, "utf8");
 const entrypoint = readFileSync(entrypointPath, "utf8");
+const captureInputs = readFileSync(captureInputsPath, "utf8");
 const sshdConfig = readFileSync(sshdConfigPath, "utf8");
 
 const packages = [
@@ -152,8 +154,11 @@ test("entrypoint is valid Bash and exposes bounded pure capability and literal-e
   }
 });
 
-test("entrypoint requires stable injected identities and emits only capability-bearing standard proxy URLs", () => {
+test("entrypoint consumes only stable private copies of injected inputs", () => {
   assert.match(entrypoint, /readonly INPUT_ROOT=\/run\/cogs-input/u);
+  assert.match(entrypoint, /readonly INPUT_CAPTURE=\/usr\/local\/libexec\/cogs-capture-inputs/u);
+  assert.match(entrypoint, /python3 -I "\$INPUT_CAPTURE" "\$INPUT_ROOT" "\$RUNTIME_ROOT"/u);
+  assert.doesNotMatch(entrypoint, /"\$INPUT_ROOT\/(?:ssh_|client_|egress-ca|proxy-capability)/u);
   for (const name of [
     "ssh_host_ed25519_key",
     "ssh_host_ed25519_key.pub",
@@ -161,11 +166,11 @@ test("entrypoint requires stable injected identities and emits only capability-b
     "egress-ca.crt",
     "proxy-capability",
   ]) {
-    assert.ok(entrypoint.includes(`$INPUT_ROOT/${name}`), name);
+    assert.ok(captureInputs.includes(`"${name}"`), name);
+    assert.ok(entrypoint.includes(`$RUNTIME_ROOT/${name}`), name);
   }
-  assert.match(entrypoint, /stat -c '%d:%i:%s:%u:%g:%a:%h:%F'/u);
+  assert.match(entrypoint, /stat -c '%d:%i:%s:%u:%g:%a:%h:%Y:%Z:%F'/u);
   assert.match(entrypoint, /realpath -e/u);
-  assert.match(entrypoint, /single-link regular file/u);
   assert.match(entrypoint, /ssh-keygen -y -f/u);
   assert.match(entrypoint, /\[\[ "\$derived" == "\$provided" \]\]/u);
   assert.match(entrypoint, /client_lines.*== 1/u);
@@ -174,6 +179,40 @@ test("entrypoint requires stable injected identities and emits only capability-b
   assert.match(entrypoint, /proxy_url="http:\/\/cogs:\$\{capability\}@\$\{endpoint#http:\/\/\}"/u);
   assert.doesNotMatch(entrypoint, /Proxy-Authorization|upstream.*(?:token|password|secret)/iu);
   assert.match(entrypoint, /exec \/usr\/bin\/env -i/u);
+  assert.match(dockerfile, /capture-inputs\.py \/usr\/local\/libexec\/cogs-capture-inputs/u);
+});
+
+test("input capturer uses retained directory descriptors, openat no-follow reads, stable generations, and exclusive outputs", () => {
+  const syntax = spawnSync(
+    "python3",
+    [
+      "-I",
+      "-c",
+      'compile(open(__import__("sys").argv[1], "rb").read(), __import__("sys").argv[1], "exec")',
+      captureInputsPath,
+    ],
+    { encoding: "utf8" },
+  );
+  assert.equal(syntax.status, 0, syntax.stderr);
+  assert.match(captureInputs, /os\.open\(path, os\.O_RDONLY \| os\.O_DIRECTORY \| os\.O_NOFOLLOW\)/u);
+  assert.match(captureInputs, /os\.open\(name, os\.O_RDONLY \| os\.O_NOFOLLOW, dir_fd=source_root\)/u);
+  for (const field of [
+    "st_dev",
+    "st_ino",
+    "st_size",
+    "st_uid",
+    "st_gid",
+    "st_mode",
+    "st_nlink",
+    "st_mtime_ns",
+    "st_ctime_ns",
+  ]) {
+    assert.ok(captureInputs.includes(field), field);
+  }
+  assert.match(captureInputs, /os\.O_WRONLY \| os\.O_CREAT \| os\.O_EXCL \| os\.O_NOFOLLOW/u);
+  assert.match(captureInputs, /0o600/u);
+  assert.match(captureInputs, /os\.fsync\(descriptor\)/u);
+  assert.match(captureInputs, /os\.fsync\(output_root\)/u);
 });
 
 test("SSH sessions receive uppercase and lowercase proxy/trust compatibility variables", () => {

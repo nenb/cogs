@@ -155,30 +155,28 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "integrated_predecessor_git_commit",
         "inventory_scope",
         "inventory_algorithm",
+        "worktree_merkle_sha256",
         "source_closure_complete",
-        "excluded_self_referential_outputs",
-        "release_candidate_binding_present"
+        "excluded_generated_evidence_outputs",
+        "commit_binding_present"
       ],
       "properties": {
-        "integrated_predecessor_git_commit": {
-          "const": "dc11c1f6f2e29a66c602b82d805c764a00517bf0"
-        },
         "inventory_scope": {
-          "const": "complete-stage4-source-closure"
+          "const": "complete-tracked-worktree-source-build-qualification-closure"
         },
         "inventory_algorithm": {
-          "const": "sha256-over-exact-file-bytes"
+          "const": "sha256-domain-separated-canonical-path-and-exact-byte-digest-list"
         },
-        "release_candidate_binding_present": {
+        "worktree_merkle_sha256": { "$ref": "#/$defs/sha256" },
+        "commit_binding_present": {
           "const": false
         },
         "source_closure_complete": {
           "const": true
         },
-        "excluded_self_referential_outputs": {
+        "excluded_generated_evidence_outputs": {
           "type": "array",
           "minItems": 3,
           "maxItems": 3,

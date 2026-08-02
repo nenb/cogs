@@ -1,91 +1,62 @@
-# Protected-main release image publication
+# Protected-main image-set publication
 
 **Workflow:** [`.github/workflows/release-images.yml`](../../.github/workflows/release-images.yml)
 
-**Destinations:** `ghcr.io/nenb/cogs/worker` and `ghcr.io/nenb/cogs/sandbox`
+**Transport destinations:** `ghcr.io/nenb/cogs/worker` and `ghcr.io/nenb/cogs/sandbox`
 
 **Target:** exactly `linux/amd64`
 
-**Authority:** a first-attempt manual dispatch by `vars.RELEASE_IMAGE_PUBLISH_ACTOR` from the protected `main` branch
+**Authority:** a first-attempt manual dispatch by `vars.RELEASE_IMAGE_PUBLISH_ACTOR` from protected `main`
 
-**Readiness status:** publication evidence only; a receipt never promotes production readiness or release eligibility
+**Readiness status:** successful-workflow assertions only; neither transport tags nor the assertion artifact promote readiness or release eligibility
 
-This is the only workflow authorized to publish the production worker and sandbox image definitions. The separate [local image artifact workflow](local-image-artifacts.md) remains nonpublishing, unsigned, and limited to `contents: read`.
+The separate [local image artifact workflow](local-image-artifacts.md) remains nonpublishing, unsigned, and limited to `contents: read`.
 
-## Dispatch contract
+## Dispatch and source authority
 
-The workflow has only a `workflow_dispatch` trigger. It has no pull-request or push trigger. The operator must enter the full 40-character SHA that was reviewed.
+The workflow has only `workflow_dispatch`. Before package-write effects it requires the actor, triggering actor, event sender, and configured publisher to be the same; attempt one; protected `refs/heads/main`; the workflow loaded from that ref; and exact equality among the reviewed SHA, event SHA, workflow SHA, and current default-branch HEAD. It repeats the API HEAD check after credential-free checkout and builds a tracked-only `git archive` context. The workflow permission set is empty; authority receives `contents: read`, while publication receives only `contents: read`, `packages: write`, and `id-token: write`.
 
-Before checkout, login, build, or package-write effects, the authority job requires all of the following:
+## Run-unique transport, not release tags
 
-- `github.run_attempt == 1`;
-- actor, triggering actor, event sender, and `vars.RELEASE_IMAGE_PUBLISH_ACTOR` are the same nonempty identity;
-- the repository default branch is `main`, the selected ref is `refs/heads/main`, and GitHub reports that ref protected;
-- `github.workflow_ref` identifies `.github/workflows/release-images.yml` on `refs/heads/main`;
-- workflow SHA, event SHA, reviewed SHA, and the current default-branch HEAD read from the GitHub API are identical; and
-- the reviewed SHA is syntactically a full lowercase Git SHA.
+Each run writes only `candidate-<full-sha>-<run-id>-<run-attempt>` transport tags. They are retained so the registry keeps the exact image graphs and attached artifacts. A failed run may leave one or two incomplete, unsigned, or unreceipted transport objects. Their `candidate-` name does not denote a complete image set, readiness, or release authority.
 
-The publication job repeats the API HEAD comparison after checking out the exact SHA without credentials. A branch movement before this second check aborts publication.
+The workflow writes no `sha-<commit>`, `latest`, `main`, `stable`, shortened-SHA, or other final/release alias. Consequently two repository tag writes are never used as an atomic image-set transaction, and a new first-attempt dispatch can retry safely with a different run-unique transport identity.
 
-The workflow-level permission set is empty. The authority job receives only `contents: read`. The effect job receives only `contents: read`, `packages: write`, and `id-token: write`; package and OIDC permissions are not granted to any other job.
+A successful run's sole image-set record is the canonical GitHub workflow artifact `release-image-set-assertion.canonical.json`. Consumers must separately review that assertion record and use both exact `repository@sha256:...` references. A transport tag alone, one digest alone, or workflow success without the downloaded assertion artifact is insufficient.
 
-## Candidate-first publication
+## Pinned build and evidence tools
 
-Each run first publishes unique `candidate-<full-40-character-commit>-<run-id>-<run-attempt>` tags. A failed candidate remains explicitly identifiable and a new first-attempt workflow run receives a different candidate identity, so recovery never overwrites or ambiguously resumes prior bytes. Candidate digests are scanned, supplied with SBOM attestations, signed, and verified before any release tag is created.
+Buildx is manually installed as exact `v0.29.1` Linux/amd64 bytes with SHA-256 `7d2d7d6d4680aa349614965aaa33ccec43f1a9a21e908a5ce4cb6adfa5ad5141`. The workflow verifies the checksum and reported version, creates a run-named builder, and uses the digest-pinned BuildKit image. The assertion records both the Buildx version/checksum and BuildKit image digest. Syft, Trivy, the Trivy database, and Cosign are also OCI-digest selected.
 
-Only after those recorded gates pass does the workflow create `sha-<full-40-character-commit>`, then read the tag back and require its exact index bytes to hash to the candidate digest. The workflow never writes `latest`, `main`, `stable`, a shortened SHA, or another mutable release alias. Existing candidate or release tags abort rather than being overwritten. Per-SHA concurrency prevents two authorized runs in this workflow from racing within the workflow; consumers must still use the receipt's digest reference rather than treating an OCI tag as registry-enforced immutability.
+Each build publishes one direct `linux/amd64` child plus BuildKit `mode=max` provenance. Readback requires the output digest to hash the exact top-level index, exactly one variant-free `linux/amd64` child, exactly one BuildKit attestation manifest referring to that child, and decoded BuildKit v1 provenance reporting `linux/amd64`.
 
-All Actions are selected by full commit SHA. BuildKit, Syft, Trivy, the Trivy database, and Cosign are selected by OCI digest. Updating any pin is a reviewed source change. The build uses a tracked-only `git archive` context and publishes one direct `linux/amd64` image plus BuildKit `mode=max` provenance. Registry readback must prove:
+## SBOM, scanner, and signature assertions
 
-- the output digest hashes the exact top-level registry index bytes;
-- exactly one child is `linux/amd64` with no variant;
-- exactly one BuildKit attestation manifest refers to that child; and
-- decoded BuildKit provenance reports the BuildKit v1 build type and `linux/amd64` invocation platform.
+Digest-pinned Syft generates SPDX JSON from each exact digest. Cosign attaches it as an `spdxjson` attestation, signs each exact digest, and verifies the workflow certificate identity and GitHub Actions OIDC issuer.
 
-The job exposes separate `worker_digest` and `sandbox_digest` outputs. These are registry index digests, not config digests, platform-child digests, GitHub artifact digests, or tags.
+Trivy scans each exact digest with every severity and `ignore_unfixed=false`. Before counting findings the workflow requires:
 
-## SBOM, vulnerability gate, and dispositions
+- `SchemaVersion == 2`;
+- exact `ArtifactName` and a `Metadata.RepoDigests` member equal to the scanned digest reference;
+- `ArtifactType == container_image`;
+- nonempty OS family/name metadata;
+- a nonempty `Results` array; and
+- at least one nonempty `os-pkgs` target.
 
-Digest-pinned Syft generates SPDX JSON from each exact registry digest. Keyless Cosign attaches that SPDX document as an `spdxjson` attestation. Both the image signature and SBOM attestation are verified against exactly:
+`HIGH` and `CRITICAL` findings block, including unfixed findings. `UNKNOWN`, `LOW`, and `MEDIUM` are retained but non-gating and grant no risk, legal, readiness, or release approval. Counts must partition both severity and fixed/unfixed dimensions. The assertion records these as workflow observations only; the static parser does not independently inspect the omitted raw report.
 
-- certificate identity `https://github.com/nenb/cogs/.github/workflows/release-images.yml@refs/heads/main`; and
-- OIDC issuer `https://token.actions.githubusercontent.com`.
+## Canonical successful-workflow image-set assertion
 
-Digest-pinned Trivy scans the same exact registry digest with the digest-pinned database. The command includes every severity (`UNKNOWN`, `LOW`, `MEDIUM`, `HIGH`, and `CRITICAL`), sets `ignore_unfixed=false`, uses no suppressions, and records fixed-available and unfixed counts. The workflow applies these explicit semantics:
-
-| Finding class | Gate | Receipt disposition |
-|---|---|---|
-| `HIGH`, `CRITICAL` | Blocking, whether fixed or unfixed. A successful receipt requires a count of zero. | `release-receipt-blocking-including-unfixed` |
-| `UNKNOWN` | Non-gating, but retained. | `recorded-non-gating-review-required-not-approved` |
-| `LOW`, `MEDIUM` | Non-gating, but retained. | `recorded-non-gating-not-release-approval` |
-
-“Non-gating” does not mean accepted risk, legal approval, production readiness, or release approval. It means only that this publication gate does not block those classes. The strict classifier requires severity counts and fixed/unfixed counts each to partition the complete finding total, and requires disposition counts to match the corresponding severity counts.
-
-A failed gate can leave an unsigned, unreceipted candidate object, but it cannot create the final full-SHA release tag. The failed candidate tag identifies the exact source SHA, run, and attempt. Recovery is a new manually authorized run with a new candidate identity; no candidate or release tag is overwritten.
-
-## Canonical redacted workflow assertion record
-
-A successful run uploads exactly one file: `release-image-receipt.canonical.json`. The schema is [`schemas/release-image-receipt-v1.json`](../../schemas/release-image-receipt-v1.json), and the static parser is [`scripts/release-image-receipt.ts`](../../scripts/release-image-receipt.ts).
-
-The record binds internally consistent workflow-recorded assertions about protected-main source identity, candidate and release tags, digest namespaces, linux/amd64 child manifests, tool pins, provenance and SBOM attachment, vulnerability counts, final-tag readback, and keyless verification. SHA-256 fields record the exact decoded provenance, generated SPDX JSON, and raw vulnerability report used by the workflow. It deliberately omits actor identity, tokens, runner details, raw SBOM contents, raw provenance, and raw vulnerability records. Public run metadata can still make a run correlatable; “redacted” means the canonical record does not duplicate those fields or contain credentials.
-
-The static parser performs no registry access, Cosign verification, transparency-log verification, scanner replay, or cryptographic verification. A canonical record can be forged offline. `record_valid=true` therefore means only schema-valid, canonical, internally consistent workflow assertions. The parser always fixes `cryptographic_verification_performed`, `publication_truth_established`, `signature_truth_established`, and `vulnerability_truth_established` to false. Independent consumers must verify the exact digest and Cosign evidence themselves or trust the authenticated GitHub workflow artifact channel; the record alone establishes none of those truths.
-
-Local inspection is nonpublishing:
+The schema is [`schemas/release-image-set-assertion-v1.json`](../../schemas/release-image-set-assertion-v1.json), the parser is [`scripts/release-image-set-assertion.ts`](../../scripts/release-image-set-assertion.ts), and local classification is:
 
 ```sh
-npx tsx scripts/release-image-receipt-cli.ts classify /path/release-image-receipt.canonical.json
+npx tsx scripts/release-image-set-assertion-cli.ts classify /path/release-image-set-assertion.canonical.json
 ```
 
-Classification success means `VALID_WORKFLOW_ASSERTION_RECORD`. It still fixes all verified-truth fields and all of these readiness fields to false:
+The record binds protected-main source assertions, run-unique transport identities, exact digest references, child manifests, pinned tools, provenance/SBOM assertions, strict scanner-envelope assertions and counts, and keyless verification assertions. It deliberately omits credentials, actor identity, runner details, and raw scanner/SBOM/provenance content.
 
-- `runtime_qualification_observed`;
-- `readiness_promoted`;
-- `production_ready`; and
-- `release_eligible`.
+Static classification success (`VALID_WORKFLOW_ASSERTION_RECORD`) means only canonical, schema-valid, internally consistent assertions. It performs no registry, Cosign, transparency-log, scanner, or cryptographic verification and always leaves publication truth, signature truth, vulnerability truth, readiness, production readiness, and release eligibility false.
 
-## Readiness boundary
+Do not update deployment image locks or readiness evidence until a separate reviewed change consumes the successful artifact and both exact digests. The workflow itself writes no repository file and performs no promotion.
 
-Do not change the Stage 4 image lock, offline-readiness evidence, Stage 5 freeze, deployment inputs, or readiness claims before a successful run supplies both exact digest outputs and its valid canonical receipt. Even after such a run, promotion requires a separate reviewed change that consumes those digests and closes the remaining runtime and readiness evidence. The publication workflow itself writes no repository file and performs no readiness promotion.
-
-The cleanup step logs out of GHCR and removes Docker credentials, the tracked build context, scanner database/cache, raw scans, SBOM files, verification output, Cosign state, receipt staging directory, and locally installed npm dependencies after the record upload attempt. It aggregates every logout, image-removal, filesystem-removal, and absence-check failure and fails the job if any sensitive path remains.
+Cleanup removes the named builder, Buildx client, Docker credentials, tracked context, scanner cache/database, raw evidence, Cosign state, assertion staging, and installed npm dependencies. Any cleanup uncertainty fails the job.

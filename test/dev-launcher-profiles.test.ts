@@ -299,6 +299,7 @@ exit 38
       "!images/sandbox/",
       "!images/sandbox/Dockerfile",
       "!images/sandbox/entrypoint.sh",
+      "!images/sandbox/capture-inputs.py",
       "!images/sandbox/sshd_config",
       "!dev/",
       "!dev/insecure-sandbox/",
