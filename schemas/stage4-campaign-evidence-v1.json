@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.dev/schemas/stage4-campaign-evidence-v1.json",
+  "title": "Cogs Stage 4 local/static campaign claimed-evidence state model v1",
+  "description": "Digest-only caller claims for offline transition testing; never provider, Kubernetes, campaign, cleanup, or inventory truth.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "authority",
+    "campaign_issue",
+    "execution_authorized",
+    "attempt_number",
+    "retry_count",
+    "plan_sha256",
+    "artifact_set_root_sha256",
+    "events"
+  ],
+  "properties": {
+    "version": { "const": "cogs.stage4-campaign-evidence/v1" },
+    "authority": { "const": "local-static-campaign-evidence-model" },
+    "campaign_issue": { "enum": ["S4-08/#359", "S4-09/#360", "S4-10/#361"] },
+    "execution_authorized": { "const": false },
+    "attempt_number": { "const": 1 },
+    "retry_count": { "const": 0 },
+    "plan_sha256": { "$ref": "#/$defs/sha256" },
+    "artifact_set_root_sha256": { "$ref": "#/$defs/sha256" },
+    "events": {
+      "type": "array",
+      "maxItems": 23,
+      "items": { "$ref": "#/$defs/event" }
+    }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "event": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["phase", "outcome", "producer_class"],
+      "properties": {
+        "phase": { "type": "string", "minLength": 1, "maxLength": 96, "pattern": "^[a-z0-9.-]+$" },
+        "outcome": { "enum": ["claimed-satisfied", "claimed-failed", "uncertain"] },
+        "producer_class": { "enum": ["caller-claimed-future-evidence", "independent-inventory-observer"] },
+        "evidence_sha256": { "$ref": "#/$defs/sha256" },
+        "uncertainty_artifact_sha256": { "$ref": "#/$defs/sha256" }
+      },
+      "oneOf": [
+        {
+          "properties": { "outcome": { "enum": ["claimed-satisfied", "claimed-failed"] } },
+          "required": ["evidence_sha256"],
+          "not": { "required": ["uncertainty_artifact_sha256"] }
+        },
+        {
+          "properties": { "outcome": { "const": "uncertain" } },
+          "required": ["uncertainty_artifact_sha256"],
+          "not": { "required": ["evidence_sha256"] }
+        }
+      ]
+    }
+  }
+}

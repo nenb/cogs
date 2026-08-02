@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.dev/schemas/stage4-campaign-approval-verdict-v1.json",
+  "title": "Cogs Stage 4 blocked campaign approval draft classifier verdict v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "authority",
+    "draft_valid",
+    "approval_present",
+    "execution_authorized",
+    "retry_authorized",
+    "provider_truth_observed",
+    "stage4_exit_satisfied",
+    "envelope_sha256",
+    "status",
+    "reason_code"
+  ],
+  "properties": {
+    "version": { "const": "cogs.stage4-campaign-approval-verdict/v1" },
+    "authority": { "const": "local-static-unapproved-envelope-classifier" },
+    "draft_valid": { "type": "boolean" },
+    "approval_present": { "const": false },
+    "execution_authorized": { "const": false },
+    "retry_authorized": { "const": false },
+    "provider_truth_observed": { "const": false },
+    "stage4_exit_satisfied": { "const": false },
+    "envelope_sha256": { "oneOf": [{ "$ref": "#/$defs/sha256" }, { "type": "null" }] },
+    "status": { "enum": ["valid-unapproved-blocked-draft", "preserve-uncertain"] },
+    "reason_code": {
+      "enum": [
+        "STAGE4_APPROVAL_DRAFT_VALID_BLOCKED",
+        "STAGE4_APPROVAL_DRAFT_INVALID_SHAPE",
+        "STAGE4_APPROVAL_DRAFT_AUTHORITY_PROMOTION"
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "status": { "const": "valid-unapproved-blocked-draft" } }, "required": ["status"] },
+      "then": {
+        "properties": {
+          "draft_valid": { "const": true },
+          "envelope_sha256": { "$ref": "#/$defs/sha256" },
+          "reason_code": { "const": "STAGE4_APPROVAL_DRAFT_VALID_BLOCKED" }
+        }
+      },
+      "else": { "properties": { "draft_valid": { "const": false } } }
+    }
+  ],
+  "$defs": { "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" } }
+}

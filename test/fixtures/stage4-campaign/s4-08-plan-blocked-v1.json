@@ -1,0 +1,72 @@
+{
+  "version": "cogs.stage4-campaign-plan/v1",
+  "authority": "local-static-campaign-plan-model",
+  "campaign_issue": "S4-08/#359",
+  "execution_authorized": false,
+  "attempt": {
+    "number": 1,
+    "maximum_attempts": 1,
+    "retry": "prohibited",
+    "approval_state": "absent"
+  },
+  "bindings": {
+    "source_revision_sha256": "8888888888888888888888888888888888888888888888888888888888888888",
+    "source_inventory_sha256": "9999999999999999999999999999999999999999999999999999999999999999",
+    "offline_readiness_package_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "approval_draft_sha256": "634dab2a688a3b7b569f60f5fe749c6e5199c7494297d5575937e50389a32e7c",
+    "campaign_profile_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+    "artifact_manifest_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+    "artifact_set_root_sha256": "8823cedf0c3445950c029f0b657febd2e578518b3a8b39d7e90eed53e933d207"
+  },
+  "qualification_steps": [
+    {
+      "id": "topology.source-render-object-binding",
+      "state": "unexecuted",
+      "evidence_class": "future-digest-only-claim"
+    },
+    {
+      "id": "topology.launch-template-nested-kvm",
+      "state": "unexecuted",
+      "evidence_class": "future-digest-only-claim"
+    },
+    {
+      "id": "kata.active-kvm-distinct-guest-no-fallback",
+      "state": "unexecuted",
+      "evidence_class": "future-digest-only-claim"
+    },
+    {
+      "id": "storage.ebs-workspace-session-lifecycle",
+      "state": "unexecuted",
+      "evidence_class": "future-digest-only-claim"
+    },
+    {
+      "id": "storage.exclusive-writer-forced-loss",
+      "state": "unexecuted",
+      "evidence_class": "future-digest-only-claim"
+    },
+    {
+      "id": "cleanup.runtime-and-object-behavior",
+      "state": "unexecuted",
+      "evidence_class": "future-digest-only-claim"
+    }
+  ],
+  "terminal_order": ["stop", "destroy", "independent-inventory"],
+  "evidence_policy": {
+    "metadata_only": true,
+    "digest_only": true,
+    "uncertainty_is_sticky": true,
+    "failure_skips_to_stop": true,
+    "inventory_must_be_independent": true,
+    "max_events": 9
+  },
+  "prohibited_surfaces": [
+    "executor",
+    "provider",
+    "opentofu",
+    "kubernetes-api",
+    "kubectl",
+    "helm-install-apply",
+    "external-model",
+    "network-discovery"
+  ]
+}

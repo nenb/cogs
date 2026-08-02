@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.dev/schemas/stage4-campaign-model-verdict-v1.json",
+  "title": "Cogs Stage 4 local/static campaign model verdict v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "authority",
+    "plan_valid",
+    "evidence_valid",
+    "execution_authorized",
+    "campaign_execution_observed",
+    "provider_truth_observed",
+    "kubernetes_truth_observed",
+    "cleanup_observed",
+    "zero_inventory_claimed",
+    "retry_authorized",
+    "stage4_exit_satisfied",
+    "plan_sha256",
+    "evidence_sha256",
+    "status",
+    "next_phase",
+    "reason_code"
+  ],
+  "properties": {
+    "version": { "const": "cogs.stage4-campaign-model-verdict/v1" },
+    "authority": { "const": "local-static-campaign-state-classifier" },
+    "plan_valid": { "type": "boolean" },
+    "evidence_valid": { "type": "boolean" },
+    "execution_authorized": { "const": false },
+    "campaign_execution_observed": { "const": false },
+    "provider_truth_observed": { "const": false },
+    "kubernetes_truth_observed": { "const": false },
+    "cleanup_observed": { "const": false },
+    "zero_inventory_claimed": { "const": false },
+    "retry_authorized": { "const": false },
+    "stage4_exit_satisfied": { "const": false },
+    "plan_sha256": { "oneOf": [{ "$ref": "#/$defs/sha256" }, { "type": "null" }] },
+    "evidence_sha256": { "oneOf": [{ "$ref": "#/$defs/sha256" }, { "type": "null" }] },
+    "status": {
+      "enum": [
+        "awaiting-claimed-evidence",
+        "stop-required",
+        "destroy-required",
+        "independent-inventory-required",
+        "model-order-complete-blocked",
+        "preserve-uncertain"
+      ]
+    },
+    "next_phase": {
+      "oneOf": [{ "type": "string", "minLength": 1, "maxLength": 96, "pattern": "^[a-z0-9.-]+$" }, { "type": "null" }]
+    },
+    "reason_code": {
+      "enum": [
+        "STAGE4_CAMPAIGN_AWAITING_CLAIMED_EVIDENCE",
+        "STAGE4_CAMPAIGN_STOP_REQUIRED",
+        "STAGE4_CAMPAIGN_DESTROY_REQUIRED",
+        "STAGE4_CAMPAIGN_INDEPENDENT_INVENTORY_REQUIRED",
+        "STAGE4_CAMPAIGN_MODEL_ORDER_COMPLETE_BLOCKED",
+        "STAGE4_CAMPAIGN_INVALID_SHAPE",
+        "STAGE4_CAMPAIGN_BINDING_MISMATCH",
+        "STAGE4_CAMPAIGN_INVALID_TRANSITION",
+        "STAGE4_CAMPAIGN_EVIDENCE_REPLAY",
+        "STAGE4_CAMPAIGN_UNCERTAIN"
+      ]
+    }
+  },
+  "$defs": { "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" } }
+}

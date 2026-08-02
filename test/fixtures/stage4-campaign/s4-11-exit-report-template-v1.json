@@ -1,0 +1,66 @@
+{
+  "version": "cogs.stage4-exit-review-report-template/v1",
+  "authority": "local-static-stage4-exit-review-template",
+  "issue": "S4-11/#362",
+  "matrix_sha256": "2d9f8166250e7c53dec5fd89fcf2ed12d22212f3511b2454e9c247deb34a5712",
+  "rejection_checks": [
+    {
+      "id": "mandatory-stub-or-non-real-dependency",
+      "state": "unreviewed-reject",
+      "evidence_sha256": null
+    },
+    {
+      "id": "skip-or-missing-evidence",
+      "state": "unreviewed-reject",
+      "evidence_sha256": null
+    },
+    {
+      "id": "runtime-or-policy-fallback",
+      "state": "unreviewed-reject",
+      "evidence_sha256": null
+    },
+    {
+      "id": "sensitive-data-leak",
+      "state": "unreviewed-reject",
+      "evidence_sha256": null
+    },
+    {
+      "id": "mixed-source-artifact-or-image-revision",
+      "state": "unreviewed-reject",
+      "evidence_sha256": null
+    },
+    {
+      "id": "unreviewed-exception",
+      "state": "unreviewed-reject",
+      "evidence_sha256": null
+    },
+    {
+      "id": "cleanup-or-inventory-uncertainty",
+      "state": "unreviewed-reject",
+      "evidence_sha256": null
+    }
+  ],
+  "support_scope": {
+    "state": "unreviewed",
+    "region": null,
+    "instance_type": null,
+    "runtime_artifact_set_sha256": null
+  },
+  "residual_risks": {
+    "state": "unreviewed",
+    "risk_register_sha256": null
+  },
+  "local_checks": {
+    "state": "unexecuted",
+    "check_receipt_sha256": null,
+    "artifact_scan_sha256": null
+  },
+  "temporary_launcher_is_not_daemon": true,
+  "not_ga_compliance_or_production_approval": true,
+  "decision": {
+    "state": "blocked-unreviewed-template",
+    "stage4_exit_satisfied": false,
+    "release_eligible": false,
+    "decision_evidence_sha256": null
+  }
+}

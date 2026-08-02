@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.dev/schemas/stage4-exit-review-verdict-v1.json",
+  "title": "Cogs Stage 4 exit review template classifier verdict v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "authority",
+    "template_valid",
+    "review_complete",
+    "stage4_exit_satisfied",
+    "release_eligible",
+    "matrix_sha256",
+    "report_sha256",
+    "status",
+    "reason_code"
+  ],
+  "properties": {
+    "version": { "const": "cogs.stage4-exit-review-verdict/v1" },
+    "authority": { "const": "local-static-stage4-exit-template-classifier" },
+    "template_valid": { "type": "boolean" },
+    "review_complete": { "const": false },
+    "stage4_exit_satisfied": { "const": false },
+    "release_eligible": { "const": false },
+    "matrix_sha256": { "oneOf": [{ "$ref": "#/$defs/sha256" }, { "type": "null" }] },
+    "report_sha256": { "oneOf": [{ "$ref": "#/$defs/sha256" }, { "type": "null" }] },
+    "status": { "enum": ["valid-blocked-template", "reject"] },
+    "reason_code": {
+      "enum": [
+        "STAGE4_EXIT_TEMPLATE_VALID_BLOCKED",
+        "STAGE4_EXIT_TEMPLATE_INVALID",
+        "STAGE4_EXIT_MATRIX_BINDING_MISMATCH",
+        "STAGE4_EXIT_AUTHORITY_PROMOTION"
+      ]
+    }
+  },
+  "$defs": { "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" } }
+}

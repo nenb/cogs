@@ -117,6 +117,85 @@ function teardownPlanSample(): JsonObject {
   };
 }
 
+function campaignFixture(name: string): JsonObject {
+  return JSON.parse(
+    readFileSync(resolve(import.meta.dirname, `fixtures/stage4-campaign/${name}`), "utf8"),
+  ) as JsonObject;
+}
+
+function campaignApprovalDraftSample(): JsonObject {
+  return campaignFixture("approval-draft-blocked-v1.json");
+}
+
+function campaignApprovalVerdictSample(): JsonObject {
+  return {
+    version: "cogs.stage4-campaign-approval-verdict/v1",
+    authority: "local-static-unapproved-envelope-classifier",
+    draft_valid: true,
+    approval_present: false,
+    execution_authorized: false,
+    retry_authorized: false,
+    provider_truth_observed: false,
+    stage4_exit_satisfied: false,
+    envelope_sha256: sha("a"),
+    status: "valid-unapproved-blocked-draft",
+    reason_code: "STAGE4_APPROVAL_DRAFT_VALID_BLOCKED",
+  };
+}
+
+function campaignPlanSample(): JsonObject {
+  return campaignFixture("s4-08-plan-blocked-v1.json");
+}
+
+function campaignEvidenceSample(): JsonObject {
+  return campaignFixture("s4-08-evidence-empty-v1.json");
+}
+
+function campaignModelVerdictSample(): JsonObject {
+  return {
+    version: "cogs.stage4-campaign-model-verdict/v1",
+    authority: "local-static-campaign-state-classifier",
+    plan_valid: true,
+    evidence_valid: true,
+    execution_authorized: false,
+    campaign_execution_observed: false,
+    provider_truth_observed: false,
+    kubernetes_truth_observed: false,
+    cleanup_observed: false,
+    zero_inventory_claimed: false,
+    retry_authorized: false,
+    stage4_exit_satisfied: false,
+    plan_sha256: sha("a"),
+    evidence_sha256: sha("b"),
+    status: "awaiting-claimed-evidence",
+    next_phase: "topology.source-render-object-binding",
+    reason_code: "STAGE4_CAMPAIGN_AWAITING_CLAIMED_EVIDENCE",
+  };
+}
+
+function exitReviewMatrixSample(): JsonObject {
+  return campaignFixture("s4-11-exit-matrix-template-v1.json");
+}
+
+function exitReviewReportSample(): JsonObject {
+  return campaignFixture("s4-11-exit-report-template-v1.json");
+}
+
+function exitReviewVerdictSample(): JsonObject {
+  return {
+    version: "cogs.stage4-exit-review-verdict/v1",
+    authority: "local-static-stage4-exit-template-classifier",
+    template_valid: true,
+    review_complete: false,
+    stage4_exit_satisfied: false,
+    release_eligible: false,
+    matrix_sha256: sha("a"),
+    report_sha256: sha("b"),
+    status: "valid-blocked-template",
+    reason_code: "STAGE4_EXIT_TEMPLATE_VALID_BLOCKED",
+  };
+}
+
 function offlineReadinessPackageSample(): JsonObject {
   return JSON.parse(
     readFileSync(
@@ -249,6 +328,14 @@ function nicVerdictSample(): JsonObject {
 }
 
 const STAGE4_SCHEMA_REGISTRY = [
+  { file: "stage4-campaign-approval-draft-v1.json", sample: campaignApprovalDraftSample },
+  { file: "stage4-campaign-approval-verdict-v1.json", sample: campaignApprovalVerdictSample },
+  { file: "stage4-campaign-evidence-v1.json", sample: campaignEvidenceSample },
+  { file: "stage4-campaign-model-verdict-v1.json", sample: campaignModelVerdictSample },
+  { file: "stage4-campaign-plan-v1.json", sample: campaignPlanSample },
+  { file: "stage4-exit-review-matrix-template-v1.json", sample: exitReviewMatrixSample },
+  { file: "stage4-exit-review-report-template-v1.json", sample: exitReviewReportSample },
+  { file: "stage4-exit-review-verdict-v1.json", sample: exitReviewVerdictSample },
   { file: "stage4-nic-sandbox-node-group-contract-v1.json", sample: nicContractSample },
   { file: "stage4-nic-sandbox-node-group-verdict-v1.json", sample: nicVerdictSample },
   { file: "stage4-offline-readiness-package-v1.json", sample: offlineReadinessPackageSample },
@@ -287,6 +374,14 @@ test("the bounded Stage 4 registry compiles its strict positive samples", () => 
   assert.deepEqual(
     STAGE4_SCHEMA_REGISTRY.map(({ file }) => file),
     [
+      "stage4-campaign-approval-draft-v1.json",
+      "stage4-campaign-approval-verdict-v1.json",
+      "stage4-campaign-evidence-v1.json",
+      "stage4-campaign-model-verdict-v1.json",
+      "stage4-campaign-plan-v1.json",
+      "stage4-exit-review-matrix-template-v1.json",
+      "stage4-exit-review-report-template-v1.json",
+      "stage4-exit-review-verdict-v1.json",
       "stage4-nic-sandbox-node-group-contract-v1.json",
       "stage4-nic-sandbox-node-group-verdict-v1.json",
       "stage4-offline-readiness-package-v1.json",
@@ -316,6 +411,30 @@ test("every Stage 4 schema rejects unknown root fields and representative nested
     mutation.unreviewed = true;
     assertRejected(validatorFor(validators, file), mutation, `${file} accepted an unknown root field`);
   }
+
+  const approvalMutation = campaignApprovalDraftSample();
+  (approvalMutation.approval as JsonObject).unreviewed = true;
+  assertRejected(
+    validatorFor(validators, "stage4-campaign-approval-draft-v1.json"),
+    approvalMutation,
+    "campaign approval draft accepted an unknown approval field",
+  );
+
+  const campaignMutation = campaignPlanSample();
+  (campaignMutation.bindings as JsonObject).unreviewed = true;
+  assertRejected(
+    validatorFor(validators, "stage4-campaign-plan-v1.json"),
+    campaignMutation,
+    "campaign plan accepted an unknown binding field",
+  );
+
+  const exitMutation = exitReviewReportSample();
+  (exitMutation.decision as JsonObject).unreviewed = true;
+  assertRejected(
+    validatorFor(validators, "stage4-exit-review-report-template-v1.json"),
+    exitMutation,
+    "exit report template accepted an unknown decision field",
+  );
 
   const staticMutation = staticSample();
   (staticMutation.artifacts as JsonObject).unreviewed = true;

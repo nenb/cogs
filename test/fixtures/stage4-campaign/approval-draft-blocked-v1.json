@@ -1,0 +1,91 @@
+{
+  "version": "cogs.stage4-campaign-approval-draft/v1",
+  "authority": "local-static-unapproved-envelope-draft",
+  "issue": "S4-07/#358",
+  "execution_authorized": false,
+  "dependencies": {
+    "issue_42": {
+      "state": "evidence-absent",
+      "repeated_measurements_sha256": null,
+      "destruction_reports_sha256": null,
+      "final_zero_inventory_sha256": null
+    },
+    "s4_06_acceptance_sha256": null
+  },
+  "attempt": {
+    "state": "unnamed",
+    "campaign_issue": null,
+    "attempt_id_sha256": null,
+    "attempt_number": 1,
+    "maximum_attempts": 1,
+    "retry": "prohibited"
+  },
+  "approval": {
+    "state": "unapproved",
+    "approval_evidence_sha256": null,
+    "approved_at": null,
+    "approver_identity_sha256": null
+  },
+  "identities": {
+    "campaign_operator": { "state": "absent", "subject_reference_sha256": null },
+    "campaign_approver": { "state": "absent", "subject_reference_sha256": null },
+    "budget_approver": { "state": "absent", "subject_reference_sha256": null },
+    "security_evidence_reviewer": { "state": "absent", "subject_reference_sha256": null },
+    "zero_inventory_observer": { "state": "absent", "subject_reference_sha256": null }
+  },
+  "source_binding": {
+    "state": "absent",
+    "revision_sha256": null,
+    "source_inventory_sha256": null,
+    "plan_artifact_sha256": null,
+    "render_artifact_sha256": null,
+    "runtime_artifact_set_sha256": null
+  },
+  "account_binding": {
+    "state": "absent",
+    "account_reference_sha256": null,
+    "region": null,
+    "instance_type": null
+  },
+  "resource_envelope": {
+    "state": "unapproved",
+    "resource_graph_sha256": null,
+    "eks_cluster_cap": null,
+    "trusted_node_cap": null,
+    "sandbox_node_cap": null,
+    "total_node_cap": null,
+    "storage_cap_sha256": null
+  },
+  "budget": {
+    "state": "unapproved",
+    "currency": null,
+    "spend_cap": null,
+    "alert_thresholds_sha256": null,
+    "current_price_evidence_sha256": null,
+    "current_quota_evidence_sha256": null
+  },
+  "expiry": {
+    "state": "unapproved",
+    "approved_at": null,
+    "expires_at": null,
+    "campaign_duration_seconds": null,
+    "absolute_ttl_seconds": null
+  },
+  "destroy": {
+    "state": "unapproved",
+    "path_artifact_sha256": null,
+    "target_state_binding_sha256": null,
+    "stop_on_pass": true,
+    "stop_on_failure": true,
+    "stop_on_timeout": true,
+    "stop_on_uncertainty": true
+  },
+  "independent_inventory": {
+    "state": "unapproved",
+    "procedure_artifact_sha256": null,
+    "scope_set_sha256": null,
+    "observer_identity_sha256": null,
+    "must_follow_destroy": true,
+    "zero_claimed": false
+  }
+}

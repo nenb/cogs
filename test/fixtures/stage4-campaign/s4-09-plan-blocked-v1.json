@@ -1,0 +1,72 @@
+{
+  "version": "cogs.stage4-campaign-plan/v1",
+  "authority": "local-static-campaign-plan-model",
+  "campaign_issue": "S4-09/#360",
+  "execution_authorized": false,
+  "attempt": {
+    "number": 1,
+    "maximum_attempts": 1,
+    "retry": "prohibited",
+    "approval_state": "absent"
+  },
+  "bindings": {
+    "source_revision_sha256": "9999999999999999999999999999999999999999999999999999999999999999",
+    "source_inventory_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "offline_readiness_package_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+    "approval_draft_sha256": "634dab2a688a3b7b569f60f5fe749c6e5199c7494297d5575937e50389a32e7c",
+    "campaign_profile_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+    "artifact_manifest_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+    "artifact_set_root_sha256": "b1beb12842063d37b0b72ddca0318a344b7fb81fc6f3ec8a0dc03b83df284bb2"
+  },
+  "qualification_steps": [
+    {
+      "id": "guest-root.real-dependencies-admitted",
+      "state": "unexecuted",
+      "evidence_class": "future-digest-only-claim"
+    },
+    {
+      "id": "guest-root.ipv4-ipv6-udp-quic-dns-denial",
+      "state": "unexecuted",
+      "evidence_class": "future-digest-only-claim"
+    },
+    {
+      "id": "guest-root.api-metadata-admin-cross-session-storage-denial",
+      "state": "unexecuted",
+      "evidence_class": "future-digest-only-claim"
+    },
+    {
+      "id": "guest-root.no-kubernetes-cloud-openbao-integration-model-or-ca-key-material",
+      "state": "unexecuted",
+      "evidence_class": "future-digest-only-claim"
+    },
+    {
+      "id": "functional.stage3-kata-ebs-openbao-otlp",
+      "state": "unexecuted",
+      "evidence_class": "future-digest-only-claim"
+    },
+    {
+      "id": "functional.api-key-samples-separately-authorized",
+      "state": "unexecuted",
+      "evidence_class": "future-digest-only-claim"
+    }
+  ],
+  "terminal_order": ["stop", "destroy", "independent-inventory"],
+  "evidence_policy": {
+    "metadata_only": true,
+    "digest_only": true,
+    "uncertainty_is_sticky": true,
+    "failure_skips_to_stop": true,
+    "inventory_must_be_independent": true,
+    "max_events": 9
+  },
+  "prohibited_surfaces": [
+    "executor",
+    "provider",
+    "opentofu",
+    "kubernetes-api",
+    "kubectl",
+    "helm-install-apply",
+    "external-model",
+    "network-discovery"
+  ]
+}
