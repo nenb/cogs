@@ -1463,7 +1463,7 @@
                       "const": "eks"
                     },
                     "scope": {
-                      "const": "clusters-by-account-and-region"
+                      "const": "clusters-account-region-service-wide"
                     },
                     "tag_only": {
                       "const": false
@@ -1482,7 +1482,7 @@
                       "const": "eks"
                     },
                     "scope": {
-                      "const": "addons-by-cluster"
+                      "const": "addons-for-every-cluster-account-region-service-wide"
                     },
                     "tag_only": {
                       "const": false
@@ -1501,7 +1501,7 @@
                       "const": "ec2"
                     },
                     "scope": {
-                      "const": "vpcs-by-account-and-region"
+                      "const": "vpcs-account-region-service-wide"
                     },
                     "tag_only": {
                       "const": false
@@ -1520,7 +1520,7 @@
                       "const": "ec2"
                     },
                     "scope": {
-                      "const": "subnets-by-vpc"
+                      "const": "subnets-account-region-service-wide"
                     },
                     "tag_only": {
                       "const": false
@@ -1539,7 +1539,7 @@
                       "const": "ec2"
                     },
                     "scope": {
-                      "const": "route-tables-by-vpc"
+                      "const": "route-tables-account-region-service-wide"
                     },
                     "tag_only": {
                       "const": false
@@ -1558,7 +1558,7 @@
                       "const": "ec2"
                     },
                     "scope": {
-                      "const": "routes-by-each-route-table"
+                      "const": "routes-for-every-route-table-account-region-service-wide"
                     },
                     "tag_only": {
                       "const": false
@@ -1577,7 +1577,7 @@
                       "const": "ec2"
                     },
                     "scope": {
-                      "const": "internet-gateways-by-vpc-attachment"
+                      "const": "internet-gateways-account-region-service-wide-all-attachment-states"
                     },
                     "tag_only": {
                       "const": false
@@ -1596,7 +1596,7 @@
                       "const": "ec2"
                     },
                     "scope": {
-                      "const": "network-acls-by-vpc"
+                      "const": "network-acls-account-region-service-wide"
                     },
                     "tag_only": {
                       "const": false
@@ -1615,7 +1615,7 @@
                       "const": "ec2"
                     },
                     "scope": {
-                      "const": "dhcp-options-by-vpc-association"
+                      "const": "dhcp-options-account-region-service-wide"
                     },
                     "tag_only": {
                       "const": false
@@ -1634,7 +1634,7 @@
                       "const": "ec2"
                     },
                     "scope": {
-                      "const": "nat-gateways-by-vpc-all-lifecycle-states"
+                      "const": "nat-gateways-account-region-service-wide-all-lifecycle-states"
                     },
                     "tag_only": {
                       "const": false
@@ -1653,7 +1653,7 @@
                       "const": "ec2"
                     },
                     "scope": {
-                      "const": "vpc-endpoints-by-vpc"
+                      "const": "vpc-endpoints-account-region-service-wide"
                     },
                     "tag_only": {
                       "const": false
@@ -1672,7 +1672,7 @@
                       "const": "ec2"
                     },
                     "scope": {
-                      "const": "addresses-by-account-and-region"
+                      "const": "addresses-account-region-service-wide"
                     },
                     "tag_only": {
                       "const": false
@@ -1691,7 +1691,7 @@
                       "const": "elasticloadbalancing"
                     },
                     "scope": {
-                      "const": "load-balancers-by-account-and-region"
+                      "const": "load-balancers-account-region-service-wide"
                     },
                     "tag_only": {
                       "const": false
@@ -1710,7 +1710,7 @@
                       "const": "elasticloadbalancing"
                     },
                     "scope": {
-                      "const": "target-groups-by-account-and-region"
+                      "const": "target-groups-account-region-service-wide"
                     },
                     "tag_only": {
                       "const": false
@@ -1729,7 +1729,7 @@
                       "const": "ec2"
                     },
                     "scope": {
-                      "const": "security-groups-by-vpc"
+                      "const": "security-groups-account-region-service-wide"
                     },
                     "tag_only": {
                       "const": false
@@ -1748,7 +1748,7 @@
                       "const": "iam"
                     },
                     "scope": {
-                      "const": "roles-by-exact-campaign-name-inventory"
+                      "const": "roles-account-service-wide"
                     },
                     "tag_only": {
                       "const": false
@@ -1767,7 +1767,7 @@
                       "const": "iam"
                     },
                     "scope": {
-                      "const": "policies-by-account-and-exact-campaign-name-inventory"
+                      "const": "customer-managed-policies-account-service-wide"
                     },
                     "tag_only": {
                       "const": false
@@ -1786,7 +1786,7 @@
                       "const": "iam"
                     },
                     "scope": {
-                      "const": "role-and-policy-attachments-by-enumerated-role"
+                      "const": "role-and-policy-attachments-account-service-wide"
                     },
                     "tag_only": {
                       "const": false
@@ -1805,7 +1805,7 @@
                       "const": "iam"
                     },
                     "scope": {
-                      "const": "instance-profiles-by-enumerated-role"
+                      "const": "instance-profiles-account-service-wide"
                     },
                     "tag_only": {
                       "const": false
@@ -1824,7 +1824,7 @@
                       "const": "ec2"
                     },
                     "scope": {
-                      "const": "launch-templates-and-all-versions-by-account-and-region"
+                      "const": "launch-templates-and-all-versions-account-region-service-wide"
                     },
                     "tag_only": {
                       "const": false
@@ -1843,7 +1843,7 @@
                       "const": "eks"
                     },
                     "scope": {
-                      "const": "nodegroups-by-cluster"
+                      "const": "nodegroups-for-every-cluster-account-region-service-wide"
                     },
                     "tag_only": {
                       "const": false
@@ -1862,7 +1862,7 @@
                       "const": "autoscaling"
                     },
                     "scope": {
-                      "const": "groups-by-account-and-region"
+                      "const": "groups-account-region-service-wide"
                     },
                     "tag_only": {
                       "const": false
@@ -1881,7 +1881,7 @@
                       "const": "ec2"
                     },
                     "scope": {
-                      "const": "instances-by-approved-trusted-launch-template"
+                      "const": "instances-account-region-service-wide-all-states"
                     },
                     "tag_only": {
                       "const": false
@@ -1900,7 +1900,7 @@
                       "const": "ec2"
                     },
                     "scope": {
-                      "const": "instances-by-approved-sandbox-launch-template"
+                      "const": "instances-account-region-service-wide-all-states"
                     },
                     "tag_only": {
                       "const": false
@@ -1919,7 +1919,7 @@
                       "const": "ec2"
                     },
                     "scope": {
-                      "const": "network-interfaces-by-vpc-and-attachment"
+                      "const": "network-interfaces-account-region-service-wide-all-attachment-states"
                     },
                     "tag_only": {
                       "const": false
@@ -1938,7 +1938,7 @@
                       "const": "ec2"
                     },
                     "scope": {
-                      "const": "volumes-by-trusted-node-attachment"
+                      "const": "volumes-account-region-service-wide-all-attachment-states"
                     },
                     "tag_only": {
                       "const": false
@@ -1957,7 +1957,7 @@
                       "const": "ec2"
                     },
                     "scope": {
-                      "const": "volumes-by-sandbox-node-attachment"
+                      "const": "volumes-account-region-service-wide-all-attachment-states"
                     },
                     "tag_only": {
                       "const": false
@@ -1976,7 +1976,7 @@
                       "const": "ec2"
                     },
                     "scope": {
-                      "const": "workspace-volumes-by-exact-campaign-binding"
+                      "const": "volumes-account-region-service-wide-all-attachment-states"
                     },
                     "tag_only": {
                       "const": false
@@ -1995,7 +1995,7 @@
                       "const": "ec2"
                     },
                     "scope": {
-                      "const": "session-volumes-by-exact-campaign-binding"
+                      "const": "volumes-account-region-service-wide-all-attachment-states"
                     },
                     "tag_only": {
                       "const": false
@@ -2014,7 +2014,7 @@
                       "const": "ec2"
                     },
                     "scope": {
-                      "const": "snapshots-owned-by-account"
+                      "const": "snapshots-owned-by-account-region-service-wide"
                     },
                     "tag_only": {
                       "const": false
@@ -2033,7 +2033,7 @@
                       "const": "kms"
                     },
                     "scope": {
-                      "const": "keys-and-key-state-by-account-and-region"
+                      "const": "keys-account-region-service-wide-all-key-states"
                     },
                     "tag_only": {
                       "const": false
@@ -2052,7 +2052,7 @@
                       "const": "kms"
                     },
                     "scope": {
-                      "const": "aliases-by-account-and-region"
+                      "const": "aliases-account-region-service-wide"
                     },
                     "tag_only": {
                       "const": false
@@ -2071,7 +2071,7 @@
                       "const": "logs"
                     },
                     "scope": {
-                      "const": "log-groups-by-exact-campaign-name-inventory"
+                      "const": "log-groups-account-region-service-wide"
                     },
                     "tag_only": {
                       "const": false
@@ -2090,7 +2090,7 @@
                       "const": "budgets"
                     },
                     "scope": {
-                      "const": "budgets-by-account"
+                      "const": "budgets-account-service-wide"
                     },
                     "tag_only": {
                       "const": false
@@ -2109,7 +2109,7 @@
                       "const": "budgets"
                     },
                     "scope": {
-                      "const": "notifications-by-enumerated-budget"
+                      "const": "notifications-for-every-budget-account-service-wide"
                     },
                     "tag_only": {
                       "const": false
@@ -2128,7 +2128,7 @@
                       "const": "scheduler"
                     },
                     "scope": {
-                      "const": "schedules-by-exact-campaign-group-inventory"
+                      "const": "schedules-account-region-service-wide"
                     },
                     "tag_only": {
                       "const": false
@@ -2147,7 +2147,7 @@
                       "const": "lambda"
                     },
                     "scope": {
-                      "const": "functions-by-account-and-region"
+                      "const": "functions-account-region-service-wide"
                     },
                     "tag_only": {
                       "const": false
@@ -2166,7 +2166,7 @@
                       "const": "lambda"
                     },
                     "scope": {
-                      "const": "resource-policies-by-enumerated-function"
+                      "const": "resource-policies-for-every-function-account-region-service-wide"
                     },
                     "tag_only": {
                       "const": false

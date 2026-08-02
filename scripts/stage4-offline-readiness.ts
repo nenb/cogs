@@ -161,44 +161,44 @@ export const STAGE4_PROPOSED_RESOURCE_GRAPH = Object.freeze([
 ] as const);
 
 export const STAGE4_INDEPENDENT_INVENTORY_SCOPES = Object.freeze([
-  ["eks-cluster", "eks", "clusters-by-account-and-region"],
-  ["eks-managed-addon", "eks", "addons-by-cluster"],
-  ["vpc", "ec2", "vpcs-by-account-and-region"],
-  ["subnet", "ec2", "subnets-by-vpc"],
-  ["route-table", "ec2", "route-tables-by-vpc"],
-  ["route", "ec2", "routes-by-each-route-table"],
-  ["internet-gateway", "ec2", "internet-gateways-by-vpc-attachment"],
-  ["network-acl", "ec2", "network-acls-by-vpc"],
-  ["dhcp-options-association", "ec2", "dhcp-options-by-vpc-association"],
-  ["nat-gateway", "ec2", "nat-gateways-by-vpc-all-lifecycle-states"],
-  ["vpc-endpoint", "ec2", "vpc-endpoints-by-vpc"],
-  ["elastic-ip", "ec2", "addresses-by-account-and-region"],
-  ["load-balancer", "elasticloadbalancing", "load-balancers-by-account-and-region"],
-  ["target-group", "elasticloadbalancing", "target-groups-by-account-and-region"],
-  ["security-group", "ec2", "security-groups-by-vpc"],
-  ["iam-role", "iam", "roles-by-exact-campaign-name-inventory"],
-  ["iam-customer-managed-policy", "iam", "policies-by-account-and-exact-campaign-name-inventory"],
-  ["iam-policy-attachment", "iam", "role-and-policy-attachments-by-enumerated-role"],
-  ["instance-profile", "iam", "instance-profiles-by-enumerated-role"],
-  ["launch-template", "ec2", "launch-templates-and-all-versions-by-account-and-region"],
-  ["managed-node-group", "eks", "nodegroups-by-cluster"],
-  ["autoscaling-group", "autoscaling", "groups-by-account-and-region"],
-  ["trusted-node", "ec2", "instances-by-approved-trusted-launch-template"],
-  ["sandbox-node", "ec2", "instances-by-approved-sandbox-launch-template"],
-  ["network-interface", "ec2", "network-interfaces-by-vpc-and-attachment"],
-  ["ebs-trusted-root-volume", "ec2", "volumes-by-trusted-node-attachment"],
-  ["ebs-sandbox-root-volume", "ec2", "volumes-by-sandbox-node-attachment"],
-  ["ebs-workspace-volume", "ec2", "workspace-volumes-by-exact-campaign-binding"],
-  ["ebs-session-state-volume", "ec2", "session-volumes-by-exact-campaign-binding"],
-  ["ebs-snapshot", "ec2", "snapshots-owned-by-account"],
-  ["kms-key", "kms", "keys-and-key-state-by-account-and-region"],
-  ["kms-alias", "kms", "aliases-by-account-and-region"],
-  ["log-group", "logs", "log-groups-by-exact-campaign-name-inventory"],
-  ["budget", "budgets", "budgets-by-account"],
-  ["budget-notification", "budgets", "notifications-by-enumerated-budget"],
-  ["ttl-schedule", "scheduler", "schedules-by-exact-campaign-group-inventory"],
-  ["ttl-function", "lambda", "functions-by-account-and-region"],
-  ["ttl-function-permission", "lambda", "resource-policies-by-enumerated-function"],
+  ["eks-cluster", "eks", "clusters-account-region-service-wide"],
+  ["eks-managed-addon", "eks", "addons-for-every-cluster-account-region-service-wide"],
+  ["vpc", "ec2", "vpcs-account-region-service-wide"],
+  ["subnet", "ec2", "subnets-account-region-service-wide"],
+  ["route-table", "ec2", "route-tables-account-region-service-wide"],
+  ["route", "ec2", "routes-for-every-route-table-account-region-service-wide"],
+  ["internet-gateway", "ec2", "internet-gateways-account-region-service-wide-all-attachment-states"],
+  ["network-acl", "ec2", "network-acls-account-region-service-wide"],
+  ["dhcp-options-association", "ec2", "dhcp-options-account-region-service-wide"],
+  ["nat-gateway", "ec2", "nat-gateways-account-region-service-wide-all-lifecycle-states"],
+  ["vpc-endpoint", "ec2", "vpc-endpoints-account-region-service-wide"],
+  ["elastic-ip", "ec2", "addresses-account-region-service-wide"],
+  ["load-balancer", "elasticloadbalancing", "load-balancers-account-region-service-wide"],
+  ["target-group", "elasticloadbalancing", "target-groups-account-region-service-wide"],
+  ["security-group", "ec2", "security-groups-account-region-service-wide"],
+  ["iam-role", "iam", "roles-account-service-wide"],
+  ["iam-customer-managed-policy", "iam", "customer-managed-policies-account-service-wide"],
+  ["iam-policy-attachment", "iam", "role-and-policy-attachments-account-service-wide"],
+  ["instance-profile", "iam", "instance-profiles-account-service-wide"],
+  ["launch-template", "ec2", "launch-templates-and-all-versions-account-region-service-wide"],
+  ["managed-node-group", "eks", "nodegroups-for-every-cluster-account-region-service-wide"],
+  ["autoscaling-group", "autoscaling", "groups-account-region-service-wide"],
+  ["trusted-node", "ec2", "instances-account-region-service-wide-all-states"],
+  ["sandbox-node", "ec2", "instances-account-region-service-wide-all-states"],
+  ["network-interface", "ec2", "network-interfaces-account-region-service-wide-all-attachment-states"],
+  ["ebs-trusted-root-volume", "ec2", "volumes-account-region-service-wide-all-attachment-states"],
+  ["ebs-sandbox-root-volume", "ec2", "volumes-account-region-service-wide-all-attachment-states"],
+  ["ebs-workspace-volume", "ec2", "volumes-account-region-service-wide-all-attachment-states"],
+  ["ebs-session-state-volume", "ec2", "volumes-account-region-service-wide-all-attachment-states"],
+  ["ebs-snapshot", "ec2", "snapshots-owned-by-account-region-service-wide"],
+  ["kms-key", "kms", "keys-account-region-service-wide-all-key-states"],
+  ["kms-alias", "kms", "aliases-account-region-service-wide"],
+  ["log-group", "logs", "log-groups-account-region-service-wide"],
+  ["budget", "budgets", "budgets-account-service-wide"],
+  ["budget-notification", "budgets", "notifications-for-every-budget-account-service-wide"],
+  ["ttl-schedule", "scheduler", "schedules-account-region-service-wide"],
+  ["ttl-function", "lambda", "functions-account-region-service-wide"],
+  ["ttl-function-permission", "lambda", "resource-policies-for-every-function-account-region-service-wide"],
 ] as const);
 
 const EXPECTED_IMAGE_REFERENCES = Object.freeze({
@@ -206,6 +206,22 @@ const EXPECTED_IMAGE_REFERENCES = Object.freeze({
   proxy: "envoyproxy/envoy:v1.38.3@sha256:5f7c43e1147412fdb3af578c651c67478a3df818eae89d2261e707e06c209cdb",
   sandbox: `registry.example.invalid/cogs/sandbox@sha256:${"c".repeat(64)}`,
 });
+
+/* stage4-readiness-anchor-start */
+export const STAGE4_READINESS_EXPECTED_ARTIFACTS = Object.freeze({
+  chartInventory: "c5a92117c4bf604a188393a4c3cce15fde287f35a0b7c0751fe5f1720b286321",
+  imageLock: "0b52deae8e9d24458e52c4c178283d1c51819057d8ce867a865b0b7b96902389",
+  nicContract: "ad431775037e718074a12ecaf530a5f67b26ba6d2f693980a3e580aa6f167391",
+  render: "614361336f5cbf87e4fd7b1a8a806fa5d08bbceb3c91b2b33a1710b4cfd73331",
+  repeatedRender: "614361336f5cbf87e4fd7b1a8a806fa5d08bbceb3c91b2b33a1710b4cfd73331",
+  runtimePins: "14fdacff04e1db62ec733e7696d104826c73aa87764406a5625d2a13265219f0",
+  values: "e63a0fadebe16637cc97b21adeeb4ecf33efa8e76a1469e6008c7f7ed4fbb58f",
+  localValidationNormalized: "6c6c84c392fa80fcad9caa4555b9dab41f3b7a460ede25dcf69400e82b0ceeca",
+  renderReceipt: "cb48037b113e52fecc21529ecde0a4b5ff974fa241dc92a6f0e6c05e9e55b505",
+  schemaInventory: "92fe49a97be6f2d6fc76d3bc1f25fcc0ae12a27e806b86cb9fffe363c34cfc7a",
+  sourceInventoryNormalized: "3dd100f6d8b23b6d0711ecde5ef494e0c66425cc695c558c6b952a7086b1b111",
+});
+/* stage4-readiness-anchor-end */
 
 function compareCodePoints(left: string, right: string): number {
   const leftPoints = Array.from(left, (value) => value.codePointAt(0) ?? 0);
@@ -302,6 +318,158 @@ function stringProperty(value: JsonValue | undefined, key: string): string | nul
   const object = record(value);
   const property = object?.[key];
   return typeof property === "string" ? property : null;
+}
+
+function parseCanonicalArtifact(bytes: Uint8Array): JsonRecord | null {
+  try {
+    const value = JSON.parse(decoder.decode(bytes)) as JsonValue;
+    const object = record(value);
+    return object !== null && bytesEqual(bytes, canonicalStage4OfflineReadinessBytes(value)) ? object : null;
+  } catch {
+    return null;
+  }
+}
+
+function digestEntries(value: JsonValue | undefined): Map<string, string> | null {
+  if (!Array.isArray(value)) return null;
+  const output = new Map<string, string>();
+  for (const item of value) {
+    const row = record(item);
+    if (
+      row === null ||
+      Reflect.ownKeys(row).length !== 2 ||
+      typeof row.path !== "string" ||
+      typeof row.sha256 !== "string" ||
+      !/^[0-9a-f]{64}$/u.test(row.sha256) ||
+      output.has(row.path)
+    )
+      return null;
+    output.set(row.path, row.sha256);
+  }
+  return output;
+}
+
+function normalizedInventoryDigest(bytes: Uint8Array, arrayKey: string, selfPath: string): string | null {
+  const value = parseCanonicalArtifact(bytes);
+  const entries = value?.[arrayKey];
+  if (value === null || !Array.isArray(entries)) return null;
+  let replacements = 0;
+  const normalized = entries.map((item) => {
+    const row = record(item);
+    if (row?.path !== selfPath) return item;
+    replacements += 1;
+    return { ...row, sha256: "0".repeat(64) } as JsonValue;
+  });
+  if (replacements !== 1) return null;
+  return stage4OfflineReadinessSha256(canonicalStage4OfflineReadinessBytes({ ...value, [arrayKey]: normalized }));
+}
+
+export function stage4NormalizedSourceInventorySha256(bytes: Uint8Array): string | null {
+  return normalizedInventoryDigest(bytes, "entries", "scripts/stage4-offline-readiness.ts");
+}
+
+export function stage4NormalizedLocalValidationSha256(bytes: Uint8Array): string | null {
+  return normalizedInventoryDigest(bytes, "source_bindings", "scripts/stage4-offline-readiness.ts");
+}
+
+function exactArtifactSemantics(value: ReadinessPackage, artifacts: ArtifactCopies): boolean {
+  const exactRaw: ReadonlyArray<readonly [Stage4ReadinessArtifactKey, string]> = [
+    ["chartInventory", STAGE4_READINESS_EXPECTED_ARTIFACTS.chartInventory],
+    ["values", STAGE4_READINESS_EXPECTED_ARTIFACTS.values],
+    ["render", STAGE4_READINESS_EXPECTED_ARTIFACTS.render],
+    ["repeatedRender", STAGE4_READINESS_EXPECTED_ARTIFACTS.repeatedRender],
+    ["renderReceipt", STAGE4_READINESS_EXPECTED_ARTIFACTS.renderReceipt],
+    ["imageLock", STAGE4_READINESS_EXPECTED_ARTIFACTS.imageLock],
+    ["nicContract", STAGE4_READINESS_EXPECTED_ARTIFACTS.nicContract],
+    ["runtimePins", STAGE4_READINESS_EXPECTED_ARTIFACTS.runtimePins],
+    ["schemaInventory", STAGE4_READINESS_EXPECTED_ARTIFACTS.schemaInventory],
+  ];
+  if (exactRaw.some(([key, expected]) => stage4OfflineReadinessSha256(artifacts[key]) !== expected)) return false;
+  if (
+    stage4NormalizedSourceInventorySha256(artifacts.sourceInventory) !==
+      STAGE4_READINESS_EXPECTED_ARTIFACTS.sourceInventoryNormalized ||
+    stage4NormalizedLocalValidationSha256(artifacts.localValidation) !==
+      STAGE4_READINESS_EXPECTED_ARTIFACTS.localValidationNormalized
+  )
+    return false;
+
+  const source = parseCanonicalArtifact(artifacts.sourceInventory);
+  const schemas = parseCanonicalArtifact(artifacts.schemaInventory);
+  const local = parseCanonicalArtifact(artifacts.localValidation);
+  const receipt = parseCanonicalArtifact(artifacts.renderReceipt);
+  const image = parseCanonicalArtifact(artifacts.imageLock);
+  const runtime = parseCanonicalArtifact(artifacts.runtimePins);
+  if ([source, schemas, local, receipt, image, runtime].some((item) => item === null)) return false;
+  const sourceEntries = digestEntries(source?.entries);
+  const schemaEntries = digestEntries(schemas?.entries);
+  const localBindings = digestEntries(local?.source_bindings);
+  if (sourceEntries === null || schemaEntries === null || localBindings === null) return false;
+
+  const sourceArtifactPaths: ReadonlyArray<readonly [string, Stage4ReadinessArtifactKey]> = [
+    ["docs/security-evidence/stage4-offline-readiness-artifacts/chart-inventory.json", "chartInventory"],
+    ["docs/security-evidence/stage4-offline-readiness-artifacts/image-lock.json", "imageLock"],
+    ["docs/security-evidence/stage4-offline-readiness-artifacts/notes-render-repeat.yaml", "repeatedRender"],
+    ["docs/security-evidence/stage4-offline-readiness-artifacts/notes-render.yaml", "render"],
+    ["docs/security-evidence/stage4-offline-readiness-artifacts/render-preparation-receipt.json", "renderReceipt"],
+    ["docs/security-evidence/stage4-offline-readiness-artifacts/runtime-pins.json", "runtimePins"],
+    ["docs/security-evidence/stage4-offline-readiness-artifacts/schema-inventory.json", "schemaInventory"],
+    ["deploy/nic/stage4-sandbox-node-group-contract.json", "nicContract"],
+    ["test/fixtures/helm/stage4-notes-source-shapes-valid.yaml", "values"],
+  ];
+  if (
+    sourceArtifactPaths.some(
+      ([path, key]) => sourceEntries.get(path) !== stage4OfflineReadinessSha256(artifacts[key]),
+    ) ||
+    [...schemaEntries].some(([path, digest]) => sourceEntries.get(path) !== digest) ||
+    [...localBindings].some(([path, digest]) => sourceEntries.get(path) !== digest)
+  )
+    return false;
+
+  const generatorDigest = sourceEntries.get("scripts/stage4-offline-render-preparation.ts");
+  const executionLayer = {
+    generator_source_sha256: receipt?.generator_source_sha256 as JsonValue,
+    node_arch: receipt?.node_arch as JsonValue,
+    node_executable_sha256: receipt?.node_executable_sha256 as JsonValue,
+    node_platform: receipt?.node_platform as JsonValue,
+    node_version: receipt?.node_version as JsonValue,
+    typescript_loader: receipt?.typescript_loader as JsonValue,
+  };
+  if (
+    receipt?.chart_inventory_sha256 !== stage4OfflineReadinessSha256(artifacts.chartInventory) ||
+    receipt.values_sha256 !== stage4OfflineReadinessSha256(artifacts.values) ||
+    receipt.first_render_sha256 !== stage4OfflineReadinessSha256(artifacts.render) ||
+    receipt.repeated_render_sha256 !== stage4OfflineReadinessSha256(artifacts.repeatedRender) ||
+    receipt.generator_source_sha256 !== generatorDigest ||
+    receipt.execution_layer_sha256 !==
+      stage4OfflineReadinessSha256(canonicalStage4OfflineReadinessBytes(executionLayer)) ||
+    local?.trusted_preparation_receipt_sha256 !== stage4OfflineReadinessSha256(artifacts.renderReceipt)
+  )
+    return false;
+
+  const imageRows = image?.images;
+  const packageImages = value.pins.images;
+  if (
+    !Array.isArray(imageRows) ||
+    imageRows.length !== 3 ||
+    stringProperty(imageRows[0], "reference") !== stringProperty(packageImages.worker, "reference") ||
+    stringProperty(imageRows[1], "reference") !== stringProperty(packageImages.proxy, "reference") ||
+    stringProperty(imageRows[2], "reference") !== stringProperty(packageImages.sandbox, "reference")
+  )
+    return false;
+  const packageRuntime = record(value.pins.runtime);
+  const runtimeRecord = record(runtime?.runtime);
+  if (
+    packageRuntime === null ||
+    runtimeRecord === null ||
+    stringProperty(runtimeRecord.containerd, "version") !== packageRuntime.containerd_version ||
+    stringProperty(runtimeRecord.qemu, "version") !== packageRuntime.qemu_version ||
+    stringProperty(runtimeRecord.kata, "archive_sha256") !== packageRuntime.kata_archive_sha256 ||
+    record(runtime?.eks_node_image)?.ami_id !== packageRuntime.eks_node_ami_id ||
+    record(runtime?.eks_node_image)?.release !== packageRuntime.eks_node_image_release ||
+    record(runtime?.eks_node_image)?.kernel_release !== packageRuntime.eks_node_kernel_release
+  )
+    return false;
+  return true;
 }
 
 function makeVerdict(
@@ -440,6 +608,9 @@ export function classifyStage4OfflineReadiness(
     if (expected !== stage4OfflineReadinessSha256(artifacts[key])) {
       return makeVerdict("STAGE4_READINESS_ARTIFACT_BINDING_MISMATCH", packageSha256, bindingRoot);
     }
+  }
+  if (!exactArtifactSemantics(parsed, artifacts)) {
+    return makeVerdict("STAGE4_READINESS_ARTIFACT_BINDING_MISMATCH", packageSha256, bindingRoot);
   }
   if (!bytesEqual(artifacts.render, artifacts.repeatedRender)) {
     return makeVerdict("STAGE4_READINESS_RENDER_NONDETERMINISTIC", packageSha256, bindingRoot);

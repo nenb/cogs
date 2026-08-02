@@ -1,22 +1,31 @@
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
-  cpSync,
+  chmodSync,
+  closeSync,
+  constants,
+  fstatSync,
+  fsyncSync,
   lstatSync,
+  mkdirSync,
   mkdtempSync,
+  openSync,
   readdirSync,
   readFileSync,
   realpathSync,
   rmSync,
-  statSync,
   writeFileSync,
 } from "node:fs";
-import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
-import { canonicalStage4OfflineReadinessBytes, stage4OfflineReadinessSha256 } from "./stage4-offline-readiness.ts";
 
-const require = createRequire(import.meta.url);
-const yaml = require("yaml") as { parseAllDocuments(source: string): Array<{ toJSON(): unknown; errors: unknown[] }> };
+export const STAGE4_PINNED_NODE = Object.freeze({
+  executable: "/Users/nenb/.nvm/versions/node/v22.22.2/bin/node",
+  version: "v22.22.2",
+  platform: "darwin",
+  arch: "arm64",
+  sha256: "5c899797c4eb8f1db5563eea56538342ddb3e9276ee1b04a5a1f0f1023d2b011",
+} as const);
 
 export const STAGE4_PINNED_HELM = Object.freeze({
   executable: "/opt/homebrew/bin/helm",
@@ -26,9 +35,11 @@ export const STAGE4_PINNED_HELM = Object.freeze({
 } as const);
 
 export const STAGE4_RENDER_PREPARATION_LIMITS = Object.freeze({
+  generatorBytes: 128 * 1024,
   helmBytes: 128 * 1024 * 1024,
   inventoryBytes: 64 * 1024,
   valuesBytes: 64 * 1024,
+  chartFileBytes: 512 * 1024,
   renderBytes: 256 * 1024,
   stdoutBytes: 512 * 1024,
   stderrBytes: 64 * 1024,
@@ -41,77 +52,110 @@ kind: ConfigMap
 metadata:
   name: cogs-notes-review-wrapper
 data:
-  payload: |-
-{{ include "cogs.stage4.notes.payload" . | nindent 4 }}
+  payload: {{ include "cogs.stage4.notes.payload" . | b64enc | quote }}
 `;
-const RECEIPT_VERSION = "cogs.stage4-offline-render-preparation-receipt/v1";
+const RECEIPT_VERSION = "cogs.stage4-offline-render-preparation-receipt/v2";
 const EXPECTED_CHART_INVENTORY_SHA256 = "c5a92117c4bf604a188393a4c3cce15fde287f35a0b7c0751fe5f1720b286321";
 const EXPECTED_VALUES_SHA256 = "e63a0fadebe16637cc97b21adeeb4ecf33efa8e76a1469e6008c7f7ed4fbb58f";
 const EXPECTED_RENDER_SHA256 = "614361336f5cbf87e4fd7b1a8a806fa5d08bbceb3c91b2b33a1710b4cfd73331";
 const RELEASE = "stage4";
 const NAMESPACE = "static-preparation";
+const SHA256 = /^[0-9a-f]{64}$/u;
 
+type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 type Inventory = {
   algorithm: "sha256-over-exact-file-bytes";
   chart: "cogs";
   entries: Array<{ path: string; sha256: string }>;
   version: "cogs.stage4-offline-chart-inventory/v1";
 };
-
-type RenderReceipt = {
-  version: typeof RECEIPT_VERSION;
-  authority: "trusted-local-static-render-preparation";
-  execution: "local-helm-template-only";
-  chart_inventory_sha256: string;
-  values_sha256: string;
-  helm_executable_sha256: string;
-  helm_version_sha256: string;
-  generator_source_sha256: string;
-  wrapper_source_sha256: string;
-  first_render_sha256: string;
-  repeated_render_sha256: string;
-  renders_byte_identical: true;
-  committed_render_match: true;
-  trusted_preparation_complete: true;
-  cloud_execution_observed: false;
-  kubernetes_execution_observed: false;
-  provider_execution_observed: false;
-};
-
-export type Stage4RenderPreparationResult = Readonly<{
-  receipt: Readonly<RenderReceipt>;
-  receiptBytes: Uint8Array;
-  render: Uint8Array;
-  repeatedRender: Uint8Array;
-}>;
-
-export type Stage4RenderPreparationPaths = Readonly<{
-  chartRoot: string;
-  chartInventory: string;
-  values: string;
-  committedRender: string;
-  committedRepeatedRender: string;
-  generatorSource: string;
+type AuthenticatedExecutor = Readonly<{
+  path: string;
+  fileFd: number;
+  directoryFd: number;
+  fileIdentity: Readonly<{
+    device: bigint;
+    inode: bigint;
+    size: bigint;
+    ctimeNs: bigint;
+    mtimeNs: bigint;
+    mode: bigint;
+  }>;
+  directoryIdentity: Readonly<{ device: bigint; inode: bigint; ctimeNs: bigint; mtimeNs: bigint; mode: bigint }>;
 }>;
 
 function fail(code: string): never {
   throw new Error(code);
 }
 
-function boundedBytes(path: string, maximum: number): Uint8Array {
-  const metadata = lstatSync(path);
-  if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size <= 0 || metadata.size > maximum) {
-    fail("STAGE4_RENDER_PREPARATION_BOUNDED_FILE_INVALID");
+function sha256(bytes: Uint8Array): string {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+function canonical(value: Json): Uint8Array {
+  function encode(item: Json): string {
+    if (Array.isArray(item)) return `[${item.map(encode).join(",")}]`;
+    if (item !== null && typeof item === "object") {
+      return `{${Object.entries(item)
+        .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+        .map(([key, child]) => `${JSON.stringify(key)}:${encode(child)}`)
+        .join(",")}}`;
+    }
+    const encoded = JSON.stringify(item);
+    if (encoded === undefined) fail("STAGE4_RENDER_PREPARATION_JSON_INVALID");
+    return encoded;
   }
-  const bytes = new Uint8Array(readFileSync(path));
-  if (bytes.byteLength !== metadata.size) fail("STAGE4_RENDER_PREPARATION_FILE_RACE");
-  return bytes;
+  return new TextEncoder().encode(`${encode(value)}\n`);
 }
 
 function byteEqual(left: Uint8Array, right: Uint8Array): boolean {
   if (left.byteLength !== right.byteLength) return false;
   for (let index = 0; index < left.byteLength; index += 1) if (left[index] !== right[index]) return false;
   return true;
+}
+
+function readDescriptor(
+  fd: number,
+  maximum: number,
+  code: string,
+): { bytes: Uint8Array; device: bigint; inode: bigint } {
+  const before = fstatSync(fd, { bigint: true });
+  if (!before.isFile() || before.size <= 0 || before.size > BigInt(maximum) || before.nlink < 1n) fail(code);
+  const bytes = new Uint8Array(readFileSync(fd));
+  const after = fstatSync(fd, { bigint: true });
+  if (
+    BigInt(bytes.byteLength) !== before.size ||
+    before.dev !== after.dev ||
+    before.ino !== after.ino ||
+    before.size !== after.size ||
+    before.mtimeNs !== after.mtimeNs ||
+    before.ctimeNs !== after.ctimeNs
+  )
+    fail("STAGE4_RENDER_PREPARATION_FILE_RACE");
+  return { bytes, device: before.dev, inode: before.ino };
+}
+
+function boundedBytes(path: string, maximum: number): Uint8Array {
+  const metadata = lstatSync(path, { bigint: true });
+  if (!metadata.isFile() || metadata.isSymbolicLink()) fail("STAGE4_RENDER_PREPARATION_BOUNDED_FILE_INVALID");
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const value = readDescriptor(fd, maximum, "STAGE4_RENDER_PREPARATION_BOUNDED_FILE_INVALID");
+    if (metadata.dev !== value.device || metadata.ino !== value.inode) fail("STAGE4_RENDER_PREPARATION_FILE_RACE");
+    return value.bytes;
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function writeExclusive(path: string, bytes: Uint8Array, mode: number): void {
+  const fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, mode);
+  try {
+    writeFileSync(fd, bytes);
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
 }
 
 function walk(directory: string): string[] {
@@ -123,198 +167,307 @@ function walk(directory: string): string[] {
   });
 }
 
-function authenticateInventory(chartRoot: string, inventoryPath: string): { bytes: Uint8Array; value: Inventory } {
-  const bytes = boundedBytes(inventoryPath, STAGE4_RENDER_PREPARATION_LIMITS.inventoryBytes);
+function authenticateInventory(
+  chartRoot: string,
+  inventoryPath: string,
+): { inventoryBytes: Uint8Array; files: Map<string, Uint8Array> } {
+  const inventoryBytes = boundedBytes(inventoryPath, STAGE4_RENDER_PREPARATION_LIMITS.inventoryBytes);
   let value: Inventory;
   try {
-    value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as Inventory;
+    value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(inventoryBytes)) as Inventory;
   } catch {
     fail("STAGE4_RENDER_PREPARATION_INVENTORY_INVALID");
   }
-  if (!byteEqual(bytes, canonicalStage4OfflineReadinessBytes(value as never))) {
+  if (!byteEqual(inventoryBytes, canonical(value as unknown as Json))) {
     fail("STAGE4_RENDER_PREPARATION_INVENTORY_NONCANONICAL");
   }
   if (
     value.version !== "cogs.stage4-offline-chart-inventory/v1" ||
     value.algorithm !== "sha256-over-exact-file-bytes" ||
     value.chart !== "cogs" ||
-    !Array.isArray(value.entries)
+    !Array.isArray(value.entries) ||
+    Reflect.ownKeys(value).length !== 4
   )
     fail("STAGE4_RENDER_PREPARATION_INVENTORY_INVALID");
   const paths = walk(chartRoot)
     .map((path) => relative(chartRoot, path))
     .sort();
   if (value.entries.length !== paths.length) fail("STAGE4_RENDER_PREPARATION_CHART_INVENTORY_DRIFT");
+  const files = new Map<string, Uint8Array>();
   for (const [index, path] of paths.entries()) {
     const row = value.entries[index];
+    const bytes = boundedBytes(join(chartRoot, path), STAGE4_RENDER_PREPARATION_LIMITS.chartFileBytes);
     if (
-      row?.path !== path ||
-      row.sha256 !== stage4OfflineReadinessSha256(boundedBytes(join(chartRoot, path), 512 * 1024))
-    ) {
+      row === undefined ||
+      Reflect.ownKeys(row).length !== 2 ||
+      row.path !== path ||
+      !SHA256.test(row.sha256) ||
+      row.sha256 !== sha256(bytes)
+    )
       fail("STAGE4_RENDER_PREPARATION_CHART_INVENTORY_DRIFT");
-    }
+    files.set(path, bytes);
   }
-  if (stage4OfflineReadinessSha256(bytes) !== EXPECTED_CHART_INVENTORY_SHA256) {
+  if (sha256(inventoryBytes) !== EXPECTED_CHART_INVENTORY_SHA256) {
     fail("STAGE4_RENDER_PREPARATION_CHART_INVENTORY_DRIFT");
   }
-  return { bytes, value };
+  return { inventoryBytes, files };
 }
 
-function authenticateHelm(): { executable: string; versionSha256: string } {
+function authenticateExecutionLayer(): { generatorSha256: string; nodeSha256: string } {
+  if (
+    process.execArgv.length !== 0 ||
+    process.version !== STAGE4_PINNED_NODE.version ||
+    process.platform !== STAGE4_PINNED_NODE.platform ||
+    process.arch !== STAGE4_PINNED_NODE.arch ||
+    realpathSync(process.execPath) !== STAGE4_PINNED_NODE.executable ||
+    realpathSync(process.argv[1] ?? "") !== realpathSync(import.meta.filename)
+  )
+    fail("STAGE4_RENDER_PREPARATION_EXECUTION_LAYER_INVALID");
+  const nodeBytes = boundedBytes(STAGE4_PINNED_NODE.executable, STAGE4_RENDER_PREPARATION_LIMITS.helmBytes);
+  if (sha256(nodeBytes) !== STAGE4_PINNED_NODE.sha256) fail("STAGE4_RENDER_PREPARATION_EXECUTION_LAYER_INVALID");
+  const generator = boundedBytes(import.meta.filename, STAGE4_RENDER_PREPARATION_LIMITS.generatorBytes);
+  return { generatorSha256: sha256(generator), nodeSha256: sha256(nodeBytes) };
+}
+
+function materializeAuthenticatedHelm(temporary: string): AuthenticatedExecutor {
   if (realpathSync(STAGE4_PINNED_HELM.executable) !== STAGE4_PINNED_HELM.realExecutable) {
     fail("STAGE4_RENDER_PREPARATION_HELM_PATH_DRIFT");
   }
-  const metadata = statSync(STAGE4_PINNED_HELM.realExecutable);
-  if (!metadata.isFile() || metadata.size <= 0 || metadata.size > STAGE4_RENDER_PREPARATION_LIMITS.helmBytes) {
-    fail("STAGE4_RENDER_PREPARATION_HELM_IDENTITY_INVALID");
-  }
-  const digest = stage4OfflineReadinessSha256(new Uint8Array(readFileSync(STAGE4_PINNED_HELM.realExecutable)));
-  if (digest !== STAGE4_PINNED_HELM.sha256) fail("STAGE4_RENDER_PREPARATION_HELM_IDENTITY_INVALID");
-  const version = spawnSync(STAGE4_PINNED_HELM.realExecutable, ["version", "--short"], {
+  const helmBytes = boundedBytes(STAGE4_PINNED_HELM.realExecutable, STAGE4_RENDER_PREPARATION_LIMITS.helmBytes);
+  if (sha256(helmBytes) !== STAGE4_PINNED_HELM.sha256) fail("STAGE4_RENDER_PREPARATION_HELM_IDENTITY_INVALID");
+  const directory = join(temporary, "authenticated-executor");
+  mkdirSync(directory, { mode: 0o700 });
+  const path = join(directory, "helm");
+  writeExclusive(path, helmBytes, 0o400);
+  chmodSync(path, 0o500);
+  const copy = boundedBytes(path, STAGE4_RENDER_PREPARATION_LIMITS.helmBytes);
+  if (sha256(copy) !== STAGE4_PINNED_HELM.sha256) fail("STAGE4_RENDER_PREPARATION_HELM_COPY_INVALID");
+  const fileFd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  const directoryFd = openSync(directory, constants.O_RDONLY | constants.O_NOFOLLOW);
+  const file = fstatSync(fileFd, { bigint: true });
+  const parent = fstatSync(directoryFd, { bigint: true });
+  return {
+    path,
+    fileFd,
+    directoryFd,
+    fileIdentity: {
+      device: file.dev,
+      inode: file.ino,
+      size: file.size,
+      ctimeNs: file.ctimeNs,
+      mtimeNs: file.mtimeNs,
+      mode: file.mode,
+    },
+    directoryIdentity: {
+      device: parent.dev,
+      inode: parent.ino,
+      ctimeNs: parent.ctimeNs,
+      mtimeNs: parent.mtimeNs,
+      mode: parent.mode,
+    },
+  };
+}
+
+function verifyExecutor(executor: AuthenticatedExecutor): void {
+  const file = fstatSync(executor.fileFd, { bigint: true });
+  const parent = fstatSync(executor.directoryFd, { bigint: true });
+  const path = lstatSync(executor.path, { bigint: true });
+  const expectedFile = executor.fileIdentity;
+  const expectedParent = executor.directoryIdentity;
+  if (
+    !file.isFile() ||
+    !path.isFile() ||
+    path.isSymbolicLink() ||
+    file.dev !== expectedFile.device ||
+    file.ino !== expectedFile.inode ||
+    file.size !== expectedFile.size ||
+    file.ctimeNs !== expectedFile.ctimeNs ||
+    file.mtimeNs !== expectedFile.mtimeNs ||
+    file.mode !== expectedFile.mode ||
+    file.nlink !== 1n ||
+    path.dev !== expectedFile.device ||
+    path.ino !== expectedFile.inode ||
+    parent.dev !== expectedParent.device ||
+    parent.ino !== expectedParent.inode ||
+    parent.ctimeNs !== expectedParent.ctimeNs ||
+    parent.mtimeNs !== expectedParent.mtimeNs ||
+    parent.mode !== expectedParent.mode
+  )
+    fail("STAGE4_RENDER_PREPARATION_HELM_COPY_INVALID");
+}
+
+function authenticateHelmVersion(executor: AuthenticatedExecutor, temporary: string): string {
+  verifyExecutor(executor);
+  const version = spawnSync(executor.path, ["version", "--short"], {
     encoding: "utf8",
-    env: { HOME: tmpdir(), PATH: "/usr/bin:/bin", HELM_DEBUG: "false" },
+    env: { HOME: temporary, PATH: "/usr/bin:/bin", HELM_DEBUG: "false" },
     timeout: 5_000,
     maxBuffer: STAGE4_RENDER_PREPARATION_LIMITS.versionBytes,
     shell: false,
   });
-  if (version.error !== undefined || version.status !== 0 || version.stderr !== "") {
+  if (version.error !== undefined || version.status !== 0 || version.signal !== null || version.stderr !== "") {
     fail("STAGE4_RENDER_PREPARATION_HELM_VERSION_FAILED");
   }
   const normalized = version.stdout.trim();
   if (normalized !== STAGE4_PINNED_HELM.version) fail("STAGE4_RENDER_PREPARATION_HELM_VERSION_DRIFT");
-  return {
-    executable: STAGE4_PINNED_HELM.realExecutable,
-    versionSha256: stage4OfflineReadinessSha256(new TextEncoder().encode(`${normalized}\n`)),
-  };
+  verifyExecutor(executor);
+  return sha256(new TextEncoder().encode(`${normalized}\n`));
+}
+
+function materializeInputs(
+  temporary: string,
+  files: Map<string, Uint8Array>,
+  values: Uint8Array,
+): { chart: string; values: string } {
+  const chart = join(temporary, "cogs");
+  mkdirSync(chart, { mode: 0o700 });
+  for (const [path, bytes] of files) {
+    const components = path.split("/");
+    const name = components.pop();
+    if (name === undefined || components.some((part) => part === "" || part === "." || part === "..")) {
+      fail("STAGE4_RENDER_PREPARATION_CHART_INVENTORY_DRIFT");
+    }
+    const parent = join(chart, ...components);
+    mkdirSync(parent, { recursive: true, mode: 0o700 });
+    writeExclusive(join(parent, name), bytes, 0o400);
+  }
+  writeExclusive(join(chart, "templates/notes-review.yaml"), new TextEncoder().encode(REVIEW_WRAPPER), 0o400);
+  const valuesPath = join(temporary, "authenticated-values.yaml");
+  writeExclusive(valuesPath, values, 0o400);
+  return { chart, values: valuesPath };
 }
 
 function extractPayload(stdout: string): Uint8Array {
-  const documents = yaml.parseAllDocuments(stdout);
-  if (documents.length !== 1 || documents[0]?.errors.length !== 0) fail("STAGE4_RENDER_PREPARATION_OUTPUT_INVALID");
-  const wrapper = documents[0]?.toJSON() as { metadata?: { name?: unknown }; data?: { payload?: unknown } } | undefined;
-  if (wrapper?.metadata?.name !== "cogs-notes-review-wrapper" || typeof wrapper.data?.payload !== "string") {
-    fail("STAGE4_RENDER_PREPARATION_OUTPUT_INVALID");
-  }
-  const bytes = new TextEncoder().encode(`${wrapper.data.payload.trim()}\n`);
-  if (bytes.byteLength === 0 || bytes.byteLength > STAGE4_RENDER_PREPARATION_LIMITS.renderBytes) {
+  if (Buffer.byteLength(stdout) > STAGE4_RENDER_PREPARATION_LIMITS.stdoutBytes) {
     fail("STAGE4_RENDER_PREPARATION_OUTPUT_BOUNDED_IO");
   }
-  return bytes;
+  const matches = [...stdout.matchAll(/^ {2}payload: "([A-Za-z0-9+/]*={0,2})"$/gmu)];
+  if (matches.length !== 1 || matches[0]?.[1] === undefined) fail("STAGE4_RENDER_PREPARATION_OUTPUT_INVALID");
+  const encoded = matches[0][1];
+  const payload = Buffer.from(encoded, "base64");
+  if (
+    payload.toString("base64") !== encoded ||
+    payload.byteLength === 0 ||
+    payload.byteLength > STAGE4_RENDER_PREPARATION_LIMITS.renderBytes
+  ) {
+    fail("STAGE4_RENDER_PREPARATION_OUTPUT_INVALID");
+  }
+  return new Uint8Array(payload.at(-1) === 0x0a ? payload : Buffer.concat([payload, Buffer.from("\n")]));
 }
 
-function renderOnce(chartRoot: string, valuesPath: string, helmExecutable: string): Uint8Array {
+function renderOnce(executor: AuthenticatedExecutor, chart: string, values: string, temporary: string): Uint8Array {
+  verifyExecutor(executor);
+  const helmHome = join(temporary, "helm-home");
+  const result = spawnSync(
+    executor.path,
+    ["template", RELEASE, chart, "--namespace", NAMESPACE, "--dry-run=client", "--hide-notes=false", "-f", values],
+    {
+      encoding: "utf8",
+      env: {
+        HOME: helmHome,
+        PATH: "/usr/bin:/bin",
+        HELM_CACHE_HOME: join(helmHome, "cache"),
+        HELM_CONFIG_HOME: join(helmHome, "config"),
+        HELM_DATA_HOME: join(helmHome, "data"),
+        HELM_DEBUG: "false",
+        KUBECONFIG: join(temporary, "absent-kubeconfig"),
+      },
+      timeout: STAGE4_RENDER_PREPARATION_LIMITS.processTimeoutMs,
+      maxBuffer: STAGE4_RENDER_PREPARATION_LIMITS.stdoutBytes + STAGE4_RENDER_PREPARATION_LIMITS.stderrBytes,
+      shell: false,
+    },
+  );
+  if (result.error !== undefined || result.status !== 0 || result.signal !== null || result.stderr !== "") {
+    fail("STAGE4_RENDER_PREPARATION_HELM_TEMPLATE_FAILED");
+  }
+  verifyExecutor(executor);
+  return extractPayload(result.stdout);
+}
+
+function run(): Uint8Array {
+  if (process.argv.length !== 2) fail("STAGE4_RENDER_PREPARATION_ARGUMENTS_FORBIDDEN");
+  const execution = authenticateExecutionLayer();
+  const root = resolve(import.meta.dirname, "..");
+  const artifactRoot = resolve(root, "docs/security-evidence/stage4-offline-readiness-artifacts");
+  const chart = authenticateInventory(resolve(root, "deploy/helm/cogs"), resolve(artifactRoot, "chart-inventory.json"));
+  const values = boundedBytes(
+    resolve(root, "test/fixtures/helm/stage4-notes-source-shapes-valid.yaml"),
+    STAGE4_RENDER_PREPARATION_LIMITS.valuesBytes,
+  );
+  if (sha256(values) !== EXPECTED_VALUES_SHA256) fail("STAGE4_RENDER_PREPARATION_VALUES_DRIFT");
+  const committed = boundedBytes(
+    resolve(artifactRoot, "notes-render.yaml"),
+    STAGE4_RENDER_PREPARATION_LIMITS.renderBytes,
+  );
+  const repeatedCommitted = boundedBytes(
+    resolve(artifactRoot, "notes-render-repeat.yaml"),
+    STAGE4_RENDER_PREPARATION_LIMITS.renderBytes,
+  );
+  if (sha256(committed) !== EXPECTED_RENDER_SHA256 || sha256(repeatedCommitted) !== EXPECTED_RENDER_SHA256) {
+    fail("STAGE4_RENDER_PREPARATION_COMMITTED_RENDER_MISMATCH");
+  }
+
   const temporary = mkdtempSync(join(tmpdir(), "cogs-stage4-render-preparation-"));
   try {
-    const chart = join(temporary, "cogs");
-    cpSync(chartRoot, chart, { recursive: true, dereference: false, errorOnExist: true });
-    writeFileSync(join(chart, "templates/notes-review.yaml"), REVIEW_WRAPPER, { mode: 0o600, flag: "wx" });
-    const helmHome = join(temporary, "helm-home");
-    const result = spawnSync(
-      helmExecutable,
-      [
-        "template",
-        RELEASE,
-        chart,
-        "--namespace",
-        NAMESPACE,
-        "--dry-run=client",
-        "--hide-notes=false",
-        "-f",
-        valuesPath,
-      ],
-      {
-        encoding: "utf8",
-        env: {
-          HOME: helmHome,
-          PATH: "/usr/bin:/bin",
-          HELM_CACHE_HOME: join(helmHome, "cache"),
-          HELM_CONFIG_HOME: join(helmHome, "config"),
-          HELM_DATA_HOME: join(helmHome, "data"),
-          HELM_DEBUG: "false",
-          KUBECONFIG: join(temporary, "absent-kubeconfig"),
-        },
-        timeout: STAGE4_RENDER_PREPARATION_LIMITS.processTimeoutMs,
-        maxBuffer: STAGE4_RENDER_PREPARATION_LIMITS.stdoutBytes + STAGE4_RENDER_PREPARATION_LIMITS.stderrBytes,
-        shell: false,
-      },
-    );
-    if (result.error !== undefined || result.status !== 0 || result.signal !== null || result.stderr !== "") {
-      fail("STAGE4_RENDER_PREPARATION_HELM_TEMPLATE_FAILED");
+    chmodSync(temporary, 0o700);
+    const executor = materializeAuthenticatedHelm(temporary);
+    try {
+      const inputs = materializeInputs(temporary, chart.files, values);
+      const helmVersionSha256 = authenticateHelmVersion(executor, temporary);
+      const first = renderOnce(executor, inputs.chart, inputs.values, temporary);
+      const repeated = renderOnce(executor, inputs.chart, inputs.values, temporary);
+      if (!byteEqual(first, repeated)) fail("STAGE4_RENDER_PREPARATION_NONDETERMINISTIC");
+      if (!byteEqual(first, committed) || !byteEqual(repeated, repeatedCommitted)) {
+        fail("STAGE4_RENDER_PREPARATION_COMMITTED_RENDER_MISMATCH");
+      }
+      const executionLayer = {
+        generator_source_sha256: execution.generatorSha256,
+        node_arch: STAGE4_PINNED_NODE.arch,
+        node_executable_sha256: execution.nodeSha256,
+        node_platform: STAGE4_PINNED_NODE.platform,
+        node_version: STAGE4_PINNED_NODE.version,
+        typescript_loader: "none-node-native-strip-types",
+      };
+      return canonical({
+        authority: "trusted-local-static-render-preparation",
+        chart_inventory_sha256: sha256(chart.inventoryBytes),
+        cloud_execution_observed: false,
+        committed_render_match: true,
+        execution: "pinned-node-native-typescript-authenticated-helm-copy",
+        execution_layer_sha256: sha256(canonical(executionLayer)),
+        first_render_sha256: sha256(first),
+        generator_source_sha256: execution.generatorSha256,
+        helm_executable_sha256: STAGE4_PINNED_HELM.sha256,
+        helm_execution_copy_sha256: STAGE4_PINNED_HELM.sha256,
+        helm_version_sha256: helmVersionSha256,
+        kubernetes_execution_observed: false,
+        node_arch: STAGE4_PINNED_NODE.arch,
+        node_executable_sha256: execution.nodeSha256,
+        node_platform: STAGE4_PINNED_NODE.platform,
+        node_version: STAGE4_PINNED_NODE.version,
+        provider_execution_observed: false,
+        renders_byte_identical: true,
+        repeated_render_sha256: sha256(repeated),
+        trusted_preparation_complete: true,
+        typescript_loader: "none-node-native-strip-types",
+        values_sha256: sha256(values),
+        version: RECEIPT_VERSION,
+        wrapper_source_sha256: sha256(new TextEncoder().encode(REVIEW_WRAPPER)),
+      });
+    } finally {
+      closeSync(executor.fileFd);
+      closeSync(executor.directoryFd);
     }
-    if (Buffer.byteLength(result.stdout) > STAGE4_RENDER_PREPARATION_LIMITS.stdoutBytes) {
-      fail("STAGE4_RENDER_PREPARATION_OUTPUT_BOUNDED_IO");
-    }
-    return extractPayload(result.stdout);
   } finally {
     rmSync(temporary, { recursive: true, force: true });
   }
 }
 
-export function prepareAndVerifyStage4OfflineRender(
-  paths: Stage4RenderPreparationPaths,
-): Stage4RenderPreparationResult {
-  const chartRoot = realpathSync(paths.chartRoot);
-  const inventory = authenticateInventory(chartRoot, paths.chartInventory);
-  const values = boundedBytes(paths.values, STAGE4_RENDER_PREPARATION_LIMITS.valuesBytes);
-  if (stage4OfflineReadinessSha256(values) !== EXPECTED_VALUES_SHA256) {
-    fail("STAGE4_RENDER_PREPARATION_VALUES_DRIFT");
-  }
-  const committed = boundedBytes(paths.committedRender, STAGE4_RENDER_PREPARATION_LIMITS.renderBytes);
-  const committedRepeated = boundedBytes(paths.committedRepeatedRender, STAGE4_RENDER_PREPARATION_LIMITS.renderBytes);
-  if (
-    stage4OfflineReadinessSha256(committed) !== EXPECTED_RENDER_SHA256 ||
-    stage4OfflineReadinessSha256(committedRepeated) !== EXPECTED_RENDER_SHA256
-  )
-    fail("STAGE4_RENDER_PREPARATION_COMMITTED_RENDER_MISMATCH");
-  const generator = boundedBytes(paths.generatorSource, 128 * 1024);
-  const helm = authenticateHelm();
-  const render = renderOnce(chartRoot, realpathSync(paths.values), helm.executable);
-  const repeatedRender = renderOnce(chartRoot, realpathSync(paths.values), helm.executable);
-  if (!byteEqual(render, repeatedRender)) fail("STAGE4_RENDER_PREPARATION_NONDETERMINISTIC");
-  if (!byteEqual(render, committed) || !byteEqual(repeatedRender, committedRepeated)) {
-    fail("STAGE4_RENDER_PREPARATION_COMMITTED_RENDER_MISMATCH");
-  }
-  const receipt: RenderReceipt = {
-    version: RECEIPT_VERSION,
-    authority: "trusted-local-static-render-preparation",
-    execution: "local-helm-template-only",
-    chart_inventory_sha256: stage4OfflineReadinessSha256(inventory.bytes),
-    values_sha256: stage4OfflineReadinessSha256(values),
-    helm_executable_sha256: STAGE4_PINNED_HELM.sha256,
-    helm_version_sha256: helm.versionSha256,
-    generator_source_sha256: stage4OfflineReadinessSha256(generator),
-    wrapper_source_sha256: stage4OfflineReadinessSha256(new TextEncoder().encode(REVIEW_WRAPPER)),
-    first_render_sha256: stage4OfflineReadinessSha256(render),
-    repeated_render_sha256: stage4OfflineReadinessSha256(repeatedRender),
-    renders_byte_identical: true,
-    committed_render_match: true,
-    trusted_preparation_complete: true,
-    cloud_execution_observed: false,
-    kubernetes_execution_observed: false,
-    provider_execution_observed: false,
-  };
-  const receiptBytes = canonicalStage4OfflineReadinessBytes(receipt as never);
-  return Object.freeze({ receipt: Object.freeze(receipt), receiptBytes, render, repeatedRender });
-}
-
-export function defaultStage4RenderPreparationPaths(root: string): Stage4RenderPreparationPaths {
-  return Object.freeze({
-    chartRoot: resolve(root, "deploy/helm/cogs"),
-    chartInventory: resolve(root, "docs/security-evidence/stage4-offline-readiness-artifacts/chart-inventory.json"),
-    values: resolve(root, "test/fixtures/helm/stage4-notes-source-shapes-valid.yaml"),
-    committedRender: resolve(root, "docs/security-evidence/stage4-offline-readiness-artifacts/notes-render.yaml"),
-    committedRepeatedRender: resolve(
-      root,
-      "docs/security-evidence/stage4-offline-readiness-artifacts/notes-render-repeat.yaml",
-    ),
-    generatorSource: resolve(root, "scripts/stage4-offline-render-preparation.ts"),
-  });
-}
-
 if (process.argv[1] !== undefined && realpathSync(process.argv[1]) === realpathSync(import.meta.filename)) {
-  if (process.argv.length !== 2) fail("STAGE4_RENDER_PREPARATION_ARGUMENTS_FORBIDDEN");
-  process.stdout.write(
-    prepareAndVerifyStage4OfflineRender(defaultStage4RenderPreparationPaths(resolve(import.meta.dirname, "..")))
-      .receiptBytes,
-  );
+  try {
+    process.stdout.write(run());
+  } catch (error) {
+    process.stderr.write(`${error instanceof Error ? error.message : "STAGE4_RENDER_PREPARATION_FAILED"}\n`);
+    process.exitCode = 1;
+  }
 }

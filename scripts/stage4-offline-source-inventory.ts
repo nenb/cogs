@@ -24,12 +24,13 @@ const EXACT_FILES = Object.freeze([
   "docs/operations/ci-schedule.md",
   "docs/operations/ownership.md",
   "docs/security-evidence/README.md",
+  "scripts/validate-schemas.ts",
 ]);
 const DIRECTORY_PREFIXES = Object.freeze(["deploy/helm/cogs/", "deploy/nic/"]);
 const PREFIX_PATTERNS = Object.freeze([
   /^docs\/operations\/stage-4-.*\.md$/u,
   /^docs\/test-reports\/stage-4-.*\.md$/u,
-  /^schemas\/stage4-.*\.json$/u,
+  /^schemas\/stage[45]-.*\.json$/u,
   /^scripts\/stage4-.*\.ts$/u,
   /^test\/stage4-.*\.test\.ts$/u,
   /^test\/helm-stage4-.*\.test\.ts$/u,

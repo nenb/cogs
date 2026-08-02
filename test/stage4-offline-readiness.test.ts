@@ -139,6 +139,10 @@ test("committed inventories are canonical, complete for their scopes, and bind e
   assert.ok(
     source.entries.some((entry: { path: string }) => entry.path === "test/stage4-storage-launch-contract.test.ts"),
   );
+  assert.ok(source.entries.some((entry: { path: string }) => entry.path === "scripts/validate-schemas.ts"));
+  assert.ok(
+    source.entries.some((entry: { path: string }) => entry.path === "scripts/stage4-offline-readiness-regenerate.ts"),
+  );
   assertEntries(source.entries);
 
   const walk = (directory: string): string[] =>
@@ -189,12 +193,16 @@ test("committed inventories are canonical, complete for their scopes, and bind e
     validation.source_bindings.map((entry: { path: string }) => entry.path),
     [
       "biome.json",
+      "docs/operations/stage-4-offline-readiness.md",
+      "docs/test-reports/stage-4-offline-readiness.md",
       "package.json",
       "schemas/stage4-offline-readiness-package-v1.json",
       "schemas/stage4-offline-readiness-verdict-v1.json",
+      "scripts/stage4-offline-readiness-regenerate.ts",
       "scripts/stage4-offline-readiness.ts",
       "scripts/stage4-offline-render-preparation.ts",
       "scripts/stage4-offline-source-inventory.ts",
+      "scripts/validate-schemas.ts",
       "test/stage4-offline-readiness.test.ts",
       "test/stage4-offline-render-preparation.test.ts",
       "test/stage4-schema-registry.test.ts",
@@ -271,7 +279,59 @@ test("binds every exact artifact and byte-identical repeated render", () => {
   changedPackage.artifact_bindings.binding_root_sha256 = stage4OfflineReadinessBindingRoot(changedPackage as never);
   assert.equal(
     classify(canonicalStage4OfflineReadinessBytes(changedPackage), changed).reason_code,
-    "STAGE4_READINESS_RENDER_NONDETERMINISTIC",
+    "STAGE4_READINESS_ARTIFACT_BINDING_MISMATCH",
+  );
+});
+
+test("opaque or semantically forged records fail even when package digests and root are rewritten", () => {
+  const digestFields: Record<string, string> = {
+    sourceInventory: "source_inventory_sha256",
+    renderReceipt: "render_preparation_receipt_sha256",
+    imageLock: "image_lock_sha256",
+    runtimePins: "runtime_pins_sha256",
+    schemaInventory: "schema_inventory_sha256",
+    localValidation: "local_validation_sha256",
+  };
+  for (const key of Object.keys(digestFields)) {
+    const changed = artifacts();
+    const artifact = changed[key];
+    const digestField = digestFields[key];
+    assert.ok(artifact);
+    assert.ok(digestField);
+    const original = JSON.parse(new TextDecoder().decode(artifact)) as Record<string, any>;
+    original.forged_but_canonical = true;
+    changed[key] = canonicalStage4OfflineReadinessBytes(original);
+    const forgedPackage = packageObject();
+    forgedPackage.artifact_bindings[digestField] = stage4OfflineReadinessSha256(changed[key]);
+    forgedPackage.artifact_bindings.binding_root_sha256 = stage4OfflineReadinessBindingRoot(forgedPackage as never);
+    const verdict = classify(canonicalStage4OfflineReadinessBytes(forgedPackage), changed);
+    assert.equal(verdict.local_preparation_complete, false, key);
+    assert.equal(verdict.reason_code, "STAGE4_READINESS_ARTIFACT_BINDING_MISMATCH", key);
+  }
+
+  const changed = artifacts();
+  const receipt = JSON.parse(new TextDecoder().decode(changed.renderReceipt)) as Record<string, any>;
+  receipt.first_render_sha256 = "f".repeat(64);
+  changed.renderReceipt = canonicalStage4OfflineReadinessBytes(receipt);
+  const local = JSON.parse(new TextDecoder().decode(changed.localValidation)) as Record<string, any>;
+  local.trusted_preparation_receipt_sha256 = stage4OfflineReadinessSha256(changed.renderReceipt);
+  changed.localValidation = canonicalStage4OfflineReadinessBytes(local);
+  const source = JSON.parse(new TextDecoder().decode(changed.sourceInventory)) as Record<string, any>;
+  source.entries.find(
+    (entry: { path: string }) =>
+      entry.path === "docs/security-evidence/stage4-offline-readiness-artifacts/render-preparation-receipt.json",
+  ).sha256 = stage4OfflineReadinessSha256(changed.renderReceipt);
+  changed.sourceInventory = canonicalStage4OfflineReadinessBytes(source);
+  const forgedPackage = packageObject();
+  forgedPackage.artifact_bindings.render_preparation_receipt_sha256 = stage4OfflineReadinessSha256(
+    changed.renderReceipt,
+  );
+  forgedPackage.artifact_bindings.local_validation_sha256 = stage4OfflineReadinessSha256(changed.localValidation);
+  forgedPackage.artifact_bindings.source_inventory_sha256 = stage4OfflineReadinessSha256(changed.sourceInventory);
+  forgedPackage.artifact_bindings.binding_root_sha256 = stage4OfflineReadinessBindingRoot(forgedPackage as never);
+  assert.equal(
+    classify(canonicalStage4OfflineReadinessBytes(forgedPackage), changed).reason_code,
+    "STAGE4_READINESS_ARTIFACT_BINDING_MISMATCH",
   );
 });
 
@@ -302,6 +362,11 @@ test("resource ceilings and service-specific inventory scopes form one exact clo
     value.campaign_proposal.resource_graph.classes.map((row: { resource_class: string }) => row.resource_class),
     value.stop_destroy.independent_inventory.scopes.map((row: { resource_class: string }) => row.resource_class),
   );
+  for (const row of value.stop_destroy.independent_inventory.scopes) {
+    assert.match(row.scope, /account/u, row.resource_class);
+    assert.match(row.scope, /service-wide/u, row.resource_class);
+    assert.doesNotMatch(row.scope, /approved|exact-campaign|enumerated-role|node-attachment/u, row.resource_class);
+  }
   for (const resourceClass of [
     "nat-gateway",
     "vpc-endpoint",
@@ -655,6 +720,23 @@ test("byte and aggregate bounds fail before hashing or authority classification"
   const empty = artifacts();
   empty.imageLock = new Uint8Array();
   assert.equal(classify(packageBytes(), empty).reason_code, "STAGE4_READINESS_BOUNDED_IO_VIOLATION");
+});
+
+test("committed regeneration procedure is local, bounded, and wired to native Node", () => {
+  const packageJson = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
+  assert.equal(packageJson.scripts["readiness:regenerate"], "node scripts/stage4-offline-readiness-regenerate.ts");
+  assert.equal(packageJson.scripts["readiness:render:check"], "node scripts/stage4-offline-render-preparation.ts");
+  const source = readFileSync(resolve(root, "scripts/stage4-offline-readiness-regenerate.ts"), "utf8");
+  for (const procedure of [
+    "regenerateReceipt",
+    "regenerateSchemaInventory",
+    "regenerateSourceAndLocalValidation",
+    "rewriteClassifierAnchors",
+    "regeneratePackage",
+  ])
+    assert.match(source, new RegExp(`function ${procedure}\\(`, "u"));
+  assert.match(source, /STAGE4_REGENERATE_IMMUTABLE_ARTIFACT_DRIFT/u);
+  assert.doesNotMatch(source, /@aws-sdk|kubectl|opentofu|terraform|external[- ]model/iu);
 });
 
 test("classifier source has no executable provider, filesystem, environment, or arbitrary diagnostic route", () => {
