@@ -66,12 +66,21 @@ type CampaignBindings = Readonly<{
   artifact_set_root_sha256: string;
 }>;
 
+type ArtifactRootInputs = Omit<CampaignBindings, "artifact_set_root_sha256">;
+
 export type Stage4CampaignPlan = Readonly<{
   version: "cogs.stage4-campaign-plan/v1";
   authority: "local-static-campaign-plan-model";
   campaign_issue: Stage4CampaignIssue;
+  campaign_id_sha256: string;
   execution_authorized: false;
-  attempt: Readonly<{ number: 1; maximum_attempts: 1; retry: "prohibited"; approval_state: "absent" }>;
+  attempt: Readonly<{
+    attempt_id_sha256: string;
+    number: 1;
+    maximum_attempts: 1;
+    retry: "prohibited";
+    approval_state: "absent";
+  }>;
   bindings: CampaignBindings;
   qualification_steps: readonly Readonly<{
     id: string;
@@ -102,6 +111,8 @@ export type Stage4CampaignEvidence = Readonly<{
   version: "cogs.stage4-campaign-evidence/v1";
   authority: "local-static-campaign-evidence-model";
   campaign_issue: Stage4CampaignIssue;
+  campaign_id_sha256: string;
+  attempt_id_sha256: string;
   execution_authorized: false;
   attempt_number: 1;
   retry_count: 0;
@@ -117,6 +128,8 @@ export type Stage4CampaignModelReason =
   | "STAGE4_CAMPAIGN_INDEPENDENT_INVENTORY_REQUIRED"
   | "STAGE4_CAMPAIGN_MODEL_ORDER_COMPLETE_BLOCKED"
   | "STAGE4_CAMPAIGN_INVALID_SHAPE"
+  | "STAGE4_CAMPAIGN_AUTHORITY_PROMOTION"
+  | "STAGE4_CAMPAIGN_IDENTITY_MISMATCH"
   | "STAGE4_CAMPAIGN_BINDING_MISMATCH"
   | "STAGE4_CAMPAIGN_INVALID_TRANSITION"
   | "STAGE4_CAMPAIGN_EVIDENCE_REPLAY"
@@ -125,6 +138,9 @@ export type Stage4CampaignModelReason =
 export type Stage4CampaignModelVerdict = Readonly<{
   version: "cogs.stage4-campaign-model-verdict/v1";
   authority: "local-static-campaign-state-classifier";
+  campaign_issue: Stage4CampaignIssue | null;
+  campaign_id_sha256: string | null;
+  attempt_id_sha256: string | null;
   plan_valid: boolean;
   evidence_valid: boolean;
   execution_authorized: false;
@@ -150,41 +166,91 @@ export type Stage4CampaignModelVerdict = Readonly<{
 
 type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 type JsonRecord = { [key: string]: JsonValue };
+const DIGEST = /^[0-9a-f]{64}$/u;
 const MAX_NODES = 4096;
 const MAX_DEPTH = 16;
+const MAX_ARRAY_ITEMS = 32;
+const MAX_PROPERTIES = 64;
+const MAX_STRING_BYTES = 512;
+const MAX_PROPERTY_KEY_BYTES = 128;
+const MAX_CANONICAL_BYTES = 128 * 1024;
+const ARTIFACT_ROOT_KEYS = Object.freeze([
+  "approval_draft_sha256",
+  "artifact_manifest_sha256",
+  "campaign_profile_sha256",
+  "offline_readiness_package_sha256",
+  "source_inventory_sha256",
+  "source_revision_sha256",
+] as const);
 
 function snapshotJson(input: unknown): JsonRecord | null {
   let nodes = 0;
+  let aggregateBytes = 0;
+  const consume = (bytes: number): void => {
+    aggregateBytes += bytes;
+    if (aggregateBytes > MAX_CANONICAL_BYTES) throw new TypeError("aggregate byte bound");
+  };
   const visit = (value: unknown, depth: number): JsonValue => {
     nodes += 1;
     if (nodes > MAX_NODES || depth > MAX_DEPTH) throw new TypeError("bounded shape exceeded");
     if (((typeof value === "object" && value !== null) || typeof value === "function") && types.isProxy(value)) {
       throw new TypeError("proxy rejected");
     }
-    if (value === null || typeof value === "boolean" || typeof value === "string") {
-      if (typeof value === "string" && Buffer.byteLength(value, "utf8") > 2048) throw new TypeError("string bound");
+    if (value === null) {
+      consume(4);
       return value;
     }
-    if (typeof value === "number" && Number.isSafeInteger(value)) return value;
+    if (typeof value === "boolean") {
+      consume(value ? 4 : 5);
+      return value;
+    }
+    if (typeof value === "string") {
+      const bytes = Buffer.byteLength(value, "utf8");
+      if (bytes > MAX_STRING_BYTES) throw new TypeError("string bound");
+      consume(Buffer.byteLength(JSON.stringify(value), "utf8"));
+      return value;
+    }
+    if (typeof value === "number" && Number.isSafeInteger(value)) {
+      consume(Buffer.byteLength(JSON.stringify(value), "utf8"));
+      return value;
+    }
     if (typeof value !== "object") throw new TypeError("non-JSON value");
+
     const prototype = Object.getPrototypeOf(value);
-    const descriptors = Object.getOwnPropertyDescriptors(value);
     const keys = Reflect.ownKeys(value);
     if (keys.some((key) => typeof key !== "string")) throw new TypeError("symbol key");
+    if (keys.length > MAX_PROPERTIES + 1) throw new TypeError("property count bound");
+    for (const key of keys as string[]) {
+      if (Buffer.byteLength(key, "utf8") > MAX_PROPERTY_KEY_BYTES) throw new TypeError("property key bound");
+    }
+
     if (Array.isArray(value)) {
-      if (prototype !== Array.prototype || value.length > 64) throw new TypeError("array bound");
-      const expected = [...Array.from({ length: value.length }, (_, index) => String(index)), "length"];
+      if (prototype !== Array.prototype) throw new TypeError("array prototype rejected");
+      const descriptors = Object.getOwnPropertyDescriptors(value) as Record<string, PropertyDescriptor | undefined>;
+      const lengthDescriptor = descriptors.length;
+      if (lengthDescriptor === undefined || !("value" in lengthDescriptor)) throw new TypeError("array length");
+      const length = lengthDescriptor.value;
+      if (!Number.isSafeInteger(length) || length < 0 || length > MAX_ARRAY_ITEMS) throw new TypeError("array bound");
+      const expected = [...Array.from({ length }, (_, index) => String(index)), "length"];
       if (keys.length !== expected.length || expected.some((key) => !keys.includes(key))) {
         throw new TypeError("sparse or extended array");
       }
-      return Array.from({ length: value.length }, (_, index) => {
+      consume(2 + Math.max(0, length - 1));
+      return Array.from({ length }, (_, index) => {
         const descriptor = descriptors[String(index)];
         if (!descriptor?.enumerable || !("value" in descriptor)) throw new TypeError("array accessor");
         return visit(descriptor.value, depth + 1);
       });
     }
-    if (prototype !== Object.prototype && prototype !== null) throw new TypeError("prototype rejected");
-    if (keys.length > 64) throw new TypeError("property bound");
+
+    if (prototype !== Object.prototype && prototype !== null) throw new TypeError("inherited properties rejected");
+    for (const key in value) {
+      if (!Object.hasOwn(value, key)) throw new TypeError("inherited enumerable property rejected");
+    }
+    if (keys.length > MAX_PROPERTIES) throw new TypeError("property count bound");
+    consume(2 + Math.max(0, keys.length - 1));
+    for (const key of keys as string[]) consume(Buffer.byteLength(JSON.stringify(key), "utf8") + 1);
+    const descriptors = Object.getOwnPropertyDescriptors(value);
     const output: JsonRecord = Object.create(null) as JsonRecord;
     for (const key of keys as string[]) {
       const descriptor = descriptors[key];
@@ -193,6 +259,7 @@ function snapshotJson(input: unknown): JsonRecord | null {
     }
     return output;
   };
+
   try {
     const value = visit(input, 0);
     return value !== null && typeof value === "object" && !Array.isArray(value) ? value : null;
@@ -230,26 +297,177 @@ function semanticDigest(domain: string, input: JsonValue): string {
     .digest("hex");
 }
 
-export function stage4CampaignArtifactSetRoot(bindings: Omit<CampaignBindings, "artifact_set_root_sha256">): string {
-  return semanticDigest("cogs.stage4/campaign-artifact-set/v1", bindings as unknown as JsonValue);
+function exactKeys(value: JsonRecord, expected: readonly string[]): boolean {
+  const actual = Object.keys(value).sort(compareCodePoints);
+  const wanted = [...expected].sort(compareCodePoints);
+  return actual.length === wanted.length && actual.every((key, index) => key === wanted[index]);
+}
+
+/** Hashes only a strict, safely snapshotted six-digest artifact binding. */
+export function stage4CampaignArtifactSetRoot(input: unknown): string | null {
+  const snapshot = snapshotJson(input);
+  if (
+    snapshot === null ||
+    !exactKeys(snapshot, ARTIFACT_ROOT_KEYS) ||
+    !ARTIFACT_ROOT_KEYS.every((key) => typeof snapshot[key] === "string" && DIGEST.test(snapshot[key]))
+  ) {
+    return null;
+  }
+  return semanticDigest("cogs.stage4/campaign-artifact-set/v1", snapshot);
+}
+
+export function stage4CampaignIdentitySha256(input: unknown): string | null {
+  const snapshot = snapshotJson(input);
+  if (
+    snapshot === null ||
+    !exactKeys(snapshot, ["artifact_set_root_sha256", "campaign_issue"]) ||
+    typeof snapshot.campaign_issue !== "string" ||
+    !(snapshot.campaign_issue in STAGE4_CAMPAIGN_QUALIFICATION_STEPS) ||
+    typeof snapshot.artifact_set_root_sha256 !== "string" ||
+    !DIGEST.test(snapshot.artifact_set_root_sha256)
+  ) {
+    return null;
+  }
+  return semanticDigest("cogs.stage4/campaign-identity/v1", snapshot);
+}
+
+export function stage4CampaignAttemptIdentitySha256(input: unknown): string | null {
+  const snapshot = snapshotJson(input);
+  if (
+    snapshot === null ||
+    !exactKeys(snapshot, ["approval_draft_sha256", "attempt_number", "campaign_id_sha256"]) ||
+    snapshot.attempt_number !== 1 ||
+    typeof snapshot.campaign_id_sha256 !== "string" ||
+    !DIGEST.test(snapshot.campaign_id_sha256) ||
+    typeof snapshot.approval_draft_sha256 !== "string" ||
+    !DIGEST.test(snapshot.approval_draft_sha256)
+  ) {
+    return null;
+  }
+  return semanticDigest("cogs.stage4/campaign-attempt-identity/v1", snapshot);
+}
+
+function planAuthorityPromoted(plan: JsonRecord): boolean {
+  const attempt = plan.attempt;
+  return (
+    plan.authority !== "local-static-campaign-plan-model" ||
+    plan.execution_authorized !== false ||
+    (attempt !== null &&
+      typeof attempt === "object" &&
+      !Array.isArray(attempt) &&
+      (attempt.number !== 1 ||
+        attempt.maximum_attempts !== 1 ||
+        attempt.retry !== "prohibited" ||
+        attempt.approval_state !== "absent"))
+  );
+}
+
+function evidenceAuthorityPromoted(evidence: JsonRecord): boolean {
+  return (
+    evidence.authority !== "local-static-campaign-evidence-model" ||
+    evidence.execution_authorized !== false ||
+    evidence.attempt_number !== 1 ||
+    evidence.retry_count !== 0
+  );
+}
+
+function planIdentityFailure(
+  plan: Stage4CampaignPlan,
+): "STAGE4_CAMPAIGN_BINDING_MISMATCH" | "STAGE4_CAMPAIGN_IDENTITY_MISMATCH" | null {
+  const rootInputs: ArtifactRootInputs = {
+    source_revision_sha256: plan.bindings.source_revision_sha256,
+    source_inventory_sha256: plan.bindings.source_inventory_sha256,
+    offline_readiness_package_sha256: plan.bindings.offline_readiness_package_sha256,
+    approval_draft_sha256: plan.bindings.approval_draft_sha256,
+    campaign_profile_sha256: plan.bindings.campaign_profile_sha256,
+    artifact_manifest_sha256: plan.bindings.artifact_manifest_sha256,
+  };
+  const artifactRoot = stage4CampaignArtifactSetRoot(rootInputs);
+  if (artifactRoot === null || artifactRoot !== plan.bindings.artifact_set_root_sha256) {
+    return "STAGE4_CAMPAIGN_BINDING_MISMATCH";
+  }
+  const campaignId = stage4CampaignIdentitySha256({
+    campaign_issue: plan.campaign_issue,
+    artifact_set_root_sha256: artifactRoot,
+  });
+  if (campaignId === null || campaignId !== plan.campaign_id_sha256) {
+    return "STAGE4_CAMPAIGN_IDENTITY_MISMATCH";
+  }
+  const attemptId = stage4CampaignAttemptIdentitySha256({
+    campaign_id_sha256: campaignId,
+    attempt_number: plan.attempt.number,
+    approval_draft_sha256: plan.bindings.approval_draft_sha256,
+  });
+  return attemptId === plan.attempt.attempt_id_sha256 ? null : "STAGE4_CAMPAIGN_IDENTITY_MISMATCH";
+}
+
+function exactPlanSteps(plan: Stage4CampaignPlan): boolean {
+  const expected = STAGE4_CAMPAIGN_QUALIFICATION_STEPS[plan.campaign_issue];
+  return (
+    plan.evidence_policy.max_events === expected.length + STAGE4_CAMPAIGN_TERMINAL_ORDER.length &&
+    plan.qualification_steps.length === expected.length &&
+    plan.qualification_steps.every((row, index) => row.id === expected[index])
+  );
 }
 
 export function stage4CampaignPlanSha256(input: unknown): string | null {
   const snapshot = snapshotJson(input);
-  return snapshot === null ? null : semanticDigest("cogs.stage4/campaign-plan/v1", snapshot);
+  if (
+    snapshot === null ||
+    snapshot.version !== "cogs.stage4-campaign-plan/v1" ||
+    planAuthorityPromoted(snapshot) ||
+    !validatePlan(snapshot) ||
+    planIdentityFailure(snapshot) !== null ||
+    !exactPlanSteps(snapshot)
+  ) {
+    return null;
+  }
+  return semanticDigest("cogs.stage4/campaign-plan/v1", snapshot as unknown as JsonValue);
 }
 
 export function stage4CampaignEvidenceSha256(input: unknown): string | null {
   const snapshot = snapshotJson(input);
-  return snapshot === null ? null : semanticDigest("cogs.stage4/campaign-evidence/v1", snapshot);
+  if (
+    snapshot === null ||
+    snapshot.version !== "cogs.stage4-campaign-evidence/v1" ||
+    evidenceAuthorityPromoted(snapshot) ||
+    !validateEvidence(snapshot)
+  ) {
+    return null;
+  }
+  return semanticDigest("cogs.stage4/campaign-evidence/v1", snapshot as unknown as JsonValue);
 }
 
-function makeVerdict(
+function rejected(reason: Stage4CampaignModelReason): Stage4CampaignModelVerdict {
+  return Object.freeze({
+    version: "cogs.stage4-campaign-model-verdict/v1",
+    authority: "local-static-campaign-state-classifier",
+    campaign_issue: null,
+    campaign_id_sha256: null,
+    attempt_id_sha256: null,
+    plan_valid: false,
+    evidence_valid: false,
+    execution_authorized: false,
+    campaign_execution_observed: false,
+    provider_truth_observed: false,
+    kubernetes_truth_observed: false,
+    cleanup_observed: false,
+    zero_inventory_claimed: false,
+    retry_authorized: false,
+    stage4_exit_satisfied: false,
+    plan_sha256: null,
+    evidence_sha256: null,
+    status: "preserve-uncertain",
+    next_phase: null,
+    reason_code: reason,
+  });
+}
+
+function accepted(
   reason: Stage4CampaignModelReason,
-  planValid: boolean,
-  evidenceValid: boolean,
-  planSha256: string | null,
-  evidenceSha256: string | null,
+  plan: Stage4CampaignPlan,
+  planSha256: string,
+  evidenceSha256: string,
   nextPhase: string | null,
 ): Stage4CampaignModelVerdict {
   const statuses: Partial<Record<Stage4CampaignModelReason, Stage4CampaignModelVerdict["status"]>> = {
@@ -262,8 +480,11 @@ function makeVerdict(
   return Object.freeze({
     version: "cogs.stage4-campaign-model-verdict/v1",
     authority: "local-static-campaign-state-classifier",
-    plan_valid: planValid,
-    evidence_valid: evidenceValid,
+    campaign_issue: plan.campaign_issue,
+    campaign_id_sha256: plan.campaign_id_sha256,
+    attempt_id_sha256: plan.attempt.attempt_id_sha256,
+    plan_valid: true,
+    evidence_valid: true,
     execution_authorized: false,
     campaign_execution_observed: false,
     provider_truth_observed: false,
@@ -274,7 +495,7 @@ function makeVerdict(
     stage4_exit_satisfied: false,
     plan_sha256: planSha256,
     evidence_sha256: evidenceSha256,
-    status: statuses[reason] ?? "preserve-uncertain",
+    status: reason === "STAGE4_CAMPAIGN_UNCERTAIN" ? "preserve-uncertain" : (statuses[reason] ?? "preserve-uncertain"),
     next_phase: nextPhase,
     reason_code: reason,
   });
@@ -285,55 +506,74 @@ function expectedProducer(phase: string): Stage4CampaignEvent["producer_class"] 
 }
 
 /**
- * Classifies a bounded plan and claimed-evidence sequence. The model has no
- * command, executor, callback, provider, Kubernetes, retry, or discovery surface.
+ * Classifies a bounded plan and claimed-evidence sequence. Authority and exact
+ * campaign/attempt identity are admitted before any semantic document digest.
+ * Rejected, replayed, mixed, or malformed evidence is never hashed into a verdict.
  */
 export function classifyStage4CampaignModel(planInput: unknown, evidenceInput: unknown): Stage4CampaignModelVerdict {
   const planSnapshot = snapshotJson(planInput);
-  const evidenceSnapshot = snapshotJson(evidenceInput);
-  if (planSnapshot === null || !validatePlan(planSnapshot)) {
-    return makeVerdict("STAGE4_CAMPAIGN_INVALID_SHAPE", false, false, null, null, null);
+  if (planSnapshot === null || planSnapshot.version !== "cogs.stage4-campaign-plan/v1") {
+    return rejected("STAGE4_CAMPAIGN_INVALID_SHAPE");
   }
+  if (planAuthorityPromoted(planSnapshot)) return rejected("STAGE4_CAMPAIGN_AUTHORITY_PROMOTION");
+  if (!validatePlan(planSnapshot)) return rejected("STAGE4_CAMPAIGN_INVALID_SHAPE");
   const plan = planSnapshot;
-  const planSha256 = stage4CampaignPlanSha256(plan);
-  if (planSha256 === null) return makeVerdict("STAGE4_CAMPAIGN_INVALID_SHAPE", false, false, null, null, null);
+  const identityFailure = planIdentityFailure(plan);
+  if (identityFailure !== null) return rejected(identityFailure);
+  if (!exactPlanSteps(plan)) return rejected("STAGE4_CAMPAIGN_INVALID_TRANSITION");
+  const planSha256 = semanticDigest("cogs.stage4/campaign-plan/v1", plan as unknown as JsonValue);
 
-  const { artifact_set_root_sha256: _root, ...rootInputs } = plan.bindings;
-  if (stage4CampaignArtifactSetRoot(rootInputs) !== plan.bindings.artifact_set_root_sha256) {
-    return makeVerdict("STAGE4_CAMPAIGN_BINDING_MISMATCH", false, false, planSha256, null, null);
+  const evidenceSnapshot = snapshotJson(evidenceInput);
+  if (evidenceSnapshot === null || evidenceSnapshot.version !== "cogs.stage4-campaign-evidence/v1") {
+    return rejected("STAGE4_CAMPAIGN_INVALID_SHAPE");
   }
-  if (evidenceSnapshot === null || !validateEvidence(evidenceSnapshot)) {
-    return makeVerdict("STAGE4_CAMPAIGN_INVALID_SHAPE", true, false, planSha256, null, null);
-  }
-  const evidence = evidenceSnapshot;
-  const evidenceSha256 = stage4CampaignEvidenceSha256(evidence);
+  if (evidenceAuthorityPromoted(evidenceSnapshot)) return rejected("STAGE4_CAMPAIGN_AUTHORITY_PROMOTION");
   if (
-    evidence.campaign_issue !== plan.campaign_issue ||
+    evidenceSnapshot.campaign_issue !== plan.campaign_issue ||
+    evidenceSnapshot.campaign_id_sha256 !== plan.campaign_id_sha256 ||
+    evidenceSnapshot.attempt_id_sha256 !== plan.attempt.attempt_id_sha256 ||
+    evidenceSnapshot.attempt_number !== plan.attempt.number
+  ) {
+    return rejected("STAGE4_CAMPAIGN_IDENTITY_MISMATCH");
+  }
+  if (!validateEvidence(evidenceSnapshot)) return rejected("STAGE4_CAMPAIGN_INVALID_SHAPE");
+  const evidence = evidenceSnapshot;
+  if (
     evidence.plan_sha256 !== planSha256 ||
     evidence.artifact_set_root_sha256 !== plan.bindings.artifact_set_root_sha256
   ) {
-    return makeVerdict("STAGE4_CAMPAIGN_BINDING_MISMATCH", true, false, planSha256, evidenceSha256, null);
+    return rejected("STAGE4_CAMPAIGN_BINDING_MISMATCH");
+  }
+  if (evidence.events.length > plan.evidence_policy.max_events) {
+    return rejected("STAGE4_CAMPAIGN_INVALID_TRANSITION");
   }
 
   const qualification = STAGE4_CAMPAIGN_QUALIFICATION_STEPS[plan.campaign_issue];
   let qualificationIndex = 0;
   let expectedPhase: string = qualification[0] as string;
-  let qualificationFailed = false;
+  const terminalSeen = new Set<string>();
   const digests = new Set<string>([
     planSha256,
-    plan.bindings.artifact_set_root_sha256,
+    plan.campaign_id_sha256,
+    plan.attempt.attempt_id_sha256,
     ...Object.values(plan.bindings),
   ]);
 
   for (const event of evidence.events) {
-    if (event.phase !== expectedPhase || event.producer_class !== expectedProducer(event.phase)) {
-      return makeVerdict("STAGE4_CAMPAIGN_INVALID_TRANSITION", true, false, planSha256, evidenceSha256, expectedPhase);
+    if (
+      expectedPhase === "complete" ||
+      event.phase !== expectedPhase ||
+      event.producer_class !== expectedProducer(event.phase)
+    ) {
+      return rejected("STAGE4_CAMPAIGN_INVALID_TRANSITION");
     }
-    const digest = event.evidence_sha256 ?? event.uncertainty_artifact_sha256;
-    if (digest === undefined || digests.has(digest)) {
-      return makeVerdict("STAGE4_CAMPAIGN_EVIDENCE_REPLAY", true, false, planSha256, evidenceSha256, expectedPhase);
+    if (STAGE4_CAMPAIGN_TERMINAL_ORDER.includes(event.phase as (typeof STAGE4_CAMPAIGN_TERMINAL_ORDER)[number])) {
+      if (terminalSeen.has(event.phase)) return rejected("STAGE4_CAMPAIGN_INVALID_TRANSITION");
+      terminalSeen.add(event.phase);
     }
-    digests.add(digest);
+    const eventDigest = event.evidence_sha256 ?? event.uncertainty_artifact_sha256;
+    if (eventDigest === undefined || digests.has(eventDigest)) return rejected("STAGE4_CAMPAIGN_EVIDENCE_REPLAY");
+    digests.add(eventDigest);
 
     if (event.outcome === "uncertain") {
       const requiredPhase = STAGE4_CAMPAIGN_TERMINAL_ORDER.includes(
@@ -341,32 +581,25 @@ export function classifyStage4CampaignModel(planInput: unknown, evidenceInput: u
       )
         ? expectedPhase
         : "stop";
-      return makeVerdict("STAGE4_CAMPAIGN_UNCERTAIN", true, true, planSha256, evidenceSha256, requiredPhase);
+      const evidenceSha256 = semanticDigest("cogs.stage4/campaign-evidence/v1", evidence as unknown as JsonValue);
+      return accepted("STAGE4_CAMPAIGN_UNCERTAIN", plan, planSha256, evidenceSha256, requiredPhase);
     }
     if (expectedPhase === "independent-inventory") {
-      if (event.outcome !== "claimed-satisfied") {
-        return makeVerdict("STAGE4_CAMPAIGN_UNCERTAIN", true, true, planSha256, evidenceSha256, expectedPhase);
-      }
+      if (event.outcome !== "claimed-satisfied") return rejected("STAGE4_CAMPAIGN_INVALID_TRANSITION");
       expectedPhase = "complete";
       continue;
     }
     if (expectedPhase === "destroy") {
-      if (event.outcome !== "claimed-satisfied") {
-        return makeVerdict("STAGE4_CAMPAIGN_UNCERTAIN", true, true, planSha256, evidenceSha256, expectedPhase);
-      }
+      if (event.outcome !== "claimed-satisfied") return rejected("STAGE4_CAMPAIGN_INVALID_TRANSITION");
       expectedPhase = "independent-inventory";
       continue;
     }
     if (expectedPhase === "stop") {
-      if (event.outcome !== "claimed-satisfied") {
-        return makeVerdict("STAGE4_CAMPAIGN_UNCERTAIN", true, true, planSha256, evidenceSha256, expectedPhase);
-      }
+      if (event.outcome !== "claimed-satisfied") return rejected("STAGE4_CAMPAIGN_INVALID_TRANSITION");
       expectedPhase = "destroy";
       continue;
     }
-
     if (event.outcome === "claimed-failed") {
-      qualificationFailed = true;
       expectedPhase = "stop";
       continue;
     }
@@ -374,33 +607,29 @@ export function classifyStage4CampaignModel(planInput: unknown, evidenceInput: u
     expectedPhase = qualification[qualificationIndex] ?? "stop";
   }
 
+  const evidenceSha256 = semanticDigest("cogs.stage4/campaign-evidence/v1", evidence as unknown as JsonValue);
   if (expectedPhase === "complete") {
-    return makeVerdict("STAGE4_CAMPAIGN_MODEL_ORDER_COMPLETE_BLOCKED", true, true, planSha256, evidenceSha256, null);
+    if (terminalSeen.size !== STAGE4_CAMPAIGN_TERMINAL_ORDER.length) {
+      return rejected("STAGE4_CAMPAIGN_INVALID_TRANSITION");
+    }
+    return accepted("STAGE4_CAMPAIGN_MODEL_ORDER_COMPLETE_BLOCKED", plan, planSha256, evidenceSha256, null);
   }
   if (expectedPhase === "stop") {
-    return makeVerdict("STAGE4_CAMPAIGN_STOP_REQUIRED", true, true, planSha256, evidenceSha256, "stop");
+    return accepted("STAGE4_CAMPAIGN_STOP_REQUIRED", plan, planSha256, evidenceSha256, "stop");
   }
   if (expectedPhase === "destroy") {
-    return makeVerdict("STAGE4_CAMPAIGN_DESTROY_REQUIRED", true, true, planSha256, evidenceSha256, "destroy");
+    return accepted("STAGE4_CAMPAIGN_DESTROY_REQUIRED", plan, planSha256, evidenceSha256, "destroy");
   }
   if (expectedPhase === "independent-inventory") {
-    return makeVerdict(
+    return accepted(
       "STAGE4_CAMPAIGN_INDEPENDENT_INVENTORY_REQUIRED",
-      true,
-      true,
+      plan,
       planSha256,
       evidenceSha256,
       "independent-inventory",
     );
   }
-  return makeVerdict(
-    qualificationFailed ? "STAGE4_CAMPAIGN_STOP_REQUIRED" : "STAGE4_CAMPAIGN_AWAITING_CLAIMED_EVIDENCE",
-    true,
-    true,
-    planSha256,
-    evidenceSha256,
-    expectedPhase,
-  );
+  return accepted("STAGE4_CAMPAIGN_AWAITING_CLAIMED_EVIDENCE", plan, planSha256, evidenceSha256, expectedPhase);
 }
 
 /** Appends exactly one metadata-only event when it matches the derived next phase. */
@@ -420,24 +649,11 @@ export function advanceStage4CampaignModel(
   }
   const evidence = snapshotJson(evidenceInput);
   const event = snapshotJson(eventInput);
-  if (
-    evidence === null ||
-    event === null ||
-    !validateEvidence({ ...evidence, events: [...(evidence.events as unknown[]), event] })
-  ) {
-    return null;
-  }
-  const candidate = {
-    ...evidence,
-    events: [...(evidence.events as unknown[]), event],
-  } as unknown as Stage4CampaignEvidence;
+  if (evidence === null || event === null || !Array.isArray(evidence.events)) return null;
+  const candidate = { ...evidence, events: [...evidence.events, event] };
+  if (!validateEvidence(candidate)) return null;
   const after = classifyStage4CampaignModel(planInput, candidate);
-  if (
-    after.reason_code === "STAGE4_CAMPAIGN_INVALID_TRANSITION" ||
-    after.reason_code === "STAGE4_CAMPAIGN_EVIDENCE_REPLAY"
-  ) {
-    return null;
-  }
+  if (!after.plan_valid || !after.evidence_valid) return null;
   return deepFreeze(structuredClone(candidate));
 }
 

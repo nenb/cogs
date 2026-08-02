@@ -9,6 +9,7 @@
     "version",
     "authority",
     "campaign_issue",
+    "campaign_id_sha256",
     "execution_authorized",
     "attempt",
     "bindings",
@@ -27,14 +28,20 @@
     "campaign_issue": {
       "enum": ["S4-08/#359", "S4-09/#360", "S4-10/#361"]
     },
+    "campaign_id_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
     "execution_authorized": {
       "const": false
     },
     "attempt": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["number", "maximum_attempts", "retry", "approval_state"],
+      "required": ["attempt_id_sha256", "number", "maximum_attempts", "retry", "approval_state"],
       "properties": {
+        "attempt_id_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
         "number": {
           "const": 1
         },

@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { resolve } from "node:path";
 import test from "node:test";
+import type { Ajv as AjvCore, Options, ValidateFunction } from "ajv";
 import {
   classifyStage4ExitReviewTemplate,
   STAGE4_EXIT_CRITERION_IDS,
@@ -14,6 +16,8 @@ type JsonObject = Record<string, unknown>;
 const fixture = (name: string): JsonObject =>
   JSON.parse(readFileSync(resolve(import.meta.dirname, `fixtures/stage4-campaign/${name}`), "utf8")) as JsonObject;
 const matrixFixture = (): JsonObject => fixture("s4-11-exit-matrix-template-v1.json");
+const require = createRequire(import.meta.url);
+const Ajv2020 = require("ajv/dist/2020.js") as new (options?: Options) => AjvCore;
 const reportFixture = (): JsonObject => fixture("s4-11-exit-report-template-v1.json");
 
 test("#362 matrix/report fixtures are strict, bound, unreviewed, and always exit false", () => {
@@ -106,6 +110,43 @@ test("#362 rejects matrix omissions, reordering, mixed binding, unreviewed excep
     assert.equal(result.reason_code, reason, name);
     assert.equal(result.stage4_exit_satisfied, false, name);
     assert.equal(result.release_eligible, false, name);
+  }
+});
+
+test("#362 verdict schema couples template validity, status, reason, and digests exactly", () => {
+  const schema = JSON.parse(
+    readFileSync(resolve(import.meta.dirname, "../schemas/stage4-exit-review-verdict-v1.json"), "utf8"),
+  ) as object;
+  const validate = new Ajv2020({ allErrors: true, strict: true, strictRequired: false, ownProperties: true }).compile(
+    schema,
+  ) as ValidateFunction;
+  const valid = classifyStage4ExitReviewTemplate(matrixFixture(), reportFixture());
+  assert.equal(validate(valid), true, JSON.stringify(validate.errors));
+  const mismatchReport = reportFixture();
+  mismatchReport.matrix_sha256 = "f".repeat(64);
+  const mismatch = classifyStage4ExitReviewTemplate(matrixFixture(), mismatchReport);
+  assert.equal(mismatch.matrix_sha256, stage4ExitMatrixSha256(matrixFixture()));
+  assert.equal(mismatch.report_sha256, null);
+  assert.equal(validate(mismatch), true, JSON.stringify(validate.errors));
+  const promotedReport = reportFixture();
+  (promotedReport.decision as JsonObject).stage4_exit_satisfied = true;
+  const promoted = classifyStage4ExitReviewTemplate(matrixFixture(), promotedReport);
+  assert.equal(promoted.matrix_sha256, null);
+  assert.equal(promoted.report_sha256, null);
+  assert.equal(validate(promoted), true, JSON.stringify(validate.errors));
+
+  for (const mutation of [
+    { ...valid, template_valid: false },
+    { ...valid, status: "reject" },
+    { ...valid, reason_code: "STAGE4_EXIT_TEMPLATE_INVALID" },
+    { ...valid, matrix_sha256: null },
+    { ...valid, report_sha256: null },
+    { ...mismatch, report_sha256: "a".repeat(64) },
+    { ...mismatch, reason_code: "STAGE4_EXIT_TEMPLATE_INVALID" },
+    { ...promoted, template_valid: true },
+    { ...promoted, matrix_sha256: "a".repeat(64) },
+  ]) {
+    assert.equal(validate(mutation), false);
   }
 });
 

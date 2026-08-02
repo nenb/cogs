@@ -178,13 +178,9 @@ export function classifyStage4ExitReviewTemplate(matrixInput: unknown, reportInp
   const matrix = snapshotJson(matrixInput);
   const report = snapshotJson(reportInput);
   if (matrix === null || report === null) return verdict("STAGE4_EXIT_TEMPLATE_INVALID", null, null);
-  const matrixSha256 = stage4ExitMatrixSha256(matrix);
-  const reportSha256 = stage4ExitReportSha256(report);
-  if (attemptedPromotion(matrix, report)) {
-    return verdict("STAGE4_EXIT_AUTHORITY_PROMOTION", matrixSha256, reportSha256);
-  }
+  if (attemptedPromotion(matrix, report)) return verdict("STAGE4_EXIT_AUTHORITY_PROMOTION", null, null);
   if (!validateMatrix(matrix) || !validateReport(report)) {
-    return verdict("STAGE4_EXIT_TEMPLATE_INVALID", matrixSha256, reportSha256);
+    return verdict("STAGE4_EXIT_TEMPLATE_INVALID", null, null);
   }
   const criteria = matrix.criteria as JsonRecord[];
   const rejections = report.rejection_checks as JsonRecord[];
@@ -192,10 +188,12 @@ export function classifyStage4ExitReviewTemplate(matrixInput: unknown, reportInp
     criteria.some((row, index) => row.id !== STAGE4_EXIT_CRITERION_IDS[index]) ||
     rejections.some((row, index) => row.id !== STAGE4_EXIT_REJECTION_IDS[index])
   ) {
-    return verdict("STAGE4_EXIT_TEMPLATE_INVALID", matrixSha256, reportSha256);
+    return verdict("STAGE4_EXIT_TEMPLATE_INVALID", null, null);
   }
+  const matrixSha256 = stage4ExitMatrixSha256(matrix);
+  if (matrixSha256 === null) return verdict("STAGE4_EXIT_TEMPLATE_INVALID", null, null);
   if (report.matrix_sha256 !== matrixSha256) {
-    return verdict("STAGE4_EXIT_MATRIX_BINDING_MISMATCH", matrixSha256, reportSha256);
+    return verdict("STAGE4_EXIT_MATRIX_BINDING_MISMATCH", matrixSha256, null);
   }
-  return verdict("STAGE4_EXIT_TEMPLATE_VALID_BLOCKED", matrixSha256, reportSha256);
+  return verdict("STAGE4_EXIT_TEMPLATE_VALID_BLOCKED", matrixSha256, stage4ExitReportSha256(report));
 }

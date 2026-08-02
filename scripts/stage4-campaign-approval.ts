@@ -150,8 +150,7 @@ function verdict(reason: Stage4CampaignApprovalReason, digest: string | null): S
 export function classifyStage4CampaignApprovalDraft(input: unknown): Stage4CampaignApprovalVerdict {
   const snapshot = snapshotJson(input);
   if (snapshot === null) return verdict("STAGE4_APPROVAL_DRAFT_INVALID_SHAPE", null);
-  const digest = stage4CampaignApprovalDraftSha256(snapshot);
-  if (attemptedPromotion(snapshot)) return verdict("STAGE4_APPROVAL_DRAFT_AUTHORITY_PROMOTION", digest);
-  if (!validateDraft(snapshot)) return verdict("STAGE4_APPROVAL_DRAFT_INVALID_SHAPE", digest);
-  return verdict("STAGE4_APPROVAL_DRAFT_VALID_BLOCKED", digest);
+  if (attemptedPromotion(snapshot)) return verdict("STAGE4_APPROVAL_DRAFT_AUTHORITY_PROMOTION", null);
+  if (!validateDraft(snapshot)) return verdict("STAGE4_APPROVAL_DRAFT_INVALID_SHAPE", null);
+  return verdict("STAGE4_APPROVAL_DRAFT_VALID_BLOCKED", stage4CampaignApprovalDraftSha256(snapshot));
 }

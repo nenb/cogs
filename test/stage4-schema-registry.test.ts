@@ -155,6 +155,9 @@ function campaignModelVerdictSample(): JsonObject {
   return {
     version: "cogs.stage4-campaign-model-verdict/v1",
     authority: "local-static-campaign-state-classifier",
+    campaign_issue: "S4-08/#359",
+    campaign_id_sha256: sha("c"),
+    attempt_id_sha256: sha("d"),
     plan_valid: true,
     evidence_valid: true,
     execution_authorized: false,

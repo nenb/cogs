@@ -36,17 +36,26 @@
       ]
     }
   },
-  "allOf": [
+  "oneOf": [
     {
-      "if": { "properties": { "status": { "const": "valid-unapproved-blocked-draft" } }, "required": ["status"] },
-      "then": {
-        "properties": {
-          "draft_valid": { "const": true },
-          "envelope_sha256": { "$ref": "#/$defs/sha256" },
-          "reason_code": { "const": "STAGE4_APPROVAL_DRAFT_VALID_BLOCKED" }
+      "type": "object",
+      "properties": {
+        "draft_valid": { "const": true },
+        "envelope_sha256": { "$ref": "#/$defs/sha256" },
+        "status": { "const": "valid-unapproved-blocked-draft" },
+        "reason_code": { "const": "STAGE4_APPROVAL_DRAFT_VALID_BLOCKED" }
+      }
+    },
+    {
+      "type": "object",
+      "properties": {
+        "draft_valid": { "const": false },
+        "envelope_sha256": { "type": "null" },
+        "status": { "const": "preserve-uncertain" },
+        "reason_code": {
+          "enum": ["STAGE4_APPROVAL_DRAFT_INVALID_SHAPE", "STAGE4_APPROVAL_DRAFT_AUTHORITY_PROMOTION"]
         }
-      },
-      "else": { "properties": { "draft_valid": { "const": false } } }
+      }
     }
   ],
   "$defs": { "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" } }

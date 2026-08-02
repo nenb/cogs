@@ -7,7 +7,8 @@
     "number": 1,
     "maximum_attempts": 1,
     "retry": "prohibited",
-    "approval_state": "absent"
+    "approval_state": "absent",
+    "attempt_id_sha256": "e424a4deefc3c171a14b04bc8177eeffe5666c968c66631c11413522485bc900"
   },
   "bindings": {
     "source_revision_sha256": "9999999999999999999999999999999999999999999999999999999999999999",
@@ -68,5 +69,6 @@
     "helm-install-apply",
     "external-model",
     "network-discovery"
-  ]
+  ],
+  "campaign_id_sha256": "18e3359d43bff7039eeab0b85fcf35f95af0da5ccdf44a333469f06584ba68d6"
 }

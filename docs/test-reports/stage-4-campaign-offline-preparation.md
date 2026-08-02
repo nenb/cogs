@@ -22,6 +22,10 @@ No AWS/provider API or CLI, OpenTofu init/plan/apply, SSM, EKS creation, Kuberne
 
 The classifiers inspect only caller-supplied bounded local objects. Digest references and claimed producer classes do not authenticate artifact contents, identity, execution, cleanup, independence, provider truth, or zero inventory.
 
+## Hostile-review correction
+
+The blocked offline model now closes terminal completion exactly once and rejects every later suffix, even below the event ceiling. Evidence phases are issue-specific closed enums, verdict next phases are closed enums, and standalone verdict schemas couple status/reason/digests/validity exactly. Domain-separated campaign and attempt identities are mandatory in plan, evidence, and accepted verdicts. Authority is checked first; identity/binding/transition/replay failures return no document digests. Artifact roots and campaign inputs are safely snapshotted with Proxy/accessor/inheritance/string/key/property/aggregate bounds before descriptor-value traversal. Focused hostile tests cover fabricated execution/provider-like phases, mixed identities, replay, retry, terminal reopening, contradictory verdicts, inherited properties, oversized keys/strings/property sets, getters, and Proxy traps.
+
 ## Remaining work
 
 #42 must first supply accepted repeated measurements, destruction reports, and final zero inventory. A fresh exact revision then needs revalidation and a different, separately reviewed one-attempt approval authority. #359–#361 each require fresh issue-specific approval and real evidence followed by destruction and independent zero inventory. Only afterward can #362 review one exact evidence revision with real dependency modes, local checks/scans, residual risks, and narrow region/type/runtime scope.

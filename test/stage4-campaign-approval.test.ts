@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { resolve } from "node:path";
 import test from "node:test";
+import type { Ajv as AjvCore, Options, ValidateFunction } from "ajv";
 import {
   classifyStage4CampaignApprovalDraft,
   stage4CampaignApprovalDraftSha256,
@@ -9,6 +11,8 @@ import {
 
 type JsonObject = Record<string, unknown>;
 const fixturePath = resolve(import.meta.dirname, "fixtures/stage4-campaign/approval-draft-blocked-v1.json");
+const require = createRequire(import.meta.url);
+const Ajv2020 = require("ajv/dist/2020.js") as new (options?: Options) => AjvCore;
 const fixture = (): JsonObject => JSON.parse(readFileSync(fixturePath, "utf8")) as JsonObject;
 
 test("#358 draft is exact, one-attempt, entirely unapproved, and non-authorizing", () => {
@@ -106,7 +110,33 @@ test("#358 rejects every isolated approval or authority promotion", () => {
     const result = classifyStage4CampaignApprovalDraft(value);
     assert.equal(result.draft_valid, false, name);
     assert.equal(result.execution_authorized, false, name);
+    assert.equal(result.envelope_sha256, null, name);
     assert.equal(result.reason_code, reason, name);
+  }
+});
+
+test("#358 verdict schema couples validity, status, reason, and digest exactly", () => {
+  const schema = JSON.parse(
+    readFileSync(resolve(import.meta.dirname, "../schemas/stage4-campaign-approval-verdict-v1.json"), "utf8"),
+  ) as object;
+  const validate = new Ajv2020({ allErrors: true, strict: true, strictRequired: false, ownProperties: true }).compile(
+    schema,
+  ) as ValidateFunction;
+  const valid = classifyStage4CampaignApprovalDraft(fixture());
+  assert.equal(validate(valid), true, JSON.stringify(validate.errors));
+  const invalid = classifyStage4CampaignApprovalDraft({ ...fixture(), execution_authorized: true });
+  assert.equal(validate(invalid), true, JSON.stringify(validate.errors));
+  for (const mutation of [
+    { ...valid, draft_valid: false },
+    { ...valid, status: "preserve-uncertain" },
+    { ...valid, reason_code: "STAGE4_APPROVAL_DRAFT_INVALID_SHAPE" },
+    { ...valid, envelope_sha256: null },
+    { ...invalid, draft_valid: true },
+    { ...invalid, status: "valid-unapproved-blocked-draft" },
+    { ...invalid, reason_code: "STAGE4_APPROVAL_DRAFT_VALID_BLOCKED" },
+    { ...invalid, envelope_sha256: "a".repeat(64) },
+  ]) {
+    assert.equal(validate(mutation), false);
   }
 });
 

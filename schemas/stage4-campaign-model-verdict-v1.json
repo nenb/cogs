@@ -7,6 +7,9 @@
   "required": [
     "version",
     "authority",
+    "campaign_issue",
+    "campaign_id_sha256",
+    "attempt_id_sha256",
     "plan_valid",
     "evidence_valid",
     "execution_authorized",
@@ -26,6 +29,9 @@
   "properties": {
     "version": { "const": "cogs.stage4-campaign-model-verdict/v1" },
     "authority": { "const": "local-static-campaign-state-classifier" },
+    "campaign_issue": { "oneOf": [{ "$ref": "#/$defs/campaignIssue" }, { "type": "null" }] },
+    "campaign_id_sha256": { "oneOf": [{ "$ref": "#/$defs/sha256" }, { "type": "null" }] },
+    "attempt_id_sha256": { "oneOf": [{ "$ref": "#/$defs/sha256" }, { "type": "null" }] },
     "plan_valid": { "type": "boolean" },
     "evidence_valid": { "type": "boolean" },
     "execution_authorized": { "const": false },
@@ -48,9 +54,7 @@
         "preserve-uncertain"
       ]
     },
-    "next_phase": {
-      "oneOf": [{ "type": "string", "minLength": 1, "maxLength": 96, "pattern": "^[a-z0-9.-]+$" }, { "type": "null" }]
-    },
+    "next_phase": { "oneOf": [{ "$ref": "#/$defs/phase" }, { "type": "null" }] },
     "reason_code": {
       "enum": [
         "STAGE4_CAMPAIGN_AWAITING_CLAIMED_EVIDENCE",
@@ -59,6 +63,8 @@
         "STAGE4_CAMPAIGN_INDEPENDENT_INVENTORY_REQUIRED",
         "STAGE4_CAMPAIGN_MODEL_ORDER_COMPLETE_BLOCKED",
         "STAGE4_CAMPAIGN_INVALID_SHAPE",
+        "STAGE4_CAMPAIGN_AUTHORITY_PROMOTION",
+        "STAGE4_CAMPAIGN_IDENTITY_MISMATCH",
         "STAGE4_CAMPAIGN_BINDING_MISMATCH",
         "STAGE4_CAMPAIGN_INVALID_TRANSITION",
         "STAGE4_CAMPAIGN_EVIDENCE_REPLAY",
@@ -66,5 +72,179 @@
       ]
     }
   },
-  "$defs": { "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" } }
+  "oneOf": [
+    { "$ref": "#/$defs/awaitingS408" },
+    { "$ref": "#/$defs/awaitingS409" },
+    { "$ref": "#/$defs/awaitingS410" },
+    {
+      "$ref": "#/$defs/accepted",
+      "type": "object",
+      "properties": {
+        "status": { "const": "stop-required" },
+        "next_phase": { "const": "stop" },
+        "reason_code": { "const": "STAGE4_CAMPAIGN_STOP_REQUIRED" }
+      }
+    },
+    {
+      "$ref": "#/$defs/accepted",
+      "type": "object",
+      "properties": {
+        "status": { "const": "destroy-required" },
+        "next_phase": { "const": "destroy" },
+        "reason_code": { "const": "STAGE4_CAMPAIGN_DESTROY_REQUIRED" }
+      }
+    },
+    {
+      "$ref": "#/$defs/accepted",
+      "type": "object",
+      "properties": {
+        "status": { "const": "independent-inventory-required" },
+        "next_phase": { "const": "independent-inventory" },
+        "reason_code": { "const": "STAGE4_CAMPAIGN_INDEPENDENT_INVENTORY_REQUIRED" }
+      }
+    },
+    {
+      "$ref": "#/$defs/accepted",
+      "type": "object",
+      "properties": {
+        "status": { "const": "model-order-complete-blocked" },
+        "next_phase": { "type": "null" },
+        "reason_code": { "const": "STAGE4_CAMPAIGN_MODEL_ORDER_COMPLETE_BLOCKED" }
+      }
+    },
+    {
+      "$ref": "#/$defs/accepted",
+      "type": "object",
+      "properties": {
+        "status": { "const": "preserve-uncertain" },
+        "next_phase": { "$ref": "#/$defs/terminalPhase" },
+        "reason_code": { "const": "STAGE4_CAMPAIGN_UNCERTAIN" }
+      }
+    },
+    {
+      "type": "object",
+      "properties": {
+        "campaign_issue": { "type": "null" },
+        "campaign_id_sha256": { "type": "null" },
+        "attempt_id_sha256": { "type": "null" },
+        "plan_valid": { "const": false },
+        "evidence_valid": { "const": false },
+        "plan_sha256": { "type": "null" },
+        "evidence_sha256": { "type": "null" },
+        "status": { "const": "preserve-uncertain" },
+        "next_phase": { "type": "null" },
+        "reason_code": {
+          "enum": [
+            "STAGE4_CAMPAIGN_INVALID_SHAPE",
+            "STAGE4_CAMPAIGN_AUTHORITY_PROMOTION",
+            "STAGE4_CAMPAIGN_IDENTITY_MISMATCH",
+            "STAGE4_CAMPAIGN_BINDING_MISMATCH",
+            "STAGE4_CAMPAIGN_INVALID_TRANSITION",
+            "STAGE4_CAMPAIGN_EVIDENCE_REPLAY"
+          ]
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "campaignIssue": { "enum": ["S4-08/#359", "S4-09/#360", "S4-10/#361"] },
+    "terminalPhase": { "enum": ["stop", "destroy", "independent-inventory"] },
+    "s408QualificationPhase": {
+      "enum": [
+        "topology.source-render-object-binding",
+        "topology.launch-template-nested-kvm",
+        "kata.active-kvm-distinct-guest-no-fallback",
+        "storage.ebs-workspace-session-lifecycle",
+        "storage.exclusive-writer-forced-loss",
+        "cleanup.runtime-and-object-behavior"
+      ]
+    },
+    "s409QualificationPhase": {
+      "enum": [
+        "guest-root.real-dependencies-admitted",
+        "guest-root.ipv4-ipv6-udp-quic-dns-denial",
+        "guest-root.api-metadata-admin-cross-session-storage-denial",
+        "guest-root.no-kubernetes-cloud-openbao-integration-model-or-ca-key-material",
+        "functional.stage3-kata-ebs-openbao-otlp",
+        "functional.api-key-samples-separately-authorized"
+      ]
+    },
+    "s410QualificationPhase": {
+      "enum": [
+        "performance.startup-p50-p95-p99",
+        "performance.first-tool",
+        "performance.storage-attach",
+        "performance.cold-pulls-and-scale",
+        "performance.idle-overhead",
+        "performance.git-and-build",
+        "performance.proxy-overhead",
+        "performance.recycle-duration",
+        "performance.startup-under-30s-or-reviewed-exception",
+        "recovery.worker-failure",
+        "recovery.sandbox-failure",
+        "recovery.proxy-failure",
+        "recovery.node-failure",
+        "recovery.openbao-failure",
+        "recovery.otlp-failure",
+        "recovery.storage-failure",
+        "recovery.audit-wal-failure",
+        "recovery.policy-failure",
+        "recovery.recycle-no-prompt-replay",
+        "cost.capacity-observed-no-support-extrapolation"
+      ]
+    },
+    "qualificationPhase": {
+      "oneOf": [
+        { "$ref": "#/$defs/s408QualificationPhase" },
+        { "$ref": "#/$defs/s409QualificationPhase" },
+        { "$ref": "#/$defs/s410QualificationPhase" }
+      ]
+    },
+    "phase": {
+      "oneOf": [{ "$ref": "#/$defs/qualificationPhase" }, { "$ref": "#/$defs/terminalPhase" }]
+    },
+    "accepted": {
+      "type": "object",
+      "properties": {
+        "campaign_issue": { "$ref": "#/$defs/campaignIssue" },
+        "campaign_id_sha256": { "$ref": "#/$defs/sha256" },
+        "attempt_id_sha256": { "$ref": "#/$defs/sha256" },
+        "plan_valid": { "const": true },
+        "evidence_valid": { "const": true },
+        "plan_sha256": { "$ref": "#/$defs/sha256" },
+        "evidence_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "awaitingS408": {
+      "$ref": "#/$defs/accepted",
+      "type": "object",
+      "properties": {
+        "campaign_issue": { "const": "S4-08/#359" },
+        "status": { "const": "awaiting-claimed-evidence" },
+        "next_phase": { "$ref": "#/$defs/s408QualificationPhase" },
+        "reason_code": { "const": "STAGE4_CAMPAIGN_AWAITING_CLAIMED_EVIDENCE" }
+      }
+    },
+    "awaitingS409": {
+      "$ref": "#/$defs/accepted",
+      "type": "object",
+      "properties": {
+        "campaign_issue": { "const": "S4-09/#360" },
+        "status": { "const": "awaiting-claimed-evidence" },
+        "next_phase": { "$ref": "#/$defs/s409QualificationPhase" },
+        "reason_code": { "const": "STAGE4_CAMPAIGN_AWAITING_CLAIMED_EVIDENCE" }
+      }
+    },
+    "awaitingS410": {
+      "$ref": "#/$defs/accepted",
+      "type": "object",
+      "properties": {
+        "campaign_issue": { "const": "S4-10/#361" },
+        "status": { "const": "awaiting-claimed-evidence" },
+        "next_phase": { "$ref": "#/$defs/s410QualificationPhase" },
+        "reason_code": { "const": "STAGE4_CAMPAIGN_AWAITING_CLAIMED_EVIDENCE" }
+      }
+    }
+  }
 }
