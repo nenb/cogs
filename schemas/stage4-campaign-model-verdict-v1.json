@@ -117,7 +117,9 @@
       "type": "object",
       "properties": {
         "status": { "const": "preserve-uncertain" },
-        "next_phase": { "$ref": "#/$defs/terminalPhase" },
+        "next_phase": {
+          "oneOf": [{ "$ref": "#/$defs/terminalPhase" }, { "type": "null" }]
+        },
         "reason_code": { "const": "STAGE4_CAMPAIGN_UNCERTAIN" }
       }
     },

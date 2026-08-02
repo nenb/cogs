@@ -552,6 +552,7 @@ export function classifyStage4CampaignModel(planInput: unknown, evidenceInput: u
   let qualificationIndex = 0;
   let expectedPhase: string = qualification[0] as string;
   const terminalSeen = new Set<string>();
+  let uncertaintySeen = false;
   const digests = new Set<string>([
     planSha256,
     plan.campaign_id_sha256,
@@ -575,28 +576,31 @@ export function classifyStage4CampaignModel(planInput: unknown, evidenceInput: u
     if (eventDigest === undefined || digests.has(eventDigest)) return rejected("STAGE4_CAMPAIGN_EVIDENCE_REPLAY");
     digests.add(eventDigest);
 
-    if (event.outcome === "uncertain") {
-      const requiredPhase = STAGE4_CAMPAIGN_TERMINAL_ORDER.includes(
-        expectedPhase as (typeof STAGE4_CAMPAIGN_TERMINAL_ORDER)[number],
-      )
-        ? expectedPhase
-        : "stop";
-      const evidenceSha256 = semanticDigest("cogs.stage4/campaign-evidence/v1", evidence as unknown as JsonValue);
-      return accepted("STAGE4_CAMPAIGN_UNCERTAIN", plan, planSha256, evidenceSha256, requiredPhase);
-    }
+    if (event.outcome === "uncertain") uncertaintySeen = true;
+
     if (expectedPhase === "independent-inventory") {
-      if (event.outcome !== "claimed-satisfied") return rejected("STAGE4_CAMPAIGN_INVALID_TRANSITION");
+      if (!uncertaintySeen && event.outcome !== "claimed-satisfied") {
+        return rejected("STAGE4_CAMPAIGN_INVALID_TRANSITION");
+      }
       expectedPhase = "complete";
       continue;
     }
     if (expectedPhase === "destroy") {
-      if (event.outcome !== "claimed-satisfied") return rejected("STAGE4_CAMPAIGN_INVALID_TRANSITION");
+      if (!uncertaintySeen && event.outcome !== "claimed-satisfied") {
+        return rejected("STAGE4_CAMPAIGN_INVALID_TRANSITION");
+      }
       expectedPhase = "independent-inventory";
       continue;
     }
     if (expectedPhase === "stop") {
-      if (event.outcome !== "claimed-satisfied") return rejected("STAGE4_CAMPAIGN_INVALID_TRANSITION");
+      if (!uncertaintySeen && event.outcome !== "claimed-satisfied") {
+        return rejected("STAGE4_CAMPAIGN_INVALID_TRANSITION");
+      }
       expectedPhase = "destroy";
+      continue;
+    }
+    if (uncertaintySeen) {
+      expectedPhase = "stop";
       continue;
     }
     if (event.outcome === "claimed-failed") {
@@ -608,6 +612,15 @@ export function classifyStage4CampaignModel(planInput: unknown, evidenceInput: u
   }
 
   const evidenceSha256 = semanticDigest("cogs.stage4/campaign-evidence/v1", evidence as unknown as JsonValue);
+  if (uncertaintySeen) {
+    return accepted(
+      "STAGE4_CAMPAIGN_UNCERTAIN",
+      plan,
+      planSha256,
+      evidenceSha256,
+      expectedPhase === "complete" ? null : expectedPhase,
+    );
+  }
   if (expectedPhase === "complete") {
     if (terminalSeen.size !== STAGE4_CAMPAIGN_TERMINAL_ORDER.length) {
       return rejected("STAGE4_CAMPAIGN_INVALID_TRANSITION");
@@ -639,12 +652,7 @@ export function advanceStage4CampaignModel(
   eventInput: unknown,
 ): Stage4CampaignEvidence | null {
   const before = classifyStage4CampaignModel(planInput, evidenceInput);
-  if (
-    !before.plan_valid ||
-    !before.evidence_valid ||
-    before.status === "preserve-uncertain" ||
-    before.next_phase === null
-  ) {
+  if (!before.plan_valid || !before.evidence_valid || before.next_phase === null) {
     return null;
   }
   const evidence = snapshotJson(evidenceInput);

@@ -174,18 +174,147 @@ test("a claimed qualification failure skips only to mandatory stop and never aut
   assert.equal(result.campaign_execution_observed, false);
 });
 
-test("uncertainty is sticky and directs qualification claims to stop without accepting later events", () => {
+test("uncertainty is sticky while exact best-effort cleanup remains representable", () => {
   const plan = fixture("s4-09-plan-blocked-v1.json") as unknown as Stage4CampaignPlan;
-  const evidence = fixture("s4-09-evidence-empty-v1.json") as unknown as Stage4CampaignEvidence;
-  const uncertain = {
-    ...evidence,
+  const empty = fixture("s4-09-evidence-empty-v1.json") as unknown as Stage4CampaignEvidence;
+  let evidence = {
+    ...empty,
     events: [event(requiredStep("S4-09/#360", 0), "uncertain", "uncertain")],
-  };
-  const result = classifyStage4CampaignModel(plan, uncertain);
+  } as Stage4CampaignEvidence;
+
+  let result = classifyStage4CampaignModel(plan, evidence);
   assert.equal(result.status, "preserve-uncertain");
   assert.equal(result.reason_code, "STAGE4_CAMPAIGN_UNCERTAIN");
   assert.equal(result.next_phase, "stop");
-  assert.equal(advanceStage4CampaignModel(plan, uncertain, event("stop", "after-uncertainty")), null);
+
+  evidence = advanceStage4CampaignModel(
+    plan,
+    evidence,
+    event("stop", "uncertain:stop-failed", "claimed-failed"),
+  ) as Stage4CampaignEvidence;
+  result = classifyStage4CampaignModel(plan, evidence);
+  assert.equal(result.status, "preserve-uncertain");
+  assert.equal(result.next_phase, "destroy");
+
+  evidence = advanceStage4CampaignModel(
+    plan,
+    evidence,
+    event("destroy", "uncertain:destroy", "uncertain"),
+  ) as Stage4CampaignEvidence;
+  result = classifyStage4CampaignModel(plan, evidence);
+  assert.equal(result.status, "preserve-uncertain");
+  assert.equal(result.next_phase, "independent-inventory");
+
+  evidence = advanceStage4CampaignModel(
+    plan,
+    evidence,
+    event("independent-inventory", "uncertain:inventory-failed", "claimed-failed"),
+  ) as Stage4CampaignEvidence;
+  result = classifyStage4CampaignModel(plan, evidence);
+  assert.equal(result.status, "preserve-uncertain");
+  assert.equal(result.reason_code, "STAGE4_CAMPAIGN_UNCERTAIN");
+  assert.equal(result.next_phase, null);
+  assert.equal(result.evidence_valid, true);
+  assert.equal(result.execution_authorized, false);
+  assert.equal(result.cleanup_observed, false);
+  assert.equal(result.zero_inventory_claimed, false);
+  assert.equal(result.retry_authorized, false);
+  assert.equal(result.stage4_exit_satisfied, false);
+  assert.equal(advanceStage4CampaignModel(plan, evidence, event("stop", "uncertain:retry")), null);
+});
+
+test("uncertainty in every terminal phase consumes that phase and requires only the remainder", () => {
+  const plan = fixture("s4-08-plan-blocked-v1.json") as unknown as Stage4CampaignPlan;
+  for (const [uncertainIndex, uncertainPhase] of STAGE4_CAMPAIGN_TERMINAL_ORDER.entries()) {
+    let evidence = fixture("s4-08-evidence-empty-v1.json") as unknown as Stage4CampaignEvidence;
+    evidence = advanceStage4CampaignModel(
+      plan,
+      evidence,
+      event(requiredStep("S4-08/#359", 0), `terminal-uncertain:${uncertainPhase}:failure`, "claimed-failed"),
+    ) as Stage4CampaignEvidence;
+    for (const phase of STAGE4_CAMPAIGN_TERMINAL_ORDER.slice(0, uncertainIndex)) {
+      evidence = advanceStage4CampaignModel(
+        plan,
+        evidence,
+        event(phase, `terminal-uncertain:${uncertainPhase}:before:${phase}`),
+      ) as Stage4CampaignEvidence;
+    }
+    evidence = {
+      ...evidence,
+      events: [
+        ...evidence.events,
+        event(uncertainPhase, `terminal-uncertain:${uncertainPhase}:uncertain`, "uncertain"),
+      ],
+    };
+
+    let result = classifyStage4CampaignModel(plan, evidence);
+    assert.equal(result.status, "preserve-uncertain", uncertainPhase);
+    assert.equal(result.reason_code, "STAGE4_CAMPAIGN_UNCERTAIN", uncertainPhase);
+    assert.equal(result.next_phase, STAGE4_CAMPAIGN_TERMINAL_ORDER[uncertainIndex + 1] ?? null, uncertainPhase);
+    for (const phase of STAGE4_CAMPAIGN_TERMINAL_ORDER.slice(uncertainIndex + 1)) {
+      evidence = advanceStage4CampaignModel(
+        plan,
+        evidence,
+        event(phase, `terminal-uncertain:${uncertainPhase}:after:${phase}`),
+      ) as Stage4CampaignEvidence;
+    }
+    result = classifyStage4CampaignModel(plan, evidence);
+    assert.equal(result.status, "preserve-uncertain", uncertainPhase);
+    assert.equal(result.next_phase, null, uncertainPhase);
+  }
+});
+
+test("the complete array after uncertainty rejects hostile order, duplicates, replay, completion, and retry tails", () => {
+  const plan = fixture("s4-09-plan-blocked-v1.json") as unknown as Stage4CampaignPlan;
+  const empty = fixture("s4-09-evidence-empty-v1.json") as unknown as Stage4CampaignEvidence;
+  const uncertain = event(requiredStep("S4-09/#360", 0), "hostile:uncertain", "uncertain");
+  const stop = event("stop", "hostile:stop");
+  const destroy = event("destroy", "hostile:destroy");
+  const inventory = event("independent-inventory", "hostile:inventory");
+  const uncertaintyDigest = uncertain.uncertainty_artifact_sha256;
+  const stopDigest = stop.evidence_sha256;
+  assert.ok(uncertaintyDigest);
+  assert.ok(stopDigest);
+  const assertRejectedTail = (events: readonly Stage4CampaignEvent[], reason: string): void => {
+    const result = classifyStage4CampaignModel(plan, { ...empty, events });
+    assert.equal(result.reason_code, reason);
+    assert.equal(result.plan_valid, false);
+    assert.equal(result.evidence_valid, false);
+    assert.equal(result.plan_sha256, null);
+    assert.equal(result.evidence_sha256, null);
+  };
+
+  assertRejectedTail([uncertain, destroy], "STAGE4_CAMPAIGN_INVALID_TRANSITION");
+  assertRejectedTail([uncertain, stop, stop], "STAGE4_CAMPAIGN_INVALID_TRANSITION");
+  assertRejectedTail(
+    [
+      uncertain,
+      {
+        ...stop,
+        evidence_sha256: uncertaintyDigest,
+      },
+    ],
+    "STAGE4_CAMPAIGN_EVIDENCE_REPLAY",
+  );
+  assertRejectedTail([uncertain, stop, { ...destroy, evidence_sha256: stopDigest }], "STAGE4_CAMPAIGN_EVIDENCE_REPLAY");
+  assertRejectedTail([uncertain, stop, destroy, inventory, stop], "STAGE4_CAMPAIGN_INVALID_TRANSITION");
+
+  const complete = classifyStage4CampaignModel(plan, {
+    ...empty,
+    events: [...([uncertain, stop, destroy, inventory] as const), event("complete", "hostile:complete")],
+  });
+  assert.equal(complete.reason_code, "STAGE4_CAMPAIGN_INVALID_SHAPE");
+  assert.equal(complete.evidence_valid, false);
+  assert.equal(complete.evidence_sha256, null);
+
+  const retry = classifyStage4CampaignModel(plan, {
+    ...empty,
+    retry_count: 1,
+    events: [uncertain, stop, destroy, inventory],
+  });
+  assert.equal(retry.reason_code, "STAGE4_CAMPAIGN_AUTHORITY_PROMOTION");
+  assert.equal(retry.evidence_valid, false);
+  assert.equal(retry.evidence_sha256, null);
 });
 
 test("campaign models reject mixed bindings, replay, retries, skips, and executor surfaces", () => {
@@ -288,6 +417,18 @@ test("standalone campaign evidence and verdict schemas reject fabricated phases,
     events: [event(requiredStep("S4-08/#359", 0), "schema:uncertain", "uncertain")],
   });
   assert.equal(validateVerdictSchema(uncertainVerdict), true, JSON.stringify(validateVerdictSchema.errors));
+  const completedUncertainVerdict = classifyStage4CampaignModel(plan, {
+    ...evidence,
+    events: [
+      event(requiredStep("S4-08/#359", 0), "schema:uncertain-complete", "uncertain"),
+      event("stop", "schema:uncertain-stop"),
+      event("destroy", "schema:uncertain-destroy"),
+      event("independent-inventory", "schema:uncertain-inventory"),
+    ],
+  });
+  assert.equal(completedUncertainVerdict.status, "preserve-uncertain");
+  assert.equal(completedUncertainVerdict.next_phase, null);
+  assert.equal(validateVerdictSchema(completedUncertainVerdict), true, JSON.stringify(validateVerdictSchema.errors));
 
   for (const phase of ["campaign.execute", "provider.apply", "complete", requiredStep("S4-09/#360", 0)]) {
     const mutation = { ...evidence, events: [event(phase, `schema:${phase}`)] };
