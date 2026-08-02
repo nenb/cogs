@@ -1,7 +1,18 @@
 /* biome-ignore-all lint/suspicious/noExplicitAny: hostile package mutations intentionally cross strict JSON types */
 import assert from "node:assert/strict";
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import {
+  linkSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 import test from "node:test";
 import type { Ajv as AjvCore, Options } from "ajv";
@@ -18,6 +29,7 @@ import {
 } from "../scripts/stage4-offline-readiness.ts";
 import {
   generateStage4SourceInventory,
+  readStage4SourceFile,
   STAGE4_SOURCE_INVENTORY_EXCLUSIONS,
 } from "../scripts/stage4-offline-source-inventory.ts";
 
@@ -133,6 +145,14 @@ test("committed inventories are canonical, complete for their scopes, and bind e
     STAGE4_SOURCE_INVENTORY_EXCLUSIONS,
   );
   assert.equal(source.scope, "complete-stage4-source-closure");
+  assert.deepEqual(source.repository_binding, {
+    git_executable_sha256: "7588ceab299393618d6f8861502ac0588d1594025f301d9a61a898215b5571d3",
+    git_index_path_set_sha256: source.repository_binding.git_index_path_set_sha256,
+    git_version: "git version 2.50.1 (Apple Git-155)",
+    regeneration_base_head: "c80b5eb8c6308b605c677e8c2b4154267fc147cf",
+    semantics: "exact-tracked-worktree-bytes-at-regeneration-dirty-tracked-files-allowed",
+  });
+  assert.match(source.repository_binding.git_index_path_set_sha256, /^[0-9a-f]{64}$/u);
   assert.ok(
     source.entries.some((entry: { path: string }) => entry.path === "scripts/stage4-storage-launch-contract.ts"),
   );
@@ -176,18 +196,40 @@ test("committed inventories are canonical, complete for their scopes, and bind e
   assertEntries(schemas.entries);
 
   const validation = readManifest("docs/security-evidence/stage4-offline-readiness-artifacts/local-validation.json");
-  assert.deepEqual(validation.checks, [
-    { id: "format", result: "pass-local-static" },
-    { id: "typecheck", result: "pass-local-static" },
-    { id: "unit-contracts", result: "pass-local-static" },
-    { id: "schema-registry", result: "pass-local-static" },
-    { id: "helm-lint", result: "pass-local-static" },
-    { id: "helm-zero-manifest", result: "pass-local-static" },
-    { id: "notes-render-repeat", result: "pass-local-static" },
-    { id: "trusted-render-preparation", result: "pass-local-static" },
-    { id: "complete-stage4-source-inventory", result: "pass-local-static" },
-    { id: "dependency-and-audit-policy", result: "pass-local-static" },
+  assert.deepEqual(
+    validation.checks.map((check: { id: string }) => check.id),
+    [
+      "readiness-format",
+      "repository-typecheck",
+      "stage4-unit-contracts",
+      "stage4-schema-registry",
+      "all-schema-contracts",
+      "trusted-helm-local-contracts",
+      "complete-stage4-source-inventory",
+      "dependency-lock-integrity",
+    ],
+  );
+  for (const check of validation.checks) {
+    assert.equal(check.result, "pass-exit-zero", check.id);
+    assert.equal(check.outcome.exit_code, 0, check.id);
+    assert.equal(check.outcome.signal, null, check.id);
+    assert.match(check.tool.executable_sha256, /^[0-9a-f]{64}$/u, check.id);
+    assert.ok(check.command.executable.startsWith("/"), check.id);
+    const { digest_sha256, ...outcome } = check.outcome;
+    assert.equal(digest_sha256, stage4OfflineReadinessSha256(canonicalStage4OfflineReadinessBytes(outcome)), check.id);
+  }
+  assert.deepEqual(validation.unexecuted, [
+    {
+      id: "current-npm-registry-audit",
+      reason: "external-network-operation-outside-local-offline-preparation-scope",
+      result: "not-run-not-claimed",
+    },
   ]);
+  assert.equal(validation.status, "passed-recorded-bounded-local-commands");
+  assert.equal(
+    validation.scope,
+    "only-the-eight-recorded-bounded-local-commands;no-current-registry-advisory-discovery",
+  );
   assert.deepEqual(validation.execution, { cloud: false, external_model: false, kubernetes: false, provider: false });
   assert.deepEqual(
     validation.source_bindings.map((entry: { path: string }) => entry.path),
@@ -195,10 +237,13 @@ test("committed inventories are canonical, complete for their scopes, and bind e
       "biome.json",
       "docs/operations/stage-4-offline-readiness.md",
       "docs/test-reports/stage-4-offline-readiness.md",
+      "package-lock.json",
       "package.json",
       "schemas/stage4-offline-readiness-package-v1.json",
       "schemas/stage4-offline-readiness-verdict-v1.json",
       "scripts/private-bytes.ts",
+      "scripts/check-lock-integrity.ts",
+      "scripts/check-npm-audit.ts",
       "scripts/stage4-offline-readiness-regenerate.ts",
       "scripts/stage4-offline-readiness.ts",
       "scripts/stage4-offline-render-preparation.ts",
@@ -207,6 +252,7 @@ test("committed inventories are canonical, complete for their scopes, and bind e
       "test/stage4-offline-readiness.test.ts",
       "test/stage4-offline-render-preparation.test.ts",
       "test/stage4-schema-registry.test.ts",
+      "tsconfig.json",
     ],
   );
   assertEntries(validation.source_bindings);
@@ -245,6 +291,31 @@ test("committed inventories are canonical, complete for their scopes, and bind e
   assert.equal(runtime.runtime.qemu.artifact_sha256, null);
   assert.equal(runtime.runtime.qemu.state, "artifact-identity-unresolved-blocking");
   assert.equal(runtime.exact_runtime_artifact_closure_satisfied, false);
+});
+
+test("source reads reject final and component symlinks, hard links, and oversize files", () => {
+  const temporary = mkdtempSync(join(tmpdir(), "cogs-stage4-source-hostile-"));
+  try {
+    const repository = join(temporary, "repository");
+    const outside = join(temporary, "outside");
+    mkdirSync(join(repository, "safe"), { recursive: true });
+    mkdirSync(outside);
+    writeFileSync(join(repository, "safe/source.ts"), "trusted\n");
+    writeFileSync(join(outside, "source.ts"), "hostile\n");
+    assert.equal(new TextDecoder().decode(readStage4SourceFile(repository, "safe/source.ts")), "trusted\n");
+
+    symlinkSync(join(outside, "source.ts"), join(repository, "final-link.ts"));
+    assert.throws(() => readStage4SourceFile(repository, "final-link.ts"), /STAGE4_SOURCE_INVENTORY_/u);
+    symlinkSync(outside, join(repository, "component-link"));
+    assert.throws(() => readStage4SourceFile(repository, "component-link/source.ts"), /STAGE4_SOURCE_INVENTORY_/u);
+
+    linkSync(join(repository, "safe/source.ts"), join(repository, "hard-link.ts"));
+    assert.throws(() => readStage4SourceFile(repository, "safe/source.ts"), /FILE_BOUND_INVALID/u);
+    writeFileSync(join(repository, "oversize.ts"), "too large");
+    assert.throws(() => readStage4SourceFile(repository, "oversize.ts", 2), /FILE_BOUND_INVALID/u);
+  } finally {
+    rmSync(temporary, { recursive: true, force: true });
+  }
 });
 
 test("binds every exact artifact and byte-identical repeated render", () => {
@@ -334,6 +405,32 @@ test("opaque or semantically forged records fail even when package digests and r
     classify(canonicalStage4OfflineReadinessBytes(forgedPackage), changed).reason_code,
     "STAGE4_READINESS_ARTIFACT_BINDING_MISMATCH",
   );
+});
+
+test("unsupported local pass labels and audit promotion cannot yield local completion", () => {
+  for (const mutate of [
+    (local: Record<string, any>) => {
+      local.checks[0] = { id: "readiness-format", result: "pass-exit-zero" };
+    },
+    (local: Record<string, any>) => {
+      local.checks[0].outcome.exit_code = 1;
+    },
+    (local: Record<string, any>) => {
+      local.unexecuted[0].result = "pass-exit-zero";
+    },
+  ]) {
+    const changed = artifacts();
+    const local = JSON.parse(new TextDecoder().decode(changed.localValidation)) as Record<string, any>;
+    mutate(local);
+    changed.localValidation = canonicalStage4OfflineReadinessBytes(local);
+    const forgedPackage = packageObject();
+    forgedPackage.artifact_bindings.local_validation_sha256 = stage4OfflineReadinessSha256(changed.localValidation);
+    forgedPackage.artifact_bindings.binding_root_sha256 = stage4OfflineReadinessBindingRoot(forgedPackage as never);
+    assert.equal(
+      classify(canonicalStage4OfflineReadinessBytes(forgedPackage), changed).local_preparation_complete,
+      false,
+    );
+  }
 });
 
 test("resource ceilings and service-specific inventory scopes form one exact closed world", () => {
@@ -822,7 +919,7 @@ test("classifier source has no executable provider, filesystem, environment, or 
     source,
     /from\s+["']node:(?:child_process|fs|http|https|net|dns|tls|os|worker_threads)["']|\bprocess\.(?:env|argv)|@aws-sdk|\b(?:kubectl|opentofu|terraform)\b|helm\s+(?:install|upgrade)|external[- ]model/iu,
   );
-  assert.doesNotMatch(source, /diagnostic|command|resource[_-]id|account[_-]id/iu);
+  assert.doesNotMatch(source, /diagnostic|resource[_-]id|account[_-]id|command[_-](?:input|output|route)/iu);
   const verdict = classify();
   assert.deepEqual(
     Object.keys(verdict).sort(),

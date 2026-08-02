@@ -54,7 +54,7 @@ metadata:
 data:
   payload: {{ include "cogs.stage4.notes.payload" . | b64enc | quote }}
 `;
-const RECEIPT_VERSION = "cogs.stage4-offline-render-preparation-receipt/v2";
+const RECEIPT_VERSION = "cogs.stage4-offline-render-preparation-receipt/v3";
 const EXPECTED_CHART_INVENTORY_SHA256 = "c5a92117c4bf604a188393a4c3cce15fde287f35a0b7c0751fe5f1720b286321";
 const EXPECTED_VALUES_SHA256 = "e63a0fadebe16637cc97b21adeeb4ecf33efa8e76a1469e6008c7f7ed4fbb58f";
 const EXPECTED_RENDER_SHA256 = "614361336f5cbf87e4fd7b1a8a806fa5d08bbceb3c91b2b33a1710b4cfd73331";
@@ -331,10 +331,75 @@ function materializeInputs(
     mkdirSync(parent, { recursive: true, mode: 0o700 });
     writeExclusive(join(parent, name), bytes, 0o400);
   }
-  writeExclusive(join(chart, "templates/notes-review.yaml"), new TextEncoder().encode(REVIEW_WRAPPER), 0o400);
   const valuesPath = join(temporary, "authenticated-values.yaml");
   writeExclusive(valuesPath, values, 0o400);
   return { chart, values: valuesPath };
+}
+
+function runHelm(
+  executor: AuthenticatedExecutor,
+  arguments_: readonly string[],
+  temporary: string,
+  code: string,
+): { stdout: string; stderr: string } {
+  verifyExecutor(executor);
+  const helmHome = join(temporary, "helm-home");
+  const result = spawnSync(executor.path, arguments_, {
+    encoding: "utf8",
+    env: {
+      HOME: helmHome,
+      PATH: "/usr/bin:/bin",
+      HELM_CACHE_HOME: join(helmHome, "cache"),
+      HELM_CONFIG_HOME: join(helmHome, "config"),
+      HELM_DATA_HOME: join(helmHome, "data"),
+      HELM_DEBUG: "false",
+      KUBECONFIG: join(temporary, "absent-kubeconfig"),
+    },
+    timeout: STAGE4_RENDER_PREPARATION_LIMITS.processTimeoutMs,
+    maxBuffer: STAGE4_RENDER_PREPARATION_LIMITS.stdoutBytes + STAGE4_RENDER_PREPARATION_LIMITS.stderrBytes,
+    shell: false,
+  });
+  if (result.error !== undefined || result.status !== 0 || result.signal !== null) fail(code);
+  if (
+    Buffer.byteLength(result.stdout) > STAGE4_RENDER_PREPARATION_LIMITS.stdoutBytes ||
+    Buffer.byteLength(result.stderr) > STAGE4_RENDER_PREPARATION_LIMITS.stderrBytes
+  ) {
+    fail("STAGE4_RENDER_PREPARATION_OUTPUT_BOUNDED_IO");
+  }
+  verifyExecutor(executor);
+  return { stdout: result.stdout, stderr: result.stderr };
+}
+
+function normalizedHelmOutputSha256(output: string, temporary: string): string {
+  return sha256(new TextEncoder().encode(output.split(temporary).join("<PRIVATE_TEMP>")));
+}
+
+function authenticateLocalHelmContracts(
+  executor: AuthenticatedExecutor,
+  chart: string,
+  values: string,
+  temporary: string,
+): { lintOutputSha256: string; zeroManifestOutputSha256: string } {
+  const lint = runHelm(
+    executor,
+    ["lint", chart, "--strict", "-f", values],
+    temporary,
+    "STAGE4_RENDER_PREPARATION_HELM_LINT_FAILED",
+  );
+  if (lint.stderr !== "" || !lint.stdout.includes("1 chart(s) linted, 0 chart(s) failed")) {
+    fail("STAGE4_RENDER_PREPARATION_HELM_LINT_FAILED");
+  }
+  const zero = runHelm(
+    executor,
+    ["template", RELEASE, chart, "--namespace", NAMESPACE, "--dry-run=client", "-f", values],
+    temporary,
+    "STAGE4_RENDER_PREPARATION_ZERO_MANIFEST_FAILED",
+  );
+  if (zero.stderr !== "" || zero.stdout.trim() !== "") fail("STAGE4_RENDER_PREPARATION_ZERO_MANIFEST_FAILED");
+  return {
+    lintOutputSha256: normalizedHelmOutputSha256(lint.stdout, temporary),
+    zeroManifestOutputSha256: sha256(new TextEncoder().encode(zero.stdout)),
+  };
 }
 
 function extractPayload(stdout: string): Uint8Array {
@@ -356,31 +421,13 @@ function extractPayload(stdout: string): Uint8Array {
 }
 
 function renderOnce(executor: AuthenticatedExecutor, chart: string, values: string, temporary: string): Uint8Array {
-  verifyExecutor(executor);
-  const helmHome = join(temporary, "helm-home");
-  const result = spawnSync(
-    executor.path,
+  const result = runHelm(
+    executor,
     ["template", RELEASE, chart, "--namespace", NAMESPACE, "--dry-run=client", "--hide-notes=false", "-f", values],
-    {
-      encoding: "utf8",
-      env: {
-        HOME: helmHome,
-        PATH: "/usr/bin:/bin",
-        HELM_CACHE_HOME: join(helmHome, "cache"),
-        HELM_CONFIG_HOME: join(helmHome, "config"),
-        HELM_DATA_HOME: join(helmHome, "data"),
-        HELM_DEBUG: "false",
-        KUBECONFIG: join(temporary, "absent-kubeconfig"),
-      },
-      timeout: STAGE4_RENDER_PREPARATION_LIMITS.processTimeoutMs,
-      maxBuffer: STAGE4_RENDER_PREPARATION_LIMITS.stdoutBytes + STAGE4_RENDER_PREPARATION_LIMITS.stderrBytes,
-      shell: false,
-    },
+    temporary,
+    "STAGE4_RENDER_PREPARATION_HELM_TEMPLATE_FAILED",
   );
-  if (result.error !== undefined || result.status !== 0 || result.signal !== null || result.stderr !== "") {
-    fail("STAGE4_RENDER_PREPARATION_HELM_TEMPLATE_FAILED");
-  }
-  verifyExecutor(executor);
+  if (result.stderr !== "") fail("STAGE4_RENDER_PREPARATION_HELM_TEMPLATE_FAILED");
   return extractPayload(result.stdout);
 }
 
@@ -414,6 +461,12 @@ function run(): Uint8Array {
     try {
       const inputs = materializeInputs(temporary, chart.files, values);
       const helmVersionSha256 = authenticateHelmVersion(executor, temporary);
+      const localContracts = authenticateLocalHelmContracts(executor, inputs.chart, inputs.values, temporary);
+      writeExclusive(
+        join(inputs.chart, "templates/notes-review.yaml"),
+        new TextEncoder().encode(REVIEW_WRAPPER),
+        0o400,
+      );
       const first = renderOnce(executor, inputs.chart, inputs.values, temporary);
       const repeated = renderOnce(executor, inputs.chart, inputs.values, temporary);
       if (!byteEqual(first, repeated)) fail("STAGE4_RENDER_PREPARATION_NONDETERMINISTIC");
@@ -439,6 +492,8 @@ function run(): Uint8Array {
         generator_source_sha256: execution.generatorSha256,
         helm_executable_sha256: STAGE4_PINNED_HELM.sha256,
         helm_execution_copy_sha256: STAGE4_PINNED_HELM.sha256,
+        helm_lint_output_sha256: localContracts.lintOutputSha256,
+        helm_lint_passed: true,
         helm_version_sha256: helmVersionSha256,
         kubernetes_execution_observed: false,
         node_arch: STAGE4_PINNED_NODE.arch,
@@ -453,6 +508,8 @@ function run(): Uint8Array {
         values_sha256: sha256(values),
         version: RECEIPT_VERSION,
         wrapper_source_sha256: sha256(new TextEncoder().encode(REVIEW_WRAPPER)),
+        zero_manifest_output_sha256: localContracts.zeroManifestOutputSha256,
+        zero_submitted_manifests: true,
       });
     } finally {
       closeSync(executor.fileFd);

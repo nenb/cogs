@@ -217,10 +217,10 @@ export const STAGE4_READINESS_EXPECTED_ARTIFACTS = Object.freeze({
   repeatedRender: "614361336f5cbf87e4fd7b1a8a806fa5d08bbceb3c91b2b33a1710b4cfd73331",
   runtimePins: "14fdacff04e1db62ec733e7696d104826c73aa87764406a5625d2a13265219f0",
   values: "e63a0fadebe16637cc97b21adeeb4ecf33efa8e76a1469e6008c7f7ed4fbb58f",
-  localValidationNormalized: "57044a7ae0c051a6dd8f0bc2910b2a26518f07aa7de40e598798d3992feec477",
-  renderReceipt: "cb48037b113e52fecc21529ecde0a4b5ff974fa241dc92a6f0e6c05e9e55b505",
-  schemaInventory: "b6892e2c67eb807477dfeb12a2bb9a8fd2a0b698ca7908086fec92b166fd60a0",
-  sourceInventoryNormalized: "2f94dd8a92f51b09489387cf83195df0f1a339233d83bb9c6a5dbd97306f814c",
+  localValidationNormalized: "9c7e926ef336ee60dc37fce1afea8b258d66edc3ac81607f2c517ea020aa7088",
+  renderReceipt: "2d6ab6995b6fc691ba4e6df84b8dd078ae724236efae483295fa57dffd825a44",
+  schemaInventory: "71ffec7c4a6e100665f77396e72b86e9460b2f2456049329a3799fde664a4ead",
+  sourceInventoryNormalized: "682dff9df1b0ee7cb9bc1a710a0e70a5e89c31ac510b6c1a74c75f58b6fa5d10",
 });
 /* stage4-readiness-anchor-end */
 
@@ -372,9 +372,31 @@ export function stage4NormalizedSourceInventorySha256(input: Uint8Array): string
 
 export function stage4NormalizedLocalValidationSha256(input: Uint8Array): string | null {
   const captured = capturePrivateBytes(input, STAGE4_READINESS_BYTE_LIMITS.localValidation);
-  return captured.bytes === null
-    ? null
-    : normalizedInventoryDigest(captured.bytes, "source_bindings", "scripts/stage4-offline-readiness.ts");
+  if (captured.bytes === null) return null;
+  const value = parseCanonicalArtifact(captured.bytes);
+  if (value === null || !Array.isArray(value.source_bindings) || !Array.isArray(value.checks)) return null;
+  let replacements = 0;
+  const normalizeBindings = (bindings: JsonValue): JsonValue => {
+    if (!Array.isArray(bindings)) return bindings;
+    return bindings.map((item) => {
+      const row = record(item);
+      if (row?.path !== "scripts/stage4-offline-readiness.ts") return item;
+      replacements += 1;
+      return { ...row, sha256: "0".repeat(64) } as JsonValue;
+    });
+  };
+  const checks = value.checks.map((item) => {
+    const check = record(item);
+    return check === null
+      ? item
+      : ({ ...check, source_bindings: normalizeBindings(check.source_bindings ?? null) } as JsonValue);
+  });
+  const normalized = {
+    ...value,
+    checks,
+    source_bindings: normalizeBindings(value.source_bindings),
+  };
+  return replacements >= 1 ? stage4OfflineReadinessSha256(canonicalStage4OfflineReadinessBytes(normalized)) : null;
 }
 
 function exactArtifactSemantics(value: ReadinessPackage, artifacts: ArtifactCopies): boolean {
@@ -431,6 +453,38 @@ function exactArtifactSemantics(value: ReadinessPackage, artifacts: ArtifactCopi
     return false;
 
   const generatorDigest = sourceEntries.get("scripts/stage4-offline-render-preparation.ts");
+  const expectedLocalChecks = [
+    "readiness-format",
+    "repository-typecheck",
+    "stage4-unit-contracts",
+    "stage4-schema-registry",
+    "all-schema-contracts",
+    "trusted-helm-local-contracts",
+    "complete-stage4-source-inventory",
+    "dependency-lock-integrity",
+  ];
+  const localChecks = local?.checks;
+  const localChecksPass =
+    Array.isArray(localChecks) &&
+    localChecks.length === expectedLocalChecks.length &&
+    localChecks.every((item, index) => {
+      const check = record(item);
+      const outcome = record(check?.outcome);
+      return (
+        check?.id === expectedLocalChecks[index] &&
+        check?.result === "pass-exit-zero" &&
+        outcome?.exit_code === 0 &&
+        outcome.signal === null &&
+        typeof outcome.digest_sha256 === "string" &&
+        /^[0-9a-f]{64}$/u.test(outcome.digest_sha256)
+      );
+    });
+  const unexecuted = local?.unexecuted;
+  const auditHonestlyUnexecuted =
+    Array.isArray(unexecuted) &&
+    unexecuted.length === 1 &&
+    record(unexecuted[0])?.id === "current-npm-registry-audit" &&
+    record(unexecuted[0])?.result === "not-run-not-claimed";
   const executionLayer = {
     generator_source_sha256: receipt?.generator_source_sha256 as JsonValue,
     node_arch: receipt?.node_arch as JsonValue,
@@ -444,10 +498,18 @@ function exactArtifactSemantics(value: ReadinessPackage, artifacts: ArtifactCopi
     receipt.values_sha256 !== stage4OfflineReadinessSha256(artifacts.values) ||
     receipt.first_render_sha256 !== stage4OfflineReadinessSha256(artifacts.render) ||
     receipt.repeated_render_sha256 !== stage4OfflineReadinessSha256(artifacts.repeatedRender) ||
+    !localChecksPass ||
+    !auditHonestlyUnexecuted ||
     receipt.generator_source_sha256 !== generatorDigest ||
     receipt.execution_layer_sha256 !==
       stage4OfflineReadinessSha256(canonicalStage4OfflineReadinessBytes(executionLayer)) ||
-    local?.trusted_preparation_receipt_sha256 !== stage4OfflineReadinessSha256(artifacts.renderReceipt)
+    receipt.helm_lint_passed !== true ||
+    !/^[0-9a-f]{64}$/u.test(String(receipt.helm_lint_output_sha256)) ||
+    receipt.zero_submitted_manifests !== true ||
+    receipt.zero_manifest_output_sha256 !== stage4OfflineReadinessSha256(new TextEncoder().encode("\n")) ||
+    local?.status !== "passed-recorded-bounded-local-commands" ||
+    local.scope !== "only-the-eight-recorded-bounded-local-commands;no-current-registry-advisory-discovery" ||
+    local.trusted_preparation_receipt_sha256 !== stage4OfflineReadinessSha256(artifacts.renderReceipt)
   )
     return false;
 

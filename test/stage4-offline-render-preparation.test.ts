@@ -63,6 +63,10 @@ test("trusted CLI binds pinned Node, source, immutable Helm copy, and two fresh 
   assert.equal(receipt.node_version, STAGE4_PINNED_NODE.version);
   assert.equal(receipt.helm_executable_sha256, STAGE4_PINNED_HELM.sha256);
   assert.equal(receipt.helm_execution_copy_sha256, STAGE4_PINNED_HELM.sha256);
+  assert.equal(receipt.helm_lint_passed, true);
+  assert.match(receipt.helm_lint_output_sha256, /^[0-9a-f]{64}$/u);
+  assert.equal(receipt.zero_submitted_manifests, true);
+  assert.equal(receipt.zero_manifest_output_sha256, stage4OfflineReadinessSha256(new TextEncoder().encode("\n")));
   assert.equal(receipt.generator_source_sha256, stage4OfflineReadinessSha256(new Uint8Array(readFileSync(generator))));
   assert.equal(receipt.trusted_preparation_complete, true);
   assert.equal(receipt.cloud_execution_observed, false);

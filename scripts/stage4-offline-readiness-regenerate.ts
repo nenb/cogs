@@ -1,7 +1,7 @@
 /* biome-ignore-all lint/suspicious/noExplicitAny: bounded canonical regeneration updates a strict prevalidated package */
 import { spawnSync } from "node:child_process";
 import { readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import {
   canonicalStage4OfflineReadinessBytes,
   STAGE4_INDEPENDENT_INVENTORY_SCOPES,
@@ -14,7 +14,7 @@ import {
   stage4OfflineReadinessSha256,
 } from "./stage4-offline-readiness.ts";
 import { STAGE4_PINNED_NODE } from "./stage4-offline-render-preparation.ts";
-import { generateStage4SourceInventory } from "./stage4-offline-source-inventory.ts";
+import { generateStage4SourceInventory, readStage4SourceFile } from "./stage4-offline-source-inventory.ts";
 
 const root = resolve(import.meta.dirname, "..");
 const artifactRoot = resolve(root, "docs/security-evidence/stage4-offline-readiness-artifacts");
@@ -24,17 +24,264 @@ const receiptPath = resolve(artifactRoot, "render-preparation-receipt.json");
 const sourceInventoryPath = resolve(artifactRoot, "source-inventory.json");
 const schemaInventoryPath = resolve(artifactRoot, "schema-inventory.json");
 const localValidationPath = resolve(artifactRoot, "local-validation.json");
-const read = (path: string): Uint8Array => new Uint8Array(readFileSync(resolve(root, path)));
+const MAXIMUM_COMMAND_OUTPUT_BYTES = 1024 * 1024;
+const read = (path: string): Uint8Array => readStage4SourceFile(root, path);
 const hash = (path: string): string => stage4OfflineReadinessSha256(read(path));
 
 type JsonObject = Record<string, any>;
+type CommandSpec = Readonly<{
+  id: string;
+  executable: string;
+  executableSha256: string;
+  tool: string;
+  toolVersion: string;
+  arguments: readonly string[];
+  timeoutMs: number;
+  sourcePaths: readonly string[];
+  toolComponents?: readonly Readonly<{ path: string; sha256: string }>[];
+  normalization: "none" | "stable-test-and-tool-timing" | "normalized-source-inventory-classifier-anchor";
+}>;
+
+const BIOME = Object.freeze({
+  executable: resolve(root, "node_modules/@biomejs/cli-darwin-arm64/biome"),
+  sha256: "610d3e1e770d373368d4ccee5a19c5e1735b0235024fcbed6ae07eb080d3bb09",
+  version: "2.5.3",
+});
+const NODE = Object.freeze({
+  executable: STAGE4_PINNED_NODE.executable,
+  sha256: STAGE4_PINNED_NODE.sha256,
+  version: STAGE4_PINNED_NODE.version,
+});
+const UNIT_TESTS = Object.freeze([
+  "test/stage4-campaign-approval.test.ts",
+  "test/stage4-campaign-model.test.ts",
+  "test/stage4-exit-review.test.ts",
+  "test/stage4-nic-sandbox-node-group.test.ts",
+  "test/stage4-policy-contract.test.ts",
+  "test/stage4-static-evidence.test.ts",
+  "test/stage4-storage-launch-contract.test.ts",
+  "test/stage4-teardown-verifier.test.ts",
+]);
+const FORMAT_PATHS = Object.freeze([
+  "scripts/stage4-offline-readiness-regenerate.ts",
+  "scripts/stage4-offline-readiness.ts",
+  "scripts/stage4-offline-render-preparation.ts",
+  "scripts/stage4-offline-source-inventory.ts",
+  "test/stage4-offline-readiness.test.ts",
+  "test/stage4-offline-render-preparation.test.ts",
+  "test/stage4-schema-registry.test.ts",
+]);
+const LOCAL_VALIDATION_PATHS = Object.freeze([
+  "biome.json",
+  "docs/operations/stage-4-offline-readiness.md",
+  "docs/test-reports/stage-4-offline-readiness.md",
+  "package-lock.json",
+  "package.json",
+  "schemas/stage4-offline-readiness-package-v1.json",
+  "schemas/stage4-offline-readiness-verdict-v1.json",
+  "scripts/private-bytes.ts",
+  "scripts/check-lock-integrity.ts",
+  "scripts/check-npm-audit.ts",
+  "scripts/stage4-offline-readiness-regenerate.ts",
+  "scripts/stage4-offline-readiness.ts",
+  "scripts/stage4-offline-render-preparation.ts",
+  "scripts/stage4-offline-source-inventory.ts",
+  "scripts/validate-schemas.ts",
+  "test/stage4-offline-readiness.test.ts",
+  "test/stage4-offline-render-preparation.test.ts",
+  "test/stage4-schema-registry.test.ts",
+  "tsconfig.json",
+]);
+
+function executableBytes(path: string): Uint8Array {
+  return readStage4SourceFile(dirname(path), basename(path), 128 * 1024 * 1024, false);
+}
+
+function verifyExecutable(spec: CommandSpec): void {
+  if (stage4OfflineReadinessSha256(executableBytes(spec.executable)) !== spec.executableSha256) {
+    throw new Error("STAGE4_REGENERATE_COMMAND_IDENTITY_INVALID");
+  }
+  for (const component of spec.toolComponents ?? []) {
+    if (stage4OfflineReadinessSha256(executableBytes(resolve(root, component.path))) !== component.sha256) {
+      throw new Error("STAGE4_REGENERATE_COMMAND_IDENTITY_INVALID");
+    }
+  }
+}
+
+function stableOutput(bytes: Uint8Array, normalization: CommandSpec["normalization"]): Uint8Array {
+  if (normalization === "none") return bytes;
+  if (normalization === "normalized-source-inventory-classifier-anchor") {
+    const value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as JsonObject;
+    const entry = value.entries?.find((row: JsonObject) => row.path === "scripts/stage4-offline-readiness.ts");
+    if (entry === undefined) throw new Error("STAGE4_REGENERATE_SOURCE_OUTPUT_INVALID");
+    entry.sha256 = "0".repeat(64);
+    return canonicalStage4OfflineReadinessBytes(value);
+  }
+  const text = new TextDecoder("utf-8", { fatal: true })
+    .decode(bytes)
+    .replace(/duration_ms: [0-9.]+/gu, "duration_ms: <ELAPSED>")
+    .replace(/# duration_ms [0-9.]+/gu, "# duration_ms <ELAPSED>")
+    .replace(/Checked ([0-9]+) files in [0-9.]+m?s\./gu, "Checked $1 files in <ELAPSED>.");
+  return new TextEncoder().encode(text);
+}
+
+function runCommand(spec: CommandSpec): JsonObject {
+  verifyExecutable(spec);
+  const sourceBindings = spec.sourcePaths.map((path) => ({ path, sha256: hash(path) }));
+  const result = spawnSync(spec.executable, spec.arguments, {
+    cwd: root,
+    encoding: null,
+    env: {
+      HOME: "/tmp",
+      LC_ALL: "C",
+      NO_COLOR: "1",
+      PATH: "/usr/bin:/bin",
+      TZ: "UTC",
+    },
+    maxBuffer: MAXIMUM_COMMAND_OUTPUT_BYTES,
+    timeout: spec.timeoutMs,
+    shell: false,
+  });
+  verifyExecutable(spec);
+  const sourceBindingsAfter = spec.sourcePaths.map((path) => ({ path, sha256: hash(path) }));
+  if (JSON.stringify(sourceBindingsAfter) !== JSON.stringify(sourceBindings)) {
+    throw new Error(`STAGE4_REGENERATE_COMMAND_SOURCE_RACE:${spec.id}`);
+  }
+  if (result.error !== undefined || result.status !== 0 || result.signal !== null) {
+    throw new Error(`STAGE4_REGENERATE_LOCAL_COMMAND_FAILED:${spec.id}`);
+  }
+  const stdout = stableOutput(new Uint8Array(result.stdout), spec.normalization);
+  const stderr = stableOutput(
+    new Uint8Array(result.stderr),
+    spec.normalization === "normalized-source-inventory-classifier-anchor" ? "none" : spec.normalization,
+  );
+  const outcome = {
+    exit_code: result.status,
+    signal: result.signal,
+    stderr_bytes: stderr.byteLength,
+    stderr_sha256: stage4OfflineReadinessSha256(stderr),
+    stdout_bytes: stdout.byteLength,
+    stdout_sha256: stage4OfflineReadinessSha256(stdout),
+  };
+  return {
+    command: { arguments: [...spec.arguments], executable: spec.executable },
+    id: spec.id,
+    normalization: spec.normalization,
+    outcome: {
+      ...outcome,
+      digest_sha256: stage4OfflineReadinessSha256(canonicalStage4OfflineReadinessBytes(outcome)),
+    },
+    result: "pass-exit-zero",
+    source_bindings: sourceBindings,
+    tool: {
+      components: (spec.toolComponents ?? []).map((component) => ({ ...component })),
+      executable_sha256: spec.executableSha256,
+      name: spec.tool,
+      version: spec.toolVersion,
+    },
+  };
+}
+
+function nodeCommand(
+  id: string,
+  arguments_: readonly string[],
+  sourcePaths: readonly string[],
+  normalization: CommandSpec["normalization"] = "stable-test-and-tool-timing",
+  timeoutMs = 60_000,
+  toolComponents?: CommandSpec["toolComponents"],
+): CommandSpec {
+  return {
+    id,
+    executable: NODE.executable,
+    executableSha256: NODE.sha256,
+    tool: "node",
+    toolVersion: NODE.version,
+    arguments: arguments_,
+    timeoutMs,
+    sourcePaths,
+    ...(toolComponents === undefined ? {} : { toolComponents }),
+    normalization,
+  };
+}
+
+function commandSpecs(): readonly CommandSpec[] {
+  return [
+    {
+      id: "readiness-format",
+      executable: BIOME.executable,
+      executableSha256: BIOME.sha256,
+      tool: "biome",
+      toolVersion: BIOME.version,
+      arguments: ["check", ...FORMAT_PATHS],
+      timeoutMs: 30_000,
+      sourcePaths: ["biome.json", ...FORMAT_PATHS],
+      normalization: "stable-test-and-tool-timing",
+    },
+    nodeCommand(
+      "repository-typecheck",
+      ["node_modules/typescript/bin/tsc", "--noEmit"],
+      ["tsconfig.json", "package.json", "package-lock.json"],
+      "stable-test-and-tool-timing",
+      60_000,
+      [
+        {
+          path: "node_modules/typescript/bin/tsc",
+          sha256: "8d5fa5bd883fec0979fc2004f1fe1d99aef40570155d550eadc0b03b55513bf0",
+        },
+        {
+          path: "node_modules/typescript/lib/tsc.js",
+          sha256: "2cffde0b8c6760dfb0b5b0382bbb7e00ba6a8b2d981b9205b256a700a481d983",
+        },
+        {
+          path: "node_modules/typescript/lib/_tsc.js",
+          sha256: "e8f349eabd48486bdb2bf9dc1a00c89d58297270c54b745838879e2859194419",
+        },
+      ],
+    ),
+    nodeCommand(
+      "stage4-unit-contracts",
+      ["--test", "--test-concurrency=1", ...UNIT_TESTS],
+      UNIT_TESTS,
+      "stable-test-and-tool-timing",
+      90_000,
+    ),
+    nodeCommand(
+      "stage4-schema-registry",
+      ["--test", "--test-concurrency=1", "test/stage4-schema-registry.test.ts"],
+      [
+        "test/stage4-schema-registry.test.ts",
+        "schemas/stage4-offline-readiness-package-v1.json",
+        "schemas/stage4-offline-readiness-verdict-v1.json",
+      ],
+    ),
+    nodeCommand("all-schema-contracts", ["scripts/validate-schemas.ts"], ["scripts/validate-schemas.ts"]),
+    nodeCommand(
+      "trusted-helm-local-contracts",
+      ["scripts/stage4-offline-render-preparation.ts"],
+      ["scripts/stage4-offline-render-preparation.ts"],
+      "none",
+    ),
+    nodeCommand(
+      "complete-stage4-source-inventory",
+      ["scripts/stage4-offline-source-inventory.ts"],
+      ["scripts/stage4-offline-source-inventory.ts"],
+      "normalized-source-inventory-classifier-anchor",
+    ),
+    nodeCommand(
+      "dependency-lock-integrity",
+      ["scripts/check-lock-integrity.ts"],
+      ["scripts/check-lock-integrity.ts", "package-lock.json"],
+      "none",
+    ),
+  ];
+}
 
 function regenerateReceipt(): void {
   const generator = resolve(root, "scripts/stage4-offline-render-preparation.ts");
   const result = spawnSync(STAGE4_PINNED_NODE.executable, [generator], {
     cwd: root,
     encoding: null,
-    env: { HOME: "/tmp", PATH: "/usr/bin:/bin" },
+    env: { HOME: "/tmp", LC_ALL: "C", PATH: "/usr/bin:/bin", TZ: "UTC" },
     maxBuffer: 1024 * 1024,
     timeout: 30_000,
     shell: false,
@@ -61,46 +308,34 @@ function regenerateSchemaInventory(): void {
   );
 }
 
-const LOCAL_VALIDATION_PATHS = Object.freeze([
-  "biome.json",
-  "docs/operations/stage-4-offline-readiness.md",
-  "docs/test-reports/stage-4-offline-readiness.md",
-  "package.json",
-  "schemas/stage4-offline-readiness-package-v1.json",
-  "schemas/stage4-offline-readiness-verdict-v1.json",
-  "scripts/private-bytes.ts",
-  "scripts/stage4-offline-readiness-regenerate.ts",
-  "scripts/stage4-offline-readiness.ts",
-  "scripts/stage4-offline-render-preparation.ts",
-  "scripts/stage4-offline-source-inventory.ts",
-  "scripts/validate-schemas.ts",
-  "test/stage4-offline-readiness.test.ts",
-  "test/stage4-offline-render-preparation.test.ts",
-  "test/stage4-schema-registry.test.ts",
-]);
-
 function regenerateSourceAndLocalValidation(): void {
   writeFileSync(sourceInventoryPath, generateStage4SourceInventory(root));
+  const checks = commandSpecs().map(runCommand);
+  const receipt = JSON.parse(readFileSync(receiptPath, "utf8")) as JsonObject;
+  if (
+    receipt.helm_lint_passed !== true ||
+    receipt.zero_submitted_manifests !== true ||
+    receipt.renders_byte_identical !== true
+  ) {
+    throw new Error("STAGE4_REGENERATE_HELM_PROCEDURES_UNPROVEN");
+  }
   writeFileSync(
     localValidationPath,
     canonicalStage4OfflineReadinessBytes({
-      checks: [
-        { id: "format", result: "pass-local-static" },
-        { id: "typecheck", result: "pass-local-static" },
-        { id: "unit-contracts", result: "pass-local-static" },
-        { id: "schema-registry", result: "pass-local-static" },
-        { id: "helm-lint", result: "pass-local-static" },
-        { id: "helm-zero-manifest", result: "pass-local-static" },
-        { id: "notes-render-repeat", result: "pass-local-static" },
-        { id: "trusted-render-preparation", result: "pass-local-static" },
-        { id: "complete-stage4-source-inventory", result: "pass-local-static" },
-        { id: "dependency-and-audit-policy", result: "pass-local-static" },
-      ],
+      checks,
       execution: { cloud: false, external_model: false, kubernetes: false, provider: false },
+      scope: "only-the-eight-recorded-bounded-local-commands;no-current-registry-advisory-discovery",
       source_bindings: LOCAL_VALIDATION_PATHS.map((path) => ({ path, sha256: hash(path) })),
-      status: "passed-structural-and-local-contract-checks",
+      status: "passed-recorded-bounded-local-commands",
       trusted_preparation_receipt_sha256: stage4OfflineReadinessSha256(new Uint8Array(readFileSync(receiptPath))),
-      version: "cogs.stage4-offline-local-validation/v3",
+      unexecuted: [
+        {
+          id: "current-npm-registry-audit",
+          reason: "external-network-operation-outside-local-offline-preparation-scope",
+          result: "not-run-not-claimed",
+        },
+      ],
+      version: "cogs.stage4-offline-local-validation/v4",
     }),
   );
 }
@@ -179,5 +414,13 @@ regenerateReceipt();
 regenerateSchemaInventory();
 regenerateSourceAndLocalValidation();
 rewriteClassifierAnchors();
+const expectedLocalNormalized = stage4NormalizedLocalValidationSha256(
+  new Uint8Array(readFileSync(localValidationPath)),
+);
 regenerateSourceAndLocalValidation();
+if (
+  stage4NormalizedLocalValidationSha256(new Uint8Array(readFileSync(localValidationPath))) !== expectedLocalNormalized
+) {
+  throw new Error("STAGE4_REGENERATE_NONIDEMPOTENT_VALIDATION");
+}
 regeneratePackage();

@@ -160,7 +160,7 @@
       ],
       "properties": {
         "integrated_predecessor_git_commit": {
-          "const": "b673609f7ed7b53d3085afbd83094a9b3c4f9511"
+          "const": "c80b5eb8c6308b605c677e8c2b4154267fc147cf"
         },
         "inventory_scope": {
           "const": "complete-stage4-source-closure"
@@ -383,7 +383,7 @@
           "const": "local-static-only"
         },
         "status": {
-          "const": "passed-structural-and-local-contract-checks"
+          "const": "passed-recorded-bounded-local-commands"
         },
         "provider_execution": {
           "const": false
