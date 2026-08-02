@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -13,6 +13,8 @@ import { STAGE4_PINNED_HELM, STAGE4_PINNED_NODE } from "../scripts/stage4-offlin
 const root = resolve(import.meta.dirname, "..");
 const generator = resolve(root, "scripts/stage4-offline-render-preparation.ts");
 const artifactRoot = resolve(root, "docs/security-evidence/stage4-offline-readiness-artifacts");
+const trustedPreparationAvailable =
+  existsSync(STAGE4_PINNED_NODE.executable) && existsSync(STAGE4_PINNED_HELM.executable);
 
 type Run = Readonly<{ status: number | null; stdout: Uint8Array; stderr: string }>;
 
@@ -49,7 +51,9 @@ function copyInputTree(): { temporary: string; script: string } {
   return { temporary, script: resolve(temporary, "scripts/stage4-offline-render-preparation.ts") };
 }
 
-test("trusted CLI binds pinned Node, source, immutable Helm copy, and two fresh renders", () => {
+test("trusted CLI binds pinned Node, source, immutable Helm copy, and two fresh renders", {
+  skip: !trustedPreparationAvailable,
+}, () => {
   const result = run();
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stderr, "");
@@ -74,7 +78,9 @@ test("trusted CLI binds pinned Node, source, immutable Helm copy, and two fresh 
   assert.equal(receipt.provider_execution_observed, false);
 });
 
-test("forged identical committed renders fail despite being internally digest-consistent", () => {
+test("forged identical committed renders fail despite being internally digest-consistent", {
+  skip: !trustedPreparationAvailable,
+}, () => {
   const fixture = copyInputTree();
   try {
     const forged = new TextEncoder().encode("forged-identical-render\n");
@@ -95,7 +101,7 @@ test("forged identical committed renders fail despite being internally digest-co
   }
 });
 
-test("chart and values rewrites fail before trusted completion", () => {
+test("chart and values rewrites fail before trusted completion", { skip: !trustedPreparationAvailable }, () => {
   for (const mutate of [
     (temporary: string) =>
       writeFileSync(resolve(temporary, "deploy/helm/cogs/templates/_forged.tpl"), "{{/* forged */}}\n"),
@@ -117,7 +123,9 @@ test("chart and values rewrites fail before trusted completion", () => {
   }
 });
 
-test("caller path, tsx loader, and extra arguments cannot impersonate the generator execution layer", () => {
+test("caller path, tsx loader, and extra arguments cannot impersonate the generator execution layer", {
+  skip: !trustedPreparationAvailable,
+}, () => {
   const loader = run(generator, ["--import", "tsx"]);
   assert.equal(loader.status, 1);
   assert.equal(loader.stderr, "STAGE4_RENDER_PREPARATION_EXECUTION_LAYER_INVALID\n");

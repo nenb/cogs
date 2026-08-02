@@ -1,6 +1,7 @@
 /* biome-ignore-all lint/suspicious/noExplicitAny: hostile package mutations intentionally cross strict JSON types */
 import assert from "node:assert/strict";
 import {
+  existsSync,
   linkSync,
   mkdirSync,
   mkdtempSync,
@@ -30,6 +31,7 @@ import {
 import {
   generateStage4SourceInventory,
   readStage4SourceFile,
+  STAGE4_PINNED_GIT,
   STAGE4_SOURCE_INVENTORY_EXCLUSIONS,
 } from "../scripts/stage4-offline-source-inventory.ts";
 
@@ -139,7 +141,9 @@ test("committed inventories are canonical, complete for their scopes, and bind e
 
   const sourcePath = "docs/security-evidence/stage4-offline-readiness-artifacts/source-inventory.json";
   const source = readManifest(sourcePath);
-  assert.deepEqual(bytes(sourcePath), generateStage4SourceInventory(root));
+  if (existsSync(STAGE4_PINNED_GIT.executable)) {
+    assert.deepEqual(bytes(sourcePath), generateStage4SourceInventory(root));
+  }
   assert.deepEqual(
     source.excluded_self_referential_outputs.map((row: { path: string }) => row.path),
     STAGE4_SOURCE_INVENTORY_EXCLUSIONS,

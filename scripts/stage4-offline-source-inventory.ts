@@ -187,7 +187,7 @@ export function readStage4SourceFile(
 
 function pinnedGit(root: string, arguments_: readonly string[]): Uint8Array {
   const executable = readStage4SourceFile(dirname(STAGE4_PINNED_GIT.executable), "git", 64 * 1024 * 1024, false);
-  if (stage4OfflineReadinessSha256(executable) !== STAGE4_PINNED_GIT.sha256) {
+  if (stage4OfflineReadinessSha256(executable, 64 * 1024 * 1024) !== STAGE4_PINNED_GIT.sha256) {
     throw new Error("STAGE4_SOURCE_INVENTORY_GIT_IDENTITY_INVALID");
   }
   const result = spawnSync(STAGE4_PINNED_GIT.executable, ["-c", "core.fsmonitor=false", ...arguments_], {
