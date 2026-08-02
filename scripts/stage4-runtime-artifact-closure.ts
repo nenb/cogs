@@ -54,6 +54,10 @@ const ajv = new Ajv2020({ allErrors: true, strict: true, strictRequired: false, 
 require("ajv-formats")(ajv);
 const validateEvidence = ajv.compile(evidenceSchema) as ValidateFunction;
 
+/* stage4-runtime-schema-inventory-anchor-start */
+const STAGE4_RUNTIME_SCHEMA_INVENTORY_SHA256 = "b2ca0d2f5147c5464cac26e875f5803e79807893ed0ed22eb31a23655541cbe4";
+/* stage4-runtime-schema-inventory-anchor-end */
+
 function compareCodePoints(left: string, right: string): number {
   const leftPoints = Array.from(left, (value) => value.codePointAt(0) ?? 0);
   const rightPoints = Array.from(right, (value) => value.codePointAt(0) ?? 0);
@@ -257,8 +261,8 @@ export function buildStage4RuntimeArtifactEvidence(): JsonObject {
         inventory_sha256: "a3801a32d9f1a59864bd027aebf44554b087911c7d4a4486e7bcda697ff68617",
       },
       schemas: {
-        scope: "all-stage4-and-stage5-contract-schemas",
-        inventory_sha256: "3734b1804f0173ce06835f1204f55134020ea0bf60d011bba8dc2844bca3040b",
+        scope: "all-stage4-stage5-and-production-runtime-image-contract-schemas",
+        inventory_sha256: STAGE4_RUNTIME_SCHEMA_INVENTORY_SHA256,
       },
       dependency_lock: {
         package_lock_sha256: "835d126c87bfedc30e2665aa8344abfb1a71948dbdd55cb4a7e8133512583645",

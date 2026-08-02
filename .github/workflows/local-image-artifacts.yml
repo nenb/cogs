@@ -1,4 +1,4 @@
-name: Local image artifacts
+name: Historical prepublication local image artifacts
 
 on:
   workflow_dispatch:
@@ -115,6 +115,10 @@ jobs:
           mkdir -m 0700 "$CONTEXT" "$OUT" "$DOCKER_CONFIG" "$CACHE"
           git archive --format=tar "$REVIEWED_SHA" | tar -xf - -C "$CONTEXT"
           test -z "$(find "$CONTEXT" -type l -print -quit)"
+          # v1 is a historical scaffold-only contract. Current production payloads must stop
+          # before setup, pulls, scans, or builds rather than being misclassified as scaffolds.
+          grep -Fq 'dev.cogs.profile="stage0-scaffold"' "$CONTEXT/images/worker/Dockerfile"
+          grep -Fq 'dev.cogs.profile="stage0-scaffold"' "$CONTEXT/images/sandbox/Dockerfile"
           commit_tree=$(git rev-parse "$REVIEWED_SHA^{tree}")
           source_epoch=$(git show -s --format=%ct "$REVIEWED_SHA")
           inventory_sha=$(
@@ -174,7 +178,7 @@ jobs:
             rm -f "$OUT/$role-base-index.json"
           done
 
-      - name: Build each scaffold twice as direct OCI layouts
+      - name: Build each historical scaffold twice as direct OCI layouts
         run: |
           set -euo pipefail
           epoch=$(jq -er '.source_date_epoch' "$OUT/source.json")
@@ -252,7 +256,7 @@ jobs:
             rm -f "$OUT/$role/graph-comparison.recheck.json" "$OUT/$role-materials.json"
           done
 
-      - name: Assemble and classify the blocked scaffold package
+      - name: Assemble and classify the blocked historical scaffold package
         run: |
           set -euo pipefail
           database_files_sha256=$(cat "$OUT/trivy-database-files.sha256")

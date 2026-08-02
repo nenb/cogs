@@ -521,10 +521,11 @@ test("main reports spontaneous runtime loss without exposing its cause", async (
   assert.equal(failClosed, 1);
 });
 
-test("production import boundary has no development, fixture, provider, daemon, or ambient-secret route", async () => {
-  const [compose, main] = await Promise.all([
+test("production import boundary and foundation docs preserve the implemented-source/non-authority split", async () => {
+  const [compose, main, foundation] = await Promise.all([
     readFile(new URL("../src/runtime/compose.ts", import.meta.url), "utf8"),
     readFile(new URL("../src/main.ts", import.meta.url), "utf8"),
+    readFile(new URL("../docs/operations/production-runtime-foundation.md", import.meta.url), "utf8"),
   ]);
   const source = `${compose}\n${main}`;
   assert.doesNotMatch(source, /(?:from|import\()\s*["'][^"']*dev\//);
@@ -536,4 +537,8 @@ test("production import boundary has no development, fixture, provider, daemon, 
   assert.match(compose, /executablePath:\s*runtime\.paths\.envoy_executable/u);
   assert.match(compose, /exporter:\s*pi/u);
   assert.match(compose, /mode:\s*"otlp"/u);
+  assert.match(foundation, /now provide `src\/main\.ts`, fail-closed production composition/u);
+  assert.match(foundation, /Helm chart remains NOTES-only with zero submitted manifests/u);
+  assert.match(foundation, /`RELEASE_IMAGE_SET_ABSENT`, `NO_EXECUTABLE_PROVIDER_ROUTE`/u);
+  assert.doesNotMatch(foundation, /following remain unimplemented:[\s\S]*`src\/main\.ts`/u);
 });

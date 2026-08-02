@@ -1,14 +1,16 @@
-# Generic local image artifact transaction
+# Historical prepublication local image artifact transaction
 
-**Authority:** unauthenticated local build and static artifact classification only
+**Authority:** historical unauthenticated local build and static artifact classification only
 
-**Initial content profile:** `stage0-scaffold-local-candidate`
+**Content profile:** exactly `stage0-scaffold-local-candidate`
+
+**Current applicability:** none; the current production worker and Kata guest definitions are deliberately rejected by v1
 
 **Release status:** blocked; not a release-candidate freeze, publication, signature, runtime qualification, or production-readiness decision
 
-This transaction turns the current worker and sandbox Dockerfile scaffolds into exact, inspectable local OCI artifact graphs. It intentionally does not alter or satisfy the Stage 4 offline readiness image placeholders, the Stage 4 image/runtime closure, the Stage 5 freeze manifest, or the Stage 5 release-readiness template.
+This v1 transaction was created for the earlier worker and sandbox scaffolds. It applies only when both OCI configs carry `dev.cogs.profile=stage0-scaffold`; it is historical/prepublication evidence and cannot truthfully classify the current `production-worker-release-candidate` or `kata-sandbox-guest` payloads. The retained manual workflow checks that historical label before any Docker operation, so a dispatch against the current protected branch stops without building. Production image build/publication belongs only to the separate protected-main release workflow and remains not-run-not-claimed by Stage 4 readiness.
 
-The worker Dockerfile currently copies no Cogs code and runs the distroless Node version command. The sandbox Dockerfile currently provides only a Debian shell and no production SSH or VM-isolation payload. A successful transaction therefore fixes `production_payload_present=false`, `production_ready=false`, and `release_eligible=false`.
+A valid historical transaction intentionally does not alter or satisfy the Stage 4 offline-readiness image placeholders, Stage 4 image/runtime closure, Stage 5 freeze manifest, or Stage 5 release-readiness template. It fixes `production_payload_present=false`, `production_ready=false`, and `release_eligible=false`; using v1 for current payload bytes is semantic drift, not evidence.
 
 ## Digest namespaces
 
@@ -28,7 +30,7 @@ A local manifest digest might later equal a published manifest digest if a separ
 
 ## Transaction
 
-The manual workflow [`.github/workflows/local-image-artifacts.yml`](../../.github/workflows/local-image-artifacts.yml) requires:
+The retained historical manual workflow [`.github/workflows/local-image-artifacts.yml`](../../.github/workflows/local-image-artifacts.yml) requires:
 
 - the exact reviewed SHA, equal to the protected default-branch workflow envelope;
 - one configured authorized transaction actor;
@@ -107,7 +109,7 @@ npm run images:local:assemble -- transaction-input.json artifact-root package.ca
 
 ## Mandatory blockers
 
-A valid package means only that complete bound local evidence exists for two equal scaffold builds. It always retains:
+A valid v1 package means only that complete bound local evidence exists for two equal historical scaffold builds. It cannot be generated for the current production payload and always retains:
 
 - `PRODUCTION_IMAGE_PAYLOAD_ABSENT`;
 - `REGISTRY_PUBLICATION_NOT_OBSERVED`;

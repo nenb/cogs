@@ -36,7 +36,7 @@ test("README preserves the cloud-entry gate and disclaims current deployment aut
   assert.match(text, /historical v1 assessment preserves the NIC `v0\.11\.0` capability failure/);
   assert.match(text, /Active v2 pins explicitly accepted personal-fork NIC commit/);
   assert.match(text, /resolves only external launch-template ID\/version preservation with operator attestation/);
-  assert.match(text, /leaves the EKS node image unresolved/);
+  assert.match(text, /region-specific EKS AMI\/running kernel and runtime observation are unresolved/);
 });
 
 test("the linked implementation plan keeps Stages 4 and 5 API-key-only", () => {

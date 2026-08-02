@@ -174,6 +174,39 @@ test("committed inventories are canonical, complete for their scopes, and bind e
   assert.ok(
     source.entries.some((entry: { path: string }) => entry.path === "scripts/stage4-offline-readiness-regenerate.ts"),
   );
+  const tracked = (prefix: string): string[] =>
+    readdirSync(resolve(root, prefix), { recursive: true, withFileTypes: true })
+      .filter((entry) => entry.isFile())
+      .map((entry) =>
+        `${prefix}/${entry.parentPath.slice(resolve(root, prefix).length + 1)}/${entry.name}`.replace("//", "/"),
+      )
+      .sort();
+  const sourcePaths = source.entries.map((entry: { path: string }) => entry.path);
+  for (const prefix of ["src", "images"]) {
+    assert.deepEqual(
+      sourcePaths.filter((path: string) => path.startsWith(`${prefix}/`)),
+      tracked(prefix),
+      `${prefix} closure`,
+    );
+  }
+  for (const required of [
+    ".github/workflows/local-image-artifacts.yml",
+    ".github/workflows/release-images.yml",
+    "docs/operations/local-image-artifacts.md",
+    "docs/operations/production-runtime-foundation.md",
+    "docs/operations/release-image-publication.md",
+    "schemas/local-image-artifact-package-v1.json",
+    "schemas/release-image-receipt-v1.json",
+    "schemas/runtime-v1alpha1.json",
+    "scripts/local-image-artifacts.ts",
+    "scripts/release-image-receipt.ts",
+    "test/production-compose.test.ts",
+    "test/production-sandbox-image.test.ts",
+    "test/production-worker-image.test.ts",
+  ]) {
+    assert.ok(sourcePaths.includes(required), required);
+  }
+  assert.ok(source.entries.length <= 256);
   assertEntries(source.entries);
 
   const walk = (directory: string): string[] =>
@@ -200,7 +233,17 @@ test("committed inventories are canonical, complete for their scopes, and bind e
   assert.deepEqual(
     schemas.entries.map((entry: { path: string }) => entry.path),
     readdirSync(resolve(root, "schemas"))
-      .filter((name) => /^stage[45].*\.json$/u.test(name))
+      .filter(
+        (name) =>
+          /^stage[45].*\.json$/u.test(name) ||
+          [
+            "integration-v1alpha1.json",
+            "launch-v1alpha1.json",
+            "local-image-artifact-package-v1.json",
+            "release-image-receipt-v1.json",
+            "runtime-v1alpha1.json",
+          ].includes(name),
+      )
       .sort()
       .map((name) => `schemas/${name}`),
   );
@@ -213,6 +256,7 @@ test("committed inventories are canonical, complete for their scopes, and bind e
       "readiness-format",
       "repository-typecheck",
       "stage4-unit-contracts",
+      "production-runtime-image-static-route-contracts",
       "stage4-schema-registry",
       "all-schema-contracts",
       "trusted-helm-local-contracts",
@@ -235,13 +279,30 @@ test("committed inventories are canonical, complete for their scopes, and bind e
       reason: "external-network-operation-outside-local-offline-preparation-scope",
       result: "not-run-not-claimed",
     },
+    {
+      id: "production-image-docker-builds",
+      reason: "docker-build-operation-owned-by-separate-image-workflow",
+      result: "not-run-not-claimed",
+    },
+    {
+      id: "release-image-publication",
+      reason: "registry-publication-operation-owned-by-separate-protected-main-workflow",
+      result: "not-run-not-claimed",
+    },
   ]);
   assert.equal(validation.status, "passed-recorded-bounded-local-commands");
   assert.equal(
     validation.scope,
-    "only-the-eight-recorded-bounded-local-commands;no-current-registry-advisory-discovery",
+    "only-the-nine-recorded-bounded-local-commands;no-docker-publication-or-current-registry-advisory-discovery",
   );
-  assert.deepEqual(validation.execution, { cloud: false, external_model: false, kubernetes: false, provider: false });
+  assert.deepEqual(validation.execution, {
+    cloud: false,
+    docker: false,
+    external_model: false,
+    image_publication: false,
+    kubernetes: false,
+    provider: false,
+  });
   assert.deepEqual(
     validation.source_bindings.map((entry: { path: string }) => entry.path),
     [
@@ -255,6 +316,11 @@ test("committed inventories are canonical, complete for their scopes, and bind e
       "schemas/stage4-offline-readiness-verdict-v1.json",
       "schemas/stage4-offline-readiness-verdict-v2.json",
       "schemas/stage4-authenticated-runtime-artifact-evidence-v1.json",
+      "schemas/integration-v1alpha1.json",
+      "schemas/launch-v1alpha1.json",
+      "schemas/local-image-artifact-package-v1.json",
+      "schemas/release-image-receipt-v1.json",
+      "schemas/runtime-v1alpha1.json",
       "scripts/private-bytes.ts",
       "scripts/check-lock-integrity.ts",
       "scripts/check-npm-audit.ts",
@@ -921,10 +987,13 @@ test("committed regeneration procedure is local, bounded, and wired to native No
   const packageJson = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
   assert.equal(packageJson.scripts["readiness:regenerate"], "node scripts/stage4-offline-readiness-regenerate.ts");
   assert.equal(packageJson.scripts["readiness:render:check"], "node scripts/stage4-offline-render-preparation.ts");
+  assert.match(packageJson.scripts["readiness:production:check"], /^tsx --test --test-concurrency=1 /u);
   const source = readFileSync(resolve(root, "scripts/stage4-offline-readiness-regenerate.ts"), "utf8");
   for (const procedure of [
     "regenerateReceipt",
+    "regenerateRunbookIndex",
     "regenerateSchemaInventory",
+    "rewriteRuntimeSchemaInventoryAnchor",
     "regenerateRuntimeArtifactEvidence",
     "regenerateSourceAndLocalValidation",
     "rewriteClassifierAnchors",

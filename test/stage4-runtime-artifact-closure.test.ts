@@ -135,6 +135,7 @@ test("static candidate freeze is exact but cannot promote images, release, or ex
     "sha256:726176e9bdb7524fbe935a0235fcbe5d509bf44592b9571421fc9fd8551ff1c1",
   );
   assert.equal(freeze.chart.inventory_sha256, "a3801a32d9f1a59864bd027aebf44554b087911c7d4a4486e7bcda697ff68617");
+  assert.equal(freeze.schemas.scope, "all-stage4-stage5-and-production-runtime-image-contract-schemas");
   assert.equal(
     freeze.schemas.inventory_sha256,
     stage4RuntimeArtifactSha256(

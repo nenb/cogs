@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://cogs.dev/schemas/local-image-artifact-package-v1.json",
-  "title": "Unauthenticated local image artifact package v1",
-  "description": "Exact local linux/amd64 scaffold artifact evidence. This schema cannot establish publication, signatures, release closure, runtime qualification, or production readiness.",
+  "title": "Historical unauthenticated prepublication scaffold image artifact package v1",
+  "description": "Historical exact local linux/amd64 evidence only for images labelled dev.cogs.profile=stage0-scaffold. It is inapplicable to and must reject the current production worker and Kata guest payloads, and cannot establish publication, signatures, release closure, runtime qualification, or production readiness.",
   "type": "object",
   "additionalProperties": false,
   "required": [

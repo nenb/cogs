@@ -489,9 +489,17 @@ test("package classifier rejects a symlinked artifact directory", () => {
   }
 });
 
-test("manual workflow is exact-source, non-publishing, unsigned, and all-severity", () => {
+test("historical manual workflow rejects current production payload before Docker and remains non-publishing", () => {
   const workflow = readFileSync(resolve(import.meta.dirname, "../.github/workflows/local-image-artifacts.yml"), "utf8");
+  const worker = readFileSync(resolve(import.meta.dirname, "../images/worker/Dockerfile"), "utf8");
+  const sandbox = readFileSync(resolve(import.meta.dirname, "../images/sandbox/Dockerfile"), "utf8");
+  assert.match(workflow, /^name: Historical prepublication local image artifacts$/mu);
   assert.match(workflow, /^on:\n {2}workflow_dispatch:/mu);
+  assert.equal(worker.includes('dev.cogs.profile="stage0-scaffold"'), false);
+  assert.equal(sandbox.includes('dev.cogs.profile="stage0-scaffold"'), false);
+  const historicalGate = workflow.indexOf("grep -Fq 'dev.cogs.profile=\"stage0-scaffold\"'");
+  const firstDocker = workflow.indexOf("docker ");
+  assert.ok(historicalGate >= 0 && firstDocker > historicalGate, "historical profile gate must precede Docker");
   assert.match(workflow, /permissions:\n {2}contents: read/u);
   assert.match(workflow, /github\.run_attempt == 1/u);
   assert.match(workflow, /github\.ref_protected == true/u);

@@ -49,15 +49,15 @@ No OpenBao token appears in the runtime or launch document. There is no HTTP dev
 
 ## Deliberately absent
 
-The following remain unimplemented:
+ADR 0096 and the later image-source changes now provide `src/main.ts`, fail-closed production composition, bounded API bind/shutdown persistence wiring, the canonical Basic proxy capability, worker-owned Envoy process composition, production worker image source, and the Kata guest image/entrypoint source. Those are locally tested source contracts only; they are not runtime, image-build, publication, deployment, or isolation observations.
 
-- `src/main.ts` and production component composition;
-- API non-loopback correction and shutdown persistence wiring;
-- proxy capability wire-format correction;
-- worker-owned Envoy image/process closure;
-- sandbox entrypoint and Kata image;
-- static deployment materialization;
-- image build, scan, SBOM, publication, and digest lock updates;
-- Linux/Kata/KVM qualification.
+The following remain deliberately absent:
 
-Consequently worker/sandbox placeholders and every Stage 4 release/runtime blocker remain unchanged.
+- production runtime-material provisioning and a controller that creates the worker/sandbox pair;
+- static deployment materialization (the Helm chart remains NOTES-only with zero submitted manifests);
+- any Docker build, image scan, SBOM, signature, publication, or registry readback incorporated into readiness;
+- worker/sandbox digest-lock updates (the `.invalid` placeholders remain unchanged);
+- a release image set or executable provider route; and
+- Linux/Kata/KVM, Kubernetes, CNI, storage, network, and end-to-end runtime qualification.
+
+Consequently `RELEASE_IMAGE_SET_ABSENT`, `NO_EXECUTABLE_PROVIDER_ROUTE`, the worker/sandbox placeholders, and every false provider/Kubernetes/cloud/Stage 4 exit/release claim remain unchanged.

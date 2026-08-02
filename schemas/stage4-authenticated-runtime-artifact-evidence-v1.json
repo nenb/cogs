@@ -403,7 +403,7 @@
       "additionalProperties": false,
       "required": ["scope", "inventory_sha256"],
       "properties": {
-        "scope": { "const": "all-stage4-and-stage5-contract-schemas" },
+        "scope": { "const": "all-stage4-stage5-and-production-runtime-image-contract-schemas" },
         "inventory_sha256": { "$ref": "#/$defs/sha256" }
       }
     },

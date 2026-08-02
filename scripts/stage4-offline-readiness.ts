@@ -218,12 +218,12 @@ export const STAGE4_READINESS_EXPECTED_ARTIFACTS = Object.freeze({
   render: "60f73b0e5caa843c4db9431c63cdc13eada9088d6da16c974ef127c480235710",
   repeatedRender: "60f73b0e5caa843c4db9431c63cdc13eada9088d6da16c974ef127c480235710",
   runtimePins: "1e683ef6513f9f86f7eaead0fd64d949f037afd06043882eb1b6514aa5c4a145",
-  authenticatedRuntimeArtifacts: "e559ef8356b156b853fea4dde2db7150d9ac4d1cc45bf03482495fec92bf1faa",
   values: "e63a0fadebe16637cc97b21adeeb4ecf33efa8e76a1469e6008c7f7ed4fbb58f",
-  localValidationNormalized: "8a1c6fb0563cbe2f72bb4f7beaae00e4d830d47bfd5672d8762ef6c3661b9e15",
+  authenticatedRuntimeArtifacts: "64534165274dc2a149fd6d1c91115b91682235ce0246904377ae8291e037b6e6",
+  localValidationNormalized: "61cd989a78d141d4922e851fb8866e2ac1daf82fe4de2a57f57645b2963ef587",
   renderReceipt: "b9634997067adef5816aac496c26acbdc1b2c6fc20fa0112f38efd6879e1f85b",
-  schemaInventory: "3734b1804f0173ce06835f1204f55134020ea0bf60d011bba8dc2844bca3040b",
-  sourceInventoryNormalized: "095edf9a74b89a4caf66de08d2fb4b94b78c63277959cd5604d2c0ad79ca764f",
+  schemaInventory: "b2ca0d2f5147c5464cac26e875f5803e79807893ed0ed22eb31a23655541cbe4",
+  sourceInventoryNormalized: "6e9efe7a8f92e98c58e3387fca8724abbaf4353c6334ef6b96087b7629d8ab38",
 });
 /* stage4-readiness-anchor-end */
 
@@ -465,6 +465,7 @@ function exactArtifactSemantics(value: ReadinessPackage, artifacts: ArtifactCopi
     "readiness-format",
     "repository-typecheck",
     "stage4-unit-contracts",
+    "production-runtime-image-static-route-contracts",
     "stage4-schema-registry",
     "all-schema-contracts",
     "trusted-helm-local-contracts",
@@ -488,11 +489,18 @@ function exactArtifactSemantics(value: ReadinessPackage, artifacts: ArtifactCopi
       );
     });
   const unexecuted = local?.unexecuted;
-  const auditHonestlyUnexecuted =
+  const expectedUnexecuted = [
+    "current-npm-registry-audit",
+    "production-image-docker-builds",
+    "release-image-publication",
+  ];
+  const honestlyUnexecuted =
     Array.isArray(unexecuted) &&
-    unexecuted.length === 1 &&
-    record(unexecuted[0])?.id === "current-npm-registry-audit" &&
-    record(unexecuted[0])?.result === "not-run-not-claimed";
+    unexecuted.length === expectedUnexecuted.length &&
+    unexecuted.every(
+      (item, index) => record(item)?.id === expectedUnexecuted[index] && record(item)?.result === "not-run-not-claimed",
+    );
+  const execution = record(local?.execution);
   const executionLayer = {
     generator_source_sha256: receipt?.generator_source_sha256 as JsonValue,
     node_arch: receipt?.node_arch as JsonValue,
@@ -507,7 +515,10 @@ function exactArtifactSemantics(value: ReadinessPackage, artifacts: ArtifactCopi
     receipt.first_render_sha256 !== stage4OfflineReadinessSha256(artifacts.render) ||
     receipt.repeated_render_sha256 !== stage4OfflineReadinessSha256(artifacts.repeatedRender) ||
     !localChecksPass ||
-    !auditHonestlyUnexecuted ||
+    !honestlyUnexecuted ||
+    execution === null ||
+    Reflect.ownKeys(execution).length !== 6 ||
+    Object.values(execution).some((observed) => observed !== false) ||
     receipt.generator_source_sha256 !== generatorDigest ||
     receipt.execution_layer_sha256 !==
       stage4OfflineReadinessSha256(canonicalStage4OfflineReadinessBytes(executionLayer)) ||
@@ -516,7 +527,8 @@ function exactArtifactSemantics(value: ReadinessPackage, artifacts: ArtifactCopi
     receipt.zero_submitted_manifests !== true ||
     receipt.zero_manifest_output_sha256 !== stage4OfflineReadinessSha256(new TextEncoder().encode("\n")) ||
     local?.status !== "passed-recorded-bounded-local-commands" ||
-    local.scope !== "only-the-eight-recorded-bounded-local-commands;no-current-registry-advisory-discovery" ||
+    local.scope !==
+      "only-the-nine-recorded-bounded-local-commands;no-docker-publication-or-current-registry-advisory-discovery" ||
     local.trusted_preparation_receipt_sha256 !== stage4OfflineReadinessSha256(artifacts.renderReceipt)
   )
     return false;
