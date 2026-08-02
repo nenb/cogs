@@ -1,0 +1,130 @@
+{
+  "version": "cogs.stage5-privacy-deletion-suite/v1",
+  "authority": "local-static-synthetic-input-only",
+  "fixture_data": "bounded-categorical-digest-metadata-only",
+  "prohibited_content_materialized": false,
+  "surfaces": [
+    {
+      "surface": "otlp",
+      "record_kind": "otlp-envelope",
+      "classification": "central-metadata-only",
+      "outcome": "ok",
+      "content_present": false,
+      "attachment_content_present": false,
+      "metadata_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+      "field_count": 4,
+      "boundary": null
+    },
+    {
+      "surface": "log",
+      "record_kind": "bounded-log-record",
+      "classification": "central-metadata-only",
+      "outcome": "ok",
+      "content_present": false,
+      "attachment_content_present": false,
+      "metadata_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+      "field_count": 3,
+      "boundary": null
+    },
+    {
+      "surface": "report",
+      "record_kind": "bounded-report-record",
+      "classification": "central-metadata-only",
+      "outcome": "ok",
+      "content_present": false,
+      "attachment_content_present": false,
+      "metadata_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+      "field_count": 5,
+      "boundary": null
+    },
+    {
+      "surface": "event",
+      "record_kind": "bounded-event-envelope",
+      "classification": "central-metadata-only",
+      "outcome": "ok",
+      "content_present": false,
+      "attachment_content_present": false,
+      "metadata_sha256": "4444444444444444444444444444444444444444444444444444444444444444",
+      "field_count": 4,
+      "boundary": null
+    },
+    {
+      "surface": "crash",
+      "record_kind": "bounded-crash-summary",
+      "classification": "central-metadata-only",
+      "outcome": "error",
+      "content_present": false,
+      "attachment_content_present": false,
+      "metadata_sha256": "5555555555555555555555555555555555555555555555555555555555555555",
+      "field_count": 3,
+      "boundary": null
+    },
+    {
+      "surface": "export",
+      "record_kind": "export-descriptor",
+      "classification": "authenticated-raw-export-descriptor-only",
+      "outcome": "ok",
+      "content_present": false,
+      "attachment_content_present": false,
+      "metadata_sha256": "6666666666666666666666666666666666666666666666666666666666666666",
+      "field_count": 9,
+      "boundary": {
+        "explicit_user_action": true,
+        "authenticated_api": true,
+        "model_callable": false,
+        "mode": "raw",
+        "sensitive": true,
+        "sanitized": false,
+        "anonymized": false,
+        "attachments_included": false,
+        "raw_payload_present": false
+      }
+    }
+  ],
+  "retention": {
+    "trusted_session_state_seconds": 2592000,
+    "object_copy_seconds": 2592000,
+    "workspace": "until-explicit-workspace-deletion",
+    "user_deletion_overrides_expiry": true,
+    "expiry_requires_deletion_sequence": true
+  },
+  "legal_hold": {
+    "mode": "none",
+    "authority": "separate-administrator-only",
+    "disclosed": true,
+    "retention_policy_independent": true,
+    "failure_state_is_hold": false,
+    "uncertainty_state_is_hold": false
+  },
+  "deletion": {
+    "initial_state": "retained",
+    "trigger": "explicit-user-deletion",
+    "version_policy": "all-versions-and-delete-markers",
+    "version_inventory": {
+      "versions_expected": 2,
+      "delete_markers_expected": 1,
+      "inventory_sha256": "7777777777777777777777777777777777777777777777777777777777777777"
+    },
+    "failure_policy": "stop-no-success-no-retry",
+    "uncertainty_policy": "sticky-preserve-unconfirmed-no-unknown-to-absent",
+    "transitions": [
+      "request-accepted",
+      "active-state-absence-asserted",
+      "current-object-absence-asserted",
+      "version-inventory-complete-asserted",
+      "all-versions-absence-asserted",
+      "all-delete-markers-absence-asserted",
+      "attachments-absence-asserted",
+      "final-absence-asserted"
+    ]
+  },
+  "external_execution": {
+    "profile": "local-static-model",
+    "eks_deletion": "unexecuted",
+    "object_store_deletion": "unexecuted",
+    "provider_api_invoked": false,
+    "cluster_api_invoked": false,
+    "deployment_invoked": false,
+    "external_model_invoked": false
+  }
+}

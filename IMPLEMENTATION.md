@@ -1381,6 +1381,8 @@ Expected outcomes must match the failure table in `DESIGN.md`. Unknown prompt ou
 
 ## 42. Privacy and deletion validation
 
+**Local/static status:** Issue #365 adds a strict bounded synthetic scanner for metadata-only OTLP, log, report, event, crash-summary, and export-descriptor fixtures; runtime-only canaries cover prohibited prompt/model, source/command/tool, credential/placeholder, private-ID, path, query/body, raw-export, and attachment categories without committing those payloads. The export descriptor requires explicit authenticated user action, no model-callable route, sensitive marking, and attachment/raw-payload exclusion. A pure canonical reducer fixes 30-day session/object-copy retention, explicit workspace deletion, all-version/delete-marker handling, separate administrator legal hold, and sticky failure/uncertainty stops. Its report is categorical/digest-only and fixes actual EKS/object-store deletion to unexecuted and all campaign/cloud/provider/release claims to false. It is not Stage 5 evidence and does not satisfy exit criteria 45.8 or 45.9. See [`docs/operations/stage-5-privacy-retention-export-deletion.md`](docs/operations/stage-5-privacy-retention-export-deletion.md).
+
 - inspect OTLP, worker logs, proxy logs, Kubernetes events, crash dumps, and reports for prompt/source/secret leakage;
 - test user deletion across session storage and object copies;
 - test object version deletion where configured;

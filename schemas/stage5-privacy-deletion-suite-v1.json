@@ -1,0 +1,298 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.dev/schemas/stage5-privacy-deletion-suite-v1.json",
+  "title": "Cogs Stage 5 local/static synthetic privacy and deletion suite",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "authority",
+    "fixture_data",
+    "prohibited_content_materialized",
+    "surfaces",
+    "retention",
+    "legal_hold",
+    "deletion",
+    "external_execution"
+  ],
+  "properties": {
+    "version": { "const": "cogs.stage5-privacy-deletion-suite/v1" },
+    "authority": { "const": "local-static-synthetic-input-only" },
+    "fixture_data": { "const": "bounded-categorical-digest-metadata-only" },
+    "prohibited_content_materialized": { "const": false },
+    "surfaces": {
+      "type": "array",
+      "minItems": 6,
+      "maxItems": 6,
+      "prefixItems": [
+        {
+          "allOf": [
+            { "$ref": "#/$defs/centralSurface" },
+            {
+              "type": "object",
+              "properties": { "surface": { "const": "otlp" }, "record_kind": { "const": "otlp-envelope" } }
+            }
+          ]
+        },
+        {
+          "allOf": [
+            { "$ref": "#/$defs/centralSurface" },
+            {
+              "type": "object",
+              "properties": { "surface": { "const": "log" }, "record_kind": { "const": "bounded-log-record" } }
+            }
+          ]
+        },
+        {
+          "allOf": [
+            { "$ref": "#/$defs/centralSurface" },
+            {
+              "type": "object",
+              "properties": { "surface": { "const": "report" }, "record_kind": { "const": "bounded-report-record" } }
+            }
+          ]
+        },
+        {
+          "allOf": [
+            { "$ref": "#/$defs/centralSurface" },
+            {
+              "type": "object",
+              "properties": { "surface": { "const": "event" }, "record_kind": { "const": "bounded-event-envelope" } }
+            }
+          ]
+        },
+        {
+          "allOf": [
+            { "$ref": "#/$defs/centralSurface" },
+            {
+              "type": "object",
+              "properties": { "surface": { "const": "crash" }, "record_kind": { "const": "bounded-crash-summary" } }
+            }
+          ]
+        },
+        { "$ref": "#/$defs/exportSurface" }
+      ],
+      "items": false
+    },
+    "retention": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "trusted_session_state_seconds",
+        "object_copy_seconds",
+        "workspace",
+        "user_deletion_overrides_expiry",
+        "expiry_requires_deletion_sequence"
+      ],
+      "properties": {
+        "trusted_session_state_seconds": { "const": 2592000 },
+        "object_copy_seconds": { "const": 2592000 },
+        "workspace": { "const": "until-explicit-workspace-deletion" },
+        "user_deletion_overrides_expiry": { "const": true },
+        "expiry_requires_deletion_sequence": { "const": true }
+      }
+    },
+    "legal_hold": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "authority",
+        "disclosed",
+        "retention_policy_independent",
+        "failure_state_is_hold",
+        "uncertainty_state_is_hold"
+      ],
+      "properties": {
+        "mode": { "enum": ["none", "active"] },
+        "authority": { "const": "separate-administrator-only" },
+        "disclosed": { "const": true },
+        "retention_policy_independent": { "const": true },
+        "failure_state_is_hold": { "const": false },
+        "uncertainty_state_is_hold": { "const": false }
+      }
+    },
+    "deletion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "initial_state",
+        "trigger",
+        "version_policy",
+        "version_inventory",
+        "failure_policy",
+        "uncertainty_policy",
+        "transitions"
+      ],
+      "properties": {
+        "initial_state": { "const": "retained" },
+        "trigger": { "enum": ["explicit-user-deletion", "retention-expired"] },
+        "version_policy": { "const": "all-versions-and-delete-markers" },
+        "version_inventory": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["versions_expected", "delete_markers_expected", "inventory_sha256"],
+          "properties": {
+            "versions_expected": { "type": "integer", "minimum": 0, "maximum": 1024 },
+            "delete_markers_expected": { "type": "integer", "minimum": 0, "maximum": 1024 },
+            "inventory_sha256": { "$ref": "#/$defs/digest" }
+          }
+        },
+        "failure_policy": { "const": "stop-no-success-no-retry" },
+        "uncertainty_policy": { "const": "sticky-preserve-unconfirmed-no-unknown-to-absent" },
+        "transitions": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 8,
+          "items": {
+            "enum": [
+              "request-accepted",
+              "active-state-absence-asserted",
+              "current-object-absence-asserted",
+              "version-inventory-complete-asserted",
+              "all-versions-absence-asserted",
+              "all-delete-markers-absence-asserted",
+              "attachments-absence-asserted",
+              "final-absence-asserted",
+              "operation-failed",
+              "observation-uncertain"
+            ]
+          }
+        }
+      }
+    },
+    "external_execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "profile",
+        "eks_deletion",
+        "object_store_deletion",
+        "provider_api_invoked",
+        "cluster_api_invoked",
+        "deployment_invoked",
+        "external_model_invoked"
+      ],
+      "properties": {
+        "profile": { "const": "local-static-model" },
+        "eks_deletion": { "const": "unexecuted" },
+        "object_store_deletion": { "const": "unexecuted" },
+        "provider_api_invoked": { "const": false },
+        "cluster_api_invoked": { "const": false },
+        "deployment_invoked": { "const": false },
+        "external_model_invoked": { "const": false }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "legal_hold": {
+            "type": "object",
+            "properties": { "mode": { "const": "active" } },
+            "required": ["mode"]
+          }
+        },
+        "required": ["legal_hold"]
+      },
+      "then": {
+        "properties": {
+          "deletion": {
+            "type": "object",
+            "properties": { "transitions": { "type": "array", "maxItems": 0 } },
+            "required": ["transitions"]
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "centralSurface": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "surface",
+        "record_kind",
+        "classification",
+        "outcome",
+        "content_present",
+        "attachment_content_present",
+        "metadata_sha256",
+        "field_count",
+        "boundary"
+      ],
+      "properties": {
+        "surface": { "enum": ["otlp", "log", "report", "event", "crash"] },
+        "record_kind": {
+          "enum": [
+            "otlp-envelope",
+            "bounded-log-record",
+            "bounded-report-record",
+            "bounded-event-envelope",
+            "bounded-crash-summary"
+          ]
+        },
+        "classification": { "const": "central-metadata-only" },
+        "outcome": { "enum": ["ok", "error", "denied", "uncertain"] },
+        "content_present": { "const": false },
+        "attachment_content_present": { "const": false },
+        "metadata_sha256": { "$ref": "#/$defs/digest" },
+        "field_count": { "type": "integer", "minimum": 0, "maximum": 64 },
+        "boundary": { "type": "null" }
+      }
+    },
+    "exportSurface": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "surface",
+        "record_kind",
+        "classification",
+        "outcome",
+        "content_present",
+        "attachment_content_present",
+        "metadata_sha256",
+        "field_count",
+        "boundary"
+      ],
+      "properties": {
+        "surface": { "const": "export" },
+        "record_kind": { "const": "export-descriptor" },
+        "classification": { "const": "authenticated-raw-export-descriptor-only" },
+        "outcome": { "const": "ok" },
+        "content_present": { "const": false },
+        "attachment_content_present": { "const": false },
+        "metadata_sha256": { "$ref": "#/$defs/digest" },
+        "field_count": { "type": "integer", "minimum": 0, "maximum": 64 },
+        "boundary": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "explicit_user_action",
+            "authenticated_api",
+            "model_callable",
+            "mode",
+            "sensitive",
+            "sanitized",
+            "anonymized",
+            "attachments_included",
+            "raw_payload_present"
+          ],
+          "properties": {
+            "explicit_user_action": { "const": true },
+            "authenticated_api": { "const": true },
+            "model_callable": { "const": false },
+            "mode": { "const": "raw" },
+            "sensitive": { "const": true },
+            "sanitized": { "const": false },
+            "anonymized": { "const": false },
+            "attachments_included": { "const": false },
+            "raw_payload_present": { "const": false }
+          }
+        }
+      }
+    }
+  }
+}
