@@ -1,7 +1,16 @@
 .cogs-dev/
 .git/
+.github/
 .pi/
+.tools/
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
 node_modules/
+dist/
 coverage/
 docs/security-evidence/generated/
 test/egress-conformance/reports/

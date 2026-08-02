@@ -1,0 +1,320 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.dev/schemas/local-image-artifact-package-v1.json",
+  "title": "Unauthenticated local image artifact package v1",
+  "description": "Exact local linux/amd64 scaffold artifact evidence. This schema cannot establish publication, signatures, release closure, runtime qualification, or production readiness.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "authority",
+    "source",
+    "target",
+    "content_profile",
+    "images",
+    "artifacts",
+    "publication",
+    "claims",
+    "blockers"
+  ],
+  "properties": {
+    "version": { "const": "cogs.local-image-artifact-package/v1" },
+    "authority": { "const": "unauthenticated-local-image-artifact-transaction" },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commit_sha", "tree_sha", "inventory_sha256", "source_date_epoch"],
+      "properties": {
+        "commit_sha": { "$ref": "#/$defs/gitSha" },
+        "tree_sha": { "$ref": "#/$defs/gitSha" },
+        "inventory_sha256": { "$ref": "#/$defs/hexSha256" },
+        "source_date_epoch": { "type": "integer", "minimum": 1, "maximum": 4102444800 }
+      }
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["os", "architecture", "variant"],
+      "properties": {
+        "os": { "const": "linux" },
+        "architecture": { "const": "amd64" },
+        "variant": { "type": "null" }
+      }
+    },
+    "content_profile": { "const": "stage0-scaffold-local-candidate" },
+    "images": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "prefixItems": [
+        { "$ref": "#/$defs/image", "type": "object", "properties": { "role": { "const": "worker" } } },
+        { "$ref": "#/$defs/image", "type": "object", "properties": { "role": { "const": "sandbox" } } }
+      ],
+      "items": false
+    },
+    "artifacts": {
+      "type": "array",
+      "minItems": 12,
+      "maxItems": 12,
+      "items": { "$ref": "#/$defs/artifact" }
+    },
+    "publication": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["performed", "registry_reference", "registry_digest", "remote_readback_observed"],
+      "properties": {
+        "performed": { "const": false },
+        "registry_reference": { "type": "null" },
+        "registry_digest": { "type": "null" },
+        "remote_readback_observed": { "const": false }
+      }
+    },
+    "claims": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "local_build_observed",
+        "two_build_oci_graphs_equal",
+        "production_payload_present",
+        "image_signature_verified",
+        "registry_digest_observed",
+        "cloud_execution_observed",
+        "kubernetes_execution_observed",
+        "provider_execution_observed",
+        "external_model_execution_observed",
+        "runtime_isolation_qualified",
+        "rc_frozen",
+        "production_ready",
+        "release_eligible"
+      ],
+      "properties": {
+        "local_build_observed": { "const": true },
+        "two_build_oci_graphs_equal": { "const": true },
+        "production_payload_present": { "const": false },
+        "image_signature_verified": { "const": false },
+        "registry_digest_observed": { "const": false },
+        "cloud_execution_observed": { "const": false },
+        "kubernetes_execution_observed": { "const": false },
+        "provider_execution_observed": { "const": false },
+        "external_model_execution_observed": { "const": false },
+        "runtime_isolation_qualified": { "const": false },
+        "rc_frozen": { "const": false },
+        "production_ready": { "const": false },
+        "release_eligible": { "const": false }
+      }
+    },
+    "blockers": {
+      "type": "array",
+      "minItems": 6,
+      "maxItems": 6,
+      "prefixItems": [
+        { "const": "PRODUCTION_IMAGE_PAYLOAD_ABSENT" },
+        { "const": "REGISTRY_PUBLICATION_NOT_OBSERVED" },
+        { "const": "IMAGE_SIGNATURE_NOT_VERIFIED" },
+        { "const": "RUNTIME_CONFORMANCE_NOT_EXECUTED" },
+        { "const": "STAGE4_IMAGE_RUNTIME_CLOSURE_UNCHANGED_FALSE" },
+        { "const": "STAGE5_RELEASE_FREEZE_UNCHANGED_ABSENT" }
+      ],
+      "items": false
+    }
+  },
+  "$defs": {
+    "gitSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "hexSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "kind", "path", "sha256", "size_bytes"],
+      "properties": {
+        "role": { "enum": ["worker", "sandbox"] },
+        "kind": {
+          "enum": [
+            "oci-graph-comparison",
+            "sbom",
+            "vulnerabilities",
+            "licenses",
+            "local-provenance",
+            "signature-absence"
+          ]
+        },
+        "path": { "type": "string", "minLength": 1, "maxLength": 192, "pattern": "^[a-z0-9][a-z0-9._/-]*$" },
+        "sha256": { "$ref": "#/$defs/hexSha256" },
+        "size_bytes": { "type": "integer", "minimum": 1, "maximum": 268435456 }
+      }
+    },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "dockerfile", "base", "builder", "graph", "reproducibility", "evidence"],
+      "properties": {
+        "role": { "enum": ["worker", "sandbox"] },
+        "dockerfile": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path", "sha256"],
+          "properties": {
+            "path": { "enum": ["images/worker/Dockerfile", "images/sandbox/Dockerfile"] },
+            "sha256": { "$ref": "#/$defs/hexSha256" }
+          }
+        },
+        "base": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["reference", "index_digest", "linux_amd64_manifest_digest"],
+          "properties": {
+            "reference": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^\\S+@sha256:[0-9a-f]{64}$"
+            },
+            "index_digest": { "$ref": "#/$defs/digest" },
+            "linux_amd64_manifest_digest": { "$ref": "#/$defs/digest" }
+          }
+        },
+        "builder": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "buildx_version",
+            "buildkit_version",
+            "platform",
+            "attempts",
+            "no_cache",
+            "pull_by_digest",
+            "run_network"
+          ],
+          "properties": {
+            "buildx_version": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "buildkit_version": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "platform": { "const": "linux/amd64" },
+            "attempts": { "const": 2 },
+            "no_cache": { "const": true },
+            "pull_by_digest": { "const": true },
+            "run_network": { "const": "none" }
+          }
+        },
+        "graph": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "oci_subject_manifest_digest",
+            "config_digest",
+            "layer_digests",
+            "oci_layout_index_sha256",
+            "docker_image_id",
+            "oci_archive_sha256",
+            "registry_reference",
+            "registry_digest"
+          ],
+          "properties": {
+            "oci_subject_manifest_digest": { "$ref": "#/$defs/digest" },
+            "config_digest": { "$ref": "#/$defs/digest" },
+            "layer_digests": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 256,
+              "items": { "$ref": "#/$defs/digest" }
+            },
+            "oci_layout_index_sha256": { "$ref": "#/$defs/hexSha256" },
+            "docker_image_id": { "type": "null" },
+            "oci_archive_sha256": { "type": "null" },
+            "registry_reference": { "type": "null" },
+            "registry_digest": { "type": "null" }
+          }
+        },
+        "reproducibility": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["two_builds", "oci_graph_equal", "layout_index_equal"],
+          "properties": {
+            "two_builds": { "const": true },
+            "oci_graph_equal": { "const": true },
+            "layout_index_equal": { "const": true }
+          }
+        },
+        "evidence": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["graph", "sbom", "vulnerabilities", "licenses", "provenance", "signature"],
+          "properties": {
+            "graph": { "$ref": "#/$defs/evidenceRef" },
+            "sbom": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["kind", "path", "generator_image"],
+              "properties": {
+                "kind": { "const": "sbom" },
+                "path": { "$ref": "#/$defs/artifactPath" },
+                "generator_image": { "$ref": "#/$defs/pinnedReference" }
+              }
+            },
+            "vulnerabilities": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "kind",
+                "path",
+                "scanner_image",
+                "database_reference",
+                "database_files_sha256",
+                "severities",
+                "ignore_unfixed",
+                "offline_scan"
+              ],
+              "properties": {
+                "kind": { "const": "vulnerabilities" },
+                "path": { "$ref": "#/$defs/artifactPath" },
+                "scanner_image": { "$ref": "#/$defs/pinnedReference" },
+                "database_reference": { "$ref": "#/$defs/pinnedReference" },
+                "database_files_sha256": { "$ref": "#/$defs/hexSha256" },
+                "severities": {
+                  "type": "array",
+                  "minItems": 5,
+                  "maxItems": 5,
+                  "prefixItems": [
+                    { "const": "UNKNOWN" },
+                    { "const": "LOW" },
+                    { "const": "MEDIUM" },
+                    { "const": "HIGH" },
+                    { "const": "CRITICAL" }
+                  ],
+                  "items": false
+                },
+                "ignore_unfixed": { "const": false },
+                "offline_scan": { "const": true }
+              }
+            },
+            "licenses": {
+              "$ref": "#/$defs/evidenceRef",
+              "type": "object",
+              "properties": { "kind": { "const": "licenses" } }
+            },
+            "provenance": {
+              "$ref": "#/$defs/evidenceRef",
+              "type": "object",
+              "properties": { "kind": { "const": "local-provenance" } }
+            },
+            "signature": {
+              "$ref": "#/$defs/evidenceRef",
+              "type": "object",
+              "properties": { "kind": { "const": "signature-absence" } }
+            }
+          }
+        }
+      }
+    },
+    "artifactPath": { "type": "string", "minLength": 1, "maxLength": 192, "pattern": "^[a-z0-9][a-z0-9._/-]*$" },
+    "pinnedReference": { "type": "string", "minLength": 1, "maxLength": 256, "pattern": "^\\S+@sha256:[0-9a-f]{64}$" },
+    "evidenceRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "path"],
+      "properties": {
+        "kind": { "enum": ["oci-graph-comparison", "sbom", "licenses", "local-provenance", "signature-absence"] },
+        "path": { "$ref": "#/$defs/artifactPath" }
+      }
+    }
+  }
+}
