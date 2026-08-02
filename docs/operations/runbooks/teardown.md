@@ -4,42 +4,40 @@ This is a non-executable evidence and escalation plan. It contains no provider c
 
 ## Assumptions
 
-- A future approved attempt will have immutable account binding, region, attempt ID, source/artifact revision, state custody, resource manifest, TTL, and authenticated operator/observer bindings.
-- A future independent observer will have read-only inventory capability separated from operator and approver.
-- None of those bindings or capabilities exists in the current offline package.
+| Assumption | Specific planning authority |
+|---|---|
+| A future attempt may bind account/region/attempt/source/artifact/state/manifest/TTL and authenticated operator/observer. | [Authority: offline readiness required identities](../stage-4-offline-readiness.md#required-identities-and-one-attempt-authority) |
+| A future independent observer may have read-only inventory separated from operator/approver. | [Authority: ownership separation register](../ownership.md#initial-ownership-and-approval-register) |
+| Current offline package has none of those bindings/capabilities. | [Authority: offline readiness current blockers](../stage-4-offline-readiness.md#current-blockers-preserved-exactly) |
 
 ## Static contract facts
 
-- Every future outcome—success, apply/bootstrap/test failure, timeout, or interruption—requires state-bound destruction followed by independently produced read-only inventory.
-- Inventory uncertainty blocks success and retry. Approval is one attempt only; prior approval never authorizes a correction or retry.
-- Storage cleanup uncertainty preserves state, resources, attachments, and workspace lease. Lease expiry never authorizes takeover.
-- The local [teardown classifier](../stage-4-teardown.md) orders claimed evidence only. Even `evidence-order-complete` does not observe deletion, cloud inventory, Stage 4 exit, or zero resources.
-- No local or static result can be promoted into cleanup evidence.
+| Static fact | Specific authority |
+|---|---|
+| Every future outcome requires state-bound destruction then independent read-only inventory. | [Authority: offline readiness non-executable stop/destroy paths](../stage-4-offline-readiness.md#non-executable-stop-and-destroy-paths) |
+| Inventory uncertainty blocks success/retry; approval is one attempt and grants no correction/retry. | [Authority: offline readiness one-attempt authority](../stage-4-offline-readiness.md#required-identities-and-one-attempt-authority) |
+| Storage uncertainty preserves state/resources/attachments/lease; expiry grants no takeover. | [Authority: storage/launch exclusive writer lease](../stage-4-storage-launch-contract.md#exclusive-writer-lease) |
+| Local teardown classifier orders claims only; terminal order observes no deletion/inventory/exit/zero. | [Authority: Stage 4 teardown semantic verdicts](../stage-4-teardown.md#semantic-bindings-and-verdicts) |
+| No local/static result promotes into cleanup evidence. | [Authority: Stage 4 teardown boundary](../stage-4-teardown.md#boundary) |
 
 ## Authoritative-local facts
 
-- Local launchers have bounded profile-owned cleanup tests within their exact local runtime roots.
-- Those tests do not prove provider resource ownership, cluster teardown, retained-volume handling, independent inventory, or absence in an account/region.
+| Local fact | Exact authority and applicability |
+|---|---|
+| Local launchers have bounded profile-owned cleanup tests inside exact local runtime roots. | [Authority: Stage 3 exit evidence](../../test-reports/stage-3-s3-09-linux-kvm-exit.md#automatic-acceptance) |
+| They prove no provider ownership, cluster teardown, retained-volume handling, independent inventory, or account/region absence. | [Authority: Stage 4 teardown boundary](../stage-4-teardown.md#boundary) |
 
 ## Future cloud evidence
 
-A future attempt must bind mutation and observation evidence to the exact approved state and cover separately:
-
-- EKS clusters and node groups;
-- EC2 instances and launch templates;
-- EBS volumes and snapshots;
-- network interfaces;
-- load balancers and target groups;
-- elastic IPs;
-- campaign IAM roles and policies;
-- security groups;
-- logs;
-- TTL schedules and functions; and
-- all campaign-tagged resources.
-
-A zero result requires all approved scopes, expected retained-data exceptions, exact account/region, independent authenticated producer, timestamps, pagination/completeness semantics, and immutable evidence binding. Absence from one query or the local classifier is not zero evidence.
+| Required future observation | Planned criterion, evidence contract, and location |
+|---|---|
+| Bind exact approved state to separate inventory scopes for cluster/node groups, instances/templates, volumes/snapshots, network interfaces, load-balancing resources, public addresses, IAM, security groups, logs, TTL controls, and campaign-tagged resources. | [Planned STAGE5-45.11 / `future-zero-inventory-reference-v1`](../stage-5-api-key-release-acceptance-matrix.md#criterion-level-traceability) and [planned inventory scopes](../stage-4-offline-readiness.md#non-executable-stop-and-destroy-paths) |
+| A zero result binds every approved scope, retained exception, account/region, independent producer, time, pagination/completeness, and immutable evidence. | [Planned STAGE5-45.11 / `future-zero-inventory-reference-v1`](../stage-5-api-key-release-acceptance-matrix.md#criterion-level-traceability) |
+| One query or local classifier cannot establish zero. | [Authority: Stage 4 teardown semantic verdicts](../stage-4-teardown.md#semantic-bindings-and-verdicts) |
 
 ## Fixed evidence order
+
+**Section authority:** [Authority: Stage 4 fixed claimed-evidence order](../stage-4-teardown.md#fixed-claimed-evidence-order).
 
 Use the exact eight-phase order from the static contract. Names below are evidence labels, not commands or permission to act:
 
@@ -60,6 +58,8 @@ Ordinary session teardown must not delete the retained workspace. Trusted sessio
 
 ## Exact ownership gate before any future mutation
 
+**Section authority:** [Authority: storage uncertainty preservation](../stage-4-storage-launch-contract.md#exclusive-writer-lease).
+
 For each candidate resource, a separately authorized recovery process must prove **all** applicable fields before mutation:
 
 1. exact account binding and region match the approved attempt;
@@ -78,6 +78,8 @@ If any check is missing, stale, mismatched, conflicting, or unknown: **do not mu
 
 ## Exact orphan escalation
 
+**Section authority:** [Planned STAGE5-45.11 / `future-zero-inventory-reference-v1`](../stage-5-api-key-release-acceptance-matrix.md#criterion-level-traceability).
+
 1. Set status to `preserve-uncertain`; record UTC time, exact attempt and candidate immutable references if known, failed ownership checks as categorical codes, and a digest of redacted diagnostics.
 2. Stop reconciliation, admission, retry, replacement, lease takeover, and success/zero promotion for the affected scope. Do not stop unrelated resources by discovered prefix or tag.
 3. Notify the authenticated campaign operator, campaign approver, security/evidence reviewer, budget approver, resource/service owner, and zero-inventory observer through the private incident channel. If an identity is absent or not distinct as required, record `identity-not-bound` and keep mutation blocked.
@@ -89,8 +91,12 @@ If any check is missing, stale, mismatched, conflicting, or unknown: **do not mu
 
 ## Prohibited cleanup shortcuts
 
+**Section authority:** [Authority: Stage 4 teardown boundary](../stage-4-teardown.md#boundary).
+
 Never use wildcard, recursive, account-wide, region-wide, prefix-wide, tag-only, label-only, namespace-wide, or "delete all" cleanup. Never delete a parent merely to remove unknown children; never force-detach or take over an uncertain retained volume/lease; never convert not-found, timeout, access denial, pagination gap, stale state, or observer failure into absence. Do not run a second attempt to see whether residue disappears.
 
 ## Completion record
+
+**Section authority:** [Planned STAGE5-45.11 / `future-zero-inventory-reference-v1`](../stage-5-api-key-release-acceptance-matrix.md#criterion-level-traceability).
 
 The future record must preserve exact candidate binding, authenticated producers, ordered phase evidence, per-resource outcomes, retained exceptions, uncertainty custody, cost, and independent inventory. In the current local/static scope, completion is always unavailable: cloud execution observed, cloud inventory observed, Stage 4 exit, and release eligibility remain false.

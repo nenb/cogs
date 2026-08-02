@@ -20,6 +20,15 @@
     "future_post_mvp_only": true,
     "worker_refresh_tokens": "forbidden"
   },
+  "policy_documents": [
+    {
+      "id": "runbook-policy",
+      "path": "docs/operations/runbooks/README.md",
+      "title": "Stage 5 draft operations runbooks",
+      "content_sha256": "1ff095369b6c8b062dbd5e2bc81db2c903e03067d7f463ecc857d82c6dbe8c73",
+      "status": "policy-local-static-only"
+    }
+  ],
   "fact_classes": [
     {
       "id": "assumptions",
@@ -51,7 +60,7 @@
       "id": "installation",
       "path": "docs/operations/runbooks/installation.md",
       "title": "Draft installation guide",
-      "content_sha256": "0057a3401d63872ef8c79abe0101be0f57bb3a5855054ce70c01008701627bd7",
+      "content_sha256": "95ab921eb2a6702449fbd004fecc717b6b07b5f2d6c2ed41c1a82d3318e8f4a6",
       "status": "draft-local-static-only",
       "evidence_contract": "future-operations-reference-v1"
     },
@@ -59,7 +68,7 @@
       "id": "prerequisites",
       "path": "docs/operations/runbooks/prerequisites.md",
       "title": "Draft prerequisites guide",
-      "content_sha256": "9123a9933f2a40e761447a7d1f227c91f9bd91f706f896210a5a43fc7dc490ca",
+      "content_sha256": "25294347bb079c533dc943aa8839076450081c4e4858c38f887c202ad65eb0f1",
       "status": "draft-local-static-only",
       "evidence_contract": "future-operations-reference-v1"
     },
@@ -67,7 +76,7 @@
       "id": "nic-configuration",
       "path": "docs/operations/runbooks/nic-configuration.md",
       "title": "Draft NIC configuration guide",
-      "content_sha256": "656a87ea4a9074507cb1ebaad4a50ac80c049b19d7ccc6bc5ed912c72a766690",
+      "content_sha256": "793ecdd1e1ef3d3ecb6710d8cb162563ea36a923b90c8a33e4ce61801f7e8aac",
       "status": "draft-local-static-only",
       "evidence_contract": "future-operations-reference-v1"
     },
@@ -75,7 +84,7 @@
       "id": "platform-matrix",
       "path": "docs/operations/runbooks/platform-matrix.md",
       "title": "Draft NIC and platform matrix",
-      "content_sha256": "ccea6ff78c154d6550abd6e548b8a140a72fa6e06ea0f4537bfad064a46e0e7e",
+      "content_sha256": "e26b609afa9361834396d9d62396b282e865b6aed0c6fc7a3ca5cd570f92f7ce",
       "status": "draft-local-static-only",
       "evidence_contract": "future-operations-reference-v1"
     },
@@ -83,7 +92,7 @@
       "id": "upgrade",
       "path": "docs/operations/runbooks/upgrade.md",
       "title": "Draft runtime and proxy upgrade runbook",
-      "content_sha256": "f50769b36f9a5938bf9fef02b370a4bd379991edb82eb1934f8288f80059ba5d",
+      "content_sha256": "d83cfec8098e4bf802103091b125bd000714b5edbc886f79f1bb154a530a83fd",
       "status": "draft-local-static-only",
       "evidence_contract": "future-operations-reference-v1"
     },
@@ -91,7 +100,7 @@
       "id": "openbao",
       "path": "docs/operations/runbooks/openbao.md",
       "title": "Draft OpenBao policy and revocation runbook",
-      "content_sha256": "3f184fc49c45b83adef79ef93b4269c2b5159486fed8ced669734c3e37272f42",
+      "content_sha256": "8dee140a8ce4922b1169461a67242311f3cd748e6d348e5ac71a779da747a24e",
       "status": "draft-local-static-only",
       "evidence_contract": "future-operations-reference-v1"
     },
@@ -99,7 +108,7 @@
       "id": "incident-response",
       "path": "docs/operations/runbooks/incident-response.md",
       "title": "Draft credential incident-response runbook",
-      "content_sha256": "2b6754b115ce29cedea46ad45f2d505a12ff7c03bb89189adb09944b4ac20e74",
+      "content_sha256": "4e1890723490382eb44eb1330f00d4a9b140e3d3107b770516bd72e6782d563a",
       "status": "draft-local-static-only",
       "evidence_contract": "future-operations-reference-v1"
     },
@@ -107,7 +116,7 @@
       "id": "cve-response",
       "path": "docs/operations/runbooks/cve-response.md",
       "title": "Draft node and runtime CVE response runbook",
-      "content_sha256": "fcbc4cd2982c8e9a5a40e281860c93a32c82dc68caf4a92c659b833eb01f3c09",
+      "content_sha256": "73a9274f56583085c415f8283946880c8d1d849da8042dbbd34f0231525d9790",
       "status": "draft-local-static-only",
       "evidence_contract": "future-operations-reference-v1"
     },
@@ -115,7 +124,7 @@
       "id": "retention-deletion",
       "path": "docs/operations/runbooks/retention-deletion.md",
       "title": "Draft backup, retention, export, and deletion guide",
-      "content_sha256": "1e6991abecd312a7693c51497ad7ff9981964ab859aa7d4a32cddb08d516e944",
+      "content_sha256": "d78fe24d32a19fb6c6c1a84893b824f275bd43a1ca28d18e989b35ef4e166365",
       "status": "draft-local-static-only",
       "evidence_contract": "future-operations-reference-v1"
     },
@@ -123,7 +132,7 @@
       "id": "capacity",
       "path": "docs/operations/runbooks/capacity.md",
       "title": "Draft capacity and cost planning guide",
-      "content_sha256": "52a106075bb33b6e31c9af782ebc7a7c974936f959f91dbd37e77ba4bfc6ad13",
+      "content_sha256": "4361bad89454f7a7a2220ff56184d9f4a680745e19184b7a81f7dec033105cf5",
       "status": "draft-local-static-only",
       "evidence_contract": "future-operations-reference-v1"
     },
@@ -131,7 +140,7 @@
       "id": "observability",
       "path": "docs/operations/runbooks/observability.md",
       "title": "Draft observability dashboard field reference",
-      "content_sha256": "cb4089202b506b7cf6a30e8b043be2ad10d45bdd4aec5085c4f7a0a9be21d99c",
+      "content_sha256": "acf92d50717f6a37782c1ee080e7c5c3588fb5730513eee13718f84600876093",
       "status": "draft-local-static-only",
       "evidence_contract": "future-operations-reference-v1"
     },
@@ -139,7 +148,7 @@
       "id": "limitations",
       "path": "docs/operations/runbooks/limitations.md",
       "title": "Draft known limitations and residual risks",
-      "content_sha256": "f8f54b3ffc31fc2c825e2e85ea553b562d20e58c125e351286952690a01a12a6",
+      "content_sha256": "38542c129787ea2706b4397f502216abe35345478a4c0353fb769a0cf4d840cb",
       "status": "draft-local-static-only",
       "evidence_contract": "future-operations-reference-v1"
     },
@@ -147,7 +156,7 @@
       "id": "teardown",
       "path": "docs/operations/runbooks/teardown.md",
       "title": "Draft teardown and orphan-resource verification guide",
-      "content_sha256": "1f55331a0b1da2d2c3fff0c72369f8d279664d2040ee96579dbe2cd5a9be641e",
+      "content_sha256": "3f2c197cb6c2e0f2caac9136e49e1b9c9881651039c7726343eaecb8861bb9c3",
       "status": "draft-local-static-only",
       "evidence_contract": "future-operations-reference-v1"
     }

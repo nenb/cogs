@@ -4,33 +4,38 @@ This is a review and evidence plan. It does not change a runtime, node, cluster,
 
 ## Assumptions
 
-- A future release process will produce immutable worker, sandbox, proxy, runtime, and node-image artifacts with signatures/digests and SBOMs.
-- A future platform will support draining at settled turn boundaries and bounded replacement without replaying an unknown prompt outcome.
-- Rollback safety is untested for the future EKS topology.
+| Assumption | Specific planning authority |
+|---|---|
+| A future process may produce immutable worker/sandbox/proxy/runtime/node-image artifacts with digests, signatures, and SBOMs. | [Authority: IMPLEMENTATION candidate controls](../../../IMPLEMENTATION.md#38-release-candidate-controls) |
+| A future platform may drain at settled boundaries and replace bounded resources without replaying unknown outcomes. | [Authority: DESIGN resource lifecycle](../../../DESIGN.md#18-resource-lifecycle-and-scale) |
+| Rollback safety is untested for the future EKS topology. | [Authority: IMPLEMENTATION recovery campaign](../../../IMPLEMENTATION.md#354-recovery-campaign) |
 
 ## Static contract facts
 
-- Current repository baseline includes Node.js `22.22.2`, Pi packages `0.80.6`, Envoy `1.38.3` at the pinned image digest, Kata `3.32.0` at its fixed archive digest, containerd `2.2.1`, QEMU `8.2.2`, and OpenBao `2.6.1` at its pinned fixture image digest.
-- The Envoy pin is a static input, not a runtime observation. Containerd and QEMU have version requirements but no bound binary digest in the offline package.
-- Session integration and mount changes require resource replacement. Secret or credential-version change denies new requests, drains connections, and requests replacement.
-- No upgrade may introduce TCG, `runc`, local-tool, open-egress, audit, identity, secret-source, or container fallback.
+| Static fact | Specific authority |
+|---|---|
+| Baseline pins include Node.js `22.22.2`, Pi `0.80.6`, Envoy `1.38.3` digest, Kata `3.32.0` digest, containerd `2.2.1`, QEMU `8.2.2`, and OpenBao `2.6.1` fixture digest. | [Authority: offline readiness exact bounded closure](../stage-4-offline-readiness.md#exact-bounded-closure) and [model-auth fixture](../stage-3-model-auth.md) |
+| Envoy is a static pin; containerd/QEMU version strings lack bound binary identity in the offline package. | [Authority: offline readiness exact bounded closure](../stage-4-offline-readiness.md#exact-bounded-closure) |
+| Integration/mount change requires replacement; secret version change denies, drains, and requests replacement. | [Authority: DESIGN MVP proxy construction](../../../DESIGN.md#112-mvp-proxy-construction) |
+| Upgrade cannot introduce TCG, `runc`, local-tool, open-egress, audit, identity, secret-source, or container fallback. | [Authority: IMPLEMENTATION required ADR points](../../../IMPLEMENTATION.md#47-required-adr-decision-points) |
 
 ## Authoritative-local facts
 
-- Current Linux/KVM tests cover the pinned local Stage 3 composition within their report applicability.
-- The local fixture can exercise OpenBao retrieval/revocation and Envoy behavior, but does not establish cluster rollout, node drain, CSI attach, or EKS rollback.
+| Local fact | Exact authority and applicability |
+|---|---|
+| Linux/KVM tests cover the pinned local Stage 3 composition only within report applicability. | [Authority: Stage 3 exit scope](../../test-reports/stage-3-s3-09-linux-kvm-exit.md#accepted-scope) |
+| Local OpenBao/Envoy fixtures establish no cluster rollout, node drain, CSI attach, or EKS rollback behavior. | [Authority: IMPLEMENTATION cross-stage matrix](../../../IMPLEMENTATION.md#46-cross-stage-test-matrix) |
 
 ## Future cloud evidence
 
-Every component upgrade needs candidate-specific evidence for:
-
-- immutable source, lock, image, SBOM, signature, and vulnerability disposition;
-- compatibility across worker, Pi, SSH, Envoy, OpenBao, Kata, QEMU, containerd, kernel, CNI, CSI, and NIC closure;
-- no-drift scheduling/runtime/network/identity policies and no fallback;
-- canary startup, settled-turn drain, connection revocation, persistent-state continuity, failure behavior, and exact rollback;
-- post-change conformance, privacy inspection, capacity, cost, destroy, and independent inventory.
-
-The [Stage 5 matrix](../stage-5-api-key-release-acceptance-matrix.md) remains unexecuted and cannot be satisfied by a local version bump.
+| Required future observation | Planned criterion, evidence contract, and location |
+|---|---|
+| Bind immutable source/lock/image/SBOM/signature and vulnerability disposition. | [Planned STAGE5-45.02–.03 / `future-independent-review-reference-v1`](../stage-5-api-key-release-acceptance-matrix.md#criterion-level-traceability) |
+| Demonstrate compatibility across worker, Pi, SSH, Envoy, OpenBao, Kata, QEMU, containerd, kernel, CNI, CSI, and NIC. | [Planned DESIGN-24.1–.20 / `future-local-test-reference-v1`, `future-eks-conformance-reference-v1`](../stage-5-api-key-release-acceptance-matrix.md#criterion-level-traceability) |
+| Prove no-drift placement/runtime/network/identity and no fallback. | [Planned DESIGN-24.4–.12 / `future-eks-conformance-reference-v1`](../stage-5-api-key-release-acceptance-matrix.md#criterion-level-traceability) |
+| Observe canary startup, settled drain, revocation, state continuity, failure, and exact rollback. | [Planned STAGE5-45.07 / `future-eks-conformance-reference-v1`](../stage-5-api-key-release-acceptance-matrix.md#criterion-level-traceability) |
+| Rerun conformance, privacy, capacity, cost, destroy, and independent inventory. | [Planned STAGE5-45.05, .08–.11 / `future-load-reference-v1`, `future-privacy-deletion-reference-v1`, `future-zero-inventory-reference-v1`](../stage-5-api-key-release-acceptance-matrix.md#criterion-level-traceability) |
+| Matrix remains unexecuted; local version change cannot satisfy it. | [Authority: matrix non-authority](../stage-5-api-key-release-acceptance-matrix.md#purpose-and-non-authority) |
 
 ## Static preparation sequence
 

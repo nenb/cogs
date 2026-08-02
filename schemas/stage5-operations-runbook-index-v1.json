@@ -5,7 +5,7 @@
   "description": "A strict documentation inventory only; never operations evidence, campaign authority, or a release decision.",
   "type": "object",
   "additionalProperties": false,
-  "maxProperties": 18,
+  "maxProperties": 19,
   "required": [
     "version",
     "authority",
@@ -23,6 +23,7 @@
     "compliance_certified",
     "go_no_go",
     "subscription_oauth",
+    "policy_documents",
     "fact_classes",
     "runbooks"
   ],
@@ -53,6 +54,23 @@
         "future_post_mvp_only": { "const": true },
         "worker_refresh_tokens": { "const": "forbidden" }
       }
+    },
+    "policy_documents": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 1,
+      "prefixItems": [
+        {
+          "$ref": "#/$defs/policyDocument",
+          "type": "object",
+          "properties": {
+            "id": { "const": "runbook-policy" },
+            "path": { "const": "docs/operations/runbooks/README.md" },
+            "title": { "const": "Stage 5 draft operations runbooks" }
+          }
+        }
+      ],
+      "items": false
     },
     "fact_classes": {
       "type": "array",
@@ -225,6 +243,19 @@
     }
   },
   "$defs": {
+    "policyDocument": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 5,
+      "required": ["id", "path", "title", "content_sha256", "status"],
+      "properties": {
+        "id": { "const": "runbook-policy" },
+        "path": { "const": "docs/operations/runbooks/README.md" },
+        "title": { "const": "Stage 5 draft operations runbooks" },
+        "content_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "status": { "const": "policy-local-static-only" }
+      }
+    },
     "factClass": {
       "type": "object",
       "additionalProperties": false,

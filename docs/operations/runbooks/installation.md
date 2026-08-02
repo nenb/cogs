@@ -4,38 +4,40 @@ This guide stops at local/static preparation. It does not install into a cluster
 
 ## Assumptions
 
-- A future platform team will supply the daemon, authenticated user mapping, session scheduling, approved cluster-scoped Kata installation, CNI, CSI, OpenBao, and OTLP services that Cogs itself does not provide.
-- A future installation will use synthetic data until a separate data-handling decision exists.
-- Exact accounts, principals, regions, prices, quotas, images, node images, and campaign approval are absent today.
-
-These assumptions are admission questions, not facts.
+| Assumption | Specific planning authority |
+|---|---|
+| A future platform team supplies daemon, identity, scheduling, cluster-scoped Kata, CNI, CSI, OpenBao, and OTLP dependencies; Cogs does not supply them. | [Authority: DESIGN §5.1 logical session resources](../../../DESIGN.md#51-logical-session-resources) and [IMPLEMENTATION §33 pack boundary](../../../IMPLEMENTATION.md#33-helm-software-pack) |
+| Synthetic data remains the only proposed installation data until a separate handling decision exists. | [Authority: IMPLEMENTATION §38 candidate controls](../../../IMPLEMENTATION.md#38-release-candidate-controls) |
+| Accounts, principals, regions, prices, quotas, images, node images, and campaign approval are absent. | [Authority: Stage 4 offline readiness current blockers](../stage-4-offline-readiness.md#current-blockers-preserved-exactly) |
 
 ## Static contract facts
 
-- The checked Helm chart is version `0.0.1` and is a NOTES-only scaffold that submits zero manifests. Enabled source shapes are unsafe and unqualified notes, not an installer.
-- The offline package uses synthetic `.invalid` worker and sandbox image references. It contains no release image set or executable provider route.
-- The sandbox contract requires `kata-qemu-cogs`, KVM only, and no `runc` or TCG fallback. Trusted worker/proxy and sandbox scheduling domains are disjoint.
-- Workspace and trusted session state are distinct retained roles; see the [storage/launch contract](../stage-4-storage-launch-contract.md).
-- The NIC source is blocked and the EKS AMI/image/kernel pin is unresolved; see the [NIC contract](../stage-4-nic-node-group-contract.md).
+| Static fact | Specific authority |
+|---|---|
+| Chart `0.0.1` is a NOTES-only zero-manifest scaffold; enabled notes are not an installer. | [Authority: offline readiness exact bounded closure](../stage-4-offline-readiness.md#exact-bounded-closure) |
+| Worker/sandbox image references are synthetic `.invalid` values; no image set or executable provider route exists. | [Authority: offline readiness exact bounded closure](../stage-4-offline-readiness.md#exact-bounded-closure) |
+| Sandbox runtime is exactly `kata-qemu-cogs`, KVM-only, without `runc` or TCG fallback; scheduling domains are disjoint. | [Authority: NIC exact node-group contract](../stage-4-nic-node-group-contract.md#exact-node-group-contract) |
+| Workspace and trusted session state are distinct retained roles. | [Authority: storage/launch separate durable roles](../stage-4-storage-launch-contract.md#separate-durable-storage-roles) |
+| NIC source capability and EKS image/kernel pins remain blocked. | [Authority: NIC current blockers](../stage-4-nic-node-group-contract.md#authenticated-public-source-pin-and-current-blockers) |
 
 ## Authoritative-local facts
 
-- Node.js `22.22.2` is the checked local baseline.
-- The accepted [Stage 3 Linux/KVM report](../../test-reports/stage-3-s3-09-linux-kvm-exit.md) is authoritative only for its exact local guest-root profile.
-- The insecure container is functional-only. A macOS VM has no authoritative host-network/default-deny claim.
-
-None of these facts proves cluster installation behavior.
+| Local fact | Exact authority and applicability |
+|---|---|
+| Node.js `22.22.2` is the checked local baseline. | [Authority: README local checks](../../../README.md#local-checks) |
+| Accepted Linux/KVM evidence is authoritative only for its exact local guest-root profile. | [Authority: Stage 3 Linux/KVM exit scope](../../test-reports/stage-3-s3-09-linux-kvm-exit.md#accepted-scope) |
+| Insecure container is functional-only; macOS VM has no authoritative host-network/default-deny claim. | [Authority: CI profile schedule](../ci-schedule.md#ci-and-conformance-schedule) |
+| No local fact proves cluster installation behavior. | [Authority: IMPLEMENTATION cross-stage matrix](../../../IMPLEMENTATION.md#46-cross-stage-test-matrix) |
 
 ## Future cloud evidence
 
-A separately approved exact-revision campaign must establish, with real dependencies:
-
-- exact source and image digests, node image/kernel, Kata/QEMU/containerd identity, and active KVM acceleration;
-- actual RuntimeClass, CNI dual-stack default deny, CSI modes, OpenBao workload identity, OTLP, audit WAL, and scheduler separation;
-- repeatable install, readiness, failure, and destroy behavior with independent inventory;
-- the applicable S4-11 and [Stage 5 matrix](../stage-5-api-key-release-acceptance-matrix.md) evidence bindings.
-
-No campaign is authorized by this list.
+| Required future observation | Planned criterion, evidence contract, and location |
+|---|---|
+| Bind exact source/images, node image/kernel, Kata/QEMU/containerd identity, and active KVM acceleration. | [Planned DESIGN-24.3–.5 / `future-local-test-reference-v1` and `future-eks-conformance-reference-v1`](../stage-5-api-key-release-acceptance-matrix.md#criterion-level-traceability) |
+| Observe RuntimeClass, dual-stack CNI default deny, CSI modes, OpenBao workload identity, OTLP, audit WAL, and scheduler separation with real dependencies. | [Planned DESIGN-24.4–.12 / `future-eks-conformance-reference-v1`](../stage-5-api-key-release-acceptance-matrix.md#criterion-level-traceability) |
+| Demonstrate repeatable install, readiness, failures, destroy, and independent inventory. | [Planned STAGE5-45.07, .10, .11 / `future-eks-conformance-reference-v1`, `future-operations-reference-v1`, `future-zero-inventory-reference-v1`](../stage-5-api-key-release-acceptance-matrix.md#criterion-level-traceability) |
+| Bind S4-11 and every applicable Stage 5 item to one exact candidate. | [Planned STAGE5-45.01 / `future-acceptance-index-reference-v1` finalization rule](../stage-5-api-key-release-acceptance-matrix.md#finalization-rule-for-a-future-authority) |
+| This table authorizes no campaign. | [Authority: offline package required identities and one-attempt authority](../stage-4-offline-readiness.md#required-identities-and-one-attempt-authority) |
 
 ## Local/static preparation procedure
 
@@ -60,5 +62,7 @@ No campaign is authorized by this list.
 6. Record unresolved prerequisites and stop. Do not initialize a provider, contact a cluster, call an external model, or create a resource.
 
 ## Future installation hold points
+
+**Section authority:** [Planned STAGE5-45.10 / `future-operations-reference-v1`](../stage-5-api-key-release-acceptance-matrix.md#criterion-level-traceability).
 
 A future authority must stop before each of these transitions: campaign request, cluster-scoped runtime change, identity/secret binding, first sandbox admission, first credentialed egress, and first persistent-data use. Each transition needs exact evidence, a named accountable principal, and a separately scoped approval. Missing or stale evidence leaves readiness false.

@@ -4,28 +4,40 @@ Use this decision plan when a model or integration API key, proxy capability, SS
 
 ## Assumptions
 
-- A future platform will have authenticated incident commander, credential owner, evidence custodian, and affected-user notification roles.
-- It may be possible to deny admissions, revoke exact credentials, drain exact sessions, and rotate keys without affecting unrelated tenants.
-- Those control surfaces and response times are not established for a cloud profile.
+| Assumption | Specific planning authority |
+|---|---|
+| A future platform may bind incident commander, credential owner, evidence custodian, and notification roles. | [Authority: IMPLEMENTATION independent review and operations roles](../../../IMPLEMENTATION.md#392-independent-review) |
+| Future controls may deny admissions, revoke exact credentials, drain exact sessions, and rotate without unrelated tenant impact. | [Authority: DESIGN failure behavior](../../../DESIGN.md#21-failure-behavior) |
+| Cloud control surfaces and response times are not established. | [Authority: provisional matrix non-authority](../stage-5-api-key-release-acceptance-matrix.md#purpose-and-non-authority) |
 
 ## Static contract facts
 
-- The narrow guarantee is that a sandbox cannot read the real credential value; it does not prevent confused-deputy misuse of an allowed capability or exfiltration to an approved write-capable destination.
-- Credential-use authorization and audit-WAL append fail closed. OpenBao startup failure or secret revocation leaves egress unavailable.
-- Existing HTTP/2, gRPC, SSE, or WebSocket-like streams do not become safe merely because new requests are denied; supported connections must be drained/reset. WebSockets and general gRPC are outside the MVP support boundary.
-- Central telemetry excludes prompts, model output, source, complete commands, arbitrary paths, query strings, bodies, tool output, credentials, and placeholders.
-- Unknown prompt outcomes are never silently replayed.
+| Static fact | Specific authority |
+|---|---|
+| Sandbox cannot read real credential value; this does not prevent confused-deputy misuse or source transfer to an approved write endpoint. | [Authority: DESIGN narrow credential guarantee](../../../DESIGN.md#41-narrow-credential-guarantee) |
+| Credential authorization/WAL append fails closed; OpenBao startup failure or revocation leaves egress unavailable. | [Authority: DESIGN audit fail-closed behavior](../../../DESIGN.md#114-audit-fail-closed-behavior) |
+| Existing streams require drain/reset; WebSockets and general gRPC are outside MVP boundary. | [Authority: DESIGN supported compatibility classes](../../../DESIGN.md#115-supported-compatibility-classes) |
+| Central telemetry excludes prompts/output/source/complete commands/arbitrary paths/query/body/tool output/credentials/placeholders. | [Authority: DESIGN privacy defaults](../../../DESIGN.md#162-privacy-defaults) |
+| Unknown prompt outcomes are never silently replayed. | [Authority: DESIGN failure behavior](../../../DESIGN.md#21-failure-behavior) |
 
 ## Authoritative-local facts
 
-- Local Stage 3 evidence exercises API-key resolution, redaction, fail-closed proxy/WAL paths, revocation handling, and guest-root boundary in Linux/KVM within its exact applicability.
-- It is not evidence of cloud identity, organization notification, provider-side key revocation, EKS containment, or multi-session blast radius.
+| Local fact | Exact authority and applicability |
+|---|---|
+| Stage 3 locally exercises API-key resolution, redaction, proxy/WAL denial, revocation handling, and Linux/KVM guest-root boundary. | [Authority: Stage 3 exit evidence](../../test-reports/stage-3-s3-09-linux-kvm-exit.md#automatic-acceptance) |
+| It proves no cloud identity, organization notification, provider-side revocation, EKS containment, or multi-session blast radius. | [Authority: Stage 3 exit scope](../../test-reports/stage-3-s3-09-linux-kvm-exit.md#accepted-scope) |
 
 ## Future cloud evidence
 
-The future response evidence plan must measure exact detection-to-denial, detection-to-connection-reset, rotation, replacement, recovery, and independent closure times with real dependencies. It must prove tenant/session scoping, no secret in collected artifacts, no unrelated deletion, and continued denial under OpenBao, proxy, OTLP, node, or storage failure. These remain requirements in the [Stage 5 matrix](../stage-5-api-key-release-acceptance-matrix.md).
+| Required future observation | Planned criterion, evidence contract, and location |
+|---|---|
+| Measure detection-to-denial/reset, rotation, replacement, recovery, and independent closure with real dependencies. | [Planned STAGE5-45.07, .10 / `future-eks-conformance-reference-v1`, `future-operations-reference-v1`](../stage-5-api-key-release-acceptance-matrix.md#criterion-level-traceability) |
+| Prove tenant/session scoping and absence of secrets in collected artifacts. | [Planned DESIGN-24.12, .22 and STAGE5-45.08 / `future-eks-conformance-reference-v1`, `future-independent-review-reference-v1`](../stage-5-api-key-release-acceptance-matrix.md#criterion-level-traceability) |
+| Prove no unrelated deletion and continued denial through OpenBao/proxy/OTLP/node/storage failures. | [Planned STAGE5-45.07, .09, .11 / `future-eks-conformance-reference-v1`, `future-privacy-deletion-reference-v1`, `future-zero-inventory-reference-v1`](../stage-5-api-key-release-acceptance-matrix.md#criterion-level-traceability) |
 
 ## Classification
+
+**Section authority:** [Authority: DESIGN failure behavior](../../../DESIGN.md#21-failure-behavior).
 
 | Severity | Trigger | Initial disposition |
 |---|---|---|

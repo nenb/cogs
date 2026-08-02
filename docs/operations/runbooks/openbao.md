@@ -4,37 +4,45 @@ This guide contains no OpenBao command, token, endpoint credential, or secret va
 
 ## Assumptions
 
-- A future cluster will provide authenticated, session-scoped worker identity and an OpenBao policy that can resolve only launch-authorized handles.
-- A future daemon/integration service will deliver immediate revocation signals and replace affected immutable worker/proxy resources.
-- OpenBao HA, backup, unseal, disaster recovery, and cluster ownership are external platform responsibilities and are not implemented here.
+| Assumption | Specific planning authority |
+|---|---|
+| A future cluster may provide session-scoped worker identity and exact launch-authorized OpenBao policy. | [Authority: IMPLEMENTATION identity and secrets tasks](../../../IMPLEMENTATION.md#325-identity-and-secrets) |
+| A future daemon/integration service may signal revocation and replace affected immutable worker/proxy resources. | [Authority: DESIGN MVP proxy construction](../../../DESIGN.md#112-mvp-proxy-construction) |
+| OpenBao HA, backup, unseal, disaster recovery, and cluster ownership remain external and unimplemented here. | [Authority: DESIGN trust domains](../../../DESIGN.md#42-trust-domains) |
 
 ## Static contract facts
 
-- Model and integration API keys are resolved by trusted code from handles; values remain in memory or trusted tmpfs and are forbidden from launch documents, logs, telemetry, durable reports, and the sandbox.
-- OpenBao PKI owns the CA private key. The sandbox receives only the public egress CA.
-- Missing identity, policy denial, missing/revoked secret, stale metadata, OpenBao outage at startup, or audit-WAL failure fails closed.
-- Revocation denies new requests, drains established connections, invalidates old proxy capability, and requests immutable replacement. Metadata polling is bounded to no more than 60 seconds as a backstop; it is not described as instant revocation for existing streams.
-- Subscription OAuth is disabled and unadvertised. Issue #13 is future post-MVP work only; no worker refresh-token policy exists or may be added through this runbook.
+| Static fact | Specific authority |
+|---|---|
+| Trusted code resolves API-key handles; values stay in memory/trusted tmpfs and are forbidden from launch, logs, telemetry, durable reports, and sandbox. | [Authority: DESIGN MVP proxy construction](../../../DESIGN.md#112-mvp-proxy-construction) |
+| OpenBao PKI retains the CA private key; sandbox receives only public egress CA. | [Authority: DESIGN secret-injected egress placement](../../../DESIGN.md#111-placement) |
+| Missing identity/policy/secret, stale metadata, startup outage, or WAL failure fails closed. | [Authority: DESIGN failure behavior](../../../DESIGN.md#21-failure-behavior) |
+| Revocation denies new requests, drains connections, invalidates old capability, and requests replacement; metadata polling is at most 60 seconds and not instant for existing streams. | [Authority: DESIGN MVP proxy construction](../../../DESIGN.md#112-mvp-proxy-construction) |
+| Subscription OAuth is disabled/unadvertised; issue #13 is future post-MVP only; workers have no refresh-token policy. | [Authority: provisional matrix OAuth blocker](../stage-5-api-key-release-acceptance-matrix.md#subscription-oauth-blocker) |
 
 ## Authoritative-local facts
 
-- The local functional smoke uses OpenBao `2.6.1` at digest `sha256:5b2486ab0fb90bbc788cc345b0a08616dfb375873ee8be5df3a2fd4d378a67e0`, a fresh file-backed loopback fixture, an exact KV-v2 read policy, and a short-lived orphan read token.
-- It verifies exact-path read, cross-path denial, revocation, generic errors, and cleanup. It is functional-only and proves neither Kubernetes auth nor multi-tenant production policy.
-- The current OpenBao-specific vulnerability dispositions are described in [Stage 3 model-auth notes](../stage-3-model-auth.md) and must be handled by the [CVE runbook](cve-response.md).
+| Local fact | Exact authority and applicability |
+|---|---|
+| Functional smoke uses OpenBao `2.6.1` at exact digest, fresh loopback file fixture, exact KV-v2 policy, and short-lived orphan read token. | [Authority: Stage 3 model-auth local smoke](../stage-3-model-auth.md) |
+| Smoke verifies exact read, cross-path denial, revocation, generic errors, and cleanup; it proves no Kubernetes auth or multi-tenant policy. | [Authority: Stage 3 model-auth boundaries](../stage-3-model-auth.md) |
+| OpenBao vulnerability dispositions are fixture-scoped and handled by the CVE guide. | [Authority: Stage 3 model-auth local smoke](../stage-3-model-auth.md) and [planned CVE procedure](cve-response.md#response-flow) |
 
 ## Future cloud evidence
 
-A future exact-run authority must establish:
-
-- authenticated workload identity and exact user/session/handle policy boundaries;
-- no token, handle usable by the sandbox, CA key, or real secret in workload specs or durable stores;
-- PKI issuance, SAN/lifetime bounds, rotation, expiry, and failure behavior;
-- direct metadata version/delete detection within the declared bound and immediate signal handling;
-- denial of new traffic, reset/drain of HTTP/2 and other established streams, old-capability invalidation, and immutable replacement;
-- audit intent before credential use, WAL-full denial, redacted completion records, and OTLP-outage behavior;
-- backup/recovery behavior owned by the external platform and evidence of post-campaign revocation/cleanup.
+| Required future observation | Planned criterion, evidence contract, and location |
+|---|---|
+| Authenticate workload identity and exact user/session/handle boundaries. | [Planned DESIGN-24.4 / `future-eks-conformance-reference-v1`](../stage-5-api-key-release-acceptance-matrix.md#criterion-level-traceability) |
+| Prove no sandbox-usable token/handle, CA key, or real secret in specs/durable stores. | [Planned DESIGN-24.4, .12–.14 / `future-eks-conformance-reference-v1`](../stage-5-api-key-release-acceptance-matrix.md#criterion-level-traceability) |
+| Observe PKI issuance, SAN/lifetime, rotation, expiry, and failures. | [Planned DESIGN-24.4, .11 / `future-eks-conformance-reference-v1`](../stage-5-api-key-release-acceptance-matrix.md#criterion-level-traceability) |
+| Detect direct metadata version/delete within bound and immediate signal handling. | [Planned DESIGN-24.11 / `future-eks-conformance-reference-v1`](../stage-5-api-key-release-acceptance-matrix.md#criterion-level-traceability) |
+| Deny new traffic, reset established streams, invalidate old capability, and replace immutably. | [Planned DESIGN-24.11–.12 / `future-eks-conformance-reference-v1`](../stage-5-api-key-release-acceptance-matrix.md#criterion-level-traceability) |
+| Observe audit-before-use, WAL-full denial, redacted completion, and OTLP outage behavior. | [Planned DESIGN-24.10, .22 / `future-eks-conformance-reference-v1`, `future-load-reference-v1`](../stage-5-api-key-release-acceptance-matrix.md#criterion-level-traceability) |
+| Bind external backup/recovery and post-campaign revocation/cleanup. | [Planned STAGE5-45.09, .11 / `future-privacy-deletion-reference-v1`, `future-zero-inventory-reference-v1`](../stage-5-api-key-release-acceptance-matrix.md#criterion-level-traceability) |
 
 ## Policy review checklist
+
+**Section authority:** [Authority: DESIGN model authentication](../../../DESIGN.md#12-model-authentication).
 
 For each API-key handle, record only opaque digest references and verify conceptually:
 
