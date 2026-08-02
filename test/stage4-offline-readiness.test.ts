@@ -141,9 +141,11 @@ test("committed inventories are canonical, complete for their scopes, and bind e
 
   const sourcePath = "docs/security-evidence/stage4-offline-readiness-artifacts/source-inventory.json";
   const source = readManifest(sourcePath);
-  if (existsSync(STAGE4_PINNED_GIT.executable)) {
-    assert.deepEqual(bytes(sourcePath), generateStage4SourceInventory(root));
-  }
+  const pinnedGitAvailable =
+    existsSync(STAGE4_PINNED_GIT.executable) &&
+    stage4OfflineReadinessSha256(new Uint8Array(readFileSync(STAGE4_PINNED_GIT.executable)), 64 * 1024 * 1024) ===
+      STAGE4_PINNED_GIT.sha256;
+  if (pinnedGitAvailable) assert.deepEqual(bytes(sourcePath), generateStage4SourceInventory(root));
   assert.deepEqual(
     source.excluded_self_referential_outputs.map((row: { path: string }) => row.path),
     STAGE4_SOURCE_INVENTORY_EXCLUSIONS,
