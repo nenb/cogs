@@ -32,10 +32,10 @@ const realCredential = `Bearer cogs-fixture-${randomBytes(24).toString("hex")}`;
 const apiCredential = `cogs-api-${randomBytes(24).toString("hex")}`;
 const basicCredential = `Basic ${Buffer.from(`fixture:${randomBytes(24).toString("hex")}`).toString("base64")}`;
 const capability = `Basic ${Buffer.from(`cogs:${randomBytes(24).toString("hex")}`).toString("base64")}`;
-const wrongCapability = `Basic ${Buffer.from(`wrong:${randomBytes(24).toString("hex")}`).toString("base64")}`;
+const wrongCapability = `Basic ${Buffer.from(`cogs:${randomBytes(24).toString("hex")}`).toString("base64")}`;
 const placeholder = "Bearer cogs-non-secret-placeholder";
 const sessionId = "session-envoy-suite";
-const replacementCapability = `Basic ${Buffer.from(`replacement:${randomBytes(24).toString("hex")}`).toString("base64")}`;
+const replacementCapability = `Basic ${Buffer.from(`cogs:${randomBytes(24).toString("hex")}`).toString("base64")}`;
 const sensitiveValues = [
   realCredential,
   apiCredential,

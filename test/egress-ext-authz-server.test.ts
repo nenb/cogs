@@ -16,10 +16,12 @@ import {
   CogsExtAuthzServerError,
   startCogsExtAuthzServer,
 } from "../src/egress/ext-authz-server.ts";
+import { encodeProxyAuthorizationBasic } from "../src/egress/proxy-capability.ts";
 import type { CogsEgressRoutePlan } from "../src/egress/route-policy.ts";
 
 const token = "internal-token-1";
 const capability = "capability-token-0123456789";
+const proxyAuthorization = encodeProxyAuthorizationBasic(capability);
 const session = "session-1";
 const routeId = "route-https";
 
@@ -130,7 +132,7 @@ async function call(
   });
 }
 
-function capabilityRequest(auth = capability): unknown {
+function capabilityRequest(auth = proxyAuthorization): unknown {
   return request({ mode: "capability", requireCapability: true, credentialRequired: false, proxyAuthorization: auth });
 }
 function authorizeRequest(
@@ -165,6 +167,7 @@ function request(input: {
   requireCapability: boolean;
   credentialRequired: boolean;
   proxyAuthorization?: string;
+  proxyAuthorizationValues?: readonly string[];
   method?: string;
   host?: string;
   path?: string;
@@ -182,10 +185,9 @@ function request(input: {
       ],
       request: {
         http: {
-          headers:
-            input.proxyAuthorization === undefined
-              ? []
-              : [{ key: "proxy-authorization", value: input.proxyAuthorization }],
+          headers: (
+            input.proxyAuthorizationValues ?? (input.proxyAuthorization === undefined ? [] : [input.proxyAuthorization])
+          ).map((value) => ({ key: "proxy-authorization", value })),
           ...(input.method === undefined ? {} : { method: input.method }),
           ...(input.host === undefined ? {} : { host: input.host }),
           ...(input.path === undefined ? {} : { path: input.path }),
@@ -205,17 +207,55 @@ function intentId(response: unknown): string | undefined {
   ).dynamic_metadata?.fields?.find((f) => f.key === "x-cogs-intent-id")?.value.string_value;
 }
 
+test("proxy capability wire encoding is fixed Basic username and canonical Base64", () => {
+  assert.equal(proxyAuthorization, "Basic Y29nczpjYXBhYmlsaXR5LXRva2VuLTAxMjM0NTY3ODk=");
+  assert.throws(() => encodeProxyAuthorizationBasic(""));
+  assert.throws(() => encodeProxyAuthorizationBasic("contains space capability"));
+});
+
 test("loopback server authorizes capability without WAL or intent metadata", async () => {
   await withTempWal(async (wal) => {
     await withServer(wal, async (server) => {
       const ok = await call(server.target, capabilityRequest());
       assert.equal(intentId(ok), undefined);
       assert.equal(wal.records.length, 0);
+      const wrongPassword = encodeProxyAuthorizationBasic("wrong-capability-0123456789");
+      const wrongUsername = `Basic ${Buffer.from(`other:${capability}`, "ascii").toString("base64")}`;
+      for (const malformed of [
+        capability,
+        `Bearer ${capability}`,
+        "Basic",
+        "Basic ",
+        `basic ${proxyAuthorization.slice("Basic ".length)}`,
+        `Basic  ${proxyAuthorization.slice("Basic ".length)}`,
+        proxyAuthorization.replace(/=$/u, ""),
+        "Basic !!!=",
+        "Basic Y29nczph===",
+        `Basic ${Buffer.from("cogs:", "ascii").toString("base64")}`,
+        wrongUsername,
+        wrongPassword,
+        `${proxyAuthorization}, ${proxyAuthorization}`,
+      ]) {
+        assert.equal(
+          deniedCode(await call(server.target, capabilityRequest(malformed))),
+          "ProxyAuthenticationRequired",
+        );
+      }
+      assert.equal(deniedCode(await call(server.target, capabilityRequest(""))), "Forbidden");
       assert.equal(
-        deniedCode(await call(server.target, capabilityRequest(`Bearer ${capability}`))),
-        "ProxyAuthenticationRequired",
+        deniedCode(
+          await call(
+            server.target,
+            request({
+              mode: "capability",
+              requireCapability: true,
+              credentialRequired: false,
+              proxyAuthorizationValues: [proxyAuthorization, proxyAuthorization],
+            }),
+          ),
+        ),
+        "Forbidden",
       );
-      assert.equal(deniedCode(await call(server.target, capabilityRequest("wrong"))), "ProxyAuthenticationRequired");
       assert.equal(
         deniedCode(
           await call(
@@ -579,6 +619,7 @@ test("ext-authz worker telemetry preserves WAL-before-allow ordering and redacti
       nowMs: () => 100,
     });
     try {
+      await call(server.target, capabilityRequest());
       await call(server.target, authorizeRequest());
       timeline.push("allow-callback");
       assert.equal(wal.records.length, 1);
@@ -587,6 +628,8 @@ test("ext-authz worker telemetry preserves WAL-before-allow ordering and redacti
       assert.ok(text.includes("wal.depth"));
       assert.ok(text.includes("egress.authorize"));
       assert.equal(text.includes(routeId), false);
+      assert.equal(text.includes(capability), false);
+      assert.equal(text.includes(proxyAuthorization), false);
       assert.equal(/SECRET|query|account|request|correlation|integration/.test(text), false);
       assert.ok(timeline.indexOf("append-complete") < timeline.indexOf("wal.append"));
       assert.ok(timeline.indexOf("wal.append") < timeline.indexOf("wal.depth"));

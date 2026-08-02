@@ -14,6 +14,7 @@ import type { OpenBaoIdentityPort } from "../../../src/auth/model-auth.ts";
 import { createNodeCogsEnvoyProcessPort } from "../../../src/egress/envoy-process.ts";
 import { OpenBaoEgressPkiSource } from "../../../src/egress/openbao-pki.ts";
 import { canonicalPresetPolicyRevision } from "../../../src/egress/preset-revision.ts";
+import { encodeProxyAuthorizationBasic } from "../../../src/egress/proxy-capability.ts";
 import { type CogsEgressRuntimeManager, startCogsEgressRuntimeManager } from "../../../src/egress/runtime-manager.ts";
 import type { LaunchConfig } from "../../../src/launch/config.ts";
 import { assertValidSecurityReport, writeReports } from "../controller/report.ts";
@@ -56,6 +57,9 @@ const expectedAuthorizationV2 = `Bearer ${bearerTokenV2}`;
 const proxyCapability = `cogs-proxy-${randomBytes(24).toString("hex")}`;
 const proxyCapabilityV2 = `cogs-proxy-v2-${randomBytes(24).toString("hex")}`;
 const wrongCapability = `cogs-wrong-${randomBytes(24).toString("hex")}`;
+const proxyAuthorization = encodeProxyAuthorizationBasic(proxyCapability);
+const proxyAuthorizationV2 = encodeProxyAuthorizationBasic(proxyCapabilityV2);
+const wrongProxyAuthorization = encodeProxyAuthorizationBasic(wrongCapability);
 const revocationPollIntervalMs = 500;
 const revocationObservationBoundMs = 20_000;
 const harnessReplacementReadyBoundMs = 40_000;
@@ -856,6 +860,9 @@ async function main(): Promise<void> {
           proxyCapability,
           proxyCapabilityV2,
           wrongCapability,
+          proxyAuthorization,
+          proxyAuthorizationV2,
+          wrongProxyAuthorization,
           secretHandle,
           upstreamPrivateKey,
           ...forbiddenSecrets,
@@ -877,6 +884,9 @@ async function main(): Promise<void> {
           proxyCapability,
           proxyCapabilityV2,
           wrongCapability,
+          proxyAuthorization,
+          proxyAuthorizationV2,
+          wrongProxyAuthorization,
           secretHandle,
           upstreamPrivateKey,
           ...forbiddenSecrets,
@@ -1111,7 +1121,7 @@ async function proxyProbe(
         "--noproxy",
         "",
         "--proxy-header",
-        `Proxy-Authorization: ${capability}`,
+        `Proxy-Authorization: ${encodeProxyAuthorizationBasic(capability)}`,
         `https://localhost:${upstreamPort}${path}`,
       ],
       { timeout: (maxTimeSeconds + 5) * 1000, maxBuffer: 1024 * 1024, windowsHide: true },
@@ -1149,7 +1159,7 @@ async function guestProbe(
       COGS_SUITE_GUEST_PROXY: "http://192.0.2.1:18080",
       COGS_SUITE_TARGET_PORT: String(targetPort),
       COGS_SUITE_PUBLIC_CA: trustPath,
-      COGS_SUITE_CAPABILITY: capability,
+      COGS_SUITE_CAPABILITY: encodeProxyAuthorizationBasic(capability),
       COGS_SUITE_SCENARIO: scenario,
       COGS_SUITE_KIND: kind,
       COGS_SUITE_EXPECT: expect,
