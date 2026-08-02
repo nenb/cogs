@@ -512,6 +512,9 @@ export function evaluateStage4StorageLaunchGraph(input: unknown): Stage4StorageL
 
 /** Validates bounded canonical JSON bytes without reading any path or contacting any dependency. */
 export function validateStage4StorageLaunchBytes(input: Uint8Array): Stage4StorageLaunchVerdict {
+  if (utilTypes.isProxy(input)) {
+    return verdict("reject", "STAGE4_STORAGE_LAUNCH_INVALID_SHAPE", null);
+  }
   if (input.byteLength === 0 || input.byteLength > STAGE4_STORAGE_LAUNCH_LIMITS.maxContractBytes) {
     return verdict("preserve-uncertain", "STAGE4_BOUNDED_IO_VIOLATION", null);
   }

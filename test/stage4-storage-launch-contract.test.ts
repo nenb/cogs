@@ -388,6 +388,29 @@ test("canonical byte input is bounded and rejects malformed or noncanonical I/O"
   const canonical = canonicalStage4StorageLaunchBytes(value);
   assert.ok(canonical.byteLength < STAGE4_STORAGE_LAUNCH_LIMITS.maxContractBytes);
   assert.equal(validateStage4StorageLaunchBytes(canonical).status, "admissible-static-graph");
+
+  let byteProxyTraps = 0;
+  const proxiedBytes = new Proxy(canonical, {
+    get() {
+      byteProxyTraps += 1;
+      throw new Error("byte proxy get trap must not execute");
+    },
+    getPrototypeOf() {
+      byteProxyTraps += 1;
+      throw new Error("byte proxy prototype trap must not execute");
+    },
+    ownKeys() {
+      byteProxyTraps += 1;
+      throw new Error("byte proxy ownKeys trap must not execute");
+    },
+    getOwnPropertyDescriptor() {
+      byteProxyTraps += 1;
+      throw new Error("byte proxy descriptor trap must not execute");
+    },
+  });
+  expectResult(validateStage4StorageLaunchBytes(proxiedBytes), "reject", "STAGE4_STORAGE_LAUNCH_INVALID_SHAPE");
+  assert.equal(byteProxyTraps, 0, "proxied Uint8Array must be rejected before byteLength or index access");
+
   expectResult(
     validateStage4StorageLaunchBytes(new Uint8Array(STAGE4_STORAGE_LAUNCH_LIMITS.maxContractBytes + 1)),
     "preserve-uncertain",
