@@ -384,7 +384,7 @@ test("immutable configuration and Service expose references and no secret or CA 
     "OpenBao",
     "image availability",
     "per-session",
-    "pinned NIC v0.11.0 lacks",
+    "NIC v2 source can preserve external launch-template ID/version with operator attestation",
     "EKS",
   ]) {
     assert.match(contract.data?.unresolvedChecks ?? "", escapePattern(check));

@@ -522,9 +522,12 @@ test("static contract values and Stage 5 support posture remain consistent with 
   const corpus = markdownFiles()
     .map((path) => readFileSync(path, "utf8"))
     .join("\n");
-  assert.equal((nic.nic_capability_assessment as JsonObject).outcome, "blocking-capability-gap");
-  assert.match(corpus, /NIC `v0\.11\.0`/u);
-  assert.match(corpus, /EKS (?:node )?image (?:is )?unresolved/u);
+  assert.equal((nic.nic_capability_assessment as JsonObject).outcome, "source-capability-present-local-static");
+  assert.equal((nic.nic_capability_assessment as JsonObject).provider_truth_observed, false);
+  assert.equal((nic.nic_capability_assessment as JsonObject).launch_template_contents_observed, false);
+  assert.match(corpus, /Historical v1 preserves NIC `v0\.11\.0`/u);
+  assert.match(corpus, /Active v2 pins NIC/u);
+  assert.match(corpus, /EKS (?:node )?image (?:(?:is|remains) )?unresolved/u);
   assert.match(corpus, /Kata `3\.32\.0`/u);
   assert.match(corpus, /containerd `2\.2\.1`/u);
   assert.match(corpus, /QEMU `8\.2\.2`/u);

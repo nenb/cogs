@@ -6,33 +6,33 @@ This guide describes the required semantic shape. It is not NIC syntax, a provid
 
 | Assumption | Specific planning authority |
 |---|---|
-| A future reviewed NIC revision may expose custom launch-template ID/version and nested CPU options through its pinned module boundary. | [Authority: NIC adapter acceptance requirements](../stage-4-nic-node-group-contract.md#nic-adapter-acceptance-requirements) |
-| A future EKS-compatible node image may supply the required kernel and KVM modules. | [Authority: NIC current blockers](../stage-4-nic-node-group-contract.md#authenticated-public-source-pin-and-current-blockers) |
-| Neither possibility is currently established. | [Authority: NIC security transitions](../stage-4-nic-node-group-contract.md#security-transitions) |
+| Accepted NIC v2 can preserve external launch-template ID/version with operator attestation only. | [Authority: NIC capability](../stage-4-nic-node-group-contract.md#capability-resolved-by-v2) |
+| A future EKS-compatible node image may supply the required kernel and KVM modules. | [Authority: NIC non-observation boundary](../stage-4-nic-node-group-contract.md#non-observation-boundary) |
+| Launch-template contents, provider truth, and node/runtime state are not established. | [Authority: NIC non-observation boundary](../stage-4-nic-node-group-contract.md#non-observation-boundary) |
 
 ## Static contract facts
 
 | Static fact | Specific authority |
 |---|---|
-| Source pin is NIC `v0.11.0` at commit `28221c652c56bb8d48a92538c01503a82f2f9321`, module `0.7.0` at commit `5d4cb31f07fda5c010b5be580258d32f6db75828`. | [Authority: NIC authenticated public-source pin](../stage-4-nic-node-group-contract.md#authenticated-public-source-pin-and-current-blockers) |
-| That source cannot carry custom launch-template ID/version or nested CPU options; classifier has no ready state; an AMI pin cannot cure it. | [Authority: NIC launch-template preservation](../stage-4-nic-node-group-contract.md#launch-template-preservation) |
+| Historical v1 preserves NIC `v0.11.0` / module `0.7.0` as blocked. Active v2 pins NIC `53b1a791…` and module `c3017c0e…`. | [Authority: accepted closure](../stage-4-nic-node-group-contract.md#accepted-personal-fork-closure) |
+| V2 source capability is present but non-observing; an AMI pin or attestation cannot establish launch-template/provider truth. | [Authority: NIC non-observation boundary](../stage-4-nic-node-group-contract.md#non-observation-boundary) |
 | Proposed bound is `us-east-1`, On-Demand `c8i-flex.large`, `x86_64`, non-metal, one named group, scale 0..1. | [Authority: NIC exact node-group contract](../stage-4-nic-node-group-contract.md#exact-node-group-contract) |
-| Launch template requires external ID and explicit positive version with no latest/default; CPU options require nested virtualization, one core, two threads. | [Authority: NIC launch-template preservation](../stage-4-nic-node-group-contract.md#launch-template-preservation) |
+| Launch template requires external ID and explicit positive version with no latest/default; CPU options require nested virtualization, one core, two threads. | [Authority: NIC launch-template preservation](../stage-4-nic-node-group-contract.md#capability-resolved-by-v2) |
 | Runtime is `kata-qemu-cogs`, `io.containerd.kata.v2`, KVM-only, with no Spot, metal, TCG, or `runc`. | [Authority: NIC exact node-group contract](../stage-4-nic-node-group-contract.md#exact-node-group-contract) |
-| Sandbox labels/taint and trusted selector/no-toleration are exact and disjoint. | [Authority: NIC disjoint scheduling](../stage-4-nic-node-group-contract.md#disjoint-scheduling) |
+| Sandbox labels/taint and trusted selector/no-toleration are exact and disjoint. | [Authority: NIC disjoint scheduling](../stage-4-nic-node-group-contract.md#exact-node-group-contract) |
 
 ## Authoritative-local facts
 
 | Local fact | Exact authority and applicability |
 |---|---|
 | Linux/KVM evidence supports KVM-backed guest-root testing only, not NIC mapping, managed groups, EKS scheduling/image, or CNI behavior. | [Authority: Stage 3 exit scope](../../test-reports/stage-3-s3-09-linux-kvm-exit.md#accepted-scope) |
-| Kata archive identity is accepted from bounded Stage 2 evidence; containerd/QEMU version strings are not binary identity and standalone Ubuntu is not an EKS pin. | [Authority: NIC blocker explanation](../stage-4-nic-node-group-contract.md#authenticated-public-source-pin-and-current-blockers) |
+| Kata archive identity is accepted from bounded Stage 2 evidence; containerd/QEMU version strings are not binary identity and standalone Ubuntu is not an EKS pin. | [Authority: NIC blocker explanation](../stage-4-nic-node-group-contract.md#accepted-personal-fork-closure) |
 
 ## Future cloud evidence
 
 | Ordered future requirement | Planned criterion, evidence contract, and location |
 |---|---|
-| Review and pin a new immutable NIC/module closure without rewriting the `v0.11.0` assessment. | [Planned DESIGN-24.4 and STAGE5-45.03 / `future-eks-conformance-reference-v1`](../stage-5-api-key-release-acceptance-matrix.md#criterion-level-traceability) |
+| Revalidate the immutable v2 closure without rewriting the historical `v0.11.0` assessment. | [Planned DESIGN-24.4 and STAGE5-45.03 / `future-eks-conformance-reference-v1`](../stage-5-api-key-release-acceptance-matrix.md#criterion-level-traceability) |
 | Prove locally that the adapter preserves launch-template, CPU, placement, capacity, instance, and image inputs. | [Planned DESIGN-24.2–.4 / `future-local-test-reference-v1`](../stage-5-api-key-release-acceptance-matrix.md#criterion-level-traceability) |
 | Rebuild digests and seek one-attempt approval only after #42 and all blockers resolve. | [Planned DESIGN-24.04 / `future-eks-conformance-reference-v1` S4-11 and campaign-approval lane](../stage-5-api-key-release-acceptance-matrix.md#evidence-lanes-remain-separate) |
 | Compare approved, rendered, and observed launch-template ID/version and nested CPU options. | [Planned DESIGN-24.4 / `future-eks-conformance-reference-v1`](../stage-5-api-key-release-acceptance-matrix.md#criterion-level-traceability) |
@@ -41,6 +41,6 @@ This guide describes the required semantic shape. It is not NIC syntax, a provid
 
 ## Configuration drift response
 
-**Section authority:** [Authority: NIC security transitions](../stage-4-nic-node-group-contract.md#security-transitions).
+**Section authority:** [Authority: NIC security transitions](../stage-4-nic-node-group-contract.md#non-observation-boundary).
 
 Any source, module, image, region, instance, scale, label, taint, launch-template, runtime, or fallback difference is drift. Stop, preserve the exact input and diagnostics without credentials, regenerate the static closure, and obtain review. Do not reconcile in place, silently default a field, or widen capacity.

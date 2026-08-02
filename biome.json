@@ -37,6 +37,7 @@
         "docs/security-evidence/stage4-offline-readiness-artifacts/*.json",
         "docs/security-evidence/stage5-privacy-deletion.local-static.json",
         "docs/security-evidence/stage5-offline-preparation/*.json",
+        "test/fixtures/stage4-static-manifest/valid-request-v1.json",
         "test/fixtures/stage5-privacy/valid-suite-v1.json",
         "scripts/validate-schemas.ts",
         "test/native-qualification-b.test.ts",

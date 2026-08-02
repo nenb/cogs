@@ -32,6 +32,7 @@
     "readiness:regenerate": "node scripts/stage4-offline-readiness-regenerate.ts",
     "readiness:render:check": "node scripts/stage4-offline-render-preparation.ts",
     "readiness:source:check": "node scripts/stage4-offline-source-inventory.ts",
+    "stage4:manifests": "node scripts/stage4-static-manifest-package.ts",
     "launcher": "tsx dev/launcher/main.ts"
   },
   "dependencies": {

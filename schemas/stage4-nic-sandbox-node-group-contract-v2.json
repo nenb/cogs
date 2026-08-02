@@ -1,0 +1,334 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.dev/schemas/stage4-nic-sandbox-node-group-contract-v2.json",
+  "title": "Cogs Stage 4 NIC personal-fork source capability contract v2",
+  "description": "Exact local/static source closure. Capability is configuration preservation with operator attestation only, never provider observation.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "authority",
+    "nic_source",
+    "nic_capability_assessment",
+    "node_image",
+    "sandbox_node_group",
+    "scheduling"
+  ],
+  "properties": {
+    "version": {
+      "const": "cogs.stage4-nic-sandbox-node-group-contract/v2"
+    },
+    "authority": {
+      "const": "local-static-personal-fork-source-contract"
+    },
+    "nic_source": {
+      "$ref": "#/$defs/exactNicSource"
+    },
+    "nic_capability_assessment": {
+      "$ref": "#/$defs/exactCapability"
+    },
+    "node_image": {
+      "$ref": "#/$defs/exactNodeImage"
+    },
+    "sandbox_node_group": {
+      "const": {
+        "provider": "aws",
+        "region": "us-east-1",
+        "name": "cogs-stage4-sandbox-kata",
+        "capacity_type": "ON_DEMAND",
+        "instance_type": "c8i-flex.large",
+        "architecture": "x86_64",
+        "bare_metal": false,
+        "scaling": {
+          "min": 0,
+          "max": 1
+        },
+        "required_labels": {
+          "cogs.dev/node-domain": "sandbox-kata",
+          "cogs.dev/nested-virtualization": "enabled",
+          "cogs.dev/sandbox-runtime": "kata-qemu-kvm"
+        },
+        "required_taints": [
+          {
+            "key": "cogs.dev/sandbox",
+            "value": "kata",
+            "effect": "NO_SCHEDULE"
+          }
+        ],
+        "launch_template": {
+          "source": "custom-external",
+          "id_input": "sandbox_launch_template_id",
+          "version_input": "sandbox_launch_template_version",
+          "version_selection": "explicit-positive-integer",
+          "allow_default_version": false,
+          "allow_latest_version": false,
+          "preserve_id_and_version": true,
+          "reject_reconcile_drift": true,
+          "cpu_options": {
+            "nested_virtualization": "enabled",
+            "core_count": 1,
+            "threads_per_core": 2
+          }
+        },
+        "runtime": {
+          "runtime_class_name": "kata-qemu-cogs",
+          "handler": "kata-qemu",
+          "cri_runtime_type": "io.containerd.kata.v2",
+          "kata_version": "3.32.0",
+          "kata_archive_sha256": "1449ecea50bd91fa73a94648db195d18950fe869ba4b1f12d05f55f1fa7c1b01",
+          "containerd_version": "2.2.1",
+          "qemu_version": "8.2.2",
+          "accelerator": "kvm",
+          "allow_tcg_fallback": false,
+          "allow_runc_fallback": false
+        }
+      }
+    },
+    "scheduling": {
+      "const": {
+        "trusted": {
+          "required_node_selector": {
+            "cogs.dev/node-domain": "trusted"
+          },
+          "tolerations": []
+        },
+        "sandbox": {
+          "required_node_selector": {
+            "cogs.dev/node-domain": "sandbox-kata",
+            "cogs.dev/nested-virtualization": "enabled",
+            "cogs.dev/sandbox-runtime": "kata-qemu-kvm"
+          },
+          "tolerations": [
+            {
+              "key": "cogs.dev/sandbox",
+              "operator": "Equal",
+              "value": "kata",
+              "effect": "NoSchedule"
+            }
+          ]
+        },
+        "domains_disjoint": true
+      }
+    }
+  },
+  "$defs": {
+    "file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "git_blob_sha", "content_sha256", "size_bytes"],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "git_blob_sha": {
+          "pattern": "^[0-9a-f]{40}$",
+          "type": "string"
+        },
+        "content_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1048576
+        }
+      }
+    },
+    "exactNicSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "identity",
+        "repository",
+        "source_class",
+        "release_tag",
+        "commit_sha",
+        "parent_commit_sha",
+        "tree_git_sha",
+        "commit_signature_verified",
+        "protected_main",
+        "files",
+        "eks_module"
+      ],
+      "properties": {
+        "identity": {
+          "const": "nebari-infrastructure-core"
+        },
+        "repository": {
+          "const": "https://github.com/nenb/nebari-infrastructure-core.git"
+        },
+        "source_class": {
+          "const": "personal-fork-immutable-commit-cogs-owner-accepted"
+        },
+        "release_tag": {
+          "type": "null"
+        },
+        "commit_sha": {
+          "const": "53b1a791ed1ff394969e0aeaa6379be955244b62"
+        },
+        "parent_commit_sha": {
+          "const": "89235de0f660413978ca76dc1633a499c9952b22"
+        },
+        "tree_git_sha": {
+          "const": "32c14bd9a19c0519006a9b86284402f9e0187947"
+        },
+        "commit_signature_verified": {
+          "const": false
+        },
+        "protected_main": {
+          "const": false
+        },
+        "files": {
+          "type": "array",
+          "minItems": 10,
+          "maxItems": 10,
+          "items": {
+            "$ref": "#/$defs/file"
+          }
+        },
+        "eks_module": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "registry_source",
+            "repository",
+            "source_class",
+            "version",
+            "base_version",
+            "commit_sha",
+            "parent_commit_sha",
+            "tree_git_sha",
+            "commit_signature_verified",
+            "protected_main",
+            "static_contract_check",
+            "files"
+          ],
+          "properties": {
+            "registry_source": {
+              "type": "null"
+            },
+            "repository": {
+              "const": "https://github.com/nenb/terraform-aws-eks-cluster.git"
+            },
+            "source_class": {
+              "const": "personal-fork-immutable-commit-cogs-owner-accepted"
+            },
+            "version": {
+              "type": "null"
+            },
+            "base_version": {
+              "const": "0.7.0"
+            },
+            "commit_sha": {
+              "const": "c3017c0e15b538cd4e04c0786809a861ea82c621"
+            },
+            "parent_commit_sha": {
+              "const": "8d41b1b02d800dc8e71fc8f06b9aade936c07cf0"
+            },
+            "tree_git_sha": {
+              "const": "59105ac6f037977d0dddebf844affa06e0b01236"
+            },
+            "commit_signature_verified": {
+              "const": false
+            },
+            "protected_main": {
+              "const": false
+            },
+            "static_contract_check": {
+              "const": "passed-exact-commit"
+            },
+            "files": {
+              "type": "array",
+              "minItems": 9,
+              "maxItems": 9,
+              "items": {
+                "$ref": "#/$defs/file"
+              }
+            }
+          }
+        }
+      }
+    },
+    "exactCapability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_revision_verified",
+        "managed_node_group_mapping_verified",
+        "supported_inputs",
+        "custom_launch_template_id",
+        "custom_launch_template_version",
+        "cpu_options_nested_virtualization",
+        "underlying_launch_template_mode",
+        "launch_template_contents_observed",
+        "provider_truth_observed",
+        "outcome",
+        "reason_code"
+      ],
+      "properties": {
+        "source_revision_verified": {
+          "const": true
+        },
+        "managed_node_group_mapping_verified": {
+          "const": true
+        },
+        "supported_inputs": {
+          "type": "array",
+          "minItems": 11,
+          "maxItems": 11,
+          "items": {
+            "type": "string"
+          }
+        },
+        "custom_launch_template_id": {
+          "const": true
+        },
+        "custom_launch_template_version": {
+          "const": true
+        },
+        "cpu_options_nested_virtualization": {
+          "const": "operator-attestation-only-not-observed"
+        },
+        "underlying_launch_template_mode": {
+          "const": "caller-owned-external-id-and-explicit-version"
+        },
+        "launch_template_contents_observed": {
+          "const": false
+        },
+        "provider_truth_observed": {
+          "const": false
+        },
+        "outcome": {
+          "const": "source-capability-present-local-static"
+        },
+        "reason_code": {
+          "const": "NIC_EXTERNAL_LAUNCH_TEMPLATE_SELECTION_SUPPORTED_NONOBSERVING"
+        }
+      }
+    },
+    "exactNodeImage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pin_state", "ami_id", "release", "kernel_release", "reason_code"],
+      "properties": {
+        "pin_state": {
+          "const": "unresolved"
+        },
+        "ami_id": {
+          "type": "null"
+        },
+        "release": {
+          "type": "null"
+        },
+        "kernel_release": {
+          "type": "null"
+        },
+        "reason_code": {
+          "const": "EKS_NODE_IMAGE_PIN_NOT_RECORDED"
+        }
+      }
+    }
+  }
+}

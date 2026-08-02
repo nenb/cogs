@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import { resolve } from "node:path";
 import test from "node:test";
 import type { Ajv as AjvCore, Options, ValidateFunction } from "ajv";
-import * as contractModule from "../scripts/stage4-nic-sandbox-node-group.ts";
+import * as contractModule from "../scripts/stage4-nic-sandbox-node-group-v1.ts";
 import {
   evaluateStage4NicSandboxNodeGroupContract,
   STAGE4_DISJOINT_SCHEDULING,
@@ -13,12 +13,12 @@ import {
   STAGE4_PINNED_NIC_SOURCE,
   STAGE4_SANDBOX_NODE_GROUP,
   type Stage4NicVerdict,
-} from "../scripts/stage4-nic-sandbox-node-group.ts";
+} from "../scripts/stage4-nic-sandbox-node-group-v1.ts";
 
 const require = createRequire(import.meta.url);
 const Ajv2020 = require("ajv/dist/2020.js") as new (options?: Options) => AjvCore;
 const root = resolve(import.meta.dirname, "..");
-const contractPath = resolve(root, "deploy/nic/stage4-sandbox-node-group-contract.json");
+const contractPath = resolve(root, "deploy/nic/stage4-sandbox-node-group-contract-v1.json");
 const contractSchema = require("../schemas/stage4-nic-sandbox-node-group-contract-v1.json") as object;
 const verdictSchema = require("../schemas/stage4-nic-sandbox-node-group-verdict-v1.json") as object;
 const ajv = new Ajv2020({ allErrors: true, strict: true, strictRequired: false, ownProperties: true });

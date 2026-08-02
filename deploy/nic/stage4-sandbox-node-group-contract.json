@@ -1,46 +1,144 @@
 {
-  "version": "cogs.stage4-nic-sandbox-node-group-contract/v1",
-  "authority": "local-static-source-contract",
+  "version": "cogs.stage4-nic-sandbox-node-group-contract/v2",
+  "authority": "local-static-personal-fork-source-contract",
   "nic_source": {
     "identity": "nebari-infrastructure-core",
-    "repository": "https://github.com/nebari-dev/nebari-infrastructure-core.git",
-    "release_tag": "v0.11.0",
-    "commit_sha": "28221c652c56bb8d48a92538c01503a82f2f9321",
-    "tree_git_sha": "4dfb0333e5d91003e69881ca1dcf66e1ea9ff6c2",
+    "repository": "https://github.com/nenb/nebari-infrastructure-core.git",
+    "source_class": "personal-fork-immutable-commit-cogs-owner-accepted",
+    "release_tag": null,
+    "commit_sha": "53b1a791ed1ff394969e0aeaa6379be955244b62",
+    "parent_commit_sha": "89235de0f660413978ca76dc1633a499c9952b22",
+    "tree_git_sha": "32c14bd9a19c0519006a9b86284402f9e0187947",
+    "commit_signature_verified": false,
+    "protected_main": false,
     "files": [
       {
         "path": "pkg/providers/cluster/aws/config.go",
-        "git_blob_sha": "b607ccd28fea4fa9dbb1b5f2cab8035c88eb8ab8",
-        "content_sha256": "9926e0de378b488778e4975324a76c7d3ab3aaa5b4c661e81211a1efe382e920"
+        "git_blob_sha": "18675e9558fb46deba4fb85b0e8af309e103ec45",
+        "content_sha256": "d9c14cdda1b4e8da3f7f8b546c6b0e52c054d29df64ca2f36debdd143ed42246",
+        "size_bytes": 11700
+      },
+      {
+        "path": "pkg/providers/cluster/aws/provider.go",
+        "git_blob_sha": "9b6560f744b58bfa2921b399318f1e5fd0c686e5",
+        "content_sha256": "7c005f62a933393232301b04e511c83d29e6453bdb1a3750d0eae88e54efc6ab",
+        "size_bytes": 33072
       },
       {
         "path": "pkg/providers/cluster/aws/templates/main.tf",
-        "git_blob_sha": "719efb5d85b8247968f6965acd3911b3a0a93337",
-        "content_sha256": "eca59352b11fbcb48085a9276e5b01682256ce17f55fa7f4a23c0bcccfa443f4"
+        "git_blob_sha": "2a81ce5ff489320b65c6e2cac894d37d17b4a62d",
+        "content_sha256": "a9831214a2257461d742481931a625b526b015d9f239b18d573c68171f839812",
+        "size_bytes": 2589
       },
       {
         "path": "pkg/providers/cluster/aws/tofu.go",
         "git_blob_sha": "934a1f92413ba7c758f57d779c3ad1049256b30d",
-        "content_sha256": "39e87c14203fa602568bcff4e64126271073484e531c21a83028eb104a9a506b"
+        "content_sha256": "39e87c14203fa602568bcff4e64126271073484e531c21a83028eb104a9a506b",
+        "size_bytes": 11212
+      },
+      {
+        "path": "pkg/providers/cluster/aws/external_launch_template_test.go",
+        "git_blob_sha": "d0a6fa6931676f4898c63e106636a4c2f6baae8f",
+        "content_sha256": "44cc93d23683570501a6fc68f2b576bb1790d11191c5d9118ce029a0a3e32374",
+        "size_bytes": 9403
+      },
+      {
+        "path": "pkg/nic/validate.go",
+        "git_blob_sha": "b597b1a54dc1c3e9d50790a7fdb49380e7b997de",
+        "content_sha256": "f4713ff317046160e52f957b9f8fe3ba1a0a09c9bf0dbab6ee85c0f7e98dda6a",
+        "size_bytes": 3988
+      },
+      {
+        "path": "pkg/nic/offline_validation_test.go",
+        "git_blob_sha": "1e142304f0ed98b08aab24d938d9625f93fb2b49",
+        "content_sha256": "d084ec6ef6596970c5ad3c25d00f5ae9273476be92b98b932cf41f7264ad34ed",
+        "size_bytes": 5927
+      },
+      {
+        "path": "pkg/providers/cluster/provider.go",
+        "git_blob_sha": "923c36f5db866e83cc3d6d72a68e80237c34d72c",
+        "content_sha256": "bc5b6032327dd22ec66a1d950461b75bc73a64501002da18f3bf86b485509f8c",
+        "size_bytes": 8404
+      },
+      {
+        "path": "go.mod",
+        "git_blob_sha": "e4ec29597e28dfdeb28575091f40ba46e31a8c75",
+        "content_sha256": "ba1f1fe3a0162cde7e88804dc61e3da29a3aff170121a7f56564c87587a44d40",
+        "size_bytes": 10800
+      },
+      {
+        "path": "go.sum",
+        "git_blob_sha": "8f788d8c179765d5db46440f3b61b75797e5b721",
+        "content_sha256": "d17060f3bc1531deeb8776466a72876ea52a836a2cb823b8ec865afbba81291d",
+        "size_bytes": 60713
       }
     ],
     "eks_module": {
-      "registry_source": "nebari-dev/eks-cluster/aws",
-      "version": "0.7.0",
-      "commit_sha": "5d4cb31f07fda5c010b5be580258d32f6db75828",
-      "tree_git_sha": "240dd73f709f67706d60b35d3256661848736ad2",
+      "registry_source": null,
+      "repository": "https://github.com/nenb/terraform-aws-eks-cluster.git",
+      "source_class": "personal-fork-immutable-commit-cogs-owner-accepted",
+      "version": null,
+      "base_version": "0.7.0",
+      "commit_sha": "c3017c0e15b538cd4e04c0786809a861ea82c621",
+      "parent_commit_sha": "8d41b1b02d800dc8e71fc8f06b9aade936c07cf0",
+      "tree_git_sha": "59105ac6f037977d0dddebf844affa06e0b01236",
+      "commit_signature_verified": false,
+      "protected_main": false,
+      "static_contract_check": "passed-exact-commit",
       "files": [
         {
           "path": "variables.tf",
-          "content_sha256": "20a17ac8d6a76ebaf5708ac229a062697d277e283561e070f1aac378603e1d67"
+          "git_blob_sha": "2f60dbbbd82c6d7dfe0dfe7867512552ba4ebff8",
+          "content_sha256": "9c699b0c26332fa3407595bb887aa79a91e21bcb852a49630e4960edca2b7ad3",
+          "size_bytes": 15666
         },
         {
           "path": "locals.tf",
-          "content_sha256": "e21403a5cef4faf515c6179b221e690553f6ad22d012befb57e529b3ccceec5e"
+          "git_blob_sha": "78e420cdca768c5e28000152e8f186f9c239fc97",
+          "content_sha256": "10e18f2ee4e9629d14991e06303a681563c9570b7ba48a702b382a097763d109",
+          "size_bytes": 5431
         },
         {
           "path": "main.tf",
-          "content_sha256": "e7f3107a21e597da972220993f25f38527af74999b6e44f370317938f7d732a0"
+          "git_blob_sha": "040b180fb5a20d84d667b379424c5014d6a2a75f",
+          "content_sha256": "e7f3107a21e597da972220993f25f38527af74999b6e44f370317938f7d732a0",
+          "size_bytes": 8583
+        },
+        {
+          "path": "outputs.tf",
+          "git_blob_sha": "3331e0d21c24d31584de0b61390e12f90da027ea",
+          "content_sha256": "0ff367f91c5cce7c3cbe51ae532a3b224b06dd4719ca90a039a7ef2156c46deb",
+          "size_bytes": 5540
+        },
+        {
+          "path": "README.md",
+          "git_blob_sha": "51672ac5d6ac59b22bcd8d5a96643716aaf74e69",
+          "content_sha256": "3d8862f73092c3245309a657d01d173c624ef41d428dab8aab8748b88d9ad586",
+          "size_bytes": 23659
+        },
+        {
+          "path": "test/contracts/external_launch_template_test.go",
+          "git_blob_sha": "c5182178f4f059789da73bdd66e19130ab440603",
+          "content_sha256": "117951ed22bc9e8f572d1d231b09c0a5582ff625d812d2a6db66c8711565edcc",
+          "size_bytes": 16703
+        },
+        {
+          "path": "test/go.mod",
+          "git_blob_sha": "ef0ce23aac03b1990d9e886b019150363269f72a",
+          "content_sha256": "ed5ea45d24a13a711afb9b9087338c76cb268b14eab369e4de9a651ead4bc45d",
+          "size_bytes": 6805
+        },
+        {
+          "path": "test/go.sum",
+          "git_blob_sha": "ce4279f6690c0511b436da8f24b932e5ce8cff46",
+          "content_sha256": "1dbe08eb7266c3874aca3cf213b1b4b05e58ecf2871d8b6f5e4ea70a6a9e147d",
+          "size_bytes": 32729
+        },
+        {
+          "path": ".github/workflows/static-contract.yml",
+          "git_blob_sha": "2f44ec4912e909bc641304dd039085d165508773",
+          "content_sha256": "1b74f75470b98d82a102af2072de04b55c268352519c492b295793b379752171",
+          "size_bytes": 791
         }
       ]
     }
@@ -48,13 +146,27 @@
   "nic_capability_assessment": {
     "source_revision_verified": true,
     "managed_node_group_mapping_verified": true,
-    "supported_inputs": ["instance_type", "min_size", "max_size", "ami_type", "spot", "disk", "labels", "taints"],
-    "custom_launch_template_id": false,
-    "custom_launch_template_version": false,
-    "cpu_options_nested_virtualization": false,
-    "underlying_launch_template_mode": "module-auto-created-fixed-shape",
-    "outcome": "blocking-capability-gap",
-    "reason_code": "NIC_CUSTOM_LAUNCH_TEMPLATE_AND_CPU_OPTIONS_UNSUPPORTED"
+    "supported_inputs": [
+      "instance_type",
+      "min_size",
+      "max_size",
+      "ami_type",
+      "spot",
+      "disk",
+      "labels",
+      "taints",
+      "external_launch_template_id",
+      "external_launch_template_version",
+      "nested_virtualization_operator_attestation"
+    ],
+    "custom_launch_template_id": true,
+    "custom_launch_template_version": true,
+    "cpu_options_nested_virtualization": "operator-attestation-only-not-observed",
+    "underlying_launch_template_mode": "caller-owned-external-id-and-explicit-version",
+    "launch_template_contents_observed": false,
+    "provider_truth_observed": false,
+    "outcome": "source-capability-present-local-static",
+    "reason_code": "NIC_EXTERNAL_LAUNCH_TEMPLATE_SELECTION_SUPPORTED_NONOBSERVING"
   },
   "node_image": {
     "pin_state": "unresolved",

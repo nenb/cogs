@@ -18,7 +18,7 @@ This guide stops at local/static preparation. It does not install into a cluster
 | Worker/sandbox image references are synthetic `.invalid` values; no image set or executable provider route exists. | [Authority: offline readiness exact bounded closure](../stage-4-offline-readiness.md#exact-bound-inputs-and-source-closure) |
 | Sandbox runtime is exactly `kata-qemu-cogs`, KVM-only, without `runc` or TCG fallback; scheduling domains are disjoint. | [Authority: NIC exact node-group contract](../stage-4-nic-node-group-contract.md#exact-node-group-contract) |
 | Workspace and trusted session state are distinct retained roles. | [Authority: storage/launch separate durable roles](../stage-4-storage-launch-contract.md#separate-durable-storage-roles) |
-| NIC source capability and EKS image/kernel pins remain blocked. | [Authority: NIC current blockers](../stage-4-nic-node-group-contract.md#authenticated-public-source-pin-and-current-blockers) |
+| NIC source capability and EKS image/kernel pins remain blocked. | [Authority: NIC current blockers](../stage-4-nic-node-group-contract.md#accepted-personal-fork-closure) |
 
 ## Authoritative-local facts
 

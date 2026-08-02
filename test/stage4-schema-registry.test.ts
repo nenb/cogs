@@ -231,7 +231,6 @@ function offlineReadinessVerdictSample(): JsonObject {
     reason_code: "STAGE4_LOCAL_PREPARATION_COMPLETE_CAMPAIGN_BLOCKED",
     blockers: [
       "ISSUE_42_OPEN",
-      "NIC_V0_11_0_MODULE_0_7_0_LAUNCH_TEMPLATE_CAPABILITY_MISSING",
       "EKS_AMI_IMAGE_RELEASE_KERNEL_UNRESOLVED",
       "PROPOSED_ACCOUNT_BINDING_ABSENT",
       "CURRENT_PRICE_NOT_REVALIDATED",
@@ -309,6 +308,12 @@ function teardownVerdictSample(): JsonObject {
 
 function nicContractSample(): JsonObject {
   return JSON.parse(
+    readFileSync(resolve(import.meta.dirname, "../deploy/nic/stage4-sandbox-node-group-contract-v1.json"), "utf8"),
+  ) as JsonObject;
+}
+
+function nicV2ContractSample(): JsonObject {
+  return JSON.parse(
     readFileSync(resolve(import.meta.dirname, "../deploy/nic/stage4-sandbox-node-group-contract.json"), "utf8"),
   ) as JsonObject;
 }
@@ -330,6 +335,67 @@ function nicVerdictSample(): JsonObject {
   };
 }
 
+function nicV2VerdictSample(): JsonObject {
+  return {
+    version: "cogs.stage4-nic-sandbox-node-group-verdict/v2",
+    authority: "local-static-personal-fork-source-classifier",
+    campaign_authorized: false,
+    cloud_execution_observed: false,
+    provider_truth_observed: false,
+    launch_template_contents_observed: false,
+    stage4_exit_satisfied: false,
+    release_eligible: false,
+    contract_sha256: sha("d"),
+    nic_source_pin_resolved: true,
+    node_image_pin_resolved: false,
+    launch_template_selection_capability_resolved: true,
+    status: "source-capability-satisfied-local-static",
+    reason_code: "STAGE4_NIC_SOURCE_CAPABILITY_PRESENT_NONOBSERVING",
+  };
+}
+
+function staticManifestRequestSample(): JsonObject {
+  return JSON.parse(
+    readFileSync(resolve(import.meta.dirname, "fixtures/stage4-static-manifest/valid-request-v1.json"), "utf8"),
+  ) as JsonObject;
+}
+
+function staticManifestReceiptSample(): JsonObject {
+  return {
+    version: "cogs.stage4-static-manifest-receipt/v1",
+    authority: "local-static-manifest-materialization-only",
+    request_sha256: sha("1"),
+    manifest_sha256: sha("2"),
+    nic_config_sha256: sha("3"),
+    chart_inventory_sha256: sha("4"),
+    helm_executable_sha256: sha("5"),
+    nic_contract_sha256: sha("6"),
+    object_inventory: [
+      "ConfigMap/stage4-cogs-contract",
+      "ServiceAccount/stage4-cogs-trusted",
+      "ServiceAccount/cogs-sandbox-inert",
+      "Service/stage4-cogs-proxy",
+      "NetworkPolicy/stage4-cogs-default-deny",
+      "NetworkPolicy/stage4-cogs-trusted-allow",
+      "NetworkPolicy/stage4-cogs-sandbox-allow",
+      "PodTemplate/stage4-cogs-trusted-template",
+      "PodTemplate/stage4-cogs-sandbox-template",
+    ],
+    manifest_render_route_present: true,
+    deployment_execution_route_present: false,
+    apply_route_present: false,
+    kubernetes_client_present: false,
+    kubernetes_execution_observed: false,
+    provider_execution_observed: false,
+    cloud_execution_observed: false,
+    provider_truth_observed: false,
+    launch_template_contents_observed: false,
+    campaign_authorized: false,
+    stage4_exit_satisfied: false,
+    release_eligible: false,
+  };
+}
+
 const STAGE4_SCHEMA_REGISTRY = [
   { file: "stage4-campaign-approval-draft-v1.json", sample: campaignApprovalDraftSample },
   { file: "stage4-campaign-approval-verdict-v1.json", sample: campaignApprovalVerdictSample },
@@ -340,12 +406,16 @@ const STAGE4_SCHEMA_REGISTRY = [
   { file: "stage4-exit-review-report-template-v1.json", sample: exitReviewReportSample },
   { file: "stage4-exit-review-verdict-v1.json", sample: exitReviewVerdictSample },
   { file: "stage4-nic-sandbox-node-group-contract-v1.json", sample: nicContractSample },
+  { file: "stage4-nic-sandbox-node-group-contract-v2.json", sample: nicV2ContractSample },
   { file: "stage4-nic-sandbox-node-group-verdict-v1.json", sample: nicVerdictSample },
+  { file: "stage4-nic-sandbox-node-group-verdict-v2.json", sample: nicV2VerdictSample },
   { file: "stage4-offline-readiness-package-v1.json", sample: offlineReadinessPackageSample },
   { file: "stage4-offline-readiness-verdict-v1.json", sample: offlineReadinessVerdictSample },
   { file: "stage4-policy-contract-v1.json", sample: policyContractSample },
   { file: "stage4-policy-payload-v1.json", sample: policyPayloadSample },
   { file: "stage4-policy-probe-suite-v1.json", sample: policyProbeSample },
+  { file: "stage4-static-manifest-receipt-v1.json", sample: staticManifestReceiptSample },
+  { file: "stage4-static-manifest-request-v1.json", sample: staticManifestRequestSample },
   { file: "stage4-static-preparation-evidence-v1.json", sample: staticSample },
   { file: "stage4-storage-launch-contract-v1.json", sample: storageLaunchContractSample },
   { file: "stage4-storage-launch-verdict-v1.json", sample: storageLaunchVerdictSample },
@@ -386,12 +456,16 @@ test("the bounded Stage 4 registry compiles its strict positive samples", () => 
       "stage4-exit-review-report-template-v1.json",
       "stage4-exit-review-verdict-v1.json",
       "stage4-nic-sandbox-node-group-contract-v1.json",
+      "stage4-nic-sandbox-node-group-contract-v2.json",
       "stage4-nic-sandbox-node-group-verdict-v1.json",
+      "stage4-nic-sandbox-node-group-verdict-v2.json",
       "stage4-offline-readiness-package-v1.json",
       "stage4-offline-readiness-verdict-v1.json",
       "stage4-policy-contract-v1.json",
       "stage4-policy-payload-v1.json",
       "stage4-policy-probe-suite-v1.json",
+      "stage4-static-manifest-receipt-v1.json",
+      "stage4-static-manifest-request-v1.json",
       "stage4-static-preparation-evidence-v1.json",
       "stage4-storage-launch-contract-v1.json",
       "stage4-storage-launch-verdict-v1.json",

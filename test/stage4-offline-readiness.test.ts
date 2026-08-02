@@ -155,7 +155,7 @@ test("committed inventories are canonical, complete for their scopes, and bind e
     git_executable_sha256: "7588ceab299393618d6f8861502ac0588d1594025f301d9a61a898215b5571d3",
     git_index_path_set_sha256: source.repository_binding.git_index_path_set_sha256,
     git_version: "git version 2.50.1 (Apple Git-155)",
-    regeneration_base_head: "c80b5eb8c6308b605c677e8c2b4154267fc147cf",
+    regeneration_base_head: "dc11c1f6f2e29a66c602b82d805c764a00517bf0",
     semantics: "exact-tracked-worktree-bytes-at-regeneration-dirty-tracked-files-allowed",
   });
   assert.match(source.repository_binding.git_index_path_set_sha256, /^[0-9a-f]{64}$/u);
@@ -641,16 +641,16 @@ test("authority promotion and one-attempt replay or retry authority fail closed"
   assert.equal(replayed.cloud_authorized, false);
 });
 
-test("current NIC and node-image blockers and uncertainty cannot be promoted or erased", () => {
+test("NIC v2 remains non-observing while node-image and runtime uncertainty cannot be promoted", () => {
   const mutations: Array<[string, (value: Record<string, any>) => void]> = [
     [
-      "NIC capable",
+      "NIC capability promoted to observation",
       (value) => {
-        value.pins.nic.capability_state = "ready";
+        value.pins.nic.capability_state = "provider-observed-ready";
       },
     ],
     [
-      "NIC version",
+      "NIC release invented",
       (value) => {
         value.pins.nic.release = "v0.12.0";
       },

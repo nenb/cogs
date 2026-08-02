@@ -16,7 +16,7 @@ This matrix records evidence posture, not supported-platform advertising. Read t
 | `linux-kvm` | authoritative-local guest-root profile; local scope only | no | [Authority: Stage 3 exit scope](../../test-reports/stage-3-s3-09-linux-kvm-exit.md#accepted-scope) |
 | `insecure-container` | explicitly insecure functional development | no | [Authority: CI schedule](../ci-schedule.md#ci-and-conformance-schedule) |
 | `macos-vm-dev` | convenience only; no authoritative default-deny claim | no | [Authority: IMPLEMENTATION §10.2](../../../IMPLEMENTATION.md#102-macos-vm-convenience-driver) |
-| `aws-eks-kata` through NIC | pending/blocked by NIC `v0.11.0`, unresolved EKS image, and absent S4-11 | no | [Authority: provisional matrix platform profiles](../stage-5-api-key-release-acceptance-matrix.md#platform-profiles) |
+| `aws-eks-kata` through NIC | source capability present in accepted NIC v2; provider/template contents, EKS image, and S4-11 remain unresolved | no | [Authority: provisional matrix platform profiles](../stage-5-api-key-release-acceptance-matrix.md#platform-profiles) |
 | standalone Stage 2 EC2 | historical bounded feasibility; not EKS/CNI/install/current-resource evidence | no | [Authority: IMPLEMENTATION Stage 2 boundary](../../../IMPLEMENTATION.md#stage-2-short-lived-aws-nested-virtualization-feasibility) |
 | generic Kubernetes or local k3s/Kata | design target without exact accepted profile | no | [Authority: DESIGN other environments](../../../DESIGN.md#63-other-environments) |
 | Hetzner Cloud/full VM or dedicated/k3s | deferred and unvalidated | no | [Authority: DESIGN typical Hetzner Cloud](../../../DESIGN.md#62-typical-hetzner-cloud) |

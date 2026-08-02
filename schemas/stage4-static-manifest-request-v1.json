@@ -1,0 +1,416 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.dev/schemas/stage4-static-manifest-request-v1.json",
+  "title": "Cogs Stage 4 bounded local static manifest request v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "authority", "release_name", "namespace", "values", "nic"],
+  "properties": {
+    "version": {
+      "const": "cogs.stage4-static-manifest-request/v1"
+    },
+    "authority": {
+      "const": "local-static-manifest-request-only"
+    },
+    "release_name": {
+      "type": "string",
+      "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$"
+    },
+    "namespace": {
+      "type": "string",
+      "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$"
+    },
+    "values": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enabled",
+        "nonProductionAcknowledgement",
+        "sessionIdentity",
+        "runtimeClassName",
+        "images",
+        "placement",
+        "storage",
+        "openBao",
+        "otlp",
+        "proxyIdentity",
+        "resourceProfile",
+        "lifecycle",
+        "auditWalMaxBytes",
+        "publicEgressCaConfigMap"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "nonProductionAcknowledgement": {
+          "type": "boolean"
+        },
+        "sessionIdentity": {
+          "type": "string",
+          "maxLength": 63
+        },
+        "runtimeClassName": {
+          "type": "string",
+          "maxLength": 253
+        },
+        "images": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["worker", "proxy", "sandbox"],
+          "properties": {
+            "worker": {
+              "type": "string",
+              "maxLength": 512
+            },
+            "proxy": {
+              "type": "string",
+              "maxLength": 512
+            },
+            "sandbox": {
+              "type": "string",
+              "maxLength": 512
+            }
+          }
+        },
+        "placement": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["trusted", "sandbox"],
+          "properties": {
+            "trusted": {
+              "$ref": "#/definitions/placement"
+            },
+            "sandbox": {
+              "$ref": "#/definitions/placement"
+            }
+          }
+        },
+        "storage": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "workspaceStorageClass",
+            "workspaceSize",
+            "workspaceAccessMode",
+            "workspaceVolumeMode",
+            "workspaceVolumeBindingMode",
+            "workspaceReclaimPolicy",
+            "workspaceRetention",
+            "sessionStateStorageClass",
+            "sessionStateSize",
+            "sessionStateAccessMode",
+            "sessionStateVolumeMode",
+            "sessionStateVolumeBindingMode",
+            "sessionStateReclaimPolicy",
+            "sessionStateRetention",
+            "sessionStateRetentionSeconds"
+          ],
+          "properties": {
+            "workspaceStorageClass": {
+              "type": "string",
+              "maxLength": 253
+            },
+            "workspaceSize": {
+              "const": "20Gi"
+            },
+            "workspaceAccessMode": {
+              "const": "ReadWriteOncePod"
+            },
+            "workspaceVolumeMode": {
+              "const": "Filesystem"
+            },
+            "workspaceVolumeBindingMode": {
+              "const": "WaitForFirstConsumer"
+            },
+            "workspaceReclaimPolicy": {
+              "const": "Retain"
+            },
+            "workspaceRetention": {
+              "const": "retain-until-explicit-workspace-deletion"
+            },
+            "sessionStateStorageClass": {
+              "type": "string",
+              "maxLength": 253
+            },
+            "sessionStateSize": {
+              "const": "5Gi"
+            },
+            "sessionStateAccessMode": {
+              "const": "ReadWriteOncePod"
+            },
+            "sessionStateVolumeMode": {
+              "const": "Filesystem"
+            },
+            "sessionStateVolumeBindingMode": {
+              "const": "WaitForFirstConsumer"
+            },
+            "sessionStateReclaimPolicy": {
+              "const": "Retain"
+            },
+            "sessionStateRetention": {
+              "const": "retain-30-days-after-session-close"
+            },
+            "sessionStateRetentionSeconds": {
+              "const": 2592000
+            }
+          }
+        },
+        "openBao": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["endpoint", "kubernetesAuthMount", "kubernetesAuthRole", "pkiPath", "tokenAudience", "peer"],
+          "properties": {
+            "endpoint": {
+              "type": "string",
+              "maxLength": 2048
+            },
+            "kubernetesAuthMount": {
+              "type": "string",
+              "maxLength": 256
+            },
+            "kubernetesAuthRole": {
+              "type": "string",
+              "maxLength": 256
+            },
+            "pkiPath": {
+              "type": "string",
+              "maxLength": 256
+            },
+            "tokenAudience": {
+              "type": "string",
+              "maxLength": 256
+            },
+            "peer": {
+              "$ref": "#/definitions/networkPeer"
+            }
+          }
+        },
+        "otlp": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["endpoint", "protocol", "peer"],
+          "properties": {
+            "endpoint": {
+              "type": "string",
+              "maxLength": 2048
+            },
+            "protocol": {
+              "type": "string"
+            },
+            "peer": {
+              "$ref": "#/definitions/networkPeer"
+            }
+          }
+        },
+        "proxyIdentity": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["capabilityAudience", "sourceBindingRequired"],
+          "properties": {
+            "capabilityAudience": {
+              "type": "string",
+              "maxLength": 256
+            },
+            "sourceBindingRequired": {
+              "type": "boolean"
+            }
+          }
+        },
+        "resourceProfile": {
+          "const": "stage4-fixed-bounded-v1"
+        },
+        "lifecycle": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["idleSeconds", "hardSeconds", "terminationGraceSeconds"],
+          "properties": {
+            "idleSeconds": {
+              "const": 1800
+            },
+            "hardSeconds": {
+              "const": 28800
+            },
+            "terminationGraceSeconds": {
+              "const": 30
+            }
+          }
+        },
+        "auditWalMaxBytes": {
+          "const": 1048576
+        },
+        "publicEgressCaConfigMap": {
+          "type": "string",
+          "maxLength": 253
+        }
+      }
+    },
+    "nic": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["node_group_name", "external_launch_template"],
+      "properties": {
+        "node_group_name": {
+          "const": "cogs-stage4-sandbox-kata"
+        },
+        "external_launch_template": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "version", "operator_review"],
+          "properties": {
+            "id": {
+              "type": "string",
+              "pattern": "^lt-[0-9a-f]{17}$"
+            },
+            "version": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 2147483647
+            },
+            "operator_review": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["cpu_options"],
+              "properties": {
+                "cpu_options": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["nested_virtualization", "core_count", "threads_per_core"],
+                  "properties": {
+                    "nested_virtualization": {
+                      "const": "enabled"
+                    },
+                    "core_count": {
+                      "const": 1
+                    },
+                    "threads_per_core": {
+                      "const": 2
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "definitions": {
+    "labelMap": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 16,
+      "propertyNames": {
+        "maxLength": 317,
+        "pattern": "^(?:[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?)*\\/)?[A-Za-z0-9](?:[-_.A-Za-z0-9]{0,61}[A-Za-z0-9])?$"
+      },
+      "patternProperties": {
+        "^(?:[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?)*\\/)?[A-Za-z0-9](?:[-_.A-Za-z0-9]{0,61}[A-Za-z0-9])?$": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 63,
+          "pattern": "^[A-Za-z0-9](?:[-_.A-Za-z0-9]{0,61}[A-Za-z0-9])?$"
+        }
+      }
+    },
+    "toleration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "operator", "effect"],
+      "properties": {
+        "key": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 253
+        },
+        "operator": {
+          "enum": ["Equal", "Exists"]
+        },
+        "value": {
+          "type": "string",
+          "maxLength": 63
+        },
+        "effect": {
+          "enum": ["NoSchedule", "NoExecute"]
+        },
+        "tolerationSeconds": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 86400
+        }
+      }
+    },
+    "placement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["nodeSelector", "tolerations"],
+      "properties": {
+        "nodeSelector": {
+          "$ref": "#/definitions/labelMap"
+        },
+        "tolerations": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {
+            "$ref": "#/definitions/toleration"
+          }
+        }
+      }
+    },
+    "networkPeer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["namespaceLabels", "podLabels", "port"],
+      "properties": {
+        "namespaceLabels": {
+          "$ref": "#/definitions/labelMap"
+        },
+        "podLabels": {
+          "$ref": "#/definitions/labelMap"
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535
+        }
+      }
+    },
+    "nonEmptyNetworkPeer": {},
+    "digestImage": {
+      "type": "string",
+      "minLength": 75,
+      "maxLength": 512,
+      "pattern": "^[a-z0-9]+(?:[._-][a-z0-9]+)*(?::[1-9][0-9]{0,4})?(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)+(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?@sha256:[a-f0-9]{64}$"
+    },
+    "dnsSubdomain": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 253,
+      "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?)*$"
+    },
+    "httpsEndpoint": {
+      "type": "string",
+      "minLength": 9,
+      "maxLength": 2048,
+      "pattern": "^https://(?:[A-Za-z0-9](?:[-A-Za-z0-9.]*[A-Za-z0-9])?|\\[[0-9A-Fa-f:]+\\])(?::[1-9][0-9]{0,4})?(?:/[^[:space:]?#]*)?$"
+    },
+    "boundedPath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*$"
+    },
+    "boundedIdentifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "boundedAudience": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$"
+    }
+  }
+}

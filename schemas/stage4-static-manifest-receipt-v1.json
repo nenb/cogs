@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.dev/schemas/stage4-static-manifest-receipt-v1.json",
+  "title": "Cogs Stage 4 bounded local static manifest receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "authority",
+    "request_sha256",
+    "manifest_sha256",
+    "nic_config_sha256",
+    "chart_inventory_sha256",
+    "helm_executable_sha256",
+    "nic_contract_sha256",
+    "object_inventory",
+    "manifest_render_route_present",
+    "deployment_execution_route_present",
+    "apply_route_present",
+    "kubernetes_client_present",
+    "kubernetes_execution_observed",
+    "provider_execution_observed",
+    "cloud_execution_observed",
+    "provider_truth_observed",
+    "launch_template_contents_observed",
+    "campaign_authorized",
+    "stage4_exit_satisfied",
+    "release_eligible"
+  ],
+  "properties": {
+    "version": {
+      "const": "cogs.stage4-static-manifest-receipt/v1"
+    },
+    "authority": {
+      "const": "local-static-manifest-materialization-only"
+    },
+    "request_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "manifest_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "nic_config_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "chart_inventory_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "helm_executable_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "nic_contract_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "object_inventory": {
+      "type": "array",
+      "minItems": 9,
+      "maxItems": 9,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^(ConfigMap|ServiceAccount|Service|NetworkPolicy|PodTemplate)/[a-z0-9](?:[-a-z0-9]{0,251}[a-z0-9])?$"
+      }
+    },
+    "manifest_render_route_present": {
+      "const": true
+    },
+    "deployment_execution_route_present": {
+      "const": false
+    },
+    "apply_route_present": {
+      "const": false
+    },
+    "kubernetes_client_present": {
+      "const": false
+    },
+    "kubernetes_execution_observed": {
+      "const": false
+    },
+    "provider_execution_observed": {
+      "const": false
+    },
+    "cloud_execution_observed": {
+      "const": false
+    },
+    "provider_truth_observed": {
+      "const": false
+    },
+    "launch_template_contents_observed": {
+      "const": false
+    },
+    "campaign_authorized": {
+      "const": false
+    },
+    "stage4_exit_satisfied": {
+      "const": false
+    },
+    "release_eligible": {
+      "const": false
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  }
+}

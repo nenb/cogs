@@ -33,9 +33,10 @@ test("README preserves the cloud-entry gate and disclaims current deployment aut
   assert.match(text, /static expected-policy shapes only and remain pending exact EKS CNI\/runtime qualification/);
   assert.doesNotMatch(text, /Stage 0 feasibility work/);
   assert.doesNotMatch(text, /AWS feasibility work is completed|AWS completion/i);
-  assert.match(text, /pinned to NIC `v0\.11\.0`/);
-  assert.match(text, /lacks the required custom launch-template ID\/version and nested-virtualization CPU option/);
-  assert.match(text, /EKS node-image pin also remains unresolved/);
+  assert.match(text, /historical v1 assessment preserves the NIC `v0\.11\.0` capability failure/);
+  assert.match(text, /Active v2 pins explicitly accepted personal-fork NIC commit/);
+  assert.match(text, /resolves only external launch-template ID\/version preservation with operator attestation/);
+  assert.match(text, /leaves the EKS node image unresolved/);
 });
 
 test("the linked implementation plan keeps Stages 4 and 5 API-key-only", () => {

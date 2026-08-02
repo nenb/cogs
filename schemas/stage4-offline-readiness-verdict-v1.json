@@ -104,7 +104,6 @@
       "items": {
         "enum": [
           "ISSUE_42_OPEN",
-          "NIC_V0_11_0_MODULE_0_7_0_LAUNCH_TEMPLATE_CAPABILITY_MISSING",
           "EKS_AMI_IMAGE_RELEASE_KERNEL_UNRESOLVED",
           "PROPOSED_ACCOUNT_BINDING_ABSENT",
           "CURRENT_PRICE_NOT_REVALIDATED",
@@ -153,15 +152,12 @@
             },
             "blockers": {
               "type": "array",
-              "minItems": 12,
-              "maxItems": 12,
+              "minItems": 11,
+              "maxItems": 11,
               "uniqueItems": true,
               "prefixItems": [
                 {
                   "const": "ISSUE_42_OPEN"
-                },
-                {
-                  "const": "NIC_V0_11_0_MODULE_0_7_0_LAUNCH_TEMPLATE_CAPABILITY_MISSING"
                 },
                 {
                   "const": "EKS_AMI_IMAGE_RELEASE_KERNEL_UNRESOLVED"

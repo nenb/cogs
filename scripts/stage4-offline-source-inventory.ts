@@ -53,7 +53,7 @@ const PREFIX_PATTERNS = Object.freeze([
 ]);
 const MAXIMUM_FILE_BYTES = 4 * 1024 * 1024;
 const MAXIMUM_GIT_OUTPUT_BYTES = 1024 * 1024;
-const EXPECTED_REGENERATION_BASE_HEAD = "c80b5eb8c6308b605c677e8c2b4154267fc147cf";
+const EXPECTED_REGENERATION_BASE_HEAD = "dc11c1f6f2e29a66c602b82d805c764a00517bf0";
 
 type Identity = Readonly<{
   dev: bigint;

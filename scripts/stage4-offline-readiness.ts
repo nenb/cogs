@@ -10,7 +10,6 @@ const packageSchema = require("../schemas/stage4-offline-readiness-package-v1.js
 
 export const STAGE4_READINESS_BLOCKERS = Object.freeze([
   "ISSUE_42_OPEN",
-  "NIC_V0_11_0_MODULE_0_7_0_LAUNCH_TEMPLATE_CAPABILITY_MISSING",
   "EKS_AMI_IMAGE_RELEASE_KERNEL_UNRESOLVED",
   "PROPOSED_ACCOUNT_BINDING_ABSENT",
   "CURRENT_PRICE_NOT_REVALIDATED",
@@ -210,17 +209,17 @@ const EXPECTED_IMAGE_REFERENCES = Object.freeze({
 
 /* stage4-readiness-anchor-start */
 export const STAGE4_READINESS_EXPECTED_ARTIFACTS = Object.freeze({
-  chartInventory: "c5a92117c4bf604a188393a4c3cce15fde287f35a0b7c0751fe5f1720b286321",
+  chartInventory: "a3801a32d9f1a59864bd027aebf44554b087911c7d4a4486e7bcda697ff68617",
   imageLock: "0b52deae8e9d24458e52c4c178283d1c51819057d8ce867a865b0b7b96902389",
-  nicContract: "ad431775037e718074a12ecaf530a5f67b26ba6d2f693980a3e580aa6f167391",
-  render: "614361336f5cbf87e4fd7b1a8a806fa5d08bbceb3c91b2b33a1710b4cfd73331",
-  repeatedRender: "614361336f5cbf87e4fd7b1a8a806fa5d08bbceb3c91b2b33a1710b4cfd73331",
+  nicContract: "b9f50811706846373f1519bab10af0abf44df1c9957b713cb494cde55c724743",
+  render: "60f73b0e5caa843c4db9431c63cdc13eada9088d6da16c974ef127c480235710",
+  repeatedRender: "60f73b0e5caa843c4db9431c63cdc13eada9088d6da16c974ef127c480235710",
   runtimePins: "14fdacff04e1db62ec733e7696d104826c73aa87764406a5625d2a13265219f0",
   values: "e63a0fadebe16637cc97b21adeeb4ecf33efa8e76a1469e6008c7f7ed4fbb58f",
-  localValidationNormalized: "c6d68934f90c0e72b2d06af9566e4a0bea161355f1382ac49b89fea3003c1d59",
-  renderReceipt: "2d6ab6995b6fc691ba4e6df84b8dd078ae724236efae483295fa57dffd825a44",
-  schemaInventory: "ba499db77b817d937d159c6501471676ce7d7970a2340b1edf50a64b92d7d096",
-  sourceInventoryNormalized: "5ba0e133a47efc8010e1e92c4e12546ef99260c68e250dc623fffd587972aa62",
+  localValidationNormalized: "33f83c6309aa0bd0392f17aa09dbb152576e85f98a410d9f886137cac4a5cddb",
+  renderReceipt: "b9634997067adef5816aac496c26acbdc1b2c6fc20fa0112f38efd6879e1f85b",
+  schemaInventory: "62c4baef48de5669513b3aa0f90401a94f6fa7f1d3398005d9cbb8213026fd43",
+  sourceInventoryNormalized: "a73e33e8767b003a2038bf6bd887833f6b3c80455f14e883eaf17a54f49c052e",
 });
 /* stage4-readiness-anchor-end */
 
