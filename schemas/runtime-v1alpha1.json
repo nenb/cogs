@@ -1,0 +1,135 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.dev/schemas/runtime-v1alpha1.json",
+  "title": "Cogs production worker runtime contract",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "profile", "paths", "api", "openbao", "otlp", "egress", "lifecycle"],
+  "properties": {
+    "version": { "const": "cogs.runtime/v1alpha1" },
+    "profile": { "const": "api-key-only" },
+    "paths": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "launch_document",
+        "api_bearer",
+        "openbao_jwt",
+        "proxy_capability",
+        "envoy_executable",
+        "egress_tmpfs",
+        "audit_wal",
+        "agent_directory",
+        "session_root",
+        "shared_skill_oci",
+        "private_skill_source",
+        "private_skill_store"
+      ],
+      "properties": {
+        "launch_document": { "const": "/etc/cogs/launch.json" },
+        "api_bearer": { "const": "/run/cogs/api/bearer" },
+        "openbao_jwt": { "const": "/run/cogs/openbao/jwt" },
+        "proxy_capability": { "const": "/run/cogs/proxy/capability" },
+        "envoy_executable": { "const": "/usr/local/bin/envoy" },
+        "egress_tmpfs": { "const": "/run/cogs/egress" },
+        "audit_wal": { "const": "/var/lib/cogs/session/egress-audit.wal" },
+        "agent_directory": { "const": "/var/lib/cogs/session/agent" },
+        "session_root": { "const": "/var/lib/cogs/session/sessions" },
+        "shared_skill_oci": { "const": "/var/lib/cogs/skills/shared-oci" },
+        "private_skill_source": { "const": "/var/lib/cogs/skills/private-source" },
+        "private_skill_store": { "const": "/var/lib/cogs/skills/private-store" }
+      }
+    },
+    "api": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["listen_host", "port"],
+      "properties": {
+        "listen_host": { "enum": ["127.0.0.1", "0.0.0.0"] },
+        "port": { "type": "integer", "minimum": 1024, "maximum": 65535 }
+      }
+    },
+    "openbao": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "origin",
+        "kubernetes_auth_mount",
+        "kubernetes_auth_role",
+        "model_kv_mount",
+        "egress_kv_mount",
+        "pki_mount",
+        "pki_role",
+        "projected_jwt_ttl_seconds",
+        "max_client_token_ttl_seconds"
+      ],
+      "properties": {
+        "origin": { "$ref": "#/$defs/httpsOrigin" },
+        "kubernetes_auth_mount": { "$ref": "#/$defs/mountName" },
+        "kubernetes_auth_role": { "$ref": "#/$defs/roleName" },
+        "model_kv_mount": { "$ref": "#/$defs/mountName" },
+        "egress_kv_mount": { "$ref": "#/$defs/mountName" },
+        "pki_mount": { "$ref": "#/$defs/mountName" },
+        "pki_role": { "$ref": "#/$defs/roleName" },
+        "projected_jwt_ttl_seconds": { "const": 600 },
+        "max_client_token_ttl_seconds": { "const": 600 }
+      }
+    },
+    "otlp": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocol", "traces_endpoint", "metrics_endpoint", "logs_endpoint"],
+      "properties": {
+        "protocol": { "const": "http/json" },
+        "traces_endpoint": { "$ref": "#/$defs/httpsEndpoint" },
+        "metrics_endpoint": { "$ref": "#/$defs/httpsEndpoint" },
+        "logs_endpoint": { "$ref": "#/$defs/httpsEndpoint" }
+      }
+    },
+    "egress": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["listener_port", "revocation_poll_seconds", "completion_capacity"],
+      "properties": {
+        "listener_port": { "type": "integer", "minimum": 1024, "maximum": 65535 },
+        "revocation_poll_seconds": { "type": "integer", "minimum": 1, "maximum": 60 },
+        "completion_capacity": { "type": "integer", "minimum": 1, "maximum": 1024 }
+      }
+    },
+    "lifecycle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["maximum_session_seconds", "shutdown_timeout_seconds"],
+      "properties": {
+        "maximum_session_seconds": { "const": 28800 },
+        "shutdown_timeout_seconds": { "type": "integer", "minimum": 1, "maximum": 30 }
+      }
+    }
+  },
+  "$defs": {
+    "mountName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
+    },
+    "roleName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+    },
+    "httpsOrigin": {
+      "type": "string",
+      "minLength": 9,
+      "maxLength": 2048,
+      "pattern": "^https://[^/?#\\s]+(?::[1-9][0-9]{0,4})?/$"
+    },
+    "httpsEndpoint": {
+      "type": "string",
+      "minLength": 9,
+      "maxLength": 2048,
+      "pattern": "^https://[^/?#\\s]+(?::[1-9][0-9]{0,4})?/v1/(traces|metrics|logs)$"
+    }
+  }
+}
