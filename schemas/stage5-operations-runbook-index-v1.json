@@ -1,0 +1,291 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.dev/schemas/stage5-operations-runbook-index-v1.json",
+  "title": "Cogs Stage 5 local/static draft operations runbook index",
+  "description": "A strict documentation inventory only; never operations evidence, campaign authority, or a release decision.",
+  "type": "object",
+  "additionalProperties": false,
+  "maxProperties": 18,
+  "required": [
+    "version",
+    "authority",
+    "issue",
+    "draft",
+    "qualified",
+    "campaign_authorized",
+    "cloud_execution_observed",
+    "provider_truth_observed",
+    "operations_evidence_observed",
+    "stage4_exit_satisfied",
+    "release_eligible",
+    "production_ready",
+    "general_availability",
+    "compliance_certified",
+    "go_no_go",
+    "subscription_oauth",
+    "fact_classes",
+    "runbooks"
+  ],
+  "properties": {
+    "version": { "const": "cogs.stage5-operations-runbook-index/v1" },
+    "authority": { "const": "local-static-draft-documentation-only" },
+    "issue": { "const": 366 },
+    "draft": { "const": true },
+    "qualified": { "const": false },
+    "campaign_authorized": { "const": false },
+    "cloud_execution_observed": { "const": false },
+    "provider_truth_observed": { "const": false },
+    "operations_evidence_observed": { "const": false },
+    "stage4_exit_satisfied": { "const": false },
+    "release_eligible": { "const": false },
+    "production_ready": { "const": false },
+    "general_availability": { "const": false },
+    "compliance_certified": { "const": false },
+    "go_no_go": { "const": "not-available" },
+    "subscription_oauth": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 4,
+      "required": ["status", "deferred_issue", "future_post_mvp_only", "worker_refresh_tokens"],
+      "properties": {
+        "status": { "const": "disabled-unadvertised" },
+        "deferred_issue": { "const": 13 },
+        "future_post_mvp_only": { "const": true },
+        "worker_refresh_tokens": { "const": "forbidden" }
+      }
+    },
+    "fact_classes": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "prefixItems": [
+        {
+          "$ref": "#/$defs/factClass",
+          "type": "object",
+          "properties": {
+            "id": { "const": "assumptions" },
+            "heading": { "const": "Assumptions" },
+            "authority": { "const": "untested-proposal-only" }
+          }
+        },
+        {
+          "$ref": "#/$defs/factClass",
+          "type": "object",
+          "properties": {
+            "id": { "const": "static-contract-facts" },
+            "heading": { "const": "Static contract facts" },
+            "authority": { "const": "local-static-shape-only" }
+          }
+        },
+        {
+          "$ref": "#/$defs/factClass",
+          "type": "object",
+          "properties": {
+            "id": { "const": "authoritative-local-facts" },
+            "heading": { "const": "Authoritative-local facts" },
+            "authority": { "const": "accepted-linux-kvm-applicability-only" }
+          }
+        },
+        {
+          "$ref": "#/$defs/factClass",
+          "type": "object",
+          "properties": {
+            "id": { "const": "future-cloud-evidence" },
+            "heading": { "const": "Future cloud evidence" },
+            "authority": { "const": "required-future-unexecuted" }
+          }
+        }
+      ],
+      "items": false
+    },
+    "runbooks": {
+      "type": "array",
+      "minItems": 13,
+      "maxItems": 13,
+      "prefixItems": [
+        {
+          "$ref": "#/$defs/runbook",
+          "type": "object",
+          "properties": {
+            "id": { "const": "installation" },
+            "path": { "const": "docs/operations/runbooks/installation.md" },
+            "title": { "const": "Draft installation guide" }
+          }
+        },
+        {
+          "$ref": "#/$defs/runbook",
+          "type": "object",
+          "properties": {
+            "id": { "const": "prerequisites" },
+            "path": { "const": "docs/operations/runbooks/prerequisites.md" },
+            "title": { "const": "Draft prerequisites guide" }
+          }
+        },
+        {
+          "$ref": "#/$defs/runbook",
+          "type": "object",
+          "properties": {
+            "id": { "const": "nic-configuration" },
+            "path": { "const": "docs/operations/runbooks/nic-configuration.md" },
+            "title": { "const": "Draft NIC configuration guide" }
+          }
+        },
+        {
+          "$ref": "#/$defs/runbook",
+          "type": "object",
+          "properties": {
+            "id": { "const": "platform-matrix" },
+            "path": { "const": "docs/operations/runbooks/platform-matrix.md" },
+            "title": { "const": "Draft NIC and platform matrix" }
+          }
+        },
+        {
+          "$ref": "#/$defs/runbook",
+          "type": "object",
+          "properties": {
+            "id": { "const": "upgrade" },
+            "path": { "const": "docs/operations/runbooks/upgrade.md" },
+            "title": { "const": "Draft runtime and proxy upgrade runbook" }
+          }
+        },
+        {
+          "$ref": "#/$defs/runbook",
+          "type": "object",
+          "properties": {
+            "id": { "const": "openbao" },
+            "path": { "const": "docs/operations/runbooks/openbao.md" },
+            "title": { "const": "Draft OpenBao policy and revocation runbook" }
+          }
+        },
+        {
+          "$ref": "#/$defs/runbook",
+          "type": "object",
+          "properties": {
+            "id": { "const": "incident-response" },
+            "path": { "const": "docs/operations/runbooks/incident-response.md" },
+            "title": { "const": "Draft credential incident-response runbook" }
+          }
+        },
+        {
+          "$ref": "#/$defs/runbook",
+          "type": "object",
+          "properties": {
+            "id": { "const": "cve-response" },
+            "path": { "const": "docs/operations/runbooks/cve-response.md" },
+            "title": { "const": "Draft node and runtime CVE response runbook" }
+          }
+        },
+        {
+          "$ref": "#/$defs/runbook",
+          "type": "object",
+          "properties": {
+            "id": { "const": "retention-deletion" },
+            "path": { "const": "docs/operations/runbooks/retention-deletion.md" },
+            "title": { "const": "Draft backup, retention, export, and deletion guide" }
+          }
+        },
+        {
+          "$ref": "#/$defs/runbook",
+          "type": "object",
+          "properties": {
+            "id": { "const": "capacity" },
+            "path": { "const": "docs/operations/runbooks/capacity.md" },
+            "title": { "const": "Draft capacity and cost planning guide" }
+          }
+        },
+        {
+          "$ref": "#/$defs/runbook",
+          "type": "object",
+          "properties": {
+            "id": { "const": "observability" },
+            "path": { "const": "docs/operations/runbooks/observability.md" },
+            "title": { "const": "Draft observability dashboard field reference" }
+          }
+        },
+        {
+          "$ref": "#/$defs/runbook",
+          "type": "object",
+          "properties": {
+            "id": { "const": "limitations" },
+            "path": { "const": "docs/operations/runbooks/limitations.md" },
+            "title": { "const": "Draft known limitations and residual risks" }
+          }
+        },
+        {
+          "$ref": "#/$defs/runbook",
+          "type": "object",
+          "properties": {
+            "id": { "const": "teardown" },
+            "path": { "const": "docs/operations/runbooks/teardown.md" },
+            "title": { "const": "Draft teardown and orphan-resource verification guide" }
+          }
+        }
+      ],
+      "items": false
+    }
+  },
+  "$defs": {
+    "factClass": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 4,
+      "required": ["id", "heading", "authority", "can_satisfy_gate"],
+      "properties": {
+        "id": {
+          "enum": ["assumptions", "static-contract-facts", "authoritative-local-facts", "future-cloud-evidence"]
+        },
+        "heading": {
+          "enum": ["Assumptions", "Static contract facts", "Authoritative-local facts", "Future cloud evidence"]
+        },
+        "authority": {
+          "enum": [
+            "untested-proposal-only",
+            "local-static-shape-only",
+            "accepted-linux-kvm-applicability-only",
+            "required-future-unexecuted"
+          ]
+        },
+        "can_satisfy_gate": { "const": false }
+      }
+    },
+    "runbook": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 6,
+      "required": ["id", "path", "title", "content_sha256", "status", "evidence_contract"],
+      "properties": {
+        "id": {
+          "enum": [
+            "installation",
+            "prerequisites",
+            "nic-configuration",
+            "platform-matrix",
+            "upgrade",
+            "openbao",
+            "incident-response",
+            "cve-response",
+            "retention-deletion",
+            "capacity",
+            "observability",
+            "limitations",
+            "teardown"
+          ]
+        },
+        "path": {
+          "type": "string",
+          "pattern": "^docs/operations/runbooks/[a-z-]+\\.md$",
+          "maxLength": 96
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 96,
+          "pattern": "^Draft "
+        },
+        "content_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "status": { "const": "draft-local-static-only" },
+        "evidence_contract": { "const": "future-operations-reference-v1" }
+      }
+    }
+  }
+}
