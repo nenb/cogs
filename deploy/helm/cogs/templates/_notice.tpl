@@ -51,12 +51,13 @@ dev.cogs/production-ready: "false"
 
 {{- define "cogs.stage4.validate" -}}
 {{- $v := .Values.stage4Preparation -}}
+{{- include "cogs.stage4.requireExactKeys" (dict "path" "values" "value" .Values "allowed" (list "stage4Preparation")) -}}
 {{- include "cogs.stage4.requireExactKeys" (dict "path" "stage4Preparation" "value" $v "allowed" (list "enabled" "nonProductionAcknowledgement" "sessionIdentity" "runtimeClassName" "images" "placement" "storage" "openBao" "otlp" "proxyIdentity" "resourceProfile" "lifecycle" "auditWalMaxBytes" "publicEgressCaConfigMap")) -}}
 {{- include "cogs.stage4.requireExactKeys" (dict "path" "stage4Preparation.images" "value" $v.images "allowed" (list "worker" "proxy" "sandbox")) -}}
 {{- include "cogs.stage4.requireExactKeys" (dict "path" "stage4Preparation.placement" "value" $v.placement "allowed" (list "trusted" "sandbox")) -}}
 {{- include "cogs.stage4.requireExactKeys" (dict "path" "stage4Preparation.placement.trusted" "value" $v.placement.trusted "allowed" (list "nodeSelector" "tolerations")) -}}
 {{- include "cogs.stage4.requireExactKeys" (dict "path" "stage4Preparation.placement.sandbox" "value" $v.placement.sandbox "allowed" (list "nodeSelector" "tolerations")) -}}
-{{- include "cogs.stage4.requireExactKeys" (dict "path" "stage4Preparation.storage" "value" $v.storage "allowed" (list "workspaceStorageClass" "workspaceSize" "workspaceAccessMode" "sessionStateStorageClass" "sessionStateSize" "sessionStateAccessMode")) -}}
+{{- include "cogs.stage4.requireExactKeys" (dict "path" "stage4Preparation.storage" "value" $v.storage "allowed" (list "workspaceStorageClass" "workspaceSize" "workspaceAccessMode" "workspaceVolumeMode" "workspaceVolumeBindingMode" "workspaceReclaimPolicy" "workspaceRetention" "sessionStateStorageClass" "sessionStateSize" "sessionStateAccessMode" "sessionStateVolumeMode" "sessionStateVolumeBindingMode" "sessionStateReclaimPolicy" "sessionStateRetention" "sessionStateRetentionSeconds")) -}}
 {{- include "cogs.stage4.requireExactKeys" (dict "path" "stage4Preparation.openBao" "value" $v.openBao "allowed" (list "endpoint" "kubernetesAuthMount" "kubernetesAuthRole" "pkiPath" "tokenAudience" "peer")) -}}
 {{- include "cogs.stage4.requireExactKeys" (dict "path" "stage4Preparation.openBao.peer" "value" $v.openBao.peer "allowed" (list "namespaceLabels" "podLabels" "port")) -}}
 {{- include "cogs.stage4.requireExactKeys" (dict "path" "stage4Preparation.otlp" "value" $v.otlp "allowed" (list "endpoint" "protocol" "peer")) -}}

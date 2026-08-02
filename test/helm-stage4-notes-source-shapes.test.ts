@@ -976,6 +976,11 @@ test("template validation rejects hostile security inputs with schema validation
   type HostileCase = { name: string; key: string; mutate(values: ValuesFile): void };
   const cases: HostileCase[] = [
     {
+      name: "future chart-values readiness field",
+      key: "ready",
+      mutate: (v) => ((v as unknown as Record<string, unknown>).ready = true),
+    },
+    {
       name: "crun RuntimeClass substitution",
       key: "runtimeClassName",
       mutate: (v) => (v.stage4Preparation.runtimeClassName = "crun"),
