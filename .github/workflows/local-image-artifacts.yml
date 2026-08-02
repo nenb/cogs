@@ -86,10 +86,6 @@ jobs:
       SYFT_IMAGE: ${{ needs.authority.outputs.syft_image }}
       TRIVY_IMAGE: ${{ needs.authority.outputs.trivy_image }}
       TRIVY_DATABASE: ${{ needs.authority.outputs.trivy_database }}
-      DOCKER_CONFIG: ${{ runner.temp }}/cogs-local-image-docker-config
-      OUT: ${{ runner.temp }}/cogs-local-image-artifacts
-      CONTEXT: ${{ runner.temp }}/cogs-local-image-context
-      CACHE: ${{ runner.temp }}/cogs-local-image-trivy-cache
     steps:
       - name: Check out exact reviewed source without credentials
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -101,6 +97,16 @@ jobs:
       - name: Verify exact clean source and construct tracked-only context
         run: |
           set -euo pipefail
+          export DOCKER_CONFIG="$RUNNER_TEMP/cogs-local-image-docker-config"
+          export OUT="$RUNNER_TEMP/cogs-local-image-artifacts"
+          export CONTEXT="$RUNNER_TEMP/cogs-local-image-context"
+          export CACHE="$RUNNER_TEMP/cogs-local-image-trivy-cache"
+          {
+            printf 'DOCKER_CONFIG=%s\n' "$DOCKER_CONFIG"
+            printf 'OUT=%s\n' "$OUT"
+            printf 'CONTEXT=%s\n' "$CONTEXT"
+            printf 'CACHE=%s\n' "$CACHE"
+          } >> "$GITHUB_ENV"
           test "$(git rev-parse --verify HEAD^{commit})" = "$REVIEWED_SHA"
           test -z "$(git status --porcelain=v1 --untracked-files=all)"
           test -z "$(git config --local --get-regexp 'credential\.helper|http\..*\.extraheader' || :)"
