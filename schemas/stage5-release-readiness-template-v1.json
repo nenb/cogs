@@ -90,6 +90,7 @@
       "type": "array",
       "minItems": 0,
       "maxItems": 64,
+      "uniqueItems": true,
       "items": {
         "type": "object",
         "additionalProperties": false,

@@ -73,6 +73,7 @@
       "type": "array",
       "minItems": 0,
       "maxItems": 128,
+      "uniqueItems": true,
       "items": { "$ref": "#/$defs/finding" }
     },
     "gate": {
@@ -148,11 +149,68 @@
         "severity": { "enum": ["critical", "high", "medium", "low"] },
         "owner_principal_id": { "type": ["string", "null"], "minLength": 1, "maxLength": 128 },
         "disposition": { "enum": ["open", "fixed", "false-positive", "accepted-risk"] },
-        "retest": { "enum": ["unexecuted", "pass", "fail"] },
+        "retest": { "enum": ["unexecuted", "pass", "fail", "not-required"] },
         "evidence_binding_sha256": { "type": ["string", "null"], "pattern": "^[0-9a-f]{64}$" },
         "title_code": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[A-Z0-9_]+$" },
-        "state": { "enum": ["unresolved", "resolved-metadata-only"] }
-      }
+        "state": { "enum": ["unresolved", "resolved-evidence-bound", "resolved-metadata-only"] }
+      },
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["disposition", "state", "retest", "evidence_binding_sha256"],
+          "properties": {
+            "disposition": { "const": "open" },
+            "state": { "const": "unresolved" },
+            "retest": { "const": "unexecuted" },
+            "evidence_binding_sha256": { "type": "null" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["disposition", "state", "owner_principal_id", "retest", "evidence_binding_sha256"],
+          "properties": {
+            "disposition": { "enum": ["fixed", "false-positive"] },
+            "state": { "const": "unresolved" },
+            "owner_principal_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "retest": { "const": "unexecuted" },
+            "evidence_binding_sha256": { "type": "null" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["disposition", "state", "owner_principal_id", "retest", "evidence_binding_sha256"],
+          "properties": {
+            "disposition": { "enum": ["fixed", "false-positive"] },
+            "state": { "const": "unresolved" },
+            "owner_principal_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "retest": { "const": "fail" },
+            "evidence_binding_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["disposition", "state", "owner_principal_id", "retest", "evidence_binding_sha256"],
+          "properties": {
+            "disposition": { "enum": ["fixed", "false-positive"] },
+            "state": { "const": "resolved-evidence-bound" },
+            "owner_principal_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "retest": { "const": "pass" },
+            "evidence_binding_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["severity", "disposition", "state", "owner_principal_id", "retest", "evidence_binding_sha256"],
+          "properties": {
+            "severity": { "enum": ["medium", "low"] },
+            "disposition": { "const": "accepted-risk" },
+            "state": { "const": "resolved-metadata-only" },
+            "owner_principal_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "retest": { "const": "not-required" },
+            "evidence_binding_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+          }
+        }
+      ]
     }
   }
 }

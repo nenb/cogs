@@ -90,6 +90,18 @@ function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
   return true;
 }
 
+function hasUniqueSemanticIds(kind: Stage5DocumentKind, parsed: JsonValue): boolean {
+  const field = kind === "independent-review" ? "findings" : kind === "release-readiness" ? "residual_risks" : null;
+  if (field === null) return true;
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return false;
+  const rows = parsed[field];
+  if (!Array.isArray(rows)) return false;
+  const ids = rows.map((row) =>
+    row !== null && typeof row === "object" && !Array.isArray(row) && typeof row.id === "string" ? row.id : null,
+  );
+  return ids.every((id): id is string => id !== null) && new Set(ids).size === ids.length;
+}
+
 export type Stage5DocumentValidation = Readonly<{
   authority: "local-static-shape-validation-only";
   valid: boolean;
@@ -97,7 +109,12 @@ export type Stage5DocumentValidation = Readonly<{
   campaign_authorized: false;
   cloud_execution_observed: false;
   release_eligible: false;
-  reason_code: "VALID_PROVISIONAL_DOCUMENT" | "BOUNDED_INPUT_VIOLATION" | "NON_CANONICAL_JSON" | "SCHEMA_DRIFT";
+  reason_code:
+    | "VALID_PROVISIONAL_DOCUMENT"
+    | "BOUNDED_INPUT_VIOLATION"
+    | "NON_CANONICAL_JSON"
+    | "SCHEMA_DRIFT"
+    | "SEMANTIC_DRIFT";
 }>;
 
 /** Validates bounded canonical metadata only. It performs no filesystem, process, provider, cluster, or model action. */
@@ -113,6 +130,7 @@ export function validateStage5Document(kind: Stage5DocumentKind, input: unknown)
       const parsed = JSON.parse(decoder.decode(bytes)) as JsonValue;
       if (!bytesEqual(bytes, canonicalStage5Bytes(parsed))) reason = "NON_CANONICAL_JSON";
       else if (!VALIDATORS[kind](parsed)) reason = "SCHEMA_DRIFT";
+      else if (!hasUniqueSemanticIds(kind, parsed)) reason = "SEMANTIC_DRIFT";
     } catch {
       reason = "NON_CANONICAL_JSON";
     }
@@ -189,47 +207,159 @@ export function generateProvisionalRcFreezeManifest(): JsonRecord {
 }
 
 function freezeSnapshotRoot(snapshot: FreezeSnapshot): string {
+  const ordered = FREEZE_COMPONENTS.map((component) => [component, snapshot[component]]);
   return createHash("sha256")
     .update("cogs.stage5/freeze-snapshot/v1\0", "utf8")
-    .update(canonicalJson(snapshot), "utf8")
+    .update(JSON.stringify(ordered), "utf8")
     .digest("hex");
 }
 
-/** Exact synthetic snapshot comparison. A missing or changed component always invalidates the baseline. */
-export function compareFreezeSnapshots(baseline: Partial<FreezeSnapshot>, current: Partial<FreezeSnapshot>) {
-  const digest = /^[0-9a-f]{64}$/u;
-  const missing = FREEZE_COMPONENTS.filter(
-    (component) => baseline[component] === undefined || current[component] === undefined,
-  );
-  const invalid = FREEZE_COMPONENTS.filter(
-    (component) =>
-      (baseline[component] !== undefined && !digest.test(baseline[component])) ||
-      (current[component] !== undefined && !digest.test(current[component])),
-  );
-  const changed = FREEZE_COMPONENTS.filter(
-    (component) =>
-      baseline[component] !== undefined &&
-      current[component] !== undefined &&
-      baseline[component] !== current[component],
-  );
-  const complete = missing.length === 0 && invalid.length === 0;
-  const status =
-    invalid.length > 0
-      ? "invalidated-invalid-binding"
-      : missing.length > 0
-        ? "invalidated-incomplete"
-        : changed.length > 0
-          ? "invalidated-drift"
-          : "metadata-match-only";
+type FreezeCaptureState =
+  | "ok"
+  | "rejected-proxy"
+  | "rejected-type"
+  | "rejected-prototype"
+  | "rejected-property-count"
+  | "rejected-symbol-key"
+  | "rejected-extra-property"
+  | "rejected-missing-property"
+  | "rejected-accessor"
+  | "rejected-nonenumerable-property"
+  | "rejected-invalid-digest";
+
+type FreezeCapture = Readonly<{
+  state: FreezeCaptureState;
+  snapshot: FreezeSnapshot | null;
+  missing: readonly FreezeComponent[];
+  invalid: readonly FreezeComponent[];
+}>;
+
+const emptyFreezeCapture = (state: FreezeCaptureState): FreezeCapture =>
+  Object.freeze({ state, snapshot: null, missing: Object.freeze([]), invalid: Object.freeze([]) });
+
+function isProxyInput(input: unknown): boolean {
+  return ((typeof input === "object" && input !== null) || typeof input === "function") && types.isProxy(input);
+}
+
+function captureFreezeSnapshot(input: unknown): FreezeCapture {
+  if (isProxyInput(input)) return emptyFreezeCapture("rejected-proxy");
+  if (input === null || typeof input !== "object") return emptyFreezeCapture("rejected-type");
+  if (Object.getPrototypeOf(input) !== Object.prototype) return emptyFreezeCapture("rejected-prototype");
+
+  const keys = Reflect.ownKeys(input);
+  if (keys.length > FREEZE_COMPONENTS.length) return emptyFreezeCapture("rejected-property-count");
+  if (keys.some((key) => typeof key === "symbol")) return emptyFreezeCapture("rejected-symbol-key");
+  if (keys.some((key) => !FREEZE_COMPONENTS.includes(key as FreezeComponent))) {
+    return emptyFreezeCapture("rejected-extra-property");
+  }
+  const missing = FREEZE_COMPONENTS.filter((component) => !keys.includes(component));
+  if (missing.length > 0) {
+    return Object.freeze({
+      state: "rejected-missing-property",
+      snapshot: null,
+      missing: Object.freeze(missing),
+      invalid: Object.freeze([]),
+    });
+  }
+
+  const descriptors = Object.getOwnPropertyDescriptors(input);
+  const snapshot = Object.create(null) as Record<FreezeComponent, string>;
+  const invalid: FreezeComponent[] = [];
+  for (const component of FREEZE_COMPONENTS) {
+    const descriptor = descriptors[component];
+    if (descriptor === undefined || !("value" in descriptor)) return emptyFreezeCapture("rejected-accessor");
+    if (!descriptor.enumerable) return emptyFreezeCapture("rejected-nonenumerable-property");
+    if (
+      typeof descriptor.value !== "string" ||
+      descriptor.value.length !== 64 ||
+      !/^[0-9a-f]+$/u.test(descriptor.value)
+    ) {
+      invalid.push(component);
+    } else {
+      snapshot[component] = descriptor.value;
+    }
+  }
+  if (invalid.length > 0) {
+    return Object.freeze({
+      state: "rejected-invalid-digest",
+      snapshot: null,
+      missing: Object.freeze([]),
+      invalid: Object.freeze(invalid),
+    });
+  }
   return Object.freeze({
-    status,
-    missing: Object.freeze(missing),
-    invalid: Object.freeze(invalid),
+    state: "ok",
+    snapshot: Object.freeze(snapshot) as FreezeSnapshot,
+    missing: Object.freeze([]),
+    invalid: Object.freeze([]),
+  });
+}
+
+/**
+ * Snapshots exact own metadata without invoking accessors. Proxy inputs are rejected before any reflection.
+ * A match remains non-authoritative; missing, malformed, extra, inherited, accessor, or changed input invalidates.
+ */
+export function compareFreezeSnapshots(baselineInput: unknown, currentInput: unknown) {
+  const baselineProxy = isProxyInput(baselineInput);
+  const currentProxy = isProxyInput(currentInput);
+  if (baselineProxy || currentProxy) {
+    const inputReason = baselineProxy ? "rejected-proxy-baseline" : "rejected-proxy-current";
+    return Object.freeze({
+      status: "invalidated-invalid-shape",
+      input_reason: inputReason,
+      missing: Object.freeze([]),
+      invalid: Object.freeze([]),
+      changed: Object.freeze([]),
+      baseline_binding_sha256: null,
+      current_binding_sha256: null,
+      rc_frozen: false,
+      requires_refreeze: true,
+      release_eligible: false,
+    });
+  }
+
+  const baseline = captureFreezeSnapshot(baselineInput);
+  const current = captureFreezeSnapshot(currentInput);
+  if (baseline.snapshot === null || current.snapshot === null) {
+    const missing = FREEZE_COMPONENTS.filter(
+      (component) => baseline.missing.includes(component) || current.missing.includes(component),
+    );
+    const invalid = FREEZE_COMPONENTS.filter(
+      (component) => baseline.invalid.includes(component) || current.invalid.includes(component),
+    );
+    const inputReason = baseline.state !== "ok" ? `${baseline.state}-baseline` : `${current.state}-current`;
+    return Object.freeze({
+      status:
+        invalid.length > 0
+          ? "invalidated-invalid-binding"
+          : missing.length > 0
+            ? "invalidated-incomplete"
+            : "invalidated-invalid-shape",
+      input_reason: inputReason,
+      missing: Object.freeze(missing),
+      invalid: Object.freeze(invalid),
+      changed: Object.freeze([]),
+      baseline_binding_sha256: null,
+      current_binding_sha256: null,
+      rc_frozen: false,
+      requires_refreeze: true,
+      release_eligible: false,
+    });
+  }
+
+  const changed = FREEZE_COMPONENTS.filter(
+    (component) => baseline.snapshot?.[component] !== current.snapshot?.[component],
+  );
+  return Object.freeze({
+    status: changed.length > 0 ? "invalidated-drift" : "metadata-match-only",
+    input_reason: "accepted-exact-own-shape",
+    missing: Object.freeze([]),
+    invalid: Object.freeze([]),
     changed: Object.freeze(changed),
-    baseline_binding_sha256: complete ? freezeSnapshotRoot(baseline as FreezeSnapshot) : null,
-    current_binding_sha256: complete ? freezeSnapshotRoot(current as FreezeSnapshot) : null,
+    baseline_binding_sha256: freezeSnapshotRoot(baseline.snapshot),
+    current_binding_sha256: freezeSnapshotRoot(current.snapshot),
     rc_frozen: false,
-    requires_refreeze: !complete || changed.length > 0,
+    requires_refreeze: changed.length > 0,
     release_eligible: false,
   });
 }
@@ -279,7 +409,7 @@ export type ReviewFinding = Readonly<{
   severity: "critical" | "high" | "medium" | "low";
   disposition: "open" | "fixed" | "false-positive" | "accepted-risk";
   owner_present: boolean;
-  retest: "unexecuted" | "pass" | "fail";
+  retest: "unexecuted" | "pass" | "fail" | "not-required";
   evidence_binding_present: boolean;
 }>;
 

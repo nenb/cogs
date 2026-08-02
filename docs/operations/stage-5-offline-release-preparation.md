@@ -21,13 +21,13 @@ The pure implementation is [`scripts/stage5-offline-release-preparation.ts`](../
 
 The provisional manifest inventories every required freeze category but binds none because there is no authentic release candidate. OAuth is disabled/unadvertised and a worker refresh-token path is forbidden. A future freeze must be based on one authentic source and complete artifact evidence under a new authority.
 
-The snapshot comparator requires all 12 categories and exact digest equality. Any missing category or changed source, lock, chart, skill, schema, runtime, image, SBOM, signature, vulnerability, license, or supported-AWS-matrix binding invalidates the snapshot, requires refreeze, and invalidates dependent review/campaign results. A metadata match is explicitly not a freeze decision.
+The snapshot comparator requires all 12 categories and exact digest equality. It accepts only a plain exact own-property object with bounded lowercase SHA-256 values. It rejects Proxies before reflection and rejects inherited values, accessors, symbols, non-enumerable fields, missing/extra fields, and malformed or oversized values without invoking getters. Hash input is copied into fixed component order. Any missing category or changed source, lock, chart, skill, schema, runtime, image, SBOM, signature, vulnerability, license, or supported-AWS-matrix binding invalidates the snapshot, requires refreeze, and invalidates dependent review/campaign results. A metadata match is explicitly not a freeze decision.
 
 ## #368 independent review gate
 
 The checklist covers Pi discovery, SSH/SFTP, paths, proxy parsing/routing, proxy capabilities, OpenBao, the audit WAL, policy, guest/Kata, privacy, integrity, production artifact pinning, and project-dependency isolation. Findings have bounded severity, owner, disposition, retest, and evidence-binding fields.
 
-Critical/high findings cannot be resolved by risk acceptance. They count as unresolved unless fixed or false-positive, owned, retested `pass`, and evidence-bound. Even a metadata-level clear gate cannot establish independent acceptance while authenticated independent identities and an exact RC binding are absent.
+Critical/high findings cannot be resolved by risk acceptance. They count as unresolved unless fixed or false-positive, owned, retested `pass`, and evidence-bound. Open findings must remain unresolved and unexecuted without an evidence binding; failed retests remain unresolved and evidence-bound; resolved fixes/false positives require an owner, passing retest, evidence, and `resolved-evidence-bound` state. Critical/high findings can use only that fixed/false-positive resolution path: they cannot use risk acceptance or `resolved-metadata-only`. Only medium/low findings may use evidence-bound, owned `resolved-metadata-only` risk acceptance with no retest required. Finding IDs and release-report residual-risk IDs are semantically unique, including when duplicate-ID rows otherwise differ. Even a metadata-level clear gate cannot establish independent acceptance while authenticated independent identities and an exact RC binding are absent.
 
 ## #369 campaign state machine
 

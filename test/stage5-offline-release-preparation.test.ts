@@ -132,6 +132,7 @@ test("the provisional freeze inventory is complete but authentically absent and 
   ) as any;
   assert.deepEqual(compareFreezeSnapshots(baseline, baseline), {
     status: "metadata-match-only",
+    input_reason: "accepted-exact-own-shape",
     missing: [],
     invalid: [],
     changed: [],
@@ -148,6 +149,62 @@ test("the provisional freeze inventory is complete but authentically absent and 
   delete incomplete.sbom;
   assert.equal(compareFreezeSnapshots(baseline, incomplete).status, "invalidated-incomplete");
   assert.deepEqual(compareFreezeSnapshots(baseline, { ...baseline, source: "not-a-digest" }).invalid, ["source"]);
+});
+
+test("freeze comparison rejects inherited, accessor, Proxy, symbol, extra, and unbounded values without traps", () => {
+  const baseline = Object.fromEntries(
+    FREEZE_COMPONENTS.map((component, index) => [component, String(index).padStart(64, "0")]),
+  );
+  let getterCalls = 0;
+  const accessor = { ...baseline } as Record<string, unknown>;
+  Object.defineProperty(accessor, "source", {
+    enumerable: true,
+    get: () => {
+      getterCalls += 1;
+      throw new Error("must not run");
+    },
+  });
+  assert.equal(compareFreezeSnapshots(accessor, baseline).input_reason, "rejected-accessor-baseline");
+  assert.equal(getterCalls, 0);
+
+  let proxyTraps = 0;
+  const proxy = new Proxy(baseline, {
+    getOwnPropertyDescriptor: () => {
+      proxyTraps += 1;
+      throw new Error("must not run");
+    },
+    getPrototypeOf: () => {
+      proxyTraps += 1;
+      throw new Error("must not run");
+    },
+    ownKeys: () => {
+      proxyTraps += 1;
+      throw new Error("must not run");
+    },
+  });
+  assert.equal(compareFreezeSnapshots(baseline, proxy).input_reason, "rejected-proxy-current");
+  assert.equal(proxyTraps, 0);
+
+  const inherited = Object.create({ source: baseline.source }) as Record<string, string>;
+  for (const component of FREEZE_COMPONENTS.slice(1)) inherited[component] = baseline[component] as string;
+  assert.equal(compareFreezeSnapshots(inherited, baseline).input_reason, "rejected-prototype-baseline");
+  assert.equal(
+    compareFreezeSnapshots({ ...baseline, extra: "x".repeat(1_000_000) }, baseline).input_reason,
+    "rejected-property-count-baseline",
+  );
+  const symbolKey = { ...baseline } as Record<string | symbol, string>;
+  delete symbolKey.source;
+  symbolKey[Symbol("source")] = baseline.source as string;
+  assert.equal(compareFreezeSnapshots(symbolKey, baseline).input_reason, "rejected-symbol-key-baseline");
+  assert.equal(
+    compareFreezeSnapshots({ ...baseline, source: "a".repeat(65) }, baseline).status,
+    "invalidated-invalid-binding",
+  );
+
+  const first = compareFreezeSnapshots(baseline, baseline);
+  const reordered = Object.fromEntries([...Object.entries(baseline)].reverse());
+  const second = compareFreezeSnapshots(reordered, baseline);
+  assert.equal(first.baseline_binding_sha256, second.baseline_binding_sha256, "hashing is fixed to component order");
 });
 
 test("independent review covers every required area and never resolves critical/high through risk acceptance", () => {
@@ -185,6 +242,107 @@ test("independent review covers every required area and never resolves critical/
   ]);
   assert.equal(fixedHigh.critical_high_gate, "metadata-pass");
   assert.equal(fixedHigh.independent_review_accepted, false, "metadata aggregation is not independent acceptance");
+});
+
+test("review finding schema couples disposition, state, owner, evidence, and retest", () => {
+  const resolved = {
+    id: "F-1",
+    severity: "high",
+    owner_principal_id: "review-owner",
+    disposition: "fixed",
+    retest: "pass",
+    evidence_binding_sha256: "a".repeat(64),
+    title_code: "FIXED_FINDING",
+    state: "resolved-evidence-bound",
+  };
+  const withFinding = (finding: Record<string, unknown>): Uint8Array =>
+    mutation("independent-review", (value) => value.findings.push(finding));
+  assert.equal(validateStage5Document("independent-review", withFinding(resolved)).valid, true);
+  assert.equal(
+    validateStage5Document("independent-review", withFinding({ ...resolved, severity: "critical" })).valid,
+    true,
+    "critical findings may resolve only through fixed/false-positive plus passed evidence-bound retest",
+  );
+  assert.equal(
+    validateStage5Document(
+      "independent-review",
+      withFinding({
+        ...resolved,
+        severity: "low",
+        disposition: "accepted-risk",
+        retest: "not-required",
+        state: "resolved-metadata-only",
+      }),
+    ).valid,
+    true,
+  );
+
+  for (const hostile of [
+    {
+      ...resolved,
+      severity: "high",
+      disposition: "accepted-risk",
+      retest: "not-required",
+      state: "resolved-metadata-only",
+    },
+    { ...resolved, severity: "high", state: "resolved-metadata-only" },
+    { ...resolved, disposition: "open" },
+    { ...resolved, owner_principal_id: null },
+    { ...resolved, evidence_binding_sha256: null },
+    { ...resolved, retest: "unexecuted" },
+    { ...resolved, state: "unresolved" },
+    {
+      ...resolved,
+      disposition: "open",
+      state: "unresolved",
+      retest: "unexecuted",
+      evidence_binding_sha256: "b".repeat(64),
+    },
+  ]) {
+    assert.equal(validateStage5Document("independent-review", withFinding(hostile)).reason_code, "SCHEMA_DRIFT");
+  }
+  assert.equal(
+    validateStage5Document(
+      "independent-review",
+      withFinding({
+        ...resolved,
+        disposition: "open",
+        state: "unresolved",
+        owner_principal_id: null,
+        retest: "unexecuted",
+        evidence_binding_sha256: null,
+      }),
+    ).valid,
+    true,
+  );
+});
+
+test("semantic validation rejects duplicate finding and residual-risk IDs even when rows differ", () => {
+  const finding = {
+    id: "F-DUP",
+    severity: "medium",
+    owner_principal_id: null,
+    disposition: "open",
+    retest: "unexecuted",
+    evidence_binding_sha256: null,
+    title_code: "FIRST",
+    state: "unresolved",
+  };
+  const duplicateFindings = mutation("independent-review", (value) => {
+    value.findings.push(finding, { ...finding, severity: "low", title_code: "SECOND" });
+  });
+  assert.equal(validateStage5Document("independent-review", duplicateFindings).reason_code, "SEMANTIC_DRIFT");
+
+  const risk = {
+    id: "R-DUP",
+    risk_code: "FIRST_RISK",
+    owner_principal_id: null,
+    disposition: "open",
+  };
+  const duplicateRisks = mutation("release-readiness", (value) => {
+    value.residual_risks.push(risk, { ...risk, risk_code: "SECOND_RISK" });
+  });
+  assert.equal(validateStage5Document("release-readiness", duplicateRisks).reason_code, "SEMANTIC_DRIFT");
 });
 
 test("the issue 369 campaign is entirely unexecuted and its ordered state machine preserves uncertainty", () => {
