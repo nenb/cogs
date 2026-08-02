@@ -145,18 +145,10 @@
           "minItems": 0,
           "maxItems": 8,
           "items": {
-            "enum": [
-              "request-accepted",
-              "active-state-absence-asserted",
-              "current-object-absence-asserted",
-              "version-inventory-complete-asserted",
-              "all-versions-absence-asserted",
-              "all-delete-markers-absence-asserted",
-              "attachments-absence-asserted",
-              "final-absence-asserted",
-              "operation-failed",
-              "observation-uncertain"
-            ]
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]*$"
           }
         }
       }

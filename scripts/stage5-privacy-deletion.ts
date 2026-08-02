@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
-import { types as utilTypes } from "node:util";
+import { TextDecoder, types as utilTypes } from "node:util";
 import type { Ajv as AjvCore, Options, ValidateFunction } from "ajv";
 
 const require = createRequire(import.meta.url);
@@ -45,6 +45,7 @@ export const STAGE5_PRIVACY_LIMITS = Object.freeze({
   maxArrayLength: 32,
   maxCanaries: STAGE5_PROHIBITED_CATEGORIES.length,
   maxCanaryBytes: 192,
+  maxCanaryInputBytes: 4096,
 });
 
 export type Stage5PrivacySurface = (typeof STAGE5_PRIVACY_SURFACES)[number];
@@ -130,7 +131,9 @@ type Stage5Suite = JsonRecord & {
   external_execution: JsonRecord;
 };
 type Snapshot = Readonly<{ value: JsonRecord | null; bounded: boolean }>;
+type ByteSnapshot = Readonly<{ value: JsonRecord | null; bounded: boolean }>;
 type Finding = Readonly<{ surface: Stage5PrivacySurface | "contract"; category: Stage5ProhibitedCategory }>;
+type FragmentSet = Readonly<{ exact: readonly string[]; folded: readonly string[] }>;
 type BoundaryResult = Readonly<{
   reason:
     | "STAGE5_PRIVACY_CLEAR"
@@ -145,6 +148,9 @@ type DeletionEvaluation = Pick<Stage5PrivacyDeletionReport, "deletion" | "status
 
 const REPORT_DOMAIN = "cogs.stage5/privacy-deletion-suite/v1";
 const FINDING_DOMAIN = "cogs.stage5/privacy-finding-summary/v1";
+const SURFACE_METADATA_DOMAIN = "cogs.stage5/privacy-surface-metadata/v1";
+const VERSION_INVENTORY_DOMAIN = "cogs.stage5/privacy-version-inventory/v1";
+const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false });
 const CATEGORY_ORDER = new Map(STAGE5_PROHIBITED_CATEGORIES.map((category, index) => [category, index]));
 const SURFACE_ORDER = new Map(
   (["contract", ...STAGE5_PRIVACY_SURFACES] as const).map((surface, index) => [surface, index]),
@@ -341,10 +347,37 @@ function isRecord(value: JsonValue | undefined): value is JsonRecord {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+function snapshotCanonicalBytes(input: unknown, maximum: number): ByteSnapshot {
+  if (((typeof input === "object" && input !== null) || typeof input === "function") && utilTypes.isProxy(input)) {
+    return { value: null, bounded: false };
+  }
+  if (!(input instanceof Uint8Array) || Object.getPrototypeOf(input) !== Uint8Array.prototype) {
+    return { value: null, bounded: false };
+  }
+  const length = input.byteLength;
+  if (length === 0 || length > maximum) return { value: null, bounded: true };
+  const bytes = new Uint8Array(input);
+  if (bytes.byteLength >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) {
+    return { value: null, bounded: false };
+  }
+  try {
+    const text = decoder.decode(bytes);
+    const parsed = JSON.parse(text) as unknown;
+    const snapshot = snapshotJson(parsed);
+    if (snapshot.value === null) return snapshot;
+    if (`${canonicalJson(snapshot.value)}\n` !== text) return { value: null, bounded: false };
+    return snapshot;
+  } catch {
+    return { value: null, bounded: false };
+  }
+}
+
 function snapshotCanaries(input: unknown): readonly Stage5SyntheticCanary[] | null {
   if (input === undefined) return Object.freeze([]);
-  const snapshot = snapshotJson({ canaries: input });
+  const snapshot = snapshotCanonicalBytes(input, STAGE5_PRIVACY_LIMITS.maxCanaryInputBytes);
   if (snapshot.value === null) return null;
+  if (Object.keys(snapshot.value).sort().join("\0") !== "canaries\0version") return null;
+  if (snapshot.value.version !== "cogs.stage5-privacy-canaries/v1") return null;
   const values = snapshot.value.canaries;
   if (!Array.isArray(values) || values.length > STAGE5_PRIVACY_LIMITS.maxCanaries) return null;
   const seen = new Set<Stage5ProhibitedCategory>();
@@ -368,18 +401,24 @@ function snapshotCanaries(input: unknown): readonly Stage5SyntheticCanary[] | nu
   return Object.freeze(canaries);
 }
 
+function folded(value: string): string {
+  return value.normalize("NFKC").toUpperCase().toLowerCase();
+}
+
 function keyCategory(key: string): Stage5ProhibitedCategory | null {
-  if (SAFE_BOUNDARY_KEYS.has(key)) return null;
-  for (const [category, keys] of KEY_CATEGORIES) if (keys.has(key.toLowerCase())) return category;
+  const normalized = folded(key);
+  if (SAFE_BOUNDARY_KEYS.has(normalized)) return null;
+  for (const [category, keys] of KEY_CATEGORIES) if (keys.has(normalized)) return category;
   return null;
 }
 
 function heuristicCategory(value: string): Stage5ProhibitedCategory | null {
-  if (/^(?:\/|[A-Za-z]:\\|\\\\)/u.test(value)) return "arbitrary-path";
-  if (/-----BEGIN [A-Z ]*PRIVATE KEY-----|\bBearer\s+[A-Za-z0-9._~+/=-]+|\bsk-[A-Za-z0-9_-]{8,}/u.test(value)) {
+  const normalized = value.normalize("NFKC");
+  if (/^(?:\/|[A-Za-z]:\\|\\\\)/u.test(normalized)) return "arbitrary-path";
+  if (/-----BEGIN [A-Z ]*PRIVATE KEY-----|\bBearer\s+[A-Za-z0-9._~+/=-]+|\bsk-[A-Za-z0-9_-]{8,}/iu.test(normalized)) {
     return "credential-or-placeholder";
   }
-  if (/(?:\?|&)[A-Za-z0-9_.~-]+=[^\s&]*/u.test(value)) return "network-query-or-body";
+  if (/(?:\?|&)[A-Za-z0-9_.~-]+=[^\s&]*/u.test(normalized)) return "network-query-or-body";
   return null;
 }
 
@@ -390,31 +429,139 @@ function surfaceFor(value: JsonValue): Stage5PrivacySurface | "contract" {
     : "contract";
 }
 
-function scanValue(
+function addFragment(
+  fragments: Map<Stage5PrivacySurface | "contract", { exact: string[]; folded: string[] }>,
+  surface: Stage5PrivacySurface | "contract",
+  value: string,
+): void {
+  const target = fragments.get(surface);
+  if (target === undefined) return;
+  const normalized = value.normalize("NFKC");
+  target.exact.push(normalized, normalized.replace(/[\t\n\r ]+/gu, ""));
+  target.folded.push(folded(value), folded(value).replace(/[\t\n\r :]+/gu, ""));
+  if (surface !== "contract") {
+    const global = fragments.get("contract");
+    global?.exact.push(normalized, normalized.replace(/[\t\n\r ]+/gu, ""));
+    global?.folded.push(folded(value), folded(value).replace(/[\t\n\r :]+/gu, ""));
+  }
+}
+
+function collectPrivacyFragments(
   value: JsonValue,
-  canaries: readonly Stage5SyntheticCanary[],
   surface: Stage5PrivacySurface | "contract",
   findings: Finding[],
+  fragments: Map<Stage5PrivacySurface | "contract", { exact: string[]; folded: string[] }>,
 ): void {
   if (typeof value === "string") {
-    for (const canary of canaries)
-      if (value.includes(canary.value)) findings.push({ surface, category: canary.category });
+    addFragment(fragments, surface, value);
     const heuristic = heuristicCategory(value);
     if (heuristic !== null) findings.push({ surface, category: heuristic });
     return;
   }
   if (value === null || typeof value !== "object") return;
   if (Array.isArray(value)) {
-    for (const item of value)
-      scanValue(item, canaries, surfaceFor(item) === "contract" ? surface : surfaceFor(item), findings);
+    for (const item of value) {
+      const itemSurface = surfaceFor(item);
+      collectPrivacyFragments(item, itemSurface === "contract" ? surface : itemSurface, findings, fragments);
+    }
     return;
   }
-  const ownSurface = surfaceFor(value) === "contract" ? surface : surfaceFor(value);
+  const detectedSurface = surfaceFor(value);
+  const ownSurface = detectedSurface === "contract" ? surface : detectedSurface;
   for (const [key, item] of Object.entries(value)) {
     const category = keyCategory(key);
     if (category !== null) findings.push({ surface: ownSurface, category });
-    scanValue(item, canaries, ownSurface, findings);
+    addFragment(fragments, ownSurface, key);
+    collectPrivacyFragments(item, ownSurface, findings, fragments);
   }
+}
+
+function canaryForms(value: string): readonly string[] {
+  return Object.freeze(
+    [
+      ...new Set([
+        value,
+        value.toLowerCase(),
+        value.toUpperCase(),
+        value.normalize("NFC"),
+        value.normalize("NFD"),
+        value.normalize("NFKC"),
+        value.normalize("NFKD"),
+      ]),
+    ].filter((item) => item.length > 0),
+  );
+}
+
+function canarySignatures(
+  canary: Stage5SyntheticCanary,
+): Readonly<{ exact: readonly string[]; folded: readonly string[] }> {
+  const exact = new Set<string>();
+  const normalized = new Set<string>();
+  for (const form of canaryForms(canary.value)) {
+    normalized.add(folded(form));
+    const bytes = Buffer.from(form, "utf8");
+    exact.add(bytes.toString("base64"));
+    exact.add(bytes.toString("base64").replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/u, ""));
+    normalized.add(bytes.toString("hex"));
+  }
+  return Object.freeze({ exact: Object.freeze([...exact]), folded: Object.freeze([...normalized]) });
+}
+
+function signatureComposed(signature: string, fragments: readonly string[]): boolean {
+  if (signature.length === 0) return false;
+  if (fragments.some((fragment) => fragment.includes(signature))) return true;
+  const reachable = new Uint8Array(signature.length + 1);
+  reachable[0] = 1;
+  for (let offset = 0; offset < signature.length; offset += 1) {
+    if (reachable[offset] !== 1) continue;
+    for (const fragment of fragments) {
+      if (fragment.length === 0) continue;
+      if (offset === 0) {
+        for (let end = 1; end < signature.length; end += 1) {
+          if (fragment.endsWith(signature.slice(0, end))) reachable[end] = 1;
+        }
+      }
+      if (signature.startsWith(fragment, offset)) {
+        reachable[Math.min(signature.length, offset + fragment.length)] = 1;
+      }
+      if (fragment.startsWith(signature.slice(offset))) reachable[signature.length] = 1;
+    }
+  }
+  return reachable[signature.length] === 1;
+}
+
+function containsCanary(signatures: ReturnType<typeof canarySignatures>, fragments: FragmentSet): boolean {
+  return (
+    signatures.exact.some((signature) => signatureComposed(signature, fragments.exact)) ||
+    signatures.folded.some((signature) => signatureComposed(signature, fragments.folded))
+  );
+}
+
+function scanPrivacy(value: JsonRecord, canaries: readonly Stage5SyntheticCanary[]): Finding[] {
+  const findings: Finding[] = [];
+  const fragments = new Map<Stage5PrivacySurface | "contract", { exact: string[]; folded: string[] }>();
+  for (const surface of ["contract", ...STAGE5_PRIVACY_SURFACES] as const) {
+    fragments.set(surface, { exact: [], folded: [] });
+  }
+  collectPrivacyFragments(value, "contract", findings, fragments);
+  for (const canary of canaries) {
+    const signatures = canarySignatures(canary);
+    let surfaceMatch = false;
+    for (const surface of STAGE5_PRIVACY_SURFACES) {
+      const values = fragments.get(surface);
+      if (values !== undefined && containsCanary(signatures, values)) {
+        findings.push({ surface, category: canary.category });
+        surfaceMatch = true;
+      }
+    }
+    const global = fragments.get("contract");
+    if (!surfaceMatch && global !== undefined && containsCanary(signatures, global)) {
+      findings.push({ surface: "contract", category: canary.category });
+    }
+  }
+  const unique = new Map<string, Finding>();
+  for (const finding of findings) unique.set(`${finding.surface}\0${finding.category}`, finding);
+  return [...unique.values()];
 }
 
 function findingSummary(findings: readonly Finding[]): {
@@ -506,6 +653,29 @@ function exportBoundary(value: JsonRecord): BoundaryResult {
     boundary: "explicit-sensitive-authenticated-non-model-no-payload",
     sensitive: "present",
   };
+}
+
+function metadataProvenanceValid(suite: Stage5Suite): boolean {
+  for (const surface of suite.surfaces) {
+    const digestInput: JsonRecord = {
+      surface: surface.surface,
+      record_kind: surface.record_kind as JsonValue,
+      classification: surface.classification as JsonValue,
+      outcome: surface.outcome as JsonValue,
+      content_present: surface.content_present as JsonValue,
+      attachment_content_present: surface.attachment_content_present as JsonValue,
+      field_count: surface.field_count as JsonValue,
+      boundary: surface.boundary,
+    };
+    if (surface.metadata_sha256 !== semanticDigest(SURFACE_METADATA_DOMAIN, digestInput)) return false;
+  }
+  const inventory = suite.deletion.version_inventory;
+  const inventoryInput: JsonRecord = {
+    version_policy: suite.deletion.version_policy as JsonValue,
+    versions_expected: inventory.versions_expected as JsonValue,
+    delete_markers_expected: inventory.delete_markers_expected as JsonValue,
+  };
+  return inventory.inventory_sha256 === semanticDigest(VERSION_INVENTORY_DOMAIN, inventoryInput);
 }
 
 function deletionNotEvaluated(): Stage5PrivacyDeletionReport["deletion"] {
@@ -657,13 +827,14 @@ function makeReport(
 }
 
 /**
- * Scans one already-decoded, synthetic metadata suite and evaluates its pure
- * deletion model. It performs no filesystem, process, network, provider,
- * cluster, object-store, deployment, or model operation.
+ * Scans bounded canonical JSON bytes for one synthetic metadata suite and
+ * evaluates its pure deletion model. The byte bound is enforced before JSON
+ * parsing or object reflection. It performs no filesystem, process, network,
+ * provider, cluster, object-store, deployment, or model operation.
  */
 export function evaluateStage5PrivacyDeletion(
   input: unknown,
-  syntheticCanaries?: readonly Stage5SyntheticCanary[],
+  syntheticCanaries?: unknown,
 ): Stage5PrivacyDeletionReport {
   const canaries = snapshotCanaries(syntheticCanaries);
   if (canaries === null) {
@@ -685,7 +856,7 @@ export function evaluateStage5PrivacyDeletion(
       deletionNotEvaluated(),
     );
   }
-  const snapshot = snapshotJson(input);
+  const snapshot = snapshotCanonicalBytes(input, STAGE5_PRIVACY_LIMITS.maxInputBytes);
   if (snapshot.value === null) {
     return makeReport(
       null,
@@ -706,8 +877,7 @@ export function evaluateStage5PrivacyDeletion(
     );
   }
   const digest = semanticDigest(REPORT_DOMAIN, snapshot.value);
-  const findings: Finding[] = [];
-  scanValue(snapshot.value, canaries, "contract", findings);
+  const findings = scanPrivacy(snapshot.value, canaries);
   const summary = findingSummary(findings);
   const recognizedSurfaces = Array.isArray(snapshot.value.surfaces)
     ? new Set(snapshot.value.surfaces.map(surfaceFor).filter((surface) => surface !== "contract")).size
@@ -753,6 +923,29 @@ export function evaluateStage5PrivacyDeletion(
     );
   }
   if (!validateSuite(snapshot.value)) {
+    return makeReport(
+      digest,
+      "invalid-contract",
+      {
+        result: "invalid-contract",
+        reason_code: "STAGE5_PRIVACY_INVALID_SHAPE",
+        surfaces_scanned: recognizedSurfaces,
+        affected_surfaces: Object.freeze([]),
+        categories: Object.freeze([]),
+        finding_count: 0,
+        finding_root_sha256: null,
+        attachments_excluded: true,
+        raw_export_boundary: boundary.boundary,
+        sensitive_marking: boundary.sensitive,
+      },
+      {
+        ...deletionNotEvaluated(),
+        result: "invalid-contract",
+        reason_code: "STAGE5_DELETION_INVALID_CONTRACT",
+      },
+    );
+  }
+  if (!metadataProvenanceValid(snapshot.value)) {
     return makeReport(
       digest,
       "invalid-contract",

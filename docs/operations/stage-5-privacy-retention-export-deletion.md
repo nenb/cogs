@@ -25,7 +25,9 @@ The scanner rejects or categorizes:
 7. raw transcript/export content; and
 8. attachment content.
 
-Tests create canary values only in memory, one category at a time. The committed fixture and report contain no canary values, prompts, source snippets, commands, credentials, private IDs, paths, attachments, session JSONL, or raw export. A rejection returns only fixed categories, affected-surface enums, counts, and a domain-separated finding-summary digest. It never returns a field name or offending value.
+Tests create canary values only in memory. The scanner derives bounded signatures for Unicode NFKC/case-folded text, canonical UTF-8 hex, standard base64, and unpadded base64url. It detects complete signatures and signatures composed from bounded field fragments within one surface; a signature distributed across surfaces is attributed to the contract. Tests cover upper/lower-case changes, NFC/NFD differences, upper-case hex, base64/base64url, and three-part raw/hex/base64 splits. The committed fixture and report contain no canary values, prompts, source snippets, commands, credentials, private IDs, paths, attachments, session JSONL, or raw export. A rejection returns only fixed categories, affected-surface enums, counts, and a domain-separated finding-summary digest. It never returns a field name or offending value.
+
+Each surface `metadata_sha256` is recomputed from its exact categorical fields and export boundary under `cogs.stage5/privacy-surface-metadata/v1`. The version-inventory digest is recomputed from version policy and bounded expected counts under `cogs.stage5/privacy-version-inventory/v1`. Arbitrary well-shaped hex and stale digests fail the semantic contract; tests derive the expected values independently and mutate both digest and preimage fields.
 
 This is a strict scanner rather than a general anonymizer. Unknown fields fail the suite schema even when they do not match a prohibited category. It does not claim that arbitrary natural language is anonymous or that future unconstrained formats can be made safe by pattern matching.
 
@@ -88,9 +90,11 @@ The local reducer cannot set, clear, override, or authenticate a hold. A future 
 
 ## Bounds and hostile shapes
 
-Before hashing or semantic validation, the scanner snapshots only plain JSON descriptors under fixed byte, node, depth, key, string, property, and array limits. Recursive Proxies are rejected with `util.types.isProxy` before reflection, so Proxy traps are not run. Accessors, cycles, symbols, sparse arrays, non-plain prototypes, typed arrays, unsafe numbers, and oversized input return categorical uncertainty; getter bodies are never invoked.
+The only scanner ingestion surface is an exact-prototype `Uint8Array` containing canonical JSON with one terminal LF. A 64 KiB intrinsic `byteLength` limit is enforced and the bytes are copied **before** UTF-8 decoding, JSON parsing, `Reflect.ownKeys`, or descriptor allocation. Runtime canaries use a separate 4 KiB canonical-byte envelope. A proxied byte array is rejected with `util.types.isProxy` before prototype or length access, and a typed-array subclass is rejected before length/copy. Thus every later parsed object and reflection allocation is bounded by already-copied input bytes; node, depth, key, string, property, and array limits then narrow that byte-bounded graph further.
 
-The output is deterministic canonical JSON. Input and finding digests are domain-separated semantic bindings, not identity, provenance, deletion, privacy, or evidence authentication.
+Direct objects, accessors, cycles, symbols, sparse arrays, non-plain prototypes, Buffers, typed-array subclasses, malformed/noncanonical JSON, and oversized bytes return categorical uncertainty. Direct-object and getter tests prove the rejected object is not reflected and getter bodies are never invoked; Proxy tests prove traps are never run.
+
+The output is deterministic canonical JSON. Input and finding digests are domain-separated semantic bindings. Surface/version digests prove deterministic derivation from their declared metadata preimages, but no digest authenticates identity, external provenance, deletion, privacy, or evidence authority.
 
 ## Remaining real work
 

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
@@ -38,8 +39,47 @@ function suite(): Suite {
   return JSON.parse(readFileSync(fixtureFile, "utf8")) as Suite;
 }
 
-function report(value: unknown, canaries?: readonly Stage5SyntheticCanary[]): Stage5PrivacyDeletionReport {
-  const result = evaluateStage5PrivacyDeletion(value, canaries);
+function compareCodePoints(left: string, right: string): number {
+  const a = Array.from(left, (value) => value.codePointAt(0) ?? 0);
+  const b = Array.from(right, (value) => value.codePointAt(0) ?? 0);
+  for (let index = 0; index < Math.min(a.length, b.length); index += 1) {
+    const difference = (a[index] ?? 0) - (b[index] ?? 0);
+    if (difference !== 0) return difference;
+  }
+  return a.length - b.length;
+}
+
+function canonical(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+  if (value !== null && typeof value === "object") {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => compareCodePoints(left, right))
+      .map(([key, item]) => `${JSON.stringify(key)}:${canonical(item)}`)
+      .join(",")}}`;
+  }
+  const encoded = JSON.stringify(value);
+  if (encoded === undefined) throw new TypeError("non-json test value");
+  return encoded;
+}
+
+function canonicalBytes(value: unknown): Uint8Array {
+  return new TextEncoder().encode(`${canonical(value)}\n`);
+}
+
+function domainDigest(domain: string, value: unknown): string {
+  return createHash("sha256")
+    .update(domain, "utf8")
+    .update(Uint8Array.of(0))
+    .update(canonical(value), "utf8")
+    .digest("hex");
+}
+
+function canaryBytes(canaries: readonly Stage5SyntheticCanary[]): Uint8Array {
+  return canonicalBytes({ version: "cogs.stage5-privacy-canaries/v1", canaries });
+}
+
+function classified(input: unknown, canaries?: unknown): Stage5PrivacyDeletionReport {
+  const result = evaluateStage5PrivacyDeletion(input, canaries);
   assert.equal(validateReport(result), true, JSON.stringify(validateReport.errors));
   assert.equal(result.qualified, false);
   assert.equal(result.campaign_authorized, false);
@@ -51,6 +91,10 @@ function report(value: unknown, canaries?: readonly Stage5SyntheticCanary[]): St
   assert.equal(result.deletion.actual_eks_deletion, "unexecuted");
   assert.equal(result.deletion.actual_object_store_deletion, "unexecuted");
   return result;
+}
+
+function report(value: unknown, canaries: readonly Stage5SyntheticCanary[] = []): Stage5PrivacyDeletionReport {
+  return classified(canonicalBytes(value), canaries.length === 0 ? undefined : canaryBytes(canaries));
 }
 
 function exportBoundary(value: Suite): Record<string, unknown> {
@@ -68,6 +112,7 @@ function runtimeCanary(category: Stage5SyntheticCanary["category"], index: numbe
 
 test("bounded fixture covers every surface and emits the canonical non-authoritative report", () => {
   const value = suite();
+  assert.equal(readFileSync(fixtureFile, "utf8"), `${canonical(value)}\n`);
   assert.equal(validateSuite(value), true, JSON.stringify(validateSuite.errors));
   assert.deepEqual(
     value.surfaces.map((surface) => surface.surface),
@@ -101,6 +146,49 @@ test("bounded fixture covers every surface and emits the canonical non-authorita
   assert.equal(canonicalStage5PrivacyDeletionReport(first), readFileSync(checkedReportFile, "utf8"));
 });
 
+test("every accepted metadata digest has domain-separated canonical provenance", () => {
+  const value = suite();
+  for (const surface of value.surfaces) {
+    assert.equal(
+      surface.metadata_sha256,
+      domainDigest("cogs.stage5/privacy-surface-metadata/v1", {
+        surface: surface.surface,
+        record_kind: surface.record_kind,
+        classification: surface.classification,
+        outcome: surface.outcome,
+        content_present: surface.content_present,
+        attachment_content_present: surface.attachment_content_present,
+        field_count: surface.field_count,
+        boundary: surface.boundary,
+      }),
+    );
+  }
+  assert.equal(
+    value.deletion.version_inventory.inventory_sha256,
+    domainDigest("cogs.stage5/privacy-version-inventory/v1", {
+      version_policy: value.deletion.version_policy,
+      versions_expected: value.deletion.version_inventory.versions_expected,
+      delete_markers_expected: value.deletion.version_inventory.delete_markers_expected,
+    }),
+  );
+
+  const forgedSurface = suite();
+  const first = forgedSurface.surfaces[0];
+  assert.ok(first);
+  first.metadata_sha256 = "f".repeat(64);
+  assert.equal(report(forgedSurface).status, "invalid-contract");
+
+  const staleSurface = suite();
+  const second = staleSurface.surfaces[1];
+  assert.ok(second);
+  second.outcome = "uncertain";
+  assert.equal(report(staleSurface).status, "invalid-contract");
+
+  const staleInventory = suite();
+  staleInventory.deletion.version_inventory.versions_expected = 3;
+  assert.equal(report(staleInventory).status, "invalid-contract");
+});
+
 test("runtime-only synthetic canaries detect every prohibited category without returning canary bytes", () => {
   STAGE5_PROHIBITED_CATEGORIES.forEach((category, index) => {
     const value = suite();
@@ -118,6 +206,72 @@ test("runtime-only synthetic canaries detect every prohibited category without r
     assert.equal(JSON.stringify(result).includes(canary.value), false);
     assert.equal(result.deletion.result, "not-evaluated");
   });
+});
+
+test("canaries survive case and Unicode folding, encodings, and bounded cross-field splitting", () => {
+  const category = "prompt-or-model-content" as const;
+  const raw = ["generated", "Café", "runtime", "canary"].join("~");
+  const canary = Object.freeze({ category, value: raw.normalize("NFC") });
+  const encoded = Buffer.from(canary.value, "utf8");
+  const base64 = encoded.toString("base64");
+  const base64url = base64.replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/u, "");
+  const cases = [
+    canary.value.toUpperCase(),
+    canary.value.normalize("NFD"),
+    encoded.toString("hex").toUpperCase(),
+    encoded
+      .toString("hex")
+      .match(/.{1,2}/gu)
+      ?.join(":") ?? "",
+    base64,
+    `${base64.slice(0, 8)}\n${base64.slice(8)}`,
+    base64url,
+  ];
+  for (const hostile of cases) {
+    const value = suite();
+    const surface = value.surfaces[0];
+    assert.ok(surface);
+    surface.synthetic_sample = hostile;
+    const result = report(value, [canary]);
+    assert.equal(result.status, "blocked-prohibited-content");
+    assert.deepEqual(result.privacy.categories, [category]);
+    assert.deepEqual(result.privacy.affected_surfaces, ["otlp"]);
+    assert.equal(JSON.stringify(result).includes(hostile), false);
+  }
+
+  for (const hostile of [canary.value, base64, encoded.toString("hex")]) {
+    const value = suite();
+    const surface = value.surfaces[2];
+    assert.ok(surface);
+    const first = Math.floor(hostile.length / 3);
+    const second = Math.floor((hostile.length * 2) / 3);
+    surface.synthetic_piece_a = hostile.slice(0, first);
+    surface.synthetic_piece_b = hostile.slice(first, second);
+    surface.synthetic_piece_c = hostile.slice(second);
+    const result = report(value, [canary]);
+    assert.equal(result.status, "blocked-prohibited-content");
+    assert.deepEqual(result.privacy.categories, [category]);
+    assert.deepEqual(result.privacy.affected_surfaces, ["report"]);
+  }
+
+  const fullFoldCanary = Object.freeze({ category, value: "generated~straße~runtime" });
+  const fullFoldValue = suite();
+  const fullFoldSurface = fullFoldValue.surfaces[0];
+  assert.ok(fullFoldSurface);
+  fullFoldSurface.synthetic_sample = "GENERATED~STRASSE~RUNTIME";
+  assert.equal(report(fullFoldValue, [fullFoldCanary]).status, "blocked-prohibited-content");
+
+  const distributed = suite();
+  const left = distributed.surfaces[0];
+  const right = distributed.surfaces[1];
+  assert.ok(left);
+  assert.ok(right);
+  const split = Math.floor(canary.value.length / 2);
+  left.synthetic_piece = canary.value.slice(0, split);
+  right.synthetic_piece = canary.value.slice(split);
+  const distributedResult = report(distributed, [canary]);
+  assert.equal(distributedResult.status, "blocked-prohibited-content");
+  assert.deepEqual(distributedResult.privacy.affected_surfaces, ["contract"]);
 });
 
 test("strict key and scalar heuristics reject prohibited central content and return categories only", () => {
@@ -222,7 +376,7 @@ test("proxy, accessor, cyclic, non-JSON, and oversized inputs fail closed withou
       throw new Error("trap");
     },
   });
-  assert.equal(report(proxied).privacy.reason_code, "STAGE5_PRIVACY_INVALID_SHAPE");
+  assert.equal(classified(proxied).privacy.reason_code, "STAGE5_PRIVACY_INVALID_SHAPE");
   assert.equal(proxyTraps, 0);
 
   const nestedProxyValue = suite();
@@ -240,7 +394,7 @@ test("proxy, accessor, cyclic, non-JSON, and oversized inputs fail closed withou
       throw new Error("trap");
     },
   }) as Suite["surfaces"][number];
-  assert.equal(report(nestedProxyValue).privacy.result, "uncertain");
+  assert.equal(classified(nestedProxyValue).privacy.result, "uncertain");
   assert.equal(proxyTraps, 0);
 
   let getterReads = 0;
@@ -252,13 +406,35 @@ test("proxy, accessor, cyclic, non-JSON, and oversized inputs fail closed withou
       throw new Error("getter");
     },
   });
-  assert.equal(report(accessor).privacy.result, "uncertain");
+  assert.equal(classified(accessor).privacy.result, "uncertain");
   assert.equal(getterReads, 0);
 
   const cyclic = suite();
   cyclic.loop = cyclic;
-  assert.equal(report(cyclic).privacy.reason_code, "STAGE5_PRIVACY_INVALID_SHAPE");
-  assert.equal(report({ ...suite(), bad: new Uint8Array(1) }).privacy.result, "uncertain");
+  assert.equal(classified(cyclic).privacy.reason_code, "STAGE5_PRIVACY_INVALID_SHAPE");
+  assert.equal(classified({ ...suite(), bad: new Uint8Array(1) }).privacy.result, "uncertain");
+
+  const validBytes = canonicalBytes(suite());
+  class ExtendedBytes extends Uint8Array {}
+  assert.equal(classified(new ExtendedBytes(validBytes)).privacy.reason_code, "STAGE5_PRIVACY_INVALID_SHAPE");
+  assert.equal(classified(Buffer.from(validBytes)).privacy.reason_code, "STAGE5_PRIVACY_INVALID_SHAPE");
+  const proxiedBytes = new Proxy(validBytes, {
+    get() {
+      proxyTraps += 1;
+      throw new Error("trap");
+    },
+    getPrototypeOf() {
+      proxyTraps += 1;
+      throw new Error("trap");
+    },
+  });
+  assert.equal(classified(proxiedBytes).privacy.reason_code, "STAGE5_PRIVACY_INVALID_SHAPE");
+  assert.equal(proxyTraps, 0);
+  assert.equal(
+    classified(new Uint8Array(STAGE5_PRIVACY_LIMITS.maxInputBytes + 1)).privacy.reason_code,
+    "STAGE5_PRIVACY_BOUNDED_INPUT",
+  );
+  assert.equal(classified(new TextEncoder().encode(` ${canonical(suite())}\n`)).privacy.result, "uncertain");
 
   const oversizedString = suite();
   oversizedString.synthetic_sample = "x".repeat(STAGE5_PRIVACY_LIMITS.maxStringBytes + 1);
@@ -301,6 +477,14 @@ test("deletion state machine is canonical, ordered, sticky on failure or uncerta
   assert.equal(outOfOrderResult.status, "preserve-uncertain");
   assert.equal(outOfOrderResult.deletion.reason_code, "STAGE5_DELETION_INVALID_SEQUENCE");
   assert.equal(outOfOrderResult.deletion.accepted_transition_count, 0);
+
+  const unknown = suite();
+  unknown.deletion.transitions = ["request-accepted", "future-unknown-transition"];
+  assert.equal(validateSuite(unknown), true, JSON.stringify(validateSuite.errors));
+  const unknownResult = report(unknown);
+  assert.equal(unknownResult.status, "preserve-uncertain");
+  assert.equal(unknownResult.deletion.reason_code, "STAGE5_DELETION_INVALID_SEQUENCE");
+  assert.equal(unknownResult.deletion.accepted_transition_count, 1);
 
   const failure = suite();
   failure.deletion.transitions = ["request-accepted", "operation-failed", "active-state-absence-asserted"];
@@ -427,6 +611,14 @@ test("fixture and report contain metadata only and keep every external operation
   const scannerSource = readFileSync(resolve(root, "scripts/stage5-privacy-deletion.ts"), "utf8");
   assert.doesNotMatch(scannerSource, /from "node:(?:fs|child_process|http|https|net|tls|dns|cluster)"/u);
   assert.doesNotMatch(scannerSource, /\b(?:fetch|spawn|execFile|kubectl|terraform|tofu)\s*\(/u);
+  const byteIngestion = scannerSource.slice(
+    scannerSource.indexOf("function snapshotCanonicalBytes"),
+    scannerSource.indexOf("function snapshotCanaries"),
+  );
+  assert.ok(byteIngestion.indexOf("const length = input.byteLength") < byteIngestion.indexOf("decoder.decode(bytes)"));
+  assert.ok(byteIngestion.indexOf("new Uint8Array(input)") < byteIngestion.indexOf("JSON.parse(text)"));
+  assert.ok(byteIngestion.indexOf("JSON.parse(text)") < byteIngestion.indexOf("snapshotJson(parsed)"));
+  assert.doesNotMatch(byteIngestion.slice(0, byteIngestion.indexOf("snapshotJson(parsed)")), /Reflect\.ownKeys/u);
   const checked = JSON.parse(readFileSync(checkedReportFile, "utf8"));
   assert.equal(validateReport(checked), true, JSON.stringify(validateReport.errors));
   assert.equal(checked.release_eligible, false);

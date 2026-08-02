@@ -16,7 +16,9 @@ This report records a pure scanner and deterministic deletion-model contract. It
 
 The strict fixture covers exactly OTLP, bounded logs, bounded reports, bounded events, bounded crash summaries, and the raw-export descriptor boundary. Safe surface fixtures contain only enums, booleans, bounded integers, and SHA-256 digests. No prompt, model output, source, complete command, tool output, credential/placeholder, private ID, arbitrary path, network query/body, attachment, transcript, crash dump, or raw export is committed.
 
-Runtime-only generated canaries prove all eight prohibited categories are detected without reproducing a canary in the report. Separate negative tests cover prohibited field categories and path-, authorization-, and query-shaped scalar heuristics. Findings expose only ordered category/surface enums, count, and domain-separated summary digest.
+Runtime-only generated canaries prove all eight prohibited categories are detected without reproducing a canary in the report. Hostile cases cover Unicode NFKC/case folding, NFC/NFD changes, UTF-8 hex including upper-case hex, standard base64, unpadded base64url, three-part field splits of raw/hex/base64 signatures, and a signature split across surfaces. Separate negative tests cover prohibited field categories and path-, authorization-, and query-shaped scalar heuristics. Findings expose only ordered category/surface enums, count, and domain-separated summary digest.
+
+Every surface metadata digest and the version-inventory digest is independently derived in tests from a domain-separated canonical preimage. Arbitrary replacement digests, stale surface-field preimages, and stale version-count preimages fail the semantic contract.
 
 ## Export, attachment, and marking results
 
@@ -28,11 +30,11 @@ This checks descriptor semantics only. Existing local raw exports remain sensiti
 
 The contract fixes trusted session state and graceful-shutdown object copies to 30 days (`2592000` seconds), preserves workspaces until explicit workspace deletion, and allows authenticated user deletion to begin the same sequence before retention expiry. The version policy requires current-object absence, complete version inventory, every version absent, and every delete marker absent before attachment and final absence assertions.
 
-The exact eight-transition synthetic sequence deterministically reaches `deleted-verified`. Reverse, missing, duplicate, or out-of-order transitions stop uncertain. Injected failure and uncertainty states are sticky: later assertions cannot promote success, no retry is modeled, and unknown is never converted to absent. An active separately authorized/disclosed legal hold permits no deletion transitions and returns `held-separate`; deletion failure and uncertainty remain explicitly not legal holds.
+The exact eight-transition synthetic sequence deterministically reaches `deleted-verified`. Reverse, missing, duplicate, out-of-order, and unknown bounded transition names all reach `uncertain-stop` / `STAGE5_DELETION_INVALID_SEQUENCE`; the schema deliberately admits a bounded categorical transition string so unknown transitions reach the reducer instead of being relabelled invalid contract. Injected failure and uncertainty states are sticky: later assertions cannot promote success, no retry is modeled, and unknown is never converted to absent. An active separately authorized/disclosed legal hold permits no deletion transitions and returns `held-separate`; deletion failure and uncertainty remain explicitly not legal holds.
 
 ## Hostile input and bounds
 
-Tests reject root and nested Proxies without executing traps, reject accessors without invoking getters, and reject cycles, typed arrays, non-JSON values, oversized strings, arrays, object graphs, and canaries. The scanner bounds input/canonical bytes, nodes, depth, strings, keys, object properties, array length, canary count, and canary bytes before report generation.
+The scanner now ingests only exact-prototype canonical `Uint8Array` bytes. It enforces and copies the 64 KiB suite or 4 KiB canary-envelope bound before JSON parsing or any object-key/descriptor reflection. Tests reject proxied bytes without executing traps, reject direct objects/accessors without invoking getters, reject typed-array subclasses and noncanonical bytes, and cover oversized bytes, strings, arrays, object graphs, and canaries. Parsed-graph node, depth, string, key, property, and array limits apply only after the intrinsic byte cap has already bounded reflection allocation.
 
 The schemas reject unknown fields and couple all authority/execution fields to false. The canonical checked report is byte-for-byte regenerated in the test and keeps actual EKS/object-store deletion fixed to `unexecuted`.
 
