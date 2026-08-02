@@ -49,6 +49,7 @@ export class OpenBaoWorkloadIdentityError extends Error {
   public constructor() {
     super("OpenBao workload identity unavailable");
     this.name = "OpenBaoWorkloadIdentityError";
+    this.stack = `${this.name}: ${this.message}`;
   }
 }
 
