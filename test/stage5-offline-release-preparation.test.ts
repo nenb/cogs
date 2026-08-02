@@ -82,6 +82,69 @@ test("validation rejects non-canonical, oversized, proxied, getter, malformed, a
   assert.equal(validateStage5Document("load", bytes("campaign")).reason_code, "SCHEMA_DRIFT");
 });
 
+test("intrinsic byte capture rejects hostile typed-array storage without getters or oversized processing", () => {
+  const canonical = bytes("rc-freeze");
+  const expectedDigest = stage5Sha256(canonical);
+  let getterReads = 0;
+  for (const key of ["byteLength", "buffer"] as const) {
+    Object.defineProperty(canonical, key, {
+      configurable: true,
+      get() {
+        getterReads += 1;
+        throw new Error("must not execute");
+      },
+    });
+  }
+  assert.equal(validateStage5Document("rc-freeze", canonical).valid, true);
+  assert.equal(stage5Sha256(canonical), expectedDigest);
+  assert.equal(getterReads, 0);
+
+  const oversized = new Uint8Array(256 * 1024 + 1);
+  Object.defineProperty(oversized, "byteLength", {
+    get() {
+      getterReads += 1;
+      return 1;
+    },
+  });
+  assert.equal(validateStage5Document("rc-freeze", oversized).reason_code, "BOUNDED_INPUT_VIOLATION");
+  assert.throws(() => stage5Sha256(oversized), /invalid or oversized bytes/u);
+  assert.equal(getterReads, 0);
+
+  const impostor = Object.create(Uint8Array.prototype) as Uint8Array;
+  Object.defineProperty(impostor, "byteLength", {
+    get() {
+      getterReads += 1;
+      throw new Error("must not execute");
+    },
+  });
+  assert.equal(validateStage5Document("rc-freeze", impostor).reason_code, "BOUNDED_INPUT_VIOLATION");
+  assert.equal(
+    validateStage5Document("rc-freeze", Buffer.from(Uint8Array.prototype.slice.call(canonical))).reason_code,
+    "BOUNDED_INPUT_VIOLATION",
+  );
+  assert.equal(getterReads, 0);
+
+  if (typeof SharedArrayBuffer !== "undefined") {
+    const shared = new Uint8Array(new SharedArrayBuffer(Uint8Array.prototype.slice.call(canonical).length));
+    shared.set(canonical);
+    assert.equal(validateStage5Document("rc-freeze", shared).reason_code, "BOUNDED_INPUT_VIOLATION");
+  }
+  const resizableBuffer = new ArrayBuffer(Uint8Array.prototype.slice.call(canonical).length, {
+    maxByteLength: Uint8Array.prototype.slice.call(canonical).length + 1,
+  });
+  if (resizableBuffer.resizable) {
+    const resizable = new Uint8Array(resizableBuffer);
+    resizable.set(canonical);
+    assert.equal(validateStage5Document("rc-freeze", resizable).reason_code, "BOUNDED_INPUT_VIOLATION");
+  }
+  const detachedBuffer = new ArrayBuffer(Uint8Array.prototype.slice.call(canonical).length);
+  const detached = new Uint8Array(detachedBuffer);
+  detached.set(canonical);
+  structuredClone(detachedBuffer, { transfer: [detachedBuffer] });
+  assert.equal(validateStage5Document("rc-freeze", detached).reason_code, "BOUNDED_INPUT_VIOLATION");
+  assert.throws(() => stage5Sha256(detached), /invalid or oversized bytes/u);
+});
+
 test("every authority promotion, invented binding, result, or unknown field fails closed", () => {
   const hostile: Array<[Stage5DocumentKind, (value: Record<string, any>) => void]> = [
     ["rc-freeze", (value) => (value.claims.rc_frozen = true)],

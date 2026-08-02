@@ -479,6 +479,62 @@ test("canonical byte input is bounded and rejects malformed or noncanonical I/O"
   assert.throws(() => canonicalStage4StorageLaunchBytes(oversizedCanonical), /bound/u);
 });
 
+test("intrinsic byte capture rejects hostile typed-array storage without getters or oversized processing", () => {
+  const canonical = canonicalStage4StorageLaunchBytes(graph());
+  let getterReads = 0;
+  for (const key of ["byteLength", "buffer"] as const) {
+    Object.defineProperty(canonical, key, {
+      configurable: true,
+      get() {
+        getterReads += 1;
+        throw new Error("must not execute");
+      },
+    });
+  }
+  assert.equal(validateStage4StorageLaunchBytes(canonical).status, "admissible-static-graph");
+  assert.equal(getterReads, 0);
+
+  const oversized = new Uint8Array(STAGE4_STORAGE_LAUNCH_LIMITS.maxContractBytes + 1);
+  Object.defineProperty(oversized, "byteLength", {
+    get() {
+      getterReads += 1;
+      return 1;
+    },
+  });
+  expectResult(validateStage4StorageLaunchBytes(oversized), "preserve-uncertain", "STAGE4_BOUNDED_IO_VIOLATION");
+  assert.equal(getterReads, 0);
+
+  const impostor = Object.create(Uint8Array.prototype) as Uint8Array;
+  Object.defineProperty(impostor, "byteLength", {
+    get() {
+      getterReads += 1;
+      throw new Error("must not execute");
+    },
+  });
+  expectResult(validateStage4StorageLaunchBytes(impostor), "reject", "STAGE4_STORAGE_LAUNCH_INVALID_SHAPE");
+  assert.equal(validateStage4StorageLaunchBytes(Buffer.from(canonical)).status, "reject");
+  assert.equal(getterReads, 0);
+
+  if (typeof SharedArrayBuffer !== "undefined") {
+    const shared = new Uint8Array(new SharedArrayBuffer(Uint8Array.prototype.slice.call(canonical).length));
+    shared.set(canonical);
+    assert.equal(validateStage4StorageLaunchBytes(shared).status, "reject");
+  }
+  const resizableBuffer = new ArrayBuffer(Uint8Array.prototype.slice.call(canonical).length, {
+    maxByteLength: Uint8Array.prototype.slice.call(canonical).length + 1,
+  });
+  if (resizableBuffer.resizable) {
+    const resizable = new Uint8Array(resizableBuffer);
+    resizable.set(canonical);
+    assert.equal(validateStage4StorageLaunchBytes(resizable).status, "reject");
+  }
+  const detachedBuffer = new ArrayBuffer(Uint8Array.prototype.slice.call(canonical).length);
+  const detached = new Uint8Array(detachedBuffer);
+  detached.set(canonical);
+  structuredClone(detachedBuffer, { transfer: [detachedBuffer] });
+  assert.notEqual(validateStage4StorageLaunchBytes(detached).status, "admissible-static-graph");
+});
+
 test("getter, proxy, sparse-array, symbol, and prototype inputs fail closed without trap escape", () => {
   let getterInvoked = false;
   const getter = graph();

@@ -468,6 +468,65 @@ test("proxy, accessor, cyclic, non-JSON, and oversized inputs fail closed withou
   assert.equal(report(suite(), [badCanary]).privacy.result, "uncertain");
 });
 
+test("intrinsic byte capture rejects hostile typed-array storage without getters or oversized processing", () => {
+  const canonical = canonicalBytes(suite());
+  let getterReads = 0;
+  for (const key of ["byteLength", "buffer"] as const) {
+    Object.defineProperty(canonical, key, {
+      configurable: true,
+      get() {
+        getterReads += 1;
+        throw new Error("must not execute");
+      },
+    });
+  }
+  assert.equal(classified(canonical).status, "local-contract-pass");
+  assert.equal(getterReads, 0);
+
+  const oversized = new Uint8Array(STAGE5_PRIVACY_LIMITS.maxInputBytes + 1);
+  Object.defineProperty(oversized, "byteLength", {
+    get() {
+      getterReads += 1;
+      return 1;
+    },
+  });
+  assert.equal(classified(oversized).privacy.reason_code, "STAGE5_PRIVACY_BOUNDED_INPUT");
+  assert.equal(getterReads, 0);
+
+  const impostor = Object.create(Uint8Array.prototype) as Uint8Array;
+  Object.defineProperty(impostor, "byteLength", {
+    get() {
+      getterReads += 1;
+      throw new Error("must not execute");
+    },
+  });
+  assert.equal(classified(impostor).privacy.reason_code, "STAGE5_PRIVACY_INVALID_SHAPE");
+  assert.equal(
+    classified(Buffer.from(Uint8Array.prototype.slice.call(canonical))).privacy.reason_code,
+    "STAGE5_PRIVACY_INVALID_SHAPE",
+  );
+  assert.equal(getterReads, 0);
+
+  if (typeof SharedArrayBuffer !== "undefined") {
+    const shared = new Uint8Array(new SharedArrayBuffer(Uint8Array.prototype.slice.call(canonical).length));
+    shared.set(canonical);
+    assert.equal(classified(shared).privacy.reason_code, "STAGE5_PRIVACY_INVALID_SHAPE");
+  }
+  const resizableBuffer = new ArrayBuffer(Uint8Array.prototype.slice.call(canonical).length, {
+    maxByteLength: Uint8Array.prototype.slice.call(canonical).length + 1,
+  });
+  if (resizableBuffer.resizable) {
+    const resizable = new Uint8Array(resizableBuffer);
+    resizable.set(canonical);
+    assert.equal(classified(resizable).privacy.reason_code, "STAGE5_PRIVACY_INVALID_SHAPE");
+  }
+  const detachedBuffer = new ArrayBuffer(Uint8Array.prototype.slice.call(canonical).length);
+  const detached = new Uint8Array(detachedBuffer);
+  detached.set(canonical);
+  structuredClone(detachedBuffer, { transfer: [detachedBuffer] });
+  assert.notEqual(classified(detached).status, "local-contract-pass");
+});
+
 test("deletion state machine is canonical, ordered, sticky on failure or uncertainty, and never retries", () => {
   assert.deepEqual(suite().deletion.transitions, STAGE5_DELETION_TRANSITIONS);
 
@@ -615,8 +674,10 @@ test("fixture and report contain metadata only and keep every external operation
     scannerSource.indexOf("function snapshotCanonicalBytes"),
     scannerSource.indexOf("function snapshotCanaries"),
   );
-  assert.ok(byteIngestion.indexOf("const length = input.byteLength") < byteIngestion.indexOf("decoder.decode(bytes)"));
-  assert.ok(byteIngestion.indexOf("new Uint8Array(input)") < byteIngestion.indexOf("JSON.parse(text)"));
+  assert.ok(
+    byteIngestion.indexOf("capturePrivateBytes(input, maximum)") < byteIngestion.indexOf("decoder.decode(bytes)"),
+  );
+  assert.ok(byteIngestion.indexOf("const bytes = captured.bytes") < byteIngestion.indexOf("JSON.parse(text)"));
   assert.ok(byteIngestion.indexOf("JSON.parse(text)") < byteIngestion.indexOf("snapshotJson(parsed)"));
   assert.doesNotMatch(byteIngestion.slice(0, byteIngestion.indexOf("snapshotJson(parsed)")), /Reflect\.ownKeys/u);
   const checked = JSON.parse(readFileSync(checkedReportFile, "utf8"));

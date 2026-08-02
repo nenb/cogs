@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { TextDecoder, types as utilTypes } from "node:util";
 import type { Ajv as AjvCore, Options, ValidateFunction } from "ajv";
+import { capturePrivateBytes, intrinsicByteLength } from "./private-bytes.ts";
 
 const require = createRequire(import.meta.url);
 const Ajv2020 = require("ajv/dist/2020.js") as new (options?: Options) => AjvCore;
@@ -348,16 +349,10 @@ function isRecord(value: JsonValue | undefined): value is JsonRecord {
 }
 
 function snapshotCanonicalBytes(input: unknown, maximum: number): ByteSnapshot {
-  if (((typeof input === "object" && input !== null) || typeof input === "function") && utilTypes.isProxy(input)) {
-    return { value: null, bounded: false };
-  }
-  if (!(input instanceof Uint8Array) || Object.getPrototypeOf(input) !== Uint8Array.prototype) {
-    return { value: null, bounded: false };
-  }
-  const length = input.byteLength;
-  if (length === 0 || length > maximum) return { value: null, bounded: true };
-  const bytes = new Uint8Array(input);
-  if (bytes.byteLength >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) {
+  const captured = capturePrivateBytes(input, maximum);
+  if (captured.bytes === null) return { value: null, bounded: captured.bounded };
+  const bytes = captured.bytes;
+  if (intrinsicByteLength(bytes) >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) {
     return { value: null, bounded: false };
   }
   try {

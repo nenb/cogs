@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { TextDecoder, types as utilTypes } from "node:util";
 import type { Ajv as AjvCore, Options, ValidateFunction } from "ajv";
+import { capturePrivateBytes, intrinsicByteLength } from "./private-bytes.ts";
 
 const require = createRequire(import.meta.url);
 const Ajv2020 = require("ajv/dist/2020.js") as new (options?: Options) => AjvCore;
@@ -512,17 +513,18 @@ export function evaluateStage4StorageLaunchGraph(input: unknown): Stage4StorageL
 
 /** Validates bounded canonical JSON bytes without reading any path or contacting any dependency. */
 export function validateStage4StorageLaunchBytes(input: Uint8Array): Stage4StorageLaunchVerdict {
-  if (utilTypes.isProxy(input)) {
-    return verdict("reject", "STAGE4_STORAGE_LAUNCH_INVALID_SHAPE", null);
+  const captured = capturePrivateBytes(input, STAGE4_STORAGE_LAUNCH_LIMITS.maxContractBytes);
+  if (captured.bytes === null) {
+    return captured.bounded
+      ? verdict("preserve-uncertain", "STAGE4_BOUNDED_IO_VIOLATION", null)
+      : verdict("reject", "STAGE4_STORAGE_LAUNCH_INVALID_SHAPE", null);
   }
-  if (input.byteLength === 0 || input.byteLength > STAGE4_STORAGE_LAUNCH_LIMITS.maxContractBytes) {
-    return verdict("preserve-uncertain", "STAGE4_BOUNDED_IO_VIOLATION", null);
-  }
-  if (input.byteLength >= 3 && input[0] === 0xef && input[1] === 0xbb && input[2] === 0xbf) {
+  const bytes = captured.bytes;
+  if (intrinsicByteLength(bytes) >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) {
     return verdict("reject", "STAGE4_STORAGE_LAUNCH_INVALID_SHAPE", null);
   }
   try {
-    const text = decoder.decode(input);
+    const text = decoder.decode(bytes);
     const parsed = JSON.parse(text) as unknown;
     const snapshot = snapshotJson(parsed);
     if (snapshot.value === null) {
@@ -547,7 +549,7 @@ export function canonicalStage4StorageLaunchBytes(input: unknown): Uint8Array {
     );
   }
   const encoded = new TextEncoder().encode(`${canonicalJson(snapshot.value)}\n`);
-  if (encoded.byteLength > STAGE4_STORAGE_LAUNCH_LIMITS.maxContractBytes) {
+  if (intrinsicByteLength(encoded) > STAGE4_STORAGE_LAUNCH_LIMITS.maxContractBytes) {
     throw new TypeError("canonical contract exceeds the byte bound");
   }
   return encoded;

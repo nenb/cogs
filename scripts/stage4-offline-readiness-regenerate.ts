@@ -68,6 +68,7 @@ const LOCAL_VALIDATION_PATHS = Object.freeze([
   "package.json",
   "schemas/stage4-offline-readiness-package-v1.json",
   "schemas/stage4-offline-readiness-verdict-v1.json",
+  "scripts/private-bytes.ts",
   "scripts/stage4-offline-readiness-regenerate.ts",
   "scripts/stage4-offline-readiness.ts",
   "scripts/stage4-offline-render-preparation.ts",

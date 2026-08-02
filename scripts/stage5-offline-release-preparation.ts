@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { TextDecoder, types } from "node:util";
 import type { Ajv as AjvCore, Options, ValidateFunction } from "ajv";
+import { capturePrivateBytes, intrinsicByteLength } from "./private-bytes.ts";
 
 const require = createRequire(import.meta.url);
 const Ajv2020 = require("ajv/dist/2020.js") as new (options?: Options) => AjvCore;
@@ -66,25 +67,19 @@ export function canonicalStage5Bytes(value: JsonValue): Uint8Array {
 }
 
 export function stage5Sha256(bytes: Uint8Array): string {
-  return createHash("sha256").update(bytes).digest("hex");
+  const captured = capturePrivateBytes(bytes, MAX_DOCUMENT_BYTES, true);
+  if (captured.bytes === null) throw new TypeError("invalid or oversized bytes");
+  return createHash("sha256").update(captured.bytes).digest("hex");
 }
 
 function copyBoundedBytes(input: unknown): Uint8Array | null {
-  if ((typeof input === "object" && input !== null) || typeof input === "function") {
-    if (types.isProxy(input)) return null;
-  }
-  if (!(input instanceof Uint8Array) || Object.getPrototypeOf(input) !== Uint8Array.prototype) return null;
-  try {
-    if (input.byteLength === 0 || input.byteLength > MAX_DOCUMENT_BYTES) return null;
-    return new Uint8Array(input);
-  } catch {
-    return null;
-  }
+  return capturePrivateBytes(input, MAX_DOCUMENT_BYTES).bytes;
 }
 
 function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
-  if (left.byteLength !== right.byteLength) return false;
-  for (let index = 0; index < left.byteLength; index += 1) {
+  const length = intrinsicByteLength(left);
+  if (length !== intrinsicByteLength(right)) return false;
+  for (let index = 0; index < length; index += 1) {
     if (left[index] !== right[index]) return false;
   }
   return true;

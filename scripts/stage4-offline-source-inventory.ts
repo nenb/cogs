@@ -24,6 +24,7 @@ const EXACT_FILES = Object.freeze([
   "docs/operations/ci-schedule.md",
   "docs/operations/ownership.md",
   "docs/security-evidence/README.md",
+  "scripts/private-bytes.ts",
   "scripts/validate-schemas.ts",
 ]);
 const DIRECTORY_PREFIXES = Object.freeze(["deploy/helm/cogs/", "deploy/nic/"]);

@@ -198,6 +198,7 @@ test("committed inventories are canonical, complete for their scopes, and bind e
       "package.json",
       "schemas/stage4-offline-readiness-package-v1.json",
       "schemas/stage4-offline-readiness-verdict-v1.json",
+      "scripts/private-bytes.ts",
       "scripts/stage4-offline-readiness-regenerate.ts",
       "scripts/stage4-offline-readiness.ts",
       "scripts/stage4-offline-render-preparation.ts",
@@ -709,6 +710,82 @@ test("bounded hostile prototypes, proxies, getters, symbols, and artifact-key dr
   });
   assert.equal(classify(packageBytes(), recursive).status, "preserve-uncertain");
   assert.equal(traps, 0);
+});
+
+test("intrinsic byte capture rejects hostile typed-array storage without getters or oversized processing", () => {
+  const canonical = packageBytes();
+  const expectedDigest = stage4OfflineReadinessSha256(canonical);
+  let getterReads = 0;
+  for (const key of ["byteLength", "buffer"] as const) {
+    Object.defineProperty(canonical, key, {
+      configurable: true,
+      get() {
+        getterReads += 1;
+        throw new Error("must not execute");
+      },
+    });
+  }
+  assert.equal(classify(canonical).local_preparation_complete, true);
+  assert.equal(stage4OfflineReadinessSha256(canonical), expectedDigest);
+  assert.equal(getterReads, 0);
+
+  const oversized = new Uint8Array(STAGE4_READINESS_BYTE_LIMITS.package + 1);
+  Object.defineProperty(oversized, "byteLength", {
+    get() {
+      getterReads += 1;
+      return 1;
+    },
+  });
+  assert.equal(classify(oversized).reason_code, "STAGE4_READINESS_BOUNDED_IO_VIOLATION");
+  const oversizedHashInput = new Uint8Array(4 * 1024 * 1024 + 1);
+  Object.defineProperty(oversizedHashInput, "byteLength", {
+    get() {
+      getterReads += 1;
+      return 1;
+    },
+  });
+  assert.throws(() => stage4OfflineReadinessSha256(oversizedHashInput), /invalid or oversized bytes/u);
+  const oversizedArtifacts = artifacts();
+  oversizedArtifacts.localValidation = new Uint8Array(STAGE4_READINESS_BYTE_LIMITS.localValidation + 1);
+  Object.defineProperty(oversizedArtifacts.localValidation, "byteLength", {
+    get() {
+      getterReads += 1;
+      return 1;
+    },
+  });
+  assert.equal(classify(packageBytes(), oversizedArtifacts).reason_code, "STAGE4_READINESS_BOUNDED_IO_VIOLATION");
+  assert.equal(getterReads, 0);
+
+  const impostor = Object.create(Uint8Array.prototype) as Uint8Array;
+  Object.defineProperty(impostor, "byteLength", {
+    get() {
+      getterReads += 1;
+      throw new Error("must not execute");
+    },
+  });
+  assert.equal(classify(impostor).reason_code, "STAGE4_READINESS_BOUNDED_IO_VIOLATION");
+  assert.equal(classify(Buffer.from(Uint8Array.prototype.slice.call(canonical))).local_preparation_complete, false);
+  assert.equal(getterReads, 0);
+
+  if (typeof SharedArrayBuffer !== "undefined") {
+    const shared = new Uint8Array(new SharedArrayBuffer(Uint8Array.prototype.slice.call(canonical).length));
+    shared.set(canonical);
+    assert.equal(classify(shared).local_preparation_complete, false);
+  }
+  const resizableBuffer = new ArrayBuffer(Uint8Array.prototype.slice.call(canonical).length, {
+    maxByteLength: Uint8Array.prototype.slice.call(canonical).length + 1,
+  });
+  if (resizableBuffer.resizable) {
+    const resizable = new Uint8Array(resizableBuffer);
+    resizable.set(canonical);
+    assert.equal(classify(resizable).local_preparation_complete, false);
+  }
+  const detachedBuffer = new ArrayBuffer(Uint8Array.prototype.slice.call(canonical).length);
+  const detached = new Uint8Array(detachedBuffer);
+  detached.set(canonical);
+  structuredClone(detachedBuffer, { transfer: [detachedBuffer] });
+  assert.equal(classify(detached).local_preparation_complete, false);
+  assert.throws(() => stage4OfflineReadinessSha256(detached), /invalid or oversized bytes/u);
 });
 
 test("byte and aggregate bounds fail before hashing or authority classification", () => {

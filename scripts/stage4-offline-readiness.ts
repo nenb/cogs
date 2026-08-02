@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { TextDecoder, types } from "node:util";
 import type { Ajv as AjvCore, Options, ValidateFunction } from "ajv";
+import { capturePrivateBytes, intrinsicByteLength } from "./private-bytes.ts";
 
 const require = createRequire(import.meta.url);
 const Ajv2020 = require("ajv/dist/2020.js") as new (options?: Options) => AjvCore;
@@ -216,10 +217,10 @@ export const STAGE4_READINESS_EXPECTED_ARTIFACTS = Object.freeze({
   repeatedRender: "614361336f5cbf87e4fd7b1a8a806fa5d08bbceb3c91b2b33a1710b4cfd73331",
   runtimePins: "14fdacff04e1db62ec733e7696d104826c73aa87764406a5625d2a13265219f0",
   values: "e63a0fadebe16637cc97b21adeeb4ecf33efa8e76a1469e6008c7f7ed4fbb58f",
-  localValidationNormalized: "9efeaf57dbbb2bc3792ae7cb5f82103d9d7d423cb44a59d29a34caa48d978d4f",
+  localValidationNormalized: "57044a7ae0c051a6dd8f0bc2910b2a26518f07aa7de40e598798d3992feec477",
   renderReceipt: "cb48037b113e52fecc21529ecde0a4b5ff974fa241dc92a6f0e6c05e9e55b505",
   schemaInventory: "b6892e2c67eb807477dfeb12a2bb9a8fd2a0b698ca7908086fec92b166fd60a0",
-  sourceInventoryNormalized: "abe32cbce70b4a924c828e3f4dafc9e8ad627129164cdb7fbdf7b5eb09a17d8d",
+  sourceInventoryNormalized: "2f94dd8a92f51b09489387cf83195df0f1a339233d83bb9c6a5dbd97306f814c",
 });
 /* stage4-readiness-anchor-end */
 
@@ -253,7 +254,9 @@ export function canonicalStage4OfflineReadinessBytes(value: JsonValue): Uint8Arr
 }
 
 export function stage4OfflineReadinessSha256(bytes: Uint8Array): string {
-  return createHash("sha256").update(bytes).digest("hex");
+  const captured = capturePrivateBytes(bytes, 4 * 1024 * 1024, true);
+  if (captured.bytes === null) throw new TypeError("invalid or oversized bytes");
+  return createHash("sha256").update(captured.bytes).digest("hex");
 }
 
 function domainHash(domain: string, value: JsonValue): string {
@@ -265,20 +268,16 @@ function domainHash(domain: string, value: JsonValue): string {
 }
 
 function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
-  if (left.byteLength !== right.byteLength) return false;
-  for (let index = 0; index < left.byteLength; index += 1) {
+  const length = intrinsicByteLength(left);
+  if (length !== intrinsicByteLength(right)) return false;
+  for (let index = 0; index < length; index += 1) {
     if (left[index] !== right[index]) return false;
   }
   return true;
 }
 
 function copyBytes(value: unknown, maximum: number): Uint8Array | null {
-  if ((typeof value === "object" && value !== null) || typeof value === "function") {
-    if (types.isProxy(value)) return null;
-  }
-  if (!(value instanceof Uint8Array) || Object.getPrototypeOf(value) !== Uint8Array.prototype) return null;
-  if (value.byteLength === 0 || value.byteLength > maximum) return null;
-  return new Uint8Array(value);
+  return capturePrivateBytes(value, maximum).bytes;
 }
 
 function copyArtifacts(input: unknown): ArtifactCopies | null {
@@ -303,7 +302,7 @@ function copyArtifacts(input: unknown): ArtifactCopies | null {
     const maximum = STAGE4_READINESS_BYTE_LIMITS[key];
     const bytes = copyBytes(descriptor.value, maximum);
     if (bytes === null) return null;
-    aggregate += bytes.byteLength;
+    aggregate += intrinsicByteLength(bytes);
     if (aggregate > STAGE4_READINESS_BYTE_LIMITS.aggregateArtifacts) return null;
     output[key] = bytes;
   }
@@ -364,12 +363,18 @@ function normalizedInventoryDigest(bytes: Uint8Array, arrayKey: string, selfPath
   return stage4OfflineReadinessSha256(canonicalStage4OfflineReadinessBytes({ ...value, [arrayKey]: normalized }));
 }
 
-export function stage4NormalizedSourceInventorySha256(bytes: Uint8Array): string | null {
-  return normalizedInventoryDigest(bytes, "entries", "scripts/stage4-offline-readiness.ts");
+export function stage4NormalizedSourceInventorySha256(input: Uint8Array): string | null {
+  const captured = capturePrivateBytes(input, STAGE4_READINESS_BYTE_LIMITS.sourceInventory);
+  return captured.bytes === null
+    ? null
+    : normalizedInventoryDigest(captured.bytes, "entries", "scripts/stage4-offline-readiness.ts");
 }
 
-export function stage4NormalizedLocalValidationSha256(bytes: Uint8Array): string | null {
-  return normalizedInventoryDigest(bytes, "source_bindings", "scripts/stage4-offline-readiness.ts");
+export function stage4NormalizedLocalValidationSha256(input: Uint8Array): string | null {
+  const captured = capturePrivateBytes(input, STAGE4_READINESS_BYTE_LIMITS.localValidation);
+  return captured.bytes === null
+    ? null
+    : normalizedInventoryDigest(captured.bytes, "source_bindings", "scripts/stage4-offline-readiness.ts");
 }
 
 function exactArtifactSemantics(value: ReadinessPackage, artifacts: ArtifactCopies): boolean {
