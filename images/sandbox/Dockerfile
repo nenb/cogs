@@ -4,18 +4,20 @@ FROM debian:13-slim@sha256:020c0d20b9880058cbe785a9db107156c3c75c2ac944a6aa7ab59
 
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 
-# Both repositories are immutable snapshots. Requested package names and versions are
-# deliberately closed; changing this list is a package-policy change.
+# Both repositories are immutable snapshots. APT authenticates their signed InRelease
+# metadata with the pinned Debian archive keyring; HTTP avoids a circular dependency on
+# the newer CA bundle installed from that authenticated snapshot. Requested package names
+# and versions are deliberately closed; changing this list is a package-policy change.
 RUN printf '%s\n' \
       'Types: deb' \
-      'URIs: https://snapshot.debian.org/archive/debian/20260713T000000Z/' \
+      'URIs: http://snapshot.debian.org/archive/debian/20260713T000000Z/' \
       'Suites: trixie' \
       'Components: main' \
       'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
       'Check-Valid-Until: no' \
       '' \
       'Types: deb' \
-      'URIs: https://snapshot.debian.org/archive/debian-security/20260731T000000Z/' \
+      'URIs: http://snapshot.debian.org/archive/debian-security/20260731T000000Z/' \
       'Suites: trixie-security' \
       'Components: main' \
       'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
@@ -41,8 +43,9 @@ RUN printf '%s\n' \
       nodejs=20.19.2+dfsg-1+deb13u2 \
       npm=9.2.0~ds1-3 \
       openjdk-21-jre-headless=21.0.11+10-1~deb13u2 \
-      openssh-client=1:10.0p1-7+deb13u2 \
-      openssh-server=1:10.0p1-7+deb13u2 \
+      openssh-client=1:10.0p1-7+deb13u4 \
+      openssh-server=1:10.0p1-7+deb13u4 \
+      openssh-sftp-server=1:10.0p1-7+deb13u4 \
       openssl=3.5.6-1~deb13u2 \
       python3=3.13.5-1 \
       python3-httpx=0.28.1-1 \
@@ -51,6 +54,7 @@ RUN printf '%s\n' \
       socat=1.8.0.3-1 \
     && rm -rf /var/lib/apt/lists/* /root/.ssh \
     && rm -f /etc/ssh/ssh_host_* /etc/ssh/sshd_config.d/* \
+      /etc/machine-id /var/lib/dbus/machine-id /var/lib/systemd/random-seed \
     && install -d -o root -g root -m 0700 /root /workspace /run/cogs-runtime \
     && install -d -o root -g root -m 0500 /run/cogs-input \
     && install -d -o root -g root -m 0755 /run/sshd /shared /user \

@@ -26,8 +26,9 @@ const packages = [
   "nodejs=20.19.2+dfsg-1+deb13u2",
   "npm=9.2.0~ds1-3",
   "openjdk-21-jre-headless=21.0.11+10-1~deb13u2",
-  "openssh-client=1:10.0p1-7+deb13u2",
-  "openssh-server=1:10.0p1-7+deb13u2",
+  "openssh-client=1:10.0p1-7+deb13u4",
+  "openssh-server=1:10.0p1-7+deb13u4",
+  "openssh-sftp-server=1:10.0p1-7+deb13u4",
   "openssl=3.5.6-1~deb13u2",
   "python3=3.13.5-1",
   "python3-httpx=0.28.1-1",
@@ -55,8 +56,9 @@ test("sandbox image uses the reviewed Debian base, immutable snapshots, and exac
     dockerfile,
     /^FROM debian:13-slim@sha256:020c0d20b9880058cbe785a9db107156c3c75c2ac944a6aa7ab59f2add76a7bd$/mu,
   );
-  assert.match(dockerfile, /URIs: https:\/\/snapshot\.debian\.org\/archive\/debian\/20260713T000000Z\//u);
-  assert.match(dockerfile, /URIs: https:\/\/snapshot\.debian\.org\/archive\/debian-security\/20260731T000000Z\//u);
+  assert.match(dockerfile, /URIs: http:\/\/snapshot\.debian\.org\/archive\/debian\/20260713T000000Z\//u);
+  assert.match(dockerfile, /URIs: http:\/\/snapshot\.debian\.org\/archive\/debian-security\/20260731T000000Z\//u);
+  assert.match(dockerfile, /Signed-By: \/usr\/share\/keyrings\/debian-archive-keyring\.gpg/gu);
   assert.doesNotMatch(dockerfile, /\bARG\s+DEBIAN_|\$\{?DEBIAN_/u);
   const install = dockerfile.match(/apt-get install --yes --no-install-recommends \\\n([\s\S]*?)\n {4}&& rm -rf/u)?.[1];
   assert.ok(install);
@@ -69,6 +71,9 @@ test("sandbox image uses the reviewed Debian base, immutable snapshots, and exac
   );
   assert.doesNotMatch(install, /(?:aws|azure|google-cloud|kubectl|kubernetes|openbao|vault)/iu);
   assert.match(dockerfile, /rm -f \/etc\/ssh\/ssh_host_\*/u);
+  for (const generatedIdentity of ["/etc/machine-id", "/var/lib/dbus/machine-id", "/var/lib/systemd/random-seed"]) {
+    assert.ok(dockerfile.includes(generatedIdentity), generatedIdentity);
+  }
   assert.match(dockerfile, /USER 0:0/u);
 });
 
