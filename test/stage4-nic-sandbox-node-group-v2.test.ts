@@ -41,7 +41,7 @@ test("active v2 pins the accepted personal forks and resolves only source capabi
   assert.equal(verdict.reason_code, "STAGE4_NIC_SOURCE_CAPABILITY_PRESENT_NONOBSERVING");
   assert.equal(verdict.nic_source_pin_resolved, true);
   assert.equal(verdict.launch_template_selection_capability_resolved, true);
-  assert.equal(verdict.contract_sha256, "b3ee4458df300f787edc4d4c4de0c62e4a5ee3cd4599ca74662cb7dfbfc1a8af");
+  assert.equal(verdict.contract_sha256, "5dfc1bb269868daf536598d3a80e9c4dfee51793ce3f391b3d5dc1ee753cbb29");
 
   assert.equal(contract.nic_source.commit_sha, "53b1a791ed1ff394969e0aeaa6379be955244b62");
   assert.equal(contract.nic_source.tree_git_sha, "32c14bd9a19c0519006a9b86284402f9e0187947");
@@ -54,7 +54,15 @@ test("active v2 pins the accepted personal forks and resolves only source capabi
     "operator-attestation-only-not-observed",
   );
   assert.equal(contract.nic_capability_assessment.launch_template_contents_observed, false);
-  assert.equal(contract.node_image.pin_state, "unresolved");
+  assert.equal(contract.node_image.pin_state, "public-candidate");
+  assert.equal(contract.node_image.release, "1.35.6-20260728");
+  assert.equal(contract.node_image.ami_id, null);
+  assert.equal(contract.node_image.kernel_release, null);
+  assert.equal(contract.sandbox_node_group.runtime.qemu_version, "11.0.1");
+  assert.equal(
+    contract.sandbox_node_group.runtime.qemu_artifact_sha256,
+    "1e4968d9cce98c7cba8f9e3488236cba56993d9747f268d03b0284f3df2b012d",
+  );
 });
 
 test("v2 binds every reviewed file blob, content digest, and size in exact order", () => {

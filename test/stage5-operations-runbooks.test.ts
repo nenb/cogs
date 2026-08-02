@@ -530,7 +530,7 @@ test("static contract values and Stage 5 support posture remain consistent with 
   assert.match(corpus, /EKS (?:node )?image (?:(?:is|remains) )?unresolved/u);
   assert.match(corpus, /Kata `3\.32\.0`/u);
   assert.match(corpus, /containerd `2\.2\.1`/u);
-  assert.match(corpus, /QEMU `8\.2\.2`/u);
+  assert.match(corpus, /Kata-bundled QEMU `11\.0\.1`/u);
   assert.deepEqual(matrix.subscription_oauth, {
     status: "disabled-unadvertised",
     advertised: false,

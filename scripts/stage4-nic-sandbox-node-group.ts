@@ -27,7 +27,7 @@ export type Stage4NicV2Verdict = Readonly<{
 
 const CONTRACT_VERSION = "cogs.stage4-nic-sandbox-node-group-contract/v2";
 const CONTRACT_AUTHORITY = "local-static-personal-fork-source-contract";
-const EXPECTED_CONTRACT_SHA256 = "b3ee4458df300f787edc4d4c4de0c62e4a5ee3cd4599ca74662cb7dfbfc1a8af";
+const EXPECTED_CONTRACT_SHA256 = "5dfc1bb269868daf536598d3a80e9c4dfee51793ce3f391b3d5dc1ee753cbb29";
 const MAX_DEPTH = 20;
 const MAX_NODES = 1024;
 

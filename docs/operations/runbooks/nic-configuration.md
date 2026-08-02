@@ -26,7 +26,7 @@ This guide describes the required semantic shape. It is not NIC syntax, a provid
 | Local fact | Exact authority and applicability |
 |---|---|
 | Linux/KVM evidence supports KVM-backed guest-root testing only, not NIC mapping, managed groups, EKS scheduling/image, or CNI behavior. | [Authority: Stage 3 exit scope](../../test-reports/stage-3-s3-09-linux-kvm-exit.md#accepted-scope) |
-| Kata archive identity is accepted from bounded Stage 2 evidence; containerd/QEMU version strings are not binary identity and standalone Ubuntu is not an EKS pin. | [Authority: NIC blocker explanation](../stage-4-nic-node-group-contract.md#accepted-personal-fork-closure) |
+| Selected containerd `2.2.1` and Kata-bundled QEMU `11.0.1` candidate binaries are authenticated but not runtime-observed; standalone Ubuntu/QEMU `8.2.2` is historical and is not an EKS pin. | [Authority: NIC exact node-group contract](../stage-4-nic-node-group-contract.md#exact-node-group-contract) |
 
 ## Future cloud evidence
 

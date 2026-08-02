@@ -49,7 +49,7 @@ The immutable launch-document metadata contains exactly its version, session ID,
 
 Session, workspace, and resource IDs are not arbitrary opaque strings. They are kind-specific digest references (`cogs.<kind>/v1:sha256:<lowercase digest>`), preventing token/credential-shaped values and cross-kind substitution. Their preimages and provenance remain caller claims: domain-shaped references do not authenticate an issuer, launch, resource, or observation.
 
-RuntimeClass resolution is a bounded caller assertion. `present-static-assertion` does not establish cluster truth; `missing`, a wrong name, or any runc/TCG fallback denies admission. The checked NIC v0.11.0 contract remains independently `blocked-missing-capability` because it cannot preserve custom launch-template ID/version or nested-virtualization CPU options. Issue #355 neither depends on nor changes that provider-source result.
+RuntimeClass resolution is a bounded caller assertion. `present-static-assertion` does not establish cluster truth; `missing`, a wrong name, or any runc/TCG fallback denies admission. Historical NIC v1 remains `blocked-missing-capability`; active personal-fork v2 resolves source-level launch-template selection only and observes no launch-template or provider truth. Issue #355 neither depends on nor changes either NIC authority.
 
 ## Immutable and ephemeral identity boundary
 

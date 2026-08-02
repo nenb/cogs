@@ -60,7 +60,7 @@
       "id": "installation",
       "path": "docs/operations/runbooks/installation.md",
       "title": "Draft installation guide",
-      "content_sha256": "cf25076e999399205d2925a88be06e4f12335c5912eed8bd7efde50a475a6c74",
+      "content_sha256": "3ec28401f1ec424018be5aa6a14c5583788cf7d8ffc2c831c5c35d3ef9dcf890",
       "status": "draft-local-static-only",
       "evidence_contract": "future-operations-reference-v1"
     },
@@ -68,7 +68,7 @@
       "id": "prerequisites",
       "path": "docs/operations/runbooks/prerequisites.md",
       "title": "Draft prerequisites guide",
-      "content_sha256": "cb377dbdd5285178f06a16907268cadbcbe41b3b67c697e0db3bb4429441a9e8",
+      "content_sha256": "4bcbb71fcc2c97c7280db386d1dc33aeb031ae0c01dae5b2354dd6b8c3961f48",
       "status": "draft-local-static-only",
       "evidence_contract": "future-operations-reference-v1"
     },
@@ -76,7 +76,7 @@
       "id": "nic-configuration",
       "path": "docs/operations/runbooks/nic-configuration.md",
       "title": "Draft NIC configuration guide",
-      "content_sha256": "4e8d0ed01272f3ddc60f911416fe915735cc8a1b00100cdb6daf84a1e9ecef34",
+      "content_sha256": "0ea147d0506c4d3bbe9e6512f2caf6189e2409474ce652601fe7d0de16bb9fa8",
       "status": "draft-local-static-only",
       "evidence_contract": "future-operations-reference-v1"
     },
@@ -92,7 +92,7 @@
       "id": "upgrade",
       "path": "docs/operations/runbooks/upgrade.md",
       "title": "Draft runtime and proxy upgrade runbook",
-      "content_sha256": "ad0e1cd08c41b5f4fa62ada0bd7dc461c5810affff71fd680ef2936c5d58c588",
+      "content_sha256": "16184a9fab7def7974e52ab1b4e5aaab8acce7f501b34e8120d0157fac427800",
       "status": "draft-local-static-only",
       "evidence_contract": "future-operations-reference-v1"
     },

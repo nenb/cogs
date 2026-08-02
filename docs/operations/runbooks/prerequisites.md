@@ -17,8 +17,8 @@ This is a requirements checklist, not a discovery script or installation authori
 | Issue #42 blocks cloud entry; closure alone grants no campaign authority. | [Authority: offline readiness current blockers](../stage-4-offline-readiness.md#honest-image-nic-and-runtime-blockers) |
 | Campaigns are one-attempt, exact-revision, bounded, destroyed, and independently inventoried. | [Authority: offline readiness one-attempt authority](../stage-4-offline-readiness.md#stopdestroy-and-identities) |
 | Account, principals, envelope, attempt, approval, and executable provider route are absent. | [Authority: offline readiness pure classifier boundary](../stage-4-offline-readiness.md#pure-classifier-boundary) |
-| Runtime pins are Kata `3.32.0` at the fixed archive digest, containerd `2.2.1`, QEMU `8.2.2`, `io.containerd.kata.v2`, and KVM only. | [Authority: NIC exact node-group contract](../stage-4-nic-node-group-contract.md#exact-node-group-contract) |
-| RuntimeClass is exactly `kata-qemu-cogs`; `runc` and TCG are forbidden; trusted/sandbox placement is disjoint. | [Authority: NIC disjoint scheduling](../stage-4-nic-node-group-contract.md#exact-node-group-contract) |
+| Runtime pins are Kata `3.32.0` at the fixed archive digest, containerd `2.2.1`, Kata-bundled QEMU `11.0.1`, `io.containerd.kata.v2`, and KVM only. | [Authority: NIC exact node-group contract](../stage-4-nic-node-group-contract.md#exact-node-group-contract) |
+| RuntimeClass is exactly `kata-qemu-cogs`; `runc` and TCG are forbidden; trusted/sandbox placement is disjoint. | [Authority: NIC exact node-group contract](../stage-4-nic-node-group-contract.md#exact-node-group-contract) |
 | Sandbox receives no service-account token, cloud/OpenBao identity, real credential, or CA private key. | [Authority: DESIGN mandatory invariants](../../../DESIGN.md#44-mandatory-invariants) |
 | Egress is explicit HTTP/HTTPS proxy only, externally default-denied, dual-stack covered or IPv6 disabled, and UDP blocked. | [Authority: DESIGN secret-injected egress placement](../../../DESIGN.md#111-placement) |
 | Credential authorization/WAL append fails closed; ordinary OTLP failure does not stop uncredentialed work. | [Authority: DESIGN audit fail-closed behavior](../../../DESIGN.md#114-audit-fail-closed-behavior) |
@@ -38,7 +38,7 @@ This is a requirements checklist, not a discovery script or installation authori
 
 | Required future observation | Planned criterion, evidence contract, and location |
 |---|---|
-| Capable NIC revision preserves exact launch-template ID/version and nested virtualization. | [Planned DESIGN-24.4 / `future-eks-conformance-reference-v1`](../stage-5-api-key-release-acceptance-matrix.md#criterion-level-traceability) |
+| Observe active NIC v2's preserved launch-template ID/version and nested-virtualization attestation against exact provider state. | [Planned DESIGN-24.4 / `future-eks-conformance-reference-v1`](../stage-5-api-key-release-acceptance-matrix.md#criterion-level-traceability) |
 | Bind immutable EKS node image/release/kernel and active KVM modules/device. | [Planned DESIGN-24.4 / `future-eks-conformance-reference-v1`](../stage-5-api-key-release-acceptance-matrix.md#criterion-level-traceability) |
 | Observe exact RuntimeClass, no trusted sandbox sidecar, and no runtime fallback. | [Planned DESIGN-24.4–.5 / `future-eks-conformance-reference-v1`](../stage-5-api-key-release-acceptance-matrix.md#criterion-level-traceability) |
 | Prove real CNI denial for IPv4/IPv6, UDP/QUIC, metadata, API/admin, cross-session, and direct bypass. | [Planned DESIGN-24.5, .12 / `future-eks-conformance-reference-v1`](../stage-5-api-key-release-acceptance-matrix.md#criterion-level-traceability) |

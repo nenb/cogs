@@ -15,6 +15,10 @@ import {
 } from "./stage4-offline-readiness.ts";
 import { STAGE4_PINNED_NODE } from "./stage4-offline-render-preparation.ts";
 import { generateStage4SourceInventory, readStage4SourceFile } from "./stage4-offline-source-inventory.ts";
+import {
+  buildStage4RuntimeArtifactEvidence,
+  canonicalStage4RuntimeArtifactBytes,
+} from "./stage4-runtime-artifact-closure.ts";
 
 const root = resolve(import.meta.dirname, "..");
 const artifactRoot = resolve(root, "docs/security-evidence/stage4-offline-readiness-artifacts");
@@ -61,13 +65,17 @@ const UNIT_TESTS = Object.freeze([
   "test/stage4-static-evidence.test.ts",
   "test/stage4-storage-launch-contract.test.ts",
   "test/stage4-teardown-verifier.test.ts",
+  "test/stage4-runtime-artifact-closure.test.ts",
 ]);
 const FORMAT_PATHS = Object.freeze([
   "scripts/stage4-offline-readiness-regenerate.ts",
   "scripts/stage4-offline-readiness.ts",
   "scripts/stage4-offline-render-preparation.ts",
   "scripts/stage4-offline-source-inventory.ts",
+  "scripts/stage4-runtime-artifact-closure-regenerate.ts",
+  "scripts/stage4-runtime-artifact-closure.ts",
   "test/stage4-offline-readiness.test.ts",
+  "test/stage4-runtime-artifact-closure.test.ts",
   "test/stage4-offline-render-preparation.test.ts",
   "test/stage4-schema-registry.test.ts",
 ]);
@@ -78,7 +86,10 @@ const LOCAL_VALIDATION_PATHS = Object.freeze([
   "package-lock.json",
   "package.json",
   "schemas/stage4-offline-readiness-package-v1.json",
+  "schemas/stage4-offline-readiness-package-v2.json",
   "schemas/stage4-offline-readiness-verdict-v1.json",
+  "schemas/stage4-offline-readiness-verdict-v2.json",
+  "schemas/stage4-authenticated-runtime-artifact-evidence-v1.json",
   "scripts/private-bytes.ts",
   "scripts/check-lock-integrity.ts",
   "scripts/check-npm-audit.ts",
@@ -86,9 +97,12 @@ const LOCAL_VALIDATION_PATHS = Object.freeze([
   "scripts/stage4-offline-readiness.ts",
   "scripts/stage4-offline-render-preparation.ts",
   "scripts/stage4-offline-source-inventory.ts",
+  "scripts/stage4-runtime-artifact-closure-regenerate.ts",
+  "scripts/stage4-runtime-artifact-closure.ts",
   "scripts/validate-schemas.ts",
   "test/stage4-offline-readiness.test.ts",
   "test/stage4-offline-render-preparation.test.ts",
+  "test/stage4-runtime-artifact-closure.test.ts",
   "test/stage4-schema-registry.test.ts",
   "tsconfig.json",
 ]);
@@ -254,7 +268,10 @@ function commandSpecs(): readonly CommandSpec[] {
       [
         "test/stage4-schema-registry.test.ts",
         "schemas/stage4-offline-readiness-package-v1.json",
+        "schemas/stage4-offline-readiness-package-v2.json",
         "schemas/stage4-offline-readiness-verdict-v1.json",
+        "schemas/stage4-offline-readiness-verdict-v2.json",
+        "schemas/stage4-authenticated-runtime-artifact-evidence-v1.json",
       ],
     ),
     nodeCommand("all-schema-contracts", ["scripts/validate-schemas.ts"], ["scripts/validate-schemas.ts"]),
@@ -311,6 +328,13 @@ function regenerateSchemaInventory(): void {
   );
 }
 
+function regenerateRuntimeArtifactEvidence(): void {
+  writeFileSync(
+    resolve(artifactRoot, "authenticated-runtime-artifacts.json"),
+    canonicalStage4RuntimeArtifactBytes(buildStage4RuntimeArtifactEvidence()),
+  );
+}
+
 function regenerateSourceAndLocalValidation(): void {
   writeFileSync(sourceInventoryPath, generateStage4SourceInventory(root));
   const checks = commandSpecs().map(runCommand);
@@ -354,6 +378,9 @@ function rewriteClassifierAnchors(): void {
     render: hash("docs/security-evidence/stage4-offline-readiness-artifacts/notes-render.yaml"),
     repeatedRender: hash("docs/security-evidence/stage4-offline-readiness-artifacts/notes-render-repeat.yaml"),
     runtimePins: hash("docs/security-evidence/stage4-offline-readiness-artifacts/runtime-pins.json"),
+    authenticatedRuntimeArtifacts: hash(
+      "docs/security-evidence/stage4-offline-readiness-artifacts/authenticated-runtime-artifacts.json",
+    ),
     values: hash("test/fixtures/helm/stage4-notes-source-shapes-valid.yaml"),
   };
   for (const [key, actual] of Object.entries(immutableInputs)) {
@@ -378,7 +405,35 @@ function rewriteClassifierAnchors(): void {
 
 function regeneratePackage(): void {
   const value = JSON.parse(readFileSync(packagePath, "utf8")) as JsonObject;
+  const nic = JSON.parse(readFileSync(resolve(root, "deploy/nic/stage4-sandbox-node-group-contract.json"), "utf8"));
+  const runtimePins = JSON.parse(readFileSync(resolve(artifactRoot, "runtime-pins.json"), "utf8"));
   value.blockers = [...STAGE4_READINESS_BLOCKERS];
+  value.pins.nic = {
+    capability_state: "source-capability-present-operator-attestation-only",
+    commit_sha: nic.nic_source.commit_sha,
+    module_commit_sha: nic.nic_source.eks_module.commit_sha,
+    module_version: nic.nic_source.eks_module.version,
+    reason_code: "STAGE4_NIC_SOURCE_CAPABILITY_PRESENT_NONOBSERVING",
+    release: nic.nic_source.release_tag,
+  };
+  value.pins.runtime = {
+    accelerator: runtimePins.runtime.accelerator,
+    containerd_artifact_sha256: runtimePins.runtime.containerd.artifact_sha256,
+    containerd_artifact_state: runtimePins.runtime.containerd.artifact_state,
+    containerd_version: runtimePins.runtime.containerd.version,
+    eks_node_ami_id: runtimePins.eks_node_image.ami_id,
+    eks_node_image_release: runtimePins.eks_node_image.release,
+    eks_node_kernel_release: runtimePins.eks_node_image.kernel_release,
+    exact_runtime_artifact_closure_satisfied: true,
+    kata_archive_sha256: runtimePins.runtime.kata.archive_sha256,
+    kata_version: runtimePins.runtime.kata.version,
+    node_image_state: runtimePins.eks_node_image.pin_state,
+    qemu_artifact_sha256: runtimePins.runtime.qemu.artifact_sha256,
+    qemu_artifact_state: runtimePins.runtime.qemu.artifact_state,
+    qemu_version: runtimePins.runtime.qemu.version,
+    runc_fallback: runtimePins.runtime.runc_fallback,
+    tcg_fallback: runtimePins.runtime.tcg_fallback,
+  };
   value.campaign_proposal.resource_graph.classes = STAGE4_PROPOSED_RESOURCE_GRAPH.map(
     ([resource_class, maximum_count, resource_type, size_gib_each]) => ({
       maximum_count,
@@ -401,6 +456,9 @@ function regeneratePackage(): void {
     render_sha256: hash("docs/security-evidence/stage4-offline-readiness-artifacts/notes-render.yaml"),
     repeated_render_sha256: hash("docs/security-evidence/stage4-offline-readiness-artifacts/notes-render-repeat.yaml"),
     runtime_pins_sha256: hash("docs/security-evidence/stage4-offline-readiness-artifacts/runtime-pins.json"),
+    authenticated_runtime_artifacts_sha256: hash(
+      "docs/security-evidence/stage4-offline-readiness-artifacts/authenticated-runtime-artifacts.json",
+    ),
     schema_inventory_sha256: hash("docs/security-evidence/stage4-offline-readiness-artifacts/schema-inventory.json"),
     source_inventory_sha256: hash("docs/security-evidence/stage4-offline-readiness-artifacts/source-inventory.json"),
     values_sha256: hash("test/fixtures/helm/stage4-notes-source-shapes-valid.yaml"),
@@ -415,6 +473,9 @@ if (process.argv.length !== 2 || realpathSync(process.argv[1] ?? "") !== realpat
 }
 regenerateReceipt();
 regenerateSchemaInventory();
+regenerateRuntimeArtifactEvidence();
+// Normalize source-derived package semantics before schema-registry checks, then bind final generated artifacts below.
+regeneratePackage();
 regenerateSourceAndLocalValidation();
 rewriteClassifierAnchors();
 const expectedLocalNormalized = stage4NormalizedLocalValidationSha256(

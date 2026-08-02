@@ -77,10 +77,17 @@
           "kata_version": "3.32.0",
           "kata_archive_sha256": "1449ecea50bd91fa73a94648db195d18950fe869ba4b1f12d05f55f1fa7c1b01",
           "containerd_version": "2.2.1",
-          "qemu_version": "8.2.2",
+          "qemu_version": "11.0.1",
           "accelerator": "kvm",
           "allow_tcg_fallback": false,
-          "allow_runc_fallback": false
+          "allow_runc_fallback": false,
+          "containerd_artifact_sha256": "af3e82bac6abed58d45956c653244aa2be583359a9753614278ef652012f2883",
+          "qemu_provenance": "kata-bundled-release-member",
+          "qemu_member_path": "opt/kata/bin/qemu-system-x86_64",
+          "qemu_artifact_sha256": "1e4968d9cce98c7cba8f9e3488236cba56993d9747f268d03b0284f3df2b012d",
+          "qemu_config_sha256": "7ecd072a35da55f5abc76d604a610cf3f2d543c7de0cefc4d1a81028facd2cae",
+          "guest_kernel_version": "6.18.35",
+          "guest_kernel_sha256": "43701715ae2885f936bbe5c66a2de7c14dc51de7d19412d04833e4bbcf205bd0"
         }
       }
     },
@@ -311,23 +318,45 @@
     "exactNodeImage": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["pin_state", "ami_id", "release", "kernel_release", "reason_code"],
+      "required": [
+        "pin_state",
+        "kubernetes_minor",
+        "ami_type",
+        "public_release_tag",
+        "public_release_commit",
+        "public_release_url",
+        "ami_name",
+        "release",
+        "source_ami_name",
+        "public_kernel_package",
+        "baked_containerd_package",
+        "selected_containerd_override_required",
+        "region",
+        "ami_id",
+        "kernel_release",
+        "reason_code"
+      ],
       "properties": {
-        "pin_state": {
-          "const": "unresolved"
+        "pin_state": { "const": "public-candidate" },
+        "kubernetes_minor": { "const": "1.35" },
+        "ami_type": { "const": "AL2023_x86_64_STANDARD" },
+        "public_release_tag": { "const": "v20260728" },
+        "public_release_commit": { "const": "80b4c870f33069dadf27e075f184c06cccfc7999" },
+        "public_release_url": {
+          "const": "https://github.com/awslabs/amazon-eks-ami/releases/tag/v20260728"
         },
-        "ami_id": {
-          "type": "null"
+        "ami_name": { "const": "amazon-eks-node-al2023-x86_64-standard-1.35-v20260728" },
+        "release": { "const": "1.35.6-20260728" },
+        "source_ami_name": {
+          "const": "al2023-ami-minimal-2023.12.20260727.0-kernel-6.12-x86_64"
         },
-        "release": {
-          "type": "null"
-        },
-        "kernel_release": {
-          "type": "null"
-        },
-        "reason_code": {
-          "const": "EKS_NODE_IMAGE_PIN_NOT_RECORDED"
-        }
+        "public_kernel_package": { "const": "6.12.94-123.192.amzn2023" },
+        "baked_containerd_package": { "const": "2.2.5-1.amzn2023.0.1" },
+        "selected_containerd_override_required": { "const": true },
+        "region": { "const": "us-east-1" },
+        "ami_id": { "type": "null" },
+        "kernel_release": { "type": "null" },
+        "reason_code": { "const": "EKS_AMI_ID_AND_RUNNING_KERNEL_REQUIRE_AWS_OBSERVATION" }
       }
     }
   }

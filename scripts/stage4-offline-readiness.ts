@@ -6,7 +6,7 @@ import { capturePrivateBytes, intrinsicByteLength } from "./private-bytes.ts";
 
 const require = createRequire(import.meta.url);
 const Ajv2020 = require("ajv/dist/2020.js") as new (options?: Options) => AjvCore;
-const packageSchema = require("../schemas/stage4-offline-readiness-package-v1.json") as object;
+const packageSchema = require("../schemas/stage4-offline-readiness-package-v2.json") as object;
 
 export const STAGE4_READINESS_BLOCKERS = Object.freeze([
   "ISSUE_42_OPEN",
@@ -18,8 +18,6 @@ export const STAGE4_READINESS_BLOCKERS = Object.freeze([
   "CAMPAIGN_ENVELOPE_AND_APPROVAL_ABSENT",
   "NO_EXECUTABLE_PROVIDER_ROUTE",
   "RELEASE_IMAGE_SET_ABSENT",
-  "CONTAINERD_ARTIFACT_IDENTITY_UNRESOLVED",
-  "QEMU_ARTIFACT_IDENTITY_UNRESOLVED",
 ] as const);
 
 export const STAGE4_READINESS_ARTIFACT_KEYS = Object.freeze([
@@ -32,6 +30,7 @@ export const STAGE4_READINESS_ARTIFACT_KEYS = Object.freeze([
   "imageLock",
   "nicContract",
   "runtimePins",
+  "authenticatedRuntimeArtifacts",
   "schemaInventory",
   "localValidation",
 ] as const);
@@ -47,6 +46,7 @@ export const STAGE4_READINESS_BYTE_LIMITS = Object.freeze({
   imageLock: 16 * 1024,
   nicContract: 128 * 1024,
   runtimePins: 16 * 1024,
+  authenticatedRuntimeArtifacts: 64 * 1024,
   schemaInventory: 256 * 1024,
   localValidation: 128 * 1024,
   aggregateArtifacts: 1024 * 1024,
@@ -63,9 +63,11 @@ export type Stage4ReadinessReasonCode =
   | "STAGE4_READINESS_BINDING_ROOT_MISMATCH";
 
 export type Stage4OfflineReadinessVerdict = Readonly<{
-  version: "cogs.stage4-offline-readiness-verdict/v1";
+  version: "cogs.stage4-offline-readiness-verdict/v2";
   authority: "local-static-stage4-readiness-classifier";
   local_preparation_complete: boolean;
+  candidate_artifact_closure_complete: boolean;
+  selected_runtime_artifacts_authenticated: boolean;
   local_preparation_scope: "bounded-package-assembly-and-local-validation-only";
   trusted_render_preparation_complete: boolean;
   exact_image_runtime_closure_satisfied: false;
@@ -115,6 +117,7 @@ const DIGEST_FIELDS: Readonly<Record<Stage4ReadinessArtifactKey, string>> = Obje
   imageLock: "image_lock_sha256",
   nicContract: "nic_contract_sha256",
   runtimePins: "runtime_pins_sha256",
+  authenticatedRuntimeArtifacts: "authenticated_runtime_artifacts_sha256",
   schemaInventory: "schema_inventory_sha256",
   localValidation: "local_validation_sha256",
 });
@@ -211,15 +214,16 @@ const EXPECTED_IMAGE_REFERENCES = Object.freeze({
 export const STAGE4_READINESS_EXPECTED_ARTIFACTS = Object.freeze({
   chartInventory: "a3801a32d9f1a59864bd027aebf44554b087911c7d4a4486e7bcda697ff68617",
   imageLock: "0b52deae8e9d24458e52c4c178283d1c51819057d8ce867a865b0b7b96902389",
-  nicContract: "b9f50811706846373f1519bab10af0abf44df1c9957b713cb494cde55c724743",
+  nicContract: "9b61b547884b6baa081974242171885f92c7d756224bc181fe6e78c965c1fa9a",
   render: "60f73b0e5caa843c4db9431c63cdc13eada9088d6da16c974ef127c480235710",
   repeatedRender: "60f73b0e5caa843c4db9431c63cdc13eada9088d6da16c974ef127c480235710",
-  runtimePins: "14fdacff04e1db62ec733e7696d104826c73aa87764406a5625d2a13265219f0",
+  runtimePins: "1e683ef6513f9f86f7eaead0fd64d949f037afd06043882eb1b6514aa5c4a145",
+  authenticatedRuntimeArtifacts: "e559ef8356b156b853fea4dde2db7150d9ac4d1cc45bf03482495fec92bf1faa",
   values: "e63a0fadebe16637cc97b21adeeb4ecf33efa8e76a1469e6008c7f7ed4fbb58f",
-  localValidationNormalized: "33f83c6309aa0bd0392f17aa09dbb152576e85f98a410d9f886137cac4a5cddb",
+  localValidationNormalized: "8a1c6fb0563cbe2f72bb4f7beaae00e4d830d47bfd5672d8762ef6c3661b9e15",
   renderReceipt: "b9634997067adef5816aac496c26acbdc1b2c6fc20fa0112f38efd6879e1f85b",
-  schemaInventory: "62c4baef48de5669513b3aa0f90401a94f6fa7f1d3398005d9cbb8213026fd43",
-  sourceInventoryNormalized: "a73e33e8767b003a2038bf6bd887833f6b3c80455f14e883eaf17a54f49c052e",
+  schemaInventory: "3734b1804f0173ce06835f1204f55134020ea0bf60d011bba8dc2844bca3040b",
+  sourceInventoryNormalized: "095edf9a74b89a4caf66de08d2fb4b94b78c63277959cd5604d2c0ad79ca764f",
 });
 /* stage4-readiness-anchor-end */
 
@@ -408,6 +412,7 @@ function exactArtifactSemantics(value: ReadinessPackage, artifacts: ArtifactCopi
     ["imageLock", STAGE4_READINESS_EXPECTED_ARTIFACTS.imageLock],
     ["nicContract", STAGE4_READINESS_EXPECTED_ARTIFACTS.nicContract],
     ["runtimePins", STAGE4_READINESS_EXPECTED_ARTIFACTS.runtimePins],
+    ["authenticatedRuntimeArtifacts", STAGE4_READINESS_EXPECTED_ARTIFACTS.authenticatedRuntimeArtifacts],
     ["schemaInventory", STAGE4_READINESS_EXPECTED_ARTIFACTS.schemaInventory],
   ];
   if (exactRaw.some(([key, expected]) => stage4OfflineReadinessSha256(artifacts[key]) !== expected)) return false;
@@ -438,6 +443,10 @@ function exactArtifactSemantics(value: ReadinessPackage, artifacts: ArtifactCopi
     ["docs/security-evidence/stage4-offline-readiness-artifacts/notes-render.yaml", "render"],
     ["docs/security-evidence/stage4-offline-readiness-artifacts/render-preparation-receipt.json", "renderReceipt"],
     ["docs/security-evidence/stage4-offline-readiness-artifacts/runtime-pins.json", "runtimePins"],
+    [
+      "docs/security-evidence/stage4-offline-readiness-artifacts/authenticated-runtime-artifacts.json",
+      "authenticatedRuntimeArtifacts",
+    ],
     ["docs/security-evidence/stage4-offline-readiness-artifacts/schema-inventory.json", "schemaInventory"],
     ["deploy/nic/stage4-sandbox-node-group-contract.json", "nicContract"],
     ["test/fixtures/helm/stage4-notes-source-shapes-valid.yaml", "values"],
@@ -528,7 +537,11 @@ function exactArtifactSemantics(value: ReadinessPackage, artifacts: ArtifactCopi
     packageRuntime === null ||
     runtimeRecord === null ||
     stringProperty(runtimeRecord.containerd, "version") !== packageRuntime.containerd_version ||
+    stringProperty(runtimeRecord.containerd, "artifact_sha256") !== packageRuntime.containerd_artifact_sha256 ||
+    stringProperty(runtimeRecord.containerd, "artifact_state") !== packageRuntime.containerd_artifact_state ||
     stringProperty(runtimeRecord.qemu, "version") !== packageRuntime.qemu_version ||
+    stringProperty(runtimeRecord.qemu, "artifact_sha256") !== packageRuntime.qemu_artifact_sha256 ||
+    stringProperty(runtimeRecord.qemu, "artifact_state") !== packageRuntime.qemu_artifact_state ||
     stringProperty(runtimeRecord.kata, "archive_sha256") !== packageRuntime.kata_archive_sha256 ||
     record(runtime?.eks_node_image)?.ami_id !== packageRuntime.eks_node_ami_id ||
     record(runtime?.eks_node_image)?.release !== packageRuntime.eks_node_image_release ||
@@ -545,9 +558,11 @@ function makeVerdict(
 ): Stage4OfflineReadinessVerdict {
   const complete = reasonCode === "STAGE4_LOCAL_PREPARATION_COMPLETE_CAMPAIGN_BLOCKED";
   return Object.freeze({
-    version: "cogs.stage4-offline-readiness-verdict/v1",
+    version: "cogs.stage4-offline-readiness-verdict/v2",
     authority: "local-static-stage4-readiness-classifier",
     local_preparation_complete: complete,
+    candidate_artifact_closure_complete: complete,
+    selected_runtime_artifacts_authenticated: complete,
     local_preparation_scope: "bounded-package-assembly-and-local-validation-only",
     trusted_render_preparation_complete: complete,
     exact_image_runtime_closure_satisfied: false,
