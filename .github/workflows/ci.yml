@@ -64,6 +64,8 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      - { name: Build production worker import closure, run: "npm run build" }
+
       - name: Unit, hostile-canary, fake-model, and JSONL tests
         env:
           PI_OFFLINE: "1"
@@ -509,27 +511,13 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with: { ref: "${{ needs.native-qualification-eligibility.outputs.reviewed_sha }}", persist-credentials: false }
       - name: Require every native transaction and report lifecycle
-        env:
-          QUALITY_RESULT: "${{ needs.quality.result }}"
-          ELIGIBILITY_RESULT: "${{ needs.native-qualification-eligibility.result }}"
-          A_RESULT: "${{ needs.native-qualification-a.result }}"
-          B_RESULT: "${{ needs.native-qualification-b.result }}"
-          C_RESULT: "${{ needs.native-qualification-c.result }}"
-          D_RESULT: "${{ needs.native-qualification-d.result }}"
-          E_RESULT: "${{ needs.native-qualification-e.result }}"
-          INTEGRATION_RESULT: "${{ needs.native-closure-integration.result }}"
-          A_UPLOAD: "${{ needs.native-qualification-a.outputs.upload }}"
-          A_CLEANUP: "${{ needs.native-qualification-a.outputs.cleanup }}"
-          B_UPLOAD: "${{ needs.native-qualification-b.outputs.upload }}"
-          B_CLEANUP: "${{ needs.native-qualification-b.outputs.cleanup }}"
-          C_UPLOAD: "${{ needs.native-qualification-c.outputs.upload }}"
-          C_CLEANUP: "${{ needs.native-qualification-c.outputs.cleanup }}"
-          D_UPLOAD: "${{ needs.native-qualification-d.outputs.upload }}"
-          D_CLEANUP: "${{ needs.native-qualification-d.outputs.cleanup }}"
-          E_UPLOAD: "${{ needs.native-qualification-e.outputs.upload }}"
-          E_CLEANUP: "${{ needs.native-qualification-e.outputs.cleanup }}"
-          INTEGRATION_UPLOAD: "${{ needs.native-closure-integration.outputs.upload }}"
-          INTEGRATION_CLEANUP: "${{ needs.native-closure-integration.outputs.cleanup }}"
+        env: { QUALITY_RESULT: "${{ needs.quality.result }}", ELIGIBILITY_RESULT: "${{ needs.native-qualification-eligibility.result }}",
+          A_RESULT: "${{ needs.native-qualification-a.result }}", B_RESULT: "${{ needs.native-qualification-b.result }}", C_RESULT: "${{ needs.native-qualification-c.result }}",
+          D_RESULT: "${{ needs.native-qualification-d.result }}", E_RESULT: "${{ needs.native-qualification-e.result }}", INTEGRATION_RESULT: "${{ needs.native-closure-integration.result }}",
+          A_UPLOAD: "${{ needs.native-qualification-a.outputs.upload }}", A_CLEANUP: "${{ needs.native-qualification-a.outputs.cleanup }}", B_UPLOAD: "${{ needs.native-qualification-b.outputs.upload }}",
+          B_CLEANUP: "${{ needs.native-qualification-b.outputs.cleanup }}", C_UPLOAD: "${{ needs.native-qualification-c.outputs.upload }}", C_CLEANUP: "${{ needs.native-qualification-c.outputs.cleanup }}",
+          D_UPLOAD: "${{ needs.native-qualification-d.outputs.upload }}", D_CLEANUP: "${{ needs.native-qualification-d.outputs.cleanup }}", E_UPLOAD: "${{ needs.native-qualification-e.outputs.upload }}",
+          E_CLEANUP: "${{ needs.native-qualification-e.outputs.cleanup }}", INTEGRATION_UPLOAD: "${{ needs.native-closure-integration.outputs.upload }}", INTEGRATION_CLEANUP: "${{ needs.native-closure-integration.outputs.cleanup }}" }
         run: |
           /usr/bin/env -i LC_ALL=C PYTHONCOERCECLOCALE=0 QUALITY_RESULT="$QUALITY_RESULT" ELIGIBILITY_RESULT="$ELIGIBILITY_RESULT" \
             A_RESULT="$A_RESULT" B_RESULT="$B_RESULT" C_RESULT="$C_RESULT" D_RESULT="$D_RESULT" E_RESULT="$E_RESULT" \
@@ -556,32 +544,29 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   images:
-    name: Images, vulnerabilities, and SBOMs
+    name: Production image candidates, vulnerabilities, and SBOMs
     runs-on: ubuntu-24.04
     timeout-minutes: 35
-    env:
-      ENVOY_IMAGE: envoyproxy/envoy:v1.38.3@sha256:5f7c43e1147412fdb3af578c651c67478a3df818eae89d2261e707e06c209cdb
-      OPENBAO_IMAGE: quay.io/openbao/openbao:2.6.1@sha256:5b2486ab0fb90bbc788cc345b0a08616dfb375873ee8be5df3a2fd4d378a67e0
+    env: { ENVOY_IMAGE: "envoyproxy/envoy:v1.38.3@sha256:5f7c43e1147412fdb3af578c651c67478a3df818eae89d2261e707e06c209cdb",
+      OPENBAO_IMAGE: "quay.io/openbao/openbao:2.6.1@sha256:5b2486ab0fb90bbc788cc345b0a08616dfb375873ee8be5df3a2fd4d378a67e0" }
     steps:
       - name: Check out source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
 
-      - name: Build worker scaffold
-        run: docker build --pull=false --tag cogs-worker:ci --file images/worker/Dockerfile .
+      - { name: Build production worker release candidate, run: "docker build --platform linux/amd64 --pull=false --tag cogs-worker:ci --file images/worker/Dockerfile ." }
 
-      - name: Build sandbox scaffold
-        run: docker build --pull=false --tag cogs-sandbox:ci --file images/sandbox/Dockerfile .
+      - name: Verify worker runtime versions, ABI, and emitted import boundary
+        run: test "$(docker image inspect --format '{{.Architecture}}' cogs-worker:ci)" = amd64 && test "$(docker run --rm --entrypoint /nodejs/bin/node cogs-worker:ci --version)" = v22.22.2 && docker run --rm --entrypoint /usr/local/bin/envoy cogs-worker:ci --version | grep -F '/1.38.3/' && docker run --rm --entrypoint /nodejs/bin/node cogs-worker:ci --input-type=module --eval "await import('/opt/cogs/dist/src/main.js')"
 
-      - name: Build insecure-container test driver
-        run: docker build --pull=false --tag cogs-insecure-sandbox:ci --file dev/insecure-sandbox/Dockerfile .
+      - { name: Build production sandbox guest image, run: "docker build --pull=false --tag cogs-sandbox:ci --file images/sandbox/Dockerfile ." }
 
-      - name: Pull pinned selected proxy
-        run: docker pull "$ENVOY_IMAGE"
+      - { name: Build insecure-container test driver, run: "docker build --pull=false --tag cogs-insecure-sandbox:ci --file dev/insecure-sandbox/Dockerfile ." }
 
-      - name: Pull pinned OpenBao model-auth fixture
-        run: docker pull "$OPENBAO_IMAGE"
+      - { name: Pull pinned selected proxy, run: "docker pull \"$ENVOY_IMAGE\"" }
+
+      - { name: Pull pinned OpenBao model-auth fixture, run: "docker pull \"$OPENBAO_IMAGE\"" }
 
       - name: Scan worker image
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0

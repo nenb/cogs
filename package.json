@@ -28,6 +28,7 @@
     "lock:check": "tsx scripts/check-lock-integrity.ts",
     "licenses": "tsx scripts/check-licenses.ts",
     "audit": "tsx scripts/check-npm-audit.ts",
+    "build": "rm -rf dist && tsc --project tsconfig.build.json",
     "evidence:issue68": "tsx scripts/benchmark-issue68-checkpoints.ts",
     "readiness:regenerate": "node scripts/stage4-offline-readiness-regenerate.ts",
     "readiness:render:check": "node scripts/stage4-offline-render-preparation.ts",
