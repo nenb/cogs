@@ -82,10 +82,15 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     outputs:
-      worker_digest: ${{ steps.digests.outputs.worker_digest }}
-      sandbox_digest: ${{ steps.digests.outputs.sandbox_digest }}
+      assertion_size: ${{ steps.assertion-transport.outputs.assertion_size }}
+      assertion_sha256: ${{ steps.assertion-transport.outputs.assertion_sha256 }}
+      assertion_b64: ${{ steps.assertion-transport.outputs.assertion_b64 }}
     env:
       REVIEWED_SHA: ${{ needs.authority.outputs.reviewed_sha }}
+      DOCKER_BUILD_RECORD_UPLOAD: "false"
+      DOCKER_BUILD_SUMMARY: "false"
+      BUILDX_METADATA_PROVENANCE: max
+      ASSERTION_TRANSPORT_MAX_BYTES: "65536"
       WORKER_REPOSITORY: ghcr.io/nenb/cogs/worker
       SANDBOX_REPOSITORY: ghcr.io/nenb/cogs/sandbox
       BUILDX_VERSION: v0.29.1
@@ -120,7 +125,6 @@ jobs:
           export WORK="$RUNNER_TEMP/cogs-release-work"
           export CACHE="$RUNNER_TEMP/cogs-release-trivy-cache"
           export ASSERTION="$RUNNER_TEMP/cogs-release-image-set-assertion-staging"
-          export UPLOAD="$RUNNER_TEMP/cogs-release-image-set-assertion-upload"
           export COSIGN_HOME="$RUNNER_TEMP/cogs-release-cosign-home"
           export BUILDX_BUILDER="cogs-release-${{ github.run_id }}-${{ github.run_attempt }}"
           {
@@ -129,7 +133,6 @@ jobs:
             printf 'WORK=%s\n' "$WORK"
             printf 'CACHE=%s\n' "$CACHE"
             printf 'ASSERTION=%s\n' "$ASSERTION"
-            printf 'UPLOAD=%s\n' "$UPLOAD"
             printf 'COSIGN_HOME=%s\n' "$COSIGN_HOME"
             printf 'BUILDX_BUILDER=%s\n' "$BUILDX_BUILDER"
           } >> "$GITHUB_ENV"
@@ -141,7 +144,7 @@ jobs:
           if git remote get-url origin | grep -Eq '://[^/]*@'; then
             exit 1
           fi
-          mkdir -m 0700 "$DOCKER_CONFIG" "$CONTEXT" "$WORK" "$CACHE" "$ASSERTION" "$UPLOAD" "$COSIGN_HOME"
+          mkdir -m 0700 "$DOCKER_CONFIG" "$CONTEXT" "$WORK" "$CACHE" "$ASSERTION" "$COSIGN_HOME"
           response="$WORK/default-head.json"
           curl --fail --silent --show-error --proto '=https' --tlsv1.2 \
             --header 'Accept: application/vnd.github+json' \
@@ -162,7 +165,6 @@ jobs:
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version-file: .nvmrc
-          cache: npm
 
       - name: Install locked assertion-parser dependencies without lifecycle scripts
         run: npm ci --ignore-scripts
@@ -222,45 +224,50 @@ jobs:
             rm -f "$error"
           done
 
-      - name: Build and publish exact worker with attached BuildKit provenance
-        id: build-worker
-        uses: docker/build-push-action@4f58ea79222b3b9dc2c8bbdd6debcef730109a75 # v6.9.0
-        with:
-          context: ${{ runner.temp }}/cogs-release-context
-          file: ${{ runner.temp }}/cogs-release-context/images/worker/Dockerfile
-          platforms: linux/amd64
-          pull: true
-          no-cache: true
-          push: true
-          tags: ghcr.io/nenb/cogs/worker:candidate-${{ needs.authority.outputs.reviewed_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
-          provenance: mode=max
-          sbom: false
-
-      - name: Build and publish exact sandbox with attached BuildKit provenance
-        id: build-sandbox
-        uses: docker/build-push-action@4f58ea79222b3b9dc2c8bbdd6debcef730109a75 # v6.9.0
-        with:
-          context: ${{ runner.temp }}/cogs-release-context
-          file: ${{ runner.temp }}/cogs-release-context/images/sandbox/Dockerfile
-          platforms: linux/amd64
-          pull: true
-          no-cache: true
-          push: true
-          tags: ghcr.io/nenb/cogs/sandbox:candidate-${{ needs.authority.outputs.reviewed_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
-          provenance: mode=max
-          sbom: false
+      - name: Build and publish exact images with the pinned Buildx client and attached provenance
+        run: |
+          set -euo pipefail
+          umask 077
+          transport_tag="candidate-$REVIEWED_SHA-${{ github.run_id }}-${{ github.run_attempt }}"
+          for role in worker sandbox; do
+            repository_name="${role^^}_REPOSITORY"
+            repository=${!repository_name}
+            metadata="$WORK/$role.build-metadata.json"
+            case "$role" in
+              worker | sandbox) dockerfile="$CONTEXT/images/$role/Dockerfile" ;;
+              *) exit 1 ;;
+            esac
+            test ! -e "$metadata" && test ! -L "$metadata"
+            docker buildx build \
+              --builder "$BUILDX_BUILDER" \
+              --platform linux/amd64 \
+              --file "$dockerfile" \
+              --pull \
+              --no-cache \
+              --push \
+              --provenance=mode=max \
+              --sbom=false \
+              --tag "$repository:$transport_tag" \
+              --metadata-file "$metadata" \
+              "$CONTEXT"
+            test "$(stat -c '%u:%g:%a:%h:%F' "$metadata")" = \
+              "$(id -u):$(id -g):600:1:regular file"
+            jq -e '
+              type == "object" and
+              (."containerimage.digest" | type == "string" and test("^sha256:[0-9a-f]{64}$")) and
+              (."containerimage.descriptor".digest == ."containerimage.digest") and
+              (."buildx.build.provenance" | type == "object")' "$metadata" >/dev/null
+          done
 
       - name: Read back exact registry digests, platform manifests, and BuildKit provenance
-        env:
-          WORKER_DIGEST: ${{ steps.build-worker.outputs.digest }}
-          SANDBOX_DIGEST: ${{ steps.build-sandbox.outputs.digest }}
         run: |
           set -euo pipefail
           for role in worker sandbox; do
             repository_name="${role^^}_REPOSITORY"
-            digest_name="${role^^}_DIGEST"
             repository=${!repository_name}
-            digest=${!digest_name}
+            metadata="$WORK/$role.build-metadata.json"
+            digest=$(jq -er '."containerimage.digest"' "$metadata")
+            test "$digest" = "$(jq -er '."containerimage.descriptor".digest' "$metadata")"
             [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
             subject="$repository@$digest"
             candidate="$repository:candidate-$REVIEWED_SHA-${{ github.run_id }}-${{ github.run_attempt }}"
@@ -503,31 +510,30 @@ jobs:
             "$WORK/assertion-classification.json" >/dev/null
           test "$(find "$ASSERTION" -type f | wc -l | tr -d ' ')" = 1
 
-      - name: Expose exact registry digest outputs
-        id: digests
-        run: |
-          set -euo pipefail
-          worker_digest=$(cat "$WORK/worker.registry-digest")
-          sandbox_digest=$(cat "$WORK/sandbox.registry-digest")
-          [[ "$worker_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
-          [[ "$sandbox_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
-          printf 'worker_digest=%s\n' "$worker_digest" >> "$GITHUB_OUTPUT"
-          printf 'sandbox_digest=%s\n' "$sandbox_digest" >> "$GITHUB_OUTPUT"
-
-      - name: Preserve exactly one non-sensitive canonical assertion for upload
+      - name: Export only bounded canonical redacted assertion bytes and their integrity metadata
+        id: assertion-transport
         run: |
           set -euo pipefail
           source="$ASSERTION/release-image-set-assertion.canonical.json"
-          destination="$UPLOAD/release-image-set-assertion.canonical.json"
-          test ! -e "$destination" && test ! -L "$destination"
+          test ! -L "$source" && test -f "$source"
           test "$(find "$ASSERTION" -mindepth 1 -maxdepth 1 -type f ! -type l | wc -l | tr -d ' ')" = 1
           test "$(find "$ASSERTION" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')" = 1
-          test "$(stat -c '%u:%g:%a:%h:%s:%F' "$source")" = "$(id -u):$(id -g):600:1:$(stat -c '%s' "$source"):regular file"
-          mv -- "$source" "$destination"
-          test ! -e "$source" && test ! -L "$source"
-          test "$(find "$UPLOAD" -mindepth 1 -maxdepth 1 -type f ! -type l | wc -l | tr -d ' ')" = 1
-          test "$(find "$UPLOAD" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')" = 1
-          npx tsx scripts/release-image-set-assertion-cli.ts classify "$destination" >/dev/null
+          test "$(stat -c '%u:%g:%a:%h:%F' "$source")" = \
+            "$(id -u):$(id -g):600:1:regular file"
+          size=$(stat -c '%s' "$source")
+          [[ "$size" =~ ^[1-9][0-9]*$ ]]
+          test "$size" -le "$ASSERTION_TRANSPORT_MAX_BYTES"
+          sha256=$(sha256sum "$source" | awk '{print $1}')
+          [[ "$sha256" =~ ^[0-9a-f]{64}$ ]]
+          encoded=$(base64 -w 0 "$source")
+          expected_encoded_size=$((4 * ((size + 2) / 3)))
+          test "${#encoded}" -eq "$expected_encoded_size"
+          [[ "$encoded" =~ ^[A-Za-z0-9+/]+={0,2}$ ]]
+          {
+            printf 'assertion_size=%s\n' "$size"
+            printf 'assertion_sha256=%s\n' "$sha256"
+            printf 'assertion_b64=%s\n' "$encoded"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Remove and verify all credential, builder, cache, staging, and dependency state
         if: ${{ always() }}
@@ -539,18 +545,25 @@ jobs:
           WORK=${WORK:-"$RUNNER_TEMP/cogs-release-work"}
           CACHE=${CACHE:-"$RUNNER_TEMP/cogs-release-trivy-cache"}
           ASSERTION=${ASSERTION:-"$RUNNER_TEMP/cogs-release-image-set-assertion-staging"}
-          UPLOAD=${UPLOAD:-"$RUNNER_TEMP/cogs-release-image-set-assertion-upload"}
           COSIGN_HOME=${COSIGN_HOME:-"$RUNNER_TEMP/cogs-release-cosign-home"}
           BUILDX_BUILDER=${BUILDX_BUILDER:-"cogs-release-${{ github.run_id }}-${{ github.run_attempt }}"}
+          buildkit_node="buildx_buildkit_${BUILDX_BUILDER}0"
+          buildkit_state="${buildkit_node}_state"
           docker logout ghcr.io >/dev/null 2>&1 || status=1
-          if [[ ${BUILDX_CREATED:-false} == true ]]; then
+          if [[ ${BUILDX_CREATED:-false} == true ]] || docker buildx inspect "$BUILDX_BUILDER" >/dev/null 2>&1; then
             docker buildx rm "$BUILDX_BUILDER" >/dev/null 2>&1 || status=1
-            if docker buildx inspect "$BUILDX_BUILDER" >/dev/null 2>&1; then
-              printf 'Cleanup retained builder: %s\n' "$BUILDX_BUILDER" >&2
-              status=1
-            fi
-          elif docker buildx inspect "$BUILDX_BUILDER" >/dev/null 2>&1; then
-            docker buildx rm "$BUILDX_BUILDER" >/dev/null 2>&1 || status=1
+          fi
+          if docker buildx inspect "$BUILDX_BUILDER" >/dev/null 2>&1; then
+            printf 'Cleanup retained builder: %s\n' "$BUILDX_BUILDER" >&2
+            status=1
+          fi
+          if docker container inspect "$buildkit_node" >/dev/null 2>&1; then
+            printf 'Cleanup retained BuildKit container: %s\n' "$buildkit_node" >&2
+            status=1
+          fi
+          if docker volume inspect "$buildkit_state" >/dev/null 2>&1; then
+            printf 'Cleanup retained BuildKit state volume: %s\n' "$buildkit_state" >&2
+            status=1
           fi
           for image in "$BUILDKIT_IMAGE" "$SYFT_IMAGE" "$TRIVY_IMAGE" "$COSIGN_IMAGE"; do
             docker image rm "$image" >/dev/null 2>&1 || status=1
@@ -566,23 +579,48 @@ jobs:
               status=1
             fi
           done
-          upload_entries=$(find "$UPLOAD" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ') || status=1
-          if [[ ${upload_entries:-2} -gt 1 ]]; then
-            printf 'Cleanup found invalid upload staging contents\n' >&2
-            status=1
-          elif [[ ${upload_entries:-0} == 1 ]]; then
-            upload_file="$UPLOAD/release-image-set-assertion.canonical.json"
-            [[ ! -L "$upload_file" && -f "$upload_file" ]] || status=1
-            [[ "$(stat -c '%u:%g:%a:%h:%F' "$upload_file" 2>/dev/null)" == "$(id -u):$(id -g):600:1:regular file" ]] || status=1
-          fi
           exit "$status"
 
-      - name: Upload the sole canonical successful image-set assertion record
+  assertion-upload:
+    name: Upload finalized image-set assertion
+    needs: [publish]
+    if: ${{ needs.publish.result == 'success' }}
+    permissions: {}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - name: Reconstruct and verify the bounded canonical bytes
+        env:
+          ASSERTION_B64: ${{ needs.publish.outputs.assertion_b64 }}
+          ASSERTION_SHA256: ${{ needs.publish.outputs.assertion_sha256 }}
+          ASSERTION_SIZE: ${{ needs.publish.outputs.assertion_size }}
+        run: |
+          set -euo pipefail
+          umask 077
+          [[ "$ASSERTION_SIZE" =~ ^[1-9][0-9]*$ ]]
+          test "$ASSERTION_SIZE" -le 65536
+          [[ "$ASSERTION_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$ASSERTION_B64" =~ ^[A-Za-z0-9+/]+={0,2}$ ]]
+          expected_encoded_size=$((4 * ((ASSERTION_SIZE + 2) / 3)))
+          test "${#ASSERTION_B64}" -eq "$expected_encoded_size"
+          directory="$RUNNER_TEMP/release-image-set-assertion"
+          file="$directory/release-image-set-assertion.canonical.json"
+          install -d -m 0700 "$directory"
+          test ! -e "$file" && test ! -L "$file"
+          printf '%s' "$ASSERTION_B64" | base64 --decode > "$file"
+          test "$(stat -c '%u:%g:%a:%h:%s:%F' "$file")" = \
+            "$(id -u):$(id -g):600:1:${ASSERTION_SIZE}:regular file"
+          test "$(sha256sum "$file" | awk '{print $1}')" = "$ASSERTION_SHA256"
+          test "$(find "$directory" -mindepth 1 -maxdepth 1 -type f ! -type l | wc -l | tr -d ' ')" = 1
+          test "$(find "$directory" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')" = 1
+
+      - name: Upload the sole finalized image-set assertion
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: release-image-set-assertion-${{ needs.authority.outputs.reviewed_sha }}-${{ github.run_id }}
-          path: ${{ runner.temp }}/cogs-release-image-set-assertion-upload/release-image-set-assertion.canonical.json
+          name: release-image-set-assertion-${{ github.sha }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/release-image-set-assertion/release-image-set-assertion.canonical.json
           if-no-files-found: error
           retention-days: 30
           compression-level: 0
           include-hidden-files: false
+          overwrite: false
