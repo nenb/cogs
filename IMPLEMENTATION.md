@@ -160,8 +160,8 @@ The staff engineer should pin exact versions during Stage 0 rather than using fl
 
 ### Runtime dependencies
 
-- Ubuntu or Debian sandbox image;
-- OpenSSH server;
+- Ubuntu or Debian sandbox image with only the current Bash, Git, OpenSSH/key-validation, OpenSSL/CA, and Python input-capture package roots;
+- OpenSSH server with internal SFTP;
 - Kata Containers with QEMU/KVM for the reference profile;
 - proxy selected by Stage 1 conformance testing;
 - OpenBao;
@@ -175,7 +175,7 @@ The conformance harness may use a language different from Cogs if that materiall
 
 - a test controller using pytest or the Node test runner;
 - a small static Go guest probe for TCP, UDP, DNS, HTTP/1.1, HTTP/2, and malformed requests;
-- real Git, Python/pip, npm, Java, curl, and language SDKs for compatibility tests;
+- real Git, Python/pip clients, npm/Node, Java, curl, and language SDKs in a labelled insecure conformance image for compatibility tests;
 - an upstream fixture server that supports TLS and HTTP/2 and never reflects injected credentials.
 
 Test code is not part of the Cogs line-count budget. Consistent with `DESIGN.md`, implementation planning should expect approximately 3,000–5,000 production lines after history, deduplication, broker, preset, revocation, and proxy-capability work. Crossing 5,000 production lines triggers a scope and architecture ADR rather than pressure to compress security-sensitive code.

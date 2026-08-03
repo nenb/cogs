@@ -198,7 +198,7 @@ One active session consists of two trust domains:
 2. **Untrusted sandbox resource**
    - one VM boundary;
    - one Ubuntu/Debian-based environment;
-   - OpenSSH server and ordinary Unix tooling;
+   - OpenSSH server and the minimal ordinary Unix tooling required by the production shell, Git, trust, and input-capture contracts;
    - selected persistent workspace;
    - read-only skill snapshots;
    - ephemeral root filesystem and `/tmp`.
@@ -486,7 +486,7 @@ The sandbox is configured with:
 
 Host CNI policy or a provider firewall permits only the assigned SSH and proxy paths. Port-scoped policy permits the sandbox to reach the proxy listener but not the Cogs API or proxy administration port even when they share a Pod. The proxy capability is bound to the same session/source policy and stripped before upstream forwarding. Guest root can read and use this capability, but it grants only that session's already-approved routes and is not an upstream credential.
 
-Ignoring proxy environment variables causes connection failure rather than bypass. Some clients resolve target hosts before issuing CONNECT even when configured with a proxy. Phase 0 tests the required Java, Python, Node, Git, and package-manager clients. If compatibility requires DNS, the deployment adds an external resolver that answers only exact allowlisted A/AAAA names and rejects arbitrary names, subdomains, and other query types; unrestricted DNS is not enabled.
+Ignoring proxy environment variables causes connection failure rather than bypass. Some clients resolve target hosts before issuing CONNECT even when configured with a proxy. Phase 0 tests Java, Python, Node, Git, and package-manager clients in the labelled insecure conformance profile; compatibility clients and network probes are not production guest requirements. If compatibility requires DNS, the deployment adds an external resolver that answers only exact allowlisted A/AAAA names and rejects arbitrary names, subdomains, and other query types; unrestricted DNS is not enabled.
 
 ### 11.2 MVP proxy construction
 
@@ -934,7 +934,8 @@ The guest image adds configuration, not an agent framework:
 - Ubuntu or Debian base;
 - OpenSSH server;
 - CA public certificate and trust-store environment variables;
-- standard development tools selected by the platform image;
+- the minimal production tool roots selected by the platform image: Bash, Git, OpenSSH/key validation, OpenSSL/CA trust, and Python input capture;
+- compatibility clients and network/bypass probes only in a separately labelled insecure conformance image;
 - no Cogs-specific privileged daemon.
 
 Targets, excluding tests, generated schemas, Helm templates, and vendored dependencies:

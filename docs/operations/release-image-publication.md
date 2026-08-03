@@ -30,6 +30,8 @@ Buildx is manually installed as exact `v0.29.1` Linux/amd64 bytes with SHA-256 `
 
 Each build publishes one direct `linux/amd64` child plus BuildKit `mode=max` provenance. The metadata-derived digest must equal the metadata descriptor digest. Registry readback then requires that digest to hash the exact top-level index, exactly one variant-free `linux/amd64` child, exactly one BuildKit attestation manifest referring to that child, and decoded BuildKit v1 provenance reporting `linux/amd64`.
 
+The production sandbox fixes package policy `debian-trixie-snapshots-20260713-20260731-production-core-v2`: Bash, CA certificates, Git, OpenSSH client/key validation and server/internal SFTP, OpenSSL, and Python input capture are the only direct package roots. Node/npm, Java, curl, Python client/pip, DNS/firewall/socket probes, and other conformance tooling remain in the separately labelled `insecure-container` / `functional-only` image and cannot enter this publication subject without failing static package-policy checks.
+
 ## SBOM, scanner, and signature assertions
 
 Digest-pinned Syft generates SPDX JSON from each exact digest. Cosign attaches it as an `spdxjson` attestation, signs each exact digest, and verifies the workflow certificate identity and GitHub Actions OIDC issuer.

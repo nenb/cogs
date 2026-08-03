@@ -150,8 +150,36 @@ assert.ok(
   "insecure-container must install the exact fixed Expat package",
 );
 for (const label of [
+  'dev.cogs.profile="insecure-container"',
+  'dev.cogs.authority="functional-only"',
+  'dev.cogs.package-policy="debian-trixie-snapshots-20260713-20260731-insecure-conformance-v1"',
+]) {
+  assert.ok(insecureContainerDockerfile.includes(label), `insecure conformance image must retain label ${label}`);
+}
+for (const conformanceRoot of [
+  "curl",
+  "dnsutils",
+  "iproute2",
+  "iptables",
+  "netcat-openbsd",
+  "nftables",
+  "nodejs",
+  "npm",
+  "openjdk-21-jre-headless",
+  "python3-httpx",
+  "python3-pip",
+  "python3-requests",
+  "socat",
+]) {
+  assert.match(
+    insecureContainerDockerfile,
+    new RegExp(`^\\s+${conformanceRoot}(?:=[^\\s]+)?\\s+\\\\$`, "mu"),
+    `insecure conformance image must retain ${conformanceRoot}`,
+  );
+}
+for (const label of [
   'dev.cogs.profile="kata-sandbox-guest"',
-  'dev.cogs.package-policy="debian-trixie-snapshots-20260713-20260731-v1"',
+  'dev.cogs.package-policy="debian-trixie-snapshots-20260713-20260731-production-core-v2"',
   'dev.cogs.isolation-authority="external-runtime-required"',
   'dev.cogs.credentials="proxy-capability-only-no-upstream-secrets"',
   'dev.cogs.skills-inputs="external-read-only"',
@@ -169,6 +197,29 @@ assert.ok(
     sandboxDockerfile.includes("snapshot.debian.org/archive/debian-security/20260731T000000Z/"),
   "sandbox image must use the reviewed immutable Debian snapshots",
 );
+for (const forbiddenProductionRoot of [
+  "bind9-dnsutils",
+  "curl",
+  "iproute2",
+  "iptables",
+  "libexpat1",
+  "netcat-openbsd",
+  "nftables",
+  "nodejs",
+  "npm",
+  "openjdk-21-jre-headless",
+  "openssh-sftp-server",
+  "python3-httpx",
+  "python3-pip",
+  "python3-requests",
+  "socat",
+]) {
+  assert.doesNotMatch(
+    sandboxDockerfile,
+    new RegExp(`^\\s+${forbiddenProductionRoot}(?:=[^\\s]+)?\\s+\\\\$`, "mu"),
+    `production sandbox must not request ${forbiddenProductionRoot}`,
+  );
+}
 assert.ok(openBaoIgnore.includes("review deadline 2026-08-15"), "OpenBao CVE ignores must carry their review deadline");
 for (const fixedRuntimeFinding of ["CVE-2026-39822", "CVE-2026-56852"]) {
   assert.equal(

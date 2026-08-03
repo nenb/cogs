@@ -52,7 +52,8 @@ COPY dev/insecure-sandbox/entrypoint.sh /usr/local/bin/cogs-insecure-entrypoint
 LABEL org.opencontainers.image.source="https://github.com/nenb/cogs" \
       org.opencontainers.image.licenses="Apache-2.0" \
       dev.cogs.profile="insecure-container" \
-      dev.cogs.authority="functional-only"
+      dev.cogs.authority="functional-only" \
+      dev.cogs.package-policy="debian-trixie-snapshots-20260713-20260731-insecure-conformance-v1"
 
 EXPOSE 2222
 ENTRYPOINT ["/usr/local/bin/cogs-insecure-entrypoint"]
