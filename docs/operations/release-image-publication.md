@@ -49,7 +49,7 @@ The production sandbox fixes package policy `ubuntu-noble-snapshot-20260801-prod
 
 ## SBOM, scanner, and signature assertions
 
-Digest-pinned Syft generates SPDX JSON from each exact digest. Cosign attaches it as an `spdxjson` attestation, signs each exact digest, and verifies the workflow certificate identity and GitHub Actions OIDC issuer.
+Digest-pinned Syft generates SPDX JSON from each exact digest. Cosign attaches it as an `spdxjson` attestation, signs each exact digest, and verifies the workflow certificate identity and GitHub Actions OIDC issuer. Pinned Cosign v3 verification reports the image signature and the signed SPDX attachment together; the validator requires exactly one `https://sigstore.dev/cosign/sign/v1` record and one `https://spdx.dev/Document` record, in either order, both bound to the exact digest reference. The separate attestation verifier then requires exactly one valid in-toto SPDX statement for the same repository and digest.
 
 Trivy scans each exact digest with every severity and `ignore_unfixed=false`. Before counting findings the workflow requires:
 
