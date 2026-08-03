@@ -25,6 +25,7 @@
     "images:check": "tsx scripts/check-image-pins.ts",
     "release-pins:check": "tsx scripts/release-image-set-pins-cli.ts check",
     "release-pins:regenerate": "tsx scripts/release-image-set-pins-cli.ts write",
+    "images:release:preflight": "tsx scripts/release-local-preflight-cli.ts",
     "images:local:verify": "tsx scripts/local-image-artifacts-cli.ts",
     "images:local:assemble": "tsx scripts/assemble-local-image-artifact-package.ts",
     "lock:check": "tsx scripts/check-lock-integrity.ts",
@@ -34,7 +35,7 @@
     "evidence:issue68": "tsx scripts/benchmark-issue68-checkpoints.ts",
     "readiness:regenerate": "node scripts/stage4-offline-readiness-regenerate.ts",
     "readiness:render:check": "node scripts/stage4-offline-render-preparation.ts",
-    "readiness:production:check": "tsx --test --test-concurrency=1 test/api-server.test.ts test/local-image-artifacts.test.ts test/openbao-workload-identity.test.ts test/production-compose.test.ts test/production-sandbox-image.test.ts test/production-worker-image.test.ts test/release-image-set-assertion.test.ts test/runtime-config.test.ts test/runtime-trusted-files.test.ts test/stage4-nic-sandbox-node-group-v2.test.ts test/stage4-static-manifest-package.test.ts",
+    "readiness:production:check": "tsx --test --test-concurrency=1 test/api-server.test.ts test/local-image-artifacts.test.ts test/openbao-workload-identity.test.ts test/production-compose.test.ts test/production-sandbox-image.test.ts test/production-worker-image.test.ts test/release-image-set-assertion.test.ts test/release-local-preflight.test.ts test/runtime-config.test.ts test/runtime-trusted-files.test.ts test/stage4-nic-sandbox-node-group-v2.test.ts test/stage4-static-manifest-package.test.ts",
     "readiness:source:check": "node scripts/stage4-offline-source-inventory.ts",
     "stage4:manifests": "node scripts/stage4-static-manifest-package.ts",
     "launcher": "tsx dev/launcher/main.ts"

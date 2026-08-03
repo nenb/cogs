@@ -10,7 +10,7 @@
 
 **Readiness status:** successful-workflow assertions only; neither transport tags nor the assertion artifact promote readiness or release eligibility
 
-The separate [local image artifact workflow](local-image-artifacts.md) remains nonpublishing, unsigned, and limited to `contents: read`.
+The separate [local image artifact workflow](local-image-artifacts.md) remains nonpublishing, unsigned, and limited to `contents: read`. The [local vulnerability preflight](release-local-vulnerability-preflight.md) can scan already-existing exact local subjects with this workflow's Trivy policy, but cannot establish publication, signature, readiness, or release truth.
 
 ## Dispatch and source authority
 
