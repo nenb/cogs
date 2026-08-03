@@ -160,7 +160,7 @@ The staff engineer should pin exact versions during Stage 0 rather than using fl
 
 ### Runtime dependencies
 
-- Ubuntu or Debian sandbox image with only the current Bash, Git, OpenSSH/key-validation, OpenSSL/CA, and Python input-capture package roots;
+- Ubuntu 24.04 LTS Linux/amd64 production sandbox fixed by ADR 0097 to the exact OCI index and signed `20260801T000000Z` Noble snapshot, with only the current Bash, Git, OpenSSH/key-validation, OpenSSL/CA, and Python input-capture package roots;
 - OpenSSH server with internal SFTP;
 - Kata Containers with QEMU/KVM for the reference profile;
 - proxy selected by Stage 1 conformance testing;

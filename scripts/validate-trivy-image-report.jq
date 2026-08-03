@@ -10,12 +10,20 @@ def valid_vulnerability:
   (.Severity == "UNKNOWN" or .Severity == "LOW" or .Severity == "MEDIUM" or .Severity == "HIGH" or .Severity == "CRITICAL") and
   ((has("FixedVersion") | not) or .FixedVersion == null or (.FixedVersion | type == "string"));
 
+def valid_package:
+  type == "object" and
+  (.ID | nonempty_string) and
+  (.Name | nonempty_string) and
+  (.Version | nonempty_string);
+
 def valid_result($os_family):
   type == "object" and
   (.Class == "os-pkgs" or .Class == "lang-pkgs") and
   (.Target | nonempty_string) and
   (.Type | nonempty_string) and
   (if .Class == "os-pkgs" then .Type == $os_family else true end) and
+  (.Packages | type == "array") and
+  all(.Packages[]; valid_package) and
   ((.Vulnerabilities == null) or (.Vulnerabilities | type == "array")) and
   all((.Vulnerabilities // [])[]; valid_vulnerability);
 
@@ -32,4 +40,4 @@ type == "object" and
 (.Metadata.OS.Family as $os_family |
   (.Results | type == "array" and length > 0) and
   all(.Results[]; valid_result($os_family)) and
-  any(.Results[]; .Class == "os-pkgs" and .Type == $os_family))
+  any(.Results[]; .Class == "os-pkgs" and .Type == $os_family and (.Packages | length > 0)))

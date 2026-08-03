@@ -179,7 +179,7 @@ for (const conformanceRoot of [
 }
 for (const label of [
   'dev.cogs.profile="kata-sandbox-guest"',
-  'dev.cogs.package-policy="debian-trixie-snapshots-20260713-20260731-production-core-v2"',
+  'dev.cogs.package-policy="ubuntu-noble-snapshot-20260801-production-core-v1"',
   'dev.cogs.isolation-authority="external-runtime-required"',
   'dev.cogs.credentials="proxy-capability-only-no-upstream-secrets"',
   'dev.cogs.skills-inputs="external-read-only"',
@@ -188,14 +188,41 @@ for (const label of [
 }
 assert.ok(
   sandboxDockerfile.includes(
-    "FROM debian:13-slim@sha256:020c0d20b9880058cbe785a9db107156c3c75c2ac944a6aa7ab59f2add76a7bd",
+    "FROM --platform=linux/amd64 ubuntu:24.04@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90",
   ),
-  "sandbox image must use the reviewed Debian 13.6 index digest",
+  "sandbox image must use the exact Ubuntu 24.04 OCI index and require Linux/amd64",
+);
+assert.equal(
+  (sandboxDockerfile.match(/Snapshot: 20260801T000000Z/g) ?? []).length,
+  2,
+  "sandbox image must fix noble archive and security stanzas to the same Ubuntu snapshot",
 );
 assert.ok(
-  sandboxDockerfile.includes("snapshot.debian.org/archive/debian/20260713T000000Z/") &&
-    sandboxDockerfile.includes("snapshot.debian.org/archive/debian-security/20260731T000000Z/"),
-  "sandbox image must use the reviewed immutable Debian snapshots",
+  sandboxDockerfile.includes("Suites: noble noble-updates") &&
+    sandboxDockerfile.includes("Suites: noble-security") &&
+    (sandboxDockerfile.match(/Components: main universe/g) ?? []).length === 2,
+  "sandbox image must use only noble, noble-updates, and noble-security main+universe",
+);
+for (const [sha256, path] of [
+  [
+    "321b30ad5a1c3783cb3d73ae439f824f6d3874d76a93a62f4a984959b490aa7b",
+    "pool/main/o/openssl/openssl_3.0.13-0ubuntu3.12_amd64.deb",
+  ],
+  [
+    "6bac2a01979e210d9eac1d4d56747ec709ea60654744d66705dc3c36e7629e50",
+    "pool/main/c/ca-certificates/ca-certificates_20260601~24.04.1_all.deb",
+  ],
+] as const) {
+  assert.ok(sandboxDockerfile.includes(`ADD --checksum=sha256:${sha256}`), `bootstrap checksum ${sha256}`);
+  assert.ok(
+    sandboxDockerfile.includes(`https://snapshot.ubuntu.com/ubuntu/20260801T000000Z/${path}`),
+    `official bootstrap URL ${path}`,
+  );
+}
+assert.doesNotMatch(
+  sandboxDockerfile,
+  /rm -rf \/var\/lib\/(?:apt|dpkg)|rm -rf \/etc\/apt/,
+  "sandbox image must preserve APT and dpkg metadata for scanner visibility",
 );
 for (const forbiddenProductionRoot of [
   "bind9-dnsutils",

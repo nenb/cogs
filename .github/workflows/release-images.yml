@@ -374,6 +374,7 @@ jobs:
                 --scanners vuln \
                 --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL \
                 --ignore-unfixed=false \
+                --list-all-pkgs \
                 --exit-code 0 \
                 --format json \
                 --output "/evidence/$role.vulnerabilities.json" \
@@ -381,6 +382,25 @@ jobs:
             jq -e --arg subject "$subject" \
               --from-file "$CONTEXT/scripts/validate-trivy-image-report.jq" \
               "$WORK/$role.vulnerabilities.json" >/dev/null
+            if [[ "$role" == sandbox ]]; then
+              jq -e '.Metadata.OS.Family == "ubuntu" and .Metadata.OS.Name == "24.04"' \
+                "$WORK/$role.vulnerabilities.json" >/dev/null
+              docker run --rm --platform linux/amd64 --entrypoint /usr/bin/dpkg-query "$subject" \
+                -W '-f=${binary:Package}\t${Version}\n' | LC_ALL=C sort > "$WORK/$role.dpkg-packages.txt"
+              awk -F '\t' \
+                'NF != 2 || $1 == "" || $2 == "" { exit 1 } END { if (NR == 0) exit 1 }' \
+                "$WORK/$role.dpkg-packages.txt"
+              dpkg_count=$(wc -l < "$WORK/$role.dpkg-packages.txt" | tr -d ' ')
+              trivy_count=$(jq -er \
+                '[.Results[] | select(.Class == "os-pkgs") | .Packages[]] | length' \
+                "$WORK/$role.vulnerabilities.json")
+              syft_count=$(jq -er \
+                '[.packages[] | select(any(.externalRefs[]?; .referenceType == "purl" and (.referenceLocator | startswith("pkg:deb/ubuntu/"))))] | length' \
+                "$WORK/$role.sbom.spdx.json")
+              [[ "$dpkg_count" =~ ^[1-9][0-9]*$ ]]
+              test "$dpkg_count" -eq "$trivy_count"
+              test "$dpkg_count" -eq "$syft_count"
+            fi
             jq -cS '
               [(.Results[] | .Vulnerabilities // [])[]] as $all |
               {
