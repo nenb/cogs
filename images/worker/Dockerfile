@@ -13,7 +13,15 @@ RUN npm run build --ignore-scripts
 FROM node-runtime AS production-dependencies
 WORKDIR /opt/cogs
 COPY package.json package-lock.json ./
+# Pi 0.80.6 ships a nested npm-shrinkwrap that retains vulnerable
+# brace-expansion 5.0.6. Replace only that exact nested package from the
+# root lock's authenticated, exact 5.0.8 dependency before copying runtime bytes.
 RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund \
+    && test "$(node --input-type=module --eval 'import package_ from "./node_modules/brace-expansion/package.json" with { type: "json" }; process.stdout.write(package_.version)')" = 5.0.8 \
+    && test "$(node --input-type=module --eval 'import package_ from "./node_modules/@earendil-works/pi-coding-agent/node_modules/brace-expansion/package.json" with { type: "json" }; process.stdout.write(package_.version)')" = 5.0.6 \
+    && rm -rf node_modules/@earendil-works/pi-coding-agent/node_modules/brace-expansion \
+    && cp -a node_modules/brace-expansion node_modules/@earendil-works/pi-coding-agent/node_modules/brace-expansion \
+    && test "$(node --input-type=module --eval 'import package_ from "./node_modules/@earendil-works/pi-coding-agent/node_modules/brace-expansion/package.json" with { type: "json" }; process.stdout.write(package_.version)')" = 5.0.8 \
     && rm -rf node_modules/.bin node_modules/.cache \
     && node --input-type=module --eval \
       'import { readFileSync, writeFileSync } from "node:fs"; const source = JSON.parse(readFileSync("package.json", "utf8")); const output = { name: source.name, version: source.version, private: true, type: "module", engines: { node: "22.22.2" }, dependencies: source.dependencies }; writeFileSync("package.json", `${JSON.stringify(output, null, 2)}\n`);'

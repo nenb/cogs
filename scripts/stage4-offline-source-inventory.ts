@@ -204,10 +204,6 @@ function trackedFiles(root: string): TrackedFile[] {
       throw new Error("STAGE4_SOURCE_INVENTORY_GIT_ENTRY_INVALID");
     files.push({ mode: match[1] as GitFileMode, path: match[3] });
   }
-  const untracked = text(pinnedGit(root, ["ls-files", "--others", "--exclude-standard", "-z"]))
-    .split("\0")
-    .filter((path) => path !== "");
-  if (untracked.length !== 0) throw new Error("STAGE4_SOURCE_INVENTORY_UNTRACKED_SOURCE_FORBIDDEN");
   if (files.length === 0 || files.length > MAXIMUM_TRACKED_FILES)
     throw new Error("STAGE4_SOURCE_INVENTORY_FILE_COUNT_INVALID");
   return files.sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0));

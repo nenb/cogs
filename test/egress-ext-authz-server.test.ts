@@ -114,22 +114,30 @@ async function call(
   const values = extra?.token === undefined ? [token] : Array.isArray(extra.token) ? extra.token : [extra.token];
   for (const value of values) metadata.add("x-cogs-authz-token", value);
   const options = { deadline: new Date(Date.now() + (extra?.deadlineMs ?? 1000)) };
-  return await new Promise<unknown>((resolve, reject) => {
-    const c = client.makeUnaryRequest(
-      authorizationService.Check.path,
-      authorizationService.Check.requestSerialize,
-      authorizationService.Check.responseDeserialize,
-      req,
-      metadata,
-      options,
-      (error, response) => {
-        client.close();
-        if (error) reject(error);
-        else resolve(response);
-      },
-    );
-    if (extra?.cancel) c.cancel();
-  });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      client.waitForReady(Date.now() + 2000, (error) => (error === undefined ? resolve() : reject(error)));
+    });
+    return await new Promise<unknown>((resolve, reject) => {
+      const c = client.makeUnaryRequest(
+        authorizationService.Check.path,
+        authorizationService.Check.requestSerialize,
+        authorizationService.Check.responseDeserialize,
+        req,
+        metadata,
+        options,
+        (error, response) => {
+          client.close();
+          if (error) reject(error);
+          else resolve(response);
+        },
+      );
+      if (extra?.cancel) c.cancel();
+    });
+  } catch (error) {
+    client.close();
+    throw error;
+  }
 }
 
 function capabilityRequest(auth = proxyAuthorization): unknown {

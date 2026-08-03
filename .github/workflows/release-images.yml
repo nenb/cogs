@@ -308,7 +308,7 @@ jobs:
             docker run --rm --user "$(id -u):$(id -g)" --network bridge \
               --env DOCKER_CONFIG=/docker-config \
               --mount "type=bind,src=$DOCKER_CONFIG,dst=/docker-config,readonly" \
-              --mount "type=bind,src=$CACHE,dst=/cache,readonly" \
+              --mount "type=bind,src=$CACHE,dst=/cache" \
               --mount "type=bind,src=$WORK,dst=/evidence" \
               "$TRIVY_IMAGE" image \
                 --cache-dir /cache \
