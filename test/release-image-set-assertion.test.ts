@@ -699,8 +699,15 @@ test("Cosign output validators reject hostile subjects and malformed verificatio
     return result.status === 0;
   };
 
-  assert.equal(acceptedSignature([signature]), true);
+  const spdxSignature = structuredClone(signature);
+  spdxSignature.critical.type = "https://spdx.dev/Document";
+  assert.equal(acceptedSignature([signature, spdxSignature]), true);
+  assert.equal(acceptedSignature([spdxSignature, signature]), true);
   assert.equal(acceptedSignature([]), false);
+  assert.equal(acceptedSignature([signature]), false);
+  assert.equal(acceptedSignature([spdxSignature]), false);
+  assert.equal(acceptedSignature([signature, signature]), false);
+  assert.equal(acceptedSignature([signature, spdxSignature, spdxSignature]), false);
   assert.equal(acceptedSignature({ ...signature }), false);
   for (const [name, mutate] of [
     [
@@ -713,7 +720,22 @@ test("Cosign output validators reject hostile subjects and malformed verificatio
   ] as const) {
     const value = structuredClone(signature);
     mutate(value);
-    assert.equal(acceptedSignature([value]), false, name);
+    assert.equal(acceptedSignature([value, spdxSignature]), false, name);
+  }
+  for (const [name, mutate] of [
+    [
+      "SBOM wrong repository",
+      (value: typeof spdxSignature) =>
+        (value.critical.identity["docker-reference"] = `ghcr.io/nenb/not-cogs/worker@${imageDigest}`),
+    ],
+    [
+      "SBOM wrong digest",
+      (value: typeof spdxSignature) => (value.critical.image["docker-manifest-digest"] = digest("2")),
+    ],
+  ] as const) {
+    const value = structuredClone(spdxSignature);
+    mutate(value);
+    assert.equal(acceptedSignature([signature, value]), false, name);
   }
 
   assert.equal(acceptedAttestation([envelope]), true);
