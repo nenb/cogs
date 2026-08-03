@@ -271,6 +271,9 @@ jobs:
               *) exit 1 ;;
             esac
             test ! -e "$metadata" && test ! -L "$metadata"
+            (set -o noclobber; : > "$metadata")
+            test "$(stat -c '%u:%g:%a:%h:%s:%F' "$metadata")" = \
+              "$(id -u):$(id -g):600:1:0:regular empty file"
             docker buildx build \
               --builder "$BUILDX_BUILDER" \
               --platform linux/amd64 \
@@ -283,8 +286,15 @@ jobs:
               --tag "$repository:$transport_tag" \
               --metadata-file "$metadata" \
               "$CONTEXT"
-            test "$(stat -c '%u:%g:%a:%h:%F' "$metadata")" = \
-              "$(id -u):$(id -g):600:1:regular file"
+            test ! -L "$metadata" && test -f "$metadata"
+            test "$(stat -c '%u:%g:%h:%F' "$metadata")" = \
+              "$(id -u):$(id -g):1:regular file"
+            metadata_size=$(stat -c '%s' "$metadata")
+            [[ "$metadata_size" =~ ^[1-9][0-9]*$ ]]
+            test "$metadata_size" -le 4194304
+            chmod 0600 -- "$metadata"
+            test "$(stat -c '%u:%g:%a:%h:%s:%F' "$metadata")" = \
+              "$(id -u):$(id -g):600:1:$metadata_size:regular file"
             jq -e '
               type == "object" and
               (."containerimage.digest" | type == "string" and test("^sha256:[0-9a-f]{64}$")) and
