@@ -100,9 +100,13 @@ jobs:
       TRIVY_IMAGE: docker.io/aquasec/trivy@sha256:a22415a38938a56c379387a8163fcb0ce38b10ace73e593475d3658d578b2436
       TRIVY_DATABASE: ghcr.io/aquasecurity/trivy-db:2@sha256:82225c2b2d979e8d7ed306b75bce9118304b688cfbfdbca7c61723d30f0d1bb6
       TRIVY_JAVA_DATABASE: ghcr.io/aquasecurity/trivy-java-db:1@sha256:8a8e6f28332f81c09f8cd575f8fda8b1c30fb5fe4c30f7f55ce06a01a6cc93c7
-      COSIGN_IMAGE: ghcr.io/sigstore/cosign/cosign@sha256:f1946d0f30fc8e3777b02f2201e02efdba9fe38f4918162f937052fac98e083f
+      COSIGN_IMAGE: ghcr.io/sigstore/cosign/cosign@sha256:be924970ba7438c22e18067dec5637946d6566eac711f5bedd1584e7137008fb
       CERTIFICATE_IDENTITY: https://github.com/nenb/cogs/.github/workflows/release-images.yml@refs/heads/main
       CERTIFICATE_OIDC_ISSUER: https://token.actions.githubusercontent.com
+      CERTIFICATE_WORKFLOW_NAME: Publish protected-main image-set candidates
+      CERTIFICATE_REPOSITORY: nenb/cogs
+      CERTIFICATE_REF: refs/heads/main
+      CERTIFICATE_TRIGGER: workflow_dispatch
     steps:
       - name: Check out only the exact authorized commit without credentials
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -212,6 +216,8 @@ jobs:
             docker image inspect "$image" --format '{{json .RepoDigests}}' | \
               jq -e --arg suffix "@$digest" 'any(.[]; endswith($suffix))' >/dev/null
           done
+          docker run --rm --platform linux/amd64 "$COSIGN_IMAGE" version | \
+            grep -Eq '^GitVersion:[[:space:]]+v3\.0\.5$'
           transport_tag="candidate-$REVIEWED_SHA-${{ github.run_id }}-${{ github.run_attempt }}"
           for repository in "$WORKER_REPOSITORY" "$SANDBOX_REPOSITORY"; do
             error="$WORK/tag-check-$(basename "$repository")-$transport_tag.stderr"
@@ -386,23 +392,91 @@ jobs:
               --mount "type=bind,src=$WORK,dst=/evidence,readonly" \
               "$COSIGN_IMAGE" "$@"
           }
+          verify_signature_as() {
+            local sha=$1 repo=$2 ref=$3 event=$4 identity=$5
+            cosign verify --new-bundle-format=true --output json \
+              --certificate-identity "$identity" \
+              --certificate-oidc-issuer "$CERTIFICATE_OIDC_ISSUER" \
+              --certificate-github-workflow-sha "$sha" \
+              --certificate-github-workflow-name "$CERTIFICATE_WORKFLOW_NAME" \
+              --certificate-github-workflow-repository "$repo" \
+              --certificate-github-workflow-ref "$ref" \
+              --certificate-github-workflow-trigger "$event" \
+              "$subject"
+          }
+          verify_attestation_as() {
+            local sha=$1 repo=$2 ref=$3 event=$4 identity=$5
+            cosign verify-attestation --new-bundle-format=true --output json --type spdxjson \
+              --certificate-identity "$identity" \
+              --certificate-oidc-issuer "$CERTIFICATE_OIDC_ISSUER" \
+              --certificate-github-workflow-sha "$sha" \
+              --certificate-github-workflow-name "$CERTIFICATE_WORKFLOW_NAME" \
+              --certificate-github-workflow-repository "$repo" \
+              --certificate-github-workflow-ref "$ref" \
+              --certificate-github-workflow-trigger "$event" \
+              "$subject"
+          }
+          require_verifier_rejection() {
+            local verifier=$1 label=$2 diagnostic_pattern=$3
+            shift 3
+            local output="$WORK/$role.$label.rejected.json"
+            local error="$WORK/$role.$label.rejected.stderr"
+            if "$verifier" "$@" >"$output" 2>"$error"; then
+              printf 'Verifier accepted hostile certificate constraint: %s\n' "$label" >&2
+              return 1
+            fi
+            if ! grep -Eiq "$diagnostic_pattern" "$error"; then
+              printf 'Verifier rejection lacked a constraint-specific diagnostic: %s\n' "$label" >&2
+              return 1
+            fi
+            rm -f -- "$output" "$error"
+          }
+          case ${REVIEWED_SHA:0:1} in
+            0) wrong_sha="1${REVIEWED_SHA:1}" ;;
+            *) wrong_sha="0${REVIEWED_SHA:1}" ;;
+          esac
           for role in worker sandbox; do
             repository_name="${role^^}_REPOSITORY"
             repository=${!repository_name}
             digest=$(cat "$WORK/$role.registry-digest")
+            digest_hex=${digest#sha256:}
             subject="$repository@$digest"
-            cosign attest --yes --type spdxjson --predicate "/evidence/$role.sbom.spdx.json" "$subject"
-            cosign sign --yes "$subject"
-            cosign verify \
-              --certificate-identity "$CERTIFICATE_IDENTITY" \
-              --certificate-oidc-issuer "$CERTIFICATE_OIDC_ISSUER" \
-              "$subject" > "$WORK/$role.signature-verification.json"
-            cosign verify-attestation --type spdxjson \
-              --certificate-identity "$CERTIFICATE_IDENTITY" \
-              --certificate-oidc-issuer "$CERTIFICATE_OIDC_ISSUER" \
-              "$subject" > "$WORK/$role.sbom-verification.jsonl"
-            test -s "$WORK/$role.signature-verification.json"
-            test -s "$WORK/$role.sbom-verification.jsonl"
+            cosign attest --yes --new-bundle-format=true --type spdxjson \
+              --predicate "/evidence/$role.sbom.spdx.json" "$subject"
+            cosign sign --yes --new-bundle-format=true "$subject"
+            verify_signature_as "$REVIEWED_SHA" "$CERTIFICATE_REPOSITORY" "$CERTIFICATE_REF" \
+              "$CERTIFICATE_TRIGGER" "$CERTIFICATE_IDENTITY" > "$WORK/$role.signature-verification.json"
+            jq -e --arg subject "$subject" --arg digest "$digest" \
+              --from-file "$CONTEXT/scripts/validate-cosign-signature-verification.jq" \
+              "$WORK/$role.signature-verification.json" >/dev/null
+            verify_attestation_as "$REVIEWED_SHA" "$CERTIFICATE_REPOSITORY" "$CERTIFICATE_REF" \
+              "$CERTIFICATE_TRIGGER" "$CERTIFICATE_IDENTITY" > "$WORK/$role.sbom-verification.jsonl"
+            jq -s -e --arg repository "$repository" --arg digest_hex "$digest_hex" \
+              --from-file "$CONTEXT/scripts/validate-cosign-attestation-verification.jq" \
+              "$WORK/$role.sbom-verification.jsonl" >/dev/null
+
+            for verifier in verify_signature_as verify_attestation_as; do
+              require_verifier_rejection "$verifier" "$verifier-wrong-sha" \
+                'github workflow sha|githubworkflowsha|workflow sha|certificate.*sha' \
+                "$wrong_sha" "$CERTIFICATE_REPOSITORY" "$CERTIFICATE_REF" "$CERTIFICATE_TRIGGER" \
+                "$CERTIFICATE_IDENTITY"
+              require_verifier_rejection "$verifier" "$verifier-wrong-repository" \
+                'github workflow repository|githubworkflowrepository|workflow repository|certificate.*repository' \
+                "$REVIEWED_SHA" nenb/not-cogs "$CERTIFICATE_REF" "$CERTIFICATE_TRIGGER" \
+                "$CERTIFICATE_IDENTITY"
+              require_verifier_rejection "$verifier" "$verifier-wrong-ref" \
+                'github workflow ref|githubworkflowref|workflow ref|certificate.*ref' \
+                "$REVIEWED_SHA" "$CERTIFICATE_REPOSITORY" refs/heads/not-main "$CERTIFICATE_TRIGGER" \
+                "$CERTIFICATE_IDENTITY"
+              require_verifier_rejection "$verifier" "$verifier-wrong-trigger" \
+                'github workflow trigger|githubworkflowtrigger|workflow trigger|certificate.*trigger' \
+                "$REVIEWED_SHA" "$CERTIFICATE_REPOSITORY" "$CERTIFICATE_REF" push \
+                "$CERTIFICATE_IDENTITY"
+              require_verifier_rejection "$verifier" "$verifier-wrong-identity" \
+                'certificate identity|expected identit(y|ies)|identities.*certificate|certificate.*identity' \
+                "$REVIEWED_SHA" "$CERTIFICATE_REPOSITORY" "$CERTIFICATE_REF" "$CERTIFICATE_TRIGGER" \
+                'https://github.com/nenb/cogs/.github/workflows/not-release-images.yml@refs/heads/main'
+            done
           done
 
       - name: Generate and classify one canonical redacted workflow assertion record

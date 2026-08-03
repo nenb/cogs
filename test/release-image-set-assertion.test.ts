@@ -22,6 +22,8 @@ const workflowPath = resolve(root, ".github/workflows/release-images.yml");
 const workflowSource = readFileSync(workflowPath, "utf8");
 const trivyValidatorPath = resolve(root, "scripts/validate-trivy-image-report.jq");
 const trivyValidatorSource = readFileSync(trivyValidatorPath, "utf8");
+const cosignSignatureValidatorPath = resolve(root, "scripts/validate-cosign-signature-verification.jq");
+const cosignAttestationValidatorPath = resolve(root, "scripts/validate-cosign-attestation-verification.jq");
 const identity = "https://github.com/nenb/cogs/.github/workflows/release-images.yml@refs/heads/main";
 const issuer = "https://token.actions.githubusercontent.com";
 const sha = "a".repeat(40);
@@ -345,6 +347,11 @@ test("release workflow pins every action and tool and writes only run-unique tra
   assert.match(workflowSource, /BUILDX_VERSION: v0\.29\.1/u);
   assert.match(
     workflowSource,
+    /COSIGN_IMAGE: ghcr\.io\/sigstore\/cosign\/cosign@sha256:be924970ba7438c22e18067dec5637946d6566eac711f5bedd1584e7137008fb/u,
+  );
+  assert.match(workflowSource, /grep -Eq '\^GitVersion:\[\[:space:\]\]\+v3\\\.0\\\.5\$'/u);
+  assert.match(
+    workflowSource,
     /BUILDX_LINUX_AMD64_SHA256: 7d2d7d6d4680aa349614965aaa33ccec43f1a9a21e908a5ce4cb6adfa5ad5141/u,
   );
   assert.match(workflowSource, /sha256sum --check --strict/u);
@@ -491,6 +498,146 @@ test("Trivy gate rejects every unsupported result and malformed vulnerability be
   }
 });
 
+test("Cosign output validators reject hostile subjects and malformed verification payloads", () => {
+  const repository = "ghcr.io/nenb/cogs/worker";
+  const imageDigest = digest("1");
+  const digestHex = imageDigest.slice("sha256:".length);
+  const signature = {
+    critical: {
+      type: "https://sigstore.dev/cosign/sign/v1",
+      identity: { "docker-reference": `${repository}@${imageDigest}` },
+      image: { "docker-manifest-digest": imageDigest },
+    },
+  };
+  const statement = {
+    _type: "https://in-toto.io/Statement/v0.1",
+    predicateType: "https://spdx.dev/Document",
+    subject: [{ name: repository, digest: { sha256: digestHex } }],
+    predicate: { spdxVersion: "SPDX-2.3", deliberately_not_compared_to_the_generated_sbom: true },
+  };
+  const envelope = {
+    payloadType: "application/vnd.in-toto+json",
+    payload: Buffer.from(JSON.stringify(statement)).toString("base64"),
+    signatures: [{ sig: "fixture-signature" }],
+  };
+  const acceptedSignature = (value: unknown): boolean => {
+    const result = spawnSync(
+      "jq",
+      [
+        "-e",
+        "--arg",
+        "subject",
+        `${repository}@${imageDigest}`,
+        "--arg",
+        "digest",
+        imageDigest,
+        "--from-file",
+        cosignSignatureValidatorPath,
+      ],
+      { encoding: "utf8", input: JSON.stringify(value) },
+    );
+    assert.equal(result.error, undefined, result.error?.message);
+    return result.status === 0;
+  };
+  const acceptedAttestation = (values: unknown[]): boolean => {
+    const result = spawnSync(
+      "jq",
+      [
+        "-s",
+        "-e",
+        "--arg",
+        "repository",
+        repository,
+        "--arg",
+        "digest_hex",
+        digestHex,
+        "--from-file",
+        cosignAttestationValidatorPath,
+      ],
+      { encoding: "utf8", input: values.map((value) => JSON.stringify(value)).join("\n") },
+    );
+    assert.equal(result.error, undefined, result.error?.message);
+    return result.status === 0;
+  };
+
+  assert.equal(acceptedSignature([signature]), true);
+  assert.equal(acceptedSignature([]), false);
+  assert.equal(acceptedSignature({ ...signature }), false);
+  for (const [name, mutate] of [
+    [
+      "wrong repository",
+      (value: typeof signature) =>
+        (value.critical.identity["docker-reference"] = `ghcr.io/nenb/not-cogs/worker@${imageDigest}`),
+    ],
+    ["wrong digest", (value: typeof signature) => (value.critical.image["docker-manifest-digest"] = digest("2"))],
+    ["wrong type", (value: typeof signature) => (value.critical.type = "hostile")],
+  ] as const) {
+    const value = structuredClone(signature);
+    mutate(value);
+    assert.equal(acceptedSignature([value]), false, name);
+  }
+
+  assert.equal(acceptedAttestation([envelope]), true);
+  assert.equal(acceptedAttestation([]), false);
+  const statementSubject = (value: typeof statement) => {
+    const subject = value.subject[0];
+    assert.ok(subject);
+    return subject;
+  };
+  const hostileAttestations: Array<[string, (value: typeof envelope, decoded: typeof statement) => void]> = [
+    ["wrong repository", (_value, decoded) => (statementSubject(decoded).name = "ghcr.io/nenb/not-cogs/worker")],
+    ["wrong digest", (_value, decoded) => (statementSubject(decoded).digest.sha256 = "2".repeat(64))],
+    ["extra subject", (_value, decoded) => decoded.subject.push({ name: repository, digest: { sha256: digestHex } })],
+    ["wrong predicate type", (_value, decoded) => (decoded.predicateType = "https://example.invalid/predicate")],
+    ["wrong payload type", (value) => (value.payloadType = "application/json")],
+    ["empty signatures", (value) => (value.signatures = [])],
+    ["malformed payload", (value) => (value.payload = "not base64 or json")],
+  ];
+  for (const [name, mutate] of hostileAttestations) {
+    const value = structuredClone(envelope);
+    const decoded = structuredClone(statement);
+    mutate(value, decoded);
+    if (value.payload === envelope.payload) value.payload = Buffer.from(JSON.stringify(decoded)).toString("base64");
+    assert.equal(acceptedAttestation([value]), false, name);
+  }
+});
+
+test("release workflow binds both Cosign verifiers to exact workflow certificate claims", () => {
+  const signing = runStep(workflowJob("publish"), "verify_signature_as()");
+  for (const verifier of ["verify_signature_as", "verify_attestation_as"]) {
+    const start = signing.indexOf(`${verifier}()`);
+    assert.notEqual(start, -1, verifier);
+    const end = signing.indexOf("\n          }", start);
+    const body = signing.slice(start, end);
+    for (const flag of [
+      "--new-bundle-format=true",
+      "--output json",
+      '--certificate-identity "$identity"',
+      '--certificate-oidc-issuer "$CERTIFICATE_OIDC_ISSUER"',
+      '--certificate-github-workflow-sha "$sha"',
+      '--certificate-github-workflow-name "$CERTIFICATE_WORKFLOW_NAME"',
+      '--certificate-github-workflow-repository "$repo"',
+      '--certificate-github-workflow-ref "$ref"',
+      '--certificate-github-workflow-trigger "$event"',
+    ]) {
+      assert.ok(body.includes(flag), `${verifier}: ${flag}`);
+    }
+  }
+  assert.match(workflowSource, /CERTIFICATE_WORKFLOW_NAME: Publish protected-main image-set candidates/u);
+  assert.match(workflowSource, /CERTIFICATE_REPOSITORY: nenb\/cogs/u);
+  assert.match(workflowSource, /CERTIFICATE_REF: refs\/heads\/main/u);
+  assert.match(workflowSource, /CERTIFICATE_TRIGGER: workflow_dispatch/u);
+  assert.match(signing, /CERTIFICATE_REPOSITORY[\s\S]*nenb\/not-cogs/u);
+  assert.match(signing, /refs\/heads\/not-main/u);
+  assert.match(signing, /CERTIFICATE_REF" push/u);
+  assert.match(signing, /wrong_sha/u);
+  assert.match(signing, /not-release-images\.yml@refs\/heads\/main/u);
+  assert.equal((signing.match(/require_verifier_rejection "\$verifier"/gu) ?? []).length, 5);
+  assert.match(signing, /grep -Eiq "\$diagnostic_pattern" "\$error"/u);
+  assert.doesNotMatch(signing, /--certificate-identity-regexp|--insecure-ignore-/u);
+  assert.doesNotMatch(readFileSync(cosignAttestationValidatorPath, "utf8"), /expected|slurpfile/u);
+});
+
 test("release publication uses only the pinned direct Buildx client and private metadata files", () => {
   const publish = workflowJob("publish");
   const build = runStep(publish, "docker buildx build");
@@ -634,13 +781,13 @@ test("release workflow preserves evidence gates and removes all direct-build int
   assert.match(trivyValidatorSource, /\.Class == "os-pkgs" or \.Class == "lang-pkgs"/u);
   assert.match(trivyValidatorSource, /\.Type == \$os_family/u);
   assert.match(trivyValidatorSource, /all\(\(\.Vulnerabilities \/\/ \[\]\)\[\]; valid_vulnerability\)/u);
-  assert.match(workflowSource, /cosign attest --yes --type spdxjson/u);
-  assert.match(workflowSource, /cosign sign --yes "\$subject"/u);
-  assert.match(
-    workflowSource,
-    /cosign verify[\s\S]*--certificate-identity "\$CERTIFICATE_IDENTITY"[\s\S]*--certificate-oidc-issuer "\$CERTIFICATE_OIDC_ISSUER"/u,
-  );
-  assert.match(workflowSource, /cosign verify-attestation --type spdxjson/u);
+  assert.match(workflowSource, /cosign attest --yes --new-bundle-format=true --type spdxjson/u);
+  assert.match(workflowSource, /cosign sign --yes --new-bundle-format=true "\$subject"/u);
+  assert.match(workflowSource, /cosign verify --new-bundle-format=true --output json/u);
+  assert.match(workflowSource, /cosign verify-attestation --new-bundle-format=true --output json --type spdxjson/u);
+  assert.match(workflowSource, /validate-cosign-signature-verification\.jq/u);
+  assert.match(workflowSource, /validate-cosign-attestation-verification\.jq/u);
+  assert.doesNotMatch(workflowSource, /test -s "\$WORK\/\$role\.(?:signature|sbom)-verification/u);
   assert.doesNotMatch(workflowSource, /docs\/security-evidence\/stage4-offline-readiness-artifacts\/image-lock\.json/u);
   assert.doesNotMatch(workflowSource, /(?:tofu|terraform|kubectl|helm|aws |external model)/iu);
   assert.match(workflowSource, /static_parser_cryptographic_verification_performed:false/u);
