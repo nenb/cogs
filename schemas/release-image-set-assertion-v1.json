@@ -1,0 +1,486 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.dev/schemas/release-image-set-assertion-v1.json",
+  "title": "Protected-main successful image-set workflow assertion record v1",
+  "description": "Canonical redacted successful-workflow artifact that records the exact worker and sandbox digest references transported under run-unique candidate tags. No final or release tag is written. Static parsing does not verify publication, signatures, provenance, SBOMs, or vulnerability results and establishes no readiness or release eligibility.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "authority",
+    "repository",
+    "source",
+    "workflow",
+    "target",
+    "transport_policy",
+    "tools",
+    "images",
+    "claims",
+    "blockers",
+    "redaction"
+  ],
+  "properties": {
+    "version": { "const": "cogs.release-image-set-assertion/v1" },
+    "authority": { "const": "protected-main-github-actions-publication-assertion-record" },
+    "repository": { "const": "nenb/cogs" },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reviewed_sha", "default_branch", "protected", "observed_head_sha", "tree_sha", "inventory_sha256"],
+      "properties": {
+        "reviewed_sha": { "$ref": "#/$defs/gitSha" },
+        "default_branch": { "const": "main" },
+        "protected": { "const": true },
+        "observed_head_sha": { "$ref": "#/$defs/gitSha" },
+        "tree_sha": { "$ref": "#/$defs/gitSha" },
+        "inventory_sha256": { "$ref": "#/$defs/hexSha256" }
+      }
+    },
+    "workflow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "ref",
+        "sha",
+        "event",
+        "run_id",
+        "run_attempt",
+        "certificate_identity",
+        "certificate_oidc_issuer"
+      ],
+      "properties": {
+        "path": { "const": ".github/workflows/release-images.yml" },
+        "ref": { "const": "refs/heads/main" },
+        "sha": { "$ref": "#/$defs/gitSha" },
+        "event": { "const": "workflow_dispatch" },
+        "run_id": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+        "run_attempt": { "const": 1 },
+        "certificate_identity": {
+          "const": "https://github.com/nenb/cogs/.github/workflows/release-images.yml@refs/heads/main"
+        },
+        "certificate_oidc_issuer": { "const": "https://token.actions.githubusercontent.com" }
+      }
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["os", "architecture", "variant"],
+      "properties": {
+        "os": { "const": "linux" },
+        "architecture": { "const": "amd64" },
+        "variant": { "type": "null" }
+      }
+    },
+    "transport_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag_format",
+        "run_unique",
+        "retained_after_workflow",
+        "transport_only",
+        "final_tags_written",
+        "mutable_release_alias_written",
+        "image_set_record",
+        "consumer_requirement"
+      ],
+      "properties": {
+        "tag_format": { "const": "candidate-<full-40-character-commit>-<run-id>-<run-attempt>" },
+        "run_unique": { "const": true },
+        "retained_after_workflow": { "const": true },
+        "transport_only": { "const": true },
+        "final_tags_written": { "const": false },
+        "mutable_release_alias_written": { "const": false },
+        "image_set_record": {
+          "const": "canonical-successful-workflow-artifact-with-exact-digest-references"
+        },
+        "consumer_requirement": {
+          "const": "separately-reviewed-assertion-record-and-both-exact-digests"
+        }
+      }
+    },
+    "tools": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["buildx_client", "buildkit_image", "syft_image", "trivy_image", "trivy_database", "cosign_image"],
+      "properties": {
+        "buildx_client": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["version", "linux_amd64_sha256"],
+          "properties": {
+            "version": { "const": "v0.29.1" },
+            "linux_amd64_sha256": {
+              "const": "7d2d7d6d4680aa349614965aaa33ccec43f1a9a21e908a5ce4cb6adfa5ad5141"
+            }
+          }
+        },
+        "buildkit_image": { "$ref": "#/$defs/pinnedImage" },
+        "syft_image": { "$ref": "#/$defs/pinnedImage" },
+        "trivy_image": { "$ref": "#/$defs/pinnedImage" },
+        "trivy_database": { "$ref": "#/$defs/pinnedImage" },
+        "cosign_image": { "$ref": "#/$defs/pinnedImage" }
+      }
+    },
+    "images": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "prefixItems": [
+        {
+          "$ref": "#/$defs/image",
+          "type": "object",
+          "properties": {
+            "role": { "const": "worker" },
+            "registry_repository": { "const": "ghcr.io/nenb/cogs/worker" },
+            "dockerfile": {
+              "$ref": "#/$defs/dockerfile",
+              "type": "object",
+              "properties": { "path": { "const": "images/worker/Dockerfile" } }
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/image",
+          "type": "object",
+          "properties": {
+            "role": { "const": "sandbox" },
+            "registry_repository": { "const": "ghcr.io/nenb/cogs/sandbox" },
+            "dockerfile": {
+              "$ref": "#/$defs/dockerfile",
+              "type": "object",
+              "properties": { "path": { "const": "images/sandbox/Dockerfile" } }
+            }
+          }
+        }
+      ],
+      "items": false
+    },
+    "claims": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "workflow_recorded_exact_protected_default_branch_source",
+        "workflow_recorded_image_set_complete",
+        "workflow_recorded_buildkit_provenance_attached",
+        "workflow_recorded_sbom_attached",
+        "workflow_recorded_vulnerability_gate_passed",
+        "workflow_recorded_keyless_signatures_verified",
+        "static_parser_cryptographic_verification_performed",
+        "cloud_execution_observed",
+        "kubernetes_execution_observed",
+        "provider_execution_observed",
+        "external_model_execution_observed",
+        "runtime_qualification_observed",
+        "readiness_promoted",
+        "production_ready",
+        "release_eligible"
+      ],
+      "properties": {
+        "workflow_recorded_exact_protected_default_branch_source": { "const": true },
+        "workflow_recorded_image_set_complete": { "const": true },
+        "workflow_recorded_buildkit_provenance_attached": { "const": true },
+        "workflow_recorded_sbom_attached": { "const": true },
+        "workflow_recorded_vulnerability_gate_passed": { "const": true },
+        "workflow_recorded_keyless_signatures_verified": { "const": true },
+        "static_parser_cryptographic_verification_performed": { "const": false },
+        "cloud_execution_observed": { "const": false },
+        "kubernetes_execution_observed": { "const": false },
+        "provider_execution_observed": { "const": false },
+        "external_model_execution_observed": { "const": false },
+        "runtime_qualification_observed": { "const": false },
+        "readiness_promoted": { "const": false },
+        "production_ready": { "const": false },
+        "release_eligible": { "const": false }
+      }
+    },
+    "blockers": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "prefixItems": [
+        { "const": "RUNTIME_CONFORMANCE_NOT_EXECUTED" },
+        { "const": "READINESS_PROMOTION_REQUIRES_SEPARATE_REVIEW" },
+        { "const": "RELEASE_ELIGIBILITY_UNCHANGED_FALSE" }
+      ],
+      "items": false
+    },
+    "redaction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["actor_omitted", "tokens_omitted", "runner_details_omitted", "raw_scanner_findings_omitted"],
+      "properties": {
+        "actor_omitted": { "const": true },
+        "tokens_omitted": { "const": true },
+        "runner_details_omitted": { "const": true },
+        "raw_scanner_findings_omitted": { "const": true }
+      }
+    }
+  },
+  "$defs": {
+    "gitSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "hexSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "pinnedImage": {
+      "type": "string",
+      "minLength": 72,
+      "maxLength": 256,
+      "pattern": "^[^\\s@]+(?:[^\\s@]*)?@sha256:[0-9a-f]{64}$"
+    },
+    "dockerfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": { "enum": ["images/worker/Dockerfile", "images/sandbox/Dockerfile"] },
+        "sha256": { "$ref": "#/$defs/hexSha256" }
+      }
+    },
+    "counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["total", "unknown", "low", "medium", "high", "critical", "fixed_available", "unfixed"],
+      "properties": {
+        "total": { "type": "integer", "minimum": 0, "maximum": 1000000 },
+        "unknown": { "type": "integer", "minimum": 0, "maximum": 1000000 },
+        "low": { "type": "integer", "minimum": 0, "maximum": 1000000 },
+        "medium": { "type": "integer", "minimum": 0, "maximum": 1000000 },
+        "high": { "const": 0 },
+        "critical": { "const": 0 },
+        "fixed_available": { "type": "integer", "minimum": 0, "maximum": 1000000 },
+        "unfixed": { "type": "integer", "minimum": 0, "maximum": 1000000 }
+      }
+    },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "role",
+        "registry_repository",
+        "transport_tag",
+        "registry_digest",
+        "exact_reference",
+        "linux_amd64_manifest_digest",
+        "dockerfile",
+        "buildkit_provenance",
+        "sbom",
+        "vulnerabilities",
+        "signature"
+      ],
+      "properties": {
+        "role": { "enum": ["worker", "sandbox"] },
+        "registry_repository": { "enum": ["ghcr.io/nenb/cogs/worker", "ghcr.io/nenb/cogs/sandbox"] },
+        "transport_tag": {
+          "type": "string",
+          "pattern": "^candidate-[0-9a-f]{40}-[1-9][0-9]{0,19}-1$"
+        },
+        "registry_digest": { "$ref": "#/$defs/digest" },
+        "exact_reference": {
+          "type": "string",
+          "pattern": "^ghcr\\.io/nenb/cogs/(?:worker|sandbox)@sha256:[0-9a-f]{64}$"
+        },
+        "linux_amd64_manifest_digest": { "$ref": "#/$defs/digest" },
+        "dockerfile": { "$ref": "#/$defs/dockerfile" },
+        "buildkit_provenance": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "workflow_recorded_attached",
+            "mode",
+            "predicate_type",
+            "build_type",
+            "workflow_recorded_platform_verified",
+            "readback_sha256"
+          ],
+          "properties": {
+            "workflow_recorded_attached": { "const": true },
+            "mode": { "const": "max" },
+            "predicate_type": { "const": "https://slsa.dev/provenance/v0.2" },
+            "build_type": { "const": "https://mobyproject.org/buildkit@v1" },
+            "workflow_recorded_platform_verified": { "const": true },
+            "readback_sha256": { "$ref": "#/$defs/hexSha256" }
+          }
+        },
+        "sbom": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "format",
+            "predicate_type",
+            "spdx_json_sha256",
+            "workflow_recorded_generated_for_exact_digest",
+            "workflow_recorded_attached",
+            "workflow_recorded_keyless_signed",
+            "workflow_recorded_signature_verified",
+            "certificate_identity",
+            "certificate_oidc_issuer"
+          ],
+          "properties": {
+            "format": { "const": "spdx-json" },
+            "predicate_type": { "const": "https://spdx.dev/Document" },
+            "spdx_json_sha256": { "$ref": "#/$defs/hexSha256" },
+            "workflow_recorded_generated_for_exact_digest": { "const": true },
+            "workflow_recorded_attached": { "const": true },
+            "workflow_recorded_keyless_signed": { "const": true },
+            "workflow_recorded_signature_verified": { "const": true },
+            "certificate_identity": {
+              "const": "https://github.com/nenb/cogs/.github/workflows/release-images.yml@refs/heads/main"
+            },
+            "certificate_oidc_issuer": { "const": "https://token.actions.githubusercontent.com" }
+          }
+        },
+        "vulnerabilities": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "scanned_reference",
+            "report_sha256",
+            "severities",
+            "ignore_unfixed",
+            "suppressions",
+            "workflow_recorded_report_contract",
+            "counts",
+            "gate",
+            "disposition"
+          ],
+          "properties": {
+            "scanned_reference": {
+              "type": "string",
+              "pattern": "^ghcr\\.io/nenb/cogs/(?:worker|sandbox)@sha256:[0-9a-f]{64}$"
+            },
+            "report_sha256": { "$ref": "#/$defs/hexSha256" },
+            "severities": {
+              "type": "array",
+              "minItems": 5,
+              "maxItems": 5,
+              "prefixItems": [
+                { "const": "UNKNOWN" },
+                { "const": "LOW" },
+                { "const": "MEDIUM" },
+                { "const": "HIGH" },
+                { "const": "CRITICAL" }
+              ],
+              "items": false
+            },
+            "ignore_unfixed": { "const": false },
+            "suppressions": { "const": false },
+            "workflow_recorded_report_contract": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "schema_version",
+                "artifact_name_exact_subject",
+                "repo_digest_exact_subject",
+                "artifact_type",
+                "os_metadata_present",
+                "results_nonempty",
+                "all_results_shape_validated",
+                "allowed_result_classes",
+                "result_target_type_nonempty",
+                "os_package_type_matches_os_family",
+                "vulnerabilities_null_or_array",
+                "vulnerability_shapes_validated",
+                "os_package_target_present"
+              ],
+              "properties": {
+                "schema_version": { "const": 2 },
+                "artifact_name_exact_subject": { "const": true },
+                "repo_digest_exact_subject": { "const": true },
+                "artifact_type": { "const": "container_image" },
+                "os_metadata_present": { "const": true },
+                "results_nonempty": { "const": true },
+                "all_results_shape_validated": { "const": true },
+                "allowed_result_classes": {
+                  "type": "array",
+                  "minItems": 2,
+                  "maxItems": 2,
+                  "prefixItems": [{ "const": "os-pkgs" }, { "const": "lang-pkgs" }],
+                  "items": false
+                },
+                "result_target_type_nonempty": { "const": true },
+                "os_package_type_matches_os_family": { "const": true },
+                "vulnerabilities_null_or_array": { "const": true },
+                "vulnerability_shapes_validated": { "const": true },
+                "os_package_target_present": { "const": true }
+              }
+            },
+            "counts": { "$ref": "#/$defs/counts" },
+            "gate": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["policy", "severities", "includes_unfixed", "finding_count", "outcome"],
+              "properties": {
+                "policy": { "const": "block-high-critical" },
+                "severities": {
+                  "type": "array",
+                  "minItems": 2,
+                  "maxItems": 2,
+                  "prefixItems": [{ "const": "HIGH" }, { "const": "CRITICAL" }],
+                  "items": false
+                },
+                "includes_unfixed": { "const": true },
+                "finding_count": { "const": 0 },
+                "outcome": { "const": "pass" }
+              }
+            },
+            "disposition": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["unknown", "low_medium", "high_critical"],
+              "properties": {
+                "unknown": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["count", "semantics"],
+                  "properties": {
+                    "count": { "type": "integer", "minimum": 0, "maximum": 1000000 },
+                    "semantics": { "const": "recorded-non-gating-review-required-not-approved" }
+                  }
+                },
+                "low_medium": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["count", "semantics"],
+                  "properties": {
+                    "count": { "type": "integer", "minimum": 0, "maximum": 1000000 },
+                    "semantics": { "const": "recorded-non-gating-not-release-approval" }
+                  }
+                },
+                "high_critical": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["count", "semantics"],
+                  "properties": {
+                    "count": { "const": 0 },
+                    "semantics": { "const": "image-set-assertion-blocking-including-unfixed" }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "signature": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "workflow_recorded_keyless",
+            "workflow_recorded_digest_signed",
+            "workflow_recorded_verified",
+            "certificate_identity",
+            "certificate_oidc_issuer"
+          ],
+          "properties": {
+            "workflow_recorded_keyless": { "const": true },
+            "workflow_recorded_digest_signed": { "const": true },
+            "workflow_recorded_verified": { "const": true },
+            "certificate_identity": {
+              "const": "https://github.com/nenb/cogs/.github/workflows/release-images.yml@refs/heads/main"
+            },
+            "certificate_oidc_issuer": { "const": "https://token.actions.githubusercontent.com" }
+          }
+        }
+      }
+    }
+  }
+}

@@ -695,7 +695,7 @@ test("linux-kvm profile switches relay after manager ready without fallback", as
     const relay = Object.freeze({
       configureProxyCapability: (holder: { withSecret<T>(op: (secret: string) => T): T }) => {
         holder.withSecret((secret) => {
-          assert.match(secret, /^[A-Za-z0-9_-]{22,256}$/u);
+          assert.match(secret, /^[A-Za-z0-9_-]{32,128}$/u);
         });
         calls.push("relay.capability");
       },

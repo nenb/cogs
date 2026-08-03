@@ -7,6 +7,7 @@ import { platform, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { encodeProxyAuthorizationBasic } from "../../../../src/egress/proxy-capability.ts";
 import { writeReports } from "../../controller/report.ts";
 import { type CaseManifest, runConformance, type SecurityReport } from "../../controller/runner.ts";
 import { startFaultInjector } from "../../fault-injector/server.ts";
@@ -26,6 +27,8 @@ const stateRoot = process.platform === "linux" ? "/dev/shm" : tmpdir();
 const realCredential = `Bearer cogs-fixture-${randomBytes(24).toString("hex")}`;
 const capability = `cogs-capability-${randomBytes(24).toString("hex")}`;
 const wrongCapability = `cogs-wrong-${randomBytes(24).toString("hex")}`;
+const capabilityAuthorization = encodeProxyAuthorizationBasic(capability);
+const wrongCapabilityAuthorization = encodeProxyAuthorizationBasic(wrongCapability);
 const placeholder = "Bearer cogs-non-secret-placeholder";
 const sessionId = "session-envoy-smoke";
 
@@ -148,7 +151,7 @@ const fixtures = await startUpstreamFixtures({
   },
   redirectLocation: "https://undeclared.invalid/denied",
 });
-const faultInjector = await startFaultInjector({ initialCapability: capability });
+const faultInjector = await startFaultInjector({ initialCapability: capabilityAuthorization });
 let report: SecurityReport | undefined;
 try {
   const proxyCertificate = await generateProxyCertificate(material);
@@ -192,7 +195,14 @@ try {
 
   const adapter = new EnvoyConformanceAdapter({
     stateRoot,
-    sensitiveValues: [realCredential, capability, wrongCapability, placeholder],
+    sensitiveValues: [
+      realCredential,
+      capability,
+      wrongCapability,
+      capabilityAuthorization,
+      wrongCapabilityAuthorization,
+      placeholder,
+    ],
     configurationFor: (test) => configFor(test.id),
     commandFor: (test, runtime) => ({
       command: join(here, "case-probe.sh"),
@@ -259,7 +269,14 @@ try {
       "The immutable TLS interception certificate enumerates registered hosts; Envoy does not mint leaves dynamically.",
       "The complete route, parser, HTTP/2, redirect, drain, and client matrix is tracked by Stage 1 issue 22.",
     ],
-    redactValues: [realCredential, capability, wrongCapability, placeholder],
+    redactValues: [
+      realCredential,
+      capability,
+      wrongCapability,
+      capabilityAuthorization,
+      wrongCapabilityAuthorization,
+      placeholder,
+    ],
     adapter,
     cleanupTimeoutMs: 20_000,
     teardownTimeoutMs: 20_000,
@@ -298,7 +315,14 @@ try {
     );
     assert.notEqual(faultInjector.snapshot().intents[0]?.completion, null);
     const serialized = JSON.stringify({ report, observations, snapshot: faultInjector.snapshot(), records });
-    for (const value of [realCredential, capability, wrongCapability, placeholder])
+    for (const value of [
+      realCredential,
+      capability,
+      wrongCapability,
+      capabilityAuthorization,
+      wrongCapabilityAuthorization,
+      placeholder,
+    ])
       assert.equal(serialized.includes(value), false);
   } catch (error) {
     const result = bearerResult ?? report.tests[0];

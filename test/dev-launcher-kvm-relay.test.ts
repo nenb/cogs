@@ -176,8 +176,11 @@ test("relay injects callback-scoped proxy capability into fragmented CONNECT onl
     await new Promise((resolve) => setTimeout(resolve, 10));
     s.write("User-Agent: curl\r\n\r\nbody");
     assert.match(await readOnce(s), /200 Connection Established/u);
-    assert.match(upstream.captured(), /\r\nProxy-Authorization: abcdefghijklmnopqrstuvwxyz012345\r\n/u);
-    assert.doesNotMatch(upstream.captured(), /Proxy-Authorization: Bearer/u);
+    assert.match(
+      upstream.captured(),
+      /\r\nProxy-Authorization: Basic Y29nczphYmNkZWZnaGlqa2xtbm9wcXJzdHV2d3h5ejAxMjM0NQ==\r\n/u,
+    );
+    assert.doesNotMatch(upstream.captured(), /Proxy-Authorization: (?:Bearer|abcdefghijklmnopqrstuvwxyz)/u);
     assert.equal((upstream.captured().match(/Proxy-Authorization/gu) ?? []).length, 1);
     assert.match(upstream.captured(), /\r\n\r\nbody$/u);
     assert.equal(JSON.stringify(r.snapshot()).includes("abcdefghijklmnopqrstuvwxyz"), false);

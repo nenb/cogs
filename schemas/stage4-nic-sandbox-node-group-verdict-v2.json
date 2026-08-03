@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.dev/schemas/stage4-nic-sandbox-node-group-verdict-v2.json",
+  "title": "Cogs Stage 4 NIC source capability verdict v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "authority",
+    "campaign_authorized",
+    "cloud_execution_observed",
+    "provider_truth_observed",
+    "launch_template_contents_observed",
+    "stage4_exit_satisfied",
+    "release_eligible",
+    "contract_sha256",
+    "nic_source_pin_resolved",
+    "node_image_pin_resolved",
+    "launch_template_selection_capability_resolved",
+    "status",
+    "reason_code"
+  ],
+  "properties": {
+    "version": {
+      "const": "cogs.stage4-nic-sandbox-node-group-verdict/v2"
+    },
+    "authority": {
+      "const": "local-static-personal-fork-source-classifier"
+    },
+    "campaign_authorized": {
+      "const": false
+    },
+    "cloud_execution_observed": {
+      "const": false
+    },
+    "provider_truth_observed": {
+      "const": false
+    },
+    "launch_template_contents_observed": {
+      "const": false
+    },
+    "stage4_exit_satisfied": {
+      "const": false
+    },
+    "release_eligible": {
+      "const": false
+    },
+    "contract_sha256": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        }
+      ]
+    },
+    "nic_source_pin_resolved": {
+      "type": "boolean"
+    },
+    "node_image_pin_resolved": {
+      "const": false
+    },
+    "launch_template_selection_capability_resolved": {
+      "type": "boolean"
+    },
+    "status": {
+      "enum": ["source-capability-satisfied-local-static", "reject-drift"]
+    },
+    "reason_code": {
+      "enum": [
+        "STAGE4_NIC_SOURCE_CAPABILITY_PRESENT_NONOBSERVING",
+        "STAGE4_NIC_INVALID_SHAPE",
+        "STAGE4_NIC_INVALID_VERSION",
+        "STAGE4_NIC_SOURCE_DRIFT"
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "source-capability-satisfied-local-static"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "reason_code": {
+            "const": "STAGE4_NIC_SOURCE_CAPABILITY_PRESENT_NONOBSERVING"
+          },
+          "nic_source_pin_resolved": {
+            "const": true
+          },
+          "launch_template_selection_capability_resolved": {
+            "const": true
+          },
+          "contract_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "nic_source_pin_resolved": {
+            "const": false
+          },
+          "launch_template_selection_capability_resolved": {
+            "const": false
+          }
+        }
+      }
+    }
+  ]
+}

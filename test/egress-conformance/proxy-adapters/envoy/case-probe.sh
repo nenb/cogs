@@ -72,7 +72,8 @@ curl --silent --show-error \
   --connect-timeout 5 \
   --noproxy '' \
   --proxy "$HTTPS_PROXY" \
-  --proxy-header "Proxy-Authorization: $capability" \
+  --proxy-basic \
+  --proxy-user "cogs:$capability" \
   --cacert "$SSL_CERT_FILE" \
   --header 'Authorization: Bearer cogs-non-secret-placeholder' \
   --http1.1 \

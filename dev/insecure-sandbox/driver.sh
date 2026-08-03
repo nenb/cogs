@@ -93,6 +93,7 @@ acquire_lock() {
     fail 'another insecure-container lifecycle command holds the state lock'
   fi
   chmod 0700 "$lock"
+  chgrp "$(id -g)" "$lock"
   printf '%s\n' "$$" > "$lock/pid"
   trap 'rm -rf -- "$lock"' EXIT
 }
@@ -139,6 +140,7 @@ init_docker_tool_state_at() {
   verify_private_dir "$(dirname "$docker_root")"
   mkdir -p "$docker_root" "$docker_home" "$docker_config" "$buildx_config"
   chmod 0700 "$docker_root" "$docker_home" "$docker_config" "$buildx_config"
+  chgrp "$(id -g)" "$docker_root" "$docker_home" "$docker_config" "$buildx_config"
   verify_private_dir "$docker_root"
   verify_private_dir "$docker_home"
   verify_private_dir "$docker_config"
@@ -296,6 +298,7 @@ create() {
   local input="$state/input" control="$state/control" ca_private
   mkdir -p "$control"
   chmod 0700 "$state" "$control"
+  chgrp "$(id -g)" "$state" "$control"
   printf '%s\n' "$state_id" > "$sentinel"
   printf '%s\n' "$container" > "$state/container"
   printf '%s\n' "$volume" > "$state/volume"
@@ -309,6 +312,7 @@ create() {
 
   mkdir -p "$input"
   chmod 0700 "$input"
+  chgrp "$(id -g)" "$input"
   ssh-keygen -q -t ed25519 -N '' -C cogs-insecure-host -f "$input/ssh_host_ed25519_key"
   ssh-keygen -q -t ed25519 -N '' -C cogs-insecure-client -f "$control/client_ed25519_key"
   cp "$control/client_ed25519_key.pub" "$input/client_ed25519_key.pub"

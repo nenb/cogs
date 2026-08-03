@@ -1,6 +1,8 @@
 /* biome-ignore-all lint/suspicious/noExplicitAny: hostile package mutations intentionally cross strict JSON types */
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import {
+  chmodSync,
   existsSync,
   linkSync,
   mkdirSync,
@@ -33,6 +35,7 @@ import {
   readStage4SourceFile,
   STAGE4_PINNED_GIT,
   STAGE4_SOURCE_INVENTORY_EXCLUSIONS,
+  stage4TrackedWorktreeMerkle,
 } from "../scripts/stage4-offline-source-inventory.ts";
 
 const root = resolve(import.meta.dirname, "..");
@@ -52,6 +55,9 @@ function artifacts(): Record<string, Uint8Array> {
     imageLock: bytes("docs/security-evidence/stage4-offline-readiness-artifacts/image-lock.json"),
     nicContract: bytes("deploy/nic/stage4-sandbox-node-group-contract.json"),
     runtimePins: bytes("docs/security-evidence/stage4-offline-readiness-artifacts/runtime-pins.json"),
+    authenticatedRuntimeArtifacts: bytes(
+      "docs/security-evidence/stage4-offline-readiness-artifacts/authenticated-runtime-artifacts.json",
+    ),
     schemaInventory: bytes("docs/security-evidence/stage4-offline-readiness-artifacts/schema-inventory.json"),
     localValidation: bytes("docs/security-evidence/stage4-offline-readiness-artifacts/local-validation.json"),
   };
@@ -74,6 +80,8 @@ test("committed canonical package is locally complete but campaign-blocked and n
   assert.equal(verdict.local_preparation_complete, true);
   assert.equal(verdict.local_preparation_scope, "bounded-package-assembly-and-local-validation-only");
   assert.equal(verdict.trusted_render_preparation_complete, true);
+  assert.equal(verdict.candidate_artifact_closure_complete, true);
+  assert.equal(verdict.selected_runtime_artifacts_authenticated, true);
   assert.equal(verdict.exact_image_runtime_closure_satisfied, false);
   assert.equal(verdict.campaign_request_ready, false);
   assert.equal(verdict.campaign_approved, false);
@@ -96,10 +104,10 @@ test("verdict and package compile under strict independent schemas", () => {
   const Ajv2020 = require("ajv/dist/2020.js") as new (options?: Options) => AjvCore;
   const ajv = new Ajv2020({ allErrors: true, strict: true, strictRequired: false, ownProperties: true });
   const packageSchema = JSON.parse(
-    readFileSync(resolve(root, "schemas/stage4-offline-readiness-package-v1.json"), "utf8"),
+    readFileSync(resolve(root, "schemas/stage4-offline-readiness-package-v2.json"), "utf8"),
   );
   const verdictSchema = JSON.parse(
-    readFileSync(resolve(root, "schemas/stage4-offline-readiness-verdict-v1.json"), "utf8"),
+    readFileSync(resolve(root, "schemas/stage4-offline-readiness-verdict-v2.json"), "utf8"),
   );
   const validatePackage = ajv.compile(packageSchema);
   const validateVerdict = ajv.compile(verdictSchema);
@@ -147,18 +155,32 @@ test("committed inventories are canonical, complete for their scopes, and bind e
       STAGE4_PINNED_GIT.sha256;
   if (pinnedGitAvailable) assert.deepEqual(bytes(sourcePath), generateStage4SourceInventory(root));
   assert.deepEqual(
-    source.excluded_self_referential_outputs.map((row: { path: string }) => row.path),
+    source.excluded_generated_evidence_outputs.map((row: { path: string }) => row.path),
     STAGE4_SOURCE_INVENTORY_EXCLUSIONS,
   );
-  assert.equal(source.scope, "complete-stage4-source-closure");
-  assert.deepEqual(source.repository_binding, {
+  assert.equal(source.scope, "complete-tracked-worktree-source-build-qualification-closure");
+  assert.equal(source.version, "cogs.stage4-offline-source-inventory/v5");
+  assert.deepEqual(source.worktree_binding, {
+    file_count: source.entries.length,
     git_executable_sha256: "7588ceab299393618d6f8861502ac0588d1594025f301d9a61a898215b5571d3",
-    git_index_path_set_sha256: source.repository_binding.git_index_path_set_sha256,
     git_version: "git version 2.50.1 (Apple Git-155)",
-    regeneration_base_head: "c80b5eb8c6308b605c677e8c2b4154267fc147cf",
-    semantics: "exact-tracked-worktree-bytes-at-regeneration-dirty-tracked-files-allowed",
+    tracked_path_set_sha256: source.worktree_binding.tracked_path_set_sha256,
+    worktree_merkle_sha256: stage4TrackedWorktreeMerkle(source.entries),
+    semantics:
+      "complete-tracked-git-modes-and-worktree-bytes-excluding-recorded-generated-evidence;no-commit-or-clean-index-claim",
   });
-  assert.match(source.repository_binding.git_index_path_set_sha256, /^[0-9a-f]{64}$/u);
+  assert.match(source.worktree_binding.tracked_path_set_sha256, /^[0-9a-f]{64}$/u);
+  assert.match(source.worktree_binding.worktree_merkle_sha256, /^[0-9a-f]{64}$/u);
+  assert.equal(Object.hasOwn(source.worktree_binding, "regeneration_base_head"), false);
+  for (const entry of source.entries as Array<{ mode: string; path: string }>) {
+    assert.match(entry.mode, /^100(?:644|755)$/u, entry.path);
+    const executable = (statSync(resolve(root, entry.path)).mode & 0o111) !== 0;
+    assert.equal(entry.mode, executable ? "100755" : "100644", entry.path);
+  }
+  const modeChanged = source.entries.map((entry: { mode: string; path: string; sha256: string }, index: number) =>
+    index === 0 ? { ...entry, mode: entry.mode === "100755" ? "100644" : "100755" } : entry,
+  );
+  assert.notEqual(stage4TrackedWorktreeMerkle(modeChanged), source.worktree_binding.worktree_merkle_sha256);
   assert.ok(
     source.entries.some((entry: { path: string }) => entry.path === "scripts/stage4-storage-launch-contract.ts"),
   );
@@ -169,6 +191,43 @@ test("committed inventories are canonical, complete for their scopes, and bind e
   assert.ok(
     source.entries.some((entry: { path: string }) => entry.path === "scripts/stage4-offline-readiness-regenerate.ts"),
   );
+  const tracked = (prefix: string): string[] =>
+    readdirSync(resolve(root, prefix), { recursive: true, withFileTypes: true })
+      .filter((entry) => entry.isFile())
+      .map((entry) =>
+        `${prefix}/${entry.parentPath.slice(resolve(root, prefix).length + 1)}/${entry.name}`.replace("//", "/"),
+      )
+      .sort();
+  const sourcePaths = source.entries.map((entry: { path: string }) => entry.path);
+  for (const prefix of ["src", "images"]) {
+    assert.deepEqual(
+      sourcePaths.filter((path: string) => path.startsWith(`${prefix}/`)),
+      tracked(prefix),
+      `${prefix} closure`,
+    );
+  }
+  for (const required of [
+    ".github/workflows/ci.yml",
+    ".github/workflows/local-image-artifacts.yml",
+    ".github/workflows/release-images.yml",
+    "docs/operations/local-image-artifacts.md",
+    "docs/operations/production-runtime-foundation.md",
+    "docs/operations/release-image-publication.md",
+    "schemas/local-image-artifact-package-v1.json",
+    "schemas/release-image-set-assertion-v1.json",
+    "schemas/runtime-v1alpha1.json",
+    "third_party/envoy-ext-authz-v1.38.3/ext_authz.descriptor.pb",
+    "third_party/envoy-ext-authz-v1.38.3/manifest.json",
+    "scripts/local-image-artifacts.ts",
+    "scripts/release-image-set-assertion.ts",
+    "scripts/validate-trivy-image-report.jq",
+    "test/production-compose.test.ts",
+    "test/production-sandbox-image.test.ts",
+    "test/production-worker-image.test.ts",
+  ]) {
+    assert.ok(sourcePaths.includes(required), required);
+  }
+  assert.ok(source.entries.length <= 1024);
   assertEntries(source.entries);
 
   const walk = (directory: string): string[] =>
@@ -195,7 +254,17 @@ test("committed inventories are canonical, complete for their scopes, and bind e
   assert.deepEqual(
     schemas.entries.map((entry: { path: string }) => entry.path),
     readdirSync(resolve(root, "schemas"))
-      .filter((name) => /^stage[45].*\.json$/u.test(name))
+      .filter(
+        (name) =>
+          /^stage[45].*\.json$/u.test(name) ||
+          [
+            "integration-v1alpha1.json",
+            "launch-v1alpha1.json",
+            "local-image-artifact-package-v1.json",
+            "release-image-set-assertion-v1.json",
+            "runtime-v1alpha1.json",
+          ].includes(name),
+      )
       .sort()
       .map((name) => `schemas/${name}`),
   );
@@ -208,6 +277,7 @@ test("committed inventories are canonical, complete for their scopes, and bind e
       "readiness-format",
       "repository-typecheck",
       "stage4-unit-contracts",
+      "production-runtime-image-static-route-contracts",
       "stage4-schema-registry",
       "all-schema-contracts",
       "trusted-helm-local-contracts",
@@ -230,13 +300,30 @@ test("committed inventories are canonical, complete for their scopes, and bind e
       reason: "external-network-operation-outside-local-offline-preparation-scope",
       result: "not-run-not-claimed",
     },
+    {
+      id: "production-image-docker-builds",
+      reason: "docker-build-operation-owned-by-separate-image-workflow",
+      result: "not-run-not-claimed",
+    },
+    {
+      id: "release-image-publication",
+      reason: "registry-publication-operation-owned-by-separate-protected-main-workflow",
+      result: "not-run-not-claimed",
+    },
   ]);
   assert.equal(validation.status, "passed-recorded-bounded-local-commands");
   assert.equal(
     validation.scope,
-    "only-the-eight-recorded-bounded-local-commands;no-current-registry-advisory-discovery",
+    "only-the-nine-recorded-bounded-local-commands;no-docker-publication-or-current-registry-advisory-discovery",
   );
-  assert.deepEqual(validation.execution, { cloud: false, external_model: false, kubernetes: false, provider: false });
+  assert.deepEqual(validation.execution, {
+    cloud: false,
+    docker: false,
+    external_model: false,
+    image_publication: false,
+    kubernetes: false,
+    provider: false,
+  });
   assert.deepEqual(
     validation.source_bindings.map((entry: { path: string }) => entry.path),
     [
@@ -246,7 +333,15 @@ test("committed inventories are canonical, complete for their scopes, and bind e
       "package-lock.json",
       "package.json",
       "schemas/stage4-offline-readiness-package-v1.json",
+      "schemas/stage4-offline-readiness-package-v2.json",
       "schemas/stage4-offline-readiness-verdict-v1.json",
+      "schemas/stage4-offline-readiness-verdict-v2.json",
+      "schemas/stage4-authenticated-runtime-artifact-evidence-v1.json",
+      "schemas/integration-v1alpha1.json",
+      "schemas/launch-v1alpha1.json",
+      "schemas/local-image-artifact-package-v1.json",
+      "schemas/release-image-set-assertion-v1.json",
+      "schemas/runtime-v1alpha1.json",
       "scripts/private-bytes.ts",
       "scripts/check-lock-integrity.ts",
       "scripts/check-npm-audit.ts",
@@ -254,9 +349,12 @@ test("committed inventories are canonical, complete for their scopes, and bind e
       "scripts/stage4-offline-readiness.ts",
       "scripts/stage4-offline-render-preparation.ts",
       "scripts/stage4-offline-source-inventory.ts",
+      "scripts/stage4-runtime-artifact-closure-regenerate.ts",
+      "scripts/stage4-runtime-artifact-closure.ts",
       "scripts/validate-schemas.ts",
       "test/stage4-offline-readiness.test.ts",
       "test/stage4-offline-render-preparation.test.ts",
+      "test/stage4-runtime-artifact-closure.test.ts",
       "test/stage4-schema-registry.test.ts",
       "tsconfig.json",
     ],
@@ -282,21 +380,23 @@ test("committed inventories are canonical, complete for their scopes, and bind e
   assert.equal(imageLock.images[0].artifact_identity_state, "absent-blocking");
   assert.equal(imageLock.images[2].artifact_identity_state, "absent-blocking");
   const runtime = readManifest("docs/security-evidence/stage4-offline-readiness-artifacts/runtime-pins.json");
-  assert.deepEqual(runtime.eks_node_image, {
-    ami_id: null,
-    kernel_release: null,
-    reason_code: "EKS_NODE_IMAGE_PIN_NOT_RECORDED",
-    release: null,
-    state: "unresolved-blocking",
-  });
+  assert.equal(runtime.eks_node_image.kubernetes_minor, "1.35");
+  assert.equal(runtime.eks_node_image.public_release_tag, "v20260728");
+  assert.equal(runtime.eks_node_image.public_release_commit, "80b4c870f33069dadf27e075f184c06cccfc7999");
+  assert.equal(runtime.eks_node_image.release, "1.35.6-20260728");
+  assert.equal(runtime.eks_node_image.ami_id, null);
+  assert.equal(runtime.eks_node_image.kernel_release, null);
+  assert.equal(runtime.eks_node_image.pin_state, "public-candidate-aws-fields-unresolved");
   assert.equal(runtime.runtime.kata.archive_sha256, committedPackage.pins.runtime.kata_archive_sha256);
   assert.equal(runtime.runtime.containerd.version, committedPackage.pins.runtime.containerd_version);
   assert.equal(runtime.runtime.qemu.version, committedPackage.pins.runtime.qemu_version);
-  assert.equal(runtime.runtime.containerd.artifact_sha256, null);
-  assert.equal(runtime.runtime.containerd.state, "artifact-identity-unresolved-blocking");
-  assert.equal(runtime.runtime.qemu.artifact_sha256, null);
-  assert.equal(runtime.runtime.qemu.state, "artifact-identity-unresolved-blocking");
-  assert.equal(runtime.exact_runtime_artifact_closure_satisfied, false);
+  assert.equal(runtime.runtime.containerd.artifact_sha256, committedPackage.pins.runtime.containerd_artifact_sha256);
+  assert.equal(runtime.runtime.containerd.artifact_state, "authenticated-public-release-selected-candidate");
+  assert.equal(runtime.runtime.qemu.artifact_sha256, committedPackage.pins.runtime.qemu_artifact_sha256);
+  assert.equal(runtime.runtime.qemu.provenance, "kata-bundled-release-member");
+  assert.equal(runtime.historical_host_observation.qemu.version, "8.2.2");
+  assert.equal(runtime.historical_host_observation.qemu.selected_runtime, false);
+  assert.equal(committedPackage.pins.runtime.exact_runtime_artifact_closure_satisfied, true);
 });
 
 test("source reads reject final and component symlinks, hard links, and oversize files", () => {
@@ -309,6 +409,18 @@ test("source reads reject final and component symlinks, hard links, and oversize
     writeFileSync(join(repository, "safe/source.ts"), "trusted\n");
     writeFileSync(join(outside, "source.ts"), "hostile\n");
     assert.equal(new TextDecoder().decode(readStage4SourceFile(repository, "safe/source.ts")), "trusted\n");
+    assert.equal(
+      new TextDecoder().decode(readStage4SourceFile(repository, "safe/source.ts", 1024, true, "100644")),
+      "trusted\n",
+    );
+    assert.throws(() => readStage4SourceFile(repository, "safe/source.ts", 1024, true, "100755"), /FILE_MODE_INVALID/u);
+    chmodSync(join(repository, "safe/source.ts"), 0o755);
+    assert.equal(
+      new TextDecoder().decode(readStage4SourceFile(repository, "safe/source.ts", 1024, true, "100755")),
+      "trusted\n",
+    );
+    assert.throws(() => readStage4SourceFile(repository, "safe/source.ts", 1024, true, "100644"), /FILE_MODE_INVALID/u);
+    chmodSync(join(repository, "safe/source.ts"), 0o644);
 
     symlinkSync(join(outside, "source.ts"), join(repository, "final-link.ts"));
     assert.throws(() => readStage4SourceFile(repository, "final-link.ts"), /STAGE4_SOURCE_INVENTORY_/u);
@@ -321,6 +433,37 @@ test("source reads reject final and component symlinks, hard links, and oversize
     assert.throws(() => readStage4SourceFile(repository, "oversize.ts", 2), /FILE_BOUND_INVALID/u);
   } finally {
     rmSync(temporary, { recursive: true, force: true });
+  }
+});
+
+test("source inventory ignores irrelevant untracked outputs but rejects untracked validation inputs", () => {
+  const pinnedGitAvailable =
+    existsSync(STAGE4_PINNED_GIT.executable) &&
+    stage4OfflineReadinessSha256(new Uint8Array(readFileSync(STAGE4_PINNED_GIT.executable)), 64 * 1024 * 1024) ===
+      STAGE4_PINNED_GIT.sha256;
+  if (!pinnedGitAvailable) return;
+
+  const repository = mkdtempSync(join(tmpdir(), "cogs-stage4-untracked-scope-"));
+  try {
+    writeFileSync(join(repository, "README.md"), "tracked\n");
+    const initialized = spawnSync(STAGE4_PINNED_GIT.executable, ["init", "--quiet"], { cwd: repository });
+    assert.equal(initialized.status, 0);
+    const added = spawnSync(STAGE4_PINNED_GIT.executable, ["add", "README.md"], { cwd: repository });
+    assert.equal(added.status, 0);
+
+    mkdirSync(join(repository, "generated-output"));
+    writeFileSync(join(repository, "generated-output/result.json"), "{}\n");
+    assert.doesNotThrow(() => generateStage4SourceInventory(repository));
+
+    writeFileSync(join(repository, ".git/info/exclude"), "src/\n");
+    mkdirSync(join(repository, "src"));
+    writeFileSync(join(repository, "src/hostile.ts"), "export {};\n");
+    assert.throws(
+      () => generateStage4SourceInventory(repository),
+      /STAGE4_SOURCE_INVENTORY_UNTRACKED_VALIDATION_INPUT_FORBIDDEN/u,
+    );
+  } finally {
+    rmSync(repository, { recursive: true, force: true });
   }
 });
 
@@ -337,6 +480,7 @@ test("binds every exact artifact and byte-identical repeated render", () => {
     imageLock: "image_lock_sha256",
     nicContract: "nic_contract_sha256",
     runtimePins: "runtime_pins_sha256",
+    authenticatedRuntimeArtifacts: "authenticated_runtime_artifacts_sha256",
     schemaInventory: "schema_inventory_sha256",
     localValidation: "local_validation_sha256",
   };
@@ -367,6 +511,7 @@ test("opaque or semantically forged records fail even when package digests and r
     renderReceipt: "render_preparation_receipt_sha256",
     imageLock: "image_lock_sha256",
     runtimePins: "runtime_pins_sha256",
+    authenticatedRuntimeArtifacts: "authenticated_runtime_artifacts_sha256",
     schemaInventory: "schema_inventory_sha256",
     localValidation: "local_validation_sha256",
   };
@@ -641,16 +786,16 @@ test("authority promotion and one-attempt replay or retry authority fail closed"
   assert.equal(replayed.cloud_authorized, false);
 });
 
-test("current NIC and node-image blockers and uncertainty cannot be promoted or erased", () => {
+test("NIC v2 remains non-observing while node-image and runtime uncertainty cannot be promoted", () => {
   const mutations: Array<[string, (value: Record<string, any>) => void]> = [
     [
-      "NIC capable",
+      "NIC capability promoted to observation",
       (value) => {
-        value.pins.nic.capability_state = "ready";
+        value.pins.nic.capability_state = "provider-observed-ready";
       },
     ],
     [
-      "NIC version",
+      "NIC release invented",
       (value) => {
         value.pins.nic.release = "v0.12.0";
       },
@@ -692,9 +837,9 @@ test("current NIC and node-image blockers and uncertainty cannot be promoted or 
       },
     ],
     [
-      "runtime closure invented",
+      "runtime artifact closure downgraded",
       (value) => {
-        value.pins.runtime.exact_runtime_artifact_closure_satisfied = true;
+        value.pins.runtime.exact_runtime_artifact_closure_satisfied = false;
       },
     ],
     [
@@ -906,10 +1051,14 @@ test("committed regeneration procedure is local, bounded, and wired to native No
   const packageJson = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
   assert.equal(packageJson.scripts["readiness:regenerate"], "node scripts/stage4-offline-readiness-regenerate.ts");
   assert.equal(packageJson.scripts["readiness:render:check"], "node scripts/stage4-offline-render-preparation.ts");
+  assert.match(packageJson.scripts["readiness:production:check"], /^tsx --test --test-concurrency=1 /u);
   const source = readFileSync(resolve(root, "scripts/stage4-offline-readiness-regenerate.ts"), "utf8");
   for (const procedure of [
     "regenerateReceipt",
+    "regenerateRunbookIndex",
     "regenerateSchemaInventory",
+    "rewriteRuntimeSchemaInventoryAnchor",
+    "regenerateRuntimeArtifactEvidence",
     "regenerateSourceAndLocalValidation",
     "rewriteClassifierAnchors",
     "regeneratePackage",
@@ -935,6 +1084,7 @@ test("classifier source has no executable provider, filesystem, environment, or 
       "blockers",
       "campaign_approved",
       "campaign_request_ready",
+      "candidate_artifact_closure_complete",
       "cloud_authorized",
       "cloud_execution_observed",
       "current_resources_observed",
@@ -945,6 +1095,7 @@ test("classifier source has no executable provider, filesystem, environment, or 
       "provider_truth_observed",
       "reason_code",
       "release_eligible",
+      "selected_runtime_artifacts_authenticated",
       "stage4_exit_satisfied",
       "status",
       "trusted_render_preparation_complete",

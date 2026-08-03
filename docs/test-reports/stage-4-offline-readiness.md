@@ -6,7 +6,8 @@
 - Pure authority: `local-static-stage4-readiness-package` / `local-static-stage4-readiness-classifier`.
 - Trusted preparation authority: `trusted-local-static-render-preparation`.
 - Local preparation: true, scoped only to `bounded-package-assembly-and-local-validation-only`.
-- Exact image/runtime closure: false.
+- Authenticated selected-runtime candidate artifacts: true (public/static release bytes only).
+- Exact image/runtime observation closure: false.
 - Campaign request ready / approved / cloud authorized: false / false / false.
 - Provider/cloud/Kubernetes/current-resource/zero-resource observation: none.
 - Stage 4 exit / release eligible: false / false.
@@ -21,16 +22,16 @@ Tests freshly rerun preparation through the exact pinned Node CLI. Identical for
 
 ## Exact closure and honest blockers
 
-The generated source inventory covers the complete Stage 4 closure, including Helm/NIC, every Stage 4 schema/script/test/fixture/doc, root build locks, all readiness generators/artifacts, the active `scripts/validate-schemas.ts` schema-pass executor, the committed regeneration procedure, and the later storage proxied-byte correction. It excludes only the readiness package, source inventory itself, and local-validation artifact to break explicit self-reference; those exclusions are machine-recorded and tested. Its pinned Git index path set binds regeneration to predecessor `c80b5eb8c6308b605c677e8c2b4154267fc147cf` while allowing dirty tracked worktree bytes. Selected untracked paths reject. Source reads retain no-follow descriptors for every component and compare lstat/fstat identities before and after bounded reads; symlink components/finals, hard links, oversize files, and replacement drift reject.
+The generated source inventory covers every tracked worktree file, including `src/`, `images/`, `third_party/`, `.github/workflows/ci.yml`, release workflows, build definitions, qualification inputs, schemas, tests, documentation, and evidence. It excludes only the readiness package, source inventory itself, and local-validation artifact to break generated-evidence recursion; those exclusions are machine-recorded and tested. Every entry records exact Git mode (`100644` or `100755`), path, and exact worktree-byte SHA-256; regeneration verifies Git mode against worktree executable bits. It records the complete tracked path-set digest and a domain-separated Merkle digest over all three entry fields. It makes no predecessor, immutable-commit, or clean-index claim; a later release candidate requires separate binding. Untracked files beneath every validation/build input root reject preparation; unrelated untracked outputs stay outside the closure, and the protected publication workflow excludes all untracked bytes by constructing its context with `git archive`. Source reads retain no-follow descriptors for every component and compare lstat/fstat identities before and after bounded reads; symlink components/finals, hard links, executable-mode mismatch, oversize files, and replacement drift reject.
 
-The package binds all exact local inputs and one domain-separated semantic root. This does **not** establish release artifact closure:
+The v2 package binds all exact local inputs, authenticated-runtime evidence, and one domain-separated semantic root. Public candidate artifact closure is now exact:
 
-- worker and sandbox records are `.invalid` placeholders, so `RELEASE_IMAGE_SET_ABSENT` remains blocking;
-- containerd `2.2.1` and QEMU `8.2.2` have null artifact SHA-256 values, so their separate artifact-identity blockers remain;
-- the EKS AMI/image/kernel is unresolved;
-- NIC `v0.11.0` / module `0.7.0` lacks custom launch-template/nested-CPU support.
+- containerd `2.2.1` static archive SHA-256 `af3e82bac6abed58d45956c653244aa2be583359a9753614278ef652012f2883` is bound to its release checksum, SLSA provenance, workflow identity/issuer/run, commit, and selected executable members;
+- Kata `3.32.0` archive SHA-256 `1449ecea50bd91fa73a94648db195d18950fe869ba4b1f12d05f55f1fa7c1b01` is bound to the GitHub immutable-release attestation and commit;
+- Kata's selected bundled QEMU is `11.0.1`, member SHA-256 `1e4968d9cce98c7cba8f9e3488236cba56993d9747f268d03b0284f3df2b012d`, with exact configuration and guest-kernel member identities; QEMU `8.2.2` remains historical host/source context only; and
+- Kubernetes `1.35` / AL2023 candidate `v20260728` is pinned to catalog commit `80b4c870f33069dadf27e075f184c06cccfc7999`, but its region-specific AMI ID and running kernel remain null.
 
-Placeholder digests and version strings cannot satisfy these blockers.
+The two artifact-identity blockers are therefore removed. Active personal-fork NIC v2 also resolves source-level external launch-template selection, so the historical NIC capability blocker is removed. This does **not** establish release/runtime observation closure: worker and sandbox are `.invalid` placeholders; exact Envoy lacks a publisher signature; launch-template contents, the EKS AMI ID/running kernel, and the selected containerd override are AWS-unobserved. `RELEASE_IMAGE_SET_ABSENT`, AWS image/kernel, account, price, quota, identity, approval, and provider-route blockers remain.
 
 ## Closed proposal and inventory
 
@@ -40,12 +41,12 @@ It contains exactly 38 corresponding independent inventory rows in the same orde
 
 ## Executed local evidence boundary
 
-Regeneration executes and records eight pinned, bounded, no-shell commands: readiness formatting, repository typecheck, bounded Stage 4 contract tests, Stage 4 schema-registry tests, all-schema validation, trusted Helm lint/zero-manifest/repeated-render checks, complete source inventory, and lockfile SRI integrity. Every record binds exact argv, executable/tool/version/digest, procedure source digests, exit code/signal, bounded stdout/stderr lengths and digests, normalization, and an outcome digest. The current npm-registry audit is explicitly recorded as `not-run-not-claimed` because it is external; local completion makes no current audit/advisory-discovery claim.
+Regeneration executes and records nine pinned, bounded, no-shell commands: readiness formatting, repository typecheck, bounded Stage 4 contract tests, production runtime/image/static-route source-contract tests, Stage 4 schema-registry tests, all-schema validation, trusted Helm lint/zero-manifest/repeated-render checks, complete source inventory, and lockfile SRI integrity. Every record binds exact argv, executable/tool/version/digest, procedure source digests, exit code/signal, bounded stdout/stderr lengths and digests, normalization, and an outcome digest. The command performs no Docker operation. Production Docker builds, release-image publication, and the current npm-registry audit are explicitly recorded as `not-run-not-claimed`; local completion makes no image-build, publication, current audit, or advisory-discovery claim.
 
 ## Hostile coverage
 
-Tests cover canonical bytes, every artifact digest, trusted receipt replacement, fresh-render forgery, complete source and schema inventories, component/final symlinks, hard links, oversize source reads, exact closed resource/inventory mapping, prohibited nonzero resources, blocker order/uniqueness, reason/status coupling, all expanded revalidation triggers, source/pin/price/quota/graph replay, invented image/runtime artifacts, authority promotion, two-attempt approval, prior-approval retry, byte bounds, inherited/custom prototypes, symbols, getters, and root/recursive Proxy traps. Invalid or uncertain input preserves uncertainty and every campaign/cloud/release claim remains false.
+Tests cover canonical bytes, every artifact digest, trusted receipt replacement, fresh-render forgery, complete mode-aware source and schema inventories, component/final symlinks, hard links, executable-mode mismatch, oversize source reads, exact closed resource/inventory mapping, prohibited nonzero resources, blocker order/uniqueness, reason/status coupling, all expanded revalidation triggers, source/pin/price/quota/graph replay, invented image/runtime artifacts, authority promotion, two-attempt approval, prior-approval retry, byte bounds, inherited/custom prototypes, symbols, getters, and root/recursive Proxy traps. Invalid or uncertain input preserves uncertainty and every campaign/cloud/release claim remains false.
 
 ## Required future work
 
-After #42 closure—and after any source, pin, price/quota, campaign graph, Helm/chart/values/renderer/tool identity, validation/advisory expiry, account/principal/separation, approval/envelope/attempt, destroy, or inventory change—the complete package and trusted receipt must be freshly regenerated. A future authority must supply real release images, exact containerd/QEMU artifacts, a capable NIC revision, exact EKS image/kernel, current account/price/quota/support facts, separated identities, and one-attempt approval. This package cannot be promoted into those facts or authorities.
+After #42 closure—and after any source, pin, price/quota, campaign graph, Helm/chart/values/renderer/tool identity, validation/advisory expiry, account/principal/separation, approval/envelope/attempt, destroy, or inventory change—the complete package and trusted receipt must be freshly regenerated. A future authority must supply real release worker/sandbox images, an Envoy signature disposition, region-specific EKS AMI and running-kernel evidence, observation of active NIC v2's launch-template/CPU configuration and the selected containerd/QEMU/kernel bytes, current account/price/quota/support facts, separated identities, and one-attempt approval. This package cannot be promoted into those facts or authorities.

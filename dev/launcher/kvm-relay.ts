@@ -1,4 +1,5 @@
 import { createServer, Socket } from "node:net";
+import { encodeProxyAuthorizationBasic } from "../../src/egress/proxy-capability.ts";
 import type { SecretHolder } from "./openbao.ts";
 
 export type KvmRelayOptions = Readonly<{ signal?: AbortSignal; deadlineAt?: number }>;
@@ -460,8 +461,9 @@ function injectProxyAuthorization(raw: Buffer, secret: string): Buffer {
     if (name === "host") host++;
   }
   if (host !== 1 || !lines.some((line) => line.toLowerCase() === `host: localhost:${port}`)) fail();
+  const authorization = encodeProxyAuthorizationBasic(secret);
   return Buffer.concat([
-    Buffer.from(`${lines.join("\r\n")}\r\nProxy-Authorization: ${secret}\r\n\r\n`, "latin1"),
+    Buffer.from(`${lines.join("\r\n")}\r\nProxy-Authorization: ${authorization}\r\n\r\n`, "latin1"),
     rest,
   ]);
 }
@@ -485,7 +487,7 @@ function requireSecretHolder(holder: unknown): asserts holder is SecretHolder {
 }
 
 function validateProxySecret(secret: string): string {
-  if (typeof secret !== "string" || !/^[A-Za-z0-9_-]{22,256}$/u.test(secret)) fail();
+  if (typeof secret !== "string" || !/^[A-Za-z0-9_-]{32,128}$/u.test(secret)) fail();
   return secret;
 }
 

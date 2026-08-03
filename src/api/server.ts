@@ -618,7 +618,7 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
   async function listenOnce(port = 0, host = "127.0.0.1", cooperative: CooperativeOptions): Promise<{ port: number }> {
     if (closed) throw new Error("api server is closed");
     if (listenStarted) throw new Error("api server is already listening");
-    if (!loopbackHost(host)) throw new Error("listen host must be loopback");
+    if (!productionListenHost(host)) throw new Error("listen host is not allowed");
     listenStarted = true;
     if (isCooperativeAborted(cooperative)) {
       closed = true;
@@ -1273,8 +1273,8 @@ function optionInteger(value: number | undefined, fallback: number, name: string
   return resolved;
 }
 
-function loopbackHost(host: string): boolean {
-  return host === "127.0.0.1" || host === "::1";
+function productionListenHost(host: string): boolean {
+  return host === "127.0.0.1" || host === "0.0.0.0";
 }
 
 function validRequestTarget(target: string): boolean {

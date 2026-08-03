@@ -160,7 +160,7 @@
       ],
       "properties": {
         "integrated_predecessor_git_commit": {
-          "const": "c80b5eb8c6308b605c677e8c2b4154267fc147cf"
+          "const": "dc11c1f6f2e29a66c602b82d805c764a00517bf0"
         },
         "inventory_scope": {
           "const": "complete-stage4-source-closure"
@@ -273,22 +273,22 @@
           ],
           "properties": {
             "release": {
-              "const": "v0.11.0"
+              "type": "null"
             },
             "commit_sha": {
-              "const": "28221c652c56bb8d48a92538c01503a82f2f9321"
+              "const": "53b1a791ed1ff394969e0aeaa6379be955244b62"
             },
             "module_version": {
-              "const": "0.7.0"
+              "type": "null"
             },
             "module_commit_sha": {
-              "const": "5d4cb31f07fda5c010b5be580258d32f6db75828"
+              "const": "c3017c0e15b538cd4e04c0786809a861ea82c621"
             },
             "capability_state": {
-              "const": "blocked-missing-custom-launch-template-and-nested-cpu-options"
+              "const": "source-capability-present-operator-attestation-only"
             },
             "reason_code": {
-              "const": "STAGE4_NIC_LAUNCH_TEMPLATE_CAPABILITY_MISSING"
+              "const": "STAGE4_NIC_SOURCE_CAPABILITY_PRESENT_NONOBSERVING"
             }
           }
         },
@@ -2419,15 +2419,12 @@
     },
     "blockers": {
       "type": "array",
-      "minItems": 12,
-      "maxItems": 12,
+      "minItems": 11,
+      "maxItems": 11,
       "uniqueItems": true,
       "prefixItems": [
         {
           "const": "ISSUE_42_OPEN"
-        },
-        {
-          "const": "NIC_V0_11_0_MODULE_0_7_0_LAUNCH_TEMPLATE_CAPABILITY_MISSING"
         },
         {
           "const": "EKS_AMI_IMAGE_RELEASE_KERNEL_UNRESOLVED"

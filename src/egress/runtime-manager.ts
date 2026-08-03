@@ -29,6 +29,7 @@ import {
   type CogsEgressTelemetrySink,
   createCogsEgressTelemetrySink,
 } from "./otlp-telemetry.ts";
+import { requireProxyCapability } from "./proxy-capability.ts";
 import {
   type CogsEgressRevocationReason,
   type CogsEgressRevocationSource,
@@ -224,7 +225,7 @@ class RuntimeManager {
       ...(this.options.workerTelemetry === undefined ? {} : { workerTelemetry: this.options.workerTelemetry }),
     });
     this.internalAuthzToken = validSecret(this.options.randomSecret(32));
-    this.proxyCapability = validSecret(this.options.proxyCapability);
+    this.proxyCapability = requireProxyCapability(this.options.proxyCapability);
     requireSecretPolicy(
       this.options.launch.user_id,
       this.options.launch.session_id,
@@ -608,7 +609,7 @@ function capture(options: CogsEgressRuntimeManagerOptions): Captured {
       maxSessionExpiresAtMs: integer(options.maxSessionExpiresAtMs, 1, Number.MAX_SAFE_INTEGER),
       completionCapacity: integer(options.completionCapacity, 1, 1024),
       revocation: validRevocation(options.revocation),
-      proxyCapability: validSecret(options.proxyCapability),
+      proxyCapability: requireProxyCapability(options.proxyCapability),
       workerTelemetry: captureTelemetry(options.workerTelemetry),
       revocationPollIntervalMs: integer(options.revocationPollIntervalMs ?? 1000, 50, 60_000),
       revocationMinPkiRemainingMs: integer(options.revocationMinPkiRemainingMs ?? 60_000, 1000, 3_600_000),

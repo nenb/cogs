@@ -1186,7 +1186,7 @@ test("publish validates payload graph and disconnects actual backpressure consum
   }
 });
 
-test("startup and request-target routing are loopback and origin-form only", async () => {
+test("startup allows only fixed production bind hosts and request-target routing is origin-form only", async () => {
   const life = lifecycle();
   const p = ports();
   const api = createApiServer({
@@ -1197,8 +1197,18 @@ test("startup and request-target routing are loopback and origin-form only", asy
     bearerToken: "worker-secret-0123456789abcdefghi",
     sessionId: "session-1",
   });
-  await assert.rejects(api.listen(0, "0.0.0.0"), /loopback/);
-  await assert.rejects(api.listen(0, "localhost"), /loopback/);
+  await api.listen(0, "0.0.0.0");
+  await api.close();
+  const rejected = createApiServer({
+    lifecycle: life as never,
+    session: p.session,
+    history: p.history,
+    exporter: p.exporter,
+    bearerToken: "worker-secret-0123456789abcdefghi",
+    sessionId: "session-1",
+  });
+  await assert.rejects(rejected.listen(0, "localhost"), /not allowed/);
+  await assert.rejects(rejected.listen(0, "::1"), /not allowed/);
   const first = createApiServer({
     lifecycle: life as never,
     session: p.session,

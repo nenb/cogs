@@ -1,24 +1,37 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 
-const created = "2026-07-25T01:40:00Z";
-const expiry = "2026-08-08T01:39:59Z";
+const created = "2026-08-03T00:40:00Z";
+const expiry = "2026-08-16T23:59:59Z";
 const expected = {
   "brace-expansion": {
     severity: "high",
-    source: 1130591,
-    url: "https://github.com/advisories/GHSA-mh99-v99m-4gvg",
-    range: ">=4.0.0 <5.0.8",
-    findingRange: "4.0.0 - 5.0.7",
+    findingRange: "3.0.0 - 5.0.7",
     node: "node_modules/@earendil-works/pi-coding-agent/node_modules/brace-expansion",
+    advisories: [
+      {
+        source: 1123898,
+        url: "https://github.com/advisories/GHSA-3jxr-9vmj-r5cp",
+        range: ">=3.0.0 <5.0.7",
+      },
+      {
+        source: 1130591,
+        url: "https://github.com/advisories/GHSA-mh99-v99m-4gvg",
+        range: ">=4.0.0 <5.0.8",
+      },
+    ],
   },
   protobufjs: {
     severity: "moderate",
-    source: 1123964,
-    url: "https://github.com/advisories/GHSA-j3f2-48v5-ccww",
-    range: ">=7.5.0 <=7.6.4",
     findingRange: "7.5.0 - 7.6.4",
     node: "node_modules/@earendil-works/pi-coding-agent/node_modules/protobufjs",
+    advisories: [
+      {
+        source: 1123964,
+        url: "https://github.com/advisories/GHSA-j3f2-48v5-ccww",
+        range: ">=7.5.0 <=7.6.4",
+      },
+    ],
   },
 } as const;
 
@@ -70,14 +83,19 @@ for (const [name, disposition] of Object.entries(expected)) {
   assert.equal(finding.range, disposition.findingRange, "npm audit affected range changed");
   assert.deepEqual(finding.effects, [], "npm audit effect graph changed");
   assert.deepEqual(finding.nodes, [disposition.node], "npm audit dependency path changed");
-  assert.ok(Array.isArray(finding.via) && finding.via.length === 1, "npm audit advisory graph changed");
-  const advisory = record(finding.via[0]);
-  assert.equal(advisory.source, disposition.source, "npm audit advisory identity changed");
-  assert.equal(advisory.name, name, "npm audit advisory package changed");
-  assert.equal(advisory.dependency, name, "npm audit advisory dependency changed");
-  assert.equal(advisory.url, disposition.url, "npm audit advisory URL changed");
-  assert.equal(advisory.severity, disposition.severity, "npm audit advisory severity changed");
-  assert.equal(advisory.range, disposition.range, "npm audit advisory range changed");
+  assert.ok(
+    Array.isArray(finding.via) && finding.via.length === disposition.advisories.length,
+    "npm audit advisory graph changed",
+  );
+  for (const [index, expectedAdvisory] of disposition.advisories.entries()) {
+    const advisory = record(finding.via[index]);
+    assert.equal(advisory.source, expectedAdvisory.source, "npm audit advisory identity changed");
+    assert.equal(advisory.name, name, "npm audit advisory package changed");
+    assert.equal(advisory.dependency, name, "npm audit advisory dependency changed");
+    assert.equal(advisory.url, expectedAdvisory.url, "npm audit advisory URL changed");
+    assert.equal(advisory.severity, disposition.severity, "npm audit advisory severity changed");
+    assert.equal(advisory.range, expectedAdvisory.range, "npm audit advisory range changed");
+  }
 }
 
 const counts = record(record(root.metadata).vulnerabilities);
@@ -86,4 +104,4 @@ assert.deepEqual(
   { info: 0, low: 0, moderate: 1, high: 1, critical: 0, total: 2 },
   "npm audit vulnerability counts changed",
 );
-console.log(`Accepted exactly two temporary npm audit dispositions through ${expiry}.`);
+console.log(`Accepted exactly two package-scoped temporary dispositions covering three advisories through ${expiry}.`);

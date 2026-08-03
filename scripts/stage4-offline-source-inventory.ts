@@ -17,43 +17,35 @@ export const STAGE4_PINNED_GIT = Object.freeze({
   sha256: "7588ceab299393618d6f8861502ac0588d1594025f301d9a61a898215b5571d3",
 } as const);
 
-const ROOT_FILES = Object.freeze([
-  "COGS.md",
-  "DESIGN.md",
-  "IMPLEMENTATION.md",
-  "README.md",
-  "SECRET-INJECTION.md",
-  "biome.json",
-  "package-lock.json",
-  "package.json",
-  "tsconfig.json",
-]);
-const EXACT_FILES = Object.freeze([
-  "docs/adr/0012-use-aws-virtual-nested-kvm-for-stage-4-candidate.md",
-  "docs/operations/aws-feasibility-campaign.md",
-  "docs/operations/ci-schedule.md",
-  "docs/operations/ownership.md",
-  "docs/security-evidence/README.md",
-  "scripts/private-bytes.ts",
-  "scripts/check-lock-integrity.ts",
-  "scripts/check-npm-audit.ts",
-  "scripts/validate-schemas.ts",
-]);
-const DIRECTORY_PREFIXES = Object.freeze(["deploy/helm/cogs/", "deploy/nic/"]);
-const PREFIX_PATTERNS = Object.freeze([
-  /^docs\/operations\/stage-4-.*\.md$/u,
-  /^docs\/test-reports\/stage-4-.*\.md$/u,
-  /^schemas\/stage[45]-.*\.json$/u,
-  /^scripts\/stage4-.*\.ts$/u,
-  /^test\/stage4-.*\.test\.ts$/u,
-  /^test\/helm-stage4-.*\.test\.ts$/u,
-  /^test\/fixtures\/helm\/stage4-.*\.yaml$/u,
-  /^test\/fixtures\/stage4-[^/]+\//u,
-  /^docs\/security-evidence\/stage4-offline-readiness-artifacts\//u,
-]);
 const MAXIMUM_FILE_BYTES = 4 * 1024 * 1024;
-const MAXIMUM_GIT_OUTPUT_BYTES = 1024 * 1024;
-const EXPECTED_REGENERATION_BASE_HEAD = "c80b5eb8c6308b605c677e8c2b4154267fc147cf";
+const MAXIMUM_GIT_OUTPUT_BYTES = 4 * 1024 * 1024;
+const MAXIMUM_TRACKED_FILES = 1024;
+const MAXIMUM_AGGREGATE_BYTES = 16 * 1024 * 1024;
+const WORKTREE_MERKLE_DOMAIN = "cogs.stage4/tracked-worktree-mode-path-byte-merkle/v2\0";
+const UNTRACKED_VALIDATION_PREFIXES = Object.freeze([
+  "deploy/helm/cogs/",
+  "deploy/nic/",
+  "images/",
+  "schemas/",
+  "scripts/",
+  "spikes/",
+  "src/",
+  "test/",
+  "third_party/",
+]);
+
+type GitFileMode = "100644" | "100755";
+
+type TrackedFile = Readonly<{
+  mode: GitFileMode;
+  path: string;
+}>;
+
+type SourceInventoryEntry = Readonly<{
+  mode: GitFileMode;
+  path: string;
+  sha256: string;
+}>;
 
 type Identity = Readonly<{
   dev: bigint;
@@ -64,15 +56,6 @@ type Identity = Readonly<{
   ctimeNs: bigint;
   nlink: bigint;
 }>;
-
-function selectedSourcePath(path: string): boolean {
-  return (
-    ROOT_FILES.includes(path as (typeof ROOT_FILES)[number]) ||
-    EXACT_FILES.includes(path as (typeof EXACT_FILES)[number]) ||
-    DIRECTORY_PREFIXES.some((prefix) => path.startsWith(prefix)) ||
-    PREFIX_PATTERNS.some((pattern) => pattern.test(path))
-  );
-}
 
 function identity(metadata: BigIntStats): Identity {
   return {
@@ -120,6 +103,7 @@ export function readStage4SourceFile(
   path: string,
   maximum = MAXIMUM_FILE_BYTES,
   requireSingleLink = true,
+  expectedGitMode?: GitFileMode,
 ): Uint8Array {
   const physicalRoot = realpathSync(root);
   const components = safeComponents(path);
@@ -160,6 +144,9 @@ export function readStage4SourceFile(
       (requireSingleLink ? final.expected.nlink !== 1n : final.expected.nlink < 1n)
     ) {
       throw new Error("STAGE4_SOURCE_INVENTORY_FILE_BOUND_INVALID");
+    }
+    if (expectedGitMode !== undefined && ((final.expected.mode & 0o111n) !== 0n) !== (expectedGitMode === "100755")) {
+      throw new Error("STAGE4_SOURCE_INVENTORY_FILE_MODE_INVALID");
     }
     const bytes = new Uint8Array(readFileSync(final.fd));
     if (BigInt(bytes.byteLength) !== final.expected.size) throw new Error("STAGE4_SOURCE_INVENTORY_FILE_RACE");
@@ -215,79 +202,79 @@ function text(bytes: Uint8Array): string {
   return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
 }
 
-function repositorySnapshot(root: string): { baseHead: string; paths: string[] } {
+function trackedFiles(root: string): TrackedFile[] {
   const version = text(pinnedGit(root, ["--version"])).trim();
   if (version !== STAGE4_PINNED_GIT.version) throw new Error("STAGE4_SOURCE_INVENTORY_GIT_IDENTITY_INVALID");
   const top = realpathSync(text(pinnedGit(root, ["rev-parse", "--show-toplevel"])).trim());
   if (top !== root) throw new Error("STAGE4_SOURCE_INVENTORY_GIT_ROOT_INVALID");
-  const head = text(pinnedGit(root, ["rev-parse", "--verify", "HEAD"])).trim();
-  if (!/^[0-9a-f]{40}$/u.test(head)) throw new Error("STAGE4_SOURCE_INVENTORY_GIT_REVISION_INVALID");
-  const baseHead = text(pinnedGit(root, ["merge-base", EXPECTED_REGENERATION_BASE_HEAD, head])).trim();
-  if (baseHead !== EXPECTED_REGENERATION_BASE_HEAD) throw new Error("STAGE4_SOURCE_INVENTORY_GIT_REVISION_INVALID");
-  const index = pinnedGit(root, ["ls-files", "--cached", "--stage", "-z"]);
-  const paths: string[] = [];
-  for (const record of text(index).split("\0")) {
+  const files: TrackedFile[] = [];
+  for (const record of text(pinnedGit(root, ["ls-files", "--cached", "--stage", "-z"])).split("\0")) {
     if (record === "") continue;
     const match = /^(100644|100755) ([0-9a-f]{40,64}) 0\t(.+)$/u.exec(record);
-    if (match === null) {
-      const candidate = record.slice(record.indexOf("\t") + 1);
-      if (selectedSourcePath(candidate)) throw new Error("STAGE4_SOURCE_INVENTORY_GIT_ENTRY_INVALID");
-      continue;
-    }
-    const path = match[3];
-    if (path !== undefined && selectedSourcePath(path)) paths.push(path);
+    if (match === null || match[1] === undefined || match[3] === undefined)
+      throw new Error("STAGE4_SOURCE_INVENTORY_GIT_ENTRY_INVALID");
+    files.push({ mode: match[1] as GitFileMode, path: match[3] });
   }
-  const untracked = text(pinnedGit(root, ["ls-files", "--others", "--exclude-standard", "-z"]))
+  const untracked = text(pinnedGit(root, ["ls-files", "--others", "-z", "--", ...UNTRACKED_VALIDATION_PREFIXES]))
     .split("\0")
-    .filter((path) => path !== "" && selectedSourcePath(path));
-  if (untracked.length !== 0) throw new Error("STAGE4_SOURCE_INVENTORY_UNTRACKED_SOURCE_FORBIDDEN");
-  return { baseHead, paths };
+    .filter((path) => path !== "");
+  if (
+    untracked.some((path) =>
+      UNTRACKED_VALIDATION_PREFIXES.some((prefix) => path === prefix.slice(0, -1) || path.startsWith(prefix)),
+    )
+  ) {
+    throw new Error("STAGE4_SOURCE_INVENTORY_UNTRACKED_VALIDATION_INPUT_FORBIDDEN");
+  }
+  if (files.length === 0 || files.length > MAXIMUM_TRACKED_FILES)
+    throw new Error("STAGE4_SOURCE_INVENTORY_FILE_COUNT_INVALID");
+  return files.sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0));
+}
+
+export function stage4TrackedWorktreeMerkle(entries: readonly SourceInventoryEntry[]): string {
+  return createHash("sha256")
+    .update(WORKTREE_MERKLE_DOMAIN, "utf8")
+    .update(canonicalStage4OfflineReadinessBytes(entries.map((entry) => ({ ...entry }))))
+    .digest("hex");
 }
 
 export function stage4SourceClosurePaths(root: string): string[] {
   const physicalRoot = realpathSync(root);
-  const paths = repositorySnapshot(physicalRoot)
-    .paths.filter((path) => !STAGE4_SOURCE_INVENTORY_EXCLUSIONS.includes(path as never))
-    .sort();
-  for (const required of [...ROOT_FILES, ...EXACT_FILES]) {
-    if (!paths.includes(required)) throw new Error("STAGE4_SOURCE_INVENTORY_REQUIRED_SOURCE_MISSING");
-  }
-  return paths;
+  return trackedFiles(physicalRoot)
+    .map((file) => file.path)
+    .filter((path) => !STAGE4_SOURCE_INVENTORY_EXCLUSIONS.includes(path as never));
 }
 
 export function generateStage4SourceInventory(root: string): Uint8Array {
   const physicalRoot = realpathSync(root);
-  const repository = repositorySnapshot(physicalRoot);
-  const paths = repository.paths.filter((path) => !STAGE4_SOURCE_INVENTORY_EXCLUSIONS.includes(path as never)).sort();
-  if (paths.length === 0 || paths.length > 256) throw new Error("STAGE4_SOURCE_INVENTORY_FILE_COUNT_INVALID");
-  for (const required of [...ROOT_FILES, ...EXACT_FILES]) {
-    if (!paths.includes(required)) throw new Error("STAGE4_SOURCE_INVENTORY_REQUIRED_SOURCE_MISSING");
-  }
+  const allTrackedFiles = trackedFiles(physicalRoot);
+  const files = allTrackedFiles.filter((file) => !STAGE4_SOURCE_INVENTORY_EXCLUSIONS.includes(file.path as never));
   let aggregate = 0;
-  const entries = paths.map((path) => {
-    const bytes = readStage4SourceFile(physicalRoot, path);
+  const entries = files.map(({ mode, path }) => {
+    const bytes = readStage4SourceFile(physicalRoot, path, MAXIMUM_FILE_BYTES, true, mode);
     aggregate += bytes.byteLength;
-    if (aggregate > 16 * 1024 * 1024) throw new Error("STAGE4_SOURCE_INVENTORY_AGGREGATE_BOUND_INVALID");
-    return { path, sha256: stage4OfflineReadinessSha256(bytes) };
+    if (aggregate > MAXIMUM_AGGREGATE_BYTES) throw new Error("STAGE4_SOURCE_INVENTORY_AGGREGATE_BOUND_INVALID");
+    return { mode, path, sha256: stage4OfflineReadinessSha256(bytes) };
   });
   return canonicalStage4OfflineReadinessBytes({
-    algorithm: "sha256-over-exact-file-bytes",
+    algorithm: "sha256-domain-separated-canonical-git-mode-path-and-exact-byte-digest-list",
     entries,
-    excluded_self_referential_outputs: STAGE4_SOURCE_INVENTORY_EXCLUSIONS.map((path) => ({
+    excluded_generated_evidence_outputs: STAGE4_SOURCE_INVENTORY_EXCLUSIONS.map((path) => ({
       path,
-      reason: "excluded-self-referential-generated-output",
+      reason: "excluded-generated-evidence-recursion",
     })),
-    repository_binding: {
+    scope: "complete-tracked-worktree-source-build-qualification-closure",
+    version: "cogs.stage4-offline-source-inventory/v5",
+    worktree_binding: {
+      file_count: entries.length,
       git_executable_sha256: STAGE4_PINNED_GIT.sha256,
-      git_index_path_set_sha256: createHash("sha256")
-        .update(canonicalStage4OfflineReadinessBytes(repository.paths.slice().sort()))
-        .digest("hex"),
       git_version: STAGE4_PINNED_GIT.version,
-      regeneration_base_head: repository.baseHead,
-      semantics: "exact-tracked-worktree-bytes-at-regeneration-dirty-tracked-files-allowed",
+      tracked_path_set_sha256: createHash("sha256")
+        .update(canonicalStage4OfflineReadinessBytes(allTrackedFiles.map((file) => file.path)))
+        .digest("hex"),
+      worktree_merkle_sha256: stage4TrackedWorktreeMerkle(entries),
+      semantics:
+        "complete-tracked-git-modes-and-worktree-bytes-excluding-recorded-generated-evidence;no-commit-or-clean-index-claim",
     },
-    scope: "complete-stage4-source-closure",
-    version: "cogs.stage4-offline-source-inventory/v3",
   });
 }
 

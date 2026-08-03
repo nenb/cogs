@@ -23,13 +23,18 @@
     "egress-bindings:regenerate-check": "tsx scripts/check-envoy-ext-authz-descriptor.ts --regenerate",
     "feasibility-source:check": "tsx scripts/check-feasibility-source.ts",
     "images:check": "tsx scripts/check-image-pins.ts",
+    "images:local:verify": "tsx scripts/local-image-artifacts-cli.ts",
+    "images:local:assemble": "tsx scripts/assemble-local-image-artifact-package.ts",
     "lock:check": "tsx scripts/check-lock-integrity.ts",
     "licenses": "tsx scripts/check-licenses.ts",
     "audit": "tsx scripts/check-npm-audit.ts",
+    "build": "rm -rf dist && tsc --project tsconfig.build.json",
     "evidence:issue68": "tsx scripts/benchmark-issue68-checkpoints.ts",
     "readiness:regenerate": "node scripts/stage4-offline-readiness-regenerate.ts",
     "readiness:render:check": "node scripts/stage4-offline-render-preparation.ts",
+    "readiness:production:check": "tsx --test --test-concurrency=1 test/api-server.test.ts test/local-image-artifacts.test.ts test/openbao-workload-identity.test.ts test/production-compose.test.ts test/production-sandbox-image.test.ts test/production-worker-image.test.ts test/release-image-set-assertion.test.ts test/runtime-config.test.ts test/runtime-trusted-files.test.ts test/stage4-nic-sandbox-node-group-v2.test.ts test/stage4-static-manifest-package.test.ts",
     "readiness:source:check": "node scripts/stage4-offline-source-inventory.ts",
+    "stage4:manifests": "node scripts/stage4-static-manifest-package.ts",
     "launcher": "tsx dev/launcher/main.ts"
   },
   "dependencies": {
@@ -40,6 +45,7 @@
     "@grpc/proto-loader": "0.8.1",
     "ajv": "8.20.0",
     "ajv-formats": "3.0.1",
+    "brace-expansion": "5.0.8",
     "ssh2": "1.17.0",
     "typebox": "1.3.6"
   },

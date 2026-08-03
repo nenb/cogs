@@ -13,6 +13,7 @@ import {
 import type { EgressAuditWal } from "./audit-wal.ts";
 import { buildExtAuthzResponse, type CogsExtAuthzCheck, parseExtAuthzCheck } from "./ext-authz-adapter.ts";
 import { loadExtAuthzDescriptor } from "./ext-authz-descriptor.ts";
+import { decodeProxyAuthorizationBasic, requireProxyCapability } from "./proxy-capability.ts";
 import type { CogsEgressRoute, CogsEgressRoutePlan } from "./route-policy.ts";
 
 const maxActiveChecks = 32;
@@ -70,7 +71,7 @@ export async function startCogsExtAuthzServer(options: CogsExtAuthzServerOptions
     const userId = validOpaque(captured.userId);
     const sessionId = validOpaque(captured.sessionId);
     const internalToken = validSecret(captured.internalAuthzToken);
-    const proxyCapability = validSecret(captured.proxyCapability);
+    const proxyCapability = requireProxyCapability(captured.proxyCapability);
     try {
       if (
         captured.policyAuthorizer !== undefined &&
@@ -421,7 +422,13 @@ class SecretVerifier {
     return this.#ok(value, this.#token);
   }
   capabilityOk(value: string): boolean {
-    return this.#ok(value, this.#capability);
+    const password = decodeProxyAuthorizationBasic(value);
+    if (password === undefined) return false;
+    try {
+      return this.#digestOk(password, this.#capability);
+    } finally {
+      password.fill(0);
+    }
   }
   clear(): void {
     if (this.#cleared) return;
@@ -432,19 +439,22 @@ class SecretVerifier {
   }
   #ok(value: string, expected: Buffer): boolean {
     try {
-      const candidate = digest(this.#key, validSecret(value));
-      try {
-        return timingSafeEqual(candidate, expected);
-      } finally {
-        candidate.fill(0);
-      }
+      return this.#digestOk(validSecret(value), expected);
     } catch {
       return false;
     }
   }
+  #digestOk(value: string | Buffer, expected: Buffer): boolean {
+    const candidate = digest(this.#key, value);
+    try {
+      return timingSafeEqual(candidate, expected);
+    } finally {
+      candidate.fill(0);
+    }
+  }
 }
 
-function digest(key: Buffer, value: string): Buffer {
+function digest(key: Buffer, value: string | Buffer): Buffer {
   return createHmac("sha256", key).update(value).digest();
 }
 

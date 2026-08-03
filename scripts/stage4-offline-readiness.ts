@@ -6,11 +6,10 @@ import { capturePrivateBytes, intrinsicByteLength } from "./private-bytes.ts";
 
 const require = createRequire(import.meta.url);
 const Ajv2020 = require("ajv/dist/2020.js") as new (options?: Options) => AjvCore;
-const packageSchema = require("../schemas/stage4-offline-readiness-package-v1.json") as object;
+const packageSchema = require("../schemas/stage4-offline-readiness-package-v2.json") as object;
 
 export const STAGE4_READINESS_BLOCKERS = Object.freeze([
   "ISSUE_42_OPEN",
-  "NIC_V0_11_0_MODULE_0_7_0_LAUNCH_TEMPLATE_CAPABILITY_MISSING",
   "EKS_AMI_IMAGE_RELEASE_KERNEL_UNRESOLVED",
   "PROPOSED_ACCOUNT_BINDING_ABSENT",
   "CURRENT_PRICE_NOT_REVALIDATED",
@@ -19,8 +18,6 @@ export const STAGE4_READINESS_BLOCKERS = Object.freeze([
   "CAMPAIGN_ENVELOPE_AND_APPROVAL_ABSENT",
   "NO_EXECUTABLE_PROVIDER_ROUTE",
   "RELEASE_IMAGE_SET_ABSENT",
-  "CONTAINERD_ARTIFACT_IDENTITY_UNRESOLVED",
-  "QEMU_ARTIFACT_IDENTITY_UNRESOLVED",
 ] as const);
 
 export const STAGE4_READINESS_ARTIFACT_KEYS = Object.freeze([
@@ -33,6 +30,7 @@ export const STAGE4_READINESS_ARTIFACT_KEYS = Object.freeze([
   "imageLock",
   "nicContract",
   "runtimePins",
+  "authenticatedRuntimeArtifacts",
   "schemaInventory",
   "localValidation",
 ] as const);
@@ -48,6 +46,7 @@ export const STAGE4_READINESS_BYTE_LIMITS = Object.freeze({
   imageLock: 16 * 1024,
   nicContract: 128 * 1024,
   runtimePins: 16 * 1024,
+  authenticatedRuntimeArtifacts: 64 * 1024,
   schemaInventory: 256 * 1024,
   localValidation: 128 * 1024,
   aggregateArtifacts: 1024 * 1024,
@@ -64,9 +63,11 @@ export type Stage4ReadinessReasonCode =
   | "STAGE4_READINESS_BINDING_ROOT_MISMATCH";
 
 export type Stage4OfflineReadinessVerdict = Readonly<{
-  version: "cogs.stage4-offline-readiness-verdict/v1";
+  version: "cogs.stage4-offline-readiness-verdict/v2";
   authority: "local-static-stage4-readiness-classifier";
   local_preparation_complete: boolean;
+  candidate_artifact_closure_complete: boolean;
+  selected_runtime_artifacts_authenticated: boolean;
   local_preparation_scope: "bounded-package-assembly-and-local-validation-only";
   trusted_render_preparation_complete: boolean;
   exact_image_runtime_closure_satisfied: false;
@@ -116,6 +117,7 @@ const DIGEST_FIELDS: Readonly<Record<Stage4ReadinessArtifactKey, string>> = Obje
   imageLock: "image_lock_sha256",
   nicContract: "nic_contract_sha256",
   runtimePins: "runtime_pins_sha256",
+  authenticatedRuntimeArtifacts: "authenticated_runtime_artifacts_sha256",
   schemaInventory: "schema_inventory_sha256",
   localValidation: "local_validation_sha256",
 });
@@ -210,17 +212,18 @@ const EXPECTED_IMAGE_REFERENCES = Object.freeze({
 
 /* stage4-readiness-anchor-start */
 export const STAGE4_READINESS_EXPECTED_ARTIFACTS = Object.freeze({
-  chartInventory: "c5a92117c4bf604a188393a4c3cce15fde287f35a0b7c0751fe5f1720b286321",
+  chartInventory: "a3801a32d9f1a59864bd027aebf44554b087911c7d4a4486e7bcda697ff68617",
   imageLock: "0b52deae8e9d24458e52c4c178283d1c51819057d8ce867a865b0b7b96902389",
-  nicContract: "ad431775037e718074a12ecaf530a5f67b26ba6d2f693980a3e580aa6f167391",
-  render: "614361336f5cbf87e4fd7b1a8a806fa5d08bbceb3c91b2b33a1710b4cfd73331",
-  repeatedRender: "614361336f5cbf87e4fd7b1a8a806fa5d08bbceb3c91b2b33a1710b4cfd73331",
-  runtimePins: "14fdacff04e1db62ec733e7696d104826c73aa87764406a5625d2a13265219f0",
+  nicContract: "9b61b547884b6baa081974242171885f92c7d756224bc181fe6e78c965c1fa9a",
+  render: "60f73b0e5caa843c4db9431c63cdc13eada9088d6da16c974ef127c480235710",
+  repeatedRender: "60f73b0e5caa843c4db9431c63cdc13eada9088d6da16c974ef127c480235710",
+  runtimePins: "1e683ef6513f9f86f7eaead0fd64d949f037afd06043882eb1b6514aa5c4a145",
   values: "e63a0fadebe16637cc97b21adeeb4ecf33efa8e76a1469e6008c7f7ed4fbb58f",
-  localValidationNormalized: "c6d68934f90c0e72b2d06af9566e4a0bea161355f1382ac49b89fea3003c1d59",
-  renderReceipt: "2d6ab6995b6fc691ba4e6df84b8dd078ae724236efae483295fa57dffd825a44",
-  schemaInventory: "ba499db77b817d937d159c6501471676ce7d7970a2340b1edf50a64b92d7d096",
-  sourceInventoryNormalized: "5ba0e133a47efc8010e1e92c4e12546ef99260c68e250dc623fffd587972aa62",
+  authenticatedRuntimeArtifacts: "d7aa3057bd7804341004e68bfc22dc33ae3835df5950e8e536e46b7995595047",
+  localValidationNormalized: "43e444b067d86cd2b3a2e34e2e30f9e8e2fec7a4d3f703c19641dc7ec39a1f8a",
+  renderReceipt: "b9634997067adef5816aac496c26acbdc1b2c6fc20fa0112f38efd6879e1f85b",
+  schemaInventory: "b77cf6f69dff2ae1da988b45156dbdb356d6dfed11e73c84bf7d5a325af923a0",
+  sourceInventoryNormalized: "dd951e670af87d0cac1933d0bacca1ca75090e679c51ddbef69c21121a7bace4",
 });
 /* stage4-readiness-anchor-end */
 
@@ -329,17 +332,26 @@ function parseCanonicalArtifact(bytes: Uint8Array): JsonRecord | null {
   }
 }
 
-function digestEntries(value: JsonValue | undefined): Map<string, string> | null {
+function trackedWorktreeMerkle(value: JsonValue | undefined): string | null {
+  if (!Array.isArray(value)) return null;
+  return createHash("sha256")
+    .update("cogs.stage4/tracked-worktree-mode-path-byte-merkle/v2\0", "utf8")
+    .update(canonicalStage4OfflineReadinessBytes(value))
+    .digest("hex");
+}
+
+function digestEntries(value: JsonValue | undefined, requireGitMode = false): Map<string, string> | null {
   if (!Array.isArray(value)) return null;
   const output = new Map<string, string>();
   for (const item of value) {
     const row = record(item);
     if (
       row === null ||
-      Reflect.ownKeys(row).length !== 2 ||
+      Reflect.ownKeys(row).length !== (requireGitMode ? 3 : 2) ||
       typeof row.path !== "string" ||
       typeof row.sha256 !== "string" ||
       !/^[0-9a-f]{64}$/u.test(row.sha256) ||
+      (requireGitMode && row.mode !== "100644" && row.mode !== "100755") ||
       output.has(row.path)
     )
       return null;
@@ -360,7 +372,16 @@ function normalizedInventoryDigest(bytes: Uint8Array, arrayKey: string, selfPath
     return { ...row, sha256: "0".repeat(64) } as JsonValue;
   });
   if (replacements !== 1) return null;
-  return stage4OfflineReadinessSha256(canonicalStage4OfflineReadinessBytes({ ...value, [arrayKey]: normalized }));
+  const normalizedValue = { ...value, [arrayKey]: normalized };
+  if (arrayKey === "entries" && selfPath === "scripts/stage4-offline-readiness.ts") {
+    const binding = record(normalizedValue.worktree_binding);
+    if (binding === null) return null;
+    normalizedValue.worktree_binding = {
+      ...binding,
+      worktree_merkle_sha256: trackedWorktreeMerkle(normalized),
+    };
+  }
+  return stage4OfflineReadinessSha256(canonicalStage4OfflineReadinessBytes(normalizedValue));
 }
 
 export function stage4NormalizedSourceInventorySha256(input: Uint8Array): string | null {
@@ -409,6 +430,7 @@ function exactArtifactSemantics(value: ReadinessPackage, artifacts: ArtifactCopi
     ["imageLock", STAGE4_READINESS_EXPECTED_ARTIFACTS.imageLock],
     ["nicContract", STAGE4_READINESS_EXPECTED_ARTIFACTS.nicContract],
     ["runtimePins", STAGE4_READINESS_EXPECTED_ARTIFACTS.runtimePins],
+    ["authenticatedRuntimeArtifacts", STAGE4_READINESS_EXPECTED_ARTIFACTS.authenticatedRuntimeArtifacts],
     ["schemaInventory", STAGE4_READINESS_EXPECTED_ARTIFACTS.schemaInventory],
   ];
   if (exactRaw.some(([key, expected]) => stage4OfflineReadinessSha256(artifacts[key]) !== expected)) return false;
@@ -427,10 +449,25 @@ function exactArtifactSemantics(value: ReadinessPackage, artifacts: ArtifactCopi
   const image = parseCanonicalArtifact(artifacts.imageLock);
   const runtime = parseCanonicalArtifact(artifacts.runtimePins);
   if ([source, schemas, local, receipt, image, runtime].some((item) => item === null)) return false;
-  const sourceEntries = digestEntries(source?.entries);
+  const sourceEntries = digestEntries(source?.entries, true);
   const schemaEntries = digestEntries(schemas?.entries);
   const localBindings = digestEntries(local?.source_bindings);
   if (sourceEntries === null || schemaEntries === null || localBindings === null) return false;
+  const worktree = record(source?.worktree_binding);
+  const packageSource = record(value.source);
+  const worktreeMerkle = trackedWorktreeMerkle(source?.entries);
+  if (
+    source?.version !== "cogs.stage4-offline-source-inventory/v5" ||
+    source.algorithm !== "sha256-domain-separated-canonical-git-mode-path-and-exact-byte-digest-list" ||
+    source.scope !== "complete-tracked-worktree-source-build-qualification-closure" ||
+    worktree === null ||
+    packageSource === null ||
+    worktree.file_count !== sourceEntries.size ||
+    worktree.worktree_merkle_sha256 !== worktreeMerkle ||
+    packageSource.worktree_merkle_sha256 !== worktreeMerkle ||
+    packageSource.commit_binding_present !== false
+  )
+    return false;
 
   const sourceArtifactPaths: ReadonlyArray<readonly [string, Stage4ReadinessArtifactKey]> = [
     ["docs/security-evidence/stage4-offline-readiness-artifacts/chart-inventory.json", "chartInventory"],
@@ -439,6 +476,10 @@ function exactArtifactSemantics(value: ReadinessPackage, artifacts: ArtifactCopi
     ["docs/security-evidence/stage4-offline-readiness-artifacts/notes-render.yaml", "render"],
     ["docs/security-evidence/stage4-offline-readiness-artifacts/render-preparation-receipt.json", "renderReceipt"],
     ["docs/security-evidence/stage4-offline-readiness-artifacts/runtime-pins.json", "runtimePins"],
+    [
+      "docs/security-evidence/stage4-offline-readiness-artifacts/authenticated-runtime-artifacts.json",
+      "authenticatedRuntimeArtifacts",
+    ],
     ["docs/security-evidence/stage4-offline-readiness-artifacts/schema-inventory.json", "schemaInventory"],
     ["deploy/nic/stage4-sandbox-node-group-contract.json", "nicContract"],
     ["test/fixtures/helm/stage4-notes-source-shapes-valid.yaml", "values"],
@@ -457,6 +498,7 @@ function exactArtifactSemantics(value: ReadinessPackage, artifacts: ArtifactCopi
     "readiness-format",
     "repository-typecheck",
     "stage4-unit-contracts",
+    "production-runtime-image-static-route-contracts",
     "stage4-schema-registry",
     "all-schema-contracts",
     "trusted-helm-local-contracts",
@@ -480,11 +522,18 @@ function exactArtifactSemantics(value: ReadinessPackage, artifacts: ArtifactCopi
       );
     });
   const unexecuted = local?.unexecuted;
-  const auditHonestlyUnexecuted =
+  const expectedUnexecuted = [
+    "current-npm-registry-audit",
+    "production-image-docker-builds",
+    "release-image-publication",
+  ];
+  const honestlyUnexecuted =
     Array.isArray(unexecuted) &&
-    unexecuted.length === 1 &&
-    record(unexecuted[0])?.id === "current-npm-registry-audit" &&
-    record(unexecuted[0])?.result === "not-run-not-claimed";
+    unexecuted.length === expectedUnexecuted.length &&
+    unexecuted.every(
+      (item, index) => record(item)?.id === expectedUnexecuted[index] && record(item)?.result === "not-run-not-claimed",
+    );
+  const execution = record(local?.execution);
   const executionLayer = {
     generator_source_sha256: receipt?.generator_source_sha256 as JsonValue,
     node_arch: receipt?.node_arch as JsonValue,
@@ -499,7 +548,10 @@ function exactArtifactSemantics(value: ReadinessPackage, artifacts: ArtifactCopi
     receipt.first_render_sha256 !== stage4OfflineReadinessSha256(artifacts.render) ||
     receipt.repeated_render_sha256 !== stage4OfflineReadinessSha256(artifacts.repeatedRender) ||
     !localChecksPass ||
-    !auditHonestlyUnexecuted ||
+    !honestlyUnexecuted ||
+    execution === null ||
+    Reflect.ownKeys(execution).length !== 6 ||
+    Object.values(execution).some((observed) => observed !== false) ||
     receipt.generator_source_sha256 !== generatorDigest ||
     receipt.execution_layer_sha256 !==
       stage4OfflineReadinessSha256(canonicalStage4OfflineReadinessBytes(executionLayer)) ||
@@ -508,7 +560,8 @@ function exactArtifactSemantics(value: ReadinessPackage, artifacts: ArtifactCopi
     receipt.zero_submitted_manifests !== true ||
     receipt.zero_manifest_output_sha256 !== stage4OfflineReadinessSha256(new TextEncoder().encode("\n")) ||
     local?.status !== "passed-recorded-bounded-local-commands" ||
-    local.scope !== "only-the-eight-recorded-bounded-local-commands;no-current-registry-advisory-discovery" ||
+    local.scope !==
+      "only-the-nine-recorded-bounded-local-commands;no-docker-publication-or-current-registry-advisory-discovery" ||
     local.trusted_preparation_receipt_sha256 !== stage4OfflineReadinessSha256(artifacts.renderReceipt)
   )
     return false;
@@ -529,7 +582,11 @@ function exactArtifactSemantics(value: ReadinessPackage, artifacts: ArtifactCopi
     packageRuntime === null ||
     runtimeRecord === null ||
     stringProperty(runtimeRecord.containerd, "version") !== packageRuntime.containerd_version ||
+    stringProperty(runtimeRecord.containerd, "artifact_sha256") !== packageRuntime.containerd_artifact_sha256 ||
+    stringProperty(runtimeRecord.containerd, "artifact_state") !== packageRuntime.containerd_artifact_state ||
     stringProperty(runtimeRecord.qemu, "version") !== packageRuntime.qemu_version ||
+    stringProperty(runtimeRecord.qemu, "artifact_sha256") !== packageRuntime.qemu_artifact_sha256 ||
+    stringProperty(runtimeRecord.qemu, "artifact_state") !== packageRuntime.qemu_artifact_state ||
     stringProperty(runtimeRecord.kata, "archive_sha256") !== packageRuntime.kata_archive_sha256 ||
     record(runtime?.eks_node_image)?.ami_id !== packageRuntime.eks_node_ami_id ||
     record(runtime?.eks_node_image)?.release !== packageRuntime.eks_node_image_release ||
@@ -546,9 +603,11 @@ function makeVerdict(
 ): Stage4OfflineReadinessVerdict {
   const complete = reasonCode === "STAGE4_LOCAL_PREPARATION_COMPLETE_CAMPAIGN_BLOCKED";
   return Object.freeze({
-    version: "cogs.stage4-offline-readiness-verdict/v1",
+    version: "cogs.stage4-offline-readiness-verdict/v2",
     authority: "local-static-stage4-readiness-classifier",
     local_preparation_complete: complete,
+    candidate_artifact_closure_complete: complete,
+    selected_runtime_artifacts_authenticated: complete,
     local_preparation_scope: "bounded-package-assembly-and-local-validation-only",
     trusted_render_preparation_complete: complete,
     exact_image_runtime_closure_satisfied: false,

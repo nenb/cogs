@@ -1,0 +1,309 @@
+name: Historical prepublication local image artifacts
+
+on:
+  workflow_dispatch:
+    inputs:
+      reviewed_sha:
+        description: Exact protected-default-branch commit SHA to build
+        required: true
+        type: string
+      syft_image:
+        description: Exact anchore/syft OCI image reference including @sha256 digest
+        required: true
+        type: string
+      trivy_image:
+        description: Exact aquasec/trivy OCI image reference including @sha256 digest
+        required: true
+        type: string
+      trivy_database:
+        description: Exact ghcr.io/aquasecurity/trivy-db:2 OCI reference including @sha256 digest
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: local-image-artifacts-${{ inputs.reviewed_sha }}
+  cancel-in-progress: false
+
+jobs:
+  authority:
+    name: Exact reviewed SHA authority
+    if: >-
+      github.run_attempt == 1 &&
+      github.actor == github.triggering_actor &&
+      github.actor == vars.LOCAL_IMAGE_ARTIFACT_ACTOR &&
+      github.event.sender.login == github.actor &&
+      github.ref_type == 'branch' &&
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch) &&
+      github.ref_protected == true &&
+      github.workflow_ref == format('{0}/.github/workflows/local-image-artifacts.yml@{1}', github.repository, github.ref) &&
+      github.workflow_sha == github.sha
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    outputs:
+      reviewed_sha: ${{ steps.validate.outputs.reviewed_sha }}
+      syft_image: ${{ steps.validate.outputs.syft_image }}
+      trivy_image: ${{ steps.validate.outputs.trivy_image }}
+      trivy_database: ${{ steps.validate.outputs.trivy_database }}
+    steps:
+      - name: Validate one exact non-publishing transaction
+        id: validate
+        env:
+          REVIEWED_SHA: ${{ inputs.reviewed_sha }}
+          SYFT_IMAGE: ${{ inputs.syft_image }}
+          TRIVY_IMAGE: ${{ inputs.trivy_image }}
+          TRIVY_DATABASE: ${{ inputs.trivy_database }}
+          AUTHORIZED_ACTOR: ${{ vars.LOCAL_IMAGE_ARTIFACT_ACTOR }}
+          ACTOR: ${{ github.actor }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          ENVELOPE_SHA: ${{ github.sha }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: |
+          set -euo pipefail
+          test -n "$AUTHORIZED_ACTOR"
+          test "$ACTOR" = "$AUTHORIZED_ACTOR"
+          test "$TRIGGERING_ACTOR" = "$ACTOR"
+          [[ "$REVIEWED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$REVIEWED_SHA" = "$ENVELOPE_SHA"
+          test "$WORKFLOW_SHA" = "$ENVELOPE_SHA"
+          [[ "$SYFT_IMAGE" =~ ^anchore/syft@sha256:[0-9a-f]{64}$ ]]
+          [[ "$TRIVY_IMAGE" =~ ^aquasec/trivy@sha256:[0-9a-f]{64}$ ]]
+          [[ "$TRIVY_DATABASE" =~ ^ghcr.io/aquasecurity/trivy-db:2@sha256:[0-9a-f]{64}$ ]]
+          printf 'reviewed_sha=%s\n' "$REVIEWED_SHA" >> "$GITHUB_OUTPUT"
+          printf 'syft_image=%s\n' "$SYFT_IMAGE" >> "$GITHUB_OUTPUT"
+          printf 'trivy_image=%s\n' "$TRIVY_IMAGE" >> "$GITHUB_OUTPUT"
+          printf 'trivy_database=%s\n' "$TRIVY_DATABASE" >> "$GITHUB_OUTPUT"
+
+  build-evidence:
+    name: Deterministic linux-amd64 OCI graphs and local evidence
+    needs: [authority]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      REVIEWED_SHA: ${{ needs.authority.outputs.reviewed_sha }}
+      SYFT_IMAGE: ${{ needs.authority.outputs.syft_image }}
+      TRIVY_IMAGE: ${{ needs.authority.outputs.trivy_image }}
+      TRIVY_DATABASE: ${{ needs.authority.outputs.trivy_database }}
+    steps:
+      - name: Check out exact reviewed source without credentials
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.authority.outputs.reviewed_sha }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Verify exact clean source and construct tracked-only context
+        run: |
+          set -euo pipefail
+          export DOCKER_CONFIG="$RUNNER_TEMP/cogs-local-image-docker-config"
+          export OUT="$RUNNER_TEMP/cogs-local-image-artifacts"
+          export CONTEXT="$RUNNER_TEMP/cogs-local-image-context"
+          export CACHE="$RUNNER_TEMP/cogs-local-image-trivy-cache"
+          {
+            printf 'DOCKER_CONFIG=%s\n' "$DOCKER_CONFIG"
+            printf 'OUT=%s\n' "$OUT"
+            printf 'CONTEXT=%s\n' "$CONTEXT"
+            printf 'CACHE=%s\n' "$CACHE"
+          } >> "$GITHUB_ENV"
+          test "$(git rev-parse --verify HEAD^{commit})" = "$REVIEWED_SHA"
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+          test -z "$(git config --local --get-regexp 'credential\.helper|http\..*\.extraheader' || :)"
+          ! git remote get-url origin | grep -Eq '://[^/]*@'
+          git ls-files -z | python3 -c 'import sys; rows=sys.stdin.buffer.read().split(b"\0")[:-1]; assert rows and all(row and b"\n" not in row and b"\r" not in row for row in rows)'
+          mkdir -m 0700 "$CONTEXT" "$OUT" "$DOCKER_CONFIG" "$CACHE"
+          git archive --format=tar "$REVIEWED_SHA" | tar -xf - -C "$CONTEXT"
+          test -z "$(find "$CONTEXT" -type l -print -quit)"
+          # v1 is a historical scaffold-only contract. Current production payloads must stop
+          # before setup, pulls, scans, or builds rather than being misclassified as scaffolds.
+          grep -Fq 'dev.cogs.profile="stage0-scaffold"' "$CONTEXT/images/worker/Dockerfile"
+          grep -Fq 'dev.cogs.profile="stage0-scaffold"' "$CONTEXT/images/sandbox/Dockerfile"
+          commit_tree=$(git rev-parse "$REVIEWED_SHA^{tree}")
+          source_epoch=$(git show -s --format=%ct "$REVIEWED_SHA")
+          inventory_sha=$(
+            git ls-files -z | LC_ALL=C sort -z |
+              while IFS= read -r -d '' path; do
+                mode=$(git ls-files -s -- "$path" | awk '{print $1}')
+                size=$(wc -c < "$path" | tr -d ' ')
+                hash=$(sha256sum -- "$path" | awk '{print $1}')
+                printf '%s\t%s\t%s\t%s\n' "$mode" "$size" "$hash" "$path"
+              done | sha256sum | awk '{print $1}'
+          )
+          jq -cn --arg commit "$REVIEWED_SHA" --arg tree "$commit_tree" --arg inventory "$inventory_sha" --argjson epoch "$source_epoch" \
+            '{commit_sha:$commit,tree_sha:$tree,inventory_sha256:$inventory,source_date_epoch:$epoch}' > "$OUT/source.json"
+
+      - name: Set up exact Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install locked repository dependencies without lifecycle scripts
+        run: npm ci --ignore-scripts
+
+      - name: Verify linux-amd64 builder and exact evidence-tool images
+        run: |
+          set -euo pipefail
+          test "$(docker info --format '{{.OSType}}/{{.Architecture}}')" = linux/x86_64
+          docker buildx inspect --bootstrap | grep -Eq '^Platforms:.*linux/amd64([, ]|$)'
+          docker pull --platform linux/amd64 "$SYFT_IMAGE"
+          docker pull --platform linux/amd64 "$TRIVY_IMAGE"
+          for ref in "$SYFT_IMAGE" "$TRIVY_IMAGE"; do
+            digest=${ref##*@}
+            docker image inspect "$ref" --format '{{json .RepoDigests}}' | jq -e --arg suffix "@$digest" 'any(.[]; endswith($suffix))' >/dev/null
+          done
+          buildx_version=$(docker buildx version | tr -d '\r\n' | cut -c1-128)
+          buildkit_version=$(docker buildx inspect --bootstrap | awk '/BuildKit version:/ {print $3; exit}')
+          test -n "$buildkit_version"
+          jq -cn --arg buildx "$buildx_version" --arg buildkit "$buildkit_version" \
+            '{buildx_version:$buildx,buildkit_version:$buildkit}' > "$OUT/builder.json"
+
+      - name: Verify each base index selects the recorded linux-amd64 manifest
+        run: |
+          set -euo pipefail
+          worker_ref='gcr.io/distroless/nodejs22-debian13:nonroot@sha256:773a62fbe24a3f8c8b24b16fd59154627f8b406737bc906f83bf1732bc8907dd'
+          worker_child='sha256:83cc33d5adfc7d6f3b1ba14defc7bbd93f08c6f22fb643ee51a47ba55670e23c'
+          sandbox_ref='docker.io/library/debian:13-slim@sha256:28de0877c2189802884ccd20f15ee41c203573bd87bb6b883f5f46362d24c5c2'
+          sandbox_child='sha256:a617c1cdde36a7e0194b2f07dff669e1753c03c3205356b94f9f350b0f9a57d1'
+          for role in worker sandbox; do
+            ref_name="${role}_ref"
+            child_name="${role}_child"
+            ref=${!ref_name}
+            child=${!child_name}
+            docker buildx imagetools inspect --raw "$ref" > "$OUT/$role-base-index.json"
+            jq -e --arg child "$child" \
+              '[.manifests[] | select(.platform.os == "linux" and .platform.architecture == "amd64" and (.platform.variant // null) == null) | .digest] == [$child]' \
+              "$OUT/$role-base-index.json" >/dev/null
+            rm -f "$OUT/$role-base-index.json"
+          done
+
+      - name: Build each historical scaffold twice as direct OCI layouts
+        run: |
+          set -euo pipefail
+          epoch=$(jq -er '.source_date_epoch' "$OUT/source.json")
+          for role in worker sandbox; do
+            mkdir -m 0700 "$OUT/$role"
+            for attempt in a b; do
+              mkdir -m 0700 "$OUT/$role-$attempt.oci"
+              docker buildx build \
+                --platform linux/amd64 \
+                --pull \
+                --no-cache \
+                --network none \
+                --provenance=false \
+                --sbom=false \
+                --build-arg "SOURCE_DATE_EPOCH=$epoch" \
+                --metadata-file "$OUT/$role-$attempt.build-metadata.json" \
+                --output "type=oci,dest=$OUT/$role-$attempt.oci,tar=false,oci-mediatypes=true" \
+                --file "$CONTEXT/images/$role/Dockerfile" \
+                "$CONTEXT"
+            done
+            npx tsx scripts/local-image-artifacts-cli.ts verify "$role" "$OUT/$role-a.oci" "$OUT/$role-b.oci" "$OUT/$role/graph-comparison.json"
+          done
+
+      - name: Acquire one exact vulnerability database and freeze its file identity
+        run: |
+          set -euo pipefail
+          docker run --rm --user "$(id -u):$(id -g)" --network bridge \
+            --mount "type=bind,src=$CACHE,dst=/cache" \
+            "$TRIVY_IMAGE" image --cache-dir /cache --db-repository "$TRIVY_DATABASE" --download-db-only
+          test -f "$CACHE/db/trivy.db"
+          database_files_sha256=$(
+            find "$CACHE/db" -type f -print0 | LC_ALL=C sort -z |
+              while IFS= read -r -d '' file; do
+                rel=${file#"$CACHE/db/"}
+                size=$(wc -c < "$file" | tr -d ' ')
+                hash=$(sha256sum -- "$file" | awk '{print $1}')
+                printf '%s\t%s\t%s\n' "$size" "$hash" "$rel"
+              done | sha256sum | awk '{print $1}'
+          )
+          printf '%s\n' "$database_files_sha256" > "$OUT/trivy-database-files.sha256"
+
+      - name: Generate exact SBOM, all-severity vulnerability, license, provenance, and signature-absence evidence
+        run: |
+          set -euo pipefail
+          worker_dockerfile_sha=$(sha256sum images/worker/Dockerfile | awk '{print $1}')
+          sandbox_dockerfile_sha=$(sha256sum images/sandbox/Dockerfile | awk '{print $1}')
+          jq -cn --arg sha "$worker_dockerfile_sha" \
+            '{dockerfile:{path:"images/worker/Dockerfile",sha256:$sha},base:{reference:"gcr.io/distroless/nodejs22-debian13:nonroot@sha256:773a62fbe24a3f8c8b24b16fd59154627f8b406737bc906f83bf1732bc8907dd",index_digest:"sha256:773a62fbe24a3f8c8b24b16fd59154627f8b406737bc906f83bf1732bc8907dd",linux_amd64_manifest_digest:"sha256:83cc33d5adfc7d6f3b1ba14defc7bbd93f08c6f22fb643ee51a47ba55670e23c"}}' > "$OUT/worker-materials.json"
+          jq -cn --arg sha "$sandbox_dockerfile_sha" \
+            '{dockerfile:{path:"images/sandbox/Dockerfile",sha256:$sha},base:{reference:"docker.io/library/debian:13-slim@sha256:28de0877c2189802884ccd20f15ee41c203573bd87bb6b883f5f46362d24c5c2",index_digest:"sha256:28de0877c2189802884ccd20f15ee41c203573bd87bb6b883f5f46362d24c5c2",linux_amd64_manifest_digest:"sha256:a617c1cdde36a7e0194b2f07dff669e1753c03c3205356b94f9f350b0f9a57d1"}}' > "$OUT/sandbox-materials.json"
+          for role in worker sandbox; do
+            docker run --rm --user "$(id -u):$(id -g)" --network none \
+              --mount "type=bind,src=$OUT/$role-a.oci,dst=/layout,readonly" \
+              "$SYFT_IMAGE" scan oci-dir:/layout -o spdx-json > "$OUT/$role/sbom.spdx.json"
+            tar -C "$OUT/$role-a.oci" -cf "$OUT/$role/image.scan.oci.tar" .
+            docker run --rm --user "$(id -u):$(id -g)" --network none \
+              --mount "type=bind,src=$CACHE,dst=/cache,readonly" \
+              --mount "type=bind,src=$OUT/$role,dst=/evidence" \
+              "$TRIVY_IMAGE" image \
+                --cache-dir /cache \
+                --skip-db-update \
+                --offline-scan \
+                --input /evidence/image.scan.oci.tar \
+                --scanners vuln \
+                --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL \
+                --ignore-unfixed=false \
+                --format json \
+                --output /evidence/vulnerabilities.json
+            rm -f "$OUT/$role/image.scan.oci.tar"
+            npx tsx scripts/local-image-artifacts-cli.ts licenses "$role" "$OUT/$role/sbom.spdx.json" "$OUT/$role/licenses.json"
+            npx tsx scripts/local-image-artifacts-cli.ts signature-absence "$role" "$OUT/$role/signature-absence.json"
+            npx tsx scripts/local-image-artifacts-cli.ts provenance "$role" "$OUT/$role/graph-comparison.json" "$OUT/source.json" "$OUT/builder.json" "$OUT/$role-materials.json" "$OUT/$role/local-provenance.json"
+            npx tsx scripts/local-image-artifacts-cli.ts verify "$role" "$OUT/$role-a.oci" "$OUT/$role-b.oci" "$OUT/$role/graph-comparison.recheck.json"
+            cmp "$OUT/$role/graph-comparison.json" "$OUT/$role/graph-comparison.recheck.json"
+            rm -f "$OUT/$role/graph-comparison.recheck.json" "$OUT/$role-materials.json"
+          done
+
+      - name: Assemble and classify the blocked historical scaffold package
+        run: |
+          set -euo pipefail
+          database_files_sha256=$(cat "$OUT/trivy-database-files.sha256")
+          worker_dockerfile_sha=$(sha256sum images/worker/Dockerfile | awk '{print $1}')
+          sandbox_dockerfile_sha=$(sha256sum images/sandbox/Dockerfile | awk '{print $1}')
+          jq -cn \
+            --slurpfile source "$OUT/source.json" \
+            --slurpfile builder "$OUT/builder.json" \
+            --arg syft "$SYFT_IMAGE" \
+            --arg trivy "$TRIVY_IMAGE" \
+            --arg database "$TRIVY_DATABASE" \
+            --arg database_files "$database_files_sha256" \
+            --arg worker_dockerfile_sha "$worker_dockerfile_sha" \
+            --arg sandbox_dockerfile_sha "$sandbox_dockerfile_sha" \
+            '{version:"cogs.local-image-artifact-transaction-input/v1",source:$source[0],builder:$builder[0],tools:{syft_image:$syft,trivy_image:$trivy,trivy_database_reference:$database,trivy_database_files_sha256:$database_files},images:[{role:"worker",dockerfile:{path:"images/worker/Dockerfile",sha256:$worker_dockerfile_sha},base:{reference:"gcr.io/distroless/nodejs22-debian13:nonroot@sha256:773a62fbe24a3f8c8b24b16fd59154627f8b406737bc906f83bf1732bc8907dd",index_digest:"sha256:773a62fbe24a3f8c8b24b16fd59154627f8b406737bc906f83bf1732bc8907dd",linux_amd64_manifest_digest:"sha256:83cc33d5adfc7d6f3b1ba14defc7bbd93f08c6f22fb643ee51a47ba55670e23c"},graph_path:"worker/graph-comparison.json",sbom_path:"worker/sbom.spdx.json",vulnerabilities_path:"worker/vulnerabilities.json",licenses_path:"worker/licenses.json",provenance_path:"worker/local-provenance.json",signature_path:"worker/signature-absence.json"},{role:"sandbox",dockerfile:{path:"images/sandbox/Dockerfile",sha256:$sandbox_dockerfile_sha},base:{reference:"docker.io/library/debian:13-slim@sha256:28de0877c2189802884ccd20f15ee41c203573bd87bb6b883f5f46362d24c5c2",index_digest:"sha256:28de0877c2189802884ccd20f15ee41c203573bd87bb6b883f5f46362d24c5c2",linux_amd64_manifest_digest:"sha256:a617c1cdde36a7e0194b2f07dff669e1753c03c3205356b94f9f350b0f9a57d1"},graph_path:"sandbox/graph-comparison.json",sbom_path:"sandbox/sbom.spdx.json",vulnerabilities_path:"sandbox/vulnerabilities.json",licenses_path:"sandbox/licenses.json",provenance_path:"sandbox/local-provenance.json",signature_path:"sandbox/signature-absence.json"}]}' > "$OUT/transaction-input.json"
+          npx tsx scripts/assemble-local-image-artifact-package.ts "$OUT/transaction-input.json" "$OUT" "$OUT/package.canonical.json" > "$OUT/classification.canonical.json"
+          jq -e '.reason_code == "VALID_BLOCKED_SCAFFOLD_PACKAGE" and .valid == true and .production_ready == false and .release_eligible == false and .stage4_image_runtime_closure_satisfied == false and .stage5_release_freeze_satisfied == false' "$OUT/classification.canonical.json" >/dev/null
+          rm -f "$OUT/transaction-input.json"
+          find "$OUT" -type f -print0 | LC_ALL=C sort -z | while IFS= read -r -d '' file; do
+            rel=${file#"$OUT/"}
+            printf '%s  %s\n' "$(sha256sum "$file" | awk '{print $1}')" "$rel"
+          done > "$OUT/SHA256SUMS"
+
+      - name: Upload exact non-published local artifact package
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: local-image-artifacts-${{ needs.authority.outputs.reviewed_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/cogs-local-image-artifacts/
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+      - name: State digest namespaces without promotion
+        env:
+          CI_ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+        run: |
+          set -euo pipefail
+          [[ "$CI_ARTIFACT_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          test "$(jq -r '.publication.registry_digest' "$OUT/package.canonical.json")" = null
+          test "$(jq -r '.claims.image_signature_verified' "$OUT/package.canonical.json")" = false
+          printf 'GitHub artifact digest (not image/config/OCI-layout/registry digest): %s\n' "$CI_ARTIFACT_DIGEST"
+
+      - name: Remove transaction-local scanner and Docker state
+        if: ${{ always() }}
+        run: |
+          rm -rf -- "$CACHE" "$DOCKER_CONFIG" "$CONTEXT"
+          test ! -e "$CACHE"
+          test ! -e "$DOCKER_CONFIG"
+          test ! -e "$CONTEXT"

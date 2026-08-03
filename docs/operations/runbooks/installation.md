@@ -18,7 +18,7 @@ This guide stops at local/static preparation. It does not install into a cluster
 | Worker/sandbox image references are synthetic `.invalid` values; no image set or executable provider route exists. | [Authority: offline readiness exact bounded closure](../stage-4-offline-readiness.md#exact-bound-inputs-and-source-closure) |
 | Sandbox runtime is exactly `kata-qemu-cogs`, KVM-only, without `runc` or TCG fallback; scheduling domains are disjoint. | [Authority: NIC exact node-group contract](../stage-4-nic-node-group-contract.md#exact-node-group-contract) |
 | Workspace and trusted session state are distinct retained roles. | [Authority: storage/launch separate durable roles](../stage-4-storage-launch-contract.md#separate-durable-storage-roles) |
-| NIC source capability and EKS image/kernel pins remain blocked. | [Authority: NIC current blockers](../stage-4-nic-node-group-contract.md#authenticated-public-source-pin-and-current-blockers) |
+| NIC v2 source capability is present; launch-template/provider observation and region-specific EKS image/kernel evidence remain blocked. | [Authority: NIC non-observation boundary](../stage-4-nic-node-group-contract.md#non-observation-boundary) |
 
 ## Authoritative-local facts
 
@@ -33,7 +33,7 @@ This guide stops at local/static preparation. It does not install into a cluster
 
 | Required future observation | Planned criterion, evidence contract, and location |
 |---|---|
-| Bind exact source/images, node image/kernel, Kata/QEMU/containerd identity, and active KVM acceleration. | [Planned DESIGN-24.3–.5 / `future-local-test-reference-v1` and `future-eks-conformance-reference-v1`](../stage-5-api-key-release-acceptance-matrix.md#criterion-level-traceability) |
+| Bind release images and node image/kernel, then observe the authenticated Kata/QEMU/containerd candidate and active KVM acceleration. | [Planned DESIGN-24.3–.5 / `future-local-test-reference-v1` and `future-eks-conformance-reference-v1`](../stage-5-api-key-release-acceptance-matrix.md#criterion-level-traceability) |
 | Observe RuntimeClass, dual-stack CNI default deny, CSI modes, OpenBao workload identity, OTLP, audit WAL, and scheduler separation with real dependencies. | [Planned DESIGN-24.4–.12 / `future-eks-conformance-reference-v1`](../stage-5-api-key-release-acceptance-matrix.md#criterion-level-traceability) |
 | Demonstrate repeatable install, readiness, failures, destroy, and independent inventory. | [Planned STAGE5-45.07, .10, .11 / `future-eks-conformance-reference-v1`, `future-operations-reference-v1`, `future-zero-inventory-reference-v1`](../stage-5-api-key-release-acceptance-matrix.md#criterion-level-traceability) |
 | Bind S4-11 and every applicable Stage 5 item to one exact candidate. | [Planned STAGE5-45.01 / `future-acceptance-index-reference-v1` finalization rule](../stage-5-api-key-release-acceptance-matrix.md#finalization-rule-for-a-future-authority) |

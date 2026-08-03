@@ -1,3 +1,4 @@
+/* biome-ignore-all lint/suspicious/noExplicitAny: legacy-version sample derivation mutates strict JSON fixtures */
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -208,7 +209,35 @@ function offlineReadinessPackageSample(): JsonObject {
   ) as JsonObject;
 }
 
-function offlineReadinessVerdictSample(): JsonObject {
+function offlineReadinessPackageV1Sample(): JsonObject {
+  const value = offlineReadinessPackageSample() as Record<string, any>;
+  value.version = "cogs.stage4-offline-readiness-package/v1";
+  value.source = {
+    integrated_predecessor_git_commit: "dc11c1f6f2e29a66c602b82d805c764a00517bf0",
+    inventory_scope: "complete-stage4-source-closure",
+    inventory_algorithm: "sha256-over-exact-file-bytes",
+    source_closure_complete: true,
+    excluded_self_referential_outputs: [
+      "docs/security-evidence/stage4-offline-readiness-package.json",
+      "docs/security-evidence/stage4-offline-readiness-artifacts/source-inventory.json",
+      "docs/security-evidence/stage4-offline-readiness-artifacts/local-validation.json",
+    ],
+    release_candidate_binding_present: false,
+  };
+  delete value.artifact_bindings.authenticated_runtime_artifacts_sha256;
+  value.pins.runtime.qemu_version = "8.2.2";
+  value.pins.runtime.eks_node_image_release = null;
+  value.pins.runtime.node_image_state = "unresolved-blocking";
+  value.pins.runtime.containerd_artifact_sha256 = null;
+  value.pins.runtime.containerd_artifact_state = "unresolved-blocking";
+  value.pins.runtime.qemu_artifact_sha256 = null;
+  value.pins.runtime.qemu_artifact_state = "unresolved-blocking";
+  value.pins.runtime.exact_runtime_artifact_closure_satisfied = false;
+  value.blockers.push("CONTAINERD_ARTIFACT_IDENTITY_UNRESOLVED", "QEMU_ARTIFACT_IDENTITY_UNRESOLVED");
+  return value;
+}
+
+function offlineReadinessVerdictV1Sample(): JsonObject {
   return {
     version: "cogs.stage4-offline-readiness-verdict/v1",
     authority: "local-static-stage4-readiness-classifier",
@@ -231,7 +260,6 @@ function offlineReadinessVerdictSample(): JsonObject {
     reason_code: "STAGE4_LOCAL_PREPARATION_COMPLETE_CAMPAIGN_BLOCKED",
     blockers: [
       "ISSUE_42_OPEN",
-      "NIC_V0_11_0_MODULE_0_7_0_LAUNCH_TEMPLATE_CAPABILITY_MISSING",
       "EKS_AMI_IMAGE_RELEASE_KERNEL_UNRESOLVED",
       "PROPOSED_ACCOUNT_BINDING_ABSENT",
       "CURRENT_PRICE_NOT_REVALIDATED",
@@ -244,6 +272,27 @@ function offlineReadinessVerdictSample(): JsonObject {
       "QEMU_ARTIFACT_IDENTITY_UNRESOLVED",
     ],
   };
+}
+
+function offlineReadinessVerdictSample(): JsonObject {
+  const value = offlineReadinessVerdictV1Sample() as Record<string, any>;
+  value.version = "cogs.stage4-offline-readiness-verdict/v2";
+  value.candidate_artifact_closure_complete = true;
+  value.selected_runtime_artifacts_authenticated = true;
+  value.blockers = value.blockers.slice(0, -2);
+  return value;
+}
+
+function authenticatedRuntimeArtifactSample(): JsonObject {
+  return JSON.parse(
+    readFileSync(
+      resolve(
+        import.meta.dirname,
+        "../docs/security-evidence/stage4-offline-readiness-artifacts/authenticated-runtime-artifacts.json",
+      ),
+      "utf8",
+    ),
+  ) as JsonObject;
 }
 
 function policyContractSample(): JsonObject {
@@ -309,6 +358,12 @@ function teardownVerdictSample(): JsonObject {
 
 function nicContractSample(): JsonObject {
   return JSON.parse(
+    readFileSync(resolve(import.meta.dirname, "../deploy/nic/stage4-sandbox-node-group-contract-v1.json"), "utf8"),
+  ) as JsonObject;
+}
+
+function nicV2ContractSample(): JsonObject {
+  return JSON.parse(
     readFileSync(resolve(import.meta.dirname, "../deploy/nic/stage4-sandbox-node-group-contract.json"), "utf8"),
   ) as JsonObject;
 }
@@ -330,7 +385,69 @@ function nicVerdictSample(): JsonObject {
   };
 }
 
+function nicV2VerdictSample(): JsonObject {
+  return {
+    version: "cogs.stage4-nic-sandbox-node-group-verdict/v2",
+    authority: "local-static-personal-fork-source-classifier",
+    campaign_authorized: false,
+    cloud_execution_observed: false,
+    provider_truth_observed: false,
+    launch_template_contents_observed: false,
+    stage4_exit_satisfied: false,
+    release_eligible: false,
+    contract_sha256: sha("d"),
+    nic_source_pin_resolved: true,
+    node_image_pin_resolved: false,
+    launch_template_selection_capability_resolved: true,
+    status: "source-capability-satisfied-local-static",
+    reason_code: "STAGE4_NIC_SOURCE_CAPABILITY_PRESENT_NONOBSERVING",
+  };
+}
+
+function staticManifestRequestSample(): JsonObject {
+  return JSON.parse(
+    readFileSync(resolve(import.meta.dirname, "fixtures/stage4-static-manifest/valid-request-v1.json"), "utf8"),
+  ) as JsonObject;
+}
+
+function staticManifestReceiptSample(): JsonObject {
+  return {
+    version: "cogs.stage4-static-manifest-receipt/v1",
+    authority: "local-static-manifest-materialization-only",
+    request_sha256: sha("1"),
+    manifest_sha256: sha("2"),
+    nic_config_sha256: sha("3"),
+    chart_inventory_sha256: sha("4"),
+    helm_executable_sha256: sha("5"),
+    nic_contract_sha256: sha("6"),
+    object_inventory: [
+      "ConfigMap/stage4-cogs-contract",
+      "ServiceAccount/stage4-cogs-trusted",
+      "ServiceAccount/cogs-sandbox-inert",
+      "Service/stage4-cogs-proxy",
+      "NetworkPolicy/stage4-cogs-default-deny",
+      "NetworkPolicy/stage4-cogs-trusted-allow",
+      "NetworkPolicy/stage4-cogs-sandbox-allow",
+      "PodTemplate/stage4-cogs-trusted-template",
+      "PodTemplate/stage4-cogs-sandbox-template",
+    ],
+    manifest_render_route_present: true,
+    deployment_execution_route_present: false,
+    apply_route_present: false,
+    kubernetes_client_present: false,
+    kubernetes_execution_observed: false,
+    provider_execution_observed: false,
+    cloud_execution_observed: false,
+    provider_truth_observed: false,
+    launch_template_contents_observed: false,
+    campaign_authorized: false,
+    stage4_exit_satisfied: false,
+    release_eligible: false,
+  };
+}
+
 const STAGE4_SCHEMA_REGISTRY = [
+  { file: "stage4-authenticated-runtime-artifact-evidence-v1.json", sample: authenticatedRuntimeArtifactSample },
   { file: "stage4-campaign-approval-draft-v1.json", sample: campaignApprovalDraftSample },
   { file: "stage4-campaign-approval-verdict-v1.json", sample: campaignApprovalVerdictSample },
   { file: "stage4-campaign-evidence-v1.json", sample: campaignEvidenceSample },
@@ -340,12 +457,18 @@ const STAGE4_SCHEMA_REGISTRY = [
   { file: "stage4-exit-review-report-template-v1.json", sample: exitReviewReportSample },
   { file: "stage4-exit-review-verdict-v1.json", sample: exitReviewVerdictSample },
   { file: "stage4-nic-sandbox-node-group-contract-v1.json", sample: nicContractSample },
+  { file: "stage4-nic-sandbox-node-group-contract-v2.json", sample: nicV2ContractSample },
   { file: "stage4-nic-sandbox-node-group-verdict-v1.json", sample: nicVerdictSample },
-  { file: "stage4-offline-readiness-package-v1.json", sample: offlineReadinessPackageSample },
-  { file: "stage4-offline-readiness-verdict-v1.json", sample: offlineReadinessVerdictSample },
+  { file: "stage4-nic-sandbox-node-group-verdict-v2.json", sample: nicV2VerdictSample },
+  { file: "stage4-offline-readiness-package-v1.json", sample: offlineReadinessPackageV1Sample },
+  { file: "stage4-offline-readiness-package-v2.json", sample: offlineReadinessPackageSample },
+  { file: "stage4-offline-readiness-verdict-v1.json", sample: offlineReadinessVerdictV1Sample },
+  { file: "stage4-offline-readiness-verdict-v2.json", sample: offlineReadinessVerdictSample },
   { file: "stage4-policy-contract-v1.json", sample: policyContractSample },
   { file: "stage4-policy-payload-v1.json", sample: policyPayloadSample },
   { file: "stage4-policy-probe-suite-v1.json", sample: policyProbeSample },
+  { file: "stage4-static-manifest-receipt-v1.json", sample: staticManifestReceiptSample },
+  { file: "stage4-static-manifest-request-v1.json", sample: staticManifestRequestSample },
   { file: "stage4-static-preparation-evidence-v1.json", sample: staticSample },
   { file: "stage4-storage-launch-contract-v1.json", sample: storageLaunchContractSample },
   { file: "stage4-storage-launch-verdict-v1.json", sample: storageLaunchVerdictSample },
@@ -355,6 +478,7 @@ const STAGE4_SCHEMA_REGISTRY = [
 
 function compileRegistry(): Map<string, ValidateFunction> {
   const ajv = new Ajv2020({ allErrors: true, strict: true, strictRequired: false, ownProperties: true });
+  require("ajv-formats")(ajv);
   return new Map(
     STAGE4_SCHEMA_REGISTRY.map(({ file }) => {
       const schema = JSON.parse(readFileSync(resolve(schemaDirectory, file), "utf8")) as object;
@@ -377,6 +501,7 @@ test("the bounded Stage 4 registry compiles its strict positive samples", () => 
   assert.deepEqual(
     STAGE4_SCHEMA_REGISTRY.map(({ file }) => file),
     [
+      "stage4-authenticated-runtime-artifact-evidence-v1.json",
       "stage4-campaign-approval-draft-v1.json",
       "stage4-campaign-approval-verdict-v1.json",
       "stage4-campaign-evidence-v1.json",
@@ -386,12 +511,18 @@ test("the bounded Stage 4 registry compiles its strict positive samples", () => 
       "stage4-exit-review-report-template-v1.json",
       "stage4-exit-review-verdict-v1.json",
       "stage4-nic-sandbox-node-group-contract-v1.json",
+      "stage4-nic-sandbox-node-group-contract-v2.json",
       "stage4-nic-sandbox-node-group-verdict-v1.json",
+      "stage4-nic-sandbox-node-group-verdict-v2.json",
       "stage4-offline-readiness-package-v1.json",
+      "stage4-offline-readiness-package-v2.json",
       "stage4-offline-readiness-verdict-v1.json",
+      "stage4-offline-readiness-verdict-v2.json",
       "stage4-policy-contract-v1.json",
       "stage4-policy-payload-v1.json",
       "stage4-policy-probe-suite-v1.json",
+      "stage4-static-manifest-receipt-v1.json",
+      "stage4-static-manifest-request-v1.json",
       "stage4-static-preparation-evidence-v1.json",
       "stage4-storage-launch-contract-v1.json",
       "stage4-storage-launch-verdict-v1.json",
@@ -458,7 +589,7 @@ test("every Stage 4 schema rejects unknown root fields and representative nested
   const readinessMutation = offlineReadinessPackageSample();
   ((readinessMutation.campaign_proposal as JsonObject).account_binding as JsonObject).unreviewed = true;
   assertRejected(
-    validatorFor(validators, "stage4-offline-readiness-package-v1.json"),
+    validatorFor(validators, "stage4-offline-readiness-package-v2.json"),
     readinessMutation,
     "offline readiness package accepted an unknown account-binding field",
   );
