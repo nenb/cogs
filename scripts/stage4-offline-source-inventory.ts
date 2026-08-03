@@ -215,7 +215,7 @@ function trackedFiles(root: string): TrackedFile[] {
       throw new Error("STAGE4_SOURCE_INVENTORY_GIT_ENTRY_INVALID");
     files.push({ mode: match[1] as GitFileMode, path: match[3] });
   }
-  const untracked = text(pinnedGit(root, ["ls-files", "--others", "--exclude-standard", "-z"]))
+  const untracked = text(pinnedGit(root, ["ls-files", "--others", "-z", "--", ...UNTRACKED_VALIDATION_PREFIXES]))
     .split("\0")
     .filter((path) => path !== "");
   if (

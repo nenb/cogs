@@ -455,6 +455,7 @@ test("source inventory ignores irrelevant untracked outputs but rejects untracke
     writeFileSync(join(repository, "generated-output/result.json"), "{}\n");
     assert.doesNotThrow(() => generateStage4SourceInventory(repository));
 
+    writeFileSync(join(repository, ".git/info/exclude"), "src/\n");
     mkdirSync(join(repository, "src"));
     writeFileSync(join(repository, "src/hostile.ts"), "export {};\n");
     assert.throws(
