@@ -138,9 +138,7 @@ test("materializes deterministic local manifests, NIC handoff, and a non-authori
   }
 });
 
-test("rejects aliases, quoted/fractional versions, attestation drift, extra fields, and noncanonical bytes", {
-  skip: !pinnedHelmAvailable,
-}, () => {
+test("rejects aliases, quoted/fractional versions, attestation drift, extra fields, and noncanonical bytes", () => {
   const temporary = mkdtempSync(join(tmpdir(), "cogs-stage4-manifest-hostile-"));
   try {
     const cases: Array<(value: Record<string, any>) => void> = [
@@ -150,18 +148,29 @@ test("rejects aliases, quoted/fractional versions, attestation drift, extra fiel
       (value) => (value.nic.external_launch_template.version = 0),
       (value) => (value.nic.external_launch_template.operator_review.cpu_options.nested_virtualization = "observed"),
       (value) => (value.nic.external_launch_template.operator_review.cpu_options.core_count = 2),
-      (value) => (value.values.placement.sandbox.tolerations = []),
       (value) => (value.extra = true),
     ];
     for (const [index, mutate] of cases.entries()) {
       const request = temporaryRequest(temporary, mutate);
       const result = run(request, join(temporary, `output-${index}`));
       assert.notEqual(result.status, 0, `case ${index}`);
-      assert.match(result.stderr, /^STAGE4_MANIFEST_(REQUEST_INVALID|HELM_FAILED)\n$/u);
+      assert.equal(result.stderr, "STAGE4_MANIFEST_REQUEST_INVALID\n");
     }
     const whitespace = join(temporary, "whitespace.json");
     writeFileSync(whitespace, ` ${readFileSync(validRequest, "utf8")}`, { mode: 0o600 });
     assert.match(run(whitespace, join(temporary, "whitespace-output")).stderr, /STAGE4_MANIFEST_REQUEST_NONCANONICAL/u);
+  } finally {
+    rmSync(temporary, { recursive: true, force: true });
+  }
+});
+
+test("rejects Helm-level placement drift", { skip: !pinnedHelmAvailable }, () => {
+  const temporary = mkdtempSync(join(tmpdir(), "cogs-stage4-manifest-helm-hostile-"));
+  try {
+    const request = temporaryRequest(temporary, (value) => (value.values.placement.sandbox.tolerations = []));
+    const result = run(request, join(temporary, "output"));
+    assert.notEqual(result.status, 0);
+    assert.equal(result.stderr, "STAGE4_MANIFEST_HELM_FAILED\n");
   } finally {
     rmSync(temporary, { recursive: true, force: true });
   }
