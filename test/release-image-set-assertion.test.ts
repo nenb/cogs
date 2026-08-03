@@ -796,6 +796,18 @@ test("release publication uses only the pinned direct Buildx client and private 
   assert.match(build, /--pull/u);
   assert.match(build, /--no-cache/u);
   assert.match(build, /--metadata-file "\$metadata"/u);
+  assert.match(build, /\(set -o noclobber; : > "\$metadata"\)/u);
+  assert.match(build, /600:1:0:regular empty file/u);
+  assert.match(build, /test ! -L "\$metadata" && test -f "\$metadata"/u);
+  assert.match(build, /metadata_size=\$\(stat -c '%s' "\$metadata"\)/u);
+  assert.match(build, /test "\$metadata_size" -le 4194304/u);
+  assert.match(build, /chmod 0600 -- "\$metadata"/u);
+  assert.match(build, /600:1:\$metadata_size:regular file/u);
+  const precreate = build.indexOf('(set -o noclobber; : > "$metadata")');
+  const invocation = build.indexOf("docker buildx build");
+  const normalizeMode = build.indexOf('chmod 0600 -- "$metadata"');
+  const parse = build.indexOf("jq -e '");
+  assert.ok(precreate >= 0 && precreate < invocation && invocation < normalizeMode && normalizeMode < parse);
   assert.match(build, /\."containerimage\.digest"/u);
   assert.match(build, /\."containerimage\.descriptor"\.digest/u);
   assert.match(build, /\."buildx\.build\.provenance"/u);
