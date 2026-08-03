@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -24,6 +24,9 @@ const root = resolve(import.meta.dirname, "..");
 const script = resolve(root, "scripts/stage4-static-manifest-package.ts");
 const validRequest = resolve(root, "test/fixtures/stage4-static-manifest/valid-request-v1.json");
 const sha = (bytes: Buffer): string => createHash("sha256").update(bytes).digest("hex");
+const pinnedHelmAvailable =
+  existsSync(STAGE4_STATIC_MANIFEST_HELM.executable) &&
+  sha(readFileSync(STAGE4_STATIC_MANIFEST_HELM.executable)) === STAGE4_STATIC_MANIFEST_HELM.sha256;
 
 function run(request: string, output: string) {
   return spawnSync(process.execPath, [script, "--request", request, "--output", output], {
@@ -53,7 +56,9 @@ function temporaryRequest(directory: string, mutate: (value: Record<string, any>
   return path;
 }
 
-test("materializes deterministic local manifests, NIC handoff, and a non-authorizing receipt", () => {
+test("materializes deterministic local manifests, NIC handoff, and a non-authorizing receipt", {
+  skip: !pinnedHelmAvailable,
+}, () => {
   const temporary = mkdtempSync(join(tmpdir(), "cogs-stage4-manifest-test-"));
   try {
     const first = join(temporary, "first");
@@ -133,7 +138,9 @@ test("materializes deterministic local manifests, NIC handoff, and a non-authori
   }
 });
 
-test("rejects aliases, quoted/fractional versions, attestation drift, extra fields, and noncanonical bytes", () => {
+test("rejects aliases, quoted/fractional versions, attestation drift, extra fields, and noncanonical bytes", {
+  skip: !pinnedHelmAvailable,
+}, () => {
   const temporary = mkdtempSync(join(tmpdir(), "cogs-stage4-manifest-hostile-"));
   try {
     const cases: Array<(value: Record<string, any>) => void> = [
