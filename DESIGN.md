@@ -169,7 +169,7 @@ flowchart LR
     S -->|HTTP_PROXY / HTTPS_PROXY only| E
 
     subgraph U[VM-backed sandbox]
-      S[Ubuntu/Debian sandbox\nroot allowed]
+      S[Ubuntu 24.04 sandbox\nroot allowed]
       W[/workspace]
       SS[/shared/skills read-only]
       US[/user/skills read-only snapshot]
@@ -197,7 +197,7 @@ One active session consists of two trust domains:
 
 2. **Untrusted sandbox resource**
    - one VM boundary;
-   - one Ubuntu/Debian-based environment;
+   - one Ubuntu 24.04 LTS environment built for Linux/amd64 from the exact OCI index and signed Noble snapshot selected by ADR 0097;
    - OpenSSH server and the minimal ordinary Unix tooling required by the production shell, Git, trust, and input-capture contracts;
    - selected persistent workspace;
    - read-only skill snapshots;
@@ -931,7 +931,7 @@ src/
 
 The guest image adds configuration, not an agent framework:
 
-- Ubuntu or Debian base;
+- Ubuntu 24.04 LTS Linux/amd64 base and signed `20260801T000000Z` Noble snapshot fixed by ADR 0097;
 - OpenSSH server;
 - CA public certificate and trust-store environment variables;
 - the minimal production tool roots selected by the platform image: Bash, Git, OpenSSH/key validation, OpenSSL/CA trust, and Python input capture;

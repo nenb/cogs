@@ -527,8 +527,14 @@ test("Trivy gate rejects every unsupported result and malformed vulnerability be
     ArtifactType: "container_image",
     Metadata: { RepoDigests: [subject], OS: { Family: "debian", Name: "13" } },
     Results: [
-      { Class: "os-pkgs", Target: `${subject} (debian 13)`, Type: "debian", Vulnerabilities: null },
-      { Class: "lang-pkgs", Target: "package-lock.json", Type: "npm", Vulnerabilities: [vulnerability] },
+      {
+        Class: "os-pkgs",
+        Target: `${subject} (debian 13)`,
+        Type: "debian",
+        Packages: [{ ID: "dpkg@1.0", Name: "dpkg", Version: "1.0" }],
+        Vulnerabilities: null,
+      },
+      { Class: "lang-pkgs", Target: "package-lock.json", Type: "npm", Packages: [], Vulnerabilities: [vulnerability] },
     ],
   };
   const accepted = (report: unknown): boolean => {
@@ -549,6 +555,9 @@ test("Trivy gate rejects every unsupported result and malformed vulnerability be
     ["empty target", (report) => (report.Results[0].Target = "")],
     ["empty type", (report) => (report.Results[0].Type = "")],
     ["wrong OS package type", (report) => (report.Results[0].Type = "ubuntu")],
+    ["missing package inventory", (report) => delete report.Results[0].Packages],
+    ["empty OS package inventory", (report) => (report.Results[0].Packages = [])],
+    ["malformed inventory package", (report) => delete report.Results[0].Packages[0].Version],
     ["scalar vulnerabilities", (report) => (report.Results[0].Vulnerabilities = "none")],
     ["missing vulnerability identity", (report) => delete report.Results[1].Vulnerabilities[0].VulnerabilityID],
     ["missing package identity", (report) => delete report.Results[1].Vulnerabilities[0].PkgID],
@@ -830,6 +839,7 @@ test("assertion transport is exclusive, bounded, hashed, byte preserving, and ho
 test("release workflow preserves evidence gates and removes all direct-build intermediates", () => {
   assert.match(workflowSource, /--severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL/u);
   assert.match(workflowSource, /--ignore-unfixed=false/u);
+  assert.match(workflowSource, /--list-all-pkgs/u);
   assert.match(workflowSource, /--java-db-repository "\$TRIVY_JAVA_DATABASE"/u);
   assert.match(workflowSource, /--download-java-db-only/u);
   assert.match(workflowSource, /--skip-java-db-update/u);
@@ -847,7 +857,13 @@ test("release workflow preserves evidence gates and removes all direct-build int
   assert.match(trivyValidatorSource, /all\(\.Results\[\]; valid_result\(\$os_family\)\)/u);
   assert.match(trivyValidatorSource, /\.Class == "os-pkgs" or \.Class == "lang-pkgs"/u);
   assert.match(trivyValidatorSource, /\.Type == \$os_family/u);
+  assert.match(trivyValidatorSource, /\.Packages \| type == "array"/u);
+  assert.match(trivyValidatorSource, /all\(\.Packages\[\]; valid_package\)/u);
+  assert.match(trivyValidatorSource, /\.Packages \| length > 0/u);
   assert.match(trivyValidatorSource, /all\(\(\.Vulnerabilities \/\/ \[\]\)\[\]; valid_vulnerability\)/u);
+  assert.match(workflowSource, /\.Metadata\.OS\.Family == "ubuntu" and \.Metadata\.OS\.Name == "24\.04"/u);
+  assert.match(workflowSource, /test "\$dpkg_count" -eq "\$trivy_count"/u);
+  assert.match(workflowSource, /test "\$dpkg_count" -eq "\$syft_count"/u);
   assert.match(workflowSource, /cosign attest --yes --new-bundle-format=true --type spdxjson/u);
   assert.match(workflowSource, /cosign sign --yes --new-bundle-format=true "\$subject"/u);
   assert.match(workflowSource, /cosign verify --new-bundle-format=true --output json/u);

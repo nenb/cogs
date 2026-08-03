@@ -132,7 +132,7 @@ copy_image_config() {
 install_ssh_identity() {
   local private="$RUNTIME_ROOT/ssh_host_ed25519_key"
   local public="$RUNTIME_ROOT/ssh_host_ed25519_key.pub"
-  local derived provided client_type client_blob client_fields client_lines
+  local derived derived_fields provided client_type client_blob client_fields client_lines
 
   regular_file_identity "$HOST_KEY" 600 64 16384 >/dev/null || fail
   regular_file_identity "$HOST_PUBLIC" 600 80 1024 >/dev/null || fail
@@ -142,6 +142,9 @@ install_ssh_identity() {
   provided=$(awk 'NR == 1 { print $1 " " $2 }' "$public" 2>/dev/null) || fail
   [[ "$client_lines" == 1 && ( "$client_fields" == 2 || "$client_fields" == 3 ) && "$provided" == ssh-ed25519\ * ]] || fail
   derived=$(ssh-keygen -y -f "$private" 2>/dev/null) || fail
+  derived_fields=$(awk 'NR == 1 { print NF } END { if (NR != 1) exit 1 }' <<< "$derived" 2>/dev/null) || fail
+  [[ "$derived_fields" == 2 || "$derived_fields" == 3 ]] || fail
+  derived=$(awk 'NR == 1 { print $1 " " $2 }' <<< "$derived" 2>/dev/null) || fail
   [[ "$derived" == "$provided" ]] || fail
   ssh-keygen -l -E sha256 -f "$private" 2>/dev/null | grep -Fq '(ED25519)' || fail
 

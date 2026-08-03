@@ -32,7 +32,7 @@ Buildx is manually installed from the manifest-selected exact Linux/amd64 bytes.
 
 Each build publishes one direct `linux/amd64` child plus BuildKit `mode=max` provenance. The metadata-derived digest must equal the metadata descriptor digest. Registry readback then requires that digest to hash the exact top-level index, exactly one variant-free `linux/amd64` child, exactly one BuildKit attestation manifest referring to that child, and decoded BuildKit v1 provenance reporting `linux/amd64`.
 
-The production sandbox fixes package policy `debian-trixie-snapshots-20260713-20260731-production-core-v2`: Bash, CA certificates, Git, OpenSSH client/key validation and server/internal SFTP, OpenSSL, and Python input capture are the only direct package roots. Node/npm, Java, curl, Python client/pip, DNS/firewall/socket probes, and other conformance tooling remain in the separately labelled `insecure-container` / `functional-only` image and cannot enter this publication subject without failing static package-policy checks.
+The production sandbox fixes package policy `ubuntu-noble-snapshot-20260801-production-core-v1` on the exact Linux/amd64 Ubuntu 24.04 OCI index. Ubuntu's signed snapshot mechanism is fixed at `20260801T000000Z` for `noble`, `noble-updates`, and `noble-security`, using `main universe` only; the initial OpenSSL/CA artifacts are official snapshot URLs constrained by reviewed SHA-256 values and verified package identities. Bash, CA certificates, Git, OpenSSH client/key validation and server/internal SFTP, OpenSSL, and Python input capture are the only direct package roots. APT and dpkg metadata and `/etc/os-release` remain present for scanner visibility. Node/npm, Java, curl, Python client/pip, DNS/firewall/socket probes, and other conformance tooling remain in the separately labelled `insecure-container` / `functional-only` image and cannot enter this publication subject without failing static package-policy checks.
 
 ## SBOM, scanner, and signature assertions
 
@@ -47,10 +47,11 @@ Trivy scans each exact digest with every severity and `ignore_unfixed=false`. Be
 - a nonempty `Results` array where every entry is an object;
 - only exact `os-pkgs` or `lang-pkgs` classes, each with nonempty target and type;
 - every `os-pkgs` type equal to `Metadata.OS.Family`, with at least one such OS-package result;
+- `Packages` equal to an array for every result, with nonempty package identity/version fields and a nonempty OS-package inventory (the scan uses `--list-all-pkgs`);
 - `Vulnerabilities` equal to either `null` or an array for every result; and
 - every vulnerability carrying nonempty vulnerability/package identity and installed-version strings, an allowed severity, and only an absent, null, or string fixed version.
 
-`HIGH` and `CRITICAL` findings block, including unfixed findings. `UNKNOWN`, `LOW`, and `MEDIUM` are retained but non-gating and grant no risk, legal, readiness, or release approval. Counts must partition both severity and fixed/unfixed dimensions. The assertion records these as workflow observations only; the static parser does not independently inspect the omitted raw report.
+`HIGH` and `CRITICAL` findings block, including unfixed findings. For the sandbox, the workflow additionally requires Trivy to identify `ubuntu` 24.04, obtains the exact dpkg installed-package count from the digest subject, and compares it with nonempty Trivy and SPDX package evidence so an empty or materially incomplete OS inventory fails closed. `UNKNOWN`, `LOW`, and `MEDIUM` are retained but non-gating and grant no risk, legal, readiness, or release approval. Counts must partition both severity and fixed/unfixed dimensions. The assertion records these as workflow observations only; the static parser does not independently inspect the omitted raw report.
 
 ## Canonical successful-workflow image-set assertion
 

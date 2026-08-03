@@ -17,13 +17,30 @@ const captureInputs = readFileSync(captureInputsPath, "utf8");
 const sshdConfig = readFileSync(sshdConfigPath, "utf8");
 
 const packages = [
-  "bash=5.2.37-2+b9",
-  "ca-certificates=20250419",
-  "git=1:2.47.3-0+deb13u1",
-  "openssh-client=1:10.0p1-7+deb13u4",
-  "openssh-server=1:10.0p1-7+deb13u4",
-  "openssl=3.5.6-1~deb13u2",
-  "python3=3.13.5-1",
+  "bash=5.2.21-2ubuntu4",
+  "ca-certificates=20260601~24.04.1",
+  "git=1:2.43.0-1ubuntu7.3",
+  "openssh-client=1:9.6p1-3ubuntu13.18",
+  "openssh-server=1:9.6p1-3ubuntu13.18",
+  "openssl=3.0.13-0ubuntu3.12",
+  "python3=3.12.3-0ubuntu2.1",
+] as const;
+
+const bootstrapArtifacts = [
+  {
+    package: "openssl",
+    version: "3.0.13-0ubuntu3.12",
+    architecture: "amd64",
+    sha256: "321b30ad5a1c3783cb3d73ae439f824f6d3874d76a93a62f4a984959b490aa7b",
+    path: "pool/main/o/openssl/openssl_3.0.13-0ubuntu3.12_amd64.deb",
+  },
+  {
+    package: "ca-certificates",
+    version: "20260601~24.04.1",
+    architecture: "all",
+    sha256: "6bac2a01979e210d9eac1d4d56747ec709ea60654744d66705dc3c36e7629e50",
+    path: "pool/main/c/ca-certificates/ca-certificates_20260601~24.04.1_all.deb",
+  },
 ] as const;
 
 const removedProductionRoots = [
@@ -103,18 +120,54 @@ function source(command: string) {
   });
 }
 
-test("sandbox image uses the reviewed Debian base, immutable snapshots, and exact package policy", () => {
+test("sandbox image uses the exact amd64 Ubuntu 24.04 base and signed fixed snapshot package policy", () => {
   assert.match(
     dockerfile,
-    /^FROM debian:13-slim@sha256:020c0d20b9880058cbe785a9db107156c3c75c2ac944a6aa7ab59f2add76a7bd$/mu,
+    /^FROM --platform=linux\/amd64 ubuntu:24\.04@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90$/mu,
   );
-  assert.match(dockerfile, /URIs: http:\/\/snapshot\.debian\.org\/archive\/debian\/20260713T000000Z\//u);
-  assert.match(dockerfile, /URIs: http:\/\/snapshot\.debian\.org\/archive\/debian-security\/20260731T000000Z\//u);
-  assert.match(dockerfile, /Signed-By: \/usr\/share\/keyrings\/debian-archive-keyring\.gpg/gu);
-  assert.doesNotMatch(dockerfile, /\bARG\s+DEBIAN_|\$\{?DEBIAN_/u);
+  assert.match(dockerfile, /URIs: http:\/\/archive\.ubuntu\.com\/ubuntu\//u);
+  assert.match(dockerfile, /Suites: noble noble-updates/u);
+  assert.match(dockerfile, /URIs: http:\/\/security\.ubuntu\.com\/ubuntu\//u);
+  assert.match(dockerfile, /Suites: noble-security/u);
+  assert.equal((dockerfile.match(/Components: main universe/gu) ?? []).length, 2);
+  assert.equal((dockerfile.match(/Snapshot: 20260801T000000Z/gu) ?? []).length, 2);
+  assert.equal((dockerfile.match(/Signed-By: \/usr\/share\/keyrings\/ubuntu-archive-keyring\.gpg/gu) ?? []).length, 2);
+  assert.match(dockerfile, /APT::Snapshot "20260801T000000Z";/u);
+  assert.match(dockerfile, /APT::Update::Error-Mode=any/u);
+  assert.match(dockerfile, /Acquire::Retries "0";/u);
+  assert.match(dockerfile, /Acquire::AllowInsecureRepositories "false";/u);
+  assert.match(dockerfile, /Acquire::AllowDowngradeToInsecureRepositories "false";/u);
+  assert.match(dockerfile, /APT::Get::AllowUnauthenticated "false";/u);
+  assert.doesNotMatch(dockerfile, /noble-backports|\b(?:restricted|multiverse)\b/iu);
+  assert.doesNotMatch(dockerfile, /\bARG\s+(?:UBUNTU|SNAPSHOT)_|\$\{?(?:UBUNTU|SNAPSHOT)_/u);
+
+  for (const artifact of bootstrapArtifacts) {
+    assert.ok(
+      dockerfile.includes(
+        `ADD --checksum=sha256:${artifact.sha256} \\\n  https://snapshot.ubuntu.com/ubuntu/20260801T000000Z/${artifact.path}`,
+      ),
+      artifact.package,
+    );
+    assert.ok(dockerfile.includes(`Package)" = ${artifact.package}`), artifact.package);
+    assert.match(
+      dockerfile,
+      new RegExp(`Version\\)" = '?${artifact.version.replaceAll(".", "\\.").replaceAll("+", "\\+")}'?`, "u"),
+      artifact.package,
+    );
+    assert.ok(dockerfile.includes(`Architecture)" = ${artifact.architecture}`), artifact.package);
+  }
+  assert.match(
+    dockerfile,
+    /dpkg --unpack \/tmp\/cogs-bootstrap-openssl\.deb \/tmp\/cogs-bootstrap-ca-certificates\.deb/u,
+  );
+  assert.match(dockerfile, /update-ca-certificates --fresh/u);
+  assert.match(dockerfile, /test -s \/etc\/ssl\/certs\/ca-certificates\.crt/u);
+
   const install = installPackages(dockerfile);
   assert.deepEqual(install, packages);
   assert.doesNotMatch(install.join("\n"), /(?:aws|azure|google-cloud|kubectl|kubernetes|openbao|vault)/iu);
+  assert.match(dockerfile, /test -z "\$\(dpkg --audit\)"/u);
+  assert.doesNotMatch(dockerfile, /rm -rf \/var\/lib\/(?:apt|dpkg)|rm -rf \/etc\/apt/u);
   assert.match(dockerfile, /rm -f \/etc\/ssh\/ssh_host_\*/u);
   for (const generatedIdentity of ["/etc/machine-id", "/var/lib/dbus/machine-id", "/var/lib/systemd/random-seed"]) {
     assert.ok(dockerfile.includes(generatedIdentity), generatedIdentity);
@@ -145,7 +198,7 @@ test("conformance clients and network probes cannot re-enter production and rema
 test("sandbox labels describe an external Kata requirement without claiming isolation from image bytes", () => {
   for (const label of [
     'dev.cogs.profile="kata-sandbox-guest"',
-    'dev.cogs.package-policy="debian-trixie-snapshots-20260713-20260731-production-core-v2"',
+    'dev.cogs.package-policy="ubuntu-noble-snapshot-20260801-production-core-v1"',
     'dev.cogs.isolation-authority="external-runtime-required"',
     'dev.cogs.credentials="proxy-capability-only-no-upstream-secrets"',
     'dev.cogs.skills-inputs="external-read-only"',
@@ -235,6 +288,8 @@ test("entrypoint consumes only stable private copies of injected inputs", () => 
   assert.match(entrypoint, /stat -c '%d:%i:%s:%u:%g:%a:%h:%Y:%Z:%F'/u);
   assert.match(entrypoint, /realpath -e/u);
   assert.match(entrypoint, /ssh-keygen -y -f/u);
+  assert.match(entrypoint, /derived_fields.*== 2.*derived_fields.*== 3/u);
+  assert.match(entrypoint, /derived=.*awk 'NR == 1 \{ print \$1 " " \$2 \}'/u);
   assert.match(entrypoint, /\[\[ "\$derived" == "\$provided" \]\]/u);
   assert.match(entrypoint, /client_lines.*== 1/u);
   assert.match(entrypoint, /printf 'restrict %s %s\\n'/u);
