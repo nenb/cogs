@@ -544,7 +544,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   images:
-    name: Production image candidates, vulnerabilities, and SBOMs
+    name: Images, vulnerabilities, and SBOMs
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     env: { ENVOY_IMAGE: "envoyproxy/envoy:v1.38.3@sha256:5f7c43e1147412fdb3af578c651c67478a3df818eae89d2261e707e06c209cdb",
