@@ -1,5 +1,6 @@
 /* biome-ignore-all lint/suspicious/noExplicitAny: hostile package mutations intentionally cross strict JSON types */
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import {
   chmodSync,
   existsSync,
@@ -432,6 +433,36 @@ test("source reads reject final and component symlinks, hard links, and oversize
     assert.throws(() => readStage4SourceFile(repository, "oversize.ts", 2), /FILE_BOUND_INVALID/u);
   } finally {
     rmSync(temporary, { recursive: true, force: true });
+  }
+});
+
+test("source inventory ignores irrelevant untracked outputs but rejects untracked validation inputs", () => {
+  const pinnedGitAvailable =
+    existsSync(STAGE4_PINNED_GIT.executable) &&
+    stage4OfflineReadinessSha256(new Uint8Array(readFileSync(STAGE4_PINNED_GIT.executable)), 64 * 1024 * 1024) ===
+      STAGE4_PINNED_GIT.sha256;
+  if (!pinnedGitAvailable) return;
+
+  const repository = mkdtempSync(join(tmpdir(), "cogs-stage4-untracked-scope-"));
+  try {
+    writeFileSync(join(repository, "README.md"), "tracked\n");
+    const initialized = spawnSync(STAGE4_PINNED_GIT.executable, ["init", "--quiet"], { cwd: repository });
+    assert.equal(initialized.status, 0);
+    const added = spawnSync(STAGE4_PINNED_GIT.executable, ["add", "README.md"], { cwd: repository });
+    assert.equal(added.status, 0);
+
+    mkdirSync(join(repository, "generated-output"));
+    writeFileSync(join(repository, "generated-output/result.json"), "{}\n");
+    assert.doesNotThrow(() => generateStage4SourceInventory(repository));
+
+    mkdirSync(join(repository, "src"));
+    writeFileSync(join(repository, "src/hostile.ts"), "export {};\n");
+    assert.throws(
+      () => generateStage4SourceInventory(repository),
+      /STAGE4_SOURCE_INVENTORY_UNTRACKED_VALIDATION_INPUT_FORBIDDEN/u,
+    );
+  } finally {
+    rmSync(repository, { recursive: true, force: true });
   }
 });
 

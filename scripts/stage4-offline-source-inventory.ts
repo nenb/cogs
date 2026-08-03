@@ -21,7 +21,18 @@ const MAXIMUM_FILE_BYTES = 4 * 1024 * 1024;
 const MAXIMUM_GIT_OUTPUT_BYTES = 4 * 1024 * 1024;
 const MAXIMUM_TRACKED_FILES = 1024;
 const MAXIMUM_AGGREGATE_BYTES = 16 * 1024 * 1024;
-const WORKTREE_MERKLE_DOMAIN = "cogs.stage4/tracked-worktree-byte-merkle/v1\0";
+const WORKTREE_MERKLE_DOMAIN = "cogs.stage4/tracked-worktree-mode-path-byte-merkle/v2\0";
+const UNTRACKED_VALIDATION_PREFIXES = Object.freeze([
+  "deploy/helm/cogs/",
+  "deploy/nic/",
+  "images/",
+  "schemas/",
+  "scripts/",
+  "spikes/",
+  "src/",
+  "test/",
+  "third_party/",
+]);
 
 type GitFileMode = "100644" | "100755";
 
@@ -203,6 +214,16 @@ function trackedFiles(root: string): TrackedFile[] {
     if (match === null || match[1] === undefined || match[3] === undefined)
       throw new Error("STAGE4_SOURCE_INVENTORY_GIT_ENTRY_INVALID");
     files.push({ mode: match[1] as GitFileMode, path: match[3] });
+  }
+  const untracked = text(pinnedGit(root, ["ls-files", "--others", "--exclude-standard", "-z"]))
+    .split("\0")
+    .filter((path) => path !== "");
+  if (
+    untracked.some((path) =>
+      UNTRACKED_VALIDATION_PREFIXES.some((prefix) => path === prefix.slice(0, -1) || path.startsWith(prefix)),
+    )
+  ) {
+    throw new Error("STAGE4_SOURCE_INVENTORY_UNTRACKED_VALIDATION_INPUT_FORBIDDEN");
   }
   if (files.length === 0 || files.length > MAXIMUM_TRACKED_FILES)
     throw new Error("STAGE4_SOURCE_INVENTORY_FILE_COUNT_INVALID");
