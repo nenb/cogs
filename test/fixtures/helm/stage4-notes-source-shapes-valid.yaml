@@ -6,9 +6,9 @@ stage4Preparation:
   runtimeClassName: kata-qemu-cogs
 
   images:
-    worker: registry.example.invalid/cogs/worker@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    worker: ghcr.io/nenb/cogs/worker@sha256:c2f240fa191fb22970f6b1ff0142448841401885c87f403efca152d9201004bc
     proxy: envoyproxy/envoy:v1.38.3@sha256:5f7c43e1147412fdb3af578c651c67478a3df818eae89d2261e707e06c209cdb
-    sandbox: registry.example.invalid/cogs/sandbox@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+    sandbox: ghcr.io/nenb/cogs/sandbox@sha256:b8827b17c73fac0ce869681fad4a01c625f068566a55f1aa7e3a9efc0e1bdc60
 
   placement:
     trusted:

@@ -53,15 +53,14 @@ Production composition authenticates SSH/SFTP exactly as `root`, matching the sa
 
 ## Deliberately absent
 
-ADR 0096 and the later image-source changes now provide `src/main.ts`, fail-closed production composition, bounded API bind/shutdown persistence wiring, the canonical Basic proxy capability, worker-owned Envoy process composition, production worker image source, and the Kata guest image/entrypoint source. Egress startup uses retained lifecycle ownership: an abort waits for or subsequently closes any manager that resolves late, so a late Envoy cannot escape rollback ownership. The process entrypoint arms the 31-second hard-exit deadline for signals, startup failure, spontaneous runtime loss, and shutdown failure; it clears that timer only after cleanup completes without uncertainty. The worker dependency stage also replaces Pi 0.80.6's shrinkwrap-retained `brace-expansion` 5.0.6 with the root lock's exact authenticated 5.0.8 bytes, verifies both the expected vulnerable input and fixed output versions, and copies only the remediated dependency tree into the final image. Those are locally tested source contracts only; they are not runtime, publication, deployment, or isolation observations; a local image build verifies construction but does not promote readiness.
+ADR 0096 and the later image-source changes now provide `src/main.ts`, fail-closed production composition, bounded API bind/shutdown persistence wiring, the canonical Basic proxy capability, worker-owned Envoy process composition, production worker image source, and the Kata guest image/entrypoint source. Egress startup uses retained lifecycle ownership: an abort waits for or subsequently closes any manager that resolves late, so a late Envoy cannot escape rollback ownership. The process entrypoint arms the 31-second hard-exit deadline for signals, startup failure, spontaneous runtime loss, and shutdown failure; it clears that timer only after cleanup completes without uncertainty. The worker dependency stage also replaces Pi 0.80.6's shrinkwrap-retained `brace-expansion` 5.0.6 and `undici` 8.5.0 with the root lock's exact authenticated 5.0.9 and 8.9.0 bytes, verifies both expected vulnerable inputs and fixed outputs, and copies only the remediated dependency tree into the final image. Those are locally tested source contracts only; they are not runtime, publication, deployment, or isolation observations; a local image build verifies construction but does not promote readiness.
 
 The following remain deliberately absent:
 
 - production runtime-material provisioning and a controller that creates the worker/sandbox pair;
 - static deployment materialization (the Helm chart remains NOTES-only with zero submitted manifests);
-- any Docker build, image scan, SBOM, signature, publication, or registry readback incorporated into readiness;
-- worker/sandbox digest-lock updates (the `.invalid` placeholders remain unchanged);
-- a release image set or executable provider route; and
+- any runtime qualification inferred from Docker builds, scans, SBOMs, signatures, publication, or registry readback;
+- a mutable release alias, production promotion, or executable provider route; and
 - Linux/Kata/KVM, Kubernetes, CNI, storage, network, and end-to-end runtime qualification.
 
-Consequently `RELEASE_IMAGE_SET_ABSENT`, `NO_EXECUTABLE_PROVIDER_ROUTE`, the worker/sandbox placeholders, and every false provider/Kubernetes/cloud/Stage 4 exit/release claim remain unchanged.
+Protected-main run `30852317459` and its independent review now supply exact immutable worker/sandbox identities to readiness v3, so `RELEASE_IMAGE_SET_ABSENT` and the placeholders are removed. The image-source revision remains separately bound from later readiness metadata. `NO_EXECUTABLE_PROVIDER_ROUTE` and every false runtime/provider/Kubernetes/cloud/Stage 4 exit/production/release claim remain unchanged.

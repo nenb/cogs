@@ -56,8 +56,8 @@ data:
 `;
 const RECEIPT_VERSION = "cogs.stage4-offline-render-preparation-receipt/v3";
 const EXPECTED_CHART_INVENTORY_SHA256 = "a3801a32d9f1a59864bd027aebf44554b087911c7d4a4486e7bcda697ff68617";
-const EXPECTED_VALUES_SHA256 = "e63a0fadebe16637cc97b21adeeb4ecf33efa8e76a1469e6008c7f7ed4fbb58f";
-const EXPECTED_RENDER_SHA256 = "60f73b0e5caa843c4db9431c63cdc13eada9088d6da16c974ef127c480235710";
+const EXPECTED_VALUES_SHA256 = "c689236c57e1eab668f8bf504e148245cc23a652b529d1aaab20ef8d4e0fdc7a";
+const EXPECTED_RENDER_SHA256 = "399d9b86a43777a57542c70c93f6ef595224e455d6969d2bfbd154e6d05d8fa0";
 const RELEASE = "stage4";
 const NAMESPACE = "static-preparation";
 const SHA256 = /^[0-9a-f]{64}$/u;

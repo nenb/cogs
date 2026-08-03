@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 
-const created = "2026-08-03T20:21:32Z";
+const created = "2026-08-03T21:58:55Z";
 const expiry = "2026-08-16T23:59:59Z";
 const expected = {
   "@earendil-works/pi-coding-agent": {
@@ -34,7 +34,7 @@ const expected = {
         range: ">=4.0.0 <5.0.8",
       },
       {
-        source: 1130705,
+        source: 1130734,
         url: "https://github.com/advisories/GHSA-rgw5-rvv9-x895",
         severity: "high",
         range: ">=4.0.0 <5.0.9",

@@ -3,6 +3,11 @@ import { spawnSync } from "node:child_process";
 import { readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
 import {
+  RELEASE_IMAGE_SOURCE_INVENTORY_SHA256,
+  RELEASE_IMAGE_SOURCE_SHA,
+  RELEASE_IMAGE_SOURCE_TREE_SHA,
+} from "./release-image-set-review.ts";
+import {
   canonicalStage4OfflineReadinessBytes,
   STAGE4_INDEPENDENT_INVENTORY_SCOPES,
   STAGE4_PROPOSED_RESOURCE_GRAPH,
@@ -77,6 +82,7 @@ const PRODUCTION_CONTRACT_TESTS = Object.freeze([
   "test/production-sandbox-image.test.ts",
   "test/production-worker-image.test.ts",
   "test/release-image-set-assertion.test.ts",
+  "test/release-image-set-review.test.ts",
   "test/release-local-preflight.test.ts",
   "test/runtime-config.test.ts",
   "test/runtime-trusted-files.test.ts",
@@ -88,9 +94,11 @@ const PRODUCTION_SCHEMA_NAMES = Object.freeze([
   "launch-v1alpha1.json",
   "local-image-artifact-package-v1.json",
   "release-image-set-assertion-v1.json",
+  "release-image-set-review-v1.json",
   "runtime-v1alpha1.json",
 ]);
 const FORMAT_PATHS = Object.freeze([
+  "scripts/release-image-set-review.ts",
   "scripts/release-local-preflight-cli.ts",
   "scripts/release-local-preflight.ts",
   "scripts/release-trivy-database-metadata-cli.ts",
@@ -100,6 +108,7 @@ const FORMAT_PATHS = Object.freeze([
   "scripts/stage4-offline-source-inventory.ts",
   "scripts/stage4-runtime-artifact-closure-regenerate.ts",
   "scripts/stage4-runtime-artifact-closure.ts",
+  "test/release-image-set-review.test.ts",
   "test/release-local-preflight.test.ts",
   "test/stage4-offline-readiness.test.ts",
   "test/stage4-runtime-artifact-closure.test.ts",
@@ -116,14 +125,18 @@ const LOCAL_VALIDATION_PATHS = Object.freeze([
   "package.json",
   "schemas/stage4-offline-readiness-package-v1.json",
   "schemas/stage4-offline-readiness-package-v2.json",
+  "schemas/stage4-offline-readiness-package-v3.json",
   "schemas/stage4-offline-readiness-verdict-v1.json",
   "schemas/stage4-offline-readiness-verdict-v2.json",
+  "schemas/stage4-offline-readiness-verdict-v3.json",
   "schemas/stage4-authenticated-runtime-artifact-evidence-v1.json",
+  "schemas/stage4-authenticated-runtime-artifact-evidence-v2.json",
   ...PRODUCTION_SCHEMA_NAMES.map((name) => `schemas/${name}`),
   "scripts/private-bytes.ts",
   "scripts/check-lock-integrity.ts",
   "scripts/check-npm-audit.ts",
   "scripts/release-image-set-pins.ts",
+  "scripts/release-image-set-review.ts",
   "scripts/release-local-preflight-cli.ts",
   "scripts/release-local-preflight.ts",
   "scripts/release-trivy-database-metadata-cli.ts",
@@ -134,6 +147,7 @@ const LOCAL_VALIDATION_PATHS = Object.freeze([
   "scripts/stage4-runtime-artifact-closure-regenerate.ts",
   "scripts/stage4-runtime-artifact-closure.ts",
   "scripts/validate-schemas.ts",
+  "test/release-image-set-review.test.ts",
   "test/release-local-preflight.test.ts",
   "test/stage4-offline-readiness.test.ts",
   "test/stage4-offline-render-preparation.test.ts",
@@ -319,9 +333,12 @@ function commandSpecs(): readonly CommandSpec[] {
         "test/stage4-schema-registry.test.ts",
         "schemas/stage4-offline-readiness-package-v1.json",
         "schemas/stage4-offline-readiness-package-v2.json",
+        "schemas/stage4-offline-readiness-package-v3.json",
         "schemas/stage4-offline-readiness-verdict-v1.json",
         "schemas/stage4-offline-readiness-verdict-v2.json",
+        "schemas/stage4-offline-readiness-verdict-v3.json",
         "schemas/stage4-authenticated-runtime-artifact-evidence-v1.json",
+        "schemas/stage4-authenticated-runtime-artifact-evidence-v2.json",
         ...PRODUCTION_SCHEMA_NAMES.map((name) => `schemas/${name}`),
       ],
     ),
@@ -476,6 +493,8 @@ function rewriteClassifierAnchors(): void {
   const immutableInputs = {
     chartInventory: hash("docs/security-evidence/stage4-offline-readiness-artifacts/chart-inventory.json"),
     imageLock: hash("docs/security-evidence/stage4-offline-readiness-artifacts/image-lock.json"),
+    releaseImageAssertion: hash("docs/security-evidence/release-image-set-assertion-30852317459.canonical.json"),
+    releaseImageReview: hash("docs/security-evidence/release-image-set-review-30852317459.canonical.json"),
     nicContract: hash("deploy/nic/stage4-sandbox-node-group-contract.json"),
     render: hash("docs/security-evidence/stage4-offline-readiness-artifacts/notes-render.yaml"),
     repeatedRender: hash("docs/security-evidence/stage4-offline-readiness-artifacts/notes-render-repeat.yaml"),
@@ -509,6 +528,7 @@ function regeneratePackage(): void {
   const value = JSON.parse(readFileSync(packagePath, "utf8")) as JsonObject;
   const nic = JSON.parse(readFileSync(resolve(root, "deploy/nic/stage4-sandbox-node-group-contract.json"), "utf8"));
   const runtimePins = JSON.parse(readFileSync(resolve(artifactRoot, "runtime-pins.json"), "utf8"));
+  const imageLock = JSON.parse(readFileSync(resolve(artifactRoot, "image-lock.json"), "utf8"));
   const sourceInventory = JSON.parse(readFileSync(sourceInventoryPath, "utf8"));
   value.blockers = [...STAGE4_READINESS_BLOCKERS];
   value.source = {
@@ -520,6 +540,19 @@ function regeneratePackage(): void {
     inventory_scope: sourceInventory.scope,
     source_closure_complete: true,
     worktree_merkle_sha256: sourceInventory.worktree_binding.worktree_merkle_sha256,
+    image_source: {
+      reviewed_sha: RELEASE_IMAGE_SOURCE_SHA,
+      tree_sha: RELEASE_IMAGE_SOURCE_TREE_SHA,
+      inventory_sha256: RELEASE_IMAGE_SOURCE_INVENTORY_SHA256,
+      relation: "separately-bound-immutable-image-source",
+    },
+  };
+  value.pins.images = {
+    worker: { reference: imageLock.images[0].reference, state: imageLock.images[0].state },
+    proxy: { reference: imageLock.images[1].reference, state: imageLock.images[1].state },
+    sandbox: { reference: imageLock.images[2].reference, state: imageLock.images[2].state },
+    release_image_set_present: imageLock.release_image_set_present,
+    exact_image_closure_satisfied: imageLock.exact_image_closure_satisfied,
   };
   value.pins.nic = {
     capability_state: "source-capability-present-operator-attestation-only",
@@ -561,6 +594,10 @@ function regeneratePackage(): void {
   Object.assign(value.artifact_bindings, {
     chart_inventory_sha256: hash("docs/security-evidence/stage4-offline-readiness-artifacts/chart-inventory.json"),
     image_lock_sha256: hash("docs/security-evidence/stage4-offline-readiness-artifacts/image-lock.json"),
+    release_image_assertion_sha256: hash(
+      "docs/security-evidence/release-image-set-assertion-30852317459.canonical.json",
+    ),
+    release_image_review_sha256: hash("docs/security-evidence/release-image-set-review-30852317459.canonical.json"),
     local_validation_sha256: hash("docs/security-evidence/stage4-offline-readiness-artifacts/local-validation.json"),
     nic_contract_sha256: hash("deploy/nic/stage4-sandbox-node-group-contract.json"),
     render_preparation_receipt_sha256: hash(

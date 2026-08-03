@@ -6,12 +6,11 @@ import { capturePrivateBytes } from "./private-bytes.ts";
 
 const require = createRequire(import.meta.url);
 const Ajv2020 = require("ajv/dist/2020.js") as new (options?: Options) => AjvCore;
-const evidenceSchema = require("../schemas/stage4-authenticated-runtime-artifact-evidence-v1.json") as object;
+const evidenceSchema = require("../schemas/stage4-authenticated-runtime-artifact-evidence-v2.json") as object;
 
 export const STAGE4_RUNTIME_ARTIFACT_MAX_BYTES = 64 * 1024;
 export const STAGE4_RUNTIME_ARTIFACT_BLOCKERS = Object.freeze([
   "EKS_AMI_ID_AND_RUNNING_KERNEL_AWS_UNRESOLVED",
-  "RELEASE_IMAGE_SET_ABSENT",
   "ENVOY_UPSTREAM_SIGNATURE_UNAVAILABLE",
   "CAMPAIGN_ENVELOPE_AND_APPROVAL_ABSENT",
 ] as const);
@@ -25,13 +24,15 @@ export type Stage4RuntimeArtifactReasonCode =
   | "STAGE4_RUNTIME_ARTIFACT_BINDING_INVALID";
 
 export type Stage4RuntimeArtifactVerdict = Readonly<{
-  version: "cogs.stage4-authenticated-runtime-artifact-verdict/v1";
+  version: "cogs.stage4-authenticated-runtime-artifact-verdict/v2";
   authority: "local-static-runtime-artifact-classifier";
   candidate_artifact_closure_complete: boolean;
   selected_runtime_artifacts_authenticated: boolean;
   eks_public_candidate_selected: boolean;
   eks_ami_id_resolved: false;
   running_kernel_resolved: false;
+  release_image_set_present: boolean;
+  exact_image_identity_closure_satisfied: boolean;
   campaign_authorized: false;
   cloud_execution_observed: false;
   provider_truth_observed: false;
@@ -55,7 +56,7 @@ require("ajv-formats")(ajv);
 const validateEvidence = ajv.compile(evidenceSchema) as ValidateFunction;
 
 /* stage4-runtime-schema-inventory-anchor-start */
-const STAGE4_RUNTIME_SCHEMA_INVENTORY_SHA256 = "597e9333cba1b1c4b4c2a3ca8b3b2238cb4a17c99f7d4afaae2f4b26c95f8af7";
+const STAGE4_RUNTIME_SCHEMA_INVENTORY_SHA256 = "473cee3b00f409e1e4c28346f23491d7e3694933e41560b24c666c99e455be86";
 /* stage4-runtime-schema-inventory-anchor-end */
 
 function compareCodePoints(left: string, right: string): number {
@@ -103,7 +104,7 @@ export function stage4RuntimeArtifactBinding(value: JsonObject): string {
 /** Exact local candidate assembled only from already measured public release and repository bytes. */
 export function buildStage4RuntimeArtifactEvidence(): JsonObject {
   const value: JsonObject = {
-    version: "cogs.stage4-authenticated-runtime-artifact-evidence/v1",
+    version: "cogs.stage4-authenticated-runtime-artifact-evidence/v2",
     authority: "local-static-public-release-artifact-closure",
     platform: { os: "linux", architecture: "amd64" },
     containerd: {
@@ -265,7 +266,7 @@ export function buildStage4RuntimeArtifactEvidence(): JsonObject {
         inventory_sha256: STAGE4_RUNTIME_SCHEMA_INVENTORY_SHA256,
       },
       dependency_lock: {
-        package_lock_sha256: "835d126c87bfedc30e2665aa8344abfb1a71948dbdd55cb4a7e8133512583645",
+        package_lock_sha256: "21fa5340665a5e2c04a5f185b2cae2ba550256c4c830fefcf000a42c89e358ea",
         pi_version: "0.80.6",
         pi_agent_core_sri:
           "sha512-Lvn89ko42h5ETUb6Z0Ku6ldskEqXaTdQBYvSa0+7bdG9V6rUEpXptv5e0OVZ1HDcvi8s6/2lGCQWsxKX+DFHNw==",
@@ -273,12 +274,23 @@ export function buildStage4RuntimeArtifactEvidence(): JsonObject {
         pi_coding_agent_sri:
           "sha512-vcfD6tOk402isLl3Cm/qbn2O10TvgroMp1+/fEGM24ZdvETFCdOYv5VZ7m59EI5fPsjfSJh+CpQ5bhBrhfOg7g==",
       },
+      release_images: {
+        state: "reviewed-static-identity-closure-not-runtime-observed",
+        assertion_sha256: "ad45d6b0a114c481eb869daff38f4ddc669801e8a5b5d808c404b506ae33c450",
+        review_sha256: "f6a607349062f5ca9211978600012b4cd16651af984c083a0329646a74da6a3a",
+        workflow_run_id: 30852317459,
+        image_source_sha: "d3ddb987ceeec0bae0fa2d89fdc134187a0d1de3",
+        image_source_tree_sha: "6fb6dbe512280e906555b02d6367d6a43c1421a9",
+        image_source_inventory_sha256: "e2f4a4ad970c6e1e68e995db96b26e35f85d752b41670acee2c9090c5e663b94",
+        worker: "ghcr.io/nenb/cogs/worker@sha256:c2f240fa191fb22970f6b1ff0142448841401885c87f403efca152d9201004bc",
+        sandbox: "ghcr.io/nenb/cogs/sandbox@sha256:b8827b17c73fac0ce869681fad4a01c625f068566a55f1aa7e3a9efc0e1bdc60",
+      },
     },
     claims: {
       candidate_artifact_closure_complete: true,
       selected_runtime_artifacts_authenticated: true,
       local_candidate_freeze_complete: true,
-      release_image_set_present: false,
+      release_image_set_present: true,
       exact_image_runtime_closure_satisfied: false,
       campaign_authorized: false,
       cloud_execution_observed: false,
@@ -305,13 +317,15 @@ function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
 function verdict(reason: Stage4RuntimeArtifactReasonCode, evidenceSha: string | null, binding: string | null) {
   const complete = reason === "STAGE4_RUNTIME_ARTIFACT_CANDIDATE_CLOSED_AWS_BLOCKED";
   return Object.freeze({
-    version: "cogs.stage4-authenticated-runtime-artifact-verdict/v1" as const,
+    version: "cogs.stage4-authenticated-runtime-artifact-verdict/v2" as const,
     authority: "local-static-runtime-artifact-classifier" as const,
     candidate_artifact_closure_complete: complete,
     selected_runtime_artifacts_authenticated: complete,
     eks_public_candidate_selected: complete,
     eks_ami_id_resolved: false as const,
     running_kernel_resolved: false as const,
+    release_image_set_present: complete,
+    exact_image_identity_closure_satisfied: complete,
     campaign_authorized: false as const,
     cloud_execution_observed: false as const,
     provider_truth_observed: false as const,
