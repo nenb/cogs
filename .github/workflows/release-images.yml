@@ -94,6 +94,7 @@ jobs:
       SYFT_IMAGE: docker.io/anchore/syft@sha256:bd5357d2cd087f03af748dac24df48bfbc1723080d78f75f69aca1f2d429060e
       TRIVY_IMAGE: docker.io/aquasec/trivy@sha256:a22415a38938a56c379387a8163fcb0ce38b10ace73e593475d3658d578b2436
       TRIVY_DATABASE: ghcr.io/aquasecurity/trivy-db:2@sha256:82225c2b2d979e8d7ed306b75bce9118304b688cfbfdbca7c61723d30f0d1bb6
+      TRIVY_JAVA_DATABASE: ghcr.io/aquasecurity/trivy-java-db:1@sha256:8a8e6f28332f81c09f8cd575f8fda8b1c30fb5fe4c30f7f55ce06a01a6cc93c7
       COSIGN_IMAGE: ghcr.io/sigstore/cosign/cosign@sha256:f1946d0f30fc8e3777b02f2201e02efdba9fe38f4918162f937052fac98e083f
       CERTIFICATE_IDENTITY: https://github.com/nenb/cogs/.github/workflows/release-images.yml@refs/heads/main
       CERTIFICATE_OIDC_ISSUER: https://token.actions.githubusercontent.com
@@ -288,8 +289,14 @@ jobs:
           set -euo pipefail
           docker run --rm --user "$(id -u):$(id -g)" --network bridge \
             --mount "type=bind,src=$CACHE,dst=/cache" \
-            "$TRIVY_IMAGE" image --cache-dir /cache --db-repository "$TRIVY_DATABASE" --download-db-only
+            "$TRIVY_IMAGE" image --cache-dir /cache --db-repository "$TRIVY_DATABASE" \
+              --download-db-only --no-progress --skip-version-check
           test -f "$CACHE/db/trivy.db"
+          docker run --rm --user "$(id -u):$(id -g)" --network bridge \
+            --mount "type=bind,src=$CACHE,dst=/cache" \
+            "$TRIVY_IMAGE" image --cache-dir /cache --java-db-repository "$TRIVY_JAVA_DATABASE" \
+              --download-java-db-only --no-progress --skip-version-check
+          test -f "$CACHE/java-db/trivy-java.db"
 
       - name: Generate exact SPDX SBOMs and scan every severity including unfixed findings
         run: |
@@ -320,6 +327,8 @@ jobs:
               "$TRIVY_IMAGE" image \
                 --cache-dir /cache \
                 --skip-db-update \
+                --skip-java-db-update \
+                --skip-version-check \
                 --offline-scan \
                 --platform linux/amd64 \
                 --scanners vuln \
@@ -344,10 +353,15 @@ jobs:
                 fixed_available: ([$all[] | select(((.FixedVersion // "") | length) > 0)] | length),
                 unfixed: ([$all[] | select(((.FixedVersion // "") | length) == 0)] | length)
               }' "$WORK/$role.vulnerabilities.json" > "$WORK/$role.vulnerability-counts.json"
-            jq -e '
+            if ! jq -e '
               .total == (.unknown + .low + .medium + .high + .critical) and
               .total == (.fixed_available + .unfixed) and
-              .high == 0 and .critical == 0' "$WORK/$role.vulnerability-counts.json" >/dev/null
+              .high == 0 and .critical == 0' "$WORK/$role.vulnerability-counts.json" >/dev/null; then
+              jq -r --arg role "$role" '
+                "VULNERABILITY_GATE_BLOCKED role=\($role) total=\(.total) unknown=\(.unknown) low=\(.low) medium=\(.medium) high=\(.high) critical=\(.critical) fixed_available=\(.fixed_available) unfixed=\(.unfixed)"' \
+                "$WORK/$role.vulnerability-counts.json" >&2
+              exit 1
+            fi
           done
 
       - name: Keyless-attest each SBOM, keyless-sign each digest, and verify exact authority
@@ -421,6 +435,7 @@ jobs:
             --arg syft "$SYFT_IMAGE" \
             --arg trivy "$TRIVY_IMAGE" \
             --arg trivy_database "$TRIVY_DATABASE" \
+            --arg trivy_java_database "$TRIVY_JAVA_DATABASE" \
             --arg cosign "$COSIGN_IMAGE" \
             --arg identity "$CERTIFICATE_IDENTITY" \
             --arg issuer "$CERTIFICATE_OIDC_ISSUER" \
@@ -462,7 +477,7 @@ jobs:
               workflow:{path:".github/workflows/release-images.yml",ref:"refs/heads/main",sha:$sha,event:"workflow_dispatch",run_id:$run_id,run_attempt:1,certificate_identity:$identity,certificate_oidc_issuer:$issuer},
               target:{os:"linux",architecture:"amd64",variant:null},
               transport_policy:{tag_format:"candidate-<full-40-character-commit>-<run-id>-<run-attempt>",run_unique:true,retained_after_workflow:true,transport_only:true,final_tags_written:false,mutable_release_alias_written:false,image_set_record:"canonical-successful-workflow-artifact-with-exact-digest-references",consumer_requirement:"separately-reviewed-assertion-record-and-both-exact-digests"},
-              tools:{buildx_client:{version:$buildx_version,linux_amd64_sha256:$buildx_sha256},buildkit_image:$buildkit,syft_image:$syft,trivy_image:$trivy,trivy_database:$trivy_database,cosign_image:$cosign},
+              tools:{buildx_client:{version:$buildx_version,linux_amd64_sha256:$buildx_sha256},buildkit_image:$buildkit,syft_image:$syft,trivy_image:$trivy,trivy_database:$trivy_database,trivy_java_database:$trivy_java_database,cosign_image:$cosign},
               images:[
                 image("worker";"ghcr.io/nenb/cogs/worker";$worker_digest;$worker_child;"images/worker/Dockerfile";$worker_dockerfile_sha;$worker_provenance_sha;$worker_sbom_sha;$worker_vulnerabilities_sha;$worker_counts[0]),
                 image("sandbox";"ghcr.io/nenb/cogs/sandbox";$sandbox_digest;$sandbox_child;"images/sandbox/Dockerfile";$sandbox_dockerfile_sha;$sandbox_provenance_sha;$sandbox_sbom_sha;$sandbox_vulnerabilities_sha;$sandbox_counts[0])
