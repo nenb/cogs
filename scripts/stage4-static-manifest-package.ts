@@ -256,17 +256,36 @@ function nicConfig(request: Request): Buffer {
   );
 }
 
-function ensureNewOutput(path: string): string {
+function resolvedOutput(path: string): string {
   const requested = resolve(path);
-  const parent = realpathSync(dirname(requested));
-  const output = join(parent, basename(requested));
-  mkdirSync(output, { mode: 0o700 });
-  if (realpathSync(output) !== output) fail("STAGE4_MANIFEST_OUTPUT_INVALID");
-  return output;
+  return join(realpathSync(dirname(requested)), basename(requested));
+}
+
+function preflightNewOutput(path: string): void {
+  const output = resolvedOutput(path);
+  try {
+    lstatSync(output);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    fail("STAGE4_MANIFEST_OUTPUT_INVALID");
+  }
+  fail("STAGE4_MANIFEST_OUTPUT_INVALID");
+}
+
+function ensureNewOutput(path: string): string {
+  const output = resolvedOutput(path);
+  try {
+    mkdirSync(output, { mode: 0o700 });
+    if (realpathSync(output) !== output) fail("STAGE4_MANIFEST_OUTPUT_INVALID");
+    return output;
+  } catch {
+    fail("STAGE4_MANIFEST_OUTPUT_INVALID");
+  }
 }
 
 export function materializeStage4StaticManifestPackage(requestPath: string, outputPath: string): void {
   const { request, bytes: requestBytes } = parseRequest(requestPath);
+  preflightNewOutput(outputPath);
   const root = resolve(import.meta.dirname, "..");
   const temporary = mkdtempSync(join(tmpdir(), "cogs-stage4-static-manifest-"));
   let output: string | undefined;

@@ -184,7 +184,9 @@ test("rejects symlink request, existing output, extra arguments, and unreadable 
     assert.notEqual(run(link, join(temporary, "link-output")).status, 0);
     const output = join(temporary, "existing");
     writeFileSync(output, "occupied", { mode: 0o600 });
-    assert.notEqual(run(validRequest, output).status, 0);
+    const existing = run(validRequest, output);
+    assert.notEqual(existing.status, 0);
+    assert.equal(existing.stderr, "STAGE4_MANIFEST_OUTPUT_INVALID\n");
     const unreadable = join(temporary, "unreadable.json");
     writeFileSync(unreadable, readFileSync(validRequest), { mode: 0o000 });
     chmodSync(unreadable, 0o000);
