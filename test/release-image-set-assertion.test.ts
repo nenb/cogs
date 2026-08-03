@@ -346,6 +346,18 @@ test("release workflow pins every action and tool and writes only run-unique tra
   assert.doesNotMatch(workflowSource, /tags:[^\n]*(?:latest|main|stable)/u);
 });
 
+test("release workflow gives non-root Syft isolated writable state", () => {
+  const scan = runStep(workflowJob("publish"), "syft_state=");
+  assert.match(scan, /syft_state="\$WORK\/\$role\.syft-state"/u);
+  assert.match(scan, /mkdir -m 0700 "\$syft_state" "\$syft_state\/tmp" "\$syft_state\/cache"/u);
+  assert.match(scan, /--env HOME=\/syft-state/u);
+  assert.match(scan, /--env TMPDIR=\/syft-state\/tmp/u);
+  assert.match(scan, /--env XDG_CACHE_HOME=\/syft-state\/cache/u);
+  assert.match(scan, /--env SYFT_CHECK_FOR_APP_UPDATE=false/u);
+  assert.match(scan, /--mount "type=bind,src=\$syft_state,dst=\/syft-state"/u);
+  assert.ok(scan.indexOf("mkdir -m 0700") < scan.indexOf('"$SYFT_IMAGE" scan'));
+});
+
 test("release cleanup aggregates an early retained credential path instead of accepting later successes", () => {
   const publish = workflowJob("publish");
   const cleanup = runStep(publish, "Cleanup retained sensitive path");

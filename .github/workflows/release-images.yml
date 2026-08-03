@@ -299,9 +299,16 @@ jobs:
             repository=${!repository_name}
             digest=$(cat "$WORK/$role.registry-digest")
             subject="$repository@$digest"
+            syft_state="$WORK/$role.syft-state"
+            mkdir -m 0700 "$syft_state" "$syft_state/tmp" "$syft_state/cache"
             docker run --rm --user "$(id -u):$(id -g)" --network bridge \
               --env DOCKER_CONFIG=/docker-config \
+              --env HOME=/syft-state \
+              --env TMPDIR=/syft-state/tmp \
+              --env XDG_CACHE_HOME=/syft-state/cache \
+              --env SYFT_CHECK_FOR_APP_UPDATE=false \
               --mount "type=bind,src=$DOCKER_CONFIG,dst=/docker-config,readonly" \
+              --mount "type=bind,src=$syft_state,dst=/syft-state" \
               "$SYFT_IMAGE" scan "registry:$subject" -o spdx-json > "$WORK/$role.sbom.spdx.json"
             jq -e '(.spdxVersion == "SPDX-2.2" or .spdxVersion == "SPDX-2.3") and (.packages | type == "array")' \
               "$WORK/$role.sbom.spdx.json" >/dev/null
