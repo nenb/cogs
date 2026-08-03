@@ -103,7 +103,15 @@
     "tools": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["buildx_client", "buildkit_image", "syft_image", "trivy_image", "trivy_database", "cosign_image"],
+      "required": [
+        "buildx_client",
+        "buildkit_image",
+        "syft_image",
+        "trivy_image",
+        "trivy_database",
+        "trivy_java_database",
+        "cosign_image"
+      ],
       "properties": {
         "buildx_client": {
           "type": "object",
@@ -120,6 +128,7 @@
         "syft_image": { "$ref": "#/$defs/pinnedImage" },
         "trivy_image": { "$ref": "#/$defs/pinnedImage" },
         "trivy_database": { "$ref": "#/$defs/pinnedImage" },
+        "trivy_java_database": { "$ref": "#/$defs/pinnedImage" },
         "cosign_image": { "$ref": "#/$defs/pinnedImage" }
       }
     },

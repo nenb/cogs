@@ -151,6 +151,7 @@ function receiptFixture(): Record<string, unknown> {
       syft_image: pinned("docker.io/anchore/syft", "8"),
       trivy_image: pinned("docker.io/aquasec/trivy", "9"),
       trivy_database: pinned("ghcr.io/aquasecurity/trivy-db:2", "a"),
+      trivy_java_database: pinned("ghcr.io/aquasecurity/trivy-java-db:1", "d"),
       cosign_image: pinned("ghcr.io/sigstore/cosign/cosign", "b"),
     },
     images: [
@@ -325,7 +326,14 @@ test("release workflow pins every action and tool and writes only run-unique tra
   const uses = Object.values(workflow.jobs).flatMap((job) => job.steps.map((step) => step.uses).filter(Boolean));
   assert.ok(uses.length >= 5);
   for (const action of uses) assert.match(action ?? "", /^[^@\s]+@[0-9a-f]{40}$/u, action);
-  for (const variable of ["BUILDKIT_IMAGE", "SYFT_IMAGE", "TRIVY_IMAGE", "TRIVY_DATABASE", "COSIGN_IMAGE"]) {
+  for (const variable of [
+    "BUILDKIT_IMAGE",
+    "SYFT_IMAGE",
+    "TRIVY_IMAGE",
+    "TRIVY_DATABASE",
+    "TRIVY_JAVA_DATABASE",
+    "COSIGN_IMAGE",
+  ]) {
     assert.match(workflowSource, new RegExp(`${variable}: [^\\s]+@sha256:[0-9a-f]{64}`, "u"), variable);
   }
   assert.doesNotMatch(workflowSource, /:latest(?:@|\s|$)/u);
@@ -489,7 +497,13 @@ test("release workflow binds provenance, strict vulnerability semantics, signatu
   assert.equal((workflowSource.match(/platforms: linux\/amd64/gu) ?? []).length, 2);
   assert.match(workflowSource, /--severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL/u);
   assert.match(workflowSource, /--ignore-unfixed=false/u);
+  assert.match(workflowSource, /--java-db-repository "\$TRIVY_JAVA_DATABASE"/u);
+  assert.match(workflowSource, /--download-java-db-only/u);
+  assert.match(workflowSource, /--skip-java-db-update/u);
+  assert.match(workflowSource, /--skip-version-check/u);
+  assert.match(workflowSource, /test -f "\$CACHE\/java-db\/trivy-java\.db"/u);
   assert.match(workflowSource, /\.high == 0 and \.critical == 0/u);
+  assert.match(workflowSource, /VULNERABILITY_GATE_BLOCKED role=/u);
   assert.match(workflowSource, /image-set-assertion-blocking-including-unfixed/u);
   assert.match(workflowSource, /--from-file "\$CONTEXT\/scripts\/validate-trivy-image-report\.jq"/u);
   assert.doesNotMatch(workflowSource, /\.Vulnerabilities\[\]\?/u);
