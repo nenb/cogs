@@ -2,7 +2,7 @@
 
 Date: 2026-07-14
 
-This is functional, fixture-backed Stage 1 evidence. It does not establish guest isolation, production readiness, or release eligibility. The unchanged client cases run against both pinned candidates through the non-authoritative root guest. The complete DNS-bypass group remains authoritative Linux/KVM evidence; every preset keeps guest DNS disabled.
+This is functional, fixture-backed Stage 1 evidence. It does not establish guest isolation, production readiness, or release eligibility. The unchanged client cases run against both pinned candidates through the non-authoritative root guest labelled `insecure-container` / `functional-only` with package policy `debian-trixie-snapshots-20260713-20260731-insecure-conformance-v1`. Node/npm, Java, Python client libraries/pip, curl, and network-probe tooling remain conformance-only and are not production sandbox roots. The complete DNS-bypass group remains authoritative Linux/KVM evidence; every preset keeps guest DNS disabled.
 
 ## Results
 

@@ -6,38 +6,88 @@ import test from "node:test";
 
 const root = resolve(import.meta.dirname, "..");
 const dockerfilePath = resolve(root, "images/sandbox/Dockerfile");
+const insecureDockerfilePath = resolve(root, "dev/insecure-sandbox/Dockerfile");
 const entrypointPath = resolve(root, "images/sandbox/entrypoint.sh");
 const captureInputsPath = resolve(root, "images/sandbox/capture-inputs.py");
 const sshdConfigPath = resolve(root, "images/sandbox/sshd_config");
 const dockerfile = readFileSync(dockerfilePath, "utf8");
+const insecureDockerfile = readFileSync(insecureDockerfilePath, "utf8");
 const entrypoint = readFileSync(entrypointPath, "utf8");
 const captureInputs = readFileSync(captureInputsPath, "utf8");
 const sshdConfig = readFileSync(sshdConfigPath, "utf8");
 
 const packages = [
   "bash=5.2.37-2+b9",
-  "bind9-dnsutils=1:9.20.26-1~deb13u1",
   "ca-certificates=20250419",
-  "curl=8.14.1-2+deb13u4",
   "git=1:2.47.3-0+deb13u1",
-  "iproute2=6.15.0-1",
-  "iptables=1.8.11-2",
-  "libexpat1=2.8.2-1~deb13u1",
-  "netcat-openbsd=1.229-1",
-  "nftables=1.1.3-1",
-  "nodejs=20.19.2+dfsg-1+deb13u2",
-  "npm=9.2.0~ds1-3",
-  "openjdk-21-jre-headless=21.0.11+10-1~deb13u2",
   "openssh-client=1:10.0p1-7+deb13u4",
   "openssh-server=1:10.0p1-7+deb13u4",
-  "openssh-sftp-server=1:10.0p1-7+deb13u4",
   "openssl=3.5.6-1~deb13u2",
   "python3=3.13.5-1",
-  "python3-httpx=0.28.1-1",
-  "python3-pip=25.1.1+dfsg-1",
-  "python3-requests=2.32.3+dfsg-5+deb13u1",
-  "socat=1.8.0.3-1",
 ] as const;
+
+const removedProductionRoots = [
+  "bind9-dnsutils",
+  "curl",
+  "iproute2",
+  "iptables",
+  "libexpat1",
+  "netcat-openbsd",
+  "nftables",
+  "nodejs",
+  "npm",
+  "openjdk-21-jre-headless",
+  "openssh-sftp-server",
+  "python3-httpx",
+  "python3-pip",
+  "python3-requests",
+  "socat",
+] as const;
+
+const forbiddenProductionClosure = [
+  "bind9-dnsutils",
+  "curl",
+  "iproute2",
+  "iptables",
+  "netcat-openbsd",
+  "nftables",
+  "nodejs",
+  "npm",
+  "openjdk-21-jre-headless",
+  "python3-httpx",
+  "python3-pip",
+  "python3-requests",
+  "socat",
+] as const;
+
+const insecureConformanceRoots = [
+  "curl",
+  "dnsutils",
+  "iproute2",
+  "iptables",
+  "netcat-openbsd",
+  "nftables",
+  "nodejs",
+  "npm",
+  "openjdk-21-jre-headless",
+  "python3-httpx",
+  "python3-pip",
+  "python3-requests",
+  "socat",
+] as const;
+
+function installPackages(source: string): string[] {
+  const install = source.match(/apt-get install --yes --no-install-recommends \\\n([\s\S]*?)\n {4}&&/u)?.[1];
+  assert.ok(install);
+  return install
+    .split("\n")
+    .map((line) => line.trim().replace(/ \\$/u, ""))
+    .filter(Boolean);
+}
+
+function packageName(specification: string): string {
+  return specification.split("=")[0] ?? "";
+}
 
 function directive(name: string): string[] {
   return sshdConfig
@@ -62,16 +112,9 @@ test("sandbox image uses the reviewed Debian base, immutable snapshots, and exac
   assert.match(dockerfile, /URIs: http:\/\/snapshot\.debian\.org\/archive\/debian-security\/20260731T000000Z\//u);
   assert.match(dockerfile, /Signed-By: \/usr\/share\/keyrings\/debian-archive-keyring\.gpg/gu);
   assert.doesNotMatch(dockerfile, /\bARG\s+DEBIAN_|\$\{?DEBIAN_/u);
-  const install = dockerfile.match(/apt-get install --yes --no-install-recommends \\\n([\s\S]*?)\n {4}&& rm -rf/u)?.[1];
-  assert.ok(install);
-  assert.deepEqual(
-    install
-      .split("\n")
-      .map((line) => line.trim().replace(/ \\$/u, ""))
-      .filter(Boolean),
-    packages,
-  );
-  assert.doesNotMatch(install, /(?:aws|azure|google-cloud|kubectl|kubernetes|openbao|vault)/iu);
+  const install = installPackages(dockerfile);
+  assert.deepEqual(install, packages);
+  assert.doesNotMatch(install.join("\n"), /(?:aws|azure|google-cloud|kubectl|kubernetes|openbao|vault)/iu);
   assert.match(dockerfile, /rm -f \/etc\/ssh\/ssh_host_\*/u);
   for (const generatedIdentity of ["/etc/machine-id", "/var/lib/dbus/machine-id", "/var/lib/systemd/random-seed"]) {
     assert.ok(dockerfile.includes(generatedIdentity), generatedIdentity);
@@ -79,10 +122,30 @@ test("sandbox image uses the reviewed Debian base, immutable snapshots, and exac
   assert.match(dockerfile, /USER 0:0/u);
 });
 
+test("conformance clients and network probes cannot re-enter production and remain in the labelled insecure profile", () => {
+  const productionNames = new Set(installPackages(dockerfile).map(packageName));
+  for (const name of removedProductionRoots) assert.equal(productionNames.has(name), false, name);
+
+  const closureGuard = dockerfile.match(/readonly forbidden_packages=\(([^)]+)\)/u)?.[1]?.split(/\s+/u);
+  assert.deepEqual(closureGuard, forbiddenProductionClosure);
+  assert.match(dockerfile, /dpkg-query -W -f='\$\{db:Status-Status\}' "\$package"/u);
+  assert.match(dockerfile, /\[\[ "\$\(dpkg-query[^\n]+\)" == installed \]\]/u);
+
+  const insecureNames = new Set(installPackages(insecureDockerfile).map(packageName));
+  for (const name of insecureConformanceRoots) assert.equal(insecureNames.has(name), true, name);
+  for (const label of [
+    'dev.cogs.profile="insecure-container"',
+    'dev.cogs.authority="functional-only"',
+    'dev.cogs.package-policy="debian-trixie-snapshots-20260713-20260731-insecure-conformance-v1"',
+  ]) {
+    assert.ok(insecureDockerfile.includes(label), label);
+  }
+});
+
 test("sandbox labels describe an external Kata requirement without claiming isolation from image bytes", () => {
   for (const label of [
     'dev.cogs.profile="kata-sandbox-guest"',
-    'dev.cogs.package-policy="debian-trixie-snapshots-20260713-20260731-v1"',
+    'dev.cogs.package-policy="debian-trixie-snapshots-20260713-20260731-production-core-v2"',
     'dev.cogs.isolation-authority="external-runtime-required"',
     'dev.cogs.credentials="proxy-capability-only-no-upstream-secrets"',
     'dev.cogs.skills-inputs="external-read-only"',

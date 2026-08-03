@@ -31,27 +31,19 @@ RUN printf '%s\n' \
     && apt-get -o APT::Update::Error-Mode=any update \
     && DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends \
       bash=5.2.37-2+b9 \
-      bind9-dnsutils=1:9.20.26-1~deb13u1 \
       ca-certificates=20250419 \
-      curl=8.14.1-2+deb13u4 \
       git=1:2.47.3-0+deb13u1 \
-      iproute2=6.15.0-1 \
-      iptables=1.8.11-2 \
-      libexpat1=2.8.2-1~deb13u1 \
-      netcat-openbsd=1.229-1 \
-      nftables=1.1.3-1 \
-      nodejs=20.19.2+dfsg-1+deb13u2 \
-      npm=9.2.0~ds1-3 \
-      openjdk-21-jre-headless=21.0.11+10-1~deb13u2 \
       openssh-client=1:10.0p1-7+deb13u4 \
       openssh-server=1:10.0p1-7+deb13u4 \
-      openssh-sftp-server=1:10.0p1-7+deb13u4 \
       openssl=3.5.6-1~deb13u2 \
       python3=3.13.5-1 \
-      python3-httpx=0.28.1-1 \
-      python3-pip=25.1.1+dfsg-1 \
-      python3-requests=2.32.3+dfsg-5+deb13u1 \
-      socat=1.8.0.3-1 \
+    && readonly forbidden_packages=(bind9-dnsutils curl iproute2 iptables netcat-openbsd nftables nodejs npm openjdk-21-jre-headless python3-httpx python3-pip python3-requests socat) \
+    && for package in "${forbidden_packages[@]}"; do \
+         if [[ "$(dpkg-query -W -f='${db:Status-Status}' "$package" 2> /dev/null || true)" == installed ]]; then \
+           printf 'forbidden production package present: %s\n' "$package" >&2; \
+           exit 1; \
+         fi; \
+       done \
     && rm -rf /var/lib/apt/lists/* /root/.ssh \
     && rm -f /etc/ssh/ssh_host_* /etc/ssh/sshd_config.d/* \
       /etc/machine-id /var/lib/dbus/machine-id /var/lib/systemd/random-seed \
@@ -67,7 +59,7 @@ COPY --chown=root:root --chmod=0555 images/sandbox/capture-inputs.py /usr/local/
 LABEL org.opencontainers.image.source="https://github.com/nenb/cogs" \
       org.opencontainers.image.licenses="Apache-2.0" \
       dev.cogs.profile="kata-sandbox-guest" \
-      dev.cogs.package-policy="debian-trixie-snapshots-20260713-20260731-v1" \
+      dev.cogs.package-policy="debian-trixie-snapshots-20260713-20260731-production-core-v2" \
       dev.cogs.isolation-authority="external-runtime-required" \
       dev.cogs.credentials="proxy-capability-only-no-upstream-secrets" \
       dev.cogs.skills-inputs="external-read-only"
