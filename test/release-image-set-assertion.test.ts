@@ -13,6 +13,13 @@ import {
   finalizeReleaseImageSetAssertion,
   type ReleaseImageSetAssertionJson,
 } from "../scripts/release-image-set-assertion.ts";
+import {
+  generateReleaseImageSetAssertionSchema,
+  generateReleaseImageSetWorkflowPins,
+  RELEASE_IMAGE_SET_PIN_ENVIRONMENT,
+  RELEASE_IMAGE_SET_PINS,
+  RELEASE_IMAGE_SET_PINS_MANIFEST_PATH,
+} from "../scripts/release-image-set-pins.ts";
 
 const require = createRequire(import.meta.url);
 const parseYaml = (require("yaml") as { parse(source: string): unknown }).parse;
@@ -28,7 +35,6 @@ const identity = "https://github.com/nenb/cogs/.github/workflows/release-images.
 const issuer = "https://token.actions.githubusercontent.com";
 const sha = "a".repeat(40);
 const digest = (marker: string) => `sha256:${marker.repeat(64)}`;
-const pinned = (name: string, marker: string) => `${name}@${digest(marker)}`;
 
 function receiptFixture(): Record<string, unknown> {
   const image = (role: "worker" | "sandbox", counts: Record<string, number>) => {
@@ -145,18 +151,7 @@ function receiptFixture(): Record<string, unknown> {
       image_set_record: "canonical-successful-workflow-artifact-with-exact-digest-references",
       consumer_requirement: "separately-reviewed-assertion-record-and-both-exact-digests",
     },
-    tools: {
-      buildx_client: {
-        version: "v0.29.1",
-        linux_amd64_sha256: "7d2d7d6d4680aa349614965aaa33ccec43f1a9a21e908a5ce4cb6adfa5ad5141",
-      },
-      buildkit_image: pinned("docker.io/moby/buildkit", "7"),
-      syft_image: pinned("docker.io/anchore/syft", "8"),
-      trivy_image: pinned("docker.io/aquasec/trivy", "9"),
-      trivy_database: pinned("ghcr.io/aquasecurity/trivy-db:2", "a"),
-      trivy_java_database: pinned("ghcr.io/aquasecurity/trivy-java-db:1", "d"),
-      cosign_image: pinned("ghcr.io/sigstore/cosign/cosign", "b"),
-    },
+    tools: structuredClone(RELEASE_IMAGE_SET_PINS.tools),
     images: [
       image("worker", {
         total: 3,
@@ -234,6 +229,60 @@ test("release record parser accepts canonical workflow assertions without elevat
   assert.equal(result.production_ready, false);
   assert.equal(result.release_eligible, false);
   assert.match(result.record_sha256 ?? "", /^[0-9a-f]{64}$/u);
+});
+
+test("release tool manifest generates the exact schema and rejects every independent pin substitution", () => {
+  const schemaPath = resolve(root, "schemas/release-image-set-assertion-v1.json");
+  const schemaSource = readFileSync(schemaPath, "utf8");
+  assert.equal(generateReleaseImageSetAssertionSchema(schemaSource), schemaSource);
+
+  const schema = JSON.parse(schemaSource);
+  const ajv = new Ajv2020({ allErrors: true, strict: true, strictRequired: false, ownProperties: true });
+  const validate = ajv.compile(schema);
+  type MutableTools = {
+    buildx_client: { version: string; linux_amd64_sha256: string };
+    buildkit_image: string;
+    syft_image: string;
+    trivy_image: string;
+    trivy_database: string;
+    trivy_java_database: string;
+    cosign_image: string;
+  };
+  const mutations: Array<readonly [string, (tools: MutableTools) => void]> = [
+    [
+      "Buildx version",
+      (tools) => (tools.buildx_client.version = tools.buildx_client.version === "v9.9.9" ? "v9.9.8" : "v9.9.9"),
+    ],
+    [
+      "Buildx checksum",
+      (tools) =>
+        (tools.buildx_client.linux_amd64_sha256 =
+          tools.buildx_client.linux_amd64_sha256 === "0".repeat(64) ? "1".repeat(64) : "0".repeat(64)),
+    ],
+  ];
+  for (const key of [
+    "buildkit_image",
+    "syft_image",
+    "trivy_image",
+    "trivy_database",
+    "trivy_java_database",
+    "cosign_image",
+  ] as const) {
+    mutations.push([
+      key,
+      (tools) => (tools[key] = `${tools[key].slice(0, -1)}${tools[key].endsWith("0") ? "1" : "0"}`),
+    ]);
+  }
+  for (const [name, mutate] of mutations) {
+    const value = receiptFixture() as { tools: MutableTools };
+    mutate(value.tools);
+    assert.equal(validate(value), false, `${name}: schema accepted substituted pin`);
+    assert.equal(
+      classifyReleaseImageSetAssertion(canonical(value)).reason_code,
+      "SCHEMA_OR_SEMANTIC_DRIFT",
+      `${name}: parser accepted substituted pin`,
+    );
+  }
 });
 
 test("release record parser rejects noncanonical, promoted, mismatched, and incomplete assertions", () => {
@@ -331,6 +380,11 @@ test("release workflow pins every action and tool and writes only run-unique tra
   const uses = Object.values(workflow.jobs).flatMap((job) => job.steps.map((step) => step.uses).filter(Boolean));
   assert.ok(uses.length >= 4);
   for (const action of uses) assert.match(action ?? "", /^[^@\s]+@[0-9a-f]{40}$/u, action);
+  const publish = workflowJob("publish");
+  const workflowPinEnvironment = Object.fromEntries(
+    Object.keys(RELEASE_IMAGE_SET_PIN_ENVIRONMENT).map((key) => [key, publish.env?.[key]]),
+  );
+  assert.deepEqual(workflowPinEnvironment, RELEASE_IMAGE_SET_PIN_ENVIRONMENT);
   for (const variable of [
     "BUILDKIT_IMAGE",
     "SYFT_IMAGE",
@@ -340,6 +394,18 @@ test("release workflow pins every action and tool and writes only run-unique tra
     "COSIGN_IMAGE",
   ]) {
     assert.match(workflowSource, new RegExp(`${variable}: [^\\s]+@sha256:[0-9a-f]{64}`, "u"), variable);
+  }
+  const pinCheck = runStep(publish, "pin_manifest=");
+  assert.match(pinCheck, new RegExp(RELEASE_IMAGE_SET_PINS_MANIFEST_PATH.replaceAll("/", "\\/"), "u"));
+  for (const variable of Object.keys(RELEASE_IMAGE_SET_PIN_ENVIRONMENT))
+    assert.match(pinCheck, new RegExp(variable, "u"));
+  const actionsEnvironmentWrites = workflowSource.split("\n").filter((line) => line.includes("GITHUB_ENV"));
+  for (const variable of Object.keys(RELEASE_IMAGE_SET_PIN_ENVIRONMENT)) {
+    assert.equal(
+      actionsEnvironmentWrites.some((line) => line.includes(variable)),
+      false,
+      `${variable} must not be injected through GITHUB_ENV`,
+    );
   }
   assert.doesNotMatch(workflowSource, /:latest(?:@|\s|$)/u);
   assert.match(workflowSource, /--tag "\$repository:\$transport_tag"/u);
@@ -354,6 +420,7 @@ test("release workflow pins every action and tool and writes only run-unique tra
     workflowSource,
     /BUILDX_LINUX_AMD64_SHA256: 7d2d7d6d4680aa349614965aaa33ccec43f1a9a21e908a5ce4cb6adfa5ad5141/u,
   );
+  assert.equal(generateReleaseImageSetWorkflowPins(workflowSource), workflowSource);
   assert.match(workflowSource, /sha256sum --check --strict/u);
   assert.match(workflowSource, /docker buildx create[\s\S]*--driver-opt "image=\$BUILDKIT_IMAGE"/u);
   assert.doesNotMatch(workflowSource, /docker\/setup-buildx-action@/u);

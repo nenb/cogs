@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import type { Ajv as AjvCore, Options, ValidateFunction } from "ajv";
 import { capturePrivateBytes } from "./private-bytes.ts";
+import { RELEASE_IMAGE_SET_PINS } from "./release-image-set-pins.ts";
 
 const require = createRequire(import.meta.url);
 const Ajv2020 = require("ajv/dist/2020.js") as new (options?: Options) => AjvCore;
@@ -61,6 +62,10 @@ function asCount(value: unknown, label: string): number {
 function assertImageSetAssertionSemantics(value: unknown): asserts value is JsonObject {
   if (!validateAssertion(value)) throw new Error(`assertion schema drift: ${ajv.errorsText(validateAssertion.errors)}`);
   const assertion = asObject(value, "assertion");
+  const tools = asObject(assertion.tools, "tools") as JsonObject;
+  if (canonicalJson(tools) !== canonicalJson(RELEASE_IMAGE_SET_PINS.tools as unknown as JsonObject)) {
+    throw new Error("assertion tools must equal the reviewed release pin manifest");
+  }
   const source = asObject(assertion.source, "source");
   const workflow = asObject(assertion.workflow, "workflow");
   if (

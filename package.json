@@ -9,7 +9,7 @@
     "node": ">=22.19.0 <23"
   },
   "scripts": {
-    "check": "npm run format:check && npm run typecheck && npm run test && npm run schemas && npm run presets:check && npm run egress-bindings:check && npm run images:check && npm run lock:check && npm run licenses && npm run audit",
+    "check": "npm run format:check && npm run typecheck && npm run release-pins:check && npm run test && npm run schemas && npm run presets:check && npm run egress-bindings:check && npm run images:check && npm run lock:check && npm run licenses && npm run audit",
     "format": "biome check --write .",
     "format:check": "biome check .",
     "lint": "biome lint .",
@@ -23,6 +23,8 @@
     "egress-bindings:regenerate-check": "tsx scripts/check-envoy-ext-authz-descriptor.ts --regenerate",
     "feasibility-source:check": "tsx scripts/check-feasibility-source.ts",
     "images:check": "tsx scripts/check-image-pins.ts",
+    "release-pins:check": "tsx scripts/release-image-set-pins-cli.ts check",
+    "release-pins:regenerate": "tsx scripts/release-image-set-pins-cli.ts write",
     "images:local:verify": "tsx scripts/local-image-artifacts-cli.ts",
     "images:local:assemble": "tsx scripts/assemble-local-image-artifact-package.ts",
     "lock:check": "tsx scripts/check-lock-integrity.ts",

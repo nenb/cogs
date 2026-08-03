@@ -1,0 +1,15 @@
+{
+  "version": "cogs.release-image-set-pins/v1",
+  "tools": {
+    "buildx_client": {
+      "version": "v0.29.1",
+      "linux_amd64_sha256": "7d2d7d6d4680aa349614965aaa33ccec43f1a9a21e908a5ce4cb6adfa5ad5141"
+    },
+    "buildkit_image": "docker.io/moby/buildkit@sha256:6eceb8971ce4fceb3daca562832642706238b7eea72941fcf9896c93c3c4a53e",
+    "syft_image": "docker.io/anchore/syft@sha256:bd5357d2cd087f03af748dac24df48bfbc1723080d78f75f69aca1f2d429060e",
+    "trivy_image": "docker.io/aquasec/trivy@sha256:a22415a38938a56c379387a8163fcb0ce38b10ace73e593475d3658d578b2436",
+    "trivy_database": "ghcr.io/aquasecurity/trivy-db:2@sha256:82225c2b2d979e8d7ed306b75bce9118304b688cfbfdbca7c61723d30f0d1bb6",
+    "trivy_java_database": "ghcr.io/aquasecurity/trivy-java-db:1@sha256:8a8e6f28332f81c09f8cd575f8fda8b1c30fb5fe4c30f7f55ce06a01a6cc93c7",
+    "cosign_image": "ghcr.io/sigstore/cosign/cosign@sha256:be924970ba7438c22e18067dec5637946d6566eac711f5bedd1584e7137008fb"
+  }
+}
