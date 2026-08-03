@@ -500,7 +500,13 @@ function dockerRunPrefix(network: "bridge" | "none"): string[] {
   return ["run", "--rm", "--pull", "never", "--network", network];
 }
 
-async function databaseMetadata(cacheVolume: string, path: string, env: NodeJS.ProcessEnv, evaluatedAt: Date) {
+async function databaseMetadata(
+  cacheVolume: string,
+  path: string,
+  type: "vulnerability" | "java",
+  env: NodeJS.ProcessEnv,
+  evaluatedAt: Date,
+) {
   const result = await execute(
     "docker",
     [
@@ -516,7 +522,7 @@ async function databaseMetadata(cacheVolume: string, path: string, env: NodeJS.P
     undefined,
     64 * 1024,
   );
-  return inspectTrivyDatabaseMetadata(Uint8Array.from(result.stdout), evaluatedAt);
+  return inspectTrivyDatabaseMetadata(Uint8Array.from(result.stdout), evaluatedAt, type);
 }
 
 async function inspectDatabases(
@@ -525,8 +531,8 @@ async function inspectDatabases(
   evaluatedAt: Date,
 ): Promise<ReleaseLocalDatabaseObservation> {
   return {
-    vulnerability: await databaseMetadata(cacheVolume, "/cache/db/metadata.json", env, evaluatedAt),
-    java: await databaseMetadata(cacheVolume, "/cache/java-db/metadata.json", env, evaluatedAt),
+    vulnerability: await databaseMetadata(cacheVolume, "/cache/db/metadata.json", "vulnerability", env, evaluatedAt),
+    java: await databaseMetadata(cacheVolume, "/cache/java-db/metadata.json", "java", env, evaluatedAt),
   };
 }
 

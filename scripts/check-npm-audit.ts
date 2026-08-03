@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 
-const created = "2026-08-03T00:40:00Z";
+const created = "2026-08-03T17:33:04Z";
 const expiry = "2026-08-16T23:59:59Z";
 const expected = {
   "brace-expansion": {
     severity: "high",
-    findingRange: "3.0.0 - 5.0.7",
+    findingRange: "3.0.0 - 5.0.8",
     node: "node_modules/@earendil-works/pi-coding-agent/node_modules/brace-expansion",
     advisories: [
       {
@@ -18,6 +18,11 @@ const expected = {
         source: 1130591,
         url: "https://github.com/advisories/GHSA-mh99-v99m-4gvg",
         range: ">=4.0.0 <5.0.8",
+      },
+      {
+        source: 1130705,
+        url: "https://github.com/advisories/GHSA-rgw5-rvv9-x895",
+        range: ">=4.0.0 <5.0.9",
       },
     ],
   },
@@ -104,4 +109,4 @@ assert.deepEqual(
   { info: 0, low: 0, moderate: 1, high: 1, critical: 0, total: 2 },
   "npm audit vulnerability counts changed",
 );
-console.log(`Accepted exactly two package-scoped temporary dispositions covering three advisories through ${expiry}.`);
+console.log(`Accepted exactly two package-scoped temporary dispositions covering four advisories through ${expiry}.`);
