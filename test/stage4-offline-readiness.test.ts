@@ -1,6 +1,7 @@
 /* biome-ignore-all lint/suspicious/noExplicitAny: hostile package mutations intentionally cross strict JSON types */
 import assert from "node:assert/strict";
 import {
+  chmodSync,
   existsSync,
   linkSync,
   mkdirSync,
@@ -157,18 +158,28 @@ test("committed inventories are canonical, complete for their scopes, and bind e
     STAGE4_SOURCE_INVENTORY_EXCLUSIONS,
   );
   assert.equal(source.scope, "complete-tracked-worktree-source-build-qualification-closure");
-  assert.equal(source.version, "cogs.stage4-offline-source-inventory/v4");
+  assert.equal(source.version, "cogs.stage4-offline-source-inventory/v5");
   assert.deepEqual(source.worktree_binding, {
     file_count: source.entries.length,
     git_executable_sha256: "7588ceab299393618d6f8861502ac0588d1594025f301d9a61a898215b5571d3",
     git_version: "git version 2.50.1 (Apple Git-155)",
     tracked_path_set_sha256: source.worktree_binding.tracked_path_set_sha256,
     worktree_merkle_sha256: stage4TrackedWorktreeMerkle(source.entries),
-    semantics: "complete-tracked-worktree-bytes-excluding-recorded-generated-evidence;no-commit-or-clean-index-claim",
+    semantics:
+      "complete-tracked-git-modes-and-worktree-bytes-excluding-recorded-generated-evidence;no-commit-or-clean-index-claim",
   });
   assert.match(source.worktree_binding.tracked_path_set_sha256, /^[0-9a-f]{64}$/u);
   assert.match(source.worktree_binding.worktree_merkle_sha256, /^[0-9a-f]{64}$/u);
   assert.equal(Object.hasOwn(source.worktree_binding, "regeneration_base_head"), false);
+  for (const entry of source.entries as Array<{ mode: string; path: string }>) {
+    assert.match(entry.mode, /^100(?:644|755)$/u, entry.path);
+    const executable = (statSync(resolve(root, entry.path)).mode & 0o111) !== 0;
+    assert.equal(entry.mode, executable ? "100755" : "100644", entry.path);
+  }
+  const modeChanged = source.entries.map((entry: { mode: string; path: string; sha256: string }, index: number) =>
+    index === 0 ? { ...entry, mode: entry.mode === "100755" ? "100644" : "100755" } : entry,
+  );
+  assert.notEqual(stage4TrackedWorktreeMerkle(modeChanged), source.worktree_binding.worktree_merkle_sha256);
   assert.ok(
     source.entries.some((entry: { path: string }) => entry.path === "scripts/stage4-storage-launch-contract.ts"),
   );
@@ -208,6 +219,7 @@ test("committed inventories are canonical, complete for their scopes, and bind e
     "third_party/envoy-ext-authz-v1.38.3/manifest.json",
     "scripts/local-image-artifacts.ts",
     "scripts/release-image-set-assertion.ts",
+    "scripts/validate-trivy-image-report.jq",
     "test/production-compose.test.ts",
     "test/production-sandbox-image.test.ts",
     "test/production-worker-image.test.ts",
@@ -396,6 +408,18 @@ test("source reads reject final and component symlinks, hard links, and oversize
     writeFileSync(join(repository, "safe/source.ts"), "trusted\n");
     writeFileSync(join(outside, "source.ts"), "hostile\n");
     assert.equal(new TextDecoder().decode(readStage4SourceFile(repository, "safe/source.ts")), "trusted\n");
+    assert.equal(
+      new TextDecoder().decode(readStage4SourceFile(repository, "safe/source.ts", 1024, true, "100644")),
+      "trusted\n",
+    );
+    assert.throws(() => readStage4SourceFile(repository, "safe/source.ts", 1024, true, "100755"), /FILE_MODE_INVALID/u);
+    chmodSync(join(repository, "safe/source.ts"), 0o755);
+    assert.equal(
+      new TextDecoder().decode(readStage4SourceFile(repository, "safe/source.ts", 1024, true, "100755")),
+      "trusted\n",
+    );
+    assert.throws(() => readStage4SourceFile(repository, "safe/source.ts", 1024, true, "100644"), /FILE_MODE_INVALID/u);
+    chmodSync(join(repository, "safe/source.ts"), 0o644);
 
     symlinkSync(join(outside, "source.ts"), join(repository, "final-link.ts"));
     assert.throws(() => readStage4SourceFile(repository, "final-link.ts"), /STAGE4_SOURCE_INVENTORY_/u);

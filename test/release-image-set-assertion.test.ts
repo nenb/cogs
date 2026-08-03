@@ -19,6 +19,8 @@ const Ajv2020 = require("ajv/dist/2020.js") as new (options?: Options) => AjvCor
 const root = resolve(import.meta.dirname, "..");
 const workflowPath = resolve(root, ".github/workflows/release-images.yml");
 const workflowSource = readFileSync(workflowPath, "utf8");
+const trivyValidatorPath = resolve(root, "scripts/validate-trivy-image-report.jq");
+const trivyValidatorSource = readFileSync(trivyValidatorPath, "utf8");
 const identity = "https://github.com/nenb/cogs/.github/workflows/release-images.yml@refs/heads/main";
 const issuer = "https://token.actions.githubusercontent.com";
 const sha = "a".repeat(40);
@@ -73,6 +75,12 @@ function receiptFixture(): Record<string, unknown> {
           artifact_type: "container_image",
           os_metadata_present: true,
           results_nonempty: true,
+          all_results_shape_validated: true,
+          allowed_result_classes: ["os-pkgs", "lang-pkgs"],
+          result_target_type_nonempty: true,
+          os_package_type_matches_os_family: true,
+          vulnerabilities_null_or_array: true,
+          vulnerability_shapes_validated: true,
           os_package_target_present: true,
         },
         counts,
@@ -360,6 +368,7 @@ test("release cleanup aggregates an early retained credential path instead of ac
     CACHE: join(temporary, "cache"),
     ASSERTION: join(temporary, "assertion"),
     COSIGN_HOME: join(temporary, "cosign"),
+    UPLOAD: join(temporary, "upload"),
   };
   for (const path of Object.values(paths)) mkdirSync(path);
   const workspace = join(temporary, "workspace");
@@ -373,6 +382,7 @@ test("release cleanup aggregates an early retained credential path instead of ac
         GITHUB_WORKSPACE: workspace,
         RUNNER_TEMP: temporary,
         PATH: `${bin}:/usr/bin:/bin`,
+        BUILDKIT_IMAGE: "buildkit",
         SYFT_IMAGE: "syft",
         TRIVY_IMAGE: "trivy",
         COSIGN_IMAGE: "cosign",
@@ -405,6 +415,60 @@ test("readiness remains blocked until successful digests are separately reviewed
   }
 });
 
+test("Trivy gate rejects every unsupported result and malformed vulnerability before aggregation", () => {
+  const subject = `ghcr.io/nenb/cogs/worker@${digest("1")}`;
+  const vulnerability = {
+    VulnerabilityID: "CVE-2099-0001",
+    PkgID: "example@1.0.0",
+    PkgName: "example",
+    InstalledVersion: "1.0.0",
+    FixedVersion: "1.0.1",
+    Severity: "LOW",
+  };
+  const valid = {
+    SchemaVersion: 2,
+    ArtifactName: subject,
+    ArtifactType: "container_image",
+    Metadata: { RepoDigests: [subject], OS: { Family: "debian", Name: "13" } },
+    Results: [
+      { Class: "os-pkgs", Target: `${subject} (debian 13)`, Type: "debian", Vulnerabilities: null },
+      { Class: "lang-pkgs", Target: "package-lock.json", Type: "npm", Vulnerabilities: [vulnerability] },
+    ],
+  };
+  const accepted = (report: unknown): boolean => {
+    const result = spawnSync("jq", ["-e", "--arg", "subject", subject, "--from-file", trivyValidatorPath], {
+      encoding: "utf8",
+      input: JSON.stringify(report),
+    });
+    assert.equal(result.error, undefined, result.error?.message);
+    return result.status === 0;
+  };
+  assert.equal(accepted(valid), true);
+
+  // biome-ignore lint/suspicious/noExplicitAny: hostile scanner envelopes intentionally cross the valid report type
+  const hostile: Array<[string, (report: Record<string, any>) => void]> = [
+    ["wrong subject", (report) => (report.ArtifactName = `ghcr.io/nenb/cogs/worker@${digest("2")}`)],
+    ["non-object result", (report) => (report.Results[0] = "os-pkgs")],
+    ["unsupported class", (report) => (report.Results[0].Class = "unknown-pkgs")],
+    ["empty target", (report) => (report.Results[0].Target = "")],
+    ["empty type", (report) => (report.Results[0].Type = "")],
+    ["wrong OS package type", (report) => (report.Results[0].Type = "ubuntu")],
+    ["scalar vulnerabilities", (report) => (report.Results[0].Vulnerabilities = "none")],
+    ["missing vulnerability identity", (report) => delete report.Results[1].Vulnerabilities[0].VulnerabilityID],
+    ["missing package identity", (report) => delete report.Results[1].Vulnerabilities[0].PkgID],
+    ["empty installed version", (report) => (report.Results[1].Vulnerabilities[0].InstalledVersion = "")],
+    ["unsupported severity", (report) => (report.Results[1].Vulnerabilities[0].Severity = "NEGLIGIBLE")],
+    ["invalid fixed version", (report) => (report.Results[1].Vulnerabilities[0].FixedVersion = 1)],
+    ["missing OS coverage", (report) => report.Results.shift()],
+  ];
+  for (const [name, mutate] of hostile) {
+    // biome-ignore lint/suspicious/noExplicitAny: mutation callbacks require one shared hostile shape
+    const report = structuredClone(valid) as Record<string, any>;
+    mutate(report);
+    assert.equal(accepted(report), false, name);
+  }
+});
+
 test("release workflow binds provenance, strict vulnerability semantics, signatures, and one image-set assertion", () => {
   const publish = workflowJob("publish");
   assert.equal(publish.outputs?.worker_digest, "$" + "{{ steps.digests.outputs.worker_digest }}");
@@ -415,13 +479,16 @@ test("release workflow binds provenance, strict vulnerability semantics, signatu
   assert.match(workflowSource, /--ignore-unfixed=false/u);
   assert.match(workflowSource, /\.high == 0 and \.critical == 0/u);
   assert.match(workflowSource, /image-set-assertion-blocking-including-unfixed/u);
-  assert.match(workflowSource, /\.SchemaVersion == 2/u);
-  assert.match(workflowSource, /\.ArtifactName == \$subject/u);
-  assert.match(workflowSource, /\.Metadata\.RepoDigests \| index\(\$subject\) != null/u);
-  assert.match(workflowSource, /\.ArtifactType == "container_image"/u);
-  assert.match(workflowSource, /\.Metadata\.OS\.Family/u);
-  assert.match(workflowSource, /\.Results \| type == "array" and length > 0/u);
-  assert.match(workflowSource, /\.Class == "os-pkgs"/u);
+  assert.match(workflowSource, /--from-file "\$CONTEXT\/scripts\/validate-trivy-image-report\.jq"/u);
+  assert.doesNotMatch(workflowSource, /\.Vulnerabilities\[\]\?/u);
+  assert.match(trivyValidatorSource, /\.SchemaVersion == 2/u);
+  assert.match(trivyValidatorSource, /\.ArtifactName == \$subject/u);
+  assert.match(trivyValidatorSource, /\.Metadata\.RepoDigests \| index\(\$subject\) != null/u);
+  assert.match(trivyValidatorSource, /\.ArtifactType == "container_image"/u);
+  assert.match(trivyValidatorSource, /all\(\.Results\[\]; valid_result\(\$os_family\)\)/u);
+  assert.match(trivyValidatorSource, /\.Class == "os-pkgs" or \.Class == "lang-pkgs"/u);
+  assert.match(trivyValidatorSource, /\.Type == \$os_family/u);
+  assert.match(trivyValidatorSource, /all\(\(\.Vulnerabilities \/\/ \[\]\)\[\]; valid_vulnerability\)/u);
   assert.match(workflowSource, /cosign attest --yes --type spdxjson/u);
   assert.match(workflowSource, /cosign sign --yes "\$subject"/u);
   assert.match(
@@ -433,7 +500,7 @@ test("release workflow binds provenance, strict vulnerability semantics, signatu
   assert.ok(upload);
   assert.equal(
     upload.with?.path,
-    "$" + "{{ runner.temp }}/cogs-release-image-set-assertion/release-image-set-assertion.canonical.json",
+    "$" + "{{ runner.temp }}/cogs-release-image-set-assertion-upload/release-image-set-assertion.canonical.json",
   );
   assert.doesNotMatch(workflowSource, /docs\/security-evidence\/stage4-offline-readiness-artifacts\/image-lock\.json/u);
   assert.doesNotMatch(workflowSource, /(?:tofu|terraform|kubectl|helm|aws |external model)/iu);
@@ -446,5 +513,14 @@ test("release workflow binds provenance, strict vulnerability semantics, signatu
   );
   assert.match(workflowSource, /status=0[\s\S]*docker logout ghcr\.io[^\n]*\|\| status=1/u);
   assert.match(workflowSource, /docker buildx rm "\$BUILDX_BUILDER"/u);
+  assert.match(workflowSource, /for image in "\$BUILDKIT_IMAGE" "\$SYFT_IMAGE" "\$TRIVY_IMAGE" "\$COSIGN_IMAGE"/u);
+  assert.match(workflowSource, /Cleanup retained tool image:/u);
   assert.match(workflowSource, /for path in "\$DOCKER_CONFIG"[\s\S]*exit "\$status"/u);
+  assert.match(workflowSource, /Preserve exactly one non-sensitive canonical assertion for upload/u);
+  assert.match(workflowSource, /UPLOAD=.*cogs-release-image-set-assertion-upload/u);
+  assert.match(workflowSource, /upload_entries=.*find "\$UPLOAD"/u);
+  assert.equal(publish.steps.at(-1), upload, "artifact upload must be the final step after successful cleanup");
+  assert.ok(
+    workflowSource.indexOf("Remove and verify all credential") < workflowSource.indexOf("Upload the sole canonical"),
+  );
 });

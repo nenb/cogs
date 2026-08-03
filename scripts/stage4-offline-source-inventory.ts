@@ -23,6 +23,19 @@ const MAXIMUM_TRACKED_FILES = 1024;
 const MAXIMUM_AGGREGATE_BYTES = 16 * 1024 * 1024;
 const WORKTREE_MERKLE_DOMAIN = "cogs.stage4/tracked-worktree-byte-merkle/v1\0";
 
+type GitFileMode = "100644" | "100755";
+
+type TrackedFile = Readonly<{
+  mode: GitFileMode;
+  path: string;
+}>;
+
+type SourceInventoryEntry = Readonly<{
+  mode: GitFileMode;
+  path: string;
+  sha256: string;
+}>;
+
 type Identity = Readonly<{
   dev: bigint;
   ino: bigint;
@@ -79,6 +92,7 @@ export function readStage4SourceFile(
   path: string,
   maximum = MAXIMUM_FILE_BYTES,
   requireSingleLink = true,
+  expectedGitMode?: GitFileMode,
 ): Uint8Array {
   const physicalRoot = realpathSync(root);
   const components = safeComponents(path);
@@ -119,6 +133,9 @@ export function readStage4SourceFile(
       (requireSingleLink ? final.expected.nlink !== 1n : final.expected.nlink < 1n)
     ) {
       throw new Error("STAGE4_SOURCE_INVENTORY_FILE_BOUND_INVALID");
+    }
+    if (expectedGitMode !== undefined && ((final.expected.mode & 0o111n) !== 0n) !== (expectedGitMode === "100755")) {
+      throw new Error("STAGE4_SOURCE_INVENTORY_FILE_MODE_INVALID");
     }
     const bytes = new Uint8Array(readFileSync(final.fd));
     if (BigInt(bytes.byteLength) !== final.expected.size) throw new Error("STAGE4_SOURCE_INVENTORY_FILE_RACE");
@@ -174,28 +191,29 @@ function text(bytes: Uint8Array): string {
   return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
 }
 
-function trackedPaths(root: string): string[] {
+function trackedFiles(root: string): TrackedFile[] {
   const version = text(pinnedGit(root, ["--version"])).trim();
   if (version !== STAGE4_PINNED_GIT.version) throw new Error("STAGE4_SOURCE_INVENTORY_GIT_IDENTITY_INVALID");
   const top = realpathSync(text(pinnedGit(root, ["rev-parse", "--show-toplevel"])).trim());
   if (top !== root) throw new Error("STAGE4_SOURCE_INVENTORY_GIT_ROOT_INVALID");
-  const paths: string[] = [];
+  const files: TrackedFile[] = [];
   for (const record of text(pinnedGit(root, ["ls-files", "--cached", "--stage", "-z"])).split("\0")) {
     if (record === "") continue;
     const match = /^(100644|100755) ([0-9a-f]{40,64}) 0\t(.+)$/u.exec(record);
-    if (match === null || match[3] === undefined) throw new Error("STAGE4_SOURCE_INVENTORY_GIT_ENTRY_INVALID");
-    paths.push(match[3]);
+    if (match === null || match[1] === undefined || match[3] === undefined)
+      throw new Error("STAGE4_SOURCE_INVENTORY_GIT_ENTRY_INVALID");
+    files.push({ mode: match[1] as GitFileMode, path: match[3] });
   }
   const untracked = text(pinnedGit(root, ["ls-files", "--others", "--exclude-standard", "-z"]))
     .split("\0")
     .filter((path) => path !== "");
   if (untracked.length !== 0) throw new Error("STAGE4_SOURCE_INVENTORY_UNTRACKED_SOURCE_FORBIDDEN");
-  if (paths.length === 0 || paths.length > MAXIMUM_TRACKED_FILES)
+  if (files.length === 0 || files.length > MAXIMUM_TRACKED_FILES)
     throw new Error("STAGE4_SOURCE_INVENTORY_FILE_COUNT_INVALID");
-  return paths.sort();
+  return files.sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0));
 }
 
-export function stage4TrackedWorktreeMerkle(entries: readonly { path: string; sha256: string }[]): string {
+export function stage4TrackedWorktreeMerkle(entries: readonly SourceInventoryEntry[]): string {
   return createHash("sha256")
     .update(WORKTREE_MERKLE_DOMAIN, "utf8")
     .update(canonicalStage4OfflineReadinessBytes(entries.map((entry) => ({ ...entry }))))
@@ -204,38 +222,41 @@ export function stage4TrackedWorktreeMerkle(entries: readonly { path: string; sh
 
 export function stage4SourceClosurePaths(root: string): string[] {
   const physicalRoot = realpathSync(root);
-  return trackedPaths(physicalRoot).filter((path) => !STAGE4_SOURCE_INVENTORY_EXCLUSIONS.includes(path as never));
+  return trackedFiles(physicalRoot)
+    .map((file) => file.path)
+    .filter((path) => !STAGE4_SOURCE_INVENTORY_EXCLUSIONS.includes(path as never));
 }
 
 export function generateStage4SourceInventory(root: string): Uint8Array {
   const physicalRoot = realpathSync(root);
-  const allTrackedPaths = trackedPaths(physicalRoot);
-  const paths = allTrackedPaths.filter((path) => !STAGE4_SOURCE_INVENTORY_EXCLUSIONS.includes(path as never));
+  const allTrackedFiles = trackedFiles(physicalRoot);
+  const files = allTrackedFiles.filter((file) => !STAGE4_SOURCE_INVENTORY_EXCLUSIONS.includes(file.path as never));
   let aggregate = 0;
-  const entries = paths.map((path) => {
-    const bytes = readStage4SourceFile(physicalRoot, path);
+  const entries = files.map(({ mode, path }) => {
+    const bytes = readStage4SourceFile(physicalRoot, path, MAXIMUM_FILE_BYTES, true, mode);
     aggregate += bytes.byteLength;
     if (aggregate > MAXIMUM_AGGREGATE_BYTES) throw new Error("STAGE4_SOURCE_INVENTORY_AGGREGATE_BOUND_INVALID");
-    return { path, sha256: stage4OfflineReadinessSha256(bytes) };
+    return { mode, path, sha256: stage4OfflineReadinessSha256(bytes) };
   });
   return canonicalStage4OfflineReadinessBytes({
-    algorithm: "sha256-domain-separated-canonical-path-and-exact-byte-digest-list",
+    algorithm: "sha256-domain-separated-canonical-git-mode-path-and-exact-byte-digest-list",
     entries,
     excluded_generated_evidence_outputs: STAGE4_SOURCE_INVENTORY_EXCLUSIONS.map((path) => ({
       path,
       reason: "excluded-generated-evidence-recursion",
     })),
     scope: "complete-tracked-worktree-source-build-qualification-closure",
-    version: "cogs.stage4-offline-source-inventory/v4",
+    version: "cogs.stage4-offline-source-inventory/v5",
     worktree_binding: {
       file_count: entries.length,
       git_executable_sha256: STAGE4_PINNED_GIT.sha256,
       git_version: STAGE4_PINNED_GIT.version,
       tracked_path_set_sha256: createHash("sha256")
-        .update(canonicalStage4OfflineReadinessBytes(allTrackedPaths))
+        .update(canonicalStage4OfflineReadinessBytes(allTrackedFiles.map((file) => file.path)))
         .digest("hex"),
       worktree_merkle_sha256: stage4TrackedWorktreeMerkle(entries),
-      semantics: "complete-tracked-worktree-bytes-excluding-recorded-generated-evidence;no-commit-or-clean-index-claim",
+      semantics:
+        "complete-tracked-git-modes-and-worktree-bytes-excluding-recorded-generated-evidence;no-commit-or-clean-index-claim",
     },
   });
 }

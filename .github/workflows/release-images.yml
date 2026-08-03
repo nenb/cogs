@@ -118,7 +118,8 @@ jobs:
           export CONTEXT="$RUNNER_TEMP/cogs-release-context"
           export WORK="$RUNNER_TEMP/cogs-release-work"
           export CACHE="$RUNNER_TEMP/cogs-release-trivy-cache"
-          export ASSERTION="$RUNNER_TEMP/cogs-release-image-set-assertion"
+          export ASSERTION="$RUNNER_TEMP/cogs-release-image-set-assertion-staging"
+          export UPLOAD="$RUNNER_TEMP/cogs-release-image-set-assertion-upload"
           export COSIGN_HOME="$RUNNER_TEMP/cogs-release-cosign-home"
           export BUILDX_BUILDER="cogs-release-${{ github.run_id }}-${{ github.run_attempt }}"
           {
@@ -127,6 +128,7 @@ jobs:
             printf 'WORK=%s\n' "$WORK"
             printf 'CACHE=%s\n' "$CACHE"
             printf 'ASSERTION=%s\n' "$ASSERTION"
+            printf 'UPLOAD=%s\n' "$UPLOAD"
             printf 'COSIGN_HOME=%s\n' "$COSIGN_HOME"
             printf 'BUILDX_BUILDER=%s\n' "$BUILDX_BUILDER"
           } >> "$GITHUB_ENV"
@@ -138,7 +140,7 @@ jobs:
           if git remote get-url origin | grep -Eq '://[^/]*@'; then
             exit 1
           fi
-          mkdir -m 0700 "$DOCKER_CONFIG" "$CONTEXT" "$WORK" "$CACHE" "$ASSERTION" "$COSIGN_HOME"
+          mkdir -m 0700 "$DOCKER_CONFIG" "$CONTEXT" "$WORK" "$CACHE" "$ASSERTION" "$UPLOAD" "$COSIGN_HOME"
           response="$WORK/default-head.json"
           curl --fail --silent --show-error --proto '=https' --tlsv1.2 \
             --header 'Accept: application/vnd.github+json' \
@@ -182,6 +184,7 @@ jobs:
             --driver docker-container \
             --driver-opt "image=$BUILDKIT_IMAGE" \
             --use
+          printf 'BUILDX_CREATED=true\n' >> "$GITHUB_ENV"
           docker buildx inspect "$BUILDX_BUILDER" --bootstrap > "$WORK/buildx-builder-inspect.txt"
           grep -Eq '^Platforms:.*linux/amd64([, ]|$)' "$WORK/buildx-builder-inspect.txt"
 
@@ -319,21 +322,11 @@ jobs:
                 --format json \
                 --output "/evidence/$role.vulnerabilities.json" \
                 "$subject"
-            jq -e --arg subject "$subject" '
-              .SchemaVersion == 2 and
-              .ArtifactName == $subject and
-              .ArtifactType == "container_image" and
-              (.Metadata | type == "object") and
-              (.Metadata.RepoDigests | type == "array") and
-              (.Metadata.RepoDigests | index($subject) != null) and
-              (.Metadata.OS | type == "object") and
-              (.Metadata.OS.Family | type == "string" and length > 0) and
-              (.Metadata.OS.Name | type == "string" and length > 0) and
-              (.Results | type == "array" and length > 0) and
-              any(.Results[]; .Class == "os-pkgs" and (.Target | type == "string" and length > 0))' \
+            jq -e --arg subject "$subject" \
+              --from-file "$CONTEXT/scripts/validate-trivy-image-report.jq" \
               "$WORK/$role.vulnerabilities.json" >/dev/null
             jq -cS '
-              [.Results[].Vulnerabilities[]?] as $all |
+              [(.Results[] | .Vulnerabilities // [])[]] as $all |
               {
                 total: ($all | length),
                 unknown: ([$all[] | select((.Severity // "UNKNOWN") == "UNKNOWN")] | length),
@@ -443,7 +436,7 @@ jobs:
                   severities:["UNKNOWN","LOW","MEDIUM","HIGH","CRITICAL"],
                   ignore_unfixed:false,
                   suppressions:false,
-                  workflow_recorded_report_contract:{schema_version:2,artifact_name_exact_subject:true,repo_digest_exact_subject:true,artifact_type:"container_image",os_metadata_present:true,results_nonempty:true,os_package_target_present:true},
+                  workflow_recorded_report_contract:{schema_version:2,artifact_name_exact_subject:true,repo_digest_exact_subject:true,artifact_type:"container_image",os_metadata_present:true,results_nonempty:true,all_results_shape_validated:true,allowed_result_classes:["os-pkgs","lang-pkgs"],result_target_type_nonempty:true,os_package_type_matches_os_family:true,vulnerabilities_null_or_array:true,vulnerability_shapes_validated:true,os_package_target_present:true},
                   counts:$counts,
                   gate:{policy:"block-high-critical",severities:["HIGH","CRITICAL"],includes_unfixed:true,finding_count:($counts.high + $counts.critical),outcome:"pass"},
                   disposition:{
@@ -499,17 +492,22 @@ jobs:
           printf 'worker_digest=%s\n' "$worker_digest" >> "$GITHUB_OUTPUT"
           printf 'sandbox_digest=%s\n' "$sandbox_digest" >> "$GITHUB_OUTPUT"
 
-      - name: Upload the sole canonical successful image-set assertion record
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: release-image-set-assertion-${{ needs.authority.outputs.reviewed_sha }}-${{ github.run_id }}
-          path: ${{ runner.temp }}/cogs-release-image-set-assertion/release-image-set-assertion.canonical.json
-          if-no-files-found: error
-          retention-days: 30
-          compression-level: 0
-          include-hidden-files: false
+      - name: Preserve exactly one non-sensitive canonical assertion for upload
+        run: |
+          set -euo pipefail
+          source="$ASSERTION/release-image-set-assertion.canonical.json"
+          destination="$UPLOAD/release-image-set-assertion.canonical.json"
+          test ! -e "$destination" && test ! -L "$destination"
+          test "$(find "$ASSERTION" -mindepth 1 -maxdepth 1 -type f ! -type l | wc -l | tr -d ' ')" = 1
+          test "$(find "$ASSERTION" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')" = 1
+          test "$(stat -c '%u:%g:%a:%h:%s:%F' "$source")" = "$(id -u):$(id -g):600:1:$(stat -c '%s' "$source"):regular file"
+          mv -- "$source" "$destination"
+          test ! -e "$source" && test ! -L "$source"
+          test "$(find "$UPLOAD" -mindepth 1 -maxdepth 1 -type f ! -type l | wc -l | tr -d ' ')" = 1
+          test "$(find "$UPLOAD" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')" = 1
+          npx tsx scripts/release-image-set-assertion-cli.ts classify "$destination" >/dev/null
 
-      - name: Remove registry credentials, scanner state, evidence, and build context
+      - name: Remove and verify all credential, builder, cache, staging, and dependency state
         if: ${{ always() }}
         run: |
           set +e
@@ -518,14 +516,27 @@ jobs:
           CONTEXT=${CONTEXT:-"$RUNNER_TEMP/cogs-release-context"}
           WORK=${WORK:-"$RUNNER_TEMP/cogs-release-work"}
           CACHE=${CACHE:-"$RUNNER_TEMP/cogs-release-trivy-cache"}
-          ASSERTION=${ASSERTION:-"$RUNNER_TEMP/cogs-release-image-set-assertion"}
+          ASSERTION=${ASSERTION:-"$RUNNER_TEMP/cogs-release-image-set-assertion-staging"}
+          UPLOAD=${UPLOAD:-"$RUNNER_TEMP/cogs-release-image-set-assertion-upload"}
           COSIGN_HOME=${COSIGN_HOME:-"$RUNNER_TEMP/cogs-release-cosign-home"}
           BUILDX_BUILDER=${BUILDX_BUILDER:-"cogs-release-${{ github.run_id }}-${{ github.run_attempt }}"}
           docker logout ghcr.io >/dev/null 2>&1 || status=1
-          if docker buildx inspect "$BUILDX_BUILDER" >/dev/null 2>&1; then
+          if [[ ${BUILDX_CREATED:-false} == true ]]; then
+            docker buildx rm "$BUILDX_BUILDER" >/dev/null 2>&1 || status=1
+            if docker buildx inspect "$BUILDX_BUILDER" >/dev/null 2>&1; then
+              printf 'Cleanup retained builder: %s\n' "$BUILDX_BUILDER" >&2
+              status=1
+            fi
+          elif docker buildx inspect "$BUILDX_BUILDER" >/dev/null 2>&1; then
             docker buildx rm "$BUILDX_BUILDER" >/dev/null 2>&1 || status=1
           fi
-          docker image rm "$SYFT_IMAGE" "$TRIVY_IMAGE" "$COSIGN_IMAGE" >/dev/null 2>&1 || status=1
+          for image in "$BUILDKIT_IMAGE" "$SYFT_IMAGE" "$TRIVY_IMAGE" "$COSIGN_IMAGE"; do
+            docker image rm "$image" >/dev/null 2>&1 || status=1
+            if docker image inspect "$image" >/dev/null 2>&1; then
+              printf 'Cleanup retained tool image: %s\n' "$image" >&2
+              status=1
+            fi
+          done
           rm -rf -- "$DOCKER_CONFIG" "$CONTEXT" "$WORK" "$CACHE" "$ASSERTION" "$COSIGN_HOME" "$GITHUB_WORKSPACE/node_modules" || status=1
           for path in "$DOCKER_CONFIG" "$CONTEXT" "$WORK" "$CACHE" "$ASSERTION" "$COSIGN_HOME" "$GITHUB_WORKSPACE/node_modules"; do
             if [[ -e "$path" || -L "$path" ]]; then
@@ -533,4 +544,23 @@ jobs:
               status=1
             fi
           done
+          upload_entries=$(find "$UPLOAD" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ') || status=1
+          if [[ ${upload_entries:-2} -gt 1 ]]; then
+            printf 'Cleanup found invalid upload staging contents\n' >&2
+            status=1
+          elif [[ ${upload_entries:-0} == 1 ]]; then
+            upload_file="$UPLOAD/release-image-set-assertion.canonical.json"
+            [[ ! -L "$upload_file" && -f "$upload_file" ]] || status=1
+            [[ "$(stat -c '%u:%g:%a:%h:%F' "$upload_file" 2>/dev/null)" == "$(id -u):$(id -g):600:1:regular file" ]] || status=1
+          fi
           exit "$status"
+
+      - name: Upload the sole canonical successful image-set assertion record
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-image-set-assertion-${{ needs.authority.outputs.reviewed_sha }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/cogs-release-image-set-assertion-upload/release-image-set-assertion.canonical.json
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+          include-hidden-files: false

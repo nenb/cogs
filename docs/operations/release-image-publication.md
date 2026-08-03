@@ -40,8 +40,11 @@ Trivy scans each exact digest with every severity and `ignore_unfixed=false`. Be
 - exact `ArtifactName` and a `Metadata.RepoDigests` member equal to the scanned digest reference;
 - `ArtifactType == container_image`;
 - nonempty OS family/name metadata;
-- a nonempty `Results` array; and
-- at least one nonempty `os-pkgs` target.
+- a nonempty `Results` array where every entry is an object;
+- only exact `os-pkgs` or `lang-pkgs` classes, each with nonempty target and type;
+- every `os-pkgs` type equal to `Metadata.OS.Family`, with at least one such OS-package result;
+- `Vulnerabilities` equal to either `null` or an array for every result; and
+- every vulnerability carrying nonempty vulnerability/package identity and installed-version strings, an allowed severity, and only an absent, null, or string fixed version.
 
 `HIGH` and `CRITICAL` findings block, including unfixed findings. `UNKNOWN`, `LOW`, and `MEDIUM` are retained but non-gating and grant no risk, legal, readiness, or release approval. Counts must partition both severity and fixed/unfixed dimensions. The assertion records these as workflow observations only; the static parser does not independently inspect the omitted raw report.
 
@@ -59,4 +62,4 @@ Static classification success (`VALID_WORKFLOW_ASSERTION_RECORD`) means only can
 
 Do not update deployment image locks or readiness evidence until a separate reviewed change consumes the successful artifact and both exact digests. The workflow itself writes no repository file and performs no promotion.
 
-Cleanup removes the named builder, Buildx client, Docker credentials, tracked context, scanner cache/database, raw evidence, Cosign state, assertion staging, and installed npm dependencies. Any cleanup uncertainty fails the job.
+Before artifact upload, the workflow moves exactly one canonical, non-sensitive assertion into a dedicated private upload directory. It then removes and verifies removal of the named builder, Buildx client and pinned tool images, Docker credentials, tracked context, scanner cache/database, raw evidence, Cosign state, assertion staging, and installed npm dependencies. Any cleanup uncertainty fails the job and therefore prevents upload. The artifact upload is the final step, so a failed cleanup cannot leave an artifact labelled as a successful-workflow assertion.

@@ -375,6 +375,12 @@
                 "artifact_type",
                 "os_metadata_present",
                 "results_nonempty",
+                "all_results_shape_validated",
+                "allowed_result_classes",
+                "result_target_type_nonempty",
+                "os_package_type_matches_os_family",
+                "vulnerabilities_null_or_array",
+                "vulnerability_shapes_validated",
                 "os_package_target_present"
               ],
               "properties": {
@@ -384,6 +390,18 @@
                 "artifact_type": { "const": "container_image" },
                 "os_metadata_present": { "const": true },
                 "results_nonempty": { "const": true },
+                "all_results_shape_validated": { "const": true },
+                "allowed_result_classes": {
+                  "type": "array",
+                  "minItems": 2,
+                  "maxItems": 2,
+                  "prefixItems": [{ "const": "os-pkgs" }, { "const": "lang-pkgs" }],
+                  "items": false
+                },
+                "result_target_type_nonempty": { "const": true },
+                "os_package_type_matches_os_family": { "const": true },
+                "vulnerabilities_null_or_array": { "const": true },
+                "vulnerability_shapes_validated": { "const": true },
                 "os_package_target_present": { "const": true }
               }
             },

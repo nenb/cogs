@@ -167,7 +167,7 @@
           "const": "complete-tracked-worktree-source-build-qualification-closure"
         },
         "inventory_algorithm": {
-          "const": "sha256-domain-separated-canonical-path-and-exact-byte-digest-list"
+          "const": "sha256-domain-separated-canonical-git-mode-path-and-exact-byte-digest-list"
         },
         "worktree_merkle_sha256": { "$ref": "#/$defs/sha256" },
         "commit_binding_present": {

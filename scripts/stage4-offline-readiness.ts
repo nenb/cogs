@@ -219,11 +219,11 @@ export const STAGE4_READINESS_EXPECTED_ARTIFACTS = Object.freeze({
   repeatedRender: "60f73b0e5caa843c4db9431c63cdc13eada9088d6da16c974ef127c480235710",
   runtimePins: "1e683ef6513f9f86f7eaead0fd64d949f037afd06043882eb1b6514aa5c4a145",
   values: "e63a0fadebe16637cc97b21adeeb4ecf33efa8e76a1469e6008c7f7ed4fbb58f",
-  authenticatedRuntimeArtifacts: "c256f8270a9a322028cb5e365723c5503c7398cfad14deda1775a2baca2a5b77",
-  localValidationNormalized: "6f904eb289434d68d30f97cc5caea26e42004a5e1ad58346d94822e44a20d309",
+  authenticatedRuntimeArtifacts: "d7aa3057bd7804341004e68bfc22dc33ae3835df5950e8e536e46b7995595047",
+  localValidationNormalized: "4a518cde0244f00b4c68b2f17f4debca17fc40c29ef7759323a64f193a16a4cb",
   renderReceipt: "b9634997067adef5816aac496c26acbdc1b2c6fc20fa0112f38efd6879e1f85b",
-  schemaInventory: "d9130b2bc85a0cb6ae957a1ceb045598fb848e759f59ceb80dd723c729ec4df4",
-  sourceInventoryNormalized: "88698acd8cf9daaf587413fd5289e8589b5c18abfd307ba8e94252b10c96e868",
+  schemaInventory: "b77cf6f69dff2ae1da988b45156dbdb356d6dfed11e73c84bf7d5a325af923a0",
+  sourceInventoryNormalized: "42c0fc3eb7b2be4b9ac96a89095cad79c5428bdd5d347fdc94adf385471a295c",
 });
 /* stage4-readiness-anchor-end */
 
@@ -340,17 +340,18 @@ function trackedWorktreeMerkle(value: JsonValue | undefined): string | null {
     .digest("hex");
 }
 
-function digestEntries(value: JsonValue | undefined): Map<string, string> | null {
+function digestEntries(value: JsonValue | undefined, requireGitMode = false): Map<string, string> | null {
   if (!Array.isArray(value)) return null;
   const output = new Map<string, string>();
   for (const item of value) {
     const row = record(item);
     if (
       row === null ||
-      Reflect.ownKeys(row).length !== 2 ||
+      Reflect.ownKeys(row).length !== (requireGitMode ? 3 : 2) ||
       typeof row.path !== "string" ||
       typeof row.sha256 !== "string" ||
       !/^[0-9a-f]{64}$/u.test(row.sha256) ||
+      (requireGitMode && row.mode !== "100644" && row.mode !== "100755") ||
       output.has(row.path)
     )
       return null;
@@ -448,7 +449,7 @@ function exactArtifactSemantics(value: ReadinessPackage, artifacts: ArtifactCopi
   const image = parseCanonicalArtifact(artifacts.imageLock);
   const runtime = parseCanonicalArtifact(artifacts.runtimePins);
   if ([source, schemas, local, receipt, image, runtime].some((item) => item === null)) return false;
-  const sourceEntries = digestEntries(source?.entries);
+  const sourceEntries = digestEntries(source?.entries, true);
   const schemaEntries = digestEntries(schemas?.entries);
   const localBindings = digestEntries(local?.source_bindings);
   if (sourceEntries === null || schemaEntries === null || localBindings === null) return false;
@@ -456,8 +457,8 @@ function exactArtifactSemantics(value: ReadinessPackage, artifacts: ArtifactCopi
   const packageSource = record(value.source);
   const worktreeMerkle = trackedWorktreeMerkle(source?.entries);
   if (
-    source?.version !== "cogs.stage4-offline-source-inventory/v4" ||
-    source.algorithm !== "sha256-domain-separated-canonical-path-and-exact-byte-digest-list" ||
+    source?.version !== "cogs.stage4-offline-source-inventory/v5" ||
+    source.algorithm !== "sha256-domain-separated-canonical-git-mode-path-and-exact-byte-digest-list" ||
     source.scope !== "complete-tracked-worktree-source-build-qualification-closure" ||
     worktree === null ||
     packageSource === null ||
