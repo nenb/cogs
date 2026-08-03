@@ -26,9 +26,9 @@ A successful run's sole image-set record is the canonical GitHub workflow artifa
 
 ## Pinned build and evidence tools
 
-Buildx is manually installed as exact `v0.29.1` Linux/amd64 bytes with SHA-256 `7d2d7d6d4680aa349614965aaa33ccec43f1a9a21e908a5ce4cb6adfa5ad5141`. The workflow verifies the checksum and reported version, creates a run-named builder, and uses the digest-pinned BuildKit image. The assertion records both the Buildx version/checksum and BuildKit image digest. Syft, Trivy, the Trivy database, and Cosign are also OCI-digest selected.
+Buildx is manually installed as exact `v0.29.1` Linux/amd64 bytes with SHA-256 `7d2d7d6d4680aa349614965aaa33ccec43f1a9a21e908a5ce4cb6adfa5ad5141`. The workflow verifies the checksum and reported version, creates a run-named builder, and uses the digest-pinned BuildKit image. It invokes that pinned client directly with a private metadata file for each image; no build action, build summary, or build-record artifact is enabled. The assertion records both the Buildx version/checksum and BuildKit image digest. Syft, Trivy, the Trivy database, and Cosign are also OCI-digest selected.
 
-Each build publishes one direct `linux/amd64` child plus BuildKit `mode=max` provenance. Readback requires the output digest to hash the exact top-level index, exactly one variant-free `linux/amd64` child, exactly one BuildKit attestation manifest referring to that child, and decoded BuildKit v1 provenance reporting `linux/amd64`.
+Each build publishes one direct `linux/amd64` child plus BuildKit `mode=max` provenance. The metadata-derived digest must equal the metadata descriptor digest. Registry readback then requires that digest to hash the exact top-level index, exactly one variant-free `linux/amd64` child, exactly one BuildKit attestation manifest referring to that child, and decoded BuildKit v1 provenance reporting `linux/amd64`.
 
 ## SBOM, scanner, and signature assertions
 
@@ -62,4 +62,6 @@ Static classification success (`VALID_WORKFLOW_ASSERTION_RECORD`) means only can
 
 Do not update deployment image locks or readiness evidence until a separate reviewed change consumes the successful artifact and both exact digests. The workflow itself writes no repository file and performs no promotion.
 
-Before artifact upload, the workflow moves exactly one canonical, non-sensitive assertion into a dedicated private upload directory. It then removes and verifies removal of the named builder, Buildx client and pinned tool images, Docker credentials, tracked context, scanner cache/database, raw evidence, Cosign state, assertion staging, and installed npm dependencies. Any cleanup uncertainty fails the job and therefore prevents upload. The artifact upload is the final step, so a failed cleanup cannot leave an artifact labelled as a successful-workflow assertion.
+The publication job exports only the canonical redacted assertion bytes, Base64 encoded and bounded to 65,536 decoded bytes, plus their exact byte size and SHA-256. It then removes and verifies removal of the named builder, BuildKit container and state volume, Buildx client and pinned tool images, Docker credentials, tracked context, scanner cache/database, raw evidence, Cosign state, assertion staging, and installed npm dependencies. Any cleanup or action post-step uncertainty fails the finalized publication job.
+
+A separate minimal job, with no checkout, Node setup, registry credentials, OIDC permission, or package permission, becomes eligible only when `needs.publish.result == 'success'`. It reconstructs the bounded bytes, verifies Base64 length, ownership, mode, link count, file type, size, SHA-256, and sole-file containment, then performs the workflow's only artifact upload as its final step. Thus an assertion cannot be uploaded before the publication job's cleanup and action post steps have finalized successfully.

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
@@ -274,9 +275,11 @@ test("release record parser rejects noncanonical, promoted, mismatched, and inco
   assert.equal(classifyReleaseImageSetAssertion(canonical(incomplete)).reason_code, "SCHEMA_OR_SEMANTIC_DRIFT");
 });
 
-type WorkflowStep = { uses?: string; run?: string; with?: Record<string, unknown> };
+type WorkflowStep = { id?: string; uses?: string; run?: string; with?: Record<string, unknown> };
 type WorkflowJob = {
   if?: string;
+  needs?: string | string[];
+  env?: Record<string, string>;
   permissions?: Record<string, string>;
   outputs?: Record<string, string>;
   steps: WorkflowStep[];
@@ -324,7 +327,7 @@ test("release workflow has one manual protected-main authority and least-privile
 
 test("release workflow pins every action and tool and writes only run-unique transport tags", () => {
   const uses = Object.values(workflow.jobs).flatMap((job) => job.steps.map((step) => step.uses).filter(Boolean));
-  assert.ok(uses.length >= 5);
+  assert.ok(uses.length >= 4);
   for (const action of uses) assert.match(action ?? "", /^[^@\s]+@[0-9a-f]{40}$/u, action);
   for (const variable of [
     "BUILDKIT_IMAGE",
@@ -337,8 +340,7 @@ test("release workflow pins every action and tool and writes only run-unique tra
     assert.match(workflowSource, new RegExp(`${variable}: [^\\s]+@sha256:[0-9a-f]{64}`, "u"), variable);
   }
   assert.doesNotMatch(workflowSource, /:latest(?:@|\s|$)/u);
-  assert.match(workflowSource, /tags: ghcr\.io\/nenb\/cogs\/worker:candidate-\$\{\{/u);
-  assert.match(workflowSource, /tags: ghcr\.io\/nenb\/cogs\/sandbox:candidate-\$\{\{/u);
+  assert.match(workflowSource, /--tag "\$repository:\$transport_tag"/u);
   assert.match(workflowSource, /candidate-\$REVIEWED_SHA-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/u);
   assert.match(workflowSource, /BUILDX_VERSION: v0\.29\.1/u);
   assert.match(
@@ -388,7 +390,6 @@ test("release cleanup aggregates an early retained credential path instead of ac
     CACHE: join(temporary, "cache"),
     ASSERTION: join(temporary, "assertion"),
     COSIGN_HOME: join(temporary, "cosign"),
-    UPLOAD: join(temporary, "upload"),
   };
   for (const path of Object.values(paths)) mkdirSync(path);
   const workspace = join(temporary, "workspace");
@@ -407,6 +408,7 @@ test("release cleanup aggregates an early retained credential path instead of ac
         TRIVY_IMAGE: "trivy",
         COSIGN_IMAGE: "cosign",
         BUILDX_BUILDER: "test-builder",
+        BUILDX_CREATED: "false",
       },
     });
     assert.notEqual(result.status, 0);
@@ -489,12 +491,129 @@ test("Trivy gate rejects every unsupported result and malformed vulnerability be
   }
 });
 
-test("release workflow binds provenance, strict vulnerability semantics, signatures, and one image-set assertion", () => {
+test("release publication uses only the pinned direct Buildx client and private metadata files", () => {
   const publish = workflowJob("publish");
-  assert.equal(publish.outputs?.worker_digest, "$" + "{{ steps.digests.outputs.worker_digest }}");
-  assert.equal(publish.outputs?.sandbox_digest, "$" + "{{ steps.digests.outputs.sandbox_digest }}");
-  assert.equal((workflowSource.match(/provenance: mode=max/gu) ?? []).length, 2);
-  assert.equal((workflowSource.match(/platforms: linux\/amd64/gu) ?? []).length, 2);
+  const build = runStep(publish, "docker buildx build");
+  const readback = runStep(publish, "digest=$(jq -er");
+  assert.equal(
+    publish.steps.some((step) => step.uses?.startsWith("docker/build-push-action@")),
+    false,
+  );
+  assert.doesNotMatch(workflowSource, /docker\/setup-buildx-action@/u);
+  assert.doesNotMatch(workflowSource, /cache: npm/u);
+  assert.match(build, /for role in worker sandbox/u);
+  assert.match(build, /--builder "\$BUILDX_BUILDER"/u);
+  assert.match(build, /--platform linux\/amd64/u);
+  assert.match(build, /--provenance=mode=max/u);
+  assert.match(build, /--sbom=false/u);
+  assert.match(build, /--push/u);
+  assert.match(build, /--pull/u);
+  assert.match(build, /--no-cache/u);
+  assert.match(build, /--metadata-file "\$metadata"/u);
+  assert.match(build, /\."containerimage\.digest"/u);
+  assert.match(build, /\."containerimage\.descriptor"\.digest/u);
+  assert.match(build, /\."buildx\.build\.provenance"/u);
+  assert.match(readback, /metadata="\$WORK\/\$role\.build-metadata\.json"/u);
+  assert.match(readback, /test "\$digest" = "\$\(jq -er '\."containerimage\.descriptor"\.digest'/u);
+  assert.equal(publish.env?.DOCKER_BUILD_RECORD_UPLOAD, "false");
+  assert.equal(publish.env?.DOCKER_BUILD_SUMMARY, "false");
+  assert.equal(publish.env?.BUILDX_METADATA_PROVENANCE, "max");
+});
+
+test("only the finalized success-dependent minimal job can upload the assertion", () => {
+  const publish = workflowJob("publish");
+  const uploader = workflowJob("assertion-upload");
+  assert.equal(
+    publish.steps.some((step) => step.uses?.startsWith("actions/upload-artifact@")),
+    false,
+  );
+  assert.deepEqual(uploader.needs, ["publish"]);
+  assert.equal(uploader.if?.replace(/\s+/gu, " ").trim(), "$" + "{{ needs.publish.result == 'success' }}");
+  assert.deepEqual(uploader.permissions, {});
+  const uploads = Object.entries(workflow.jobs).flatMap(([job, value]) =>
+    value.steps.filter((step) => step.uses?.startsWith("actions/upload-artifact@")).map(() => job),
+  );
+  assert.deepEqual(uploads, ["assertion-upload"]);
+  assert.equal(
+    uploader.steps.some((step) =>
+      /actions\/checkout@|actions\/setup-node@|docker\/login-action@/u.test(step.uses ?? ""),
+    ),
+    false,
+  );
+  const upload = uploader.steps.at(-1);
+  assert.equal(upload?.uses?.startsWith("actions/upload-artifact@"), true);
+  assert.equal(
+    upload?.with?.path,
+    "$" + "{{ runner.temp }}/release-image-set-assertion/release-image-set-assertion.canonical.json",
+  );
+});
+
+test("a hostile publish post-step or finalization failure makes assertion upload ineligible", () => {
+  const uploadEligible = (
+    mainSucceeded: boolean,
+    cleanupSucceeded: boolean,
+    postsSucceeded: boolean,
+    finalizationSucceeded: boolean,
+  ): boolean => mainSucceeded && cleanupSucceeded && postsSucceeded && finalizationSucceeded;
+  assert.equal(uploadEligible(true, true, true, true), true);
+  assert.equal(uploadEligible(false, true, true, true), false);
+  assert.equal(uploadEligible(true, false, true, true), false);
+  assert.equal(uploadEligible(true, true, false, true), false);
+  assert.equal(uploadEligible(true, true, true, false), false);
+  const publish = workflowJob("publish");
+  const uploader = workflowJob("assertion-upload");
+  assert.equal(publish.steps.at(-1)?.run?.includes('exit "$status"'), true);
+  assert.equal(uploader.if, "$" + "{{ needs.publish.result == 'success' }}");
+});
+
+test("assertion transport is exclusive, bounded, hashed, byte preserving, and hostile-input closed", () => {
+  const publish = workflowJob("publish");
+  const uploader = workflowJob("assertion-upload");
+  assert.deepEqual(Object.keys(publish.outputs ?? {}).sort(), ["assertion_b64", "assertion_sha256", "assertion_size"]);
+  assert.equal(publish.outputs?.assertion_b64, "$" + "{{ steps.assertion-transport.outputs.assertion_b64 }}");
+  assert.equal(publish.outputs?.assertion_sha256, "$" + "{{ steps.assertion-transport.outputs.assertion_sha256 }}");
+  assert.equal(publish.outputs?.assertion_size, "$" + "{{ steps.assertion-transport.outputs.assertion_size }}");
+  const encode = runStep(publish, "ASSERTION_TRANSPORT_MAX_BYTES");
+  const decode = runStep(uploader, "expected_encoded_size");
+  assert.equal(publish.env?.ASSERTION_TRANSPORT_MAX_BYTES, "65536");
+  assert.match(encode, /test ! -L "\$source" && test -f "\$source"/u);
+  assert.match(encode, /test "\$size" -le "\$ASSERTION_TRANSPORT_MAX_BYTES"/u);
+  assert.match(encode, /sha256sum "\$source"/u);
+  assert.match(encode, /base64 -w 0 "\$source"/u);
+  assert.match(encode, /expected_encoded_size=/u);
+  assert.doesNotMatch(encode, /worker_digest|sandbox_digest|reviewed_sha/u);
+  assert.match(decode, /test "\$ASSERTION_SIZE" -le 65536/u);
+  assert.match(decode, /base64 --decode/u);
+  assert.match(decode, /sha256sum "\$file"/u);
+  assert.match(decode, /600:1:\$\{ASSERTION_SIZE\}:regular file/u);
+
+  const bytes = Buffer.from(canonical(receiptFixture()));
+  const encoded = bytes.toString("base64");
+  const hash = createHash("sha256").update(bytes).digest("hex");
+  const accepted = (candidate: string, size: number, sha256: string): boolean => {
+    if (!Number.isSafeInteger(size) || size <= 0 || size > 65_536) return false;
+    if (!/^[0-9a-f]{64}$/u.test(sha256) || !/^[A-Za-z0-9+/]+={0,2}$/u.test(candidate)) return false;
+    if (candidate.length !== 4 * Math.ceil(size / 3)) return false;
+    const decoded = Buffer.from(candidate, "base64");
+    return (
+      decoded.length === size &&
+      decoded.toString("base64") === candidate &&
+      createHash("sha256").update(decoded).digest("hex") === sha256
+    );
+  };
+  assert.equal(accepted(encoded, bytes.length, hash), true);
+  assert.equal(Buffer.from(encoded, "base64").equals(bytes), true);
+  assert.equal(accepted(encoded, bytes.length + 1, hash), false);
+  assert.equal(accepted(encoded, bytes.length, "0".repeat(64)), false);
+  assert.equal(accepted(`${encoded}\n`, bytes.length, hash), false);
+  const oversized = Buffer.alloc(65_537, 0x61);
+  assert.equal(
+    accepted(oversized.toString("base64"), oversized.length, createHash("sha256").update(oversized).digest("hex")),
+    false,
+  );
+});
+
+test("release workflow preserves evidence gates and removes all direct-build intermediates", () => {
   assert.match(workflowSource, /--severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL/u);
   assert.match(workflowSource, /--ignore-unfixed=false/u);
   assert.match(workflowSource, /--java-db-repository "\$TRIVY_JAVA_DATABASE"/u);
@@ -522,31 +641,18 @@ test("release workflow binds provenance, strict vulnerability semantics, signatu
     /cosign verify[\s\S]*--certificate-identity "\$CERTIFICATE_IDENTITY"[\s\S]*--certificate-oidc-issuer "\$CERTIFICATE_OIDC_ISSUER"/u,
   );
   assert.match(workflowSource, /cosign verify-attestation --type spdxjson/u);
-  const upload = publish.steps.find((step) => step.uses?.startsWith("actions/upload-artifact@"));
-  assert.ok(upload);
-  assert.equal(
-    upload.with?.path,
-    "$" + "{{ runner.temp }}/cogs-release-image-set-assertion-upload/release-image-set-assertion.canonical.json",
-  );
   assert.doesNotMatch(workflowSource, /docs\/security-evidence\/stage4-offline-readiness-artifacts\/image-lock\.json/u);
   assert.doesNotMatch(workflowSource, /(?:tofu|terraform|kubectl|helm|aws |external model)/iu);
   assert.match(workflowSource, /static_parser_cryptographic_verification_performed:false/u);
   assert.match(workflowSource, /readiness_promoted:false,production_ready:false,release_eligible:false/u);
-  assert.match(workflowSource, /docker logout ghcr\.io/u);
-  assert.match(
-    workflowSource,
-    /rm -rf -- "\$DOCKER_CONFIG" "\$CONTEXT" "\$WORK" "\$CACHE" "\$ASSERTION" "\$COSIGN_HOME"/u,
-  );
-  assert.match(workflowSource, /status=0[\s\S]*docker logout ghcr\.io[^\n]*\|\| status=1/u);
-  assert.match(workflowSource, /docker buildx rm "\$BUILDX_BUILDER"/u);
-  assert.match(workflowSource, /for image in "\$BUILDKIT_IMAGE" "\$SYFT_IMAGE" "\$TRIVY_IMAGE" "\$COSIGN_IMAGE"/u);
-  assert.match(workflowSource, /Cleanup retained tool image:/u);
-  assert.match(workflowSource, /for path in "\$DOCKER_CONFIG"[\s\S]*exit "\$status"/u);
-  assert.match(workflowSource, /Preserve exactly one non-sensitive canonical assertion for upload/u);
-  assert.match(workflowSource, /UPLOAD=.*cogs-release-image-set-assertion-upload/u);
-  assert.match(workflowSource, /upload_entries=.*find "\$UPLOAD"/u);
-  assert.equal(publish.steps.at(-1), upload, "artifact upload must be the final step after successful cleanup");
-  assert.ok(
-    workflowSource.indexOf("Remove and verify all credential") < workflowSource.indexOf("Upload the sole canonical"),
-  );
+  const cleanup = runStep(workflowJob("publish"), "Cleanup retained builder");
+  assert.match(cleanup, /docker logout ghcr\.io/u);
+  assert.match(cleanup, /docker buildx rm "\$BUILDX_BUILDER"/u);
+  assert.match(cleanup, /docker container inspect "\$buildkit_node"/u);
+  assert.match(cleanup, /docker volume inspect "\$buildkit_state"/u);
+  assert.match(cleanup, /for image in "\$BUILDKIT_IMAGE" "\$SYFT_IMAGE" "\$TRIVY_IMAGE" "\$COSIGN_IMAGE"/u);
+  assert.match(cleanup, /Cleanup retained tool image:/u);
+  assert.match(cleanup, /rm -rf -- "\$DOCKER_CONFIG" "\$CONTEXT" "\$WORK" "\$CACHE" "\$ASSERTION" "\$COSIGN_HOME"/u);
+  assert.match(cleanup, /for path in "\$DOCKER_CONFIG"[\s\S]*exit "\$status"/u);
+  assert.doesNotMatch(workflowSource, /cogs-release-image-set-assertion-upload|\bUPLOAD\b/u);
 });
