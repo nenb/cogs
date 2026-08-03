@@ -118,6 +118,7 @@ function harness() {
   let failAt = "";
   let cleanupFailure = "";
   let piState: "idle" | "running" = "idle";
+  let sshOptions: SshConnectionManagerOptions | undefined;
   const maybe = (stage: string) => {
     log.push(stage);
     if (failAt === stage) throw new Error(`${secretBearer}:${secretProxy}`);
@@ -247,6 +248,7 @@ function harness() {
     },
     createSsh: (options: SshConnectionManagerOptions) => {
       maybe("ssh.create");
+      sshOptions = options;
       sshLost = () => options.onLost?.("lost");
       return ssh;
     },
@@ -290,6 +292,9 @@ function harness() {
     setPiState(state: "idle" | "running") {
       piState = state;
     },
+    sshOptions() {
+      return sshOptions;
+    },
     loseSsh() {
       sshLost?.();
     },
@@ -298,6 +303,20 @@ function harness() {
     },
   };
 }
+
+test("production SSH uses the sandbox image's single guest-root identity", async () => {
+  const sshdConfig = await readFile(new URL("../images/sandbox/sshd_config", import.meta.url), "utf8");
+  const allowedUsers = sshdConfig
+    .split("\n")
+    .filter((line) => line.startsWith("AllowUsers "))
+    .flatMap((line) => line.slice("AllowUsers ".length).trim().split(/\s+/u));
+  assert.deepEqual(allowedUsers, ["root"]);
+
+  const h = harness();
+  const worker = await startProductionWorker({ seams: h.seams });
+  assert.equal(h.sshOptions()?.config.username, allowedUsers[0]);
+  await worker.close();
+});
 
 test("production composition starts in one exact fail-closed order and closes reverse-owned order", async () => {
   const h = harness();
