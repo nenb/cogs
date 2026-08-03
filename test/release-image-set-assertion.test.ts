@@ -556,21 +556,31 @@ test("release cleanup aggregates an early retained credential path instead of ac
   }
 });
 
-test("readiness remains blocked until successful digests are separately reviewed", () => {
+test("readiness binds only the separately reviewed successful digest set without runtime promotion", () => {
   const imageLock = JSON.parse(
     readFileSync(resolve(root, "docs/security-evidence/stage4-offline-readiness-artifacts/image-lock.json"), "utf8"),
   ) as {
     exact_image_closure_satisfied: boolean;
     release_image_set_present: boolean;
     images: Array<{ role: string; state: string; reference: string }>;
+    release_image_set: { assertion_sha256: string; review_sha256: string; state: string };
   };
-  assert.equal(imageLock.exact_image_closure_satisfied, false);
-  assert.equal(imageLock.release_image_set_present, false);
+  assert.equal(imageLock.exact_image_closure_satisfied, true);
+  assert.equal(imageLock.release_image_set_present, true);
+  assert.equal(
+    imageLock.release_image_set.assertion_sha256,
+    "ad45d6b0a114c481eb869daff38f4ddc669801e8a5b5d808c404b506ae33c450",
+  );
+  assert.equal(
+    imageLock.release_image_set.review_sha256,
+    "f6a607349062f5ca9211978600012b4cd16651af984c083a0329646a74da6a3a",
+  );
+  assert.equal(imageLock.release_image_set.state, "reviewed-static-identity-closure-not-runtime-observed");
   for (const role of ["worker", "sandbox"]) {
     const image = imageLock.images.find((candidate) => candidate.role === role);
     assert.ok(image);
-    assert.equal(image.state, "synthetic-placeholder-not-release-image");
-    assert.match(image.reference, /^registry\.example\.invalid\//u);
+    assert.equal(image.state, "exact-reviewed-candidate-not-runtime-observed");
+    assert.match(image.reference, new RegExp(`^ghcr\\.io/nenb/cogs/${role}@sha256:[0-9a-f]{64}$`, "u"));
   }
 });
 

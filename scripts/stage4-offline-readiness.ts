@@ -3,10 +3,20 @@ import { createRequire } from "node:module";
 import { TextDecoder, types } from "node:util";
 import type { Ajv as AjvCore, Options, ValidateFunction } from "ajv";
 import { capturePrivateBytes, intrinsicByteLength } from "./private-bytes.ts";
+import {
+  classifyReleaseImageSetReview,
+  RELEASE_IMAGE_REFERENCES,
+  RELEASE_IMAGE_SET_ASSERTION_SHA256,
+  RELEASE_IMAGE_SET_REVIEW_SHA256,
+  RELEASE_IMAGE_SOURCE_INVENTORY_SHA256,
+  RELEASE_IMAGE_SOURCE_SHA,
+  RELEASE_IMAGE_SOURCE_TREE_SHA,
+  RELEASE_IMAGE_WORKFLOW_RUN_ID,
+} from "./release-image-set-review.ts";
 
 const require = createRequire(import.meta.url);
 const Ajv2020 = require("ajv/dist/2020.js") as new (options?: Options) => AjvCore;
-const packageSchema = require("../schemas/stage4-offline-readiness-package-v2.json") as object;
+const packageSchema = require("../schemas/stage4-offline-readiness-package-v3.json") as object;
 
 export const STAGE4_READINESS_BLOCKERS = Object.freeze([
   "ISSUE_42_OPEN",
@@ -17,7 +27,6 @@ export const STAGE4_READINESS_BLOCKERS = Object.freeze([
   "SEPARATED_CAMPAIGN_IDENTITIES_ABSENT",
   "CAMPAIGN_ENVELOPE_AND_APPROVAL_ABSENT",
   "NO_EXECUTABLE_PROVIDER_ROUTE",
-  "RELEASE_IMAGE_SET_ABSENT",
 ] as const);
 
 export const STAGE4_READINESS_ARTIFACT_KEYS = Object.freeze([
@@ -28,6 +37,8 @@ export const STAGE4_READINESS_ARTIFACT_KEYS = Object.freeze([
   "repeatedRender",
   "renderReceipt",
   "imageLock",
+  "releaseImageAssertion",
+  "releaseImageReview",
   "nicContract",
   "runtimePins",
   "authenticatedRuntimeArtifacts",
@@ -44,6 +55,8 @@ export const STAGE4_READINESS_BYTE_LIMITS = Object.freeze({
   repeatedRender: 256 * 1024,
   renderReceipt: 16 * 1024,
   imageLock: 16 * 1024,
+  releaseImageAssertion: 64 * 1024,
+  releaseImageReview: 16 * 1024,
   nicContract: 128 * 1024,
   runtimePins: 16 * 1024,
   authenticatedRuntimeArtifacts: 64 * 1024,
@@ -63,7 +76,7 @@ export type Stage4ReadinessReasonCode =
   | "STAGE4_READINESS_BINDING_ROOT_MISMATCH";
 
 export type Stage4OfflineReadinessVerdict = Readonly<{
-  version: "cogs.stage4-offline-readiness-verdict/v2";
+  version: "cogs.stage4-offline-readiness-verdict/v3";
   authority: "local-static-stage4-readiness-classifier";
   local_preparation_complete: boolean;
   candidate_artifact_closure_complete: boolean;
@@ -115,6 +128,8 @@ const DIGEST_FIELDS: Readonly<Record<Stage4ReadinessArtifactKey, string>> = Obje
   repeatedRender: "repeated_render_sha256",
   renderReceipt: "render_preparation_receipt_sha256",
   imageLock: "image_lock_sha256",
+  releaseImageAssertion: "release_image_assertion_sha256",
+  releaseImageReview: "release_image_review_sha256",
   nicContract: "nic_contract_sha256",
   runtimePins: "runtime_pins_sha256",
   authenticatedRuntimeArtifacts: "authenticated_runtime_artifacts_sha256",
@@ -205,25 +220,27 @@ export const STAGE4_INDEPENDENT_INVENTORY_SCOPES = Object.freeze([
 ] as const);
 
 const EXPECTED_IMAGE_REFERENCES = Object.freeze({
-  worker: `registry.example.invalid/cogs/worker@sha256:${"a".repeat(64)}`,
+  worker: RELEASE_IMAGE_REFERENCES.worker,
   proxy: "envoyproxy/envoy:v1.38.3@sha256:5f7c43e1147412fdb3af578c651c67478a3df818eae89d2261e707e06c209cdb",
-  sandbox: `registry.example.invalid/cogs/sandbox@sha256:${"c".repeat(64)}`,
+  sandbox: RELEASE_IMAGE_REFERENCES.sandbox,
 });
 
 /* stage4-readiness-anchor-start */
 export const STAGE4_READINESS_EXPECTED_ARTIFACTS = Object.freeze({
   chartInventory: "a3801a32d9f1a59864bd027aebf44554b087911c7d4a4486e7bcda697ff68617",
-  imageLock: "0b52deae8e9d24458e52c4c178283d1c51819057d8ce867a865b0b7b96902389",
+  imageLock: "b0e8a4c39643087a2707a253b0e2dafb48569edf5debb799bb813a67a9559536",
+  releaseImageAssertion: "ad45d6b0a114c481eb869daff38f4ddc669801e8a5b5d808c404b506ae33c450",
+  releaseImageReview: "f6a607349062f5ca9211978600012b4cd16651af984c083a0329646a74da6a3a",
   nicContract: "9b61b547884b6baa081974242171885f92c7d756224bc181fe6e78c965c1fa9a",
-  render: "60f73b0e5caa843c4db9431c63cdc13eada9088d6da16c974ef127c480235710",
-  repeatedRender: "60f73b0e5caa843c4db9431c63cdc13eada9088d6da16c974ef127c480235710",
+  render: "399d9b86a43777a57542c70c93f6ef595224e455d6969d2bfbd154e6d05d8fa0",
+  repeatedRender: "399d9b86a43777a57542c70c93f6ef595224e455d6969d2bfbd154e6d05d8fa0",
   runtimePins: "1e683ef6513f9f86f7eaead0fd64d949f037afd06043882eb1b6514aa5c4a145",
-  values: "e63a0fadebe16637cc97b21adeeb4ecf33efa8e76a1469e6008c7f7ed4fbb58f",
-  authenticatedRuntimeArtifacts: "aaf0005a8d25364aa5b72387925aa9193daf9d8b5ec86b5f151873a717bced95",
-  localValidationNormalized: "d86e4c874b480765e06f3a544eead44b2811dd178d6da7653960618b27c6aebd",
-  renderReceipt: "b9634997067adef5816aac496c26acbdc1b2c6fc20fa0112f38efd6879e1f85b",
-  schemaInventory: "597e9333cba1b1c4b4c2a3ca8b3b2238cb4a17c99f7d4afaae2f4b26c95f8af7",
-  sourceInventoryNormalized: "888ff7d38f34605a73f38a2dcfc584b72920a51fcb825d32bd8a130ef48baa60",
+  values: "c689236c57e1eab668f8bf504e148245cc23a652b529d1aaab20ef8d4e0fdc7a",
+  authenticatedRuntimeArtifacts: "89b50bd8f48360748911af2f3c0f2bd062095e31ac926745c339f99ccbbaf3a5",
+  localValidationNormalized: "913ff79bde803c5aa8d119beb9fab1b05ef776028fa5f26c207bbedce024ee34",
+  renderReceipt: "491c7963c00873ee6429cb3917c2ae1316e83b5905257b1abc8c60a4464541cf",
+  schemaInventory: "473cee3b00f409e1e4c28346f23491d7e3694933e41560b24c666c99e455be86",
+  sourceInventoryNormalized: "24825260a8dec43974822640831503d5ed5a2fd38c30a54733e29c5ed1a5e14b",
 });
 /* stage4-readiness-anchor-end */
 
@@ -428,6 +445,8 @@ function exactArtifactSemantics(value: ReadinessPackage, artifacts: ArtifactCopi
     ["repeatedRender", STAGE4_READINESS_EXPECTED_ARTIFACTS.repeatedRender],
     ["renderReceipt", STAGE4_READINESS_EXPECTED_ARTIFACTS.renderReceipt],
     ["imageLock", STAGE4_READINESS_EXPECTED_ARTIFACTS.imageLock],
+    ["releaseImageAssertion", STAGE4_READINESS_EXPECTED_ARTIFACTS.releaseImageAssertion],
+    ["releaseImageReview", STAGE4_READINESS_EXPECTED_ARTIFACTS.releaseImageReview],
     ["nicContract", STAGE4_READINESS_EXPECTED_ARTIFACTS.nicContract],
     ["runtimePins", STAGE4_READINESS_EXPECTED_ARTIFACTS.runtimePins],
     ["authenticatedRuntimeArtifacts", STAGE4_READINESS_EXPECTED_ARTIFACTS.authenticatedRuntimeArtifacts],
@@ -472,6 +491,8 @@ function exactArtifactSemantics(value: ReadinessPackage, artifacts: ArtifactCopi
   const sourceArtifactPaths: ReadonlyArray<readonly [string, Stage4ReadinessArtifactKey]> = [
     ["docs/security-evidence/stage4-offline-readiness-artifacts/chart-inventory.json", "chartInventory"],
     ["docs/security-evidence/stage4-offline-readiness-artifacts/image-lock.json", "imageLock"],
+    ["docs/security-evidence/release-image-set-assertion-30852317459.canonical.json", "releaseImageAssertion"],
+    ["docs/security-evidence/release-image-set-review-30852317459.canonical.json", "releaseImageReview"],
     ["docs/security-evidence/stage4-offline-readiness-artifacts/notes-render-repeat.yaml", "repeatedRender"],
     ["docs/security-evidence/stage4-offline-readiness-artifacts/notes-render.yaml", "render"],
     ["docs/security-evidence/stage4-offline-readiness-artifacts/render-preparation-receipt.json", "renderReceipt"],
@@ -568,12 +589,34 @@ function exactArtifactSemantics(value: ReadinessPackage, artifacts: ArtifactCopi
 
   const imageRows = image?.images;
   const packageImages = value.pins.images;
+  const releaseSet = record(image?.release_image_set);
+  const packageImageSource = record(packageSource?.image_source);
+  const releaseReviewVerdict = classifyReleaseImageSetReview(
+    artifacts.releaseImageAssertion,
+    artifacts.releaseImageReview,
+  );
   if (
+    !releaseReviewVerdict.record_valid ||
     !Array.isArray(imageRows) ||
     imageRows.length !== 3 ||
+    image?.version !== "cogs.stage4-offline-image-lock/v3" ||
+    image.release_image_set_present !== true ||
+    image.exact_image_closure_satisfied !== true ||
     stringProperty(imageRows[0], "reference") !== stringProperty(packageImages.worker, "reference") ||
     stringProperty(imageRows[1], "reference") !== stringProperty(packageImages.proxy, "reference") ||
-    stringProperty(imageRows[2], "reference") !== stringProperty(packageImages.sandbox, "reference")
+    stringProperty(imageRows[2], "reference") !== stringProperty(packageImages.sandbox, "reference") ||
+    record(imageRows[0])?.state !== "exact-reviewed-candidate-not-runtime-observed" ||
+    record(imageRows[2])?.state !== "exact-reviewed-candidate-not-runtime-observed" ||
+    releaseSet?.assertion_sha256 !== RELEASE_IMAGE_SET_ASSERTION_SHA256 ||
+    releaseSet?.review_sha256 !== RELEASE_IMAGE_SET_REVIEW_SHA256 ||
+    releaseSet?.image_source_sha !== RELEASE_IMAGE_SOURCE_SHA ||
+    releaseSet?.workflow_run_id !== RELEASE_IMAGE_WORKFLOW_RUN_ID ||
+    packageImages.release_image_set_present !== true ||
+    packageImages.exact_image_closure_satisfied !== true ||
+    packageImageSource?.reviewed_sha !== RELEASE_IMAGE_SOURCE_SHA ||
+    packageImageSource?.tree_sha !== RELEASE_IMAGE_SOURCE_TREE_SHA ||
+    packageImageSource?.inventory_sha256 !== RELEASE_IMAGE_SOURCE_INVENTORY_SHA256 ||
+    packageImageSource?.relation !== "separately-bound-immutable-image-source"
   )
     return false;
   const packageRuntime = record(value.pins.runtime);
@@ -603,7 +646,7 @@ function makeVerdict(
 ): Stage4OfflineReadinessVerdict {
   const complete = reasonCode === "STAGE4_LOCAL_PREPARATION_COMPLETE_CAMPAIGN_BLOCKED";
   return Object.freeze({
-    version: "cogs.stage4-offline-readiness-verdict/v2",
+    version: "cogs.stage4-offline-readiness-verdict/v3",
     authority: "local-static-stage4-readiness-classifier",
     local_preparation_complete: complete,
     candidate_artifact_closure_complete: complete,

@@ -37,6 +37,8 @@ function assertUncertain(input: unknown): void {
   assert.equal(result.eks_public_candidate_selected, false);
   assert.equal(result.eks_ami_id_resolved, false);
   assert.equal(result.running_kernel_resolved, false);
+  assert.equal(result.release_image_set_present, false);
+  assert.equal(result.exact_image_identity_closure_satisfied, false);
   assert.equal(result.campaign_authorized, false);
   assert.equal(result.cloud_execution_observed, false);
   assert.equal(result.provider_truth_observed, false);
@@ -57,6 +59,8 @@ test("committed evidence is deterministic exact local closure with every authori
   assert.equal(result.eks_public_candidate_selected, true);
   assert.equal(result.eks_ami_id_resolved, false);
   assert.equal(result.running_kernel_resolved, false);
+  assert.equal(result.release_image_set_present, true);
+  assert.equal(result.exact_image_identity_closure_satisfied, true);
   assert.equal(result.campaign_authorized, false);
   assert.equal(result.cloud_execution_observed, false);
   assert.equal(result.provider_truth_observed, false);
@@ -116,7 +120,7 @@ test("public EKS candidate is exact while all AWS-resolved fields remain absent"
   assert.equal(candidate.provider_truth_observed, false);
 });
 
-test("static candidate freeze is exact but cannot promote images, release, or expired security truth", () => {
+test("static candidate freeze binds reviewed image identities but cannot promote runtime, release, or expired security truth", () => {
   const freeze = object().static_candidate_freeze;
   assert.equal(freeze.envoy.publisher_signature_verified, false);
   assert.equal(
@@ -147,9 +151,18 @@ test("static candidate freeze is exact but cannot promote images, release, or ex
   assert.equal(freeze.dependency_lock.pi_version, "0.80.6");
   assert.equal(
     freeze.dependency_lock.package_lock_sha256,
-    "835d126c87bfedc30e2665aa8344abfb1a71948dbdd55cb4a7e8133512583645",
+    "21fa5340665a5e2c04a5f185b2cae2ba550256c4c830fefcf000a42c89e358ea",
   );
-  assert.equal(object().claims.release_image_set_present, false);
+  assert.equal(
+    freeze.release_images.worker,
+    "ghcr.io/nenb/cogs/worker@sha256:c2f240fa191fb22970f6b1ff0142448841401885c87f403efca152d9201004bc",
+  );
+  assert.equal(
+    freeze.release_images.sandbox,
+    "ghcr.io/nenb/cogs/sandbox@sha256:b8827b17c73fac0ce869681fad4a01c625f068566a55f1aa7e3a9efc0e1bdc60",
+  );
+  assert.equal(freeze.release_images.image_source_sha, "d3ddb987ceeec0bae0fa2d89fdc134187a0d1de3");
+  assert.equal(object().claims.release_image_set_present, true);
   assert.equal(object().claims.release_eligible, false);
 });
 
@@ -159,7 +172,7 @@ test("evidence compiles under strict schema and rejects unknown fields", () => {
   const ajv = new Ajv2020({ allErrors: true, strict: true, strictRequired: false, ownProperties: true });
   require("ajv-formats")(ajv);
   const schema = JSON.parse(
-    readFileSync(resolve(root, "schemas/stage4-authenticated-runtime-artifact-evidence-v1.json"), "utf8"),
+    readFileSync(resolve(root, "schemas/stage4-authenticated-runtime-artifact-evidence-v2.json"), "utf8"),
   );
   const validate = ajv.compile(schema);
   assert.equal(validate(object()), true, JSON.stringify(validate.errors));
@@ -188,6 +201,10 @@ test("hostile artifact, provenance, QEMU, EKS, freeze, and claim drift fail clos
     (value) => (value.eks_node_image_candidate.running_kernel_release = "claimed"),
     (value) => (value.static_candidate_freeze.envoy.publisher_signature_verified = true),
     (value) => (value.static_candidate_freeze.skills.policy = "ambient-skills"),
+    (value) => (value.static_candidate_freeze.release_images.assertion_sha256 = "0".repeat(64)),
+    (value) =>
+      (value.static_candidate_freeze.release_images.worker = value.static_candidate_freeze.release_images.sandbox),
+    (value) => (value.claims.release_image_set_present = false),
     (value) => (value.claims.cloud_execution_observed = true),
     (value) => (value.claims.release_eligible = true),
   ];
