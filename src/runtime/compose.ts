@@ -282,7 +282,7 @@ export async function startProductionWorker(
             ssh = seams.createSsh({
               config: {
                 endpoint: launch.sandbox.ssh_endpoint,
-                username: "cogs",
+                username: "root",
                 hostKeySha256: launch.sandbox.ssh_host_key,
                 clientKeyPath: launch.sandbox.client_key_path,
                 shutdownTimeoutMs: runtime.lifecycle.shutdown_timeout_seconds * 1000,

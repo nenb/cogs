@@ -47,6 +47,10 @@ The helper does not create, chmod, chown, rename, delete, discover, or recover m
 
 No OpenBao token appears in the runtime or launch document. There is no HTTP development option, static-token option, environment source, token cache, renewal loop, Kubernetes API call, SDK, OAuth path, or fallback.
 
+## Production sandbox SSH identity
+
+Production composition authenticates SSH/SFTP exactly as `root`, matching the sandbox image's root-only `sshd`. This intentionally preserves DESIGN's guest-root semantics; there is no `cogs` guest account or non-root fallback, and the existing public-key-only, forwarding, tunnel, password, and PAM restrictions remain unchanged.
+
 ## Deliberately absent
 
 ADR 0096 and the later image-source changes now provide `src/main.ts`, fail-closed production composition, bounded API bind/shutdown persistence wiring, the canonical Basic proxy capability, worker-owned Envoy process composition, production worker image source, and the Kata guest image/entrypoint source. Egress startup uses retained lifecycle ownership: an abort waits for or subsequently closes any manager that resolves late, so a late Envoy cannot escape rollback ownership. The process entrypoint arms the 31-second hard-exit deadline for signals, startup failure, spontaneous runtime loss, and shutdown failure; it clears that timer only after cleanup completes without uncertainty. The worker dependency stage also replaces Pi 0.80.6's shrinkwrap-retained `brace-expansion` 5.0.6 with the root lock's exact authenticated 5.0.8 bytes, verifies both the expected vulnerable input and fixed output versions, and copies only the remediated dependency tree into the final image. Those are locally tested source contracts only; they are not runtime, publication, deployment, or isolation observations; a local image build verifies construction but does not promote readiness.
