@@ -93,6 +93,7 @@ const PRODUCTION_SCHEMA_NAMES = Object.freeze([
 const FORMAT_PATHS = Object.freeze([
   "scripts/release-local-preflight-cli.ts",
   "scripts/release-local-preflight.ts",
+  "scripts/release-trivy-database-metadata-cli.ts",
   "scripts/stage4-offline-readiness-regenerate.ts",
   "scripts/stage4-offline-readiness.ts",
   "scripts/stage4-offline-render-preparation.ts",
@@ -125,6 +126,7 @@ const LOCAL_VALIDATION_PATHS = Object.freeze([
   "scripts/release-image-set-pins.ts",
   "scripts/release-local-preflight-cli.ts",
   "scripts/release-local-preflight.ts",
+  "scripts/release-trivy-database-metadata-cli.ts",
   "scripts/stage4-offline-readiness-regenerate.ts",
   "scripts/stage4-offline-readiness.ts",
   "scripts/stage4-offline-render-preparation.ts",

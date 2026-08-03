@@ -350,6 +350,7 @@ test("committed inventories are canonical, complete for their scopes, and bind e
       "scripts/release-image-set-pins.ts",
       "scripts/release-local-preflight-cli.ts",
       "scripts/release-local-preflight.ts",
+      "scripts/release-trivy-database-metadata-cli.ts",
       "scripts/stage4-offline-readiness-regenerate.ts",
       "scripts/stage4-offline-readiness.ts",
       "scripts/stage4-offline-render-preparation.ts",

@@ -285,6 +285,32 @@ test("release tool manifest generates the exact schema and rejects every indepen
   }
 });
 
+test("reviewed Aqua DB observations bind exact local digests, OCI types, metadata, and exclusive expiry", () => {
+  const osReference =
+    "ghcr.io/aquasecurity/trivy-db:2@sha256:3d9ac2dcf97e923fad3065ddb2262b0790426a7f87b3ec06b70462dc7b5ddc6a";
+  const javaReference =
+    "ghcr.io/aquasecurity/trivy-java-db:1@sha256:8a8e6f28332f81c09f8cd575f8fda8b1c30fb5fe4c30f7f55ce06a01a6cc93c7";
+  assert.equal(RELEASE_IMAGE_SET_PINS.tools.trivy_database, osReference);
+  assert.equal(RELEASE_IMAGE_SET_PINS.tools.trivy_java_database, javaReference);
+  const publication = readFileSync(resolve(root, "docs/operations/release-image-publication.md"), "utf8");
+  for (const reviewedValue of [
+    osReference,
+    javaReference,
+    "sha256:82225c2b2d979e8d7ed306b75bce9118304b688cfbfdbca7c61723d30f0d1bb6",
+    "application/vnd.aquasec.trivy.config.v1+json",
+    "application/vnd.aquasec.trivy.db.layer.v1.tar+gzip",
+    "application/vnd.aquasec.trivy.javadb.layer.v1.tar+gzip",
+    "2026-08-03T14:43:04.772935128Z",
+    "2026-08-04T14:43:04.772934765Z",
+    "2026-08-03T01:24:02.348348214Z",
+    "2026-08-06T01:24:02.348348063Z",
+  ]) {
+    assert.ok(publication.includes(reviewedValue), reviewedValue);
+  }
+  assert.match(publication, /bounded local observations/u);
+  assert.match(publication, /do not establish continuing tag or registry truth/u);
+});
+
 test("release record parser rejects noncanonical, promoted, mismatched, and incomplete assertions", () => {
   const valid = receiptFixture();
   assert.equal(
@@ -428,6 +454,43 @@ test("release workflow pins every action and tool and writes only run-unique tra
   assert.doesNotMatch(workflowSource, /sha-\$REVIEWED_SHA/u);
   assert.match(workflowSource, /Refusing to overwrite pre-existing run-unique transport tag/u);
   assert.doesNotMatch(workflowSource, /tags:[^\n]*(?:latest|main|stable)/u);
+});
+
+test("release workflow fail-closes strict DB metadata after acquisition and before scan, signing, and assertion", () => {
+  const publish = workflowJob("publish");
+  const acquisition = runStep(publish, "database_valid_until=$(date");
+  assert.match(acquisition, /date -u -d '\+60 minutes'/u);
+  assert.match(acquisition, /test ! -L "\$CACHE\/db\/trivy\.db"/u);
+  assert.match(acquisition, /test ! -L "\$CACHE\/db\/metadata\.json"/u);
+  assert.match(acquisition, /chmod 0600 -- "\$CACHE\/db\/metadata\.json"/u);
+  assert.match(acquisition, /snapshot vulnerability/u);
+  assert.match(acquisition, /test ! -L "\$CACHE\/java-db\/trivy-java\.db"/u);
+  assert.match(acquisition, /test ! -L "\$CACHE\/java-db\/metadata\.json"/u);
+  assert.match(acquisition, /chmod 0600 -- "\$CACHE\/java-db\/metadata\.json"/u);
+  assert.match(acquisition, /snapshot java/u);
+  assert.ok(acquisition.indexOf("snapshot vulnerability") < acquisition.indexOf("--download-java-db-only"));
+
+  const scans = runStep(publish, "syft_state=");
+  const scanVerification = scans.indexOf("verify vulnerability");
+  const javaVerification = scans.indexOf("verify java", scanVerification);
+  const offlineScan = scans.indexOf('"$TRIVY_IMAGE" image', javaVerification);
+  assert.ok(scanVerification > scans.indexOf('"$SYFT_IMAGE" scan'));
+  assert.ok(javaVerification > scanVerification);
+  assert.ok(offlineScan > javaVerification);
+  assert.match(scans, /for role in worker sandbox/u);
+
+  const signIndex = publish.steps.findIndex((step) => step.run?.includes("cosign attest --yes"));
+  const assertionIndex = publish.steps.findIndex((step) => step.run?.includes("assertion.draft.json"));
+  assert.ok(signIndex > 0);
+  assert.ok(assertionIndex > signIndex);
+  const beforeSigning = publish.steps[signIndex - 1]?.run ?? "";
+  const beforeAssertion = publish.steps[assertionIndex - 1]?.run ?? "";
+  for (const recheck of [beforeSigning, beforeAssertion]) {
+    assert.match(recheck, /verify vulnerability/u);
+    assert.match(recheck, /verify java/u);
+    assert.match(recheck, /database-valid-until/u);
+  }
+  assert.doesNotMatch(publish.steps[assertionIndex]?.run ?? "", /UpdatedAt|NextUpdate|DownloadedAt|metadata_sha256/u);
 });
 
 test("release workflow gives non-root Syft isolated writable state", () => {

@@ -34,7 +34,28 @@ type JsonPrimitive = string | number | boolean | null;
 export type ReleaseLocalJson = JsonPrimitive | ReleaseLocalJson[] | { [key: string]: ReleaseLocalJson };
 type JsonObject = { [key: string]: ReleaseLocalJson };
 
-type DatabaseMetadata = Readonly<{
+export type ReleaseTrivyDatabaseType = "vulnerability" | "java";
+
+export const RELEASE_TRIVY_DATABASE_EXPECTATIONS = Object.freeze({
+  vulnerability: Object.freeze({
+    metadata_schema: "trivy-db-cache-metadata/v1",
+    database_version: 2,
+    oci_manifest_schema_version: 2,
+    oci_artifact_type: "application/vnd.aquasec.trivy.config.v1+json",
+    oci_layer_media_type: "application/vnd.aquasec.trivy.db.layer.v1.tar+gzip",
+  }),
+  java: Object.freeze({
+    metadata_schema: "trivy-db-cache-metadata/v1",
+    database_version: 1,
+    oci_manifest_schema_version: 2,
+    oci_artifact_type: "application/vnd.aquasec.trivy.config.v1+json",
+    oci_layer_media_type: "application/vnd.aquasec.trivy.javadb.layer.v1.tar+gzip",
+  }),
+});
+
+export type ReleaseTrivyDatabaseMetadata = Readonly<{
+  schema: "trivy-db-cache-metadata/v1";
+  type: ReleaseTrivyDatabaseType;
   version: number;
   updated_at: string;
   next_update: string;
@@ -44,8 +65,8 @@ type DatabaseMetadata = Readonly<{
 }>;
 
 export type ReleaseLocalDatabaseObservation = Readonly<{
-  vulnerability: DatabaseMetadata;
-  java: DatabaseMetadata;
+  vulnerability: ReleaseTrivyDatabaseMetadata;
+  java: ReleaseTrivyDatabaseMetadata;
 }>;
 
 export type ReleaseLocalLedgerContext = Readonly<{
@@ -106,41 +127,108 @@ function nullableString(value: unknown, label: string): string | null {
   return boundedString(value, label);
 }
 
-function parseTimestamp(value: unknown, label: string): { source: string; milliseconds: number } {
+const TRIVY_METADATA_KEYS = new Set(["Version", "NextUpdate", "UpdatedAt", "DownloadedAt"]);
+const STRICT_UTC_TIMESTAMP = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?Z$/u;
+
+function parseTimestamp(value: unknown, label: string): { source: string; nanoseconds: bigint } {
   const source = boundedString(value, label, false);
-  const milliseconds = Date.parse(source);
-  if (!Number.isFinite(milliseconds) || !source.endsWith("Z")) throw new Error(`${label}: invalid UTC timestamp`);
-  return { source, milliseconds };
+  const match = STRICT_UTC_TIMESTAMP.exec(source);
+  if (match === null) throw new Error(`${label}: invalid UTC timestamp`);
+  const [, yearSource, monthSource, daySource, hourSource, minuteSource, secondSource, fractionSource = ""] = match;
+  const parts = [yearSource, monthSource, daySource, hourSource, minuteSource, secondSource].map(Number);
+  const [year, month, day, hour, minute, second] = parts;
+  if (
+    parts.some((part) => !Number.isSafeInteger(part)) ||
+    year === undefined ||
+    month === undefined ||
+    day === undefined ||
+    hour === undefined ||
+    minute === undefined ||
+    second === undefined ||
+    month < 1 ||
+    month > 12 ||
+    day < 1 ||
+    day > 31 ||
+    hour > 23 ||
+    minute > 59 ||
+    second > 59
+  ) {
+    throw new Error(`${label}: invalid UTC timestamp`);
+  }
+  const epochMilliseconds = Date.UTC(year, month - 1, day, hour, minute, second);
+  const date = new Date(epochMilliseconds);
+  if (
+    !Number.isFinite(epochMilliseconds) ||
+    date.getUTCFullYear() !== year ||
+    date.getUTCMonth() !== month - 1 ||
+    date.getUTCDate() !== day ||
+    date.getUTCHours() !== hour ||
+    date.getUTCMinutes() !== minute ||
+    date.getUTCSeconds() !== second
+  ) {
+    throw new Error(`${label}: invalid UTC timestamp`);
+  }
+  const fraction = BigInt(fractionSource.padEnd(9, "0"));
+  return { source, nanoseconds: BigInt(epochMilliseconds) * 1_000_000n + fraction };
 }
 
-export function inspectTrivyDatabaseMetadata(input: unknown, evaluatedAt: Date): DatabaseMetadata {
+export function inspectTrivyDatabaseMetadata(
+  input: unknown,
+  evaluatedAt: Date,
+  type: ReleaseTrivyDatabaseType,
+  minimumValidUntil?: Date,
+): ReleaseTrivyDatabaseMetadata {
   const captured = capturePrivateBytes(input, 64 * 1024);
   if (captured.bytes === null) throw new Error("database metadata: bounded private bytes required");
   let parsed: unknown;
+  let source: string;
   try {
-    parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(captured.bytes));
+    source = new TextDecoder("utf-8", { fatal: true }).decode(captured.bytes);
+    parsed = JSON.parse(source);
   } catch {
     throw new Error("database metadata: invalid UTF-8 JSON");
   }
+  const compact = JSON.stringify(parsed);
+  if (source !== compact && source !== `${compact}\n`) throw new Error("database metadata: strict JSON required");
   const value = asObject(parsed, "database metadata");
-  if (!Number.isSafeInteger(value.Version) || (value.Version as number) < 1) {
-    throw new Error("database metadata: invalid version");
+  const keys = Object.keys(value);
+  if (keys.length !== TRIVY_METADATA_KEYS.size || keys.some((key) => !TRIVY_METADATA_KEYS.has(key))) {
+    throw new Error("database metadata: exact schema required");
+  }
+  const expectation = RELEASE_TRIVY_DATABASE_EXPECTATIONS[type];
+  if (expectation === undefined) throw new Error("database metadata: unsupported database type");
+  if (value.Version !== expectation.database_version) {
+    throw new Error(`database metadata: ${type} database version mismatch`);
   }
   const updated = parseTimestamp(value.UpdatedAt, "database metadata.UpdatedAt");
   const next = parseTimestamp(value.NextUpdate, "database metadata.NextUpdate");
   const downloaded = parseTimestamp(value.DownloadedAt, "database metadata.DownloadedAt");
   const evaluatedMilliseconds = evaluatedAt.getTime();
+  const minimumMilliseconds = minimumValidUntil?.getTime();
   if (!Number.isFinite(evaluatedMilliseconds)) throw new Error("database metadata: invalid evaluation time");
-  if (next.milliseconds <= updated.milliseconds || downloaded.milliseconds < updated.milliseconds) {
+  if (
+    minimumMilliseconds !== undefined &&
+    (!Number.isFinite(minimumMilliseconds) || minimumMilliseconds < evaluatedMilliseconds)
+  ) {
+    throw new Error("database metadata: invalid minimum validity time");
+  }
+  const evaluatedNanoseconds = BigInt(evaluatedMilliseconds) * 1_000_000n;
+  if (updated.nanoseconds > evaluatedNanoseconds) throw new Error("database metadata: UpdatedAt is in the future");
+  if (next.nanoseconds <= updated.nanoseconds || downloaded.nanoseconds < updated.nanoseconds) {
     throw new Error("database metadata: inconsistent update interval");
   }
+  if (minimumMilliseconds !== undefined && next.nanoseconds <= BigInt(minimumMilliseconds) * 1_000_000n) {
+    throw new Error("database metadata: insufficient run validity");
+  }
   return Object.freeze({
-    version: value.Version as number,
+    schema: expectation.metadata_schema,
+    type,
+    version: expectation.database_version,
     updated_at: updated.source,
     next_update: next.source,
     downloaded_at: downloaded.source,
     evaluated_at: evaluatedAt.toISOString(),
-    current: evaluatedMilliseconds < next.milliseconds,
+    current: evaluatedNanoseconds < next.nanoseconds,
   });
 }
 
@@ -165,6 +253,15 @@ function severity(value: unknown, label: string): (typeof SEVERITIES)[number] {
   return selected as (typeof SEVERITIES)[number];
 }
 
+function packageSecurityIdentity(inventory: Record<string, unknown>): JsonObject {
+  return {
+    name: boundedString(inventory.Name, "package.Name"),
+    version: boundedString(inventory.Version, "package.Version"),
+    source_name: nullableString(inventory.SrcName, "package.SrcName"),
+    source_version: nullableString(inventory.SrcVersion, "package.SrcVersion"),
+  };
+}
+
 function sourcePackage(
   resultClass: string,
   vulnerability: Record<string, unknown>,
@@ -181,10 +278,11 @@ function sourcePackage(
       mapping: resultClass === "os-pkgs" ? "binary-package-fallback-unverified" : "language-package-self",
     };
   }
-  const inventoryName = boundedString(inventory.Name, "package.Name");
-  const inventoryVersion = boundedString(inventory.Version, "package.Version");
-  const sourceName = nullableString(inventory.SrcName, "package.SrcName");
-  const sourceVersion = nullableString(inventory.SrcVersion, "package.SrcVersion");
+  const identity = packageSecurityIdentity(inventory);
+  const inventoryName = identity.name as string;
+  const inventoryVersion = identity.version as string;
+  const sourceName = identity.source_name as string | null;
+  const sourceVersion = identity.source_version as string | null;
   return {
     name: sourceName ?? inventoryName,
     version: sourceVersion ?? inventoryVersion,
@@ -204,7 +302,10 @@ function vendorSeverity(value: unknown): JsonObject {
   const result: JsonObject = {};
   for (const [key, item] of Object.entries(object)) {
     boundedString(key, "vulnerability.VendorSeverity key");
-    result[key] = severity(item, `vulnerability.VendorSeverity.${key}`);
+    if (!Number.isSafeInteger(item) || (item as number) < 0 || (item as number) >= SEVERITIES.length) {
+      throw new Error(`vulnerability.VendorSeverity.${key}: unsupported numeric severity`);
+    }
+    result[key] = SEVERITIES[item as number] as ReleaseLocalJson;
   }
   return result;
 }
@@ -294,10 +395,15 @@ export function createReleaseLocalLedger(
       for (const [packageIndex, packageValue] of result.Packages.entries()) {
         const item = asObject(packageValue, `Results[${resultIndex}].Packages[${packageIndex}]`);
         const id = boundedString(item.ID, "package.ID");
-        boundedString(item.Name, "package.Name");
-        boundedString(item.Version, "package.Version");
-        if (packages.has(id)) throw new Error("Trivy report: duplicate package inventory ID");
-        packages.set(id, item);
+        const identity = packageSecurityIdentity(item);
+        const existing = packages.get(id);
+        if (existing !== undefined) {
+          if (canonicalJson(packageSecurityIdentity(existing)) !== canonicalJson(identity)) {
+            throw new Error("Trivy report: conflicting duplicate package inventory ID");
+          }
+        } else {
+          packages.set(id, item);
+        }
       }
     }
     if (

@@ -88,13 +88,13 @@ test("worker final stage is nonroot, read-only-root compatible, and starts the f
 test("worker installs without lifecycle scripts and copies only production runtime material into the final stage", () => {
   assert.equal((dockerfile.match(/npm ci[^\n]*--ignore-scripts/gu) ?? []).length, 2);
   assert.match(dockerfile, /npm ci --omit=dev --ignore-scripts/u);
-  assert.equal(packageJson.dependencies["brace-expansion"], "5.0.8");
+  assert.equal(packageJson.dependencies["brace-expansion"], "5.0.9");
   assert.match(dockerfile, /nested npm-shrinkwrap that retains vulnerable/u);
-  assert.match(dockerfile, /node_modules\/brace-expansion\/package\.json[\s\S]*version\)'\)" = 5\.0\.8/u);
+  assert.match(dockerfile, /node_modules\/brace-expansion\/package\.json[\s\S]*version\)'\)" = 5\.0\.9/u);
   assert.match(dockerfile, /node_modules\/@earendil-works\/pi-coding-agent\/node_modules\/brace-expansion/u);
   assert.match(dockerfile, /test "\$\(node[\s\S]*version\)'\)" = 5\.0\.6/u);
   assert.match(dockerfile, /cp -a node_modules\/brace-expansion/u);
-  assert.equal((dockerfile.match(/= 5\.0\.8/gu) ?? []).length, 2);
+  assert.equal((dockerfile.match(/= 5\.0\.9/gu) ?? []).length, 2);
   assert.match(dockerfile, /rm -rf node_modules\/\.bin node_modules\/\.cache/u);
   const finalStage = dockerfile.slice(dockerfile.indexOf(`FROM --platform=linux/amd64 ${finalImage}`));
   assert.doesNotMatch(finalStage, /\b(?:apt|apt-get|apk|dnf|yum|npm|npx|tsc)\b|\/bin\/(?:ba)?sh/u);

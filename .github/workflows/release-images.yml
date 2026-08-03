@@ -99,7 +99,7 @@ jobs:
       BUILDKIT_IMAGE: docker.io/moby/buildkit@sha256:6eceb8971ce4fceb3daca562832642706238b7eea72941fcf9896c93c3c4a53e
       SYFT_IMAGE: docker.io/anchore/syft@sha256:bd5357d2cd087f03af748dac24df48bfbc1723080d78f75f69aca1f2d429060e
       TRIVY_IMAGE: docker.io/aquasec/trivy@sha256:a22415a38938a56c379387a8163fcb0ce38b10ace73e593475d3658d578b2436
-      TRIVY_DATABASE: ghcr.io/aquasecurity/trivy-db:2@sha256:82225c2b2d979e8d7ed306b75bce9118304b688cfbfdbca7c61723d30f0d1bb6
+      TRIVY_DATABASE: ghcr.io/aquasecurity/trivy-db:2@sha256:3d9ac2dcf97e923fad3065ddb2262b0790426a7f87b3ec06b70462dc7b5ddc6a
       TRIVY_JAVA_DATABASE: ghcr.io/aquasecurity/trivy-java-db:1@sha256:8a8e6f28332f81c09f8cd575f8fda8b1c30fb5fe4c30f7f55ce06a01a6cc93c7
       COSIGN_IMAGE: ghcr.io/sigstore/cosign/cosign@sha256:be924970ba7438c22e18067dec5637946d6566eac711f5bedd1584e7137008fb
       # release-image-set-tool-pins:generated-end
@@ -324,19 +324,34 @@ jobs:
             printf '%s\n' "$child" > "$WORK/$role.linux-amd64-manifest-digest"
           done
 
-      - name: Acquire the exact vulnerability database
+      - name: Acquire and fail-closed inspect the exact vulnerability databases
         run: |
           set -euo pipefail
+          umask 077
+          database_valid_until=$(date -u -d '+60 minutes' '+%Y-%m-%dT%H:%M:%SZ')
+          printf '%s\n' "$database_valid_until" > "$WORK/database-valid-until"
+          test "$(stat -c '%u:%g:%a:%h:%F' "$WORK/database-valid-until")" = \
+            "$(id -u):$(id -g):600:1:regular file"
           docker run --rm --user "$(id -u):$(id -g)" --network bridge \
             --mount "type=bind,src=$CACHE,dst=/cache" \
             "$TRIVY_IMAGE" image --cache-dir /cache --db-repository "$TRIVY_DATABASE" \
               --download-db-only --no-progress --skip-version-check
-          test -f "$CACHE/db/trivy.db"
+          test -f "$CACHE/db/trivy.db" && test ! -L "$CACHE/db/trivy.db"
+          test -f "$CACHE/db/metadata.json" && test ! -L "$CACHE/db/metadata.json"
+          chmod 0600 -- "$CACHE/db/metadata.json"
+          npx tsx scripts/release-trivy-database-metadata-cli.ts snapshot vulnerability \
+            "$CACHE/db/metadata.json" "$database_valid_until" \
+            "$WORK/vulnerability-database-metadata.canonical.json"
           docker run --rm --user "$(id -u):$(id -g)" --network bridge \
             --mount "type=bind,src=$CACHE,dst=/cache" \
             "$TRIVY_IMAGE" image --cache-dir /cache --java-db-repository "$TRIVY_JAVA_DATABASE" \
               --download-java-db-only --no-progress --skip-version-check
-          test -f "$CACHE/java-db/trivy-java.db"
+          test -f "$CACHE/java-db/trivy-java.db" && test ! -L "$CACHE/java-db/trivy-java.db"
+          test -f "$CACHE/java-db/metadata.json" && test ! -L "$CACHE/java-db/metadata.json"
+          chmod 0600 -- "$CACHE/java-db/metadata.json"
+          npx tsx scripts/release-trivy-database-metadata-cli.ts snapshot java \
+            "$CACHE/java-db/metadata.json" "$database_valid_until" \
+            "$WORK/java-database-metadata.canonical.json"
 
       - name: Generate exact SPDX SBOMs and scan every severity including unfixed findings
         run: |
@@ -359,6 +374,13 @@ jobs:
               "$SYFT_IMAGE" scan "registry:$subject" -o spdx-json > "$WORK/$role.sbom.spdx.json"
             jq -e '(.spdxVersion == "SPDX-2.2" or .spdxVersion == "SPDX-2.3") and (.packages | type == "array")' \
               "$WORK/$role.sbom.spdx.json" >/dev/null
+            database_valid_until=$(cat "$WORK/database-valid-until")
+            npx tsx scripts/release-trivy-database-metadata-cli.ts verify vulnerability \
+              "$CACHE/db/metadata.json" "$database_valid_until" \
+              "$WORK/vulnerability-database-metadata.canonical.json"
+            npx tsx scripts/release-trivy-database-metadata-cli.ts verify java \
+              "$CACHE/java-db/metadata.json" "$database_valid_until" \
+              "$WORK/java-database-metadata.canonical.json"
             docker run --rm --user "$(id -u):$(id -g)" --network bridge \
               --env DOCKER_CONFIG=/docker-config \
               --mount "type=bind,src=$DOCKER_CONFIG,dst=/docker-config,readonly" \
@@ -423,6 +445,17 @@ jobs:
               exit 1
             fi
           done
+
+      - name: Re-read unchanged current database metadata immediately before signing
+        run: |
+          set -euo pipefail
+          database_valid_until=$(cat "$WORK/database-valid-until")
+          npx tsx scripts/release-trivy-database-metadata-cli.ts verify vulnerability \
+            "$CACHE/db/metadata.json" "$database_valid_until" \
+            "$WORK/vulnerability-database-metadata.canonical.json"
+          npx tsx scripts/release-trivy-database-metadata-cli.ts verify java \
+            "$CACHE/java-db/metadata.json" "$database_valid_until" \
+            "$WORK/java-database-metadata.canonical.json"
 
       - name: Keyless-attest each SBOM, keyless-sign each digest, and verify exact authority
         run: |
@@ -525,6 +558,17 @@ jobs:
                 'https://github.com/nenb/cogs/.github/workflows/not-release-images.yml@refs/heads/main'
             done
           done
+
+      - name: Re-read unchanged current database metadata before assertion finalization
+        run: |
+          set -euo pipefail
+          database_valid_until=$(cat "$WORK/database-valid-until")
+          npx tsx scripts/release-trivy-database-metadata-cli.ts verify vulnerability \
+            "$CACHE/db/metadata.json" "$database_valid_until" \
+            "$WORK/vulnerability-database-metadata.canonical.json"
+          npx tsx scripts/release-trivy-database-metadata-cli.ts verify java \
+            "$CACHE/java-db/metadata.json" "$database_valid_until" \
+            "$WORK/java-database-metadata.canonical.json"
 
       - name: Generate and classify one canonical redacted workflow assertion record
         run: |

@@ -1,6 +1,15 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
+import {
+  chmodSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import test from "node:test";
@@ -10,6 +19,7 @@ import {
   createReleaseLocalLedger,
   inspectTrivyDatabaseMetadata,
   RELEASE_LOCAL_TRIVY,
+  RELEASE_TRIVY_DATABASE_EXPECTATIONS,
   type ReleaseLocalDatabaseObservation,
   type ReleaseLocalJson,
 } from "../scripts/release-local-preflight.ts";
@@ -24,8 +34,8 @@ const metadataValue = {
 
 function databases(at = "2026-08-03T11:59:59Z"): ReleaseLocalDatabaseObservation {
   return {
-    vulnerability: inspectTrivyDatabaseMetadata(bytes(metadataValue), new Date(at)),
-    java: inspectTrivyDatabaseMetadata(bytes(metadataValue), new Date(at)),
+    vulnerability: inspectTrivyDatabaseMetadata(bytes(metadataValue), new Date(at), "vulnerability"),
+    java: inspectTrivyDatabaseMetadata(bytes({ ...metadataValue, Version: 1 }), new Date(at), "java"),
   };
 }
 
@@ -39,7 +49,7 @@ function report(findings = true): Record<string, unknown> {
           InstalledVersion: "1.0",
           Severity: "CRITICAL",
           SeveritySource: "nvd",
-          VendorSeverity: { nvd: "CRITICAL", debian: "HIGH" },
+          VendorSeverity: { nvd: 4, debian: 3 },
           Status: "fix_deferred",
           DataSource: { ID: "debian", Name: "Debian Security Tracker", URL: "https://security-tracker.debian.org" },
           PrimaryURL: "https://avd.aquasec.com/nvd/cve-2026-0001",
@@ -117,15 +127,196 @@ function ledger(value = report(), selectedDatabases = databases()) {
   });
 }
 
-test("database freshness is strict at NextUpdate and rejects inconsistent metadata", () => {
-  assert.equal(inspectTrivyDatabaseMetadata(bytes(metadataValue), new Date("2026-08-03T11:59:59Z")).current, true);
-  assert.equal(inspectTrivyDatabaseMetadata(bytes(metadataValue), new Date("2026-08-03T12:00:00Z")).current, false);
+test("database freshness is strict at clock boundaries and rejects future or inconsistent metadata", () => {
+  assert.equal(
+    inspectTrivyDatabaseMetadata(bytes(metadataValue), new Date("2026-08-03T11:59:59.999Z"), "vulnerability").current,
+    true,
+  );
+  assert.equal(
+    inspectTrivyDatabaseMetadata(bytes(metadataValue), new Date("2026-08-03T12:00:00Z"), "vulnerability").current,
+    false,
+  );
+  assert.doesNotThrow(() =>
+    inspectTrivyDatabaseMetadata(
+      bytes({
+        ...metadataValue,
+        UpdatedAt: "2026-08-02T14:00:00Z",
+        DownloadedAt: "2026-08-02T14:00:00Z",
+      }),
+      new Date("2026-08-02T14:00:00Z"),
+      "vulnerability",
+    ),
+  );
+  assert.throws(
+    () =>
+      inspectTrivyDatabaseMetadata(
+        bytes({
+          ...metadataValue,
+          UpdatedAt: "2026-08-02T14:00:00.000000001Z",
+          DownloadedAt: "2026-08-02T14:00:00.000000001Z",
+        }),
+        new Date("2026-08-02T14:00:00Z"),
+        "vulnerability",
+      ),
+    /future/u,
+  );
   assert.throws(() =>
     inspectTrivyDatabaseMetadata(
       bytes({ ...metadataValue, DownloadedAt: "2026-08-01T00:00:00Z" }),
       new Date("2026-08-02T14:00:00Z"),
+      "vulnerability",
     ),
   );
+  assert.throws(
+    () =>
+      inspectTrivyDatabaseMetadata(
+        bytes(metadataValue),
+        new Date("2026-08-03T11:00:00Z"),
+        "vulnerability",
+        new Date("2026-08-03T12:00:00Z"),
+      ),
+    /insufficient run validity/u,
+  );
+});
+
+test("database metadata parser rejects malformed schema, type, version, and independent DB substitution", () => {
+  assert.deepEqual(RELEASE_TRIVY_DATABASE_EXPECTATIONS, {
+    vulnerability: {
+      metadata_schema: "trivy-db-cache-metadata/v1",
+      database_version: 2,
+      oci_manifest_schema_version: 2,
+      oci_artifact_type: "application/vnd.aquasec.trivy.config.v1+json",
+      oci_layer_media_type: "application/vnd.aquasec.trivy.db.layer.v1.tar+gzip",
+    },
+    java: {
+      metadata_schema: "trivy-db-cache-metadata/v1",
+      database_version: 1,
+      oci_manifest_schema_version: 2,
+      oci_artifact_type: "application/vnd.aquasec.trivy.config.v1+json",
+      oci_layer_media_type: "application/vnd.aquasec.trivy.javadb.layer.v1.tar+gzip",
+    },
+  });
+  const evaluatedAt = new Date("2026-08-03T11:00:00Z");
+  assert.throws(
+    () => inspectTrivyDatabaseMetadata(Uint8Array.from([0xff]), evaluatedAt, "vulnerability"),
+    /invalid UTF-8 JSON/u,
+  );
+  assert.throws(
+    () =>
+      inspectTrivyDatabaseMetadata(
+        new TextEncoder().encode(
+          '{"Version":2,"Version":2,"UpdatedAt":"2026-08-02T12:00:00Z","NextUpdate":"2026-08-03T12:00:00Z","DownloadedAt":"2026-08-02T13:00:00Z"}',
+        ),
+        evaluatedAt,
+        "vulnerability",
+      ),
+    /strict JSON/u,
+  );
+  assert.doesNotThrow(() =>
+    inspectTrivyDatabaseMetadata(
+      new TextEncoder().encode(`${JSON.stringify(metadataValue)}\n`),
+      evaluatedAt,
+      "vulnerability",
+    ),
+  );
+  for (const nonTrivyEncoding of [`${JSON.stringify(metadataValue)}\n\n`, JSON.stringify(metadataValue, null, 2)]) {
+    assert.throws(
+      () => inspectTrivyDatabaseMetadata(new TextEncoder().encode(nonTrivyEncoding), evaluatedAt, "vulnerability"),
+      /strict JSON/u,
+    );
+  }
+  assert.throws(
+    () => inspectTrivyDatabaseMetadata(bytes({ ...metadataValue, Unknown: true }), evaluatedAt, "vulnerability"),
+    /exact schema/u,
+  );
+  const missingSchemaField = { ...metadataValue } as Record<string, unknown>;
+  delete missingSchemaField.DownloadedAt;
+  assert.throws(
+    () => inspectTrivyDatabaseMetadata(bytes(missingSchemaField), evaluatedAt, "vulnerability"),
+    /exact schema/u,
+  );
+  assert.throws(
+    () => inspectTrivyDatabaseMetadata(bytes({ ...metadataValue, Version: 3 }), evaluatedAt, "vulnerability"),
+    /version mismatch/u,
+  );
+  assert.throws(
+    () => inspectTrivyDatabaseMetadata(bytes(metadataValue), evaluatedAt, "java"),
+    /java database version mismatch/u,
+  );
+  assert.throws(
+    () => inspectTrivyDatabaseMetadata(bytes({ ...metadataValue, Version: 1 }), evaluatedAt, "vulnerability"),
+    /vulnerability database version mismatch/u,
+  );
+  assert.throws(
+    () => inspectTrivyDatabaseMetadata(bytes(metadataValue), evaluatedAt, "hostile" as "vulnerability"),
+    /unsupported database type/u,
+  );
+  assert.throws(
+    () => inspectTrivyDatabaseMetadata(new Uint8Array(64 * 1024 + 1), evaluatedAt, "vulnerability"),
+    /bounded private bytes/u,
+  );
+});
+
+test("database metadata file inspection rejects symlinks, oversized files, and post-acquisition substitution", () => {
+  const root = realpathSync(mkdtempSync(resolve(tmpdir(), "cogs-release-db-metadata-test-")));
+  const metadataPath = resolve(root, "metadata.json");
+  const snapshotPath = resolve(root, "snapshot.json");
+  const deadline = new Date(Math.floor((Date.now() + 60 * 60 * 1000) / 1000) * 1000);
+  const currentMetadata = {
+    Version: 2,
+    NextUpdate: new Date(deadline.getTime() + 60 * 60 * 1000).toISOString(),
+    UpdatedAt: new Date(deadline.getTime() - 2 * 60 * 60 * 1000).toISOString(),
+    DownloadedAt: new Date(deadline.getTime() - 60 * 60 * 1000).toISOString(),
+  };
+  const run = (operation: "snapshot" | "verify", source: string, snapshot = snapshotPath) =>
+    spawnSync(
+      process.execPath,
+      [
+        "--import",
+        "tsx",
+        resolve(import.meta.dirname, "../scripts/release-trivy-database-metadata-cli.ts"),
+        operation,
+        "vulnerability",
+        source,
+        deadline.toISOString().replace(".000Z", "Z"),
+        snapshot,
+      ],
+      { encoding: "utf8", timeout: 30_000, maxBuffer: 1024 * 1024, cwd: resolve(import.meta.dirname, "..") },
+    );
+  try {
+    writeFileSync(metadataPath, JSON.stringify(currentMetadata), { mode: 0o600 });
+    const created = run("snapshot", metadataPath);
+    assert.equal(created.status, 0, created.stderr);
+    assert.equal(statSync(snapshotPath).mode & 0o777, 0o600);
+    const verified = run("verify", metadataPath);
+    assert.equal(verified.status, 0, verified.stderr);
+
+    writeFileSync(metadataPath, JSON.stringify({ ...currentMetadata, DownloadedAt: new Date().toISOString() }));
+    const substituted = run("verify", metadataPath);
+    assert.notEqual(substituted.status, 0);
+    assert.match(substituted.stderr, /substituted after acquisition/u);
+
+    const symlinkTarget = resolve(root, "symlink-target.json");
+    const symlinkPath = resolve(root, "metadata-link.json");
+    writeFileSync(symlinkTarget, JSON.stringify(currentMetadata), { mode: 0o600 });
+    symlinkSync(symlinkTarget, symlinkPath);
+    const symlinked = run("snapshot", symlinkPath, resolve(root, "symlink-snapshot.json"));
+    assert.notEqual(symlinked.status, 0);
+    assert.match(symlinked.stderr, /private caller-owned bounded regular file/u);
+
+    const oversizedPath = resolve(root, "oversized.json");
+    writeFileSync(oversizedPath, Buffer.alloc(64 * 1024 + 1, 0x20), { mode: 0o600 });
+    const oversized = run("snapshot", oversizedPath, resolve(root, "oversized-snapshot.json"));
+    assert.notEqual(oversized.status, 0);
+    assert.match(oversized.stderr, /private caller-owned bounded regular file/u);
+
+    chmodSync(metadataPath, 0o644);
+    const publicMode = run("verify", metadataPath);
+    assert.notEqual(publicMode.status, 0);
+    assert.match(publicMode.stderr, /private caller-owned bounded regular file/u);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("canonical ledger retains every raw finding and source-package category without weakening the gate", () => {
@@ -228,6 +419,27 @@ test("report parser fails closed on subject, class, package inventory, and vulne
   delete missingOsResult.Packages;
   assert.throws(() => ledger(missingOsInventory), /nonempty OS package inventory/u);
 
+  const repeatedInstallation = report();
+  const repeatedResult = (repeatedInstallation.Results as Array<Record<string, unknown>>)[1];
+  assert.ok(repeatedResult);
+  const repeatedPackages = repeatedResult.Packages as Array<Record<string, unknown>>;
+  const repeatedPackage = repeatedPackages[0];
+  assert.ok(repeatedPackage);
+  repeatedPackages.push({
+    ...structuredClone(repeatedPackage),
+    FilePath: "nested/node_modules/npm-package/package.json",
+  });
+  assert.doesNotThrow(() => ledger(repeatedInstallation));
+
+  const conflictingInstallation = structuredClone(repeatedInstallation);
+  const conflictingResult = (conflictingInstallation.Results as Array<Record<string, unknown>>)[1];
+  assert.ok(conflictingResult);
+  const conflictingPackages = conflictingResult.Packages as Array<Record<string, unknown>>;
+  const conflictingPackage = conflictingPackages[1];
+  assert.ok(conflictingPackage);
+  conflictingPackage.Version = "2.1";
+  assert.throws(() => ledger(conflictingInstallation), /conflicting duplicate package inventory ID/u);
+
   const wrongSeverity = report();
   const result = (wrongSeverity.Results as Array<Record<string, unknown>>)[0];
   assert.ok(result);
@@ -235,6 +447,16 @@ test("report parser fails closed on subject, class, package inventory, and vulne
   assert.ok(wrongSeverityFinding);
   wrongSeverityFinding.Severity = "URGENT";
   assert.throws(() => ledger(wrongSeverity), /severity/u);
+
+  for (const invalidVendorSeverity of [-1, 5, 1.5, "HIGH"]) {
+    const wrongVendorSeverity = report();
+    const vendorResult = (wrongVendorSeverity.Results as Array<Record<string, unknown>>)[0];
+    assert.ok(vendorResult);
+    const vendorFinding = (vendorResult.Vulnerabilities as Array<Record<string, unknown>>)[0];
+    assert.ok(vendorFinding);
+    vendorFinding.VendorSeverity = { nvd: invalidVendorSeverity };
+    assert.throws(() => ledger(wrongVendorSeverity), /numeric severity/u);
+  }
 
   const missingPackageIdentity = report();
   const missingResult = (missingPackageIdentity.Results as Array<Record<string, unknown>>)[0];
