@@ -198,8 +198,9 @@ test("local export writes deterministic raw bundle, hashes, schema, modes, and d
     const manifestBytes = await readFile(join(bundle, "manifest.json"));
     assert.equal(sha(manifestBytes), later.manifest_sha256);
     const manifest = JSON.parse(manifestBytes.toString("utf8"));
+    assert.equal(manifest.version, "cogs.export/v1alpha2");
     assert.equal(manifest.cogs_version, "0.0.0");
-    assert.equal(manifest.pi_version, "0.80.6");
+    assert.equal(manifest.pi_version, "0.84.2");
     assert.equal(manifest.mode, "raw");
     assert.equal(manifest.attachments_included, false);
     assert.deepEqual(
@@ -210,7 +211,7 @@ test("local export writes deterministic raw bundle, hashes, schema, modes, and d
     const ajv = new Ajv({ strict: true });
     addFormats(ajv);
     const schema = JSON.parse(
-      await readFile(join(import.meta.dirname, "../schemas/export-manifest-v1alpha1.json"), "utf8"),
+      await readFile(join(import.meta.dirname, "../schemas/export-manifest-v1alpha2.json"), "utf8"),
     );
     assert.equal(ajv.validate(schema, manifest), true, ajv.errorsText());
     const sidecars =

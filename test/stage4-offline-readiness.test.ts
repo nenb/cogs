@@ -106,10 +106,10 @@ test("verdict and package compile under strict independent schemas", () => {
   const Ajv2020 = require("ajv/dist/2020.js") as new (options?: Options) => AjvCore;
   const ajv = new Ajv2020({ allErrors: true, strict: true, strictRequired: false, ownProperties: true });
   const packageSchema = JSON.parse(
-    readFileSync(resolve(root, "schemas/stage4-offline-readiness-package-v3.json"), "utf8"),
+    readFileSync(resolve(root, "schemas/stage4-offline-readiness-package-v4.json"), "utf8"),
   );
   const verdictSchema = JSON.parse(
-    readFileSync(resolve(root, "schemas/stage4-offline-readiness-verdict-v3.json"), "utf8"),
+    readFileSync(resolve(root, "schemas/stage4-offline-readiness-verdict-v4.json"), "utf8"),
   );
   const validatePackage = ajv.compile(packageSchema);
   const validateVerdict = ajv.compile(verdictSchema);
@@ -344,11 +344,14 @@ test("committed inventories are canonical, complete for their scopes, and bind e
       "schemas/stage4-offline-readiness-package-v1.json",
       "schemas/stage4-offline-readiness-package-v2.json",
       "schemas/stage4-offline-readiness-package-v3.json",
+      "schemas/stage4-offline-readiness-package-v4.json",
       "schemas/stage4-offline-readiness-verdict-v1.json",
       "schemas/stage4-offline-readiness-verdict-v2.json",
       "schemas/stage4-offline-readiness-verdict-v3.json",
+      "schemas/stage4-offline-readiness-verdict-v4.json",
       "schemas/stage4-authenticated-runtime-artifact-evidence-v1.json",
       "schemas/stage4-authenticated-runtime-artifact-evidence-v2.json",
+      "schemas/stage4-authenticated-runtime-artifact-evidence-v3.json",
       "schemas/integration-v1alpha1.json",
       "schemas/launch-v1alpha1.json",
       "schemas/local-image-artifact-package-v1.json",
@@ -395,10 +398,10 @@ test("committed inventories are canonical, complete for their scopes, and bind e
       (image: { reference: string }) => image.reference,
     ),
   );
-  assert.equal(imageLock.release_image_set_present, true);
-  assert.equal(imageLock.exact_image_closure_satisfied, true);
-  assert.equal(imageLock.images[0].artifact_identity_state, "reviewed-protected-main-image-set-record");
-  assert.equal(imageLock.images[2].artifact_identity_state, "reviewed-protected-main-image-set-record");
+  assert.equal(imageLock.release_image_set_present, false);
+  assert.equal(imageLock.exact_image_closure_satisfied, false);
+  assert.equal(imageLock.images[0].artifact_identity_state, "historical-reviewed-protected-main-image-set-record");
+  assert.equal(imageLock.images[2].artifact_identity_state, "historical-reviewed-protected-main-image-set-record");
   assert.equal(
     imageLock.release_image_set.assertion_sha256,
     packageObject().artifact_bindings.release_image_assertion_sha256,
@@ -851,15 +854,15 @@ test("NIC v2 remains non-observing while node-image and runtime uncertainty cann
       },
     ],
     [
-      "reviewed release image set removed",
+      "historical release image set promoted",
       (value) => {
-        value.pins.images.release_image_set_present = false;
+        value.pins.images.release_image_set_present = true;
       },
     ],
     [
-      "image identity closure removed",
+      "historical image identity closure promoted",
       (value) => {
-        value.pins.images.exact_image_closure_satisfied = false;
+        value.pins.images.exact_image_closure_satisfied = true;
       },
     ],
     [

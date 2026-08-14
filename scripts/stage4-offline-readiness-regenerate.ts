@@ -126,11 +126,14 @@ const LOCAL_VALIDATION_PATHS = Object.freeze([
   "schemas/stage4-offline-readiness-package-v1.json",
   "schemas/stage4-offline-readiness-package-v2.json",
   "schemas/stage4-offline-readiness-package-v3.json",
+  "schemas/stage4-offline-readiness-package-v4.json",
   "schemas/stage4-offline-readiness-verdict-v1.json",
   "schemas/stage4-offline-readiness-verdict-v2.json",
   "schemas/stage4-offline-readiness-verdict-v3.json",
+  "schemas/stage4-offline-readiness-verdict-v4.json",
   "schemas/stage4-authenticated-runtime-artifact-evidence-v1.json",
   "schemas/stage4-authenticated-runtime-artifact-evidence-v2.json",
+  "schemas/stage4-authenticated-runtime-artifact-evidence-v3.json",
   ...PRODUCTION_SCHEMA_NAMES.map((name) => `schemas/${name}`),
   "scripts/private-bytes.ts",
   "scripts/check-lock-integrity.ts",
@@ -334,11 +337,14 @@ function commandSpecs(): readonly CommandSpec[] {
         "schemas/stage4-offline-readiness-package-v1.json",
         "schemas/stage4-offline-readiness-package-v2.json",
         "schemas/stage4-offline-readiness-package-v3.json",
+        "schemas/stage4-offline-readiness-package-v4.json",
         "schemas/stage4-offline-readiness-verdict-v1.json",
         "schemas/stage4-offline-readiness-verdict-v2.json",
         "schemas/stage4-offline-readiness-verdict-v3.json",
+        "schemas/stage4-offline-readiness-verdict-v4.json",
         "schemas/stage4-authenticated-runtime-artifact-evidence-v1.json",
         "schemas/stage4-authenticated-runtime-artifact-evidence-v2.json",
+        "schemas/stage4-authenticated-runtime-artifact-evidence-v3.json",
         ...PRODUCTION_SCHEMA_NAMES.map((name) => `schemas/${name}`),
       ],
     ),
@@ -526,6 +532,7 @@ function rewriteClassifierAnchors(): void {
 
 function regeneratePackage(): void {
   const value = JSON.parse(readFileSync(packagePath, "utf8")) as JsonObject;
+  value.version = "cogs.stage4-offline-readiness-package/v4";
   const nic = JSON.parse(readFileSync(resolve(root, "deploy/nic/stage4-sandbox-node-group-contract.json"), "utf8"));
   const runtimePins = JSON.parse(readFileSync(resolve(artifactRoot, "runtime-pins.json"), "utf8"));
   const imageLock = JSON.parse(readFileSync(resolve(artifactRoot, "image-lock.json"), "utf8"));
@@ -544,7 +551,7 @@ function regeneratePackage(): void {
       reviewed_sha: RELEASE_IMAGE_SOURCE_SHA,
       tree_sha: RELEASE_IMAGE_SOURCE_TREE_SHA,
       inventory_sha256: RELEASE_IMAGE_SOURCE_INVENTORY_SHA256,
-      relation: "separately-bound-immutable-image-source",
+      relation: "historical-separately-bound-immutable-image-source",
     },
   };
   value.pins.images = {

@@ -23,7 +23,7 @@ import { promisify } from "node:util";
 import type { StreamFn } from "@earendil-works/pi-agent-core";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import type { AssistantMessage } from "@earendil-works/pi-ai/compat";
-import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { ModelRuntime, SessionManager } from "@earendil-works/pi-coding-agent";
 import type { Ajv as AjvCore } from "ajv";
 import { createFakeModelStream } from "../spikes/pi-embedding.ts";
 import { createApiServer } from "../src/api/server.ts";
@@ -1481,7 +1481,7 @@ test("Pi session queue, abort, timeout, publication failure, and containment fai
           toolPorts: fakePorts(calls),
         }),
       ),
-      /unknown model/,
+      /unsupported model provider/,
     );
     await assert.rejects(
       createCogsPiSession(
@@ -3443,6 +3443,135 @@ test("authenticated Pi session derives model auth from launch and performs runti
       await adapter.dispose();
     }
   } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Pi session sanitizes credential synchronization failures and bounds credential removal", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "cogs-pi-credential-fail-"));
+  const originalSet = ModelRuntime.prototype.setRuntimeApiKey;
+  const originalRemove = ModelRuntime.prototype.removeRuntimeApiKey;
+  const secret = "credential-secret-sentinel";
+  try {
+    await mkdir(resolve(root, "workspace"), { recursive: true });
+    await mkdir(resolve(root, "agent"), { recursive: true });
+    ModelRuntime.prototype.setRuntimeApiKey = async (_provider, key) => {
+      const error = new Error("credential synchronization failed");
+      Object.defineProperty(error, "credential", { enumerable: true, value: { type: "api_key", key } });
+      throw error;
+    };
+    await assert.rejects(
+      createCogsPiSession(
+        withDefaults({
+          cwd: resolve(root, "workspace"),
+          agentDir: resolve(root, "agent"),
+          sessionRoot: resolve(root, "sessions"),
+          sessionId: "credential-failure",
+          model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+          apiKey: secret,
+          toolPorts: fakePorts([]),
+          abortTimeoutMs: 25,
+        }),
+      ),
+      (error) => {
+        assert.equal(String(error), "Error: model credential operation failed");
+        assert.equal(JSON.stringify(error).includes(secret), false);
+        assert.equal(JSON.stringify(Object.getOwnPropertyDescriptors(error)).includes(secret), false);
+        return true;
+      },
+    );
+
+    let setAborted = false;
+    let cleanupRemovalCalls = 0;
+    ModelRuntime.prototype.setRuntimeApiKey = async (_provider, _key, options) =>
+      new Promise<void>((_resolve, reject) => {
+        options?.signal?.addEventListener(
+          "abort",
+          () => {
+            setAborted = true;
+            reject(new Error("aborted"));
+          },
+          { once: true },
+        );
+      });
+    ModelRuntime.prototype.removeRuntimeApiKey = async () => {
+      cleanupRemovalCalls += 1;
+    };
+    await assert.rejects(
+      createCogsPiSession(
+        withDefaults({
+          cwd: resolve(root, "workspace"),
+          agentDir: resolve(root, "agent"),
+          sessionRoot: resolve(root, "sessions"),
+          sessionId: "credential-hang",
+          model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+          apiKey: secret,
+          toolPorts: fakePorts([]),
+          abortTimeoutMs: 25,
+        }),
+      ),
+      /model credential operation failed/,
+    );
+    assert.equal(setAborted, true);
+    assert.equal(cleanupRemovalCalls, 1);
+
+    ModelRuntime.prototype.setRuntimeApiKey = originalSet;
+    ModelRuntime.prototype.removeRuntimeApiKey = originalRemove;
+    const adapter = await createCogsPiSession(
+      withDefaults({
+        cwd: resolve(root, "workspace"),
+        agentDir: resolve(root, "agent"),
+        sessionRoot: resolve(root, "sessions"),
+        sessionId: "credential-removal",
+        model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+        apiKey: secret,
+        toolPorts: fakePorts([]),
+        streamFn: oneTextStream("done"),
+        abortTimeoutMs: 25,
+      }),
+    );
+    ModelRuntime.prototype.removeRuntimeApiKey = () => new Promise<void>(() => undefined);
+    const started = Date.now();
+    await assert.rejects(adapter.dispose(), /Pi session cleanup failed/);
+    assert.ok(Date.now() - started < 1_000, "credential cleanup must be bounded");
+  } finally {
+    ModelRuntime.prototype.setRuntimeApiKey = originalSet;
+    ModelRuntime.prototype.removeRuntimeApiKey = originalRemove;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Pi session excludes ambient provider variables from runtime auth", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "cogs-pi-ambient-auth-"));
+  const prior = process.env.CLOUDFLARE_ACCOUNT_ID;
+  process.env.CLOUDFLARE_ACCOUNT_ID = "ambient-account-must-not-be-used";
+  let modelCalls = 0;
+  try {
+    await mkdir(resolve(root, "workspace"), { recursive: true });
+    await mkdir(resolve(root, "agent"), { recursive: true });
+    await assert.rejects(
+      createCogsPiSession(
+        withDefaults({
+          cwd: resolve(root, "workspace"),
+          agentDir: resolve(root, "agent"),
+          sessionRoot: resolve(root, "sessions"),
+          sessionId: "ambient-auth",
+          model: { provider: "cloudflare-workers-ai", id: "@cf/google/gemma-4-26b-a4b-it" },
+          apiKey: "aaaaaaaa",
+          toolPorts: fakePorts([]),
+          streamFn: () => {
+            modelCalls += 1;
+            return createAssistantMessageEventStream();
+          },
+          abortTimeoutMs: 100,
+        }),
+      ),
+      /unsupported model provider/,
+    );
+    assert.equal(modelCalls, 0);
+  } finally {
+    if (prior === undefined) delete process.env.CLOUDFLARE_ACCOUNT_ID;
+    else process.env.CLOUDFLARE_ACCOUNT_ID = prior;
     await rm(root, { recursive: true, force: true });
   }
 });

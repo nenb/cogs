@@ -88,19 +88,34 @@ test("worker final stage is nonroot, read-only-root compatible, and starts the f
 test("worker installs without lifecycle scripts and copies only production runtime material into the final stage", () => {
   assert.equal((dockerfile.match(/npm ci[^\n]*--ignore-scripts/gu) ?? []).length, 2);
   assert.match(dockerfile, /npm ci --omit=dev --ignore-scripts/u);
-  assert.equal(packageJson.dependencies["brace-expansion"], "5.0.9");
-  assert.equal(packageJson.dependencies.undici, "8.9.0");
-  assert.match(dockerfile, /nested npm-shrinkwrap that retains vulnerable/u);
-  assert.match(dockerfile, /node_modules\/brace-expansion\/package\.json[\s\S]*version\)'\)" = 5\.0\.9/u);
-  assert.match(dockerfile, /node_modules\/@earendil-works\/pi-coding-agent\/node_modules\/brace-expansion/u);
-  assert.match(dockerfile, /test "\$\(node[\s\S]*version\)'\)" = 5\.0\.6/u);
-  assert.match(dockerfile, /cp -a node_modules\/brace-expansion/u);
-  assert.equal((dockerfile.match(/= 5\.0\.9/gu) ?? []).length, 2);
-  assert.match(dockerfile, /node_modules\/undici\/package\.json[\s\S]*version\)'\)" = 8\.9\.0/u);
-  assert.match(dockerfile, /node_modules\/@earendil-works\/pi-coding-agent\/node_modules\/undici/u);
-  assert.match(dockerfile, /test "\$\(node[\s\S]*version\)'\)" = 8\.5\.0/u);
-  assert.match(dockerfile, /cp -a node_modules\/undici/u);
-  assert.equal((dockerfile.match(/= 8\.9\.0/gu) ?? []).length, 2);
+  assert.equal(packageJson.dependencies["@earendil-works/pi-agent-core"], "0.84.2");
+  assert.equal(packageJson.dependencies["@earendil-works/pi-ai"], "0.84.2");
+  assert.equal(packageJson.dependencies["@earendil-works/pi-coding-agent"], "0.84.2");
+  assert.equal(packageJson.dependencies["brace-expansion"], undefined);
+  assert.equal(packageJson.dependencies.undici, undefined);
+  assert.match(dockerfile, /Pi 0\.84\.2's authenticated shrinkwrap/u);
+  for (const packageName of ["pi-agent-core", "pi-ai", "pi-coding-agent"]) {
+    assert.match(
+      dockerfile,
+      new RegExp(
+        `node_modules/@earendil-works/${packageName}/package\\.json[\\s\\S]*version\\)'\\)" = 0\\.84\\.2`,
+        "u",
+      ),
+    );
+  }
+  assert.match(
+    dockerfile,
+    /node_modules\/@earendil-works\/pi-coding-agent\/node_modules\/brace-expansion\/package\.json[\s\S]*version\)'\)" = 5\.0\.9/u,
+  );
+  assert.match(
+    dockerfile,
+    /node_modules\/@earendil-works\/pi-coding-agent\/node_modules\/undici\/package\.json[\s\S]*version\)'\)" = 8\.9\.0/u,
+  );
+  assert.match(
+    dockerfile,
+    /node_modules\/@earendil-works\/pi-coding-agent\/node_modules\/protobufjs\/package\.json[\s\S]*version\)'\)" = 7\.6\.5/u,
+  );
+  assert.doesNotMatch(dockerfile, /cp -a node_modules\/(?:brace-expansion|undici)|= (?:5\.0\.6|8\.5\.0)/u);
   assert.match(dockerfile, /rm -rf node_modules\/\.bin node_modules\/\.cache/u);
   const finalStage = dockerfile.slice(dockerfile.indexOf(`FROM --platform=linux/amd64 ${finalImage}`));
   assert.doesNotMatch(finalStage, /\b(?:apt|apt-get|apk|dnf|yum|npm|npx|tsc)\b|\/bin\/(?:ba)?sh/u);

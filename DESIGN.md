@@ -281,7 +281,7 @@ This cost is accepted because a mandatory VM boundary cannot be supplied by an o
 The worker uses `createAgentSession()` from the pinned current `@earendil-works/*` release with:
 
 - `SessionManager` for native append-only JSONL;
-- `AuthStorage` and `ModelRegistry` for Pi-supported models;
+- `ModelRuntime` with application-owned in-memory credential storage for explicitly allowlisted Pi API-key models;
 - Pi's built-in retry, compaction, branching, usage, and event behavior;
 - a custom resource loader that returns only approved context and skill data;
 - four custom VM-backed tools named `read`, `write`, `edit`, and `bash`.
@@ -566,8 +566,8 @@ Two storage paths are used:
 1. **Organization and user API keys**
    - stored in OpenBao;
    - resolved by a scoped worker identity;
-   - supplied to Pi through `AuthStorage.setRuntimeApiKey()`;
-   - held in memory only.
+   - supplied to Pi through `ModelRuntime.setRuntimeApiKey()` backed by application-owned in-memory credential storage;
+   - held in memory only and removed during cleanup.
 
 2. **OpenAI/Anthropic subscription OAuth**
    - login UX belongs to the future daemon;

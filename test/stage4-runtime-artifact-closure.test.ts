@@ -52,15 +52,15 @@ function assertUncertain(input: unknown): void {
 test("committed evidence is deterministic exact local closure with every authority claim false", () => {
   assert.deepEqual(bytes(), canonicalStage4RuntimeArtifactBytes(buildStage4RuntimeArtifactEvidence()));
   const result = classifyStage4RuntimeArtifactEvidence(bytes());
-  assert.equal(result.status, "candidate-closure-complete-aws-blocked");
-  assert.equal(result.reason_code, "STAGE4_RUNTIME_ARTIFACT_CANDIDATE_CLOSED_AWS_BLOCKED");
+  assert.equal(result.status, "candidate-closure-complete-blocked");
+  assert.equal(result.reason_code, "STAGE4_RUNTIME_ARTIFACT_CANDIDATE_CLOSED_BLOCKED");
   assert.equal(result.candidate_artifact_closure_complete, true);
   assert.equal(result.selected_runtime_artifacts_authenticated, true);
   assert.equal(result.eks_public_candidate_selected, true);
   assert.equal(result.eks_ami_id_resolved, false);
   assert.equal(result.running_kernel_resolved, false);
-  assert.equal(result.release_image_set_present, true);
-  assert.equal(result.exact_image_identity_closure_satisfied, true);
+  assert.equal(result.release_image_set_present, false);
+  assert.equal(result.exact_image_identity_closure_satisfied, false);
   assert.equal(result.campaign_authorized, false);
   assert.equal(result.cloud_execution_observed, false);
   assert.equal(result.provider_truth_observed, false);
@@ -120,7 +120,7 @@ test("public EKS candidate is exact while all AWS-resolved fields remain absent"
   assert.equal(candidate.provider_truth_observed, false);
 });
 
-test("static candidate freeze binds reviewed image identities but cannot promote retired OpenBao or runtime truth", () => {
+test("static candidate freeze retires stale image identities and cannot promote retired OpenBao or runtime truth", () => {
   const freeze = object().static_candidate_freeze;
   assert.equal(freeze.envoy.publisher_signature_verified, false);
   assert.equal(
@@ -150,21 +150,25 @@ test("static candidate freeze binds reviewed image identities but cannot promote
       ),
     ),
   );
-  assert.equal(freeze.dependency_lock.pi_version, "0.80.6");
+  assert.equal(freeze.dependency_lock.pi_version, "0.84.2");
   assert.equal(
     freeze.dependency_lock.package_lock_sha256,
-    "21fa5340665a5e2c04a5f185b2cae2ba550256c4c830fefcf000a42c89e358ea",
+    "42151881d9945740578313e2d3117e3bcac93a26d99a65ece8b18d15631601e1",
   );
   assert.equal(
-    freeze.release_images.worker,
-    "ghcr.io/nenb/cogs/worker@sha256:c2f240fa191fb22970f6b1ff0142448841401885c87f403efca152d9201004bc",
+    freeze.dependency_lock.pi_agent_core_sri,
+    "sha512-8Pn3wSCxj0cfo5I6jxQYVB/3uuQRmHhAlEclyjqpOuMEdQMIODHizRogv56FLdbU+dTiGnybeHQ2N+sV1/L2YA==",
   );
   assert.equal(
-    freeze.release_images.sandbox,
-    "ghcr.io/nenb/cogs/sandbox@sha256:b8827b17c73fac0ce869681fad4a01c625f068566a55f1aa7e3a9efc0e1bdc60",
+    freeze.dependency_lock.pi_ai_sri,
+    "sha512-6MzsrYIYNVlE7SfpbL2yYb67Qo58p/7Q+xWG1RZvoX1P80aRCHSod2/13aFpxkow1lPO2LEh3c495J0Gwmyjig==",
   );
-  assert.equal(freeze.release_images.image_source_sha, "d3ddb987ceeec0bae0fa2d89fdc134187a0d1de3");
-  assert.equal(object().claims.release_image_set_present, true);
+  assert.equal(
+    freeze.dependency_lock.pi_coding_agent_sri,
+    "sha512-l4E+B7hgXKWddRo8bC/eSue2aWZjEgJ9xIpf5p0Og+lq8a2TArCwJ0HCoCPCgaBP/tN4zbYH/wOwvx9pJpeLCA==",
+  );
+  assert.equal(Object.hasOwn(freeze, "release_images"), false);
+  assert.equal(object().claims.release_image_set_present, false);
   assert.equal(object().claims.release_eligible, false);
 });
 
@@ -174,7 +178,7 @@ test("evidence compiles under strict schema and rejects unknown fields", () => {
   const ajv = new Ajv2020({ allErrors: true, strict: true, strictRequired: false, ownProperties: true });
   require("ajv-formats")(ajv);
   const schema = JSON.parse(
-    readFileSync(resolve(root, "schemas/stage4-authenticated-runtime-artifact-evidence-v2.json"), "utf8"),
+    readFileSync(resolve(root, "schemas/stage4-authenticated-runtime-artifact-evidence-v3.json"), "utf8"),
   );
   const validate = ajv.compile(schema);
   assert.equal(validate(object()), true, JSON.stringify(validate.errors));
@@ -203,10 +207,8 @@ test("hostile artifact, provenance, QEMU, EKS, freeze, and claim drift fail clos
     (value) => (value.eks_node_image_candidate.running_kernel_release = "claimed"),
     (value) => (value.static_candidate_freeze.envoy.publisher_signature_verified = true),
     (value) => (value.static_candidate_freeze.skills.policy = "ambient-skills"),
-    (value) => (value.static_candidate_freeze.release_images.assertion_sha256 = "0".repeat(64)),
-    (value) =>
-      (value.static_candidate_freeze.release_images.worker = value.static_candidate_freeze.release_images.sandbox),
-    (value) => (value.claims.release_image_set_present = false),
+    (value) => (value.static_candidate_freeze.release_images = {}),
+    (value) => (value.claims.release_image_set_present = true),
     (value) => (value.claims.cloud_execution_observed = true),
     (value) => (value.claims.release_eligible = true),
   ];

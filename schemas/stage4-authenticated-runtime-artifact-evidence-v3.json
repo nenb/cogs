@@ -1,0 +1,805 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.dev/schemas/stage4-authenticated-runtime-artifact-evidence-v3.json",
+  "title": "Cogs Stage 4 authenticated runtime artifact evidence v3",
+  "description": "Local/static authenticated runtime artifact and current dependency freeze with the incompatible historical release images absent from selection; no AWS, provider, Kubernetes, runtime, campaign, or release authority.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "authority",
+    "platform",
+    "containerd",
+    "kata",
+    "historical_qemu_host_observation",
+    "eks_node_image_candidate",
+    "static_candidate_freeze",
+    "claims",
+    "blockers",
+    "binding_sha256"
+  ],
+  "properties": {
+    "version": {
+      "const": "cogs.stage4-authenticated-runtime-artifact-evidence/v3"
+    },
+    "authority": {
+      "const": "local-static-public-release-artifact-closure"
+    },
+    "platform": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["os", "architecture"],
+      "properties": {
+        "os": {
+          "const": "linux"
+        },
+        "architecture": {
+          "const": "amd64"
+        }
+      }
+    },
+    "containerd": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "source_commit", "artifact", "authentication", "selected_executables"],
+      "properties": {
+        "version": {
+          "const": "2.2.1"
+        },
+        "source_commit": {
+          "$ref": "#/$defs/gitSha"
+        },
+        "artifact": {
+          "$ref": "#/$defs/containerdArtifact"
+        },
+        "authentication": {
+          "$ref": "#/$defs/containerdAuthentication"
+        },
+        "selected_executables": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "prefixItems": [
+            {
+              "$ref": "#/$defs/archiveMember"
+            },
+            {
+              "$ref": "#/$defs/archiveMember"
+            }
+          ],
+          "items": false
+        }
+      }
+    },
+    "kata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "source_commit",
+        "artifact",
+        "authentication",
+        "versions_manifest",
+        "selected_qemu",
+        "qemu_config",
+        "guest_kernel"
+      ],
+      "properties": {
+        "version": {
+          "const": "3.32.0"
+        },
+        "source_commit": {
+          "$ref": "#/$defs/gitSha"
+        },
+        "artifact": {
+          "$ref": "#/$defs/releaseArtifact"
+        },
+        "authentication": {
+          "$ref": "#/$defs/kataAuthentication"
+        },
+        "versions_manifest": {
+          "$ref": "#/$defs/archiveMember"
+        },
+        "selected_qemu": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["version", "provenance", "path", "size", "sha256", "elf_build_id"],
+          "properties": {
+            "version": {
+              "const": "11.0.1"
+            },
+            "provenance": {
+              "const": "kata-bundled-release-member"
+            },
+            "path": {
+              "const": "opt/kata/bin/qemu-system-x86_64"
+            },
+            "size": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "sha256": {
+              "$ref": "#/$defs/sha256"
+            },
+            "elf_build_id": {
+              "$ref": "#/$defs/gitSha"
+            }
+          }
+        },
+        "qemu_config": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path", "size", "sha256", "configured_qemu_path", "configured_kernel_path"],
+          "properties": {
+            "path": {
+              "const": "opt/kata/share/defaults/kata-containers/configuration-qemu.toml"
+            },
+            "size": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "sha256": {
+              "$ref": "#/$defs/sha256"
+            },
+            "configured_qemu_path": {
+              "const": "/opt/kata/bin/qemu-system-x86_64"
+            },
+            "configured_kernel_path": {
+              "const": "/opt/kata/share/kata-containers/vmlinux.container"
+            }
+          }
+        },
+        "guest_kernel": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["version", "symlink_path", "member_path", "size", "sha256"],
+          "properties": {
+            "version": {
+              "const": "6.18.35"
+            },
+            "symlink_path": {
+              "const": "opt/kata/share/kata-containers/vmlinux.container"
+            },
+            "member_path": {
+              "const": "opt/kata/share/kata-containers/vmlinux-6.18.35-197"
+            },
+            "size": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "sha256": {
+              "$ref": "#/$defs/sha256"
+            }
+          }
+        }
+      }
+    },
+    "historical_qemu_host_observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "reported_package",
+        "observed_command_path",
+        "evidence_path",
+        "selected_runtime",
+        "artifact_identity_bound",
+        "interpretation",
+        "upstream_source_reference"
+      ],
+      "properties": {
+        "version": {
+          "const": "8.2.2"
+        },
+        "reported_package": {
+          "const": "1:8.2.2+ds-0ubuntu1.17"
+        },
+        "observed_command_path": {
+          "const": "/usr/bin/qemu-system-x86_64"
+        },
+        "evidence_path": {
+          "const": "docs/test-reports/stage-2-aws-measurement.md"
+        },
+        "selected_runtime": {
+          "const": false
+        },
+        "artifact_identity_bound": {
+          "const": false
+        },
+        "interpretation": {
+          "const": "historical-host-distro-observation-not-kata-runtime-identity"
+        },
+        "upstream_source_reference": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "url",
+            "size",
+            "sha256",
+            "signature_url",
+            "signature_sha256",
+            "signer_fingerprint",
+            "source_only_not_runtime_artifact"
+          ],
+          "properties": {
+            "url": {
+              "const": "https://download.qemu.org/qemu-8.2.2.tar.xz"
+            },
+            "size": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "sha256": {
+              "$ref": "#/$defs/sha256"
+            },
+            "signature_url": {
+              "const": "https://download.qemu.org/qemu-8.2.2.tar.xz.sig"
+            },
+            "signature_sha256": {
+              "$ref": "#/$defs/sha256"
+            },
+            "signer_fingerprint": {
+              "pattern": "^[A-F0-9]{40}$",
+              "type": "string"
+            },
+            "source_only_not_runtime_artifact": {
+              "const": true
+            }
+          }
+        }
+      }
+    },
+    "eks_node_image_candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state",
+        "selection_reason",
+        "kubernetes_minor",
+        "ami_type",
+        "public_release_tag",
+        "public_release_commit",
+        "public_release_url",
+        "ami_name",
+        "release_version",
+        "source_ami_name",
+        "public_kernel_package",
+        "baked_containerd_package",
+        "selected_containerd_override_required",
+        "region",
+        "ami_id",
+        "running_kernel_release",
+        "provider_truth_observed"
+      ],
+      "properties": {
+        "state": {
+          "const": "public-candidate-aws-fields-unresolved"
+        },
+        "selection_reason": {
+          "const": "kubernetes-1.35-matches-the-pinned-nebari-autoscaler-default-line-and-the-latest-non-abandoned-public-ami-catalog"
+        },
+        "kubernetes_minor": {
+          "const": "1.35"
+        },
+        "ami_type": {
+          "const": "AL2023_x86_64_STANDARD"
+        },
+        "public_release_tag": {
+          "const": "v20260728"
+        },
+        "public_release_commit": {
+          "$ref": "#/$defs/gitSha"
+        },
+        "public_release_url": {
+          "const": "https://github.com/awslabs/amazon-eks-ami/releases/tag/v20260728"
+        },
+        "ami_name": {
+          "const": "amazon-eks-node-al2023-x86_64-standard-1.35-v20260728"
+        },
+        "release_version": {
+          "const": "1.35.6-20260728"
+        },
+        "source_ami_name": {
+          "const": "al2023-ami-minimal-2023.12.20260727.0-kernel-6.12-x86_64"
+        },
+        "public_kernel_package": {
+          "const": "6.12.94-123.192.amzn2023"
+        },
+        "baked_containerd_package": {
+          "const": "2.2.5-1.amzn2023.0.1"
+        },
+        "selected_containerd_override_required": {
+          "const": true
+        },
+        "region": {
+          "const": "us-east-1"
+        },
+        "ami_id": {
+          "type": "null"
+        },
+        "running_kernel_release": {
+          "type": "null"
+        },
+        "provider_truth_observed": {
+          "const": false
+        }
+      }
+    },
+    "static_candidate_freeze": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["envoy", "openbao", "skills", "chart", "schemas", "dependency_lock"],
+      "properties": {
+        "envoy": {
+          "$ref": "#/$defs/envoyFreeze"
+        },
+        "openbao": {
+          "$ref": "#/$defs/openBaoFreeze"
+        },
+        "skills": {
+          "$ref": "#/$defs/skillsFreeze"
+        },
+        "chart": {
+          "$ref": "#/$defs/chartFreeze"
+        },
+        "schemas": {
+          "$ref": "#/$defs/schemaFreeze"
+        },
+        "dependency_lock": {
+          "$ref": "#/$defs/dependencyFreeze"
+        }
+      }
+    },
+    "claims": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "candidate_artifact_closure_complete",
+        "selected_runtime_artifacts_authenticated",
+        "local_candidate_freeze_complete",
+        "release_image_set_present",
+        "exact_image_runtime_closure_satisfied",
+        "campaign_authorized",
+        "cloud_execution_observed",
+        "provider_truth_observed",
+        "kubernetes_truth_observed",
+        "current_resources_observed",
+        "zero_resources_claimed",
+        "stage4_exit_satisfied",
+        "release_eligible"
+      ],
+      "properties": {
+        "candidate_artifact_closure_complete": {
+          "const": true
+        },
+        "selected_runtime_artifacts_authenticated": {
+          "const": true
+        },
+        "local_candidate_freeze_complete": {
+          "const": true
+        },
+        "release_image_set_present": {
+          "const": false
+        },
+        "exact_image_runtime_closure_satisfied": {
+          "const": false
+        },
+        "campaign_authorized": {
+          "const": false
+        },
+        "cloud_execution_observed": {
+          "const": false
+        },
+        "provider_truth_observed": {
+          "const": false
+        },
+        "kubernetes_truth_observed": {
+          "const": false
+        },
+        "current_resources_observed": {
+          "const": false
+        },
+        "zero_resources_claimed": {
+          "const": false
+        },
+        "stage4_exit_satisfied": {
+          "const": false
+        },
+        "release_eligible": {
+          "const": false
+        }
+      }
+    },
+    "blockers": {
+      "type": "array",
+      "minItems": 5,
+      "maxItems": 5,
+      "prefixItems": [
+        {
+          "const": "OPENBAO_FIXED_RELEASE_IMAGE_ABSENT"
+        },
+        {
+          "const": "RELEASE_IMAGE_SET_ABSENT"
+        },
+        {
+          "const": "EKS_AMI_ID_AND_RUNNING_KERNEL_AWS_UNRESOLVED"
+        },
+        {
+          "const": "ENVOY_UPSTREAM_SIGNATURE_UNAVAILABLE"
+        },
+        {
+          "const": "CAMPAIGN_ENVELOPE_AND_APPROVAL_ABSENT"
+        }
+      ],
+      "items": false
+    },
+    "binding_sha256": {
+      "$ref": "#/$defs/sha256"
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "gitSha": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{40}$"
+    },
+    "releaseArtifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "url", "size", "sha256"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "url": {
+          "type": "string",
+          "format": "uri",
+          "pattern": "^https://"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2147483648
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "containerdArtifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "url", "size", "sha256", "checksum_url", "checksum_sha256"],
+      "properties": {
+        "name": {
+          "const": "containerd-static-2.2.1-linux-amd64.tar.gz"
+        },
+        "url": {
+          "type": "string",
+          "format": "uri",
+          "pattern": "^https://"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "checksum_url": {
+          "type": "string",
+          "format": "uri",
+          "pattern": "^https://"
+        },
+        "checksum_sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "archiveMember": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "size", "sha256"],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[^/].*"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 268435456
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "containerdAuthentication": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "attestation_url",
+        "attestation_sha256",
+        "predicate_type",
+        "certificate_identity",
+        "certificate_oidc_issuer",
+        "workflow_run",
+        "verified"
+      ],
+      "properties": {
+        "kind": {
+          "const": "github-actions-slsa-v1"
+        },
+        "attestation_url": {
+          "type": "string",
+          "format": "uri"
+        },
+        "attestation_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "predicate_type": {
+          "const": "https://slsa.dev/provenance/v1"
+        },
+        "certificate_identity": {
+          "type": "string",
+          "format": "uri"
+        },
+        "certificate_oidc_issuer": {
+          "const": "https://token.actions.githubusercontent.com"
+        },
+        "workflow_run": {
+          "type": "string",
+          "format": "uri"
+        },
+        "verified": {
+          "const": true
+        }
+      }
+    },
+    "kataAuthentication": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "attestation_api", "predicate_type", "certificate_identity", "timestamp", "verified"],
+      "properties": {
+        "kind": {
+          "const": "github-immutable-release-attestation-v0.2"
+        },
+        "attestation_api": {
+          "type": "string",
+          "format": "uri"
+        },
+        "predicate_type": {
+          "const": "https://in-toto.io/attestation/release/v0.2"
+        },
+        "certificate_identity": {
+          "const": "https://dotcom.releases.github.com"
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "verified": {
+          "const": true
+        }
+      }
+    },
+    "envoyFreeze": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "index_digest",
+        "linux_amd64_manifest_digest",
+        "binary_sha256",
+        "source_commit",
+        "publisher_signature_verified",
+        "state"
+      ],
+      "properties": {
+        "version": {
+          "const": "1.38.3"
+        },
+        "index_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "linux_amd64_manifest_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "binary_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "source_commit": {
+          "$ref": "#/$defs/gitSha"
+        },
+        "publisher_signature_verified": {
+          "const": false
+        },
+        "state": {
+          "const": "exact-static-digest-signature-unavailable-not-runtime-observed"
+        }
+      }
+    },
+    "openBaoFreeze": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "index_digest",
+        "linux_amd64_manifest_digest",
+        "binary_sha256",
+        "certificate_identity",
+        "certificate_oidc_issuer",
+        "publisher_signature_verified",
+        "retired_at",
+        "retirement_reason",
+        "state"
+      ],
+      "properties": {
+        "version": {
+          "const": "2.6.1"
+        },
+        "index_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "linux_amd64_manifest_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "binary_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "certificate_identity": {
+          "type": "string",
+          "format": "uri"
+        },
+        "certificate_oidc_issuer": {
+          "const": "https://token.actions.githubusercontent.com"
+        },
+        "publisher_signature_verified": {
+          "const": true
+        },
+        "retired_at": {
+          "const": "2026-08-14T20:14:04Z"
+        },
+        "retirement_reason": {
+          "const": "fixed-high-go-stdlib-no-fixed-upstream-image"
+        },
+        "state": {
+          "const": "exact-static-signed-retired-fixed-high-findings"
+        }
+      }
+    },
+    "skillsFreeze": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["policy", "empty_bundle_digest", "shared_oci_manifest_digest", "user_bundle_digest"],
+      "properties": {
+        "policy": {
+          "const": "no-bundled-release-skills"
+        },
+        "empty_bundle_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "shared_oci_manifest_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "user_bundle_digest": {
+          "$ref": "#/$defs/digest"
+        }
+      }
+    },
+    "chartFreeze": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version", "delivery", "inventory_sha256"],
+      "properties": {
+        "name": {
+          "const": "cogs"
+        },
+        "version": {
+          "const": "0.0.1"
+        },
+        "delivery": {
+          "const": "notes-only-zero-submitted-manifests"
+        },
+        "inventory_sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "schemaFreeze": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scope", "inventory_sha256"],
+      "properties": {
+        "scope": {
+          "const": "all-stage4-stage5-and-production-runtime-image-contract-schemas"
+        },
+        "inventory_sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "dependencyFreeze": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["package_lock_sha256", "pi_version", "pi_agent_core_sri", "pi_ai_sri", "pi_coding_agent_sri"],
+      "properties": {
+        "package_lock_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "pi_version": {
+          "const": "0.84.2"
+        },
+        "pi_agent_core_sri": {
+          "type": "string",
+          "pattern": "^sha512-"
+        },
+        "pi_ai_sri": {
+          "type": "string",
+          "pattern": "^sha512-"
+        },
+        "pi_coding_agent_sri": {
+          "type": "string",
+          "pattern": "^sha512-"
+        }
+      }
+    },
+    "releaseImagesFreeze": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state",
+        "assertion_sha256",
+        "review_sha256",
+        "workflow_run_id",
+        "image_source_sha",
+        "image_source_tree_sha",
+        "image_source_inventory_sha256",
+        "worker",
+        "sandbox"
+      ],
+      "properties": {
+        "state": {
+          "const": "reviewed-static-identity-closure-not-runtime-observed"
+        },
+        "assertion_sha256": {
+          "const": "ad45d6b0a114c481eb869daff38f4ddc669801e8a5b5d808c404b506ae33c450"
+        },
+        "review_sha256": {
+          "const": "f6a607349062f5ca9211978600012b4cd16651af984c083a0329646a74da6a3a"
+        },
+        "workflow_run_id": {
+          "const": 30852317459
+        },
+        "image_source_sha": {
+          "const": "d3ddb987ceeec0bae0fa2d89fdc134187a0d1de3"
+        },
+        "image_source_tree_sha": {
+          "const": "6fb6dbe512280e906555b02d6367d6a43c1421a9"
+        },
+        "image_source_inventory_sha256": {
+          "const": "e2f4a4ad970c6e1e68e995db96b26e35f85d752b41670acee2c9090c5e663b94"
+        },
+        "worker": {
+          "const": "ghcr.io/nenb/cogs/worker@sha256:c2f240fa191fb22970f6b1ff0142448841401885c87f403efca152d9201004bc"
+        },
+        "sandbox": {
+          "const": "ghcr.io/nenb/cogs/sandbox@sha256:b8827b17c73fac0ce869681fad4a01c625f068566a55f1aa7e3a9efc0e1bdc60"
+        }
+      }
+    }
+  }
+}

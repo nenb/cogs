@@ -16,11 +16,12 @@ import {
 
 const require = createRequire(import.meta.url);
 const Ajv2020 = require("ajv/dist/2020.js") as new (options?: Options) => AjvCore;
-const packageSchema = require("../schemas/stage4-offline-readiness-package-v3.json") as object;
+const packageSchema = require("../schemas/stage4-offline-readiness-package-v4.json") as object;
 
 export const STAGE4_READINESS_BLOCKERS = Object.freeze([
   "ISSUE_42_OPEN",
   "OPENBAO_FIXED_RELEASE_IMAGE_ABSENT",
+  "RELEASE_IMAGE_SET_ABSENT",
   "EKS_AMI_IMAGE_RELEASE_KERNEL_UNRESOLVED",
   "PROPOSED_ACCOUNT_BINDING_ABSENT",
   "CURRENT_PRICE_NOT_REVALIDATED",
@@ -77,7 +78,7 @@ export type Stage4ReadinessReasonCode =
   | "STAGE4_READINESS_BINDING_ROOT_MISMATCH";
 
 export type Stage4OfflineReadinessVerdict = Readonly<{
-  version: "cogs.stage4-offline-readiness-verdict/v3";
+  version: "cogs.stage4-offline-readiness-verdict/v4";
   authority: "local-static-stage4-readiness-classifier";
   local_preparation_complete: boolean;
   candidate_artifact_closure_complete: boolean;
@@ -229,7 +230,7 @@ const EXPECTED_IMAGE_REFERENCES = Object.freeze({
 /* stage4-readiness-anchor-start */
 export const STAGE4_READINESS_EXPECTED_ARTIFACTS = Object.freeze({
   chartInventory: "a3801a32d9f1a59864bd027aebf44554b087911c7d4a4486e7bcda697ff68617",
-  imageLock: "b0e8a4c39643087a2707a253b0e2dafb48569edf5debb799bb813a67a9559536",
+  imageLock: "9ce614ad6377b7fc72fa85add929ae306c51f392228243fe38cc6d824ebaf539",
   releaseImageAssertion: "ad45d6b0a114c481eb869daff38f4ddc669801e8a5b5d808c404b506ae33c450",
   releaseImageReview: "f6a607349062f5ca9211978600012b4cd16651af984c083a0329646a74da6a3a",
   nicContract: "9b61b547884b6baa081974242171885f92c7d756224bc181fe6e78c965c1fa9a",
@@ -237,11 +238,11 @@ export const STAGE4_READINESS_EXPECTED_ARTIFACTS = Object.freeze({
   repeatedRender: "399d9b86a43777a57542c70c93f6ef595224e455d6969d2bfbd154e6d05d8fa0",
   runtimePins: "1e683ef6513f9f86f7eaead0fd64d949f037afd06043882eb1b6514aa5c4a145",
   values: "c689236c57e1eab668f8bf504e148245cc23a652b529d1aaab20ef8d4e0fdc7a",
-  authenticatedRuntimeArtifacts: "44c0b153e333672085fce76a8df666670f20c9e530249aea78e80572fb722622",
-  localValidationNormalized: "8b021117a864083dbeba033513bc472418c137041f1e9b2a6309e2f35928a1db",
+  authenticatedRuntimeArtifacts: "993992bd545df0d6c3a720b87791399c32c628b0a67f6b65ba7955313f88fb46",
+  localValidationNormalized: "7dbdb5864c6319ed7e29c79d004ccd7d89180a05eec0ce958aea3b07f8915683",
   renderReceipt: "491c7963c00873ee6429cb3917c2ae1316e83b5905257b1abc8c60a4464541cf",
-  schemaInventory: "60ac14b79b90c8b43815c942ff8b4d1a8786808d5ad42d78d01b2ad20d6c0146",
-  sourceInventoryNormalized: "1fd7f469a19f0e8676202f6ef1f18ceb6308c50e4f55779a313ecf03f5cb66b5",
+  schemaInventory: "50ba9e24139f937240d42a5a02853e58b0efccf7667b4fb2e630c58adec0275d",
+  sourceInventoryNormalized: "7a0e00210f897f44e12127acc3b84826d869868d3e3da43979f9ecbc1dd07bd9",
 });
 /* stage4-readiness-anchor-end */
 
@@ -600,24 +601,25 @@ function exactArtifactSemantics(value: ReadinessPackage, artifacts: ArtifactCopi
     !releaseReviewVerdict.record_valid ||
     !Array.isArray(imageRows) ||
     imageRows.length !== 3 ||
-    image?.version !== "cogs.stage4-offline-image-lock/v3" ||
-    image.release_image_set_present !== true ||
-    image.exact_image_closure_satisfied !== true ||
+    image?.version !== "cogs.stage4-offline-image-lock/v4" ||
+    image.release_image_set_present !== false ||
+    image.exact_image_closure_satisfied !== false ||
     stringProperty(imageRows[0], "reference") !== stringProperty(packageImages.worker, "reference") ||
     stringProperty(imageRows[1], "reference") !== stringProperty(packageImages.proxy, "reference") ||
     stringProperty(imageRows[2], "reference") !== stringProperty(packageImages.sandbox, "reference") ||
-    record(imageRows[0])?.state !== "exact-reviewed-candidate-not-runtime-observed" ||
-    record(imageRows[2])?.state !== "exact-reviewed-candidate-not-runtime-observed" ||
+    record(imageRows[0])?.state !== "historical-reviewed-incompatible-current-source" ||
+    record(imageRows[2])?.state !== "historical-reviewed-incompatible-current-source" ||
+    releaseSet?.state !== "historical-reviewed-incompatible-current-source" ||
     releaseSet?.assertion_sha256 !== RELEASE_IMAGE_SET_ASSERTION_SHA256 ||
     releaseSet?.review_sha256 !== RELEASE_IMAGE_SET_REVIEW_SHA256 ||
     releaseSet?.image_source_sha !== RELEASE_IMAGE_SOURCE_SHA ||
     releaseSet?.workflow_run_id !== RELEASE_IMAGE_WORKFLOW_RUN_ID ||
-    packageImages.release_image_set_present !== true ||
-    packageImages.exact_image_closure_satisfied !== true ||
+    packageImages.release_image_set_present !== false ||
+    packageImages.exact_image_closure_satisfied !== false ||
     packageImageSource?.reviewed_sha !== RELEASE_IMAGE_SOURCE_SHA ||
     packageImageSource?.tree_sha !== RELEASE_IMAGE_SOURCE_TREE_SHA ||
     packageImageSource?.inventory_sha256 !== RELEASE_IMAGE_SOURCE_INVENTORY_SHA256 ||
-    packageImageSource?.relation !== "separately-bound-immutable-image-source"
+    packageImageSource?.relation !== "historical-separately-bound-immutable-image-source"
   )
     return false;
   const packageRuntime = record(value.pins.runtime);
@@ -647,7 +649,7 @@ function makeVerdict(
 ): Stage4OfflineReadinessVerdict {
   const complete = reasonCode === "STAGE4_LOCAL_PREPARATION_COMPLETE_CAMPAIGN_BLOCKED";
   return Object.freeze({
-    version: "cogs.stage4-offline-readiness-verdict/v3",
+    version: "cogs.stage4-offline-readiness-verdict/v4",
     authority: "local-static-stage4-readiness-classifier",
     local_preparation_complete: complete,
     candidate_artifact_closure_complete: complete,

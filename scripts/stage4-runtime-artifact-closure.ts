@@ -6,18 +6,19 @@ import { capturePrivateBytes } from "./private-bytes.ts";
 
 const require = createRequire(import.meta.url);
 const Ajv2020 = require("ajv/dist/2020.js") as new (options?: Options) => AjvCore;
-const evidenceSchema = require("../schemas/stage4-authenticated-runtime-artifact-evidence-v2.json") as object;
+const evidenceSchema = require("../schemas/stage4-authenticated-runtime-artifact-evidence-v3.json") as object;
 
 export const STAGE4_RUNTIME_ARTIFACT_MAX_BYTES = 64 * 1024;
 export const STAGE4_RUNTIME_ARTIFACT_BLOCKERS = Object.freeze([
   "OPENBAO_FIXED_RELEASE_IMAGE_ABSENT",
+  "RELEASE_IMAGE_SET_ABSENT",
   "EKS_AMI_ID_AND_RUNNING_KERNEL_AWS_UNRESOLVED",
   "ENVOY_UPSTREAM_SIGNATURE_UNAVAILABLE",
   "CAMPAIGN_ENVELOPE_AND_APPROVAL_ABSENT",
 ] as const);
 
 export type Stage4RuntimeArtifactReasonCode =
-  | "STAGE4_RUNTIME_ARTIFACT_CANDIDATE_CLOSED_AWS_BLOCKED"
+  | "STAGE4_RUNTIME_ARTIFACT_CANDIDATE_CLOSED_BLOCKED"
   | "STAGE4_RUNTIME_ARTIFACT_BOUNDED_INPUT_INVALID"
   | "STAGE4_RUNTIME_ARTIFACT_CANONICAL_INPUT_INVALID"
   | "STAGE4_RUNTIME_ARTIFACT_SCHEMA_INVALID"
@@ -25,7 +26,7 @@ export type Stage4RuntimeArtifactReasonCode =
   | "STAGE4_RUNTIME_ARTIFACT_BINDING_INVALID";
 
 export type Stage4RuntimeArtifactVerdict = Readonly<{
-  version: "cogs.stage4-authenticated-runtime-artifact-verdict/v2";
+  version: "cogs.stage4-authenticated-runtime-artifact-verdict/v3";
   authority: "local-static-runtime-artifact-classifier";
   candidate_artifact_closure_complete: boolean;
   selected_runtime_artifacts_authenticated: boolean;
@@ -43,7 +44,7 @@ export type Stage4RuntimeArtifactVerdict = Readonly<{
   release_eligible: false;
   evidence_sha256: string | null;
   binding_sha256: string | null;
-  status: "candidate-closure-complete-aws-blocked" | "preserve-uncertain";
+  status: "candidate-closure-complete-blocked" | "preserve-uncertain";
   reason_code: Stage4RuntimeArtifactReasonCode;
   blockers: readonly (typeof STAGE4_RUNTIME_ARTIFACT_BLOCKERS)[number][];
 }>;
@@ -57,7 +58,7 @@ require("ajv-formats")(ajv);
 const validateEvidence = ajv.compile(evidenceSchema) as ValidateFunction;
 
 /* stage4-runtime-schema-inventory-anchor-start */
-const STAGE4_RUNTIME_SCHEMA_INVENTORY_SHA256 = "60ac14b79b90c8b43815c942ff8b4d1a8786808d5ad42d78d01b2ad20d6c0146";
+const STAGE4_RUNTIME_SCHEMA_INVENTORY_SHA256 = "50ba9e24139f937240d42a5a02853e58b0efccf7667b4fb2e630c58adec0275d";
 /* stage4-runtime-schema-inventory-anchor-end */
 
 function compareCodePoints(left: string, right: string): number {
@@ -105,7 +106,7 @@ export function stage4RuntimeArtifactBinding(value: JsonObject): string {
 /** Exact local candidate assembled only from already measured public release and repository bytes. */
 export function buildStage4RuntimeArtifactEvidence(): JsonObject {
   const value: JsonObject = {
-    version: "cogs.stage4-authenticated-runtime-artifact-evidence/v2",
+    version: "cogs.stage4-authenticated-runtime-artifact-evidence/v3",
     authority: "local-static-public-release-artifact-closure",
     platform: { os: "linux", architecture: "amd64" },
     containerd: {
@@ -268,31 +269,20 @@ export function buildStage4RuntimeArtifactEvidence(): JsonObject {
         inventory_sha256: STAGE4_RUNTIME_SCHEMA_INVENTORY_SHA256,
       },
       dependency_lock: {
-        package_lock_sha256: "21fa5340665a5e2c04a5f185b2cae2ba550256c4c830fefcf000a42c89e358ea",
-        pi_version: "0.80.6",
+        package_lock_sha256: "42151881d9945740578313e2d3117e3bcac93a26d99a65ece8b18d15631601e1",
+        pi_version: "0.84.2",
         pi_agent_core_sri:
-          "sha512-Lvn89ko42h5ETUb6Z0Ku6ldskEqXaTdQBYvSa0+7bdG9V6rUEpXptv5e0OVZ1HDcvi8s6/2lGCQWsxKX+DFHNw==",
-        pi_ai_sri: "sha512-7xfLk8sANBp+bpPEbjoOZTbPxsa+++b1JXAoSJsNa3vbs9AHHEclmvg54XLQcxH+fuwaeti/g2jeIfJ+mVYLpA==",
+          "sha512-8Pn3wSCxj0cfo5I6jxQYVB/3uuQRmHhAlEclyjqpOuMEdQMIODHizRogv56FLdbU+dTiGnybeHQ2N+sV1/L2YA==",
+        pi_ai_sri: "sha512-6MzsrYIYNVlE7SfpbL2yYb67Qo58p/7Q+xWG1RZvoX1P80aRCHSod2/13aFpxkow1lPO2LEh3c495J0Gwmyjig==",
         pi_coding_agent_sri:
-          "sha512-vcfD6tOk402isLl3Cm/qbn2O10TvgroMp1+/fEGM24ZdvETFCdOYv5VZ7m59EI5fPsjfSJh+CpQ5bhBrhfOg7g==",
-      },
-      release_images: {
-        state: "reviewed-static-identity-closure-not-runtime-observed",
-        assertion_sha256: "ad45d6b0a114c481eb869daff38f4ddc669801e8a5b5d808c404b506ae33c450",
-        review_sha256: "f6a607349062f5ca9211978600012b4cd16651af984c083a0329646a74da6a3a",
-        workflow_run_id: 30852317459,
-        image_source_sha: "d3ddb987ceeec0bae0fa2d89fdc134187a0d1de3",
-        image_source_tree_sha: "6fb6dbe512280e906555b02d6367d6a43c1421a9",
-        image_source_inventory_sha256: "e2f4a4ad970c6e1e68e995db96b26e35f85d752b41670acee2c9090c5e663b94",
-        worker: "ghcr.io/nenb/cogs/worker@sha256:c2f240fa191fb22970f6b1ff0142448841401885c87f403efca152d9201004bc",
-        sandbox: "ghcr.io/nenb/cogs/sandbox@sha256:b8827b17c73fac0ce869681fad4a01c625f068566a55f1aa7e3a9efc0e1bdc60",
+          "sha512-l4E+B7hgXKWddRo8bC/eSue2aWZjEgJ9xIpf5p0Og+lq8a2TArCwJ0HCoCPCgaBP/tN4zbYH/wOwvx9pJpeLCA==",
       },
     },
     claims: {
       candidate_artifact_closure_complete: true,
       selected_runtime_artifacts_authenticated: true,
       local_candidate_freeze_complete: true,
-      release_image_set_present: true,
+      release_image_set_present: false,
       exact_image_runtime_closure_satisfied: false,
       campaign_authorized: false,
       cloud_execution_observed: false,
@@ -317,17 +307,17 @@ function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
 }
 
 function verdict(reason: Stage4RuntimeArtifactReasonCode, evidenceSha: string | null, binding: string | null) {
-  const complete = reason === "STAGE4_RUNTIME_ARTIFACT_CANDIDATE_CLOSED_AWS_BLOCKED";
+  const complete = reason === "STAGE4_RUNTIME_ARTIFACT_CANDIDATE_CLOSED_BLOCKED";
   return Object.freeze({
-    version: "cogs.stage4-authenticated-runtime-artifact-verdict/v2" as const,
+    version: "cogs.stage4-authenticated-runtime-artifact-verdict/v3" as const,
     authority: "local-static-runtime-artifact-classifier" as const,
     candidate_artifact_closure_complete: complete,
     selected_runtime_artifacts_authenticated: complete,
     eks_public_candidate_selected: complete,
     eks_ami_id_resolved: false as const,
     running_kernel_resolved: false as const,
-    release_image_set_present: complete,
-    exact_image_identity_closure_satisfied: complete,
+    release_image_set_present: false as const,
+    exact_image_identity_closure_satisfied: false as const,
     campaign_authorized: false as const,
     cloud_execution_observed: false as const,
     provider_truth_observed: false as const,
@@ -337,7 +327,7 @@ function verdict(reason: Stage4RuntimeArtifactReasonCode, evidenceSha: string | 
     release_eligible: false as const,
     evidence_sha256: evidenceSha,
     binding_sha256: binding,
-    status: complete ? ("candidate-closure-complete-aws-blocked" as const) : ("preserve-uncertain" as const),
+    status: complete ? ("candidate-closure-complete-blocked" as const) : ("preserve-uncertain" as const),
     reason_code: reason,
     blockers: complete ? STAGE4_RUNTIME_ARTIFACT_BLOCKERS : Object.freeze([]),
   });
@@ -373,5 +363,5 @@ export function classifyStage4RuntimeArtifactEvidence(input: unknown): Stage4Run
   if (!bytesEqual(captured.bytes, expected)) {
     return verdict("STAGE4_RUNTIME_ARTIFACT_SEMANTIC_DRIFT", evidenceSha, binding);
   }
-  return verdict("STAGE4_RUNTIME_ARTIFACT_CANDIDATE_CLOSED_AWS_BLOCKED", evidenceSha, binding);
+  return verdict("STAGE4_RUNTIME_ARTIFACT_CANDIDATE_CLOSED_BLOCKED", evidenceSha, binding);
 }

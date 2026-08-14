@@ -92,7 +92,7 @@
       "id": "upgrade",
       "path": "docs/operations/runbooks/upgrade.md",
       "title": "Draft runtime and proxy upgrade runbook",
-      "content_sha256": "f0b2dc49d2229e4685e4234d6d40733ddc70c810e081b81cbcdd027820e9e5fb",
+      "content_sha256": "0756c3c5ecac700d20be0be95b72dadecea988d8d486e895f632e114ac357798",
       "status": "draft-local-static-only",
       "evidence_contract": "future-operations-reference-v1"
     },
