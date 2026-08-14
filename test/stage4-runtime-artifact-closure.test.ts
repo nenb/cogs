@@ -120,7 +120,7 @@ test("public EKS candidate is exact while all AWS-resolved fields remain absent"
   assert.equal(candidate.provider_truth_observed, false);
 });
 
-test("static candidate freeze binds reviewed image identities but cannot promote runtime, release, or expired security truth", () => {
+test("static candidate freeze binds reviewed image identities but cannot promote retired OpenBao or runtime truth", () => {
   const freeze = object().static_candidate_freeze;
   assert.equal(freeze.envoy.publisher_signature_verified, false);
   assert.equal(
@@ -132,7 +132,9 @@ test("static candidate freeze binds reviewed image identities but cannot promote
     freeze.openbao.certificate_identity,
     "https://github.com/openbao/openbao/.github/workflows/release-images.yml@refs/tags/v2.6.1",
   );
-  assert.equal(freeze.openbao.security_disposition_expires_at, "2026-08-15T23:59:59Z");
+  assert.equal(freeze.openbao.retired_at, "2026-08-14T20:14:04Z");
+  assert.equal(freeze.openbao.retirement_reason, "fixed-high-go-stdlib-no-fixed-upstream-image");
+  assert.equal(freeze.openbao.state, "exact-static-signed-retired-fixed-high-findings");
   assert.equal(freeze.skills.policy, "no-bundled-release-skills");
   assert.equal(
     freeze.skills.shared_oci_manifest_digest,

@@ -20,6 +20,7 @@ const packageSchema = require("../schemas/stage4-offline-readiness-package-v3.js
 
 export const STAGE4_READINESS_BLOCKERS = Object.freeze([
   "ISSUE_42_OPEN",
+  "OPENBAO_FIXED_RELEASE_IMAGE_ABSENT",
   "EKS_AMI_IMAGE_RELEASE_KERNEL_UNRESOLVED",
   "PROPOSED_ACCOUNT_BINDING_ABSENT",
   "CURRENT_PRICE_NOT_REVALIDATED",
@@ -236,11 +237,11 @@ export const STAGE4_READINESS_EXPECTED_ARTIFACTS = Object.freeze({
   repeatedRender: "399d9b86a43777a57542c70c93f6ef595224e455d6969d2bfbd154e6d05d8fa0",
   runtimePins: "1e683ef6513f9f86f7eaead0fd64d949f037afd06043882eb1b6514aa5c4a145",
   values: "c689236c57e1eab668f8bf504e148245cc23a652b529d1aaab20ef8d4e0fdc7a",
-  authenticatedRuntimeArtifacts: "89b50bd8f48360748911af2f3c0f2bd062095e31ac926745c339f99ccbbaf3a5",
-  localValidationNormalized: "913ff79bde803c5aa8d119beb9fab1b05ef776028fa5f26c207bbedce024ee34",
+  authenticatedRuntimeArtifacts: "44c0b153e333672085fce76a8df666670f20c9e530249aea78e80572fb722622",
+  localValidationNormalized: "8b021117a864083dbeba033513bc472418c137041f1e9b2a6309e2f35928a1db",
   renderReceipt: "491c7963c00873ee6429cb3917c2ae1316e83b5905257b1abc8c60a4464541cf",
-  schemaInventory: "473cee3b00f409e1e4c28346f23491d7e3694933e41560b24c666c99e455be86",
-  sourceInventoryNormalized: "24825260a8dec43974822640831503d5ed5a2fd38c30a54733e29c5ed1a5e14b",
+  schemaInventory: "60ac14b79b90c8b43815c942ff8b4d1a8786808d5ad42d78d01b2ad20d6c0146",
+  sourceInventoryNormalized: "1fd7f469a19f0e8676202f6ef1f18ceb6308c50e4f55779a313ecf03f5cb66b5",
 });
 /* stage4-readiness-anchor-end */
 

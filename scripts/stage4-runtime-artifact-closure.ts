@@ -10,6 +10,7 @@ const evidenceSchema = require("../schemas/stage4-authenticated-runtime-artifact
 
 export const STAGE4_RUNTIME_ARTIFACT_MAX_BYTES = 64 * 1024;
 export const STAGE4_RUNTIME_ARTIFACT_BLOCKERS = Object.freeze([
+  "OPENBAO_FIXED_RELEASE_IMAGE_ABSENT",
   "EKS_AMI_ID_AND_RUNNING_KERNEL_AWS_UNRESOLVED",
   "ENVOY_UPSTREAM_SIGNATURE_UNAVAILABLE",
   "CAMPAIGN_ENVELOPE_AND_APPROVAL_ABSENT",
@@ -56,7 +57,7 @@ require("ajv-formats")(ajv);
 const validateEvidence = ajv.compile(evidenceSchema) as ValidateFunction;
 
 /* stage4-runtime-schema-inventory-anchor-start */
-const STAGE4_RUNTIME_SCHEMA_INVENTORY_SHA256 = "473cee3b00f409e1e4c28346f23491d7e3694933e41560b24c666c99e455be86";
+const STAGE4_RUNTIME_SCHEMA_INVENTORY_SHA256 = "60ac14b79b90c8b43815c942ff8b4d1a8786808d5ad42d78d01b2ad20d6c0146";
 /* stage4-runtime-schema-inventory-anchor-end */
 
 function compareCodePoints(left: string, right: string): number {
@@ -246,8 +247,9 @@ export function buildStage4RuntimeArtifactEvidence(): JsonObject {
           "https://github.com/openbao/openbao/.github/workflows/release-images.yml@refs/tags/v2.6.1",
         certificate_oidc_issuer: "https://token.actions.githubusercontent.com",
         publisher_signature_verified: true,
-        security_disposition_expires_at: "2026-08-15T23:59:59Z",
-        state: "exact-static-signed-not-runtime-observed",
+        retired_at: "2026-08-14T20:14:04Z",
+        retirement_reason: "fixed-high-go-stdlib-no-fixed-upstream-image",
+        state: "exact-static-signed-retired-fixed-high-findings",
       },
       skills: {
         policy: "no-bundled-release-skills",

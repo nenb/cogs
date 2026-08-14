@@ -225,7 +225,9 @@ function offlineReadinessPackageV2Sample(): JsonObject {
   };
   value.pins.images.release_image_set_present = false;
   value.pins.images.exact_image_closure_satisfied = false;
-  value.blockers = value.blockers.filter((blocker: string) => blocker !== "RELEASE_IMAGE_SET_ABSENT");
+  value.blockers = value.blockers.filter(
+    (blocker: string) => blocker !== "RELEASE_IMAGE_SET_ABSENT" && blocker !== "OPENBAO_FIXED_RELEASE_IMAGE_ABSENT",
+  );
   value.blockers.push("RELEASE_IMAGE_SET_ABSENT");
   return value;
 }
@@ -308,6 +310,7 @@ function offlineReadinessVerdictSample(): JsonObject {
   const value = offlineReadinessVerdictV2Sample() as Record<string, any>;
   value.version = "cogs.stage4-offline-readiness-verdict/v3";
   value.blockers = value.blockers.filter((blocker: string) => blocker !== "RELEASE_IMAGE_SET_ABSENT");
+  value.blockers.splice(1, 0, "OPENBAO_FIXED_RELEASE_IMAGE_ABSENT");
   return value;
 }
 
@@ -327,7 +330,12 @@ function authenticatedRuntimeArtifactV1Sample(): JsonObject {
   const value = authenticatedRuntimeArtifactSample() as Record<string, any>;
   value.version = "cogs.stage4-authenticated-runtime-artifact-evidence/v1";
   delete value.static_candidate_freeze.release_images;
+  delete value.static_candidate_freeze.openbao.retired_at;
+  delete value.static_candidate_freeze.openbao.retirement_reason;
+  value.static_candidate_freeze.openbao.security_disposition_expires_at = "2026-08-15T23:59:59Z";
+  value.static_candidate_freeze.openbao.state = "exact-static-signed-not-runtime-observed";
   value.claims.release_image_set_present = false;
+  value.blockers = value.blockers.filter((blocker: string) => blocker !== "OPENBAO_FIXED_RELEASE_IMAGE_ABSENT");
   value.blockers.splice(1, 0, "RELEASE_IMAGE_SET_ABSENT");
   return value;
 }

@@ -17,17 +17,10 @@ Boundaries:
 - OpenBao/dev-source failures fail closed and do not fall back to another source.
 - Local OpenBao fixture evidence is functional-only. It does not make isolation, release, Kubernetes-auth, or AWS claims.
 
-Local OpenBao functional smoke:
+Retired local OpenBao functional smoke:
 
-- Entry point: `dev/openbao-model-auth/ci-smoke.sh`.
-- Image: `quay.io/openbao/openbao:2.6.1@sha256:5b2486ab0fb90bbc788cc345b0a08616dfb375873ee8be5df3a2fd4d378a67e0`.
-- The server is published on loopback only with no persistent volume.
-- Bootstrap initializes a fresh server, enables KV-v2 at `model/`, writes exactly one model API key, and creates a short-lived orphan read token scoped to `model/data/users/alice/anthropic`.
-- The TypeScript smoke uses production `OpenBaoModelApiKeyStore` plus `ModelCredentialResolver`, checks the expected key in-memory without printing it, verifies another user/path is denied by the exact-path OpenBao ACL policy, revokes the read token, verifies subsequent reads fail generically, revokes the bootstrap root token, and writes a strict `cogs.security-report/v1alpha1` `report.json`.
-- The report binds `source_revision` from `COGS_SOURCE_REVISION`; local runs default to current Git `HEAD`, so the local report must be regenerated after the final commit for exact binding.
-- The smoke verifies the runtime `bao version` reports OpenBao v2.6.1 before writing evidence.
-- The CI OpenBao Trivy ignore is scoped to `.trivyignore-openbao` for the OpenBao scan only. The v2.6.1 release SBOM records pseudo Go module version `v0.0.0-20260722141719-ba7ad8861d05`; five separate CVE entries document Trivy 0.70 treating that pseudo-version as older than fixes no newer than 2.5.4 even though the pinned runtime is v2.6.1. These false-positive ignores remain due for review by 2026-08-15.
-- `CVE-2026-56852` is not ignored: OpenBao v2.6.1 upgrades `golang.org/x/text` from vulnerable v0.38.0 to fixed v0.39.0.
-- `GHSA-hrxh-6v49-42gf` is different: the 2026-07-31 review confirmed v2.6.1 is still the latest stable OpenBao release/image and its release SBOM contains the real grpc-go v1.81.1 finding (fixed in grpc-go v1.82.1). OpenBao main has upgraded to v1.82.1, but no fixed release image exists. The exception is therefore renewed only for exact OpenBao digest `sha256:5b2486ab0fb90bbc788cc345b0a08616dfb375873ee8be5df3a2fd4d378a67e0` and this fixed file-storage fixture with no HA, xDS, cluster forwarding, external plugins, or gRPC listener and host-loopback-only REST publication. Boundary or image drift invalidates the exception. Its hard expiry is `2026-08-15T23:59:59Z`; expiry or a fixed upstream image requires removal or a new explicit security decision.
-- The report records functional-only test results and states that shell EXIT-trap cleanup verification happens after report generation.
-- The shell wrapper traps exits/signals and verifies labeled containers, labeled volumes, and temporary state are removed after process exit.
+- The exact v2.6.1 fixture was retired on 2026-08-14 after a fresh scan reported fixed HIGH findings in its Go v1.26.5 standard library. The expiring scoped dispositions were removed rather than renewed or expanded.
+- `dev/openbao-model-auth/ci-smoke.sh`, its fixed file-storage configuration, and historical reports remain review material only. Active CI, security-labelled smoke, selected-image SBOM generation, and campaign readiness must not execute or promote them.
+- Current readiness carries `OPENBAO_FIXED_RELEASE_IMAGE_ABSENT`. This is a blocker, not a clean-scan, runtime, production, or release claim.
+- Readmission requires one exact stable upstream image with verified publisher identity, a fresh zero-HIGH/zero-CRITICAL scan without ignores or VEX, restored functional smoke against that same identity, and regenerated readiness evidence.
+- The complete scan facts, decision, and non-authorizing historical boundary are recorded in [`openbao-2.6.1-retirement.md`](../security-evidence/openbao-2.6.1-retirement.md).

@@ -7,10 +7,10 @@ const expected = {
   "@earendil-works/pi-coding-agent": {
     severity: "moderate",
     isDirect: true,
-    findingRange: ">=0.75.4",
+    findingRange: "0.75.4 - 0.83.0",
     node: "node_modules/@earendil-works/pi-coding-agent",
     effects: [],
-    fixAvailable: { name: "@earendil-works/pi-coding-agent", version: "0.75.3", isSemVerMajor: true },
+    fixAvailable: { name: "@earendil-works/pi-coding-agent", version: "0.84.2", isSemVerMajor: true },
     viaPackages: ["undici"],
   },
   "brace-expansion": {
@@ -63,7 +63,7 @@ const expected = {
     findingRange: "8.0.0 - 8.8.0",
     node: "node_modules/@earendil-works/pi-coding-agent/node_modules/undici",
     effects: ["@earendil-works/pi-coding-agent"],
-    fixAvailable: { name: "@earendil-works/pi-coding-agent", version: "0.75.3", isSemVerMajor: true },
+    fixAvailable: { name: "@earendil-works/pi-coding-agent", version: "0.84.2", isSemVerMajor: true },
     advisories: [
       {
         source: 1130714,

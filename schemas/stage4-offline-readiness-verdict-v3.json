@@ -101,11 +101,12 @@
     },
     "blockers": {
       "type": "array",
-      "maxItems": 8,
+      "maxItems": 9,
       "uniqueItems": true,
       "items": {
         "enum": [
           "ISSUE_42_OPEN",
+          "OPENBAO_FIXED_RELEASE_IMAGE_ABSENT",
           "EKS_AMI_IMAGE_RELEASE_KERNEL_UNRESOLVED",
           "PROPOSED_ACCOUNT_BINDING_ABSENT",
           "CURRENT_PRICE_NOT_REVALIDATED",
@@ -157,12 +158,15 @@
             },
             "blockers": {
               "type": "array",
-              "minItems": 8,
-              "maxItems": 8,
+              "minItems": 9,
+              "maxItems": 9,
               "uniqueItems": true,
               "prefixItems": [
                 {
                   "const": "ISSUE_42_OPEN"
+                },
+                {
+                  "const": "OPENBAO_FIXED_RELEASE_IMAGE_ABSENT"
                 },
                 {
                   "const": "EKS_AMI_IMAGE_RELEASE_KERNEL_UNRESOLVED"
