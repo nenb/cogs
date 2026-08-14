@@ -280,73 +280,32 @@ test("sensitive export cleanup treats post-acquisition removal as uncertain", as
   }
 });
 
-test("launcher image prerequisite uses exact pinned OpenBao and Envoy images", async () => {
+test("retired launcher image helper retains exact history but active workflows cannot invoke it", async () => {
   assert.equal(LAUNCHER_DOCKER, "/usr/bin/docker");
   assert.deepEqual(LAUNCHER_IMAGE_ENV, { HOME: "/tmp" });
   assert.deepEqual(LAUNCHER_REQUIRED_IMAGES, [OPENBAO_IMAGE, ENVOY_IMAGE]);
   assert.throws(() => verifyImageInspect(OPENBAO_IMAGE, JSON.stringify([{ RepoDigests: [] }])));
   verifyImageInspect(OPENBAO_IMAGE, JSON.stringify([{ RepoDigests: [OPENBAO_IMAGE.replace(":2.6.1@", "@")] }]));
+
+  const insecure = await readFile(join(process.cwd(), ".github/workflows/insecure-container.yml"), "utf8");
   const kvm = await readFile(join(process.cwd(), ".github/workflows/kvm-qualification.yml"), "utf8");
-  assert.match(kvm, /id: launcher_images[\s\S]*npx --no-install tsx scripts\/prepare-launcher-images\.ts/);
-  assert.match(kvm, /id: launcher_s309[\s\S]*--scenario s3-09[\s\S]*launcher-s3-09-linux-kvm\.json/);
-  assert.match(kvm, /id: launcher_smoke[\s\S]*launcher-linux-kvm\.json/);
-  const order = [
-    "Exercise the isolated Debian guest lifecycle",
-    "id: launcher_images",
-    "id: launcher_roots",
-    "id: launcher_s309",
-    "id: launcher_smoke",
-    "id: launcher_roots_cleanup",
-    "id: guest",
-    "id: envoy_suite",
-    "id: real_runtime_kvm",
-    "id: destroy",
-    "id: evidence",
-    "LAUNCHER_S309_OUTCOME",
-  ];
-  for (let index = 1; index < order.length; index += 1) {
-    assert(kvm.indexOf(order[index - 1] as string) < kvm.indexOf(order[index] as string));
+  for (const workflow of [insecure, kvm]) {
+    assert.doesNotMatch(
+      workflow,
+      /prepare-launcher-images|run-launcher-smoke-evidence|stage3-real-runtime|openbao-model-auth/,
+    );
+    assert.match(workflow, /COGS_SOURCE_REVISION: \$\{\{ github\.event\.pull_request\.head\.sha \|\| github\.sha \}\}/);
   }
-  assert.match(kvm, /id: launcher_images\n {8}run: npx --no-install tsx scripts\/prepare-launcher-images\.ts/);
-  assert.match(kvm, /id: launcher_roots\n {8}if: always\(\) && steps\.launcher_images\.outcome == 'success'/);
-  assert.match(
-    kvm,
-    /id: launcher_s309\n {8}if: always\(\) && steps\.launcher_roots\.outcome == 'success'\n {8}continue-on-error: true/,
-  );
-  assert.match(
-    kvm,
-    /id: launcher_smoke\n {8}if: always\(\) && steps\.launcher_roots\.outcome == 'success'\n {8}continue-on-error: true/,
-  );
-  assert.match(kvm, /id: launcher_roots_cleanup\n {8}if: always\(\) && steps\.launcher_roots\.outcome != 'skipped'/);
   assert.match(kvm, /id: envoy_suite\n {8}continue-on-error: true/);
-  assert.match(kvm, /id: real_runtime_kvm\n {8}continue-on-error: true/);
   assert.match(kvm, /id: destroy\n {8}if: always\(\) && steps\.guest\.outcome != 'skipped'/);
   assert.match(kvm, /id: evidence\n {8}if: always\(\)/);
-  assert.match(kvm, /Enforce authoritative conformance after evidence publication\n {8}if: always\(\)/);
-  assert.match(kvm, /id: launcher_s309[\s\S]*--state s309-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/);
-  assert.match(kvm, /id: launcher_smoke[\s\S]*--state kvm-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/);
   for (const [variable, step] of [
     ["ENVOY_OUTCOME", "envoy_suite"],
-    ["REAL_RUNTIME_KVM_OUTCOME", "real_runtime_kvm"],
     ["DESTROY_OUTCOME", "destroy"],
     ["EVIDENCE_OUTCOME", "evidence"],
-    ["LAUNCHER_IMAGES_OUTCOME", "launcher_images"],
-    ["LAUNCHER_SMOKE_OUTCOME", "launcher_smoke"],
-    ["LAUNCHER_S309_OUTCOME", "launcher_s309"],
-    ["LAUNCHER_ROOTS_CLEANUP_OUTCOME", "launcher_roots_cleanup"],
   ] as const) {
     assert(kvm.includes(`${variable}: \${{ steps.${step}.outcome }}`));
     assert(kvm.includes(`test "$${variable}" = success`));
-  }
-});
-
-test("launcher workflows preserve nonempty roots and use exact checkout", async () => {
-  const insecure = await readFile(join(process.cwd(), ".github/workflows/insecure-container.yml"), "utf8");
-  const kvm = await readFile(join(process.cwd(), ".github/workflows/kvm-qualification.yml"), "utf8");
-  for (const text of [insecure, kvm]) {
-    assert.match(text, /test "\$\(find "\$root" -mindepth 1 -maxdepth 1 \| wc -l\)" = 0[\s\S]*sudo umount "\$root"/);
-    assert.doesNotMatch(text, /rmdir \/run\/cogs[\s\S]*\|\| true/);
-    assert.match(text, /COGS_SOURCE_REVISION: \$\{\{ github\.event\.pull_request\.head\.sha \|\| github\.sha \}\}/);
   }
   assert.match(kvm, /ref: \$\{\{ github\.event\.pull_request\.head\.sha \|\| github\.sha \}\}/);
 });

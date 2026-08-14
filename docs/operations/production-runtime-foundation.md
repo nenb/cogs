@@ -63,4 +63,4 @@ The following remain deliberately absent:
 - a mutable release alias, production promotion, or executable provider route; and
 - Linux/Kata/KVM, Kubernetes, CNI, storage, network, and end-to-end runtime qualification.
 
-Protected-main run `30852317459` and its independent review now supply exact immutable worker/sandbox identities to readiness v3, so `RELEASE_IMAGE_SET_ABSENT` and the placeholders are removed. The image-source revision remains separately bound from later readiness metadata. `NO_EXECUTABLE_PROVIDER_ROUTE` and every false runtime/provider/Kubernetes/cloud/Stage 4 exit/production/release claim remain unchanged.
+Protected-main run `30852317459` and its independent review now supply exact immutable worker/sandbox identities to readiness v3, so `RELEASE_IMAGE_SET_ABSENT` and the placeholders are removed. The image-source revision remains separately bound from later readiness metadata. The later OpenBao v2.6.1 retirement adds `OPENBAO_FIXED_RELEASE_IMAGE_ABSENT`; `NO_EXECUTABLE_PROVIDER_ROUTE` and every false runtime/provider/Kubernetes/cloud/Stage 4 exit/production/release claim remain unchanged.

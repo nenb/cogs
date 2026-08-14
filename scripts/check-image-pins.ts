@@ -54,8 +54,8 @@ const adr0037 = readFileSync(resolve(root, "docs/adr/0037-authorize-pinned-git-t
 const envoySuite = readFileSync(resolve(root, "test/egress-conformance/proxy-adapters/envoy/suite-smoke.ts"), "utf8");
 const openBaoSmoke = readFileSync(resolve(root, "dev/openbao-model-auth/ci-smoke.sh"), "utf8");
 const openBaoConfig = readFileSync(resolve(root, "dev/openbao-model-auth/config.hcl"), "utf8");
-const openBaoIgnore = readFileSync(resolve(root, ".trivyignore-openbao"), "utf8");
 const insecureContainerWorkflow = readFileSync(resolve(root, ".github/workflows/insecure-container.yml"), "utf8");
+const kvmWorkflow = readFileSync(resolve(root, ".github/workflows/kvm-qualification.yml"), "utf8");
 const insecureContainerDockerfile = readFileSync(resolve(root, "dev/insecure-sandbox/Dockerfile"), "utf8");
 const sandboxDockerfile = readFileSync(resolve(root, "images/sandbox/Dockerfile"), "utf8");
 const workerDockerfile = readFileSync(resolve(root, "images/worker/Dockerfile"), "utf8");
@@ -93,27 +93,12 @@ assert.match(MITMPROXY_IMAGE, /^mitmproxy\/mitmproxy:\d+\.\d+\.\d+@sha256:[a-f0-
 assert.equal(
   OPENBAO_IMAGE,
   "quay.io/openbao/openbao:2.6.1@sha256:5b2486ab0fb90bbc788cc345b0a08616dfb375873ee8be5df3a2fd4d378a67e0",
-  "OpenBao model-auth smoke must use the accepted v2.6.1 digest",
+  "retired OpenBao fixture history must retain its exact rejected digest",
 );
 assert.ok(
-  ciWorkflow.includes(`OPENBAO_IMAGE: ${OPENBAO_IMAGE}`) || ciWorkflow.includes(`OPENBAO_IMAGE: "${OPENBAO_IMAGE}"`),
-  "CI must scan and inventory the exact OpenBao pin",
+  openBaoSmoke.includes(`OPENBAO_IMAGE="${OPENBAO_IMAGE}"`),
+  "retired OpenBao smoke must retain its exact historical pin",
 );
-const openBaoScan = ciWorkflow.match(
-  / {6}- name: Scan pinned OpenBao model-auth fixture\n[\s\S]*?(?=\n {6}- name:)/,
-)?.[0];
-assert.ok(openBaoScan, "CI must Trivy-scan the OpenBao pin");
-assert.match(openBaoScan, /image-ref: \$\{\{ env\.OPENBAO_IMAGE \}\}/, "OpenBao scan must use the exact pinned image");
-assert.ok(openBaoScan.includes('exit-code: "1"'), "OpenBao scan must fail on findings");
-assert.ok(openBaoScan.includes("severity: HIGH,CRITICAL"), "OpenBao scan must retain its severity boundary");
-assert.ok(openBaoScan.includes("trivyignores: .trivyignore-openbao"), "OpenBao scan must use its scoped ignore file");
-assert.equal(
-  (ciWorkflow.match(/trivyignores: \.trivyignore-openbao/g) ?? []).length,
-  1,
-  "OpenBao Trivy ignore file must be wired exactly once",
-);
-assert.ok(ciWorkflow.includes("openbao-model-auth.spdx.json"), "CI must generate an OpenBao model-auth fixture SBOM");
-assert.ok(openBaoSmoke.includes(`OPENBAO_IMAGE="${OPENBAO_IMAGE}"`), "OpenBao smoke must run the exact scanned pin");
 assert.equal((openBaoSmoke.match(/--publish/g) ?? []).length, 1, "OpenBao smoke must publish exactly one port");
 assert.ok(openBaoSmoke.includes('--publish "127.0.0.1::8200"'), "OpenBao REST API must be host-loopback-only");
 assert.doesNotMatch(
@@ -131,10 +116,13 @@ assert.doesNotMatch(
   /\b(?:ha_storage|cluster_addr|plugin_directory|xds)\b/i,
   "OpenBao advisory disposition forbids HA, cluster, plugin, and xDS configuration",
 );
-assert.ok(
-  insecureContainerWorkflow.includes("dev/openbao-model-auth/ci-smoke.sh"),
-  "security-labelled smoke must run OpenBao model-auth fixture",
-);
+for (const workflow of [insecureContainerWorkflow, kvmWorkflow]) {
+  assert.doesNotMatch(
+    workflow,
+    /openbao-model-auth|stage3-real-runtime|run-launcher-smoke-evidence|prepare-launcher-images/,
+    "security-labelled smoke must not execute retired OpenBao-dependent paths",
+  );
+}
 assert.ok(
   insecureContainerDockerfile.includes(
     "FROM debian:13-slim@sha256:020c0d20b9880058cbe785a9db107156c3c75c2ac944a6aa7ab59f2add76a7bd",
@@ -251,57 +239,19 @@ for (const forbiddenProductionRoot of [
     `production sandbox must not request ${forbiddenProductionRoot}`,
   );
 }
-assert.ok(openBaoIgnore.includes("review deadline 2026-08-15"), "OpenBao CVE ignores must carry their review deadline");
-for (const fixedRuntimeFinding of ["CVE-2026-39822", "CVE-2026-56852"]) {
-  assert.equal(
-    openBaoIgnore.includes(fixedRuntimeFinding),
-    false,
-    `OpenBao ignore must not suppress fixed runtime finding ${fixedRuntimeFinding}`,
-  );
-}
-assert.deepEqual(
-  openBaoIgnore
-    .split(/\r?\n/)
-    .filter((line) => line.startsWith("CVE-"))
-    .sort(),
-  ["CVE-2024-8185", "CVE-2024-9180", "CVE-2025-59043", "CVE-2025-64761", "CVE-2026-45808"],
-  "OpenBao Trivy ignore must contain only reviewed pseudo-module CVE false positives",
-);
-assert.deepEqual(
-  openBaoIgnore.split(/\r?\n/).filter((line) => line.startsWith("GHSA-")),
-  ["GHSA-hrxh-6v49-42gf"],
-  "OpenBao Trivy ignore must contain exactly the reviewed grpc-go advisory",
-);
-assert.ok(openBaoIgnore.includes("real grpc-go v1.81.1 finding"), "grpc-go disposition must identify a real finding");
-assert.ok(openBaoIgnore.includes("fixed in v1.82.1"), "grpc-go disposition must identify the fixed boundary");
+assert.ok(!ciWorkflow.includes("OPENBAO_IMAGE"), "retired OpenBao must not be scanned as an active CI image");
 assert.ok(
-  openBaoIgnore.includes("v0.0.0-20260722141719-ba7ad8861d05") && openBaoIgnore.includes("runtime is v2.6.1"),
-  "pseudo-module dispositions must bind the v2.6.1 release SBOM version",
+  !ciWorkflow.includes("trivyignores: .trivyignore-openbao"),
+  "retired OpenBao vulnerability ignore must not remain active in CI",
+);
+assert.equal(
+  existsSync(resolve(root, ".trivyignore-openbao")),
+  false,
+  "retired OpenBao vulnerability ignore file must be removed",
 );
 assert.ok(
-  openBaoIgnore.includes("sha256:5b2486ab0fb90bbc788cc345b0a08616dfb375873ee8be5df3a2fd4d378a67e0"),
-  "grpc-go disposition must bind the exact OpenBao digest",
-);
-assert.ok(
-  openBaoIgnore.includes(
-    "file storage; no HA, xDS, cluster forwarding, external plugins, or gRPC listener; host-loopback-only REST",
-  ),
-  "grpc-go disposition must state the complete fixed fixture boundary",
-);
-assert.ok(
-  openBaoIgnore.includes("latest stable release/image") &&
-    openBaoIgnore.includes("upstream main has v1.82.1 but no fixed release image exists"),
-  "grpc-go disposition must explain why the exact exception remains necessary",
-);
-assert.ok(openBaoIgnore.includes("Any boundary or image drift invalidates"), "grpc-go disposition must fail on drift");
-const grpcIgnoreDeadline = "2026-08-15T23:59:59Z";
-assert.ok(
-  openBaoIgnore.includes(`Hard expiry: ${grpcIgnoreDeadline}`),
-  "grpc-go disposition must state its hard expiry",
-);
-assert.ok(
-  Date.now() <= Date.parse(grpcIgnoreDeadline),
-  "grpc-go scan exception expired; remove it or record a new decision",
+  !ciWorkflow.includes("openbao-model-auth.spdx.json"),
+  "retired OpenBao must not receive an active selected-image SBOM job",
 );
 assert.ok(!ciWorkflow.includes("MITMPROXY_IMAGE"), "rejected mitmproxy must not be scanned as an active CI image");
 assert.ok(
@@ -356,5 +306,5 @@ for (const [name, version, filename, size] of gitToolPins) {
 assert.match(kvmGitTools, /readonly COGS_GIT_PACKAGE_COUNT=4/, "Git tools package set must remain fixed");
 
 console.log(
-  `Verified external base-image digest pinning for ${dockerfiles.length} image definitions, exact worker Node/Envoy composition, production sandbox labels/snapshots, selected Envoy/OpenBao scanning, and inactive mitmproxy exception removal.`,
+  `Verified external base-image digest pinning for ${dockerfiles.length} image definitions, exact worker Node/Envoy composition, production sandbox labels/snapshots, selected Envoy scanning, and inactive OpenBao/mitmproxy retirement.`,
 );

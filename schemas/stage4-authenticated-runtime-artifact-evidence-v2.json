@@ -415,9 +415,12 @@
     },
     "blockers": {
       "type": "array",
-      "minItems": 3,
-      "maxItems": 3,
+      "minItems": 4,
+      "maxItems": 4,
       "prefixItems": [
+        {
+          "const": "OPENBAO_FIXED_RELEASE_IMAGE_ABSENT"
+        },
         {
           "const": "EKS_AMI_ID_AND_RUNNING_KERNEL_AWS_UNRESOLVED"
         },
@@ -640,7 +643,8 @@
         "certificate_identity",
         "certificate_oidc_issuer",
         "publisher_signature_verified",
-        "security_disposition_expires_at",
+        "retired_at",
+        "retirement_reason",
         "state"
       ],
       "properties": {
@@ -666,11 +670,14 @@
         "publisher_signature_verified": {
           "const": true
         },
-        "security_disposition_expires_at": {
-          "const": "2026-08-15T23:59:59Z"
+        "retired_at": {
+          "const": "2026-08-14T20:14:04Z"
+        },
+        "retirement_reason": {
+          "const": "fixed-high-go-stdlib-no-fixed-upstream-image"
         },
         "state": {
-          "const": "exact-static-signed-not-runtime-observed"
+          "const": "exact-static-signed-retired-fixed-high-findings"
         }
       }
     },

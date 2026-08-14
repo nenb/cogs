@@ -2451,12 +2451,15 @@
     },
     "blockers": {
       "type": "array",
-      "minItems": 8,
-      "maxItems": 8,
+      "minItems": 9,
+      "maxItems": 9,
       "uniqueItems": true,
       "prefixItems": [
         {
           "const": "ISSUE_42_OPEN"
+        },
+        {
+          "const": "OPENBAO_FIXED_RELEASE_IMAGE_ABSENT"
         },
         {
           "const": "EKS_AMI_IMAGE_RELEASE_KERNEL_UNRESOLVED"
