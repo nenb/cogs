@@ -1,0 +1,173 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nenb.github.io/cogs/schemas/release-image-set-review-v2.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "authority", "assertion", "source", "images", "review", "observations", "claims"],
+  "properties": {
+    "version": { "const": "cogs.release-image-set-review/v2" },
+    "authority": { "const": "independent-static-release-image-set-review-record" },
+    "assertion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifact_id",
+        "artifact_name",
+        "artifact_expires_at",
+        "canonical_path",
+        "canonical_size",
+        "sha256",
+        "workflow_run_id",
+        "workflow_run_attempt"
+      ],
+      "properties": {
+        "artifact_id": { "type": "integer", "minimum": 1 },
+        "artifact_name": { "type": "string", "minLength": 1, "maxLength": 180 },
+        "artifact_expires_at": { "type": "string", "format": "date-time" },
+        "canonical_path": { "type": "string", "pattern": "^docs/security-evidence/[a-z0-9.-]+\\.json$" },
+        "canonical_size": { "type": "integer", "minimum": 1, "maximum": 65536 },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "workflow_run_id": { "type": "integer", "minimum": 1 },
+        "workflow_run_attempt": { "const": 1 }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "image_source_sha",
+        "image_source_tree_sha",
+        "image_source_inventory_sha256",
+        "relation_to_readiness_source"
+      ],
+      "properties": {
+        "image_source_sha": { "$ref": "#/$defs/gitSha" },
+        "image_source_tree_sha": { "$ref": "#/$defs/gitSha" },
+        "image_source_inventory_sha256": { "$ref": "#/$defs/sha256" },
+        "relation_to_readiness_source": { "const": "separately-bound-immutable-image-source" }
+      }
+    },
+    "images": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "prefixItems": [
+        { "type": "object", "$ref": "#/$defs/image", "properties": { "role": { "const": "worker" } } },
+        { "type": "object", "$ref": "#/$defs/image", "properties": { "role": { "const": "sandbox" } } }
+      ],
+      "items": false
+    },
+    "review": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reviewer", "reviewed_at", "procedure", "assertion_parser_result"],
+      "properties": {
+        "reviewer": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "reviewed_at": { "type": "string", "format": "date-time" },
+        "procedure": { "const": "cogs-independent-release-image-set-review/v2" },
+        "assertion_parser_result": { "const": "VALID_WORKFLOW_ASSERTION_RECORD" }
+      }
+    },
+    "observations": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "assertion_canonical_and_schema_valid",
+        "source_tree_and_inventory_matched",
+        "registry_index_digests_matched",
+        "transport_tags_matched_exact_indexes",
+        "linux_amd64_children_matched",
+        "buildkit_provenance_matched",
+        "exact_certificate_constraints_verified",
+        "transparency_log_entries_verified",
+        "spdx_attestations_verified",
+        "sandbox_dpkg_sbom_package_count",
+        "worker_fixed_undici_installations",
+        "worker_fixed_undici_version",
+        "independent_pinned_trivy_gate_reproduced"
+      ],
+      "properties": {
+        "assertion_canonical_and_schema_valid": { "const": true },
+        "source_tree_and_inventory_matched": { "const": true },
+        "registry_index_digests_matched": { "const": true },
+        "transport_tags_matched_exact_indexes": { "const": true },
+        "linux_amd64_children_matched": { "const": true },
+        "buildkit_provenance_matched": { "const": true },
+        "exact_certificate_constraints_verified": { "const": true },
+        "transparency_log_entries_verified": { "const": true },
+        "spdx_attestations_verified": { "const": true },
+        "sandbox_dpkg_sbom_package_count": { "const": 140 },
+        "worker_fixed_undici_installations": { "const": 1 },
+        "worker_fixed_undici_version": { "const": "8.9.0" },
+        "independent_pinned_trivy_gate_reproduced": { "const": true }
+      }
+    },
+    "claims": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "release_image_set_present",
+        "exact_image_identity_closure_satisfied",
+        "runtime_qualification_observed",
+        "cloud_execution_observed",
+        "provider_execution_observed",
+        "kubernetes_execution_observed",
+        "readiness_promoted",
+        "production_ready",
+        "release_eligible"
+      ],
+      "properties": {
+        "release_image_set_present": { "const": true },
+        "exact_image_identity_closure_satisfied": { "const": true },
+        "runtime_qualification_observed": { "const": false },
+        "cloud_execution_observed": { "const": false },
+        "provider_execution_observed": { "const": false },
+        "kubernetes_execution_observed": { "const": false },
+        "readiness_promoted": { "const": false },
+        "production_ready": { "const": false },
+        "release_eligible": { "const": false }
+      }
+    }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "gitSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "role",
+        "exact_reference",
+        "linux_amd64_manifest_digest",
+        "buildkit_provenance_sha256",
+        "sbom_sha256",
+        "vulnerabilities"
+      ],
+      "properties": {
+        "role": { "enum": ["worker", "sandbox"] },
+        "exact_reference": {
+          "type": "string",
+          "pattern": "^ghcr\\.io/nenb/cogs/(?:worker|sandbox)@sha256:[0-9a-f]{64}$",
+          "maxLength": 160
+        },
+        "linux_amd64_manifest_digest": { "$ref": "#/$defs/digest" },
+        "buildkit_provenance_sha256": { "$ref": "#/$defs/sha256" },
+        "sbom_sha256": { "$ref": "#/$defs/sha256" },
+        "vulnerabilities": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["unknown", "low", "medium", "high", "critical", "total"],
+          "properties": {
+            "unknown": { "type": "integer", "minimum": 0 },
+            "low": { "type": "integer", "minimum": 0 },
+            "medium": { "type": "integer", "minimum": 0 },
+            "high": { "const": 0 },
+            "critical": { "const": 0 },
+            "total": { "type": "integer", "minimum": 0 }
+          }
+        }
+      }
+    }
+  }
+}

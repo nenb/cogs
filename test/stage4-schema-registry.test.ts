@@ -209,8 +209,31 @@ function offlineReadinessPackageSample(): JsonObject {
   ) as JsonObject;
 }
 
-function offlineReadinessPackageV3Sample(): JsonObject {
+function offlineReadinessPackageV4Sample(): JsonObject {
   const value = offlineReadinessPackageSample() as Record<string, any>;
+  value.version = "cogs.stage4-offline-readiness-package/v4";
+  value.source.image_source = {
+    reviewed_sha: "d3ddb987ceeec0bae0fa2d89fdc134187a0d1de3",
+    tree_sha: "6fb6dbe512280e906555b02d6367d6a43c1421a9",
+    inventory_sha256: "e2f4a4ad970c6e1e68e995db96b26e35f85d752b41670acee2c9090c5e663b94",
+    relation: "historical-separately-bound-immutable-image-source",
+  };
+  value.pins.images.worker = {
+    reference: "ghcr.io/nenb/cogs/worker@sha256:c2f240fa191fb22970f6b1ff0142448841401885c87f403efca152d9201004bc",
+    state: "historical-reviewed-incompatible-current-source",
+  };
+  value.pins.images.sandbox = {
+    reference: "ghcr.io/nenb/cogs/sandbox@sha256:b8827b17c73fac0ce869681fad4a01c625f068566a55f1aa7e3a9efc0e1bdc60",
+    state: "historical-reviewed-incompatible-current-source",
+  };
+  value.pins.images.release_image_set_present = false;
+  value.pins.images.exact_image_closure_satisfied = false;
+  value.blockers.splice(2, 0, "RELEASE_IMAGE_SET_ABSENT");
+  return value;
+}
+
+function offlineReadinessPackageV3Sample(): JsonObject {
+  const value = offlineReadinessPackageV4Sample() as Record<string, any>;
   value.version = "cogs.stage4-offline-readiness-package/v3";
   value.source.image_source.relation = "separately-bound-immutable-image-source";
   value.pins.images.worker.state = "exact-reviewed-candidate-not-runtime-observed";
@@ -326,10 +349,17 @@ function offlineReadinessVerdictV3Sample(): JsonObject {
   return value;
 }
 
-function offlineReadinessVerdictSample(): JsonObject {
+function offlineReadinessVerdictV4Sample(): JsonObject {
   const value = offlineReadinessVerdictV3Sample() as Record<string, any>;
   value.version = "cogs.stage4-offline-readiness-verdict/v4";
   value.blockers.splice(2, 0, "RELEASE_IMAGE_SET_ABSENT");
+  return value;
+}
+
+function offlineReadinessVerdictSample(): JsonObject {
+  const value = offlineReadinessVerdictV4Sample() as Record<string, any>;
+  value.version = "cogs.stage4-offline-readiness-verdict/v5";
+  value.blockers = value.blockers.filter((blocker: string) => blocker !== "RELEASE_IMAGE_SET_ABSENT");
   return value;
 }
 
@@ -343,6 +373,15 @@ function authenticatedRuntimeArtifactSample(): JsonObject {
       "utf8",
     ),
   ) as JsonObject;
+}
+
+function authenticatedRuntimeArtifactV3Sample(): JsonObject {
+  const value = authenticatedRuntimeArtifactSample() as Record<string, any>;
+  value.version = "cogs.stage4-authenticated-runtime-artifact-evidence/v3";
+  delete value.static_candidate_freeze.release_images;
+  value.claims.release_image_set_present = false;
+  value.blockers.splice(1, 0, "RELEASE_IMAGE_SET_ABSENT");
+  return value;
 }
 
 function authenticatedRuntimeArtifactV1Sample(): JsonObject {
@@ -547,7 +586,8 @@ function staticManifestReceiptSample(): JsonObject {
 const STAGE4_SCHEMA_REGISTRY = [
   { file: "stage4-authenticated-runtime-artifact-evidence-v1.json", sample: authenticatedRuntimeArtifactV1Sample },
   { file: "stage4-authenticated-runtime-artifact-evidence-v2.json", sample: authenticatedRuntimeArtifactV2Sample },
-  { file: "stage4-authenticated-runtime-artifact-evidence-v3.json", sample: authenticatedRuntimeArtifactSample },
+  { file: "stage4-authenticated-runtime-artifact-evidence-v3.json", sample: authenticatedRuntimeArtifactV3Sample },
+  { file: "stage4-authenticated-runtime-artifact-evidence-v4.json", sample: authenticatedRuntimeArtifactSample },
   { file: "stage4-campaign-approval-draft-v1.json", sample: campaignApprovalDraftSample },
   { file: "stage4-campaign-approval-verdict-v1.json", sample: campaignApprovalVerdictSample },
   { file: "stage4-campaign-evidence-v1.json", sample: campaignEvidenceSample },
@@ -563,11 +603,13 @@ const STAGE4_SCHEMA_REGISTRY = [
   { file: "stage4-offline-readiness-package-v1.json", sample: offlineReadinessPackageV1Sample },
   { file: "stage4-offline-readiness-package-v2.json", sample: offlineReadinessPackageV2Sample },
   { file: "stage4-offline-readiness-package-v3.json", sample: offlineReadinessPackageV3Sample },
-  { file: "stage4-offline-readiness-package-v4.json", sample: offlineReadinessPackageSample },
+  { file: "stage4-offline-readiness-package-v4.json", sample: offlineReadinessPackageV4Sample },
+  { file: "stage4-offline-readiness-package-v5.json", sample: offlineReadinessPackageSample },
   { file: "stage4-offline-readiness-verdict-v1.json", sample: offlineReadinessVerdictV1Sample },
   { file: "stage4-offline-readiness-verdict-v2.json", sample: offlineReadinessVerdictV2Sample },
   { file: "stage4-offline-readiness-verdict-v3.json", sample: offlineReadinessVerdictV3Sample },
-  { file: "stage4-offline-readiness-verdict-v4.json", sample: offlineReadinessVerdictSample },
+  { file: "stage4-offline-readiness-verdict-v4.json", sample: offlineReadinessVerdictV4Sample },
+  { file: "stage4-offline-readiness-verdict-v5.json", sample: offlineReadinessVerdictSample },
   { file: "stage4-policy-contract-v1.json", sample: policyContractSample },
   { file: "stage4-policy-payload-v1.json", sample: policyPayloadSample },
   { file: "stage4-policy-probe-suite-v1.json", sample: policyProbeSample },
@@ -608,6 +650,7 @@ test("the bounded Stage 4 registry compiles its strict positive samples", () => 
       "stage4-authenticated-runtime-artifact-evidence-v1.json",
       "stage4-authenticated-runtime-artifact-evidence-v2.json",
       "stage4-authenticated-runtime-artifact-evidence-v3.json",
+      "stage4-authenticated-runtime-artifact-evidence-v4.json",
       "stage4-campaign-approval-draft-v1.json",
       "stage4-campaign-approval-verdict-v1.json",
       "stage4-campaign-evidence-v1.json",
@@ -624,10 +667,12 @@ test("the bounded Stage 4 registry compiles its strict positive samples", () => 
       "stage4-offline-readiness-package-v2.json",
       "stage4-offline-readiness-package-v3.json",
       "stage4-offline-readiness-package-v4.json",
+      "stage4-offline-readiness-package-v5.json",
       "stage4-offline-readiness-verdict-v1.json",
       "stage4-offline-readiness-verdict-v2.json",
       "stage4-offline-readiness-verdict-v3.json",
       "stage4-offline-readiness-verdict-v4.json",
+      "stage4-offline-readiness-verdict-v5.json",
       "stage4-policy-contract-v1.json",
       "stage4-policy-payload-v1.json",
       "stage4-policy-probe-suite-v1.json",
@@ -699,7 +744,7 @@ test("every Stage 4 schema rejects unknown root fields and representative nested
   const readinessMutation = offlineReadinessPackageSample();
   ((readinessMutation.campaign_proposal as JsonObject).account_binding as JsonObject).unreviewed = true;
   assertRejected(
-    validatorFor(validators, "stage4-offline-readiness-package-v4.json"),
+    validatorFor(validators, "stage4-offline-readiness-package-v5.json"),
     readinessMutation,
     "offline readiness package accepted an unknown account-binding field",
   );

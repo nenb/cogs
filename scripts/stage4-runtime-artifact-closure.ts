@@ -6,12 +6,11 @@ import { capturePrivateBytes } from "./private-bytes.ts";
 
 const require = createRequire(import.meta.url);
 const Ajv2020 = require("ajv/dist/2020.js") as new (options?: Options) => AjvCore;
-const evidenceSchema = require("../schemas/stage4-authenticated-runtime-artifact-evidence-v3.json") as object;
+const evidenceSchema = require("../schemas/stage4-authenticated-runtime-artifact-evidence-v4.json") as object;
 
 export const STAGE4_RUNTIME_ARTIFACT_MAX_BYTES = 64 * 1024;
 export const STAGE4_RUNTIME_ARTIFACT_BLOCKERS = Object.freeze([
   "OPENBAO_FIXED_RELEASE_IMAGE_ABSENT",
-  "RELEASE_IMAGE_SET_ABSENT",
   "EKS_AMI_ID_AND_RUNNING_KERNEL_AWS_UNRESOLVED",
   "ENVOY_UPSTREAM_SIGNATURE_UNAVAILABLE",
   "CAMPAIGN_ENVELOPE_AND_APPROVAL_ABSENT",
@@ -26,7 +25,7 @@ export type Stage4RuntimeArtifactReasonCode =
   | "STAGE4_RUNTIME_ARTIFACT_BINDING_INVALID";
 
 export type Stage4RuntimeArtifactVerdict = Readonly<{
-  version: "cogs.stage4-authenticated-runtime-artifact-verdict/v3";
+  version: "cogs.stage4-authenticated-runtime-artifact-verdict/v4";
   authority: "local-static-runtime-artifact-classifier";
   candidate_artifact_closure_complete: boolean;
   selected_runtime_artifacts_authenticated: boolean;
@@ -58,7 +57,7 @@ require("ajv-formats")(ajv);
 const validateEvidence = ajv.compile(evidenceSchema) as ValidateFunction;
 
 /* stage4-runtime-schema-inventory-anchor-start */
-const STAGE4_RUNTIME_SCHEMA_INVENTORY_SHA256 = "f1357b20cedbf1b08b459581efa949c99e98537505ecac4395e2177d77357373";
+const STAGE4_RUNTIME_SCHEMA_INVENTORY_SHA256 = "ca8a324816c2ab45f96aafb0c916b3b12d4b1b15eeb51bf63ac69b45b143e683";
 /* stage4-runtime-schema-inventory-anchor-end */
 
 function compareCodePoints(left: string, right: string): number {
@@ -106,7 +105,7 @@ export function stage4RuntimeArtifactBinding(value: JsonObject): string {
 /** Exact local candidate assembled only from already measured public release and repository bytes. */
 export function buildStage4RuntimeArtifactEvidence(): JsonObject {
   const value: JsonObject = {
-    version: "cogs.stage4-authenticated-runtime-artifact-evidence/v3",
+    version: "cogs.stage4-authenticated-runtime-artifact-evidence/v4",
     authority: "local-static-public-release-artifact-closure",
     platform: { os: "linux", architecture: "amd64" },
     containerd: {
@@ -277,12 +276,23 @@ export function buildStage4RuntimeArtifactEvidence(): JsonObject {
         pi_coding_agent_sri:
           "sha512-l4E+B7hgXKWddRo8bC/eSue2aWZjEgJ9xIpf5p0Og+lq8a2TArCwJ0HCoCPCgaBP/tN4zbYH/wOwvx9pJpeLCA==",
       },
+      release_images: {
+        state: "reviewed-current-source-image-set",
+        assertion_sha256: "2368b09be02dc6e21debd8f047e58400173d62ff13edc27398ddbfe1708474d4",
+        review_sha256: "9e3f9ababef58e8b4cc90e9f007251c05a2065eb2ff2e25f928e7c8b4d61e216",
+        workflow_run_id: 31856469035,
+        image_source_sha: "cb9ec3958f6f2571c7c3f90e25b645e49e288a3f",
+        image_source_tree_sha: "bf47273803ee54b5a2fd29d61224836e9f1bfd77",
+        image_source_inventory_sha256: "de0173b66335bbdfbc10968061fac058cfd5648d3a46beb5e537eefa8fa460b8",
+        worker: "ghcr.io/nenb/cogs/worker@sha256:1e71b2d0cd65f16c9633e092311b885ff03f43f4036195326e1a9fc91ea57535",
+        sandbox: "ghcr.io/nenb/cogs/sandbox@sha256:db475ee1d01d446fe79cc9efdad40c9589cefe60eb69bce2f35108ea44eb94fe",
+      },
     },
     claims: {
       candidate_artifact_closure_complete: true,
       selected_runtime_artifacts_authenticated: true,
       local_candidate_freeze_complete: true,
-      release_image_set_present: false,
+      release_image_set_present: true,
       exact_image_runtime_closure_satisfied: false,
       campaign_authorized: false,
       cloud_execution_observed: false,
@@ -309,15 +319,15 @@ function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
 function verdict(reason: Stage4RuntimeArtifactReasonCode, evidenceSha: string | null, binding: string | null) {
   const complete = reason === "STAGE4_RUNTIME_ARTIFACT_CANDIDATE_CLOSED_BLOCKED";
   return Object.freeze({
-    version: "cogs.stage4-authenticated-runtime-artifact-verdict/v3" as const,
+    version: "cogs.stage4-authenticated-runtime-artifact-verdict/v4" as const,
     authority: "local-static-runtime-artifact-classifier" as const,
     candidate_artifact_closure_complete: complete,
     selected_runtime_artifacts_authenticated: complete,
     eks_public_candidate_selected: complete,
     eks_ami_id_resolved: false as const,
     running_kernel_resolved: false as const,
-    release_image_set_present: false as const,
-    exact_image_identity_closure_satisfied: false as const,
+    release_image_set_present: complete,
+    exact_image_identity_closure_satisfied: complete,
     campaign_authorized: false as const,
     cloud_execution_observed: false as const,
     provider_truth_observed: false as const,
