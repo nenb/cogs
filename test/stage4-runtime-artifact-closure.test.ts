@@ -49,7 +49,7 @@ function assertUncertain(input: unknown): void {
   assert.deepEqual(result.blockers, []);
 }
 
-test("committed evidence is deterministic exact local closure with every authority claim false", () => {
+test("committed evidence is deterministic exact local closure with current image identity and no runtime authority", () => {
   assert.deepEqual(bytes(), canonicalStage4RuntimeArtifactBytes(buildStage4RuntimeArtifactEvidence()));
   const result = classifyStage4RuntimeArtifactEvidence(bytes());
   assert.equal(result.status, "candidate-closure-complete-blocked");
@@ -59,8 +59,8 @@ test("committed evidence is deterministic exact local closure with every authori
   assert.equal(result.eks_public_candidate_selected, true);
   assert.equal(result.eks_ami_id_resolved, false);
   assert.equal(result.running_kernel_resolved, false);
-  assert.equal(result.release_image_set_present, false);
-  assert.equal(result.exact_image_identity_closure_satisfied, false);
+  assert.equal(result.release_image_set_present, true);
+  assert.equal(result.exact_image_identity_closure_satisfied, true);
   assert.equal(result.campaign_authorized, false);
   assert.equal(result.cloud_execution_observed, false);
   assert.equal(result.provider_truth_observed, false);
@@ -120,7 +120,7 @@ test("public EKS candidate is exact while all AWS-resolved fields remain absent"
   assert.equal(candidate.provider_truth_observed, false);
 });
 
-test("static candidate freeze retires stale image identities and cannot promote retired OpenBao or runtime truth", () => {
+test("static candidate freeze binds current dependencies and cannot promote retired OpenBao or runtime truth", () => {
   const freeze = object().static_candidate_freeze;
   assert.equal(freeze.envoy.publisher_signature_verified, false);
   assert.equal(
@@ -167,8 +167,18 @@ test("static candidate freeze retires stale image identities and cannot promote 
     freeze.dependency_lock.pi_coding_agent_sri,
     "sha512-l4E+B7hgXKWddRo8bC/eSue2aWZjEgJ9xIpf5p0Og+lq8a2TArCwJ0HCoCPCgaBP/tN4zbYH/wOwvx9pJpeLCA==",
   );
-  assert.equal(Object.hasOwn(freeze, "release_images"), false);
-  assert.equal(object().claims.release_image_set_present, false);
+  assert.deepEqual(freeze.release_images, {
+    state: "reviewed-current-source-image-set",
+    assertion_sha256: "2368b09be02dc6e21debd8f047e58400173d62ff13edc27398ddbfe1708474d4",
+    review_sha256: "9e3f9ababef58e8b4cc90e9f007251c05a2065eb2ff2e25f928e7c8b4d61e216",
+    workflow_run_id: 31856469035,
+    image_source_sha: "cb9ec3958f6f2571c7c3f90e25b645e49e288a3f",
+    image_source_tree_sha: "bf47273803ee54b5a2fd29d61224836e9f1bfd77",
+    image_source_inventory_sha256: "de0173b66335bbdfbc10968061fac058cfd5648d3a46beb5e537eefa8fa460b8",
+    worker: "ghcr.io/nenb/cogs/worker@sha256:1e71b2d0cd65f16c9633e092311b885ff03f43f4036195326e1a9fc91ea57535",
+    sandbox: "ghcr.io/nenb/cogs/sandbox@sha256:db475ee1d01d446fe79cc9efdad40c9589cefe60eb69bce2f35108ea44eb94fe",
+  });
+  assert.equal(object().claims.release_image_set_present, true);
   assert.equal(object().claims.release_eligible, false);
 });
 
@@ -178,7 +188,7 @@ test("evidence compiles under strict schema and rejects unknown fields", () => {
   const ajv = new Ajv2020({ allErrors: true, strict: true, strictRequired: false, ownProperties: true });
   require("ajv-formats")(ajv);
   const schema = JSON.parse(
-    readFileSync(resolve(root, "schemas/stage4-authenticated-runtime-artifact-evidence-v3.json"), "utf8"),
+    readFileSync(resolve(root, "schemas/stage4-authenticated-runtime-artifact-evidence-v4.json"), "utf8"),
   );
   const validate = ajv.compile(schema);
   assert.equal(validate(object()), true, JSON.stringify(validate.errors));
@@ -207,8 +217,9 @@ test("hostile artifact, provenance, QEMU, EKS, freeze, and claim drift fail clos
     (value) => (value.eks_node_image_candidate.running_kernel_release = "claimed"),
     (value) => (value.static_candidate_freeze.envoy.publisher_signature_verified = true),
     (value) => (value.static_candidate_freeze.skills.policy = "ambient-skills"),
-    (value) => (value.static_candidate_freeze.release_images = {}),
-    (value) => (value.claims.release_image_set_present = true),
+    (value) =>
+      (value.static_candidate_freeze.release_images.worker = value.static_candidate_freeze.release_images.sandbox),
+    (value) => (value.claims.release_image_set_present = false),
     (value) => (value.claims.cloud_execution_observed = true),
     (value) => (value.claims.release_eligible = true),
   ];

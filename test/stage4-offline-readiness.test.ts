@@ -53,8 +53,8 @@ function artifacts(): Record<string, Uint8Array> {
     repeatedRender: bytes("docs/security-evidence/stage4-offline-readiness-artifacts/notes-render-repeat.yaml"),
     renderReceipt: bytes("docs/security-evidence/stage4-offline-readiness-artifacts/render-preparation-receipt.json"),
     imageLock: bytes("docs/security-evidence/stage4-offline-readiness-artifacts/image-lock.json"),
-    releaseImageAssertion: bytes("docs/security-evidence/release-image-set-assertion-30852317459.canonical.json"),
-    releaseImageReview: bytes("docs/security-evidence/release-image-set-review-30852317459.canonical.json"),
+    releaseImageAssertion: bytes("docs/security-evidence/release-image-set-assertion-31856469035.canonical.json"),
+    releaseImageReview: bytes("docs/security-evidence/release-image-set-review-31856469035.canonical.json"),
     nicContract: bytes("deploy/nic/stage4-sandbox-node-group-contract.json"),
     runtimePins: bytes("docs/security-evidence/stage4-offline-readiness-artifacts/runtime-pins.json"),
     authenticatedRuntimeArtifacts: bytes(
@@ -106,10 +106,10 @@ test("verdict and package compile under strict independent schemas", () => {
   const Ajv2020 = require("ajv/dist/2020.js") as new (options?: Options) => AjvCore;
   const ajv = new Ajv2020({ allErrors: true, strict: true, strictRequired: false, ownProperties: true });
   const packageSchema = JSON.parse(
-    readFileSync(resolve(root, "schemas/stage4-offline-readiness-package-v4.json"), "utf8"),
+    readFileSync(resolve(root, "schemas/stage4-offline-readiness-package-v5.json"), "utf8"),
   );
   const verdictSchema = JSON.parse(
-    readFileSync(resolve(root, "schemas/stage4-offline-readiness-verdict-v4.json"), "utf8"),
+    readFileSync(resolve(root, "schemas/stage4-offline-readiness-verdict-v5.json"), "utf8"),
   );
   const validatePackage = ajv.compile(packageSchema);
   const validateVerdict = ajv.compile(verdictSchema);
@@ -218,14 +218,18 @@ test("committed inventories are canonical, complete for their scopes, and bind e
     "schemas/local-image-artifact-package-v1.json",
     "schemas/release-image-set-assertion-v1.json",
     "schemas/release-image-set-review-v1.json",
+    "schemas/release-image-set-review-v2.json",
     "schemas/runtime-v1alpha1.json",
     "third_party/envoy-ext-authz-v1.38.3/ext_authz.descriptor.pb",
     "third_party/envoy-ext-authz-v1.38.3/manifest.json",
     "scripts/local-image-artifacts.ts",
     "scripts/release-image-set-assertion.ts",
     "scripts/release-image-set-review.ts",
+    "scripts/release-image-set-review-v2.ts",
     "docs/security-evidence/release-image-set-assertion-30852317459.canonical.json",
     "docs/security-evidence/release-image-set-review-30852317459.canonical.json",
+    "docs/security-evidence/release-image-set-assertion-31856469035.canonical.json",
+    "docs/security-evidence/release-image-set-review-31856469035.canonical.json",
     "scripts/validate-trivy-image-report.jq",
     "test/production-compose.test.ts",
     "test/production-sandbox-image.test.ts",
@@ -269,6 +273,7 @@ test("committed inventories are canonical, complete for their scopes, and bind e
             "local-image-artifact-package-v1.json",
             "release-image-set-assertion-v1.json",
             "release-image-set-review-v1.json",
+            "release-image-set-review-v2.json",
             "runtime-v1alpha1.json",
           ].includes(name),
       )
@@ -345,24 +350,29 @@ test("committed inventories are canonical, complete for their scopes, and bind e
       "schemas/stage4-offline-readiness-package-v2.json",
       "schemas/stage4-offline-readiness-package-v3.json",
       "schemas/stage4-offline-readiness-package-v4.json",
+      "schemas/stage4-offline-readiness-package-v5.json",
       "schemas/stage4-offline-readiness-verdict-v1.json",
       "schemas/stage4-offline-readiness-verdict-v2.json",
       "schemas/stage4-offline-readiness-verdict-v3.json",
       "schemas/stage4-offline-readiness-verdict-v4.json",
+      "schemas/stage4-offline-readiness-verdict-v5.json",
       "schemas/stage4-authenticated-runtime-artifact-evidence-v1.json",
       "schemas/stage4-authenticated-runtime-artifact-evidence-v2.json",
       "schemas/stage4-authenticated-runtime-artifact-evidence-v3.json",
+      "schemas/stage4-authenticated-runtime-artifact-evidence-v4.json",
       "schemas/integration-v1alpha1.json",
       "schemas/launch-v1alpha1.json",
       "schemas/local-image-artifact-package-v1.json",
       "schemas/release-image-set-assertion-v1.json",
       "schemas/release-image-set-review-v1.json",
+      "schemas/release-image-set-review-v2.json",
       "schemas/runtime-v1alpha1.json",
       "scripts/private-bytes.ts",
       "scripts/check-lock-integrity.ts",
       "scripts/check-npm-audit.ts",
       "scripts/release-image-set-pins.ts",
       "scripts/release-image-set-review.ts",
+      "scripts/release-image-set-review-v2.ts",
       "scripts/release-local-preflight-cli.ts",
       "scripts/release-local-preflight.ts",
       "scripts/release-trivy-database-metadata-cli.ts",
@@ -374,6 +384,7 @@ test("committed inventories are canonical, complete for their scopes, and bind e
       "scripts/stage4-runtime-artifact-closure.ts",
       "scripts/validate-schemas.ts",
       "test/release-image-set-review.test.ts",
+      "test/release-image-set-review-v2.test.ts",
       "test/release-local-preflight.test.ts",
       "test/stage4-offline-readiness.test.ts",
       "test/stage4-offline-render-preparation.test.ts",
@@ -398,10 +409,10 @@ test("committed inventories are canonical, complete for their scopes, and bind e
       (image: { reference: string }) => image.reference,
     ),
   );
-  assert.equal(imageLock.release_image_set_present, false);
-  assert.equal(imageLock.exact_image_closure_satisfied, false);
-  assert.equal(imageLock.images[0].artifact_identity_state, "historical-reviewed-protected-main-image-set-record");
-  assert.equal(imageLock.images[2].artifact_identity_state, "historical-reviewed-protected-main-image-set-record");
+  assert.equal(imageLock.release_image_set_present, true);
+  assert.equal(imageLock.exact_image_closure_satisfied, true);
+  assert.equal(imageLock.images[0].artifact_identity_state, "reviewed-protected-main-image-set-record");
+  assert.equal(imageLock.images[2].artifact_identity_state, "reviewed-protected-main-image-set-record");
   assert.equal(
     imageLock.release_image_set.assertion_sha256,
     packageObject().artifact_bindings.release_image_assertion_sha256,
@@ -854,15 +865,15 @@ test("NIC v2 remains non-observing while node-image and runtime uncertainty cann
       },
     ],
     [
-      "historical release image set promoted",
+      "reviewed release image set removed",
       (value) => {
-        value.pins.images.release_image_set_present = true;
+        value.pins.images.release_image_set_present = false;
       },
     ],
     [
-      "historical image identity closure promoted",
+      "reviewed image identity closure removed",
       (value) => {
-        value.pins.images.exact_image_closure_satisfied = true;
+        value.pins.images.exact_image_closure_satisfied = false;
       },
     ],
     [
