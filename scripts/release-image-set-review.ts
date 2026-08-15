@@ -3,7 +3,6 @@ import { createRequire } from "node:module";
 import { TextDecoder } from "node:util";
 import type { Ajv as AjvCore, Options, ValidateFunction } from "ajv";
 import { capturePrivateBytes } from "./private-bytes.ts";
-import { classifyReleaseImageSetAssertion } from "./release-image-set-assertion.ts";
 
 const require = createRequire(import.meta.url);
 const Ajv2020 = require("ajv/dist/2020.js") as new (options?: Options) => AjvCore;
@@ -192,8 +191,10 @@ export function classifyReleaseImageSetReview(
     return invalid("REVIEW_INPUT_BOUNDEDNESS_INVALID");
   const assertionSha = sha256(assertionCapture.bytes);
   const reviewSha = sha256(reviewCapture.bytes);
-  const assertionVerdict = classifyReleaseImageSetAssertion(assertionCapture.bytes);
-  if (!assertionVerdict.record_valid || assertionSha !== RELEASE_IMAGE_SET_ASSERTION_SHA256) {
+  // The independently reviewed assertion is immutable historical evidence. Bind
+  // its exact bytes before parsing rather than reinterpreting it with mutable
+  // publication-tool pins selected after that review.
+  if (assertionSha !== RELEASE_IMAGE_SET_ASSERTION_SHA256) {
     return invalid("ASSERTION_RECORD_INVALID", assertionSha, reviewSha);
   }
   let review: JsonObject;

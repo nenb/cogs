@@ -58,7 +58,7 @@ require("ajv-formats")(ajv);
 const validateEvidence = ajv.compile(evidenceSchema) as ValidateFunction;
 
 /* stage4-runtime-schema-inventory-anchor-start */
-const STAGE4_RUNTIME_SCHEMA_INVENTORY_SHA256 = "50ba9e24139f937240d42a5a02853e58b0efccf7667b4fb2e630c58adec0275d";
+const STAGE4_RUNTIME_SCHEMA_INVENTORY_SHA256 = "f1357b20cedbf1b08b459581efa949c99e98537505ecac4395e2177d77357373";
 /* stage4-runtime-schema-inventory-anchor-end */
 
 function compareCodePoints(left: string, right: string): number {
