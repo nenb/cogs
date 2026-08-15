@@ -1,0 +1,164 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.dev/schemas/export-manifest-v1alpha2.json",
+  "title": "Cogs local export manifest v1alpha2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "cogs_version",
+    "pi_version",
+    "session_id",
+    "created_at",
+    "mode",
+    "attachments_included",
+    "files",
+    "skills"
+  ],
+  "properties": {
+    "version": {
+      "const": "cogs.export/v1alpha2"
+    },
+    "cogs_version": {
+      "const": "0.0.0"
+    },
+    "pi_version": {
+      "const": "0.84.2"
+    },
+    "session_id": {
+      "$ref": "#/$defs/opaqueId"
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "mode": {
+      "const": "raw"
+    },
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "id"],
+      "properties": {
+        "provider": {
+          "$ref": "#/$defs/opaqueId"
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        }
+      }
+    },
+    "files": {
+      "type": "array",
+      "minItems": 5,
+      "allOf": [
+        {
+          "contains": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "const": "session.jsonl"
+              }
+            },
+            "required": ["path"]
+          }
+        },
+        {
+          "contains": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "const": "git-map.json"
+              }
+            },
+            "required": ["path"]
+          }
+        },
+        {
+          "contains": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "const": "skills.json"
+              }
+            },
+            "required": ["path"]
+          }
+        },
+        {
+          "contains": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "const": "warnings.json"
+              }
+            },
+            "required": ["path"]
+          }
+        },
+        {
+          "contains": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "const": "transform-report.json"
+              }
+            },
+            "required": ["path"]
+          }
+        }
+      ],
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "sha256", "bytes"],
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024,
+            "pattern": "^(?![A-Za-z]:)(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\)(?!.*//)[^\\u0000-\\u001F\\u007F]+$"
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "bytes": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      }
+    },
+    "skills": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["shared_revision", "user_revision"],
+      "properties": {
+        "shared_revision": {
+          "$ref": "#/$defs/digest"
+        },
+        "user_revision": {
+          "$ref": "#/$defs/digest"
+        }
+      }
+    },
+    "attachments_included": {
+      "const": false
+    }
+  },
+  "$defs": {
+    "opaqueId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    }
+  }
+}

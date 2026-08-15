@@ -1,12 +1,11 @@
 import type { StreamFn } from "@earendil-works/pi-agent-core";
-import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
-import { type AssistantMessage, getModel } from "@earendil-works/pi-ai/compat";
+import { createAssistantMessageEventStream, InMemoryCredentialStore } from "@earendil-works/pi-ai";
+import type { AssistantMessage } from "@earendil-works/pi-ai/compat";
 import {
-  AuthStorage,
   createAgentSession,
   createExtensionRuntime,
   defineTool,
-  ModelRegistry,
+  ModelRuntime,
   type ResourceLoader,
   type SessionManager,
   SettingsManager,
@@ -23,7 +22,7 @@ export interface FakeModelState {
 
 export interface SpikeSessionResult {
   session: Awaited<ReturnType<typeof createAgentSession>>["session"];
-  authStorage: AuthStorage;
+  modelRuntime: ModelRuntime;
   fakeModelState: FakeModelState;
   executedTools: string[];
 }
@@ -96,7 +95,9 @@ export function createLockedResourceLoader(): ResourceLoader {
     getThemes: () => ({ themes: [], diagnostics: [] }),
     getAgentsFiles: () => ({ agentsFiles: [] }),
     getSystemPrompt: () => "You are a deterministic Stage 0 test agent. Use only the explicitly supplied stub tools.",
+    getSystemPromptSource: () => undefined,
     getAppendSystemPrompt: () => [],
+    getAppendSystemPromptSources: () => [],
     extendResources: () => {},
     reload: async () => {},
   };
@@ -148,10 +149,14 @@ export async function createSpikeSession(
   cwd: string,
   agentDir: string,
 ): Promise<SpikeSessionResult> {
-  const authStorage = AuthStorage.inMemory();
-  authStorage.setRuntimeApiKey("anthropic", SPIKE_API_KEY);
-  const modelRegistry = ModelRegistry.inMemory(authStorage);
-  const model = getModel("anthropic", "claude-sonnet-4-5");
+  const modelRuntime = await ModelRuntime.create({
+    credentials: new InMemoryCredentialStore(),
+    modelsPath: null,
+    allowModelNetwork: false,
+    refreshOnCreate: false,
+  });
+  await modelRuntime.setRuntimeApiKey("anthropic", SPIKE_API_KEY);
+  const model = modelRuntime.getModel("anthropic", "claude-sonnet-4-5");
   if (!model) throw new Error("Pinned Pi catalog does not contain the spike model");
 
   const executedTools: string[] = [];
@@ -161,8 +166,7 @@ export async function createSpikeSession(
     agentDir,
     model,
     thinkingLevel: "off",
-    authStorage,
-    modelRegistry,
+    modelRuntime,
     resourceLoader: createLockedResourceLoader(),
     customTools: createStubTools(executedTools),
     tools: [...SPIKE_TOOL_NAMES],
@@ -172,10 +176,16 @@ export async function createSpikeSession(
   });
 
   const fakeStream = createFakeModelStream(fakeModelState);
-  session.agent.streamFn = async (activeModel, context, options) => {
-    const apiKey = await authStorage.getApiKey(activeModel.provider);
-    if (!apiKey) throw new Error("fake stream did not receive the runtime API key");
+  session.agent.streamFunction = async (activeModel, context, options) => {
+    const auth = await modelRuntime.getAuth(
+      activeModel,
+      options?.signal === undefined ? {} : { signal: options.signal },
+    );
+    const apiKey = auth?.auth.apiKey;
+    if (auth?.source !== "stored credential" || !apiKey || auth.auth.headers !== undefined || auth.env !== undefined) {
+      throw new Error("fake stream did not receive the runtime API key");
+    }
     return fakeStream(activeModel, context, { ...options, apiKey });
   };
-  return { session, authStorage, fakeModelState, executedTools };
+  return { session, modelRuntime, fakeModelState, executedTools };
 }

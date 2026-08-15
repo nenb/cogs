@@ -640,7 +640,7 @@ test("production import boundary and foundation docs preserve the implemented-so
   assert.match(compose, /mode:\s*"otlp"/u);
   assert.match(foundation, /now provide `src\/main\.ts`, fail-closed production composition/u);
   assert.match(foundation, /Helm chart remains NOTES-only with zero submitted manifests/u);
-  assert.match(foundation, /`RELEASE_IMAGE_SET_ABSENT` and the placeholders are removed/u);
+  assert.match(foundation, /restores `RELEASE_IMAGE_SET_ABSENT` pending a new protected-main publication/u);
   assert.match(foundation, /`NO_EXECUTABLE_PROVIDER_ROUTE` and every false runtime\/provider\/Kubernetes\/cloud/u);
   assert.doesNotMatch(foundation, /following remain unimplemented:[\s\S]*`src\/main\.ts`/u);
 });

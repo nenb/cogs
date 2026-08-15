@@ -80,10 +80,10 @@ type BundleFile =
   | "manifest.json";
 
 const EXPORT_ROOT = "exports";
-const VERSION = "cogs.export/v1alpha1";
+const VERSION = "cogs.export/v1alpha2";
 const DESCRIPTOR_VERSION = "cogs.export-descriptor/v1alpha1";
 const COGS_VERSION = "0.0.0";
-const PI_VERSION = "0.80.6";
+const PI_VERSION = "0.84.2";
 const MAX_BUNDLE_BYTES = 72 * 1024 * 1024;
 const DEFAULT_TIMEOUT_MS = 10_000;
 const OPAQUE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;

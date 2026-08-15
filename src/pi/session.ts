@@ -2,14 +2,14 @@ import { constants } from "node:fs";
 import { access, lstat, mkdir, open, realpath, unlink } from "node:fs/promises";
 import { dirname, resolve, sep } from "node:path";
 import type { StreamFn } from "@earendil-works/pi-agent-core";
+import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import {
-  AuthStorage,
   createAgentSession,
   createExtensionRuntime,
   createSyntheticSourceInfo,
   defineTool,
-  ModelRegistry,
+  ModelRuntime,
   type ResourceLoader,
   SessionManager,
   SettingsManager,
@@ -75,6 +75,7 @@ import {
 
 export const COGS_PI_TOOL_NAMES = ["read", "write", "edit", "bash"] as const;
 export type CogsPiToolName = (typeof COGS_PI_TOOL_NAMES)[number];
+const COGS_PI_API_KEY_PROVIDERS = new Set(["anthropic", "openai", "openrouter"]);
 
 export interface CogsToolPorts {
   readonly read: (input: { path: string; offset?: number; limit?: number; signal?: AbortSignal }) => Promise<JsonValue>;
@@ -383,7 +384,9 @@ export function createLockedResourceLoader(
     getAgentsFiles: () => ({ agentsFiles: [...agentsFiles] }),
     getSystemPrompt: () =>
       input.systemPrompt ?? "You are Cogs. Use only the explicitly supplied read, write, edit, and bash tools.",
+    getSystemPromptSource: () => undefined,
     getAppendSystemPrompt: () => [...appendSystemPrompt],
+    getAppendSystemPromptSources: () => [],
     extendResources: () => {},
     reload: async () => {},
   };
@@ -484,6 +487,7 @@ export async function createCogsPiSession(options: CogsPiSessionOptions): Promis
   assertOpaqueId(sessionId, "session id");
   assertProviderId(modelProvider, "provider id");
   assertModelId(modelId, "model id");
+  if (!COGS_PI_API_KEY_PROVIDERS.has(modelProvider)) throw new Error("unsupported model provider");
 
   const secret: SecretHolder = { value: apiKey };
   let preparedResources: CogsPreparedSkills | undefined;
@@ -499,7 +503,12 @@ export async function createCogsPiSession(options: CogsPiSessionOptions): Promis
           options: ownedRuntimeOptions,
           ...(resumeFile === undefined ? {} : { resumeFile }),
         });
-  const authStorage = AuthStorage.inMemory();
+  const modelRuntime = await ModelRuntime.create({
+    credentials: new InMemoryCredentialStore(),
+    modelsPath: null,
+    allowModelNetwork: false,
+    refreshOnCreate: false,
+  });
   let ownershipStarted = false;
   try {
     await ownedRuntime?.begin();
@@ -517,11 +526,14 @@ export async function createCogsPiSession(options: CogsPiSessionOptions): Promis
       },
       policyAuthorizer,
     );
-    authStorage.setRuntimeApiKey(modelProvider, secret.value);
-    const modelRegistry = ModelRegistry.inMemory(authStorage);
-    const model = modelRegistry.find(modelProvider, modelId);
+    await boundedModelCredentialMutation(
+      (signal) => modelRuntime.setRuntimeApiKey(modelProvider, secret.value, { signal }),
+      abortTimeoutMs ?? 5_000,
+    );
+    const model = modelRuntime.getModel(modelProvider, modelId);
     if (!model) throw new Error("unknown model");
-    if (modelRegistry.isUsingOAuth(model)) throw new Error("oauth model authentication is disabled");
+    if (modelRuntime.isUsingOAuth(modelProvider)) throw new Error("oauth model authentication is disabled");
+    await resolveRuntimeApiKey(modelRuntime, model, secret.value, abortTimeoutMs ?? 5_000);
 
     const sessionManager = await createContainedSessionManager(cwd, sessionRoot, sessionId, resumeFile);
     const sessionDir = sessionManager.getSessionDir();
@@ -607,8 +619,7 @@ export async function createCogsPiSession(options: CogsPiSessionOptions): Promis
       agentDir,
       model,
       thinkingLevel: "off",
-      authStorage,
-      modelRegistry,
+      modelRuntime,
       resourceLoader: createLockedResourceLoader(
         preparedResources === undefined
           ? {}
@@ -632,15 +643,19 @@ export async function createCogsPiSession(options: CogsPiSessionOptions): Promis
     const session = sessionResult.session;
     await historyStore.flushSettled();
 
-    if (streamFn !== undefined) {
-      session.agent.streamFn = async (activeModel, context, streamOptions) => {
-        const apiKey = await authStorage.getApiKey(activeModel.provider, { includeFallback: false });
-        if (!apiKey) throw new Error("missing runtime model API key");
-        return streamFn(activeModel, context, { ...streamOptions, apiKey });
-      };
-    }
+    const piStream = session.agent.streamFunction;
+    session.agent.streamFunction = async (activeModel, context, streamOptions) => {
+      const apiKey = await resolveRuntimeApiKey(
+        modelRuntime,
+        activeModel,
+        secret.value,
+        operationTimeoutMs ?? 30_000,
+        streamOptions?.signal,
+      );
+      return (streamFn ?? piStream)(activeModel, context, { ...streamOptions, apiKey });
+    };
 
-    const adapter = new PiSessionAdapter(session, authStorage, model, sessionManager, {
+    const adapter = new PiSessionAdapter(session, modelRuntime, model, sessionManager, {
       emit,
       onFatal,
       provider: modelProvider,
@@ -673,8 +688,16 @@ export async function createCogsPiSession(options: CogsPiSessionOptions): Promis
         cleanupError = disposeError;
       }
     }
-    authStorage.removeRuntimeApiKey(modelProvider);
-    secret.value = "";
+    try {
+      await boundedModelCredentialMutation(
+        (signal) => modelRuntime.removeRuntimeApiKey(modelProvider, { signal }),
+        abortTimeoutMs ?? 5_000,
+      );
+    } catch (removeError) {
+      cleanupError = removeError;
+    } finally {
+      secret.value = "";
+    }
     if (ownershipStarted) {
       try {
         await ownedRuntime?.cleanup(async () => undefined);
@@ -1359,6 +1382,65 @@ function maxTurn(records: readonly CogsGitMapRecord[]): number {
   return turn;
 }
 
+async function boundedModelCredentialMutation(
+  operation: (signal: AbortSignal) => Promise<void>,
+  timeoutMs: number,
+): Promise<void> {
+  const controller = new AbortController();
+  let timer: NodeJS.Timeout | undefined;
+  const mutation = Promise.resolve()
+    .then(() => operation(controller.signal))
+    .catch(() => {
+      throw new Error("model credential operation failed");
+    });
+  try {
+    await Promise.race([
+      mutation,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          controller.abort();
+          reject(new Error("model credential operation failed"));
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+    controller.abort();
+  }
+}
+
+async function resolveRuntimeApiKey(
+  modelRuntime: ModelRuntime,
+  model: Model<Api>,
+  expectedKey: string,
+  timeoutMs: number,
+  parentSignal?: AbortSignal,
+): Promise<string> {
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  if (parentSignal?.aborted) abort();
+  else parentSignal?.addEventListener("abort", abort, { once: true });
+  const timer = setTimeout(abort, timeoutMs);
+  try {
+    const auth = await modelRuntime.getAuth(model, { signal: controller.signal });
+    if (
+      auth?.source !== "stored credential" ||
+      auth.auth.apiKey !== expectedKey ||
+      auth.auth.headers !== undefined ||
+      auth.env !== undefined
+    ) {
+      throw new Error("invalid auth");
+    }
+    return auth.auth.apiKey;
+  } catch {
+    throw new Error("model authentication unavailable");
+  } finally {
+    clearTimeout(timer);
+    parentSignal?.removeEventListener("abort", abort);
+    controller.abort();
+  }
+}
+
 function observerDeadline<T>(promise: Promise<T> | PromiseLike<T>, ms: number, onTimeout?: () => void): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
   return Promise.race([
@@ -1617,7 +1699,7 @@ function matchesLeaf(
 }
 
 class PiSessionAdapter implements CogsPiSessionPorts {
-  readonly #authStorage: AuthStorage;
+  readonly #modelRuntime: ModelRuntime;
   private active: ActiveRun | undefined;
   private phase: AdapterPhase = "open";
   private cleanupPromise: Promise<void> | undefined;
@@ -1633,7 +1715,7 @@ class PiSessionAdapter implements CogsPiSessionPorts {
 
   public constructor(
     private readonly session: PiSession,
-    authStorage: AuthStorage,
+    modelRuntime: ModelRuntime,
     public readonly model: Model<Api>,
     private readonly sessionManager: SessionManager,
     private readonly runtime: {
@@ -1655,7 +1737,7 @@ class PiSessionAdapter implements CogsPiSessionPorts {
       readonly ownedRuntime: CogsPiOwnedRuntimeTracker | undefined;
     },
   ) {
-    this.#authStorage = authStorage;
+    this.#modelRuntime = modelRuntime;
     this.timeoutMs = runtime.operationTimeoutMs ?? 60_000;
     this.abortTimeoutMs = runtime.abortTimeoutMs ?? 5_000;
     this.unsubscribe = session.subscribe((event) => this.forwardEvent(event));
@@ -1905,8 +1987,16 @@ class PiSessionAdapter implements CogsPiSessionPorts {
         cleanupError = error;
       }
     }
-    this.#authStorage.removeRuntimeApiKey(this.runtime.provider);
-    this.runtime.secret.value = "";
+    try {
+      await boundedModelCredentialMutation(
+        (signal) => this.#modelRuntime.removeRuntimeApiKey(this.runtime.provider, { signal }),
+        this.abortTimeoutMs,
+      );
+    } catch (error) {
+      cleanupError = error;
+    } finally {
+      this.runtime.secret.value = "";
+    }
     this.phase = "disposed";
     if (cleanupError !== undefined) throw new Error("Pi session cleanup failed");
   }
@@ -2287,8 +2377,16 @@ class PiSessionAdapter implements CogsPiSessionPorts {
             cleanupError = error;
           }
         }
-        this.#authStorage.removeRuntimeApiKey(this.runtime.provider);
-        this.runtime.secret.value = "";
+        try {
+          await boundedModelCredentialMutation(
+            (signal) => this.#modelRuntime.removeRuntimeApiKey(this.runtime.provider, { signal }),
+            this.abortTimeoutMs,
+          );
+        } catch (error) {
+          cleanupError = error;
+        } finally {
+          this.runtime.secret.value = "";
+        }
         this.active = undefined;
         this.phase = "failed";
         this.invokeFatal(_reason);

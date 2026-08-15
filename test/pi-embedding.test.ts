@@ -54,7 +54,7 @@ test("headless Pi embedding uses only four stubs, ignores hostile discovery, and
     await installHostileCanaries(cwd, agentDir);
 
     const sessionManager = SessionManager.create(cwd, sessionDir);
-    const { session, authStorage, fakeModelState, executedTools } = await createSpikeSession(
+    const { session, modelRuntime, fakeModelState, executedTools } = await createSpikeSession(
       sessionManager,
       cwd,
       agentDir,
@@ -66,8 +66,8 @@ test("headless Pi embedding uses only four stubs, ignores hostile discovery, and
         [...SPIKE_TOOL_NAMES].sort(),
         "the trusted worker must expose exactly the four Cogs tools",
       );
-      assert.equal(authStorage.getAuthStatus("anthropic").source, "runtime");
-      assert.equal(await authStorage.getApiKey("anthropic"), SPIKE_API_KEY);
+      assert.equal(modelRuntime.getProviderAuthStatus("anthropic").source, "runtime");
+      assert.equal((await modelRuntime.getAuth("anthropic"))?.auth.apiKey, SPIKE_API_KEY);
 
       await assertMissing(marker, "resource construction must not execute discovery canaries");
       await session.prompt("Use read once, then finish.");
@@ -94,6 +94,7 @@ test("headless Pi embedding uses only four stubs, ignores hostile discovery, and
       );
     } finally {
       session.dispose();
+      await modelRuntime.removeRuntimeApiKey("anthropic");
     }
 
     const sessionFile = sessionManager.getSessionFile();

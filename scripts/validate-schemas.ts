@@ -51,8 +51,7 @@ const integration = {
   },
 };
 
-type ClosureTool = Record<string, unknown> & { objects: Array<Record<string, unknown>> };
-type ClosureReport = Record<string, unknown> & { tools: ClosureTool[] };
+type ClosureReport = Record<string, unknown> & { tools: Array<{ objects: Array<Record<string, unknown>> }> };
 const closureGolden = JSON.parse(
   readFileSync(resolve(root, "test/fixtures/outcome-two/reports/runtime-closure-v1.canonical.jsonl"), "utf8"),
 ) as ClosureReport;
@@ -116,10 +115,10 @@ const validSamples: Record<string, unknown> = {
     allow: true,
     reason: "allowed",
   },
-  "export-manifest-v1alpha1.json": {
-    version: "cogs.export/v1alpha1",
+  "export-manifest-v1alpha2.json": {
+    version: "cogs.export/v1alpha2",
     cogs_version: "0.0.0",
-    pi_version: "0.80.6",
+    pi_version: "0.84.2",
     session_id: "session-123",
     created_at: "2026-07-10T12:00:00Z",
     mode: "raw",
@@ -182,8 +181,7 @@ function nativeMetadata(job: keyof typeof nativeChecks): unknown[] {
     { role: "executable", sha256: "1".repeat(64), size_bytes: 11, soname: null, needed: ["ld.so"] },
     { role: "loader", sha256: "2".repeat(64), size_bytes: 12, soname: "ld.so", needed: [] },
   ];
-  const normalized = objects.map(({ size_bytes, ...row }) => ({ ...row, size: size_bytes }));
-  const mapped = objects.map(({ role, sha256 }) => ({ role, sha256 }));
+  const normalized = objects.map(({ size_bytes, ...row }) => ({ ...row, size: size_bytes })); const mapped = objects.map(({ role, sha256 }) => ({ role, sha256 }));
   if (job === "A") return [
     ...objects.map((row, index) => ({ kind: "object", id: `python-object-${index}`, ...row })),
     { kind: "summary", closure_sha256: hash(normalized), mapping_sha256: hash(mapped.map(({ role, sha256 }) => [role, sha256])),
@@ -199,8 +197,7 @@ function nativeMetadata(job: keyof typeof nativeChecks): unknown[] {
         source_sha256: executable.sha256, source_size_bytes: 11, sealed_sha256: executable.sha256,
         sealed_size_bytes: 11, seal_mask: 63, execution_mapping_sha256: mapping, output_sha256: markerHash };
     });
-    const parserObjects = structuredClone(objects);
-    const parserView = parserObjects.map(({ size_bytes, ...row }) => ({ ...row, size: size_bytes }));
+    const parserObjects = structuredClone(objects); const parserView = parserObjects.map(({ size_bytes, ...row }) => ({ ...row, size: size_bytes }));
     const closureView = (row: typeof tools[number]) => ({ closure_sha256: row.closure_sha256,
       objects: row.objects.map(({ size_bytes, ...item }) => ({ ...item, size: size_bytes })),
       seal_profile: "linux-memfd-exec-seals-v1", sealed_executable: true, tool: row.id });

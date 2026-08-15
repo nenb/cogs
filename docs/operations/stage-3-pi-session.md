@@ -4,8 +4,8 @@ This slice promotes the Stage 0 Pi embedding spike into the production `SessionP
 
 ## Runtime boundary
 
-- The worker explicitly constructs Pi SDK runtime components: in-memory `AuthStorage`, in-memory `ModelRegistry`, internally constructed contained `SessionManager`, locked `ResourceLoader`, in-memory `SettingsManager`, and `createAgentSession()`.
-- Authentication is API-key-only and runtime-only. The adapter uses `AuthStorage.inMemory().setRuntimeApiKey(...)` and rejects OAuth/refresh-token paths. Runtime API keys are not read from files, reflected in events, or written to native Pi JSONL.
+- The worker explicitly constructs Pi SDK runtime components: `ModelRuntime` with application-owned `InMemoryCredentialStore`, internally constructed contained `SessionManager`, locked `ResourceLoader`, in-memory `SettingsManager`, and `createAgentSession()`. Model-file loading, model-network access, and create-time refresh are disabled.
+- Authentication is API-key-only and runtime-only. The adapter uses `ModelRuntime.setRuntimeApiKey(...)`, admits only the provisional `anthropic`, `openai`, and `openrouter` API-key providers, requires every stream to resolve the exact stored key without provider-derived environment or synthesized headers, rejects OAuth/refresh-token paths, and uses bounded abort signals for auth resolution and sanitized key removal. Runtime API keys are not read from files, reflected in events, errors, or written to native Pi JSONL.
 - Pi resource discovery is disabled. The locked resource loader returns no extensions, skills, prompts, themes, agents files, packages, or repository imports.
 - The only active SDK tools are the Cogs custom `read`, `write`, `edit`, and `bash` tools. They are backed solely by injected ports/fakes; no Pi built-in tools or direct host/network fallbacks are registered.
 
