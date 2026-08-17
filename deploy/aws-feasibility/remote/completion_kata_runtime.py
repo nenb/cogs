@@ -13,6 +13,9 @@ import hashlib
 import json
 import re
 import completion_kata_actions as actions
+import completion_kata_network as network
+import completion_kata_process as process
+import completion_kata_qualification as qualification
 
 BASE = "/var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/.state/completion-v1"
 INPUT_SHARE = BASE + "/kata-input-v1/share"
@@ -250,11 +253,6 @@ _make_fake_launch_permit_for_tests, _claim_launch_permit = _permit_routes()
 del _permit_routes
 
 
-def _open_production_owner():
-    """Fail closed until operation/root/input/network and tool issuers exist."""
-    raise KataRuntimeError("production runtime owner is unavailable: issuers unqualified")
-
-
 def ctr_run_spec(permit):
     """Consume the one operation-owned candidate bundle and return fixed bytes."""
     state = _claim_launch_permit(permit)
@@ -270,7 +268,7 @@ def ctr_run_spec(permit):
     return CommandSpec(actions.CommandId.CTR_RUN, argv, b"", "runtime-start")
 
 
-def fixed_command_specs_for_tests():
+def _fixed_command_specs():
     """Exact observer and non-force teardown argv; specifications only."""
     ctr = "/usr/bin/ctr"
     prefix = (ctr, "--namespace", NAMESPACE)
@@ -284,6 +282,11 @@ def fixed_command_specs_for_tests():
         (actions.CommandId.CTR_CONTAINER_REMOVE, prefix + ("containers", "rm", CONTAINER_ID), "remove"),
     )
     return tuple(CommandSpec(command, argv, b"", deadline) for command, argv, deadline in rows)
+
+
+def fixed_command_specs_for_tests():
+    """Preserve the historical read-only specification snapshot helper."""
+    return _fixed_command_specs()
 
 
 _CAPABILITIES = (
@@ -744,6 +747,62 @@ def container_remove_after_task(snapshot):
             snapshot.network is Observation.ABSENT and snapshot.container is Observation.EXACT):
         return TeardownAction.CONTAINER_REMOVE
     return TeardownAction.PRESERVE
+
+
+def _fixed_runtime_owner_routes():
+    """Seal the fixed containerd/Kata API behind process and /30 owners."""
+    seal = object()
+    states = {}
+
+    class FixedRuntimeOwner:
+        __slots__ = ()
+        def __new__(cls, key=None):
+            if key is not seal:
+                raise KataRuntimeError("sealed runtime owner")
+            return super().__new__(cls)
+        @property
+        def uncertain(self):
+            return states[self]["uncertain"]
+        @property
+        def closed(self):
+            return states[self]["closed"]
+        def observation_and_teardown_specs(self):
+            state = states[self]
+            if state["closed"] or state["uncertain"]:
+                raise KataRuntimeError("runtime owner is closed or uncertain")
+            return _fixed_command_specs()
+        def poison(self):
+            states[self]["uncertain"] = True
+        def close(self):
+            state = states[self]
+            if state["uncertain"]:
+                raise KataRuntimeError("runtime ownership is uncertain")
+            state["closed"] = True
+
+    def make(process_owner, network_owner):
+        if (type(process_owner) is not process.FixedProcessOwner or process_owner.closed
+                or type(network_owner) is not network.FixedNetworkOwner or network_owner.closed):
+            raise KataRuntimeError("exact live process/network owners required")
+        owner = FixedRuntimeOwner(seal)
+        states[owner] = {"closed": False, "uncertain": False,
+                         "process_owner": process_owner, "network_owner": network_owner}
+        return owner
+
+    def open_owner(grant, process_owner, network_owner):
+        qualification._consume_fixed_owner_grant(grant, "runtime")
+        return make(process_owner, network_owner)
+
+    return FixedRuntimeOwner, open_owner, make
+
+
+(FixedRuntimeOwner, _open_production_owner,
+ _make_fixed_runtime_owner_for_tests) = _fixed_runtime_owner_routes()
+del _fixed_runtime_owner_routes
+
+
+def open_fixed_runtime_owner():
+    """The zero-argument route cannot manufacture root/input/network authority."""
+    raise KataRuntimeError("production runtime owner requires the sealed coordinator gate")
 
 
 def source_invariants_for_tests():

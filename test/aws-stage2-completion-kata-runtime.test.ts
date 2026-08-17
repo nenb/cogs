@@ -45,7 +45,8 @@ test("S4 Kata runtime/spec/process/share owner is closed and hostile-tested offl
   assert.match(source, /MAX_SHARE_DEPTH = 4/u);
   assert.match(source, /MAX_SHARE_TOTAL = 256/u);
   assert.match(source, /def next_teardown_action\(snapshot\):/u);
-  assert.match(source, /def _open_production_owner\(\):/u);
+  assert.match(source, /class FixedRuntimeOwner/u);
+  assert.match(source, /_open_production_owner,/u);
   assert.doesNotMatch(
     source,
     /subprocess|socket|requests|urllib|boto|AWS|terraform|tofu|argparse|sys\.argv|os\.|environ|pathlib|\bopen\(|if __name__|ctr run --config/u,

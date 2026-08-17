@@ -44,7 +44,8 @@ test("S3 fixed network/firewall owner is closed and identity-conservative", asyn
   assert.match(source, /def recover_netns\(transition, observed, teardown\):/u);
   assert.match(source, /def recover_tc\(transition, observed, teardown\):/u);
   assert.match(source, /def recover_nft\(transition, observed, teardown\):/u);
-  assert.match(source, /production unavailable pending exact qualified host-tool fixtures and command permits/u);
+  assert.match(source, /class FixedNetworkOwner/u);
+  assert.match(source, /production network owner requires the sealed coordinator gate/u);
   assert.doesNotMatch(source, /def recovery_state|class Transition:|ADOPT|task_stopped/u);
   assert.doesNotMatch(source, /subprocess|os\.system|shell=True|iptables|masquerade|SNAT|DNAT/u);
   assert.doesNotMatch(source, /^def (?:run|execute|spawn|generic_command)\(/mu);

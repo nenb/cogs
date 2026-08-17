@@ -23,6 +23,7 @@ import struct
 import time
 import completion_kata_actions as actions
 import completion_kata_fdmap as fdmap
+import completion_kata_qualification as qualification
 import completion_kata_ssh as kata_ssh
 
 CONTRACT_VERSION = "cogs.stage2-kata-tool-closure/v1"
@@ -826,8 +827,95 @@ def adapt_ssh_process_outcome(outcome):
     )
 
 
+def _fixed_process_owner_routes():
+    """Build the production process API without exposing a permit issuer.
+
+    Only the eventual operation-journal bridge may register an outcome.  In
+    particular, constructing ``ProcessOutcome`` never makes it operation-owned.
+    The supervisor retains every absolute deadline and directly owned child.
+    """
+    seal = object()
+    states = {}
+
+    class FixedProcessOwner:
+        __slots__ = ()
+        def __new__(cls, key=None):
+            if key is not seal:
+                raise ProcessError("sealed process owner")
+            return super().__new__(cls)
+        @property
+        def uncertain(self):
+            return states[self]["uncertain"]
+        @property
+        def closed(self):
+            return states[self]["closed"]
+        def fixed_specs(self):
+            state = states[self]
+            if state["closed"] or state["uncertain"]:
+                raise ProcessError("process owner is closed or uncertain")
+            return tuple(_spec(command) for command in (
+                CommandId.CTR_CONTAINER_INFO, CommandId.CTR_CONTAINER_LIST,
+                CommandId.CTR_TASK_LIST, CommandId.CTR_TASK_TERM,
+                CommandId.CTR_TASK_KILL, CommandId.CTR_TASK_REMOVE,
+                CommandId.CTR_CONTAINER_REMOVE, CommandId.SSH_READY,
+            ))
+        def poison(self):
+            states[self]["uncertain"] = True
+        def close(self):
+            state = states[self]
+            if state["uncertain"]:
+                raise ProcessError("process ownership is uncertain")
+            if state["closed"]:
+                return
+            if state["outcomes"]:
+                state["uncertain"] = True
+                raise ProcessError("unconsumed operation outcome")
+            state["closed"] = True
+
+    def make():
+        owner = FixedProcessOwner(seal)
+        states[owner] = {"closed": False, "uncertain": False, "outcomes": {}}
+        return owner
+
+    def open_owner(grant):
+        qualification._consume_fixed_owner_grant(grant, "process")
+        return make()
+
+    def remember(owner, outcome):
+        state = states.get(owner)
+        if (type(owner) is not FixedProcessOwner or state is None or state["closed"]
+                or state["uncertain"] or type(outcome) is not ProcessOutcome):
+            raise ProcessError("exact live process owner/outcome required")
+        identity = id(outcome)
+        if identity in state["outcomes"]:
+            state["uncertain"] = True
+            raise ProcessError("duplicate operation outcome")
+        state["outcomes"][identity] = outcome
+        return outcome
+
+    def claim(owner, outcome, command_id):
+        state = states.get(owner)
+        if (type(owner) is not FixedProcessOwner or state is None or state["closed"]
+                or state["uncertain"] or type(command_id) is not CommandId
+                or type(outcome) is not ProcessOutcome):
+            raise ProcessError("operation-derived process outcome required")
+        retained = state["outcomes"].pop(id(outcome), None)
+        if retained is not outcome or outcome.command_id != command_id.value:
+            state["uncertain"] = True
+            raise ProcessError("foreign, replayed, or mismatched process outcome")
+        return outcome
+
+    return FixedProcessOwner, open_owner, remember, claim, make
+
+
+(FixedProcessOwner, _open_fixed_process_owner, _remember_operation_outcome_for_tests,
+ _claim_operation_outcome, _make_fixed_process_owner_for_tests) = _fixed_process_owner_routes()
+del _fixed_process_owner_routes
+
+
 def open_fixed_process_owner():
-    raise ProcessError("production process permits unavailable: committed preflight/closure absent")
+    """The zero-argument production entry cannot bypass coordinator preflight."""
+    raise ProcessError("production process owner requires the sealed coordinator gate")
 
 
 def _fixed_spec_snapshots_for_tests():

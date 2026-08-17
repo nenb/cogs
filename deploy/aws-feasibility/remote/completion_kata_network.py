@@ -12,6 +12,8 @@ import json
 import os
 import re
 import completion_kata_actions as actions
+import completion_kata_process as process
+import completion_kata_qualification as qualification
 
 NETNS = "cogs-stage2-ssh"
 NETNS_PATH = "/run/netns/cogs-stage2-ssh"
@@ -991,8 +993,67 @@ def make_test_local_fake(responses=()):
     return TestLocalNetworkFake(_TestPermit(), responses)
 
 
-def open_fixed_network_owner(*_args, **_kwargs):
-    raise NetworkError("production unavailable pending exact qualified host-tool fixtures and command permits")
+def _fixed_network_owner_routes():
+    """Seal the fixed /30 owner and its only setup/cleanup plans."""
+    seal = object()
+    states = {}
+    setup_actions = tuple(action for action in _MUTATIONS
+                          if action not in {Action.NFT_REMOVE, Action.NETNS_REMOVE})
+    cleanup_actions = (Action.NFT_REMOVE, Action.NETNS_REMOVE)
+
+    class FixedNetworkOwner:
+        __slots__ = ()
+        def __new__(cls, key=None):
+            if key is not seal:
+                raise NetworkError("sealed network owner")
+            return super().__new__(cls)
+        @property
+        def uncertain(self):
+            return states[self]["uncertain"]
+        @property
+        def closed(self):
+            return states[self]["closed"]
+        def setup_plan(self):
+            state = states[self]
+            if state["closed"] or state["uncertain"]:
+                raise NetworkError("network owner is closed or uncertain")
+            return tuple(command(action) for action in setup_actions)
+        def cleanup_plan(self):
+            state = states[self]
+            if state["closed"] or state["uncertain"]:
+                raise NetworkError("network owner is closed or uncertain")
+            return tuple(command(action) for action in cleanup_actions)
+        def poison(self):
+            states[self]["uncertain"] = True
+        def close(self):
+            state = states[self]
+            if state["uncertain"]:
+                raise NetworkError("network ownership is uncertain")
+            state["closed"] = True
+
+    def make(process_owner):
+        if type(process_owner) is not process.FixedProcessOwner or process_owner.closed:
+            raise NetworkError("exact live process owner required")
+        owner = FixedNetworkOwner(seal)
+        states[owner] = {"closed": False, "uncertain": False,
+                         "process_owner": process_owner}
+        return owner
+
+    def open_owner(grant, process_owner):
+        qualification._consume_fixed_owner_grant(grant, "network")
+        return make(process_owner)
+
+    return FixedNetworkOwner, open_owner, make
+
+
+(FixedNetworkOwner, _open_production_owner,
+ _make_fixed_network_owner_for_tests) = _fixed_network_owner_routes()
+del _fixed_network_owner_routes
+
+
+def open_fixed_network_owner():
+    """The zero-argument route cannot substitute for coordinator authority."""
+    raise NetworkError("production network owner requires the sealed coordinator gate")
 
 
 # No generic command, executable, shell, host probe, network mutation entry point,
