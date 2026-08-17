@@ -153,7 +153,7 @@ test("removed host qualification surfaces stay absent and only the approved non-
   assert.equal(protectedDiff.status, 0, protectedDiff.stderr);
   assert.equal(protectedDiff.stdout, ".github/workflows/stage2-workload-linux-foundations.yml\n");
   const workflow = readFileSync(join(root, ".github/workflows/stage2-workload-linux-foundations.yml"), "utf8");
-  assert.match(workflow, /stage2-workload-linux-foundations:/u);
+  assert.match(workflow, /name: Stage 2 workload Linux foundations/u);
   assert.match(workflow, /COGS_REQUIRE_STAGE2_WORKLOAD_LINUX_FOUNDATIONS=1/u);
 });
 
