@@ -248,28 +248,7 @@ check(run.argv[-5:] == (
     runtime.ROOTFS_CANDIDATE, runtime.CONTAINER_ID, "/bin/sh", "-c", bootstrap.decode("ascii"),
 ), "run argv positional suffix")
 rejected(lambda: runtime.ctr_run_spec(permit))
-rejected(runtime.open_fixed_runtime_owner)
 rejected(runtime._open_production_owner)
-rejected(lambda: runtime.FixedRuntimeOwner())
-rejected(lambda: runtime._make_fixed_runtime_owner_for_tests(object(), object()))
-
-# The production runtime API is bound to exact process and fixed-/30 owner
-# types.  It exposes only fixed observer/non-force teardown specs, and
-# uncertainty permanently closes that route.
-owner_process = runtime.process._make_fixed_process_owner_for_tests()
-owner_network = runtime.network._make_fixed_network_owner_for_tests(owner_process)
-owner_runtime = runtime._make_fixed_runtime_owner_for_tests(owner_process, owner_network)
-owner_specs = owner_runtime.observation_and_teardown_specs()
-check(len(owner_specs) == 7, "runtime owner fixed spec count")
-check(all("--force" not in item.argv and "-f" not in item.argv for item in owner_specs),
-      "runtime owner exposed force")
-owner_runtime.poison()
-rejected(owner_runtime.observation_and_teardown_specs)
-rejected(owner_runtime.close)
-check(owner_runtime.uncertain and not owner_runtime.closed, "runtime uncertainty was not sticky")
-owner_network.close()
-owner_process.close()
-
 commands = {item.command_id.value: item for item in runtime.fixed_command_specs_for_tests()}
 check(len(commands) == 7, "fixed command count")
 check(commands["CTR_TASK_TERM"].argv[-4:] == ("kill", "--signal", "SIGTERM", runtime.CONTAINER_ID), "TERM argv")

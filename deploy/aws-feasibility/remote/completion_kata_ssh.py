@@ -1,12 +1,11 @@
 """Closed authenticated-SSH readiness boundary for Stage 2 Kata.
 
-The immutable command, sealed production owner API, and historical offline fake
-are present.  The exact authenticated host-tool contract remains absent, so the
-production owner cannot be opened and this module cannot make a connection.
+Only the immutable command and an offline typed fake are available.  Loading a
+host SSH tool closure remains deliberately absent, so this module cannot open a
+production command issuer or make a connection.
 """
 from dataclasses import dataclass
 import hashlib
-import completion_kata_qualification as qualification
 
 MARKER = b"COGS_STAGE2_SSH_READY_V1\n"
 MARKER_SHA256 = hashlib.sha256(MARKER).hexdigest()
@@ -183,82 +182,6 @@ make_test_local_fake, authenticate_test_local, revoke_test_local, fake_state_for
 del _fake_routes
 
 
-def _fixed_ssh_owner_routes():
-    """Seal one authenticated attempt to an operation-derived process result."""
-    seal = object()
-    states = {}
-
-    class FixedSshOwner:
-        __slots__ = ()
-        def __new__(cls, key=None):
-            _fail(key is seal, "sealed SSH owner")
-            return super().__new__(cls)
-        @property
-        def uncertain(self):
-            return states[self]["uncertain"]
-        @property
-        def closed(self):
-            return states[self]["closed"]
-        @property
-        def revoked(self):
-            return states[self]["revoked"]
-        def command_spec(self):
-            state = states[self]
-            _fail(not state["closed"] and not state["uncertain"] and not state["attempted"],
-                  "SSH retry, closure, or uncertainty")
-            return SshCommand()
-        def authenticate_process_outcome(self, outcome):
-            # Imported lazily because the process supervisor imports this module
-            # to obtain the immutable SSH command.
-            import completion_kata_process as process
-            state = states[self]
-            _fail(not state["closed"] and not state["revoked"]
-                  and not state["attempted"] and not state["uncertain"],
-                  "SSH retry or revoked readiness")
-            state["attempted"] = True
-            try:
-                owned = process._claim_operation_outcome(
-                    state["process_owner"], outcome, process.CommandId.SSH_READY,
-                )
-                return validate_outcome(process.adapt_ssh_process_outcome(owned))
-            except BaseException:
-                state["uncertain"] = True
-                state["revoked"] = True
-                raise
-        def poison_and_ensure_revoked(self):
-            state = states[self]
-            state["uncertain"] = True
-            state["revoked"] = True
-        def ensure_revoked(self):
-            states[self]["revoked"] = True
-        def close(self):
-            state = states[self]
-            state["revoked"] = True
-            if state["uncertain"]:
-                raise SshError("SSH ownership is uncertain")
-            state["closed"] = True
-
-    def make(process_owner):
-        import completion_kata_process as process
-        _fail(type(process_owner) is process.FixedProcessOwner and not process_owner.closed,
-              "exact live process owner required")
-        owner = FixedSshOwner(seal)
-        states[owner] = {"process_owner": process_owner, "attempted": False,
-                         "revoked": False, "uncertain": False, "closed": False}
-        return owner
-
-    def open_owner(grant, process_owner):
-        qualification._consume_fixed_owner_grant(grant, "ssh")
-        return make(process_owner)
-
-    return FixedSshOwner, open_owner, make
-
-
-(FixedSshOwner, _open_production_owner,
- _make_fixed_ssh_owner_for_tests) = _fixed_ssh_owner_routes()
-del _fixed_ssh_owner_routes
-
-
 def open_fixed_ssh_owner():
-    """The zero-argument route cannot bypass the authenticated owner contract."""
-    raise SshError("production SSH owner requires the sealed coordinator gate")
+    """Fail closed until the exact host-tool contract loader is committed."""
+    raise SshError("production SSH unavailable: host-tool contract loader is absent")

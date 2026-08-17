@@ -48,31 +48,6 @@ assert b"policy accept" in network.NFT_TRANSACTION and b"priority filter" in net
 assert b"flush" not in network.NFT_TRANSACTION and b"nat" not in network.NFT_TRANSACTION.lower()
 rejected(lambda: network.command("NETNS_ADD"))
 rejected(lambda: network.open_fixed_network_owner())
-rejected(lambda: network.FixedNetworkOwner())
-rejected(lambda: network._make_fixed_network_owner_for_tests(object()))
-
-# The production class has one immutable /30 plan and one narrow reverse
-# cleanup plan.  Its test constructor still requires the exact process-owner
-# type; poisoning is sticky and never selects a broad reset.
-plan_process = network.process._make_fixed_process_owner_for_tests()
-plan_owner = network._make_fixed_network_owner_for_tests(plan_process)
-assert tuple(item.action for item in plan_owner.setup_plan()) == (
-    network.Action.NETNS_ADD, network.Action.LINK_ADD, network.Action.LINK_MOVE,
-    network.Action.HOST_ADDRESS_ADD, network.Action.HOST_LINK_UP,
-    network.Action.PEER_RENAME, network.Action.PEER_ADDRGEN_NONE,
-    network.Action.LOOPBACK_UP, network.Action.GUEST_ADDRESS_ADD,
-    network.Action.GUEST_LINK_UP, network.Action.NFT_INSTALL,
-)
-assert tuple(item.action for item in plan_owner.cleanup_plan()) == (
-    network.Action.NFT_REMOVE, network.Action.NETNS_REMOVE,
-)
-assert not any("default" in item.argv_tail for item in plan_owner.setup_plan())
-plan_owner.poison()
-rejected(plan_owner.setup_plan)
-rejected(plan_owner.cleanup_plan)
-rejected(plan_owner.close)
-assert plan_owner.uncertain and not plan_owner.closed
-plan_process.close()
 
 fake = network.make_test_local_fake((b"one", b"two"))
 assert fake.issue(network.Action.NETNS_ADD) == b"one"

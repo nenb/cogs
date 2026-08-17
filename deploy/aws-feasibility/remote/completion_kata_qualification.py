@@ -20,12 +20,6 @@ BLOCKER_ORDER = (
     "network-fixtures-unqualified", "ssh-fixture-unqualified", "kvm-missing-or-unqualified",
 )
 AUTHORITIES = frozenset({"offline-fake", "committed-local-preflight"})
-OWNER_CONTRACT_VERSION = "cogs.stage2-kata-fixed-owner-contract/v1"
-OWNER_ROLES = ("process", "network", "runtime", "ssh")
-OWNER_CONTRACT_DOMAINS = (
-    "source", "host-tool-identities", "command-permits", "runtime-fixtures",
-    "network-fixtures", "ssh-fixture", "kvm",
-)
 
 
 class QualificationError(Exception):
@@ -105,107 +99,41 @@ def load_report(raw):
 
 
 def _committed_routes():
-    """Seal the only production gate and its one grant per fixed owner.
-
-    A platform observation is not an owner contract.  The contract loader is
-    deliberately inside this closure so a caller cannot supply report bytes,
-    booleans, a digest, or a contract-shaped object.  The current repository
-    has no reviewed Stage 2 runtime/host-tool attestation, so the loader returns
-    no contract and the production route remains closed.
-    """
     seal = object()
-    gates = {}
-    grants = {}
-
     class CommittedFacts:
-        __slots__ = ("checks", "contract")
-        def __init__(self, key, checks, contract):
+        __slots__ = ("checks",)
+        def __init__(self, key, checks):
             _fail(key is seal)
             self.checks = checks
-            self.contract = contract
-
-    class AuthenticatedOwnerContract:
-        __slots__ = ("version", "bindings")
-        def __init__(self, key, bindings):
-            _fail(key is seal)
-            _fail(type(bindings) is tuple and len(bindings) == len(OWNER_CONTRACT_DOMAINS))
-            _fail(tuple(name for name, _digest in bindings) == OWNER_CONTRACT_DOMAINS)
-            _fail(all(type(digest) is str and len(digest) == 64
-                      and set(digest) <= set("0123456789abcdef")
-                      and digest != "0" * 64 for _name, digest in bindings))
-            self.version = OWNER_CONTRACT_VERSION
-            self.bindings = bindings
-
     class CommittedGate:
         __slots__ = ()
         def __new__(cls, key=None):
             _fail(key is seal)
             return super().__new__(cls)
-
-    class OwnerGrant:
-        __slots__ = ()
-        def __new__(cls, key=None):
-            _fail(key is seal)
-            return super().__new__(cls)
-
-    def authenticated_contract():
-        # ADR 0099 slice A does not invent the absent host-tool/runtime pin.
-        # A later manually reviewed committed contract must be parsed and
-        # authenticated here before this can return AuthenticatedOwnerContract.
-        return None
-
     def kvm_candidate():
         try:
             observed = os.stat("/dev/kvm", follow_symlinks=False)
             return stat.S_ISCHR(observed.st_mode) and os.access("/dev/kvm", os.R_OK | os.W_OK)
         except OSError:
             return False
-
     def collect():
-        contract = authenticated_contract()
-        closed = type(contract) is AuthenticatedOwnerContract
-        # No environment/configuration input and no mutation.  The current
-        # committed source has neither the exact owner contract nor its pins.
+        # No environment/configuration input and no mutation.  Committed exact
+        # fixture attestations do not yet exist, so those facts remain false.
         return CommittedFacts(seal, (
             platform.system() == "Linux", platform.machine() == "x86_64", os.geteuid() == 0,
-            os.path.realpath(os.getcwd()) == FIXED_ROOT, False, closed, closed, closed, closed,
-            kvm_candidate() and closed,
-        ), contract)
-
+            os.path.realpath(os.getcwd()) == FIXED_ROOT, False, False, False, False, False,
+            kvm_candidate() and False,
+        ))
     def report():
         return _report(collect().checks, "committed-local-preflight")
-
     def claim():
         value = collect()
         _fail(not _report(value.checks, "committed-local-preflight")["blockers"])
-        _fail(type(value.contract) is AuthenticatedOwnerContract)
-        gate = CommittedGate(seal)
-        gates[gate] = {"contract": value.contract, "roles": set()}
-        return gate
-
-    def grant(gate, role):
-        state = gates.get(gate)
-        _fail(type(gate) is CommittedGate and state is not None)
-        _fail(type(role) is str and role in OWNER_ROLES and role not in state["roles"])
-        state["roles"].add(role)
-        value = OwnerGrant(seal)
-        grants[value] = [gate, role, False]
-        return value
-
-    def consume(value, role):
-        state = grants.get(value)
-        _fail(type(value) is OwnerGrant and state is not None and not state[2])
-        _fail(type(role) is str and role == state[1])
-        gate_state = gates.get(state[0])
-        _fail(gate_state is not None and type(gate_state["contract"]) is AuthenticatedOwnerContract)
-        state[2] = True
-        return gate_state["contract"]
-
-    return report, claim, grant, consume
+        return CommittedGate(seal)
+    return report, claim
 
 
-(committed_report, _claim_committed_gate, _grant_fixed_owner,
- _consume_fixed_owner_grant) = _committed_routes()
+committed_report, _claim_committed_gate = _committed_routes()
 del _committed_routes
 
 

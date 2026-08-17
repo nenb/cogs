@@ -32,8 +32,7 @@ test("S5 qualification gate and complete lifecycle remain offline and fail close
     readFile(join(remote, "completion_kata_process.py"), "utf8"),
     readFile(join(remote, "completion_kata_coordinator.py"), "utf8"),
   ]);
-  assert.match(ssh, /class FixedSshOwner/u);
-  assert.match(ssh, /production SSH owner requires the sealed coordinator gate/u);
+  assert.match(ssh, /host-tool contract loader is absent/u);
   assert.match(ssh, /ConnectionAttempts=1/u);
   assert.match(operation, /ROOTFS_RELEASE_READY/u);
   assert.match(operation, /ROOTFS_RELEASE_AUTHORIZED/u);

@@ -34,7 +34,7 @@ test("S1 closed process owner and fixed local supervisor fail closed", async () 
 
   const source = await readFile(productionPath, "utf8");
   const productionLines = source.split("\n").length - 1;
-  assert.ok(productionLines <= 1_000, `S1 production exceeds retained hard 1000: ${productionLines}`);
+  assert.ok(productionLines <= 900, `S1 production exceeds hard 900: ${productionLines}`);
   assert.match(source, /CommandId = actions\.CommandId/u);
   assert.match(source, /def _parse_contract\(raw, expected_sha256\):/u);
   assert.match(source, /F_SEAL_WRITE \| fcntl\.F_SEAL_GROW \| fcntl\.F_SEAL_SHRINK \| fcntl\.F_SEAL_SEAL/u);
@@ -50,8 +50,6 @@ test("S1 closed process owner and fixed local supervisor fail closed", async () 
   assert.doesNotMatch(source, /RLIMIT_NOFILE|os\.closerange/u);
   assert.match(source, /MAX_STREAM = 65_536/u);
   assert.match(source, /Deliberately no production execute\/run function/u);
-  assert.match(source, /class FixedProcessOwner/u);
-  assert.match(source, /operation-derived process outcome required/u);
   assert.doesNotMatch(source, /^def (?:run|execute|spawn|issue_command)\(/mu);
   assert.doesNotMatch(source, /subprocess|shell=True|os\.system|pkill|killall|timeout\(1\)/u);
   assert.doesNotMatch(source, /completion_kata_operation/u);

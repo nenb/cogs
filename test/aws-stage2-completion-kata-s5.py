@@ -214,30 +214,6 @@ for hostile in (
     assert ssh.fake_state_for_tests(candidate) == (ssh.QUALIFICATION, True, True, True, 1)
     reject(lambda candidate=candidate: ssh.authenticate_test_local(candidate))
 reject(ssh.open_fixed_ssh_owner)
-reject(lambda: ssh.FixedSshOwner())
-reject(lambda: ssh._make_fixed_ssh_owner_for_tests(object()))
-
-# Production SSH accepts only a ProcessOutcome retained by the exact process
-# owner.  A caller-constructed lookalike poisons readiness; an owned result is
-# consumed once and can never authorize a second authentication attempt.
-forged_process_owner = process._make_fixed_process_owner_for_tests()
-forged_ssh_owner = ssh._make_fixed_ssh_owner_for_tests(forged_process_owner)
-assert forged_ssh_owner.command_spec().argv is ssh.ARGV
-reject(lambda: forged_ssh_owner.authenticate_process_outcome(process_good))
-assert forged_ssh_owner.uncertain and forged_ssh_owner.revoked
-reject(lambda: forged_ssh_owner.authenticate_process_outcome(process_good))
-reject(forged_ssh_owner.close)
-assert forged_process_owner.uncertain
-reject(forged_process_owner.close)
-
-owned_process_owner = process._make_fixed_process_owner_for_tests()
-owned_ssh_owner = ssh._make_fixed_ssh_owner_for_tests(owned_process_owner)
-process._remember_operation_outcome_for_tests(owned_process_owner, process_good)
-production_ready = owned_ssh_owner.authenticate_process_outcome(process_good)
-assert production_ready == ready
-reject(lambda: owned_ssh_owner.authenticate_process_outcome(process_good))
-owned_ssh_owner.close()
-owned_process_owner.close()
 
 # The composed coordinator owns adapter failures too. Revocation is ensured
 # once, and idempotent teardown consumes it before the one task-stop call.
@@ -271,68 +247,6 @@ reject(lambda: coordinator.authenticate_once(failure_owners, failure_process))
 assert ssh.fake_state_for_tests(failure_ssh) == (ssh.QUALIFICATION, True, True, True, 1)
 coordinator.stop_task_after_revoke(failure_owners)
 assert failure_stop.stops == 1
-
-# The sealed production coordinator owns one exact reverse close.  Cleanup
-# continues after a failure, but uncertainty is sticky and a second close does
-# not retry the failed owner or choose a fallback.
-def owner_tuple():
-    process_owner = process._make_fixed_process_owner_for_tests()
-    network_owner = network._make_fixed_network_owner_for_tests(process_owner)
-    runtime_owner = runtime._make_fixed_runtime_owner_for_tests(process_owner, network_owner)
-    ssh_owner = ssh._make_fixed_ssh_owner_for_tests(process_owner)
-    return process_owner, network_owner, runtime_owner, ssh_owner
-
-
-def wrap_close(name, original, calls, fail=False):
-    def close(self):
-        calls.append(name)
-        if fail:
-            raise RuntimeError("fixed injected close uncertainty")
-        return original(self)
-    return close
-
-
-reject(lambda: coordinator.LocalKataCoordinator())
-reject(lambda: coordinator._make_local_coordinator((object(),) * 4))
-close_owners = owner_tuple()
-closed = coordinator._make_local_coordinator(close_owners)
-close_calls = []
-classes = tuple(type(item) for item in close_owners)
-original_closes = tuple(item.close for item in classes)
-try:
-    for name, owner_class, original in zip(
-            ("process", "network", "runtime", "ssh"), classes, original_closes, strict=True):
-        owner_class.close = wrap_close(name, original, close_calls)
-    closed.close()
-finally:
-    for owner_class, original in zip(classes, original_closes, strict=True):
-        owner_class.close = original
-assert close_calls == ["ssh", "runtime", "network", "process"]
-assert closed.closed and not closed.uncertain and all(item.closed for item in close_owners)
-closed.close()
-
-uncertain_owners = owner_tuple()
-uncertain_coordinator = coordinator._make_local_coordinator(uncertain_owners)
-uncertain_calls = []
-classes = tuple(type(item) for item in uncertain_owners)
-original_closes = tuple(item.close for item in classes)
-try:
-    for name, owner_class, original in zip(
-            ("process", "network", "runtime", "ssh"), classes, original_closes, strict=True):
-        owner_class.close = wrap_close(
-            name, original, uncertain_calls, fail=name == "runtime",
-        )
-    reject(uncertain_coordinator.close)
-finally:
-    for owner_class, original in zip(classes, original_closes, strict=True):
-        owner_class.close = original
-assert uncertain_calls == ["ssh", "runtime", "network", "process"]
-assert uncertain_coordinator.closed and uncertain_coordinator.uncertain
-reject(uncertain_coordinator.close)
-assert uncertain_calls == ["ssh", "runtime", "network", "process"]
-# The injected runtime close did not mutate anything external; settle only the
-# local test object's logical state after restoring the real method.
-uncertain_owners[2].close()
 
 # Exact inherited input identities are one-shot and role-bound. Missing, extra,
 # relabelled, replaced, or linked descriptors fail before fork.
@@ -512,11 +426,6 @@ assert qualified_fake["qualified"] and qualified_fake["external_mutations_invoke
 assert qualified_fake["authority"] == "offline-fake"
 actual = qualification.committed_report()
 assert actual["authority"] == "committed-local-preflight"
-assert qualification.OWNER_ROLES == ("process", "network", "runtime", "ssh")
-reject(qualification._claim_committed_gate)
-reject(lambda: qualification._grant_fixed_owner(object(), "process"))
-reject(lambda: qualification._consume_fixed_owner_grant(object(), "process"))
-reject(lambda: qualification._grant_fixed_owner(object(), True))
 for blocker in ("host-tools-unqualified", "runtime-fixtures-unqualified",
                 "network-fixtures-unqualified", "ssh-fixture-unqualified",
                 "kvm-missing-or-unqualified"):

@@ -53,14 +53,6 @@ assert unissued["NFT_INSTALL"].stdin == process.NFT_INPUT
 assert snapshots["SSH_READY"][0][-2:] == ("root@192.0.2.2", "printf '%s\\n' COGS_STAGE2_SSH_READY_V1")
 assert snapshots["SSH_READY"][2:] == ("ssh", (200, 201))
 assert len(snapshots) == 8
-rejected(process.open_fixed_process_owner)
-rejected(lambda: process.FixedProcessOwner())
-owner = process._make_fixed_process_owner_for_tests()
-assert tuple(item.command_id for item in owner.fixed_specs()) == tuple(snapshots)
-owner.poison()
-rejected(owner.fixed_specs)
-rejected(owner.close)
-assert owner.uncertain and not owner.closed
 rejected(lambda: process._spec("IP_NETNS_ADD"))
 rejected(lambda: process._test_spec("ok"))
 BOOT_A = "12345678-1234-1234-1234-123456789abc"
