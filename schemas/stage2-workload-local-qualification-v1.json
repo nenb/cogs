@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.invalid/schemas/stage2-workload-local-qualification-v1.json",
+  "title": "Cogs Stage 2 seven-sample local-only workload qualification",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "result",
+    "candidate_contract_sha256",
+    "lifecycle_count",
+    "samples",
+    "all_match_final_pin",
+    "lifecycle_deleted",
+    "authority"
+  ],
+  "properties": {
+    "version": { "const": "cogs.stage2-workload-local-qualification/v1" },
+    "result": { "const": "pass" },
+    "candidate_contract_sha256": { "const": "b8660b92d778e9f5dc89586df4f68a2e2b12cdce818ff4fe12adf0a8e951fdf3" },
+    "lifecycle_count": { "const": 1 },
+    "samples": {
+      "type": "array",
+      "minItems": 7,
+      "maxItems": 7,
+      "prefixItems": [
+        { "allOf": [{ "$ref": "#/$defs/sample" }, { "$ref": "#/$defs/sample1" }] },
+        { "allOf": [{ "$ref": "#/$defs/sample" }, { "$ref": "#/$defs/sample2" }] },
+        { "allOf": [{ "$ref": "#/$defs/sample" }, { "$ref": "#/$defs/sample3" }] },
+        { "allOf": [{ "$ref": "#/$defs/sample" }, { "$ref": "#/$defs/sample4" }] },
+        { "allOf": [{ "$ref": "#/$defs/sample" }, { "$ref": "#/$defs/sample5" }] },
+        { "allOf": [{ "$ref": "#/$defs/sample" }, { "$ref": "#/$defs/sample6" }] },
+        { "allOf": [{ "$ref": "#/$defs/sample" }, { "$ref": "#/$defs/sample7" }] }
+      ],
+      "items": false
+    },
+    "all_match_final_pin": { "const": true },
+    "lifecycle_deleted": { "const": true },
+    "authority": { "const": "local-standalone-kata-only-stopped-before-step-5" }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "deb_sha256",
+        "deb_bytes",
+        "installed_tree_sha256",
+        "installed_entries",
+        "installed_bytes",
+        "package",
+        "version",
+        "architecture"
+      ],
+      "properties": {
+        "deb_sha256": { "$ref": "#/$defs/sha256" },
+        "deb_bytes": { "type": "integer", "minimum": 1, "maximum": 4194304 },
+        "installed_tree_sha256": { "const": "78aa672b7bd34a21fdd70d9adc2beb1693be06c8ad910db359456f8e5e57d7b2" },
+        "installed_entries": { "const": 259 },
+        "installed_bytes": { "const": 1048576 },
+        "package": { "const": "cogs-stage2-fixture" },
+        "version": { "const": "1.0" },
+        "architecture": { "const": "all" }
+      }
+    },
+    "sample": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sample",
+        "operations",
+        "git_ms",
+        "package_build_ms",
+        "package_install_ms",
+        "package_identity",
+        "deleted"
+      ],
+      "properties": {
+        "sample": { "type": "integer", "minimum": 1, "maximum": 7 },
+        "operations": {
+          "type": "array",
+          "prefixItems": [{ "const": "git" }, { "const": "package-build" }, { "const": "package-install" }],
+          "items": false,
+          "minItems": 3,
+          "maxItems": 3
+        },
+        "git_ms": { "type": "integer", "minimum": 0, "maximum": 1200000 },
+        "package_build_ms": { "type": "integer", "minimum": 0, "maximum": 300000 },
+        "package_install_ms": { "type": "integer", "minimum": 0, "maximum": 300000 },
+        "package_identity": { "$ref": "#/$defs/identity" },
+        "deleted": { "const": true }
+      }
+    },
+    "sample1": { "type": "object", "properties": { "sample": { "const": 1 } } },
+    "sample2": { "type": "object", "properties": { "sample": { "const": 2 } } },
+    "sample3": { "type": "object", "properties": { "sample": { "const": 3 } } },
+    "sample4": { "type": "object", "properties": { "sample": { "const": 4 } } },
+    "sample5": { "type": "object", "properties": { "sample": { "const": 5 } } },
+    "sample6": { "type": "object", "properties": { "sample": { "const": 6 } } },
+    "sample7": { "type": "object", "properties": { "sample": { "const": 7 } } }
+  }
+}

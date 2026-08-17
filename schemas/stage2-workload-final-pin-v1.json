@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.invalid/schemas/stage2-workload-final-pin-v1.json",
+  "title": "Cogs Stage 2 manually reviewed deterministic workload final pin",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "candidate_contract_sha256", "candidate_a", "candidate_b", "promotion"],
+  "properties": {
+    "version": { "const": "cogs.stage2-workload-final-pin/v1" },
+    "candidate_contract_sha256": { "const": "b8660b92d778e9f5dc89586df4f68a2e2b12cdce818ff4fe12adf0a8e951fdf3" },
+    "candidate_a": { "$ref": "#/$defs/identity" },
+    "candidate_b": { "$ref": "#/$defs/identity" },
+    "promotion": { "const": "manual-reviewed-a-equals-b" }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "deb_sha256",
+        "deb_bytes",
+        "installed_tree_sha256",
+        "installed_entries",
+        "installed_bytes",
+        "package",
+        "version",
+        "architecture"
+      ],
+      "properties": {
+        "deb_sha256": { "$ref": "#/$defs/sha256" },
+        "deb_bytes": { "type": "integer", "minimum": 1, "maximum": 4194304 },
+        "installed_tree_sha256": { "const": "78aa672b7bd34a21fdd70d9adc2beb1693be06c8ad910db359456f8e5e57d7b2" },
+        "installed_entries": { "const": 259 },
+        "installed_bytes": { "const": 1048576 },
+        "package": { "const": "cogs-stage2-fixture" },
+        "version": { "const": "1.0" },
+        "architecture": { "const": "all" }
+      }
+    }
+  }
+}

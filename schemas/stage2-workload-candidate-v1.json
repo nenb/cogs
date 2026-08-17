@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.invalid/schemas/stage2-workload-candidate-v1.json",
+  "title": "Cogs Stage 2 deterministic workload package candidate",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "result",
+    "candidate_contract_sha256",
+    "candidates",
+    "a_equals_b",
+    "lifecycle_deleted",
+    "promotion"
+  ],
+  "properties": {
+    "version": { "const": "cogs.stage2-workload-candidate/v1" },
+    "result": { "const": "pass" },
+    "candidate_contract_sha256": { "const": "b8660b92d778e9f5dc89586df4f68a2e2b12cdce818ff4fe12adf0a8e951fdf3" },
+    "candidates": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "prefixItems": [{ "$ref": "#/$defs/candidateA" }, { "$ref": "#/$defs/candidateB" }],
+      "items": false
+    },
+    "a_equals_b": { "const": true },
+    "lifecycle_deleted": { "const": true },
+    "promotion": { "const": "manual-only" }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "deb_sha256",
+        "deb_bytes",
+        "installed_tree_sha256",
+        "installed_entries",
+        "installed_bytes",
+        "package",
+        "version",
+        "architecture"
+      ],
+      "properties": {
+        "deb_sha256": { "$ref": "#/$defs/sha256" },
+        "deb_bytes": { "type": "integer", "minimum": 1, "maximum": 4194304 },
+        "installed_tree_sha256": { "const": "78aa672b7bd34a21fdd70d9adc2beb1693be06c8ad910db359456f8e5e57d7b2" },
+        "installed_entries": { "const": 259 },
+        "installed_bytes": { "const": 1048576 },
+        "package": { "const": "cogs-stage2-fixture" },
+        "version": { "const": "1.0" },
+        "architecture": { "const": "all" }
+      }
+    },
+    "candidateA": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "package_identity", "deleted"],
+      "properties": {
+        "id": { "const": "A" },
+        "package_identity": { "$ref": "#/$defs/identity" },
+        "deleted": { "const": true }
+      }
+    },
+    "candidateB": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "package_identity", "deleted"],
+      "properties": {
+        "id": { "const": "B" },
+        "package_identity": { "$ref": "#/$defs/identity" },
+        "deleted": { "const": true }
+      }
+    }
+  }
+}

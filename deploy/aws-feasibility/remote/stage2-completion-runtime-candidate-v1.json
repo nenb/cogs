@@ -1,0 +1,30 @@
+{
+  "version": "cogs.stage2-workload-candidate-contract/v1",
+  "platform": { "os": "linux", "architecture": "amd64", "euid": 0 },
+  "source_date_epoch": 1782172800,
+  "sample_count": 7,
+  "bindings": {
+    "artifacts_contract_sha256": "fe524cc5caafab7f6bb10ef9ebcac40903c1b1bdd60e8ebbf21919bfa788a341",
+    "rootfs_contract_sha256": "caf9082f56625dc3f55a41ad115c7c700e84a1198e60c0cd9be420d7c13b4d54",
+    "rootfs_manifest_sha256": "8783c292f232842a3d1d2d35e7ac2268d591fa6e947d3984868fe33ca006e691",
+    "rootfs_ustar_sha256": "47b0ab5752ae50da6bc9840345aa9ba6285bde3e5ae186c0c548acbaa83768d3",
+    "git_fixture_sha256": "73ccf2bce069d96d1dbd7e927e0fbd9205dcedfdb4a8ff104eb29e3f3e9e0b7c",
+    "git_archive_sha256": "06450642c9c6cd69b1e6f961ea085e2f873faa40431a34d7a35f1259ce4e2e63",
+    "git_commit": "ca429a94b73caea0fc39164b8087cc1c63f43818",
+    "package_source_sha256": "03f9ce0491b29e2ffaf216e9d49bc0c382ad1cad808aa1ad53284c06185fce52",
+    "package_archive_sha256": "21e6a9306b2ecf62f2a2a1137ac997b35d63e96a478af61da6762d985e920b68",
+    "installed_tree_sha256": "78aa672b7bd34a21fdd70d9adc2beb1693be06c8ad910db359456f8e5e57d7b2"
+  },
+  "fixture": {
+    "git": { "version": "cogs-stage2-git-v1", "files": 512, "lines_per_file": 128, "modified": 32, "untracked": 8 },
+    "package": {
+      "name": "cogs-stage2-fixture",
+      "version": "1.0",
+      "architecture": "all",
+      "files": 256,
+      "file_bytes": 4096,
+      "installed_entries": 259,
+      "installed_bytes": 1048576
+    }
+  }
+}
