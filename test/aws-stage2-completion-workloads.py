@@ -161,7 +161,6 @@ check("no-cgroup-proof" in owner.PROCESS_LIMITATION, "subreaper limitation is hi
 if sys.platform == "darwin":
     rejected(lambda: owner._rename_noreplace(-1, "x", -1, "y"), owner.CleanupUncertain)
 
-
 def synchronized_hook(stage_name, action):
     used = False
 
@@ -253,6 +252,39 @@ if sys.platform.startswith("linux") and os.geteuid() == 0:
         check(len(replacements) == 1 and replacements[0].read_bytes() == b"replacement-output", "output replacement disappeared")
         owner._RACE_HOOK = None
 
+    with tempfile.TemporaryDirectory() as temporary:
+        root = new_root(temporary, "stat-open-swap")
+        root.mkdir("tree", 0o700)
+        root.write_file("tree/value", b"owned-before-open", 0o600)
+        used = False
+
+        def swap_between_stat_open(stage, parent_fd, source, _quarantine):
+            global used
+            if stage != "stat-open" or source != "value" or used:
+                return
+            used = True
+            parent = descriptor_path(parent_fd)
+            barrier = threading.Barrier(2)
+
+            def racer():
+                barrier.wait()
+                os.rename(parent / source, parent / "saved-before-open")
+                (parent / source).write_bytes(b"replacement-before-open")
+                os.chmod(parent / source, 0o600)
+
+            thread = threading.Thread(target=racer)
+            thread.start()
+            barrier.wait()
+            thread.join()
+
+        owner._RACE_HOOK = swap_between_stat_open
+        rejected(lambda: root.remove_tree("tree"), owner.CleanupUncertain)
+        retained = Path(temporary).resolve() / "stat-open-swap/retained"
+        tree_quarantine = next(path for path in retained.glob(".q-*") if path.is_dir())
+        check((tree_quarantine / "saved-before-open").read_bytes() == b"owned-before-open", "stat/open source disappeared")
+        check((tree_quarantine / "value").read_bytes() == b"replacement-before-open", "stat/open replacement disappeared")
+        owner._RACE_HOOK = None
+
     for kind in ("inner-file", "inner-directory"):
         with tempfile.TemporaryDirectory() as temporary:
             root = new_root(temporary, kind)
@@ -324,14 +356,67 @@ for number in (signal.SIGTERM, signal.SIGINT):
 if sys.platform.startswith("linux") and os.geteuid() == 0:
     guest._enable_subreaper()
     with tempfile.TemporaryDirectory() as temporary:
-        operation = Path(temporary).resolve() / "parent-isolation"
+        base = Path(temporary).resolve()
+        os.chmod(base, 0o755)
+        operation = base / "parent-isolation"
         deadline = guest.Deadline.start(4.0, 2.0)
         root = guest.OwnedRoot(operation, deadline, "host-candidate")
         parent_status = os.lstat(operation)
-        check(stat.S_IMODE(parent_status.st_mode) == 0o700 and parent_status.st_uid == owner.OPERATION_PARENT_UID, "operation parent owner or mode differs")
-        escape = "import os;\ntry: open('../escaped','wb').write(b'x')\nexcept PermissionError: print('blocked')\nelse: raise SystemExit(9)"
-        guest._run((sys.executable, "-c", escape), root, deadline, b"blocked\n")
-        check(not (operation / "escaped").exists(), "capability-cleared child renamed operation parent")
+        retained_status = os.lstat(operation / "retained")
+        check(stat.S_IMODE(parent_status.st_mode) == 0o700 and parent_status.st_uid == 0, "operation parent is not root-owned mode 0700")
+        check((retained_status.st_uid, retained_status.st_gid) == (owner.WORKLOAD_UID, owner.WORKLOAD_GID), "retained root is not workload-owned")
+        escape = r'''
+import ctypes, json, os
+status = {}
+for line in open('/proc/self/status', encoding='ascii'):
+    if ':' in line:
+        key, value = line.split(':', 1)
+        status[key] = value.strip()
+assert os.getresuid() == (65534, 65534, 65534)
+assert os.getresgid() == (65534, 65534, 65534)
+assert os.getgroups() == []
+assert status['CapInh'] == status['CapPrm'] == status['CapEff'] == status['CapBnd'] == status['CapAmb'] == '0000000000000000'
+assert status['NoNewPrivs'] == '1'
+assert ctypes.CDLL(None).prctl(27, 0, 0, 0, 0) & 0x0F == 0x0F
+blocked = 0
+for operation in (
+    lambda: os.listdir('..'),
+    lambda: os.rename('../retained', '../renamed'),
+    lambda: os.chown('..', 65534, 65534),
+):
+    try:
+        operation()
+    except PermissionError:
+        blocked += 1
+assert blocked == 3
+fds = []
+for name in os.listdir('/proc/self/fd'):
+    try:
+        fds.append(os.readlink('/proc/self/fd/' + name))
+    except OSError:
+        pass
+assert not any('recovery-v2' in value or value.endswith('/parent-isolation') for value in fds)
+assert sum(value.endswith('/retained') for value in fds) == 1
+print(json.dumps({'blocked': blocked, 'uid': os.geteuid(), 'gid': os.getegid(), 'zero_caps': True}, sort_keys=True, separators=(',', ':')))
+'''
+        expected = b'{"blocked":3,"gid":65534,"uid":65534,"zero_caps":true}\n'
+        guest._run((sys.executable, "-c", escape), root, deadline, expected)
+        attacker = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import os,sys;os.setgroups([]);os.setgid(65534);os.setuid(65534);p=sys.argv[1];n=0"
+                "\nfor f in (lambda:os.listdir(p),lambda:os.rename(p+'/retained',p+'/renamed'),lambda:os.chown(p,65534,65534)):"
+                "\n try:f()"
+                "\n except PermissionError:n+=1"
+                "\nprint('blocked',n) if n==3 else sys.exit(9)",
+                str(operation),
+            ],
+            capture_output=True,
+            check=False,
+        )
+        check(attacker.returncode == 0 and attacker.stdout == b"blocked 3\n", "unrelated uid 65534 reached the parent")
+        check(not (operation / "renamed").exists(), "uid attacker renamed retained root")
         root.cleanup()
 
     with tempfile.TemporaryDirectory() as temporary:
@@ -366,33 +451,78 @@ time.sleep(30)
         check(not guest._children(), "nested escaped child remained")
         root.cleanup()
 
-    # A SIGKILL leaves a canonical exact-generation journal. The fixed recovery function
-    # authenticates it, performs cleanup only, and never calls a workload function.
-    with tempfile.TemporaryDirectory() as temporary:
-        operation = Path(temporary).resolve() / "recoverable"
-        helper = subprocess.run(
-            [
-                sys.executable,
-                "-B",
-                "-c",
-                (
-                    "import os,sys;sys.path.insert(0,sys.argv[1]);"
-                    "from completion_workload_owner import Deadline,OwnedRoot;"
-                    "r=OwnedRoot(sys.argv[2],Deadline.start(30,20),'host-candidate');"
-                    "r.write_file('effect',b'exact',0o600);os.kill(os.getpid(),9)"
-                ),
-                str(REMOTE),
-                str(operation),
-            ],
-            capture_output=True,
-            check=False,
-            env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "PYTHONDONTWRITEBYTECODE": "1"},
-        )
-        check(helper.returncode < 0 and operation.exists(), "SIGKILL did not leave recovery state")
-        journal = (operation / "recovery.json").read_bytes()
-        check(journal.endswith(b"\n") and json.loads(journal)["generation"], "recovery record is not canonical")
-        owner.recover_owned_root(operation, "host-candidate")
-        check(not operation.exists(), "cleanup-only recovery left the operation")
+    # SIGKILL every fsync-ordered construction/cleanup state. Recovery authenticates
+    # partial construction, root-already-absent, journal-retired, and parent-absent cuts.
+    recovery_phases = (
+        "tombstone-created",
+        "tombstone-durable",
+        "intent",
+        "parent-staging-created",
+        "parent-marker-durable",
+        "parent-published",
+        "parent-created",
+        "root-created",
+        "root-marker-durable",
+        "journal-durable",
+        "running",
+        "work-running",
+        "child-empty",
+        "root-removing",
+        "root-quarantined",
+        "root-contents-removed",
+        "root-directory-removed",
+        "root-removed",
+        "recovery.json-quarantined",
+        "recovery.json-removed",
+        ".parent-generation-quarantined",
+        ".parent-generation-removed",
+        "journal-retired",
+        "parent-removing",
+        "parent-quarantined",
+        "parent-directory-removed",
+        "parent-removed",
+    )
+    for phase in recovery_phases:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary).resolve()
+            operation = directory / f"recover-{phase}"
+            counter = directory / "work-count"
+            helper_program = r'''
+import os, sys
+sys.path.insert(0, sys.argv[1])
+import completion_workload_owner as owner
+target, operation, counter = sys.argv[2:]
+def cut(phase):
+    if phase == target:
+        os.kill(os.getpid(), 9)
+owner._STATE_HOOK = cut
+owner._CLEANUP_HOOK = cut
+root = owner.OwnedRoot(operation, owner.Deadline.start(30, 20), 'host-candidate')
+with open(counter, 'ab') as stream:
+    stream.write(b'work\n')
+    stream.flush()
+    os.fsync(stream.fileno())
+root.write_file('effect', b'exact', 0o600)
+if target == 'work-running':
+    os.kill(os.getpid(), 9)
+root.cleanup()
+'''
+            helper = subprocess.run(
+                [sys.executable, "-B", "-c", helper_program, str(REMOTE), phase, str(operation), str(counter)],
+                capture_output=True,
+                check=False,
+                env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "PYTHONDONTWRITEBYTECODE": "1"},
+            )
+            check(helper.returncode < 0, f"SIGKILL cut {phase} did not fire")
+            before = counter.read_bytes() if counter.exists() else b""
+            tombstones = list(directory.glob(f".{operation.name}.recovery-*"))
+            check(len(tombstones) == 1, f"{phase} lost or duplicated the external tombstone")
+            owner.recover_owned_root(operation, "host-candidate")
+            check(not operation.exists() and not list(directory.glob(f".{operation.name}.recovery-*")), f"{phase} recovery left residue")
+            after = counter.read_bytes() if counter.exists() else b""
+            check(after == before and after in {b"", b"work\n"}, f"{phase} recovery retried work")
+            rejected(lambda operation=operation: owner.recover_owned_root(operation, "host-candidate"), Exception)
+            check(not operation.exists(), f"{phase} second recovery changed absence")
 
     # Production transaction seams run without replacing workload functions when the exact
     # reviewed Linux tool closure is present. Post-pin uses exact synthetic reviewed bytes.
@@ -524,8 +654,8 @@ source = "\n".join((REMOTE / name).read_text() for name in (
 for recovery_name in ("completion_package_candidate_recovery.py", "completion_package_post_pin_recovery.py"):
     recovery_source = (REMOTE / recovery_name).read_text()
     check("completion_guest_workloads" not in recovery_source and "completion_package_candidate" not in recovery_source, "recovery entry can reach work")
-for forbidden in ("local-standalone-kata", "workload-local-qualification", "completion_local_full"):
-    check(forbidden not in source, "removed authority remains in host source")
+for forbidden in ("local-standalone-kata", "workload-local-qualification", "completion_local_full", "CAP_CHOWN"):
+    check(forbidden not in source, "removed authority or capability remains in host source")
 for cloud in ("boto", "AWS_", "requests", "urllib", "Terraform", "OpenTofu"):
     check(cloud not in source, "cloud surface entered host workload")
 check(not (REMOTE / "completion_local_full.py").exists(), "host qualification module remains")

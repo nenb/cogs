@@ -22,6 +22,8 @@ from completion_workload_owner import (
     WorkloadDeadline,
     WorkloadError,
     WorkloadInterrupted,
+    WORKLOAD_GID,
+    WORKLOAD_UID,
     _children,
     _drain_descendants,
     _enable_subreaper,
@@ -239,7 +241,7 @@ def _verify_installed(root, relative):
     _require(tuple(sorted(observed)) == tuple(sorted(expected_map)))
     for path, record in expected_map.items():
         status, raw = observed[path]
-        _require(status.st_uid == status.st_gid == 0)
+        _require((status.st_uid, status.st_gid) == (WORKLOAD_UID, WORKLOAD_GID))
         _require(stat.S_IMODE(status.st_mode) == record.mode)
         _require(status.st_mtime_ns == record.mtime * 1_000_000_000)
         _require(stat.S_ISDIR(status.st_mode) == (record.kind == "directory"))
@@ -307,6 +309,7 @@ def _run_package_sample(root, label, tools, deadline):
         _run(
             (
                 tools.dpkg.executable,
+                "--force-not-root",
                 "--admindir",
                 root.proc_path(admin),
                 "--instdir",

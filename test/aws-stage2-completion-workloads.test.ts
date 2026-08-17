@@ -37,8 +37,8 @@ const identity = {
 const contractSha = "b8660b92d778e9f5dc89586df4f68a2e2b12cdce818ff4fe12adf0a8e951fdf3";
 const executionBinding = {
   fixture_implementation_sha256: "c877bdbbce0f1c7920294f5a240aa8b83c81dd96ce3c4daab650a9fbadc7f9f4",
-  workload_implementation_sha256: "c688bd03456923c54f0e8fdfcd5dc1d1ab71b73112eec7646b0d288f9a6dc7d4",
-  owner_implementation_sha256: "bae673ac4bcdb0c216455fcd365f2d23adec919309d1930137a1553106400dac",
+  workload_implementation_sha256: "c856bb997e1d799c712cf08b48c2fb3de314b8e0efe8985908a5b58d08b3c850",
+  owner_implementation_sha256: "5176aa28df91a01ff3e9a16d09646bf8ba57fff8e85b20f0d5c776d25c2ef21b",
   orchestrator_implementation_sha256: "edb057827c213e35d00f9088abba238bf1ab687b963212eaa311acdc9f0f18f8",
   candidate_recovery_implementation_sha256: "f53b17ee098f331cf8a2389029fce73af9f8019d7321e874eaa24236a7eda195",
   post_pin_recovery_implementation_sha256: "b48c6a10cdad463e798e82cef5c93ec5fcd65f56e944971084a458a123fb28ba",
@@ -51,8 +51,8 @@ const executionBinding = {
   source_checkout: "unbound-current-checkout",
   linux_dynamic_tool_closure: "unbound-kernel-libc-loader-libraries-config-helpers",
   process_containment: "linux-subreaper-pidfd-or-start-time-no-cgroup-v2",
-  process_containment_limitation: "no-cgroup-proof-after-supervisor-crash-or-hostile-environment-rewrite",
-  operation_parent_isolation: "mode-0700-uid-65534-parent-dac-cleared-cap-chown-only-fixed-tools",
+  process_containment_limitation: "no-cgroup-proof-honest-supervisor-crash-only-not-hostile-process-closure",
+  operation_parent_isolation: "root-owned-mode-0700-parent-workload-uid-gid-65534-zero-capabilities-nnp",
   rootfs_execution: "not-used-by-host-candidate-or-reproduction",
 };
 const reproductions = [
