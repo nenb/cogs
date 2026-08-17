@@ -127,44 +127,6 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  stage2-workload-linux-foundations:
-    name: Stage 2 workload Linux lifecycle foundations
-    needs: [quality]
-    if: ${{ needs.quality.result == 'success' && github.event_name != 'workflow_dispatch' }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - name: Check out exact source without credentials
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
-          persist-credentials: false
-
-      - name: Verify exact checked source
-        env:
-          EXPECTED_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
-        run: |
-          set -euo pipefail
-          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
-          test "$(/usr/bin/git rev-parse HEAD)" = "$EXPECTED_SHA"
-
-      - name: Run root-owned Linux lifecycle foundations without provider access
-        run: |
-          set -euo pipefail
-          sudo -n env -i \
-            HOME=/root LC_ALL=C PATH=/usr/sbin:/usr/bin:/sbin:/bin \
-            PYTHONDONTWRITEBYTECODE=1 \
-            COGS_REQUIRE_STAGE2_WORKLOAD_LINUX_FOUNDATIONS=1 \
-            /usr/bin/python3 -I -B test/aws-stage2-completion-workloads.py
-          sudo -n env -i \
-            HOME=/root LC_ALL=C PATH=/usr/sbin:/usr/bin:/sbin:/bin \
-            PYTHONDONTWRITEBYTECODE=1 \
-            COGS_REQUIRE_STAGE2_WORKLOAD_LINUX_FOUNDATIONS=1 \
-            /usr/bin/python3 -I -B -O test/aws-stage2-completion-workloads.py
-          test ! -e /tmp/cogs-stage2-workload-candidate-v1
-          test ! -e /tmp/cogs-stage2-workload-post-pin-v1
-          test -z "$(find /tmp -maxdepth 1 -name '.cogs-stage2-workload-*.recovery-*' -print -quit)"
-
   native-c1:
     name: Native C1
     needs: [quality, native-qualification-eligibility]

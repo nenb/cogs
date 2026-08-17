@@ -1197,7 +1197,7 @@ def _retire_partial_tombstone(path):
         os.close(outer_fd)
 
 
-def recover_owned_root(path, kind):
+def recover_workload_root(path, kind):
     """Fixed one-pass cleanup-only recovery; no workload function is reachable."""
     deadline = Deadline.start(30.0, 25.0)
     _enable_subreaper()

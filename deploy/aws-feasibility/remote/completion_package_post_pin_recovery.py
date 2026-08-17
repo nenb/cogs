@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 import sys
 
-from completion_workload_owner import WorkloadError, recover_owned_root
+from completion_workload_owner import WorkloadError, recover_workload_root
 
 POST_PIN_ROOT = Path("/tmp/cogs-stage2-workload-post-pin-v1")
 
@@ -15,7 +15,7 @@ def main():
         os.write(2, b"completion host recovery failed: invocation\n")
         return 1
     try:
-        recover_owned_root(POST_PIN_ROOT, "host-post-pin")
+        recover_workload_root(POST_PIN_ROOT, "host-post-pin")
         os.write(1, b'{"result":"recovered","version":"cogs.stage2-workload-recovery-result/v1"}\n')
         return 0
     except BaseException as error:

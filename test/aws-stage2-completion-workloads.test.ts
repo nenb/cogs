@@ -38,10 +38,10 @@ const contractSha = "b8660b92d778e9f5dc89586df4f68a2e2b12cdce818ff4fe12adf0a8e95
 const executionBinding = {
   fixture_implementation_sha256: "c877bdbbce0f1c7920294f5a240aa8b83c81dd96ce3c4daab650a9fbadc7f9f4",
   workload_implementation_sha256: "c856bb997e1d799c712cf08b48c2fb3de314b8e0efe8985908a5b58d08b3c850",
-  owner_implementation_sha256: "5176aa28df91a01ff3e9a16d09646bf8ba57fff8e85b20f0d5c776d25c2ef21b",
+  owner_implementation_sha256: "9702447028b55a3534cdc25f964b566ef9469bba0ed13d79142b2514375f11b7",
   orchestrator_implementation_sha256: "edb057827c213e35d00f9088abba238bf1ab687b963212eaa311acdc9f0f18f8",
-  candidate_recovery_implementation_sha256: "f53b17ee098f331cf8a2389029fce73af9f8019d7321e874eaa24236a7eda195",
-  post_pin_recovery_implementation_sha256: "b48c6a10cdad463e798e82cef5c93ec5fcd65f56e944971084a458a123fb28ba",
+  candidate_recovery_implementation_sha256: "1408a9b51b9e5a241a731ac2f453ee28ff1f44f8e92d4111cd9a4100010522e5",
+  post_pin_recovery_implementation_sha256: "1bae8dbde70ea7c0465dbb808a9d85205d88cdf03302f389128a25884ec2c060",
   tool_observations: [
     { name: "git", sha256: "1".repeat(64), bytes: 1, version: "git version 2.47.3" },
     { name: "dpkg-deb", sha256: "2".repeat(64), bytes: 2, version: "dpkg-deb 1.22.22" },
@@ -133,7 +133,7 @@ test("candidate, final, and post-pin schemas make A=B structural", () => {
   }
 });
 
-test("removed host qualification surfaces and protected files stay untouched", () => {
+test("removed host qualification surfaces stay absent and only the approved non-AWS CI file changes", () => {
   assert.throws(() => readFileSync(join(root, "deploy/aws-feasibility/remote/completion_local_full.py")));
   assert.throws(() => readFileSync(join(root, "schemas/stage2-workload-local-qualification-v1.json")));
 
@@ -151,7 +151,10 @@ test("removed host qualification surfaces and protected files stay untouched", (
     { cwd: root, encoding: "utf8" },
   );
   assert.equal(protectedDiff.status, 0, protectedDiff.stderr);
-  assert.equal(protectedDiff.stdout, "");
+  assert.equal(protectedDiff.stdout, ".github/workflows/stage2-workload-linux-foundations.yml\n");
+  const workflow = readFileSync(join(root, ".github/workflows/stage2-workload-linux-foundations.yml"), "utf8");
+  assert.match(workflow, /stage2-workload-linux-foundations:/u);
+  assert.match(workflow, /COGS_REQUIRE_STAGE2_WORKLOAD_LINUX_FOUNDATIONS=1/u);
 });
 
 test("fixed candidate and recovery entries redact every invocation failure", () => {

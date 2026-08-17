@@ -522,11 +522,11 @@ root.cleanup()
             before = counter.read_bytes() if counter.exists() else b""
             tombstones = list(directory.glob(f".{operation.name}.recovery-*"))
             check(len(tombstones) == 1, f"{phase} lost or duplicated the external tombstone")
-            owner.recover_owned_root(operation, "host-candidate")
+            owner.recover_workload_root(operation, "host-candidate")
             check(not operation.exists() and not list(directory.glob(f".{operation.name}.recovery-*")), f"{phase} recovery left residue")
             after = counter.read_bytes() if counter.exists() else b""
             check(after == before and after in {b"", b"work\n"}, f"{phase} recovery retried work")
-            rejected(lambda operation=operation: owner.recover_owned_root(operation, "host-candidate"), Exception)
+            rejected(lambda operation=operation: owner.recover_workload_root(operation, "host-candidate"), Exception)
             check(not operation.exists(), f"{phase} second recovery changed absence")
 
     # Production transaction seams run without replacing workload functions when the exact
