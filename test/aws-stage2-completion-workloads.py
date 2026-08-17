@@ -196,7 +196,9 @@ def descriptor_path(descriptor, name=""):
 
 # Authentic synchronized source, quarantine, output, inner-file, and inner-directory
 # replacements run only where renameat2 and proc descriptors are the production surface.
+linux_destructive_cases_ran = False
 if sys.platform.startswith("linux") and os.geteuid() == 0:
+    linux_destructive_cases_ran = True
     def new_root(temporary, name):
         return owner.OwnedRoot(Path(temporary).resolve() / name, owner.Deadline.start(8, 4), "host-candidate")
 
@@ -353,7 +355,10 @@ for number in (signal.SIGTERM, signal.SIGINT):
 
 # Linux closure repeatedly discovers pid/start-time or pidfd identities. The nested child
 # forks from TERM, setsid-escapes, ignores TERM in one generation, and outlives its leader.
+linux_containment_recovery_cases_ran = False
+linux_exact_tool_transaction_cases_ran = False
 if sys.platform.startswith("linux") and os.geteuid() == 0:
+    linux_containment_recovery_cases_ran = True
     guest._enable_subreaper()
     with tempfile.TemporaryDirectory() as temporary:
         base = Path(temporary).resolve()
@@ -537,6 +542,7 @@ root.cleanup()
         and versions[2] == [b"Debian 'dpkg' package management program version 1.22.22 (amd64)."]
     )
     if exact_tools and not candidate.CANDIDATE_ROOT.exists() and not candidate.POST_PIN_ROOT.exists():
+        linux_exact_tool_transaction_cases_ran = True
         candidate_raw = candidate.run_candidate_transaction()
         candidate_result = json.loads(candidate_raw)
         check(candidate_raw == contract.canonical_json(candidate_result), "candidate output bytes are not canonical")
@@ -660,4 +666,13 @@ for cloud in ("boto", "AWS_", "requests", "urllib", "Terraform", "OpenTofu"):
     check(cloud not in source, "cloud surface entered host workload")
 check(not (REMOTE / "completion_local_full.py").exists(), "host qualification module remains")
 check(not (ROOT / "schemas/stage2-workload-local-qualification-v1.json").exists(), "host qualification schema remains")
-print("completion workload contract tests passed")
+if os.environ.get("COGS_REQUIRE_STAGE2_WORKLOAD_LINUX_FOUNDATIONS") == "1":
+    check(sys.platform.startswith("linux") and os.geteuid() == 0, "Linux root foundation environment absent")
+    check(linux_destructive_cases_ran, "Linux destructive ownership cases skipped")
+    check(linux_containment_recovery_cases_ran, "Linux containment/recovery cases skipped")
+print(
+    "completion workload contract tests passed "
+    f"linux_destructive={linux_destructive_cases_ran} "
+    f"linux_containment_recovery={linux_containment_recovery_cases_ran} "
+    f"linux_exact_tools={linux_exact_tool_transaction_cases_ran}"
+)
