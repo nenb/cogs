@@ -2,7 +2,7 @@
 FROM debian:13-slim@sha256:020c0d20b9880058cbe785a9db107156c3c75c2ac944a6aa7ab59f2add76a7bd
 
 ARG DEBIAN_SNAPSHOT=20260713T000000Z
-ARG DEBIAN_SECURITY_SNAPSHOT=20260811T000000Z
+ARG DEBIAN_SECURITY_SNAPSHOT=20260815T000000Z
 RUN printf '%s\n' \
       'Types: deb' \
       "URIs: http://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}/" \
@@ -53,7 +53,7 @@ LABEL org.opencontainers.image.source="https://github.com/nenb/cogs" \
       org.opencontainers.image.licenses="Apache-2.0" \
       dev.cogs.profile="insecure-container" \
       dev.cogs.authority="functional-only" \
-      dev.cogs.package-policy="debian-trixie-snapshots-20260713-20260811-insecure-conformance-v2"
+      dev.cogs.package-policy="debian-trixie-snapshots-20260713-20260815-insecure-conformance-v3"
 
 EXPOSE 2222
 ENTRYPOINT ["/usr/local/bin/cogs-insecure-entrypoint"]

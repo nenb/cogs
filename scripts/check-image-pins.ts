@@ -130,7 +130,7 @@ assert.ok(
   "insecure-container must use the reviewed Debian 13.6 index digest",
 );
 assert.ok(
-  insecureContainerDockerfile.includes("ARG DEBIAN_SECURITY_SNAPSHOT=20260811T000000Z"),
+  insecureContainerDockerfile.includes("ARG DEBIAN_SECURITY_SNAPSHOT=20260815T000000Z"),
   "insecure-container must use the immutable security snapshot containing fixed Expat and OpenJDK",
 );
 assert.ok(
@@ -144,7 +144,7 @@ assert.ok(
 for (const label of [
   'dev.cogs.profile="insecure-container"',
   'dev.cogs.authority="functional-only"',
-  'dev.cogs.package-policy="debian-trixie-snapshots-20260713-20260811-insecure-conformance-v2"',
+  'dev.cogs.package-policy="debian-trixie-snapshots-20260713-20260815-insecure-conformance-v3"',
 ]) {
   assert.ok(insecureContainerDockerfile.includes(label), `insecure conformance image must retain label ${label}`);
 }
