@@ -29,7 +29,7 @@ _HEX = frozenset("0123456789abcdef")
 REVIEWED_SOURCE_DIGESTS = {
     "fixture_implementation_sha256": "c877bdbbce0f1c7920294f5a240aa8b83c81dd96ce3c4daab650a9fbadc7f9f4",
     "workload_implementation_sha256": "c856bb997e1d799c712cf08b48c2fb3de314b8e0efe8985908a5b58d08b3c850",
-    "owner_implementation_sha256": "9702447028b55a3534cdc25f964b566ef9469bba0ed13d79142b2514375f11b7",
+    "owner_implementation_sha256": "13549ab79d1eabe40b8c640cd5f69bfdc257674a8bedd7fc7d8f0e7c1b35610a",
     "orchestrator_implementation_sha256": "edb057827c213e35d00f9088abba238bf1ab687b963212eaa311acdc9f0f18f8",
     "candidate_recovery_implementation_sha256": "1408a9b51b9e5a241a731ac2f453ee28ff1f44f8e92d4111cd9a4100010522e5",
     "post_pin_recovery_implementation_sha256": "1bae8dbde70ea7c0465dbb808a9d85205d88cdf03302f389128a25884ec2c060",

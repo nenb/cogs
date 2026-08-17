@@ -990,13 +990,17 @@ class OwnedRoot:
                 self.state.append("root-removing", root_quarantine=root_quarantine)
             if self.fd >= 0:
                 self.verify_generation()
+                retained_status = os.fstat(self.fd)
                 if _entry_exists(self.parent_fd, self.ROOT_NAME):
                     if _entry_exists(self.parent_fd, root_quarantine):
                         raise CleanupUncertain("root generations conflict")
+                    _cut("source-root", self.parent_fd, self.ROOT_NAME, root_quarantine)
                     _rename_noreplace(self.parent_fd, self.ROOT_NAME, self.parent_fd, root_quarantine)
                     _cleanup_cut("root-quarantined")
                 current = os.stat(root_quarantine, dir_fd=self.parent_fd, follow_symlinks=False)
-                _require(_same_object(os.fstat(self.fd), current))
+                if not _same_object(retained_status, os.fstat(self.fd)) or not _same_object(os.fstat(self.fd), current):
+                    self.uncertain = True
+                    raise CleanupUncertain("root replacement was quarantined but not owned")
                 self._delete_contents(self.fd)
                 _cleanup_cut("root-contents-removed")
                 emptied = os.fstat(self.fd)

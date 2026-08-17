@@ -197,8 +197,10 @@ def descriptor_path(descriptor, name=""):
 # Authentic synchronized source, quarantine, output, inner-file, and inner-directory
 # replacements run only where renameat2 and proc descriptors are the production surface.
 linux_destructive_cases_ran = False
+linux_foundation_cases_ran = set()
+recovery_phases = ()
 if sys.platform.startswith("linux") and os.geteuid() == 0:
-    linux_destructive_cases_ran = True
+
     def new_root(temporary, name):
         return owner.OwnedRoot(Path(temporary).resolve() / name, owner.Deadline.start(8, 4), "host-candidate")
 
@@ -216,8 +218,12 @@ if sys.platform.startswith("linux") and os.geteuid() == 0:
         rejected(root.cleanup, owner.CleanupUncertain)
         parent = Path(temporary).resolve() / "source-swap"
         check((parent / "saved-retained" / "owned").read_bytes() == b"owned", "source generation was deleted")
-        quarantines = list(parent.glob(".q-*"))
-        check(len(quarantines) == 1 and (quarantines[0] / "replacement").read_bytes() == b"replacement", "source replacement was deleted")
+        quarantines = list(parent.glob(".root-*"))
+        check(len(quarantines) == 1 and (quarantines[0] / "replacement").read_bytes() == b"replacement", "source replacement was deleted or misclassified")
+        tombstone = Path(temporary).resolve() / ".source-swap.recovery-v2"
+        last_state = json.loads(tombstone.read_bytes().splitlines()[-1])
+        check(last_state["phase"] == "uncertain", "source replacement was not categorized as cleanup uncertainty")
+        linux_foundation_cases_ran.add("source-swap")
         owner._RACE_HOOK = None
 
     with tempfile.TemporaryDirectory() as temporary:
@@ -231,7 +237,8 @@ if sys.platform.startswith("linux") and os.geteuid() == 0:
         rejected(root.cleanup, owner.CleanupUncertain)
         parent = Path(temporary).resolve() / "quarantine-collision"
         check((parent / "retained" / "owned").read_bytes() == b"owned", "collision moved source")
-        check(len(list(parent.glob(".q-*"))) == 1, "collision destination disappeared")
+        check(len(list(parent.glob(".root-*"))) == 1, "collision destination disappeared")
+        linux_foundation_cases_ran.add("quarantine-collision")
         owner._RACE_HOOK = None
 
     with tempfile.TemporaryDirectory() as temporary:
@@ -252,6 +259,7 @@ if sys.platform.startswith("linux") and os.geteuid() == 0:
         check((retained / "saved-output").read_bytes() == b"owned-output", "owned output disappeared")
         replacements = [path for path in retained.glob(".q-*") if path.is_file()]
         check(len(replacements) == 1 and replacements[0].read_bytes() == b"replacement-output", "output replacement disappeared")
+        linux_foundation_cases_ran.add("output-swap")
         owner._RACE_HOOK = None
 
     with tempfile.TemporaryDirectory() as temporary:
@@ -285,6 +293,7 @@ if sys.platform.startswith("linux") and os.geteuid() == 0:
         tree_quarantine = next(path for path in retained.glob(".q-*") if path.is_dir())
         check((tree_quarantine / "saved-before-open").read_bytes() == b"owned-before-open", "stat/open source disappeared")
         check((tree_quarantine / "value").read_bytes() == b"replacement-before-open", "stat/open replacement disappeared")
+        linux_foundation_cases_ran.add("stat-open-swap")
         owner._RACE_HOOK = None
 
     for kind in ("inner-file", "inner-directory"):
@@ -319,7 +328,9 @@ if sys.platform.startswith("linux") and os.geteuid() == 0:
                 check((tree_quarantine / "saved-inner/value").read_bytes() == b"owned-inner", "inner directory disappeared")
                 replacement = next(path for path in tree_quarantine.glob(".q-*") if path.is_dir())
                 check((replacement / "value").read_bytes() == b"replacement-inner", "inner directory replacement disappeared")
+            linux_foundation_cases_ran.add(kind)
             owner._RACE_HOOK = None
+    linux_destructive_cases_ran = True
 
 # A real closed stdout is categorical; no traceback, path, command, or partial success
 # document is reported by the helper process.
@@ -358,7 +369,6 @@ for number in (signal.SIGTERM, signal.SIGINT):
 linux_containment_recovery_cases_ran = False
 linux_exact_tool_transaction_cases_ran = False
 if sys.platform.startswith("linux") and os.geteuid() == 0:
-    linux_containment_recovery_cases_ran = True
     guest._enable_subreaper()
     with tempfile.TemporaryDirectory() as temporary:
         base = Path(temporary).resolve()
@@ -423,6 +433,7 @@ print(json.dumps({'blocked': blocked, 'uid': os.geteuid(), 'gid': os.getegid(), 
         check(attacker.returncode == 0 and attacker.stdout == b"blocked 3\n", "unrelated uid 65534 reached the parent")
         check(not (operation / "renamed").exists(), "uid attacker renamed retained root")
         root.cleanup()
+        linux_foundation_cases_ran.add("parent-isolation")
 
     with tempfile.TemporaryDirectory() as temporary:
         deadline = guest.Deadline.start(2.0, 1.2)
@@ -432,6 +443,7 @@ print(json.dumps({'blocked': blocked, 'uid': os.geteuid(), 'gid': os.getegid(), 
         check(time.monotonic() - started < 2.0, "timeout was not bounded")
         root.cleanup()
         check(not guest._children(), "timeout child remained")
+        linux_foundation_cases_ran.add("timeout")
 
     nested_program = r'''
 import os, signal, time
@@ -455,6 +467,7 @@ time.sleep(30)
         rejected(lambda: guest._run((sys.executable, "-c", nested_program), root, deadline), owner.ChildUncertain)
         check(not guest._children(), "nested escaped child remained")
         root.cleanup()
+        linux_foundation_cases_ran.add("nested-descendants")
 
     # SIGKILL every fsync-ordered construction/cleanup state. Recovery authenticates
     # partial construction, root-already-absent, journal-retired, and parent-absent cuts.
@@ -528,6 +541,8 @@ root.cleanup()
             check(after == before and after in {b"", b"work\n"}, f"{phase} recovery retried work")
             rejected(lambda operation=operation: owner.recover_workload_root(operation, "host-candidate"), Exception)
             check(not operation.exists(), f"{phase} second recovery changed absence")
+            linux_foundation_cases_ran.add(f"recovery:{phase}")
+    linux_containment_recovery_cases_ran = True
 
     # Production transaction seams run without replacing workload functions when the exact
     # reviewed Linux tool closure is present. Post-pin uses exact synthetic reviewed bytes.
@@ -670,6 +685,19 @@ if os.environ.get("COGS_REQUIRE_STAGE2_WORKLOAD_LINUX_FOUNDATIONS") == "1":
     check(sys.platform.startswith("linux") and os.geteuid() == 0, "Linux root foundation environment absent")
     check(linux_destructive_cases_ran, "Linux destructive ownership cases skipped")
     check(linux_containment_recovery_cases_ran, "Linux containment/recovery cases skipped")
+    required_foundations = {
+        "source-swap",
+        "quarantine-collision",
+        "output-swap",
+        "stat-open-swap",
+        "inner-file",
+        "inner-directory",
+        "parent-isolation",
+        "timeout",
+        "nested-descendants",
+        *(f"recovery:{phase}" for phase in recovery_phases),
+    }
+    check(linux_foundation_cases_ran == required_foundations, "required Linux foundation case set differs")
 print(
     "completion workload contract tests passed "
     f"linux_destructive={linux_destructive_cases_ran} "
