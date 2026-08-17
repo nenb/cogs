@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://cogs.invalid/schemas/stage2-workload-candidate-v1.json",
-  "title": "Non-authoritative Stage 2 host package candidate",
+  "$id": "https://cogs.invalid/schemas/stage2-workload-post-pin-v1.json",
+  "title": "Non-authoritative Stage 2 host post-pin reproduction",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -12,22 +12,20 @@
     "final_pin_sha256",
     "package_identity",
     "reproductions",
-    "a_equals_b",
+    "matches_final_pin",
     "lifecycle_deleted",
-    "promotion",
     "execution_binding"
   ],
   "properties": {
-    "version": { "const": "cogs.stage2-workload-candidate/v1" },
+    "version": { "const": "cogs.stage2-workload-post-pin/v1" },
     "result": { "const": "pass" },
-    "authority": { "const": "non-authoritative-host-candidate-only" },
+    "authority": { "const": "non-authoritative-host-reproduction-only" },
     "candidate_contract_sha256": { "const": "b8660b92d778e9f5dc89586df4f68a2e2b12cdce818ff4fe12adf0a8e951fdf3" },
-    "final_pin_sha256": { "type": "null" },
+    "final_pin_sha256": { "$ref": "#/$defs/sha256" },
     "package_identity": { "$ref": "#/$defs/identity" },
     "reproductions": { "$ref": "#/$defs/reproductions" },
-    "a_equals_b": { "const": true },
+    "matches_final_pin": { "const": true },
     "lifecycle_deleted": { "const": true },
-    "promotion": { "const": "external-manual-review-required" },
     "execution_binding": { "$ref": "#/$defs/executionBinding" }
   },
   "$defs": {
@@ -58,8 +56,6 @@
     },
     "reproductions": {
       "type": "array",
-      "minItems": 2,
-      "maxItems": 2,
       "prefixItems": [
         {
           "type": "object",
@@ -74,7 +70,9 @@
           "properties": { "id": { "const": "B" }, "deleted": { "const": true } }
         }
       ],
-      "items": false
+      "items": false,
+      "minItems": 2,
+      "maxItems": 2
     },
     "toolObservation": {
       "type": "object",
@@ -112,8 +110,6 @@
         },
         "tool_observations": {
           "type": "array",
-          "minItems": 3,
-          "maxItems": 3,
           "prefixItems": [
             {
               "allOf": [
@@ -134,7 +130,9 @@
               ]
             }
           ],
-          "items": false
+          "items": false,
+          "minItems": 3,
+          "maxItems": 3
         },
         "contract_validator": { "const": "unbound-self-referential-host-validator" },
         "source_checkout": { "const": "unbound-current-checkout" },

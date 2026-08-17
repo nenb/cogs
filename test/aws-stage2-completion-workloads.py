@@ -1,296 +1,318 @@
 #!/usr/bin/env python3
-"""Readable portable and hostile tests for ADR 0099 workload contracts."""
+"""Portable hostile tests for ADR 0099 non-authoritative host workloads."""
 
+import copy
 import hashlib
-import inspect
 import json
 import os
 from pathlib import Path
+import shutil
+import signal
+import subprocess
 import sys
 import tempfile
+import threading
+import time
 
 ROOT = Path(__file__).resolve().parents[1]
 REMOTE = ROOT / "deploy/aws-feasibility/remote"
 sys.path.insert(0, str(REMOTE))
 
 import completion_guest_workloads as guest
-import completion_local_full as local
 import completion_package_candidate as candidate
 import completion_runtime_contract as contract
 
+
+def check(condition, message):
+    if not condition:
+        raise AssertionError(message)
+
+
+def rejected(function, exception=Exception):
+    try:
+        function()
+    except exception:
+        return
+    raise AssertionError("hostile value was accepted")
+
+
 fixed = contract.load_candidate_contract()
-assert fixed.value["sample_count"] == 7
-assert fixed.value["platform"] == {"os": "linux", "architecture": "amd64", "euid": 0}
-assert fixed.value["bindings"]["rootfs_manifest_sha256"] == "8783c292f232842a3d1d2d35e7ac2268d591fa6e947d3984868fe33ca006e691"
-assert fixed.value["bindings"]["rootfs_ustar_sha256"] == "47b0ab5752ae50da6bc9840345aa9ba6285bde3e5ae186c0c548acbaa83768d3"
-assert "deb_sha256" not in json.dumps(fixed.value)
-assert fixed.sha256 == hashlib.sha256(contract.CANDIDATE_PATH.read_bytes()).hexdigest()
+check(fixed.sha256 == contract.REVIEWED_CANDIDATE_SHA256, "candidate digest drift")
+check(hashlib.sha256(contract.CANDIDATE_PATH.read_bytes()).hexdigest() == contract.REVIEWED_CANDIDATE_SHA256, "raw candidate digest drift")
+check(fixed.value["sample_count"] == 7 and "deb_sha256" not in json.dumps(fixed.value), "candidate contract changed")
+check(contract.REVIEWED_FINAL_PIN_SHA256 is None, "an unreviewed final digest was invented")
+rejected(contract.load_final_pin, contract.FinalPinUnavailable)
 
-try:
-    contract.load_final_pin()
-except contract.FinalPinUnavailable:
-    pass
-else:
-    raise AssertionError("qualification opened without a manual final pin")
+identity = {
+    "deb_sha256": "a" * 64,
+    "deb_bytes": 1234,
+    "installed_tree_sha256": fixed.value["bindings"]["installed_tree_sha256"],
+    "installed_entries": 259,
+    "installed_bytes": 1048576,
+    "package": "cogs-stage2-fixture",
+    "version": "1.0",
+    "architecture": "all",
+}
+final_value = {
+    "version": "cogs.stage2-workload-final-pin/v1",
+    "candidate_contract_sha256": fixed.sha256,
+    "package_identity": identity,
+    "reproductions": ["A", "B"],
+    "promotion": "manual-reviewed-a-equals-b",
+}
 
-# Strict JSON rejects duplicate/additional keys, scalar coercion, A!=B, and drift.
+# Exact bytes: symlink, hardlink, reformat, BOM, trailing data, duplicate key, and
+# a final path without a separately reviewed digest all remain closed.
 with tempfile.TemporaryDirectory() as temporary:
-    root = Path(temporary)
+    directory = Path(temporary).resolve()
     original_candidate = contract.CANDIDATE_PATH
     original_final = contract.FINAL_PATH
+    original_digest = contract.REVIEWED_FINAL_PIN_SHA256
+    exact = original_candidate.read_bytes()
     try:
-        duplicate = root / "duplicate.json"
-        duplicate.write_text('{"version":1,"version":1}\n')
-        contract.CANDIDATE_PATH = duplicate
-        try:
-            contract.load_candidate_contract()
-        except contract.WorkloadContractError:
-            pass
-        else:
-            raise AssertionError("duplicate JSON key accepted")
+        target = directory / "target.json"
+        target.write_bytes(exact)
+        symlink = directory / "symlink.json"
+        symlink.symlink_to(target)
+        contract.CANDIDATE_PATH = symlink
+        rejected(contract.load_candidate_contract, contract.WorkloadContractError)
 
-        changed = json.loads(original_candidate.read_text())
-        changed["sample_count"] = True
-        hostile = root / "hostile.json"
-        hostile.write_text(json.dumps(changed))
-        contract.CANDIDATE_PATH = hostile
-        try:
-            contract.load_candidate_contract()
-        except contract.WorkloadContractError:
-            pass
-        else:
-            raise AssertionError("bool/int coercion accepted")
+        hardlink = directory / "hardlink.json"
+        os.link(target, hardlink)
+        contract.CANDIDATE_PATH = hardlink
+        rejected(contract.load_candidate_contract, contract.WorkloadContractError)
+        hardlink.unlink()
 
-        changed = json.loads(original_candidate.read_text())
-        changed["platform"]["euid"] = False
-        hostile.write_text(json.dumps(changed))
-        try:
-            contract.load_candidate_contract()
-        except contract.WorkloadContractError:
-            pass
-        else:
-            raise AssertionError("False was accepted as numeric zero")
+        for number, raw in enumerate((
+            json.dumps(json.loads(exact)).encode(),
+            b"\xef\xbb\xbf" + exact,
+            exact + b" ",
+            b'{"version":1,"version":1}\n',
+        )):
+            hostile = directory / f"hostile-{number}.json"
+            hostile.write_bytes(raw)
+            contract.CANDIDATE_PATH = hostile
+            rejected(contract.load_candidate_contract, contract.WorkloadContractError)
 
         contract.CANDIDATE_PATH = original_candidate
-        identity = {
-            "deb_sha256": "a" * 64,
-            "deb_bytes": 1234,
-            "installed_tree_sha256": fixed.value["bindings"]["installed_tree_sha256"],
-            "installed_entries": 259,
-            "installed_bytes": 1048576,
-            "package": "cogs-stage2-fixture",
-            "version": "1.0",
-            "architecture": "all",
-        }
-        final_value = {
-            "version": "cogs.stage2-workload-final-pin/v1",
-            "candidate_contract_sha256": fixed.sha256,
-            "candidate_a": identity,
-            "candidate_b": dict(identity),
-            "promotion": "manual-reviewed-a-equals-b",
-        }
-        final_path = root / "final.json"
-        final_path.write_text(json.dumps(final_value))
+        final_path = directory / "final.json"
+        canonical = contract.canonical_json(final_value)
+        final_path.write_bytes(canonical)
         contract.FINAL_PATH = final_path
-        assert contract.load_final_pin().candidate_a == contract.load_final_pin().candidate_b
+        rejected(contract.load_final_pin, contract.FinalPinUnavailable)
+        contract.REVIEWED_FINAL_PIN_SHA256 = hashlib.sha256(canonical).hexdigest()
+        final = contract.load_final_pin()
+        check(final.final_pin_sha256 == hashlib.sha256(canonical).hexdigest(), "final raw digest missing")
+        check(final.candidate_a == final.candidate_b == final.package_identity, "A=B representation differs")
 
-        unequal = json.loads(final_path.read_text())
-        unequal["candidate_b"]["deb_sha256"] = "b" * 64
-        final_path.write_text(json.dumps(unequal))
-        try:
-            contract.load_final_pin()
-        except contract.WorkloadContractError:
-            pass
-        else:
-            raise AssertionError("unequal A/B final pin accepted")
-
-        extra = json.loads(json.dumps(final_value))
-        extra["candidate_a"]["path"] = "/hostile"
-        final_path.write_text(json.dumps(extra))
-        try:
-            contract.load_final_pin()
-        except contract.WorkloadContractError:
-            pass
-        else:
-            raise AssertionError("caller-selected path accepted")
+        final_path.write_bytes(json.dumps(final_value, indent=2).encode() + b"\n")
+        rejected(contract.load_final_pin, contract.WorkloadContractError)
+        final_path.write_bytes(canonical)
+        unequal_shape = copy.deepcopy(final_value)
+        unequal_shape["candidate_a"] = identity
+        final_path.write_bytes(contract.canonical_json(unequal_shape))
+        contract.REVIEWED_FINAL_PIN_SHA256 = hashlib.sha256(final_path.read_bytes()).hexdigest()
+        rejected(contract.load_final_pin, contract.WorkloadContractError)
     finally:
         contract.CANDIDATE_PATH = original_candidate
         contract.FINAL_PATH = original_final
+        contract.REVIEWED_FINAL_PIN_SHA256 = original_digest
 
-# The real Darwin route must fail before creating a candidate or pretending a pin.
-if sys.platform == "darwin":
-    assert not os.path.lexists(candidate.CANDIDATE_ROOT)
-    try:
-        candidate.run_candidate_transaction()
-    except Exception:
-        pass
-    else:
-        raise AssertionError("Darwin invented a Linux package candidate")
-    assert not os.path.lexists(candidate.CANDIDATE_ROOT)
-
-identity = contract.PackageIdentity(
-    "a" * 64,
-    1234,
-    fixed.value["bindings"]["installed_tree_sha256"],
-    259,
-    1048576,
-    "cogs-stage2-fixture",
-    "1.0",
-    "all",
-)
-
-# Simulate only the sealed orchestration seams: exactly A, B; mismatch is all-or-nothing.
+# Authentic descriptor read under repeated rename/ABA yields one complete generation or
+# rejects; the exact candidate loader would additionally reject every non-reviewed digest.
 with tempfile.TemporaryDirectory() as temporary:
-    original_root = candidate.CANDIDATE_ROOT
-    original_platform = candidate._require_linux_amd64_root
-    original_versions = candidate._check_versions
-    original_sample = candidate._run_package_sample
-    candidate.CANDIDATE_ROOT = Path(temporary) / "candidate"
-    calls = []
-    candidate._require_linux_amd64_root = lambda: None
-    candidate._check_versions = lambda _root: None
+    directory = Path(temporary).resolve()
+    active = directory / "active"
+    alternate = directory / "alternate"
+    active.write_bytes(b"A" * 4096)
+    alternate.write_bytes(b"B" * 4096)
+    stop = False
 
-    def package_sample(root, label):
-        calls.append(label)
-        path = root / f"package-{label}"
-        path.mkdir()
-        path.rmdir()
-        return identity, 1, 2
+    def swapper():
+        spare = directory / "spare"
+        while not stop:
+            try:
+                os.rename(active, spare)
+                os.rename(alternate, active)
+                os.rename(spare, alternate)
+            except FileNotFoundError:
+                pass
 
-    candidate._run_package_sample = package_sample
+    thread = threading.Thread(target=swapper)
+    thread.start()
     try:
-        output = json.loads(candidate.run_candidate_transaction())
-        assert calls == ["candidate-a", "candidate-b"]
-        assert output["a_equals_b"] is True
-        assert output["candidates"][0]["package_identity"] == output["candidates"][1]["package_identity"]
-        assert not candidate.CANDIDATE_ROOT.exists()
-
-        calls.clear()
-        different = contract.PackageIdentity(*({**identity.value(), "deb_sha256": "b" * 64}.values()))
-
-        def mismatching(root, label):
-            value = identity if label == "candidate-a" else different
-            calls.append(label)
-            return value, 1, 2
-
-        candidate._run_package_sample = mismatching
-        try:
-            candidate.run_candidate_transaction()
-        except Exception:
-            pass
-        else:
-            raise AssertionError("candidate A!=B produced output")
-        assert calls == ["candidate-a", "candidate-b"] and not candidate.CANDIDATE_ROOT.exists()
+        for _index in range(100):
+            try:
+                raw = contract._read_regular(active, 8192)
+            except contract.WorkloadContractError:
+                continue
+            check(raw in {b"A" * 4096, b"B" * 4096}, "torn ABA read accepted")
     finally:
-        candidate.CANDIDATE_ROOT = original_root
-        candidate._require_linux_amd64_root = original_platform
-        candidate._check_versions = original_versions
-        candidate._run_package_sample = original_sample
+        stop = True
+        thread.join()
 
-# Simulate full orchestration and prove fixed per-sample operation order and abort behavior.
+# Owned file reads reject hardlinks and command output creation rejects symlinks without
+# changing their targets.
 with tempfile.TemporaryDirectory() as temporary:
-    originals = (
-        local.FULL_ROOT,
-        local.load_candidate_contract,
-        local.load_final_pin,
-        local._require_linux_amd64_root,
-        local._check_versions,
-        local._prepare_git_fixture,
-        local._run_git_sample,
-        local._run_package_sample,
-    )
-    local.FULL_ROOT = Path(temporary) / "full"
-    final = contract.FinalPin(fixed.sha256, identity, identity)
-    events = []
-    local.load_candidate_contract = lambda: fixed
-    local.load_final_pin = lambda: final
-    local._require_linux_amd64_root = lambda: None
-    local._check_versions = lambda _root: None
-    local._prepare_git_fixture = lambda root: root / "git-fixture.git"
+    deadline = guest.Deadline.start(5, 2)
+    root_path = Path(temporary).resolve() / "owned"
+    root = guest.OwnedRoot(root_path, deadline)
+    root.write_file("value", b"safe")
+    os.link(root_path / "value", root_path / "other")
+    rejected(lambda: root.read_file("value", 32), guest.WorkloadError)
+    os.unlink(root_path / "other")
+    root.unlink("value")
+    target = Path(temporary).resolve() / "target"
+    target.write_bytes(b"preserve")
+    os.symlink(target, root_path / "command.out")
+    rejected(lambda: guest._run(("/usr/bin/true",), root, deadline), guest.WorkloadError)
+    check(target.read_bytes() == b"preserve", "symlink output target changed")
+    os.unlink(root_path / "command.out")
+    root.cleanup()
+    check(not os.path.lexists(root_path), "owned root remained")
 
-    def git_sample(_root, _bare, sample):
-        events.append((sample, "git"))
-        return sample
+# Replacement-path cleanup is identity-conservative: uncertainty dominates and neither
+# the moved owned generation nor the replacement is guessed at or deleted.
+with tempfile.TemporaryDirectory() as temporary:
+    deadline = guest.Deadline.start(5, 2)
+    root_path = Path(temporary).resolve() / "owned"
+    moved = Path(temporary).resolve() / "moved-owned"
+    root = guest.OwnedRoot(root_path, deadline)
+    root.write_file("owned", b"owned")
+    os.rename(root_path, moved)
+    root_path.mkdir(mode=0o700)
+    (root_path / "replacement").write_bytes(b"replacement")
+    rejected(root.cleanup, guest.CleanupUncertain)
+    check((root_path / "replacement").read_bytes() == b"replacement", "replacement was deleted")
+    check((moved / "owned").read_bytes() == b"owned", "uncertain owned generation was deleted")
 
-    def full_package(_root, label):
-        sample = int(label.removeprefix("sample-"))
-        events.extend(((sample, "package-build"), (sample, "package-install")))
-        return identity, sample + 10, sample + 20
-
-    local._run_git_sample = git_sample
-    local._run_package_sample = full_package
-    try:
-        result = json.loads(local.run_local_full_qualification())
-        expected = [(sample, operation) for sample in range(1, 8) for operation in ("git", "package-build", "package-install")]
-        assert events == expected
-        assert [row["sample"] for row in result["samples"]] == list(range(1, 8))
-        assert all(row["deleted"] is True for row in result["samples"])
-        assert result["lifecycle_count"] == 1 and len(result["samples"]) == 7
-        assert not local.FULL_ROOT.exists()
-
-        events.clear()
-
-        def fail_third(_root, _bare, sample):
-            events.append((sample, "git"))
-            if sample == 3:
-                raise local.LocalQualificationError()
-            return sample
-
-        local._run_git_sample = fail_third
-        try:
-            local.run_local_full_qualification()
-        except Exception:
-            pass
-        else:
-            raise AssertionError("partial seven-sample result was returned")
-        assert events[-1] == (3, "git") and all(sample <= 3 for sample, _operation in events)
-        assert not local.FULL_ROOT.exists()
-    finally:
+# A real closed stdout is categorical; no traceback, path, command, or partial success
+# document is reported by the helper process.
+broken_output = subprocess.run(
+    [
+        sys.executable,
+        "-B",
+        "-c",
         (
-            local.FULL_ROOT,
-            local.load_candidate_contract,
-            local.load_final_pin,
-            local._require_linux_amd64_root,
-            local._check_versions,
-            local._prepare_git_fixture,
-            local._run_git_sample,
-            local._run_package_sample,
-        ) = originals
+            "import os,sys; sys.path.insert(0,sys.argv[1]); "
+            "import completion_package_candidate as c; os.close(1); "
+            "\ntry: c._write_stdout(b'x')\n"
+            "except Exception as e: os.write(2, e.category.encode()+b'\\n')"
+        ),
+        str(REMOTE),
+    ],
+    capture_output=True,
+    check=False,
+    env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "PYTHONDONTWRITEBYTECODE": "1"},
+)
+check(broken_output.returncode == 0 and broken_output.stdout == b"", "broken stdout escaped")
+check(broken_output.stderr == b"output-uncertain\n", "broken stdout was not categorical")
 
-# Public authority-bearing functions are zero-argument and code owns every path/flag/env.
-for function in (
-    contract.load_candidate_contract,
-    contract.load_final_pin,
-    candidate.run_candidate_transaction,
-    candidate.run_post_pin_transaction,
-    local.run_local_full_qualification,
+# TERM/INT are categorical and do not disclose a path or command.
+for number in (signal.SIGTERM, signal.SIGINT):
+    try:
+        with guest.SignalScope():
+            os.kill(os.getpid(), number)
+    except guest.WorkloadInterrupted as error:
+        check(error.category == "interrupted" and "/" not in str(error), "signal was not categorical")
+    else:
+        raise AssertionError("signal did not interrupt")
+
+# Real timeout and escaped-child checks are Linux-only. The subreaper owns descendants,
+# applies bounded TERM/KILL/reap, and leaves no adopted child.
+if sys.platform.startswith("linux"):
+    guest._enable_subreaper()
+    with tempfile.TemporaryDirectory() as temporary:
+        deadline = guest.Deadline.start(1.0, 0.55)
+        root = guest.OwnedRoot(Path(temporary).resolve() / "timeout", deadline)
+        started = time.monotonic()
+        rejected(lambda: guest._run((sys.executable, "-c", "import time; time.sleep(30)"), root, deadline), guest.WorkloadDeadline)
+        check(time.monotonic() - started < 1.1, "timeout was not bounded")
+        root.cleanup()
+        check(not guest._children(), "timeout child remained")
+
+    with tempfile.TemporaryDirectory() as temporary:
+        deadline = guest.Deadline.start(3.0, 1.5)
+        root = guest.OwnedRoot(Path(temporary).resolve() / "escaped", deadline)
+        program = "import os,time; p=os.fork(); (os.setsid(),time.sleep(30)) if p==0 else None"
+        guest._run((sys.executable, "-c", program), root, deadline)
+        check(not guest._children(), "escaped child remained")
+        root.cleanup()
+
+# Semantic codecs make A=B structural (one identity) and reject every summary mismatch.
+tools = [
+    {"name": "git", "sha256": "1" * 64, "bytes": 1, "version": "git version 2.47.3"},
+    {"name": "dpkg-deb", "sha256": "2" * 64, "bytes": 2, "version": "dpkg-deb 1.22.22"},
+    {"name": "dpkg", "sha256": "3" * 64, "bytes": 3, "version": "dpkg 1.22.22"},
+]
+binding = contract.execution_binding(tools)
+candidate_value = {
+    "version": "cogs.stage2-workload-candidate/v1",
+    "result": "pass",
+    "authority": "non-authoritative-host-candidate-only",
+    "candidate_contract_sha256": fixed.sha256,
+    "final_pin_sha256": None,
+    "package_identity": identity,
+    "reproductions": [{"id": "A", "deleted": True}, {"id": "B", "deleted": True}],
+    "a_equals_b": True,
+    "lifecycle_deleted": True,
+    "promotion": "external-manual-review-required",
+    "execution_binding": binding,
+}
+contract.validate_candidate_result(candidate_value)
+for key, hostile in (
+    ("authority", "authoritative"),
+    ("final_pin_sha256", "f" * 64),
+    ("a_equals_b", False),
+    ("lifecycle_deleted", False),
+    ("reproductions", list(reversed(candidate_value["reproductions"]))),
 ):
-    assert tuple(inspect.signature(function).parameters) == ()
+    changed = copy.deepcopy(candidate_value)
+    changed[key] = hostile
+    rejected(lambda changed=changed: contract.validate_candidate_result(changed), contract.WorkloadContractError)
 
-source = "\n".join(
-    (REMOTE / name).read_text()
-    for name in (
-        "completion_runtime_contract.py",
-        "completion_guest_workloads.py",
-        "completion_package_candidate.py",
-        "completion_local_full.py",
-    )
-)
-fixed_flags = (
-    "--build",
-    "--root-owner-group",
-    "--compression=xz",
-    "--compression-level=6",
-    "--threads-max=1",
-    "--admindir",
-    "--instdir",
-    "--install",
-)
-for flag in fixed_flags:
-    assert flag in source
-for forbidden in ("boto", "AWS_", "urllib", "requests", "socket", "retry", "fallback", "argparse"):
-    assert forbidden not in source
-assert "/tmp/cogs-stage2-workload-candidate-v1" in source
-assert "/tmp/cogs-stage2-workload-post-pin-v1" in source
-assert "/tmp/cogs-stage2-workload-full-v1" in source
+parsed_identity = contract.parse_identity(identity)
+semantic_final = contract.FinalPin(fixed.sha256, "f" * 64, parsed_identity)
+post_value = {
+    "version": "cogs.stage2-workload-post-pin/v1",
+    "result": "pass",
+    "authority": "non-authoritative-host-reproduction-only",
+    "candidate_contract_sha256": fixed.sha256,
+    "final_pin_sha256": "f" * 64,
+    "package_identity": identity,
+    "reproductions": [{"id": "A", "deleted": True}, {"id": "B", "deleted": True}],
+    "matches_final_pin": True,
+    "lifecycle_deleted": True,
+    "execution_binding": binding,
+}
+contract.validate_post_pin_result(post_value, semantic_final)
+for key, hostile in (
+    ("authority", "authoritative"),
+    ("final_pin_sha256", None),
+    ("matches_final_pin", False),
+    ("lifecycle_deleted", False),
+    ("reproductions", list(reversed(post_value["reproductions"]))),
+):
+    changed = copy.deepcopy(post_value)
+    changed[key] = hostile
+    rejected(lambda changed=changed: contract.validate_post_pin_result(changed, semantic_final), contract.WorkloadContractError)
+
+# Darwin's production route fails before creating an owned root and cannot invent a pin.
+if sys.platform == "darwin":
+    check(not os.path.lexists(candidate.CANDIDATE_ROOT), "candidate root pre-existed")
+    rejected(candidate.run_candidate_transaction)
+    check(not os.path.lexists(candidate.CANDIDATE_ROOT), "Darwin created a candidate root")
+    check(contract.REVIEWED_FINAL_PIN_SHA256 is None, "Darwin invented a final pin")
+
+source = "\n".join((REMOTE / name).read_text() for name in (
+    "completion_runtime_contract.py",
+    "completion_guest_workloads.py",
+    "completion_package_candidate.py",
+))
+for forbidden in ("local-standalone-kata", "workload-local-qualification", "completion_local_full"):
+    check(forbidden not in source, "removed authority remains in host source")
+for cloud in ("boto", "AWS_", "requests", "urllib", "Terraform", "OpenTofu"):
+    check(cloud not in source, "cloud surface entered host workload")
+check(not (REMOTE / "completion_local_full.py").exists(), "host qualification module remains")
+check(not (ROOT / "schemas/stage2-workload-local-qualification-v1.json").exists(), "host qualification schema remains")
 print("completion workload contract tests passed")
