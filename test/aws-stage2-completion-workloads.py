@@ -6,8 +6,8 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -21,6 +21,7 @@ sys.path.insert(0, str(REMOTE))
 import completion_guest_workloads as guest
 import completion_package_candidate as candidate
 import completion_runtime_contract as contract
+import completion_workload_owner as owner
 
 
 def check(condition, message):
@@ -38,7 +39,9 @@ def rejected(function, exception=Exception):
 
 fixed = contract.load_candidate_contract()
 check(fixed.sha256 == contract.REVIEWED_CANDIDATE_SHA256, "candidate digest drift")
-check(hashlib.sha256(contract.CANDIDATE_PATH.read_bytes()).hexdigest() == contract.REVIEWED_CANDIDATE_SHA256, "raw candidate digest drift")
+candidate_exact_bytes = contract.CANDIDATE_PATH.read_bytes()
+check(hashlib.sha256(candidate_exact_bytes).hexdigest() == contract.REVIEWED_CANDIDATE_SHA256, "raw candidate digest drift")
+check(candidate_exact_bytes != contract.canonical_json(fixed.value), "pretty reviewed input was mislabeled canonical")
 check(fixed.value["sample_count"] == 7 and "deb_sha256" not in json.dumps(fixed.value), "candidate contract changed")
 check(contract.REVIEWED_FINAL_PIN_SHA256 is None, "an unreviewed final digest was invented")
 rejected(contract.load_final_pin, contract.FinalPinUnavailable)
@@ -151,40 +154,138 @@ with tempfile.TemporaryDirectory() as temporary:
         stop = True
         thread.join()
 
-# Owned file reads reject hardlinks and command output creation rejects symlinks without
-# changing their targets.
-with tempfile.TemporaryDirectory() as temporary:
-    deadline = guest.Deadline.start(5, 2)
-    root_path = Path(temporary).resolve() / "owned"
-    root = guest.OwnedRoot(root_path, deadline)
-    root.write_file("value", b"safe")
-    os.link(root_path / "value", root_path / "other")
-    rejected(lambda: root.read_file("value", 32), guest.WorkloadError)
-    os.unlink(root_path / "other")
-    root.unlink("value")
-    target = Path(temporary).resolve() / "target"
-    target.write_bytes(b"preserve")
-    os.symlink(target, root_path / "command.out")
-    rejected(lambda: guest._run(("/usr/bin/true",), root, deadline), guest.WorkloadError)
-    check(target.read_bytes() == b"preserve", "symlink output target changed")
-    os.unlink(root_path / "command.out")
-    root.cleanup()
-    check(not os.path.lexists(root_path), "owned root remained")
+# Destructive ownership uses Linux renameat2(RENAME_NOREPLACE). Darwin has no emulation:
+# it fails closed and cannot turn portable tests into lifecycle evidence.
+check(owner.PROCESS_CONTAINMENT.endswith("no-cgroup-v2"), "cgroup closure was claimed")
+check("no-cgroup-proof" in owner.PROCESS_LIMITATION, "subreaper limitation is hidden")
+if sys.platform == "darwin":
+    rejected(lambda: owner._rename_noreplace(-1, "x", -1, "y"), owner.CleanupUncertain)
 
-# Replacement-path cleanup is identity-conservative: uncertainty dominates and neither
-# the moved owned generation nor the replacement is guessed at or deleted.
-with tempfile.TemporaryDirectory() as temporary:
-    deadline = guest.Deadline.start(5, 2)
-    root_path = Path(temporary).resolve() / "owned"
-    moved = Path(temporary).resolve() / "moved-owned"
-    root = guest.OwnedRoot(root_path, deadline)
-    root.write_file("owned", b"owned")
-    os.rename(root_path, moved)
-    root_path.mkdir(mode=0o700)
-    (root_path / "replacement").write_bytes(b"replacement")
-    rejected(root.cleanup, guest.CleanupUncertain)
-    check((root_path / "replacement").read_bytes() == b"replacement", "replacement was deleted")
-    check((moved / "owned").read_bytes() == b"owned", "uncertain owned generation was deleted")
+
+def synchronized_hook(stage_name, action):
+    used = False
+
+    def hook(stage, parent_fd, source, quarantine):
+        nonlocal used
+        if used or stage != stage_name:
+            return
+        used = True
+        barrier = threading.Barrier(2)
+        failure = []
+
+        def racer():
+            try:
+                barrier.wait()
+                action(parent_fd, source, quarantine)
+            except BaseException as error:
+                failure.append(error)
+
+        thread = threading.Thread(target=racer)
+        thread.start()
+        barrier.wait()
+        thread.join()
+        if failure:
+            raise failure[0]
+
+    return hook
+
+
+def descriptor_path(descriptor, name=""):
+    base = Path(f"/proc/self/fd/{descriptor}")
+    return base / name if name else base
+
+
+# Authentic synchronized source, quarantine, output, inner-file, and inner-directory
+# replacements run only where renameat2 and proc descriptors are the production surface.
+if sys.platform.startswith("linux") and os.geteuid() == 0:
+    def new_root(temporary, name):
+        return owner.OwnedRoot(Path(temporary).resolve() / name, owner.Deadline.start(8, 4), "host-candidate")
+
+    with tempfile.TemporaryDirectory() as temporary:
+        root = new_root(temporary, "source-swap")
+        root.write_file("owned", b"owned")
+
+        def swap_source(parent_fd, source, _quarantine):
+            parent = descriptor_path(parent_fd)
+            os.rename(parent / source, parent / "saved-retained")
+            (parent / source).mkdir(mode=0o700)
+            (parent / source / "replacement").write_bytes(b"replacement")
+
+        owner._RACE_HOOK = synchronized_hook("source-root", swap_source)
+        rejected(root.cleanup, owner.CleanupUncertain)
+        parent = Path(temporary).resolve() / "source-swap"
+        check((parent / "saved-retained" / "owned").read_bytes() == b"owned", "source generation was deleted")
+        quarantines = list(parent.glob(".q-*"))
+        check(len(quarantines) == 1 and (quarantines[0] / "replacement").read_bytes() == b"replacement", "source replacement was deleted")
+        owner._RACE_HOOK = None
+
+    with tempfile.TemporaryDirectory() as temporary:
+        root = new_root(temporary, "quarantine-collision")
+        root.write_file("owned", b"owned")
+
+        def collide(parent_fd, _source, quarantine):
+            descriptor_path(parent_fd, quarantine).mkdir(mode=0o700)
+
+        owner._RACE_HOOK = synchronized_hook("source-root", collide)
+        rejected(root.cleanup, owner.CleanupUncertain)
+        parent = Path(temporary).resolve() / "quarantine-collision"
+        check((parent / "retained" / "owned").read_bytes() == b"owned", "collision moved source")
+        check(len(list(parent.glob(".q-*"))) == 1, "collision destination disappeared")
+        owner._RACE_HOOK = None
+
+    with tempfile.TemporaryDirectory() as temporary:
+        root = new_root(temporary, "output-swap")
+        output = os.open("command.out", os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW, 0o600, dir_fd=root.fd)
+        os.write(output, b"owned-output")
+
+        def swap_output(parent_fd, source, _quarantine):
+            parent = descriptor_path(parent_fd)
+            os.rename(parent / source, parent / "saved-output")
+            (parent / source).write_bytes(b"replacement-output")
+            os.chmod(parent / source, 0o600)
+
+        owner._RACE_HOOK = synchronized_hook("command-output", swap_output)
+        rejected(lambda: root.remove_output(output), owner.CleanupUncertain)
+        os.close(output)
+        retained = Path(temporary).resolve() / "output-swap/retained"
+        check((retained / "saved-output").read_bytes() == b"owned-output", "owned output disappeared")
+        replacements = [path for path in retained.glob(".q-*") if path.is_file()]
+        check(len(replacements) == 1 and replacements[0].read_bytes() == b"replacement-output", "output replacement disappeared")
+        owner._RACE_HOOK = None
+
+    for kind in ("inner-file", "inner-directory"):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = new_root(temporary, kind)
+            root.mkdir("tree", 0o700)
+            if kind == "inner-file":
+                root.write_file("tree/value", b"owned-inner", 0o600)
+            else:
+                root.mkdir("tree/child", 0o700)
+                root.write_file("tree/child/value", b"owned-inner", 0o600)
+
+            def swap_inner(parent_fd, source, _quarantine):
+                parent = descriptor_path(parent_fd)
+                os.rename(parent / source, parent / "saved-inner")
+                if kind == "inner-file":
+                    (parent / source).write_bytes(b"replacement-inner")
+                    os.chmod(parent / source, 0o600)
+                else:
+                    (parent / source).mkdir(mode=0o700)
+                    (parent / source / "value").write_bytes(b"replacement-inner")
+
+            owner._RACE_HOOK = synchronized_hook(kind, swap_inner)
+            rejected(lambda: root.remove_tree("tree"), owner.CleanupUncertain)
+            retained = Path(temporary).resolve() / kind / "retained"
+            tree_quarantine = next(path for path in retained.glob(".q-*") if path.is_dir())
+            if kind == "inner-file":
+                check((tree_quarantine / "saved-inner").read_bytes() == b"owned-inner", "inner file disappeared")
+                replacement = next(path for path in tree_quarantine.glob(".q-*") if path.is_file())
+                check(replacement.read_bytes() == b"replacement-inner", "inner file replacement disappeared")
+            else:
+                check((tree_quarantine / "saved-inner/value").read_bytes() == b"owned-inner", "inner directory disappeared")
+                replacement = next(path for path in tree_quarantine.glob(".q-*") if path.is_dir())
+                check((replacement / "value").read_bytes() == b"replacement-inner", "inner directory replacement disappeared")
+            owner._RACE_HOOK = None
 
 # A real closed stdout is categorical; no traceback, path, command, or partial success
 # document is reported by the helper process.
@@ -218,26 +319,132 @@ for number in (signal.SIGTERM, signal.SIGINT):
     else:
         raise AssertionError("signal did not interrupt")
 
-# Real timeout and escaped-child checks are Linux-only. The subreaper owns descendants,
-# applies bounded TERM/KILL/reap, and leaves no adopted child.
-if sys.platform.startswith("linux"):
+# Linux closure repeatedly discovers pid/start-time or pidfd identities. The nested child
+# forks from TERM, setsid-escapes, ignores TERM in one generation, and outlives its leader.
+if sys.platform.startswith("linux") and os.geteuid() == 0:
     guest._enable_subreaper()
     with tempfile.TemporaryDirectory() as temporary:
-        deadline = guest.Deadline.start(1.0, 0.55)
-        root = guest.OwnedRoot(Path(temporary).resolve() / "timeout", deadline)
+        operation = Path(temporary).resolve() / "parent-isolation"
+        deadline = guest.Deadline.start(4.0, 2.0)
+        root = guest.OwnedRoot(operation, deadline, "host-candidate")
+        parent_status = os.lstat(operation)
+        check(stat.S_IMODE(parent_status.st_mode) == 0o700 and parent_status.st_uid == owner.OPERATION_PARENT_UID, "operation parent owner or mode differs")
+        escape = "import os;\ntry: open('../escaped','wb').write(b'x')\nexcept PermissionError: print('blocked')\nelse: raise SystemExit(9)"
+        guest._run((sys.executable, "-c", escape), root, deadline, b"blocked\n")
+        check(not (operation / "escaped").exists(), "capability-cleared child renamed operation parent")
+        root.cleanup()
+
+    with tempfile.TemporaryDirectory() as temporary:
+        deadline = guest.Deadline.start(2.0, 1.2)
+        root = guest.OwnedRoot(Path(temporary).resolve() / "timeout", deadline, "host-candidate")
         started = time.monotonic()
         rejected(lambda: guest._run((sys.executable, "-c", "import time; time.sleep(30)"), root, deadline), guest.WorkloadDeadline)
-        check(time.monotonic() - started < 1.1, "timeout was not bounded")
+        check(time.monotonic() - started < 2.0, "timeout was not bounded")
         root.cleanup()
         check(not guest._children(), "timeout child remained")
 
+    nested_program = r'''
+import os, signal, time
+pid = os.fork()
+if pid:
+    raise SystemExit(0)
+os.setsid()
+def on_term(_number, _frame):
+    nested = os.fork()
+    if nested == 0:
+        os.setsid()
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        time.sleep(30)
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+signal.signal(signal.SIGTERM, on_term)
+time.sleep(30)
+'''
     with tempfile.TemporaryDirectory() as temporary:
-        deadline = guest.Deadline.start(3.0, 1.5)
-        root = guest.OwnedRoot(Path(temporary).resolve() / "escaped", deadline)
-        program = "import os,time; p=os.fork(); (os.setsid(),time.sleep(30)) if p==0 else None"
-        guest._run((sys.executable, "-c", program), root, deadline)
-        check(not guest._children(), "escaped child remained")
+        deadline = guest.Deadline.start(4.0, 2.5)
+        root = guest.OwnedRoot(Path(temporary).resolve() / "nested", deadline, "host-candidate")
+        rejected(lambda: guest._run((sys.executable, "-c", nested_program), root, deadline), owner.ChildUncertain)
+        check(not guest._children(), "nested escaped child remained")
         root.cleanup()
+
+    # A SIGKILL leaves a canonical exact-generation journal. The fixed recovery function
+    # authenticates it, performs cleanup only, and never calls a workload function.
+    with tempfile.TemporaryDirectory() as temporary:
+        operation = Path(temporary).resolve() / "recoverable"
+        helper = subprocess.run(
+            [
+                sys.executable,
+                "-B",
+                "-c",
+                (
+                    "import os,sys;sys.path.insert(0,sys.argv[1]);"
+                    "from completion_workload_owner import Deadline,OwnedRoot;"
+                    "r=OwnedRoot(sys.argv[2],Deadline.start(30,20),'host-candidate');"
+                    "r.write_file('effect',b'exact',0o600);os.kill(os.getpid(),9)"
+                ),
+                str(REMOTE),
+                str(operation),
+            ],
+            capture_output=True,
+            check=False,
+            env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "PYTHONDONTWRITEBYTECODE": "1"},
+        )
+        check(helper.returncode < 0 and operation.exists(), "SIGKILL did not leave recovery state")
+        journal = (operation / "recovery.json").read_bytes()
+        check(journal.endswith(b"\n") and json.loads(journal)["generation"], "recovery record is not canonical")
+        owner.recover_owned_root(operation, "host-candidate")
+        check(not operation.exists(), "cleanup-only recovery left the operation")
+
+    # Production transaction seams run without replacing workload functions when the exact
+    # reviewed Linux tool closure is present. Post-pin uses exact synthetic reviewed bytes.
+    versions = (
+        subprocess.run([guest.GIT, "--version"], capture_output=True, check=False).stdout,
+        subprocess.run([guest.DPKG_DEB, "--version"], capture_output=True, check=False).stdout.splitlines()[:1],
+        subprocess.run([guest.DPKG, "--version"], capture_output=True, check=False).stdout.splitlines()[:1],
+    )
+    exact_tools = (
+        versions[0] == b"git version 2.47.3\n"
+        and versions[1] == [b"Debian 'dpkg-deb' package archive backend version 1.22.22 (amd64)."]
+        and versions[2] == [b"Debian 'dpkg' package management program version 1.22.22 (amd64)."]
+    )
+    if exact_tools and not candidate.CANDIDATE_ROOT.exists() and not candidate.POST_PIN_ROOT.exists():
+        candidate_raw = candidate.run_candidate_transaction()
+        candidate_result = json.loads(candidate_raw)
+        check(candidate_raw == contract.canonical_json(candidate_result), "candidate output bytes are not canonical")
+        check(candidate_result["authority"] == "non-authoritative-host-candidate-only", "candidate authority changed")
+        check(not candidate.CANDIDATE_ROOT.exists(), "candidate emitted before cleanup")
+        cuts = []
+
+        def fail_between(stage):
+            cuts.append(stage)
+            if stage == "after-candidate-a":
+                raise candidate.CandidateError("injected categorical cut")
+
+        candidate._TRANSACTION_HOOK = fail_between
+        try:
+            rejected(candidate.run_candidate_transaction, candidate.CandidateError)
+        finally:
+            candidate._TRANSACTION_HOOK = None
+        check(cuts == ["after-candidate-a"], "failure cut retried or reached candidate B")
+        check(not candidate.CANDIDATE_ROOT.exists(), "failure cut left candidate operation")
+        original_final = contract.FINAL_PATH
+        original_digest = contract.REVIEWED_FINAL_PIN_SHA256
+        with tempfile.TemporaryDirectory() as temporary:
+            final_path = Path(temporary).resolve() / "final.json"
+            pinned = copy.deepcopy(final_value)
+            pinned["package_identity"] = candidate_result["package_identity"]
+            final_raw = contract.canonical_json(pinned)
+            final_path.write_bytes(final_raw)
+            contract.FINAL_PATH = final_path
+            contract.REVIEWED_FINAL_PIN_SHA256 = hashlib.sha256(final_raw).hexdigest()
+            try:
+                post_raw = candidate.run_post_pin_transaction()
+                post_result = json.loads(post_raw)
+                check(post_raw == contract.canonical_json(post_result), "post-pin output bytes are not canonical")
+                check(post_result["final_pin_sha256"] == contract.REVIEWED_FINAL_PIN_SHA256, "post-pin digest differs")
+                check(not candidate.POST_PIN_ROOT.exists(), "post-pin emitted before cleanup")
+            finally:
+                contract.FINAL_PATH = original_final
+                contract.REVIEWED_FINAL_PIN_SHA256 = original_digest
 
 # Semantic codecs make A=B structural (one identity) and reject every summary mismatch.
 tools = [
@@ -286,6 +493,8 @@ post_value = {
     "execution_binding": binding,
 }
 contract.validate_post_pin_result(post_value, semantic_final)
+rejected(lambda: contract.validate_post_pin_result(post_value), TypeError)
+rejected(lambda: contract.validate_post_pin_result(post_value, None), contract.WorkloadContractError)
 for key, hostile in (
     ("authority", "authoritative"),
     ("final_pin_sha256", None),
@@ -306,9 +515,15 @@ if sys.platform == "darwin":
 
 source = "\n".join((REMOTE / name).read_text() for name in (
     "completion_runtime_contract.py",
+    "completion_workload_owner.py",
     "completion_guest_workloads.py",
     "completion_package_candidate.py",
+    "completion_package_candidate_recovery.py",
+    "completion_package_post_pin_recovery.py",
 ))
+for recovery_name in ("completion_package_candidate_recovery.py", "completion_package_post_pin_recovery.py"):
+    recovery_source = (REMOTE / recovery_name).read_text()
+    check("completion_guest_workloads" not in recovery_source and "completion_package_candidate" not in recovery_source, "recovery entry can reach work")
 for forbidden in ("local-standalone-kata", "workload-local-qualification", "completion_local_full"):
     check(forbidden not in source, "removed authority remains in host source")
 for cloud in ("boto", "AWS_", "requests", "urllib", "Terraform", "OpenTofu"):

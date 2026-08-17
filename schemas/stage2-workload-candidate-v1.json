@@ -18,20 +18,45 @@
     "execution_binding"
   ],
   "properties": {
-    "version": { "const": "cogs.stage2-workload-candidate/v1" },
-    "result": { "const": "pass" },
-    "authority": { "const": "non-authoritative-host-candidate-only" },
-    "candidate_contract_sha256": { "const": "b8660b92d778e9f5dc89586df4f68a2e2b12cdce818ff4fe12adf0a8e951fdf3" },
-    "final_pin_sha256": { "type": "null" },
-    "package_identity": { "$ref": "#/$defs/identity" },
-    "reproductions": { "$ref": "#/$defs/reproductions" },
-    "a_equals_b": { "const": true },
-    "lifecycle_deleted": { "const": true },
-    "promotion": { "const": "external-manual-review-required" },
-    "execution_binding": { "$ref": "#/$defs/executionBinding" }
+    "version": {
+      "const": "cogs.stage2-workload-candidate/v1"
+    },
+    "result": {
+      "const": "pass"
+    },
+    "authority": {
+      "const": "non-authoritative-host-candidate-only"
+    },
+    "candidate_contract_sha256": {
+      "const": "b8660b92d778e9f5dc89586df4f68a2e2b12cdce818ff4fe12adf0a8e951fdf3"
+    },
+    "final_pin_sha256": {
+      "type": "null"
+    },
+    "package_identity": {
+      "$ref": "#/$defs/identity"
+    },
+    "reproductions": {
+      "$ref": "#/$defs/reproductions"
+    },
+    "a_equals_b": {
+      "const": true
+    },
+    "lifecycle_deleted": {
+      "const": true
+    },
+    "promotion": {
+      "const": "external-manual-review-required"
+    },
+    "execution_binding": {
+      "$ref": "#/$defs/executionBinding"
+    }
   },
   "$defs": {
-    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
     "identity": {
       "type": "object",
       "additionalProperties": false,
@@ -46,14 +71,32 @@
         "architecture"
       ],
       "properties": {
-        "deb_sha256": { "$ref": "#/$defs/sha256" },
-        "deb_bytes": { "type": "integer", "minimum": 1, "maximum": 4194304 },
-        "installed_tree_sha256": { "const": "78aa672b7bd34a21fdd70d9adc2beb1693be06c8ad910db359456f8e5e57d7b2" },
-        "installed_entries": { "const": 259 },
-        "installed_bytes": { "const": 1048576 },
-        "package": { "const": "cogs-stage2-fixture" },
-        "version": { "const": "1.0" },
-        "architecture": { "const": "all" }
+        "deb_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "deb_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4194304
+        },
+        "installed_tree_sha256": {
+          "const": "78aa672b7bd34a21fdd70d9adc2beb1693be06c8ad910db359456f8e5e57d7b2"
+        },
+        "installed_entries": {
+          "const": 259
+        },
+        "installed_bytes": {
+          "const": 1048576
+        },
+        "package": {
+          "const": "cogs-stage2-fixture"
+        },
+        "version": {
+          "const": "1.0"
+        },
+        "architecture": {
+          "const": "all"
+        }
       }
     },
     "reproductions": {
@@ -65,13 +108,27 @@
           "type": "object",
           "additionalProperties": false,
           "required": ["id", "deleted"],
-          "properties": { "id": { "const": "A" }, "deleted": { "const": true } }
+          "properties": {
+            "id": {
+              "const": "A"
+            },
+            "deleted": {
+              "const": true
+            }
+          }
         },
         {
           "type": "object",
           "additionalProperties": false,
           "required": ["id", "deleted"],
-          "properties": { "id": { "const": "B" }, "deleted": { "const": true } }
+          "properties": {
+            "id": {
+              "const": "B"
+            },
+            "deleted": {
+              "const": true
+            }
+          }
         }
       ],
       "items": false
@@ -81,10 +138,21 @@
       "additionalProperties": false,
       "required": ["name", "sha256", "bytes", "version"],
       "properties": {
-        "name": { "enum": ["git", "dpkg-deb", "dpkg"] },
-        "sha256": { "$ref": "#/$defs/sha256" },
-        "bytes": { "type": "integer", "minimum": 1 },
-        "version": { "type": "string", "minLength": 1, "maxLength": 160 }
+        "name": {
+          "enum": ["git", "dpkg-deb", "dpkg"]
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        }
       }
     },
     "executionBinding": {
@@ -93,11 +161,17 @@
       "required": [
         "fixture_implementation_sha256",
         "workload_implementation_sha256",
+        "owner_implementation_sha256",
         "orchestrator_implementation_sha256",
+        "candidate_recovery_implementation_sha256",
+        "post_pin_recovery_implementation_sha256",
         "tool_observations",
         "contract_validator",
         "source_checkout",
         "linux_dynamic_tool_closure",
+        "process_containment",
+        "process_containment_limitation",
+        "operation_parent_isolation",
         "rootfs_execution"
       ],
       "properties": {
@@ -105,10 +179,10 @@
           "const": "c877bdbbce0f1c7920294f5a240aa8b83c81dd96ce3c4daab650a9fbadc7f9f4"
         },
         "workload_implementation_sha256": {
-          "const": "451ddb9e65998c3599c534188eb5bbb6270cd0c899cc9dbd2a43106010661797"
+          "const": "c688bd03456923c54f0e8fdfcd5dc1d1ab71b73112eec7646b0d288f9a6dc7d4"
         },
         "orchestrator_implementation_sha256": {
-          "const": "75abc89837833084c2dec1b5d7be1f546261997475a7e73a14a6bede8511dc77"
+          "const": "edb057827c213e35d00f9088abba238bf1ab687b963212eaa311acdc9f0f18f8"
         },
         "tool_observations": {
           "type": "array",
@@ -117,29 +191,82 @@
           "prefixItems": [
             {
               "allOf": [
-                { "$ref": "#/$defs/toolObservation" },
-                { "type": "object", "properties": { "name": { "const": "git" } } }
+                {
+                  "$ref": "#/$defs/toolObservation"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "const": "git"
+                    }
+                  }
+                }
               ]
             },
             {
               "allOf": [
-                { "$ref": "#/$defs/toolObservation" },
-                { "type": "object", "properties": { "name": { "const": "dpkg-deb" } } }
+                {
+                  "$ref": "#/$defs/toolObservation"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "const": "dpkg-deb"
+                    }
+                  }
+                }
               ]
             },
             {
               "allOf": [
-                { "$ref": "#/$defs/toolObservation" },
-                { "type": "object", "properties": { "name": { "const": "dpkg" } } }
+                {
+                  "$ref": "#/$defs/toolObservation"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "const": "dpkg"
+                    }
+                  }
+                }
               ]
             }
           ],
           "items": false
         },
-        "contract_validator": { "const": "unbound-self-referential-host-validator" },
-        "source_checkout": { "const": "unbound-current-checkout" },
-        "linux_dynamic_tool_closure": { "const": "unbound-kernel-libc-loader-libraries-config-helpers" },
-        "rootfs_execution": { "const": "not-used-by-host-candidate-or-reproduction" }
+        "contract_validator": {
+          "const": "unbound-self-referential-host-validator"
+        },
+        "source_checkout": {
+          "const": "unbound-current-checkout"
+        },
+        "linux_dynamic_tool_closure": {
+          "const": "unbound-kernel-libc-loader-libraries-config-helpers"
+        },
+        "rootfs_execution": {
+          "const": "not-used-by-host-candidate-or-reproduction"
+        },
+        "owner_implementation_sha256": {
+          "const": "bae673ac4bcdb0c216455fcd365f2d23adec919309d1930137a1553106400dac"
+        },
+        "candidate_recovery_implementation_sha256": {
+          "const": "f53b17ee098f331cf8a2389029fce73af9f8019d7321e874eaa24236a7eda195"
+        },
+        "post_pin_recovery_implementation_sha256": {
+          "const": "b48c6a10cdad463e798e82cef5c93ec5fcd65f56e944971084a458a123fb28ba"
+        },
+        "process_containment": {
+          "const": "linux-subreaper-pidfd-or-start-time-no-cgroup-v2"
+        },
+        "process_containment_limitation": {
+          "const": "no-cgroup-proof-after-supervisor-crash-or-hostile-environment-rewrite"
+        },
+        "operation_parent_isolation": {
+          "const": "mode-0700-uid-65534-parent-dac-cleared-cap-chown-only-fixed-tools"
+        }
       }
     }
   }

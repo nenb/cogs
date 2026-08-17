@@ -28,8 +28,11 @@ _HEX = frozenset("0123456789abcdef")
 # portable host implementation, not a checkout, kernel, libc, loader, or Linux tool closure.
 REVIEWED_SOURCE_DIGESTS = {
     "fixture_implementation_sha256": "c877bdbbce0f1c7920294f5a240aa8b83c81dd96ce3c4daab650a9fbadc7f9f4",
-    "workload_implementation_sha256": "451ddb9e65998c3599c534188eb5bbb6270cd0c899cc9dbd2a43106010661797",
-    "orchestrator_implementation_sha256": "75abc89837833084c2dec1b5d7be1f546261997475a7e73a14a6bede8511dc77",
+    "workload_implementation_sha256": "c688bd03456923c54f0e8fdfcd5dc1d1ab71b73112eec7646b0d288f9a6dc7d4",
+    "owner_implementation_sha256": "bae673ac4bcdb0c216455fcd365f2d23adec919309d1930137a1553106400dac",
+    "orchestrator_implementation_sha256": "edb057827c213e35d00f9088abba238bf1ab687b963212eaa311acdc9f0f18f8",
+    "candidate_recovery_implementation_sha256": "f53b17ee098f331cf8a2389029fce73af9f8019d7321e874eaa24236a7eda195",
+    "post_pin_recovery_implementation_sha256": "b48c6a10cdad463e798e82cef5c93ec5fcd65f56e944971084a458a123fb28ba",
 }
 
 
@@ -277,7 +280,10 @@ def _verify_source_bindings():
     paths = {
         "fixture_implementation_sha256": REMOTE / "completion_fixtures.py",
         "workload_implementation_sha256": REMOTE / "completion_guest_workloads.py",
+        "owner_implementation_sha256": REMOTE / "completion_workload_owner.py",
         "orchestrator_implementation_sha256": REMOTE / "completion_package_candidate.py",
+        "candidate_recovery_implementation_sha256": REMOTE / "completion_package_candidate_recovery.py",
+        "post_pin_recovery_implementation_sha256": REMOTE / "completion_package_post_pin_recovery.py",
     }
     for name, path in paths.items():
         _require(_sha(_read_regular(path, 131_072)) == REVIEWED_SOURCE_DIGESTS[name], "reviewed host source changed")
@@ -290,6 +296,9 @@ def execution_binding(tool_observations):
         "contract_validator": "unbound-self-referential-host-validator",
         "source_checkout": "unbound-current-checkout",
         "linux_dynamic_tool_closure": "unbound-kernel-libc-loader-libraries-config-helpers",
+        "process_containment": "linux-subreaper-pidfd-or-start-time-no-cgroup-v2",
+        "process_containment_limitation": "no-cgroup-proof-after-supervisor-crash-or-hostile-environment-rewrite",
+        "operation_parent_isolation": "mode-0700-uid-65534-parent-dac-cleared-cap-chown-only-fixed-tools",
         "rootfs_execution": "not-used-by-host-candidate-or-reproduction",
     }
 
@@ -301,7 +310,7 @@ def load_candidate_contract():
     raw = _read_regular(CANDIDATE_PATH)
     _require(_sha(artifacts_raw) == REVIEWED_ARTIFACTS_SHA256, "artifact contract digest differs")
     _require(_sha(rootfs_raw) == REVIEWED_ROOTFS_SHA256, "rootfs contract digest differs")
-    _require(_sha(raw) == REVIEWED_CANDIDATE_SHA256, "candidate bytes are not the reviewed canonical object")
+    _require(_sha(raw) == REVIEWED_CANDIDATE_SHA256, "candidate bytes are not the exact reviewed byte object")
     value = _json(raw)
     _require(value == _expected_candidate(artifacts_raw, rootfs_raw), "candidate contract drift")
     _verify_source_bindings()
@@ -359,7 +368,7 @@ def _validate_observation(value):
 
 
 def _validate_execution(value):
-    keys = (*REVIEWED_SOURCE_DIGESTS, "tool_observations", "contract_validator", "source_checkout", "linux_dynamic_tool_closure", "rootfs_execution")
+    keys = (*REVIEWED_SOURCE_DIGESTS, "tool_observations", "contract_validator", "source_checkout", "linux_dynamic_tool_closure", "process_containment", "process_containment_limitation", "operation_parent_isolation", "rootfs_execution")
     _exact_keys(value, keys)
     for name, digest in REVIEWED_SOURCE_DIGESTS.items():
         _require(value[name] == digest)
@@ -370,6 +379,9 @@ def _validate_execution(value):
     _require(value["contract_validator"] == "unbound-self-referential-host-validator")
     _require(value["source_checkout"] == "unbound-current-checkout")
     _require(value["linux_dynamic_tool_closure"] == "unbound-kernel-libc-loader-libraries-config-helpers")
+    _require(value["process_containment"] == "linux-subreaper-pidfd-or-start-time-no-cgroup-v2")
+    _require(value["process_containment_limitation"] == "no-cgroup-proof-after-supervisor-crash-or-hostile-environment-rewrite")
+    _require(value["operation_parent_isolation"] == "mode-0700-uid-65534-parent-dac-cleared-cap-chown-only-fixed-tools")
     _require(value["rootfs_execution"] == "not-used-by-host-candidate-or-reproduction")
 
 
@@ -386,7 +398,8 @@ def validate_candidate_result(value):
     return value
 
 
-def validate_post_pin_result(value, final=None):
+def validate_post_pin_result(value, final):
+    _require(type(final) is FinalPin)
     keys = ("version", "result", "authority", "candidate_contract_sha256", "final_pin_sha256", "package_identity", "reproductions", "matches_final_pin", "lifecycle_deleted", "execution_binding")
     _exact_keys(value, keys)
     _require(value["version"] == "cogs.stage2-workload-post-pin/v1")
@@ -397,8 +410,7 @@ def validate_post_pin_result(value, final=None):
     _require(value["reproductions"] == [{"id": "A", "deleted": True}, {"id": "B", "deleted": True}])
     _require(value["matches_final_pin"] is True and value["lifecycle_deleted"] is True)
     _validate_execution(value["execution_binding"])
-    if final is not None:
-        _require(value["candidate_contract_sha256"] == final.candidate_contract_sha256)
-        _require(value["final_pin_sha256"] == final.final_pin_sha256)
-        _require(identity == final.package_identity)
+    _require(value["candidate_contract_sha256"] == final.candidate_contract_sha256)
+    _require(value["final_pin_sha256"] == final.final_pin_sha256)
+    _require(identity == final.package_identity)
     return value

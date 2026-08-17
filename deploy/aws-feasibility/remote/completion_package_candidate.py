@@ -30,6 +30,13 @@ from completion_runtime_contract import (
 CANDIDATE_ROOT = Path("/tmp/cogs-stage2-workload-candidate-v1")
 POST_PIN_ROOT = Path("/tmp/cogs-stage2-workload-post-pin-v1")
 MAX_OUTPUT_BYTES = 4096
+_TRANSACTION_HOOK = None
+
+
+def _transaction_cut(stage):
+    hook = _TRANSACTION_HOOK
+    if hook is not None:
+        hook(stage)
 
 
 class CandidateError(WorkloadError):
@@ -87,13 +94,17 @@ def run_candidate_transaction():
             contract = load_candidate_contract()
             require_linux_amd64_root()
             tools = ToolSet()
-            root = OwnedRoot(CANDIDATE_ROOT, deadline)
+            root = OwnedRoot(CANDIDATE_ROOT, deadline, "host-candidate")
+            root.mkdir("private-home", 0o700)
+            root.mkdir("private-tmp", 0o700)
             _check_versions(root, tools, deadline)
             tool_observations = tools.observations()
             first, _first_build_ms, _first_install_ms = _run_package_sample(root, "candidate-a", tools, deadline)
+            _transaction_cut("after-candidate-a")
             _same_tools(tool_observations, tools)
             _require(load_candidate_contract() == contract)
             second, _second_build_ms, _second_install_ms = _run_package_sample(root, "candidate-b", tools, deadline)
+            _transaction_cut("after-candidate-b")
             _same_tools(tool_observations, tools)
             _require(first == second and load_candidate_contract() == contract)
             result = {
@@ -133,13 +144,17 @@ def run_post_pin_transaction():
             final = load_final_pin()
             require_linux_amd64_root()
             tools = ToolSet()
-            root = OwnedRoot(POST_PIN_ROOT, deadline)
+            root = OwnedRoot(POST_PIN_ROOT, deadline, "host-post-pin")
+            root.mkdir("private-home", 0o700)
+            root.mkdir("private-tmp", 0o700)
             _check_versions(root, tools, deadline)
             tool_observations = tools.observations()
             first, _first_build_ms, _first_install_ms = _run_package_sample(root, "candidate-a", tools, deadline)
+            _transaction_cut("after-post-pin-a")
             _same_tools(tool_observations, tools)
             _require(load_final_pin() == final)
             second, _second_build_ms, _second_install_ms = _run_package_sample(root, "candidate-b", tools, deadline)
+            _transaction_cut("after-post-pin-b")
             _same_tools(tool_observations, tools)
             _require(first == second == final.package_identity and load_final_pin() == final)
             result = {

@@ -17,7 +17,7 @@ for (const optimized of [false, true]) {
       cwd: root,
       env: { PATH: process.env.PATH ?? "/usr/bin:/bin", PYTHONDONTWRITEBYTECODE: "1" },
       encoding: "utf8",
-      timeout: 60_000,
+      timeout: process.platform === "linux" ? 600_000 : 60_000,
     });
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /completion workload contract tests passed/u);
@@ -37,8 +37,11 @@ const identity = {
 const contractSha = "b8660b92d778e9f5dc89586df4f68a2e2b12cdce818ff4fe12adf0a8e951fdf3";
 const executionBinding = {
   fixture_implementation_sha256: "c877bdbbce0f1c7920294f5a240aa8b83c81dd96ce3c4daab650a9fbadc7f9f4",
-  workload_implementation_sha256: "451ddb9e65998c3599c534188eb5bbb6270cd0c899cc9dbd2a43106010661797",
-  orchestrator_implementation_sha256: "75abc89837833084c2dec1b5d7be1f546261997475a7e73a14a6bede8511dc77",
+  workload_implementation_sha256: "c688bd03456923c54f0e8fdfcd5dc1d1ab71b73112eec7646b0d288f9a6dc7d4",
+  owner_implementation_sha256: "bae673ac4bcdb0c216455fcd365f2d23adec919309d1930137a1553106400dac",
+  orchestrator_implementation_sha256: "edb057827c213e35d00f9088abba238bf1ab687b963212eaa311acdc9f0f18f8",
+  candidate_recovery_implementation_sha256: "f53b17ee098f331cf8a2389029fce73af9f8019d7321e874eaa24236a7eda195",
+  post_pin_recovery_implementation_sha256: "b48c6a10cdad463e798e82cef5c93ec5fcd65f56e944971084a458a123fb28ba",
   tool_observations: [
     { name: "git", sha256: "1".repeat(64), bytes: 1, version: "git version 2.47.3" },
     { name: "dpkg-deb", sha256: "2".repeat(64), bytes: 2, version: "dpkg-deb 1.22.22" },
@@ -47,6 +50,9 @@ const executionBinding = {
   contract_validator: "unbound-self-referential-host-validator",
   source_checkout: "unbound-current-checkout",
   linux_dynamic_tool_closure: "unbound-kernel-libc-loader-libraries-config-helpers",
+  process_containment: "linux-subreaper-pidfd-or-start-time-no-cgroup-v2",
+  process_containment_limitation: "no-cgroup-proof-after-supervisor-crash-or-hostile-environment-rewrite",
+  operation_parent_isolation: "mode-0700-uid-65534-parent-dac-cleared-cap-chown-only-fixed-tools",
   rootfs_execution: "not-used-by-host-candidate-or-reproduction",
 };
 const reproductions = [
@@ -148,6 +154,25 @@ test("removed host qualification surfaces and protected files stay untouched", (
   assert.equal(protectedDiff.stdout, "");
 });
 
+test("fixed candidate and recovery entries redact every invocation failure", () => {
+  for (const entry of [
+    "deploy/aws-feasibility/remote/completion_package_candidate.py",
+    "deploy/aws-feasibility/remote/completion_package_candidate_recovery.py",
+    "deploy/aws-feasibility/remote/completion_package_post_pin_recovery.py",
+  ]) {
+    const result = spawnSync("python3", ["-B", entry, "forbidden-selector"], {
+      cwd: root,
+      env: { PATH: process.env.PATH ?? "/usr/bin:/bin", PYTHONDONTWRITEBYTECODE: "1" },
+      encoding: "utf8",
+      timeout: 10_000,
+    });
+    assert.equal(result.status, 1);
+    assert.equal(result.stdout, "");
+    assert.match(result.stderr, /^completion host (candidate|recovery) failed: invocation\n$/u);
+    assert.doesNotMatch(result.stderr, /\/|git|dpkg|Traceback|Kata|qualification|forbidden/u);
+  }
+});
+
 test("Darwin CLI is categorical and cannot create a final pin", { skip: process.platform !== "darwin" }, () => {
   const result = spawnSync("python3", ["-B", "deploy/aws-feasibility/remote/completion_package_candidate.py"], {
     cwd: root,
@@ -160,4 +185,19 @@ test("Darwin CLI is categorical and cannot create a final pin", { skip: process.
   assert.match(result.stderr, /^completion host candidate failed: [a-z-]+\n$/u);
   assert.doesNotMatch(result.stderr, /\/|git|dpkg|Traceback|Kata|qualification/u);
   assert.throws(() => readFileSync(join(root, "deploy/aws-feasibility/remote/stage2-completion-runtime-v1.json")));
+  for (const entry of [
+    "deploy/aws-feasibility/remote/completion_package_candidate_recovery.py",
+    "deploy/aws-feasibility/remote/completion_package_post_pin_recovery.py",
+  ]) {
+    const recovery = spawnSync("python3", ["-B", entry], {
+      cwd: root,
+      env: { PATH: process.env.PATH ?? "/usr/bin:/bin", PYTHONDONTWRITEBYTECODE: "1" },
+      encoding: "utf8",
+      timeout: 10_000,
+    });
+    assert.equal(recovery.status, 1);
+    assert.equal(recovery.stdout, "");
+    assert.equal(recovery.stderr, "completion host recovery failed: invariant\n");
+    assert.doesNotMatch(recovery.stderr, /\/|Traceback|Kata|qualification/u);
+  }
 });
