@@ -49,9 +49,10 @@ def identity(descriptor):
     try:
         with open(f"/proc/self/fdinfo/{descriptor}", "r", encoding="ascii") as source:
             rows = [row for row in source.read(4096).splitlines() if row.startswith("mnt_id:\t")]
-        if len(rows) != 1 or not rows[0][7:].isdigit():
+        prefix = "mnt_id:\t"
+        if len(rows) != 1 or not rows[0][len(prefix):].isdigit():
             raise FdMapError("invalid descriptor mount identity")
-        mount_id = int(rows[0][7:])
+        mount_id = int(rows[0][len(prefix):])
     except FileNotFoundError:
         # Portable identity remains explicitly incomplete. It cannot be encoded
         # as a durable production generation without real fdinfo.
