@@ -473,7 +473,8 @@ _NFT_RULES = {
         (_nft_match(_nft_meta("oifname"), HOST_IF), _nft_verdict("drop")),
     ),
 }
-_NFT_ROW_ORDER = ("table", "chain", "rule", "rule", "chain", "rule", "rule", "chain", "rule", "rule")
+_NFT_ROW_ORDER = ("table", "chain", "chain", "chain", "rule", "rule", "rule", "rule", "rule", "rule")
+_NFT_RULE_CHAIN_ORDER = ("input", "input", "output", "output", "forward", "forward")
 
 
 def _normalize_nft_expr(expressions):
@@ -544,7 +545,9 @@ def parse_nft_snapshot(raw, table_name=TABLE, host_if=HOST_IF):
         else:
             _keys(content, ("family", "table", "chain", "expr"))
             chain = content["chain"]
-            if chain != active_chain or content["family"] != "inet" or content["table"] != table_name:
+            expected_chain = _NFT_RULE_CHAIN_ORDER[len(rule_handles)]
+            if (chain != expected_chain or chain not in {name for name, _handle in chain_handles}
+                    or content["family"] != "inet" or content["table"] != table_name):
                 raise NetworkError("nft rule ownership drift")
             expr = tuple(_normalize_nft_expr(content["expr"]))
             ordinal = rule_ordinals[chain]
