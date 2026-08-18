@@ -1633,6 +1633,22 @@ def _cleanup_detached_placeholders(journal):
     finally: os.close(parent)
 
 
+def _normalize_baseline_links(links):
+    normalized = json.loads(json.dumps(links))
+    for row in normalized:
+        linkinfo = row.get("linkinfo") if type(row) is dict else None
+        if type(linkinfo) is dict and linkinfo.get("info_kind") == "bridge":
+            data = linkinfo.get("info_data")
+            if type(data) is not dict: raise NetworkError("bridge link detail")
+            for name in ("hello_timer", "tcn_timer", "topology_change_timer", "gc_timer"):
+                value = data.get(name)
+                if (type(value) not in (int, float) or type(value) is bool
+                        or not math.isfinite(value) or value < 0):
+                    raise NetworkError("bridge timer metric")
+                data[name] = 0
+    return json.dumps(normalized, sort_keys=True, separators=(",", ":")).encode()
+
+
 def _complete_baseline(raws, mountinfo, journal, allow_owned_nft=False):
     if type(raws) is not tuple or len(raws) != 6:
         raise NetworkError("complete baseline outputs required")
@@ -1703,7 +1719,8 @@ def _complete_baseline(raws, mountinfo, journal, allow_owned_nft=False):
             except NetworkError: ignored_names.add(qname)
     normalized_names = json.dumps([row for row in names if row["name"] not in ignored_names],
                                   sort_keys=True, separators=(",", ":")).encode()
-    all_raw = (*raws[:4], normalized_names, raws[5], mountinfo)
+    all_raw = (_normalize_baseline_links(links), *raws[1:4], normalized_names,
+               raws[5], mountinfo)
     return dict(zip(_BASELINE_KEYS, (hashlib.sha256(raw).hexdigest() for raw in all_raw), strict=True))
 
 

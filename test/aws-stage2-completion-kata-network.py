@@ -163,6 +163,10 @@ rejected(lambda: network.parse_routes(encoded(routes4), 4, parsed_host))
 rejected(lambda: network.parse_routes(encoded(host_routes4 + [{**host_routes4[0], "dev": "other0"}]), 4, parsed_host))
 
 # Duplicate members, malformed depth/scalars, and source-specific bounds fail closed.
+bridge_a = [{"ifname": "docker0", "linkinfo": {"info_kind": "bridge", "info_data": {
+    "hello_timer": 0.0, "tcn_timer": 0.0, "topology_change_timer": 0.0, "gc_timer": 1.25}}}]
+bridge_b = copy.deepcopy(bridge_a); bridge_b[0]["linkinfo"]["info_data"]["gc_timer"] = 9.5
+assert network._normalize_baseline_links(bridge_a) == network._normalize_baseline_links(bridge_b)
 large_nft_array = encoded(list(range(network.MAX_ITEMS + 1)))
 rejected(lambda: network._load(large_nft_array))
 assert len(network._load(large_nft_array, network.MAX_NFT_ITEMS)) == network.MAX_ITEMS + 1
