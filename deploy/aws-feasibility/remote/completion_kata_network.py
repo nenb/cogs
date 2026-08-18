@@ -483,9 +483,12 @@ def _normalize_nft_expr(expressions):
         match = expression.get("match") if type(expression) is dict else None
         right = match.get("right") if type(match) is dict else None
         if match and match.get("left") == {"ct": {"key": "state"}}:
-            try: _keys(right, ("set",))
-            except NetworkError as error:
-                raise NetworkError(f"nft state-set shape:{right!r}") from error
+            if right == "established":
+                right = {"set": [right]}; match["right"] = right
+            else:
+                try: _keys(right, ("set",))
+                except NetworkError as error:
+                    raise NetworkError(f"nft state-set shape:{right!r}") from error
             if type(right["set"]) is not list or not right["set"] or any(type(item) is not str for item in right["set"]):
                 raise NetworkError("nft set expression")
             right["set"].sort()

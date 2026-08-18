@@ -205,6 +205,7 @@ def nft_fixture(handle_offset=0):
         rows.append({"chain": {"family": "inet", "table": "cogs_stage2_ssh_v1", "name": chain,
                                "type": "filter", "hook": chain, "prio": 0, "policy": "accept",
                                "handle": 8 + chain_index + handle_offset}})
+    for chain in ("input", "output", "forward"):
         for expression in rules[chain]:
             rows.append({"rule": {"family": "inet", "table": "cogs_stage2_ssh_v1", "chain": chain,
                                   "expr": expression, "handle": rule_handle}})
@@ -223,6 +224,9 @@ dynamic_nft = json.loads(json.dumps(nft).replace("cogs_stage2_ssh_v1", "c42taaaa
 dynamic_nft["nftables"][1]["table"]["comment"] = "owner:c42taaaaaaaaaa"
 network.parse_nft_snapshot(encoded(dynamic_nft), "c42taaaaaaaaaa", "c42haaaaaaaaaa")
 assert replaced_nft_snapshot.identity != nft_snapshot.identity
+native_singleton_nft = copy.deepcopy(nft)
+native_singleton_nft["nftables"][5]["rule"]["expr"][4]["match"]["right"] = "established"
+assert network.parse_nft_snapshot(encoded(native_singleton_nft)).content == nft_snapshot.content
 for change in ("policy", "interface", "duplicate", "bare-set", "ordering", "handle"):
     hostile = copy.deepcopy(nft)
     if change == "policy":
@@ -232,7 +236,7 @@ for change in ("policy", "interface", "duplicate", "bare-set", "ordering", "hand
     if change == "duplicate":
         hostile["nftables"].append(copy.deepcopy(hostile["nftables"][-1]))
     if change == "bare-set":
-        hostile["nftables"][6]["rule"]["expr"][4]["match"]["right"] = ["established", "new"]
+        hostile["nftables"][5]["rule"]["expr"][4]["match"]["right"] = ["established", "new"]
     if change == "ordering":
         hostile["nftables"][2], hostile["nftables"][3] = hostile["nftables"][3], hostile["nftables"][2]
     if change == "handle":
