@@ -1170,8 +1170,9 @@ def production_owner_test():
                                for kind, _body in operation._network_history(production_network))
                     # Fresh-process setup cuts: planned record, linked/pre-record,
                     # retained open, final pre-bind check, and bind/pre-output.
-                    add_intent = network._effect_body(production_network, network.Action.IP_NETNS_ADD,
-                                                      target=network._empty_identity())
+                    add_intent = network._effect_body(
+                        production_network, network.Action.IP_NETNS_ADD,
+                        target=baseline_body["identity"])
                     network._record_effect(production_network, "NETWORK_EFFECT_INTENT_V2", add_intent)
                     def setup_cut(owner, code, invoke):
                         child = os.fork()
@@ -1938,7 +1939,7 @@ def production_owner_test():
                         os.close(identity_r)
                         try:
                             child_control = fs.OperationControl(
-                                time.monotonic_ns() + 120_000_000_000, lambda: False)
+                                time.monotonic_ns() + operation.JOURNAL_TOTAL_NS, lambda: False)
                             child_factory = lambda control: linux_chain_factory(
                                 transaction_completion, control)
                             with patch.object(operation, "_open_base_chain", side_effect=child_factory):
