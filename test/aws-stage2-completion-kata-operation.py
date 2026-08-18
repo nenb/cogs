@@ -1154,9 +1154,10 @@ def production_owner_test():
                     "after_parent": generation(50, stamp=40),
                     "before_child": None, "after_child": generation(51),
                 }
-                production_fixture((intent, ("ROOTFS_LEASED", leased),
+                network_prefix = (intent, ("ROOTFS_LEASED", leased),
                     ("FS_INTENT", fs_intent), ("FS_OBSERVED", baseline_observed),
-                    ("FS_SETTLED", baseline_observed)))
+                    ("FS_SETTLED", baseline_observed))
+                production_fixture(network_prefix)
                 production_network = operation._open_fixed_operation(); retained_tools = []
                 try:
                     for role, path in (("ip", "/usr/sbin/ip"), ("nft", "/usr/sbin/nft"), ("tc", "/usr/sbin/tc")):
@@ -1215,6 +1216,19 @@ def production_owner_test():
                         else: raise AssertionError("setup stat/open replacement adopted")
                     assert setup_path.read_bytes() == b"foreign"
                     setup_path.unlink(); setup_backup.rename(setup_path)
+                    # The rejected lookup changed the original inode generation;
+                    # preserve that journal and use a fresh baseline for later cuts.
+                    setup_path.unlink(); production_network.close()
+                    os.rmdir(network.PRESERVED_DIR)
+                    production_fixture(network_prefix)
+                    production_network = operation._open_fixed_operation()
+                    baseline_body = network._capture_fixed_baselines(
+                        production_network, *retained_tools)
+                    add_intent = network._effect_body(
+                        production_network, network.Action.IP_NETNS_ADD,
+                        target=baseline_body["identity"])
+                    network._record_effect(
+                        production_network, "NETWORK_EFFECT_INTENT_V2", add_intent)
                     def cut_prebind():
                         with patch.object(network.os, "fork", side_effect=lambda: os._exit(74)):
                             network._establish_netns(production_network)
@@ -1958,11 +1972,12 @@ def production_owner_test():
                                         return value
                                     operation._record_command_outcome = after_effect
                                 elif cut == "fsync":
-                                    real = operation._record_input_wa
+                                    journal_type = type(authority)
+                                    real = journal_type.record_input_wa
                                     def after_fsync(journal, body):
                                         if body["action"] == "file-settled": os._exit(83)
                                         return real(journal, body)
-                                    operation._record_input_wa = after_fsync
+                                    journal_type.record_input_wa = after_fsync
                                 elif cut == "settlement":
                                     real = operation._record_input_grant
                                     def after_settlement(journal, body):

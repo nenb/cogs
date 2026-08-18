@@ -1260,7 +1260,9 @@ def _establish_netns(journal):
             if planned is None or (observed.st_dev, observed.st_ino) != (planned["device"], planned["inode"]):
                 raise NetworkError("original namespace placeholder replacement")
             if observed_identity != planned:
-                if planned["nlink"] != 0 or observed_identity["nlink"] != 1: raise NetworkError("linked placeholder drift")
+                if planned["nlink"] != 0 or observed_identity["nlink"] != 1:
+                    raise NetworkError(
+                        f"linked placeholder drift:{planned['nlink']}:{observed_identity['nlink']}")
                 planned = observed_identity; _original_placeholder_record(journal, planned)
             descriptor = os.open(name, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW, dir_fd=parent); opened.append(descriptor)
         # This is the final name lookup. The child receives only this retained fd;
