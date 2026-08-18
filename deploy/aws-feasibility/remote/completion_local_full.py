@@ -132,37 +132,25 @@ def _not_reached(rows, start=0):
     return all(row["outcome"] == "not-reached" for row in rows[start:])
 
 
-def _work_failure(timings):
-    git, build, install = timings["git"], timings["build"], timings["install"]
-    for index, row in enumerate(git):
+def _phase_failure(rows, later, code):
+    for index, row in enumerate(rows):
         if row["outcome"] == "not-reached":
-            _require(_not_reached(git, index) and _not_reached(build) and _not_reached(install))
-            return "git-sample"
+            _require(_not_reached(rows, index) and all(_not_reached(group) for group in later))
+            return code
         if row["outcome"] == "failure":
-            _require(_not_reached(git, index + 1) and _not_reached(build) and _not_reached(install))
-            return "git-sample"
+            _require(_not_reached(rows, index + 1) and all(_not_reached(group) for group in later))
+            return code
         if row["deletion"] != "absent":
-            _require(_not_reached(git, index + 1) and _not_reached(build) and _not_reached(install))
-            return "deletion"
-    for index, (built, installed) in enumerate(zip(build, install, strict=True)):
-        if built["outcome"] == "not-reached":
-            _require(_not_reached(build, index) and _not_reached(install, index))
-            return "build-sample"
-        if built["outcome"] == "failure":
-            _require(installed["outcome"] == "not-reached"
-                     and _not_reached(build, index + 1) and _not_reached(install, index))
-            return "build-sample"
-        if installed["outcome"] == "not-reached":
-            _require(_not_reached(build, index + 1) and _not_reached(install, index))
-            return "install-sample"
-        if installed["outcome"] == "failure":
-            _require(_not_reached(build, index + 1) and _not_reached(install, index + 1))
-            return "install-sample"
-        _require(built["deletion"] == installed["deletion"])
-        if built["deletion"] != "absent":
-            _require(_not_reached(build, index + 1) and _not_reached(install, index + 1))
+            _require(_not_reached(rows, index + 1) and all(_not_reached(group) for group in later))
             return "deletion"
     return None
+
+
+def _work_failure(timings):
+    git, build, install = timings["git"], timings["build"], timings["install"]
+    return (_phase_failure(git, (build, install), "git-sample")
+            or _phase_failure(build, (install,), "build-sample")
+            or _phase_failure(install, (), "install-sample"))
 
 
 def _teardown_failure(teardown, binding, operation_status, residue):

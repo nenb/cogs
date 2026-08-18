@@ -8,9 +8,14 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 BASE_REVISION = "746568773798d72f5a79ad639d96cb227597f3b7"
-BASELINE_DEPLOYMENT_LINES = 28_599
-BASELINE_RETAINED_SCHEMA_SCRIPT_LINES = 7_019
-BASELINE_LINES = BASELINE_DEPLOYMENT_LINES + BASELINE_RETAINED_SCHEMA_SCRIPT_LINES
+GROSS_CHECKPOINT_REVISION = "8ca369fa6c862223c3abf4782c015b39a8cbcb1e"
+INHERITED_POST_BASE_GROSS_ADDITIONS = 2_281
+PHYSICAL_BASELINE_DEPLOYMENT_LINES = 28_599
+PHYSICAL_BASELINE_RETAINED_LINES = 7_019
+PHYSICAL_BASELINE_LINES = PHYSICAL_BASELINE_DEPLOYMENT_LINES + PHYSICAL_BASELINE_RETAINED_LINES
+INHERITED_PREDECESSOR_MINIMUM = 33_912
+PRE_BASE_GROSS_ADDITIONS = 2_949
+CONSERVATIVE_BASELINE_LINES = INHERITED_PREDECESSOR_MINIMUM + PRE_BASE_GROSS_ADDITIONS
 PREFERRED_LIMIT = 42_000
 HARD_LIMIT = 45_000
 DEPLOY_ROOT = "deploy/aws-feasibility"
@@ -68,17 +73,20 @@ def _counted(path):
 
 
 def _gross_additions():
-    output = _git(["diff", "--numstat", BASE_REVISION, "--", DEPLOY_ROOT, *RETAINED_FILES])
+    output = _git(["diff", "--numstat", GROSS_CHECKPOINT_REVISION, "--",
+                   DEPLOY_ROOT, *RETAINED_FILES])
     added = 0
     for line in output.splitlines():
         columns = line.split("\t")
         _require(len(columns) == 3 and columns[0].isdigit() and columns[1].isdigit())
         _require(_counted(columns[2]))
         added += int(columns[0])
-    untracked = _git(["ls-files", "--others", "--exclude-standard", "--", DEPLOY_ROOT, *RETAINED_FILES])
-    for name in untracked.splitlines():
-        _require(_counted(name))
-        added += _lines(ROOT / name)
+    ordinary = _git(["ls-files", "--others", "--exclude-standard", "--", DEPLOY_ROOT, *RETAINED_FILES])
+    ignored = _git(["ls-files", "--others", "--ignored", "--exclude-standard", "--",
+                    DEPLOY_ROOT, *RETAINED_FILES])
+    for name in set(ordinary.splitlines() + ignored.splitlines()):
+        if _counted(name):
+            added += _lines(ROOT / name)
     return added
 
 
@@ -87,14 +95,19 @@ def measure():
     deploy = sum(_lines(path) for path in _deploy_paths())
     retained = sum(_lines(ROOT / name) for name in RETAINED_FILES)
     current = deploy + retained
-    gross_added = _gross_additions()
-    conservative = BASELINE_LINES + gross_added
+    gross_added = INHERITED_POST_BASE_GROSS_ADDITIONS + _gross_additions()
+    conservative = CONSERVATIVE_BASELINE_LINES + gross_added
     report = {
         "version": "cogs.stage2-retained-line-budget/v1",
         "base_revision": BASE_REVISION,
-        "baseline_lines": BASELINE_LINES,
-        "baseline_deployment_lines": BASELINE_DEPLOYMENT_LINES,
-        "baseline_retained_schema_script_lines": BASELINE_RETAINED_SCHEMA_SCRIPT_LINES,
+        "gross_checkpoint_revision": GROSS_CHECKPOINT_REVISION,
+        "inherited_post_base_gross_additions": INHERITED_POST_BASE_GROSS_ADDITIONS,
+        "physical_baseline_lines": PHYSICAL_BASELINE_LINES,
+        "physical_baseline_deployment_lines": PHYSICAL_BASELINE_DEPLOYMENT_LINES,
+        "physical_baseline_retained_schema_script_lines": PHYSICAL_BASELINE_RETAINED_LINES,
+        "inherited_predecessor_minimum": INHERITED_PREDECESSOR_MINIMUM,
+        "pre_base_gross_additions": PRE_BASE_GROSS_ADDITIONS,
+        "conservative_baseline_lines": CONSERVATIVE_BASELINE_LINES,
         "deployment_lines": deploy,
         "retained_schema_script_lines": retained,
         "current_lines": current,

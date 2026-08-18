@@ -135,7 +135,6 @@ def categorical_failure(code):
         value["timings"]["install"] = not_reached(binding)
     elif code == "install-sample":
         value["timings"]["install"][0]["outcome"] = "failure"
-        stop_after(value["timings"]["build"], 0, binding)
         stop_after(value["timings"]["install"], 0, binding)
     elif code == "deletion":
         value["timings"]["git"][0]["deletion"] = "not-proved"
@@ -156,6 +155,20 @@ def categorical_failure(code):
         value["teardown"][0]["outcome"] = "failure"
         value["teardown"][-1]["outcome"] = "not-reached"
         value["zero_residue"]["operation_state"] = "not-proved"
+    return refresh(value)
+
+
+def ordinal_failure(group, ordinal, deletion=False):
+    value = passing()
+    value.update(result="failure", qualified=False,
+                 failure_code="deletion" if deletion else f"{group}-sample")
+    binding = value["operation"]["binding_sha256"]
+    row = value["timings"][group][ordinal - 1]
+    row["deletion" if deletion else "outcome"] = "not-proved" if deletion else "failure"
+    stop_after(value["timings"][group], ordinal - 1, binding)
+    order = ("git", "build", "install")
+    for later in order[order.index(group) + 1:]:
+        value["timings"][later] = not_reached(binding)
     return refresh(value)
 
 
@@ -199,6 +212,23 @@ rejected(lambda: local.validate_result(reached_favorable), "failed KVM with favo
 for code in ("lifecycle-start", "ssh", "git-sample", "build-sample", "install-sample",
              "deletion", "cleanup", "residue", "uncertain"):
     check(local.validate_result(categorical_failure(code)) is False, f"causal {code}")
+for group in ("git", "build", "install"):
+    for ordinal in range(1, 8):
+        check(local.validate_result(ordinal_failure(group, ordinal)) is False,
+              f"valid {group} failure {ordinal}")
+        check(local.validate_result(ordinal_failure(group, ordinal, deletion=True)) is False,
+              f"valid {group} deletion {ordinal}")
+        invalid = ordinal_failure(group, ordinal)
+        pristine = passing()
+        if ordinal < 7:
+            invalid["timings"][group][ordinal] = pristine["timings"][group][ordinal]
+        elif group != "install":
+            later = ("git", "build", "install")[("git", "build", "install").index(group) + 1]
+            invalid["timings"][later][0] = pristine["timings"][later][0]
+        else:
+            invalid["timings"]["install"][5]["outcome"] = "failure"
+        refresh(invalid)
+        rejected(lambda value=invalid: local.validate_result(value), f"invalid {group} continuation {ordinal}")
 
 
 def mutation(name, change, base=pass_value):
@@ -250,13 +280,30 @@ budget_spec = importlib.util.spec_from_file_location("stage2_retained_budget", B
 budget = importlib.util.module_from_spec(budget_spec)
 budget_spec.loader.exec_module(budget)
 line_report = budget.measure()
-check(line_report["baseline_lines"] == line_report["baseline_deployment_lines"]
-      + line_report["baseline_retained_schema_script_lines"], "complete frozen baseline")
+check(line_report["physical_baseline_lines"] == line_report["physical_baseline_deployment_lines"]
+      + line_report["physical_baseline_retained_schema_script_lines"], "complete physical baseline")
+check(line_report["conservative_baseline_lines"] == line_report["inherited_predecessor_minimum"]
+      + line_report["pre_base_gross_additions"] == 36_861, "inherited no-deletion baseline")
 check(line_report["current_lines"] == line_report["deployment_lines"]
       + line_report["retained_schema_script_lines"], "complete retained count")
-check(line_report["conservative_lines_no_deletion_credit"] == budget.BASELINE_LINES
+check(line_report["gross_added_lines_no_deletion_credit"] >= line_report["inherited_post_base_gross_additions"]
+      == 2_281, "inherited post-base gross additions")
+check(line_report["conservative_lines_no_deletion_credit"] == budget.CONSERVATIVE_BASELINE_LINES
       + line_report["gross_added_lines_no_deletion_credit"], "no deletion credit")
 check(line_report["preferred_satisfied"] and line_report["hard_satisfied"], "ADR 0099 cap")
+ignored_probe = ROOT / "deploy/aws-feasibility/__pycache__/stage2_ignored_counted_probe.py"
+check(not ignored_probe.exists(), "ignored cap probe pre-existed")
+ignored_probe.parent.mkdir(exist_ok=True)
+try:
+    ignored_probe.write_text("one\ntwo\nthree\n")
+    check(subprocess.run(["git", "check-ignore", "-q", str(ignored_probe.relative_to(ROOT))], cwd=ROOT).returncode == 0,
+          "cap probe was not ignored")
+    charged = budget.measure()
+    check(charged["current_lines"] == line_report["current_lines"] + 3, "ignored physical source omitted")
+    check(charged["conservative_lines_no_deletion_credit"]
+          == line_report["conservative_lines_no_deletion_credit"] + 3, "ignored gross source omitted")
+finally:
+    ignored_probe.unlink(missing_ok=True)
 protected = subprocess.run(["git", "cat-file", "-e",
                             "69eccf1:schemas/stage2-workload-local-qualification-v1.json"],
                            cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

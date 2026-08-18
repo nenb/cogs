@@ -252,6 +252,58 @@ test("schema-only semantic relations are explicitly classified and codec-require
   }
 });
 
+test("every workload ordinal follows Git then build then install and stops monotonically", () => {
+  const validate = compile();
+  const pass = fixture("local-result-v2-pass.json");
+  const groups = ["git", "build", "install"] as const;
+  const stop = (rows: Record<string, any>[], start: number): void => {
+    for (let index = start; index < rows.length; index += 1) {
+      rows[index] = { ...rows[index], duration_ns: null, outcome: "not-reached", deletion: "not-reached" };
+    }
+  };
+  const refresh = (value: Record<string, any>): void => {
+    for (const group of groups) {
+      const durations = value.timings[group]
+        .map((row: Record<string, any>) => row.duration_ns)
+        .filter((duration: unknown): duration is number => typeof duration === "number");
+      value.timing_summaries[group] = {
+        count: durations.length,
+        total_ns: durations.reduce((total: number, duration: number) => total + duration, 0),
+        minimum_ns: durations.length === 0 ? null : Math.min(...durations),
+        maximum_ns: durations.length === 0 ? null : Math.max(...durations),
+      };
+    }
+  };
+  for (const [groupIndex, group] of groups.entries()) {
+    for (let ordinal = 0; ordinal < 7; ordinal += 1) {
+      const valid = clone(pass);
+      valid.result = "failure";
+      valid.qualified = false;
+      valid.failure_code = `${group}-sample`;
+      valid.timings[group][ordinal].outcome = "failure";
+      stop(valid.timings[group], ordinal + 1);
+      for (const later of groups.slice(groupIndex + 1)) stop(valid.timings[later], 0);
+      refresh(valid);
+      assert.equal(validate(valid), true, `${group}-${ordinal + 1}: ${JSON.stringify(validate.errors)}`);
+      assert.equal(codecAccepts(valid), true, `valid ${group}-${ordinal + 1}`);
+
+      const invalid = clone(valid);
+      if (ordinal < 6) {
+        invalid.timings[group][ordinal + 1] = clone(pass).timings[group][ordinal + 1];
+      } else if (groupIndex < 2) {
+        const nextGroup = groups[groupIndex + 1];
+        assert.ok(nextGroup);
+        invalid.timings[nextGroup][0] = clone(pass).timings[nextGroup][0];
+      } else {
+        invalid.timings.install[5].outcome = "failure";
+      }
+      refresh(invalid);
+      assert.equal(validate(invalid), true, `schema must remain explicitly semantic-only for ${group}-${ordinal + 1}`);
+      assert.equal(codecAccepts(invalid), false, `invalid continuation after ${group}-${ordinal + 1}`);
+    }
+  }
+});
+
 test("zero-argument stub remains blocked and correction stays within the global cap", () => {
   const source = readFileSync(producer, "utf8");
   for (const args of [[], ["report.json"], ["--qualified"]]) {
@@ -277,13 +329,20 @@ test("zero-argument stub remains blocked and correction stays within the global 
   assert.equal(budget.preferred_satisfied, true);
   assert.equal(budget.hard_satisfied, true);
   assert.equal(
-    budget.baseline_lines,
-    Number(budget.baseline_deployment_lines) + Number(budget.baseline_retained_schema_script_lines),
+    budget.physical_baseline_lines,
+    Number(budget.physical_baseline_deployment_lines) + Number(budget.physical_baseline_retained_schema_script_lines),
   );
+  assert.equal(
+    budget.conservative_baseline_lines,
+    Number(budget.inherited_predecessor_minimum) + Number(budget.pre_base_gross_additions),
+  );
+  assert.equal(budget.conservative_baseline_lines, 36_861);
+  assert.equal(budget.inherited_post_base_gross_additions, 2_281);
+  assert.ok(Number(budget.gross_added_lines_no_deletion_credit) >= 2_281);
   assert.equal(budget.current_lines, Number(budget.deployment_lines) + Number(budget.retained_schema_script_lines));
   assert.equal(
     budget.conservative_lines_no_deletion_credit,
-    Number(budget.baseline_lines) + Number(budget.gross_added_lines_no_deletion_credit),
+    Number(budget.conservative_baseline_lines) + Number(budget.gross_added_lines_no_deletion_credit),
   );
   const budgetSource = readFileSync(budgetPath, "utf8");
   for (const retainedPath of [
