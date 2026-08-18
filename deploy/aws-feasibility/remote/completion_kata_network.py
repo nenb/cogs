@@ -1430,7 +1430,14 @@ def _descriptor_remove_netns(journal, retained):
 def _complete_baseline(raws, mountinfo, journal, allow_owned_nft=False):
     if type(raws) is not tuple or len(raws) != 6:
         raise NetworkError("complete baseline outputs required")
-    links, addresses, routes4, routes6, names, ruleset = (_load(raw) for raw in raws)
+    parsed = []
+    for label, raw in zip(("links", "addresses", "routes4", "routes6", "names", "ruleset"),
+                          raws, strict=True):
+        try:
+            parsed.append(_load(raw))
+        except NetworkError as error:
+            raise NetworkError(f"complete baseline {label}: {error}") from error
+    links, addresses, routes4, routes6, names, ruleset = parsed
     if any(type(value) is not list for value in (links, addresses, routes4, routes6, names)):
         raise NetworkError("complete baseline arrays required")
     if any(type(row) is not dict for value in (links, addresses, routes4, routes6, names) for row in value):
