@@ -1206,6 +1206,40 @@ def _read_mountinfo():
     return raw
 
 
+def _netns_parent_mount(raw=None):
+    raw = _read_mountinfo() if raw is None else raw
+    try: lines = raw.decode("utf-8", "strict").splitlines()
+    except UnicodeError as error: raise NetworkError("parent mountinfo encoding") from error
+    found = []
+    for line in lines:
+        fields = line.split(" ")
+        if fields.count("-") != 1: raise NetworkError("parent mountinfo separator")
+        separator = fields.index("-")
+        if separator < 6 or len(fields) != separator + 4:
+            raise NetworkError("parent mountinfo shape")
+        point = _OCTAL.sub(lambda match: chr(int(match.group(1), 8)), fields[4])
+        if point == "/run/netns":
+            found.append((fields[3], fields[separator + 1], fields[separator + 2],
+                          tuple(fields[6:separator])))
+    if len(found) > 1: raise NetworkError("netns parent mount cardinality")
+    return None if not found else found[0]
+
+
+def _prepare_netns_parent():
+    observed = _netns_parent_mount()
+    libc = ctypes.CDLL(None, use_errno=True)
+    if observed is None:
+        if libc.mount(b"/run/netns", b"/run/netns", None, 4096, None) != 0:
+            saved = ctypes.get_errno(); raise OSError(saved, os.strerror(saved))
+    elif observed[:3] != ("/netns", "tmpfs", "tmpfs"):
+        raise NetworkError("foreign netns parent mount")
+    if libc.mount(None, b"/run/netns", None, 1 << 18, None) != 0:
+        saved = ctypes.get_errno(); raise OSError(saved, os.strerror(saved))
+    settled = _netns_parent_mount()
+    if settled is None or settled[:3] != ("/netns", "tmpfs", "tmpfs") or settled[3]:
+        raise NetworkError("private netns parent mount absent")
+
+
 def _netns_identity(journal=None, raw=None, name=None):
     raw = _read_mountinfo() if raw is None else raw
     if journal is not None: _record_observation(journal, "MOUNTINFO", raw)
@@ -1331,6 +1365,7 @@ def _quarantine_stage(journal):
 
 def _establish_netns(journal):
     """Create, retain, and journal the inode before the exact bind mount."""
+    _prepare_netns_parent()
     name = _bound_names(journal)[0]; parent = os.open("/run/netns", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
     opened = [parent]; helper_pid = None; helper_waited = False
     try:
@@ -1401,12 +1436,6 @@ def _establish_netns(journal):
         if _created_nsfs_identity(source_fd) != created:
             raise NetworkError("created nsfs changed at bind")
         libc = ctypes.CDLL(None, use_errno=True)
-        # ip-netns may have made its retained parent a shared self-bind. Make that
-        # exact parent private so this operation-unique mount cannot propagate back
-        # as a second stack layer. A plain non-mountpoint parent reports EINVAL.
-        if libc.mount(None, b"/run/netns", None, 1 << 18, None) != 0:
-            saved = ctypes.get_errno()
-            if saved != errno.EINVAL: raise OSError(saved, os.strerror(saved))
         target_path = "/run/netns/" + name
         if libc.mount(source_path.encode(), target_path.encode(), None, 4096, None) != 0:
             saved = ctypes.get_errno(); raise OSError(saved, os.strerror(saved))
@@ -1591,6 +1620,14 @@ def _cleanup_detached_placeholders(journal):
                     preserved.st_gid != 0 or preserved.st_mode & 0o7777 != 0o700):
                 raise NetworkError("preserved directory replacement")
             os.rmdir(PRESERVED_DIR); os.fsync(parent)
+        parent_mount = _netns_parent_mount()
+        if parent_mount is None or parent_mount[:3] != ("/netns", "tmpfs", "tmpfs"):
+            raise NetworkError("owned netns parent mount changed")
+        libc = ctypes.CDLL(None, use_errno=True)
+        if libc.umount2(b"/run/netns", 0) != 0:
+            saved = ctypes.get_errno(); raise OSError(saved, os.strerror(saved))
+        if _netns_parent_mount() is not None:
+            raise NetworkError("owned netns parent mount remains")
     finally: os.close(parent)
 
 
@@ -1605,6 +1642,8 @@ def _complete_baseline(raws, mountinfo, journal, allow_owned_nft=False):
         except NetworkError as error:
             raise NetworkError(f"complete baseline {label}: {error}") from error
     links, addresses, routes4, routes6, names, ruleset = parsed
+    if _netns_parent_mount(mountinfo) is not None:
+        raise NetworkError("baseline netns parent must be an unmounted private directory")
     if any(type(value) is not list for value in (links, addresses, routes4, routes6, names)):
         raise NetworkError("complete baseline arrays required")
     if any(type(row) is not dict for value in (links, addresses, routes4, routes6, names) for row in value):
