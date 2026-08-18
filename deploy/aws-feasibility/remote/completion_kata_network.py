@@ -2388,8 +2388,7 @@ def _abort_fixed_setup(journal, ip, nft, tc):
 
 
 def _poison_fixed_network(journal, reason="unknown"):
-    import completion_kata_operation as operation
-    operation._record_uncertain(journal, reason)
+    journal.record_uncertain(reason)
 
 
 class _TestPermit:
