@@ -821,11 +821,17 @@ def parse_tc_filters(raw, source, target):
     if source == target:
         raise NetworkError("tc self redirect")
     value = _load(raw)
-    if type(value) is not list or len(value) != 2:
+    if type(value) is not list or len(value) not in {2, 3}:
         raise NetworkError(f"tc filter list:{value!r}")
-    table_row, row = value
-    for item in value:
+    native = len(value) == 3
+    if native:
+        header, table_row, row = value
+        _keys(header, ("protocol", "pref", "kind", "chain"))
+    else:
+        table_row, row = value
+    for item in (table_row, row):
         _keys(item, ("protocol", "pref", "kind", "chain", "options"))
+    for item in value:
         if (item["protocol"], item["pref"], item["kind"], item["chain"]) != ("all", 49152, "u32", 0):
             raise NetworkError("tc filter header drift")
     if table_row["options"] != {"fh": "800:", "ht_divisor": 1}:
@@ -833,20 +839,33 @@ def parse_tc_filters(raw, source, target):
     table = TcFilterTable(source.ifindex, source.ifname, "ingress", "all", 49152,
                           "u32", 0, "800:", 1)
     options = row["options"]
-    _keys(options, ("fh", "ht", "order", "key_ht", "bkt", "terminal", "not_in_hw", "match", "actions"))
-    expected = {"fh": "800::800", "ht": "800:", "order": 2048, "key_ht": 32768,
-                "bkt": "0", "terminal": True, "not_in_hw": True,
-                "match": {"value": "00000000", "mask": "00000000", "off": 0}}
-    if {key: options[key] for key in expected} != expected or type(options["actions"]) is not list or len(options["actions"]) != 1:
+    if native:
+        _keys(options, ("fh", "order", "key_ht", "bkt", "not_in_hw", "match", "actions"))
+        expected = {"fh": "800::800", "order": 2048, "key_ht": "800", "bkt": "0",
+                    "not_in_hw": True,
+                    "match": {"value": "0", "mask": "0", "offmask": "", "off": 0}}
+    else:
+        _keys(options, ("fh", "ht", "order", "key_ht", "bkt", "terminal", "not_in_hw", "match", "actions"))
+        expected = {"fh": "800::800", "ht": "800:", "order": 2048, "key_ht": 32768,
+                    "bkt": "0", "terminal": True, "not_in_hw": True,
+                    "match": {"value": "00000000", "mask": "00000000", "off": 0}}
+    if ({key: options[key] for key in expected} != expected
+            or type(options["actions"]) is not list or len(options["actions"]) != 1):
         raise NetworkError("tc u32 match drift")
     action = options["actions"][0]
-    _keys(action, ("order", "kind", "control_action", "index", "ref", "bind", "eaction", "direction", "to_dev"))
+    if native:
+        _keys(action, ("order", "kind", "mirred_action", "direction", "to_dev",
+                       "control_action", "index", "ref", "bind"))
+        control, redirect = "stolen", action["mirred_action"]
+    else:
+        _keys(action, ("order", "kind", "control_action", "index", "ref", "bind", "eaction", "direction", "to_dev"))
+        control, redirect = "pipe", action["eaction"]
     _keys(action["control_action"], ("type",))
     if (action["order"], action["kind"], action["control_action"]["type"], action["ref"], action["bind"],
-            action["eaction"], action["direction"], action["to_dev"]) != (
-            1, "mirred", "pipe", 1, 1, "redirect", "egress", target.ifname):
+            redirect, action["direction"], action["to_dev"]) != (
+            1, "mirred", control, 1, 1, "redirect", "egress", target.ifname):
         raise NetworkError("tc action binding drift")
-    parsed_action = TcAction(_uint(action["index"]), "mirred", "pipe", "redirect", "egress",
+    parsed_action = TcAction(_uint(action["index"]), "mirred", control, "redirect", "egress",
                              target.ifindex, target.ifname, _uint(action["ref"]), _uint(action["bind"]))
     return (table, TcFilter(source.ifindex, source.ifname, "ingress", "all", 49152, "u32", 0,
                             "800::800", 2048, parsed_action))

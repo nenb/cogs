@@ -359,6 +359,19 @@ native_tap_qdiscs = network.parse_tc_qdiscs(encoded([
 assert native_tap_qdiscs[0].kind == "fq_codel"
 guest_filter = network.parse_tc_filters(encoded(filter_fixture("tap-dynamic", 11)), guest, tap)
 tap_filter = network.parse_tc_filters(encoded(filter_fixture("eth0", 12)), tap, guest)
+native_filter = [
+    {"protocol": "all", "pref": 49152, "kind": "u32", "chain": 0},
+    {"protocol": "all", "pref": 49152, "kind": "u32", "chain": 0,
+     "options": {"fh": "800:", "ht_divisor": 1}},
+    {"protocol": "all", "pref": 49152, "kind": "u32", "chain": 0, "options": {
+        "fh": "800::800", "order": 2048, "key_ht": "800", "bkt": "0",
+        "not_in_hw": True, "match": {"value": "0", "mask": "0", "offmask": "", "off": 0},
+        "actions": [{"order": 1, "kind": "mirred", "mirred_action": "redirect",
+                     "direction": "egress", "to_dev": "tap-dynamic",
+                     "control_action": {"type": "stolen"}, "index": 1, "ref": 1, "bind": 1}],
+    }},
+]
+assert network.parse_tc_filters(encoded(native_filter), guest, tap)[-1].action.control == "stolen"
 before_runtime = network.RuntimeState(netns_identity, parsed_host, parsed_ns, guest_root, ())
 after_runtime = network.RuntimeState(netns_identity, parsed_host, parsed_ns + (tap,),
                                      guest_qdiscs + tap_qdiscs, guest_filter + tap_filter)
