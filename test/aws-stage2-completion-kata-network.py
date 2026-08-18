@@ -374,10 +374,14 @@ discovered_identity, _ = network._derive_journal_identity("discovered", None,
 assert discovered_identity["tap"]["ifname"] == "tap-dynamic"
 stat_raw = json.dumps({"device": device, "inode": inode}, sort_keys=True,
                       separators=(",", ":")).encode()
+runtime_routes6 = routes6 + [{"type": "multicast", "dst": "ff00::/8", "dev": "tap-dynamic",
+                              "table": "local", "protocol": "kernel", "metric": 256,
+                              "flags": [], "pref": "medium"}]
 runtime_outputs = [
     observation("IP_HOST_ROUTES4", encoded(host_routes4)),
     observation("IP_HOST_ROUTES6", encoded(host_routes6)),
-    observation("IP_NS_ROUTES4", encoded(routes4)), observation("IP_NS_ROUTES6", encoded(routes6)),
+    observation("IP_NS_ROUTES4", encoded(routes4)),
+    observation("IP_NS_ROUTES6", encoded(runtime_routes6)),
     observation("TC_QDISC", encoded(qdisc_ingress)), observation("TC_QDISC:tap-dynamic", encoded(qdisc_ingress)),
     observation("TC_INGRESS_FILTER:eth0", encoded(filter_fixture("tap-dynamic", 11))),
     observation("TC_INGRESS_FILTER:tap-dynamic", encoded(filter_fixture("eth0", 12))),

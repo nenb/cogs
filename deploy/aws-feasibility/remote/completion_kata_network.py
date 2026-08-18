@@ -388,7 +388,10 @@ def parse_routes(raw, family, links, host_if=HOST_IF):
     if type(value) is not list or family not in (4, 6) or type(links) is not tuple:
         raise NetworkError("route list")
     bound = {item.ifname for item in links}
-    if bound not in ({host_if}, {"lo", GUEST_IF}):
+    runtime_taps = {item.ifname for item in links if item.kind == "tap"}
+    namespace_bound = (bound == {"lo", GUEST_IF} | runtime_taps
+                       and len(runtime_taps) <= 1)
+    if bound != {host_if} and not namespace_bound:
         raise NetworkError("complete route link binding")
     result = []
     for row in value:
@@ -408,7 +411,7 @@ def parse_routes(raw, family, links, host_if=HOST_IF):
                    if row.get("type") == "multicast" and row["dst"] == "ff00::/8"
                    and bound == {host_if} else GUEST_IF
                    if row.get("type") == "multicast" and row["dst"] == "ff00::/8"
-                   and bound == {"lo", GUEST_IF} else None)
+                   and namespace_bound else None)
         if row["dst"] == "default" or dev not in bound or row["protocol"] != "kernel":
             raise NetworkError(
                 f"default, foreign, or misbound route:{dev!r}:{source!r}:{row!r}")
@@ -431,7 +434,10 @@ def parse_routes(raw, family, links, host_if=HOST_IF):
         expected = {tuple(host_if if item == HOST_IF else item for item in row)
                     for row in candidates}
     else:
-        expected = _ROUTE4_CANDIDATE if family == 4 else _ROUTE6_CANDIDATE
+        expected = set(_ROUTE4_CANDIDATE if family == 4 else _ROUTE6_CANDIDATE)
+        if family == 6:
+            expected.update(("multicast", "ff00::/8", tap, "local", "kernel", None,
+                             None, 256, (), "medium") for tap in runtime_taps)
     if len(actual) != len(result) or actual != expected:
         raise NetworkError("complete route inventory drift")
     return tuple(result)
@@ -2065,7 +2071,7 @@ def _derive_journal_identity(kind, action, outputs, prior=None, baselines=None):
         links = (*retained, tap)
         parse_routes(rows["IP_HOST_ROUTES4"][0], 4, host_links, host.ifname)
         parse_routes(rows["IP_HOST_ROUTES6"][0], 6, host_links, host.ifname)
-        parse_routes(rows["IP_NS_ROUTES4"][0], 4, retained); parse_routes(rows["IP_NS_ROUTES6"][0], 6, retained)
+        parse_routes(rows["IP_NS_ROUTES4"][0], 4, links); parse_routes(rows["IP_NS_ROUTES6"][0], 6, links)
         guest_q = parse_tc_qdiscs(rows["TC_QDISC"][0], guest); tap_q = parse_tc_qdiscs(rows["TC_QDISC:" + tap.ifname][0], tap)
         filters = (parse_tc_filters(rows["TC_INGRESS_FILTER:eth0"][0], guest, tap) +
                    parse_tc_filters(rows["TC_INGRESS_FILTER:" + tap.ifname][0], tap, guest))
