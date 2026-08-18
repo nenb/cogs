@@ -1733,7 +1733,10 @@ def _make_authority():
                                   == self.state.generation)
                 state_live_ok = (fs._observe_node(self.state.identity_fd, self.state.operation_fd,
                                                   self.control) == self.state.generation)
-                _fail(base_ok and state_child_ok and state_live_ok)
+                if not (base_ok and state_child_ok and state_live_ok):
+                    raise OperationError(
+                        f"fixed journal base drift:{int(base_ok)}:{int(state_child_ok)}:"
+                        f"{int(state_live_ok)}")
             finally:
                 fs._close_chain(fresh)
         def _reopen_base(self):
