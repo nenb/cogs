@@ -2220,6 +2220,24 @@ def production_owner_test():
                 assert recovered.record_type == "COMMAND_OUTCOME_V2"
                 assert recovered.body["uncertain"] and not recovered.body["leader_reaped"]
 
+            # Expired durable authority settles uncertainty without touching a
+            # potentially reused cgroup name.
+            fixture_journal(completion, lifecycle_prefix)
+            expired_owner = operation._open_fixed_operation()
+            expired_command = fixed_v2_intent(expired_owner.command_context())
+            expired_owner.record_command_intent(expired_command)
+            with (patch.object(process, "_boottime_ns",
+                               return_value=expired_command["deadline_boottime_ns"]),
+                  patch.object(process, "_recover_cgroup",
+                               side_effect=AssertionError("expired cleanup mutation"))):
+                process._recover_pending_fixed(expired_owner)
+            expired_owner.close()
+            expired_outcome = operation._parse(
+                fixture_journal_path(completion).read_bytes())[-1]
+            assert (expired_outcome.record_type == "COMMAND_OUTCOME_V2"
+                    and expired_outcome.body["uncertain"]
+                    and "lifecycle-deadline-expired" in expired_outcome.body["errors"])
+
             # Historical v1 remains parseable offline but is not admitted by the
             # production fixed journal/owner route.
             legacy = command_body(0)

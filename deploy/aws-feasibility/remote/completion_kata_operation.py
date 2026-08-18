@@ -2056,6 +2056,14 @@ def _make_authority():
             _fail(intent.record_type == "COMMAND_INTENT_V2")
             return (intent.body, None if preexec is None else preexec.body,
                     None if terminal is None else terminal.body)
+        def recovery_lifecycle_deadline(self):
+            _io, records, status = reload(self, True); _fail(status == "exact" and records)
+            rows = [item.body for item in records
+                    if item.record_type == "LIFECYCLE_DEADLINE_V1"]
+            admitted = any(item.record_type == "PRODUCTION_ADMISSION_V2" for item in records)
+            _fail(len(rows) <= 1 and (not admitted or len(rows) == 1))
+            return (records[0].body["host_boot_id"],
+                    None if not rows else rows[0]["journal_deadline_boottime_ns"])
         def pending_command(self):
             intent, preexec, terminal = self.recovery_command()
             _fail(terminal is None)
@@ -2521,6 +2529,8 @@ def _make_authority():
     def pending_command(authority): return authority.pending_command()
     def has_recovery_command(authority): return authority.has_recovery_command()
     def recovery_command(authority): return authority.recovery_command()
+    def recovery_lifecycle_deadline(authority):
+        return authority.recovery_lifecycle_deadline()
     def record_command_intent(authority, body): return authority.record_command_intent(body)
     def record_command_preexec(authority, body): return authority.record_command_preexec(body)
     def record_command_output(authority, body): return authority.record_command_output(body)
@@ -2569,7 +2579,7 @@ def _make_authority():
         invoke_rootfs_reopen_route, settle_rootfs_reopen, claim_rootfs_release,
         invoke_rootfs_release, settle_rootfs_release, make_fake_lifecycle,
         admit_production_v2, claim_production_operation, command_context, pending_command, has_recovery_command,
-        recovery_command,
+        recovery_command, recovery_lifecycle_deadline,
         record_command_intent,
         record_command_preexec, record_command_output, record_command_outcome, record_daemon_retained,
         record_daemon_outcome, durable_command_outcome, durable_command_output,
@@ -2585,7 +2595,7 @@ def _make_authority():
     _invoke_rootfs_reopen_route, _settle_rootfs_reopen, _claim_rootfs_release,
     _invoke_rootfs_release, _settle_rootfs_release, _make_fake_lifecycle_for_tests,
     _admit_production_v2, _claim_production_operation, _command_context, _pending_command, _has_recovery_command,
-    _recovery_command,
+    _recovery_command, _recovery_lifecycle_deadline,
     _record_command_intent,
     _record_command_preexec, _record_command_output, _record_command_outcome, _record_daemon_retained,
     _record_daemon_outcome, _durable_command_outcome, _durable_command_output,
