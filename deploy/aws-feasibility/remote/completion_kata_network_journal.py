@@ -261,8 +261,10 @@ def initial():
 def successful_trace(command_ids, phase, replay_indices=()):
     observed = tuple(value for index, value in enumerate(command_ids) if index not in replay_indices)
     variants = SUCCESS_PHASE_TRACE_VARIANTS.get(phase)
-    _fail(observed in variants if variants is not None else
-          phase in SUCCESS_PHASE_TRACES and observed == SUCCESS_PHASE_TRACES[phase])
+    valid = (observed in variants if variants is not None else
+             phase in SUCCESS_PHASE_TRACES and observed == SUCCESS_PHASE_TRACES[phase])
+    if not valid:
+        raise ValueError(f"network journal trace:{phase}:{observed!r}")
 def command_intent(intent, state):
     import completion_kata_network as network
     command_id = intent["command_id"]
