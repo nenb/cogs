@@ -31,6 +31,7 @@ class CommandId(Enum):
     SSH_KEYGEN_SERVER = "SSH_KEYGEN_SERVER"
     SSH_PUBLIC_CLIENT = "SSH_PUBLIC_CLIENT"
     SSH_PUBLIC_SERVER = "SSH_PUBLIC_SERVER"
+    CONTAINERD_START = "CONTAINERD_START"
     CTR_RUN = "CTR_RUN"
     CTR_CONTAINER_INFO = "CTR_CONTAINER_INFO"
     CTR_CONTAINER_LIST = "CTR_CONTAINER_LIST"
@@ -68,4 +69,7 @@ class CommandId(Enum):
 
 COMMAND_IDS = frozenset(item.value for item in CommandId)
 NETWORK_COMMANDS = frozenset(item for item in CommandId if item.value.startswith(("IP_", "TC_", "NFT_")))
-RUNTIME_COMMANDS = frozenset(item for item in CommandId if item.value.startswith("CTR_"))
+RUNTIME_COMMANDS = frozenset(
+    item for item in CommandId
+    if item is CommandId.CONTAINERD_START or item.value.startswith("CTR_")
+)
