@@ -1149,8 +1149,14 @@ def production_owner_test():
 
             # The production baseline route runs through a real fsynced FixedJournal.
             if os.environ.get("COGS_REQUIRE_STAGE2_NETWORK_FOUNDATION") == "1":
+                baseline_observed = {
+                    **fs_intent, "before_parent": generation(50),
+                    "after_parent": generation(50, stamp=40),
+                    "before_child": None, "after_child": generation(51),
+                }
                 fixture_journal(completion, (intent, ("ROOTFS_LEASED", leased),
-                    ("FS_INTENT", fs_intent), ("FS_ABSENT", absent), ("FS_SETTLED", absent)))
+                    ("FS_INTENT", fs_intent), ("FS_OBSERVED", baseline_observed),
+                    ("FS_SETTLED", baseline_observed)))
                 production_network = operation._open_fixed_operation(); retained_tools = []
                 try:
                     for role, path in (("ip", "/usr/sbin/ip"), ("nft", "/usr/sbin/nft"), ("tc", "/usr/sbin/tc")):
