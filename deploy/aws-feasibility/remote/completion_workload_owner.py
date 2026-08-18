@@ -997,7 +997,10 @@ class OwnedRoot:
             if self._before_phase("root-removing"):
                 self.state.append("root-removing", root_quarantine=root_quarantine)
             if self.fd >= 0:
-                self.verify_generation()
+                if self.marker_identity is not None:
+                    self.verify_generation()
+                else:
+                    _require(not self._before_phase("root-removing"))
                 retained_status = os.fstat(self.fd)
                 if _entry_exists(self.parent_fd, self.ROOT_NAME):
                     if _entry_exists(self.parent_fd, root_quarantine):
@@ -1165,8 +1168,16 @@ class OwnedRoot:
                 os.fsync(instance.parent_fd)
             instance.identity = os.fstat(instance.fd)
             _require((instance.identity.st_uid, instance.identity.st_gid, stat.S_IMODE(instance.identity.st_mode)) == (WORKLOAD_UID, WORKLOAD_GID, 0o700))
-            marker_raw, instance.marker_identity = instance.read_file(".owner-generation", 32, require_owner=False)
-            _require(instance.marker_identity.st_uid == SUPERVISOR_UID and marker_raw == instance.generation)
+            if _entry_exists(instance.fd, ".owner-generation"):
+                marker_raw, instance.marker_identity = instance.read_file(".owner-generation", 32, require_owner=False)
+                _require(instance.marker_identity.st_uid == SUPERVISOR_UID and marker_raw == instance.generation)
+            else:
+                _require(
+                    instance.state.value["root_dev"] is not None
+                    and not instance._before_phase("root-removing")
+                    and root_name == root_quarantine
+                )
+                instance.marker_identity = None
             if instance.state.value["root_dev"] is None:
                 instance.state.append(
                     "running",

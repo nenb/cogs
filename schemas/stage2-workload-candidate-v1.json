@@ -250,7 +250,7 @@
           "const": "not-used-by-host-candidate-or-reproduction"
         },
         "owner_implementation_sha256": {
-          "const": "a26eb1c4ec2ca9186531509920da188d6b7b716ea6b4d29d3c1c6b5226af368c"
+          "const": "498407f393924ab472d3f014a3c2e54257e0b38f6b0783f24fcf35e820b31796"
         },
         "candidate_recovery_implementation_sha256": {
           "const": "1408a9b51b9e5a241a731ac2f453ee28ff1f44f8e92d4111cd9a4100010522e5"
