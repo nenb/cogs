@@ -402,7 +402,8 @@ def parse_routes(raw, family, links, host_if=HOST_IF):
                    if source in {"127.0.0.1", "::1"} or row["dst"].startswith("127.")
                    or row["dst"] == "::1" else None)
         if row["dst"] == "default" or dev not in bound or row["protocol"] != "kernel":
-            raise NetworkError("default, foreign, or misbound route")
+            raise NetworkError(
+                f"default, foreign, or misbound route:{dev!r}:{source!r}:{row!r}")
         try:
             network = ipaddress.ip_network(row["dst"], strict=False)
         except (TypeError, ValueError) as error:
