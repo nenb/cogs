@@ -448,7 +448,8 @@ def parse_runtime_addresses(raw, links):
     seen, identities = set(), set()
     for link in value:
         _keys(link, ("ifindex", "ifname", "addr_info"),
-              _LINK_OPTIONAL + ("flags", "operstate", "link_type", "address", "qdisc"))
+              _LINK_OPTIONAL + ("flags", "operstate", "link_type", "address", "qdisc",
+                                "link_index"))
         name, index = link["ifname"], _uint(link["ifindex"])
         if name not in bound or bound[name] != index or name in seen or type(link["addr_info"]) is not list:
             raise NetworkError("runtime address/link cross-binding")
