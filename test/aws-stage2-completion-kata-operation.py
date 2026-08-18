@@ -1532,6 +1532,8 @@ def production_owner_test():
                         except FileNotFoundError: pass
 
             # Real FixedJournal persists exact output-bound baseline/effect cuts.
+            network_input_root = completion / "kata-input-v1"
+            network_input_root.rmdir()
             fixture_journal(completion, (intent, ("ROOTFS_LEASED", leased),
                 ("FS_INTENT", fs_intent), ("FS_ABSENT", absent), ("FS_SETTLED", absent)))
             network_owner = operation._open_fixed_operation(); sources = []
@@ -1586,6 +1588,7 @@ def production_owner_test():
             assert operation._network_history(resumed_network)[-1] == ("NETWORK_EFFECT_INTENT_V2", exact_intent)
             rejected(lambda: operation._record_network(resumed_network, "NETWORK_EFFECT_OBSERVED_V2", observed))
             resumed_network.close()
+            network_input_root.mkdir(mode=0o700)
 
             # Both durable release suffixes are freshly reservable through the
             # production authority and carry exact phase/cross-ledger pointers.
