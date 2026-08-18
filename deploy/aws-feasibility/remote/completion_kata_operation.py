@@ -95,10 +95,14 @@ def _validate_stage_layout(raw_names, records, phase, completion_key):
     _fail(len(grants) == len(mkdirs) == 1 and grants[0]["name"].encode("ascii") == active)
     parent = grants[0]["parent_generation"]
     key_names = ("mount_id", "device", "inode", "kind")
+    input_create = any(item.record_type == "FS_INTENT"
+                       and item.body["resource_id"] == "input-root"
+                       and item.body["action"] == "create" for item in records)
+    baseline_names = [os.fsdecode(name) for name in raw_names
+                      if name not in candidates and not (name == INPUT_NAME.raw and input_create)]
     _fail(all(mkdirs[0]["parent_key"][name] == parent[name] == completion_key[name]
               for name in key_names)
-          and mkdirs[0]["names_sha256"] == hashlib.sha256(_canonical([
-              os.fsdecode(name) for name in raw_names if name not in candidates])).hexdigest()
+          and mkdirs[0]["names_sha256"] == hashlib.sha256(_canonical(baseline_names)).hexdigest()
           and mkdirs[0]["target_mode"] == 0o700
           and grants[0]["expected_kind"] == "directory"
           and grants[0]["expected_mode"] == 0o700
