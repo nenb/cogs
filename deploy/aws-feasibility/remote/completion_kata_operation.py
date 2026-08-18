@@ -79,7 +79,7 @@ ACTIONS = frozenset({"create", "metadata", "link", "remove"})
 COMMANDS = actions.COMMAND_IDS
 LEGACY_COMMANDS = COMMANDS - {"CONTAINERD_START"}
 _POLICY_MAPS = (command_policy.POLICY_SHA256, command_policy.OCCURRENCES, command_policy.PHASES,
-    command_policy.MAX_OCCURRENCES, command_policy.MUTATION_ORDERS, command_policy.PHASE_COMMAND_TRACES, command_policy.LIFECYCLE_REQUIREMENTS)
+    command_policy.MAX_OCCURRENCES, command_policy.PHASE_COMMAND_TRACES, command_policy.LIFECYCLE_REQUIREMENTS)
 _DEFERRED_COMMANDS = command_policy.DEFERRED_COMMANDS
 DEADLINES = frozenset({
     "observer", "network", "keygen", "runtime-start", "task-term", "task-kill", "remove", "listener",
@@ -614,7 +614,7 @@ def _same_command(left, right):
     return all(left[name] == right[name] for name in _command(left))
 def _policy_tables():
     maps = (command_policy.POLICY_SHA256, command_policy.OCCURRENCES, command_policy.PHASES,
-        command_policy.MAX_OCCURRENCES, command_policy.MUTATION_ORDERS, command_policy.PHASE_COMMAND_TRACES, command_policy.LIFECYCLE_REQUIREMENTS)
+        command_policy.MAX_OCCURRENCES, command_policy.PHASE_COMMAND_TRACES, command_policy.LIFECYCLE_REQUIREMENTS)
     _fail(all(value is expected and type(value) is MappingProxyType
               for value, expected in zip(maps, _POLICY_MAPS)))
     implemented, deferred = set(maps[0]), set(command_policy.DEFERRED_COMMANDS)
@@ -623,12 +623,8 @@ def _policy_tables():
           and implemented == set(maps[1]) == set(maps[2]) == set(maps[3]))
     _fail(all(type(rows) is tuple and rows and maps[2][name] == tuple(dict.fromkeys(rows))
               and maps[3][name] == len(rows) for name, rows in maps[1].items()))
-    orders = tuple(maps[4].values()); flattened = tuple(item for order in orders for item in order)
-    _fail(all(type(name) is str and type(order) is tuple and len(order) == len(set(order))
-              for name, order in maps[4].items()))
-    _fail(len(flattened) == len(set(flattened)) and set(flattened) <= implemented)
-    trace_ids = {item for trace in maps[5].values() for item in trace}
-    _fail(all(type(phase) is str and type(trace) is tuple for phase, trace in maps[5].items()) and trace_ids <= implemented | deferred and all(type(value) is tuple and value for value in maps[6].values()))
+    trace_ids = {item for trace in maps[4].values() for item in trace}
+    _fail(all(type(phase) is str and type(trace) is tuple for phase, trace in maps[4].items()) and trace_ids <= implemented | deferred and all(type(value) is tuple and value for value in maps[5].values()))
     return maps
 def _v2_policy_digest(intent):
     names = ("command_id", "executable_role", "executable_path", "argv", "stdin_hex",
@@ -671,9 +667,13 @@ def _settled_v2(records, intent, index):
     outcomes = [item for item in records[:index] if item.record_type == "COMMAND_OUTCOME_V2" and item.body["command_serial"] == serial]
     return bool(outcomes and not outcomes[-1].body["uncertain"] and outcomes[-1].body["outcome"] == "exited"
                 and outcomes[-1].body["status"] == 0)
+def _trace_key(records, index, phase, ownership):
+    successful = {item.body["command_id"] for item in records[:index] if item.record_type == "COMMAND_OUTCOME_V2" and not item.body["uncertain"] and item.body["outcome"] == "exited" and item.body["status"] == 0}
+    daemon = any(item.record_type == "DAEMON_RETAINED_V2" for item in records[:index]); task = None if ownership is None else ownership["task"]; container = None if ownership is None else ownership["container"]
+    suffix = {"READINESS_REVOKED": "daemon" if daemon else "no-daemon", "OWNERSHIP_OBSERVED": "task-exact" if task == "exact-owned" else f"task-absent:network-{'created' if 'IP_NETNS_ADD' in successful else 'absent'}", "NETWORK_ABSENT": "task-owned" if task == "exact-owned" else f"task-absent:{'daemon-v3' if daemon else 'no-daemon'}", "TASK_ABSENT": "container-owned" if container == "exact-owned" else f"container-absent:{'daemon-v3' if daemon else 'no-daemon'}", "CONTAINER_ABSENT": "daemon" if daemon else "no-daemon", "SHARE_ABSENT": "nft-created" if "NFT_INSTALL" in successful else "nft-absent"}.get(phase)
+    return phase if suffix is None else f"{phase}:{suffix}"
 def _phase_trace(records, index, phase, ownership=None, candidate=None, complete=False):
-    _policy_tables(); key = phase if phase != "OWNERSHIP_OBSERVED" else f"{phase}:task-{ownership['task'].split('-', 1)[0]}"
-    trace = command_policy.PHASE_COMMAND_TRACES.get(key, ())
+    _policy_tables(); trace = command_policy.PHASE_COMMAND_TRACES.get(_trace_key(records, index, phase, ownership), ())
     intents = [item for item in records[:index] if item.record_type == "COMMAND_INTENT_V2" and item.body["lifecycle_phase"] == phase]
     observed = tuple(item.body["command_id"] for item in intents) + (() if candidate is None else (candidate,))
     _fail(observed == trace if complete else observed == trace[:len(observed)] and len(observed) <= len(trace))

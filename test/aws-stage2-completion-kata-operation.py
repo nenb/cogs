@@ -474,6 +474,7 @@ def linux_chain_factory(path, control):
 
 def fixture_journal(
     completion, bodies=(), malformed=None, wrong_journal_key=False, wrong_state_parent=False,
+    host_boot_id=None,
 ):
     """Test-only filesystem fixture; production has no generic journal writer."""
     state_path = Path(completion) / operation.STATE_NAME.text
@@ -513,7 +514,9 @@ def fixture_journal(
         {**state_generation, "mtime_ns": state_generation["mtime_ns"] + 1}
         if wrong_state_parent else state_generation
     )
-    raw = append(b"", "GENESIS", genesis_body(journal=recorded_key))
+    genesis = genesis_body(journal=recorded_key)
+    if host_boot_id is not None: genesis["host_boot_id"] = host_boot_id
+    raw = append(b"", "GENESIS", genesis)
     raw = append(raw, "GENESIS_SETTLED", {
         "operation_token": "a" * 64, "journal_key": recorded_key,
         "state_parent": recorded_state,
@@ -563,12 +566,58 @@ def fixed_v2_intent(context):
     return body
 
 
+def native_transaction_crashes(completion):
+    if not os.access(process.CGROUP_ROOT, os.W_OK):
+        return False
+    fixed = process._FIXED_COMMANDS[process.CommandId.IP_NETNS_ADD]
+    lifecycle = (("ROOTFS_ACQUIRE_INTENT", rootfs_intent), ("ROOTFS_LEASED", leased),
+                 ("BASELINES_CAPTURED", {"operation_token": "a" * 64, "proof_sha256": "9" * 64}))
+    for cut in ("intent", "create", "fork", "preexec", "release"):
+        fixture_journal(completion, lifecycle, host_boot_id=process._boot_id())
+        descriptor = os.open("/usr/bin/true", os.O_RDONLY | os.O_CLOEXEC)
+        executable_sha256 = process._digest_fd(descriptor, os.fstat(descriptor).st_size)
+        retained = process.RetainedExecutable(
+            "ip", "/usr/sbin/ip", descriptor, executable_sha256,
+            "d" * 64, process._host_generation(descriptor),
+        )
+        supervisor = os.fork()
+        if supervisor == 0:
+            try:
+                authority = operation._open_fixed_operation()
+                if cut == "intent":
+                    real = process.kata_operation._record_command_intent
+                    process.kata_operation._record_command_intent = lambda *args: (real(*args), os._exit(83))[0]
+                elif cut == "create":
+                    real = process._prepare_cgroup
+                    process._prepare_cgroup = lambda *args: (real(*args), os._exit(83))[0]
+                elif cut == "fork":
+                    real = process._identity
+                    process._identity = lambda *args: (real(*args), os._exit(83))[0]
+                elif cut == "preexec":
+                    real = process.kata_operation._record_command_preexec
+                    process.kata_operation._record_command_preexec = lambda *args: (real(*args), os._exit(83))[0]
+                else:
+                    process._drain_transaction = lambda *_args: os._exit(83)
+                process._transact_fixed(authority, fixed, retained)
+            finally:
+                os._exit(84)
+        os.close(descriptor)
+        assert os.waitpid(supervisor, 0)[1] == 83 << 8
+        resumed = operation._open_fixed_operation()
+        process._recover_pending_fixed(resumed)
+        resumed.close()
+        terminal = operation._parse(fixture_journal_path(completion).read_bytes())[-1]
+        assert terminal.record_type == "COMMAND_OUTCOME_V2" and terminal.body["uncertain"]
+    if os.path.isdir(process.CGROUP_BASE): os.rmdir(process.CGROUP_BASE)
+    return True
+
+
 def production_owner_test():
     if sys.platform != "linux":
-        return False
+        return False, False
     if os.geteuid() != 0:
         rejected(operation._open_fixed_operation)
-        return False
+        return False, False
     with tempfile.TemporaryDirectory(dir="/tmp") as temporary:
         os.chmod(temporary, 0o700)
         completion = Path(temporary) / "completion"
@@ -760,15 +809,17 @@ def production_owner_test():
             unknown.mkdir(mode=0o700)
             rejected(operation._open_fixed_operation)
             unknown.rmdir()
-    return True
+            native_transaction = native_transaction_crashes(completion)
+    return True, native_transaction
 
 
 def fixture_journal_path(completion):
     return Path(completion) / operation.STATE_NAME.text / operation.JOURNAL_NAME.text
 
 
-owner_qualified = production_owner_test()
-if os.environ.get("COGS_REQUIRE_STAGE2_KATA_NATIVE_FOUNDATIONS") == "1" and not owner_qualified:
-    raise RuntimeError("root Linux fsynced journal foundations were required")
+owner_qualified, transaction_qualified = production_owner_test()
+if (os.environ.get("COGS_REQUIRE_STAGE2_KATA_NATIVE_FOUNDATIONS") == "1"
+        and not (owner_qualified and transaction_qualified)):
+    raise RuntimeError("root Linux journal/cgroup transaction crash foundations were required")
 qualification = "EUID-0 LINUX QUALIFIED" if owner_qualified else "EUID-0 Linux matrix SKIPPED"
 print(f"completion Kata operation foundation matrix passed; {qualification}")

@@ -175,13 +175,36 @@ failed = add(add(add(raw, "COMMAND_INTENT_V2", command), "COMMAND_PREEXEC_V2", p
 reject(lambda: add(failed, "NETWORK_READY",
                    {"operation_token": "a" * 64, "proof_sha256": "9" * 64}))
 cleanup = add(failed, "READINESS_REVOKED", {"operation_token": "a" * 64})
-cleanup, cleanup_serial = complete_trace(cleanup, 1, "READINESS_REVOKED")
+cleanup, cleanup_serial = complete_trace(
+    cleanup, 1, "READINESS_REVOKED", "READINESS_REVOKED:no-daemon")
 cleanup = add(cleanup, "OWNERSHIP_OBSERVED", {"operation_token": "a" * 64,
     "proof_sha256": "9" * 64, "task": "absent", "container": "absent",
     "runtime": "absent", "share": "absent"})
 cleanup, cleanup_serial = complete_trace(
-    cleanup, cleanup_serial, "OWNERSHIP_OBSERVED", "OWNERSHIP_OBSERVED:task-absent")
-add(cleanup, "NETWORK_ABSENT", {"operation_token": "a" * 64, "proof_sha256": "9" * 64})
+    cleanup, cleanup_serial, "OWNERSHIP_OBSERVED", "OWNERSHIP_OBSERVED:task-absent:network-absent")
+cleanup = add(cleanup, "NETWORK_ABSENT", {"operation_token": "a" * 64, "proof_sha256": "9" * 64})
+for phase, target, trace_key in (
+    ("NETWORK_ABSENT", "TASK_ABSENT", "NETWORK_ABSENT:task-absent:no-daemon"),
+    ("TASK_ABSENT", "CONTAINER_ABSENT", "TASK_ABSENT:container-absent:no-daemon"),
+    ("CONTAINER_ABSENT", "RUNTIME_ABSENT", "CONTAINER_ABSENT:no-daemon"),
+):
+    cleanup, cleanup_serial = complete_trace(cleanup, cleanup_serial, phase, trace_key)
+    cleanup = add(cleanup, target, {"operation_token": "a" * 64, "proof_sha256": "9" * 64})
+cleanup = add(cleanup, "SHARE_ABSENT", {"operation_token": "a" * 64, "proof_sha256": "9" * 64})
+cleanup, cleanup_serial = complete_trace(cleanup, cleanup_serial, "SHARE_ABSENT", "SHARE_ABSENT:nft-absent")
+cleanup = add(cleanup, "FIREWALL_ABSENT", {"operation_token": "a" * 64, "proof_sha256": "9" * 64})
+add(cleanup, "INPUT_REMOVED", {"operation_token": "a" * 64, "proof_sha256": "9" * 64})
+# A successful netns effect followed by failure selects exact network removal.
+partial, partial_serial = run_success(raw, 0, "IP_NETNS_ADD", "BASELINES_CAPTURED")
+link = intent(partial_serial, "IP_LINK_ADD", "BASELINES_CAPTURED")
+partial = add(add(add(partial, "COMMAND_INTENT_V2", link), "COMMAND_PREEXEC_V2", preexec(link)),
+              "COMMAND_OUTCOME_V2", outcome(link, status=7))
+partial = add(partial, "READINESS_REVOKED", {"operation_token": "a" * 64})
+partial = add(partial, "OWNERSHIP_OBSERVED", {"operation_token": "a" * 64,
+    "proof_sha256": "9" * 64, "task": "absent", "container": "absent",
+    "runtime": "absent", "share": "absent"})
+add(partial, "COMMAND_INTENT_V2",
+    intent(partial_serial + 1, "IP_NETNS_REMOVE", "OWNERSHIP_OBSERVED"))
 
 # Replay semantics bind genesis, current phase, fd roles, cgroup lineage, limits,
 # overflow and wait classification rather than trusting a shared digest header.
@@ -284,19 +307,27 @@ EXPECTED_PHASE_TRACES = {
         "IP_NS_LINKS", "IP_NS_ADDRESSES", "IP_NS_ROUTES4", "IP_NS_ROUTES6",
         "NFT_TABLE", "CTR_RUN"),
     "RUNTIME_READY": ("CTR_CONTAINER_INFO", "CTR_CONTAINER_LIST", "CTR_TASK_LIST", "SSH_READY"),
-    "READINESS_REVOKED": ("CTR_TASK_LIST", "CTR_CONTAINER_INFO", "CTR_CONTAINER_LIST"),
+    "READINESS_REVOKED:daemon": ("CTR_TASK_LIST", "CTR_CONTAINER_INFO", "CTR_CONTAINER_LIST"),
+    "READINESS_REVOKED:no-daemon": (),
     "OWNERSHIP_OBSERVED:task-exact": ("CTR_TASK_LIST", "CTR_TASK_TERM", "CTR_TASK_LIST",
         "CTR_TASK_KILL", "CTR_TASK_LIST"),
-    "OWNERSHIP_OBSERVED:task-absent": ("IP_NETNS_REMOVE", "IP_HOST_LINKS",
+    "OWNERSHIP_OBSERVED:task-absent:network-created": ("IP_NETNS_REMOVE", "IP_HOST_LINKS",
         "IP_HOST_ADDRESSES", "IP_HOST_ROUTES4", "IP_HOST_ROUTES6", "IP_NS_LINKS",
         "IP_NS_ADDRESSES", "IP_NS_ROUTES4", "IP_NS_ROUTES6", "NFT_TABLE"),
+    "OWNERSHIP_OBSERVED:task-absent:network-absent": (),
     "TASK_STOPPED": ("IP_NETNS_REMOVE", "IP_HOST_LINKS", "IP_HOST_ADDRESSES",
         "IP_HOST_ROUTES4", "IP_HOST_ROUTES6", "IP_NS_LINKS", "IP_NS_ADDRESSES",
         "IP_NS_ROUTES4", "IP_NS_ROUTES6", "NFT_TABLE"),
-    "NETWORK_ABSENT": ("CTR_TASK_REMOVE", "CTR_TASK_LIST"),
-    "TASK_ABSENT": ("CTR_CONTAINER_REMOVE", "CTR_CONTAINER_LIST"),
-    "CONTAINER_ABSENT": ("CTR_CONTAINER_LIST",),
-    "SHARE_ABSENT": ("NFT_REMOVE", "NFT_TABLE"),
+    "NETWORK_ABSENT:task-owned": ("CTR_TASK_REMOVE", "CTR_TASK_LIST"),
+    "NETWORK_ABSENT:task-absent:no-daemon": (),
+    "NETWORK_ABSENT:task-absent:daemon-v3": ("CTR_RUN",),
+    "TASK_ABSENT:container-owned": ("CTR_CONTAINER_REMOVE", "CTR_CONTAINER_LIST"),
+    "TASK_ABSENT:container-absent:no-daemon": (),
+    "TASK_ABSENT:container-absent:daemon-v3": ("CTR_RUN",),
+    "CONTAINER_ABSENT:daemon": ("CTR_CONTAINER_LIST",),
+    "CONTAINER_ABSENT:no-daemon": (),
+    "SHARE_ABSENT:nft-created": ("NFT_REMOVE", "NFT_TABLE"),
+    "SHARE_ABSENT:nft-absent": (),
 }
 EXPECTED_LIFECYCLE_REQUIREMENTS = {
     "NETWORK_READY": ("BASELINES_CAPTURED",), "RUNTIME_READY": ("NETWORK_READY",),
@@ -311,8 +342,8 @@ check(dict(policy.LIFECYCLE_REQUIREMENTS) == EXPECTED_LIFECYCLE_REQUIREMENTS,
       "complete lifecycle requirement drift")
 # Command bytes are independently regenerated from process compositions.
 for mapping in (policy.POLICY_SHA256, policy.OCCURRENCES, policy.PHASES,
-                policy.MAX_OCCURRENCES, policy.MUTATION_ORDERS,
-                policy.PHASE_COMMAND_TRACES, policy.LIFECYCLE_REQUIREMENTS):
+                policy.MAX_OCCURRENCES, policy.PHASE_COMMAND_TRACES,
+                policy.LIFECYCLE_REQUIREMENTS):
     reject(lambda mapping=mapping: mapping.__setitem__("CTR_TASK_LIST", ("RUNTIME_READY",)))
 original_policy = policy.POLICY_SHA256
 try:

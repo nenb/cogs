@@ -8,6 +8,7 @@ const root = process.cwd();
 const productionPath = join(root, "deploy/aws-feasibility/remote/completion_kata_process.py");
 const historical = join(root, "test/aws-stage2-completion-kata-process.py");
 const correction = join(root, "test/aws-stage2-completion-kata-slice-a.py");
+const foundations = join(root, ".github/workflows/stage2-workload-linux-foundations.yml");
 
 test("S1 historical process matrix and journal-gated correction", async () => {
   const env: NodeJS.ProcessEnv = { ...process.env, PYTHONDONTWRITEBYTECODE: "1" };
@@ -37,4 +38,7 @@ test("S1 historical process matrix and journal-gated correction", async () => {
   assert.doesNotMatch(source, /COGS_KATA_PROCESS_TESTING_V1|def _make_test_issuer\(|def _supervise\(/u);
   assert.doesNotMatch(source, /os\.kill(?:pg)?\(/u);
   assert.doesNotMatch(source, /^def (?:run|execute|spawn|issue_command)\(/mu);
+  const workflow = await readFile(foundations, "utf8");
+  assert.match(workflow, /COGS_REQUIRE_STAGE2_KATA_NATIVE_FOUNDATIONS=1/u);
+  assert.match(workflow, /aws-stage2-completion-kata-operation\.py[\s\S]*aws-stage2-completion-kata-process\.py/u);
 });
