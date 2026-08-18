@@ -1751,8 +1751,8 @@ def _baselines(journal):
 
 def _capture_fixed_baselines(journal, ip, nft, tc):
     import completion_kata_operation as operation
-    preserved = _preserved_directory(); os.close(preserved)
     raws = tuple(_perform_fixed(journal, action, ip, nft, tc) for action in _BASELINE_ACTIONS)
+    preserved = _preserved_directory(); os.close(preserved)
     mountinfo = _read_mountinfo(); baselines = _complete_baseline(raws, mountinfo, journal)
     _netns_identity(journal, mountinfo)
     body = _snapshot(journal, "baseline", baselines, _empty_identity())
