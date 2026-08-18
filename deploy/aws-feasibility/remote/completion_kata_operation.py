@@ -1636,7 +1636,12 @@ def _make_authority():
                 _validate_stage_layout(
                     raw_names, records, phase, _key_value(self.completion.generation.key))
                 if len(records) > 1:
-                    _fail(_generation_value(self.state.generation) == records[1].body["state_parent"])
+                    state_parent_ok = (_generation_value(self.state.generation)
+                                       == records[1].body["state_parent"])
+                    if not state_parent_ok and os.environ.get(
+                            "COGS_KATA_SYNTHETIC_ATTESTATION_V1") == "1":
+                        os.write(2, b"DIAG_STATE_PARENT\n")
+                    _fail(state_parent_ok)
                 if phase not in {"GENESIS", "GENESIS_SETTLED", "ROOTFS_ABSENT",
                                  "FINAL_BASELINES", "RETIRE_INTENT", "RETIRED"}:
                     _fail(ROOTFS_NAME.raw in names)
