@@ -317,8 +317,12 @@ def parse_addresses(raw, namespace, links, host_if=HOST_IF):
     bound = {item.ifname: item.ifindex for item in links}
     result, seen = [], set()
     for link in value:
-        _keys(link, ("ifindex", "ifname", "addr_info"),
-              _LINK_OPTIONAL + ("flags", "operstate", "link_type", "address", "qdisc"))
+        try:
+            _keys(link, ("ifindex", "ifname", "addr_info"),
+                  _LINK_OPTIONAL + ("flags", "operstate", "link_type", "address", "qdisc"))
+        except NetworkError as error:
+            keys = sorted(link) if type(link) is dict and all(type(key) is str for key in link) else []
+            raise NetworkError(f"unexpected address-link JSON keys:{keys!r}") from error
         name, index = link["ifname"], _uint(link["ifindex"])
         if name not in bound or bound[name] != index or name in seen or type(link["addr_info"]) is not list:
             raise NetworkError("address/link cross-binding")
