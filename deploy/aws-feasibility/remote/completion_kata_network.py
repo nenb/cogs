@@ -1811,7 +1811,10 @@ def _observe_ready_teardown(journal, ip, nft, tc, prior):
 
 def _effect(journal, action, ip, nft, tc, prior, final=False):
     intent = _effect_body(journal, action, target=prior)
-    _record_effect(journal, "NETWORK_EFFECT_INTENT_V2", intent)
+    try:
+        _record_effect(journal, "NETWORK_EFFECT_INTENT_V2", intent)
+    except BaseException as error:
+        raise NetworkError(f"network effect intent rejected:{action.value}") from error
     if action is Action.IP_NETNS_ADD: _establish_netns(journal)
     elif action is Action.IP_NETNS_REMOVE: _descriptor_remove_netns(journal, prior)
     else: _perform_fixed(journal, action, ip, nft, tc, prior)
