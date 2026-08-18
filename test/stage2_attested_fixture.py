@@ -16,13 +16,22 @@ def ensure_attested_static_fixture():
     if OUTPUT.exists():
         raw = OUTPUT.read_bytes()
     else:
-        configured = os.environ.get("COGS_STAGE2_SYNTHETIC_CLANG")
-        if configured not in (None, "/usr/bin/clang-18"):
-            raise RuntimeError("reviewed synthetic fixture compiler invalid")
-        compiler = configured or shutil.which("clang")
+        configured = (os.environ.get("COGS_STAGE2_SYNTHETIC_CLANG"),
+                      os.environ.get("COGS_STAGE2_SYNTHETIC_LLD"))
+        reviewed = {
+            ("/usr/bin/clang-18", "/usr/bin/ld.lld-18"),
+            ("/usr/bin/clang-18", "/usr/bin/ld.lld"),
+            ("/usr/lib/llvm-18/bin/clang", "/usr/lib/llvm-18/bin/ld.lld"),
+            ("/usr/local/swift/usr/bin/clang", "/usr/local/swift/usr/bin/ld.lld"),
+        }
+        if configured == (None, None):
+            compiler, linker = shutil.which("clang"), "lld"
+        elif configured in reviewed:
+            compiler, linker = configured
+        else:
+            raise RuntimeError("reviewed synthetic fixture toolchain invalid")
         if compiler is None:
             raise RuntimeError("reviewed synthetic fixture compiler unavailable")
-        linker = "/usr/bin/ld.lld-18" if configured is not None else "lld"
         temporary = OUTPUT.with_suffix(".building")
         temporary.unlink(missing_ok=True)
         try:

@@ -121,11 +121,19 @@ jobs:
           sudo -n test ! -L "$fixture"
           sudo -n test ! -e /tmp/cogs-stage2-attested-static-v1.building
           sudo -n test ! -L /tmp/cogs-stage2-attested-static-v1.building
-          sudo -n test -x /usr/bin/clang-18
-          sudo -n test -x /usr/bin/ld.lld-18
+          fixture_cc= fixture_ld=
+          for pair in \
+            '/usr/bin/clang-18 /usr/bin/ld.lld-18' \
+            '/usr/bin/clang-18 /usr/bin/ld.lld' \
+            '/usr/lib/llvm-18/bin/clang /usr/lib/llvm-18/bin/ld.lld' \
+            '/usr/local/swift/usr/bin/clang /usr/local/swift/usr/bin/ld.lld'; do
+            set -- $pair
+            if test -x "$1" && test -x "$2"; then fixture_cc="$1"; fixture_ld="$2"; break; fi
+          done
+          test -n "$fixture_cc" && test -n "$fixture_ld"
           sudo -n env -i \
             HOME=/root LC_ALL=C PATH=/usr/sbin:/usr/bin:/sbin:/bin \
-            PYTHONDONTWRITEBYTECODE=1 COGS_STAGE2_SYNTHETIC_CLANG=/usr/bin/clang-18 \
+            PYTHONDONTWRITEBYTECODE=1 COGS_STAGE2_SYNTHETIC_CLANG="$fixture_cc" COGS_STAGE2_SYNTHETIC_LLD="$fixture_ld" \
             COGS_REQUIRE_STAGE2_KATA_NATIVE_FOUNDATIONS=1 \
             COGS_REQUIRE_STAGE2_KATA_RUNTIME_FOUNDATIONS=1 \
             /usr/bin/python3 -I -B test/aws-stage2-completion-kata-operation.py
@@ -136,7 +144,7 @@ jobs:
             /usr/bin/python3 -I -B test/aws-stage2-completion-kata-process.py
           sudo -n env -i \
             HOME=/root LC_ALL=C PATH=/usr/sbin:/usr/bin:/sbin:/bin \
-            PYTHONDONTWRITEBYTECODE=1 COGS_STAGE2_SYNTHETIC_CLANG=/usr/bin/clang-18 \
+            PYTHONDONTWRITEBYTECODE=1 COGS_STAGE2_SYNTHETIC_CLANG="$fixture_cc" COGS_STAGE2_SYNTHETIC_LLD="$fixture_ld" \
             COGS_REQUIRE_STAGE2_KATA_NATIVE_SSH_INPUT=1 \
             /usr/bin/python3 -I -B test/aws-stage2-completion-kata-ssh-native.py
           cleanup_ssh_fixture
