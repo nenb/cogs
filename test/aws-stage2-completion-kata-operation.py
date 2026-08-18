@@ -1078,6 +1078,8 @@ def production_owner_test():
 
             intent = ("ROOTFS_ACQUIRE_INTENT", rootfs_intent)
             leased_records = (intent, ("ROOTFS_LEASED", leased))
+            def production_fixture(bodies):
+                fixture_journal(completion, bodies, host_boot_id=process._boot_id())
             for bodies in ((intent,), leased_records):
                 for mismatch in ("journal", "state"):
                     fixture_journal(
@@ -1636,7 +1638,7 @@ def production_owner_test():
 
             # Production admission is a real fsynced FixedJournal record and
             # survives an exact reopen; legacy journals cannot be claimed.
-            fixture_journal(completion, leased_records)
+            production_fixture(leased_records)
             stale_admission = operation._open_fixed_operation()
             stale_bytes = fixture_journal_path(completion).read_bytes()
             with patch.object(operation, "_current_boot_id",
@@ -1644,7 +1646,7 @@ def production_owner_test():
                 rejected(lambda: operation._admit_production_v2(stale_admission))
             assert fixture_journal_path(completion).read_bytes() == stale_bytes
             stale_admission.close()
-            fixture_journal(completion, leased_records)
+            production_fixture(leased_records)
             admitted = operation._open_fixed_operation()
             operation._admit_production_v2(admitted)
             assert operation._claim_production_operation(admitted) is admitted
@@ -1708,7 +1710,7 @@ def production_owner_test():
                 "expected_parent_generation": parent_generation,
                 "names_sha256": baseline_names_sha,
             }
-            fixture_journal(completion, layout_prefix + (("FS_INTENT", absence_intent),))
+            production_fixture(layout_prefix + (("FS_INTENT", absence_intent),))
             absence_owner = operation._open_fixed_operation()
             absence = {**absence_intent, "parent_observation": parent_generation,
                        "observed_names": baseline_names}
@@ -1719,7 +1721,7 @@ def production_owner_test():
             exact_absence = operation._open_fixed_operation()
             assert exact_absence.status() == "exact"
             exact_absence.close()
-            fixture_journal(completion, layout_prefix + (("INPUT_GRANT", grant),))
+            production_fixture(layout_prefix + (("INPUT_GRANT", grant),))
             active_path = completion / active_name
             def assert_cleanup_only_preserved():
                 preserved = operation._open_fixed_operation()
@@ -1743,12 +1745,12 @@ def production_owner_test():
                 (grant, {**stage_mkdir, "target_mode": 0o777}),
             )
             for hostile_grant, hostile_mkdir in hostile_layouts:
-                fixture_journal(completion, layout_prefix + (
+                production_fixture(layout_prefix + (
                     ("INPUT_GRANT", hostile_grant), ("INPUT_WA", hostile_mkdir)))
                 active_path.mkdir(mode=0o700)
                 assert_cleanup_only_preserved()
                 active_path.rmdir()
-            fixture_journal(completion, layout_prefix + (
+            production_fixture(layout_prefix + (
                 ("INPUT_GRANT", grant), ("INPUT_WA", stage_mkdir)))
             quarantine_path = completion / quarantine_name
             literal_path = completion / "kata-key-stage-v1"
@@ -2202,7 +2204,7 @@ def production_owner_test():
                 "admission_version": operation.PRODUCTION_ADMISSION_VERSION,
                 "policy_version": operation.command_policy.POLICY_VERSION,
                 "parser_source_sha256": operation.SSH_PARSER_SHA256}),)
-            fixture_journal(completion, recovery_prefix)
+            production_fixture(recovery_prefix)
             recovery_authority = operation._open_fixed_operation()
             recovery_control = fs.OperationControl(
                 time.monotonic_ns() + 30_000_000_000, lambda: False)
@@ -2227,7 +2229,7 @@ def production_owner_test():
                 ("BASELINES_CAPTURED", {"operation_token": "a" * 64, "proof_sha256": "9" * 64}),
             )
             for with_preexec in (False, True):
-                fixture_journal(completion, lifecycle_prefix)
+                production_fixture(lifecycle_prefix)
                 crashed = operation._open_fixed_operation()
                 command = fixed_v2_intent(crashed.command_context())
                 crashed.record_command_intent(command)
@@ -2257,7 +2259,7 @@ def production_owner_test():
 
             # Expired durable authority settles uncertainty without touching a
             # potentially reused cgroup name.
-            fixture_journal(completion, lifecycle_prefix)
+            production_fixture(lifecycle_prefix)
             expired_owner = operation._open_fixed_operation()
             expired_command = fixed_v2_intent(expired_owner.command_context())
             expired_owner.record_command_intent(expired_command)
@@ -2276,7 +2278,7 @@ def production_owner_test():
             # Historical v1 remains parseable offline but is not admitted by the
             # production fixed journal/owner route.
             legacy = command_body(0)
-            fixture_journal(completion, lifecycle_prefix + (
+            production_fixture(lifecycle_prefix + (
                 ("COMMAND_INTENT", legacy),
                 ("COMMAND_OUTCOME", zero_outcome(legacy)),
             ))
@@ -2284,7 +2286,7 @@ def production_owner_test():
             assert legacy_owner.status() == "preserve"
             rejected(legacy_owner.command_context)
             legacy_owner.close()
-            fixture_journal(completion, lifecycle_prefix)
+            production_fixture(lifecycle_prefix)
 
             # Construction/read faults fail closed, and no lock or owner escapes.
             with patch.object(fs, "_read_regular", side_effect=OSError("injected read")):
