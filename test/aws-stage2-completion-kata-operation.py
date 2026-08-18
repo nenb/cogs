@@ -1884,23 +1884,6 @@ def production_owner_test():
                                         return value
                                     inputs.os.rmdir = after_removal
                                 producer.create()
-                        except BaseException:
-                            import traceback
-                            traceback.print_exc()
-                            records = operation._parse(
-                                fixture_journal_path(transaction_completion).read_bytes())
-                            print("DIAG_STATUS", authority.status(),
-                                  sum(row.record_type == "PRODUCTION_ADMISSION_V2" for row in records),
-                                  operation._legal(records), file=sys.stderr)
-                            raw_names = fs._enumerate_stable(
-                                child_chain.components[-1].node, child_control).raw_names
-                            try:
-                                operation._validate_stage_layout(
-                                    raw_names, records, "FS_INTENT",
-                                    operation._key_value(child_chain.components[-1].node.generation.key))
-                                print("DIAG_LAYOUT_OK", file=sys.stderr)
-                            except BaseException:
-                                print("DIAG_LAYOUT_FAIL", file=sys.stderr)
                         finally: os._exit(84)
                     os.close(identity_w)
                     _pid, supervisor_status = os.waitpid(supervisor, 0)

@@ -1644,7 +1644,7 @@ def _make_authority():
                                   "COMMAND_PREEXEC", "COMMAND_OUTCOME", "COMMAND_INTENT_V2",
                                   "COMMAND_PREEXEC_V2", "DAEMON_RETAINED_V2", *LIFECYCLE[:13]}
                 if phase in input_required:
-                    if phase != "FIREWALL_ABSENT":
+                    if phase not in {"FIREWALL_ABSENT", "FS_INTENT"}:
                         _fail(INPUT_NAME.raw in names)
                 if phase in set(LIFECYCLE[13:]) | {"FINAL_BASELINES", "RETIRE_INTENT", "RETIRED"}:
                     _fail(INPUT_NAME.raw not in names)
@@ -1677,9 +1677,6 @@ def _make_authority():
                                   == self.state.generation)
                 state_live_ok = (fs._observe_node(self.state.identity_fd, self.state.operation_fd,
                                                   self.control) == self.state.generation)
-                if not (base_ok and state_child_ok and state_live_ok) and os.environ.get(
-                        "COGS_KATA_SYNTHETIC_ATTESTATION_V1") == "1":
-                    os.write(2, f"DIAG_CHAIN:{base_ok}:{state_child_ok}:{state_live_ok}\n".encode())
                 _fail(base_ok and state_child_ok and state_live_ok)
             finally:
                 fs._close_chain(fresh)
