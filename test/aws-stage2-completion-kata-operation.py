@@ -1833,7 +1833,8 @@ def production_owner_test():
                     transaction_completion.mkdir(parents=True, mode=0o700)
                     for sibling in ("artifacts", "rootfs-v1"):
                         (transaction_completion / sibling).mkdir(mode=0o700)
-                    fixture_journal(transaction_completion, layout_prefix)
+                    fixture_journal(
+                        transaction_completion, layout_prefix, host_boot_id=process._boot_id())
                     identity_r, identity_w = os.pipe2(os.O_CLOEXEC)
                     supervisor = os.fork()
                     if supervisor == 0:
@@ -1883,9 +1884,6 @@ def production_owner_test():
                                         return value
                                     inputs.os.rmdir = after_removal
                                 producer.create()
-                        except BaseException:
-                            import traceback
-                            traceback.print_exc()
                         finally: os._exit(84)
                     os.close(identity_w)
                     _pid, supervisor_status = os.waitpid(supervisor, 0)
@@ -1923,7 +1921,8 @@ def production_owner_test():
                     transaction_completion.mkdir(parents=True, mode=0o700)
                     for sibling in ("artifacts", "rootfs-v1"):
                         (transaction_completion / sibling).mkdir(mode=0o700)
-                    fixture_journal(transaction_completion, layout_prefix)
+                    fixture_journal(
+                        transaction_completion, layout_prefix, host_boot_id=process._boot_id())
                     identity_r, identity_w = os.pipe2(os.O_CLOEXEC)
                     supervisor = os.fork()
                     if supervisor == 0:
@@ -2008,7 +2007,8 @@ def production_owner_test():
                 transaction_chain = linux_chain_factory(transaction_completion, transaction_control)
                 transaction_parent = transaction_chain.components[-1].node
                 try:
-                    fixture_journal(transaction_completion, layout_prefix)
+                    fixture_journal(
+                        transaction_completion, layout_prefix, host_boot_id=process._boot_id())
                     runtime_authority = operation._open_fixed_operation()
                     production_inputs = inputs._compose_production_inputs(
                         runtime_authority, transaction_parent, transaction_control, executable_owner)
