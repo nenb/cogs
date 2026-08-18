@@ -33,9 +33,12 @@ JOURNAL_NAME = fs._name("operation-v1.jsonl")
 ARTIFACTS_NAME = fs._name("artifacts")
 ROOTFS_NAME = fs._name("rootfs-v1")
 INPUT_NAME = fs._name("kata-input-v1")
+RUNTIME_NAME = fs._name("kata-runtime-v1")
+RUNTIME_STAGING_NAME = fs._name(".kata-runtime-v1.staging")
 KEY_STAGE_PREFIX = b"kata-key-stage-v1-"
 COMPLETION_NAMES = frozenset({
     STATE_NAME.raw, ARTIFACTS_NAME.raw, ROOTFS_NAME.raw, INPUT_NAME.raw,
+    RUNTIME_NAME.raw, RUNTIME_STAGING_NAME.raw,
 })
 MAX_LINE = 300_000
 MAX_RECORDS = 16_384
@@ -69,8 +72,15 @@ def _stage_candidates(names):
         _fail(len(token) == 64 and set(token) <= set(b"0123456789abcdef"))
     return candidates
 
+def _validate_runtime_layout(names, records):
+    present = names & {RUNTIME_NAME.raw, RUNTIME_STAGING_NAME.raw}
+    _fail(len(present) <= 1)
+    if present:
+        _fail(any(item.record_type == "RUNTIME_STAGE_INTENT_V4" for item in records))
+
 def _validate_stage_layout(raw_names, records, phase, completion_key):
     names = set(raw_names)
+    _validate_runtime_layout(names, records)
     candidates = _stage_candidates(names)
     if not candidates: return
     _fail(records and phase in KEY_INPUT_PHASES)
@@ -1626,7 +1636,8 @@ def _make_authority():
                 if phase in {"ROOTFS_ABSENT", "FINAL_BASELINES", "RETIRE_INTENT", "RETIRED"}:
                     _fail(ROOTFS_NAME.raw not in names)
             else:
-                _fail(not candidates and names <= COMPLETION_NAMES)
+                _fail(not candidates and not names & {RUNTIME_NAME.raw, RUNTIME_STAGING_NAME.raw}
+                      and names <= COMPLETION_NAMES)
             fs._revalidate_chain(self.chain, self.control)
         def _reopen_base(self):
             old = self.chain

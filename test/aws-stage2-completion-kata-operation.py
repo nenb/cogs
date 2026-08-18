@@ -736,8 +736,10 @@ def native_runtime_daemon_foundations(completion):
             finally: os.close(value)
         def reset(extra=(), tree=True, graceful=False):
             if tree:
-                Path(runtime_base + "/bin").mkdir(parents=True); Path(runtime_base + "/containerd-root").mkdir()
-                Path(runtime_base + "/containerd-state").mkdir(); Path(runtime_base + "/containerd.toml").write_bytes(runtime.CONTAINERD_CONFIG_BYTES)
+                Path(runtime_base).mkdir(mode=0o700)
+                for child in ("bin", "containerd-root", "containerd-state"):
+                    Path(runtime_base, child).mkdir(mode=0o700)
+                Path(runtime_base + "/containerd.toml").write_bytes(runtime.CONTAINERD_CONFIG_BYTES)
                 os.chmod(runtime_base + "/containerd.toml", 0o600)
                 if graceful: Path(runtime_base + "/containerd-state/term-responsive").write_bytes(b"1")
             stage = {"operation_token": "a" * 64, "policy_version": policy.RUNTIME_POLICY_VERSION,
@@ -859,7 +861,11 @@ def native_runtime_daemon_foundations(completion):
                     "pid": 900000 + serial, "ppid": 1, "pgid": 900000 + serial, "sid": 900000 + serial,
                     "proc_start_time": 1 + serial, "pidfd_supported": True,
                     "cgroup_path": f"{process.CGROUP_BASE}/{intent['operation_token']}-{serial}",
-                    "cgroup_generation": generation(200 + serial), "exec_status_pipe": generation(300 + serial, "pipe", 0o600), "release_count": 0})
+                    "cgroup_generation": generation(200 + serial),
+                    "executable_sha256": intent["executable_sha256"],
+                    "tool_closure_sha256": intent["tool_closure_sha256"],
+                    "executable_generation": intent["executable_generation"],
+                    "exec_status_pipe": generation(300 + serial, "pipe", 0o600), "release_count": 0})
                 stdout = next(outputs); observed.record_command_output({"operation_token": intent["operation_token"],
                     "command_serial": serial, "command_id": intent["command_id"], "binding_sha256": intent["binding_sha256"],
                     "stdout_hex": stdout.hex(), "stderr_hex": ""})
@@ -1243,7 +1249,7 @@ def production_owner_test():
                                 os.fsync(descriptor)
                             finally: os.close(descriptor)
                         production_network.close()
-                        lifecycle = operation._make_fake_lifecycle(journal_path.read_bytes())
+                        lifecycle = operation._make_fake_lifecycle_for_tests(journal_path.read_bytes())
                         lifecycle.runtime_ready(runtime_body["proof_sha256"])
                         lifecycle.ssh_ready("1" * 64); lifecycle.revoke_readiness()
                         lifecycle.ownership_observed("2" * 64); lifecycle.task_stopped("3" * 64)
@@ -1306,7 +1312,7 @@ def production_owner_test():
                         assert absent_body["snapshot_kind"] == "network-absent"
                         os.close(tun); tun = None
                         production_network.close()
-                        lifecycle = operation._make_fake_lifecycle(journal_path.read_bytes())
+                        lifecycle = operation._make_fake_lifecycle_for_tests(journal_path.read_bytes())
                         lifecycle.task_absent("4" * 64); lifecycle.container_absent("5" * 64)
                         lifecycle.runtime_absent("6" * 64); lifecycle.share_absent("7" * 64)
                         replace_journal(lifecycle.journal_bytes())
@@ -1368,7 +1374,7 @@ def production_owner_test():
                     discovered_body = network._snapshot(production_network, "discovered", baselines,
                         discovered_identity, network._sources(production_network, "NETWORK_SNAPSHOT_V2"))
                     production_network.close(); journal_path = fixture_journal_path(completion)
-                    lifecycle = operation._make_fake_lifecycle(journal_path.read_bytes())
+                    lifecycle = operation._make_fake_lifecycle_for_tests(journal_path.read_bytes())
                     lifecycle.revoke_readiness(); lifecycle.ownership_observed("8" * 64, task="absent")
                     replace_journal(lifecycle.journal_bytes())
                     production_network = operation._open_fixed_operation()
@@ -1451,7 +1457,7 @@ def production_owner_test():
                     absent_body = network._remove_fixed_network(production_network, *retained_tools)
                     assert absent_body["snapshot_kind"] == "network-absent"
                     os.close(tun2); tun2 = None
-                    production_network.close(); lifecycle = operation._make_fake_lifecycle(journal_path.read_bytes())
+                    production_network.close(); lifecycle = operation._make_fake_lifecycle_for_tests(journal_path.read_bytes())
                     lifecycle.task_absent("9" * 64); lifecycle.container_absent("a" * 64)
                     lifecycle.runtime_absent("b" * 64); lifecycle.share_absent("c" * 64)
                     replace_journal(lifecycle.journal_bytes())
@@ -1709,7 +1715,7 @@ def production_owner_test():
             active_path.rmdir()
             foreign = completion / ("kata-key-stage-v1-" + "b" * 64 + ".quarantine")
             quarantine_path.rename(foreign)
-            rejected(operation._open_fixed_operation)
+            assert_cleanup_only_preserved()
             foreign.rename(quarantine_path)
             final_owner = operation._open_fixed_operation()
             cleanup_chain = linux_chain_factory(completion, layout_control)
