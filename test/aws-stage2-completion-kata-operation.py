@@ -1929,7 +1929,7 @@ def production_owner_test():
                         os.close(identity_r)
                         try:
                             child_control = fs.OperationControl(
-                                time.monotonic_ns() + 180_000_000_000, lambda: False)
+                                time.monotonic_ns() + operation.command_policy.SSH_TOTAL_NS, lambda: False)
                             child_factory = lambda control: linux_chain_factory(
                                 transaction_completion, control)
                             with patch.object(operation, "_open_base_chain", side_effect=child_factory):
@@ -1961,9 +1961,6 @@ def production_owner_test():
                                 operation._record_runtime_mount_v2(authority, issuance)
                                 install_process_cut(cut, "SSH_READY")
                                 process._transact_fixed_ssh(authority, ssh_executable, bindings)
-                        except BaseException:
-                            import traceback
-                            traceback.print_exc()
                         finally: os._exit(84)
                     os.close(identity_w)
                     _pid, supervisor_status = os.waitpid(supervisor, 0)
@@ -2006,7 +2003,7 @@ def production_owner_test():
                 transaction_patch = patch.object(operation, "_open_base_chain", side_effect=transaction_factory)
                 transaction_patch.start()
                 transaction_control = fs.OperationControl(
-                    time.monotonic_ns() + 180_000_000_000, lambda: False)
+                    time.monotonic_ns() + operation.command_policy.SSH_TOTAL_NS, lambda: False)
                 transaction_chain = linux_chain_factory(transaction_completion, transaction_control)
                 transaction_parent = transaction_chain.components[-1].node
                 try:
