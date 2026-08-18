@@ -1085,7 +1085,11 @@ def _perform_fixed(journal, action, ip, nft, tc, target=None, endpoint=None):
     if (outcome.outcome != "exited" or outcome.status != 0 or outcome.stderr
             or outcome.stdout_truncated or outcome.stderr_truncated or outcome.errors
             or not outcome.reaped):
-        raise NetworkError("fixed network command failed")
+        raise NetworkError(
+            f"fixed network command failed:{fixed.command_id.value}:{outcome.outcome}:"
+            f"{outcome.status}:{len(outcome.stdout)}:{len(outcome.stderr)}:"
+            f"{int(outcome.stdout_truncated)}:{int(outcome.stderr_truncated)}:"
+            f"{len(outcome.errors)}:{int(outcome.reaped)}")
     _record_observation(journal, action.value + ((":" + endpoint.ifname) if endpoint is not None else ""),
                         outcome.stdout, durable.command_serial)
     return outcome.stdout

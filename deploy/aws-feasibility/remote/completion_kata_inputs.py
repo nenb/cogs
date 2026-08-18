@@ -1209,9 +1209,9 @@ def _owner_routes():
         existing, snapshot = _optional_child(completion, stage_name, control)
         _fail(existing is None and command_policy.KEY_STAGE_PREFIX == operation.BASE + "/" + KEY_STAGE_PREFIX)
         stage_grant = create_grant(
-            state["journal"], operation._command_context(state["journal"]).operation_token,
+            state["journal"], state["journal"].command_context().operation_token,
             "@key-stage", stage_name, completion, "directory", 0o700, first_serial, control)
-        operation._record_input_wa(state["journal"], {
+        state["journal"].record_input_wa({
             "action": "mkdir", "path": "@key-stage",
             "parent_key": _key_value(completion.generation.key),
             "names_sha256": names_digest(snapshot.raw_names), "child_key": None,
@@ -1227,7 +1227,7 @@ def _owner_routes():
         try:
             _fail(stage.generation.mode == 0o700 and stage.generation.uid == stage.generation.gid == 0)
             settle_grant(state["journal"], stage_grant, stage, control)
-            operation._record_input_wa(state["journal"], {
+            state["journal"].record_input_wa({
                 "action": "mkdir-settled", "path": "@key-stage",
                 "parent_key": _key_value(completion.generation.key),
                 "names_sha256": names_digest(snapshot.raw_names),
@@ -1251,7 +1251,7 @@ def _owner_routes():
                 return outcome
             def key_grant(name, mode, serial):
                 return create_grant(state["journal"],
-                                    operation._command_context(state["journal"]).operation_token,
+                                    state["journal"].command_context().operation_token,
                                     "@key-stage/" + name, fs._name(name), stage, "file", mode,
                                     serial, control)
             def opened(name, mode, maximum, grant):
@@ -1260,7 +1260,7 @@ def _owner_routes():
                       and node.generation.nlink == 1)
                 fs._require_empty_fd_xattrs(node, control)
                 settle_grant(state["journal"], grant, node, control)
-                operation._record_input_wa(state["journal"], {
+                state["journal"].record_input_wa({
                     "action": "file-settled", "path": "@key-stage/" + name,
                     "parent_key": _key_value(stage.generation.key),
                     "names_sha256": names_digest(fs._enumerate_stable(stage, control).raw_names),
@@ -1285,7 +1285,7 @@ def _owner_routes():
             run(process.CommandId.SSH_PUBLIC_SERVER, first_serial + 3, server_y)
             for node in (client_node, client_pub_node, server_node, server_pub_node):
                 _fail(fs._observe_node(node.identity_fd, node.operation_fd, control) == node.generation)
-            _fail(operation._command_context(state["journal"]).command_serial == first_serial + 4)
+            _fail(state["journal"].command_context().command_serial == first_serial + 4)
             return _validate_key_material(KeyMaterial(
                 client_private, client_public, server_private, server_public)), tuple(held)
         except BaseException as error:
@@ -1295,8 +1295,8 @@ def _owner_routes():
         completion, control = state["completion"], state["control"]
         stage_name = state["key_stage_name"]
         quarantine_name = fs._name(stage_name.text + ".quarantine")
-        wa_rows = operation._input_wa(state["journal"])
-        grant_rows = operation._input_grants(state["journal"])
+        wa_rows = state["journal"].input_wa()
+        grant_rows = state["journal"].input_grants()
         mkdir_rows = [row for row in wa_rows if (row["action"], row["path"]) == ("mkdir", "@key-stage")]
         settled_rows = [row for row in wa_rows
                         if (row["action"], row["path"]) == ("mkdir-settled", "@key-stage")]
@@ -1314,7 +1314,7 @@ def _owner_routes():
             active_name = stage_name if generation is not None else quarantine_name
             active_snapshot = completion_snapshot if generation is not None else quarantine_snapshot
             excluded = {active_name.raw}
-            if operation._durable_phase(state["journal"]) == "FS_INTENT":
+            if state["journal"].durable_phase() == "FS_INTENT":
                 excluded.add(INPUT_NAME.raw)
                 excluded.update(row["name"].encode("ascii") for row in grant_rows
                                 if row["path"] == "." and row["action"] == "intent")
@@ -1329,7 +1329,7 @@ def _owner_routes():
                 intents = [row for row in grants if row["action"] == "intent"]
                 _fail(len(intents) == 1 and not any(row["action"] == "settled" for row in grants))
                 settle_grant(state["journal"], intents[0], stage, control)
-                operation._record_input_wa(state["journal"], {
+                state["journal"].record_input_wa({
                     "action": "mkdir-settled", "path": "@key-stage",
                     "parent_key": mkdir_rows[0]["parent_key"],
                     "names_sha256": mkdir_rows[0]["names_sha256"],
@@ -1342,7 +1342,7 @@ def _owner_routes():
             prior_stage_remove = [row for row in wa_rows
                                   if (row["action"], row["path"]) == ("remove", "@key-stage")]
             if not prior_stage_remove:
-                operation._record_input_wa(state["journal"], {
+                state["journal"].record_input_wa({
                     "action": "remove", "path": "@key-stage",
                     "parent_key": _key_value(completion.generation.key),
                     "names_sha256": mkdir_rows[0]["names_sha256"],
@@ -1392,7 +1392,7 @@ def _owner_routes():
                                   and node.generation.gid == settled["expected_gid"] == 0)
                         else: settle_grant(state["journal"], intents[0], node, control)
                     finally: _close_owned((node,))
-                    operation._record_input_wa(state["journal"], {
+                    state["journal"].record_input_wa({
                         "action": "file-settled", "path": path,
                         "parent_key": _key_value(stage.generation.key),
                         "names_sha256": names_digest(snapshot.raw_names),
@@ -1408,7 +1408,7 @@ def _owner_routes():
                 if prior:
                     _fail(len(prior) == 1 and _parse_key(prior[0]["child_key"], "file") == generation.key)
                 else:
-                    operation._record_input_wa(state["journal"], {
+                    state["journal"].record_input_wa({
                         "action": "remove", "path": path, "parent_key": _key_value(stage.generation.key),
                         "names_sha256": names_digest(snapshot.raw_names),
                         "child_key": _key_value(generation.key), "before_mode": generation.mode,
@@ -1421,7 +1421,7 @@ def _owner_routes():
             absent, _ = _optional_child(completion, stage_name, control)
             original, _ = _optional_child(completion, state["key_stage_name"], control)
             _fail(absent is None and original is None)
-            operation._record_input_wa(state["journal"], {
+            state["journal"].record_input_wa({
                 "action": "absent", "path": "@key-stage",
                 "parent_key": _key_value(completion.generation.key),
                 "names_sha256": names_digest(fs._enumerate_stable(completion, control).raw_names),
@@ -1432,9 +1432,9 @@ def _owner_routes():
 
     def poison_production(state, primary):
         state["uncertain"] = primary
-        if operation._durable_phase(state["journal"]) == "UNCERTAIN": return
+        if state["journal"].durable_phase() == "UNCERTAIN": return
         try:
-            operation._record_uncertain(state["journal"], "incomplete")
+            state["journal"].record_uncertain("incomplete")
         except BaseException as journal_error:
             raise BaseExceptionGroup(
                 "input failure and durable uncertainty failure", [primary, journal_error],
@@ -1450,7 +1450,7 @@ def _owner_routes():
             _fail(not state["removed"] and state["uncertain"] is None)
             if state["identity"] is not None:
                 return self.verify()
-            before = operation._command_context(state["journal"])
+            before = state["journal"].command_context()
             _fail(before.lifecycle_phase == "ROOTFS_LEASED")
             key_handles = ()
             try:
@@ -1479,7 +1479,7 @@ def _owner_routes():
                     "expected_parent_generation": operation._generation_value(parent_before),
                     "names_sha256": _sha(operation._canonical(names)),
                 }
-                operation._record_fs_intent(state["journal"], intent)
+                state["journal"].record_fs_intent(intent)
                 identity = create_owned(
                     parent, grant, key_grant, state["control"],
                 )
@@ -1500,8 +1500,8 @@ def _owner_routes():
                     }
                 finally:
                     _close_owned((root,))
-                operation._record_fs_observed(state["journal"], observed)
-                operation._record_fs_settled(state["journal"], observed)
+                state["journal"].record_fs_observed(observed)
+                state["journal"].record_fs_settled(observed)
                 state["identity"] = identity
                 return identity
             except BaseException as error:
@@ -1524,7 +1524,7 @@ def _owner_routes():
             state = production[self]
             _fail(state["identity"] is not None and not state["removed"]
                   and state["uncertain"] is None)
-            context = operation._command_context(state["journal"])
+            context = state["journal"].command_context()
             _fail(context.operation_token == state["identity"].operation_token)
             try:
                 return latch_route(state["grant"], None, lambda: verify_owned(
@@ -1583,7 +1583,7 @@ def _owner_routes():
             state = production[self]
             identity = self.verify()
             _fail(state["handles"] is None)
-            context = operation._command_context(state["journal"])
+            context = state["journal"].command_context()
             _fail(context.lifecycle_phase == "FIREWALL_ABSENT")
             detach = _ProductionDetachGrant(seal)
             detaches[detach] = {"operation": state["grant"], "status": "detached", "uncertain": None}
@@ -1598,7 +1598,7 @@ def _owner_routes():
                     "operation_token": identity.operation_token,
                     "observed_names": [os.fsdecode(name) for name in names],
                 }))
-                operation._record_input_removed(state["journal"], proof)
+                state["journal"].record_input_removed(proof)
                 state["removed"] = True
                 return removed
             except BaseException as error:
@@ -1616,31 +1616,31 @@ def _owner_routes():
                 return self._continue_cleanup()
             except BaseException as error:
                 try:
-                    if operation._durable_phase(state["journal"]) != "UNCERTAIN":
-                        operation._record_uncertain(state["journal"], "identity-mismatch")
+                    if state["journal"].durable_phase() != "UNCERTAIN":
+                        state["journal"].record_uncertain("identity-mismatch")
                 except BaseException as settlement_error:
                     raise ExceptionGroup("cleanup failure and uncertainty settlement failure",
                                          (error, settlement_error))
                 raise error
         def _continue_cleanup(self):
             state = production[self]
-            if operation._has_recovery_command(state["journal"]):
+            if state["journal"].has_recovery_command():
                 import completion_kata_process as process
                 process._recover_pending_production(state["journal"])
-            operation_token = operation._input_cleanup_token(state["journal"])
+            operation_token = state["journal"].input_cleanup_token()
             state["key_stage_name"] = fs._name(KEY_STAGE_PREFIX + operation_token)
             def mark_uncertain(reason):
-                if operation._durable_phase(state["journal"]) != "UNCERTAIN":
-                    operation._record_uncertain(state["journal"], reason)
+                if state["journal"].durable_phase() != "UNCERTAIN":
+                    state["journal"].record_uncertain(reason)
             try:
                 remove_key_stage(state)
             except BaseException as error:
                 mark_uncertain("identity-mismatch")
                 raise error
-            steps = operation._input_steps(state["journal"])
+            steps = state["journal"].input_steps()
             recorded_paths = {row["path"] for row in steps}
-            wa_state = operation._input_wa(state["journal"])
-            grant_state = operation._input_grants(state["journal"])
+            wa_state = state["journal"].input_wa()
+            grant_state = state["journal"].input_grants()
             mkdir_rows = sorted((row for row in wa_state
                                  if row["action"] == "mkdir" and row["path"] != "@key-stage"),
                                 key=lambda row: (row["path"].count("/"), row["path"].encode()))
@@ -1687,7 +1687,7 @@ def _owner_routes():
                     settlements = [row for row in wa_state
                                    if (row["action"], row["path"]) == ("mkdir-settled", path)]
                     if not settlements and any(row["action"] == "settled" for row in grants):
-                        operation._record_input_wa(state["journal"], {
+                        state["journal"].record_input_wa({
                             "action": "mkdir-settled", "path": path,
                             "parent_key": wa["parent_key"], "names_sha256": wa["names_sha256"],
                             "child_key": _key_value(generation.key), "before_mode": None,
@@ -1699,13 +1699,13 @@ def _owner_routes():
                             or generation.uid != 0 or generation.gid != 0):
                         mark_uncertain("identity-mismatch")
                         raise InputError("unsettled restart directory")
-                    operation._record_input_step(state["journal"], "create-intent", path,
+                    state["journal"].record_input_step("create-intent", path,
                                                  "directory", _key_value(generation.key), None)
-                    operation._record_input_step(state["journal"], "create", path,
+                    state["journal"].record_input_step("create", path,
                                                  "directory", _key_value(generation.key), None)
                     recorded_paths.add(path)
                 finally: _close_owned(owned)
-            steps = operation._input_steps(state["journal"])
+            steps = state["journal"].input_steps()
             by_path = {}
             for row in steps: by_path.setdefault(row["path"], []).append(row)
             candidates = []
@@ -1736,7 +1736,7 @@ def _owner_routes():
                     path, kind = source["path"], source["kind"]
                     rows = by_path[path]
                     if rows[-1]["action"] != "remove-intent":
-                        operation._record_input_step(state["journal"], "remove-intent", path, kind,
+                        state["journal"].record_input_step("remove-intent", path, kind,
                                                      source["key"], source["sha256"])
                     if path == ".":
                         generation = root_generation
@@ -1767,16 +1767,16 @@ def _owner_routes():
                             os.fsync(parent.operation_fd.number)
                         absent, _ = _optional_child(parent, name, state["control"])
                         _fail(absent is None)
-                        operation._record_input_step(state["journal"], "absent", path, kind,
+                        state["journal"].record_input_step("absent", path, kind,
                                                      None, source["sha256"])
                     finally: _close_owned(owned)
                 final, _ = _optional_child(state["completion"], INPUT_NAME, state["control"])
                 _fail(final is None)
                 proof = _sha(operation._canonical({"operation_token": steps[0]["operation_token"],
                                                     "input_absent": True})) if steps else _sha(b"no-input-steps\n")
-                phase = operation._durable_phase(state["journal"])
+                phase = state["journal"].durable_phase()
                 if phase == "FS_INTENT":
-                    intent = operation._pending_fs_intent(state["journal"])
+                    intent = state["journal"].pending_fs_intent()
                     observed_parent = fs._observe_node(
                         state["completion"].identity_fd, state["completion"].operation_fd,
                         state["control"])
@@ -1785,20 +1785,20 @@ def _owner_routes():
                                    key=lambda value: value.encode("utf-8"))
                     parent_observation = operation._generation_value(observed_parent)
                     if parent_observation != intent["expected_parent_generation"]:
-                        operation._record_uncertain(state["journal"], "identity-mismatch")
+                        state["journal"].record_uncertain("identity-mismatch")
                     else:
                         absent = {**intent, "parent_observation": parent_observation,
                                   "observed_names": names}
                         try:
-                            operation._record_fs_absent(state["journal"], absent)
-                            operation._record_fs_settled(state["journal"], absent)
+                            state["journal"].record_fs_absent(absent)
+                            state["journal"].record_fs_settled(absent)
                         except BaseException as error:
-                            operation._record_uncertain(state["journal"], "identity-mismatch")
+                            state["journal"].record_uncertain("identity-mismatch")
                             raise error
                 elif phase == "ROOTFS_LEASED":
-                    operation._record_uncertain(state["journal"], "incomplete")
+                    state["journal"].record_uncertain("incomplete")
                 elif phase == "FIREWALL_ABSENT":
-                    operation._record_input_removed(state["journal"], proof)
+                    state["journal"].record_input_removed(proof)
                 return proof
             finally:
                 if root is not None and root.identity_fd.disposition == "open": _close_owned((root,))
