@@ -608,6 +608,7 @@ def parse_netns_identity(raw, stat, path=NETNS_PATH):
         return _OCTAL.sub(lambda match: chr(int(match.group(1), 8)), text)
 
     found = []
+    nearby = []
     for line in lines:
         fields = line.split(" ")
         if fields.count("-") != 1:
@@ -628,13 +629,15 @@ def parse_netns_identity(raw, stat, path=NETNS_PATH):
                 or len(set(mount_options)) != len(mount_options)
                 or len(set(super_options)) != len(super_options)):
             raise NetworkError("mountinfo options")
+        if point.startswith("/run/netns"):
+            nearby.append((root, point, fs_type, source))
         if point == path:
             found.append(NetnsIdentity(mount_id, parent_id, fields[2], root, point,
                                        mount_options, optional, fs_type, source, super_options,
                                        stat.device, stat.inode))
     expected_device = f"{os.major(stat.device)}:{os.minor(stat.device)}"
     if len(found) != 1:
-        raise NetworkError("netns mount cardinality")
+        raise NetworkError(f"netns mount cardinality:{len(found)}:{nearby!r}")
     identity = found[0]
     propagation = tuple(field.split(":", 1)[0] for field in identity.optional_fields)
     optional_ok = (len(identity.optional_fields) <= 2
