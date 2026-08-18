@@ -13,6 +13,7 @@ import errno
 import hashlib
 import ipaddress
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -164,6 +165,8 @@ def _load(raw):
                     raise NetworkError("JSON array bound")
                 return [convert(child, depth + 1) for child in item]
             if item is None or type(item) in (str, int, bool):
+                return item
+            if type(item) is float and math.isfinite(item):
                 return item
             raise NetworkError("JSON scalar")
         return convert(value)
