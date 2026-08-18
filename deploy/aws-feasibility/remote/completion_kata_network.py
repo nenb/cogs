@@ -1301,7 +1301,9 @@ def _establish_netns(journal):
         if os.write(release_w, b"B") != 1: raise NetworkError("namespace helper release")
         os.close(ready_r); os.close(release_w)
         _pid, status = os.waitpid(child, 0); helper_waited = True
-        if os.waitstatus_to_exitcode(status) != 0: raise NetworkError("fixed namespace bind helper")
+        helper_status = os.waitstatus_to_exitcode(status)
+        if helper_status != 0:
+            raise NetworkError(f"fixed namespace bind helper:{helper_status}")
         identity = _netns_identity(journal=None, name=name)
         if identity is None or any(getattr(identity, field) != created[field]
                                    for field in ("device", "inode_device", "inode")):
