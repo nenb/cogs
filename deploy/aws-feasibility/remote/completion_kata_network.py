@@ -2241,6 +2241,9 @@ def _resume_effect(journal, ip, nft, tc):
     if not effects or effects[-1][0] == "NETWORK_EFFECT_SETTLED_V2":
         return
     kind, body = effects[-1]
+    if (operation._command_context(journal).lifecycle_phase == "UNCERTAIN"
+            and body["action"] != Action.IP_NETNS_REMOVE.value):
+        raise NetworkError("uncertain setup effect cannot resume")
     if kind == "NETWORK_EFFECT_OBSERVED_V2":
         _record_effect(journal, "NETWORK_EFFECT_SETTLED_V2", body); return
     outcomes = [value for record, value in history if record == "COMMAND_OUTCOME_V2"
