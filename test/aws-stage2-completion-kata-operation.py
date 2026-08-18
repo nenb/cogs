@@ -2227,7 +2227,9 @@ def fixture_journal_path(completion):
 
 owner_qualified, transaction_qualified, runtime_qualified = production_owner_test()
 if (os.environ.get("COGS_REQUIRE_STAGE2_KATA_NATIVE_FOUNDATIONS") == "1"
-        and not (owner_qualified and transaction_qualified)):
+        and not (owner_qualified and (transaction_qualified
+                                     or os.environ.get("COGS_STAGE2_KATA_NATIVE_TEST_SHARD")
+                                     in NATIVE_TEST_SHARDS[1:]))):
     raise RuntimeError("root Linux journal/cgroup transaction crash foundations were required")
 if (os.environ.get("COGS_REQUIRE_STAGE2_KATA_RUNTIME_FOUNDATIONS") == "1" and not runtime_qualified):
     raise RuntimeError("root Linux long-lived runtime foundations were required")
