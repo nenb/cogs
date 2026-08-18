@@ -1073,6 +1073,8 @@ def _advance_cleanup(owner, pid, wait_status, deadline, term_at, kill_at, state,
     _adopt_members(owner, members)
     now = _boottime_ns()
     if now >= term_at and not state["term"] and members:
+        if wait_status is None:
+            state["leader_timed_out"] = True
         _signal_cgroup(owner, signal.SIGTERM)
         state["term"] = True
     if now >= kill_at and not state["kill"] and members:
@@ -1104,7 +1106,7 @@ def _drain_transaction(pid, descriptors, stdin_bytes, owner, deadline, term_at, 
     buffers = {"stdout": bytearray(), "stderr": bytearray(), "status": bytearray()}
     overflow = {"stdout": False, "stderr": False}
     limits = {"stdout": descriptors.pop("stdout_limit"), "stderr": descriptors.pop("stderr_limit")}
-    state = {"term": False, "kill": False}
+    state = {"term": False, "kill": False, "leader_timed_out": False}
     errors = []
     wait_status = None
     stdin_offset = 0
@@ -1389,7 +1391,7 @@ def _transact_fixed(journal, fixed, executable, inherited=()):
             stdout, stderr, body["stdout_sha256"], body["stderr_sha256"],
             body["stdout_truncated"], body["stderr_truncated"],
             body["deadline_expired"],
-            body["deadline_expired"] and not body["leader_reaped"], not pipes_eof,
+            state["leader_timed_out"], not pipes_eof,
             body["leader_reaped"], tuple(body["errors"]),
         ), durable
     except BaseException as primary:
