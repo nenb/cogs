@@ -211,7 +211,7 @@ class Link:
 _LINK_OPTIONAL = ("mtu", "min_mtu", "max_mtu", "group", "txqlen", "linkmode", "master",
                   "promiscuity", "num_tx_queues", "num_rx_queues", "gso_max_size",
                   "gso_max_segs", "tso_max_size", "tso_max_segs", "gro_max_size",
-                  "allmulti", "inet6_addr_gen_mode", "parentbus", "parentdev",
+                  "allmulti", "inet6_addr_gen_mode", "ifalias", "parentbus", "parentdev",
                   "link_netnsid", "link", "broadcast", "altnames")
 _MAC = re.compile(r"(?:[0-9a-f]{2}:){5}[0-9a-f]{2}")
 
@@ -1818,9 +1818,18 @@ def _capture_fixed_baselines(journal, ip, nft, tc):
 
 def _owned_links(raw, names):
     value = _load(raw)
-    if type(value) is not list:
+    if (type(value) is not list or type(names) is not tuple or not names
+            or len(names) != len(set(names))):
         raise NetworkError("complete owned links")
-    parsed = {_parse_link_row(row).ifname: _parse_link_row(row) for row in value}
+    parsed = {}
+    for row in value:
+        if type(row) is not dict:
+            raise NetworkError("owned link row")
+        candidate = row.get("ifname")
+        if candidate in names:
+            link = _parse_link_row(row)
+            if link.ifname in parsed: raise NetworkError("duplicate owned link")
+            parsed[link.ifname] = link
     return tuple(parsed.get(name) for name in names)
 
 
