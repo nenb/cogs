@@ -121,9 +121,9 @@ jobs:
           sudo -n test ! -L "$fixture"
           sudo -n test ! -e /tmp/cogs-stage2-attested-static-v1.building
           sudo -n test ! -L /tmp/cogs-stage2-attested-static-v1.building
-          sudo -n test -x /usr/local/swift/usr/bin/clang
+          sudo -n test -x /usr/lib/llvm-18/bin/clang
           sudo -n env -i \
-            HOME=/root LC_ALL=C PATH=/usr/local/swift/usr/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+            HOME=/root LC_ALL=C PATH=/usr/lib/llvm-18/bin:/usr/sbin:/usr/bin:/sbin:/bin \
             PYTHONDONTWRITEBYTECODE=1 \
             COGS_REQUIRE_STAGE2_KATA_NATIVE_FOUNDATIONS=1 \
             COGS_REQUIRE_STAGE2_KATA_RUNTIME_FOUNDATIONS=1 \
@@ -134,7 +134,7 @@ jobs:
             COGS_REQUIRE_STAGE2_KATA_NATIVE_FOUNDATIONS=1 \
             /usr/bin/python3 -I -B test/aws-stage2-completion-kata-process.py
           sudo -n env -i \
-            HOME=/root LC_ALL=C PATH=/usr/local/swift/usr/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+            HOME=/root LC_ALL=C PATH=/usr/lib/llvm-18/bin:/usr/sbin:/usr/bin:/sbin:/bin \
             PYTHONDONTWRITEBYTECODE=1 \
             COGS_REQUIRE_STAGE2_KATA_NATIVE_SSH_INPUT=1 \
             /usr/bin/python3 -I -B test/aws-stage2-completion-kata-ssh-native.py
