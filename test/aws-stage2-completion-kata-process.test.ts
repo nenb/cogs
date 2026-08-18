@@ -14,13 +14,19 @@ test("S1 historical process matrix and journal-gated correction", async () => {
   const env: NodeJS.ProcessEnv = { ...process.env, PYTHONDONTWRITEBYTECODE: "1" };
   delete env.PYTHONOPTIMIZE;
   const history = spawnSync("python3", [historical], {
-    cwd: root, env, encoding: "utf8", timeout: 120_000,
+    cwd: root,
+    env,
+    encoding: "utf8",
+    timeout: 120_000,
   });
   assert.equal(history.status, 0, history.stderr);
   assert.match(history.stdout, /completion Kata process/u);
   for (const args of [[correction], ["-O", correction]]) {
     const result = spawnSync("python3", args, {
-      cwd: root, env, encoding: "utf8", timeout: 120_000,
+      cwd: root,
+      env,
+      encoding: "utf8",
+      timeout: 120_000,
     });
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /Slice A correction matrix passed/u);
