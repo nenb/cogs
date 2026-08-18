@@ -1626,7 +1626,7 @@ def _cleanup_detached_placeholders(journal):
         if parent_mount is None or parent_mount[:3] != ("/netns", "tmpfs", "tmpfs"):
             raise NetworkError("owned netns parent mount changed")
         libc = ctypes.CDLL(None, use_errno=True)
-        if libc.umount2(b"/run/netns", 0) != 0:
+        if libc.umount2(b"/run/netns", 2) != 0:
             saved = ctypes.get_errno(); raise OSError(saved, os.strerror(saved))
         if _netns_parent_mount() is not None:
             raise NetworkError("owned netns parent mount remains")
