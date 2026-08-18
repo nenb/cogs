@@ -1789,6 +1789,23 @@ def _retained_observation_raw(journal, source_id, before_kind=None):
     raise NetworkError("retained observer raw unavailable")
 
 
+def _first_retained_observation_raw(journal, source_id):
+    import completion_kata_operation as operation
+    grouped = {}
+    for kind, body in operation._network_history(journal):
+        if kind == operation.network_journal.OUTPUT_RECORD:
+            grouped.setdefault(body["observation_serial"], []).append(body)
+        elif kind == "NETWORK_SNAPSHOT_V2":
+            break
+    for serial in sorted(grouped):
+        rows = sorted(grouped[serial], key=lambda row: row["chunk_index"])
+        if (rows[0]["source_id"] == source_id and len(rows) == rows[0]["chunk_count"]
+                and rows[-1]["chunk_index"] + 1 == rows[-1]["chunk_count"]):
+            raw = b"".join(bytes.fromhex(row["raw_hex"]) for row in rows)
+            if hashlib.sha256(raw).hexdigest() == rows[0]["output_sha256"]: return raw
+    raise NetworkError("first retained observer raw unavailable")
+
+
 def _pending_observation(journal):
     import completion_kata_operation as operation
     history = operation._network_history(journal)
@@ -2321,8 +2338,12 @@ def _remove_fixed_network(journal, ip, nft, tc):
                 if os.path.lexists(path): raise NetworkError("private netns residue")
         for name in _BASELINE_KEYS[:5]:
             if fresh[name] != baselines[name]:
+                detail = ""
+                if name == "host_links":
+                    detail = (f":{_load(_first_retained_observation_raw(journal, 'IP_ALL_LINKS'))!r}"
+                              f":{_load(raws[0])!r}")
                 raise NetworkError(
-                    f"complete network baseline not restored:{name}:{baselines[name]}:{fresh[name]}")
+                    f"complete network baseline not restored:{name}:{baselines[name]}:{fresh[name]}{detail}")
         body = _snapshot(journal, "network-absent", baselines, absent,
                          _sources(journal, "NETWORK_SNAPSHOT_V2"))
         operation._settle_network_phase(journal, "NETWORK_ABSENT"); return body
