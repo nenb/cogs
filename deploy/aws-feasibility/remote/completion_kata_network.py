@@ -946,7 +946,7 @@ def runtime_difference(before, after):
     tap = taps[0]
     guest_root = TcQdisc(guest.ifindex, guest.ifname, "noqueue", "0:", None, True, 2)
     guest_ingress = TcQdisc(guest.ifindex, guest.ifname, "ingress", "ffff:", "ffff:fff1", False, None)
-    tap_root = TcQdisc(tap.ifindex, tap.ifname, "noqueue", "0:", None, True, 2)
+    tap_root = TcQdisc(tap.ifindex, tap.ifname, tap.qdisc, "0:", None, True, 2)
     tap_ingress = TcQdisc(tap.ifindex, tap.ifname, "ingress", "ffff:", "ffff:fff1", False, None)
     if before.qdiscs != (guest_root,) or before.filters:
         raise NetworkError("unexpected tc baseline")
