@@ -1551,7 +1551,8 @@ def _make_authority():
         """One idempotently-closeable owner for the fixed state, lock, and journal."""
         def __init__(self):
             _fail(os.geteuid() == 0)
-            self.control = fs.OperationControl(time.monotonic_ns() + 30_000_000_000, lambda: False)
+            self.control = fs.OperationControl(
+                time.monotonic_ns() + command_policy.SSH_TOTAL_NS, lambda: False)
             self.chain = None
             self.lock = None
             self.closed = False
