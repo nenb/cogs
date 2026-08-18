@@ -1291,7 +1291,8 @@ def _establish_netns(journal):
             source_fd = os.open("/proc/self/ns/net", os.O_RDONLY | os.O_CLOEXEC)
             if os.write(ready_w, b"R") != 1 or os.read(release_r, 1) != b"B": os._exit(122)
             if libc.mount(("/proc/self/fd/" + str(source_fd)).encode(),
-                    ("/proc/self/fd/" + str(descriptor)).encode(), None, 4096, None) != 0: os._exit(123)
+                    ("/proc/self/fd/" + str(descriptor)).encode(), None, 4096, None) != 0:
+                saved = ctypes.get_errno(); os._exit(130 + saved if saved <= 125 else 255)
             os._exit(0)
         os.close(ready_w); os.close(release_r)
         if os.read(ready_r, 1) != b"R": raise NetworkError("namespace helper readiness")
