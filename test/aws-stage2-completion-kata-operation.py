@@ -1633,8 +1633,15 @@ def production_owner_test():
                 "parser_source_sha256": operation.SSH_PARSER_SHA256}),)
             fixture_journal(completion, layout_prefix + (("INPUT_GRANT", grant),))
             active_path = completion / active_name
+            def assert_cleanup_only_preserved():
+                preserved = operation._open_fixed_operation()
+                try:
+                    assert preserved.status() == "preserve"
+                    rejected(lambda: operation._claim_production_operation(preserved))
+                finally:
+                    preserved.close()
             active_path.mkdir(mode=0o700)
-            rejected(operation._open_fixed_operation)
+            assert_cleanup_only_preserved()
             active_path.rmdir()
             stage_mkdir = {"operation_token": "a" * 64, "action": "mkdir",
                 "path": "@key-stage", "parent_key": parent_key,
@@ -1651,7 +1658,7 @@ def production_owner_test():
                 fixture_journal(completion, layout_prefix + (
                     ("INPUT_GRANT", hostile_grant), ("INPUT_WA", hostile_mkdir)))
                 active_path.mkdir(mode=0o700)
-                rejected(operation._open_fixed_operation)
+                assert_cleanup_only_preserved()
                 active_path.rmdir()
             fixture_journal(completion, layout_prefix + (
                 ("INPUT_GRANT", grant), ("INPUT_WA", stage_mkdir)))
