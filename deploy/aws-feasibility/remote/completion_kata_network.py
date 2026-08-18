@@ -793,10 +793,12 @@ def parse_tc_qdiscs(raw, endpoint):
             result.append(TcQdisc(endpoint.ifindex, endpoint.ifname, "noqueue", "0:", None,
                                   True, 2))
         else:
-            try: _keys(row, ("kind", "handle", "parent"))
+            try: _keys(row, ("kind", "handle", "parent"), ("options",))
             except NetworkError as error:
                 raise NetworkError(f"native ingress qdisc shape:{row!r}") from error
-            if row != {"kind": "ingress", "handle": "ffff:", "parent": "ffff:fff1"}:
+            if ({key: value for key, value in row.items() if key != "options"}
+                    != {"kind": "ingress", "handle": "ffff:", "parent": "ffff:fff1"}
+                    or row.get("options", {}) != {}):
                 raise NetworkError("tc ingress qdisc drift")
             result.append(TcQdisc(endpoint.ifindex, endpoint.ifname, "ingress", "ffff:",
                                   "ffff:fff1", False, None))
