@@ -777,6 +777,12 @@ def tc_observer_commands(veth, tap):
                  for kind in (TcObservation.QDISC, TcObservation.INGRESS_FILTER))
 
 
+_NATIVE_FQ_CODEL_OPTIONS = {
+    "limit": 10240, "flows": 1024, "quantum": 1514, "target": 4999,
+    "interval": 99999, "memory_limit": 33554432, "ecn": True, "drop_batch": 64,
+}
+
+
 def parse_tc_qdiscs(raw, endpoint):
     endpoint = _tc_endpoint(endpoint)
     value = _load(raw)
@@ -786,11 +792,16 @@ def parse_tc_qdiscs(raw, endpoint):
     for index, row in enumerate(value):
         if index == 0:
             _keys(row, ("kind", "handle", "root", "refcnt", "options"))
-            if (row["kind"], row["handle"], row["root"], row["options"]) != ("noqueue", "0:", True, {}):
+            root_identity = (row["kind"], row["handle"], row["root"], row["options"])
+            noqueue = root_identity == ("noqueue", "0:", True, {})
+            native_fq_codel = (endpoint.kind == "tap" and endpoint.qdisc == "fq_codel"
+                               and root_identity == ("fq_codel", "0:", True,
+                                                     _NATIVE_FQ_CODEL_OPTIONS))
+            if not (noqueue or native_fq_codel):
                 raise NetworkError(f"tc root qdisc drift:{row!r}")
             if row["refcnt"] != 2:
                 raise NetworkError("tc root qdisc refcnt drift")
-            result.append(TcQdisc(endpoint.ifindex, endpoint.ifname, "noqueue", "0:", None,
+            result.append(TcQdisc(endpoint.ifindex, endpoint.ifname, row["kind"], "0:", None,
                                   True, 2))
         else:
             try: _keys(row, ("kind", "handle", "parent"), ("options",))

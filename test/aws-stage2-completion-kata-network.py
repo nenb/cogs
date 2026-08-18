@@ -350,6 +350,13 @@ def filter_fixture(target, action_index):
 guest_root = network.parse_tc_qdiscs(encoded(qdisc_root), guest)
 guest_qdiscs = network.parse_tc_qdiscs(encoded(qdisc_ingress), guest)
 tap_qdiscs = network.parse_tc_qdiscs(encoded(qdisc_ingress), tap)
+native_tap = network.parse_runtime_links(encoded(ns_links_json + [native_tap_json]))[-1]
+native_tap_qdiscs = network.parse_tc_qdiscs(encoded([
+    {"kind": "fq_codel", "handle": "0:", "root": True, "refcnt": 2,
+     "options": network._NATIVE_FQ_CODEL_OPTIONS},
+    {"kind": "ingress", "handle": "ffff:", "parent": "ffff:fff1", "options": {}},
+]), native_tap)
+assert native_tap_qdiscs[0].kind == "fq_codel"
 guest_filter = network.parse_tc_filters(encoded(filter_fixture("tap-dynamic", 11)), guest, tap)
 tap_filter = network.parse_tc_filters(encoded(filter_fixture("eth0", 12)), tap, guest)
 before_runtime = network.RuntimeState(netns_identity, parsed_host, parsed_ns, guest_root, ())
