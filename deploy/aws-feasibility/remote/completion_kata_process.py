@@ -1394,7 +1394,8 @@ def _transact_fixed(journal, fixed, executable, inherited=(), daemon_owner=None,
                                                 for item in template.argv))
         if fixed != expected: raise ProcessError("operation-derived key command required")
     elif not (_internally_fixed(fixed) or runtime_fixed):
-        raise ProcessError("internally fixed command required")
+        raise ProcessError(
+            f"internally fixed command required:{fixed.command_id.value}:{fixed.argv!r}")
     if fixed.command_id is CommandId.CONTAINERD_START:
         raise ProcessError("long-lived containerd requires the runtime daemon owner")
     runtime_extension = _RUNTIME_EXTENSIONS.get(id(fixed)) is fixed
