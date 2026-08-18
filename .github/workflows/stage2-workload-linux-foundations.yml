@@ -121,6 +121,11 @@ jobs:
           sudo -n test ! -L "$fixture"
           sudo -n test ! -e /tmp/cogs-stage2-attested-static-v1.building
           sudo -n test ! -L /tmp/cogs-stage2-attested-static-v1.building
+          command -v clang || true
+          command -v clang-18 || true
+          command -v ld.lld || true
+          /usr/bin/find /opt /usr/local /usr -maxdepth 7 -type f \
+            \( -name clang -o -name clang-18 -o -name ld.lld -o -name ld.lld-18 \) -print 2>/dev/null || true
           fixture_cc= fixture_ld=
           for pair in \
             '/usr/bin/clang-18 /usr/bin/ld.lld-18' \
