@@ -362,8 +362,16 @@ for snapshot_kind, existing, expected_removals in (("ready", netns_object, [netw
 
 source = network.tc_observer_command(network.Action.TC_QDISC, tap)
 check(process._internally_fixed(process.FixedCommand(
-    network.Action.TC_QDISC, "tc", "/usr/sbin/tc", ("/usr/sbin/tc", *source.argv_tail),
+    network.Action.TC_QDISC, "tc", "/usr/sbin/tc",
+    tuple(NETNS["name"] if item == network.NETNS else item
+          for item in ("/usr/sbin/tc", *source.argv_tail)),
     b"", 10_000_000_000, output_grammar="json")), "retained tc command rejected")
+ip_source = process._FIXED_COMMANDS[network.Action.IP_NS_LINKS]
+check(process._internally_fixed(process.FixedCommand(
+    ip_source.command_id, ip_source.executable_role, ip_source.executable_path,
+    tuple(NETNS["name"] if item == network.NETNS else item for item in ip_source.argv),
+    ip_source.stdin, ip_source.duration_ns, ip_source.stdout_limit, ip_source.stderr_limit,
+    ip_source.output_grammar, ip_source.inherited_fds)), "bound netns command rejected")
 
 check("RETRY" not in network.Recovery.__members__, "retry disposition remains")
 source_text = (ROOT / "deploy/aws-feasibility/remote/completion_kata_network.py").read_text()

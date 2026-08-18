@@ -926,7 +926,7 @@ def _internally_fixed(fixed):
                  kata_network.HOST_IF if item == host else item for item in fixed.argv)
     stdin = fixed.stdin.replace(table.encode(), kata_network.TABLE.encode()) if table else fixed.stdin
     if host: stdin = stdin.replace(host.encode(), kata_network.HOST_IF.encode())
-    if canonical is not None and fixed == FixedCommand(canonical.command_id, canonical.executable_role,
+    if canonical is not None and canonical == FixedCommand(canonical.command_id, canonical.executable_role,
             canonical.executable_path, argv, stdin, canonical.duration_ns, canonical.stdout_limit,
             canonical.stderr_limit, canonical.output_grammar, canonical.inherited_fds):
         return True
