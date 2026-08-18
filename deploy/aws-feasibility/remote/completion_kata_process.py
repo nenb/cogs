@@ -1258,8 +1258,9 @@ def _outcome_body(intent, outcome, status, exec_errno, stdout, stderr, overflow,
     return body
 
 
-def _cleanup_closed(cleanup, pid):
-    return all(cleanup[:3]) and (pid is None or cleanup[3])
+def _cleanup_closed(cleanup, pid, wait_status):
+    leader_closed = pid is None or wait_status is not None or cleanup[3]
+    return all(cleanup[:3]) and leader_closed
 
 
 def _within_work_cutoff(work_cutoff):
@@ -1376,7 +1377,7 @@ def _transact_fixed(journal, fixed, executable, inherited=()):
         except BaseException as error:
             errors.append(f"subreaper-restore:{type(error).__name__}")
         subreaper_restored = True
-        if not _cleanup_closed(cleanup, pid):
+        if not _cleanup_closed(cleanup, pid, wait_status):
             raise ProcessError("cleanup continuation required")
         body = _outcome_body(
             intent, outcome, status, exec_errno, stdout, stderr, overflow,
@@ -1434,7 +1435,7 @@ def _transact_fixed(journal, fixed, executable, inherited=()):
             False, cleanup, failure_state, errors,
             release_count if preexec_recorded else 0,
         )
-        if _cleanup_closed(cleanup, pid):
+        if _cleanup_closed(cleanup, pid, wait_status):
             try:
                 kata_operation._record_command_outcome(journal, failure_body)
             except BaseException as journal_error:

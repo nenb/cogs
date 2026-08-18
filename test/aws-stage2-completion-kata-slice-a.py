@@ -377,7 +377,7 @@ with patch.object(process, "_recover_cgroup", return_value=(True, True)), \
      patch.object(process, "_observe_proc", return_value=process.RecoveryObservation(process.ObservationKind.ABSENT)) as absent:
     process._recover_pending_fixed(daemon_journal)
 check(absent.called, "ECHILD daemon recovery did not poll exact proc absence")
-check(not process._cleanup_closed((False, False, False, False), 10),
+check(not process._cleanup_closed((False, False, False, False), 10, None),
       "owned residue was considered terminally closed")
 
 # Recovery kills and polls the deterministic leaf without consulting the dead
@@ -418,7 +418,7 @@ check("work_cutoff = deadline - _cleanup_reserve_ns(fixed)" in source
       and "fixed.stdin, owner, work_cutoff" in source
       and "_settle_cgroup(owner, pid, deadline" in source,
       "one final deadline did not reserve cleanup before work")
-check(source.index("if not _cleanup_closed(cleanup, pid)") <
+check(source.index("if not _cleanup_closed(cleanup, pid, wait_status)") <
       source.index("durable = kata_operation._record_command_outcome"),
       "terminal outcome can precede residue closure")
 check(process.LONG_LIVED_CONTAINERD.command_id is process.CommandId.CONTAINERD_START,
