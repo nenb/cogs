@@ -20,6 +20,15 @@ RUN printf '%s\n' \
       > /etc/apt/sources.list.d/debian.sources \
     && apt-get -o APT::Update::Error-Mode=any update \
     && DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends \
+      bsdutils=1:2.41.5-0+deb13u1 \
+      libblkid1=2.41.5-0+deb13u1 \
+      liblastlog2-2=2.41.5-0+deb13u1 \
+      libmount1=2.41.5-0+deb13u1 \
+      libsmartcols1=2.41.5-0+deb13u1 \
+      libuuid1=2.41.5-0+deb13u1 \
+      login=1:4.16.0-2+really2.41.5-0+deb13u1 \
+      mount=2.41.5-0+deb13u1 \
+      util-linux=2.41.5-0+deb13u1 \
       bash \
       ca-certificates \
       curl \

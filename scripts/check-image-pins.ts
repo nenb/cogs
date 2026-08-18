@@ -131,8 +131,24 @@ assert.ok(
 );
 assert.ok(
   insecureContainerDockerfile.includes("ARG DEBIAN_SECURITY_SNAPSHOT=20260815T000000Z"),
-  "insecure-container must use the immutable security snapshot containing fixed Expat and OpenJDK",
+  "insecure-container must use the immutable security snapshot containing fixed util-linux, Expat, and OpenJDK",
 );
+for (const fixedUtilLinuxPackage of [
+  "bsdutils=1:2.41.5-0+deb13u1",
+  "libblkid1=2.41.5-0+deb13u1",
+  "liblastlog2-2=2.41.5-0+deb13u1",
+  "libmount1=2.41.5-0+deb13u1",
+  "libsmartcols1=2.41.5-0+deb13u1",
+  "libuuid1=2.41.5-0+deb13u1",
+  "login=1:4.16.0-2+really2.41.5-0+deb13u1",
+  "mount=2.41.5-0+deb13u1",
+  "util-linux=2.41.5-0+deb13u1",
+]) {
+  assert.ok(
+    insecureContainerDockerfile.includes(fixedUtilLinuxPackage),
+    `insecure-container must install exact fixed package ${fixedUtilLinuxPackage}`,
+  );
+}
 assert.ok(
   insecureContainerDockerfile.includes("libexpat1=2.8.2-1~deb13u1"),
   "insecure-container must install the exact fixed Expat package",

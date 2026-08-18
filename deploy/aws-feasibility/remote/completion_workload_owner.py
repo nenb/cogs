@@ -750,15 +750,23 @@ class OwnedRoot:
         try:
             for index, component in enumerate(parts):
                 final = index == len(parts) - 1
-                try:
-                    os.mkdir(component, mode if final else 0o700, dir_fd=descriptor)
-                    os.chown(component, WORKLOAD_UID, WORKLOAD_GID, dir_fd=descriptor, follow_symlinks=False)
-                except FileExistsError:
-                    if final and not exist_ok:
-                        raise
-                    if not parents and not final:
-                        raise
-                next_descriptor = self._checked_open(descriptor, component, os.O_RDONLY | os.O_DIRECTORY)
+                if not final:
+                    try:
+                        next_descriptor = self._checked_open(descriptor, component, os.O_RDONLY | os.O_DIRECTORY)
+                    except FileNotFoundError:
+                        if not parents:
+                            raise
+                        os.mkdir(component, 0o700, dir_fd=descriptor)
+                        os.chown(component, WORKLOAD_UID, WORKLOAD_GID, dir_fd=descriptor, follow_symlinks=False)
+                        next_descriptor = self._checked_open(descriptor, component, os.O_RDONLY | os.O_DIRECTORY)
+                else:
+                    try:
+                        os.mkdir(component, mode, dir_fd=descriptor)
+                        os.chown(component, WORKLOAD_UID, WORKLOAD_GID, dir_fd=descriptor, follow_symlinks=False)
+                    except FileExistsError:
+                        if not exist_ok:
+                            raise
+                    next_descriptor = self._checked_open(descriptor, component, os.O_RDONLY | os.O_DIRECTORY)
                 status = os.fstat(next_descriptor)
                 _require(stat.S_ISDIR(status.st_mode) and status.st_uid == WORKLOAD_UID and status.st_gid == WORKLOAD_GID)
                 os.close(descriptor)
