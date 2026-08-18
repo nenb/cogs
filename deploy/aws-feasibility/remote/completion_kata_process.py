@@ -1568,7 +1568,7 @@ def _recover_pending_fixed(journal):
 def _test_spec(action):
     if type(action) is not _TestAction:
         raise ProcessError("closed test action required")
-    timeout = 0.2 if action in {_TestAction.SLEEP, _TestAction.HELD_PIPE} else 5
+    timeout = 2 if action in {_TestAction.SLEEP, _TestAction.HELD_PIPE} else 5
     inherited = ((kata_ssh.KEY_FD, kata_ssh.KNOWN_HOSTS_FD)
                  if action is _TestAction.INHERITED else ())
     return _Spec("TEST_" + action.name, (TEST_PATH, action.value), b"", "test", timeout, inherited)
