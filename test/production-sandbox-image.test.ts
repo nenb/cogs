@@ -189,7 +189,7 @@ test("conformance clients and network probes cannot re-enter production and rema
   for (const label of [
     'dev.cogs.profile="insecure-container"',
     'dev.cogs.authority="functional-only"',
-    'dev.cogs.package-policy="debian-trixie-snapshots-20260713-20260811-insecure-conformance-v2"',
+    'dev.cogs.package-policy="debian-trixie-snapshots-20260713-20260815-insecure-conformance-v3"',
   ]) {
     assert.ok(insecureDockerfile.includes(label), label);
   }
