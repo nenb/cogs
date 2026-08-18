@@ -1247,6 +1247,31 @@ def _quarantine_stage(journal):
     return None if not rows else rows[-1]
 
 
+def _settle_propagated_netns_duplicate(created, name):
+    """Collapse the exact two-layer stack produced by a shared netns parent."""
+    path = "/run/netns/" + name
+    raw = _read_mountinfo(); selected = []
+    for line in raw.decode("utf-8", "strict").splitlines():
+        fields = line.split(" ")
+        if len(fields) > 4 and _OCTAL.sub(
+                lambda match: chr(int(match.group(1), 8)), fields[4]) == path:
+            selected.append(line)
+    if len(selected) != 2:
+        raise NetworkError(f"netns propagated stack:{len(selected)}")
+    observed = os.stat(path, follow_symlinks=False)
+    identities = tuple(parse_netns_identity(
+        (line + "\n").encode(), NetnsStat(observed.st_dev, observed.st_ino), path)
+        for line in selected)
+    if any(any(getattr(identity, field) != created[field]
+               for field in ("device", "inode_device", "inode"))
+           for identity in identities):
+        raise NetworkError("netns propagated identity drift")
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.umount2(path.encode(), 0) != 0:
+        saved = ctypes.get_errno(); raise OSError(saved, os.strerror(saved))
+    return _netns_identity(journal=None, name=name)
+
+
 def _establish_netns(journal):
     """Create, retain, and journal the inode before parent-relative move_mount."""
     if os.uname().machine != "x86_64":
@@ -1345,7 +1370,12 @@ def _establish_netns(journal):
                             MOVE_MOUNT_SOURCE_EMPTY_PATH_FLAG) != 0:
                 saved = ctypes.get_errno(); raise OSError(saved, os.strerror(saved))
         finally: os.close(tree_fd)
-        identity = _netns_identity(journal=None, name=name)
+        try:
+            identity = _netns_identity(journal=None, name=name)
+        except NetworkError as error:
+            if not str(error).startswith("netns mount cardinality:2:"):
+                raise
+            identity = _settle_propagated_netns_duplicate(created, name)
         if identity is None or any(getattr(identity, field) != created[field]
                                    for field in ("device", "inode_device", "inode")):
             raise NetworkError("bound namespace differs from created nsfs")
