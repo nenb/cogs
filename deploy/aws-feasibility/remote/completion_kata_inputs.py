@@ -1313,8 +1313,13 @@ def _owner_routes():
                   and _parse_key(mkdir_rows[0]["parent_key"], "directory") == completion.generation.key)
             active_name = stage_name if generation is not None else quarantine_name
             active_snapshot = completion_snapshot if generation is not None else quarantine_snapshot
+            excluded = {active_name.raw}
+            if operation._durable_phase(state["journal"]) == "FS_INTENT":
+                excluded.add(INPUT_NAME.raw)
+                excluded.update(row["name"].encode("ascii") for row in grant_rows
+                                if row["path"] == "." and row["action"] == "intent")
             names_without_stage = tuple(name for name in active_snapshot.raw_names
-                                        if name != active_name.raw)
+                                        if name not in excluded)
             _fail(names_digest(names_without_stage) == mkdir_rows[0]["names_sha256"])
             stage = fs._open_path_node(completion, active_name, "directory", control)
             stage_name = active_name
