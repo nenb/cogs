@@ -857,7 +857,7 @@ def parse_runtime_links(raw):
                 or tap.addrgenmode not in ("none", 1)
                 or tap.mac == "00:00:00:00:00:00" or tap.operstate != "UP"
                 or set(tap.flags) != {"BROADCAST", "MULTICAST", "UP", "LOWER_UP"}):
-            raise NetworkError("runtime TAP identity drift")
+            raise NetworkError(f"runtime TAP identity drift:{tap!r}")
     return result
 
 
