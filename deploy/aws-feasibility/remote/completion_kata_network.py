@@ -210,8 +210,9 @@ class Link:
 
 _LINK_OPTIONAL = ("mtu", "min_mtu", "max_mtu", "group", "txqlen", "linkmode", "master",
                   "promiscuity", "num_tx_queues", "num_rx_queues", "gso_max_size",
-                  "gso_max_segs", "tso_max_size", "tso_max_segs", "link_netnsid", "link",
-                  "broadcast", "altnames")
+                  "gso_max_segs", "tso_max_size", "tso_max_segs", "gro_max_size",
+                  "allmulti", "inet6_addr_gen_mode", "link_netnsid", "link", "broadcast",
+                  "altnames")
 _MAC = re.compile(r"(?:[0-9a-f]{2}:){5}[0-9a-f]{2}")
 
 
