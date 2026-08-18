@@ -1609,8 +1609,10 @@ def production_owner_test():
             try:
                 parent_generation = operation._generation_value(layout_parent.generation)
                 parent_key = operation._key_value(layout_parent.generation.key)
-                baseline_names_sha = inputs.names_digest(
-                    fs._enumerate_stable(layout_parent, layout_control).raw_names)
+                baseline_names_sha = hashlib.sha256(operation._canonical([
+                    os.fsdecode(name) for name in
+                    fs._enumerate_stable(layout_parent, layout_control).raw_names
+                ])).hexdigest()
             finally:
                 fs._close_chain(layout_chain)
             active_name = "kata-key-stage-v1-" + "a" * 64
