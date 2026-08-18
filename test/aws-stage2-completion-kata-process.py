@@ -309,7 +309,7 @@ def linux_supervisor_tests():
             process.kata_operation._validate_body("COMMAND_PREEXEC_V2", body)
             self.preexec = body
         def record_command_output(self, body):
-            process.kata_operation._validate_body("COMMAND_OUTPUT_V2", body)
+            process.kata_operation._validate_body("COMMAND_OUTPUT_V3", body)
             self.output = body
             return body
         def record_command_outcome(self, body):
