@@ -787,7 +787,7 @@ def parse_tc_qdiscs(raw, endpoint):
         if index == 0:
             _keys(row, ("kind", "handle", "root", "refcnt", "options"))
             if (row["kind"], row["handle"], row["root"], row["options"]) != ("noqueue", "0:", True, {}):
-                raise NetworkError("tc root qdisc drift")
+                raise NetworkError(f"tc root qdisc drift:{row!r}")
             if row["refcnt"] != 2:
                 raise NetworkError("tc root qdisc refcnt drift")
             result.append(TcQdisc(endpoint.ifindex, endpoint.ifname, "noqueue", "0:", None,
