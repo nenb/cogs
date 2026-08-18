@@ -37,6 +37,10 @@ MAX_ITEMS = 64
 MAX_DEPTH = 16
 MAX_MOUNTINFO_BYTES = 4_194_304
 MAX_MOUNTINFO_LINES = 4096
+SYS_OPEN_TREE_X86_64 = 428
+SYS_MOVE_MOUNT_X86_64 = 429
+OPEN_TREE_FLAGS = 1 | os.O_CLOEXEC | 0x1000  # CLONE | CLOEXEC | AT_EMPTY_PATH
+MOVE_MOUNT_EMPTY_PATH_FLAGS = 0x4 | 0x40  # F_EMPTY_PATH | T_EMPTY_PATH
 QUALIFICATION_CANDIDATE = "UNQUALIFIED_FIXED_HOST_TOOL_OUTPUT_CANDIDATE_V1"
 ZERO = "0" * 64
 IP_CONTRACT = "iproute2-json-qualification-candidate-v1"
@@ -1240,6 +1244,8 @@ def _quarantine_stage(journal):
 
 def _establish_netns(journal):
     """Create and journal the underlying inode before descriptor-targeted bind mount."""
+    if os.uname().machine != "x86_64":
+        raise NetworkError("fixed mount API architecture")
     name = _bound_names(journal)[0]; parent = os.open("/run/netns", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
     opened = [parent]; helper_pid = None; helper_waited = False
     try:
@@ -1295,10 +1301,14 @@ def _establish_netns(journal):
             if libc.unshare(0x40000000) != 0: os._exit(121)
             source_fd = os.open("/proc/self/ns/net", os.O_RDONLY | os.O_CLOEXEC)
             if os.write(ready_w, b"R") != 1 or os.read(release_r, 1) != b"B": os._exit(122)
-            if libc.mount(("/proc/self/fd/" + str(source_fd)).encode(),
-                    ("/proc/self/fd/" + str(descriptor)).encode(), None, 4096, None) != 0:
+            tree_fd = libc.syscall(
+                SYS_OPEN_TREE_X86_64, source_fd, b"", OPEN_TREE_FLAGS)
+            if tree_fd < 0:
                 saved = ctypes.get_errno(); os._exit(130 + saved if saved <= 125 else 255)
-            os._exit(0)
+            if libc.syscall(SYS_MOVE_MOUNT_X86_64, tree_fd, b"", descriptor, b"",
+                            MOVE_MOUNT_EMPTY_PATH_FLAGS) != 0:
+                saved = ctypes.get_errno(); os._exit(180 + saved if saved <= 75 else 255)
+            os.close(tree_fd); os._exit(0)
         os.close(ready_w); os.close(release_r)
         if os.read(ready_r, 1) != b"R": raise NetworkError("namespace helper readiness")
         source_fd = os.open(f"/proc/{child}/ns/net", os.O_RDONLY | os.O_CLOEXEC); opened.append(source_fd)
