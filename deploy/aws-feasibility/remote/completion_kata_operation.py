@@ -1668,15 +1668,19 @@ def _make_authority():
             fresh = _open_base_chain(self.control)
             try:
                 expected_base = self.chain.components[:-1]
-                _fail(fresh.anchor.generation == self.chain.anchor.generation
-                      and len(fresh.components) == len(expected_base)
-                      and all(left.name == right.name
-                              and left.node.generation == right.node.generation
-                              for left, right in zip(fresh.components, expected_base)))
-                _fail(fs._observe_child(self.completion, STATE_NAME, self.control)
-                      == self.state.generation)
-                _fail(fs._observe_node(self.state.identity_fd, self.state.operation_fd,
-                                       self.control) == self.state.generation)
+                base_ok = (fresh.anchor.generation == self.chain.anchor.generation
+                           and len(fresh.components) == len(expected_base)
+                           and all(left.name == right.name
+                                   and left.node.generation == right.node.generation
+                                   for left, right in zip(fresh.components, expected_base)))
+                state_child_ok = (fs._observe_child(self.completion, STATE_NAME, self.control)
+                                  == self.state.generation)
+                state_live_ok = (fs._observe_node(self.state.identity_fd, self.state.operation_fd,
+                                                  self.control) == self.state.generation)
+                if not (base_ok and state_child_ok and state_live_ok) and os.environ.get(
+                        "COGS_KATA_SYNTHETIC_ATTESTATION_V1") == "1":
+                    os.write(2, f"DIAG_CHAIN:{base_ok}:{state_child_ok}:{state_live_ok}\n".encode())
+                _fail(base_ok and state_child_ok and state_live_ok)
             finally:
                 fs._close_chain(fresh)
         def _reopen_base(self):
