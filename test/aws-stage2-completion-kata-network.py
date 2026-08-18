@@ -129,19 +129,28 @@ routes4 = [
     {"type": "local", "dst": "192.0.2.2", "dev": "eth0", "table": "local", "protocol": "kernel", "scope": "host", "prefsrc": "192.0.2.2"},
     {"type": "broadcast", "dst": "192.0.2.3", "dev": "eth0", "table": "local", "protocol": "kernel", "scope": "link", "prefsrc": "192.0.2.2"},
 ]
-routes6 = [{"type": "local", "dst": "::1", "dev": "lo", "table": "local",
-            "protocol": "kernel", "metric": 0, "flags": [], "pref": "medium"}]
+routes6 = [
+    {"type": "local", "dst": "::1", "dev": "lo", "table": "local",
+     "protocol": "kernel", "metric": 0, "flags": [], "pref": "medium"},
+    {"type": "multicast", "dst": "ff00::/8", "dev": "eth0", "table": "local",
+     "protocol": "kernel", "metric": 256, "flags": [], "pref": "medium"},
+]
 host_routes4 = [
     {"dst": "192.0.2.0/30", "dev": "c42h0", "protocol": "kernel", "scope": "link", "prefsrc": "192.0.2.1"},
     {"type": "local", "dst": "192.0.2.1", "dev": "c42h0", "table": "local", "protocol": "kernel", "scope": "host", "prefsrc": "192.0.2.1"},
     {"type": "broadcast", "dst": "192.0.2.3", "dev": "c42h0", "table": "local", "protocol": "kernel", "scope": "link", "prefsrc": "192.0.2.1"},
 ]
+host_routes6 = [{"type": "multicast", "dst": "ff00::/8", "dev": "c42h0",
+                 "table": "local", "protocol": "kernel", "metric": 256,
+                 "flags": [], "pref": "medium"}]
 assert len(network.parse_routes(encoded(routes4), 4, parsed_ns)) == 6
-assert len(network.parse_routes(encoded(routes6), 6, parsed_ns)) == 1
+assert len(network.parse_routes(encoded(routes6), 6, parsed_ns)) == 2
 assert len(network.parse_routes(encoded(host_routes4), 4, parsed_host)) == 3
 assert len(network.parse_routes(encoded([{key: value for key, value in row.items() if key != "dev"}
                                          for row in host_routes4]), 4, parsed_host)) == 3
-assert network.parse_routes(b"[]", 6, parsed_host) == ()
+assert len(network.parse_routes(encoded(host_routes6), 6, parsed_host)) == 1
+assert len(network.parse_routes(encoded([{key: value for key, value in host_routes6[0].items()
+                                         if key != "dev"}]), 6, parsed_host)) == 1
 for hostile, family in (
     (routes4 + [{"type": "blackhole", "dst": "203.0.113.0/24", "dev": "lo", "table": "main", "protocol": "kernel"}], 4),
     (routes4 + [copy.deepcopy(routes4[0])], 4),
@@ -364,7 +373,8 @@ assert discovered_identity["tap"]["ifname"] == "tap-dynamic"
 stat_raw = json.dumps({"device": device, "inode": inode}, sort_keys=True,
                       separators=(",", ":")).encode()
 runtime_outputs = [
-    observation("IP_HOST_ROUTES4", encoded(host_routes4)), observation("IP_HOST_ROUTES6", b"[]"),
+    observation("IP_HOST_ROUTES4", encoded(host_routes4)),
+    observation("IP_HOST_ROUTES6", encoded(host_routes6)),
     observation("IP_NS_ROUTES4", encoded(routes4)), observation("IP_NS_ROUTES6", encoded(routes6)),
     observation("TC_QDISC", encoded(qdisc_ingress)), observation("TC_QDISC:tap-dynamic", encoded(qdisc_ingress)),
     observation("TC_INGRESS_FILTER:eth0", encoded(filter_fixture("tap-dynamic", 11))),

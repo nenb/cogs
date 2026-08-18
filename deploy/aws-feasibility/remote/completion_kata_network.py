@@ -366,6 +366,9 @@ _HOST_ROUTE4_CANDIDATE = {
     ("local", "192.0.2.1", HOST_IF, "local", "kernel", "host", "192.0.2.1", None, (), None),
     ("broadcast", "192.0.2.3", HOST_IF, "local", "kernel", "link", "192.0.2.1", None, (), None),
 }
+_HOST_ROUTE6_CANDIDATE = {
+    ("multicast", "ff00::/8", HOST_IF, "local", "kernel", None, None, 256, (), "medium"),
+}
 _ROUTE4_CANDIDATE = {
     ("unicast", "192.0.2.0/30", GUEST_IF, "main", "kernel", "link", "192.0.2.2", None, (), None),
     ("local", "127.0.0.0/8", "lo", "local", "kernel", "host", "127.0.0.1", None, (), None),
@@ -376,6 +379,7 @@ _ROUTE4_CANDIDATE = {
 }
 _ROUTE6_CANDIDATE = {
     ("local", "::1", "lo", "local", "kernel", None, None, 0, (), "medium"),
+    ("multicast", "ff00::/8", GUEST_IF, "local", "kernel", None, None, 256, (), "medium"),
 }
 
 
@@ -400,7 +404,11 @@ def parse_routes(raw, family, links, host_if=HOST_IF):
             dev = (host_if if source == "192.0.2.1" else GUEST_IF
                    if source == "192.0.2.2" else "lo"
                    if source in {"127.0.0.1", "::1"} or row["dst"].startswith("127.")
-                   or row["dst"] == "::1" else None)
+                   or row["dst"] == "::1" else host_if
+                   if row.get("type") == "multicast" and row["dst"] == "ff00::/8"
+                   and bound == {host_if} else GUEST_IF
+                   if row.get("type") == "multicast" and row["dst"] == "ff00::/8"
+                   and bound == {"lo", GUEST_IF} else None)
         if row["dst"] == "default" or dev not in bound or row["protocol"] != "kernel":
             raise NetworkError(
                 f"default, foreign, or misbound route:{dev!r}:{source!r}:{row!r}")
@@ -419,8 +427,9 @@ def parse_routes(raw, family, links, host_if=HOST_IF):
     actual = {(item.route_type, item.dst, item.dev, item.table, item.protocol, item.scope,
                item.source, item.metric, item.flags, item.pref) for item in result}
     if bound == {host_if}:
-        expected = ({tuple(host_if if item == HOST_IF else item for item in row)
-                     for row in _HOST_ROUTE4_CANDIDATE} if family == 4 else set())
+        candidates = _HOST_ROUTE4_CANDIDATE if family == 4 else _HOST_ROUTE6_CANDIDATE
+        expected = {tuple(host_if if item == HOST_IF else item for item in row)
+                    for row in candidates}
     else:
         expected = _ROUTE4_CANDIDATE if family == 4 else _ROUTE6_CANDIDATE
     if len(actual) != len(result) or actual != expected:
