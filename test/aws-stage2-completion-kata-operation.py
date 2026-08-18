@@ -1604,6 +1604,7 @@ def production_owner_test():
             reopened_admitted = operation._open_fixed_operation()
             assert operation._claim_production_operation(reopened_admitted) is reopened_admitted
             reopened_admitted.close()
+            input_root.rmdir()
 
             # Real FixedJournal layout derives the sole active/quarantine names
             # from the admitted operation token and permits settlement writes
