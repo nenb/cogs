@@ -129,18 +129,24 @@
     "platform": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["kvm_api", "qmp_present", "qmp_enabled"],
+      "required": ["observation", "kvm_api", "qmp_present", "qmp_enabled"],
       "properties": {
         "kvm_api": { "anyOf": [{ "type": "null" }, { "const": 12 }] },
         "qmp_present": { "type": "boolean" },
-        "qmp_enabled": { "type": "boolean" }
+        "qmp_enabled": { "type": "boolean" },
+        "observation": { "enum": ["not-reached", "failure", "pass"] }
       }
     },
     "platformPass": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["kvm_api", "qmp_present", "qmp_enabled"],
-      "properties": { "kvm_api": { "const": 12 }, "qmp_present": { "const": true }, "qmp_enabled": { "const": true } }
+      "required": ["observation", "kvm_api", "qmp_present", "qmp_enabled"],
+      "properties": {
+        "kvm_api": { "const": 12 },
+        "qmp_present": { "const": true },
+        "qmp_enabled": { "const": true },
+        "observation": { "const": "pass" }
+      }
     },
     "lifecycle": {
       "type": "object",
@@ -492,6 +498,55 @@
         { "$ref": "#/$defs/teardownRow", "properties": { "phase": { "const": "RETIRED" } }, "type": "object" }
       ],
       "items": false
+    },
+    "platformUnobserved": {
+      "type": "object",
+      "properties": {
+        "observation": { "const": "not-reached" },
+        "kvm_api": { "type": "null" },
+        "qmp_present": { "const": false },
+        "qmp_enabled": { "const": false }
+      }
+    },
+    "platformFailure": {
+      "type": "object",
+      "properties": { "observation": { "const": "failure" } },
+      "not": {
+        "required": ["kvm_api", "qmp_present", "qmp_enabled"],
+        "properties": {
+          "kvm_api": { "const": 12 },
+          "qmp_present": { "const": true },
+          "qmp_enabled": { "const": true }
+        },
+        "type": "object"
+      }
+    },
+    "admissionKvmPass": { "type": "object", "properties": { "kvm": { "const": "pass" } } },
+    "admissionKvmFailure": { "type": "object", "properties": { "kvm": { "const": "failure" } } },
+    "admissionKvmNotReached": { "type": "object", "properties": { "kvm": { "const": "not-reached" } } }
+  },
+  "allOf": [
+    {
+      "oneOf": [
+        {
+          "properties": {
+            "admission": { "$ref": "#/$defs/admissionKvmPass" },
+            "platform": { "$ref": "#/$defs/platformPass" }
+          }
+        },
+        {
+          "properties": {
+            "admission": { "$ref": "#/$defs/admissionKvmFailure" },
+            "platform": { "$ref": "#/$defs/platformFailure" }
+          }
+        },
+        {
+          "properties": {
+            "admission": { "$ref": "#/$defs/admissionKvmNotReached" },
+            "platform": { "$ref": "#/$defs/platformUnobserved" }
+          }
+        }
+      ]
     }
-  }
+  ]
 }

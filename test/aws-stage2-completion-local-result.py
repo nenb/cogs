@@ -9,6 +9,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 MODULE_PATH = ROOT / "deploy/aws-feasibility/remote/completion_local_full.py"
+BUDGET_PATH = ROOT / "scripts/check-stage2-retained-lines.py"
 FIXTURES = ROOT / "test/fixtures/stage2-completion"
 spec = importlib.util.spec_from_file_location("completion_local_full", MODULE_PATH)
 local = importlib.util.module_from_spec(spec)
@@ -77,7 +78,8 @@ def passing():
         "authority": local.AUTHORITY, "validation_classification": local.VALIDATION_CLASSIFICATION,
         "limitations": list(local.LIMITATIONS), "bindings": bindings,
         "admission": {name: "pass" for name in local.ADMISSION_PHASES},
-        "platform": {"kvm_api": 12, "qmp_present": True, "qmp_enabled": True},
+        "platform": {"observation": "pass", "kvm_api": 12,
+                     "qmp_present": True, "qmp_enabled": True},
         "lifecycle": {"attempts": 1, "outcome": "pass", "ssh_attempts": 1, "ssh_outcome": "pass"},
         "operation": {
             "operation_sha256": operation, "journal_sha256": journal, "binding_sha256": binding,
@@ -97,7 +99,10 @@ def failing(code="preflight"):
     position = local.ADMISSION_CODES.index(code)
     value["admission"] = {name: ("pass" if index < position else "failure" if index == position else "not-reached")
                           for index, name in enumerate(local.ADMISSION_PHASES)}
-    value["platform"] = {"kvm_api": None, "qmp_present": False, "qmp_enabled": False}
+    value["platform"] = {
+        "observation": "failure" if code == "kvm" else "not-reached",
+        "kvm_api": None, "qmp_present": False, "qmp_enabled": False,
+    }
     value["lifecycle"] = {"attempts": 0, "outcome": "not-reached", "ssh_attempts": 0,
                           "ssh_outcome": "not-reached"}
     value["operation"].update(operation_sha256=None, journal_sha256=None, binding_sha256=None,
@@ -176,6 +181,21 @@ for name, expected in (("local-result-v2-pass.json", pass_value), ("local-result
     check(local.load_result(raw) == expected and raw.isascii() and len(raw) <= 32768, f"load {name}")
 for code in local.ADMISSION_CODES:
     check(local.validate_result(failing(code)) is False, f"admission {code}")
+for code in local.ADMISSION_CODES[:-1]:
+    for hostile in (
+        {"observation": "failure", "kvm_api": 12, "qmp_present": True, "qmp_enabled": False},
+        {"observation": "failure", "kvm_api": None, "qmp_present": True, "qmp_enabled": True},
+        {"observation": "pass", "kvm_api": 12, "qmp_present": False, "qmp_enabled": False},
+        {"observation": "pass", "kvm_api": 12, "qmp_present": True, "qmp_enabled": True},
+    ):
+        mutation_value = failing(code)
+        mutation_value["platform"] = hostile
+        rejected(lambda value=mutation_value: local.validate_result(value), f"{code} later KVM fact")
+reached_favorable = failing("kvm")
+reached_favorable["platform"] = {
+    "observation": "failure", "kvm_api": 12, "qmp_present": True, "qmp_enabled": True,
+}
+rejected(lambda: local.validate_result(reached_favorable), "failed KVM with favorable facts")
 for code in ("lifecycle-start", "ssh", "git-sample", "build-sample", "install-sample",
              "deletion", "cleanup", "residue", "uncertain"):
     check(local.validate_result(categorical_failure(code)) is False, f"causal {code}")
@@ -226,6 +246,17 @@ schema = json.loads((ROOT / local.SCHEMA_REGISTRY[0][1]).read_text())
 check(schema["properties"]["authority"]["const"] == local.AUTHORITY, "schema authority")
 check(schema["properties"]["validation_classification"]["const"] == local.VALIDATION_CLASSIFICATION,
       "validator-required classification")
+budget_spec = importlib.util.spec_from_file_location("stage2_retained_budget", BUDGET_PATH)
+budget = importlib.util.module_from_spec(budget_spec)
+budget_spec.loader.exec_module(budget)
+line_report = budget.measure()
+check(line_report["baseline_lines"] == line_report["baseline_deployment_lines"]
+      + line_report["baseline_retained_schema_script_lines"], "complete frozen baseline")
+check(line_report["current_lines"] == line_report["deployment_lines"]
+      + line_report["retained_schema_script_lines"], "complete retained count")
+check(line_report["conservative_lines_no_deletion_credit"] == budget.BASELINE_LINES
+      + line_report["gross_added_lines_no_deletion_credit"], "no deletion credit")
+check(line_report["preferred_satisfied"] and line_report["hard_satisfied"], "ADR 0099 cap")
 protected = subprocess.run(["git", "cat-file", "-e",
                             "69eccf1:schemas/stage2-workload-local-qualification-v1.json"],
                            cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

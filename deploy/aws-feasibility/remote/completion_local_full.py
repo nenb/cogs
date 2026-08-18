@@ -211,12 +211,23 @@ def validate_result(value):
     first_failure = _admission_failure(value["admission"])
 
     platform = value["platform"]
-    _keys(platform, {"kvm_api", "qmp_present", "qmp_enabled"})
+    _keys(platform, {"observation", "kvm_api", "qmp_present", "qmp_enabled"})
+    _require(platform["observation"] in ("not-reached", "failure", "pass"))
     _require(platform["kvm_api"] is None or (type(platform["kvm_api"]) is int and platform["kvm_api"] == 12))
     _require(type(platform["qmp_present"]) is bool and type(platform["qmp_enabled"]) is bool)
     _require(not platform["qmp_enabled"] or platform["qmp_present"])
-    platform_pass = platform == {"kvm_api": 12, "qmp_present": True, "qmp_enabled": True}
-    _require((value["admission"]["kvm"] == "pass") == platform_pass)
+    platform_pass = {"observation": "pass", "kvm_api": 12,
+                     "qmp_present": True, "qmp_enabled": True}
+    platform_unobserved = {"observation": "not-reached", "kvm_api": None,
+                           "qmp_present": False, "qmp_enabled": False}
+    kvm_outcome = value["admission"]["kvm"]
+    if kvm_outcome == "pass":
+        _require(platform == platform_pass)
+    elif kvm_outcome == "not-reached":
+        _require(platform == platform_unobserved)
+    else:
+        favorable = platform["kvm_api"] == 12 and platform["qmp_present"] and platform["qmp_enabled"]
+        _require(platform["observation"] == "failure" and not favorable)
 
     lifecycle = value["lifecycle"]
     _keys(lifecycle, {"attempts", "outcome", "ssh_attempts", "ssh_outcome"})
@@ -254,10 +265,11 @@ def validate_result(value):
         _require(all(number is None or type(number) is int for number in summaries[name].values()))
 
     work_started = any(not _not_reached(rows) for rows in timings.values())
+    platform_succeeded = platform == platform_pass
     if lifecycle["attempts"]:
-        _require(operation["status"] != "not-created" and first_failure is None and platform_pass)
+        _require(operation["status"] != "not-created" and first_failure is None and platform_succeeded)
     if lifecycle["ssh_attempts"]:
-        _require(lifecycle["attempts"] == 1 and lifecycle["outcome"] == "pass" and platform_pass)
+        _require(lifecycle["attempts"] == 1 and lifecycle["outcome"] == "pass" and platform_succeeded)
     _require(lifecycle["ssh_attempts"] <= lifecycle["attempts"])
     if work_started:
         _require(lifecycle["ssh_attempts"] == 1 and lifecycle["ssh_outcome"] == "pass")

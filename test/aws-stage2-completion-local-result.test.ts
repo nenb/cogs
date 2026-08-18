@@ -171,6 +171,24 @@ test("schema prefix structure and codec reject the same structural hostile matri
     assert.equal(validate(value), false, `schema accepted ${name}`);
     assert.equal(codecAccepts(value), false, `codec accepted ${name}`);
   }
+  const stopped = fixture("local-result-v2-failure.json");
+  for (const [name, platform] of [
+    ["partial KVM after stop", { observation: "failure", kvm_api: 12, qmp_present: true, qmp_enabled: false }],
+    ["QMP after stop", { observation: "failure", kvm_api: null, qmp_present: true, qmp_enabled: true }],
+    ["API after stop", { observation: "pass", kvm_api: 12, qmp_present: false, qmp_enabled: false }],
+    ["favorable KVM after stop", { observation: "pass", kvm_api: 12, qmp_present: true, qmp_enabled: true }],
+  ] as const) {
+    const value = clone(stopped);
+    value.platform = platform;
+    assert.equal(validate(value), false, `schema accepted ${name}`);
+    assert.equal(codecAccepts(value), false, `codec accepted ${name}`);
+  }
+  const reachedFailure = clone(stopped);
+  reachedFailure.admission = { preflight: "pass", source_binding: "pass", attestation: "pass", kvm: "failure" };
+  reachedFailure.failure_code = "kvm";
+  reachedFailure.platform = { observation: "failure", kvm_api: 12, qmp_present: true, qmp_enabled: true };
+  assert.equal(validate(reachedFailure), false, "schema accepted favorable facts as reached KVM failure");
+  assert.equal(codecAccepts(reachedFailure), false);
 });
 
 test("schema-only semantic relations are explicitly classified and codec-required", () => {
@@ -200,12 +218,6 @@ test("schema-only semantic relations are explicitly classified and codec-require
       deletion: "absent",
       binding_sha256: "d".repeat(64),
     };
-  });
-  add("SSH without KVM", pass, (value) => {
-    value.result = "failure";
-    value.qualified = false;
-    value.failure_code = "kvm";
-    value.admission.kvm = "failure";
   });
   add("install after failed build", pass, (value) => {
     value.result = "failure";
@@ -256,14 +268,32 @@ test("zero-argument stub remains blocked and correction stays within the global 
   assert.match(source, /^def main\(\):$/mu);
   assert.doesNotMatch(source, /argparse|sys\.stdin|input\(|open_fixed_coordinator|run_fixed_local_qualification/u);
   assert.doesNotMatch(source, /boto|AWS_|requests|urllib|socket|subprocess|terraform|tofu/iu);
-  const retained = spawnSync(
-    "bash",
-    [
-      "-c",
-      String.raw`find deploy/aws-feasibility -type f \( -name '*.py' -o -name '*.sh' -o -name '*.tf' \) -print0 | xargs -0 wc -l | tail -1`,
-    ],
-    { cwd: root, encoding: "utf8" },
-  );
+  const budgetPath = join(root, "scripts/check-stage2-retained-lines.py");
+  const retained = spawnSync("python3", ["-B", budgetPath], { cwd: root, encoding: "utf8" });
   assert.equal(retained.status, 0, retained.stderr);
-  assert.ok(Number.parseInt(retained.stdout.trim(), 10) < 45_000, retained.stdout);
+  const budget = JSON.parse(retained.stdout) as Record<string, number | boolean | string>;
+  assert.equal(budget.preferred_limit, 42_000);
+  assert.equal(budget.hard_limit, 45_000);
+  assert.equal(budget.preferred_satisfied, true);
+  assert.equal(budget.hard_satisfied, true);
+  assert.equal(
+    budget.baseline_lines,
+    Number(budget.baseline_deployment_lines) + Number(budget.baseline_retained_schema_script_lines),
+  );
+  assert.equal(budget.current_lines, Number(budget.deployment_lines) + Number(budget.retained_schema_script_lines));
+  assert.equal(
+    budget.conservative_lines_no_deletion_credit,
+    Number(budget.baseline_lines) + Number(budget.gross_added_lines_no_deletion_credit),
+  );
+  const budgetSource = readFileSync(budgetPath, "utf8");
+  for (const retainedPath of [
+    "schemas/aws-stage2-measurement-evidence-v1alpha1.json",
+    "scripts/validate-aws-stage2-measurement-report.ts",
+    "scripts/render-aws-stage2-measurement-report.ts",
+    "schemas/aws-feasibility-report-v1alpha1.json",
+    "scripts/validate-aws-feasibility-report.ts",
+    "schemas/stage2-workload-local-qualification-v2.json",
+  ]) {
+    assert.match(budgetSource, new RegExp(retainedPath.replaceAll(".", String.raw`\.`), "u"));
+  }
 });
