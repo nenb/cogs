@@ -2113,7 +2113,9 @@ def production_owner_test():
                     assert ((shard.startswith("input-") and len(input_crash_cuts) == 1
                              and not ssh_crash_cuts)
                             or (shard.startswith("ssh-") and len(ssh_crash_cuts) == 1
-                                and not input_crash_cuts))
+                                and not input_crash_cuts)
+                            or (shard == "network-runtime" and not input_crash_cuts
+                                and not ssh_crash_cuts))
                     return True, False, False
                 assert not transaction_completion.exists()
                 missing = []
