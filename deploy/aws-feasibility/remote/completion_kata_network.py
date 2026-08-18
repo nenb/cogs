@@ -520,7 +520,8 @@ def parse_nft_snapshot(raw, table_name=TABLE, host_if=HOST_IF):
     rule_ordinals = {name: 0 for name in _NFT_RULES}
     for expected_kind, row in zip(_NFT_ROW_ORDER, rows[1:]):
         if type(row) is not dict or tuple(row) != (expected_kind,):
-            raise NetworkError("nft output ordering drift")
+            actual = tuple(tuple(item) if type(item) is dict else () for item in rows[1:])
+            raise NetworkError(f"nft output ordering drift:{actual!r}")
         body = row[expected_kind]
         if type(body) is not dict:
             raise NetworkError("nft body")
