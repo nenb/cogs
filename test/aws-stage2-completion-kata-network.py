@@ -226,7 +226,10 @@ network.parse_nft_snapshot(encoded(dynamic_nft), "c42taaaaaaaaaa", "c42haaaaaaaa
 assert replaced_nft_snapshot.identity != nft_snapshot.identity
 native_singleton_nft = copy.deepcopy(nft)
 native_singleton_nft["nftables"][5]["rule"]["expr"][4]["match"]["right"] = "established"
+native_set_nft = copy.deepcopy(native_singleton_nft)
+native_set_nft["nftables"][7]["rule"]["expr"][4]["match"]["right"] = ["established", "new"]
 assert network.parse_nft_snapshot(encoded(native_singleton_nft)).content == nft_snapshot.content
+assert network.parse_nft_snapshot(encoded(native_set_nft)).content == nft_snapshot.content
 for change in ("policy", "interface", "duplicate", "bare-set", "ordering", "handle"):
     hostile = copy.deepcopy(nft)
     if change == "policy":
@@ -236,7 +239,7 @@ for change in ("policy", "interface", "duplicate", "bare-set", "ordering", "hand
     if change == "duplicate":
         hostile["nftables"].append(copy.deepcopy(hostile["nftables"][-1]))
     if change == "bare-set":
-        hostile["nftables"][5]["rule"]["expr"][4]["match"]["right"] = ["established", "new"]
+        hostile["nftables"][5]["rule"]["expr"][4]["match"]["right"] = ["established", "invalid"]
     if change == "ordering":
         hostile["nftables"][2], hostile["nftables"][3] = hostile["nftables"][3], hostile["nftables"][2]
     if change == "handle":

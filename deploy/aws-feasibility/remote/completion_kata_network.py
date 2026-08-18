@@ -485,6 +485,9 @@ def _normalize_nft_expr(expressions):
         if match and match.get("left") == {"ct": {"key": "state"}}:
             if right == "established":
                 right = {"set": [right]}; match["right"] = right
+            elif (type(right) is list and len(right) == 2
+                  and set(right) == {"established", "new"}):
+                right = {"set": right}; match["right"] = right
             else:
                 try: _keys(right, ("set",))
                 except NetworkError as error:
