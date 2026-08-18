@@ -1628,7 +1628,7 @@ def _make_authority():
             raw_names = fs._enumerate_stable(self.completion, self.control).raw_names
             names = set(raw_names)
             _fail(STATE_NAME.raw in names)
-            candidates = _stage_candidates(names)
+            candidates = set()
             if records:
                 _fail(_key_value(journal_generation.key) == records[0].body["journal_key"])
                 _fail(not any(item.record_type in _V1_COMMAND_RECORDS for item in records))
@@ -1636,12 +1636,7 @@ def _make_authority():
                 _validate_stage_layout(
                     raw_names, records, phase, _key_value(self.completion.generation.key))
                 if len(records) > 1:
-                    state_parent_ok = (_generation_value(self.state.generation)
-                                       == records[1].body["state_parent"])
-                    if not state_parent_ok and os.environ.get(
-                            "COGS_KATA_SYNTHETIC_ATTESTATION_V1") == "1":
-                        os.write(2, b"DIAG_STATE_PARENT\n")
-                    _fail(state_parent_ok)
+                    _fail(_generation_value(self.state.generation) == records[1].body["state_parent"])
                 if phase not in {"GENESIS", "GENESIS_SETTLED", "ROOTFS_ABSENT",
                                  "FINAL_BASELINES", "RETIRE_INTENT", "RETIRED"}:
                     _fail(ROOTFS_NAME.raw in names)
@@ -1656,6 +1651,7 @@ def _make_authority():
                 if phase in {"ROOTFS_ABSENT", "FINAL_BASELINES", "RETIRE_INTENT", "RETIRED"}:
                     _fail(ROOTFS_NAME.raw not in names)
             else:
+                candidates = _stage_candidates(names)
                 _fail(not candidates and not names & RUNTIME_NAMES
                       and names <= COMPLETION_NAMES | RUNTIME_NAMES)
             observed_completion = fs._observe_node(
@@ -1682,9 +1678,6 @@ def _make_authority():
                                   == self.state.generation)
                 state_live_ok = (fs._observe_node(self.state.identity_fd, self.state.operation_fd,
                                                   self.control) == self.state.generation)
-                if not (base_ok and state_child_ok and state_live_ok) and os.environ.get(
-                        "COGS_KATA_SYNTHETIC_ATTESTATION_V1") == "1":
-                    os.write(2, f"DIAG_CHAIN:{base_ok}:{state_child_ok}:{state_live_ok}\n".encode())
                 _fail(base_ok and state_child_ok and state_live_ok)
             finally:
                 fs._close_chain(fresh)
