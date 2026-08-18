@@ -1716,7 +1716,7 @@ def production_owner_test():
                        "observed_names": baseline_names}
             absence_owner.record_fs_absent(absence)
             absence_owner.record_fs_settled(absence)
-            assert operation._durable_phase(absence_owner) == "FS_SETTLED"
+            assert absence_owner.durable_phase() == "FS_SETTLED"
             absence_owner.close()
             exact_absence = operation._open_fixed_operation()
             assert exact_absence.status() == "exact"
