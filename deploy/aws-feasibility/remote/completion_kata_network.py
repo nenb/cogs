@@ -249,7 +249,7 @@ def _parse_link_row(row, runtime=False):
         peer = _uint(peer)
     return Link(_uint(row["ifindex"]), name, kind, mac, peer, tuple(row["flags"]), row["operstate"],
                 "UP" in row["flags"] and row["operstate"] in ("UP", "UNKNOWN"),
-                row["qdisc"], row.get("addrgenmode"))
+                row["qdisc"], row.get("addrgenmode", row.get("inet6_addr_gen_mode")))
 
 
 def parse_links(raw, namespace, host_if=HOST_IF):
