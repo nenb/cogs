@@ -8,6 +8,7 @@ opening remains unavailable until the coordinator facet is complete.
 """
 from dataclasses import asdict, dataclass
 from enum import Enum
+import array
 import ctypes
 import errno
 import hashlib
@@ -17,6 +18,7 @@ import math
 import os
 from pathlib import Path
 import re
+import socket
 import completion_kata_actions as actions
 import completion_kata_owner as owner_helpers
 
@@ -1295,10 +1297,14 @@ def _establish_netns(journal):
         if descriptor_identity != planned or path_identity != planned:
             raise NetworkError("pre-bind placeholder replacement")
         ready_r, ready_w = os.pipe2(os.O_CLOEXEC); release_r, release_w = os.pipe2(os.O_CLOEXEC)
-        opened.extend((ready_r, ready_w, release_r, release_w))
+        mount_parent, mount_child = socket.socketpair(
+            socket.AF_UNIX, socket.SOCK_DGRAM | socket.SOCK_CLOEXEC)
+        mount_parent_fd, mount_child_fd = mount_parent.detach(), mount_child.detach()
+        opened.extend((ready_r, ready_w, release_r, release_w, mount_parent_fd, mount_child_fd))
         child = os.fork(); helper_pid = child
         if child == 0:
-            os.close(ready_r); os.close(release_w); libc = ctypes.CDLL(None, use_errno=True)
+            os.close(ready_r); os.close(release_w); os.close(mount_parent_fd)
+            libc = ctypes.CDLL(None, use_errno=True)
             if libc.unshare(0x40000000) != 0: os._exit(121)
             source_fd = os.open("/proc/self/ns/net", os.O_RDONLY | os.O_CLOEXEC)
             if os.write(ready_w, b"R") != 1 or os.read(release_r, 1) != b"B": os._exit(122)
@@ -1306,11 +1312,11 @@ def _establish_netns(journal):
                 SYS_OPEN_TREE_X86_64, source_fd, b"", OPEN_TREE_FLAGS)
             if tree_fd < 0:
                 saved = ctypes.get_errno(); os._exit(130 + saved if saved <= 125 else 255)
-            if libc.syscall(SYS_MOVE_MOUNT_X86_64, tree_fd, b"", descriptor, b"",
-                            MOVE_MOUNT_EMPTY_PATH_FLAGS) != 0:
-                saved = ctypes.get_errno(); os._exit(180 + saved if saved <= 75 else 255)
+            transfer = socket.socket(fileno=mount_child_fd)
+            rights = array.array("i", (tree_fd,))
+            sent = transfer.sendmsg((b"M",), ((socket.SOL_SOCKET, socket.SCM_RIGHTS, rights),))
             os.close(tree_fd)
-            if os.write(ready_w, b"M") != 1 or os.read(release_r, 1) != b"A": os._exit(124)
+            if sent != 1 or os.read(release_r, 1) != b"A": os._exit(124)
             os._exit(0)
         os.close(ready_w); os.close(release_r)
         if os.read(ready_r, 1) != b"R": raise NetworkError("namespace helper readiness")
@@ -1318,7 +1324,24 @@ def _establish_netns(journal):
         created = _created_nsfs_identity(source_fd); _created_nsfs_record(journal, child, created)
         if _created_nsfs_identity(source_fd) != created: raise NetworkError("created nsfs changed before bind")
         if os.write(release_w, b"B") != 1: raise NetworkError("namespace helper release")
-        if os.read(ready_r, 1) != b"M": raise NetworkError("namespace mount readiness")
+        os.close(mount_child_fd)
+        transfer = socket.socket(fileno=mount_parent_fd)
+        message, ancillary, _flags, _address = transfer.recvmsg(
+            1, socket.CMSG_SPACE(array.array("i").itemsize))
+        transfer.detach()
+        received = array.array("i")
+        for level, kind, data in ancillary:
+            if level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS:
+                received.frombytes(data[:len(data) - len(data) % received.itemsize])
+        if message != b"M" or len(received) != 1:
+            raise NetworkError("namespace mount descriptor transfer")
+        tree_fd = received[0]
+        try:
+            libc = ctypes.CDLL(None, use_errno=True)
+            if libc.syscall(SYS_MOVE_MOUNT_X86_64, tree_fd, b"", descriptor, b"",
+                            MOVE_MOUNT_EMPTY_PATH_FLAGS) != 0:
+                saved = ctypes.get_errno(); raise OSError(saved, os.strerror(saved))
+        finally: os.close(tree_fd)
         identity = _netns_identity(journal=None, name=name)
         if identity is None or any(getattr(identity, field) != created[field]
                                    for field in ("device", "inode_device", "inode")):
