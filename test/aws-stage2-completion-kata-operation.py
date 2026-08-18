@@ -1262,12 +1262,13 @@ def production_owner_test():
                     foreign_delete = subprocess.run(("/usr/sbin/ip", "netns", "delete", foreign_name), env=fixed_env,
                                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                     assert foreign_delete.returncode == 0 and foreign_delete.stderr == b""
-                    network._resume_effect(production_network, *retained_tools); network._abort_fixed_setup(production_network, *retained_tools)
+                    rejected(lambda: network._resume_effect(production_network, *retained_tools))
                     production_network.close()
                     for path in (Path("/run/netns/c42naaaaaaaaaa"), Path("/run/netns/c42qaaaaaaaaaa")):
                         if path.exists(): path.unlink()
-                    fixture_journal(completion, (intent, ("ROOTFS_LEASED", leased),
-                        ("FS_INTENT", fs_intent), ("FS_ABSENT", absent), ("FS_SETTLED", absent)))
+                    production_fixture((intent, ("ROOTFS_LEASED", leased),
+                        ("FS_INTENT", fs_intent), ("FS_OBSERVED", baseline_observed),
+                        ("FS_SETTLED", baseline_observed)))
                     production_network = operation._open_fixed_operation()
                     network._capture_fixed_baselines(production_network, *retained_tools)
                     ready_body = network._setup_fixed_network(production_network, *retained_tools)
@@ -1415,8 +1416,9 @@ def production_owner_test():
 
                     # Failed-launch route: task absent while the ready network still exists.
                     production_network.close()
-                    fixture_journal(completion, (intent, ("ROOTFS_LEASED", leased),
-                        ("FS_INTENT", fs_intent), ("FS_ABSENT", absent), ("FS_SETTLED", absent)))
+                    production_fixture((intent, ("ROOTFS_LEASED", leased),
+                        ("FS_INTENT", fs_intent), ("FS_OBSERVED", baseline_observed),
+                        ("FS_SETTLED", baseline_observed)))
                     production_network = operation._open_fixed_operation()
                     network._capture_fixed_baselines(production_network, *retained_tools)
                     ready_body = network._setup_fixed_network(production_network, *retained_tools)
