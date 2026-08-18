@@ -52,7 +52,7 @@ def _policy_inserter_route():
     return take
 _take_attested_policy_inserter = _policy_inserter_route()
 del _policy_inserter_route
-DEFERRED_COMMANDS = frozenset({"CTR_RUN", "TC_QDISC", "TC_INGRESS_FILTER"})
+DEFERRED_COMMANDS = frozenset({"CTR_RUN"})
 
 # Byte-compatible protected v1 vocabulary; B1 IDs are journal-derived and do
 # not enter the fixed process digest table.
@@ -70,7 +70,8 @@ LEGACY_COMMANDS = frozenset({
 })
 B1_COMMAND_IDS = frozenset({"IP_HOST_ADDRGEN_NONE", "IP_HOST_LINK_REMOVE", "IP_NETNS_LIST",
     "IP_ALL_LINKS", "IP_ALL_ADDRESSES", "IP_ALL_ROUTES4", "IP_ALL_ROUTES6", "NFT_RULESET",
-    "IP_VETH_ADD_ATOMIC", "NFT_INSTALL_OWNED", "NFT_REMOVE_ATOMIC"})
+    "IP_VETH_ADD_ATOMIC", "NFT_INSTALL_OWNED", "NFT_REMOVE_ATOMIC", "TC_QDISC",
+    "TC_INGRESS_FILTER"})
 
 _IDENTITY_CREATE_DIGESTS = (
     "57da97bf9cad7e6f4b8bdc2e283be28cd7bf4860ea6b41dfe60112214f511a72",
