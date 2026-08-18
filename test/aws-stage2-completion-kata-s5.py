@@ -156,7 +156,7 @@ for command in runtime.fixed_command_specs_for_tests():
     assert type(command.command_id) is actions.CommandId and command.command_id.value in operation.COMMANDS
 assert {item.command_id for item in process._unissued_spec_snapshots_for_tests()} <= operation.COMMANDS
 assert {item[0] for item in process._fixed_spec_snapshots_for_tests()} <= operation.COMMANDS
-for command_id in sorted(operation.COMMANDS):
+for command_id in sorted(operation.LEGACY_COMMANDS):
     command = {"operation_token": "a" * 64, "command_serial": 0,
                "command_id": command_id, "binding_sha256": "9" * 64,
                "deadline_class": "observer"}

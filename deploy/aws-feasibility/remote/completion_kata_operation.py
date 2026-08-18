@@ -17,6 +17,7 @@ import os
 import time
 import unicodedata
 import completion_kata_actions as actions
+import completion_kata_command_policy as command_policy
 import completion_rootfs_fs as fs
 
 VERSION = "cogs.stage2-kata-operation/v1"
@@ -77,6 +78,11 @@ RESOURCES = frozenset(RESOURCE_TARGETS)
 MAX_OBSERVED_NAMES = 64
 ACTIONS = frozenset({"create", "metadata", "link", "remove"})
 COMMANDS = actions.COMMAND_IDS
+LEGACY_COMMANDS = COMMANDS - {"CONTAINERD_START"}
+_fail_policy_partition = set(command_policy.POLICY_SHA256) | set(command_policy.DEFERRED_COMMANDS)
+if _fail_policy_partition != set(COMMANDS):
+    raise RuntimeError("v2 command policy partition drift")
+del _fail_policy_partition
 DEADLINES = frozenset({
     "observer", "network", "keygen", "runtime-start", "task-term", "task-kill", "remove", "listener",
     "ssh", "runtime-absence",
@@ -131,7 +137,7 @@ def _key(value):
     _uint(value["mount_id"], minimum=1)
     _uint(value["device"])
     _uint(value["inode"], minimum=1)
-    _choice(value["kind"], {"directory", "file", "pipe", "symlink", "other"})
+    _choice(value["kind"], {"directory", "file", "pipe", "socket", "symlink", "other"})
 def _generation(value, nullable=False):
     if nullable and value is None:
         return
@@ -168,7 +174,7 @@ def _command(body):
     _keys({name: body[name] for name in names if name in body}, names)
     _hex(body["operation_token"])
     _uint(body["command_serial"], MAX_RECORDS - 1)
-    _choice(body["command_id"], COMMANDS)
+    _choice(body["command_id"], LEGACY_COMMANDS)
     _hex(body["binding_sha256"])
     _choice(body["deadline_class"], DEADLINES)
     return names
@@ -203,8 +209,8 @@ def _command_intent_v2(body):
         "executable_role", "executable_path", "executable_sha256",
         "executable_generation", "tool_closure_sha256", "argv", "argv_sha256",
         "stdin_hex", "stdin_sha256", "stdin_length", "environment",
-        "environment_sha256", "inherited_fds", "deadline_boottime_ns",
-        "output_grammar", "stdout_limit", "stderr_limit",
+        "environment_sha256", "inherited_fds", "deadline_class", "duration_ns",
+        "deadline_boottime_ns", "output_grammar", "stdout_limit", "stderr_limit",
     )
     _keys(body, names + extra)
     _key(body["journal_key"])
@@ -232,6 +238,8 @@ def _command_intent_v2(body):
         _fd_binding(row)
     _fail(len({row["role"] for row in inherited}) == len(inherited))
     _fail(len({row["target_fd"] for row in inherited}) == len(inherited))
+    _choice(body["deadline_class"], DEADLINES)
+    _uint(body["duration_ns"], 120_000_000_000, 1)
     _uint(body["deadline_boottime_ns"], minimum=1)
     _choice(body["output_grammar"], OUTPUT_GRAMMARS)
     _uint(body["stdout_limit"], 65536)
@@ -398,6 +406,9 @@ def _validate_body(kind, body):
         if body["outcome"] == "not-started":
             _fail(body["release_count"] == 0)
             _fail(body["status"] is body["errno"] is None and not body["term_attempted"])
+            _fail(body["stdout_length"] == body["stderr_length"] == 0)
+            _fail(body["stdout_sha256"] == body["stderr_sha256"] == hashlib.sha256(b"").hexdigest())
+            _fail(not body["stdout_truncated"] and not body["stderr_truncated"])
         elif body["outcome"] == "exec-failed":
             _fail(body["release_count"] == 1)
             _fail(body["status"] is None and type(body["errno"]) is int and body["errno"] > 0)
@@ -417,7 +428,7 @@ def _validate_body(kind, body):
         preexec = {name: value for name, value in body.items() if name not in extra}
         _validate_body("COMMAND_PREEXEC_V2", preexec)
         _generation(body["socket_generation"])
-        _fail(body["socket_generation"]["kind"] == "file")
+        _fail(body["socket_generation"]["kind"] == "socket")
     elif kind == "DAEMON_OUTCOME_V2":
         names = _command_v2_header(body)
         extra = (
@@ -608,32 +619,29 @@ def _same_intent(left, right):
     return all(left[name] == right[name] for name in names)
 def _same_command(left, right):
     return all(left[name] == right[name] for name in _command(left))
+def _v2_policy_digest(intent):
+    value = {
+        "command_id": intent["command_id"],
+        "executable_role": intent["executable_role"],
+        "executable_path": intent["executable_path"],
+        "argv": intent["argv"], "stdin_hex": intent["stdin_hex"],
+        "deadline_class": intent["deadline_class"], "duration_ns": intent["duration_ns"],
+        "output_grammar": intent["output_grammar"],
+        "stdout_limit": intent["stdout_limit"], "stderr_limit": intent["stderr_limit"],
+        "inherited_fds": [[row["role"], row["target_fd"]] for row in intent["inherited_fds"]],
+    }
+    return hashlib.sha256(_canonical(value)).hexdigest()
+
+
 def _v2_lineage(genesis, phase, intent, preexec=None, outcome=None):
     _fail(intent["journal_key"] == genesis["journal_key"])
     _fail(intent["host_boot_id"] == genesis["host_boot_id"])
     _fail(intent["source_revision"] == genesis["source_revision"])
     _fail(intent["lifecycle_phase"] == phase)
     command_id = intent["command_id"]
-    if command_id.startswith("IP_"):
-        expected_tool = ("ip", "/usr/sbin/ip")
-    elif command_id.startswith("TC_"):
-        expected_tool = ("tc", "/usr/sbin/tc")
-    elif command_id.startswith("NFT_"):
-        expected_tool = ("nft", "/usr/sbin/nft")
-    elif command_id.startswith("CTR_"):
-        expected_tool = ("ctr", "/usr/bin/ctr")
-    elif command_id.startswith("SSH_KEYGEN_") or command_id.startswith("SSH_PUBLIC_"):
-        expected_tool = ("ssh-keygen", "/usr/bin/ssh-keygen")
-    elif command_id == "SSH_READY":
-        expected_tool = ("ssh", "/usr/bin/ssh")
-    else:
-        expected_tool = ("containerd", "/usr/bin/containerd")
-    _fail((intent["executable_role"], intent["executable_path"]) == expected_tool)
-    _fail(intent["argv"][0] == expected_tool[1])
-    expected_fds = (["CLIENT_KEY", "KNOWN_HOSTS"], [200, 201]) \
-        if intent["command_id"] == "SSH_READY" else ([], [])
-    _fail([row["role"] for row in intent["inherited_fds"]] == expected_fds[0])
-    _fail([row["target_fd"] for row in intent["inherited_fds"]] == expected_fds[1])
+    _fail(command_id in command_policy.POLICY_SHA256)
+    _fail(_v2_policy_digest(intent) == command_policy.POLICY_SHA256[command_id])
+    _fail(phase in command_policy.PHASES[command_id])
     if preexec is not None:
         _fail(_same_command_v2(preexec, intent))
         _fail(preexec["host_boot_id"] == intent["host_boot_id"])
@@ -678,6 +686,9 @@ def _legal(records):
             })
             _fail(body["command_serial"] == next_serial)
             _v2_lineage(genesis, phase, body)
+            _fail(sum(item.record_type == "COMMAND_INTENT_V2" and
+                      item.body["command_id"] == body["command_id"]
+                      for item in records[:index]) < command_policy.MAX_OCCURRENCES[body["command_id"]])
             next_serial += 1
             command_phase = kind
             command_intent_v2 = record
@@ -745,6 +756,8 @@ def _legal(records):
                 phase = "UNCERTAIN"
             continue
         _fail(command_phase is None)
+        if retained_daemon is not None:
+            _fail(kind not in set(LIFECYCLE[10:]) | {"FINAL_BASELINES", "RETIRE_INTENT", "RETIRED"})
         if phase == "GENESIS":
             _fail(index == 1 and kind == "GENESIS_SETTLED" and body["journal_key"] == key)
             phase = kind
@@ -836,6 +849,8 @@ def _legal(records):
             pending = None
         else:
             raise OperationError()
+    if phase in {"RUNTIME_ABSENT", *LIFECYCLE[11:], "FINAL_BASELINES", "RETIRE_INTENT", "RETIRED"}:
+        _fail(retained_daemon is None)
     return phase
 def _parse_untrusted(raw):
     _fail(type(raw) is bytes and 0 < len(raw) <= MAX_BYTES and raw.endswith(b"\n") and b"\x00" not in raw)
@@ -1032,7 +1047,8 @@ def _make_authority():
                                  "FINAL_BASELINES", "RETIRE_INTENT", "RETIRED"}:
                     _fail(ROOTFS_NAME.raw in names)
                 input_required = {"FS_OBSERVED", "FS_ABSENT", "FS_SETTLED", "COMMAND_INTENT",
-                                  "COMMAND_PREEXEC", "COMMAND_OUTCOME", *LIFECYCLE[:13]}
+                                  "COMMAND_PREEXEC", "COMMAND_OUTCOME", "COMMAND_INTENT_V2",
+                                  "COMMAND_PREEXEC_V2", "DAEMON_RETAINED_V2", *LIFECYCLE[:13]}
                 if phase in input_required:
                     _fail(INPUT_NAME.raw in names)
                 if phase in set(LIFECYCLE[13:]) | {"FINAL_BASELINES", "RETIRE_INTENT", "RETIRED"}:

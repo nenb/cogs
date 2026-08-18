@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 REMOTE = ROOT / "deploy/aws-feasibility/remote"
 sys.path.insert(0, str(REMOTE))
 import completion_kata_operation as operation
+import completion_kata_process as process
 import completion_rootfs_fs as fs
 import completion_rootfs_lease as lease
 import completion_rootfs_ledger as ledger
@@ -535,6 +536,31 @@ def fixture_journal(
     return raw
 
 
+def fixed_v2_intent(context):
+    fixed = process._FIXED_COMMANDS[process.CommandId.CTR_CONTAINER_INFO]
+    environment = [list(row) for row in operation.FIXED_ENV]
+    body = {
+        "operation_token": context.operation_token, "command_serial": context.command_serial,
+        "command_id": fixed.command_id.value, "binding_sha256": operation.ZERO,
+        "journal_key": context.journal_key, "host_boot_id": context.host_boot_id,
+        "source_revision": context.source_revision, "lifecycle_phase": context.lifecycle_phase,
+        "executable_role": fixed.executable_role, "executable_path": fixed.executable_path,
+        "executable_sha256": "c" * 64, "executable_generation": generation(90, "file", 0o755),
+        "tool_closure_sha256": "d" * 64, "argv": list(fixed.argv),
+        "argv_sha256": hashlib.sha256(operation._canonical(list(fixed.argv))).hexdigest(),
+        "stdin_hex": "", "stdin_sha256": hashlib.sha256(b"").hexdigest(), "stdin_length": 0,
+        "environment": environment,
+        "environment_sha256": hashlib.sha256(operation._canonical(environment)).hexdigest(),
+        "inherited_fds": [], "deadline_class": "observer", "duration_ns": fixed.duration_ns,
+        "deadline_boottime_ns": process._boottime_ns() + fixed.duration_ns,
+        "output_grammar": fixed.output_grammar, "stdout_limit": fixed.stdout_limit,
+        "stderr_limit": fixed.stderr_limit,
+    }
+    binding = {name: body[name] for name in body if name != "binding_sha256"}
+    body["binding_sha256"] = hashlib.sha256(operation._canonical(binding)).hexdigest()
+    return body
+
+
 def production_owner_test():
     if sys.platform != "linux":
         return False
@@ -679,6 +705,38 @@ def production_owner_test():
                 )
                 release_owner.close()
             input_root.mkdir(mode=0o700)
+
+            # Actual fsynced _FixedJournal reopen/recovery cuts after v2 INTENT
+            # and PREEXEC. Cgroup cleanup has its separate authentic root test.
+            lifecycle_prefix = leased_records + (
+                ("BASELINES_CAPTURED", {"operation_token": "a" * 64, "proof_sha256": "9" * 64}),
+                ("NETWORK_READY", {"operation_token": "a" * 64, "proof_sha256": "9" * 64}),
+            )
+            for with_preexec in (False, True):
+                fixture_journal(completion, lifecycle_prefix)
+                crashed = operation._open_fixed_operation()
+                command = fixed_v2_intent(crashed.command_context())
+                crashed.record_command_intent(command)
+                if with_preexec:
+                    crashed.record_command_preexec({
+                        "operation_token": command["operation_token"], "command_serial": 0,
+                        "command_id": command["command_id"],
+                        "binding_sha256": command["binding_sha256"],
+                        "host_boot_id": command["host_boot_id"], "pid": 999999,
+                        "ppid": 1, "pgid": 999999, "sid": 999999, "proc_start_time": 1,
+                        "pidfd_supported": True,
+                        "cgroup_path": f"{process.CGROUP_BASE}/{command['operation_token']}-0",
+                        "cgroup_generation": generation(91),
+                        "exec_status_pipe": generation(92, "pipe", 0o600), "release_count": 0,
+                    })
+                crashed.close()
+                resumed = operation._open_fixed_operation()
+                with patch.object(process, "_recover_cgroup", return_value=(True, True)):
+                    process._recover_pending_fixed(resumed)
+                resumed.close()
+                recovered = operation._parse(fixture_journal_path(completion).read_bytes())[-1]
+                assert recovered.record_type == "COMMAND_OUTCOME_V2"
+                assert recovered.body["uncertain"] and not recovered.body["leader_reaped"]
 
             # Construction/read faults fail closed, and no lock or owner escapes.
             with patch.object(fs, "_read_regular", side_effect=OSError("injected read")):

@@ -68,32 +68,49 @@ def prefix():
     })
 
 
-def intent(serial=0, command_id="CTR_TASK_LIST", phase="ROOTFS_LEASED", limits=(16, 16)):
+def rebound(body):
+    body = copy.deepcopy(body)
+    body["argv_sha256"] = hashlib.sha256(operation._canonical(body["argv"])).hexdigest()
+    binding = {name: body[name] for name in body if name != "binding_sha256"}
+    body["binding_sha256"] = hashlib.sha256(operation._canonical(binding)).hexdigest()
+    return body
+
+
+def intent(serial=0, command_id="CTR_TASK_LIST", phase="RUNTIME_READY"):
     environment = [list(row) for row in operation.FIXED_ENV]
     if command_id == "CONTAINERD_START":
-        role, path = "containerd", "/usr/bin/containerd"
-        argv = [path, "--address", "/fixed/socket"]
+        fixed = process.LONG_LIVED_CONTAINERD
+        deadline_class, duration, grammar, stdin, inherited = "runtime-start", 60_000_000_000, "empty", b"", []
     else:
-        role, path = "ctr", "/usr/bin/ctr"
-        argv = [path, "tasks", "list"]
+        fixed = process._FIXED_COMMANDS[process.CommandId(command_id)]
+        spec = process._spec(fixed.command_id)
+        deadline_class, duration, grammar, stdin = spec.deadline_class, fixed.duration_ns, fixed.output_grammar, fixed.stdin
+        inherited = []
+        if fixed.inherited_fds:
+            inherited = [
+                {"role": "CLIENT_KEY", "target_fd": 200, "generation": generation(93, "file", 0o400),
+                 "content_sha256": "e" * 64, "content_length": 3},
+                {"role": "KNOWN_HOSTS", "target_fd": 201, "generation": generation(94, "file", 0o400),
+                 "content_sha256": "f" * 64, "content_length": 5},
+            ]
+    argv = list(fixed.argv)
     body = {
         "operation_token": "a" * 64, "command_serial": serial,
         "command_id": command_id, "binding_sha256": operation.ZERO,
         "journal_key": key(), "host_boot_id": "11111111-1111-1111-1111-111111111111",
         "source_revision": "5" * 40, "lifecycle_phase": phase,
-        "executable_role": role, "executable_path": path,
+        "executable_role": fixed.executable_role, "executable_path": fixed.executable_path,
         "executable_sha256": "c" * 64, "executable_generation": generation(90, "file", 0o755),
         "tool_closure_sha256": "d" * 64, "argv": argv,
         "argv_sha256": hashlib.sha256(operation._canonical(argv)).hexdigest(),
-        "stdin_hex": "", "stdin_sha256": hashlib.sha256(b"").hexdigest(),
-        "stdin_length": 0, "environment": environment,
+        "stdin_hex": stdin.hex(), "stdin_sha256": hashlib.sha256(stdin).hexdigest(),
+        "stdin_length": len(stdin), "environment": environment,
         "environment_sha256": hashlib.sha256(operation._canonical(environment)).hexdigest(),
-        "inherited_fds": [], "deadline_boottime_ns": 9_000_000_000,
-        "output_grammar": "text", "stdout_limit": limits[0], "stderr_limit": limits[1],
+        "inherited_fds": inherited, "deadline_class": deadline_class, "duration_ns": duration,
+        "deadline_boottime_ns": 99_000_000_000, "output_grammar": grammar,
+        "stdout_limit": 65536, "stderr_limit": 65536,
     }
-    binding = {name: body[name] for name in body if name != "binding_sha256"}
-    body["binding_sha256"] = hashlib.sha256(operation._canonical(binding)).hexdigest()
-    return body
+    return rebound(body)
 
 
 def preexec(command):
@@ -126,48 +143,95 @@ def outcome(command, stdout=b"", truncated=False, uncertain=False):
 
 
 raw = prefix()
+for kind in ("BASELINES_CAPTURED", "NETWORK_READY", "RUNTIME_READY"):
+    raw = add(raw, kind, {"operation_token": "a" * 64, "proof_sha256": "9" * 64})
 command = intent()
 with_intent = add(raw, "COMMAND_INTENT_V2", command)
 with_preexec = add(with_intent, "COMMAND_PREEXEC_V2", preexec(command))
 settled = add(with_preexec, "COMMAND_OUTCOME_V2", outcome(command))
-check(operation._legal(operation._parse(settled)) == "ROOTFS_LEASED", "v2 changed lifecycle")
+check(operation._legal(operation._parse(settled)) == "RUNTIME_READY", "v2 changed lifecycle")
 add(settled, "COMMAND_INTENT_V2", intent(1))
 
 # Replay semantics bind genesis, current phase, fd roles, cgroup lineage, limits,
 # overflow and wait classification rather than trusting a shared digest header.
 for hostile in (
-    intent(phase="NETWORK_READY"),
+    rebound({**command, "argv": ["/usr/bin/ctr", "--address", "/attacker.sock", "tasks", "kill"]}),
+    rebound({**command, "deadline_class": "remove"}),
+    rebound({**command, "duration_ns": 1}),
+    rebound({**command, "output_grammar": "json"}),
     {**command, "journal_key": key(99)},
-    {**command, "inherited_fds": [{
+    rebound({**command, "inherited_fds": [{
         "role": "CLIENT_KEY", "target_fd": 200, "generation": generation(93, "file", 0o400),
         "content_sha256": "e" * 64, "content_length": 0,
-    }]},
+    }]}),
 ):
     reject(lambda hostile=hostile: add(raw, "COMMAND_INTENT_V2", hostile))
 bad_preexec = {**preexec(command), "host_boot_id": "22222222-2222-2222-2222-222222222222"}
 reject(lambda: add(with_intent, "COMMAND_PREEXEC_V2", bad_preexec))
 for hostile_outcome in (
-    outcome(command, b"x" * 17),
+    outcome(command, b"x" * 65537),
     {**outcome(command), "outcome": "signaled", "status": 0},
     {**outcome(command), "stdout_truncated": True},
 ):
     reject(lambda hostile=hostile_outcome: add(with_preexec, "COMMAND_OUTCOME_V2", hostile))
-overflow_command = intent(limits=(16, 16))
+overflow_command = intent()
 overflow_prefix = add(add(raw, "COMMAND_INTENT_V2", overflow_command),
                       "COMMAND_PREEXEC_V2", preexec(overflow_command))
-add(overflow_prefix, "COMMAND_OUTCOME_V2", outcome(overflow_command, b"x" * 16, True))
+add(overflow_prefix, "COMMAND_OUTCOME_V2", outcome(overflow_command, b"x" * 65536, True))
 
 # Long-lived containerd settles into a separate retained state; serial 1 short
 # commands remain legal, and daemon retirement is independently journaled.
-daemon = intent(command_id="CONTAINERD_START")
-daemon_raw = add(raw, "COMMAND_INTENT_V2", daemon)
+daemon_prefix = prefix()
+for kind in ("BASELINES_CAPTURED", "NETWORK_READY"):
+    daemon_prefix = add(daemon_prefix, kind, {"operation_token": "a" * 64, "proof_sha256": "9" * 64})
+daemon = intent(command_id="CONTAINERD_START", phase="NETWORK_READY")
+daemon_raw = add(daemon_prefix, "COMMAND_INTENT_V2", daemon)
 daemon_preexec = preexec(daemon)
 daemon_raw = add(daemon_raw, "COMMAND_PREEXEC_V2", daemon_preexec)
-retained = {**daemon_preexec, "socket_generation": generation(95, "file", 0o600)}
+retained = {**daemon_preexec, "socket_generation": generation(95, "socket", 0o600)}
 daemon_raw = add(daemon_raw, "DAEMON_RETAINED_V2", retained)
-daemon_raw = add(daemon_raw, "COMMAND_INTENT_V2", intent(1))
-check(operation._legal(operation._parse(daemon_raw)) == "ROOTFS_LEASED",
+retained_raw = daemon_raw
+daemon_raw = add(daemon_raw, "COMMAND_INTENT_V2", intent(1, "CTR_CONTAINER_INFO", "NETWORK_READY"))
+check(operation._legal(operation._parse(daemon_raw)) == "NETWORK_READY",
       "retained daemon blocked later command")
+
+# A retained daemon cannot use legacy v1 or cross runtime absence/finalization;
+# its authentic endpoint generation is a Unix socket.
+legacy_daemon = {"operation_token": "a" * 64, "command_serial": 0,
+                 "command_id": "CONTAINERD_START", "binding_sha256": "9" * 64,
+                 "deadline_class": "runtime-start"}
+reject(lambda: add(prefix(), "COMMAND_INTENT", legacy_daemon))
+progress = add(retained_raw, "RUNTIME_READY", {"operation_token": "a" * 64, "proof_sha256": "9" * 64})
+progress = add(progress, "SSH_READY", {"operation_token": "a" * 64, "proof_sha256": "9" * 64,
+    "marker_sha256": hashlib.sha256(operation.FIXED["ssh_marker"].encode()).hexdigest(),
+    "authentication_attempts": 1})
+progress = add(progress, "READINESS_REVOKED", {"operation_token": "a" * 64})
+progress = add(progress, "OWNERSHIP_OBSERVED", {"operation_token": "a" * 64,
+    "proof_sha256": "9" * 64, "task": "absent", "container": "exact-owned",
+    "runtime": "exact-owned", "share": "exact-owned"})
+for kind in ("NETWORK_ABSENT", "TASK_ABSENT", "CONTAINER_ABSENT"):
+    progress = add(progress, kind, {"operation_token": "a" * 64, "proof_sha256": "9" * 64})
+reject(lambda: add(progress, "RUNTIME_ABSENT", {"operation_token": "a" * 64,
+                                                 "proof_sha256": "9" * 64}))
+daemon_outcome = {"operation_token": "a" * 64, "command_serial": 0,
+    "command_id": "CONTAINERD_START", "binding_sha256": daemon["binding_sha256"],
+    "pid": daemon_preexec["pid"], "proc_start_time": daemon_preexec["proc_start_time"],
+    "status": 0, "leader_reaped": True, "descendants_reaped": True,
+    "cgroup_empty": True, "cgroup_removed": True, "uncertain": False, "errors": []}
+closed_daemon = add(retained_raw, "DAEMON_OUTCOME_V2", daemon_outcome)
+# The exact command policy rejects foreign owner IDs, wrong lifecycle, repeats,
+# and impossible output on a command which was never released.
+reject(lambda: add(raw, "COMMAND_INTENT_V2", intent(command_id="CTR_TASK_TERM")))
+unsupported = copy.deepcopy(command); unsupported["command_id"] = "CTR_RUN"
+unsupported = rebound(unsupported)
+reject(lambda: add(raw, "COMMAND_INTENT_V2", unsupported))
+ssh_intent = intent(command_id="SSH_READY")
+ssh_done = add(add(add(raw, "COMMAND_INTENT_V2", ssh_intent), "COMMAND_PREEXEC_V2", preexec(ssh_intent)),
+               "COMMAND_OUTCOME_V2", outcome(ssh_intent, operation.FIXED["ssh_marker"].encode()))
+reject(lambda: add(ssh_done, "COMMAND_INTENT_V2", intent(1, "SSH_READY")))
+not_started_output = outcome(command, b"x")
+not_started_output.update({"outcome": "not-started", "status": None, "release_count": 0})
+reject(lambda: operation._validate_body("COMMAND_OUTCOME_V2", not_started_output))
 
 # Cleanup-only pending-intent recovery never forks or releases and durably
 # consumes the exact serial. Pending PREEXEC is always sticky uncertain.
@@ -183,32 +247,57 @@ class RecoveryJournal:
         return body
 
 journal = RecoveryJournal((command, None))
-with patch.object(process.os.path, "exists", return_value=False), \
+with patch.object(process, "_recover_cgroup", return_value=(True, True)), \
      patch.object(process.os, "fork", side_effect=AssertionError("recovery forked")):
     process._recover_pending_fixed(journal)
-check(journal.recorded["outcome"] == "not-started" and not journal.recorded["uncertain"],
-      "clean pending intent did not settle")
+check(journal.recorded["outcome"] == "not-started" and journal.recorded["uncertain"]
+      and not journal.recorded["leader_reaped"] and not journal.recorded["descendants_reaped"],
+      "intent recovery fabricated wait/reap certainty")
 recovery_preexec = preexec(command)
 preexec_journal = RecoveryJournal((command, recovery_preexec))
-read_fd, write_fd = __import__("os").pipe()
-try:
-    with patch.object(process, "_directory_identity", return_value=(read_fd, recovery_preexec["cgroup_generation"])), \
-         patch.object(process, "_usable_pidfd_open", return_value=write_fd), \
-         patch.object(process, "_kill_cgroup", return_value=None), \
-         patch.object(process, "_cgroup_members", return_value=()), \
-         patch.object(process.os, "rmdir", return_value=None), \
-         patch.object(process.os, "fork", side_effect=AssertionError("recovery forked")):
-        process._recover_pending_fixed(preexec_journal)
-finally:
-    for descriptor in (read_fd, write_fd):
-        try: __import__("os").close(descriptor)
-        except OSError: pass
-check(preexec_journal.recorded["uncertain"] and preexec_journal.recorded["release_count"] == 1,
-      "pending preexec recovery was not sticky uncertain")
+with patch.object(process, "_recover_cgroup", return_value=(True, True)) as recover, \
+     patch.object(process, "_usable_pidfd_open", side_effect=AssertionError("leader pidfd required")), \
+     patch.object(process.os, "fork", side_effect=AssertionError("recovery forked")):
+    process._recover_pending_fixed(preexec_journal)
+check(recover.call_args.args[1] == process._generation_tuple(recovery_preexec["cgroup_generation"]),
+      "preexec recovery did not bind cgroup generation")
+check(preexec_journal.recorded["uncertain"] and preexec_journal.recorded["release_count"] == 0,
+      "pending preexec recovery was not honestly sticky uncertain")
+
+# Recovery kills and polls the deterministic leaf without consulting the dead
+# leader. A wait-wide census, not cgroup emptiness, proves descendant reaping.
+base_fd = __import__("os").open("/dev/null", __import__("os").O_RDONLY)
+leaf_fd = __import__("os").open("/dev/null", __import__("os").O_RDONLY)
+state, errors = {"term": False, "kill": False}, []
+with patch.object(process, "_directory_identity", side_effect=[
+        (base_fd, generation(80)), (leaf_fd, recovery_preexec["cgroup_generation"])]), \
+     patch.object(process, "_kill_cgroup") as killed, \
+     patch.object(process, "_cgroup_members", side_effect=[(777,), (), ()]), \
+     patch.object(process.os, "rmdir"):
+    check(process._recover_cgroup(recovery_preexec["cgroup_path"],
+          process._generation_tuple(recovery_preexec["cgroup_generation"]),
+          process._boottime_ns() + 1_000_000_000, state, errors) == (True, True),
+          "bounded cgroup recovery did not remove the leaf")
+check(killed.call_count == 2 and state["kill"] and not errors,
+      "leader-absent recovery did not use cgroup kill")
+with patch.object(process.os, "waitpid", return_value=(0, 0)):
+    check(process._wait_all_children(10, [])[1] is False,
+          "live wait-wide child was inferred reaped from cgroup state")
+with patch.object(process.os, "waitpid", side_effect=[(777, 0), ChildProcessError()]):
+    check(process._wait_all_children(10, [])[1] is True,
+          "wait-wide zombie census did not establish the narrow reap fact")
+uncertain_restore = process._outcome_body(
+    command, "exited", 0, None, b"", b"", {"stdout": False, "stderr": False}, 0,
+    True, (True, True, True, True), {"term": False, "kill": False},
+    ["subreaper-restore:OSError"], 1)
+check(uncertain_restore["uncertain"] and uncertain_restore["outcome"] == "uncertain",
+      "subreaper restoration failure settled a certain outcome")
 
 source = (ROOT / "deploy/aws-feasibility/remote/completion_kata_process.py").read_text()
 for forbidden in ("COGS_KATA_PROCESS_TESTING_V1", "def _make_test_issuer(", "def _supervise("):
     check(forbidden not in source, f"deployed test/generic issuer remains: {forbidden}")
+check(source.index("_set_subreaper(previous_subreaper)") < source.index("_record_command_outcome(journal, body)"),
+      "subreaper restoration occurs after durable settlement")
 check(process.LONG_LIVED_CONTAINERD.command_id is process.CommandId.CONTAINERD_START,
       "containerd was modeled as a short command")
 check(process.OWNER_ASSIGNED_IDS == {

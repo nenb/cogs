@@ -79,29 +79,58 @@ def _digest_regular(descriptor, expected):
     return digest.hexdigest()
 
 
-def bind_inputs(client_fd, known_hosts_fd, expected_client, expected_known_hosts):
-    """Observe the two fixed SSH inputs; this function grants no authority."""
-    if (type(client_fd) is not int or type(known_hosts_fd) is not int
-            or client_fd < 0 or known_hosts_fd < 0 or client_fd == known_hosts_fd
-            or not isinstance(expected_client, FdIdentity)
-            or not isinstance(expected_known_hosts, FdIdentity)):
-        raise FdMapError("invalid fixed inputs")
-    rows = []
-    for role, descriptor, expected in (
-        (CLIENT_KEY, client_fd, expected_client),
-        (KNOWN_HOSTS, known_hosts_fd, expected_known_hosts),
-    ):
-        if identity(descriptor) != expected:
-            raise FdMapError("input identity mismatch")
-        rows.append(InheritedBinding(
-            role, descriptor, ROLE_TARGETS[role], expected,
-            _digest_regular(descriptor, expected),
-        ))
-    if (rows[0].identity.device, rows[0].identity.inode) == (
-        rows[1].identity.device, rows[1].identity.inode,
-    ):
-        raise FdMapError("roles share one underlying object")
-    return tuple(rows)
+def _input_routes():
+    seal, states = object(), {}
+
+    class InputOwner:
+        __slots__ = ()
+        def __new__(cls, key=None):
+            if key is not seal:
+                raise FdMapError("sealed input owner")
+            return super().__new__(cls)
+
+    def bind_inputs(client_fd, known_hosts_fd, expected_client, expected_known_hosts):
+        """Bind exact SSH inputs behind the historical one-use owner API."""
+        if (type(client_fd) is not int or type(known_hosts_fd) is not int
+                or client_fd < 0 or known_hosts_fd < 0 or client_fd == known_hosts_fd
+                or not isinstance(expected_client, FdIdentity)
+                or not isinstance(expected_known_hosts, FdIdentity)):
+            raise FdMapError("invalid fixed inputs")
+        rows = []
+        for role, descriptor, expected in (
+            (CLIENT_KEY, client_fd, expected_client),
+            (KNOWN_HOSTS, known_hosts_fd, expected_known_hosts),
+        ):
+            if identity(descriptor) != expected:
+                raise FdMapError("input identity mismatch")
+            rows.append(InheritedBinding(
+                role, descriptor, ROLE_TARGETS[role], expected,
+                _digest_regular(descriptor, expected),
+            ))
+        if (rows[0].identity.device, rows[0].identity.inode) == (
+            rows[1].identity.device, rows[1].identity.inode,
+        ):
+            raise FdMapError("roles share one underlying object")
+        owner = InputOwner(seal)
+        states[owner] = (tuple(rows), False)
+        return owner
+
+    def claim(targets, owner):
+        state = states.get(owner)
+        if (type(owner) is not InputOwner or state is None or state[1]
+                or type(targets) is not tuple or targets != (200, 201)):
+            raise FdMapError("invalid input claim")
+        rows = revalidate(state[0])
+        states[owner] = (state[0], True)
+        return rows
+
+    return InputOwner, bind_inputs, claim
+
+
+InputOwner, bind_inputs, claim = _input_routes()
+make_input_owner_for_tests = bind_inputs
+
+del _input_routes
 
 
 def revalidate(bindings):

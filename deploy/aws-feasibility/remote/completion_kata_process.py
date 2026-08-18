@@ -517,16 +517,11 @@ _fd_identity = fdmap.identity
 _seal_inherited_inputs_for_tests = fdmap.bind_inputs
 _install_inherited_fds = fdmap.install
 _relocate_child_internals = fdmap.relocate_internals
-_claimed_input_bindings = set()
-
-
 def _claim_inherited_fds(spec, owner):
     try:
-        if spec.inherited_fds != (200, 201) or id(owner) in _claimed_input_bindings:
-            raise fdmap.FdMapError("invalid or reused input binding")
-        rows = fdmap.revalidate(owner)
-        _claimed_input_bindings.add(id(owner))
-        return rows
+        if spec.inherited_fds == () and owner == ():
+            return ()
+        return fdmap.claim(spec.inherited_fds, owner)
     except fdmap.FdMapError as error:
         raise ProcessError("invalid inherited descriptor map") from error
 
@@ -805,12 +800,23 @@ def _boottime_ns():
     return time.clock_gettime_ns(CLOCK)
 
 
+def _require_no_children():
+    with open(f"/proc/self/task/{os.getpid()}/children", "rb", buffering=0) as source:
+        raw = source.read(65_537)
+    if len(raw) > 65_536 or any(not row.isdigit() for row in raw.split()):
+        raise ProcessError("invalid child baseline")
+    if raw.split():
+        raise ProcessError("process owner has unrelated children")
+
+
 def _host_generation(descriptor, kind=None):
     identity = fdmap.identity(descriptor)
     if identity.mount_id is None:
         raise ProcessError("fdinfo mount identity unavailable")
     if kind is None:
-        kind = "file" if stat.S_ISREG(identity.mode) else "pipe" if stat.S_ISFIFO(identity.mode) else "other"
+        kind = ("file" if stat.S_ISREG(identity.mode) else
+                "pipe" if stat.S_ISFIFO(identity.mode) else
+                "socket" if stat.S_ISSOCK(identity.mode) else "other")
     return {
         "mount_id": identity.mount_id, "device": identity.device, "inode": identity.inode,
         "kind": kind, "mode": identity.mode & 0o7777, "uid": identity.uid,
@@ -851,6 +857,7 @@ def _intent_body(context, fixed, executable, bindings, deadline):
             "generation": _host_generation(row.source_fd),
             "content_sha256": row.content_sha256, "content_length": row.identity.size,
         })
+    command_spec = _spec(fixed.command_id)
     body = {
         "operation_token": context.operation_token, "command_serial": context.command_serial,
         "command_id": fixed.command_id.value, "binding_sha256": ZERO,
@@ -863,7 +870,8 @@ def _intent_body(context, fixed, executable, bindings, deadline):
         "stdin_hex": fixed.stdin.hex(), "stdin_sha256": hashlib.sha256(fixed.stdin).hexdigest(),
         "stdin_length": len(fixed.stdin), "environment": environment,
         "environment_sha256": hashlib.sha256(kata_operation._canonical(environment)).hexdigest(),
-        "inherited_fds": inherited, "deadline_boottime_ns": deadline,
+        "inherited_fds": inherited, "deadline_class": command_spec.deadline_class,
+        "duration_ns": fixed.duration_ns, "deadline_boottime_ns": deadline,
         "output_grammar": fixed.output_grammar, "stdout_limit": fixed.stdout_limit,
         "stderr_limit": fixed.stderr_limit,
     }
@@ -1036,10 +1044,17 @@ def _set_subreaper(enabled):
     if libc.prctl(37, ctypes.byref(observed), 0, 0, 0) != 0:
         saved = ctypes.get_errno()
         raise OSError(saved, os.strerror(saved))
+    previous = bool(observed.value)
     if libc.prctl(36, int(enabled), 0, 0, 0) != 0:
         saved = ctypes.get_errno()
         raise OSError(saved, os.strerror(saved))
-    return bool(observed.value)
+    readback = ctypes.c_int()
+    if libc.prctl(37, ctypes.byref(readback), 0, 0, 0) != 0:
+        saved = ctypes.get_errno()
+        raise OSError(saved, os.strerror(saved))
+    if bool(readback.value) is not bool(enabled):
+        raise ProcessError("subreaper readback mismatch")
+    return previous
 
 
 def _advance_cleanup(owner, pid, wait_status, deadline, term_at, kill_at, state, errors):
@@ -1141,25 +1156,45 @@ def _drain_transaction(pid, descriptors, stdin_bytes, owner, deadline, term_at, 
     return buffers, overflow, wait_status, pipes_eof, state, errors
 
 
+def _wait_all_children(leader_pid, errors):
+    """Reap every waitable child and prove the subreaper has no child left."""
+    leader_reaped = False
+    while True:
+        try:
+            observed, _status = os.waitpid(-1, os.WNOHANG)
+        except ChildProcessError:
+            return leader_reaped, True
+        except OSError as error:
+            if error.errno == errno.EINTR:
+                continue
+            errors.append(f"wait-census:{error.errno}")
+            return leader_reaped, False
+        if observed == 0:
+            return leader_reaped, False
+        if observed == leader_pid:
+            leader_reaped = True
+
+
 def _settle_cgroup(owner, leader_pid, deadline, errors):
-    members = _cgroup_members(owner)
-    if members and _boottime_ns() < deadline:
-        _kill_cgroup(owner)
+    stable_empty = descendants_reaped = leader_reaped = False
+    while _boottime_ns() < deadline:
         members = _cgroup_members(owner)
-    stable_empty = not members and not _cgroup_members(owner)
-    descendants_reaped = True
-    for pid, (descriptor, _row) in tuple(owner.pidfds.items()):
-        if pid != leader_pid:
-            try:
-                observed, _status = os.waitpid(pid, os.WNOHANG)
-            except ChildProcessError:
-                observed = 0
-            if observed != pid:
-                descendants_reaped = False
+        if members:
+            _kill_cgroup(owner)
+        observed_leader, no_children = _wait_all_children(leader_pid, errors)
+        leader_reaped = leader_reaped or observed_leader
+        first_empty = not _cgroup_members(owner)
+        stable_empty = first_empty and not _cgroup_members(owner)
+        descendants_reaped = no_children
+        if stable_empty and descendants_reaped:
+            break
+        time.sleep(0.005)
+    for descriptor, _row in tuple(owner.pidfds.values()):
         try:
             os.close(descriptor)
         except OSError as error:
             errors.append(f"pidfd-close:{error.errno}")
+    owner.pidfds.clear()
     removed = False
     if stable_empty:
         try:
@@ -1188,13 +1223,13 @@ def _settle_cgroup(owner, leader_pid, deadline, errors):
                 setattr(owner, attribute, None)
             except OSError as error:
                 errors.append(f"cgroup-fd-close:{error.errno}")
-    return stable_empty, descendants_reaped, removed
+    return stable_empty, descendants_reaped, removed, leader_reaped
 
 
 def _outcome_body(intent, outcome, status, exec_errno, stdout, stderr, overflow,
                   wait_status, pipes_eof, cleanup, state, errors, release_count):
-    cgroup_empty, descendants_reaped, cgroup_removed = cleanup
-    leader_reaped = wait_status is not None or release_count == 0
+    cgroup_empty, descendants_reaped, cgroup_removed, cleanup_reaped = cleanup
+    leader_reaped = wait_status is not None or cleanup_reaped
     interrupted = state["term"] or state["kill"] or "absolute-deadline" in errors
     uncertain = (not leader_reaped or not descendants_reaped or not cgroup_empty
                  or not cgroup_removed or not pipes_eof or bool(errors) or interrupted)
@@ -1228,7 +1263,11 @@ def _transact_fixed(journal, fixed, executable, inherited=()):
         raise ProcessError("usable pidfd signaling is required")
     context = kata_operation._command_context(journal)
     deadline = _boottime_ns() + fixed.duration_ns
-    bindings = fdmap.revalidate(inherited)
+    spec = _Spec(
+        fixed.command_id.value, fixed.argv, fixed.stdin, "fixed",
+        fixed.duration_ns / 1_000_000_000, fixed.inherited_fds,
+    )
+    bindings = _claim_inherited_fds(spec, inherited)
     intent = _intent_body(context, fixed, executable, bindings, deadline)
     kata_operation._record_command_intent(journal, intent)
     owner = None
@@ -1236,11 +1275,14 @@ def _transact_fixed(journal, fixed, executable, inherited=()):
     pidfd = None
     pipes = []
     release_count = 0
-    previous_subreaper = _set_subreaper(True)
+    previous_subreaper = None
+    subreaper_restored = False
     errors = []
     wait_status = None
     preexec_recorded = False
     try:
+        _require_no_children()
+        previous_subreaper = _set_subreaper(True)
         owner = _prepare_cgroup(context)
         def owned_pipe():
             pair = os.pipe2(os.O_CLOEXEC)
@@ -1252,13 +1294,13 @@ def _transact_fixed(journal, fixed, executable, inherited=()):
         stdout_r, stdout_w = owned_pipe()
         stderr_r, stderr_w = owned_pipe()
         stdin_r, stdin_w = owned_pipe()
-        spec = _Spec(
+        child_spec = _Spec(
             fixed.command_id.value, fixed.argv, fixed.stdin, "fixed",
             fixed.duration_ns / 1_000_000_000, bindings,
         )
         pid = os.fork()
         if pid == 0:
-            _child(executable.descriptor, spec, release_r, setup_w, status_w, stdout_w, stderr_w, stdin_r)
+            _child(executable.descriptor, child_spec, release_r, setup_w, status_w, stdout_w, stderr_w, stdin_r)
         pidfd = _usable_pidfd_open(pid)
         for descriptor in (release_r, setup_w, status_w, stdout_w, stderr_w, stdin_r):
             os.close(descriptor)
@@ -1311,6 +1353,11 @@ def _transact_fixed(journal, fixed, executable, inherited=()):
         else:
             outcome, status = "uncertain", None
         cleanup = _settle_cgroup(owner, pid, deadline, errors)
+        try:
+            _set_subreaper(previous_subreaper)
+        except BaseException as error:
+            errors.append(f"subreaper-restore:{type(error).__name__}")
+        subreaper_restored = True
         body = _outcome_body(
             intent, outcome, status, exec_errno, stdout, stderr, overflow,
             wait_status, pipes_eof, cleanup, state, errors, release_count,
@@ -1331,25 +1378,36 @@ def _transact_fixed(journal, fixed, executable, inherited=()):
                 os.close(descriptor)
             except OSError as error:
                 errors.append(f"close:{error.errno}")
-        if pidfd is not None and wait_status is None:
+        if pid is not None and wait_status is None:
             try:
-                signal.pidfd_send_signal(pidfd, signal.SIGKILL)
+                if pidfd is not None:
+                    signal.pidfd_send_signal(pidfd, signal.SIGKILL)
                 while _boottime_ns() < deadline:
                     observed, status = os.waitpid(pid, os.WNOHANG)
                     if observed == pid:
                         wait_status = status
                         break
                     time.sleep(0.005)
+                if wait_status is None:
+                    errors.append("leader-cleanup:unreaped")
             except BaseException as error:
                 errors.append(f"leader-cleanup:{type(error).__name__}")
-        cleanup = (owner is None, owner is None, owner is None)
+        cleanup = (owner is None, owner is None, owner is None, wait_status is not None)
+        killed_cgroup = False
         if owner is not None:
             try:
                 _kill_cgroup(owner)
+                killed_cgroup = True
                 cleanup = _settle_cgroup(owner, pid, deadline, errors)
             except BaseException as error:
                 errors.append(f"cgroup-cleanup:{type(error).__name__}")
-        failure_state = {"term": False, "kill": owner is not None}
+        if previous_subreaper is not None and not subreaper_restored:
+            try:
+                _set_subreaper(previous_subreaper)
+            except BaseException as error:
+                errors.append(f"subreaper-restore:{type(error).__name__}")
+            subreaper_restored = True
+        failure_state = {"term": False, "kill": killed_cgroup}
         failure_body = _outcome_body(
             intent, "uncertain" if preexec_recorded else "not-started", None, None,
             b"", b"", {"stdout": False, "stderr": False}, wait_status,
@@ -1367,55 +1425,79 @@ def _transact_fixed(journal, fixed, executable, inherited=()):
                 os.close(pidfd)
             except OSError:
                 pass
-        try:
-            _set_subreaper(previous_subreaper)
-        except BaseException:
-            pass
+        if previous_subreaper is not None and not subreaper_restored:
+            try:
+                _set_subreaper(previous_subreaper)
+            except BaseException:
+                pass
+
+
+def _recover_cgroup(path, expected_generation, deadline, state, errors):
+    """Open the deterministic leaf, then boundedly kill, poll, and remove it."""
+    base_fd = leaf_fd = owner = None
+    try:
+        base_fd, _base_generation = _directory_identity(CGROUP_BASE)
+        leaf_fd, observed = _directory_identity(path)
+        leaf_generation = _generation_tuple(observed)
+        if expected_generation is not None and leaf_generation != expected_generation:
+            raise ProcessError("recovery cgroup generation mismatch")
+        owner = _CgroupOwner(
+            path, leaf_generation, (), False, {}, leaf_fd, base_fd,
+            path.rsplit("/", 1)[1],
+        )
+        leaf_fd = base_fd = None
+        _kill_cgroup(owner)
+        state["kill"] = True
+        empty = False
+        while _boottime_ns() < deadline:
+            members = _cgroup_members(owner)
+            if members:
+                _kill_cgroup(owner)
+            elif not _cgroup_members(owner):
+                empty = True
+                break
+            time.sleep(0.005)
+        removed = False
+        if empty:
+            os.close(owner.directory_fd)
+            owner.directory_fd = None
+            os.rmdir(owner.leaf_name, dir_fd=owner.base_fd)
+            removed = True
+        for attribute in ("directory_fd", "base_fd"):
+            descriptor = getattr(owner, attribute)
+            if descriptor is not None:
+                os.close(descriptor)
+                setattr(owner, attribute, None)
+        return empty, removed
+    except FileNotFoundError:
+        return True, True
+    except BaseException as error:
+        errors.append(f"recovery:{type(error).__name__}")
+        return False, False
+    finally:
+        owned = () if owner is None else (owner.directory_fd, owner.base_fd)
+        for descriptor in (leaf_fd, base_fd, *owned):
+            if descriptor is not None:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
 
 
 def _recover_pending_fixed(journal):
-    """Cleanup-only continuation; it never forks, releases, or starts work."""
+    """Cleanup-only crash continuation; absence never fabricates wait/reap proof."""
     intent, preexec = kata_operation._pending_command(journal)
     errors = ["crash-continuation"]
     state = {"term": False, "kill": False}
-    cgroup_empty = cgroup_removed = descendants_reaped = False
     path = f"{CGROUP_BASE}/{intent['operation_token']}-{intent['command_serial']}"
-    if preexec is None:
-        if not os.path.exists(path):
-            cgroup_empty = cgroup_removed = descendants_reaped = True
-            errors = []
-    else:
-        try:
-            descriptor = _usable_pidfd_open(preexec["pid"])
-            os.close(descriptor)
-            directory_fd, generation = _directory_identity(path)
-            expected_generation = _generation_tuple(preexec["cgroup_generation"])
-            if _generation_tuple(generation) != expected_generation:
-                os.close(directory_fd)
-                raise ProcessError("recovery cgroup generation mismatch")
-            owner = _CgroupOwner(
-                path, expected_generation, (), False, {}, directory_fd,
-            )
-            _kill_cgroup(owner)
-            state["kill"] = True
-            members = _cgroup_members(owner)
-            cgroup_empty = not members
-            descendants_reaped = cgroup_empty
-            if cgroup_empty:
-                os.close(directory_fd)
-                owner.directory_fd = None
-                os.rmdir(path)
-                cgroup_removed = True
-            elif owner.directory_fd is not None:
-                os.close(owner.directory_fd)
-                owner.directory_fd = None
-        except BaseException as error:
-            errors.append(f"recovery:{type(error).__name__}")
-    closure = (cgroup_empty, descendants_reaped, cgroup_removed)
+    expected = None if preexec is None else _generation_tuple(preexec["cgroup_generation"])
+    deadline = _boottime_ns() + 2_000_000_000
+    cgroup_empty, cgroup_removed = _recover_cgroup(path, expected, deadline, state, errors)
+    closure = (cgroup_empty, False, cgroup_removed, False)
     body = _outcome_body(
         intent, "not-started" if preexec is None else "uncertain", None, None,
-        b"", b"", {"stdout": False, "stderr": False}, None, preexec is None,
-        closure, state, errors, 0 if preexec is None else 1,
+        b"", b"", {"stdout": False, "stderr": False}, None, False,
+        closure, state, errors, 0,
     )
     return kata_operation._record_command_outcome(journal, body)
 

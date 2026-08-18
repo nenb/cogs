@@ -172,6 +172,82 @@ int main(int argc, char **argv) {
 '''
 
 
+def authentic_root_cgroup_recovery():
+    """Exercise leader-absent cgroup crash cleanup when root cgroup v2 is writable."""
+    if platform.system() != "Linux" or os.geteuid() != 0 or not os.access(process.CGROUP_ROOT, os.W_OK):
+        return False
+    context = process.kata_operation.CommandContext(
+        "c" * 64, {"mount_id": 1, "device": 2, "inode": 3, "kind": "file"},
+        process._boot_id(), "5" * 40, "NETWORK_READY", 4242,
+    )
+    previous = process._set_subreaper(True)
+    owner = None
+    gate_r = gate_w = report_r = report_w = grandchild = None
+    try:
+        owner = process._prepare_cgroup(context)
+        gate_r, gate_w = os.pipe2(os.O_CLOEXEC)
+        report_r, report_w = os.pipe2(os.O_CLOEXEC)
+        leader = os.fork()
+        if leader == 0:
+            try:
+                os.close(gate_w); os.close(report_r)
+                if os.read(gate_r, 1) != b"R": os._exit(90)
+                child = os.fork()
+                if child == 0:
+                    time.sleep(30); os._exit(0)
+                os.write(report_w, f"{child}\n".encode("ascii"))
+            finally:
+                os._exit(0)
+        os.close(gate_r); gate_r = None
+        os.close(report_w); report_w = None
+        process._register_cgroup(owner, leader)
+        os.write(gate_w, b"R"); os.close(gate_w); gate_w = None
+        grandchild = int(os.read(report_r, 32)); os.close(report_r); report_r = None
+        assert os.waitpid(leader, 0)[0] == leader
+        expected, path = owner.leaf_generation, owner.path
+        for descriptor, _row in owner.pidfds.values(): os.close(descriptor)
+        owner.pidfds.clear()
+        for descriptor in (owner.directory_fd, owner.base_fd): os.close(descriptor)
+        owner.directory_fd = owner.base_fd = None
+        state, errors = {"term": False, "kill": False}, []
+        assert process._recover_cgroup(
+            path, expected, process._boottime_ns() + 2_000_000_000, state, errors,
+        ) == (True, True)
+        assert state["kill"] and errors == []
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            observed, _status = os.waitpid(grandchild, os.WNOHANG)
+            if observed == grandchild: break
+            time.sleep(0.005)
+        else:
+            raise AssertionError("adopted grandchild was not reaped after authentic recovery")
+        if owner.base_created: os.rmdir(process.CGROUP_BASE)
+        return True
+    finally:
+        for descriptor in (gate_r, gate_w, report_r, report_w):
+            if descriptor is not None:
+                try: os.close(descriptor)
+                except OSError: pass
+        if owner is not None:
+            for attribute in ("directory_fd", "base_fd"):
+                descriptor = getattr(owner, attribute)
+                if descriptor is not None:
+                    try: os.close(descriptor)
+                    except OSError: pass
+                    setattr(owner, attribute, None)
+            if os.path.exists(owner.path):
+                process._recover_cgroup(
+                    owner.path, owner.leaf_generation,
+                    process._boottime_ns() + 2_000_000_000,
+                    {"term": False, "kill": False}, [],
+                )
+            process._wait_all_children(-1, [])
+            if owner.base_created and os.path.isdir(process.CGROUP_BASE):
+                try: os.rmdir(process.CGROUP_BASE)
+                except OSError: pass
+        process._set_subreaper(previous)
+
+
 def linux_supervisor_tests():
     if platform.system() != "Linux" or platform.machine() != "x86_64":
         return
@@ -239,7 +315,7 @@ def linux_supervisor_tests():
                 try: os.close(descriptor)
                 except OSError: pass
             value.pidfds.clear()
-            return True, True, True
+            return True, True, True, False
         return (
             patch.object(process, "_prepare_cgroup", side_effect=prepare),
             patch.object(process, "_register_cgroup", side_effect=register),
@@ -406,12 +482,27 @@ def linux_supervisor_tests():
         raise AssertionError("PID mismatch child was not reaped")
     assert real_identity
 
-    # Setup timeout occurs after fork/pidfd adoption and is cleanup-only.
+    # Setup timeout and the first pidfd-open failure after fork still perform a
+    # bounded direct wait; neither may fabricate a not-started reap fact.
     with patch.object(
         process, "_read_setup_boottime",
         side_effect=process.ProcessError("fixed setup timeout"),
     ):
         rejected(lambda: issue(process._TestAction.OK))
+    with patch.object(process, "_usable_pidfd_open", side_effect=OSError(errno.EIO, "pidfd")):
+        rejected(lambda: issue(process._TestAction.OK))
+    process._require_no_children()
+
+    # Restoration failure is folded into uncertainty before journal settlement.
+    subreaper_calls = 0
+    def fail_restore(enabled):
+        nonlocal subreaper_calls
+        subreaper_calls += 1
+        if subreaper_calls == 1: return False
+        raise OSError(errno.EIO, "restore")
+    with patch.object(process, "_set_subreaper", side_effect=fail_restore):
+        result = issue(process._TestAction.OK)
+    assert result.outcome == "uncertain" and "subreaper-restore:OSError" in result.errors
 
     # ECHILD and identity-observation failures are recorded, never thrown.
     wait_errors = []
@@ -465,8 +556,11 @@ required = os.environ.get("COGS_REQUIRE_LINUX_PROCESS_TESTS_V1") == "1"
 qualified = platform.system() == "Linux" and platform.machine() == "x86_64"
 if required and not qualified:
     raise RuntimeError("Linux amd64 process qualification was required")
+root_cgroup = authentic_root_cgroup_recovery()
 if qualified:
     linux_supervisor_tests()
-    print("completion Kata process LINUX AMD64 QUALIFIED matrix passed")
+    print("completion Kata process LINUX AMD64 QUALIFIED matrix passed" +
+          ("; root cgroup crash matrix passed" if root_cgroup else "; root cgroup crash matrix SKIPPED"))
 else:
-    print("completion Kata process portable matrix passed; Linux amd64 supervisor matrix SKIPPED")
+    print("completion Kata process portable matrix passed; Linux amd64 supervisor matrix SKIPPED; " +
+          ("root cgroup crash matrix passed" if root_cgroup else "root cgroup crash matrix SKIPPED"))
