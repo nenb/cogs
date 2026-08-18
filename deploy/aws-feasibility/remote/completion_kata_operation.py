@@ -1677,6 +1677,9 @@ def _make_authority():
                                   == self.state.generation)
                 state_live_ok = (fs._observe_node(self.state.identity_fd, self.state.operation_fd,
                                                   self.control) == self.state.generation)
+                if not (base_ok and state_child_ok and state_live_ok) and os.environ.get(
+                        "COGS_KATA_SYNTHETIC_ATTESTATION_V1") == "1":
+                    os.write(2, f"DIAG_CHAIN:{base_ok}:{state_child_ok}:{state_live_ok}\n".encode())
                 _fail(base_ok and state_child_ok and state_live_ok)
             finally:
                 fs._close_chain(fresh)
