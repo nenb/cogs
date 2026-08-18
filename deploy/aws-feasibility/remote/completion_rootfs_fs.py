@@ -37,12 +37,13 @@ _O_DIRECTORY = getattr(os, "O_DIRECTORY", 0)
 IDENTITY_FLAGS = _O_PATH | _O_NOFOLLOW | _O_CLOEXEC
 DIRECTORY_FLAGS = os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW | _O_CLOEXEC
 FILE_FLAGS = os.O_RDONLY | _O_NOFOLLOW | _O_CLOEXEC
-# Qualified amd64 runtimes expose one of two fixed O_PATH fdinfo forms: the
-# approved Linux form retains O_LARGEFILE, while the QEMU guest form retains
-# open-time O_NOFOLLOW. No kernel-age boundary is assumed.
+# Qualified amd64 runtimes expose three fixed O_PATH fdinfo forms: hosted
+# Linux may omit or retain O_LARGEFILE, while the QEMU guest retains open-time
+# O_NOFOLLOW. No kernel-age boundary is assumed.
 FDINFO_FLAGS = b"012100000"
 FDINFO_NOFOLLOW_FLAGS = b"012400000"
-FDINFO_IDENTITY_FLAGS = (FDINFO_FLAGS, FDINFO_NOFOLLOW_FLAGS)
+FDINFO_PATH_FLAGS = b"012000000"
+FDINFO_IDENTITY_FLAGS = (FDINFO_FLAGS, FDINFO_NOFOLLOW_FLAGS, FDINFO_PATH_FLAGS)
 ANONYMOUS_FDINFO_FLAGS = (b"022440002", b"022300002")
 ROOTFS_STRUCTURAL_COUNTER_KEYS = (
     "active_history_record_copies", "listed_names", "parent_snapshots", "complete_legal_folds",
