@@ -1412,15 +1412,11 @@ def production_owner_test():
                     finally:
                         if tun is not None: os.close(tun)
                     original_placeholder = Path("/run/netns/c42n" + token_suffix)
-                    placeholder_stat = original_placeholder.stat(follow_symlinks=False)
-                    planned = network._original_placeholder(production_network)
-                    assert (placeholder_stat.st_dev, placeholder_stat.st_ino) == (planned["device"], planned["inode"])
                     quarantine_placeholder = Path("/run/netns/c42q" + token_suffix)
-                    quarantine_stat = quarantine_placeholder.stat(follow_symlinks=False)
-                    detached = network._quarantine_stage(production_network)[1]["preserved"]
-                    assert (quarantine_stat.st_dev, quarantine_stat.st_ino) == (detached["device"], detached["inode"])
+                    assert not original_placeholder.exists() and not quarantine_placeholder.exists()
+                    assert not Path(network.PRESERVED_DIR).exists()
+                    assert network._netns_parent_mount() is None
                     assert not Path("/sys/class/net/c42h" + token_suffix).exists()
-                    original_placeholder.unlink(); quarantine_placeholder.unlink()  # fixture-only exact cleanup before token reuse
 
                     # Failed-launch route: task absent while the ready network still exists.
                     production_network.close()
