@@ -1264,7 +1264,10 @@ def production_owner_test():
                     assert foreign_delete.returncode == 0 and foreign_delete.stderr == b""
                     rejected(lambda: network._resume_effect(production_network, *retained_tools))
                     production_network.close()
-                    for path in (Path("/run/netns/c42naaaaaaaaaa"), Path("/run/netns/c42qaaaaaaaaaa")):
+                    setup_mount = Path("/run/netns/c42naaaaaaaaaa")
+                    if setup_mount.exists():
+                        assert libc.umount2(os.fsencode(setup_mount), 2) == 0
+                    for path in (setup_mount, Path("/run/netns/c42qaaaaaaaaaa")):
                         if path.exists(): path.unlink()
                     production_fixture((intent, ("ROOTFS_LEASED", leased),
                         ("FS_INTENT", fs_intent), ("FS_OBSERVED", baseline_observed),
