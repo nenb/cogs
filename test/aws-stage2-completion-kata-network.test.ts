@@ -7,6 +7,7 @@ import { test } from "node:test";
 const root = process.cwd();
 const productionPath = join(root, "deploy/aws-feasibility/remote/completion_kata_network.py");
 const pythonTestPath = join(root, "test/aws-stage2-completion-kata-network.py");
+const linuxTestPath = join(root, "test/aws-stage2-completion-kata-network-linux.py");
 
 test("S3 fixed network/firewall owner is closed and identity-conservative", async () => {
   const env: NodeJS.ProcessEnv = { ...process.env, PYTHONDONTWRITEBYTECODE: "1" };
@@ -29,14 +30,26 @@ test("S3 fixed network/firewall owner is closed and identity-conservative", asyn
   assert.notEqual(optimized.status, 0);
 
   const source = await readFile(productionPath, "utf8");
-  const lines = source.split("\n").length - 1;
-  assert.ok(lines <= 1100, `S3 production exceeds revised hard 1100: ${lines}`);
+  const linuxFixture = await readFile(linuxTestPath, "utf8");
+  const workflow = await readFile(join(root, ".github/workflows/stage2-workload-linux-foundations.yml"), "utf8");
+  assert.match(
+    workflow,
+    /COGS_REQUIRE_STAGE2_NETWORK_FOUNDATION=1[\s\S]*aws-stage2-completion-kata-network-linux\.py/u,
+  );
+  assert.match(linuxFixture, /move_to_quarantine\(retained_ns\)[\s\S]*replacement = ns_identity\(netns\)/u);
+  assert.doesNotMatch(linuxFixture, /boto|terraform|tofu|aws |provider/u);
+  const caps = spawnSync("python3", [join(root, "scripts/check-stage2-retained-lines.py")], {
+    cwd: root,
+    env,
+    encoding: "utf8",
+  });
+  assert.equal(caps.status, 0, caps.stderr || caps.stdout);
   assert.match(source, /Action = actions\.CommandId/u);
   assert.match(source, /TcObservation = actions\.CommandId/u);
   assert.match(source, /NFT_TRANSACTION = b'''add table inet cogs_stage2_ssh_v1/u);
   assert.match(source, /QUALIFICATION_CANDIDATE = "UNQUALIFIED_FIXED_HOST_TOOL_OUTPUT_CANDIDATE_V1"/u);
-  assert.match(source, /def parse_nft_snapshot\(raw\):/u);
-  assert.match(source, /def parse_netns_identity\(raw, stat\):/u);
+  assert.match(source, /def parse_nft_snapshot\(raw, table_name=TABLE, host_if=HOST_IF\):/u);
+  assert.match(source, /def parse_netns_identity\(raw, stat, path=NETNS_PATH\):/u);
   assert.match(source, /def parse_tc_qdiscs\(raw, endpoint\):/u);
   assert.match(source, /def parse_tc_filters\(raw, source, target\):/u);
   assert.match(source, /def runtime_difference\(before, after\):/u);

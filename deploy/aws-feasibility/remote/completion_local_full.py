@@ -134,15 +134,12 @@ def _not_reached(rows, start=0):
 
 def _phase_failure(rows, later, code):
     for index, row in enumerate(rows):
-        if row["outcome"] == "not-reached":
-            _require(_not_reached(rows, index) and all(_not_reached(group) for group in later))
-            return code
-        if row["outcome"] == "failure":
-            _require(_not_reached(rows, index + 1) and all(_not_reached(group) for group in later))
-            return code
-        if row["deletion"] != "absent":
-            _require(_not_reached(rows, index + 1) and all(_not_reached(group) for group in later))
-            return "deletion"
+        if row["outcome"] == "pass" and row["deletion"] == "absent":
+            continue
+        remaining = index if row["outcome"] == "not-reached" else index + 1
+        _require(_not_reached(rows, remaining)
+                 and all(_not_reached(group) for group in later))
+        return code if row["outcome"] != "pass" else "deletion"
     return None
 
 
@@ -321,10 +318,20 @@ def load_result(raw):
 
 
 def main():
-    """Zero-argument stub; no serialized input can open production."""
+    """Run only the fixed local entry; current immutable prerequisites block."""
     if len(sys.argv) != 1:
         raise LocalResultBlocked()
-    raise LocalResultBlocked()
+    import completion_kata_coordinator as coordinator
+    try:
+        # No report bytes can enter this route.  When the missing secure issuer
+        # is committed, this call must return its sealed private receipt rather
+        # than a decoded/caller-created result.
+        receipt = coordinator._run_fixed_local_qualification()
+    except coordinator.CoordinatorBlocked as error:
+        raise LocalResultBlocked() from error
+    value = coordinator._consume_local_receipt(receipt)
+    raw = canonical_result(value)
+    _require(sys.stdout.buffer.write(raw) == len(raw))
 
 
 if __name__ == "__main__":

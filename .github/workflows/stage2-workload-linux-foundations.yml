@@ -36,6 +36,25 @@ jobs:
         run: |
           set -euo pipefail
           fixture=/tmp/cogs-kata-process-s1-v1
+          runtime_fixture=/tmp/cogs-stage2-containerd-2.2.1
+          runtime_archive=/tmp/cogs-stage2-containerd-2.2.1.tar.gz
+          cleanup_runtime_fixture() {
+            if sudo -n test -e "$runtime_fixture" || sudo -n test -L "$runtime_fixture"; then
+              sudo -n test ! -L "$runtime_fixture" && sudo -n test -d "$runtime_fixture" || return 1
+              test "$(sudo -n find "$runtime_fixture" -mindepth 1 -maxdepth 2 -printf '%P\n' | sort)" = $'bin\nbin/containerd\nbin/ctr' || return 1
+              sudo -n test "$(sudo -n stat -c '%u:%g:%a' -- "$runtime_fixture" "$runtime_fixture/bin")" = $'0:0:700\n0:0:700' || return 1
+              for name in containerd ctr; do
+                sudo -n test "$(sudo -n stat -c '%u:%g:%a' -- "$runtime_fixture/bin/$name")" = 0:0:500 || return 1
+                sudo -n rm -- "$runtime_fixture/bin/$name" || return 1
+              done
+              sudo -n rmdir -- "$runtime_fixture/bin" "$runtime_fixture" || return 1
+            fi
+            if sudo -n test -e "$runtime_archive" || sudo -n test -L "$runtime_archive"; then
+              sudo -n test ! -L "$runtime_archive" && sudo -n test -f "$runtime_archive" || return 1
+              test "$(sudo -n sha256sum "$runtime_archive" | cut -d' ' -f1)" = af3e82bac6abed58d45956c653244aa2be583359a9753614278ef652012f2883 || return 1
+              sudo -n rm -- "$runtime_archive" || return 1
+            fi
+          }
           cleanup_native_fixture() {
             if sudo -n test -e "$fixture" || sudo -n test -L "$fixture"; then
               sudo -n test ! -L "$fixture" || return 1
@@ -58,33 +77,100 @@ jobs:
               sudo -n rmdir -- "$fixture" || return 1
             fi
           }
+          cleanup_ssh_fixture() {
+            for pair in \
+              'cogs-stage2-attested-static-v1.elf -' \
+              'cogs-stage2-attested-ssh-contract-v1.json attested-ssh-contract-v1.json' \
+              'cogs-stage2-attested-ssh-keygen-contract-v1.json attested-ssh-keygen-contract-v1.json'; do
+              set -- $pair
+              target="/tmp/$1"
+              source="test/fixtures/stage2-completion/$2"
+              if sudo -n test -e "$target" || sudo -n test -L "$target"; then
+                sudo -n test ! -L "$target" || return 1
+                sudo -n test -f "$target" || return 1
+                sudo -n test "$(sudo -n stat -c '%u:%g' -- "$target")" = 0:0 || return 1
+                if [[ "$2" = - ]]; then
+                  sudo -n test "$(sudo -n stat -c '%s' -- "$target")" = 5968 || return 1
+                  sudo -n test "$(sudo -n sha256sum "$target" | cut -d' ' -f1)" = 195f8c4f5812eb29247a6d99882f868a0266fbb237016285da49fdf53bd7c74f || return 1
+                else
+                  sudo -n cmp --silent "$target" "$source" || return 1
+                fi
+                sudo -n rm -- "$target" || return 1
+              fi
+            done
+            sudo -n test ! -e /tmp/cogs-stage2-attested-static-v1.building || return 1
+            sudo -n test ! -L /tmp/cogs-stage2-attested-static-v1.building || return 1
+          }
           cleanup_on_exit() {
             primary=$?
             trap - EXIT
             set +e
             cleanup_native_fixture
             cleanup_status=$?
+            cleanup_ssh_fixture
+            ssh_cleanup_status=$?
+            cleanup_runtime_fixture
+            runtime_cleanup_status=$?
+            if (( cleanup_status == 0 && ssh_cleanup_status != 0 )); then cleanup_status=$ssh_cleanup_status; fi
+            if (( cleanup_status == 0 && runtime_cleanup_status != 0 )); then cleanup_status=$runtime_cleanup_status; fi
             if (( primary != 0 )); then exit "$primary"; fi
             exit "$cleanup_status"
           }
           trap cleanup_on_exit EXIT
           sudo -n test ! -e "$fixture"
           sudo -n test ! -L "$fixture"
+          sudo -n test ! -e /tmp/cogs-stage2-attested-static-v1.building
+          sudo -n test ! -L /tmp/cogs-stage2-attested-static-v1.building
+          sudo -n test -x /usr/bin/clang
           sudo -n env -i \
             HOME=/root LC_ALL=C PATH=/usr/sbin:/usr/bin:/sbin:/bin \
             PYTHONDONTWRITEBYTECODE=1 \
             COGS_REQUIRE_STAGE2_KATA_NATIVE_FOUNDATIONS=1 \
+            COGS_REQUIRE_STAGE2_KATA_RUNTIME_FOUNDATIONS=1 \
             /usr/bin/python3 -I -B test/aws-stage2-completion-kata-operation.py
           sudo -n env -i \
             HOME=/root LC_ALL=C PATH=/usr/sbin:/usr/bin:/sbin:/bin \
             PYTHONDONTWRITEBYTECODE=1 \
             COGS_REQUIRE_STAGE2_KATA_NATIVE_FOUNDATIONS=1 \
             /usr/bin/python3 -I -B test/aws-stage2-completion-kata-process.py
+          sudo -n env -i \
+            HOME=/root LC_ALL=C PATH=/usr/sbin:/usr/bin:/sbin:/bin \
+            PYTHONDONTWRITEBYTECODE=1 \
+            COGS_REQUIRE_STAGE2_KATA_NATIVE_SSH_INPUT=1 \
+            /usr/bin/python3 -I -B test/aws-stage2-completion-kata-ssh-native.py
+          cleanup_ssh_fixture
           sudo -n test ! -e /sys/fs/cgroup/cogs-stage2-completion-v1
           test -z "$(/usr/bin/pgrep -f '[/]tmp/cogs-kata-process-s1-v1/helper' || true)"
+          test -z "$(/usr/bin/pgrep -f '[/]tmp/tmp[^/]*/daemon' || true)"
           cleanup_native_fixture
           sudo -n test ! -e "$fixture"
           sudo -n test ! -L "$fixture"
+          cleanup_runtime_fixture
+          sudo -n /usr/bin/curl --fail --location --silent --show-error \
+            https://github.com/containerd/containerd/releases/download/v2.2.1/containerd-static-2.2.1-linux-amd64.tar.gz \
+            --output "$runtime_archive"
+          test "$(sudo -n sha256sum "$runtime_archive" | cut -d' ' -f1)" = af3e82bac6abed58d45956c653244aa2be583359a9753614278ef652012f2883
+          sudo -n mkdir -m 0700 "$runtime_fixture" "$runtime_fixture/bin"
+          sudo -n tar -xzf "$runtime_archive" -C "$runtime_fixture" bin/containerd bin/ctr
+          sudo -n chown 0:0 "$runtime_fixture/bin/containerd" "$runtime_fixture/bin/ctr"
+          sudo -n chmod 0500 "$runtime_fixture/bin/containerd" "$runtime_fixture/bin/ctr"
+          sudo -n env -i \
+            HOME=/root LC_ALL=C PATH=/usr/sbin:/usr/bin:/sbin:/bin \
+            PYTHONDONTWRITEBYTECODE=1 \
+            COGS_REQUIRE_STAGE2_KATA_NATIVE_FOUNDATIONS=1 \
+            COGS_REQUIRE_STAGE2_NETWORK_FOUNDATION=1 \
+            COGS_STAGE2_CONTAINERD_FIXTURE="$runtime_fixture" \
+            /usr/bin/python3 -I -B test/aws-stage2-completion-kata-operation.py
+          sudo -n env -i \
+            HOME=/root LC_ALL=C PATH=/usr/sbin:/usr/bin:/sbin:/bin \
+            PYTHONDONTWRITEBYTECODE=1 \
+            COGS_REQUIRE_STAGE2_KATA_NATIVE_FOUNDATIONS=1 \
+            /usr/bin/python3 -I -B test/aws-stage2-completion-kata-process.py
+          sudo -n env -i \
+            HOME=/root LC_ALL=C PATH=/usr/sbin:/usr/bin:/sbin:/bin \
+            PYTHONDONTWRITEBYTECODE=1 \
+            COGS_REQUIRE_STAGE2_NETWORK_FOUNDATION=1 \
+            /usr/bin/python3 -I -B test/aws-stage2-completion-kata-network-linux.py
           sudo -n env -i \
             HOME=/root LC_ALL=C PATH=/usr/sbin:/usr/bin:/sbin:/bin \
             PYTHONDONTWRITEBYTECODE=1 \

@@ -25,8 +25,9 @@ test("S2 fixed input/control owner is closed, deterministic, and identity-bound"
   assert.match(source, /O_TMPFILE/u);
   assert.match(source, /linkat/u);
   assert.match(source, /operation-specific manifest/u);
-  assert.match(source, /no production create or\s+remove route/u);
-  assert.doesNotMatch(source, /os\.walk|rmtree|glob|subprocess|socket|ssh-keygen|keyscan/u);
+  assert.match(source, /package-private production/u);
+  assert.doesNotMatch(source, /def open_fixed_input_owner/u);
+  assert.doesNotMatch(source, /os\.walk|rmtree|glob|subprocess|socket|keyscan/u);
 });
 
 test("S2 fixed inputs optional Docker filesystem matrix is explicitly non-authoritative", {

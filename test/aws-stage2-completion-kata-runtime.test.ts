@@ -34,7 +34,10 @@ test("S4 Kata runtime/spec/process/share owner is closed and hostile-tested offl
 
   const source = await readFile(modulePath, "utf8");
   const physicalLines = source.split("\n").length - 1;
-  assert.ok(physicalLines >= 650 && physicalLines <= 1_300, `unexpected production line count: ${physicalLines}`);
+  assert.ok(
+    physicalLines >= 650 && physicalLines <= 1_500,
+    `unexpected integrated production line count: ${physicalLines}`,
+  );
   assert.match(source, /mounts = \(/u);
   assert.match(source, /def validate_stored_spec\(stored_spec\):/u);
   assert.match(source, /def custom_mount_argv\(\):/u);
@@ -46,9 +49,20 @@ test("S4 Kata runtime/spec/process/share owner is closed and hostile-tested offl
   assert.match(source, /MAX_SHARE_TOTAL = 256/u);
   assert.match(source, /def next_teardown_action\(snapshot\):/u);
   assert.match(source, /def _open_production_owner\(\):/u);
+  assert.match(source, /def fixed_command_specs_v2\(\):/u);
+  assert.match(source, /def _stage_containerd_archive\(/u);
+  assert.match(source, /CONTAINERD_ARCHIVE_SHA256/u);
+  assert.match(source, /def shutdown_daemon\(daemon\):/u);
+  assert.match(source, /successful released TERM[\s\S]*CTR_TASK_KILL/u);
+  assert.match(source, /def cleanup\(owner\):/u);
+  assert.match(source, /def _proc_snapshot\(attested, netns\):/u);
+  assert.match(source, /def _qmp_kvm\(processes\):/u);
+  assert.match(source, /def _share_fact\(\):/u);
   assert.doesNotMatch(
     source,
-    /subprocess|socket|requests|urllib|boto|AWS|terraform|tofu|argparse|sys\.argv|os\.|environ|pathlib|\bopen\(|if __name__|ctr run --config/u,
+    /subprocess|requests|urllib|boto|AWS|terraform|tofu|argparse|sys\.argv|pathlib|if __name__|ctr run --config|callable\(/u,
   );
+  assert.match(source, /os\.environ\.get\("COGS_KATA_SYNTHETIC_RUNTIME_V1"\) == "1"/u);
+  assert.doesNotMatch(source, /_VERIFIED_INPUTS|_VERIFIED_NETNS|_FIXED_ATTESTATIONS|_PRIVATE_DAEMONS/u);
   assert.doesNotMatch(source, /def custom_mount_argv\([^)]{1,}\)/u);
 });

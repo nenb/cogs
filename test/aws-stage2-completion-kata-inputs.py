@@ -186,16 +186,17 @@ for hostile in (
 ):
     rejected(lambda hostile=hostile: inputs._parse_mountinfo(hostile, "/fixed/input"))
 
-# Capabilities are registry identities, not duck-typed lookalikes, and there is
-# no production operation or process issuer in this module.
+# Historical test grants remain distinct and cannot become the package-private
+# production operation/input owner.
 source_path = REMOTE / "completion_kata_inputs.py"
 source = source_path.read_text()
 module_tree = ast.parse(source)
 assert "InputPermit" in source and "KeyMaterialGrant" in source
-for forbidden in ("os.walk", "rmtree", "glob", "subprocess", "socket", "ssh-keygen", "keyscan", "if __name__"):
+for forbidden in ("os.walk", "rmtree", "glob", "subprocess", "socket", "keyscan", "if __name__"):
     assert forbidden not in source
 for name in ("create_fixed_inputs", "remove_fixed_inputs", "InputPermit", "KeyMaterialGrant"):
     assert not hasattr(inputs, name)
+rejected(lambda: inputs._ProductionInputs())
 for exported in (inputs._create_fixed_inputs_test_local, inputs._verify_fixed_inputs_test_local,
                  inputs._remove_fixed_inputs_test_local):
     assert callable(exported)
@@ -368,6 +369,21 @@ def linux_functional():
             assert created == create()  # complete is idempotently resumable
             assert created == inputs._verify_fixed_inputs_test_local(completion, operation_grant, control)
             assert created.entry_count == len(graph)
+            class RuntimeJournal:
+                def command_context(self):
+                    return inputs.operation.CommandContext(
+                        created.operation_token, {"kind": "file"}, "boot", "1" * 40,
+                        "ROOTFS_LEASED", 0,
+                    )
+            runtime_journal = RuntimeJournal()
+            runtime_owner = inputs._reopen_runtime_inputs(runtime_journal, completion, control)
+            runtime_grant = inputs._claim_runtime_inputs(runtime_owner, runtime_journal)
+            identity, generations = inputs._consume_runtime_inputs(runtime_grant)
+            assert identity == created and len(generations) >= 5
+            assert inputs._verify_runtime_inputs(runtime_grant) == (identity, generations)
+            rejected(lambda: inputs._consume_runtime_inputs(runtime_grant))
+            inputs._close_runtime_inputs(runtime_owner)
+            rejected(lambda: inputs._verify_runtime_inputs(runtime_grant))
 
             detach = inputs._make_test_detach_grant(operation_grant)
             ordered = sorted((item for item in graph if item.path != "."),
@@ -605,6 +621,7 @@ def linux_functional():
         finally:
             fs._close_node(completion)
     print("completion Kata inputs LINUX EUID-0 FUNCTIONAL matrix passed")
+
 
 
 linux_functional()

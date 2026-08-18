@@ -8,6 +8,8 @@ import importlib.util
 import json
 from pathlib import Path
 import sys
+from types import SimpleNamespace
+from unittest.mock import patch
 
 if sys.flags.optimize != 0:
     raise RuntimeError("contract tests refuse Python optimization")
@@ -239,14 +241,10 @@ check(runtime.BOOTSTRAP == bootstrap, "bootstrap bytes drifted")
 permit = runtime._make_fake_launch_permit_for_tests()
 run = runtime.ctr_run_spec(permit)
 check(run.command_id is runtime.actions.CommandId.CTR_RUN and run.stdin == b"", "run command envelope")
-check(run.argv[:14] == (
-    "/usr/bin/ctr", "--namespace", runtime.NAMESPACE, "run", "--runtime", runtime.RUNTIME,
-    "--runtime-config-path", runtime.RUNTIME_CONFIG, "--rootfs", "--read-only", "--detach",
-    "--with-ns", "network:" + runtime.NETNS_PATH, "--mount",
-), "run argv positional prefix")
-check(run.argv[-5:] == (
-    runtime.ROOTFS_CANDIDATE, runtime.CONTAINER_ID, "/bin/sh", "-c", bootstrap.decode("ascii"),
-), "run argv positional suffix")
+check(run.argv == runtime._ctr_metadata_argv()
+      and run.argv[5:7] == ("containers", "create")
+      and "run" not in run.argv and "tasks" not in run.argv,
+      "metadata-only container create policy")
 rejected(lambda: runtime.ctr_run_spec(permit))
 rejected(runtime._open_production_owner)
 commands = {item.command_id.value: item for item in runtime.fixed_command_specs_for_tests()}
@@ -388,5 +386,149 @@ check(runtime.recovery_class(foreign) == "preserve_no_adoption", "name-only adop
 clean = runtime.RuntimeSnapshot(True, O.ABSENT, "absent", O.ABSENT, O.ABSENT,
                                 O.ABSENT, O.EXACT, O.ABSENT, True)
 check(runtime.next_teardown_action(clean) is runtime.TeardownAction.COMPLETE, "closed teardown")
+
+# V2 addressed policy is additive; every historical v1 byte snapshot above is unchanged.
+v1 = runtime.fixed_command_specs_for_tests()
+v2 = runtime.fixed_command_specs_v2()
+check(len(v1) == len(v2) == 7, "versioned ctr command cardinality")
+check(all(item.argv[1] == "--namespace" for item in v1), "historical v1 bytes changed")
+check(all(item.argv[:3] == (runtime.STAGED_CTR, "--address", runtime.CONTAINERD_ADDRESS)
+          for item in v2), "v2 ctr escaped private address")
+run_v2 = runtime.ctr_run_spec_v2("a" * 64)
+check(run_v2.argv == runtime.command_policy.ctr_run_argv("a" * 64), "v2 policy/spec drift")
+check(runtime.ROOTFS_CANDIDATE not in run_v2.argv and "operation-" + "a" * 64 in run_v2.argv[-5],
+      "v2 retained root policy")
+check(hashlib.sha256(runtime.CONTAINERD_CONFIG_BYTES).hexdigest() == runtime.CONTAINERD_CONFIG_SHA256,
+      "fixed private config digest")
+check(runtime.private_containerd_spec_v2().argv[:3] ==
+      (runtime.STAGED_CONTAINERD, "--address", runtime.CONTAINERD_ADDRESS), "private daemon staging/address")
+check(runtime.command_policy.CONTAINERD_ARCHIVE_SHA256 ==
+      "af3e82bac6abed58d45956c653244aa2be583359a9753614278ef652012f2883"
+      and runtime.command_policy.CONTAINERD_ARCHIVE_SIZE == 33_645_699, "containerd archive pin")
+check(runtime.KATA_CONFIG_SHA256 == "7ecd072a35da55f5abc76d604a610cf3f2d543c7de0cefc4d1a81028facd2cae"
+      and runtime.COMMITTED_EXECUTABLE_SHA256["/opt/kata/bin/qemu-system-x86_64"] ==
+      "1e4968d9cce98c7cba8f9e3488236cba56993d9747f268d03b0284f3df2b012d",
+      "committed Kata config/QEMU table")
+policy = runtime.command_policy
+check(policy.POLICY_VERSION == "cogs.stage2-kata-command-policy/v4-process-only-ssh-stable-1"
+      and not hasattr(policy, "PHASE_COMMAND_TRACES")
+      and policy.ATTESTED_COMMANDS == frozenset({"SSH_READY", *policy.KEY_COMMANDS}),
+      "SSH-stable main process policy was replaced")
+policy_value = {"version": policy.RUNTIME_POLICY_VERSION, "archive_sha256": policy.CONTAINERD_ARCHIVE_SHA256,
+    "archive_size": policy.CONTAINERD_ARCHIVE_SIZE, "extraction": [list(row) for row in policy.CONTAINERD_EXTRACTION],
+    "staged_containerd": policy.STAGED_CONTAINERD, "staged_ctr": policy.STAGED_CTR,
+    "address": policy.CONTAINERD_ADDRESS, "mounts": list(policy.CTR_MOUNTS),
+    "tails": {name: list(row) for name, row in policy.CTR_TAILS.items()},
+    "traces": {name: list(row) for name, row in policy.RUNTIME_TRACES.items()},
+    "ownership_traces": [list(row) for row in policy.RUNTIME_OWNERSHIP_TRACES],
+    "post_kill_observations": policy.RUNTIME_POST_KILL_OBSERVATIONS,
+    "post_kill_interval_ns": policy.RUNTIME_POST_KILL_INTERVAL_NS}
+policy_raw = json.dumps(policy_value, sort_keys=True, separators=(",", ":")).encode() + b"\n"
+check(hashlib.sha256(policy_raw).hexdigest() == policy.RUNTIME_POLICY_SHA256,
+      "runtime owner policy hash drift")
+check(dict(policy.RUNTIME_TRACES) == {
+    "NETWORK_READY": ("CONTAINERD_START", "CTR_RUN"),
+    "RUNTIME_READY": ("CTR_CONTAINER_INFO", "CTR_CONTAINER_LIST", "CTR_TASK_LIST"),
+    "READINESS_REVOKED": ("CTR_TASK_LIST", "CTR_CONTAINER_INFO", "CTR_CONTAINER_LIST"),
+    "OWNERSHIP_OBSERVED:task-exact": ("CTR_TASK_LIST", "CTR_TASK_TERM", "CTR_TASK_LIST", "CTR_TASK_KILL") +
+        ("CTR_TASK_LIST",) * policy.RUNTIME_POST_KILL_OBSERVATIONS,
+    "NETWORK_ABSENT": ("CTR_TASK_REMOVE", "CTR_TASK_LIST"),
+    "TASK_ABSENT": ("CTR_CONTAINER_REMOVE", "CTR_CONTAINER_LIST"),
+    "CONTAINER_ABSENT": ("CTR_CONTAINER_LIST",),
+}, "runtime owner trace drift")
+runtime.kata_operation._runtime_trace((), 0, "NETWORK_READY", candidate="CONTAINERD_START")
+rejected(lambda: runtime.kata_operation._runtime_trace((), 0, "NETWORK_READY", candidate="CTR_RUN"))
+# Every post-KILL read is a new durable trace position; each prefix can settle.
+trace_records = []
+for serial, command_id in enumerate(policy.RUNTIME_TRACES["OWNERSHIP_OBSERVED:task-exact"]):
+    binding = f"{serial + 1:064x}"
+    trace_records.append(SimpleNamespace(record_type="COMMAND_INTENT_V2", body={
+        "command_serial": serial, "command_id": command_id, "binding_sha256": binding,
+        "policy_version": policy.RUNTIME_POLICY_VERSION, "lifecycle_phase": "OWNERSHIP_OBSERVED"}))
+    if command_id != "CONTAINERD_START":
+        trace_records.append(SimpleNamespace(record_type="COMMAND_OUTCOME_V2", body={
+            "command_serial": serial, "command_id": command_id, "binding_sha256": binding,
+            "outcome": "exited", "status": 0, "uncertain": False}))
+    if serial >= 4:
+        runtime.kata_operation._runtime_trace(tuple(trace_records), len(trace_records), "OWNERSHIP_OBSERVED",
+            {"task": "exact-owned"}, complete=True)
+check(sum(row.body["command_id"] == "CTR_TASK_KILL" for row in trace_records
+          if row.record_type == "COMMAND_INTENT_V2") == 1, "post-KILL trace repeated mutation")
+check(runtime.command_policy.CONTAINERD_EXTRACTION == (
+    ("bin/containerd", 44_050_184, "f5d70cf9a249a70a70c379ba8f7259ea91122650cc06103bc0fc44a04dbc54da", 0o500),
+    ("bin/ctr", 22_143_160, "448b1d7a2da84b6265dc4685afcc6c69a6299de43b942b8a3d6d540f6585d1db", 0o500),
+), "fixed extraction manifest")
+rejected(lambda: runtime.kata_inputs._claim_runtime_inputs(object(), object()))
+rejected(lambda: runtime.kata_network._claim_runtime_network(object(), object()))
+check("process_snapshot" not in runtime._observe_fixed_runtime.__code__.co_varnames,
+      "caller process snapshot entered production observation")
+check("kill_permitted" not in runtime._cleanup_fixed_runtime.__code__.co_varnames,
+      "caller kill flag entered production cleanup")
+runtime_source = MODULE_PATH.read_text()
+for required in ('state[9][1] == "containerd.sock"', 'process._host_generation(fresh, "socket") == expected',
+                 'os.rename(name, quarantine, src_dir_fd=parent, dst_dir_fd=parent)',
+                 'os.unlink(quarantine, dir_fd=parent); os.fsync(parent)', '_shutdown_private_containerd',
+                 'kata_operation.GEN_KEYS[:7]', 'state[10][name] = inventory(node)', 'remove_tree(node.operation_fd.number)',
+                 'seen["nlink"] == 0', 'kata_operation.GEN_KEYS[:4]', 'verify_daemon(daemon, certain)'):
+    check(required in runtime_source, "exact retained socket cleanup route missing")
+
+# Execute the direct QMP proof: query-kvm is mandatory and streams/fds close.
+class FakeStream:
+    def __init__(self):
+        self.rows = iter((b'{"QMP":{}}\n', b'{"return":{},"id":1}\n',
+                          b'{"return":{"status":"running"},"id":2}\n',
+                          b'{"return":{"enabled":true,"present":true},"id":3}\n')); self.writes = []
+    def __enter__(self): return self
+    def __exit__(self, *_args): self.closed = True
+    def readline(self, _limit): return next(self.rows)
+    def write(self, value): self.writes.append(value); return len(value)
+class FakeSocket:
+    def __init__(self, *_args): self.stream = FakeStream(); self.closed = False
+    def settimeout(self, _value): pass
+    def connect(self, path): check(path == runtime.QMP_SOCKET, "wrong QMP endpoint")
+    def makefile(self, *_args, **_kwargs): return self.stream
+    def close(self): self.closed = True
+fake_socket = FakeSocket(); qemu = runtime.ProcessRecord("qemu", 41, 40, 99,
+    "/opt/kata/bin/qemu-system-x86_64", 7, 8, (), (("net", "net:[1]"),))
+classification = runtime.ProcessClassification(runtime.Observation.EXACT, (qemu,), "exact")
+sockstat = SimpleNamespace(st_mode=__import__("stat").S_IFSOCK | 0o600, st_uid=0, st_gid=0,
+                           st_dev=11, st_ino=12, st_ctime_ns=13)
+kvmstat = SimpleNamespace(st_mode=__import__("stat").S_IFCHR | 0o600, st_rdev=14, st_dev=15, st_ino=16)
+import completion_kata_process as process_module
+with patch.object(runtime.socket, "socket", return_value=fake_socket), \
+     patch.object(runtime.os, "lstat", return_value=sockstat), \
+     patch.object(runtime, "_read_bounded", return_value=(b"Num Ref Protocol Flags Type St Inode Path\n"
+         b"000: 00000002 00000000 00010000 0001 01 123 " + runtime.QMP_SOCKET.encode() + b"\n")), \
+     patch.object(runtime.os, "listdir", side_effect=[["4"], ["9"]]), \
+     patch.object(runtime.os, "readlink", side_effect=["socket:[123]", "/dev/kvm"]), \
+     patch.object(runtime.os, "open", side_effect=[20, 21]), \
+     patch.object(runtime.os, "fstat", return_value=kvmstat), \
+     patch.object(runtime.os, "close"), patch.object(runtime.fcntl, "ioctl", return_value=12), \
+     patch.object(process_module, "_proc_row", return_value=(41, 40, 41, 41, 99)):
+    qmp = runtime._qmp_kvm(classification)
+check(qmp["kvm_present"] and qmp["kvm_enabled"] and fake_socket.closed and fake_socket.stream.closed
+      and any(b"query-kvm" in row for row in fake_socket.stream.writes), "QMP KVM proof not executed")
+
+# Exact fd-relative staging cleanup accepts owned no-follow residue kinds.
+import tempfile
+with tempfile.TemporaryDirectory() as temporary:
+    parent = __import__("os").open(temporary, __import__("os").O_RDONLY | __import__("os").O_DIRECTORY)
+    try:
+        __import__("os").mkdir("owned", dir_fd=parent); owned = __import__("os").open(
+            "owned", __import__("os").O_RDONLY | __import__("os").O_DIRECTORY, dir_fd=parent)
+        try:
+            __import__("os").symlink("missing", "link", dir_fd=owned)
+            __import__("os").mkfifo("fifo", 0o600, dir_fd=owned)
+        finally: __import__("os").close(owned)
+        runtime._purge_owned_tree(parent, "owned"); check("owned" not in __import__("os").listdir(parent), "staging rollback")
+    finally: __import__("os").close(parent)
+
+# One centralized complete counted-set gate enforces physical and no-deletion totals.
+import subprocess
+cap = subprocess.run([sys.executable, str(ROOT / "scripts/check-stage2-retained-lines.py")],
+                     check=True, stdout=subprocess.PIPE, text=True)
+cap_report = json.loads(cap.stdout)
+check(cap_report["hard_satisfied"] and cap_report["conservative_lines_no_deletion_credit"] < 48_000,
+      "ADR0099 centralized cap failed")
 
 print("completion Kata runtime S4 hostile offline matrix passed")

@@ -81,11 +81,13 @@ def intent(serial=0, command_id="CTR_TASK_LIST", phase="RUNTIME_READY"):
     if command_id == "CONTAINERD_START":
         fixed = process.LONG_LIVED_CONTAINERD
         deadline_class, duration, grammar, stdin, inherited = "runtime-start", 60_000_000_000, "empty", b"", []
+        stdout_limit = stderr_limit = 65536
     else:
         fixed = process._FIXED_COMMANDS[process.CommandId(command_id)]
         spec = process._spec(fixed.command_id)
         deadline_class, duration, grammar, stdin = spec.deadline_class, fixed.duration_ns, fixed.output_grammar, fixed.stdin
         inherited = []
+        stdout_limit, stderr_limit = fixed.stdout_limit, fixed.stderr_limit
         if fixed.inherited_fds:
             inherited = [
                 {"role": "CLIENT_KEY", "target_fd": 200, "generation": generation(93, "file", 0o400),
@@ -93,7 +95,7 @@ def intent(serial=0, command_id="CTR_TASK_LIST", phase="RUNTIME_READY"):
                 {"role": "KNOWN_HOSTS", "target_fd": 201, "generation": generation(94, "file", 0o400),
                  "content_sha256": "f" * 64, "content_length": 5},
             ]
-    argv = list(fixed.argv)
+    argv = [item.replace("{operation_token}", "a" * 64) for item in fixed.argv]
     body = {
         "operation_token": "a" * 64, "command_serial": serial,
         "command_id": command_id, "binding_sha256": operation.ZERO,
@@ -108,9 +110,11 @@ def intent(serial=0, command_id="CTR_TASK_LIST", phase="RUNTIME_READY"):
         "environment_sha256": hashlib.sha256(operation._canonical(environment)).hexdigest(),
         "inherited_fds": inherited, "policy_version": operation.command_policy.POLICY_VERSION,
         "deadline_class": deadline_class, "duration_ns": duration,
-        "cleanup_reserve_ns": operation.command_policy.CLEANUP_RESERVE_NS,
+        "cleanup_reserve_ns": (operation.command_policy.SSH_CLEANUP_RESERVE_NS
+                               if command_id == "SSH_READY" else
+                               operation.command_policy.CLEANUP_RESERVE_NS),
         "deadline_boottime_ns": 99_000_000_000, "output_grammar": grammar,
-        "stdout_limit": 65536, "stderr_limit": 65536,
+        "stdout_limit": stdout_limit, "stderr_limit": stderr_limit,
     }
     return rebound(body)
 
@@ -122,7 +126,11 @@ def preexec(command):
         "host_boot_id": command["host_boot_id"], "pid": 10, "ppid": 1,
         "pgid": 10, "sid": 10, "proc_start_time": 99, "pidfd_supported": True,
         "cgroup_path": f"{process.CGROUP_BASE}/{command['operation_token']}-{command['command_serial']}",
-        "cgroup_generation": generation(91), "exec_status_pipe": generation(92, "pipe", 0o600),
+        "cgroup_generation": generation(91),
+        "executable_sha256": command["executable_sha256"],
+        "tool_closure_sha256": command["tool_closure_sha256"],
+        "executable_generation": command["executable_generation"],
+        "exec_status_pipe": generation(92, "pipe", 0o600),
         "release_count": 0,
     }
 
@@ -268,6 +276,12 @@ mixed = prefix()
 for kind in ("BASELINES_CAPTURED", "NETWORK_READY", "RUNTIME_READY"):
     mixed = add(mixed, kind, {"operation_token": "a" * 64, "proof_sha256": "9" * 64})
 reject(lambda: add(mixed, "COMMAND_INTENT_V2", intent(command_id="SSH_READY")))
+# SSH/key policies remain blocked until exact attested executable identities
+# are committed; self-described executable hashes/generations cannot issue.
+ssh_intent = intent(command_id="SSH_READY")
+reject(lambda: add(raw, "COMMAND_INTENT_V2", ssh_intent))
+check(not operation.command_policy.ATTESTED_EXECUTABLES, "unattested SSH policy enabled")
+
 not_started_output = outcome(command, b"x")
 not_started_output.update({"outcome": "not-started", "status": None, "release_count": 0})
 reject(lambda: operation._validate_body("COMMAND_OUTCOME_V2", not_started_output))
@@ -282,12 +296,15 @@ EXPECTED_IMPLEMENTED = {
     "IP_LINK_MOVE", "IP_LOOPBACK_UP", "IP_NETNS_ADD", "IP_NETNS_REMOVE",
     "IP_NS_ADDRESSES", "IP_NS_LINKS", "IP_NS_ROUTES4", "IP_NS_ROUTES6",
     "IP_PEER_ADDRGEN_NONE", "IP_PEER_RENAME", "NFT_INSTALL", "NFT_REMOVE",
-    "NFT_TABLE", "SSH_READY", "CONTAINERD_START",
+    "NFT_TABLE", "SSH_READY", "SSH_KEYGEN_CLIENT", "SSH_PUBLIC_CLIENT",
+    "SSH_KEYGEN_SERVER", "SSH_PUBLIC_SERVER", "CONTAINERD_START",
 }
-check(policy.POLICY_VERSION == "cogs.stage2-kata-command-policy/v2-process-only-1",
-      "process-only policy version drift")
+check(policy.POLICY_VERSION == "cogs.stage2-kata-command-policy/v4-process-only-ssh-stable-1",      "process-only policy version drift")
 check(set(policy.POLICY_SHA256) == EXPECTED_IMPLEMENTED, "implemented process policy drift")
-check(all(value == ("BASELINES_CAPTURED",) for value in policy.OCCURRENCES.values())
+expected_occurrences = {name: (("ROOTFS_LEASED",) if name in policy.KEY_COMMANDS else
+                               ("RUNTIME_READY",) if name == "SSH_READY" else
+                               ("BASELINES_CAPTURED",)) for name in policy.POLICY_SHA256}
+check(dict(policy.OCCURRENCES) == expected_occurrences
       and dict(policy.PHASES) == dict(policy.OCCURRENCES)
       and all(value == 1 for value in policy.MAX_OCCURRENCES.values()),
       "transaction occurrence policy drift")
@@ -305,9 +322,10 @@ finally:
     policy.POLICY_SHA256 = original_policy
 check(set(policy.POLICY_SHA256) == set(policy.OCCURRENCES) == set(policy.PHASES)
       == set(policy.MAX_OCCURRENCES), "policy map key drift")
-check(not set(policy.POLICY_SHA256) & set(policy.DEFERRED_COMMANDS)
-      and set(policy.POLICY_SHA256) | set(policy.DEFERRED_COMMANDS) == set(operation.COMMANDS),
-      "policy/deferred partition drift")
+partitions = (set(policy.POLICY_SHA256), set(policy.DEFERRED_COMMANDS), set(policy.B1_COMMAND_IDS))
+check(not any(left & right for index, left in enumerate(partitions) for right in partitions[index + 1:])
+      and set().union(*partitions) == set(operation.COMMANDS),
+      "policy/deferred/B1 partition drift")
 for command_id in policy.POLICY_SHA256:
     phase = policy.OCCURRENCES[command_id][0]
     regenerated = intent(command_id=command_id, phase=phase)
@@ -322,36 +340,10 @@ setup_raw = add(prefix(), "BASELINES_CAPTURED",
 add(setup_raw, "COMMAND_INTENT_V2",
     intent(command_id="IP_LINK_ADD", phase="BASELINES_CAPTURED"))
 
-# Cleanup-only pending-intent recovery never forks or releases and durably
-# consumes the exact serial. Pending PREEXEC is always sticky uncertain.
-class RecoveryJournal:
-    def __init__(self, pending):
-        self.pending = pending
-        self.recorded = None
-    def pending_command(self):
-        return self.pending
-    def record_command_outcome(self, body):
-        operation._validate_body("COMMAND_OUTCOME_V2", body)
-        self.recorded = body
-        return body
-
-journal = RecoveryJournal((command, None))
-with patch.object(process, "_recover_cgroup", return_value=(True, True)), \
-     patch.object(process.os, "fork", side_effect=AssertionError("recovery forked")):
-    process._recover_pending_fixed(journal)
-check(journal.recorded["outcome"] == "not-started" and journal.recorded["uncertain"]
-      and not journal.recorded["leader_reaped"] and not journal.recorded["descendants_reaped"],
-      "intent recovery fabricated wait/reap certainty")
+# Production recovery accepts only the sealed real operation authority; duck
+# journals cannot exercise or rewrite cleanup state.
+reject(lambda: process._recover_pending_fixed(object()))
 recovery_preexec = preexec(command)
-preexec_journal = RecoveryJournal((command, recovery_preexec))
-with patch.object(process, "_recover_cgroup", return_value=(True, True)) as recover, \
-     patch.object(process, "_usable_pidfd_open", side_effect=AssertionError("leader pidfd required")), \
-     patch.object(process.os, "fork", side_effect=AssertionError("recovery forked")):
-    process._recover_pending_fixed(preexec_journal)
-check(recover.call_args.args[1] == process._generation_tuple(recovery_preexec["cgroup_generation"]),
-      "preexec recovery did not bind cgroup generation")
-check(preexec_journal.recorded["uncertain"] and preexec_journal.recorded["release_count"] == 0,
-      "pending preexec recovery was not honestly sticky uncertain")
 
 class TerminalRecoveryJournal:
     def __init__(self, values): self.recorded, self.values = False, values
@@ -378,6 +370,7 @@ with patch.object(process, "_recover_cgroup", return_value=(True, True)), \
     process._recover_pending_fixed(daemon_journal)
 check(absent.called, "ECHILD daemon recovery did not poll exact proc absence")
 check(not process._cleanup_closed((False, False, False, False), 10, None),
+
       "owned residue was considered terminally closed")
 
 # Recovery kills and polls the deterministic leaf without consulting the dead
@@ -423,8 +416,6 @@ check(source.index("if not _cleanup_closed(cleanup, pid, wait_status)") <
       "terminal outcome can precede residue closure")
 check(process.LONG_LIVED_CONTAINERD.command_id is process.CommandId.CONTAINERD_START,
       "containerd was modeled as a short command")
-check(process.OWNER_ASSIGNED_IDS == {
-    "CTR_RUN", "SSH_KEYGEN_CLIENT", "SSH_KEYGEN_SERVER", "SSH_PUBLIC_CLIENT",
-    "SSH_PUBLIC_SERVER", "TC_INGRESS_FILTER", "TC_QDISC",
-}, "owner-assigned command set drift")
+check(process.OWNER_ASSIGNED_IDS == {"CTR_RUN"},
+      "owner-assigned command set drift")
 print("completion Kata Slice A correction matrix passed")

@@ -1,552 +1,158 @@
-{
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
+{ "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://cogs.invalid/schemas/stage2-workload-local-qualification-v2.json",
   "title": "ADR 0099 non-authoritative local Kata qualification report data",
-  "type": "object",
-  "additionalProperties": false,
-  "required": [
-    "version",
-    "result",
-    "failure_code",
-    "qualified",
-    "authority",
-    "limitations",
-    "validation_classification",
-    "bindings",
-    "admission",
-    "platform",
-    "lifecycle",
-    "operation",
-    "timings",
-    "timing_summaries",
-    "teardown",
-    "zero_residue"
-  ],
-  "properties": {
-    "version": { "const": "cogs.stage2-workload-local-qualification/v2" },
-    "result": { "enum": ["pass", "failure"] },
-    "failure_code": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/failureCode" }] },
-    "qualified": { "type": "boolean" },
-    "authority": { "const": "non-authoritative-local-qualification-report-data" },
+  "type": "object", "additionalProperties": false, "minProperties": 16, "maxProperties": 16,
+  "properties": { "version": { "const": "cogs.stage2-workload-local-qualification/v2" },
+    "result": { "enum": ["pass", "failure"] }, "failure_code": { "$ref": "#/$defs/nullableFailureCode" },
+    "qualified": { "type": "boolean" }, "authority": { "const": "non-authoritative-local-qualification-report-data" },
     "validation_classification": { "const": "schema-insufficient-independent-semantics-and-private-receipt-required" },
-    "limitations": {
-      "type": "array",
-      "prefixItems": [
-        { "const": "report-data-does-not-establish-local-qualification-authority" },
-        { "const": "requires-exact-private-receipt-and-custody-validation" },
-        { "const": "not-aws-evidence" },
-        { "const": "not-production-evidence" },
-        { "const": "not-release-evidence" },
-        { "const": "no-seven-cycle-controller-authority" },
-        { "const": "no-retry-or-promotion-authority" }
-      ],
-      "items": false,
-      "minItems": 7,
-      "maxItems": 7
-    },
-    "bindings": { "$ref": "#/$defs/bindings" },
-    "admission": { "$ref": "#/$defs/admission" },
-    "platform": { "$ref": "#/$defs/platform" },
-    "lifecycle": { "$ref": "#/$defs/lifecycle" },
-    "operation": { "$ref": "#/$defs/operation" },
-    "timings": { "$ref": "#/$defs/timingGroups" },
-    "timing_summaries": { "$ref": "#/$defs/timingSummaries" },
-    "teardown": { "$ref": "#/$defs/teardownRows" },
-    "zero_residue": { "$ref": "#/$defs/zeroResidue" }
-  },
-  "oneOf": [
-    {
-      "properties": {
-        "result": { "const": "pass" },
-        "failure_code": { "type": "null" },
-        "qualified": { "const": true },
-        "platform": { "$ref": "#/$defs/platformPass" },
+    "limitations": { "const": [ "report-data-does-not-establish-local-qualification-authority",
+      "requires-exact-private-receipt-and-custody-validation",
+      "not-aws-evidence", "not-production-evidence", "not-release-evidence",
+      "no-seven-cycle-controller-authority", "no-retry-or-promotion-authority" ] },
+    "bindings": { "$ref": "#/$defs/bindings" }, "admission": { "$ref": "#/$defs/admission" },
+    "platform": { "$ref": "#/$defs/platform" }, "lifecycle": { "$ref": "#/$defs/lifecycle" },
+    "operation": { "$ref": "#/$defs/operation" }, "timings": { "$ref": "#/$defs/timingGroups" },
+    "timing_summaries": { "$ref": "#/$defs/timingSummaries" }, "teardown": { "$ref": "#/$defs/teardownRows" },
+    "zero_residue": { "$ref": "#/$defs/zeroResidue" } },
+  "oneOf": [ { "properties": { "result": { "const": "pass" },
+        "failure_code": { "type": "null" }, "qualified": { "const": true }, "platform": { "$ref": "#/$defs/platformPass" },
         "lifecycle": { "$ref": "#/$defs/lifecyclePass" },
         "operation": { "type": "object", "properties": { "status": { "const": "retired" } } },
         "timings": { "$ref": "#/$defs/timingGroupsPass" },
         "teardown": { "type": "array", "items": { "$ref": "#/$defs/teardownRowPass" } },
-        "zero_residue": { "$ref": "#/$defs/zeroResiduePass" },
-        "admission": { "$ref": "#/$defs/admissionPass" }
-      }
-    },
-    {
-      "properties": {
-        "result": { "const": "failure" },
-        "failure_code": { "$ref": "#/$defs/failureCode" },
-        "qualified": { "const": false }
-      }
-    }
-  ],
-  "$defs": {
-    "sha1": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "zero_residue": { "$ref": "#/$defs/zeroResiduePass" }, "admission": { "$ref": "#/$defs/admissionPass" } } },
+    { "properties": { "result": { "const": "failure" },
+        "failure_code": { "$ref": "#/$defs/failureCode" }, "qualified": { "const": false } } } ],
+  "$defs": { "sha1": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
     "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
     "nullableSha256": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/sha256" }] },
-    "failureCode": {
-      "enum": [
-        "preflight",
-        "source-binding",
-        "attestation",
-        "kvm",
-        "lifecycle-start",
-        "ssh",
-        "git-sample",
-        "build-sample",
-        "install-sample",
-        "deletion",
-        "cleanup",
-        "residue",
-        "uncertain"
-      ]
-    },
-    "bindings": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "source_head",
-        "source_manifest_sha256",
-        "host_attestation_sha256",
-        "runtime_attestation_sha256",
-        "rootfs_sha256",
-        "artifact_sha256",
-        "candidate_sha256",
-        "final_pin_sha256",
-        "guest_program_sha256",
-        "owner_implementation_sha256"
-      ],
-      "properties": {
-        "source_head": { "$ref": "#/$defs/sha1" },
-        "source_manifest_sha256": { "$ref": "#/$defs/sha256" },
-        "host_attestation_sha256": { "$ref": "#/$defs/sha256" },
-        "runtime_attestation_sha256": { "$ref": "#/$defs/sha256" },
-        "rootfs_sha256": { "$ref": "#/$defs/sha256" },
-        "artifact_sha256": { "$ref": "#/$defs/sha256" },
-        "candidate_sha256": { "$ref": "#/$defs/sha256" },
-        "final_pin_sha256": { "$ref": "#/$defs/sha256" },
-        "guest_program_sha256": { "$ref": "#/$defs/sha256" },
-        "owner_implementation_sha256": { "$ref": "#/$defs/sha256" }
-      }
-    },
-    "platform": {
-      "type": "object",
-      "additionalProperties": false,
+    "failureCode": { "enum": [ "preflight", "source-binding", "attestation", "kvm", "lifecycle-start",
+      "ssh", "git-sample", "build-sample", "install-sample", "deletion", "cleanup", "residue", "uncertain" ] },
+    "nullableFailureCode": { "anyOf": [ { "type": "null" }, { "$ref": "#/$defs/failureCode" }
+    ] }, "outcome": { "enum": ["pass", "failure", "not-reached"] },
+    "duration": { "type": "integer", "minimum": 1, "maximum": 3600000000000 },
+    "nullableDuration": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/duration" }] },
+    "bindings": { "type": "object", "additionalProperties": false,
+      "minProperties": 10, "maxProperties": 10,
+      "propertyNames": { "enum": [ "source_head", "source_manifest_sha256", "host_attestation_sha256",
+        "runtime_attestation_sha256", "rootfs_sha256", "artifact_sha256",
+        "candidate_sha256", "final_pin_sha256", "guest_program_sha256", "owner_implementation_sha256" ] },
+      "properties": { "source_head": { "$ref": "#/$defs/sha1" } },
+      "patternProperties": { "_sha256$": { "$ref": "#/$defs/sha256" } } },
+    "platform": { "type": "object", "additionalProperties": false,
       "required": ["observation", "kvm_api", "qmp_present", "qmp_enabled"],
-      "properties": {
-        "kvm_api": { "anyOf": [{ "type": "null" }, { "const": 12 }] },
-        "qmp_present": { "type": "boolean" },
-        "qmp_enabled": { "type": "boolean" },
-        "observation": { "enum": ["not-reached", "failure", "pass"] }
-      }
-    },
-    "platformPass": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["observation", "kvm_api", "qmp_present", "qmp_enabled"],
-      "properties": {
-        "kvm_api": { "const": 12 },
-        "qmp_present": { "const": true },
-        "qmp_enabled": { "const": true },
-        "observation": { "const": "pass" }
-      }
-    },
-    "lifecycle": {
-      "type": "object",
-      "additionalProperties": false,
+      "properties": { "kvm_api": { "anyOf": [{ "type": "null" }, { "const": 12 }] },
+        "qmp_present": { "type": "boolean" }, "qmp_enabled": { "type": "boolean" },
+        "observation": { "$ref": "#/$defs/outcome" } } },
+    "platformPass": { "const": { "kvm_api": 12, "qmp_present": true, "qmp_enabled": true, "observation": "pass"
+    } }, "lifecycle": { "type": "object", "additionalProperties": false,
       "required": ["attempts", "outcome", "ssh_attempts", "ssh_outcome"],
-      "properties": {
-        "attempts": { "type": "integer", "minimum": 0, "maximum": 1 },
-        "outcome": { "enum": ["pass", "failure", "not-reached"] },
-        "ssh_attempts": { "type": "integer", "minimum": 0, "maximum": 1 },
-        "ssh_outcome": { "enum": ["pass", "failure", "not-reached"] }
-      }
-    },
-    "lifecyclePass": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["attempts", "outcome", "ssh_attempts", "ssh_outcome"],
-      "properties": {
-        "attempts": { "const": 1 },
-        "outcome": { "const": "pass" },
-        "ssh_attempts": { "const": 1 },
-        "ssh_outcome": { "const": "pass" }
-      }
-    },
-    "operation": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "operation_sha256",
-        "journal_sha256",
-        "binding_sha256",
-        "source_head",
-        "source_manifest_sha256",
-        "final_pin_sha256",
-        "status"
-      ],
-      "properties": {
-        "operation_sha256": { "$ref": "#/$defs/nullableSha256" },
-        "journal_sha256": { "$ref": "#/$defs/nullableSha256" },
-        "binding_sha256": { "$ref": "#/$defs/nullableSha256" },
-        "source_head": { "$ref": "#/$defs/sha1" },
-        "source_manifest_sha256": { "$ref": "#/$defs/sha256" },
-        "final_pin_sha256": { "$ref": "#/$defs/sha256" },
-        "status": { "enum": ["not-created", "uncertain", "retired"] }
+      "properties": { "attempts": { "type": "integer", "minimum": 0, "maximum": 1 },
+        "outcome": { "$ref": "#/$defs/outcome" }, "ssh_attempts": { "type": "integer", "minimum": 0, "maximum": 1 },
+        "ssh_outcome": { "$ref": "#/$defs/outcome" } } },
+    "lifecyclePass": { "const": { "attempts": 1, "outcome": "pass", "ssh_attempts": 1, "ssh_outcome": "pass"
+    } }, "operation": { "type": "object", "additionalProperties": false,
+      "minProperties": 7, "maxProperties": 7, "properties": { "operation_sha256": { "$ref": "#/$defs/nullableSha256" },
+        "journal_sha256": { "$ref": "#/$defs/nullableSha256" }, "binding_sha256": { "$ref": "#/$defs/nullableSha256" },
+        "source_head": { "$ref": "#/$defs/sha1" }, "source_manifest_sha256": { "$ref": "#/$defs/sha256" },
+        "final_pin_sha256": { "$ref": "#/$defs/sha256" }, "status": { "enum": ["not-created", "uncertain", "retired"] } },
+      "if": { "type": "object", "properties": { "status": { "const": "not-created" } }
       },
-      "oneOf": [
-        {
-          "properties": {
-            "status": { "const": "not-created" },
-            "operation_sha256": { "type": "null" },
-            "journal_sha256": { "type": "null" },
-            "binding_sha256": { "type": "null" }
-          }
-        },
-        {
-          "properties": {
-            "status": { "enum": ["uncertain", "retired"] },
-            "operation_sha256": { "$ref": "#/$defs/sha256" },
-            "journal_sha256": { "$ref": "#/$defs/sha256" },
-            "binding_sha256": { "$ref": "#/$defs/sha256" }
-          }
-        }
-      ]
-    },
-    "timingRow": {
-      "type": "object",
-      "additionalProperties": false,
+      "then": { "type": "object", "properties": { "operation_sha256": { "type": "null" }, "journal_sha256": { "type": "null" },
+        "binding_sha256": { "type": "null" } } },
+      "else": { "type": "object", "properties": { "operation_sha256": { "$ref": "#/$defs/sha256" },
+        "journal_sha256": { "$ref": "#/$defs/sha256" }, "binding_sha256": { "$ref": "#/$defs/sha256" }
+      } } },
+    "timingRow": { "type": "object", "additionalProperties": false,
       "required": ["ordinal", "duration_ns", "outcome", "deletion", "binding_sha256"],
-      "properties": {
-        "ordinal": { "type": "integer", "minimum": 1, "maximum": 7 },
-        "duration_ns": { "anyOf": [{ "type": "null" }, { "type": "integer", "minimum": 1, "maximum": 3600000000000 }] },
-        "outcome": { "enum": ["pass", "failure", "not-reached"] },
+      "properties": { "ordinal": { "type": "integer", "minimum": 1, "maximum": 7 },
+        "duration_ns": { "$ref": "#/$defs/nullableDuration" }, "outcome": { "$ref": "#/$defs/outcome" },
         "deletion": { "enum": ["absent", "not-proved", "not-reached"] },
-        "binding_sha256": { "$ref": "#/$defs/nullableSha256" }
-      }
-    },
-    "timingRowPass": {
-      "type": "object",
-      "properties": {
-        "outcome": { "const": "pass" },
-        "deletion": { "const": "absent" },
-        "duration_ns": { "type": "integer", "minimum": 1, "maximum": 3600000000000 },
-        "binding_sha256": { "$ref": "#/$defs/sha256" }
-      }
-    },
-    "timingGroups": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["git", "build", "install"],
-      "properties": {
-        "git": { "$ref": "#/$defs/timingRows" },
-        "build": { "$ref": "#/$defs/timingRows" },
-        "install": { "$ref": "#/$defs/timingRows" }
-      }
-    },
-    "timingGroupsPass": {
-      "type": "object",
-      "properties": {
-        "git": { "type": "array", "minItems": 7, "maxItems": 7, "items": { "$ref": "#/$defs/timingRowPass" } },
-        "build": { "type": "array", "minItems": 7, "maxItems": 7, "items": { "$ref": "#/$defs/timingRowPass" } },
-        "install": { "type": "array", "minItems": 7, "maxItems": 7, "items": { "$ref": "#/$defs/timingRowPass" } }
-      }
-    },
-    "timingSummary": {
-      "type": "object",
-      "additionalProperties": false,
+        "binding_sha256": { "$ref": "#/$defs/nullableSha256" } } },
+    "timingRowPass": { "type": "object",
+      "properties": { "outcome": { "const": "pass" },
+        "deletion": { "const": "absent" }, "duration_ns": { "$ref": "#/$defs/duration" },
+        "binding_sha256": { "$ref": "#/$defs/sha256" } } },
+    "timingGroupObject": { "type": "object", "minProperties": 3, "maxProperties": 3,
+      "propertyNames": { "enum": ["git", "build", "install"] } },
+    "timingGroups": { "allOf": [
+      { "$ref": "#/$defs/timingGroupObject" }, { "type": "object", "additionalProperties": { "$ref": "#/$defs/timingRows" } } ] },
+    "timingGroupsPass": { "allOf": [
+      { "$ref": "#/$defs/timingGroupObject" }, { "type": "object", "additionalProperties": { "$ref": "#/$defs/timingRowsPass" } } ] },
+    "timingRowsPass": { "type": "array", "minItems": 7, "maxItems": 7,
+      "items": { "$ref": "#/$defs/timingRowPass" } },
+    "timingSummary": { "type": "object", "additionalProperties": false,
       "required": ["count", "total_ns", "minimum_ns", "maximum_ns"],
-      "properties": {
-        "count": { "type": "integer", "minimum": 0, "maximum": 7 },
+      "properties": { "count": { "type": "integer", "minimum": 0, "maximum": 7 },
         "total_ns": { "type": "integer", "minimum": 0, "maximum": 25200000000000 },
-        "minimum_ns": { "anyOf": [{ "type": "null" }, { "type": "integer", "minimum": 1, "maximum": 3600000000000 }] },
-        "maximum_ns": { "anyOf": [{ "type": "null" }, { "type": "integer", "minimum": 1, "maximum": 3600000000000 }] }
-      }
-    },
-    "timingSummaries": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["git", "build", "install"],
-      "properties": {
-        "git": { "$ref": "#/$defs/timingSummary" },
-        "build": { "$ref": "#/$defs/timingSummary" },
-        "install": { "$ref": "#/$defs/timingSummary" }
-      }
-    },
-    "teardownRow": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["phase", "outcome", "binding_sha256"],
-      "properties": {
-        "phase": {
-          "enum": [
-            "READINESS_REVOKED",
-            "TASK_STOPPED",
-            "NETWORK_ABSENT",
-            "TASK_ABSENT",
-            "CONTAINER_ABSENT",
-            "RUNTIME_PROCESSES_ABSENT",
-            "SHARE_AND_MOUNTS_ABSENT",
-            "FIREWALL_ABSENT",
-            "CONTAINERD_ABSENT",
-            "INPUTS_ABSENT",
-            "ROOTFS_ABSENT",
-            "FINAL_BASELINES",
-            "RETIRED"
-          ]
-        },
-        "outcome": { "enum": ["pass", "failure", "not-reached"] },
-        "binding_sha256": { "$ref": "#/$defs/nullableSha256" }
-      }
-    },
-    "teardownRowPass": {
-      "type": "object",
-      "properties": { "outcome": { "const": "pass" }, "binding_sha256": { "$ref": "#/$defs/sha256" } }
-    },
-    "absence": { "enum": ["absent", "not-proved"] },
-    "zeroResidue": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "tasks",
-        "containers",
-        "shim_processes",
-        "qemu_processes",
-        "virtiofsd_processes",
-        "containerd_processes",
-        "child_processes",
-        "cgroups",
-        "namespaces",
-        "veth_devices",
-        "tap_devices",
-        "traffic_control",
-        "firewall",
-        "shares",
-        "mounts",
-        "inputs",
-        "operation_state",
-        "runtime_state",
-        "runtime_cache",
-        "rootfs_lease",
-        "rootfs_build",
-        "rootfs_publication",
-        "unexpected_descriptors",
-        "network_state",
-        "network_routes",
-        "network_addresses",
-        "firewall_baseline",
-        "mount_baseline",
-        "source_identity",
-        "input_control",
-        "share_paths",
-        "runtime_staging",
-        "report_staging",
-        "descriptor_baseline",
-        "process_baseline",
-        "cgroup_baseline",
-        "namespace_baseline"
-      ],
-      "properties": {
-        "tasks": { "$ref": "#/$defs/absence" },
-        "containers": { "$ref": "#/$defs/absence" },
-        "shim_processes": { "$ref": "#/$defs/absence" },
-        "qemu_processes": { "$ref": "#/$defs/absence" },
-        "virtiofsd_processes": { "$ref": "#/$defs/absence" },
-        "containerd_processes": { "$ref": "#/$defs/absence" },
-        "child_processes": { "$ref": "#/$defs/absence" },
-        "cgroups": { "$ref": "#/$defs/absence" },
-        "namespaces": { "$ref": "#/$defs/absence" },
-        "veth_devices": { "$ref": "#/$defs/absence" },
-        "tap_devices": { "$ref": "#/$defs/absence" },
-        "traffic_control": { "$ref": "#/$defs/absence" },
-        "firewall": { "$ref": "#/$defs/absence" },
-        "shares": { "$ref": "#/$defs/absence" },
-        "mounts": { "$ref": "#/$defs/absence" },
-        "inputs": { "$ref": "#/$defs/absence" },
-        "operation_state": { "$ref": "#/$defs/absence" },
-        "runtime_state": { "$ref": "#/$defs/absence" },
-        "runtime_cache": { "$ref": "#/$defs/absence" },
-        "rootfs_lease": { "$ref": "#/$defs/absence" },
-        "rootfs_build": { "$ref": "#/$defs/absence" },
-        "rootfs_publication": { "$ref": "#/$defs/absence" },
-        "unexpected_descriptors": { "$ref": "#/$defs/absence" },
-        "network_state": { "$ref": "#/$defs/absence" },
-        "network_routes": { "$ref": "#/$defs/absence" },
-        "network_addresses": { "$ref": "#/$defs/absence" },
-        "firewall_baseline": { "$ref": "#/$defs/absence" },
-        "mount_baseline": { "$ref": "#/$defs/absence" },
-        "source_identity": { "$ref": "#/$defs/absence" },
-        "input_control": { "$ref": "#/$defs/absence" },
-        "share_paths": { "$ref": "#/$defs/absence" },
-        "runtime_staging": { "$ref": "#/$defs/absence" },
-        "report_staging": { "$ref": "#/$defs/absence" },
-        "descriptor_baseline": { "$ref": "#/$defs/absence" },
-        "process_baseline": { "$ref": "#/$defs/absence" },
-        "cgroup_baseline": { "$ref": "#/$defs/absence" },
-        "namespace_baseline": { "$ref": "#/$defs/absence" }
-      }
-    },
-    "zeroResiduePass": {
-      "type": "object",
-      "properties": {
-        "tasks": { "const": "absent" },
-        "containers": { "const": "absent" },
-        "shim_processes": { "const": "absent" },
-        "qemu_processes": { "const": "absent" },
-        "virtiofsd_processes": { "const": "absent" },
-        "containerd_processes": { "const": "absent" },
-        "child_processes": { "const": "absent" },
-        "cgroups": { "const": "absent" },
-        "namespaces": { "const": "absent" },
-        "veth_devices": { "const": "absent" },
-        "tap_devices": { "const": "absent" },
-        "traffic_control": { "const": "absent" },
-        "firewall": { "const": "absent" },
-        "shares": { "const": "absent" },
-        "mounts": { "const": "absent" },
-        "inputs": { "const": "absent" },
-        "operation_state": { "const": "absent" },
-        "runtime_state": { "const": "absent" },
-        "runtime_cache": { "const": "absent" },
-        "rootfs_lease": { "const": "absent" },
-        "rootfs_build": { "const": "absent" },
-        "rootfs_publication": { "const": "absent" },
-        "unexpected_descriptors": { "const": "absent" },
-        "network_state": { "const": "absent" },
-        "network_routes": { "const": "absent" },
-        "network_addresses": { "const": "absent" },
-        "firewall_baseline": { "const": "absent" },
-        "mount_baseline": { "const": "absent" },
-        "source_identity": { "const": "absent" },
-        "input_control": { "const": "absent" },
-        "share_paths": { "const": "absent" },
-        "runtime_staging": { "const": "absent" },
-        "report_staging": { "const": "absent" },
-        "descriptor_baseline": { "const": "absent" },
-        "process_baseline": { "const": "absent" },
-        "cgroup_baseline": { "const": "absent" },
-        "namespace_baseline": { "const": "absent" }
-      }
-    },
-    "admission": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["preflight", "source_binding", "attestation", "kvm"],
-      "properties": {
-        "preflight": { "enum": ["pass", "failure", "not-reached"] },
-        "source_binding": { "enum": ["pass", "failure", "not-reached"] },
-        "attestation": { "enum": ["pass", "failure", "not-reached"] },
-        "kvm": { "enum": ["pass", "failure", "not-reached"] }
-      }
-    },
-    "admissionPass": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["preflight", "source_binding", "attestation", "kvm"],
-      "properties": {
-        "preflight": { "const": "pass" },
-        "source_binding": { "const": "pass" },
-        "attestation": { "const": "pass" },
-        "kvm": { "const": "pass" }
-      }
-    },
-    "timingRows": {
-      "type": "array",
-      "maxItems": 7,
-      "prefixItems": [
-        { "$ref": "#/$defs/timingRow", "properties": { "ordinal": { "const": 1 } }, "type": "object" },
-        { "$ref": "#/$defs/timingRow", "properties": { "ordinal": { "const": 2 } }, "type": "object" },
-        { "$ref": "#/$defs/timingRow", "properties": { "ordinal": { "const": 3 } }, "type": "object" },
-        { "$ref": "#/$defs/timingRow", "properties": { "ordinal": { "const": 4 } }, "type": "object" },
-        { "$ref": "#/$defs/timingRow", "properties": { "ordinal": { "const": 5 } }, "type": "object" },
-        { "$ref": "#/$defs/timingRow", "properties": { "ordinal": { "const": 6 } }, "type": "object" },
-        { "$ref": "#/$defs/timingRow", "properties": { "ordinal": { "const": 7 } }, "type": "object" }
-      ],
-      "items": false,
-      "minItems": 7
-    },
-    "teardownRows": {
-      "type": "array",
-      "minItems": 13,
-      "maxItems": 13,
-      "prefixItems": [
-        {
-          "$ref": "#/$defs/teardownRow",
-          "properties": { "phase": { "const": "READINESS_REVOKED" } },
-          "type": "object"
-        },
-        { "$ref": "#/$defs/teardownRow", "properties": { "phase": { "const": "TASK_STOPPED" } }, "type": "object" },
-        { "$ref": "#/$defs/teardownRow", "properties": { "phase": { "const": "NETWORK_ABSENT" } }, "type": "object" },
-        { "$ref": "#/$defs/teardownRow", "properties": { "phase": { "const": "TASK_ABSENT" } }, "type": "object" },
-        { "$ref": "#/$defs/teardownRow", "properties": { "phase": { "const": "CONTAINER_ABSENT" } }, "type": "object" },
-        {
-          "$ref": "#/$defs/teardownRow",
-          "properties": { "phase": { "const": "RUNTIME_PROCESSES_ABSENT" } },
-          "type": "object"
-        },
-        {
-          "$ref": "#/$defs/teardownRow",
-          "properties": { "phase": { "const": "SHARE_AND_MOUNTS_ABSENT" } },
-          "type": "object"
-        },
-        { "$ref": "#/$defs/teardownRow", "properties": { "phase": { "const": "FIREWALL_ABSENT" } }, "type": "object" },
-        {
-          "$ref": "#/$defs/teardownRow",
-          "properties": { "phase": { "const": "CONTAINERD_ABSENT" } },
-          "type": "object"
-        },
-        { "$ref": "#/$defs/teardownRow", "properties": { "phase": { "const": "INPUTS_ABSENT" } }, "type": "object" },
-        { "$ref": "#/$defs/teardownRow", "properties": { "phase": { "const": "ROOTFS_ABSENT" } }, "type": "object" },
-        { "$ref": "#/$defs/teardownRow", "properties": { "phase": { "const": "FINAL_BASELINES" } }, "type": "object" },
-        { "$ref": "#/$defs/teardownRow", "properties": { "phase": { "const": "RETIRED" } }, "type": "object" }
-      ],
-      "items": false
-    },
-    "platformUnobserved": {
-      "type": "object",
-      "properties": {
-        "observation": { "const": "not-reached" },
-        "kvm_api": { "type": "null" },
-        "qmp_present": { "const": false },
-        "qmp_enabled": { "const": false }
-      }
-    },
-    "platformFailure": {
-      "type": "object",
-      "properties": { "observation": { "const": "failure" } },
-      "not": {
-        "required": ["kvm_api", "qmp_present", "qmp_enabled"],
-        "properties": {
-          "kvm_api": { "const": 12 },
-          "qmp_present": { "const": true },
-          "qmp_enabled": { "const": true }
-        },
-        "type": "object"
-      }
-    },
+        "minimum_ns": { "$ref": "#/$defs/nullableDuration" }, "maximum_ns": { "$ref": "#/$defs/nullableDuration" } } },
+    "timingSummaries": { "allOf": [
+      { "$ref": "#/$defs/timingGroupObject" }, { "type": "object", "additionalProperties": { "$ref": "#/$defs/timingSummary" } } ] },
+    "teardownRow": { "type": "object", "additionalProperties": false,
+      "required": ["phase", "outcome", "binding_sha256"], "properties": { "phase": { "type": "string" },
+        "outcome": { "$ref": "#/$defs/outcome" }, "binding_sha256": { "$ref": "#/$defs/nullableSha256" } } },
+    "teardownRowPass": { "type": "object", "properties": { "outcome": { "const": "pass" }, "binding_sha256": { "$ref": "#/$defs/sha256" }
+    } }, "absence": { "enum": ["absent", "not-proved"] },
+    "residueObject": { "type": "object", "minProperties": 37, "maxProperties": 37,
+      "propertyNames": { "enum": [ "tasks", "containers", "shim_processes", "qemu_processes",
+          "virtiofsd_processes", "containerd_processes", "child_processes", "cgroups",
+          "namespaces", "veth_devices", "tap_devices", "traffic_control", "firewall",
+          "shares", "mounts", "inputs", "operation_state", "runtime_state",
+          "runtime_cache", "rootfs_lease", "rootfs_build", "rootfs_publication",
+          "unexpected_descriptors", "network_state", "network_routes", "network_addresses",
+          "firewall_baseline", "mount_baseline", "source_identity", "input_control",
+          "share_paths", "runtime_staging", "report_staging", "descriptor_baseline",
+          "process_baseline", "cgroup_baseline", "namespace_baseline"
+        ] } },
+    "zeroResidue": { "allOf": [ { "$ref": "#/$defs/residueObject" }, { "type": "object", "additionalProperties": { "$ref": "#/$defs/absence" } }
+    ] },
+    "zeroResiduePass": { "allOf": [ { "$ref": "#/$defs/residueObject" }, { "type": "object", "additionalProperties": { "const": "absent" } }
+    ] }, "admissionObject": { "type": "object", "minProperties": 4, "maxProperties": 4,
+      "propertyNames": { "enum": ["preflight", "source_binding", "attestation", "kvm"] } },
+    "admission": { "allOf": [ { "$ref": "#/$defs/admissionObject" }, { "type": "object", "additionalProperties": { "$ref": "#/$defs/outcome" } }
+    ] }, "admissionPass": { "const": { "preflight": "pass", "source_binding": "pass", "attestation": "pass", "kvm": "pass"
+    } }, "timingRows": { "type": "array", "minItems": 7, "maxItems": 7,
+      "prefixItems": [ { "$ref": "#/$defs/timingRow", "type": "object", "properties": { "ordinal": { "const": 1 } } },
+        { "$ref": "#/$defs/timingRow", "type": "object", "properties": { "ordinal": { "const": 2 } } },
+        { "$ref": "#/$defs/timingRow", "type": "object", "properties": { "ordinal": { "const": 3 } } },
+        { "$ref": "#/$defs/timingRow", "type": "object", "properties": { "ordinal": { "const": 4 } } },
+        { "$ref": "#/$defs/timingRow", "type": "object", "properties": { "ordinal": { "const": 5 } } },
+        { "$ref": "#/$defs/timingRow", "type": "object", "properties": { "ordinal": { "const": 6 } } },
+        { "$ref": "#/$defs/timingRow", "type": "object", "properties": { "ordinal": { "const": 7 } } } ],
+      "items": false },
+    "teardownRows": { "allOf": [ { "type": "array",
+          "minItems": 13, "maxItems": 13, "items": { "$ref": "#/$defs/teardownRow" } },
+        { "type": "array",
+          "minItems": 13, "maxItems": 13,
+          "prefixItems": [ { "type": "object", "properties": { "phase": { "const": "READINESS_REVOKED" } } },
+            { "type": "object", "properties": { "phase": { "const": "TASK_STOPPED" } } },
+            { "type": "object", "properties": { "phase": { "const": "NETWORK_ABSENT" } } },
+            { "type": "object", "properties": { "phase": { "const": "TASK_ABSENT" } } },
+            { "type": "object", "properties": { "phase": { "const": "CONTAINER_ABSENT" } } },
+            { "type": "object", "properties": { "phase": { "const": "RUNTIME_PROCESSES_ABSENT" } } },
+            { "type": "object", "properties": { "phase": { "const": "SHARE_AND_MOUNTS_ABSENT" } } },
+            { "type": "object", "properties": { "phase": { "const": "FIREWALL_ABSENT" } } },
+            { "type": "object", "properties": { "phase": { "const": "CONTAINERD_ABSENT" } } },
+            { "type": "object", "properties": { "phase": { "const": "INPUTS_ABSENT" } } },
+            { "type": "object", "properties": { "phase": { "const": "ROOTFS_ABSENT" } } },
+            { "type": "object", "properties": { "phase": { "const": "FINAL_BASELINES" } } },
+            { "type": "object", "properties": { "phase": { "const": "RETIRED" } } } ],
+          "items": false } ] },
+    "platformUnobserved": { "const": { "kvm_api": null, "qmp_present": false, "qmp_enabled": false, "observation": "not-reached"
+    } }, "kvmPassFields": { "type": "object", "required": ["kvm_api", "qmp_present", "qmp_enabled"],
+      "properties": { "kvm_api": { "const": 12 },
+        "qmp_present": { "const": true }, "qmp_enabled": { "const": true } } },
+    "platformFailure": { "type": "object", "properties": { "observation": { "const": "failure" } },
+      "not": { "$ref": "#/$defs/kvmPassFields" } },
     "admissionKvmPass": { "type": "object", "properties": { "kvm": { "const": "pass" } } },
     "admissionKvmFailure": { "type": "object", "properties": { "kvm": { "const": "failure" } } },
-    "admissionKvmNotReached": { "type": "object", "properties": { "kvm": { "const": "not-reached" } } }
-  },
-  "allOf": [
-    {
-      "oneOf": [
-        {
-          "properties": {
-            "admission": { "$ref": "#/$defs/admissionKvmPass" },
-            "platform": { "$ref": "#/$defs/platformPass" }
-          }
-        },
-        {
-          "properties": {
-            "admission": { "$ref": "#/$defs/admissionKvmFailure" },
-            "platform": { "$ref": "#/$defs/platformFailure" }
-          }
-        },
-        {
-          "properties": {
-            "admission": { "$ref": "#/$defs/admissionKvmNotReached" },
-            "platform": { "$ref": "#/$defs/platformUnobserved" }
-          }
-        }
-      ]
-    }
-  ]
-}
+    "admissionKvmNotReached": { "type": "object", "properties": { "kvm": { "const": "not-reached" } } } },
+  "allOf": [ { "oneOf": [ { "properties": { "admission": { "$ref": "#/$defs/admissionKvmPass" },
+            "platform": { "$ref": "#/$defs/platformPass" } } },
+        { "properties": { "admission": { "$ref": "#/$defs/admissionKvmFailure" },
+            "platform": { "$ref": "#/$defs/platformFailure" } } },
+        { "properties": { "admission": { "$ref": "#/$defs/admissionKvmNotReached" },
+            "platform": { "$ref": "#/$defs/platformUnobserved" } } }
+      ] }
+  ] }

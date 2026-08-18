@@ -14,6 +14,7 @@ CLIENT_KEY = "CLIENT_KEY"
 KNOWN_HOSTS = "KNOWN_HOSTS"
 ROLE_TARGETS = {CLIENT_KEY: 200, KNOWN_HOSTS: 201}
 MAX_INPUT = 65_536
+_HEX = frozenset("0123456789abcdef")
 
 
 class FdMapError(Exception):
@@ -185,6 +186,53 @@ def relocate_internals(descriptors, reserved=(0, 1, 2, 3, 198, 200, 201)):
                 os.close(descriptor)
             except OSError:
                 pass
+
+
+def _production_binding_routes(historical_claim=claim):
+    """Package-private one-use binding for the trusted T1 SSH composition.
+
+    ``bind_inputs`` remains a pure historical observation API.  Values returned
+    by it cannot be promoted here: only this route can create the distinct owner
+    consumed by the process composition.
+    """
+    seal = object()
+    states = {}
+
+    class _ProductionInputBinding:
+        __slots__ = ()
+        def __new__(cls, key=None):
+            if key is not seal:
+                raise FdMapError("production binding is package-private")
+            return super().__new__(cls)
+
+    def make(client_fd, known_hosts_fd, expected_client, expected_known_hosts,
+             operation_token, manifest_sha256):
+        if (type(operation_token) is not str or len(operation_token) != 64
+                or set(operation_token) - _HEX or operation_token == "0" * 64
+                or type(manifest_sha256) is not str or len(manifest_sha256) != 64
+                or set(manifest_sha256) - _HEX):
+            raise FdMapError("invalid input lineage")
+        observed_owner = bind_inputs(client_fd, known_hosts_fd, expected_client, expected_known_hosts)
+        rows = historical_claim((200, 201), observed_owner)
+        value = _ProductionInputBinding(seal)
+        states[value] = [rows, operation_token, manifest_sha256, False]
+        return value
+
+    def claim(value, operation_token, manifest_sha256):
+        state = states.get(value)
+        if (type(value) is not _ProductionInputBinding or state is None or state[3]
+                or operation_token != state[1] or manifest_sha256 != state[2]):
+            raise FdMapError("invalid, stale, or reused production binding")
+        rows = revalidate(state[0])
+        state[3] = True
+        return rows
+
+    return _ProductionInputBinding, make, claim
+
+
+(_ProductionInputBinding, _bind_production_inputs,
+ _claim_production_inputs) = _production_binding_routes()
+del _production_binding_routes
 
 
 def install(bindings):

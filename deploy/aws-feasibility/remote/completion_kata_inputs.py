@@ -1,23 +1,33 @@
 """Fixed, fd-relative Kata input/control ownership foundation.
-Trusted host modules own it; guest/campaign data are untrusted. There is no production create or
-remove route; InputPermit/KeyMaterialGrant issuers are absent and routes are tests.
+
+Historical test routes remain non-authoritative: no public ``InputPermit`` or
+``KeyMaterialGrant`` exists.  The package-private production route is composed
+only inside trusted T1, consumes four durable ssh-keygen
+outcomes, and binds every graph operation to the same locked journal lineage.
 """
 from dataclasses import dataclass
 import base64
 import binascii
 import ctypes
+import fcntl
 import hashlib
 import json
 import os
 import struct
 import sys
+import time
 import zlib
 import completion_fixtures as fixtures
+import completion_kata_command_policy as command_policy
+import completion_kata_fdmap as fdmap
+import completion_kata_operation as operation
+import completion_kata_owner as owner_helpers
 import completion_rootfs_fs as fs
 
 VERSION = "cogs.stage2-kata-input-manifest/v1"
 INPUT_NAME = fs._name("kata-input-v1")
 MANIFEST_NAME = fs._name(".cogs-stage2-kata-input-manifest-v1.json")
+KEY_STAGE_PREFIX = "kata-key-stage-v1-"
 CLIENT_KEY = "private/ssh_client_ed25519_key"
 KNOWN_HOSTS = "private/known_hosts"
 SERVER_KEY = "share/ssh_host_ed25519_key"
@@ -26,6 +36,40 @@ CLIENT_COMMENT = b"cogs-stage2-client-v1"
 SERVER_COMMENT = b"cogs-stage2-server-v1"
 SSH_ALIAS = b"cogs-stage2-ssh-v1"
 MAX_PRIVATE = 16_384
+GRANT_BIRTH_WINDOW_NS = 1_200_000_000_000
+
+class _StatxTimestamp(ctypes.Structure):
+    _fields_ = (("sec", ctypes.c_longlong), ("nsec", ctypes.c_uint), ("reserved", ctypes.c_int))
+class _Statx(ctypes.Structure):
+    _fields_ = (("mask", ctypes.c_uint), ("blksize", ctypes.c_uint),
+                ("attributes", ctypes.c_ulonglong), ("nlink", ctypes.c_uint),
+                ("uid", ctypes.c_uint), ("gid", ctypes.c_uint), ("mode", ctypes.c_ushort),
+                ("spare0", ctypes.c_ushort), ("ino", ctypes.c_ulonglong),
+                ("size", ctypes.c_ulonglong), ("blocks", ctypes.c_ulonglong),
+                ("attributes_mask", ctypes.c_ulonglong), ("atime", _StatxTimestamp),
+                ("btime", _StatxTimestamp), ("ctime", _StatxTimestamp),
+                ("mtime", _StatxTimestamp), ("rdev_major", ctypes.c_uint),
+                ("rdev_minor", ctypes.c_uint), ("dev_major", ctypes.c_uint),
+                ("dev_minor", ctypes.c_uint), ("mnt_id", ctypes.c_ulonglong),
+                ("dio_mem_align", ctypes.c_uint), ("dio_offset_align", ctypes.c_uint),
+                ("spare", ctypes.c_ulonglong * 12))
+def _rename_noreplace(parent_fd, source, destination, control):
+    _fail(sys.platform == "linux" and os.uname().machine == "x86_64")
+    control.check(); result = ctypes.CDLL(None, use_errno=True).syscall(
+        316, parent_fd, ctypes.c_char_p(source.raw), parent_fd,
+        ctypes.c_char_p(destination.raw), 1)
+    control.check(); _fail(result == 0)
+
+def _birth_authority(descriptor, control):
+    _fail(sys.platform == "linux" and os.uname().machine == "x86_64")
+    control.check(); value = _Statx()
+    result = ctypes.CDLL(None, use_errno=True).syscall(
+        332, descriptor, ctypes.c_char_p(b""), 0x1000 | 0x4000, 0x00000800 | 0x00001000,
+        ctypes.byref(value))
+    control.check(); _fail(result == 0 and value.mask & 0x00000800 and value.mask & 0x00001000)
+    raw = bytearray(8); _fail(fcntl.ioctl(descriptor, 0x80087601, raw, True) == 0)
+    version = struct.unpack("@L", raw)[0]
+    return value.mnt_id, value.btime.sec * 1_000_000_000 + value.btime.nsec, version
 MAX_PUBLIC = 1_024
 MAX_MANIFEST = 4 * 1024 * 1024
 MAX_MOUNTINFO = 1024 * 1024
@@ -141,9 +185,7 @@ def _private_key(raw, expected_blob, expected_public, comment):
     _fail(padding == bytes(range(1, len(padding) + 1)))
 
 def _validate_key_material(value):
-    """Parse structure, not seed math. Production must prove seed derivation;
-    the test issuer accepts only exact mathematically valid RFC 8032 vectors.
-    """
+    """Parse structure, not seed math; production binds ``ssh-keygen -y`` too."""
     _fail(type(value) is KeyMaterial)
     client_blob, client_public = _public_row(value.client_public, CLIENT_COMMENT)
     server_blob, server_public = _public_row(value.server_public, SERVER_COMMENT)
@@ -151,6 +193,7 @@ def _validate_key_material(value):
     _private_key(value.client_private, client_blob, client_public, CLIENT_COMMENT)
     _private_key(value.server_private, server_blob, server_public, SERVER_COMMENT)
     return value
+
 
 def _git_object(kind, raw, oid):
     framed = kind.encode("ascii") + b" " + str(len(raw)).encode("ascii") + b"\x00" + raw
@@ -568,11 +611,10 @@ def _owner_routes():
     keys = {}
     detaches = {}
 
-    class _TestOperationGrant:
+    class _OperationGrant:
         __slots__ = ()
         def __new__(cls, key=None):
-            _fail(key is seal)
-            return super().__new__(cls)
+            _fail(False)
         @property
         def token(self):
             return permits[self]["token"]
@@ -593,17 +635,68 @@ def _owner_routes():
         def manifest_size(self):
             return permits[self]["manifest"]["size"]
 
-    class _TestKeyGrant:
-        __slots__ = ()
-        def __new__(cls, key=None):
-            _fail(key is seal)
-            return super().__new__(cls)
+    _TestOperationGrant = owner_helpers.sealed_type(
+        "_TestOperationGrant", seal, InputError, bases=(_OperationGrant,))
+    _TestKeyGrant = owner_helpers.sealed_type("_TestKeyGrant", seal, InputError)
+    _TestDetachGrant = owner_helpers.sealed_type("_TestDetachGrant", seal, InputError)
+    _ProductionOperationGrant = owner_helpers.sealed_type(
+        "_ProductionOperationGrant", seal, InputError, bases=(_OperationGrant,))
+    _ProductionKeyGrant = owner_helpers.sealed_type("_ProductionKeyGrant", seal, InputError)
+    _ProductionDetachGrant = owner_helpers.sealed_type(
+        "_ProductionDetachGrant", seal, InputError)
 
-    class _TestDetachGrant:
-        __slots__ = ()
-        def __new__(cls, key=None):
-            _fail(key is seal)
-            return super().__new__(cls)
+    operation_types = (_TestOperationGrant, _ProductionOperationGrant)
+    key_types = (_TestKeyGrant, _ProductionKeyGrant)
+    detach_types = (_TestDetachGrant, _ProductionDetachGrant)
+
+    def names_digest(raw_names):
+        return _sha(operation._canonical([os.fsdecode(name) for name in raw_names]))
+
+    def create_grant(journal, token, path, name, parent, kind, mode, command_serial, control):
+        _fail(parent.generation.mode == 0o700 and parent.generation.uid == parent.generation.gid == 0)
+        mount_id, _parent_birth, parent_version = _birth_authority(parent.operation_fd.number, control)
+        lower = time.time_ns() - 2_000_000_000; grant_id = _sha(operation._canonical({
+            "operation_token": token, "path": path, "name": name.text,
+            "command_serial": command_serial}))
+        body = {"action": "intent", "grant_id": grant_id, "path": path, "name": name.text,
+                "parent_generation": operation._generation_value(parent.generation),
+                "parent_inode_version": parent_version, "expected_kind": kind,
+                "expected_mode": mode, "expected_uid": 0, "expected_gid": 0,
+                "command_serial": command_serial, "birth_min_ns": lower,
+                "birth_max_ns": lower + GRANT_BIRTH_WINDOW_NS, "mount_id": mount_id,
+                "inode_version_min": 0, "inode_version_max": 0xffffffff,
+                "child_generation": None, "child_birth_ns": None, "child_inode_version": None}
+        operation._record_input_grant(journal, body)
+        return body
+
+    def settle_grant(journal, grant, node, control):
+        mount_id, birth_ns, inode_version = _birth_authority(node.operation_fd.number, control)
+        _fail(mount_id == grant["mount_id"] and grant["birth_min_ns"] <= birth_ns <= grant["birth_max_ns"]
+              and node.generation.key.kind == grant["expected_kind"]
+              and node.generation.mode == grant["expected_mode"]
+              and node.generation.uid == grant["expected_uid"]
+              and node.generation.gid == grant["expected_gid"])
+        operation._record_input_grant(journal, {**{name: grant[name] for name in grant
+            if name not in {"action", "child_generation", "child_birth_ns", "child_inode_version"}},
+            "action": "settled", "child_generation": operation._generation_value(node.generation),
+            "child_birth_ns": birth_ns, "child_inode_version": inode_version})
+
+    def durable_wa(grant, action, path, parent_key, raw_names, child_key,
+                   before_mode, target_mode):
+        journal = permits[grant].get("journal")
+        if journal is not None:
+            operation._record_input_wa(journal, {
+                "action": action, "path": path, "parent_key": _key_value(parent_key),
+                "names_sha256": names_digest(raw_names),
+                "child_key": None if child_key is None else _key_value(child_key),
+                "before_mode": before_mode, "target_mode": target_mode})
+
+    def durable_step(grant, action, path, kind, key, digest):
+        state = permits[grant]
+        journal = state.get("journal")
+        if journal is not None:
+            operation._record_input_step(
+                journal, action, path, kind, None if key is None else _key_value(key), digest)
 
     def direct_recorded_names(state, parent_path, exclude=None):
         names = set()
@@ -673,6 +766,8 @@ def _owner_routes():
             record["settled"] = linked.key
             if manifest:
                 record["digest"], record["size"] = _sha(raw), len(raw)
+            durable_step(operation_grant, "create", "@manifest" if manifest else path,
+                         "file", linked.key, _sha(raw))
             return linked.key
         if record is None:
             record = {"parent": parent.generation.key, "attempts": [], "settled": None}
@@ -690,6 +785,8 @@ def _owner_routes():
             descriptor, identity, generation = _anonymous_file(parent, raw, mode, control)
             _checkpoint(control, "after-anonymous-identity:" + path)
             record["attempts"].append([generation.key, "intent"])
+            durable_step(operation_grant, "create-intent", "@manifest" if manifest else path,
+                         "file", generation.key, _sha(raw))
             _checkpoint(control, "after-file-intent:" + path)
             _link_tmp(descriptor, parent, name)
             _checkpoint(control, "after-link:" + path)
@@ -700,17 +797,19 @@ def _owner_routes():
             record["settled"] = linked.key
             if manifest:
                 record["digest"], record["size"] = _sha(raw), len(raw)
+            durable_step(operation_grant, "create", "@manifest" if manifest else path,
+                         "file", linked.key, _sha(raw))
         except BaseException as error:
             owner = None if identity is None else fs.HeldNode(identity, descriptor, generation)
             _close_owned((owner, descriptor if identity is None else None), error)
         _close_owned((fs.HeldNode(identity, descriptor, generation),))
         return linked.key
 
-    def create_test_local(completion, operation_grant, key_grant, control):
+    def create_owned(completion, operation_grant, key_grant, control):
         state = permits.get(operation_grant)
         key_state = keys.get(key_grant)
-        _fail(type(operation_grant) is _TestOperationGrant and state is not None)
-        _fail(type(key_grant) is _TestKeyGrant and key_state is not None)
+        _fail(type(operation_grant) in operation_types and state is not None)
+        _fail(type(key_grant) in key_types and key_state is not None)
         _fail(state["key_grant"] is key_grant and key_state["operation"] is operation_grant)
         _fail(state["status"] in {"unstarted", "creating", "complete"})
         if state["status"] == "complete":
@@ -740,15 +839,35 @@ def _owner_routes():
                     _fail(record["parent"] == parent.generation.key)
                     if existing is None:
                         _fail(record["key"] is None and snapshot.raw_names == record["before"])
+                        durable_wa(operation_grant, "mkdir", entry.path, parent.generation.key,
+                                   snapshot.raw_names, None, None, 0o700)
+                        journal = state.get("journal")
+                        create_name, create_authority = name, None
+                        if journal is not None:
+                            suffix = _sha(entry.path.encode("utf-8"))[:16]
+                            create_name = fs._name(".cogs-grant-" + state["token"][:32] + "-" + suffix)
+                            serial = operation._command_context(journal).command_serial
+                            create_authority = create_grant(journal, state["token"], entry.path,
+                                                            create_name, parent, "directory", 0o700,
+                                                            serial, control)
                         previous = os.umask(0o077)
                         try:
-                            os.mkdir(name.raw, 0o700, dir_fd=parent.operation_fd.number)
+                            os.mkdir(create_name.raw, 0o700, dir_fd=parent.operation_fd.number)
                         finally:
                             _fail(os.umask(previous) == 0o077)
                         _checkpoint(control, "after-mkdir:" + entry.path)
                         os.fsync(parent.operation_fd.number)
                         _checkpoint(control, "after-directory-parent-fsync:" + entry.path)
+                        if create_authority is not None:
+                            created = fs._open_path_node(parent, create_name, "directory", control)
+                            try: settle_grant(journal, create_authority, created, control)
+                            finally: _close_owned((created,))
+                            _rename_noreplace(parent.operation_fd.number, create_name, name, control)
+                            os.fsync(parent.operation_fd.number)
                         existing = fs._observe_child(parent, name, control)
+                        durable_wa(operation_grant, "mkdir-settled", entry.path,
+                                   parent.generation.key, snapshot.raw_names,
+                                   existing.key, None, 0o700)
                     else:
                         # Intent plus an existing name is never an identity grant.
                         _fail(record["key"] is not None and record["key"] == existing.key)
@@ -756,7 +875,11 @@ def _owner_routes():
                     _fail(existing.key.kind == "directory" and existing.mode == expected_mode)
                     _fail(existing.uid == existing.gid == 0 and existing.key.mount_id == parent.generation.key.mount_id)
                     _fail(existing.key.device == parent.generation.key.device)
+                    durable_step(operation_grant, "create-intent", entry.path, "directory",
+                                 existing.key, None)
                     record["key"] = existing.key
+                    durable_step(operation_grant, "create", entry.path, "directory",
+                                 existing.key, None)
                     _checkpoint(control, "after-directory-settle:" + entry.path)
                     if entry.path == ".":
                         root = fs._open_path_node(completion, INPUT_NAME, "directory", control)
@@ -780,10 +903,16 @@ def _owner_routes():
                 try:
                     if entry.kind == "directory":
                         state["metadata"].setdefault(entry.path, False)
-                        os.fchmod(node.operation_fd.number, entry.mode)
-                        _checkpoint(control, "after-directory-chmod:" + entry.path)
-                        os.fsync(node.operation_fd.number)
-                        _checkpoint(control, "after-directory-fsync:" + entry.path)
+                        mutate = node.generation.mode != entry.mode or state.get("journal") is None
+                        if mutate:
+                            if state.get("journal") is not None:
+                                durable_wa(operation_grant, "metadata", entry.path,
+                                           node.generation.key, (), node.generation.key,
+                                           node.generation.mode, entry.mode)
+                            os.fchmod(node.operation_fd.number, entry.mode)
+                            _checkpoint(control, "after-directory-chmod:" + entry.path)
+                            os.fsync(node.operation_fd.number)
+                            _checkpoint(control, "after-directory-fsync:" + entry.path)
                     observed = fs._observe_node(node.identity_fd, node.operation_fd, control)
                     _fail(observed.key == state["directories"].get(entry.path, {}).get("key", observed.key))
                     _fail(observed.mode == entry.mode and observed.uid == observed.gid == 0)
@@ -804,9 +933,9 @@ def _owner_routes():
         _close_owned((root,))
         return identity
 
-    def verify_test_local(completion, operation_grant, control):
+    def verify_owned(completion, operation_grant, control):
         state = permits.get(operation_grant)
-        _fail(type(operation_grant) is _TestOperationGrant and state is not None and state["status"] == "complete")
+        _fail(type(operation_grant) in operation_types and state is not None and state["status"] == "complete")
         return _verify_graph(completion, operation_grant, control)
 
     def removal_order(graph, rows):
@@ -886,11 +1015,11 @@ def _owner_routes():
             detach["status"] = "removed"
         _checkpoint(control, "after-remove-absence-settle:" + path)
 
-    def remove_test_local(completion, operation_grant, detach_grant, control):
+    def remove_owned(completion, operation_grant, detach_grant, control):
         state = permits.get(operation_grant)
         detach = detaches.get(detach_grant)
-        _fail(type(operation_grant) is _TestOperationGrant and state is not None and state["status"] == "complete")
-        _fail(type(detach_grant) is _TestDetachGrant and detach is not None)
+        _fail(type(operation_grant) in operation_types and state is not None and state["status"] == "complete")
+        _fail(type(detach_grant) in detach_types and detach is not None)
         _fail(detach["operation"] is operation_grant and detach["status"] in {"detached", "removing", "removed"})
         if detach["status"] == "removed":
             existing, _snapshot = _optional_child(completion, INPUT_NAME, control)
@@ -954,6 +1083,12 @@ def _owner_routes():
                     _checkpoint(control, "after-remove-intent:" + path)
                 else:
                     _fail(detach["active"] == index)
+                durable_step(operation_grant, "remove-intent", path, kind,
+                             (_parse_key(key, kind) if path == "." else
+                              detach["manifest_key"] if path == "@manifest" else key),
+                             None if kind == "directory" else (
+                                 _sha(detach["manifest_raw"]) if path == "@manifest" else
+                                 _sha({entry.path: entry for entry in detach["graph"]}[path].content)))
                 if path == ".":
                     _fail(root.generation.key == _parse_key(key, "directory"))
                     _close_owned((root,))
@@ -961,6 +1096,7 @@ def _owner_routes():
                     os.rmdir(INPUT_NAME.raw, dir_fd=completion.operation_fd.number)
                     _checkpoint(control, "after-rmdir:.")
                     settle_active_absence(completion, None, detach, control)
+                    durable_step(operation_grant, "absent", path, kind, None, None)
                     break
                 parent, name, intermediates = open_removal_parent(root, path, control)
                 owned = () if parent is root else (parent,) + intermediates
@@ -983,6 +1119,10 @@ def _owner_routes():
                     _fail(name.raw not in fs._enumerate_stable(parent, control).raw_names)
                     detach["cursor"] += 1
                     detach["active"] = None
+                    durable_step(operation_grant, "absent", path, kind, None,
+                                 None if kind == "directory" else (
+                                     _sha(detach["manifest_raw"]) if path == "@manifest" else
+                                     _sha({entry.path: entry for entry in detach["graph"]}[path].content)))
                     _checkpoint(control, "after-remove-absence-settle:" + path)
                 except BaseException as error:
                     _close_owned(owned, error)
@@ -1057,18 +1197,717 @@ def _owner_routes():
                 raise
             raise uncertain from error
 
+    production = {}
+
+    def fixed_key_material(state, first_serial):
+        import completion_kata_process as process
+        _fail(type(state["key_executable"]) is process.RetainedExecutable)
+        _fail((state["key_executable"].role, state["key_executable"].path)
+              == ("ssh-keygen", "/usr/bin/ssh-keygen"))
+        completion, control = state["completion"], state["control"]
+        stage_name = state["key_stage_name"]
+        existing, snapshot = _optional_child(completion, stage_name, control)
+        _fail(existing is None and command_policy.KEY_STAGE_PREFIX == operation.BASE + "/" + KEY_STAGE_PREFIX)
+        stage_grant = create_grant(
+            state["journal"], operation._command_context(state["journal"]).operation_token,
+            "@key-stage", stage_name, completion, "directory", 0o700, first_serial, control)
+        operation._record_input_wa(state["journal"], {
+            "action": "mkdir", "path": "@key-stage",
+            "parent_key": _key_value(completion.generation.key),
+            "names_sha256": names_digest(snapshot.raw_names), "child_key": None,
+            "before_mode": None, "target_mode": 0o700})
+        previous = os.umask(0o077)
+        try:
+            os.mkdir(stage_name.raw, 0o700, dir_fd=completion.operation_fd.number)
+        finally:
+            _fail(os.umask(previous) == 0o077)
+        os.fsync(completion.operation_fd.number)
+        stage = fs._open_path_node(completion, stage_name, "directory", control)
+        held = [stage]
+        try:
+            _fail(stage.generation.mode == 0o700 and stage.generation.uid == stage.generation.gid == 0)
+            settle_grant(state["journal"], stage_grant, stage, control)
+            operation._record_input_wa(state["journal"], {
+                "action": "mkdir-settled", "path": "@key-stage",
+                "parent_key": _key_value(completion.generation.key),
+                "names_sha256": names_digest(snapshot.raw_names),
+                "child_key": _key_value(stage.generation.key), "before_mode": None,
+                "target_mode": 0o700})
+            def run(command_id, serial, expected_stdout=None):
+                outcome, receipt = process._transact_key(
+                    state["journal"], state["key_executable"], command_id)
+                _fail(type(outcome) is process.ProcessOutcome
+                      and type(receipt) is operation.DurableCommandOutcome)
+                _fail(receipt.command_serial == serial and outcome.command_id == receipt.command_id)
+                if expected_stdout is not None: _fail(outcome.stdout == expected_stdout)
+                durable = operation._durable_command_output(
+                    state["journal"], serial, receipt.command_id, receipt.binding_sha256,
+                    outcome.stdout, outcome.stderr)
+                body = durable.body
+                _fail(durable.body == receipt.body and outcome.stderr == b"")
+                _fail(body["outcome"] == "exited" and body["status"] == 0
+                      and not body["uncertain"] and not body["stdout_truncated"]
+                      and not body["stderr_truncated"] and body["errors"] == [])
+                return outcome
+            def key_grant(name, mode, serial):
+                return create_grant(state["journal"],
+                                    operation._command_context(state["journal"]).operation_token,
+                                    "@key-stage/" + name, fs._name(name), stage, "file", mode,
+                                    serial, control)
+            def opened(name, mode, maximum, grant):
+                node = fs._open_path_node(stage, fs._name(name), "file", control); held.append(node)
+                _fail(node.generation.mode == mode and node.generation.uid == node.generation.gid == 0
+                      and node.generation.nlink == 1)
+                fs._require_empty_fd_xattrs(node, control)
+                settle_grant(state["journal"], grant, node, control)
+                operation._record_input_wa(state["journal"], {
+                    "action": "file-settled", "path": "@key-stage/" + name,
+                    "parent_key": _key_value(stage.generation.key),
+                    "names_sha256": names_digest(fs._enumerate_stable(stage, control).raw_names),
+                    "child_key": _key_value(node.generation.key), "before_mode": None,
+                    "target_mode": mode})
+                return node, fs._read_regular(node, maximum, control)
+            client_grant = key_grant("client", 0o600, first_serial)
+            client_pub_grant = key_grant("client.pub", 0o644, first_serial)
+            run(process.CommandId.SSH_KEYGEN_CLIENT, first_serial, b"")
+            client_node, client_private = opened("client", 0o600, MAX_PRIVATE, client_grant)
+            client_pub_node, client_public = opened("client.pub", 0o644, MAX_PUBLIC, client_pub_grant)
+            client_y = client_public.rsplit(b" ", 1)[0] + b"\n"
+            run(process.CommandId.SSH_PUBLIC_CLIENT, first_serial + 1, client_y)
+            _fail(fs._observe_node(client_node.identity_fd, client_node.operation_fd, control)
+                  == client_node.generation)
+            server_grant = key_grant("server", 0o600, first_serial + 2)
+            server_pub_grant = key_grant("server.pub", 0o644, first_serial + 2)
+            run(process.CommandId.SSH_KEYGEN_SERVER, first_serial + 2, b"")
+            server_node, server_private = opened("server", 0o600, MAX_PRIVATE, server_grant)
+            server_pub_node, server_public = opened("server.pub", 0o644, MAX_PUBLIC, server_pub_grant)
+            server_y = server_public.rsplit(b" ", 1)[0] + b"\n"
+            run(process.CommandId.SSH_PUBLIC_SERVER, first_serial + 3, server_y)
+            for node in (client_node, client_pub_node, server_node, server_pub_node):
+                _fail(fs._observe_node(node.identity_fd, node.operation_fd, control) == node.generation)
+            _fail(operation._command_context(state["journal"]).command_serial == first_serial + 4)
+            return _validate_key_material(KeyMaterial(
+                client_private, client_public, server_private, server_public)), tuple(held)
+        except BaseException as error:
+            _close_owned(tuple(reversed(held)), error)
+
+    def remove_key_stage(state, handles=()):
+        completion, control = state["completion"], state["control"]
+        stage_name = state["key_stage_name"]
+        quarantine_name = fs._name(stage_name.text + ".quarantine")
+        wa_rows = operation._input_wa(state["journal"])
+        grant_rows = operation._input_grants(state["journal"])
+        mkdir_rows = [row for row in wa_rows if (row["action"], row["path"]) == ("mkdir", "@key-stage")]
+        settled_rows = [row for row in wa_rows
+                        if (row["action"], row["path"]) == ("mkdir-settled", "@key-stage")]
+        if handles:
+            _fail(len(mkdir_rows) == 1)
+            _close_owned(tuple(reversed(handles[1:])))
+            stage = handles[0]
+        else:
+            generation, completion_snapshot = _optional_child(completion, stage_name, control)
+            quarantined, quarantine_snapshot = _optional_child(completion, quarantine_name, control)
+            _fail(not (generation is not None and quarantined is not None))
+            if generation is None and quarantined is None: return
+            _fail(len(mkdir_rows) == 1 and len(settled_rows) <= 1
+                  and _parse_key(mkdir_rows[0]["parent_key"], "directory") == completion.generation.key)
+            active_name = stage_name if generation is not None else quarantine_name
+            active_snapshot = completion_snapshot if generation is not None else quarantine_snapshot
+            names_without_stage = tuple(name for name in active_snapshot.raw_names
+                                        if name != active_name.raw)
+            _fail(names_digest(names_without_stage) == mkdir_rows[0]["names_sha256"])
+            stage = fs._open_path_node(completion, active_name, "directory", control)
+            stage_name = active_name
+        try:
+            if not settled_rows:
+                grants = [row for row in grant_rows if row["path"] == "@key-stage"]
+                intents = [row for row in grants if row["action"] == "intent"]
+                _fail(len(intents) == 1 and not any(row["action"] == "settled" for row in grants))
+                settle_grant(state["journal"], intents[0], stage, control)
+                operation._record_input_wa(state["journal"], {
+                    "action": "mkdir-settled", "path": "@key-stage",
+                    "parent_key": mkdir_rows[0]["parent_key"],
+                    "names_sha256": mkdir_rows[0]["names_sha256"],
+                    "child_key": _key_value(stage.generation.key), "before_mode": None,
+                    "target_mode": 0o700})
+                settled_rows = [{"child_key": _key_value(stage.generation.key)}]
+            _fail(len(settled_rows) == 1
+                  and stage.generation.key == _parse_key(settled_rows[0]["child_key"], "directory")
+                  and stage.generation.mode == 0o700 and stage.generation.uid == stage.generation.gid == 0)
+            prior_stage_remove = [row for row in wa_rows
+                                  if (row["action"], row["path"]) == ("remove", "@key-stage")]
+            if not prior_stage_remove:
+                operation._record_input_wa(state["journal"], {
+                    "action": "remove", "path": "@key-stage",
+                    "parent_key": _key_value(completion.generation.key),
+                    "names_sha256": mkdir_rows[0]["names_sha256"],
+                    "child_key": _key_value(stage.generation.key),
+                    "before_mode": stage.generation.mode, "target_mode": 0})
+            if stage_name is not quarantine_name:
+                _rename_noreplace(completion.operation_fd.number, stage_name, quarantine_name, control)
+                os.fsync(completion.operation_fd.number); stage_name = quarantine_name
+            snapshot = fs._enumerate_stable(stage, control)
+            allowed = {row["name"].encode("ascii") for row in grant_rows
+                       if row["action"] == "intent" and row["path"].startswith("@key-stage/")}
+            _fail(set(snapshot.raw_names) <= allowed)
+            for raw in sorted(snapshot.raw_names, reverse=True):
+                generation = fs._observe_child(stage, fs._name(os.fsdecode(raw)), control)
+                path = "@key-stage/" + os.fsdecode(raw)
+                settlements = [row for row in wa_rows
+                               if (row["action"], row["path"]) == ("file-settled", path)]
+                grants = [row for row in grant_rows if row["path"] == path]
+                intents = [row for row in grants if row["action"] == "intent"]
+                settled_grants = [row for row in grants if row["action"] == "settled"]
+                _fail(len(intents) == 1 and len(settled_grants) <= 1
+                      and len(grants) == len(intents) + len(settled_grants)
+                      and intents[0]["name"] == os.fsdecode(raw))
+                if not settlements:
+                    node = fs._open_path_node(stage, fs._name(os.fsdecode(raw)), "file", control)
+                    try:
+                        if settled_grants:
+                            settled = settled_grants[0]
+                            mount_id, birth_ns, inode_version = _birth_authority(
+                                node.operation_fd.number, control)
+                            parent_key = _key_value(stage.generation.key)
+                            _fail(settled["grant_id"] == intents[0]["grant_id"]
+                                  and all(settled[name] == intents[0][name] for name in (
+                                      "name", "parent_generation", "parent_inode_version",
+                                      "expected_kind", "expected_mode", "expected_uid", "expected_gid",
+                                      "command_serial", "birth_min_ns", "birth_max_ns", "mount_id",
+                                      "inode_version_min", "inode_version_max"))
+                                  and all(intents[0]["parent_generation"][name] == parent_key[name]
+                                          for name in ("mount_id", "device", "inode", "kind"))
+                                  and settled["child_generation"] == operation._generation_value(node.generation)
+                                  and settled["child_birth_ns"] == birth_ns
+                                  and settled["child_inode_version"] == inode_version
+                                  and mount_id == settled["mount_id"]
+                                  and settled["expected_kind"] == "file"
+                                  and node.generation.mode == settled["expected_mode"]
+                                  and node.generation.uid == settled["expected_uid"] == 0
+                                  and node.generation.gid == settled["expected_gid"] == 0)
+                        else: settle_grant(state["journal"], intents[0], node, control)
+                    finally: _close_owned((node,))
+                    operation._record_input_wa(state["journal"], {
+                        "action": "file-settled", "path": path,
+                        "parent_key": _key_value(stage.generation.key),
+                        "names_sha256": names_digest(snapshot.raw_names),
+                        "child_key": _key_value(generation.key), "before_mode": None,
+                        "target_mode": generation.mode})
+                    settlements = [{"child_key": _key_value(generation.key),
+                                    "target_mode": generation.mode}]
+                _fail(len(settlements) == 1
+                      and generation.key == _parse_key(settlements[0]["child_key"], "file")
+                      and generation.uid == generation.gid == 0
+                      and generation.mode == settlements[0]["target_mode"])
+                prior = [row for row in wa_rows if (row["action"], row["path"]) == ("remove", path)]
+                if prior:
+                    _fail(len(prior) == 1 and _parse_key(prior[0]["child_key"], "file") == generation.key)
+                else:
+                    operation._record_input_wa(state["journal"], {
+                        "action": "remove", "path": path, "parent_key": _key_value(stage.generation.key),
+                        "names_sha256": names_digest(snapshot.raw_names),
+                        "child_key": _key_value(generation.key), "before_mode": generation.mode,
+                        "target_mode": 0})
+                os.unlink(raw, dir_fd=stage.operation_fd.number); os.fsync(stage.operation_fd.number)
+            removed_generation = stage.generation
+            _close_owned((stage,)); stage = None
+            os.rmdir(stage_name.raw, dir_fd=completion.operation_fd.number)
+            os.fsync(completion.operation_fd.number)
+            absent, _ = _optional_child(completion, stage_name, control)
+            original, _ = _optional_child(completion, state["key_stage_name"], control)
+            _fail(absent is None and original is None)
+            operation._record_input_wa(state["journal"], {
+                "action": "absent", "path": "@key-stage",
+                "parent_key": _key_value(completion.generation.key),
+                "names_sha256": names_digest(fs._enumerate_stable(completion, control).raw_names),
+                "child_key": _key_value(removed_generation.key),
+                "before_mode": removed_generation.mode, "target_mode": 0})
+        finally:
+            if stage is not None and stage.identity_fd.disposition == "open": _close_owned((stage,))
+
+    def poison_production(state, primary):
+        state["uncertain"] = primary
+        if operation._durable_phase(state["journal"]) == "UNCERTAIN": return
+        try:
+            operation._record_uncertain(state["journal"], "incomplete")
+        except BaseException as journal_error:
+            raise BaseExceptionGroup(
+                "input failure and durable uncertainty failure", [primary, journal_error],
+            )
+
+    class _ProductionInputs:
+        __slots__ = ()
+        def __new__(cls, key=None):
+            _fail(key is seal)
+            return super().__new__(cls)
+        def create(self):
+            state = production[self]
+            _fail(not state["removed"] and state["uncertain"] is None)
+            if state["identity"] is not None:
+                return self.verify()
+            before = operation._command_context(state["journal"])
+            _fail(before.lifecycle_phase == "ROOTFS_LEASED")
+            key_handles = ()
+            try:
+                material, key_handles = fixed_key_material(state, before.command_serial)
+                grant = _ProductionOperationGrant(seal)
+                key_grant = _ProductionKeyGrant(seal)
+                permits[grant] = {
+                    "token": before.operation_token, "status": "unstarted",
+                    "key_grant": key_grant, "directories": {}, "files": {},
+                    "metadata": {}, "manifest": None, "uncertain": None,
+                    "journal": state["journal"],
+                }
+                keys[key_grant] = {"material": material, "operation": grant}
+                state["grant"], state["key_grant"] = grant, key_grant
+                parent = state["completion"]
+                parent_before = fs._observe_node(
+                    parent.identity_fd, parent.operation_fd, state["control"],
+                )
+                names = [os.fsdecode(name) for name in
+                         fs._enumerate_stable(parent, state["control"]).raw_names]
+                _fail(INPUT_NAME.text not in names)
+                names.sort(key=lambda value: value.encode("utf-8"))
+                intent = {
+                    "operation_token": before.operation_token,
+                    "resource_id": "input-root", "action": "create",
+                    "expected_parent_generation": operation._generation_value(parent_before),
+                    "names_sha256": _sha(operation._canonical(names)),
+                }
+                operation._record_fs_intent(state["journal"], intent)
+                identity = create_owned(
+                    parent, grant, key_grant, state["control"],
+                )
+                remove_key_stage(state, key_handles)
+                import completion_kata_process as process
+                process._release_attested_executable(state["key_executable"])
+                state["key_released"] = True
+                root = fs._open_path_node(parent, INPUT_NAME, "directory", state["control"])
+                try:
+                    parent_after = fs._observe_node(
+                        parent.identity_fd, parent.operation_fd, state["control"],
+                    )
+                    observed = {**intent,
+                        "before_parent": operation._generation_value(parent_before),
+                        "after_parent": operation._generation_value(parent_after),
+                        "before_child": None,
+                        "after_child": operation._generation_value(root.generation),
+                    }
+                finally:
+                    _close_owned((root,))
+                operation._record_fs_observed(state["journal"], observed)
+                operation._record_fs_settled(state["journal"], observed)
+                state["identity"] = identity
+                return identity
+            except BaseException as error:
+                cleanup_error = None
+                try: remove_key_stage(state, key_handles)
+                except BaseException as caught: cleanup_error = caught
+                release_error = None
+                if not state["key_released"]:
+                    try:
+                        import completion_kata_process as process
+                        process._release_attested_executable(state["key_executable"])
+                        state["key_released"] = True
+                    except BaseException as caught: release_error = caught
+                failures = [item for item in (error, cleanup_error, release_error) if item is not None]
+                primary = error if len(failures) == 1 else BaseExceptionGroup(
+                    "input creation/key-stage/attestation settlement failure", failures)
+                poison_production(state, primary)
+                raise primary
+        def verify(self):
+            state = production[self]
+            _fail(state["identity"] is not None and not state["removed"]
+                  and state["uncertain"] is None)
+            context = operation._command_context(state["journal"])
+            _fail(context.operation_token == state["identity"].operation_token)
+            try:
+                return latch_route(state["grant"], None, lambda: verify_owned(
+                    state["completion"], state["grant"], state["control"],
+                ))
+            except BaseException as error:
+                poison_production(state, error)
+                raise
+        def prepare_launch(self):
+            """Prove the complete manifest, including known_hosts, before launch."""
+            return self.verify()
+        def claim_ssh_bindings(self):
+            state = production[self]
+            identity = self.verify()
+            _fail(state["handles"] is None and not state["bindings_claimed"])
+            root = fs._open_path_node(
+                state["completion"], INPUT_NAME, "directory", state["control"],
+            )
+            client = known = None
+            client_intermediates = known_intermediates = ()
+            try:
+                client, client_intermediates = _open_relative(
+                    root, CLIENT_KEY, "file", state["control"],
+                )
+                known, known_intermediates = _open_relative(
+                    root, KNOWN_HOSTS, "file", state["control"],
+                )
+                binding = fdmap._bind_production_inputs(
+                    client.operation_fd.number, known.operation_fd.number,
+                    fdmap.identity(client.operation_fd.number),
+                    fdmap.identity(known.operation_fd.number),
+                    identity.operation_token, identity.manifest_sha256,
+                )
+                state["handles"] = ((known,) + known_intermediates
+                                    + (client,) + client_intermediates + (root,))
+                state["bindings_claimed"] = True
+                return binding
+            except BaseException as error:
+                try:
+                    _close_owned(((known,) + (known_intermediates if known is not None else ())
+                                  + (client,) + (client_intermediates if client is not None else ())
+                                  + (root,)), error)
+                except BaseException as owned_error:
+                    poison_production(state, owned_error)
+                    raise
+        def release_ssh_bindings(self):
+            state = production[self]
+            handles, state["handles"] = state["handles"], None
+            _fail(handles is not None)
+            try:
+                _close_owned(handles)
+            except BaseException as error:
+                poison_production(state, error)
+                raise
+        def remove(self):
+            state = production[self]
+            identity = self.verify()
+            _fail(state["handles"] is None)
+            context = operation._command_context(state["journal"])
+            _fail(context.lifecycle_phase == "FIREWALL_ABSENT")
+            detach = _ProductionDetachGrant(seal)
+            detaches[detach] = {"operation": state["grant"], "status": "detached", "uncertain": None}
+            try:
+                removed = latch_route(state["grant"], detach, lambda: remove_owned(
+                    state["completion"], state["grant"], detach, state["control"],
+                ))
+                names = fs._enumerate_stable(state["completion"], state["control"]).raw_names
+                _fail(INPUT_NAME.raw not in names and removed == identity)
+                proof = _sha(operation._canonical({
+                    "manifest_sha256": identity.manifest_sha256,
+                    "operation_token": identity.operation_token,
+                    "observed_names": [os.fsdecode(name) for name in names],
+                }))
+                operation._record_input_removed(state["journal"], proof)
+                state["removed"] = True
+                return removed
+            except BaseException as error:
+                poison_production(state, error)
+                raise
+
+    class _ProductionInputCleanup:
+        __slots__ = ()
+        def __new__(cls, key=None):
+            _fail(key is seal)
+            return super().__new__(cls)
+        def continue_cleanup(self):
+            state = production[self]
+            if operation._has_recovery_command(state["journal"]):
+                import completion_kata_process as process
+                process._recover_pending_production(state["journal"])
+            try:
+                remove_key_stage(state)
+            except BaseException as error:
+                if operation._durable_phase(state["journal"]) != "UNCERTAIN":
+                    operation._record_uncertain(state["journal"], "identity-mismatch")
+                raise error
+            steps = operation._input_steps(state["journal"])
+            recorded_paths = {row["path"] for row in steps}
+            wa_state = operation._input_wa(state["journal"])
+            grant_state = operation._input_grants(state["journal"])
+            mkdir_rows = sorted((row for row in wa_state
+                                 if row["action"] == "mkdir" and row["path"] != "@key-stage"),
+                                key=lambda row: (row["path"].count("/"), row["path"].encode()))
+            for wa in mkdir_rows:
+                path = wa["path"]
+                if path in recorded_paths: continue
+                if path == ".":
+                    parent, name, intermediates = state["completion"], INPUT_NAME, ()
+                else:
+                    root_generation, _ = _optional_child(
+                        state["completion"], INPUT_NAME, state["control"])
+                    _fail(root_generation is not None)
+                    root_probe = fs._open_path_node(
+                        state["completion"], INPUT_NAME, "directory", state["control"])
+                    try:
+                        parent, name, intermediates = _open_parent(root_probe, path, state["control"])
+                    finally:
+                        if parent is not root_probe: _close_owned((root_probe,))
+                owned = () if parent is state["completion"] else (parent,) + intermediates
+                try:
+                    _fail(parent.generation.key == _parse_key(wa["parent_key"], "directory"))
+                    generation, _snapshot = _optional_child(parent, name, state["control"])
+                    grants = [row for row in grant_state if row["path"] == path]
+                    intents = [row for row in grants if row["action"] == "intent"]
+                    temporary_generation = None
+                    if intents:
+                        _fail(len(intents) == 1)
+                        temporary = fs._name(intents[0]["name"])
+                        temporary_generation, _ = _optional_child(parent, temporary, state["control"])
+                        if generation is not None and temporary_generation is not None:
+                            operation._record_uncertain(state["journal"], "identity-mismatch")
+                            raise InputError("grant target and quarantine both exist")
+                    if generation is None and intents:
+                        if temporary_generation is not None:
+                            node = fs._open_path_node(parent, temporary, "directory", state["control"])
+                            try:
+                                if not any(row["action"] == "settled" for row in grants):
+                                    settle_grant(state["journal"], intents[0], node, state["control"])
+                            finally: _close_owned((node,))
+                            _rename_noreplace(parent.operation_fd.number, temporary, name, state["control"])
+                            os.fsync(parent.operation_fd.number)
+                            generation = fs._observe_child(parent, name, state["control"])
+                    if generation is None: continue
+                    settlements = [row for row in wa_state
+                                   if (row["action"], row["path"]) == ("mkdir-settled", path)]
+                    if not settlements and any(row["action"] == "settled" for row in grants):
+                        operation._record_input_wa(state["journal"], {
+                            "action": "mkdir-settled", "path": path,
+                            "parent_key": wa["parent_key"], "names_sha256": wa["names_sha256"],
+                            "child_key": _key_value(generation.key), "before_mode": None,
+                            "target_mode": wa["target_mode"]})
+                        settlements = [{"child_key": _key_value(generation.key)}]
+                    if (len(settlements) != 1
+                            or generation.key != _parse_key(settlements[0]["child_key"], "directory")
+                            or generation.mode not in {0o700, wa["target_mode"]}
+                            or generation.uid != 0 or generation.gid != 0):
+                        operation._record_uncertain(state["journal"], "identity-mismatch")
+                        raise InputError("unsettled restart directory")
+                    operation._record_input_step(state["journal"], "create-intent", path,
+                                                 "directory", _key_value(generation.key), None)
+                    operation._record_input_step(state["journal"], "create", path,
+                                                 "directory", _key_value(generation.key), None)
+                    recorded_paths.add(path)
+                finally: _close_owned(owned)
+            steps = operation._input_steps(state["journal"])
+            by_path = {}
+            for row in steps: by_path.setdefault(row["path"], []).append(row)
+            candidates = []
+            for path, rows in by_path.items():
+                if rows[-1]["action"] != "absent":
+                    source = next((row for row in reversed(rows)
+                                   if row["action"] in {"create", "create-intent"}), None)
+                    _fail(source is not None); candidates.append(source)
+            candidates.sort(key=lambda row: (row["path"] == ".", -row["path"].count("/"),
+                                              row["path"].encode("utf-8")))
+            root = None
+            try:
+                root_generation, _ = _optional_child(state["completion"], INPUT_NAME, state["control"])
+                if root_generation is not None:
+                    root = fs._open_path_node(state["completion"], INPUT_NAME, "directory", state["control"])
+                else:
+                    for source in candidates:
+                        rows = by_path[source["path"]]
+                        if rows[-1]["action"] != "remove-intent":
+                            operation._record_input_step(
+                                state["journal"], "remove-intent", source["path"], source["kind"],
+                                source["key"], source["sha256"])
+                        operation._record_input_step(
+                            state["journal"], "absent", source["path"], source["kind"],
+                            None, source["sha256"])
+                    candidates = []
+                for source in candidates:
+                    path, kind = source["path"], source["kind"]
+                    rows = by_path[path]
+                    if rows[-1]["action"] != "remove-intent":
+                        operation._record_input_step(state["journal"], "remove-intent", path, kind,
+                                                     source["key"], source["sha256"])
+                    if path == ".":
+                        generation = root_generation
+                        parent, name, intermediates = state["completion"], INPUT_NAME, ()
+                    else:
+                        _fail(root is not None)
+                        actual = MANIFEST_NAME.text if path == "@manifest" else path
+                        parent, name, intermediates = _open_parent(root, actual, state["control"])
+                        generation, _ = _optional_child(parent, name, state["control"])
+                    owned = () if parent in {state["completion"], root} else (parent,) + intermediates
+                    try:
+                        if generation is not None:
+                            expected = _parse_key(source["key"], kind)
+                            _fail(generation.key == expected)
+                            node = fs._open_path_node(parent, name, kind, state["control"])
+                            try:
+                                _fail(node.generation.key == expected and node.generation.uid == node.generation.gid == 0)
+                                if kind == "file":
+                                    raw = fs._read_regular(node, MAX_MANIFEST, state["control"])
+                                    _fail(_sha(raw) == source["sha256"])
+                                else:
+                                    _fail(not fs._enumerate_stable(node, state["control"]).raw_names)
+                            finally: _close_owned((node,))
+                            if path == ".":
+                                _close_owned((root,)); root = None
+                            (os.unlink if kind == "file" else os.rmdir)(
+                                name.raw, dir_fd=parent.operation_fd.number)
+                            os.fsync(parent.operation_fd.number)
+                        absent, _ = _optional_child(parent, name, state["control"])
+                        _fail(absent is None)
+                        operation._record_input_step(state["journal"], "absent", path, kind,
+                                                     None, source["sha256"])
+                    finally: _close_owned(owned)
+                final, _ = _optional_child(state["completion"], INPUT_NAME, state["control"])
+                _fail(final is None)
+                proof = _sha(operation._canonical({"operation_token": steps[0]["operation_token"],
+                                                    "input_absent": True})) if steps else _sha(b"no-input-steps\n")
+                phase = operation._durable_phase(state["journal"])
+                if phase == "FS_INTENT":
+                    intent = operation._pending_fs_intent(state["journal"])
+                    observed_parent = fs._observe_node(
+                        state["completion"].identity_fd, state["completion"].operation_fd,
+                        state["control"])
+                    names = sorted((os.fsdecode(raw) for raw in
+                                    fs._enumerate_stable(state["completion"], state["control"]).raw_names),
+                                   key=lambda value: value.encode("utf-8"))
+                    absent = {**intent,
+                              "parent_observation": operation._generation_value(observed_parent),
+                              "observed_names": names}
+                    try:
+                        operation._record_fs_absent(state["journal"], absent)
+                        operation._record_fs_settled(state["journal"], absent)
+                    except BaseException as error:
+                        operation._record_uncertain(state["journal"], "identity-mismatch")
+                        raise error
+                elif phase == "ROOTFS_LEASED":
+                    operation._record_uncertain(state["journal"], "incomplete")
+                elif phase == "FIREWALL_ABSENT":
+                    operation._record_input_removed(state["journal"], proof)
+                return proof
+            finally:
+                if root is not None and root.identity_fd.disposition == "open": _close_owned((root,))
+
+    def make_production_inputs(journal, completion, control, executable_owner):
+        import completion_kata_process as process
+        journal = operation._claim_production_operation(journal)
+        _fail(type(completion) is fs.HeldNode and type(control) is fs.OperationControl)
+        key_executable = process._claim_attested_executable(executable_owner, "ssh-keygen")
+        _fail((key_executable.role, key_executable.path) == ("ssh-keygen", "/usr/bin/ssh-keygen"))
+        context = operation._command_context(journal)
+        _fail(context.lifecycle_phase == "ROOTFS_LEASED")
+        value = _ProductionInputs(seal)
+        production[value] = {
+            "journal": journal, "completion": completion, "control": control,
+            "key_executable": key_executable,
+            "key_stage_name": fs._name(KEY_STAGE_PREFIX + context.operation_token),
+            "grant": None, "key_grant": None,
+            "identity": None, "handles": None, "bindings_claimed": False,
+            "key_released": False, "removed": False, "uncertain": None,
+        }
+        return value
+
+    def make_production_cleanup(journal, completion, control):
+        journal = operation._claim_production_operation(journal)
+        _fail(type(completion) is fs.HeldNode and type(control) is fs.OperationControl)
+        _fail(operation._durable_phase(journal) in {"ROOTFS_LEASED", "FS_INTENT", "FS_SETTLED",
+              "RUNTIME_READY", "SSH_READY", "READINESS_REVOKED", "FIREWALL_ABSENT", "UNCERTAIN"})
+        value = _ProductionInputCleanup(seal)
+        production[value] = {"journal": journal, "completion": completion, "control": control}
+        return value
+
     create_route = lambda completion, operation, key, control: latch_route(
-        operation, None, lambda: create_test_local(completion, operation, key, control))
+        operation, None, lambda: create_owned(completion, operation, key, control))
     verify_route = lambda completion, operation, control: latch_route(
-        operation, None, lambda: verify_test_local(completion, operation, control))
+        operation, None, lambda: verify_owned(completion, operation, control))
     remove_route = lambda completion, operation, detach, control: latch_route(
-        operation, detach, lambda: remove_test_local(completion, operation, detach, control))
+        operation, detach, lambda: remove_owned(completion, operation, detach, control))
     return (make_test_key_grant, make_test_operation_grant, bind_test_operation_grant,
-            make_test_detach_grant, create_route, verify_route, remove_route)
+            make_test_detach_grant, create_route, verify_route, remove_route,
+            _ProductionInputs, make_production_inputs,
+            _ProductionInputCleanup, make_production_cleanup)
 
 (_make_test_key_grant, _make_test_operation_grant, _bind_test_operation_grant,
  _make_test_detach_grant, _create_fixed_inputs_test_local,
- _verify_fixed_inputs_test_local, _remove_fixed_inputs_test_local) = _owner_routes()
+ _verify_fixed_inputs_test_local, _remove_fixed_inputs_test_local,
+ _ProductionInputs, _compose_production_inputs,
+ _ProductionInputCleanup, _compose_production_input_cleanup) = _owner_routes()
 del _owner_routes
 
-# Deliberately no production input creation/removal function or capability issuer.
+
+# Runtime handoff retains real descriptors and reuses the canonical graph
+# verifier. It accepts no manifest identities, digests, paths, or callbacks.
+def _runtime_input_routes():
+    owners = owner_helpers.Registry("_RuntimeInputs", InputError)
+    grants = owner_helpers.Registry("_RuntimeInputGrant", InputError)
+    _RuntimeInputs, _RuntimeInputGrant = owners.kind, grants.kind
+    class _ObservedGrant:
+        def __init__(self, token, raw, generation, rows):
+            self.token, self.raw, self.generation, self.rows = token, raw, generation, rows
+        def manifest_key(self): return self.generation.key
+        def manifest_digest(self): return _sha(self.raw)
+        def manifest_size(self): return len(self.raw)
+        def directory_key(self, path): return _parse_key(self.rows[path]["identity"], "directory")
+        def file_key(self, path): return _parse_key(self.rows[path]["identity"], "file")
+    def observed(completion, token, control):
+        root = manifest = None
+        try:
+            root = fs._open_path_node(completion, INPUT_NAME, "directory", control)
+            manifest = fs._open_path_node(root, MANIFEST_NAME, "file", control)
+            raw = fs._read_regular(manifest, MAX_MANIFEST, control)
+            grant = _ObservedGrant(token, raw, manifest.generation,
+                                   _manifest_rows(_parse_manifest(raw, token)))
+        except BaseException as error:
+            _close_owned(tuple(node for node in (manifest, root) if node is not None), error)
+        _close_owned((manifest, root))
+        return grant, _verify_graph(completion, grant, control)
+    def reopen(journal, completion, control):
+        _fail(type(completion) is fs.HeldNode and type(control) is fs.OperationControl)
+        context = operation._command_context(journal)
+        _fail(context.lifecycle_phase not in {"RETIRED", "INPUT_REMOVED",
+                                               "ROOTFS_RELEASE_READY", "ROOTFS_RELEASE_AUTHORIZED",
+                                               "ROOTFS_ABSENT"})
+        observed_grant, identity = observed(completion, context.operation_token, control)
+        root = share = host = authorized = fixture = None
+        share_i = host_i = auth_i = fixture_i = ()
+        try:
+            root = fs._open_path_node(completion, INPUT_NAME, "directory", control)
+            share, share_i = _open_relative(root, "share", "directory", control)
+            host, host_i = _open_relative(root, SERVER_KEY, "file", control)
+            authorized, auth_i = _open_relative(root, AUTHORIZED_KEYS, "file", control)
+            fixture, fixture_i = _open_relative(root, "share/fixture", "directory", control)
+            _fail(not share_i and len(host_i) == len(auth_i) == len(fixture_i) == 1)
+            retained = (fixture, *fixture_i, authorized, *auth_i, host, *host_i, share, root)
+        except BaseException as error:
+            _close_owned(tuple(node for node in (fixture, *fixture_i, authorized, *auth_i,
+                                                  host, *host_i, share, *share_i, root)
+                               if node is not None), error)
+        return owners.issue([
+            journal, completion, control, observed_grant, identity, retained, False, False,
+        ])
+    def claim(owner, journal):
+        state = owners.require(owner)
+        _fail(state[0] is journal and not state[6])
+        fresh_grant, identity = observed(state[1], state[4].operation_token, state[2])
+        _fail(identity == state[4] and fresh_grant.raw == state[3].raw)
+        for node in state[5]:
+            _fail(fs._observe_node(node.identity_fd, node.operation_fd, state[2]) == node.generation)
+        state[6] = True
+        return grants.issue([
+            owner, identity, tuple(node.generation for node in state[5]), False,
+        ])
+    def verify(grant):
+        state = grants.require(grant)
+        owner = owners.require(state[0])
+        _fail(not owner[7])
+        fresh, identity = observed(owner[1], owner[4].operation_token, owner[2])
+        _fail(identity == state[1] == owner[4] and fresh.raw == owner[3].raw)
+        for node, generation in zip(owner[5], state[2], strict=True):
+            _fail(fs._observe_node(node.identity_fd, node.operation_fd, owner[2]) == generation)
+        return identity, state[2]
+    def consume(grant):
+        state = grants.require(grant); _fail(not state[3]); result = verify(grant); state[3] = True; return result
+    def close(owner):
+        state = owners.require(owner)
+        _fail(not state[7])
+        _close_owned(state[5]); state[7] = True
+        for grant, value in grants.items():
+            if value[0] is owner:
+                grants.pop(grant)
+        owners.pop(owner)
+    return reopen, claim, consume, verify, close
+
+(_reopen_runtime_inputs, _claim_runtime_inputs, _consume_runtime_inputs,
+ _verify_runtime_inputs, _close_runtime_inputs) = _runtime_input_routes()
+del _runtime_input_routes

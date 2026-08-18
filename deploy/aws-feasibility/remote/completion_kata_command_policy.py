@@ -1,49 +1,186 @@
-"""Immutable process-transaction replay policy for ADR0099 Slice A."""
+"""Immutable SSH-stable process policy plus separate ADR0099 runtime-owner policy."""
 from types import MappingProxyType
 
-POLICY_VERSION = "cogs.stage2-kata-command-policy/v2-process-only-1"
+POLICY_VERSION = "cogs.stage2-kata-command-policy/v4-process-only-ssh-stable-1"
 CLEANUP_RESERVE_NS = 2_000_000_000
-DEFERRED_COMMANDS = frozenset({
-    "CTR_RUN", "SSH_KEYGEN_CLIENT", "SSH_KEYGEN_SERVER", "SSH_PUBLIC_CLIENT",
-    "SSH_PUBLIC_SERVER", "TC_QDISC", "TC_INGRESS_FILTER",
+SSH_TOTAL_NS = 1_200_000_000_000
+SSH_CLEANUP_RESERVE_NS = 30_000_000_000
+HOST_TOOL_CONTRACT_VERSION = "cogs.stage2-kata-tool-closure/v1"
+KEY_STAGE_PREFIX = "/var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/.state/completion-v1/kata-key-stage-v1-"
+KEY_STAGE = KEY_STAGE_PREFIX + "{operation_token}"
+KEY_COMMANDS = MappingProxyType({
+    "SSH_KEYGEN_CLIENT": ("/usr/bin/ssh-keygen", "-q", "-t", "ed25519", "-N", "",
+                          "-C", "cogs-stage2-client-v1", "-f", KEY_STAGE + "/client"),
+    "SSH_PUBLIC_CLIENT": ("/usr/bin/ssh-keygen", "-y", "-f", KEY_STAGE + "/client"),
+    "SSH_KEYGEN_SERVER": ("/usr/bin/ssh-keygen", "-q", "-t", "ed25519", "-N", "",
+                          "-C", "cogs-stage2-server-v1", "-f", KEY_STAGE + "/server"),
+    "SSH_PUBLIC_SERVER": ("/usr/bin/ssh-keygen", "-y", "-f", KEY_STAGE + "/server"),
 })
+KEY_COMMAND_ORDER = tuple(KEY_COMMANDS)
+ATTESTED_COMMANDS = frozenset({"SSH_READY", *KEY_COMMANDS})
+# Exact final contract descriptors are inserted only by a later reviewed host
+# contract commit. The real issuer consumes this object by identity and cannot
+# issue while it is empty.
+REVIEWED_HOST_TOOL_CONTRACTS = MappingProxyType({})
+REVIEWED_SYNTHETIC_HOST_TOOL_CONTRACTS = MappingProxyType({
+    "ssh": MappingProxyType({"contract_path": "/tmp/cogs-stage2-attested-ssh-contract-v1.json",
+                              "contract_sha256": "88a62e7144946777503689829eba8eca0322be9ae2c8c2684306c8c27e6f9ce5"}),
+    "ssh-keygen": MappingProxyType({"contract_path": "/tmp/cogs-stage2-attested-ssh-keygen-contract-v1.json",
+                                     "contract_sha256": "f996af01c71b1096bb97d8474900ab6ac672ab196f8b98ff61fef4d05f33c304"}),
+})
+_ATTESTED_EXECUTABLES = {}
+ATTESTED_EXECUTABLES = MappingProxyType(_ATTESTED_EXECUTABLES)
+def _policy_inserter_route():
+    available = [True]
+    def install(command_ids, value, reviewed):
+        if (not (reviewed is REVIEWED_HOST_TOOL_CONTRACTS
+                 or reviewed is REVIEWED_SYNTHETIC_HOST_TOOL_CONTRACTS)
+                or type(command_ids) is not tuple
+                or not command_ids or not set(command_ids) <= ATTESTED_COMMANDS
+                or type(value) is not dict or set(value) != {
+                    "executable_sha256", "tool_closure_sha256", "executable_path",
+                    "contract_version"}):
+            raise RuntimeError("unreviewed executable policy insertion")
+        if any(name in _ATTESTED_EXECUTABLES for name in command_ids):
+            raise RuntimeError("executable policy already inserted")
+        frozen = MappingProxyType(dict(value))
+        for name in command_ids: _ATTESTED_EXECUTABLES[name] = frozen
+    def take():
+        if not available[0]: raise RuntimeError("policy inserter already issued")
+        available[0] = False
+        return install
+    return take
+_take_attested_policy_inserter = _policy_inserter_route()
+del _policy_inserter_route
+DEFERRED_COMMANDS = frozenset({"CTR_RUN", "TC_QDISC", "TC_INGRESS_FILTER"})
+
+# Byte-compatible protected v1 vocabulary; B1 IDs are journal-derived and do
+# not enter the fixed process digest table.
+LEGACY_V1_VERSION = "cogs.stage2-kata-command-v1/protected-746"
+LEGACY_COMMANDS = frozenset({
+    "IP_NETNS_ADD", "IP_LINK_ADD", "IP_LINK_MOVE", "IP_HOST_ADDRESS_ADD",
+    "IP_HOST_LINK_UP", "IP_PEER_RENAME", "IP_PEER_ADDRGEN_NONE", "IP_LOOPBACK_UP",
+    "IP_GUEST_ADDRESS_ADD", "IP_GUEST_LINK_UP", "IP_NETNS_REMOVE", "IP_HOST_LINKS",
+    "IP_HOST_ADDRESSES", "IP_HOST_ROUTES4", "IP_HOST_ROUTES6", "IP_NS_LINKS",
+    "IP_NS_ADDRESSES", "IP_NS_ROUTES4", "IP_NS_ROUTES6", "TC_QDISC",
+    "TC_INGRESS_FILTER", "NFT_INSTALL", "NFT_REMOVE", "NFT_TABLE",
+    "SSH_KEYGEN_CLIENT", "SSH_KEYGEN_SERVER", "SSH_PUBLIC_CLIENT", "SSH_PUBLIC_SERVER",
+    "CTR_RUN", "CTR_CONTAINER_INFO", "CTR_CONTAINER_LIST", "CTR_TASK_LIST",
+    "CTR_TASK_TERM", "CTR_TASK_KILL", "CTR_TASK_REMOVE", "CTR_CONTAINER_REMOVE", "SSH_READY",
+})
+B1_COMMAND_IDS = frozenset({"IP_HOST_ADDRGEN_NONE", "IP_HOST_LINK_REMOVE", "IP_NETNS_LIST",
+    "IP_ALL_LINKS", "IP_ALL_ADDRESSES", "IP_ALL_ROUTES4", "IP_ALL_ROUTES6", "NFT_RULESET",
+    "IP_VETH_ADD_ATOMIC", "NFT_INSTALL_OWNED", "NFT_REMOVE_ATOMIC"})
+
+_IDENTITY_CREATE_DIGESTS = (
+    "57da97bf9cad7e6f4b8bdc2e283be28cd7bf4860ea6b41dfe60112214f511a72",
+    "2e2f373d5154ddbfbeea4ae24799ddbbc321f272a0a44474ef4fa9feda7706cf",
+)
 _POLICY_SHA256 = {
-    "CTR_CONTAINER_INFO": "deec7488abeba15b9e5d67b8b229f5986124dadd3bd827f80ea93ee73eadb305",
-    "CTR_CONTAINER_LIST": "3d5aec1615766a6882d2b214926a4f1a91921e1ed53c414ddd55f10d76b9d857",
-    "CTR_CONTAINER_REMOVE": "81d07679371d0440765c90588992fd2f4e8a56e0dd3e688ef54e26dab1073c7a",
-    "CTR_TASK_KILL": "e4095d5c3c2c257e281baa3899eee4c51ef7f004f426ab981e4f67f8013ea312",
-    "CTR_TASK_LIST": "a18d7a266ef9b82b7604fb22358691c2cb319e43f2a4b6983e7fc3fd86bce624",
-    "CTR_TASK_REMOVE": "38fe4e1dcdc26a26518174d3a13420c4029ffc980b9ff105d70f1254a78ca66c",
-    "CTR_TASK_TERM": "c11f572fffb430f60e74b61b43a7ed21e5ab4785c14bc866189bab56ad5efabe",
-    "IP_GUEST_ADDRESS_ADD": "0723af224c330ee462b325c8c8c34b9d0aec56244bf601418f07bcf7f750afbb",
-    "IP_GUEST_LINK_UP": "ea292fa278754e180419ded6a58790a2175b4d804e0700d5c8e2f49d9bb36555",
-    "IP_HOST_ADDRESSES": "723138df42f50ba9920dfbaa9332a1883b19de6ab435f7169ae22a852ba35a8b",
-    "IP_HOST_ADDRESS_ADD": "f4adb92cc0c6f331ebb4f6b07f98fb9cca9e99a2947a77f13d1620c1bbb258e6",
-    "IP_HOST_LINKS": "8877bbe228cb7775ccfc565933f40dad6028a44307e3e68b64a1fb638d179366",
-    "IP_HOST_LINK_UP": "bd43a3930e29422c1a834e42e58cb375283ac1df6ede9277182c288af9fde02e",
-    "IP_HOST_ROUTES4": "0c3a7b310a819b72480255c8737ae9302b84b78f7d763cfc11dade277d53b39c",
-    "IP_HOST_ROUTES6": "e5f1ea69ab9340642dfb3abcc357334ea595a83409ae1090c1feb2ef2b6a4754",
-    "IP_LINK_ADD": "863bb0c79cca59ed2dd3140823898cf13ae9147557d6316ad033e2eee0cda12d",
-    "IP_LINK_MOVE": "3fee6987b5b83229a1f15344e103699d4bf852e26f3edf3458e7ae0292868c16",
-    "IP_LOOPBACK_UP": "985eae557b42e1cba7480238a62c126770b0a1d5f8bea6d43a9dc096b9b0638c",
-    "IP_NETNS_ADD": "fb5e3650edaf49e5399999361b2b65333c074073d50cd8ed39a87cdf4d8f223d",
-    "IP_NETNS_REMOVE": "b4adde4681f4310a6a3e713f2f8cabb1f50133deef48d4e00407aaf4fffaf04c",
-    "IP_NS_ADDRESSES": "b8b59c8f25a4945241f65b863c10719599606b13ba46f001d4d8f8790ba433b1",
-    "IP_NS_LINKS": "61e14798253d6a76ab6c6fa48b82cddce18a7f74d83a7c7685882060b0a0a447",
-    "IP_NS_ROUTES4": "456328373d35162d43f3c8615181985ff009e161b2adf9563eb6ccaf78dc59d8",
-    "IP_NS_ROUTES6": "f1ad7e7d7d178f92ee16a21c821a6bbcbf34481bd5e4082fe48c8092eb786097",
-    "IP_PEER_ADDRGEN_NONE": "cc8e54d770da4d455a025cf94dd74c277f677d2e95bad9e09e8226de89bebbc8",
-    "IP_PEER_RENAME": "fb8f4334d7421c17c67b31519212983246f3d5234d4507ee6ae4fd7a04657286",
-    "NFT_INSTALL": "2b0548a0741a3800bd752378bb01ebe74d292d045febe9719c519180566257ec",
-    "NFT_REMOVE": "b6aae2e2aecedfd36271db02daeb0a881b92412a6923e2ddd94be78ce2b6c5d6",
-    "NFT_TABLE": "f1880ea6fbbd566077fcc5de0a3ade6642fa3b4f2bacd19b51b4654b75d169dd",
-    "SSH_READY": "2fbcab7e6bf50d33fb7bb9fc853b4277fd98ac3d687860ff476e929d6e692e21",
-    "CONTAINERD_START": "74e4ba841928c76d9d305fe2817d20efb5ffcd6d96bc9e2d6e4fc2af4ac585ea",
+    "CTR_CONTAINER_INFO": "2815a5d4b7e306c3eee1030f3328bef1a4b7dab914cadc79aea4b215bd0977aa",
+    "CTR_CONTAINER_LIST": "ba75e006cbdf34f5e6fdd2006b14bf9273a8e3ce7d6951bc30cd2aa9d54be2a9",
+    "CTR_CONTAINER_REMOVE": "6707260cbfdd20df52e020160490f4e0ed28be1f8e3f46f0183c54e4b54b854e",
+    "CTR_TASK_KILL": "0265c47f6f0edab4caf082451b926f7d07da4b1fda52f8e81bd6771fcc4139e6",
+    "CTR_TASK_LIST": "2208b3c2544259064211be7c0ca934e7f817a4cdb13eb25fd076baf260c67447",
+    "CTR_TASK_REMOVE": "7d38e7ee2c13f5d6c19bf7b2c1dd44244c3100de1ea621c92724900542625548",
+    "CTR_TASK_TERM": "a834973f3c29b2ecafe99919da4c461c3e08042946991675d7890cef29567ef0",
+    "IP_GUEST_ADDRESS_ADD": "83428606b3855e2b2f9178968cd9ed6a374ee6cc4be7f69c75bb5a6aaf737ee9",
+    "IP_GUEST_LINK_UP": "83e3422198161d4d836cd1042da2afe63104c1456e2d515ebe39dd0296e6b3cf",
+    "IP_HOST_ADDRESSES": "50e8f664c42b257c40b25926325d5807c1b26cbe82fcc8d32b5d07de08516ae0",
+    "IP_HOST_ADDRESS_ADD": "d4f2e42e27549407f3407811f788c4572b0b4801c71875867f0dcf95d948443e",
+    "IP_HOST_LINKS": "24d960ab30ea659561f5e3b44eea44881b5f1ea6eb7a113d306cc38d2143b7e0",
+    "IP_HOST_LINK_UP": "87eed7c4f1cf1208a243f9acf4113307311d76488776855737c25e625448c676",
+    "IP_HOST_ROUTES4": "def44eaafdc8873044f00932e84bd20b51c5688fe988a969aa166f0a1e173177",
+    "IP_HOST_ROUTES6": "0dc7e8f9f2e6ca67725d01711bf0e774d3573aa8ad059dd82c4f2a660bdfc5d7",
+    "IP_LINK_ADD": "fa96d5c361007f8eb89c0ebf5ccba9eab93ea71a180253450e34bb50620324ed",
+    "IP_LINK_MOVE": "1beba4a83d823ae9410c34c684adaaeec86a37dce24f13ae949383df23e7ece4",
+    "IP_LOOPBACK_UP": "afc6f04177744abcb05424b7685f397a0bd7a00484aad50c9d9e880abc8eb2cf",
+    "IP_NETNS_ADD": "28e72e3b635cf30be4571662cac19ec0eb4ca284ee0b25828e83c089d42c3d73",
+    "IP_NETNS_REMOVE": "96f3c19b6fc79a2d068603db28929292d08c67aad9ea6a974b98073b46d59d1b",
+    "IP_NS_ADDRESSES": "a72ec608e94b05a01c791d1633b02ad555e561a7b46d81cc4d17c09fb18c5fd1",
+    "IP_NS_LINKS": "20b9fefc889de5d9c9ea10c2f7635bfc80af5230dd0acebb8423e14f8c53855d",
+    "IP_NS_ROUTES4": "4293fbb68a4f000cc2544817d532151f747145c6921e9c893641b861cc13b96d",
+    "IP_NS_ROUTES6": "7721fd08e65d890cc7b5730a017c5b1f953a076a5e150f995fe139e8e6033bc4",
+    "IP_PEER_ADDRGEN_NONE": "1e472a86001cb41fc793126c915e856c3ca1ead588b6ad7b4889a9a67a1a6d30",
+    "IP_PEER_RENAME": "b96a2714c3b3fe1c1a686c9790b321d2cc6003edcce15340bf8f3fcb389bb0d4",
+    "NFT_INSTALL": "64bc4796579f9f7676baa58f927a4608e2a28b0dfccd569d93922458256226bc",
+    "NFT_REMOVE": "e05578f9ddf2bd48b9e8dd4fab15450121204cb312224c47337bd54992a46afa",
+    "NFT_TABLE": "c81d934f138b8c4e89faff3d51620eab944a100e92e077242c9ce02e37f93b0d",
+    "SSH_READY": "0113356720b575ee2daebf64138485213ebbef0dcc99ac32f301d6650dbf46be",
+    "SSH_KEYGEN_CLIENT": _IDENTITY_CREATE_DIGESTS[0],
+    "SSH_PUBLIC_CLIENT": "1f68af8c1dde18e50dc62e3c2a6f5d2bf2d9518056df9955577f35a0ca2e2526",
+    "SSH_KEYGEN_SERVER": _IDENTITY_CREATE_DIGESTS[1],
+    "SSH_PUBLIC_SERVER": "3e98ed1b3384265e32bd52a8b343ed83d2c16e6f91230fa2d8836e418f35607c",
+    "CONTAINERD_START": "d4bffc7bfe628d4cdf3440bc4156db5891cd3941e791dac92a17bc7922bbb8c2",
 }
 POLICY_SHA256 = MappingProxyType(_POLICY_SHA256)
-del _POLICY_SHA256
+del _IDENTITY_CREATE_DIGESTS, _POLICY_SHA256
+
 _OCCURRENCES = {name: ("BASELINES_CAPTURED",) for name in POLICY_SHA256}
+for _name in KEY_COMMANDS: _OCCURRENCES[_name] = ("ROOTFS_LEASED",)
+_OCCURRENCES["SSH_READY"] = ("RUNTIME_READY",)
 OCCURRENCES = MappingProxyType(_OCCURRENCES)
 PHASES = MappingProxyType(dict(_OCCURRENCES))
 MAX_OCCURRENCES = MappingProxyType({name: 1 for name in _OCCURRENCES})
-del _OCCURRENCES
+del _name, _OCCURRENCES
+
+RUNTIME_POLICY_VERSION = "cogs.stage2-kata-runtime-policy/v5-indexed-kill-observe-1"; RUNTIME_POLICY_SHA256 = "0c67cb88a02092ea1605405f86ae05ec0b56aaf5d1da081e9900739290cb583f"
+RUNTIME_POST_KILL_OBSERVATIONS = 8; RUNTIME_POST_KILL_INTERVAL_NS = 250_000_000
+BASE = "/var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/.state/completion-v1"; CONTAINERD_ADDRESS = BASE + "/kata-runtime-v1/containerd.sock"
+STAGED_CONTAINERD = BASE + "/kata-runtime-v1/bin/containerd"; STAGED_CTR = BASE + "/kata-runtime-v1/bin/ctr"
+CONTAINERD_ARCHIVE_SHA256 = "af3e82bac6abed58d45956c653244aa2be583359a9753614278ef652012f2883"; CONTAINERD_ARCHIVE_SIZE = 33_645_699
+CONTAINERD_EXTRACTION = (("bin/containerd", 44_050_184, "f5d70cf9a249a70a70c379ba8f7259ea91122650cc06103bc0fc44a04dbc54da", 0o500),
+    ("bin/ctr", 22_143_160, "448b1d7a2da84b6265dc4685afcc6c69a6299de43b942b8a3d6d540f6585d1db", 0o500))
+CONTAINERD_EXTRACTION_SHA256 = "ffd892ec4ef2da92a824d78645b75e66972bbe44d664062026d324a58ab88512"
+INPUT_SHARE = BASE + "/kata-input-v1/share"; NETNS_PATH = "/run/netns/cogs-stage2-ssh"; NAMESPACE = "cogs-stage2-completion-v1"
+BOOTSTRAP = """set -eu
+umask 077
+/bin/mkdir -p /run/sshd /run/cogs-stage2-ssh/work
+/bin/chown 0:0 /run/sshd /run/cogs-stage2-ssh/work
+/bin/chmod 0755 /run/sshd
+/bin/chmod 0700 /run/cogs-stage2-ssh/work
+[ \"$(/usr/bin/stat -c '%u:%g:%a:%F' -- /run/sshd)\" = \"0:0:755:directory\" ]
+[ \"$(/usr/bin/stat -c '%u:%g:%a:%F' -- /run/cogs-stage2-ssh/work)\" = \"0:0:700:directory\" ]
+[ ! -e /run/cogs-stage2-ssh/sshd.pid ]
+exec /usr/sbin/sshd -D -e -f /etc/ssh/sshd_config
+"""
+CTR_MOUNTS = ("type=tmpfs,src=tmpfs,dst=/run/cogs-stage2-ssh,options=rw:nosuid:nodev:noexec:mode=0700:size=67108864:nr_inodes=16384",
+    f"type=bind,src={INPUT_SHARE}/ssh_host_ed25519_key,dst=/run/cogs-stage2-ssh/ssh_host_ed25519_key,options=bind:ro:nosuid:nodev:noexec:private",
+    f"type=bind,src={INPUT_SHARE}/authorized_keys,dst=/run/cogs-stage2-ssh/authorized_keys,options=bind:ro:nosuid:nodev:noexec:private",
+    f"type=bind,src={INPUT_SHARE}/fixture,dst=/run/cogs-stage2-ssh/input,options=bind:ro:nosuid:nodev:noexec:private")
+CTR_TAILS = MappingProxyType({"CTR_CONTAINER_INFO": ("containers", "info", "cogs-stage2-ssh-v1"),
+    "CTR_CONTAINER_LIST": ("containers", "list"), "CTR_TASK_LIST": ("tasks", "list"),
+    "CTR_TASK_TERM": ("tasks", "kill", "--signal", "SIGTERM", "cogs-stage2-ssh-v1"), "CTR_TASK_KILL": ("tasks", "kill", "--signal", "SIGKILL", "cogs-stage2-ssh-v1"),
+    "CTR_TASK_REMOVE": ("tasks", "rm", "cogs-stage2-ssh-v1"), "CTR_CONTAINER_REMOVE": ("containers", "rm", "cogs-stage2-ssh-v1")})
+RUNTIME_EXTENSION_COMMANDS = frozenset({"CONTAINERD_START", "CTR_RUN", *CTR_TAILS})
+def ctr_run_argv(rootfs_token):
+    if type(rootfs_token) is not str or len(rootfs_token) != 64 or any(c not in "0123456789abcdef" for c in rootfs_token): raise ValueError("rootfs token")
+    mounts = tuple(value for row in CTR_MOUNTS for value in ("--mount", row)); root = BASE + "/rootfs-v1/operation-" + rootfs_token + "/rootfs"
+    return (STAGED_CTR, "--address", CONTAINERD_ADDRESS, "--namespace", NAMESPACE, "run", "--runtime", "io.containerd.kata.v2",
+        "--runtime-config-path", "/opt/kata/share/defaults/kata-containers/configuration-qemu.toml", "--rootfs", "--read-only",
+        "--detach", "--with-ns", "network:/proc/{ctr-child-pid}/fd/202", *mounts, root,
+        "cogs-stage2-ssh-v1", "/bin/sh", "-c", BOOTSTRAP)
+def validate_runtime_policy(intent, genesis):
+    command = intent.get("command_id")
+    if command == "CTR_RUN": argv, deadline, duration, grammar = list(ctr_run_argv(genesis["rootfs_token"])), "runtime-start", 60_000_000_000, "text"
+    elif command == "CONTAINERD_START":
+        argv = [STAGED_CONTAINERD, "--address", CONTAINERD_ADDRESS, "--root", BASE + "/kata-runtime-v1/containerd-root",
+                "--state", BASE + "/kata-runtime-v1/containerd-state", "--config", BASE + "/kata-runtime-v1/containerd.toml"]
+        deadline, duration, grammar = "runtime-start", 60_000_000_000, "empty"
+    elif command in CTR_TAILS:
+        argv = [STAGED_CTR, "--address", CONTAINERD_ADDRESS, "--namespace", NAMESPACE, *CTR_TAILS[command]]
+        deadline = "observer" if command in {"CTR_CONTAINER_INFO", "CTR_CONTAINER_LIST", "CTR_TASK_LIST"} else "task-term" if command == "CTR_TASK_TERM" else "task-kill" if command == "CTR_TASK_KILL" else "remove"
+        duration = {"observer": 5, "task-term": 15, "task-kill": 10, "remove": 20}[deadline] * 1_000_000_000; grammar = "text"
+    else: return False
+    expected = {"executable_role": "containerd" if command == "CONTAINERD_START" else "ctr", "executable_path": argv[0], "argv": argv,
+        "stdin_hex": "", "policy_version": RUNTIME_POLICY_VERSION, "deadline_class": deadline, "duration_ns": duration,
+        "cleanup_reserve_ns": min(CLEANUP_RESERVE_NS, duration // 2), "output_grammar": grammar, "stdout_limit": 65536, "stderr_limit": 65536, "inherited_fds": []}
+    return all(intent.get(name) == value for name, value in expected.items())
+_RUNTIME_TRACES = {"NETWORK_READY": ("CONTAINERD_START", "CTR_RUN"),
+    "RUNTIME_READY": ("CTR_CONTAINER_INFO", "CTR_CONTAINER_LIST", "CTR_TASK_LIST"), "READINESS_REVOKED": ("CTR_TASK_LIST", "CTR_CONTAINER_INFO", "CTR_CONTAINER_LIST"),
+    "OWNERSHIP_OBSERVED:task-exact": ("CTR_TASK_LIST", "CTR_TASK_TERM", "CTR_TASK_LIST", "CTR_TASK_KILL") + ("CTR_TASK_LIST",) * RUNTIME_POST_KILL_OBSERVATIONS,
+    "NETWORK_ABSENT": ("CTR_TASK_REMOVE", "CTR_TASK_LIST"), "TASK_ABSENT": ("CTR_CONTAINER_REMOVE", "CTR_CONTAINER_LIST"), "CONTAINER_ABSENT": ("CTR_CONTAINER_LIST",)}
+RUNTIME_TRACES = MappingProxyType(_RUNTIME_TRACES); _OWNED = _RUNTIME_TRACES["OWNERSHIP_OBSERVED:task-exact"]; RUNTIME_OWNERSHIP_TRACES = (_OWNED[:3],) + tuple(_OWNED[:5 + index] for index in range(RUNTIME_POST_KILL_OBSERVATIONS))
+_RUNTIME_OCCURRENCES = {name: tuple(phase.split(":", 1)[0] for phase, trace in _RUNTIME_TRACES.items() for item in trace if item == name) for name in RUNTIME_EXTENSION_COMMANDS}
+RUNTIME_OCCURRENCES = MappingProxyType(_RUNTIME_OCCURRENCES); RUNTIME_PHASES = MappingProxyType({name: tuple(dict.fromkeys(phases)) for name, phases in _RUNTIME_OCCURRENCES.items()})
+RUNTIME_MAX_OCCURRENCES = MappingProxyType({name: len(phases) for name, phases in _RUNTIME_OCCURRENCES.items()}); del _RUNTIME_TRACES, _RUNTIME_OCCURRENCES, _OWNED

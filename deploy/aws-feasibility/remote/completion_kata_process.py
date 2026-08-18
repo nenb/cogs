@@ -4,9 +4,11 @@ This slice implements exact journaled fork/session/exec, settlement, and crash
 recovery. It does not expose a production command issuer or lifecycle owner;
 parsing a contract therefore grants no execution authority. Tests exercise the
 private primitive with a fixed harmless executable descriptor.
+
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
+from types import MappingProxyType
 import ctypes
 import errno
 import fcntl
@@ -15,18 +17,23 @@ import json
 import os
 import platform
 import re
+import select
 import selectors
 import signal
 import stat
 import struct
 import time
 import completion_kata_actions as actions
+import completion_kata_command_policy as command_policy
 import completion_kata_fdmap as fdmap
 import completion_kata_network as kata_network
 import completion_kata_operation as kata_operation
+import completion_kata_owner as owner_helpers
+import completion_kata_qualification as qualification
 import completion_kata_runtime as kata_runtime
 import completion_kata_ssh as kata_ssh
 
+_install_attested_policy = command_policy._take_attested_policy_inserter()
 CONTRACT_VERSION = "cogs.stage2-kata-tool-closure/v1"
 TEST_PATH = "/tmp/cogs-kata-process-s1-v1/helper"
 MAX_STREAM = 65_536
@@ -41,7 +48,7 @@ FORBIDDEN_TAGS = frozenset({"RPATH", "RUNPATH", "AUDIT", "DEPAUDIT", "FILTER", "
 DEADLINE_SECONDS = {
     "observer": 5, "network": 10, "keygen": 15, "runtime-start": 60,
     "task-term": 15, "task-kill": 10, "remove": 20, "listener": 60,
-    "ssh": 10, "runtime-absence": 30,
+    "ssh": command_policy.SSH_TOTAL_NS / 1_000_000_000, "runtime-absence": 30,
 }
 CLOCK = getattr(time, "CLOCK_BOOTTIME", time.CLOCK_MONOTONIC)
 FIXED_ENV = kata_operation.FIXED_ENV
@@ -149,6 +156,105 @@ class RetainedExecutable:
     sha256: str
     closure_sha256: str
     generation: dict
+    closure_descriptors: tuple = ()
+
+
+def _attested_executable_routes(install_policy):
+    states = owner_helpers.Registry(
+        "AttestedExecutableOwner", ProcessError,
+        "exact unused attested executable required",
+        sealed_message="attested executable owner is sealed")
+    AttestedExecutableOwner = states.kind
+    claimed, released = set(), set()
+    def claim(owner, role):
+        state = states.require(owner)
+        if role not in state or state[role][1]:
+            raise ProcessError("exact unused attested executable required")
+        retained = state[role][0]
+        if type(retained) is not RetainedExecutable:
+            raise ProcessError("invalid retained executable state")
+        state[role][1] = True
+        claimed.add(id(retained))
+        return retained
+    def require(retained):
+        if (type(retained) is not RetainedExecutable or id(retained) not in claimed
+                or id(retained) in released):
+            raise ProcessError("attestation-issued retained executable required")
+        return retained
+    def release(retained):
+        require(retained); released.add(id(retained))
+        errors = []
+        for descriptor in (retained.descriptor, *retained.closure_descriptors):
+            try: os.close(descriptor)
+            except OSError as error: errors.append(error)
+        if errors: raise BaseExceptionGroup("attested descriptor release", errors)
+    def issue(reviewed):
+        synthetic = reviewed is command_policy.REVIEWED_SYNTHETIC_HOST_TOOL_CONTRACTS
+        if not (reviewed is command_policy.REVIEWED_HOST_TOOL_CONTRACTS or synthetic) or not reviewed:
+            raise ProcessError("exact committed host-tool contracts unavailable")
+        if any(name in command_policy.ATTESTED_EXECUTABLES for name in command_policy.ATTESTED_COMMANDS):
+            raise ProcessError("host-tool policy already issued")
+        values, policies, owned = {}, {}, []
+        try:
+            for role, expected_ids, path in (
+                ("ssh", ("SSH_READY",), "/usr/bin/ssh"),
+                ("ssh-keygen", command_policy.KEY_COMMAND_ORDER, "/usr/bin/ssh-keygen"),
+            ):
+                descriptor = reviewed.get(role)
+                if (type(descriptor) is not MappingProxyType or set(descriptor) != {
+                        "contract_path", "contract_sha256"}):
+                    raise ProcessError("invalid committed host-tool descriptor")
+                contract_fd = os.open(descriptor["contract_path"], os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+                try:
+                    status = os.fstat(contract_fd)
+                    expected_uid = os.geteuid() if synthetic else 0
+                    if not stat.S_ISREG(status.st_mode) or status.st_uid != expected_uid or status.st_nlink != 1:
+                        raise ProcessError("host-tool contract identity mismatch")
+                    raw = os.read(contract_fd, 262_145)
+                finally: os.close(contract_fd)
+                contract = _parse_contract(raw, descriptor["contract_sha256"])
+                source_path = ("/tmp/cogs-stage2-attested-static-v1.elf" if synthetic else path)
+                if (contract.command_id not in expected_ids
+                        or contract.executable.logical_path != source_path
+                        or contract.loader is not None or contract.libraries):
+                    raise ProcessError("host-tool contract role/static-closure mismatch")
+                executable_fd = _sealed_memfd(contract.executable, True); owned.append(executable_fd)
+                closure_fds = tuple(_sealed_memfd(item) for item in
+                                    ((() if contract.loader is None else (contract.loader,)) + contract.libraries))
+                owned.extend(closure_fds)
+                retained = RetainedExecutable(role, path, executable_fd, contract.executable.sha256,
+                                              contract.closure_sha256, _host_generation(executable_fd),
+                                              closure_fds)
+                policy_value = {"executable_sha256": retained.sha256,
+                                "tool_closure_sha256": retained.closure_sha256,
+                                "executable_path": retained.path,
+                                "contract_version": CONTRACT_VERSION}
+                policies[expected_ids] = policy_value
+                values[role] = [retained, False]
+            for command_ids, policy_value in policies.items():
+                install_policy(command_ids, policy_value, reviewed)
+            return states.issue(values)
+        except BaseException:
+            for descriptor in reversed(owned):
+                try: os.close(descriptor)
+                except OSError: pass
+            raise
+    def open_fixed():
+        qualification._claim_committed_gate()
+        return issue(command_policy.REVIEWED_HOST_TOOL_CONTRACTS)
+    def open_synthetic():
+        if os.environ.get("COGS_KATA_SYNTHETIC_ATTESTATION_V1") != "1":
+            raise ProcessError("synthetic attestation test admission absent")
+        return issue(command_policy.REVIEWED_SYNTHETIC_HOST_TOOL_CONTRACTS)
+    return AttestedExecutableOwner, claim, require, release, issue, open_fixed, open_synthetic
+
+
+(AttestedExecutableOwner, _claim_attested_executable, _require_attested_executable,
+ _release_attested_executable, _issue_attested_executable_owner,
+ _open_attested_executable_owner,
+ _open_synthetic_attested_executable_owner_for_tests) = _attested_executable_routes(
+     _install_attested_policy)
+del _attested_executable_routes, _install_attested_policy
 
 
 @dataclass(frozen=True)
@@ -192,6 +298,8 @@ CONTAINERD_SOCKET = kata_operation.BASE + "/kata-runtime-v1/containerd.sock"
 CONTAINERD_ROOT = kata_operation.BASE + "/kata-runtime-v1/containerd-root"
 CONTAINERD_STATE = kata_operation.BASE + "/kata-runtime-v1/containerd-state"
 CONTAINERD_CONFIG = kata_operation.BASE + "/kata-runtime-v1/containerd.toml"
+STAGED_CONTAINERD = kata_operation.BASE + "/kata-runtime-v1/bin/containerd"
+STAGED_CTR = kata_operation.BASE + "/kata-runtime-v1/bin/ctr"
 LONG_LIVED_CONTAINERD = LongLivedCommand(
     CommandId.CONTAINERD_START, "containerd", "/usr/bin/containerd",
     ("/usr/bin/containerd", "--address", CONTAINERD_SOCKET, "--root", CONTAINERD_ROOT,
@@ -221,15 +329,38 @@ def _compose_fixed_commands():
             source.command_id, "ctr", "/usr/bin/ctr", argv, source.stdin,
             int(DEADLINE_SECONDS[source.deadline_class] * 1_000_000_000),
         )
+    for name, argv in command_policy.KEY_COMMANDS.items():
+        command_id = CommandId[name]
+        rows[command_id] = FixedCommand(
+            command_id, "ssh-keygen", "/usr/bin/ssh-keygen", argv, b"",
+            15_000_000_000, 1024 if name.startswith("SSH_PUBLIC_") else 0,
+            4096, "text", (),
+        )
     source = kata_ssh.command_spec()
     rows[CommandId.SSH_READY] = FixedCommand(
         CommandId.SSH_READY, "ssh", "/usr/bin/ssh", source.argv, source.stdin,
-        10_000_000_000, output_grammar="text", inherited_fds=source.inherited_fds,
+        command_policy.SSH_TOTAL_NS, 4096, 4096, "ssh-plan", source.inherited_fds,
     )
     return rows
 
 
 _FIXED_COMMANDS = _compose_fixed_commands()
+_RUNTIME_EXTENSIONS = {}
+def _bind_ctr_extension(command_id):
+    source = next(item for item in kata_runtime.fixed_command_specs_v2() if item.command_id is command_id)
+    fixed = FixedCommand(command_id, "ctr", STAGED_CTR, source.argv, source.stdin,
+        int(DEADLINE_SECONDS[source.deadline_class] * 1_000_000_000), output_grammar="text")
+    _RUNTIME_EXTENSIONS[id(fixed)] = fixed; return fixed
+
+def _bind_ctr_run_extension(rootfs_token):
+    fixed = FixedCommand(CommandId.CTR_RUN, "ctr", STAGED_CTR,
+        kata_operation.command_policy.ctr_run_argv(rootfs_token), b"", 60_000_000_000,
+        output_grammar="text"); _RUNTIME_EXTENSIONS[id(fixed)] = fixed; return fixed
+def _bind_containerd_extension():
+    fixed = FixedCommand(CommandId.CONTAINERD_START, "containerd", STAGED_CONTAINERD,
+        (STAGED_CONTAINERD, "--address", CONTAINERD_SOCKET, "--root", CONTAINERD_ROOT,
+         "--state", CONTAINERD_STATE, "--config", CONTAINERD_CONFIG), b"", 60_000_000_000, output_grammar="empty")
+    _RUNTIME_EXTENSIONS[id(fixed)] = fixed; return fixed
 PROCESS_OWNED_IDS = frozenset(_FIXED_COMMANDS)
 OWNER_ASSIGNED_IDS = actions.COMMAND_IDS - {item.value for item in PROCESS_OWNED_IDS} - {
     CommandId.CONTAINERD_START.value,
@@ -259,6 +390,9 @@ def _spec(command_id):
     seconds = source.duration_ns / 1_000_000_000
     if command_id is CommandId.SSH_READY:
         deadline_class = "ssh"
+    elif command_id in {CommandId.SSH_KEYGEN_CLIENT, CommandId.SSH_KEYGEN_SERVER,
+                        CommandId.SSH_PUBLIC_CLIENT, CommandId.SSH_PUBLIC_SERVER}:
+        deadline_class = "keygen"
     elif command_id in {
         CommandId.CTR_CONTAINER_INFO, CommandId.CTR_CONTAINER_LIST,
         CommandId.CTR_TASK_LIST,
@@ -278,25 +412,13 @@ def _spec(command_id):
     )
 
 def _unissued_network_spec(command_id):
-    """Exact action bytes that intentionally contain no guessed argv[0]."""
-    tails = {
-        CommandId.IP_NETNS_ADD: ("ip", ("netns", "add", "cogs-stage2-ssh"), b""),
-        CommandId.IP_LINK_ADD: ("ip", ("link", "add", "name", "c42h0", "address", "02:00:00:42:00:01", "type", "veth", "peer", "name", "c42g0", "address", "02:00:00:42:00:02"), b""),
-        CommandId.IP_LINK_MOVE: ("ip", ("link", "set", "dev", "c42g0", "netns", "cogs-stage2-ssh"), b""),
-        CommandId.IP_HOST_ADDRESS_ADD: ("ip", ("address", "add", "192.0.2.1/30", "dev", "c42h0"), b""),
-        CommandId.IP_HOST_LINK_UP: ("ip", ("link", "set", "dev", "c42h0", "up"), b""),
-        CommandId.IP_PEER_RENAME: ("ip", ("-n", "cogs-stage2-ssh", "link", "set", "dev", "c42g0", "name", "eth0"), b""),
-        CommandId.IP_PEER_ADDRGEN_NONE: ("ip", ("-n", "cogs-stage2-ssh", "link", "set", "dev", "eth0", "addrgenmode", "none"), b""),
-        CommandId.IP_LOOPBACK_UP: ("ip", ("-n", "cogs-stage2-ssh", "link", "set", "dev", "lo", "up"), b""),
-        CommandId.IP_GUEST_ADDRESS_ADD: ("ip", ("-n", "cogs-stage2-ssh", "address", "add", "192.0.2.2/30", "dev", "eth0"), b""),
-        CommandId.IP_GUEST_LINK_UP: ("ip", ("-n", "cogs-stage2-ssh", "link", "set", "dev", "eth0", "up"), b""),
-        CommandId.NFT_INSTALL: ("nft", ("-f", "-"), NFT_INPUT),
-        CommandId.NFT_REMOVE: ("nft", ("delete", "table", "inet", "cogs_stage2_ssh_v1"), b""),
-    }
-    if type(command_id) is not CommandId or command_id not in tails:
-        raise ProcessError("closed unissued action required")
-    tool, tail, stdin = tails[command_id]
-    return _UnissuedSpec(command_id.value, tool, tail, stdin, "network")
+    """Historical wrapper over the authoritative fixed network command table."""
+    if type(command_id) is not CommandId: raise ProcessError("closed unissued action required")
+    try: source = kata_network.command(kata_network.Action(command_id.value))
+    except (ValueError, kata_network.NetworkError) as error:
+        raise ProcessError("closed unissued action required") from error
+    tool = "nft" if source.tool_contract.startswith("libnftables") else "ip"
+    return _UnissuedSpec(command_id.value, tool, source.argv_tail, source.stdin, "network")
 
 
 def _canonical(value):
@@ -546,12 +668,13 @@ def _execveat(descriptor, argv):
         raise OSError(saved, os.strerror(saved))
 
 
-def _child(executable_fd, spec, release_r, setup_w, status_w, stdout_w, stderr_w, stdin_r):
+def _child(executable_fd, spec, release_r, setup_w, status_w, stdout_w, stderr_w, stdin_r, network_fd=None):
     try:
-        (executable_fd, release_r, setup_w, status_w, stdout_w, stderr_w,
-         stdin_r) = _relocate_child_internals((
-             executable_fd, release_r, setup_w, status_w, stdout_w, stderr_w, stdin_r,
-         ))
+        internal = (executable_fd, release_r, setup_w, status_w, stdout_w, stderr_w, stdin_r,
+                    *((network_fd,) if network_fd is not None else ()))
+        relocated = _relocate_child_internals(internal)
+        executable_fd, release_r, setup_w, status_w, stdout_w, stderr_w, stdin_r = relocated[:7]
+        if network_fd is not None: network_fd = relocated[7]
         os.setsid()
         report = struct.pack("!QQQQ", os.getpid(), os.getppid(), os.getpgrp(), os.getsid(0))
         os.write(setup_w, report)
@@ -564,12 +687,18 @@ def _child(executable_fd, spec, release_r, setup_w, status_w, stdout_w, stderr_w
         os.dup2(executable_fd, 198, inheritable=False)
         status_w = 3
         executable_fd = 198
-        allowed = {0, 1, 2, 3, 198, release_r,
+        allowed = {0, 1, 2, 3, 198, release_r, *(() if network_fd is None else (network_fd,)),
                    *(row.target_fd for row in spec.inherited_fds)}
         _close_except(allowed)
         if os.read(release_r, 1) != b"R":
             os._exit(125)
-        _execveat(executable_fd, spec.argv)
+        argv = spec.argv
+        if network_fd is not None:
+            if network_fd != kata_runtime.CTR_NS_FD:
+                os.dup2(network_fd, kata_runtime.CTR_NS_FD, inheritable=True); os.close(network_fd)
+            else: os.set_inheritable(network_fd, True)
+            argv = tuple(item.replace("{ctr-child-pid}", str(os.getpid())) for item in argv)
+        _execveat(executable_fd, argv)
     except OSError as error:
         _write_child_error(status_w, error.errno or errno.EIO)
     except BaseException:
@@ -577,20 +706,21 @@ def _child(executable_fd, spec, release_r, setup_w, status_w, stdout_w, stderr_w
     os._exit(126)
 
 
-def _read_setup(descriptor, deadline):
+def _read_setup_until(descriptor, remaining):
     raw = b""
     while len(raw) < SETUP_SIZE:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise ProcessError("child setup timeout")
-        ready, _, _ = __import__("select").select([descriptor], [], [], remaining)
-        if not ready:
+        timeout = remaining()
+        if timeout <= 0 or not __import__("select").select([descriptor], [], [], timeout)[0]:
             raise ProcessError("child setup timeout")
         part = os.read(descriptor, SETUP_SIZE - len(raw))
-        if not part:
-            raise ProcessError("incomplete child setup")
+        if not part: raise ProcessError("incomplete child setup")
         raw += part
     return struct.unpack("!QQQQ", raw)
+
+
+def _read_setup(descriptor, deadline):
+    """Historical wall-clock wrapper over the authoritative setup reader."""
+    return _read_setup_until(descriptor, lambda: deadline - time.monotonic())
 
 
 def _wait_nohang(pid, errors, label, deadline):
@@ -606,69 +736,6 @@ def _wait_nohang(pid, errors, label, deadline):
             return None, error.errno == errno.ECHILD
     errors.append(f"{label}:wait-deadline")
     return None, False
-
-
-def _drain(pid, descriptors, absolute_deadline):
-    selector = None
-    buffers = {"stdout": bytearray(), "stderr": bytearray(), "status": bytearray()}
-    truncated = {"stdout": False, "stderr": False}
-    errors = []
-    wait_status = None
-    child_done = False
-    failure = None
-    try:
-        selector = selectors.DefaultSelector()
-        for name, descriptor in descriptors.items():
-            os.set_blocking(descriptor, False)
-            selector.register(descriptor, selectors.EVENT_READ, name)
-        while selector.get_map() or not child_done:
-            if not child_done:
-                observed_status, child_done = _wait_nohang(pid, errors, "drain-wait", absolute_deadline)
-                if observed_status is not None:
-                    wait_status = observed_status
-            remaining = absolute_deadline - time.monotonic()
-            if remaining <= 0:
-                break
-            events = selector.select(min(remaining, 0.05)) if selector.get_map() else ()
-            for key, _mask in events:
-                name = key.data
-                try:
-                    part = os.read(key.fd, 8192)
-                except BlockingIOError:
-                    continue
-                except OSError as error:
-                    errors.append(f"{name}-read:{error.errno}")
-                    selector.unregister(key.fd)
-                    continue
-                if not part:
-                    selector.unregister(key.fd)
-                    continue
-                limit = STATUS_SIZE if name == "status" else MAX_STREAM
-                room = max(0, limit - len(buffers[name]))
-                buffers[name].extend(part[:room])
-                if name != "status" and len(part) > room:
-                    truncated[name] = True
-                if name == "status" and len(part) > room:
-                    errors.append("invalid-exec-status")
-        leader_timed_out = not child_done
-        pipe_timed_out = child_done and bool(selector.get_map())
-    except BaseException as error:
-        failure = error
-    finally:
-        if selector is not None:
-            try:
-                selector.close()
-            except OSError as error:
-                errors.append(f"selector-close:{error.errno}")
-        for descriptor in descriptors.values():
-            try:
-                os.close(descriptor)
-            except OSError as error:
-                errors.append(f"drain-close:{error.errno}")
-    if failure is not None:
-        errors.insert(0, f"drain:{type(failure).__name__}:{failure}")
-        raise ProcessError(";".join(errors)) from failure
-    return buffers, truncated, wait_status, leader_timed_out, pipe_timed_out, errors
 
 
 def _recovery_class(identity, observed_boot_id, observation):
@@ -837,11 +904,61 @@ def _digest_fd(descriptor, size):
 
 
 def _cleanup_reserve_ns(fixed):
-    return min(kata_operation.command_policy.CLEANUP_RESERVE_NS, fixed.duration_ns // 2)
+    reviewed = (command_policy.SSH_CLEANUP_RESERVE_NS
+                if fixed.command_id is CommandId.SSH_READY else command_policy.CLEANUP_RESERVE_NS)
+    return min(reviewed, fixed.duration_ns // 2)
 
 
-def _intent_body(context, fixed, executable, bindings, deadline):
-    if fixed is not _FIXED_COMMANDS.get(fixed.command_id):
+def _internally_fixed(fixed):
+    if type(fixed) is not FixedCommand:
+        return False
+    canonical = _FIXED_COMMANDS.get(fixed.command_id)
+    if canonical is not None and fixed == canonical:
+        return True
+    netns = next((item for item in fixed.argv if type(item) is str and re.fullmatch(r"c42[qn][0-9a-f]{10}", item)), None)
+    table = next((item for item in fixed.argv if type(item) is str and re.fullmatch(r"c42t[0-9a-f]{10}", item)), None)
+    if table is None:
+        match = re.search(rb"c42t[0-9a-f]{10}", fixed.stdin); table = None if match is None else match.group().decode()
+    host = next((item for item in fixed.argv if type(item) is str and re.fullmatch(r"c42h[0-9a-f]{10}", item)), None)
+    if host is None:
+        match = re.search(rb"c42h[0-9a-f]{10}", fixed.stdin); host = None if match is None else match.group().decode()
+    argv = tuple(kata_network.NETNS if item == netns else kata_network.TABLE if item == table else
+                 kata_network.HOST_IF if item == host else item for item in fixed.argv)
+    stdin = fixed.stdin.replace(table.encode(), kata_network.TABLE.encode()) if table else fixed.stdin
+    if host: stdin = stdin.replace(host.encode(), kata_network.HOST_IF.encode())
+    if canonical is not None and fixed == FixedCommand(canonical.command_id, canonical.executable_role,
+            canonical.executable_path, argv, stdin, canonical.duration_ns, canonical.stdout_limit,
+            canonical.stderr_limit, canonical.output_grammar, canonical.inherited_fds):
+        return True
+    if (fixed.command_id not in {
+            CommandId.TC_QDISC, CommandId.TC_INGRESS_FILTER}
+            or fixed.executable_role != "tc" or fixed.executable_path != "/usr/sbin/tc"
+            or fixed.stdin or fixed.duration_ns != 10_000_000_000
+            or fixed.stdout_limit != MAX_STREAM or fixed.stderr_limit != MAX_STREAM
+            or fixed.output_grammar != "json" or fixed.inherited_fds):
+        return False
+    prefix = ("/usr/sbin/tc", "-n", netns, "-j")
+    tail = fixed.argv[len(prefix):]
+    if fixed.argv[:len(prefix)] != prefix or len(tail) not in {4, 5}:
+        return False
+    expected = (("qdisc", "show", "dev", tail[3])
+                if fixed.command_id is CommandId.TC_QDISC else
+                ("filter", "show", "dev", tail[3], "ingress"))
+    return tail == expected and re.fullmatch(r"[A-Za-z0-9_.-]{1,15}", tail[3]) is not None
+
+
+def _intent_body(context, fixed, executable, bindings, deadline, runtime_fixed=False):
+    if fixed.command_id in {CommandId.SSH_READY, CommandId.SSH_KEYGEN_CLIENT,
+                            CommandId.SSH_KEYGEN_SERVER, CommandId.SSH_PUBLIC_CLIENT,
+                            CommandId.SSH_PUBLIC_SERVER}:
+        _require_attested_executable(executable)
+    template = _FIXED_COMMANDS.get(fixed.command_id)
+    if fixed.command_id in {CommandId[name] for name in command_policy.KEY_COMMANDS}:
+        expected_argv = tuple(item.replace("{operation_token}", context.operation_token)
+                              for item in template.argv)
+        if fixed != replace(template, argv=expected_argv):
+            raise ProcessError("command is not operation-derived fixed key policy")
+    elif not (_internally_fixed(fixed) or runtime_fixed):
         raise ProcessError("command is not internally fixed")
     if (type(executable) is not RetainedExecutable
             or (executable.role, executable.path) != (fixed.executable_role, fixed.executable_path)):
@@ -860,7 +977,11 @@ def _intent_body(context, fixed, executable, bindings, deadline):
             "generation": _host_generation(row.source_fd),
             "content_sha256": row.content_sha256, "content_length": row.identity.size,
         })
-    command_spec = _spec(fixed.command_id)
+    runtime_extension = _RUNTIME_EXTENSIONS.get(id(fixed)) is fixed
+    deadline_class = ("runtime-start" if fixed.command_id in {CommandId.CTR_RUN, CommandId.CONTAINERD_START}
+                      else _spec(fixed.command_id).deadline_class)
+    policy_version = (kata_operation.command_policy.RUNTIME_POLICY_VERSION if runtime_extension else
+                      kata_operation.command_policy.POLICY_VERSION)
     body = {
         "operation_token": context.operation_token, "command_serial": context.command_serial,
         "command_id": fixed.command_id.value, "binding_sha256": ZERO,
@@ -873,8 +994,8 @@ def _intent_body(context, fixed, executable, bindings, deadline):
         "stdin_hex": fixed.stdin.hex(), "stdin_sha256": hashlib.sha256(fixed.stdin).hexdigest(),
         "stdin_length": len(fixed.stdin), "environment": environment,
         "environment_sha256": hashlib.sha256(kata_operation._canonical(environment)).hexdigest(),
-        "inherited_fds": inherited, "policy_version": kata_operation.command_policy.POLICY_VERSION,
-        "deadline_class": command_spec.deadline_class, "duration_ns": fixed.duration_ns,
+        "inherited_fds": inherited, "policy_version": policy_version,
+        "deadline_class": deadline_class, "duration_ns": fixed.duration_ns,
         "cleanup_reserve_ns": _cleanup_reserve_ns(fixed),
         "deadline_boottime_ns": deadline,
         "output_grammar": fixed.output_grammar, "stdout_limit": fixed.stdout_limit,
@@ -1085,21 +1206,8 @@ def _advance_cleanup(owner, pid, wait_status, deadline, term_at, kill_at, state,
 
 
 def _read_setup_boottime(descriptor, deadline):
-    raw = b""
-    while len(raw) < SETUP_SIZE:
-        remaining = deadline - _boottime_ns()
-        if remaining <= 0:
-            raise ProcessError("child setup timeout")
-        ready, _, _ = __import__("select").select(
-            [descriptor], [], [], remaining / 1_000_000_000,
-        )
-        if not ready:
-            raise ProcessError("child setup timeout")
-        part = os.read(descriptor, SETUP_SIZE - len(raw))
-        if not part:
-            raise ProcessError("incomplete child setup")
-        raw += part
-    return struct.unpack("!QQQQ", raw)
+    return _read_setup_until(
+        descriptor, lambda: (deadline - _boottime_ns()) / 1_000_000_000)
 
 
 def _drain_transaction(pid, descriptors, stdin_bytes, owner, deadline, term_at, kill_at):
@@ -1271,23 +1379,37 @@ def _within_work_cutoff(work_cutoff):
         raise ProcessError("work cutoff reached")
 
 
-def _transact_fixed(journal, fixed, executable, inherited=()):
-    """Private T1 transaction; no executable, argv, environment, or deadline selector."""
-    if fixed is not _FIXED_COMMANDS.get(fixed.command_id):
+def _transact_fixed(journal, fixed, executable, inherited=(), daemon_owner=None, consumption_owner=None, launch_permit=None):
+    """Private T1 transaction over one registered fixed table identity."""
+    context = kata_operation._command_context(journal)
+    runtime_fixed = False
+    if launch_permit is not None and type(fixed) is FixedCommand and fixed.command_id is CommandId.CTR_RUN:
+        runtime_fixed = ((fixed.executable_role, fixed.executable_path, fixed.argv, fixed.stdin) ==
+            ("ctr", kata_runtime.STAGED_CTR, kata_runtime._ctr_metadata_argv(), b"") and
+            fixed.duration_ns == 10_000_000_000 and fixed.stdout_limit == fixed.stderr_limit == MAX_STREAM and
+            fixed.inherited_fds == ())
+    template = _FIXED_COMMANDS.get(fixed.command_id)
+    if fixed.command_id in {CommandId[name] for name in command_policy.KEY_COMMANDS}:
+        expected = replace(template, argv=tuple(item.replace("{operation_token}", context.operation_token)
+                                                for item in template.argv))
+        if fixed != expected: raise ProcessError("operation-derived key command required")
+    elif not (_internally_fixed(fixed) or runtime_fixed):
         raise ProcessError("internally fixed command required")
     if fixed.command_id is CommandId.CONTAINERD_START:
         raise ProcessError("long-lived containerd requires the runtime daemon owner")
+    runtime_extension = _RUNTIME_EXTENSIONS.get(id(fixed)) is fixed
+    if (runtime_extension and consumption_owner is None) or ((runtime_extension or runtime_fixed) and daemon_owner is None):
+        raise ProcessError("runtime path owners required")
     if not hasattr(signal, "pidfd_send_signal") or not hasattr(os, "pidfd_open"):
         raise ProcessError("usable pidfd signaling is required")
-    context = kata_operation._command_context(journal)
     deadline = _boottime_ns() + fixed.duration_ns
     work_cutoff = deadline - _cleanup_reserve_ns(fixed)
     spec = _Spec(
         fixed.command_id.value, fixed.argv, fixed.stdin, "fixed",
         fixed.duration_ns / 1_000_000_000, fixed.inherited_fds,
     )
-    bindings = _claim_inherited_fds(spec, inherited)
-    intent = _intent_body(context, fixed, executable, bindings, deadline)
+    bindings = _claim_inherited_fds(spec, inherited); network_fd = None
+    intent = _intent_body(context, fixed, executable, bindings, deadline, runtime_fixed)
     kata_operation._record_command_intent(journal, intent)
     owner = None
     pid = None
@@ -1300,6 +1422,7 @@ def _transact_fixed(journal, fixed, executable, inherited=()):
     wait_status = None
     preexec_recorded = False
     try:
+        network_fd = None if launch_permit is None else kata_runtime._retain_launch_network_descriptor(launch_permit)
         _require_no_children()
         previous_subreaper = _set_subreaper(True)
         _within_work_cutoff(work_cutoff)
@@ -1321,7 +1444,8 @@ def _transact_fixed(journal, fixed, executable, inherited=()):
         )
         pid = os.fork()
         if pid == 0:
-            _child(executable.descriptor, child_spec, release_r, setup_w, status_w, stdout_w, stderr_w, stdin_r)
+            _child(executable.descriptor, child_spec, release_r, setup_w, status_w, stdout_w, stderr_w, stdin_r, network_fd)
+        if network_fd is not None: os.close(network_fd); network_fd = None
         pidfd = _usable_pidfd_open(pid)
         for descriptor in (release_r, setup_w, status_w, stdout_w, stderr_w, stdin_r):
             os.close(descriptor)
@@ -1342,14 +1466,29 @@ def _transact_fixed(journal, fixed, executable, inherited=()):
             "pgid": identity.pgid, "sid": identity.sid, "proc_start_time": identity.starttime,
             "pidfd_supported": True, "cgroup_path": owner.path,
             "cgroup_generation": dict(zip(kata_operation.GEN_KEYS, owner.leaf_generation)),
+            "executable_sha256": intent["executable_sha256"],
+            "tool_closure_sha256": intent["tool_closure_sha256"],
+            "executable_generation": intent["executable_generation"],
             "exec_status_pipe": _host_generation(status_r), "release_count": 0,
         }
+        if fixed.command_id is CommandId.CTR_RUN:
+            preexec.update({"namespace_fd": kata_runtime.CTR_NS_FD,
+                            "namespace_path": kata_runtime.CTR_NS_TEMPLATE.replace("{ctr-child-pid}", str(pid))})
         kata_operation._record_command_preexec(journal, preexec)
         preexec_recorded = True
         _within_work_cutoff(work_cutoff)
+        if runtime_extension:
+            kata_runtime._verify_runtime_consumption(consumption_owner, journal, fixed.command_id.value)
+        if runtime_extension or runtime_fixed:
+            _verify_fixed_daemon(daemon_owner, journal)
+        if launch_permit is not None:
+            retained_network = kata_runtime._preexec_launch_network(launch_permit, pid)
+            if fixed.command_id is not CommandId.CTR_RUN or retained_network["path"] != "/run/netns/" + retained_network["identity"]["name"]:
+                raise ProcessError("runtime network opener binding")
         if os.write(release_w, b"R") != 1:
             raise ProcessError("short release")
         release_count = 1
+        if launch_permit is not None: kata_runtime._release_launch_preexec(launch_permit)
         os.close(release_w)
         pipes.remove(release_w)
         for descriptor in (status_r, stdout_r, stderr_r, stdin_w):
@@ -1387,6 +1526,10 @@ def _transact_fixed(journal, fixed, executable, inherited=()):
             intent, outcome, status, exec_errno, stdout, stderr, overflow,
             wait_status, pipes_eof, cleanup, state, errors, release_count,
         )
+        if not body["uncertain"]:
+            kata_operation._record_command_output(journal, {"operation_token": intent["operation_token"],
+                "command_serial": intent["command_serial"], "command_id": intent["command_id"],
+                "binding_sha256": intent["binding_sha256"], "stdout_hex": stdout.hex(), "stderr_hex": stderr.hex()})
         durable = kata_operation._record_command_outcome(journal, body)
         return ProcessOutcome(
             fixed.command_id.value, identity, body["outcome"], body["status"], body["errno"],
@@ -1449,6 +1592,9 @@ def _transact_fixed(journal, fixed, executable, inherited=()):
             errors.append("cleanup-continuation-pending")
         raise ProcessError(";".join(errors)) from primary
     finally:
+        if network_fd is not None:
+            try: os.close(network_fd)
+            except OSError: pass
         if pidfd is not None:
             try:
                 os.close(pidfd)
@@ -1459,6 +1605,187 @@ def _transact_fixed(journal, fixed, executable, inherited=()):
                 _set_subreaper(previous_subreaper)
             except BaseException:
                 pass
+
+
+def _daemon_routes():
+    states = owner_helpers.Registry(
+        "_DaemonOwner", ProcessError, "private daemon owner",
+        sealed_message="sealed daemon owner")
+    _DaemonOwner = states.kind
+    def socket_generation():
+        descriptor = os.open(CONTAINERD_SOCKET, os.O_PATH | os.O_CLOEXEC | os.O_NOFOLLOW)
+        try: return _host_generation(descriptor, "socket")
+        finally: os.close(descriptor)
+    def close_state(owner):
+        try:
+            state = states.pop(owner)
+        except ProcessError:
+            return []
+        errors = []
+        descriptors = ([state[2]] if state[2] is not None else []) + [row[0] for row in state[3].pidfds.values()]; state[2] = None; state[3].pidfds.clear()
+        for descriptor in descriptors:
+            try: os.close(descriptor)
+            except OSError as error: errors.append(f"daemon-pidfd-close:{error.errno}")
+        for attribute in ("directory_fd", "base_fd"):
+            descriptor = getattr(state[3], attribute, None)
+            if descriptor is None: continue
+            try: os.close(descriptor)
+            except OSError as error: errors.append(f"daemon-cgroup-fd-close:{error.errno}")
+            setattr(state[3], attribute, None)
+        try: _set_subreaper(state[4])
+        except BaseException as error: errors.append(f"daemon-subreaper-restore:{type(error).__name__}")
+        return errors
+    def verify(owner, journal):
+        state = states.require(owner)
+        if state[0] is not journal:
+            raise ProcessError("private daemon owner")
+        retained = state[1]; row = _proc_row(retained["pid"])
+        if (row[4] != retained["proc_start_time"] or _cgroup_generation(retained["cgroup_path"]) !=
+                tuple(retained["cgroup_generation"][name] for name in kata_operation.GEN_KEYS) or
+                socket_generation() != retained["socket_generation"]):
+            raise ProcessError("private daemon replacement")
+        return retained
+    def start(journal, executable):
+        fixed = _bind_containerd_extension(); context = kata_operation._command_context(journal)
+        deadline = _boottime_ns() + fixed.duration_ns; intent = _intent_body(context, fixed, executable, (), deadline)
+        kata_operation._record_command_intent(journal, intent); previous = _set_subreaper(True)
+        cgroup = None; descriptors = []; pid = pidfd = None
+        try:
+            cgroup = _prepare_cgroup(context)
+            def pipe():
+                pair = os.pipe2(os.O_CLOEXEC); descriptors.extend(pair); return pair
+            release_r, release_w = pipe(); setup_r, setup_w = pipe(); status_r, status_w = pipe()
+            stdin_r, stdin_w = pipe(); devnull = os.open("/dev/null", os.O_WRONLY | os.O_CLOEXEC); descriptors.append(devnull)
+            spec = _Spec(fixed.command_id.value, fixed.argv, b"", "fixed", 60.0, ())
+            pid = os.fork()
+            if pid == 0: _child(executable.descriptor, spec, release_r, setup_w, status_w, devnull, devnull, stdin_r)
+            pidfd = _usable_pidfd_open(pid)
+            for descriptor in (release_r, setup_w, status_w, stdin_r, devnull):
+                os.close(descriptor); descriptors.remove(descriptor)
+            setup = _read_setup_boottime(setup_r, deadline); os.close(setup_r); descriptors.remove(setup_r)
+            identity, observed = _identity(pid, setup)
+            if observed is not None: os.close(observed)
+            if not identity.pidfd_supported: raise ProcessError("daemon pidfd unavailable")
+            _register_cgroup(cgroup, pid)
+            preexec = {"operation_token": intent["operation_token"], "command_serial": intent["command_serial"],
+                "command_id": intent["command_id"], "binding_sha256": intent["binding_sha256"],
+                "host_boot_id": identity.boot_id, "pid": pid, "ppid": identity.ppid, "pgid": identity.pgid,
+                "sid": identity.sid, "proc_start_time": identity.starttime, "pidfd_supported": True,
+                "cgroup_path": cgroup.path, "cgroup_generation": dict(zip(kata_operation.GEN_KEYS, cgroup.leaf_generation)),
+                "executable_sha256": intent["executable_sha256"], "tool_closure_sha256": intent["tool_closure_sha256"],
+                "executable_generation": intent["executable_generation"],
+                "exec_status_pipe": _host_generation(status_r), "release_count": 0}
+            kata_operation._record_command_preexec(journal, preexec)
+            if os.write(release_w, b"R") != 1: raise ProcessError("daemon release")
+            os.close(release_w); descriptors.remove(release_w); os.close(stdin_w); descriptors.remove(stdin_w)
+            poller = select.poll(); poller.register(status_r, select.POLLIN | select.POLLHUP)
+            wait_ms = max(1, (deadline - _boottime_ns()) // 1_000_000)
+            if not poller.poll(wait_ms): raise ProcessError("daemon exec timeout")
+            status_raw = os.read(status_r, STATUS_SIZE + 1); os.close(status_r); descriptors.remove(status_r)
+            if status_raw: raise ProcessError("daemon exec failed")
+            while _boottime_ns() < deadline:
+                try:
+                    observed = os.lstat(CONTAINERD_SOCKET)
+                    if stat.S_ISSOCK(observed.st_mode): break
+                except FileNotFoundError: pass
+                time.sleep(0.01)
+            else: raise ProcessError("daemon socket timeout")
+            retained = {**preexec, "socket_generation": socket_generation()}
+            kata_operation._record_daemon_retained(journal, retained)
+            return states.issue([journal, retained, pidfd, cgroup, previous])
+        except BaseException as primary:
+            if pidfd is not None:
+                try: signal.pidfd_send_signal(pidfd, signal.SIGKILL)
+                except BaseException: pass
+            if cgroup is not None and pid is not None:
+                cleanup_errors = []; _settle_cgroup(cgroup, pid, _boottime_ns() + 2_000_000_000, cleanup_errors)
+            for descriptor in descriptors:
+                try: os.close(descriptor)
+                except OSError: pass
+            if pidfd is not None:
+                try: os.close(pidfd)
+                except OSError: pass
+            try: _set_subreaper(previous)
+            except BaseException: pass
+            try: _recover_pending_fixed(journal)
+            except BaseException: pass
+            raise primary
+    def reopen(journal):
+        history = journal.runtime_recovery_history()
+        if len(history["daemon_retained"]) != len(history["daemon_outcomes"]) + 1:
+            raise ProcessError("no retained private daemon")
+        retained = history["daemon_retained"][-1]; pidfd = base_fd = leaf_fd = owner = None
+        try:
+            pidfd = _usable_pidfd_open(retained["pid"])
+            base_fd, base_generation = _directory_identity(CGROUP_BASE)
+            leaf_fd, leaf_generation = _directory_identity(retained["cgroup_path"])
+            cgroup = _CgroupOwner(retained["cgroup_path"], _generation_tuple(leaf_generation),
+                _generation_tuple(base_generation), False, {}, leaf_fd, base_fd,
+                retained["cgroup_path"].rsplit("/", 1)[1]); leaf_fd = base_fd = None
+            _adopt_members(cgroup, _cgroup_members(cgroup))
+            owner = states.issue([
+                journal, retained, pidfd, cgroup, _set_subreaper(True),
+            ])
+            verify(owner, journal); return owner
+        except (FileNotFoundError, ProcessLookupError) as absent:
+            errors = ["daemon-absent-on-reopen"]
+            if owner is not None: errors.extend(close_state(owner)); owner = None
+            empty, removed = _recover_cgroup(retained["cgroup_path"], _generation_tuple(retained["cgroup_generation"]),
+                                              _boottime_ns() + 5_000_000_000, {"term": False, "kill": False}, errors)
+            body = {"operation_token": retained["operation_token"], "command_serial": retained["command_serial"],
+                "command_id": retained["command_id"], "binding_sha256": retained["binding_sha256"],
+                "pid": retained["pid"], "proc_start_time": retained["proc_start_time"], "status": None,
+                "leader_reaped": False, "descendants_reaped": False, "cgroup_empty": empty,
+                "cgroup_removed": removed, "uncertain": True, "errors": errors}
+            for descriptor in (pidfd, leaf_fd, base_fd):
+                if descriptor is not None:
+                    try: os.close(descriptor)
+                    except OSError: pass
+            kata_operation._record_daemon_outcome(journal, body)
+            raise ProcessError("daemon absent on reopen") from absent
+        except BaseException as primary:
+            errors = close_state(owner) if owner is not None else []
+            for descriptor in (pidfd, leaf_fd, base_fd):
+                if descriptor is not None:
+                    try: os.close(descriptor)
+                    except OSError as error: errors.append(f"daemon-reopen-fd-close:{error.errno}")
+            if errors: raise ProcessError(";".join(errors)) from primary
+            raise
+    def stop(owner, journal):
+        retained = verify(owner, journal); state = states.require(owner); errors = []
+        final = _boottime_ns() + 10_000_000_000; term_limit = min(final, _boottime_ns() + 5_000_000_000); status = None
+        signal.pidfd_send_signal(state[2], signal.SIGTERM); poller = select.poll(); poller.register(state[2], select.POLLIN)
+        wait_ms = max(1, (term_limit - _boottime_ns()) // 1_000_000)
+        ready = poller.poll(wait_ms)
+        if not ready:
+            try: signal.pidfd_send_signal(state[2], signal.SIGKILL)
+            except ProcessLookupError: pass
+            ready = poller.poll(max(1, (final - _boottime_ns()) // 1_000_000))
+        if ready:
+            try: status = os.waitid(os.P_PIDFD, state[2], os.WEXITED).si_status
+            except ChildProcessError:
+                try:
+                    if _proc_row(retained["pid"])[4] == retained["proc_start_time"]: errors.append("daemon-not-absent")
+                except FileNotFoundError: pass
+        else: errors.append("daemon-final-deadline")
+        empty, descendants, removed, leader = _settle_cgroup(state[3], retained["pid"], final, errors)
+        errors.extend(close_state(owner))
+        absent = False
+        try: absent = _proc_row(retained["pid"])[4] != retained["proc_start_time"]
+        except FileNotFoundError: absent = True
+        body = {"operation_token": retained["operation_token"], "command_serial": retained["command_serial"],
+            "command_id": retained["command_id"], "binding_sha256": retained["binding_sha256"],
+            "pid": retained["pid"], "proc_start_time": retained["proc_start_time"], "status": status,
+            "leader_reaped": leader or absent, "descendants_reaped": descendants,
+            "cgroup_empty": empty, "cgroup_removed": removed,
+            "uncertain": bool(errors) or not (absent and empty and descendants and removed), "errors": errors}
+        kata_operation._record_daemon_outcome(journal, body)
+        if body["uncertain"]: raise ProcessError("private daemon cleanup uncertain")
+        return body
+    return start, reopen, verify, stop
+
+(_start_fixed_daemon, _reopen_fixed_daemon, _verify_fixed_daemon, _stop_fixed_daemon) = _daemon_routes()
+del _daemon_routes
 
 
 def _recover_cgroup(path, expected_generation, deadline, state, errors):
@@ -1536,8 +1863,25 @@ def _recover_daemon_reap(preexec, deadline, errors):
     return leader_done, descendants_done
 
 
+def _transact_fixed_ssh(journal, executable, inherited):
+    journal = kata_operation._claim_production_operation(journal)
+    _require_attested_executable(executable)
+    return _transact_fixed(journal, _FIXED_COMMANDS[CommandId.SSH_READY], executable, inherited)
+
+
+def _transact_key(journal, executable, command_id):
+    journal = kata_operation._claim_production_operation(journal)
+    _require_attested_executable(executable)
+    context = kata_operation._command_context(journal)
+    template = _FIXED_COMMANDS[command_id]
+    command = replace(template, argv=tuple(
+        item.replace("{operation_token}", context.operation_token) for item in template.argv))
+    return _transact_fixed(journal, command, executable)
+
+
+
 def _recover_pending_fixed(journal):
-    """Cleanup-only crash continuation; absence never fabricates wait/reap proof."""
+    """Slice-A process-only recovery primitive; no production admission."""
     if hasattr(journal, "recovery_command"):
         intent, preexec, terminal = kata_operation._recovery_command(journal)
     else:
@@ -1547,7 +1891,9 @@ def _recover_pending_fixed(journal):
     state = {"term": False, "kill": False}
     path = f"{CGROUP_BASE}/{intent['operation_token']}-{intent['command_serial']}"
     expected = None if preexec is None else _generation_tuple(preexec["cgroup_generation"])
-    deadline = _boottime_ns() + (4_000_000_000 if intent["command_id"] == "CONTAINERD_START" else 2_000_000_000)
+    recovery_budget = (4_000_000_000 if intent["command_id"] == "CONTAINERD_START"
+                       else intent["cleanup_reserve_ns"])
+    deadline = _boottime_ns() + recovery_budget
     cgroup_deadline = deadline - 2_000_000_000 if intent["command_id"] == "CONTAINERD_START" else deadline
     cgroup_empty, cgroup_removed = _recover_cgroup(path, expected, cgroup_deadline, state, errors)
     closure = (cgroup_empty, False, cgroup_removed, False)
@@ -1566,6 +1912,16 @@ def _recover_pending_fixed(journal):
     )
     return kata_operation._record_command_outcome(journal, body)
 
+
+def _recover_pending_production(journal):
+    """Production family adapter: exact admission and sticky uncertain closure."""
+    journal = kata_operation._claim_production_operation(journal)
+    outcome = _recover_pending_fixed(journal)
+    if outcome.body["uncertain"] and kata_operation._durable_phase(journal) != "UNCERTAIN":
+        kata_operation._record_uncertain(journal, "incomplete")
+    return outcome
+
+
 def _test_spec(action):
     if type(action) is not _TestAction:
         raise ProcessError("closed test action required")
@@ -1578,10 +1934,12 @@ def _test_spec(action):
 def _unissued_spec_snapshots_for_tests():
     commands = (
         CommandId.IP_NETNS_ADD, CommandId.IP_LINK_ADD, CommandId.IP_LINK_MOVE,
-        CommandId.IP_HOST_ADDRESS_ADD, CommandId.IP_HOST_LINK_UP,
+        CommandId.IP_HOST_ADDRESS_ADD, CommandId.IP_HOST_ADDRGEN_NONE,
+        CommandId.IP_HOST_LINK_UP,
         CommandId.IP_PEER_RENAME, CommandId.IP_PEER_ADDRGEN_NONE,
         CommandId.IP_LOOPBACK_UP, CommandId.IP_GUEST_ADDRESS_ADD,
-        CommandId.IP_GUEST_LINK_UP, CommandId.NFT_INSTALL, CommandId.NFT_REMOVE,
+        CommandId.IP_GUEST_LINK_UP, CommandId.IP_HOST_LINK_REMOVE,
+        CommandId.NFT_INSTALL, CommandId.NFT_REMOVE,
     )
     return tuple(_unissued_network_spec(item) for item in commands)
 
@@ -1605,10 +1963,18 @@ def _fixed_spec_snapshots_for_tests():
     available = {CommandId.CTR_CONTAINER_INFO, CommandId.CTR_CONTAINER_LIST,
                  CommandId.CTR_TASK_LIST, CommandId.CTR_TASK_TERM,
                  CommandId.CTR_TASK_KILL, CommandId.CTR_TASK_REMOVE,
-                 CommandId.CTR_CONTAINER_REMOVE, CommandId.SSH_READY}
+                 CommandId.CTR_CONTAINER_REMOVE, CommandId.SSH_READY,
+                 CommandId.SSH_KEYGEN_CLIENT, CommandId.SSH_KEYGEN_SERVER,
+                 CommandId.SSH_PUBLIC_CLIENT, CommandId.SSH_PUBLIC_SERVER}
     return tuple((item.value, _spec(item).argv, _spec(item).stdin,
                   _spec(item).deadline_class, _spec(item).inherited_fds)
                  for item in CommandId if item in available)
 
 
-# Deliberately no production execute/run function and no operation CommandPermit issuer.
+def _fixed_spec_snapshots_v3_for_tests():
+    rows = {item.command_id: item for item in kata_runtime.fixed_command_specs_v2()}
+    return tuple((item.value, rows[item].argv, rows[item].stdin, rows[item].deadline_class, ())
+                 for item in CommandId if item in rows)
+
+
+# No public production execute/run function or caller-selectable command issuer.

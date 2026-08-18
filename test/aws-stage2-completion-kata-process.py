@@ -39,25 +39,36 @@ def contract_rejected(raw):
     raise AssertionError("hostile contract accepted")
 
 
-# Closed production snapshots contain no caller-selected token.  These exact
-# values are future actions only; no production execution issuer exists.
+# Historical process-only snapshots remain byte stable; V3 is separate.
 snapshots = {name: (argv, stdin, deadline, fds) for name, argv, stdin, deadline, fds in process._fixed_spec_snapshots_for_tests()}
 assert snapshots["CTR_TASK_TERM"] == ((
     "/usr/bin/ctr", "--address", process.CONTAINERD_SOCKET,
     "--namespace", "cogs-stage2-completion-v1", "tasks", "kill",
     "--signal", "SIGTERM", "cogs-stage2-ssh-v1",
 ), b"", "task-term", ())
+v3_snapshots = {name: argv for name, argv, _stdin, _deadline, _fds in process._fixed_spec_snapshots_v3_for_tests()}
+assert v3_snapshots["CTR_TASK_TERM"][:3] == (process.STAGED_CTR, "--address", process.CONTAINERD_SOCKET)
+poll_r, poll_w = __import__("os").pipe()
+try:
+    poller = process.select.poll(); poller.register(poll_r, process.select.POLLIN)
+    __import__("os").write(poll_w, b"x"); assert poller.poll(1000)
+finally:
+    __import__("os").close(poll_r); __import__("os").close(poll_w)
+rejected(lambda: process._start_fixed_daemon(object(), object()))
 assert process.NFT_INPUT.endswith(b'add rule inet cogs_stage2_ssh_v1 forward oifname "c42h0" drop\n')
 unissued = {item.command_id: item for item in process._unissued_spec_snapshots_for_tests()}
 assert unissued["IP_NETNS_ADD"].tool_contract == "ip"
 assert unissued["IP_NETNS_ADD"].argv_tail == ("netns", "add", "cogs-stage2-ssh")
+assert unissued["IP_HOST_ADDRGEN_NONE"].argv_tail == (
+    "link", "set", "dev", "c42h0", "addrgenmode", "none",
+)
 assert unissued["IP_PEER_ADDRGEN_NONE"].argv_tail[-2:] == ("addrgenmode", "none")
 assert unissued["NFT_INSTALL"].tool_contract == "nft"
 assert unissued["NFT_INSTALL"].argv_tail == ("-f", "-")
 assert unissued["NFT_INSTALL"].stdin == process.NFT_INPUT
-assert snapshots["SSH_READY"][0][-2:] == ("root@192.0.2.2", "printf '%s\\n' COGS_STAGE2_SSH_READY_V1")
+assert snapshots["SSH_READY"][0][-2:] == ("root@192.0.2.2", "/bin/sh -s")
 assert snapshots["SSH_READY"][2:] == ("ssh", (200, 201))
-assert len(snapshots) == 8
+assert len(snapshots) == 12
 rejected(lambda: process._spec("IP_NETNS_ADD"))
 rejected(lambda: process._test_spec("ok"))
 BOOT_A = "12345678-1234-1234-1234-123456789abc"
@@ -78,8 +89,8 @@ rejected(lambda: process._recovery_class(fake_identity, BOOT_A, process.Recovery
 for command in (process.CommandId.IP_NETNS_ADD, process.CommandId.NFT_INSTALL):
     assert process._spec(command).command_id == command.value
 for command in (process.CommandId.SSH_KEYGEN_CLIENT, process.CommandId.SSH_PUBLIC_CLIENT):
-    rejected(lambda command=command: process._spec(command))
-assert {"SSH_KEYGEN_CLIENT", "SSH_PUBLIC_CLIENT", "CTR_RUN"} <= process.OWNER_ASSIGNED_IDS
+    assert process._spec(command).deadline_class == "keygen"
+assert process.OWNER_ASSIGNED_IDS == {"CTR_RUN"}
 
 # Contract decoding requires canonical, digest-bound, exact typed records.
 def canonical(value):
@@ -288,7 +299,7 @@ def linux_supervisor_tests():
                 "a" * 64, {"mount_id": 1, "device": 2, "inode": 3, "kind": "file"},
                 process._boot_id(), "5" * 40, "ROOTFS_LEASED", 0,
             )
-            self.intent = self.preexec = self.outcome = None
+            self.intent = self.preexec = self.output = self.outcome = None
         def command_context(self):
             return self.context
         def record_command_intent(self, body):
@@ -297,6 +308,10 @@ def linux_supervisor_tests():
         def record_command_preexec(self, body):
             process.kata_operation._validate_body("COMMAND_PREEXEC_V2", body)
             self.preexec = body
+        def record_command_output(self, body):
+            process.kata_operation._validate_body("COMMAND_OUTPUT_V2", body)
+            self.output = body
+            return body
         def record_command_outcome(self, body):
             process.kata_operation._validate_body("COMMAND_OUTCOME_V2", body)
             self.outcome = body

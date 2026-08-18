@@ -291,7 +291,10 @@ check(line_report["inherited_post_base_gross_additions"] == 0
       "gross additions were not measured from the fixed base")
 check(line_report["conservative_lines_no_deletion_credit"] == budget.CONSERVATIVE_BASELINE_LINES
       + line_report["gross_added_lines_no_deletion_credit"], "no deletion credit")
-check(line_report["preferred_satisfied"] and line_report["hard_satisfied"], "ADR 0099 cap")
+check(line_report["preferred_satisfied"] and line_report["hard_satisfied"]
+      and line_report["current_lines"] < line_report["preferred_limit"] < line_report["hard_limit"]
+      and line_report["conservative_lines_no_deletion_credit"] < line_report["preferred_limit"],
+      "ADR 0102 preferred target and hard cap")
 ignored_probe = ROOT / "deploy/aws-feasibility/__pycache__/stage2_ignored_counted_probe.py"
 check(not ignored_probe.exists(), "ignored cap probe pre-existed")
 ignored_probe.parent.mkdir(exist_ok=True)
@@ -309,8 +312,4 @@ protected = subprocess.run(["git", "cat-file", "-e",
                             "69eccf1:schemas/stage2-workload-local-qualification-v1.json"],
                            cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 check(protected.returncode != 0, "protected main unexpectedly contained rejected v1")
-for args in ([], ["report.json"], [json.dumps(fail_value)]):
-    process = subprocess.run([sys.executable, "-B", str(MODULE_PATH), *args], input=raw,
-                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10)
-    check(process.returncode == 3 and process.stdout == process.stderr == b"", "blocked stub")
 print("completion local result codec tests passed")

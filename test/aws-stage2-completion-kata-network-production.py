@@ -1,0 +1,375 @@
+#!/usr/bin/env python3
+"""Optimization-safe hostile checks for ADR0099 fixed network composition."""
+import copy
+import hashlib
+from pathlib import Path
+import sys
+from types import MappingProxyType
+from unittest.mock import patch
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "deploy/aws-feasibility/remote"))
+import completion_kata_network as network
+import completion_kata_network_journal as journal_model
+import completion_kata_operation as operation
+import completion_kata_process as process
+import completion_kata_runtime as runtime
+
+
+def check(value, message):
+    if not value: raise AssertionError(message)
+
+
+def reject(call, message="hostile network lifecycle value accepted"):
+    try: call()
+    except BaseException: return
+    raise AssertionError(message)
+
+
+def proof(body):
+    body["proof_sha256"] = hashlib.sha256(operation._canonical(
+        {name: value for name, value in body.items() if name != "proof_sha256"})).hexdigest()
+    return body
+
+
+def link(index, name, mac, peer, kind="veth"):
+    return {"ifindex": index, "ifname": name, "kind": kind, "mac": mac,
+            "peer_ifindex": peer, "flags": ["BROADCAST", "MULTICAST", "UP", "LOWER_UP"],
+            "operstate": "UP", "up": True, "qdisc": "noqueue", "addrgenmode": "none"}
+
+
+BASELINES = {name: hashlib.sha256(name.encode()).hexdigest() for name in journal_model.BASELINES}
+def bind(value, sources):
+    value = {**value, "state_sha256": operation.ZERO}
+    value["state_sha256"] = hashlib.sha256(operation._canonical({"identity": {
+        name: child for name, child in value.items() if name != "state_sha256"},
+        "sources": sources})).hexdigest()
+    return value
+
+
+SOURCE = [{"observation_serial": 0, "source_id": "IP_ALL_LINKS",
+           "output_sha256": hashlib.sha256(b"[]").hexdigest(), "output_length": 2}]
+EMPTY = bind({"netns": None, "host_link": None, "peer_link": None, "nft": None,
+         "tap": None, "tc": None, "addresses_sha256": operation.ZERO,
+         "routes_sha256": operation.ZERO, "state_sha256": operation.ZERO}, SOURCE)
+NETNS = {"name": "c42naaaaaaaaaa", "mount_id": 41, "parent_id": 30, "device": "0:4",
+         "inode_device": 4, "inode": 4026533000}
+NFT = {"table_name": "c42taaaaaaaaaa", "table_handle": 7,
+       "chain_handles": [["input", 8], ["output", 9], ["forward", 10]],
+       "rule_handles": [[name, ordinal, 20 + index * 2 + ordinal]
+                        for index, name in enumerate(("input", "output", "forward"))
+                        for ordinal in (0, 1)]}
+HOST = link(7, "c42h0", network.HOST_MAC, 8)
+GUEST = link(8, "eth0", network.GUEST_MAC, 7)
+READY_ID = bind({**EMPTY, "netns": NETNS, "host_link": HOST, "peer_link": GUEST, "nft": NFT,
+            "addresses_sha256": "a" * 64, "routes_sha256": "b" * 64}, SOURCE)
+BASELINE = proof({"operation_token": "a" * 64, "policy_version": journal_model.POLICY_VERSION,
+                  "snapshot_kind": "baseline", "sources": SOURCE,
+                  "baselines": BASELINES, "identity": EMPTY, "proof_sha256": operation.ZERO})
+operation._validate_body("NETWORK_SNAPSHOT_V2", BASELINE)
+class HistoryJournal:
+    def network_history(self):
+        return (("NETWORK_SNAPSHOT_V2", BASELINE),
+                (journal_model.OUTPUT_RECORD, {"observation_serial": 4, "source_id": "IP_NS_LINKS",
+                    "output_sha256": "e" * 64, "output_length": 2, "chunk_index": 0, "chunk_count": 1}))
+check(network._sources(HistoryJournal(), "NETWORK_SNAPSHOT_V2")[0]["source_id"] == "IP_NS_LINKS",
+      "authentic network_history snapshot cursor omitted")
+check(type(journal_model.SUCCESS_PHASE_TRACES) is MappingProxyType and
+      type(journal_model.EFFECT_COMMAND_TRACES) is MappingProxyType and
+      type(journal_model.LIFECYCLE_REQUIREMENTS) is MappingProxyType,
+      "B1 traces are mutable")
+setup_trace = journal_model.SUCCESS_PHASE_TRACES["BASELINES_CAPTURED"]
+journal_model.successful_trace(setup_trace, "BASELINES_CAPTURED")
+reject(lambda: journal_model.successful_trace(setup_trace[:-1], "BASELINES_CAPTURED"),
+       "B1 successful lifecycle accepted a skipped command")
+
+# Firewall exists before addresses or either link-up; host addrgen precedes host-up.
+check(journal_model.EFFECT_COMMAND_TRACES["IP_GUEST_LINK_UP"][:3] ==
+      ("IP_GUEST_LINK_UP", "IP_HOST_LINKS", "IP_HOST_ADDRESSES"),
+      "final setup trace retained obsolete partial observers")
+check(network._SETUP_ACTIONS == tuple(network.Action(name) for name in journal_model.SETUP) and
+      network.Action.IP_VETH_ADD_ATOMIC in network._SETUP_ACTIONS and
+      not {network.Action.IP_LINK_ADD, network.Action.IP_LINK_MOVE, network.Action.IP_PEER_RENAME} & set(network._SETUP_ACTIONS),
+      "setup is not atomic-netns veth policy")
+check("RUNTIME_READY" not in journal_model.LIFECYCLE_REQUIREMENTS,
+      "B1 improperly requires a deferred runtime-ready transition")
+positions = {action: network._SETUP_ACTIONS.index(action) for action in network._SETUP_ACTIONS}
+check(positions[network.Action.NFT_INSTALL_OWNED] < positions[network.Action.IP_HOST_ADDRESS_ADD] and
+      positions[network.Action.NFT_INSTALL_OWNED] < positions[network.Action.IP_GUEST_ADDRESS_ADD] and
+      positions[network.Action.IP_HOST_ADDRGEN_NONE] < positions[network.Action.IP_HOST_LINK_UP],
+      "live link/address precedes firewall or addrgen")
+
+# The real journal codec enforces intent/observed/settled ordering, exact setup
+# order, and nsfs replacement rejection rather than trusting a fake owner type.
+state = journal_model.initial(); state["snapshots"] = [BASELINE]; state["current"] = EMPTY
+intent = {"operation_token": "a" * 64, "policy_version": journal_model.POLICY_VERSION,
+          "effect_serial": 0, "action": "IP_NETNS_ADD",
+          "prior_proof_sha256": operation.ZERO, "target": EMPTY}
+operation._validate_body("NETWORK_EFFECT_INTENT_V2", intent)
+state = journal_model.advance(state, "NETWORK_EFFECT_INTENT_V2", intent, "BASELINES_CAPTURED")
+def command_intent(command_id):
+    source = network.command(network.Action(command_id)); role = ("nft" if source.tool_contract.startswith("libnftables")
+        else "tc" if source.tool_contract.startswith("tc-") else "ip")
+    argv = ["/usr/sbin/" + role, *(NFT["table_name"] if item == network.TABLE else
+            NETNS["name"] if item == network.NETNS else "c42haaaaaaaaaa" if item == network.HOST_IF else item
+            for item in source.argv_tail)]
+    return {"command_id": command_id, "command_serial": 99, "operation_token": "a" * 64, "executable_role": role,
+            "executable_path": "/usr/sbin/" + role, "argv": argv,
+            "stdin_hex": source.stdin.replace(network.TABLE.encode(), NFT["table_name"].encode()).hex(),
+            "stdin_length": len(source.stdin),
+            "deadline_class": "network", "duration_ns": 10_000_000_000, "output_grammar": "json",
+            "stdout_limit": 65536, "stderr_limit": 65536, "inherited_fds": []}
+for action, trace in journal_model.EFFECT_COMMAND_TRACES.items():
+    first = 1 if action == "IP_NETNS_REMOVE" else 2
+    for cut in range(first, len(trace) + 1):
+        cursor_state = journal_model.initial(); cursor_state["snapshots"] = [{"identity": READY_ID}]
+        cursor_state["pending"] = ("NETWORK_EFFECT_INTENT_V2", {"action": action, "target": READY_ID}, 0)
+        cursor_state["effect_commands"] = list(trace[:cut])
+        cursor_state["output_pending"] = {"base": {"source_id": trace[cut - 1]}, "chunks": [b"x"]}
+        journal_model.command_intent(command_intent(trace[cut - 1]), cursor_state)
+for observer in journal_model.EFFECT_COMMAND_TRACES["IP_NETNS_ADD"]:
+    state = journal_model.command_intent(command_intent(observer), state)
+reject(lambda: journal_model.advance(state, "NETWORK_EFFECT_INTENT_V2", intent, "BASELINES_CAPTURED"),
+       "pending mutation could be reissued")
+wrong_target = copy.deepcopy(intent); wrong_target["target"] = {**EMPTY, "routes_sha256": "f" * 64}
+fresh = journal_model.initial(); fresh["snapshots"] = [BASELINE]; fresh["current"] = EMPTY
+reject(lambda: journal_model.advance(fresh, "NETWORK_EFFECT_INTENT_V2", wrong_target,
+                                     "BASELINES_CAPTURED"), "effect intent did not bind exact target")
+def quarantine_body(placeholder, preserved=None):
+    return proof({"operation_token": "a" * 64, "policy_version": journal_model.POLICY_VERSION,
+        "original_name": NETNS["name"], "quarantine_name": "c42qaaaaaaaaaa", "target": EMPTY,
+        "placeholder": placeholder, "preserved": preserved, "proof_sha256": operation.ZERO})
+qstate = journal_model.initial(); qstate["current"] = EMPTY
+quarantine = quarantine_body(None)
+qstate = journal_model.advance(qstate, "NETWORK_QUARANTINE_INTENT_V2", quarantine, "TASK_STOPPED")
+quarantine = quarantine_body({"device": 7, "inode": 8})
+qstate = journal_model.advance(qstate, "NETWORK_QUARANTINE_PLACEHOLDER_V2", quarantine, "TASK_STOPPED")
+quarantine = quarantine_body({"device": 7, "inode": 9})
+qstate = journal_model.advance(qstate, "NETWORK_QUARANTINE_PLACEHOLDER_V2", quarantine, "TASK_STOPPED")
+quarantine = quarantine_body({"device": 7, "inode": 9},
+    {"name": "c42naaaaaaaaaa", "device": 7, "inode": 10})
+qstate = journal_model.advance(qstate, "NETWORK_QUARANTINE_MOVED_V2", quarantine, "TASK_STOPPED")
+qstate = journal_model.advance(qstate, "NETWORK_QUARANTINE_SETTLED_V2", quarantine, "TASK_STOPPED")
+qstate = journal_model.advance(qstate, "NETWORK_DETACH_INTENT_V2", quarantine, "TASK_STOPPED")
+detached = quarantine_body({"device": 7, "inode": 9},
+    {"name": "c42qaaaaaaaaaa", "device": 7, "inode": 9})
+qstate = journal_model.advance(qstate, "NETWORK_DETACHED_V2", detached, "TASK_STOPPED")
+reject(lambda: journal_model.advance(qstate, "NETWORK_QUARANTINE_MOVED_V2", quarantine, "TASK_STOPPED"),
+       "detached quarantine replayed move")
+raw_chunks = b"x" * (journal_model.MAX_CHUNK_BYTES + 3); output_hash = hashlib.sha256(raw_chunks).hexdigest()
+cursor = journal_model.initial(); cursor = journal_model.command_outcome(cursor, {
+    "command_serial": 0, "command_id": "IP_ALL_LINKS", "stdout_sha256": output_hash,
+    "stdout_length": len(raw_chunks), "stderr_length": 0, "stdout_truncated": False,
+    "stderr_truncated": False, "outcome": "exited", "status": 0, "uncertain": False})
+def output_chunk(index, raw):
+    return proof({"operation_token": "a" * 64, "policy_version": journal_model.POLICY_VERSION,
+        "observation_serial": 0, "source_id": "IP_ALL_LINKS", "command_serial": 0,
+        "chunk_index": index, "chunk_count": 2, "output_sha256": output_hash,
+        "output_length": len(raw_chunks), "raw_hex": raw.hex(), "proof_sha256": operation.ZERO})
+cursor = journal_model.advance(cursor, journal_model.OUTPUT_RECORD,
+                               output_chunk(0, raw_chunks[:journal_model.MAX_CHUNK_BYTES]), "FS_SETTLED")
+cursor = journal_model.command_intent(command_intent("IP_ALL_LINKS"), cursor)
+cursor = journal_model.advance(cursor, journal_model.OUTPUT_RECORD,
+                               output_chunk(1, raw_chunks[journal_model.MAX_CHUNK_BYTES:]), "FS_SETTLED")
+check(cursor["output_pending"] is None and cursor["observations"][0]["raw"] == raw_chunks,
+      "observer chunk cursor did not resume")
+# Production pass resumes only its missing suffix; partial nft mutation reuses retained list bytes.
+pass_rows = [{"observation_serial": index, "source_id": name,
+              "output_sha256": hashlib.sha256(name.encode()).hexdigest(), "output_length": len(name)}
+             for index, name in enumerate(("IP_HOST_LINKS", "IP_NS_LINKS"))]
+def pass_perform(_journal, action, *_args, **_kwargs):
+    name = action.value; raw = name.encode(); pass_rows.append({"observation_serial": len(pass_rows),
+        "source_id": name, "output_sha256": hashlib.sha256(raw).hexdigest(), "output_length": len(raw)})
+with patch.object(network, "_resume_observer_chunk"), patch.object(network, "_sources", side_effect=lambda *_a: list(pass_rows)), \
+     patch.object(network, "_source_raw", side_effect=lambda _j, row: row["source_id"].encode()), \
+     patch.object(network, "_perform_fixed", side_effect=pass_perform):
+    resumed = network._observer_pass(object(), object(), object(), object(),
+        ("IP_HOST_LINKS", "IP_NS_LINKS", "IP_HOST_ADDRESSES", "IP_NS_ADDRESSES"), "NETWORK_SNAPSHOT_V2")
+check(resumed == tuple(name.encode() for name in ("IP_HOST_LINKS", "IP_NS_LINKS", "IP_HOST_ADDRESSES", "IP_NS_ADDRESSES")),
+      "production observer pass duplicated retained prefix")
+recorded_resume = []
+with patch.object(network, "_pending_observation", return_value={"source_id": "NFT_REMOVE_ATOMIC", "command_serial": 7}), \
+     patch.object(network, "_retained_observation_raw", return_value=b"retained-table"), \
+     patch.object(network, "_record_observation", side_effect=lambda _j, source, raw, serial: recorded_resume.append((source, raw, serial))):
+    network._resume_observer_chunk(object(), object(), object(), object(), network.Action.NFT_REMOVE_ATOMIC)
+check(recorded_resume == [("NFT_REMOVE_ATOMIC", b"retained-table", 7)], "partial nft mutation resumed empty bytes")
+
+# Complete runtime address inventory includes the TAP row and requires it empty.
+tap_row = link(30, "tap-fixed", "02:00:00:00:00:30", None, "tap")
+tap = network.Link(30, "tap-fixed", "tap", tap_row["mac"], None,
+                   tuple(tap_row["flags"]), "UP", True, "noqueue", "none")
+lo = network.Link(1, "lo", "loopback", "00:00:00:00:00:00", None,
+                  ("LOOPBACK", "UP", "LOWER_UP"), "UNKNOWN", True, "noqueue", None)
+guest = network.Link(8, "eth0", "veth", network.GUEST_MAC, 7,
+                     tuple(GUEST["flags"]), "UP", True, "noqueue", "none")
+addresses = b'[{"ifindex":1,"ifname":"lo","addr_info":[{"family":"inet","local":"127.0.0.1","prefixlen":8,"scope":"host"},{"family":"inet6","local":"::1","prefixlen":128,"scope":"host"}]},{"ifindex":8,"ifname":"eth0","addr_info":[{"family":"inet","local":"192.0.2.2","prefixlen":30,"scope":"global"}]},{"ifindex":30,"ifname":"tap-fixed","addr_info":[]}]'
+check(len(network.parse_runtime_addresses(addresses, (lo, guest, tap))) == 3,
+      "authentic TAP-empty address inventory rejected")
+reject(lambda: network.parse_runtime_addresses(addresses.replace(b'"addr_info":[]',
+    b'"addr_info":[{"family":"inet6","local":"fe80::1","prefixlen":64,"scope":"link"}]'),
+    (lo, guest, tap)), "TAP IPv6 address accepted")
+
+# Endpoint-derived tc argv is admitted only when its endpoint name is retained
+# by the durable ready/runtime identity.
+runtime_id = copy.deepcopy(READY_ID); runtime_id["tap"] = tap_row
+runtime_id["tc"] = {"qdiscs": [{}] * 4, "filters": [{}] * 4}
+runtime_snapshot = {"snapshot_kind": "discovered", "identity": runtime_id}
+tc_state = {"snapshots": [runtime_snapshot], "effects": [], "pending": None}
+intent_tc = {"command_id": "TC_QDISC", "executable_role": "tc",
+             "executable_path": "/usr/sbin/tc", "stdin_hex": "", "stdin_length": 0,
+             "deadline_class": "network", "duration_ns": 10_000_000_000,
+             "output_grammar": "json", "stdout_limit": 65536, "stderr_limit": 65536,
+             "inherited_fds": [],
+             "argv": ["/usr/sbin/tc", "-n", NETNS["name"], "-j", "qdisc", "show", "dev", "tap-fixed"]}
+journal_model.tc_intent(intent_tc, tc_state)
+foreign = copy.deepcopy(intent_tc); foreign["argv"][-1] = "foreign0"
+reject(lambda: journal_model.tc_intent(foreign, tc_state), "foreign tc endpoint accepted")
+ready_teardown = journal_model.SUCCESS_PHASE_TRACE_VARIANTS["TASK_STOPPED"][1]
+discovered_teardown = journal_model.SUCCESS_PHASE_TRACE_VARIANTS["TASK_STOPPED"][2]
+absent_teardown = journal_model.SUCCESS_PHASE_TRACE_VARIANTS["TASK_STOPPED"][-1]
+journal_model.successful_trace(ready_teardown, "TASK_STOPPED")
+journal_model.successful_trace(discovered_teardown, "TASK_STOPPED")
+journal_model.successful_trace(absent_teardown, "TASK_STOPPED")
+for trace in journal_model.SUCCESS_PHASE_TRACE_VARIANTS["OWNERSHIP_OBSERVED"]:
+    journal_model.successful_trace(trace, "OWNERSHIP_OBSERVED")
+check("IP_NETNS_REMOVE" not in absent_teardown and
+      "NFT_REMOVE_ATOMIC" not in journal_model.SUCCESS_PHASE_TRACE_VARIANTS["SHARE_ABSENT"][1],
+      "absent resource trace executes rm")
+operation_netns_path = runtime.operation_netns_path("a" * 64)
+retained_network = {"operation_token": "a" * 64, "identity": NETNS, "path": operation_netns_path}
+with patch.object(network, "_consume_runtime_network", return_value=retained_network), \
+     patch.object(network, "_verify_runtime_network", return_value=retained_network):
+    runtime_permit = runtime._make_operation_launch_permit(object())
+    run_spec = runtime.ctr_run_spec(runtime_permit)
+    runtime._preexec_launch_network(runtime_permit, 1234); runtime._release_launch_preexec(runtime_permit)
+    stored = {"ID": runtime.CONTAINER_ID, "Labels": {}, "Image": "",
+        "Runtime": {"Name": runtime.RUNTIME, "Options": {"type_url": "io.containerd.kata.v2.options",
+                    "config_path": runtime.RUNTIME_CONFIG}}, "SnapshotKey": "", "Snapshotter": "",
+        "CreatedAt": "2026-01-01T00:00:00Z", "UpdatedAt": "2026-01-01T00:00:00Z",
+        "Extensions": {}, "Spec": runtime._expected_operation_oci_spec("a" * 64, "/proc/1234/fd/202")}
+    runtime.validate_stored_info(
+        stored, runtime._stored_launch_network_grant(runtime_permit),
+        runtime._resolved_launch_network_path(runtime_permit))
+check(operation_netns_path == "/run/netns/" + NETNS["name"] and
+      run_spec.argv[5:7] == ("containers", "create") and "run" not in run_spec.argv and
+      stored["Spec"]["linux"]["namespaces"][-1] == {"type": "network", "path": "/proc/1234/fd/202"},
+      "runtime operation-owned metadata grant diverged")
+check(operation.command_policy.LEGACY_V1_VERSION.endswith("protected-746") and
+      "CONTAINERD_START" not in operation.command_policy.LEGACY_COMMANDS,
+      "protected historical v1 vocabulary widened")
+# Production ready->discovered->runtime records TAP discovery before its first
+# tc intent, then validates the exact full runtime snapshot.
+netns_object = network.NetnsIdentity(41, 30, "0:4", "net:[4026533000]",
+    "/run/netns/" + NETNS["name"], ("rw",), (), "nsfs", "nsfs", ("rw",), 4, 4026533000)
+host_object = network.Link(**{**HOST, "flags": tuple(HOST["flags"])})
+guest_object = network.Link(**{**GUEST, "flags": tuple(GUEST["flags"])})
+qroot = network.TcQdisc(8, "eth0", "noqueue", "0:", None, True, 2)
+qing = network.TcQdisc(8, "eth0", "ingress", "ffff:", "ffff:fff1", False, None)
+troot = network.TcQdisc(30, "tap-fixed", "noqueue", "0:", None, True, 2)
+ting = network.TcQdisc(30, "tap-fixed", "ingress", "ffff:", "ffff:fff1", False, None)
+def directional(source_link, target_link, index):
+    table = network.TcFilterTable(source_link.ifindex, source_link.ifname, "ingress", "all", 49152, "u32", 0, "800:", 1)
+    action = network.TcAction(index, "mirred", "pipe", "redirect", "egress",
+                              target_link.ifindex, target_link.ifname, 1, 1)
+    return (table, network.TcFilter(source_link.ifindex, source_link.ifname, "ingress", "all",
+                                    49152, "u32", 0, "800::800", 2048, action))
+nft_object = network.NftSnapshot({"nftables": [{"table": {"name": NFT["table_name"]}}]},
+    network.NftKernelIdentity(7, tuple(tuple(row) for row in NFT["chain_handles"]),
+                              tuple(tuple(row) for row in NFT["rule_handles"])))
+ready = network._identity(netns_object, host_object, guest_object, nft_object,
+                          tc=network._tc_value((qroot,), ()))
+ready = bind(ready, SOURCE)
+class JournalCut:
+    def __init__(self): self.rows = [{"snapshot_kind": "ready", "identity": ready, "baselines": BASELINES}]
+    def network_history(self): return ()
+cut = JournalCut(); snapshots = []
+def source_rows(*ids):
+    return [{"observation_serial": index + 10, "source_id": name,
+             "output_sha256": hashlib.sha256(name.encode()).hexdigest(), "output_length": len(name)}
+            for index, name in enumerate(ids)]
+def fake_sources(_journal, _after=None):
+    return source_rows("IP_HOST_LINKS", "IP_NS_LINKS", "IP_HOST_ADDRESSES", "IP_NS_ADDRESSES") if len(snapshots) == 0 else source_rows(
+        "IP_HOST_ROUTES4", "IP_HOST_ROUTES6", "IP_NS_ROUTES4", "IP_NS_ROUTES6",
+        "TC_QDISC", "TC_QDISC:tap-fixed", "TC_INGRESS_FILTER:eth0",
+        "TC_INGRESS_FILTER:tap-fixed", "MOUNTINFO", "NETNS_STAT", "NFT_TABLE")
+def fake_snapshot(_journal, kind, baselines, identity, sources):
+    identity = network._bind_identity(identity, sources)
+    body = proof({"operation_token": "a" * 64, "policy_version": journal_model.POLICY_VERSION,
+                  "snapshot_kind": kind, "baselines": baselines, "sources": sources,
+                  "identity": identity, "proof_sha256": operation.ZERO})
+    operation._validate_body("NETWORK_SNAPSHOT_V2", body)
+    snapshots.append(body); cut.rows.append(body); return body
+def fake_perform(_journal, action, _ip, _nft, _tc, **_kwargs):
+    if action in {network.Action.TC_QDISC, network.Action.TC_INGRESS_FILTER}:
+        endpoint = _kwargs.get("endpoint") or guest_object
+        tail = (("qdisc", "show", "dev", endpoint.ifname) if action is network.Action.TC_QDISC else
+                ("filter", "show", "dev", endpoint.ifname, "ingress"))
+        candidate = {**intent_tc, "operation_token": "a" * 64, "command_id": action.value,
+                     "argv": ["/usr/sbin/tc", "-n", NETNS["name"], "-j", *tail], "stdin_hex": ""}
+        journal_model.tc_intent(candidate, {"snapshots": cut.rows, "effects": [], "pending": None})
+    return action.value.encode()
+with patch.object(network, "_baselines", return_value=(BASELINES, cut.rows)), \
+     patch.object(network, "_perform_fixed", side_effect=fake_perform), \
+     patch.object(network, "parse_links", return_value=(host_object,)), \
+     patch.object(network, "parse_runtime_links", return_value=(lo, guest_object, tap)), \
+     patch.object(network, "parse_addresses"), patch.object(network, "parse_runtime_addresses"), \
+     patch.object(network, "parse_routes"), patch.object(network, "_netns_identity", return_value=netns_object), \
+     patch.object(network, "_journal_netns", return_value=netns_object), \
+     patch.object(network, "_observer_pass", side_effect=lambda _j, _i, _n, _t, expected, *_a, **_k: tuple(name.encode() for name in expected)), \
+     patch.object(network, "parse_tc_qdiscs", side_effect=((qroot, qing), (troot, ting))), \
+     patch.object(network, "parse_tc_filters", side_effect=(directional(guest_object, tap, 11), directional(tap, guest_object, 12))), \
+     patch.object(network, "parse_nft_snapshot", return_value=nft_object), \
+     patch.object(network, "_sources", side_effect=fake_sources), patch.object(network, "_snapshot", side_effect=fake_snapshot), \
+     patch.object(network, "_bound_names", return_value=(NETNS["name"], NFT["table_name"])), \
+     patch.object(network, "_bound_host", return_value=network.HOST_IF):
+    network._observe_fixed_runtime_network(cut, object(), object(), object())
+check([row["snapshot_kind"] for row in snapshots] == ["discovered", "runtime"],
+      "production runtime did not durably discover TAP before tc/full runtime")
+
+# The production ready-only failed-launch path removes only the retained unique
+# namespace; an already-absent namespace takes the direct baseline trace and
+# issues no removal command.
+def ready_cut(kind="ready"):
+    value = JournalCut()
+    if kind == "discovered": value.rows[-1] = {"snapshot_kind": kind, "identity": runtime_id, "baselines": BASELINES}
+    return value
+def absent_identity():
+    return {**network._empty_identity(), "nft": READY_ID["nft"]}
+def teardown_snapshot(_journal, kind, baselines, identity, sources):
+    snapshots.append({"snapshot_kind": kind, "identity": network._bind_identity(identity, sources),
+                      "baselines": baselines, "proof_sha256": "f" * 64})
+    return snapshots[-1]
+for snapshot_kind, existing, expected_removals in (("ready", netns_object, [network.Action.IP_NETNS_REMOVE]),
+        ("discovered", netns_object, [network.Action.IP_NETNS_REMOVE]), ("ready", None, [])):
+    teardown = ready_cut(snapshot_kind); removals = []; snapshots.clear(); netns_calls = []
+    def netns_observe(*_args, **_kwargs):
+        netns_calls.append(1); return existing if len(netns_calls) == 1 else None
+    def remove_effect(_journal, action, _ip, _nft, _tc, _prior):
+        removals.append(action); return absent_identity()
+    with patch.object(network, "_baselines", return_value=(BASELINES, teardown.rows)), \
+         patch.object(network, "_resume_effect"), patch.object(network, "_netns_identity", side_effect=netns_observe), \
+         patch.object(network, "_observe_ready_teardown", return_value=ready), \
+         patch.object(network, "_observe_discovered_identity", return_value=runtime_id), \
+         patch.object(network, "_effect", side_effect=remove_effect), patch.object(network, "_settled_effects", return_value=[]), \
+         patch.object(network, "_quarantine_netns"), patch.object(network, "_bound_names", return_value=(NETNS["name"], NFT["table_name"])), \
+         patch.object(network, "_bound_host", return_value=network.HOST_IF), \
+         patch.object(network, "_fresh_baseline_outputs", return_value=((b"[]",) * 6, b"mount\n", BASELINES)), \
+         patch.object(network, "_snapshot", side_effect=teardown_snapshot), \
+         patch.object(network, "_sources", return_value=SOURCE), \
+         patch.object(operation, "_settle_network_phase"):
+        network._remove_fixed_network(teardown, object(), object(), object())
+    check(removals == expected_removals, "ready-only/absent teardown issued wrong rm")
+
+source = network.tc_observer_command(network.Action.TC_QDISC, tap)
+check(process._internally_fixed(process.FixedCommand(
+    network.Action.TC_QDISC, "tc", "/usr/sbin/tc", ("/usr/sbin/tc", *source.argv_tail),
+    b"", 10_000_000_000, output_grammar="json")), "retained tc command rejected")
+
+check("RETRY" not in network.Recovery.__members__, "retry disposition remains")
+source_text = (ROOT / "deploy/aws-feasibility/remote/completion_kata_network.py").read_text()
+for required in ("runtime_difference(before, after)", "NETWORK_EFFECT_INTENT_V2",
+                 "_resume_effect(journal", "fresh != baselines"):
+    check(required in source_text, f"missing production invariant: {required}")
+for forbidden in ("subprocess", "os.system", "shell=True", "iptables", "masquerade", "SNAT", "DNAT"):
+    check(forbidden not in source_text, f"forbidden production route: {forbidden}")
+print("completion Kata fixed production network lifecycle matrix passed")
