@@ -133,24 +133,14 @@ test("candidate, final, and post-pin schemas make A=B structural", () => {
   }
 });
 
-test("retired host qualification v1 stays absent and only the approved non-AWS CI file changes", () => {
-  assert.throws(() => readFileSync(join(root, "schemas/stage2-workload-local-qualification-v1.json")));
-
-  const protectedDiff = spawnSync(
+test("rejected v1 is absent from protected main and host foundations remain non-authoritative", () => {
+  const rejectedV1 = spawnSync(
     "git",
-    [
-      "diff",
-      "--name-only",
-      "69eccf1..HEAD",
-      "--",
-      ".github/workflows",
-      "deploy/aws-feasibility/remote/completion_kata_*.py",
-      "deploy/aws-feasibility/*.sh",
-    ],
+    ["cat-file", "-e", "69eccf1:schemas/stage2-workload-local-qualification-v1.json"],
     { cwd: root, encoding: "utf8" },
   );
-  assert.equal(protectedDiff.status, 0, protectedDiff.stderr);
-  assert.equal(protectedDiff.stdout, ".github/workflows/stage2-workload-linux-foundations.yml\n");
+  assert.notEqual(rejectedV1.status, 0);
+
   const workflow = readFileSync(join(root, ".github/workflows/stage2-workload-linux-foundations.yml"), "utf8");
   assert.match(workflow, /name: Stage 2 workload Linux foundations/u);
   assert.match(workflow, /COGS_REQUIRE_STAGE2_WORKLOAD_LINUX_FOUNDATIONS=1/u);

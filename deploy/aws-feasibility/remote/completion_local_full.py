@@ -1,8 +1,8 @@
-"""Strict local Kata result codec and deliberately blocked production entry.
+"""Strict non-authoritative local Kata result data and a blocked entry.
 
-A decoded report is data, never authority.  The future coordinator must provide
-an in-process private typed receipt; this slice intentionally defines no public
-receipt constructor or report-to-receipt adaptation.
+Decoded or canonical report bytes never grant authority.  A future coordinator
+must privately type and custody-bind the complete bytes plus independently
+verified source and journal facts; no report-to-receipt adaptation exists here.
 """
 import hashlib
 import json
@@ -11,19 +11,21 @@ import sys
 VERSION = "cogs.stage2-workload-local-qualification/v2"
 SCHEMA_REGISTRY = ((VERSION, "schemas/stage2-workload-local-qualification-v2.json"),)
 MAX_RESULT_BYTES = 32 * 1024
-AUTHORITY = "local-only-standalone-kata-stopped-before-step5"
+AUTHORITY = "non-authoritative-local-qualification-report-data"
+VALIDATION_CLASSIFICATION = "schema-insufficient-independent-semantics-and-private-receipt-required"
 LIMITATIONS = (
-    "not-aws-evidence",
-    "not-production-evidence",
-    "not-release-evidence",
-    "no-seven-cycle-controller-authority",
-    "no-retry-or-promotion-authority",
+    "report-data-does-not-establish-local-qualification-authority",
+    "requires-exact-private-receipt-and-custody-validation",
+    "not-aws-evidence", "not-production-evidence", "not-release-evidence",
+    "no-seven-cycle-controller-authority", "no-retry-or-promotion-authority",
 )
 DIGEST_FIELDS = (
     "source_manifest_sha256", "host_attestation_sha256", "runtime_attestation_sha256",
     "rootfs_sha256", "artifact_sha256", "candidate_sha256", "final_pin_sha256",
     "guest_program_sha256", "owner_implementation_sha256",
 )
+ADMISSION_PHASES = ("preflight", "source_binding", "attestation", "kvm")
+ADMISSION_CODES = ("preflight", "source-binding", "attestation", "kvm")
 TEARDOWN_PHASES = (
     "READINESS_REVOKED", "TASK_STOPPED", "NETWORK_ABSENT", "TASK_ABSENT",
     "CONTAINER_ABSENT", "RUNTIME_PROCESSES_ABSENT", "SHARE_AND_MOUNTS_ABSENT",
@@ -40,15 +42,13 @@ RESIDUE_FACTS = (
     "input_control", "share_paths", "runtime_staging", "report_staging",
     "descriptor_baseline", "process_baseline", "cgroup_baseline", "namespace_baseline",
 )
-FAILURE_CODES = frozenset({
-    "preflight", "source-binding", "attestation", "kvm", "lifecycle-start", "ssh",
-    "git-sample", "build-sample", "install-sample", "deletion", "cleanup", "residue",
-    "deadline", "interrupted", "uncertain",
-})
+FAILURE_CODES = frozenset((*ADMISSION_CODES, "lifecycle-start", "ssh", "git-sample",
+                           "build-sample", "install-sample", "deletion", "cleanup",
+                           "residue", "uncertain"))
 ROOT_KEYS = {
     "version", "result", "failure_code", "qualified", "authority", "limitations",
-    "bindings", "platform", "lifecycle", "operation", "timings", "timing_summaries",
-    "teardown", "zero_residue",
+    "validation_classification", "bindings", "admission", "platform", "lifecycle",
+    "operation", "timings", "timing_summaries", "teardown", "zero_residue",
 }
 
 
@@ -92,34 +92,114 @@ def _binding_digest(bindings, operation_sha256, journal_sha256):
 
 
 def _summary(rows):
-    durations = [row["duration_ns"] for row in rows]
-    return {
-        "count": len(durations),
-        "total_ns": sum(durations),
-        "minimum_ns": min(durations) if durations else None,
-        "maximum_ns": max(durations) if durations else None,
-    }
+    durations = [row["duration_ns"] for row in rows if row["duration_ns"] is not None]
+    return {"count": len(durations), "total_ns": sum(durations),
+            "minimum_ns": min(durations) if durations else None,
+            "maximum_ns": max(durations) if durations else None}
 
 
 def _validate_rows(rows, binding):
-    _require(type(rows) is list and len(rows) <= 7)
-    failed = False
-    for index, row in enumerate(rows, 1):
+    _require(type(rows) is list and len(rows) == 7)
+    for ordinal, row in enumerate(rows, 1):
         _keys(row, {"ordinal", "duration_ns", "outcome", "deletion", "binding_sha256"})
         _integer(row["ordinal"], 1, 7)
-        _integer(row["duration_ns"], 1, 3_600_000_000_000)
-        _require(row["ordinal"] == index and row["outcome"] in ("pass", "failure"))
-        _require(row["deletion"] in ("absent", "not-proved") and row["binding_sha256"] == binding)
-        _require(not failed)
-        failed = row["outcome"] == "failure" or row["deletion"] != "absent"
-    return failed
+        _require(row["ordinal"] == ordinal and row["outcome"] in ("pass", "failure", "not-reached"))
+        _require(row["binding_sha256"] == binding)
+        if row["outcome"] == "not-reached":
+            _require(row["duration_ns"] is None and row["deletion"] == "not-reached")
+        else:
+            _integer(row["duration_ns"], 1, 3_600_000_000_000)
+            _require(row["deletion"] in ("absent", "not-proved"))
+
+
+def _admission_failure(admission):
+    _keys(admission, ADMISSION_PHASES)
+    first = None
+    blocked = False
+    for phase, code in zip(ADMISSION_PHASES, ADMISSION_CODES, strict=True):
+        outcome = admission[phase]
+        _require(outcome in ("pass", "failure", "not-reached"))
+        if blocked:
+            _require(outcome == "not-reached")
+        elif outcome == "failure":
+            first, blocked = code, True
+        else:
+            _require(outcome == "pass")
+    return first
+
+
+def _not_reached(rows, start=0):
+    return all(row["outcome"] == "not-reached" for row in rows[start:])
+
+
+def _work_failure(timings):
+    git, build, install = timings["git"], timings["build"], timings["install"]
+    for index, row in enumerate(git):
+        if row["outcome"] == "not-reached":
+            _require(_not_reached(git, index) and _not_reached(build) and _not_reached(install))
+            return "git-sample"
+        if row["outcome"] == "failure":
+            _require(_not_reached(git, index + 1) and _not_reached(build) and _not_reached(install))
+            return "git-sample"
+        if row["deletion"] != "absent":
+            _require(_not_reached(git, index + 1) and _not_reached(build) and _not_reached(install))
+            return "deletion"
+    for index, (built, installed) in enumerate(zip(build, install, strict=True)):
+        if built["outcome"] == "not-reached":
+            _require(_not_reached(build, index) and _not_reached(install, index))
+            return "build-sample"
+        if built["outcome"] == "failure":
+            _require(installed["outcome"] == "not-reached"
+                     and _not_reached(build, index + 1) and _not_reached(install, index))
+            return "build-sample"
+        if installed["outcome"] == "not-reached":
+            _require(_not_reached(build, index + 1) and _not_reached(install, index))
+            return "install-sample"
+        if installed["outcome"] == "failure":
+            _require(_not_reached(build, index + 1) and _not_reached(install, index + 1))
+            return "install-sample"
+        _require(built["deletion"] == installed["deletion"])
+        if built["deletion"] != "absent":
+            _require(_not_reached(build, index + 1) and _not_reached(install, index + 1))
+            return "deletion"
+    return None
+
+
+def _teardown_failure(teardown, binding, operation_status, residue):
+    _require(type(teardown) is list and len(teardown) == len(TEARDOWN_PHASES))
+    first_bad = None
+    unreachable = False
+    for index, (expected, row) in enumerate(zip(TEARDOWN_PHASES, teardown, strict=True)):
+        _keys(row, {"phase", "outcome", "binding_sha256"})
+        _require(row["phase"] == expected and row["outcome"] in ("pass", "failure", "not-reached"))
+        _require(row["binding_sha256"] == binding)
+        if unreachable:
+            _require(row["outcome"] == "not-reached")
+        elif row["outcome"] == "not-reached":
+            first_bad, unreachable = first_bad if first_bad is not None else index, True
+        elif row["outcome"] == "failure" and first_bad is None:
+            first_bad = index
+    all_absent = all(item == "absent" for item in residue.values())
+    all_pass = first_bad is None
+    if operation_status == "not-created":
+        _require(all(row["outcome"] == "not-reached" for row in teardown) and binding is None)
+    elif operation_status == "retired":
+        _require(all_pass and all_absent)
+    else:
+        _require(not all_pass and teardown[-1]["outcome"] != "pass" and not all_absent)
+    if first_bad is None:
+        return None
+    if first_bad >= TEARDOWN_PHASES.index("FINAL_BASELINES") and not all_absent:
+        return "residue"
+    return "cleanup"
 
 
 def validate_result(value):
-    """Independently validate all report semantics; return recomputed qualification."""
+    """Validate one closed execution history and recompute its first failure."""
     _keys(value, ROOT_KEYS)
     _require(value["version"] == VERSION and value["result"] in ("pass", "failure"))
     _require(type(value["qualified"]) is bool and value["authority"] == AUTHORITY)
+    _require(value["validation_classification"] == VALIDATION_CLASSIFICATION)
     _require(type(value["limitations"]) is list and tuple(value["limitations"]) == LIMITATIONS)
 
     bindings = value["bindings"]
@@ -128,23 +208,23 @@ def validate_result(value):
     _require(type(head) is str and len(head) == 40 and all(c in "0123456789abcdef" for c in head))
     for name in DIGEST_FIELDS:
         _digest(bindings[name])
+    first_failure = _admission_failure(value["admission"])
 
     platform = value["platform"]
     _keys(platform, {"kvm_api", "qmp_present", "qmp_enabled"})
     _require(platform["kvm_api"] is None or (type(platform["kvm_api"]) is int and platform["kvm_api"] == 12))
     _require(type(platform["qmp_present"]) is bool and type(platform["qmp_enabled"]) is bool)
     _require(not platform["qmp_enabled"] or platform["qmp_present"])
+    platform_pass = platform == {"kvm_api": 12, "qmp_present": True, "qmp_enabled": True}
+    _require((value["admission"]["kvm"] == "pass") == platform_pass)
 
     lifecycle = value["lifecycle"]
     _keys(lifecycle, {"attempts", "outcome", "ssh_attempts", "ssh_outcome"})
-    _integer(lifecycle["attempts"], 0, 1)
-    _integer(lifecycle["ssh_attempts"], 0, 1)
-    _require(lifecycle["ssh_attempts"] <= lifecycle["attempts"])
-    for attempts, outcome in ((lifecycle["attempts"], lifecycle["outcome"]),
-                              (lifecycle["ssh_attempts"], lifecycle["ssh_outcome"])):
+    for attempts_name, outcome_name in (("attempts", "outcome"), ("ssh_attempts", "ssh_outcome")):
+        attempts, outcome = lifecycle[attempts_name], lifecycle[outcome_name]
+        _integer(attempts, 0, 1)
         _require(outcome in ("pass", "failure", "not-reached"))
         _require((attempts == 0) == (outcome == "not-reached"))
-    _require(not platform["qmp_present"] or lifecycle["attempts"] == 1)
 
     operation = value["operation"]
     _keys(operation, {"operation_sha256", "journal_sha256", "binding_sha256", "source_head",
@@ -153,61 +233,63 @@ def validate_result(value):
     _require(operation["source_manifest_sha256"] == bindings["source_manifest_sha256"])
     _require(operation["final_pin_sha256"] == bindings["final_pin_sha256"])
     _require(operation["status"] in ("not-created", "uncertain", "retired"))
-    operation_digests = [operation[name] for name in
-                         ("operation_sha256", "journal_sha256", "binding_sha256")]
+    digests = [operation[name] for name in ("operation_sha256", "journal_sha256", "binding_sha256")]
     if operation["status"] == "not-created":
-        _require(operation_digests == [None, None, None] and lifecycle["attempts"] == 0)
+        _require(digests == [None, None, None] and lifecycle["attempts"] == lifecycle["ssh_attempts"] == 0)
         binding = None
     else:
-        for digest in operation_digests:
+        _require(first_failure is None)
+        for digest in digests:
             _digest(digest)
         binding = _binding_digest(bindings, operation["operation_sha256"], operation["journal_sha256"])
         _require(operation["binding_sha256"] == binding)
 
-    timings = value["timings"]
-    summaries = value["timing_summaries"]
+    timings, summaries = value["timings"], value["timing_summaries"]
     _keys(timings, {"git", "build", "install"})
     _keys(summaries, {"git", "build", "install"})
-    timing_failed = False
     for name in ("git", "build", "install"):
-        timing_failed = _validate_rows(timings[name], binding) or timing_failed
-        summary = summaries[name]
-        _keys(summary, {"count", "total_ns", "minimum_ns", "maximum_ns"})
-        _require(summary == _summary(timings[name]))
-        for number in summary.values():
-            _require(number is None or type(number) is int)
-    git_rows, build_rows, install_rows = timings["git"], timings["build"], timings["install"]
-    if len(git_rows) < 7 or any(row["outcome"] != "pass" for row in git_rows):
-        _require(not build_rows and not install_rows)
-    _require(len(install_rows) <= len(build_rows) <= len(install_rows) + 1)
+        _validate_rows(timings[name], binding)
+        _keys(summaries[name], {"count", "total_ns", "minimum_ns", "maximum_ns"})
+        _require(summaries[name] == _summary(timings[name]))
+        _require(all(number is None or type(number) is int for number in summaries[name].values()))
 
-    teardown = value["teardown"]
-    _require(type(teardown) is list and len(teardown) == len(TEARDOWN_PHASES))
-    for expected, row in zip(TEARDOWN_PHASES, teardown, strict=True):
-        _keys(row, {"phase", "outcome", "binding_sha256"})
-        _require(row["phase"] == expected and row["outcome"] in ("pass", "failure", "not-reached"))
-        _require(row["binding_sha256"] == binding)
+    work_started = any(not _not_reached(rows) for rows in timings.values())
+    if lifecycle["attempts"]:
+        _require(operation["status"] != "not-created" and first_failure is None and platform_pass)
+    if lifecycle["ssh_attempts"]:
+        _require(lifecycle["attempts"] == 1 and lifecycle["outcome"] == "pass" and platform_pass)
+    _require(lifecycle["ssh_attempts"] <= lifecycle["attempts"])
+    if work_started:
+        _require(lifecycle["ssh_attempts"] == 1 and lifecycle["ssh_outcome"] == "pass")
+
+    if first_failure is None:
+        if operation["status"] == "not-created":
+            first_failure = "lifecycle-start"
+        elif lifecycle["attempts"] == 0:
+            first_failure = "uncertain" if operation["status"] == "uncertain" else "lifecycle-start"
+        elif lifecycle["outcome"] == "failure":
+            _require(lifecycle["ssh_attempts"] == 0 and not work_started)
+            first_failure = "lifecycle-start"
+        elif lifecycle["ssh_attempts"] == 0 or lifecycle["ssh_outcome"] == "failure":
+            _require(not work_started)
+            first_failure = "ssh"
+        else:
+            first_failure = _work_failure(timings)
 
     residue = value["zero_residue"]
     _keys(residue, RESIDUE_FACTS)
     _require(all(item in ("absent", "not-proved") for item in residue.values()))
+    teardown_failure = _teardown_failure(value["teardown"], binding, operation["status"], residue)
+    if first_failure is None:
+        first_failure = teardown_failure
 
-    complete_rows = all(len(timings[name]) == 7 for name in timings)
-    rows_pass = complete_rows and not timing_failed and all(
-        row["outcome"] == "pass" and row["deletion"] == "absent"
-        for rows in timings.values() for row in rows)
-    qualified = (
-        platform == {"kvm_api": 12, "qmp_present": True, "qmp_enabled": True}
-        and lifecycle == {"attempts": 1, "outcome": "pass", "ssh_attempts": 1, "ssh_outcome": "pass"}
-        and operation["status"] == "retired" and rows_pass
-        and all(row["outcome"] == "pass" for row in teardown)
-        and all(item == "absent" for item in residue.values())
-    )
+    qualified = first_failure is None
     _require(value["qualified"] == qualified)
     if value["result"] == "pass":
         _require(qualified and value["failure_code"] is None)
     else:
-        _require(not qualified and value["failure_code"] in FAILURE_CODES)
+        _require(not qualified and value["failure_code"] in FAILURE_CODES
+                 and value["failure_code"] == first_failure)
     return qualified
 
 
@@ -219,17 +301,16 @@ def canonical_result(value):
 
 
 def load_result(raw):
-    """Load only canonical ASCII JSON.  The returned dictionary grants no authority."""
+    """Load canonical ASCII report data; never construct or grant a receipt."""
     _require(type(raw) is bytes and 0 < len(raw) <= MAX_RESULT_BYTES and raw.endswith(b"\n"))
     try:
-        text = raw.decode("ascii")
         def unique(rows):
             value = {}
             for key, item in rows:
                 _require(type(key) is str and key not in value)
                 value[key] = item
             return value
-        value = json.loads(text, object_pairs_hook=unique,
+        value = json.loads(raw.decode("ascii"), object_pairs_hook=unique,
                            parse_constant=lambda _x: (_ for _ in ()).throw(ValueError()))
     except LocalResultError:
         raise
@@ -240,10 +321,9 @@ def load_result(raw):
 
 
 def main():
-    """Zero-argument stub: no report, JSON, path, or environment can open production."""
+    """Zero-argument stub; no serialized input can open production."""
     if len(sys.argv) != 1:
         raise LocalResultBlocked()
-    # Deliberately no coordinator import and no receipt adaptation in this slice.
     raise LocalResultBlocked()
 
 

@@ -9,6 +9,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 MODULE_PATH = ROOT / "deploy/aws-feasibility/remote/completion_local_full.py"
+FIXTURES = ROOT / "test/fixtures/stage2-completion"
 spec = importlib.util.spec_from_file_location("completion_local_full", MODULE_PATH)
 local = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(local)
@@ -35,140 +36,202 @@ def digest_view(bindings, operation, journal):
 
 
 def summary(rows):
-    values = [row["duration_ns"] for row in rows]
-    return {
-        "count": len(values), "total_ns": sum(values),
-        "minimum_ns": min(values) if values else None,
-        "maximum_ns": max(values) if values else None,
-    }
+    values = [row["duration_ns"] for row in rows if row["duration_ns"] is not None]
+    return {"count": len(values), "total_ns": sum(values),
+            "minimum_ns": min(values) if values else None,
+            "maximum_ns": max(values) if values else None}
+
+
+def refresh(value):
+    value["timing_summaries"] = {name: summary(rows) for name, rows in value["timings"].items()}
+    return value
+
+
+def not_reached(binding):
+    return [{"ordinal": index, "duration_ns": None, "outcome": "not-reached",
+             "deletion": "not-reached", "binding_sha256": binding}
+            for index in range(1, 8)]
+
+
+def stop_after(rows, index, binding):
+    rows[index + 1:] = not_reached(binding)[index + 1:]
 
 
 def passing():
     bindings = {
-        "source_head": "a" * 40,
-        "source_manifest_sha256": "1" * 64,
-        "host_attestation_sha256": "2" * 64,
-        "runtime_attestation_sha256": "3" * 64,
-        "rootfs_sha256": "4" * 64,
-        "artifact_sha256": "5" * 64,
-        "candidate_sha256": "6" * 64,
-        "final_pin_sha256": "7" * 64,
-        "guest_program_sha256": "8" * 64,
-        "owner_implementation_sha256": "9" * 64,
+        "source_head": "a" * 40, "source_manifest_sha256": "1" * 64,
+        "host_attestation_sha256": "2" * 64, "runtime_attestation_sha256": "3" * 64,
+        "rootfs_sha256": "4" * 64, "artifact_sha256": "5" * 64,
+        "candidate_sha256": "6" * 64, "final_pin_sha256": "7" * 64,
+        "guest_program_sha256": "8" * 64, "owner_implementation_sha256": "9" * 64,
     }
     operation, journal = "b" * 64, "c" * 64
     binding = digest_view(bindings, operation, journal)
-    timings = {}
-    for offset, name in enumerate(("git", "build", "install"), 1):
-        timings[name] = [
-            {"ordinal": index, "duration_ns": offset * 100 + index, "outcome": "pass",
-             "deletion": "absent", "binding_sha256": binding}
-            for index in range(1, 8)
-        ]
-    return {
-        "version": local.VERSION,
-        "result": "pass",
-        "failure_code": None,
-        "qualified": True,
-        "authority": local.AUTHORITY,
-        "limitations": list(local.LIMITATIONS),
-        "bindings": bindings,
+    timings = {name: [
+        {"ordinal": index, "duration_ns": offset * 100 + index, "outcome": "pass",
+         "deletion": "absent", "binding_sha256": binding}
+        for index in range(1, 8)]
+        for offset, name in enumerate(("git", "build", "install"), 1)}
+    return refresh({
+        "version": local.VERSION, "result": "pass", "failure_code": None, "qualified": True,
+        "authority": local.AUTHORITY, "validation_classification": local.VALIDATION_CLASSIFICATION,
+        "limitations": list(local.LIMITATIONS), "bindings": bindings,
+        "admission": {name: "pass" for name in local.ADMISSION_PHASES},
         "platform": {"kvm_api": 12, "qmp_present": True, "qmp_enabled": True},
         "lifecycle": {"attempts": 1, "outcome": "pass", "ssh_attempts": 1, "ssh_outcome": "pass"},
         "operation": {
             "operation_sha256": operation, "journal_sha256": journal, "binding_sha256": binding,
             "source_head": bindings["source_head"],
             "source_manifest_sha256": bindings["source_manifest_sha256"],
-            "final_pin_sha256": bindings["final_pin_sha256"], "status": "retired",
-        },
+            "final_pin_sha256": bindings["final_pin_sha256"], "status": "retired"},
         "timings": timings,
-        "timing_summaries": {name: summary(rows) for name, rows in timings.items()},
-        "teardown": [
-            {"phase": phase, "outcome": "pass", "binding_sha256": binding}
-            for phase in local.TEARDOWN_PHASES
-        ],
+        "teardown": [{"phase": phase, "outcome": "pass", "binding_sha256": binding}
+                     for phase in local.TEARDOWN_PHASES],
         "zero_residue": {name: "absent" for name in local.RESIDUE_FACTS},
-    }
+    })
 
 
-def failing():
+def failing(code="preflight"):
     value = passing()
-    value.update(result="failure", failure_code="preflight", qualified=False)
+    value.update(result="failure", failure_code=code, qualified=False)
+    position = local.ADMISSION_CODES.index(code)
+    value["admission"] = {name: ("pass" if index < position else "failure" if index == position else "not-reached")
+                          for index, name in enumerate(local.ADMISSION_PHASES)}
     value["platform"] = {"kvm_api": None, "qmp_present": False, "qmp_enabled": False}
     value["lifecycle"] = {"attempts": 0, "outcome": "not-reached", "ssh_attempts": 0,
                           "ssh_outcome": "not-reached"}
     value["operation"].update(operation_sha256=None, journal_sha256=None, binding_sha256=None,
                               status="not-created")
-    value["timings"] = {name: [] for name in ("git", "build", "install")}
-    value["timing_summaries"] = {name: summary([]) for name in value["timings"]}
-    value["teardown"] = [
-        {"phase": phase, "outcome": "not-reached", "binding_sha256": None}
-        for phase in local.TEARDOWN_PHASES
-    ]
-    return value
+    value["timings"] = {name: not_reached(None) for name in ("git", "build", "install")}
+    value["teardown"] = [{"phase": phase, "outcome": "not-reached", "binding_sha256": None}
+                         for phase in local.TEARDOWN_PHASES]
+    return refresh(value)
 
 
-value = passing()
-raw = local.canonical_result(value)
-check(raw == local.canonical_result(local.load_result(raw)), "canonical round trip")
-check(raw.isascii() and len(raw) <= 32768 and raw.endswith(b"\n"), "ASCII/size/framing")
-check(local.validate_result(failing()) is False, "categorical failure")
+def categorical_failure(code):
+    value = passing()
+    value.update(result="failure", failure_code=code, qualified=False)
+    binding = value["operation"]["binding_sha256"]
+    if code == "lifecycle-start":
+        value["lifecycle"] = {"attempts": 1, "outcome": "failure", "ssh_attempts": 0,
+                              "ssh_outcome": "not-reached"}
+        value["timings"] = {name: not_reached(binding) for name in value["timings"]}
+    elif code == "ssh":
+        value["lifecycle"].update(ssh_outcome="failure")
+        value["timings"] = {name: not_reached(binding) for name in value["timings"]}
+    elif code == "git-sample":
+        value["timings"]["git"][0]["outcome"] = "failure"
+        stop_after(value["timings"]["git"], 0, binding)
+        value["timings"]["build"] = not_reached(binding)
+        value["timings"]["install"] = not_reached(binding)
+    elif code == "build-sample":
+        value["timings"]["build"][0]["outcome"] = "failure"
+        stop_after(value["timings"]["build"], 0, binding)
+        value["timings"]["install"] = not_reached(binding)
+    elif code == "install-sample":
+        value["timings"]["install"][0]["outcome"] = "failure"
+        stop_after(value["timings"]["build"], 0, binding)
+        stop_after(value["timings"]["install"], 0, binding)
+    elif code == "deletion":
+        value["timings"]["git"][0]["deletion"] = "not-proved"
+        stop_after(value["timings"]["git"], 0, binding)
+        value["timings"]["build"] = not_reached(binding)
+        value["timings"]["install"] = not_reached(binding)
+    elif code in ("cleanup", "residue"):
+        value["operation"]["status"] = "uncertain"
+        index = 0 if code == "cleanup" else local.TEARDOWN_PHASES.index("FINAL_BASELINES")
+        value["teardown"][index]["outcome"] = "failure"
+        value["teardown"][-1]["outcome"] = "not-reached"
+        value["zero_residue"]["qemu_processes"] = "not-proved"
+    elif code == "uncertain":
+        value["operation"]["status"] = "uncertain"
+        value["lifecycle"] = {"attempts": 0, "outcome": "not-reached", "ssh_attempts": 0,
+                              "ssh_outcome": "not-reached"}
+        value["timings"] = {name: not_reached(binding) for name in value["timings"]}
+        value["teardown"][0]["outcome"] = "failure"
+        value["teardown"][-1]["outcome"] = "not-reached"
+        value["zero_residue"]["operation_state"] = "not-proved"
+    return refresh(value)
 
-mutations = []
-def mutation(name, change):
-    changed = copy.deepcopy(value)
+
+if sys.argv[1:] == ["--catalog"]:
+    catalog = [failing(code) for code in local.ADMISSION_CODES]
+    catalog.extend(categorical_failure(code) for code in (
+        "lifecycle-start", "ssh", "git-sample", "build-sample", "install-sample",
+        "deletion", "cleanup", "residue", "uncertain"))
+    sys.stdout.write(json.dumps(catalog, separators=(",", ":")))
+    raise SystemExit(0)
+if sys.argv[1:] == ["--probe"]:
+    try:
+        local.canonical_result(json.loads(sys.stdin.buffer.read()))
+    except (local.LocalResultError, ValueError, TypeError):
+        raise SystemExit(1)
+    raise SystemExit(0)
+check(not sys.argv[1:], "unexpected test selector")
+
+pass_value, fail_value = passing(), failing()
+for name, expected in (("local-result-v2-pass.json", pass_value), ("local-result-v2-failure.json", fail_value)):
+    raw = (FIXTURES / name).read_bytes()
+    check(raw == local.canonical_result(expected), f"shared fixture {name}")
+    check(local.load_result(raw) == expected and raw.isascii() and len(raw) <= 32768, f"load {name}")
+for code in local.ADMISSION_CODES:
+    check(local.validate_result(failing(code)) is False, f"admission {code}")
+for code in ("lifecycle-start", "ssh", "git-sample", "build-sample", "install-sample",
+             "deletion", "cleanup", "residue", "uncertain"):
+    check(local.validate_result(categorical_failure(code)) is False, f"causal {code}")
+
+
+def mutation(name, change, base=pass_value):
+    changed = copy.deepcopy(base)
     change(changed)
-    mutations.append((name, changed))
+    rejected(lambda: local.validate_result(changed), name)
+
 
 mutation("root extra", lambda item: item.update(extra=True))
 mutation("nested extra", lambda item: item["bindings"].update(extra="0" * 64))
-mutation("bool as ordinal", lambda item: item["timings"]["git"][0].update(ordinal=True))
-mutation("bool as duration", lambda item: item["timings"]["git"][0].update(duration_ns=True))
+mutation("ordinal order", lambda item: item["timings"]["git"].reverse())
 mutation("summary", lambda item: item["timing_summaries"]["git"].update(total_ns=1))
-mutation("row order", lambda item: item["timings"]["git"].reverse())
-mutation("missing timing", lambda item: item["timings"]["build"].pop())
-mutation("unproved deletion", lambda item: item["timings"]["install"][2].update(deletion="not-proved"))
-mutation("row operation", lambda item: item["timings"]["git"][0].update(binding_sha256="d" * 64))
 mutation("mixed source", lambda item: item["operation"].update(source_head="b" * 40))
-mutation("mixed manifest", lambda item: item["operation"].update(source_manifest_sha256="d" * 64))
 mutation("mixed pin", lambda item: item["operation"].update(final_pin_sha256="e" * 64))
-mutation("operation binding", lambda item: item["operation"].update(operation_sha256="d" * 64))
-mutation("KVM API", lambda item: item["platform"].update(kvm_api=None))
-mutation("QMP", lambda item: item["platform"].update(qmp_enabled=False))
-mutation("lifecycle attempts", lambda item: item["lifecycle"].update(attempts=0))
-mutation("SSH attempts", lambda item: item["lifecycle"].update(ssh_attempts=0))
-mutation("teardown order", lambda item: item["teardown"].reverse())
-mutation("teardown result", lambda item: item["teardown"][3].update(outcome="failure"))
-mutation("residue", lambda item: item["zero_residue"].update(qemu_processes="not-proved"))
-mutation("authority", lambda item: item.update(authority="aws-feasibility"))
-mutation("limitations", lambda item: item["limitations"].pop())
-mutation("positive boolean", lambda item: item["timings"]["git"].pop())
-for name, changed in mutations:
-    rejected(lambda changed=changed: local.validate_result(changed), name)
+mutation("binding", lambda item: item["operation"].update(operation_sha256="d" * 64))
+mutation("authority", lambda item: item.update(authority="local-authority"))
+mutation("classification", lambda item: item.update(validation_classification="schema-only"))
+mutation("work without operation", lambda item: item["timings"]["git"][0].update(
+    duration_ns=1, outcome="failure", deletion="absent"), fail_value)
+mutation("SSH without KVM", lambda item: item["admission"].update(kvm="failure"))
+mutation("install after build failure", lambda item: item["timings"]["build"][0].update(outcome="failure"))
+mutation("unreachable teardown", lambda item: item["teardown"][0].update(outcome="not-reached"))
+mutation("uncertain retired phase", lambda item: item["operation"].update(status="uncertain"))
+mutation("wrong causal code", lambda item: item.update(failure_code="ssh"), categorical_failure("git-sample"))
 
-all_green_failure = passing()
-all_green_failure.update(result="failure", failure_code="preflight", qualified=False)
-rejected(lambda: local.validate_result(all_green_failure), "all-green failure")
+for valid in (1, 3_600_000_000_000):
+    changed = copy.deepcopy(pass_value)
+    for row in changed["timings"]["git"]:
+        row["duration_ns"] = valid
+    refresh(changed)
+    check(local.validate_result(changed), f"duration boundary {valid}")
+for invalid in (0, 3_600_000_000_001, True, 1.0):
+    mutation(f"duration {invalid!r}", lambda item, invalid=invalid: item["timings"]["git"][0].update(duration_ns=invalid))
 
-rejected(lambda: local.load_result(json.dumps(value).encode("ascii") + b"\n"), "noncanonical JSON")
-rejected(lambda: local.load_result(raw[:-1]), "missing newline")
-rejected(lambda: local.load_result(b"\xef\xbb\xbf" + raw), "non-ASCII/BOM")
-duplicate = b'{"authority":"duplicate",' + raw[1:]
-rejected(lambda: local.load_result(duplicate), "duplicate root key")
-needle = b'"source_head":"' + b"a" * 40 + b'"'
-duplicate_nested = raw.replace(needle, needle + b',"source_head":"' + b"a" * 40 + b'"', 1)
-rejected(lambda: local.load_result(duplicate_nested), "duplicate nested key")
+raw = local.canonical_result(pass_value)
+rejected(lambda: local.load_result(json.dumps(pass_value).encode("ascii") + b"\n"), "noncanonical")
+rejected(lambda: local.load_result(raw[:-1]), "newline")
+rejected(lambda: local.load_result(b"\xef\xbb\xbf" + raw), "ASCII/BOM")
+rejected(lambda: local.load_result(b" " * (local.MAX_RESULT_BYTES - 1) + b"\n"), "exact size malformed")
+rejected(lambda: local.load_result(b" " * local.MAX_RESULT_BYTES + b"\n"), "oversize")
+rejected(lambda: local.load_result(b'{"duration_ns":1e400}\n'), "non-integral/overflow JSON")
+rejected(lambda: local.load_result(b'{"authority":"duplicate",' + raw[1:]), "duplicate key")
 
 schema = json.loads((ROOT / local.SCHEMA_REGISTRY[0][1]).read_text())
-check(local.SCHEMA_REGISTRY == ((local.VERSION, "schemas/stage2-workload-local-qualification-v2.json"),),
-      "schema registry")
-check(schema["$id"].endswith("stage2-workload-local-qualification-v2.json"), "schema id")
-check(schema["properties"]["version"]["const"] == local.VERSION, "schema version")
-check(not (ROOT / "schemas/stage2-workload-local-qualification-v1.json").exists(), "retired v1 not recreated")
-
-for args in ([], ["report.json"], [json.dumps(failing())]):
+check(schema["properties"]["authority"]["const"] == local.AUTHORITY, "schema authority")
+check(schema["properties"]["validation_classification"]["const"] == local.VALIDATION_CLASSIFICATION,
+      "validator-required classification")
+protected = subprocess.run(["git", "cat-file", "-e",
+                            "69eccf1:schemas/stage2-workload-local-qualification-v1.json"],
+                           cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+check(protected.returncode != 0, "protected main unexpectedly contained rejected v1")
+for args in ([], ["report.json"], [json.dumps(fail_value)]):
     process = subprocess.run([sys.executable, "-B", str(MODULE_PATH), *args], input=raw,
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10)
-    check(process.returncode == 3 and process.stdout == b"" and process.stderr == b"", "blocked stub")
-
+    check(process.returncode == 3 and process.stdout == process.stderr == b"", "blocked stub")
 print("completion local result codec tests passed")

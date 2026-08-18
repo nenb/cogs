@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://cogs.invalid/schemas/stage2-workload-local-qualification-v2.json",
-  "title": "ADR 0099 local-only standalone Kata qualification result",
+  "title": "ADR 0099 non-authoritative local Kata qualification report data",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -11,7 +11,9 @@
     "qualified",
     "authority",
     "limitations",
+    "validation_classification",
     "bindings",
+    "admission",
     "platform",
     "lifecycle",
     "operation",
@@ -25,10 +27,13 @@
     "result": { "enum": ["pass", "failure"] },
     "failure_code": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/failureCode" }] },
     "qualified": { "type": "boolean" },
-    "authority": { "const": "local-only-standalone-kata-stopped-before-step5" },
+    "authority": { "const": "non-authoritative-local-qualification-report-data" },
+    "validation_classification": { "const": "schema-insufficient-independent-semantics-and-private-receipt-required" },
     "limitations": {
       "type": "array",
       "prefixItems": [
+        { "const": "report-data-does-not-establish-local-qualification-authority" },
+        { "const": "requires-exact-private-receipt-and-custody-validation" },
         { "const": "not-aws-evidence" },
         { "const": "not-production-evidence" },
         { "const": "not-release-evidence" },
@@ -36,21 +41,17 @@
         { "const": "no-retry-or-promotion-authority" }
       ],
       "items": false,
-      "minItems": 5,
-      "maxItems": 5
+      "minItems": 7,
+      "maxItems": 7
     },
     "bindings": { "$ref": "#/$defs/bindings" },
+    "admission": { "$ref": "#/$defs/admission" },
     "platform": { "$ref": "#/$defs/platform" },
     "lifecycle": { "$ref": "#/$defs/lifecycle" },
     "operation": { "$ref": "#/$defs/operation" },
     "timings": { "$ref": "#/$defs/timingGroups" },
     "timing_summaries": { "$ref": "#/$defs/timingSummaries" },
-    "teardown": {
-      "type": "array",
-      "minItems": 13,
-      "maxItems": 13,
-      "items": { "$ref": "#/$defs/teardownRow" }
-    },
+    "teardown": { "$ref": "#/$defs/teardownRows" },
     "zero_residue": { "$ref": "#/$defs/zeroResidue" }
   },
   "oneOf": [
@@ -64,7 +65,8 @@
         "operation": { "type": "object", "properties": { "status": { "const": "retired" } } },
         "timings": { "$ref": "#/$defs/timingGroupsPass" },
         "teardown": { "type": "array", "items": { "$ref": "#/$defs/teardownRowPass" } },
-        "zero_residue": { "$ref": "#/$defs/zeroResiduePass" }
+        "zero_residue": { "$ref": "#/$defs/zeroResiduePass" },
+        "admission": { "$ref": "#/$defs/admissionPass" }
       }
     },
     {
@@ -93,8 +95,6 @@
         "deletion",
         "cleanup",
         "residue",
-        "deadline",
-        "interrupted",
         "uncertain"
       ]
     },
@@ -140,11 +140,7 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["kvm_api", "qmp_present", "qmp_enabled"],
-      "properties": {
-        "kvm_api": { "const": 12 },
-        "qmp_present": { "const": true },
-        "qmp_enabled": { "const": true }
-      }
+      "properties": { "kvm_api": { "const": 12 }, "qmp_present": { "const": true }, "qmp_enabled": { "const": true } }
     },
     "lifecycle": {
       "type": "object",
@@ -214,24 +210,29 @@
       "required": ["ordinal", "duration_ns", "outcome", "deletion", "binding_sha256"],
       "properties": {
         "ordinal": { "type": "integer", "minimum": 1, "maximum": 7 },
-        "duration_ns": { "type": "integer", "minimum": 1, "maximum": 3600000000000 },
-        "outcome": { "enum": ["pass", "failure"] },
-        "deletion": { "enum": ["absent", "not-proved"] },
-        "binding_sha256": { "$ref": "#/$defs/sha256" }
+        "duration_ns": { "anyOf": [{ "type": "null" }, { "type": "integer", "minimum": 1, "maximum": 3600000000000 }] },
+        "outcome": { "enum": ["pass", "failure", "not-reached"] },
+        "deletion": { "enum": ["absent", "not-proved", "not-reached"] },
+        "binding_sha256": { "$ref": "#/$defs/nullableSha256" }
       }
     },
     "timingRowPass": {
       "type": "object",
-      "properties": { "outcome": { "const": "pass" }, "deletion": { "const": "absent" } }
+      "properties": {
+        "outcome": { "const": "pass" },
+        "deletion": { "const": "absent" },
+        "duration_ns": { "type": "integer", "minimum": 1, "maximum": 3600000000000 },
+        "binding_sha256": { "$ref": "#/$defs/sha256" }
+      }
     },
     "timingGroups": {
       "type": "object",
       "additionalProperties": false,
       "required": ["git", "build", "install"],
       "properties": {
-        "git": { "type": "array", "maxItems": 7, "items": { "$ref": "#/$defs/timingRow" } },
-        "build": { "type": "array", "maxItems": 7, "items": { "$ref": "#/$defs/timingRow" } },
-        "install": { "type": "array", "maxItems": 7, "items": { "$ref": "#/$defs/timingRow" } }
+        "git": { "$ref": "#/$defs/timingRows" },
+        "build": { "$ref": "#/$defs/timingRows" },
+        "install": { "$ref": "#/$defs/timingRows" }
       }
     },
     "timingGroupsPass": {
@@ -417,6 +418,80 @@
         "cgroup_baseline": { "const": "absent" },
         "namespace_baseline": { "const": "absent" }
       }
+    },
+    "admission": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["preflight", "source_binding", "attestation", "kvm"],
+      "properties": {
+        "preflight": { "enum": ["pass", "failure", "not-reached"] },
+        "source_binding": { "enum": ["pass", "failure", "not-reached"] },
+        "attestation": { "enum": ["pass", "failure", "not-reached"] },
+        "kvm": { "enum": ["pass", "failure", "not-reached"] }
+      }
+    },
+    "admissionPass": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["preflight", "source_binding", "attestation", "kvm"],
+      "properties": {
+        "preflight": { "const": "pass" },
+        "source_binding": { "const": "pass" },
+        "attestation": { "const": "pass" },
+        "kvm": { "const": "pass" }
+      }
+    },
+    "timingRows": {
+      "type": "array",
+      "maxItems": 7,
+      "prefixItems": [
+        { "$ref": "#/$defs/timingRow", "properties": { "ordinal": { "const": 1 } }, "type": "object" },
+        { "$ref": "#/$defs/timingRow", "properties": { "ordinal": { "const": 2 } }, "type": "object" },
+        { "$ref": "#/$defs/timingRow", "properties": { "ordinal": { "const": 3 } }, "type": "object" },
+        { "$ref": "#/$defs/timingRow", "properties": { "ordinal": { "const": 4 } }, "type": "object" },
+        { "$ref": "#/$defs/timingRow", "properties": { "ordinal": { "const": 5 } }, "type": "object" },
+        { "$ref": "#/$defs/timingRow", "properties": { "ordinal": { "const": 6 } }, "type": "object" },
+        { "$ref": "#/$defs/timingRow", "properties": { "ordinal": { "const": 7 } }, "type": "object" }
+      ],
+      "items": false,
+      "minItems": 7
+    },
+    "teardownRows": {
+      "type": "array",
+      "minItems": 13,
+      "maxItems": 13,
+      "prefixItems": [
+        {
+          "$ref": "#/$defs/teardownRow",
+          "properties": { "phase": { "const": "READINESS_REVOKED" } },
+          "type": "object"
+        },
+        { "$ref": "#/$defs/teardownRow", "properties": { "phase": { "const": "TASK_STOPPED" } }, "type": "object" },
+        { "$ref": "#/$defs/teardownRow", "properties": { "phase": { "const": "NETWORK_ABSENT" } }, "type": "object" },
+        { "$ref": "#/$defs/teardownRow", "properties": { "phase": { "const": "TASK_ABSENT" } }, "type": "object" },
+        { "$ref": "#/$defs/teardownRow", "properties": { "phase": { "const": "CONTAINER_ABSENT" } }, "type": "object" },
+        {
+          "$ref": "#/$defs/teardownRow",
+          "properties": { "phase": { "const": "RUNTIME_PROCESSES_ABSENT" } },
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/teardownRow",
+          "properties": { "phase": { "const": "SHARE_AND_MOUNTS_ABSENT" } },
+          "type": "object"
+        },
+        { "$ref": "#/$defs/teardownRow", "properties": { "phase": { "const": "FIREWALL_ABSENT" } }, "type": "object" },
+        {
+          "$ref": "#/$defs/teardownRow",
+          "properties": { "phase": { "const": "CONTAINERD_ABSENT" } },
+          "type": "object"
+        },
+        { "$ref": "#/$defs/teardownRow", "properties": { "phase": { "const": "INPUTS_ABSENT" } }, "type": "object" },
+        { "$ref": "#/$defs/teardownRow", "properties": { "phase": { "const": "ROOTFS_ABSENT" } }, "type": "object" },
+        { "$ref": "#/$defs/teardownRow", "properties": { "phase": { "const": "FINAL_BASELINES" } }, "type": "object" },
+        { "$ref": "#/$defs/teardownRow", "properties": { "phase": { "const": "RETIRED" } }, "type": "object" }
+      ],
+      "items": false
     }
   }
 }

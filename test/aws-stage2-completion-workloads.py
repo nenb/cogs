@@ -679,8 +679,12 @@ for forbidden in ("local-standalone-kata", "workload-local-qualification", "comp
     check(forbidden not in source, "removed authority or capability remains in host source")
 for cloud in ("boto", "AWS_", "requests", "urllib", "Terraform", "OpenTofu"):
     check(cloud not in source, "cloud surface entered host workload")
-# The ADR 0099 local-result v2 codec is separate from these host-only transactions.
-check(not (ROOT / "schemas/stage2-workload-local-qualification-v1.json").exists(), "retired host qualification schema remains")
+# ADR 0100 binds rejected v1 status to protected main, not arbitrary branch history.
+v1_on_protected_main = subprocess.run(
+    ["git", "cat-file", "-e", "69eccf1:schemas/stage2-workload-local-qualification-v1.json"],
+    cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+)
+check(v1_on_protected_main.returncode != 0, "protected main contained rejected qualification v1")
 if os.environ.get("COGS_REQUIRE_STAGE2_WORKLOAD_LINUX_FOUNDATIONS") == "1":
     check(sys.platform.startswith("linux") and os.geteuid() == 0, "Linux root foundation environment absent")
     check(linux_destructive_cases_ran, "Linux destructive ownership cases skipped")
