@@ -130,6 +130,14 @@ jobs:
             sudo -n test ! -e /tmp/cogs-stage2-attested-static-v1.building || return 1
             sudo -n test ! -L /tmp/cogs-stage2-attested-static-v1.building || return 1
           }
+          cleanup_netns_parent() {
+            if sudo -n test -e /run/netns || sudo -n test -L /run/netns; then
+              sudo -n test ! -L /run/netns && sudo -n test -d /run/netns || return 1
+              sudo -n test "$(sudo -n stat -c '%u:%g:%a' /run/netns)" = 0:0:755 || return 1
+              test -z "$(sudo -n find /run/netns -mindepth 1 -maxdepth 1 -print -quit)" || return 1
+              sudo -n rmdir /run/netns || return 1
+            fi
+          }
           cleanup_on_exit() {
             primary=$?
             trap - EXIT
@@ -140,8 +148,11 @@ jobs:
             ssh_cleanup_status=$?
             cleanup_runtime_fixture
             runtime_cleanup_status=$?
+            cleanup_netns_parent
+            netns_cleanup_status=$?
             if (( cleanup_status == 0 && ssh_cleanup_status != 0 )); then cleanup_status=$ssh_cleanup_status; fi
             if (( cleanup_status == 0 && runtime_cleanup_status != 0 )); then cleanup_status=$runtime_cleanup_status; fi
+            if (( cleanup_status == 0 && netns_cleanup_status != 0 )); then cleanup_status=$netns_cleanup_status; fi
             if (( primary != 0 )); then exit "$primary"; fi
             exit "$cleanup_status"
           }
@@ -217,6 +228,9 @@ jobs:
           sudo -n tar -xzf "$runtime_archive" -C "$runtime_fixture" bin/containerd bin/ctr
           sudo -n chown 0:0 "$runtime_fixture/bin/containerd" "$runtime_fixture/bin/ctr"
           sudo -n chmod 0500 "$runtime_fixture/bin/containerd" "$runtime_fixture/bin/ctr"
+          sudo -n test ! -e /run/netns
+          sudo -n test ! -L /run/netns
+          sudo -n mkdir -m 0755 /run/netns
           sudo -n env -i \
             HOME=/root LC_ALL=C PATH=/usr/sbin:/usr/bin:/sbin:/bin \
             PYTHONDONTWRITEBYTECODE=1 \
