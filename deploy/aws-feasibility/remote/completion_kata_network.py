@@ -822,7 +822,7 @@ def parse_tc_filters(raw, source, target):
         raise NetworkError("tc self redirect")
     value = _load(raw)
     if type(value) is not list or len(value) != 2:
-        raise NetworkError("tc filter list")
+        raise NetworkError(f"tc filter list:{value!r}")
     table_row, row = value
     for item in value:
         _keys(item, ("protocol", "pref", "kind", "chain", "options"))
