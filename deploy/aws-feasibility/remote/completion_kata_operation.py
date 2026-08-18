@@ -1638,6 +1638,18 @@ def _make_authority():
             else:
                 _fail(not candidates and not names & {RUNTIME_NAME.raw, RUNTIME_STAGING_NAME.raw}
                       and names <= COMPLETION_NAMES)
+            observed_completion = fs._observe_node(
+                self.completion.identity_fd, self.completion.operation_fd, self.control)
+            expected_completion = self.completion.generation
+            _fail(observed_completion.key == expected_completion.key
+                  and observed_completion.mode == expected_completion.mode
+                  and observed_completion.uid == expected_completion.uid
+                  and observed_completion.gid == expected_completion.gid)
+            if observed_completion != expected_completion:
+                components = list(self.chain.components); current = components[-2]
+                components[-2] = fs.ChainComponent(current.name, fs.HeldNode(
+                    current.node.identity_fd, current.node.operation_fd, observed_completion))
+                self.chain = fs.HeldChain(self.chain.anchor, tuple(components))
             fs._revalidate_chain(self.chain, self.control)
         def _reopen_base(self):
             old = self.chain
