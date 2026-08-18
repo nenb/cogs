@@ -1269,6 +1269,7 @@ def production_owner_test():
                         assert libc.umount2(os.fsencode(setup_mount), 2) == 0
                     for path in (setup_mount, Path("/run/netns/c42qaaaaaaaaaa")):
                         if path.exists(): path.unlink()
+                    os.rmdir(network.PRESERVED_DIR)
                     production_fixture((intent, ("ROOTFS_LEASED", leased),
                         ("FS_INTENT", fs_intent), ("FS_OBSERVED", baseline_observed),
                         ("FS_SETTLED", baseline_observed)))
