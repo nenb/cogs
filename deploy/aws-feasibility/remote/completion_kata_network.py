@@ -42,7 +42,7 @@ MAX_MOUNTINFO_LINES = 4096
 SYS_OPEN_TREE_X86_64 = 428
 SYS_MOVE_MOUNT_X86_64 = 429
 OPEN_TREE_FLAGS = 1 | os.O_CLOEXEC | 0x1000  # CLONE | CLOEXEC | AT_EMPTY_PATH
-MOVE_MOUNT_EMPTY_PATH_FLAGS = 0x4 | 0x40  # F_EMPTY_PATH | T_EMPTY_PATH
+MOVE_MOUNT_SOURCE_EMPTY_PATH_FLAG = 0x4
 QUALIFICATION_CANDIDATE = "UNQUALIFIED_FIXED_HOST_TOOL_OUTPUT_CANDIDATE_V1"
 ZERO = "0" * 64
 IP_CONTRACT = "iproute2-json-qualification-candidate-v1"
@@ -1245,7 +1245,7 @@ def _quarantine_stage(journal):
 
 
 def _establish_netns(journal):
-    """Create and journal the underlying inode before descriptor-targeted bind mount."""
+    """Create, retain, and journal the inode before parent-relative move_mount."""
     if os.uname().machine != "x86_64":
         raise NetworkError("fixed mount API architecture")
     name = _bound_names(journal)[0]; parent = os.open("/run/netns", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
@@ -1290,8 +1290,8 @@ def _establish_netns(journal):
                 planned = observed_identity; _original_placeholder_record(journal, planned)
             descriptor = os.open(name, os.O_PATH | os.O_CLOEXEC | os.O_NOFOLLOW,
                                  dir_fd=parent); opened.append(descriptor)
-        # This is the final name lookup. The child receives only this retained fd;
-        # replacement after these checks cannot redirect the bind target.
+        # This is the final name lookup before the operation-unique parent-relative
+        # move_mount; the retained descriptor and post-mount nsfs proof detect drift.
         descriptor_identity = _placeholder_identity(os.fstat(descriptor))
         path_identity = _placeholder_identity(os.stat(name, dir_fd=parent, follow_symlinks=False))
         if descriptor_identity != planned or path_identity != planned:
@@ -1338,8 +1338,8 @@ def _establish_netns(journal):
         tree_fd = received[0]
         try:
             libc = ctypes.CDLL(None, use_errno=True)
-            if libc.syscall(SYS_MOVE_MOUNT_X86_64, tree_fd, b"", descriptor, b"",
-                            MOVE_MOUNT_EMPTY_PATH_FLAGS) != 0:
+            if libc.syscall(SYS_MOVE_MOUNT_X86_64, tree_fd, b"", parent, name.encode(),
+                            MOVE_MOUNT_SOURCE_EMPTY_PATH_FLAG) != 0:
                 saved = ctypes.get_errno(); raise OSError(saved, os.strerror(saved))
         finally: os.close(tree_fd)
         identity = _netns_identity(journal=None, name=name)
