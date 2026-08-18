@@ -1612,6 +1612,18 @@ def _owner_routes():
             return super().__new__(cls)
         def continue_cleanup(self):
             state = production[self]
+            try:
+                return self._continue_cleanup()
+            except BaseException as error:
+                try:
+                    if operation._durable_phase(state["journal"]) != "UNCERTAIN":
+                        operation._record_uncertain(state["journal"], "identity-mismatch")
+                except BaseException as settlement_error:
+                    raise ExceptionGroup("cleanup failure and uncertainty settlement failure",
+                                         (error, settlement_error))
+                raise error
+        def _continue_cleanup(self):
+            state = production[self]
             if operation._has_recovery_command(state["journal"]):
                 import completion_kata_process as process
                 process._recover_pending_production(state["journal"])

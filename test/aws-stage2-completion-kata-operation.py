@@ -1631,6 +1631,14 @@ def production_owner_test():
             # Production admission is a real fsynced FixedJournal record and
             # survives an exact reopen; legacy journals cannot be claimed.
             fixture_journal(completion, leased_records)
+            stale_admission = operation._open_fixed_operation()
+            stale_bytes = fixture_journal_path(completion).read_bytes()
+            with patch.object(operation, "_current_boot_id",
+                              return_value="22222222-2222-2222-2222-222222222222"):
+                rejected(lambda: operation._admit_production_v2(stale_admission))
+            assert fixture_journal_path(completion).read_bytes() == stale_bytes
+            stale_admission.close()
+            fixture_journal(completion, leased_records)
             admitted = operation._open_fixed_operation()
             operation._admit_production_v2(admitted)
             assert operation._claim_production_operation(admitted) is admitted
@@ -1667,10 +1675,10 @@ def production_owner_test():
             try:
                 parent_generation = operation._generation_value(layout_parent.generation)
                 parent_key = operation._key_value(layout_parent.generation.key)
-                baseline_names_sha = hashlib.sha256(operation._canonical([
-                    os.fsdecode(name) for name in
-                    fs._enumerate_stable(layout_parent, layout_control).raw_names
-                ])).hexdigest()
+                baseline_names = [os.fsdecode(name) for name in
+                                  fs._enumerate_stable(layout_parent, layout_control).raw_names]
+                baseline_names_sha = hashlib.sha256(
+                    operation._canonical(baseline_names)).hexdigest()
             finally:
                 fs._close_chain(layout_chain)
             active_name = "kata-key-stage-v1-" + "a" * 64
@@ -1689,6 +1697,22 @@ def production_owner_test():
                 "admission_version": operation.PRODUCTION_ADMISSION_VERSION,
                 "policy_version": operation.command_policy.POLICY_VERSION,
                 "parser_source_sha256": operation.SSH_PARSER_SHA256}),)
+            absence_intent = {
+                "operation_token": "a" * 64, "resource_id": "input-root", "action": "create",
+                "expected_parent_generation": parent_generation,
+                "names_sha256": baseline_names_sha,
+            }
+            fixture_journal(completion, layout_prefix + (("FS_INTENT", absence_intent),))
+            absence_owner = operation._open_fixed_operation()
+            absence = {**absence_intent, "parent_observation": parent_generation,
+                       "observed_names": baseline_names}
+            operation._record_fs_absent(absence_owner, absence)
+            operation._record_fs_settled(absence_owner, absence)
+            assert operation._durable_phase(absence_owner) == "FS_SETTLED"
+            absence_owner.close()
+            exact_absence = operation._open_fixed_operation()
+            assert exact_absence.status() == "exact"
+            exact_absence.close()
             fixture_journal(completion, layout_prefix + (("INPUT_GRANT", grant),))
             active_path = completion / active_name
             def assert_cleanup_only_preserved():

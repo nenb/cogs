@@ -2171,7 +2171,8 @@ def _make_authority():
             return result
         def admit_production_v2(self):
             context = self.command_context()
-            _fail(context.lifecycle_phase == "ROOTFS_LEASED")
+            _fail(context.lifecycle_phase == "ROOTFS_LEASED"
+                  and context.host_boot_id == _current_boot_id())
             _io, records, status = reload(self, True); _fail(status == "exact")
             deadlines = [item.body for item in records
                          if item.record_type == "LIFECYCLE_DEADLINE_V1"]
@@ -2249,7 +2250,7 @@ def _make_authority():
             write_validated(self, "FS_OBSERVED", body)
         def record_fs_settled(self, body):
             _io, records, status = reload(self)
-            _fail(status == "exact" and records[-1].record_type == "FS_OBSERVED"
+            _fail(status == "exact" and records[-1].record_type in {"FS_OBSERVED", "FS_ABSENT"}
                   and body == records[-1].body)
             write_validated(self, "FS_SETTLED", body)
         def record_ssh_result(self, serial, binding, manifest, stdout, canonical_result):
@@ -2534,7 +2535,8 @@ def _make_authority():
         _io, records, status = reload(authority, True)
         admissions = [item for item in records if item.record_type == "PRODUCTION_ADMISSION_V2"]
         deadlines = [item for item in records if item.record_type == "LIFECYCLE_DEADLINE_V1"]
-        _fail(status == "exact" and len(admissions) == len(deadlines) == 1)
+        _fail(status == "exact" and len(admissions) == len(deadlines) == 1
+              and records[0].body["host_boot_id"] == _current_boot_id())
         return authority
     def command_context(authority): return authority.command_context()
     def pending_command(authority): return authority.pending_command()
