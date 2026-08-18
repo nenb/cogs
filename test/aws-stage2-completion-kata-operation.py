@@ -1651,7 +1651,7 @@ def production_owner_test():
                 ({**grant, "parent_generation": {**parent_generation,
                     "inode": parent_generation["inode"] + 1}},
                  {**stage_mkdir, "parent_key": {**parent_key, "inode": parent_key["inode"] + 1}}),
-                (grant, {**stage_mkdir, "names_sha256": "0" * 64}),
+                (grant, {**stage_mkdir, "names_sha256": "1" * 64}),
                 (grant, {**stage_mkdir, "target_mode": 0o777}),
             )
             for hostile_grant, hostile_mkdir in hostile_layouts:
