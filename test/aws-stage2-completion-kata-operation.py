@@ -1535,12 +1535,10 @@ def production_owner_test():
                             "c42t" + token_suffix), "c42t" + token_suffix, "c42h" + token_suffix)
                         assert network._nft_value(listed) == discovered_body["identity"]["nft"]
                         net_command("/usr/sbin/nft", "delete", "table", "inet", "c42t" + token_suffix)
-                    placeholder_stat = Path("/run/netns/c42n" + token_suffix).stat(follow_symlinks=False)
-                    planned = network._original_placeholder(production_network)
-                    assert (placeholder_stat.st_dev, placeholder_stat.st_ino) == (planned["device"], planned["inode"])
-                    quarantine_stat = Path("/run/netns/c42q" + token_suffix).stat(follow_symlinks=False)
-                    detached = network._quarantine_stage(production_network)[1]["preserved"]
-                    assert (quarantine_stat.st_dev, quarantine_stat.st_ino) == (detached["device"], detached["inode"])
+                    assert not Path("/run/netns/c42n" + token_suffix).exists()
+                    assert not Path("/run/netns/c42q" + token_suffix).exists()
+                    assert not Path(network.PRESERVED_DIR).exists()
+                    assert network._netns_parent_mount() is None
                     assert not Path("/sys/class/net/c42h" + token_suffix).exists()
                 finally:
                     if "tun2" in locals() and tun2 is not None: os.close(tun2)
