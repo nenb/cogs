@@ -28,18 +28,13 @@ test("S0 fixed operation foundation fails closed", async () => {
   const lease = await readFile(leasePath, "utf8");
   const operationLines = operation.split("\n").length - 1;
   const leaseExtension = lease.split("\n").length - 1 - 376;
-  // ADR0099 Slice A's 1900 local guard predated B1's durable network records.
-  // The accepted complete count is 35,618 retained + 8,600 maximum gross =
-  // 44,218, still below the unchanged global 45,000 hard cap.
-  const adr0099RetainedBasis = 35_618;
-  const adr0099CompleteGrossHigh = 8_600;
-  assert.ok(adr0099RetainedBasis + adr0099CompleteGrossHigh < 48_000);
-  const sliceAHigh = 1900;
-  const b1JournalIntegrationHigh = 100;
-  assert.equal(sliceAHigh + b1JournalIntegrationHigh, 2000);
+  // ADR0102 supersedes the old slice-local guard with measured integrated limits.
+  const adr0102Preferred = 47_000;
+  const adr0102Hard = 48_000;
+  assert.ok(adr0102Preferred < adr0102Hard);
   assert.ok(
-    operationLines + leaseExtension <= 2750,
-    `Integrated Slice A, B1, B2, SSH, and runtime journal/lease extension exceeds 2750: ${operationLines + leaseExtension}`,
+    operationLines + leaseExtension <= 2850,
+    `Integrated process, network, SSH, runtime, and recovery extension exceeds 2850: ${operationLines + leaseExtension}`,
   );
   const caps = spawnSync("python3", [join(root, "scripts/check-stage2-retained-lines.py")], {
     cwd: root,

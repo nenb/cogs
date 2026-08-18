@@ -1007,7 +1007,25 @@ def native_containerd_metadata_fixture(completion, journal, network_owner, permi
          runtime.CONTAINERD_ROOT, runtime.CONTAINERD_STATE, runtime.CONTAINERD_CONFIG) = saved[2]
 
 
+INPUT_CRASH_CUTS = (
+    "intent", "cgroup-create", "fork", "preexec", "release", "drain",
+    "effect", "fsync", "settlement", "quarantine", "removal",
+)
+SSH_CRASH_CUTS = ("intent", "cgroup-create", "fork", "preexec", "release", "drain")
+NATIVE_TEST_SHARDS = ("baseline",) + tuple(
+    "input-" + cut for cut in INPUT_CRASH_CUTS) + tuple(
+    "ssh-" + cut for cut in SSH_CRASH_CUTS)
+
+
 def production_owner_test():
+    shard = os.environ.get("COGS_STAGE2_KATA_NATIVE_TEST_SHARD")
+    if shard is not None:
+        assert (os.environ.get("COGS_REQUIRE_STAGE2_KATA_NATIVE_FOUNDATIONS") == "1"
+                and shard in NATIVE_TEST_SHARDS)
+    input_crash_cuts = (INPUT_CRASH_CUTS if shard is None else
+                        tuple(cut for cut in INPUT_CRASH_CUTS if shard == "input-" + cut))
+    ssh_crash_cuts = (SSH_CRASH_CUTS if shard is None else
+                      tuple(cut for cut in SSH_CRASH_CUTS if shard == "ssh-" + cut))
     if sys.platform != "linux":
         return False, False, False
     if os.geteuid() != 0:
@@ -1827,8 +1845,7 @@ def production_owner_test():
                             return count
                         process.os.write = after_release
                     else: process._drain_transaction = lambda *_args: os._exit(83)
-                for cut in ("intent", "cgroup-create", "fork", "preexec", "release", "drain",
-                            "effect", "fsync", "settlement", "quarantine", "removal"):
+                for cut in input_crash_cuts:
                     assert not transaction_completion.exists()
                     transaction_completion.mkdir(parents=True, mode=0o700)
                     for sibling in ("artifacts", "rootfs-v1"):
@@ -1916,7 +1933,7 @@ def production_owner_test():
                         assert len(terminals) == 1 and terminals[0]["uncertain"]
                     import shutil
                     shutil.rmtree(transaction_completion)
-                for cut in ("intent", "cgroup-create", "fork", "preexec", "release", "drain"):
+                for cut in ssh_crash_cuts:
                     assert not transaction_completion.exists()
                     transaction_completion.mkdir(parents=True, mode=0o700)
                     for sibling in ("artifacts", "rootfs-v1"):
@@ -1992,6 +2009,12 @@ def production_owner_test():
                             and operation.INPUT_NAME.text not in recovered_names
                             and not os.path.exists(process.CGROUP_BASE))
                     shutil.rmtree(transaction_completion)
+                if shard is not None and shard != "baseline":
+                    assert ((shard.startswith("input-") and len(input_crash_cuts) == 1
+                             and not ssh_crash_cuts)
+                            or (shard.startswith("ssh-") and len(ssh_crash_cuts) == 1
+                                and not input_crash_cuts))
+                    return True, False, False
                 assert not transaction_completion.exists()
                 missing = []
                 cursor = transaction_completion

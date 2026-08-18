@@ -118,6 +118,7 @@ for fixed in (ssh_fixed, *(process._FIXED_COMMANDS[process.CommandId[name]]
 
 # Caller-created journals/executables and direct attestation owners are denied.
 reject(lambda: operation._claim_production_operation(object()))
+reject(lambda: operation._input_cleanup_token(object()))
 active_layout_name = b"kata-key-stage-v1-" + b"a" * 64
 reject(lambda: operation._stage_candidates(
     set(operation.COMPLETION_NAMES) | {b"kata-key-stage-v1"}))
@@ -168,6 +169,48 @@ quarantine_names = tuple(active_layout_name + b".quarantine" if name == active_l
                          for name in layout_names)
 operation._validate_stage_layout(
     quarantine_names, quarantine_records, "UNCERTAIN", layout_parent_key)
+runtime_intent = type("LayoutRecord", (), {
+    "record_type": "RUNTIME_STAGE_INTENT_V4", "body": {}})()
+runtime_staged = type("LayoutRecord", (), {
+    "record_type": "RUNTIME_STAGED_V3", "body": {}})()
+for runtime_name in operation.RUNTIME_NAMES:
+    operation._validate_runtime_layout({runtime_name}, [runtime_intent], "NETWORK_READY")
+reject(lambda: operation._validate_runtime_layout(
+    set(operation.RUNTIME_NAMES), [runtime_intent], "NETWORK_READY"))
+operation._validate_runtime_layout(
+    {operation.RUNTIME_NAME.raw}, [runtime_intent, runtime_staged], "NETWORK_READY")
+reject(lambda: operation._validate_runtime_layout(
+    {operation.RUNTIME_STAGING_NAME.raw}, [runtime_intent, runtime_staged], "NETWORK_READY"))
+for terminal_phase in {"INPUT_REMOVED", "ROOTFS_ABSENT", "RETIRED"}:
+    for runtime_name in operation.RUNTIME_NAMES:
+        reject(lambda runtime_name=runtime_name, terminal_phase=terminal_phase:
+               operation._validate_runtime_layout(
+                   {runtime_name}, [runtime_intent, runtime_staged], terminal_phase))
+root_temporary = (b".cogs-grant-" + b"a" * 32 + b"-"
+                  + hashlib.sha256(b".").hexdigest()[:16].encode())
+root_intent = type("LayoutRecord", (), {"record_type": "INPUT_GRANT", "body": {
+    "path": ".", "action": "intent", "name": root_temporary.decode()}})()
+root_settled = type("LayoutRecord", (), {"record_type": "INPUT_GRANT", "body": {
+    "path": ".", "action": "settled", "name": root_temporary.decode()}})()
+root_published = type("LayoutRecord", (), {"record_type": "INPUT_WA", "body": {
+    "path": ".", "action": "mkdir-settled"}})()
+root_records = [layout_records[0], root_intent]
+prepublication_names = tuple(operation.COMPLETION_NAMES - {operation.INPUT_NAME.raw})
+operation._validate_stage_layout(
+    prepublication_names + (root_temporary,), root_records, "FS_INTENT", layout_parent_key)
+operation._validate_stage_layout(
+    prepublication_names + (root_temporary,), root_records + [root_settled],
+    "FS_INTENT", layout_parent_key)
+reject(lambda: operation._validate_stage_layout(
+    prepublication_names + (root_temporary,),
+    root_records + [root_settled, root_published], "FS_INTENT", layout_parent_key))
+reject(lambda: operation._validate_stage_layout(
+    prepublication_names + (root_temporary, operation.INPUT_NAME.raw),
+    root_records, "FS_INTENT", layout_parent_key))
+for terminal_phase in {"FIREWALL_ABSENT", "INPUT_REMOVED", "RETIRED"}:
+    reject(lambda terminal_phase=terminal_phase: operation._validate_stage_layout(
+        prepublication_names + (root_temporary,), root_records,
+        terminal_phase, layout_parent_key))
 reject(lambda: operation.RuntimeMountIssuance())
 reject(lambda: kata_runtime.RuntimeMountOwner())
 reject(lambda: kata_runtime.RuntimeMountGrant())

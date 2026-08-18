@@ -1615,13 +1615,15 @@ def _owner_routes():
             if operation._has_recovery_command(state["journal"]):
                 import completion_kata_process as process
                 process._recover_pending_production(state["journal"])
-            context = operation._command_context(state["journal"])
-            state["key_stage_name"] = fs._name(KEY_STAGE_PREFIX + context.operation_token)
+            operation_token = operation._input_cleanup_token(state["journal"])
+            state["key_stage_name"] = fs._name(KEY_STAGE_PREFIX + operation_token)
+            def mark_uncertain(reason):
+                if operation._durable_phase(state["journal"]) != "UNCERTAIN":
+                    operation._record_uncertain(state["journal"], reason)
             try:
                 remove_key_stage(state)
             except BaseException as error:
-                if operation._durable_phase(state["journal"]) != "UNCERTAIN":
-                    operation._record_uncertain(state["journal"], "identity-mismatch")
+                mark_uncertain("identity-mismatch")
                 raise error
             steps = operation._input_steps(state["journal"])
             recorded_paths = {row["path"] for row in steps}
@@ -1657,7 +1659,7 @@ def _owner_routes():
                         temporary = fs._name(intents[0]["name"])
                         temporary_generation, _ = _optional_child(parent, temporary, state["control"])
                         if generation is not None and temporary_generation is not None:
-                            operation._record_uncertain(state["journal"], "identity-mismatch")
+                            mark_uncertain("identity-mismatch")
                             raise InputError("grant target and quarantine both exist")
                     if generation is None and intents:
                         if temporary_generation is not None:
@@ -1683,7 +1685,7 @@ def _owner_routes():
                             or generation.key != _parse_key(settlements[0]["child_key"], "directory")
                             or generation.mode not in {0o700, wa["target_mode"]}
                             or generation.uid != 0 or generation.gid != 0):
-                        operation._record_uncertain(state["journal"], "identity-mismatch")
+                        mark_uncertain("identity-mismatch")
                         raise InputError("unsettled restart directory")
                     operation._record_input_step(state["journal"], "create-intent", path,
                                                  "directory", _key_value(generation.key), None)

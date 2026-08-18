@@ -62,6 +62,14 @@ ROOTFS_PIN = {
 }
 MOUNT_SHA = "22157f258386d8d4be07ec6eb086a582936c23037be403caa829b644bf4e058e"
 KEY_INPUT_PHASES = frozenset({"ROOTFS_LEASED", "FS_INTENT", "UNCERTAIN"})
+RUNTIME_RESIDUE_PHASES = frozenset({
+    "NETWORK_READY", "RUNTIME_READY", "SSH_READY", "READINESS_REVOKED",
+    "OWNERSHIP_OBSERVED", "TASK_STOPPED", "NETWORK_ABSENT", "TASK_ABSENT",
+    "CONTAINER_ABSENT", "RUNTIME_ABSENT", "SHARE_ABSENT", "FIREWALL_ABSENT",
+    "UNCERTAIN", "RUNTIME_CLEANUP_ONLY",
+})
+JOURNAL_SETUP_MARGIN_NS = 300_000_000_000
+JOURNAL_SETTLEMENT_MARGIN_NS = command_policy.SSH_CLEANUP_RESERVE_NS
 
 def _stage_candidates(names, allowed=()):
     candidates = set(names) - COMPLETION_NAMES - RUNTIME_NAMES - set(allowed)
@@ -72,15 +80,21 @@ def _stage_candidates(names, allowed=()):
         _fail(len(token) == 64 and set(token) <= set(b"0123456789abcdef"))
     return candidates
 
-def _validate_runtime_layout(names, records):
+def _validate_runtime_layout(names, records, phase):
     present = names & RUNTIME_NAMES
     _fail(len(present) <= 1)
-    if present:
-        _fail(any(item.record_type == "RUNTIME_STAGE_INTENT_V4" for item in records))
+    intent = any(item.record_type == "RUNTIME_STAGE_INTENT_V4" for item in records)
+    staged = any(item.record_type == "RUNTIME_STAGED_V3" for item in records)
+    allowed = set()
+    if intent and phase in RUNTIME_RESIDUE_PHASES:
+        allowed.add(RUNTIME_NAME.raw)
+        if not staged:
+            allowed.add(RUNTIME_STAGING_NAME.raw)
+    _fail(present <= allowed)
 
 def _validate_stage_layout(raw_names, records, phase, completion_key):
     names = set(raw_names)
-    _validate_runtime_layout(names, records)
+    _validate_runtime_layout(names, records, phase)
     token = records[0].body["operation_token"] if records else ""
     expected_temporary = (b".cogs-grant-" + token[:32].encode("ascii") + b"-"
                           + hashlib.sha256(b".").hexdigest()[:16].encode("ascii"))
@@ -88,7 +102,13 @@ def _validate_stage_layout(raw_names, records, phase, completion_key):
                    and item.body["path"] == "." and item.body["action"] == "intent"]
     _fail(len(root_grants) <= 1 and all(
         item["name"].encode("ascii") == expected_temporary for item in root_grants))
-    allowed_temporaries = {expected_temporary} if root_grants else set()
+    root_terminal = any(item.record_type == "INPUT_WA"
+                        and item.body["path"] == "."
+                        and item.body["action"] == "mkdir-settled" for item in records)
+    temporary_active = len(root_grants) == 1 and not root_terminal and phase in KEY_INPUT_PHASES
+    allowed_temporaries = {expected_temporary} if temporary_active else set()
+    if expected_temporary in names:
+        _fail(INPUT_NAME.raw not in names)
     candidates = _stage_candidates(names, allowed_temporaries)
     if not candidates: return
     _fail(records and phase in KEY_INPUT_PHASES)
@@ -1551,8 +1571,11 @@ def _make_authority():
         """One idempotently-closeable owner for the fixed state, lock, and journal."""
         def __init__(self):
             _fail(os.geteuid() == 0)
+            opened_ns = time.monotonic_ns()
+            self.ssh_start_deadline_ns = opened_ns + JOURNAL_SETUP_MARGIN_NS
             self.control = fs.OperationControl(
-                time.monotonic_ns() + command_policy.SSH_TOTAL_NS, lambda: False)
+                self.ssh_start_deadline_ns + command_policy.SSH_TOTAL_NS
+                + JOURNAL_SETTLEMENT_MARGIN_NS, lambda: False)
             self.chain = None
             self.lock = None
             self.closed = False
@@ -2019,6 +2042,8 @@ def _make_authority():
             return intent, preexec
         def record_command_intent(self, body):
             context = self.command_context()
+            if body["command_id"] == "SSH_READY":
+                _fail(time.monotonic_ns() < self.ssh_start_deadline_ns)
             _fail(body["operation_token"] == context.operation_token)
             _fail(body["journal_key"] == context.journal_key)
             _fail(body["host_boot_id"] == context.host_boot_id)
@@ -2144,6 +2169,13 @@ def _make_authority():
         def input_steps(self):
             _io, records, status = reload(self, True); _fail(status == "exact")
             return tuple(item.body for item in records if item.record_type == "INPUT_STEP")
+        def input_cleanup_token(self):
+            _io, records, status = reload(self, True)
+            _fail(status == "exact" and records and _legal(records) in {
+                "ROOTFS_LEASED", "FS_INTENT", "FS_SETTLED", "RUNTIME_READY",
+                "SSH_READY", "READINESS_REVOKED", "FIREWALL_ABSENT", "UNCERTAIN",
+            })
+            return records[0].body["operation_token"]
         def record_fs_intent(self, body):
             context = self.command_context()
             _fail(body["operation_token"] == context.operation_token)
@@ -2469,6 +2501,7 @@ def _make_authority():
     def record_input_step(authority, action, path, kind, key, digest):
         return production(authority).record_input_step(action, path, kind, key, digest)
     def input_steps(authority): return production(authority).input_steps()
+    def input_cleanup_token(authority): return production(authority).input_cleanup_token()
     def record_fs_intent(authority, body): return production(authority).record_fs_intent(body)
     def record_fs_observed(authority, body): return production(authority).record_fs_observed(body)
     def record_fs_settled(authority, body): return production(authority).record_fs_settled(body)
@@ -2497,7 +2530,8 @@ def _make_authority():
         record_command_preexec, record_command_output, record_command_outcome, record_daemon_retained,
         record_daemon_outcome, durable_command_outcome, durable_command_output,
         record_runtime_mount_v2, pending_fs_intent, record_fs_absent,
-        record_input_grant, input_grants, record_input_wa, input_wa, record_input_step, input_steps, record_fs_intent, record_fs_observed,
+        record_input_grant, input_grants, record_input_wa, input_wa, record_input_step, input_steps,
+        input_cleanup_token, record_fs_intent, record_fs_observed,
         record_fs_settled, record_ssh_result, record_ssh_ready, durable_phase,
         revoke_readiness, revoke_or_require_terminal, record_input_removed, record_uncertain,
         network_records, network_history, record_network, settle_network_phase,
@@ -2513,7 +2547,7 @@ def _make_authority():
     _record_daemon_outcome, _durable_command_outcome, _durable_command_output,
     _record_runtime_mount_body_v2, _pending_fs_intent, _record_fs_absent,
     _record_input_grant, _input_grants, _record_input_wa, _input_wa, _record_input_step, _input_steps,
-    _record_fs_intent, _record_fs_observed,
+    _input_cleanup_token, _record_fs_intent, _record_fs_observed,
     _record_fs_settled, _record_ssh_result,
     _record_ssh_ready, _durable_phase, _revoke_readiness, _revoke_or_require_terminal,
     _record_input_removed, _record_uncertain,
