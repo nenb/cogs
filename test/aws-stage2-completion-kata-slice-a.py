@@ -144,6 +144,19 @@ def outcome(command, stdout=b"", truncated=False, uncertain=False, status=0):
     }
 
 
+def legacy_intent(serial, command_id):
+    return {"operation_token": "a" * 64, "command_serial": serial,
+            "command_id": command_id, "binding_sha256": "c" * 64,
+            "deadline_class": "network"}
+
+
+def legacy_not_started(command):
+    return {**command, "outcome": "not_started", "status": None, "errno": None,
+            "stdout_sha256": operation.ZERO, "stdout_length": 0, "stdout_truncated": False,
+            "stderr_sha256": operation.ZERO, "stderr_length": 0, "stderr_truncated": False,
+            "wait_result": "not_waited", "reap_result": "not_child"}
+
+
 raw = add(prefix(), "BASELINES_CAPTURED",
           {"operation_token": "a" * 64, "proof_sha256": "9" * 64})
 command = intent(command_id="IP_NETNS_ADD", phase="BASELINES_CAPTURED")
@@ -155,6 +168,17 @@ reject(lambda: add(settled, "NETWORK_READY",
                    {"operation_token": "a" * 64, "proof_sha256": "9" * 64}))
 reject(lambda: add(settled, "COMMAND_INTENT_V2",
                    intent(1, "IP_NETNS_ADD", "BASELINES_CAPTURED")))
+# The first intent permanently selects one command record generation. Same-ID
+# and different-ID mixing both reject in either direction.
+for command_id in ("IP_NETNS_ADD", "IP_LINK_ADD"):
+    reject(lambda command_id=command_id: add(
+        settled, "COMMAND_INTENT", legacy_intent(1, command_id)))
+legacy = legacy_intent(0, "IP_NETNS_ADD")
+legacy_settled = add(add(raw, "COMMAND_INTENT", legacy),
+                     "COMMAND_OUTCOME", legacy_not_started(legacy))
+for command_id in ("IP_NETNS_ADD", "IP_LINK_ADD"):
+    reject(lambda command_id=command_id: add(
+        legacy_settled, "COMMAND_INTENT_V2", intent(1, command_id, "BASELINES_CAPTURED")))
 failed = add(add(add(raw, "COMMAND_INTENT_V2", command), "COMMAND_PREEXEC_V2", preexec(command)),
              "COMMAND_OUTCOME_V2", outcome(command, status=7))
 reject(lambda: add(failed, "NETWORK_READY",
@@ -222,6 +246,7 @@ daemon_outcome = {"operation_token": "a" * 64, "command_serial": daemon_serial,
     "pid": daemon_preexec["pid"], "proc_start_time": daemon_preexec["proc_start_time"],
     "status": 0, "leader_reaped": True, "descendants_reaped": True,
     "cgroup_empty": True, "cgroup_removed": True, "uncertain": False, "errors": []}
+reject(lambda: add(legacy_settled, "DAEMON_OUTCOME_V2", daemon_outcome))
 early_daemon = add(retained_raw, "DAEMON_OUTCOME_V2", daemon_outcome)
 check(operation._legal(operation._parse(early_daemon)) == "UNCERTAIN",
       "early daemon exit was not terminal")

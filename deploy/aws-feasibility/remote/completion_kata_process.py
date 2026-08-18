@@ -1,10 +1,9 @@
-"""Closed process owner for the fixed Stage 2 Kata lifecycle.
+"""Private fixed process-transaction primitive for Stage 2 Kata.
 
-No production command issuer exists in this slice.  In particular, parsing a
-contract does not grant execution authority: the committed amd64 host-tool
-closure and the operation journal's CommandPermit issuer are both absent.
-The only issuer below is an explicitly test-only, fixed harmless executable
-used to qualify the same fork/session/exec-status supervisor.
+This slice implements exact journaled fork/session/exec, settlement, and crash
+recovery. It does not expose a production command issuer or lifecycle owner;
+parsing a contract therefore grants no execution authority. Tests exercise the
+private primitive with a fixed harmless executable descriptor.
 """
 from dataclasses import dataclass
 from enum import Enum

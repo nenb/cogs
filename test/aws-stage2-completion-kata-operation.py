@@ -799,6 +799,16 @@ def production_owner_test():
                 assert recovered.record_type == "COMMAND_OUTCOME_V2"
                 assert recovered.body["uncertain"] and not recovered.body["leader_reaped"]
 
+            # Historical v1 remains parseable offline but is not admitted by the
+            # production fixed journal/owner route.
+            legacy = command_body(0)
+            fixture_journal(completion, lifecycle_prefix + (
+                ("COMMAND_INTENT", legacy),
+                ("COMMAND_OUTCOME", zero_outcome(legacy)),
+            ))
+            rejected(operation._open_fixed_operation)
+            fixture_journal(completion, lifecycle_prefix)
+
             # Construction/read faults fail closed, and no lock or owner escapes.
             with patch.object(fs, "_read_regular", side_effect=OSError("injected read")):
                 rejected(operation._open_fixed_operation)

@@ -4,8 +4,9 @@ Production host modules are trusted; guest input cannot import or execute host P
 These capabilities prevent unintended route composition, but Python objects are
 bookkeeping only. Closure introspection is therefore outside the security boundary.
 Authority is the locked, fsynced journal plus retained kernel object identities.
-The accepted v1 records remain byte-for-byte compatible; Slice A adds separately
-named v2 command records."""
+The accepted v1 records remain byte-for-byte compatible. A journal's first command
+intent selects either legacy v1 or exact v2 command records for its lifetime.
+"""
 from dataclasses import dataclass
 from types import MappingProxyType
 import ctypes
@@ -78,6 +79,9 @@ MAX_OBSERVED_NAMES = 64
 ACTIONS = frozenset({"create", "metadata", "link", "remove"})
 COMMANDS = actions.COMMAND_IDS
 LEGACY_COMMANDS = COMMANDS - {"CONTAINERD_START"}
+_V1_COMMAND_RECORDS = frozenset({"COMMAND_INTENT", "COMMAND_PREEXEC", "COMMAND_OUTCOME"})
+_V2_COMMAND_RECORDS = frozenset({"COMMAND_INTENT_V2", "COMMAND_PREEXEC_V2", "COMMAND_OUTCOME_V2",
+                                 "DAEMON_RETAINED_V2", "DAEMON_OUTCOME_V2"})
 _POLICY_MAPS = (command_policy.POLICY_SHA256, command_policy.OCCURRENCES,
                 command_policy.PHASES, command_policy.MAX_OCCURRENCES)
 _DEFERRED_COMMANDS = command_policy.DEFERRED_COMMANDS
@@ -662,7 +666,7 @@ def _v2_lineage(genesis, phase, intent, preexec=None, outcome=None):
             _fail(1 <= outcome["status"] <= 64)
 def _v2_occurrence(records, index, phase, body):
     _policy_tables(); _fail(phase == "BASELINES_CAPTURED")
-    _fail(not any(item.record_type == "COMMAND_INTENT_V2"
+    _fail(not any(item.record_type in {"COMMAND_INTENT", "COMMAND_INTENT_V2"}
                   and item.body["command_id"] == body["command_id"] for item in records[:index]))
 def _legal(records):
     _fail(records and records[0].record_type == "GENESIS")
@@ -676,6 +680,7 @@ def _legal(records):
     command_intent_v2 = None
     command_preexec_v2 = None
     retained_daemon = None
+    command_generation = None
     ownership = None
     rootfs = False
     next_serial = 0
@@ -685,6 +690,14 @@ def _legal(records):
         _fail(body["operation_token"] == token)
         if phase in {"UNCERTAIN", "RETIRED"}:
             raise OperationError()
+        if command_generation == "v1":
+            _fail(kind not in _V2_COMMAND_RECORDS)
+        elif command_generation == "v2":
+            _fail(kind not in _V1_COMMAND_RECORDS)
+        if kind in {"COMMAND_INTENT", "COMMAND_INTENT_V2"}:
+            selected = "v1" if kind == "COMMAND_INTENT" else "v2"
+            _fail(command_generation in {None, selected})
+            command_generation = selected
         if kind == "COMMAND_INTENT_V2":
             _fail(rootfs and command_phase is None and phase in {
                 "ROOTFS_LEASED", "FS_SETTLED", *LIFECYCLE[:14],
@@ -1044,6 +1057,7 @@ def _make_authority():
             _fail(names <= COMPLETION_NAMES and STATE_NAME.raw in names)
             if records:
                 _fail(_key_value(journal_generation.key) == records[0].body["journal_key"])
+                _fail(not any(item.record_type in _V1_COMMAND_RECORDS for item in records))
                 phase = _legal(records)
                 if len(records) > 1:
                     _fail(_generation_value(self.state.generation) == records[1].body["state_parent"])
