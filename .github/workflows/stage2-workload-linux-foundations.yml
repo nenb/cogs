@@ -121,12 +121,11 @@ jobs:
           sudo -n test ! -L "$fixture"
           sudo -n test ! -e /tmp/cogs-stage2-attested-static-v1.building
           sudo -n test ! -L /tmp/cogs-stage2-attested-static-v1.building
-          clang_path="$(command -v clang)"
-          test -n "$clang_path" && test -x "$clang_path"
-          clang_dir="$(dirname "$clang_path")"
+          sudo -n test -x /usr/bin/clang-18
+          sudo -n test -x /usr/bin/ld.lld-18
           sudo -n env -i \
-            HOME=/root LC_ALL=C PATH="$clang_dir:/usr/sbin:/usr/bin:/sbin:/bin" \
-            PYTHONDONTWRITEBYTECODE=1 \
+            HOME=/root LC_ALL=C PATH=/usr/sbin:/usr/bin:/sbin:/bin \
+            PYTHONDONTWRITEBYTECODE=1 COGS_STAGE2_SYNTHETIC_CLANG=/usr/bin/clang-18 \
             COGS_REQUIRE_STAGE2_KATA_NATIVE_FOUNDATIONS=1 \
             COGS_REQUIRE_STAGE2_KATA_RUNTIME_FOUNDATIONS=1 \
             /usr/bin/python3 -I -B test/aws-stage2-completion-kata-operation.py
@@ -136,8 +135,8 @@ jobs:
             COGS_REQUIRE_STAGE2_KATA_NATIVE_FOUNDATIONS=1 \
             /usr/bin/python3 -I -B test/aws-stage2-completion-kata-process.py
           sudo -n env -i \
-            HOME=/root LC_ALL=C PATH="$clang_dir:/usr/sbin:/usr/bin:/sbin:/bin" \
-            PYTHONDONTWRITEBYTECODE=1 \
+            HOME=/root LC_ALL=C PATH=/usr/sbin:/usr/bin:/sbin:/bin \
+            PYTHONDONTWRITEBYTECODE=1 COGS_STAGE2_SYNTHETIC_CLANG=/usr/bin/clang-18 \
             COGS_REQUIRE_STAGE2_KATA_NATIVE_SSH_INPUT=1 \
             /usr/bin/python3 -I -B test/aws-stage2-completion-kata-ssh-native.py
           cleanup_ssh_fixture

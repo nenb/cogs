@@ -16,15 +16,19 @@ def ensure_attested_static_fixture():
     if OUTPUT.exists():
         raw = OUTPUT.read_bytes()
     else:
-        compiler = shutil.which("clang")
+        configured = os.environ.get("COGS_STAGE2_SYNTHETIC_CLANG")
+        if configured not in (None, "/usr/bin/clang-18"):
+            raise RuntimeError("reviewed synthetic fixture compiler invalid")
+        compiler = configured or shutil.which("clang")
         if compiler is None:
             raise RuntimeError("reviewed synthetic fixture compiler unavailable")
+        linker = "/usr/bin/ld.lld-18" if configured is not None else "lld"
         temporary = OUTPUT.with_suffix(".building")
         temporary.unlink(missing_ok=True)
         try:
             result = subprocess.run([
                 compiler, "-target", "x86_64-linux-gnu", "-nostdlib", "-static",
-                "-fuse-ld=lld", "-Wl,-e,_start", "-Wl,--build-id=none", "-Os",
+                f"-fuse-ld={linker}", "-Wl,-e,_start", "-Wl,--build-id=none", "-Os",
                 "-fno-builtin", "-fno-ident", "-o", str(temporary), str(SOURCE),
             ], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                timeout=30, check=False)
