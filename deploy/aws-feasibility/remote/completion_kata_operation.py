@@ -2467,7 +2467,8 @@ def _make_authority():
     def make_fake_lifecycle(raw):
         records = list(_parse(raw))
         _fail(_legal(records) in {"ROOTFS_LEASED", "ROOTFS_RELEASE_READY",
-                                  "ROOTFS_RELEASE_AUTHORIZED", "NETWORK_READY"})
+                                  "ROOTFS_RELEASE_AUTHORIZED", "NETWORK_READY",
+                                  "NETWORK_ABSENT"})
         state = {"records": records, "raw": raw, "release": False}
         def record(kind, body):
             line = _encode(kind, body, tuple(state["records"]))
