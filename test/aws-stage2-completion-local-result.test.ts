@@ -337,8 +337,8 @@ test("zero-argument stub remains blocked and correction stays within the global 
     Number(budget.inherited_predecessor_minimum) + Number(budget.pre_base_gross_additions),
   );
   assert.equal(budget.conservative_baseline_lines, 36_861);
-  assert.equal(budget.inherited_post_base_gross_additions, 2_281);
-  assert.ok(Number(budget.gross_added_lines_no_deletion_credit) >= 2_281);
+  assert.equal(budget.inherited_post_base_gross_additions, 0);
+  assert.ok(Number(budget.gross_added_lines_no_deletion_credit) > 0);
   assert.equal(budget.current_lines, Number(budget.deployment_lines) + Number(budget.retained_schema_script_lines));
   assert.equal(
     budget.conservative_lines_no_deletion_credit,

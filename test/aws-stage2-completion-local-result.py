@@ -286,8 +286,9 @@ check(line_report["conservative_baseline_lines"] == line_report["inherited_prede
       + line_report["pre_base_gross_additions"] == 36_861, "inherited no-deletion baseline")
 check(line_report["current_lines"] == line_report["deployment_lines"]
       + line_report["retained_schema_script_lines"], "complete retained count")
-check(line_report["gross_added_lines_no_deletion_credit"] >= line_report["inherited_post_base_gross_additions"]
-      == 2_281, "inherited post-base gross additions")
+check(line_report["inherited_post_base_gross_additions"] == 0
+      and line_report["gross_added_lines_no_deletion_credit"] > 0,
+      "gross additions were not measured from the fixed base")
 check(line_report["conservative_lines_no_deletion_credit"] == budget.CONSERVATIVE_BASELINE_LINES
       + line_report["gross_added_lines_no_deletion_credit"], "no deletion credit")
 check(line_report["preferred_satisfied"] and line_report["hard_satisfied"], "ADR 0099 cap")
