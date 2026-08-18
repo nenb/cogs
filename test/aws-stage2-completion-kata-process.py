@@ -492,7 +492,7 @@ def linux_supervisor_tests():
     # A child-side pre-exec failure is a fixed-size errno result and is reaped.
     with patch.object(process, "_execveat", side_effect=OSError(errno.ENOEXEC, "fixed injected exec failure")):
         result = issue(process._TestAction.OK)
-    assert result.outcome == "exec_failed" and result.errno == errno.ENOEXEC and result.reaped
+    assert result.outcome == "exec-failed" and result.errno == errno.ENOEXEC and result.reaped
 
     # A fake mismatching snapshot prevents release. Closing the release pipe lets
     # the directly-owned blocked child exit, and the parent still reaps it.
