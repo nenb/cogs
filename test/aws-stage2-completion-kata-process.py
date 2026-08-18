@@ -475,9 +475,11 @@ def linux_supervisor_tests():
 
     # close_range reaches inherited descriptors above a subsequently lowered limit.
     base = os.open("/dev/null", os.O_RDONLY | os.O_CLOEXEC)
-    high = __import__("fcntl").fcntl(base, __import__("fcntl").F_DUPFD, 4096)
-    os.set_inheritable(high, True)
     old_limit = resource.getrlimit(resource.RLIMIT_NOFILE)
+    high_floor = min(4096, old_limit[0] - 1)
+    assert high_floor > 256
+    high = __import__("fcntl").fcntl(base, __import__("fcntl").F_DUPFD, high_floor)
+    os.set_inheritable(high, True)
     try:
         resource.setrlimit(resource.RLIMIT_NOFILE, (256, old_limit[1]))
         result = issue(process._TestAction.HIGH_FD)
