@@ -1610,6 +1610,8 @@ def _owner_routes():
             if operation._has_recovery_command(state["journal"]):
                 import completion_kata_process as process
                 process._recover_pending_production(state["journal"])
+            context = operation._command_context(state["journal"])
+            state["key_stage_name"] = fs._name(KEY_STAGE_PREFIX + context.operation_token)
             try:
                 remove_key_stage(state)
             except BaseException as error:
@@ -1803,11 +1805,10 @@ def _owner_routes():
         _fail(type(completion) is fs.HeldNode and type(control) is fs.OperationControl)
         _fail(operation._durable_phase(journal) in {"ROOTFS_LEASED", "FS_INTENT", "FS_SETTLED",
               "RUNTIME_READY", "SSH_READY", "READINESS_REVOKED", "FIREWALL_ABSENT", "UNCERTAIN"})
-        context = operation._command_context(journal)
         value = _ProductionInputCleanup(seal)
         production[value] = {
             "journal": journal, "completion": completion, "control": control,
-            "key_stage_name": fs._name(KEY_STAGE_PREFIX + context.operation_token),
+            "key_stage_name": None,
         }
         return value
 
