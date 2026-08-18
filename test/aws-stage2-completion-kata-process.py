@@ -173,79 +173,66 @@ int main(int argc, char **argv) {
 
 
 def authentic_root_cgroup_recovery():
-    """Exercise leader-absent cgroup crash cleanup when root cgroup v2 is writable."""
+    """Crash one supervisor, then recover its leader-absent descendant fresh."""
     if platform.system() != "Linux" or os.geteuid() != 0 or not os.access(process.CGROUP_ROOT, os.W_OK):
         return False
-    context = process.kata_operation.CommandContext(
-        "c" * 64, {"mount_id": 1, "device": 2, "inode": 3, "kind": "file"},
-        process._boot_id(), "5" * 40, "NETWORK_READY", 4242,
-    )
-    previous = process._set_subreaper(True)
-    owner = None
-    gate_r = gate_w = report_r = report_w = grandchild = None
-    try:
-        owner = process._prepare_cgroup(context)
-        gate_r, gate_w = os.pipe2(os.O_CLOEXEC)
-        report_r, report_w = os.pipe2(os.O_CLOEXEC)
-        leader = os.fork()
-        if leader == 0:
-            try:
-                os.close(gate_w); os.close(report_r)
+    token = "c" * 64
+    path = f"{process.CGROUP_BASE}/{token}-4242"
+    report_r, report_w = os.pipe2(os.O_CLOEXEC)
+    supervisor = os.fork()
+    if supervisor == 0:
+        try:
+            os.close(report_r)
+            context = process.kata_operation.CommandContext(
+                token, {"mount_id": 1, "device": 2, "inode": 3, "kind": "file"},
+                process._boot_id(), "5" * 40, "NETWORK_READY", 4242,
+            )
+            owner = process._prepare_cgroup(context)
+            gate_r, gate_w = os.pipe2(os.O_CLOEXEC)
+            child_r, child_w = os.pipe2(os.O_CLOEXEC)
+            leader = os.fork()
+            if leader == 0:
+                os.close(gate_w); os.close(child_r)
                 if os.read(gate_r, 1) != b"R": os._exit(90)
-                child = os.fork()
-                if child == 0:
+                descendant = os.fork()
+                if descendant == 0:
                     time.sleep(30); os._exit(0)
-                os.write(report_w, f"{child}\n".encode("ascii"))
-            finally:
-                os._exit(0)
-        os.close(gate_r); gate_r = None
-        os.close(report_w); report_w = None
-        process._register_cgroup(owner, leader)
-        os.write(gate_w, b"R"); os.close(gate_w); gate_w = None
-        grandchild = int(os.read(report_r, 32)); os.close(report_r); report_r = None
-        assert os.waitpid(leader, 0)[0] == leader
-        expected, path = owner.leaf_generation, owner.path
-        for descriptor, _row in owner.pidfds.values(): os.close(descriptor)
-        owner.pidfds.clear()
-        for descriptor in (owner.directory_fd, owner.base_fd): os.close(descriptor)
-        owner.directory_fd = owner.base_fd = None
-        state, errors = {"term": False, "kill": False}, []
+                os.write(child_w, f"{descendant}\n".encode("ascii")); os._exit(0)
+            os.close(gate_r); os.close(child_w)
+            process._register_cgroup(owner, leader)
+            os.write(gate_w, b"R"); os.close(gate_w)
+            descendant = int(os.read(child_r, 32)); os.close(child_r)
+            os.waitpid(leader, 0)
+            payload = json.dumps({"expected": owner.leaf_generation,
+                                  "base_created": owner.base_created,
+                                  "descendant": descendant}).encode() + b"\n"
+            os.write(report_w, payload)
+        finally:
+            os._exit(77)  # descriptor/process-owner crash cut
+    os.close(report_w)
+    raw = b""
+    while True:
+        part = os.read(report_r, 4096)
+        if not part: break
+        raw += part
+    os.close(report_r)
+    assert os.waitpid(supervisor, 0)[1] == 77 << 8
+    value = json.loads(raw)
+    state, errors = {"term": False, "kill": False}, []
+    try:
         assert process._recover_cgroup(
-            path, expected, process._boottime_ns() + 2_000_000_000, state, errors,
+            path, tuple(value["expected"]), process._boottime_ns() + 2_000_000_000,
+            state, errors,
         ) == (True, True)
-        assert state["kill"] and errors == []
-        deadline = time.monotonic() + 2
-        while time.monotonic() < deadline:
-            observed, _status = os.waitpid(grandchild, os.WNOHANG)
-            if observed == grandchild: break
-            time.sleep(0.005)
-        else:
-            raise AssertionError("adopted grandchild was not reaped after authentic recovery")
-        if owner.base_created: os.rmdir(process.CGROUP_BASE)
+        assert state["kill"] and errors == [] and not os.path.exists(path)
         return True
     finally:
-        for descriptor in (gate_r, gate_w, report_r, report_w):
-            if descriptor is not None:
-                try: os.close(descriptor)
-                except OSError: pass
-        if owner is not None:
-            for attribute in ("directory_fd", "base_fd"):
-                descriptor = getattr(owner, attribute)
-                if descriptor is not None:
-                    try: os.close(descriptor)
-                    except OSError: pass
-                    setattr(owner, attribute, None)
-            if os.path.exists(owner.path):
-                process._recover_cgroup(
-                    owner.path, owner.leaf_generation,
-                    process._boottime_ns() + 2_000_000_000,
-                    {"term": False, "kill": False}, [],
-                )
-            process._wait_all_children(-1, [])
-            if owner.base_created and os.path.isdir(process.CGROUP_BASE):
-                try: os.rmdir(process.CGROUP_BASE)
-                except OSError: pass
-        process._set_subreaper(previous)
+        if os.path.exists(path):
+            process._recover_cgroup(path, None, process._boottime_ns() + 2_000_000_000,
+                                    {"term": False, "kill": False}, [])
+        if value["base_created"] and os.path.isdir(process.CGROUP_BASE):
+            try: os.rmdir(process.CGROUP_BASE)
+            except OSError: pass
 
 
 def linux_supervisor_tests():

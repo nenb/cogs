@@ -5,9 +5,9 @@ These capabilities prevent unintended route composition, but Python objects are
 bookkeeping only. Closure introspection is therefore outside the security boundary.
 Authority is the locked, fsynced journal plus retained kernel object identities.
 The accepted v1 records remain byte-for-byte compatible; Slice A adds separately
-named v2 command records.
-"""
+named v2 command records."""
 from dataclasses import dataclass
+from types import MappingProxyType
 import ctypes
 import errno
 import fcntl
@@ -19,7 +19,6 @@ import unicodedata
 import completion_kata_actions as actions
 import completion_kata_command_policy as command_policy
 import completion_rootfs_fs as fs
-
 VERSION = "cogs.stage2-kata-operation/v1"
 BASE = "/var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/.state/completion-v1"
 STATE_NAME = fs._name("kata-operation-v1")
@@ -79,10 +78,10 @@ MAX_OBSERVED_NAMES = 64
 ACTIONS = frozenset({"create", "metadata", "link", "remove"})
 COMMANDS = actions.COMMAND_IDS
 LEGACY_COMMANDS = COMMANDS - {"CONTAINERD_START"}
-_fail_policy_partition = set(command_policy.POLICY_SHA256) | set(command_policy.DEFERRED_COMMANDS)
-if _fail_policy_partition != set(COMMANDS):
-    raise RuntimeError("v2 command policy partition drift")
-del _fail_policy_partition
+_POLICY_MAPS = (command_policy.POLICY_SHA256, command_policy.OCCURRENCES,
+                command_policy.PHASES, command_policy.MAX_OCCURRENCES,
+                command_policy.MUTATION_ORDERS)
+_DEFERRED_COMMANDS = command_policy.DEFERRED_COMMANDS
 DEADLINES = frozenset({
     "observer", "network", "keygen", "runtime-start", "task-term", "task-kill", "remove", "listener",
     "ssh", "runtime-absence",
@@ -109,7 +108,6 @@ PROOF_LIFECYCLE = frozenset({
     "NETWORK_ABSENT", "TASK_ABSENT", "CONTAINER_ABSENT", "RUNTIME_ABSENT",
     "SHARE_ABSENT", "FIREWALL_ABSENT", "INPUT_REMOVED", "ROOTFS_ABSENT",
 })
-
 class OperationError(Exception):
     pass
 def _fail(condition):
@@ -137,12 +135,19 @@ def _key(value):
     _uint(value["mount_id"], minimum=1)
     _uint(value["device"])
     _uint(value["inode"], minimum=1)
-    _choice(value["kind"], {"directory", "file", "pipe", "socket", "symlink", "other"})
+    _choice(value["kind"], {"directory", "file", "pipe", "symlink", "other"})
 def _generation(value, nullable=False):
     if nullable and value is None:
         return
     _keys(value, GEN_KEYS)
     _key({name: value[name] for name in GEN_KEYS[:4]})
+    for name in ("uid", "gid", "nlink", "size", "mtime_ns", "ctime_ns"):
+        _uint(value[name])
+    _uint(value["mode"], 0o7777)
+def _daemon_socket_generation(value):
+    _keys(value, GEN_KEYS)
+    _uint(value["mount_id"], minimum=1); _uint(value["device"]); _uint(value["inode"], minimum=1)
+    _fail(value["kind"] == "socket")
     for name in ("uid", "gid", "nlink", "size", "mtime_ns", "ctime_ns"):
         _uint(value[name])
     _uint(value["mode"], 0o7777)
@@ -186,13 +191,11 @@ def _command_v2_header(body):
     _choice(body["command_id"], COMMANDS)
     _hex(body["binding_sha256"])
     return names
-
 def _argv(value):
     _fail(type(value) is list and 1 <= len(value) <= 256)
     for item in value:
         _text(item, True)
         _fail(0 < len(item.encode("ascii")) <= 4096)
-
 def _fd_binding(value):
     _keys(value, ("role", "target_fd", "generation", "content_sha256", "content_length"))
     _text(value["role"], True)
@@ -201,7 +204,6 @@ def _fd_binding(value):
     _fail(value["generation"]["kind"] == "file")
     _hex(value["content_sha256"], zero=True)
     _uint(value["content_length"], 65536)
-
 def _command_intent_v2(body):
     names = _command_v2_header(body)
     extra = (
@@ -209,8 +211,9 @@ def _command_intent_v2(body):
         "executable_role", "executable_path", "executable_sha256",
         "executable_generation", "tool_closure_sha256", "argv", "argv_sha256",
         "stdin_hex", "stdin_sha256", "stdin_length", "environment",
-        "environment_sha256", "inherited_fds", "deadline_class", "duration_ns",
-        "deadline_boottime_ns", "output_grammar", "stdout_limit", "stderr_limit",
+        "environment_sha256", "inherited_fds", "policy_version", "deadline_class",
+        "duration_ns", "cleanup_reserve_ns", "deadline_boottime_ns",
+        "output_grammar", "stdout_limit", "stderr_limit",
     )
     _keys(body, names + extra)
     _key(body["journal_key"])
@@ -238,8 +241,10 @@ def _command_intent_v2(body):
         _fd_binding(row)
     _fail(len({row["role"] for row in inherited}) == len(inherited))
     _fail(len({row["target_fd"] for row in inherited}) == len(inherited))
+    _fail(body["policy_version"] == command_policy.POLICY_VERSION)
     _choice(body["deadline_class"], DEADLINES)
     _uint(body["duration_ns"], 120_000_000_000, 1)
+    _uint(body["cleanup_reserve_ns"], body["duration_ns"] - 1, 1)
     _uint(body["deadline_boottime_ns"], minimum=1)
     _choice(body["output_grammar"], OUTPUT_GRAMMARS)
     _uint(body["stdout_limit"], 65536)
@@ -247,10 +252,8 @@ def _command_intent_v2(body):
     bound = {name: body[name] for name in body if name != "binding_sha256"}
     _fail(hashlib.sha256(_canonical(bound)).hexdigest() == body["binding_sha256"])
     return names
-
 def _same_command_v2(left, right):
     return all(left[name] == right[name] for name in _command_v2_header(left))
-
 def _zero_outcome(body):
     return (
         body["status"] is None and body["errno"] is None
@@ -427,8 +430,7 @@ def _validate_body(kind, body):
         ))
         preexec = {name: value for name, value in body.items() if name not in extra}
         _validate_body("COMMAND_PREEXEC_V2", preexec)
-        _generation(body["socket_generation"])
-        _fail(body["socket_generation"]["kind"] == "socket")
+        _daemon_socket_generation(body["socket_generation"])
     elif kind == "DAEMON_OUTCOME_V2":
         names = _command_v2_header(body)
         extra = (
@@ -552,7 +554,6 @@ def _canonical(value):
     return json.dumps(
         value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False,
     ).encode("utf-8") + b"\n"
-
 @dataclass(frozen=True)
 class Record:
     sequence: int
@@ -561,7 +562,6 @@ class Record:
     line_sha256: str
     record_type: str
     body: dict
-
 @dataclass(frozen=True)
 class CommandContext:
     operation_token: str
@@ -570,20 +570,17 @@ class CommandContext:
     source_revision: str
     lifecycle_phase: str
     command_serial: int
-
 @dataclass(frozen=True)
 class CommandIntentReceipt:
     command_serial: int
     command_id: str
     binding_sha256: str
-
 @dataclass(frozen=True)
 class DurableCommandOutcome:
     command_serial: int
     command_id: str
     binding_sha256: str
     body: dict
-
 @dataclass(frozen=True)
 class RootfsReleaseContext:
     operation_token: str
@@ -600,40 +597,47 @@ class RootfsReleaseContext:
     authorized_sequence: int | None
     authorized_offset: int | None
     authorized_sha256: str | None
-
 @dataclass(frozen=True)
 class RootfsAuthorization:
     rootfs_token: str
     sequence: int
     offset: int
     line_sha256: str
-
     def __post_init__(self):
         _hex(self.rootfs_token)
         _uint(self.sequence, fs.ROOTFS_LEDGER_MAX_RECORDS - 1)
         _uint(self.offset, fs.ROOTFS_LEDGER_MAX_BYTES, 1)
         _hex(self.line_sha256)
-
 def _same_intent(left, right):
     names = ("operation_token", "resource_id", "action", "expected_parent_generation", "names_sha256")
     return all(left[name] == right[name] for name in names)
 def _same_command(left, right):
     return all(left[name] == right[name] for name in _command(left))
+def _policy_tables():
+    maps = (command_policy.POLICY_SHA256, command_policy.OCCURRENCES,
+            command_policy.PHASES, command_policy.MAX_OCCURRENCES, command_policy.MUTATION_ORDERS)
+    _fail(all(value is expected and type(value) is MappingProxyType
+              for value, expected in zip(maps, _POLICY_MAPS)))
+    implemented, deferred = set(maps[0]), set(command_policy.DEFERRED_COMMANDS)
+    _fail(command_policy.DEFERRED_COMMANDS is _DEFERRED_COMMANDS and not implemented & deferred)
+    _fail(implemented | deferred == set(COMMANDS)
+          and implemented == set(maps[1]) == set(maps[2]) == set(maps[3]))
+    _fail(all(type(rows) is tuple and rows and maps[2][name] == tuple(dict.fromkeys(rows))
+              and maps[3][name] == len(rows) for name, rows in maps[1].items()))
+    orders = tuple(maps[4].values()); flattened = tuple(item for order in orders for item in order)
+    _fail(all(type(name) is str and type(order) is tuple and len(order) == len(set(order))
+              for name, order in maps[4].items()))
+    _fail(len(flattened) == len(set(flattened)) and set(flattened) <= implemented)
+    return maps
 def _v2_policy_digest(intent):
-    value = {
-        "command_id": intent["command_id"],
-        "executable_role": intent["executable_role"],
-        "executable_path": intent["executable_path"],
-        "argv": intent["argv"], "stdin_hex": intent["stdin_hex"],
-        "deadline_class": intent["deadline_class"], "duration_ns": intent["duration_ns"],
-        "output_grammar": intent["output_grammar"],
-        "stdout_limit": intent["stdout_limit"], "stderr_limit": intent["stderr_limit"],
-        "inherited_fds": [[row["role"], row["target_fd"]] for row in intent["inherited_fds"]],
-    }
+    names = ("command_id", "executable_role", "executable_path", "argv", "stdin_hex",
+             "policy_version", "deadline_class", "duration_ns", "cleanup_reserve_ns",
+             "output_grammar", "stdout_limit", "stderr_limit")
+    value = {name: intent[name] for name in names}
+    value["inherited_fds"] = [[row["role"], row["target_fd"]] for row in intent["inherited_fds"]]
     return hashlib.sha256(_canonical(value)).hexdigest()
-
-
 def _v2_lineage(genesis, phase, intent, preexec=None, outcome=None):
+    _policy_tables()
     _fail(intent["journal_key"] == genesis["journal_key"])
     _fail(intent["host_boot_id"] == genesis["host_boot_id"])
     _fail(intent["source_revision"] == genesis["source_revision"])
@@ -659,6 +663,33 @@ def _v2_lineage(genesis, phase, intent, preexec=None, outcome=None):
             _fail(0 <= outcome["status"] <= 255)
         if outcome["outcome"] == "signaled":
             _fail(1 <= outcome["status"] <= 64)
+def _successful_v2(record):
+    body = record.body
+    return (record.record_type == "COMMAND_OUTCOME_V2" and not body["uncertain"]
+            and body["outcome"] == "exited" and body["status"] == 0)
+def _v2_occurrence(records, index, phase, body):
+    _policy_tables(); command_id = body["command_id"]
+    prior = [item for item in records[:index] if item.record_type == "COMMAND_INTENT_V2"
+             and item.body["command_id"] == command_id]
+    expected = command_policy.OCCURRENCES[command_id]
+    _fail(len(prior) < len(expected) and expected[len(prior)] == phase)
+    order = command_policy.MUTATION_ORDERS.get(phase, ())
+    if command_id in order:
+        seen = [item.body["command_id"] for item in records[:index]
+                if item.record_type == "COMMAND_INTENT_V2" and item.body["lifecycle_phase"] == phase
+                and item.body["command_id"] in order]
+        _fail(tuple(seen) == order[:len(seen)] and len(seen) < len(order)
+              and command_id == order[len(seen)])
+        outcomes = [item for item in records[:index] if item.record_type == "COMMAND_OUTCOME_V2"
+                    and seen and item.body["command_id"] == seen[-1]]
+        _fail(not seen or outcomes and _successful_v2(outcomes[-1]))
+    if command_id == "CTR_TASK_KILL":
+        term = [item for item in records[:index] if item.record_type == "COMMAND_OUTCOME_V2"
+                and item.body["command_id"] == "CTR_TASK_TERM"]
+        fresh = [item for item in records[:index] if item.record_type == "COMMAND_OUTCOME_V2"
+                 and item.body["command_id"] == "CTR_TASK_LIST"]
+        _fail(term and fresh and _successful_v2(term[-1]) and _successful_v2(fresh[-1])
+              and fresh[-1].sequence > term[-1].sequence)
 def _legal(records):
     _fail(records and records[0].record_type == "GENESIS")
     genesis = records[0].body
@@ -686,9 +717,7 @@ def _legal(records):
             })
             _fail(body["command_serial"] == next_serial)
             _v2_lineage(genesis, phase, body)
-            _fail(sum(item.record_type == "COMMAND_INTENT_V2" and
-                      item.body["command_id"] == body["command_id"]
-                      for item in records[:index]) < command_policy.MAX_OCCURRENCES[body["command_id"]])
+            _v2_occurrence(records, index, phase, body)
             next_serial += 1
             command_phase = kind
             command_intent_v2 = record
@@ -717,7 +746,7 @@ def _legal(records):
             _fail(body["pid"] == daemon_preexec.body["pid"])
             _fail(body["proc_start_time"] == daemon_preexec.body["proc_start_time"])
             retained_daemon = None
-            if body["uncertain"]:
+            if body["uncertain"] or phase != "FIREWALL_ABSENT":
                 phase = "UNCERTAIN"
             continue
         if kind == "COMMAND_OUTCOME_V2":
@@ -757,7 +786,7 @@ def _legal(records):
             continue
         _fail(command_phase is None)
         if retained_daemon is not None:
-            _fail(kind not in set(LIFECYCLE[10:]) | {"FINAL_BASELINES", "RETIRE_INTENT", "RETIRED"})
+            _fail(kind not in set(LIFECYCLE[13:]) | {"FINAL_BASELINES", "RETIRE_INTENT", "RETIRED"})
         if phase == "GENESIS":
             _fail(index == 1 and kind == "GENESIS_SETTLED" and body["journal_key"] == key)
             phase = kind
@@ -849,7 +878,7 @@ def _legal(records):
             pending = None
         else:
             raise OperationError()
-    if phase in {"RUNTIME_ABSENT", *LIFECYCLE[11:], "FINAL_BASELINES", "RETIRE_INTENT", "RETIRED"}:
+    if phase in {"INPUT_REMOVED", *LIFECYCLE[14:], "FINAL_BASELINES", "RETIRE_INTENT", "RETIRED"}:
         _fail(retained_daemon is None)
     return phase
 def _parse_untrusted(raw):
@@ -956,7 +985,6 @@ def _open_base_chain(control):
         return fs._open_anchored_chain(anchor, fs._fixed_policies(), control)
     except BaseException as error:
         fs._close_node(anchor, error)
-
 def _make_authority():
     seal = object()
     owners, closed, permits, grants = {}, set(), {}, {}
@@ -1337,15 +1365,28 @@ def _make_authority():
                 genesis["operation_token"], genesis["journal_key"], genesis["host_boot_id"],
                 genesis["source_revision"], _legal(records), serial,
             )
-        def pending_command(self):
-            _io, records, status = reload(self)
-            _fail(status == "exact" and records[-1].record_type in {
-                "COMMAND_INTENT_V2", "COMMAND_PREEXEC_V2",
-            })
-            preexec = records[-1] if records[-1].record_type == "COMMAND_PREEXEC_V2" else None
-            intent = records[-2] if preexec is not None else records[-1]
+        def recovery_command(self):
+            _io, records, status = reload(self); _fail(status == "exact")
+            terminal = None
+            if records[-1].record_type in {"COMMAND_INTENT_V2", "COMMAND_PREEXEC_V2"}:
+                preexec = records[-1] if records[-1].record_type == "COMMAND_PREEXEC_V2" else None
+                intent = records[-2] if preexec is not None else records[-1]
+            else:
+                terminal = records[-1]
+                _fail(terminal.record_type == "COMMAND_OUTCOME_V2" and terminal.body["uncertain"])
+                serial = terminal.body["command_serial"]
+                intent = next(item for item in records if item.record_type == "COMMAND_INTENT_V2"
+                              and item.body["command_serial"] == serial)
+                matches = [item for item in records if item.record_type == "COMMAND_PREEXEC_V2"
+                           and item.body["command_serial"] == serial]
+                preexec = matches[0] if matches else None
             _fail(intent.record_type == "COMMAND_INTENT_V2")
-            return intent.body, None if preexec is None else preexec.body
+            return (intent.body, None if preexec is None else preexec.body,
+                    None if terminal is None else terminal.body)
+        def pending_command(self):
+            intent, preexec, terminal = self.recovery_command()
+            _fail(terminal is None)
+            return intent, preexec
         def record_command_intent(self, body):
             context = self.command_context()
             _fail(body["operation_token"] == context.operation_token)
@@ -1601,20 +1642,14 @@ def _make_authority():
             closed.add(authority)
             owners[authority][1:] = [(), "closed"]
             io.close(error)
-    def command_context(authority):
-        return authority.command_context()
-    def pending_command(authority):
-        return authority.pending_command()
-    def record_command_intent(authority, body):
-        return authority.record_command_intent(body)
-    def record_command_preexec(authority, body):
-        return authority.record_command_preexec(body)
-    def record_command_outcome(authority, body):
-        return authority.record_command_outcome(body)
-    def record_daemon_retained(authority, body):
-        return authority.record_daemon_retained(body)
-    def record_daemon_outcome(authority, body):
-        return authority.record_daemon_outcome(body)
+    def command_context(authority): return authority.command_context()
+    def pending_command(authority): return authority.pending_command()
+    def recovery_command(authority): return authority.recovery_command()
+    def record_command_intent(authority, body): return authority.record_command_intent(body)
+    def record_command_preexec(authority, body): return authority.record_command_preexec(body)
+    def record_command_outcome(authority, body): return authority.record_command_outcome(body)
+    def record_daemon_retained(authority, body): return authority.record_daemon_retained(body)
+    def record_daemon_outcome(authority, body): return authority.record_daemon_outcome(body)
     def durable_command_outcome(authority, serial, command_id, binding_sha256):
         return authority.durable_command_outcome(serial, command_id, binding_sha256)
     def durable_command_output(authority, serial, command_id, binding_sha256, stdout, stderr):
@@ -1625,16 +1660,15 @@ def _make_authority():
         _open_fixed_operation, create_fixed_operation_test_local, claim_rootfs_reopen,
         invoke_rootfs_reopen_route, settle_rootfs_reopen, claim_rootfs_release,
         invoke_rootfs_release, settle_rootfs_release, make_fake_lifecycle,
-        command_context, pending_command, record_command_intent, record_command_preexec,
-        record_command_outcome, record_daemon_retained, record_daemon_outcome,
+        command_context, pending_command, recovery_command, record_command_intent,
+        record_command_preexec, record_command_outcome, record_daemon_retained, record_daemon_outcome,
         durable_command_outcome, durable_command_output,
     )
-
 (
     _open_fixed_operation, _create_fixed_operation_test_local, _claim_rootfs_reopen,
     _invoke_rootfs_reopen_route, _settle_rootfs_reopen, _claim_rootfs_release,
     _invoke_rootfs_release, _settle_rootfs_release, _make_fake_lifecycle_for_tests,
-    _command_context, _pending_command, _record_command_intent,
+    _command_context, _pending_command, _recovery_command, _record_command_intent,
     _record_command_preexec, _record_command_outcome, _record_daemon_retained,
     _record_daemon_outcome, _durable_command_outcome, _durable_command_output,
 ) = _make_authority()

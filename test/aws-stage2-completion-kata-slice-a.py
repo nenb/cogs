@@ -106,7 +106,9 @@ def intent(serial=0, command_id="CTR_TASK_LIST", phase="RUNTIME_READY"):
         "stdin_hex": stdin.hex(), "stdin_sha256": hashlib.sha256(stdin).hexdigest(),
         "stdin_length": len(stdin), "environment": environment,
         "environment_sha256": hashlib.sha256(operation._canonical(environment)).hexdigest(),
-        "inherited_fds": inherited, "deadline_class": deadline_class, "duration_ns": duration,
+        "inherited_fds": inherited, "policy_version": operation.command_policy.POLICY_VERSION,
+        "deadline_class": deadline_class, "duration_ns": duration,
+        "cleanup_reserve_ns": operation.command_policy.CLEANUP_RESERVE_NS,
         "deadline_boottime_ns": 99_000_000_000, "output_grammar": grammar,
         "stdout_limit": 65536, "stderr_limit": 65536,
     }
@@ -150,7 +152,7 @@ with_intent = add(raw, "COMMAND_INTENT_V2", command)
 with_preexec = add(with_intent, "COMMAND_PREEXEC_V2", preexec(command))
 settled = add(with_preexec, "COMMAND_OUTCOME_V2", outcome(command))
 check(operation._legal(operation._parse(settled)) == "RUNTIME_READY", "v2 changed lifecycle")
-add(settled, "COMMAND_INTENT_V2", intent(1))
+reject(lambda: add(settled, "COMMAND_INTENT_V2", intent(1)))
 
 # Replay semantics bind genesis, current phase, fd roles, cgroup lineage, limits,
 # overflow and wait classification rather than trusting a shared digest header.
@@ -189,6 +191,8 @@ daemon_raw = add(daemon_prefix, "COMMAND_INTENT_V2", daemon)
 daemon_preexec = preexec(daemon)
 daemon_raw = add(daemon_raw, "COMMAND_PREEXEC_V2", daemon_preexec)
 retained = {**daemon_preexec, "socket_generation": generation(95, "socket", 0o600)}
+reject(lambda: operation._key(key(95, "socket")))
+operation._daemon_socket_generation(retained["socket_generation"])
 daemon_raw = add(daemon_raw, "DAEMON_RETAINED_V2", retained)
 retained_raw = daemon_raw
 daemon_raw = add(daemon_raw, "COMMAND_INTENT_V2", intent(1, "CTR_CONTAINER_INFO", "NETWORK_READY"))
@@ -209,16 +213,24 @@ progress = add(progress, "READINESS_REVOKED", {"operation_token": "a" * 64})
 progress = add(progress, "OWNERSHIP_OBSERVED", {"operation_token": "a" * 64,
     "proof_sha256": "9" * 64, "task": "absent", "container": "exact-owned",
     "runtime": "exact-owned", "share": "exact-owned"})
-for kind in ("NETWORK_ABSENT", "TASK_ABSENT", "CONTAINER_ABSENT"):
+for kind in ("NETWORK_ABSENT", "TASK_ABSENT", "CONTAINER_ABSENT",
+             "RUNTIME_ABSENT", "SHARE_ABSENT", "FIREWALL_ABSENT"):
     progress = add(progress, kind, {"operation_token": "a" * 64, "proof_sha256": "9" * 64})
-reject(lambda: add(progress, "RUNTIME_ABSENT", {"operation_token": "a" * 64,
-                                                 "proof_sha256": "9" * 64}))
+reject(lambda: add(progress, "INPUT_REMOVED", {"operation_token": "a" * 64,
+                                                "proof_sha256": "9" * 64}))
 daemon_outcome = {"operation_token": "a" * 64, "command_serial": 0,
     "command_id": "CONTAINERD_START", "binding_sha256": daemon["binding_sha256"],
     "pid": daemon_preexec["pid"], "proc_start_time": daemon_preexec["proc_start_time"],
     "status": 0, "leader_reaped": True, "descendants_reaped": True,
     "cgroup_empty": True, "cgroup_removed": True, "uncertain": False, "errors": []}
-closed_daemon = add(retained_raw, "DAEMON_OUTCOME_V2", daemon_outcome)
+early_daemon = add(retained_raw, "DAEMON_OUTCOME_V2", daemon_outcome)
+check(operation._legal(operation._parse(early_daemon)) == "UNCERTAIN",
+      "early daemon exit was not terminal")
+reject(lambda: add(early_daemon, "RUNTIME_READY", {"operation_token": "a" * 64,
+                                                    "proof_sha256": "9" * 64}))
+closed_daemon = add(progress, "DAEMON_OUTCOME_V2", daemon_outcome)
+closed_daemon = add(closed_daemon, "INPUT_REMOVED", {"operation_token": "a" * 64,
+                                                      "proof_sha256": "9" * 64})
 # The exact command policy rejects foreign owner IDs, wrong lifecycle, repeats,
 # and impossible output on a command which was never released.
 reject(lambda: add(raw, "COMMAND_INTENT_V2", intent(command_id="CTR_TASK_TERM")))
@@ -232,6 +244,70 @@ reject(lambda: add(ssh_done, "COMMAND_INTENT_V2", intent(1, "SSH_READY")))
 not_started_output = outcome(command, b"x")
 not_started_output.update({"outcome": "not-started", "status": None, "release_count": 0})
 reject(lambda: operation._validate_body("COMMAND_OUTCOME_V2", not_started_output))
+
+# Policy is deeply immutable, exactly partitioned, and independently regenerated
+# from the process compositions rather than trusted as matching literals.
+policy = operation.command_policy
+for mapping in (policy.POLICY_SHA256, policy.OCCURRENCES, policy.PHASES,
+                policy.MAX_OCCURRENCES, policy.MUTATION_ORDERS):
+    reject(lambda mapping=mapping: mapping.__setitem__("CTR_TASK_LIST", ("RUNTIME_READY",)))
+original_policy = policy.POLICY_SHA256
+try:
+    policy.POLICY_SHA256 = dict(original_policy)
+    reject(lambda: operation._v2_lineage(operation._parse(raw)[0].body,
+                                         "RUNTIME_READY", command))
+finally:
+    policy.POLICY_SHA256 = original_policy
+check(set(policy.POLICY_SHA256) == set(policy.OCCURRENCES) == set(policy.PHASES)
+      == set(policy.MAX_OCCURRENCES), "policy map key drift")
+check(not set(policy.POLICY_SHA256) & set(policy.DEFERRED_COMMANDS)
+      and set(policy.POLICY_SHA256) | set(policy.DEFERRED_COMMANDS) == set(operation.COMMANDS),
+      "policy/deferred partition drift")
+for command_id in policy.POLICY_SHA256:
+    phase = policy.OCCURRENCES[command_id][0]
+    regenerated = intent(command_id=command_id, phase=phase)
+    check(operation._v2_policy_digest(regenerated) == policy.POLICY_SHA256[command_id],
+          f"stale policy digest: {command_id}")
+reject(lambda: add(raw, "COMMAND_INTENT_V2",
+                   rebound({**command, "policy_version": "future-policy"})))
+
+# Setup mutations are an exact successful prefix, never an unordered menu.
+setup_raw = add(prefix(), "BASELINES_CAPTURED",
+                {"operation_token": "a" * 64, "proof_sha256": "9" * 64})
+reject(lambda: add(setup_raw, "COMMAND_INTENT_V2",
+                   intent(command_id="IP_LINK_ADD", phase="BASELINES_CAPTURED")))
+netns = intent(command_id="IP_NETNS_ADD", phase="BASELINES_CAPTURED")
+setup_raw = add(add(add(setup_raw, "COMMAND_INTENT_V2", netns),
+                    "COMMAND_PREEXEC_V2", preexec(netns)),
+                "COMMAND_OUTCOME_V2", outcome(netns))
+add(setup_raw, "COMMAND_INTENT_V2",
+    intent(1, "IP_LINK_ADD", "BASELINES_CAPTURED"))
+
+# KILL requires successful TERM and a distinct fresh task observation after it.
+ownership = settled
+ownership = add(ownership, "SSH_READY", {"operation_token": "a" * 64,
+    "proof_sha256": "9" * 64,
+    "marker_sha256": hashlib.sha256(operation.FIXED["ssh_marker"].encode()).hexdigest(),
+    "authentication_attempts": 1})
+ownership = add(ownership, "READINESS_REVOKED", {"operation_token": "a" * 64})
+ownership = add(ownership, "OWNERSHIP_OBSERVED", {"operation_token": "a" * 64,
+    "proof_sha256": "9" * 64, "task": "exact-owned", "container": "exact-owned",
+    "runtime": "exact-owned", "share": "exact-owned"})
+observed = intent(1, "CTR_TASK_LIST", "OWNERSHIP_OBSERVED")
+ownership = add(add(add(ownership, "COMMAND_INTENT_V2", observed),
+                    "COMMAND_PREEXEC_V2", preexec(observed)),
+                "COMMAND_OUTCOME_V2", outcome(observed))
+term = intent(2, "CTR_TASK_TERM", "OWNERSHIP_OBSERVED")
+ownership = add(add(add(ownership, "COMMAND_INTENT_V2", term),
+                    "COMMAND_PREEXEC_V2", preexec(term)),
+                "COMMAND_OUTCOME_V2", outcome(term))
+reject(lambda: add(ownership, "COMMAND_INTENT_V2",
+                   intent(3, "CTR_TASK_KILL", "OWNERSHIP_OBSERVED")))
+fresh = intent(3, "CTR_TASK_LIST", "OWNERSHIP_OBSERVED")
+ownership = add(add(add(ownership, "COMMAND_INTENT_V2", fresh),
+                    "COMMAND_PREEXEC_V2", preexec(fresh)),
+                "COMMAND_OUTCOME_V2", outcome(fresh))
+add(ownership, "COMMAND_INTENT_V2", intent(4, "CTR_TASK_KILL", "OWNERSHIP_OBSERVED"))
 
 # Cleanup-only pending-intent recovery never forks or releases and durably
 # consumes the exact serial. Pending PREEXEC is always sticky uncertain.
@@ -263,6 +339,21 @@ check(recover.call_args.args[1] == process._generation_tuple(recovery_preexec["c
       "preexec recovery did not bind cgroup generation")
 check(preexec_journal.recorded["uncertain"] and preexec_journal.recorded["release_count"] == 0,
       "pending preexec recovery was not honestly sticky uncertain")
+
+class TerminalRecoveryJournal:
+    def __init__(self): self.recorded = False
+    def recovery_command(self):
+        return command, recovery_preexec, outcome(command, uncertain=True)
+    def record_command_outcome(self, _body):
+        self.recorded = True
+        raise AssertionError("terminal uncertainty was rewritten")
+terminal_journal = TerminalRecoveryJournal()
+with patch.object(process, "_recover_cgroup", return_value=(True, True)):
+    terminal_result = process._recover_pending_fixed(terminal_journal)
+check(terminal_result.body["uncertain"] and not terminal_journal.recorded,
+      "terminal-uncertain cleanup changed durable uncertainty")
+check(not process._cleanup_closed((False, False, False, False), 10),
+      "owned residue was considered terminally closed")
 
 # Recovery kills and polls the deterministic leaf without consulting the dead
 # leader. A wait-wide census, not cgroup emptiness, proves descendant reaping.
@@ -298,6 +389,13 @@ for forbidden in ("COGS_KATA_PROCESS_TESTING_V1", "def _make_test_issuer(", "def
     check(forbidden not in source, f"deployed test/generic issuer remains: {forbidden}")
 check(source.index("_set_subreaper(previous_subreaper)") < source.index("_record_command_outcome(journal, body)"),
       "subreaper restoration occurs after durable settlement")
+check("work_cutoff = deadline - _cleanup_reserve_ns(fixed)" in source
+      and "fixed.stdin, owner, work_cutoff" in source
+      and "_settle_cgroup(owner, pid, deadline" in source,
+      "one final deadline did not reserve cleanup before work")
+check(source.index("if not _cleanup_closed(cleanup, pid)") <
+      source.index("durable = kata_operation._record_command_outcome"),
+      "terminal outcome can precede residue closure")
 check(process.LONG_LIVED_CONTAINERD.command_id is process.CommandId.CONTAINERD_START,
       "containerd was modeled as a short command")
 check(process.OWNER_ASSIGNED_IDS == {

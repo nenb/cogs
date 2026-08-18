@@ -837,6 +837,10 @@ def _digest_fd(descriptor, size):
     return digest.hexdigest()
 
 
+def _cleanup_reserve_ns(fixed):
+    return min(kata_operation.command_policy.CLEANUP_RESERVE_NS, fixed.duration_ns // 2)
+
+
 def _intent_body(context, fixed, executable, bindings, deadline):
     if fixed is not _FIXED_COMMANDS.get(fixed.command_id):
         raise ProcessError("command is not internally fixed")
@@ -870,8 +874,10 @@ def _intent_body(context, fixed, executable, bindings, deadline):
         "stdin_hex": fixed.stdin.hex(), "stdin_sha256": hashlib.sha256(fixed.stdin).hexdigest(),
         "stdin_length": len(fixed.stdin), "environment": environment,
         "environment_sha256": hashlib.sha256(kata_operation._canonical(environment)).hexdigest(),
-        "inherited_fds": inherited, "deadline_class": command_spec.deadline_class,
-        "duration_ns": fixed.duration_ns, "deadline_boottime_ns": deadline,
+        "inherited_fds": inherited, "policy_version": kata_operation.command_policy.POLICY_VERSION,
+        "deadline_class": command_spec.deadline_class, "duration_ns": fixed.duration_ns,
+        "cleanup_reserve_ns": _cleanup_reserve_ns(fixed),
+        "deadline_boottime_ns": deadline,
         "output_grammar": fixed.output_grammar, "stdout_limit": fixed.stdout_limit,
         "stderr_limit": fixed.stderr_limit,
     }
@@ -1253,6 +1259,15 @@ def _outcome_body(intent, outcome, status, exec_errno, stdout, stderr, overflow,
     return body
 
 
+def _cleanup_closed(cleanup, pid):
+    return all(cleanup[:3]) and (pid is None or cleanup[3])
+
+
+def _within_work_cutoff(work_cutoff):
+    if _boottime_ns() >= work_cutoff:
+        raise ProcessError("work cutoff reached")
+
+
 def _transact_fixed(journal, fixed, executable, inherited=()):
     """Private T1 transaction; no executable, argv, environment, or deadline selector."""
     if fixed is not _FIXED_COMMANDS.get(fixed.command_id):
@@ -1263,6 +1278,7 @@ def _transact_fixed(journal, fixed, executable, inherited=()):
         raise ProcessError("usable pidfd signaling is required")
     context = kata_operation._command_context(journal)
     deadline = _boottime_ns() + fixed.duration_ns
+    work_cutoff = deadline - _cleanup_reserve_ns(fixed)
     spec = _Spec(
         fixed.command_id.value, fixed.argv, fixed.stdin, "fixed",
         fixed.duration_ns / 1_000_000_000, fixed.inherited_fds,
@@ -1283,6 +1299,7 @@ def _transact_fixed(journal, fixed, executable, inherited=()):
     try:
         _require_no_children()
         previous_subreaper = _set_subreaper(True)
+        _within_work_cutoff(work_cutoff)
         owner = _prepare_cgroup(context)
         def owned_pipe():
             pair = os.pipe2(os.O_CLOEXEC)
@@ -1294,6 +1311,7 @@ def _transact_fixed(journal, fixed, executable, inherited=()):
         stdout_r, stdout_w = owned_pipe()
         stderr_r, stderr_w = owned_pipe()
         stdin_r, stdin_w = owned_pipe()
+        _within_work_cutoff(work_cutoff)
         child_spec = _Spec(
             fixed.command_id.value, fixed.argv, fixed.stdin, "fixed",
             fixed.duration_ns / 1_000_000_000, bindings,
@@ -1305,7 +1323,7 @@ def _transact_fixed(journal, fixed, executable, inherited=()):
         for descriptor in (release_r, setup_w, status_w, stdout_w, stderr_w, stdin_r):
             os.close(descriptor)
             pipes.remove(descriptor)
-        setup = _read_setup_boottime(setup_r, deadline)
+        setup = _read_setup_boottime(setup_r, work_cutoff)
         os.close(setup_r)
         pipes.remove(setup_r)
         identity, observed_pidfd = _identity(pid, setup)
@@ -1325,6 +1343,7 @@ def _transact_fixed(journal, fixed, executable, inherited=()):
         }
         kata_operation._record_command_preexec(journal, preexec)
         preexec_recorded = True
+        _within_work_cutoff(work_cutoff)
         if os.write(release_w, b"R") != 1:
             raise ProcessError("short release")
         release_count = 1
@@ -1332,13 +1351,13 @@ def _transact_fixed(journal, fixed, executable, inherited=()):
         pipes.remove(release_w)
         for descriptor in (status_r, stdout_r, stderr_r, stdin_w):
             pipes.remove(descriptor)
-        term_at = max(_boottime_ns(), deadline - 2_000_000_000)
-        kill_at = max(term_at, deadline - 500_000_000)
+        term_at = max(_boottime_ns(), work_cutoff - 1_500_000_000)
+        kill_at = max(term_at, work_cutoff - 250_000_000)
         buffers, overflow, wait_status, pipes_eof, state, drain_errors = _drain_transaction(
             pid, {"status": status_r, "stdout": stdout_r, "stderr": stderr_r,
                   "stdin": stdin_w, "stdout_limit": fixed.stdout_limit,
                   "stderr_limit": fixed.stderr_limit},
-            fixed.stdin, owner, deadline, term_at, kill_at,
+            fixed.stdin, owner, work_cutoff, term_at, kill_at,
         )
         errors.extend(drain_errors)
         status_raw = bytes(buffers["status"])
@@ -1358,6 +1377,8 @@ def _transact_fixed(journal, fixed, executable, inherited=()):
         except BaseException as error:
             errors.append(f"subreaper-restore:{type(error).__name__}")
         subreaper_restored = True
+        if not _cleanup_closed(cleanup, pid):
+            raise ProcessError("cleanup continuation required")
         body = _outcome_body(
             intent, outcome, status, exec_errno, stdout, stderr, overflow,
             wait_status, pipes_eof, cleanup, state, errors, release_count,
@@ -1414,10 +1435,13 @@ def _transact_fixed(journal, fixed, executable, inherited=()):
             False, cleanup, failure_state, errors,
             release_count if preexec_recorded else 0,
         )
-        try:
-            kata_operation._record_command_outcome(journal, failure_body)
-        except BaseException as journal_error:
-            errors.append(f"outcome:{type(journal_error).__name__}")
+        if _cleanup_closed(cleanup, pid):
+            try:
+                kata_operation._record_command_outcome(journal, failure_body)
+            except BaseException as journal_error:
+                errors.append(f"outcome:{type(journal_error).__name__}")
+        else:
+            errors.append("cleanup-continuation-pending")
         raise ProcessError(";".join(errors)) from primary
     finally:
         if pidfd is not None:
@@ -1486,7 +1510,11 @@ def _recover_cgroup(path, expected_generation, deadline, state, errors):
 
 def _recover_pending_fixed(journal):
     """Cleanup-only crash continuation; absence never fabricates wait/reap proof."""
-    intent, preexec = kata_operation._pending_command(journal)
+    if hasattr(journal, "recovery_command"):
+        intent, preexec, terminal = kata_operation._recovery_command(journal)
+    else:
+        intent, preexec = kata_operation._pending_command(journal)
+        terminal = None
     errors = ["crash-continuation"]
     state = {"term": False, "kill": False}
     path = f"{CGROUP_BASE}/{intent['operation_token']}-{intent['command_serial']}"
@@ -1494,6 +1522,11 @@ def _recover_pending_fixed(journal):
     deadline = _boottime_ns() + 2_000_000_000
     cgroup_empty, cgroup_removed = _recover_cgroup(path, expected, deadline, state, errors)
     closure = (cgroup_empty, False, cgroup_removed, False)
+    if terminal is not None:
+        return kata_operation.DurableCommandOutcome(
+            terminal["command_serial"], terminal["command_id"],
+            terminal["binding_sha256"], terminal,
+        )
     body = _outcome_body(
         intent, "not-started" if preexec is None else "uncertain", None, None,
         b"", b"", {"stdout": False, "stderr": False}, None, False,
