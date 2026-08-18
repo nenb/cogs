@@ -808,7 +808,10 @@ def production_owner_test():
                 ("COMMAND_INTENT", legacy),
                 ("COMMAND_OUTCOME", zero_outcome(legacy)),
             ))
-            rejected(operation._open_fixed_operation)
+            legacy_owner = operation._open_fixed_operation()
+            assert legacy_owner.status() == "preserve"
+            rejected(legacy_owner.command_context)
+            legacy_owner.close()
             fixture_journal(completion, lifecycle_prefix)
 
             # Construction/read faults fail closed, and no lock or owner escapes.
