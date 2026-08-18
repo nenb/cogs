@@ -19,10 +19,12 @@ jobs:
     timeout-minutes: 30
     strategy:
       fail-fast: false
-      max-parallel: 20
+      max-parallel: 22
       matrix:
         shard:
           - baseline
+          - native-wrapper
+          - network-runtime
           - input-intent
           - input-cgroup-create
           - input-fork
@@ -150,34 +152,55 @@ jobs:
           sudo -n test ! -L /tmp/cogs-stage2-attested-static-v1.building
           fixture_cc=/usr/bin/clang-18 fixture_ld=/usr/bin/ld
           sudo -n test -x "$fixture_cc" && sudo -n test -x "$fixture_ld"
+          case "$COGS_STAGE2_KATA_NATIVE_TEST_SHARD" in
+            baseline)
+              sudo -n env -i \
+                HOME=/root LC_ALL=C PATH=/usr/sbin:/usr/bin:/sbin:/bin \
+                PYTHONDONTWRITEBYTECODE=1 COGS_STAGE2_SYNTHETIC_CLANG="$fixture_cc" COGS_STAGE2_SYNTHETIC_LLD="$fixture_ld" \
+                COGS_STAGE2_KATA_NATIVE_TEST_SHARD=baseline \
+                COGS_REQUIRE_STAGE2_KATA_NATIVE_FOUNDATIONS=1 \
+                COGS_REQUIRE_STAGE2_KATA_RUNTIME_FOUNDATIONS=1 \
+                /usr/bin/python3 -I -B test/aws-stage2-completion-kata-operation.py
+              sudo -n env -i \
+                HOME=/root LC_ALL=C PATH=/usr/sbin:/usr/bin:/sbin:/bin \
+                PYTHONDONTWRITEBYTECODE=1 COGS_REQUIRE_STAGE2_KATA_NATIVE_FOUNDATIONS=1 \
+                /usr/bin/python3 -I -B test/aws-stage2-completion-kata-process.py
+              ;;
+            native-wrapper)
+              sudo -n env -i \
+                HOME=/root LC_ALL=C PATH=/usr/sbin:/usr/bin:/sbin:/bin \
+                PYTHONDONTWRITEBYTECODE=1 COGS_STAGE2_SYNTHETIC_CLANG="$fixture_cc" COGS_STAGE2_SYNTHETIC_LLD="$fixture_ld" \
+                COGS_STAGE2_KATA_NATIVE_TEST_SHARD=baseline \
+                COGS_REQUIRE_STAGE2_KATA_NATIVE_SSH_INPUT=1 \
+                /usr/bin/python3 -I -B test/aws-stage2-completion-kata-ssh-native.py
+              exit 0
+              ;;
+            network-runtime) ;;
+            input-*|ssh-*)
+              sudo -n env -i \
+                HOME=/root LC_ALL=C PATH=/usr/sbin:/usr/bin:/sbin:/bin \
+                PYTHONDONTWRITEBYTECODE=1 COGS_STAGE2_SYNTHETIC_CLANG="$fixture_cc" COGS_STAGE2_SYNTHETIC_LLD="$fixture_ld" \
+                COGS_STAGE2_KATA_NATIVE_TEST_SHARD="$COGS_STAGE2_KATA_NATIVE_TEST_SHARD" \
+                COGS_REQUIRE_STAGE2_KATA_NATIVE_FOUNDATIONS=1 \
+                /usr/bin/python3 -I -B test/aws-stage2-completion-kata-operation.py
+              exit 0
+              ;;
+            *) exit 64 ;;
+          esac
           if [[ "$COGS_STAGE2_KATA_NATIVE_TEST_SHARD" = baseline ]]; then
             sudo -n env -i \
               HOME=/root LC_ALL=C PATH=/usr/sbin:/usr/bin:/sbin:/bin \
-              PYTHONDONTWRITEBYTECODE=1 COGS_STAGE2_SYNTHETIC_CLANG="$fixture_cc" COGS_STAGE2_SYNTHETIC_LLD="$fixture_ld" \
-              COGS_STAGE2_KATA_NATIVE_TEST_SHARD="$COGS_STAGE2_KATA_NATIVE_TEST_SHARD" \
-              COGS_REQUIRE_STAGE2_KATA_NATIVE_FOUNDATIONS=1 \
-              COGS_REQUIRE_STAGE2_KATA_RUNTIME_FOUNDATIONS=1 \
-              /usr/bin/python3 -I -B test/aws-stage2-completion-kata-operation.py
-          else
+              PYTHONDONTWRITEBYTECODE=1 COGS_REQUIRE_STAGE2_WORKLOAD_LINUX_FOUNDATIONS=1 \
+              /usr/bin/python3 -I -B test/aws-stage2-completion-workloads.py
             sudo -n env -i \
               HOME=/root LC_ALL=C PATH=/usr/sbin:/usr/bin:/sbin:/bin \
-              PYTHONDONTWRITEBYTECODE=1 COGS_STAGE2_SYNTHETIC_CLANG="$fixture_cc" COGS_STAGE2_SYNTHETIC_LLD="$fixture_ld" \
-              COGS_STAGE2_KATA_NATIVE_TEST_SHARD="$COGS_STAGE2_KATA_NATIVE_TEST_SHARD" \
-              COGS_REQUIRE_STAGE2_KATA_NATIVE_FOUNDATIONS=1 \
-              /usr/bin/python3 -I -B test/aws-stage2-completion-kata-operation.py
+              PYTHONDONTWRITEBYTECODE=1 COGS_REQUIRE_STAGE2_WORKLOAD_LINUX_FOUNDATIONS=1 \
+              /usr/bin/python3 -I -B -O test/aws-stage2-completion-workloads.py
+            test ! -e /tmp/cogs-stage2-workload-candidate-v1
+            test ! -e /tmp/cogs-stage2-workload-post-pin-v1
+            test -z "$(find /tmp -maxdepth 1 -name '.cogs-stage2-workload-*.recovery-*' -print -quit)"
             exit 0
           fi
-          sudo -n env -i \
-            HOME=/root LC_ALL=C PATH=/usr/sbin:/usr/bin:/sbin:/bin \
-            PYTHONDONTWRITEBYTECODE=1 \
-            COGS_REQUIRE_STAGE2_KATA_NATIVE_FOUNDATIONS=1 \
-            /usr/bin/python3 -I -B test/aws-stage2-completion-kata-process.py
-          sudo -n env -i \
-            HOME=/root LC_ALL=C PATH=/usr/sbin:/usr/bin:/sbin:/bin \
-            PYTHONDONTWRITEBYTECODE=1 COGS_STAGE2_SYNTHETIC_CLANG="$fixture_cc" COGS_STAGE2_SYNTHETIC_LLD="$fixture_ld" \
-            COGS_STAGE2_KATA_NATIVE_TEST_SHARD="$COGS_STAGE2_KATA_NATIVE_TEST_SHARD" \
-            COGS_REQUIRE_STAGE2_KATA_NATIVE_SSH_INPUT=1 \
-            /usr/bin/python3 -I -B test/aws-stage2-completion-kata-ssh-native.py
           cleanup_ssh_fixture
           sudo -n test ! -e /sys/fs/cgroup/cogs-stage2-completion-v1
           test -z "$(/usr/bin/pgrep -f '[/]tmp/cogs-kata-process-s1-v1/helper' || true)"
@@ -199,7 +222,7 @@ jobs:
             PYTHONDONTWRITEBYTECODE=1 \
             COGS_REQUIRE_STAGE2_KATA_NATIVE_FOUNDATIONS=1 \
             COGS_REQUIRE_STAGE2_NETWORK_FOUNDATION=1 \
-            COGS_STAGE2_KATA_NATIVE_TEST_SHARD="$COGS_STAGE2_KATA_NATIVE_TEST_SHARD" \
+            COGS_STAGE2_KATA_NATIVE_TEST_SHARD=baseline \
             COGS_STAGE2_CONTAINERD_FIXTURE="$runtime_fixture" \
             /usr/bin/python3 -I -B test/aws-stage2-completion-kata-operation.py
           sudo -n env -i \
@@ -212,19 +235,6 @@ jobs:
             PYTHONDONTWRITEBYTECODE=1 \
             COGS_REQUIRE_STAGE2_NETWORK_FOUNDATION=1 \
             /usr/bin/python3 -I -B test/aws-stage2-completion-kata-network-linux.py
-          sudo -n env -i \
-            HOME=/root LC_ALL=C PATH=/usr/sbin:/usr/bin:/sbin:/bin \
-            PYTHONDONTWRITEBYTECODE=1 \
-            COGS_REQUIRE_STAGE2_WORKLOAD_LINUX_FOUNDATIONS=1 \
-            /usr/bin/python3 -I -B test/aws-stage2-completion-workloads.py
-          sudo -n env -i \
-            HOME=/root LC_ALL=C PATH=/usr/sbin:/usr/bin:/sbin:/bin \
-            PYTHONDONTWRITEBYTECODE=1 \
-            COGS_REQUIRE_STAGE2_WORKLOAD_LINUX_FOUNDATIONS=1 \
-            /usr/bin/python3 -I -B -O test/aws-stage2-completion-workloads.py
-          test ! -e /tmp/cogs-stage2-workload-candidate-v1
-          test ! -e /tmp/cogs-stage2-workload-post-pin-v1
-          test -z "$(find /tmp -maxdepth 1 -name '.cogs-stage2-workload-*.recovery-*' -print -quit)"
           sudo -n test ! -e /sys/fs/cgroup/cogs-stage2-completion-v1
           test -z "$(/usr/bin/pgrep -f '[/]tmp/cogs-kata-process-s1-v1/helper' || true)"
           sudo -n test ! -e "$fixture"

@@ -2020,7 +2020,7 @@ def production_owner_test():
                         os.close(identity_r)
                         try:
                             child_control = fs.OperationControl(
-                                time.monotonic_ns() + operation.command_policy.SSH_TOTAL_NS, lambda: False)
+                                time.monotonic_ns() + operation.JOURNAL_TOTAL_NS, lambda: False)
                             child_factory = lambda control: linux_chain_factory(
                                 transaction_completion, control)
                             with patch.object(operation, "_open_base_chain", side_effect=child_factory):
@@ -2100,7 +2100,7 @@ def production_owner_test():
                 transaction_patch = patch.object(operation, "_open_base_chain", side_effect=transaction_factory)
                 transaction_patch.start()
                 transaction_control = fs.OperationControl(
-                    time.monotonic_ns() + operation.command_policy.SSH_TOTAL_NS, lambda: False)
+                    time.monotonic_ns() + operation.JOURNAL_TOTAL_NS, lambda: False)
                 transaction_chain = linux_chain_factory(transaction_completion, transaction_control)
                 transaction_parent = transaction_chain.components[-1].node
                 try:

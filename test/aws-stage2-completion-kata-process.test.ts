@@ -66,6 +66,8 @@ test("S1 historical process matrix and journal-gated correction", async () => {
     [...shardRows.matchAll(/- ([a-z-]+)/gu)].map((match) => match[1]),
     [
       "baseline",
+      "native-wrapper",
+      "network-runtime",
       "input-intent",
       "input-cgroup-create",
       "input-fork",
@@ -87,7 +89,7 @@ test("S1 historical process matrix and journal-gated correction", async () => {
       "ssh-output",
     ],
   );
-  assert.match(workflow, /fail-fast: false[\s\S]*max-parallel: 20/u);
+  assert.match(workflow, /fail-fast: false[\s\S]*max-parallel: 22/u);
   assert.match(workflow, /COGS_STAGE2_KATA_NATIVE_TEST_SHARD: \$\{\{ matrix\.shard \}\}/u);
   assert.match(
     workflow,
