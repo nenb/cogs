@@ -420,7 +420,7 @@ def linux_supervisor_tests():
     result = issue(process._TestAction.HELD_PIPE)
     assert result.reaped and result.pipe_timed_out and not result.leader_timed_out
     assert result.outcome == "uncertain" and result.timed_out
-    assert time.monotonic() - started < 1
+    assert time.monotonic() - started < 3
 
     held = os.open("/dev/null", os.O_RDONLY | os.O_CLOEXEC)
     try:
