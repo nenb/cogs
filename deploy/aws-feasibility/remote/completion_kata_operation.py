@@ -1690,8 +1690,11 @@ def _make_authority():
                 input_required = {"FS_OBSERVED", "COMMAND_INTENT", "COMMAND_PREEXEC",
                                   "COMMAND_OUTCOME", "COMMAND_INTENT_V2", "COMMAND_PREEXEC_V2",
                                   "DAEMON_RETAINED_V2", *LIFECYCLE[:13]}
-                absent_settlement = (phase == "FS_SETTLED" and len(records) >= 2
-                                     and records[-2].record_type == "FS_ABSENT")
+                settlements = [index for index, item in enumerate(records)
+                               if item.record_type == "FS_SETTLED"]
+                absent_settlement = (phase == "FS_SETTLED" and settlements
+                                     and settlements[-1] > 0
+                                     and records[settlements[-1] - 1].record_type == "FS_ABSENT")
                 if phase == "FS_SETTLED" and not absent_settlement:
                     input_required.add("FS_SETTLED")
                 if phase in input_required and phase not in {"FIREWALL_ABSENT", "FS_INTENT"}:
