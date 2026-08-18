@@ -1885,7 +1885,9 @@ def production_owner_test():
                                 producer.create()
                         finally: os._exit(84)
                     os.close(identity_w)
-                    assert os.waitpid(supervisor, 0)[1] == 83 << 8
+                    _pid, supervisor_status = os.waitpid(supervisor, 0)
+                    assert os.waitstatus_to_exitcode(supervisor_status) == 83, (
+                        cut, os.waitstatus_to_exitcode(supervisor_status))
                     reported = (os.read(identity_r, 64).decode("ascii")
                                 if cut == "fork" else "")
                     os.close(identity_r)
@@ -1959,7 +1961,9 @@ def production_owner_test():
                                 process._transact_fixed_ssh(authority, ssh_executable, bindings)
                         finally: os._exit(84)
                     os.close(identity_w)
-                    assert os.waitpid(supervisor, 0)[1] == 83 << 8
+                    _pid, supervisor_status = os.waitpid(supervisor, 0)
+                    assert os.waitstatus_to_exitcode(supervisor_status) == 83, (
+                        cut, os.waitstatus_to_exitcode(supervisor_status))
                     reported = (os.read(identity_r, 64).decode("ascii")
                                 if cut == "fork" else "")
                     os.close(identity_r)
