@@ -580,9 +580,11 @@ def native_transaction_crashes(completion):
             "ip", "/usr/sbin/ip", descriptor, executable_sha256,
             "d" * 64, process._host_generation(descriptor),
         )
+        identity_r, identity_w = os.pipe2(os.O_CLOEXEC)
         supervisor = os.fork()
         if supervisor == 0:
             try:
+                os.close(identity_r)
                 authority = operation._open_fixed_operation()
                 if cut == "intent":
                     real = process.kata_operation._record_command_intent
@@ -592,7 +594,11 @@ def native_transaction_crashes(completion):
                     process._prepare_cgroup = lambda *args: (real(*args), os._exit(83))[0]
                 elif cut == "fork":
                     real = process._identity
-                    process._identity = lambda *args: (real(*args), os._exit(83))[0]
+                    def crash_after_fork(*args):
+                        identity, pidfd = real(*args)
+                        os.write(identity_w, f"{identity.pid}:{identity.starttime}".encode("ascii"))
+                        os._exit(83)
+                    process._identity = crash_after_fork
                 elif cut == "preexec":
                     real = process.kata_operation._record_command_preexec
                     process.kata_operation._record_command_preexec = lambda *args: (real(*args), os._exit(83))[0]
@@ -601,14 +607,19 @@ def native_transaction_crashes(completion):
                 process._transact_fixed(authority, fixed, retained)
             finally:
                 os._exit(84)
-        os.close(descriptor)
+        os.close(descriptor); os.close(identity_w)
         assert os.waitpid(supervisor, 0)[1] == 83 << 8
-        resumed = operation._open_fixed_operation()
-        process._recover_pending_fixed(resumed)
-        resumed.close()
+        reported = os.read(identity_r, 64).decode("ascii"); os.close(identity_r)
+        helper = str(ROOT / "test/aws-stage2-completion-kata-native-recover.py")
+        recovery = os.fork()
+        if recovery == 0:
+            argv = ["/usr/bin/python3", "-I", "-B", helper, str(completion)]
+            if reported: argv.append(reported)
+            os.execve(argv[0], argv, {"HOME": "/root", "LC_ALL": "C", "PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "PYTHONDONTWRITEBYTECODE": "1"})
+        assert os.waitpid(recovery, 0)[1] == 0
         terminal = operation._parse(fixture_journal_path(completion).read_bytes())[-1]
         assert terminal.record_type == "COMMAND_OUTCOME_V2" and terminal.body["uncertain"]
-    if os.path.isdir(process.CGROUP_BASE): os.rmdir(process.CGROUP_BASE)
+        assert not os.path.exists(process.CGROUP_BASE)
     return True
 
 

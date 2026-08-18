@@ -144,21 +144,6 @@ def outcome(command, stdout=b"", truncated=False, uncertain=False, status=0):
     }
 
 
-def run_success(raw, serial, command_id, phase, status=0):
-    command = intent(serial, command_id, phase)
-    raw = add(raw, "COMMAND_INTENT_V2", command)
-    raw = add(raw, "COMMAND_PREEXEC_V2", preexec(command))
-    return add(raw, "COMMAND_OUTCOME_V2", outcome(command, status=status)), serial + 1
-
-
-def complete_trace(raw, serial, phase, trace_key=None):
-    for command_id in operation.command_policy.PHASE_COMMAND_TRACES[trace_key or phase]:
-        if command_id in operation.command_policy.DEFERRED_COMMANDS:
-            break
-        raw, serial = run_success(raw, serial, command_id, phase)
-    return raw, serial
-
-
 raw = add(prefix(), "BASELINES_CAPTURED",
           {"operation_token": "a" * 64, "proof_sha256": "9" * 64})
 command = intent(command_id="IP_NETNS_ADD", phase="BASELINES_CAPTURED")
@@ -174,37 +159,8 @@ failed = add(add(add(raw, "COMMAND_INTENT_V2", command), "COMMAND_PREEXEC_V2", p
              "COMMAND_OUTCOME_V2", outcome(command, status=7))
 reject(lambda: add(failed, "NETWORK_READY",
                    {"operation_token": "a" * 64, "proof_sha256": "9" * 64}))
-cleanup = add(failed, "READINESS_REVOKED", {"operation_token": "a" * 64})
-cleanup, cleanup_serial = complete_trace(
-    cleanup, 1, "READINESS_REVOKED", "READINESS_REVOKED:no-daemon")
-cleanup = add(cleanup, "OWNERSHIP_OBSERVED", {"operation_token": "a" * 64,
-    "proof_sha256": "9" * 64, "task": "absent", "container": "absent",
-    "runtime": "absent", "share": "absent"})
-cleanup, cleanup_serial = complete_trace(
-    cleanup, cleanup_serial, "OWNERSHIP_OBSERVED", "OWNERSHIP_OBSERVED:task-absent:network-absent")
-cleanup = add(cleanup, "NETWORK_ABSENT", {"operation_token": "a" * 64, "proof_sha256": "9" * 64})
-for phase, target, trace_key in (
-    ("NETWORK_ABSENT", "TASK_ABSENT", "NETWORK_ABSENT:task-absent:no-daemon"),
-    ("TASK_ABSENT", "CONTAINER_ABSENT", "TASK_ABSENT:container-absent:no-daemon"),
-    ("CONTAINER_ABSENT", "RUNTIME_ABSENT", "CONTAINER_ABSENT:no-daemon"),
-):
-    cleanup, cleanup_serial = complete_trace(cleanup, cleanup_serial, phase, trace_key)
-    cleanup = add(cleanup, target, {"operation_token": "a" * 64, "proof_sha256": "9" * 64})
-cleanup = add(cleanup, "SHARE_ABSENT", {"operation_token": "a" * 64, "proof_sha256": "9" * 64})
-cleanup, cleanup_serial = complete_trace(cleanup, cleanup_serial, "SHARE_ABSENT", "SHARE_ABSENT:nft-absent")
-cleanup = add(cleanup, "FIREWALL_ABSENT", {"operation_token": "a" * 64, "proof_sha256": "9" * 64})
-add(cleanup, "INPUT_REMOVED", {"operation_token": "a" * 64, "proof_sha256": "9" * 64})
-# A successful netns effect followed by failure selects exact network removal.
-partial, partial_serial = run_success(raw, 0, "IP_NETNS_ADD", "BASELINES_CAPTURED")
-link = intent(partial_serial, "IP_LINK_ADD", "BASELINES_CAPTURED")
-partial = add(add(add(partial, "COMMAND_INTENT_V2", link), "COMMAND_PREEXEC_V2", preexec(link)),
-              "COMMAND_OUTCOME_V2", outcome(link, status=7))
-partial = add(partial, "READINESS_REVOKED", {"operation_token": "a" * 64})
-partial = add(partial, "OWNERSHIP_OBSERVED", {"operation_token": "a" * 64,
-    "proof_sha256": "9" * 64, "task": "absent", "container": "absent",
-    "runtime": "absent", "share": "absent"})
-add(partial, "COMMAND_INTENT_V2",
-    intent(partial_serial + 1, "IP_NETNS_REMOVE", "OWNERSHIP_OBSERVED"))
+reject(lambda: add(failed, "READINESS_REVOKED", {"operation_token": "a" * 64}))
+# Slice A never infers network/runtime/SSH cleanup from generic lifecycle proofs.
 
 # Replay semantics bind genesis, current phase, fd roles, cgroup lineage, limits,
 # overflow and wait classification rather than trusting a shared digest header.
@@ -238,10 +194,8 @@ add(overflow_prefix, "COMMAND_OUTCOME_V2", outcome(overflow_command, b"x" * 6553
 # commands remain legal, and daemon retirement is independently journaled.
 daemon_prefix = add(prefix(), "BASELINES_CAPTURED",
                     {"operation_token": "a" * 64, "proof_sha256": "9" * 64})
-daemon_prefix, daemon_serial = complete_trace(daemon_prefix, 0, "BASELINES_CAPTURED")
-daemon_prefix = add(daemon_prefix, "NETWORK_READY",
-                    {"operation_token": "a" * 64, "proof_sha256": "9" * 64})
-daemon = intent(daemon_serial, "CONTAINERD_START", "NETWORK_READY")
+daemon_serial = 0
+daemon = intent(daemon_serial, "CONTAINERD_START", "BASELINES_CAPTURED")
 daemon_raw = add(daemon_prefix, "COMMAND_INTENT_V2", daemon)
 daemon_preexec = preexec(daemon)
 daemon_raw = add(daemon_raw, "COMMAND_PREEXEC_V2", daemon_preexec)
@@ -251,8 +205,8 @@ operation._daemon_socket_generation(retained["socket_generation"])
 daemon_raw = add(daemon_raw, "DAEMON_RETAINED_V2", retained)
 retained_raw = daemon_raw
 daemon_raw = add(daemon_raw, "COMMAND_INTENT_V2",
-                 intent(daemon_serial + 1, "CTR_CONTAINER_INFO", "NETWORK_READY"))
-check(operation._legal(operation._parse(daemon_raw)) == "NETWORK_READY",
+                 intent(daemon_serial + 1, "CTR_CONTAINER_INFO", "BASELINES_CAPTURED"))
+check(operation._legal(operation._parse(daemon_raw)) == "BASELINES_CAPTURED",
       "retained daemon blocked later command")
 
 # A retained daemon cannot use legacy v1 or cross runtime absence/finalization;
@@ -293,57 +247,29 @@ not_started_output = outcome(command, b"x")
 not_started_output.update({"outcome": "not-started", "status": None, "release_count": 0})
 reject(lambda: operation._validate_body("COMMAND_OUTCOME_V2", not_started_output))
 
-# Policy is deeply immutable and checked against an independent complete oracle.
+# Independent process-only policy oracle: exact IDs, one baseline occurrence, no lifecycle policy.
 policy = operation.command_policy
-EXPECTED_PHASE_TRACES = {
-    "BASELINES_CAPTURED": ("IP_NETNS_ADD", "IP_LINK_ADD", "IP_LINK_MOVE",
-        "IP_HOST_ADDRESS_ADD", "IP_HOST_LINK_UP", "IP_PEER_RENAME",
-        "IP_PEER_ADDRGEN_NONE", "IP_LOOPBACK_UP", "IP_GUEST_ADDRESS_ADD",
-        "IP_GUEST_LINK_UP", "NFT_INSTALL", "IP_HOST_LINKS", "IP_HOST_ADDRESSES",
-        "IP_HOST_ROUTES4", "IP_HOST_ROUTES6", "IP_NS_LINKS", "IP_NS_ADDRESSES",
-        "IP_NS_ROUTES4", "IP_NS_ROUTES6", "NFT_TABLE"),
-    "NETWORK_READY": ("CONTAINERD_START", "CTR_CONTAINER_INFO", "CTR_CONTAINER_LIST",
-        "IP_HOST_LINKS", "IP_HOST_ADDRESSES", "IP_HOST_ROUTES4", "IP_HOST_ROUTES6",
-        "IP_NS_LINKS", "IP_NS_ADDRESSES", "IP_NS_ROUTES4", "IP_NS_ROUTES6",
-        "NFT_TABLE", "CTR_RUN"),
-    "RUNTIME_READY": ("CTR_CONTAINER_INFO", "CTR_CONTAINER_LIST", "CTR_TASK_LIST", "SSH_READY"),
-    "READINESS_REVOKED:daemon": ("CTR_TASK_LIST", "CTR_CONTAINER_INFO", "CTR_CONTAINER_LIST"),
-    "READINESS_REVOKED:no-daemon": (),
-    "OWNERSHIP_OBSERVED:task-exact": ("CTR_TASK_LIST", "CTR_TASK_TERM", "CTR_TASK_LIST",
-        "CTR_TASK_KILL", "CTR_TASK_LIST"),
-    "OWNERSHIP_OBSERVED:task-absent:network-created": ("IP_NETNS_REMOVE", "IP_HOST_LINKS",
-        "IP_HOST_ADDRESSES", "IP_HOST_ROUTES4", "IP_HOST_ROUTES6", "IP_NS_LINKS",
-        "IP_NS_ADDRESSES", "IP_NS_ROUTES4", "IP_NS_ROUTES6", "NFT_TABLE"),
-    "OWNERSHIP_OBSERVED:task-absent:network-absent": (),
-    "TASK_STOPPED": ("IP_NETNS_REMOVE", "IP_HOST_LINKS", "IP_HOST_ADDRESSES",
-        "IP_HOST_ROUTES4", "IP_HOST_ROUTES6", "IP_NS_LINKS", "IP_NS_ADDRESSES",
-        "IP_NS_ROUTES4", "IP_NS_ROUTES6", "NFT_TABLE"),
-    "NETWORK_ABSENT:task-owned": ("CTR_TASK_REMOVE", "CTR_TASK_LIST"),
-    "NETWORK_ABSENT:task-absent:no-daemon": (),
-    "NETWORK_ABSENT:task-absent:daemon-v3": ("CTR_RUN",),
-    "TASK_ABSENT:container-owned": ("CTR_CONTAINER_REMOVE", "CTR_CONTAINER_LIST"),
-    "TASK_ABSENT:container-absent:no-daemon": (),
-    "TASK_ABSENT:container-absent:daemon-v3": ("CTR_RUN",),
-    "CONTAINER_ABSENT:daemon": ("CTR_CONTAINER_LIST",),
-    "CONTAINER_ABSENT:no-daemon": (),
-    "SHARE_ABSENT:nft-created": ("NFT_REMOVE", "NFT_TABLE"),
-    "SHARE_ABSENT:nft-absent": (),
+EXPECTED_IMPLEMENTED = {
+    "CTR_CONTAINER_INFO", "CTR_CONTAINER_LIST", "CTR_CONTAINER_REMOVE", "CTR_TASK_KILL",
+    "CTR_TASK_LIST", "CTR_TASK_REMOVE", "CTR_TASK_TERM", "IP_GUEST_ADDRESS_ADD",
+    "IP_GUEST_LINK_UP", "IP_HOST_ADDRESSES", "IP_HOST_ADDRESS_ADD", "IP_HOST_LINKS",
+    "IP_HOST_LINK_UP", "IP_HOST_ROUTES4", "IP_HOST_ROUTES6", "IP_LINK_ADD",
+    "IP_LINK_MOVE", "IP_LOOPBACK_UP", "IP_NETNS_ADD", "IP_NETNS_REMOVE",
+    "IP_NS_ADDRESSES", "IP_NS_LINKS", "IP_NS_ROUTES4", "IP_NS_ROUTES6",
+    "IP_PEER_ADDRGEN_NONE", "IP_PEER_RENAME", "NFT_INSTALL", "NFT_REMOVE",
+    "NFT_TABLE", "SSH_READY", "CONTAINERD_START",
 }
-EXPECTED_LIFECYCLE_REQUIREMENTS = {
-    "NETWORK_READY": ("BASELINES_CAPTURED",), "RUNTIME_READY": ("NETWORK_READY",),
-    "SSH_READY": ("RUNTIME_READY",), "OWNERSHIP_OBSERVED": ("READINESS_REVOKED",),
-    "TASK_STOPPED": ("OWNERSHIP_OBSERVED",),
-    "NETWORK_ABSENT": ("TASK_STOPPED", "OWNERSHIP_OBSERVED"),
-    "TASK_ABSENT": ("NETWORK_ABSENT",), "CONTAINER_ABSENT": ("TASK_ABSENT",),
-    "RUNTIME_ABSENT": ("CONTAINER_ABSENT",), "FIREWALL_ABSENT": ("SHARE_ABSENT",),
-}
-check(dict(policy.PHASE_COMMAND_TRACES) == EXPECTED_PHASE_TRACES, "complete phase trace drift")
-check(dict(policy.LIFECYCLE_REQUIREMENTS) == EXPECTED_LIFECYCLE_REQUIREMENTS,
-      "complete lifecycle requirement drift")
-# Command bytes are independently regenerated from process compositions.
+check(policy.POLICY_VERSION == "cogs.stage2-kata-command-policy/v2-process-only-1",
+      "process-only policy version drift")
+check(set(policy.POLICY_SHA256) == EXPECTED_IMPLEMENTED, "implemented process policy drift")
+check(all(value == ("BASELINES_CAPTURED",) for value in policy.OCCURRENCES.values())
+      and dict(policy.PHASES) == dict(policy.OCCURRENCES)
+      and all(value == 1 for value in policy.MAX_OCCURRENCES.values()),
+      "transaction occurrence policy drift")
+check(not hasattr(policy, "PHASE_COMMAND_TRACES") and not hasattr(policy, "LIFECYCLE_REQUIREMENTS"),
+      "generic lifecycle/resource inference remains in Slice A")
 for mapping in (policy.POLICY_SHA256, policy.OCCURRENCES, policy.PHASES,
-                policy.MAX_OCCURRENCES, policy.PHASE_COMMAND_TRACES,
-                policy.LIFECYCLE_REQUIREMENTS):
+                policy.MAX_OCCURRENCES):
     reject(lambda mapping=mapping: mapping.__setitem__("CTR_TASK_LIST", ("RUNTIME_READY",)))
 original_policy = policy.POLICY_SHA256
 try:
@@ -365,22 +291,11 @@ for command_id in policy.POLICY_SHA256:
 reject(lambda: add(raw, "COMMAND_INTENT_V2",
                    rebound({**command, "policy_version": "future-policy"})))
 
-# Setup mutations are an exact successful prefix, never an unordered menu.
+# Slice A binds exact transactions but does not guess network command ordering.
 setup_raw = add(prefix(), "BASELINES_CAPTURED",
                 {"operation_token": "a" * 64, "proof_sha256": "9" * 64})
-reject(lambda: add(setup_raw, "COMMAND_INTENT_V2",
-                   intent(command_id="IP_LINK_ADD", phase="BASELINES_CAPTURED")))
-netns = intent(command_id="IP_NETNS_ADD", phase="BASELINES_CAPTURED")
-setup_raw = add(add(add(setup_raw, "COMMAND_INTENT_V2", netns),
-                    "COMMAND_PREEXEC_V2", preexec(netns)),
-                "COMMAND_OUTCOME_V2", outcome(netns))
 add(setup_raw, "COMMAND_INTENT_V2",
-    intent(1, "IP_LINK_ADD", "BASELINES_CAPTURED"))
-
-# TERM, fresh observation, KILL, and final observation occupy exact positions.
-check(policy.PHASE_COMMAND_TRACES["OWNERSHIP_OBSERVED:task-exact"] == (
-    "CTR_TASK_LIST", "CTR_TASK_TERM", "CTR_TASK_LIST", "CTR_TASK_KILL", "CTR_TASK_LIST"),
-    "TERM-observe-KILL trace drift")
+    intent(command_id="IP_LINK_ADD", phase="BASELINES_CAPTURED"))
 
 # Cleanup-only pending-intent recovery never forks or releases and durably
 # consumes the exact serial. Pending PREEXEC is always sticky uncertain.
