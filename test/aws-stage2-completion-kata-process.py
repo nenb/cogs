@@ -321,11 +321,17 @@ def linux_supervisor_tests():
             for descriptor, _row in value.pidfds.values():
                 try: signal.pidfd_send_signal(descriptor, signal.SIGKILL)
                 except ProcessLookupError: pass
-        def settle(value, leader, _deadline, _errors):
+        def settle(value, leader, deadline, _errors):
             for pid, (descriptor, _row) in tuple(value.pidfds.items()):
                 if pid != leader:
-                    try: os.waitpid(pid, os.WNOHANG)
-                    except ChildProcessError: pass
+                    while time.monotonic_ns() < deadline:
+                        try:
+                            observed, _status = os.waitpid(pid, os.WNOHANG)
+                        except ChildProcessError:
+                            break
+                        if observed == pid:
+                            break
+                        time.sleep(0.005)
                 try: os.close(descriptor)
                 except OSError: pass
             value.pidfds.clear()
