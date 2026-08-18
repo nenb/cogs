@@ -1887,6 +1887,21 @@ def production_owner_test():
                         except BaseException:
                             import traceback
                             traceback.print_exc()
+                            records = operation._parse(
+                                fixture_journal_path(transaction_completion).read_bytes())
+                            try:
+                                print("DIAG_LEGAL", operation._legal(records), file=sys.stderr)
+                            except BaseException:
+                                print("DIAG_LEGAL_FAIL", file=sys.stderr); traceback.print_exc()
+                            try:
+                                raw_names = fs._enumerate_stable(
+                                    child_chain.components[-1].node, child_control).raw_names
+                                operation._validate_stage_layout(
+                                    raw_names, records, "FS_INTENT",
+                                    operation._key_value(child_chain.components[-1].node.generation.key))
+                                print("DIAG_LAYOUT_OK", file=sys.stderr)
+                            except BaseException:
+                                print("DIAG_LAYOUT_FAIL", file=sys.stderr); traceback.print_exc()
                         finally: os._exit(84)
                     os.close(identity_w)
                     _pid, supervisor_status = os.waitpid(supervisor, 0)
