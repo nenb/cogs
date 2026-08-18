@@ -1063,12 +1063,13 @@ def _set_subreaper(enabled):
 
 
 def _advance_cleanup(owner, pid, wait_status, deadline, term_at, kill_at, state, errors):
-    try:
-        observed, status = os.waitpid(pid, os.WNOHANG)
-        if observed == pid:
-            wait_status = status
-    except ChildProcessError:
-        errors.append("leader-reap-authority-lost")
+    if wait_status is None:
+        try:
+            observed, status = os.waitpid(pid, os.WNOHANG)
+            if observed == pid:
+                wait_status = status
+        except ChildProcessError:
+            errors.append("leader-reap-authority-lost")
     members = _cgroup_members(owner)
     _adopt_members(owner, members)
     now = _boottime_ns()
