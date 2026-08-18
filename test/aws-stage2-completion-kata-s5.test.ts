@@ -5,25 +5,47 @@ import { join } from "node:path";
 import { test } from "node:test";
 
 const root = process.cwd();
-const remote = join(root, "deploy/aws-feasibility/remote");
 const py = join(root, "test/aws-stage2-completion-kata-s5.py");
+const remote = join(root, "deploy/aws-feasibility/remote");
 
-test("ADR0099 Slice A entry remains fail-closed", async () => {
-  const env = { ...process.env, PYTHONDONTWRITEBYTECODE: "1" };
+test("S5 qualification gate and complete lifecycle remain offline and fail closed", async () => {
+  const env: NodeJS.ProcessEnv = { ...process.env, PYTHONDONTWRITEBYTECODE: "1" };
   delete env.PYTHONOPTIMIZE;
-  for (const args of [[py], ["-O", py]]) {
-    const result = spawnSync("python3", args, { cwd: root, env, encoding: "utf8", timeout: 30_000 });
-    assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /Slice A fail-closed foundation matrix passed/u);
-  }
-  const [qualification, shell, fdmap] = await Promise.all([
+  const result = spawnSync("python3", [py], { cwd: root, env, encoding: "utf8", timeout: 30_000 });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /completion Kata S5 offline qualification\/lifecycle matrix passed/u);
+
+  const optimized = spawnSync("python3", ["-O", py], {
+    cwd: root,
+    env,
+    encoding: "utf8",
+    timeout: 30_000,
+  });
+  assert.notEqual(optimized.status, 0);
+
+  const [ssh, operation, qualification, entry, ledger, processOwner, coordinator] = await Promise.all([
+    readFile(join(remote, "completion_kata_ssh.py"), "utf8"),
+    readFile(join(remote, "completion_kata_operation.py"), "utf8"),
     readFile(join(remote, "completion_kata_qualification.py"), "utf8"),
     readFile(join(remote, "run-stage2-completion-remote.sh"), "utf8"),
-    readFile(join(remote, "completion_kata_fdmap.py"), "utf8"),
+    readFile(join(remote, "completion_rootfs_ledger.py"), "utf8"),
+    readFile(join(remote, "completion_kata_process.py"), "utf8"),
+    readFile(join(remote, "completion_kata_coordinator.py"), "utf8"),
   ]);
-  assert.doesNotMatch(qualification, /CommittedGate|_claim_committed_gate|seal = object\(\)/u);
-  assert.match(shell, /\/usr\/bin\/env -i/u);
-  assert.match(shell, /\/usr\/bin\/python3 -I -B/u);
-  assert.match(fdmap, /content_sha256/u);
-  assert.doesNotMatch(fdmap, /make_input_owner_for_tests|seal = object\(\)/u);
+  assert.match(ssh, /host-tool contract loader is absent/u);
+  assert.match(ssh, /ConnectionAttempts=1/u);
+  assert.match(operation, /ROOTFS_RELEASE_READY/u);
+  assert.match(operation, /ROOTFS_RELEASE_AUTHORIZED/u);
+  assert.doesNotMatch(operation, /def append\(/u);
+  assert.match(qualification, /host-tools-unqualified/u);
+  assert.match(qualification, /kvm-missing-or-unqualified/u);
+  assert.doesNotMatch(qualification, /subprocess|socket|boto|urllib|requests/u);
+  assert.match(entry, /\/usr\/bin\/python3 -I/u);
+  assert.doesNotMatch(entry, /\/usr\/bin\/(?:aws|tofu|terraform|ssh|ctr|ip|nft)(?:\s|$)/u);
+  assert.doesNotMatch(ledger, /release_private|release-authorized.*True/u);
+  assert.match(ledger, /def _append_release_authorized_record/u);
+  assert.match(processOwner, /_install_inherited_fds/u);
+  assert.match(processOwner, /adapt_ssh_process_outcome/u);
+  assert.match(coordinator, /_claim_committed_gate/u);
+  assert.match(coordinator, /revoke_before_teardown/u);
 });

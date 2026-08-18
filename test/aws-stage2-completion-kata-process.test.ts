@@ -5,22 +5,36 @@ import { join } from "node:path";
 import { test } from "node:test";
 
 const root = process.cwd();
-const py = join(root, "test/aws-stage2-completion-kata-process.py");
-const production = join(root, "deploy/aws-feasibility/remote/completion_kata_process.py");
+const productionPath = join(root, "deploy/aws-feasibility/remote/completion_kata_process.py");
+const historical = join(root, "test/aws-stage2-completion-kata-process.py");
+const correction = join(root, "test/aws-stage2-completion-kata-slice-a.py");
 
-test("ADR0099 Slice A fixed process boundary is optimization-safe", async () => {
-  const env = { ...process.env, PYTHONDONTWRITEBYTECODE: "1" };
+test("S1 historical process matrix and journal-gated correction", async () => {
+  const env: NodeJS.ProcessEnv = { ...process.env, PYTHONDONTWRITEBYTECODE: "1" };
   delete env.PYTHONOPTIMIZE;
-  for (const args of [[py], ["-O", py]]) {
-    const result = spawnSync("python3", args, { cwd: root, env, encoding: "utf8", timeout: 30_000 });
+  const history = spawnSync("python3", [historical], {
+    cwd: root, env, encoding: "utf8", timeout: 120_000,
+  });
+  assert.equal(history.status, 0, history.stderr);
+  assert.match(history.stdout, /completion Kata process/u);
+  for (const args of [[correction], ["-O", correction]]) {
+    const result = spawnSync("python3", args, {
+      cwd: root, env, encoding: "utf8", timeout: 120_000,
+    });
     assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /fixed process transaction matrix passed/u);
+    assert.match(result.stdout, /Slice A correction matrix passed/u);
   }
-  const source = await readFile(production, "utf8");
-  assert.match(source, /CLOCK_BOOTTIME/u);
+
+  const source = await readFile(productionPath, "utf8");
+  assert.match(source, /def _transact_fixed\(journal, fixed, executable, inherited=\(\)\):/u);
+  assert.match(source, /_record_command_intent[\s\S]*_record_command_preexec[\s\S]*os\.write\(release_w, b"R"\)/u);
+  assert.match(source, /selectors\.DefaultSelector/u);
+  assert.match(source, /cgroup\.kill/u);
   assert.match(source, /pidfd_send_signal/u);
-  assert.match(source, /cgroup\.procs/u);
-  assert.match(source, /absolute_deadline_ns/u);
-  assert.doesNotMatch(source, /COGS_KATA_PROCESS_TESTING_V1|def _supervise\(|def _make_test_issuer\(/u);
-  assert.doesNotMatch(source, /^def (?:execute|run|spawn|issue_command|spec)\(/mu);
+  assert.match(source, /_set_subreaper\(True\)/u);
+  assert.match(source, /def _recover_pending_fixed/u);
+  assert.match(source, /LONG_LIVED_CONTAINERD = LongLivedCommand/u);
+  assert.doesNotMatch(source, /COGS_KATA_PROCESS_TESTING_V1|def _make_test_issuer\(|def _supervise\(/u);
+  assert.doesNotMatch(source, /os\.kill(?:pg)?\(/u);
+  assert.doesNotMatch(source, /^def (?:run|execute|spawn|issue_command)\(/mu);
 });

@@ -22,7 +22,7 @@ class FdMapError(Exception):
 
 @dataclass(frozen=True)
 class FdIdentity:
-    mount_id: int
+    mount_id: int | None
     device: int
     inode: int
     mode: int
@@ -45,7 +45,7 @@ class InheritedBinding:
 
 def identity(descriptor):
     value = os.fstat(descriptor)
-    mount_id = 1
+    mount_id = None
     try:
         with open(f"/proc/self/fdinfo/{descriptor}", "r", encoding="ascii") as source:
             rows = [row for row in source.read(4096).splitlines() if row.startswith("mnt_id:\t")]
@@ -53,7 +53,9 @@ def identity(descriptor):
             raise FdMapError("invalid descriptor mount identity")
         mount_id = int(rows[0][7:])
     except FileNotFoundError:
-        pass
+        # Portable identity remains explicitly incomplete. It cannot be encoded
+        # as a durable production generation without real fdinfo.
+        mount_id = None
     return FdIdentity(
         mount_id, value.st_dev, value.st_ino, value.st_mode, value.st_uid, value.st_gid,
         value.st_nlink, value.st_size, value.st_mtime_ns, value.st_ctime_ns,
