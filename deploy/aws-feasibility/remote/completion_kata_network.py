@@ -1488,7 +1488,11 @@ def _quarantine_netns(journal, retained):
                         raise NetworkError("unowned quarantine placeholder preserved")
                     target_fd = os.open(quarantine, os.O_RDONLY | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0), dir_fd=parent)
                     opened.append(target_fd)
-                if syscall(429, tree_fd, b"", target_fd, b"", 0x4 | 0x40) != 0:  # move_mount F/T_EMPTY_PATH
+                target_stat = os.stat(quarantine, dir_fd=parent, follow_symlinks=False)
+                if (placeholder is None or (target_stat.st_dev, target_stat.st_ino) !=
+                        (placeholder["device"], placeholder["inode"])):
+                    raise NetworkError("quarantine target changed before move")
+                if syscall(429, tree_fd, b"", parent, quarantine.encode(), 0x4) != 0:  # F_EMPTY_PATH
                     saved = ctypes.get_errno(); raise OSError(saved, os.strerror(saved))
                 moved = open_identity(quarantine)
             if any(getattr(moved[1], name) != expected[name] for name in fields):
