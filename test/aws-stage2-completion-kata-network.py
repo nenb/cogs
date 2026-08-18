@@ -249,6 +249,9 @@ mountinfo = (
 stat = network.NetnsStat(device, inode)
 netns_identity = network.parse_netns_identity(mountinfo, stat)
 assert (netns_identity.mount_id, netns_identity.device, netns_identity.inode) == (41, "0:4", inode)
+shared_netns = network.parse_netns_identity(
+    mountinfo.replace(b"cogs-stage2-ssh rw -", b"cogs-stage2-ssh rw shared:308 -"), stat)
+assert shared_netns.optional_fields == ("shared:308",)
 replacement_mount_netns = network.parse_netns_identity(mountinfo.replace(b"41 30", b"42 30"), stat)
 replacement_inode_netns = network.parse_netns_identity(
     mountinfo.replace(b"4026533000", b"4026533001"), network.NetnsStat(device, inode + 1),
@@ -261,6 +264,8 @@ for hostile in (
     mountinfo.replace(b"- nsfs nsfs rw", b"- tmpfs nsfs rw"),
     mountinfo.replace(b"- nsfs nsfs rw", b"- nsfs other rw"),
     mountinfo.replace(b"cogs-stage2-ssh rw -", b"cogs-stage2-ssh ro -"),
+    mountinfo.replace(b"cogs-stage2-ssh rw -", b"cogs-stage2-ssh rw shared:0 -"),
+    mountinfo.replace(b"cogs-stage2-ssh rw -", b"cogs-stage2-ssh rw master:308 -"),
     mountinfo.replace(b"nsfs nsfs rw", b"nsfs nsfs rw,nosuid"),
 ):
     rejected(lambda hostile=hostile: network.parse_netns_identity(hostile, stat))
