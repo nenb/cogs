@@ -1581,7 +1581,7 @@ def _descriptor_remove_netns(journal, retained):
             if tree_fd < 0: saved = ctypes.get_errno(); raise OSError(saved, os.strerror(saved))
             opened.append(tree_fd); stat = os.fstat(tree_fd)
             if (stat.st_dev, stat.st_ino) != (expected["inode_device"], expected["inode"]): raise NetworkError("quarantine mount replacement")
-            if libc.umount2(("/proc/self/fd/" + str(tree_fd)).encode(), 2) != 0:
+            if libc.umount2(("/run/netns/" + quarantine).encode(), 2) != 0:
                 saved = ctypes.get_errno(); raise OSError(saved, os.strerror(saved))
             exposed = os.stat(quarantine, dir_fd=parent, follow_symlinks=False)
         if (exposed.st_dev, exposed.st_ino) != (placeholder["device"], placeholder["inode"]):
